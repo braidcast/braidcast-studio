@@ -32,6 +32,7 @@
 !CODESTYLE.md
 !COPYING
 !INSTALL
+!magefile.go
 !README.rst
 
 # Exclude lock files
