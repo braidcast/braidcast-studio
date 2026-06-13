@@ -3,6 +3,8 @@
 #include <widgets/OBSBasic.hpp>
 #include <utility/CanvasManager.hpp>
 
+#include <utility>
+
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -101,6 +103,60 @@ void OBSBasicSettings::LoadCanvasSettings()
 }
 
 void OBSBasicSettings::SaveCanvasSettings() {}
-void OBSBasicSettings::AddCanvasClicked() {}
-void OBSBasicSettings::RemoveCanvasClicked(const std::string &) {}
-void OBSBasicSettings::EditCanvasClicked(const std::string &) {}
+
+void OBSBasicSettings::AddCanvasClicked()
+{
+	CanvasManager &mgr = main->GetCanvasManager();
+
+	CanvasDefinition def;
+	def.name = QT_TO_UTF8(QTStr("Basic.Settings.Canvas.NewName"));
+	def.width = 1920;
+	def.height = 1080;
+	def.fpsNum = 60;
+	def.fpsDen = 1;
+
+	const CanvasDefinition &added = mgr.Add(std::move(def));
+
+	obs_video_info covi = {};
+	added.ToVideoInfo(covi);
+	main->AddCanvas(added.name, &covi, ACTIVATE | MIX_AUDIO | SCENE_REF, added.uuid.c_str());
+
+	canvasChanged = true;
+	EnableApplyButton(true);
+	RebuildCanvasList();
+}
+
+void OBSBasicSettings::RemoveCanvasClicked(const std::string &uuid)
+{
+	CanvasManager &mgr = main->GetCanvasManager();
+	CanvasDefinition *def = mgr.Find(uuid);
+	if (!def || def->isDefault) {
+		return;
+	}
+
+	QMessageBox::StandardButton confirm = QMessageBox::question(
+		this, QTStr("Basic.Settings.Canvas.RemoveConfirm.Title"),
+		QTStr("Basic.Settings.Canvas.RemoveConfirm.Text").arg(QString::fromStdString(def->name)));
+	if (confirm != QMessageBox::Yes) {
+		return;
+	}
+
+	for (const OBS::Canvas &canvas : main->GetCanvases()) {
+		if (uuid == obs_canvas_get_uuid(canvas)) {
+			main->RemoveCanvas(static_cast<obs_canvas_t *>(canvas));
+			break;
+		}
+	}
+	mgr.Remove(uuid);
+
+	canvasChanged = true;
+	EnableApplyButton(true);
+	RebuildCanvasList();
+}
+
+void OBSBasicSettings::EditCanvasClicked(const std::string &uuid)
+{
+	(void)uuid;
+	QMessageBox::information(this, QTStr("Basic.Settings.Canvas"),
+				QTStr("Basic.Settings.Canvas.EditComingSoon"));
+}
