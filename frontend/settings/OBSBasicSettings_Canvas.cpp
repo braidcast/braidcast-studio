@@ -213,6 +213,27 @@ void OBSBasicSettings::ApplyCanvasEdit(CanvasDefinition &def)
 		if (main->program) {
 			main->ResizeProgram(def.width, def.height);
 		}
+
+		CanvasManager &mgr = main->GetCanvasManager();
+		for (const CanvasDefinition &other : mgr.Definitions()) {
+			if (other.isDefault) {
+				continue;
+			}
+			if (!other.useDefaultResolution && !other.color.useDefault) {
+				continue;
+			}
+			for (const OBS::Canvas &canvas : main->GetCanvases()) {
+				if (other.uuid == obs_canvas_get_uuid(canvas)) {
+					obs_video_info covi = {};
+					other.ToVideoInfo(covi, &def);
+					if (!obs_canvas_reset_video(static_cast<obs_canvas_t *>(canvas), &covi)) {
+						blog(LOG_WARNING, "Failed to live-follow Default for canvas '%s'",
+						     other.name.c_str());
+					}
+					break;
+				}
+			}
+		}
 		return;
 	}
 
