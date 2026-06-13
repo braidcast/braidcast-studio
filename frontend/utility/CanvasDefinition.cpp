@@ -133,18 +133,21 @@ CanvasDefinition CanvasDefinition::FromData(obs_data_t *data)
 	return def;
 }
 
-void CanvasDefinition::ToVideoInfo(struct obs_video_info &ovi) const
+void CanvasDefinition::ToVideoInfo(struct obs_video_info &ovi, const CanvasDefinition *inheritFrom) const
 {
+	const CanvasDefinition *res = (useDefaultResolution && inheritFrom) ? inheritFrom : this;
+	const CanvasColorDef &col = (color.useDefault && inheritFrom) ? inheritFrom->color : color;
+
 	ovi = {}; // graphics_module left null; the caller fills it from the running pipeline
-	ovi.base_width = width;
-	ovi.base_height = height;
-	ovi.output_width = width;   // unified: edit-surface == encode size
-	ovi.output_height = height;
-	ovi.fps_num = fpsNum;
-	ovi.fps_den = fpsDen;
+	ovi.base_width = res->width;
+	ovi.base_height = res->height;
+	ovi.output_width = res->width;   // unified: edit-surface == encode size
+	ovi.output_height = res->height;
+	ovi.fps_num = res->fpsNum;
+	ovi.fps_den = res->fpsDen;
 	ovi.gpu_conversion = true;  // GPU colorspace conversion, matching the main video pipeline
-	ovi.output_format = VideoFormatFromName(color.format);
-	ovi.colorspace = VideoColorSpaceFromName(color.space);
-	ovi.range = VideoRangeFromName(color.range);
+	ovi.output_format = VideoFormatFromName(col.format);
+	ovi.colorspace = VideoColorSpaceFromName(col.space);
+	ovi.range = VideoRangeFromName(col.range);
 	ovi.scale_type = OBS_SCALE_BICUBIC;
 }

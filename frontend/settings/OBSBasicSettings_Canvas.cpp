@@ -118,7 +118,7 @@ void OBSBasicSettings::AddCanvasClicked()
 	CanvasDefinition &added = mgr.Add(std::move(def));
 
 	obs_video_info covi = {};
-	added.ToVideoInfo(covi);
+	added.ToVideoInfo(covi, &mgr.Default());
 	main->AddCanvas(added.name, &covi, ACTIVATE | MIX_AUDIO | SCENE_REF, added.uuid.c_str());
 
 	CanvasEditorDialog dlg(added, main, this);
@@ -219,7 +219,7 @@ void OBSBasicSettings::ApplyCanvasEdit(CanvasDefinition &def)
 	for (const OBS::Canvas &canvas : main->GetCanvases()) {
 		if (def.uuid == obs_canvas_get_uuid(canvas)) {
 			obs_video_info ovi = {};
-			def.ToVideoInfo(ovi);
+			def.ToVideoInfo(ovi, &main->GetCanvasManager().Default());
 			if (!obs_canvas_reset_video(static_cast<obs_canvas_t *>(canvas), &ovi)) {
 				blog(LOG_WARNING, "Failed to apply canvas '%s' resolution %ux%u", def.name.c_str(),
 				     def.width, def.height);

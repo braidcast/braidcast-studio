@@ -43,5 +43,5 @@ struct CanvasDefinition {
 	static CanvasDefinition FromData(obs_data_t *data);
 
 	/* Fill an obs_video_info from this definition's resolution/fps/color. */
-	void ToVideoInfo(struct obs_video_info &ovi) const;
+	void ToVideoInfo(struct obs_video_info &ovi, const CanvasDefinition *inheritFrom = nullptr) const;
 };

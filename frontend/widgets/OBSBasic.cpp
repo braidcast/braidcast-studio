@@ -1047,7 +1047,7 @@ void OBSBasic::OBSInit()
 			continue;
 		}
 		obs_video_info covi = {};
-		def.ToVideoInfo(covi);
+		def.ToVideoInfo(covi, &canvasManager.Default());
 		AddCanvas(def.name, &covi, ACTIVATE | MIX_AUDIO | SCENE_REF, def.uuid.c_str());
 	}
 
