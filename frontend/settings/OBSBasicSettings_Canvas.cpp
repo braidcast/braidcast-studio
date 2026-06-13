@@ -177,21 +177,41 @@ void OBSBasicSettings::EditCanvasClicked(const std::string &uuid)
 	RebuildCanvasList();
 }
 
-void OBSBasicSettings::ApplyCanvasEdit(const CanvasDefinition &def)
+void OBSBasicSettings::ApplyCanvasEdit(CanvasDefinition &def)
 {
 	if (def.isDefault) {
 		obs_video_info ovi;
-		if (obs_get_video_info(&ovi)) {
-			ovi.base_width = def.width;
-			ovi.base_height = def.height;
-			ovi.output_width = def.width;
-			ovi.output_height = def.height;
-			ovi.fps_num = def.fpsNum;
-			ovi.fps_den = def.fpsDen;
-			if (obs_reset_video(&ovi) != OBS_VIDEO_SUCCESS) {
-				blog(LOG_WARNING, "Failed to apply Default canvas resolution %ux%u", def.width,
-				     def.height);
-			}
+		if (!obs_get_video_info(&ovi)) {
+			return;
+		}
+
+		/* The Default canvas drives the main video pipeline, which can't be
+		 * reset while an output is running. Rather than silently dropping the
+		 * change, tell the user and keep the definition matching what's live. */
+		if (obs_video_active()) {
+			def.width = ovi.base_width;
+			def.height = ovi.base_height;
+			def.fpsNum = ovi.fps_num;
+			def.fpsDen = ovi.fps_den;
+			QMessageBox::information(this, QTStr("Basic.Settings.Canvas"),
+						QTStr("Basic.Settings.Canvas.Editor.ActiveResolution"));
+			return;
+		}
+
+		ovi.base_width = def.width;
+		ovi.base_height = def.height;
+		ovi.output_width = def.width;
+		ovi.output_height = def.height;
+		ovi.fps_num = def.fpsNum;
+		ovi.fps_den = def.fpsDen;
+		if (obs_reset_video(&ovi) != OBS_VIDEO_SUCCESS) {
+			blog(LOG_WARNING, "Failed to apply Default canvas resolution %ux%u", def.width, def.height);
+			return;
+		}
+
+		main->ResizePreview(def.width, def.height);
+		if (main->program) {
+			main->ResizeProgram(def.width, def.height);
 		}
 		return;
 	}
