@@ -85,9 +85,26 @@ void CanvasEditorDialog::BuildUI()
 		}
 	}
 	videoTabLayout->addWidget(videoEncoderCombo);
-	RebuildVideoProps();
-	connect(videoEncoderCombo, &QComboBox::currentIndexChanged, this, [this](int) { RebuildVideoProps(); });
+	RebuildEncoderProps(videoEncoderCombo, videoTabLayout, videoProps, def.video);
+	connect(videoEncoderCombo, &QComboBox::currentIndexChanged, this,
+		[this](int) { RebuildEncoderProps(videoEncoderCombo, videoTabLayout, videoProps, def.video); });
 	tabs->addTab(videoTab, QTStr("Basic.Settings.Canvas.Editor.Tab.Video"));
+
+	QWidget *audioTab = new QWidget();
+	audioTabLayout = new QVBoxLayout(audioTab);
+	audioEncoderCombo = new QComboBox();
+	PopulateEncoderCombo(audioEncoderCombo, OBS_ENCODER_AUDIO);
+	{
+		int i = audioEncoderCombo->findData(QString::fromStdString(def.audio.id));
+		if (i >= 0) {
+			audioEncoderCombo->setCurrentIndex(i);
+		}
+	}
+	audioTabLayout->addWidget(audioEncoderCombo);
+	RebuildEncoderProps(audioEncoderCombo, audioTabLayout, audioProps, def.audio);
+	connect(audioEncoderCombo, &QComboBox::currentIndexChanged, this,
+		[this](int) { RebuildEncoderProps(audioEncoderCombo, audioTabLayout, audioProps, def.audio); });
+	tabs->addTab(audioTab, QTStr("Basic.Settings.Canvas.Editor.Tab.Audio"));
 
 	root->addWidget(tabs);
 
@@ -121,6 +138,12 @@ void CanvasEditorDialog::ReadBack()
 		def.video.settings = obs_data_create();
 		obs_data_apply(def.video.settings, videoProps->GetSettings());
 	}
+
+	def.audio.id = QT_TO_UTF8(audioEncoderCombo->currentData().toString());
+	if (audioProps) {
+		def.audio.settings = obs_data_create();
+		obs_data_apply(def.audio.settings, audioProps->GetSettings());
+	}
 }
 
 void CanvasEditorDialog::PopulateEncoderCombo(QComboBox *combo, obs_encoder_type want)
@@ -139,23 +162,24 @@ void CanvasEditorDialog::PopulateEncoderCombo(QComboBox *combo, obs_encoder_type
 	combo->model()->sort(0);
 }
 
-void CanvasEditorDialog::RebuildVideoProps()
+void CanvasEditorDialog::RebuildEncoderProps(QComboBox *combo, QVBoxLayout *layout, OBSPropertiesView *&view,
+					     CanvasEncoderDef &enc)
 {
-	if (videoProps) {
-		videoTabLayout->removeWidget(videoProps);
-		videoProps->deleteLater();
-		videoProps = nullptr;
+	if (view) {
+		layout->removeWidget(view);
+		view->deleteLater();
+		view = nullptr;
 	}
-	std::string id = QT_TO_UTF8(videoEncoderCombo->currentData().toString());
+	std::string id = QT_TO_UTF8(combo->currentData().toString());
 	if (id.empty()) {
 		return;
 	}
 	OBSDataAutoRelease settings = obs_encoder_defaults(id.c_str());
-	if (def.video.id == id && def.video.settings) {
-		obs_data_apply(settings, def.video.settings);
+	if (enc.id == id && enc.settings) {
+		obs_data_apply(settings, enc.settings);
 	}
-	videoProps = new OBSPropertiesView(settings.Get(), id.c_str(),
-					   (PropertiesReloadCallback)obs_get_encoder_properties, 170);
-	videoProps->setFrameShape(QFrame::NoFrame);
-	videoTabLayout->addWidget(videoProps);
+	view = new OBSPropertiesView(settings.Get(), id.c_str(), (PropertiesReloadCallback)obs_get_encoder_properties,
+				    170);
+	view->setFrameShape(QFrame::NoFrame);
+	layout->addWidget(view);
 }

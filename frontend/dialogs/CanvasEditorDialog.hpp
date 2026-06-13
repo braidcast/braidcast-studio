@@ -24,7 +24,7 @@ private:
 	void BuildUI();
 	void ReadBack();
 	void PopulateEncoderCombo(QComboBox *combo, obs_encoder_type want);
-	void RebuildVideoProps();
+	void RebuildEncoderProps(QComboBox *combo, QVBoxLayout *layout, OBSPropertiesView *&view, CanvasEncoderDef &enc);
 
 	CanvasDefinition &def;
 	OBSBasic *main;
@@ -38,4 +38,8 @@ private:
 	QComboBox *videoEncoderCombo = nullptr;
 	OBSPropertiesView *videoProps = nullptr;
 	QVBoxLayout *videoTabLayout = nullptr;
+
+	QComboBox *audioEncoderCombo = nullptr;
+	OBSPropertiesView *audioProps = nullptr;
+	QVBoxLayout *audioTabLayout = nullptr;
 };
