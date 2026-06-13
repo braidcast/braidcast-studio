@@ -201,6 +201,18 @@ void CanvasEditorDialog::BuildUI()
 	selectData(colorSpace, def.color.space);
 	selectData(colorRange, def.color.range);
 
+	sdrWhiteLevel = new QSpinBox();
+	sdrWhiteLevel->setRange(80, 480);
+	sdrWhiteLevel->setSuffix(" nits");
+	sdrWhiteLevel->setValue((int)def.color.sdrWhiteLevel);
+	advForm->addRow(QTStr("Basic.Settings.Advanced.Video.SdrWhiteLevel"), sdrWhiteLevel);
+
+	hdrNominalPeak = new QSpinBox();
+	hdrNominalPeak->setRange(400, 10000);
+	hdrNominalPeak->setSuffix(" nits");
+	hdrNominalPeak->setValue((int)def.color.hdrNominalPeakLevel);
+	advForm->addRow(QTStr("Basic.Settings.Advanced.Video.HdrNominalPeakLevel"), hdrNominalPeak);
+
 	if (!def.isDefault) {
 		colorUseDefault = new idian::ToggleSwitch(def.color.useDefault);
 		advForm->addRow(QTStr("Basic.Settings.Canvas.Editor.UseDefault"), colorUseDefault);
@@ -208,6 +220,8 @@ void CanvasEditorDialog::BuildUI()
 			colorFormat->setEnabled(!on);
 			colorSpace->setEnabled(!on);
 			colorRange->setEnabled(!on);
+			sdrWhiteLevel->setEnabled(!on);
+			hdrNominalPeak->setEnabled(!on);
 		};
 		applyColorDefault(def.color.useDefault);
 		connect(colorUseDefault, &QAbstractButton::toggled, this, applyColorDefault);
@@ -257,6 +271,8 @@ void CanvasEditorDialog::ReadBack()
 	def.color.format = QT_TO_UTF8(colorFormat->currentData().toString());
 	def.color.space = QT_TO_UTF8(colorSpace->currentData().toString());
 	def.color.range = QT_TO_UTF8(colorRange->currentData().toString());
+	def.color.sdrWhiteLevel = (uint32_t)sdrWhiteLevel->value();
+	def.color.hdrNominalPeakLevel = (uint32_t)hdrNominalPeak->value();
 
 	if (!def.isDefault) {
 		def.useDefaultResolution = resUseDefault->isChecked();

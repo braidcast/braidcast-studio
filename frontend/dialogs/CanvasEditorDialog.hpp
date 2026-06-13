@@ -53,5 +53,7 @@ private:
 	QComboBox *colorFormat = nullptr;
 	QComboBox *colorSpace = nullptr;
 	QComboBox *colorRange = nullptr;
+	QSpinBox *sdrWhiteLevel = nullptr;
+	QSpinBox *hdrNominalPeak = nullptr;
 	idian::ToggleSwitch *colorUseDefault = nullptr;
 };
