@@ -51,13 +51,14 @@ QWidget *OBSBasicSettings::BuildCanvasCard(const CanvasDefinition &def)
 	spec->setObjectName("canvasCardSpec");
 	outer->addWidget(spec);
 
-	auto encLine = [](const char *label, const CanvasEncoderDef &enc) {
-		QString id = enc.useDefault ? QString("Use Default")
-					    : QString::fromStdString(enc.id.empty() ? "(unset)" : enc.id);
+	auto encLine = [](const QString &label, const CanvasEncoderDef &enc) {
+		QString id = enc.useDefault ? QTStr("Basic.Settings.Canvas.Card.UseDefault")
+			     : enc.id.empty()  ? QTStr("Basic.Settings.Canvas.Card.Unset")
+					       : QString::fromStdString(enc.id);
 		return QString("%1: %2").arg(label).arg(id);
 	};
-	outer->addWidget(new QLabel(encLine("Video", def.video)));
-	outer->addWidget(new QLabel(encLine("Audio", def.audio)));
+	outer->addWidget(new QLabel(encLine(QTStr("Basic.Settings.Canvas.Card.Video"), def.video)));
+	outer->addWidget(new QLabel(encLine(QTStr("Basic.Settings.Canvas.Card.Audio"), def.audio)));
 
 	return card;
 }
