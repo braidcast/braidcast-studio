@@ -164,6 +164,57 @@ void CanvasEditorDialog::BuildUI()
 	});
 	tabs->addTab(audioTab, QTStr("Basic.Settings.Canvas.Editor.Tab.Audio"));
 
+	QWidget *advTab = new QWidget();
+	QFormLayout *advForm = new QFormLayout(advTab);
+
+	colorFormat = new QComboBox();
+	colorFormat->addItem(QTStr("Basic.Settings.Advanced.Video.ColorFormat.NV12"), "NV12");
+	colorFormat->addItem(QTStr("Basic.Settings.Advanced.Video.ColorFormat.I420"), "I420");
+	colorFormat->addItem(QTStr("Basic.Settings.Advanced.Video.ColorFormat.I444"), "I444");
+	colorFormat->addItem(QTStr("Basic.Settings.Advanced.Video.ColorFormat.P010"), "P010");
+	colorFormat->addItem(QTStr("Basic.Settings.Advanced.Video.ColorFormat.I010"), "I010");
+	colorFormat->addItem(QTStr("Basic.Settings.Advanced.Video.ColorFormat.P216"), "P216");
+	colorFormat->addItem(QTStr("Basic.Settings.Advanced.Video.ColorFormat.P416"), "P416");
+	colorFormat->addItem(QTStr("Basic.Settings.Advanced.Video.ColorFormat.BGRA"), "RGB");
+	advForm->addRow(QTStr("Basic.Settings.Advanced.Video.ColorFormat"), colorFormat);
+
+	colorSpace = new QComboBox();
+	colorSpace->addItem(QTStr("Basic.Settings.Advanced.Video.ColorSpace.sRGB"), "sRGB");
+	colorSpace->addItem(QTStr("Basic.Settings.Advanced.Video.ColorSpace.709"), "709");
+	colorSpace->addItem(QTStr("Basic.Settings.Advanced.Video.ColorSpace.601"), "601");
+	colorSpace->addItem(QTStr("Basic.Settings.Advanced.Video.ColorSpace.2100PQ"), "2100PQ");
+	colorSpace->addItem(QTStr("Basic.Settings.Advanced.Video.ColorSpace.2100HLG"), "2100HLG");
+	advForm->addRow(QTStr("Basic.Settings.Advanced.Video.ColorSpace"), colorSpace);
+
+	colorRange = new QComboBox();
+	colorRange->addItem(QTStr("Basic.Settings.Advanced.Video.ColorRange.Partial"), "Partial");
+	colorRange->addItem(QTStr("Basic.Settings.Advanced.Video.ColorRange.Full"), "Full");
+	advForm->addRow(QTStr("Basic.Settings.Advanced.Video.ColorRange"), colorRange);
+
+	auto selectData = [](QComboBox *combo, const std::string &value) {
+		int i = combo->findData(QString::fromStdString(value));
+		if (i >= 0) {
+			combo->setCurrentIndex(i);
+		}
+	};
+	selectData(colorFormat, def.color.format);
+	selectData(colorSpace, def.color.space);
+	selectData(colorRange, def.color.range);
+
+	if (!def.isDefault) {
+		colorUseDefault = new idian::ToggleSwitch(def.color.useDefault);
+		advForm->addRow(QTStr("Basic.Settings.Canvas.Editor.UseDefault"), colorUseDefault);
+		auto applyColorDefault = [this](bool on) {
+			colorFormat->setEnabled(!on);
+			colorSpace->setEnabled(!on);
+			colorRange->setEnabled(!on);
+		};
+		applyColorDefault(def.color.useDefault);
+		connect(colorUseDefault, &QAbstractButton::toggled, this, applyColorDefault);
+	}
+
+	tabs->addTab(advTab, QTStr("Basic.Settings.Canvas.Editor.Tab.Advanced"));
+
 	root->addWidget(tabs);
 
 	QDialogButtonBox *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
@@ -203,10 +254,15 @@ void CanvasEditorDialog::ReadBack()
 		obs_data_apply(def.audio.settings, audioProps->GetSettings());
 	}
 
+	def.color.format = QT_TO_UTF8(colorFormat->currentData().toString());
+	def.color.space = QT_TO_UTF8(colorSpace->currentData().toString());
+	def.color.range = QT_TO_UTF8(colorRange->currentData().toString());
+
 	if (!def.isDefault) {
 		def.useDefaultResolution = resUseDefault->isChecked();
 		def.video.useDefault = videoUseDefault->isChecked();
 		def.audio.useDefault = audioUseDefault->isChecked();
+		def.color.useDefault = colorUseDefault->isChecked();
 	}
 }
 

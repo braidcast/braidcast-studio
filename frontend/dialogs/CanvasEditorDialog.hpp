@@ -49,4 +49,9 @@ private:
 	OBSPropertiesView *audioProps = nullptr;
 	QVBoxLayout *audioTabLayout = nullptr;
 	idian::ToggleSwitch *audioUseDefault = nullptr;
+
+	QComboBox *colorFormat = nullptr;
+	QComboBox *colorSpace = nullptr;
+	QComboBox *colorRange = nullptr;
+	idian::ToggleSwitch *colorUseDefault = nullptr;
 };
