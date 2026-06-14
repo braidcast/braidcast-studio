@@ -1220,6 +1220,18 @@ void OBSBasic::LoadData(obs_data_t *data, SceneCollection &collection)
 		return;
 	}
 
+	/* ClearSceneData destroyed the additional canvases; recreate them (empty, with
+	 * their persisted uuid) from the global definitions so obs_load_sources below can
+	 * resolve each scene's canvas_uuid to the right canvas instead of the main one. */
+	for (const CanvasDefinition &def : canvasManager.Definitions()) {
+		if (def.isDefault) {
+			continue;
+		}
+		obs_video_info covi = {};
+		def.ToVideoInfo(covi, &canvasManager.Default());
+		AddCanvas(def.name, &covi, ACTIVATE | MIX_AUDIO | SCENE_REF, def.uuid.c_str());
+	}
+
 	InitDefaultTransitions();
 
 	if (devicePropertiesThread && devicePropertiesThread->isRunning()) {
@@ -1281,27 +1293,6 @@ void OBSBasic::LoadData(obs_data_t *data, SceneCollection &collection)
 	LoadAudioDevice(AUX_AUDIO_2.data(), 4, data);
 	LoadAudioDevice(AUX_AUDIO_3.data(), 5, data);
 	LoadAudioDevice(AUX_AUDIO_4.data(), 6, data);
-
-	// Apply per-collection canvas content bindings to the globally-created canvases.
-	OBSDataArrayAutoRelease canvasBindings = obs_data_get_array(data, "canvas_bindings");
-	if (canvasBindings) {
-		const size_t bindingCount = obs_data_array_count(canvasBindings);
-		for (size_t i = 0; i < bindingCount; i++) {
-			OBSDataAutoRelease binding = obs_data_array_item(canvasBindings, i);
-			const char *uuid = obs_data_get_string(binding, "canvas_uuid");
-			const char *boundScene = obs_data_get_string(binding, "current_scene");
-
-			OBSCanvasAutoRelease canvas = obs_get_canvas_by_uuid(uuid);
-			if (!canvas || !boundScene || !*boundScene) {
-				continue;
-			}
-
-			OBSSourceAutoRelease scene = obs_get_source_by_name(boundScene);
-			if (scene && obs_source_is_scene(scene)) {
-				obs_canvas_set_channel(canvas, 0, scene);
-			}
-		}
-	}
 
 	// Restore the per-collection main->canvas scene link map (FromDataArray
 	// returns an empty map for a null/absent array).
@@ -1387,6 +1378,34 @@ void OBSBasic::LoadData(obs_data_t *data, SceneCollection &collection)
 
 	obs_missing_files_t *files = obs_missing_files_create();
 	obs_load_sources(sources, addMissingFiles, files);
+
+	// Apply per-collection canvas content bindings now that both the canvases (recreated
+	// above) and their scenes (just loaded) exist; restores each canvas's current scene.
+	OBSDataArrayAutoRelease canvasBindings = obs_data_get_array(data, "canvas_bindings");
+	if (canvasBindings) {
+		const size_t bindingCount = obs_data_array_count(canvasBindings);
+		for (size_t i = 0; i < bindingCount; i++) {
+			OBSDataAutoRelease binding = obs_data_array_item(canvasBindings, i);
+			const char *uuid = obs_data_get_string(binding, "canvas_uuid");
+			const char *boundScene = obs_data_get_string(binding, "current_scene");
+
+			OBSCanvasAutoRelease canvas = obs_get_canvas_by_uuid(uuid);
+			if (!canvas || !boundScene || !*boundScene) {
+				continue;
+			}
+
+			OBSSourceAutoRelease scene = obs_get_source_by_name(boundScene);
+			if (scene && obs_source_is_scene(scene)) {
+				obs_canvas_set_channel(canvas, 0, scene);
+			}
+		}
+	}
+
+	// Seed a default scene only for additional canvases the collection left empty
+	// (e.g. a brand-new canvas with no persisted scenes); idempotent otherwise.
+	for (const OBS::Canvas &canvas : canvases) {
+		EnsureCanvasHasScene(canvas);
+	}
 
 	if (resetVideo) {
 		ResetVideo();

@@ -1020,17 +1020,6 @@ void OBSBasic::OBSInit()
 		}
 	}
 
-	/* graphics_module is consumed only at global graphics init; additional canvas
-	 * mixes reuse the existing context, so ToVideoInfo's null is fine here. */
-	for (const CanvasDefinition &def : canvasManager.Definitions()) {
-		if (def.isDefault) {
-			continue;
-		}
-		obs_video_info covi = {};
-		def.ToVideoInfo(covi, &canvasManager.Default());
-		AddCanvas(def.name, &covi, ACTIVATE | MIX_AUDIO | SCENE_REF, def.uuid.c_str());
-	}
-
 	/* load audio monitoring */
 	if (obs_audio_monitoring_available()) {
 		const char *device_name = config_get_string(activeConfiguration, "Audio", "MonitoringDeviceName");

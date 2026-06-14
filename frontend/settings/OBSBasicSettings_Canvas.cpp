@@ -52,9 +52,9 @@ QWidget *OBSBasicSettings::BuildCanvasCard(const CanvasDefinition &def)
 	outer->addWidget(spec);
 
 	auto encLine = [](const QString &label, const CanvasEncoderDef &enc) {
-		QString id = enc.useDefault ? QTStr("Basic.Settings.Canvas.Card.UseDefault")
-			     : enc.id.empty()  ? QTStr("Basic.Settings.Canvas.Card.Unset")
-					       : QString::fromStdString(enc.id);
+		QString id = enc.useDefault   ? QTStr("Basic.Settings.Canvas.Card.UseDefault")
+			     : enc.id.empty() ? QTStr("Basic.Settings.Canvas.Card.Unset")
+					      : QString::fromStdString(enc.id);
 		return QString("%1: %2").arg(label).arg(id);
 	};
 	outer->addWidget(new QLabel(encLine(QTStr("Basic.Settings.Canvas.Card.Video"), def.video)));
@@ -119,7 +119,11 @@ void OBSBasicSettings::AddCanvasClicked()
 
 	obs_video_info covi = {};
 	added.ToVideoInfo(covi, &mgr.Default());
-	main->AddCanvas(added.name, &covi, ACTIVATE | MIX_AUDIO | SCENE_REF, added.uuid.c_str());
+	const OBS::Canvas &canvas =
+		main->AddCanvas(added.name, &covi, ACTIVATE | MIX_AUDIO | SCENE_REF, added.uuid.c_str());
+	/* Live-added canvas has no persisted scenes and no LoadData cycle to seed one,
+	 * so give it a default scene immediately. */
+	main->EnsureCanvasHasScene(canvas);
 
 	CanvasEditorDialog dlg(added, main, this);
 	if (dlg.exec() == QDialog::Accepted) {
@@ -194,7 +198,7 @@ void OBSBasicSettings::ApplyCanvasEdit(CanvasDefinition &def)
 			def.fpsNum = ovi.fps_num;
 			def.fpsDen = ovi.fps_den;
 			QMessageBox::information(this, QTStr("Basic.Settings.Canvas"),
-						QTStr("Basic.Settings.Canvas.Editor.ActiveResolution"));
+						 QTStr("Basic.Settings.Canvas.Editor.ActiveResolution"));
 			return;
 		}
 

@@ -43,7 +43,6 @@ const OBS::Canvas &OBSBasic::AddCanvas(const std::string &name, obs_video_info *
 	}
 	OBSCanvas canvas = raw;
 	auto &it = canvases.emplace_back(canvas);
-	EnsureCanvasHasScene(raw);
 	OnEvent(OBS_FRONTEND_EVENT_CANVAS_ADDED);
 	return it;
 }
