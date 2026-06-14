@@ -105,7 +105,7 @@ build() {
     setup_ubuntu
   }
 
-  local product_name='obs-studio'
+  local product_name='obs-multistream'
 
   pushd ${project_root}
 

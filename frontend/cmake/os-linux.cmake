@@ -53,35 +53,41 @@ if(NOT DEFINED GIT_HASH)
   endif()
 endif()
 
-configure_file(cmake/linux/com.obsproject.Studio.metainfo.xml.in com.obsproject.Studio.metainfo.xml)
+configure_file(
+  cmake/linux/com.obsproject.obs-multistream.metainfo.xml.in
+  com.obsproject.obs-multistream.metainfo.xml
+)
 
 install(
-  FILES "${CMAKE_CURRENT_BINARY_DIR}/com.obsproject.Studio.metainfo.xml"
+  FILES "${CMAKE_CURRENT_BINARY_DIR}/com.obsproject.obs-multistream.metainfo.xml"
   DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/metainfo"
 )
 
-install(FILES cmake/linux/com.obsproject.Studio.desktop DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/applications")
+install(
+  FILES cmake/linux/com.obsproject.obs-multistream.desktop
+  DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/applications"
+)
 
 install(
   FILES cmake/linux/icons/obs-logo-128.png
   DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/128x128/apps"
-  RENAME com.obsproject.Studio.png
+  RENAME com.obsproject.obs-multistream.png
 )
 
 install(
   FILES cmake/linux/icons/obs-logo-256.png
   DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/256x256/apps"
-  RENAME com.obsproject.Studio.png
+  RENAME com.obsproject.obs-multistream.png
 )
 
 install(
   FILES cmake/linux/icons/obs-logo-512.png
   DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/512x512/apps"
-  RENAME com.obsproject.Studio.png
+  RENAME com.obsproject.obs-multistream.png
 )
 
 install(
   FILES cmake/linux/icons/obs-logo-scalable.svg
   DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/scalable/apps"
-  RENAME com.obsproject.Studio.svg
+  RENAME com.obsproject.obs-multistream.svg
 )

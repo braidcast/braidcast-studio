@@ -1317,7 +1317,7 @@ static bool UpdateVSRedists()
 
 static void UpdateRegistryVersion(const Manifest &manifest)
 {
-	const char *regKey = R"(Software\Microsoft\Windows\CurrentVersion\Uninstall\OBS Studio)";
+	const char *regKey = R"(Software\Microsoft\Windows\CurrentVersion\Uninstall\OBS MultiStreamer)";
 	LSTATUS res;
 	HKEY key;
 	char version[32];

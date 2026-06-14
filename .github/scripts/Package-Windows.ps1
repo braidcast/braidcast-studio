@@ -51,9 +51,9 @@ function Package {
     $CommitDistance = $Tokens[-2]
 
     if ( $CommitDistance -gt 0 ) {
-        $OutputName = "obs-studio-${CommitVersion}-${CommitHash}"
+        $OutputName = "obs-multistream-${CommitVersion}-${CommitHash}"
     } else {
-        $OutputName = "obs-studio-${CommitVersion}"
+        $OutputName = "obs-multistream-${CommitVersion}"
     }
 
     $CpackArgs = @(
@@ -70,7 +70,7 @@ function Package {
 
     cpack @CpackArgs
 
-    $Package = Get-ChildItem -filter "obs-studio-*-windows-${Target}.zip" -File
+    $Package = Get-ChildItem -filter "obs-multistream-*-windows-${Target}.zip" -File
     Move-Item -Path $Package -Destination "${OutputName}-windows-${Target}.zip"
 
     Pop-Location -Stack PackageTemp

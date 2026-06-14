@@ -32,7 +32,7 @@ runs:
         if [[ '${{ inputs.failCondition }}' == 'never' ]]; then set +e; fi
         python3 -u \
           build-aux/format-manifest.py \
-          build-aux/com.obsproject.Studio.json \
+          build-aux/com.obsproject.obs-multistream.json \
           --check \
           --loglevel INFO
         echo ::endgroup::

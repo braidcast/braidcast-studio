@@ -1,5 +1,5 @@
 {
-    "id": "com.obsproject.Studio",
+    "id": "com.obsproject.obs-multistream",
     "runtime": "org.freedesktop.Platform",
     "runtime-version": "25.08",
     "sdk": "org.freedesktop.Sdk",
@@ -20,7 +20,7 @@
         "--env=VST_PATH=/app/extensions/Plugins/vst"
     ],
     "add-extensions": {
-        "com.obsproject.Studio.Plugin": {
+        "com.obsproject.obs-multistream.Plugin": {
             "directory": "plugins",
             "subdirectories": true,
             "add-ld-path": "lib",

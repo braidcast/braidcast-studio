@@ -51,7 +51,7 @@ The project pins exact formatter versions. CI rejects PRs that don't match. Colu
 - **C/C++/ObjC** — `clang-format` **exactly 19.1.1**. Run `./build-aux/run-clang-format` (ZSH). Note: the codebase enforces braces on all control statements (see `.clang-format` / recent history).
 - **CMake** — `gersemi` (Python). Run `./build-aux/run-gersemi`.
 - **Swift** — `swift-format`. Run `./build-aux/run-swift-format`.
-- **Flatpak manifest** — `python3 ./build-aux/format-manifest.py com.obsproject.Studio.json`.
+- **Flatpak manifest** — `python3 ./build-aux/format-manifest.py com.obsproject.obs-multistream.json`.
 
 ## Tests
 

@@ -125,7 +125,7 @@ struct virtualcam_data {
 static void install_cmio_system_extension(struct virtualcam_data *vcam)
 {
     OSSystemExtensionRequest *request = [OSSystemExtensionRequest
-        activationRequestForExtension:@"com.obsproject.obs-studio.mac-camera-extension"
+        activationRequestForExtension:@"com.obsproject.obs-multistream.mac-camera-extension"
                                 queue:dispatch_get_main_queue()];
     request.delegate = vcam->extensionDelegate;
 
