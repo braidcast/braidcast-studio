@@ -36,9 +36,6 @@
 #endif
 #include <dialogs/OBSRemux.hpp>
 #include <settings/OBSBasicSettings.hpp>
-#ifdef _WIN32
-#include <utility/AutoUpdateThread.hpp>
-#endif
 #include <utility/RemoteTextThread.hpp>
 #if defined(_WIN32) || defined(WHATSNEW_ENABLED)
 #include <utility/WhatsNewInfoThread.hpp>
@@ -378,17 +375,8 @@ void OBSBasic::on_actionCheckForUpdates_triggered()
 
 void OBSBasic::on_actionRepair_triggered()
 {
-#if defined(_WIN32)
-	ui->actionCheckForUpdates->setEnabled(false);
-	ui->actionRepair->setEnabled(false);
-
-	if (updateCheckThread && updateCheckThread->isRunning()) {
-		return;
-	}
-
-	updateCheckThread.reset(new AutoUpdateThread(false, true));
-	updateCheckThread->start();
-#endif
+	/* Repair downloads the updater payload from OBS Project update
+	 * infrastructure; this fork does not phone home, so it is a no-op. */
 }
 
 void OBSBasic::on_actionRestartSafe_triggered()
@@ -457,9 +445,7 @@ void OBSBasic::on_actionShowWhatsNew_triggered()
 
 void OBSBasic::on_actionReleaseNotes_triggered()
 {
-	QString addr("https://github.com/obsproject/obs-studio/releases");
-	QUrl url(QString("%1/%2").arg(addr, obs_get_version_string()), QUrl::TolerantMode);
-	QDesktopServices::openUrl(url);
+	/* This fork does not direct users to official OBS Project release notes. */
 }
 
 void OBSBasic::on_actionShowSettingsFolder_triggered()

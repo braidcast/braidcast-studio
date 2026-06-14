@@ -1,7 +1,6 @@
 #include "OBSAbout.hpp"
 
 #include <widgets/OBSBasic.hpp>
-#include <utility/RemoteTextThread.hpp>
 
 #include <qt-wrappers.hpp>
 
@@ -62,19 +61,9 @@ OBSAbout::OBSAbout(QWidget *parent) : QDialog(parent), ui(new Ui::OBSAbout)
 	connect(ui->authors, &ClickableLabel::clicked, this, &OBSAbout::ShowAuthors);
 	connect(ui->license, &ClickableLabel::clicked, this, &OBSAbout::ShowLicense);
 
-	QPointer<OBSAbout> about(this);
-
-	OBSBasic *main = OBSBasic::Get();
-	if (main->patronJson.empty() && !main->patronJsonThread) {
-		RemoteTextThread *thread =
-			new RemoteTextThread("https://obsproject.com/patreon/about-box.json", "application/json");
-		QObject::connect(thread, &RemoteTextThread::Result, main, &OBSBasic::UpdatePatronJson);
-		QObject::connect(thread, &RemoteTextThread::Result, this, &OBSAbout::ShowAbout);
-		main->patronJsonThread.reset(thread);
-		thread->start();
-	} else {
-		ShowAbout();
-	}
+	/* This fork does not fetch the patron list from OBS Project
+	 * infrastructure; the About box simply shows no patron list. */
+	ShowAbout();
 }
 
 void OBSAbout::ShowAbout()

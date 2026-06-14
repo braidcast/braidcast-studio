@@ -21,9 +21,6 @@
 
 #include <dialogs/OBSWhatsNew.hpp>
 
-#ifdef _WIN32
-#include <utility/AutoUpdateThread.hpp>
-#endif
 #ifdef ENABLE_SPARKLE_UPDATER
 #include <utility/MacUpdateThread.hpp>
 #include <utility/OBSSparkle.hpp>
@@ -202,29 +199,9 @@ void OBSBasic::TimedCheckForUpdates()
 
 void OBSBasic::CheckForUpdates(bool manualUpdate)
 {
-#if _WIN32
-	ui->actionCheckForUpdates->setEnabled(false);
-	ui->actionRepair->setEnabled(false);
-
-	if (updateCheckThread && updateCheckThread->isRunning()) {
-		return;
-	}
-	updateCheckThread.reset(new AutoUpdateThread(manualUpdate));
-	updateCheckThread->start();
-#elif defined(ENABLE_SPARKLE_UPDATER)
-	ui->actionCheckForUpdates->setEnabled(false);
-
-	if (updateCheckThread && updateCheckThread->isRunning()) {
-		return;
-	}
-
-	MacUpdateThread *mut = new MacUpdateThread(manualUpdate);
-	connect(mut, &MacUpdateThread::Result, this, &OBSBasic::MacBranchesFetched, Qt::QueuedConnection);
-	updateCheckThread.reset(mut);
-	updateCheckThread->start();
-#else
+	/* This fork does not phone home to OBS Project update infrastructure, so
+	 * no update check is performed and no update thread is ever started. */
 	UNUSED_PARAMETER(manualUpdate);
-#endif
 }
 
 void OBSBasic::MacBranchesFetched(const QString &branch, bool manualUpdate)
