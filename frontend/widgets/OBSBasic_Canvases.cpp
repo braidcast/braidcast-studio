@@ -120,7 +120,7 @@ void OBSBasic::ApplyCanvasSceneLinks()
 	}
 
 	for (const OBS::Canvas &canvas : canvases) {
-		obs_canvas_t *c = canvas; // implicit operator obs_canvas_t*
+		obs_canvas_t *c = canvas;
 		const char *canvasUuid = obs_canvas_get_uuid(c);
 		if (!canvasUuid) {
 			continue;

@@ -1148,7 +1148,7 @@ public:
 private:
 	std::vector<OBS::Canvas> canvases;
 	CanvasManager canvasManager;
-	CanvasSceneLink canvasSceneLink; // per-collection main->canvas scene-switch map
+	CanvasSceneLink canvasSceneLink;
 
 	static void CanvasRemoved(void *data, calldata_t *params);
 	void ClearCanvases();
