@@ -78,12 +78,18 @@ func Run() error {
 		}
 		return err
 	}
-	cmd := exec.Command(runExe, "--portable")
-	cmd.Dir = filepath.Dir(runExe)
+	// Resolve to an absolute path: with cmd.Dir set, Windows fails to find a
+	// relative executable (it gets re-resolved against cmd.Dir).
+	exe, err := filepath.Abs(runExe)
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(exe, "--portable")
+	cmd.Dir = filepath.Dir(exe)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
-	fmt.Printf("> %s --portable\n", runExe)
+	fmt.Printf("> %s --portable\n", exe)
 	return cmd.Run()
 }
 
