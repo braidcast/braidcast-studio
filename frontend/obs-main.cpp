@@ -761,7 +761,8 @@ static void main_crash_handler(const char *format, va_list args, void * /* param
 
 	string finalMessage = string(message_buffer.get(), message_buffer.get() + size);
 
-	int ret = MessageBoxA(NULL, finalMessage.c_str(), "OBS has crashed!", MB_YESNO | MB_ICONERROR | MB_TASKMODAL);
+	int ret = MessageBoxA(NULL, finalMessage.c_str(), "OBS MultiStreamer has crashed!",
+			      MB_YESNO | MB_ICONERROR | MB_TASKMODAL);
 
 	if (ret == IDYES) {
 		size_t len = strlen(text);
@@ -856,7 +857,7 @@ static inline bool arg_is(const char *arg, const char *long_form, const char *sh
 
 #ifdef _WIN32
 static constexpr char vcRunErrorTitle[] = "Outdated Visual C++ Runtime";
-static constexpr char vcRunErrorMsg[] = "OBS Studio requires a newer version of the Microsoft Visual C++ "
+static constexpr char vcRunErrorMsg[] = "OBS MultiStreamer requires a newer version of the Microsoft Visual C++ "
 					"Redistributables.\n\nYou will now be directed to the download page.";
 static constexpr char vcRunInstallerUrl[] = "https://obsproject.com/visual-studio-2022-runtimes";
 
