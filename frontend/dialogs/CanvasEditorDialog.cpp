@@ -74,7 +74,12 @@ void CanvasEditorDialog::BuildUI()
 
 	if (!def.isDefault) {
 		resUseDefault = new idian::ToggleSwitch(def.useDefaultResolution);
-		form->addRow(QTStr("Basic.Settings.Canvas.Editor.UseDefaultRes"), resUseDefault);
+		QWidget *resUseDefaultRow = new QWidget();
+		QHBoxLayout *resUseDefaultLayout = new QHBoxLayout(resUseDefaultRow);
+		resUseDefaultLayout->setContentsMargins(0, 0, 0, 0);
+		resUseDefaultLayout->addWidget(resUseDefault);
+		resUseDefaultLayout->addStretch();
+		form->addRow(QTStr("Basic.Settings.Canvas.Editor.UseDefaultRes"), resUseDefaultRow);
 		auto applyResDefault = [this](bool on) {
 			resCombo->setEnabled(!on);
 			fpsNum->setEnabled(!on);
@@ -105,7 +110,7 @@ void CanvasEditorDialog::BuildUI()
 		QWidget *row = new QWidget();
 		QHBoxLayout *rowLayout = new QHBoxLayout(row);
 		rowLayout->setContentsMargins(0, 0, 0, 0);
-		rowLayout->addWidget(new QLabel(QTStr("Basic.Settings.Canvas.Editor.UseDefault")));
+		rowLayout->addWidget(new QLabel(QTStr("Basic.Settings.Canvas.Editor.UseDefaultVideo")));
 		rowLayout->addWidget(videoUseDefault);
 		rowLayout->addStretch();
 		videoTabLayout->insertWidget(0, row);
@@ -143,7 +148,7 @@ void CanvasEditorDialog::BuildUI()
 		QWidget *row = new QWidget();
 		QHBoxLayout *rowLayout = new QHBoxLayout(row);
 		rowLayout->setContentsMargins(0, 0, 0, 0);
-		rowLayout->addWidget(new QLabel(QTStr("Basic.Settings.Canvas.Editor.UseDefault")));
+		rowLayout->addWidget(new QLabel(QTStr("Basic.Settings.Canvas.Editor.UseDefaultAudio")));
 		rowLayout->addWidget(audioUseDefault);
 		rowLayout->addStretch();
 		audioTabLayout->insertWidget(0, row);
@@ -165,7 +170,8 @@ void CanvasEditorDialog::BuildUI()
 	tabs->addTab(audioTab, QTStr("Basic.Settings.Canvas.Editor.Tab.Audio"));
 
 	QWidget *advTab = new QWidget();
-	QFormLayout *advForm = new QFormLayout(advTab);
+	QVBoxLayout *advTabLayout = new QVBoxLayout(advTab);
+	QFormLayout *advForm = new QFormLayout();
 
 	colorFormat = new QComboBox();
 	colorFormat->addItem(QTStr("Basic.Settings.Advanced.Video.ColorFormat.NV12"), "NV12");
@@ -213,9 +219,16 @@ void CanvasEditorDialog::BuildUI()
 	hdrNominalPeak->setValue((int)def.color.hdrNominalPeakLevel);
 	advForm->addRow(QTStr("Basic.Settings.Advanced.Video.HdrNominalPeakLevel"), hdrNominalPeak);
 
+	advTabLayout->addLayout(advForm);
 	if (!def.isDefault) {
 		colorUseDefault = new idian::ToggleSwitch(def.color.useDefault);
-		advForm->addRow(QTStr("Basic.Settings.Canvas.Editor.UseDefault"), colorUseDefault);
+		QWidget *row = new QWidget();
+		QHBoxLayout *rowLayout = new QHBoxLayout(row);
+		rowLayout->setContentsMargins(0, 0, 0, 0);
+		rowLayout->addWidget(new QLabel(QTStr("Basic.Settings.Canvas.Editor.UseDefaultAdvanced")));
+		rowLayout->addWidget(colorUseDefault);
+		rowLayout->addStretch();
+		advTabLayout->insertWidget(0, row);
 		auto applyColorDefault = [this](bool on) {
 			colorFormat->setEnabled(!on);
 			colorSpace->setEnabled(!on);
@@ -315,7 +328,7 @@ void CanvasEditorDialog::RebuildEncoderProps(QComboBox *combo, QVBoxLayout *layo
 		obs_data_apply(settings, enc.settings);
 	}
 	view = new OBSPropertiesView(settings.Get(), id.c_str(), (PropertiesReloadCallback)obs_get_encoder_properties,
-				    170);
+				     170);
 	view->setFrameShape(QFrame::NoFrame);
 	layout->addWidget(view);
 }
