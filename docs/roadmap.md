@@ -65,36 +65,41 @@ canvas); recording, replay buffer, and multitrack/GoLive are hidden and inert.
 
 ---
 
-## Phase 2 — Multi-destination 💭 IN DESIGN
+## Phase 2 — Multi-destination 🔧 DESIGNED, building 2a
 
 The goal: each canvas streams to its own destination(s) simultaneously — one
 encode per canvas, fanned out to many platforms (Twitch + YouTube + Kick + …).
 This closes the Phase 1 seam where additional canvases are definitions only.
 
-**Proposed direction (under discussion, not decided): dockable canvas windows.**
-Inspired by SE.Live, but avoiding its failure modes. Each canvas surfaces as a
-dockable window holding a resolution-matched preview plus its scene binding
-(with optional auto-follow of the current scene). The Default preview becomes
-dockable too. Later, only canvases connected to a destination surface as docks.
+**Model decided: per-canvas scenes over shared sources** (Model 1). Each canvas
+owns its own scenes (normal OBS scenes); sources stay global/shared, so a canvas
+scene references and positions them. Layout is per-canvas (transform/visibility);
+content is shared (properties/filters/name). "Link scene" = activation sync
+(switch main program scene → linked canvases follow). Rejected Model 2 (one base
+scene + per-canvas overrides) as a high-cost custom layer. This **revises** the
+Phase 1-era "canvas references one shared scene" decision (which only held for
+same-aspect canvases). Full design: `docs/superpowers/specs/2026-06-14-canvas-
+multidestination-design.md`. Surfaced as **dockable canvas windows** (preview +
+scene tree + 🔗 link + per-canvas output), all dockable, phased visibility.
 
-SE.Live failure modes to explicitly avoid:
+SE.Live failure modes explicitly designed against: broken Link scene; broken
+canvas CRUD; a non-switchable "primary" destination forcing re-encodes; GPU
+blowout/FPS drops from redundant encodes; frame-skips invisible to OBS Stats.
+Our fixes: working uuid-keyed link; reuse Phase 1 CanvasManager CRUD; no
+privileged primary; one encode per canvas, shared where settings match; native
+`obs_output_t` per destination so OBS Stats see everything.
 
-- Broken canvas CRUD (rename/save/delete that silently do nothing or error).
-- A non-switchable "primary" destination that forces redundant re-encodes.
-- GPU blowout and game FPS drops from redundant encodes.
-- Frame-skips invisible to OBS's native Stats.
-- Dead "link scene" feature.
+**Build decomposition (each: spec → plan → implement):**
 
-Design intents to carry in:
-
-- One encode per canvas; share/reuse encode where resolution matches instead of
-  re-encoding per destination.
-- Native `obs_output_t` per destination so OBS's own Stats reflect everything.
-- All canvas CRUD actually works and is reflected live.
-
-> This section is a captured proposal, not an approved design. The full design
-> will be brainstormed and written to `docs/superpowers/specs/` before any
-> implementation.
+- 🔧 **2a — Scene model** — per-canvas scenes over shared sources, scene-link
+  activation sync, Add-Source "use existing" default. Plan:
+  `docs/superpowers/plans/2026-06-14-canvas-scene-model.md` (built on libobs's
+  `obs_canvas_scene_create`/`obs_canvas_set_channel`). **In implementation.**
+- 🔭 **2b — Dockable canvas windows** — the per-canvas dock UI; default preview
+  as a dock; phased visibility.
+- 🔭 **2c — Per-canvas outputs & destinations** — native `obs_output` per canvas,
+  encoder-sharing for identical settings, destination management, Stats; harvest
+  or retire the dormant GoLive plumbing.
 
 ---
 
