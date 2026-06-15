@@ -373,37 +373,46 @@ void OBSBasicSettings::SaveStream1Settings()
 	auto oldWHIPSimulcastTotalLayers = config_get_int(main->Config(), "Stream1", "WHIPSimulcastTotalLayers");
 	SaveSpinBox(ui->whipSimulcastTotalLayers, "Stream1", "WHIPSimulcastTotalLayers");
 
-	auto oldMultitrackVideoSetting = config_get_bool(main->Config(), "Stream1", "EnableMultitrackVideo");
+	/* Multitrack video config is global and tied to the live (primary) service.
+	 * Deriving it from the form while a non-primary profile is selected would
+	 * recompute global multitrack settings from the wrong service, so only the
+	 * primary profile may touch it. */
+	if (current && current->isPrimary) {
+		auto oldMultitrackVideoSetting = config_get_bool(main->Config(), "Stream1", "EnableMultitrackVideo");
 
-	if (!IsCustomService()) {
-		OBSDataAutoRelease settings = obs_data_create();
-		obs_data_set_string(settings, "service", QT_TO_UTF8(ui->service->currentText()));
-		OBSServiceAutoRelease temp_service =
-			obs_service_create_private("rtmp_common", "auto config query service", settings);
-		settings = obs_service_get_settings(temp_service);
-		auto available = obs_data_has_user_value(settings, "multitrack_video_configuration_url");
+		if (!IsCustomService()) {
+			OBSDataAutoRelease settings = obs_data_create();
+			obs_data_set_string(settings, "service", QT_TO_UTF8(ui->service->currentText()));
+			OBSServiceAutoRelease temp_service =
+				obs_service_create_private("rtmp_common", "auto config query service", settings);
+			settings = obs_service_get_settings(temp_service);
+			auto available = obs_data_has_user_value(settings, "multitrack_video_configuration_url");
 
-		if (available) {
-			SaveCheckBox(ui->enableMultitrackVideo, "Stream1", "EnableMultitrackVideo");
+			if (available) {
+				SaveCheckBox(ui->enableMultitrackVideo, "Stream1", "EnableMultitrackVideo");
+			} else {
+				config_remove_value(main->Config(), "Stream1", "EnableMultitrackVideo");
+			}
 		} else {
-			config_remove_value(main->Config(), "Stream1", "EnableMultitrackVideo");
+			SaveCheckBox(ui->enableMultitrackVideo, "Stream1", "EnableMultitrackVideo");
 		}
-	} else {
-		SaveCheckBox(ui->enableMultitrackVideo, "Stream1", "EnableMultitrackVideo");
-	}
-	SaveCheckBox(ui->multitrackVideoMaximumAggregateBitrateAuto, "Stream1",
-		     "MultitrackVideoMaximumAggregateBitrateAuto");
-	SaveSpinBox(ui->multitrackVideoMaximumAggregateBitrate, "Stream1", "MultitrackVideoMaximumAggregateBitrate");
-	SaveCheckBox(ui->multitrackVideoMaximumVideoTracksAuto, "Stream1", "MultitrackVideoMaximumVideoTracksAuto");
-	SaveSpinBox(ui->multitrackVideoMaximumVideoTracks, "Stream1", "MultitrackVideoMaximumVideoTracks");
-	SaveCheckBox(ui->multitrackVideoStreamDumpEnable, "Stream1", "MultitrackVideoStreamDumpEnabled");
-	SaveCheckBox(ui->multitrackVideoConfigOverrideEnable, "Stream1", "MultitrackVideoConfigOverrideEnabled");
-	SaveText(ui->multitrackVideoConfigOverride, "Stream1", "MultitrackVideoConfigOverride");
-	SaveComboData(ui->multitrackVideoAdditionalCanvas, "Stream1", "MultitrackExtraCanvas");
+		SaveCheckBox(ui->multitrackVideoMaximumAggregateBitrateAuto, "Stream1",
+			     "MultitrackVideoMaximumAggregateBitrateAuto");
+		SaveSpinBox(ui->multitrackVideoMaximumAggregateBitrate, "Stream1",
+			    "MultitrackVideoMaximumAggregateBitrate");
+		SaveCheckBox(ui->multitrackVideoMaximumVideoTracksAuto, "Stream1",
+			     "MultitrackVideoMaximumVideoTracksAuto");
+		SaveSpinBox(ui->multitrackVideoMaximumVideoTracks, "Stream1", "MultitrackVideoMaximumVideoTracks");
+		SaveCheckBox(ui->multitrackVideoStreamDumpEnable, "Stream1", "MultitrackVideoStreamDumpEnabled");
+		SaveCheckBox(ui->multitrackVideoConfigOverrideEnable, "Stream1",
+			     "MultitrackVideoConfigOverrideEnabled");
+		SaveText(ui->multitrackVideoConfigOverride, "Stream1", "MultitrackVideoConfigOverride");
+		SaveComboData(ui->multitrackVideoAdditionalCanvas, "Stream1", "MultitrackExtraCanvas");
 
-	if (oldMultitrackVideoSetting != ui->enableMultitrackVideo->isChecked() ||
-	    oldWHIPSimulcastTotalLayers != ui->whipSimulcastTotalLayers->value()) {
-		main->ResetOutputs();
+		if (oldMultitrackVideoSetting != ui->enableMultitrackVideo->isChecked() ||
+		    oldWHIPSimulcastTotalLayers != ui->whipSimulcastTotalLayers->value()) {
+			main->ResetOutputs();
+		}
 	}
 }
 

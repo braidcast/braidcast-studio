@@ -2182,6 +2182,12 @@ void OBSBasicSettings::showEvent(QShowEvent *event)
 void OBSBasicSettings::reject()
 {
 	if (AskIfCanCloseSettings()) {
+		/* Stream-profile field edits are accumulated into the manager in memory
+		 * as the user switches profiles; only Apply/OK flushes them to disk.
+		 * Reload from streams.json so cancelling discards those uncommitted
+		 * edits. (Add/Remove are immediate management actions, matching the
+		 * canvas pattern, and already persisted to disk.) */
+		main->GetStreamProfileManager().Load();
 		close();
 	}
 }
