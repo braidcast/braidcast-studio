@@ -62,10 +62,15 @@ canvas); recording, replay buffer, and multitrack/GoLive are hidden and inert.
   Default Canvas only (additional canvases not yet wired — see Phase 2).
 - 🔭 **GUI visual passes** — Settings tabs, canvas editor, control panel hide
   state across themes.
+- 🔭 **2a scene model (runtime)** — code-complete but unverified live: create a
+  2nd canvas + scene + current-scene, restart, confirm it survives (no collapse
+  onto main); Add Source defaults to the existing source; Settings/plugin-added
+  canvases get a default scene. Scene-link sync stays dormant until the 2b UI
+  populates the link map.
 
 ---
 
-## Phase 2 — Multi-destination 🔧 DESIGNED, building 2a
+## Phase 2 — Multi-destination 🔧 2a–2e + 2b code-complete, live broadcast owed
 
 The goal: each canvas streams to its own destination(s) simultaneously — one
 encode per canvas, fanned out to many platforms (Twitch + YouTube + Kick + …).
@@ -91,15 +96,37 @@ privileged primary; one encode per canvas, shared where settings match; native
 
 **Build decomposition (each: spec → plan → implement):**
 
-- 🔧 **2a — Scene model** — per-canvas scenes over shared sources, scene-link
+- ✅ **2a — Scene model** — per-canvas scenes over shared sources, scene-link
   activation sync, Add-Source "use existing" default. Plan:
   `docs/superpowers/plans/2026-06-14-canvas-scene-model.md` (built on libobs's
-  `obs_canvas_scene_create`/`obs_canvas_set_channel`). **In implementation.**
-- 🔭 **2b — Dockable canvas windows** — the per-canvas dock UI; default preview
-  as a dock; phased visibility.
-- 🔭 **2c — Per-canvas outputs & destinations** — native `obs_output` per canvas,
-  encoder-sharing for identical settings, destination management, Stats; harvest
-  or retire the dormant GoLive plumbing.
+  `obs_canvas_scene_create`/`obs_canvas_set_channel`). **Code-complete**
+  (build-green + two-stage reviewed; GUI runtime verification owed). Capstone
+  fix: a Phase-1 carry-forward bug had additional canvases created in `OBSInit`
+  then destroyed by `ClearSceneData` before the collection loaded, so their
+  scenes/bindings restored onto the main canvas. Now recreated inside `LoadData`
+  (after the clear, before `obs_load_sources`); bindings applied after sources
+  load; default scenes seeded only for still-empty canvases. **2b/2c must keep
+  additional-canvas creation in the load path, not `OBSInit`.**
+  Phase 2 was re-decomposed into ordered sub-phases 2c → 2d → 2e → 2b; all are
+  now on `canvas-foundation`:
+- ✅ **2c — Streams tab** — global, reusable stream profiles (`streams.json`),
+  master-detail Streams settings page, primary-only mirror into OBS's single
+  `obs_service`. Build-green + GUI-verified (persistence, primary mirror,
+  Cancel-discards).
+- ✅ **2d — Outputs tab** — an output = (stream profile × canvas) + `enabled`,
+  persisted per scene-collection (`output_bindings`). Settings → Outputs routing
+  page grouped by canvas with a searchable profile dropdown and a single-key
+  in-use guard. Build-green + GUI-verified (persist across restart, in-use block).
+- ✅ **2e — Multistream engine + dock** — encode-once-per-canvas fan-out
+  (`MultistreamOutput`), one `obs_output` per enabled binding driven by its
+  profile's `obs_service`, handler-level single-key guard, and a Multistream dock
+  (per-canvas groups, status dots, Go Live / Stop All). Build-green + GUI-verified
+  to the connection-failure (Error) path; a real sustained broadcast is owed
+  (needs live creds — see `docs/issues.md` #2).
+- ✅ **2b — Dockable canvas windows** — one dock per additional canvas: a scene
+  list + an `OBSQTDisplay` of that canvas's mix, splitter auto-orienting from the
+  dock shape, layout persisted by canvas uuid. Build-green + GUI-verified
+  (scene add scoped to canvas, persistence across restart, clean teardown).
 
 ---
 
