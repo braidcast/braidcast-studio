@@ -6,7 +6,8 @@
 #include <utility/StreamProfile.hpp>
 #include <utility/StreamProfileManager.hpp>
 
-#include <QCheckBox>
+#include <Idian/ToggleSwitch.hpp>
+
 #include <QComboBox>
 #include <QCompleter>
 #include <QFrame>
@@ -72,11 +73,10 @@ QWidget *OBSBasicSettings::BuildOutputRow(OutputBinding &binding)
 		layout->addWidget(badge);
 	}
 
-	QCheckBox *enable = new QCheckBox();
+	idian::ToggleSwitch *enable = new idian::ToggleSwitch(binding.enabled);
 	enable->setObjectName("outputEnableToggle");
-	enable->setChecked(binding.enabled);
 	enable->setEnabled(!inUse);
-	connect(enable, &QCheckBox::toggled, this, [this, bindingUuid, enable](bool checked) {
+	connect(enable, &QAbstractButton::toggled, this, [this, bindingUuid, enable](bool checked) {
 		if (loadingOutputs) {
 			return;
 		}
@@ -98,7 +98,11 @@ QWidget *OBSBasicSettings::BuildOutputRow(OutputBinding &binding)
 	});
 	layout->addWidget(enable);
 
-	QPushButton *remove = new QPushButton(QTStr("Remove"));
+	QPushButton *remove = new QPushButton();
+	remove->setObjectName("outputRemoveButton");
+	remove->setProperty("class", "icon-trash");
+	remove->setFlat(true);
+	remove->setToolTip(QTStr("Remove"));
 	connect(remove, &QPushButton::clicked, this, [this, bindingUuid]() { RemoveOutputClicked(bindingUuid); });
 	layout->addWidget(remove);
 
@@ -115,11 +119,39 @@ QWidget *OBSBasicSettings::BuildCanvasOutputGroup(const char *canvasUuid, const 
 
 	QVBoxLayout *outer = new QVBoxLayout(group);
 
+	std::vector<OutputBinding *> canvasBindings = main->GetOutputBindings().ForCanvas(uuid);
+
+	QWidget *headerRow = new QWidget();
+	headerRow->setObjectName("outputGroupHeaderRow");
+	QHBoxLayout *headerLayout = new QHBoxLayout(headerRow);
+	headerLayout->setContentsMargins(0, 0, 0, 0);
+
 	QLabel *header = new QLabel(canvasTitle);
 	header->setObjectName("outputGroupHeader");
-	outer->addWidget(header);
+	headerLayout->addWidget(header);
+	headerLayout->addStretch();
 
-	for (OutputBinding *binding : main->GetOutputBindings().ForCanvas(uuid)) {
+	/* Cascade toggle: ON only when every binding under this canvas is enabled;
+	 * mixed/none read as OFF. Empty canvas has nothing to cascade, so disable. */
+	bool allEnabled = !canvasBindings.empty();
+	for (const OutputBinding *binding : canvasBindings) {
+		if (!binding->enabled) {
+			allEnabled = false;
+			break;
+		}
+	}
+
+	idian::ToggleSwitch *cascade = new idian::ToggleSwitch(allEnabled);
+	cascade->setObjectName("outputGroupCascadeToggle");
+	cascade->setEnabled(!canvasBindings.empty());
+	cascade->setToolTip(QTStr("Basic.Settings.Outputs.CascadeToggle"));
+	connect(cascade, &QAbstractButton::toggled, this,
+		[this, uuid](bool checked) { CascadeCanvasOutputs(uuid, checked); });
+	headerLayout->addWidget(cascade);
+
+	outer->addWidget(headerRow);
+
+	for (OutputBinding *binding : canvasBindings) {
 		outer->addWidget(BuildOutputRow(*binding));
 	}
 
@@ -194,6 +226,31 @@ void OBSBasicSettings::AddOutputClicked(const std::string &canvasUuid)
 void OBSBasicSettings::RemoveOutputClicked(const std::string &bindingUuid)
 {
 	main->GetOutputBindings().Remove(bindingUuid);
+	main->SaveProject();
+	RebuildOutputList();
+}
+
+void OBSBasicSettings::CascadeCanvasOutputs(const std::string &canvasUuid, bool enabled)
+{
+	if (loadingOutputs) {
+		return;
+	}
+
+	OutputBindings &bindings = main->GetOutputBindings();
+	for (OutputBinding *binding : bindings.ForCanvas(canvasUuid)) {
+		if (enabled) {
+			/* Don't force a profile live twice (one RTMP key = one
+			 * stream); leave guarded bindings untouched. */
+			if (binding->profileUuid.empty() ||
+			    bindings.ProfileEnabledElsewhere(binding->uuid, binding->profileUuid)) {
+				continue;
+			}
+			binding->enabled = true;
+		} else {
+			binding->enabled = false;
+		}
+	}
+
 	main->SaveProject();
 	RebuildOutputList();
 }

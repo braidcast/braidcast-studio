@@ -169,6 +169,7 @@ private:
 	void RebuildOutputList();
 	void AddOutputClicked(const std::string &canvasUuid);
 	void RemoveOutputClicked(const std::string &bindingUuid);
+	void CascadeCanvasOutputs(const std::string &canvasUuid, bool enabled);
 	QWidget *BuildCanvasOutputGroup(const char *canvasUuid, const QString &canvasTitle);
 	QWidget *BuildOutputRow(struct OutputBinding &binding);
 
