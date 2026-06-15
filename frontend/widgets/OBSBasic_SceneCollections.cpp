@@ -917,6 +917,11 @@ void OBSBasic::Save(SceneCollection &collection)
 	OBSDataArrayAutoRelease canvasSceneLinks = canvasSceneLink.ToDataArray();
 	obs_data_set_array(saveData, "canvas_scene_links", canvasSceneLinks);
 
+	// Per-collection output routing (profile x canvas). Profiles live in the
+	// global streams.json; only the bindings are per-collection.
+	OBSDataArrayAutoRelease outputBindingsArr = outputBindings.ToDataArray();
+	obs_data_set_array(saveData, "output_bindings", outputBindingsArr);
+
 	// Transitions
 	OBSSourceAutoRelease transition = obs_get_output_source(0);
 	OBSDataArrayAutoRelease transitionsData = SaveTransitions();
@@ -1298,6 +1303,9 @@ void OBSBasic::LoadData(obs_data_t *data, SceneCollection &collection)
 	// returns an empty map for a null/absent array).
 	OBSDataArrayAutoRelease canvasSceneLinks = obs_data_get_array(data, "canvas_scene_links");
 	canvasSceneLink = CanvasSceneLink::FromDataArray(canvasSceneLinks);
+
+	OBSDataArrayAutoRelease outputBindingsArr = obs_data_get_array(data, "output_bindings");
+	outputBindings = OutputBindings::FromDataArray(outputBindingsArr);
 
 	if (!sources) {
 		sources = std::move(groups);
