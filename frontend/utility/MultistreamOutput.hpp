@@ -4,6 +4,7 @@
 
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -71,6 +72,7 @@ private:
 	/* video_t for a canvas: obs_get_video() for the Default, else the
 	 * additional canvas's mix. NULL if not found/no mix. */
 	video_t *VideoForCanvas(const std::string &canvasUuid);
+	/* FindLive/RemoveLive assume the caller already holds liveMutex. */
 	LiveOutput *FindLive(const std::string &bindingUuid);
 	void RemoveLive(const std::string &bindingUuid);
 	void NotifyChanged();
@@ -80,5 +82,10 @@ private:
 
 	OBSBasic *main;
 	std::vector<CanvasEncoders> canvasEncoders; // cached, rebuilt lazily
+	/* The off-thread output start/stop signal handlers read `live` while the Qt
+	 * thread inserts/erases it; liveMutex guards every access. It is never held
+	 * across an obs_output_start/stop call (those can fire signals → handler →
+	 * re-lock → deadlock), only around the bare vector operations. */
+	mutable std::mutex liveMutex;
 	std::vector<std::unique_ptr<LiveOutput>> live;
 };

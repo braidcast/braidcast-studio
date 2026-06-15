@@ -81,6 +81,7 @@ bool MultistreamOutput::ProfileLiveElsewhere(const std::string &bindingUuid, con
 	if (profileUuid.empty()) {
 		return false;
 	}
+	std::lock_guard<std::mutex> lock(liveMutex);
 	for (const auto &lo : live) {
 		if (lo->bindingUuid != bindingUuid && lo->profileUuid == profileUuid) {
 			return true;
@@ -142,14 +143,21 @@ bool MultistreamOutput::StartOutput(const std::string &bindingUuid)
 
 	lo->state = State::Connecting;
 	LiveOutput *raw = lo.get();
-	live.push_back(std::move(lo));
+	{
+		std::lock_guard<std::mutex> lock(liveMutex);
+		live.push_back(std::move(lo));
+	}
 
+	/* obs_output_start is async; raw stays valid because only this (Qt) thread
+	 * erases `live`. The handler may flip raw->state, so guard the failure write. */
 	if (!obs_output_start(raw->output)) {
 		const char *err = obs_output_get_last_error(raw->output);
-		raw->lastError = err ? err : "";
-		raw->state = State::Error;
-		blog(LOG_WARNING, "Multistream: output '%s' failed to start: %s", oname.c_str(),
-		     raw->lastError.c_str());
+		{
+			std::lock_guard<std::mutex> lock(liveMutex);
+			raw->lastError = err ? err : "";
+			raw->state = State::Error;
+		}
+		blog(LOG_WARNING, "Multistream: output '%s' failed to start: %s", oname.c_str(), err ? err : "");
 		NotifyChanged();
 		return false;
 	}
@@ -159,14 +167,24 @@ bool MultistreamOutput::StartOutput(const std::string &bindingUuid)
 
 void MultistreamOutput::StopOutput(const std::string &bindingUuid)
 {
-	LiveOutput *lo = FindLive(bindingUuid);
-	if (!lo) {
-		return;
+	obs_output_t *out = nullptr;
+	{
+		std::lock_guard<std::mutex> lock(liveMutex);
+		LiveOutput *lo = FindLive(bindingUuid);
+		if (!lo) {
+			return;
+		}
+		out = lo->output;
 	}
-	if (lo->output) {
-		obs_output_stop(lo->output);
+	/* Stop outside the lock: obs_output_stop can fire "stop" synchronously,
+	 * which re-enters OnOutputStop and would deadlock on liveMutex. */
+	if (out) {
+		obs_output_stop(out);
 	}
-	RemoveLive(bindingUuid);
+	{
+		std::lock_guard<std::mutex> lock(liveMutex);
+		RemoveLive(bindingUuid);
+	}
 	NotifyChanged();
 }
 
@@ -183,12 +201,24 @@ int MultistreamOutput::StartAll()
 
 void MultistreamOutput::StopAll()
 {
-	for (auto &lo : live) {
-		if (lo->output) {
-			obs_output_stop(lo->output);
+	/* Collect raw handles under the lock, then stop outside it (obs_output_stop
+	 * may fire "stop" synchronously → OnOutputStop → re-lock → deadlock). */
+	std::vector<obs_output_t *> toStop;
+	{
+		std::lock_guard<std::mutex> lock(liveMutex);
+		for (auto &lo : live) {
+			if (lo->output) {
+				toStop.push_back(lo->output);
+			}
 		}
 	}
-	live.clear();
+	for (obs_output_t *out : toStop) {
+		obs_output_stop(out);
+	}
+	{
+		std::lock_guard<std::mutex> lock(liveMutex);
+		live.clear();
+	}
 	/* Encoders are released when the handler is destroyed or rebuilt; keep the
 	 * cache so a quick restart reuses them, but they hold no output refs now. */
 	NotifyChanged();
@@ -196,11 +226,13 @@ void MultistreamOutput::StopAll()
 
 bool MultistreamOutput::AnyActive() const
 {
+	std::lock_guard<std::mutex> lock(liveMutex);
 	return !live.empty();
 }
 
 bool MultistreamOutput::IsLive(const std::string &bindingUuid) const
 {
+	std::lock_guard<std::mutex> lock(liveMutex);
 	for (const auto &lo : live) {
 		if (lo->bindingUuid == bindingUuid) {
 			return true;
@@ -231,6 +263,7 @@ void MultistreamOutput::RemoveLive(const std::string &bindingUuid)
 
 std::vector<MultistreamOutput::OutputStatus> MultistreamOutput::Statuses() const
 {
+	std::lock_guard<std::mutex> lock(liveMutex);
 	std::vector<OutputStatus> out;
 	for (const OutputBinding &b : main->GetOutputBindings().bindings) {
 		if (!b.enabled) {
@@ -267,10 +300,13 @@ void MultistreamOutput::OnOutputStart(void *data, calldata_t *cd)
 {
 	auto self = static_cast<MultistreamOutput *>(data);
 	obs_output_t *out = (obs_output_t *)calldata_ptr(cd, "output");
-	for (auto &lo : self->live) {
-		if (lo->output == out) {
-			lo->state = State::Live;
-			break;
+	{
+		std::lock_guard<std::mutex> lock(self->liveMutex);
+		for (auto &lo : self->live) {
+			if (lo->output == out) {
+				lo->state = State::Live;
+				break;
+			}
 		}
 	}
 	self->NotifyChanged();
@@ -280,10 +316,13 @@ void MultistreamOutput::OnOutputStop(void *data, calldata_t *cd)
 {
 	auto self = static_cast<MultistreamOutput *>(data);
 	obs_output_t *out = (obs_output_t *)calldata_ptr(cd, "output");
-	for (auto &lo : self->live) {
-		if (lo->output == out) {
-			lo->state = State::Idle;
-			break;
+	{
+		std::lock_guard<std::mutex> lock(self->liveMutex);
+		for (auto &lo : self->live) {
+			if (lo->output == out) {
+				lo->state = State::Idle;
+				break;
+			}
 		}
 	}
 	self->NotifyChanged();
