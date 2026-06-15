@@ -12,6 +12,10 @@ target_sources(
     utility/CanvasManager.hpp
     utility/CanvasSceneLink.cpp
     utility/CanvasSceneLink.hpp
+    utility/StreamProfile.cpp
+    utility/StreamProfile.hpp
+    utility/StreamProfileManager.cpp
+    utility/StreamProfileManager.hpp
     utility/CrashHandler.cpp
     utility/CrashHandler.hpp
     utility/FFmpegCodec.cpp
