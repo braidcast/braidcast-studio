@@ -1278,9 +1278,12 @@
         </layout>
        </widget>
        <widget class="QWidget" name="streamPage">
-        <layout class="QVBoxLayout" name="verticalLayout_5">
+        <layout class="QHBoxLayout" name="verticalLayout_5">
+         <property name="spacing">
+          <number>0</number>
+         </property>
          <property name="leftMargin">
-          <number>9</number>
+          <number>0</number>
          </property>
          <property name="topMargin">
           <number>0</number>
@@ -1292,7 +1295,55 @@
           <number>0</number>
          </property>
          <item>
-          <widget class="QFrame" name="widget_5">
+          <widget class="QFrame" name="streamProfilePanel">
+           <property name="minimumSize">
+            <size>
+             <width>230</width>
+             <height>0</height>
+            </size>
+           </property>
+           <property name="maximumSize">
+            <size>
+             <width>230</width>
+             <height>16777215</height>
+            </size>
+           </property>
+           <property name="frameShape">
+            <enum>QFrame::StyledPanel</enum>
+           </property>
+           <layout class="QVBoxLayout" name="streamProfilePanelLayout">
+            <property name="leftMargin">
+             <number>8</number>
+            </property>
+            <property name="topMargin">
+             <number>8</number>
+            </property>
+            <property name="rightMargin">
+             <number>8</number>
+            </property>
+            <property name="bottomMargin">
+             <number>8</number>
+            </property>
+           </layout>
+          </widget>
+         </item>
+         <item>
+          <widget class="QWidget" name="streamFormColumn">
+           <layout class="QVBoxLayout" name="streamFormColumnLayout">
+            <property name="leftMargin">
+             <number>9</number>
+            </property>
+            <property name="topMargin">
+             <number>0</number>
+            </property>
+            <property name="rightMargin">
+             <number>0</number>
+            </property>
+            <property name="bottomMargin">
+             <number>0</number>
+            </property>
+            <item>
+             <widget class="QFrame" name="widget_5">
            <layout class="QFormLayout" name="topStreamLayout">
             <property name="fieldGrowthPolicy">
              <enum>QFormLayout::AllNonFixedFieldsGrow</enum>
@@ -2272,6 +2323,9 @@
              </layout>
             </widget>
            </widget>
+          </widget>
+            </item>
+           </layout>
           </widget>
          </item>
         </layout>

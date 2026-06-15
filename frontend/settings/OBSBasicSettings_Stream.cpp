@@ -98,15 +98,16 @@ void OBSBasicSettings::InitStreamPage()
 	connect(ui->multitrackVideoConfigOverrideEnable, &QCheckBox::toggled, this,
 		&OBSBasicSettings::UpdateMultitrackVideo);
 
-	/* Build the profile address book panel programmatically and insert it at
-	 * the top of the stream page, above the reused service form. The .ui form
-	 * is left untouched; only this list panel and the Label row are new. */
-	QVBoxLayout *panel = new QVBoxLayout();
+	/* Build the profile address book and drop it into the left column of the
+	 * stream page (the streamProfilePanel defined in the .ui), beside the reused
+	 * service form. The list fills the column; the "Add profile" tile sits at the
+	 * bottom, matching the Streams master-detail mock. */
+	QVBoxLayout *panel = ui->streamProfilePanelLayout;
 
 	streamProfileList = new QListWidget();
 	streamProfileList->setObjectName("streamProfileList");
-	streamProfileList->setMaximumHeight(140);
-	panel->addWidget(streamProfileList);
+	streamProfileList->setFrameShape(QFrame::NoFrame);
+	panel->addWidget(streamProfileList, 1);
 
 	QHBoxLayout *buttons = new QHBoxLayout();
 	QPushButton *addProfile = new QPushButton(QTStr("Basic.Settings.Streams.AddProfile"));
@@ -115,13 +116,7 @@ void OBSBasicSettings::InitStreamPage()
 	removeProfile->setObjectName("streamProfileRemove");
 	buttons->addWidget(addProfile);
 	buttons->addWidget(removeProfile);
-	buttons->addStretch();
 	panel->addLayout(buttons);
-
-	QVBoxLayout *streamPageLayout = qobject_cast<QVBoxLayout *>(ui->streamPage->layout());
-	if (streamPageLayout) {
-		streamPageLayout->insertLayout(0, panel);
-	}
 
 	/* Per-profile Label field, inserted as the first row of the service form. */
 	streamProfileLabel = new QLineEdit();
