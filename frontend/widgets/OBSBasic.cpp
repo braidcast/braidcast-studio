@@ -1003,6 +1003,7 @@ void OBSBasic::OBSInit()
 	/* Load global canvas definitions before resetting video: the Default
 	 * definition drives the main canvas's resolution, fps, and color. */
 	canvasManager.Load();
+	streamProfileManager.Load();
 
 	int ret = 0;
 
@@ -1086,6 +1087,23 @@ void OBSBasic::OBSInit()
 
 	if (!InitService()) {
 		throw "Failed to initialize service";
+	}
+
+	if (streamProfileManager.Empty()) {
+		/* Migrate the existing single Stream1 service into a primary profile so
+		 * nothing is lost on first run after the 2c upgrade. */
+		obs_service_t *svc = GetService();
+		if (svc) {
+			StreamProfile p;
+			const char *type = obs_service_get_type(svc);
+			if (type && *type) {
+				p.serviceId = type;
+			}
+			p.settings = obs_service_get_settings(svc);
+			p.isPrimary = true;
+			streamProfileManager.Add(std::move(p));
+			streamProfileManager.Save();
+		}
 	}
 
 	ResetOutputs();

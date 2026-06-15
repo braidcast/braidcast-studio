@@ -28,6 +28,7 @@
 #include <utility/CanvasSceneLink.hpp>
 #include <utility/OBSCanvas.hpp>
 #include <utility/PreviewProgramSizeObserver.hpp>
+#include <utility/StreamProfileManager.hpp>
 #include <utility/VCamConfig.hpp>
 #include <utility/platform.hpp>
 #include <utility/undo_stack.hpp>
@@ -1148,6 +1149,7 @@ public:
 private:
 	std::vector<OBS::Canvas> canvases;
 	CanvasManager canvasManager;
+	StreamProfileManager streamProfileManager;
 	CanvasSceneLink canvasSceneLink;
 
 	static void CanvasRemoved(void *data, calldata_t *params);
@@ -1156,6 +1158,7 @@ private:
 public:
 	const std::vector<OBS::Canvas> &GetCanvases() const noexcept { return canvases; }
 	CanvasManager &GetCanvasManager() { return canvasManager; }
+	StreamProfileManager &GetStreamProfileManager() { return streamProfileManager; }
 
 	const OBS::Canvas &AddCanvas(const std::string &name, obs_video_info *ovi = nullptr, int flags = 0,
 				     const char *uuid = nullptr);
