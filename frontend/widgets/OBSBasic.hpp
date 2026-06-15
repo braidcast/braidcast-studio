@@ -26,6 +26,7 @@
 #include <utility/BasicOutputHandler.hpp>
 #include <utility/CanvasManager.hpp>
 #include <utility/CanvasSceneLink.hpp>
+#include <utility/MultistreamOutput.hpp>
 #include <utility/OutputBinding.hpp>
 #include <utility/OBSCanvas.hpp>
 #include <utility/PreviewProgramSizeObserver.hpp>
@@ -1153,6 +1154,7 @@ private:
 	StreamProfileManager streamProfileManager;
 	CanvasSceneLink canvasSceneLink;
 	OutputBindings outputBindings;
+	std::unique_ptr<MultistreamOutput> multistreamOutput;
 
 	static void CanvasRemoved(void *data, calldata_t *params);
 	void ClearCanvases();
@@ -1162,6 +1164,7 @@ public:
 	CanvasManager &GetCanvasManager() { return canvasManager; }
 	StreamProfileManager &GetStreamProfileManager() { return streamProfileManager; }
 	OutputBindings &GetOutputBindings() { return outputBindings; }
+	MultistreamOutput *GetMultistreamOutput() { return multistreamOutput.get(); }
 
 	const OBS::Canvas &AddCanvas(const std::string &name, obs_video_info *ovi = nullptr, int flags = 0,
 				     const char *uuid = nullptr);

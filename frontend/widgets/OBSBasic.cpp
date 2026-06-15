@@ -1107,6 +1107,11 @@ void OBSBasic::OBSInit()
 	}
 
 	ResetOutputs();
+
+	/* Fan-out engine: encode-once-per-canvas, stream-to-many. Constructed after
+	 * profiles and outputs are ready; the Multistream dock drives it. */
+	multistreamOutput = std::make_unique<MultistreamOutput>(this);
+
 	CreateHotkeys();
 
 	InitPrimitives();
@@ -1492,6 +1497,7 @@ void OBSBasic::applicationShutdown() noexcept
 
 	service = nullptr;
 	outputHandler.reset();
+	multistreamOutput.reset();
 
 	delete interaction;
 	delete properties;
