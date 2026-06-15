@@ -2755,6 +2755,11 @@ QIcon OBSBasicSettings::GetCanvasIcon() const
 	return canvasIcon;
 }
 
+QIcon OBSBasicSettings::GetOutputIcon() const
+{
+	return outputIcon;
+}
+
 void OBSBasicSettings::SetGeneralIcon(const QIcon &icon)
 {
 	ui->listWidget->item(Pages::GENERAL)->setIcon(icon);
@@ -2794,6 +2799,12 @@ void OBSBasicSettings::SetCanvasIcon(const QIcon &icon)
 {
 	canvasIcon = icon;
 	ui->listWidget->item(Pages::CANVAS)->setIcon(icon);
+}
+
+void OBSBasicSettings::SetOutputIcon(const QIcon &icon)
+{
+	outputIcon = icon;
+	ui->listWidget->item(Pages::OUTPUTS)->setIcon(icon);
 }
 
 void OBSBasicSettings::UpdateAdvNetworkGroup()

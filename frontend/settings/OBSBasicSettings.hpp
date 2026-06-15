@@ -53,6 +53,7 @@ class OBSBasicSettings : public QDialog {
 	Q_PROPERTY(QIcon accessibilityIcon READ GetAccessibilityIcon WRITE SetAccessibilityIcon DESIGNABLE true)
 	Q_PROPERTY(QIcon advancedIcon READ GetAdvancedIcon WRITE SetAdvancedIcon DESIGNABLE true)
 	Q_PROPERTY(QIcon canvasIcon READ GetCanvasIcon WRITE SetCanvasIcon DESIGNABLE true)
+	Q_PROPERTY(QIcon outputIcon READ GetOutputIcon WRITE SetOutputIcon DESIGNABLE true)
 
 	enum Pages { GENERAL, APPEARANCE, STREAM, CANVAS, OUTPUTS, AUDIO, HOTKEYS, ACCESSIBILITY, ADVANCED, NUM_PAGES };
 
@@ -285,6 +286,7 @@ private:
 	QIcon accessibilityIcon;
 	QIcon advancedIcon;
 	QIcon canvasIcon;
+	QIcon outputIcon;
 
 	QIcon GetGeneralIcon() const;
 	QIcon GetAppearanceIcon() const;
@@ -294,6 +296,7 @@ private:
 	QIcon GetAccessibilityIcon() const;
 	QIcon GetAdvancedIcon() const;
 	QIcon GetCanvasIcon() const;
+	QIcon GetOutputIcon() const;
 
 	OBSService GetStream1Service();
 
@@ -356,6 +359,7 @@ private slots:
 	void SetAccessibilityIcon(const QIcon &icon);
 	void SetAdvancedIcon(const QIcon &icon);
 	void SetCanvasIcon(const QIcon &icon);
+	void SetOutputIcon(const QIcon &icon);
 
 	void UseStreamKeyAdvClicked();
 
