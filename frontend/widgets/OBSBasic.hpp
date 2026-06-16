@@ -884,7 +884,14 @@ private slots:
 	void EnablePreviewDisplay(bool enable);
 	void TogglePreview();
 
+private:
+	bool defaultPreviewOutputGated = false;
+	void UpdateDefaultPreviewGate();
+
 public:
+	/* Fired when binding `enabled` membership changes (Settings > Outputs).
+	 * Canvas previews subscribe to re-evaluate their output gate. */
+	void NotifyOutputBindingsChanged();
 	inline void GetDisplayRect(int &x, int &y, int &cx, int &cy)
 	{
 		x = previewX;
@@ -896,6 +903,8 @@ public:
 	QColor GetSelectionColor() const;
 
 signals:
+	void OutputBindingsChanged();
+
 	void CanvasResized(uint32_t width, uint32_t height);
 	void OutputResized(uint32_t width, uint32_t height);
 
@@ -1178,6 +1187,7 @@ public:
 	CanvasManager &GetCanvasManager() { return canvasManager; }
 	StreamProfileManager &GetStreamProfileManager() { return streamProfileManager; }
 	OutputBindings &GetOutputBindings() { return outputBindings; }
+	CanvasSceneLink &GetCanvasSceneLink() { return canvasSceneLink; }
 	MultistreamOutput *GetMultistreamOutput() { return multistreamOutput.get(); }
 
 	const OBS::Canvas &AddCanvas(const std::string &name, obs_video_info *ovi = nullptr, int flags = 0,

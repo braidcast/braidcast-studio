@@ -25,6 +25,9 @@ struct OutputBindings {
 	OutputBinding *Find(const std::string &uuid);
 	/* All bindings for one canvas, in insertion order. */
 	std::vector<OutputBinding *> ForCanvas(const std::string &canvasUuid);
+	/* True if some binding for this canvas is enabled. Gates the canvas preview
+	 * (Outputs are the source of truth for whether a canvas renders live). */
+	bool AnyEnabledForCanvas(const std::string &canvasUuid) const;
 	/* True if some OTHER binding with the same non-empty profile is already
 	 * enabled (single RTMP key = one live stream). Used for the "in use" guard. */
 	bool ProfileEnabledElsewhere(const std::string &bindingUuid, const std::string &profileUuid) const;

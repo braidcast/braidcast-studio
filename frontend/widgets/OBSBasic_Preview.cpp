@@ -269,8 +269,27 @@ void OBSBasic::EnablePreviewDisplay(bool enable)
 
 void OBSBasic::TogglePreview()
 {
+	/* The output gate (Settings > Outputs) overrides the manual toggle: with no
+	 * enabled output the Default canvas isn't live, so the toggle is inert. */
+	if (defaultPreviewOutputGated) {
+		return;
+	}
 	previewEnabled = !previewEnabled;
 	EnablePreviewDisplay(previewEnabled);
+}
+
+void OBSBasic::UpdateDefaultPreviewGate()
+{
+	defaultPreviewOutputGated = !GetOutputBindings().AnyEnabledForCanvas(GetCanvasManager().Default().uuid);
+	if (defaultPreviewOutputGated) {
+		ui->label->setText(QTStr("Basic.Main.PreviewDisabled.NoOutput"));
+		ui->enablePreviewButton->setVisible(false);
+		EnablePreviewDisplay(false);
+	} else {
+		ui->label->setText(QTStr("Basic.Main.PreviewDisabled"));
+		ui->enablePreviewButton->setVisible(true);
+		EnablePreviewDisplay(previewEnabled);
+	}
 }
 
 void OBSBasic::EnablePreview()

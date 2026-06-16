@@ -94,6 +94,7 @@ QWidget *OBSBasicSettings::BuildOutputRow(OutputBinding &binding)
 		}
 		b->enabled = checked;
 		main->SaveProject();
+		main->NotifyOutputBindingsChanged();
 		RebuildOutputList();
 	});
 	layout->addWidget(enable);
@@ -220,6 +221,7 @@ void OBSBasicSettings::AddOutputClicked(const std::string &canvasUuid)
 	 * upcoming RebuildOutputList, so do not hold it. */
 	main->GetOutputBindings().Add(canvasUuid);
 	main->SaveProject();
+	main->NotifyOutputBindingsChanged();
 	RebuildOutputList();
 }
 
@@ -227,6 +229,7 @@ void OBSBasicSettings::RemoveOutputClicked(const std::string &bindingUuid)
 {
 	main->GetOutputBindings().Remove(bindingUuid);
 	main->SaveProject();
+	main->NotifyOutputBindingsChanged();
 	RebuildOutputList();
 }
 
@@ -252,5 +255,6 @@ void OBSBasicSettings::CascadeCanvasOutputs(const std::string &canvasUuid, bool 
 	}
 
 	main->SaveProject();
+	main->NotifyOutputBindingsChanged();
 	RebuildOutputList();
 }

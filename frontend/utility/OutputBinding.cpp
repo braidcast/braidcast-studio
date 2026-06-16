@@ -44,6 +44,16 @@ std::vector<OutputBinding *> OutputBindings::ForCanvas(const std::string &canvas
 	return out;
 }
 
+bool OutputBindings::AnyEnabledForCanvas(const std::string &canvasUuid) const
+{
+	for (const OutputBinding &b : bindings) {
+		if (b.canvasUuid == canvasUuid && b.enabled) {
+			return true;
+		}
+	}
+	return false;
+}
+
 bool OutputBindings::ProfileEnabledElsewhere(const std::string &bindingUuid, const std::string &profileUuid) const
 {
 	if (profileUuid.empty()) {

@@ -1474,6 +1474,17 @@ void OBSBasic::OnFirstLoad()
 	if (showLogViewerOnStartup) {
 		on_actionViewCurrentLog_triggered();
 	}
+
+	/* Output bindings are loaded by now, so the Default-canvas preview gate can
+	 * be evaluated truthfully; doing it earlier would falsely gate at startup. */
+	connect(this, &OBSBasic::OutputBindingsChanged, this, &OBSBasic::UpdateDefaultPreviewGate);
+	connect(this, &OBSBasic::OutputBindingsChanged, this, &OBSBasic::ReconcileCanvasDocks);
+	UpdateDefaultPreviewGate();
+}
+
+void OBSBasic::NotifyOutputBindingsChanged()
+{
+	emit OutputBindingsChanged();
 }
 
 OBSBasic::~OBSBasic() {}

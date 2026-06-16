@@ -19,6 +19,8 @@
 
 #include <docks/CanvasDock.hpp>
 
+#include <QPoint>
+
 void OBSBasic::CanvasRemoved(void *data, calldata_t *params)
 {
 	obs_canvas_t *canvas = static_cast<obs_canvas_t *>(calldata_ptr(params, "canvas"));
@@ -190,12 +192,32 @@ void OBSBasic::CreateCanvasDock(const OBS::Canvas &canvas)
 		return;
 	}
 
+	/* The Default canvas uses the central preview, never a dock. canvases[]
+	 * only holds additional canvases, but guard defensively. */
+	if (GetCanvasManager().Default().uuid == uuid) {
+		return;
+	}
+
 	if (canvasDocks.count(uuid)) {
+		return;
+	}
+
+	/* A canvas only gets a dock once at least one of its outputs is enabled;
+	 * Outputs (Settings) are the source of truth for whether a canvas is live. */
+	if (!GetOutputBindings().AnyEnabledForCanvas(uuid)) {
 		return;
 	}
 
 	CanvasDock *dock = new CanvasDock(this, OBSCanvas(canvas), this);
 	AddDockWidget(dock, Qt::RightDockWidgetArea);
+
+	/* Float by default so it pops up as a movable window rather than gluing to
+	 * the right edge; stagger successive docks so they do not perfectly overlap. */
+	dock->setFloating(true);
+	int offset = static_cast<int>(canvasDocks.size()) * 32;
+	dock->resize(480, 320);
+	dock->move(pos() + QPoint(120 + offset, 120 + offset));
+
 	canvasDocks[uuid] = dock;
 }
 
@@ -215,10 +237,13 @@ void OBSBasic::DestroyCanvasDock(const std::string &uuid)
 
 void OBSBasic::ReconcileCanvasDocks()
 {
+	/* CreateCanvasDock self-gates on AnyEnabledForCanvas, so this only adds
+	 * docks for additional canvases whose outputs are enabled. */
 	for (const OBS::Canvas &canvas : canvases) {
 		CreateCanvasDock(canvas);
 	}
 
+	/* Remove docks whose canvas vanished or whose outputs are no longer enabled. */
 	std::vector<std::string> stale;
 	for (const auto &[uuid, dock] : canvasDocks) {
 		bool present = false;
@@ -229,7 +254,7 @@ void OBSBasic::ReconcileCanvasDocks()
 				break;
 			}
 		}
-		if (!present) {
+		if (!present || !GetOutputBindings().AnyEnabledForCanvas(uuid)) {
 			stale.push_back(uuid);
 		}
 	}

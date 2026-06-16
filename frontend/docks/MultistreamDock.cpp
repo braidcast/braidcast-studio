@@ -59,6 +59,11 @@ MultistreamDock::MultistreamDock(OBSBasic *main_, QWidget *parent) : QFrame(pare
 	QWidget *inner = new QWidget();
 	groupsLayout = new QVBoxLayout(inner);
 	scroll->setWidget(inner);
+	/* setWidget force-enables the viewport's autoFillBackground, which paints it
+	 * in the base palette role and makes the scrolled content read as a
+	 * different theme than the dock frame; clear it so it inherits. */
+	scroll->viewport()->setAutoFillBackground(false);
+	inner->setAutoFillBackground(false);
 	outer->addWidget(scroll, 1);
 
 	QHBoxLayout *footer = new QHBoxLayout();
