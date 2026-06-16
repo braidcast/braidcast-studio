@@ -52,9 +52,17 @@ QWidget *OBSBasicSettings::BuildCanvasCard(const CanvasDefinition &def)
 	outer->addWidget(spec);
 
 	auto encLine = [](const QString &label, const CanvasEncoderDef &enc) {
-		QString id = enc.useDefault   ? QTStr("Basic.Settings.Canvas.Card.UseDefault")
-			     : enc.id.empty() ? QTStr("Basic.Settings.Canvas.Card.Unset")
-					      : QString::fromStdString(enc.id);
+		QString id;
+		if (enc.useDefault) {
+			id = QTStr("Basic.Settings.Canvas.Card.UseDefault");
+		} else if (enc.id.empty()) {
+			id = QTStr("Basic.Settings.Canvas.Card.Unset");
+		} else {
+			/* Show the friendly encoder name (e.g. "NVIDIA NVENC AV1") rather
+			 * than the registration id ("obs_nvenc_av1_tex"). */
+			const char *name = obs_encoder_get_display_name(enc.id.c_str());
+			id = name ? QString::fromUtf8(name) : QString::fromStdString(enc.id);
+		}
 		return QString("%1: %2").arg(label).arg(id);
 	};
 	outer->addWidget(new QLabel(encLine(QTStr("Basic.Settings.Canvas.Card.Video"), def.video)));

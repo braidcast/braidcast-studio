@@ -47,10 +47,15 @@ void CanvasEditorDialog::BuildUI()
 
 	resCombo = new QComboBox();
 	resCombo->setEditable(true);
-	resCombo->addItem("1920x1080");
-	resCombo->addItem("1280x720");
-	resCombo->addItem("1080x1920");
-	resCombo->addItem("720x1280");
+	/* Common landscape then vertical presets up to 4K; the combo stays editable
+	 * so any custom resolution can still be typed in. */
+	static const char *const resPresets[] = {
+		"3840x2160", "2560x1440", "1920x1080", "1600x900", "1280x720",
+		"2160x3840", "1440x2560", "1080x1920", "720x1280",
+	};
+	for (const char *res : resPresets) {
+		resCombo->addItem(res);
+	}
 	resCombo->setCurrentText(QString("%1x%2").arg(def.width).arg(def.height));
 	form->addRow(QTStr("Basic.Settings.Canvas.Editor.Resolution"), resCombo);
 
