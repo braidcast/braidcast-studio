@@ -5,6 +5,45 @@ out, and how they were resolved. Newest first.
 
 ---
 
+## #4 — Additional canvas previews are view-only (no drag layout editing)
+
+**Status:** OPEN (design decision / future work) — surfaced 2026-06-16 from an
+edge-case question: "what if a user mainly uses an additional canvas, with the
+Default canvas purely for inheritance?"
+
+**Finding.** `CanvasDock`'s preview is a plain `OBSQTDisplay` — it renders the
+canvas mix but has **no** mouse/transform interaction (verified: no
+`mousePressEvent` / `obs_sceneitem_set_pos` / selection handlers in
+`CanvasDock.cpp`). Only the central `OBSBasicPreview` (a subclass) implements
+source select / drag / resize / transform. Consequence: a scene owned by an
+additional canvas can be **populated** (the dock's Add Source → `obs_scene_add`)
+but its sources **cannot be visually positioned by dragging** — there is no
+in-dock layout editing. Numeric Edit-Transform isn't wired into the dock either.
+
+**Why it matters.** Model 1 gives each additional canvas independent scenes with
+independent per-item layout. The intended north-star (landscape + vertical
+simultaneously, per-platform layouts) *requires* laying out the vertical canvas.
+For a user whose primary surface is an additional canvas, that surface is
+currently un-editable except by full-canvas placement.
+
+**The inheritance half already works.** Per-field audio/video/resolution/color
+inheritance from the Default canvas (Phase 1 4a `ToVideoInfo`) is implemented, so
+"Default purely for inheritance, different resolution per canvas" is supported at
+the encode level — it's only the *visual editing* of the dependent canvas that's
+missing.
+
+**Recommended fix (not the shelved step 3).** Make canvas-dock previews
+**editable** — give each dock an `OBSBasicPreview`-class surface bound to its own
+canvas, so the Default stays central/editable and every additional canvas is
+fully editable in its own (floating) dock. This is preferable to the rejected
+"first-enabled-wins-center" reparenting (a primary-canvas state machine + runtime
+reparenting of the main preview — invasive, marginal gain). **Needs a spike:**
+`OBSBasicPreview` assumes the main program canvas in several places
+(`obs_get_video()`, scene-item resolution), so binding it to an arbitrary canvas
+is non-trivial and must be scoped before committing.
+
+---
+
 ## #3 — Canvas/multistream holistic review: deferred findings
 
 **Status:** OPEN (logged for decision/follow-up) — from the Phase-2 wrap-up review.

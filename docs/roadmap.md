@@ -128,10 +128,58 @@ privileged primary; one encode per canvas, shared where settings match; native
   dock shape, layout persisted by canvas uuid. Build-green + GUI-verified
   (scene add scoped to canvas, persistence across restart, clean teardown).
 
+### Canvas-dock UX iteration (batch 2) ✅ 2026-06-16
+
+Reworked the canvas-preview UX around **Settings → Outputs as the single source
+of truth**, plus supporting fixes. All build-green and GUI-verified by the user.
+
+- ✅ **Output-gated previews** — a canvas renders a preview only when it has ≥1
+  enabled output binding (`OutputBindings::AnyEnabledForCanvas`, pushed via the
+  `OBSBasic::OutputBindingsChanged` signal). The Default canvas keeps the central
+  preview and swaps to a **canvas-agnostic** "Preview Disabled — enable a canvas
+  in Settings → Outputs" placeholder until enabled.
+- ✅ **Additional canvas docks appear-on-enable** — each additional canvas's dock
+  is created **floating** only while it has an enabled output and is destroyed
+  when disabled, reconciled live off `OutputBindingsChanged`.
+- ✅ **Canvas-dock anatomy** — in-dock per-scene source tree, section
+  headers/divider/toolbars, a footer (canvas-editor `⚙` + polled live-status `●`),
+  and per-scene `🔗` link toggles (Model-1 activation sync to the program scene).
+- ✅ **Point-4 considered and reverted** — briefly made the Default preview a
+  dockable panel; it collapsed the central widget and starved the layout, so it
+  was reverted. Default preview stays the central widget; stock Scenes/Sources
+  docks untouched.
+- ✅ **Stream-profile duplicate validation** — block a profile that reuses
+  another's stream key (exact) or display name (case-insensitive `Platform -
+  Name`) at every commit point; fixed the panel button clipping and the
+  stale-list-on-Apply.
+- ✅ **Canvas editor / cards** — resolution presets up to 4K (landscape +
+  vertical, combo still editable); cards show friendly encoder names via
+  `obs_encoder_get_display_name`.
+- ✅ **Theme cleanup** — removed the dangling `qproperty-videoIcon` (no matching
+  Q_PROPERTY since the Video tab was folded into Canvas) that logged on every
+  Settings open.
+
 ---
 
 ## Backlog & deferred decisions ⏸
 
+- 🐛 **Additional canvas previews are view-only (no layout editing).** The canvas
+  dock preview is a plain `OBSQTDisplay` with no mouse/transform interaction —
+  only the central `OBSBasicPreview` supports source drag/select/transform. So a
+  scene belonging to an additional canvas can be populated (Add Source) but its
+  sources cannot be **visually positioned** by dragging; this matters most for a
+  workflow where an *additional* canvas (e.g. a vertical/Shorts canvas) is the
+  user's primary surface. The right fix is **editable canvas-dock previews**
+  (give each dock an `OBSBasicPreview`-class surface bound to its canvas), not the
+  shelved "first-enabled-wins-center" reparenting (see below). Feasibility needs a
+  spike — `OBSBasicPreview` assumes the main canvas in places. See `docs/issues.md`
+  #4.
+- ⏸ **"First-enabled canvas wins the center" (step 3) — shelved.** Considered
+  generalizing so any canvas could occupy the central editable preview via runtime
+  reparenting + a primary-canvas state machine. Rejected as invasive surgery on
+  OBS's most load-bearing widget for marginal gain; the real need it was meant to
+  serve (editing a non-default canvas) is better met by editable canvas docks
+  above. Default-in-center + additionals-floating is the shipped model.
 - ⏸ **GoLive / Multitrack Video** — currently dormant. It's Twitch Enhanced
   Broadcasting (many quality renditions → one Twitch ingest), orthogonal to our
   many-platforms goal. Decision at the multi-destination phase: delete the
