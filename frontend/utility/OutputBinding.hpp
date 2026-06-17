@@ -28,6 +28,10 @@ struct OutputBindings {
 	/* True if some binding for this canvas is enabled. Gates the canvas preview
 	 * (Outputs are the source of truth for whether a canvas renders live). */
 	bool AnyEnabledForCanvas(const std::string &canvasUuid) const;
+	/* True if any binding (any canvas) is enabled. Distinguishes "no canvas live
+	 * at all" from "another canvas is live in its own window" for the Default
+	 * preview placeholder. */
+	bool AnyEnabled() const;
 	/* True if some OTHER binding with the same non-empty profile is already
 	 * enabled (single RTMP key = one live stream). Used for the "in use" guard. */
 	bool ProfileEnabledElsewhere(const std::string &bindingUuid, const std::string &profileUuid) const;

@@ -54,6 +54,16 @@ bool OutputBindings::AnyEnabledForCanvas(const std::string &canvasUuid) const
 	return false;
 }
 
+bool OutputBindings::AnyEnabled() const
+{
+	for (const OutputBinding &b : bindings) {
+		if (b.enabled) {
+			return true;
+		}
+	}
+	return false;
+}
+
 bool OutputBindings::ProfileEnabledElsewhere(const std::string &bindingUuid, const std::string &profileUuid) const
 {
 	if (profileUuid.empty()) {

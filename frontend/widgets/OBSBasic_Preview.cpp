@@ -280,9 +280,14 @@ void OBSBasic::TogglePreview()
 
 void OBSBasic::UpdateDefaultPreviewGate()
 {
-	defaultPreviewOutputGated = !GetOutputBindings().AnyEnabledForCanvas(GetCanvasManager().Default().uuid);
+	OutputBindings &bindings = GetOutputBindings();
+	defaultPreviewOutputGated = !bindings.AnyEnabledForCanvas(GetCanvasManager().Default().uuid);
 	if (defaultPreviewOutputGated) {
-		ui->label->setText(QTStr("Basic.Main.PreviewDisabled.NoOutput"));
+		/* The Default canvas has no enabled output. If another canvas is live it
+		 * renders in its own window, so don't claim the preview is "disabled" -
+		 * only say so when nothing is enabled anywhere. */
+		ui->label->setText(QTStr(bindings.AnyEnabled() ? "Basic.Main.PreviewDisabled.SeparateWindow"
+							       : "Basic.Main.PreviewDisabled.NoOutput"));
 		ui->enablePreviewButton->setVisible(false);
 		EnablePreviewDisplay(false);
 	} else {
