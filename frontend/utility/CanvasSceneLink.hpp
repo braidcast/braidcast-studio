@@ -16,6 +16,10 @@ struct CanvasSceneLink {
 	std::string Resolve(const std::string &mainSceneUuid, const std::string &canvasUuid) const;
 	void Set(const std::string &mainSceneUuid, const std::string &canvasUuid, const std::string &canvasSceneUuid);
 	void Unset(const std::string &mainSceneUuid, const std::string &canvasUuid);
+	/* Drop every mapping that points a given canvas at one of its scenes, across
+	 * all main scenes. Used when a canvas scene's "follows" target is changed, so
+	 * it follows at most one main scene. */
+	void UnsetByCanvasScene(const std::string &canvasUuid, const std::string &canvasSceneUuid);
 
 	/* Serialize to / from an obs_data array named "canvas_scene_links". */
 	[[nodiscard]] OBSDataArrayAutoRelease ToDataArray() const;

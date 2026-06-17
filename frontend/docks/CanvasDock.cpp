@@ -15,6 +15,7 @@
 #include <obs-frontend-api.h>
 
 #include <QCheckBox>
+#include <QComboBox>
 #include <QCursor>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -297,7 +298,10 @@ void CanvasDock::SourceListChanged(void *data, calldata_t *)
 
 void CanvasDock::OnFrontendEvent(enum obs_frontend_event event, void *data)
 {
-	if (event != OBS_FRONTEND_EVENT_SCENE_CHANGED) {
+	/* SCENE_CHANGED keeps the highlighted current row in sync after a link-driven
+	 * switch; SCENE_LIST_CHANGED keeps the "follows" dropdowns listing the current
+	 * set of global scenes. */
+	if (event != OBS_FRONTEND_EVENT_SCENE_CHANGED && event != OBS_FRONTEND_EVENT_SCENE_LIST_CHANGED) {
 		return;
 	}
 	CanvasDock *window = static_cast<CanvasDock *>(data);
@@ -312,22 +316,25 @@ void CanvasDock::RefreshScenes()
 	OBSSource current = main->GetCanvasCurrentScene(canvas);
 	const char *currentUuid = current ? obs_source_get_uuid(current) : nullptr;
 
-	/* The 🔗 lit-state is per-program-scene; resolve the program scene once for
-	 * this rebuild. Null (no program scene yet) -> every link disabled. */
-	OBSSource programScene = main->GetCurrentSceneSource();
-	const char *programUuidC = programScene ? obs_source_get_uuid(programScene) : nullptr;
-	std::string programUuid = programUuidC ? programUuidC : "";
-	std::string linkedSceneUuid =
-		programUuid.empty() ? std::string() : main->GetCanvasSceneLink().Resolve(programUuid, canvasUuid);
+	/* The global (main-canvas) scenes a canvas scene can be set to follow. */
+	std::vector<std::pair<std::string, std::string>> mainScenes; // {uuid, name}
+	struct obs_frontend_source_list scenes = {};
+	obs_frontend_get_scenes(&scenes);
+	for (size_t i = 0; i < scenes.sources.num; i++) {
+		obs_source_t *s = scenes.sources.array[i];
+		const char *u = obs_source_get_uuid(s);
+		const char *n = obs_source_get_name(s);
+		mainScenes.emplace_back(u ? u : "", n ? n : "");
+	}
+	obs_frontend_source_list_free(&scenes);
 
 	struct Ctx {
 		CanvasDock *dock;
 		QListWidget *list;
 		const char *currentUuid;
-		const std::string *programUuid;
-		const std::string *linkedSceneUuid;
+		const std::vector<std::pair<std::string, std::string>> *mainScenes;
 		int currentRow;
-	} ctx{this, sceneList, currentUuid, &programUuid, &linkedSceneUuid, -1};
+	} ctx{this, sceneList, currentUuid, &mainScenes, -1};
 
 	obs_canvas_enum_scenes(
 		canvas,
@@ -345,45 +352,45 @@ void CanvasDock::RefreshScenes()
 			QLabel *label = new QLabel(QString::fromUtf8(name ? name : ""));
 			label->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
 
-			QPushButton *link = new QPushButton(QString::fromUtf8("\xF0\x9F\x94\x97"));
-			link->setCheckable(true);
-			link->setFlat(true);
-			/* The emoji glyph renders taller than the row and clips; shrink the
-			 * button font so it fits without growing the row height. */
-			QFont linkFont = link->font();
-			linkFont.setPointSizeF(linkFont.pointSizeF() > 0 ? linkFont.pointSizeF() * 0.8 : 9.0);
-			link->setFont(linkFont);
-			link->setToolTip(QTStr("Basic.CanvasDock.LinkScene"));
-			link->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Preferred);
-			/* No program scene -> nothing to follow; show but inert. */
-			link->setEnabled(!c->programUuid->empty());
-			link->setChecked(!c->linkedSceneUuid->empty() && *c->linkedSceneUuid == sUuid);
-
+			/* "Follows" picker: when the chosen global scene becomes the active
+			 * program scene, this canvas switches to this scene (activation sync).
+			 * Explicit, unlike binding to whatever scene happens to be live. */
 			CanvasDock *dock = c->dock;
-			connect(link, &QAbstractButton::clicked, dock, [dock, sUuid](bool checked) {
-				OBSSource program = dock->main->GetCurrentSceneSource();
-				const char *pUuid = program ? obs_source_get_uuid(program) : nullptr;
-				if (!pUuid) {
-					return;
+			CanvasSceneLink &links = dock->main->GetCanvasSceneLink();
+			QComboBox *follow = new QComboBox();
+			follow->setToolTip(QTStr("Basic.CanvasDock.LinkScene"));
+			follow->setMaximumWidth(160);
+			follow->addItem(QTStr("Basic.CanvasDock.LinkNone"), QString());
+			int currentIdx = 0;
+			for (const std::pair<std::string, std::string> &ms : *c->mainScenes) {
+				follow->addItem(QString::fromUtf8(ms.second.c_str()), QString::fromStdString(ms.first));
+				if (links.Resolve(ms.first, dock->canvasUuid) == sUuid) {
+					currentIdx = follow->count() - 1;
 				}
-				CanvasSceneLink &links = dock->main->GetCanvasSceneLink();
-				if (checked) {
-					links.Set(pUuid, dock->canvasUuid, sUuid);
-				} else {
-					links.Unset(pUuid, dock->canvasUuid);
+			}
+			follow->setCurrentIndex(currentIdx);
+
+			connect(follow, &QComboBox::activated, dock, [dock, sUuid, follow](int index) {
+				std::string newMain = follow->itemData(index).toString().toStdString();
+				CanvasSceneLink &l = dock->main->GetCanvasSceneLink();
+				/* A canvas scene follows at most one global scene: clear any
+				 * prior mapping to it before setting the new target. */
+				l.UnsetByCanvasScene(dock->canvasUuid, sUuid);
+				if (!newMain.empty()) {
+					l.Set(newMain, dock->canvasUuid, sUuid);
 				}
 				dock->main->SaveProject();
-				/* One scene maps per (program, canvas): setting this row
-				 * implicitly unlinked any sibling, so rebuild to re-light. */
-				dock->RefreshScenes();
+				/* Rebuild deferred: this combo is the signal's sender, so don't
+				 * delete it synchronously inside its own handler. */
+				QMetaObject::invokeMethod(dock, "RefreshScenes", Qt::QueuedConnection);
 			});
 
 			rowLayout->addWidget(label);
-			rowLayout->addWidget(link);
+			rowLayout->addWidget(follow);
 
 			QListWidgetItem *item = new QListWidgetItem();
 			QSize rowHint = row->sizeHint();
-			rowHint.setHeight(std::max(rowHint.height(), label->fontMetrics().height() + 10));
+			rowHint.setHeight(std::max(rowHint.height(), follow->sizeHint().height()));
 			item->setSizeHint(rowHint);
 			item->setData(Qt::UserRole, QString::fromStdString(sUuid));
 			c->list->addItem(item);

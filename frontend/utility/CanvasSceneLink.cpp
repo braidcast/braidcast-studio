@@ -28,6 +28,21 @@ void CanvasSceneLink::Unset(const std::string &mainSceneUuid, const std::string 
 	}
 }
 
+void CanvasSceneLink::UnsetByCanvasScene(const std::string &canvasUuid, const std::string &canvasSceneUuid)
+{
+	for (auto it = map.begin(); it != map.end();) {
+		auto jt = it->second.find(canvasUuid);
+		if (jt != it->second.end() && jt->second == canvasSceneUuid) {
+			it->second.erase(jt);
+		}
+		if (it->second.empty()) {
+			it = map.erase(it);
+		} else {
+			++it;
+		}
+	}
+}
+
 OBSDataArrayAutoRelease CanvasSceneLink::ToDataArray() const
 {
 	OBSDataArrayAutoRelease arr = obs_data_array_create();
