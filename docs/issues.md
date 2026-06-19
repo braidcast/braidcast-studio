@@ -72,7 +72,11 @@ The items below were deliberately **not** auto-fixed and are recorded here.
   scoped to resolution/FPS: the warning + revert (and the follower warning) fire
   only when the resolution/FPS actually changed, so name/encoder/color edits still
   apply while live — only the video-mix reset is withheld. (The Default branch had
-  the same over-broad warning before; it's now gated the same way.)
+  the same over-broad warning before; it's now gated the same way.) The editor
+  dialog also disables the resolution/FPS inputs (and the inherit-resolution
+  toggle) while the canvas is live, with a "locked while live" hint, so the change
+  can't be attempted in the first place; the `ApplyCanvasEdit` guard remains as a
+  backstop.
 
 - **C1 (design decision) — output-binding edits ignore Settings → Cancel.** Every
   mutation in the Outputs tab calls `SaveProject()` immediately, so editing

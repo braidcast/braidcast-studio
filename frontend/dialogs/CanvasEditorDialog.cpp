@@ -94,6 +94,25 @@ void CanvasEditorDialog::BuildUI()
 		connect(resUseDefault, &QAbstractButton::toggled, this, applyResDefault);
 	}
 
+	/* Resolution/FPS require resetting the canvas video mix, which can't happen
+	 * while an output is reading it. Lock those inputs while the canvas is live so
+	 * the change can't be attempted; ApplyCanvasEdit keeps a guard as a backstop. */
+	const bool live = def.isDefault
+				  ? obs_video_active()
+				  : (main->GetMultistreamOutput() && main->GetMultistreamOutput()->IsCanvasLive(def.uuid));
+	if (live) {
+		resCombo->setEnabled(false);
+		fpsNum->setEnabled(false);
+		fpsDen->setEnabled(false);
+		if (resUseDefault) {
+			resUseDefault->setEnabled(false);
+		}
+		QLabel *lockedHint = new QLabel(QTStr("Basic.Settings.Canvas.Editor.LockedWhileLive"));
+		lockedHint->setWordWrap(true);
+		lockedHint->setProperty("class", "text-muted");
+		form->addRow(QString(), lockedHint);
+	}
+
 	root->addLayout(form);
 
 	tabs = new QTabWidget();
