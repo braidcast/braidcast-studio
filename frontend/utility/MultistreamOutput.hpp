@@ -42,6 +42,10 @@ public:
 	void StopOutput(const std::string &bindingUuid);
 
 	bool IsLive(const std::string &bindingUuid) const;
+	/* True if any output is currently running on this canvas. While running, the
+	 * canvas's encoders are bound to its video mix, so the mix must not be reset
+	 * (obs_canvas_reset_video frees it → UAF). */
+	bool IsCanvasLive(const std::string &canvasUuid) const;
 
 	/* Drop the cached encoder pair for a canvas. Call when the canvas's video is
 	 * reset or the canvas is removed: the cached encoder is bound to the old video

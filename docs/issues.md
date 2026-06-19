@@ -55,16 +55,20 @@ the thread/teardown ordering all came back correct. One real latent bug was
 fixed in commit `e39a3b7ac` (the never-invalidated per-canvas encoder cache).
 The items below were deliberately **not** auto-fixed and are recorded here.
 
-- **H1 (potential crash) — editing an additional canvas's resolution while a
-  multistream output is live on it.** `ApplyCanvasEdit`'s non-default branch
-  (OBSBasicSettings_Canvas.cpp) calls `obs_canvas_reset_video` without checking
-  whether a multistream output is currently live on that canvas (the default
-  branch *does* guard with `obs_video_active()`). `reset_video` frees the old
-  video mix; a live encoder still bound to it then reads freed memory. The
-  encoder-cache invalidation (e39a3b7ac) covers the *next* Go Live but not an
-  *already-live* output. Fix: refuse the edit (or stop the affected output
-  first) when `MultistreamOutput` reports the canvas live — mirror the default
-  branch's active-guard. Needs a small UX decision (refuse vs auto-stop).
+- **H1 (potential crash) — RESOLVED.** Editing an additional canvas's resolution
+  while a multistream output was live on it called `obs_canvas_reset_video`
+  unguarded, freeing the video mix under a live encoder (UAF). Added
+  `MultistreamOutput::IsCanvasLive(canvasUuid)` and guarded **both**
+  `obs_canvas_reset_video` sites on additional canvases in `ApplyCanvasEdit`:
+  (1) the non-default branch now refuses the edit when the canvas is live —
+  mirroring the Default branch's `obs_video_active()` guard: it reverts the
+  resolution/FPS to the live values and shows `…Editor.ActiveResolution`;
+  (2) the Default branch's live-follow loop skips any follower canvas that's live
+  (leaving it at its current resolution) and shows `…Editor.ActiveFollower` once.
+  Chose **refuse** over auto-stop for consistency with the existing Default-branch
+  behavior (don't tear down a running broadcast from a settings edit). Site 2 was
+  reachable because a follower's output uses the canvas mix, not the main video,
+  so `obs_video_active()` can be false while the follower is live.
 
 - **C1 (design decision) — output-binding edits ignore Settings → Cancel.** Every
   mutation in the Outputs tab calls `SaveProject()` immediately, so editing

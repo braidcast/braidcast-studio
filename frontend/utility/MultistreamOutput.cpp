@@ -254,6 +254,17 @@ bool MultistreamOutput::IsLive(const std::string &bindingUuid) const
 	return false;
 }
 
+bool MultistreamOutput::IsCanvasLive(const std::string &canvasUuid) const
+{
+	std::lock_guard<std::mutex> lock(liveMutex);
+	for (const auto &lo : live) {
+		if (lo->canvasUuid == canvasUuid) {
+			return true;
+		}
+	}
+	return false;
+}
+
 MultistreamOutput::LiveOutput *MultistreamOutput::FindLive(const std::string &bindingUuid)
 {
 	for (auto &lo : live) {

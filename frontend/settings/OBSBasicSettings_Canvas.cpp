@@ -231,11 +231,19 @@ void OBSBasicSettings::ApplyCanvasEdit(CanvasDefinition &def)
 		}
 
 		CanvasManager &mgr = main->GetCanvasManager();
+		bool skippedLiveFollower = false;
 		for (const CanvasDefinition &other : mgr.Definitions()) {
 			if (other.isDefault) {
 				continue;
 			}
 			if (!other.useDefaultResolution && !other.color.useDefault) {
+				continue;
+			}
+			/* A follower that's live on a multistream output has the same
+			 * reset-frees-the-mix hazard as a directly-edited canvas; leave it at
+			 * its current resolution and tell the user once below. */
+			if (auto *ms = main->GetMultistreamOutput(); ms && ms->IsCanvasLive(other.uuid)) {
+				skippedLiveFollower = true;
 				continue;
 			}
 			for (const OBS::Canvas &canvas : main->GetCanvases()) {
@@ -253,11 +261,32 @@ void OBSBasicSettings::ApplyCanvasEdit(CanvasDefinition &def)
 				}
 			}
 		}
+		if (skippedLiveFollower) {
+			QMessageBox::information(this, QTStr("Basic.Settings.Canvas"),
+						 QTStr("Basic.Settings.Canvas.Editor.ActiveFollower"));
+		}
 		return;
 	}
 
 	for (const OBS::Canvas &canvas : main->GetCanvases()) {
 		if (def.uuid == obs_canvas_get_uuid(canvas)) {
+			/* A live multistream output has encoders bound to this canvas's video
+			 * mix; obs_canvas_reset_video would free that mix out from under them.
+			 * Mirror the Default branch: refuse and keep the definition matching
+			 * what's live. */
+			if (auto *ms = main->GetMultistreamOutput(); ms && ms->IsCanvasLive(def.uuid)) {
+				obs_video_info covi = {};
+				if (obs_canvas_get_video_info(static_cast<obs_canvas_t *>(canvas), &covi)) {
+					def.width = covi.base_width;
+					def.height = covi.base_height;
+					def.fpsNum = covi.fps_num;
+					def.fpsDen = covi.fps_den;
+				}
+				QMessageBox::information(this, QTStr("Basic.Settings.Canvas"),
+							 QTStr("Basic.Settings.Canvas.Editor.ActiveResolution"));
+				return;
+			}
+
 			obs_video_info ovi = {};
 			def.ToVideoInfo(ovi, &main->GetCanvasManager().Default());
 			if (!obs_canvas_reset_video(static_cast<obs_canvas_t *>(canvas), &ovi)) {
