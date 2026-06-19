@@ -197,16 +197,22 @@ void OBSBasicSettings::ApplyCanvasEdit(CanvasDefinition &def)
 			return;
 		}
 
-		/* The Default canvas drives the main video pipeline, which can't be
-		 * reset while an output is running. Rather than silently dropping the
-		 * change, tell the user and keep the definition matching what's live. */
+		const bool resChanged = def.width != ovi.base_width || def.height != ovi.base_height ||
+					def.fpsNum != ovi.fps_num || def.fpsDen != ovi.fps_den;
+
+		/* The Default canvas drives the main video pipeline, which can't be reset
+		 * while an output is running. Only the resolution/FPS need that reset, so
+		 * a name/encoder-only edit still applies; warn and revert only when the
+		 * resolution actually changed, keeping the definition matching what's live. */
 		if (obs_video_active()) {
-			def.width = ovi.base_width;
-			def.height = ovi.base_height;
-			def.fpsNum = ovi.fps_num;
-			def.fpsDen = ovi.fps_den;
-			QMessageBox::information(this, QTStr("Basic.Settings.Canvas"),
-						 QTStr("Basic.Settings.Canvas.Editor.ActiveResolution"));
+			if (resChanged) {
+				def.width = ovi.base_width;
+				def.height = ovi.base_height;
+				def.fpsNum = ovi.fps_num;
+				def.fpsDen = ovi.fps_den;
+				QMessageBox::information(this, QTStr("Basic.Settings.Canvas"),
+							 QTStr("Basic.Settings.Canvas.Editor.ActiveResolution"));
+			}
 			return;
 		}
 
@@ -241,9 +247,10 @@ void OBSBasicSettings::ApplyCanvasEdit(CanvasDefinition &def)
 			}
 			/* A follower that's live on a multistream output has the same
 			 * reset-frees-the-mix hazard as a directly-edited canvas; leave it at
-			 * its current resolution and tell the user once below. */
+			 * its current resolution. Only warn when the Default resolution
+			 * actually changed (a name-only edit leaves followers unaffected). */
 			if (auto *ms = main->GetMultistreamOutput(); ms && ms->IsCanvasLive(other.uuid)) {
-				skippedLiveFollower = true;
+				skippedLiveFollower = skippedLiveFollower || resChanged;
 				continue;
 			}
 			for (const OBS::Canvas &canvas : main->GetCanvases()) {
@@ -272,18 +279,25 @@ void OBSBasicSettings::ApplyCanvasEdit(CanvasDefinition &def)
 		if (def.uuid == obs_canvas_get_uuid(canvas)) {
 			/* A live multistream output has encoders bound to this canvas's video
 			 * mix; obs_canvas_reset_video would free that mix out from under them.
-			 * Mirror the Default branch: refuse and keep the definition matching
-			 * what's live. */
+			 * Mirror the Default branch: skip the reset while live, and warn/revert
+			 * only when the resolution actually changed so a name/encoder edit still
+			 * applies. */
 			if (auto *ms = main->GetMultistreamOutput(); ms && ms->IsCanvasLive(def.uuid)) {
 				obs_video_info covi = {};
-				if (obs_canvas_get_video_info(static_cast<obs_canvas_t *>(canvas), &covi)) {
-					def.width = covi.base_width;
-					def.height = covi.base_height;
-					def.fpsNum = covi.fps_num;
-					def.fpsDen = covi.fps_den;
+				const bool got = obs_canvas_get_video_info(static_cast<obs_canvas_t *>(canvas), &covi);
+				const bool resChanged = !got || def.width != covi.base_width ||
+							def.height != covi.base_height || def.fpsNum != covi.fps_num ||
+							def.fpsDen != covi.fps_den;
+				if (resChanged) {
+					if (got) {
+						def.width = covi.base_width;
+						def.height = covi.base_height;
+						def.fpsNum = covi.fps_num;
+						def.fpsDen = covi.fps_den;
+					}
+					QMessageBox::information(this, QTStr("Basic.Settings.Canvas"),
+								 QTStr("Basic.Settings.Canvas.Editor.ActiveResolution"));
 				}
-				QMessageBox::information(this, QTStr("Basic.Settings.Canvas"),
-							 QTStr("Basic.Settings.Canvas.Editor.ActiveResolution"));
 				return;
 			}
 

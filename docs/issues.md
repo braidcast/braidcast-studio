@@ -68,7 +68,11 @@ The items below were deliberately **not** auto-fixed and are recorded here.
   Chose **refuse** over auto-stop for consistency with the existing Default-branch
   behavior (don't tear down a running broadcast from a settings edit). Site 2 was
   reachable because a follower's output uses the canvas mix, not the main video,
-  so `obs_video_active()` can be false while the follower is live.
+  so `obs_video_active()` can be false while the follower is live. The refusal is
+  scoped to resolution/FPS: the warning + revert (and the follower warning) fire
+  only when the resolution/FPS actually changed, so name/encoder/color edits still
+  apply while live — only the video-mix reset is withheld. (The Default branch had
+  the same over-broad warning before; it's now gated the same way.)
 
 - **C1 (design decision) — output-binding edits ignore Settings → Cancel.** Every
   mutation in the Outputs tab calls `SaveProject()` immediately, so editing
