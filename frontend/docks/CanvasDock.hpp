@@ -57,14 +57,22 @@ private:
 	/* Color the footer status dot from this canvas's multistream state (polled). */
 	void UpdateStatusDot();
 	void OnSceneSelected();
+	void ShowSceneMenu(const QPoint &pos);
 	void AddScene();
+	void DuplicateScene();
 	void RenameScene();
 	void RemoveScene();
+	void OpenSceneFilters();
 
 	obs_sceneitem_t *SelectedSceneItem();
+	void ShowSourceMenu(const QPoint &pos);
 	void AddSource();
 	void RemoveSource();
+	void RenameSource();
 	void OpenSourceProperties();
+	void OpenSourceFilters();
+	void EditSourceTransform();
+	void ResetSourceTransform();
 	void MoveSource(enum obs_order_movement movement);
 
 	OBSBasic *main = nullptr;

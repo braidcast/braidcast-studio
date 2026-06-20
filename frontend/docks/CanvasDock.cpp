@@ -3,6 +3,7 @@
 #include <dialogs/CanvasEditorDialog.hpp>
 #include <dialogs/NameDialog.hpp>
 #include <dialogs/OBSBasicSourceSelect.hpp>
+#include <dialogs/OBSBasicTransform.hpp>
 #include <utility/CanvasDefinition.hpp>
 #include <utility/CanvasManager.hpp>
 #include <utility/MultistreamOutput.hpp>
@@ -82,6 +83,7 @@ CanvasDock::CanvasDock(OBSBasic *main_, OBSCanvas canvas_, QWidget *parent)
 
 	sourceList = new QListWidget();
 	sourceList->setSelectionMode(QAbstractItemView::SingleSelection);
+	sourceList->setContextMenuPolicy(Qt::CustomContextMenu);
 
 	QWidget *sceneContainer = new QWidget();
 	QVBoxLayout *sceneLayout = new QVBoxLayout(sceneContainer);
@@ -177,15 +179,8 @@ CanvasDock::CanvasDock(OBSBasic *main_, OBSCanvas canvas_, QWidget *parent)
 	connect(sourceUpButton, &QPushButton::clicked, this, [this]() { MoveSource(OBS_ORDER_MOVE_UP); });
 	connect(sourceDownButton, &QPushButton::clicked, this, [this]() { MoveSource(OBS_ORDER_MOVE_DOWN); });
 	connect(sceneList, &QListWidget::itemSelectionChanged, this, &CanvasDock::OnSceneSelected);
-	connect(sceneList, &QListWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
-		QMenu menu(this);
-		menu.addAction(QTStr("Add"), this, &CanvasDock::AddScene);
-		if (sceneList->currentItem()) {
-			menu.addAction(QTStr("Rename"), this, &CanvasDock::RenameScene);
-			menu.addAction(QTStr("Remove"), this, &CanvasDock::RemoveScene);
-		}
-		menu.exec(sceneList->mapToGlobal(pos));
-	});
+	connect(sceneList, &QListWidget::customContextMenuRequested, this, &CanvasDock::ShowSceneMenu);
+	connect(sourceList, &QListWidget::customContextMenuRequested, this, &CanvasDock::ShowSourceMenu);
 	auto addDrawCallback = [this]() {
 		obs_display_add_draw_callback(preview->GetDisplay(), OBSBasicPreview::CanvasPreviewRender, preview);
 		obs_display_set_background_color(preview->GetDisplay(), kPreviewBackground);
@@ -518,6 +513,129 @@ void CanvasDock::MoveSource(enum obs_order_movement movement)
 	main->SaveProject();
 }
 
+void CanvasDock::ShowSourceMenu(const QPoint &pos)
+{
+	obs_sceneitem_t *item = SelectedSceneItem();
+
+	QMenu popup(this);
+
+	QAction *add = popup.addAction(QTStr("Add"));
+	connect(add, &QAction::triggered, this, &CanvasDock::AddSource);
+
+	if (item) {
+		popup.addSeparator();
+
+		QMenu *order = popup.addMenu(QTStr("Basic.MainMenu.Edit.Order"));
+		QAction *up = order->addAction(QTStr("Basic.MainMenu.Edit.Order.MoveUp"));
+		connect(up, &QAction::triggered, this, [this]() { MoveSource(OBS_ORDER_MOVE_UP); });
+		QAction *down = order->addAction(QTStr("Basic.MainMenu.Edit.Order.MoveDown"));
+		connect(down, &QAction::triggered, this, [this]() { MoveSource(OBS_ORDER_MOVE_DOWN); });
+		QAction *top = order->addAction(QTStr("Basic.MainMenu.Edit.Order.MoveToTop"));
+		connect(top, &QAction::triggered, this, [this]() { MoveSource(OBS_ORDER_MOVE_TOP); });
+		QAction *bottom = order->addAction(QTStr("Basic.MainMenu.Edit.Order.MoveToBottom"));
+		connect(bottom, &QAction::triggered, this, [this]() { MoveSource(OBS_ORDER_MOVE_BOTTOM); });
+
+		QAction *transform = popup.addAction(QTStr("Basic.MainMenu.Edit.Transform.EditTransform"));
+		connect(transform, &QAction::triggered, this, &CanvasDock::EditSourceTransform);
+		QAction *reset = popup.addAction(QTStr("Basic.MainMenu.Edit.Transform.ResetTransform"));
+		connect(reset, &QAction::triggered, this, &CanvasDock::ResetSourceTransform);
+
+		popup.addSeparator();
+
+		QAction *rename = popup.addAction(QTStr("Rename"));
+		connect(rename, &QAction::triggered, this, &CanvasDock::RenameSource);
+		QAction *remove = popup.addAction(QTStr("Remove"));
+		connect(remove, &QAction::triggered, this, &CanvasDock::RemoveSource);
+
+		popup.addSeparator();
+
+		QAction *filters = popup.addAction(QTStr("Filters"));
+		connect(filters, &QAction::triggered, this, &CanvasDock::OpenSourceFilters);
+		QAction *props = popup.addAction(QTStr("Properties"));
+		connect(props, &QAction::triggered, this, &CanvasDock::OpenSourceProperties);
+		props->setEnabled(obs_source_configurable(obs_sceneitem_get_source(item)));
+	}
+
+	popup.exec(sourceList->mapToGlobal(pos));
+}
+
+void CanvasDock::RenameSource()
+{
+	obs_sceneitem_t *item = SelectedSceneItem();
+	if (!item) {
+		return;
+	}
+	OBSSource source = obs_sceneitem_get_source(item);
+
+	std::string prev = obs_source_get_name(source);
+	std::string name = prev;
+	if (!NameDialog::AskForName(this, QTStr("Rename"), QTStr("Basic.Main.AddSceneDlg.Text"), name,
+				    QString::fromStdString(prev))) {
+		return;
+	}
+	if (name.empty() || name == prev) {
+		return;
+	}
+	OBSSourceAutoRelease existing = obs_get_source_by_name(name.c_str());
+	if (existing) {
+		OBSMessageBox::warning(this, QTStr("NameExists.Title"), QTStr("NameExists.Text"));
+		return;
+	}
+	obs_source_set_name(source, name.c_str());
+	main->SaveProject();
+}
+
+void CanvasDock::OpenSourceFilters()
+{
+	obs_sceneitem_t *item = SelectedSceneItem();
+	if (!item) {
+		return;
+	}
+	obs_source_t *source = obs_sceneitem_get_source(item);
+	if (source) {
+		main->CreateFiltersWindow(source);
+	}
+}
+
+void CanvasDock::EditSourceTransform()
+{
+	obs_sceneitem_t *item = SelectedSceneItem();
+	if (!item) {
+		return;
+	}
+	OBSBasicTransform *dialog = new OBSBasicTransform(item, main);
+	dialog->setAttribute(Qt::WA_DeleteOnClose);
+	dialog->show();
+}
+
+void CanvasDock::ResetSourceTransform()
+{
+	obs_sceneitem_t *item = SelectedSceneItem();
+	if (!item || obs_sceneitem_locked(item)) {
+		return;
+	}
+
+	obs_sceneitem_defer_update_begin(item);
+
+	obs_transform_info info;
+	vec2_set(&info.pos, 0.0f, 0.0f);
+	vec2_set(&info.scale, 1.0f, 1.0f);
+	info.rot = 0.0f;
+	info.alignment = OBS_ALIGN_TOP | OBS_ALIGN_LEFT;
+	info.bounds_type = OBS_BOUNDS_NONE;
+	info.bounds_alignment = OBS_ALIGN_CENTER;
+	info.crop_to_bounds = false;
+	vec2_set(&info.bounds, 0.0f, 0.0f);
+	obs_sceneitem_set_info2(item, &info);
+
+	obs_sceneitem_crop crop = {};
+	obs_sceneitem_set_crop(item, &crop);
+
+	obs_sceneitem_defer_update_end(item);
+
+	main->SaveProject();
+}
+
 void CanvasDock::OnSceneSelected()
 {
 	if (refreshing) {
@@ -536,6 +654,38 @@ void CanvasDock::OnSceneSelected()
 	}
 }
 
+void CanvasDock::ShowSceneMenu(const QPoint &pos)
+{
+	QMenu popup(this);
+
+	QAction *add = popup.addAction(QTStr("Add"));
+	connect(add, &QAction::triggered, this, &CanvasDock::AddScene);
+
+	if (sceneList->currentItem()) {
+		QAction *dup = popup.addAction(QTStr("Duplicate"));
+		connect(dup, &QAction::triggered, this, &CanvasDock::DuplicateScene);
+		QAction *rename = popup.addAction(QTStr("Rename"));
+		connect(rename, &QAction::triggered, this, &CanvasDock::RenameScene);
+		QAction *remove = popup.addAction(QTStr("Remove"));
+		connect(remove, &QAction::triggered, this, &CanvasDock::RemoveScene);
+
+		popup.addSeparator();
+
+		QAction *filters = popup.addAction(QTStr("Filters"));
+		connect(filters, &QAction::triggered, this, &CanvasDock::OpenSceneFilters);
+	}
+
+	popup.exec(sceneList->mapToGlobal(pos));
+}
+
+void CanvasDock::OpenSceneFilters()
+{
+	OBSSource sceneSource = main->GetCanvasCurrentScene(canvas);
+	if (sceneSource) {
+		main->CreateFiltersWindow(sceneSource);
+	}
+}
+
 void CanvasDock::AddScene()
 {
 	std::string name;
@@ -551,6 +701,40 @@ void CanvasDock::AddScene()
 	if (scene) {
 		main->SetCanvasCurrentScene(canvas, obs_scene_get_source(scene));
 	}
+	RefreshScenes();
+}
+
+void CanvasDock::DuplicateScene()
+{
+	OBSSource current = main->GetCanvasCurrentScene(canvas);
+	OBSScene scene = obs_scene_from_source(current);
+	if (!scene) {
+		return;
+	}
+
+	std::string placeholder = std::string(obs_source_get_name(current)) + " 2";
+	std::string name;
+	if (!NameDialog::AskForName(this, QTStr("Basic.Main.AddSceneDlg.Title"), QTStr("Basic.Main.AddSceneDlg.Text"),
+				    name, QString::fromStdString(placeholder))) {
+		return;
+	}
+	if (name.empty()) {
+		return;
+	}
+	OBSSourceAutoRelease existing = obs_get_source_by_name(name.c_str());
+	if (existing) {
+		OBSMessageBox::warning(this, QTStr("NameExists.Title"), QTStr("NameExists.Text"));
+		return;
+	}
+
+	/* Model-1: canvases share global sources, so a refs duplicate (new scene,
+	 * shared source refs) is correct. obs_scene_duplicate attaches the copy to
+	 * the source scene's own canvas, so no separate attach is needed. */
+	OBSSceneAutoRelease dup = obs_scene_duplicate(scene, name.c_str(), OBS_SCENE_DUP_REFS);
+	if (dup) {
+		main->SetCanvasCurrentScene(canvas, obs_scene_get_source(dup));
+	}
+	main->SaveProject();
 	RefreshScenes();
 }
 
