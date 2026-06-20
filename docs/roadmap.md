@@ -196,15 +196,21 @@ The Phase-2 model lets an additional canvas be *populated* but not visually
 preview (`OBSBasicPreview`) is OBS's most load-bearing widget and assumes the
 main program canvas in several places.
 
-- 🔭 **3a — Editable canvas-dock previews (keystone).** Today the canvas dock
-  preview is a plain `OBSQTDisplay` with no mouse/transform interaction — only the
-  central `OBSBasicPreview` supports source drag/select/transform. So a scene on an
-  additional canvas can be populated (Add Source) but its sources can't be
-  positioned by dragging; this matters most when an *additional* canvas (e.g. a
-  vertical/Shorts canvas) is the user's primary surface. Fix = give each dock an
-  `OBSBasicPreview`-class surface bound to its own canvas. **Spike first:**
-  `OBSBasicPreview` assumes the main canvas (`obs_get_video()`, scene-item
-  resolution) in places. See `docs/issues.md` #4. This is the prerequisite for 3b.
+- ✅ **3a — Editable canvas-dock previews (keystone) — IMPLEMENTED (build-green +
+  reviewed; GUI acceptance owed).** The canvas dock now hosts an `OBSBasicPreview`
+  bound to its canvas, so sources in a canvas dock are draggable / selectable /
+  stretch / crop / rotate, scoped to that canvas's scene. Done via **Approach A**:
+  parameterized `OBSBasicPreview` with a `targetCanvas` member (default `nullptr` =
+  the central preview's exact prior behavior); `TargetScene()`/`TargetVideoInfo()`
+  route scene + base-resolution, a per-surface `surface*` viewport decouples
+  paint/hit-test, and a self-contained `CanvasPreviewRender` draw callback paints
+  `obs_canvas_render` + the editing overlays. Plan:
+  `docs/superpowers/plans/2026-06-20-editable-canvas-previews.md` (5 tasks, commits
+  `69f4d59e`..`cbf227c5`). Per-task spec+quality reviews + a holistic final review
+  all passed (null-path invariant, multi-dock isolation, no stale-viewport window).
+  **Owed:** the manual GUI acceptance pass (drag isolation across docks, teardown,
+  live-canvas edit) — can't be driven headlessly. Out of scope (→ 3b/3d): per-canvas
+  undo, Studio Mode, nudge, scrollbars, source-list context menu. Unblocks 3b.
 - 🔭 **3b — Per-canvas Studio Mode.** Make preview/program staging + transitions
   work per canvas, not Default-only. Superset of 3a (adds per-canvas transition +
   program staging on top of an editable surface); the hardest item. Do after 3a.
