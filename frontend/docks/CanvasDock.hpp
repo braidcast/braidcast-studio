@@ -63,7 +63,6 @@ private:
 
 	obs_sceneitem_t *SelectedSceneItem();
 	void AddSource();
-	void AddExistingSource(OBSSource source);
 	void RemoveSource();
 	void OpenSourceProperties();
 	void MoveSource(enum obs_order_movement movement);

@@ -2,6 +2,7 @@
 
 #include <dialogs/CanvasEditorDialog.hpp>
 #include <dialogs/NameDialog.hpp>
+#include <dialogs/OBSBasicSourceSelect.hpp>
 #include <utility/CanvasDefinition.hpp>
 #include <utility/CanvasManager.hpp>
 #include <utility/MultistreamOutput.hpp>
@@ -15,7 +16,6 @@
 
 #include <QCheckBox>
 #include <QComboBox>
-#include <QCursor>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -476,54 +476,14 @@ obs_sceneitem_t *CanvasDock::SelectedSceneItem()
 void CanvasDock::AddSource()
 {
 	OBSSource current = main->GetCanvasCurrentScene(canvas);
-	obs_scene_t *scene = obs_scene_from_source(current);
+	OBSScene scene = obs_scene_from_source(current);
 	if (!scene) {
 		return;
 	}
 
-	/* Model 1: canvases arrange the same shared sources. The primary action is
-	 * adding an existing global input to this canvas's scene; creating brand-new
-	 * source types stays with the main window for now. */
-	QMenu popup(this);
-	struct Ctx {
-		QMenu *menu;
-		CanvasDock *dock;
-	} ctx{&popup, this};
-
-	obs_enum_sources(
-		[](void *param, obs_source_t *source) {
-			if (obs_source_get_type(source) != OBS_SOURCE_TYPE_INPUT) {
-				return true;
-			}
-			auto *c = static_cast<Ctx *>(param);
-			const char *name = obs_source_get_name(source);
-			OBSSource src = source;
-			QAction *action = c->menu->addAction(QString::fromUtf8(name ? name : ""));
-			CanvasDock *dock = c->dock;
-			QObject::connect(action, &QAction::triggered, dock,
-					 [dock, src]() { dock->AddExistingSource(src); });
-			return true;
-		},
-		&ctx);
-
-	if (popup.isEmpty()) {
-		QAction *none = popup.addAction(QTStr("Basic.Main.AddSourceHelp.Title"));
-		none->setEnabled(false);
-	}
-
-	popup.exec(QCursor::pos());
-}
-
-void CanvasDock::AddExistingSource(OBSSource source)
-{
-	OBSSource current = main->GetCanvasCurrentScene(canvas);
-	obs_scene_t *scene = obs_scene_from_source(current);
-	if (!scene) {
-		return;
-	}
-	/* item_add fires back through SourceListChanged, so the list rebuilds. */
-	obs_scene_add(scene, source);
-	main->SaveProject();
+	OBSBasicSourceSelect sourceSelect(main, main->undo_s, scene);
+	sourceSelect.exec();
+	/* createNew/addExisting fire item_add -> SourceListChanged rebuilds the list. */
 }
 
 void CanvasDock::RemoveSource()
