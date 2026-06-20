@@ -98,8 +98,30 @@ OBSBasicTransform::OBSBasicTransform(OBSSceneItem item, OBSBasic *parent)
 #endif
 	ui->buttonBox->button(QDialogButtonBox::Close)->setDefault(true);
 
-	connect(ui->buttonBox->button(QDialogButtonBox::Reset), &QPushButton::clicked, main,
-		&OBSBasic::on_actionResetTransform_triggered);
+	connect(ui->buttonBox->button(QDialogButtonBox::Reset), &QPushButton::clicked, this, [this]() {
+		OBSSceneItem resetItem = this->item;
+		if (!resetItem || obs_sceneitem_locked(resetItem)) {
+			return;
+		}
+
+		obs_sceneitem_defer_update_begin(resetItem);
+
+		obs_transform_info info;
+		vec2_set(&info.pos, 0.0f, 0.0f);
+		vec2_set(&info.scale, 1.0f, 1.0f);
+		info.rot = 0.0f;
+		info.alignment = OBS_ALIGN_TOP | OBS_ALIGN_LEFT;
+		info.bounds_type = OBS_BOUNDS_NONE;
+		info.bounds_alignment = OBS_ALIGN_CENTER;
+		info.crop_to_bounds = false;
+		vec2_set(&info.bounds, 0.0f, 0.0f);
+		obs_sceneitem_set_info2(resetItem, &info);
+
+		obs_sceneitem_crop crop = {};
+		obs_sceneitem_set_crop(resetItem, &crop);
+
+		obs_sceneitem_defer_update_end(resetItem);
+	});
 
 	installEventFilter(CreateShortcutFilter());
 
@@ -110,7 +132,7 @@ OBSBasicTransform::OBSBasicTransform(OBSSceneItem item, OBSBasic *parent)
 	std::string name = obs_source_get_name(obs_sceneitem_get_source(item));
 	setWindowTitle(QTStr("Basic.TransformWindow.Title").arg(name.c_str()));
 
-	OBSDataAutoRelease wrapper = obs_scene_save_transform_states(main->GetCurrentScene(), false);
+	OBSDataAutoRelease wrapper = obs_scene_save_transform_states(scene, false);
 	undo_data = std::string(obs_data_get_json(wrapper));
 
 	adjustSize();
@@ -120,20 +142,31 @@ OBSBasicTransform::OBSBasicTransform(OBSSceneItem item, OBSBasic *parent)
 
 OBSBasicTransform::~OBSBasicTransform()
 {
-	OBSDataAutoRelease wrapper = obs_scene_save_transform_states(main->GetCurrentScene(), false);
+	OBSScene scene = obs_sceneitem_get_scene(item);
+	if (!scene) {
+		return;
+	}
 
-	auto undo_redo = [](const std::string &data) {
+	OBSDataAutoRelease wrapper = obs_scene_save_transform_states(scene, false);
+
+	OBSSource sceneSource = obs_scene_get_source(scene);
+	OBSCanvasAutoRelease canvas = obs_source_get_canvas(sceneSource);
+	OBSCanvasAutoRelease mainCanvas = obs_get_main_canvas();
+	const bool isCanvas = canvas && canvas.Get() != mainCanvas.Get();
+
+	auto undo_redo = [isCanvas](const std::string &data) {
 		OBSDataAutoRelease dat = obs_data_create_from_json(data.c_str());
 		OBSSourceAutoRelease source = obs_get_source_by_uuid(obs_data_get_string(dat, "scene_uuid"));
-		OBSBasic::Get()->SetCurrentScene(source.Get(), true);
+		if (!isCanvas) {
+			OBSBasic::Get()->SetCurrentScene(source.Get(), true);
+		}
 		obs_scene_load_transform_states(data.c_str());
 	};
 
 	std::string redo_data(obs_data_get_json(wrapper));
 	if (undo_data.compare(redo_data) != 0) {
-		main->undo_s.add_action(
-			QTStr("Undo.Transform").arg(obs_source_get_name(obs_scene_get_source(main->GetCurrentScene()))),
-			undo_redo, undo_redo, undo_data, redo_data);
+		main->undo_s.add_action(QTStr("Undo.Transform").arg(obs_source_get_name(sceneSource)), undo_redo,
+					undo_redo, undo_data, redo_data);
 	}
 }
 
