@@ -148,7 +148,7 @@ void setupSceneItem(void *_data, obs_scene_t *scene)
 }
 
 std::optional<OBSSceneItem> setupExistingSource(std::string_view uuid, bool visible, bool duplicate,
-						SourceCopyInfo *info = nullptr)
+						SourceCopyInfo *info = nullptr, OBSScene targetScene = OBSScene())
 {
 	OBSSourceAutoRelease temp = obs_get_source_by_uuid(uuid.data());
 	if (!temp) {
@@ -156,7 +156,7 @@ std::optional<OBSSceneItem> setupExistingSource(std::string_view uuid, bool visi
 	}
 
 	OBSBasic *main = OBSBasic::Get();
-	OBSScene scene = main->GetCurrentScene();
+	OBSScene scene = targetScene ? targetScene : main->GetCurrentScene();
 	if (!scene) {
 		return std::nullopt;
 	}
@@ -197,10 +197,11 @@ std::optional<OBSSceneItem> setupExistingSource(std::string_view uuid, bool visi
 	return OBSSceneItem(data.scene_item);
 }
 
-std::optional<OBSSource> setupNewSource(QWidget *parent, const char *id, const char *name)
+std::optional<OBSSource> setupNewSource(QWidget *parent, const char *id, const char *name,
+					OBSScene targetScene = OBSScene())
 {
 	OBSBasic *main = OBSBasic::Get();
-	OBSScene scene = main->GetCurrentScene();
+	OBSScene scene = targetScene ? targetScene : main->GetCurrentScene();
 
 	if (!scene) {
 		return std::nullopt;
