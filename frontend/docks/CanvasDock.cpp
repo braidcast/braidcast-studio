@@ -215,7 +215,6 @@ CanvasDock::CanvasDock(OBSBasic *main_, OBSCanvas canvas_, QWidget *parent)
 	RefreshSources();
 	ApplyOrientation();
 
-	ready = true;
 	UpdatePreviewGate();
 	UpdateStatusDot();
 }

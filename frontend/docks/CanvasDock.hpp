@@ -86,7 +86,6 @@ private:
 	 * and rebuilt whenever the current scene changes (see RefreshSources). */
 	std::vector<OBSSignal> sceneItemSigs;
 
-	bool ready = false;        // guards the draw callback before the display is wired
 	bool refreshing = false;   // guards programmatic list rebuild from firing selection
 	bool previewGated = false; // true when no enabled output -> placeholder shown, render skipped
 };
