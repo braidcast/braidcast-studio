@@ -8,11 +8,11 @@
 
 #include <qt-wrappers.hpp>
 
-#include <QCheckBox>
+#include <Idian/ToggleSwitch.hpp>
+
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
-#include <QPushButton>
 #include <QScrollArea>
 #include <QShowEvent>
 #include <QVBoxLayout>
@@ -64,26 +64,6 @@ MultistreamDock::MultistreamDock(OBSBasic *main_, QWidget *parent) : QFrame(pare
 	scroll->viewport()->setAutoFillBackground(false);
 	inner->setAutoFillBackground(false);
 	outer->addWidget(scroll, 1);
-
-	QHBoxLayout *footer = new QHBoxLayout();
-	QPushButton *goLive = new QPushButton(QTStr("Basic.Multistream.GoLive"));
-	QPushButton *stopAll = new QPushButton(QTStr("Basic.Multistream.StopAll"));
-	connect(goLive, &QPushButton::clicked, this, [this]() {
-		if (auto *e = main->GetMultistreamOutput()) {
-			e->StartAll();
-		}
-		Refresh();
-	});
-	connect(stopAll, &QPushButton::clicked, this, [this]() {
-		if (auto *e = main->GetMultistreamOutput()) {
-			e->StopAll();
-		}
-		Refresh();
-	});
-	footer->addWidget(goLive);
-	footer->addWidget(stopAll);
-	footer->addStretch();
-	outer->addLayout(footer);
 
 	Refresh();
 }
@@ -158,12 +138,11 @@ void MultistreamDock::Refresh()
 				break;
 			}
 		}
-		QCheckBox *cascade = new QCheckBox();
+		idian::ToggleSwitch *cascade = new idian::ToggleSwitch(allLive);
 		cascade->setObjectName("multistreamCascade");
 		cascade->setToolTip(QTStr("Basic.Multistream.Cascade.Tooltip"));
-		cascade->setChecked(allLive);
 		cascadeBoxes[canvasUuid] = cascade;
-		connect(cascade, &QCheckBox::toggled, this, [this, canvasUuid](bool on) {
+		connect(cascade, &QAbstractButton::toggled, this, [this, canvasUuid](bool on) {
 			if (refreshing) {
 				return;
 			}
@@ -191,9 +170,9 @@ void MultistreamDock::Refresh()
 
 			StreamProfile *p = main->GetStreamProfileManager().Find(binding->profileUuid);
 			const bool profileMissing = !p && !binding->profileUuid.empty();
-			QString profileText = p ? QString::fromStdString(p->DisplayName())
-						: profileMissing ? QTStr("Basic.Settings.Outputs.ProfileMissing")
-								 : QString::fromUtf8("\xE2\x80\x94");
+			QString profileText = p                ? QString::fromStdString(p->DisplayName())
+					      : profileMissing ? QTStr("Basic.Settings.Outputs.ProfileMissing")
+							       : QString::fromUtf8("\xE2\x80\x94");
 			QLabel *profileLabel = new QLabel(profileText);
 			if (profileMissing) {
 				profileLabel->setToolTip(QTStr("Basic.Settings.Outputs.ProfileMissing.Tooltip"));
@@ -224,13 +203,12 @@ void MultistreamDock::Refresh()
 			rowLayout->addWidget(dot);
 			rowLayout->addWidget(stateText);
 
-			/* Per-row enable toggle: set checked BEFORE connecting so the
-			 * initial state never emits toggled. The refreshing guard is the
-			 * belt-and-suspenders for any later programmatic change. */
-			QCheckBox *toggle = new QCheckBox();
+			/* Per-row enable toggle: the constructor sets the initial state
+			 * before any connection, so it never emits toggled. The refreshing
+			 * guard is the belt-and-suspenders for any later programmatic change. */
+			idian::ToggleSwitch *toggle = new idian::ToggleSwitch(engine && engine->IsLive(bindingUuid));
 			toggle->setObjectName("multistreamRowToggle");
-			toggle->setChecked(engine && engine->IsLive(bindingUuid));
-			connect(toggle, &QCheckBox::toggled, this, [this, bindingUuid](bool on) {
+			connect(toggle, &QAbstractButton::toggled, this, [this, bindingUuid](bool on) {
 				if (refreshing) {
 					return;
 				}
@@ -276,15 +254,39 @@ void MultistreamDock::UpdateStatuses()
 {
 	MultistreamOutput *engine = main->GetMultistreamOutput();
 
+	/* A ToggleSwitch only repositions its handle on show or click, never on a
+	 * programmatic setChecked, so an engine-driven state flip (a stream erroring
+	 * out, an async connect completing) can't be reflected in place. Escalate any
+	 * such divergence to a full Refresh, whose freshly-built switches lay out
+	 * correctly on showEvent; the in-place dot/text path below covers the common
+	 * tick where nothing toggled. */
+	for (const auto &[bindingUuid, w] : rowWidgets) {
+		if (w.toggle->isChecked() != (engine && engine->IsLive(bindingUuid))) {
+			Refresh();
+			return;
+		}
+	}
+	for (const auto &[canvasUuid, cascade] : cascadeBoxes) {
+		std::vector<OutputBinding *> bindings = main->GetOutputBindings().ForCanvas(canvasUuid);
+		bool allLive = !bindings.empty();
+		for (OutputBinding *b : bindings) {
+			if (!engine || !engine->IsLive(b->uuid)) {
+				allLive = false;
+				break;
+			}
+		}
+		if (cascade->isChecked() != allLive) {
+			Refresh();
+			return;
+		}
+	}
+
 	std::unordered_map<std::string, MultistreamOutput::OutputStatus> byBinding;
 	if (engine) {
 		for (const MultistreamOutput::OutputStatus &s : engine->Statuses()) {
 			byBinding[s.bindingUuid] = s;
 		}
 	}
-
-	/* setChecked below must not re-enter the toggle/cascade handlers. */
-	refreshing = true;
 
 	for (const auto &[bindingUuid, w] : rowWidgets) {
 		MultistreamOutput::State state = MultistreamOutput::State::Idle;
@@ -302,21 +304,5 @@ void MultistreamDock::UpdateStatuses()
 		const bool showError = state == MultistreamOutput::State::Error && !lastError.isEmpty();
 		w.dot->setToolTip(showError ? lastError : QString());
 		w.stateText->setToolTip(showError ? lastError : QString());
-
-		w.toggle->setChecked(engine && engine->IsLive(bindingUuid));
 	}
-
-	for (const auto &[canvasUuid, cascade] : cascadeBoxes) {
-		std::vector<OutputBinding *> bindings = main->GetOutputBindings().ForCanvas(canvasUuid);
-		bool allLive = !bindings.empty();
-		for (OutputBinding *b : bindings) {
-			if (!engine || !engine->IsLive(b->uuid)) {
-				allLive = false;
-				break;
-			}
-		}
-		cascade->setChecked(allLive);
-	}
-
-	refreshing = false;
 }

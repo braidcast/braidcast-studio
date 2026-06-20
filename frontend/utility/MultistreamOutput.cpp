@@ -207,17 +207,6 @@ void MultistreamOutput::StopOutput(const std::string &bindingUuid)
 	NotifyChanged();
 }
 
-int MultistreamOutput::StartAll()
-{
-	int started = 0;
-	for (const OutputBinding &b : main->GetOutputBindings().bindings) {
-		if (b.enabled && StartOutput(b.uuid)) {
-			started++;
-		}
-	}
-	return started;
-}
-
 void MultistreamOutput::StopAll()
 {
 	/* Collect raw handles under the lock, then stop outside it (obs_output_stop

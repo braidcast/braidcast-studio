@@ -9,12 +9,15 @@ class OBSBasic;
 class QVBoxLayout;
 class QShowEvent;
 class QLabel;
-class QCheckBox;
 
-/* Read-only control panel for the fan-out streaming engine. Lists every output
- * binding grouped by canvas with live status, exposes per-canvas cascade
- * toggles and per-binding enable toggles, and a master Go Live / Stop All. It
- * never edits bindings or profiles — that is done in Settings -> Outputs. */
+namespace idian {
+class ToggleSwitch;
+}
+
+/* Control panel for the fan-out streaming engine. Lists every output binding
+ * grouped by canvas with live status, and exposes per-canvas cascade toggles and
+ * per-binding enable toggles to switch streams on and off. It never edits
+ * bindings or profiles — that is done in Settings -> Outputs. */
 class MultistreamDock : public QFrame {
 	Q_OBJECT
 
@@ -38,7 +41,7 @@ private:
 	struct RowWidgets {
 		QLabel *dot = nullptr;
 		QLabel *stateText = nullptr;
-		QCheckBox *toggle = nullptr;
+		idian::ToggleSwitch *toggle = nullptr;
 	};
 
 	OBSBasic *main = nullptr;
@@ -48,6 +51,6 @@ private:
 	/* Live handles into the current tree, repopulated by Refresh and read by
 	 * UpdateStatuses. Cleared before each rebuild so no entry outlives its
 	 * widgets. */
-	std::unordered_map<std::string, RowWidgets> rowWidgets;    // by binding uuid
-	std::unordered_map<std::string, QCheckBox *> cascadeBoxes; // by canvas uuid
+	std::unordered_map<std::string, RowWidgets> rowWidgets;              // by binding uuid
+	std::unordered_map<std::string, idian::ToggleSwitch *> cascadeBoxes; // by canvas uuid
 };

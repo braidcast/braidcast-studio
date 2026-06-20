@@ -32,10 +32,7 @@ public:
 	explicit MultistreamOutput(OBSBasic *main);
 	~MultistreamOutput();
 
-	/* Start every enabled binding not already live. Honors the single-key
-	 * guard (one live output per profile). Returns the number started. */
-	int StartAll();
-	/* Stop everything. */
+	/* Stop everything. Used on teardown. */
 	void StopAll();
 	/* Start/stop one binding by uuid (used by the dock row + cascade). */
 	bool StartOutput(const std::string &bindingUuid);
