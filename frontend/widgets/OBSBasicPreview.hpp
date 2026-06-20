@@ -177,6 +177,16 @@ public:
 		surfaceScale = scale;
 	}
 
+	/* Bind this surface to a canvas (non-null = per-canvas dock surface) or back
+	 * to the main scene (null). The dock passes its canvas at construction. */
+	inline void SetTargetCanvas(obs_canvas_t *canvas) { targetCanvas = canvas; }
+	inline obs_canvas_t *GetTargetCanvas() const { return targetCanvas; }
+
+	/* Draw callback for a canvas-dock display: paints obs_canvas_render(targetCanvas)
+	 * plus the editing overlays, and stores this surface's viewport so hit-test and
+	 * paint agree. Install via obs_display_add_draw_callback(display, &CanvasPreviewRender, this). */
+	static void CanvasPreviewRender(void *data, uint32_t cx, uint32_t cy);
+
 	inline void SetLocked(bool newLockedVal) { locked = newLockedVal; }
 	inline void ToggleLocked() { locked = !locked; }
 	inline bool Locked() const { return locked; }

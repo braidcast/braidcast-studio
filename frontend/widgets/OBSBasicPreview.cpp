@@ -812,24 +812,29 @@ void OBSBasicPreview::mouseReleaseEvent(QMouseEvent *event)
 		hoveredPreviewItems.push_back(item);
 		selectedItems.clear();
 	}
-	OBSBasic *main = OBSBasic::Get();
-	OBSDataAutoRelease rwrapper = obs_scene_save_transform_states(TargetScene(), true);
+	/* Per-canvas undo is out of scope for 3a: a dock surface commits live but
+	 * records no undo entry. Only the main preview pushes a transform undo, so
+	 * TargetScene() here is provably the main current scene. */
+	if (!targetCanvas) {
+		OBSBasic *main = OBSBasic::Get();
+		OBSDataAutoRelease rwrapper = obs_scene_save_transform_states(TargetScene(), true);
 
-	auto undo_redo = [](const std::string &data) {
-		OBSDataAutoRelease dat = obs_data_create_from_json(data.c_str());
-		OBSSourceAutoRelease source = obs_get_source_by_uuid(obs_data_get_string(dat, "scene_uuid"));
-		OBSBasic::Get()->SetCurrentScene(source.Get(), true);
+		auto undo_redo = [](const std::string &data) {
+			OBSDataAutoRelease dat = obs_data_create_from_json(data.c_str());
+			OBSSourceAutoRelease source = obs_get_source_by_uuid(obs_data_get_string(dat, "scene_uuid"));
+			OBSBasic::Get()->SetCurrentScene(source.Get(), true);
 
-		obs_scene_load_transform_states(data.c_str());
-	};
+			obs_scene_load_transform_states(data.c_str());
+		};
 
-	if (wrapper && rwrapper) {
-		std::string undo_data(obs_data_get_json(wrapper));
-		std::string redo_data(obs_data_get_json(rwrapper));
-		if (changed && undo_data.compare(redo_data) != 0) {
-			main->undo_s.add_action(
-				QTStr("Undo.Transform").arg(obs_source_get_name(main->GetCurrentSceneSource())),
-				undo_redo, undo_redo, undo_data, redo_data);
+		if (wrapper && rwrapper) {
+			std::string undo_data(obs_data_get_json(wrapper));
+			std::string redo_data(obs_data_get_json(rwrapper));
+			if (changed && undo_data.compare(redo_data) != 0) {
+				main->undo_s.add_action(
+					QTStr("Undo.Transform").arg(obs_source_get_name(main->GetCurrentSceneSource())),
+					undo_redo, undo_redo, undo_data, redo_data);
+			}
 		}
 	}
 
@@ -2250,6 +2255,64 @@ void OBSBasicPreview::DrawSceneEditing()
 	GS_DEBUG_MARKER_END();
 }
 
+void OBSBasicPreview::CanvasPreviewRender(void *data, uint32_t cx, uint32_t cy)
+{
+	GS_DEBUG_MARKER_BEGIN(GS_DEBUG_COLOR_DEFAULT, "CanvasPreviewRender");
+
+	OBSBasicPreview *prev = static_cast<OBSBasicPreview *>(data);
+	obs_canvas_t *canvas = prev->targetCanvas;
+	if (!canvas) {
+		GS_DEBUG_MARKER_END();
+		return;
+	}
+
+	uint32_t baseCX = 1, baseCY = 1;
+	obs_video_info ovi;
+	if (obs_canvas_get_video_info(canvas, &ovi)) {
+		baseCX = std::max(ovi.base_width, 1u);
+		baseCY = std::max(ovi.base_height, 1u);
+	}
+
+	int x, y;
+	float scale;
+	GetScaleAndCenterPos(int(baseCX), int(baseCY), int(cx), int(cy), x, y, scale);
+
+	int newCX = int(scale * float(baseCX));
+	int newCY = int(scale * float(baseCY));
+
+	/* Store the surface's viewport so hit-test (GetMouseEventPos etc.) maps to the
+	 * same pixels we paint into. No PREVIEW_EDGE_SIZE inset: the dock has no scroll
+	 * chrome, so the surface fills the display centered. */
+	prev->SetViewport(x, y, newCX, newCY, scale);
+
+	gs_viewport_push();
+	gs_projection_push();
+
+	/* Overflow overlay: ortho in widget pixels, viewport = full display. */
+	gs_ortho(float(-x), float(cx) - float(x), float(-y), float(cy) - float(y), -100.0f, 100.0f);
+	prev->DrawOverflow();
+
+	/* Canvas mix: ortho in canvas space, viewport = the centered region. */
+	gs_ortho(0.0f, float(baseCX), 0.0f, float(baseCY), -100.0f, 100.0f);
+	gs_set_viewport(x, y, newCX, newCY);
+	obs_canvas_render(canvas);
+	gs_load_vertexbuffer(nullptr);
+
+	/* Editing overlays: back to widget-pixel ortho, reset viewport. */
+	gs_ortho(float(-x), float(cx) - float(x), float(-y), float(cy) - float(y), -100.0f, 100.0f);
+	gs_reset_viewport();
+	prev->DrawSceneEditing();
+	/* Honor the same spacing-helper preference the main preview does. */
+	if (OBSBasic::Get()->drawSpacingHelpers) {
+		prev->DrawSpacingHelpers();
+	}
+
+	gs_projection_pop();
+	gs_viewport_pop();
+
+	GS_DEBUG_MARKER_END();
+}
+
 void OBSBasicPreview::ResetScrollingOffset()
 {
 	vec2_zero(&scrollingOffset);
@@ -2692,6 +2755,10 @@ void OBSBasicPreview::yScrollBarChanged(int value)
 
 void OBSBasicPreview::UpdateXScrollBar(float cx)
 {
+	/* The canvas dock has no scrollbars; fixed-scaling chrome is main-only (3b). */
+	if (targetCanvas) {
+		return;
+	}
 	if (updatingXScrollBar) {
 		return;
 	}
@@ -2713,6 +2780,10 @@ void OBSBasicPreview::UpdateXScrollBar(float cx)
 
 void OBSBasicPreview::UpdateYScrollBar(float cy)
 {
+	/* The canvas dock has no scrollbars; fixed-scaling chrome is main-only (3b). */
+	if (targetCanvas) {
+		return;
+	}
 	if (updatingYScrollBar) {
 		return;
 	}
