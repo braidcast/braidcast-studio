@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 
+#include "bridge.hpp"
 #include "frontend_callbacks.hpp"
 #include "log.hpp"
 #include "paths.hpp"
@@ -261,6 +262,11 @@ bool ObsBootstrap::Start()
 	obs_frontend_set_callbacks_internal(g_frontend);
 	HostLog("[obs] frontend-api shim registered");
 
+	// Build the JS<->C++ method registry and arm obs->JS event forwarding
+	// before module load + the FINISHED_LOADING fan-out, so the bridge's
+	// frontend event callback is registered when those events fire.
+	Bridge::Init();
+
 	LoadCuratedModules();
 
 	obs_post_load_modules();
@@ -298,8 +304,20 @@ void ObsBootstrap::TeardownScene()
 	HostLog("[obs] test scene released");
 }
 
+void ObsBootstrap::FireSceneChanged()
+{
+	// Re-announce the bound scene so the (now-loaded) page observes a forwarded
+	// obs.event end-to-end. The shim fans this to the bridge's event callback.
+	if (g_frontend) {
+		g_frontend->on_event(OBS_FRONTEND_EVENT_SCENE_CHANGED);
+	}
+}
+
 void ObsBootstrap::Stop()
 {
+	// Drop the bridge's obs frontend event callback while libobs is still up.
+	Bridge::Shutdown();
+
 	// Deferred source destruction can cascade across the destruction-task
 	// thread; drain in a loop until no more work is spawned before
 	// obs_shutdown, mirroring the Qt frontend's ClearSceneData.

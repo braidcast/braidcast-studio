@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>OBS MultiStreamer</title>
+  <title>OBS MultiStreamer — bridge test</title>
   <style>
     :root { color-scheme: dark; }
     html, body { height: 100%; margin: 0; }
@@ -11,50 +11,149 @@
       font-family: system-ui, "Segoe UI", sans-serif;
       background: #16181d;
       color: #e6e8ec;
-      display: flex;
-      align-items: center;
-      justify-content: center;
+      padding: 24px;
+      box-sizing: border-box;
     }
-    .card {
-      text-align: center;
-      padding: 40px 56px;
+    h1 { font-size: 20px; font-weight: 600; margin: 0 0 16px; }
+    .grid { display: grid; gap: 14px; max-width: 640px; }
+    .panel {
       border: 1px solid #2a2e37;
-      border-radius: 12px;
+      border-radius: 10px;
       background: #1c1f26;
+      padding: 14px 16px;
     }
-    h1 { font-size: 22px; font-weight: 600; margin: 0 0 4px; }
-    .status { color: #4ade80; font-size: 13px; letter-spacing: 0.04em; text-transform: uppercase; }
-    .ver { margin-top: 18px; font-size: 13px; color: #9aa0aa; }
-    .ver code { color: #d7dae0; }
+    .label { color: #9aa0aa; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; }
+    .value { margin-top: 4px; font-size: 14px; color: #d7dae0; }
+    code { color: #4ade80; }
+    button {
+      background: #2563eb; color: #fff; border: 0; border-radius: 8px;
+      padding: 9px 16px; font-size: 14px; cursor: pointer;
+    }
+    button:hover { background: #1d4ed8; }
+    #log {
+      font-family: "Cascadia Code", Consolas, monospace; font-size: 12px;
+      background: #0f1115; border: 1px solid #2a2e37; border-radius: 8px;
+      padding: 10px; height: 180px; overflow: auto; white-space: pre-wrap;
+      color: #b6bcc6;
+    }
+    #stream-state { font-weight: 600; }
+    .on { color: #4ade80; }
+    .off { color: #f87171; }
   </style>
 </head>
 <body>
-  <div class="card">
-    <h1>OBS MultiStreamer</h1>
-    <div class="status">shell online</div>
-    <div class="ver">libobs <code id="ver">querying…</code></div>
+  <h1>OBS MultiStreamer — bridge test</h1>
+  <div class="grid">
+    <div class="panel">
+      <div class="label">libobs version (getVersion)</div>
+      <div class="value"><code id="ver">querying…</code></div>
+    </div>
+    <div class="panel">
+      <div class="label">scenes (listScenes)</div>
+      <div class="value" id="scenes">querying…</div>
+    </div>
+    <div class="panel">
+      <div class="label">current scene (getCurrentScene)</div>
+      <div class="value" id="cur">querying…</div>
+    </div>
+    <div class="panel">
+      <div class="label">streaming (getStreamingState)</div>
+      <div class="value">state: <span id="stream-state" class="off">…</span></div>
+      <div style="margin-top:10px"><button id="toggle">Start streaming</button></div>
+    </div>
+    <div class="panel">
+      <div class="label">event log (push)</div>
+      <div id="log"></div>
+    </div>
   </div>
+
+  <script src="obs-bridge.js"></script>
   <script>
-    // Prove the JS<->C++ bridge survived the port: ask libobs for its version.
-    function queryVersion() {
-      if (!window.cefQuery) {
-        document.getElementById('ver').textContent = '(bridge unavailable)';
-        console.log('OBSERR: cefQuery missing');
+    const logEl = document.getElementById('log');
+    function log(line) {
+      const ts = new Date().toLocaleTimeString();
+      logEl.textContent += '[' + ts + '] ' + line + '\n';
+      logEl.scrollTop = logEl.scrollHeight;
+      console.log('OBSLOG: ' + line);
+    }
+
+    function setStreamUi(active) {
+      const s = document.getElementById('stream-state');
+      s.textContent = active ? 'LIVE' : 'idle';
+      s.className = active ? 'on' : 'off';
+      document.getElementById('toggle').textContent = active ? 'Stop streaming' : 'Start streaming';
+      document.getElementById('toggle').dataset.active = active ? '1' : '0';
+    }
+
+    async function init() {
+      if (!window.obs) {
+        document.getElementById('ver').textContent = '(bridge client missing)';
+        log('FATAL: window.obs not defined');
         return;
       }
-      window.cefQuery({
-        request: 'getObsVersion',
-        onSuccess: function (r) {
-          document.getElementById('ver').textContent = r;
-          console.log('OBSVER:' + r);
-        },
-        onFailure: function (code, msg) {
-          document.getElementById('ver').textContent = 'error ' + code;
-          console.log('OBSERR:' + code + ' ' + msg);
-        }
+
+      // Subscribe to pushes BEFORE making calls so streaming.changed lands.
+      window.obs.on('streaming.changed', function (p) {
+        log('push streaming.changed -> ' + JSON.stringify(p));
+        setStreamUi(!!(p && p.active));
       });
+      window.obs.on('obs.event', function (p) {
+        log('push obs.event -> ' + JSON.stringify(p));
+      });
+
+      try {
+        const ver = await window.obs.call('getVersion');
+        document.getElementById('ver').textContent = ver;
+        log('getVersion -> ' + ver);
+      } catch (e) { log('getVersion ERR: ' + e.message); }
+
+      try {
+        const scenes = await window.obs.call('listScenes');
+        document.getElementById('scenes').textContent =
+          (scenes && scenes.length) ? scenes.join(', ') : '(none)';
+        log('listScenes -> ' + JSON.stringify(scenes));
+      } catch (e) { log('listScenes ERR: ' + e.message); }
+
+      try {
+        const cur = await window.obs.call('getCurrentScene');
+        document.getElementById('cur').textContent = cur === null ? '(none)' : cur;
+        log('getCurrentScene -> ' + JSON.stringify(cur));
+      } catch (e) { log('getCurrentScene ERR: ' + e.message); }
+
+      try {
+        const st = await window.obs.call('getStreamingState');
+        setStreamUi(!!(st && st.active));
+        log('getStreamingState -> ' + JSON.stringify(st));
+      } catch (e) { log('getStreamingState ERR: ' + e.message); }
+
+      // Prove the error path: an unknown method must reject cleanly.
+      try {
+        await window.obs.call('does.not.exist');
+        log('unknown-method ERR: expected failure, got success');
+      } catch (e) {
+        log('unknown-method rejected as expected -> ' + e.message);
+      }
+
+      // Auto-exercise the streaming stub on load so the streaming.changed push
+      // is provable from logs without a manual click. The Start/Stop button
+      // still drives it interactively for the GUI gate.
+      try {
+        await window.obs.call('streaming.start');
+        await window.obs.call('streaming.stop');
+        log('streaming round-trip exercised (start+stop)');
+      } catch (e) { log('streaming self-test ERR: ' + e.message); }
     }
-    window.addEventListener('load', queryVersion);
+
+    document.getElementById('toggle').addEventListener('click', async function () {
+      const active = this.dataset.active === '1';
+      const method = active ? 'streaming.stop' : 'streaming.start';
+      try {
+        const r = await window.obs.call(method);
+        log(method + ' -> ' + JSON.stringify(r));
+      } catch (e) { log(method + ' ERR: ' + e.message); }
+    });
+
+    window.addEventListener('load', init);
   </script>
 </body>
 </html>

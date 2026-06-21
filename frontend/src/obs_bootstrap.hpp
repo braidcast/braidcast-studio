@@ -14,6 +14,9 @@
 // pumps CefDoMessageLoopWork() before Stop()/CefShutdown().
 namespace ObsBootstrap {
 bool Start();
+// Re-fire OBS_FRONTEND_EVENT_SCENE_CHANGED through the shim so the loaded UI page
+// observes a forwarded obs.event (proves obs->shim->bridge->JS post-load).
+void FireSceneChanged();
 void TeardownScene();
 void Stop();
 } // namespace ObsBootstrap

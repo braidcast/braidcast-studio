@@ -75,6 +75,15 @@ target_include_directories(
   PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}/api-impl"
 )
 
+# The bridge envelope uses nlohmann/json, a header-only lib shipped in the
+# obs-deps prefix include dir (the legacy frontend gets it transitively via Qt;
+# this non-Qt exe must add it explicitly). Add every CMAKE_PREFIX_PATH/include.
+foreach(_prefix IN LISTS CMAKE_PREFIX_PATH)
+  if(EXISTS "${_prefix}/include/nlohmann/json.hpp")
+    target_include_directories(${_target} PRIVATE "${_prefix}/include")
+  endif()
+endforeach()
+
 add_dependencies(${_target} libcef_dll_wrapper)
 target_link_libraries(
   ${_target}

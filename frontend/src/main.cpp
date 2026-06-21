@@ -104,6 +104,9 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 			} else {
 				HostLog("[obs] fe-test-web not found for size probe");
 			}
+			// Page is loaded by now: re-fire SCENE_CHANGED so the UI observes a
+			// forwarded obs.event end-to-end (obs->shim->bridge->JS).
+			ObsBootstrap::FireSceneChanged();
 		} else if (wparam == kSmokeQuitTimerId) {
 			KillTimer(hwnd, kSmokeQuitTimerId);
 			HostLog("[host] smoke-quit timer fired -> WM_CLOSE");
