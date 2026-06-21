@@ -17,6 +17,7 @@
 #include "preview_window.hpp"
 #include "properties_serializer.hpp"
 
+#include "multistream/CanvasRuntime.hpp"
 #include "multistream/CanvasStore.hpp"
 #include "multistream/MultistreamEngine.hpp"
 #include "multistream/OutputBindingStore.hpp"
@@ -1534,8 +1535,12 @@ bool MethodCanvasCreate(const json &params, json &result, std::string &error)
 	def.audio.settings = obs_encoder_defaults(def.audio.id.c_str());
 
 	CanvasStore &store = ObsBootstrap::Canvases();
-	const std::string uuid = store.Add(std::move(def)).uuid;
+	const CanvasDefinition &added = store.Add(std::move(def));
+	const std::string uuid = added.uuid;
 	store.Save();
+
+	// Bring up the live obs_canvas_t mix so the new canvas can encode immediately.
+	ObsBootstrap::CanvasRuntime().EnsureCanvas(added);
 
 	EmitEvent("canvas.changed", json::object());
 	result = json{{"uuid", uuid}};
@@ -1609,6 +1614,13 @@ bool MethodCanvasUpdate(const json &params, json &result, std::string &error)
 	if (resChanged || vencChanged || aencChanged) {
 		ObsBootstrap::Multistream().InvalidateCanvasEncoders(uuid);
 	}
+	// Resolution/fps changes resize the live mix; the guard above already refused
+	// while the canvas is live, so this only runs on an idle canvas. (Encoder-id
+	// changes don't touch the mix.) No-op for the Default canvas, which has no
+	// runtime mix.
+	if (resChanged) {
+		ObsBootstrap::CanvasRuntime().ResetVideo(*def);
+	}
 
 	store.Save();
 	EmitEvent("canvas.changed", json::object());
@@ -1634,8 +1646,9 @@ bool MethodCanvasRemove(const json &params, json &result, std::string &error)
 		return false;
 	}
 	// Drop the engine's cached encoder pair for the removed canvas (it is bound to
-	// a mix that goes away with the canvas).
+	// a mix that goes away with the canvas), then destroy the live mix itself.
 	ObsBootstrap::Multistream().InvalidateCanvasEncoders(uuid);
+	ObsBootstrap::CanvasRuntime().RemoveCanvas(uuid);
 
 	store.Remove(uuid);
 	store.Save();
