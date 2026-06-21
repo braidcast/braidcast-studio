@@ -26,6 +26,30 @@ public:
 	obs_canvas_t *Find(const std::string &uuid) const; // null for Default/unknown
 	video_t *VideoFor(const std::string &uuid) const;  // obs_canvas_get_video or null
 
+	// Per-canvas scene access, mirroring the legacy OBSBasic per-canvas scene API
+	// (obs_canvas_get/set_channel(canvas, 0, ...) for "current", obs_canvas_*scene*
+	// for CRUD). All resolve the live obs_canvas_t for `uuid`; an unknown/Default
+	// uuid (no runtime mix) yields the empty/false result, so callers fall back to
+	// the global channel-0 path. Refcounts follow the bridge's existing contracts.
+
+	// One scene's name + uuid, as listed by Scenes().
+	struct SceneInfo {
+		std::string name;
+		std::string uuid;
+		bool current = false; // bound to the canvas's channel 0
+	};
+
+	// The canvas's current scene source (its channel-0 binding), addref'd; caller
+	// releases. null for an unknown/Default canvas or an unbound channel.
+	obs_source_t *CurrentScene(const std::string &uuid) const;
+	std::vector<SceneInfo> Scenes(const std::string &uuid) const; // enum the canvas's scenes
+	bool SetCurrentScene(const std::string &uuid, const std::string &sceneName);
+	// Create a scene in the canvas (addref'd scene source, caller releases) or null
+	// on failure / unknown canvas. Does NOT bind it to channel 0.
+	obs_source_t *CreateScene(const std::string &uuid, const std::string &name);
+	bool RemoveScene(const std::string &uuid, const std::string &sceneName);
+	bool RenameScene(const std::string &uuid, const std::string &from, const std::string &to);
+
 	void ClearAll(); // destroy all live canvases (teardown, before obs_shutdown)
 
 private:

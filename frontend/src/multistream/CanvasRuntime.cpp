@@ -144,6 +144,179 @@ video_t *CanvasRuntime::VideoFor(const std::string &uuid) const
 	return canvas ? obs_canvas_get_video(canvas) : nullptr;
 }
 
+obs_source_t *CanvasRuntime::CurrentScene(const std::string &uuid) const
+{
+	obs_canvas_t *canvas = Find(uuid);
+	if (!canvas) {
+		return nullptr;
+	}
+	// obs_canvas_get_channel hands back an addref'd source; pass that ownership
+	// straight to the caller (matches the bridge's addref'd scene-source contract).
+	obs_source_t *cur = obs_canvas_get_channel(canvas, 0);
+	if (cur && !obs_scene_from_source(cur)) {
+		obs_source_release(cur); // channel 0 holds a non-scene source
+		return nullptr;
+	}
+	return cur;
+}
+
+std::vector<CanvasRuntime::SceneInfo> CanvasRuntime::Scenes(const std::string &uuid) const
+{
+	std::vector<SceneInfo> scenes;
+	obs_canvas_t *canvas = Find(uuid);
+	if (!canvas) {
+		return scenes;
+	}
+
+	// The current scene (channel 0) flags which entry is current. Hold its name
+	// while enumerating; release the addref'd source afterward.
+	OBSSourceAutoRelease cur = obs_canvas_get_channel(canvas, 0);
+	const char *curName = cur ? obs_source_get_name(cur) : nullptr;
+	const std::string currentName = curName ? curName : std::string();
+
+	struct Ctx {
+		std::vector<SceneInfo> *out;
+		const std::string *current;
+	} ctx{&scenes, &currentName};
+
+	// The enum callback's source is owned by the canvas for the call's duration;
+	// read its name/uuid in-place (no extra ref needed, mirroring EnsureScene).
+	obs_canvas_enum_scenes(
+		canvas,
+		[](void *param, obs_source_t *scene) -> bool {
+			auto *c = static_cast<Ctx *>(param);
+			const char *name = obs_source_get_name(scene);
+			const char *sceneUuid = obs_source_get_uuid(scene);
+			if (name) {
+				c->out->push_back(SceneInfo{name, sceneUuid ? sceneUuid : std::string(),
+							    !c->current->empty() && *c->current == name});
+			}
+			return true; // keep enumerating
+		},
+		&ctx);
+
+	return scenes;
+}
+
+bool CanvasRuntime::SetCurrentScene(const std::string &uuid, const std::string &sceneName)
+{
+	obs_canvas_t *canvas = Find(uuid);
+	if (!canvas) {
+		return false;
+	}
+	OBSSourceAutoRelease scene = obs_canvas_get_source_by_name(canvas, sceneName.c_str()); // addref'd
+	if (!scene || !obs_scene_from_source(scene)) {
+		return false;
+	}
+	obs_canvas_set_channel(canvas, 0, scene);
+	return true;
+}
+
+obs_source_t *CanvasRuntime::CreateScene(const std::string &uuid, const std::string &name)
+{
+	obs_canvas_t *canvas = Find(uuid);
+	if (!canvas) {
+		return nullptr;
+	}
+	// Reject a duplicate name within this canvas (mirrors the global scenes.create
+	// guard, but scoped to the canvas's own source namespace).
+	OBSSourceAutoRelease clash = obs_canvas_get_source_by_name(canvas, name.c_str());
+	if (clash) {
+		return nullptr;
+	}
+	obs_scene_t *scene = obs_canvas_scene_create(canvas, name.c_str());
+	if (!scene) {
+		return nullptr;
+	}
+	// obs_canvas_scene_create returns the scene without an added strong ref on its
+	// source (the canvas owns it via SCENE_REF). Addref the source for the caller so
+	// it matches the bridge's addref'd scene-source contract (caller releases).
+	obs_source_t *sceneSource = obs_scene_get_source(scene);
+	if (sceneSource) {
+		obs_source_get_ref(sceneSource);
+	}
+	return sceneSource;
+}
+
+bool CanvasRuntime::RemoveScene(const std::string &uuid, const std::string &sceneName)
+{
+	obs_canvas_t *canvas = Find(uuid);
+	if (!canvas) {
+		return false;
+	}
+
+	// Count this canvas's scenes and find a fallback (any scene but the target) so we
+	// can move channel 0 off the target before removing it; refuse the last scene.
+	struct Ctx {
+		std::string target;
+		int count = 0;
+		obs_source_t *fallback = nullptr; // addref'd
+	} ctx;
+	ctx.target = sceneName;
+	obs_canvas_enum_scenes(
+		canvas,
+		[](void *param, obs_source_t *scene) -> bool {
+			auto *c = static_cast<Ctx *>(param);
+			c->count++;
+			const char *n = obs_source_get_name(scene);
+			if (n && c->target != n && !c->fallback) {
+				obs_source_get_ref(scene); // keep for fallback past enum
+				c->fallback = scene;
+			}
+			return true;
+		},
+		&ctx);
+
+	if (ctx.count <= 1) {
+		if (ctx.fallback) {
+			obs_source_release(ctx.fallback);
+		}
+		return false;
+	}
+
+	OBSSourceAutoRelease target = obs_canvas_get_source_by_name(canvas, sceneName.c_str()); // addref'd
+	if (!target || !obs_scene_from_source(target)) {
+		if (ctx.fallback) {
+			obs_source_release(ctx.fallback);
+		}
+		return false;
+	}
+
+	// If the target is the canvas's current scene, switch channel 0 to the fallback
+	// before removing it so the mix never points at a removed scene.
+	OBSSourceAutoRelease current = obs_canvas_get_channel(canvas, 0);
+	if (current && current.Get() == target.Get() && ctx.fallback) {
+		obs_canvas_set_channel(canvas, 0, ctx.fallback);
+	}
+
+	obs_canvas_scene_remove(obs_scene_from_source(target));
+	if (ctx.fallback) {
+		obs_source_release(ctx.fallback);
+	}
+	return true;
+}
+
+bool CanvasRuntime::RenameScene(const std::string &uuid, const std::string &from, const std::string &to)
+{
+	obs_canvas_t *canvas = Find(uuid);
+	if (!canvas) {
+		return false;
+	}
+	if (from == to) {
+		return true;
+	}
+	OBSSourceAutoRelease clash = obs_canvas_get_source_by_name(canvas, to.c_str());
+	if (clash) {
+		return false; // name already taken within this canvas
+	}
+	OBSSourceAutoRelease scene = obs_canvas_get_source_by_name(canvas, from.c_str()); // addref'd
+	if (!scene || !obs_scene_from_source(scene)) {
+		return false;
+	}
+	obs_source_set_name(scene, to.c_str());
+	return true;
+}
+
 void CanvasRuntime::DestroyCanvas(obs_canvas_t *canvas)
 {
 	if (!canvas) {
