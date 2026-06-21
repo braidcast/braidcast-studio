@@ -337,6 +337,30 @@ largest chunk of 4.1 — validate it with a cheap throwaway test BEFORE sinking 
 effort. Also: the full-app teardown must replicate `ClearSceneData`'s
 enum-remove-all-then-drain, not the spike's single-scene minimal version.
 
+**✅ De-risking spike 4.0b — headless `obs-frontend-api` shim — DONE 2026-06-21,
+verdict GO.** A throwaway console exe (`spike/frontend-api/`, gitignored) registered
+a non-Qt `HeadlessFrontendCallbacks : obs_frontend_callbacks` (all 95 methods —
+mostly typed-zero stubs, ~10 real bodies: scene getter, 3 config getters, event/
+save/preload registries with fan-out, locale passthrough) via
+`obs_frontend_set_callbacks_internal()` before a curated module load. Result
+(verified from `run.log`, exit 0): **19 plugins loaded** (incl. obs-x264,
+obs-ffmpeg, obs-qsv11, rtmp-services, obs-outputs, obs-browser, obs-webrtc,
+win-capture, win-dshow, win-wasapi, obs-filters/transitions), **all 4 functional
+probes created OK** (`obs_x264` encoder, `rtmp_custom` service, `rtmp_output`
+output, `browser_source`), clean teardown (`bnum_allocs()=3`). **Sized: only 2 of
+95 callbacks were actually invoked at load** (`add_event_callback`, `on_event`) —
+so the real 4.1 API-layer surface is small (~10–15 live bodies; the rest stay
+typed-zero stubs until a UI feature needs them). **One real finding (the Qt-coupling
+blocker we were watching for): `obs-websocket` hard-crashes at load**
+(`STATUS_STACK_BUFFER_OVERRUN` → `QWidget: Must construct a QApplication before a
+QWidget`) — Qt-coupled plugins need either a `QApplication -platform offscreen`
+stood up before load, or exclusion. Denylist for 4.1 = `frontend-tools`,
+`decklink-output-ui`, `decklink-captions`, `aja-output-ui`, **`obs-websocket`**
+(until offscreen-QApplication or a native reimplementation). Spec/plan/RESULTS:
+`docs/superpowers/{specs,plans}/2026-06-21-frontend-api-shim-spike*` +
+`spike/frontend-api/RESULTS.md` (all gitignored — read directly). The headless
+approach is proven; do not re-spike it.
+
 **Scope note:** large multi-sub-project effort (the Qt frontend is ~85K LOC of
 UI + app logic), decomposed into its own spec/plan cycles. Remaining Phase 3
 items — **3b** (per-canvas Studio Mode) and **3e** (Stats dock) — and any further
@@ -356,9 +380,11 @@ so a working app is always available; only one frontend ever builds at a time.
 - 🔭 **Cross-platform preview** — the spike and initial build are **Windows-only**
   (HWND + D3D11 passthrough). macOS (NSView + IOSurface) and Linux (X11/GL)
   preview embedding come later as their own efforts.
-- 🔭 **Headless `obs-frontend-api` shim** (surfaced by the 4.0 spike) — needed to
-  load the full plugin set without a Qt frontend; likely the biggest 4.1
-  workstream. Spike a viability test with all modules before committing to 4.1.
+- ✅ **Headless `obs-frontend-api` shim** (surfaced by the 4.0 spike) — viability
+  proven by spike 4.0b (2026-06-21, GO; see above). 4.1 builds the real non-Qt
+  `OBSStudioAPI` equivalent (~10–15 live callback bodies + typed-zero stubs) and a
+  curated module allowlist that excludes the Qt-coupled plugins (`obs-websocket`
+  pending offscreen-QApplication or native reimpl).
 - ✅ **Visual confirmation of the spike (2026-06-21, windows-mcp)** — the bridge
   result (`32.1.0-…`) renders in the browser pane, and a temporary green
   `color_source` rendered on screen in the preview pane, proving the `obs_display`
