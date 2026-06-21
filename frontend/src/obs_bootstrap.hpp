@@ -27,6 +27,12 @@ void RunPropertiesSelfTest();
 // the move math (offset pos, then restore). Gated by the caller to the smoke
 // path; leaves no visible change.
 void RunPreviewEditSelfTest();
+// Headless proof for 4.3.5: round-trip settings.getVideo/setVideo (to 1280x720@30
+// and back) and settings.getAudio/setAudio (to 44100 and back) through the
+// bridge, verifying the preview display survives the video reset. Gated by the
+// caller to the smoke path; restores the original config so the run leaves no
+// change.
+void RunSettingsSelfTest();
 void Stop();
 } // namespace ObsBootstrap
 

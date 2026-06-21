@@ -87,6 +87,7 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 			if (getenv("FE_SMOKE_QUIT_SECONDS")) {
 				ObsBootstrap::RunPropertiesSelfTest();
 				ObsBootstrap::RunPreviewEditSelfTest();
+				ObsBootstrap::RunSettingsSelfTest();
 			}
 		} else if (wparam == kSmokeQuitTimerId) {
 			KillTimer(hwnd, kSmokeQuitTimerId);

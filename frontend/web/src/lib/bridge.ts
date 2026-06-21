@@ -156,6 +156,27 @@ export interface PropertiesResult {
   values: Record<string, unknown>;
 }
 
+// --- settings: video / audio (4.3.5) ----------------------------------------
+
+/** Core video config: base (canvas) + output (scaled) size + frame rate. */
+export interface VideoSettings {
+  baseWidth: number;
+  baseHeight: number;
+  outputWidth: number;
+  outputHeight: number;
+  fpsNum: number;
+  fpsDen: number;
+}
+
+/** Speaker layouts obs_audio_info accepts. */
+export type SpeakerLayout = "mono" | "stereo" | "2.1" | "4.0" | "4.1" | "5.1" | "7.1";
+
+/** Core audio config. */
+export interface AudioSettings {
+  sampleRate: number;
+  speakers: SpeakerLayout;
+}
+
 /** Known bridge methods. Extend as the C++ Bridge gains methods. */
 export interface ObsMethods {
   getVersion: string;
@@ -188,6 +209,11 @@ export interface ObsMethods {
   "properties.get": PropertiesResult;
   "properties.set": PropertiesResult;
   "properties.button": PropertiesResult;
+  // Core video/audio settings (4.3.5). set* return the applied (post-reset) values.
+  "settings.getVideo": VideoSettings;
+  "settings.setVideo": VideoSettings;
+  "settings.getAudio": AudioSettings;
+  "settings.setAudio": AudioSettings;
 }
 
 /** Known server->client push events and their payload shapes. */
@@ -197,6 +223,8 @@ export interface ObsEvents {
   "scenes.changed": Record<string, never>;
   "sceneItems.changed": { scene: string | null };
   "sceneItem.selected": { scene: string | null; id: number | null };
+  "settings.videoChanged": VideoSettings;
+  "settings.audioChanged": AudioSettings;
 }
 
 export interface BridgeError extends Error {

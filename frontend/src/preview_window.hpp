@@ -60,6 +60,14 @@ bool SelectFromBridge(const std::string &scene, int64_t id, bool hasId);
 // topmost matching scene-item id, or -1 when nothing is hit. Used by the smoke
 // self-test to prove hit-testing without a real cursor.
 int64_t HitTestForTest(float canvasX, float canvasY);
+
+// Re-validate the preview after an obs_reset_video. The obs_display swapchain and
+// its draw callback survive a video reset (obs_reset_video only rebuilds the
+// video mix, not the graphics device), so this just clears the cached letterbox
+// transform so the next frame recomputes it against the new base resolution, and
+// nudges the display to redraw at its current size. Returns false only when no
+// display exists yet. Runs on the UI thread.
+bool OnVideoReset();
 } // namespace Preview
 
 #endif // OBS_MULTISTREAM_FRONTEND_PREVIEW_WINDOW_HPP_

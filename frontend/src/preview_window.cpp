@@ -963,4 +963,28 @@ int64_t HitTestForTest(float canvasX, float canvasY)
 	return id;
 }
 
+bool OnVideoReset()
+{
+	if (!g_display) {
+		// No display yet (UI never sized the preview). The next SetRect creates
+		// it fresh against the new base resolution; nothing to re-validate.
+		HostLog("[preview] OnVideoReset: no display yet (will create lazily)");
+		return false;
+	}
+
+	// The base resolution changed, so the cached letterbox transform is stale.
+	// Reset it; RenderPreview recomputes it from obs_get_video_info() on the next
+	// frame. ClientToCanvas treats scale<=0 as "no frame yet" and ignores mouse
+	// input until that recompute lands, avoiding a one-frame mis-mapped drag.
+	{
+		std::lock_guard<std::mutex> lock(g_stateMutex);
+		g_transform = PreviewTransform{};
+	}
+
+	// Nudge a redraw at the current size so the new mix is presented promptly.
+	obs_display_update_color_space(g_display);
+	HostLog("[preview] OnVideoReset: display alive, letterbox transform invalidated");
+	return true;
+}
+
 } // namespace Preview

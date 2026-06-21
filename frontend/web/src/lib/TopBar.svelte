@@ -1,8 +1,10 @@
 <script lang="ts">
   import { obs } from "./bridge";
+  import SettingsModal from "./SettingsModal.svelte";
 
   let live = $state(false);
   let busy = $state(false);
+  let settingsOpen = $state(false);
 
   async function refresh() {
     try {
@@ -36,10 +38,17 @@
     <span class="dot" class:live></span>
     OBS MultiStreamer
   </div>
-  <button class:live onclick={toggle} disabled={busy}>
-    {live ? "Stop Streaming" : "Start Streaming"}
-  </button>
+  <div class="actions">
+    <button class="gear" title="Settings" aria-label="Settings" onclick={() => (settingsOpen = true)}>⚙</button>
+    <button class:live onclick={toggle} disabled={busy}>
+      {live ? "Stop Streaming" : "Start Streaming"}
+    </button>
+  </div>
 </header>
+
+{#if settingsOpen}
+  <SettingsModal onClose={() => (settingsOpen = false)} />
+{/if}
 
 <style>
   .topbar {
@@ -66,6 +75,24 @@
   .dot.live {
     background: var(--on);
     box-shadow: 0 0 8px var(--on);
+  }
+  .actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .gear {
+    background: var(--bg-sunken);
+    border: 1px solid var(--border);
+    color: var(--text-soft);
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .gear:hover {
+    color: var(--text);
   }
   button.live {
     background: var(--off);

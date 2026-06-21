@@ -186,6 +186,243 @@ bool MethodPreviewHide(const json & /*params*/, json & /*result*/, std::string &
 	return true;
 }
 
+// --- settings (video / audio) -----------------------------------------------
+
+// Live-change guard. There is no streaming/recording yet, so nothing is ever
+// active, but the slot exists so 4.4 can wire it to MultistreamOutput::
+// IsCanvasLive (refuse video/audio resets while any output is live).
+// TODO(4.4): return true when any MultistreamOutput is live for any canvas.
+bool AnyOutputActive()
+{
+	return false;
+}
+
+// speaker_layout <-> string. Data-driven so a new layout is one row. The set is
+// what obs_audio_info accepts; the UI offers at least mono/stereo.
+struct SpeakerName {
+	speaker_layout layout;
+	const char *name;
+};
+const SpeakerName kSpeakerNames[] = {
+	{SPEAKERS_MONO, "mono"},     {SPEAKERS_STEREO, "stereo"}, {SPEAKERS_2POINT1, "2.1"},
+	{SPEAKERS_4POINT0, "4.0"},   {SPEAKERS_4POINT1, "4.1"},   {SPEAKERS_5POINT1, "5.1"},
+	{SPEAKERS_7POINT1, "7.1"},
+};
+
+const char *SpeakerLayoutName(speaker_layout layout)
+{
+	for (const auto &s : kSpeakerNames) {
+		if (s.layout == layout) {
+			return s.name;
+		}
+	}
+	return "stereo";
+}
+
+bool SpeakerLayoutFromName(const std::string &name, speaker_layout &out)
+{
+	for (const auto &s : kSpeakerNames) {
+		if (name == s.name) {
+			out = s.layout;
+			return true;
+		}
+	}
+	return false;
+}
+
+json VideoInfoToJson(const obs_video_info &ovi)
+{
+	return json{
+		{"baseWidth", ovi.base_width},   {"baseHeight", ovi.base_height},
+		{"outputWidth", ovi.output_width}, {"outputHeight", ovi.output_height},
+		{"fpsNum", ovi.fps_num},         {"fpsDen", ovi.fps_den},
+	};
+}
+
+bool MethodSettingsGetVideo(const json & /*params*/, json &result, std::string &error)
+{
+	obs_video_info ovi = {};
+	if (!obs_get_video_info(&ovi)) {
+		error = "video not initialized";
+		return false;
+	}
+	result = VideoInfoToJson(ovi);
+	return true;
+}
+
+// Read a required positive uint field. Caps at 16384 (the D3D11 max texture
+// dimension) so a bad value can't allocate an absurd render target.
+bool ReadDimension(const json &params, const char *key, uint32_t current, uint32_t &out, std::string &error)
+{
+	auto it = params.find(key);
+	if (it == params.end()) {
+		out = current; // absent -> keep current
+		return true;
+	}
+	if (!it->is_number_integer() && !it->is_number_unsigned()) {
+		error = std::string("'") + key + "' must be an integer";
+		return false;
+	}
+	const int64_t v = it->get<int64_t>();
+	if (v <= 0 || v > 16384) {
+		error = std::string("'") + key + "' must be in 1..16384";
+		return false;
+	}
+	out = uint32_t(v);
+	return true;
+}
+
+// Rebuild the current obs_video_info, override only the passed fields, and
+// obs_reset_video. Preserves graphics_module/colorspace/range/format/adapter/
+// gpu_conversion/scale_type so only resolution+FPS change. Refuses while an
+// output is live and on a failed reset restores the prior config so video is
+// never left broken. Emits settings.videoChanged + re-validates the preview.
+bool MethodSettingsSetVideo(const json &params, json &result, std::string &error)
+{
+	if (!params.is_object()) {
+		error = "setVideo expects an object";
+		return false;
+	}
+	if (AnyOutputActive()) {
+		error = "cannot change video while an output is active";
+		return false;
+	}
+
+	obs_video_info ovi = {};
+	if (!obs_get_video_info(&ovi)) {
+		error = "video not initialized";
+		return false;
+	}
+	const obs_video_info previous = ovi; // for rollback
+
+	if (!ReadDimension(params, "baseWidth", ovi.base_width, ovi.base_width, error) ||
+	    !ReadDimension(params, "baseHeight", ovi.base_height, ovi.base_height, error) ||
+	    !ReadDimension(params, "outputWidth", ovi.output_width, ovi.output_width, error) ||
+	    !ReadDimension(params, "outputHeight", ovi.output_height, ovi.output_height, error)) {
+		return false;
+	}
+
+	auto readFps = [&](const char *key, uint32_t current, uint32_t &out) -> bool {
+		auto it = params.find(key);
+		if (it == params.end()) {
+			out = current;
+			return true;
+		}
+		if (!it->is_number_integer() && !it->is_number_unsigned()) {
+			error = std::string("'") + key + "' must be an integer";
+			return false;
+		}
+		const int64_t v = it->get<int64_t>();
+		if (v <= 0 || v > 1000) {
+			error = std::string("'") + key + "' must be in 1..1000";
+			return false;
+		}
+		out = uint32_t(v);
+		return true;
+	};
+	if (!readFps("fpsNum", ovi.fps_num, ovi.fps_num) || !readFps("fpsDen", ovi.fps_den, ovi.fps_den)) {
+		return false;
+	}
+
+	const int rv = obs_reset_video(&ovi);
+	if (rv != OBS_VIDEO_SUCCESS) {
+		// Restore the prior config so we never leave video in a broken state.
+		obs_video_info restore = previous;
+		const int rb = obs_reset_video(&restore);
+		HostLog("[bridge] settings.setVideo reset FAILED code=" + std::to_string(rv) +
+			", rollback code=" + std::to_string(rb));
+		error = "obs_reset_video failed (code " + std::to_string(rv) + ")";
+		return false;
+	}
+
+	// The obs_display swapchain survives a video reset; just invalidate the cached
+	// letterbox transform so the next frame re-letterboxes to the new base size.
+	Preview::OnVideoReset();
+
+	obs_video_info applied = {};
+	obs_get_video_info(&applied);
+	result = VideoInfoToJson(applied);
+	EmitEvent("settings.videoChanged", result);
+	HostLog("[bridge] settings.setVideo -> " + std::to_string(applied.base_width) + "x" +
+		std::to_string(applied.base_height) + " out " + std::to_string(applied.output_width) + "x" +
+		std::to_string(applied.output_height) + " @ " + std::to_string(applied.fps_num) + "/" +
+		std::to_string(applied.fps_den));
+	return true;
+}
+
+bool MethodSettingsGetAudio(const json & /*params*/, json &result, std::string &error)
+{
+	obs_audio_info oai = {};
+	if (!obs_get_audio_info(&oai)) {
+		error = "audio not initialized";
+		return false;
+	}
+	result = json{{"sampleRate", oai.samples_per_sec}, {"speakers", SpeakerLayoutName(oai.speakers)}};
+	return true;
+}
+
+bool MethodSettingsSetAudio(const json &params, json &result, std::string &error)
+{
+	if (!params.is_object()) {
+		error = "setAudio expects an object";
+		return false;
+	}
+	if (AnyOutputActive()) {
+		error = "cannot change audio while an output is active";
+		return false;
+	}
+
+	obs_audio_info oai = {};
+	if (!obs_get_audio_info(&oai)) {
+		error = "audio not initialized";
+		return false;
+	}
+
+	auto sr = params.find("sampleRate");
+	if (sr != params.end()) {
+		if (!sr->is_number_integer() && !sr->is_number_unsigned()) {
+			error = "'sampleRate' must be an integer";
+			return false;
+		}
+		const int64_t v = sr->get<int64_t>();
+		// OBS supports 44100 and 48000; reject anything else.
+		if (v != 44100 && v != 48000) {
+			error = "'sampleRate' must be 44100 or 48000";
+			return false;
+		}
+		oai.samples_per_sec = uint32_t(v);
+	}
+
+	auto sp = params.find("speakers");
+	if (sp != params.end()) {
+		if (!sp->is_string()) {
+			error = "'speakers' must be a string layout name";
+			return false;
+		}
+		speaker_layout layout;
+		if (!SpeakerLayoutFromName(sp->get<std::string>(), layout)) {
+			error = "unknown speaker layout '" + sp->get<std::string>() + "'";
+			return false;
+		}
+		oai.speakers = layout;
+	}
+
+	// obs_reset_audio fails when audio is active; with no outputs yet it succeeds.
+	// Active audio sources are re-attached by libobs to the new mix.
+	if (!obs_reset_audio(&oai)) {
+		error = "obs_reset_audio failed (audio may be active)";
+		return false;
+	}
+
+	obs_audio_info applied = {};
+	obs_get_audio_info(&applied);
+	result = json{{"sampleRate", applied.samples_per_sec}, {"speakers", SpeakerLayoutName(applied.speakers)}};
+	EmitEvent("settings.audioChanged", result);
+	HostLog("[bridge] settings.setAudio -> " + std::to_string(applied.samples_per_sec) + "Hz " +
+		SpeakerLayoutName(applied.speakers));
+	return true;
+}
+
 // --- scenes / scene-items helpers -------------------------------------------
 
 // Read an optional string field from params; returns "" when absent/not a
@@ -1053,6 +1290,10 @@ void Init()
 		{"properties.get", MethodPropertiesGet},
 		{"properties.set", MethodPropertiesSet},
 		{"properties.button", MethodPropertiesButton},
+		{"settings.getVideo", MethodSettingsGetVideo},
+		{"settings.setVideo", MethodSettingsSetVideo},
+		{"settings.getAudio", MethodSettingsGetAudio},
+		{"settings.setAudio", MethodSettingsSetAudio},
 	};
 
 	obs_frontend_add_event_callback(OnFrontendEvent, nullptr);

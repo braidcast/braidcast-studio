@@ -489,6 +489,87 @@ void ObsBootstrap::RunPreviewEditSelfTest()
 	obs_source_release(sceneSource);
 }
 
+void ObsBootstrap::RunSettingsSelfTest()
+{
+	using Bridge::json;
+
+	auto run = [](const std::string &method, const json &params, bool &ok) -> json {
+		json result;
+		std::string error;
+		ok = Bridge::Dispatch(method, params, result, error);
+		if (!ok) {
+			HostLog("[selftest] " + method + " FAILED: " + error);
+			return json(nullptr);
+		}
+		return result;
+	};
+
+	bool ok = false;
+
+	// 1) getVideo: expect the bootstrap defaults (1920x1080@60).
+	json v0 = run("settings.getVideo", json(nullptr), ok);
+	if (!ok) {
+		return;
+	}
+	const uint32_t baseW = v0.value("baseWidth", 0u);
+	const uint32_t baseH = v0.value("baseHeight", 0u);
+	HostLog("[selftest] getVideo -> base " + std::to_string(baseW) + "x" + std::to_string(baseH) + " out " +
+		std::to_string(v0.value("outputWidth", 0u)) + "x" + std::to_string(v0.value("outputHeight", 0u)) +
+		" @ " + std::to_string(v0.value("fpsNum", 0u)) + "/" + std::to_string(v0.value("fpsDen", 0u)));
+
+	// 2) setVideo to 1280x720@30; confirm the new active fps + that the display is
+	// still alive (a frame can still draw) after the reset.
+	json v1 = run("settings.setVideo",
+		      json{{"baseWidth", 1280},
+			   {"baseHeight", 720},
+			   {"outputWidth", 1280},
+			   {"outputHeight", 720},
+			   {"fpsNum", 30},
+			   {"fpsDen", 1}},
+		      ok);
+	if (ok) {
+		HostLog("[selftest] setVideo 1280x720@30 -> base " + std::to_string(v1.value("baseWidth", 0u)) + "x" +
+			std::to_string(v1.value("baseHeight", 0u)) + " (round-trip " +
+			((v1.value("baseWidth", 0u) == 1280 && v1.value("baseHeight", 0u) == 720) ? "OK" : "MISMATCH") +
+			")");
+		HostLog("[selftest] active fps after reset = " + std::to_string(obs_get_active_fps()));
+		// Prove the preview display survived: it re-validates without re-creation.
+		const bool alive = Preview::OnVideoReset();
+		HostLog("[selftest] preview display after video reset -> " +
+			std::string(alive ? "ALIVE (re-validated)" : "not yet created"));
+		// Prove the default scene is still bound to output channel 0.
+		obs_source_t *scene = obs_get_output_source(0);
+		HostLog("[selftest] output ch0 scene after reset -> " +
+			std::string(scene ? obs_source_get_name(scene) : "NULL"));
+		if (scene) {
+			obs_source_release(scene);
+		}
+	}
+
+	// 3) Restore the original video config so the smoke run leaves no change.
+	run("settings.setVideo", v0, ok);
+	HostLog("[selftest] video restored to " + std::to_string(baseW) + "x" + std::to_string(baseH));
+
+	// 4) getAudio: expect the bootstrap defaults (48000 stereo).
+	json a0 = run("settings.getAudio", json(nullptr), ok);
+	if (ok) {
+		HostLog("[selftest] getAudio -> " + std::to_string(a0.value("sampleRate", 0u)) + "Hz " +
+			a0.value("speakers", std::string("?")));
+	}
+
+	// 5) setAudio to 44100; confirm it round-trips.
+	json a1 = run("settings.setAudio", json{{"sampleRate", 44100}, {"speakers", "stereo"}}, ok);
+	if (ok) {
+		HostLog("[selftest] setAudio 44100 -> " + std::to_string(a1.value("sampleRate", 0u)) + "Hz " +
+			a1.value("speakers", std::string("?")) + " (round-trip " +
+			(a1.value("sampleRate", 0u) == 44100 ? "OK" : "MISMATCH") + ")");
+	}
+
+	// 6) Restore the original audio config.
+	run("settings.setAudio", a0, ok);
+	HostLog("[selftest] audio restored to " + std::to_string(a0.value("sampleRate", 0u)) + "Hz");
+}
+
 void ObsBootstrap::Stop()
 {
 	// Drop the bridge's obs frontend event callback while libobs is still up.
