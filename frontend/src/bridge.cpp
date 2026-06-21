@@ -482,7 +482,7 @@ obs_source_t *ResolveSceneSource(const std::string &name)
 // Default/absent path byte-identical.
 struct CanvasTarget {
 	std::string uuid;     // the additional canvas's uuid; empty => global path
-	bool isAdditional;    // true only when uuid names a non-Default canvas
+	bool isAdditional = false; // true only when uuid names a non-Default canvas
 };
 
 CanvasTarget ResolveCanvasTarget(const json &params)
