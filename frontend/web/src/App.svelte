@@ -3,6 +3,7 @@
   import TopBar from "./lib/TopBar.svelte";
   import ScenesPanel from "./lib/ScenesPanel.svelte";
   import SourcesPanel from "./lib/SourcesPanel.svelte";
+  import MultistreamPanel from "./lib/MultistreamPanel.svelte";
   import PreviewArea from "./lib/PreviewArea.svelte";
   import EventLog from "./lib/EventLog.svelte";
 
@@ -23,6 +24,7 @@
     <aside class="left">
       <ScenesPanel />
       <SourcesPanel />
+      <MultistreamPanel />
     </aside>
 
     <div class="center">
