@@ -95,6 +95,11 @@ MultistreamEngine::MultistreamEngine(CanvasStore &canvases_, StreamProfileStore 
 
 MultistreamEngine::~MultistreamEngine()
 {
+	/* Defensive: stop everything still live. Clear the callback first so the
+	 * StopAll notification can't reach back into a now-dangling owner (e.g. the
+	 * unique_ptr that holds us is mid-reset(), so its global accessor is already
+	 * null). The owner runs StopAll explicitly before destroying us anyway. */
+	onStatusChanged = nullptr;
 	StopAll();
 }
 

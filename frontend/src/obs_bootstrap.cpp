@@ -276,6 +276,10 @@ OutputBindingStore &ObsBootstrap::OutputBindings()
 
 MultistreamEngine &ObsBootstrap::Multistream()
 {
+	// Valid only between Start() (constructs g_multistream after the stores load)
+	// and Stop() (resets it). Every caller is a bridge method driven by JS, which
+	// can only run once the CEF page has loaded -- well after construction -- so
+	// the pointer is non-null on every reachable path.
 	return *g_multistream;
 }
 
@@ -1068,6 +1072,57 @@ void ObsBootstrap::RunMultistreamModelSelfTest()
 	}
 }
 
+void ObsBootstrap::RunMultistreamEngineSelfTest()
+{
+	// Drive the fan-out engine end-to-end without a real broadcast: create a temp
+	// profile pointed at a dead local RTMP host + a temp enabled binding on the
+	// Default canvas, start the output, then stop it. Operate ONLY on the in-memory
+	// stores (never Save), so the user's files are untouched and the model returns
+	// to baseline at the end.
+	const std::string canvasUuid = g_canvases.Default().uuid;
+	const size_t profilesBefore = g_streamProfiles.Profiles().size();
+	const size_t bindingsBefore = g_outputBindings.Bindings().bindings.size();
+
+	StreamProfile prof;
+	prof.label = "selftest-engine";
+	prof.serviceId = "rtmp_custom";
+	prof.settings = OBSDataAutoRelease(obs_data_create());
+	obs_data_set_string(prof.settings, "server", "rtmp://127.0.0.1:1/live");
+	obs_data_set_string(prof.settings, "key", "selftest");
+	const std::string profileUuid = g_streamProfiles.Add(std::move(prof)).uuid;
+
+	OutputBinding &binding = g_outputBindings.Bindings().Add(canvasUuid);
+	binding.profileUuid = profileUuid;
+	binding.enabled = true;
+	const std::string bindingUuid = binding.uuid;
+
+	// Start: connecting to a dead host stays Connecting or flips Error -- either is
+	// valid proof the start path ran (encoders built, output+service created).
+	const bool started = g_multistream->StartOutput(bindingUuid);
+	const bool canvasLive = g_multistream->IsCanvasLive(canvasUuid);
+	std::vector<MultistreamEngine::OutputStatus> statuses = g_multistream->Statuses();
+	const std::string firstState =
+		statuses.empty() ? "(none)" : MultistreamEngine::StateName(statuses.front().state);
+	HostLog(std::string("[selftest] engine StartOutput -> ") + (started ? "true" : "false") +
+		"; IsCanvasLive(default)=" + (canvasLive ? "true" : "false") + "; first status state=" + firstState +
+		" (" + std::to_string(statuses.size()) + " enabled)");
+
+	// Stop: the output must drop out of the live set for both the binding and canvas.
+	g_multistream->StopOutput(bindingUuid);
+	const bool stillLive = g_multistream->IsLive(bindingUuid);
+	const bool stillCanvasLive = g_multistream->IsCanvasLive(canvasUuid);
+	HostLog(std::string("[selftest] engine StopOutput -> IsLive=") + (stillLive ? "true (BUG)" : "false") +
+		"; IsCanvasLive(default)=" + (stillCanvasLive ? "true (BUG)" : "false"));
+
+	// Restore the model to baseline (in-memory only; nothing was Saved).
+	g_outputBindings.Bindings().Remove(bindingUuid);
+	g_streamProfiles.Remove(profileUuid);
+	HostLog("[selftest] engine cleanup: profiles " + std::to_string(g_streamProfiles.Profiles().size()) +
+		" (was " + std::to_string(profilesBefore) + "), bindings " +
+		std::to_string(g_outputBindings.Bindings().bindings.size()) + " (was " +
+		std::to_string(bindingsBefore) + ")");
+}
+
 void ObsBootstrap::Stop()
 {
 	// Drop the bridge's obs frontend event callback while libobs is still up.
@@ -1082,7 +1137,12 @@ void ObsBootstrap::Stop()
 	// Tear the engine down before the stores it references clear and before
 	// obs_shutdown: StopAll releases its services/outputs/encoders while libobs
 	// is still up. The dtor also calls StopAll (defensive), but reset here so the
-	// order against Clear() is explicit.
+	// order against Clear() is explicit. Safe to notify during the explicit
+	// StopAll because (a) Bridge::Shutdown ran above and the CEF loop has already
+	// returned, so any TID_UI emit task is drained before this point, and (b) the
+	// deferred DoEmit reads no engine state -- BuildStatusArray runs synchronously
+	// at post time. The dtor clears onStatusChanged before its own StopAll, so the
+	// reset()-nulled global is never dereferenced.
 	if (g_multistream) {
 		g_multistream->StopAll();
 		g_multistream.reset();

@@ -85,6 +85,14 @@ void RunOutputBindingBridgeSelfTest();
 // persisted, then Remove + Save to restore the user's real files unchanged.
 // Gated by the caller to the smoke path.
 void RunMultistreamModelSelfTest();
+// Headless proof for 4.4.4: drive the fan-out engine end-to-end without a real
+// broadcast. Create a temp profile (dead local RTMP host) + a temp enabled
+// binding on the Default canvas in the in-memory stores, StartOutput, log the
+// result + IsCanvasLive + first status, StopOutput, assert it left the live set,
+// then remove the temp profile/binding so the model returns to baseline. Never
+// Saves, so the user's files are untouched. Gated by the caller to the smoke
+// path.
+void RunMultistreamEngineSelfTest();
 void Stop();
 } // namespace ObsBootstrap
 
