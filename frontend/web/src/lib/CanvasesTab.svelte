@@ -8,6 +8,13 @@
   } from "./bridge";
   import PropertyForm from "./properties/PropertyForm.svelte";
 
+  interface Props {
+    /** A canvas uuid to open for editing once the list loads (deep-link from a
+     * canvas panel's settings button). */
+    editCanvas?: string | null;
+  }
+  let { editCanvas = null }: Props = $props();
+
   // Resolution presets the form offers; custom values still accepted via inputs.
   const resPresets: { label: string; w: number; h: number }[] = [
     { label: "1920 × 1080", w: 1920, h: 1080 },
@@ -70,6 +77,18 @@
     // Live-refresh the list when any canvas mutates (this tab or elsewhere).
     const off = obs.on("canvas.changed", () => void loadCanvases());
     return off;
+  });
+
+  // Deep-link: when opened with an editCanvas uuid, open that canvas's edit form
+  // once the list is loaded (runs once per uuid).
+  let deepLinked = $state<string | null>(null);
+  $effect(() => {
+    if (!editCanvas || !loaded || deepLinked === editCanvas) return;
+    const c = canvases.find((x) => x.uuid === editCanvas);
+    if (c) {
+      deepLinked = editCanvas;
+      openEdit(c);
+    }
   });
 
   function fpsText(c: CanvasInfo): string {

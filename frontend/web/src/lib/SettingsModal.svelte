@@ -7,8 +7,11 @@
 
   interface Props {
     onClose: () => void;
+    initialTab?: TabId;
+    /** When opening on the Canvases tab, a canvas uuid to open for editing. */
+    editCanvas?: string | null;
   }
-  let { onClose }: Props = $props();
+  let { onClose, initialTab, editCanvas = null }: Props = $props();
 
   // Hide the native preview overlay while this modal is open (it would otherwise
   // paint over the modal's center).
@@ -24,7 +27,9 @@
     { id: "outputs", label: "Outputs" },
   ] as const;
   type TabId = (typeof tabs)[number]["id"];
-  let activeTab = $state<TabId>("video");
+  // initialTab is an open-time seed; the user switches tabs freely afterward.
+  // svelte-ignore state_referenced_locally
+  let activeTab = $state<TabId>(initialTab ?? "video");
 
   // Common presets the UI offers; custom values are still accepted via the fields.
   const resPresets: { label: string; w: number; h: number }[] = [
@@ -182,7 +187,7 @@
 
     <div class="modal-body">
       {#if activeTab === "canvases"}
-        <CanvasesTab />
+        <CanvasesTab {editCanvas} />
       {:else if activeTab === "streams"}
         <StreamsTab />
       {:else if activeTab === "outputs"}

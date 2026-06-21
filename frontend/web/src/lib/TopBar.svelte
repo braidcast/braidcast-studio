@@ -1,10 +1,10 @@
 <script lang="ts">
   import { obs } from "./bridge";
   import SettingsModal from "./SettingsModal.svelte";
+  import { settingsOpener, openSettings, closeSettings } from "./settingsOpener.svelte";
 
   let live = $state(false);
   let busy = $state(false);
-  let settingsOpen = $state(false);
 
   async function refresh() {
     try {
@@ -39,15 +39,19 @@
     OBS MultiStreamer
   </div>
   <div class="actions">
-    <button class="gear" title="Settings" aria-label="Settings" onclick={() => (settingsOpen = true)}>⚙</button>
+    <button class="gear" title="Settings" aria-label="Settings" onclick={() => openSettings("video")}>⚙</button>
     <button class:live onclick={toggle} disabled={busy}>
       {live ? "Stop Streaming" : "Start Streaming"}
     </button>
   </div>
 </header>
 
-{#if settingsOpen}
-  <SettingsModal onClose={() => (settingsOpen = false)} />
+{#if settingsOpener.open}
+  <SettingsModal
+    initialTab={settingsOpener.tab}
+    editCanvas={settingsOpener.editCanvas}
+    onClose={closeSettings}
+  />
 {/if}
 
 <style>
