@@ -192,6 +192,9 @@ export interface CanvasInfo {
   fpsDen: number;
   videoEncoder: string;
   audioEncoder: string;
+  /** True when >=1 enabled output binds this canvas; the canvas panel is shown
+   * only when enabled (Default included -- its panel hides when disabled). */
+  enabled: boolean;
 }
 
 /** Fields accepted by canvas.create. */

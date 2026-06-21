@@ -1577,6 +1577,11 @@ json CanvasToJson(const CanvasDefinition &def)
 		{"fpsDen", def.fpsDen},
 		{"videoEncoder", def.video.id},
 		{"audioEncoder", def.audio.id},
+		// Output-gated: a canvas panel is shown only when >=1 enabled output binds
+		// it (the Default canvas included -- its panel hides when disabled, which
+		// the Qt central-widget preview could never do). Re-evaluated by the UI on
+		// canvas.changed / outputBinding.changed.
+		{"enabled", ObsBootstrap::OutputBindings().Bindings().AnyEnabledForCanvas(def.uuid)},
 	};
 }
 
