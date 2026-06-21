@@ -19,6 +19,18 @@ Four layers, each compiled separately and wired together at runtime via the modu
 
 `docs/sphinx/` (`backend-design.rst`, `graphics.rst`, `frontends.rst`) documents the API design — consult it before changing libobs public surfaces.
 
+## Fork-specific architecture — native multistream
+
+The reason this fork exists. On top of stock OBS, the frontend adds a layer for streaming one composited scene to several destinations at once via **multiple canvases + output multiplexing**. This code is NOT in upstream OBS and is the most likely place for new work. It lives in `frontend/utility/`, `frontend/docks/`, `frontend/settings/`, and `frontend/widgets/OBSBasic_Canvases.cpp`. Three-layer data model:
+
+- **Canvas** = an independent encode target (resolution/FPS). `CanvasDefinition` (data), `CanvasManager` (registry), `OBSCanvas` (libobs binding), `CanvasSceneLink` (scene↔canvas association). Edited via `CanvasEditorDialog`; configured in the Settings → **Canvas** tab (`OBSBasicSettings_Canvas.cpp`).
+- **Stream profile** = a reusable destination credential (platform + key), stored **globally** in `streams.json`, shared across scene collections. Configured in the Settings → **Streams** tab.
+- **Output binding** = a (stream-profile × canvas) pairing, stored **per scene-collection** in `output_bindings`. `OutputBinding` (`frontend/utility/OutputBinding.{cpp,hpp}`); configured in the Settings → **Outputs** tab. `OutputBindings::AnyEnabledForCanvas` gates whether a canvas renders/encodes.
+
+The **fan-out engine** is `MultistreamOutput` (`frontend/utility/`): encode-once per canvas, then multiplex to every enabled output bound to it. The **Multistream dock** (`frontend/docks/MultistreamDock.cpp`) shows per-output live status; **per-canvas preview docks** are `CanvasDock` (`frontend/docks/CanvasDock.cpp`), which hosts an `OBSBasicPreview` parameterized by `targetCanvas` so each dock edits its own canvas's scene (drag/select/transform scoped per-canvas; null `targetCanvas` = the unchanged central preview).
+
+`MultistreamOutput::IsCanvasLive` guards live-edit hazards (refuses canvas-video resets while an output is live). Stock single-stream Output/Video Settings tabs and the GoLive/Multitrack path are deliberately left dormant — the default Canvas now drives the main pipeline. Roadmap and phase status live in `docs/roadmap.md`.
+
 ## Build
 
 CMake **presets** drive everything (`CMakePresets.json`); there is no plain `cmake .` flow. Requires CMake ≥ 3.28, Qt 6, and prebuilt `obs-deps`/CEF that CI fetches per the `buildspec`/`dependencies` vendor block.
