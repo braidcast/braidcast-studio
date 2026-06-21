@@ -36,6 +36,8 @@ export interface ObsMethods {
   getStreamingState: { active: boolean };
   "streaming.start": { active: boolean };
   "streaming.stop": { active: boolean };
+  "preview.setRect": null;
+  "preview.hide": null;
 }
 
 /** Known server->client push events and their payload shapes. */

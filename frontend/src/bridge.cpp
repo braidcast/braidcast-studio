@@ -12,6 +12,7 @@
 #include "include/wrapper/cef_helpers.h"
 
 #include "log.hpp"
+#include "preview_window.hpp"
 
 namespace Bridge {
 
@@ -137,6 +138,51 @@ bool MethodStreamingStop(const json & /*params*/, json &result, std::string & /*
 	return SetStreaming(false, result);
 }
 
+// Position the native preview overlay over the UI's reported region. params:
+// {x,y,w,h} in CSS pixels (host-client space) + dpr (devicePixelRatio). Convert
+// CSS px -> device px so the HWND lands exactly on the UI region under any DPI
+// scale. Runs on the UI thread (router callback), the same thread that owns the
+// HWND, so the SetWindowPos is direct. Lazily creates the overlay on first call.
+bool MethodPreviewSetRect(const json &params, json & /*result*/, std::string &error)
+{
+	PreviewWindow *pw = Preview::Instance();
+	if (!pw) {
+		error = "preview not ready";
+		return false;
+	}
+	if (!params.is_object()) {
+		error = "setRect expects an object {x,y,w,h,dpr}";
+		return false;
+	}
+
+	auto num = [&](const char *key, double fallback) -> double {
+		auto it = params.find(key);
+		return (it != params.end() && it->is_number()) ? it->get<double>() : fallback;
+	};
+
+	const double dpr = num("dpr", 1.0) > 0.0 ? num("dpr", 1.0) : 1.0;
+	const int x = int(num("x", 0.0) * dpr + 0.5);
+	const int y = int(num("y", 0.0) * dpr + 0.5);
+	const int w = int(num("w", 0.0) * dpr + 0.5);
+	const int h = int(num("h", 0.0) * dpr + 0.5);
+
+	HostLog("[bridge] preview.setRect dev-px x=" + std::to_string(x) + " y=" + std::to_string(y) +
+		" w=" + std::to_string(w) + " h=" + std::to_string(h) + " (dpr=" + std::to_string(dpr) + ")");
+	pw->SetRect(x, y, w, h);
+	return true;
+}
+
+bool MethodPreviewHide(const json & /*params*/, json & /*result*/, std::string &error)
+{
+	PreviewWindow *pw = Preview::Instance();
+	if (!pw) {
+		error = "preview not ready";
+		return false;
+	}
+	pw->Hide();
+	return true;
+}
+
 // Post the actual ExecuteJavaScript on TID_UI. Built from JSON dumps so the name
 // and payload are correctly quoted/escaped.
 void DoEmit(const std::string &name, const std::string &payloadDump)
@@ -174,6 +220,8 @@ void Init()
 		{"getStreamingState", MethodGetStreamingState},
 		{"streaming.start", MethodStreamingStart},
 		{"streaming.stop", MethodStreamingStop},
+		{"preview.setRect", MethodPreviewSetRect},
+		{"preview.hide", MethodPreviewHide},
 	};
 
 	obs_frontend_add_event_callback(OnFrontendEvent, nullptr);

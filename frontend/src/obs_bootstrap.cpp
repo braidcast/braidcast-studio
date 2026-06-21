@@ -62,7 +62,8 @@ void ObsLogHandler(int level, const char *format, va_list args, void *)
 // keep a non-owning pointer to fan lifecycle events (FINISHED_LOADING).
 FrontendCallbacks *g_frontend = nullptr;
 
-// Test scene + browser source bound to output channel 0 (4.1.2 proof).
+// Default scene + sample source bound to output channel 0 so the preview has a
+// visible canvas to render.
 obs_scene_t *g_scene = nullptr;
 
 // Curated full-set load: enumerate every *.dll in obs-plugins/64bit/ and
@@ -170,28 +171,30 @@ void RunProbes()
 	}
 }
 
-// Build the 4.1.2 test scene: one browser source on a self-contained data: URL
-// (no network), bound to output channel 0 so it ticks and composites into the
-// preview.
-void CreateTestScene()
+// Build the clean default scene: a single solid color_source sized to the canvas,
+// bound to output channel 0 so the preview visibly renders a non-empty canvas.
+// A placeholder until the real scene/source UI (4.3+) drives content; no network,
+// no CEF dependency, ticks immediately.
+void CreateDefaultScene()
 {
-	obs_data_t *settings = obs_data_create();
-	obs_data_set_string(
-		settings, "url",
-		"data:text/html,<html><body style='margin:0'>"
-		"<div style='width:100vw;height:100vh;background:%23ff00ff'></div></body></html>");
-	obs_data_set_int(settings, "width", 1280);
-	obs_data_set_int(settings, "height", 720);
+	obs_video_info ovi = {};
+	const uint32_t cx = obs_get_video_info(&ovi) ? ovi.base_width : 1920;
+	const uint32_t cy = obs_get_video_info(&ovi) ? ovi.base_height : 1080;
 
-	obs_source_t *source = obs_source_create("browser_source", "fe-test-web", settings, nullptr);
+	obs_data_t *settings = obs_data_create();
+	obs_data_set_int(settings, "color", 0xff334155); // ARGB slate (matches the UI's sunken bg family)
+	obs_data_set_int(settings, "width", cx);
+	obs_data_set_int(settings, "height", cy);
+
+	obs_source_t *source = obs_source_create("color_source", "Placeholder Background", settings, nullptr);
 	obs_data_release(settings);
 	if (!source) {
-		HostLog("[obs] obs_source_create(browser_source) failed");
+		HostLog("[obs] obs_source_create(color_source) failed");
 		return;
 	}
-	HostLog("[obs] browser source created (fe-test-web)");
+	HostLog("[obs] default color source created (Placeholder Background)");
 
-	g_scene = obs_scene_create("fe-test-scene");
+	g_scene = obs_scene_create("Default Scene");
 	if (!g_scene) {
 		HostLog("[obs] obs_scene_create failed");
 		obs_source_release(source);
@@ -202,7 +205,7 @@ void CreateTestScene()
 	obs_source_release(source); // scene owns the create-ref now
 
 	obs_set_output_source(0, obs_scene_get_source(g_scene));
-	HostLog("[obs] test scene bound to output channel 0");
+	HostLog("[obs] default scene bound to output channel 0");
 }
 
 } // namespace
@@ -279,7 +282,7 @@ bool ObsBootstrap::Start()
 
 	RunProbes();
 
-	CreateTestScene();
+	CreateDefaultScene();
 
 	return true;
 }
@@ -293,15 +296,11 @@ void ObsBootstrap::TeardownScene()
 	// Unbind from the output channel first so nothing ticks/renders it.
 	obs_set_output_source(0, nullptr);
 
-	// Removing + releasing the scene cascades to the browser source's destroy,
-	// which only POSTS `delete this` to TID_UI (and posts a CEF CloseBrowser).
-	// The caller pumps CefDoMessageLoopWork() after this so those drain before
-	// CefShutdown.
 	obs_source_t *scene_source = obs_scene_get_source(g_scene);
 	obs_source_remove(scene_source);
 	obs_scene_release(g_scene);
 	g_scene = nullptr;
-	HostLog("[obs] test scene released");
+	HostLog("[obs] default scene released");
 }
 
 void ObsBootstrap::FireSceneChanged()

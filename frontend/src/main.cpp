@@ -25,7 +25,6 @@ constexpr UINT_PTR kSizeProbeTimerId = 1;
 constexpr UINT_PTR kSmokeQuitTimerId = 2;
 
 // Host-window-owned handles. Single-threaded (browser process UI thread).
-HWND g_preview_hwnd = nullptr;
 CefRefPtr<CefBrowser> g_browser;
 
 // Owns the obs_display attached to the preview child HWND. Created after
@@ -52,58 +51,34 @@ void AddObsBinDirToSearchPath()
 	SetDllDirectoryW(dir.c_str());
 }
 
-// Split the client area: obs preview child HWND on the LEFT half, the embedded
-// CEF UI browser on the RIGHT half.
-void LayoutChildren(HWND host)
+// The CEF UI browser fills the whole host client area. The obs preview is a
+// separate overlay HWND positioned by the UI via preview.setRect (it floats
+// above the browser within the sibling z-order), so layout only resizes the
+// browser here -- the UI re-reports its preview rect on resize/scroll.
+void LayoutBrowser(HWND host)
 {
+	if (!g_browser) {
+		return;
+	}
 	RECT rc;
 	GetClientRect(host, &rc);
-	const int width = rc.right - rc.left;
-	const int height = rc.bottom - rc.top;
-	const int half = width / 2;
-
-	if (g_preview_hwnd) {
-		MoveWindow(g_preview_hwnd, 0, 0, half, height, TRUE);
-		if (g_preview) {
-			g_preview->Resize(uint32_t(half), uint32_t(height));
-		}
-	}
-
-	if (g_browser) {
-		HWND browser_hwnd = g_browser->GetHost()->GetWindowHandle();
-		if (browser_hwnd) {
-			SetWindowPos(browser_hwnd, nullptr, half, 0, width - half, height,
-				     SWP_NOZORDER | SWP_NOACTIVATE);
-		}
+	HWND browser_hwnd = g_browser->GetHost()->GetWindowHandle();
+	if (browser_hwnd) {
+		SetWindowPos(browser_hwnd, nullptr, 0, 0, rc.right - rc.left, rc.bottom - rc.top,
+			     SWP_NOZORDER | SWP_NOACTIVATE);
 	}
 }
 
 LRESULT CALLBACK HostWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 {
 	switch (msg) {
-	case WM_CREATE: {
-		// Bare child HWND for the preview region; an obs_display attaches to it.
-		g_preview_hwnd = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE, 0, 0, kHostWidth / 2,
-						 kHostHeight, hwnd, nullptr,
-						 reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(hwnd, GWLP_HINSTANCE)),
-						 nullptr);
-		return 0;
-	}
 	case WM_SIZE:
-		LayoutChildren(hwnd);
+		LayoutBrowser(hwnd);
 		return 0;
 	case WM_TIMER:
 		if (wparam == kSizeProbeTimerId) {
 			KillTimer(hwnd, kSizeProbeTimerId);
-			obs_source_t *src = obs_get_source_by_name("fe-test-web");
-			if (src) {
-				HostLog("[obs] fe-test-web size: " + std::to_string(obs_source_get_width(src)) + "x" +
-					std::to_string(obs_source_get_height(src)) +
-					" (active fps=" + std::to_string(obs_get_active_fps()) + ")");
-				obs_source_release(src);
-			} else {
-				HostLog("[obs] fe-test-web not found for size probe");
-			}
+			HostLog("[obs] active fps=" + std::to_string(obs_get_active_fps()));
 			// Page is loaded by now: re-fire SCENE_CHANGED so the UI observes a
 			// forwarded obs.event end-to-end (obs->shim->bridge->JS).
 			ObsBootstrap::FireSceneChanged();
@@ -160,6 +135,14 @@ void DrainCefTasks()
 // utility subprocesses, which all re-launch this same executable).
 int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 {
+	// Per-monitor-DPI-v2 before any window is created so client rects and the
+	// preview overlay map 1:1 to device pixels (the UI reports CSS px x dpr; we
+	// place the HWND in device px). Must run in every CEF process, harmless in the
+	// subprocesses. Single-monitor correctness is the gate; mixed-DPI multimonitor
+	// is a refinement (the overlay re-reports its rect on move, but cross-monitor
+	// dpr changes mid-drag are not yet handled).
+	SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+
 	CefMainArgs main_args(hInstance);
 
 	CefRefPtr<App> app(new App(StartupUrl()));
@@ -197,12 +180,11 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 		return 1;
 	}
 
-	// Attach an obs_display to the preview child HWND so the active scene renders
-	// into the left region each frame. The child HWND was created in WM_CREATE.
-	if (g_preview_hwnd) {
-		g_preview = std::make_unique<PreviewWindow>(g_preview_hwnd);
-		g_preview->CreateDisplay();
-	}
+	// Create the preview owner now that libobs is up. Its overlay HWND + obs_display
+	// are created lazily on the first preview.setRect from the UI, so the canvas
+	// renders exactly into the region the Svelte app designates.
+	g_preview = std::make_unique<PreviewWindow>(host, hInstance);
+	Preview::SetInstance(g_preview.get());
 
 	// Probe the test source's size after its async CEF browser has spun up.
 	SetTimer(host, kSizeProbeTimerId, 4000, nullptr);
@@ -220,7 +202,9 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 	CefRefPtr<Client> client(new Client());
 	CefBrowserSettings browser_settings;
 	CefWindowInfo window_info;
-	window_info.SetAsChild(host, CefRect(kHostWidth / 2, 0, kHostWidth / 2, kHostHeight));
+	RECT host_rc;
+	GetClientRect(host, &host_rc);
+	window_info.SetAsChild(host, CefRect(0, 0, host_rc.right - host_rc.left, host_rc.bottom - host_rc.top));
 
 	g_browser = CefBrowserHost::CreateBrowserSync(window_info, client, app->startup_url(), browser_settings, nullptr,
 						      nullptr);
@@ -235,15 +219,24 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 		return 1;
 	}
 
-	LayoutChildren(host);
+	// Both siblings clip each other so neither overdraws the boundary: the obs
+	// overlay floats above the browser without flicker (browser HWND gets the bit
+	// here; the overlay sets it at creation).
+	if (HWND browser_hwnd = g_browser->GetHost()->GetWindowHandle()) {
+		SetWindowLongPtrW(browser_hwnd, GWL_STYLE,
+				  GetWindowLongPtrW(browser_hwnd, GWL_STYLE) | WS_CLIPSIBLINGS);
+	}
+
+	LayoutBrowser(host);
 
 	CefRunMessageLoop();
 
 	g_browser = nullptr;
 
-	// Destroy the obs_display while libobs is still up, before obs_shutdown
-	// tears down the graphics device.
+	// Destroy the obs_display + overlay HWND while libobs is still up, before
+	// obs_shutdown tears down the graphics device.
 	if (g_preview) {
+		Preview::SetInstance(nullptr);
 		g_preview->Destroy();
 		g_preview.reset();
 	}
