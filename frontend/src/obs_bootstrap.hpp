@@ -16,6 +16,7 @@ class CanvasStore;
 class StreamProfileStore;
 class OutputBindingStore;
 class MultistreamEngine;
+class CanvasRuntime;
 
 namespace ObsBootstrap {
 bool Start();
@@ -40,6 +41,12 @@ OutputBindingStore &OutputBindings();
 // clear). Exposed so the bridge can drive streaming + report live status over
 // it. Valid between Start() and Stop().
 MultistreamEngine &Multistream();
+
+// The live obs_canvas_t mixes for the additional (non-Default) canvases, owned by
+// the bootstrap (built in Start after the model loads, torn down in Stop before
+// the stores clear). Exposed so the canvas CRUD bridge methods can keep the mixes
+// in sync with the definitions. Valid between Start() and Stop().
+CanvasRuntime &CanvasRuntime();
 
 // Re-fire OBS_FRONTEND_EVENT_SCENE_CHANGED through the shim so the loaded UI page
 // observes a forwarded obs.event (proves obs->shim->bridge->JS post-load).

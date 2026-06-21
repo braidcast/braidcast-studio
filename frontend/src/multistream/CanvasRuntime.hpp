@@ -29,7 +29,8 @@ public:
 	void ClearAll(); // destroy all live canvases (teardown, before obs_shutdown)
 
 private:
-	void EnsureScene(obs_canvas_t *canvas); // obs_canvas_scene_create + set_channel(0) if empty
+	void EnsureScene(obs_canvas_t *canvas);    // obs_canvas_scene_create + set_channel(0) if empty
+	void DestroyCanvas(obs_canvas_t *canvas);  // detach scenes, obs_canvas_remove + release
 	// Build an obs_video_info for a definition, filling graphics_module/adapter
 	// from the running pipeline (CanvasDefinition::ToVideoInfo leaves them null).
 	void BuildVideoInfo(const CanvasDefinition &def, obs_video_info &ovi) const;

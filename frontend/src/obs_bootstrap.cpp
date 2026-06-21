@@ -20,6 +20,7 @@
 #include "bridge.hpp"
 #include "frontend_callbacks.hpp"
 #include "log.hpp"
+#include "multistream/CanvasRuntime.hpp"
 #include "multistream/CanvasStore.hpp"
 #include "multistream/MultistreamEngine.hpp"
 #include "multistream/OutputBindingStore.hpp"
@@ -229,6 +230,12 @@ OutputBindingStore g_outputBindings;
 // them by reference) and reset in Stop before they clear.
 std::unique_ptr<MultistreamEngine> g_multistream;
 
+// Live obs_canvas_t mixes for the additional (non-Default) canvases, so the
+// engine can encode them. Built from g_canvases after the model loads (before the
+// engine, which resolves canvas video through it) and torn down in Stop after the
+// engine is gone but while libobs is still up.
+std::unique_ptr<CanvasRuntime> g_canvasRuntime;
+
 // Load (or seed) the model from the shared config dir and log its shape. Must run
 // after modules load so EnsureDefaultEncoders sees registered encoders.
 void LoadMultistreamModel()
@@ -272,6 +279,14 @@ StreamProfileStore &ObsBootstrap::StreamProfiles()
 OutputBindingStore &ObsBootstrap::OutputBindings()
 {
 	return g_outputBindings;
+}
+
+::CanvasRuntime &ObsBootstrap::CanvasRuntime()
+{
+	// Valid between Start() (constructs g_canvasRuntime after the model loads) and
+	// Stop() (resets it). Like Multistream(), every caller is a bridge method
+	// driven by JS, so the pointer is non-null on every reachable path.
+	return *g_canvasRuntime;
 }
 
 MultistreamEngine &ObsBootstrap::Multistream()
@@ -359,14 +374,18 @@ bool ObsBootstrap::Start()
 
 	LoadMultistreamModel();
 
+	// Bring up the live obs_canvas_t mixes for the additional canvases before the
+	// engine, which resolves canvas video through the runtime below.
+	g_canvasRuntime = std::make_unique<::CanvasRuntime>(g_canvases);
+	g_canvasRuntime->SyncFromDefinitions();
+
 	// Build the fan-out engine over the now-loaded stores. The Default canvas
-	// encodes from the global mix; additional canvases get a real obs_canvas_t
-	// mix in 4.4.5, so the resolver returns null for them (start is refused +
-	// logged until then). State changes route to the bridge, which posts the
-	// multistream.changed push on its own (thread-safe) UI marshaling.
+	// encodes from the global mix; additional canvases encode from their
+	// CanvasRuntime obs_canvas_t mix. State changes route to the bridge, which
+	// posts the multistream.changed push on its own (thread-safe) UI marshaling.
 	g_multistream = std::make_unique<MultistreamEngine>(
 		g_canvases, g_streamProfiles, g_outputBindings, [](const std::string &uuid) -> video_t * {
-			return uuid == g_canvases.Default().uuid ? obs_get_video() : nullptr;
+			return uuid == g_canvases.Default().uuid ? obs_get_video() : g_canvasRuntime->VideoFor(uuid);
 		});
 	g_multistream->onStatusChanged = [] { Bridge::EmitMultistreamChanged(); };
 
@@ -1146,6 +1165,20 @@ void ObsBootstrap::Stop()
 	if (g_multistream) {
 		g_multistream->StopAll();
 		g_multistream.reset();
+	}
+
+	// Destroy the additional-canvas mixes while libobs is still up, after the
+	// engine (which bound encoders to those mixes) is gone but before the stores
+	// clear and obs_shutdown. The canvases hold scene references, so freeing them
+	// here keeps the leak count below at the libobs static residual. Destroying a
+	// canvas releases its scene sources, whose obs_source_destroy defers the actual
+	// free onto the destruction-task thread, so drain again afterward (the earlier
+	// drain ran before these scenes existed) before obs_shutdown.
+	if (g_canvasRuntime) {
+		g_canvasRuntime->ClearAll();
+		g_canvasRuntime.reset();
+		while (obs_wait_for_destroy_queue()) {
+		}
 	}
 
 	// Release the multistream model's obs_data while libobs is still up, so the

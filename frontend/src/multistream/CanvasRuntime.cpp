@@ -110,11 +110,7 @@ void CanvasRuntime::RemoveCanvas(const std::string &uuid)
 {
 	for (auto it = canvases.begin(); it != canvases.end(); ++it) {
 		if (it->uuid == uuid) {
-			// obs_load_canvas returned a canvas we own one ref to. Remove it
-			// from libobs first (drops the canvas's own refs to its scenes),
-			// then release our create-ref.
-			obs_canvas_remove(it->canvas);
-			obs_canvas_release(it->canvas);
+			DestroyCanvas(it->canvas);
 			canvases.erase(it);
 			return;
 		}
@@ -148,12 +144,45 @@ video_t *CanvasRuntime::VideoFor(const std::string &uuid) const
 	return canvas ? obs_canvas_get_video(canvas) : nullptr;
 }
 
+void CanvasRuntime::DestroyCanvas(obs_canvas_t *canvas)
+{
+	if (!canvas) {
+		return;
+	}
+
+	// Detach the canvas's scenes while the canvas is still live. obs_canvas_destroy
+	// only drops the SCENE_REF strong ref on its scenes; it never calls
+	// obs_canvas_remove_source, so the scene's removal from canvas->sources runs
+	// later from obs_source_destroy -- by which point the canvas's strong refs are
+	// already gone and obs_weak_canvas_get_canvas() returns NULL, so the cleanup is
+	// skipped and the canvas->sources hash table (uthash buckets) leaks. Removing
+	// the scenes here, while the weak canvas ref still resolves, empties that hash
+	// table and drops the per-scene weak canvas ref before the canvas is freed.
+	struct Ctx {
+		std::vector<OBSSource> scenes;
+	} ctx;
+	obs_canvas_enum_scenes(
+		canvas,
+		[](void *param, obs_source_t *sceneSource) {
+			// OBSSource takes a fresh strong ref so the source survives past enum
+			// (which drops its own ref when the callback returns); removal happens
+			// below, outside the canvas sources_mutex the enum holds.
+			static_cast<Ctx *>(param)->scenes.emplace_back(sceneSource);
+			return true;
+		},
+		&ctx);
+	for (obs_source_t *sceneSource : ctx.scenes) {
+		obs_canvas_scene_remove(obs_scene_from_source(sceneSource));
+	}
+
+	obs_canvas_remove(canvas);
+	obs_canvas_release(canvas);
+}
+
 void CanvasRuntime::ClearAll()
 {
 	while (!canvases.empty()) {
-		const Entry &e = canvases.back();
-		obs_canvas_remove(e.canvas);
-		obs_canvas_release(e.canvas);
+		DestroyCanvas(canvases.back().canvas);
 		canvases.pop_back();
 	}
 }
