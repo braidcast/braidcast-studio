@@ -208,13 +208,12 @@ bool MethodPreviewHide(const json & /*params*/, json & /*result*/, std::string &
 
 // --- settings (video / audio) -----------------------------------------------
 
-// Live-change guard. There is no streaming/recording yet, so nothing is ever
-// active, but the slot exists so 4.4 can wire it to MultistreamOutput::
-// IsCanvasLive (refuse video/audio resets while any output is live).
-// TODO(4.4): return true when any MultistreamOutput is live for any canvas.
+// Live-change guard: refuse global video/audio resets while any output is live,
+// since the global mix backs the Default canvas's encoders and resetting it would
+// free the mix out from under them (UAF).
 bool AnyOutputActive()
 {
-	return false;
+	return ObsBootstrap::Multistream().AnyLive();
 }
 
 // speaker_layout <-> string. Data-driven so a new layout is one row. The set is
@@ -1421,12 +1420,12 @@ bool MethodPropertiesButton(const json &params, json &result, std::string &error
 // --- canvases (native multistream encode targets, 4.4.1) --------------------
 
 // Whether a canvas is currently encoding/streaming. Structural edits
-// (resolution/fps/encoder) are refused while live. No outputs exist yet, so this
-// is always false for now.
-// TODO(4.4.4): wire to MultistreamOutput::IsCanvasLive(uuid).
-bool CanvasIsLive(const std::string & /*uuid*/)
+// (resolution/fps/encoder) are refused while live, since the canvas's encoders
+// are bound to its video mix and resetting it would free the mix out from under
+// them (UAF).
+bool CanvasIsLive(const std::string &uuid)
 {
-	return false;
+	return ObsBootstrap::Multistream().IsCanvasLive(uuid);
 }
 
 // Map one CanvasDefinition to the bridge's canvas shape. Resolution is a single
@@ -1605,6 +1604,12 @@ bool MethodCanvasUpdate(const json &params, json &result, std::string &error)
 		def->audio.settings = obs_encoder_defaults(aenc.c_str());
 	}
 
+	// A structural change invalidates the engine's cached encoder pair (bound to
+	// the old resolution/id), so a later restart rebuilds it against the new mix.
+	if (resChanged || vencChanged || aencChanged) {
+		ObsBootstrap::Multistream().InvalidateCanvasEncoders(uuid);
+	}
+
 	store.Save();
 	EmitEvent("canvas.changed", json::object());
 	result = CanvasToJson(*def);
@@ -1628,6 +1633,10 @@ bool MethodCanvasRemove(const json &params, json &result, std::string &error)
 		error = "the default canvas cannot be removed";
 		return false;
 	}
+	// Drop the engine's cached encoder pair for the removed canvas (it is bound to
+	// a mix that goes away with the canvas).
+	ObsBootstrap::Multistream().InvalidateCanvasEncoders(uuid);
+
 	store.Remove(uuid);
 	store.Save();
 	EmitEvent("canvas.changed", json::object());
