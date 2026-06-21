@@ -1783,6 +1783,15 @@ bool MethodCanvasRemove(const json &params, json &result, std::string &error)
 		error = "cannot remove a canvas while it is live";
 		return false;
 	}
+	// Destroy this canvas's preview surface FIRST: its obs_display renders the
+	// canvas mix on the render thread, so the display (and its draw callback) must
+	// be torn down -- synchronizing with the render thread -- before RemoveCanvas
+	// frees the mix, else the next render dereferences freed memory (UAF). A live
+	// output is already refused above; an idle-but-previewed canvas is not, which
+	// is exactly the case this guards.
+	if (PreviewManager *pm = Preview::Instance()) {
+		pm->Destroy(uuid);
+	}
 	// Drop the engine's cached encoder pair for the removed canvas (it is bound to
 	// a mix that goes away with the canvas), then destroy the live mix itself.
 	ObsBootstrap::Multistream().InvalidateCanvasEncoders(uuid);
