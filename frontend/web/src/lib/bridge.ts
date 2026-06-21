@@ -177,6 +177,56 @@ export interface AudioSettings {
   speakers: SpeakerLayout;
 }
 
+// --- canvases (native multistream encode targets, 4.4.1) --------------------
+
+/** A canvas as reported by canvas.list / returned by canvas.update. */
+export interface CanvasInfo {
+  uuid: string;
+  name: string;
+  isDefault: boolean;
+  baseWidth: number;
+  baseHeight: number;
+  outputWidth: number;
+  outputHeight: number;
+  fpsNum: number;
+  fpsDen: number;
+  videoEncoder: string;
+  audioEncoder: string;
+}
+
+/** Fields accepted by canvas.create. */
+export interface CanvasCreateParams {
+  name: string;
+  baseWidth: number;
+  baseHeight: number;
+  outputWidth?: number;
+  outputHeight?: number;
+  fpsNum: number;
+  fpsDen: number;
+  videoEncoder?: string;
+  audioEncoder?: string;
+}
+
+/** Fields accepted by canvas.update (all but uuid optional; name always allowed). */
+export interface CanvasUpdateParams {
+  uuid: string;
+  name?: string;
+  baseWidth?: number;
+  baseHeight?: number;
+  outputWidth?: number;
+  outputHeight?: number;
+  fpsNum?: number;
+  fpsDen?: number;
+  videoEncoder?: string;
+  audioEncoder?: string;
+}
+
+/** An encoder type as reported by encoderTypes.list. */
+export interface EncoderType {
+  id: string;
+  name: string;
+}
+
 /** Known bridge methods. Extend as the C++ Bridge gains methods. */
 export interface ObsMethods {
   getVersion: string;
@@ -214,6 +264,12 @@ export interface ObsMethods {
   "settings.setVideo": VideoSettings;
   "settings.getAudio": AudioSettings;
   "settings.setAudio": AudioSettings;
+  // Canvases (native multistream encode targets, 4.4.1).
+  "canvas.list": CanvasInfo[];
+  "canvas.create": { uuid: string };
+  "canvas.update": CanvasInfo;
+  "canvas.remove": { removed: string };
+  "encoderTypes.list": EncoderType[];
 }
 
 /** Known server->client push events and their payload shapes. */
@@ -225,6 +281,7 @@ export interface ObsEvents {
   "sceneItem.selected": { scene: string | null; id: number | null };
   "settings.videoChanged": VideoSettings;
   "settings.audioChanged": AudioSettings;
+  "canvas.changed": Record<string, never>;
 }
 
 export interface BridgeError extends Error {

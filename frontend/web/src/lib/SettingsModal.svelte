@@ -1,10 +1,21 @@
 <script lang="ts">
   import { obs, type VideoSettings, type AudioSettings, type SpeakerLayout } from "./bridge";
+  import CanvasesTab from "./CanvasesTab.svelte";
 
   interface Props {
     onClose: () => void;
   }
   let { onClose }: Props = $props();
+
+  // Data-driven tab list: add a tab by appending one row (and its render branch
+  // below). Streams/Outputs arrive in 4.4.2/4.4.3.
+  const tabs = [
+    { id: "video", label: "Video" },
+    { id: "audio", label: "Audio" },
+    { id: "canvases", label: "Canvases" },
+  ] as const;
+  type TabId = (typeof tabs)[number]["id"];
+  let activeTab = $state<TabId>("video");
 
   // Common presets the UI offers; custom values are still accepted via the fields.
   const resPresets: { label: string; w: number; h: number }[] = [
@@ -148,10 +159,24 @@
       <button class="icon close" title="Close" onclick={onClose}>✕</button>
     </header>
 
+    <div class="tabs" role="tablist">
+      {#each tabs as t (t.id)}
+        <button
+          class="tab"
+          class:active={activeTab === t.id}
+          role="tab"
+          aria-selected={activeTab === t.id}
+          onclick={() => (activeTab = t.id)}>{t.label}</button
+        >
+      {/each}
+    </div>
+
     <div class="modal-body">
-      {#if !loaded}
+      {#if activeTab === "canvases"}
+        <CanvasesTab />
+      {:else if !loaded}
         <p class="dim">Loading settings…</p>
-      {:else}
+      {:else if activeTab === "video"}
         <section class="group">
           <h4>Video</h4>
 
@@ -211,7 +236,7 @@
             </button>
           </div>
         </section>
-
+      {:else if activeTab === "audio"}
         <section class="group">
           <h4>Audio</h4>
 
@@ -267,11 +292,35 @@
     background: var(--bg-raised);
     border: 1px solid var(--border);
     border-radius: 12px;
-    width: min(520px, 100%);
+    width: min(640px, 100%);
     max-height: 86vh;
     display: flex;
     flex-direction: column;
     box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
+  }
+  .tabs {
+    display: flex;
+    gap: 2px;
+    padding: 0 18px;
+    border-bottom: 1px solid var(--border);
+  }
+  .tab {
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--text-dim);
+    font: inherit;
+    font-size: 13px;
+    padding: 10px 12px;
+    cursor: pointer;
+    margin-bottom: -1px;
+  }
+  .tab:hover {
+    color: var(--text);
+  }
+  .tab.active {
+    color: var(--text);
+    border-bottom-color: var(--accent);
   }
   .modal-head {
     display: flex;

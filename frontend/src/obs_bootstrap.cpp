@@ -254,6 +254,11 @@ void LoadMultistreamModel()
 
 } // namespace
 
+CanvasStore &ObsBootstrap::Canvases()
+{
+	return g_canvases;
+}
+
 bool ObsBootstrap::Start()
 {
 	// obs-browser checks this in its guarded path to skip CefInitialize (the
@@ -609,6 +614,115 @@ void ObsBootstrap::RunSettingsSelfTest()
 	// 6) Restore the original audio config.
 	run("settings.setAudio", a0, ok);
 	HostLog("[selftest] audio restored to " + std::to_string(a0.value("sampleRate", 0u)) + "Hz");
+}
+
+void ObsBootstrap::RunCanvasBridgeSelfTest()
+{
+	using Bridge::json;
+
+	auto run = [](const std::string &method, const json &params, bool &ok) -> json {
+		json result;
+		std::string error;
+		ok = Bridge::Dispatch(method, params, result, error);
+		if (!ok) {
+			HostLog("[selftest] " + method + " FAILED: " + error);
+			return json(nullptr);
+		}
+		return result;
+	};
+
+	bool ok = false;
+
+	// 1) canvas.list: report the user's real canvases.
+	json list = run("canvas.list", json(nullptr), ok);
+	if (ok && list.is_array()) {
+		std::string names;
+		for (const auto &c : list) {
+			names += " '" + c.value("name", std::string("?")) + "'(" +
+				 std::to_string(c.value("baseWidth", 0u)) + "x" +
+				 std::to_string(c.value("baseHeight", 0u)) + "@" +
+				 std::to_string(c.value("fpsNum", 0u)) + "/" + std::to_string(c.value("fpsDen", 0u)) +
+				 (c.value("isDefault", false) ? ",default" : "") + ")";
+		}
+		HostLog("[selftest] canvas.list -> " + std::to_string(list.size()) + " canvas(es):" + names);
+	}
+
+	// 2) encoderTypes.list video + audio: prove sane sets.
+	for (const char *kind : {"video", "audio"}) {
+		json types = run("encoderTypes.list", json{{"kind", kind}}, ok);
+		if (ok && types.is_array()) {
+			std::string sample;
+			int shown = 0;
+			for (const auto &t : types) {
+				if (shown++ < 6) {
+					sample += " " + t.value("id", std::string("?"));
+				}
+			}
+			HostLog("[selftest] encoderTypes.list " + std::string(kind) + " -> " +
+				std::to_string(types.size()) + ":" + sample);
+		}
+	}
+
+	// 3) create -> update -> (encoder properties.get) -> remove round-trip, proving
+	// each persists to canvases.json and the file ends exactly as it began.
+	json created = run("canvas.create",
+			   json{{"name", "selftest-bridge-canvas"},
+				{"baseWidth", 1280},
+				{"baseHeight", 720},
+				{"fpsNum", 30},
+				{"fpsDen", 1}},
+			   ok);
+	if (!ok || !created.is_object()) {
+		return;
+	}
+	const std::string uuid = created.value("uuid", std::string());
+	HostLog("[selftest] canvas.create -> uuid=" + uuid);
+
+	// Confirm it persisted to disk by reloading a fresh store.
+	{
+		CanvasStore reloaded;
+		reloaded.Load();
+		const CanvasDefinition *found = reloaded.Find(uuid);
+		HostLog(std::string("[selftest] canvas.create persisted: ") +
+			(found ? "FOUND (" + std::to_string(found->width) + "x" + std::to_string(found->height) + "@" +
+					 std::to_string(found->fpsNum) + ")"
+			       : "MISSING"));
+	}
+
+	json updated = run("canvas.update",
+			   json{{"uuid", uuid}, {"name", "selftest-renamed"}, {"baseWidth", 1920}, {"baseHeight", 1080}},
+			   ok);
+	if (ok && updated.is_object()) {
+		HostLog("[selftest] canvas.update -> name='" + updated.value("name", std::string("?")) + "' " +
+			std::to_string(updated.value("baseWidth", 0u)) + "x" +
+			std::to_string(updated.value("baseHeight", 0u)) + " (round-trip " +
+			((updated.value("name", std::string()) == "selftest-renamed" &&
+			  updated.value("baseWidth", 0u) == 1920u)
+				 ? "OK"
+				 : "MISMATCH") +
+			")");
+	}
+
+	// Encoder properties.get through the generic serializer (kind:"encoder").
+	json encProps = run("properties.get", json{{"kind", "encoder"}, {"ref", uuid + ":video"}}, ok);
+	if (ok && encProps.is_object() && encProps.contains("props")) {
+		HostLog("[selftest] properties.get encoder(video) -> " +
+			std::to_string(encProps["props"].size()) + " descriptors");
+	}
+
+	json removed = run("canvas.remove", json{{"uuid", uuid}}, ok);
+	if (ok) {
+		HostLog("[selftest] canvas.remove -> removed=" + removed.value("removed", std::string("?")));
+	}
+
+	// Confirm the file is back to its original shape (temp canvas gone).
+	{
+		CanvasStore reloaded;
+		reloaded.Load();
+		const bool gone = reloaded.Find(uuid) == nullptr;
+		HostLog(std::string("[selftest] canvas.remove restored file: ") + (gone ? "OK (temp gone)" : "STILL PRESENT") +
+			"; store now " + std::to_string(reloaded.Definitions().size()));
+	}
 }
 
 void ObsBootstrap::RunMultistreamModelSelfTest()

@@ -13,8 +13,12 @@
 #include "include/wrapper/cef_helpers.h"
 
 #include "log.hpp"
+#include "obs_bootstrap.hpp"
 #include "preview_window.hpp"
 #include "properties_serializer.hpp"
+
+#include "multistream/CanvasStore.hpp"
+#include <util/platform.h>
 
 namespace Bridge {
 
@@ -1083,6 +1087,74 @@ struct PropertyKind {
 	void (*release)(void *obj);                                 // drop the resolve ref
 };
 
+// A canvas encoder is a *stored* (non-instantiated) id + obs_data settings living
+// in a CanvasDefinition, not a live obs object. The "encoder" PropertyKind below
+// resolves a ref of the form "<canvasUuid>:video" | "<canvasUuid>:audio" to this
+// context: properties come from the encoder *type* (obs_get_encoder_properties),
+// settings are the definition's own obs_data, and updates apply back into it +
+// Save + emit canvas.changed. Heap-allocated by resolve, freed by release.
+struct EncoderRefCtx {
+	std::string canvasUuid;
+	bool isVideo = true;
+	std::string encoderId;       // e.g. "obs_x264" / "ffmpeg_aac"
+	OBSDataAutoRelease settings; // the CanvasDefinition's encoder settings (same obs_data instance)
+};
+
+// Parse "<uuid>:video" / "<uuid>:audio". Returns false on malformed refs.
+bool ParseEncoderRef(const std::string &ref, std::string &uuid, bool &isVideo)
+{
+	const size_t colon = ref.find_last_of(':');
+	if (colon == std::string::npos || colon == 0 || colon + 1 >= ref.size()) {
+		return false;
+	}
+	uuid = ref.substr(0, colon);
+	const std::string which = ref.substr(colon + 1);
+	if (which == "video") {
+		isVideo = true;
+	} else if (which == "audio") {
+		isVideo = false;
+	} else {
+		return false;
+	}
+	return true;
+}
+
+void *ResolveEncoderRef(const std::string &ref)
+{
+	std::string uuid;
+	bool isVideo = true;
+	if (!ParseEncoderRef(ref, uuid, isVideo)) {
+		return nullptr;
+	}
+	CanvasDefinition *def = ObsBootstrap::Canvases().Find(uuid);
+	if (!def) {
+		return nullptr;
+	}
+	CanvasEncoderDef &enc = isVideo ? def->video : def->audio;
+	if (enc.id.empty()) {
+		return nullptr; // no encoder chosen for this canvas yet
+	}
+	// Ensure the settings obs_data exists so props bind + updates persist; seed
+	// from the encoder type's defaults the first time.
+	if (!enc.settings) {
+		enc.settings = obs_encoder_defaults(enc.id.c_str());
+		if (!enc.settings) {
+			enc.settings = obs_data_create();
+		}
+	}
+
+	auto *ctx = new EncoderRefCtx();
+	ctx->canvasUuid = uuid;
+	ctx->isVideo = isVideo;
+	ctx->encoderId = enc.id;
+	// Share the SAME obs_data instance the definition holds (so applied settings
+	// land in the model). OBSDataAutoRelease::operator=(T) takes ownership without
+	// addref, so addref explicitly to keep both refs valid.
+	obs_data_addref(enc.settings.Get());
+	ctx->settings = enc.settings.Get();
+	return ctx;
+}
+
 const PropertyKind kPropertyKinds[] = {
 	{
 		"source",
@@ -1091,6 +1163,29 @@ const PropertyKind kPropertyKinds[] = {
 		[](void *obj) -> obs_data_t * { return obs_source_get_settings(static_cast<obs_source_t *>(obj)); },
 		[](void *obj, obs_data_t *settings) { obs_source_update(static_cast<obs_source_t *>(obj), settings); },
 		[](void *obj) { obs_source_release(static_cast<obs_source_t *>(obj)); },
+	},
+	{
+		"encoder",
+		ResolveEncoderRef,
+		[](void *obj) -> obs_properties_t * {
+			return obs_get_encoder_properties(static_cast<EncoderRefCtx *>(obj)->encoderId.c_str());
+		},
+		[](void *obj) -> obs_data_t * {
+			obs_data_t *s = static_cast<EncoderRefCtx *>(obj)->settings;
+			if (s) {
+				obs_data_addref(s);
+			}
+			return s;
+		},
+		[](void *obj, obs_data_t *settings) {
+			auto *ctx = static_cast<EncoderRefCtx *>(obj);
+			// Merge the incoming settings into the definition's stored obs_data
+			// (same instance the def holds), then persist + announce.
+			obs_data_apply(ctx->settings, settings);
+			ObsBootstrap::Canvases().Save();
+			EmitEvent("canvas.changed", json::object());
+		},
+		[](void *obj) { delete static_cast<EncoderRefCtx *>(obj); },
 	},
 };
 
@@ -1233,6 +1328,254 @@ bool MethodPropertiesButton(const json &params, json &result, std::string &error
 	return ok;
 }
 
+// --- canvases (native multistream encode targets, 4.4.1) --------------------
+
+// Whether a canvas is currently encoding/streaming. Structural edits
+// (resolution/fps/encoder) are refused while live. No outputs exist yet, so this
+// is always false for now.
+// TODO(4.4.4): wire to MultistreamOutput::IsCanvasLive(uuid).
+bool CanvasIsLive(const std::string & /*uuid*/)
+{
+	return false;
+}
+
+// Map one CanvasDefinition to the bridge's canvas shape. Resolution is a single
+// value in the model (edit-surface == encode size), so base* and output* mirror
+// it; the field pair is kept so the JS contract reads like the video settings.
+json CanvasToJson(const CanvasDefinition &def)
+{
+	return json{
+		{"uuid", def.uuid},
+		{"name", def.name},
+		{"isDefault", def.isDefault},
+		{"baseWidth", def.width},
+		{"baseHeight", def.height},
+		{"outputWidth", def.width},
+		{"outputHeight", def.height},
+		{"fpsNum", def.fpsNum},
+		{"fpsDen", def.fpsDen},
+		{"videoEncoder", def.video.id},
+		{"audioEncoder", def.audio.id},
+	};
+}
+
+bool MethodCanvasList(const json & /*params*/, json &result, std::string & /*error*/)
+{
+	json arr = json::array();
+	for (const CanvasDefinition &def : ObsBootstrap::Canvases().Definitions()) {
+		arr.push_back(CanvasToJson(def));
+	}
+	result = std::move(arr);
+	return true;
+}
+
+// Read an optional positive dimension (caps at 16384, the D3D11 texture max).
+// Absent -> keeps `current`. Zero/negative/oversized -> error.
+bool ReadCanvasDim(const json &params, const char *key, uint32_t current, uint32_t &out, std::string &error)
+{
+	auto it = params.find(key);
+	if (it == params.end() || it->is_null()) {
+		out = current;
+		return true;
+	}
+	if (!it->is_number_integer() && !it->is_number_unsigned()) {
+		error = std::string("'") + key + "' must be an integer";
+		return false;
+	}
+	const int64_t v = it->get<int64_t>();
+	if (v <= 0 || v > 16384) {
+		error = std::string("'") + key + "' must be in 1..16384";
+		return false;
+	}
+	out = uint32_t(v);
+	return true;
+}
+
+bool ReadCanvasFps(const json &params, const char *key, uint32_t current, uint32_t &out, std::string &error)
+{
+	auto it = params.find(key);
+	if (it == params.end() || it->is_null()) {
+		out = current;
+		return true;
+	}
+	if (!it->is_number_integer() && !it->is_number_unsigned()) {
+		error = std::string("'") + key + "' must be an integer";
+		return false;
+	}
+	const int64_t v = it->get<int64_t>();
+	if (v <= 0 || v > 1000) {
+		error = std::string("'") + key + "' must be in 1..1000";
+		return false;
+	}
+	out = uint32_t(v);
+	return true;
+}
+
+bool MethodCanvasCreate(const json &params, json &result, std::string &error)
+{
+	if (!params.is_object()) {
+		error = "canvas.create expects an object";
+		return false;
+	}
+	const std::string name = OptString(params, "name");
+	if (name.empty()) {
+		error = "canvas.create requires a non-empty 'name'";
+		return false;
+	}
+
+	CanvasDefinition def;
+	def.name = name;
+	def.isDefault = false;
+	// Resolution: base* drives the single stored width/height; output* is accepted
+	// for contract symmetry but the model unifies them, so base* wins.
+	if (!ReadCanvasDim(params, "baseWidth", 1920, def.width, error) ||
+	    !ReadCanvasDim(params, "baseHeight", 1080, def.height, error) ||
+	    !ReadCanvasFps(params, "fpsNum", 60, def.fpsNum, error) ||
+	    !ReadCanvasFps(params, "fpsDen", 1, def.fpsDen, error)) {
+		return false;
+	}
+
+	// Encoder ids: explicit or the same defaults the legacy / EnsureDefaultEncoders
+	// use. Seed their settings blobs from the encoder type defaults.
+	const std::string venc = OptString(params, "videoEncoder");
+	const std::string aenc = OptString(params, "audioEncoder");
+	def.video.id = venc.empty() ? "obs_x264" : venc;
+	def.audio.id = aenc.empty() ? "ffmpeg_aac" : aenc;
+	def.video.settings = obs_encoder_defaults(def.video.id.c_str());
+	def.audio.settings = obs_encoder_defaults(def.audio.id.c_str());
+
+	CanvasStore &store = ObsBootstrap::Canvases();
+	const std::string uuid = store.Add(std::move(def)).uuid;
+	store.Save();
+
+	EmitEvent("canvas.changed", json::object());
+	result = json{{"uuid", uuid}};
+	return true;
+}
+
+bool MethodCanvasUpdate(const json &params, json &result, std::string &error)
+{
+	if (!params.is_object()) {
+		error = "canvas.update expects an object";
+		return false;
+	}
+	const std::string uuid = OptString(params, "uuid");
+	if (uuid.empty()) {
+		error = "canvas.update requires a non-empty 'uuid'";
+		return false;
+	}
+	CanvasStore &store = ObsBootstrap::Canvases();
+	CanvasDefinition *def = store.Find(uuid);
+	if (!def) {
+		error = "no canvas with uuid '" + uuid + "'";
+		return false;
+	}
+
+	// Name change is always allowed. Structural fields (resolution/fps/encoder) are
+	// refused while the canvas is live.
+	const std::string name = OptString(params, "name");
+	if (!name.empty()) {
+		def->name = name;
+	}
+
+	// Resolve the requested structural values first so we can tell whether any
+	// actually changed before deciding to refuse.
+	uint32_t newW = def->width, newH = def->height, newFpsN = def->fpsNum, newFpsD = def->fpsDen;
+	if (!ReadCanvasDim(params, "baseWidth", def->width, newW, error) ||
+	    !ReadCanvasDim(params, "baseHeight", def->height, newH, error) ||
+	    !ReadCanvasFps(params, "fpsNum", def->fpsNum, newFpsN, error) ||
+	    !ReadCanvasFps(params, "fpsDen", def->fpsDen, newFpsD, error)) {
+		return false;
+	}
+	const std::string venc = OptString(params, "videoEncoder");
+	const std::string aenc = OptString(params, "audioEncoder");
+
+	const bool resChanged = newW != def->width || newH != def->height || newFpsN != def->fpsNum ||
+				newFpsD != def->fpsDen;
+	const bool vencChanged = !venc.empty() && venc != def->video.id;
+	const bool aencChanged = !aenc.empty() && aenc != def->audio.id;
+
+	if ((resChanged || vencChanged || aencChanged) && CanvasIsLive(uuid)) {
+		error = "cannot change resolution/fps/encoder while the canvas is live";
+		return false;
+	}
+
+	def->width = newW;
+	def->height = newH;
+	def->fpsNum = newFpsN;
+	def->fpsDen = newFpsD;
+	// Switching an encoder id replaces its stored settings with that type's
+	// defaults (the prior blob belongs to a different encoder schema).
+	if (vencChanged) {
+		def->video.id = venc;
+		def->video.settings = obs_encoder_defaults(venc.c_str());
+	}
+	if (aencChanged) {
+		def->audio.id = aenc;
+		def->audio.settings = obs_encoder_defaults(aenc.c_str());
+	}
+
+	store.Save();
+	EmitEvent("canvas.changed", json::object());
+	result = CanvasToJson(*def);
+	return true;
+}
+
+bool MethodCanvasRemove(const json &params, json &result, std::string &error)
+{
+	const std::string uuid = OptString(params, "uuid");
+	if (uuid.empty()) {
+		error = "canvas.remove requires a non-empty 'uuid'";
+		return false;
+	}
+	CanvasStore &store = ObsBootstrap::Canvases();
+	const CanvasDefinition *def = store.Find(uuid);
+	if (!def) {
+		error = "no canvas with uuid '" + uuid + "'";
+		return false;
+	}
+	if (def->isDefault) {
+		error = "the default canvas cannot be removed";
+		return false;
+	}
+	store.Remove(uuid);
+	store.Save();
+	EmitEvent("canvas.changed", json::object());
+	result = json{{"removed", uuid}};
+	return true;
+}
+
+// List registered encoder types of a kind ("video"|"audio") as {id, name}.
+// Filters obs_enum_encoder_types by obs_get_encoder_type. Sorted by display name.
+bool MethodEncoderTypesList(const json &params, json &result, std::string &error)
+{
+	const std::string kind = OptString(params, "kind");
+	obs_encoder_type want;
+	if (kind == "video") {
+		want = OBS_ENCODER_VIDEO;
+	} else if (kind == "audio") {
+		want = OBS_ENCODER_AUDIO;
+	} else {
+		error = "encoderTypes.list requires 'kind' of 'video' or 'audio'";
+		return false;
+	}
+
+	json arr = json::array();
+	const char *id = nullptr;
+	for (size_t i = 0; obs_enum_encoder_types(i, &id); ++i) {
+		if (!id || obs_get_encoder_type(id) != want) {
+			continue;
+		}
+		const char *display = obs_encoder_get_display_name(id);
+		arr.push_back(json{{"id", id}, {"name", display ? json(display) : json(id)}});
+	}
+	std::sort(arr.begin(), arr.end(), [](const json &a, const json &b) {
+		return a.value("name", std::string()) < b.value("name", std::string());
+	});
+	result = std::move(arr);
+	return true;
+}
+
 // Post the actual ExecuteJavaScript on TID_UI. Built from JSON dumps so the name
 // and payload are correctly quoted/escaped.
 void DoEmit(const std::string &name, const std::string &payloadDump)
@@ -1294,6 +1637,11 @@ void Init()
 		{"settings.setVideo", MethodSettingsSetVideo},
 		{"settings.getAudio", MethodSettingsGetAudio},
 		{"settings.setAudio", MethodSettingsSetAudio},
+		{"canvas.list", MethodCanvasList},
+		{"canvas.create", MethodCanvasCreate},
+		{"canvas.update", MethodCanvasUpdate},
+		{"canvas.remove", MethodCanvasRemove},
+		{"encoderTypes.list", MethodEncoderTypesList},
 	};
 
 	obs_frontend_add_event_callback(OnFrontendEvent, nullptr);

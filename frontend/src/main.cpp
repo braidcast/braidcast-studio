@@ -89,6 +89,7 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 				ObsBootstrap::RunPreviewEditSelfTest();
 				ObsBootstrap::RunSettingsSelfTest();
 				ObsBootstrap::RunMultistreamModelSelfTest();
+				ObsBootstrap::RunCanvasBridgeSelfTest();
 			}
 		} else if (wparam == kSmokeQuitTimerId) {
 			KillTimer(hwnd, kSmokeQuitTimerId);

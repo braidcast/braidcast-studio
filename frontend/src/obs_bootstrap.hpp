@@ -12,8 +12,16 @@
 // `delete this` to TID_UI, and ActuallyCloseBrowser posts the CEF close -- both
 // drain only via the CEF message loop. The caller (main.cpp) runs this and then
 // pumps CefDoMessageLoopWork() before Stop()/CefShutdown().
+class CanvasStore;
+
 namespace ObsBootstrap {
 bool Start();
+
+// The global native-multistream canvas model, owned by the bootstrap (loaded in
+// Start, cleared in Stop). Exposed so the bridge can serve canvas CRUD over it.
+// Valid between Start() and Stop().
+CanvasStore &Canvases();
+
 // Re-fire OBS_FRONTEND_EVENT_SCENE_CHANGED through the shim so the loaded UI page
 // observes a forwarded obs.event (proves obs->shim->bridge->JS post-load).
 void FireSceneChanged();
@@ -33,6 +41,12 @@ void RunPreviewEditSelfTest();
 // caller to the smoke path; restores the original config so the run leaves no
 // change.
 void RunSettingsSelfTest();
+// Headless proof for 4.4.1: drive canvas.list / encoderTypes.list and a
+// canvas.create+update+remove round-trip through the bridge, confirming each
+// persists to canvases.json and restores. Also exercises an encoder
+// properties.get when wired. Gated by the caller to the smoke path; restores the
+// user's file unchanged.
+void RunCanvasBridgeSelfTest();
 // Headless proof for 4.4.0: round-trip the multistream model stores. Add a
 // canvas + a stream profile, Save, reload into a fresh store, confirm each
 // persisted, then Remove + Save to restore the user's real files unchanged.
