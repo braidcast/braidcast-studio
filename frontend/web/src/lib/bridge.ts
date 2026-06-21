@@ -290,6 +290,24 @@ export interface OutputBindingUpdateParams {
   canvasUuid?: string;
 }
 
+// --- multistream live status (fan-out engine, 4.4.4) -------------------------
+
+/** Live state of one enabled output binding. */
+export type MultistreamState = "idle" | "connecting" | "live" | "error";
+
+/**
+ * One status row reported by multistream.status / pushed on multistream.changed
+ * (one per enabled binding). `lastError` is set only in the "error" state.
+ */
+export interface MultistreamStatus {
+  bindingUuid: string;
+  canvasUuid: string;
+  profileLabel: string;
+  canvasName: string;
+  state: MultistreamState;
+  lastError: string;
+}
+
 /** Known bridge methods. Extend as the C++ Bridge gains methods. */
 export interface ObsMethods {
   getVersion: string;
@@ -346,6 +364,10 @@ export interface ObsMethods {
   "outputBinding.update": OutputBindingInfo;
   "outputBinding.setEnabled": { uuid: string; enabled: boolean };
   "outputBinding.remove": { removed: string };
+  // Multistream live status + per-row control (fan-out engine, 4.4.4).
+  "multistream.status": { outputs: MultistreamStatus[] };
+  "multistream.startOutput": { ok: boolean };
+  "multistream.stopOutput": { ok: boolean };
 }
 
 /** Known server->client push events and their payload shapes. */
@@ -360,6 +382,7 @@ export interface ObsEvents {
   "canvas.changed": Record<string, never>;
   "streamProfile.changed": Record<string, never>;
   "outputBinding.changed": Record<string, never>;
+  "multistream.changed": { outputs: MultistreamStatus[] };
 }
 
 export interface BridgeError extends Error {

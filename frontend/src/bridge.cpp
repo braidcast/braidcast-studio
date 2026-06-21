@@ -34,11 +34,6 @@ using MethodFn = std::function<bool(const json &params, json &result, std::strin
 
 std::unordered_map<std::string, MethodFn> g_methods;
 
-// Streaming is a stub for 4.1.4: a flag toggled by streaming.start/stop, read by
-// getStreamingState, and announced via the streaming.changed push event. Touched
-// only on the UI thread (router callbacks), so no lock needed.
-bool g_streaming = false;
-
 // The UI browser EmitEvent targets. Set/cleared on the UI thread; read on the UI
 // thread (EmitEvent posts there first). guarded for paranoia across the post.
 std::mutex g_browser_mutex;
@@ -142,30 +137,28 @@ bool MethodListScenes(const json & /*params*/, json &result, std::string & /*err
 
 bool MethodGetStreamingState(const json & /*params*/, json &result, std::string & /*error*/)
 {
-	result = json{{"active", g_streaming}};
+	result = json{{"active", ObsBootstrap::Multistream().AnyLive()}};
 	return true;
 }
 
-// Shared toggle for streaming.start / streaming.stop. Sets the flag, emits the
-// streaming.changed push (proving server->client events end-to-end), and returns
-// {active}. No real streaming yet (4.1.4 stub).
-bool SetStreaming(bool active, json &result)
-{
-	g_streaming = active;
-	json payload = json{{"active", g_streaming}};
-	EmitEvent("streaming.changed", payload);
-	result = payload;
-	return true;
-}
-
+// streaming.start/stop drive the fan-out engine: start every enabled binding /
+// stop everything. `active` reports whether anything is live afterward; the
+// streaming.changed push proves the server->client event end-to-end (the engine
+// also pushes multistream.changed per-output via onStatusChanged).
 bool MethodStreamingStart(const json & /*params*/, json &result, std::string & /*error*/)
 {
-	return SetStreaming(true, result);
+	ObsBootstrap::Multistream().StartAllEnabled();
+	result = json{{"active", ObsBootstrap::Multistream().AnyLive()}};
+	EmitEvent("streaming.changed", result);
+	return true;
 }
 
 bool MethodStreamingStop(const json & /*params*/, json &result, std::string & /*error*/)
 {
-	return SetStreaming(false, result);
+	ObsBootstrap::Multistream().StopAll();
+	result = json{{"active", false}};
+	EmitEvent("streaming.changed", result);
+	return true;
 }
 
 // Position the native preview overlay over the UI's reported region. params:
@@ -2086,6 +2079,37 @@ bool MethodOutputBindingRemove(const json &params, json &result, std::string &er
 	return true;
 }
 
+// --- multistream live status + per-row control (4.4.4) ----------------------
+
+bool MethodMultistreamStatus(const json & /*params*/, json &result, std::string & /*error*/)
+{
+	result = json{{"outputs", BuildStatusArray()}};
+	return true;
+}
+
+bool MethodMultistreamStartOutput(const json &params, json &result, std::string &error)
+{
+	const std::string uuid = OptString(params, "uuid");
+	if (uuid.empty()) {
+		error = "multistream.startOutput requires a non-empty 'uuid'";
+		return false;
+	}
+	result = json{{"ok", ObsBootstrap::Multistream().StartOutput(uuid)}};
+	return true;
+}
+
+bool MethodMultistreamStopOutput(const json &params, json &result, std::string &error)
+{
+	const std::string uuid = OptString(params, "uuid");
+	if (uuid.empty()) {
+		error = "multistream.stopOutput requires a non-empty 'uuid'";
+		return false;
+	}
+	ObsBootstrap::Multistream().StopOutput(uuid);
+	result = json{{"ok", true}};
+	return true;
+}
+
 // Post the actual ExecuteJavaScript on TID_UI. Built from JSON dumps so the name
 // and payload are correctly quoted/escaped.
 void DoEmit(const std::string &name, const std::string &payloadDump)
@@ -2163,6 +2187,9 @@ void Init()
 		{"outputBinding.update", MethodOutputBindingUpdate},
 		{"outputBinding.setEnabled", MethodOutputBindingSetEnabled},
 		{"outputBinding.remove", MethodOutputBindingRemove},
+		{"multistream.status", MethodMultistreamStatus},
+		{"multistream.startOutput", MethodMultistreamStartOutput},
+		{"multistream.stopOutput", MethodMultistreamStopOutput},
 	};
 
 	obs_frontend_add_event_callback(OnFrontendEvent, nullptr);
