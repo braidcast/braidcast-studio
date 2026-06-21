@@ -108,6 +108,14 @@ void RunMultistreamEngineSelfTest();
 // never Saves, so the user's files are untouched. Gated by the caller to the smoke
 // path.
 void RunCanvasRuntimeSelfTest();
+// Headless proof for 4.4.5b sub-phase A: bring up a temporary additional canvas,
+// then drive the canvas-scoped scene/source bridge path (scenes.create/list/
+// setCurrent + sources.create with a `canvas` uuid) and assert the new scene is
+// listed in the canvas yet ISOLATED from the global scene list, and that a source
+// added to the canvas lands in the canvas's current scene, not output 0. Removes
+// the temp canvas afterward; never Saves, so the user's files are untouched. Gated
+// by the caller to the smoke path.
+void RunCanvasSceneSelfTest();
 void Stop();
 } // namespace ObsBootstrap
 

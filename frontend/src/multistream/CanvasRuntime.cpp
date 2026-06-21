@@ -228,14 +228,12 @@ obs_source_t *CanvasRuntime::CreateScene(const std::string &uuid, const std::str
 	if (!scene) {
 		return nullptr;
 	}
-	// obs_canvas_scene_create returns the scene without an added strong ref on its
-	// source (the canvas owns it via SCENE_REF). Addref the source for the caller so
-	// it matches the bridge's addref'd scene-source contract (caller releases).
-	obs_source_t *sceneSource = obs_scene_get_source(scene);
-	if (sceneSource) {
-		obs_source_get_ref(sceneSource);
-	}
-	return sceneSource;
+	// obs_canvas_scene_create returns the scene with the creation ref still owned by
+	// the caller, while the canvas holds its OWN strong ref (obs_canvas_insert_source
+	// addref's under SCENE_REF). Hand that creation ref straight to the caller -- it
+	// already matches the bridge's addref'd scene-source contract (caller releases),
+	// so do NOT add another ref or the creation ref leaks.
+	return obs_scene_get_source(scene);
 }
 
 bool CanvasRuntime::RemoveScene(const std::string &uuid, const std::string &sceneName)

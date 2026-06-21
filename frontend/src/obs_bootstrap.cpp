@@ -1207,6 +1207,125 @@ void ObsBootstrap::RunCanvasRuntimeSelfTest()
 		"; canvases now " + std::to_string(g_canvases.Definitions().size()));
 }
 
+void ObsBootstrap::RunCanvasSceneSelfTest()
+{
+	using Bridge::json;
+
+	auto run = [](const std::string &method, const json &params, bool &ok) -> json {
+		json result;
+		std::string error;
+		ok = Bridge::Dispatch(method, params, result, error);
+		if (!ok) {
+			HostLog("[selftest] " + method + " FAILED: " + error);
+			return json(nullptr);
+		}
+		return result;
+	};
+
+	// Bring up a temporary ADDITIONAL canvas with its own live mix (+ a default
+	// channel-0 "Scene"), exactly like the canvas-runtime selftest. Operate ONLY on
+	// the in-memory stores (never Save) so the user's files stay untouched. The
+	// point is to prove the bridge's scene/source ops, when given this canvas's uuid,
+	// act on the canvas's OWN scenes -- isolated from the global channel-0 scene list.
+	CanvasDefinition def;
+	def.name = "selftest-scene-canvas";
+	def.isDefault = false;
+	def.width = 1280;
+	def.height = 720;
+	def.fpsNum = 30;
+	def.fpsDen = 1;
+	const CanvasDefinition &added = g_canvases.Add(std::move(def));
+	const std::string canvasUuid = added.uuid;
+	g_canvasRuntime->EnsureCanvas(added);
+
+	bool ok = false;
+
+	// 1) Create a scene inside the canvas via the canvas-scoped bridge path.
+	const char *kSceneName = "selftest-canvas-scene";
+	json created = run("scenes.create", json{{"canvas", canvasUuid}, {"name", kSceneName}}, ok);
+	HostLog(std::string("[selftest] canvas-scene scenes.create -> ") +
+		(ok ? "ok name='" + created.value("name", std::string("?")) + "'" : "FAIL"));
+
+	// 2) List the canvas's scenes (expect the default "Scene" + our new one) and the
+	// GLOBAL scenes (expect our scene ABSENT -- proof of isolation).
+	json canvasScenes = run("scenes.list", json{{"canvas", canvasUuid}}, ok);
+	bool inCanvasList = false;
+	std::string canvasNames;
+	if (ok && canvasScenes.is_array()) {
+		for (const auto &s : canvasScenes) {
+			canvasNames += " '" + s.value("name", std::string("?")) + "'";
+			if (s.value("name", std::string()) == kSceneName) {
+				inCanvasList = true;
+			}
+		}
+	}
+	json globalScenes = run("scenes.list", json(nullptr), ok);
+	bool inGlobalList = false;
+	if (ok && globalScenes.is_array()) {
+		for (const auto &s : globalScenes) {
+			if (s.value("name", std::string()) == kSceneName) {
+				inGlobalList = true;
+			}
+		}
+	}
+	HostLog(std::string("[selftest] canvas-scene scenes.list -> canvas has scene=") +
+		(inCanvasList ? "true" : "false (BUG)") + " (" + std::to_string(canvasScenes.size()) + ":" + canvasNames +
+		" ); global has scene=" + (inGlobalList ? "true (BUG: not isolated)" : "false") + " (isolation " +
+		((inCanvasList && !inGlobalList) ? "OK" : "BUG") + ")");
+
+	// 3) Make it the canvas's current scene (its channel 0, NOT output 0).
+	json setCur = run("scenes.setCurrent", json{{"canvas", canvasUuid}, {"name", kSceneName}}, ok);
+	HostLog(std::string("[selftest] canvas-scene scenes.setCurrent -> ") + (ok ? "ok" : "FAIL"));
+
+	// 4) Add a source via the canvas-scoped path; assert it lands in the CANVAS's
+	// current scene, NOT the global output-0 scene.
+	json srcCreated = run("sources.create", json{{"canvas", canvasUuid}, {"type", "color_source"}}, ok);
+	const int64_t newItemId = ok ? srcCreated.value("id", int64_t(0)) : 0;
+	const std::string newSrcName = ok ? srcCreated.value("source", std::string()) : std::string();
+	HostLog(std::string("[selftest] canvas-scene sources.create -> ") +
+		(ok ? "id=" + std::to_string(newItemId) + " source='" + newSrcName + "'" : "FAIL"));
+
+	// Count the source's presence in the canvas's current scene items vs the global
+	// output-0 scene items by the bridge's own list methods.
+	auto sceneHasItem = [&](const json &listParams) -> bool {
+		bool listOk = false;
+		json items = run("sceneItems.list", listParams, listOk);
+		if (!listOk || !items.is_array()) {
+			return false;
+		}
+		for (const auto &it : items) {
+			if (it.value("source", std::string()) == newSrcName) {
+				return true;
+			}
+		}
+		return false;
+	};
+	const bool inCanvasScene = sceneHasItem(json{{"canvas", canvasUuid}});
+	const bool inGlobalScene = sceneHasItem(json(nullptr));
+	HostLog(std::string("[selftest] canvas-scene source placement -> in canvas scene=") +
+		(inCanvasScene ? "true" : "false (BUG)") + "; in global scene=" +
+		(inGlobalScene ? "true (BUG: leaked to output 0)" : "false") + " (placement " +
+		((inCanvasScene && !inGlobalScene) ? "OK" : "BUG") + ")");
+
+	// Clean up: remove the source from the canvas scene, then destroy the temp
+	// canvas + drop its mix, returning the in-memory model to baseline (nothing
+	// Saved). Destroying the canvas releases its scenes (including our created ones).
+	if (newItemId) {
+		run("sceneItems.remove", json{{"canvas", canvasUuid}, {"id", newItemId}}, ok);
+		obs_source_t *s = obs_get_source_by_name(newSrcName.c_str());
+		if (s) {
+			obs_source_remove(s);
+			obs_source_release(s);
+		}
+	}
+	g_multistream->InvalidateCanvasEncoders(canvasUuid);
+	g_canvasRuntime->RemoveCanvas(canvasUuid);
+	g_canvases.Remove(canvasUuid);
+	const bool gone = g_canvasRuntime->Find(canvasUuid) == nullptr && g_canvases.Find(canvasUuid) == nullptr;
+	HostLog(std::string("[selftest] canvas-scene cleanup: temp canvas ") + (gone ? "removed" : "STILL PRESENT (BUG)") +
+		"; canvases now " + std::to_string(g_canvases.Definitions().size()));
+}
+
 void ObsBootstrap::Stop()
 {
 	// Drop the bridge's obs frontend event callback while libobs is still up.
