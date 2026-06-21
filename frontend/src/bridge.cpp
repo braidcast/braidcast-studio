@@ -43,6 +43,7 @@ struct EventName {
 const EventName kForwardedEvents[] = {
 	{OBS_FRONTEND_EVENT_FINISHED_LOADING, "OBS_FRONTEND_EVENT_FINISHED_LOADING"},
 	{OBS_FRONTEND_EVENT_SCENE_CHANGED, "OBS_FRONTEND_EVENT_SCENE_CHANGED"},
+	{OBS_FRONTEND_EVENT_SCENE_LIST_CHANGED, "OBS_FRONTEND_EVENT_SCENE_LIST_CHANGED"},
 };
 
 const char *ForwardedEventName(obs_frontend_event event)
@@ -183,6 +184,448 @@ bool MethodPreviewHide(const json & /*params*/, json & /*result*/, std::string &
 	return true;
 }
 
+// --- scenes / scene-items helpers -------------------------------------------
+
+// Read an optional string field from params; returns "" when absent/not a
+// string. Treats an empty string the same as absent for scene resolution.
+std::string OptString(const json &params, const char *key)
+{
+	if (!params.is_object()) {
+		return std::string();
+	}
+	auto it = params.find(key);
+	return (it != params.end() && it->is_string()) ? it->get<std::string>() : std::string();
+}
+
+// Resolve a scene source by name, addref'd (caller releases). When `name` is
+// empty, falls back to the scene bound to output channel 0 (the current scene),
+// also addref'd. null when nothing resolves or the named source is not a scene.
+obs_source_t *ResolveSceneSource(const std::string &name)
+{
+	if (name.empty()) {
+		return obs_get_output_source(0); // already addref'd; null if unbound
+	}
+	obs_source_t *source = obs_get_source_by_name(name.c_str()); // addref'd
+	if (!source) {
+		return nullptr;
+	}
+	if (!obs_scene_from_source(source)) {
+		obs_source_release(source); // not a scene
+		return nullptr;
+	}
+	return source;
+}
+
+// Locate a scene item by id within a scene. Returns the item WITHOUT an added
+// ref (it is owned by the scene); valid only while the scene is held. null when
+// no item matches.
+struct ItemFind {
+	int64_t id;
+	obs_sceneitem_t *found;
+};
+
+obs_sceneitem_t *FindSceneItem(obs_scene_t *scene, int64_t id)
+{
+	ItemFind ctx{id, nullptr};
+	obs_scene_enum_items(
+		scene,
+		[](obs_scene_t *, obs_sceneitem_t *item, void *param) -> bool {
+			auto *c = static_cast<ItemFind *>(param);
+			if (obs_sceneitem_get_id(item) == c->id) {
+				c->found = item;
+				return false; // stop
+			}
+			return true;
+		},
+		&ctx);
+	return ctx.found;
+}
+
+// Parse the required scene-item id from params (accepts number or numeric
+// string). Returns false and fills `error` when missing/unparseable.
+bool ItemIdFromParams(const json &params, int64_t &id, std::string &error)
+{
+	if (params.is_object()) {
+		auto it = params.find("id");
+		if (it != params.end()) {
+			if (it->is_number_integer()) {
+				id = it->get<int64_t>();
+				return true;
+			}
+			if (it->is_string()) {
+				try {
+					id = std::stoll(it->get<std::string>());
+					return true;
+				} catch (...) {
+				}
+			}
+		}
+	}
+	error = "missing or invalid 'id'";
+	return false;
+}
+
+// --- scenes -----------------------------------------------------------------
+
+bool MethodScenesList(const json & /*params*/, json &result, std::string & /*error*/)
+{
+	// Enumerate scene sources in creation order. `current` flags the scene bound
+	// to output channel 0.
+	obs_source_t *current = obs_get_output_source(0); // addref'd; may be null
+	const char *currentName = current ? obs_source_get_name(current) : nullptr;
+	const std::string currentStr = currentName ? currentName : std::string();
+
+	json scenes = json::array();
+	struct Ctx {
+		json *arr;
+		const std::string *current;
+	} ctx{&scenes, &currentStr};
+
+	obs_enum_scenes(
+		[](void *param, obs_source_t *source) -> bool {
+			auto *c = static_cast<Ctx *>(param);
+			const char *name = obs_source_get_name(source);
+			if (name) {
+				c->arr->push_back(json{{"name", name}, {"current", !c->current->empty() &&
+											      *c->current == name}});
+			}
+			return true; // keep enumerating
+		},
+		&ctx);
+
+	if (current) {
+		obs_source_release(current);
+	}
+	result = std::move(scenes);
+	return true;
+}
+
+bool MethodScenesCreate(const json &params, json &result, std::string &error)
+{
+	const std::string name = OptString(params, "name");
+	if (name.empty()) {
+		error = "scenes.create requires a non-empty 'name'";
+		return false;
+	}
+	// Reject duplicates (a source of any kind with that name collides).
+	obs_source_t *existing = obs_get_source_by_name(name.c_str());
+	if (existing) {
+		obs_source_release(existing);
+		error = "a source named '" + name + "' already exists";
+		return false;
+	}
+
+	obs_scene_t *scene = obs_scene_create(name.c_str());
+	if (!scene) {
+		error = "obs_scene_create failed";
+		return false;
+	}
+	obs_scene_release(scene); // creation ref; the scene source persists in the registry
+
+	EmitEvent("scenes.changed", json::object());
+	result = json{{"name", name}};
+	return true;
+}
+
+bool MethodScenesRemove(const json &params, json &result, std::string &error)
+{
+	const std::string name = OptString(params, "name");
+	if (name.empty()) {
+		error = "scenes.remove requires a non-empty 'name'";
+		return false;
+	}
+
+	// Count scenes and find a fallback (any scene other than the target) so we
+	// can switch output 0 off the target before removing it. Refuse removing the
+	// last scene.
+	struct Ctx {
+		std::string target;
+		int count = 0;
+		obs_source_t *fallback = nullptr; // addref'd
+	} ctx;
+	ctx.target = name;
+
+	obs_enum_scenes(
+		[](void *param, obs_source_t *source) -> bool {
+			auto *c = static_cast<Ctx *>(param);
+			c->count++;
+			const char *n = obs_source_get_name(source);
+			if (n && c->target != n && !c->fallback) {
+				obs_source_get_ref(source); // keep for fallback
+				c->fallback = source;
+			}
+			return true;
+		},
+		&ctx);
+
+	if (ctx.count <= 1) {
+		if (ctx.fallback) {
+			obs_source_release(ctx.fallback);
+		}
+		error = "cannot remove the last scene";
+		return false;
+	}
+
+	obs_source_t *target = obs_get_source_by_name(name.c_str()); // addref'd
+	if (!target || !obs_scene_from_source(target)) {
+		if (target) {
+			obs_source_release(target);
+		}
+		if (ctx.fallback) {
+			obs_source_release(ctx.fallback);
+		}
+		error = "no scene named '" + name + "'";
+		return false;
+	}
+
+	// If the target is the current scene, switch output 0 to the fallback first.
+	obs_source_t *current = obs_get_output_source(0); // addref'd
+	const bool removingCurrent = current && current == target;
+	if (current) {
+		obs_source_release(current);
+	}
+	if (removingCurrent && ctx.fallback) {
+		obs_set_output_source(0, ctx.fallback);
+	}
+
+	obs_source_remove(target);
+	obs_source_release(target);
+	if (ctx.fallback) {
+		obs_source_release(ctx.fallback);
+	}
+
+	EmitEvent("scenes.changed", json::object());
+	result = json{{"removed", name}};
+	return true;
+}
+
+bool MethodScenesSetCurrent(const json &params, json &result, std::string &error)
+{
+	const std::string name = OptString(params, "name");
+	if (name.empty()) {
+		error = "scenes.setCurrent requires a non-empty 'name'";
+		return false;
+	}
+	obs_source_t *source = obs_get_source_by_name(name.c_str()); // addref'd
+	if (!source || !obs_scene_from_source(source)) {
+		if (source) {
+			obs_source_release(source);
+		}
+		error = "no scene named '" + name + "'";
+		return false;
+	}
+	obs_set_output_source(0, source);
+	obs_source_release(source);
+
+	EmitEvent("scenes.changed", json::object());
+	result = json{{"name", name}};
+	return true;
+}
+
+bool MethodScenesRename(const json &params, json &result, std::string &error)
+{
+	const std::string from = OptString(params, "from");
+	const std::string to = OptString(params, "to");
+	if (from.empty() || to.empty()) {
+		error = "scenes.rename requires 'from' and 'to'";
+		return false;
+	}
+	if (from == to) {
+		result = json{{"name", to}};
+		return true;
+	}
+	obs_source_t *clash = obs_get_source_by_name(to.c_str());
+	if (clash) {
+		obs_source_release(clash);
+		error = "a source named '" + to + "' already exists";
+		return false;
+	}
+	obs_source_t *source = obs_get_source_by_name(from.c_str()); // addref'd
+	if (!source || !obs_scene_from_source(source)) {
+		if (source) {
+			obs_source_release(source);
+		}
+		error = "no scene named '" + from + "'";
+		return false;
+	}
+	obs_source_set_name(source, to.c_str());
+	obs_source_release(source);
+
+	EmitEvent("scenes.changed", json::object());
+	result = json{{"name", to}};
+	return true;
+}
+
+// --- scene items ------------------------------------------------------------
+
+// Emit sceneItems.changed for the resolved scene. Passes the scene's actual name
+// so the UI can decide whether the change applies to what it is showing.
+void EmitSceneItemsChanged(obs_source_t *sceneSource)
+{
+	const char *name = sceneSource ? obs_source_get_name(sceneSource) : nullptr;
+	EmitEvent("sceneItems.changed", json{{"scene", name ? json(name) : json(nullptr)}});
+}
+
+bool MethodSceneItemsList(const json &params, json &result, std::string &error)
+{
+	obs_source_t *sceneSource = ResolveSceneSource(OptString(params, "scene")); // addref'd
+	if (!sceneSource) {
+		error = "no scene to list";
+		return false;
+	}
+	obs_scene_t *scene = obs_scene_from_source(sceneSource);
+
+	// obs_scene_enum_items yields bottom-to-top; we build top-first (topmost
+	// draw-order source at index 0) to match the OBS Sources-list convention.
+	json items = json::array();
+	obs_scene_enum_items(
+		scene,
+		[](obs_scene_t *, obs_sceneitem_t *item, void *param) -> bool {
+			auto *arr = static_cast<json *>(param);
+			obs_source_t *src = obs_sceneitem_get_source(item);
+			const char *srcName = src ? obs_source_get_name(src) : nullptr;
+			// Prepend to invert bottom-first enumeration into top-first.
+			arr->insert(arr->begin(), json{
+							  {"id", obs_sceneitem_get_id(item)},
+							  {"source", srcName ? json(srcName) : json(nullptr)},
+							  {"visible", obs_sceneitem_visible(item)},
+							  {"locked", obs_sceneitem_locked(item)},
+						  });
+			return true;
+		},
+		&items);
+
+	obs_source_release(sceneSource);
+	result = std::move(items);
+	return true;
+}
+
+bool MethodSceneItemsSetVisible(const json &params, json &result, std::string &error)
+{
+	int64_t id = 0;
+	if (!ItemIdFromParams(params, id, error)) {
+		return false;
+	}
+	const bool visible = params.is_object() && params.value("visible", false);
+	obs_source_t *sceneSource = ResolveSceneSource(OptString(params, "scene"));
+	if (!sceneSource) {
+		error = "no scene";
+		return false;
+	}
+	obs_scene_t *scene = obs_scene_from_source(sceneSource);
+	obs_sceneitem_t *item = FindSceneItem(scene, id);
+	if (!item) {
+		obs_source_release(sceneSource);
+		error = "no scene item with id " + std::to_string(id);
+		return false;
+	}
+	obs_sceneitem_set_visible(item, visible);
+	EmitSceneItemsChanged(sceneSource);
+	obs_source_release(sceneSource);
+	result = json{{"id", id}, {"visible", visible}};
+	return true;
+}
+
+bool MethodSceneItemsSetLocked(const json &params, json &result, std::string &error)
+{
+	int64_t id = 0;
+	if (!ItemIdFromParams(params, id, error)) {
+		return false;
+	}
+	const bool locked = params.is_object() && params.value("locked", false);
+	obs_source_t *sceneSource = ResolveSceneSource(OptString(params, "scene"));
+	if (!sceneSource) {
+		error = "no scene";
+		return false;
+	}
+	obs_scene_t *scene = obs_scene_from_source(sceneSource);
+	obs_sceneitem_t *item = FindSceneItem(scene, id);
+	if (!item) {
+		obs_source_release(sceneSource);
+		error = "no scene item with id " + std::to_string(id);
+		return false;
+	}
+	obs_sceneitem_set_locked(item, locked);
+	EmitSceneItemsChanged(sceneSource);
+	obs_source_release(sceneSource);
+	result = json{{"id", id}, {"locked", locked}};
+	return true;
+}
+
+bool MethodSceneItemsRemove(const json &params, json &result, std::string &error)
+{
+	int64_t id = 0;
+	if (!ItemIdFromParams(params, id, error)) {
+		return false;
+	}
+	obs_source_t *sceneSource = ResolveSceneSource(OptString(params, "scene"));
+	if (!sceneSource) {
+		error = "no scene";
+		return false;
+	}
+	obs_scene_t *scene = obs_scene_from_source(sceneSource);
+	obs_sceneitem_t *item = FindSceneItem(scene, id);
+	if (!item) {
+		obs_source_release(sceneSource);
+		error = "no scene item with id " + std::to_string(id);
+		return false;
+	}
+	obs_sceneitem_remove(item);
+	EmitSceneItemsChanged(sceneSource);
+	obs_source_release(sceneSource);
+	result = json{{"removed", id}};
+	return true;
+}
+
+bool MethodSceneItemsReorder(const json &params, json &result, std::string &error)
+{
+	int64_t id = 0;
+	if (!ItemIdFromParams(params, id, error)) {
+		return false;
+	}
+	const std::string direction = OptString(params, "direction");
+	// Map UI direction -> libobs movement, data-driven.
+	struct Move {
+		const char *name;
+		obs_order_movement movement;
+	};
+	static const Move kMoves[] = {
+		{"up", OBS_ORDER_MOVE_UP},
+		{"down", OBS_ORDER_MOVE_DOWN},
+		{"top", OBS_ORDER_MOVE_TOP},
+		{"bottom", OBS_ORDER_MOVE_BOTTOM},
+	};
+	const obs_order_movement *movement = nullptr;
+	for (const auto &m : kMoves) {
+		if (direction == m.name) {
+			movement = &m.movement;
+			break;
+		}
+	}
+	if (!movement) {
+		error = "reorder 'direction' must be one of up|down|top|bottom";
+		return false;
+	}
+
+	obs_source_t *sceneSource = ResolveSceneSource(OptString(params, "scene"));
+	if (!sceneSource) {
+		error = "no scene";
+		return false;
+	}
+	obs_scene_t *scene = obs_scene_from_source(sceneSource);
+	obs_sceneitem_t *item = FindSceneItem(scene, id);
+	if (!item) {
+		obs_source_release(sceneSource);
+		error = "no scene item with id " + std::to_string(id);
+		return false;
+	}
+	obs_sceneitem_set_order(item, *movement);
+	EmitSceneItemsChanged(sceneSource);
+	obs_source_release(sceneSource);
+	result = json{{"id", id}, {"direction", direction}};
+	return true;
+}
+
 // Post the actual ExecuteJavaScript on TID_UI. Built from JSON dumps so the name
 // and payload are correctly quoted/escaped.
 void DoEmit(const std::string &name, const std::string &payloadDump)
@@ -222,6 +665,16 @@ void Init()
 		{"streaming.stop", MethodStreamingStop},
 		{"preview.setRect", MethodPreviewSetRect},
 		{"preview.hide", MethodPreviewHide},
+		{"scenes.list", MethodScenesList},
+		{"scenes.create", MethodScenesCreate},
+		{"scenes.remove", MethodScenesRemove},
+		{"scenes.setCurrent", MethodScenesSetCurrent},
+		{"scenes.rename", MethodScenesRename},
+		{"sceneItems.list", MethodSceneItemsList},
+		{"sceneItems.setVisible", MethodSceneItemsSetVisible},
+		{"sceneItems.setLocked", MethodSceneItemsSetLocked},
+		{"sceneItems.remove", MethodSceneItemsRemove},
+		{"sceneItems.reorder", MethodSceneItemsReorder},
 	};
 
 	obs_frontend_add_event_callback(OnFrontendEvent, nullptr);

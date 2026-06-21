@@ -28,6 +28,22 @@ declare global {
 
 // --- typed surface (loose for now; tightened as the API grows) ---------------
 
+/** A scene as reported by scenes.list. */
+export interface SceneInfo {
+  name: string;
+  current: boolean;
+}
+
+/** A scene item (source within a scene) as reported by sceneItems.list. */
+export interface SceneItem {
+  id: number;
+  source: string | null;
+  visible: boolean;
+  locked: boolean;
+}
+
+export type ReorderDirection = "up" | "down" | "top" | "bottom";
+
 /** Known bridge methods. Extend as the C++ Bridge gains methods. */
 export interface ObsMethods {
   getVersion: string;
@@ -38,12 +54,26 @@ export interface ObsMethods {
   "streaming.stop": { active: boolean };
   "preview.setRect": null;
   "preview.hide": null;
+  // Scenes (current = the scene bound to output channel 0).
+  "scenes.list": SceneInfo[];
+  "scenes.create": { name: string };
+  "scenes.remove": { removed: string };
+  "scenes.setCurrent": { name: string };
+  "scenes.rename": { name: string };
+  // Scene items (top-first draw order; omit `scene` to target the current scene).
+  "sceneItems.list": SceneItem[];
+  "sceneItems.setVisible": { id: number; visible: boolean };
+  "sceneItems.setLocked": { id: number; locked: boolean };
+  "sceneItems.remove": { removed: number };
+  "sceneItems.reorder": { id: number; direction: ReorderDirection };
 }
 
 /** Known server->client push events and their payload shapes. */
 export interface ObsEvents {
   "streaming.changed": { active: boolean };
   "obs.event": { event: string };
+  "scenes.changed": Record<string, never>;
+  "sceneItems.changed": { scene: string | null };
 }
 
 export interface BridgeError extends Error {
