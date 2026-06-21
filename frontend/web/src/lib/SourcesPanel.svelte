@@ -1,9 +1,15 @@
 <script lang="ts">
   import { obs, type SceneItem, type ReorderDirection } from "./bridge";
-  import { sceneState } from "./scenes.svelte";
+  import { canvasFocus } from "./canvasFocus.svelte";
+  import { currentSceneFor } from "./canvasScenes.svelte";
   import PropertyForm from "./properties/PropertyForm.svelte";
   import AddSourceModal from "./AddSourceModal.svelte";
   import { suspendPreview } from "./previewGate.svelte";
+
+  // The shared Sources panel follows the focused canvas: it lists + mutates that
+  // canvas's current scene, passing { canvas } through every bridge call.
+  const canvas = $derived(canvasFocus.uuid);
+  const currentScene = $derived(currentSceneFor(canvas));
 
   let items = $state<SceneItem[]>([]);
   let loaded = $state(false);
@@ -21,7 +27,7 @@
   // Select a row and drive the preview selection (overlay handles/outline).
   function selectItem(item: SceneItem) {
     selectedItemId = item.id;
-    void obs.call("preview.select", { scene: sceneState.current, id: item.id });
+    void obs.call("preview.select", { canvas, scene: currentScene, id: item.id });
   }
 
   // The inline properties modal overlaps the preview; suspend the overlay while open.
@@ -32,7 +38,7 @@
   // Reflect preview-driven selection (click in the overlay) back into the list.
   $effect(() => {
     const off = obs.on("sceneItem.selected", (p) => {
-      if (!p.scene || p.scene === sceneState.current) {
+      if (!p.scene || p.scene === currentScene) {
         selectedItemId = p.id;
       }
     });
@@ -49,14 +55,14 @@
   }
 
   async function load() {
-    if (!sceneState.current) {
+    if (!currentScene) {
       items = [];
       loaded = true;
       return;
     }
     error = null;
     try {
-      items = await obs.call("sceneItems.list", { scene: sceneState.current });
+      items = await obs.call("sceneItems.list", { canvas, scene: currentScene });
       // Drop a stale selection if the item is gone.
       if (selectedItemId !== null && !items.some((i) => i.id === selectedItemId)) {
         selectedItemId = null;
@@ -68,17 +74,22 @@
     }
   }
 
-  // Reload whenever the current scene changes.
+  // Reload whenever the focused canvas or its current scene changes.
   $effect(() => {
-    // Touch the dependency so the effect re-runs on scene switch.
-    void sceneState.current;
+    // Touch the dependencies so the effect re-runs on focus/scene switch.
+    void canvas;
+    void currentScene;
     void load();
   });
 
-  // Refresh on scene-item mutations that target the scene we're showing.
+  // Refresh on scene-item mutations that target the scene we're showing. The
+  // Default canvas's events arrive with canvas=null (the global channel-0 path),
+  // so accept a null canvas as well as our own uuid; the scene filter keeps it
+  // scoped (an extra reload is cheap and self-correcting via load()).
   $effect(() => {
     const off = obs.on("sceneItems.changed", (p) => {
-      if (!p.scene || p.scene === sceneState.current) {
+      const canvasMatch = p.canvas == null || p.canvas === canvas;
+      if (canvasMatch && (!p.scene || p.scene === currentScene)) {
         void load();
       }
     });
@@ -92,7 +103,8 @@
   async function toggleVisible(item: SceneItem) {
     try {
       await obs.call("sceneItems.setVisible", {
-        scene: sceneState.current,
+        canvas,
+        scene: currentScene,
         id: item.id,
         visible: !item.visible,
       });
@@ -104,7 +116,8 @@
   async function toggleLocked(item: SceneItem) {
     try {
       await obs.call("sceneItems.setLocked", {
-        scene: sceneState.current,
+        canvas,
+        scene: currentScene,
         id: item.id,
         locked: !item.locked,
       });
@@ -115,7 +128,7 @@
 
   async function reorder(item: SceneItem, direction: ReorderDirection) {
     try {
-      await obs.call("sceneItems.reorder", { scene: sceneState.current, id: item.id, direction });
+      await obs.call("sceneItems.reorder", { canvas, scene: currentScene, id: item.id, direction });
     } catch (e) {
       reportError(e);
     }
@@ -123,7 +136,7 @@
 
   async function remove(item: SceneItem) {
     try {
-      await obs.call("sceneItems.remove", { scene: sceneState.current, id: item.id });
+      await obs.call("sceneItems.remove", { canvas, scene: currentScene, id: item.id });
     } catch (e) {
       reportError(e);
     }
@@ -136,14 +149,16 @@
     <button
       class="icon add"
       title="Add source"
-      disabled={!sceneState.current}
+      disabled={!currentScene}
       onclick={() => (adding = true)}>＋</button
     >
   </header>
 
   {#if error}
     <p class="error">{error}</p>
-  {:else if !sceneState.current}
+  {:else if !canvas}
+    <p class="dim">No canvas focused</p>
+  {:else if !currentScene}
     <p class="dim">No scene selected</p>
   {:else if !loaded}
     <p class="dim">Loading…</p>
@@ -193,7 +208,7 @@
 </section>
 
 {#if adding}
-  <AddSourceModal onCreated={onSourceCreated} onClose={() => (adding = false)} />
+  <AddSourceModal {canvas} scene={currentScene} onCreated={onSourceCreated} onClose={() => (adding = false)} />
 {/if}
 
 {#if propsForSource}

@@ -1,15 +1,18 @@
 <script lang="ts">
   import { obs, type SourceType } from "./bridge";
-  import { sceneState } from "./scenes.svelte";
   import { suspendPreview } from "./previewGate.svelte";
 
   interface Props {
+    /** Focused canvas uuid; the source is added into this canvas's current scene. */
+    canvas: string | null;
+    /** Target scene name (the canvas's current scene). */
+    scene: string | null;
     /** Called after a successful create with the new sceneitem id + source name. */
     onCreated: (created: { id: number; source: string }) => void;
     /** Close without creating. */
     onClose: () => void;
   }
-  let { onCreated, onClose }: Props = $props();
+  let { canvas, scene, onCreated, onClose }: Props = $props();
 
   // Hide the native preview overlay while this modal is open.
   $effect(() => suspendPreview());
@@ -31,7 +34,7 @@
     try {
       const [list, existing] = await Promise.all([
         obs.call("sourceTypes.list"),
-        obs.call("sources.listExisting", { scene: sceneState.current }),
+        obs.call("sources.listExisting", { canvas, scene }),
       ]);
       types = list;
       existingNames = new Set(existing.map((n) => n.toLowerCase()));
@@ -77,7 +80,8 @@
       const created = await obs.call("sources.create", {
         type: selectedType.id,
         name: trimmed,
-        scene: sceneState.current,
+        canvas,
+        scene,
       });
       onCreated(created);
     } catch (e) {

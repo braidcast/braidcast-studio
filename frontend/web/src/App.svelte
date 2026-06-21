@@ -1,10 +1,9 @@
 <script lang="ts">
   import { obs } from "./lib/bridge";
   import TopBar from "./lib/TopBar.svelte";
-  import ScenesPanel from "./lib/ScenesPanel.svelte";
   import SourcesPanel from "./lib/SourcesPanel.svelte";
   import MultistreamPanel from "./lib/MultistreamPanel.svelte";
-  import PreviewArea from "./lib/PreviewArea.svelte";
+  import CanvasPanels from "./lib/CanvasPanels.svelte";
   import EventLog from "./lib/EventLog.svelte";
 
   let version = $state<string>("…");
@@ -22,13 +21,12 @@
 
   <main>
     <aside class="left">
-      <ScenesPanel />
       <SourcesPanel />
       <MultistreamPanel />
     </aside>
 
     <div class="center">
-      <PreviewArea />
+      <CanvasPanels />
       <EventLog />
     </div>
   </main>
