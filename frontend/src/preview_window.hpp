@@ -103,59 +103,77 @@ private:
 	void *display_ = nullptr;    // obs_display_t* (opaque here)
 };
 
-// Owns the native preview: currently a single Default surface (null targetCanvas)
-// rendering the global mix + editing output channel 0, byte-identical to the
-// original single-preview behavior. Sub-phase B2 promotes this to a manager of N
-// per-canvas surfaces. SetRect/Hide run on the host UI thread; the obs_display
-// lives between ObsBootstrap::Start() and Stop().
-class PreviewWindow {
+// Owns the native preview surfaces, one per canvas, keyed by canvas uuid. The
+// empty/Default canvas uuid maps to a null-targetCanvas surface (global mix +
+// output 0), byte-identical to the original single-preview behavior; any other
+// uuid is resolved to its obs_canvas_t mix via CanvasRuntime on first use. The
+// single live PreviewManager is reachable process-wide via Preview::Instance().
+//
+// SetRect/Hide/Destroy run on the host UI thread (the bridge router callback
+// thread). DestroyAll runs at teardown, while libobs is up and BEFORE the canvas
+// mixes are freed -- an additional surface's display renders a canvas mix, so its
+// obs_display must die before that mix.
+class PreviewManager {
 public:
-	PreviewWindow(HWND host, HINSTANCE instance);
+	PreviewManager(HWND host, HINSTANCE instance);
+	~PreviewManager();
 
-	// Position/size the overlay (device pixels, host-client coords). Creates the
-	// overlay HWND + display on first call. Zero/negative size hides instead.
-	void SetRect(int x, int y, int cx, int cy);
+	PreviewManager(const PreviewManager &) = delete;
+	PreviewManager &operator=(const PreviewManager &) = delete;
 
-	// Hide the overlay HWND (keeps it + the display alive for the next SetRect).
-	void Hide();
+	// Position/size the surface for `canvasUuid` (empty/Default uuid => the Default
+	// surface). Lazily creates the surface on first use; an unknown non-Default
+	// uuid (no live canvas mix) is a no-op.
+	void SetRect(const std::string &canvasUuid, int x, int y, int cx, int cy);
+	void Hide(const std::string &canvasUuid);
+	void Destroy(const std::string &canvasUuid);
 
-	// Destroy the obs_display (must run while libobs is up) and the overlay HWND.
-	void Destroy();
+	// Destroy every surface's display + overlay HWND. Called at teardown before the
+	// canvas mixes (CanvasRuntime::ClearAll) and obs_shutdown.
+	void DestroyAll();
 
-	// The Default surface, so the bridge select/hit-test/reset paths can reach it.
-	PreviewSurface &Default() { return default_; }
+	// The surface for `canvasUuid`, creating it if absent. Empty/Default uuid =>
+	// the Default surface (null targetCanvas). Returns null for a non-Default uuid
+	// with no live canvas mix. Used by the bridge select/hit-test/reset paths.
+	PreviewSurface *SurfaceFor(const std::string &canvasUuid);
+
+	// Apply OnVideoReset to every live surface (global-mix reset). Runs on the UI
+	// thread.
+	void OnVideoResetAll();
 
 private:
-	PreviewSurface default_;
+	struct Impl;
+	Impl *impl_; // pimpl: the surface list, kept out of this header
+	HWND host_;
+	HINSTANCE instance_;
 };
 
-// Process-wide accessor to the single live PreviewWindow so the bridge methods
-// (preview.setRect / preview.hide) can reach it without threading a pointer
-// through the dispatch registry. Set by main.cpp after the display is ready and
+// Process-wide accessor to the single live PreviewManager so the bridge methods
+// (preview.setRect / preview.hide / preview.select) can reach it without threading
+// a pointer through the dispatch registry. Set by main.cpp after libobs is up and
 // cleared before teardown; both bridge and main run on the same UI thread.
 namespace Preview {
-void SetInstance(PreviewWindow *pw);
-PreviewWindow *Instance();
+void SetInstance(PreviewManager *pm);
+PreviewManager *Instance();
 
-// Drive selection from JS (the SourcesPanel) without a mouse event. The editor's
-// authoritative scene is always output channel 0; `scene` is only used to verify
-// it matches output 0's name (else the call is ignored, keeping "preview shows
-// the current scene" intact). When `hasId` is false the selection is cleared.
-// Emits sceneItem.selected like a mouse-driven change. Runs on the UI thread.
-bool SelectFromBridge(const std::string &scene, int64_t id, bool hasId);
+// Drive selection from JS (the SourcesPanel) on the surface for `canvas` (empty =>
+// the Default surface, output channel 0). `scene` is validated against that
+// surface's current scene name (a mismatch is ignored, keeping "preview shows the
+// current scene" intact). When `hasId` is false the selection is cleared. Emits
+// sceneItem.selected like a mouse-driven change. Runs on the UI thread.
+bool SelectFromBridge(const std::string &canvas, const std::string &scene, int64_t id, bool hasId);
 
-// Hit-test at a canvas-space coordinate against output 0's scene; returns the
-// topmost matching scene-item id, or -1 when nothing is hit. Used by the smoke
-// self-test to prove hit-testing without a real cursor.
-int64_t HitTestForTest(float canvasX, float canvasY);
+// Hit-test at a canvas-space coordinate against the surface for `canvas` (empty =>
+// the Default surface); returns the topmost matching scene-item id, or -1. Used by
+// the smoke self-tests to prove hit-testing without a real cursor.
+int64_t HitTestForTest(const std::string &canvas, float canvasX, float canvasY);
 
-// Re-validate the preview after an obs_reset_video. The obs_display swapchain and
-// its draw callback survive a video reset (obs_reset_video only rebuilds the
-// video mix, not the graphics device), so this just clears the cached letterbox
+// Re-validate every live surface after an obs_reset_video of the global mix. The
+// obs_display swapchains + draw callbacks survive a video reset (it rebuilds the
+// video mix, not the graphics device), so this just clears each cached letterbox
 // transform so the next frame recomputes it against the new base resolution, and
-// nudges the display to redraw at its current size. Returns false only when no
-// display exists yet. Runs on the UI thread.
-bool OnVideoReset();
+// nudges a redraw. Runs on the UI thread.
+void OnVideoReset();
 } // namespace Preview
 
 #endif // OBS_MULTISTREAM_FRONTEND_PREVIEW_WINDOW_HPP_

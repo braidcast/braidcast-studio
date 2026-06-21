@@ -27,9 +27,10 @@ constexpr UINT_PTR kSmokeQuitTimerId = 2;
 // Host-window-owned handles. Single-threaded (browser process UI thread).
 CefRefPtr<CefBrowser> g_browser;
 
-// Owns the obs_display attached to the preview child HWND. Created after
-// ObsBootstrap::Start() succeeds; destroyed before ObsBootstrap::Stop().
-std::unique_ptr<PreviewWindow> g_preview;
+// Owns the per-canvas preview surfaces (each an obs_display on its own child
+// HWND). Created after ObsBootstrap::Start() succeeds; all surfaces destroyed
+// before ObsBootstrap::Stop() (which frees the canvas mixes those displays render).
+std::unique_ptr<PreviewManager> g_preview;
 
 // The UI loads from the offline app:// bundle served by scheme.cpp.
 const char *StartupUrl()
@@ -194,10 +195,10 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 		return 1;
 	}
 
-	// Create the preview owner now that libobs is up. Its overlay HWND + obs_display
-	// are created lazily on the first preview.setRect from the UI, so the canvas
-	// renders exactly into the region the Svelte app designates.
-	g_preview = std::make_unique<PreviewWindow>(host, hInstance);
+	// Create the preview manager now that libobs is up. Each canvas's overlay HWND +
+	// obs_display are created lazily on its first preview.setRect from the UI, so a
+	// canvas renders exactly into the region the Svelte app designates.
+	g_preview = std::make_unique<PreviewManager>(host, hInstance);
 	Preview::SetInstance(g_preview.get());
 
 	// Probe the test source's size after its async CEF browser has spun up.
@@ -247,11 +248,14 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 
 	g_browser = nullptr;
 
-	// Destroy the obs_display + overlay HWND while libobs is still up, before
-	// obs_shutdown tears down the graphics device.
+	// Destroy every preview surface's obs_display + overlay HWND while libobs is
+	// still up. This must precede ObsBootstrap::Stop(): an additional canvas's
+	// surface renders that canvas's mix, and Stop() (via CanvasRuntime::ClearAll)
+	// frees those mixes, so the displays must die first. The Default surface renders
+	// the global mix, freed even later by obs_shutdown.
 	if (g_preview) {
 		Preview::SetInstance(nullptr);
-		g_preview->Destroy();
+		g_preview->DestroyAll();
 		g_preview.reset();
 	}
 

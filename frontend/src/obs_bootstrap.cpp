@@ -557,12 +557,12 @@ void ObsBootstrap::RunPreviewEditSelfTest()
 	vec3_set(&center, 0.5f, 0.5f, 0.0f);
 	vec3_transform(&center, &center, &boxTransform);
 
-	// 1) Select via the same entry point the bridge uses.
-	const bool selOk = Preview::SelectFromBridge("", id, true);
+	// 1) Select via the same entry point the bridge uses (Default surface => "").
+	const bool selOk = Preview::SelectFromBridge("", "", id, true);
 	HostLog("[selftest] preview-edit: SelectFromBridge -> " + std::string(selOk ? "OK" : "FAIL"));
 
 	// 2) Hit-test at the item center: expect to get the same id back.
-	const int64_t hit = Preview::HitTestForTest(center.x, center.y);
+	const int64_t hit = Preview::HitTestForTest("", center.x, center.y);
 	HostLog("[selftest] preview-edit: hit-test at center (" + std::to_string(int(center.x)) + "," +
 		std::to_string(int(center.y)) + ") -> id=" + std::to_string(hit) +
 		(hit == id ? " (match)" : " (MISMATCH)"));
@@ -585,7 +585,7 @@ void ObsBootstrap::RunPreviewEditSelfTest()
 		std::to_string(int(restoredPos.y)) + ")");
 
 	// Clear the selection so the smoke run leaves no committed selection state.
-	Preview::SelectFromBridge("", 0, false);
+	Preview::SelectFromBridge("", "", 0, false);
 	obs_source_release(sceneSource);
 }
 
@@ -633,8 +633,10 @@ void ObsBootstrap::RunSettingsSelfTest()
 			((v1.value("baseWidth", 0u) == 1280 && v1.value("baseHeight", 0u) == 720) ? "OK" : "MISMATCH") +
 			")");
 		HostLog("[selftest] active fps after reset = " + std::to_string(obs_get_active_fps()));
-		// Prove the preview display survived: it re-validates without re-creation.
-		const bool alive = Preview::OnVideoReset();
+		// Prove the Default preview surface survived: it re-validates without
+		// re-creation (its display + draw callback persist across a video reset).
+		PreviewSurface *defaultSurface = Preview::Instance() ? Preview::Instance()->SurfaceFor("") : nullptr;
+		const bool alive = defaultSurface && defaultSurface->OnVideoReset();
 		HostLog("[selftest] preview display after video reset -> " +
 			std::string(alive ? "ALIVE (re-validated)" : "not yet created"));
 		// Prove the default scene is still bound to output channel 0.

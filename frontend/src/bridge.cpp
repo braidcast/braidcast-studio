@@ -167,15 +167,20 @@ bool MethodStreamingStop(const json & /*params*/, json &result, std::string & /*
 // CSS px -> device px so the HWND lands exactly on the UI region under any DPI
 // scale. Runs on the UI thread (router callback), the same thread that owns the
 // HWND, so the SetWindowPos is direct. Lazily creates the overlay on first call.
+// Read the optional `canvas` uuid that addresses one preview surface. Absent,
+// empty, or the Default canvas uuid all map to the Default surface, so today's
+// single-preview caller (which sends no `canvas`) is unchanged.
+std::string PreviewCanvasParam(const json &params);
+
 bool MethodPreviewSetRect(const json &params, json & /*result*/, std::string &error)
 {
-	PreviewWindow *pw = Preview::Instance();
-	if (!pw) {
+	PreviewManager *pm = Preview::Instance();
+	if (!pm) {
 		error = "preview not ready";
 		return false;
 	}
 	if (!params.is_object()) {
-		error = "setRect expects an object {x,y,w,h,dpr}";
+		error = "setRect expects an object {x,y,w,h,dpr,canvas?}";
 		return false;
 	}
 
@@ -189,21 +194,23 @@ bool MethodPreviewSetRect(const json &params, json & /*result*/, std::string &er
 	const int y = int(num("y", 0.0) * dpr + 0.5);
 	const int w = int(num("w", 0.0) * dpr + 0.5);
 	const int h = int(num("h", 0.0) * dpr + 0.5);
+	const std::string canvas = PreviewCanvasParam(params);
 
 	HostLog("[bridge] preview.setRect dev-px x=" + std::to_string(x) + " y=" + std::to_string(y) +
-		" w=" + std::to_string(w) + " h=" + std::to_string(h) + " (dpr=" + std::to_string(dpr) + ")");
-	pw->SetRect(x, y, w, h);
+		" w=" + std::to_string(w) + " h=" + std::to_string(h) + " (dpr=" + std::to_string(dpr) +
+		(canvas.empty() ? ")" : ", canvas=" + canvas + ")"));
+	pm->SetRect(canvas, x, y, w, h);
 	return true;
 }
 
-bool MethodPreviewHide(const json & /*params*/, json & /*result*/, std::string &error)
+bool MethodPreviewHide(const json &params, json & /*result*/, std::string &error)
 {
-	PreviewWindow *pw = Preview::Instance();
-	if (!pw) {
+	PreviewManager *pm = Preview::Instance();
+	if (!pm) {
 		error = "preview not ready";
 		return false;
 	}
-	pw->Hide();
+	pm->Hide(PreviewCanvasParam(params));
 	return true;
 }
 
@@ -511,6 +518,15 @@ obs_source_t *ResolveTargetScene(const json &params)
 	return ResolveSceneSource(OptString(params, "scene")); // addref'd
 }
 
+// The canvas uuid that addresses one preview surface: empty for the Default
+// surface (absent/empty/Default-uuid `canvas`), else the additional canvas's uuid.
+// Reuses the scene resolver's Default-vs-additional rule so preview and scene ops
+// agree on what "Default" means.
+std::string PreviewCanvasParam(const json &params)
+{
+	return ResolveCanvasTarget(params).uuid;
+}
+
 // Locate a scene item by id within a scene. Returns the item WITHOUT an added
 // ref (it is owned by the scene); valid only while the scene is held. null when
 // no item matches.
@@ -560,8 +576,9 @@ bool ItemIdFromParams(const json &params, int64_t &id, std::string &error)
 	return false;
 }
 
-// Drive preview selection from the UI (SourcesPanel). params: {scene?, id?}. A
-// null/absent id deselects. The editor's authoritative scene is always output 0;
+// Drive preview selection from the UI (SourcesPanel). params: {scene?, id?,
+// canvas?}. A null/absent id deselects. The addressed surface's scene (output 0
+// for the Default surface, else the canvas's current scene) is authoritative;
 // `scene` is only validated against it. Returns {selected: id|null}.
 bool MethodPreviewSelect(const json &params, json &result, std::string &error)
 {
@@ -581,7 +598,7 @@ bool MethodPreviewSelect(const json &params, json &result, std::string &error)
 		}
 	}
 
-	if (!Preview::SelectFromBridge(scene, id, hasId)) {
+	if (!Preview::SelectFromBridge(PreviewCanvasParam(params), scene, id, hasId)) {
 		error = "preview selection failed (no scene or scene mismatch)";
 		return false;
 	}

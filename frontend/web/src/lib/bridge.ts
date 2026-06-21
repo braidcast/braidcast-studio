@@ -316,6 +316,10 @@ export interface ObsMethods {
   getStreamingState: { active: boolean };
   "streaming.start": { active: boolean };
   "streaming.stop": { active: boolean };
+  // Native preview surfaces. Pass an optional `canvas` uuid to address one
+  // canvas's surface; omit it (or pass the Default canvas uuid) for the Default
+  // surface (global mix + output 0), preserving today's single-preview caller
+  // (4.4.5b). setRect params: {x,y,w,h,dpr,canvas?}; hide/select: {...,canvas?}.
   "preview.setRect": null;
   "preview.hide": null;
   "preview.select": { selected: number | null };
