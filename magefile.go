@@ -28,16 +28,16 @@ const (
 	buildDir       = "build_x64"
 	buildConfig    = "RelWithDebInfo"
 	configurePset  = "windows-x64"
-	frontendTarget = "obs-studio"
+	frontendTarget = "obs-multistream-frontend"
 	versionTag     = "32.1.0"
 	depsDir        = ".deps"
 )
 
 // runExe is the full runtime layout produced by the build; running anything
 // else won't resolve OBS's data/plugins correctly.
-var runExe = filepath.Join(buildDir, "rundir", buildConfig, "bin", "64bit", "obs64.exe")
+var runExe = filepath.Join(buildDir, "rundir", buildConfig, "bin", "64bit", "obs-multistream.exe")
 
-// Build does an incremental frontend build (the obs-studio target only).
+// Build does an incremental frontend build (the obs-multistream-frontend target only).
 func Build() error {
 	return sh(cmakeExe, "--build", buildDir, "--config", buildConfig, "--target", frontendTarget)
 }
