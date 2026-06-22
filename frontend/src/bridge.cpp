@@ -214,6 +214,20 @@ bool MethodPreviewHide(const json &params, json & /*result*/, std::string &error
 	return true;
 }
 
+// Fully tear down a canvas's preview surface (display + overlay HWND), not just
+// hide it. The UI calls this when a canvas panel unmounts (the canvas left the
+// enabled set), so a disabled canvas's surface does not linger until shutdown.
+bool MethodPreviewDestroy(const json &params, json & /*result*/, std::string &error)
+{
+	PreviewManager *pm = Preview::Instance();
+	if (!pm) {
+		error = "preview not ready";
+		return false;
+	}
+	pm->Destroy(PreviewCanvasParam(params));
+	return true;
+}
+
 // --- settings (video / audio) -----------------------------------------------
 
 // Live-change guard: refuse global video/audio resets while any output is live,
@@ -2323,6 +2337,7 @@ void Init()
 		{"streaming.stop", MethodStreamingStop},
 		{"preview.setRect", MethodPreviewSetRect},
 		{"preview.hide", MethodPreviewHide},
+		{"preview.destroy", MethodPreviewDestroy},
 		{"preview.select", MethodPreviewSelect},
 		{"scenes.list", MethodScenesList},
 		{"scenes.create", MethodScenesCreate},

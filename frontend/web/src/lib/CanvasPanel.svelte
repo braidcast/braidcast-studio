@@ -54,6 +54,12 @@
     obs.call("preview.hide", { canvas: uuid }).catch(() => {});
   }
 
+  // On unmount (the canvas left the enabled set) fully tear the surface down, not
+  // just hide it, so a disabled canvas's native display does not linger to shutdown.
+  function destroyPreview() {
+    obs.call("preview.destroy", { canvas: uuid }).catch(() => {});
+  }
+
   onMount(() => {
     reportRect();
     const ro = new ResizeObserver(reportRect);
@@ -64,7 +70,7 @@
       ro.disconnect();
       window.removeEventListener("resize", reportRect);
       window.removeEventListener("scroll", reportRect, true);
-      hidePreview();
+      destroyPreview();
       store.dispose();
     };
   });
