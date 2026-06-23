@@ -1,27 +1,20 @@
 <script lang="ts">
-  import { obs, type CanvasInfo, type MultistreamStatus } from "./lib/bridge";
-  import { canvasFocus, setFocusedCanvas } from "./lib/canvasFocus.svelte";
-  import TopBar from "./lib/TopBar.svelte";
-  import ScenesPanel from "./lib/ScenesPanel.svelte";
-  import SourcesPanel from "./lib/SourcesPanel.svelte";
-  import PreviewArea from "./lib/PreviewArea.svelte";
-  import CanvasPanel from "./lib/CanvasPanel.svelte";
-  import MultistreamPanel from "./lib/MultistreamPanel.svelte";
-  import AudioMixer from "./lib/AudioMixer.svelte";
-  import SceneTransitions from "./lib/SceneTransitions.svelte";
-  import Controls from "./lib/Controls.svelte";
+  import { obs } from "./lib/bridge";
+  import MenuBar from "./lib/MenuBar.svelte";
+  import DockHost from "./lib/dock/DockHost.svelte";
+  import { DOCKS, panelOptions } from "./lib/dock/dockRegistry";
+  import { themeStore } from "./lib/theme/themeStore.svelte";
+  import SettingsModal from "./lib/SettingsModal.svelte";
+  import { settingsOpener, closeSettings } from "./lib/settingsOpener.svelte";
+  import type { DockviewApi } from "dockview-core";
 
-  let version = $state<string>("…");
+  let version = $state("…");
+  let api = $state<DockviewApi | undefined>(undefined);
+  let visibleDocks = $state<Record<string, boolean>>({});
+  let locked = $state(false);
 
-  // Canvas list drives the layout: the Default canvas is the central preview +
-  // left Scenes dock; non-Default enabled canvases become right-column side docks.
-  let canvases = $state<CanvasInfo[]>([]);
-  let loaded = $state(false);
-  // One representative live-status row per canvas (for the side docks' dots).
-  let statusByCanvas = $state<Record<string, MultistreamStatus>>({});
-
-  const defaultCanvas = $derived(canvases.find((c) => c.isDefault) ?? null);
-  const additionals = $derived(canvases.filter((c) => !c.isDefault && c.enabled));
+  // Apply the saved (or default Industrial) theme before first paint settles.
+  void themeStore.hydrate();
 
   $effect(() => {
     obs
@@ -30,159 +23,120 @@
       .catch((e) => (version = "error: " + (e as Error).message));
   });
 
-  async function load() {
-    try {
-      canvases = await obs.call("canvas.list");
-    } catch {
-      // keep prior list; status bar / docks surface failures elsewhere
-    } finally {
-      loaded = true;
+  // Single tear-out seam. P1 defers real floating-window detach to next phase
+  // (see the plan's floating-scope decision); the ⧉ affordance routes here.
+  function detachDock(panelId: string): void {
+    console.log("OBSSHELL: detach requested for " + panelId + " (wired next phase)");
+  }
+
+  // Build the dock-model.html default arrangement:
+  //   center column = Preview (top) over a bottom row of
+  //     Scenes · Sources · Audio Mixer · Transitions · Controls (Controls rightmost)
+  //   right rail   = Canvas placeholder (top) over Multistream, right of the center.
+  function buildDefaultLayout(dv: DockviewApi): void {
+    dv.clear();
+    dv.addPanel(panelOptions("preview", detachDock));
+    // Bottom row, left-to-right, anchored below the preview.
+    dv.addPanel(panelOptions("scenes", detachDock, { position: { referencePanel: "preview", direction: "below" } }));
+    dv.addPanel(panelOptions("sources", detachDock, { position: { referencePanel: "scenes", direction: "right" } }));
+    dv.addPanel(panelOptions("mixer", detachDock, { position: { referencePanel: "sources", direction: "right" } }));
+    dv.addPanel(
+      panelOptions("transitions", detachDock, { position: { referencePanel: "mixer", direction: "right" } }),
+    );
+    dv.addPanel(
+      panelOptions("controls", detachDock, { position: { referencePanel: "transitions", direction: "right" } }),
+    );
+    // Right rail spanning the height, right of the preview/center column.
+    dv.addPanel(
+      panelOptions("canvas-placeholder", detachDock, { position: { referencePanel: "preview", direction: "right" } }),
+    );
+    dv.addPanel(
+      panelOptions("multistream", detachDock, {
+        position: { referencePanel: "canvas-placeholder", direction: "below" },
+      }),
+    );
+    logDocks(dv);
+    refreshVisible();
+  }
+
+  // One log line per dock added, so a headless smoke run can confirm the full
+  // default layout was assembled (visual fidelity vs the mock is GUI-owed).
+  function logDocks(dv: DockviewApi): void {
+    for (const p of dv.panels) {
+      console.log("OBSSHELL: dock added -> " + p.id);
     }
+    console.log("OBSSHELL: default layout built (" + dv.panels.length + " docks)");
   }
 
-  // Default the shared Sources focus to the Default canvas once known, without
-  // stomping a focus the user later set by clicking a side dock.
-  $effect(() => {
-    const def = defaultCanvas;
-    if (def && canvasFocus.uuid === null) setFocusedCanvas(def.uuid);
-  });
-
-  function rank(s: MultistreamStatus["state"]): number {
-    return s === "live" ? 3 : s === "connecting" ? 2 : s === "error" ? 1 : 0;
+  function refreshVisible(): void {
+    if (!api) return;
+    const present = new Set(api.panels.map((p) => p.id));
+    const next: Record<string, boolean> = {};
+    for (const d of DOCKS) next[d.id] = present.has(d.id);
+    visibleDocks = next;
   }
 
-  function applyStatuses(rows: MultistreamStatus[]) {
-    const next: Record<string, MultistreamStatus> = {};
-    for (const r of rows) {
-      const prev = next[r.canvasUuid];
-      if (!prev || rank(r.state) > rank(prev.state)) next[r.canvasUuid] = r;
+  function onReady(dv: DockviewApi): void {
+    api = dv;
+    dv.onDidLayoutChange(() => refreshVisible());
+    buildDefaultLayout(dv);
+  }
+
+  function toggleDock(id: string): void {
+    if (!api) return;
+    const existing = api.getPanel(id);
+    if (existing) {
+      api.removePanel(existing);
+    } else {
+      api.addPanel(panelOptions(id, detachDock));
     }
-    statusByCanvas = next;
+    refreshVisible();
   }
 
-  $effect(() => {
-    void load();
-    // canvas.changed reshapes the list; an output enable/disable flips a canvas's
-    // `enabled` gate, so re-fetch on both.
-    const offCanvas = obs.on("canvas.changed", () => void load());
-    const offBinding = obs.on("outputBinding.changed", () => void load());
-    const offStatus = obs.on("multistream.changed", (p) => applyStatuses(p.outputs ?? []));
-    obs
-      .call("multistream.status")
-      .then((r) => applyStatuses(r.outputs ?? []))
-      .catch(() => {});
-    return () => {
-      offCanvas();
-      offBinding();
-      offStatus();
-    };
-  });
+  function resetLayout(): void {
+    if (api) buildDefaultLayout(api);
+  }
+
+  // Dockview 6.6.1 has no `locked` api setter; disabling drag-and-drop via
+  // updateOptions is the lock mechanism — panels can't be re-tiled or torn while on.
+  function toggleLock(): void {
+    locked = !locked;
+    api?.updateOptions({ disableDnd: locked });
+  }
 </script>
 
 <div class="shell">
-  <TopBar />
-
-  <main>
-    <aside class="left">
-      {#if defaultCanvas}
-        <ScenesPanel canvas={defaultCanvas.uuid} isDefault={true} />
-      {/if}
-      <SourcesPanel />
-    </aside>
-
-    <div class="center">
-      {#if defaultCanvas}
-        <PreviewArea canvas={defaultCanvas.uuid} label={defaultCanvas.name} />
-      {:else if loaded}
-        <div class="center-empty"><p class="dim">No Default canvas</p></div>
-      {/if}
-    </div>
-
-    <aside class="right">
-      {#each additionals as c (c.uuid)}
-        <CanvasPanel canvas={c} status={statusByCanvas[c.uuid] ?? null} />
-      {/each}
-      <MultistreamPanel />
-    </aside>
-
-    <div class="bottom">
-      <AudioMixer />
-      <SceneTransitions />
-      <Controls />
-    </div>
-  </main>
-
-  <footer class="statusbar">
-    <span>libobs {version}</span>
-  </footer>
+  <MenuBar {visibleDocks} {toggleDock} {resetLayout} {locked} {toggleLock} />
+  <div class="host-area">
+    <DockHost {onReady} />
+  </div>
+  <footer class="statusbar"><span>libobs {version}</span></footer>
 </div>
+
+{#if settingsOpener.open}
+  <SettingsModal initialTab={settingsOpener.tab} editCanvas={settingsOpener.editCanvas} onClose={closeSettings} />
+{/if}
 
 <style>
   .shell {
     display: flex;
     flex-direction: column;
     height: 100%;
+    background: var(--color-base);
   }
-  main {
+  .host-area {
     flex: 1;
-    display: grid;
-    grid-template-columns: 280px 1fr 320px;
-    grid-template-rows: 1fr auto;
-    grid-template-areas:
-      "left center right"
-      "bottom bottom bottom";
-    gap: 14px;
-    padding: 14px;
     min-height: 0;
-  }
-  .left {
-    grid-area: left;
-    display: flex;
-    flex-direction: column;
-    gap: 14px;
-    min-height: 0;
-    overflow: auto;
-  }
-  .center {
-    grid-area: center;
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-    min-width: 0;
-  }
-  .center-empty {
-    flex: 1;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border: 1px dashed var(--border);
-    border-radius: 10px;
-  }
-  .right {
-    grid-area: right;
-    display: flex;
-    flex-direction: column;
-    gap: 14px;
-    min-height: 0;
-    overflow: auto;
-  }
-  .bottom {
-    grid-area: bottom;
-    display: grid;
-    grid-template-columns: 1fr 1fr 240px;
-    gap: 14px;
-    min-height: 0;
-  }
-  .dim {
-    color: var(--text-dim);
-    margin: 0;
-    font-size: 12px;
   }
   .statusbar {
-    border-top: 1px solid var(--border);
-    background: var(--bg-raised);
-    padding: 6px 18px;
-    font-size: 12px;
-    color: var(--text-dim);
+    flex: 0 0 auto;
+    border-top: var(--border-weight) solid var(--color-border);
+    background: var(--color-surface);
+    padding: 4px 12px;
+    font-family: var(--font-ui);
+    font-size: 10px;
+    letter-spacing: var(--letter-spacing);
+    text-transform: var(--label-case);
+    color: var(--color-muted);
   }
 </style>
