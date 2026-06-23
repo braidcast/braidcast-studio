@@ -1493,6 +1493,29 @@ const PropertyKind *FindPropertyKind(const std::string &kind)
 // serialized descriptor array; `values` is the object's current settings as a
 // JSON object (so the form binds the same data the object reads). Frees the
 // fetched properties; does NOT release `obj`.
+// Flatten a serialized property tree into a flat name->value map. The per-property
+// serializer reads each value via the default-falling-back obs_data_get_*, so this
+// map carries a source type's defaults (e.g. Display Capture's method/monitor) that
+// obs_data_get_json would omit -- it only emits explicitly-set values, leaving a
+// freshly created source's defaulted fields blank in the properties form.
+static void CollectPropertyValues(const json &descriptors, json &values)
+{
+	if (!descriptors.is_array()) {
+		return;
+	}
+	for (const auto &d : descriptors) {
+		const auto nameIt = d.find("name");
+		const auto valIt = d.find("value");
+		if (nameIt != d.end() && nameIt->is_string() && valIt != d.end()) {
+			values[nameIt->get<std::string>()] = *valIt;
+		}
+		const auto propsIt = d.find("props"); // checkable/normal group children
+		if (propsIt != d.end()) {
+			CollectPropertyValues(*propsIt, values);
+		}
+	}
+}
+
 bool BuildPropertiesResult(const PropertyKind *kind, void *obj, json &result, std::string &error)
 {
 	obs_properties_t *props = kind->get_props(obj);
@@ -1500,16 +1523,11 @@ bool BuildPropertiesResult(const PropertyKind *kind, void *obj, json &result, st
 
 	json descriptors = PropertiesSerializer::SerializeProperties(props, settings);
 
+	// Build the value map from the serialized descriptors (default-aware) rather
+	// than obs_data_get_json (set-values only), so a source type's get_defaults
+	// values populate the form instead of showing blank until manually touched.
 	json values = json::object();
-	if (settings) {
-		const char *raw = obs_data_get_json(settings);
-		if (raw) {
-			values = json::parse(raw, nullptr, false);
-			if (values.is_discarded()) {
-				values = json::object();
-			}
-		}
-	}
+	CollectPropertyValues(descriptors, values);
 
 	if (props) {
 		obs_properties_destroy(props);
