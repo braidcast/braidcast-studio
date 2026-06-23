@@ -16,7 +16,7 @@ include(defaults)
 include(helpers)
 
 option(ENABLE_FRONTEND "Enable building with UI (requires Qt)" ON)
-option(USE_LEGACY_FRONTEND "Build the legacy Qt frontend (transitional)" ON)
+option(USE_LEGACY_FRONTEND "Build the legacy Qt frontend (transitional)" OFF)
 option(ENABLE_SCRIPTING "Enable scripting support" ON)
 option(ENABLE_HEVC "Enable HEVC encoders" ON)
 
