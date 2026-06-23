@@ -333,6 +333,25 @@ export interface AudioLevel {
   peak: number;
 }
 
+/** A selectable audio device as reported by audio.listDevices (includes "Default"). */
+export interface AudioDevice {
+  id: string;
+  name: string;
+}
+
+/**
+ * One global audio channel slot as reported by audio.getGlobalDevices (6 entries:
+ * ch1/2 desktop output, ch3-6 mic input). `deviceId: null` = the channel is disabled.
+ */
+export interface GlobalAudioSlot {
+  channel: number;
+  role: "desktop" | "mic";
+  label: string;
+  isInput: boolean;
+  deviceId: string | null;
+  active: boolean;
+}
+
 /** Known bridge methods. Extend as the C++ Bridge gains methods. */
 export interface ObsMethods {
   getVersion: string;
@@ -416,6 +435,12 @@ export interface ObsMethods {
   "audio.list": { sources: AudioSource[] };
   "audio.setDeflection": { uuid: string; deflection: number; volumeDb: number };
   "audio.setMuted": { uuid: string; muted: boolean };
+  // Global audio device pickers (Desktop Audio / Mic channels). setGlobalDevice
+  // applies LIVE: the backend creates/updates/removes the source, rebuilds the
+  // mixer, and emits audio.changed. deviceId null/"" disables the channel.
+  "audio.listDevices": AudioDevice[];
+  "audio.getGlobalDevices": GlobalAudioSlot[];
+  "audio.setGlobalDevice": { channel: number; deviceId: string | null };
   // Shell persistence (P1). theme.* stores an opaque JSON blob the JS theme store
   // stringifies/parses into its own schema (active id + live tokens + custom
   // themes); layout.* stores the serialized Dockview state (a JSON string). load

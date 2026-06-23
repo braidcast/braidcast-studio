@@ -1,5 +1,12 @@
 <script lang="ts">
-  import { obs, type VideoSettings, type AudioSettings, type SpeakerLayout } from "./bridge";
+  import {
+    obs,
+    type VideoSettings,
+    type AudioSettings,
+    type SpeakerLayout,
+    type AudioDevice,
+    type GlobalAudioSlot,
+  } from "./bridge";
   import CanvasesTab from "./CanvasesTab.svelte";
   import StreamsTab from "./StreamsTab.svelte";
   import OutputsTab from "./OutputsTab.svelte";
@@ -54,6 +61,12 @@
   let sampleRate = $state<number>(48000);
   let speakers = $state<SpeakerLayout>("stereo");
 
+  // Global audio device pickers (live, not gated behind Apply).
+  let globalSlots = $state<GlobalAudioSlot[]>([]);
+  let inputDevices = $state<AudioDevice[]>([]);
+  let outputDevices = $state<AudioDevice[]>([]);
+  let deviceError = $state<string | null>(null);
+
   let loaded = $state(false);
   let videoError = $state<string | null>(null);
   let audioError = $state<string | null>(null);
@@ -68,10 +81,19 @@
 
   async function load() {
     try {
-      const [v, a] = await Promise.all([obs.call("settings.getVideo"), obs.call("settings.getAudio")]);
+      const [v, a, slots, ins, outs] = await Promise.all([
+        obs.call("settings.getVideo"),
+        obs.call("settings.getAudio"),
+        obs.call("audio.getGlobalDevices"),
+        obs.call("audio.listDevices", { kind: "input" }),
+        obs.call("audio.listDevices", { kind: "output" }),
+      ]);
       hydrateVideo(v);
       sampleRate = a.sampleRate;
       speakers = a.speakers;
+      globalSlots = slots;
+      inputDevices = ins;
+      outputDevices = outs;
     } catch (e) {
       videoError = (e as Error).message;
     } finally {
@@ -150,6 +172,20 @@
       audioError = (e as Error).message;
     } finally {
       applyingAudio = false;
+    }
+  }
+
+  async function setGlobalDevice(channel: number, value: string) {
+    deviceError = null;
+    const deviceId = value === "" ? null : value;
+    try {
+      await obs.call("audio.setGlobalDevice", { channel, deviceId });
+      // reflect the change locally so the select stays in sync
+      globalSlots = globalSlots.map((s) =>
+        s.channel === channel ? { ...s, deviceId, active: deviceId !== null } : s,
+      );
+    } catch (e) {
+      deviceError = (e as Error).message;
     }
   }
 
@@ -285,6 +321,33 @@
               {applyingAudio ? "Applying…" : "Apply Audio"}
             </button>
           </div>
+        </section>
+
+        <section class="group">
+          <h4>Global Audio Devices</h4>
+
+          {#each globalSlots as slot (slot.channel)}
+            {@const devices = slot.isInput ? inputDevices : outputDevices}
+            {@const known = slot.deviceId === null || devices.some((d) => d.id === slot.deviceId)}
+            <div class="field">
+              <span class="flabel">{slot.label}</span>
+              <select
+                value={slot.deviceId ?? ""}
+                onchange={(e) => void setGlobalDevice(slot.channel, e.currentTarget.value)}
+              >
+                <option value="">Disabled</option>
+                {#each devices as d (d.id)}
+                  <option value={d.id}>{d.name}</option>
+                {/each}
+                {#if !known && slot.deviceId !== null}
+                  <option value={slot.deviceId}>{slot.deviceId} (unavailable)</option>
+                {/if}
+              </select>
+            </div>
+          {/each}
+
+          {#if deviceError}<p class="error">{deviceError}</p>{/if}
+          <p class="dim hint">Changes apply immediately.</p>
         </section>
       {/if}
     </div>
@@ -430,6 +493,20 @@
     outline: none;
     border-color: var(--accent);
   }
+  select {
+    background: var(--bg-sunken);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 7px 10px;
+    color: var(--text);
+    font: inherit;
+    width: 100%;
+    max-width: 320px;
+  }
+  select:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
   .actions {
     display: flex;
     justify-content: flex-end;
@@ -476,6 +553,10 @@
   .dim {
     color: var(--text-dim);
     margin: 0;
+  }
+  .hint {
+    font-size: 12px;
+    margin-top: 8px;
   }
   .error {
     color: var(--off, #d65a5a);
