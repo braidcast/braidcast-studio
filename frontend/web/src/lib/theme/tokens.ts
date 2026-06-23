@@ -61,11 +61,17 @@ export const TOKEN_CSS_VARS: Record<keyof ThemeTokens, string> = {
 };
 
 // Write every token to :root as a CSS variable. Idempotent; safe to call on every
-// preset switch. --radius is forced to "0" regardless of the incoming value.
+// preset switch. --radius is forced to "0" regardless of the incoming value. The
+// three string-enum tokens are also mirrored onto :root as data-* attributes, so
+// component CSS can branch on them via attribute selectors (CSS cannot match a
+// custom property's string value).
 export function applyTheme(tokens: ThemeTokens): void {
   const root = document.documentElement;
   for (const key of Object.keys(TOKEN_CSS_VARS) as (keyof ThemeTokens)[]) {
     const value = key === "radius" ? "0" : String(tokens[key]);
     root.style.setProperty(TOKEN_CSS_VARS[key], value);
   }
+  root.dataset.selectionStyle = tokens.selectionStyle;
+  root.dataset.meterStyle = tokens.meterStyle;
+  root.dataset.density = tokens.density;
 }
