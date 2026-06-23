@@ -4,6 +4,7 @@
   import { openSettings } from "../settingsOpener.svelte";
   import { previewSuspended } from "../previewGate.svelte";
   import { WINDOW_ID } from "../windowContext";
+  import ContextMenu, { type ContextMenuItem } from "../ContextMenu.svelte";
 
   // A composite, inseparable dock for one NON-DEFAULT canvas (hierarchy-model.html
   // §1 right column): an inline preview + this canvas's own scenes + its own
@@ -21,6 +22,14 @@
   function report(e: unknown) {
     error = (e as Error).message;
   }
+
+  function focusOnMount(node: HTMLInputElement) {
+    node.focus();
+    node.select();
+  }
+
+  // One context menu for the whole dock (scene rows and source rows both use it).
+  let menu = $state<{ x: number; y: number; items: (ContextMenuItem | null)[] } | null>(null);
 
   // ---- inline preview region (native overlay scoped to this canvas) -----------
   let previewEl = $state<HTMLElement | undefined>();
@@ -71,6 +80,50 @@
       return;
     }
     obs.call("scenes.setCurrent", { canvas: canvasUuid, name }).catch(report);
+  }
+
+  // ---- scene rename / remove (scoped to this canvas) -------------------------
+  let renamingScene = $state<string | null>(null);
+  let renameSceneTo = $state("");
+
+  function beginRenameScene(name: string) {
+    renamingScene = name;
+    renameSceneTo = name;
+  }
+  function renameScene(from: string, to: string) {
+    obs.call("scenes.rename", { canvas: canvasUuid, from, to }).catch(report);
+  }
+  function commitRenameScene() {
+    const from = renamingScene;
+    const to = renameSceneTo.trim();
+    renamingScene = null;
+    if (!from || !to || to === from) {
+      return;
+    }
+    renameScene(from, to);
+  }
+  function onRenameSceneKey(e: KeyboardEvent) {
+    if (e.key === "Enter") {
+      commitRenameScene();
+    } else if (e.key === "Escape") {
+      renamingScene = null;
+    }
+  }
+  function removeScene(name: string) {
+    obs.call("scenes.remove", { canvas: canvasUuid, name }).catch(report);
+  }
+
+  function openSceneMenu(e: MouseEvent, name: string) {
+    e.preventDefault();
+    menu = {
+      x: e.clientX,
+      y: e.clientY,
+      items: [
+        { label: "Rename", action: () => beginRenameScene(name) },
+        null,
+        { label: "Remove", danger: true, disabled: scenes.length <= 1, action: () => removeScene(name) },
+      ],
+    };
   }
 
   // ---- sources (current scene of this canvas) --------------------------------
@@ -132,6 +185,56 @@
     } catch (e) {
       report(e);
     }
+  }
+
+  // ---- source rename (scoped to this canvas's current scene) -----------------
+  let renamingId = $state<number | null>(null);
+  let renameTo = $state("");
+
+  function beginRenameSource(item: SceneItem) {
+    renamingId = item.id;
+    renameTo = item.source ?? "";
+  }
+  async function commitRenameSource() {
+    const id = renamingId;
+    const name = renameTo.trim();
+    renamingId = null;
+    if (id === null || !name) {
+      return;
+    }
+    try {
+      await obs.call("sources.rename", { canvas: canvasUuid, scene: currentScene, id, name });
+    } catch (e) {
+      report(e);
+    }
+  }
+  function onRenameSourceKey(e: KeyboardEvent) {
+    if (e.key === "Enter") {
+      void commitRenameSource();
+    } else if (e.key === "Escape") {
+      renamingId = null;
+    }
+  }
+
+  function openSourceMenu(e: MouseEvent, item: SceneItem, idx: number) {
+    e.preventDefault();
+    menu = {
+      x: e.clientX,
+      y: e.clientY,
+      items: [
+        { label: "Rename", action: () => beginRenameSource(item) },
+        null,
+        { label: item.visible ? "Hide" : "Show", action: () => void toggleVisible(item) },
+        { label: item.locked ? "Unlock" : "Lock", action: () => void toggleLocked(item) },
+        null,
+        { label: "Move Up", disabled: idx === 0, action: () => void reorder(item, "up") },
+        { label: "Move Down", disabled: idx === items.length - 1, action: () => void reorder(item, "down") },
+        { label: "Move to Top", disabled: idx === 0, action: () => void reorder(item, "top") },
+        { label: "Move to Bottom", disabled: idx === items.length - 1, action: () => void reorder(item, "bottom") },
+        null,
+        { label: "Remove", danger: true, action: () => void remove(item) },
+      ],
+    };
   }
 
   // ---- footer: polled live-status dot for this canvas ------------------------
@@ -238,8 +341,18 @@
       <div class="col-head">Scenes</div>
       <ul class="list">
         {#each scenes as scene (scene.name)}
-          <li class="dock-row" class:sel={scene.current}>
-            <button class="dock-label" onclick={() => setCurrentScene(scene.name)}>{scene.name}</button>
+          <li class="dock-row" class:sel={scene.current} oncontextmenu={(e) => openSceneMenu(e, scene.name)}>
+            {#if renamingScene === scene.name}
+              <input
+                class="inline"
+                bind:value={renameSceneTo}
+                onkeydown={onRenameSceneKey}
+                onblur={commitRenameScene}
+                use:focusOnMount
+              />
+            {:else}
+              <button class="dock-label" ondblclick={() => beginRenameScene(scene.name)} onclick={() => setCurrentScene(scene.name)}>{scene.name}</button>
+            {/if}
           </li>
         {/each}
         {#if loaded && scenes.length === 0}
@@ -252,14 +365,29 @@
       <div class="col-head">Sources</div>
       <ul class="list">
         {#each items as item, idx (item.id)}
-          <li class="dock-row" class:sel={item.id === selectedId} class:dimmed={!item.visible}>
+          <li
+            class="dock-row"
+            class:sel={item.id === selectedId}
+            class:dimmed={!item.visible}
+            oncontextmenu={(e) => openSourceMenu(e, item, idx)}
+          >
             <button class="dock-icon" title={item.visible ? "Hide" : "Show"} onclick={() => void toggleVisible(item)}>
               {item.visible ? "👁" : "🚫"}
             </button>
             <button class="dock-icon" title={item.locked ? "Unlock" : "Lock"} onclick={() => void toggleLocked(item)}>
               {item.locked ? "🔒" : "🔓"}
             </button>
-            <button class="dock-label" onclick={() => selectItem(item)}>{item.source ?? "(unnamed)"}</button>
+            {#if renamingId === item.id}
+              <input
+                class="inline"
+                bind:value={renameTo}
+                onkeydown={onRenameSourceKey}
+                onblur={commitRenameSource}
+                use:focusOnMount
+              />
+            {:else}
+              <button class="dock-label" onclick={() => selectItem(item)}>{item.source ?? "(unnamed)"}</button>
+            {/if}
             <span class="dock-actions">
               <button class="dock-icon" title="Move up" disabled={idx === 0} onclick={() => void reorder(item, "up")}>▲</button
               >
@@ -287,6 +415,10 @@
     >
   </footer>
 </div>
+
+{#if menu}
+  <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => (menu = null)} />
+{/if}
 
 <style>
   /* Override the shared .dock-body: this composite owns its inner scroll regions,
@@ -352,6 +484,18 @@
   }
   .dock-label {
     font-size: 10px;
+  }
+  .inline {
+    flex: 1;
+    background: var(--color-base);
+    border: var(--border-weight) solid var(--color-accent);
+    color: var(--color-text);
+    font-family: var(--font-ui);
+    font-size: 11px;
+    padding: 3px 5px;
+  }
+  .inline:focus {
+    outline: none;
   }
   .dock-icon {
     padding: 1px 3px;

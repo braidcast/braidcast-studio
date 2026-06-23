@@ -356,6 +356,8 @@ export interface ObsMethods {
   "scenes.remove": { removed: string };
   "scenes.setCurrent": { name: string };
   "scenes.rename": { name: string };
+  // Duplicate a scene (global channel-0 path only; additional canvases unsupported).
+  "scenes.duplicate": { name: string };
   // Scene reorder is NOT supported by the backend: libobs enumerates scenes in
   // creation order and the new frontend has no scene-collection persistence to
   // store a custom order, so this method always rejects with a clear error. Kept
@@ -372,6 +374,8 @@ export interface ObsMethods {
   // an optional `canvas` uuid to add into an additional canvas's current scene.
   "sourceTypes.list": SourceType[];
   "sources.create": { id: number; source: string };
+  // Rename a scene item's underlying source (canvas/scene optional, default current).
+  "sources.rename": { id: number; source: string };
   "sources.listExisting": string[];
   "sources.addExisting": { id: number; source: string };
   // Generic obs_properties renderer (4.3.2).

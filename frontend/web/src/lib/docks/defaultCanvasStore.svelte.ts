@@ -59,6 +59,10 @@ class DefaultCanvasStore {
     await obs.call("scenes.rename", { from, to });
   }
 
+  async duplicate(name: string): Promise<void> {
+    await obs.call("scenes.duplicate", { name });
+  }
+
   async remove(name: string): Promise<void> {
     await obs.call("scenes.remove", { name });
   }

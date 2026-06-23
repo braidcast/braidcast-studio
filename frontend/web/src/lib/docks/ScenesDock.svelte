@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { defaultCanvas } from "./defaultCanvasStore.svelte";
+  import ContextMenu, { type ContextMenuItem } from "../ContextMenu.svelte";
 
   // The mount adapter strips internal __* keys; this dock declares no props.
   let {}: Record<string, unknown> = $props();
@@ -12,6 +13,7 @@
   let renamingFrom = $state<string | null>(null);
   let renameTo = $state("");
   let actionError = $state<string | null>(null);
+  let menu = $state<{ x: number; y: number; items: (ContextMenuItem | null)[] } | null>(null);
 
   function focusOnMount(node: HTMLInputElement) {
     node.focus();
@@ -68,6 +70,11 @@
     }
   }
 
+  function duplicate(name: string) {
+    actionError = null;
+    defaultCanvas.duplicate(name).catch(report);
+  }
+
   async function remove(name: string) {
     actionError = null;
     try {
@@ -75,6 +82,20 @@
     } catch (e) {
       report(e);
     }
+  }
+
+  function openMenu(e: MouseEvent, name: string) {
+    e.preventDefault();
+    menu = {
+      x: e.clientX,
+      y: e.clientY,
+      items: [
+        { label: "Rename", action: () => beginRename(name) },
+        { label: "Duplicate", action: () => duplicate(name) },
+        null,
+        { label: "Remove", danger: true, disabled: defaultCanvas.scenes.length <= 1, action: () => void remove(name) },
+      ],
+    };
   }
 
   function onAddKey(e: KeyboardEvent) {
@@ -106,7 +127,7 @@
   {:else}
     <ul class="dock-list">
       {#each defaultCanvas.scenes as scene (scene.name)}
-        <li class="dock-row" class:sel={scene.current}>
+        <li class="dock-row" class:sel={scene.current} oncontextmenu={(e) => openMenu(e, scene.name)}>
           {#if renamingFrom === scene.name}
             <input
               class="inline"
@@ -155,6 +176,10 @@
     <p class="dock-msg err">{actionError}</p>
   {/if}
 </div>
+
+{#if menu}
+  <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => (menu = null)} />
+{/if}
 
 <style>
   .inline {

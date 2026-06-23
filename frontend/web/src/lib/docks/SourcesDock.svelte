@@ -5,6 +5,7 @@
   import AddSourceModal from "../AddSourceModal.svelte";
   import PropertyForm from "../properties/PropertyForm.svelte";
   import { suspendPreview } from "../previewGate.svelte";
+  import ContextMenu, { type ContextMenuItem } from "../ContextMenu.svelte";
 
   let {}: Record<string, unknown> = $props();
 
@@ -19,9 +20,17 @@
   let selectedItemId = $state<number | null>(null);
   let propsForSource = $state<string | null>(null);
   let adding = $state(false);
+  let renamingId = $state<number | null>(null);
+  let renameTo = $state("");
+  let menu = $state<{ x: number; y: number; items: (ContextMenuItem | null)[] } | null>(null);
 
   function report(e: unknown) {
     error = (e as Error).message;
+  }
+
+  function focusOnMount(node: HTMLInputElement) {
+    node.focus();
+    node.select();
   }
 
   function openProperties(item: SceneItem) {
@@ -124,6 +133,55 @@
       report(e);
     }
   }
+
+  function beginRename(item: SceneItem) {
+    renamingId = item.id;
+    renameTo = item.source ?? "";
+  }
+
+  async function commitRename() {
+    const id = renamingId;
+    const name = renameTo.trim();
+    renamingId = null;
+    if (id === null || !name) {
+      return;
+    }
+    try {
+      await obs.call("sources.rename", { scene: currentScene, id, name });
+    } catch (e) {
+      report(e);
+    }
+  }
+
+  function onRenameKey(e: KeyboardEvent) {
+    if (e.key === "Enter") {
+      void commitRename();
+    } else if (e.key === "Escape") {
+      renamingId = null;
+    }
+  }
+
+  function openMenu(e: MouseEvent, item: SceneItem, idx: number) {
+    e.preventDefault();
+    menu = {
+      x: e.clientX,
+      y: e.clientY,
+      items: [
+        { label: "Properties", action: () => openProperties(item) },
+        { label: "Rename", action: () => beginRename(item) },
+        null,
+        { label: item.visible ? "Hide" : "Show", action: () => void toggleVisible(item) },
+        { label: item.locked ? "Unlock" : "Lock", action: () => void toggleLocked(item) },
+        null,
+        { label: "Move Up", disabled: idx === 0, action: () => void reorder(item, "up") },
+        { label: "Move Down", disabled: idx === items.length - 1, action: () => void reorder(item, "down") },
+        { label: "Move to Top", disabled: idx === 0, action: () => void reorder(item, "top") },
+        { label: "Move to Bottom", disabled: idx === items.length - 1, action: () => void reorder(item, "bottom") },
+        null,
+        { label: "Remove", danger: true, action: () => void remove(item) },
+      ],
+    };
+  }
 </script>
 
 <div class="dock-body">
@@ -142,16 +200,25 @@
   {:else}
     <ul class="dock-list">
       {#each items as item, idx (item.id)}
-        <li class="dock-row" class:sel={item.id === selectedItemId} class:dimmed={!item.visible}>
+        <li
+          class="dock-row"
+          class:sel={item.id === selectedItemId}
+          class:dimmed={!item.visible}
+          oncontextmenu={(e) => openMenu(e, item, idx)}
+        >
           <button class="dock-icon" title={item.visible ? "Hide" : "Show"} onclick={() => void toggleVisible(item)}>
             {item.visible ? "👁" : "🚫"}
           </button>
           <button class="dock-icon" title={item.locked ? "Unlock" : "Lock"} onclick={() => void toggleLocked(item)}>
             {item.locked ? "🔒" : "🔓"}
           </button>
-          <button class="dock-label" onclick={() => selectItem(item)} ondblclick={() => openProperties(item)}>
-            {item.source ?? "(unnamed)"}
-          </button>
+          {#if renamingId === item.id}
+            <input class="inline" bind:value={renameTo} onkeydown={onRenameKey} onblur={commitRename} use:focusOnMount />
+          {:else}
+            <button class="dock-label" onclick={() => selectItem(item)} ondblclick={() => openProperties(item)}>
+              {item.source ?? "(unnamed)"}
+            </button>
+          {/if}
           <span class="dock-actions">
             <button class="dock-icon" title="Properties" onclick={() => openProperties(item)}>⚙</button>
             <button class="dock-icon" title="Move up" disabled={idx === 0} onclick={() => void reorder(item, "up")}>▲</button>
@@ -193,10 +260,26 @@
   </div>
 {/if}
 
+{#if menu}
+  <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => (menu = null)} />
+{/if}
+
 <style>
   /* Sources rows are one row shorter than the shared default (5px 7px). */
   .dock-row {
     padding: 4px 7px;
+  }
+  .inline {
+    flex: 1;
+    background: var(--color-base);
+    border: var(--border-weight) solid var(--color-accent);
+    color: var(--color-text);
+    font-family: var(--font-ui);
+    font-size: 11px;
+    padding: 3px 5px;
+  }
+  .inline:focus {
+    outline: none;
   }
   .modal-backdrop {
     position: fixed;
