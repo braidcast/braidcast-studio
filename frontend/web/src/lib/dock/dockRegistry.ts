@@ -3,6 +3,7 @@ import type { AddPanelOptions } from "dockview-core";
 import PlaceholderDock from "../docks/PlaceholderDock.svelte";
 import ControlsDock from "../docks/ControlsDock.svelte";
 import ScenesDock from "../docks/ScenesDock.svelte";
+import SourcesDock from "../docks/SourcesDock.svelte";
 
 // One entry per dock in the §3.5 inventory. `id` is the stable Dockview panel id
 // (also the dock id the future window.detach uses). `accent` marks Controls /
@@ -24,7 +25,7 @@ export const DOCKS: DockDef[] = [
     params: { label: "Program / Preview", phase: "P2" },
   },
   { id: "scenes", title: "Scenes", component: ScenesDock, params: {} },
-  { id: "sources", title: "Sources", component: PlaceholderDock, params: { label: "Source list", phase: "P2" } },
+  { id: "sources", title: "Sources", component: SourcesDock, params: {} },
   { id: "mixer", title: "Audio Mixer", component: PlaceholderDock, params: { label: "Faders", phase: "P4" } },
   { id: "transitions", title: "Transitions", component: PlaceholderDock, params: { label: "Fade", phase: "P4" } },
   { id: "controls", title: "Controls", component: ControlsDock, params: {}, accent: true },
