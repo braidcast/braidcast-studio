@@ -1,9 +1,8 @@
 <script lang="ts">
   import Menu, { type MenuItem } from "./Menu.svelte";
   import { DOCKS } from "./dock/dockRegistry";
-  import { PRESETS } from "./theme/presets";
-  import { themeStore } from "./theme/themeStore.svelte";
   import { openSettings } from "./settingsOpener.svelte";
+  import { openThemeEditor } from "./themeEditorOpener.svelte";
 
   // App passes the dock-visibility map + the toggle / reset / lock actions so the
   // Docks menu drives the live layout. visibleDocks[id] === false => hidden.
@@ -41,7 +40,7 @@
     { label: "Fullscreen Preview", disabled: true },
   ];
   // Docks menu: one toggle per dock (checked = visible) + Reset + Lock + the theme
-  // preset switcher (the full editor is a later phase).
+  // editor (preset switching + full token editing live in the editor now).
   const dockItems: (MenuItem | null)[] = $derived([
     ...DOCKS.map((d) => ({
       label: d.title,
@@ -52,11 +51,7 @@
     { label: "Reset Layout", action: resetLayout },
     { label: "Lock Docks", checked: locked, action: toggleLock },
     null,
-    ...PRESETS.map((p) => ({
-      label: "Theme: " + p.name,
-      checked: themeStore.activeId === p.id,
-      action: () => void themeStore.setPreset(p.id),
-    })),
+    { label: "Theme Editor…", action: () => openThemeEditor() },
   ]);
   const helpItems: (MenuItem | null)[] = [{ label: "About OBS MultiStreamer", disabled: true }];
 </script>

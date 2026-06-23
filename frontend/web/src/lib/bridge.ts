@@ -416,12 +416,13 @@ export interface ObsMethods {
   "audio.list": { sources: AudioSource[] };
   "audio.setDeflection": { uuid: string; deflection: number; volumeDb: number };
   "audio.setMuted": { uuid: string; muted: boolean };
-  // Shell persistence (P1). theme.* stores the active preset id; layout.* stores
-  // the serialized Dockview state (a JSON string). load returns "" when nothing
-  // is saved yet, so the shell falls back to the default preset / default layout;
-  // a missing handler also resolves to null (treated as "nothing saved").
+  // Shell persistence (P1). theme.* stores an opaque JSON blob the JS theme store
+  // stringifies/parses into its own schema (active id + live tokens + custom
+  // themes); layout.* stores the serialized Dockview state (a JSON string). load
+  // returns "" when nothing is saved yet, so the store falls back to defaults; a
+  // missing handler also resolves to null (treated as "nothing saved").
   "theme.save": { saved: boolean };
-  "theme.load": { activePreset: string };
+  "theme.load": { state: string };
   "layout.save": { saved: boolean };
   "layout.load": { layout: string };
   // Floating dock tear-out (P3a). detach opens a new OS window whose browser

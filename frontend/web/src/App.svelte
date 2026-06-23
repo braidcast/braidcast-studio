@@ -9,6 +9,8 @@
   import { themeStore } from "./lib/theme/themeStore.svelte";
   import SettingsModal from "./lib/SettingsModal.svelte";
   import { settingsOpener, closeSettings } from "./lib/settingsOpener.svelte";
+  import ThemeEditor from "./lib/ThemeEditor.svelte";
+  import { themeEditorOpener, closeThemeEditor } from "./lib/themeEditorOpener.svelte";
   import type { DockviewApi } from "dockview-core";
 
   let version = $state("…");
@@ -165,6 +167,10 @@
 
 {#if settingsOpener.open}
   <SettingsModal initialTab={settingsOpener.tab} editCanvas={settingsOpener.editCanvas} onClose={closeSettings} />
+{/if}
+
+{#if themeEditorOpener.open}
+  <ThemeEditor onClose={closeThemeEditor} />
 {/if}
 
 <style>
