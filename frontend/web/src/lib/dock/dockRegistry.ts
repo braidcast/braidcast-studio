@@ -26,13 +26,6 @@ export const DOCKS: DockDef[] = [
   { id: "mixer", title: "Audio Mixer", component: PlaceholderDock, params: { label: "Faders", phase: "P4" } },
   { id: "transitions", title: "Transitions", component: PlaceholderDock, params: { label: "Fade", phase: "P4" } },
   { id: "controls", title: "Controls", component: ControlsDock, params: {}, accent: true },
-  {
-    id: "canvas-placeholder",
-    title: "Canvas",
-    component: PlaceholderDock,
-    params: { label: "Canvas preview", phase: "P3" },
-    accent: true,
-  },
   { id: "multistream", title: "Multistream", component: MultistreamDock, params: {}, accent: true },
 ];
 

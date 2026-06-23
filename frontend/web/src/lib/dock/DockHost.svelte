@@ -2,9 +2,11 @@
   import { onMount, onDestroy } from "svelte";
   import { createDockview, type DockviewApi, type DockviewComponentOptions, type IContentRenderer } from "dockview-core";
   import "dockview-core/dist/styles/dockview.css";
+  import type { Component } from "svelte";
   import { DOCKS } from "./dockRegistry";
   import { createContentRenderer } from "./mountAdapter";
   import { DockTab } from "./tabRenderer";
+  import CanvasDock from "../docks/CanvasDock.svelte";
 
   // onReady hands the caller the DockviewApi (fired from this host's onMount) so it
   // can build the default layout + save/load. The caller adds panels with the
@@ -22,6 +24,10 @@
   for (const d of DOCKS) {
     renderers[d.id] = createContentRenderer(d.component);
   }
+  // Dynamic per-canvas composite docks (canvasReconciler adds them at runtime with
+  // component "canvas" + JSON-safe params {canvasUuid, canvasName}); register the
+  // one shared renderer here since they are not static DOCKS entries.
+  renderers["canvas"] = createContentRenderer(CanvasDock as unknown as Component<Record<string, unknown>>);
 
   function buildOptions(): DockviewComponentOptions {
     return {

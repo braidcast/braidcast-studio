@@ -4,6 +4,7 @@
   import DockHost from "./lib/dock/DockHost.svelte";
   import { DOCKS, panelOptions } from "./lib/dock/dockRegistry";
   import { layoutStore } from "./lib/dock/layoutStore.svelte";
+  import { startCanvasDockReconciler } from "./lib/dock/canvasReconciler";
   import { themeStore } from "./lib/theme/themeStore.svelte";
   import SettingsModal from "./lib/SettingsModal.svelte";
   import { settingsOpener, closeSettings } from "./lib/settingsOpener.svelte";
@@ -33,7 +34,8 @@
   // Build the dock-model.html default arrangement:
   //   center column = Preview (top) over a bottom row of
   //     Scenes · Sources · Audio Mixer · Transitions · Controls (Controls rightmost)
-  //   right rail   = Canvas placeholder (top) over Multistream, right of the center.
+  //   right rail   = Multistream, right of the center. Non-default canvas docks are
+  //     added at runtime by the reconciler (tab-stacked into the center preview).
   function buildDefaultLayout(dv: DockviewApi): void {
     dv.clear();
     dv.addPanel(panelOptions("preview", detachDock));
@@ -49,12 +51,7 @@
     );
     // Right rail spanning the height, right of the preview/center column.
     dv.addPanel(
-      panelOptions("canvas-placeholder", detachDock, { position: { referencePanel: "preview", direction: "right" } }),
-    );
-    dv.addPanel(
-      panelOptions("multistream", detachDock, {
-        position: { referencePanel: "canvas-placeholder", direction: "below" },
-      }),
+      panelOptions("multistream", detachDock, { position: { referencePanel: "preview", direction: "right" } }),
     );
     logDocks(dv);
     refreshVisible();
@@ -101,6 +98,8 @@
     } else {
       buildDefaultLayout(dv);
     }
+    // Output-gated per-canvas composite docks (added/removed as canvases enable).
+    startCanvasDockReconciler(dv, detachDock);
   }
 
   function toggleDock(id: string): void {
