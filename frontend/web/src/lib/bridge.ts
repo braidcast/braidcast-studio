@@ -53,8 +53,9 @@ export interface SourceType {
 
 // --- generic obs_properties descriptors (4.3.2) -----------------------------
 
-/** Editable-object kind a property set belongs to. "source" is wired now. */
-export type PropertyKind = "source" | "encoder" | "service" | "output";
+/** Editable-object kind a property set belongs to. "filter" addresses a filter
+ * by its uuid (the ref); the others address their object by name/id. */
+export type PropertyKind = "source" | "encoder" | "service" | "output" | "filter";
 
 /** One item in a list (combo/radio) property. */
 export interface PropertyListItem {
@@ -228,6 +229,25 @@ export interface CanvasUpdateParams {
 export interface EncoderType {
   id: string;
   name: string;
+}
+
+// --- source filters (chroma key, color correction, noise suppression, ...) ---
+
+/** A creatable filter type as reported by filterTypes.list. `video`/`audio`
+ * mark which source streams the filter applies to (an entry may be both). */
+export interface FilterType {
+  id: string;
+  name: string;
+  video: boolean;
+  audio: boolean;
+}
+
+/** One filter in a source's filter chain (chain order) as reported by filters.list. */
+export interface FilterInfo {
+  name: string;
+  id: string;
+  uuid: string;
+  enabled: boolean;
 }
 
 // --- stream profiles (reusable destination credentials, 4.4.2) --------------
@@ -412,6 +432,17 @@ export interface ObsMethods {
   "canvas.update": CanvasInfo;
   "canvas.remove": { removed: string };
   "encoderTypes.list": EncoderType[];
+  // Source filters. filterTypes.list enumerates creatable filter types (optionally
+  // narrowed by kind); filters.list returns one source's chain in draw order. add/
+  // remove/setEnabled/reorder/rename mutate the chain; the selected filter's
+  // obs_properties are edited via PropertyForm kind="filter" (ref = its uuid).
+  "filterTypes.list": FilterType[];
+  "filters.list": FilterInfo[];
+  "filters.add": { name: string; uuid: string };
+  "filters.remove": { removed: string };
+  "filters.setEnabled": { name: string; enabled: boolean };
+  "filters.reorder": { name: string; direction: ReorderDirection };
+  "filters.rename": { name: string };
   // Stream profiles (reusable destination credentials, 4.4.2).
   "streamProfile.list": StreamProfileInfo[];
   "streamProfile.create": { uuid: string };

@@ -5,6 +5,7 @@
   import { previewSuspended, suspendPreview } from "../previewGate.svelte";
   import { WINDOW_ID } from "../windowContext";
   import ContextMenu, { type ContextMenuItem } from "../ContextMenu.svelte";
+  import { openFilters } from "../filterDialogOpener.svelte";
 
   // A composite, inseparable dock for one NON-DEFAULT canvas (hierarchy-model.html
   // §1 right column): an inline preview + this canvas's own scenes + its own
@@ -225,6 +226,7 @@
       x: e.clientX,
       y: e.clientY,
       items: [
+        { label: "Filters", disabled: !item.source, action: () => item.source && openFilters(item.source) },
         { label: "Rename", action: () => beginRenameSource(item) },
         null,
         { label: item.visible ? "Hide" : "Show", action: () => void toggleVisible(item) },

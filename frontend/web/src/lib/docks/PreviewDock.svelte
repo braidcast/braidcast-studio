@@ -5,6 +5,7 @@
   import { WINDOW_ID } from "../windowContext";
   import ContextMenu, { type ContextMenuItem } from "../ContextMenu.svelte";
   import PropertyForm from "../properties/PropertyForm.svelte";
+  import { openFilters } from "../filterDialogOpener.svelte";
 
   let {}: Record<string, unknown> = $props();
 
@@ -31,6 +32,7 @@
           }
         },
       },
+      { label: "Filters", disabled: !p.source, action: () => p.source && openFilters(p.source) },
       { label: p.visible ? "Hide" : "Show", action: () => void call("sceneItems.setVisible", { scene: p.scene, id: p.id, visible: !p.visible }) },
       { label: p.locked ? "Unlock" : "Lock", action: () => void call("sceneItems.setLocked", { scene: p.scene, id: p.id, locked: !p.locked }) },
       null,

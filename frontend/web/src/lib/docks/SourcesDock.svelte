@@ -6,6 +6,7 @@
   import PropertyForm from "../properties/PropertyForm.svelte";
   import { suspendPreview } from "../previewGate.svelte";
   import ContextMenu, { type ContextMenuItem } from "../ContextMenu.svelte";
+  import { openFilters } from "../filterDialogOpener.svelte";
 
   let {}: Record<string, unknown> = $props();
 
@@ -168,6 +169,7 @@
       y: e.clientY,
       items: [
         { label: "Properties", action: () => openProperties(item) },
+        { label: "Filters", disabled: !item.source, action: () => item.source && openFilters(item.source) },
         { label: "Rename", action: () => beginRename(item) },
         null,
         { label: item.visible ? "Hide" : "Show", action: () => void toggleVisible(item) },

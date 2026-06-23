@@ -11,6 +11,8 @@
   import { settingsOpener, closeSettings } from "./lib/settingsOpener.svelte";
   import ThemeEditor from "./lib/ThemeEditor.svelte";
   import { themeEditorOpener, closeThemeEditor } from "./lib/themeEditorOpener.svelte";
+  import FilterDialog from "./lib/FilterDialog.svelte";
+  import { filterDialogOpener, closeFilters } from "./lib/filterDialogOpener.svelte";
   import type { DockviewApi } from "dockview-core";
 
   let version = $state("…");
@@ -171,6 +173,10 @@
 
 {#if themeEditorOpener.open}
   <ThemeEditor onClose={closeThemeEditor} />
+{/if}
+
+{#if filterDialogOpener.open && filterDialogOpener.source}
+  <FilterDialog source={filterDialogOpener.source} onClose={closeFilters} />
 {/if}
 
 <style>
