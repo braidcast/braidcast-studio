@@ -1560,6 +1560,16 @@ const PropertyKind kPropertyKinds[] = {
 		[](void *obj) { obs_source_release(static_cast<obs_source_t *>(obj)); },
 	},
 	{
+		// A filter is an obs_source_t (type FILTER) in the global uuid registry, so
+		// resolve it by uuid and reuse the source property/update ops.
+		"filter",
+		[](const std::string &ref) -> void * { return obs_get_source_by_uuid(ref.c_str()); },
+		[](void *obj) -> obs_properties_t * { return obs_source_properties(static_cast<obs_source_t *>(obj)); },
+		[](void *obj) -> obs_data_t * { return obs_source_get_settings(static_cast<obs_source_t *>(obj)); },
+		[](void *obj, obs_data_t *settings) { obs_source_update(static_cast<obs_source_t *>(obj), settings); },
+		[](void *obj) { obs_source_release(static_cast<obs_source_t *>(obj)); },
+	},
+	{
 		"encoder",
 		ResolveEncoderRef,
 		[](void *obj) -> obs_properties_t * {
@@ -1722,9 +1732,11 @@ bool MethodPropertiesSet(const json &params, json &result, std::string &error)
 			kind->update(obj, settings);
 			obs_data_release(settings);
 			// Persist source-setting edits to the global collection (encoder/service
-			// kinds persist their own stores in their update closures). Skip the
-			// additional-canvas path -- those are persisted per-canvas later.
-			if (std::string(kind->name) == "source" && !ResolveCanvasTarget(params).isAdditional) {
+			// kinds persist their own stores in their update closures). Filters
+			// serialize with their parent source, so persist them the same way. Skip
+			// the additional-canvas path -- those are persisted per-canvas later.
+			const std::string kindName = kind->name;
+			if ((kindName == "source" || kindName == "filter") && !ResolveCanvasTarget(params).isAdditional) {
 				SceneCollection::Save();
 			}
 		}
@@ -1770,6 +1782,291 @@ bool MethodPropertiesButton(const json &params, json &result, std::string &error
 	const bool ok = BuildPropertiesResult(kind, obj, result, error);
 	kind->release(obj);
 	return ok;
+}
+
+// --- source filters ----------------------------------------------------------
+
+// Resolve the parent source a filter operates on. params: {source}. Addref'd
+// (caller releases). Fills `error` and returns null when the name is empty or
+// unknown.
+obs_source_t *ResolveFilterParent(const json &params, std::string &error)
+{
+	const std::string name = OptString(params, "source");
+	if (name.empty()) {
+		error = "filters requires a non-empty 'source'";
+		return nullptr;
+	}
+	obs_source_t *parent = obs_get_source_by_name(name.c_str());
+	if (!parent) {
+		error = "no source named '" + name + "'";
+		return nullptr;
+	}
+	return parent;
+}
+
+// List CREATABLE filter types: id, display name, coarse capability flags. Skips
+// deprecated/disabled types. params: {kind?: "video"|"audio"|"all"} narrows the
+// list to filters capable of that media kind ("all" = no filter). Sorted by name.
+bool MethodFilterTypesList(const json &params, json &result, std::string & /*error*/)
+{
+	const std::string kind = OptString(params, "kind");
+	const bool wantVideo = kind == "video";
+	const bool wantAudio = kind == "audio";
+
+	json types = json::array();
+	const char *id = nullptr;
+	for (size_t idx = 0; obs_enum_filter_types(idx, &id); ++idx) {
+		if (!id) {
+			continue;
+		}
+		const uint32_t flags = obs_get_source_output_flags(id);
+		if (flags & (OBS_SOURCE_DEPRECATED | OBS_SOURCE_CAP_DISABLED)) {
+			continue;
+		}
+		const bool video = (flags & OBS_SOURCE_VIDEO) != 0;
+		const bool audio = (flags & OBS_SOURCE_AUDIO) != 0;
+		if (wantVideo && !video) {
+			continue;
+		}
+		if (wantAudio && !audio) {
+			continue;
+		}
+		const char *display = obs_source_get_display_name(id);
+		types.push_back(json{
+			{"id", id},
+			{"name", display ? json(display) : json(id)},
+			{"video", video},
+			{"audio", audio},
+		});
+	}
+
+	std::sort(types.begin(), types.end(), [](const json &a, const json &b) {
+		return a.value("name", std::string()) < b.value("name", std::string());
+	});
+
+	result = std::move(types);
+	return true;
+}
+
+// Context threaded into obs_source_enum_filters to collect the chain in order.
+struct FilterEnumCtx {
+	json *filters;
+};
+
+void CollectFilter(obs_source_t * /*parent*/, obs_source_t *child, void *param)
+{
+	auto *ctx = static_cast<FilterEnumCtx *>(param);
+	const char *name = obs_source_get_name(child);
+	const char *id = obs_source_get_id(child);
+	const char *uuid = obs_source_get_uuid(child);
+	ctx->filters->push_back(json{
+		{"name", name ? json(name) : json()},
+		{"id", id ? json(id) : json()},
+		{"uuid", uuid ? json(uuid) : json()},
+		{"enabled", obs_source_enabled(child)},
+	});
+}
+
+// List the filters on a source in chain order. params: {source}.
+bool MethodFiltersList(const json &params, json &result, std::string &error)
+{
+	obs_source_t *parent = ResolveFilterParent(params, error);
+	if (!parent) {
+		return false;
+	}
+	json filters = json::array();
+	FilterEnumCtx ctx{&filters};
+	obs_source_enum_filters(parent, CollectFilter, &ctx);
+	obs_source_release(parent);
+	result = std::move(filters);
+	return true;
+}
+
+// Add a new filter of `type` to a source. params: {source, type, name?}. `name`
+// defaults to the type's display name; rejects a name already used on the parent.
+// Returns {name, uuid}.
+bool MethodFiltersAdd(const json &params, json &result, std::string &error)
+{
+	obs_source_t *parent = ResolveFilterParent(params, error);
+	if (!parent) {
+		return false;
+	}
+	const std::string type = OptString(params, "type");
+	if (type.empty()) {
+		obs_source_release(parent);
+		error = "filters.add requires a non-empty 'type'";
+		return false;
+	}
+	std::string name = OptString(params, "name");
+	const bool explicitName = !name.empty();
+	if (!explicitName) {
+		const char *display = obs_source_get_display_name(type.c_str());
+		name = display ? std::string(display) : type;
+	}
+
+	OBSSourceAutoRelease existing = obs_source_get_filter_by_name(parent, name.c_str());
+	if (existing) {
+		if (explicitName) {
+			obs_source_release(parent);
+			error = "a filter named '" + name + "' already exists on this source";
+			return false;
+		}
+		// Auto-suffix the default name ("Color Correction", "Color Correction 2", ...)
+		// until a free name is found, matching native OBS behavior.
+		const std::string base = name;
+		for (int n = 2;; ++n) {
+			std::string candidate = base + " " + std::to_string(n);
+			OBSSourceAutoRelease taken = obs_source_get_filter_by_name(parent, candidate.c_str());
+			if (taken) {
+				continue;
+			}
+			name = std::move(candidate);
+			break;
+		}
+	}
+
+	obs_source_t *f = obs_source_create(type.c_str(), name.c_str(), nullptr, nullptr);
+	if (!f) {
+		obs_source_release(parent);
+		error = "failed to create filter of type '" + type + "'";
+		return false;
+	}
+	obs_source_filter_add(parent, f);
+	const char *uuid = obs_source_get_uuid(f);
+	std::string uuidStr = uuid ? std::string(uuid) : std::string();
+	obs_source_release(f); // parent now holds the reference
+	obs_source_release(parent);
+
+	SceneCollection::Save();
+	result = json{{"name", name}, {"uuid", uuidStr}};
+	return true;
+}
+
+// Remove a filter by name. params: {source, name}. Returns {removed: name}.
+bool MethodFiltersRemove(const json &params, json &result, std::string &error)
+{
+	obs_source_t *parent = ResolveFilterParent(params, error);
+	if (!parent) {
+		return false;
+	}
+	const std::string name = OptString(params, "name");
+	OBSSourceAutoRelease f = obs_source_get_filter_by_name(parent, name.c_str());
+	if (!f) {
+		obs_source_release(parent);
+		error = "no filter named '" + name + "' on this source";
+		return false;
+	}
+	obs_source_filter_remove(parent, f);
+	obs_source_release(parent);
+
+	SceneCollection::Save();
+	result = json{{"removed", name}};
+	return true;
+}
+
+// Enable/disable a filter by name. params: {source, name, enabled}. Returns
+// {name, enabled}.
+bool MethodFiltersSetEnabled(const json &params, json &result, std::string &error)
+{
+	obs_source_t *parent = ResolveFilterParent(params, error);
+	if (!parent) {
+		return false;
+	}
+	const std::string name = OptString(params, "name");
+	OBSSourceAutoRelease f = obs_source_get_filter_by_name(parent, name.c_str());
+	if (!f) {
+		obs_source_release(parent);
+		error = "no filter named '" + name + "' on this source";
+		return false;
+	}
+	const bool enabled = params.is_object() && params.value("enabled", false);
+	obs_source_set_enabled(f, enabled);
+	obs_source_release(parent);
+
+	SceneCollection::Save();
+	result = json{{"name", name}, {"enabled", enabled}};
+	return true;
+}
+
+// Move a filter within the chain. params: {source, name, direction}, direction
+// one of up|down|top|bottom. Returns {name, direction}.
+bool MethodFiltersReorder(const json &params, json &result, std::string &error)
+{
+	const std::string direction = OptString(params, "direction");
+	struct Move {
+		const char *name;
+		obs_order_movement movement;
+	};
+	static const Move kMoves[] = {
+		{"up", OBS_ORDER_MOVE_UP},
+		{"down", OBS_ORDER_MOVE_DOWN},
+		{"top", OBS_ORDER_MOVE_TOP},
+		{"bottom", OBS_ORDER_MOVE_BOTTOM},
+	};
+	const obs_order_movement *movement = nullptr;
+	for (const auto &m : kMoves) {
+		if (direction == m.name) {
+			movement = &m.movement;
+			break;
+		}
+	}
+	if (!movement) {
+		error = "reorder 'direction' must be one of up|down|top|bottom";
+		return false;
+	}
+
+	obs_source_t *parent = ResolveFilterParent(params, error);
+	if (!parent) {
+		return false;
+	}
+	const std::string name = OptString(params, "name");
+	OBSSourceAutoRelease f = obs_source_get_filter_by_name(parent, name.c_str());
+	if (!f) {
+		obs_source_release(parent);
+		error = "no filter named '" + name + "' on this source";
+		return false;
+	}
+	obs_source_filter_set_order(parent, f, *movement);
+	obs_source_release(parent);
+
+	SceneCollection::Save();
+	result = json{{"name", name}, {"direction", direction}};
+	return true;
+}
+
+// Rename a filter. params: {source, name, newName}. Rejects an empty newName or
+// a collision with a different filter on the parent. Returns {name: newName}.
+bool MethodFiltersRename(const json &params, json &result, std::string &error)
+{
+	obs_source_t *parent = ResolveFilterParent(params, error);
+	if (!parent) {
+		return false;
+	}
+	const std::string name = OptString(params, "name");
+	const std::string newName = OptString(params, "newName");
+	if (newName.empty()) {
+		obs_source_release(parent);
+		error = "filters.rename requires a non-empty 'newName'";
+		return false;
+	}
+	OBSSourceAutoRelease f = obs_source_get_filter_by_name(parent, name.c_str());
+	if (!f) {
+		obs_source_release(parent);
+		error = "no filter named '" + name + "' on this source";
+		return false;
+	}
+	OBSSourceAutoRelease clash = obs_source_get_filter_by_name(parent, newName.c_str());
+	if (clash && clash.Get() != f.Get()) {
+		obs_source_release(parent);
+		error = "a filter named '" + newName + "' already exists on this source";
+		return false;
+	}
+	obs_source_set_name(f, newName.c_str());
+	obs_source_release(parent);
+
+	SceneCollection::Save();
+	result = json{{"name", newName}};
+	return true;
 }
 
 // --- canvases (native multistream encode targets, 4.4.1) --------------------
@@ -3050,6 +3347,13 @@ void Init()
 		{"properties.get", MethodPropertiesGet},
 		{"properties.set", MethodPropertiesSet},
 		{"properties.button", MethodPropertiesButton},
+		{"filterTypes.list", MethodFilterTypesList},
+		{"filters.list", MethodFiltersList},
+		{"filters.add", MethodFiltersAdd},
+		{"filters.remove", MethodFiltersRemove},
+		{"filters.setEnabled", MethodFiltersSetEnabled},
+		{"filters.reorder", MethodFiltersReorder},
+		{"filters.rename", MethodFiltersRename},
 		{"settings.getVideo", MethodSettingsGetVideo},
 		{"settings.setVideo", MethodSettingsSetVideo},
 		{"settings.getAudio", MethodSettingsGetAudio},
