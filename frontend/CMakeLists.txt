@@ -4,10 +4,9 @@ cmake_minimum_required(VERSION 3.28...3.30)
 # that boots libobs and shows one windowed CEF browser serving an offline app://
 # page. Ported from the proven spike/ PoC (verdict GO).
 
-# obs-frontend-api is frontend-agnostic and lives in the legacy tree for now; the
-# new exe still links OBS::frontend-api from there.
+# obs-frontend-api is frontend-agnostic; the new exe links OBS::frontend-api.
 if(NOT TARGET OBS::frontend-api)
-  add_subdirectory("${CMAKE_SOURCE_DIR}/frontend_old/api" frontend-api)
+  add_subdirectory(api frontend-api)
 endif()
 
 if(NOT TARGET OBS::libobs)
@@ -75,15 +74,14 @@ target_sources(
     src/log.hpp
     api-impl/frontend_callbacks.cpp
     api-impl/frontend_callbacks.hpp
-    # Phase 4.4.0 native-multistream data model. The five legacy model files are
-    # Qt-free (libobs obs_data_* + std only) and compiled here UNMODIFIED from
-    # their frontend_old/utility/ location; the *Store files de-Qt the two legacy
+    # Phase 4.4.0 native-multistream data model. These five model files are
+    # Qt-free (libobs obs_data_* + std only); the *Store files de-Qt the two
     # managers (config dir via os_get_config_path instead of OBSApp).
-    "${CMAKE_SOURCE_DIR}/frontend_old/utility/CanvasDefinition.cpp"
-    "${CMAKE_SOURCE_DIR}/frontend_old/utility/OBSCanvas.cpp"
-    "${CMAKE_SOURCE_DIR}/frontend_old/utility/CanvasSceneLink.cpp"
-    "${CMAKE_SOURCE_DIR}/frontend_old/utility/OutputBinding.cpp"
-    "${CMAKE_SOURCE_DIR}/frontend_old/utility/StreamProfile.cpp"
+    utility/CanvasDefinition.cpp
+    utility/OBSCanvas.cpp
+    utility/CanvasSceneLink.cpp
+    utility/OutputBinding.cpp
+    utility/StreamProfile.cpp
     src/multistream/CanvasStore.cpp
     src/multistream/CanvasStore.hpp
     src/multistream/StreamProfileStore.cpp
@@ -105,9 +103,9 @@ target_include_directories(
   PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${CMAKE_CURRENT_SOURCE_DIR}/api-impl"
-    # The legacy model files (and the *Store ports that include their
-    # headers) resolve "CanvasDefinition.hpp" etc. from frontend_old/utility.
-    "${CMAKE_SOURCE_DIR}/frontend_old/utility"
+    # The model files (and the *Store ports that include their headers)
+    # resolve "CanvasDefinition.hpp" etc. from utility/.
+    "${CMAKE_CURRENT_SOURCE_DIR}/utility"
 )
 
 # The bridge envelope uses nlohmann/json, a header-only lib shipped in the
@@ -151,11 +149,11 @@ set_source_files_properties(
   src/scene_persistence.cpp
   src/transitions.cpp
   api-impl/frontend_callbacks.cpp
-  "${CMAKE_SOURCE_DIR}/frontend_old/utility/CanvasDefinition.cpp"
-  "${CMAKE_SOURCE_DIR}/frontend_old/utility/OBSCanvas.cpp"
-  "${CMAKE_SOURCE_DIR}/frontend_old/utility/CanvasSceneLink.cpp"
-  "${CMAKE_SOURCE_DIR}/frontend_old/utility/OutputBinding.cpp"
-  "${CMAKE_SOURCE_DIR}/frontend_old/utility/StreamProfile.cpp"
+  utility/CanvasDefinition.cpp
+  utility/OBSCanvas.cpp
+  utility/CanvasSceneLink.cpp
+  utility/OutputBinding.cpp
+  utility/StreamProfile.cpp
   src/multistream/CanvasStore.cpp
   src/multistream/StreamProfileStore.cpp
   src/multistream/OutputBindingStore.cpp

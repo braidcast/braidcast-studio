@@ -16,7 +16,6 @@ include(defaults)
 include(helpers)
 
 option(ENABLE_FRONTEND "Enable building with UI (requires Qt)" ON)
-option(USE_LEGACY_FRONTEND "Build the legacy Qt frontend (transitional)" OFF)
 option(ENABLE_SCRIPTING "Enable scripting support" ON)
 option(ENABLE_HEVC "Enable HEVC encoders" ON)
 
@@ -33,9 +32,7 @@ add_subdirectory(plugins)
 
 add_subdirectory(test/test-input)
 
-if(ENABLE_FRONTEND AND USE_LEGACY_FRONTEND)
-  add_subdirectory(frontend_old)
-elseif(ENABLE_FRONTEND)
+if(ENABLE_FRONTEND)
   add_subdirectory(frontend)
 endif()
 

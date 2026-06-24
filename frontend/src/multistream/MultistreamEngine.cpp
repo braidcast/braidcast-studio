@@ -12,8 +12,7 @@
 #include <cstring>
 
 // File-local ports of BasicOutputHandler's stream-output-type resolution, so the
-// engine has no dependency on the Qt output handler. Verbatim from
-// frontend_old/utility/BasicOutputHandler.{cpp,hpp}.
+// engine has no dependency on the Qt output handler.
 namespace {
 
 bool can_use_output(const char *prot, const char *output, const char *prot_test1, const char *prot_test2 = nullptr)
