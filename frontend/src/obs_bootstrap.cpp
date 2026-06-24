@@ -594,6 +594,30 @@ void ObsBootstrap::RunPropertiesSelfTest()
 			const std::string src = created.value("source", std::string("?"));
 			HostLog("[selftest] sources.create " + std::string(type) + " -> id=" +
 				std::to_string(id) + " source='" + src + "'");
+
+			// Transform round-trip on the first created item: set pos, prove
+			// getTransform reads it back, then exercise a quick action.
+			if (std::string(type) == "color_source" && id) {
+				run("sceneItems.setTransform",
+				    json{{"id", id}, {"transform", json{{"pos", json{{"x", 123.0}, {"y", 45.0}}}}}});
+				json tf = run("sceneItems.getTransform", json{{"id", id}});
+				if (tf.is_object()) {
+					const double px = tf["pos"].value("x", 0.0);
+					const double py = tf["pos"].value("y", 0.0);
+					HostLog("[selftest] sceneItems transform pos=" + std::to_string(px) + "," +
+						std::to_string(py) +
+						((px == 123.0 && py == 45.0) ? " (round-trip OK)" : " (MISMATCH)") +
+						" base=" + std::to_string(tf.value("baseWidth", 0)) + "x" +
+						std::to_string(tf.value("baseHeight", 0)));
+				}
+				json act = run("sceneItems.transformAction", json{{"id", id}, {"action", "center"}});
+				if (act.is_object()) {
+					HostLog("[selftest] sceneItems.transformAction center -> pos=" +
+						std::to_string(act["pos"].value("x", 0.0)) + "," +
+						std::to_string(act["pos"].value("y", 0.0)));
+				}
+			}
+
 			run("sceneItems.remove", json{{"id", id}});
 			obs_source_t *s = obs_get_source_by_name(src.c_str());
 			if (s) {

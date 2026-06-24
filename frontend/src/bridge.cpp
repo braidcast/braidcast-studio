@@ -35,6 +35,9 @@
 #include "multistream/StreamProfileStore.hpp"
 #include <util/dstr.h>
 #include <util/platform.h>
+#include <graphics/vec2.h>
+#include <graphics/vec3.h>
+#include <graphics/matrix4.h>
 
 namespace Bridge {
 
@@ -1190,6 +1193,323 @@ bool MethodSceneItemsReorder(const json &params, json &result, std::string &erro
 		SceneCollection::Save();
 	}
 	result = json{{"id", id}, {"direction", direction}};
+	return true;
+}
+
+// --- scene-item transform ---------------------------------------------------
+
+// The base (canvas) size a transform op centers/fits against. For an additional
+// canvas this is the canvas definition's resolution; otherwise the global video
+// info. Returns false only when the global video info is unavailable.
+bool ResolveBaseSize(const json &params, uint32_t &baseWidth, uint32_t &baseHeight)
+{
+	const CanvasTarget target = ResolveCanvasTarget(params);
+	if (target.isAdditional) {
+		if (CanvasDefinition *def = ObsBootstrap::Canvases().Find(target.uuid)) {
+			baseWidth = def->width;
+			baseHeight = def->height;
+			return true;
+		}
+	}
+	obs_video_info ovi;
+	if (!obs_get_video_info(&ovi)) {
+		return false;
+	}
+	baseWidth = ovi.base_width;
+	baseHeight = ovi.base_height;
+	return true;
+}
+
+// Serialize an item's full transform (info2 + crop + source/base sizes) into the
+// shape getTransform/setTransform/transformAction all return.
+json SceneItemTransformToJson(obs_sceneitem_t *item, uint32_t baseWidth, uint32_t baseHeight)
+{
+	obs_transform_info info;
+	obs_sceneitem_get_info2(item, &info);
+
+	obs_sceneitem_crop crop;
+	obs_sceneitem_get_crop(item, &crop);
+
+	obs_source_t *src = obs_sceneitem_get_source(item);
+	const uint32_t srcW = src ? obs_source_get_width(src) : 0;
+	const uint32_t srcH = src ? obs_source_get_height(src) : 0;
+
+	return json{
+		{"pos", json{{"x", info.pos.x}, {"y", info.pos.y}}},
+		{"rot", info.rot},
+		{"scale", json{{"x", info.scale.x}, {"y", info.scale.y}}},
+		{"alignment", info.alignment},
+		{"boundsType", static_cast<int>(info.bounds_type)},
+		{"boundsAlignment", info.bounds_alignment},
+		{"bounds", json{{"x", info.bounds.x}, {"y", info.bounds.y}}},
+		{"cropToBounds", info.crop_to_bounds},
+		{"crop", json{{"left", crop.left}, {"top", crop.top}, {"right", crop.right}, {"bottom", crop.bottom}}},
+		{"sourceWidth", srcW},
+		{"sourceHeight", srcH},
+		{"baseWidth", baseWidth},
+		{"baseHeight", baseHeight},
+	};
+}
+
+// Axis-aligned bounding box of an item's drawn quad, in scene space. Mirrors the
+// old frontend's GetItemBox so center math accounts for rotation/bounds.
+void GetSceneItemBox(obs_sceneitem_t *item, vec3 &tl, vec3 &br)
+{
+	matrix4 boxTransform;
+	obs_sceneitem_get_box_transform(item, &boxTransform);
+
+	vec3_set(&tl, M_INFINITE, M_INFINITE, 0.0f);
+	vec3_set(&br, -M_INFINITE, -M_INFINITE, 0.0f);
+
+	const float corners[4][2] = {{0.0f, 0.0f}, {1.0f, 0.0f}, {0.0f, 1.0f}, {1.0f, 1.0f}};
+	for (const auto &c : corners) {
+		vec3 pos;
+		vec3_set(&pos, c[0], c[1], 0.0f);
+		vec3_transform(&pos, &pos, &boxTransform);
+		vec3_min(&tl, &tl, &pos);
+		vec3_max(&br, &br, &pos);
+	}
+}
+
+// Resolve the scene + item shared by all three transform methods. On success
+// `sceneSource` is addref'd (caller releases) and `item` is borrowed from it.
+bool ResolveTransformTarget(const json &params, obs_source_t *&sceneSource, obs_sceneitem_t *&item,
+			    std::string &error)
+{
+	int64_t id = 0;
+	if (!ItemIdFromParams(params, id, error)) {
+		return false;
+	}
+	sceneSource = ResolveTargetScene(params); // addref'd
+	if (!sceneSource) {
+		error = "no scene";
+		return false;
+	}
+	item = FindSceneItem(obs_scene_from_source(sceneSource), id);
+	if (!item) {
+		obs_source_release(sceneSource);
+		sceneSource = nullptr;
+		error = "no scene item with id " + std::to_string(id);
+		return false;
+	}
+	return true;
+}
+
+// Persist + notify after a transform mutation, matching the sibling item methods.
+void CommitSceneItemChange(const json &params, obs_source_t *sceneSource)
+{
+	EmitSceneItemsChanged(sceneSource, ResolveCanvasTarget(params).uuid);
+	if (!ResolveCanvasTarget(params).isAdditional) {
+		SceneCollection::Save();
+	}
+}
+
+bool MethodSceneItemsGetTransform(const json &params, json &result, std::string &error)
+{
+	obs_source_t *sceneSource = nullptr;
+	obs_sceneitem_t *item = nullptr;
+	if (!ResolveTransformTarget(params, sceneSource, item, error)) {
+		return false;
+	}
+	uint32_t baseW = 0, baseH = 0;
+	ResolveBaseSize(params, baseW, baseH);
+	result = SceneItemTransformToJson(item, baseW, baseH);
+	obs_source_release(sceneSource);
+	return true;
+}
+
+bool MethodSceneItemsSetTransform(const json &params, json &result, std::string &error)
+{
+	obs_source_t *sceneSource = nullptr;
+	obs_sceneitem_t *item = nullptr;
+	if (!ResolveTransformTarget(params, sceneSource, item, error)) {
+		return false;
+	}
+
+	// Partial update: start from the current transform and overlay only the
+	// fields the caller supplied so the UI can send just what changed.
+	obs_transform_info info;
+	obs_sceneitem_get_info2(item, &info);
+	obs_sceneitem_crop crop;
+	obs_sceneitem_get_crop(item, &crop);
+
+	const json *t = nullptr;
+	if (params.is_object()) {
+		auto it = params.find("transform");
+		if (it != params.end() && it->is_object()) {
+			t = &*it;
+		}
+	}
+	if (t) {
+		auto num = [](const json &o, const char *k, float &out) {
+			auto it = o.find(k);
+			if (it != o.end() && it->is_number()) {
+				out = it->get<float>();
+			}
+		};
+		auto subVec = [&](const char *key, float &x, float &y) {
+			auto it = t->find(key);
+			if (it != t->end() && it->is_object()) {
+				num(*it, "x", x);
+				num(*it, "y", y);
+			}
+		};
+
+		subVec("pos", info.pos.x, info.pos.y);
+
+		float rot = info.rot;
+		num(*t, "rot", rot);
+		info.rot = rot;
+
+		// Clamp scale to avoid a zero (degenerate) component: keep current.
+		float sx = info.scale.x, sy = info.scale.y;
+		subVec("scale", sx, sy);
+		info.scale.x = (sx != 0.0f) ? sx : info.scale.x;
+		info.scale.y = (sy != 0.0f) ? sy : info.scale.y;
+
+		if (auto it = t->find("alignment"); it != t->end() && it->is_number_integer()) {
+			info.alignment = it->get<uint32_t>();
+		}
+		if (auto it = t->find("boundsType"); it != t->end() && it->is_number_integer()) {
+			info.bounds_type = static_cast<obs_bounds_type>(it->get<int>());
+		}
+		if (auto it = t->find("boundsAlignment"); it != t->end() && it->is_number_integer()) {
+			info.bounds_alignment = it->get<uint32_t>();
+		}
+		subVec("bounds", info.bounds.x, info.bounds.y);
+		if (auto it = t->find("cropToBounds"); it != t->end() && it->is_boolean()) {
+			info.crop_to_bounds = it->get<bool>();
+		}
+
+		auto it = t->find("crop");
+		if (it != t->end() && it->is_object()) {
+			auto cropInt = [&](const char *k, int &out) {
+				auto c = it->find(k);
+				if (c != it->end() && c->is_number_integer()) {
+					out = c->get<int>();
+				}
+			};
+			cropInt("left", crop.left);
+			cropInt("top", crop.top);
+			cropInt("right", crop.right);
+			cropInt("bottom", crop.bottom);
+		}
+	}
+
+	obs_sceneitem_defer_update_begin(item);
+	obs_sceneitem_set_info2(item, &info);
+	obs_sceneitem_set_crop(item, &crop);
+	obs_sceneitem_defer_update_end(item);
+
+	CommitSceneItemChange(params, sceneSource);
+
+	uint32_t baseW = 0, baseH = 0;
+	ResolveBaseSize(params, baseW, baseH);
+	result = SceneItemTransformToJson(item, baseW, baseH);
+	obs_source_release(sceneSource);
+	return true;
+}
+
+// Center the item in the base canvas, replicating the old frontend's
+// CenterSelectedSceneItems(CenterType::Scene): shift the item's axis-aligned box
+// so its center lands on the canvas center (accounts for rotation/bounds).
+void CenterItemInBase(obs_sceneitem_t *item, uint32_t baseWidth, uint32_t baseHeight)
+{
+	vec3 tl, br;
+	GetSceneItemBox(item, tl, br);
+
+	vec3 center;
+	vec3_set(&center, (tl.x + br.x) / 2.0f, (tl.y + br.y) / 2.0f, 0.0f);
+
+	vec3 screenCenter;
+	vec3_set(&screenCenter, float(baseWidth), float(baseHeight), 0.0f);
+	vec3_mulf(&screenCenter, &screenCenter, 0.5f);
+
+	vec3 offset;
+	vec3_sub(&offset, &screenCenter, &center);
+
+	// Translate the existing top-left by the offset (SetItemTL math).
+	vec2 pos;
+	obs_sceneitem_get_pos(item, &pos);
+	pos.x += offset.x;
+	pos.y += offset.y;
+	obs_sceneitem_set_pos(item, &pos);
+}
+
+bool MethodSceneItemsTransformAction(const json &params, json &result, std::string &error)
+{
+	const std::string action = OptString(params, "action");
+	static const char *kActions[] = {"reset",  "center", "fitToScreen",
+					 "stretchToScreen", "flipH",  "flipV"};
+	bool known = false;
+	for (const char *a : kActions) {
+		if (action == a) {
+			known = true;
+			break;
+		}
+	}
+	if (!known) {
+		error = "transformAction 'action' must be one of "
+			"reset|center|fitToScreen|stretchToScreen|flipH|flipV";
+		return false;
+	}
+
+	obs_source_t *sceneSource = nullptr;
+	obs_sceneitem_t *item = nullptr;
+	if (!ResolveTransformTarget(params, sceneSource, item, error)) {
+		return false;
+	}
+
+	uint32_t baseW = 0, baseH = 0;
+	ResolveBaseSize(params, baseW, baseH);
+
+	obs_sceneitem_defer_update_begin(item);
+
+	if (action == "reset") {
+		obs_transform_info info;
+		vec2_set(&info.pos, 0.0f, 0.0f);
+		info.rot = 0.0f;
+		vec2_set(&info.scale, 1.0f, 1.0f);
+		info.alignment = OBS_ALIGN_TOP | OBS_ALIGN_LEFT;
+		info.bounds_type = OBS_BOUNDS_NONE;
+		info.bounds_alignment = OBS_ALIGN_CENTER;
+		vec2_set(&info.bounds, 0.0f, 0.0f);
+		info.crop_to_bounds = false;
+		obs_sceneitem_set_info2(item, &info);
+
+		obs_sceneitem_crop crop = {};
+		obs_sceneitem_set_crop(item, &crop);
+	} else if (action == "flipH" || action == "flipV") {
+		obs_transform_info info;
+		obs_sceneitem_get_info2(item, &info);
+		if (action == "flipH") {
+			info.scale.x = -info.scale.x;
+		} else {
+			info.scale.y = -info.scale.y;
+		}
+		obs_sceneitem_set_info2(item, &info);
+	} else if (action == "fitToScreen" || action == "stretchToScreen") {
+		// Mirror the old frontend's CenterAlignSelectedItems: identity
+		// pos/scale, left/top alignment, bounds = base size, centered.
+		obs_transform_info info;
+		vec2_set(&info.pos, 0.0f, 0.0f);
+		info.rot = 0.0f;
+		vec2_set(&info.scale, 1.0f, 1.0f);
+		info.alignment = OBS_ALIGN_LEFT | OBS_ALIGN_TOP;
+		info.bounds_type = (action == "fitToScreen") ? OBS_BOUNDS_SCALE_INNER : OBS_BOUNDS_STRETCH;
+		info.bounds_alignment = OBS_ALIGN_CENTER;
+		vec2_set(&info.bounds, float(baseW), float(baseH));
+		info.crop_to_bounds = obs_sceneitem_get_bounds_crop(item);
+		obs_sceneitem_set_info2(item, &info);
+	} else { // center
+		CenterItemInBase(item, baseW, baseH);
+	}
+
+	obs_sceneitem_defer_update_end(item);
+
+	CommitSceneItemChange(params, sceneSource);
+	result = SceneItemTransformToJson(item, baseW, baseH);
+	obs_source_release(sceneSource);
 	return true;
 }
 
@@ -3606,6 +3926,9 @@ void Init()
 		{"sceneItems.setLocked", MethodSceneItemsSetLocked},
 		{"sceneItems.remove", MethodSceneItemsRemove},
 		{"sceneItems.reorder", MethodSceneItemsReorder},
+		{"sceneItems.getTransform", MethodSceneItemsGetTransform},
+		{"sceneItems.setTransform", MethodSceneItemsSetTransform},
+		{"sceneItems.transformAction", MethodSceneItemsTransformAction},
 		{"sourceTypes.list", MethodSourceTypesList},
 		{"sources.create", MethodSourcesCreate},
 		{"sources.listExisting", MethodSourcesListExisting},
