@@ -28,6 +28,7 @@
 #include "multistream/StreamProfileStore.hpp"
 #include "paths.hpp"
 #include "preview_window.hpp"
+#include "projector_window.hpp"
 #include "scene_persistence.hpp"
 #include "transitions.hpp"
 
@@ -1596,6 +1597,36 @@ void ObsBootstrap::RunPreviewSurfaceIsolationSelfTest()
 	const bool gone = g_canvasRuntime->Find(canvasUuid) == nullptr && g_canvases.Find(canvasUuid) == nullptr;
 	HostLog(std::string("[selftest] preview-isolation cleanup: temp canvas ") +
 		(gone ? "removed" : "STILL PRESENT (BUG)"));
+}
+
+void ObsBootstrap::RunProjectorSelfTest()
+{
+	if (!Projector::Instance()) {
+		HostLog("[selftest] projector: no manager (skipped)");
+		return;
+	}
+
+	HostLog("[selftest] projector display.listMonitors -> " + std::to_string(EnumerateMonitors().size()) +
+		" monitor(s)");
+
+	// Open a windowed PROGRAM projector directly via the manager (windowed needs no
+	// monitor index, so this works headlessly). Confirm it got a live display, then
+	// close it so the run leaves no state behind.
+	std::string error;
+	const int id = Projector::Instance()->Open(ProjectorKind::Program, "", "", /*fullscreen=*/false,
+						   /*monitor=*/-1, error);
+	if (id <= 0) {
+		HostLog("[selftest] projector windowed program -> FAILED: " + error);
+		return;
+	}
+	const bool hasDisplay = Projector::Instance()->HasDisplayForTest(id);
+	const bool closed = Projector::Instance()->Close(id);
+	if (!hasDisplay || !closed) {
+		HostLog("[selftest] projector windowed program -> FAILED (hasDisplay=" + std::to_string(hasDisplay) +
+			" closed=" + std::to_string(closed) + ")");
+		return;
+	}
+	HostLog("[selftest] projector windowed program -> opened id=" + std::to_string(id) + ", closed OK");
 }
 
 void ObsBootstrap::RunAudioMixerSelfTest()

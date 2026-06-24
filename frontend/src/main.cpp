@@ -15,6 +15,7 @@
 #include "log.hpp"
 #include "obs_bootstrap.hpp"
 #include "preview_window.hpp"
+#include "projector_window.hpp"
 #include "scene_persistence.hpp"
 #include "scheme.hpp"
 #include "window_manager.hpp"
@@ -39,6 +40,11 @@ std::unique_ptr<PreviewManager> g_preview;
 // its own child browser sharing the process-wide Client, so all browsers drain
 // from one browser_list_ at quit. Stood up after the main browser exists.
 std::unique_ptr<WindowManager> g_windows;
+
+// Owns the native projectors (each a top-level obs_display window). Created after
+// the preview manager; every projector's display is destroyed (DestroyAll) before
+// ObsBootstrap::Stop() frees the canvas mixes a canvas projector renders.
+std::unique_ptr<ProjectorManager> g_projector;
 
 // The UI loads from the offline app:// bundle served by scheme.cpp.
 const char *StartupUrl()
@@ -105,6 +111,7 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 				ObsBootstrap::RunCanvasRuntimeSelfTest();
 				ObsBootstrap::RunCanvasSceneSelfTest();
 				ObsBootstrap::RunPreviewSurfaceIsolationSelfTest();
+				ObsBootstrap::RunProjectorSelfTest();
 				ObsBootstrap::RunAudioMixerSelfTest();
 			}
 		} else if (wparam == kSmokeQuitTimerId) {
@@ -224,6 +231,10 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 	// own host HWND under their windowId via the same RegisterWindow seam.)
 	g_preview->RegisterWindow(0, host);
 
+	// Stand up the projector manager (top-level projector windows; no parent host).
+	g_projector = std::make_unique<ProjectorManager>(hInstance);
+	Projector::SetInstance(g_projector.get());
+
 	// Probe the test source's size after its async CEF browser has spun up.
 	SetTimer(host, kSizeProbeTimerId, 4000, nullptr);
 
@@ -297,6 +308,14 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 	// surface renders that canvas's mix, and Stop() (via CanvasRuntime::ClearAll)
 	// frees those mixes, so the displays must die first. The Default surface renders
 	// the global mix, freed even later by obs_shutdown.
+	// Tear down every projector's obs_display + window while libobs is up and BEFORE
+	// the canvas mixes are freed (a canvas projector's display renders a canvas mix).
+	if (g_projector) {
+		Projector::SetInstance(nullptr);
+		g_projector->DestroyAll();
+		g_projector.reset();
+	}
+
 	if (g_preview) {
 		Preview::SetInstance(nullptr);
 		g_preview->DestroyAll();

@@ -139,6 +139,11 @@ void RunPreviewSurfaceIsolationSelfTest();
 // scene so it activates), rebuilds the monitor, exercises the methods, then
 // removes the temp source + restores state. Gated by the caller to the smoke path.
 void RunAudioMixerSelfTest();
+// Headless proof for native projectors: open a WINDOWED PROGRAM projector via the
+// manager directly (no monitor needed), confirm it got a live obs_display, then
+// close it, leaving no state behind. Also logs the monitor count. Gated by the
+// caller to the smoke path.
+void RunProjectorSelfTest();
 void Stop();
 } // namespace ObsBootstrap
 

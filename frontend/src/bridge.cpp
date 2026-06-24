@@ -22,6 +22,7 @@
 #include "log.hpp"
 #include "obs_bootstrap.hpp"
 #include "preview_window.hpp"
+#include "projector_window.hpp"
 #include "properties_serializer.hpp"
 #include "scene_persistence.hpp"
 #include "transitions.hpp"
@@ -3872,6 +3873,175 @@ bool MethodWindowList(const json & /*params*/, json &result, std::string & /*err
 	return true;
 }
 
+// Native projectors (fullscreen / windowed) — drive ProjectorManager and broadcast
+// projector.changed on open/close.
+
+bool MethodDisplayListMonitors(const json & /*params*/, json &result, std::string & /*error*/)
+{
+	json arr = json::array();
+	for (const MonitorInfo &m : EnumerateMonitors()) {
+		arr.push_back(json{
+			{"index", m.index},
+			{"name", m.name},
+			{"x", m.x},
+			{"y", m.y},
+			{"width", m.width},
+			{"height", m.height},
+			{"primary", m.primary},
+		});
+	}
+	result = json{{"monitors", std::move(arr)}};
+	return true;
+}
+
+bool MethodProjectorOpen(const json &params, json &result, std::string &error)
+{
+	ProjectorManager *pm = Projector::Instance();
+	if (!pm) {
+		error = "projector manager not active";
+		return false;
+	}
+
+	// target: an object carrying the kind + an optional name/canvas.
+	auto t = params.is_object() ? params.find("target") : params.end();
+	if (!params.is_object() || t == params.end() || !t->is_object()) {
+		error = "projector.open requires a 'target' object";
+		return false;
+	}
+	const json &target = *t;
+
+	ProjectorKind kind;
+	if (!KindFromString(OptString(target, "kind"), kind)) {
+		error = "unknown/missing target.kind";
+		return false;
+	}
+
+	std::string name;
+	std::string canvasUuid;
+	switch (kind) {
+	case ProjectorKind::Scene:
+	case ProjectorKind::Source: {
+		name = OptString(target, "name");
+		if (name.empty()) {
+			error = "target.name is required for a scene/source projector";
+			return false;
+		}
+		obs_source_t *s = obs_get_source_by_name(name.c_str()); // addref'd; validation only
+		if (!s) {
+			error = "no source named '" + name + "'";
+			return false;
+		}
+		const bool isScene = obs_scene_from_source(s) != nullptr;
+		obs_source_release(s); // Open re-acquires its own addref
+		if (kind == ProjectorKind::Scene && !isScene) {
+			error = "'" + name + "' is not a scene";
+			return false;
+		}
+		break;
+	}
+	case ProjectorKind::Canvas: {
+		canvasUuid = OptString(target, "canvas");
+		if (canvasUuid.empty()) {
+			error = "target.canvas is required for a canvas projector";
+			return false;
+		}
+		if (!ObsBootstrap::CanvasRuntime().Find(canvasUuid)) {
+			error = "no live canvas mix for '" + canvasUuid + "'";
+			return false;
+		}
+		break;
+	}
+	case ProjectorKind::Program:
+		break;
+	}
+
+	const std::string mode = OptString(params, "mode");
+	if (mode != "fullscreen" && mode != "windowed") {
+		error = "mode must be 'fullscreen' or 'windowed'";
+		return false;
+	}
+	const bool fullscreen = mode == "fullscreen";
+
+	// Optional monitor index; required + bounds-checked for fullscreen, optional
+	// (falls back to primary) for windowed.
+	int monitor = -1;
+	if (params.is_object()) {
+		auto it = params.find("monitor");
+		if (it != params.end() && it->is_number_integer()) {
+			monitor = it->get<int>();
+		}
+	}
+	const int monitorCount = int(EnumerateMonitors().size());
+	if (fullscreen) {
+		if (monitor < 0 || monitor >= monitorCount) {
+			error = "fullscreen requires a valid 'monitor' index in [0," + std::to_string(monitorCount) + ")";
+			return false;
+		}
+	} else if (monitor < 0 || monitor >= monitorCount) {
+		monitor = -1; // windowed: fall back to primary
+	}
+
+	const int id = pm->Open(kind, name, canvasUuid, fullscreen, monitor, error);
+	if (id <= 0) {
+		if (error.empty()) {
+			error = "failed to open projector";
+		}
+		return false;
+	}
+
+	EmitEvent("projector.changed", json{{"opened", id}});
+	HostLog("[bridge] projector.open -> ok id=" + std::to_string(id) + " kind=" + KindToString(kind) + " mode=" +
+		mode);
+	result = json{{"projectorId", id}};
+	return true;
+}
+
+bool MethodProjectorClose(const json &params, json &result, std::string &error)
+{
+	ProjectorManager *pm = Projector::Instance();
+	if (!pm) {
+		error = "projector manager not active";
+		return false;
+	}
+	if (!params.is_object() || !params.contains("projectorId") || !params["projectorId"].is_number_integer()) {
+		error = "projector.close requires an integer 'projectorId'";
+		return false;
+	}
+	const int id = params["projectorId"].get<int>();
+	const bool closed = pm->Close(id);
+	EmitEvent("projector.changed", json{{"closed", id}});
+	HostLog("[bridge] projector.close id=" + std::to_string(id) + " -> " + (closed ? "ok" : "not found"));
+	result = json{{"closed", closed}};
+	return true;
+}
+
+bool MethodProjectorList(const json & /*params*/, json &result, std::string & /*error*/)
+{
+	ProjectorManager *pm = Projector::Instance();
+	json arr = json::array();
+	if (pm) {
+		for (const ProjectorManager::ProjectorInfo &p : pm->List()) {
+			json entry = json{
+				{"projectorId", p.projectorId},
+				{"kind", KindToString(p.kind)},
+				{"mode", p.mode == ProjectorMode::Fullscreen ? "fullscreen" : "windowed"},
+			};
+			if (p.kind == ProjectorKind::Scene || p.kind == ProjectorKind::Source) {
+				entry["name"] = p.name;
+			}
+			if (p.kind == ProjectorKind::Canvas) {
+				entry["canvas"] = p.canvasUuid;
+			}
+			if (p.monitorIndex >= 0) {
+				entry["monitor"] = p.monitorIndex;
+			}
+			arr.push_back(std::move(entry));
+		}
+	}
+	result = json{{"projectors", std::move(arr)}};
+	return true;
+}
+
 } // namespace
 
 bool WriteJsonString(const char *file, const char *key, const std::string &value)
@@ -3985,6 +4155,10 @@ void Init()
 		{"window.detach", MethodWindowDetach},
 		{"window.redock", MethodWindowRedock},
 		{"window.list", MethodWindowList},
+		{"display.listMonitors", MethodDisplayListMonitors},
+		{"projector.open", MethodProjectorOpen},
+		{"projector.close", MethodProjectorClose},
+		{"projector.list", MethodProjectorList},
 	};
 
 	obs_frontend_add_event_callback(OnFrontendEvent, nullptr);

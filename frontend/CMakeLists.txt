@@ -65,6 +65,8 @@ target_sources(
     src/preview_window.hpp
     src/window_manager.cpp
     src/window_manager.hpp
+    src/projector_window.cpp
+    src/projector_window.hpp
     src/audio/AudioMonitor.cpp
     src/audio/AudioMonitor.hpp
     src/scene_persistence.cpp
@@ -145,6 +147,7 @@ set_source_files_properties(
   src/bridge.cpp
   src/properties_serializer.cpp
   src/preview_window.cpp
+  src/projector_window.cpp
   src/audio/AudioMonitor.cpp
   src/scene_persistence.cpp
   src/transitions.cpp
