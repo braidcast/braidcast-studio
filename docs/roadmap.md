@@ -504,8 +504,14 @@ build-green, headless-smoke clean (leaks 2 baseline), and pushed.
 - 🔭 **Multiview** — a grid render of all scenes in one window. Larger: needs a custom
   multi-scene grid render (not a single `obs_display` of one target like projectors).
   Own scoping pass before building.
-- 🔭 **Hotkeys settings** — bind global/app hotkeys (obs hotkey API enumeration +
-  capture UI). Moderate, self-contained; not yet built.
+- ✅ **Hotkeys settings — DONE 2026-06-24.** Enumerate libobs hotkeys, bind key combos,
+  persist (`hotkeys.json`, keyed by name), restore on boot. `hotkeys.list/set/clear`
+  (UI sends DOM `KeyboardEvent.code` + modifiers → a data-table maps to `obs_key`);
+  Start/Stop Streaming frontend hotkeys registered + wired to the engine. **Bound
+  hotkeys fire globally** via libobs's existing `GetAsyncKeyState` poll thread (verified
+  against source — no keyboard hook needed). Hotkeys tab in Settings (grouped by
+  registerer, click-to-capture + clear + filter). Selftest round-trips a binding;
+  real-keypress firing is GUI-owed.
 - 🔭 **obs-websocket** — excluded (Qt-coupled, hard-crashes headless). Needs an
   offscreen-`QApplication` stood up before load, or a native reimplementation, if
   remote control is wanted. (Note: Phase 5 OBS-MCP would give AI control via the
