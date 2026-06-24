@@ -483,6 +483,39 @@ export interface ProjectorInfo {
   monitor: number | null;
 }
 
+// --- hotkeys (global + per-object key bindings) ------------------------------
+
+/** Who registered a hotkey, used to group the list. "frontend" = app-level
+ * actions; the rest are owned by a libobs object named by `owner`. */
+export type HotkeyRegisterer = "frontend" | "source" | "output" | "encoder" | "service" | "unknown";
+
+/** One resolved key binding for a hotkey. `display` is the human-readable combo
+ * the backend formats (e.g. "Ctrl+Shift+A", "F1"). */
+export interface HotkeyBinding {
+  display: string;
+}
+
+/** A key combo to assign, expressed with a DOM KeyboardEvent.code plus modifier
+ * flags. `code` is e.g. "KeyA" | "F1" | "Space". */
+export interface HotkeyCombo {
+  code: string;
+  ctrl: boolean;
+  shift: boolean;
+  alt: boolean;
+  meta: boolean;
+}
+
+/** A hotkey as reported by hotkeys.list. `owner` names the libobs object that
+ * registered it (source/output/...), or null for frontend hotkeys. */
+export interface Hotkey {
+  id: string;
+  name: string;
+  description: string;
+  registerer: HotkeyRegisterer;
+  owner: string | null;
+  bindings: HotkeyBinding[];
+}
+
 /** A registered transition type as reported by transitionTypes.list. */
 export interface TransitionType {
   id: string;
@@ -614,6 +647,13 @@ export interface ObsMethods {
   "transitions.getCurrent": TransitionState;
   "transitions.setCurrent": { id: string; name: string };
   "transitions.setDuration": { durationMs: number };
+  // Hotkeys (global + per-object key bindings). list enumerates every registered
+  // hotkey with its current bindings; set replaces a hotkey's bindings (one combo
+  // per call is the MVP) and echoes the formatted displays; clear removes them.
+  // All three emit hotkeys.changed after mutating.
+  "hotkeys.list": { hotkeys: Hotkey[] };
+  "hotkeys.set": { bindings: HotkeyBinding[] };
+  "hotkeys.clear": { bindings: HotkeyBinding[] };
   // Native projectors (standalone windows rendering a target on a monitor, P3).
   // listMonitors enumerates the displays a fullscreen projector can target.
   // open spawns a projector (fullscreen needs `monitor`); the window closes
@@ -683,6 +723,9 @@ export interface ObsEvents {
   // The active transition type and/or its duration changed; the UI re-runs
   // transitions.getCurrent to refresh its dropdown + duration field.
   "transitions.changed": Record<string, never>;
+  // A hotkey binding changed (set/clear, or an external edit); the UI re-runs
+  // hotkeys.list to refresh its rows.
+  "hotkeys.changed": Record<string, never>;
   // The set of live native projectors changed (opened/closed, incl. user OS-close
   // or Esc); a consumer re-runs projector.list to refresh.
   "projector.changed": Record<string, never>;
