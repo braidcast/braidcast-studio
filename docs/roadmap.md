@@ -491,11 +491,25 @@ build-green, headless-smoke clean (leaks 2 baseline), and pushed.
 
 **Low / likely out of scope (confirm):**
 
-- 🔭 Projectors / Multiview / fullscreen projector; Hotkeys settings; About dialog;
-  Fullscreen Preview; Recordings list.
+- ✅ **About dialog — DONE 2026-06-24.** Help→About modal (product name, tagline,
+  libobs version, GPLv2+, fork note); offline.
+- ✅ **Projectors + Fullscreen Preview — DONE 2026-06-24.** Native `ProjectorManager`
+  + borderless-fullscreen / windowed projector windows rendering a target
+  (program/scene/source/canvas) into their own `obs_display`, letterboxed, closing on
+  Esc/window-close; teardown ordered before canvas mixes. `display.listMonitors` +
+  `projector.open/close/list`; per-monitor + windowed entries in the Sources/Scenes/
+  Preview/Canvas context menus + the View menu (program). Selftest + monitor-enum
+  verified; on-screen rendering/fullscreen placement is GUI-owed. (Fullscreen Preview =
+  a program projector.) Recordings list is moot — recording is dormant.
+- 🔭 **Multiview** — a grid render of all scenes in one window. Larger: needs a custom
+  multi-scene grid render (not a single `obs_display` of one target like projectors).
+  Own scoping pass before building.
+- 🔭 **Hotkeys settings** — bind global/app hotkeys (obs hotkey API enumeration +
+  capture UI). Moderate, self-contained; not yet built.
 - 🔭 **obs-websocket** — excluded (Qt-coupled, hard-crashes headless). Needs an
   offscreen-`QApplication` stood up before load, or a native reimplementation, if
-  remote control is wanted.
+  remote control is wanted. (Note: Phase 5 OBS-MCP would give AI control via the
+  bridge instead — may reduce the need for obs-websocket.)
 
 **Cleanup / infra:**
 
