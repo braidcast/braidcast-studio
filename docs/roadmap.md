@@ -465,15 +465,28 @@ build-green, headless-smoke clean (leaks 2 baseline), and pushed.
 
 **Medium — parity gaps:**
 
-- 🔭 **File-dialog / Browse** — `PathControl`'s Browse button is a no-op; file-based
-  sources (media, image, …) need paths typed by hand. Needs a native file-dialog
-  bridge method.
-- 🔭 **Unsupported property types** — `font`, `editable_list`, `frame_rate` render
-  "Editing not yet supported" in the properties renderer.
-- 🔭 **Undo / Redo** and **Edit → Transform** (numeric transform / reset / fit /
-  center) — menu items present but disabled.
+- ✅ **File-dialog / Browse — DONE 2026-06-24.** Native `dialog.openFile` bridge
+  method (modern `IFileDialog` COM — open/save/directory, OBS filter-string parsing,
+  parented to the main host window, COM-balance/leak-reviewed = SHIP); `PathControl`'s
+  Browse button wired. File-based sources can now pick paths.
+- ✅ **Property types font / editable_list / frame_rate — DONE 2026-06-24.** Replaced
+  the "Editing not yet supported" fallback with real controls (FontControl
+  face/size/bold-italic-underline-strikeout; EditableListControl add/remove/reorder +
+  Add Files via the dialog; FrameRateControl common-rate dropdown + numerator/
+  denominator). Serializer enriched with editable_list (type/filter/default_path) +
+  frame_rate (fps_options/fps_ranges) metadata; the generic obs_data JSON write path
+  round-trips the values. Registered in the data-driven control registry.
+- ✅ **Edit → Transform — DONE 2026-06-24.** `sceneItems.getTransform/setTransform/
+  transformAction` (position/scale/rotation/crop/alignment/bounding-box + reset/center/
+  fit/stretch/flip; per-canvas base res; round-trip + center math runtime-verified in
+  the boot self-test). Numeric Transform dialog reachable from the Sources/Canvas/
+  Preview source context menus + the Edit→Transform menu item.
+- 🔭 **Undo / Redo** — still open; menu items disabled. **Not "medium": no undo
+  infrastructure exists** — it's a from-scratch cross-cutting subsystem (every mutation
+  needs paired undo/redo actions). Needs a dedicated effort, not a quick parity fix.
 - 🔭 **Recording / Replay buffer** — dormant by design since Phase 1 (RECORD button
-  + no bridge). Decision owed: do we want recording in the multistream app at all?
+  + no bridge). **Decision owed (product, not code): do we want recording in the
+  multistream app at all?** Gates whether to build the bridge + UI.
 
 **Low / likely out of scope (confirm):**
 
