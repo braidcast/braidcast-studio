@@ -102,10 +102,12 @@ set_executable_target_properties(${_target})
 
 target_include_directories(
   ${_target}
-  PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}/api-impl"
-          # The legacy model files (and the *Store ports that include their
-          # headers) resolve "CanvasDefinition.hpp" etc. from frontend_old/utility.
-          "${CMAKE_SOURCE_DIR}/frontend_old/utility"
+  PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    "${CMAKE_CURRENT_SOURCE_DIR}/api-impl"
+    # The legacy model files (and the *Store ports that include their
+    # headers) resolve "CanvasDefinition.hpp" etc. from frontend_old/utility.
+    "${CMAKE_SOURCE_DIR}/frontend_old/utility"
 )
 
 # The bridge envelope uses nlohmann/json, a header-only lib shipped in the
@@ -120,7 +122,16 @@ endforeach()
 add_dependencies(${_target} libcef_dll_wrapper)
 target_link_libraries(
   ${_target}
-  PRIVATE libcef_lib libcef_dll_wrapper ${CEF_STANDARD_LIBS} OBS::libobs OBS::frontend-api
+  PRIVATE
+    libcef_lib
+    libcef_dll_wrapper
+    ${CEF_STANDARD_LIBS}
+    OBS::libobs
+    OBS::frontend-api
+    # IFileDialog (shobjidl) lives in ole32/shell32; SHCreateItemFromParsingName in shlwapi.
+    ole32
+    shell32
+    shlwapi
 )
 
 # CEF's /DELAYLOAD list (from SET_EXECUTABLE_TARGET_PROPERTIES) names DLLs this

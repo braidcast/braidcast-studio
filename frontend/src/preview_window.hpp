@@ -180,6 +180,10 @@ public:
 	// thread.
 	void OnVideoResetAll();
 
+	// The main window's top-level host HWND (windowId 0), set at construction. Used
+	// to parent native modal dialogs (e.g. the file picker) to the app window.
+	HWND MainHostHwnd() const { return host_; }
+
 private:
 	struct Impl;
 	Impl *impl_; // pimpl: the surface list, kept out of this header

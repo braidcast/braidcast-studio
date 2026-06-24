@@ -77,6 +77,19 @@ const char *TextInfoTypeName(obs_text_info_type type)
 	}
 }
 
+const char *EditableListTypeName(obs_editable_list_type type)
+{
+	switch (type) {
+	case OBS_EDITABLE_LIST_TYPE_FILES:
+		return "files";
+	case OBS_EDITABLE_LIST_TYPE_FILES_AND_URLS:
+		return "files_and_urls";
+	case OBS_EDITABLE_LIST_TYPE_STRINGS:
+	default:
+		return "strings";
+	}
+}
+
 const char *PathTypeName(obs_path_type type)
 {
 	switch (type) {
@@ -344,6 +357,36 @@ void SerializeProperty(obs_property_t *prop, obs_data_t *settings, json &out)
 			obs_property_next(&el);
 		}
 		out["props"] = std::move(nested);
+		break;
+	}
+	case OBS_PROPERTY_EDITABLE_LIST: {
+		out["editable_list_type"] = EditableListTypeName(obs_property_editable_list_type(prop));
+		out["filter"] = Str(obs_property_editable_list_filter(prop));
+		out["default_path"] = Str(obs_property_editable_list_default_path(prop));
+		break;
+	}
+	case OBS_PROPERTY_FRAME_RATE: {
+		json options = json::array();
+		const size_t optCount = obs_property_frame_rate_options_count(prop);
+		for (size_t i = 0; i < optCount; i++) {
+			options.push_back(json{
+				{"name", Str(obs_property_frame_rate_option_name(prop, i))},
+				{"description", Str(obs_property_frame_rate_option_description(prop, i))},
+			});
+		}
+		out["fps_options"] = std::move(options);
+
+		json ranges = json::array();
+		const size_t rangeCount = obs_property_frame_rate_fps_ranges_count(prop);
+		for (size_t i = 0; i < rangeCount; i++) {
+			const media_frames_per_second min = obs_property_frame_rate_fps_range_min(prop, i);
+			const media_frames_per_second max = obs_property_frame_rate_fps_range_max(prop, i);
+			ranges.push_back(json{
+				{"min", json{{"numerator", min.numerator}, {"denominator", min.denominator}}},
+				{"max", json{{"numerator", max.numerator}, {"denominator", max.denominator}}},
+			});
+		}
+		out["fps_ranges"] = std::move(ranges);
 		break;
 	}
 	default:

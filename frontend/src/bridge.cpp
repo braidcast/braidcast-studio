@@ -7,6 +7,9 @@
 #include <unordered_map>
 #include <vector>
 
+#include <shobjidl.h>
+#include <shlwapi.h>
+
 #include <obs.h>
 #include <obs.hpp>
 #include <obs-frontend-api.h>
@@ -1684,6 +1687,198 @@ bool BuildPropertiesResult(const PropertyKind *kind, void *obj, json &result, st
 
 	(void)error;
 	result = json{{"props", std::move(descriptors)}, {"values", std::move(values)}};
+	return true;
+}
+
+// --- native file dialog -------------------------------------------------------
+
+// UTF-8 -> UTF-16. Empty string maps to empty wstring.
+std::wstring Utf8ToWide(const std::string &s)
+{
+	if (s.empty()) {
+		return std::wstring();
+	}
+	const int len = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), nullptr, 0);
+	std::wstring out(len > 0 ? len : 0, L'\0');
+	if (len > 0) {
+		MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), out.data(), len);
+	}
+	return out;
+}
+
+// UTF-16 -> UTF-8. Empty input maps to empty string.
+std::string WideToUtf8(const wchar_t *s)
+{
+	if (!s || !*s) {
+		return std::string();
+	}
+	const int len = WideCharToMultiByte(CP_UTF8, 0, s, -1, nullptr, 0, nullptr, nullptr);
+	std::string out(len > 0 ? len - 1 : 0, '\0');
+	if (len > 0) {
+		WideCharToMultiByte(CP_UTF8, 0, s, -1, out.data(), len, nullptr, nullptr);
+	}
+	return out;
+}
+
+// One parsed filter spec; owns its strings so the COMDLG_FILTERSPEC views stay
+// valid for the dialog's lifetime.
+struct DialogFilterSpec {
+	std::wstring name;
+	std::wstring pattern;
+};
+
+// Parse the OBS filter-string format ("Desc (*.a *.b);;Desc2 (*.c)") into spec
+// pairs of {label, "*.a;*.b"} (the Win32 dialog wants patterns ';'-joined).
+std::vector<DialogFilterSpec> ParseDialogFilter(const std::string &filter)
+{
+	std::vector<DialogFilterSpec> specs;
+	size_t pos = 0;
+	while (pos < filter.size()) {
+		size_t end = filter.find(";;", pos);
+		const std::string entry = filter.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+		pos = end == std::string::npos ? filter.size() : end + 2;
+		if (entry.empty()) {
+			continue;
+		}
+
+		const size_t paren = entry.find('(');
+		std::string label = paren == std::string::npos ? entry : entry.substr(0, paren);
+		// Trim trailing whitespace off the label.
+		while (!label.empty() && (label.back() == ' ' || label.back() == '\t')) {
+			label.pop_back();
+		}
+
+		std::string patterns;
+		if (paren != std::string::npos) {
+			const size_t close = entry.find(')', paren);
+			patterns = entry.substr(paren + 1, close == std::string::npos ? std::string::npos : close - paren - 1);
+		}
+		// Patterns are space-separated in OBS form; Win32 wants ';'-separated.
+		std::wstring widePatterns;
+		size_t pstart = 0;
+		while (pstart < patterns.size()) {
+			size_t pend = patterns.find(' ', pstart);
+			const std::string token =
+				patterns.substr(pstart, pend == std::string::npos ? std::string::npos : pend - pstart);
+			pstart = pend == std::string::npos ? patterns.size() : pend + 1;
+			if (token.empty()) {
+				continue;
+			}
+			if (!widePatterns.empty()) {
+				widePatterns += L";";
+			}
+			widePatterns += Utf8ToWide(token);
+		}
+		if (widePatterns.empty()) {
+			widePatterns = L"*.*";
+		}
+
+		specs.push_back({Utf8ToWide(label.empty() ? "Files" : label), std::move(widePatterns)});
+	}
+	return specs;
+}
+
+// Native file open/save/directory picker via the modern IFileDialog (COM).
+// params: {mode: "open"|"save"|"directory", filter?, defaultPath?, defaultName?}.
+// Returns {path: string|null} -- null on cancel. Runs on the CEF UI thread.
+bool MethodDialogOpenFile(const json &params, json &result, std::string &error)
+{
+	const std::string mode = [&]() {
+		const std::string m = OptString(params, "mode");
+		return m.empty() ? std::string("open") : m;
+	}();
+	const std::string filter = OptString(params, "filter");
+	const std::string defaultPath = OptString(params, "defaultPath");
+	const std::string defaultName = OptString(params, "defaultName");
+	const bool isSave = mode == "save";
+	const bool isDirectory = mode == "directory";
+
+	// The bridge runs on the CEF UI thread; COM may or may not be initialized
+	// there. Try the call first; only initialize (and uninitialize) if needed.
+	bool comInitialized = false;
+	IFileDialog *dialog = nullptr;
+	const CLSID clsid = isSave ? CLSID_FileSaveDialog : CLSID_FileOpenDialog;
+	HRESULT hr = CoCreateInstance(clsid, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog));
+	if (hr == CO_E_NOTINITIALIZED) {
+		if (SUCCEEDED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) {
+			comInitialized = true;
+			hr = CoCreateInstance(clsid, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog));
+		}
+	}
+	if (FAILED(hr) || !dialog) {
+		if (comInitialized) {
+			CoUninitialize();
+		}
+		error = "failed to create file dialog";
+		return false;
+	}
+
+	if (isDirectory) {
+		DWORD opts = 0;
+		if (SUCCEEDED(dialog->GetOptions(&opts))) {
+			dialog->SetOptions(opts | FOS_PICKFOLDERS);
+		}
+	} else {
+		std::vector<DialogFilterSpec> specs = ParseDialogFilter(filter);
+		if (specs.empty()) {
+			specs.push_back({L"All Files", L"*.*"});
+		}
+		std::vector<COMDLG_FILTERSPEC> winSpecs;
+		winSpecs.reserve(specs.size());
+		for (const DialogFilterSpec &s : specs) {
+			winSpecs.push_back({s.name.c_str(), s.pattern.c_str()});
+		}
+		dialog->SetFileTypes(static_cast<UINT>(winSpecs.size()), winSpecs.data());
+	}
+
+	if (!defaultPath.empty()) {
+		IShellItem *folder = nullptr;
+		if (SUCCEEDED(SHCreateItemFromParsingName(Utf8ToWide(defaultPath).c_str(), nullptr,
+							  IID_PPV_ARGS(&folder)))) {
+			dialog->SetFolder(folder);
+			folder->Release();
+		}
+	}
+	if (!defaultName.empty() && !isDirectory) {
+		dialog->SetFileName(Utf8ToWide(defaultName).c_str());
+	}
+
+	HWND parent = nullptr;
+	if (PreviewManager *pm = Preview::Instance()) {
+		parent = pm->MainHostHwnd();
+	}
+
+	std::string chosen;
+	bool cancelled = true;
+	bool failed = false;
+	const HRESULT showHr = dialog->Show(parent);
+	if (SUCCEEDED(showHr)) {
+		IShellItem *item = nullptr;
+		if (SUCCEEDED(dialog->GetResult(&item)) && item) {
+			PWSTR pathW = nullptr;
+			if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &pathW)) && pathW) {
+				chosen = WideToUtf8(pathW);
+				cancelled = false;
+				CoTaskMemFree(pathW);
+			}
+			item->Release();
+		}
+	} else if (showHr != HRESULT_FROM_WIN32(ERROR_CANCELLED)) {
+		// User cancellation is reported as {path:null}; any other failure is a
+		// genuine error so the caller can distinguish them.
+		failed = true;
+	}
+
+	dialog->Release();
+	if (comInitialized) {
+		CoUninitialize();
+	}
+
+	if (failed) {
+		error = "file dialog failed";
+		return false;
+	}
+	result = json{{"path", cancelled ? json(nullptr) : json(chosen)}};
 	return true;
 }
 
@@ -3419,6 +3614,7 @@ void Init()
 		{"properties.get", MethodPropertiesGet},
 		{"properties.set", MethodPropertiesSet},
 		{"properties.button", MethodPropertiesButton},
+		{"dialog.openFile", MethodDialogOpenFile},
 		{"filterTypes.list", MethodFilterTypesList},
 		{"filters.list", MethodFiltersList},
 		{"filters.add", MethodFiltersAdd},
