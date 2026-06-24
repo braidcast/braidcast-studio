@@ -23,6 +23,7 @@
 #include "log.hpp"
 #include "multistream/CanvasRuntime.hpp"
 #include "multistream/CanvasStore.hpp"
+#include "multistream/Hotkeys.hpp"
 #include "multistream/MultistreamEngine.hpp"
 #include "multistream/OutputBindingStore.hpp"
 #include "multistream/StreamProfileStore.hpp"
@@ -460,6 +461,13 @@ bool ObsBootstrap::Start()
 			return uuid == g_canvases.Default().uuid ? obs_get_video() : g_canvasRuntime->VideoFor(uuid);
 		});
 	g_multistream->onStatusChanged = [] { Bridge::EmitMultistreamChanged(); };
+
+	// Register the frontend-owned hotkeys (Start/Stop Streaming, wired to the engine
+	// above) and load saved bindings. Done after modules + scenes load (so every
+	// source/output/etc. hotkey id exists for Load to resolve by name) and after the
+	// engine exists (the callbacks drive it). libobs's hotkey thread fires bound
+	// hotkeys globally from here on -- no key injection needed.
+	Hotkeys::RegisterFrontendHotkeys();
 
 	// Seed (first run) or restore the global audio devices (Desktop Audio / Mic) on
 	// output channels 1..6 -- stock OBS sets these up but the new frontend never did,
@@ -1727,10 +1735,95 @@ void ObsBootstrap::RunAudioMixerSelfTest()
 		" source(s) (was " + std::to_string(baseCount) + ")");
 }
 
+void ObsBootstrap::RunHotkeysSelfTest()
+{
+	using Bridge::json;
+
+	auto run = [](const std::string &method, const json &params, bool &ok) -> json {
+		json result;
+		std::string error;
+		ok = Bridge::Dispatch(method, params, result, error);
+		if (!ok) {
+			HostLog("[selftest] " + method + " FAILED: " + error);
+			return json(nullptr);
+		}
+		return result;
+	};
+
+	bool ok = false;
+
+	// 1) hotkeys.list: expect > 0, and find the frontend Start Streaming hotkey (proof
+	// the frontend registration ran). Capture its id + whether it already has bindings.
+	json list = run("hotkeys.list", json(nullptr), ok);
+	if (!ok || !list.is_object() || !list["hotkeys"].is_array()) {
+		return;
+	}
+	const size_t total = list["hotkeys"].size();
+	std::string startId;
+	bool startHadBindings = false;
+	size_t frontendCount = 0;
+	for (const auto &h : list["hotkeys"]) {
+		if (h.value("registerer", std::string()) == "frontend") {
+			frontendCount++;
+		}
+		if (h.value("name", std::string()) == "OBSBasic.StartStreaming") {
+			startId = h.value("id", std::string());
+			startHadBindings = h["bindings"].is_array() && !h["bindings"].empty();
+		}
+	}
+	HostLog("[selftest] hotkeys.list -> " + std::to_string(total) + " hotkey(s), " +
+		std::to_string(frontendCount) + " frontend; Start Streaming id=" +
+		(startId.empty() ? "(MISSING -- BUG)" : startId));
+	if (startId.empty()) {
+		return;
+	}
+
+	// 2) set Ctrl+Shift+F12 on it via a DOM-code-shaped binding, expect a non-empty
+	// display string back.
+	json set = run("hotkeys.set",
+		       json{{"id", startId},
+			    {"bindings", json::array({json{{"code", "F12"},
+							   {"ctrl", true},
+							   {"shift", true},
+							   {"alt", false},
+							   {"meta", false}}})}},
+		       ok);
+	std::string setDisplay;
+	if (ok && set.is_object() && set["bindings"].is_array() && !set["bindings"].empty()) {
+		setDisplay = set["bindings"][0].value("display", std::string());
+	}
+	HostLog("[selftest] hotkeys.set Ctrl+Shift+F12 -> display='" + setDisplay + "'");
+
+	// 3) Re-list and confirm the binding reads back on that hotkey (round-trip).
+	json relist = run("hotkeys.list", json(nullptr), ok);
+	std::string readback;
+	if (ok && relist.is_object() && relist["hotkeys"].is_array()) {
+		for (const auto &h : relist["hotkeys"]) {
+			if (h.value("id", std::string()) == startId && h["bindings"].is_array() &&
+			    !h["bindings"].empty()) {
+				readback = h["bindings"][0].value("display", std::string());
+			}
+		}
+	}
+	HostLog("[selftest] hotkeys.set round-trip -> readback='" + readback + "' (" +
+		(!readback.empty() && readback == setDisplay ? "OK" : "MISMATCH") + ")");
+
+	// 4) Restore: clear the binding we added (the portable smoke run starts with no
+	// saved file, so Start Streaming was unbound -- clearing returns it to baseline).
+	run("hotkeys.clear", json{{"id", startId}}, ok);
+	HostLog(std::string("[selftest] hotkeys.clear restore -> ") + (ok ? "ok" : "FAIL") +
+		(startHadBindings ? " (NOTE: hotkey had a prior binding; cleared)" : ""));
+}
+
 void ObsBootstrap::Stop()
 {
 	// Drop the bridge's obs frontend event callback while libobs is still up.
 	Bridge::Shutdown();
+
+	// Unregister the frontend-owned hotkeys while libobs is still up, before the
+	// engine they drive is torn down below. Saved bindings already persisted on every
+	// hotkeys.set/clear, so no save is needed here.
+	Hotkeys::UnregisterFrontendHotkeys();
 
 	// Unbind channel 0 and destroy the program transition while libobs is still up,
 	// before the scene-removal pass below, so the transition releases its wrapped

@@ -144,6 +144,12 @@ void RunAudioMixerSelfTest();
 // close it, leaving no state behind. Also logs the monitor count. Gated by the
 // caller to the smoke path.
 void RunProjectorSelfTest();
+// Headless proof for hotkeys: drive hotkeys.list (expect > 0, including the
+// frontend Start/Stop Streaming), then a hotkeys.set -> hotkeys.list round-trip on
+// one hotkey (bind Ctrl+Shift+F12 via a {code:"F12",ctrl,shift} call, confirm it
+// reads back), then clear it so the run leaves the binding as it found it. Gated by
+// the caller to the smoke path.
+void RunHotkeysSelfTest();
 void Stop();
 } // namespace ObsBootstrap
 

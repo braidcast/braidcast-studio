@@ -94,6 +94,8 @@ target_sources(
     src/multistream/MultistreamEngine.hpp
     src/multistream/CanvasRuntime.cpp
     src/multistream/CanvasRuntime.hpp
+    src/multistream/Hotkeys.cpp
+    src/multistream/Hotkeys.hpp
     src/multistream/StorePaths.hpp
 )
 
@@ -162,6 +164,7 @@ set_source_files_properties(
   src/multistream/OutputBindingStore.cpp
   src/multistream/MultistreamEngine.cpp
   src/multistream/CanvasRuntime.cpp
+  src/multistream/Hotkeys.cpp
   PROPERTIES COMPILE_OPTIONS "/wd4201"
 )
 

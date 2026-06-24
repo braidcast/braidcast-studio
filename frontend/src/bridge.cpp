@@ -30,6 +30,7 @@
 
 #include "multistream/CanvasRuntime.hpp"
 #include "multistream/CanvasStore.hpp"
+#include "multistream/Hotkeys.hpp"
 #include "multistream/MultistreamEngine.hpp"
 #include "multistream/OutputBindingStore.hpp"
 #include "multistream/StorePaths.hpp"
@@ -4159,6 +4160,9 @@ void Init()
 		{"projector.open", MethodProjectorOpen},
 		{"projector.close", MethodProjectorClose},
 		{"projector.list", MethodProjectorList},
+		{"hotkeys.list", Hotkeys::MethodList},
+		{"hotkeys.set", Hotkeys::MethodSet},
+		{"hotkeys.clear", Hotkeys::MethodClear},
 	};
 
 	obs_frontend_add_event_callback(OnFrontendEvent, nullptr);
