@@ -7,6 +7,7 @@
   import ContextMenu, { type ContextMenuItem } from "../ContextMenu.svelte";
   import { openFilters } from "../filterDialogOpener.svelte";
   import { openTransform } from "../transformOpener.svelte";
+  import { prefetchMonitors, projectorItems } from "../projectorMenu";
 
   // A composite, inseparable dock for one NON-DEFAULT canvas (hierarchy-model.html
   // §1 right column): an inline preview + this canvas's own scenes + its own
@@ -245,6 +246,7 @@
         { label: "Move Down", disabled: idx === items.length - 1, action: () => void reorder(item, "down") },
         { label: "Move to Top", disabled: idx === 0, action: () => void reorder(item, "top") },
         { label: "Move to Bottom", disabled: idx === items.length - 1, action: () => void reorder(item, "bottom") },
+        ...(item.source ? [null, ...projectorItems({ kind: "source", name: item.source })] : []),
         null,
         { label: "Remove", danger: true, action: () => void remove(item) },
       ],
@@ -279,6 +281,9 @@
       { label: "Move to Top", action: () => void call("sceneItems.reorder", { direction: "top" }) },
       { label: "Move to Bottom", action: () => void call("sceneItems.reorder", { direction: "bottom" }) },
       null,
+      // Project this canvas (addressed by its uuid).
+      ...projectorItems({ kind: "canvas", canvas: canvasUuid }),
+      null,
       { label: "Remove", danger: true, action: () => void call("sceneItems.remove", {}) },
     ];
   }
@@ -309,6 +314,7 @@
 
   // ---- lifecycle -------------------------------------------------------------
   onMount(() => {
+    prefetchMonitors();
     void loadScenes();
     void (async () => {
       try {

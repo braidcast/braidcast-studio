@@ -2,11 +2,15 @@
   import { onMount } from "svelte";
   import { defaultCanvas } from "./defaultCanvasStore.svelte";
   import ContextMenu, { type ContextMenuItem } from "../ContextMenu.svelte";
+  import { prefetchMonitors, projectorItems } from "../projectorMenu";
 
   // The mount adapter strips internal __* keys; this dock declares no props.
   let {}: Record<string, unknown> = $props();
 
-  onMount(() => defaultCanvas.start());
+  onMount(() => {
+    defaultCanvas.start();
+    prefetchMonitors();
+  });
 
   let adding = $state(false);
   let newName = $state("");
@@ -92,6 +96,8 @@
       items: [
         { label: "Rename", action: () => beginRename(name) },
         { label: "Duplicate", action: () => duplicate(name) },
+        null,
+        ...projectorItems({ kind: "scene", name }),
         null,
         { label: "Remove", danger: true, disabled: defaultCanvas.scenes.length <= 1, action: () => void remove(name) },
       ],

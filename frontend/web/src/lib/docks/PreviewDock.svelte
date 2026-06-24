@@ -7,6 +7,7 @@
   import PropertyForm from "../properties/PropertyForm.svelte";
   import { openFilters } from "../filterDialogOpener.svelte";
   import { openTransform } from "../transformOpener.svelte";
+  import { prefetchMonitors, projectorItems } from "../projectorMenu";
 
   let {}: Record<string, unknown> = $props();
 
@@ -48,6 +49,9 @@
       { label: "Move to Top", action: () => void call("sceneItems.reorder", { scene: p.scene, id: p.id, direction: "top" }) },
       { label: "Move to Bottom", action: () => void call("sceneItems.reorder", { scene: p.scene, id: p.id, direction: "bottom" }) },
       null,
+      // Project the program / default mix (the Default surface == channel 0).
+      ...projectorItems({ kind: "program" }),
+      null,
       { label: "Remove", danger: true, action: () => void call("sceneItems.remove", { scene: p.scene, id: p.id }) },
     ];
   }
@@ -84,6 +88,7 @@
   }
 
   onMount(() => {
+    prefetchMonitors();
     reportRect();
     const ro = new ResizeObserver(reportRect);
     if (previewEl) {

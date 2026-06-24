@@ -8,10 +8,14 @@
   import ContextMenu, { type ContextMenuItem } from "../ContextMenu.svelte";
   import { openFilters } from "../filterDialogOpener.svelte";
   import { openTransform } from "../transformOpener.svelte";
+  import { prefetchMonitors, projectorItems } from "../projectorMenu";
 
   let {}: Record<string, unknown> = $props();
 
-  onMount(() => defaultCanvas.start());
+  onMount(() => {
+    defaultCanvas.start();
+    prefetchMonitors();
+  });
 
   // The default canvas's current scene drives this list (global channel-0 path).
   const currentScene = $derived(defaultCanvas.current);
@@ -184,6 +188,7 @@
         { label: "Move Down", disabled: idx === items.length - 1, action: () => void reorder(item, "down") },
         { label: "Move to Top", disabled: idx === 0, action: () => void reorder(item, "top") },
         { label: "Move to Bottom", disabled: idx === items.length - 1, action: () => void reorder(item, "bottom") },
+        ...(item.source ? [null, ...projectorItems({ kind: "source", name: item.source })] : []),
         null,
         { label: "Remove", danger: true, action: () => void remove(item) },
       ],

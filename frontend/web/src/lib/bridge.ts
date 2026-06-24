@@ -451,6 +451,38 @@ export interface Transform {
 /** Quick-action verbs accepted by sceneItems.transformAction. */
 export type TransformAction = "reset" | "center" | "fitToScreen" | "stretchToScreen" | "flipH" | "flipV";
 
+// --- projectors (native standalone windows rendering a target, P3) ----------
+
+/** A display/monitor as reported by display.listMonitors. `index` is the stable
+ * ordinal the projector.open `monitor` param expects; `x`/`y` are the desktop
+ * position (virtual-screen coords). */
+export interface Monitor {
+  index: number;
+  name: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  primary: boolean;
+}
+
+/** What a projector renders. "program" = the program / default mix (no name);
+ * "scene"/"source" address by name; "canvas" addresses an additional canvas by
+ * its uuid (passed as `canvas`). */
+export type ProjectorTarget =
+  | { kind: "program" }
+  | { kind: "scene"; name: string }
+  | { kind: "source"; name: string }
+  | { kind: "canvas"; canvas: string };
+
+/** A live projector as reported by projector.list / returned by projector.open. */
+export interface ProjectorInfo {
+  projectorId: number;
+  target: ProjectorTarget;
+  mode: "fullscreen" | "windowed";
+  monitor: number | null;
+}
+
 /** A registered transition type as reported by transitionTypes.list. */
 export interface TransitionType {
   id: string;
@@ -582,6 +614,16 @@ export interface ObsMethods {
   "transitions.getCurrent": TransitionState;
   "transitions.setCurrent": { id: string; name: string };
   "transitions.setDuration": { durationMs: number };
+  // Native projectors (standalone windows rendering a target on a monitor, P3).
+  // listMonitors enumerates the displays a fullscreen projector can target.
+  // open spawns a projector (fullscreen needs `monitor`); the window closes
+  // itself (Esc / window close), so there is no UI-driven close path beyond
+  // projector.close. list enumerates the live projectors. projector.changed is
+  // pushed whenever the set opens/closes.
+  "display.listMonitors": { monitors: Monitor[] };
+  "projector.open": { projectorId: number };
+  "projector.close": { closed: boolean };
+  "projector.list": { projectors: ProjectorInfo[] };
   // Shell persistence (P1). theme.* stores an opaque JSON blob the JS theme store
   // stringifies/parses into its own schema (active id + live tokens + custom
   // themes); layout.* stores the serialized Dockview state (a JSON string). load
@@ -641,6 +683,9 @@ export interface ObsEvents {
   // The active transition type and/or its duration changed; the UI re-runs
   // transitions.getCurrent to refresh its dropdown + duration field.
   "transitions.changed": Record<string, never>;
+  // The set of live native projectors changed (opened/closed, incl. user OS-close
+  // or Esc); a consumer re-runs projector.list to refresh.
+  "projector.changed": Record<string, never>;
   // Floating dock tear-out (P3a). Broadcast to ALL browsers (main + detached).
   // opened fires after a detached window's browser exists; closed fires on
   // explicit redock AND on user OS-close (NOT during app shutdown).

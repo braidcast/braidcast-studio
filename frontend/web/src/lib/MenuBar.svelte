@@ -5,6 +5,30 @@
   import { openThemeEditor } from "./themeEditorOpener.svelte";
   import { defaultSelection, openTransform } from "./transformOpener.svelte";
   import { openAbout } from "./aboutOpener.svelte";
+  import { onMount } from "svelte";
+  import { obs, type Monitor } from "./bridge";
+
+  // The Fullscreen Projector (Program) entries depend on the runtime monitor
+  // list. The shared projectorMenu cache builds ContextMenu items; the menu bar
+  // uses MenuItem, so enumerate here into local rune state and build the entries
+  // inline (one per monitor). Loaded once on mount; the set rarely changes.
+  let monitors = $state<Monitor[]>([]);
+  onMount(() => {
+    obs
+      .call("display.listMonitors")
+      .then((res) => (monitors = res?.monitors ?? []))
+      .catch((e) => console.log("display.listMonitors failed: " + (e as Error).message));
+  });
+  function openProgramFullscreen(monitor: number) {
+    obs
+      .call("projector.open", { target: { kind: "program" }, mode: "fullscreen", monitor })
+      .catch((e) => console.log("projector.open failed: " + (e as Error).message));
+  }
+  function openProgramWindowed() {
+    obs
+      .call("projector.open", { target: { kind: "program" }, mode: "windowed" })
+      .catch((e) => console.log("projector.open failed: " + (e as Error).message));
+  }
 
   // App passes the dock-visibility map + the toggle / reset / lock actions so the
   // Docks menu drives the live layout. visibleDocks[id] === false => hidden.
@@ -44,11 +68,17 @@
         openTransform({ scene: defaultSelection.scene ?? undefined, id: defaultSelection.id }, "Selected Source"),
     },
   ]);
-  const viewItems: (MenuItem | null)[] = [
+  const viewItems: (MenuItem | null)[] = $derived([
     { label: "Studio Mode", disabled: true },
     { label: "Stats", disabled: true },
     { label: "Fullscreen Preview", disabled: true },
-  ];
+    null,
+    { label: "Windowed Projector (Program)", action: openProgramWindowed },
+    ...monitors.map((m) => ({
+      label: `Fullscreen Projector (Program) — ${m.name} (${m.width}×${m.height})`,
+      action: () => openProgramFullscreen(m.index),
+    })),
+  ]);
   // Docks menu: one toggle per dock (checked = visible) + Reset + Lock + the theme
   // editor (preset switching + full token editing live in the editor now).
   const dockItems: (MenuItem | null)[] = $derived([
