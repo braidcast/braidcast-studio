@@ -2,6 +2,7 @@
 
 #include <obs.hpp>
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -33,6 +34,23 @@ public:
 		std::string canvasName;
 		State state = State::Idle;
 		std::string lastError;
+	};
+
+	/* Numeric performance snapshot for one enabled binding. Plain struct (no
+	 * json/bridge dependency); the bridge shapes it into the stats payload and
+	 * derives bitrate from the delta of totalBytes across polls. A non-live
+	 * binding yields zeros + its current state. */
+	struct OutputStats {
+		std::string bindingUuid;
+		std::string canvasUuid;
+		std::string profileLabel; // {platform} - {label}
+		std::string canvasName;
+		State state = State::Idle;
+		uint64_t totalBytes = 0;
+		int droppedFrames = 0;
+		int totalFrames = 0;
+		double congestion = 0.0; // 0..1
+		uint64_t connectTimeMs = 0;
 	};
 
 	/* Resolver: video_t* for a canvas uuid (Default -> obs_get_video();
@@ -67,6 +85,12 @@ public:
 	void InvalidateCanvasEncoders(const std::string &canvasUuid);
 
 	std::vector<OutputStatus> Statuses() const;
+
+	/* Numeric per-binding performance snapshot for the Stats dock. Mirrors how
+	 * Statuses() enumerates enabled bindings, but reads live counters off each
+	 * binding's obs_output_t (total bytes, dropped/total frames, congestion,
+	 * connect time). Non-live bindings yield zeros + their current state. */
+	std::vector<OutputStats> StatsSnapshot() const;
 
 	/* Invoked (possibly off the libobs thread, via the output signal handlers)
 	 * whenever any output's state changes. The bridge target routes through its

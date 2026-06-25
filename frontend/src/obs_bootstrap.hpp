@@ -150,6 +150,12 @@ void RunProjectorSelfTest();
 // reads back), then clear it so the run leaves the binding as it found it. Gated by
 // the caller to the smoke path.
 void RunHotkeysSelfTest();
+// Headless proof for the stats snapshot: drive stats.get through the bridge and
+// confirm general.fps / general.cpu are present and 'outputs' is an array sized to
+// the enabled-binding count. Live bitrate/drop numbers need a real broadcast, so
+// this only verifies shape + that the general stats populate. Gated by the caller
+// to the smoke path.
+void RunStatsSelfTest();
 void Stop();
 } // namespace ObsBootstrap
 

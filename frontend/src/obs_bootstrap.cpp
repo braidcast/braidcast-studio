@@ -1815,6 +1815,37 @@ void ObsBootstrap::RunHotkeysSelfTest()
 		(startHadBindings ? " (NOTE: hotkey had a prior binding; cleared)" : ""));
 }
 
+void ObsBootstrap::RunStatsSelfTest()
+{
+	using Bridge::json;
+
+	json result;
+	std::string error;
+	if (!Bridge::Dispatch("stats.get", json(nullptr), result, error)) {
+		HostLog("[selftest] stats.get FAILED: " + error);
+		return;
+	}
+
+	const bool hasGeneral = result.is_object() && result["general"].is_object();
+	const bool hasFps = hasGeneral && result["general"].contains("fps") && result["general"]["fps"].is_number();
+	const bool hasCpu = hasGeneral && result["general"].contains("cpu") && result["general"]["cpu"].is_number();
+	const bool outputsArray = result.is_object() && result["outputs"].is_array();
+
+	size_t enabled = 0;
+	for (const auto &b : g_outputBindings.Bindings().bindings) {
+		if (b.enabled) {
+			enabled++;
+		}
+	}
+	const size_t outputsSize = outputsArray ? result["outputs"].size() : 0;
+	const double fps = hasFps ? result["general"].value("fps", 0.0) : 0.0;
+	const double cpu = hasCpu ? result["general"].value("cpu", 0.0) : 0.0;
+
+	HostLog("[selftest] stats.get -> fps=" + std::to_string(fps) + " cpu=" + std::to_string(cpu) +
+		" outputs=" + std::to_string(outputsSize) + " (enabled bindings=" + std::to_string(enabled) + ", " +
+		((hasFps && hasCpu && outputsArray && outputsSize == enabled) ? "OK" : "MISMATCH") + ")");
+}
+
 void ObsBootstrap::Stop()
 {
 	// Drop the bridge's obs frontend event callback while libobs is still up.

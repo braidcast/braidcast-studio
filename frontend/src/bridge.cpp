@@ -3327,6 +3327,108 @@ bool MethodMultistreamStopOutput(const json &params, json &result, std::string &
 	return true;
 }
 
+// --- stats snapshot (general perf + per-output streaming, polled ~1x/s) ------
+
+// Per-binding bitrate cache. stats.get is polled ~1x/s; bitrate is the delta of
+// the output's cumulative bytes since the previous poll, so we keep the prior
+// sample per binding keyed by uuid. First sample, a missing binding, or a counter
+// reset (bytes < prev, e.g. a reconnect) yields 0 kbps for that tick.
+struct BitrateSample {
+	uint64_t prevBytes = 0;
+	uint64_t prevTimeNs = 0;
+};
+
+// CPU sampling needs a persistent handle (start once, query per call); kept at
+// file scope so Shutdown() can os_cpu_usage_info_destroy it (a function-static
+// would leak it past obs_shutdown). The bitrate cache rides along, cleared on
+// Shutdown so a re-init starts fresh.
+os_cpu_usage_info_t *g_cpuInfo = nullptr;
+std::unordered_map<std::string, BitrateSample> g_bitrateCache;
+
+bool MethodStatsGet(const json & /*params*/, json &result, std::string & /*error*/)
+{
+	if (!g_cpuInfo) {
+		g_cpuInfo = os_cpu_usage_info_start();
+	}
+	std::unordered_map<std::string, BitrateSample> &bitrateCache = g_bitrateCache;
+
+	// --- general performance ---
+	// The first query after start can return NaN until two samples exist; clamp
+	// it to 0 so the payload stays clean (real CPU populates on the next poll).
+	double cpu = g_cpuInfo ? os_cpu_usage_info_query(g_cpuInfo) : 0.0;
+	if (!(cpu == cpu)) {
+		cpu = 0.0;
+	}
+	const double memoryMB = static_cast<double>(os_get_proc_resident_size()) / (1024.0 * 1024.0);
+	const double fps = obs_get_active_fps();
+	const double avgFrameMs = static_cast<double>(obs_get_average_frame_time_ns()) / 1.0e6;
+
+	const uint32_t renderLagged = obs_get_lagged_frames();
+	const uint32_t renderTotal = obs_get_total_frames();
+	const double renderLagPct = renderTotal > 0 ? (static_cast<double>(renderLagged) / renderTotal) * 100.0 : 0.0;
+
+	uint32_t encodeSkipped = 0;
+	uint32_t encodeTotal = 0;
+	if (video_t *video = obs_get_video()) {
+		encodeSkipped = video_output_get_skipped_frames(video);
+		encodeTotal = video_output_get_total_frames(video);
+	}
+	const double encodeSkipPct = encodeTotal > 0 ? (static_cast<double>(encodeSkipped) / encodeTotal) * 100.0 : 0.0;
+
+	json general = json{
+		{"cpu", cpu},
+		{"memoryMB", memoryMB},
+		{"fps", fps},
+		{"avgFrameMs", avgFrameMs},
+		{"renderLagged", static_cast<int>(renderLagged)},
+		{"renderTotal", static_cast<int>(renderTotal)},
+		{"renderLagPct", renderLagPct},
+		{"encodeSkipped", static_cast<int>(encodeSkipped)},
+		{"encodeTotal", static_cast<int>(encodeTotal)},
+		{"encodeSkipPct", encodeSkipPct},
+	};
+
+	// --- per-output streaming ---
+	const uint64_t nowNs = os_gettime_ns();
+	json outputs = json::array();
+	std::unordered_map<std::string, BitrateSample> nextCache;
+	for (const MultistreamEngine::OutputStats &s : ObsBootstrap::Multistream().StatsSnapshot()) {
+		// bitrate = delta-bytes / delta-seconds * 8 / 1000 (kbps). First sample
+		// (no prior) or a counter reset -> 0. Re-key nextCache so stale bindings
+		// no longer present are dropped automatically.
+		double bitrateKbps = 0.0;
+		auto it = bitrateCache.find(s.bindingUuid);
+		if (it != bitrateCache.end() && s.totalBytes >= it->second.prevBytes && nowNs > it->second.prevTimeNs) {
+			const double deltaBytes = static_cast<double>(s.totalBytes - it->second.prevBytes);
+			const double deltaSec = static_cast<double>(nowNs - it->second.prevTimeNs) / 1.0e9;
+			if (deltaSec > 0.0) {
+				bitrateKbps = (deltaBytes * 8.0 / 1000.0) / deltaSec;
+			}
+		}
+		nextCache[s.bindingUuid] = BitrateSample{s.totalBytes, nowNs};
+
+		const double dropPct =
+			s.totalFrames > 0 ? (static_cast<double>(s.droppedFrames) / s.totalFrames) * 100.0 : 0.0;
+
+		outputs.push_back(json{
+			{"bindingUuid", s.bindingUuid},
+			{"profileLabel", s.profileLabel},
+			{"canvasName", s.canvasName},
+			{"state", MultistreamEngine::StateName(s.state)},
+			{"bitrateKbps", bitrateKbps},
+			{"droppedFrames", s.droppedFrames},
+			{"totalFrames", s.totalFrames},
+			{"dropPct", dropPct},
+			{"congestionPct", s.congestion * 100.0},
+			{"durationMs", s.connectTimeMs},
+		});
+	}
+	bitrateCache.swap(nextCache);
+
+	result = json{{"general", std::move(general)}, {"outputs", std::move(outputs)}};
+	return true;
+}
+
 // --- audio mixer (per-source faders + volmeters, levels) --------------------
 
 bool MethodAudioList(const json & /*params*/, json &result, std::string & /*error*/)
@@ -4139,6 +4241,7 @@ void Init()
 		{"multistream.status", MethodMultistreamStatus},
 		{"multistream.startOutput", MethodMultistreamStartOutput},
 		{"multistream.stopOutput", MethodMultistreamStopOutput},
+		{"stats.get", MethodStatsGet},
 		{"audio.list", MethodAudioList},
 		{"audio.setDeflection", MethodAudioSetDeflection},
 		{"audio.setMuted", MethodAudioSetMuted},
@@ -4173,6 +4276,11 @@ void Shutdown()
 {
 	obs_frontend_remove_event_callback(OnFrontendEvent, nullptr);
 	g_methods.clear();
+	if (g_cpuInfo) {
+		os_cpu_usage_info_destroy(g_cpuInfo);
+		g_cpuInfo = nullptr;
+	}
+	g_bitrateCache.clear();
 }
 
 void SeedGlobalAudio()

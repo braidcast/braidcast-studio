@@ -392,6 +392,51 @@ std::vector<MultistreamEngine::OutputStatus> MultistreamEngine::Statuses() const
 	return out;
 }
 
+std::vector<MultistreamEngine::OutputStats> MultistreamEngine::StatsSnapshot() const
+{
+	std::lock_guard<std::mutex> lock(liveMutex);
+	std::vector<OutputStats> out;
+	for (const OutputBinding &b : bindings.Bindings().bindings) {
+		if (!b.enabled) {
+			continue;
+		}
+		OutputStats st;
+		st.bindingUuid = b.uuid;
+		st.canvasUuid = b.canvasUuid;
+		if (!b.profileUuid.empty()) {
+			if (StreamProfile *p = profiles.Find(b.profileUuid)) {
+				st.profileLabel = p->DisplayName();
+			}
+		}
+		const CanvasDefinition &def = canvases.Default();
+		if (b.canvasUuid == def.uuid) {
+			st.canvasName = def.name;
+		} else if (const CanvasDefinition *cdef = canvases.Find(b.canvasUuid)) {
+			st.canvasName = cdef->name;
+		}
+		for (const auto &lo : live) {
+			if (lo->bindingUuid != b.uuid) {
+				continue;
+			}
+			st.state = lo->state;
+			if (lo->output) {
+				/* obs_output_get_congestion/_connect_time_ms take a non-const
+				 * handle; the auto-release yields one regardless of our constness. */
+				obs_output_t *o = lo->output;
+				st.totalBytes = obs_output_get_total_bytes(o);
+				st.droppedFrames = obs_output_get_frames_dropped(o);
+				st.totalFrames = obs_output_get_total_frames(o);
+				st.congestion = obs_output_get_congestion(o);
+				int connectMs = obs_output_get_connect_time_ms(o);
+				st.connectTimeMs = connectMs > 0 ? static_cast<uint64_t>(connectMs) : 0;
+			}
+			break;
+		}
+		out.push_back(std::move(st));
+	}
+	return out;
+}
+
 void MultistreamEngine::NotifyChanged()
 {
 	if (onStatusChanged) {
