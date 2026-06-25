@@ -541,12 +541,34 @@ build-green, headless-smoke clean (leaks 2 baseline), and pushed.
 
 ---
 
-## Phase 5 — OBS MCP: AI control surface 🔭 PLANNED (design first)
+## Phase 5 — OBS MCP: AI control surface 🔧 MVP SHIPPED (2026-06-25)
 
 Expose the app's OBS control to AI agents over the **Model Context Protocol (MCP)**,
 so an assistant can drive the production — switch scenes, add/configure sources, edit
 transforms, manage canvases / stream profiles / output bindings, start/stop the
 multistream, and read live state — through a typed, discoverable tool surface.
+
+**MVP DONE (embedded HTTP, decided topology):** an embedded localhost HTTP MCP server
+(`frontend/src/mcp/{HttpServer,McpServer}`), opt-in (`mcp.json enabled=false` default,
+nothing listens until turned on), token-auth, `127.0.0.1`-only. Speaks the MCP
+request/response subset (`initialize`/`tools/list`/`tools/call`/`ping`); every
+`tools/call` marshals onto the CEF UI thread (15s-timeout future, shutdown-guarded) and
+reuses the existing `Bridge::Dispatch` over `g_methods`. **20 curated tools**
+(list/switch/create scene, scene-item visibility+transform, source create/rename/remove,
+transitions, canvas/profile/output lists, multistream status + start/stop, get_stats)
++ a generic **`obs_call`** escape hatch. **Capability gating:** Read always; Mutate
+(`allowMutations`); GoLive (`allowGoLive`, default off) — start/stop_output are GoLive.
+A Settings **"AI Control"** tab (enable, port, copyable endpoint + token, regenerate,
+the two capability toggles). Self-test round-trips initialize/tools.list/curated +
+generic calls + go-live gating; `leaks: 2`, clean thread join at teardown. **Owed:**
+a real external MCP client (Claude Desktop/Code) driving OBS over the socket end-to-end
+(GUI/live; the self-test proves the protocol in-process). Spec:
+`docs/superpowers/specs/2026-06-25-phase5-obs-mcp-design.md` (gitignored).
+
+**Later (post-MVP):** SSE / server-initiated notifications (push obs events as MCP
+notifications), MCP **resources** (scenes/canvas/stats as pull resources), per-tool
+confirmations, schema auto-generation from an annotated `g_methods`, remote/auth
+hardening.
 
 **Why this is cheap to build here:** the CEF bridge is already a **data-driven method
 registry** (~77 operations in `g_methods`: `scenes.*`, `sources.*`, `properties.*`,
