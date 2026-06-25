@@ -97,6 +97,14 @@ target_sources(
     src/multistream/Hotkeys.cpp
     src/multistream/Hotkeys.hpp
     src/multistream/StorePaths.hpp
+    # Embedded MCP server (Stage 1): a localhost HTTP/1.1 endpoint speaking the MCP
+    # JSON-RPC subset, proxying a generic obs_call tool through Bridge::Dispatch.
+    # HttpServer is deliberately libobs-free (Winsock only) so it stays out of the
+    # /wd4201 set; only McpServer.cpp includes obs.h.
+    src/mcp/HttpServer.cpp
+    src/mcp/HttpServer.hpp
+    src/mcp/McpServer.cpp
+    src/mcp/McpServer.hpp
 )
 
 # CEF's required compiler/linker flags, defines, and include paths.
@@ -134,6 +142,8 @@ target_link_libraries(
     ole32
     shell32
     shlwapi
+    # The embedded MCP server's HttpServer uses Winsock.
+    ws2_32
 )
 
 # CEF's /DELAYLOAD list (from SET_EXECUTABLE_TARGET_PROPERTIES) names DLLs this
@@ -165,6 +175,7 @@ set_source_files_properties(
   src/multistream/MultistreamEngine.cpp
   src/multistream/CanvasRuntime.cpp
   src/multistream/Hotkeys.cpp
+  src/mcp/McpServer.cpp
   PROPERTIES COMPILE_OPTIONS "/wd4201"
 )
 

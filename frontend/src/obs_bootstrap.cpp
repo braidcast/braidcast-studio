@@ -24,6 +24,7 @@
 #include "multistream/CanvasRuntime.hpp"
 #include "multistream/CanvasStore.hpp"
 #include "multistream/Hotkeys.hpp"
+#include "mcp/McpServer.hpp"
 #include "multistream/MultistreamEngine.hpp"
 #include "multistream/OutputBindingStore.hpp"
 #include "multistream/StreamProfileStore.hpp"
@@ -246,6 +247,12 @@ std::unique_ptr<CanvasRuntime> g_canvasRuntime;
 // callbacks are removed first by ClearAll). The global source activate/deactivate
 // signals below rebuild its set + push audio.changed so the UI re-lists.
 std::unique_ptr<AudioMonitor> g_audioMonitor;
+
+// The embedded MCP server. Constructed at the end of Start() (after the audio
+// monitor is up) and torn down at the very top of Stop() (before Bridge::Shutdown,
+// so its accept thread is joined while the bridge + libobs are still alive).
+// Disabled by default (mcp.json enabled=false), so nothing listens unless opted in.
+std::unique_ptr<McpServer> g_mcp;
 
 // Rebuild the audio monitor's active-source set and notify the UI. Wired to the
 // global source activate/deactivate signals; runs on the signal's thread (the
@@ -483,6 +490,13 @@ bool ObsBootstrap::Start()
 	g_audioMonitor->Rebuild();
 	ConnectAudioSourceSignals();
 	HostLog("[obs] audio monitor up; active audio sources=" + std::to_string(g_audioMonitor->List().size()));
+
+	// Bring up the embedded MCP server last (after the bridge + stores + audio are
+	// all live, so any tool call lands on a fully-up engine). Disabled by default
+	// (mcp.json enabled=false), so this only listens when the user opts in.
+	g_mcp = std::make_unique<McpServer>();
+	Mcp::SetInstance(g_mcp.get());
+	g_mcp->Start();
 
 	return true;
 }
@@ -1846,8 +1860,131 @@ void ObsBootstrap::RunStatsSelfTest()
 		((hasFps && hasCpu && outputsArray && outputsSize == enabled) ? "OK" : "MISMATCH") + ")");
 }
 
+void ObsBootstrap::RunMcpSelfTest()
+{
+	using Bridge::json;
+
+	// Drive the MCP request path IN-PROCESS via HandleRequest (no real socket), so
+	// the smoke is free of socket timing flakiness. StartForTest sets the config the
+	// in-process path reads WITHOUT touching the user's mcp.json. Because this runs
+	// on the UI thread (WM_TIMER), obs_call -> RunBridge sees CefCurrentlyOn(TID_UI)
+	// and calls Bridge::Dispatch directly (no post-and-block deadlock).
+	// Bind port 0 so the OS picks a free ephemeral port: a fixed port collides with
+	// a prior run's TIME_WAIT socket on rapid restarts (the smoke does exactly that).
+	// The in-process HandleRequest path the assertions use does not depend on the
+	// socket; the listen is exercised only to prove the accept thread comes up cleanly.
+	McpServer server;
+	const bool listening = server.StartForTest(0, "selftest-token", /*allowMutations=*/true,
+						   /*allowGoLive=*/false);
+	HostLog(std::string("[selftest] mcp StartForTest(ephemeral) -> ") +
+		(listening ? "listening" : "not-listening (in-process path still exercised)"));
+
+	auto call = [&](const json &rpc) -> json {
+		Mcp::HttpRequest req;
+		req.method = "POST";
+		req.path = "/mcp";
+		req.authorization = "Bearer selftest-token";
+		req.body = rpc.dump();
+		Mcp::HttpResponse resp = server.HandleRequest(req);
+		if (resp.body.empty()) {
+			return json(nullptr); // e.g. a 202 notification ack
+		}
+		try {
+			return json::parse(resp.body);
+		} catch (...) {
+			return json(nullptr);
+		}
+	};
+
+	// 1) initialize -> serverInfo present.
+	json init = call(json{{"jsonrpc", "2.0"}, {"id", 1}, {"method", "initialize"}, {"params", json::object()}});
+	const bool hasServerInfo = init.is_object() && init.contains("result") && init["result"].contains("serverInfo");
+	HostLog(std::string("[selftest] mcp initialize -> serverInfo ") + (hasServerInfo ? "present" : "MISSING") +
+		(hasServerInfo ? " (name='" + init["result"]["serverInfo"].value("name", std::string("?")) +
+					 "' version=" + init["result"]["serverInfo"].value("version", std::string("?")) + ")"
+			       : ""));
+
+	// 2) tools/list -> contains obs_call.
+	json toolsList = call(json{{"jsonrpc", "2.0"}, {"id", 2}, {"method", "tools/list"}});
+	bool hasObsCall = false;
+	if (toolsList.is_object() && toolsList.contains("result") && toolsList["result"]["tools"].is_array()) {
+		for (const auto &t : toolsList["result"]["tools"]) {
+			if (t.value("name", std::string()) == "obs_call") {
+				hasObsCall = true;
+			}
+		}
+	}
+	HostLog(std::string("[selftest] mcp tools/list -> obs_call ") + (hasObsCall ? "present" : "MISSING"));
+
+	// 3) tools/call obs_call scenes.list -> isError false + parsed text is an array.
+	json scenesCall = call(json{{"jsonrpc", "2.0"},
+				    {"id", 3},
+				    {"method", "tools/call"},
+				    {"params", json{{"name", "obs_call"},
+						    {"arguments", json{{"method", "scenes.list"}, {"params", json::object()}}}}}});
+	bool scenesOk = false;
+	bool scenesArray = false;
+	if (scenesCall.is_object() && scenesCall.contains("result")) {
+		const json &r = scenesCall["result"];
+		scenesOk = r.is_object() && r.value("isError", true) == false;
+		if (scenesOk && r["content"].is_array() && !r["content"].empty()) {
+			try {
+				const json parsed = json::parse(r["content"][0].value("text", std::string()));
+				scenesArray = parsed.is_array();
+			} catch (...) {
+				scenesArray = false;
+			}
+		}
+	}
+	HostLog(std::string("[selftest] mcp obs_call scenes.list -> isError=") + (scenesOk ? "false" : "true") +
+		" content[0] is array=" + (scenesArray ? "true" : "false") +
+		((scenesOk && scenesArray) ? " (OK)" : " (MISMATCH)"));
+
+	// 4) Gating: allowGoLive=false, so multistream.startOutput is blocked before
+	// Dispatch -> isError true with "disabled" in the text, and it did NOT execute.
+	json goLiveCall =
+		call(json{{"jsonrpc", "2.0"},
+			  {"id", 4},
+			  {"method", "tools/call"},
+			  {"params", json{{"name", "obs_call"},
+					  {"arguments", json{{"method", "multistream.startOutput"},
+							     {"params", json{{"bindingUuid", "does-not-exist"}}}}}}}});
+	bool gateBlocked = false;
+	std::string gateText;
+	if (goLiveCall.is_object() && goLiveCall.contains("result")) {
+		const json &r = goLiveCall["result"];
+		gateBlocked = r.is_object() && r.value("isError", false) == true;
+		if (r["content"].is_array() && !r["content"].empty()) {
+			gateText = r["content"][0].value("text", std::string());
+		}
+	}
+	const bool gateOk = gateBlocked && gateText.find("disabled") != std::string::npos;
+	HostLog(std::string("[selftest] mcp go-live gating -> isError=") + (gateBlocked ? "true" : "false") +
+		" text='" + gateText + "' (" + (gateOk ? "OK, did not execute" : "MISMATCH") + ")");
+
+	if (hasServerInfo && hasObsCall && scenesOk && scenesArray && gateOk) {
+		HostLog("[selftest] mcp -> initialize/tools.list/obs_call scenes.list OK; go-live gated OK");
+	} else {
+		HostLog("[selftest] mcp -> FAILED (see step lines above)");
+	}
+
+	server.Stop();
+}
+
 void ObsBootstrap::Stop()
 {
+	// Stop the MCP server FIRST: set its shutdown flag and join its accept thread so
+	// no new request is accepted and any in-flight marshalled call bails. The CEF
+	// loop has already returned by the time Stop() runs (main.cpp pumps then stops),
+	// so the marshal-to-UI path can no longer be serviced -- joining here guarantees
+	// nothing is left blocked on it. Done before Bridge::Shutdown so the bridge +
+	// libobs are still up for any draining call.
+	if (g_mcp) {
+		g_mcp->Stop();
+		Mcp::SetInstance(nullptr);
+		g_mcp.reset();
+	}
+
 	// Drop the bridge's obs frontend event callback while libobs is still up.
 	Bridge::Shutdown();
 

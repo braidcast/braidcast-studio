@@ -156,6 +156,13 @@ void RunHotkeysSelfTest();
 // this only verifies shape + that the general stats populate. Gated by the caller
 // to the smoke path.
 void RunStatsSelfTest();
+// Headless proof for the embedded MCP server: spin up a test McpServer (in-process
+// HandleRequest, no real socket), then drive initialize / tools/list / a
+// tools/call obs_call(scenes.list) and assert the round-trips, plus a go-live
+// gating check (allowGoLive=false blocks multistream.startOutput before it
+// executes). Touches no config file (StartForTest does not Save). Gated by the
+// caller to the smoke path.
+void RunMcpSelfTest();
 void Stop();
 } // namespace ObsBootstrap
 
