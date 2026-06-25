@@ -456,9 +456,11 @@ build-green, headless-smoke clean (leaks 2 baseline), and pushed.
   animation (headless-undriveable). **Follow-up:** transition-source properties
   (Fade-to-Color / Luma Wipe / Stinger) use defaults — no properties UI yet;
   per-canvas transitions (→ 3b).
-- 🔭 **Studio Mode (3b).** Preview/program staging + transitions, per canvas. Menu
-  item disabled. Transitions now exist for the global path; 3b extends them per
-  canvas + adds the preview/program split. The hardest item.
+- ⏸ **Studio Mode (3b) — DEFERRED (decided 2026-06-25).** Preview/program staging +
+  transition, per canvas. Menu item stays disabled. Deferred as low-value for this
+  fork's use case (it's a live-switching-production workflow); revisit if that need
+  arises. Transitions already cover the global program path; Studio Mode would add an
+  off-air preview scene + a program surface + the preview→program transition action.
 - 🔭 **Stats dock (3e).** Multistream per-output monitoring (bitrate / dropped frames
   / reconnects / CPU-GPU, grouped by canvas) reading `MultistreamEngine`'s per-output
   handles. Menu item disabled. Needs a design pass.
