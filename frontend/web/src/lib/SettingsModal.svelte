@@ -11,6 +11,7 @@
   import StreamsTab from "./StreamsTab.svelte";
   import OutputsTab from "./OutputsTab.svelte";
   import HotkeysTab from "./HotkeysTab.svelte";
+  import McpTab from "./McpTab.svelte";
   import { suspendPreview } from "./previewGate.svelte";
 
   interface Props {
@@ -34,6 +35,7 @@
     { id: "streams", label: "Streams" },
     { id: "outputs", label: "Outputs" },
     { id: "hotkeys", label: "Hotkeys" },
+    { id: "mcp", label: "AI Control" },
   ] as const;
   type TabId = (typeof tabs)[number]["id"];
   // initialTab is an open-time seed; the user switches tabs freely afterward.
@@ -232,6 +234,8 @@
         <OutputsTab />
       {:else if activeTab === "hotkeys"}
         <HotkeysTab />
+      {:else if activeTab === "mcp"}
+        <McpTab />
       {:else if !loaded}
         <p class="dim">Loading settings…</p>
       {:else if activeTab === "video"}

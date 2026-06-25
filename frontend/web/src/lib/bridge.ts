@@ -553,6 +553,34 @@ export interface Stats {
   outputs: OutputStat[];
 }
 
+// --- MCP server (embedded AI-control HTTP endpoint, Phase 5) -----------------
+
+/**
+ * The embedded MCP server's live config + status, as reported by mcp.getConfig /
+ * returned by mcp.setConfig / pushed via mcp.changed. `endpoint` is the URL a
+ * client connects to (http://127.0.0.1:<port>/mcp); `listening` reflects whether
+ * the localhost HTTP server is actually bound, with `lastError` set when it
+ * failed to start.
+ */
+export interface McpConfig {
+  enabled: boolean;
+  port: number;
+  token: string;
+  allowMutations: boolean;
+  allowGoLive: boolean;
+  listening: boolean;
+  lastError: string;
+  endpoint: string;
+}
+
+/** Fields accepted by mcp.setConfig (all optional; omitted fields are unchanged). */
+export interface McpSetConfigParams {
+  enabled?: boolean;
+  port?: number;
+  allowMutations?: boolean;
+  allowGoLive?: boolean;
+}
+
 /** A registered transition type as reported by transitionTypes.list. */
 export interface TransitionType {
   id: string;
@@ -691,6 +719,14 @@ export interface ObsMethods {
   "hotkeys.list": { hotkeys: Hotkey[] };
   "hotkeys.set": { bindings: HotkeyBinding[] };
   "hotkeys.clear": { bindings: HotkeyBinding[] };
+  // Embedded MCP server (AI-control localhost endpoint, Phase 5). getConfig
+  // reports the live config + listening status; setConfig applies a partial and
+  // echoes the full updated config; regenerateToken rotates the bearer token
+  // (invalidating existing clients) and returns the new one. All mutations also
+  // emit mcp.changed.
+  "mcp.getConfig": McpConfig;
+  "mcp.setConfig": McpConfig;
+  "mcp.regenerateToken": { token: string };
   // Stats snapshot (general perf + per-output live stats). Polled by the Stats
   // dock on a ~1s interval; there is no push, so the dock owns the cadence.
   "stats.get": Stats;
@@ -769,6 +805,9 @@ export interface ObsEvents {
   // The set of live native projectors changed (opened/closed, incl. user OS-close
   // or Esc); a consumer re-runs projector.list to refresh.
   "projector.changed": Record<string, never>;
+  // The embedded MCP server's config or listening status changed (enable/disable,
+  // port change, token regenerate, or a bind error); the UI re-runs mcp.getConfig.
+  "mcp.changed": Record<string, never>;
   // Floating dock tear-out (P3a). Broadcast to ALL browsers (main + detached).
   // opened fires after a detached window's browser exists; closed fires on
   // explicit redock AND on user OS-close (NOT during app shutdown).
