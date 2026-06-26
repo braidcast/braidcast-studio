@@ -303,8 +303,11 @@
   }
   .item.active {
     background: var(--bg-sunken);
-    color: var(--accent);
+    color: var(--text);
     border-left-color: var(--accent);
+  }
+  .item.active :global(svg) {
+    color: var(--accent);
   }
   .pane {
     flex: 1;
