@@ -265,7 +265,7 @@
   }
   .server-toggle.on {
     border-color: var(--meter-green);
-    background: rgba(70, 184, 94, 0.12);
+    background: color-mix(in srgb, var(--meter-green) 12%, transparent);
     color: var(--meter-green);
   }
   .server-toggle:hover {

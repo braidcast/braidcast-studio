@@ -13,15 +13,12 @@
   import FilterDialog from "./lib/FilterDialog.svelte";
   import { filterDialogOpener, closeFilters } from "./lib/filterDialogOpener.svelte";
   import TransformDialog from "./lib/TransformDialog.svelte";
-  import { transformOpener, closeTransform, startDefaultSelectionTracking } from "./lib/transformOpener.svelte";
+  import { transformOpener, closeTransform } from "./lib/transformOpener.svelte";
   import AboutDialog from "./lib/AboutDialog.svelte";
   import { aboutOpen, closeAbout } from "./lib/aboutOpener.svelte";
 
   // Apply the saved (or default Industrial) theme before first paint settles.
   void themeStore.hydrate();
-
-  // Track the default-canvas selection so the Edit > Transform menu item enables.
-  startDefaultSelectionTracking();
 </script>
 
 <div class="shell">
