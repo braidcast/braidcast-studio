@@ -715,7 +715,10 @@ invent a parallel persistence format.
 
 ---
 
-## Phase 7 — Full UI redesign: nav-rail multi-page app 🔧 7.0 SHIPPED
+## Phase 7 — Full UI redesign: nav-rail multi-page app 🔧 FEATURE-COMPLETE (GUI acceptance + merge owed)
+
+> All six phases (7.0–7.5) built + reviewed on `ui-redesign` (final holistic = SHIP_WITH_MINOR); pushed, **not merged** — held for the user's GUI acceptance pass. Two behavior changes to confirm: existing users must **Reset Layout** once to see the studio reorg (a saved `layout.json` restores the old arrangement); **Settings now live-applies with no Cancel/undo** (the modal's transactional revert, incl. the issues.md-C1 output-binding revert, was intentionally dropped for the page model).
+
 
 A ground-up reconception of the frontend IA, driven by a Claude Design mock the user
 authored ("OBS fork multistream redesign"). Rationale: the prior UI (incl. the Phase-4
