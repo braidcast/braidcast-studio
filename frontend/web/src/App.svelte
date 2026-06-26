@@ -1,6 +1,12 @@
 <script lang="ts">
   import { obs } from "./lib/bridge";
-  import MenuBar from "./lib/MenuBar.svelte";
+  import NavRail from "./lib/NavRail.svelte";
+  import { pageStore } from "./lib/pageStore.svelte";
+  import StreamPage from "./lib/pages/StreamPage.svelte";
+  import SchedulePage from "./lib/pages/SchedulePage.svelte";
+  import MonitorPage from "./lib/pages/MonitorPage.svelte";
+  import AiPage from "./lib/pages/AiPage.svelte";
+  import SettingsPage from "./lib/pages/SettingsPage.svelte";
   import DockHost from "./lib/dock/DockHost.svelte";
   import { DOCKS, panelOptions } from "./lib/dock/dockRegistry";
   import { layoutStore } from "./lib/dock/layoutStore.svelte";
@@ -139,6 +145,9 @@
     });
   }
 
+  // Dock controls (toggle/reset/lock + the visibleDocks map) drove the old Docks
+  // menu. The menu bar is gone; these stay intact, to be rewired to the Studio
+  // CANVASES bar in 7.x — the dock behavior itself is unchanged.
   function toggleDock(id: string): void {
     if (!api) return;
     const existing = api.getPanel(id);
@@ -167,11 +176,29 @@
 </script>
 
 <div class="shell">
-  <MenuBar {visibleDocks} {toggleDock} {resetLayout} {locked} {toggleLock} />
-  <div class="host-area">
-    <DockHost {onReady} />
-  </div>
-  <footer class="statusbar"><span>libobs {version}</span></footer>
+  <NavRail />
+  <main class="view">
+    <!-- Studio stays permanently mounted (hidden, not unmounted, off-page) so the
+         Dockview workspace + reconciler keep their single onReady lifecycle exactly
+         as before — switching pages must not tear down or rebuild the docks. -->
+    <div class="studio" class:hidden={pageStore.page !== "studio"}>
+      <div class="host-area">
+        <DockHost {onReady} />
+      </div>
+      <footer class="statusbar"><span>libobs {version}</span></footer>
+    </div>
+    {#if pageStore.page === "stream"}
+      <StreamPage />
+    {:else if pageStore.page === "schedule"}
+      <SchedulePage />
+    {:else if pageStore.page === "monitor"}
+      <MonitorPage />
+    {:else if pageStore.page === "ai"}
+      <AiPage />
+    {:else if pageStore.page === "settings"}
+      <SettingsPage />
+    {/if}
+  </main>
 </div>
 
 {#if settingsOpener.open}
@@ -197,9 +224,25 @@
 <style>
   .shell {
     display: flex;
-    flex-direction: column;
+    flex-direction: row;
     height: 100%;
     background: var(--color-base);
+  }
+  .view {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .studio {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .studio.hidden {
+    display: none;
   }
   .host-area {
     flex: 1;
