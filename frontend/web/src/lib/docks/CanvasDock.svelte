@@ -1,6 +1,13 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { obs, type SceneInfo, type SceneItem, type ReorderDirection, type MultistreamState } from "../bridge";
+  import {
+    obs,
+    type SceneInfo,
+    type SceneItem,
+    type ReorderDirection,
+    type MultistreamState,
+    type CanvasInfo,
+  } from "../bridge";
   import { openSettings } from "../settingsOpener.svelte";
   import { previewSuspended, suspendPreview } from "../previewGate.svelte";
   import { WINDOW_ID } from "../windowContext";
@@ -25,6 +32,7 @@
   function report(e: unknown) {
     error = (e as Error).message;
   }
+  function noop() {}
 
   function focusOnMount(node: HTMLInputElement) {
     node.focus();
@@ -63,6 +71,21 @@
   function destroyPreview() {
     obs.call("preview.destroy", { canvas: canvasUuid, window: WINDOW_ID }).catch(() => {});
   }
+
+  // ---- canvas geometry (stage res chip + aspect) -----------------------------
+  // Display-only read: the mock stage needs the canvas resolution (res chip) and
+  // aspect (9:16 vertical vs 16:9). CanvasDock receives only uuid+name, so look
+  // this canvas up in canvas.list and refresh on canvas.changed. Nothing in the
+  // scene/source/preview path depends on it.
+  let canvasInfo = $state<CanvasInfo | null>(null);
+  function loadCanvasInfo() {
+    obs
+      .call("canvas.list")
+      .then((list) => (canvasInfo = list.find((c) => c.uuid === canvasUuid) ?? null))
+      .catch(() => {});
+  }
+  let vertical = $derived(!!canvasInfo && canvasInfo.outputHeight > canvasInfo.outputWidth);
+  let resText = $derived(canvasInfo ? canvasInfo.outputWidth + " × " + canvasInfo.outputHeight : "");
 
   // ---- scenes (this canvas's own scene list) ---------------------------------
   let scenes = $state<SceneInfo[]>([]);
@@ -135,6 +158,11 @@
   // ---- sources (current scene of this canvas) --------------------------------
   let items = $state<SceneItem[]>([]);
   let selectedId = $state<number | null>(null);
+
+  // The Sources toolbar acts on the selected row (the OBS list convention); these
+  // derive the target + its index so delete/move can disable when there is none.
+  let selectedItem = $derived(items.find((i) => i.id === selectedId) ?? null);
+  let selectedIdx = $derived(selectedId === null ? -1 : items.findIndex((i) => i.id === selectedId));
 
   async function loadItems() {
     if (!currentScene) {
@@ -315,6 +343,7 @@
   // ---- lifecycle -------------------------------------------------------------
   onMount(() => {
     prefetchMonitors();
+    loadCanvasInfo();
     void loadScenes();
     void (async () => {
       try {
@@ -350,6 +379,7 @@
       }
     });
     const offStatus = obs.on("multistream.changed", (p) => recomputeState(p.outputs));
+    const offCanvasInfo = obs.on("canvas.changed", loadCanvasInfo);
 
     // Right-click in this canvas's overlay: filter to our uuid in this window with
     // a real hit, then map the device-px cursor to viewport coords via the rect.
@@ -370,6 +400,7 @@
       offItems();
       offSel();
       offStatus();
+      offCanvasInfo();
       offMenu();
       destroyPreview();
     };
@@ -399,21 +430,110 @@
   });
 </script>
 
+{#snippet icoPlus()}
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+    ><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg
+  >
+{/snippet}
+{#snippet icoTrash()}
+  <svg
+    width="13"
+    height="13"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="1.7"
+    stroke-linecap="round"
+    stroke-linejoin="round"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 13h10l1-13" /></svg
+  >
+{/snippet}
+{#snippet icoGear()}
+  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
+    ><circle cx="12" cy="12" r="3.1" /><path
+      d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.1 5.1l2.1 2.1M16.8 16.8l2.1 2.1M18.9 5.1 16.8 7.2M7.2 16.8 5.1 18.9"
+    /></svg
+  >
+{/snippet}
+{#snippet icoUp()}
+  <svg
+    width="13"
+    height="13"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2"
+    stroke-linecap="round"
+    stroke-linejoin="round"><path d="M6 14l6-6 6 6" /></svg
+  >
+{/snippet}
+{#snippet icoDown()}
+  <svg
+    width="13"
+    height="13"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2"
+    stroke-linecap="round"
+    stroke-linejoin="round"><path d="M6 10l6 6 6-6" /></svg
+  >
+{/snippet}
+{#snippet icoEye(open: boolean)}
+  {#if open}
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+      ><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12Z" /><circle cx="12" cy="12" r="2.4" /></svg
+    >
+  {:else}
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+      ><path d="M4 4 L20 20" /><path
+        d="M9.5 5.7A10 10 0 0 1 12 5.5c6.4 0 10 6.5 10 6.5a17 17 0 0 1-2.7 3.4M6.2 7.6A17 17 0 0 0 2 12s3.6 6.5 10 6.5a10 10 0 0 0 3-.45"
+      /></svg
+    >
+  {/if}
+{/snippet}
+{#snippet icoLock(locked: boolean)}
+  {#if locked}
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+      ><rect x="5" y="11" width="14" height="9" /><path d="M8 11V8a4 4 0 0 1 8 0v3" /></svg
+    >
+  {:else}
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+      ><rect x="5" y="11" width="14" height="9" /><path d="M8 11V7a4 4 0 0 1 7.6-1.7" /></svg
+    >
+  {/if}
+{/snippet}
+
 <div class="dock-body">
-  <div class="preview" bind:this={previewEl}>
-    <span class="cap">{canvasName}</span>
+  <!-- Stage: aspect-correct surface the native overlay paints through; the chips
+       are the mock's stage overlays (res top-left, LIVE top-right, scene label
+       bottom-left). pointer-events:none so they never intercept overlay input. -->
+  <div class="stage-area">
+    <div class="stage" class:vertical bind:this={previewEl}>
+      {#if resText}
+        <span class="res-chip">{resText}</span>
+      {/if}
+      {#if liveState === "live"}
+        <span class="live-chip">● LIVE</span>
+      {/if}
+      <div class="scene-tag">
+        <span class="scene-bar"></span>
+        <span class="scene-pill">{currentScene ?? canvasName}</span>
+      </div>
+    </div>
   </div>
 
   {#if error}
     <p class="dock-msg err">{error}</p>
   {/if}
 
-  <div class="lists">
-    <div class="col">
-      <div class="col-head">Scenes</div>
+  <!-- Embedded mini-lists: Scenes (left, 42%) + Sources (right). -->
+  <div class="embed">
+    <div class="col scenes-col">
+      <div class="embed-head">Scenes</div>
       <ul class="list">
         {#each scenes as scene (scene.name)}
-          <li class="dock-row" class:sel={scene.current} oncontextmenu={(e) => openSceneMenu(e, scene.name)}>
+          <li class="es-row" class:on={scene.current} oncontextmenu={(e) => openSceneMenu(e, scene.name)}>
+            <span class="es-bar"></span>
             {#if renamingScene === scene.name}
               <input
                 class="inline"
@@ -423,32 +543,46 @@
                 use:focusOnMount
               />
             {:else}
-              <button class="dock-label" ondblclick={() => beginRenameScene(scene.name)} onclick={() => setCurrentScene(scene.name)}>{scene.name}</button>
+              <button
+                class="es-label"
+                ondblclick={() => beginRenameScene(scene.name)}
+                onclick={() => setCurrentScene(scene.name)}>{scene.name}</button
+              >
             {/if}
           </li>
         {/each}
         {#if loaded && scenes.length === 0}
-          <li class="dock-row dim">No scenes</li>
+          <li class="es-row empty">No scenes</li>
         {/if}
       </ul>
+      <div class="toolbar">
+        <button class="tool-btn" title="Add scene" onclick={noop}>{@render icoPlus()}</button>
+        <button
+          class="tool-btn"
+          title="Delete scene"
+          disabled={!currentScene || scenes.length <= 1}
+          onclick={() => currentScene && removeScene(currentScene)}>{@render icoTrash()}</button
+        >
+        <button class="tool-btn" title="Scene settings" onclick={noop}>{@render icoGear()}</button>
+      </div>
     </div>
 
-    <div class="col">
-      <div class="col-head">Sources</div>
+    <div class="col sources-col">
+      <div class="embed-head">Sources{currentScene ? " · " + currentScene : ""}</div>
       <ul class="list">
         {#each items as item, idx (item.id)}
           <li
-            class="dock-row"
-            class:sel={item.id === selectedId}
-            class:dimmed={!item.visible}
+            class="es-row src"
+            class:on={item.id === selectedId}
+            class:hidden-src={!item.visible}
             oncontextmenu={(e) => openSourceMenu(e, item, idx)}
           >
-            <button class="dock-icon" title={item.visible ? "Hide" : "Show"} onclick={() => void toggleVisible(item)}>
-              {item.visible ? "👁" : "🚫"}
-            </button>
-            <button class="dock-icon" title={item.locked ? "Unlock" : "Lock"} onclick={() => void toggleLocked(item)}>
-              {item.locked ? "🔒" : "🔓"}
-            </button>
+            <button
+              class="es-eye"
+              class:off={!item.visible}
+              title={item.visible ? "Hide" : "Show"}
+              onclick={() => void toggleVisible(item)}>{@render icoEye(item.visible)}</button
+            >
             {#if renamingId === item.id}
               <input
                 class="inline"
@@ -458,32 +592,51 @@
                 use:focusOnMount
               />
             {:else}
-              <button class="dock-label" onclick={() => selectItem(item)}>{item.source ?? "(unnamed)"}</button>
+              <button class="es-label" onclick={() => selectItem(item)}>{item.source ?? "(unnamed)"}</button>
             {/if}
-            <span class="dock-actions">
-              <button class="dock-icon" title="Move up" disabled={idx === 0} onclick={() => void reorder(item, "up")}>▲</button
-              >
-              <button
-                class="dock-icon"
-                title="Move down"
-                disabled={idx === items.length - 1}
-                onclick={() => void reorder(item, "down")}>▼</button
-              >
-              <button class="dock-icon" title="Remove" onclick={() => void remove(item)}>🗑</button>
-            </span>
+            <button
+              class="es-lock"
+              class:locked={item.locked}
+              title={item.locked ? "Unlock" : "Lock"}
+              onclick={() => void toggleLocked(item)}>{@render icoLock(item.locked)}</button
+            >
           </li>
         {/each}
         {#if currentScene && items.length === 0}
-          <li class="dock-row dim">No sources</li>
+          <li class="es-row empty">No sources</li>
         {/if}
       </ul>
+      <div class="toolbar">
+        <button class="tool-btn" title="Add source" onclick={noop}>{@render icoPlus()}</button>
+        <button
+          class="tool-btn"
+          title="Delete source"
+          disabled={!selectedItem}
+          onclick={() => selectedItem && void remove(selectedItem)}>{@render icoTrash()}</button
+        >
+        <button class="tool-btn" title="Properties" onclick={noop}>{@render icoGear()}</button>
+        <div class="tool-spacer"></div>
+        <button
+          class="tool-btn"
+          title="Move up"
+          disabled={selectedIdx <= 0}
+          onclick={() => selectedItem && void reorder(selectedItem, "up")}>{@render icoUp()}</button
+        >
+        <button
+          class="tool-btn"
+          title="Move down"
+          disabled={selectedIdx < 0 || selectedIdx >= items.length - 1}
+          onclick={() => selectedItem && void reorder(selectedItem, "down")}>{@render icoDown()}</button
+        >
+      </div>
     </div>
   </div>
 
   <footer class="foot">
     <span class="dot" style:background={STATE_COLOR[liveState]} title={liveState}></span>
     <span class="foot-name">{canvasName}</span>
-    <button class="dock-icon gear" title="Edit canvas (Settings)" onclick={() => openSettings("canvases", canvasUuid)}>⚙</button
+    <button class="foot-gear" title="Edit canvas (Settings)" onclick={() => openSettings("canvases", canvasUuid)}
+      >{@render icoGear()}</button
     >
   </footer>
 </div>
@@ -493,104 +646,281 @@
 {/if}
 
 <style>
-  /* Override the shared .dock-body: this composite owns its inner scroll regions,
-     so the body itself must not scroll (shared default sets overflow: auto). */
+  /* This composite owns its inner scroll regions, so the body itself never
+     scrolls (the shared .dock-body default sets overflow:auto). */
   .dock-body {
     min-height: 0;
-    overflow: visible;
+    overflow: hidden;
+    background: var(--color-base);
   }
-  .preview {
-    flex: 0 0 auto;
-    height: 38%;
-    min-height: 90px;
-    position: relative;
-    background: transparent; /* native overlay paints through */
-    border-bottom: var(--border-weight) solid var(--color-border);
-  }
-  .cap {
-    position: absolute;
-    top: 6px;
-    left: 8px;
-    font-size: 9px;
-    letter-spacing: var(--letter-spacing);
-    text-transform: var(--label-case);
-    color: var(--color-muted);
-    pointer-events: none;
-  }
-  .lists {
+
+  /* ---- stage ----------------------------------------------------------- */
+  .stage-area {
     flex: 1;
     min-height: 0;
     display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 12px;
+    background: var(--color-base);
+  }
+  /* The native overlay HWND paints this exact element; stays transparent so the
+     video shows through. Aspect: 16:9 by default, 9:16 for a vertical canvas. */
+  .stage {
+    position: relative;
+    background: transparent;
+    box-shadow: 0 0 0 1px var(--color-border);
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    max-width: 100%;
+    max-height: 100%;
+  }
+  .stage.vertical {
+    width: auto;
+    height: 100%;
+    aspect-ratio: 9 / 16;
+    max-height: 100%;
+  }
+  .res-chip {
+    position: absolute;
+    left: 9px;
+    top: 9px;
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: 0.08em;
+    color: rgba(255, 255, 255, 0.55);
+    border: var(--border-weight) solid rgba(255, 255, 255, 0.16);
+    padding: 2px 6px;
+    pointer-events: none;
+  }
+  .live-chip {
+    position: absolute;
+    right: 9px;
+    top: 9px;
+    font-family: var(--font-mono);
+    font-size: 9px;
+    color: #fff;
+    background: var(--color-live);
+    padding: 2px 6px;
+    pointer-events: none;
+  }
+  .scene-tag {
+    position: absolute;
+    left: 0;
+    bottom: 0;
+    display: flex;
+    align-items: stretch;
+    pointer-events: none;
+  }
+  .scene-bar {
+    width: 4px;
+    background: var(--color-accent);
+  }
+  .scene-pill {
+    background: rgba(8, 8, 10, 0.78);
+    padding: 6px 11px;
+    font-size: 11px;
+    font-weight: 600;
+    color: #fff;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* ---- embedded scenes / sources lists --------------------------------- */
+  .embed {
+    flex: 0 0 154px;
+    display: flex;
+    border-top: var(--border-weight) solid var(--color-border);
+    min-height: 0;
   }
   .col {
-    flex: 1;
-    min-width: 0;
     display: flex;
     flex-direction: column;
-    overflow: auto;
+    min-height: 0;
+    min-width: 0;
+    background: var(--color-surface);
+  }
+  .scenes-col {
+    flex: 0 0 42%;
     border-right: var(--border-weight) solid var(--color-border);
   }
-  .col:last-child {
-    border-right: none;
+  .sources-col {
+    flex: 1;
   }
-  .col-head {
+  .embed-head {
     flex: 0 0 auto;
-    padding: 4px 7px;
-    font-size: 9px;
-    letter-spacing: var(--letter-spacing);
-    text-transform: uppercase;
-    color: var(--color-accent);
-    border-bottom: var(--border-weight) solid var(--color-border);
+    display: flex;
+    align-items: center;
+    height: 23px;
+    padding: 0 9px;
+    background: var(--color-surface);
+    border-bottom: var(--border-weight) solid var(--color-border-2);
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--color-dim);
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .list {
     list-style: none;
     margin: 0;
     padding: 0;
+    overflow: auto;
+    flex: 1;
+    min-height: 0;
   }
-  /* Compact overrides on the shared dock list classes: this dock is denser
-     (10px labels, 4px padding) than the shared defaults. Each rule tweaks only
-     the properties that differ; structure/selection comes from app.css. */
-  .dock-row {
-    padding: 4px 6px;
-    gap: 3px;
+
+  .es-row {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 9px 5px 11px;
+    cursor: pointer;
+    border-bottom: var(--border-weight) solid var(--color-border-2);
   }
-  .dock-label {
+  .es-row.src {
+    padding: 5px 10px;
+    cursor: default;
+  }
+  .es-row.on {
+    background: color-mix(in srgb, var(--color-accent) 11%, transparent);
+  }
+  .es-bar {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+    background: transparent;
+  }
+  .es-row.on .es-bar {
+    background: var(--color-accent);
+  }
+  .es-label {
+    flex: 1;
+    min-width: 0;
+    text-align: left;
+    background: none;
+    border: 0;
+    padding: 0;
+    cursor: pointer;
+    font-family: var(--font-ui);
+    font-size: 11px;
+    color: var(--color-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .es-row.on .es-label {
+    color: var(--color-accent);
+    font-weight: 600;
+  }
+  .es-row.hidden-src .es-label {
+    color: var(--color-muted);
+    text-decoration: line-through;
+  }
+  .es-eye {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 17px;
+    height: 17px;
+    background: none;
+    border: 0;
+    padding: 0;
+    cursor: pointer;
+    color: var(--color-dim);
+  }
+  .es-eye.off {
+    color: var(--color-muted);
+  }
+  .es-lock {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 17px;
+    height: 17px;
+    background: none;
+    border: 0;
+    padding: 0;
+    cursor: pointer;
+    color: var(--color-muted);
+  }
+  .es-lock.locked {
+    color: var(--color-dim);
+  }
+  .es-row.empty {
+    cursor: default;
+    color: var(--color-muted);
     font-size: 10px;
+    padding: 6px 11px;
+    letter-spacing: var(--letter-spacing);
+    text-transform: var(--label-case);
   }
+
   .inline {
     flex: 1;
+    min-width: 0;
     background: var(--color-base);
     border: var(--border-weight) solid var(--color-accent);
     color: var(--color-text);
     font-family: var(--font-ui);
     font-size: 11px;
-    padding: 3px 5px;
+    padding: 2px 5px;
   }
   .inline:focus {
     outline: none;
   }
-  .dock-icon {
-    padding: 1px 3px;
-    font-size: 10px;
+
+  /* ---- per-list toolbars ----------------------------------------------- */
+  .toolbar {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 4px 6px;
+    border-top: var(--border-weight) solid var(--color-border);
+    background: var(--color-surface-2);
   }
-  .dock-actions {
-    gap: 1px;
+  .tool-spacer {
+    flex: 1;
   }
-  /* "No scenes / No sources" placeholder row (not a selectable list item). */
-  .dock-row.dim {
-    color: var(--color-muted);
-    font-size: 10px;
-    letter-spacing: var(--letter-spacing);
-    text-transform: var(--label-case);
+  .tool-btn {
+    width: 25px;
+    height: 22px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: none;
+    border: 0;
+    padding: 0;
+    cursor: pointer;
+    color: var(--color-dim);
   }
+  .tool-btn:hover:not(:disabled) {
+    color: var(--color-accent);
+  }
+  .tool-btn:disabled {
+    opacity: 0.35;
+    cursor: default;
+  }
+
+  /* ---- footer ---------------------------------------------------------- */
   .foot {
     flex: 0 0 auto;
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 5px 8px;
+    padding: 5px 9px;
     border-top: var(--border-weight) solid var(--color-border);
-    background: var(--color-base);
+    background: var(--color-surface-2);
   }
   .dot {
     width: 8px;
@@ -607,14 +937,30 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .gear {
-    font-size: 12px;
+  .foot-gear {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 20px;
+    background: none;
+    border: 0;
+    padding: 0;
+    cursor: pointer;
+    color: var(--color-muted);
   }
-  /* This dock only ever shows an error message; keep the original tight pad/size
-     and no letter-spacing (shared .dock-msg is roomier and tracks the token). */
+  .foot-gear:hover {
+    color: var(--color-accent);
+  }
+
+  /* This dock only ever shows an error message; keep it tight, no tracking. */
   .dock-msg {
-    padding: 6px 7px;
+    margin: 0;
+    padding: 6px 9px;
     font-size: 10px;
-    letter-spacing: normal;
+  }
+  .dock-msg.err {
+    color: var(--color-live);
   }
 </style>

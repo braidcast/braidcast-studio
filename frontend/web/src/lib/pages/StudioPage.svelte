@@ -68,10 +68,16 @@
   );
 
   let focusedCanvas = $derived(canvases.find((c) => c.uuid === activeCanvasUuid) ?? null);
-  // Mock focusedLabel: "Name · WxH".
+  // Mock focusedLabel: "Name · WxH · fps".
   let focusedLabel = $derived(
     focusedCanvas
-      ? focusedCanvas.name + " · " + focusedCanvas.outputWidth + "×" + focusedCanvas.outputHeight
+      ? focusedCanvas.name +
+          " · " +
+          focusedCanvas.outputWidth +
+          "×" +
+          focusedCanvas.outputHeight +
+          " · " +
+          Math.round(focusedCanvas.fpsNum / focusedCanvas.fpsDen)
       : "Default Canvas",
   );
 
@@ -411,7 +417,7 @@
       <div class="chip" class:active={c.uuid === activeCanvasUuid}>
         <button class="chip-main" onclick={() => (focusedCanvasUuid = c.uuid)}>
           <span class="chip-name">{c.name}</span>
-          <span class="chip-sub">{c.outputWidth}×{c.outputHeight}</span>
+          <span class="chip-sub">{c.outputWidth}×{c.outputHeight} · {Math.round(c.fpsNum / c.fpsDen)}</span>
         </button>
         <button
           class="eye"
