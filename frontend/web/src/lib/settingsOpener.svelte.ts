@@ -2,16 +2,16 @@
 // specific tab (and, for the Canvases tab, with one canvas pre-opened for edit).
 // TopBar owns the single SettingsModal mount and reads this store.
 
-export type SettingsTab = "video" | "audio" | "canvases" | "streams" | "outputs";
+export type SettingsTab = "canvases" | "streams" | "outputs" | "audio" | "mcp" | "hotkeys";
 
 export const settingsOpener = $state<{
   open: boolean;
   tab: SettingsTab;
   editCanvas: string | null;
-}>({ open: false, tab: "video", editCanvas: null });
+}>({ open: false, tab: "canvases", editCanvas: null });
 
 /** Open Settings on a tab; for "canvases", optionally edit a specific canvas. */
-export function openSettings(tab: SettingsTab = "video", editCanvas: string | null = null): void {
+export function openSettings(tab: SettingsTab = "canvases", editCanvas: string | null = null): void {
   settingsOpener.tab = tab;
   settingsOpener.editCanvas = editCanvas;
   settingsOpener.open = true;

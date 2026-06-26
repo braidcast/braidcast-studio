@@ -1,8 +1,6 @@
 <script lang="ts">
   import {
     obs,
-    type VideoSettings,
-    type AudioSettings,
     type SpeakerLayout,
     type AudioDevice,
     type GlobalAudioSlot,
@@ -12,6 +10,7 @@
   import OutputsTab from "./OutputsTab.svelte";
   import HotkeysTab from "./HotkeysTab.svelte";
   import McpTab from "./McpTab.svelte";
+  import SettingsIcon from "./SettingsIcon.svelte";
   import { suspendPreview } from "./previewGate.svelte";
 
   interface Props {
@@ -26,42 +25,29 @@
   // paint over the modal's center).
   $effect(() => suspendPreview());
 
-  // Data-driven tab list: add a tab by appending one row (and its render branch
-  // below).
-  const tabs = [
-    { id: "video", label: "Video" },
-    { id: "audio", label: "Audio" },
+  // Sidebar categories, in setup/dependency order. Resolution/FPS used to be a
+  // Video tab; it now lives on the Default canvas in the Canvases pane.
+  const cats = [
     { id: "canvases", label: "Canvases" },
     { id: "streams", label: "Streams" },
     { id: "outputs", label: "Outputs" },
-    { id: "hotkeys", label: "Hotkeys" },
+    { id: "audio", label: "Audio" },
     { id: "mcp", label: "AI Control" },
+    { id: "hotkeys", label: "Hotkeys" },
   ] as const;
-  type TabId = (typeof tabs)[number]["id"];
+  type TabId = (typeof cats)[number]["id"];
   // initialTab is an open-time seed; the user switches tabs freely afterward.
   // svelte-ignore state_referenced_locally
-  let activeTab = $state<TabId>(initialTab ?? "video");
+  let activeTab = $state<TabId>(initialTab ?? "canvases");
 
-  // Common presets the UI offers; custom values are still accepted via the fields.
-  const resPresets: { label: string; w: number; h: number }[] = [
-    { label: "1920 × 1080", w: 1920, h: 1080 },
-    { label: "1280 × 720", w: 1280, h: 720 },
-    { label: "2560 × 1440", w: 2560, h: 1440 },
-    { label: "3840 × 2160", w: 3840, h: 2160 },
-  ];
-  const fpsPresets = [24, 30, 48, 60];
   const sampleRates = [44100, 48000];
   const speakerOptions: { label: string; value: SpeakerLayout }[] = [
     { label: "Mono", value: "mono" },
     { label: "Stereo", value: "stereo" },
   ];
 
-  // Form state, hydrated from the live config on open.
-  let baseWidth = $state(1920);
-  let baseHeight = $state(1080);
-  let outputWidth = $state(1920);
-  let outputHeight = $state(1080);
-  let fps = $state(60);
+  // Audio form state, hydrated from the live config on open. Applied live on
+  // change (no Apply button); the footer's transactional revert is Task 4.
   let sampleRate = $state<number>(48000);
   let speakers = $state<SpeakerLayout>("stereo");
 
@@ -72,110 +58,44 @@
   let deviceError = $state<string | null>(null);
 
   let loaded = $state(false);
-  let videoError = $state<string | null>(null);
   let audioError = $state<string | null>(null);
-  let videoNotice = $state<string | null>(null);
-  let audioNotice = $state<string | null>(null);
-  let applyingVideo = $state(false);
-  let applyingAudio = $state(false);
-
-  // The live-change guard is server-side (AnyOutputActive); no output exists yet,
-  // so Apply stays enabled. When 4.4 wires real outputs this becomes a reflected
-  // flag from a settings.* call; for now the server simply rejects with an error.
 
   async function load() {
     try {
-      const [v, a, slots, ins, outs] = await Promise.all([
-        obs.call("settings.getVideo"),
+      const [a, slots, ins, outs] = await Promise.all([
         obs.call("settings.getAudio"),
         obs.call("audio.getGlobalDevices"),
         obs.call("audio.listDevices", { kind: "input" }),
         obs.call("audio.listDevices", { kind: "output" }),
       ]);
-      hydrateVideo(v);
       sampleRate = a.sampleRate;
       speakers = a.speakers;
       globalSlots = slots;
       inputDevices = ins;
       outputDevices = outs;
     } catch (e) {
-      videoError = (e as Error).message;
+      audioError = (e as Error).message;
     } finally {
       loaded = true;
     }
-  }
-
-  function hydrateVideo(v: VideoSettings) {
-    baseWidth = v.baseWidth;
-    baseHeight = v.baseHeight;
-    outputWidth = v.outputWidth;
-    outputHeight = v.outputHeight;
-    // Express FPS as a whole number when fpsDen is 1 (the common case).
-    fps = v.fpsDen > 0 ? Math.round(v.fpsNum / v.fpsDen) : v.fpsNum;
   }
 
   $effect(() => {
     void load();
   });
 
-  function applyBasePreset(w: number, h: number) {
-    baseWidth = w;
-    baseHeight = h;
-  }
-  function applyOutputPreset(w: number, h: number) {
-    outputWidth = w;
-    outputHeight = h;
-  }
-
-  function positiveInt(n: number, max: number): boolean {
-    return Number.isInteger(n) && n > 0 && n <= max;
-  }
-
-  const videoValid = $derived(
-    positiveInt(baseWidth, 16384) &&
-      positiveInt(baseHeight, 16384) &&
-      positiveInt(outputWidth, 16384) &&
-      positiveInt(outputHeight, 16384) &&
-      positiveInt(fps, 1000),
-  );
-
-  async function applyVideo() {
-    if (!videoValid || applyingVideo) return;
-    applyingVideo = true;
-    videoError = null;
-    videoNotice = null;
-    try {
-      const applied = await obs.call("settings.setVideo", {
-        baseWidth,
-        baseHeight,
-        outputWidth,
-        outputHeight,
-        fpsNum: fps,
-        fpsDen: 1,
-      });
-      hydrateVideo(applied);
-      videoNotice = "Video settings applied.";
-    } catch (e) {
-      videoError = (e as Error).message;
-    } finally {
-      applyingVideo = false;
-    }
-  }
-
-  async function applyAudio() {
-    if (applyingAudio) return;
-    applyingAudio = true;
+  async function setAudio(patch: { sampleRate?: number; speakers?: SpeakerLayout }) {
     audioError = null;
-    audioNotice = null;
+    const next = { sampleRate, speakers, ...patch };
+    // Reflect locally so the chips stay in sync immediately.
+    sampleRate = next.sampleRate;
+    speakers = next.speakers;
     try {
-      const applied = await obs.call("settings.setAudio", { sampleRate, speakers });
+      const applied = await obs.call("settings.setAudio", next);
       sampleRate = applied.sampleRate;
       speakers = applied.speakers;
-      audioNotice = "Audio settings applied.";
     } catch (e) {
       audioError = (e as Error).message;
-    } finally {
-      applyingAudio = false;
     }
   }
 
@@ -192,6 +112,9 @@
       deviceError = (e as Error).message;
     }
   }
+
+  // Task 4 wires the real transactional apply; stub for now.
+  function applyChanges() {}
 
   function onKeydown(e: KeyboardEvent) {
     if (e.key === "Escape") onClose();
@@ -213,155 +136,103 @@
       <button class="icon close" title="Close" onclick={onClose}>✕</button>
     </header>
 
-    <div class="tabs" role="tablist">
-      {#each tabs as t (t.id)}
-        <button
-          class="tab"
-          class:active={activeTab === t.id}
-          role="tab"
-          aria-selected={activeTab === t.id}
-          onclick={() => (activeTab = t.id)}>{t.label}</button
-        >
-      {/each}
-    </div>
-
     <div class="modal-body">
-      {#if activeTab === "canvases"}
-        <CanvasesTab {editCanvas} />
-      {:else if activeTab === "streams"}
-        <StreamsTab />
-      {:else if activeTab === "outputs"}
-        <OutputsTab />
-      {:else if activeTab === "hotkeys"}
-        <HotkeysTab />
-      {:else if activeTab === "mcp"}
-        <McpTab />
-      {:else if !loaded}
-        <p class="dim">Loading settings…</p>
-      {:else if activeTab === "video"}
-        <section class="group">
-          <h4>Video</h4>
+      <div class="side" role="tablist" aria-label="Settings categories">
+        {#each cats as c (c.id)}
+          <button
+            class="item"
+            class:active={activeTab === c.id}
+            role="tab"
+            aria-selected={activeTab === c.id}
+            onclick={() => (activeTab = c.id)}
+          >
+            <SettingsIcon id={c.id} />
+            <span>{c.label}</span>
+          </button>
+        {/each}
+      </div>
 
-          <div class="field">
-            <span class="flabel">Base (Canvas) Resolution</span>
-            <div class="presets">
-              {#each resPresets as p (p.label)}
-                <button
-                  class="chip"
-                  class:active={baseWidth === p.w && baseHeight === p.h}
-                  onclick={() => applyBasePreset(p.w, p.h)}>{p.label}</button
-                >
+      <div class="pane">
+        {#if activeTab === "canvases"}
+          <CanvasesTab {editCanvas} />
+        {:else if activeTab === "streams"}
+          <StreamsTab />
+        {:else if activeTab === "outputs"}
+          <OutputsTab />
+        {:else if activeTab === "hotkeys"}
+          <HotkeysTab />
+        {:else if activeTab === "mcp"}
+          <McpTab />
+        {:else if activeTab === "audio"}
+          {#if !loaded}
+            <p class="dim">Loading settings…</p>
+          {:else}
+            <section class="group">
+              <h4>Audio</h4>
+
+              <div class="field">
+                <span class="flabel">Sample Rate</span>
+                <div class="presets">
+                  {#each sampleRates as r (r)}
+                    <button class="chip" class:active={sampleRate === r} onclick={() => void setAudio({ sampleRate: r })}
+                      >{r} Hz</button
+                    >
+                  {/each}
+                </div>
+              </div>
+
+              <div class="field">
+                <span class="flabel">Channels</span>
+                <div class="presets">
+                  {#each speakerOptions as o (o.value)}
+                    <button
+                      class="chip"
+                      class:active={speakers === o.value}
+                      onclick={() => void setAudio({ speakers: o.value })}>{o.label}</button
+                    >
+                  {/each}
+                </div>
+              </div>
+
+              {#if audioError}<p class="error">{audioError}</p>{/if}
+              <p class="dim hint">Changes apply immediately.</p>
+            </section>
+
+            <section class="group">
+              <h4>Global Audio Devices</h4>
+
+              {#each globalSlots as slot (slot.channel)}
+                {@const devices = slot.isInput ? inputDevices : outputDevices}
+                {@const known = slot.deviceId === null || devices.some((d) => d.id === slot.deviceId)}
+                <div class="field">
+                  <span class="flabel">{slot.label}</span>
+                  <select
+                    value={slot.deviceId ?? ""}
+                    onchange={(e) => void setGlobalDevice(slot.channel, e.currentTarget.value)}
+                  >
+                    <option value="">Disabled</option>
+                    {#each devices as d (d.id)}
+                      <option value={d.id}>{d.name}</option>
+                    {/each}
+                    {#if !known && slot.deviceId !== null}
+                      <option value={slot.deviceId}>{slot.deviceId} (unavailable)</option>
+                    {/if}
+                  </select>
+                </div>
               {/each}
-            </div>
-            <div class="wh">
-              <input type="number" min="1" max="16384" bind:value={baseWidth} aria-label="Base width" />
-              <span class="x">×</span>
-              <input type="number" min="1" max="16384" bind:value={baseHeight} aria-label="Base height" />
-            </div>
-          </div>
 
-          <div class="field">
-            <span class="flabel">Output (Scaled) Resolution</span>
-            <div class="presets">
-              {#each resPresets as p (p.label)}
-                <button
-                  class="chip"
-                  class:active={outputWidth === p.w && outputHeight === p.h}
-                  onclick={() => applyOutputPreset(p.w, p.h)}>{p.label}</button
-                >
-              {/each}
-            </div>
-            <div class="wh">
-              <input type="number" min="1" max="16384" bind:value={outputWidth} aria-label="Output width" />
-              <span class="x">×</span>
-              <input type="number" min="1" max="16384" bind:value={outputHeight} aria-label="Output height" />
-            </div>
-          </div>
-
-          <div class="field">
-            <span class="flabel">Frame Rate (FPS)</span>
-            <div class="presets">
-              {#each fpsPresets as f (f)}
-                <button class="chip" class:active={fps === f} onclick={() => (fps = f)}>{f}</button>
-              {/each}
-            </div>
-            <div class="wh">
-              <input type="number" min="1" max="1000" bind:value={fps} aria-label="FPS" />
-            </div>
-          </div>
-
-          {#if videoError}<p class="error">{videoError}</p>{/if}
-          {#if videoNotice}<p class="notice">{videoNotice}</p>{/if}
-          <div class="actions">
-            <button class="btn primary" disabled={!videoValid || applyingVideo} onclick={() => void applyVideo()}>
-              {applyingVideo ? "Applying…" : "Apply Video"}
-            </button>
-          </div>
-        </section>
-      {:else if activeTab === "audio"}
-        <section class="group">
-          <h4>Audio</h4>
-
-          <div class="field">
-            <span class="flabel">Sample Rate</span>
-            <div class="presets">
-              {#each sampleRates as r (r)}
-                <button class="chip" class:active={sampleRate === r} onclick={() => (sampleRate = r)}>{r} Hz</button>
-              {/each}
-            </div>
-          </div>
-
-          <div class="field">
-            <span class="flabel">Channels</span>
-            <div class="presets">
-              {#each speakerOptions as o (o.value)}
-                <button class="chip" class:active={speakers === o.value} onclick={() => (speakers = o.value)}
-                  >{o.label}</button
-                >
-              {/each}
-            </div>
-          </div>
-
-          {#if audioError}<p class="error">{audioError}</p>{/if}
-          {#if audioNotice}<p class="notice">{audioNotice}</p>{/if}
-          <div class="actions">
-            <button class="btn primary" disabled={applyingAudio} onclick={() => void applyAudio()}>
-              {applyingAudio ? "Applying…" : "Apply Audio"}
-            </button>
-          </div>
-        </section>
-
-        <section class="group">
-          <h4>Global Audio Devices</h4>
-
-          {#each globalSlots as slot (slot.channel)}
-            {@const devices = slot.isInput ? inputDevices : outputDevices}
-            {@const known = slot.deviceId === null || devices.some((d) => d.id === slot.deviceId)}
-            <div class="field">
-              <span class="flabel">{slot.label}</span>
-              <select
-                value={slot.deviceId ?? ""}
-                onchange={(e) => void setGlobalDevice(slot.channel, e.currentTarget.value)}
-              >
-                <option value="">Disabled</option>
-                {#each devices as d (d.id)}
-                  <option value={d.id}>{d.name}</option>
-                {/each}
-                {#if !known && slot.deviceId !== null}
-                  <option value={slot.deviceId}>{slot.deviceId} (unavailable)</option>
-                {/if}
-              </select>
-            </div>
-          {/each}
-
-          {#if deviceError}<p class="error">{deviceError}</p>{/if}
-          <p class="dim hint">Changes apply immediately.</p>
-        </section>
-      {/if}
+              {#if deviceError}<p class="error">{deviceError}</p>{/if}
+              <p class="dim hint">Changes apply immediately.</p>
+            </section>
+          {/if}
+        {/if}
+      </div>
     </div>
 
     <footer class="modal-foot">
-      <button class="btn ghost" onclick={onClose}>Close</button>
+      <button class="btn primary" onclick={onClose}>OK</button>
+      <button class="btn" onclick={applyChanges}>Apply</button>
+      <button class="btn ghost" onclick={onClose}>Cancel</button>
     </footer>
   </div>
 </div>
@@ -380,36 +251,11 @@
   .modal {
     background: var(--bg-raised);
     border: 1px solid var(--border);
-    border-radius: 12px;
-    width: min(640px, 100%);
+    width: min(880px, 100%);
     max-height: 86vh;
     display: flex;
     flex-direction: column;
     box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
-  }
-  .tabs {
-    display: flex;
-    gap: 2px;
-    padding: 0 18px;
-    border-bottom: 1px solid var(--border);
-  }
-  .tab {
-    background: none;
-    border: none;
-    border-bottom: 2px solid transparent;
-    color: var(--text-dim);
-    font: inherit;
-    font-size: 13px;
-    padding: 10px 12px;
-    cursor: pointer;
-    margin-bottom: -1px;
-  }
-  .tab:hover {
-    color: var(--text);
-  }
-  .tab.active {
-    color: var(--text);
-    border-bottom-color: var(--accent);
   }
   .modal-head {
     display: flex;
@@ -424,12 +270,52 @@
     font-weight: 600;
   }
   .modal-body {
-    padding: 6px 18px 14px;
+    display: flex;
+    flex: 1;
+    min-height: 360px;
+    overflow: hidden;
+  }
+  .side {
+    flex: 0 0 180px;
+    width: 180px;
+    border-right: 1px solid var(--border);
+    padding: 6px 0;
+    overflow-y: auto;
+  }
+  .item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    height: auto;
+    padding: 8px 12px;
+    background: none;
+    border: none;
+    border-left: 3px solid transparent;
+    color: var(--text-dim);
+    font: inherit;
+    font-size: 13px;
+    text-align: left;
+    cursor: pointer;
+  }
+  .item:hover {
+    color: var(--text);
+  }
+  .item.active {
+    background: var(--bg-sunken);
+    color: var(--accent);
+    border-left-color: var(--accent);
+  }
+  .pane {
+    flex: 1;
+    min-width: 0;
+    padding: 6px 16px 14px;
     overflow: auto;
   }
   .modal-foot {
     display: flex;
     justify-content: flex-end;
+    gap: 6px;
     padding: 12px 18px;
     border-top: 1px solid var(--border);
   }
@@ -466,7 +352,6 @@
     border: 1px solid var(--border);
     background: var(--bg-sunken);
     color: var(--text-soft);
-    border-radius: 999px;
     padding: 4px 11px;
     font: inherit;
     font-size: 12px;
@@ -480,31 +365,9 @@
     border-color: var(--accent);
     color: var(--color-accent-contrast);
   }
-  .wh {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .x {
-    color: var(--text-dim);
-  }
-  input {
-    background: var(--bg-sunken);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 7px 10px;
-    color: var(--text);
-    font: inherit;
-    width: 96px;
-  }
-  input:focus {
-    outline: none;
-    border-color: var(--accent);
-  }
   select {
     background: var(--bg-sunken);
     border: 1px solid var(--border);
-    border-radius: 6px;
     padding: 7px 10px;
     color: var(--text);
     font: inherit;
@@ -515,18 +378,12 @@
     outline: none;
     border-color: var(--accent);
   }
-  .actions {
-    display: flex;
-    justify-content: flex-end;
-    margin-top: 4px;
-  }
   .icon {
     background: none;
     border: none;
     color: var(--text-dim);
     cursor: pointer;
     padding: 2px 4px;
-    border-radius: 4px;
     font-size: 14px;
     line-height: 1;
   }
@@ -535,7 +392,6 @@
     background: var(--bg-sunken);
   }
   .btn {
-    border-radius: 6px;
     padding: 7px 14px;
     font: inherit;
     cursor: pointer;
@@ -551,10 +407,6 @@
     border-color: var(--accent);
     color: var(--color-accent-contrast);
   }
-  .btn.primary:disabled {
-    opacity: 0.45;
-    cursor: default;
-  }
   .btn.ghost {
     background: none;
   }
@@ -568,11 +420,6 @@
   }
   .error {
     color: var(--off, #d65a5a);
-    margin: 6px 0 0;
-    font-size: 12px;
-  }
-  .notice {
-    color: var(--on, #4caf50);
     margin: 6px 0 0;
     font-size: 12px;
   }

@@ -40,7 +40,7 @@
   </button>
   <button disabled>RECORD</button>
   <button disabled>STUDIO</button>
-  <button onclick={() => openSettings("video")}>SETTINGS ⚙</button>
+  <button onclick={() => openSettings("canvases")}>SETTINGS ⚙</button>
 </div>
 
 <style>

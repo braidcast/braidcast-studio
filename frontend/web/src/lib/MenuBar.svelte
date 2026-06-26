@@ -49,7 +49,7 @@
   // §3.5 LOCKED contents. Actions not in P1 scope are present but disabled so the
   // menu shape matches the spec exactly; later phases enable them.
   const fileItems: (MenuItem | null)[] = $derived([
-    { label: "Settings", action: () => openSettings("video") },
+    { label: "Settings", action: () => openSettings("canvases") },
     { label: "Recordings", disabled: true },
     null,
     { label: "Exit", action: () => window.close() },
