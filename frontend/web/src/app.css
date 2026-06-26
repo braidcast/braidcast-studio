@@ -156,40 +156,61 @@ button.accent {
 
 /* Dockview theme: drive its CSS variables off our tokens so the docking chrome
    matches the active preset and stays 0-radius. dockview-core ships unstyled
-   beyond these variables; we own the rest. */
+   beyond these variables; we own the rest. The dock header strip reads panel2
+   (--color-surface-2) and the group body reads panel (--color-surface), per the
+   redesign mock's dockHead. */
 .dockview-theme-obs {
   --dv-background-color: var(--color-base);
   --dv-group-view-background-color: var(--color-surface);
-  --dv-tabs-and-actions-container-background-color: var(--color-surface);
-  --dv-activegroup-visiblepanel-tab-background-color: var(--color-surface);
-  --dv-inactivegroup-visiblepanel-tab-background-color: var(--color-base);
-  --dv-tab-divider-color: var(--color-border);
-  --dv-separator-border: var(--color-border);
-  --dv-paneview-active-outline-color: var(--color-accent);
+  --dv-tabs-and-actions-container-height: 31px;
+  --dv-tabs-and-actions-container-background-color: var(--color-surface-2);
+  --dv-activegroup-visiblepanel-tab-background-color: var(--color-surface-2);
+  --dv-inactivegroup-visiblepanel-tab-background-color: var(--color-surface-2);
   --dv-activegroup-visiblepanel-tab-color: var(--color-text);
   --dv-inactivegroup-visiblepanel-tab-color: var(--color-muted);
+  --dv-tab-divider-color: var(--color-border);
+  --dv-separator-border: var(--color-border);
+  --dv-sash-color: var(--color-border);
+  --dv-active-sash-color: var(--color-accent);
+  --dv-drag-over-background-color: color-mix(in srgb, var(--color-accent) 18%, transparent);
+  --dv-drag-over-border-color: var(--color-accent);
+  --dv-icon-hover-background-color: color-mix(in srgb, var(--color-text) 8%, transparent);
+  --dv-paneview-active-outline-color: var(--color-accent);
+  --dv-floating-border: var(--border-weight) solid var(--color-border);
+  --dv-floating-box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
   --dv-tabs-container-scrollbar-color: var(--color-border);
   height: 100%;
 }
 
-/* Custom dock-header chrome (DockTab renderer): title + ⧉ tear-out + ✕ close, per
-   dock-model.html. Replaces dockview's default tab content; styled here so it
-   re-skins live with the active theme and stays 0-radius. */
+/* Custom dock-header chrome (DockTab renderer): optional status dot + title +
+   optional `S/S` badge + ⧉ tear-out + ✕ close, per the redesign mock's dockHead.
+   Replaces dockview's default tab content; styled here so it re-skins live with the
+   active theme and stays 0-radius. */
 .obs-dock-tab {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  gap: 7px;
   width: 100%;
   height: 100%;
-  padding: 0 8px;
+  padding: 0 6px 0 11px;
+  background: var(--color-surface-2);
+  border-bottom: var(--border-weight) solid var(--color-border);
+  cursor: move;
+  user-select: none;
+}
+.obs-dock-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  background: var(--color-muted);
 }
 .obs-dock-title {
   font-family: var(--font-ui);
-  font-size: 9px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--color-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--color-text);
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -197,22 +218,43 @@ button.accent {
 .obs-dock-tab.accent .obs-dock-title {
   color: var(--color-accent);
 }
+.obs-dock-badge {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.06em;
+  padding: 1px 5px;
+  color: var(--color-border);
+}
+.obs-dock-tab.accent .obs-dock-badge {
+  color: var(--color-accent);
+}
+.obs-dock-spacer {
+  flex: 1 1 auto;
+  min-width: 0;
+}
 .obs-dock-btns {
   display: inline-flex;
   gap: 2px;
   flex: 0 0 auto;
 }
 .obs-dock-btn {
-  background: transparent;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 21px;
+  height: 20px;
+  padding: 0;
+  background: none;
   border: 0;
-  height: auto;
-  padding: 2px 4px;
   font-size: 11px;
   line-height: 1;
   color: var(--color-muted);
 }
 .obs-dock-btn:hover {
-  color: var(--color-accent);
+  color: var(--color-text);
+  background: color-mix(in srgb, var(--color-text) 8%, transparent);
   border: 0;
 }
 
