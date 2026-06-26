@@ -46,9 +46,16 @@ export interface ThemeTokens {
   mode: ThemeMode;
 }
 
-// token field -> CSS custom property name. One entry per token; applyTheme loops
+// The token fields that map to a CSS custom property. Excludes the axis
+// discriminators (accent/mode): those are string labels, not CSS-usable values, so
+// they're applied only as data-* attributes below. Emitting `--accent` as a var would
+// also clobber the legacy `--accent` color alias in app.css (var(--accent) consumers
+// would compute the string "amber" instead of a color).
+type CssTokenKey = Exclude<keyof ThemeTokens, "accent" | "mode">;
+
+// token field -> CSS custom property name. One entry per CSS token; applyTheme loops
 // this so adding a token is a single-line change here, not a new assignment.
-export const TOKEN_CSS_VARS: Record<keyof ThemeTokens, string> = {
+export const TOKEN_CSS_VARS: Record<CssTokenKey, string> = {
   colorBase: "--color-base",
   colorRail: "--color-rail",
   colorSurface: "--color-surface",
@@ -75,8 +82,6 @@ export const TOKEN_CSS_VARS: Record<keyof ThemeTokens, string> = {
   selectionStyle: "--selection-style",
   borderWeight: "--border-weight",
   radius: "--radius",
-  accent: "--accent",
-  mode: "--mode",
 };
 
 // Write every token to :root as a CSS variable. Idempotent; safe to call on every
@@ -88,7 +93,7 @@ export const TOKEN_CSS_VARS: Record<keyof ThemeTokens, string> = {
 // custom property's string value).
 export function applyTheme(tokens: ThemeTokens): void {
   const root = document.documentElement;
-  for (const key of Object.keys(TOKEN_CSS_VARS) as (keyof ThemeTokens)[]) {
+  for (const key of Object.keys(TOKEN_CSS_VARS) as CssTokenKey[]) {
     const value = key === "radius" ? "0" : String(tokens[key]);
     root.style.setProperty(TOKEN_CSS_VARS[key], value);
   }

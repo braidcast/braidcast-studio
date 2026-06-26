@@ -88,8 +88,6 @@
   --selection-style: left-bar;
   --border-weight: 1px;
   --radius: 0;
-  --accent: amber;
-  --mode: dark;
 
   /* Legacy aliases: retained pre-token components (SettingsModal, AddSourceModal,
      properties/*, the *Tab settings panels, EventLog) still reference these old
