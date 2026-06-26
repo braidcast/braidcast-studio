@@ -581,6 +581,15 @@ export interface McpSetConfigParams {
   allowGoLive?: boolean;
 }
 
+// --- scene collections (named scene/source sets, switchable, Phase 6a) -------
+
+/** A scene collection as reported by collections.list. Exactly one is active. */
+export interface CollectionInfo {
+  id: string;
+  name: string;
+  active: boolean;
+}
+
 /** A registered transition type as reported by transitionTypes.list. */
 export interface TransitionType {
   id: string;
@@ -749,6 +758,17 @@ export interface ObsMethods {
   "theme.load": { state: string };
   "layout.save": { saved: boolean };
   "layout.load": { layout: string };
+  // Scene collections (named, switchable scene/source sets, Phase 6a). list
+  // enumerates every collection with the active one flagged; create/rename/remove
+  // mutate the registry; switch tears down the current scene world and loads the
+  // target (rejects while any output is live, refuses removing the last one). All
+  // mutations emit collections.changed; switch additionally emits scenes.changed +
+  // transitions.changed so the Scenes/Sources/preview resync on their own.
+  "collections.list": CollectionInfo[];
+  "collections.create": { id: string };
+  "collections.rename": { id: string; name: string };
+  "collections.switch": { active: string };
+  "collections.remove": { removed: boolean };
   // Floating dock tear-out (P3a). detach opens a new OS window whose browser
   // loads index.html?window=<id>&dock=<dock>; redock destroys that window. list
   // enumerates the live detached windows.
@@ -808,6 +828,9 @@ export interface ObsEvents {
   // The embedded MCP server's config or listening status changed (enable/disable,
   // port change, token regenerate, or a bind error); the UI re-runs mcp.getConfig.
   "mcp.changed": Record<string, never>;
+  // A scene collection was created/renamed/removed or switched (active changed);
+  // the menu re-runs collections.list to refresh its list + active checkmark.
+  "collections.changed": Record<string, never>;
   // Floating dock tear-out (P3a). Broadcast to ALL browsers (main + detached).
   // opened fires after a detached window's browser exists; closed fires on
   // explicit redock AND on user OS-close (NOT during app shutdown).
