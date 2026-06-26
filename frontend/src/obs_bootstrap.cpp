@@ -31,6 +31,7 @@
 #include "paths.hpp"
 #include "preview_window.hpp"
 #include "projector_window.hpp"
+#include "scene_collections.hpp"
 #include "scene_persistence.hpp"
 #include "transitions.hpp"
 
@@ -232,6 +233,11 @@ CanvasStore g_canvases;
 StreamProfileStore g_streamProfiles;
 OutputBindingStore g_outputBindings;
 
+// The scene-collection registry (per-collection scene sets). Loaded + migrated
+// in Start before scenes are restored, so the no-arg SceneCollection::Save/Load
+// target the active collection's file; cleared in Stop.
+SceneCollections g_sceneCollections;
+
 // The fan-out streaming engine, constructed after the stores load (it captures
 // them by reference) and reset in Stop before they clear.
 std::unique_ptr<MultistreamEngine> g_multistream;
@@ -326,6 +332,11 @@ void LoadMultistreamModel()
 }
 
 } // namespace
+
+::SceneCollections &ObsBootstrap::SceneCollections()
+{
+	return g_sceneCollections;
+}
 
 CanvasStore &ObsBootstrap::Canvases()
 {
@@ -440,9 +451,25 @@ bool ObsBootstrap::Start()
 
 	RunProbes();
 
-	// Restore the saved global scene collection; first run (no file) falls back to
-	// the placeholder default scene. On the Load path g_scene stays null, which the
-	// null-safe TeardownScene handles.
+	// Load (or first-run migrate) the scene-collection registry BEFORE restoring
+	// scenes, so the no-arg SceneCollection::Load/Save below resolve the active
+	// collection's file. First run (no scene_collections.json) adopts the legacy
+	// single-file scene_collection.json IN PLACE -- reused, not copied, so the
+	// user's existing scenes carry over with zero data loss -- as the sole
+	// "Untitled" collection.
+	g_sceneCollections.Load();
+	if (g_sceneCollections.List().empty()) {
+		g_sceneCollections.SeedExisting("Untitled", "scene_collection.json");
+		HostLog("[scene] migrated single-file scenes into collection 'Untitled'");
+	}
+	const SceneCollectionRecord *activeCollection = g_sceneCollections.Active();
+	HostLog("[scene] " + std::to_string(g_sceneCollections.List().size()) + " scene collection(s); active='" +
+		(activeCollection ? activeCollection->name : "(none)") + "' file=" +
+		g_sceneCollections.ActiveScenePath());
+
+	// Restore the active collection's scenes; first run with no scene file falls
+	// back to the placeholder default scene. On the Load path g_scene stays null,
+	// which the null-safe TeardownScene handles.
 	if (!SceneCollection::Load()) {
 		CreateDefaultScene();
 	}
@@ -2170,6 +2197,7 @@ void ObsBootstrap::Stop()
 	g_canvases.Clear();
 	g_streamProfiles.Clear();
 	g_outputBindings.Clear();
+	g_sceneCollections.Clear();
 
 	obs_shutdown();
 

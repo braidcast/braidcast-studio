@@ -18,9 +18,17 @@ class OutputBindingStore;
 class MultistreamEngine;
 class CanvasRuntime;
 class AudioMonitor;
+class SceneCollections;
 
 namespace ObsBootstrap {
 bool Start();
+
+// The scene-collection registry (per-collection scene sets, persisted to
+// scene_collections.json + one scene file each). Owned by the bootstrap (loaded
+// + migrated in Start, cleared in Stop). Exposed so the bridge can serve
+// collection CRUD over it and scene_persistence can target the active file.
+// Valid between Start() and Stop().
+SceneCollections &SceneCollections();
 
 // The global native-multistream canvas model, owned by the bootstrap (loaded in
 // Start, cleared in Stop). Exposed so the bridge can serve canvas CRUD over it.

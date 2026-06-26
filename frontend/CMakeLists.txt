@@ -69,6 +69,8 @@ target_sources(
     src/projector_window.hpp
     src/audio/AudioMonitor.cpp
     src/audio/AudioMonitor.hpp
+    src/scene_collections.cpp
+    src/scene_collections.hpp
     src/scene_persistence.cpp
     src/scene_persistence.hpp
     src/transitions.cpp
@@ -171,6 +173,7 @@ set_source_files_properties(
   src/preview_window.cpp
   src/projector_window.cpp
   src/audio/AudioMonitor.cpp
+  src/scene_collections.cpp
   src/scene_persistence.cpp
   src/transitions.cpp
   api-impl/frontend_callbacks.cpp

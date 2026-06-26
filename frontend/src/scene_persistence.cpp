@@ -1,7 +1,8 @@
 #include "scene_persistence.hpp"
 
 #include "log.hpp"
-#include "multistream/StorePaths.hpp"
+#include "obs_bootstrap.hpp"
+#include "scene_collections.hpp"
 #include "transitions.hpp"
 
 #include <obs.h>
@@ -14,11 +15,6 @@
 namespace SceneCollection {
 
 namespace {
-
-std::string FilePath()
-{
-	return MultistreamBasicPath("scene_collection.json");
-}
 
 // Per-save context carrying the channel 1-6 global audio sources to exclude (the
 // audio mixer persists those separately via audio_devices.json) plus the main
@@ -62,6 +58,11 @@ bool SaveFilter(void *data, obs_source_t *source)
 
 void Save()
 {
+	Save(ObsBootstrap::SceneCollections().ActiveScenePath());
+}
+
+void Save(const std::string &path)
+{
 	SaveContext ctx;
 	OBSSourceAutoRelease audioRefs[6];
 	for (uint32_t ch = 1; ch <= 6; ch++) {
@@ -80,7 +81,6 @@ void Save()
 	obs_data_set_array(root, "sources", sources);
 	obs_data_set_string(root, "current_scene", currentName ? currentName : "");
 
-	const std::string path = FilePath();
 	std::filesystem::path dir = std::filesystem::u8path(path).parent_path();
 	os_mkdirs(dir.u8string().c_str());
 
@@ -91,7 +91,11 @@ void Save()
 
 bool Load()
 {
-	const std::string path = FilePath();
+	return Load(ObsBootstrap::SceneCollections().ActiveScenePath());
+}
+
+bool Load(const std::string &path)
+{
 	OBSDataAutoRelease root = obs_data_create_from_json_file_safe(path.c_str(), "bak");
 	if (!root) {
 		return false;

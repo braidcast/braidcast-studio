@@ -26,6 +26,7 @@
 #include "preview_window.hpp"
 #include "projector_window.hpp"
 #include "properties_serializer.hpp"
+#include "scene_collections.hpp"
 #include "scene_persistence.hpp"
 #include "transitions.hpp"
 #include "window_manager.hpp"
@@ -4495,6 +4496,74 @@ bool MethodSettingsRestore(const json &params, json &result, std::string &error)
 	return true;
 }
 
+// --- Scene collections ------------------------------------------------------
+//
+// The registry of per-collection scene sets (Phase 6a). list/create/rename/
+// remove operate on the bootstrap-owned SceneCollections; switching the active
+// collection (and reloading scenes) is a later task. Each mutation re-saves the
+// index and emits collections.changed so every window re-lists.
+
+bool MethodCollectionsList(const json & /*params*/, json &result, std::string & /*error*/)
+{
+	const SceneCollections &store = ObsBootstrap::SceneCollections();
+	const std::string activeId = store.ActiveId();
+	json arr = json::array();
+	for (const SceneCollectionRecord &c : store.List()) {
+		arr.push_back(json{{"id", c.id}, {"name", c.name}, {"active", c.id == activeId}});
+	}
+	result = std::move(arr);
+	return true;
+}
+
+bool MethodCollectionsCreate(const json &params, json &result, std::string &error)
+{
+	const std::string name = OptString(params, "name");
+	if (name.empty()) {
+		error = "collections.create requires a non-empty 'name'";
+		return false;
+	}
+	const SceneCollectionRecord &added = ObsBootstrap::SceneCollections().Create(name);
+	result = json{{"id", added.id}};
+	EmitEvent("collections.changed", json::object());
+	return true;
+}
+
+bool MethodCollectionsRename(const json &params, json &result, std::string &error)
+{
+	const std::string id = OptString(params, "id");
+	const std::string name = OptString(params, "name");
+	if (id.empty()) {
+		error = "collections.rename requires a non-empty 'id'";
+		return false;
+	}
+	if (name.empty()) {
+		error = "collections.rename requires a non-empty 'name'";
+		return false;
+	}
+	if (!ObsBootstrap::SceneCollections().Rename(id, name)) {
+		error = "no scene collection with id '" + id + "'";
+		return false;
+	}
+	result = json{{"id", id}, {"name", name}};
+	EmitEvent("collections.changed", json::object());
+	return true;
+}
+
+bool MethodCollectionsRemove(const json &params, json &result, std::string &error)
+{
+	const std::string id = OptString(params, "id");
+	if (id.empty()) {
+		error = "collections.remove requires a non-empty 'id'";
+		return false;
+	}
+	if (!ObsBootstrap::SceneCollections().Remove(id, error)) {
+		return false;
+	}
+	result = json{{"removed", id}};
+	EmitEvent("collections.changed", json::object());
+	return true;
+}
+
 } // namespace
 
 bool WriteJsonString(const char *file, const char *key, const std::string &value)
@@ -4544,6 +4613,10 @@ void Init()
 		{"scenes.rename", MethodScenesRename},
 		{"scenes.duplicate", MethodScenesDuplicate},
 		{"scenes.reorder", MethodScenesReorder},
+		{"collections.list", MethodCollectionsList},
+		{"collections.create", MethodCollectionsCreate},
+		{"collections.rename", MethodCollectionsRename},
+		{"collections.remove", MethodCollectionsRemove},
 		{"sceneItems.list", MethodSceneItemsList},
 		{"sceneItems.setVisible", MethodSceneItemsSetVisible},
 		{"sceneItems.setLocked", MethodSceneItemsSetLocked},
