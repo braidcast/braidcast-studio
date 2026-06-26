@@ -1,34 +1,95 @@
-/* Token defaults = Industrial (the JS theme store overwrites these on load; these
-   are the no-flash initial paint). The hard 0-radius rule is global and a token
-   (--radius) so a custom theme can never reintroduce rounding. */
+/* Geist + Geist Mono, self-hosted woff2 (offline — the app is served from app://,
+   no Google Fonts CDN). These live under src/lib/theme/fonts/; Vite hashes them and
+   rewrites the url() to a relative asset path the scheme handler resolves. */
+@font-face {
+  font-family: "Geist";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("./lib/theme/fonts/geist-sans-400.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Geist";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("./lib/theme/fonts/geist-sans-500.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Geist";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("./lib/theme/fonts/geist-sans-600.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Geist";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("./lib/theme/fonts/geist-sans-700.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Geist Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("./lib/theme/fonts/geist-mono-400.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Geist Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("./lib/theme/fonts/geist-mono-500.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Geist Mono";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("./lib/theme/fonts/geist-mono-600.woff2") format("woff2");
+}
+
+/* Token defaults = Studio Dark, the redesign default (the JS theme store overwrites
+   these on load; these are the no-flash initial paint, kept in sync with
+   presets.STUDIO_DARK / MODE_VALUES.dark). The hard 0-radius rule is global and a
+   token (--radius) so a custom theme can never reintroduce rounding. */
 :root {
   color-scheme: dark;
 
-  --color-base: #0a0a0a;
-  --color-surface: #141414;
-  --color-border: #333333;
-  --color-text: #bbbbbb;
-  --color-muted: #666666;
-  --color-accent: #e0a23c;
-  --color-accent-contrast: #0a0a0a;
-  --color-live: #ef4444;
-  --meter-green: #3fae4a;
-  --meter-yellow: #eab308;
-  --meter-red: #ef4444;
+  --color-base: #0a0a0b;
+  --color-rail: #0e0e11;
+  --color-surface: #141418;
+  --color-surface-2: #1b1b20;
+  --color-border: #28282e;
+  --color-border-2: #1e1e23;
+  --color-text: #e9e9ec;
+  --color-dim: #9a9aa2;
+  --color-muted: #5c5c64;
+  --color-accent: #e7a338;
+  --color-accent-contrast: #0a0a0b;
+  --color-accent-ink: #0a0a0b;
+  --color-live: #f04444;
+  --meter-green: #46b85e;
+  --meter-yellow: #e6b03e;
+  --meter-red: #f04444;
 
-  --font-ui: "Consolas", "SF Mono", ui-monospace, monospace;
-  --font-mono: "Consolas", "SF Mono", ui-monospace, monospace;
+  --font-ui: "Geist", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, monospace;
   --label-case: uppercase;
-  --letter-spacing: 0.1em;
+  --letter-spacing: 0.06em;
 
   --density: comfortable;
   --space-unit: 8px;
   --control-height: 30px;
 
-  --meter-style: segmented;
+  --meter-style: gradient;
   --selection-style: left-bar;
   --border-weight: 1px;
   --radius: 0;
+  --accent: amber;
+  --mode: dark;
 
   /* Legacy aliases: retained pre-token components (SettingsModal, AddSourceModal,
      properties/*, the *Tab settings panels, EventLog) still reference these old

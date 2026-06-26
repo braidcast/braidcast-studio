@@ -1,6 +1,13 @@
 import { obs } from "../bridge";
 import { applyTheme, type ThemeTokens } from "./tokens";
-import { INDUSTRIAL, PRESETS, DEFAULT_PRESET_ID, type PresetEntry } from "./presets";
+import {
+  ACCENT_VALUES,
+  MODE_VALUES,
+  PRESETS,
+  DEFAULT_PRESET_ID,
+  defaultTokens,
+  type PresetEntry,
+} from "./presets";
 
 // Persisted theme schema. The store owns it and (de)serializes it into the opaque
 // `state` blob carried by theme.save / theme.load. activeTokens is the LIVE token
@@ -28,7 +35,7 @@ const PERSIST_DEBOUNCE_MS = 300;
 class ThemeStore {
   // The LIVE token object. setToken replaces it wholesale (a new identity) so $derived
   // / $effect consumers re-run.
-  tokens = $state<ThemeTokens>({ ...INDUSTRIAL });
+  tokens = $state<ThemeTokens>(defaultTokens());
   activeId = $state(DEFAULT_PRESET_ID);
   customThemes = $state<PresetEntry[]>([]);
 
@@ -49,6 +56,15 @@ class ThemeStore {
       const derived = DENSITY_VALUES[value as ThemeTokens["density"]];
       next.spaceUnit = derived.spaceUnit;
       next.controlHeight = derived.controlHeight;
+    } else if (key === "accent") {
+      // Accent axis: rewrite the accent color + its ink, leaving the neutrals
+      // (and the chosen mode) untouched so the two axes compose.
+      const acc = ACCENT_VALUES[value as ThemeTokens["accent"]];
+      next.colorAccent = acc.accent;
+      next.colorAccentContrast = acc.accentInk;
+    } else if (key === "mode") {
+      // Light/dark axis: swap the whole neutral palette, preserving the accent.
+      Object.assign(next, MODE_VALUES[value as ThemeTokens["mode"]]);
     }
     this.tokens = next;
     this.applyNow();
@@ -112,9 +128,9 @@ class ThemeStore {
         if (typeof parsed.activeId === "string") {
           this.activeId = parsed.activeId;
         }
-        // Spread over INDUSTRIAL so a token added after this state was saved is
-        // never missing (old/partial blobs stay valid).
-        this.tokens = { ...INDUSTRIAL, ...(parsed.activeTokens ?? {}) };
+        // Spread over the default preset so a token added after this state was
+        // saved is never missing (old/partial blobs stay valid).
+        this.tokens = { ...defaultTokens(), ...(parsed.activeTokens ?? {}) };
         // Keep the seq counter ahead of any restored custom ids so new saves don't collide.
         this.seq = this.customThemes.reduce((m, t) => {
           const n = Number(t.id.slice(t.id.lastIndexOf("-") + 1));
@@ -123,7 +139,7 @@ class ThemeStore {
       }
     } catch {
       // malformed/old/empty state -> defaults
-      this.tokens = { ...INDUSTRIAL };
+      this.tokens = defaultTokens();
       this.activeId = DEFAULT_PRESET_ID;
       this.customThemes = [];
     }

@@ -15,9 +15,13 @@
   // One entry per color token; the short label sits beneath the swatch (mock .sw span).
   const PALETTE: { key: keyof ThemeTokens; label: string }[] = [
     { key: "colorBase", label: "base" },
+    { key: "colorRail", label: "rail" },
     { key: "colorSurface", label: "surface" },
+    { key: "colorSurface2", label: "surf-2" },
     { key: "colorBorder", label: "border" },
+    { key: "colorBorder2", label: "bord-2" },
     { key: "colorText", label: "text" },
+    { key: "colorDim", label: "dim" },
     { key: "colorMuted", label: "muted" },
     { key: "colorAccent", label: "accent" },
     { key: "colorAccentContrast", label: "accent-c" },
@@ -31,6 +35,8 @@
   // listed (e.g. an imported custom), it's prepended as a synthetic option so the
   // <select> still reflects it.
   const FONT_OPTIONS: { value: string; label: string }[] = [
+    { value: "'Geist', 'Segoe UI', system-ui, sans-serif", label: "Geist" },
+    { value: "'Geist Mono', ui-monospace, monospace", label: "Geist Mono" },
     { value: "'Consolas', 'SF Mono', ui-monospace, monospace", label: "Consolas / Mono" },
     { value: "'JetBrains Mono', ui-monospace, monospace", label: "JetBrains Mono" },
     { value: "'Segoe UI', system-ui, sans-serif", label: "Segoe UI" },
