@@ -35,7 +35,8 @@
   }: DialogSpec & { onClose: () => void } = $props();
 
   // Snapshot the prop once; this dialog mounts fresh per open (Rename seeds the
-  // current name), so the input is uncontrolled after that.
+  // current name), so the input is uncontrolled after that. untrack marks the
+  // one-time read intentional, silencing svelte-check's state_referenced_locally.
   let value = $state(untrack(() => initial));
 
   const valid = $derived(kind !== "prompt" || value.trim().length > 0);
@@ -77,7 +78,7 @@
     <header class="head">{title}</header>
     <div class="body">
       {#if kind === "prompt"}
-        <input class="field" bind:value onkeydown={onKeydown} use:focusOnMount spellcheck="false" />
+        <input class="field" bind:value aria-label={title} use:focusOnMount spellcheck="false" />
       {:else if message}
         <p class="msg">{message}</p>
       {/if}
