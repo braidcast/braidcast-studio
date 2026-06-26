@@ -556,14 +556,14 @@
         {/if}
       </ul>
       <div class="toolbar">
-        <button class="tool-btn" title="Add scene" onclick={noop}>{@render icoPlus()}</button>
+        <button class="tool-btn" title="Add scene (coming soon)" disabled onclick={noop}>{@render icoPlus()}</button>
         <button
           class="tool-btn"
           title="Delete scene"
           disabled={!currentScene || scenes.length <= 1}
           onclick={() => currentScene && removeScene(currentScene)}>{@render icoTrash()}</button
         >
-        <button class="tool-btn" title="Scene settings" onclick={noop}>{@render icoGear()}</button>
+        <button class="tool-btn" title="Scene settings (coming soon)" disabled onclick={noop}>{@render icoGear()}</button>
       </div>
     </div>
 
@@ -607,14 +607,14 @@
         {/if}
       </ul>
       <div class="toolbar">
-        <button class="tool-btn" title="Add source" onclick={noop}>{@render icoPlus()}</button>
+        <button class="tool-btn" title="Add source (coming soon)" disabled onclick={noop}>{@render icoPlus()}</button>
         <button
           class="tool-btn"
           title="Delete source"
           disabled={!selectedItem}
           onclick={() => selectedItem && void remove(selectedItem)}>{@render icoTrash()}</button
         >
-        <button class="tool-btn" title="Properties" onclick={noop}>{@render icoGear()}</button>
+        <button class="tool-btn" title="Properties (coming soon)" disabled onclick={noop}>{@render icoGear()}</button>
         <div class="tool-spacer"></div>
         <button
           class="tool-btn"

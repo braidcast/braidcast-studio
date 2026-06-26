@@ -161,8 +161,10 @@
   $effect(() => {
     if (!api) return;
     for (const c of canvases) {
-      if (c.isDefault) continue;
-      const panel = api.getPanel("canvas:" + c.uuid);
+      // The Default canvas lives in the static "preview" dock; non-default canvases
+      // in reconciler-managed "canvas:<uuid>" panels. Both get the same live->green
+      // dot mapping (updateParameters merges, so only __dot is touched).
+      const panel = api.getPanel(c.isDefault ? "preview" : "canvas:" + c.uuid);
       if (!panel) continue;
       const co = outputs.filter((o) => o.canvasUuid === c.uuid);
       const state: MultistreamState = co.some((o) => o.state === "live")
@@ -181,7 +183,15 @@
     const loadCanvases = () => {
       obs
         .call("canvas.list")
-        .then((list) => (canvases = list))
+        .then((list) => {
+          canvases = list;
+          // A focused canvas that was deleted/disabled would otherwise stick the
+          // GO-LIVE bar on a non-existent canvas; drop it so focus falls back to
+          // the Default canvas via the activeCanvasUuid derivation.
+          if (focusedCanvasUuid && !list.some((c) => c.uuid === focusedCanvasUuid)) {
+            focusedCanvasUuid = null;
+          }
+        })
         .catch(() => {});
     };
     const loadStatus = () => {
