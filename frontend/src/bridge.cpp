@@ -1,6 +1,7 @@
 #include "bridge.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <functional>
 #include <mutex>
@@ -518,7 +519,16 @@ bool MethodSettingsGetAudio(const json & /*params*/, json &result, std::string &
 		error = "audio not initialized";
 		return false;
 	}
-	result = json{{"sampleRate", oai.samples_per_sec}, {"speakers", SpeakerLayoutName(oai.speakers)}};
+	const char *monName = nullptr;
+	const char *monId = nullptr;
+	obs_get_audio_monitoring_device(&monName, &monId);
+	result = json{
+		{"sampleRate", oai.samples_per_sec},
+		{"speakers", SpeakerLayoutName(oai.speakers)},
+		{"monitoringDevice",
+		 json{{"id", monId ? std::string(monId) : std::string("default")},
+		      {"name", monName ? std::string(monName) : std::string("Default")}}},
+	};
 	return true;
 }
 
@@ -528,56 +538,84 @@ bool MethodSettingsSetAudio(const json &params, json &result, std::string &error
 		error = "setAudio expects an object";
 		return false;
 	}
-	if (AnyOutputActive()) {
-		error = "cannot change audio while an output is active";
-		return false;
+
+	// Monitoring device is independent of the audio mix and is safe to change
+	// while outputs are active, so apply it before the active-output guard.
+	if (auto md = params.find("monitoringDevice"); md != params.end() && md->is_object()) {
+		const std::string id = md->value("id", std::string());
+		const std::string name = md->value("name", std::string());
+		if (!id.empty()) {
+			obs_set_audio_monitoring_device(name.empty() ? id.c_str() : name.c_str(), id.c_str());
+		}
 	}
 
-	obs_audio_info oai = {};
-	if (!obs_get_audio_info(&oai)) {
-		error = "audio not initialized";
-		return false;
-	}
+	// Sample rate / channel layout require resetting the audio mix, which fails
+	// while audio is active -- only gate (and reset) when one is actually set.
+	const bool changeMix = params.contains("sampleRate") || params.contains("speakers");
+	if (changeMix) {
+		if (AnyOutputActive()) {
+			error = "cannot change sample rate or channels while an output is active";
+			return false;
+		}
 
-	auto sr = params.find("sampleRate");
-	if (sr != params.end()) {
-		if (!sr->is_number_integer() && !sr->is_number_unsigned()) {
-			error = "'sampleRate' must be an integer";
+		obs_audio_info oai = {};
+		if (!obs_get_audio_info(&oai)) {
+			error = "audio not initialized";
 			return false;
 		}
-		const int64_t v = sr->get<int64_t>();
-		// OBS supports 44100 and 48000; reject anything else.
-		if (v != 44100 && v != 48000) {
-			error = "'sampleRate' must be 44100 or 48000";
-			return false;
-		}
-		oai.samples_per_sec = uint32_t(v);
-	}
 
-	auto sp = params.find("speakers");
-	if (sp != params.end()) {
-		if (!sp->is_string()) {
-			error = "'speakers' must be a string layout name";
-			return false;
+		auto sr = params.find("sampleRate");
+		if (sr != params.end()) {
+			if (!sr->is_number_integer() && !sr->is_number_unsigned()) {
+				error = "'sampleRate' must be an integer";
+				return false;
+			}
+			const int64_t v = sr->get<int64_t>();
+			// OBS supports 44100 and 48000; reject anything else.
+			if (v != 44100 && v != 48000) {
+				error = "'sampleRate' must be 44100 or 48000";
+				return false;
+			}
+			oai.samples_per_sec = uint32_t(v);
 		}
-		speaker_layout layout;
-		if (!SpeakerLayoutFromName(sp->get<std::string>(), layout)) {
-			error = "unknown speaker layout '" + sp->get<std::string>() + "'";
-			return false;
-		}
-		oai.speakers = layout;
-	}
 
-	// obs_reset_audio fails when audio is active; with no outputs yet it succeeds.
-	// Active audio sources are re-attached by libobs to the new mix.
-	if (!obs_reset_audio(&oai)) {
-		error = "obs_reset_audio failed (audio may be active)";
-		return false;
+		auto sp = params.find("speakers");
+		if (sp != params.end()) {
+			if (!sp->is_string()) {
+				error = "'speakers' must be a string layout name";
+				return false;
+			}
+			speaker_layout layout;
+			if (!SpeakerLayoutFromName(sp->get<std::string>(), layout)) {
+				error = "unknown speaker layout '" + sp->get<std::string>() + "'";
+				return false;
+			}
+			oai.speakers = layout;
+		}
+
+		// obs_reset_audio fails when audio is active; with no outputs yet it succeeds.
+		// Active audio sources are re-attached by libobs to the new mix.
+		if (!obs_reset_audio(&oai)) {
+			error = "obs_reset_audio failed (audio may be active)";
+			return false;
+		}
 	}
 
 	obs_audio_info applied = {};
-	obs_get_audio_info(&applied);
-	result = json{{"sampleRate", applied.samples_per_sec}, {"speakers", SpeakerLayoutName(applied.speakers)}};
+	if (!obs_get_audio_info(&applied)) {
+		error = "audio not initialized";
+		return false;
+	}
+	const char *monName = nullptr;
+	const char *monId = nullptr;
+	obs_get_audio_monitoring_device(&monName, &monId);
+	result = json{
+		{"sampleRate", applied.samples_per_sec},
+		{"speakers", SpeakerLayoutName(applied.speakers)},
+		{"monitoringDevice",
+		 json{{"id", monId ? std::string(monId) : std::string("default")},
+		      {"name", monName ? std::string(monName) : std::string("Default")}}},
+	};
 	EmitEvent("settings.audioChanged", result);
 	HostLog("[bridge] settings.setAudio -> " + std::to_string(applied.samples_per_sec) + "Hz " +
 		SpeakerLayoutName(applied.speakers));
@@ -4691,6 +4729,173 @@ bool MethodAudioSetMuted(const json &params, json &result, std::string &error)
 	return true;
 }
 
+// --- advanced per-source audio properties ------------------------------------
+// Mirrors stock OBS's "Advanced Audio Properties" dialog: per-source gain,
+// downmix-to-mono, stereo balance, sync offset, mixer-track routing, and
+// monitoring type. State lives on the source and saves with the scene
+// collection automatically (no separate persistence needed).
+
+static const std::pair<obs_monitoring_type, const char *> kMonitoringTypes[] = {
+	{OBS_MONITORING_TYPE_NONE, "none"},
+	{OBS_MONITORING_TYPE_MONITOR_ONLY, "monitorOnly"},
+	{OBS_MONITORING_TYPE_MONITOR_AND_OUTPUT, "monitorAndOutput"},
+};
+
+const char *MonitoringTypeName(obs_monitoring_type type)
+{
+	for (const auto &m : kMonitoringTypes) {
+		if (m.first == type) {
+			return m.second;
+		}
+	}
+	return "none";
+}
+
+bool MonitoringTypeFromName(const std::string &name, obs_monitoring_type &out)
+{
+	for (const auto &m : kMonitoringTypes) {
+		if (name == m.second) {
+			out = m.first;
+			return true;
+		}
+	}
+	return false;
+}
+
+// Resolve an audio source by uuid (preferred) or name, from either the "uuid"
+// or "source" param key. Returns an addref'd source (caller releases).
+obs_source_t *ResolveAudioSource(const json &params)
+{
+	for (const char *key : {"uuid", "source"}) {
+		const std::string v = OptString(params, key);
+		if (v.empty()) {
+			continue;
+		}
+		if (obs_source_t *s = obs_get_source_by_uuid(v.c_str())) { // addref'd
+			return s;
+		}
+		if (obs_source_t *s = obs_get_source_by_name(v.c_str())) { // addref'd
+			return s;
+		}
+	}
+	return nullptr;
+}
+
+// Build the full advanced-audio state JSON for a source. -inf gain (muted to
+// zero multiplier) is reported as null so the UI can render it distinctly.
+json BuildAdvancedAudio(obs_source_t *s)
+{
+	const float db = obs_mul_to_db(obs_source_get_volume(s));
+	const uint32_t mixers = obs_source_get_audio_mixers(s);
+	json tracks = json::array();
+	for (int i = 0; i < 6; ++i) {
+		tracks.push_back((mixers & (1u << i)) != 0);
+	}
+	return json{
+		{"volumeDb", std::isfinite(db) ? json(db) : json(nullptr)},
+		{"forceMono", (obs_source_get_flags(s) & OBS_SOURCE_FLAG_FORCE_MONO) != 0},
+		{"balance", obs_source_get_balance_value(s)},
+		{"syncOffsetMs", int(obs_source_get_sync_offset(s) / 1000000)},
+		{"tracks", std::move(tracks)},
+		{"monitoringType", MonitoringTypeName(obs_source_get_monitoring_type(s))},
+	};
+}
+
+bool MethodAudioGetAdvanced(const json &params, json &result, std::string &error)
+{
+	OBSSourceAutoRelease s = ResolveAudioSource(params);
+	if (!s) {
+		error = "audio.getAdvanced: no source for the given 'uuid'/'source'";
+		return false;
+	}
+	result = BuildAdvancedAudio(s);
+	return true;
+}
+
+bool MethodAudioSetAdvanced(const json &params, json &result, std::string &error)
+{
+	if (!params.is_object()) {
+		error = "audio.setAdvanced expects an object";
+		return false;
+	}
+	OBSSourceAutoRelease s = ResolveAudioSource(params);
+	if (!s) {
+		error = "audio.setAdvanced: no source for the given 'uuid'/'source'";
+		return false;
+	}
+
+	// Validate monitoringType up front so an invalid value rejects the whole
+	// request before any field is written -- the mutation stays atomic.
+	bool setMonitoring = false;
+	obs_monitoring_type monitoringType = OBS_MONITORING_TYPE_NONE;
+	if (auto it = params.find("monitoringType"); it != params.end() && it->is_string()) {
+		if (!MonitoringTypeFromName(it->get<std::string>(), monitoringType)) {
+			error = "audio.setAdvanced: unknown monitoringType '" + it->get<std::string>() + "'";
+			return false;
+		}
+		setMonitoring = true;
+	}
+
+	if (auto it = params.find("volumeDb"); it != params.end() && it->is_number()) {
+		obs_source_set_volume(s, obs_db_to_mul(it->get<float>()));
+	}
+
+	if (auto it = params.find("forceMono"); it != params.end() && it->is_boolean()) {
+		uint32_t flags = obs_source_get_flags(s);
+		if (it->get<bool>()) {
+			flags |= OBS_SOURCE_FLAG_FORCE_MONO;
+		} else {
+			flags &= ~uint32_t(OBS_SOURCE_FLAG_FORCE_MONO);
+		}
+		obs_source_set_flags(s, flags);
+	}
+
+	if (auto it = params.find("balance"); it != params.end() && it->is_number()) {
+		obs_source_set_balance_value(s, std::clamp(it->get<float>(), 0.0f, 1.0f));
+	}
+
+	if (auto it = params.find("syncOffsetMs"); it != params.end() && it->is_number()) {
+		obs_source_set_sync_offset(s, it->get<int64_t>() * 1000000);
+	}
+
+	if (auto it = params.find("tracks"); it != params.end() && it->is_array()) {
+		uint32_t mask = 0;
+		const json &arr = *it;
+		for (size_t i = 0; i < arr.size() && i < 6; ++i) {
+			if (arr[i].is_boolean() && arr[i].get<bool>()) {
+				mask |= (1u << i);
+			}
+		}
+		obs_source_set_audio_mixers(s, mask);
+	}
+
+	if (setMonitoring) {
+		obs_source_set_monitoring_type(s, monitoringType);
+	}
+
+	result = BuildAdvancedAudio(s);
+	EmitEvent("audio.changed", json::object());
+	return true;
+}
+
+// List the available audio monitoring output devices. Stock OBS prepends a
+// "Default" entry (id "default") before enumerating the real devices.
+bool MethodAudioListMonitorDevices(const json & /*params*/, json &result, std::string & /*error*/)
+{
+	json arr = json::array();
+	arr.push_back(json{{"id", "default"}, {"name", "Default"}});
+	obs_enum_audio_monitoring_devices(
+		[](void *data, const char *name, const char *id) -> bool {
+			auto *out = static_cast<json *>(data);
+			out->push_back(json{{"id", id ? std::string(id) : std::string()},
+					    {"name", name ? std::string(name) : std::string()}});
+			return true;
+		},
+		&arr);
+	result = std::move(arr);
+	return true;
+}
+
 // --- global audio devices (Desktop Audio / Mic on output channels 1..6) ------
 // Stock OBS seeds these on first run; the new frontend never did, so the mixer
 // stayed empty. One row per global output channel: a wasapi capture source bound
@@ -5877,6 +6082,9 @@ void Init()
 		{"audio.list", MethodAudioList},
 		{"audio.setDeflection", MethodAudioSetDeflection},
 		{"audio.setMuted", MethodAudioSetMuted},
+		{"audio.getAdvanced", MethodAudioGetAdvanced},
+		{"audio.setAdvanced", MethodAudioSetAdvanced},
+		{"audio.listMonitorDevices", MethodAudioListMonitorDevices},
 		{"audio.listDevices", MethodAudioListDevices},
 		{"audio.getGlobalDevices", MethodAudioGetGlobalDevices},
 		{"audio.setGlobalDevice", MethodAudioSetGlobalDevice},
