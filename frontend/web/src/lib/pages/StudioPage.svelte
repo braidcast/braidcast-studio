@@ -20,6 +20,7 @@
   } from "../bridge";
   import { pageStore } from "../pageStore.svelte";
   import { suspendPreview } from "../previewGate.svelte";
+  import { undoStore } from "../undoStore.svelte";
   import CollectionDialog, { type DialogSpec } from "../CollectionDialog.svelte";
   import ContextMenu, { type ContextMenuItem } from "../ContextMenu.svelte";
 
@@ -195,6 +196,7 @@
 
   // Chip + bottom-bar data, refreshed off the same engine pushes the docks use.
   onMount(() => {
+    undoStore.start();
     const loadCanvases = () => {
       obs
         .call("canvas.list")
@@ -522,6 +524,31 @@
       {/if}
     {/each}
 
+    <button
+      class="histbtn"
+      title={undoStore.canUndo ? "Undo " + undoStore.undoName : "Undo"}
+      aria-label="Undo"
+      disabled={!undoStore.canUndo}
+      onclick={() => undoStore.undo()}
+    >
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+        <path d="M3 8h11a6 6 0 0 1 0 12H8" />
+        <path d="M7 4 3 8l4 4" />
+      </svg>
+    </button>
+    <button
+      class="histbtn"
+      title={undoStore.canRedo ? "Redo " + undoStore.redoName : "Redo"}
+      aria-label="Redo"
+      disabled={!undoStore.canRedo}
+      onclick={() => undoStore.redo()}
+    >
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+        <path d="M21 8H10a6 6 0 0 0 0 12h6" />
+        <path d="M17 4l4 4-4 4" />
+      </svg>
+    </button>
+
     <button class="restore reset" onclick={resetLayout}>Reset Layout</button>
     <button class="restore overflow" title="More" aria-label="More studio actions" onclick={openOverflow}>⋯</button>
   </div>
@@ -690,6 +717,27 @@
     padding: 6px 10px;
     font-size: 14px;
     line-height: 1;
+  }
+  .histbtn {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    background: none;
+    border: var(--border-weight) solid var(--color-border);
+    color: var(--color-dim);
+    cursor: pointer;
+  }
+  .histbtn:hover:not(:disabled) {
+    color: var(--color-accent);
+    border-color: var(--color-accent);
+  }
+  .histbtn:disabled {
+    color: var(--color-muted);
+    cursor: default;
   }
 
   .golive-bar {

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import NavRail from "./lib/NavRail.svelte";
   import { pageStore } from "./lib/pageStore.svelte";
   import StudioPage from "./lib/pages/StudioPage.svelte";
@@ -14,9 +15,41 @@
   import { transformOpener, closeTransform } from "./lib/transformOpener.svelte";
   import AboutDialog from "./lib/AboutDialog.svelte";
   import { aboutOpen, closeAbout } from "./lib/aboutOpener.svelte";
+  import { undoStore } from "./lib/undoStore.svelte";
 
   // Apply the saved (or default Industrial) theme before first paint settles.
   void themeStore.hydrate();
+
+  // Skip the global undo/redo shortcut when the focus is in a text-editing field so
+  // native per-field undo (and rename/search typing) keeps working.
+  function isEditable(t: EventTarget | null): boolean {
+    if (!(t instanceof HTMLElement)) {
+      return false;
+    }
+    const tag = t.tagName;
+    return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || t.isContentEditable;
+  }
+
+  function onKeydown(e: KeyboardEvent): void {
+    // Windows modifier; ignore Alt-combos and editable targets.
+    if (!e.ctrlKey || e.altKey || isEditable(e.target)) {
+      return;
+    }
+    const key = e.key.toLowerCase();
+    if (key === "z" && !e.shiftKey) {
+      e.preventDefault();
+      undoStore.undo();
+    } else if ((key === "z" && e.shiftKey) || key === "y") {
+      e.preventDefault();
+      undoStore.redo();
+    }
+  }
+
+  onMount(() => {
+    undoStore.start();
+    window.addEventListener("keydown", onKeydown);
+    return () => window.removeEventListener("keydown", onKeydown);
+  });
 </script>
 
 <div class="shell">

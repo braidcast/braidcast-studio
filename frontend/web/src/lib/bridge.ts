@@ -602,6 +602,17 @@ export interface CollectionInfo {
   active: boolean;
 }
 
+// --- undo/redo (engine undo stack mirror) -----------------------------------
+
+/** Undo-stack state reported by undo.state and pushed on undo.changed. `undoName`/
+ * `redoName` name the next action either way undoes/redoes (empty when none). */
+export interface UndoState {
+  canUndo: boolean;
+  canRedo: boolean;
+  undoName: string;
+  redoName: string;
+}
+
 /** A registered transition type as reported by transitionTypes.list. */
 export interface TransitionType {
   id: string;
@@ -796,6 +807,11 @@ export interface ObsMethods {
   "window.detach": { windowId: number };
   "window.redock": { redocked: number };
   "window.list": { windows: { windowId: number; dock: string }[] };
+  // Engine undo stack. state reports can-undo/can-redo + the next action names;
+  // undo/redo pop/replay the top entry. All emit undo.changed after mutating.
+  "undo.state": UndoState;
+  "undo.undo": Record<string, never>;
+  "undo.redo": Record<string, never>;
 }
 
 /** Known server->client push events and their payload shapes. */
@@ -859,6 +875,9 @@ export interface ObsEvents {
   // explicit redock AND on user OS-close (NOT during app shutdown).
   "window.opened": { windowId: number; dock: string };
   "window.closed": { windowId: number; dock: string };
+  // The undo stack changed (a recorded mutation, an undo, or a redo); the mirror
+  // re-applies the pushed state to refresh the shortcuts + toolbar buttons.
+  "undo.changed": UndoState;
 }
 
 export interface BridgeError extends Error {
