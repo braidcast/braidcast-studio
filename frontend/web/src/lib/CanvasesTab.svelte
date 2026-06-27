@@ -37,6 +37,8 @@
   let fWidth = $state(1920);
   let fHeight = $state(1080);
   let fFps = $state(60);
+  let resCustom = $state(false);
+  let fpsCustom = $state(false);
   let fVideoEnc = $state("");
   let fAudioEnc = $state("");
   let saving = $state(false);
@@ -105,6 +107,8 @@
     fWidth = 1920;
     fHeight = 1080;
     fFps = 60;
+    resCustom = false;
+    fpsCustom = false;
     fVideoEnc = videoEncoders[0]?.id ?? "";
     fAudioEnc = audioEncoders[0]?.id ?? "";
     formError = null;
@@ -117,6 +121,8 @@
     fWidth = c.baseWidth;
     fHeight = c.baseHeight;
     fFps = c.fpsDen > 0 ? Math.round(c.fpsNum / c.fpsDen) : c.fpsNum;
+    resCustom = !resPresets.some((p) => p.w === fWidth && p.h === fHeight);
+    fpsCustom = !fpsPresets.includes(fFps);
     fVideoEnc = c.videoEncoder || videoEncoders[0]?.id || "";
     fAudioEnc = c.audioEncoder || audioEncoders[0]?.id || "";
     formError = null;
@@ -262,31 +268,45 @@
           {#each resPresets as p (p.label)}
             <button
               class="chip"
-              class:active={fWidth === p.w && fHeight === p.h}
+              class:active={!resCustom && fWidth === p.w && fHeight === p.h}
               onclick={() => {
                 fWidth = p.w;
                 fHeight = p.h;
+                resCustom = false;
               }}>{p.label}</button
             >
           {/each}
+          <button class="chip" class:active={resCustom} onclick={() => (resCustom = true)}>Custom</button>
         </div>
-        <div class="wh">
-          <input type="number" min="1" max="16384" bind:value={fWidth} aria-label="Width" />
-          <span class="x">×</span>
-          <input type="number" min="1" max="16384" bind:value={fHeight} aria-label="Height" />
-        </div>
+        {#if resCustom}
+          <div class="wh">
+            <input type="number" min="1" max="16384" bind:value={fWidth} aria-label="Width" />
+            <span class="x">×</span>
+            <input type="number" min="1" max="16384" bind:value={fHeight} aria-label="Height" />
+          </div>
+        {/if}
       </div>
 
       <div class="field">
         <span class="flabel">Frame Rate (FPS)</span>
         <div class="presets">
           {#each fpsPresets as f (f)}
-            <button class="chip" class:active={fFps === f} onclick={() => (fFps = f)}>{f}</button>
+            <button
+              class="chip"
+              class:active={!fpsCustom && fFps === f}
+              onclick={() => {
+                fFps = f;
+                fpsCustom = false;
+              }}>{f}</button
+            >
           {/each}
+          <button class="chip" class:active={fpsCustom} onclick={() => (fpsCustom = true)}>Custom</button>
         </div>
-        <div class="wh">
-          <input type="number" min="1" max="1000" bind:value={fFps} aria-label="FPS" />
-        </div>
+        {#if fpsCustom}
+          <div class="wh">
+            <input type="number" min="1" max="1000" bind:value={fFps} aria-label="FPS" />
+          </div>
+        {/if}
       </div>
 
       <div class="field">
@@ -487,6 +507,12 @@
   input[type="text"],
   select {
     width: 100%;
+  }
+  input[type="text"] {
+    max-width: 340px;
+  }
+  select {
+    max-width: 420px;
   }
   input:focus,
   select:focus {

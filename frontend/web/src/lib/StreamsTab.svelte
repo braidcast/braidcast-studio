@@ -331,6 +331,10 @@
     font: inherit;
     width: 100%;
   }
+  input[type="text"],
+  select {
+    max-width: 340px;
+  }
   input:focus,
   select:focus {
     outline: none;
