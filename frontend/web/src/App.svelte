@@ -13,6 +13,8 @@
   import { filterDialogOpener, closeFilters } from "./lib/filterDialogOpener.svelte";
   import TransformDialog from "./lib/TransformDialog.svelte";
   import { transformOpener, closeTransform } from "./lib/transformOpener.svelte";
+  import AdvAudioDialog from "./lib/AdvAudioDialog.svelte";
+  import { advAudioOpener, closeAdvAudio } from "./lib/advAudioOpener.svelte";
   import AboutDialog from "./lib/AboutDialog.svelte";
   import { aboutOpen, closeAbout } from "./lib/aboutOpener.svelte";
   import { undoStore } from "./lib/undoStore.svelte";
@@ -95,6 +97,10 @@
 
 {#if transformOpener.target}
   <TransformDialog target={transformOpener.target} label={transformOpener.label} onClose={closeTransform} />
+{/if}
+
+{#if advAudioOpener.open && advAudioOpener.source}
+  <AdvAudioDialog source={advAudioOpener.source} label={advAudioOpener.label} onClose={closeAdvAudio} />
 {/if}
 
 {#if aboutOpen.open}

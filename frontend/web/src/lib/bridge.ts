@@ -213,10 +213,34 @@ export interface VideoSettings {
 /** Speaker layouts obs_audio_info accepts. */
 export type SpeakerLayout = "mono" | "stereo" | "2.1" | "4.0" | "4.1" | "5.1" | "7.1";
 
-/** Core audio config. */
+/** Core audio config. `monitoringDevice` is the device the audio-monitoring mix
+ * is routed to (a leading {id:"default"} entry from audio.listMonitorDevices). */
 export interface AudioSettings {
   sampleRate: number;
   speakers: SpeakerLayout;
+  monitoringDevice: MonitorDevice;
+}
+
+/** A selectable monitoring device as reported by audio.listMonitorDevices
+ * (includes a leading {id:"default", name:"Default"}). */
+export interface MonitorDevice {
+  id: string;
+  name: string;
+}
+
+/** How a source's audio is monitored, mapping the OBS_MONITORING_TYPE_* enum. */
+export type AudioMonitoringType = "none" | "monitorOnly" | "monitorAndOutput";
+
+/** A source's advanced audio properties (Advanced Audio Properties dialog).
+ * `volumeDb` is null when muted to silence (-inf); `tracks` is the 6 mixer-track
+ * enable flags; `balance` is 0..1 (0.5 = center). */
+export interface AdvancedAudio {
+  volumeDb: number | null;
+  forceMono: boolean;
+  balance: number;
+  syncOffsetMs: number;
+  tracks: boolean[];
+  monitoringType: AudioMonitoringType;
 }
 
 // --- canvases (native multistream encode targets, 4.4.1) --------------------
@@ -761,6 +785,13 @@ export interface ObsMethods {
   "audio.listDevices": AudioDevice[];
   "audio.getGlobalDevices": GlobalAudioSlot[];
   "audio.setGlobalDevice": { channel: number; deviceId: string | null };
+  // Advanced audio properties (per-source: volume/mono/balance/sync/tracks/
+  // monitoring). getAdvanced loads the full state; setAdvanced applies a partial
+  // (send only changed fields) and echoes the full post-apply state. Both also
+  // emit audio.changed. listMonitorDevices enumerates the monitoring outputs.
+  "audio.getAdvanced": AdvancedAudio;
+  "audio.setAdvanced": AdvancedAudio;
+  "audio.listMonitorDevices": MonitorDevice[];
   // Scene transitions. transitionTypes.list enumerates the registered transition
   // types; getCurrent returns the active type + duration. setCurrent/setDuration
   // mutate and echo the applied value; both also emit transitions.changed.

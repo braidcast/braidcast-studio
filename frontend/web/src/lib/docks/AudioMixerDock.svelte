@@ -1,6 +1,7 @@
 <script lang="ts">
   import { obs, type AudioSource } from "../bridge";
   import { openFilters } from "../filterDialogOpener.svelte";
+  import { openAdvAudio } from "../advAudioOpener.svelte";
 
   // Per-source faders + live dB meters. Levels arrive on the audio.levels push
   // (~30 Hz x N sources); we coalesce into a Map and flush once per animation
@@ -155,6 +156,11 @@
               onclick={() => void toggleMuted(src)}>{src.muted ? "🔇" : "🔊"}</button
             >
             <button class="mute filters" title="Filters" onclick={() => openFilters(src.name, "audio")}>🎛</button>
+            <button
+              class="mute filters"
+              title="Advanced Audio Properties"
+              onclick={() => openAdvAudio(src.name, src.name)}>⚙</button
+            >
             <input
               class="fader"
               type="range"

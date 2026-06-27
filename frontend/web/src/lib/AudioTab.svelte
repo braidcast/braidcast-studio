@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { obs, type SpeakerLayout, type AudioDevice, type GlobalAudioSlot } from "./bridge";
+  import { obs, type SpeakerLayout, type AudioDevice, type GlobalAudioSlot, type MonitorDevice } from "./bridge";
 
   // Audio settings, lifted verbatim from the former SettingsModal audio pane.
   // Applies live on change (the page model has no Apply boundary).
@@ -11,6 +11,9 @@
 
   let sampleRate = $state<number>(48000);
   let speakers = $state<SpeakerLayout>("stereo");
+  let monitoringDevice = $state<MonitorDevice>({ id: "default", name: "Default" });
+  let monitorDevices = $state<MonitorDevice[]>([]);
+  const monKnown = $derived(monitorDevices.some((d) => d.id === monitoringDevice.id));
 
   let globalSlots = $state<GlobalAudioSlot[]>([]);
   let inputDevices = $state<AudioDevice[]>([]);
@@ -22,17 +25,20 @@
 
   async function load() {
     try {
-      const [a, slots, ins, outs] = await Promise.all([
+      const [a, slots, ins, outs, mons] = await Promise.all([
         obs.call("settings.getAudio"),
         obs.call("audio.getGlobalDevices"),
         obs.call("audio.listDevices", { kind: "input" }),
         obs.call("audio.listDevices", { kind: "output" }),
+        obs.call("audio.listMonitorDevices"),
       ]);
       sampleRate = a.sampleRate;
       speakers = a.speakers;
+      monitoringDevice = a.monitoringDevice;
       globalSlots = slots;
       inputDevices = ins;
       outputDevices = outs;
+      monitorDevices = mons;
     } catch (e) {
       audioError = (e as Error).message;
     } finally {
@@ -44,17 +50,26 @@
     void load();
   });
 
-  async function setAudio(patch: { sampleRate?: number; speakers?: SpeakerLayout }) {
+  async function setAudio(patch: { sampleRate?: number; speakers?: SpeakerLayout; monitoringDevice?: MonitorDevice }) {
     audioError = null;
-    const next = { sampleRate, speakers, ...patch };
+    const next = { sampleRate, speakers, monitoringDevice, ...patch };
     sampleRate = next.sampleRate;
     speakers = next.speakers;
+    monitoringDevice = next.monitoringDevice;
     try {
       const applied = await obs.call("settings.setAudio", next);
       sampleRate = applied.sampleRate;
       speakers = applied.speakers;
+      monitoringDevice = applied.monitoringDevice;
     } catch (e) {
       audioError = (e as Error).message;
+    }
+  }
+
+  function setMonitoringDevice(id: string) {
+    const dev = monitorDevices.find((d) => d.id === id);
+    if (dev) {
+      void setAudio({ monitoringDevice: dev });
     }
   }
 
@@ -98,6 +113,18 @@
           >
         {/each}
       </div>
+    </div>
+
+    <div class="field">
+      <span class="flabel">Monitoring Device</span>
+      <select value={monitoringDevice.id} onchange={(e) => setMonitoringDevice(e.currentTarget.value)}>
+        {#each monitorDevices as d (d.id)}
+          <option value={d.id}>{d.name}</option>
+        {/each}
+        {#if !monKnown}
+          <option value={monitoringDevice.id}>{monitoringDevice.name} (unavailable)</option>
+        {/if}
+      </select>
     </div>
 
     {#if audioError}<p class="error">{audioError}</p>{/if}
