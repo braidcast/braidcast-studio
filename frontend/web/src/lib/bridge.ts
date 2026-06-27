@@ -353,6 +353,17 @@ export interface OutputBindingUpdateParams {
   canvasUuid?: string;
 }
 
+// One scene-link row: a non-default canvas (uuid) follows a main scene (uuid).
+// Names are resolved server-side for display; may be empty if a uuid no longer
+// resolves (stale row pending prune).
+export interface SceneLinkInfo {
+  mainScene: string;
+  mainSceneName: string;
+  canvas: string;
+  canvasScene: string;
+  canvasSceneName: string;
+}
+
 // --- multistream live status (fan-out engine, 4.4.4) -------------------------
 
 /** Live state of one enabled output binding. */
@@ -698,6 +709,13 @@ export interface ObsMethods {
   "outputBinding.update": OutputBindingInfo;
   "outputBinding.setEnabled": { uuid: string; enabled: boolean };
   "outputBinding.remove": { removed: string };
+  // Scene links (a non-default canvas follows a main scene). list returns every
+  // link with names resolved for display; set creates/updates a link (mainScene =
+  // main scene NAME, canvas = canvas UUID, canvasScene = canvas scene NAME); clear
+  // removes one. set/clear return {} and emit sceneLink.changed.
+  "sceneLink.list": { links: SceneLinkInfo[] };
+  "sceneLink.set": Record<string, never>;
+  "sceneLink.clear": Record<string, never>;
   // Multistream live status + per-row control (fan-out engine, 4.4.4).
   "multistream.status": { outputs: MultistreamStatus[] };
   "multistream.startOutput": { ok: boolean };
@@ -809,6 +827,8 @@ export interface ObsEvents {
   "canvas.changed": Record<string, never>;
   "streamProfile.changed": Record<string, never>;
   "outputBinding.changed": Record<string, never>;
+  // A scene link was created/updated/removed; a consumer re-runs sceneLink.list.
+  "sceneLink.changed": Record<string, never>;
   "multistream.changed": { outputs: MultistreamStatus[] };
   // Coalesced per-source audio levels, pushed at most ~30 Hz off the volmeter
   // callbacks. The UI maps dB -> meter width and applies peak hold.
