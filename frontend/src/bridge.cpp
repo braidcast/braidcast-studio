@@ -1230,6 +1230,38 @@ void EmitSceneItemsChanged(obs_source_t *sceneSource, const std::string &canvasU
 		       {"canvas", canvasUuid.empty() ? json(nullptr) : json(canvasUuid)}});
 }
 
+// Scale-filter token <-> obs_scale_type. Shared by sceneItems.list (enum->token)
+// and sceneItems.setScaleFilter (token->enum) so both speak one vocabulary.
+struct ScaleFilterEntry {
+	const char *token;
+	obs_scale_type type;
+};
+static const ScaleFilterEntry kScaleFilters[] = {
+	{"disable", OBS_SCALE_DISABLE}, {"point", OBS_SCALE_POINT},     {"bilinear", OBS_SCALE_BILINEAR},
+	{"bicubic", OBS_SCALE_BICUBIC}, {"lanczos", OBS_SCALE_LANCZOS}, {"area", OBS_SCALE_AREA},
+};
+
+const char *ScaleFilterToToken(obs_scale_type type)
+{
+	for (const auto &e : kScaleFilters) {
+		if (e.type == type) {
+			return e.token;
+		}
+	}
+	return "disable";
+}
+
+bool ScaleFilterFromToken(const std::string &token, obs_scale_type &type)
+{
+	for (const auto &e : kScaleFilters) {
+		if (token == e.token) {
+			type = e.type;
+			return true;
+		}
+	}
+	return false;
+}
+
 bool MethodSceneItemsList(const json &params, json &result, std::string &error)
 {
 	obs_source_t *sceneSource = ResolveTargetScene(params); // addref'd
@@ -1254,6 +1286,8 @@ bool MethodSceneItemsList(const json &params, json &result, std::string &error)
 							  {"source", srcName ? json(srcName) : json(nullptr)},
 							  {"visible", obs_sceneitem_visible(item)},
 							  {"locked", obs_sceneitem_locked(item)},
+							  {"scaleFilter",
+							   ScaleFilterToToken(obs_sceneitem_get_scale_filter(item))},
 						  });
 			return true;
 		},
@@ -1399,6 +1433,40 @@ bool MethodSceneItemsReorder(const json &params, json &result, std::string &erro
 		SceneCollection::Save();
 	}
 	result = json{{"id", id}, {"direction", direction}};
+	return true;
+}
+
+bool MethodSceneItemsSetScaleFilter(const json &params, json &result, std::string &error)
+{
+	int64_t id = 0;
+	if (!ItemIdFromParams(params, id, error)) {
+		return false;
+	}
+	const std::string filter = OptString(params, "filter");
+	obs_scale_type type;
+	if (!ScaleFilterFromToken(filter, type)) {
+		error = "'filter' must be one of disable|point|bilinear|bicubic|lanczos|area";
+		return false;
+	}
+	obs_source_t *sceneSource = ResolveTargetScene(params);
+	if (!sceneSource) {
+		error = "no scene";
+		return false;
+	}
+	obs_scene_t *scene = obs_scene_from_source(sceneSource);
+	obs_sceneitem_t *item = FindSceneItem(scene, id);
+	if (!item) {
+		obs_source_release(sceneSource);
+		error = "no scene item with id " + std::to_string(id);
+		return false;
+	}
+	obs_sceneitem_set_scale_filter(item, type);
+	EmitSceneItemsChanged(sceneSource, ResolveCanvasTarget(params).uuid);
+	obs_source_release(sceneSource);
+	if (!ResolveCanvasTarget(params).isAdditional) {
+		SceneCollection::Save();
+	}
+	result = json{{"id", id}, {"filter", filter}};
 	return true;
 }
 
@@ -4708,6 +4776,39 @@ bool MethodCollectionsRename(const json &params, json &result, std::string &erro
 	return true;
 }
 
+bool MethodCollectionsDuplicate(const json &params, json &result, std::string &error)
+{
+	SceneCollections &store = ObsBootstrap::SceneCollections();
+	if (store.IndexWasCorrupt()) {
+		error = "scene collection index is corrupt; cannot modify collections";
+		return false;
+	}
+	const std::string name = OptString(params, "name");
+	if (name.empty()) {
+		error = "collections.duplicate requires a non-empty 'name'";
+		return false;
+	}
+	// Reject a name already in use so the duplicate stays distinguishable in the list.
+	for (const SceneCollectionRecord &c : store.List()) {
+		if (c.name == name) {
+			error = "a scene collection named '" + name + "' already exists";
+			return false;
+		}
+	}
+	// Source: the explicit id, or the active collection when omitted.
+	std::string sourceId = OptString(params, "id");
+	if (sourceId.empty()) {
+		sourceId = store.ActiveId();
+	}
+	const SceneCollectionRecord *added = store.Duplicate(sourceId, name, error);
+	if (!added) {
+		return false;
+	}
+	result = json{{"id", added->id}, {"name", added->name}};
+	EmitEvent("collections.changed", json::object());
+	return true;
+}
+
 bool MethodCollectionsSwitch(const json &params, json &result, std::string &error)
 {
 	if (ObsBootstrap::SceneCollections().IndexWasCorrupt()) {
@@ -4798,6 +4899,7 @@ void Init()
 		{"collections.list", MethodCollectionsList},
 		{"collections.create", MethodCollectionsCreate},
 		{"collections.rename", MethodCollectionsRename},
+		{"collections.duplicate", MethodCollectionsDuplicate},
 		{"collections.switch", MethodCollectionsSwitch},
 		{"collections.remove", MethodCollectionsRemove},
 		{"sceneItems.list", MethodSceneItemsList},
@@ -4808,6 +4910,7 @@ void Init()
 		{"sceneItems.getTransform", MethodSceneItemsGetTransform},
 		{"sceneItems.setTransform", MethodSceneItemsSetTransform},
 		{"sceneItems.transformAction", MethodSceneItemsTransformAction},
+		{"sceneItems.setScaleFilter", MethodSceneItemsSetScaleFilter},
 		{"sourceTypes.list", MethodSourceTypesList},
 		{"sources.create", MethodSourcesCreate},
 		{"sources.listExisting", MethodSourcesListExisting},

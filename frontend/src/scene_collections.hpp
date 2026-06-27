@@ -66,6 +66,15 @@ public:
 	// Rename by id. Saves the index. Returns false when the id is unknown.
 	bool Rename(const std::string &id, const std::string &name);
 
+	// Duplicate the collection `sourceId` under display `name`: mint a fresh record
+	// (uuid + unique scenes/<slug>.json) like Create, then byte-copy the source's
+	// scene file and each present per-collection sibling (output bindings, scene
+	// links) to the new slug's paths. When the source is the active collection its
+	// in-memory scenes/bindings/links are flushed to disk first so the copy captures
+	// the live state. Does NOT switch the active collection. Saves the index.
+	// Returns the new record, or nullptr (with `error`) when `sourceId` is unknown.
+	const SceneCollectionRecord *Duplicate(const std::string &sourceId, const std::string &name, std::string &error);
+
 	// Switch the active collection to `id`: persist the outgoing collection's scenes,
 	// tear its scene world down leak-safely (mirroring shutdown's drain), make `id`
 	// active + persist the index, load the target's scenes (a never-saved collection

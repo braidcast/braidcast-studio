@@ -249,6 +249,60 @@ bool SceneCollections::Rename(const std::string &id, const std::string &name)
 	return false;
 }
 
+const SceneCollectionRecord *SceneCollections::Duplicate(const std::string &sourceId, const std::string &name,
+							 std::string &error)
+{
+	auto src = std::find_if(collections_.begin(), collections_.end(),
+				[&](const SceneCollectionRecord &c) { return c.id == sourceId; });
+	if (src == collections_.end()) {
+		error = "no scene collection with id '" + sourceId + "'";
+		return nullptr;
+	}
+
+	// Capture source rel paths before Create() mutates collections_ (which can
+	// reallocate the vector and invalidate `src`).
+	const std::string srcSceneRel = src->sceneFile;
+	const std::string srcBindingsRel = BindingsRelFor(srcSceneRel);
+	const std::string srcLinksRel = SceneLinksRelFor(srcSceneRel);
+
+	// The active collection's scenes/bindings/links live in memory and may be dirty;
+	// flush them to disk so the copy captures the current state (mirrors Switch's
+	// save-before-teardown). Resolved while activeId_ still names the source so the
+	// Active*Path() helpers address its files.
+	if (sourceId == activeId_) {
+		SceneCollection::Save(ActiveScenePath());
+		ObsBootstrap::OutputBindings().Save(ActiveBindingsPath());
+		ObsBootstrap::SceneLinks().Save(ActiveSceneLinksPath());
+	}
+
+	// Mint the new record (fresh uuid + unique scenes/<slug>.json) and persist the
+	// index, without switching the active collection. `src` is invalidated after this.
+	const SceneCollectionRecord &added = Create(name);
+	const std::string dstSceneRel = added.sceneFile;
+
+	// Byte-copy the scene file and each present sibling to the new slug's paths. The
+	// new slug is unique, so the destinations are guaranteed absent (os_copyfile
+	// refuses to overwrite). An absent source sibling is simply skipped.
+	auto copyRel = [](const std::string &fromRel, const std::string &toRel) {
+		const std::string from = MultistreamBasicPath(fromRel.c_str());
+		const std::string to = MultistreamBasicPath(toRel.c_str());
+		if (!os_file_exists(from.c_str())) {
+			return;
+		}
+		std::filesystem::path dir = std::filesystem::u8path(to).parent_path();
+		os_mkdirs(dir.u8string().c_str());
+		if (os_copyfile(from.c_str(), to.c_str()) != 0) {
+			HostLog("[scene] duplicate: failed to copy " + from + " -> " + to);
+		}
+	};
+	copyRel(srcSceneRel, dstSceneRel);
+	copyRel(srcBindingsRel, BindingsRelFor(dstSceneRel));
+	copyRel(srcLinksRel, SceneLinksRelFor(dstSceneRel));
+
+	HostLog("[scene] duplicated collection '" + name + "' file=" + MultistreamBasicPath(dstSceneRel.c_str()));
+	return &added;
+}
+
 bool SceneCollections::Switch(const std::string &id, std::string &error)
 {
 	if (id == activeId_) {
