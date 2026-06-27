@@ -250,10 +250,11 @@
   //            reconciler adds additional-canvas docks to its RIGHT, side-by-side.
   //   bottom = docks row — Scenes · Sources · Stats · Mixer, left-to-right.
   // The previews row is sized ~1.7x the bottom row (mock `flex:1.7` vs `flex:1`).
-  // Multistream/Controls/Transitions are intentionally NOT in the default set
-  // (Multistream -> Stream page, Controls -> the GO-LIVE bar, Transitions has no
-  // studio home in the mock); they stay registered in DOCKS so the CANVASES-bar
-  // restore chips can still reopen them.
+  // Multistream/Transitions are intentionally NOT in the default set (Multistream
+  // -> Stream page; Transitions has no studio home in the mock); they stay
+  // registered in DOCKS so the CANVASES-bar restore chips can still reopen them.
+  // The classic Controls dock was removed entirely -- the GO-LIVE bar (live) and
+  // the nav-rail Settings page replace it.
   function buildDefaultLayout(dv: DockviewApi): void {
     dv.clear();
     dv.addPanel(panelOptions("preview", detachDock));
