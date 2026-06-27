@@ -404,6 +404,9 @@
       y: e.clientY,
       items: [
         { label: "Filters", disabled: !item.source, action: () => item.source && openFilters(item.source) },
+        ...(item.interactive && item.source
+          ? [{ label: "Interact", action: () => void obs.call("sources.interact", { source: item.source }).catch(report) }]
+          : []),
         {
           label: "Edit Transform",
           action: () =>

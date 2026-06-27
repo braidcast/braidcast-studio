@@ -268,6 +268,9 @@
       items: [
         { label: "Properties", action: () => openProperties(item) },
         { label: "Filters", disabled: !item.source, action: () => item.source && openFilters(item.source) },
+        ...(item.interactive && item.source
+          ? [{ label: "Interact", action: () => void obs.call("sources.interact", { source: item.source }).catch(report) }]
+          : []),
         {
           label: "Edit Transform",
           action: () => openTransform({ scene: currentScene ?? undefined, id: item.id }, item.source ?? "(unnamed)"),

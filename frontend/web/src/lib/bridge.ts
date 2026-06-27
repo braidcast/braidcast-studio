@@ -41,6 +41,7 @@ export interface SceneItem {
   visible: boolean;
   locked: boolean;
   scaleFilter: string;
+  interactive?: boolean;
 }
 
 export type ReorderDirection = "up" | "down" | "top" | "bottom";
@@ -731,6 +732,8 @@ export interface ObsMethods {
   "sources.addExisting": { id: number; source: string };
   // Duplicate the source of a scene item in place (undo-recorded).
   "sources.duplicate": { id: number; source: string };
+  // Open a native Interact window forwarding input to an interactive source.
+  "sources.interact": { ok: boolean; interactId: number };
   // Generic obs_properties renderer (4.3.2).
   "properties.get": PropertiesResult;
   "properties.set": PropertiesResult;
