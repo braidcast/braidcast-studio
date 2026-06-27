@@ -1389,18 +1389,11 @@ json CaptureTransformState(const json &params, obs_sceneitem_t *item)
 	return s;
 }
 
-void ApplyTransform(const std::string &data)
+// Overlay the geometry fields present in `g` (info2 + crop, plus optional
+// visible/locked) onto `item`; absent keys keep the item's current value. Shared
+// by ApplyTransform (top-level keys) and AddItemFromSnapshot (nested "geometry").
+void SetItemGeometry(obs_sceneitem_t *item, const json &g)
 {
-	json state = json::parse(data, nullptr, false);
-	if (state.is_discarded()) {
-		return;
-	}
-	obs_source_t *sceneSource = nullptr;
-	obs_sceneitem_t *item = nullptr;
-	if (!ResolveStateItem(state, sceneSource, item)) {
-		return;
-	}
-
 	obs_transform_info info;
 	obs_sceneitem_get_info2(item, &info); // seed, then overlay the snapshot
 	auto fnum = [](const json &o, const char *k, float def) -> float {
@@ -1408,32 +1401,32 @@ void ApplyTransform(const std::string &data)
 		return (it != o.end() && it->is_number()) ? it->get<float>() : def;
 	};
 	auto subVec = [&](const char *key, float &x, float &y) {
-		auto it = state.find(key);
-		if (it != state.end() && it->is_object()) {
+		auto it = g.find(key);
+		if (it != g.end() && it->is_object()) {
 			x = fnum(*it, "x", x);
 			y = fnum(*it, "y", y);
 		}
 	};
 	subVec("pos", info.pos.x, info.pos.y);
-	info.rot = fnum(state, "rot", info.rot);
+	info.rot = fnum(g, "rot", info.rot);
 	subVec("scale", info.scale.x, info.scale.y);
-	if (auto it = state.find("alignment"); it != state.end() && it->is_number_integer()) {
+	if (auto it = g.find("alignment"); it != g.end() && it->is_number_integer()) {
 		info.alignment = it->get<uint32_t>();
 	}
-	if (auto it = state.find("boundsType"); it != state.end() && it->is_number_integer()) {
+	if (auto it = g.find("boundsType"); it != g.end() && it->is_number_integer()) {
 		info.bounds_type = static_cast<obs_bounds_type>(it->get<int>());
 	}
-	if (auto it = state.find("boundsAlignment"); it != state.end() && it->is_number_integer()) {
+	if (auto it = g.find("boundsAlignment"); it != g.end() && it->is_number_integer()) {
 		info.bounds_alignment = it->get<uint32_t>();
 	}
 	subVec("bounds", info.bounds.x, info.bounds.y);
-	if (auto it = state.find("cropToBounds"); it != state.end() && it->is_boolean()) {
+	if (auto it = g.find("cropToBounds"); it != g.end() && it->is_boolean()) {
 		info.crop_to_bounds = it->get<bool>();
 	}
 
 	obs_sceneitem_crop crop;
 	obs_sceneitem_get_crop(item, &crop);
-	if (auto it = state.find("crop"); it != state.end() && it->is_object()) {
+	if (auto it = g.find("crop"); it != g.end() && it->is_object()) {
 		auto cropInt = [&](const char *k, int &out) {
 			auto c = it->find(k);
 			if (c != it->end() && c->is_number_integer()) {
@@ -1450,6 +1443,28 @@ void ApplyTransform(const std::string &data)
 	obs_sceneitem_set_info2(item, &info);
 	obs_sceneitem_set_crop(item, &crop);
 	obs_sceneitem_defer_update_end(item);
+
+	if (auto it = g.find("visible"); it != g.end() && it->is_boolean()) {
+		obs_sceneitem_set_visible(item, it->get<bool>());
+	}
+	if (auto it = g.find("locked"); it != g.end() && it->is_boolean()) {
+		obs_sceneitem_set_locked(item, it->get<bool>());
+	}
+}
+
+void ApplyTransform(const std::string &data)
+{
+	json state = json::parse(data, nullptr, false);
+	if (state.is_discarded()) {
+		return;
+	}
+	obs_source_t *sceneSource = nullptr;
+	obs_sceneitem_t *item = nullptr;
+	if (!ResolveStateItem(state, sceneSource, item)) {
+		return;
+	}
+
+	SetItemGeometry(item, state);
 
 	CommitStateChange(state, sceneSource);
 	obs_source_release(sceneSource);
@@ -1602,6 +1617,143 @@ void ApplyOrder(const std::string &data)
 	obs_source_release(sceneSource);
 }
 
+// Structural add/remove undo: ADD and REMOVE are mirror images, so two shared
+// primitives are swapped between the undo and redo slots. State keys: the usual
+// {canvas, scene, source-uuid}; AddItemFromSnapshot additionally carries
+// {sourceData, geometry, order} produced by CaptureItemSnapshot.
+
+// Remove the scene item whose source matches state.source, then emit + persist.
+void RemoveItemBySource(const json &state)
+{
+	obs_source_t *sceneSource = nullptr;
+	obs_sceneitem_t *item = nullptr;
+	if (!ResolveStateItem(state, sceneSource, item)) {
+		return;
+	}
+	obs_sceneitem_remove(item);
+	CommitStateChange(state, sceneSource);
+	obs_source_release(sceneSource);
+}
+
+// Re-add a removed item from its snapshot. Prefers the still-live source (shared
+// source, or a source not yet destroyed) over reloading, so a source is never
+// duplicated; only loads from the saved data when the uuid no longer resolves.
+// obs_load_source restores the saved uuid (verified) as long as no live source
+// holds it, so a remove->undo recreates the SAME uuid and a following redo stays
+// valid.
+void AddItemFromSnapshot(const json &state)
+{
+	obs_source_t *sceneSource = ResolveTargetScene(state); // addref'd
+	if (!sceneSource) {
+		return;
+	}
+	obs_scene_t *scene = obs_scene_from_source(sceneSource);
+
+	const std::string uuid = OptString(state, "source");
+	OBSSourceAutoRelease source = obs_get_source_by_uuid(uuid.c_str()); // addref'd or null
+	if (!source) {
+		const std::string sourceData = OptString(state, "sourceData");
+		if (!sourceData.empty()) {
+			OBSDataAutoRelease data = obs_data_create_from_json(sourceData.c_str());
+			if (data) {
+				source = obs_load_source(data); // create-ref
+			}
+		}
+	}
+	if (!source) {
+		HostLog("[bridge] AddItemFromSnapshot: cannot resolve or load source " + uuid);
+		obs_source_release(sceneSource);
+		return;
+	}
+
+	obs_sceneitem_t *item = obs_scene_add(scene, source); // scene takes its own ref
+	if (!item) {
+		obs_source_release(sceneSource);
+		return;
+	}
+
+	if (auto geo = state.find("geometry"); geo != state.end() && geo->is_object()) {
+		SetItemGeometry(item, *geo);
+	}
+
+	// Restore stacking order (index 0 == first_item; out-of-range clamps).
+	if (auto it = state.find("order"); it != state.end() && it->is_number_integer()) {
+		int pos = it->get<int>();
+		obs_sceneitem_set_order_position(item, pos < 0 ? 0 : pos);
+	}
+
+	CommitStateChange(state, sceneSource);
+	obs_source_release(sceneSource);
+}
+
+// Capture everything AddItemFromSnapshot needs to recreate `item`: the
+// re-resolution keys, the full serialized source (so it survives destruction),
+// its geometry (info2 + crop + visible + locked), and its stacking index.
+json CaptureItemSnapshot(const json &params, obs_source_t *sceneSource, obs_sceneitem_t *item)
+{
+	obs_source_t *src = obs_sceneitem_get_source(item); // borrowed
+	json s = StateBase(params, src);
+
+	if (src) {
+		OBSDataAutoRelease data = obs_save_source(src); // addref'd
+		const char *jsonStr = data ? obs_data_get_json(data) : nullptr;
+		s["sourceData"] = jsonStr ? std::string(jsonStr) : std::string();
+	}
+
+	obs_transform_info info;
+	obs_sceneitem_get_info2(item, &info);
+	obs_sceneitem_crop crop;
+	obs_sceneitem_get_crop(item, &crop);
+	s["geometry"] = json{
+		{"pos", {{"x", info.pos.x}, {"y", info.pos.y}}},
+		{"rot", info.rot},
+		{"scale", {{"x", info.scale.x}, {"y", info.scale.y}}},
+		{"alignment", info.alignment},
+		{"boundsType", static_cast<int>(info.bounds_type)},
+		{"boundsAlignment", info.bounds_alignment},
+		{"bounds", {{"x", info.bounds.x}, {"y", info.bounds.y}}},
+		{"cropToBounds", info.crop_to_bounds},
+		{"crop", {{"left", crop.left}, {"top", crop.top}, {"right", crop.right}, {"bottom", crop.bottom}}},
+		{"visible", obs_sceneitem_visible(item)},
+		{"locked", obs_sceneitem_locked(item)},
+	};
+
+	// 0-based index in native (bottom-to-top) enumeration; first_item == 0.
+	struct OrderCtx {
+		obs_sceneitem_t *target;
+		int idx;
+		int found;
+	} octx{item, 0, -1};
+	obs_scene_enum_items(
+		obs_scene_from_source(sceneSource),
+		[](obs_scene_t *, obs_sceneitem_t *it, void *param) -> bool {
+			auto *c = static_cast<OrderCtx *>(param);
+			if (it == c->target) {
+				c->found = c->idx;
+				return false; // stop
+			}
+			c->idx++;
+			return true;
+		},
+		&octx);
+	s["order"] = octx.found < 0 ? 0 : octx.found;
+	return s;
+}
+
+// Cb adapters: parse the payload, then dispatch to the matching primitive.
+const UndoManager::Cb kAddItemFromSnapshot = [](const std::string &d) {
+	json s = json::parse(d, nullptr, false);
+	if (!s.is_discarded()) {
+		AddItemFromSnapshot(s);
+	}
+};
+const UndoManager::Cb kRemoveItemBySource = [](const std::string &d) {
+	json s = json::parse(d, nullptr, false);
+	if (!s.is_discarded()) {
+		RemoveItemBySource(s);
+	}
+};
+
 bool MethodSceneItemsList(const json &params, json &result, std::string &error)
 {
 	obs_source_t *sceneSource = ResolveTargetScene(params); // addref'd
@@ -1726,12 +1878,23 @@ bool MethodSceneItemsRemove(const json &params, json &result, std::string &error
 		error = "no scene item with id " + std::to_string(id);
 		return false;
 	}
+	obs_source_t *itemSrc = obs_sceneitem_get_source(item); // borrowed
+	const char *srcName = itemSrc ? obs_source_get_name(itemSrc) : nullptr;
+	const std::string name = srcName ? srcName : "";
+	// Snapshot the full item (source data + geometry + order) BEFORE removal so
+	// undo can faithfully recreate it; redo just removes by source uuid again.
+	const json before = CaptureItemSnapshot(params, sceneSource, item);
+	const json after = StateBase(params, itemSrc);
+
 	obs_sceneitem_remove(item);
 	EmitSceneItemsChanged(sceneSource, ResolveCanvasTarget(params).uuid);
 	obs_source_release(sceneSource);
 	if (!ResolveCanvasTarget(params).isAdditional) {
 		SceneCollection::Save();
 	}
+	// undo == re-add the snapshot; redo == remove by source uuid.
+	ObsBootstrap::Undo().AddAction("Remove " + name, kAddItemFromSnapshot, kRemoveItemBySource, before.dump(),
+				       after.dump());
 	result = json{{"removed", id}};
 	return true;
 }
@@ -2241,6 +2404,14 @@ bool MethodSourcesCreate(const json &params, json &result, std::string &error)
 
 	obs_sceneitem_t *item = obs_scene_add(scene, source); // scene takes its own ref
 	const int64_t itemId = item ? obs_sceneitem_get_id(item) : 0;
+
+	// Capture undo state while the scene + item are still held: undo removes by
+	// source uuid, redo re-adds from the snapshot.
+	json before, after;
+	if (item) {
+		before = StateBase(params, source);
+		after = CaptureItemSnapshot(params, sceneSource, item);
+	}
 	obs_source_release(source); // drop the create-ref; scene holds the source
 
 	EmitSceneItemsChanged(sceneSource, ResolveCanvasTarget(params).uuid);
@@ -2253,6 +2424,8 @@ bool MethodSourcesCreate(const json &params, json &result, std::string &error)
 	if (!ResolveCanvasTarget(params).isAdditional) {
 		SceneCollection::Save();
 	}
+	ObsBootstrap::Undo().AddAction("Add " + name, kRemoveItemBySource, kAddItemFromSnapshot, before.dump(),
+				       after.dump());
 	result = json{{"id", itemId}, {"source", name}};
 	return true;
 }
@@ -2326,6 +2499,14 @@ bool MethodSourcesAddExisting(const json &params, json &result, std::string &err
 
 	obs_sceneitem_t *item = obs_scene_add(scene, source); // scene takes its own ref
 	const int64_t itemId = item ? obs_sceneitem_get_id(item) : 0;
+
+	// Capture undo state while the scene + item are still held; AddItemFromSnapshot
+	// will REUSE the pre-existing source via obs_get_source_by_uuid on redo.
+	json before, after;
+	if (item) {
+		before = StateBase(params, source);
+		after = CaptureItemSnapshot(params, sceneSource, item);
+	}
 	obs_source_release(source); // drop our lookup ref
 
 	EmitSceneItemsChanged(sceneSource, ResolveCanvasTarget(params).uuid);
@@ -2338,6 +2519,8 @@ bool MethodSourcesAddExisting(const json &params, json &result, std::string &err
 	if (!ResolveCanvasTarget(params).isAdditional) {
 		SceneCollection::Save();
 	}
+	ObsBootstrap::Undo().AddAction("Add " + name, kRemoveItemBySource, kAddItemFromSnapshot, before.dump(),
+				       after.dump());
 	result = json{{"id", itemId}, {"source", name}};
 	return true;
 }
