@@ -5,6 +5,7 @@
 
 #include "preview_window.hpp"
 
+#include "GeneralSettings.hpp"
 #include "multistream/CanvasRuntime.hpp"
 #include "multistream/CanvasStore.hpp"
 #include "obs_bootstrap.hpp"
@@ -901,6 +902,135 @@ void PreviewSurface::OnLeftDown(int mx, int my)
 	obs_source_release(sceneSource);
 }
 
+namespace {
+
+// Below EPSILON a snap component counts as "unset". Mirrors the legacy preview's
+// EPSILON; used so a later candidate only overrides an already-claimed axis when
+// it is strictly closer.
+constexpr float kSnapEpsilon = 0.0001f;
+
+// Accumulates source-edge snapping for the dragged box [tl,br] against every
+// OTHER scene item, seeded with the canvas-edge/center offset. Ported from the
+// legacy OffsetData/GetSourceSnapOffset.
+struct SnapAccum {
+	float clampDist;
+	int64_t draggedId;
+	vec3 tl, br, offset;
+};
+
+bool SourceSnapCb(obs_scene_t * /* scene */, obs_sceneitem_t *item, void *param)
+{
+	auto *data = static_cast<SnapAccum *>(param);
+
+	if (obs_sceneitem_get_id(item) == data->draggedId) {
+		return true;
+	}
+	if (obs_sceneitem_locked(item) || !obs_sceneitem_visible(item) || !SceneItemHasVideo(item)) {
+		return true;
+	}
+
+	matrix4 boxTransform;
+	obs_sceneitem_get_box_transform(item, &boxTransform);
+
+	vec3 t[4] = {
+		GetTransformedPos(0.0f, 0.0f, boxTransform),
+		GetTransformedPos(1.0f, 0.0f, boxTransform),
+		GetTransformedPos(0.0f, 1.0f, boxTransform),
+		GetTransformedPos(1.0f, 1.0f, boxTransform),
+	};
+
+	vec3 tl, br;
+	vec3_copy(&tl, &t[0]);
+	vec3_copy(&br, &t[0]);
+	for (const vec3 &v : t) {
+		vec3_min(&tl, &tl, &v);
+		vec3_max(&br, &br, &v);
+	}
+
+	// Snap the dragged box's edges to this item's edges. l/r select which edge of
+	// each box is compared; x/y select the axis (the other axis must overlap).
+#define EDGE_SNAP(l, r, x, y)                                                                                 \
+	do {                                                                                                  \
+		double dist = fabsf(l.x - data->r.x);                                                         \
+		if (dist < data->clampDist && fabsf(data->offset.x) < kSnapEpsilon && data->tl.y < br.y &&    \
+		    data->br.y > tl.y && (fabsf(data->offset.x) > dist || data->offset.x < kSnapEpsilon)) {    \
+			data->offset.x = l.x - data->r.x;                                                     \
+		}                                                                                             \
+	} while (false)
+
+	EDGE_SNAP(tl, br, x, y);
+	EDGE_SNAP(tl, br, y, x);
+	EDGE_SNAP(br, tl, x, y);
+	EDGE_SNAP(br, tl, y, x);
+#undef EDGE_SNAP
+
+	return true;
+}
+
+// Returns the snap adjustment (canvas space) to add to the proposed move offset
+// so the dragged bounding box [tl,br] aligns to canvas edges, canvas center
+// lines, or other items' edges. Ports the legacy GetSnapOffset (edges/center)
+// and SnapItemMovement (source) combine logic. snapDistance is already in canvas
+// space here, so unlike the legacy we do NOT divide by the surface scale.
+vec3 CanvasSnapOffset(const GeneralSettings &gs, obs_scene_t *scene, int64_t draggedId, const vec3 &tl,
+		      const vec3 &br, float baseW, float baseH)
+{
+	vec3 clampOffset;
+	vec3_zero(&clampOffset);
+
+	const float clampDist = float(gs.snapDistance);
+	const bool screenSnap = gs.snapToEdge;
+	const bool centerSnap = gs.snapToCenter;
+	const float centerX = br.x - (br.x - tl.x) / 2.0f;
+	const float centerY = br.y - (br.y - tl.y) / 2.0f;
+
+	// Left canvas edge.
+	if (screenSnap && fabsf(tl.x) < clampDist) {
+		clampOffset.x = -tl.x;
+	}
+	// Right canvas edge.
+	if (screenSnap && fabsf(clampOffset.x) < kSnapEpsilon && fabsf(baseW - br.x) < clampDist) {
+		clampOffset.x = baseW - br.x;
+	}
+	// Horizontal center.
+	if (centerSnap && fabsf(baseW - (br.x - tl.x)) > clampDist && fabsf(baseW / 2.0f - centerX) < clampDist) {
+		clampOffset.x = baseW / 2.0f - centerX;
+	}
+
+	// Top canvas edge.
+	if (screenSnap && fabsf(tl.y) < clampDist) {
+		clampOffset.y = -tl.y;
+	}
+	// Bottom canvas edge.
+	if (screenSnap && fabsf(clampOffset.y) < kSnapEpsilon && fabsf(baseH - br.y) < clampDist) {
+		clampOffset.y = baseH - br.y;
+	}
+	// Vertical center.
+	if (centerSnap && fabsf(baseH - (br.y - tl.y)) > clampDist && fabsf(baseH / 2.0f - centerY) < clampDist) {
+		clampOffset.y = baseH / 2.0f - centerY;
+	}
+
+	if (!gs.snapToSource) {
+		return clampOffset;
+	}
+
+	SnapAccum acc;
+	acc.clampDist = clampDist;
+	acc.draggedId = draggedId;
+	vec3_copy(&acc.tl, &tl);
+	vec3_copy(&acc.br, &br);
+	vec3_copy(&acc.offset, &clampOffset);
+
+	obs_scene_enum_items(scene, SourceSnapCb, &acc);
+
+	if (fabsf(acc.offset.x) > kSnapEpsilon || fabsf(acc.offset.y) > kSnapEpsilon) {
+		return acc.offset;
+	}
+	return clampOffset;
+}
+
+} // namespace
+
 void PreviewSurface::OnMouseMove(int mx, int my)
 {
 	if (state_->drag.mode == DragMode::None) {
@@ -921,11 +1051,53 @@ void PreviewSurface::OnMouseMove(int mx, int my)
 	if (item && !obs_sceneitem_locked(item)) {
 		state_->drag.moved = true;
 		if (state_->drag.mode == DragMode::Move) {
+			float offX = canvasPos.x - state_->drag.startCanvasPos.x;
+			float offY = canvasPos.y - state_->drag.startCanvasPos.y;
+
+			// Snap the move to canvas edges/center and other items' edges, unless
+			// disabled in General settings or temporarily suppressed with Ctrl.
+			const GeneralSettings &gs = ObsBootstrap::General();
+			const bool ctrlHeld = GetKeyState(VK_CONTROL) < 0;
+			obs_video_info ovi;
+			if (gs.snapEnabled && !ctrlHeld && SurfaceVideoInfo(targetCanvas_, ovi) && ovi.base_width &&
+			    ovi.base_height) {
+				// Dragged item's transformed bounding box, translated from its
+				// current pos to the proposed pos (pos is a pure translation, so
+				// this stays correct for rotated/bounds-scaled items).
+				matrix4 boxTransform;
+				obs_sceneitem_get_box_transform(item, &boxTransform);
+				vec3 corners[4] = {
+					GetTransformedPos(0.0f, 0.0f, boxTransform),
+					GetTransformedPos(1.0f, 0.0f, boxTransform),
+					GetTransformedPos(0.0f, 1.0f, boxTransform),
+					GetTransformedPos(1.0f, 1.0f, boxTransform),
+				};
+				vec3 tl, br;
+				vec3_copy(&tl, &corners[0]);
+				vec3_copy(&br, &corners[0]);
+				for (const vec3 &v : corners) {
+					vec3_min(&tl, &tl, &v);
+					vec3_max(&br, &br, &v);
+				}
+
+				vec2 curPos;
+				obs_sceneitem_get_pos(item, &curPos);
+				const float shiftX = state_->drag.startItemPos.x + offX - curPos.x;
+				const float shiftY = state_->drag.startItemPos.y + offY - curPos.y;
+				tl.x += shiftX;
+				br.x += shiftX;
+				tl.y += shiftY;
+				br.y += shiftY;
+
+				vec3 snap = CanvasSnapOffset(gs, scene, state_->drag.id, tl, br,
+							     float(ovi.base_width), float(ovi.base_height));
+				offX += snap.x;
+				offY += snap.y;
+			}
+
 			vec2 newPos;
-			newPos.x = std::round(state_->drag.startItemPos.x +
-					      (canvasPos.x - state_->drag.startCanvasPos.x));
-			newPos.y = std::round(state_->drag.startItemPos.y +
-					      (canvasPos.y - state_->drag.startCanvasPos.y));
+			newPos.x = std::round(state_->drag.startItemPos.x + offX);
+			newPos.y = std::round(state_->drag.startItemPos.y + offY);
 			obs_sceneitem_set_pos(item, &newPos);
 		} else if (state_->drag.mode == DragMode::Resize) {
 			StretchItem(state_->drag, item, canvasPos);
