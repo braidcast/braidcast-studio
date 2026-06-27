@@ -2943,6 +2943,11 @@ bool MethodEncoderTypesList(const json &params, json &result, std::string &error
 		if (!id || obs_get_encoder_type(id) != want) {
 			continue;
 		}
+		// Skip internal (texture-based) and deprecated compat variants whose display
+		// names duplicate the user-facing encoders, matching upstream Settings.
+		if (obs_get_encoder_caps(id) & (OBS_ENCODER_CAP_INTERNAL | OBS_ENCODER_CAP_DEPRECATED)) {
+			continue;
+		}
 		const char *display = obs_encoder_get_display_name(id);
 		arr.push_back(json{{"id", id}, {"name", display ? json(display) : json(id)}});
 	}
