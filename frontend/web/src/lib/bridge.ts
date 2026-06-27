@@ -849,6 +849,9 @@ export interface ObsMethods {
   // save, or directory chooser; `filter` is an OBS-style filter string. Returns
   // { path: null } when the user cancels.
   "dialog.openFile": { path: string | null };
+  // Reveal a path in the system file manager (file highlighted in its folder;
+  // directory opened directly).
+  "shell.revealPath": { ok: boolean };
   // Core video/audio settings (4.3.5). set* return the applied (post-reset) values.
   "settings.getVideo": VideoSettings;
   "settings.setVideo": VideoSettings;

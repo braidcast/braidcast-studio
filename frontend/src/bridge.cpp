@@ -14,6 +14,7 @@
 
 #include <shobjidl.h>
 #include <shlwapi.h>
+#include <shellapi.h>
 #include <wincodec.h>
 #include <wrl/client.h>
 #pragma comment(lib, "windowscodecs.lib")
@@ -3596,6 +3597,37 @@ bool MethodDialogOpenFile(const json &params, json &result, std::string &error)
 		return false;
 	}
 	result = json{{"path", cancelled ? json(nullptr) : json(chosen)}};
+	return true;
+}
+
+// Reveal a path in the system file manager. A file is highlighted inside its
+// containing folder; a directory is opened directly.
+bool MethodShellRevealPath(const json &params, json &result, std::string &error)
+{
+	const std::string path = OptString(params, "path");
+	if (path.empty()) {
+		error = "shell.revealPath requires a non-empty 'path'";
+		return false;
+	}
+	const std::wstring widePath = Utf8ToWide(path);
+	const DWORD attrs = GetFileAttributesW(widePath.c_str());
+	if (attrs == INVALID_FILE_ATTRIBUTES) {
+		error = "path does not exist";
+		return false;
+	}
+
+	HINSTANCE rc;
+	if (attrs & FILE_ATTRIBUTE_DIRECTORY) {
+		rc = ShellExecuteW(nullptr, L"open", widePath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+	} else {
+		const std::wstring args = L"/select,\"" + widePath + L"\"";
+		rc = ShellExecuteW(nullptr, L"open", L"explorer.exe", args.c_str(), nullptr, SW_SHOWNORMAL);
+	}
+	if (reinterpret_cast<INT_PTR>(rc) <= 32) {
+		error = "failed to open file manager";
+		return false;
+	}
+	result = json{{"ok", true}};
 	return true;
 }
 
@@ -7248,6 +7280,7 @@ void Init()
 		{"properties.set", MethodPropertiesSet},
 		{"properties.button", MethodPropertiesButton},
 		{"dialog.openFile", MethodDialogOpenFile},
+	{"shell.revealPath", MethodShellRevealPath},
 		{"filterTypes.list", MethodFilterTypesList},
 		{"filters.list", MethodFiltersList},
 		{"filters.add", MethodFiltersAdd},

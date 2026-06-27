@@ -49,6 +49,15 @@
     }
   }
 
+  async function openFolder() {
+    if (!path) return;
+    try {
+      await obs.call("shell.revealPath", { path });
+    } catch (e) {
+      error = (e as Error).message;
+    }
+  }
+
   function onKeydown(e: KeyboardEvent) {
     if (e.key === "Escape") {
       onClose();
@@ -85,6 +94,7 @@
     <footer class="modal-foot">
       <button class="btn ghost" onclick={() => void copy()}>{copied ? "Copied" : "Copy"}</button>
       <button class="btn ghost" onclick={() => void load()}>Refresh</button>
+      <button class="btn ghost" disabled={!path} onclick={() => void openFolder()}>Open Folder</button>
       <button class="btn" onclick={onClose}>Close</button>
     </footer>
   </div>
