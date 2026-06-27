@@ -22,7 +22,21 @@
     { label: "2560 × 1440", w: 2560, h: 1440 },
     { label: "3840 × 2160", w: 3840, h: 2160 },
   ];
-  const fpsPresets = [24, 30, 48, 60];
+  const fpsPresets: { label: string; num: number; den: number }[] = [
+    { label: "24", num: 24, den: 1 },
+    { label: "30", num: 30, den: 1 },
+    { label: "48", num: 48, den: 1 },
+    { label: "60", num: 60, den: 1 },
+    { label: "23.976", num: 24000, den: 1001 },
+    { label: "29.97", num: 30000, den: 1001 },
+    { label: "59.94", num: 60000, den: 1001 },
+  ];
+  const scaleTypes: { label: string; value: string }[] = [
+    { label: "Bilinear", value: "bilinear" },
+    { label: "Bicubic", value: "bicubic" },
+    { label: "Lanczos", value: "lanczos" },
+    { label: "Area", value: "area" },
+  ];
 
   let canvases = $state<CanvasInfo[]>([]);
   let videoEncoders = $state<EncoderType[]>([]);
@@ -36,9 +50,15 @@
   let fName = $state("");
   let fWidth = $state(1920);
   let fHeight = $state(1080);
-  let fFps = $state(60);
+  let fFpsNum = $state(60);
+  let fFpsDen = $state(1);
+  let fOutSameAsBase = $state(true);
+  let fOutWidth = $state(1920);
+  let fOutHeight = $state(1080);
+  let fScaleType = $state("bicubic");
   let resCustom = $state(false);
   let fpsCustom = $state(false);
+  let outCustom = $state(false);
   let fVideoEnc = $state("");
   let fAudioEnc = $state("");
   let saving = $state(false);
@@ -94,7 +114,8 @@
   });
 
   function fpsText(c: CanvasInfo): string {
-    return c.fpsDen > 0 ? String(Math.round(c.fpsNum / c.fpsDen)) : String(c.fpsNum);
+    if (!(c.fpsDen > 0)) return String(c.fpsNum);
+    return c.fpsDen > 1 ? (c.fpsNum / c.fpsDen).toFixed(2) : String(c.fpsNum);
   }
 
   function encName(list: EncoderType[], id: string): string {
@@ -117,9 +138,15 @@
     fName = "";
     fWidth = 1920;
     fHeight = 1080;
-    fFps = 60;
+    fFpsNum = 60;
+    fFpsDen = 1;
+    fOutSameAsBase = true;
+    fOutWidth = 1920;
+    fOutHeight = 1080;
+    fScaleType = "bicubic";
     resCustom = false;
     fpsCustom = false;
+    outCustom = false;
     fVideoEnc = videoEncoders[0]?.id ?? "";
     fAudioEnc = audioEncoders[0]?.id ?? "";
     formError = null;
@@ -131,9 +158,15 @@
     fName = c.name;
     fWidth = c.baseWidth;
     fHeight = c.baseHeight;
-    fFps = c.fpsDen > 0 ? Math.round(c.fpsNum / c.fpsDen) : c.fpsNum;
+    fFpsNum = c.fpsNum;
+    fFpsDen = c.fpsDen;
+    fOutSameAsBase = c.outputWidth === c.baseWidth && c.outputHeight === c.baseHeight;
+    fOutWidth = c.outputWidth;
+    fOutHeight = c.outputHeight;
+    fScaleType = c.scaleType || "bicubic";
     resCustom = !resPresets.some((p) => p.w === fWidth && p.h === fHeight);
-    fpsCustom = !fpsPresets.includes(fFps);
+    fpsCustom = !fpsPresets.some((p) => p.num === c.fpsNum && p.den === c.fpsDen);
+    outCustom = !fOutSameAsBase && !resPresets.some((p) => p.w === c.outputWidth && p.h === c.outputHeight);
     fVideoEnc = c.videoEncoder || videoEncoders[0]?.id || "";
     fAudioEnc = c.audioEncoder || audioEncoders[0]?.id || "";
     formError = null;
@@ -152,7 +185,9 @@
     fName.trim().length > 0 &&
       positiveInt(fWidth, 16384) &&
       positiveInt(fHeight, 16384) &&
-      positiveInt(fFps, 1000),
+      positiveInt(fFpsNum, 144000) &&
+      fFpsDen > 0 &&
+      (fOutSameAsBase || (positiveInt(fOutWidth, 16384) && positiveInt(fOutHeight, 16384))),
   );
 
   async function save() {
@@ -166,8 +201,11 @@
           name: fName.trim(),
           baseWidth: fWidth,
           baseHeight: fHeight,
-          fpsNum: fFps,
-          fpsDen: 1,
+          outputWidth: fOutSameAsBase ? 0 : fOutWidth,
+          outputHeight: fOutSameAsBase ? 0 : fOutHeight,
+          fpsNum: fFpsNum,
+          fpsDen: fFpsDen,
+          scaleType: fScaleType,
           videoEncoder: fVideoEnc || undefined,
           audioEncoder: fAudioEnc || undefined,
         };
@@ -177,8 +215,11 @@
           name: fName.trim(),
           baseWidth: fWidth,
           baseHeight: fHeight,
-          fpsNum: fFps,
-          fpsDen: 1,
+          outputWidth: fOutSameAsBase ? 0 : fOutWidth,
+          outputHeight: fOutSameAsBase ? 0 : fOutHeight,
+          fpsNum: fFpsNum,
+          fpsDen: fFpsDen,
+          scaleType: fScaleType,
           videoEncoder: fVideoEnc || undefined,
           audioEncoder: fAudioEnc || undefined,
         };
@@ -309,23 +350,84 @@
       </div>
 
       <div class="field">
-        <span class="flabel">Frame Rate (FPS)</span>
+        <span class="flabel">Output Resolution (scaled)</span>
         <div class="presets">
-          {#each fpsPresets as f (f)}
+          <button
+            class="chip"
+            class:active={fOutSameAsBase}
+            onclick={() => {
+              fOutSameAsBase = true;
+              outCustom = false;
+            }}>Same as base</button
+          >
+          {#each resPresets as p (p.label)}
             <button
               class="chip"
-              class:active={!fpsCustom && fFps === f}
+              class:active={!fOutSameAsBase && !outCustom && fOutWidth === p.w && fOutHeight === p.h}
               onclick={() => {
-                fFps = f;
-                fpsCustom = false;
-              }}>{f}</button
+                fOutSameAsBase = false;
+                fOutWidth = p.w;
+                fOutHeight = p.h;
+                outCustom = false;
+              }}>{p.label}</button
             >
           {/each}
-          <button class="chip" class:active={fpsCustom} onclick={() => (fpsCustom = true)}>Custom</button>
+          <button
+            class="chip"
+            class:active={!fOutSameAsBase && outCustom}
+            onclick={() => {
+              fOutSameAsBase = false;
+              outCustom = true;
+            }}>Custom</button
+          >
+        </div>
+        {#if !fOutSameAsBase && outCustom}
+          <div class="wh">
+            <input type="number" min="1" max="16384" bind:value={fOutWidth} aria-label="Output width" />
+            <span class="x">×</span>
+            <input type="number" min="1" max="16384" bind:value={fOutHeight} aria-label="Output height" />
+          </div>
+        {/if}
+      </div>
+
+      <div class="field">
+        <span class="flabel">Downscale Filter</span>
+        <select bind:value={fScaleType}>
+          {#each scaleTypes as s (s.value)}
+            <option value={s.value}>{s.label}</option>
+          {/each}
+        </select>
+      </div>
+
+      <div class="field">
+        <span class="flabel">Frame Rate (FPS)</span>
+        <div class="presets">
+          {#each fpsPresets as p (p.label)}
+            <button
+              class="chip"
+              class:active={!fpsCustom && fFpsNum === p.num && fFpsDen === p.den}
+              onclick={() => {
+                fFpsNum = p.num;
+                fFpsDen = p.den;
+                fpsCustom = false;
+              }}>{p.label}</button
+            >
+          {/each}
+          <button
+            class="chip"
+            class:active={fpsCustom}
+            onclick={() => {
+              // Collapse a fractional preset (num/den) to a sane whole-number seed
+              // so Custom doesn't pre-fill an absurd value like 30000.
+              fFpsNum = fFpsDen > 1 ? Math.round(fFpsNum / fFpsDen) : fFpsNum;
+              fpsCustom = true;
+              fFpsDen = 1;
+            }}>Custom</button
+          >
         </div>
         {#if fpsCustom}
           <div class="wh">
-            <input type="number" min="1" max="1000" bind:value={fFps} aria-label="FPS" />
+            <input type="number" min="1" max="144000" bind:value={fFpsNum} aria-label="FPS" />
           </div>
         {/if}
       </div>

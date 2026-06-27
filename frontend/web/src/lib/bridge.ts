@@ -257,6 +257,7 @@ export interface CanvasInfo {
   outputHeight: number;
   fpsNum: number;
   fpsDen: number;
+  scaleType: string;
   videoEncoder: string;
   audioEncoder: string;
   /** True when >=1 enabled output binds this canvas; the canvas panel is shown
@@ -273,6 +274,7 @@ export interface CanvasCreateParams {
   outputHeight?: number;
   fpsNum: number;
   fpsDen: number;
+  scaleType?: string;
   videoEncoder?: string;
   audioEncoder?: string;
 }
@@ -287,6 +289,7 @@ export interface CanvasUpdateParams {
   outputHeight?: number;
   fpsNum?: number;
   fpsDen?: number;
+  scaleType?: string;
   videoEncoder?: string;
   audioEncoder?: string;
 }
