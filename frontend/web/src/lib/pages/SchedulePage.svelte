@@ -461,7 +461,7 @@
   .sub {
     font-family: var(--font-mono);
     font-size: 11px;
-    color: var(--color-muted);
+    color: var(--color-dim);
     min-width: 150px;
     text-align: center;
   }

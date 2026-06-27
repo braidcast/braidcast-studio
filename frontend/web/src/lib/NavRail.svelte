@@ -319,10 +319,10 @@
     font-family: var(--font-ui);
     width: 100%;
     background: none;
-    color: var(--color-muted);
+    color: var(--color-dim);
   }
   .nav-item:hover {
-    color: var(--color-dim);
+    color: var(--color-text);
   }
   .nav-item.active {
     background: color-mix(in srgb, var(--color-accent) 9%, transparent);
@@ -357,11 +357,11 @@
     width: 100%;
     cursor: pointer;
     background: none;
-    color: var(--color-muted);
+    color: var(--color-dim);
     font-family: var(--font-ui);
   }
   .foot-btn:hover {
-    color: var(--color-dim);
+    color: var(--color-text);
   }
   .foot-label {
     font-size: 8px;

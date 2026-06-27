@@ -42,8 +42,8 @@ export const MODE_VALUES: Record<ThemeMode, ModePalette> = {
     colorBorder: "#28282e",
     colorBorder2: "#1e1e23",
     colorText: "#e9e9ec",
-    colorDim: "#9a9aa2",
-    colorMuted: "#5c5c64",
+    colorDim: "#b4b4ba",
+    colorMuted: "#888890",
   },
   light: {
     colorBase: "#e9e9ec",
@@ -54,7 +54,7 @@ export const MODE_VALUES: Record<ThemeMode, ModePalette> = {
     colorBorder2: "#e6e6ea",
     colorText: "#18181b",
     colorDim: "#55555c",
-    colorMuted: "#8b8b92",
+    colorMuted: "#75757c",
   },
 };
 
