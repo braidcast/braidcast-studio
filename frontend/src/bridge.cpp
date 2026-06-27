@@ -1984,6 +1984,10 @@ bool MethodSceneItemsList(const json &params, json &result, std::string &error)
 			auto *arr = static_cast<json *>(param);
 			obs_source_t *src = obs_sceneitem_get_source(item);
 			const char *srcName = src ? obs_source_get_name(src) : nullptr;
+			// Row color tag lives in the item's private settings under "color"
+			// (hex string, "" when unset). See sceneItems.setColor.
+			OBSDataAutoRelease priv = obs_sceneitem_get_private_settings(item);
+			const char *color = priv ? obs_data_get_string(priv, "color") : "";
 			// Prepend to invert bottom-first enumeration into top-first.
 			arr->insert(arr->begin(), json{
 							  {"id", obs_sceneitem_get_id(item)},
@@ -1996,6 +2000,7 @@ bool MethodSceneItemsList(const json &params, json &result, std::string &error)
 							   src ? ((obs_source_get_output_flags(src) &
 								   OBS_SOURCE_INTERACTION) != 0)
 							       : false},
+							  {"color", color ? color : ""},
 						  });
 			return true;
 		},
@@ -2207,6 +2212,41 @@ bool MethodSceneItemsSetScaleFilter(const json &params, json &result, std::strin
 	}
 	RecordUndo("Scale Filtering", ApplyScaleFilter, before, after);
 	result = json{{"id", id}, {"filter", filter}};
+	return true;
+}
+
+// Set a row color tag on a scene item. The color is a hex string ("#RRGGBB" /
+// "#AARRGGBB"); an empty string clears it. Stored in the item's private settings
+// under "color" -- the same store sceneItems.list reads back -- so it persists
+// with the scene collection. Resolution mirrors setScaleFilter ({canvas,scene,id}).
+bool MethodSceneItemsSetColor(const json &params, json &result, std::string &error)
+{
+	int64_t id = 0;
+	if (!ItemIdFromParams(params, id, error)) {
+		return false;
+	}
+	const std::string color = OptString(params, "color"); // empty string clears the tag
+	obs_source_t *sceneSource = ResolveTargetScene(params); // addref'd
+	if (!sceneSource) {
+		error = "no scene";
+		return false;
+	}
+	obs_scene_t *scene = obs_scene_from_source(sceneSource);
+	obs_sceneitem_t *item = FindSceneItem(scene, id);
+	if (!item) {
+		obs_source_release(sceneSource);
+		error = "no scene item with id " + std::to_string(id);
+		return false;
+	}
+	// obs_sceneitem_get_private_settings returns an addref'd ref; OBSDataAutoRelease releases it.
+	OBSDataAutoRelease priv = obs_sceneitem_get_private_settings(item);
+	obs_data_set_string(priv, "color", color.c_str());
+	EmitSceneItemsChanged(sceneSource, ResolveCanvasTarget(params).uuid);
+	obs_source_release(sceneSource);
+	if (!ResolveCanvasTarget(params).isAdditional) {
+		SceneCollection::Save();
+	}
+	result = json{{"ok", true}};
 	return true;
 }
 
@@ -3003,6 +3043,95 @@ bool MethodSourcesRename(const json &params, json &result, std::string &error)
 	}
 	RecordUndo("Rename", ApplyRename, before, after);
 	result = json{{"id", id}, {"source", name}};
+	return true;
+}
+
+// --- missing files (relink) --------------------------------------------------
+// Mirrors the legacy "Missing Files" dialog (frontend_old/dialogs/
+// OBSMissingFiles + utility/MissingFilesModel): walk every source AND each
+// source's filters, ask each for its obs_missing_files set, and apply a
+// replacement by issuing the missing-file's own callback. We reuse
+// obs_missing_file_issue_callback -- exactly what the legacy saveFiles() calls --
+// rather than the lower-level obs_source_replace_missing_file, because the
+// type-specific replace callback the latter needs is baked into each
+// missing-file entry and is not exposed to callers here.
+
+using MissingFileVisitor = std::function<void(const char *ownerName, obs_missing_file_t *)>;
+
+// Visit each of `src`'s missing files while it (and its container) is alive.
+// obs_source_get_missing_files never returns null (it falls back to an empty set).
+void VisitSourceMissingFiles(obs_source_t *src, const MissingFileVisitor &visit)
+{
+	obs_missing_files_t *files = obs_source_get_missing_files(src);
+	const char *name = obs_source_get_name(src);
+	const size_t count = obs_missing_files_count(files);
+	for (size_t i = 0; i < count; i++) {
+		obs_missing_file_t *f = obs_missing_files_get_file(files, (int)i);
+		visit(name ? name : "", f);
+	}
+	obs_missing_files_destroy(files);
+}
+
+// Walk every source plus each source's filters, applying `visit` to every
+// missing file. Both findMissing and relinkMissing share this so they agree on
+// exactly which entries exist (filter-owned ones included).
+void ForEachMissingFile(const MissingFileVisitor &visit)
+{
+	obs_enum_all_sources(
+		[](void *param, obs_source_t *source) -> bool {
+			const auto &v = *static_cast<const MissingFileVisitor *>(param);
+			VisitSourceMissingFiles(source, v);
+			obs_source_enum_filters(
+				source,
+				[](obs_source_t *, obs_source_t *filter, void *p) {
+					VisitSourceMissingFiles(filter, *static_cast<const MissingFileVisitor *>(p));
+				},
+				param);
+			return true;
+		},
+		const_cast<MissingFileVisitor *>(&visit));
+}
+
+bool MethodSourcesFindMissing(const json & /*params*/, json &result, std::string & /*error*/)
+{
+	json arr = json::array();
+	ForEachMissingFile([&arr](const char *owner, obs_missing_file_t *f) {
+		const char *path = obs_missing_file_get_path(f);
+		arr.push_back(json{{"source", owner}, {"originalPath", path ? path : ""}});
+	});
+	result = std::move(arr);
+	return true;
+}
+
+bool MethodSourcesRelinkMissing(const json &params, json &result, std::string &error)
+{
+	const std::string source = OptString(params, "source");
+	const std::string originalPath = OptString(params, "originalPath");
+	if (source.empty() || originalPath.empty()) {
+		error = "sources.relinkMissing requires 'source' and 'originalPath'";
+		return false;
+	}
+	const std::string newPath = OptString(params, "newPath"); // empty string clears the reference
+
+	bool applied = false;
+	ForEachMissingFile([&](const char *owner, obs_missing_file_t *f) {
+		if (applied) {
+			return;
+		}
+		const char *path = obs_missing_file_get_path(f);
+		if (source == owner && path && originalPath == path) {
+			obs_missing_file_issue_callback(f, newPath.c_str());
+			applied = true;
+		}
+	});
+	if (!applied) {
+		error = "sources.relinkMissing: no missing file matched the given 'source'/'originalPath'";
+		return false;
+	}
+
+	SceneCollection::Save();
+	EmitScenesChanged(std::string());
+	result = json{{"ok", true}};
 	return true;
 }
 
@@ -5229,6 +5358,131 @@ bool MethodAudioSetAdvanced(const json &params, json &result, std::string &error
 	return true;
 }
 
+// --- per-source deinterlacing ------------------------------------------------
+// Token <-> enum maps shared by sources.getDeinterlace (enum->token) and
+// sources.setDeinterlace (token->enum), mirroring kScaleFilters/kMonitoringTypes.
+// The mode/field-order live on the source and serialize with the scene
+// collection (libobs persists "deinterlace_mode"/"deinterlace_field_order").
+
+static const std::pair<obs_deinterlace_mode, const char *> kDeinterlaceModes[] = {
+	{OBS_DEINTERLACE_MODE_DISABLE, "disable"},     {OBS_DEINTERLACE_MODE_DISCARD, "discard"},
+	{OBS_DEINTERLACE_MODE_RETRO, "retro"},         {OBS_DEINTERLACE_MODE_BLEND, "blend"},
+	{OBS_DEINTERLACE_MODE_BLEND_2X, "blend2x"},    {OBS_DEINTERLACE_MODE_LINEAR, "linear"},
+	{OBS_DEINTERLACE_MODE_LINEAR_2X, "linear2x"},  {OBS_DEINTERLACE_MODE_YADIF, "yadif"},
+	{OBS_DEINTERLACE_MODE_YADIF_2X, "yadif2x"},
+};
+
+static const std::pair<obs_deinterlace_field_order, const char *> kDeinterlaceFieldOrders[] = {
+	{OBS_DEINTERLACE_FIELD_ORDER_TOP, "top"},
+	{OBS_DEINTERLACE_FIELD_ORDER_BOTTOM, "bottom"},
+};
+
+const char *DeinterlaceModeToToken(obs_deinterlace_mode mode)
+{
+	for (const auto &e : kDeinterlaceModes) {
+		if (e.first == mode) {
+			return e.second;
+		}
+	}
+	return "disable";
+}
+
+bool DeinterlaceModeFromToken(const std::string &token, obs_deinterlace_mode &out)
+{
+	for (const auto &e : kDeinterlaceModes) {
+		if (token == e.second) {
+			out = e.first;
+			return true;
+		}
+	}
+	return false;
+}
+
+const char *DeinterlaceFieldOrderToToken(obs_deinterlace_field_order order)
+{
+	for (const auto &e : kDeinterlaceFieldOrders) {
+		if (e.first == order) {
+			return e.second;
+		}
+	}
+	return "top";
+}
+
+bool DeinterlaceFieldOrderFromToken(const std::string &token, obs_deinterlace_field_order &out)
+{
+	for (const auto &e : kDeinterlaceFieldOrders) {
+		if (token == e.second) {
+			out = e.first;
+			return true;
+		}
+	}
+	return false;
+}
+
+// Reuses ResolveAudioSource (a misnomer -- it resolves any source by uuid|name).
+json BuildDeinterlace(obs_source_t *s)
+{
+	return json{
+		{"mode", DeinterlaceModeToToken(obs_source_get_deinterlace_mode(s))},
+		{"fieldOrder", DeinterlaceFieldOrderToToken(obs_source_get_deinterlace_field_order(s))},
+	};
+}
+
+bool MethodSourcesGetDeinterlace(const json &params, json &result, std::string &error)
+{
+	OBSSourceAutoRelease s = ResolveAudioSource(params);
+	if (!s) {
+		error = "sources.getDeinterlace: no source for the given 'source'/'uuid'";
+		return false;
+	}
+	result = BuildDeinterlace(s);
+	return true;
+}
+
+bool MethodSourcesSetDeinterlace(const json &params, json &result, std::string &error)
+{
+	if (!params.is_object()) {
+		error = "sources.setDeinterlace expects an object";
+		return false;
+	}
+	OBSSourceAutoRelease s = ResolveAudioSource(params);
+	if (!s) {
+		error = "sources.setDeinterlace: no source for the given 'source'/'uuid'";
+		return false;
+	}
+
+	// Validate both tokens before applying so an invalid value rejects the whole
+	// request -- the mutation stays atomic.
+	bool setMode = false;
+	obs_deinterlace_mode mode = OBS_DEINTERLACE_MODE_DISABLE;
+	if (auto it = params.find("mode"); it != params.end() && it->is_string()) {
+		if (!DeinterlaceModeFromToken(it->get<std::string>(), mode)) {
+			error = "sources.setDeinterlace: unknown mode '" + it->get<std::string>() + "'";
+			return false;
+		}
+		setMode = true;
+	}
+	bool setField = false;
+	obs_deinterlace_field_order fieldOrder = OBS_DEINTERLACE_FIELD_ORDER_TOP;
+	if (auto it = params.find("fieldOrder"); it != params.end() && it->is_string()) {
+		if (!DeinterlaceFieldOrderFromToken(it->get<std::string>(), fieldOrder)) {
+			error = "sources.setDeinterlace: unknown fieldOrder '" + it->get<std::string>() + "'";
+			return false;
+		}
+		setField = true;
+	}
+
+	if (setMode) {
+		obs_source_set_deinterlace_mode(s, mode);
+	}
+	if (setField) {
+		obs_source_set_deinterlace_field_order(s, fieldOrder);
+	}
+
+	result = BuildDeinterlace(s);
+	return true;
+}
+
 // List the available audio monitoring output devices. Stock OBS prepends a
 // "Default" entry (id "default") before enumerating the real devices.
 bool MethodAudioListMonitorDevices(const json & /*params*/, json &result, std::string & /*error*/)
@@ -6632,6 +6886,7 @@ void Init()
 		{"sceneItems.setTransform", MethodSceneItemsSetTransform},
 		{"sceneItems.transformAction", MethodSceneItemsTransformAction},
 		{"sceneItems.setScaleFilter", MethodSceneItemsSetScaleFilter},
+		{"sceneItems.setColor", MethodSceneItemsSetColor},
 		{"sceneItems.group", MethodSceneItemsGroup},
 		{"sceneItems.ungroup", MethodSceneItemsUngroup},
 		{"sourceTypes.list", MethodSourceTypesList},
@@ -6640,6 +6895,10 @@ void Init()
 		{"sources.addExisting", MethodSourcesAddExisting},
 		{"sources.duplicate", MethodSourcesDuplicate},
 		{"sources.rename", MethodSourcesRename},
+		{"sources.findMissing", MethodSourcesFindMissing},
+		{"sources.relinkMissing", MethodSourcesRelinkMissing},
+		{"sources.getDeinterlace", MethodSourcesGetDeinterlace},
+		{"sources.setDeinterlace", MethodSourcesSetDeinterlace},
 		{"properties.get", MethodPropertiesGet},
 		{"properties.set", MethodPropertiesSet},
 		{"properties.button", MethodPropertiesButton},
