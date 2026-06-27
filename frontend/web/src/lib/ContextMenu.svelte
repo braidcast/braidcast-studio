@@ -6,6 +6,11 @@
     action?: () => void;
     danger?: boolean;
     disabled?: boolean;
+    // A checkable item renders a leading ✓ when `checked`. `action` toggles it.
+    checked?: boolean;
+    // A submenu item: hovering opens a flyout of these children. `action` is
+    // ignored when `children` is present.
+    children?: (ContextMenuItem | null)[];
   }
 </script>
 
@@ -14,12 +19,27 @@
   // clamped to stay on screen. Mirrors Menu.svelte's dropdown look (same tokens,
   // same box-shadow). Auto-closes on outside click (deferred so the opening
   // right-click doesn't dismiss it), Escape, resize, and scroll.
+  import Self from "./ContextMenu.svelte";
+
   let {
     x,
     y,
     items,
     onClose,
   }: { x: number; y: number; items: (ContextMenuItem | null)[]; onClose: () => void } = $props();
+
+  // Reserve the leading tick gutter only when the menu has at least one checkable
+  // item, so plain flat menus render with their original left padding unchanged.
+  const hasCheckable = $derived(items.some((it) => it && "checked" in it));
+
+  let openSub = $state<number | null>(null);
+  let subPos = $state<{ x: number; y: number }>({ x: 0, y: 0 });
+
+  function openSubmenu(i: number, el: HTMLElement) {
+    const r = el.getBoundingClientRect();
+    subPos = { x: r.right - 2, y: r.top };
+    openSub = i;
+  }
 
   let menuEl = $state<HTMLDivElement | undefined>();
   // Set once by the measure effect below (clamped into the viewport). Hidden until
@@ -93,22 +113,45 @@
   {#each items as item, i (item ? item.label : "div-" + i)}
     {#if item === null}
       <div class="divider"></div>
+    {:else if item.children}
+      <div
+        class="item submenu"
+        class:disabled={item.disabled}
+        role="menuitem"
+        tabindex="-1"
+        aria-haspopup="true"
+        onmouseenter={(e) => openSubmenu(i, e.currentTarget as HTMLElement)}
+      >
+        {#if hasCheckable}
+          <span class="tick"></span>
+        {/if}
+        <span class="lbl">{item.label}</span>
+        <span class="arrow">▸</span>
+      </div>
     {:else}
       <button
         class="item"
         class:disabled={item.disabled}
         class:danger={item.danger}
-        role="menuitem"
+        role="menuitemcheckbox"
+        aria-checked={item.checked ? "true" : "false"}
         onclick={(e) => {
           e.stopPropagation();
           run(item);
         }}
       >
-        {item.label}
+        {#if hasCheckable}
+          <span class="tick">{item.checked ? "✓" : ""}</span>
+        {/if}
+        <span class="lbl">{item.label}</span>
       </button>
     {/if}
   {/each}
 </div>
+
+{#if openSub !== null && items[openSub] && items[openSub]!.children}
+  <Self x={subPos.x} y={subPos.y} items={items[openSub]!.children!} onClose={onClose} />
+{/if}
 
 <style>
   .context-menu {
@@ -132,6 +175,33 @@
     font-size: 11px;
     letter-spacing: var(--letter-spacing);
     text-transform: var(--label-case);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .item.submenu {
+    justify-content: space-between;
+    cursor: default;
+  }
+  .item.submenu:hover {
+    background: var(--color-base);
+  }
+  .tick {
+    flex: 0 0 12px;
+    text-align: center;
+    color: var(--color-accent);
+  }
+  .lbl {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .arrow {
+    flex: 0 0 auto;
+    color: var(--color-dim);
+    font-size: 9px;
   }
   .item:hover {
     background: var(--color-base);
