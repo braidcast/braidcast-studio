@@ -118,7 +118,7 @@
 >
   {#each items as item, i (item ? item.label : "div-" + i)}
     {#if item === null}
-      <div class="divider"></div>
+      <div class="divider" role="separator" onmouseenter={() => (openSub = null)}></div>
     {:else if item.children}
       <div
         class="item submenu"
@@ -141,6 +141,7 @@
         class:danger={item.danger}
         role={"checked" in item ? "menuitemcheckbox" : "menuitem"}
         aria-checked={"checked" in item ? (item.checked ? "true" : "false") : undefined}
+        onmouseenter={() => (openSub = null)}
         onclick={(e) => {
           e.stopPropagation();
           run(item);
