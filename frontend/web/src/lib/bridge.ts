@@ -42,9 +42,30 @@ export interface SceneItem {
   locked: boolean;
   scaleFilter: string;
   interactive?: boolean;
+  // Per-item color tag (hex like "#RRGGBB"; "" when unset).
+  color: string;
 }
 
 export type ReorderDirection = "up" | "down" | "top" | "bottom";
+
+// Per-source deinterlacing mode + field order tokens (sources.get/setDeinterlace).
+export type DeinterlaceMode =
+  | "disable"
+  | "discard"
+  | "retro"
+  | "blend"
+  | "blend2x"
+  | "linear"
+  | "linear2x"
+  | "yadif"
+  | "yadif2x";
+export type DeinterlaceFieldOrder = "top" | "bottom";
+
+/** One source whose backing media file can no longer be found (sources.findMissing). */
+export interface MissingFile {
+  source: string;
+  originalPath: string;
+}
 
 /** A creatable input source type as reported by sourceTypes.list. */
 export interface SourceType {
@@ -784,6 +805,9 @@ export interface ObsMethods {
   "sceneItems.setVisible": { id: number; visible: boolean };
   "sceneItems.setLocked": { id: number; locked: boolean };
   "sceneItems.setScaleFilter": Record<string, never>;
+  // Set a per-item color tag ({ scene, id, canvas?, color }; color "" clears it).
+  // Emits sceneItems.changed.
+  "sceneItems.setColor": { ok: true };
   "sceneItems.remove": { removed: number };
   "sceneItems.reorder": { id: number; direction: ReorderDirection };
   // Group selected items into a new group / dissolve a group (neither is undoable yet).
@@ -808,6 +832,15 @@ export interface ObsMethods {
   "sources.duplicate": { id: number; source: string };
   // Open a native Interact window forwarding input to an interactive source.
   "sources.interact": { ok: boolean; interactId: number };
+  // Missing media repair. findMissing lists sources whose backing file is gone;
+  // relinkMissing ({ source, originalPath, newPath }) repoints one and emits
+  // scenes.changed.
+  "sources.findMissing": MissingFile[];
+  "sources.relinkMissing": { ok: true };
+  // Per-source deinterlacing ({ source } / { source, mode?, fieldOrder? }). Both
+  // echo the applied mode + field order.
+  "sources.getDeinterlace": { mode: DeinterlaceMode; fieldOrder: DeinterlaceFieldOrder };
+  "sources.setDeinterlace": { mode: DeinterlaceMode; fieldOrder: DeinterlaceFieldOrder };
   // Generic obs_properties renderer (4.3.2).
   "properties.get": PropertiesResult;
   "properties.set": PropertiesResult;

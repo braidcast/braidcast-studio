@@ -1,5 +1,6 @@
 <script lang="ts">
   import { obs, type GeneralSettings } from "./bridge";
+  import { openMissingFiles } from "./missingFilesOpener.svelte";
 
   // General app settings, live-applied (the page model has no Apply boundary):
   // each control change pushes only its changed key via settings.setGeneral and
@@ -230,6 +231,12 @@
     <p class="dim note">Used by the OBS Studio importer.</p>
   </section>
 
+  <section class="group">
+    <h4>Sources</h4>
+    <button class="action" onclick={() => openMissingFiles()}>Find Missing Files…</button>
+    <p class="dim note">Locate and relink sources whose media file has moved or been renamed.</p>
+  </section>
+
   {#if error}<p class="error">{error}</p>{/if}
 {/if}
 
@@ -297,6 +304,20 @@
   .dim {
     color: var(--color-muted);
     margin: 0;
+  }
+  .action {
+    height: auto;
+    padding: 7px 12px;
+    font-family: var(--font-ui);
+    font-size: 12px;
+    border: var(--border-weight) solid var(--color-border);
+    background: transparent;
+    color: var(--color-text);
+    cursor: pointer;
+  }
+  .action:hover {
+    border-color: var(--color-accent);
+    color: var(--color-accent);
   }
   .hint {
     font-size: 12px;

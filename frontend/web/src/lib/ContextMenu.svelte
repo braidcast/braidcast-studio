@@ -8,6 +8,9 @@
     disabled?: boolean;
     // A checkable item renders a leading ✓ when `checked`. `action` toggles it.
     checked?: boolean;
+    // A color-tag item renders a leading filled square in this color (empty string
+    // = a hollow "none" square). Purely cosmetic; combines with `checked`.
+    swatch?: string;
     // A submenu item: hovering opens a flyout of these children. `action` is
     // ignored when `children` is present.
     children?: (ContextMenuItem | null)[];
@@ -150,6 +153,9 @@
         {#if hasCheckable}
           <span class="tick">{item.checked ? "✓" : ""}</span>
         {/if}
+        {#if "swatch" in item}
+          <span class="swatch" class:none={!item.swatch} style:background={item.swatch || "transparent"}></span>
+        {/if}
         <span class="lbl">{item.label}</span>
       </button>
     {/if}
@@ -197,6 +203,15 @@
     flex: 0 0 12px;
     text-align: center;
     color: var(--color-accent);
+  }
+  .swatch {
+    flex: 0 0 10px;
+    width: 10px;
+    height: 10px;
+    border: var(--border-weight) solid var(--color-border);
+  }
+  .swatch.none {
+    background: transparent;
   }
   .lbl {
     flex: 1;

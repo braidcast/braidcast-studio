@@ -18,6 +18,9 @@
   import { openTransform } from "../transformOpener.svelte";
   import { prefetchMonitors, projectorItems } from "../projectorMenu";
   import { scaleFilterMenu } from "../scaleFilterMenu";
+  import { deinterlaceMenu } from "../deinterlaceMenu";
+  import { colorMenu } from "../colorMenu";
+  import type { DeinterlaceMode, DeinterlaceFieldOrder } from "../bridge";
   import { defaultCanvas } from "./defaultCanvasStore.svelte";
 
   // A composite, inseparable dock for one NON-DEFAULT canvas (hierarchy-model.html
@@ -397,11 +400,24 @@
     }
   }
 
-  function openSourceMenu(e: MouseEvent, item: SceneItem, idx: number) {
+  // Deinterlacing is a source-level property (no canvas), fetched just-in-time when
+  // the menu opens. Falls back to disabled state on error.
+  async function fetchDeint(source: string): Promise<{ mode: DeinterlaceMode; fieldOrder: DeinterlaceFieldOrder }> {
+    try {
+      return await obs.call("sources.getDeinterlace", { source });
+    } catch {
+      return { mode: "disable", fieldOrder: "top" };
+    }
+  }
+
+  async function openSourceMenu(e: MouseEvent, item: SceneItem, idx: number) {
     e.preventDefault();
+    const x = e.clientX;
+    const y = e.clientY;
+    const deint = item.source ? await fetchDeint(item.source) : { mode: "disable" as const, fieldOrder: "top" as const };
     menu = {
-      x: e.clientX,
-      y: e.clientY,
+      x,
+      y,
       items: [
         { label: "Filters", disabled: !item.source, action: () => item.source && openFilters(item.source) },
         ...(item.interactive && item.source
@@ -419,6 +435,22 @@
         scaleFilterMenu(item.scaleFilter, (filter) =>
           void obs
             .call("sceneItems.setScaleFilter", { canvas: canvasUuid, scene: currentScene, id: item.id, filter })
+            .catch(report),
+        ),
+        ...(item.source
+          ? [
+              deinterlaceMenu(
+                deint.mode,
+                deint.fieldOrder,
+                (mode) => void obs.call("sources.setDeinterlace", { source: item.source, mode }).catch(report),
+                (fieldOrder) =>
+                  void obs.call("sources.setDeinterlace", { source: item.source, fieldOrder }).catch(report),
+              ),
+            ]
+          : []),
+        colorMenu(item.color, (color) =>
+          void obs
+            .call("sceneItems.setColor", { canvas: canvasUuid, scene: currentScene, id: item.id, color })
             .catch(report),
         ),
         null,
@@ -451,16 +483,20 @@
   // ---- preview right-click menu (this canvas's hit scene item) ---------------
   // No Properties (matches the row menu, which omits it for additional-canvas
   // private sources). Every call carries this canvas's uuid + scene + item id.
-  function buildPreviewItems(p: {
-    scene: string | null;
-    id: number | null;
-    source: string | null;
-    visible: boolean;
-    locked: boolean;
-  }): (ContextMenuItem | null)[] {
+  function buildPreviewItems(
+    p: {
+      scene: string | null;
+      id: number | null;
+      source: string | null;
+      visible: boolean;
+      locked: boolean;
+    },
+    deint: { mode: DeinterlaceMode; fieldOrder: DeinterlaceFieldOrder },
+  ): (ContextMenuItem | null)[] {
     const call = (method: string, params: Record<string, unknown>) =>
       obs.call(method, { canvas: canvasUuid, scene: p.scene, id: p.id, ...params }).catch(report);
     const currentFilter = items.find((i) => i.id === p.id)?.scaleFilter ?? "disable";
+    const currentColor = items.find((i) => i.id === p.id)?.color ?? "";
     return [
       {
         label: "Edit Transform",
@@ -469,6 +505,17 @@
           openTransform({ canvas: canvasUuid, scene: p.scene ?? undefined, id: p.id }, p.source ?? "(unnamed)"),
       },
       scaleFilterMenu(currentFilter, (filter) => void call("sceneItems.setScaleFilter", { filter })),
+      ...(p.source
+        ? [
+            deinterlaceMenu(
+              deint.mode,
+              deint.fieldOrder,
+              (mode) => void obs.call("sources.setDeinterlace", { source: p.source, mode }).catch(report),
+              (fieldOrder) => void obs.call("sources.setDeinterlace", { source: p.source, fieldOrder }).catch(report),
+            ),
+          ]
+        : []),
+      colorMenu(currentColor, (color) => void call("sceneItems.setColor", { color })),
       null,
       { label: p.visible ? "Hide" : "Show", action: () => void call("sceneItems.setVisible", { visible: !p.visible }) },
       { label: p.locked ? "Unlock" : "Lock", action: () => void call("sceneItems.setLocked", { locked: !p.locked }) },
@@ -567,7 +614,14 @@
       }
       const r = previewEl.getBoundingClientRect();
       const dpr = window.devicePixelRatio || 1;
-      menu = { x: r.left + p.x / dpr, y: r.top + p.y / dpr, items: buildPreviewItems(p), suspendOverlay: true };
+      const x = r.left + p.x / dpr;
+      const y = r.top + p.y / dpr;
+      void (async () => {
+        const deint = p.source
+          ? await fetchDeint(p.source)
+          : { mode: "disable" as const, fieldOrder: "top" as const };
+        menu = { x, y, items: buildPreviewItems(p, deint), suspendOverlay: true };
+      })();
     });
 
     return () => {
@@ -761,7 +815,8 @@
             class="es-row src"
             class:on={item.id === selectedId}
             class:hidden-src={!item.visible}
-            oncontextmenu={(e) => openSourceMenu(e, item, idx)}
+            style:box-shadow={item.color ? `inset 3px 0 0 ${item.color}` : null}
+            oncontextmenu={(e) => void openSourceMenu(e, item, idx)}
           >
             <button
               class="es-eye"

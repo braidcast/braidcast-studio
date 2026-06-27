@@ -17,6 +17,8 @@
   import { advAudioOpener, closeAdvAudio } from "./lib/advAudioOpener.svelte";
   import AboutDialog from "./lib/AboutDialog.svelte";
   import { aboutOpen, closeAbout } from "./lib/aboutOpener.svelte";
+  import MissingFilesDialog from "./lib/MissingFilesDialog.svelte";
+  import { missingFilesOpen, closeMissingFiles } from "./lib/missingFilesOpener.svelte";
   import { undoStore } from "./lib/undoStore.svelte";
   import { obs } from "./lib/bridge";
   import { clipboard } from "./lib/clipboardStore.svelte";
@@ -111,6 +113,10 @@
 
 {#if aboutOpen.open}
   <AboutDialog onClose={closeAbout} />
+{/if}
+
+{#if missingFilesOpen.open}
+  <MissingFilesDialog onClose={closeMissingFiles} />
 {/if}
 
 <style>

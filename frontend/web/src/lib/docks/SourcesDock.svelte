@@ -12,6 +12,9 @@
   import { openTransform } from "../transformOpener.svelte";
   import { prefetchMonitors, projectorItems } from "../projectorMenu";
   import { scaleFilterMenu } from "../scaleFilterMenu";
+  import { deinterlaceMenu } from "../deinterlaceMenu";
+  import { colorMenu } from "../colorMenu";
+  import type { DeinterlaceMode, DeinterlaceFieldOrder } from "../bridge";
 
   let {}: Record<string, unknown> = $props();
 
@@ -267,11 +270,24 @@
     }
   }
 
-  function openMenu(e: MouseEvent, item: SceneItem, idx: number) {
+  // Deinterlacing lives on the source (not the scene item), so it isn't in the row
+  // data; fetch it just-in-time when the menu opens. Falls back to disabled state.
+  async function fetchDeint(source: string): Promise<{ mode: DeinterlaceMode; fieldOrder: DeinterlaceFieldOrder }> {
+    try {
+      return await obs.call("sources.getDeinterlace", { source });
+    } catch {
+      return { mode: "disable", fieldOrder: "top" };
+    }
+  }
+
+  async function openMenu(e: MouseEvent, item: SceneItem, idx: number) {
     e.preventDefault();
+    const x = e.clientX;
+    const y = e.clientY;
+    const deint = item.source ? await fetchDeint(item.source) : { mode: "disable" as const, fieldOrder: "top" as const };
     menu = {
-      x: e.clientX,
-      y: e.clientY,
+      x,
+      y,
       items: [
         { label: "Properties", action: () => openProperties(item) },
         { label: "Filters", disabled: !item.source, action: () => item.source && openFilters(item.source) },
@@ -285,6 +301,20 @@
         { label: "Rename", action: () => beginRename(item) },
         scaleFilterMenu(item.scaleFilter, (filter) =>
           void obs.call("sceneItems.setScaleFilter", { scene: currentScene, id: item.id, filter }).catch(report),
+        ),
+        ...(item.source
+          ? [
+              deinterlaceMenu(
+                deint.mode,
+                deint.fieldOrder,
+                (mode) => void obs.call("sources.setDeinterlace", { source: item.source, mode }).catch(report),
+                (fieldOrder) =>
+                  void obs.call("sources.setDeinterlace", { source: item.source, fieldOrder }).catch(report),
+              ),
+            ]
+          : []),
+        colorMenu(item.color, (color) =>
+          void obs.call("sceneItems.setColor", { scene: currentScene, id: item.id, color }).catch(report),
         ),
         null,
         { label: "Copy", disabled: !item.source, action: () => copySource(item) },
@@ -341,7 +371,8 @@
           class="dock-row"
           class:sel={item.id === selectedItemId}
           class:dimmed={!item.visible}
-          oncontextmenu={(e) => openMenu(e, item, idx)}
+          style:box-shadow={item.color ? `inset 3px 0 0 ${item.color}` : null}
+          oncontextmenu={(e) => void openMenu(e, item, idx)}
         >
           <button class="dock-icon" title={item.visible ? "Hide" : "Show"} onclick={() => void toggleVisible(item)}>
             {item.visible ? "👁" : "🚫"}
