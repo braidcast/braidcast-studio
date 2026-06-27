@@ -226,16 +226,16 @@
   {:else}
     <ul class="grid">
       {#each canvases as c (c.uuid)}
+        {@const portrait = c.baseHeight > c.baseWidth}
         <li class="tile">
-          <button class="tile-body" onclick={() => openEdit(c)}>
-            <div class="aspect-frame">
-              <div
-                class="aspect-inner"
-                style:aspect-ratio="{c.baseWidth} / {c.baseHeight}"
-                style:width={c.baseWidth >= c.baseHeight ? "100%" : "auto"}
-                style:height={c.baseWidth >= c.baseHeight ? "auto" : "100%"}
-              ></div>
+          <button class="preview-box" onclick={() => openEdit(c)} title="Edit “{c.name}”">
+            <div class="preview-square">
+              <div class="preview-frame" class:tall={portrait} style:aspect-ratio="{c.baseWidth} / {c.baseHeight}">
+                <span class="res-chip">{c.baseWidth} × {c.baseHeight}</span>
+              </div>
             </div>
+          </button>
+          <div class="tile-foot">
             <div class="info">
               <div class="line1">
                 <span class="name">{c.name}</span>
@@ -243,23 +243,15 @@
                 <span class="ratio">{ratioLabel(c.baseWidth, c.baseHeight)}</span>
               </div>
               <div class="line2">
-                {c.baseWidth} × {c.baseHeight} @ {fpsText(c)} fps
-                <span class="sep">·</span>
-                {encName(videoEncoders, c.videoEncoder)} / {encName(audioEncoders, c.audioEncoder)}
+                {fpsText(c)} fps · {encName(videoEncoders, c.videoEncoder)} / {encName(audioEncoders, c.audioEncoder)}
               </div>
             </div>
-          </button>
-          <div class="rowactions">
-            <button class="mini" title="Video encoder settings" onclick={() => toggleExpand(c.uuid, "video")}
-              >V⚙</button
-            >
-            <button class="mini" title="Audio encoder settings" onclick={() => toggleExpand(c.uuid, "audio")}
-              >A⚙</button
-            >
-            <button class="mini" title="Edit" onclick={() => openEdit(c)}>✎</button>
-            <button class="mini danger" title="Remove" disabled={c.isDefault} onclick={() => void remove(c)}
-              >🗑</button
-            >
+            <div class="rowactions">
+              <button class="mini" title="Video encoder settings" onclick={() => toggleExpand(c.uuid, "video")}>V⚙</button>
+              <button class="mini" title="Audio encoder settings" onclick={() => toggleExpand(c.uuid, "audio")}>A⚙</button>
+              <button class="mini" title="Edit" onclick={() => openEdit(c)}>✎</button>
+              <button class="mini danger" title="Remove" disabled={c.isDefault} onclick={() => void remove(c)}>🗑</button>
+            </div>
           </div>
         </li>
       {/each}
@@ -377,55 +369,72 @@
     margin: 0;
     padding: 0;
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-    gap: 12px;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 14px;
   }
   .tile {
     display: flex;
     flex-direction: column;
-    border: 1px solid var(--border);
-    background: var(--bg-sunken);
+    border: var(--border-weight) solid var(--color-border);
+    background: var(--color-surface);
   }
-  .tile-body {
-    display: flex;
-    align-items: flex-start;
-    gap: 12px;
-    width: 100%;
-    height: auto;
-    padding: 12px;
-    text-align: left;
-    background: none;
-    border: none;
-    color: inherit;
-    cursor: pointer;
-  }
-  .tile-body:hover {
-    background: var(--bg-raised);
-  }
-  .aspect-frame {
-    flex: 0 0 auto;
-    width: 56px;
-    height: 56px;
+  .preview-box {
     display: flex;
     align-items: center;
     justify-content: center;
-    border: 1px solid var(--color-border);
+    width: 100%;
+    height: 168px;
+    padding: 18px;
     background: var(--color-base);
+    border: 0;
+    border-bottom: var(--border-weight) solid var(--color-border);
+    cursor: pointer;
   }
-  .aspect-inner {
-    max-width: 100%;
+  .preview-box:hover {
+    background: color-mix(in srgb, var(--color-text) 3%, var(--color-base));
+  }
+  .preview-square {
+    width: 132px;
+    height: 132px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .preview-frame {
+    position: relative;
+    width: 100%;
+    height: auto;
     max-height: 100%;
-    border: 1px solid var(--color-border);
+    border: var(--border-weight) solid var(--color-border);
     background: var(--color-surface-2);
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
   }
-  .ratio {
-    margin-left: auto;
-    font-family: var(--font-mono, monospace);
-    font-size: 10px;
-    color: var(--text-dim);
+  .preview-frame.tall {
+    width: auto;
+    height: 100%;
+    max-width: 100%;
+  }
+  .res-chip {
+    position: absolute;
+    top: 5px;
+    left: 5px;
+    font-family: var(--font-mono);
+    font-size: 8px;
+    letter-spacing: 0.04em;
+    color: var(--color-dim);
+    background: color-mix(in srgb, var(--color-base) 70%, transparent);
+    padding: 1px 4px;
+    white-space: nowrap;
+  }
+  .tile-foot {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 12px 12px 10px;
   }
   .info {
     min-width: 0;
+    flex: 1;
   }
   .line1 {
     display: flex;
@@ -434,32 +443,41 @@
   }
   .name {
     font-size: 13px;
-    color: var(--text);
+    color: var(--color-text);
     font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .badge {
-    font-size: 10px;
+    flex: 0 0 auto;
+    font-size: 9px;
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    color: var(--color-accent-contrast);
-    background: var(--accent);
-    border-radius: 999px;
-    padding: 1px 7px;
+    color: var(--color-accent-ink);
+    background: var(--color-accent);
+    padding: 1px 6px;
+  }
+  .ratio {
+    margin-left: auto;
+    flex: 0 0 auto;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--color-muted);
   }
   .line2 {
     font-size: 11px;
-    color: var(--text-dim);
-    margin-top: 2px;
-  }
-  .sep {
-    margin: 0 4px;
+    color: var(--color-muted);
+    margin-top: 3px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .rowactions {
     display: flex;
     gap: 4px;
     justify-content: flex-end;
-    padding: 8px 10px;
-    border-top: 1px solid var(--border);
+    flex: 0 0 auto;
   }
   .mini {
     background: none;

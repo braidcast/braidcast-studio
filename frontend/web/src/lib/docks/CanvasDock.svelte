@@ -53,6 +53,14 @@
       return;
     }
     const r = previewEl.getBoundingClientRect();
+    // A native overlay HWND sits above CEF and ignores Dockview's tab visibility:
+    // when this dock is tab-stacked in the background (display:none) or collapsed,
+    // its overlay would keep painting at its last rect and bleed over whatever is
+    // now on top. Detect the hidden/zero case and hide the overlay instead.
+    if (!previewEl.offsetParent || r.width < 1 || r.height < 1) {
+      hidePreview();
+      return;
+    }
     obs
       .call("preview.setRect", {
         canvas: canvasUuid,
