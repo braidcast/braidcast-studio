@@ -41,6 +41,12 @@
     openSub = i;
   }
 
+  // A fresh menu (new items array from the caller) starts with no flyout open.
+  $effect(() => {
+    items;
+    openSub = null;
+  });
+
   let menuEl = $state<HTMLDivElement | undefined>();
   // Set once by the measure effect below (clamped into the viewport). Hidden until
   // then so it never flashes at the origin before placement.
