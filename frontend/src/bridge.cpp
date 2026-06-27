@@ -5863,6 +5863,16 @@ bool MethodProjectorOpen(const json &params, json &result, std::string &error)
 		}
 		break;
 	}
+	case ProjectorKind::Multiview: {
+		// canvas is OPTIONAL for a multiview: empty = the Default canvas (global
+		// scenes); a non-empty uuid must name a live additional-canvas mix.
+		canvasUuid = OptString(target, "canvas");
+		if (!canvasUuid.empty() && !ObsBootstrap::CanvasRuntime().Find(canvasUuid)) {
+			error = "no live canvas mix for '" + canvasUuid + "'";
+			return false;
+		}
+		break;
+	}
 	case ProjectorKind::Program:
 		break;
 	}

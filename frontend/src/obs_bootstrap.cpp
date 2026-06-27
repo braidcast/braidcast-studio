@@ -1914,6 +1914,25 @@ void ObsBootstrap::RunProjectorSelfTest()
 		return;
 	}
 	HostLog("[selftest] projector windowed program -> opened id=" + std::to_string(id) + ", closed OK");
+
+	// Open a windowed MULTIVIEW projector for the Default canvas (empty uuid =
+	// global scenes; windowed needs no monitor index, so it works headlessly). This
+	// exercises the scene-snapshot build + label creation + ordered teardown.
+	std::string mvError;
+	const int mvId = Projector::Instance()->Open(ProjectorKind::Multiview, "", "", /*fullscreen=*/false,
+						     /*monitor=*/-1, mvError);
+	if (mvId <= 0) {
+		HostLog("[selftest] projector windowed multiview -> FAILED: " + mvError);
+		return;
+	}
+	const bool mvHasDisplay = Projector::Instance()->HasDisplayForTest(mvId);
+	const bool mvClosed = Projector::Instance()->Close(mvId);
+	if (!mvHasDisplay || !mvClosed) {
+		HostLog("[selftest] projector windowed multiview -> FAILED (hasDisplay=" +
+			std::to_string(mvHasDisplay) + " closed=" + std::to_string(mvClosed) + ")");
+		return;
+	}
+	HostLog("[selftest] projector windowed multiview -> opened id=" + std::to_string(mvId) + ", closed OK");
 }
 
 void ObsBootstrap::RunAudioMixerSelfTest()

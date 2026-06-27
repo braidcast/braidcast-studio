@@ -32,7 +32,7 @@ typedef struct obs_source obs_source_t;
 // target is borrowed and its display is destroyed (DestroyAll) before the canvas
 // mixes are freed.
 
-enum class ProjectorKind { Program, Scene, Source, Canvas };
+enum class ProjectorKind { Program, Scene, Source, Canvas, Multiview };
 
 // Map ProjectorKind <-> its wire string over a single data table (adding a kind
 // is one table row, not a new branch).
@@ -86,6 +86,15 @@ public:
 	// before the display exists or for a zero size. UI thread.
 	void ResizeDisplay(int cx, int cy);
 
+	// Re-resolve a Multiview projector's scene snapshot + labels (the per-cell
+	// targets the render thread reads). UI thread only -- it mutates the State
+	// snapshot under State::mvMutex, so a deleted scene can never reach the render
+	// thread. Cheap when the scene set is unchanged (only the active-scene index
+	// updates); rebuilds the addref'd scene + label vectors when scenes are
+	// added/removed/renamed. A no-op for non-Multiview kinds. Driven by a WM_TIMER
+	// while the window is open, plus an initial call at Create().
+	void RefreshMultiviewSnapshot();
+
 	int Id() const { return projectorId_; }
 	ProjectorKind Kind() const { return kind_; }
 	const std::string &Name() const { return name_; }
@@ -117,6 +126,7 @@ private:
 
 	HWND hwnd_ = nullptr;
 	void *display_ = nullptr; // obs_display_t* (opaque here)
+	bool mvTimerSet_ = false;  // a Multiview refresh WM_TIMER is armed on hwnd_
 };
 
 // Owns the live projectors, each a top-level window. unique_ptr so every window
