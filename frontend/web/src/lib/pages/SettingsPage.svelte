@@ -5,6 +5,7 @@
   import HotkeysTab from "../HotkeysTab.svelte";
   import AudioTab from "../AudioTab.svelte";
   import AppearanceTab from "../AppearanceTab.svelte";
+  import AdvancedTab from "../AdvancedTab.svelte";
   import { settingsNav, setSettingsTab, type SettingsTab } from "../settingsOpener.svelte";
 
   // Full Settings page: header + a 196px left sub-nav + a content pane that renders
@@ -19,6 +20,7 @@
     { id: "audio", label: "Audio" },
     { id: "hotkeys", label: "Hotkeys" },
     { id: "appearance", label: "Appearance" },
+    { id: "advanced", label: "Advanced" },
   ];
 </script>
 
@@ -52,6 +54,8 @@
         <HotkeysTab />
       {:else if settingsNav.tab === "appearance"}
         <AppearanceTab />
+      {:else if settingsNav.tab === "advanced"}
+        <AdvancedTab />
       {/if}
     </div>
   </div>

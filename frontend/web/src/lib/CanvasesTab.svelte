@@ -37,6 +37,28 @@
     { label: "Lanczos", value: "lanczos" },
     { label: "Area", value: "area" },
   ];
+  // Color format/space/range tokens (option VALUES are the exact backend tokens).
+  const colorFormats: { label: string; value: string }[] = [
+    { label: "NV12 (8-bit)", value: "NV12" },
+    { label: "I420 (8-bit)", value: "I420" },
+    { label: "I444 (8-bit)", value: "I444" },
+    { label: "I010 (10-bit)", value: "I010" },
+    { label: "P010 (10-bit)", value: "P010" },
+    { label: "P216 (16-bit)", value: "P216" },
+    { label: "P416 (16-bit)", value: "P416" },
+    { label: "RGB (8-bit)", value: "RGB" },
+  ];
+  const colorSpaces: { label: string; value: string }[] = [
+    { label: "601 (SDR)", value: "601" },
+    { label: "709 (SDR)", value: "709" },
+    { label: "2100PQ (HDR)", value: "2100PQ" },
+    { label: "2100HLG (HDR)", value: "2100HLG" },
+    { label: "sRGB", value: "sRGB" },
+  ];
+  const colorRanges: { label: string; value: string }[] = [
+    { label: "Partial", value: "Partial" },
+    { label: "Full", value: "Full" },
+  ];
 
   let canvases = $state<CanvasInfo[]>([]);
   let videoEncoders = $state<EncoderType[]>([]);
@@ -61,6 +83,10 @@
   let outCustom = $state(false);
   let fVideoEnc = $state("");
   let fAudioEnc = $state("");
+  let fColorFormat = $state("NV12");
+  let fColorSpace = $state("709");
+  let fColorRange = $state("Partial");
+  let fColorUseDefault = $state(false);
   let saving = $state(false);
   let formError = $state<string | null>(null);
 
@@ -149,6 +175,10 @@
     outCustom = false;
     fVideoEnc = videoEncoders[0]?.id ?? "";
     fAudioEnc = audioEncoders[0]?.id ?? "";
+    fColorFormat = "NV12";
+    fColorSpace = "709";
+    fColorRange = "Partial";
+    fColorUseDefault = false;
     formError = null;
     formOpen = true;
   }
@@ -169,6 +199,10 @@
     outCustom = !fOutSameAsBase && !resPresets.some((p) => p.w === c.outputWidth && p.h === c.outputHeight);
     fVideoEnc = c.videoEncoder || videoEncoders[0]?.id || "";
     fAudioEnc = c.audioEncoder || audioEncoders[0]?.id || "";
+    fColorFormat = c.color.format;
+    fColorSpace = c.color.space;
+    fColorRange = c.color.range;
+    fColorUseDefault = c.color.useDefault;
     formError = null;
     formOpen = true;
   }
@@ -180,6 +214,12 @@
   function positiveInt(n: number, max: number): boolean {
     return Number.isInteger(n) && n > 0 && n <= max;
   }
+
+  // The Default canvas has nothing to inherit, so its "use default color" toggle is
+  // hidden; resolve whether the canvas under edit is the Default one (false on add).
+  const editingDefaultCanvas = $derived(
+    editingUuid ? (canvases.find((c) => c.uuid === editingUuid)?.isDefault ?? false) : false,
+  );
 
   const formValid = $derived(
     fName.trim().length > 0 &&
@@ -208,6 +248,7 @@
           scaleType: fScaleType,
           videoEncoder: fVideoEnc || undefined,
           audioEncoder: fAudioEnc || undefined,
+          color: { format: fColorFormat, space: fColorSpace, range: fColorRange, useDefault: fColorUseDefault },
         };
         await obs.call("canvas.update", params);
       } else {
@@ -222,6 +263,7 @@
           scaleType: fScaleType,
           videoEncoder: fVideoEnc || undefined,
           audioEncoder: fAudioEnc || undefined,
+          color: { format: fColorFormat, space: fColorSpace, range: fColorRange, useDefault: fColorUseDefault },
         };
         await obs.call("canvas.create", params);
       }
@@ -450,6 +492,43 @@
         </select>
       </div>
 
+      <div class="field">
+        <span class="flabel">Advanced (Color)</span>
+        {#if !editingDefaultCanvas}
+          <label class="colorcheck">
+            <input type="checkbox" bind:checked={fColorUseDefault} />
+            Use Default canvas color settings
+          </label>
+        {/if}
+      </div>
+
+      <div class="field">
+        <span class="flabel">Color Format</span>
+        <select bind:value={fColorFormat} disabled={fColorUseDefault}>
+          {#each colorFormats as f (f.value)}
+            <option value={f.value}>{f.label}</option>
+          {/each}
+        </select>
+      </div>
+
+      <div class="field">
+        <span class="flabel">Color Space</span>
+        <select bind:value={fColorSpace} disabled={fColorUseDefault}>
+          {#each colorSpaces as cs (cs.value)}
+            <option value={cs.value}>{cs.label}</option>
+          {/each}
+        </select>
+      </div>
+
+      <div class="field">
+        <span class="flabel">Color Range</span>
+        <select bind:value={fColorRange} disabled={fColorUseDefault}>
+          {#each colorRanges as r (r.value)}
+            <option value={r.value}>{r.label}</option>
+          {/each}
+        </select>
+      </div>
+
       {#if formError}<p class="error">{formError}</p>{/if}
 
       <div class="actions">
@@ -671,6 +750,22 @@
     display: flex;
     align-items: center;
     gap: 8px;
+  }
+  .colorcheck {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text-soft);
+    cursor: pointer;
+  }
+  .colorcheck input[type="checkbox"] {
+    width: auto;
+    background: none;
+    border: 0;
+    border-radius: 0;
+    padding: 0;
+    cursor: pointer;
   }
   .x {
     color: var(--text-dim);

@@ -254,6 +254,26 @@ export interface GeneralSettings {
   importerPrompts: boolean;
 }
 
+/** Advanced app settings (process priority, stream delay, auto-reconnect, network,
+ * browser HW accel). A flat object; setAdvanced applies any present subset, persists,
+ * and echoes the full post-apply state. `processPriority` is one of normal/aboveNormal/
+ * high; `bindIP` is "default" or an IP string; the rest are booleans except the three
+ * uints (streamDelaySec, reconnectRetryDelaySec, reconnectMaxRetries). */
+export interface AdvancedSettings {
+  processPriority: string;
+  streamDelayEnabled: boolean;
+  streamDelaySec: number;
+  streamDelayPreserve: boolean;
+  reconnectEnabled: boolean;
+  reconnectRetryDelaySec: number;
+  reconnectMaxRetries: number;
+  bindIP: string;
+  newSocketLoop: boolean;
+  lowLatencyMode: boolean;
+  dynamicBitrate: boolean;
+  browserHwAccel: boolean;
+}
+
 /** A source's advanced audio properties (Advanced Audio Properties dialog).
  * `volumeDb` is null when muted to silence (-inf); `tracks` is the 6 mixer-track
  * enable flags; `balance` is 0..1 (0.5 = center). */
@@ -267,6 +287,20 @@ export interface AdvancedAudio {
 }
 
 // --- canvases (native multistream encode targets, 4.4.1) --------------------
+
+/** A canvas's color/format settings. `format`/`space`/`range` are the libobs
+ * tokens (e.g. format "NV12", space "709", range "Partial"); changing any of the
+ * three is structural (refused while the canvas is live). `sdrWhiteLevel`/
+ * `hdrNominalPeakLevel` persist but have no pipeline effect. `useDefault` (non-
+ * default canvases only) inherits the Default canvas's color settings. */
+export interface CanvasColor {
+  format: string;
+  space: string;
+  range: string;
+  sdrWhiteLevel: number;
+  hdrNominalPeakLevel: number;
+  useDefault: boolean;
+}
 
 /** A canvas as reported by canvas.list / returned by canvas.update. */
 export interface CanvasInfo {
@@ -282,6 +316,7 @@ export interface CanvasInfo {
   scaleType: string;
   videoEncoder: string;
   audioEncoder: string;
+  color: CanvasColor;
   /** True when >=1 enabled output binds this canvas; the canvas panel is shown
    * only when enabled (Default included -- its panel hides when disabled). */
   enabled: boolean;
@@ -299,6 +334,7 @@ export interface CanvasCreateParams {
   scaleType?: string;
   videoEncoder?: string;
   audioEncoder?: string;
+  color?: { format?: string; space?: string; range?: string; useDefault?: boolean };
 }
 
 /** Fields accepted by canvas.update (all but uuid optional; name always allowed). */
@@ -314,6 +350,7 @@ export interface CanvasUpdateParams {
   scaleType?: string;
   videoEncoder?: string;
   audioEncoder?: string;
+  color?: { format?: string; space?: string; range?: string; useDefault?: boolean };
 }
 
 /** An encoder type as reported by encoderTypes.list. */
@@ -777,6 +814,11 @@ export interface ObsMethods {
   // full post-apply state (snapDistance clamped 0..100 server-side).
   "settings.getGeneral": GeneralSettings;
   "settings.setGeneral": GeneralSettings;
+  // Advanced app settings (process priority/stream delay/auto-reconnect/network/
+  // browser HW accel). setAdvanced applies any present subset, persists, and echoes
+  // the full post-apply state.
+  "settings.getAdvanced": AdvancedSettings;
+  "settings.setAdvanced": AdvancedSettings;
   // Canvases (native multistream encode targets, 4.4.1).
   "canvas.list": CanvasInfo[];
   "canvas.create": { uuid: string };
@@ -949,6 +991,8 @@ export interface ObsEvents {
   "settings.audioChanged": AudioSettings;
   // General app settings changed (any setGeneral apply); the full state is pushed.
   "settings.generalChanged": GeneralSettings;
+  // Advanced app settings changed (any setAdvanced apply); the full state is pushed.
+  "settings.advancedChanged": AdvancedSettings;
   "canvas.changed": Record<string, never>;
   "streamProfile.changed": Record<string, never>;
   "outputBinding.changed": Record<string, never>;
