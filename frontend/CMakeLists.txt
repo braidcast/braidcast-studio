@@ -61,6 +61,8 @@ target_sources(
     src/properties_serializer.hpp
     src/obs_bootstrap.cpp
     src/obs_bootstrap.hpp
+    src/obs_importer.cpp
+    src/obs_importer.hpp
     src/GeneralSettings.cpp
     src/GeneralSettings.hpp
     src/AdvancedSettings.cpp
@@ -186,6 +188,7 @@ target_link_options(${_target} PRIVATE "/IGNORE:4199")
 set_source_files_properties(
   src/main.cpp
   src/obs_bootstrap.cpp
+  src/obs_importer.cpp
   src/GeneralSettings.cpp
   src/AdvancedSettings.cpp
   src/bridge.cpp

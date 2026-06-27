@@ -32,6 +32,7 @@
 #include "mcp/McpServer.hpp"
 #include "interact_window.hpp"
 #include "obs_bootstrap.hpp"
+#include "obs_importer.hpp"
 #include "AdvancedSettings.hpp"
 #include "GeneralSettings.hpp"
 #include "preview_window.hpp"
@@ -6735,6 +6736,30 @@ bool MethodCollectionsRemove(const json &params, json &result, std::string &erro
 	return true;
 }
 
+// --- OBS Studio importer (read-only) ----------------------------------------
+//
+// Thin wrappers over ObsImporter, which reads an external obs-studio install
+// strictly read-only and creates NEW fork collections / stream profiles / canvas +
+// audio state. All logic (scan, dependency closure, field mappings, live guard)
+// lives in obs_importer.cpp; the importer emits its own change events.
+
+bool MethodImporterScan(const json &params, json &result, std::string & /*error*/)
+{
+	result = ObsImporter::Scan(OptString(params, "path"));
+	return true;
+}
+
+bool MethodImporterImport(const json &params, json &result, std::string &error)
+{
+	json r = ObsImporter::Import(params);
+	if (!r.value("ok", false)) {
+		error = r.value("error", std::string("import failed"));
+		return false;
+	}
+	result = std::move(r);
+	return true;
+}
+
 // Shared {active, canvas} payload so the virtualCam.* method results and the
 // virtualCam.changed push report an identical shape.
 json VirtualCamStatusJson()
@@ -7252,6 +7277,8 @@ void Init()
 		{"collections.duplicate", MethodCollectionsDuplicate},
 		{"collections.switch", MethodCollectionsSwitch},
 		{"collections.remove", MethodCollectionsRemove},
+		{"importer.scan", MethodImporterScan},
+		{"importer.import", MethodImporterImport},
 		{"sceneItems.list", MethodSceneItemsList},
 		{"sceneItems.setVisible", MethodSceneItemsSetVisible},
 		{"sceneItems.setLocked", MethodSceneItemsSetLocked},
