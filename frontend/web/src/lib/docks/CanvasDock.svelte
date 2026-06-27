@@ -15,6 +15,8 @@
   import { openFilters } from "../filterDialogOpener.svelte";
   import { openTransform } from "../transformOpener.svelte";
   import { prefetchMonitors, projectorItems } from "../projectorMenu";
+  import { defaultCanvas } from "./defaultCanvasStore.svelte";
+  import type { SceneLinkInfo } from "../bridge";
 
   // A composite, inseparable dock for one NON-DEFAULT canvas (hierarchy-model.html
   // §1 right column): an inline preview + this canvas's own scenes + its own
@@ -119,6 +121,45 @@
     obs.call("scenes.setCurrent", { canvas: canvasUuid, name }).catch(report);
   }
 
+  // ---- scene links (which Default scenes each of this canvas's scenes follows) -
+  // Scene links whose canvas is THIS dock's canvas. Drives the row 🔗 indicator
+  // and the submenu's checked state.
+  let myLinks = $state<SceneLinkInfo[]>([]);
+
+  async function loadLinks() {
+    try {
+      const res = await obs.call("sceneLink.list");
+      myLinks = res.links.filter((l) => l.canvas === canvasUuid);
+    } catch {
+      myLinks = [];
+    }
+  }
+
+  // canvasSceneName -> main scene names it follows (resolved, non-empty only).
+  let linksByCanvasScene = $derived.by(() => {
+    const m = new Map<string, string[]>();
+    for (const l of myLinks) {
+      if (!l.canvasSceneName) continue;
+      const arr = m.get(l.canvasSceneName) ?? [];
+      if (l.mainSceneName) arr.push(l.mainSceneName);
+      m.set(l.canvasSceneName, arr);
+    }
+    return m;
+  });
+
+  function isLinked(canvasSceneName: string, mainSceneName: string): boolean {
+    return myLinks.some((l) => l.canvasSceneName === canvasSceneName && l.mainSceneName === mainSceneName);
+  }
+
+  function toggleLink(canvasSceneName: string, mainSceneName: string) {
+    const method = isLinked(canvasSceneName, mainSceneName) ? "sceneLink.clear" : "sceneLink.set";
+    const params =
+      method === "sceneLink.set"
+        ? { mainScene: mainSceneName, canvas: canvasUuid, canvasScene: canvasSceneName }
+        : { mainScene: mainSceneName, canvas: canvasUuid };
+    obs.call(method, params).catch(report);
+  }
+
   // ---- scene rename / remove (scoped to this canvas) -------------------------
   let renamingScene = $state<string | null>(null);
   let renameSceneTo = $state("");
@@ -152,11 +193,20 @@
 
   function openSceneMenu(e: MouseEvent, name: string) {
     e.preventDefault();
+    const linkChildren =
+      defaultCanvas.scenes.length === 0
+        ? [{ label: "(no main scenes)", disabled: true }]
+        : defaultCanvas.scenes.map((ms) => ({
+            label: ms.name,
+            checked: isLinked(name, ms.name),
+            action: () => toggleLink(name, ms.name),
+          }));
     menu = {
       x: e.clientX,
       y: e.clientY,
       items: [
         { label: "Rename", action: () => beginRenameScene(name) },
+        { label: "Link to", children: linkChildren },
         null,
         { label: "Remove", danger: true, disabled: scenes.length <= 1, action: () => removeScene(name) },
       ],
@@ -351,8 +401,10 @@
   // ---- lifecycle -------------------------------------------------------------
   onMount(() => {
     prefetchMonitors();
+    defaultCanvas.start();
     loadCanvasInfo();
     void loadScenes();
+    void loadLinks();
     void (async () => {
       try {
         const res = await obs.call("multistream.status");
@@ -374,8 +426,10 @@
     const offScenes = obs.on("scenes.changed", (p) => {
       if (p.canvas === canvasUuid) {
         void loadScenes();
+        void loadLinks();
       }
     });
+    const offLinks = obs.on("sceneLink.changed", () => void loadLinks());
     const offItems = obs.on("sceneItems.changed", (p) => {
       if (p.canvas === canvasUuid && (!p.scene || p.scene === currentScene)) {
         void loadItems();
@@ -405,6 +459,7 @@
       window.removeEventListener("resize", reportRect);
       window.removeEventListener("scroll", reportRect, true);
       offScenes();
+      offLinks();
       offItems();
       offSel();
       offStatus();
@@ -556,6 +611,12 @@
                 ondblclick={() => beginRenameScene(scene.name)}
                 onclick={() => setCurrentScene(scene.name)}>{scene.name}</button
               >
+              {#if linksByCanvasScene.get(scene.name)?.length}
+                <span
+                  class="link-badge"
+                  title={"Linked to: " + linksByCanvasScene.get(scene.name)!.join(", ")}>🔗</span
+                >
+              {/if}
             {/if}
           </li>
         {/each}
@@ -831,6 +892,13 @@
   .es-row.hidden-src .es-label {
     color: var(--color-muted);
     text-decoration: line-through;
+  }
+  .link-badge {
+    flex: 0 0 auto;
+    font-size: 10px;
+    color: var(--color-dim);
+    cursor: default;
+    margin-left: 2px;
   }
   .es-eye {
     flex: 0 0 auto;
