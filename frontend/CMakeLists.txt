@@ -92,6 +92,8 @@ target_sources(
     src/multistream/StreamProfileStore.hpp
     src/multistream/OutputBindingStore.cpp
     src/multistream/OutputBindingStore.hpp
+    src/multistream/SceneLinkStore.cpp
+    src/multistream/SceneLinkStore.hpp
     src/multistream/MultistreamEngine.cpp
     src/multistream/MultistreamEngine.hpp
     src/multistream/CanvasRuntime.cpp
@@ -185,6 +187,7 @@ set_source_files_properties(
   src/multistream/CanvasStore.cpp
   src/multistream/StreamProfileStore.cpp
   src/multistream/OutputBindingStore.cpp
+  src/multistream/SceneLinkStore.cpp
   src/multistream/MultistreamEngine.cpp
   src/multistream/CanvasRuntime.cpp
   src/multistream/Hotkeys.cpp

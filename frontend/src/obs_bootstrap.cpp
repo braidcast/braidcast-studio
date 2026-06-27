@@ -29,6 +29,7 @@
 #include "mcp/McpServer.hpp"
 #include "multistream/MultistreamEngine.hpp"
 #include "multistream/OutputBindingStore.hpp"
+#include "multistream/SceneLinkStore.hpp"
 #include "multistream/StreamProfileStore.hpp"
 #include "paths.hpp"
 #include "preview_window.hpp"
@@ -242,6 +243,7 @@ void CreateDefaultScene()
 CanvasStore g_canvases;
 StreamProfileStore g_streamProfiles;
 OutputBindingStore g_outputBindings;
+SceneLinkStore g_sceneLinks;
 
 // The scene-collection registry (per-collection scene sets). Loaded + migrated
 // in Start before scenes are restored, so the no-arg SceneCollection::Save/Load
@@ -323,6 +325,7 @@ void LoadMultistreamModel()
 	}
 	g_streamProfiles.Load();
 	g_outputBindings.Load();
+	g_sceneLinks.Load();
 
 	const CanvasDefinition &def = g_canvases.Default();
 	HostLog("[obs] multistream: " + std::to_string(g_canvases.Definitions().size()) +
@@ -361,6 +364,11 @@ StreamProfileStore &ObsBootstrap::StreamProfiles()
 OutputBindingStore &ObsBootstrap::OutputBindings()
 {
 	return g_outputBindings;
+}
+
+SceneLinkStore &ObsBootstrap::SceneLinks()
+{
+	return g_sceneLinks;
 }
 
 ::CanvasRuntime &ObsBootstrap::CanvasRuntime()
@@ -2240,6 +2248,7 @@ void ObsBootstrap::Stop()
 	g_canvases.Clear();
 	g_streamProfiles.Clear();
 	g_outputBindings.Clear();
+	g_sceneLinks.Clear();
 	g_sceneCollections.Clear();
 
 	obs_shutdown();

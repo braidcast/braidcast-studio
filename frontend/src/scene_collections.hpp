@@ -49,6 +49,10 @@ public:
 	// single-file scene path's sibling when no collection is active.
 	std::string ActiveBindingsPath() const;
 
+	// Sibling of the active collection's scene file holding its canvas_scene_links.
+	// scenes/<slug>.json -> scenes/<slug>.scene_links.json
+	std::string ActiveSceneLinksPath() const;
+
 	// Seed a migration record that REUSES an existing scene file in place (no
 	// copy). Used once on first run to adopt the legacy scene_collection.json.
 	// Makes it active and saves the index.

@@ -15,6 +15,7 @@
 class CanvasStore;
 class StreamProfileStore;
 class OutputBindingStore;
+class SceneLinkStore;
 class MultistreamEngine;
 class CanvasRuntime;
 class AudioMonitor;
@@ -44,6 +45,12 @@ StreamProfileStore &StreamProfiles();
 // to output_bindings.json). Owned by the bootstrap; exposed so the bridge can
 // serve output-binding CRUD over it. Valid between Start() and Stop().
 OutputBindingStore &OutputBindings();
+
+// The per-scene-collection scene-link model (main-scene -> per-canvas scene
+// activation map, persisted to scenes/<slug>.scene_links.json). Owned by the
+// bootstrap (loaded in Start, cleared in Stop). Exposed so the bridge can serve
+// scene-link CRUD over it. Valid between Start() and Stop().
+SceneLinkStore &SceneLinks();
 
 // The encode-once / fan-out streaming engine, owned by the bootstrap
 // (constructed in Start after the stores load, torn down in Stop before they

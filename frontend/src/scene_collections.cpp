@@ -67,6 +67,20 @@ std::string BindingsRelFor(const std::string &sceneRel)
 	return base + ".output_bindings.json";
 }
 
+// The scene-links file is a sibling of the scene file: strip a trailing ".json"
+// and append ".scene_links.json" (scenes/<slug>.json ->
+// scenes/<slug>.scene_links.json). Derived from sceneFile so no index migration
+// is needed -- mirrors BindingsRelFor exactly.
+std::string SceneLinksRelFor(const std::string &sceneRel)
+{
+	const std::string suffix = ".json";
+	std::string base = sceneRel;
+	if (base.size() >= suffix.size() && base.compare(base.size() - suffix.size(), suffix.size(), suffix) == 0) {
+		base.erase(base.size() - suffix.size());
+	}
+	return base + ".scene_links.json";
+}
+
 } // namespace
 
 std::string SceneCollections::IndexPath()
@@ -95,6 +109,13 @@ std::string SceneCollections::ActiveBindingsPath() const
 	const SceneCollectionRecord *active = Active();
 	const std::string sceneRel = active ? active->sceneFile : std::string("scene_collection.json");
 	return MultistreamBasicPath(BindingsRelFor(sceneRel).c_str());
+}
+
+std::string SceneCollections::ActiveSceneLinksPath() const
+{
+	const SceneCollectionRecord *active = Active();
+	const std::string sceneRel = active ? active->sceneFile : std::string("scene_collection.json");
+	return MultistreamBasicPath(SceneLinksRelFor(sceneRel).c_str());
 }
 
 std::string SceneCollections::UniqueSceneFileForName(const std::string &name) const
