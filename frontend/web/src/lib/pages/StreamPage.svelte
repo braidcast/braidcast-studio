@@ -254,61 +254,66 @@
           </span>
         </div>
 
-        {#each g.bindings as o (o.bindingUuid)}
-          {@const stat = statByBinding.get(o.bindingUuid)}
-          {@const live = o.state === "live"}
-          {@const h = live && stat ? health(stat.congestionPct) : 0}
-          <div class="row">
-            <span class="mark">{initials(o.profileLabel)}</span>
-
-            <div class="dest-col">
-              <div class="dest-line1">
-                <span class="dest-name">{o.profileLabel}</span>
-                <span class="dest-state" style:color={STATE_COLOR[o.state]} style:background={STATE_TAG_BG[o.state]}
-                  >{titleState(o.state).toUpperCase()}</span
-                >
+        <div class="dest-grid">
+          {#each g.bindings as o (o.bindingUuid)}
+            {@const stat = statByBinding.get(o.bindingUuid)}
+            {@const live = o.state === "live"}
+            {@const h = live && stat ? health(stat.congestionPct) : 0}
+            <div class="dest-tile">
+              <div class="dest-head">
+                <span class="mark">{initials(o.profileLabel)}</span>
+                <div class="dest-col">
+                  <div class="dest-line1">
+                    <span class="dest-name">{o.profileLabel}</span>
+                    <span
+                      class="dest-state"
+                      style:color={STATE_COLOR[o.state]}
+                      style:background={STATE_TAG_BG[o.state]}>{titleState(o.state).toUpperCase()}</span
+                    >
+                  </div>
+                  <div class="dest-sub">{secondary(o, stat)}</div>
+                </div>
               </div>
-              <div class="dest-sub">{secondary(o, stat)}</div>
+
+              <div class="stats-group">
+                <div class="stat-cell">
+                  <span class="stat-k">BITRATE</span>
+                  <span class="stat-v">{live && stat ? (stat.bitrateKbps / 1000).toFixed(1) + " Mb/s" : "—"}</span>
+                </div>
+                <div class="stat-cell">
+                  <span class="stat-k">DROPPED</span>
+                  <span class="stat-v">
+                    {live && stat ? stat.droppedFrames + " (" + stat.dropPct.toFixed(1) + "%)" : "—"}
+                  </span>
+                </div>
+                <div class="stat-cell">
+                  <span class="stat-k">CONGESTION</span>
+                  <span class="stat-v">{live && stat ? stat.congestionPct.toFixed(1) + "%" : "—"}</span>
+                </div>
+              </div>
+
+              <div class="health-col">
+                <span class="stat-k">HEALTH</span>
+                <div class="health-track">
+                  <div
+                    class="health-fill"
+                    style:width={h + "%"}
+                    style:background={live && stat ? healthColor(h) : "transparent"}
+                  ></div>
+                </div>
+              </div>
+
+              <button
+                class="row-btn"
+                class:stop={isRunning(o.state)}
+                class:retry={o.state === "error"}
+                onclick={() => void toggleRow(o)}
+              >
+                {isRunning(o.state) ? "Stop" : o.state === "error" ? "Retry" : "Start"}
+              </button>
             </div>
-
-            <div class="stats-group">
-              <div class="stat-cell">
-                <span class="stat-k">BITRATE</span>
-                <span class="stat-v">{live && stat ? (stat.bitrateKbps / 1000).toFixed(1) + " Mb/s" : "—"}</span>
-              </div>
-              <div class="stat-cell">
-                <span class="stat-k">DROPPED</span>
-                <span class="stat-v">
-                  {live && stat ? stat.droppedFrames + " (" + stat.dropPct.toFixed(1) + "%)" : "—"}
-                </span>
-              </div>
-              <div class="stat-cell">
-                <span class="stat-k">CONGESTION</span>
-                <span class="stat-v">{live && stat ? stat.congestionPct.toFixed(1) + "%" : "—"}</span>
-              </div>
-            </div>
-
-            <div class="health-col">
-              <span class="stat-k">HEALTH</span>
-              <div class="health-track">
-                <div
-                  class="health-fill"
-                  style:width={h + "%"}
-                  style:background={live && stat ? healthColor(h) : "transparent"}
-                ></div>
-              </div>
-            </div>
-
-            <button
-              class="row-btn"
-              class:stop={isRunning(o.state)}
-              class:retry={o.state === "error"}
-              onclick={() => void toggleRow(o)}
-            >
-              {isRunning(o.state) ? "Stop" : o.state === "error" ? "Retry" : "Start"}
-            </button>
-          </div>
-        {/each}
+          {/each}
+        </div>
       </section>
     {/each}
 
@@ -455,15 +460,24 @@
     padding: 4px 8px;
   }
 
-  .row {
+  .dest-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 12px;
+    padding: 14px 16px;
+  }
+  .dest-tile {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 14px;
+    border: var(--border-weight) solid var(--color-border);
+    background: var(--color-surface-2);
+  }
+  .dest-head {
     display: flex;
     align-items: center;
-    gap: 16px;
-    padding: 14px 16px;
-    border-bottom: var(--border-weight) solid var(--color-border-2);
-  }
-  .row:last-child {
-    border-bottom: none;
+    gap: 12px;
   }
   .mark {
     flex: 0 0 auto;
@@ -479,8 +493,7 @@
     border: var(--border-weight) solid var(--color-border);
   }
   .dest-col {
-    flex: 0 0 168px;
-    width: 168px;
+    flex: 1;
     min-width: 0;
   }
   .dest-line1 {
@@ -513,9 +526,10 @@
     white-space: nowrap;
   }
   .stats-group {
-    flex: 1;
     display: flex;
-    gap: 22px;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 12px 22px;
     min-width: 0;
   }
   .stat-cell {
@@ -536,21 +550,19 @@
     color: var(--color-dim);
   }
   .health-col {
-    flex: 0 0 130px;
-    width: 130px;
     display: flex;
     flex-direction: column;
     gap: 6px;
   }
   .health-track {
     height: 5px;
-    background: #08080a;
+    background: var(--color-base);
   }
   .health-fill {
     height: 100%;
   }
   .row-btn {
-    flex: 0 0 auto;
+    width: 100%;
     height: auto;
     padding: 8px 16px;
     font-family: var(--font-ui);

@@ -141,20 +141,22 @@
     {#if profiles.length === 0}
       <p class="dim">No stream profiles yet. Add one to stream to a destination.</p>
     {:else}
-      <ul class="list">
+      <ul class="grid">
         {#each profiles as p (p.uuid)}
-          <li class="row">
-            <div class="info">
-              <div class="line1">
-                <span class="name">{p.label || p.platform}</span>
-                {#if p.isPrimary}<span class="badge">Primary</span>{/if}
+          <li class="tile">
+            <button class="tile-body" onclick={() => openEdit(p)}>
+              <div class="info">
+                <div class="line1">
+                  <span class="name">{p.label || p.platform}</span>
+                  {#if p.isPrimary}<span class="badge">Primary</span>{/if}
+                </div>
+                <div class="line2">
+                  {p.platform}
+                  <span class="sep">·</span>
+                  {serviceName(p.service)}
+                </div>
               </div>
-              <div class="line2">
-                {p.platform}
-                <span class="sep">·</span>
-                {serviceName(p.service)}
-              </div>
-            </div>
+            </button>
             <div class="rowactions">
               <button
                 class="mini"
@@ -219,23 +221,36 @@
   .streams {
     padding: 8px 0 4px;
   }
-  .list {
+  .grid {
     list-style: none;
     margin: 0;
     padding: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 12px;
+  }
+  .tile {
     display: flex;
     flex-direction: column;
-    gap: 4px;
-  }
-  .row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    padding: 8px 10px;
     border: 1px solid var(--border);
-    border-radius: 8px;
     background: var(--bg-sunken);
+  }
+  .tile-body {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    width: 100%;
+    height: auto;
+    padding: 12px;
+    text-align: left;
+    background: none;
+    border: none;
+    color: inherit;
+    cursor: pointer;
+  }
+  .tile-body:hover {
+    background: var(--bg-raised);
+    border-color: transparent;
   }
   .info {
     min-width: 0;
@@ -270,7 +285,9 @@
   .rowactions {
     display: flex;
     gap: 4px;
-    flex-shrink: 0;
+    justify-content: flex-end;
+    padding: 8px 10px;
+    border-top: 1px solid var(--border);
   }
   .mini {
     background: none;

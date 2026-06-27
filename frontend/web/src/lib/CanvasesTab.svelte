@@ -101,6 +101,17 @@
     return list.find((e) => e.id === id)?.name ?? id ?? "—";
   }
 
+  function gcd(a: number, b: number): number {
+    return b === 0 ? a : gcd(b, a % b);
+  }
+  function ratioLabel(w: number, h: number): string {
+    if (!(w > 0) || !(h > 0)) {
+      return "";
+    }
+    const g = gcd(w, h) || 1;
+    return `${w / g}:${h / g}`;
+  }
+
   function openAdd() {
     editingUuid = null;
     fName = "";
@@ -209,20 +220,31 @@
   {#if !loaded}
     <p class="dim">Loading canvases…</p>
   {:else}
-    <ul class="list">
+    <ul class="grid">
       {#each canvases as c (c.uuid)}
-        <li class="row">
-          <div class="info">
-            <div class="line1">
-              <span class="name">{c.name}</span>
-              {#if c.isDefault}<span class="badge">Default</span>{/if}
+        <li class="tile">
+          <button class="tile-body" onclick={() => openEdit(c)}>
+            <div class="aspect-frame">
+              <div
+                class="aspect-inner"
+                style:aspect-ratio="{c.baseWidth} / {c.baseHeight}"
+                style:width={c.baseWidth >= c.baseHeight ? "100%" : "auto"}
+                style:height={c.baseWidth >= c.baseHeight ? "auto" : "100%"}
+              ></div>
             </div>
-            <div class="line2">
-              {c.baseWidth} × {c.baseHeight} @ {fpsText(c)} fps
-              <span class="sep">·</span>
-              {encName(videoEncoders, c.videoEncoder)} / {encName(audioEncoders, c.audioEncoder)}
+            <div class="info">
+              <div class="line1">
+                <span class="name">{c.name}</span>
+                {#if c.isDefault}<span class="badge">Default</span>{/if}
+                <span class="ratio">{ratioLabel(c.baseWidth, c.baseHeight)}</span>
+              </div>
+              <div class="line2">
+                {c.baseWidth} × {c.baseHeight} @ {fpsText(c)} fps
+                <span class="sep">·</span>
+                {encName(videoEncoders, c.videoEncoder)} / {encName(audioEncoders, c.audioEncoder)}
+              </div>
             </div>
-          </div>
+          </button>
           <div class="rowactions">
             <button class="mini" title="Video encoder settings" onclick={() => toggleExpand(c.uuid, "video")}
               >V⚙</button
@@ -343,23 +365,58 @@
   .canvases {
     padding: 8px 0 4px;
   }
-  .list {
+  .grid {
     list-style: none;
     margin: 0;
     padding: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 12px;
+  }
+  .tile {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    border: 1px solid var(--border);
+    background: var(--bg-sunken);
   }
-  .row {
+  .tile-body {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    width: 100%;
+    height: auto;
+    padding: 12px;
+    text-align: left;
+    background: none;
+    border: none;
+    color: inherit;
+    cursor: pointer;
+  }
+  .tile-body:hover {
+    background: var(--bg-raised);
+    border-color: transparent;
+  }
+  .aspect-frame {
+    flex: 0 0 auto;
+    width: 56px;
+    height: 56px;
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    padding: 8px 10px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--bg-sunken);
+    justify-content: center;
+    border: 1px solid var(--color-border);
+    background: var(--color-base);
+  }
+  .aspect-inner {
+    max-width: 100%;
+    max-height: 100%;
+    border: 1px solid var(--color-border);
+    background: var(--color-surface-2);
+  }
+  .ratio {
+    margin-left: auto;
+    font-family: var(--font-mono, monospace);
+    font-size: 10px;
+    color: var(--text-dim);
   }
   .info {
     min-width: 0;
@@ -394,7 +451,9 @@
   .rowactions {
     display: flex;
     gap: 4px;
-    flex-shrink: 0;
+    justify-content: flex-end;
+    padding: 8px 10px;
+    border-top: 1px solid var(--border);
   }
   .mini {
     background: none;
@@ -420,12 +479,10 @@
     cursor: default;
   }
   .expander {
+    grid-column: 1 / -1;
     border: 1px solid var(--border);
-    border-top: none;
-    border-radius: 0 0 8px 8px;
     background: var(--bg-raised);
     padding: 12px 12px 14px;
-    margin: -4px 0 2px;
   }
   .exp-head {
     font-size: 11px;
