@@ -37,6 +37,13 @@
   let busy = $state(false);
   let dialog = $state<DialogSpec | null>(null);
 
+  // Virtual camera: live state + target canvas (uuid; "" = Default / global
+  // program video), kept in sync via virtualCam.changed. The right-click picker
+  // anchors at vcamMenuPos when open.
+  let vcamActive = $state(false);
+  let vcamCanvas = $state("");
+  let vcamMenuPos = $state<{ x: number; y: number } | null>(null);
+
   // CANVASES-bar "⋯" overflow: anchor position (viewport coords) when open, the
   // runtime monitor list for the per-monitor projector entries, and the dock-lock
   // flag. Monitors load once on mount; the set rarely changes.
@@ -223,13 +230,25 @@
       .call("display.listMonitors")
       .then((res) => (monitors = res?.monitors ?? []))
       .catch((e) => console.log("display.listMonitors failed: " + (e as Error).message));
+    obs
+      .call("virtualCam.status")
+      .then((s) => {
+        vcamActive = s.active;
+        vcamCanvas = s.canvas;
+      })
+      .catch(() => {});
     const offCanvas = obs.on("canvas.changed", loadCanvases);
     const offMulti = obs.on("multistream.changed", (p) => (outputs = p.outputs));
     const offBindings = obs.on("outputBinding.changed", loadStatus);
+    const offVcam = obs.on("virtualCam.changed", (s) => {
+      vcamActive = s.active;
+      vcamCanvas = s.canvas;
+    });
     return () => {
       offCanvas();
       offMulti();
       offBindings();
+      offVcam();
     };
   });
 
@@ -477,6 +496,36 @@
       busy = false;
     }
   }
+
+  // Virtual camera start/stop. Authoritative state arrives via virtualCam.changed,
+  // so don't optimistically flip here.
+  async function toggleVcam(): Promise<void> {
+    try {
+      await obs.call(vcamActive ? "virtualCam.stop" : "virtualCam.start");
+    } catch (e) {
+      console.log("virtualCam toggle failed: " + (e as Error).message);
+    }
+  }
+
+  // Target-canvas label for the button tooltip: the canvas matching vcamCanvas, else
+  // "Default" (empty target or a uuid that no longer resolves -> global program).
+  let vcamTargetName = $derived(canvases.find((c) => c.uuid === vcamCanvas)?.name ?? "Default");
+
+  function openVcamMenu(e: MouseEvent): void {
+    e.preventDefault();
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    vcamMenuPos = { x: r.left, y: r.bottom + 2 };
+  }
+
+  // One picker entry per canvas; the current target is checked. The Default canvas
+  // is in the list already (its uuid resolves to the global program video).
+  let vcamMenuItems = $derived<ContextMenuItem[]>(
+    canvases.map((c) => ({
+      label: c.name,
+      checked: c.uuid === vcamCanvas,
+      action: () => obs.call("virtualCam.setConfig", { canvas: c.uuid }).catch(() => {}),
+    })),
+  );
 </script>
 
 <div class="studio" class:hidden={pageStore.page !== "studio"}>
@@ -567,6 +616,15 @@
     </div>
 
     <div class="cluster right">
+      <button
+        class="vcam"
+        class:active={vcamActive}
+        onclick={() => void toggleVcam()}
+        oncontextmenu={openVcamMenu}
+        title={"Virtual Camera → " + vcamTargetName + " (right-click to choose canvas)"}
+      >
+        📷 VCAM
+      </button>
       <div class="perf">
         {#each perfRow as e (e.k)}
           <span><span class="pk">{e.k}</span> {e.v}</span>
@@ -590,6 +648,10 @@
 
 {#if overflowPos}
   <ContextMenu x={overflowPos.x} y={overflowPos.y} items={overflowItems} onClose={() => (overflowPos = null)} />
+{/if}
+
+{#if vcamMenuPos}
+  <ContextMenu x={vcamMenuPos.x} y={vcamMenuPos.y} items={vcamMenuItems} onClose={() => (vcamMenuPos = null)} />
 {/if}
 
 <style>
@@ -793,6 +855,26 @@
   }
   .pk {
     color: var(--color-muted);
+  }
+  .vcam {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    background: transparent;
+    border: var(--border-weight) solid var(--color-border);
+    color: var(--color-dim);
+    font-family: var(--font-ui);
+    font-size: 11px;
+    padding: 7px 12px;
+    cursor: pointer;
+  }
+  .vcam:hover {
+    border-color: var(--color-accent);
+    color: var(--color-accent);
+  }
+  .vcam.active {
+    border-color: var(--meter-green);
+    color: var(--meter-green);
   }
   .golive {
     display: flex;

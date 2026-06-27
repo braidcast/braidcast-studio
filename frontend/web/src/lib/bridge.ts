@@ -658,6 +658,21 @@ export interface TransitionState {
   durationMs: number;
 }
 
+// --- virtual camera (output one canvas's video as a system webcam) ----------
+
+/** Virtual-camera live state as reported by virtualCam.status / pushed on
+ * virtualCam.changed. `canvas` is the target canvas uuid (empty = Default). */
+export interface VirtualCamStatus {
+  active: boolean;
+  canvas: string;
+}
+
+/** Virtual-camera config as reported by virtualCam.getConfig / returned by
+ * setConfig. `canvas` = target canvas uuid (empty = Default / global program). */
+export interface VirtualCamConfig {
+  canvas: string;
+}
+
 /** Known bridge methods. Extend as the C++ Bridge gains methods. */
 export interface ObsMethods {
   getVersion: string;
@@ -773,6 +788,15 @@ export interface ObsMethods {
   "multistream.status": { outputs: MultistreamStatus[] };
   "multistream.startOutput": { ok: boolean };
   "multistream.stopOutput": { ok: boolean };
+  // Virtual camera (output one canvas's video as a system webcam). start/stop
+  // toggle the output; status reports the live state; get/setConfig read/write the
+  // target canvas (empty/unknown/Default uuid -> the global program video). start/
+  // stop/setConfig all emit virtualCam.changed.
+  "virtualCam.start": { ok: true };
+  "virtualCam.stop": { ok: true };
+  "virtualCam.status": VirtualCamStatus;
+  "virtualCam.getConfig": VirtualCamConfig;
+  "virtualCam.setConfig": VirtualCamConfig;
   // Audio mixer (per-source faders + volmeters). list returns the active audio
   // sources; set* return the applied value. Levels arrive via the audio.levels
   // push (throttled to ~30 Hz), not a method.
@@ -896,6 +920,9 @@ export interface ObsEvents {
   // A scene link was created/updated/removed; a consumer re-runs sceneLink.list.
   "sceneLink.changed": Record<string, never>;
   "multistream.changed": { outputs: MultistreamStatus[] };
+  // The virtual camera started/stopped or its target canvas changed (fires on
+  // start, stop, AND setConfig); the UI re-syncs its toggle + target label.
+  "virtualCam.changed": VirtualCamStatus;
   // Coalesced per-source audio levels, pushed at most ~30 Hz off the volmeter
   // callbacks. The UI maps dB -> meter width and applies peak hold.
   "audio.levels": { levels: AudioLevel[] };
