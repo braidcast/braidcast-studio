@@ -580,7 +580,8 @@ export type ProjectorTarget =
   | { kind: "program" }
   | { kind: "scene"; name: string }
   | { kind: "source"; name: string }
-  | { kind: "canvas"; canvas: string };
+  | { kind: "canvas"; canvas: string }
+  | { kind: "multiview"; canvas?: string };
 
 /** A live projector as reported by projector.list / returned by projector.open. */
 export interface ProjectorInfo {

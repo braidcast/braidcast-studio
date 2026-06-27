@@ -427,6 +427,22 @@
       .catch((e) => console.log("projector.open failed: " + (e as Error).message));
   }
 
+  // Multiview projector for the focused canvas (empty canvas = the Default canvas's
+  // scenes). Renders all of that canvas's scenes in a labeled grid.
+  function multiviewCanvas(): string {
+    return focusedCanvas?.isDefault ? "" : (activeCanvasUuid ?? "");
+  }
+  function openMultiviewWindowed(): void {
+    obs
+      .call("projector.open", { target: { kind: "multiview", canvas: multiviewCanvas() }, mode: "windowed" })
+      .catch((e) => console.log("projector.open failed: " + (e as Error).message));
+  }
+  function openMultiviewFullscreen(monitor: number): void {
+    obs
+      .call("projector.open", { target: { kind: "multiview", canvas: multiviewCanvas() }, mode: "fullscreen", monitor })
+      .catch((e) => console.log("projector.open failed: " + (e as Error).message));
+  }
+
   // CANVASES-bar overflow contents: a windowed program projector, one fullscreen
   // entry per monitor, then the dock-lock toggle (a leading ✓ marks it on, since
   // ContextMenu items have no native checked state).
@@ -435,6 +451,12 @@
     ...monitors.map((m) => ({
       label: `Fullscreen Projector (Program) — ${m.name} (${m.width}×${m.height})`,
       action: () => openProgramFullscreen(m.index),
+    })),
+    null,
+    { label: "Multiview (Windowed)", action: openMultiviewWindowed },
+    ...monitors.map((m) => ({
+      label: `Multiview (Fullscreen) — ${m.name} (${m.width}×${m.height})`,
+      action: () => openMultiviewFullscreen(m.index),
     })),
     null,
     { label: (docksLocked ? "✓ " : "") + "Lock Docks", action: toggleLock },
