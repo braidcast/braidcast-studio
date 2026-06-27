@@ -286,48 +286,64 @@ LRESULT CALLBACK InteractWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
 		return 0;
 	}
 	case WM_LBUTTONDOWN:
-		if (source) {
+		if (self) {
+			self->PressButton(MK_LBUTTON);
 			HandleClick(source, hwnd, wparam, lparam, MOUSE_LEFT, false, 1);
 		}
 		return 0;
-	case WM_LBUTTONUP:
-		if (source) {
-			HandleClick(source, hwnd, wparam, lparam, MOUSE_LEFT, true, 1);
-		}
-		return 0;
 	case WM_LBUTTONDBLCLK:
-		if (source) {
+		if (self) {
+			self->PressButton(MK_LBUTTON);
 			HandleClick(source, hwnd, wparam, lparam, MOUSE_LEFT, false, 2);
 		}
 		return 0;
+	case WM_LBUTTONUP:
+		if (self) {
+			HandleClick(source, hwnd, wparam, lparam, MOUSE_LEFT, true, 1);
+			self->ReleaseButton(MK_LBUTTON);
+		}
+		return 0;
 	case WM_MBUTTONDOWN:
-		if (source) {
+		if (self) {
+			self->PressButton(MK_MBUTTON);
 			HandleClick(source, hwnd, wparam, lparam, MOUSE_MIDDLE, false, 1);
 		}
 		return 0;
-	case WM_MBUTTONUP:
-		if (source) {
-			HandleClick(source, hwnd, wparam, lparam, MOUSE_MIDDLE, true, 1);
-		}
-		return 0;
 	case WM_MBUTTONDBLCLK:
-		if (source) {
+		if (self) {
+			self->PressButton(MK_MBUTTON);
 			HandleClick(source, hwnd, wparam, lparam, MOUSE_MIDDLE, false, 2);
 		}
 		return 0;
+	case WM_MBUTTONUP:
+		if (self) {
+			HandleClick(source, hwnd, wparam, lparam, MOUSE_MIDDLE, true, 1);
+			self->ReleaseButton(MK_MBUTTON);
+		}
+		return 0;
 	case WM_RBUTTONDOWN:
-		if (source) {
+		if (self) {
+			self->PressButton(MK_RBUTTON);
 			HandleClick(source, hwnd, wparam, lparam, MOUSE_RIGHT, false, 1);
 		}
 		return 0;
-	case WM_RBUTTONUP:
-		if (source) {
-			HandleClick(source, hwnd, wparam, lparam, MOUSE_RIGHT, true, 1);
+	case WM_RBUTTONDBLCLK:
+		if (self) {
+			self->PressButton(MK_RBUTTON);
+			HandleClick(source, hwnd, wparam, lparam, MOUSE_RIGHT, false, 2);
 		}
 		return 0;
-	case WM_RBUTTONDBLCLK:
-		if (source) {
-			HandleClick(source, hwnd, wparam, lparam, MOUSE_RIGHT, false, 2);
+	case WM_RBUTTONUP:
+		if (self) {
+			HandleClick(source, hwnd, wparam, lparam, MOUSE_RIGHT, true, 1);
+			self->ReleaseButton(MK_RBUTTON);
+		}
+		return 0;
+	case WM_CAPTURECHANGED:
+		// Another window stole the grab: forget our pressed buttons (no synthetic
+		// up, no ReleaseCapture -- we no longer hold it).
+		if (self) {
+			self->ResetButtons();
 		}
 		return 0;
 	case WM_MOUSEWHEEL: {
@@ -551,6 +567,31 @@ void InteractWindow::Destroy()
 obs_source_t *InteractWindow::PinnedSource() const
 {
 	return source_;
+}
+
+void InteractWindow::PressButton(unsigned buttonMask)
+{
+	// Grab the mouse on the first button down so a drag that leaves the client
+	// area keeps delivering moves + the matching button-up.
+	if (buttonsDown_ == 0 && hwnd_) {
+		SetCapture(hwnd_);
+	}
+	buttonsDown_ |= buttonMask;
+}
+
+void InteractWindow::ReleaseButton(unsigned buttonMask)
+{
+	buttonsDown_ &= ~buttonMask;
+	if (buttonsDown_ == 0) {
+		ReleaseCapture();
+	}
+}
+
+void InteractWindow::ResetButtons()
+{
+	// Capture was taken by another window: forget our pressed buttons without
+	// calling ReleaseCapture (we no longer hold it) and without fabricating an up.
+	buttonsDown_ = 0;
 }
 
 InteractManager::InteractManager(HINSTANCE instance) : instance_(instance) {}

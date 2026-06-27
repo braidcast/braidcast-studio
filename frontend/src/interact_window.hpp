@@ -60,6 +60,13 @@ public:
 	// Valid until Destroy releases the ref (and nulls it). UI thread only.
 	obs_source_t *PinnedSource() const;
 
+	// Win32 mouse-capture tracking so a press-drag that leaves the client area
+	// still delivers WM_MOUSEMOVE/WM_*BUTTONUP (raw Win32 has no implicit grab).
+	// `buttonMask` is the MK_* bit for the button. UI thread only.
+	void PressButton(unsigned buttonMask);   // SetCapture on the first button down
+	void ReleaseButton(unsigned buttonMask); // ReleaseCapture when the last clears
+	void ResetButtons();                     // capture stolen (WM_CAPTURECHANGED)
+
 	// Whether the obs_display exists (non-null). Used by the smoke self-test.
 	bool HasDisplay() const { return display_ != nullptr; }
 
@@ -76,7 +83,8 @@ private:
 	obs_source_t *source_; // addref'd for the window's whole lifetime
 
 	HWND hwnd_ = nullptr;
-	void *display_ = nullptr; // obs_display_t* (opaque here)
+	void *display_ = nullptr;  // obs_display_t* (opaque here)
+	unsigned buttonsDown_ = 0; // MK_* bits of currently pressed mouse buttons
 };
 
 // Owns the live interaction windows, each a top-level window. unique_ptr so every
