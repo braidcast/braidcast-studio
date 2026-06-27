@@ -25,6 +25,7 @@ class SceneCollections;
 class UndoManager;
 class VirtualCamManager;
 struct GeneralSettings;
+struct AdvancedSettings;
 
 namespace ObsBootstrap {
 bool Start();
@@ -106,6 +107,14 @@ VirtualCamManager &VirtualCam();
 // settings.getGeneral/setGeneral over it and other systems can read prefs.
 // Valid between Start() and Stop().
 GeneralSettings &General();
+
+// The global "Advanced settings" bag (process priority, per-output stream delay /
+// reconnect / network options, dynamic bitrate, browser HW accel), persisted to
+// advanced.json. Owned by the bootstrap (Load() early in Start, where the loaded
+// process priority is also applied once). Exposed so the bridge can serve
+// settings.getAdvanced/setAdvanced over it and the engine can read per-output
+// options at StartOutput. Valid between Start() and Stop().
+AdvancedSettings &Advanced();
 
 // Re-fire OBS_FRONTEND_EVENT_SCENE_CHANGED through the shim so the loaded UI page
 // observes a forwarded obs.event (proves obs->shim->bridge->JS post-load).

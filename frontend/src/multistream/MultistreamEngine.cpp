@@ -1,5 +1,8 @@
 #include "MultistreamEngine.hpp"
 
+#include "AdvancedSettings.hpp"
+#include "obs_bootstrap.hpp"
+
 #include "CanvasStore.hpp"
 #include "OutputBindingStore.hpp"
 #include "StreamProfileStore.hpp"
@@ -224,6 +227,41 @@ bool MultistreamEngine::StartOutput(const std::string &bindingUuid)
 
 	lo->startSignal.Connect(obs_output_get_signal_handler(lo->output), "start", OnOutputStart, this);
 	lo->stopSignal.Connect(obs_output_get_signal_handler(lo->output), "stop", OnOutputStop, this);
+
+	// Apply the global Advanced settings to this output. These are output-level (not
+	// encoder-level) options, so they are compatible with the encode-once model: the
+	// shared per-canvas encoders are untouched; only the per-binding output wrapper
+	// carries the delay/reconnect/network config. They apply to NEWLY started
+	// outputs -- a live output picks up changes only on its next restart.
+	const AdvancedSettings &adv = ObsBootstrap::Advanced();
+
+	// Stream delay (set 0 to clear any prior delay on a reused output name).
+	if (adv.streamDelayEnabled) {
+		obs_output_set_delay(lo->output, adv.streamDelaySec,
+				     adv.streamDelayPreserve ? OBS_OUTPUT_DELAY_PRESERVE : 0);
+	} else {
+		obs_output_set_delay(lo->output, 0, 0);
+	}
+
+	// Automatic reconnect (retry_count 0 disables reconnecting).
+	if (adv.reconnectEnabled) {
+		obs_output_set_reconnect_settings(lo->output, (int)adv.reconnectMaxRetries,
+						  (int)adv.reconnectRetryDelaySec);
+	} else {
+		obs_output_set_reconnect_settings(lo->output, 0, (int)adv.reconnectRetryDelaySec);
+	}
+
+	// Network / dynamic-bitrate options consumed by the rtmp output (rtmp-stream.h:
+	// bind_ip / new_socket_loop_enabled / low_latency_mode_enabled / dyn_bitrate).
+	// "default"/empty bindIP means "do not bind a specific NIC" -- leave it unset.
+	OBSDataAutoRelease osettings = obs_data_create();
+	if (adv.bindIP != "default" && !adv.bindIP.empty()) {
+		obs_data_set_string(osettings, "bind_ip", adv.bindIP.c_str());
+	}
+	obs_data_set_bool(osettings, "new_socket_loop_enabled", adv.newSocketLoop);
+	obs_data_set_bool(osettings, "low_latency_mode_enabled", adv.lowLatencyMode);
+	obs_data_set_bool(osettings, "dyn_bitrate", adv.dynamicBitrate);
+	obs_output_update(lo->output, osettings);
 
 	obs_output_set_video_encoder(lo->output, ce->video);
 	obs_output_set_audio_encoder(lo->output, ce->audio, 0);

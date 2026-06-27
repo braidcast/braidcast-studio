@@ -63,6 +63,8 @@ target_sources(
     src/obs_bootstrap.hpp
     src/GeneralSettings.cpp
     src/GeneralSettings.hpp
+    src/AdvancedSettings.cpp
+    src/AdvancedSettings.hpp
     src/preview_window.cpp
     src/preview_window.hpp
     src/window_manager.cpp
@@ -181,6 +183,7 @@ set_source_files_properties(
   src/main.cpp
   src/obs_bootstrap.cpp
   src/GeneralSettings.cpp
+  src/AdvancedSettings.cpp
   src/bridge.cpp
   src/properties_serializer.cpp
   src/preview_window.cpp

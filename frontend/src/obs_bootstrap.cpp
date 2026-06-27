@@ -32,6 +32,7 @@
 #include "multistream/SceneLinkStore.hpp"
 #include "multistream/StreamProfileStore.hpp"
 #include "multistream/VirtualCamManager.hpp"
+#include "AdvancedSettings.hpp"
 #include "GeneralSettings.hpp"
 #include "paths.hpp"
 #include "preview_window.hpp"
@@ -257,6 +258,11 @@ VirtualCamManager g_virtualCam;
 // prefs) and persisted on each bridge set. A plain struct -- no teardown needed.
 GeneralSettings g_general;
 
+// The global Advanced settings bag, loaded early in Start (its process priority is
+// applied once at load; the engine reads its per-output options at StartOutput)
+// and persisted on each bridge set. A plain struct -- no teardown needed.
+AdvancedSettings g_advanced;
+
 // The scene-collection registry (per-collection scene sets). Loaded + migrated
 // in Start before scenes are restored, so the no-arg SceneCollection::Save/Load
 // target the active collection's file; cleared in Stop.
@@ -401,6 +407,11 @@ VirtualCamManager &ObsBootstrap::VirtualCam()
 GeneralSettings &ObsBootstrap::General()
 {
 	return g_general;
+}
+
+AdvancedSettings &ObsBootstrap::Advanced()
+{
+	return g_advanced;
 }
 
 ::CanvasRuntime &ObsBootstrap::CanvasRuntime()
@@ -549,6 +560,13 @@ bool ObsBootstrap::Start()
 	// Load the global General settings early: projectors + later systems read it.
 	g_general.Load();
 	HostLog("[obs] general settings loaded");
+
+	// Load the global Advanced settings and apply the stored process priority once.
+	// The engine reads the rest (stream delay / reconnect / network) per output at
+	// StartOutput; browserHwAccel is store-only.
+	g_advanced.Load();
+	ApplyProcessPriority(g_advanced.processPriority);
+	HostLog("[obs] advanced settings loaded; process priority=" + g_advanced.processPriority);
 
 	LoadCuratedModules();
 

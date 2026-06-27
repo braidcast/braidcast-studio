@@ -25,6 +25,7 @@
 #include "mcp/McpServer.hpp"
 #include "interact_window.hpp"
 #include "obs_bootstrap.hpp"
+#include "AdvancedSettings.hpp"
 #include "GeneralSettings.hpp"
 #include "preview_window.hpp"
 #include "projector_window.hpp"
@@ -384,7 +385,9 @@ bool ReadDimension(const json &params, const char *key, uint32_t current, uint32
 // never left broken, then re-letterboxes the preview + resizes the program
 // transition. Caller owns the live-active/live-canvas guard.
 static bool ApplyGlobalVideo(uint32_t baseW, uint32_t baseH, uint32_t outW, uint32_t outH, uint32_t fpsNum,
-			     uint32_t fpsDen, obs_scale_type scaleType, std::string &error)
+			     uint32_t fpsDen, obs_scale_type scaleType, std::string &error,
+			     const video_format *fmt = nullptr, const video_colorspace *cs = nullptr,
+			     const video_range_type *range = nullptr)
 {
 	obs_video_info ovi = {};
 	if (!obs_get_video_info(&ovi)) {
@@ -400,15 +403,28 @@ static bool ApplyGlobalVideo(uint32_t baseW, uint32_t baseH, uint32_t outW, uint
 	ovi.fps_num = fpsNum;
 	ovi.fps_den = fpsDen;
 	ovi.scale_type = scaleType;
+	// Color fields are only overridden for the Default canvas (which drives the
+	// global pipeline); the resolution-only callers pass null and keep the current
+	// format/colorspace/range.
+	if (fmt) {
+		ovi.output_format = *fmt;
+	}
+	if (cs) {
+		ovi.colorspace = *cs;
+	}
+	if (range) {
+		ovi.range = *range;
+	}
 
-	// All non-resolution fields are copied from the current config, so if these
-	// seven already match there is genuinely nothing to reset. Skip the full
-	// pipeline reset (and its preview flicker) -- this also makes the redundant
-	// double-apply on a Settings Cancel a no-op.
+	// All non-overridden fields are copied from the current config, so if these
+	// already match there is genuinely nothing to reset. Skip the full pipeline
+	// reset (and its preview flicker) -- this also makes the redundant double-apply
+	// on a Settings Cancel a no-op.
 	if (ovi.base_width == previous.base_width && ovi.base_height == previous.base_height &&
 	    ovi.output_width == previous.output_width && ovi.output_height == previous.output_height &&
 	    ovi.fps_num == previous.fps_num && ovi.fps_den == previous.fps_den &&
-	    ovi.scale_type == previous.scale_type) {
+	    ovi.scale_type == previous.scale_type && ovi.output_format == previous.output_format &&
+	    ovi.colorspace == previous.colorspace && ovi.range == previous.range) {
 		return true;
 	}
 
@@ -578,6 +594,95 @@ bool MethodSettingsSetGeneral(const json &params, json &result, std::string &err
 
 	result = GeneralToJson(g);
 	EmitEvent("settings.generalChanged", result);
+	return true;
+}
+
+// Build the full Advanced-settings wire object (camelCase keys) from the struct.
+// Shared by settings.getAdvanced and the settings.setAdvanced response/event so the
+// two can't drift; iterates the same descriptor tables the persistence layer uses.
+json AdvancedToJson(const AdvancedSettings &a)
+{
+	json out = json::object();
+	for (const AdvancedBoolField &f : kAdvancedBoolFields) {
+		out[f.json] = a.*f.member;
+	}
+	for (const AdvancedStringField &f : kAdvancedStringFields) {
+		out[f.json] = a.*f.member;
+	}
+	for (const AdvancedUIntField &f : kAdvancedUIntFields) {
+		out[f.json] = a.*f.member;
+	}
+	return out;
+}
+
+bool MethodSettingsGetAdvanced(const json & /*params*/, json &result, std::string & /*error*/)
+{
+	result = AdvancedToJson(ObsBootstrap::Advanced());
+	return true;
+}
+
+bool MethodSettingsSetAdvanced(const json &params, json &result, std::string &error)
+{
+	if (!params.is_object()) {
+		error = "setAdvanced expects an object";
+		return false;
+	}
+	// Validate the one enum field up front so a bad token rejects the whole call
+	// before any field is mutated.
+	auto pp = params.find("processPriority");
+	if (pp != params.end() && !pp->is_null()) {
+		if (!pp->is_string()) {
+			error = "processPriority must be a string";
+			return false;
+		}
+		const std::string v = pp->get<std::string>();
+		bool ok = false;
+		for (const char *t : kProcessPriorityTokens) {
+			if (v == t) {
+				ok = true;
+				break;
+			}
+		}
+		if (!ok) {
+			error = "processPriority must be one of normal, aboveNormal, high";
+			return false;
+		}
+	}
+
+	AdvancedSettings &a = ObsBootstrap::Advanced();
+	const std::string oldPriority = a.processPriority;
+	// Apply ONLY present keys of the matching type; unknown keys are ignored.
+	for (const AdvancedBoolField &f : kAdvancedBoolFields) {
+		auto it = params.find(f.json);
+		if (it != params.end() && it->is_boolean()) {
+			a.*f.member = it->get<bool>();
+		}
+	}
+	for (const AdvancedStringField &f : kAdvancedStringFields) {
+		auto it = params.find(f.json);
+		if (it != params.end() && it->is_string()) {
+			a.*f.member = it->get<std::string>();
+		}
+	}
+	for (const AdvancedUIntField &f : kAdvancedUIntFields) {
+		auto it = params.find(f.json);
+		if (it != params.end() && it->is_number()) {
+			int64_t v = it->get<int64_t>();
+			v = v < (int64_t)f.min ? (int64_t)f.min : (v > (int64_t)f.max ? (int64_t)f.max : v);
+			a.*f.member = (uint32_t)v;
+		}
+	}
+	a.Save();
+
+	// Live-apply the one wired side effect: re-pin the process priority when it
+	// changed. Stream delay / reconnect / network options are read per output at
+	// StartOutput, so they apply to newly started outputs (live ones on restart).
+	if (a.processPriority != oldPriority) {
+		ApplyProcessPriority(a.processPriority);
+	}
+
+	result = AdvancedToJson(a);
+	EmitEvent("settings.advancedChanged", result);
 	return true;
 }
 
@@ -3892,6 +3997,18 @@ json CanvasToJson(const CanvasDefinition &def)
 		{"fpsDen", def.fpsDen},
 		{"videoEncoder", def.video.id},
 		{"audioEncoder", def.audio.id},
+		// Per-canvas color: format/space/range tokens map 1:1 onto libobs video
+		// format/colorspace/range (applied via CanvasDefinition::ToVideoInfo). The
+		// sdr/hdr nit levels are persisted but not yet applied to the pipeline.
+		{"color",
+		 json{
+			 {"format", def.color.format},
+			 {"space", def.color.space},
+			 {"range", def.color.range},
+			 {"sdrWhiteLevel", def.color.sdrWhiteLevel},
+			 {"hdrNominalPeakLevel", def.color.hdrNominalPeakLevel},
+			 {"useDefault", def.color.useDefault},
+		 }},
 		// Output-gated: a canvas panel is shown only when >=1 enabled output binds
 		// it (the Default canvas included -- its panel hides when disabled, which
 		// the Qt central-widget preview could never do). Re-evaluated by the UI on
@@ -3995,6 +4112,78 @@ bool ReadCanvasScale(const json &params, const char *key, const std::string &cur
 	return true;
 }
 
+// Valid per-canvas color tokens -- must stay in sync with CanvasDefinition.cpp's
+// VideoFormatFromName / VideoColorSpaceFromName / VideoRangeFromName maps. "RGB"
+// is the editor token for the BGRA packed format. Unknown tokens are rejected
+// rather than silently coerced to a fallback.
+const std::unordered_set<std::string> kColorFormats = {"NV12", "I420", "I444", "I010",
+						       "P010", "P216", "P416", "RGB"};
+const std::unordered_set<std::string> kColorSpaces = {"601", "709", "2100PQ", "2100HLG", "sRGB"};
+const std::unordered_set<std::string> kColorRanges = {"Partial", "Full"};
+
+// Read an optional nested `color` object. Absent/null -> out = current (no change).
+// Any present subset of {format,space,range,sdrWhiteLevel,hdrNominalPeakLevel,
+// useDefault} overrides the corresponding field; unknown format/space/range tokens
+// are rejected with a clear error.
+bool ReadCanvasColor(const json &params, const CanvasColorDef &current, CanvasColorDef &out, std::string &error)
+{
+	out = current;
+	auto it = params.find("color");
+	if (it == params.end() || it->is_null()) {
+		return true;
+	}
+	if (!it->is_object()) {
+		error = "'color' must be an object";
+		return false;
+	}
+	const json &c = *it;
+	auto readTok = [&](const char *key, const std::unordered_set<std::string> &valid, std::string &field) -> bool {
+		auto f = c.find(key);
+		if (f == c.end() || f->is_null()) {
+			return true;
+		}
+		if (!f->is_string()) {
+			error = std::string("color.") + key + " must be a string";
+			return false;
+		}
+		const std::string v = f->get<std::string>();
+		if (valid.find(v) == valid.end()) {
+			error = std::string("color.") + key + " '" + v + "' is not a recognized token";
+			return false;
+		}
+		field = v;
+		return true;
+	};
+	if (!readTok("format", kColorFormats, out.format) || !readTok("space", kColorSpaces, out.space) ||
+	    !readTok("range", kColorRanges, out.range)) {
+		return false;
+	}
+	auto readNit = [&](const char *key, uint32_t &field) -> bool {
+		auto f = c.find(key);
+		if (f == c.end() || f->is_null()) {
+			return true;
+		}
+		if (!f->is_number()) {
+			error = std::string("color.") + key + " must be a number";
+			return false;
+		}
+		int64_t v = f->get<int64_t>();
+		if (v < 0) {
+			v = 0;
+		}
+		field = (uint32_t)v;
+		return true;
+	};
+	if (!readNit("sdrWhiteLevel", out.sdrWhiteLevel) || !readNit("hdrNominalPeakLevel", out.hdrNominalPeakLevel)) {
+		return false;
+	}
+	auto ud = c.find("useDefault");
+	if (ud != c.end() && ud->is_boolean()) {
+		out.useDefault = ud->get<bool>();
+	}
+	return true;
+}
+
 bool MethodCanvasCreate(const json &params, json &result, std::string &error)
 {
 	if (!params.is_object()) {
@@ -4018,7 +4207,8 @@ bool MethodCanvasCreate(const json &params, json &result, std::string &error)
 	    !ReadCanvasOutputDim(params, "outputHeight", 0, def.outputHeight, error) ||
 	    !ReadCanvasScale(params, "scaleType", def.scaleType, def.scaleType, error) ||
 	    !ReadCanvasFps(params, "fpsNum", 60, def.fpsNum, error) ||
-	    !ReadCanvasFps(params, "fpsDen", 1, def.fpsDen, error)) {
+	    !ReadCanvasFps(params, "fpsDen", 1, def.fpsDen, error) ||
+	    !ReadCanvasColor(params, def.color, def.color, error)) {
 		return false;
 	}
 
@@ -4083,6 +4273,10 @@ bool MethodCanvasUpdate(const json &params, json &result, std::string &error)
 	    !ReadCanvasFps(params, "fpsDen", def->fpsDen, newFpsD, error)) {
 		return false;
 	}
+	CanvasColorDef newColor;
+	if (!ReadCanvasColor(params, def->color, newColor, error)) {
+		return false;
+	}
 	const std::string venc = OptString(params, "videoEncoder");
 	const std::string aenc = OptString(params, "audioEncoder");
 
@@ -4091,22 +4285,44 @@ bool MethodCanvasUpdate(const json &params, json &result, std::string &error)
 	const bool resChanged = newW != def->width || newH != def->height || newFpsN != def->fpsNum ||
 				newFpsD != def->fpsDen || newOutW != def->outputWidth ||
 				newOutH != def->outputHeight || newScale != def->scaleType;
+	// A color change rewrites the obs_video_info (output_format/colorspace/range), so
+	// it resets the canvas video and rebuilds its encoders exactly like a resolution
+	// change -- structural, gated by the same live refusal + reset. Only these three
+	// fields reach the pipeline (via ToVideoInfo); the sdr/hdr nit levels and
+	// useDefault are persisted below but never force a reset or block while-live.
+	const bool colorChanged = newColor.format != def->color.format || newColor.space != def->color.space ||
+				  newColor.range != def->color.range;
 	const bool vencChanged = !venc.empty() && venc != def->video.id;
 	const bool aencChanged = !aenc.empty() && aenc != def->audio.id;
 
-	if ((resChanged || vencChanged || aencChanged) && CanvasIsLive(uuid)) {
-		error = "cannot change resolution/fps/encoder while the canvas is live";
+	if ((resChanged || colorChanged || vencChanged || aencChanged) && CanvasIsLive(uuid)) {
+		error = "cannot change resolution/fps/color/encoder while the canvas is live";
 		return false;
 	}
 
-	// The Default canvas has no runtime mix -- a resolution/fps change drives the
-	// global/main video pipeline instead. Apply it BEFORE committing any def fields
-	// so a failed reset (rolled back inside ApplyGlobalVideo) leaves the def -- and
-	// thus canvases.json -- untouched and consistent with the live pipeline.
-	if (resChanged && def->isDefault) {
+	// The Default canvas has no runtime mix -- a resolution/fps/color change drives
+	// the global/main video pipeline instead. Apply it BEFORE committing any def
+	// fields so a failed reset (rolled back inside ApplyGlobalVideo) leaves the def
+	// -- and thus canvases.json -- untouched and consistent with the live pipeline.
+	if ((resChanged || colorChanged) && def->isDefault) {
 		obs_scale_type st = OBS_SCALE_BICUBIC;
 		ScaleFilterFromToken(newScale, st); // validated by ReadCanvasScale above
-		if (!ApplyGlobalVideo(newW, newH, newOutW, newOutH, newFpsN, newFpsD, st, error)) {
+		// Resolve the color tokens to libobs enums via ToVideoInfo (single source of
+		// truth for the token->enum mapping), then override only the color fields of
+		// the global reset.
+		CanvasDefinition scratch;
+		scratch.width = newW;
+		scratch.height = newH;
+		scratch.outputWidth = newOutW;
+		scratch.outputHeight = newOutH;
+		scratch.fpsNum = newFpsN;
+		scratch.fpsDen = newFpsD;
+		scratch.scaleType = newScale;
+		scratch.color = newColor;
+		obs_video_info tovi = {};
+		scratch.ToVideoInfo(tovi);
+		if (!ApplyGlobalVideo(newW, newH, newOutW, newOutH, newFpsN, newFpsD, st, error, &tovi.output_format,
+				      &tovi.colorspace, &tovi.range)) {
 			return false;
 		}
 	}
@@ -4118,6 +4334,7 @@ bool MethodCanvasUpdate(const json &params, json &result, std::string &error)
 	def->scaleType = newScale;
 	def->fpsNum = newFpsN;
 	def->fpsDen = newFpsD;
+	def->color = newColor;
 	// Switching an encoder id replaces its stored settings with that type's
 	// defaults (the prior blob belongs to a different encoder schema).
 	if (vencChanged) {
@@ -4130,8 +4347,9 @@ bool MethodCanvasUpdate(const json &params, json &result, std::string &error)
 	}
 
 	// A structural change invalidates the engine's cached encoder pair (bound to
-	// the old resolution/id), so a later restart rebuilds it against the new mix.
-	if (resChanged || vencChanged || aencChanged) {
+	// the old resolution/color/id), so a later restart rebuilds it against the new
+	// mix.
+	if (resChanged || colorChanged || vencChanged || aencChanged) {
 		ObsBootstrap::Multistream().InvalidateCanvasEncoders(uuid);
 	}
 	// Resolution/fps changes resize the live mix; the guard above already refused
@@ -4139,7 +4357,7 @@ bool MethodCanvasUpdate(const json &params, json &result, std::string &error)
 	// changes don't touch the mix.) The Default canvas was already handled above
 	// (it drives global video, not a runtime mix); ResetVideo reads *def so it must
 	// run after the commit.
-	if (resChanged && !def->isDefault) {
+	if ((resChanged || colorChanged) && !def->isDefault) {
 		ObsBootstrap::CanvasRuntime().ResetVideo(*def);
 	}
 
@@ -5919,21 +6137,23 @@ bool MethodSettingsRestore(const json &params, json &result, std::string &error)
 	if (params.contains("canvases")) {
 		CanvasStore &cs = ObsBootstrap::Canvases();
 
-		// Snapshot the pre-restore non-Default canvases (uuid + resolution) so we can
-		// tell which live mixes were created during the edit (tear them down) and
-		// which surviving ones had a resolution change (revert the mix). A live canvas
-		// can't be edited, so it can't appear in a revert delta; we still defensively
-		// skip touching one.
+		// Snapshot the pre-restore non-Default canvases (uuid + resolution + the
+		// pipeline-affecting color tokens) so we can tell which live mixes were created
+		// during the edit (tear them down) and which surviving ones had a
+		// resolution/color change (revert the mix). A live canvas can't be edited, so
+		// it can't appear in a revert delta; we still defensively skip touching one.
 		struct Prev {
 			std::string uuid;
 			uint32_t w, h, outW, outH, fpsN, fpsD;
 			std::string scale;
+			std::string fmt, space, range;
 		};
 		std::vector<Prev> before;
 		for (const CanvasDefinition &d : cs.Definitions()) {
 			if (!d.isDefault) {
 				before.push_back({d.uuid, d.width, d.height, d.outputWidth, d.outputHeight,
-						  d.fpsNum, d.fpsDen, d.scaleType});
+						  d.fpsNum, d.fpsDen, d.scaleType, d.color.format, d.color.space,
+						  d.color.range});
 			}
 		}
 
@@ -5971,10 +6191,11 @@ bool MethodSettingsRestore(const json &params, json &result, std::string &error)
 		// edit, brought back by the revert). EnsureCanvas is idempotent.
 		rt.SyncFromDefinitions();
 
-		// 3) Revert the live mix resolution for surviving non-Default canvases whose
-		// resolution changed during the edit, invalidating their cached encoders too
-		// (mirrors MethodCanvasUpdate). The Default canvas has no runtime mix -- its
-		// resolution drives global video, handled below.
+		// 3) Revert the live mix resolution/color for surviving non-Default canvases
+		// whose resolution or pipeline-affecting color changed during the edit,
+		// invalidating their cached encoders too (mirrors MethodCanvasUpdate). The
+		// Default canvas has no runtime mix -- its resolution/color drives global
+		// video, handled below.
 		for (const CanvasDefinition &d : cs.Definitions()) {
 			if (d.isDefault || CanvasIsLive(d.uuid)) {
 				continue;
@@ -5985,7 +6206,8 @@ bool MethodSettingsRestore(const json &params, json &result, std::string &error)
 				}
 				if (p.w != d.width || p.h != d.height || p.outW != d.outputWidth ||
 				    p.outH != d.outputHeight || p.fpsN != d.fpsNum || p.fpsD != d.fpsDen ||
-				    p.scale != d.scaleType) {
+				    p.scale != d.scaleType || p.fmt != d.color.format || p.space != d.color.space ||
+				    p.range != d.color.range) {
 					ObsBootstrap::Multistream().InvalidateCanvasEncoders(d.uuid);
 					rt.ResetVideo(d);
 				}
@@ -5994,15 +6216,18 @@ bool MethodSettingsRestore(const json &params, json &result, std::string &error)
 		}
 
 		// 4) Make global video follow the restored Default canvas def so the main
-		// pipeline (and output resolution) reverts too. Reuse Task 1's path; skip
-		// while an output is live (a live pipeline can't be reset).
+		// pipeline (and output resolution + color) reverts too. Reuse Task 1's path;
+		// skip while an output is live (a live pipeline can't be reset). Resolve the
+		// color tokens to libobs enums via ToVideoInfo, like MethodCanvasUpdate.
 		if (!AnyOutputActive()) {
 			const CanvasDefinition &def = cs.Default();
 			std::string e;
 			obs_scale_type st = OBS_SCALE_BICUBIC;
 			ScaleFilterFromToken(def.scaleType, st);
+			obs_video_info tovi = {};
+			def.ToVideoInfo(tovi);
 			ApplyGlobalVideo(def.width, def.height, def.outputWidth, def.outputHeight, def.fpsNum,
-					 def.fpsDen, st, e);
+					 def.fpsDen, st, e, &tovi.output_format, &tovi.colorspace, &tovi.range);
 		}
 	}
 
@@ -6299,6 +6524,8 @@ void Init()
 		{"settings.setAudio", MethodSettingsSetAudio},
 		{"settings.getGeneral", MethodSettingsGetGeneral},
 		{"settings.setGeneral", MethodSettingsSetGeneral},
+		{"settings.getAdvanced", MethodSettingsGetAdvanced},
+		{"settings.setAdvanced", MethodSettingsSetAdvanced},
 		{"settings.snapshot", MethodSettingsSnapshot},
 		{"settings.restore", MethodSettingsRestore},
 		{"canvas.list", MethodCanvasList},
