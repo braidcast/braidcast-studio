@@ -24,6 +24,10 @@ constexpr wchar_t kInteractClassName[] = L"ObsMultiStreamInteract";
 constexpr int kDefaultClientW = 1280;
 constexpr int kDefaultClientH = 720;
 
+// Private message posted from the source "rename" signal (any thread) so the
+// retitle runs on the UI thread, reading the already-updated source name.
+constexpr UINT WM_INTERACT_RENAME = WM_APP + 1;
+
 InteractManager *g_instance = nullptr;
 
 // Convert a UTF-8 string to a wide string for Win32 *W APIs (window titles).
@@ -248,6 +252,29 @@ InteractWindow *InteractFromHwnd(HWND hwnd)
 	return reinterpret_cast<InteractWindow *>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
 }
 
+// Source "remove" signal: the source was deleted (or its collection swapped).
+// Our hard ref keeps it (and its CEF browser) alive as a zombie until the window
+// closes, so close it. Fires from libobs (possibly off the UI thread) while the
+// source is being torn down; PostMessage defers the close + our ref-release to
+// the UI thread, after the signal returns -- never re-entering the teardown.
+void OnSourceRemoved(void *data, calldata_t * /*cd*/)
+{
+	auto *self = static_cast<InteractWindow *>(data);
+	if (self && self->Hwnd()) {
+		PostMessageW(self->Hwnd(), WM_CLOSE, 0, 0);
+	}
+}
+
+// Source "rename" signal: defer the retitle to the UI thread, which reads the
+// fresh name off the pinned source (already renamed by then).
+void OnSourceRenamed(void *data, calldata_t * /*cd*/)
+{
+	auto *self = static_cast<InteractWindow *>(data);
+	if (self && self->Hwnd()) {
+		PostMessageW(self->Hwnd(), WM_INTERACT_RENAME, 0, 0);
+	}
+}
+
 // Self-close through the manager so teardown is ordered + re-entrancy-safe (the
 // GWLP_USERDATA is cleared in Destroy, so a WM_DESTROY this triggers no-ops).
 void SelfClose(InteractWindow *self)
@@ -388,7 +415,23 @@ LRESULT CALLBACK InteractWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
 			return 0;
 		}
 		if (source) {
-			HandleKey(source, wparam, lparam, false, nullptr);
+			// Correlate the translated character (TranslateMessage queues a WM_CHAR
+			// before this WM_KEYDOWN is dispatched) and send ONE combined key_click
+			// carrying both native_vkey and text. This avoids obs-browser emitting a
+			// second JS keydown with keyCode 0 from a standalone WM_CHAR. Only plain
+			// keys are peeked; SYSKEY (Alt+...) keeps its WM_SYSCHAR for DefWindowProc
+			// so system shortcuts (Alt+F4, menu mnemonics) still work.
+			char text[8] = {0};
+			if (msg == WM_KEYDOWN) {
+				MSG cm;
+				if (PeekMessageW(&cm, hwnd, WM_CHAR, WM_CHAR, PM_REMOVE)) {
+					const wchar_t wc = wchar_t(cm.wParam);
+					const int n = WideCharToMultiByte(CP_UTF8, 0, &wc, 1, text,
+									  int(sizeof(text) - 1), nullptr, nullptr);
+					text[(n > 0 && n < int(sizeof(text))) ? n : 0] = '\0';
+				}
+			}
+			HandleKey(source, wparam, lparam, false, text[0] ? text : nullptr);
 		}
 		// Sys keys must still reach DefWindowProc so Alt+F4 / the system menu work.
 		if (msg == WM_SYSKEYDOWN) {
@@ -404,18 +447,12 @@ LRESULT CALLBACK InteractWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
 			break;
 		}
 		return 0;
-	case WM_CHAR: {
+	case WM_INTERACT_RENAME: {
+		// Retitle off the (already-renamed) pinned source, on the UI thread.
 		if (source) {
-			const wchar_t wc = wchar_t(wparam);
-			char utf8[8] = {0};
-			const int n = WideCharToMultiByte(CP_UTF8, 0, &wc, 1, utf8, int(sizeof(utf8) - 1), nullptr,
-							  nullptr);
-			utf8[(n > 0 && n < int(sizeof(utf8))) ? n : 0] = '\0';
-			// WM_CHAR carries text, not a vkey: leave native_vkey/scancode 0.
-			obs_key_event ev = {};
-			ev.modifiers = KeyModifiers();
-			ev.text = utf8;
-			obs_source_send_key_click(source, &ev, false);
+			const char *name = obs_source_get_name(source);
+			const std::wstring title = Utf8ToWide(std::string("Interact - ") + (name ? name : ""));
+			SetWindowTextW(hwnd, title.c_str());
 		}
 		return 0;
 	}
@@ -528,6 +565,14 @@ bool InteractWindow::Create(HINSTANCE instance)
 		return false;
 	}
 	obs_display_add_draw_callback(display, RenderInteract, state_);
+
+	// Track the source's lifetime: auto-close on delete (else our hard ref leaves
+	// a zombie source/browser running) and retitle on rename. Disconnected in
+	// Destroy before the ref is dropped.
+	if (signal_handler_t *handler = obs_source_get_signal_handler(source_)) {
+		signal_handler_connect(handler, "remove", OnSourceRemoved, this);
+		signal_handler_connect(handler, "rename", OnSourceRenamed, this);
+	}
 	return true;
 }
 
@@ -558,6 +603,13 @@ void InteractWindow::Destroy()
 		hwnd_ = nullptr;
 	}
 	if (source_) {
+		// Disconnect the lifetime signals BEFORE dropping our ref so a remove/rename
+		// racing teardown can't fire into a half-destroyed window. Disconnect is a
+		// safe no-op if Create failed before connecting.
+		if (signal_handler_t *sh = obs_source_get_signal_handler(source_)) {
+			signal_handler_disconnect(sh, "remove", OnSourceRemoved, this);
+			signal_handler_disconnect(sh, "rename", OnSourceRenamed, this);
+		}
 		obs_source_release(source_);
 		source_ = nullptr;
 		state_->source = nullptr;
