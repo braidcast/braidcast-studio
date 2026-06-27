@@ -104,6 +104,8 @@ target_sources(
     src/multistream/CanvasRuntime.hpp
     src/multistream/Hotkeys.cpp
     src/multistream/Hotkeys.hpp
+    src/multistream/VirtualCamManager.cpp
+    src/multistream/VirtualCamManager.hpp
     src/multistream/StorePaths.hpp
     # Embedded MCP server (Stage 1): a localhost HTTP/1.1 endpoint speaking the MCP
     # JSON-RPC subset, proxying a generic obs_call tool through Bridge::Dispatch.
@@ -195,6 +197,7 @@ set_source_files_properties(
   src/multistream/MultistreamEngine.cpp
   src/multistream/CanvasRuntime.cpp
   src/multistream/Hotkeys.cpp
+  src/multistream/VirtualCamManager.cpp
   src/mcp/McpServer.cpp
   PROPERTIES COMPILE_OPTIONS "/wd4201"
 )

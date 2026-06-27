@@ -31,6 +31,7 @@
 #include "multistream/OutputBindingStore.hpp"
 #include "multistream/SceneLinkStore.hpp"
 #include "multistream/StreamProfileStore.hpp"
+#include "multistream/VirtualCamManager.hpp"
 #include "paths.hpp"
 #include "preview_window.hpp"
 #include "projector_window.hpp"
@@ -246,6 +247,11 @@ StreamProfileStore g_streamProfiles;
 OutputBindingStore g_outputBindings;
 SceneLinkStore g_sceneLinks;
 
+// The virtual-camera output manager. Empty until Start() loads its target canvas;
+// its onChanged is wired to the virtualCam.changed event next to the engine's
+// status hook below. Shut down in Stop before the canvases it feeds are torn down.
+VirtualCamManager g_virtualCam;
+
 // The scene-collection registry (per-collection scene sets). Loaded + migrated
 // in Start before scenes are restored, so the no-arg SceneCollection::Save/Load
 // target the active collection's file; cleared in Stop.
@@ -380,6 +386,11 @@ SceneLinkStore &ObsBootstrap::SceneLinks()
 UndoManager &ObsBootstrap::Undo()
 {
 	return g_undo;
+}
+
+VirtualCamManager &ObsBootstrap::VirtualCam()
+{
+	return g_virtualCam;
 }
 
 ::CanvasRuntime &ObsBootstrap::CanvasRuntime()
@@ -629,6 +640,14 @@ bool ObsBootstrap::Start()
 			return uuid == g_canvases.Default().uuid ? obs_get_video() : g_canvasRuntime->VideoFor(uuid);
 		});
 	g_multistream->onStatusChanged = [] { Bridge::EmitMultistreamChanged(); };
+
+	// Restore the virtual camera's target canvas and route its start/stop signal
+	// state changes to the virtualCam.changed push. Done after the CanvasRuntime is
+	// up (Start() resolves the target canvas's mix through it). Like the engine's
+	// hook, EmitVirtualCamChanged marshals to TID_UI so the off-thread signal is
+	// safe.
+	g_virtualCam.Load();
+	g_virtualCam.onChanged = [] { Bridge::EmitVirtualCamChanged(); };
 
 	// Register the frontend-owned hotkeys (Start/Stop Streaming, wired to the engine
 	// above) and load saved bindings. Done after modules + scenes load (so every
@@ -2289,6 +2308,11 @@ void ObsBootstrap::Stop()
 		g_multistream->StopAll();
 		g_multistream.reset();
 	}
+
+	// Stop + release the virtual-camera output while libobs is still up, before the
+	// canvas mixes it feeds are destroyed below. Shutdown() disconnects its signals
+	// first, so onChanged is never read again after this -- no nulling needed.
+	g_virtualCam.Shutdown();
 
 	// Destroy the additional-canvas mixes while libobs is still up, after the
 	// engine (which bound encoders to those mixes) is gone but before the stores

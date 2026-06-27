@@ -41,6 +41,7 @@
 #include "multistream/SceneLinkStore.hpp"
 #include "multistream/StorePaths.hpp"
 #include "multistream/StreamProfileStore.hpp"
+#include "multistream/VirtualCamManager.hpp"
 #include <util/dstr.h>
 #include <util/platform.h>
 #include <graphics/vec2.h>
@@ -5962,6 +5963,58 @@ bool MethodCollectionsRemove(const json &params, json &result, std::string &erro
 	return true;
 }
 
+// Shared {active, canvas} payload so the virtualCam.* method results and the
+// virtualCam.changed push report an identical shape.
+json VirtualCamStatusJson()
+{
+	return json{
+		{"active", ObsBootstrap::VirtualCam().IsActive()},
+		{"canvas", ObsBootstrap::VirtualCam().TargetCanvas()},
+	};
+}
+
+bool MethodVirtualCamStart(const json & /*params*/, json &result, std::string &error)
+{
+	if (!ObsBootstrap::VirtualCam().Start(error)) {
+		return false;
+	}
+	result = json{{"ok", true}};
+	return true;
+}
+
+bool MethodVirtualCamStop(const json & /*params*/, json &result, std::string & /*error*/)
+{
+	ObsBootstrap::VirtualCam().Stop();
+	result = json{{"ok", true}};
+	return true;
+}
+
+bool MethodVirtualCamStatus(const json & /*params*/, json &result, std::string & /*error*/)
+{
+	result = VirtualCamStatusJson();
+	return true;
+}
+
+bool MethodVirtualCamGetConfig(const json & /*params*/, json &result, std::string & /*error*/)
+{
+	result = json{{"canvas", ObsBootstrap::VirtualCam().TargetCanvas()}};
+	return true;
+}
+
+bool MethodVirtualCamSetConfig(const json &params, json &result, std::string &error)
+{
+	if (!params.is_object()) {
+		error = "virtualCam.setConfig expects an object {canvas}";
+		return false;
+	}
+	const std::string canvas = OptString(params, "canvas");
+	ObsBootstrap::VirtualCam().SetTargetCanvas(canvas);
+	ObsBootstrap::VirtualCam().Save();
+	result = json{{"canvas", canvas}};
+	EmitVirtualCamChanged();
+	return true;
+}
+
 } // namespace
 
 bool WriteJsonString(const char *file, const char *key, const std::string &value)
@@ -6075,6 +6128,11 @@ void Init()
 		{"multistream.status", MethodMultistreamStatus},
 		{"multistream.startOutput", MethodMultistreamStartOutput},
 		{"multistream.stopOutput", MethodMultistreamStopOutput},
+		{"virtualCam.start", MethodVirtualCamStart},
+		{"virtualCam.stop", MethodVirtualCamStop},
+		{"virtualCam.status", MethodVirtualCamStatus},
+		{"virtualCam.getConfig", MethodVirtualCamGetConfig},
+		{"virtualCam.setConfig", MethodVirtualCamSetConfig},
 		{"undo.undo", MethodUndoUndo},
 		{"undo.redo", MethodUndoRedo},
 		{"undo.state", MethodUndoState},
@@ -6200,6 +6258,18 @@ void EmitMultistreamChanged()
 		return;
 	}
 	EmitEvent("multistream.changed", json{{"outputs", BuildStatusArray()}});
+}
+
+void EmitVirtualCamChanged()
+{
+	// Fired from the off-thread virtual-camera output start/stop signal handlers;
+	// defer to TID_UI so reading the manager state + emitting never races a
+	// concurrent UI-thread setConfig (mirrors EmitMultistreamChanged).
+	if (!CefCurrentlyOn(TID_UI)) {
+		CefPostTask(TID_UI, base::BindOnce(&EmitVirtualCamChanged));
+		return;
+	}
+	EmitEvent("virtualCam.changed", VirtualCamStatusJson());
 }
 
 void EmitAudioLevels()

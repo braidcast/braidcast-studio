@@ -66,6 +66,11 @@ void EmitEvent(const std::string &name, const json &payload);
 // (EmitEvent marshals to TID_UI).
 void EmitMultistreamChanged();
 
+// Push the virtual-camera state ({active, canvas}) as the "virtualCam.changed"
+// event. Wired as the VirtualCamManager's onChanged; safe to call off the UI
+// thread (it marshals to TID_UI before reading the manager + emitting).
+void EmitVirtualCamChanged();
+
 // Push the coalesced per-source audio levels as the "audio.levels" event. Called
 // by the AudioMonitor's volmeter callback FROM THE AUDIO THREAD; this marshals to
 // TID_UI, throttles to ~30 Hz, then snapshots the monitor's levels and builds the

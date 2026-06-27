@@ -23,6 +23,7 @@ class CanvasRuntime;
 class AudioMonitor;
 class SceneCollections;
 class UndoManager;
+class VirtualCamManager;
 
 namespace ObsBootstrap {
 bool Start();
@@ -90,6 +91,13 @@ AudioMonitor &AudioMonitor();
 // bridge can serve undo.undo/redo/state over it and wire its onChanged to the
 // undo.changed event. Valid between Start() and Stop().
 UndoManager &Undo();
+
+// The virtual-camera output manager (start/stop the OBS virtual camera, fed from
+// a chosen canvas's video). Owned by the bootstrap (Load() in Start after the
+// CanvasRuntime is up, Shutdown() in Stop before the canvases it feeds are torn
+// down). Exposed so the bridge can serve virtualCam.* over it. Valid between
+// Start() and Stop().
+VirtualCamManager &VirtualCam();
 
 // Re-fire OBS_FRONTEND_EVENT_SCENE_CHANGED through the shim so the loaded UI page
 // observes a forwarded obs.event (proves obs->shim->bridge->JS post-load).
