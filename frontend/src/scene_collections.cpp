@@ -4,6 +4,7 @@
 #include "log.hpp"
 #include "multistream/MultistreamEngine.hpp"
 #include "multistream/OutputBindingStore.hpp"
+#include "multistream/SceneLinkStore.hpp"
 #include "multistream/StorePaths.hpp"
 #include "obs_bootstrap.hpp"
 #include "scene_persistence.hpp"
@@ -273,6 +274,7 @@ bool SceneCollections::Switch(const std::string &id, std::string &error)
 	// collection so both paths resolve to its files.
 	SceneCollection::Save(ActiveScenePath());
 	ObsBootstrap::OutputBindings().Save(ActiveBindingsPath());
+	ObsBootstrap::SceneLinks().Save(ActiveSceneLinksPath());
 
 	// Tear the outgoing scene world down leak-safely: unbind + destroy the channel-0
 	// transition (releasing its wrapped scene), release the boot placeholder scene if
@@ -302,6 +304,7 @@ bool SceneCollections::Switch(const std::string &id, std::string &error)
 	// crash; the preview-gating + Multistream dock simply see zero bindings. Done
 	// after activeId_ flipped above so ActiveBindingsPath() resolves the target.
 	ObsBootstrap::OutputBindings().Load(ActiveBindingsPath());
+	ObsBootstrap::SceneLinks().Load(ActiveSceneLinksPath());
 
 	// Resync every window: the active collection, its scene list, and the transition
 	// (re-created above) all changed; the bindings swap re-decides preview-gating
@@ -310,6 +313,7 @@ bool SceneCollections::Switch(const std::string &id, std::string &error)
 	Bridge::EmitEvent("scenes.changed", nlohmann::json{{"canvas", nullptr}});
 	Bridge::EmitEvent("transitions.changed", nlohmann::json::object());
 	Bridge::EmitEvent("outputBinding.changed", nlohmann::json::object());
+	Bridge::EmitEvent("sceneLink.changed", nlohmann::json::object());
 	Bridge::EmitMultistreamChanged();
 
 	HostLog("[scene] switched to collection '" + it->name + "' file=" + ActiveScenePath());

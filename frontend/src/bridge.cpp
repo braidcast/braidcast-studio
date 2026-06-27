@@ -36,6 +36,7 @@
 #include "multistream/Hotkeys.hpp"
 #include "multistream/MultistreamEngine.hpp"
 #include "multistream/OutputBindingStore.hpp"
+#include "multistream/SceneLinkStore.hpp"
 #include "multistream/StorePaths.hpp"
 #include "multistream/StreamProfileStore.hpp"
 #include <util/dstr.h>
@@ -815,6 +816,136 @@ bool MethodScenesCreate(const json &params, json &result, std::string &error)
 	return true;
 }
 
+// --- scene links ------------------------------------------------------------
+
+// Resolve a GLOBAL (Default-canvas) scene name -> its source uuid (empty if none).
+static std::string MainSceneUuidFromName(const std::string &name)
+{
+	OBSSourceAutoRelease s = obs_get_source_by_name(name.c_str());
+	if (!s || !obs_scene_from_source(s)) {
+		return {};
+	}
+	const char *u = obs_source_get_uuid(s);
+	return u ? u : std::string();
+}
+
+// Resolve a GLOBAL scene uuid -> its current name (empty if none).
+static std::string MainSceneNameFromUuid(const std::string &uuid)
+{
+	OBSSourceAutoRelease s = obs_get_source_by_uuid(uuid.c_str());
+	if (!s) {
+		return {};
+	}
+	const char *n = obs_source_get_name(s);
+	return n ? n : std::string();
+}
+
+// Resolve a canvas scene name -> uuid within one canvas (empty if none).
+static std::string CanvasSceneUuidFromName(const std::string &canvasUuid, const std::string &name)
+{
+	for (const CanvasRuntime::SceneInfo &s : ObsBootstrap::CanvasRuntime().Scenes(canvasUuid)) {
+		if (s.name == name) {
+			return s.uuid;
+		}
+	}
+	return {};
+}
+
+// {links:[{mainScene,mainSceneName,canvas,canvasScene,canvasSceneName}]} -- flat
+// rows. Names are resolved for display; rows whose uuids no longer resolve are
+// still returned with empty names (the UI hides those / they get pruned on edit).
+bool MethodSceneLinkList(const json &params, json &result, std::string &error)
+{
+	(void)params;
+	(void)error;
+	json rows = json::array();
+	const CanvasSceneLink &link = ObsBootstrap::SceneLinks().Links();
+	for (const auto &[mainUuid, perCanvas] : link.map) {
+		const std::string mainName = MainSceneNameFromUuid(mainUuid);
+		for (const auto &[canvasUuid, canvasSceneUuid] : perCanvas) {
+			std::string canvasSceneName;
+			for (const CanvasRuntime::SceneInfo &s : ObsBootstrap::CanvasRuntime().Scenes(canvasUuid)) {
+				if (s.uuid == canvasSceneUuid) {
+					canvasSceneName = s.name;
+					break;
+				}
+			}
+			rows.push_back(json{{"mainScene", mainUuid},
+					    {"mainSceneName", mainName},
+					    {"canvas", canvasUuid},
+					    {"canvasScene", canvasSceneUuid},
+					    {"canvasSceneName", canvasSceneName}});
+		}
+	}
+	result = json{{"links", std::move(rows)}};
+	return true;
+}
+
+// params: {mainScene:<name>, canvas:<uuid>, canvasScene:<name>}. Sets/moves the
+// link, persists, applies immediately if `mainScene` is the live program scene,
+// and broadcasts sceneLink.changed.
+bool MethodSceneLinkSet(const json &params, json &result, std::string &error)
+{
+	const std::string mainName = OptString(params, "mainScene");
+	const std::string canvasUuid = OptString(params, "canvas");
+	const std::string canvasSceneName = OptString(params, "canvasScene");
+	if (mainName.empty() || canvasUuid.empty() || canvasSceneName.empty()) {
+		error = "sceneLink.set requires 'mainScene', 'canvas', 'canvasScene'";
+		return false;
+	}
+	const std::string mainUuid = MainSceneUuidFromName(mainName);
+	if (mainUuid.empty()) {
+		error = "no main scene named '" + mainName + "'";
+		return false;
+	}
+	const std::string canvasSceneUuid = CanvasSceneUuidFromName(canvasUuid, canvasSceneName);
+	if (canvasSceneUuid.empty()) {
+		error = "no scene named '" + canvasSceneName + "' in that canvas";
+		return false;
+	}
+
+	ObsBootstrap::SceneLinks().Links().Set(mainUuid, canvasUuid, canvasSceneUuid);
+	ObsBootstrap::SceneLinks().Save();
+
+	// Instant feedback: if the linked main scene is live now, switch the canvas.
+	OBSSourceAutoRelease program = Transitions::GetProgramScene();
+	if (program) {
+		const char *pu = obs_source_get_uuid(program);
+		if (pu && mainUuid == pu) {
+			ObsBootstrap::ApplyCanvasSceneLinks(mainUuid);
+		}
+	}
+
+	EmitEvent("sceneLink.changed", json::object());
+	result = json::object();
+	return true;
+}
+
+// params: {mainScene:<name>, canvas:<uuid>}. Removes that canvas's link for the
+// main scene, persists, broadcasts.
+bool MethodSceneLinkClear(const json &params, json &result, std::string &error)
+{
+	const std::string mainName = OptString(params, "mainScene");
+	const std::string canvasUuid = OptString(params, "canvas");
+	if (mainName.empty() || canvasUuid.empty()) {
+		error = "sceneLink.clear requires 'mainScene' and 'canvas'";
+		return false;
+	}
+	const std::string mainUuid = MainSceneUuidFromName(mainName);
+	CanvasSceneLink &link = ObsBootstrap::SceneLinks().Links();
+	auto it = link.map.find(mainUuid);
+	if (it != link.map.end()) {
+		it->second.erase(canvasUuid);
+		if (it->second.empty()) {
+			link.map.erase(it);
+		}
+		ObsBootstrap::SceneLinks().Save();
+	}
+	EmitEvent("sceneLink.changed", json::object());
+	result = json::object();
+	return true;
+}
+
 bool MethodScenesRemove(const json &params, json &result, std::string &error)
 {
 	const std::string name = OptString(params, "name");
@@ -825,6 +956,9 @@ bool MethodScenesRemove(const json &params, json &result, std::string &error)
 
 	const CanvasTarget canvasTarget = ResolveCanvasTarget(params);
 	if (canvasTarget.isAdditional) {
+		// Resolve the canvas scene's uuid before removal so the link prune below can
+		// match it (the source is gone afterwards).
+		const std::string goneSceneUuid = CanvasSceneUuidFromName(canvasTarget.uuid, name);
 		// Remove from the additional canvas's own scenes; the runtime refuses the
 		// last scene and switches channel 0 off the target first.
 		if (!ObsBootstrap::CanvasRuntime().RemoveScene(canvasTarget.uuid, name)) {
@@ -832,6 +966,7 @@ bool MethodScenesRemove(const json &params, json &result, std::string &error)
 			return false;
 		}
 		EmitScenesChanged(canvasTarget.uuid);
+		ObsBootstrap::PruneSceneLinksForCanvasScene(canvasTarget.uuid, goneSceneUuid);
 		result = json{{"removed", name}};
 		return true;
 	}
@@ -879,6 +1014,11 @@ bool MethodScenesRemove(const json &params, json &result, std::string &error)
 		return false;
 	}
 
+	// Capture the uuid before removal so links referencing it can be pruned after
+	// the source is destroyed.
+	const char *removedUuidC = obs_source_get_uuid(target);
+	const std::string removedUuid = removedUuidC ? removedUuidC : std::string();
+
 	// If the target is the current scene, switch the program scene to the fallback
 	// first (non-animated -- the target is about to be removed).
 	obs_source_t *current = Transitions::GetProgramScene(); // addref'd; unwraps the ch0 transition
@@ -898,6 +1038,7 @@ bool MethodScenesRemove(const json &params, json &result, std::string &error)
 
 	EmitScenesChanged(std::string());
 	SceneCollection::Save();
+	ObsBootstrap::PruneSceneLinksForMainScene(removedUuid);
 	result = json{{"removed", name}};
 	return true;
 }
@@ -931,7 +1072,11 @@ bool MethodScenesSetCurrent(const json &params, json &result, std::string &error
 		return false;
 	}
 	Transitions::SetProgramScene(source, true); // animate through the program transition
+	const char *switchedUuid = obs_source_get_uuid(source);
+	const std::string switchedUuidStr = switchedUuid ? switchedUuid : std::string();
 	obs_source_release(source);
+
+	ObsBootstrap::ApplyCanvasSceneLinks(switchedUuidStr);
 
 	EmitScenesChanged(std::string());
 	SceneCollection::Save();
@@ -2917,6 +3062,7 @@ bool MethodCanvasRemove(const json &params, json &result, std::string &error)
 
 	store.Remove(uuid);
 	store.Save();
+	ObsBootstrap::PruneSceneLinksForCanvas(uuid);
 	EmitEvent("canvas.changed", json::object());
 	result = json{{"removed", uuid}};
 	return true;
@@ -4700,6 +4846,9 @@ void Init()
 		{"outputBinding.update", MethodOutputBindingUpdate},
 		{"outputBinding.setEnabled", MethodOutputBindingSetEnabled},
 		{"outputBinding.remove", MethodOutputBindingRemove},
+		{"sceneLink.list", MethodSceneLinkList},
+		{"sceneLink.set", MethodSceneLinkSet},
+		{"sceneLink.clear", MethodSceneLinkClear},
 		{"multistream.status", MethodMultistreamStatus},
 		{"multistream.startOutput", MethodMultistreamStartOutput},
 		{"multistream.stopOutput", MethodMultistreamStopOutput},
