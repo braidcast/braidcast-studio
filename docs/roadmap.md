@@ -867,6 +867,92 @@ frontend-only (backend already had `streaming.start`/`stop` = StartAllEnabled/St
 
 ---
 
+## Phase 8 — Platform integration: OAuth + stream metadata + Go Live modal 🔭 PLANNED
+
+**Goal:** A "Stream Information" modal that opens when the single **Go Live** button is clicked
+(classic-OBS style), letting the user set per-destination **title / category / tags / thumbnail**
+and push them to the platform via its API before the stream starts. Platforms: **Twitch, Kick,
+YouTube** (minimal metadata). OAuth is the enabler — not for streaming itself (RTMP stream keys
+already work), but for editing live metadata the way stock OBS does.
+
+**Why OAuth, not just stream keys:** streaming works today via RTMP keys. OAuth adds *managing*
+the broadcast — title, game/category, tags, thumbnail — from inside the app.
+
+### Researched platform reality (2026-06-28; sources in the design analysis)
+
+| | Title | Category | Tags | Thumbnail | Desktop auth | Notes |
+|---|---|---|---|---|---|---|
+| **Twitch** | ✓ | ✓ game_id | ✓ ≤10, lowercase-alnum-25 | ✗ (no API) | **Device Code Flow**, no secret | `PATCH /helix/channels` (one call). 4 h token; refresh one-time-use, 30-day inactivity expiry. |
+| **Kick** | ✓ | ✓ category_id | ✓ ≤10 | ✗ (read-only field) | Auth-code **+ PKCE but secret STILL required**; no device flow | `PATCH /public/v1/channels` (one call). Official API exists (`api.kick.com`). Youngest API. |
+| **YouTube** | ✓ | ✓ (on the video, separate call) | ✓ | ✓ `thumbnails.set` (2 MB, phone-verified acct) | **PKCE loopback** (Desktop client) or device flow, no secret | Full broadcast lifecycle: create→bind→set meta→thumbnail→transition. **Sensitive scope ⇒ Google app verification; 100-user cap until verified (weeks).** Quota fine. |
+
+Key asymmetry: **Twitch/Kick = one PATCH**; **YouTube = a whole broadcast-lifecycle integration**.
+**Thumbnail is YouTube-only** — Twitch & Kick have no write API for it (hide the field for them).
+**Can't reuse `auth.obsproject.com`** (OBS's own proxy) — use direct platform flows + our own
+registered OAuth clients. **Kick has no public-client path** — embed an (obfuscated) client secret
+or run a thin token-exchange proxy.
+
+### Portable from `frontend_old/` (the CEF rewrite dropped it)
+
+- `frontend_old/oauth/{Auth,OAuth,TwitchAuth,YoutubeAuth,RestreamAuth}.{cpp,hpp}` — vanilla
+  OAuth2 (auth-code + refresh, loopback) — flow logic portable; Qt coupling thin.
+- `frontend_old/utility/YoutubeApiWrappers.*` + `dialogs/OBSYoutubeActions.*` — the FULL YouTube
+  metadata + broadcast lifecycle (insert/bind/transition, categories, `videos.update`,
+  `thumbnails/set`). The richest reference; rebuild its UI in Svelte, port the API calls.
+- Twitch/Restream old code = stream-key fetch only (no metadata UI). **No Kick code anywhere.**
+- Build-cred pattern ALREADY present: CMake cacheVars from env (`TWITCH_CLIENTID`/`_HASH`,
+  `YOUTUBE_CLIENTID`/`_SECRET`/`_HASH`, `RESTREAM_*`), XOR-obfuscated via `utility/obf.h`; CI
+  already injects `secrets.TWITCH_CLIENT_ID`. Add `KICK_*` the same way.
+
+### Proposed architecture
+
+- **OAuth + platform API calls live in the C++ bridge**, not the JS bundle — keeps client
+  secrets out of the shipped web assets, runs the loopback HTTP listener / device-code polling
+  natively, and reuses the portable old OAuth logic. New bridge methods (sketch):
+  `oauth.connect{platform}` / `oauth.disconnect` / `oauth.status`, `streamMeta.getCategories`
+  (search/typeahead), `streamMeta.get`/`streamMeta.set{profile, fields}`. Svelte owns the modal.
+- **Token store:** `%APPDATA%/obs-multistream/oauth_tokens.json` (ideally DPAPI-wrapped on
+  Windows; at least not world-readable). Per-platform refresh handling.
+- **Account ↔ profile link:** a connected OAuth account attaches to a stream profile (which
+  already carries platform + key); metadata editing for a destination requires its account
+  connected (inline "Connect…" otherwise).
+- **Go Live modal flow:** click Go Live → modal lists each armed destination grouped by
+  platform/account → platform-conditional fields (title/category/tags everywhere; thumbnail +
+  privacy/description for YouTube) → confirm pushes metadata per platform, then `streaming.start`;
+  partial-failure tolerant (warn, still allow going live). Also reachable mid-stream to edit.
+
+### Proposed phasing
+
+- **8a — OAuth foundation + first platform (Twitch).** Bridge OAuth (device-code flow), token
+  store, "Connect account" UI, `streamMeta` set/category-search; Twitch `PATCH /helix/channels`.
+  Fastest end-to-end proof (no secret, no verification, single PATCH).
+- **8b — Go Live modal.** Wire the single Go Live button to open the modal; platform-conditional
+  fields; Twitch metadata pushed on confirm → then start.
+- **8c — Kick.** Auth-code+PKCE with embedded (obfuscated) secret; `PATCH /public/v1/channels`.
+- **8d — YouTube.** PKCE loopback; broadcast lifecycle (create/bind/transition) + category/tags +
+  privacy + `thumbnails.set`. **Start Google app-verification paperwork in parallel from 8a.**
+- **8e — Polish.** Thumbnail picker, mid-stream metadata edit, refresh-token re-auth UX, errors.
+
+### Open decisions (resolve before building)
+
+1. **Thumbnail YouTube-only** acceptable? (Twitch/Kick can't via API.)
+2. **Kick secret:** embed obfuscated in the binary (open-source tradeoff, like OBS's old Twitch)
+   vs run a thin token-exchange proxy? (Recommend embed for now.)
+3. **YouTube model:** create-a-broadcast-per-go-live (OBS style, full control) vs update-the-
+   existing/auto-created broadcast? (Recommend create-per-go-live — matches the old dialog.)
+4. **OAuth in the C++ bridge** (recommended, secrets out of JS) confirmed?
+5. Sequencing: **Twitch → Kick → YouTube** (by API simplicity + verification gate) confirmed?
+
+### Risks
+
+- Google verification gate (sensitive scope) — weeks; 100-user cap until done. Start early.
+- Kick API youngest/least-documented; no device flow; secret required. Build defensively (backoff,
+  undocumented rate limits).
+- Refresh-token lifecycle differs per platform (Twitch one-time-use + 30-day inactivity).
+- Secret handling: embedded secrets are extractable — obfuscate + accept, or proxy.
+
+---
+
 ## Backlog & deferred decisions ⏸
 
 - ⏸ **GoLive / Multitrack Video** — currently dormant. It's Twitch Enhanced
