@@ -878,6 +878,31 @@ already work), but for editing live metadata the way stock OBS does.
 **Why OAuth, not just stream keys:** streaming works today via RTMP keys. OAuth adds *managing*
 the broadcast — title, game/category, tags, thumbnail — from inside the app.
 
+**Core requirement — extensibility (a provider registry, not per-platform branching).** Adding a
+new provider must be ~one module + one registry line, with the modal and engine untouched. This
+is a data/registry design, not a `switch (platform)`:
+
+- **`StreamProvider` interface** (C++ bridge) per platform: `id`, `displayName`, an **auth
+  strategy** reference, `authConfig` (endpoints/scopes/cred-env-var names), a **capability
+  descriptor** (which fields it supports + their constraints), `searchCategories(token, query)`,
+  `applyMetadata(token, profile, fields)`, and optional broadcast-lifecycle hooks
+  (create/bind/transition) for providers that need them (YouTube, Facebook).
+- **`ProviderRegistry`** = `map<id, StreamProvider>` populated at boot. Bridge methods are
+  generic and dispatch through it: `oauth.providers` (returns every provider's capability schema
+  as JSON), `oauth.connect{providerId}` / `disconnect` / `status`, `streamMeta.searchCategories`,
+  `streamMeta.get`/`set{profile, fields}`.
+- **Auth strategies are a small reusable set** providers pick from — a new provider almost always
+  reuses one rather than writing flow code: `device-code` · `pkce-loopback` · `auth-code+secret`
+  (loopback or embedded webview) · (optional `proxy` for secret-required providers). Secret
+  handling is a strategy concern (embed-obfuscated vs proxy), not per-provider code.
+- **Capability-driven modal:** the Svelte Go Live modal renders fields *from* each connected
+  destination's capability descriptor (title/category/tags/thumbnail/privacy/description as
+  data). A new thumbnail-capable provider → the thumbnail field appears automatically; one
+  without → hidden. **No modal edits to add a provider.**
+- **Net:** adding a provider = a new `XProvider` (declares endpoints/scopes/caps + apply impl,
+  reuses an auth strategy) + one registry entry + `X_CLIENTID`/`X_SECRET` env vars. Zero changes
+  to the modal, the engine, or the other providers.
+
 ### Researched platform reality (2026-06-28; sources in the design analysis)
 
 | | Title | Category | Tags | Thumbnail | Desktop auth | Notes |
@@ -887,10 +912,39 @@ the broadcast — title, game/category, tags, thumbnail — from inside the app.
 | **YouTube** | ✓ | ✓ (on the video, separate call) | ✓ | ✓ `thumbnails.set` (2 MB, phone-verified acct) | **PKCE loopback** (Desktop client) or device flow, no secret | Full broadcast lifecycle: create→bind→set meta→thumbnail→transition. **Sensitive scope ⇒ Google app verification; 100-user cap until verified (weeks).** Quota fine. |
 
 Key asymmetry: **Twitch/Kick = one PATCH**; **YouTube = a whole broadcast-lifecycle integration**.
-**Thumbnail is YouTube-only** — Twitch & Kick have no write API for it (hide the field for them).
+**Thumbnail support: YouTube ✓, Facebook ✓, Twitch ✗, Kick ✗** (the latter two have no write API
+— hide the field for them; the capability descriptor drives this automatically).
 **Can't reuse `auth.obsproject.com`** (OBS's own proxy) — use direct platform flows + our own
 registered OAuth clients. **Kick has no public-client path** — embed an (obfuscated) client secret
 or run a thin token-exchange proxy.
+
+### Candidate providers beyond the MVP three (2026-06-28 research)
+
+The registry is designed so these slot in later without touching the modal/engine.
+
+- **Facebook Page Live — FEASIBLE, validates the thumbnail path, but highest-friction auth.**
+  `POST /{page-id}/live_videos` → RTMPS ingest + a live-video id; sets `title`, `description`,
+  `privacy`, `content_tags` (generic interest IDs — **no real game/category catalog** since
+  Facebook Gaming was sunset). **Thumbnail:** `POST /{video-id}/thumbnails` exists (so FB is a
+  second thumbnail-capable provider) — *but whether it applies before/during a live (vs only the
+  saved VOD) is unverified; test before committing.* **Auth = auth-code + client-secret via an
+  embedded webview** — Meta supports **no device flow, no PKCE loopback**, and its policy says
+  **don't embed the secret in a binary** → this provider needs the **proxy** auth strategy (or an
+  accepted-risk embed). **Meta App Review is a hard gate** (dev mode only reaches app
+  admins/testers — same shape as Google's verification, possibly stricter). 60-day tokens, no
+  silent refresh; Graph API has a ~2-yr-per-version deprecation cadence = ongoing maintenance.
+  → Slots in as a `facebook` provider using the `auth-code+secret`/`proxy` strategy; good test of
+  the thumbnail-capable + lifecycle + proxy paths. Schedule **after** the MVP three.
+- **Instagram — NOT FEASIBLE via official API; do not plan a built-in.** Instagram exposes **no
+  programmatic live API** for third parties: the Content Publishing API has no live CREATE path,
+  and Instagram Live Producer keys are browser-only and **cannot be retrieved via API** (Meta:
+  "no plans to build one"). The only path is the user manually pasting a browser-obtained stream
+  key into a normal RTMP profile (which already works) — there's nothing for the app to *own*.
+  Document as out-of-scope; revisit only if Meta ships a live API.
+
+So the realistic provider set is **Twitch · Kick · YouTube · (later) Facebook Page**, spanning
+all four auth strategies — which is exactly why the registry/strategy abstraction is the core of
+this phase.
 
 ### Portable from `frontend_old/` (the CEF rewrite dropped it)
 
@@ -932,6 +986,11 @@ or run a thin token-exchange proxy.
 - **8d — YouTube.** PKCE loopback; broadcast lifecycle (create/bind/transition) + category/tags +
   privacy + `thumbnails.set`. **Start Google app-verification paperwork in parallel from 8a.**
 - **8e — Polish.** Thumbnail picker, mid-stream metadata edit, refresh-token re-auth UX, errors.
+- **8f — Facebook Page (optional, post-MVP).** A `facebook` provider on the `auth-code+secret`/
+  `proxy` strategy: `live_videos` create + title/description/privacy + `thumbnails` upload (test
+  the live-timing gap first). Requires a token-exchange proxy (or accepted-risk embedded secret)
+  and Meta App Review (start that paperwork before building). **Instagram is excluded** — no
+  official live API.
 
 ### Open decisions (resolve before building)
 
@@ -942,6 +1001,11 @@ or run a thin token-exchange proxy.
    existing/auto-created broadcast? (Recommend create-per-go-live — matches the old dialog.)
 4. **OAuth in the C++ bridge** (recommended, secrets out of JS) confirmed?
 5. Sequencing: **Twitch → Kick → YouTube** (by API simplicity + verification gate) confirmed?
+6. **Facebook Page** — in scope as a later provider (8f)? It needs a **token-exchange proxy**
+   (Meta forbids embedding the secret + has no device/PKCE flow) and App Review. Are we willing to
+   run a tiny proxy service? If not, Facebook (and any future secret-required, no-public-flow
+   provider) is embed-with-accepted-risk or dropped.
+7. **Instagram** — confirmed out-of-scope (no official live API; manual key paste only)?
 
 ### Risks
 
