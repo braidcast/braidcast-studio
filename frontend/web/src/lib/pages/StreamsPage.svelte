@@ -1,7 +1,17 @@
+<script lang="ts">
+  import StreamsTab from "../StreamsTab.svelte";
+</script>
+
 <div class="page">
   <header class="head">
     <span class="title">Streams</span>
   </header>
+
+  <div class="body">
+    <div class="pane">
+      <StreamsTab />
+    </div>
+  </div>
 </div>
 
 <style>
@@ -28,5 +38,16 @@
     font-size: 16px;
     font-weight: 600;
     letter-spacing: -0.01em;
+  }
+  .body {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+  }
+  .pane {
+    flex: 1;
+    min-width: 0;
+    overflow: auto;
+    padding: 24px 28px;
   }
 </style>

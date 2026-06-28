@@ -8,7 +8,6 @@ import { setPage } from "./pageStore.svelte";
 export type SettingsTab =
   | "general"
   | "canvases"
-  | "streams"
   | "audio"
   | "hotkeys"
   | "browserDocks"
