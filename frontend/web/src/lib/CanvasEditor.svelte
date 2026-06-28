@@ -346,7 +346,7 @@
     margin-top: 14px;
     padding: 14px;
     border: 1px solid var(--border);
-    border-radius: 10px;
+    border-radius: 0;
     background: var(--bg-raised);
   }
   .form h4 {
@@ -375,7 +375,7 @@
     border: 1px solid var(--border);
     background: var(--bg-sunken);
     color: var(--text-soft);
-    border-radius: 999px;
+    border-radius: 0;
     padding: 4px 11px;
     font: inherit;
     font-size: 12px;
@@ -417,7 +417,7 @@
   select {
     background: var(--bg-sunken);
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: 0;
     padding: 7px 10px;
     color: var(--text);
     font: inherit;
@@ -447,7 +447,7 @@
     margin-top: 4px;
   }
   .btn {
-    border-radius: 6px;
+    border-radius: 0;
     padding: 7px 14px;
     font: inherit;
     cursor: pointer;

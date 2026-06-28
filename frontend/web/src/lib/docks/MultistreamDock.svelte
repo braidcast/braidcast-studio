@@ -43,23 +43,6 @@
     };
   });
 
-  function isRunning(state: MultistreamState): boolean {
-    return state === "connecting" || state === "live";
-  }
-
-  async function toggle(o: MultistreamStatus) {
-    error = null;
-    try {
-      if (isRunning(o.state)) {
-        await obs.call("multistream.stopOutput", { uuid: o.bindingUuid });
-      } else {
-        await obs.call("multistream.startOutput", { uuid: o.bindingUuid });
-      }
-      // The authoritative row update arrives via multistream.changed.
-    } catch (e) {
-      error = (e as Error).message;
-    }
-  }
 </script>
 
 <div class="dock-body">
@@ -90,9 +73,6 @@
               <div class="lasterr">{o.lastError}</div>
             {/if}
           </div>
-          <button class="mini" class:on={isRunning(o.state)} onclick={() => void toggle(o)}>
-            {isRunning(o.state) ? "STOP" : "START"}
-          </button>
         </li>
       {/each}
     </ul>
@@ -157,26 +137,6 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-  .mini {
-    flex-shrink: 0;
-    height: auto;
-    padding: 4px 10px;
-    font-size: 10px;
-    letter-spacing: var(--letter-spacing);
-    text-transform: var(--label-case);
-    background: transparent;
-    border: var(--border-weight) solid var(--color-border);
-    color: var(--color-text);
-  }
-  .mini:hover {
-    border-color: var(--color-accent);
-    color: var(--color-accent);
-  }
-  .mini.on {
-    background: var(--color-live);
-    border-color: var(--color-live);
-    color: #fff;
   }
   /* Multistream messages use a roomier pad than the shared 8px 7px default. */
   .dock-msg {

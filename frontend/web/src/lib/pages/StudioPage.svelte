@@ -84,7 +84,10 @@
     if (focusedOutputs.some((o) => o.state === "error")) return "error";
     return "idle";
   });
-  let anyRunning = $derived(focusedOutputs.some((o) => o.state === "live" || o.state === "connecting"));
+  // Authoritative GLOBAL live flag for the GO LIVE button: streaming.changed
+  // drives it, seeded once on mount from the initial multistream.status read.
+  // (The per-canvas focus dot / LIVE badge above still derive from focusedOutputs.)
+  let anyRunning = $state(false);
 
   // Mock focusedDot: green when live, accent otherwise (connecting/error keep the
   // meter colors so the dot still reads transient states).
@@ -247,6 +250,12 @@
     };
     loadCanvases();
     loadStatus();
+    // Authoritative initial seed for the GLOBAL live flag: any enabled output
+    // running anywhere => live. Subsequent transitions arrive via streaming.changed.
+    obs
+      .call("multistream.status")
+      .then((res) => (anyRunning = res.outputs.some((o) => o.state === "live" || o.state === "connecting")))
+      .catch(() => {});
     obs
       .call("settings.getGeneral")
       .then((g) => {
@@ -267,6 +276,7 @@
       .catch(() => {});
     const offCanvas = obs.on("canvas.changed", loadCanvases);
     const offMulti = obs.on("multistream.changed", (p) => (outputs = p.outputs));
+    const offStreaming = obs.on("streaming.changed", (p) => (anyRunning = p.active));
     const offBindings = obs.on("outputBinding.changed", loadStatus);
     const offVcam = obs.on("virtualCam.changed", (s) => {
       vcamActive = s.active;
@@ -279,6 +289,7 @@
     return () => {
       offCanvas();
       offMulti();
+      offStreaming();
       offBindings();
       offVcam();
       offGeneral();
@@ -537,36 +548,28 @@
   }
 
   async function doToggleLive(): Promise<void> {
-    if (busy || focusedOutputs.length === 0) return;
+    if (busy) return;
     busy = true;
     try {
-      // No startAll bridge method -- drive each enabled output bound to the focused
-      // canvas (the bottom bar is per-focused-canvas). Per-call errors are ignored;
-      // the authoritative state arrives via multistream.changed.
-      if (anyRunning) {
-        for (const o of focusedOutputs) {
-          if (o.state === "live" || o.state === "connecting") {
-            await obs.call("multistream.stopOutput", { uuid: o.bindingUuid }).catch(() => {});
-          }
-        }
-      } else {
-        for (const o of focusedOutputs) {
-          await obs.call("multistream.startOutput", { uuid: o.bindingUuid }).catch(() => {});
-        }
-      }
+      // Single source of truth: start/stop every enabled binding across all canvases.
+      // The engine no-ops if nothing is armed; the authoritative live flag arrives
+      // back via streaming.changed.
+      await obs.call(anyRunning ? "streaming.stop" : "streaming.start");
+    } catch (e) {
+      console.log("streaming toggle failed: " + (e as Error).message);
     } finally {
       busy = false;
     }
   }
 
   // Route through a confirm dialog when the matching go-live warning is enabled;
-  // otherwise toggle directly. The busy / empty-outputs guards live in doToggleLive.
+  // otherwise toggle directly. The busy guard lives in doToggleLive.
   function toggleLive(): void {
     if (anyRunning && warnStop) {
       dialog = {
         kind: "confirm",
         title: "Stop Stream",
-        message: "Stop streaming on the focused canvas?",
+        message: "Stop streaming to all destinations?",
         confirmLabel: "Stop",
         onCommit: () => void doToggleLive(),
       };
@@ -576,7 +579,7 @@
       dialog = {
         kind: "confirm",
         title: "Go Live",
-        message: "Start streaming on the focused canvas?",
+        message: "Start streaming to all enabled destinations?",
         confirmLabel: "Go Live",
         onCommit: () => void doToggleLive(),
       };
@@ -739,7 +742,7 @@
       <button
         class="golive"
         class:running={anyRunning}
-        disabled={busy || focusedOutputs.length === 0}
+        disabled={busy || outputs.length === 0}
         onclick={() => void toggleLive()}
       >
         {anyRunning ? "■  END STREAM" : "●  GO LIVE"}
