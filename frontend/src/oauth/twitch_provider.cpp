@@ -119,7 +119,7 @@ json TwitchProvider::capabilityJson() const
 
 	json labelOptions = json::array();
 	for (const LabelOption &l : kContentLabels) {
-		labelOptions.push_back(json{{"id", l.id}, {"label", l.label}});
+		labelOptions.push_back(json{{"value", l.id}, {"label", l.label}});
 	}
 
 	json langOptions = json::array();
@@ -381,28 +381,38 @@ bool TwitchProvider::applyMetadata(OAuthAccount &acct, const json &fields, std::
 		body["tags"] = std::move(tags);
 	}
 
-	// Content classification labels: array of { id, enabled|is_enabled }.
+	// Content classification labels: the modal submits the labelset as an array of
+	// selected `value` strings (the label ids). Mirror that selection across the full
+	// known label set so unselected labels are explicitly disabled -- sending only the
+	// enabled ones would leave previously-set labels untouched and make clearing
+	// impossible.
 	if (fields.contains("contentLabels") && fields["contentLabels"].is_array()) {
-		json labels = json::array();
+		std::array<bool, kContentLabels.size()> selected{};
 		for (const json &l : fields["contentLabels"]) {
-			if (!l.is_object()) {
-				continue;
+			std::string lid;
+			if (l.is_string()) {
+				lid = l.get<std::string>();
+			} else if (l.is_object()) {
+				// Tolerate object entries keyed by `value` (or legacy `id`).
+				lid = Str(l, "value");
+				if (lid.empty()) {
+					lid = Str(l, "id");
+				}
 			}
-			const std::string lid = Str(l, "id");
 			if (lid.empty()) {
 				continue;
 			}
-			bool enabled = false;
-			if (l.contains("is_enabled") && l["is_enabled"].is_boolean()) {
-				enabled = l["is_enabled"].get<bool>();
-			} else if (l.contains("enabled") && l["enabled"].is_boolean()) {
-				enabled = l["enabled"].get<bool>();
+			for (size_t i = 0; i < kContentLabels.size(); ++i) {
+				if (lid == kContentLabels[i].id) {
+					selected[i] = true;
+					break;
+				}
 			}
-			labels.push_back(json{{"id", lid}, {"is_enabled", enabled}});
 		}
-		// Always send when the field is present (even an empty array) so the last
-		// remaining label can be cleared; dropping empties would make that
-		// impossible.
+		json labels = json::array();
+		for (size_t i = 0; i < kContentLabels.size(); ++i) {
+			labels.push_back(json{{"id", kContentLabels[i].id}, {"is_enabled", selected[i]}});
+		}
 		body["content_classification_labels"] = std::move(labels);
 	}
 

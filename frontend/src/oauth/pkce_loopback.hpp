@@ -36,6 +36,10 @@ public:
 		// binds 127.0.0.1. Kick's OAuth frontend rewrites a literal 127.0.0.1, so it
 		// must advertise "localhost" (which resolves to 127.0.0.1 on Windows).
 		std::string redirectHost = "127.0.0.1";
+		// Extra authorize-URL query params appended (url-encoded) verbatim. Empty for
+		// Twitch/Kick; YouTube uses {{"access_type","offline"},{"prompt","consent"}} so
+		// Google returns a refresh token (without prompt=consent it omits it on re-consent).
+		std::vector<std::pair<std::string, std::string>> extraAuthParams;
 	};
 
 	explicit PkceLoopbackStrategy(Config config);

@@ -453,8 +453,8 @@ export interface OAuthProviderField {
   type: string;
   tier?: string;
   shareable?: boolean;
-  /** enum/labelset choices (token strings); the 8b modal title-cases them. */
-  options?: string[];
+  /** enum/labelset choices as {value,label}; `value` is submitted, `label` is shown verbatim. */
+  options?: { value: string; label: string }[];
   /** Soft max length (text/tags) carried for hint/validation; advisory only. */
   max?: number;
 }

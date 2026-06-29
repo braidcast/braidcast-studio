@@ -116,6 +116,12 @@ target_sources(
     src/oauth/twitch_provider.hpp
     src/oauth/kick_provider.cpp
     src/oauth/kick_provider.hpp
+    src/oauth/youtube_provider.cpp
+    src/oauth/youtube_provider.hpp
+    # Phase 8d: generic ingest-key writeback (marshals an RTMP server+key into a
+    # stream profile on TID_UI; includes obs.h -> in the /wd4201 set below).
+    src/ingest_writeback.cpp
+    src/ingest_writeback.hpp
     api-impl/frontend_callbacks.cpp
     api-impl/frontend_callbacks.hpp
     # Phase 4.4.0 native-multistream data model. These five model files are
@@ -209,6 +215,24 @@ endif()
 
 include(cmake/feature-kick.cmake)
 
+# Phase 8d: inject the YouTube (Google) OAuth client_id and optional client_secret
+# at build time. YouTube reuses the PKCE-loopback strategy; the secret is OPTIONAL
+# (Google desktop clients ship a non-confidential one sent only when present). Each
+# has its own obfuscation hash defaulting to 0 (plaintext) so the "0x@..._HASH@"
+# template expands to a valid literal on the no-credential path.
+set(YOUTUBE_CLIENTID "$ENV{YOUTUBE_CLIENTID}" CACHE STRING "YouTube OAuth client id (public; PKCE-loopback flow)")
+set(YOUTUBE_HASH "$ENV{YOUTUBE_HASH}" CACHE STRING "Obfuscation key for YOUTUBE_CLIENTID; 0 means plaintext")
+set(YOUTUBE_SECRET "$ENV{YOUTUBE_SECRET}" CACHE STRING "YouTube OAuth client secret (optional)")
+set(YOUTUBE_SECRET_HASH "$ENV{YOUTUBE_SECRET_HASH}" CACHE STRING "Obfuscation key for YOUTUBE_SECRET; 0 means plaintext")
+if(NOT YOUTUBE_HASH)
+  set(YOUTUBE_HASH "0")
+endif()
+if(NOT YOUTUBE_SECRET_HASH)
+  set(YOUTUBE_SECRET_HASH "0")
+endif()
+
+include(cmake/feature-youtube.cmake)
+
 # Generate ui-config.h into a dedicated dir and put it on the include path so
 # provider_creds.cpp can #include "ui-config.h".
 set(_generated_dir "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -272,6 +296,7 @@ set_source_files_properties(
   src/scene_persistence.cpp
   src/tray.cpp
   src/transitions.cpp
+  src/ingest_writeback.cpp
   api-impl/frontend_callbacks.cpp
   utility/CanvasDefinition.cpp
   utility/OBSCanvas.cpp

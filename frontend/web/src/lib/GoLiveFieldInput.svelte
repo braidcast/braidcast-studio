@@ -29,14 +29,20 @@
   const bool = $derived(value === true);
   const showGhost = $derived(ghostText !== "" && str === "");
 
-  function titleCase(s: string): string {
-    return s.length ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+  // Option contract: enum/labelset `options` are {value,label} objects (value submitted,
+  // label shown verbatim). Coerce a bare string to {value, label} so a mixed/legacy
+  // provider never renders "[object Object]".
+  type Opt = { value: string; label: string };
+  function normOpt(o: unknown): Opt {
+    return typeof o === "string" ? { value: o, label: o } : (o as Opt);
   }
+  const opts = $derived((field.options ?? []).map(normOpt));
+
   function basename(p: string): string {
     return p.split(/[\\/]/).pop() || p;
   }
-  function toggleLabel(opt: string): void {
-    onChange(arr.includes(opt) ? arr.filter((o) => o !== opt) : [...arr, opt]);
+  function toggleLabel(v: string): void {
+    onChange(arr.includes(v) ? arr.filter((o) => o !== v) : [...arr, v]);
   }
 
   async function pickImage(): Promise<void> {
@@ -73,8 +79,8 @@
 {:else if field.type === "enum"}
   <select class="inp" class:narrow value={str} onchange={(e) => onChange(e.currentTarget.value)}>
     <option value="">—</option>
-    {#each field.options ?? [] as opt (opt)}
-      <option value={opt}>{titleCase(opt)}</option>
+    {#each opts as opt (opt.value)}
+      <option value={opt.value}>{opt.label}</option>
     {/each}
   </select>
 {:else if field.type === "bool"}
@@ -87,10 +93,10 @@
   ><i></i></button>
 {:else if field.type === "labelset"}
   <div class="labelset">
-    {#each field.options ?? [] as opt (opt)}
+    {#each opts as opt (opt.value)}
       <label class="lscheck">
-        <input type="checkbox" checked={arr.includes(opt)} onchange={() => toggleLabel(opt)} />
-        {titleCase(opt)}
+        <input type="checkbox" checked={arr.includes(opt.value)} onchange={() => toggleLabel(opt.value)} />
+        {opt.label}
       </label>
     {/each}
   </div>

@@ -310,6 +310,9 @@ bool PkceLoopbackStrategy::authorize(const AuthContext &ctx, OAuthAccount &acct,
 	AppendQuery(authUrl, "state", state);
 	AppendQuery(authUrl, "code_challenge", challenge);
 	AppendQuery(authUrl, "code_challenge_method", "S256");
+	for (const std::pair<std::string, std::string> &param : config_.extraAuthParams) {
+		AppendQuery(authUrl, param.first.c_str(), param.second);
+	}
 
 	ctx.emitProgress(json{{"phase", "browser"},
 			      {"message", "Waiting for browser authorization\xE2\x80\xA6"},

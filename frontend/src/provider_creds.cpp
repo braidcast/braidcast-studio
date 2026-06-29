@@ -52,3 +52,34 @@ bool KickConfigured()
 {
 	return !KickClientId().empty() && !KickClientSecret().empty();
 }
+
+// YOUTUBE_HASH / YOUTUBE_SECRET_HASH == 0 means the value was injected as
+// plaintext; a non-zero hash is the nibble-XOR key. deobfuscate_str mutates in
+// place, so operate on a copy. The secret may legitimately be empty (Google
+// desktop clients can omit it). Mirrors KickClientId/KickClientSecret.
+std::string YouTubeClientId()
+{
+	std::string id = YOUTUBE_CLIENTID;
+	if (id.empty())
+		return id;
+	if (YOUTUBE_HASH == 0)
+		return id;
+	deobfuscate_str(&id[0], YOUTUBE_HASH);
+	return id;
+}
+
+std::string YouTubeClientSecret()
+{
+	std::string secret = YOUTUBE_SECRET;
+	if (secret.empty())
+		return secret;
+	if (YOUTUBE_SECRET_HASH == 0)
+		return secret;
+	deobfuscate_str(&secret[0], YOUTUBE_SECRET_HASH);
+	return secret;
+}
+
+bool YouTubeConfigured()
+{
+	return !YouTubeClientId().empty();
+}

@@ -14,3 +14,10 @@ bool TwitchConfigured();
 std::string KickClientId();
 std::string KickClientSecret();
 bool KickConfigured();
+
+// YouTube (Google) desktop client: the id is required; the secret ships
+// non-confidential and is OPTIONAL (the PKCE token calls send it only when set).
+// Configured = id non-empty (the secret may legitimately be empty).
+std::string YouTubeClientId();
+std::string YouTubeClientSecret();
+bool YouTubeConfigured();

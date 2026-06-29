@@ -7,6 +7,7 @@
 #include "../provider_creds.hpp"
 #include "kick_provider.hpp"
 #include "twitch_provider.hpp"
+#include "youtube_provider.hpp"
 
 namespace OAuth {
 
@@ -48,6 +49,9 @@ void BootProviders()
 	}
 	if (KickConfigured()) {
 		Registry().Register(std::make_unique<KickProvider>());
+	}
+	if (YouTubeConfigured()) {
+		Registry().Register(std::make_unique<YouTubeProvider>());
 	}
 	HostLog("[oauth] provider registry booted: " + std::to_string(Registry().All().size()) + " provider(s)");
 }
