@@ -57,6 +57,10 @@ target_sources(
     src/scheme.hpp
     src/bridge.cpp
     src/bridge.hpp
+    src/http_client.cpp
+    src/http_client.hpp
+    src/async_task.cpp
+    src/async_task.hpp
     src/properties_serializer.cpp
     src/properties_serializer.hpp
     src/obs_bootstrap.cpp
@@ -161,6 +165,9 @@ foreach(_prefix IN LISTS CMAKE_PREFIX_PATH)
   endif()
 endforeach()
 
+# libcurl backs the bridge HTTP client (Phase 8a OAuth + platform-API calls).
+find_package(CURL REQUIRED)
+
 add_dependencies(${_target} libcef_dll_wrapper)
 target_link_libraries(
   ${_target}
@@ -170,6 +177,7 @@ target_link_libraries(
     ${CEF_STANDARD_LIBS}
     OBS::libobs
     OBS::frontend-api
+    CURL::libcurl
     # IFileDialog (shobjidl) lives in ole32/shell32; SHCreateItemFromParsingName in shlwapi.
     ole32
     shell32

@@ -27,6 +27,7 @@
 #include "include/wrapper/cef_closure_task.h"
 #include "include/wrapper/cef_helpers.h"
 
+#include "async_task.hpp"
 #include "audio/AudioMonitor.hpp"
 #include "log.hpp"
 #include "mcp/McpServer.hpp"
@@ -7411,6 +7412,10 @@ void Init()
 
 void Shutdown()
 {
+	// Block any further off-thread PostToUi from a detached worker: the CEF loop
+	// has already returned by the time Stop() reaches here, so a late marshal must
+	// no-op rather than touch CEF.
+	AsyncTask::SetAlive(false);
 	obs_frontend_remove_event_callback(OnFrontendEvent, nullptr);
 	// Drop the undo->event hook so the g_undo.Clear() later in Stop() (after the CEF
 	// loop has returned) doesn't try to emit through a torn-down bridge.
