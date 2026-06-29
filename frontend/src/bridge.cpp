@@ -7289,11 +7289,12 @@ bool MethodLogGetCurrent(const json & /*params*/, json &result, std::string & /*
 
 // ---- OAuth (Phase 8a) ------------------------------------------------------
 //
-// Generic, registry-dispatched account-connection surface. The device-code grant
-// runs on a detached worker (blocking HTTP); progress is reported back to JS via
-// EmitEvent (oauth.deviceCode / oauth.status / oauth.connectError), all of which
-// marshal to TID_UI and no-op after teardown. No per-platform branches here --
-// everything routes through the provider the registry resolves by id.
+// Generic, registry-dispatched account-connection surface. The interactive grant
+// runs on a detached worker (blocking HTTP / a loopback listener); progress is
+// reported back to JS via EmitEvent (oauth.connectProgress / oauth.status /
+// oauth.connectError), all of which marshal to TID_UI and no-op after teardown. No
+// per-platform branches here -- everything routes through the provider the registry
+// resolves by id, and the per-strategy grant lives in AuthStrategy::authorize.
 
 // Per-profile connection state from the token store: one row per stored account.
 json BuildOAuthStatusArray()
@@ -7338,10 +7339,16 @@ void OpenUrlInBrowser(const std::string &url)
 	ShellExecuteW(nullptr, L"open", Utf8ToWide(url).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
-// The device-code flow body, run on a detached worker thread. Owns everything by
-// value so it can safely outlive the originating bridge call.
+// The interactive connect flow, run on a detached worker thread. Owns everything
+// by value so it can safely outlive the originating bridge call. Strategy-agnostic:
+// it builds an AuthContext (progress emitter + cancel probe) and hands the whole
+// grant to the provider's AuthStrategy::authorize -- no per-strategy branching here.
+// The strategy reports progress via oauth.connectProgress (device-code:
+// phase="deviceCode"; loopback: phase="browser"); a top-level "openUrl" in a
+// progress payload is opened in the system browser here and stripped before the
+// event reaches JS.
 void RunOAuthConnect(std::string providerId, std::string profileUuid)
-{
+try {
 	OAuth::StreamProvider *provider = OAuth::Registry().Get(providerId);
 	if (!provider) {
 		EmitOAuthConnectError(profileUuid, providerId, "unknown provider");
@@ -7353,65 +7360,41 @@ void RunOAuthConnect(std::string providerId, std::string profileUuid)
 		return;
 	}
 
-	OAuth::DeviceCodeStart start;
-	std::string err;
-	if (!auth->begin(start, err)) {
-		EmitOAuthConnectError(profileUuid, providerId, err);
-		return;
-	}
-
-	// Surface the user code + open the verification page, then poll.
-	const std::string userCode = start.userCode;
-	const std::string verifyUri = start.verificationUri;
-	const int expiresSec = start.expiresSec;
-	AsyncTask::PostToUi([profileUuid, providerId, userCode, verifyUri, expiresSec] {
-		EmitEvent("oauth.deviceCode", json{{"profileUuid", profileUuid},
-						   {"providerId", providerId},
-						   {"userCode", userCode},
-						   {"verificationUri", verifyUri},
-						   {"expiresSec", expiresSec}});
-		OpenUrlInBrowser(verifyUri);
-	});
-
-	int intervalSec = start.intervalSec > 0 ? start.intervalSec : 5;
-	const int lifeSec = start.expiresSec > 0 ? start.expiresSec : 300;
-	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(lifeSec);
+	OAuth::AuthContext ctx;
+	ctx.canceled = [] {
+		return !g_oauthRunning.load(std::memory_order_acquire) || g_oauthCancel.load(std::memory_order_acquire);
+	};
+	ctx.emitProgress = [profileUuid, providerId](const json &payload) {
+		json p = payload;
+		std::string openUrl;
+		auto it = p.find("openUrl");
+		if (it != p.end() && it->is_string()) {
+			openUrl = it->get<std::string>();
+			p.erase(it);
+		}
+		AsyncTask::PostToUi([profileUuid, providerId, p, openUrl] {
+			json event = json{{"profileUuid", profileUuid}, {"providerId", providerId}};
+			event.update(p);
+			EmitEvent("oauth.connectProgress", event);
+			if (!openUrl.empty()) {
+				OpenUrlInBrowser(openUrl);
+			}
+		});
+	};
 
 	OAuth::OAuthAccount acct;
 	acct.providerId = providerId;
 	acct.profileUuid = profileUuid;
 
-	for (;;) {
-		if (!g_oauthRunning.load(std::memory_order_acquire) || g_oauthCancel.load(std::memory_order_acquire)) {
-			return; // bridge tore down, or the user canceled, mid-flow
+	std::string err;
+	if (!auth->authorize(ctx, acct, err)) {
+		// A cancel (user closed the modal, or the bridge tore down) returns false
+		// with no error to surface -- stay silent, exactly as the legacy poll loop
+		// did. Emit only a genuine failure.
+		if (!ctx.canceled()) {
+			EmitOAuthConnectError(profileUuid, providerId, err);
 		}
-		std::this_thread::sleep_for(std::chrono::seconds(intervalSec));
-		if (!g_oauthRunning.load(std::memory_order_acquire) || g_oauthCancel.load(std::memory_order_acquire)) {
-			return;
-		}
-		if (std::chrono::steady_clock::now() >= deadline) {
-			EmitOAuthConnectError(profileUuid, providerId, "device code expired before authorization");
-			return;
-		}
-
-		std::string pollErr;
-		const OAuth::AuthStrategy::PollResult result = auth->poll(start.deviceCode, acct, pollErr);
-		if (result == OAuth::AuthStrategy::PollResult::Pending) {
-			continue;
-		}
-		if (result == OAuth::AuthStrategy::PollResult::SlowDown) {
-			intervalSec += 5;
-			continue;
-		}
-		if (result == OAuth::AuthStrategy::PollResult::Expired) {
-			EmitOAuthConnectError(profileUuid, providerId, "device code expired before authorization");
-			return;
-		}
-		if (result == OAuth::AuthStrategy::PollResult::Error) {
-			EmitOAuthConnectError(profileUuid, providerId, pollErr);
-			return;
-		}
-		break; // Success
+		return;
 	}
 
 	// Tokens are in hand. Fetch identity (best-effort: keep the precious one-time
@@ -7447,6 +7430,17 @@ void RunOAuthConnect(std::string providerId, std::string profileUuid)
 			ObsBootstrap::StreamProfiles().Save();
 			EmitEvent("streamProfile.changed", json::object());
 		});
+	}
+} catch (const std::exception &e) {
+	// authorize() touches Winsock/crypto/HTTP; an escape on this detached worker
+	// would std::terminate the process. Convert it to a clean connectError, but
+	// stay silent if the user already canceled (matches the cancel path above).
+	if (g_oauthRunning.load(std::memory_order_acquire) && !g_oauthCancel.load(std::memory_order_acquire)) {
+		EmitOAuthConnectError(profileUuid, providerId, std::string("connect failed: ") + e.what());
+	}
+} catch (...) {
+	if (g_oauthRunning.load(std::memory_order_acquire) && !g_oauthCancel.load(std::memory_order_acquire)) {
+		EmitOAuthConnectError(profileUuid, providerId, "connect failed: unknown error");
 	}
 }
 

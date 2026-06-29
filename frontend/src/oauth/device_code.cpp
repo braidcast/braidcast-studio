@@ -1,7 +1,9 @@
 #include "device_code.hpp"
 
+#include <chrono>
 #include <ctime>
 #include <optional>
+#include <thread>
 #include <utility>
 
 #include "../http_client.hpp"
@@ -71,6 +73,61 @@ json ParseJson(const std::string &body)
 
 DeviceCodeStrategy::DeviceCodeStrategy(Config config) : config_(std::move(config)) {}
 
+bool DeviceCodeStrategy::authorize(const AuthContext &ctx, OAuthAccount &acct, std::string &err)
+{
+	DeviceCodeStart start;
+	if (!begin(start, err)) {
+		return false;
+	}
+
+	// Surface the user code and open the verification page. `openUrl` is opened by
+	// the connect flow and stripped before the event reaches JS, so the emitted
+	// payload carries only {phase, userCode, verificationUri, expiresSec}.
+	ctx.emitProgress(json{{"phase", "deviceCode"},
+			      {"userCode", start.userCode},
+			      {"verificationUri", start.verificationUri},
+			      {"expiresSec", start.expiresSec},
+			      {"openUrl", start.verificationUri}});
+
+	int intervalSec = start.intervalSec > 0 ? start.intervalSec : 5;
+	const int lifeSec = start.expiresSec > 0 ? start.expiresSec : 300;
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(lifeSec);
+
+	for (;;) {
+		if (ctx.canceled()) {
+			return false; // bridge tore down, or the user canceled, mid-flow
+		}
+		std::this_thread::sleep_for(std::chrono::seconds(intervalSec));
+		if (ctx.canceled()) {
+			return false;
+		}
+		if (std::chrono::steady_clock::now() >= deadline) {
+			err = "device code expired before authorization";
+			return false;
+		}
+
+		std::string pollErr;
+		const PollResult result = poll(start.deviceCode, acct, pollErr);
+		if (result == PollResult::Pending) {
+			continue;
+		}
+		if (result == PollResult::SlowDown) {
+			intervalSec += 5; // RFC 8628: back off on slow_down
+			continue;
+		}
+		if (result == PollResult::Expired) {
+			err = "device code expired before authorization";
+			return false;
+		}
+		if (result == PollResult::Error) {
+			err = pollErr;
+			return false;
+		}
+		break; // Success
+	}
+	return true;
+}
+
 bool DeviceCodeStrategy::begin(DeviceCodeStart &out, std::string &err)
 {
 	std::string scopesJoined;
@@ -120,7 +177,8 @@ bool DeviceCodeStrategy::begin(DeviceCodeStart &out, std::string &err)
 	return true;
 }
 
-AuthStrategy::PollResult DeviceCodeStrategy::poll(const std::string &deviceCode, OAuthAccount &acct, std::string &err)
+DeviceCodeStrategy::PollResult DeviceCodeStrategy::poll(const std::string &deviceCode, OAuthAccount &acct,
+							std::string &err)
 {
 	std::string body;
 	AppendForm(body, "client_id", config_.clientId);
@@ -227,7 +285,7 @@ bool DeviceCodeStrategy::refresh(OAuthAccount &acct, std::string &err)
 	return true;
 }
 
-bool DeviceCodeStrategy::ensureFresh(OAuthAccount &acct, const std::string &profileUuid, std::string &err)
+bool DeviceCodeStrategy::ensureFresh(OAuthAccount &acct, const std::string &profileUuid, std::string &err, bool force)
 {
 	if (acct.refresh.empty()) {
 		err = "no refresh token";
@@ -235,7 +293,7 @@ bool DeviceCodeStrategy::ensureFresh(OAuthAccount &acct, const std::string &prof
 	}
 
 	const int64_t skew = 5;
-	if (static_cast<int64_t>(time(nullptr)) <= acct.expireTime - skew) {
+	if (!force && static_cast<int64_t>(time(nullptr)) <= acct.expireTime - skew) {
 		return true; // still fresh; no network
 	}
 
@@ -258,7 +316,9 @@ bool DeviceCodeStrategy::ensureFresh(OAuthAccount &acct, const std::string &prof
 	}
 
 	// Re-check after the store re-read: a prior holder may have just refreshed.
-	if (static_cast<int64_t>(time(nullptr)) <= acct.expireTime - skew) {
+	// A forced refresh (reactive 401) skips this -- the access token is dead
+	// regardless of the stored expiry, so always refresh under the lock.
+	if (!force && static_cast<int64_t>(time(nullptr)) <= acct.expireTime - skew) {
 		return true;
 	}
 

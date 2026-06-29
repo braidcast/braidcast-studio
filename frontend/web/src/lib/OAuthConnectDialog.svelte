@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { obs, type DeviceCodePrompt } from "./bridge";
+  import { obs, type DeviceCodeProgress } from "./bridge";
   import { markOAuthConnected, type OAuthConnectRequest } from "./oauthConnectOpener.svelte";
 
   interface Props {
@@ -11,9 +11,16 @@
   // The native preview overlay is suspended by the opener for this dialog's whole
   // lifetime, so it never occludes the modal.
 
+  const DEFAULT_BROWSER_MESSAGE = "A browser window opened — complete authorization there. Waiting…";
+
   type Phase = "starting" | "waiting" | "error";
+  // Which auth strategy the in-flight connect resolved to, set from the progress
+  // event's `phase`. null until the first progress event arrives.
+  type ConnMode = "deviceCode" | "browser";
   let phase = $state<Phase>("starting");
-  let prompt = $state<DeviceCodePrompt | null>(null);
+  let connMode = $state<ConnMode | null>(null);
+  let prompt = $state<DeviceCodeProgress | null>(null);
+  let browserMessage = $state(DEFAULT_BROWSER_MESSAGE);
   let errorMsg = $state<string | null>(null);
   let remaining = $state(0);
   let timer: ReturnType<typeof setInterval> | null = null;
@@ -45,12 +52,14 @@
     return m + ":" + (s < 10 ? "0" : "") + s;
   }
 
-  // Kick off (or retry) the device-code flow. The call returns immediately
-  // ({pending:true}); the user code + verification URL arrive via oauth.deviceCode.
+  // Kick off (or retry) the connect flow. The call returns immediately
+  // ({pending:true}); the strategy + its details arrive via oauth.connectProgress.
   async function begin() {
     phase = "starting";
+    connMode = null;
     errorMsg = null;
     prompt = null;
+    browserMessage = DEFAULT_BROWSER_MESSAGE;
     stopTimer();
     try {
       await obs.call("oauth.connect", { providerId: req.providerId, profileUuid: req.profileUuid });
@@ -76,13 +85,22 @@
 
   $effect(() => {
     void begin();
-    const offCode = obs.on("oauth.deviceCode", (p) => {
+    const offProgress = obs.on("oauth.connectProgress", (p) => {
       if (p.profileUuid !== req.profileUuid) {
         return;
       }
-      prompt = p;
       phase = "waiting";
-      startCountdown(p.expiresSec);
+      if (p.phase === "deviceCode") {
+        connMode = "deviceCode";
+        prompt = p;
+        startCountdown(p.expiresSec);
+      } else {
+        // PKCE loopback: no code, no countdown — just wait for the browser round-trip.
+        connMode = "browser";
+        prompt = null;
+        browserMessage = p.message || DEFAULT_BROWSER_MESSAGE;
+        stopTimer();
+      }
     });
     const offStatus = obs.on("oauth.status", () => void checkConnected());
     const offErr = obs.on("oauth.connectError", (p) => {
@@ -94,7 +112,7 @@
       errorMsg = p.error || "Connection failed.";
     });
     return () => {
-      offCode();
+      offProgress();
       offStatus();
       offErr();
       stopTimer();
@@ -127,9 +145,13 @@
       {#if phase === "error"}
         <p class="error">{errorMsg}</p>
         <p class="dim">The connection could not be completed. Try again or close.</p>
-      {:else if phase === "starting" || !prompt}
-        <p class="dim">Starting connection…</p>
-      {:else}
+      {:else if phase === "waiting" && connMode === "browser"}
+        <div class="browser-wait">
+          <div class="spinner" role="status" aria-label="Waiting for authorization"></div>
+          <p class="waiting">{browserMessage}</p>
+        </div>
+        <p class="dim">The browser was opened automatically — complete authorization there.</p>
+      {:else if phase === "waiting" && connMode === "deviceCode" && prompt}
         <p class="dim">Enter this code in the page that just opened in your browser:</p>
         <div class="code">{prompt.userCode}</div>
         <p class="vu">
@@ -139,6 +161,8 @@
         <p class="waiting">
           Waiting for authorization…{#if remaining > 0}<span class="muted"> · code expires in {fmt(remaining)}</span>{/if}
         </p>
+      {:else}
+        <p class="dim">Starting connection…</p>
       {/if}
     </div>
 
@@ -227,6 +251,30 @@
     margin: 0;
     font-size: 12px;
     color: var(--color-text);
+  }
+  .browser-wait {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 6px 0 10px;
+  }
+  .spinner {
+    flex: none;
+    width: 18px;
+    height: 18px;
+    border: 2px solid var(--color-border);
+    border-top-color: var(--color-accent);
+    animation: oauth-spin 0.8s linear infinite;
+  }
+  @keyframes oauth-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .spinner {
+      animation-duration: 2.4s;
+    }
   }
   .muted {
     color: var(--color-muted);

@@ -480,15 +480,26 @@ export interface OAuthStatus {
   displayName: string;
 }
 
-/** Device-code prompt pushed during oauth.connect (oauth.deviceCode). The system
- * browser is already opened to `verificationUri` by the bridge; the modal shows the
- * `userCode` for the user to enter and counts down from `expiresSec`. */
-export interface DeviceCodePrompt {
+/** Connect progress pushed during oauth.connect (oauth.connectProgress). `phase`
+ * discriminates the auth strategy: "deviceCode" carries the `userCode` the user enters
+ * in the already-opened `verificationUri` (counts down from `expiresSec`); "browser" is
+ * a PKCE loopback flow with no code — a browser window was opened automatically and the
+ * bridge waits, so the modal only shows `message`. */
+export interface DeviceCodeProgress {
   profileUuid: string;
+  providerId: string;
+  phase: "deviceCode";
   userCode: string;
   verificationUri: string;
   expiresSec: number;
 }
+export interface BrowserAuthProgress {
+  profileUuid: string;
+  providerId: string;
+  phase: "browser";
+  message: string;
+}
+export type OAuthConnectProgress = DeviceCodeProgress | BrowserAuthProgress;
 
 /** A profile's stream metadata (Go Live "Stream Information") as returned by
  * streamMeta.get. `category` is a nested {id,name} (id "" when unset); `language`
@@ -1031,14 +1042,14 @@ export interface ObsMethods {
   // Platform OAuth (Connect Account dual path, Phase 8). providers enumerates the
   // platforms that support account connection (empty in a build without a client
   // id -> stream-key only); connect ({providerId, profileUuid}) kicks off the
-  // device-code flow and returns immediately ({pending:true}) -- the real result
-  // arrives via the oauth.deviceCode / oauth.status / oauth.connectError events;
+  // connect flow and returns immediately ({pending:true}) -- the real result
+  // arrives via the oauth.connectProgress / oauth.status / oauth.connectError events;
   // disconnect ({profileUuid}) clears a profile's linked account (emits oauth.status);
   // status reports the per-profile link state.
   "oauth.providers": OAuthProvider[];
   "oauth.connect": { ok: boolean; pending: boolean };
-  // Cancel an in-flight device-code connect (dialog closed before authorization);
-  // aborts the backend poll so the profile is not linked after the modal is gone.
+  // Cancel an in-flight connect (dialog closed before authorization);
+  // aborts the backend flow so the profile is not linked after the modal is gone.
   "oauth.cancelConnect": { ok: true };
   "oauth.disconnect": { ok: boolean };
   "oauth.status": OAuthStatus[];
@@ -1223,11 +1234,13 @@ export interface ObsEvents {
   "settings.advancedChanged": AdvancedSettings;
   "canvas.changed": Record<string, never>;
   "streamProfile.changed": Record<string, never>;
-  // Platform OAuth device-code flow (Phase 8). deviceCode carries the user code +
-  // verification URL to display (the system browser is already opened by the bridge);
+  // Platform OAuth connect flow (Phase 8). connectProgress reports progress for an
+  // in-flight connect; `phase` discriminates the strategy ("deviceCode" carries the
+  // user code + verification URL the bridge already opened, "browser" is a PKCE
+  // loopback with no code, only a status message);
   // status fires whenever any profile's link state changes (re-fetch oauth.status);
   // connectError reports a failed/aborted connect for one profile.
-  "oauth.deviceCode": DeviceCodePrompt;
+  "oauth.connectProgress": OAuthConnectProgress;
   "oauth.status": OAuthStatus[];
   "oauth.connectError": { profileUuid: string; error: string };
   // A profile's stream metadata changed (8b modal apply / external edit); a consumer

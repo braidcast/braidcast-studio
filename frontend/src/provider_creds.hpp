@@ -8,3 +8,9 @@
 // was supplied at configure time.
 std::string TwitchClientId();
 bool TwitchConfigured();
+
+// Kick is a confidential client: both id and secret ship in the binary
+// (plaintext or lightly obfuscated). Configured = both non-empty.
+std::string KickClientId();
+std::string KickClientSecret();
+bool KickConfigured();

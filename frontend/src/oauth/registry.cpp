@@ -5,6 +5,7 @@
 
 #include "../log.hpp"
 #include "../provider_creds.hpp"
+#include "kick_provider.hpp"
 #include "twitch_provider.hpp"
 
 namespace OAuth {
@@ -44,6 +45,9 @@ void BootProviders()
 {
 	if (TwitchConfigured()) {
 		Registry().Register(std::make_unique<TwitchProvider>());
+	}
+	if (KickConfigured()) {
+		Registry().Register(std::make_unique<KickProvider>());
 	}
 	HostLog("[oauth] provider registry booted: " + std::to_string(Registry().All().size()) + " provider(s)");
 }

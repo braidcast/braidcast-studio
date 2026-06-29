@@ -106,12 +106,16 @@ target_sources(
     src/oauth/provider.hpp
     src/oauth/device_code.cpp
     src/oauth/device_code.hpp
+    src/oauth/pkce_loopback.cpp
+    src/oauth/pkce_loopback.hpp
     src/oauth/token_store.cpp
     src/oauth/token_store.hpp
     src/oauth/registry.cpp
     src/oauth/registry.hpp
     src/oauth/twitch_provider.cpp
     src/oauth/twitch_provider.hpp
+    src/oauth/kick_provider.cpp
+    src/oauth/kick_provider.hpp
     api-impl/frontend_callbacks.cpp
     api-impl/frontend_callbacks.hpp
     # Phase 4.4.0 native-multistream data model. These five model files are
@@ -188,6 +192,23 @@ endif()
 
 include(cmake/feature-twitch.cmake)
 
+# Phase 8c: inject the Kick OAuth client_id AND client_secret at build time (Kick
+# is a confidential client: auth-code + PKCE still requires the secret on token
+# calls). Each has its own obfuscation hash defaulting to 0 (plaintext) so the
+# "0x@..._HASH@" template expands to a valid literal on the no-credential path.
+set(KICK_CLIENTID "$ENV{KICK_CLIENTID}" CACHE STRING "Kick OAuth client id (public; PKCE-loopback flow)")
+set(KICK_HASH "$ENV{KICK_HASH}" CACHE STRING "Obfuscation key for KICK_CLIENTID; 0 means plaintext")
+set(KICK_SECRET "$ENV{KICK_SECRET}" CACHE STRING "Kick OAuth client secret (confidential)")
+set(KICK_SECRET_HASH "$ENV{KICK_SECRET_HASH}" CACHE STRING "Obfuscation key for KICK_SECRET; 0 means plaintext")
+if(NOT KICK_HASH)
+  set(KICK_HASH "0")
+endif()
+if(NOT KICK_SECRET_HASH)
+  set(KICK_SECRET_HASH "0")
+endif()
+
+include(cmake/feature-kick.cmake)
+
 # Generate ui-config.h into a dedicated dir and put it on the include path so
 # provider_creds.cpp can #include "ui-config.h".
 set(_generated_dir "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -222,8 +243,10 @@ target_link_libraries(
     shlwapi
     # DPAPI (CryptProtectData/CryptUnprotectData) wraps the OAuth token store.
     crypt32
-    # The embedded MCP server's HttpServer uses Winsock.
+    # The embedded MCP server's HttpServer + the PKCE-loopback auth listener use Winsock.
     ws2_32
+    # CNG (BCryptGenRandom/SHA-256) backs the PKCE verifier/challenge + CSRF state.
+    bcrypt
 )
 
 # CEF's /DELAYLOAD list (from SET_EXECUTABLE_TARGET_PROPERTIES) names DLLs this

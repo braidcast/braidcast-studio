@@ -190,9 +190,13 @@ bool TwitchProvider::SendAuthed(OAuthAccount &acct, Http::HttpReq req, Http::Htt
 		return true;
 	}
 
-	// Reactive 401: force one refresh + retry with the new bearer.
+	// Reactive 401: force one refresh + retry with the new bearer. Route through
+	// ensureFresh(force) -- NOT a bare refresh() -- so a rotated refresh token is
+	// re-read + written back under the same single-flight lock the proactive path
+	// uses. Benign for Twitch (its refresh tokens do not rotate) but keeps both
+	// providers on one store-coherent path.
 	std::string refreshErr;
-	if (!auth_.refresh(acct, refreshErr)) {
+	if (!auth_.ensureFresh(acct, acct.profileUuid, refreshErr, /*force=*/true)) {
 		err = "re-authentication required";
 		return false;
 	}

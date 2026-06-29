@@ -30,13 +30,35 @@ public:
 
 	explicit DeviceCodeStrategy(Config config);
 
-	bool begin(DeviceCodeStart &out, std::string &err) override;
-	PollResult poll(const std::string &deviceCode, OAuthAccount &acct, std::string &err) override;
+	bool authorize(const AuthContext &ctx, OAuthAccount &acct, std::string &err) override;
 	bool refresh(OAuthAccount &acct, std::string &err) override;
-	bool ensureFresh(OAuthAccount &acct, const std::string &profileUuid, std::string &err) override;
+	bool ensureFresh(OAuthAccount &acct, const std::string &profileUuid, std::string &err,
+			 bool force = false) override;
 	int scopeVer() const override { return config_.scopeVer; }
 
 private:
+	enum class PollResult { Pending, SlowDown, Success, Expired, Error };
+
+	// The device-code grant's first-leg result: show `userCode` to the user, open
+	// `verificationUri` in a browser, then poll with `deviceCode` every
+	// `intervalSec` until `expiresSec` elapses.
+	struct DeviceCodeStart {
+		std::string deviceCode;
+		std::string userCode;
+		std::string verificationUri;
+		int intervalSec = 5;
+		int expiresSec = 0;
+	};
+
+	// Begin the grant (POST the device endpoint). Fills `out`; false + `err` on
+	// transport/parse failure.
+	bool begin(DeviceCodeStart &out, std::string &err);
+
+	// Poll the token endpoint once for `deviceCode`. On Success, `acct` is filled
+	// with access/refresh/expireTime/scopeVer. Pending/SlowDown mean keep polling;
+	// Expired/Error are terminal.
+	PollResult poll(const std::string &deviceCode, OAuthAccount &acct, std::string &err);
+
 	// One mutex per account key, created on demand, so two concurrent ensureFresh
 	// callers for the SAME account serialize (single-flight) while different
 	// accounts refresh in parallel.

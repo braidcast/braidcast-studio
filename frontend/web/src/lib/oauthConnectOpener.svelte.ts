@@ -1,11 +1,11 @@
-// Shared opener for the OAuth device-code connect modal. Mirrors missingFilesOpener:
-// App owns the single OAuthConnectDialog mount gated on `.open`; the Streams tab
-// requests it with the profile + provider to connect via openOAuthConnect().
+// Shared opener for the OAuth connect modal (device-code or PKCE browser flow).
+// Mirrors missingFilesOpener: App owns the single OAuthConnectDialog mount gated on
+// `.open`; the Streams tab requests it with the profile + provider via openOAuthConnect().
 
 import { obs } from "./bridge";
 import { suspendPreview } from "./previewGate.svelte";
 
-/** The profile being connected + which provider drives the device-code flow. */
+/** The profile being connected + which provider drives the connect flow. */
 export interface OAuthConnectRequest {
   profileUuid: string;
   providerId: string;
@@ -21,8 +21,8 @@ export const oauthConnect = $state<{ open: boolean; req: OAuthConnectRequest | n
 // never raises above the modal.
 let release: (() => void) | null = null;
 
-// Set by the dialog once the device-code flow has linked the account, so closing
-// the (now-finished) modal does not abort the already-completed poll.
+// Set by the dialog once the connect flow has linked the account, so closing
+// the (now-finished) modal does not abort the already-completed flow.
 let connected = false;
 
 /** Open the OAuth connect modal for one profile/provider. */
@@ -39,9 +39,9 @@ export function markOAuthConnected(): void {
 }
 
 export function closeOAuthConnect(): void {
-  // Abort an in-flight device-code poll so a profile can't be linked after the
-  // modal is gone. Skipped once the flow already connected. Swallow if the host
-  // bridge lacks the method (older build).
+  // Abort an in-flight connect so a profile can't be linked after the modal is gone.
+  // Skipped once the flow already connected. Swallow if the host bridge lacks the
+  // method (older build).
   if (!connected) {
     void obs.call("oauth.cancelConnect").catch(() => {});
   }

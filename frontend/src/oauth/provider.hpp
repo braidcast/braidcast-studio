@@ -2,6 +2,7 @@
 #define OBS_MULTISTREAM_FRONTEND_OAUTH_PROVIDER_HPP_
 
 #include <cstdint>
+#include <functional>
 #include <string>
 
 #include <nlohmann/json.hpp>
@@ -39,34 +40,34 @@ struct OAuthAccount {
 	std::string profileUuid;
 };
 
-// The device-code grant's first-leg result: show `userCode` to the user, open
-// `verificationUri` in a browser, then poll with `deviceCode` every
-// `intervalSec` until `expiresSec` elapses.
-struct DeviceCodeStart {
-	std::string deviceCode;
-	std::string userCode;
-	std::string verificationUri;
-	int intervalSec = 5;
-	int expiresSec = 0;
+// The runtime context the framework hands an AuthStrategy for one interactive
+// grant. `emitProgress` reports a phase payload to JS (wired to the
+// `oauth.connectProgress` event on the UI thread); a top-level `openUrl` key in a
+// payload is opened in the system browser by the connect flow and stripped before
+// the event reaches JS. `canceled` returns true once the user cancels or the
+// bridge tears down, so the strategy can bail promptly from any wait.
+struct AuthContext {
+	std::function<void(const json &payload)> emitProgress;
+	std::function<bool()> canceled;
 };
 
 // One platform's auth mechanism (device-code, PKCE-loopback, ...). Strategies are
-// a small reusable set providers pick from; the framework holds only the device-
-// code one in Task 3.
+// a small reusable set providers pick from. `authorize` runs the WHOLE interactive
+// grant on a worker thread; strategy-specific wire details (device endpoints, the
+// PKCE loopback listener) stay inside the concrete strategy so the connect flow
+// has no per-strategy branches.
 class AuthStrategy {
 public:
 	virtual ~AuthStrategy() = default;
 
-	enum class PollResult { Pending, SlowDown, Success, Expired, Error };
-
-	// Begin the grant (e.g. POST the device endpoint). Fills `out`; false + `err`
-	// on transport/parse failure.
-	virtual bool begin(DeviceCodeStart &out, std::string &err) = 0;
-
-	// Poll the token endpoint once for `deviceCode`. On Success, `acct` is filled
-	// with access/refresh/expireTime/scopeVer (identity is a separate provider
-	// hook). Pending/SlowDown mean keep polling; Expired/Error are terminal.
-	virtual PollResult poll(const std::string &deviceCode, OAuthAccount &acct, std::string &err) = 0;
+	// Run the entire interactive grant on the calling worker thread: drive the
+	// platform-specific authorization, reporting progress via `ctx.emitProgress`
+	// and bailing promptly when `ctx.canceled()` turns true, then fill `acct`
+	// (access/refresh/expireTime/scopeVer; identity is a separate provider hook).
+	// Returns false on failure (with `err` set) or on cancellation (where `err`
+	// may be empty) -- the connect flow suppresses the error emit when
+	// `ctx.canceled()` is true.
+	virtual bool authorize(const AuthContext &ctx, OAuthAccount &acct, std::string &err) = 0;
 
 	// Exchange the refresh token for a fresh access token, updating `acct` in
 	// place (and persisting a rotated refresh token if the response carries one).
@@ -79,7 +80,12 @@ public:
 	// re-read from the token store inside the flight lock and the rotated token is
 	// written back, so concurrent callers with stale copies never invalidate each
 	// other's one-time-use refresh token. true when the token is usable afterward.
-	virtual bool ensureFresh(OAuthAccount &acct, const std::string &profileUuid, std::string &err) = 0;
+	// `force` bypasses the skew/expiry check (a reactive 401 means the access token
+	// is dead regardless of its stored expiry), but keeps the SAME single-flight +
+	// store-coherent re-read + write-back path so a rotated refresh token is still
+	// persisted rather than dropped.
+	virtual bool ensureFresh(OAuthAccount &acct, const std::string &profileUuid, std::string &err,
+				 bool force = false) = 0;
 
 	// The scope version this strategy currently requests. Tokens stored with a
 	// lower scopeVer were issued under an older permission set and must reconnect.
