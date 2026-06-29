@@ -867,7 +867,7 @@ frontend-only (backend already had `streaming.start`/`stop` = StartAllEnabled/St
 
 ---
 
-## Phase 8 — Platform integration: OAuth + stream metadata + Go Live modal 🚧 8a DONE
+## Phase 8 — Platform integration: OAuth + stream metadata + Go Live modal 🚧 MVP (8a–8e) DONE; 8f deferred
 
 **Goal:** A "Stream Information" modal that opens when the single **Go Live** button is clicked
 (classic-OBS style), letting the user set per-destination **title / category / tags / thumbnail**
@@ -989,18 +989,48 @@ this phase.
   148 methods / leaks 2 / clean shutdown. **Acceptance owed (needs a real Twitch client id + GUI):**
   live connect round-trip, scopeVer-refusal, concurrent-refresh coherence, DPAPI write/read — all
   compile-clean + logic-reviewed but unexercised in portable smoke (`provider registry booted: 0`).
-- **8b — Go Live modal.** Wire the single Go Live button to open the modal; platform-conditional
-  fields; Twitch metadata pushed on confirm → then start. **LOCKED first task: convert
-  `streamMeta.get/set/searchCategories` from synchronous (UI-thread-blocking up to the 30 s HTTP
-  timeout) to the async `RunAsync`+event shape `oauth.connect` already uses** — deferred from 8a
-  because those methods had zero callers there; the modal is their first consumer, and 8a's
-  single-flight refresh fix already makes the concurrent path safe. Modal = Simple/Advanced toggle
-  (Simple = shared fields; Advanced = per-destination full + platform-unique, empty inherits from
-  shared) per the approved mocks in `docs/superpowers/specs/2026-06-28-phase8-mocks/`.
-- **8c — Kick.** Auth-code+PKCE with embedded (obfuscated) secret; `PATCH /public/v1/channels`.
-- **8d — YouTube.** PKCE loopback; broadcast lifecycle (create/bind/transition) + category/tags +
-  privacy + `thumbnails.set`. **Start Google app-verification paperwork in parallel from 8a.**
-- **8e — Polish.** Thumbnail picker, mid-stream metadata edit, refresh-token re-auth UX, errors.
+- **8b — Go Live modal. ✅ DONE 2026-06-29** (`a45973a07`,`1bbaf21bb`). Added a deferred-callback
+  **async bridge dispatch lane** (`g_asyncMethods`/`RunAsyncMethod`/`DispatchAsync`) and moved
+  `streamMeta.get/searchCategories/set` onto it (JS `await` contract unchanged; the shared lane
+  8c/8d reuse). `GoLiveModal` renders entirely from capability descriptors via one
+  `GoLiveFieldInput` (all 8 field types); shared-defaults block = union of every shareable field;
+  per-destination override cards (empty inherits, filled overrides) per the mock; Simple/Advanced.
+  Confirm pushes resolved metadata per armed+connected destination (partial-failure tolerant), then
+  `streaming.start`. General toggle "Ask for stream info on Go Live" (default on) + Edit-stream-info
+  button (works mid-stream). Review SHIP_WITH_FIXES (0 Crit): fixed primary-enabled-before-load,
+  collapsed triplicated rendering into one descriptor-driven path, and a same-account token clobber
+  reopened by going concurrent (ensureFresh is now the sole token writer).
+- **8c — Kick. ✅ DONE 2026-06-29** (`3d22ebb9f`). Reusable **PKCE-loopback** strategy (127.0.0.1
+  ephemeral Winsock listener, S256, CSRF state) + a generalized strategy-agnostic `authorize()`
+  connect flow (`oauth.connectProgress {phase}`; device-code & browser-wait UX). `KickProvider`:
+  `channel:read/write`+`user:read`, `PATCH /public/v1/channels`, `/public/v2/categories` typeahead,
+  identity+channel-read prefill; redirect host `localhost` (Kick's Next.js rewrites `127.0.0.1`).
+  Review SHIP_WITH_FIXES (0 Crit): reactive-401 now force-refreshes through the persisting
+  single-flight path (Kick refresh tokens rotate), worker try/catch, category-id string wire type.
+- **8d — YouTube. ✅ DONE 2026-06-29** (`033f45a2b`). PKCE-loopback (no secret; `access_type=offline`
+  +`prompt=consent` via `Config.extraAuthParams`) + create-per-go-live lifecycle: liveBroadcasts.
+  insert → liveStreams.insert → bind → videos.update (category/tags) → thumbnails.set, then writes
+  the RTMP ingest URL+key into the linked profile (UI-thread `ingest_writeback`, completes before
+  `streaming.start`). **enableAutoStart always true** so YouTube auto-transitions when the encoder
+  connects (no manual transition hook); advanced toggle controls only `enableAutoStop`. 11-field
+  descriptor (privacy/description/thumbnail + YouTube-only advanced). Review SHIP_WITH_FIXES (0 Crit;
+  writeback sync + videos.update merge affirmed correct). Also standardized all providers'
+  enum/labelset options on `{value,label}` (fixed Twitch language/content-labels rendering as
+  `[object Object]`). **`YOUTUBE_CLIENTID` must be a Google "Desktop app" OAuth client** (Web clients
+  reject loopback redirects). **Google app-verification paperwork (sensitive scope) still owed.**
+- **8e — Polish. ✅ DONE 2026-06-29** (`406fc9f56`). Thumbnail preview + remove + drag-drop + 2 MB
+  hint; **reconnect UX** for stale-scope tokens (distinct "⚠ Reconnect" state in Streams; excluded
+  from the modal push + shown as "authorization expired" — still streams via key); human
+  platform-named partial-failure toasts. (Mid-stream edit + debounced typeahead already shipped in
+  8b.) Frontend-only; check 0/0, build EXIT=0.
+- **Phase 8 MVP (8a–8e) COMPLETE + pushed to `origin/ui-redesign`; NOT merged.** Acceptance owed
+  (live, can't headless — needs the registered apps + creds): real connect round-trips per platform,
+  metadata push, YouTube create-per-go-live + auto-transition + thumbnail + ingest writeback, Kick
+  variable-loopback-port acceptance (RFC 8252), refresh/reconnect, DPAPI read/write. NOTE: portable
+  smoke shows clean `[obs] shutdown complete` (leaks 2) but an intermittent **CEF-exit segfault**
+  appears in the headless shell (reproduces with the pre-8e bundle; subagents smoke the same binary
+  clean; outside OBS's crash handler) — a teardown/GPU artifact, not a Phase 8 regression; confirm
+  close behavior in a real GUI session.
 - **8f — Facebook Page (optional, post-MVP).** A `facebook` provider on the `auth-code+secret`/
   `proxy` strategy: `live_videos` create + title/description/privacy + `thumbnails` upload (test
   the live-timing gap first). Requires a token-exchange proxy (or accepted-risk embedded secret)
