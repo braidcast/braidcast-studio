@@ -71,6 +71,10 @@
   --color-accent-contrast: #0a0a0b;
   --color-accent-ink: #0a0a0b;
   --color-live: #f04444;
+  /* Success/linked status (OAuth "linked" chip + connected panel). Static status
+     colors, not part of the theme presets; --color-ok-bg is the darker border/fill. */
+  --color-ok: #3fb950;
+  --color-ok-bg: #234a2c;
   --meter-green: #46b85e;
   --meter-yellow: #e6b03e;
   --meter-red: #f04444;

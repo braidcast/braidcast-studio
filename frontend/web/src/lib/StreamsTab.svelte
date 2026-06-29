@@ -418,8 +418,8 @@
     border: 1px solid var(--border);
   }
   .chip.ok {
-    color: #3fb950;
-    border-color: #234a2c;
+    color: var(--color-ok);
+    border-color: var(--color-ok-bg);
   }
   .chip.key {
     color: var(--color-muted);
@@ -555,12 +555,12 @@
     align-items: center;
     gap: 10px;
     padding: 10px 12px;
-    border: 1px solid #234a2c;
-    background: rgba(63, 185, 80, 0.06);
+    border: 1px solid var(--color-ok-bg);
+    background: color-mix(in srgb, var(--color-ok) 6%, transparent);
     max-width: 360px;
   }
   .conn .dot {
-    color: #3fb950;
+    color: var(--color-ok);
   }
   .conn .who {
     flex: 1;

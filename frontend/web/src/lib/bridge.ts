@@ -486,19 +486,21 @@ export interface DeviceCodePrompt {
   expiresSec: number;
 }
 
-/** A profile's stream metadata (Go Live "Stream Information"). Minimal shape; the
- * 8b modal fleshes it out. */
+/** A profile's stream metadata (Go Live "Stream Information") as returned by
+ * streamMeta.get. `category` is a nested {id,name} (id "" when unset); `language`
+ * is the broadcaster language code. */
 export interface StreamMeta {
   title: string;
-  categoryId: string;
-  categoryName: string;
-  tags: string[];
+  category: { id: string; name: string };
+  language: string;
 }
 
-/** One category/game match (streamMeta.searchCategories). */
+/** One category/game match (streamMeta.searchCategories). `boxArt` is the box-art
+ * image URL (may contain {width}/{height} placeholders). */
 export interface StreamCategory {
   id: string;
   name: string;
+  boxArt: string;
 }
 
 // --- output bindings (profile x canvas routing edges, 4.4.3) -----------------
@@ -1031,15 +1033,19 @@ export interface ObsMethods {
   // status reports the per-profile link state.
   "oauth.providers": OAuthProvider[];
   "oauth.connect": { ok: boolean; pending: boolean };
+  // Cancel an in-flight device-code connect (dialog closed before authorization);
+  // aborts the backend poll so the profile is not linked after the modal is gone.
+  "oauth.cancelConnect": { ok: true };
   "oauth.disconnect": { ok: boolean };
   "oauth.status": OAuthStatus[];
-  // Stream metadata (Go Live "Stream Information": title / category / tags). get
-  // loads a profile's current metadata; searchCategories resolves a query to game/
-  // category matches; set persists and echoes the metadata. Fleshed out by the 8b
-  // modal; typed minimally here so the surface is usable without breaking typing.
+  // Stream metadata (Go Live "Stream Information": title / category / language).
+  // get loads a profile's current metadata ({title, category:{id,name}, language});
+  // searchCategories resolves a query to game/category matches ({id, name, boxArt});
+  // set ({profileUuid, fields}) persists and returns {ok:true}, emitting
+  // streamMeta.changed.
   "streamMeta.get": StreamMeta;
   "streamMeta.searchCategories": StreamCategory[];
-  "streamMeta.set": StreamMeta;
+  "streamMeta.set": { ok: true };
   // Output bindings (profile x canvas routing edges, 4.4.3).
   "outputBinding.list": OutputBindingInfo[];
   "outputBinding.create": { uuid: string };

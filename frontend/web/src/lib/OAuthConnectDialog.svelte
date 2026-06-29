@@ -1,6 +1,6 @@
 <script lang="ts">
   import { obs, type DeviceCodePrompt } from "./bridge";
-  import type { OAuthConnectRequest } from "./oauthConnectOpener.svelte";
+  import { markOAuthConnected, type OAuthConnectRequest } from "./oauthConnectOpener.svelte";
 
   interface Props {
     req: OAuthConnectRequest;
@@ -65,6 +65,8 @@
       const statuses = await obs.call("oauth.status");
       const me = statuses.find((s) => s.profileUuid === req.profileUuid);
       if (me && me.connected) {
+        // Linked: the poll already finished, so the close below must not cancel it.
+        markOAuthConnected();
         onClose();
       }
     } catch {
