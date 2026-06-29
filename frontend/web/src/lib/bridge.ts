@@ -453,6 +453,10 @@ export interface OAuthProviderField {
   type: string;
   tier?: string;
   shareable?: boolean;
+  /** enum/labelset choices (token strings); the 8b modal title-cases them. */
+  options?: string[];
+  /** Soft max length (text/tags) carried for hint/validation; advisory only. */
+  max?: number;
 }
 
 /** A streaming platform that supports account connection (oauth.providers). The

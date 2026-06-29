@@ -3,6 +3,7 @@
   import { openMissingFiles } from "./missingFilesOpener.svelte";
   import { openLogViewer } from "./logViewerOpener.svelte";
   import { openImporter } from "./importerOpener.svelte";
+  import { goLivePref, setAskStreamInfo } from "./goLivePrefStore.svelte";
 
   // General app settings, live-applied (the page model has no Apply boundary):
   // each control change pushes only its changed key via settings.setGeneral and
@@ -144,6 +145,15 @@
 
   <section class="group">
     <h4>Streaming</h4>
+    <label class="check">
+      <input
+        type="checkbox"
+        checked={goLivePref.askStreamInfo}
+        onchange={(e) => setAskStreamInfo(e.currentTarget.checked)}
+      />
+      Ask for stream info on Go Live
+    </label>
+    <p class="dim note">Open the Stream Information panel when going live. When off, Go Live starts instantly with the last-saved metadata.</p>
     <label class="check">
       <input
         type="checkbox"

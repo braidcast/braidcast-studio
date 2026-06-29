@@ -25,6 +25,8 @@
   import { undoStore } from "../undoStore.svelte";
   import CollectionDialog, { type DialogSpec } from "../CollectionDialog.svelte";
   import ContextMenu, { type ContextMenuItem } from "../ContextMenu.svelte";
+  import { openGoLiveModal } from "../goLiveModalOpener.svelte";
+  import { goLivePref } from "../goLivePrefStore.svelte";
 
   let api = $state<DockviewApi | undefined>(undefined);
   let visibleDocks = $state<Record<string, boolean>>({});
@@ -562,8 +564,10 @@
     }
   }
 
-  // Route through a confirm dialog when the matching go-live warning is enabled;
-  // otherwise toggle directly. The busy guard lives in doToggleLive.
+  // Going live routes through the Stream Information modal (trigger option A) when
+  // the "Ask for stream info on Go Live" pref is on; the modal pushes metadata then
+  // calls streaming.start itself. With the pref off, fall back to the optional
+  // warn-confirm + instant start. Stopping keeps the single warn/stop path.
   function toggleLive(): void {
     if (anyRunning && warnStop) {
       dialog = {
@@ -573,6 +577,10 @@
         confirmLabel: "Stop",
         onCommit: () => void doToggleLive(),
       };
+      return;
+    }
+    if (!anyRunning && goLivePref.askStreamInfo) {
+      openGoLiveModal("golive");
       return;
     }
     if (!anyRunning && warnGoLive) {
@@ -739,6 +747,14 @@
           <span><span class="pk">{e.k}</span> {e.v}</span>
         {/each}
       </div>
+      <button
+        class="editinfo"
+        disabled={outputs.length === 0}
+        onclick={() => openGoLiveModal("edit")}
+        title="Edit stream information (title / category / tags) — works before and during the stream"
+      >
+        ✎ Edit stream info
+      </button>
       <button
         class="golive"
         class:running={anyRunning}
@@ -984,6 +1000,26 @@
   .vcam.active {
     border-color: var(--meter-green);
     color: var(--meter-green);
+  }
+  .editinfo {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    background: transparent;
+    border: var(--border-weight) solid var(--color-border);
+    color: var(--color-dim);
+    font-family: var(--font-ui);
+    font-size: 11px;
+    padding: 7px 12px;
+    cursor: pointer;
+  }
+  .editinfo:hover:not(:disabled) {
+    border-color: var(--color-accent);
+    color: var(--color-accent);
+  }
+  .editinfo:disabled {
+    opacity: 0.5;
+    cursor: default;
   }
   .golive {
     display: flex;
