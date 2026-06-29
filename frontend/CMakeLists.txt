@@ -110,6 +110,8 @@ target_sources(
     src/oauth/token_store.hpp
     src/oauth/registry.cpp
     src/oauth/registry.hpp
+    src/oauth/twitch_provider.cpp
+    src/oauth/twitch_provider.hpp
     api-impl/frontend_callbacks.cpp
     api-impl/frontend_callbacks.hpp
     # Phase 4.4.0 native-multistream data model. These five model files are

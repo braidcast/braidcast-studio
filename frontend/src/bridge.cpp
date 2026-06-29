@@ -10,6 +10,7 @@
 #include <functional>
 #include <iterator>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -7395,8 +7396,34 @@ void RunOAuthConnect(std::string providerId, std::string profileUuid)
 	if (!provider->fetchIdentity(acct, idErr)) {
 		HostLog("[oauth] fetchIdentity failed for " + providerId + ": " + idErr);
 	}
+
+	// Stream-key autofill (Twitch /helix/streams/key): fetch before persisting so a
+	// token rotated by the key call is captured in the Put below, then write the key
+	// into the linked stream profile on the UI thread (the profile store is UI-thread
+	// owned). Providers without a key endpoint return false (no-op).
+	std::string streamKey, keyErr;
+	const bool haveKey = provider->fetchStreamKey(acct, streamKey, keyErr) && !streamKey.empty();
+	if (!haveKey && !keyErr.empty()) {
+		HostLog("[oauth] fetchStreamKey skipped for " + providerId + ": " + keyErr);
+	}
+
 	OAuth::Tokens().Put(profileUuid, acct);
 	EmitOAuthStatus();
+
+	if (haveKey) {
+		AsyncTask::PostToUi([profileUuid, streamKey] {
+			StreamProfile *p = ObsBootstrap::StreamProfiles().Find(profileUuid);
+			if (!p) {
+				return;
+			}
+			if (!p->settings) {
+				p->settings = obs_data_create();
+			}
+			obs_data_set_string(p->settings, "key", streamKey.c_str());
+			ObsBootstrap::StreamProfiles().Save();
+			EmitEvent("streamProfile.changed", json::object());
+		});
+	}
 }
 
 bool MethodOAuthProviders(const json & /*params*/, json &result, std::string & /*error*/)
@@ -7450,6 +7477,137 @@ bool MethodOAuthDisconnect(const json &params, json &result, std::string &error)
 bool MethodOAuthStatus(const json & /*params*/, json &result, std::string & /*error*/)
 {
 	result = BuildOAuthStatusArray();
+	return true;
+}
+
+// ---- streamMeta (Phase 8a) -------------------------------------------------
+//
+// Platform stream-metadata read/search/write, dispatched through the provider the
+// registry resolves. Coherence: load the account from the store, let the provider
+// refresh it in place (proactive skew + reactive 401), then write it back so a
+// rotated refresh token is always persisted -- no caller operates on a stale copy.
+// These run synchronously on the calling (UI) thread and block on the network; if
+// that proves janky in 8b, convert to the async-with-event shape oauth.connect uses.
+
+bool MethodStreamMetaGet(const json &params, json &result, std::string &error)
+{
+	const std::string profileUuid = OptString(params, "profileUuid");
+	if (profileUuid.empty()) {
+		error = "streamMeta.get requires a non-empty 'profileUuid'";
+		return false;
+	}
+	std::optional<OAuth::OAuthAccount> stored = OAuth::Tokens().Get(profileUuid);
+	if (!stored) {
+		error = "not connected";
+		return false;
+	}
+	OAuth::StreamProvider *provider = OAuth::Registry().Get(stored->providerId);
+	if (!provider) {
+		error = "unknown provider: " + stored->providerId;
+		return false;
+	}
+
+	OAuth::OAuthAccount acct = *stored;
+	json out;
+	std::string err;
+	bool ok;
+	try {
+		ok = provider->getMetadata(acct, out, err);
+	} catch (const std::exception &e) {
+		error = std::string("streamMeta.get failed: ") + e.what();
+		return false;
+	}
+	OAuth::Tokens().Put(profileUuid, acct); // persist any rotated token
+	if (!ok) {
+		error = err;
+		return false;
+	}
+	result = std::move(out);
+	return true;
+}
+
+bool MethodStreamMetaSearchCategories(const json &params, json &result, std::string &error)
+{
+	const std::string providerId = OptString(params, "providerId");
+	const std::string query = OptString(params, "query");
+	if (providerId.empty()) {
+		error = "streamMeta.searchCategories requires a non-empty 'providerId'";
+		return false;
+	}
+	OAuth::StreamProvider *provider = OAuth::Registry().Get(providerId);
+	if (!provider) {
+		error = "unknown provider: " + providerId;
+		return false;
+	}
+
+	// Use any connected account for this provider (search needs a user token).
+	std::string accountUuid;
+	OAuth::OAuthAccount acct;
+	for (const auto &entry : OAuth::Tokens().All()) {
+		if (entry.second.providerId == providerId) {
+			accountUuid = entry.first;
+			acct = entry.second;
+			break;
+		}
+	}
+	if (accountUuid.empty()) {
+		error = "connect an account first";
+		return false;
+	}
+
+	json out;
+	std::string err;
+	bool ok;
+	try {
+		ok = provider->searchCategories(acct, query, out, err);
+	} catch (const std::exception &e) {
+		error = std::string("streamMeta.searchCategories failed: ") + e.what();
+		return false;
+	}
+	OAuth::Tokens().Put(accountUuid, acct);
+	if (!ok) {
+		error = err;
+		return false;
+	}
+	result = std::move(out);
+	return true;
+}
+
+bool MethodStreamMetaSet(const json &params, json &result, std::string &error)
+{
+	const std::string profileUuid = OptString(params, "profileUuid");
+	if (profileUuid.empty()) {
+		error = "streamMeta.set requires a non-empty 'profileUuid'";
+		return false;
+	}
+	std::optional<OAuth::OAuthAccount> stored = OAuth::Tokens().Get(profileUuid);
+	if (!stored) {
+		error = "not connected";
+		return false;
+	}
+	OAuth::StreamProvider *provider = OAuth::Registry().Get(stored->providerId);
+	if (!provider) {
+		error = "unknown provider: " + stored->providerId;
+		return false;
+	}
+	const json fields = params.is_object() && params.contains("fields") ? params["fields"] : json::object();
+
+	OAuth::OAuthAccount acct = *stored;
+	std::string err;
+	bool ok;
+	try {
+		ok = provider->applyMetadata(acct, fields, err);
+	} catch (const std::exception &e) {
+		error = std::string("streamMeta.set failed: ") + e.what();
+		return false;
+	}
+	OAuth::Tokens().Put(profileUuid, acct);
+	if (!ok) {
+		error = err;
+		return false;
+	}
+	EmitEvent("streamMeta.changed", json{{"profileUuid", profileUuid}});
+	result = json{{"ok", true}};
 	return true;
 }
 
@@ -7600,6 +7758,9 @@ void Init()
 		{"oauth.connect", MethodOAuthConnect},
 		{"oauth.disconnect", MethodOAuthDisconnect},
 		{"oauth.status", MethodOAuthStatus},
+		{"streamMeta.get", MethodStreamMetaGet},
+		{"streamMeta.searchCategories", MethodStreamMetaSearchCategories},
+		{"streamMeta.set", MethodStreamMetaSet},
 	};
 
 	// Notify JS whenever the undo stack changes (add/undo/redo/clear) so the UI's

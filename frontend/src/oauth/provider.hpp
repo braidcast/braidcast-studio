@@ -98,16 +98,29 @@ public:
 	virtual bool fetchIdentity(OAuthAccount &acct, std::string &err) = 0;
 
 	// Fetch the channel's current stream metadata (title/category/...) into `out`
-	// for prefill. false + `err` on failure.
-	virtual bool getMetadata(const OAuthAccount &acct, json &out, std::string &err) = 0;
+	// for prefill. `acct` is non-const so a reactive token refresh (proactive skew
+	// or a 401 retry) propagates back for the caller to persist. false + `err` on
+	// failure.
+	virtual bool getMetadata(OAuthAccount &acct, json &out, std::string &err) = 0;
 
 	// Resolve a category/game typeahead `query` into `out` (a list of matches).
-	virtual bool searchCategories(const OAuthAccount &acct, const std::string &query, json &out,
-				      std::string &err) = 0;
+	// `acct` is non-const for the same refresh-propagation reason as getMetadata.
+	virtual bool searchCategories(OAuthAccount &acct, const std::string &query, json &out, std::string &err) = 0;
 
 	// Push the resolved metadata `fields` to the platform. false + `err` on
 	// failure (a per-platform failure warns but must not block going live).
 	virtual bool applyMetadata(OAuthAccount &acct, const json &fields, std::string &err) = 0;
+
+	// Optionally fetch the platform stream key for `acct` (Twitch exposes one via
+	// /helix/streams/key; most providers do not). Default: unsupported. On success
+	// fills `key`; false + `err` (or false with empty `key`) when unavailable.
+	virtual bool fetchStreamKey(OAuthAccount &acct, std::string &key, std::string &err)
+	{
+		(void)acct;
+		(void)err;
+		key.clear();
+		return false;
+	}
 };
 
 } // namespace OAuth

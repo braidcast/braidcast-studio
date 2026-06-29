@@ -1,8 +1,11 @@
 #include "registry.hpp"
 
+#include <memory>
 #include <utility>
 
 #include "../log.hpp"
+#include "../provider_creds.hpp"
+#include "twitch_provider.hpp"
 
 namespace OAuth {
 
@@ -39,8 +42,9 @@ ProviderRegistry &Registry()
 
 void BootProviders()
 {
-	// Task 4 registers the Twitch provider here, e.g.:
-	//   if (TwitchConfigured()) Registry().Register(std::make_unique<TwitchProvider>());
+	if (TwitchConfigured()) {
+		Registry().Register(std::make_unique<TwitchProvider>());
+	}
 	HostLog("[oauth] provider registry booted: " + std::to_string(Registry().All().size()) + " provider(s)");
 }
 
