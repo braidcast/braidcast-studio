@@ -1,0 +1,4 @@
+#pragma once
+
+#define TWITCH_CLIENTID "@TWITCH_CLIENTID@"
+#define TWITCH_HASH     0x@TWITCH_HASH@

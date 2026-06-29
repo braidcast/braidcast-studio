@@ -92,6 +92,13 @@ target_sources(
     src/session_log.cpp
     src/session_log.hpp
     src/log.hpp
+    # Build-time platform OAuth credential injection (Phase 8a). obf.c is the
+    # symmetric nibble-XOR deobfuscator; provider_creds reads the configured
+    # ui-config.h and returns the plaintext-or-deobfuscated client_id.
+    src/obf.c
+    src/obf.h
+    src/provider_creds.cpp
+    src/provider_creds.hpp
     api-impl/frontend_callbacks.cpp
     api-impl/frontend_callbacks.hpp
     # Phase 4.4.0 native-multistream data model. These five model files are
@@ -155,6 +162,24 @@ target_include_directories(
     # resolve "CanvasDefinition.hpp" etc. from utility/.
     "${CMAKE_CURRENT_SOURCE_DIR}/utility"
 )
+
+# Phase 8a: inject the Twitch OAuth client_id at build time. The cache vars
+# default to the environment so CI/.env feed the credential without a -D flag.
+# TWITCH_HASH must default to 0 (not empty) so the "0x@TWITCH_HASH@" template
+# expands to a valid "0x0" literal on the no-credential path.
+set(TWITCH_CLIENTID "$ENV{TWITCH_CLIENTID}" CACHE STRING "Twitch OAuth client id (public; device-code flow)")
+set(TWITCH_HASH "$ENV{TWITCH_HASH}" CACHE STRING "Obfuscation key for TWITCH_CLIENTID; 0 means plaintext")
+if(NOT TWITCH_HASH)
+  set(TWITCH_HASH "0")
+endif()
+
+include(cmake/feature-twitch.cmake)
+
+# Generate ui-config.h into a dedicated dir and put it on the include path so
+# provider_creds.cpp can #include "ui-config.h".
+set(_generated_dir "${CMAKE_CURRENT_BINARY_DIR}/generated")
+configure_file(cmake/ui-config.h.in "${_generated_dir}/ui-config.h")
+target_include_directories(${_target} PRIVATE "${_generated_dir}")
 
 # The bridge envelope uses nlohmann/json, a header-only lib shipped in the
 # obs-deps prefix include dir (the legacy frontend gets it transitively via Qt;
