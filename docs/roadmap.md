@@ -1062,7 +1062,29 @@ this phase.
 
 ---
 
-## Phase 9 — Creator engagement layer: multichat, viewer count, alerts & widgets 🔭 PLANNED
+## Phase 9 — Creator engagement layer: multichat, viewer count, alerts & widgets 🚧 9.0 DONE; rest planned
+
+**9.0 (Multichat + Aggregate Viewer Count) ✅ DONE 2026-06-30** (commits `0b1725b24`,`c016fe362`,
+`7bcccb808` on `ui-redesign`; spec `docs/superpowers/specs/2026-06-30-phase9-multichat-viewer-count-design.md`).
+C++ chat transport layer on the Phase 8 registry: a libcurl-WebSocket client, a `ChatTransport`
+interface + `ChatHub` (one worker per connected account, normalized messages → `chat.message`/
+`chat.state` events, `chat.send` routing, start-on-go-live/stop-on-stop), and three transports —
+Twitch IRC-over-WS, YouTube `liveChatMessages` long-poll, Kick Pusher (reverse-engineered) read +
+REST send. Aggregate viewer count via a `ViewerPoller` + per-provider `viewerCount()` hook →
+`viewers.changed` (Monitor card + Studio chip). Svelte virtualized multichat dock (native
+emotes/badges, escaped text, all/per-platform send box). Chat scopes added (Twitch
+`chat:read`/`chat:edit` + future EventSub `user:read:chat`/`user:write:chat`; Kick `chat:write`/
+`events:subscribe`) with scopeVer bumps. Holistic review = SHIP_WITH_FIXES (0 Critical; 4 Important
+fixed: Twitch reauth-budget reset, host-side fallback message id + client-seq dock key, Kick
+teardown-timeout, Monitor/YouTube clear-on-stop). Also fixed the **`.env` credential wiring** (CMake
+now auto-loads a CR-tolerant repo-root `.env` under the `.env`/CI names → Twitch/Kick/YouTube boot).
+check 0/0, build EXIT=0, smoke 3 providers / leaks 2 / clean OBS shutdown. **GUI/credential
+acceptance owed** (headless can't drive real chat): per-platform connect/read/send, viewer counts,
+esp. the reverse-engineered Kick Pusher path (app key/`/api/v2` chatroom id/slug casing) + a >4h
+Twitch session (reauth) + an empty-id message. NOT merged to master.
+
+**Remaining Phase 9 (planned):** moderation · alerts/events feed · overlay widgets (local HTTP
+server + widget pages) · chat-as-source · third-party emotes (BTTV/FFZ/7TV) · pre-live chat.
 
 **Goal:** the Streamlabs/StreamElements-style live layer the fork lacks — unified **multichat**
 (read+send across every connected platform in one pane), **aggregate viewer count** (sum of live
