@@ -3,6 +3,7 @@
 
 #include <string>
 
+#include "../chat/twitch_chat.hpp"
 #include "../http_client.hpp"
 #include "device_code.hpp"
 #include "provider.hpp"
@@ -16,7 +17,7 @@ namespace OAuth {
 
 // Bumped whenever the requested scope set changes, so installs holding tokens
 // issued under an older scope set are forced to re-auth (see OAuthAccount::scopeVer).
-constexpr int TWITCH_SCOPE_VERSION = 1;
+constexpr int TWITCH_SCOPE_VERSION = 2;
 
 class TwitchProvider : public StreamProvider {
 public:
@@ -30,6 +31,7 @@ public:
 	json capabilityJson() const override;
 
 	AuthStrategy *auth() override { return &auth_; }
+	Chat::ChatTransport *chat() override { return &chat_; }
 
 	bool fetchIdentity(OAuthAccount &acct, std::string &err) override;
 	bool getMetadata(OAuthAccount &acct, json &out, std::string &err) override;
@@ -47,6 +49,9 @@ private:
 	bool SendAuthed(OAuthAccount &acct, Http::HttpReq req, Http::HttpResponse &resp, std::string &err);
 
 	DeviceCodeStrategy auth_;
+	// Declared after auth_ so it is constructed second -- chat_ captures &auth_ for a
+	// reactive token refresh, so auth_ must already exist.
+	TwitchChat chat_{&auth_};
 };
 
 } // namespace OAuth

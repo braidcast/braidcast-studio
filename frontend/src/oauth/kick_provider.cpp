@@ -16,8 +16,11 @@ namespace {
 const char *kKickApiBase = "https://api.kick.com";
 
 // channel:read/write back the title/category/tags read + PATCH; user:read backs
-// the identity lookup. Verified against docs.kick.com (2026-06).
-const std::array<const char *, 3> kKickScopes = {"channel:read", "channel:write", "user:read"};
+// the identity lookup. chat:write backs the Phase 9.0 multichat REST send;
+// events:subscribe backs the Pusher chat event subscription. Verified against
+// docs.kick.com (2026-06).
+const std::array<const char *, 5> kKickScopes = {"channel:read", "channel:write", "user:read",
+						 "chat:write",   "events:subscribe"};
 
 json ParseJson(const std::string &body)
 {

@@ -33,6 +33,8 @@
 
 #include "async_task.hpp"
 #include "audio/AudioMonitor.hpp"
+#include "chat/chat_hub.hpp"
+#include "chat/ws_client.hpp"
 #include "log.hpp"
 #include "mcp/McpServer.hpp"
 #include "interact_window.hpp"
@@ -239,13 +241,22 @@ bool MethodGetStreamingState(const json & /*params*/, json &result, std::string 
 bool MethodStreamingStart(const json & /*params*/, json &result, std::string & /*error*/)
 {
 	ObsBootstrap::Multistream().StartAllEnabled();
-	result = json{{"active", ObsBootstrap::Multistream().AnyLive()}};
+	const bool active = ObsBootstrap::Multistream().AnyLive();
+	result = json{{"active", active}};
 	EmitEvent("streaming.changed", result);
+	// Phase 9.0: spin up chat transports + (T6) the viewer poller now that we are
+	// live. Start() is idempotent and finds nothing to run until a platform
+	// transport exists, so this is inert in Task 2.
+	if (active) {
+		Chat::Hub().Start();
+	}
 	return true;
 }
 
 bool MethodStreamingStop(const json & /*params*/, json &result, std::string & /*error*/)
 {
+	// Stop chat transports first so their loops stop before the outputs tear down.
+	Chat::Hub().Stop();
 	ObsBootstrap::Multistream().StopAll();
 	result = json{{"active", false}};
 	EmitEvent("streaming.changed", result);
@@ -7656,6 +7667,46 @@ bool MethodStreamMetaSet(const json &params, json &result, std::string &error)
 	return true;
 }
 
+// ---- chat (Phase 9.0) ------------------------------------------------------
+//
+// The multichat send/state surface, routed through the ChatHub (Chat::Hub()).
+// The hub owns the live per-platform transports started on go-live; tokens never
+// leave C++. Events the hub + the T6 viewer poller push to JS:
+//   - "chat.message"    one normalized message (see chat_transport.hpp)
+//   - "chat.state"      per-platform { platform, connected, error? }
+//   - "viewers.changed" { perPlatform: {platform:n}, total }  (emitted directly
+//                        by the T6 ViewerPoller via Bridge::EmitEvent)
+// All three flow through the existing alive-guarded EmitEvent path -- no new emit
+// plumbing is needed; the chat.* helpers live in the hub (RouteEmit).
+
+bool MethodChatSend(const json &params, json &result, std::string &error)
+{
+	std::vector<std::string> platforms;
+	if (params.is_object() && params.contains("platforms") && params["platforms"].is_array()) {
+		for (const auto &p : params["platforms"]) {
+			if (p.is_string()) {
+				platforms.push_back(p.get<std::string>());
+			}
+		}
+	}
+	const std::string text = OptString(params, "text");
+	if (text.empty()) {
+		error = "chat.send requires a non-empty 'text'";
+		return false;
+	}
+	// Empty platforms = send to every connected platform. Each transport's send runs
+	// on its own worker inside the hub; a failure emits a chat.state error.
+	Chat::Hub().SendToPlatforms(platforms, text);
+	result = json{{"ok", true}};
+	return true;
+}
+
+bool MethodChatState(const json & /*params*/, json &result, std::string & /*error*/)
+{
+	result = Chat::Hub().State();
+	return true;
+}
+
 // The async-lane driver: run a plain MethodFn `work` on a detached worker, then
 // resolve the captured CEF `callback` back on the UI thread. Exactly one
 // resolution per query (the only path is the single PostToUi below); a resolve
@@ -7840,6 +7891,7 @@ void Init()
 		{"oauth.cancelConnect", MethodOAuthCancelConnect},
 		{"oauth.disconnect", MethodOAuthDisconnect},
 		{"oauth.status", MethodOAuthStatus},
+		{"chat.state", MethodChatState},
 	};
 
 	// streamMeta.* go on the async lane: their provider calls block on libcurl, so
@@ -7858,11 +7910,20 @@ void Init()
 		 [](const json &p, CefRefPtr<CefMessageRouterBrowserSide::Callback> cb) {
 			 RunAsyncMethod("streamMeta.set", p, cb, MethodStreamMetaSet);
 		 }},
+		{"chat.send",
+		 [](const json &p, CefRefPtr<CefMessageRouterBrowserSide::Callback> cb) {
+			 RunAsyncMethod("chat.send", p, cb, MethodChatSend);
+		 }},
 	};
 
 	// Notify JS whenever the undo stack changes (add/undo/redo/clear) so the UI's
 	// undo/redo affordance re-reads canUndo/canRedo + names.
 	ObsBootstrap::Undo().onChanged = [] { EmitUndoChanged(); };
+
+	// Phase 9.0: libcurl global init + a one-time WebSocket-support feature check,
+	// logged at startup so a dep bundle built without WebSockets fails loudly before
+	// any chat transport tries to connect.
+	Chat::WsClient::EnsureInit();
 
 	obs_frontend_add_event_callback(OnFrontendEvent, nullptr);
 	HostLog("[bridge] init: " + std::to_string(g_methods.size()) + " methods, " +
@@ -7871,6 +7932,10 @@ void Init()
 
 void Shutdown()
 {
+	// Phase 9.0: stop the chat hub BEFORE the alive-guard flips, so every transport
+	// read loop is signaled + disconnected and its emits are still routed cleanly
+	// (rather than silently dropped) as the loops unwind.
+	Chat::Hub().Stop();
 	// Block any further off-thread PostToUi from a detached worker: the CEF loop
 	// has already returned by the time Stop() reaches here, so a late marshal must
 	// no-op rather than touch CEF.

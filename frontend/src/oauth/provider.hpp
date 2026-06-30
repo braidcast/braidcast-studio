@@ -15,6 +15,14 @@
 // instance into the ProviderRegistry at boot. The bridge dispatches generic
 // `oauth.*` / `streamMeta.*` methods through the registry -- no per-platform
 // branches in the bridge surface.
+
+// Forward declaration: a provider optionally owns a chat transport (Phase 9.0).
+// The full interface lives in chat/chat_transport.hpp, which includes THIS header
+// for OAuthAccount -- so we only forward-declare here to avoid a header cycle.
+namespace Chat {
+class ChatTransport;
+}
+
 namespace OAuth {
 
 using json = nlohmann::json;
@@ -150,6 +158,19 @@ public:
 		key.clear();
 		return false;
 	}
+
+	// The provider's chat transport (Phase 9.0), or nullptr when the provider has no
+	// chat stream. Owned by the provider (like auth()); the ChatHub runs it on a
+	// worker thread between go-live and stop. Default null so a provider without chat
+	// needs no override.
+	virtual Chat::ChatTransport *chat() { return nullptr; }
+
+	// The platform-specific channel reference the hub passes into chat()->connect for
+	// `acct`: the channel login/slug for Twitch IRC / Kick Pusher, the per-broadcast
+	// liveChatId for YouTube. Default = the account login; providers whose chat keys
+	// off something else override it, keeping the hub free of per-platform
+	// channel-resolution branches.
+	virtual std::string chatChannelRef(const OAuthAccount &acct) { return acct.login; }
 };
 
 } // namespace OAuth

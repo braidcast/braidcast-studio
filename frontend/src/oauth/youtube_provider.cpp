@@ -6,6 +6,7 @@
 #include <fstream>
 #include <iterator>
 
+#include "../chat/youtube_chat.hpp"
 #include "../http_client.hpp"
 #include "../ingest_writeback.hpp"
 #include "../log.hpp"
@@ -145,6 +146,23 @@ YouTubeProvider::YouTubeProvider()
 		  {{"access_type", "offline"}, {"prompt", "consent"}}, // extraAuthParams (force a refresh token)
 	  })
 {
+	chat_ = std::make_unique<Chat::YouTubeChat>(*this);
+}
+
+// Out-of-line so unique_ptr<Chat::YouTubeChat> can hold an incomplete type in the
+// header (the dtor sees the complete type via the include above).
+YouTubeProvider::~YouTubeProvider() = default;
+
+Chat::ChatTransport *YouTubeProvider::chat()
+{
+	return chat_.get();
+}
+
+std::string YouTubeProvider::chatChannelRef(const OAuthAccount &acct)
+{
+	(void)acct; // YouTube chat keys off the broadcast liveChatId, not the account
+	const std::lock_guard<std::mutex> guard(liveChatMutex_);
+	return liveChatId_;
 }
 
 json YouTubeProvider::capabilityJson() const
@@ -370,6 +388,13 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const json &fields, std:
 		return false;
 	}
 
+	// Invalidate any prior broadcast's chat: a new go-live attempt supersedes it, and
+	// the new liveChatId is committed only once this apply fully succeeds (below).
+	{
+		const std::lock_guard<std::mutex> guard(liveChatMutex_);
+		liveChatId_.clear();
+	}
+
 	// Read every field up front (tolerant defaults; YouTube rejects empties on the
 	// required fields, so substitute safe values rather than send "").
 	std::string title = Str(fields, "title");
@@ -453,6 +478,30 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const json &fields, std:
 	if (broadcastId.empty()) {
 		err = "YouTube liveBroadcasts.insert returned no broadcast id";
 		return false;
+	}
+
+	// The broadcast's liveChatId is what the chat transport polls. The insert
+	// response usually carries it in snippet; if not, fetch it via liveBroadcasts.list
+	// (best-effort -- absence just means chat stays disabled for this go-live).
+	std::string liveChatId;
+	if (bResp.is_object() && bResp.contains("snippet") && bResp["snippet"].is_object()) {
+		liveChatId = Str(bResp["snippet"], "liveChatId");
+	}
+	if (liveChatId.empty()) {
+		Http::HttpReq chatReq;
+		chatReq.method = "GET";
+		chatReq.url = std::string(kLiveBroadcastsUrl) + "?part=snippet&id=" + Http::UrlEncode(broadcastId);
+		Http::HttpResponse chatResp;
+		std::string chatErr;
+		if (SendAuthed(acct, chatReq, chatResp, chatErr) && chatResp.status >= 200 && chatResp.status < 300) {
+			const json item = FirstItem(ParseJson(chatResp.body));
+			if (item.is_object() && item.contains("snippet") && item["snippet"].is_object()) {
+				liveChatId = Str(item["snippet"], "liveChatId");
+			}
+		}
+		if (liveChatId.empty()) {
+			HostLog("[oauth] YouTube broadcast has no liveChatId; chat will be unavailable");
+		}
 	}
 
 	// 2. liveStreams.insert -> the RTMP ingest endpoint + stream key. CRITICAL.
@@ -554,6 +603,13 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const json &fields, std:
 	if (!WriteIngestToProfile(acct.profileUuid, ingestionAddress, streamName)) {
 		err = "failed to write the YouTube ingest endpoint into the stream profile";
 		return false;
+	}
+
+	// Go-live setup fully succeeded: publish the broadcast's liveChatId so the chat
+	// transport (started right after by streaming.start) knows which chat to poll.
+	{
+		const std::lock_guard<std::mutex> guard(liveChatMutex_);
+		liveChatId_ = liveChatId;
 	}
 	return true;
 }

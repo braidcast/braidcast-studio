@@ -118,6 +118,28 @@ target_sources(
     src/oauth/kick_provider.hpp
     src/oauth/youtube_provider.cpp
     src/oauth/youtube_provider.hpp
+    # Phase 9.0 chat transport foundation: a reusable libcurl-WebSocket client, the
+    # ChatTransport interface, and the ChatHub that runs live transports between
+    # go-live and stop. Per-platform transports (Twitch/YouTube/Kick) land in later
+    # Phase 9 tasks; the hub manages an empty set until then. None include obs.h, so
+    # they stay out of the /wd4201 set.
+    src/chat/ws_client.cpp
+    src/chat/ws_client.hpp
+    src/chat/chat_transport.hpp
+    src/chat/chat_hub.cpp
+    src/chat/chat_hub.hpp
+    # Phase 9.0 Task 3: Twitch IRC-over-WebSocket chat transport (read + send),
+    # owned by TwitchProvider; WS only, no obs.h.
+    src/chat/twitch_chat.cpp
+    src/chat/twitch_chat.hpp
+    # Phase 9.0 Task 4: YouTube live-chat transport (liveChatMessages.list long-poll
+    # + .insert send), owned by the YouTube provider; HTTP only, no obs.h.
+    src/chat/youtube_chat.cpp
+    src/chat/youtube_chat.hpp
+    # Phase 9.0 Task 5: Kick chat transport (Pusher WebSocket read + REST send),
+    # owned by KickProvider; HTTP + WS only, no obs.h.
+    src/chat/kick_chat.cpp
+    src/chat/kick_chat.hpp
     # Phase 8d: generic ingest-key writeback (marshals an RTMP server+key into a
     # stream profile on TID_UI; includes obs.h -> in the /wd4201 set below).
     src/ingest_writeback.cpp
