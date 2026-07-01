@@ -4,7 +4,7 @@
   // Host supplies tab chrome + strips __* keys; this body declares no props.
   let {}: Record<string, unknown> = $props();
 
-  // Platform dot/tag color + actor-name fallback (matches the Multichat dock).
+  // Platform dot/tag color + label (matches the Multichat dock).
   const PLATFORM_COLOR: Record<ChatPlatform, string> = {
     twitch: "#a970ff",
     youtube: "#ff4e45",
@@ -15,7 +15,11 @@
     youtube: "YouTube",
     kick: "Kick",
   };
-  // Human labels per event type (skeleton copy; richer cards come in a later phase).
+  // Stable chip order so the platform filter never reshuffles.
+  const PLATFORM_ORDER: ChatPlatform[] = ["twitch", "youtube", "kick"];
+
+  // Human labels per event type -- the summary carries the phrasing; this is the
+  // fallback the summary/aria fall back to for an unknown type.
   const TYPE_LABEL: Record<EventType, string> = {
     follow: "Follow",
     sub: "Sub",
@@ -28,11 +32,68 @@
     member: "Member",
   };
 
+  // Accent color per type. follow=blue; sub/resub=purple; subgift/member=gold;
+  // cheer=teal (bits); raid=orange; superchat/supersticker=green (money).
+  const TYPE_COLOR: Record<EventType, string> = {
+    follow: "#3ea6ff",
+    sub: "#a970ff",
+    resub: "#a970ff",
+    subgift: "#ffb62c",
+    cheer: "#1fd1c3",
+    raid: "#ff8a3d",
+    superchat: "#2ecc71",
+    supersticker: "#2ecc71",
+    member: "#ffb62c",
+  };
+
+  // Format a money amount given in MINOR currency units (cents). Prefers the
+  // locale currency formatter; an unknown/invalid currency code throws, so wrap it
+  // and fall back to a bare `${value} ${code}`. Callers only invoke this when
+  // amount != null.
+  function money(amount: number, currency: string | undefined): string {
+    const value = amount / 100;
+    if (currency) {
+      try {
+        return new Intl.NumberFormat(undefined, { style: "currency", currency }).format(value);
+      } catch {
+        // invalid ISO 4217 code -- fall through to the plain form below.
+      }
+    }
+    return `${value.toFixed(2)} ${currency ?? ""}`.trim();
+  }
+
+  // One-line action summary per type (excludes `message`, which is bound
+  // separately so it renders as escaped text). Registry map, not a switch, so a
+  // new type is a single entry. Unknown types fall back to the type label.
+  const SUMMARY: Record<EventType, (e: NormalizedEvent) => string> = {
+    follow: () => "followed",
+    sub: (e) => "subscribed" + (e.tier ? ` · ${e.tier}` : ""),
+    resub: (e) => "resubscribed" + (e.months ? ` · ${e.months} months` : ""),
+    subgift: (e) => {
+      const n = e.count ?? 1;
+      return `gifted ${n} sub${n === 1 ? "" : "s"}` + (e.tier ? ` · ${e.tier}` : "");
+    },
+    cheer: (e) => `cheered ${e.amount ?? 0} bits`,
+    raid: (e) => {
+      const n = e.amount ?? 0;
+      return `raided with ${n} viewer${n === 1 ? "" : "s"}`;
+    },
+    superchat: (e) => "Super Chat" + (e.amount != null ? ` ${money(e.amount, e.currency)}` : ""),
+    supersticker: (e) => "Super Sticker" + (e.amount != null ? ` ${money(e.amount, e.currency)}` : ""),
+    member: (e) =>
+      e.months ? `member · ${e.months} months` : e.tier ? `became a member · ${e.tier}` : "became a member",
+  };
+
+  function summary(e: NormalizedEvent): string {
+    const fn = SUMMARY[e.type];
+    return fn ? fn(e) : (TYPE_LABEL[e.type] ?? e.type);
+  }
+
   // --- feed (ring-capped + virtualized) -------------------------------------
   // Hard cap on retained events so a sustained feed can't grow the array or the
   // measured-height map without bound; trimming prunes both in lockstep.
   const MAX = 500;
-  const ESTIMATE = 34; // px height estimate for an unmeasured row
+  const ESTIMATE = 38; // px height estimate for an unmeasured row
   const OVERSCAN = 6; // rows rendered beyond the viewport on each side
   const STICK_PX = 24; // within this of the bottom counts as "stuck to latest"
 
@@ -46,6 +107,12 @@
   // bumps `measureVersion` to recompute the layout. Pruned alongside the ring trim.
   const heights = new Map<number, number>();
   let measureVersion = $state(0);
+
+  // Platform filter: "all" or one platform. Filtering feeds the virtualizer a
+  // derived subset -- heights stay keyed by the stable clientKey, so a filtered-out
+  // row keeps its measured height and re-appears at the right size when re-shown.
+  let filter = $state<"all" | ChatPlatform>("all");
+  let filtered = $derived(filter === "all" ? events : events.filter((r) => r.e.platform === filter));
 
   let scrollEl: HTMLDivElement | undefined;
   let viewTop = $state(0);
@@ -93,15 +160,16 @@
     autoStick = true;
   }
 
-  // Cumulative row offsets + total height; recomputed when the event set or any
-  // measured height changes. O(n) over the <=MAX ring -- cheap.
+  // Cumulative row offsets + total height over the FILTERED set; recomputed when the
+  // filtered set or any measured height changes. O(n) over the <=MAX ring -- cheap.
   let layout = $derived.by<{ tops: number[]; total: number }>(() => {
     void measureVersion;
-    const tops = new Array<number>(events.length);
+    const rows = filtered;
+    const tops = new Array<number>(rows.length);
     let acc = 0;
-    for (let i = 0; i < events.length; i++) {
+    for (let i = 0; i < rows.length; i++) {
       tops[i] = acc;
-      acc += heights.get(events[i].clientKey) ?? ESTIMATE;
+      acc += heights.get(rows[i].clientKey) ?? ESTIMATE;
     }
     return { tops, total: acc };
   });
@@ -109,13 +177,14 @@
   // Visible window [start, end) including overscan, from the scroll offset.
   let range = $derived.by<{ start: number; end: number }>(() => {
     const { tops } = layout;
-    const n = events.length;
+    const rows = filtered;
+    const n = rows.length;
     if (n === 0) return { start: 0, end: 0 };
     const top = viewTop;
     const bottom = viewTop + viewH;
     let start = n - 1;
     for (let i = 0; i < n; i++) {
-      const h = heights.get(events[i].clientKey) ?? ESTIMATE;
+      const h = heights.get(rows[i].clientKey) ?? ESTIMATE;
       if (tops[i] + h > top) {
         start = i;
         break;
@@ -132,7 +201,7 @@
   });
 
   let visible = $derived(
-    events.slice(range.start, range.end).map((row, i) => ({ ...row, top: layout.tops[range.start + i] })),
+    filtered.slice(range.start, range.end).map((row, i) => ({ ...row, top: layout.tops[range.start + i] })),
   );
 
   // Measure each rendered row; a height delta bumps measureVersion so the layout
@@ -167,9 +236,18 @@
     if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
   }
 
-  // Keep the view pinned to the newest event while stuck to the bottom. Depends on
-  // layout.total so it re-pins after a freshly measured row grows the sizer.
+  // Switching the filter changes the visible set; re-pin to the newest of the new
+  // subset so the user always lands on the latest matching event.
+  function setFilter(f: "all" | ChatPlatform): void {
+    filter = f;
+    autoStick = true;
+  }
+
+  // Keep the view pinned to the newest event while stuck to the bottom. Reads
+  // `filtered` (re-pin on filter change) and layout.total (re-pin after a freshly
+  // measured row grows the sizer).
   $effect(() => {
+    void filtered;
     void layout.total;
     if (autoStick && scrollEl) {
       scrollEl.scrollTop = scrollEl.scrollHeight;
@@ -188,17 +266,6 @@
     ro.observe(scrollEl);
     return () => ro.disconnect();
   });
-
-  // Build the one-line summary (excluding message, which is bound separately so it
-  // renders as escaped text). Optional fields are appended only when present.
-  function summary(e: NormalizedEvent): string {
-    const parts: string[] = [];
-    if (e.tier) parts.push("Tier " + e.tier);
-    if (e.months) parts.push(e.months + " mo");
-    if (e.count) parts.push("x" + e.count);
-    if (e.amount != null) parts.push(e.currency ? e.amount + " " + e.currency : String(e.amount));
-    return parts.join(" · ");
-  }
 
   function clear(): void {
     // The host clears its store then emits an empty events.backfill; setFeed([])
@@ -224,22 +291,85 @@
   });
 </script>
 
+<!-- Feather/lucide-style line icons (24x24, currentColor) matching the nav rail. -->
+{#snippet typeIcon(type: EventType)}
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    {#if type === "follow"}
+      <path d="M20.8 5.6a5 5 0 0 0-7.1 0L12 7.3l-1.7-1.7a5 5 0 0 0-7.1 7.1l1.7 1.7L12 21.4l7.4-7.3 1.4-1.4a5 5 0 0 0 0-7.1z" />
+    {:else if type === "sub"}
+      <path d="M12 2.5l2.9 6 6.6.6-5 4.3 1.5 6.4L12 16.9 6 20.3l1.5-6.4-5-4.3 6.6-.6z" />
+    {:else if type === "resub"}
+      <path d="M17 2l4 4-4 4" />
+      <path d="M3 11V9a4 4 0 0 1 4-4h14" />
+      <path d="M7 22l-4-4 4-4" />
+      <path d="M21 13v2a4 4 0 0 1-4 4H3" />
+    {:else if type === "subgift"}
+      <rect x="3" y="8" width="18" height="4" />
+      <path d="M12 8v13" />
+      <path d="M19 12v9H5v-9" />
+      <path d="M7.5 8a2.5 2.5 0 0 1 0-5C11 3 12 8 12 8" />
+      <path d="M16.5 8a2.5 2.5 0 0 0 0-5C13 3 12 8 12 8" />
+    {:else if type === "cheer"}
+      <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+    {:else if type === "raid"}
+      <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+      <circle cx="9" cy="7" r="4" />
+      <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+      <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+    {:else if type === "superchat"}
+      <line x1="12" y1="1.5" x2="12" y2="22.5" />
+      <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
+    {:else if type === "supersticker"}
+      <circle cx="12" cy="12" r="10" />
+      <path d="M8 14s1.5 2 4 2 4-2 4-2" />
+      <line x1="9" y1="9" x2="9.01" y2="9" />
+      <line x1="15" y1="9" x2="15.01" y2="9" />
+    {:else if type === "member"}
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+    {:else}
+      <circle cx="12" cy="12" r="4" fill="currentColor" stroke="none" />
+    {/if}
+  </svg>
+{/snippet}
+
 <div class="events">
+  <div class="bar">
+    <button class="chip" class:on={filter === "all"} onclick={() => setFilter("all")}>All</button>
+    {#each PLATFORM_ORDER as p (p)}
+      <button
+        class="chip"
+        class:on={filter === p}
+        style:--chip={PLATFORM_COLOR[p]}
+        onclick={() => setFilter(p)}
+      >
+        <span class="cdot" style:background={PLATFORM_COLOR[p]}></span>
+        {PLATFORM_LABEL[p]}
+      </button>
+    {/each}
+  </div>
+
   <div class="scroll" bind:this={scrollEl} onscroll={onScroll}>
     {#if events.length === 0}
       <p class="empty">Follows, subs, gifts and cheers from your connected accounts appear here.</p>
+    {:else if filtered.length === 0}
+      <p class="empty">No {filter === "all" ? "" : PLATFORM_LABEL[filter] + " "}events yet.</p>
     {:else}
       <div class="sizer" style:height={layout.total + "px"}>
         {#each visible as row (row.clientKey)}
           {@const e = row.e}
           {@const platformColor = PLATFORM_COLOR[e.platform] ?? "var(--color-muted)"}
           {@const actorColor = e.actorColor || platformColor}
-          {@const sum = summary(e)}
+          {@const accent = TYPE_COLOR[e.type] ?? "var(--color-muted)"}
           <div class="row" style:top={row.top + "px"} use:measureRow={row.clientKey}>
-            <span class="pdot" style:background={platformColor} title={PLATFORM_LABEL[e.platform] ?? e.platform}></span>
-            <span class="type">{TYPE_LABEL[e.type] ?? e.type}</span>
-            <span class="actor" style:color={actorColor}>{e.actorName}</span>
-            {#if sum}<span class="meta">{sum}</span>{/if}
+            <div class="line">
+              <span class="pdot" style:background={platformColor} title={PLATFORM_LABEL[e.platform] ?? e.platform}
+              ></span>
+              <span class="icon" style:color={accent} title={TYPE_LABEL[e.type] ?? e.type}
+                >{@render typeIcon(e.type)}</span
+              >
+              <span class="actor" style:color={actorColor}>{e.actorName}</span>
+              <span class="sum">{summary(e)}</span>
+            </div>
             {#if e.message}<span class="msg">{e.message}</span>{/if}
           </div>
         {/each}
@@ -247,7 +377,7 @@
     {/if}
   </div>
 
-  {#if !autoStick && events.length > 0}
+  {#if !autoStick && filtered.length > 0}
     <button class="jump" onclick={jumpToLatest}>↓ Jump to latest</button>
   {/if}
 
@@ -265,6 +395,37 @@
     font-family: var(--font-ui);
     min-height: 0;
     position: relative;
+  }
+  .bar {
+    flex: 0 0 auto;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 6px 8px;
+    border-bottom: var(--border-weight) solid var(--color-border);
+    background: var(--color-surface-2);
+  }
+  .chip {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 8px;
+    font-size: 10px;
+    font-family: var(--font-ui);
+    color: var(--color-dim);
+    background: transparent;
+    border: var(--border-weight) solid var(--color-border);
+    cursor: pointer;
+  }
+  .chip.on {
+    border-color: var(--chip, var(--color-accent));
+    color: var(--chip, var(--color-accent));
+    background: color-mix(in srgb, var(--chip, var(--color-accent)) 14%, transparent);
+  }
+  .cdot {
+    width: 6px;
+    height: 6px;
+    flex: 0 0 auto;
   }
   .scroll {
     flex: 1;
@@ -290,15 +451,16 @@
     position: absolute;
     left: 0;
     right: 0;
-    display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    gap: 0 6px;
     padding: 4px 10px;
     font-size: 12px;
     line-height: 1.5;
     color: var(--color-text);
-    word-break: break-word;
+  }
+  .line {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0 6px;
   }
   .pdot {
     align-self: center;
@@ -306,25 +468,28 @@
     height: 7px;
     flex: 0 0 auto;
   }
-  .type {
-    flex: 0 0 auto;
-    font-family: var(--font-mono);
-    font-size: 9px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--color-base);
-    background: var(--color-muted);
-    padding: 0 4px;
+  .icon {
     align-self: center;
+    flex: 0 0 auto;
+    display: inline-flex;
+  }
+  .icon :global(svg) {
+    width: 13px;
+    height: 13px;
+    display: block;
   }
   .actor {
     font-weight: 600;
     overflow-wrap: anywhere;
   }
-  .meta {
+  .sum {
     color: var(--color-dim);
+    overflow-wrap: anywhere;
   }
   .msg {
+    display: block;
+    margin-top: 1px;
+    padding-left: 26px;
     color: var(--color-text);
     overflow-wrap: anywhere;
   }
