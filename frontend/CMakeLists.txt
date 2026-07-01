@@ -144,6 +144,10 @@ target_sources(
     # owned by KickProvider; HTTP + WS only, no obs.h.
     src/chat/kick_chat.cpp
     src/chat/kick_chat.hpp
+    # Shared Kick/Pusher config (app key/cluster) + slug->chatroom/channel-id lookup,
+    # referenced by both kick_chat and kick_events so the app key lives in ONE place.
+    src/chat/kick_pusher.cpp
+    src/chat/kick_pusher.hpp
     # Phase 9.0 Task 6: aggregate viewer-count poller. One worker polls each
     # connected provider's viewerCount() while live and emits viewers.changed;
     # HTTP only via the providers, no obs.h.
@@ -171,6 +175,11 @@ target_sources(
     # live-chat sink (youtube_chat forwards them to Events::Hub().Ingest). HTTP only.
     src/events/youtube_events.cpp
     src/events/youtube_events.hpp
+    # Phase 9.2d: Kick Pusher event transport (best-effort reverse-engineered
+    # sub/gift/host(raid)/follow), owned by KickProvider. Rides Kick's public Pusher
+    # (shared config in src/chat/kick_pusher); HTTP + WS only, no obs.h.
+    src/events/kick_events.cpp
+    src/events/kick_events.hpp
     # Phase 8d: generic ingest-key writeback (marshals an RTMP server+key into a
     # stream profile on TID_UI; includes obs.h -> in the /wd4201 set below).
     src/ingest_writeback.cpp

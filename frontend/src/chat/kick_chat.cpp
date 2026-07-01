@@ -5,23 +5,12 @@
 #include "../http_client.hpp"
 #include "../log.hpp"
 #include "../oauth/kick_provider.hpp"
+#include "kick_pusher.hpp"
 #include "ws_client.hpp"
 
 namespace Chat {
 
 namespace {
-
-// --- Pusher connection config -----------------------------------------------
-// REVERSE-ENGINEERED from the Kick web client -- NOT an official/published Kick
-// API. These values can change without notice; this block is the single edit
-// point for the whole transport. If the handshake stops yielding a
-// "pusher:connection_established" frame, the app key/cluster most likely rotated
-// (a clear log line below makes that detectable without a debugger).
-// Sources (research note 2026-06-30 §1): devozdemirhasancan gist; KickLib;
-// SongoMen/kick-chat-wrapper; caesarakalaeii/all-chat.
-constexpr const char *kPusherAppKey = "32cbd69e4b950bf97679";
-constexpr const char *kPusherHost = "ws-us2.pusher.com"; // "us2" cluster
-constexpr const char *kPusherClientVersion = "8.4.0-rc2";
 
 // Kick emote image CDN. The web client renders 32/64/128px variants; /fullsize
 // serves the original upload. (Research §Emote markup and CDN -- community
@@ -29,87 +18,11 @@ constexpr const char *kPusherClientVersion = "8.4.0-rc2";
 constexpr const char *kEmoteCdnPrefix = "https://files.kick.com/emotes/";
 constexpr const char *kEmoteCdnSuffix = "/fullsize";
 
-// A browser-like User-Agent for the unofficial kick.com/api/v2 lookup -- the
-// research flags that bot-detection TLS/UA fingerprinting may block non-browser
-// clients on that internal endpoint.
-constexpr const char *kBrowserUserAgent =
-	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
-	"Chrome/126.0.0.0 Safari/537.36";
-
-// Bounded so a connect-time chatroom-id fetch cannot stall teardown for long (the
-// fetch is a blocking sync HTTP call that can't observe the cancel flag). Kept
-// short so a detached worker lingers only briefly past Stop()/Shutdown while the
-// function-local-static singletons are still alive. Proper future fix: a cancel
-// token on Http::HttpRequest so the call aborts on the cancel flag rather than
-// merely timing out.
-constexpr int kChatroomLookupTimeoutSec = 5;
-
 long long NowMs()
 {
 	return std::chrono::duration_cast<std::chrono::milliseconds>(
 		       std::chrono::system_clock::now().time_since_epoch())
 		.count();
-}
-
-// Resolve a channel slug to its Pusher chatroom id.
-//
-// UNOFFICIAL endpoint: GET https://kick.com/api/v2/channels/<slug> -> chatroom.id.
-// The official /public/v1/channels does NOT return a chatroom id (research §Getting
-// the chatroom ID, verified against docs.kick.com). This /api/v2 path is internal
-// and may be gated/removed; surface a clear error so the failure is diagnosable.
-bool ResolveChatroomId(const std::string &slug, std::string &out, std::string &err)
-{
-	if (slug.empty()) {
-		err = "Kick chat: empty channel slug";
-		return false;
-	}
-
-	Http::HttpReq req;
-	req.method = "GET";
-	req.url = "https://kick.com/api/v2/channels/" + Http::UrlEncode(slug);
-	req.timeoutSec = kChatroomLookupTimeoutSec;
-	req.headers.push_back("Accept: application/json");
-	req.headers.push_back(std::string("User-Agent: ") + kBrowserUserAgent);
-
-	const Http::HttpResponse resp = Http::HttpRequest(req);
-	if (resp.status == 0) {
-		err = "Kick chatroom lookup failed: " + resp.error;
-		return false;
-	}
-	if (resp.status < 200 || resp.status >= 300) {
-		err = "Kick chatroom lookup HTTP " + std::to_string(resp.status) +
-		      " (unofficial /api/v2 endpoint may be gated)";
-		return false;
-	}
-
-	const json j = json::parse(resp.body, nullptr, false);
-	if (!j.is_object()) {
-		err = "Kick chatroom lookup: malformed response";
-		return false;
-	}
-	auto chat = j.find("chatroom");
-	if (chat == j.end() || !chat->is_object()) {
-		err = "Kick chatroom lookup: no chatroom in response";
-		return false;
-	}
-	auto idIt = chat->find("id");
-	if (idIt == chat->end()) {
-		err = "Kick chatroom lookup: chatroom missing id";
-		return false;
-	}
-	if (idIt->is_number_integer()) {
-		out = std::to_string(idIt->get<long long>());
-	} else if (idIt->is_string()) {
-		out = idIt->get<std::string>();
-	} else {
-		err = "Kick chatroom lookup: chatroom id not numeric";
-		return false;
-	}
-	if (out.empty() || out == "0") {
-		err = "Kick chatroom lookup: invalid chatroom id";
-		return false;
-	}
-	return true;
 }
 
 // Split `content` into normalized fragments, mapping Kick's inline emote markup
@@ -257,8 +170,7 @@ bool KickChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, const 
 		return false; // fatal: logged by the hub
 	}
 
-	const std::string pusherUrl = std::string("wss://") + kPusherHost + "/app/" + kPusherAppKey +
-				      "?protocol=7&client=js&version=" + kPusherClientVersion + "&flash=false";
+	const std::string pusherUrl = KickPusherUrl();
 
 	const auto canceled = [&] { return stop_.load(std::memory_order_acquire) || ctx.canceled(); };
 
@@ -272,7 +184,8 @@ bool KickChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, const 
 		// this blocking fetch cannot stall teardown.
 		if (chatroomId.empty()) {
 			std::string lookupErr;
-			if (!ResolveChatroomId(channelRef, chatroomId, lookupErr)) {
+			std::string channelIdUnused; // chat keys off the chatroom id only
+			if (!ResolveKickChannelIds(channelRef, chatroomId, channelIdUnused, lookupErr)) {
 				EmitState(ctx, false, lookupErr);
 				if (CancelableSleep(backoff.next(), canceled)) {
 					break;

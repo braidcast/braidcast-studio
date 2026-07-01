@@ -4,6 +4,7 @@
 #include <string>
 
 #include "../chat/kick_chat.hpp"
+#include "../events/kick_events.hpp"
 #include "../http_client.hpp"
 #include "pkce_loopback.hpp"
 #include "provider.hpp"
@@ -44,6 +45,11 @@ public:
 	// chatroom id from internally.
 	Chat::ChatTransport *chat() override { return &chat_; }
 
+	// The Kick Pusher event transport (Phase 9.2d): best-effort reverse-engineered
+	// sub/gift/host(raid)/(rarely)follow. Owned here, run by the EventHub on the
+	// account-connect lifecycle. events:subscribe is already in kKickScopes.
+	Events::EventTransport *events() override { return &events_; }
+
 private:
 	// Send an authenticated Kick request: ensureFresh proactively, stamp the bearer
 	// header, and on a 401 force one refresh + retry with the new token. `req` is
@@ -57,6 +63,9 @@ private:
 
 	PkceLoopbackStrategy auth_;
 	Chat::KickChat chat_{*this};
+	// Stores only the provider pointer at construction, so passing a not-yet-fully-
+	// constructed `this` is safe.
+	Events::KickEvents events_{this};
 };
 
 } // namespace OAuth
