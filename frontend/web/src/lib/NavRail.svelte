@@ -16,6 +16,7 @@
   const NAV_ITEMS: { id: Page; label: string; title: string }[] = [
     { id: "canvases", label: "Canvases", title: "Canvases" },
     { id: "streams", label: "Streams", title: "Stream Profiles" },
+    { id: "overlays", label: "Overlays", title: "Overlay Widgets" },
     { id: "schedule", label: "Schedule", title: "Schedule" },
     { id: "monitor", label: "Monitor", title: "Monitor" },
     { id: "ai", label: "AI", title: "AI Control" },
@@ -160,6 +161,12 @@
             <path d="M16 8.2 a5.4 5.4 0 0 1 0 7.6" />
             <path d="M5.4 5.6 a9 9 0 0 0 0 12.8" />
             <path d="M18.6 5.6 a9 9 0 0 1 0 12.8" />
+          </svg>
+        {:else if item.id === "overlays"}
+          <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3.5" y="4.5" width="17" height="12" />
+            <path d="M3.5 13 L8 9 L11.5 12.5 L15 8 L20.5 13.5" />
+            <line x1="8" y1="20" x2="16" y2="20" />
           </svg>
         {:else if item.id === "schedule"}
           <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">

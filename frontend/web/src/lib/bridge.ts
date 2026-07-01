@@ -1007,6 +1007,78 @@ export interface NormalizedEvent {
   message?: string;
 }
 
+// --- overlay widgets (loopback SSE overlays, Phase 9.3) ----------------------
+
+/** One field in a widget's Fields system. `type` drives the values-panel editor;
+ * `options` (dropdown), `min`/`max`/`step` (slider) are type-specific. `value` feeds
+ * fieldData; for image/sound uploads it is the served "assets/<file>" path. */
+export interface OverlayField {
+  key: string;
+  type:
+    | "text"
+    | "number"
+    | "color"
+    | "dropdown"
+    | "checkbox"
+    | "slider"
+    | "image-upload"
+    | "sound-upload"
+    | "font";
+  label: string;
+  default: unknown;
+  value: unknown;
+  options?: { value: string; label: string }[];
+  min?: number;
+  max?: number;
+  step?: number;
+}
+
+export interface OverlayAsset {
+  key: string;
+  kind: string;
+  file: string;
+}
+
+/** Full widget definition (overlays.get / overlays.create). */
+export interface OverlayWidget {
+  id: string;
+  token: string;
+  name: string;
+  type: string;
+  html: string;
+  css: string;
+  js: string;
+  fields: OverlayField[];
+  assets: OverlayAsset[];
+  url: string;
+}
+
+/** Compact list row (overlays.list). */
+export interface OverlayListItem {
+  id: string;
+  name: string;
+  type: string;
+  token: string;
+  url: string;
+}
+
+/** overlays.serverInfo — surfaces port instability so the UI can prompt re-copy. */
+export interface OverlayServerInfo {
+  port: number;
+  listening: boolean;
+  portChanged: boolean;
+}
+
+/** Partial patch for overlays.update. */
+export interface OverlayUpdateParams {
+  id: string;
+  name?: string;
+  html?: string;
+  css?: string;
+  js?: string;
+  fields?: OverlayField[];
+}
+
 /** Known bridge methods. Extend as the C++ Bridge gains methods. */
 export interface ObsMethods {
   getVersion: string;
@@ -1304,6 +1376,22 @@ export interface ObsMethods {
   // arrive via the events.new / events.backfill push events.
   "events.list": NormalizedEvent[];
   "events.clear": { ok: boolean };
+  // Overlay widgets (loopback SSE overlays, Phase 9.3). list/get/create/duplicate/
+  // delete/url/test/serverInfo/addToScene are sync; uploadAsset is async. create/
+  // update/duplicate/delete emit overlays.changed. test broadcasts a synthetic event
+  // to one widget's open SSE streams (never persisted). addToScene creates a Browser
+  // Source at the widget URL in the current scene.
+  "overlays.list": OverlayListItem[];
+  "overlays.get": OverlayWidget;
+  "overlays.create": OverlayWidget;
+  "overlays.update": { ok: boolean };
+  "overlays.duplicate": OverlayWidget;
+  "overlays.delete": { removed: string };
+  "overlays.url": { url: string };
+  "overlays.test": { ok: boolean };
+  "overlays.serverInfo": OverlayServerInfo;
+  "overlays.uploadAsset": { path: string };
+  "overlays.addToScene": { id: number; source: string };
 }
 
 /** Known server->client push events and their payload shapes. */
@@ -1409,6 +1497,9 @@ export interface ObsEvents {
   // after a broadcast.
   "events.new": NormalizedEvent;
   "events.backfill": NormalizedEvent[];
+  // A widget was created/updated/duplicated/deleted; the Overlays page re-runs
+  // overlays.list (and re-fetches the open widget if it changed elsewhere).
+  "overlays.changed": Record<string, never>;
 }
 
 export interface BridgeError extends Error {

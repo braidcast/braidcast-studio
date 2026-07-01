@@ -5,6 +5,7 @@
   import StudioPage from "./lib/pages/StudioPage.svelte";
   import CanvasesPage from "./lib/pages/CanvasesPage.svelte";
   import StreamsPage from "./lib/pages/StreamsPage.svelte";
+  import OverlaysPage from "./lib/pages/OverlaysPage.svelte";
   import SchedulePage from "./lib/pages/SchedulePage.svelte";
   import MonitorPage from "./lib/pages/MonitorPage.svelte";
   import AiPage from "./lib/pages/AiPage.svelte";
@@ -113,6 +114,8 @@
       <CanvasesPage />
     {:else if pageStore.page === "streams"}
       <StreamsPage />
+    {:else if pageStore.page === "overlays"}
+      <OverlaysPage />
     {:else if pageStore.page === "schedule"}
       <SchedulePage />
     {:else if pageStore.page === "monitor"}

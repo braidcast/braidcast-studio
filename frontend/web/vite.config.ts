@@ -14,8 +14,9 @@ export default defineConfig({
     target: "es2022",
     // The bundle loads from local disk via the app:// scheme, so chunk size has no
     // network cost and code-splitting buys nothing -- the shell needs it all at
-    // startup. Raise the warning above today's ~540 kB so it still flags a real
+    // startup. The Overlays editor pulls in CodeMirror 6 (~+630 kB raw), putting the
+    // main chunk near ~1.17 MB; raise the warning above that so it still flags a real
     // regression (e.g. an accidental heavy dep) instead of crying wolf every build.
-    chunkSizeWarningLimit: 900,
+    chunkSizeWarningLimit: 1400,
   },
 });
