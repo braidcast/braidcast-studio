@@ -177,9 +177,23 @@ std::string AssembleDocument(const Widget &w, int port)
 {
 	json fieldData = json::object();
 	for (const json &f : w.fields) {
-		if (f.contains("key")) {
-			fieldData[f["key"].get<std::string>()] = f.value("value", json(nullptr));
+		if (!f.contains("key")) {
+			continue;
 		}
+		json value = f.value("value", json(nullptr));
+		// An uploaded asset field stores the portable, token-less "assets/<file>" as its
+		// persisted value. Rewrite ONLY the injected copy to the absolute tokenized URL the
+		// server actually serves (/w/<id>/assets/<file>?t=<token>); a bare "assets/<file>"
+		// would resolve against /w/ (no <base>) and 404, and lacks the required token. Match
+		// the prefix so it works regardless of the field's declared type. w.fields (the
+		// persisted value) is left untouched so it survives token/port changes.
+		if (value.is_string()) {
+			const std::string s = value.get<std::string>();
+			if (s.rfind("assets/", 0) == 0) {
+				value = "/w/" + w.id + "/" + s + "?t=" + w.token;
+			}
+		}
+		fieldData[f["key"].get<std::string>()] = std::move(value);
 	}
 	const json overlay = json{{"id", w.id}, {"token", w.token}, {"port", port}, {"fields", fieldData}};
 	std::string doc = "<!doctype html><html><head><meta charset=\"utf-8\">\n<style>\n";
