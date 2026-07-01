@@ -8069,6 +8069,15 @@ void EmitAudioLevels()
 		return;
 	}
 
+	// Now on TID_UI. An audio-thread volmeter fire can post this task in the window
+	// between the pre-Stop CEF drain and AudioMonitor teardown; CefShutdown then
+	// drains it after Stop() reset the monitor. Bail before touching (and re-posting
+	// to) a gone monitor. g_audioMonitor is only mutated on TID_UI (Start/Stop run
+	// on this thread), so reading it here never races.
+	if (!ObsBootstrap::AudioMonitorAlive()) {
+		return;
+	}
+
 	const uint64_t now = os_gettime_ns();
 	const uint64_t elapsed = now - lastEmitNs;
 	if (lastEmitNs != 0 && elapsed < kMinIntervalNs) {

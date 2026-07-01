@@ -88,6 +88,11 @@ CanvasRuntime &CanvasRuntime();
 // between Start() and Stop().
 AudioMonitor &AudioMonitor();
 
+// Whether the audio monitor is currently constructed (true between Start() and
+// Stop()). Lets the throttled audio.levels emit skip a drain that a CEF task
+// queued before Stop() runs during CefShutdown, after the monitor was reset.
+bool AudioMonitorAlive();
+
 // The per-scene-collection undo/redo stack (deque-based action history). Owned by
 // the bootstrap (cleared in Stop and on scene-collection switch). Exposed so the
 // bridge can serve undo.undo/redo/state over it and wire its onChanged to the

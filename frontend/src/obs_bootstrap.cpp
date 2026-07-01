@@ -493,10 +493,16 @@ MultistreamEngine &ObsBootstrap::Multistream()
 ::AudioMonitor &ObsBootstrap::AudioMonitor()
 {
 	// Valid between Start() (constructs g_audioMonitor after the default scene +
-	// modules) and Stop() (resets it). Callers are bridge methods + the throttled
-	// audio.levels emit, all reachable only after the CEF page loads, so the
-	// pointer is non-null on every reachable path.
+	// modules) and Stop() (resets it). Bridge methods only reach here while the CEF
+	// page is loaded, but the throttled audio.levels emit can be drained by
+	// CefShutdown after Stop() reset the pointer, so that path guards with
+	// AudioMonitorAlive() first.
 	return *g_audioMonitor;
+}
+
+bool ObsBootstrap::AudioMonitorAlive()
+{
+	return g_audioMonitor != nullptr;
 }
 
 bool ObsBootstrap::Start()
