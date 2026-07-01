@@ -1062,7 +1062,7 @@ this phase.
 
 ---
 
-## Phase 9 — Creator engagement layer: multichat, viewer count, alerts & widgets 🚧 9.0 DONE; rest planned
+## Phase 9 — Creator engagement layer: multichat, viewer count, alerts & widgets 🚧 9.0–9.3 DONE; rest planned
 
 **9.0 (Multichat + Aggregate Viewer Count) ✅ DONE 2026-06-30** (commits `0b1725b24`,`c016fe362`,
 `7bcccb808` on `ui-redesign`; spec `docs/superpowers/specs/2026-06-30-phase9-multichat-viewer-count-design.md`).
@@ -1109,8 +1109,35 @@ per-phase-reviewed (super-quality, all Critical/Important fixed). **Live accepta
 all three (headless can't drive real follows/subs/cheers/superchats) + the reverse-engineered Kick
 names may drift.
 
-**Remaining Phase 9 (planned):** moderation · overlay widgets (local HTTP server + widget pages) ·
-chat-as-source · third-party emotes for Kick/YouTube · pre-live chat.
+**9.3 (Overlay widgets — alert box) ✅ DONE 2026-07-01** (`ui-redesign`; spec + plan under
+`docs/superpowers/`). A StreamElements-style overlay layer: v1 ships the full infrastructure plus
+one widget type (alert box). A NEW loopback-only (`127.0.0.1`) winsock HTTP server (`frontend/src/
+overlay/overlay_server.*`, distinct from `mcp/HttpServer` — it adds GET routing, static serving off
+the on-disk web bundle, and long-lived concurrent **SSE**) serves an assembled widget document +
+the compiled `OBSOverlay` runtime + user assets; the user copies a widget URL into an OBS Browser
+Source. Widgets persist to a global `overlays.json` (`overlay_store`, crash-safe tmp+bak, mirrors
+`event_store`); `overlays.*` bridge methods (list/get/create/update/duplicate/delete/url/test/
+serverInfo/uploadAsset/addToScene). The single sink `EventHub::Ingest` fans each `NormalizedEvent`
+to both the UI and `Overlay::Server().Broadcast` (test alerts inject via `BroadcastTo`, never the
+store). Clean native widget API (`OBSOverlay.onLoad/onEvent/fields/playSound` + `obs:load`/`obs:event`,
+EventSource over SSE) built on the existing `NormalizedEvent` shape — the runtime is emitted as a
+classic IIFE (`window.OBSOverlay`, no ESM) so a plain `<script src>` runs it in the Browser Source.
+Svelte "Overlays" nav page (master-detail): CodeMirror 6 HTML/CSS/JS panes, a Fields designer +
+values panel (text/number/color/dropdown/checkbox/slider/image-upload/sound-upload/font), an iframe
+preview with per-event-type test buttons, Copy-URL + add-to-scene. Port: persist-first (default
+43000) with a scattered-band fallback scan (43000/47000/51000/55000/59000 × 50) so a Hyper-V/WSL/
+Docker port reservation can't kill the feature; `portChanged`/`!listening` surfaced in the UI.
+Group-1 (socket server) got a dedicated deep review (fixed I1 shutdown-hang on untimed header recv,
+I2 fd-reuse wrong-close via shutdown()-not-close sole-closer, I3 mutex-across-blocking-send) + a
+final holistic review (fixed a Critical: uploaded asset field URLs rewritten to
+`/w/<id>/assets/<file>?t=<token>` at serve time in `AssembleDocument`). check 0/0, build EXIT=0, an
+over-a-real-socket self-test (GET doc + SSE delivery + wrong-token 403) plus overlays create/list/
+persist/delete all green, clean shutdown. **GUI acceptance owed** (headless can't drive a real
+Browser Source): live editing round-trip, image/sound upload→render, test-button alerts, two-instance
+token isolation, delete-cleans-assets, restart-URL-stability.
+
+**Remaining Phase 9 (planned):** moderation · chat-as-source · third-party emotes for Kick/YouTube ·
+pre-live chat · additional widget types (chat box, goal bar, ticker, labels) on the 9.3 overlay infra.
 
 **Goal:** the Streamlabs/StreamElements-style live layer the fork lacks — unified **multichat**
 (read+send across every connected platform in one pane), **aggregate viewer count** (sum of live
