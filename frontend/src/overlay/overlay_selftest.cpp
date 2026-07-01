@@ -7,6 +7,10 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <optional>
 #include <string>
 
 #include "../log.hpp"
@@ -188,6 +192,68 @@ void ObsBootstrap::RunOverlaySelfTest()
 		}
 	}
 	HostLog(std::string("[selftest] overlay auth -> ") + (authOk ? "OK" : "MISMATCH"));
+
+	// --- Real store round-trip (Group 2 persistence) ------------------------
+	// Snapshot the user's real overlays.json (+ .bak) so the create/delete below
+	// exercise the persist / reload path without clobbering real widgets; restored
+	// byte-identical at the end (mirrors RunEventSelfTest's discipline).
+	auto snapshot = [](const std::string &pth) -> std::optional<std::string> {
+		std::ifstream in(std::filesystem::u8path(pth), std::ios::binary);
+		if (!in) {
+			return std::nullopt;
+		}
+		return std::optional<std::string>(std::in_place, std::istreambuf_iterator<char>(in),
+						  std::istreambuf_iterator<char>());
+	};
+	auto restore = [](const std::string &pth, const std::optional<std::string> &data) {
+		if (data) {
+			std::ofstream out(std::filesystem::u8path(pth), std::ios::binary | std::ios::trunc);
+			out.write(data->data(), static_cast<std::streamsize>(data->size()));
+		} else {
+			std::error_code ec;
+			std::filesystem::remove(std::filesystem::u8path(pth), ec);
+		}
+	};
+
+	const std::string ovPath = Overlay::OverlayStore::FilePath();
+	const std::string ovBak = ovPath + ".bak";
+	const std::optional<std::string> ovOrig = snapshot(ovPath);
+	const std::optional<std::string> ovOrigBak = snapshot(ovBak);
+
+	const Overlay::Widget created = Overlay::Store().Create("selftest-ovl", "alertbox");
+	const std::string createdId = created.id;
+	const std::string createdUrl = Overlay::WidgetUrl(created, Overlay::Store().Port());
+	const bool createOk = !created.id.empty() && !created.token.empty() && !createdUrl.empty();
+	const bool seededOk = !created.fields.empty() && !created.html.empty();
+	HostLog(std::string("[selftest] overlays create -> ") + (createOk ? "OK" : "MISMATCH") +
+		(seededOk ? " (template seeded)" : " (template missing -- empty seed)"));
+
+	bool listOk = false;
+	for (const Overlay::Widget &cand : Overlay::Store().List()) {
+		if (cand.id == createdId) {
+			listOk = true;
+			break;
+		}
+	}
+	HostLog(std::string("[selftest] overlays list -> ") + (listOk ? "OK" : "MISMATCH"));
+
+	bool persistOk = false;
+	{
+		Overlay::OverlayStore reloaded;
+		persistOk = reloaded.Get(createdId).has_value();
+	}
+	HostLog(std::string("[selftest] overlays persist -> ") + (persistOk ? "OK" : "MISMATCH"));
+
+	Overlay::Store().Delete(createdId);
+	bool deleteOk = false;
+	{
+		Overlay::OverlayStore reloaded;
+		deleteOk = !reloaded.Get(createdId).has_value();
+	}
+	HostLog(std::string("[selftest] overlays delete -> ") + (deleteOk ? "OK" : "MISMATCH"));
+
+	restore(ovPath, ovOrig);
+	restore(ovBak, ovOrigBak);
 
 	server.Stop();
 	// Leave the shared singleton clean: the real boot Server() must not serve this

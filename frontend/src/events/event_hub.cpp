@@ -12,6 +12,8 @@
 #include "../oauth/provider.hpp"
 #include "../oauth/registry.hpp"
 #include "../oauth/token_store.hpp"
+#include "../overlay/overlay_server.hpp"
+#include "../overlay/overlay_store.hpp" // Overlay::Server()
 
 namespace Events {
 
@@ -214,6 +216,10 @@ void EventHub::Ingest(const NormalizedEvent &ev)
 	}
 	json payload = ev.ToJson();
 	AsyncTask::PostToUi([payload = std::move(payload)]() { Bridge::EmitEvent("events.new", payload); });
+	// Phase 9.3: fan the same event to every open overlay widget (SSE). Called off the
+	// event worker thread; Broadcast is mutex-guarded + thread-safe. Only reached for a
+	// newly-stored (non-duplicate) event, so widgets never double-fire.
+	Overlay::Server().Broadcast(ev);
 }
 
 EventHub &Hub()

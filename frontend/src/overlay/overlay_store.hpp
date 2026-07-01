@@ -45,7 +45,13 @@ public:
 	int Port() const;                                       // persisted chosen port (default 43000)
 	void SetPort(int port);                                 // persist a newly-bound port
 
-	// --- Group 2 adds: Create/Update/Duplicate/Delete/uploadAsset + config paths ---
+	Widget Create(const std::string &name, const std::string &type); // seed from default template
+	bool Update(const std::string &id, const json &patch);           // {name?,html?,css?,js?,fields?}
+	std::optional<Widget> Duplicate(const std::string &id);          // new id+token
+	bool Delete(const std::string &id);                              // removes widget + overlays/<id> dir
+	// Store a decoded asset file; returns its served relative path "assets/<file>" (or "" on failure).
+	std::string AddAsset(const std::string &id, const std::string &key, const std::string &kind,
+			     const std::vector<unsigned char> &bytes);
 
 	static std::string FilePath();                       // MultistreamBasicPath("overlays.json")
 	static std::string AssetsDir(const std::string &id); // .../basic/overlays/<id>/assets

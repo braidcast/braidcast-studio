@@ -38,6 +38,8 @@
 #include "chat/ws_client.hpp"
 #include "events/event_hub.hpp"
 #include "log.hpp"
+#include "overlay/overlay_server.hpp"
+#include "overlay/overlay_store.hpp"
 #include "mcp/McpServer.hpp"
 #include "interact_window.hpp"
 #include "obs_bootstrap.hpp"
@@ -7758,6 +7760,358 @@ bool MethodEventsClear(const json & /*params*/, json &result, std::string & /*er
 	return true;
 }
 
+// --- overlays (Phase 9.3 widget layer) --------------------------------------
+
+// Compact standard-base64 decoder (no other decoder exists in this TU). Ignores
+// ASCII whitespace; rejects any non-alphabet byte and data after padding.
+bool DecodeBase64(const std::string &in, std::vector<unsigned char> &out)
+{
+	auto val = [](unsigned char c) -> int {
+		if (c >= 'A' && c <= 'Z') {
+			return c - 'A';
+		}
+		if (c >= 'a' && c <= 'z') {
+			return c - 'a' + 26;
+		}
+		if (c >= '0' && c <= '9') {
+			return c - '0' + 52;
+		}
+		if (c == '+') {
+			return 62;
+		}
+		if (c == '/') {
+			return 63;
+		}
+		return -1;
+	};
+	out.clear();
+	int buf = 0;
+	int bits = 0;
+	bool padded = false;
+	for (unsigned char c : in) {
+		if (c == '\r' || c == '\n' || c == ' ' || c == '\t') {
+			continue;
+		}
+		if (c == '=') {
+			padded = true;
+			continue;
+		}
+		if (padded) {
+			return false; // data after padding
+		}
+		const int v = val(c);
+		if (v < 0) {
+			return false;
+		}
+		buf = (buf << 6) | v;
+		bits += 6;
+		if (bits >= 8) {
+			bits -= 8;
+			out.push_back(static_cast<unsigned char>((buf >> bits) & 0xFF));
+		}
+	}
+	return true;
+}
+
+bool MethodOverlaysList(const json & /*params*/, json &result, std::string & /*error*/)
+{
+	const int port = Overlay::Store().Port();
+	json arr = json::array();
+	for (const Overlay::Widget &w : Overlay::Store().List()) {
+		arr.push_back(w.ToListJson(port));
+	}
+	result = std::move(arr);
+	return true;
+}
+
+bool MethodOverlaysGet(const json &p, json &result, std::string &error)
+{
+	const std::string id = OptString(p, "id");
+	std::optional<Overlay::Widget> w = Overlay::Store().Get(id);
+	if (!w) {
+		error = "no such overlay: " + id;
+		return false;
+	}
+	result = w->ToJson();
+	result["url"] = Overlay::WidgetUrl(*w, Overlay::Store().Port());
+	return true;
+}
+
+bool MethodOverlaysCreate(const json &p, json &result, std::string & /*error*/)
+{
+	const std::string name = OptString(p, "name");
+	std::string type = OptString(p, "type");
+	if (type.empty()) {
+		type = "alertbox";
+	}
+	Overlay::Widget w = Overlay::Store().Create(name.empty() ? "New Overlay" : name, type);
+	result = w.ToJson();
+	result["url"] = Overlay::WidgetUrl(w, Overlay::Store().Port());
+	EmitEvent("overlays.changed", json::object());
+	return true;
+}
+
+bool MethodOverlaysUpdate(const json &p, json &result, std::string &error)
+{
+	const std::string id = OptString(p, "id");
+	if (!Overlay::Store().Update(id, p)) {
+		error = "no such overlay: " + id;
+		return false;
+	}
+	EmitEvent("overlays.changed", json::object());
+	result = json{{"ok", true}};
+	return true;
+}
+
+bool MethodOverlaysDuplicate(const json &p, json &result, std::string &error)
+{
+	const std::string id = OptString(p, "id");
+	std::optional<Overlay::Widget> w = Overlay::Store().Duplicate(id);
+	if (!w) {
+		error = "no such overlay: " + id;
+		return false;
+	}
+	result = w->ToJson();
+	result["url"] = Overlay::WidgetUrl(*w, Overlay::Store().Port());
+	EmitEvent("overlays.changed", json::object());
+	return true;
+}
+
+bool MethodOverlaysDelete(const json &p, json &result, std::string &error)
+{
+	const std::string id = OptString(p, "id");
+	if (!Overlay::Store().Delete(id)) {
+		error = "no such overlay: " + id;
+		return false;
+	}
+	EmitEvent("overlays.changed", json::object());
+	result = json{{"removed", id}};
+	return true;
+}
+
+bool MethodOverlaysUrl(const json &p, json &result, std::string &error)
+{
+	const std::string id = OptString(p, "id");
+	std::optional<Overlay::Widget> w = Overlay::Store().Get(id);
+	if (!w) {
+		error = "no such overlay: " + id;
+		return false;
+	}
+	result = json{{"url", Overlay::WidgetUrl(*w, Overlay::Store().Port())}};
+	return true;
+}
+
+bool MethodOverlaysServerInfo(const json & /*params*/, json &result, std::string & /*error*/)
+{
+	int port = Overlay::Server().Port();
+	if (port == 0) {
+		port = Overlay::Store().Port();
+	}
+	result = json{
+		{"port", port},
+		{"listening", Overlay::Server().IsListening()},
+		{"portChanged", Overlay::Server().PortChanged()},
+	};
+	return true;
+}
+
+// overlays.test {id,type,overrides?}: fire a synthetic event straight to one widget's
+// SSE sockets (never the store, so test alerts don't persist or dedupe against real
+// events). Per-type defaults are a data table so a new type is a data change.
+bool MethodOverlaysTest(const json &p, json &result, std::string &error)
+{
+	const std::string id = OptString(p, "id");
+	const std::string type = OptString(p, "type");
+	if (id.empty() || type.empty()) {
+		error = "overlays.test requires id and type";
+		return false;
+	}
+	const json overrides = (p.is_object() && p.contains("overrides") && p["overrides"].is_object())
+				       ? p["overrides"]
+				       : json::object();
+
+	Events::NormalizedEvent ev;
+	static std::atomic<uint64_t> counter{0};
+	ev.id = "test-" + std::to_string(++counter);
+	ev.platform = "twitch";
+	ev.type = type;
+	ev.ts = static_cast<int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+					     std::chrono::system_clock::now().time_since_epoch())
+					     .count());
+	ev.actorName = "Test User";
+
+	static const std::unordered_map<std::string, std::function<void(Events::NormalizedEvent &)>> kDefaults = {
+		{"cheer", [](Events::NormalizedEvent &e) { e.amount = 500; }},
+		{"raid", [](Events::NormalizedEvent &e) { e.amount = 12; }},
+		{"sub",
+		 [](Events::NormalizedEvent &e) {
+			 e.tier = "1000";
+			 e.months = 3;
+		 }},
+		{"resub",
+		 [](Events::NormalizedEvent &e) {
+			 e.tier = "1000";
+			 e.months = 3;
+		 }},
+		{"subgift",
+		 [](Events::NormalizedEvent &e) {
+			 e.count = 5;
+			 e.tier = "1000";
+		 }},
+		{"superchat",
+		 [](Events::NormalizedEvent &e) {
+			 e.amount = 499;
+			 e.currency = "USD";
+			 e.message = "Nice!";
+		 }},
+		{"supersticker",
+		 [](Events::NormalizedEvent &e) {
+			 e.amount = 499;
+			 e.currency = "USD";
+			 e.message = "Nice!";
+		 }},
+	};
+	auto def = kDefaults.find(type);
+	if (def != kDefaults.end()) {
+		def->second(ev);
+	}
+
+	// Overrides win over every default (present, well-typed keys only).
+	if (overrides.contains("platform") && overrides["platform"].is_string()) {
+		ev.platform = overrides["platform"].get<std::string>();
+	}
+	if (overrides.contains("actorName") && overrides["actorName"].is_string()) {
+		ev.actorName = overrides["actorName"].get<std::string>();
+	}
+	if (overrides.contains("actorColor") && overrides["actorColor"].is_string()) {
+		ev.actorColor = overrides["actorColor"].get<std::string>();
+	}
+	if (overrides.contains("amount") && overrides["amount"].is_number()) {
+		ev.amount = overrides["amount"].get<int64_t>();
+	}
+	if (overrides.contains("currency") && overrides["currency"].is_string()) {
+		ev.currency = overrides["currency"].get<std::string>();
+	}
+	if (overrides.contains("tier") && overrides["tier"].is_string()) {
+		ev.tier = overrides["tier"].get<std::string>();
+	}
+	if (overrides.contains("months") && overrides["months"].is_number()) {
+		ev.months = overrides["months"].get<int>();
+	}
+	if (overrides.contains("count") && overrides["count"].is_number()) {
+		ev.count = overrides["count"].get<int>();
+	}
+	if (overrides.contains("message") && overrides["message"].is_string()) {
+		ev.message = overrides["message"].get<std::string>();
+	}
+
+	Overlay::Server().BroadcastTo(id, ev);
+	result = json{{"ok", true}};
+	return true;
+}
+
+// overlays.uploadAsset {id,key,kind,base64} -> {path:"assets/<file>"} (async lane).
+bool MethodOverlaysUploadAsset(const json &p, json &result, std::string &error)
+{
+	const std::string id = OptString(p, "id");
+	const std::string key = OptString(p, "key");
+	const std::string kind = OptString(p, "kind");
+	const std::string b64 = OptString(p, "base64");
+	if (id.empty() || key.empty() || b64.empty()) {
+		error = "overlays.uploadAsset requires id, key, base64";
+		return false;
+	}
+	std::vector<unsigned char> bytes;
+	if (!DecodeBase64(b64, bytes)) {
+		error = "invalid base64";
+		return false;
+	}
+	if (bytes.size() > 8u * 1024 * 1024) {
+		error = "asset exceeds 8 MB";
+		return false;
+	}
+	const std::string rel = Overlay::Store().AddAsset(id, key, kind, bytes);
+	if (rel.empty()) {
+		error = "failed to store asset";
+		return false;
+	}
+	result = json{{"path", rel}};
+	return true;
+}
+
+// overlays.addToScene {id, canvas?, scene?} -> {id:<sceneItemId>, source:<name>}.
+// Mirrors MethodSourcesCreate exactly, differing only in creating a browser_source
+// pre-seeded with the widget URL + the target canvas's base resolution.
+bool MethodOverlaysAddToScene(const json &params, json &result, std::string &error)
+{
+	const std::string id = OptString(params, "id");
+	std::optional<Overlay::Widget> w = Overlay::Store().Get(id);
+	if (!w) {
+		error = "no such overlay: " + id;
+		return false;
+	}
+	const std::string url = Overlay::WidgetUrl(*w, Overlay::Store().Port());
+
+	std::string name = OptString(params, "name");
+	if (name.empty()) {
+		name = w->name + " (Overlay)";
+	}
+	obs_source_t *clash = obs_get_source_by_name(name.c_str());
+	if (clash) {
+		obs_source_release(clash);
+		error = "a source named '" + name + "' already exists";
+		return false;
+	}
+
+	obs_source_t *sceneSource = ResolveTargetScene(params); // addref'd
+	if (!sceneSource) {
+		error = "no scene to add the source to";
+		return false;
+	}
+	obs_scene_t *scene = obs_scene_from_source(sceneSource);
+
+	uint32_t baseW = 1920;
+	uint32_t baseH = 1080;
+	ResolveBaseSize(params, baseW, baseH);
+
+	obs_data_t *settings = obs_data_create();
+	obs_data_set_string(settings, "url", url.c_str());
+	obs_data_set_int(settings, "width", baseW);
+	obs_data_set_int(settings, "height", baseH);
+	obs_source_t *source = obs_source_create("browser_source", name.c_str(), settings, nullptr); // create-ref
+	obs_data_release(settings);
+	if (!source) {
+		obs_source_release(sceneSource);
+		error = "obs_source_create failed for browser_source";
+		return false;
+	}
+
+	obs_sceneitem_t *item = obs_scene_add(scene, source); // scene takes its own ref
+	const int64_t itemId = item ? obs_sceneitem_get_id(item) : 0;
+
+	json before, after;
+	if (item) {
+		before = StateBase(params, source);
+		after = CaptureItemSnapshot(params, sceneSource, item);
+	}
+	obs_source_release(source); // drop the create-ref; scene holds the source
+
+	EmitSceneItemsChanged(sceneSource, ResolveCanvasTarget(params).uuid);
+	obs_source_release(sceneSource);
+
+	if (!item) {
+		error = "obs_scene_add failed";
+		return false;
+	}
+	if (!ResolveCanvasTarget(params).isAdditional) {
+		SceneCollection::Save();
+	}
+	ObsBootstrap::Undo().AddAction("Add " + name, kRemoveItemBySource, kAddItemFromSnapshot, before.dump(),
+				       after.dump());
+	result = json{{"id", itemId}, {"source", name}};
+	return true;
+}
+
 // The async-lane driver: run a plain MethodFn `work` on a detached worker, then
 // resolve the captured CEF `callback` back on the UI thread. Exactly one
 // resolution per query (the only path is the single PostToUi below); a resolve
@@ -7945,6 +8299,16 @@ void Init()
 		{"chat.state", MethodChatState},
 		{"events.list", MethodEventsList},
 		{"events.clear", MethodEventsClear},
+		{"overlays.list", MethodOverlaysList},
+		{"overlays.get", MethodOverlaysGet},
+		{"overlays.create", MethodOverlaysCreate},
+		{"overlays.update", MethodOverlaysUpdate},
+		{"overlays.duplicate", MethodOverlaysDuplicate},
+		{"overlays.delete", MethodOverlaysDelete},
+		{"overlays.url", MethodOverlaysUrl},
+		{"overlays.test", MethodOverlaysTest},
+		{"overlays.serverInfo", MethodOverlaysServerInfo},
+		{"overlays.addToScene", MethodOverlaysAddToScene},
 	};
 
 	// streamMeta.* go on the async lane: their provider calls block on libcurl, so
@@ -7966,6 +8330,10 @@ void Init()
 		{"chat.send",
 		 [](const json &p, CefRefPtr<CefMessageRouterBrowserSide::Callback> cb) {
 			 RunAsyncMethod("chat.send", p, cb, MethodChatSend);
+		 }},
+		{"overlays.uploadAsset",
+		 [](const json &p, CefRefPtr<CefMessageRouterBrowserSide::Callback> cb) {
+			 RunAsyncMethod("overlays.uploadAsset", p, cb, MethodOverlaysUploadAsset);
 		 }},
 	};
 
