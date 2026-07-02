@@ -33,6 +33,8 @@
     { type: "alertbox", label: "Alert Box", name: "New Alert Box" },
     { type: "chatbox", label: "Chat Box", name: "New Chat Box" },
     { type: "ticker", label: "Event Ticker", name: "New Event Ticker" },
+    { type: "goalbar", label: "Goal Bar", name: "New Goal Bar" },
+    { type: "labels", label: "Label", name: "New Label" },
   ];
 
   let saveTimer: ReturnType<typeof setTimeout> | undefined;

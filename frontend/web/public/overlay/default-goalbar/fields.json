@@ -1,0 +1,26 @@
+[
+  {
+    "key": "goalType",
+    "type": "dropdown",
+    "label": "Goal Type",
+    "default": "followers",
+    "value": "followers",
+    "options": [
+      { "value": "followers", "label": "Followers" },
+      { "value": "subscribers", "label": "Subscribers" },
+      { "value": "giftedsubs", "label": "Gifted Subs" },
+      { "value": "bits", "label": "Bits" },
+      { "value": "donations", "label": "Donations" }
+    ]
+  },
+  { "key": "target", "type": "number", "label": "Target", "min": 1, "max": 1000000, "step": 1, "default": 50, "value": 50 },
+  { "key": "startCurrent", "type": "number", "label": "Starting Amount", "min": 0, "max": 1000000, "step": 1, "default": 0, "value": 0 },
+  { "key": "title", "type": "text", "label": "Title", "default": "Goal", "value": "Goal" },
+  { "key": "barColor", "type": "color", "label": "Bar Color", "default": "#9147ff", "value": "#9147ff" },
+  { "key": "trackColor", "type": "color", "label": "Track Color", "default": "rgba(255,255,255,0.15)", "value": "rgba(255,255,255,0.15)" },
+  { "key": "textColor", "type": "color", "label": "Text Color", "default": "#ffffff", "value": "#ffffff" },
+  { "key": "backgroundColor", "type": "color", "label": "Background Color", "default": "rgba(0,0,0,0)", "value": "rgba(0,0,0,0)" },
+  { "key": "fontFamily", "type": "font", "label": "Font", "default": "Inter, system-ui, sans-serif", "value": "Inter, system-ui, sans-serif" },
+  { "key": "fontSize", "type": "slider", "label": "Font Size (px)", "min": 12, "max": 64, "step": 1, "default": 22, "value": 22 },
+  { "key": "showPercent", "type": "checkbox", "label": "Show Percentage", "default": true, "value": true }
+]

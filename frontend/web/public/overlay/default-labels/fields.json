@@ -1,0 +1,46 @@
+[
+  {
+    "key": "mode",
+    "type": "dropdown",
+    "label": "Mode",
+    "default": "latest",
+    "value": "latest",
+    "options": [
+      { "value": "latest", "label": "Latest" },
+      { "value": "count", "label": "Count" }
+    ]
+  },
+  {
+    "key": "eventType",
+    "type": "dropdown",
+    "label": "Event Type",
+    "default": "follower",
+    "value": "follower",
+    "options": [
+      { "value": "follower", "label": "Follower" },
+      { "value": "subscriber", "label": "Subscriber" },
+      { "value": "giftedsub", "label": "Gifted Sub" },
+      { "value": "cheer", "label": "Cheer" },
+      { "value": "raid", "label": "Raid" },
+      { "value": "superchat", "label": "Super Chat" }
+    ]
+  },
+  { "key": "format", "type": "text", "label": "Format", "default": "Latest follower: {name}", "value": "Latest follower: {name}" },
+  { "key": "emptyText", "type": "text", "label": "Empty Text", "default": "—", "value": "—" },
+  { "key": "textColor", "type": "color", "label": "Text Color", "default": "#ffffff", "value": "#ffffff" },
+  { "key": "backgroundColor", "type": "color", "label": "Background Color", "default": "rgba(0,0,0,0)", "value": "rgba(0,0,0,0)" },
+  { "key": "fontFamily", "type": "font", "label": "Font", "default": "Inter, system-ui, sans-serif", "value": "Inter, system-ui, sans-serif" },
+  { "key": "fontSize", "type": "slider", "label": "Font Size (px)", "min": 12, "max": 72, "step": 1, "default": 24, "value": 24 },
+  {
+    "key": "align",
+    "type": "dropdown",
+    "label": "Align",
+    "default": "left",
+    "value": "left",
+    "options": [
+      { "value": "left", "label": "Left" },
+      { "value": "center", "label": "Center" },
+      { "value": "right", "label": "Right" }
+    ]
+  }
+]

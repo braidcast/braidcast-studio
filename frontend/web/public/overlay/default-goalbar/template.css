@@ -1,0 +1,68 @@
+:root {
+  --ov-font: "Inter", system-ui, sans-serif;
+  --ov-size: 22px;
+  --ov-text: #ffffff;
+  --ov-bg: rgba(0, 0, 0, 0);
+  --ov-bar: #9147ff;
+  --ov-track: rgba(255, 255, 255, 0.15);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: transparent;
+  overflow: hidden;
+  font-family: var(--ov-font);
+}
+
+.goal {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 14px 18px;
+  background: var(--ov-bg);
+  color: var(--ov-text);
+  font-size: var(--ov-size);
+  line-height: 1.2;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+}
+
+.goal-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.goal-title {
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.goal-count {
+  flex: 0 0 auto;
+  font-size: 0.82em;
+  opacity: 0.9;
+  white-space: nowrap;
+}
+
+/* Rounded track by design intent (browser-source cosmetic, not app UI). */
+.goal-track {
+  position: relative;
+  width: 100%;
+  height: 0.6em;
+  background: var(--ov-track);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.goal-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 0%;
+  background: var(--ov-bar);
+  border-radius: 999px;
+  transition: width 420ms ease;
+}
