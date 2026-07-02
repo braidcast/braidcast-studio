@@ -4,13 +4,14 @@
 
 <div class="page">
   <header class="head">
-    <span class="title">Streams</span>
+    <div class="head-titles">
+      <span class="title">Streams</span>
+      <span class="sub">reusable destination credentials</span>
+    </div>
   </header>
 
   <div class="body">
-    <div class="pane">
-      <StreamsTab />
-    </div>
+    <StreamsTab />
   </div>
 </div>
 
@@ -28,10 +29,15 @@
     height: 58px;
     display: flex;
     align-items: center;
-    gap: 12px;
     padding: 0 24px;
     border-bottom: var(--border-weight) solid var(--color-border);
     background: var(--color-surface);
+  }
+  .head-titles {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    min-width: 0;
   }
   .title {
     font-family: var(--font-ui);
@@ -39,15 +45,14 @@
     font-weight: 600;
     letter-spacing: -0.01em;
   }
+  .sub {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--color-muted);
+  }
   .body {
     flex: 1;
     min-height: 0;
     display: flex;
-  }
-  .pane {
-    flex: 1;
-    min-width: 0;
-    overflow: auto;
-    padding: 24px 28px;
   }
 </style>

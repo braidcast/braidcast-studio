@@ -95,6 +95,14 @@
     return serviceTypes.find((s) => s.id === id)?.name ?? id ?? "—";
   }
 
+  // Robust display name: a fresh profile can have an empty label AND empty platform
+  // (platform is derived from the service and may lag), which collapsed the list row
+  // to a blank line. Fall back label -> platform -> a literal so a row always names
+  // itself.
+  function displayName(p: StreamProfileInfo): string {
+    return p.label?.trim() || p.platform?.trim() || "Untitled profile";
+  }
+
   // Which OAuth provider (if any) applies to a profile. Data lookup, not branches:
   // match the profile's display platform against a provider's id or displayName so
   // Kick/YouTube slot in by registering a provider, no code change here.
@@ -120,6 +128,14 @@
   const editingProvider = $derived(editingProfile ? providerForProfile(editingProfile) : null);
   const connectedStatus = $derived(editingUuid ? connectedStatusFor(editingUuid) : null);
   const needsReconnectStatus = $derived(editingUuid ? needsReconnectFor(editingUuid) : null);
+
+  // The detail pane's title: while editing, prefer the live label field, else the
+  // saved display name; the add form has no target yet.
+  const formTitle = $derived(
+    editingUuid
+      ? fLabel.trim() || (editingProfile ? displayName(editingProfile) : "Stream Profile")
+      : "New Stream Profile",
+  );
 
   function openAdd() {
     editingUuid = null;
@@ -231,356 +247,505 @@
 </script>
 
 <div class="streams">
-  {#if error}<p class="error">{error}</p>{/if}
-
-  {#if !loaded}
-    <p class="dim">Loading stream profiles…</p>
-  {:else}
-    {#if profiles.length === 0}
-      <p class="dim">No stream profiles yet. Add one to stream to a destination.</p>
-    {:else}
-      <ul class="grid">
-        {#each profiles as p (p.uuid)}
-          <li class="tile">
-            <button class="tile-body" onclick={() => openEdit(p)}>
-              <div class="info">
-                <div class="line1">
-                  <span class="name">{p.label || p.platform}</span>
-                  {#if p.isPrimary}<span class="badge">Primary</span>{/if}
-                  {#if providerForProfile(p)}
-                    {#if connectedStatusFor(p.uuid)}
-                      <span class="chip ok">✓ linked</span>
-                    {:else if needsReconnectFor(p.uuid)}
-                      <span class="chip warn">⚠ Reconnect</span>
-                    {:else}
-                      <span class="chip key">key only</span>
-                    {/if}
-                  {/if}
-                </div>
-                <div class="line2">
-                  {p.platform}
-                  <span class="sep">·</span>
-                  {serviceName(p.service)}
-                </div>
-              </div>
-            </button>
-            <div class="rowactions">
-              <button
-                class="mini"
-                title={p.isPrimary ? "Already primary" : "Set as primary"}
-                disabled={p.isPrimary}
-                onclick={() => void setPrimary(p)}>★</button
-              >
-              <button class="mini" title="Edit" onclick={() => openEdit(p)}>✎</button>
-              <button class="mini danger" title="Remove" onclick={() => void remove(p)}>🗑</button>
-            </div>
-          </li>
-        {/each}
-      </ul>
-    {/if}
-
-    <div class="addbar">
-      <button class="btn" onclick={openAdd}>+ Add Stream Profile</button>
+  <div class="master">
+    <div class="master-head">
+      <span class="mh-title">Profiles</span>
+      {#if loaded}<span class="mh-count">{profiles.length}</span>{/if}
     </div>
-  {/if}
-
-  {#if formOpen}
-    <div class="form">
-      <h4>{editingUuid ? "Edit Stream Profile" : "New Stream Profile"}</h4>
-
-      <div class="field">
-        <span class="flabel">Label</span>
-        <!-- svelte-ignore a11y_autofocus -->
-        <input type="text" bind:value={fLabel} autofocus placeholder="e.g. Main Channel" />
-      </div>
-
-      <div class="field">
-        <span class="flabel">Service</span>
-        <select bind:value={fService}>
-          {#each serviceTypes as s (s.id)}
-            <option value={s.id}>{s.name}</option>
-          {/each}
-        </select>
-      </div>
-
-      {#if editingUuid}
-        <div class="sect">
-          <div class="exp-head">Connection</div>
-
-          {#if editingProvider}
-            <div class="seg">
-              <button class="cell" class:on={connMode === "connect"} onclick={() => (connMode = "connect")}>
-                Connect Account (recommended)
-              </button>
-              <button class="cell" class:on={connMode === "key"} onclick={() => (connMode = "key")}>
-                Use Stream Key
-              </button>
-            </div>
-
-            {#if connMode === "connect"}
-              {#if connectedStatus}
-                <div class="conn">
-                  <span class="dot">●</span>
-                  <span class="who">
-                    <b>{connectedStatus.displayName || connectedStatus.login}</b>
-                    <small>Stream key auto-filled · stream info editing enabled</small>
-                  </span>
-                  <button class="lnk" onclick={() => void disconnect()}>Disconnect</button>
-                </div>
-              {:else if needsReconnectStatus}
-                <div class="conn warn">
-                  <span class="dot warn">⚠</span>
-                  <span class="who">
-                    <b>Reconnect needed</b>
-                    <small>Your authorization is out of date — reconnect to keep editing stream info.</small>
-                  </span>
-                </div>
-                <button class="btn connect" onclick={connect}>Reconnect {editingProvider.displayName} ▸</button>
-              {:else}
-                <button class="btn connect" onclick={connect}>Connect {editingProvider.displayName} ▸</button>
+    <div class="master-list">
+      {#if !loaded}
+        <p class="dim pad">Loading stream profiles…</p>
+      {:else if profiles.length === 0}
+        <p class="dim pad">No stream profiles yet.</p>
+      {:else}
+        {#each profiles as p (p.uuid)}
+          <button class="nav-item" class:active={formOpen && editingUuid === p.uuid} onclick={() => openEdit(p)}>
+            <span class="nav-name">
+              {#if p.isPrimary}<span class="star" title="Primary">★</span>{/if}
+              <span class="nav-label">{displayName(p)}</span>
+            </span>
+            <span class="nav-sub">
+              <span class="nav-plat">{p.platform || serviceName(p.service)} · {serviceName(p.service)}</span>
+              {#if providerForProfile(p)}
+                {#if connectedStatusFor(p.uuid)}
+                  <span class="chip ok">linked</span>
+                {:else if needsReconnectFor(p.uuid)}
+                  <span class="chip warn">reconnect</span>
+                {/if}
               {/if}
-              <p class="note">
-                Connected accounts unlock the Go Live "Stream Information" panel (title / category / tags / thumbnail).
-                Switch to <b>Use Stream Key</b> to paste a key manually — that still streams, just without metadata editing.
-              </p>
+            </span>
+          </button>
+        {/each}
+      {/if}
+    </div>
+    <button class="add-btn" onclick={openAdd}><span class="add-plus">＋</span> Add Stream Profile</button>
+  </div>
+
+  <div class="detail">
+    {#if error}<p class="error">{error}</p>{/if}
+
+    {#if formOpen}
+      <div class="form">
+        <div class="form-head">
+          <div class="fh-titles">
+            <span class="fh-name">{formTitle}</span>
+            <span class="fh-sub">{editingUuid ? "Edit destination credential" : "Reusable destination credential"}</span>
+          </div>
+          <span class="fh-spacer"></span>
+          {#if editingUuid && editingProfile}
+            {#if !editingProfile.isPrimary}
+              <button class="mini" title="Set as primary" onclick={() => editingProfile && void setPrimary(editingProfile)}>
+                <span class="star">★</span> Primary
+              </button>
+            {/if}
+            <button class="mini danger" title="Remove" onclick={() => editingProfile && void remove(editingProfile)}>
+              <svg
+                width="13"
+                height="13"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.7"
+                stroke-linecap="round"
+                stroke-linejoin="round"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 13h10l1-13" /></svg
+              >
+              Remove
+            </button>
+          {/if}
+        </div>
+
+        <div class="field">
+          <span class="flabel">Label</span>
+          <!-- svelte-ignore a11y_autofocus -->
+          <input type="text" bind:value={fLabel} autofocus placeholder="e.g. Main Channel" />
+        </div>
+
+        <div class="field">
+          <span class="flabel">Service</span>
+          <select bind:value={fService}>
+            {#each serviceTypes as s (s.id)}
+              <option value={s.id}>{s.name}</option>
+            {/each}
+          </select>
+        </div>
+
+        {#if editingUuid}
+          <div class="sect">
+            <div class="exp-head">Connection</div>
+
+            {#if editingProvider}
+              <div class="seg">
+                <button class="cell" class:on={connMode === "connect"} onclick={() => (connMode = "connect")}>
+                  Connect Account
+                </button>
+                <button class="cell" class:on={connMode === "key"} onclick={() => (connMode = "key")}>
+                  Use Stream Key
+                </button>
+              </div>
+
+              {#if connMode === "connect"}
+                {#if connectedStatus}
+                  <div class="conn">
+                    <span class="dot">●</span>
+                    <span class="who">
+                      <b>{connectedStatus.displayName || connectedStatus.login}</b>
+                      <small>Stream key auto-filled · stream info editing enabled</small>
+                    </span>
+                    <button class="lnk" onclick={() => void disconnect()}>Disconnect</button>
+                  </div>
+                {:else if needsReconnectStatus}
+                  <div class="conn warn">
+                    <span class="dot warn">⚠</span>
+                    <span class="who">
+                      <b>Reconnect needed</b>
+                      <small>Your authorization is out of date — reconnect to keep editing stream info.</small>
+                    </span>
+                  </div>
+                  <button class="btn connect" onclick={connect}>Reconnect {editingProvider.displayName} ▸</button>
+                {:else}
+                  <button class="btn connect" onclick={connect}>Connect {editingProvider.displayName} ▸</button>
+                {/if}
+                <p class="note">
+                  Connected accounts unlock the Go Live "Stream Information" panel (title / category / tags / thumbnail).
+                  Switch to <b>Use Stream Key</b> to paste a key manually — that still streams, just without metadata editing.
+                </p>
+              {:else}
+                <div class="settings">
+                  {#key editingUuid + ":" + fService}
+                    <PropertyForm kind="service" ref={editingUuid} />
+                  {/key}
+                </div>
+              {/if}
             {:else}
               <div class="settings">
                 {#key editingUuid + ":" + fService}
                   <PropertyForm kind="service" ref={editingUuid} />
                 {/key}
               </div>
+              {#if providers.length === 0}
+                <p class="note">Account connection unavailable in this build.</p>
+              {/if}
             {/if}
-          {:else}
-            <div class="settings">
-              {#key editingUuid + ":" + fService}
-                <PropertyForm kind="service" ref={editingUuid} />
-              {/key}
-            </div>
-            {#if providers.length === 0}
-              <p class="note">Account connection unavailable in this build.</p>
-            {/if}
+          </div>
+        {/if}
+
+        {#if formError}<p class="error">{formError}</p>{/if}
+
+        <div class="actions">
+          {#if !editingUuid}
+            <button class="btn ghost" onclick={closeForm}>Cancel</button>
           {/if}
+          <button class="btn primary" disabled={!formValid || saving} onclick={() => void save()}>
+            {saving ? "Saving…" : editingUuid ? "Save" : "Create"}
+          </button>
         </div>
-      {/if}
-
-      {#if formError}<p class="error">{formError}</p>{/if}
-
-      <div class="actions">
-        <button class="btn ghost" onclick={closeForm}>Close</button>
-        <button class="btn primary" disabled={!formValid || saving} onclick={() => void save()}>
-          {saving ? "Saving…" : editingUuid ? "Save" : "Create"}
-        </button>
       </div>
-    </div>
-  {/if}
+    {:else}
+      <div class="empty-detail">
+        <div class="empty-card">
+          <svg
+            width="30"
+            height="30"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.3"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            ><rect x="3" y="4" width="18" height="14" /><path d="M8 20h8M12 18v2M3 14h18" /></svg
+          >
+          <p class="empty-title">No profile selected</p>
+          <p class="empty-sub">Select a stream profile to edit, or add a new one.</p>
+        </div>
+      </div>
+    {/if}
+  </div>
 </div>
 
 <style>
   .streams {
-    padding: 8px 0 4px;
-  }
-  .grid {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-    gap: 12px;
-  }
-  .tile {
+    flex: 1;
     display: flex;
-    flex-direction: column;
-    border: 1px solid var(--border);
-    background: var(--bg-sunken);
-  }
-  .tile-body {
-    display: flex;
-    align-items: flex-start;
-    gap: 12px;
-    width: 100%;
-    height: auto;
-    padding: 12px;
-    text-align: left;
-    background: none;
-    border: none;
-    color: inherit;
-    cursor: pointer;
-  }
-  .tile-body:hover {
-    background: var(--bg-raised);
-  }
-  .info {
+    min-height: 0;
     min-width: 0;
   }
-  .line1 {
+
+  /* ---- master (profile list) -------------------------------------------- */
+  .master {
+    flex: 0 0 264px;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    border-right: var(--border-weight) solid var(--color-border);
+    background: var(--color-surface);
+  }
+  .master-head {
+    flex: 0 0 auto;
     display: flex;
     align-items: center;
     gap: 8px;
+    height: 34px;
+    padding: 0 14px;
+    border-bottom: var(--border-weight) solid var(--color-border);
   }
-  .name {
-    font-size: 13px;
-    color: var(--text);
-    font-weight: 500;
-  }
-  .badge {
+  .mh-title {
+    font-family: var(--font-mono);
     font-size: 10px;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--color-accent-contrast);
-    background: var(--accent);
-    border-radius: 999px;
-    padding: 1px 7px;
+    color: var(--color-muted);
+  }
+  .mh-count {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--color-dim);
+    background: var(--color-base);
+    border: var(--border-weight) solid var(--color-border);
+    padding: 0 6px;
+    line-height: 16px;
+  }
+  .master-list {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: 10px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+  .nav-item {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    width: 100%;
+    height: auto;
+    text-align: left;
+    padding: 10px 11px;
+    background: var(--color-base);
+    border: var(--border-weight) solid var(--color-border);
+    border-left: 3px solid transparent;
+    color: var(--color-text);
+    cursor: pointer;
+    transition:
+      border-color 0.1s ease,
+      background 0.1s ease;
+  }
+  .nav-item:hover {
+    border-color: color-mix(in srgb, var(--color-accent) 45%, var(--color-border));
+    background: var(--color-surface-2);
+  }
+  .nav-item.active {
+    border-left-color: var(--color-accent);
+    background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+  }
+  .nav-name {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+  .nav-label {
+    font-family: var(--font-ui);
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: var(--color-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .nav-item.active .nav-label {
+    color: var(--color-accent);
+  }
+  .star {
+    color: var(--color-accent);
+    font-size: 11px;
+    flex: 0 0 auto;
+    line-height: 1;
+  }
+  .nav-sub {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+  }
+  .nav-plat {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--color-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .chip {
-    font-size: 10px;
-    padding: 1px 7px;
-    border: 1px solid var(--border);
+    flex: 0 0 auto;
+    font-family: var(--font-mono);
+    font-size: 8px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    padding: 1px 5px;
+    border: var(--border-weight) solid var(--color-border);
   }
   .chip.ok {
     color: var(--color-ok);
-    border-color: var(--color-ok-bg);
+    border-color: color-mix(in srgb, var(--color-ok) 45%, transparent);
   }
   .chip.warn {
     color: var(--color-accent);
     border-color: var(--color-accent);
   }
-  .chip.key {
+  .add-btn {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    height: auto;
+    padding: 12px;
+    border: 0;
+    border-top: var(--border-weight) solid var(--color-border);
+    background: transparent;
+    color: var(--color-dim);
+    font-family: var(--font-ui);
+    font-size: 12px;
+    cursor: pointer;
+    transition: color 0.1s ease;
+  }
+  .add-btn:hover {
+    color: var(--color-accent);
+    border-color: var(--color-border);
+  }
+  .add-plus {
+    font-size: 14px;
+    line-height: 1;
+  }
+
+  /* ---- detail (editor pane) --------------------------------------------- */
+  .detail {
+    flex: 1;
+    min-width: 0;
+    overflow: auto;
+    padding: 24px 28px 34px;
+  }
+  .empty-detail {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+  }
+  .empty-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    color: var(--color-muted);
+    text-align: center;
+  }
+  .empty-card svg {
+    color: var(--color-border);
+    margin-bottom: 8px;
+  }
+  .empty-title {
+    margin: 0;
+    font-family: var(--font-ui);
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--color-dim);
+  }
+  .empty-sub {
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: 11px;
     color: var(--color-muted);
   }
-  .line2 {
-    font-size: 11px;
-    color: var(--text-dim);
-    margin-top: 2px;
+
+  .form {
+    max-width: 480px;
   }
-  .sep {
-    margin: 0 4px;
-  }
-  .rowactions {
+  .form-head {
     display: flex;
-    gap: 4px;
-    justify-content: flex-end;
-    padding: 8px 10px;
-    border-top: 1px solid var(--border);
+    align-items: flex-start;
+    gap: 8px;
+    padding-bottom: 16px;
+    margin-bottom: 18px;
+    border-bottom: var(--border-weight) solid var(--color-border);
+  }
+  .fh-titles {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+  }
+  .fh-name {
+    font-family: var(--font-ui);
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: var(--color-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .fh-sub {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    color: var(--color-muted);
+  }
+  .fh-spacer {
+    flex: 1;
   }
   .mini {
-    background: none;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    color: var(--text-soft);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: auto;
+    background: var(--color-surface);
+    border: var(--border-weight) solid var(--color-border);
+    color: var(--color-dim);
     cursor: pointer;
     font: inherit;
     font-size: 12px;
-    padding: 4px 7px;
+    padding: 6px 10px;
     line-height: 1;
+    white-space: nowrap;
   }
   .mini:hover:not(:disabled) {
-    color: var(--text);
-    background: var(--bg-raised);
+    color: var(--color-text);
+    border-color: var(--color-muted);
   }
   .mini.danger:hover:not(:disabled) {
-    color: var(--off, #d65a5a);
-    border-color: var(--off, #d65a5a);
+    color: var(--color-live);
+    border-color: var(--color-live);
   }
-  .mini:disabled {
-    opacity: 0.35;
-    cursor: default;
-  }
-  .addbar {
-    margin-top: 12px;
-  }
-  .form {
-    margin-top: 14px;
-    padding: 14px;
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    background: var(--bg-raised);
-  }
-  .form h4 {
-    margin: 0 0 12px;
+  .mini .star {
     font-size: 12px;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--text-dim);
   }
+
   .field {
-    margin-bottom: 12px;
+    margin-bottom: 14px;
+    max-width: 380px;
   }
   .flabel {
     display: block;
-    font-size: 12px;
-    color: var(--text-soft);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--color-muted);
     margin-bottom: 6px;
   }
   input,
   select {
-    background: var(--bg-sunken);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 7px 10px;
-    color: var(--text);
-    font: inherit;
     width: 100%;
   }
-  input[type="text"],
-  select {
-    max-width: 340px;
-  }
-  input:focus,
-  select:focus {
-    outline: none;
-    border-color: var(--accent);
-  }
-  .actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: 8px;
-    margin-top: 4px;
-  }
+
   .sect {
-    margin-top: 14px;
-    padding-top: 12px;
-    border-top: 1px solid var(--border);
+    margin-top: 20px;
+    padding-top: 18px;
+    border-top: var(--border-weight) solid var(--color-border);
+    max-width: 440px;
   }
   .exp-head {
-    font-size: 11px;
+    font-family: var(--font-mono);
+    font-size: 10px;
     text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--text-dim);
-    margin-bottom: 10px;
+    letter-spacing: 0.08em;
+    color: var(--color-dim);
+    margin-bottom: 12px;
   }
   .seg {
     display: flex;
-    border: 1px solid var(--border);
-    max-width: 360px;
-    margin-bottom: 12px;
+    border: var(--border-weight) solid var(--color-border);
+    margin-bottom: 14px;
   }
   .seg .cell {
     flex: 1;
+    height: auto;
     text-align: center;
-    padding: 7px;
-    color: var(--text-dim);
-    background: none;
+    padding: 8px;
+    color: var(--color-muted);
+    background: var(--color-base);
     border: none;
     cursor: pointer;
     font: inherit;
     font-size: 12px;
   }
   .seg .cell:hover {
-    color: var(--text);
+    color: var(--color-text);
   }
   .seg .cell.on {
-    background: var(--accent);
-    color: var(--color-accent-contrast);
+    background: var(--color-accent);
+    color: var(--color-accent-ink);
     font-weight: 600;
   }
   .conn {
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 10px 12px;
-    border: 1px solid var(--color-ok-bg);
-    background: color-mix(in srgb, var(--color-ok) 6%, transparent);
-    max-width: 360px;
+    padding: 11px 13px;
+    border: var(--border-weight) solid color-mix(in srgb, var(--color-ok) 45%, transparent);
+    background: color-mix(in srgb, var(--color-ok) 7%, transparent);
   }
   .conn .dot {
     color: var(--color-ok);
@@ -598,55 +763,74 @@
   }
   .conn .who b {
     font-weight: 600;
+    color: var(--color-text);
   }
   .conn .who small {
     display: block;
-    color: var(--text-dim);
+    margin-top: 2px;
+    color: var(--color-muted);
     font-size: 11px;
   }
   .lnk {
-    color: var(--accent);
+    height: auto;
+    color: var(--color-accent);
     background: none;
     border: none;
     cursor: pointer;
     font: inherit;
     font-size: 12px;
     padding: 0;
+    flex: 0 0 auto;
   }
   .lnk:hover {
     text-decoration: underline;
   }
   .note {
     font-size: 11px;
+    line-height: 1.55;
     color: var(--color-muted);
-    margin: 8px 0 0;
-    max-width: 360px;
+    margin: 10px 0 0;
+  }
+  .note b {
+    color: var(--color-dim);
+    font-weight: 600;
   }
   .settings {
     margin-top: 4px;
   }
-  .btn.connect {
-    background: var(--accent);
-    border-color: var(--accent);
-    color: var(--color-accent-contrast);
-    font-weight: 600;
+
+  .actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 20px;
+    max-width: 480px;
   }
   .btn {
-    border-radius: 6px;
-    padding: 7px 14px;
+    height: auto;
+    padding: 8px 16px;
     font: inherit;
+    font-size: 12px;
     cursor: pointer;
-    border: 1px solid var(--border);
-    background: var(--bg-sunken);
-    color: var(--text-soft);
+    border: var(--border-weight) solid var(--color-border);
+    background: var(--color-surface);
+    color: var(--color-dim);
   }
   .btn:hover:not(:disabled) {
-    color: var(--text);
+    color: var(--color-text);
+    border-color: var(--color-muted);
   }
+  .btn.connect,
   .btn.primary {
-    background: var(--accent);
-    border-color: var(--accent);
-    color: var(--color-accent-contrast);
+    background: var(--color-accent);
+    border-color: var(--color-accent);
+    color: var(--color-accent-ink);
+    font-weight: 600;
+  }
+  .btn.connect:hover:not(:disabled),
+  .btn.primary:hover:not(:disabled) {
+    color: var(--color-accent-ink);
+    background: color-mix(in srgb, var(--color-accent) 88%, #fff);
   }
   .btn.primary:disabled {
     opacity: 0.45;
@@ -656,11 +840,14 @@
     background: none;
   }
   .dim {
-    color: var(--text-dim);
+    color: var(--color-muted);
     margin: 0;
   }
+  .pad {
+    padding: 12px;
+  }
   .error {
-    color: var(--off, #d65a5a);
+    color: var(--color-live);
     margin: 0 0 8px;
     font-size: 12px;
   }
