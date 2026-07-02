@@ -91,10 +91,6 @@
     return off;
   });
 
-  function serviceName(id: string): string {
-    return serviceTypes.find((s) => s.id === id)?.name ?? id ?? "—";
-  }
-
   // Robust display name: a fresh profile can have an empty label AND empty platform
   // (platform is derived from the service and may lag), which collapsed the list row
   // to a blank line. Fall back label -> platform -> a literal so a row always names
@@ -265,7 +261,7 @@
               <span class="nav-label">{displayName(p)}</span>
             </span>
             <span class="nav-sub">
-              <span class="nav-plat">{p.platform || serviceName(p.service)} · {serviceName(p.service)}</span>
+              <span class="nav-plat">{p.serviceLabel}</span>
               {#if providerForProfile(p)}
                 {#if connectedStatusFor(p.uuid)}
                   <span class="chip ok">linked</span>
@@ -321,12 +317,13 @@
         </div>
 
         <div class="field">
-          <span class="flabel">Service</span>
+          <span class="flabel">Connection type</span>
           <select bind:value={fService}>
             {#each serviceTypes as s (s.id)}
               <option value={s.id}>{s.name}</option>
             {/each}
           </select>
+          <span class="fhint">Pick the platform and server below.</span>
         </div>
 
         {#if editingUuid}
@@ -698,6 +695,13 @@
   input,
   select {
     width: 100%;
+  }
+  .fhint {
+    display: block;
+    margin-top: 6px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--color-muted);
   }
 
   .sect {

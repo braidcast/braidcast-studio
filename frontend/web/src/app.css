@@ -460,3 +460,108 @@ input[type="color"] {
   color: var(--color-live);
   text-transform: none;
 }
+
+/* Shared list-dock chrome (ListToolbar / FilterReveal / Icon toggles / Splitter).
+   The Scenes & Sources docks -- both the global pair and the per-canvas composite --
+   share one bottom toolbar + reveal-filter pattern; centralizing the primitives here
+   keeps them visually identical and reskinning with the active theme. 0-radius. */
+.list-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 6px;
+  border-top: var(--border-weight) solid var(--color-border);
+  background: var(--color-surface-2);
+}
+.list-toolbar .tool-spacer {
+  flex: 1;
+}
+.tool-btn {
+  flex: 0 0 auto;
+  width: 25px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  color: var(--color-dim);
+}
+.tool-btn:hover:not(:disabled) {
+  color: var(--color-accent);
+}
+.tool-btn.active {
+  color: var(--color-accent);
+}
+.tool-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* Reveal filter: search-icon button + an inline input that fills the toolbar gap. */
+.filter-reveal {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+}
+.filter-reveal .filter-input {
+  flex: 1;
+  min-width: 0;
+  margin-left: 2px;
+  background: var(--color-base);
+  border: var(--border-weight) solid var(--color-border);
+  color: var(--color-text);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  padding: 2px 6px;
+}
+.filter-reveal .filter-input:focus {
+  outline: none;
+  border-color: var(--color-accent);
+}
+
+/* Fixed-size, centered box for an SVG eye/lock row toggle; constant footprint so
+   toggling the glyph never nudges the row (was the emoji-width jump). */
+.dock-toggle {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  color: var(--color-dim);
+}
+.dock-toggle:hover {
+  color: var(--color-accent);
+}
+.dock-toggle.off {
+  color: var(--color-muted);
+}
+
+/* Drag handle between two flex panes (CanvasDock sub-panes). Thin, 0-radius, hints
+   on hover/active; the 5px hit area sits in the flex flow. */
+.splitter {
+  flex: 0 0 5px;
+  background: var(--color-border);
+  position: relative;
+  z-index: 1;
+}
+.splitter.row {
+  cursor: col-resize;
+  align-self: stretch;
+}
+.splitter.column {
+  cursor: row-resize;
+}
+.splitter:hover,
+.splitter.dragging {
+  background: var(--color-accent);
+}

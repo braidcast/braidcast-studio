@@ -4,6 +4,8 @@
   import { defaultCanvas } from "./defaultCanvasStore.svelte";
   import ContextMenu, { type ContextMenuItem } from "../ContextMenu.svelte";
   import { prefetchMonitors, projectorItems } from "../projectorMenu";
+  import ListToolbar, { type ToolAction } from "../dock/ListToolbar.svelte";
+  import FilterReveal from "../dock/FilterReveal.svelte";
 
   // The mount adapter strips internal __* keys; this dock declares no props.
   let {}: Record<string, unknown> = $props();
@@ -34,6 +36,28 @@
     gridMode = next; // optimistic; generalChanged reconciles
     obs.call("settings.setGeneral", { scenesGridMode: next }).catch(report);
   }
+
+  // The bottom toolbar acts on the current (selected) scene, mirroring the
+  // per-canvas CanvasDock chrome. Rename stays on dbl-click + the context menu.
+  const currentName = $derived(defaultCanvas.scenes.find((s) => s.current)?.name ?? null);
+
+  const leftActions = $derived<ToolAction[]>([
+    { icon: "plus", title: "Add scene", onClick: beginAdd },
+    {
+      icon: "trash",
+      title: "Remove scene",
+      disabled: !currentName || defaultCanvas.scenes.length <= 1,
+      onClick: () => currentName && void remove(currentName),
+    },
+  ]);
+  const rightActions = $derived<ToolAction[]>([
+    {
+      icon: gridMode ? "list" : "grid",
+      title: gridMode ? "List view" : "Grid view",
+      active: gridMode,
+      onClick: toggleGrid,
+    },
+  ]);
 
   let adding = $state(false);
   let newName = $state("");
@@ -157,22 +181,12 @@
 {/snippet}
 
 <div class="dock-body">
-  <div class="dock-toolbar">
-    <input class="dock-search" placeholder="Filter…" bind:value={filter} />
-    <button
-      class="dock-add"
-      title={gridMode ? "List view" : "Grid view"}
-      aria-pressed={gridMode}
-      onclick={toggleGrid}>{gridMode ? "☰" : "▦"}</button
-    >
-    <button class="dock-add" title="Add scene" onclick={beginAdd}>＋</button>
-  </div>
-
-  {#if defaultCanvas.error}
-    <p class="dock-msg err">{defaultCanvas.error}</p>
-  {:else if !defaultCanvas.loaded}
-    <p class="dock-msg">Loading…</p>
-  {:else if gridMode}
+  <div class="dock-fill">
+    {#if defaultCanvas.error}
+      <p class="dock-msg err">{defaultCanvas.error}</p>
+    {:else if !defaultCanvas.loaded}
+      <p class="dock-msg">Loading…</p>
+    {:else if gridMode}
     <div class="scene-grid">
       {#each filteredScenes as scene (scene.name)}
         <div class="grid-tile" class:sel={scene.current} oncontextmenu={(e) => openMenu(e, scene.name)} role="listitem">
@@ -202,17 +216,6 @@
       {#each filteredScenes as scene (scene.name)}
         <li class="dock-row" class:sel={scene.current} oncontextmenu={(e) => openMenu(e, scene.name)}>
           {@render sceneCell(scene)}
-          {#if renamingFrom !== scene.name}
-            <span class="dock-actions">
-              <button class="dock-icon" title="Rename" onclick={() => beginRename(scene.name)}>✎</button>
-              <button
-                class="dock-icon"
-                title="Remove"
-                disabled={defaultCanvas.scenes.length <= 1}
-                onclick={() => void remove(scene.name)}>🗑</button
-              >
-            </span>
-          {/if}
         </li>
       {/each}
 
@@ -238,6 +241,13 @@
   {#if actionError}
     <p class="dock-msg err">{actionError}</p>
   {/if}
+  </div>
+
+  <ListToolbar left={leftActions} right={rightActions}>
+    {#snippet middle()}
+      <FilterReveal bind:value={filter} />
+    {/snippet}
+  </ListToolbar>
 </div>
 
 {#if menu}
@@ -257,19 +267,13 @@
   .inline:focus {
     outline: none;
   }
-  .dock-search {
+  /* Scroll region above the pinned bottom toolbar. */
+  .dock-fill {
     flex: 1;
-    min-width: 0;
-    background: var(--color-base);
-    border: var(--border-weight) solid var(--color-border);
-    color: var(--color-text);
-    font-family: var(--font-ui);
-    font-size: 11px;
-    padding: 2px 6px;
-  }
-  .dock-search:focus {
-    outline: none;
-    border-color: var(--color-accent);
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: auto;
   }
   .scene-grid {
     flex: 1;

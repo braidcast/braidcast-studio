@@ -336,8 +336,13 @@ export interface CanvasInfo {
   fpsNum: number;
   fpsDen: number;
   scaleType: string;
+  /** Inherit resolution/fps from the Default canvas (color inheritance lives on
+   * `color.useDefault`; encoder inheritance on `videoUseDefault`/`audioUseDefault`). */
+  useDefaultResolution: boolean;
   videoEncoder: string;
   audioEncoder: string;
+  videoUseDefault: boolean;
+  audioUseDefault: boolean;
   color: CanvasColor;
   /** True when >=1 enabled output binds this canvas; the canvas panel is shown
    * only when enabled (Default included -- its panel hides when disabled). */
@@ -354,8 +359,11 @@ export interface CanvasCreateParams {
   fpsNum: number;
   fpsDen: number;
   scaleType?: string;
+  useDefaultResolution?: boolean;
   videoEncoder?: string;
   audioEncoder?: string;
+  videoUseDefault?: boolean;
+  audioUseDefault?: boolean;
   color?: { format?: string; space?: string; range?: string; useDefault?: boolean };
 }
 
@@ -370,8 +378,11 @@ export interface CanvasUpdateParams {
   fpsNum?: number;
   fpsDen?: number;
   scaleType?: string;
+  useDefaultResolution?: boolean;
   videoEncoder?: string;
   audioEncoder?: string;
+  videoUseDefault?: boolean;
+  audioUseDefault?: boolean;
   color?: { format?: string; space?: string; range?: string; useDefault?: boolean };
 }
 
@@ -419,6 +430,9 @@ export interface StreamProfileInfo {
   service: string;
   /** Display prefix derived from the service (e.g. "YouTube", "Custom", "WHIP"). */
   platform: string;
+  /** Full selected service string (e.g. "YouTube - RTMPS"); for WHIP/custom the
+   * server URL or a generic label. Never empty. */
+  serviceLabel: string;
 }
 
 /** Fields accepted by streamProfile.create. */
@@ -503,6 +517,7 @@ export interface BrowserAuthProgress {
   providerId: string;
   phase: "browser";
   message: string;
+  timeoutSec?: number;
 }
 export type OAuthConnectProgress = DeviceCodeProgress | BrowserAuthProgress;
 

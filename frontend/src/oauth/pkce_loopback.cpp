@@ -316,18 +316,26 @@ bool PkceLoopbackStrategy::authorize(const AuthContext &ctx, OAuthAccount &acct,
 
 	ctx.emitProgress(json{{"phase", "browser"},
 			      {"message", "Waiting for browser authorization\xE2\x80\xA6"},
+			      {"timeoutSec", 180},
 			      {"openUrl", authUrl}});
 
-	// Accept ONE redirect connection. Poll with select() so cancel + an overall
-	// deadline are honored without blocking forever in accept().
-	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(300);
+	// Accept the redirect connection. Poll with select() so cancel + an overall
+	// deadline are honored without blocking forever in accept(). A browser may open
+	// stray preconnect/favicon requests to the loopback port first, so keep accepting
+	// until a request actually carries the OAuth code/error (or the deadline lapses)
+	// rather than committing to the first connection. The deadline is short (180s) so
+	// a provider that never redirects (e.g. an unverified-app screen) fails visibly
+	// instead of hanging; the UI shows a matching countdown (timeoutSec above).
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(180);
 	SocketGuard conn;
+	std::map<std::string, std::string> params;
 	for (;;) {
 		if (ctx.canceled()) {
-			return false; // user closed the modal / bridge tore down
+			return false; // user closed the modal / bridge tore down / superseded
 		}
 		if (std::chrono::steady_clock::now() >= deadline) {
-			err = "authorization timed out before the browser redirect";
+			err = "No response from the browser -- if the sign-in page showed a "
+			      "verification/blocked error, close it and try again.";
 			return false;
 		}
 
@@ -349,68 +357,87 @@ bool PkceLoopbackStrategy::authorize(const AuthContext &ctx, OAuthAccount &acct,
 		if (conn.s == INVALID_SOCKET) {
 			continue; // transient; keep waiting within the deadline
 		}
-		break;
-	}
 
-	// Bound the read so a half-open client can't hang the worker.
-	DWORD recvTimeoutMs = 5000;
-	setsockopt(conn.s, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char *>(&recvTimeoutMs),
-		   sizeof recvTimeoutMs);
+		// Bound the read so a half-open client can't hang the worker.
+		DWORD recvTimeoutMs = 5000;
+		setsockopt(conn.s, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char *>(&recvTimeoutMs),
+			   sizeof recvTimeoutMs);
 
-	std::string request;
-	char buf[2048];
-	for (int i = 0; i < 16; ++i) {
-		const int n = recv(conn.s, buf, sizeof buf, 0);
-		if (n <= 0) {
+		std::string request;
+		char buf[2048];
+		for (int i = 0; i < 16; ++i) {
+			const int n = recv(conn.s, buf, sizeof buf, 0);
+			if (n <= 0) {
+				break;
+			}
+			request.append(buf, static_cast<size_t>(n));
+			if (request.find("\r\n\r\n") != std::string::npos) {
+				break; // headers complete; the request line is all we need
+			}
+			if (request.size() > 16 * 1024) {
+				break;
+			}
+		}
+
+		// Parse the request line: "GET <target> HTTP/1.1".
+		const size_t lineEnd = request.find("\r\n");
+		const std::string line = request.substr(0, lineEnd == std::string::npos ? request.size() : lineEnd);
+		const size_t sp1 = line.find(' ');
+		const size_t sp2 = sp1 == std::string::npos ? std::string::npos : line.find(' ', sp1 + 1);
+		std::string target;
+		if (sp1 != std::string::npos && sp2 != std::string::npos) {
+			target = line.substr(sp1 + 1, sp2 - sp1 - 1);
+		}
+		const size_t qpos = target.find('?');
+		const std::string query = qpos == std::string::npos ? std::string() : target.substr(qpos + 1);
+		params = ParseQuery(query);
+
+		// The real redirect carries code= or error=; anything else (preconnect,
+		// favicon, ...) gets a minimal answer and we keep waiting on the listener.
+		if (params.count("code") || params.count("error")) {
 			break;
 		}
-		request.append(buf, static_cast<size_t>(n));
-		if (request.find("\r\n\r\n") != std::string::npos) {
-			break; // headers complete; the request line is all we need
-		}
-		if (request.size() > 16 * 1024) {
-			break;
-		}
+		const std::string ignore = "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n";
+		send(conn.s, ignore.data(), static_cast<int>(ignore.size()), 0);
+		shutdown(conn.s, SD_SEND);
+		closesocket(conn.s);
+		conn.s = INVALID_SOCKET;
 	}
 
-	// Always answer the browser with a friendly page, then close, before we judge
-	// the result -- so the user never sees a hung tab regardless of outcome.
+	const auto getParam = [&params](const char *key) -> std::string {
+		auto it = params.find(key);
+		return it == params.end() ? std::string() : it->second;
+	};
+	const std::string oauthError = getParam("error");
+	const std::string code = getParam("code");
+	const std::string returnedState = getParam("state");
+	// A genuine success needs a code, a matching CSRF state, and no error= param.
+	const bool ok = oauthError.empty() && !code.empty() && returnedState == state;
+
+	// Answer the browser before judging the result so the tab never hangs: a success
+	// page only when the grant is actually valid, otherwise a visible failure page.
+	std::string bodyHtml;
+	if (ok) {
+		bodyHtml =
+			"<p>Authorization complete \xE2\x80\x94 you can close this window and return to OBS MultiStream.</p>";
+	} else {
+		bodyHtml =
+			"<p>Authorization failed \xE2\x80\x94 close this window and return to OBS MultiStream to try again.</p>";
+	}
 	const std::string html =
 		"<!doctype html><html><head><meta charset=\"utf-8\"><title>OBS MultiStream</title></head>"
-		"<body style=\"font-family:system-ui,sans-serif;padding:2rem\">"
-		"<p>Authorization complete \xE2\x80\x94 you can close this window and return to OBS MultiStream.</p>"
-		"</body></html>";
+		"<body style=\"font-family:system-ui,sans-serif;padding:2rem\">" +
+		bodyHtml + "</body></html>";
 	const std::string response = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: " +
 				     std::to_string(html.size()) + "\r\nConnection: close\r\n\r\n" + html;
 	send(conn.s, response.data(), static_cast<int>(response.size()), 0);
 	shutdown(conn.s, SD_SEND);
 	// listener + conn close via their SocketGuards on every return below.
 
-	// Parse the request line: "GET <target> HTTP/1.1".
-	const size_t lineEnd = request.find("\r\n");
-	const std::string line = request.substr(0, lineEnd == std::string::npos ? request.size() : lineEnd);
-	const size_t sp1 = line.find(' ');
-	const size_t sp2 = sp1 == std::string::npos ? std::string::npos : line.find(' ', sp1 + 1);
-	std::string target;
-	if (sp1 != std::string::npos && sp2 != std::string::npos) {
-		target = line.substr(sp1 + 1, sp2 - sp1 - 1);
-	}
-	const size_t qpos = target.find('?');
-	const std::string query = qpos == std::string::npos ? std::string() : target.substr(qpos + 1);
-	const std::map<std::string, std::string> params = ParseQuery(query);
-
-	const auto getParam = [&params](const char *key) -> std::string {
-		auto it = params.find(key);
-		return it == params.end() ? std::string() : it->second;
-	};
-
-	const std::string oauthError = getParam("error");
 	if (!oauthError.empty()) {
 		err = "authorization denied: " + oauthError;
 		return false;
 	}
-	const std::string code = getParam("code");
-	const std::string returnedState = getParam("state");
 	if (code.empty()) {
 		err = "authorization response missing code";
 		return false;

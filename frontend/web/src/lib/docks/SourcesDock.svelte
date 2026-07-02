@@ -15,6 +15,9 @@
   import { deinterlaceMenu } from "../deinterlaceMenu";
   import { colorMenu } from "../colorMenu";
   import type { DeinterlaceMode, DeinterlaceFieldOrder } from "../bridge";
+  import Icon from "../dock/Icon.svelte";
+  import ListToolbar, { type ToolAction } from "../dock/ListToolbar.svelte";
+  import FilterReveal from "../dock/FilterReveal.svelte";
 
   let {}: Record<string, unknown> = $props();
 
@@ -42,6 +45,36 @@
   let renamingId = $state<number | null>(null);
   let renameTo = $state("");
   let menu = $state<{ x: number; y: number; items: (ContextMenuItem | null)[] } | null>(null);
+
+  // The bottom toolbar acts on the selected row (OBS list convention). Reorder is
+  // indexed against the full, unfiltered `items` so up/down disable at the ends.
+  const selectedItem = $derived(items.find((i) => i.id === selectedItemId) ?? null);
+  const selectedIdx = $derived(selectedItemId === null ? -1 : items.findIndex((i) => i.id === selectedItemId));
+
+  const leftActions = $derived<ToolAction[]>([
+    { icon: "plus", title: "Add source", disabled: !currentScene, onClick: () => (adding = true) },
+    { icon: "trash", title: "Remove source", disabled: !selectedItem, onClick: () => selectedItem && void remove(selectedItem) },
+    {
+      icon: "gear",
+      title: "Properties",
+      disabled: !selectedItem?.source,
+      onClick: () => selectedItem && openProperties(selectedItem),
+    },
+  ]);
+  const rightActions = $derived<ToolAction[]>([
+    {
+      icon: "up",
+      title: "Move up",
+      disabled: filtering || selectedIdx <= 0,
+      onClick: () => selectedItem && void reorder(selectedItem, "up"),
+    },
+    {
+      icon: "down",
+      title: "Move down",
+      disabled: filtering || selectedIdx < 0 || selectedIdx >= items.length - 1,
+      onClick: () => selectedItem && void reorder(selectedItem, "down"),
+    },
+  ]);
 
   function report(e: unknown) {
     error = (e as Error).message;
@@ -354,23 +387,19 @@
 </script>
 
 <div class="dock-body">
-  <div class="dock-toolbar">
-    <input class="dock-search" placeholder="Filter…" bind:value={filter} />
-    <button class="dock-add" title="Add source" disabled={!currentScene} onclick={() => (adding = true)}>＋</button>
-  </div>
-
-  {#if error}
-    <p class="dock-msg err">{error}</p>
-  {:else if !currentScene}
-    <p class="dock-msg">No scene selected</p>
-  {:else if !loaded}
-    <p class="dock-msg">Loading…</p>
-  {:else if items.length === 0}
-    <p class="dock-msg">No sources</p>
-  {:else if filteredItems.length === 0}
-    <p class="dock-msg">No matches</p>
-  {:else}
-    <ul class="dock-list">
+  <div class="dock-fill">
+    {#if error}
+      <p class="dock-msg err">{error}</p>
+    {:else if !currentScene}
+      <p class="dock-msg">No scene selected</p>
+    {:else if !loaded}
+      <p class="dock-msg">Loading…</p>
+    {:else if items.length === 0}
+      <p class="dock-msg">No sources</p>
+    {:else if filteredItems.length === 0}
+      <p class="dock-msg">No matches</p>
+    {:else}
+      <ul class="dock-list">
       {#each filteredItems as item, idx (item.id)}
         <li
           class="dock-row"
@@ -379,12 +408,17 @@
           style:box-shadow={item.color ? `inset 3px 0 0 ${item.color}` : null}
           oncontextmenu={(e) => void openMenu(e, item, idx)}
         >
-          <button class="dock-icon" title={item.visible ? "Hide" : "Show"} onclick={() => void toggleVisible(item)}>
-            {item.visible ? "👁" : "🚫"}
-          </button>
-          <button class="dock-icon" title={item.locked ? "Unlock" : "Lock"} onclick={() => void toggleLocked(item)}>
-            {item.locked ? "🔒" : "🔓"}
-          </button>
+          <button
+            class="dock-toggle"
+            class:off={!item.visible}
+            title={item.visible ? "Hide" : "Show"}
+            onclick={() => void toggleVisible(item)}><Icon name={item.visible ? "eye" : "eye-off"} size={14} /></button
+          >
+          <button
+            class="dock-toggle"
+            title={item.locked ? "Unlock" : "Lock"}
+            onclick={() => void toggleLocked(item)}><Icon name={item.locked ? "lock" : "lock-open"} size={12} /></button
+          >
           {#if renamingId === item.id}
             <input class="inline" bind:value={renameTo} onkeydown={onRenameKey} onblur={commitRename} use:focusOnMount />
           {:else}
@@ -392,26 +426,17 @@
               {item.source ?? "(unnamed)"}
             </button>
           {/if}
-          <span class="dock-actions">
-            <button class="dock-icon" title="Properties" onclick={() => openProperties(item)}>⚙</button>
-            <button
-              class="dock-icon"
-              title="Move up"
-              disabled={filtering || idx === 0}
-              onclick={() => void reorder(item, "up")}>▲</button
-            >
-            <button
-              class="dock-icon"
-              title="Move down"
-              disabled={filtering || idx === items.length - 1}
-              onclick={() => void reorder(item, "down")}>▼</button
-            >
-            <button class="dock-icon" title="Remove" onclick={() => void remove(item)}>🗑</button>
-          </span>
         </li>
       {/each}
-    </ul>
-  {/if}
+      </ul>
+    {/if}
+  </div>
+
+  <ListToolbar left={leftActions} right={rightActions}>
+    {#snippet middle()}
+      <FilterReveal bind:value={filter} />
+    {/snippet}
+  </ListToolbar>
 </div>
 
 {#if adding}
@@ -459,19 +484,14 @@
   .inline:focus {
     outline: none;
   }
-  .dock-search {
+  /* Scroll region above the pinned bottom toolbar, so the toolbar stays at the
+     dock's foot even when the list is empty or short. */
+  .dock-fill {
     flex: 1;
-    min-width: 0;
-    background: var(--color-base);
-    border: var(--border-weight) solid var(--color-border);
-    color: var(--color-text);
-    font-family: var(--font-ui);
-    font-size: 11px;
-    padding: 2px 6px;
-  }
-  .dock-search:focus {
-    outline: none;
-    border-color: var(--color-accent);
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: auto;
   }
   .modal-backdrop {
     position: fixed;

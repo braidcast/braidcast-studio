@@ -11,8 +11,6 @@
   // The native preview overlay is suspended by the opener for this dialog's whole
   // lifetime, so it never occludes the modal.
 
-  const DEFAULT_BROWSER_MESSAGE = "A browser window opened — complete authorization there. Waiting…";
-
   type Phase = "starting" | "waiting" | "error";
   // Which auth strategy the in-flight connect resolved to, set from the progress
   // event's `phase`. null until the first progress event arrives.
@@ -20,7 +18,6 @@
   let phase = $state<Phase>("starting");
   let connMode = $state<ConnMode | null>(null);
   let prompt = $state<DeviceCodeProgress | null>(null);
-  let browserMessage = $state(DEFAULT_BROWSER_MESSAGE);
   let errorMsg = $state<string | null>(null);
   let remaining = $state(0);
   let timer: ReturnType<typeof setInterval> | null = null;
@@ -59,8 +56,14 @@
     connMode = null;
     errorMsg = null;
     prompt = null;
-    browserMessage = DEFAULT_BROWSER_MESSAGE;
     stopTimer();
+    // Cancel any prior in-flight attempt first so a second worker can't stack on
+    // the first (a fresh connect supersedes it, but the stale worker lingers).
+    try {
+      await obs.call("oauth.cancelConnect");
+    } catch {
+      // Older host without cancelConnect — ignore and proceed.
+    }
     try {
       await obs.call("oauth.connect", { providerId: req.providerId, profileUuid: req.profileUuid });
     } catch (e) {
@@ -95,11 +98,17 @@
         prompt = p;
         startCountdown(p.expiresSec);
       } else {
-        // PKCE loopback: no code, no countdown — just wait for the browser round-trip.
+        // PKCE loopback: no code, but the loopback self-cancels at `timeoutSec`, so
+        // drive the same countdown the device-code phase uses (older hosts omit it →
+        // no deadline, plain wait).
         connMode = "browser";
         prompt = null;
-        browserMessage = p.message || DEFAULT_BROWSER_MESSAGE;
-        stopTimer();
+        const timeoutSec = p.timeoutSec ?? 0;
+        if (timeoutSec > 0) {
+          startCountdown(timeoutSec);
+        } else {
+          stopTimer();
+        }
       }
     });
     const offStatus = obs.on("oauth.status", () => void checkConnected());
@@ -148,7 +157,10 @@
       {:else if phase === "waiting" && connMode === "browser"}
         <div class="browser-wait">
           <div class="spinner" role="status" aria-label="Waiting for authorization"></div>
-          <p class="waiting">{browserMessage}</p>
+          <p class="waiting">
+            Waiting for browser sign-in{#if remaining > 0}<span class="muted"> — times out in {fmt(remaining)}</span
+              >{:else}…{/if}
+          </p>
         </div>
         <p class="dim">The browser was opened automatically — complete authorization there.</p>
       {:else if phase === "waiting" && connMode === "deviceCode" && prompt}
@@ -170,7 +182,9 @@
       {#if phase === "error"}
         <button class="btn" onclick={() => void begin()}>Retry</button>
       {/if}
-      <button class="btn ghost" onclick={onClose}>Close</button>
+      <button class="btn ghost" onclick={onClose}>
+        {phase === "waiting" || phase === "starting" ? "Cancel" : "Close"}
+      </button>
     </footer>
   </div>
 </div>

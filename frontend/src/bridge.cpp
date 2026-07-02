@@ -110,6 +110,13 @@ std::atomic<bool> g_oauthRunning{true};
 // false when a new oauth.connect starts.
 std::atomic<bool> g_oauthCancel{false};
 
+// Monotonic connect generation. Each oauth.connect bumps it and captures the new
+// value; a worker only owns the flow while g_oauthGen still equals its captured
+// gen. This lets a newer attempt tear down an older worker's wait (folded into the
+// cancel probe) and prevents a superseded worker from flipping the UI after a
+// newer attempt has started.
+std::atomic<uint64_t> g_oauthGen{0};
+
 // All live UI browsers; EmitEvent broadcasts to each. Registered/unregistered on
 // the UI thread; read on the UI thread (EmitEvent posts there first). The mutex
 // guards the registry against the (off-thread) registration paths and snapshots
@@ -4221,8 +4228,15 @@ json CanvasToJson(const CanvasDefinition &def)
 		{"scaleType", def.scaleType},
 		{"fpsNum", def.fpsNum},
 		{"fpsDen", def.fpsDen},
+		// Per-section inheritance from the Default canvas: resolution/fps (via
+		// ToVideoInfo) and each encoder (via the engine's EnsureCanvasEncoders). Flat
+		// to mirror the flat videoEncoder/audioEncoder ids; color inheritance stays
+		// nested under `color` alongside the color fields it governs.
+		{"useDefaultResolution", def.useDefaultResolution},
 		{"videoEncoder", def.video.id},
 		{"audioEncoder", def.audio.id},
+		{"videoUseDefault", def.video.useDefault},
+		{"audioUseDefault", def.audio.useDefault},
 		// Per-canvas color: format/space/range tokens map 1:1 onto libobs video
 		// format/colorspace/range (applied via CanvasDefinition::ToVideoInfo). The
 		// sdr/hdr nit levels are persisted but not yet applied to the pipeline.
@@ -4410,6 +4424,16 @@ bool ReadCanvasColor(const json &params, const CanvasColorDef &current, CanvasCo
 	return true;
 }
 
+// Read an optional boolean; absent/null/non-bool -> keeps `current`.
+bool ReadOptBool(const json &params, const char *key, bool current)
+{
+	auto it = params.find(key);
+	if (it == params.end() || !it->is_boolean()) {
+		return current;
+	}
+	return it->get<bool>();
+}
+
 bool MethodCanvasCreate(const json &params, json &result, std::string &error)
 {
 	if (!params.is_object()) {
@@ -4446,6 +4470,13 @@ bool MethodCanvasCreate(const json &params, json &result, std::string &error)
 	def.audio.id = aenc.empty() ? "ffmpeg_aac" : aenc;
 	def.video.settings = obs_encoder_defaults(def.video.id.c_str());
 	def.audio.settings = obs_encoder_defaults(def.audio.id.c_str());
+
+	// Per-section inheritance from the Default canvas (resolution/fps + each encoder);
+	// applied via ToVideoInfo / the engine's EnsureCanvasEncoders. color.useDefault is
+	// parsed inside ReadCanvasColor above.
+	def.useDefaultResolution = ReadOptBool(params, "useDefaultResolution", false);
+	def.video.useDefault = ReadOptBool(params, "videoUseDefault", false);
+	def.audio.useDefault = ReadOptBool(params, "audioUseDefault", false);
 
 	CanvasStore &store = ObsBootstrap::Canvases();
 	const CanvasDefinition &added = store.Add(std::move(def));
@@ -4506,11 +4537,24 @@ bool MethodCanvasUpdate(const json &params, json &result, std::string &error)
 	const std::string venc = OptString(params, "videoEncoder");
 	const std::string aenc = OptString(params, "audioEncoder");
 
+	// Per-section inheritance toggles. useDefaultResolution swaps the effective
+	// resolution/fps (Default vs this canvas) via ToVideoInfo, so it resizes the live
+	// mix like a raw resolution change; video/audio useDefault swap the effective
+	// encoder the engine builds, like an encoder-id change. The Default canvas has no
+	// canvas to inherit from, so its resolution toggle is inert (BuildVideoInfo is
+	// never called for it) and not treated as structural.
+	const bool newUseDefRes = ReadOptBool(params, "useDefaultResolution", def->useDefaultResolution);
+	const bool newVideoUseDefault = ReadOptBool(params, "videoUseDefault", def->video.useDefault);
+	const bool newAudioUseDefault = ReadOptBool(params, "audioUseDefault", def->audio.useDefault);
+	const bool useDefResChanged = newUseDefRes != def->useDefaultResolution && !def->isDefault;
+	const bool videoUseDefaultChanged = newVideoUseDefault != def->video.useDefault;
+	const bool audioUseDefaultChanged = newAudioUseDefault != def->audio.useDefault;
+
 	// Output res and the downscale filter resize/reconfigure the live mix just like
 	// base res, so they are structural and gated by the same live refusal + reset.
 	const bool resChanged = newW != def->width || newH != def->height || newFpsN != def->fpsNum ||
 				newFpsD != def->fpsDen || newOutW != def->outputWidth ||
-				newOutH != def->outputHeight || newScale != def->scaleType;
+				newOutH != def->outputHeight || newScale != def->scaleType || useDefResChanged;
 	// A color change rewrites the obs_video_info (output_format/colorspace/range), so
 	// it resets the canvas video and rebuilds its encoders exactly like a resolution
 	// change -- structural, gated by the same live refusal + reset. Only these three
@@ -4520,8 +4564,11 @@ bool MethodCanvasUpdate(const json &params, json &result, std::string &error)
 				  newColor.range != def->color.range;
 	const bool vencChanged = !venc.empty() && venc != def->video.id;
 	const bool aencChanged = !aenc.empty() && aenc != def->audio.id;
+	// Toggling an encoder's inheritance swaps the effective encoder just like an
+	// id change, so it is gated by the same live refusal + encoder-cache invalidation.
+	const bool encDefChanged = videoUseDefaultChanged || audioUseDefaultChanged;
 
-	if ((resChanged || colorChanged || vencChanged || aencChanged) && CanvasIsLive(uuid)) {
+	if ((resChanged || colorChanged || vencChanged || aencChanged || encDefChanged) && CanvasIsLive(uuid)) {
 		error = "cannot change resolution/fps/color/encoder while the canvas is live";
 		return false;
 	}
@@ -4561,6 +4608,9 @@ bool MethodCanvasUpdate(const json &params, json &result, std::string &error)
 	def->fpsNum = newFpsN;
 	def->fpsDen = newFpsD;
 	def->color = newColor;
+	def->useDefaultResolution = newUseDefRes;
+	def->video.useDefault = newVideoUseDefault;
+	def->audio.useDefault = newAudioUseDefault;
 	// Switching an encoder id replaces its stored settings with that type's
 	// defaults (the prior blob belongs to a different encoder schema).
 	if (vencChanged) {
@@ -4575,7 +4625,7 @@ bool MethodCanvasUpdate(const json &params, json &result, std::string &error)
 	// A structural change invalidates the engine's cached encoder pair (bound to
 	// the old resolution/color/id), so a later restart rebuilds it against the new
 	// mix.
-	if (resChanged || colorChanged || vencChanged || aencChanged) {
+	if (resChanged || colorChanged || vencChanged || aencChanged || encDefChanged) {
 		ObsBootstrap::Multistream().InvalidateCanvasEncoders(uuid);
 	}
 	// Resolution/fps changes resize the live mix; the guard above already refused
@@ -4677,8 +4727,26 @@ bool MethodEncoderTypesList(const json &params, json &result, std::string &error
 
 // --- stream profiles (reusable destination credentials, 4.4.2) --------------
 
+// The full selected service string for display, e.g. "YouTube - RTMPS". For
+// rtmp_common this is the profile's stored "service" setting verbatim (unlike
+// PlatformName, which strips the " - RTMPS" suffix); WHIP/custom have no such
+// string, so fall back to a never-empty label (the server URL when set).
+std::string StreamProfileServiceLabel(const StreamProfile &p)
+{
+	if (p.serviceId == "whip_custom") {
+		return "WHIP";
+	}
+	if (p.serviceId == "rtmp_custom") {
+		const char *server = p.settings ? obs_data_get_string(p.settings, "server") : "";
+		return (server && *server) ? std::string(server) : std::string("Custom");
+	}
+	const char *svc = p.settings ? obs_data_get_string(p.settings, "service") : "";
+	return (svc && *svc) ? std::string(svc) : p.PlatformName();
+}
+
 // Map one StreamProfile to the bridge's profile shape. `platform` is the display
-// prefix (e.g. "YouTube"); `service` is the raw service id (rtmp_common etc.).
+// prefix (e.g. "YouTube"); `service` is the raw service id (rtmp_common etc.);
+// `serviceLabel` is the full selected service (e.g. "YouTube - RTMPS").
 json StreamProfileToJson(const StreamProfile &p)
 {
 	return json{
@@ -4687,6 +4755,7 @@ json StreamProfileToJson(const StreamProfile &p)
 		{"isPrimary", p.isPrimary},
 		{"service", p.serviceId},
 		{"platform", p.PlatformName()},
+		{"serviceLabel", StreamProfileServiceLabel(p)},
 	};
 }
 
@@ -7372,8 +7441,11 @@ void OpenUrlInBrowser(const std::string &url)
 // phase="deviceCode"; loopback: phase="browser"); a top-level "openUrl" in a
 // progress payload is opened in the system browser here and stripped before the
 // event reaches JS.
-void RunOAuthConnect(std::string providerId, std::string profileUuid)
+void RunOAuthConnect(std::string providerId, std::string profileUuid, uint64_t gen)
 try {
+	// This worker owns the connect flow only while it remains the newest attempt.
+	const auto superseded = [gen] { return g_oauthGen.load(std::memory_order_acquire) != gen; };
+
 	OAuth::StreamProvider *provider = OAuth::Registry().Get(providerId);
 	if (!provider) {
 		EmitOAuthConnectError(profileUuid, providerId, "unknown provider");
@@ -7386,8 +7458,10 @@ try {
 	}
 
 	OAuth::AuthContext ctx;
-	ctx.canceled = [] {
-		return !g_oauthRunning.load(std::memory_order_acquire) || g_oauthCancel.load(std::memory_order_acquire);
+	ctx.canceled = [gen] {
+		return !g_oauthRunning.load(std::memory_order_acquire) ||
+		       g_oauthCancel.load(std::memory_order_acquire) ||
+		       g_oauthGen.load(std::memory_order_acquire) != gen;
 	};
 	ctx.emitProgress = [profileUuid, providerId](const json &payload) {
 		json p = payload;
@@ -7439,6 +7513,12 @@ try {
 		HostLog("[oauth] fetchStreamKey skipped for " + providerId + ": " + keyErr);
 	}
 
+	// A newer connect has taken over; don't persist tokens or flip the UI from this
+	// superseded worker.
+	if (superseded()) {
+		return;
+	}
+
 	OAuth::Tokens().Put(profileUuid, acct);
 	EmitOAuthStatus();
 
@@ -7469,12 +7549,15 @@ try {
 } catch (const std::exception &e) {
 	// authorize() touches Winsock/crypto/HTTP; an escape on this detached worker
 	// would std::terminate the process. Convert it to a clean connectError, but
-	// stay silent if the user already canceled (matches the cancel path above).
-	if (g_oauthRunning.load(std::memory_order_acquire) && !g_oauthCancel.load(std::memory_order_acquire)) {
+	// stay silent if the user already canceled or a newer attempt superseded us
+	// (matches the cancel path above).
+	if (g_oauthRunning.load(std::memory_order_acquire) && !g_oauthCancel.load(std::memory_order_acquire) &&
+	    g_oauthGen.load(std::memory_order_acquire) == gen) {
 		EmitOAuthConnectError(profileUuid, providerId, std::string("connect failed: ") + e.what());
 	}
 } catch (...) {
-	if (g_oauthRunning.load(std::memory_order_acquire) && !g_oauthCancel.load(std::memory_order_acquire)) {
+	if (g_oauthRunning.load(std::memory_order_acquire) && !g_oauthCancel.load(std::memory_order_acquire) &&
+	    g_oauthGen.load(std::memory_order_acquire) == gen) {
 		EmitOAuthConnectError(profileUuid, providerId, "connect failed: unknown error");
 	}
 }
@@ -7508,8 +7591,11 @@ bool MethodOAuthConnect(const json &params, json &result, std::string &error)
 
 	// The flow is long-running (user authorizes out-of-band); run it detached and
 	// answer immediately. Progress arrives as oauth.deviceCode/status/connectError.
+	// Bump the generation first so any in-flight worker sees itself superseded and
+	// tears down before this one begins waiting.
 	g_oauthCancel.store(false, std::memory_order_release);
-	AsyncTask::RunAsync([providerId, profileUuid] { RunOAuthConnect(providerId, profileUuid); });
+	const uint64_t gen = g_oauthGen.fetch_add(1, std::memory_order_acq_rel) + 1;
+	AsyncTask::RunAsync([providerId, profileUuid, gen] { RunOAuthConnect(providerId, profileUuid, gen); });
 
 	result = json{{"ok", true}, {"pending", true}};
 	return true;

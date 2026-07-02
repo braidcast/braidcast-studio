@@ -22,6 +22,13 @@
   import { colorMenu } from "../colorMenu";
   import type { DeinterlaceMode, DeinterlaceFieldOrder } from "../bridge";
   import { defaultCanvas } from "./defaultCanvasStore.svelte";
+  import AddSourceModal from "../AddSourceModal.svelte";
+  import PropertyForm from "../properties/PropertyForm.svelte";
+  import Icon from "../dock/Icon.svelte";
+  import ListToolbar, { type ToolAction } from "../dock/ListToolbar.svelte";
+  import FilterReveal from "../dock/FilterReveal.svelte";
+  import Splitter from "../dock/Splitter.svelte";
+  import { getPaneSizes, setEmbedH, setScenesW } from "../dock/canvasPaneSizes";
 
   // A composite, inseparable dock for one NON-DEFAULT canvas (hierarchy-model.html
   // §1 right column): an inline preview + this canvas's own scenes + its own
@@ -39,7 +46,6 @@
   function report(e: unknown) {
     error = (e as Error).message;
   }
-  function noop() {}
 
   function focusOnMount(node: HTMLInputElement) {
     node.focus();
@@ -196,6 +202,42 @@
     obs.call("scenes.remove", { canvas: canvasUuid, name }).catch(report);
   }
 
+  // ---- add scene (inline, scoped to this canvas) -----------------------------
+  let addingScene = $state(false);
+  let newSceneName = $state("");
+  function beginAddScene() {
+    addingScene = true;
+    newSceneName = "";
+  }
+  async function commitAddScene() {
+    const name = newSceneName.trim();
+    addingScene = false;
+    if (!name) {
+      return;
+    }
+    try {
+      await obs.call("scenes.create", { name, canvas: canvasUuid });
+      await obs.call("scenes.setCurrent", { canvas: canvasUuid, name });
+    } catch (e) {
+      report(e);
+    }
+  }
+  function onAddSceneKey(e: KeyboardEvent) {
+    if (e.key === "Enter") {
+      void commitAddScene();
+    } else if (e.key === "Escape") {
+      addingScene = false;
+    }
+  }
+
+  // ---- scene name filter (behind the toolbar reveal) -------------------------
+  let sceneFilter = $state("");
+  let filteredScenes = $derived(
+    sceneFilter.trim()
+      ? scenes.filter((s) => s.name.toLowerCase().includes(sceneFilter.trim().toLowerCase()))
+      : scenes,
+  );
+
   function openSceneMenu(e: MouseEvent, name: string) {
     e.preventDefault();
     const linkChildren =
@@ -226,6 +268,15 @@
   // derive the target + its index so delete/move can disable when there is none.
   let selectedItem = $derived(items.find((i) => i.id === selectedId) ?? null);
   let selectedIdx = $derived(selectedId === null ? -1 : items.findIndex((i) => i.id === selectedId));
+
+  // ---- source name filter (behind the toolbar reveal) ------------------------
+  let sourceFilter = $state("");
+  let sourceFiltering = $derived(sourceFilter.trim().length > 0);
+  let filteredItems = $derived(
+    sourceFiltering
+      ? items.filter((i) => (i.source ?? "").toLowerCase().includes(sourceFilter.trim().toLowerCase()))
+      : items,
+  );
 
   async function loadItems() {
     if (!currentScene) {
@@ -281,6 +332,21 @@
       await obs.call("sceneItems.remove", { canvas: canvasUuid, scene: currentScene, id: item.id });
     } catch (e) {
       report(e);
+    }
+  }
+
+  // ---- add source / properties (scoped to this canvas's current scene) -------
+  let addingSource = $state(false);
+  let propsForSource = $state<string | null>(null);
+  function onSourceCreated(created: { id: number; source: string }) {
+    addingSource = false;
+    selectedId = created.id;
+    propsForSource = created.source;
+    void loadItems();
+  }
+  function openProperties(item: SceneItem) {
+    if (item.source) {
+      propsForSource = item.source;
     }
   }
 
@@ -410,10 +476,11 @@
     }
   }
 
-  async function openSourceMenu(e: MouseEvent, item: SceneItem, idx: number) {
+  async function openSourceMenu(e: MouseEvent, item: SceneItem) {
     e.preventDefault();
     const x = e.clientX;
     const y = e.clientY;
+    const idx = items.findIndex((i) => i.id === item.id);
     const deint = item.source ? await fetchDeint(item.source) : { mode: "disable" as const, fieldOrder: "top" as const };
     menu = {
       x,
@@ -565,6 +632,74 @@
     error: "var(--color-live)",
   };
 
+  // ---- toolbar actions (bottom bars, act on the selected row) ----------------
+  let scenesLeft = $derived<ToolAction[]>([
+    { icon: "plus", title: "Add scene", onClick: beginAddScene },
+    {
+      icon: "trash",
+      title: "Delete scene",
+      disabled: !currentScene || scenes.length <= 1,
+      onClick: () => currentScene && removeScene(currentScene),
+    },
+  ]);
+  let sourcesLeft = $derived<ToolAction[]>([
+    { icon: "plus", title: "Add source", disabled: !currentScene, onClick: () => (addingSource = true) },
+    { icon: "trash", title: "Delete source", disabled: !selectedItem, onClick: () => selectedItem && void remove(selectedItem) },
+    {
+      icon: "gear",
+      title: "Properties",
+      disabled: !selectedItem?.source,
+      onClick: () => selectedItem && openProperties(selectedItem),
+    },
+  ]);
+  let sourcesRight = $derived<ToolAction[]>([
+    {
+      icon: "up",
+      title: "Move up",
+      disabled: sourceFiltering || selectedIdx <= 0,
+      onClick: () => selectedItem && void reorder(selectedItem, "up"),
+    },
+    {
+      icon: "down",
+      title: "Move down",
+      disabled: sourceFiltering || selectedIdx < 0 || selectedIdx >= items.length - 1,
+      onClick: () => selectedItem && void reorder(selectedItem, "down"),
+    },
+  ]);
+
+  // ---- resizable sub-panes (persisted per canvas across remount) -------------
+  // `embedH`/`scenesW` are px once dragged; null means "never dragged" so the CSS
+  // fallbacks (154px / 42%) apply. On first drag we seed from the live measurement.
+  // canvasUuid is fixed for a dock instance (the reconciler mounts one dock per
+  // canvas), so reading it once to seed the persisted sizes is intentional.
+  // svelte-ignore state_referenced_locally
+  const seed = getPaneSizes(canvasUuid);
+  let embedH = $state<number | null>(seed.embedH);
+  let scenesW = $state<number | null>(seed.scenesW);
+  let dockBodyEl = $state<HTMLElement | undefined>();
+  let embedEl = $state<HTMLElement | undefined>();
+  let scenesColEl = $state<HTMLElement | undefined>();
+
+  function clamp(v: number, lo: number, hi: number): number {
+    return Math.min(Math.max(v, lo), Math.max(lo, hi));
+  }
+  function onEmbedDrag(dy: number) {
+    const cur = embedH ?? embedEl?.getBoundingClientRect().height ?? 154;
+    const dockH = dockBodyEl?.clientHeight ?? 600;
+    // Dragging the divider up (dy<0) grows the embed; floor keeps the preview, cap
+    // at 60% of the dock so the stage never collapses.
+    const next = clamp(cur - dy, 120, dockH * 0.6);
+    embedH = next;
+    setEmbedH(canvasUuid, next);
+  }
+  function onScenesDrag(dx: number) {
+    const cur = scenesW ?? scenesColEl?.getBoundingClientRect().width ?? 0;
+    const totalW = embedEl?.clientWidth ?? 0;
+    const next = clamp(cur + dx, 90, totalW - 90 - 5);
+    scenesW = next;
+    setScenesW(canvasUuid, next);
+  }
+
   // ---- lifecycle -------------------------------------------------------------
   onMount(() => {
     prefetchMonitors();
@@ -671,82 +806,17 @@
       return suspendPreview();
     }
   });
+
+  // The properties modal overlaps the preview; suspend the native overlay while open.
+  // (AddSourceModal suspends itself; this covers the PropertyForm modal.)
+  $effect(() => {
+    if (propsForSource) {
+      return suspendPreview();
+    }
+  });
 </script>
 
-{#snippet icoPlus()}
-  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-    ><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg
-  >
-{/snippet}
-{#snippet icoTrash()}
-  <svg
-    width="13"
-    height="13"
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    stroke-width="1.7"
-    stroke-linecap="round"
-    stroke-linejoin="round"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 13h10l1-13" /></svg
-  >
-{/snippet}
-{#snippet icoGear()}
-  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
-    ><circle cx="12" cy="12" r="3.1" /><path
-      d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.1 5.1l2.1 2.1M16.8 16.8l2.1 2.1M18.9 5.1 16.8 7.2M7.2 16.8 5.1 18.9"
-    /></svg
-  >
-{/snippet}
-{#snippet icoUp()}
-  <svg
-    width="13"
-    height="13"
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    stroke-width="2"
-    stroke-linecap="round"
-    stroke-linejoin="round"><path d="M6 14l6-6 6 6" /></svg
-  >
-{/snippet}
-{#snippet icoDown()}
-  <svg
-    width="13"
-    height="13"
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    stroke-width="2"
-    stroke-linecap="round"
-    stroke-linejoin="round"><path d="M6 10l6 6 6-6" /></svg
-  >
-{/snippet}
-{#snippet icoEye(open: boolean)}
-  {#if open}
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
-      ><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12Z" /><circle cx="12" cy="12" r="2.4" /></svg
-    >
-  {:else}
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
-      ><path d="M4 4 L20 20" /><path
-        d="M9.5 5.7A10 10 0 0 1 12 5.5c6.4 0 10 6.5 10 6.5a17 17 0 0 1-2.7 3.4M6.2 7.6A17 17 0 0 0 2 12s3.6 6.5 10 6.5a10 10 0 0 0 3-.45"
-      /></svg
-    >
-  {/if}
-{/snippet}
-{#snippet icoLock(locked: boolean)}
-  {#if locked}
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
-      ><rect x="5" y="11" width="14" height="9" /><path d="M8 11V8a4 4 0 0 1 8 0v3" /></svg
-    >
-  {:else}
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
-      ><rect x="5" y="11" width="14" height="9" /><path d="M8 11V7a4 4 0 0 1 7.6-1.7" /></svg
-    >
-  {/if}
-{/snippet}
-
-<div class="dock-body">
+<div class="dock-body" bind:this={dockBodyEl}>
   <!-- Stage: aspect-correct surface the native overlay paints through; the chips
        are the mock's stage overlays (res top-left, LIVE top-right, scene label
        bottom-left). pointer-events:none so they never intercept overlay input. -->
@@ -769,12 +839,15 @@
     <p class="dock-msg err">{error}</p>
   {/if}
 
-  <!-- Embedded mini-lists: Scenes (left, 42%) + Sources (right). -->
-  <div class="embed">
-    <div class="col scenes-col">
+  <!-- Drag the divider to trade preview height for the mini-lists' height. -->
+  <Splitter orientation="column" onDrag={onEmbedDrag} />
+
+  <!-- Embedded mini-lists: Scenes (left) + Sources (right), both resizable. -->
+  <div class="embed" bind:this={embedEl} style:--embed-h={embedH != null ? embedH + "px" : null}>
+    <div class="col scenes-col" bind:this={scenesColEl} style:--scenes-w={scenesW != null ? scenesW + "px" : null}>
       <div class="embed-head">Scenes</div>
       <ul class="list">
-        {#each scenes as scene (scene.name)}
+        {#each filteredScenes as scene (scene.name)}
           <li class="es-row" class:on={scene.current} oncontextmenu={(e) => openSceneMenu(e, scene.name)}>
             <span class="es-bar"></span>
             {#if renamingScene === scene.name}
@@ -800,38 +873,49 @@
             {/if}
           </li>
         {/each}
-        {#if loaded && scenes.length === 0}
-          <li class="es-row empty">No scenes</li>
+        {#if addingScene}
+          <li class="es-row">
+            <span class="es-bar"></span>
+            <input
+              class="inline"
+              placeholder="Scene name"
+              bind:value={newSceneName}
+              onkeydown={onAddSceneKey}
+              onblur={commitAddScene}
+              use:focusOnMount
+            />
+          </li>
+        {/if}
+        {#if loaded && filteredScenes.length === 0 && !addingScene}
+          <li class="es-row empty">{sceneFilter.trim() ? "No matches" : "No scenes"}</li>
         {/if}
       </ul>
-      <div class="toolbar">
-        <button class="tool-btn" title="Add scene (coming soon)" disabled onclick={noop}>{@render icoPlus()}</button>
-        <button
-          class="tool-btn"
-          title="Delete scene"
-          disabled={!currentScene || scenes.length <= 1}
-          onclick={() => currentScene && removeScene(currentScene)}>{@render icoTrash()}</button
-        >
-        <button class="tool-btn" title="Scene settings (coming soon)" disabled onclick={noop}>{@render icoGear()}</button>
-      </div>
+      <ListToolbar left={scenesLeft}>
+        {#snippet middle()}
+          <FilterReveal bind:value={sceneFilter} />
+        {/snippet}
+      </ListToolbar>
     </div>
+
+    <!-- Drag to trade Scenes width for Sources width. -->
+    <Splitter orientation="row" onDrag={onScenesDrag} />
 
     <div class="col sources-col">
       <div class="embed-head">Sources{currentScene ? " · " + currentScene : ""}</div>
       <ul class="list">
-        {#each items as item, idx (item.id)}
+        {#each filteredItems as item (item.id)}
           <li
             class="es-row src"
             class:on={item.id === selectedId}
             class:hidden-src={!item.visible}
             style:box-shadow={item.color ? `inset 3px 0 0 ${item.color}` : null}
-            oncontextmenu={(e) => void openSourceMenu(e, item, idx)}
+            oncontextmenu={(e) => void openSourceMenu(e, item)}
           >
             <button
               class="es-eye"
               class:off={!item.visible}
               title={item.visible ? "Hide" : "Show"}
-              onclick={() => void toggleVisible(item)}>{@render icoEye(item.visible)}</button
+              onclick={() => void toggleVisible(item)}><Icon name={item.visible ? "eye" : "eye-off"} size={14} /></button
             >
             {#if renamingId === item.id}
               <input
@@ -848,46 +932,59 @@
               class="es-lock"
               class:locked={item.locked}
               title={item.locked ? "Unlock" : "Lock"}
-              onclick={() => void toggleLocked(item)}>{@render icoLock(item.locked)}</button
+              onclick={() => void toggleLocked(item)}><Icon name={item.locked ? "lock" : "lock-open"} size={12} /></button
             >
           </li>
         {/each}
-        {#if currentScene && items.length === 0}
-          <li class="es-row empty">No sources</li>
+        {#if currentScene && filteredItems.length === 0}
+          <li class="es-row empty">{sourceFiltering ? "No matches" : "No sources"}</li>
         {/if}
       </ul>
-      <div class="toolbar">
-        <button class="tool-btn" title="Add source (coming soon)" disabled onclick={noop}>{@render icoPlus()}</button>
-        <button
-          class="tool-btn"
-          title="Delete source"
-          disabled={!selectedItem}
-          onclick={() => selectedItem && void remove(selectedItem)}>{@render icoTrash()}</button
-        >
-        <button class="tool-btn" title="Properties (coming soon)" disabled onclick={noop}>{@render icoGear()}</button>
-        <div class="tool-spacer"></div>
-        <button
-          class="tool-btn"
-          title="Move up"
-          disabled={selectedIdx <= 0}
-          onclick={() => selectedItem && void reorder(selectedItem, "up")}>{@render icoUp()}</button
-        >
-        <button
-          class="tool-btn"
-          title="Move down"
-          disabled={selectedIdx < 0 || selectedIdx >= items.length - 1}
-          onclick={() => selectedItem && void reorder(selectedItem, "down")}>{@render icoDown()}</button
-        >
-      </div>
+      <ListToolbar left={sourcesLeft} right={sourcesRight}>
+        {#snippet middle()}
+          <FilterReveal bind:value={sourceFilter} />
+        {/snippet}
+      </ListToolbar>
     </div>
   </div>
 
   <footer class="foot">
     <span class="dot" style:background={STATE_COLOR[liveState]} title={liveState}></span>
     <span class="foot-name">{canvasName}</span>
-    <button class="foot-gear" title="Edit canvas (Canvases)" onclick={() => setPage("canvases")}>{@render icoGear()}</button>
+    <button class="foot-gear" title="Edit canvas (Canvases)" onclick={() => setPage("canvases")}>
+      <Icon name="gear" size={13} />
+    </button>
   </footer>
 </div>
+
+{#if addingSource}
+  <AddSourceModal
+    canvas={canvasUuid}
+    scene={currentScene}
+    onCreated={onSourceCreated}
+    onClose={() => (addingSource = false)}
+  />
+{/if}
+
+{#if propsForSource}
+  <div
+    class="modal-backdrop"
+    role="presentation"
+    onclick={(e) => {
+      if (e.target === e.currentTarget) propsForSource = null;
+    }}
+  >
+    <div class="modal" role="dialog" aria-modal="true" aria-label="Source properties">
+      <header class="modal-head">
+        <h3>Properties — {propsForSource}</h3>
+        <button class="modal-close" title="Close" onclick={() => (propsForSource = null)}>✕</button>
+      </header>
+      <div class="modal-body">
+        <PropertyForm kind="source" ref={propsForSource} />
+      </div>
+    </div>
+  </div>
+{/if}
 
 {#if menu}
   <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => (menu = null)} />
@@ -978,9 +1075,8 @@
 
   /* ---- embedded scenes / sources lists --------------------------------- */
   .embed {
-    flex: 0 0 154px;
+    flex: 0 0 var(--embed-h, 154px);
     display: flex;
-    border-top: var(--border-weight) solid var(--color-border);
     min-height: 0;
   }
   .col {
@@ -991,8 +1087,7 @@
     background: var(--color-surface);
   }
   .scenes-col {
-    flex: 0 0 42%;
-    border-right: var(--border-weight) solid var(--color-border);
+    flex: 0 0 var(--scenes-w, 42%);
   }
   .sources-col {
     flex: 1;
@@ -1133,39 +1228,6 @@
     outline: none;
   }
 
-  /* ---- per-list toolbars ----------------------------------------------- */
-  .toolbar {
-    flex: 0 0 auto;
-    display: flex;
-    align-items: center;
-    gap: 2px;
-    padding: 4px 6px;
-    border-top: var(--border-weight) solid var(--color-border);
-    background: var(--color-surface-2);
-  }
-  .tool-spacer {
-    flex: 1;
-  }
-  .tool-btn {
-    width: 25px;
-    height: 22px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: none;
-    border: 0;
-    padding: 0;
-    cursor: pointer;
-    color: var(--color-dim);
-  }
-  .tool-btn:hover:not(:disabled) {
-    color: var(--color-accent);
-  }
-  .tool-btn:disabled {
-    opacity: 0.35;
-    cursor: default;
-  }
-
   /* ---- footer ---------------------------------------------------------- */
   .foot {
     flex: 0 0 auto;
@@ -1216,5 +1278,58 @@
   }
   .dock-msg.err {
     color: var(--color-live);
+  }
+
+  /* ---- properties modal ------------------------------------------------ */
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+    padding: 24px;
+  }
+  .modal {
+    background: var(--color-surface);
+    border: var(--border-weight) solid var(--color-border);
+    width: min(560px, 100%);
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+  }
+  .modal-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    border-bottom: var(--border-weight) solid var(--color-border);
+  }
+  .modal-head h3 {
+    margin: 0;
+    font-size: 12px;
+    font-family: var(--font-ui);
+    letter-spacing: var(--letter-spacing);
+    text-transform: var(--label-case);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .modal-close {
+    background: none;
+    border: 0;
+    padding: 2px 4px;
+    font-size: 13px;
+    line-height: 1;
+    cursor: pointer;
+    color: var(--color-muted);
+  }
+  .modal-close:hover {
+    color: var(--color-accent);
+  }
+  .modal-body {
+    padding: 16px;
+    overflow: auto;
   }
 </style>
