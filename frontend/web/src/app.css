@@ -75,6 +75,9 @@
      colors, not part of the theme presets; --color-ok-bg is the darker border/fill. */
   --color-ok: #3fb950;
   --color-ok-bg: #234a2c;
+  --color-warn: #e6b03e;
+  --backdrop: rgba(0, 0, 0, 0.55);
+  --shadow-modal: 0 18px 48px rgba(0, 0, 0, 0.5);
   --meter-green: #46b85e;
   --meter-yellow: #e6b03e;
   --meter-red: #f04444;
