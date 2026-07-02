@@ -1136,8 +1136,17 @@ persist/delete all green, clean shutdown. **GUI acceptance owed** (headless can'
 Browser Source): live editing round-trip, image/sound upload→render, test-button alerts, two-instance
 token isolation, delete-cleans-assets, restart-URL-stability.
 
-**Remaining Phase 9 (planned):** moderation · chat-as-source · third-party emotes for Kick/YouTube ·
-pre-live chat · additional widget types (chat box, goal bar, ticker, labels) on the 9.3 overlay infra.
+**9.1b (Third-party emotes — Kick + YouTube) ✅ DONE 2026-07-02** (`ui-redesign`, commit on
+`origin/ui-redesign`). Generalized the Twitch-only 9.1 resolver with a per-platform config table
+(globals + 7TV/BTTV channel slugs; FFZ stays Twitch-only) and moved the word-substitution pass into a
+shared `Chat::ApplyThirdPartyEmotes`. **Kick** = 7TV global + 7TV/BTTV `kick/<channelId>` (over the
+already-resolved channel id; native `[emote:…]` still wins); **YouTube** = 7TV+BTTV global +
+`youtube/<channelId>` off the connected account's UC id. Both fetch once on the transport worker and
+cache. Build clean /W4 /WX, smoke `leaks: 2`. **Live rendering GUI-owed** (headless can't drive real
+Kick/YouTube chat).
+
+**Remaining Phase 9 (planned):** moderation · chat-as-source · pre-live chat · additional widget
+types (chat box, goal bar, ticker, labels) on the 9.3 overlay infra.
 
 **Goal:** the Streamlabs/StreamElements-style live layer the fork lacks — unified **multichat**
 (read+send across every connected platform in one pane), **aggregate viewer count** (sum of live
