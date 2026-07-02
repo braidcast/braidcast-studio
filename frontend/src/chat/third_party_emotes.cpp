@@ -9,8 +9,6 @@
 
 namespace Chat {
 
-using json = nlohmann::json;
-
 namespace {
 
 using EmoteMap = std::unordered_map<std::string, std::string>;
@@ -190,13 +188,37 @@ void ParseFfz(const json &root, EmoteMap &out)
 	}
 }
 
+// Which provider sets each host offers. FFZ is Twitch-only; 7TV and BTTV key channel
+// sets by /<slug>/<userId> where the slug is the host name. A null channel slug (or an
+// empty userId at the call site) skips that provider's channel set. The fetch below
+// walks these fields in fixed precedence order, so per-platform differences stay data.
+struct PlatformEmoteConfig {
+	bool ffzGlobal;
+	bool bttvGlobal;
+	bool sevenTvGlobal;
+	bool ffzRoom;            // FFZ room set, keyed by login (Twitch only)
+	const char *bttvSlug;    // BTTV channel-set provider slug; null -> skip
+	const char *sevenTvSlug; // 7TV channel-set platform slug; null -> skip
+};
+
+// Indexed by EmotePlatform; entry order MUST match the enum (Twitch, Kick, YouTube).
+const PlatformEmoteConfig &ConfigFor(EmotePlatform platform)
+{
+	static const PlatformEmoteConfig kConfigs[] = {
+		{true, true, true, true, "twitch", "twitch"},     // Twitch
+		{false, false, true, false, "kick", "kick"},      // Kick: 7TV global + 7TV/BTTV channel
+		{false, true, true, false, "youtube", "youtube"}, // YouTube: 7TV+BTTV global + channel
+	};
+	return kConfigs[static_cast<size_t>(platform)];
+}
+
 } // namespace
 
 std::unordered_map<std::string, std::string> FetchThirdPartyEmotes(EmotePlatform platform, const std::string &login,
 								   const std::string &userId,
 								   const std::function<bool()> &canceled)
 {
-	(void)platform; // only Twitch is wired today; the enum reserves room for others.
+	const PlatformEmoteConfig &cfg = ConfigFor(platform);
 	EmoteMap out;
 
 	// A GET can't observe the cancel flag mid-transfer, but polling before each one
@@ -208,35 +230,43 @@ std::unordered_map<std::string, std::string> FetchThirdPartyEmotes(EmotePlatform
 	// FFZ. A single map with last-write-wins encodes both rules by inserting in
 	// ASCENDING priority -- all globals first (FFZ, then BTTV, then 7TV), then the
 	// channel sets in the same provider order -- so a later write always belongs to a
-	// higher-priority source and overwrites any earlier lower-priority code.
+	// higher-priority source and overwrites any earlier lower-priority code. Which of
+	// those sets actually exist per platform comes from `cfg`.
 
 	// --- Global tier (lowest priority) ---
-	if (stop()) {
-		return out;
+	if (cfg.ffzGlobal) {
+		if (stop()) {
+			return out;
+		}
+		ParseFfz(GetJson("https://api.frankerfacez.com/v1/set/global", "FFZ global"), out);
 	}
-	ParseFfz(GetJson("https://api.frankerfacez.com/v1/set/global", "FFZ global"), out);
-	if (stop()) {
-		return out;
+	if (cfg.bttvGlobal) {
+		if (stop()) {
+			return out;
+		}
+		ParseBttvArray(GetJson("https://api.betterttv.net/3/cached/emotes/global", "BTTV global"), out);
 	}
-	ParseBttvArray(GetJson("https://api.betterttv.net/3/cached/emotes/global", "BTTV global"), out);
-	if (stop()) {
-		return out;
+	if (cfg.sevenTvGlobal) {
+		if (stop()) {
+			return out;
+		}
+		Parse7tv(GetJson("https://7tv.io/v3/emote-sets/global", "7TV global"), out);
 	}
-	Parse7tv(GetJson("https://7tv.io/v3/emote-sets/global", "7TV global"), out);
 
 	// --- Channel tier (highest priority) ---
-	// FFZ keys rooms by login; 7TV and BTTV key channel sets by numeric user id.
-	if (!login.empty()) {
+	// FFZ keys rooms by login; 7TV and BTTV key channel sets by channel id.
+	if (cfg.ffzRoom && !login.empty()) {
 		if (stop()) {
 			return out;
 		}
 		ParseFfz(GetJson("https://api.frankerfacez.com/v1/room/" + Http::UrlEncode(login), "FFZ room"), out);
 	}
-	if (!userId.empty()) {
+	if (cfg.bttvSlug && !userId.empty()) {
 		if (stop()) {
 			return out;
 		}
-		const json bc = GetJson("https://api.betterttv.net/3/cached/users/twitch/" + Http::UrlEncode(userId),
+		const json bc = GetJson("https://api.betterttv.net/3/cached/users/" + std::string(cfg.bttvSlug) + "/" +
+						Http::UrlEncode(userId),
 					"BTTV channel");
 		if (bc.is_object()) {
 			auto ce = bc.find("channelEmotes");
@@ -248,11 +278,14 @@ std::unordered_map<std::string, std::string> FetchThirdPartyEmotes(EmotePlatform
 				ParseBttvArray(*se, out);
 			}
 		}
-
+	}
+	if (cfg.sevenTvSlug && !userId.empty()) {
 		if (stop()) {
 			return out;
 		}
-		const json uc = GetJson("https://7tv.io/v3/users/twitch/" + Http::UrlEncode(userId), "7TV channel");
+		const json uc = GetJson("https://7tv.io/v3/users/" + std::string(cfg.sevenTvSlug) + "/" +
+						Http::UrlEncode(userId),
+					"7TV channel");
 		if (uc.is_object()) {
 			auto es = uc.find("emote_set");
 			if (es != uc.end() && es->is_object()) {
@@ -261,6 +294,55 @@ std::unordered_map<std::string, std::string> FetchThirdPartyEmotes(EmotePlatform
 		}
 	}
 
+	return out;
+}
+
+json ApplyThirdPartyEmotes(const json &fragments, const std::unordered_map<std::string, std::string> &emotes)
+{
+	if (emotes.empty()) {
+		return fragments;
+	}
+	json out = json::array();
+	for (const json &frag : fragments) {
+		if (frag.value("type", std::string()) != "text") {
+			out.push_back(frag);
+			continue;
+		}
+		const std::string text = frag.value("text", std::string());
+		std::string pending; // accumulates non-emote words + all inter-word spacing
+		size_t i = 0;
+		const size_t n = text.size();
+		while (i < n) {
+			if (text[i] == ' ') {
+				size_t j = i;
+				while (j < n && text[j] == ' ') {
+					++j;
+				}
+				pending.append(text, i, j - i);
+				i = j;
+				continue;
+			}
+			size_t j = i;
+			while (j < n && text[j] != ' ') {
+				++j;
+			}
+			const std::string word = text.substr(i, j - i);
+			auto it = emotes.find(word);
+			if (it != emotes.end()) {
+				if (!pending.empty()) {
+					out.push_back(json{{"type", "text"}, {"text", pending}});
+					pending.clear();
+				}
+				out.push_back(json{{"type", "emote"}, {"code", word}, {"url", it->second}});
+			} else {
+				pending += word;
+			}
+			i = j;
+		}
+		if (!pending.empty()) {
+			out.push_back(json{{"type", "text"}, {"text", pending}});
+		}
+	}
 	return out;
 }
 

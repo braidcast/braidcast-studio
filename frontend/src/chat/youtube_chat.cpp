@@ -5,11 +5,13 @@
 #include <chrono>
 #include <cstdio>
 #include <ctime>
+#include <unordered_map>
 
 #include "../events/event_hub.hpp"   // Events::Hub().Ingest for monetization/membership events
 #include "../events/event_model.hpp" // Events::NormalizedEvent
 #include "../http_client.hpp"
 #include "../oauth/youtube_provider.hpp"
+#include "third_party_emotes.hpp"
 #include "ws_client.hpp" // CancelableSleep / Backoff
 
 namespace Chat {
@@ -142,7 +144,8 @@ json BadgesFor(const json &authorDetails)
 
 // One liveChatMessages item -> the Phase 9 normalized message, or a null json when
 // the item carries no displayable text (e.g. a non-text event we skip).
-json NormalizeItem(const json &item, const std::string &liveChatId)
+json NormalizeItem(const json &item, const std::string &liveChatId,
+		   const std::unordered_map<std::string, std::string> &thirdPartyEmotes)
 {
 	if (!item.is_object()) {
 		return json(nullptr);
@@ -159,10 +162,12 @@ json NormalizeItem(const json &item, const std::string &liveChatId)
 		return json(nullptr); // super-chat/membership events without text -- skip in the MVP
 	}
 
-	// YouTube's list response carries no emoji image runs, so the message is a single
-	// plain-text fragment (emoji arrive inline as unicode in displayMessage).
+	// YouTube's list response carries no emoji image runs, so the message starts as a
+	// single plain-text fragment (emoji arrive inline as unicode in displayMessage);
+	// the third-party pass then splits any 7TV/BTTV emote words out of that text.
 	json fragments = json::array();
 	fragments.push_back(json{{"type", "text"}, {"text", text}});
+	fragments = ApplyThirdPartyEmotes(fragments, thirdPartyEmotes);
 
 	return json{
 		{"event", "chat.message"},
@@ -280,6 +285,12 @@ bool YouTubeChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, con
 			      {"error", stateErr}});
 	};
 
+	// Build the third-party (7TV/BTTV) emote map once for this session, keyed by the
+	// broadcaster's UC channel id (acct.userId). Best-effort + cancel-polled; runs on
+	// this worker before the poll loop. Only READ below on this same thread.
+	const std::unordered_map<std::string, std::string> thirdPartyEmotes =
+		FetchThirdPartyEmotes(EmotePlatform::YouTube, "", acct.userId, canceled);
+
 	std::string pageToken;
 	bool firstPoll = true;
 	bool announced = false;
@@ -362,7 +373,7 @@ bool YouTubeChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, con
 				}
 				// Chat first, exactly as before: a plain message emits a chat line; a
 				// Super Chat / membership item still emits its chat line (it carries text).
-				const json msg = NormalizeItem(item, liveChatId);
+				const json msg = NormalizeItem(item, liveChatId, thirdPartyEmotes);
 				if (msg.is_object()) {
 					ctx.emit(msg);
 				}

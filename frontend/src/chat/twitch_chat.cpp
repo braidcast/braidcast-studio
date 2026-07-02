@@ -274,61 +274,6 @@ json BuildFragments(const std::string &message, const std::vector<EmoteSpan> &sp
 	return frags;
 }
 
-// Rescan already-built fragments and substitute third-party (7TV/BTTV/FFZ) emotes.
-// Only `text` fragments are touched -- native Twitch emote fragments win and pass
-// through verbatim. A word (a maximal run of non-space chars) is replaced only on an
-// EXACT, case-sensitive match, since third-party codes are case-sensitive. Spaces
-// are kept in the text runs so the message reads back byte-identical apart from the
-// matched words, and the emitted emote fragment shape matches BuildFragments'.
-json ApplyThirdPartyEmotes(const json &frags, const std::unordered_map<std::string, std::string> &emotes)
-{
-	if (emotes.empty()) {
-		return frags;
-	}
-	json out = json::array();
-	for (const json &frag : frags) {
-		if (frag.value("type", std::string()) != "text") {
-			out.push_back(frag);
-			continue;
-		}
-		const std::string text = frag.value("text", std::string());
-		std::string pending; // accumulates non-emote words + all inter-word spacing
-		size_t i = 0;
-		const size_t n = text.size();
-		while (i < n) {
-			if (text[i] == ' ') {
-				size_t j = i;
-				while (j < n && text[j] == ' ') {
-					++j;
-				}
-				pending.append(text, i, j - i);
-				i = j;
-				continue;
-			}
-			size_t j = i;
-			while (j < n && text[j] != ' ') {
-				++j;
-			}
-			const std::string word = text.substr(i, j - i);
-			auto it = emotes.find(word);
-			if (it != emotes.end()) {
-				if (!pending.empty()) {
-					out.push_back(json{{"type", "text"}, {"text", pending}});
-					pending.clear();
-				}
-				out.push_back(json{{"type", "emote"}, {"code", word}, {"url", it->second}});
-			} else {
-				pending += word;
-			}
-			i = j;
-		}
-		if (!pending.empty()) {
-			out.push_back(json{{"type", "text"}, {"text", pending}});
-		}
-	}
-	return out;
-}
-
 // Resolve a Twitch login to its numeric user id via Helix. Best-effort: any failure
 // returns "" so the caller still fetches global + FFZ-by-login sets and merely skips
 // the id-keyed (7TV/BTTV) channel sets. Blocking; runs on the chat worker thread.
@@ -552,7 +497,7 @@ bool TwitchChat::connect(const Chat::ChatContext &ctx, OAuthAccount &acct, const
 								{"color", tag("color")},
 								{"badges", BuildBadges(tag("badges"))}}},
 						{"fragments",
-						 ApplyThirdPartyEmotes(
+						 Chat::ApplyThirdPartyEmotes(
 							 BuildFragments(m.trailing, ParseEmotes(tag("emotes"))),
 							 thirdPartyEmotes_)},
 					});

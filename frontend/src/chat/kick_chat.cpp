@@ -6,6 +6,7 @@
 #include "../log.hpp"
 #include "../oauth/kick_provider.hpp"
 #include "kick_pusher.hpp"
+#include "third_party_emotes.hpp"
 #include "ws_client.hpp"
 
 namespace Chat {
@@ -85,7 +86,8 @@ void EmitState(const ChatContext &ctx, bool connected, const std::string &error)
 // chat.message. Defensive throughout: a double-decode failure or any missing
 // required field drops the message rather than throwing (research flags the whole
 // Kick payload as reverse-engineered).
-void HandleChatMessage(const json &outer, const ChatContext &ctx, const std::string &chatroomId)
+void HandleChatMessage(const json &outer, const ChatContext &ctx, const std::string &chatroomId,
+		       const std::unordered_map<std::string, std::string> &thirdPartyEmotes)
 {
 	// Pusher's `data` is itself a JSON-ENCODED STRING (double-encoded); decode again.
 	auto dataIt = outer.find("data");
@@ -153,7 +155,9 @@ void HandleChatMessage(const json &outer, const ChatContext &ctx, const std::str
 		// two differ only by network latency.
 		{"ts", NowMs()},
 		{"author", json{{"name", name}, {"color", color}, {"badges", badges}}},
-		{"fragments", ParseFragments(content)},
+		// Native [emote:...] fragments win: ApplyThirdPartyEmotes only rewrites the
+		// plain-text runs ParseFragments emits, leaving Kick emote fragments verbatim.
+		{"fragments", ApplyThirdPartyEmotes(ParseFragments(content), thirdPartyEmotes)},
 	});
 }
 
@@ -184,14 +188,18 @@ bool KickChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, const 
 		// this blocking fetch cannot stall teardown.
 		if (chatroomId.empty()) {
 			std::string lookupErr;
-			std::string channelIdUnused; // chat keys off the chatroom id only
-			if (!ResolveKickChannelIds(channelRef, chatroomId, channelIdUnused, lookupErr)) {
+			std::string channelId; // numeric channel id; 7TV/BTTV key kick sets by it
+			if (!ResolveKickChannelIds(channelRef, chatroomId, channelId, lookupErr)) {
 				EmitState(ctx, false, lookupErr);
 				if (CancelableSleep(backoff.next(), canceled)) {
 					break;
 				}
 				continue;
 			}
+			// Build the third-party emote map once, on this worker, from the resolved
+			// channel id. Best-effort + cancel-polled; a failure just yields fewer
+			// emotes. Cached across reconnects since chatroomId now stays non-empty.
+			thirdPartyEmotes_ = FetchThirdPartyEmotes(EmotePlatform::Kick, "", channelId, canceled);
 		}
 
 		WsClient ws;
@@ -240,7 +248,7 @@ bool KickChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, const 
 				// auto-PONGs); reply with an app-level pong.
 				ws.sendText("{\"event\":\"pusher:pong\",\"data\":{}}");
 			} else if (event == "App\\Events\\ChatMessageEvent") {
-				HandleChatMessage(outer, ctx, chatroomId);
+				HandleChatMessage(outer, ctx, chatroomId, thirdPartyEmotes_);
 			} else if (event == "pusher:error") {
 				HostLog("[chat] kick pusher error: " + frame);
 			}

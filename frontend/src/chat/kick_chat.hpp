@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <string>
+#include <unordered_map>
 
 #include "chat_transport.hpp"
 
@@ -46,6 +47,11 @@ public:
 private:
 	OAuth::KickProvider &provider_;
 	std::atomic<bool> stop_{false};
+
+	// Third-party (7TV/BTTV) emote code -> image URL, built once after the channel id
+	// resolves and only READ by the read loop on that same worker thread, so it needs
+	// no lock. send() runs on a different worker but never touches it.
+	std::unordered_map<std::string, std::string> thirdPartyEmotes_;
 };
 
 } // namespace Chat
