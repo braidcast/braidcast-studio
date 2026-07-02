@@ -1180,12 +1180,15 @@ family is now complete: **alert box · chat box · ticker · goal bar · labels*
 **Remaining Phase 9 (planned):**
 - **Moderation** — per-platform mod actions in multichat (timeout/ban/delete-message) where OAuth
   scopes allow. Needs a design pass (scopes per platform + a compact moderation UI on chat rows).
-- **Pre-live chat** — chat is currently **live-gated** (`MethodStreamingStart` starts `Chat::Hub()`
-  only when outputs go live; stopped on go-live-stop). Make `ChatHub` always-on like `EventHub`
-  (start on account connect + boot sweep, independent of go-live). Caveat: **YouTube** chat needs a
-  live broadcast's `liveChatId`, so YT only joins at go-live (its transport no-ops on an empty
-  channelRef); Twitch/Kick connect pre-live. A real backend lifecycle change (generation model +
-  re-resolve at go-live so YT picks up its liveChatId), not free.
+- ✅ **Pre-live chat — DONE 2026-07-02** (`ui-redesign`, commit on `origin/ui-redesign`). Chat was
+  live-gated; `ChatHub` now has `EventHub`'s always-on account lifecycle: `Chat::Hub().Start()` on
+  boot (connected-account sweep, `obs_bootstrap.cpp`) and on account connect/disconnect
+  (`bridge.cpp`), so multichat + chat-box/overlay widgets work before/after streaming. Go-live still
+  re-Start()s so **YouTube** picks up its live-broadcast `liveChatId` (Twitch/Kick connect pre-live;
+  YT no-ops until live); go-live-stop re-resolves instead of stopping (drops each provider's
+  active-broadcast target first → YT falls back to no-op, Twitch/Kick persist). Hub still stopped at
+  shutdown. Build clean, smoke shows `[chat] hub started` at boot, `leaks: 2`. **Live multi-account
+  acceptance GUI-owed.**
 
 **Goal:** the Streamlabs/StreamElements-style live layer the fork lacks — unified **multichat**
 (read+send across every connected platform in one pane), **aggregate viewer count** (sum of live
