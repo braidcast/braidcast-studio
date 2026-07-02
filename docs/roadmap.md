@@ -1145,8 +1145,20 @@ already-resolved channel id; native `[emote:…]` still wins); **YouTube** = 7TV
 cache. Build clean /W4 /WX, smoke `leaks: 2`. **Live rendering GUI-owed** (headless can't drive real
 Kick/YouTube chat).
 
-**Remaining Phase 9 (planned):** moderation · chat-as-source · pre-live chat · additional widget
-types (chat box, goal bar, ticker, labels) on the 9.3 overlay infra.
+**9.3b (Chat box overlay widget) ✅ DONE 2026-07-02** (`ui-redesign`, commit on `origin/ui-redesign`).
+A second overlay widget type rendering live multichat as a browser source, reusing the 9.3 overlay
+infra + 9.0 chat hub — this also covers "chat-as-source". Chat rides the existing per-widget SSE
+stream as a **named `chat` event** (`OverlayServer::BroadcastChat` via a shared `BroadcastFrame`,
+fanned from `ChatHub::RouteEmit` on `chat.message` only; alert-box `data:`-only frames unaffected).
+Runtime gains `OBSOverlay.onChat` + a `chat` SSE listener; a `default-chatbox` template
+(html/css/js/fields) renders author color + opt-in platform tag/badges + emote fragments, XSS-safe
+(`createElement`/`textContent`), with max-messages / per-message lifetime / entry-animation fields.
+The Overlays editor create flow now has a widget-type picker (alert box / chat box). Build clean /W4
+/WX, `bun run check` 0/0, smoke `leaks: 2` + overlay SSE selftests green. **Live render in a real
+Browser Source GUI-owed.**
+
+**Remaining Phase 9 (planned):** moderation · pre-live chat · more widget types (goal bar, ticker,
+labels) on the 9.3 overlay infra.
 
 **Goal:** the Streamlabs/StreamElements-style live layer the fork lacks — unified **multichat**
 (read+send across every connected platform in one pane), **aggregate viewer count** (sum of live
