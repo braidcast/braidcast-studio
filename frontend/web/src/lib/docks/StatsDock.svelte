@@ -1,5 +1,6 @@
 <script lang="ts">
   import { obs, type Stats, type OutputStat } from "../bridge";
+  import Icon from "../dock/Icon.svelte";
 
   // Host supplies tab chrome + strips __* keys; this body declares no props.
   let {}: Record<string, unknown> = $props();
@@ -102,7 +103,7 @@
               <div class="info">
                 <div class="line1">
                   <span class="name">{o.profileLabel}</span>
-                  <span class="arrow">→</span>
+                  <span class="arrow"><Icon name="caret-right" size={10} /></span>
                   <span class="canvas">{o.canvasName}</span>
                 </div>
                 <div class="line2">
@@ -145,10 +146,12 @@
   .val {
     color: var(--color-text);
     text-align: right;
+    font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
   }
   .sub {
     color: var(--color-muted);
+    font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
   }
   .warn {
@@ -195,6 +198,8 @@
     white-space: nowrap;
   }
   .arrow {
+    display: inline-flex;
+    align-items: center;
     color: var(--color-muted);
     flex-shrink: 0;
   }
@@ -214,6 +219,7 @@
     font-variant-numeric: tabular-nums;
   }
   .stat {
+    font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
   }
 </style>

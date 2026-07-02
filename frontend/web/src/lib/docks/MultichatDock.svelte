@@ -1,22 +1,17 @@
 <script lang="ts">
   import { obs, type ChatMessage, type ChatState, type ChatPlatform } from "../bridge";
+  import { PLATFORM_COLORS, PLATFORM_LABELS, PLATFORM_ORDER as ORDER } from "../theme/platformColors";
+  import EmptyState from "../EmptyState.svelte";
+  import Icon from "../dock/Icon.svelte";
 
   // Host supplies tab chrome + strips __* keys; this body declares no props.
   let {}: Record<string, unknown> = $props();
 
   // Brand colors (spec): author-color fallback + platform dot/tag + dest chips.
-  const PLATFORM_COLOR: Record<ChatPlatform, string> = {
-    twitch: "#a970ff",
-    youtube: "#ff4e45",
-    kick: "#53fc18",
-  };
-  const PLATFORM_LABEL: Record<ChatPlatform, string> = {
-    twitch: "Twitch",
-    youtube: "YouTube",
-    kick: "Kick",
-  };
+  const PLATFORM_COLOR = PLATFORM_COLORS;
+  const PLATFORM_LABEL = PLATFORM_LABELS;
   // Stable chip order so the dest selector / connected chips never reshuffle.
-  const PLATFORM_ORDER: ChatPlatform[] = ["twitch", "youtube", "kick"];
+  const PLATFORM_ORDER: readonly ChatPlatform[] = ORDER;
 
   // --- merged scrollback (ring-capped + virtualized) ------------------------
   // Hard cap on retained messages so sustained chat can't grow the array or the
@@ -228,7 +223,7 @@
 <div class="chat">
   <div class="scroll" bind:this={scrollEl} onscroll={onScroll}>
     {#if messages.length === 0}
-      <p class="empty">{anyConnected ? "Waiting for chat…" : "Chat appears here while you are live."}</p>
+      <EmptyState compact title={anyConnected ? "Waiting for chat…" : "Chat appears here while you are live."} />
     {:else}
       <div class="sizer" style:height={layout.total + "px"}>
         {#each visible as row (row.clientKey)}
@@ -265,7 +260,7 @@
   </div>
 
   {#if !autoStick && messages.length > 0}
-    <button class="jump" onclick={jumpToLatest}>↓ Jump to latest</button>
+    <button class="jump" onclick={jumpToLatest}><Icon name="jump-down" size={11} /> Jump to latest</button>
   {/if}
 
   <div class="composer">
@@ -319,14 +314,6 @@
     min-height: 0;
     overflow-y: auto;
     overflow-x: hidden;
-  }
-  .empty {
-    margin: 0;
-    padding: 14px 10px;
-    font-size: 11px;
-    color: var(--color-muted);
-    letter-spacing: var(--letter-spacing);
-    text-transform: var(--label-case);
   }
   /* Absolute-positioned rows over a sized spacer = virtualized list (only the
      visible window is in the DOM; the sizer reserves the full scroll height). */
@@ -396,6 +383,9 @@
     transform: translateX(-50%);
     bottom: 78px;
     z-index: 2;
+    display: flex;
+    align-items: center;
+    gap: 5px;
     padding: 4px 12px;
     font-size: 10px;
     font-family: var(--font-ui);

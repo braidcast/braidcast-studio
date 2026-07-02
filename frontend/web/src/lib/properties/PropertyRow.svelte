@@ -48,7 +48,7 @@
   .label {
     text-align: right;
     font-size: 13px;
-    color: var(--text-soft);
+    color: var(--color-text);
     overflow-wrap: anywhere;
   }
   .control {

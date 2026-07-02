@@ -1,5 +1,6 @@
 <script lang="ts">
   import { obs, type McpConfig, type McpSetConfigParams } from "../bridge";
+  import PageHeader from "../PageHeader.svelte";
 
   // MCP control page. Logic mirrors McpTab.svelte (load + mcp.changed subscription,
   // optimistic apply, copy-to-clipboard, token mask, regenerate confirm) laid out to
@@ -93,23 +94,21 @@
 </script>
 
 <div class="page">
-  <header class="head">
-    <div class="head-left">
-      <span class="title">AI Control</span>
-      <span class="sub">drive the production over MCP</span>
-    </div>
-    {#if cfg}
-      <button
-        class="server-toggle"
-        class:on={cfg.enabled}
-        disabled={busy}
-        onclick={() => void apply({ enabled: !cfg!.enabled })}
-      >
-        <span class="srv-dot" style:background={cfg.enabled ? "var(--meter-green)" : "var(--color-muted)"}></span>
-        {cfg.enabled ? "Server Enabled" : "Server Disabled"}
-      </button>
-    {/if}
-  </header>
+  <PageHeader title="AI Control" sub="drive the production over MCP">
+    {#snippet actions()}
+      {#if cfg}
+        <button
+          class="server-toggle"
+          class:on={cfg.enabled}
+          disabled={busy}
+          onclick={() => void apply({ enabled: !cfg!.enabled })}
+        >
+          <span class="srv-dot" style:background={cfg.enabled ? "var(--meter-green)" : "var(--color-muted)"}></span>
+          {cfg.enabled ? "Server Enabled" : "Server Disabled"}
+        </button>
+      {/if}
+    {/snippet}
+  </PageHeader>
 
   <div class="body">
     {#if !loaded}
@@ -221,34 +220,6 @@
     flex-direction: column;
     background: var(--color-base);
     color: var(--color-text);
-  }
-  .head {
-    flex: 0 0 auto;
-    height: 58px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 16px;
-    padding: 0 24px;
-    border-bottom: var(--border-weight) solid var(--color-border);
-    background: var(--color-surface);
-  }
-  .head-left {
-    display: flex;
-    align-items: baseline;
-    gap: 12px;
-    min-width: 0;
-  }
-  .title {
-    font-family: var(--font-ui);
-    font-size: 16px;
-    font-weight: 600;
-    letter-spacing: -0.01em;
-  }
-  .sub {
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--color-muted);
   }
   .server-toggle {
     display: flex;

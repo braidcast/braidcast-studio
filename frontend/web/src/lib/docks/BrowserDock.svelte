@@ -7,6 +7,8 @@
   // NOTE: some sites block framing via X-Frame-Options / CSP frame-ancestors (full
   // platform dashboards); chat/widget popout URLs embed fine. That caveat is
   // surfaced in the Browser Docks settings manager, not per-panel.
+  import EmptyState from "../EmptyState.svelte";
+
   interface Props {
     url: string;
     title: string;
@@ -22,7 +24,9 @@
     sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
   ></iframe>
 {:else}
-  <p class="empty">No URL set for this browser dock.</p>
+  <div class="empty-wrap">
+    <EmptyState compact title="No URL set for this browser dock." />
+  </div>
 {/if}
 
 <style>
@@ -34,11 +38,9 @@
     display: block;
     background: var(--color-base);
   }
-  .empty {
-    margin: 0;
-    padding: 16px;
-    font-family: var(--font-ui);
-    font-size: 12px;
-    color: var(--color-muted);
+  .empty-wrap {
+    width: 100%;
+    height: 100%;
+    background: var(--color-base);
   }
 </style>

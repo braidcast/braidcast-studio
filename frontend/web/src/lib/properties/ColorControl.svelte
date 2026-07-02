@@ -67,22 +67,21 @@
     width: 44px;
     height: 28px;
     padding: 0;
-    border: 1px solid var(--border);
-    border-radius: 6px;
+    border: 1px solid var(--color-border);
     background: none;
     cursor: pointer;
   }
   .hex {
     font-family: var(--mono, ui-monospace, monospace);
     font-size: 12px;
-    color: var(--text-dim);
+    color: var(--color-muted);
   }
   .alpha {
     display: flex;
     align-items: center;
     gap: 6px;
     flex: 1;
-    color: var(--text-dim);
+    color: var(--color-muted);
     font-size: 12px;
   }
   .alpha input {

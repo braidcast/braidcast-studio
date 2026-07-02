@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Modal from "./Modal.svelte";
   import { obs, type ImporterScan, type ImporterImportCollection, type ImporterImportResult } from "./bridge";
 
   interface Props {
@@ -171,31 +172,10 @@
       busy = false;
     }
   }
-
-  function onKeydown(e: KeyboardEvent) {
-    if (e.key === "Escape") {
-      onClose();
-    }
-  }
 </script>
 
-<svelte:window onkeydown={onKeydown} />
-
-<div
-  class="modal-backdrop"
-  role="presentation"
-  onclick={(e) => {
-    if (e.target === e.currentTarget) onClose();
-  }}
->
-  <div class="modal" role="dialog" aria-modal="true" aria-label="Import from OBS Studio">
-    <header class="modal-head">
-      <h3>Import from OBS Studio</h3>
-      <button class="icon close" title="Close" onclick={onClose}>✕</button>
-    </header>
-
-    <div class="modal-body">
-      {#if error}<p class="error">{error}</p>{/if}
+<Modal title="Import from OBS Studio" {onClose} width={640}>
+  {#if error}<p class="error">{error}</p>{/if}
 
       {#if !loaded}
         <p class="dim">Scanning for OBS Studio…</p>
@@ -291,69 +271,19 @@
         <p class="dim note small">Reads your OBS Studio data read-only; nothing in OBS is modified.</p>
         <p class="dim note small">Stream destinations are imported as profiles; wire them to canvases in Outputs.</p>
       {/if}
-    </div>
 
-    <footer class="modal-foot">
-      {#if scan && scan.found && !result}
-        <button class="btn ghost" disabled={scanning} onclick={() => void browse()}>Browse…</button>
-        <button class="btn" disabled={!canImport} onclick={() => void runImport()}>
-          {busy ? "Importing…" : "Import"}
-        </button>
-      {/if}
-      <button class="btn ghost" onclick={onClose}>Close</button>
-    </footer>
-  </div>
-</div>
+  {#snippet footer()}
+    {#if scan && scan.found && !result}
+      <button class="btn ghost" disabled={scanning} onclick={() => void browse()}>Browse…</button>
+      <button class="btn" disabled={!canImport} onclick={() => void runImport()}>
+        {busy ? "Importing…" : "Import"}
+      </button>
+    {/if}
+    <button class="btn ghost" onclick={onClose}>Close</button>
+  {/snippet}
+</Modal>
 
 <style>
-  .modal-backdrop {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.55);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 100;
-    padding: 24px;
-  }
-  .modal {
-    background: var(--color-surface);
-    border: var(--border-weight) solid var(--color-border);
-    width: min(640px, 100%);
-    max-height: 86vh;
-    display: flex;
-    flex-direction: column;
-    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
-    font-family: var(--font-ui);
-  }
-  .modal-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 8px 11px;
-    background: var(--color-surface);
-    border-bottom: var(--border-weight) solid var(--color-border);
-  }
-  .modal-head h3 {
-    margin: 0;
-    font-size: 11px;
-    letter-spacing: var(--letter-spacing);
-    text-transform: var(--label-case);
-    color: var(--color-text);
-    font-weight: 600;
-  }
-  .modal-body {
-    padding: 12px;
-    overflow: auto;
-  }
-  .modal-foot {
-    display: flex;
-    justify-content: flex-end;
-    gap: 6px;
-    padding: 8px 11px;
-    border-top: var(--border-weight) solid var(--color-border);
-  }
-
   .section {
     margin: 14px 0 8px;
     font-size: 10px;
@@ -470,19 +400,6 @@
     font-size: 10px;
   }
 
-  .icon {
-    background: none;
-    border: none;
-    color: var(--color-muted);
-    cursor: pointer;
-    padding: 2px 4px;
-    font-size: 13px;
-    line-height: 1;
-    height: auto;
-  }
-  .icon:hover {
-    color: var(--color-text);
-  }
   .dim {
     color: var(--color-muted);
     margin: 0;

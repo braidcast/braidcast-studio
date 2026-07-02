@@ -1,6 +1,7 @@
 <script lang="ts">
   import { obs, type MultistreamStatus, type MultistreamState } from "../bridge";
   import { setPage } from "../pageStore.svelte";
+  import Icon from "../dock/Icon.svelte";
 
   // Host supplies tab chrome + strips __* keys; this body declares no props.
   let {}: Record<string, unknown> = $props();
@@ -47,7 +48,9 @@
 
 <div class="dock-body">
   <div class="dock-toolbar">
-    <button class="dock-add" title="Manage destinations (Canvases)" onclick={() => setPage("canvases")}>＋</button>
+    <button class="dock-add" title="Manage destinations (Canvases)" onclick={() => setPage("canvases")}>
+      <Icon name="plus" size={12} />
+    </button>
   </div>
 
   {#if error}
@@ -66,7 +69,7 @@
           <div class="info">
             <div class="line1">
               <span class="name">{o.profileLabel}</span>
-              <span class="arrow">→</span>
+              <span class="arrow"><Icon name="caret-right" size={10} /></span>
               <span class="canvas">{o.canvasName}</span>
             </div>
             {#if o.state === "error" && o.lastError}
@@ -80,6 +83,11 @@
 </div>
 
 <style>
+  .dock-add {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
   .list {
     list-style: none;
     margin: 0;
@@ -121,6 +129,8 @@
     white-space: nowrap;
   }
   .arrow {
+    display: inline-flex;
+    align-items: center;
     color: var(--color-muted);
     flex-shrink: 0;
   }

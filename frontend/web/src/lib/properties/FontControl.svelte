@@ -127,7 +127,7 @@
     gap: 6px;
     cursor: pointer;
     font-size: 12px;
-    color: var(--text-dim);
+    color: var(--color-muted);
   }
   input:disabled {
     opacity: 0.5;

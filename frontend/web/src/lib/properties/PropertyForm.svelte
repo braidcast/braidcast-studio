@@ -108,11 +108,11 @@
     gap: 14px;
   }
   .dim {
-    color: var(--text-dim);
+    color: var(--color-muted);
     margin: 0;
   }
   .error {
-    color: var(--off, #d65a5a);
+    color: var(--color-live);
     margin: 0;
     font-size: 12px;
   }

@@ -96,21 +96,6 @@
   --border-weight: 1px;
   --radius: 0;
 
-  /* Legacy aliases: retained pre-token components (SettingsModal, AddSourceModal,
-     properties/*, the *Tab settings panels, EventLog) still reference these old
-     variable names. Map them onto the token palette so they render correctly and
-     re-skin live with the active preset. Remove when those panels are rebuilt on
-     tokens (P5 cutover). */
-  --bg: var(--color-base);
-  --bg-raised: var(--color-surface);
-  --bg-sunken: var(--color-base);
-  --border: var(--color-border);
-  --text: var(--color-text);
-  --text-soft: var(--color-text);
-  --text-dim: var(--color-muted);
-  --accent: var(--color-accent);
-  --off: var(--color-live);
-
   font-family: var(--font-ui);
   font-size: 13px;
   color: var(--color-text);

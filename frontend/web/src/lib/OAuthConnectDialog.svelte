@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Modal from "./Modal.svelte";
   import { obs, type DeviceCodeProgress } from "./bridge";
   import { markOAuthConnected, type OAuthConnectRequest } from "./oauthConnectOpener.svelte";
 
@@ -127,116 +128,46 @@
       stopTimer();
     };
   });
-
-  function onKeydown(e: KeyboardEvent) {
-    if (e.key === "Escape") {
-      onClose();
-    }
-  }
 </script>
 
-<svelte:window onkeydown={onKeydown} />
-
-<div
-  class="modal-backdrop"
-  role="presentation"
-  onclick={(e) => {
-    if (e.target === e.currentTarget) onClose();
-  }}
->
-  <div class="modal" role="dialog" aria-modal="true" aria-label="Connect Account">
-    <header class="modal-head">
-      <h3>Connect {req.platformName}</h3>
-      <button class="icon close" title="Close" onclick={onClose}>✕</button>
-    </header>
-
-    <div class="modal-body">
-      {#if phase === "error"}
-        <p class="error">{errorMsg}</p>
-        <p class="dim">The connection could not be completed. Try again or close.</p>
-      {:else if phase === "waiting" && connMode === "browser"}
-        <div class="browser-wait">
-          <div class="spinner" role="status" aria-label="Waiting for authorization"></div>
-          <p class="waiting">
-            Waiting for browser sign-in{#if remaining > 0}<span class="muted"> — times out in {fmt(remaining)}</span
-              >{:else}…{/if}
-          </p>
-        </div>
-        <p class="dim">The browser was opened automatically — complete authorization there.</p>
-      {:else if phase === "waiting" && connMode === "deviceCode" && prompt}
-        <p class="dim">Enter this code in the page that just opened in your browser:</p>
-        <div class="code">{prompt.userCode}</div>
-        <p class="vu">
-          <a href={prompt.verificationUri} target="_blank" rel="noreferrer noopener">{prompt.verificationUri}</a>
-          <span class="muted"> (opened in your browser)</span>
-        </p>
-        <p class="waiting">
-          Waiting for authorization…{#if remaining > 0}<span class="muted"> · code expires in {fmt(remaining)}</span>{/if}
-        </p>
-      {:else}
-        <p class="dim">Starting connection…</p>
-      {/if}
+<Modal title="Connect {req.platformName}" {onClose} width={440}>
+  {#if phase === "error"}
+    <p class="error">{errorMsg}</p>
+    <p class="dim">The connection could not be completed. Try again or close.</p>
+  {:else if phase === "waiting" && connMode === "browser"}
+    <div class="browser-wait">
+      <div class="spinner" role="status" aria-label="Waiting for authorization"></div>
+      <p class="waiting">
+        Waiting for browser sign-in{#if remaining > 0}<span class="muted"> — times out in {fmt(remaining)}</span
+          >{:else}…{/if}
+      </p>
     </div>
+    <p class="dim">The browser was opened automatically — complete authorization there.</p>
+  {:else if phase === "waiting" && connMode === "deviceCode" && prompt}
+    <p class="dim">Enter this code in the page that just opened in your browser:</p>
+    <div class="code">{prompt.userCode}</div>
+    <p class="vu">
+      <a href={prompt.verificationUri} target="_blank" rel="noreferrer noopener">{prompt.verificationUri}</a>
+      <span class="muted"> (opened in your browser)</span>
+    </p>
+    <p class="waiting">
+      Waiting for authorization…{#if remaining > 0}<span class="muted"> · code expires in {fmt(remaining)}</span>{/if}
+    </p>
+  {:else}
+    <p class="dim">Starting connection…</p>
+  {/if}
 
-    <footer class="modal-foot">
-      {#if phase === "error"}
-        <button class="btn" onclick={() => void begin()}>Retry</button>
-      {/if}
-      <button class="btn ghost" onclick={onClose}>
-        {phase === "waiting" || phase === "starting" ? "Cancel" : "Close"}
-      </button>
-    </footer>
-  </div>
-</div>
+  {#snippet footer()}
+    {#if phase === "error"}
+      <button onclick={() => void begin()}>Retry</button>
+    {/if}
+    <button onclick={onClose}>
+      {phase === "waiting" || phase === "starting" ? "Cancel" : "Close"}
+    </button>
+  {/snippet}
+</Modal>
 
 <style>
-  .modal-backdrop {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.55);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 100;
-    padding: 24px;
-  }
-  .modal {
-    background: var(--color-surface);
-    border: var(--border-weight) solid var(--color-border);
-    width: min(440px, 100%);
-    max-height: 86vh;
-    display: flex;
-    flex-direction: column;
-    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
-    font-family: var(--font-ui);
-  }
-  .modal-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 8px 11px;
-    background: var(--color-surface);
-    border-bottom: var(--border-weight) solid var(--color-border);
-  }
-  .modal-head h3 {
-    margin: 0;
-    font-size: 11px;
-    letter-spacing: var(--letter-spacing);
-    text-transform: var(--label-case);
-    color: var(--color-text);
-    font-weight: 600;
-  }
-  .modal-body {
-    padding: 16px 14px;
-    overflow: auto;
-  }
-  .modal-foot {
-    display: flex;
-    justify-content: flex-end;
-    gap: 8px;
-    padding: 8px 11px;
-    border-top: var(--border-weight) solid var(--color-border);
-  }
   .code {
     font-family: var(--font-mono, monospace);
     font-size: 30px;
@@ -292,39 +223,6 @@
   }
   .muted {
     color: var(--color-muted);
-  }
-  .btn {
-    height: auto;
-    padding: 5px 10px;
-    font-family: var(--font-ui);
-    font-size: 11px;
-    border: var(--border-weight) solid var(--color-border);
-    background: transparent;
-    color: var(--color-text);
-    letter-spacing: var(--letter-spacing);
-    text-transform: var(--label-case);
-    white-space: nowrap;
-    cursor: pointer;
-  }
-  .btn:hover:not(:disabled) {
-    border-color: var(--color-accent);
-    color: var(--color-accent);
-  }
-  .btn.ghost {
-    background: none;
-  }
-  .icon {
-    background: none;
-    border: none;
-    color: var(--color-muted);
-    cursor: pointer;
-    padding: 2px 4px;
-    font-size: 13px;
-    line-height: 1;
-    height: auto;
-  }
-  .icon:hover {
-    color: var(--color-text);
   }
   .dim {
     color: var(--color-muted);

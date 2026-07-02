@@ -5,6 +5,7 @@
   import BrowserDocksTab from "../BrowserDocksTab.svelte";
   import AppearanceTab from "../AppearanceTab.svelte";
   import AdvancedTab from "../AdvancedTab.svelte";
+  import PageHeader from "../PageHeader.svelte";
   import { settingsNav, setSettingsTab, type SettingsTab } from "../settingsOpener.svelte";
 
   // Full Settings page: header + a 196px left sub-nav + a content pane that renders
@@ -23,9 +24,7 @@
 </script>
 
 <div class="page">
-  <header class="head">
-    <span class="title">Settings</span>
-  </header>
+  <PageHeader title="Settings" sub="application preferences" />
 
   <div class="body">
     <nav class="subnav" aria-label="Settings categories">
@@ -65,22 +64,6 @@
     min-height: 0;
     background: var(--color-base);
     color: var(--color-text);
-  }
-  .head {
-    flex: 0 0 auto;
-    height: 58px;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 0 24px;
-    border-bottom: var(--border-weight) solid var(--color-border);
-    background: var(--color-surface);
-  }
-  .title {
-    font-family: var(--font-ui);
-    font-size: 16px;
-    font-weight: 600;
-    letter-spacing: -0.01em;
   }
   .body {
     flex: 1;

@@ -95,7 +95,7 @@
     width: 90px;
   }
   .slash {
-    color: var(--text-dim);
+    color: var(--color-muted);
   }
   input:disabled,
   select:disabled {

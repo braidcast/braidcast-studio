@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Modal from "./Modal.svelte";
   import { obs, type AdvancedAudio, type AudioMonitoringType } from "./bridge";
 
   interface Props {
@@ -78,12 +79,6 @@
     return n;
   }
 
-  function onKeydown(e: KeyboardEvent) {
-    if (e.key === "Escape") {
-      onClose();
-    }
-  }
-
   function onEnter(e: KeyboardEvent) {
     if (e.key === "Enter") {
       (e.target as HTMLInputElement).blur();
@@ -109,173 +104,106 @@
   }
 </script>
 
-<svelte:window onkeydown={onKeydown} />
+<Modal title="Advanced Audio Properties — {label}" {onClose} width={560}>
+  {#if error}<p class="error">{error}</p>{/if}
 
-<div
-  class="modal-backdrop"
-  role="presentation"
-  onclick={(e) => {
-    if (e.target === e.currentTarget) onClose();
-  }}
->
-  <div class="modal" role="dialog" aria-modal="true" aria-label="Advanced Audio Properties">
-    <header class="modal-head">
-      <h3>Advanced Audio Properties — {label}</h3>
-      <button class="icon close" title="Close" onclick={onClose}>✕</button>
-    </header>
+  {#if !loaded}
+    <p class="dim">Loading…</p>
+  {:else if !aa}
+    <p class="dim">No audio properties available.</p>
+  {:else}
+    <div class="grid">
+      <div class="group">
+        <div class="group-head">Volume</div>
+        <label>
+          <span>dB</span>
+          <input
+            type="number"
+            step="0.1"
+            placeholder="-∞"
+            value={aa.volumeDb ?? ""}
+            onkeydown={onEnter}
+            onchange={(e) => void commit({ volumeDb: num(e.currentTarget.value, aa!.volumeDb ?? 0) })}
+          />
+        </label>
+      </div>
 
-    <div class="modal-body">
-      {#if error}<p class="error">{error}</p>{/if}
+      <div class="group">
+        <div class="group-head">Downmix</div>
+        <label>
+          <span>Mono</span>
+          <input
+            type="checkbox"
+            checked={aa.forceMono}
+            onchange={(e) => void commit({ forceMono: e.currentTarget.checked })}
+          />
+        </label>
+      </div>
 
-      {#if !loaded}
-        <p class="dim">Loading…</p>
-      {:else if !aa}
-        <p class="dim">No audio properties available.</p>
-      {:else}
-        <div class="grid">
-          <div class="group">
-            <div class="group-head">Volume</div>
-            <label>
-              <span>dB</span>
-              <input
-                type="number"
-                step="0.1"
-                placeholder="-∞"
-                value={aa.volumeDb ?? ""}
-                onkeydown={onEnter}
-                onchange={(e) => void commit({ volumeDb: num(e.currentTarget.value, aa!.volumeDb ?? 0) })}
-              />
+      <div class="group span2">
+        <div class="group-head">Balance</div>
+        <label>
+          <span>L / R</span>
+          <input
+            type="range"
+            min="0"
+            max="1"
+            step="0.01"
+            value={aa.balance}
+            onchange={(e) => void commit({ balance: num(e.currentTarget.value, aa!.balance) })}
+          />
+          <em class="px">{balanceLabel(aa.balance)}</em>
+        </label>
+      </div>
+
+      <div class="group">
+        <div class="group-head">Sync Offset</div>
+        <label>
+          <span>ms</span>
+          <input
+            type="number"
+            value={aa.syncOffsetMs}
+            onkeydown={onEnter}
+            onchange={(e) => void commit({ syncOffsetMs: num(e.currentTarget.value, aa!.syncOffsetMs, { int: true }) })}
+          />
+        </label>
+      </div>
+
+      <div class="group">
+        <div class="group-head">Audio Monitoring</div>
+        <label>
+          <span>Mode</span>
+          <select
+            value={aa.monitoringType}
+            onchange={(e) => void commit({ monitoringType: e.currentTarget.value as AudioMonitoringType })}
+          >
+            {#each MONITORING as m (m.value)}
+              <option value={m.value}>{m.label}</option>
+            {/each}
+          </select>
+        </label>
+      </div>
+
+      <div class="group span2">
+        <div class="group-head">Tracks</div>
+        <div class="tracks">
+          {#each aa.tracks as on, i (i)}
+            <label class="track">
+              <input type="checkbox" checked={on} onchange={(e) => toggleTrack(i, e.currentTarget.checked)} />
+              <span>{i + 1}</span>
             </label>
-          </div>
-
-          <div class="group">
-            <div class="group-head">Downmix</div>
-            <label>
-              <span>Mono</span>
-              <input
-                type="checkbox"
-                checked={aa.forceMono}
-                onchange={(e) => void commit({ forceMono: e.currentTarget.checked })}
-              />
-            </label>
-          </div>
-
-          <div class="group span2">
-            <div class="group-head">Balance</div>
-            <label>
-              <span>L / R</span>
-              <input
-                type="range"
-                min="0"
-                max="1"
-                step="0.01"
-                value={aa.balance}
-                onchange={(e) => void commit({ balance: num(e.currentTarget.value, aa!.balance) })}
-              />
-              <em class="px">{balanceLabel(aa.balance)}</em>
-            </label>
-          </div>
-
-          <div class="group">
-            <div class="group-head">Sync Offset</div>
-            <label>
-              <span>ms</span>
-              <input
-                type="number"
-                value={aa.syncOffsetMs}
-                onkeydown={onEnter}
-                onchange={(e) => void commit({ syncOffsetMs: num(e.currentTarget.value, aa!.syncOffsetMs, { int: true }) })}
-              />
-            </label>
-          </div>
-
-          <div class="group">
-            <div class="group-head">Audio Monitoring</div>
-            <label>
-              <span>Mode</span>
-              <select
-                value={aa.monitoringType}
-                onchange={(e) => void commit({ monitoringType: e.currentTarget.value as AudioMonitoringType })}
-              >
-                {#each MONITORING as m (m.value)}
-                  <option value={m.value}>{m.label}</option>
-                {/each}
-              </select>
-            </label>
-          </div>
-
-          <div class="group span2">
-            <div class="group-head">Tracks</div>
-            <div class="tracks">
-              {#each aa.tracks as on, i (i)}
-                <label class="track">
-                  <input type="checkbox" checked={on} onchange={(e) => toggleTrack(i, e.currentTarget.checked)} />
-                  <span>{i + 1}</span>
-                </label>
-              {/each}
-            </div>
-          </div>
+          {/each}
         </div>
-      {/if}
+      </div>
     </div>
+  {/if}
 
-    <footer class="modal-foot">
-      <button class="btn ghost" onclick={onClose}>Close</button>
-    </footer>
-  </div>
-</div>
+  {#snippet footer()}
+    <button onclick={onClose}>Close</button>
+  {/snippet}
+</Modal>
 
 <style>
-  .modal-backdrop {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.55);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 100;
-    padding: 24px;
-  }
-  .modal {
-    background: var(--color-surface);
-    border: var(--border-weight) solid var(--color-border);
-    width: min(560px, 100%);
-    max-height: 86vh;
-    display: flex;
-    flex-direction: column;
-    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
-    font-family: var(--font-ui);
-  }
-  .modal-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 8px 11px;
-    background: var(--color-surface);
-    border-bottom: var(--border-weight) solid var(--color-border);
-  }
-  .modal-head h3 {
-    margin: 0;
-    font-size: 11px;
-    letter-spacing: var(--letter-spacing);
-    text-transform: var(--label-case);
-    color: var(--color-text);
-    font-weight: 600;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .modal-body {
-    padding: 12px;
-    overflow: auto;
-  }
-  .modal-foot {
-    display: flex;
-    justify-content: flex-end;
-    padding: 8px 11px;
-    border-top: var(--border-weight) solid var(--color-border);
-  }
-
   .grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -360,38 +288,6 @@
     accent-color: var(--color-accent);
   }
 
-  .btn {
-    height: auto;
-    padding: 5px 10px;
-    font-family: var(--font-ui);
-    font-size: 11px;
-    border: var(--border-weight) solid var(--color-border);
-    background: transparent;
-    color: var(--color-text);
-    letter-spacing: var(--letter-spacing);
-    text-transform: var(--label-case);
-  }
-  .btn:hover:not(:disabled) {
-    border-color: var(--color-accent);
-    color: var(--color-accent);
-  }
-  .btn.ghost {
-    background: none;
-  }
-
-  .icon {
-    background: none;
-    border: none;
-    color: var(--color-muted);
-    cursor: pointer;
-    padding: 2px 4px;
-    font-size: 13px;
-    line-height: 1;
-    height: auto;
-  }
-  .icon:hover {
-    color: var(--color-text);
-  }
   .dim {
     color: var(--color-muted);
     margin: 0;

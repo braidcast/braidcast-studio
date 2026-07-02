@@ -10,6 +10,9 @@
   } from "./bridge";
   import PropertyForm from "./properties/PropertyForm.svelte";
   import { openOAuthConnect } from "./oauthConnectOpener.svelte";
+  import Icon from "./dock/Icon.svelte";
+  import Segmented from "./Segmented.svelte";
+  import EmptyState from "./EmptyState.svelte";
 
   let profiles = $state<StreamProfileInfo[]>([]);
   let serviceTypes = $state<ServiceType[]>([]);
@@ -257,7 +260,7 @@
         {#each profiles as p (p.uuid)}
           <button class="nav-item" class:active={formOpen && editingUuid === p.uuid} onclick={() => openEdit(p)}>
             <span class="nav-name">
-              {#if p.isPrimary}<span class="star" title="Primary">★</span>{/if}
+              {#if p.isPrimary}<span class="star" title="Primary"><Icon name="star-filled" size={11} /></span>{/if}
               <span class="nav-label">{displayName(p)}</span>
             </span>
             <span class="nav-sub">
@@ -274,7 +277,7 @@
         {/each}
       {/if}
     </div>
-    <button class="add-btn" onclick={openAdd}><span class="add-plus">＋</span> Add Stream Profile</button>
+    <button class="add-btn" onclick={openAdd}><Icon name="plus" size={13} /> Add Stream Profile</button>
   </div>
 
   <div class="detail">
@@ -291,7 +294,7 @@
           {#if editingUuid && editingProfile}
             {#if !editingProfile.isPrimary}
               <button class="mini" title="Set as primary" onclick={() => editingProfile && void setPrimary(editingProfile)}>
-                <span class="star">★</span> Primary
+                <span class="star"><Icon name="star" size={12} /></span> Primary
               </button>
             {/if}
             <button class="mini danger" title="Remove" onclick={() => editingProfile && void remove(editingProfile)}>
@@ -331,19 +334,21 @@
             <div class="exp-head">Connection</div>
 
             {#if editingProvider}
-              <div class="seg">
-                <button class="cell" class:on={connMode === "connect"} onclick={() => (connMode = "connect")}>
-                  Connect Account
-                </button>
-                <button class="cell" class:on={connMode === "key"} onclick={() => (connMode = "key")}>
-                  Use Stream Key
-                </button>
+              <div class="conn-seg">
+                <Segmented
+                  options={[
+                    { label: "Connect Account", value: "connect" },
+                    { label: "Use Stream Key", value: "key" },
+                  ]}
+                  value={connMode}
+                  onChange={(v) => (connMode = v as "connect" | "key")}
+                />
               </div>
 
               {#if connMode === "connect"}
                 {#if connectedStatus}
                   <div class="conn">
-                    <span class="dot">●</span>
+                    <span class="dot"><Icon name="dot" size={10} /></span>
                     <span class="who">
                       <b>{connectedStatus.displayName || connectedStatus.login}</b>
                       <small>Stream key auto-filled · stream info editing enabled</small>
@@ -352,15 +357,19 @@
                   </div>
                 {:else if needsReconnectStatus}
                   <div class="conn warn">
-                    <span class="dot warn">⚠</span>
+                    <span class="dot warn"><Icon name="warn" size={13} /></span>
                     <span class="who">
                       <b>Reconnect needed</b>
                       <small>Your authorization is out of date — reconnect to keep editing stream info.</small>
                     </span>
                   </div>
-                  <button class="btn connect" onclick={connect}>Reconnect {editingProvider.displayName} ▸</button>
+                  <button class="btn connect" onclick={connect}>
+                    Reconnect {editingProvider.displayName} <Icon name="caret-right" size={12} />
+                  </button>
                 {:else}
-                  <button class="btn connect" onclick={connect}>Connect {editingProvider.displayName} ▸</button>
+                  <button class="btn connect" onclick={connect}>
+                    Connect {editingProvider.displayName} <Icon name="caret-right" size={12} />
+                  </button>
                 {/if}
                 <p class="note">
                   Connected accounts unlock the Go Live "Stream Information" panel (title / category / tags / thumbnail).
@@ -398,8 +407,8 @@
         </div>
       </div>
     {:else}
-      <div class="empty-detail">
-        <div class="empty-card">
+      <EmptyState title="No profile selected" sub="Select a stream profile to edit, or add a new one.">
+        {#snippet icon()}
           <svg
             width="30"
             height="30"
@@ -411,10 +420,8 @@
             stroke-linejoin="round"
             ><rect x="3" y="4" width="18" height="14" /><path d="M8 20h8M12 18v2M3 14h18" /></svg
           >
-          <p class="empty-title">No profile selected</p>
-          <p class="empty-sub">Select a stream profile to edit, or add a new one.</p>
-        </div>
-      </div>
+        {/snippet}
+      </EmptyState>
     {/if}
   </div>
 </div>
@@ -515,8 +522,9 @@
     color: var(--color-accent);
   }
   .star {
+    display: inline-flex;
+    align-items: center;
     color: var(--color-accent);
-    font-size: 11px;
     flex: 0 0 auto;
     line-height: 1;
   }
@@ -572,10 +580,6 @@
     color: var(--color-accent);
     border-color: var(--color-border);
   }
-  .add-plus {
-    font-size: 14px;
-    line-height: 1;
-  }
 
   /* ---- detail (editor pane) --------------------------------------------- */
   .detail {
@@ -584,38 +588,6 @@
     overflow: auto;
     padding: 24px 28px 34px;
   }
-  .empty-detail {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    height: 100%;
-  }
-  .empty-card {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 4px;
-    color: var(--color-muted);
-    text-align: center;
-  }
-  .empty-card svg {
-    color: var(--color-border);
-    margin-bottom: 8px;
-  }
-  .empty-title {
-    margin: 0;
-    font-family: var(--font-ui);
-    font-size: 14px;
-    font-weight: 600;
-    color: var(--color-dim);
-  }
-  .empty-sub {
-    margin: 0;
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--color-muted);
-  }
-
   .form {
     max-width: 480px;
   }
@@ -675,9 +647,6 @@
     color: var(--color-live);
     border-color: var(--color-live);
   }
-  .mini .star {
-    font-size: 12px;
-  }
 
   .field {
     margin-bottom: 14px;
@@ -718,30 +687,8 @@
     color: var(--color-dim);
     margin-bottom: 12px;
   }
-  .seg {
-    display: flex;
-    border: var(--border-weight) solid var(--color-border);
+  .conn-seg {
     margin-bottom: 14px;
-  }
-  .seg .cell {
-    flex: 1;
-    height: auto;
-    text-align: center;
-    padding: 8px;
-    color: var(--color-muted);
-    background: var(--color-base);
-    border: none;
-    cursor: pointer;
-    font: inherit;
-    font-size: 12px;
-  }
-  .seg .cell:hover {
-    color: var(--color-text);
-  }
-  .seg .cell.on {
-    background: var(--color-accent);
-    color: var(--color-accent-ink);
-    font-weight: 600;
   }
   .conn {
     display: flex;
@@ -752,6 +699,9 @@
     background: color-mix(in srgb, var(--color-ok) 7%, transparent);
   }
   .conn .dot {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 auto;
     color: var(--color-ok);
   }
   .conn.warn {
@@ -831,10 +781,16 @@
     color: var(--color-accent-ink);
     font-weight: 600;
   }
+  .btn.connect {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+  }
   .btn.connect:hover:not(:disabled),
   .btn.primary:hover:not(:disabled) {
     color: var(--color-accent-ink);
-    background: color-mix(in srgb, var(--color-accent) 88%, #fff);
+    background: color-mix(in srgb, var(--color-accent) 88%, var(--color-text));
   }
   .btn.primary:disabled {
     opacity: 0.45;

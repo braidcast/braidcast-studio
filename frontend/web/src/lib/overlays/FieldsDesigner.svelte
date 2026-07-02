@@ -6,6 +6,7 @@
   // path as the field value). Fields are treated immutably: every mutation builds the
   // next array and hands it to onChange, which the page debounces into overlays.update.
   import { obs, type OverlayField } from "../bridge";
+  import Icon from "../dock/Icon.svelte";
 
   let {
     fields,
@@ -167,7 +168,7 @@
     <div class="sec-bar">
       <h3 class="sec-head">Designer</h3>
       <span class="sec-spacer"></span>
-      <button class="ghost" onclick={addField}>＋ Add field</button>
+      <button class="ghost" onclick={addField}><Icon name="plus" size={11} /> Add field</button>
     </div>
 
     {#if fields.length === 0}
@@ -204,11 +205,21 @@
               </select>
             </div>
             <div class="reorder">
-              <button class="icon-btn" title="Move up" disabled={i === 0} onclick={() => move(i, -1)}>↑</button>
-              <button class="icon-btn" title="Move down" disabled={i === fields.length - 1} onclick={() => move(i, 1)}
-                >↓</button
+              <button class="icon-btn" title="Move up" aria-label="Move up" disabled={i === 0} onclick={() => move(i, -1)}>
+                <Icon name="up" size={13} />
+              </button>
+              <button
+                class="icon-btn"
+                title="Move down"
+                aria-label="Move down"
+                disabled={i === fields.length - 1}
+                onclick={() => move(i, 1)}
               >
-              <button class="icon-btn danger" title="Remove field" onclick={() => removeField(i)}>✕</button>
+                <Icon name="down" size={13} />
+              </button>
+              <button class="icon-btn danger" title="Remove field" aria-label="Remove field" onclick={() => removeField(i)}>
+                <Icon name="x" size={13} />
+              </button>
             </div>
           </div>
 
@@ -216,7 +227,7 @@
             <div class="extras">
               <div class="extras-head">
                 <span class="mini">Options</span>
-                <button class="ghost sm" onclick={() => addOption(i)}>＋ Option</button>
+                <button class="ghost sm" onclick={() => addOption(i)}><Icon name="plus" size={10} /> Option</button>
               </div>
               {#each f.options ?? [] as o, oi (oi)}
                 <div class="opt-row">
@@ -232,7 +243,14 @@
                     value={o.label}
                     oninput={(e) => setOption(i, oi, { label: e.currentTarget.value })}
                   />
-                  <button class="icon-btn danger" title="Remove option" onclick={() => removeOption(i, oi)}>✕</button>
+                  <button
+                    class="icon-btn danger"
+                    title="Remove option"
+                    aria-label="Remove option"
+                    onclick={() => removeOption(i, oi)}
+                  >
+                    <Icon name="x" size={12} />
+                  </button>
                 </div>
               {/each}
             </div>
@@ -573,6 +591,9 @@
   }
 
   .ghost {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
     padding: 6px 12px;
     background: none;
     border: var(--border-weight) solid var(--color-border);

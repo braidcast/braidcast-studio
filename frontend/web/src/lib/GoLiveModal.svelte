@@ -10,6 +10,14 @@
   import { goLiveModal, closeGoLiveModal } from "./goLiveModalOpener.svelte";
   import { showToast } from "./toastStore.svelte";
   import GoLiveFieldInput from "./GoLiveFieldInput.svelte";
+  import Modal from "./Modal.svelte";
+  import Segmented from "./Segmented.svelte";
+  import Icon from "./dock/Icon.svelte";
+
+  const VIEW_OPTIONS = [
+    { label: "Simple", value: "simple" },
+    { label: "Advanced", value: "advanced" },
+  ];
 
   // The modal renders ENTIRELY from oauth.providers capability descriptors. Field
   // dispatch lives in GoLiveFieldInput, keyed by descriptor `type` (text/textarea/
@@ -178,7 +186,7 @@
   });
 
   const primaryLabel = $derived(
-    goLiveModal.mode === "golive" ? "Go Live now ▸" : isLive ? "Update info" : "Save info",
+    goLiveModal.mode === "golive" ? "Go Live now" : isLive ? "Update info" : "Save info",
   );
   const footerNote = $derived(
     goLiveModal.mode === "golive"
@@ -295,34 +303,15 @@
     submitting = false;
     closeGoLiveModal();
   }
-
-  function onKeydown(e: KeyboardEvent): void {
-    if (e.key === "Escape") {
-      closeGoLiveModal();
-    }
-  }
 </script>
 
-<svelte:window onkeydown={onKeydown} />
+<Modal title="Stream Information" onClose={closeGoLiveModal} width={580} maxHeight="88vh">
+  {#snippet headExtra()}
+    {#if isLive}<span class="live-dot" title="Live"></span>{/if}
+    <Segmented options={VIEW_OPTIONS} value={view} onChange={(v) => (view = v as "simple" | "advanced")} />
+  {/snippet}
 
-<div
-  class="modal-backdrop"
-  role="presentation"
-  onclick={(e) => {
-    if (e.target === e.currentTarget) closeGoLiveModal();
-  }}
->
-  <div class="modal" role="dialog" aria-modal="true" aria-label="Stream Information">
-    <div class="mh">
-      <span class="t">● Stream Information</span>
-      <span class="seg">
-        <button class="cell" class:on={view === "simple"} onclick={() => (view = "simple")}>Simple</button>
-        <button class="cell" class:on={view === "advanced"} onclick={() => (view = "advanced")}>Advanced</button>
-      </span>
-    </div>
-
-    <div class="mb">
-      {#if !loaded}
+  {#if !loaded}
         <p class="note">Loading destinations…</p>
       {:else}
         <!-- Shared defaults: the union of connected providers' shareable fields
@@ -445,7 +434,8 @@
                 <div class="body">
                   {#if d.needsReconnect}
                     <p class="note warn">
-                      ⚠ Authorization expired — reconnect in Streams to edit metadata. Streams as-is.
+                      <Icon name="warn" size={11} /> Authorization expired — reconnect in Streams to edit metadata. Streams
+                      as-is.
                     </p>
                   {:else}
                     <p class="note">Key-only profile — no metadata API. Streams as-is.</p>
@@ -489,7 +479,9 @@
                   ></span>
                   <span class="pname">{d.provider?.displayName || d.profile.platform || d.profile.label}</span>
                   {#if d.needsReconnect}
-                    <span class="pacct">· {d.profile.label} — ⚠ reconnect in Streams to edit metadata, streams as-is</span>
+                    <span class="pacct"
+                      >· {d.profile.label} — <Icon name="warn" size={10} /> reconnect in Streams to edit metadata, streams as-is</span
+                    >
                   {:else}
                     <span class="pacct">· {d.profile.label} — key-only, streams as-is</span>
                   {/if}
@@ -499,78 +491,21 @@
           {/each}
         {/if}
       {/if}
-    </div>
 
-    <div class="mf">
-      <span class="note">{footerNote}</span>
-      <button class="b pri" disabled={submitting || !loaded || armed.length === 0} onclick={() => void confirm()}>
-        {submitting ? "Working…" : primaryLabel}
-      </button>
-    </div>
-  </div>
-</div>
+  {#snippet footer()}
+    <span class="foot-note">{footerNote}</span>
+    <button class="accent" disabled={submitting || !loaded || armed.length === 0} onclick={() => void confirm()}>
+      {submitting ? "Working…" : primaryLabel}
+    </button>
+  {/snippet}
+</Modal>
 
 <style>
-  .modal-backdrop {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.55);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 100;
-    padding: 24px;
-  }
-  .modal {
-    max-width: 580px;
-    width: 100%;
-    background: var(--color-surface);
-    border: var(--border-weight) solid var(--color-border);
-    color: var(--color-text);
-    font-family: var(--font-ui);
-    font-size: 13px;
-    line-height: 1.5;
-    display: flex;
-    flex-direction: column;
-    max-height: 88vh;
-    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
-  }
-  .mh {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 14px 18px;
-    border-bottom: var(--border-weight) solid var(--color-border);
-  }
-  .mh .t {
-    font-size: 15px;
-    font-weight: 600;
-    color: var(--color-text);
-  }
-  .seg {
-    display: flex;
-    border: var(--border-weight) solid var(--color-border);
-  }
-  .seg .cell {
-    padding: 5px 14px;
-    font-size: 12px;
-    color: var(--color-dim);
-    background: none;
-    border: none;
-    cursor: pointer;
-    font: inherit;
-  }
-  .seg .cell:hover {
-    color: var(--color-text);
-  }
-  .seg .cell.on {
-    background: var(--color-accent);
-    color: var(--color-accent-ink);
-    font-weight: 600;
-  }
-  .mb {
-    padding: 16px 18px;
-    overflow: auto;
+  .live-dot {
+    flex: 0 0 auto;
+    width: 7px;
+    height: 7px;
+    background: var(--color-live);
   }
   .eh {
     font-size: 11px;
@@ -710,32 +645,13 @@
   }
   .note.warn {
     color: var(--color-accent);
-  }
-  .mf {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 14px;
-    padding: 14px 18px;
-    border-top: var(--border-weight) solid var(--color-border);
+    gap: 4px;
   }
-  .mf .note {
-    flex: 1;
-  }
-  .b.pri {
-    background: var(--color-accent);
-    border: var(--border-weight) solid var(--color-accent);
-    color: var(--color-accent-ink);
-    font-weight: 600;
-    padding: 8px 16px;
-    font-size: 13px;
-    cursor: pointer;
-    font-family: var(--font-ui);
-    white-space: nowrap;
-    flex: 0 0 auto;
-  }
-  .b.pri:disabled {
-    opacity: 0.5;
-    cursor: default;
+  .foot-note {
+    flex: 1 1 auto;
+    font-size: 11px;
+    color: var(--color-muted);
   }
 </style>

@@ -1,5 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import Modal from "./Modal.svelte";
+  import Icon from "./dock/Icon.svelte";
+  import ToggleSwitch from "./ToggleSwitch.svelte";
   import { obs, type FilterInfo, type FilterType, type ReorderDirection } from "./bridge";
   import PropertyForm from "./properties/PropertyForm.svelte";
   import { filterDialogOpener, type FilterKind } from "./filterDialogOpener.svelte";
@@ -180,177 +183,110 @@
     }
   }
 
-  function onKeydown(e: KeyboardEvent) {
+  // Modal owns Escape (always closes). While the add-filter picker is open, swallow
+  // Escape so it cancels the picker's native dropdown without also closing the modal
+  // — preserving the pre-Modal guard behavior.
+  function onPickKey(e: KeyboardEvent) {
     if (e.key === "Escape") {
-      // Let an in-progress inline rename or the picker cancel first.
-      if (renamingUuid !== null || picking) {
-        return;
-      }
-      onClose();
+      e.stopPropagation();
     }
   }
 </script>
 
-<svelte:window onkeydown={onKeydown} />
+<Modal title="Filters — {source}" {onClose} width={760}>
+  {#if error}<p class="error">{error}</p>{/if}
 
-<div
-  class="modal-backdrop"
-  role="presentation"
-  onclick={(e) => {
-    if (e.target === e.currentTarget) onClose();
-  }}
->
-  <div class="modal" role="dialog" aria-modal="true" aria-label="Filters">
-    <header class="modal-head">
-      <h3>Filters — {source}</h3>
-      <button class="icon close" title="Close" onclick={onClose}>✕</button>
-    </header>
+  <div class="wrap">
+    <!-- left: filter list + add control -->
+    <div class="left">
+      {#if !loaded}
+        <p class="dim">Loading…</p>
+      {:else if filters.length === 0}
+        <p class="dim">No filters on this source. Add one to get started.</p>
+      {:else}
+        <ul class="dock-list">
+          {#each filters as f, idx (f.uuid)}
+            <li class="dock-row" class:sel={f.uuid === selectedUuid} class:dimmed={!f.enabled}>
+              <span class="enable-tog" title={f.enabled ? "Disable" : "Enable"}>
+                <ToggleSwitch size="sm" checked={f.enabled} onchange={() => void setEnabled(f)} />
+              </span>
+              {#if renamingUuid === f.uuid}
+                <input
+                  class="inline"
+                  bind:value={renameTo}
+                  onkeydown={onRenameKey}
+                  onblur={commitRename}
+                  use:focusOnMount
+                />
+              {:else}
+                <button class="dock-label" onclick={() => selectFilter(f)} ondblclick={() => beginRename(f)}>
+                  {f.name}
+                </button>
+              {/if}
+              <span class="dock-actions">
+                <button class="dock-icon" title="Move up" disabled={idx === 0} onclick={() => void reorder(f, "up")}>
+                  <Icon name="up" size={12} />
+                </button>
+                <button
+                  class="dock-icon"
+                  title="Move down"
+                  disabled={idx === filters.length - 1}
+                  onclick={() => void reorder(f, "down")}
+                >
+                  <Icon name="down" size={12} />
+                </button>
+                <button class="dock-icon danger" title="Remove" onclick={() => void remove(f)}>
+                  <Icon name="trash" size={12} />
+                </button>
+              </span>
+            </li>
+          {/each}
+        </ul>
+      {/if}
 
-    <div class="modal-body">
-      {#if error}<p class="error">{error}</p>{/if}
-
-      <div class="wrap">
-        <!-- left: filter list + add control -->
-        <div class="left">
-          {#if !loaded}
-            <p class="dim">Loading…</p>
-          {:else if filters.length === 0}
-            <p class="dim">No filters on this source. Add one to get started.</p>
-          {:else}
-            <ul class="dock-list">
-              {#each filters as f, idx (f.uuid)}
-                <li class="dock-row" class:sel={f.uuid === selectedUuid} class:dimmed={!f.enabled}>
-                  <button
-                    class="dock-icon"
-                    title={f.enabled ? "Disable" : "Enable"}
-                    aria-pressed={f.enabled}
-                    onclick={() => void setEnabled(f)}
-                  >
-                    {f.enabled ? "☑" : "☐"}
-                  </button>
-                  {#if renamingUuid === f.uuid}
-                    <input
-                      class="inline"
-                      bind:value={renameTo}
-                      onkeydown={onRenameKey}
-                      onblur={commitRename}
-                      use:focusOnMount
-                    />
-                  {:else}
-                    <button class="dock-label" onclick={() => selectFilter(f)} ondblclick={() => beginRename(f)}>
-                      {f.name}
-                    </button>
-                  {/if}
-                  <span class="dock-actions">
-                    <button class="dock-icon" title="Move up" disabled={idx === 0} onclick={() => void reorder(f, "up")}
-                      >▲</button
-                    >
-                    <button
-                      class="dock-icon"
-                      title="Move down"
-                      disabled={idx === filters.length - 1}
-                      onclick={() => void reorder(f, "down")}>▼</button
-                    >
-                    <button class="dock-icon danger" title="Remove" onclick={() => void remove(f)}>🗑</button>
-                  </span>
-                </li>
-              {/each}
-            </ul>
-          {/if}
-
-          <div class="add">
-            {#if picking}
-              <select bind:value={pickType} onchange={addFilter} use:focusOnMount>
-                <option value="" disabled selected>Select a filter…</option>
-                {#if videoTypes.length > 0}
-                  <optgroup label="Video">
-                    {#each videoTypes as t (t.id)}
-                      <option value={t.id}>{t.name}</option>
-                    {/each}
-                  </optgroup>
-                {/if}
-                {#if audioTypes.length > 0}
-                  <optgroup label="Audio">
-                    {#each audioTypes as t (t.id)}
-                      <option value={t.id}>{t.name}</option>
-                    {/each}
-                  </optgroup>
-                {/if}
-              </select>
-            {:else}
-              <button class="btn" disabled={!typesLoaded} onclick={beginPick}>＋ Add Filter</button>
+      <div class="add">
+        {#if picking}
+          <select bind:value={pickType} onchange={addFilter} onkeydown={onPickKey} use:focusOnMount>
+            <option value="" disabled selected>Select a filter…</option>
+            {#if videoTypes.length > 0}
+              <optgroup label="Video">
+                {#each videoTypes as t (t.id)}
+                  <option value={t.id}>{t.name}</option>
+                {/each}
+              </optgroup>
             {/if}
-          </div>
-        </div>
-
-        <!-- right: selected filter's obs_properties -->
-        <div class="right">
-          {#if selectedUuid}
-            <PropertyForm kind="filter" ref={selectedUuid} />
-          {:else}
-            <p class="dim">No filter selected</p>
-          {/if}
-        </div>
+            {#if audioTypes.length > 0}
+              <optgroup label="Audio">
+                {#each audioTypes as t (t.id)}
+                  <option value={t.id}>{t.name}</option>
+                {/each}
+              </optgroup>
+            {/if}
+          </select>
+        {:else}
+          <button class="add-btn" disabled={!typesLoaded} onclick={beginPick}>
+            <Icon name="plus" size={12} /> Add Filter
+          </button>
+        {/if}
       </div>
     </div>
 
-    <footer class="modal-foot">
-      <button class="btn ghost" onclick={onClose}>Close</button>
-    </footer>
+    <!-- right: selected filter's obs_properties -->
+    <div class="right">
+      {#if selectedUuid}
+        <PropertyForm kind="filter" ref={selectedUuid} />
+      {:else}
+        <p class="dim">No filter selected</p>
+      {/if}
+    </div>
   </div>
-</div>
+
+  {#snippet footer()}
+    <button onclick={onClose}>Close</button>
+  {/snippet}
+</Modal>
 
 <style>
-  .modal-backdrop {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.55);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 100;
-    padding: 24px;
-  }
-  .modal {
-    background: var(--color-surface);
-    border: var(--border-weight) solid var(--color-border);
-    width: min(760px, 100%);
-    max-height: 86vh;
-    display: flex;
-    flex-direction: column;
-    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
-    font-family: var(--font-ui);
-  }
-  .modal-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 8px 11px;
-    background: var(--color-surface);
-    border-bottom: var(--border-weight) solid var(--color-border);
-  }
-  .modal-head h3 {
-    margin: 0;
-    font-size: 11px;
-    letter-spacing: var(--letter-spacing);
-    text-transform: var(--label-case);
-    color: var(--color-text);
-    font-weight: 600;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .modal-body {
-    padding: 12px;
-    overflow: auto;
-  }
-  .modal-foot {
-    display: flex;
-    justify-content: flex-end;
-    padding: 8px 11px;
-    border-top: var(--border-weight) solid var(--color-border);
-  }
-
   .wrap {
     display: flex;
     gap: 12px;
@@ -374,6 +310,11 @@
      without hovering. */
   .dock-row.sel .dock-actions {
     display: inline-flex;
+  }
+  .enable-tog {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
   }
 
   .add {
@@ -412,46 +353,30 @@
     border-color: var(--color-accent);
   }
 
-  .btn {
+  .add-btn {
     width: 100%;
     height: auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
     padding: 6px 12px;
     font-family: var(--font-ui);
     font-size: 11px;
-    border: var(--border-weight) solid var(--color-border);
     background: transparent;
     color: var(--color-text);
     letter-spacing: var(--letter-spacing);
     text-transform: var(--label-case);
   }
-  .btn:hover:not(:disabled) {
+  .add-btn:hover:not(:disabled) {
     border-color: var(--color-accent);
     color: var(--color-accent);
   }
-  .btn:disabled {
+  .add-btn:disabled {
     opacity: 0.45;
     cursor: default;
   }
-  .modal-foot .btn {
-    width: auto;
-  }
-  .btn.ghost {
-    background: none;
-  }
 
-  .icon {
-    background: none;
-    border: none;
-    color: var(--color-muted);
-    cursor: pointer;
-    padding: 2px 4px;
-    font-size: 13px;
-    line-height: 1;
-    height: auto;
-  }
-  .icon:hover {
-    color: var(--color-text);
-  }
   .dim {
     color: var(--color-muted);
     margin: 0;

@@ -2,6 +2,7 @@
   import { obs, type AudioSource } from "../bridge";
   import { openFilters } from "../filterDialogOpener.svelte";
   import { openAdvAudio } from "../advAudioOpener.svelte";
+  import Icon from "../dock/Icon.svelte";
 
   // Per-source faders + live dB meters. Levels arrive on the audio.levels push
   // (~30 Hz x N sources); we coalesce into a Map and flush once per animation
@@ -149,18 +150,24 @@
           </div>
           <div class="controls">
             <button
-              class="mute"
+              class="tool-btn mute"
               class:on={src.muted}
               title={src.muted ? "Unmute" : "Mute"}
               aria-pressed={src.muted}
-              onclick={() => void toggleMuted(src)}>{src.muted ? "🔇" : "🔊"}</button
+              onclick={() => void toggleMuted(src)}
             >
-            <button class="mute filters" title="Filters" onclick={() => openFilters(src.name, "audio")}>🎛</button>
+              <Icon name={src.muted ? "mute" : "volume"} size={13} />
+            </button>
+            <button class="tool-btn" title="Filters" onclick={() => openFilters(src.name, "audio")}>
+              <Icon name="sliders" size={13} />
+            </button>
             <button
-              class="mute filters"
+              class="tool-btn"
               title="Advanced Audio Properties"
-              onclick={() => openAdvAudio(src.name, src.name)}>⚙</button
+              onclick={() => openAdvAudio(src.name, src.name)}
             >
+              <Icon name="gear" size={13} />
+            </button>
             <input
               class="fader"
               type="range"
@@ -213,6 +220,7 @@
   }
   .db {
     flex-shrink: 0;
+    font-family: var(--font-mono);
     font-size: 10px;
     color: var(--color-muted);
     font-variant-numeric: tabular-nums;
@@ -256,23 +264,8 @@
     align-items: center;
     gap: 8px;
   }
-  .mute {
-    flex-shrink: 0;
-    height: auto;
-    padding: 2px 6px;
-    font-size: 12px;
-    line-height: 1;
-    background: transparent;
-    border: var(--border-weight) solid var(--color-border);
-    color: var(--color-muted);
-  }
   .mute.on {
     color: var(--color-live);
-    border-color: var(--color-live);
-  }
-  .mute.filters:hover {
-    color: var(--color-accent);
-    border-color: var(--color-accent);
   }
   .fader {
     flex: 1;

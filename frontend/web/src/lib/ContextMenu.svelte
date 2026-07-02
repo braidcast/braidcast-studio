@@ -6,7 +6,7 @@
     action?: () => void;
     danger?: boolean;
     disabled?: boolean;
-    // A checkable item renders a leading ✓ when `checked`. `action` toggles it.
+    // A checkable item renders a leading check mark when `checked`. `action` toggles it.
     checked?: boolean;
     // A color-tag item renders a leading filled square in this color (empty string
     // = a hollow "none" square). Purely cosmetic; combines with `checked`.
@@ -23,6 +23,7 @@
   // same box-shadow). Auto-closes on outside click (deferred so the opening
   // right-click doesn't dismiss it), Escape, resize, and scroll.
   import Self from "./ContextMenu.svelte";
+  import Icon from "./dock/Icon.svelte";
 
   let {
     x,
@@ -135,7 +136,7 @@
           <span class="tick"></span>
         {/if}
         <span class="lbl">{item.label}</span>
-        <span class="arrow">▸</span>
+        <span class="arrow"><Icon name="submenu" size={9} /></span>
       </div>
     {:else}
       <button
@@ -151,7 +152,7 @@
         }}
       >
         {#if hasCheckable}
-          <span class="tick">{item.checked ? "✓" : ""}</span>
+          <span class="tick">{#if item.checked}<Icon name="check" size={11} />{/if}</span>
         {/if}
         {#if "swatch" in item}
           <span class="swatch" class:none={!item.swatch} style:background={item.swatch || "transparent"}></span>
@@ -201,7 +202,10 @@
   }
   .tick {
     flex: 0 0 12px;
-    text-align: center;
+    height: 11px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     color: var(--color-accent);
   }
   .swatch {
@@ -222,8 +226,9 @@
   }
   .arrow {
     flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
     color: var(--color-dim);
-    font-size: 9px;
   }
   .item:hover {
     background: var(--color-base);

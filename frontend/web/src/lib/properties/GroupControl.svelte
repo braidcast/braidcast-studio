@@ -39,8 +39,7 @@
 <style>
   .group {
     grid-column: 1 / -1;
-    border: 1px solid var(--border);
-    border-radius: 8px;
+    border: 1px solid var(--color-border);
     padding: 12px 14px 14px;
     margin: 0;
     min-width: 0;
@@ -52,7 +51,7 @@
     padding: 0 6px;
     font-size: 13px;
     font-weight: 600;
-    color: var(--text);
+    color: var(--color-text);
   }
   .legend-toggle {
     display: flex;

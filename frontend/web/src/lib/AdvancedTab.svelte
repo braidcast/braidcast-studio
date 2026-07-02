@@ -1,5 +1,6 @@
 <script lang="ts">
   import { obs, type AdvancedSettings } from "./bridge";
+  import ToggleSwitch from "./ToggleSwitch.svelte";
 
   // Advanced app settings, live-applied (the page model has no Apply boundary):
   // each control change pushes only its changed key via settings.setAdvanced and
@@ -82,10 +83,10 @@
   <section class="group">
     <h4>Stream Delay</h4>
     <label class="check">
-      <input
-        type="checkbox"
+      <ToggleSwitch
+        size="sm"
         checked={s.streamDelayEnabled}
-        onchange={(e) => void apply({ streamDelayEnabled: e.currentTarget.checked })}
+        onchange={(v) => void apply({ streamDelayEnabled: v })}
       />
       Enable stream delay
     </label>
@@ -102,12 +103,12 @@
           void apply({ streamDelaySec: Number.isFinite(e.currentTarget.valueAsNumber) ? e.currentTarget.valueAsNumber : s.streamDelaySec })}
       />
     </div>
-    <label class="check">
-      <input
-        type="checkbox"
+    <label class="check" class:dis={!s.streamDelayEnabled}>
+      <ToggleSwitch
+        size="sm"
         disabled={!s.streamDelayEnabled}
         checked={s.streamDelayPreserve}
-        onchange={(e) => void apply({ streamDelayPreserve: e.currentTarget.checked })}
+        onchange={(v) => void apply({ streamDelayPreserve: v })}
       />
       Preserve delay on disconnect/reconnect
     </label>
@@ -116,10 +117,10 @@
   <section class="group">
     <h4>Reconnect</h4>
     <label class="check">
-      <input
-        type="checkbox"
+      <ToggleSwitch
+        size="sm"
         checked={s.reconnectEnabled}
-        onchange={(e) => void apply({ reconnectEnabled: e.currentTarget.checked })}
+        onchange={(v) => void apply({ reconnectEnabled: v })}
       />
       Automatically reconnect
     </label>
@@ -167,26 +168,26 @@
       />
     </div>
     <label class="check">
-      <input
-        type="checkbox"
+      <ToggleSwitch
+        size="sm"
         checked={s.newSocketLoop}
-        onchange={(e) => void apply({ newSocketLoop: e.currentTarget.checked })}
+        onchange={(v) => void apply({ newSocketLoop: v })}
       />
       Enable new networking code
     </label>
     <label class="check">
-      <input
-        type="checkbox"
+      <ToggleSwitch
+        size="sm"
         checked={s.lowLatencyMode}
-        onchange={(e) => void apply({ lowLatencyMode: e.currentTarget.checked })}
+        onchange={(v) => void apply({ lowLatencyMode: v })}
       />
       Low-latency mode
     </label>
     <label class="check">
-      <input
-        type="checkbox"
+      <ToggleSwitch
+        size="sm"
         checked={s.dynamicBitrate}
-        onchange={(e) => void apply({ dynamicBitrate: e.currentTarget.checked })}
+        onchange={(v) => void apply({ dynamicBitrate: v })}
       />
       Dynamically change bitrate when dropping frames
     </label>
@@ -195,10 +196,10 @@
   <section class="group">
     <h4>Browser</h4>
     <label class="check">
-      <input
-        type="checkbox"
+      <ToggleSwitch
+        size="sm"
         checked={s.browserHwAccel}
-        onchange={(e) => void apply({ browserHwAccel: e.currentTarget.checked })}
+        onchange={(v) => void apply({ browserHwAccel: v })}
       />
       Enable browser source hardware acceleration
     </label>
@@ -241,10 +242,7 @@
     color: var(--color-text);
     cursor: pointer;
   }
-  .check input {
-    cursor: pointer;
-  }
-  .check:has(input:disabled) {
+  .check.dis {
     color: var(--color-muted);
     cursor: default;
   }

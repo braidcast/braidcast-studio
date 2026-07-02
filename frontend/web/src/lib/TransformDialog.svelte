@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Modal from "./Modal.svelte";
   import { obs, type Transform, type TransformTarget, type TransformAction } from "./bridge";
 
   interface Props {
@@ -139,12 +140,6 @@
     return n;
   }
 
-  function onKeydown(e: KeyboardEvent) {
-    if (e.key === "Escape") {
-      onClose();
-    }
-  }
-
   // Enter on a numeric input fires `change` via blur-equivalent; commit explicitly
   // so Enter applies without losing focus.
   function onEnter(e: KeyboardEvent) {
@@ -156,104 +151,179 @@
   const showBounds = $derived(xf != null && xf.boundsType !== 0);
 </script>
 
-<svelte:window onkeydown={onKeydown} />
+<Modal title="Edit Transform — {label}" {onClose} width={560}>
+  {#if error}<p class="error">{error}</p>{/if}
 
-<div
-  class="modal-backdrop"
-  role="presentation"
-  onclick={(e) => {
-    if (e.target === e.currentTarget) onClose();
-  }}
->
-  <div class="modal" role="dialog" aria-modal="true" aria-label="Edit Transform">
-    <header class="modal-head">
-      <h3>Edit Transform — {label}</h3>
-      <button class="icon close" title="Close" onclick={onClose}>✕</button>
-    </header>
+  {#if !loaded}
+    <p class="dim">Loading…</p>
+  {:else if !xf}
+    <p class="dim">No transform available.</p>
+  {:else}
+    <div class="actions">
+      {#each ACTIONS as a (a.action)}
+        <button onclick={() => void runAction(a.action)}>{a.label}</button>
+      {/each}
+    </div>
 
-    <div class="modal-body">
-      {#if error}<p class="error">{error}</p>{/if}
+    <div class="grid">
+      <div class="group">
+        <div class="group-head">Position</div>
+        <label>
+          <span>X</span>
+          <input
+            type="number"
+            value={xf.pos.x}
+            onkeydown={onEnter}
+            onchange={(e) => void commit({ pos: { x: num(e.currentTarget.value, xf!.pos.x), y: xf!.pos.y } })}
+          />
+        </label>
+        <label>
+          <span>Y</span>
+          <input
+            type="number"
+            value={xf.pos.y}
+            onkeydown={onEnter}
+            onchange={(e) => void commit({ pos: { x: xf!.pos.x, y: num(e.currentTarget.value, xf!.pos.y) } })}
+          />
+        </label>
+      </div>
 
-      {#if !loaded}
-        <p class="dim">Loading…</p>
-      {:else if !xf}
-        <p class="dim">No transform available.</p>
-      {:else}
-        <div class="actions">
-          {#each ACTIONS as a (a.action)}
-            <button class="btn" onclick={() => void runAction(a.action)}>{a.label}</button>
-          {/each}
+      <div class="group">
+        <div class="group-head">Rotation</div>
+        <label>
+          <span>Degrees</span>
+          <input
+            type="number"
+            value={xf.rot}
+            onkeydown={onEnter}
+            onchange={(e) => void commit({ rot: num(e.currentTarget.value, xf!.rot) })}
+          />
+        </label>
+      </div>
+
+      <div class="group">
+        <div class="group-head">Size</div>
+        <label>
+          <span>Scale X</span>
+          <input
+            type="number"
+            step="0.01"
+            value={xf.scale.x}
+            onkeydown={onEnter}
+            onchange={(e) => void commit({ scale: { x: num(e.currentTarget.value, xf!.scale.x), y: xf!.scale.y } })}
+          />
+          <em class="px">{Math.round(xf.sourceWidth * xf.scale.x)}px</em>
+        </label>
+        <label>
+          <span>Scale Y</span>
+          <input
+            type="number"
+            step="0.01"
+            value={xf.scale.y}
+            onkeydown={onEnter}
+            onchange={(e) => void commit({ scale: { x: xf!.scale.x, y: num(e.currentTarget.value, xf!.scale.y) } })}
+          />
+          <em class="px">{Math.round(xf.sourceHeight * xf.scale.y)}px</em>
+        </label>
+      </div>
+
+      <div class="group">
+        <div class="group-head">Alignment</div>
+        <label>
+          <span>Position</span>
+          <select value={xf.alignment} onchange={(e) => void commit({ alignment: Number(e.currentTarget.value) })}>
+            {#each ALIGNMENTS as a (a.value)}
+              <option value={a.value}>{a.label}</option>
+            {/each}
+          </select>
+        </label>
+      </div>
+
+      <div class="group span2">
+        <div class="group-head">Crop</div>
+        <div class="row4">
+          <label>
+            <span>Left</span>
+            <input
+              type="number"
+              min="0"
+              value={xf.crop.left}
+              onkeydown={onEnter}
+              onchange={(e) =>
+                void commit({ crop: { ...xf!.crop, left: num(e.currentTarget.value, xf!.crop.left, { int: true, min: 0 }) } })}
+            />
+          </label>
+          <label>
+            <span>Top</span>
+            <input
+              type="number"
+              min="0"
+              value={xf.crop.top}
+              onkeydown={onEnter}
+              onchange={(e) =>
+                void commit({ crop: { ...xf!.crop, top: num(e.currentTarget.value, xf!.crop.top, { int: true, min: 0 }) } })}
+            />
+          </label>
+          <label>
+            <span>Right</span>
+            <input
+              type="number"
+              min="0"
+              value={xf.crop.right}
+              onkeydown={onEnter}
+              onchange={(e) =>
+                void commit({ crop: { ...xf!.crop, right: num(e.currentTarget.value, xf!.crop.right, { int: true, min: 0 }) } })}
+            />
+          </label>
+          <label>
+            <span>Bottom</span>
+            <input
+              type="number"
+              min="0"
+              value={xf.crop.bottom}
+              onkeydown={onEnter}
+              onchange={(e) =>
+                void commit({ crop: { ...xf!.crop, bottom: num(e.currentTarget.value, xf!.crop.bottom, { int: true, min: 0 }) } })}
+            />
+          </label>
         </div>
+      </div>
 
-        <div class="grid">
-          <div class="group">
-            <div class="group-head">Position</div>
+      <div class="group span2">
+        <div class="group-head">Bounding Box</div>
+        <label>
+          <span>Type</span>
+          <select value={xf.boundsType} onchange={(e) => void commit({ boundsType: Number(e.currentTarget.value) })}>
+            {#each BOUNDS_TYPES as b (b.value)}
+              <option value={b.value}>{b.label}</option>
+            {/each}
+          </select>
+        </label>
+        {#if showBounds}
+          <div class="row4">
             <label>
-              <span>X</span>
+              <span>Width</span>
               <input
                 type="number"
-                value={xf.pos.x}
+                value={xf.bounds.x}
                 onkeydown={onEnter}
-                onchange={(e) => void commit({ pos: { x: num(e.currentTarget.value, xf!.pos.x), y: xf!.pos.y } })}
+                onchange={(e) => void commit({ bounds: { x: num(e.currentTarget.value, xf!.bounds.x), y: xf!.bounds.y } })}
               />
             </label>
             <label>
-              <span>Y</span>
+              <span>Height</span>
               <input
                 type="number"
-                value={xf.pos.y}
+                value={xf.bounds.y}
                 onkeydown={onEnter}
-                onchange={(e) => void commit({ pos: { x: xf!.pos.x, y: num(e.currentTarget.value, xf!.pos.y) } })}
+                onchange={(e) => void commit({ bounds: { x: xf!.bounds.x, y: num(e.currentTarget.value, xf!.bounds.y) } })}
               />
             </label>
-          </div>
-
-          <div class="group">
-            <div class="group-head">Rotation</div>
-            <label>
-              <span>Degrees</span>
-              <input
-                type="number"
-                value={xf.rot}
-                onkeydown={onEnter}
-                onchange={(e) => void commit({ rot: num(e.currentTarget.value, xf!.rot) })}
-              />
-            </label>
-          </div>
-
-          <div class="group">
-            <div class="group-head">Size</div>
-            <label>
-              <span>Scale X</span>
-              <input
-                type="number"
-                step="0.01"
-                value={xf.scale.x}
-                onkeydown={onEnter}
-                onchange={(e) => void commit({ scale: { x: num(e.currentTarget.value, xf!.scale.x), y: xf!.scale.y } })}
-              />
-              <em class="px">{Math.round(xf.sourceWidth * xf.scale.x)}px</em>
-            </label>
-            <label>
-              <span>Scale Y</span>
-              <input
-                type="number"
-                step="0.01"
-                value={xf.scale.y}
-                onkeydown={onEnter}
-                onchange={(e) => void commit({ scale: { x: xf!.scale.x, y: num(e.currentTarget.value, xf!.scale.y) } })}
-              />
-              <em class="px">{Math.round(xf.sourceHeight * xf.scale.y)}px</em>
-            </label>
-          </div>
-
-          <div class="group">
-            <div class="group-head">Alignment</div>
-            <label>
-              <span>Position</span>
+            <label class="span2">
+              <span>Alignment</span>
               <select
-                value={xf.alignment}
-                onchange={(e) => void commit({ alignment: Number(e.currentTarget.value) })}
+                value={xf.boundsAlignment}
+                onchange={(e) => void commit({ boundsAlignment: Number(e.currentTarget.value) })}
               >
                 {#each ALIGNMENTS as a (a.value)}
                   <option value={a.value}>{a.label}</option>
@@ -261,172 +331,34 @@
               </select>
             </label>
           </div>
-
-          <div class="group span2">
-            <div class="group-head">Crop</div>
-            <div class="row4">
-              <label>
-                <span>Left</span>
-                <input
-                  type="number"
-                  min="0"
-                  value={xf.crop.left}
-                  onkeydown={onEnter}
-                  onchange={(e) =>
-                    void commit({ crop: { ...xf!.crop, left: num(e.currentTarget.value, xf!.crop.left, { int: true, min: 0 }) } })}
-                />
-              </label>
-              <label>
-                <span>Top</span>
-                <input
-                  type="number"
-                  min="0"
-                  value={xf.crop.top}
-                  onkeydown={onEnter}
-                  onchange={(e) =>
-                    void commit({ crop: { ...xf!.crop, top: num(e.currentTarget.value, xf!.crop.top, { int: true, min: 0 }) } })}
-                />
-              </label>
-              <label>
-                <span>Right</span>
-                <input
-                  type="number"
-                  min="0"
-                  value={xf.crop.right}
-                  onkeydown={onEnter}
-                  onchange={(e) =>
-                    void commit({ crop: { ...xf!.crop, right: num(e.currentTarget.value, xf!.crop.right, { int: true, min: 0 }) } })}
-                />
-              </label>
-              <label>
-                <span>Bottom</span>
-                <input
-                  type="number"
-                  min="0"
-                  value={xf.crop.bottom}
-                  onkeydown={onEnter}
-                  onchange={(e) =>
-                    void commit({ crop: { ...xf!.crop, bottom: num(e.currentTarget.value, xf!.crop.bottom, { int: true, min: 0 }) } })}
-                />
-              </label>
-            </div>
-          </div>
-
-          <div class="group span2">
-            <div class="group-head">Bounding Box</div>
-            <label>
-              <span>Type</span>
-              <select
-                value={xf.boundsType}
-                onchange={(e) => void commit({ boundsType: Number(e.currentTarget.value) })}
-              >
-                {#each BOUNDS_TYPES as b (b.value)}
-                  <option value={b.value}>{b.label}</option>
-                {/each}
-              </select>
-            </label>
-            {#if showBounds}
-              <div class="row4">
-                <label>
-                  <span>Width</span>
-                  <input
-                    type="number"
-                    value={xf.bounds.x}
-                    onkeydown={onEnter}
-                    onchange={(e) =>
-                      void commit({ bounds: { x: num(e.currentTarget.value, xf!.bounds.x), y: xf!.bounds.y } })}
-                  />
-                </label>
-                <label>
-                  <span>Height</span>
-                  <input
-                    type="number"
-                    value={xf.bounds.y}
-                    onkeydown={onEnter}
-                    onchange={(e) =>
-                      void commit({ bounds: { x: xf!.bounds.x, y: num(e.currentTarget.value, xf!.bounds.y) } })}
-                  />
-                </label>
-                <label class="span2">
-                  <span>Alignment</span>
-                  <select
-                    value={xf.boundsAlignment}
-                    onchange={(e) => void commit({ boundsAlignment: Number(e.currentTarget.value) })}
-                  >
-                    {#each ALIGNMENTS as a (a.value)}
-                      <option value={a.value}>{a.label}</option>
-                    {/each}
-                  </select>
-                </label>
-              </div>
-            {/if}
-          </div>
-        </div>
-      {/if}
+        {/if}
+      </div>
     </div>
+  {/if}
 
-    <footer class="modal-foot">
-      <button class="btn ghost" onclick={onClose}>Close</button>
-    </footer>
-  </div>
-</div>
+  {#snippet footer()}
+    <button onclick={onClose}>Close</button>
+  {/snippet}
+</Modal>
 
 <style>
-  .modal-backdrop {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.55);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 100;
-    padding: 24px;
-  }
-  .modal {
-    background: var(--color-surface);
-    border: var(--border-weight) solid var(--color-border);
-    width: min(560px, 100%);
-    max-height: 86vh;
-    display: flex;
-    flex-direction: column;
-    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
-    font-family: var(--font-ui);
-  }
-  .modal-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 8px 11px;
-    background: var(--color-surface);
-    border-bottom: var(--border-weight) solid var(--color-border);
-  }
-  .modal-head h3 {
-    margin: 0;
-    font-size: 11px;
-    letter-spacing: var(--letter-spacing);
-    text-transform: var(--label-case);
-    color: var(--color-text);
-    font-weight: 600;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .modal-body {
-    padding: 12px;
-    overflow: auto;
-  }
-  .modal-foot {
-    display: flex;
-    justify-content: flex-end;
-    padding: 8px 11px;
-    border-top: var(--border-weight) solid var(--color-border);
-  }
-
   .actions {
     display: flex;
     flex-wrap: wrap;
     gap: 6px;
     margin-bottom: 12px;
+  }
+  .actions button {
+    height: auto;
+    padding: 5px 10px;
+    font-size: 11px;
+    letter-spacing: var(--letter-spacing);
+    text-transform: var(--label-case);
+    background: transparent;
+  }
+  .actions button:hover {
+    border-color: var(--color-accent);
+    color: var(--color-accent);
   }
 
   .grid {
@@ -502,38 +434,6 @@
     border-color: var(--color-accent);
   }
 
-  .btn {
-    height: auto;
-    padding: 5px 10px;
-    font-family: var(--font-ui);
-    font-size: 11px;
-    border: var(--border-weight) solid var(--color-border);
-    background: transparent;
-    color: var(--color-text);
-    letter-spacing: var(--letter-spacing);
-    text-transform: var(--label-case);
-  }
-  .btn:hover:not(:disabled) {
-    border-color: var(--color-accent);
-    color: var(--color-accent);
-  }
-  .btn.ghost {
-    background: none;
-  }
-
-  .icon {
-    background: none;
-    border: none;
-    color: var(--color-muted);
-    cursor: pointer;
-    padding: 2px 4px;
-    font-size: 13px;
-    line-height: 1;
-    height: auto;
-  }
-  .icon:hover {
-    color: var(--color-text);
-  }
   .dim {
     color: var(--color-muted);
     margin: 0;

@@ -1,5 +1,8 @@
 <script lang="ts">
   import { obs, type CanvasInfo, type StreamProfileInfo } from "../bridge";
+  import PageHeader from "../PageHeader.svelte";
+  import Modal from "../Modal.svelte";
+  import Icon from "../dock/Icon.svelte";
 
   // SHELL ONLY (redesign Decision A): this page is a UI preview of the planned
   // scheduling feature. There is NO backend -- nothing is persisted (no
@@ -234,31 +237,26 @@
     }
     modalOpen = false;
   }
-
-  function onKeydown(e: KeyboardEvent): void {
-    if (modalOpen && e.key === "Escape") {
-      closeModal();
-    }
-  }
 </script>
 
-<svelte:window onkeydown={onKeydown} />
-
 <div class="page">
-  <header class="head">
-    <div class="head-left">
-      <span class="title">Schedule</span>
-      <div class="nav">
-        <button class="nav-btn" title="Previous month" aria-label="Previous month" onclick={prevMonth}>◀</button>
-        <span class="sub">{calLabel} · {monthCount} planned</span>
-        <button class="nav-btn" title="Next month" aria-label="Next month" onclick={nextMonth}>▶</button>
-      </div>
+  <PageHeader title="Schedule" sub="upcoming stream planning">
+    {#snippet actions()}
       <span class="shell-note" title="UI preview: scheduled streams are not saved to disk and do not auto-go-live yet.">
         preview · not saved
       </span>
-    </div>
-    <button class="new-btn" onclick={() => openModal(todayStr)}>+ New Stream</button>
-  </header>
+      <div class="month-nav">
+        <button class="nav-btn" title="Previous month" aria-label="Previous month" onclick={prevMonth}>
+          <Icon name="caret-left" size={14} />
+        </button>
+        <span class="cal-label">{calLabel} · {monthCount} planned</span>
+        <button class="nav-btn" title="Next month" aria-label="Next month" onclick={nextMonth}>
+          <Icon name="caret-right" size={14} />
+        </button>
+      </div>
+      <button class="new-btn" onclick={() => openModal(todayStr)}><Icon name="plus" size={13} /> New Stream</button>
+    {/snippet}
+  </PageHeader>
 
   <div class="body">
     <div class="cal-wrap">
@@ -331,81 +329,68 @@
 </div>
 
 {#if modalOpen}
-  <div
-    class="backdrop"
-    role="presentation"
-    onclick={(e) => {
-      if (e.target === e.currentTarget) {
-        closeModal();
-      }
-    }}
-  >
-    <div class="modal" role="dialog" aria-modal="true" aria-label="Schedule a Stream">
-      <div class="modal-head">
-        <span class="modal-title">Schedule a Stream</span>
-        <button class="modal-x" aria-label="Close" onclick={closeModal}>✕</button>
+  <Modal title="Schedule a Stream" onClose={closeModal} width={520}>
+    <div class="sched-form">
+      <div class="field">
+        <div class="f-label">TITLE</div>
+        <input class="f-input" bind:value={mTitle} spellcheck="false" />
       </div>
-      <div class="modal-body">
-        <div class="field">
-          <div class="f-label">TITLE</div>
-          <input class="f-input" bind:value={mTitle} spellcheck="false" />
+      <div class="field-row">
+        <div class="field flex1">
+          <div class="f-label">DATE</div>
+          <input class="f-input" type="date" bind:value={mDate} />
         </div>
-        <div class="field-row">
-          <div class="field flex1">
-            <div class="f-label">DATE</div>
-            <input class="f-input" type="date" bind:value={mDate} />
-          </div>
-          <div class="field f-time">
-            <div class="f-label">TIME</div>
-            <input class="f-input" type="time" bind:value={mTime} />
-          </div>
-          <div class="field f-dur">
-            <div class="f-label">DURATION</div>
-            <input class="f-input" bind:value={mDur} spellcheck="false" />
-          </div>
+        <div class="field f-time">
+          <div class="f-label">TIME</div>
+          <input class="f-input" type="time" bind:value={mTime} />
         </div>
-        <div class="field">
-          <div class="f-label">CANVASES</div>
-          <div class="chips">
-            {#each canvasOptions as name (name)}
-              <button
-                type="button"
-                class="chip"
-                class:on={mCanvases.has(name)}
-                onclick={() => (mCanvases = toggle(mCanvases, name))}
-              >{name}</button>
-            {/each}
-          </div>
+        <div class="field f-dur">
+          <div class="f-label">DURATION</div>
+          <input class="f-input" bind:value={mDur} spellcheck="false" />
         </div>
-        <div class="field">
-          <div class="f-label">DESTINATIONS</div>
-          <div class="chips">
-            {#each destOptions as name (name)}
-              <button
-                type="button"
-                class="chip"
-                class:on={mDests.has(name)}
-                onclick={() => (mDests = toggle(mDests, name))}
-              >{name}</button>
-            {/each}
-          </div>
-        </div>
-        <div class="field">
-          <div class="f-label">NOTES</div>
-          <textarea class="f-input f-area" rows="3" bind:value={mNotes}
-            placeholder="Go-live checklist, talking points, sponsor reads…"></textarea>
-        </div>
-        <p class="modal-note">
-          Preview only — this schedule is kept in memory for layout review. It is not
-          saved and will not start the stream automatically.
-        </p>
       </div>
-      <div class="modal-foot">
-        <button class="btn" onclick={closeModal}>Cancel</button>
-        <button class="btn primary" onclick={scheduleStream}>Schedule Stream</button>
+      <div class="field">
+        <div class="f-label">CANVASES</div>
+        <div class="chips">
+          {#each canvasOptions as name (name)}
+            <button
+              type="button"
+              class="chip"
+              class:on={mCanvases.has(name)}
+              onclick={() => (mCanvases = toggle(mCanvases, name))}
+            >{name}</button>
+          {/each}
+        </div>
       </div>
+      <div class="field">
+        <div class="f-label">DESTINATIONS</div>
+        <div class="chips">
+          {#each destOptions as name (name)}
+            <button
+              type="button"
+              class="chip"
+              class:on={mDests.has(name)}
+              onclick={() => (mDests = toggle(mDests, name))}
+            >{name}</button>
+          {/each}
+        </div>
+      </div>
+      <div class="field">
+        <div class="f-label">NOTES</div>
+        <textarea class="f-input f-area" rows="3" bind:value={mNotes}
+          placeholder="Go-live checklist, talking points, sponsor reads…"></textarea>
+      </div>
+      <p class="modal-note">
+        Preview only — this schedule is kept in memory for layout review. It is not
+        saved and will not start the stream automatically.
+      </p>
     </div>
-  </div>
+
+    {#snippet footer()}
+      <button onclick={closeModal}>Cancel</button>
+      <button class="accent" onclick={scheduleStream}>Schedule Stream</button>
+    {/snippet}
+  </Modal>
 {/if}
 
 <style>
@@ -418,38 +403,18 @@
   }
 
   /* ---- header ---- */
-  .head {
-    flex: 0 0 auto;
-    height: 58px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 0 24px;
-    border-bottom: var(--border-weight) solid var(--color-border);
-    background: var(--color-surface);
-  }
-  .head-left {
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    min-width: 0;
-  }
-  .title {
-    font-family: var(--font-ui);
-    font-size: 16px;
-    font-weight: 600;
-    letter-spacing: -0.01em;
-  }
-  .nav {
+  .month-nav {
     display: flex;
     align-items: center;
     gap: 8px;
   }
   .nav-btn {
-    height: auto;
-    padding: 2px 6px;
-    font-size: 10px;
-    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 24px;
+    padding: 0;
     background: transparent;
     border: var(--border-weight) solid var(--color-border);
     color: var(--color-dim);
@@ -458,7 +423,7 @@
     color: var(--color-accent);
     border-color: var(--color-accent);
   }
-  .sub {
+  .cal-label {
     font-family: var(--font-mono);
     font-size: 11px;
     color: var(--color-dim);
@@ -476,8 +441,11 @@
     cursor: help;
   }
   .new-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
     height: auto;
-    padding: 9px 18px;
+    padding: 8px 16px;
     font-size: 12px;
     font-weight: 600;
     border: 0;
@@ -487,7 +455,7 @@
   }
   .new-btn:hover {
     border: 0;
-    background: color-mix(in srgb, var(--color-accent) 88%, #fff);
+    background: color-mix(in srgb, var(--color-accent) 88%, var(--color-text));
   }
 
   /* ---- body ---- */
@@ -658,7 +626,7 @@
     letter-spacing: 0.06em;
   }
   .up-day {
-    font-size: 20px;
+    font-size: 16px;
     font-weight: 600;
     line-height: 1.1;
     color: var(--color-text);
@@ -697,54 +665,7 @@
   }
 
   /* ---- modal ---- */
-  .backdrop {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.6);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 50;
-    padding: 24px;
-    backdrop-filter: blur(2px);
-  }
-  .modal {
-    width: 520px;
-    max-width: 100%;
-    max-height: 88vh;
-    overflow-y: auto;
-    overflow-x: hidden;
-    background: var(--color-surface);
-    border: var(--border-weight) solid var(--color-border);
-    box-shadow: 0 30px 80px rgba(0, 0, 0, 0.6);
-  }
-  .modal-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 16px 20px;
-    border-bottom: var(--border-weight) solid var(--color-border);
-  }
-  .modal-title {
-    font-size: 15px;
-    font-weight: 600;
-    color: var(--color-text);
-  }
-  .modal-x {
-    background: none;
-    border: 0;
-    color: var(--color-muted);
-    font-size: 18px;
-    line-height: 1;
-    height: auto;
-    padding: 0 4px;
-  }
-  .modal-x:hover {
-    border: 0;
-    color: var(--color-text);
-  }
-  .modal-body {
-    padding: 20px;
+  .sched-form {
     display: flex;
     flex-direction: column;
     gap: 16px;
@@ -813,36 +734,5 @@
     font-size: 10px;
     line-height: 1.6;
     color: var(--color-muted);
-  }
-  .modal-foot {
-    display: flex;
-    justify-content: flex-end;
-    gap: 10px;
-    padding: 16px 20px;
-    border-top: var(--border-weight) solid var(--color-border);
-  }
-  .btn {
-    height: auto;
-    padding: 9px 18px;
-    font-size: 12px;
-    background: none;
-    border: var(--border-weight) solid var(--color-border);
-    color: var(--color-dim);
-    font-family: var(--font-ui);
-  }
-  .btn:hover {
-    border-color: var(--color-accent);
-    color: var(--color-accent);
-  }
-  .btn.primary {
-    padding: 9px 22px;
-    font-weight: 600;
-    border: 0;
-    background: var(--color-accent);
-    color: var(--color-accent-ink);
-  }
-  .btn.primary:hover {
-    border: 0;
-    background: color-mix(in srgb, var(--color-accent) 88%, #fff);
   }
 </style>

@@ -432,16 +432,15 @@
   .form {
     margin-top: 14px;
     padding: 14px;
-    border: 1px solid var(--border);
-    border-radius: 0;
-    background: var(--bg-raised);
+    border: 1px solid var(--color-border);
+    background: var(--color-surface);
   }
   .form h4 {
     margin: 0 0 12px;
     font-size: 12px;
     text-transform: uppercase;
     letter-spacing: 0.06em;
-    color: var(--text-dim);
+    color: var(--color-muted);
   }
   .field {
     margin-bottom: 12px;
@@ -449,7 +448,7 @@
   .flabel {
     display: block;
     font-size: 12px;
-    color: var(--text-soft);
+    color: var(--color-text);
     margin-bottom: 6px;
   }
   .presets {
@@ -459,21 +458,20 @@
     margin-bottom: 6px;
   }
   .chip {
-    border: 1px solid var(--border);
-    background: var(--bg-sunken);
-    color: var(--text-soft);
-    border-radius: 0;
+    border: 1px solid var(--color-border);
+    background: var(--color-base);
+    color: var(--color-text);
     padding: 4px 11px;
     font: inherit;
     font-size: 12px;
     cursor: pointer;
   }
   .chip:hover:not(:disabled) {
-    color: var(--text);
+    color: var(--color-text);
   }
   .chip.active {
-    background: var(--accent);
-    border-color: var(--accent);
+    background: var(--color-accent);
+    border-color: var(--color-accent);
     color: var(--color-accent-contrast);
   }
   .chip:disabled {
@@ -486,15 +484,14 @@
     gap: 8px;
   }
   .x {
-    color: var(--text-dim);
+    color: var(--color-muted);
   }
   input,
   select {
-    background: var(--bg-sunken);
-    border: 1px solid var(--border);
-    border-radius: 0;
+    background: var(--color-base);
+    border: 1px solid var(--color-border);
     padding: 7px 10px;
-    color: var(--text);
+    color: var(--color-text);
     font: inherit;
   }
   input[type="number"] {
@@ -513,7 +510,7 @@
   input:focus,
   select:focus {
     outline: none;
-    border-color: var(--accent);
+    border-color: var(--color-accent);
   }
   input:disabled,
   select:disabled {
@@ -654,20 +651,19 @@
     margin-top: 4px;
   }
   .btn {
-    border-radius: 0;
     padding: 7px 14px;
     font: inherit;
     cursor: pointer;
-    border: 1px solid var(--border);
-    background: var(--bg-sunken);
-    color: var(--text-soft);
+    border: 1px solid var(--color-border);
+    background: var(--color-base);
+    color: var(--color-text);
   }
   .btn:hover:not(:disabled) {
-    color: var(--text);
+    color: var(--color-text);
   }
   .btn.primary {
-    background: var(--accent);
-    border-color: var(--accent);
+    background: var(--color-accent);
+    border-color: var(--color-accent);
     color: var(--color-accent-contrast);
   }
   .btn.primary:disabled {
@@ -678,7 +674,7 @@
     background: none;
   }
   .error {
-    color: var(--off, #d65a5a);
+    color: var(--color-live);
     margin: 0 0 8px;
     font-size: 12px;
   }

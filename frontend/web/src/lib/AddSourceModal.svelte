@@ -1,4 +1,7 @@
 <script lang="ts">
+  import Modal from "./Modal.svelte";
+  import Icon, { type IconName } from "./dock/Icon.svelte";
+  import EmptyState from "./EmptyState.svelte";
   import { obs, type SourceType } from "./bridge";
   import { suspendPreview } from "./previewGate.svelte";
 
@@ -90,17 +93,17 @@
     }
   }
 
-  function typeGlyph(t: SourceType): string {
-    if (t.caps.video && t.caps.audio) return "🎬";
-    if (t.caps.video) return "🖼";
-    if (t.caps.audio) return "🔊";
-    return "🧩";
+  // Source-type icon by capability (video+audio media, video-only, audio-only, other).
+  function typeIcon(t: SourceType): IconName {
+    if (t.caps.video && t.caps.audio) return "film";
+    if (t.caps.video) return "image";
+    if (t.caps.audio) return "audio-wave";
+    return "puzzle";
   }
 
+  // Modal owns Escape. Enter creates once a valid name is entered.
   function onKeydown(e: KeyboardEvent) {
-    if (e.key === "Escape") {
-      onClose();
-    } else if (e.key === "Enter" && selectedType && nameValid) {
+    if (e.key === "Enter" && selectedType && nameValid) {
       void create();
     }
   }
@@ -108,182 +111,110 @@
 
 <svelte:window onkeydown={onKeydown} />
 
-<div
-  class="modal-backdrop"
-  role="presentation"
-  onclick={(e) => {
-    if (e.target === e.currentTarget) onClose();
-  }}
->
-  <div class="modal" role="dialog" aria-modal="true" aria-label="Add source">
-    <header class="modal-head">
-      <h3>{selectedType ? `Add — ${selectedType.name}` : "Add Source"}</h3>
-      <button class="icon close" title="Close" onclick={onClose}>✕</button>
-    </header>
+<Modal title={selectedType ? `Add — ${selectedType.name}` : "Add Source"} {onClose} width={460}>
+  {#if error}
+    <p class="error">{error}</p>
+  {/if}
 
-    <div class="modal-body">
-      {#if error}
-        <p class="error">{error}</p>
-      {/if}
-
-      {#if !selectedType}
-        {#if !loaded}
-          <p class="dim">Loading source types…</p>
-        {:else if types.length === 0}
-          <p class="dim">No source types available</p>
-        {:else}
-          <ul class="types">
-            {#each types as t (t.id)}
-              <li>
-                <button class="type" onclick={() => pickType(t)}>
-                  <span class="glyph">{typeGlyph(t)}</span>
-                  <span class="type-name">{t.name}</span>
-                </button>
-              </li>
-            {/each}
-          </ul>
-        {/if}
-      {:else}
-        <div class="name-step">
-          <label for="src-name">Name</label>
-          <!-- svelte-ignore a11y_autofocus -->
-          <input
-            id="src-name"
-            type="text"
-            bind:value={name}
-            autofocus
-            spellcheck="false"
-            placeholder="Source name"
-          />
-          {#if nameTaken}
-            <p class="warn">A source named “{trimmed}” already exists.</p>
-          {/if}
-          <div class="actions">
-            <button class="btn ghost" onclick={backToPicker}>Back</button>
-            <button class="btn primary" disabled={!nameValid || creating} onclick={() => void create()}>
-              {creating ? "Creating…" : "Create"}
+  {#if !selectedType}
+    {#if !loaded}
+      <p class="dim">Loading source types…</p>
+    {:else if types.length === 0}
+      <EmptyState compact title="No source types available" />
+    {:else}
+      <ul class="types">
+        {#each types as t (t.id)}
+          <li>
+            <button class="type" onclick={() => pickType(t)}>
+              <span class="glyph"><Icon name={typeIcon(t)} size={16} /></span>
+              <span class="type-name">{t.name}</span>
             </button>
-          </div>
-        </div>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  {:else}
+    <div class="name-step">
+      <label for="src-name">Name</label>
+      <!-- svelte-ignore a11y_autofocus -->
+      <input id="src-name" type="text" bind:value={name} autofocus spellcheck="false" placeholder="Source name" />
+      {#if nameTaken}
+        <p class="warn">A source named “{trimmed}” already exists.</p>
       {/if}
+      <div class="actions">
+        <button onclick={backToPicker}>Back</button>
+        <button class="accent" disabled={!nameValid || creating} onclick={() => void create()}>
+          {creating ? "Creating…" : "Create"}
+        </button>
+      </div>
     </div>
-  </div>
-</div>
+  {/if}
+</Modal>
 
 <style>
-  .modal-backdrop {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.55);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 100;
-    padding: 24px;
-  }
-  .modal {
-    background: var(--bg-raised);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    width: min(460px, 100%);
-    max-height: 80vh;
-    display: flex;
-    flex-direction: column;
-    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
-  }
-  .modal-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 14px 18px;
-    border-bottom: 1px solid var(--border);
-  }
-  .modal-head h3 {
-    margin: 0;
-    font-size: 14px;
-    font-weight: 600;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .modal-body {
-    padding: 14px 18px 18px;
-    overflow: auto;
-  }
-  .icon {
-    background: none;
-    border: none;
-    color: var(--text-dim);
-    cursor: pointer;
-    padding: 2px 4px;
-    border-radius: 4px;
-    font-size: 14px;
-    line-height: 1;
-  }
-  .icon:hover {
-    color: var(--text);
-    background: var(--bg-sunken);
-  }
   .types {
     list-style: none;
     margin: 0;
     padding: 0;
     display: flex;
     flex-direction: column;
-    gap: 2px;
+  }
+  .types li {
+    border-bottom: var(--border-weight) solid var(--color-border);
+  }
+  .types li:last-child {
+    border-bottom: 0;
   }
   .type {
     display: flex;
     align-items: center;
     gap: 10px;
     width: 100%;
+    height: auto;
     text-align: left;
     background: none;
-    border: 1px solid transparent;
-    border-radius: 8px;
-    padding: 8px 10px;
-    cursor: pointer;
-    color: var(--text-soft);
-    font: inherit;
+    border: 0;
+    padding: 9px 8px;
+    color: var(--color-dim);
+    font-family: var(--font-ui);
+    font-size: 12px;
   }
   .type:hover {
-    background: var(--bg-sunken);
-    color: var(--text);
-    border-color: var(--border);
+    background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+    color: var(--color-accent);
+    border: 0;
   }
   .glyph {
-    font-size: 16px;
-    width: 22px;
-    text-align: center;
+    flex: 0 0 22px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--color-muted);
+  }
+  .type:hover .glyph {
+    color: var(--color-accent);
   }
   .type-name {
     flex: 1;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+
   .name-step {
     display: flex;
     flex-direction: column;
     gap: 8px;
   }
   .name-step label {
-    font-size: 12px;
-    color: var(--text-dim);
+    font-size: 11px;
+    color: var(--color-muted);
     text-transform: uppercase;
-    letter-spacing: 0.05em;
+    letter-spacing: var(--letter-spacing);
   }
-  input {
-    background: var(--bg-sunken);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 8px 10px;
-    color: var(--text);
-    font: inherit;
-  }
-  input:focus {
-    outline: none;
-    border-color: var(--accent);
+  .name-step input {
+    width: 100%;
   }
   .actions {
     display: flex;
@@ -291,41 +222,18 @@
     gap: 8px;
     margin-top: 6px;
   }
-  .btn {
-    border-radius: 6px;
-    padding: 7px 14px;
-    font: inherit;
-    cursor: pointer;
-    border: 1px solid var(--border);
-    background: var(--bg-sunken);
-    color: var(--text-soft);
-  }
-  .btn:hover:not(:disabled) {
-    color: var(--text);
-  }
-  .btn.primary {
-    background: var(--accent);
-    border-color: var(--accent);
-    color: var(--color-accent-contrast);
-  }
-  .btn.primary:disabled {
-    opacity: 0.45;
-    cursor: default;
-  }
-  .btn.ghost {
-    background: none;
-  }
   .dim {
-    color: var(--text-dim);
+    color: var(--color-muted);
     margin: 0;
+    font-size: 11px;
   }
   .warn {
-    color: var(--off, #d65a5a);
+    color: var(--color-live);
     margin: 0;
     font-size: 12px;
   }
   .error {
-    color: var(--off, #d65a5a);
+    color: var(--color-live);
     margin: 0 0 10px;
     font-size: 12px;
   }

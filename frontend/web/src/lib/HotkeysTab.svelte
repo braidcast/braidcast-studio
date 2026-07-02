@@ -243,17 +243,16 @@
     margin-bottom: 10px;
   }
   .searchbar input {
-    background: var(--bg-sunken);
-    border: 1px solid var(--border);
-    border-radius: 0;
+    background: var(--color-base);
+    border: 1px solid var(--color-border);
     padding: 7px 10px;
-    color: var(--text);
+    color: var(--color-text);
     font: inherit;
     width: 100%;
   }
   .searchbar input:focus {
     outline: none;
-    border-color: var(--accent);
+    border-color: var(--color-accent);
   }
   .scroll {
     overflow: auto;
@@ -272,10 +271,10 @@
     font-size: 12px;
     text-transform: uppercase;
     letter-spacing: 0.06em;
-    color: var(--text-dim);
+    color: var(--color-muted);
     position: sticky;
     top: 0;
-    background: var(--bg-raised);
+    background: var(--color-surface);
     padding: 4px 0;
   }
   .list {
@@ -292,12 +291,11 @@
     justify-content: space-between;
     gap: 10px;
     padding: 6px 10px;
-    border: 1px solid var(--border);
-    border-radius: 0;
-    background: var(--bg-sunken);
+    border: 1px solid var(--color-border);
+    background: var(--color-base);
   }
   .name {
-    color: var(--text);
+    color: var(--color-text);
     font-size: 13px;
     min-width: 0;
     overflow: hidden;
@@ -311,10 +309,9 @@
     flex-shrink: 0;
   }
   .capture {
-    background: var(--bg-raised);
-    border: 1px solid var(--border);
-    border-radius: 0;
-    color: var(--text);
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    color: var(--color-text);
     cursor: pointer;
     font: inherit;
     font-size: 12px;
@@ -324,29 +321,28 @@
     line-height: 1.2;
   }
   .capture:hover {
-    border-color: var(--accent);
+    border-color: var(--color-accent);
   }
   .capture.empty {
-    color: var(--text-dim);
+    color: var(--color-muted);
     font-style: italic;
   }
   .capture.active {
-    border-color: var(--accent);
-    color: var(--accent);
+    border-color: var(--color-accent);
+    color: var(--color-accent);
     outline: none;
   }
   .combo {
-    color: var(--text);
+    color: var(--color-text);
   }
   .sep {
-    color: var(--text-dim);
+    color: var(--color-muted);
     margin: 0 3px;
   }
   .mini {
     background: none;
-    border: 1px solid var(--border);
-    border-radius: 0;
-    color: var(--text-soft);
+    border: 1px solid var(--color-border);
+    color: var(--color-text);
     cursor: pointer;
     font: inherit;
     font-size: 12px;
@@ -354,19 +350,19 @@
     line-height: 1;
   }
   .mini:hover:not(:disabled) {
-    color: var(--off, #d65a5a);
-    border-color: var(--off, #d65a5a);
+    color: var(--color-live);
+    border-color: var(--color-live);
   }
   .mini:disabled {
     opacity: 0.35;
     cursor: default;
   }
   .dim {
-    color: var(--text-dim);
+    color: var(--color-muted);
     margin: 0;
   }
   .error {
-    color: var(--off, #d65a5a);
+    color: var(--color-live);
     margin: 0 0 8px;
     font-size: 12px;
   }

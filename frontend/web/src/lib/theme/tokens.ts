@@ -48,9 +48,7 @@ export interface ThemeTokens {
 
 // The token fields that map to a CSS custom property. Excludes the axis
 // discriminators (accent/mode): those are string labels, not CSS-usable values, so
-// they're applied only as data-* attributes below. Emitting `--accent` as a var would
-// also clobber the legacy `--accent` color alias in app.css (var(--accent) consumers
-// would compute the string "amber" instead of a color).
+// they're applied only as data-* attributes below.
 type CssTokenKey = Exclude<keyof ThemeTokens, "accent" | "mode">;
 
 // token field -> CSS custom property name. One entry per CSS token; applyTheme loops

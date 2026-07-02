@@ -1,50 +1,31 @@
 <script lang="ts">
   import { obs, type NormalizedEvent, type ChatPlatform, type EventType } from "../bridge";
+  import {
+    PLATFORM_COLORS,
+    PLATFORM_LABELS,
+    PLATFORM_ORDER as ORDER,
+    EVENT_TYPE_COLORS,
+    EVENT_TYPE_LABELS,
+  } from "../theme/platformColors";
+  import EmptyState from "../EmptyState.svelte";
+  import Icon from "../dock/Icon.svelte";
 
   // Host supplies tab chrome + strips __* keys; this body declares no props.
   let {}: Record<string, unknown> = $props();
 
   // Platform dot/tag color + label (matches the Multichat dock).
-  const PLATFORM_COLOR: Record<ChatPlatform, string> = {
-    twitch: "#a970ff",
-    youtube: "#ff4e45",
-    kick: "#53fc18",
-  };
-  const PLATFORM_LABEL: Record<ChatPlatform, string> = {
-    twitch: "Twitch",
-    youtube: "YouTube",
-    kick: "Kick",
-  };
+  const PLATFORM_COLOR = PLATFORM_COLORS;
+  const PLATFORM_LABEL = PLATFORM_LABELS;
   // Stable chip order so the platform filter never reshuffles.
-  const PLATFORM_ORDER: ChatPlatform[] = ["twitch", "youtube", "kick"];
+  const PLATFORM_ORDER: readonly ChatPlatform[] = ORDER;
 
   // Human labels per event type -- the summary carries the phrasing; this is the
   // fallback the summary/aria fall back to for an unknown type.
-  const TYPE_LABEL: Record<EventType, string> = {
-    follow: "Follow",
-    sub: "Sub",
-    resub: "Resub",
-    subgift: "Gift Sub",
-    cheer: "Cheer",
-    raid: "Raid",
-    superchat: "Super Chat",
-    supersticker: "Super Sticker",
-    member: "Member",
-  };
+  const TYPE_LABEL = EVENT_TYPE_LABELS;
 
   // Accent color per type. follow=blue; sub/resub=purple; subgift/member=gold;
   // cheer=teal (bits); raid=orange; superchat/supersticker=green (money).
-  const TYPE_COLOR: Record<EventType, string> = {
-    follow: "#3ea6ff",
-    sub: "#a970ff",
-    resub: "#a970ff",
-    subgift: "#ffb62c",
-    cheer: "#1fd1c3",
-    raid: "#ff8a3d",
-    superchat: "#2ecc71",
-    supersticker: "#2ecc71",
-    member: "#ffb62c",
-  };
+  const TYPE_COLOR = EVENT_TYPE_COLORS;
 
   // Format a money amount given in MINOR currency units (cents). Prefers the
   // locale currency formatter; an unknown/invalid currency code throws, so wrap it
@@ -350,9 +331,9 @@
 
   <div class="scroll" bind:this={scrollEl} onscroll={onScroll}>
     {#if events.length === 0}
-      <p class="empty">Follows, subs, gifts and cheers from your connected accounts appear here.</p>
+      <EmptyState compact title="Follows, subs, gifts and cheers from your connected accounts appear here." />
     {:else if filtered.length === 0}
-      <p class="empty">No {filter === "all" ? "" : PLATFORM_LABEL[filter] + " "}events yet.</p>
+      <EmptyState compact title={"No " + (filter === "all" ? "" : PLATFORM_LABEL[filter] + " ") + "events yet."} />
     {:else}
       <div class="sizer" style:height={layout.total + "px"}>
         {#each visible as row (row.clientKey)}
@@ -378,7 +359,7 @@
   </div>
 
   {#if !autoStick && filtered.length > 0}
-    <button class="jump" onclick={jumpToLatest}>↓ Jump to latest</button>
+    <button class="jump" onclick={jumpToLatest}><Icon name="jump-down" size={11} /> Jump to latest</button>
   {/if}
 
   <div class="footer">
@@ -432,14 +413,6 @@
     min-height: 0;
     overflow-y: auto;
     overflow-x: hidden;
-  }
-  .empty {
-    margin: 0;
-    padding: 14px 10px;
-    font-size: 11px;
-    color: var(--color-muted);
-    letter-spacing: var(--letter-spacing);
-    text-transform: var(--label-case);
   }
   /* Absolute-positioned rows over a sized spacer = virtualized list (only the
      visible window is in the DOM; the sizer reserves the full scroll height). */
@@ -500,6 +473,9 @@
     transform: translateX(-50%);
     bottom: 46px;
     z-index: 2;
+    display: flex;
+    align-items: center;
+    gap: 5px;
     padding: 4px 12px;
     font-size: 10px;
     font-family: var(--font-ui);

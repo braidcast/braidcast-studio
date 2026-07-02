@@ -4,6 +4,7 @@
   import { openLogViewer } from "./logViewerOpener.svelte";
   import { openImporter } from "./importerOpener.svelte";
   import { goLivePref, setAskStreamInfo } from "./goLivePrefStore.svelte";
+  import ToggleSwitch from "./ToggleSwitch.svelte";
 
   // General app settings, live-applied (the page model has no Apply boundary):
   // each control change pushes only its changed key via settings.setGeneral and
@@ -81,7 +82,7 @@
     <h4>Snapping</h4>
 
     <label class="check">
-      <input type="checkbox" checked={s.snapEnabled} onchange={(e) => void apply({ snapEnabled: e.currentTarget.checked })} />
+      <ToggleSwitch size="sm" checked={s.snapEnabled} onchange={(v) => void apply({ snapEnabled: v })} />
       Enable snapping
     </label>
 
@@ -100,30 +101,30 @@
       />
     </div>
 
-    <label class="check">
-      <input
-        type="checkbox"
+    <label class="check" class:dis={!s.snapEnabled}>
+      <ToggleSwitch
+        size="sm"
         disabled={!s.snapEnabled}
         checked={s.snapToEdge}
-        onchange={(e) => void apply({ snapToEdge: e.currentTarget.checked })}
+        onchange={(v) => void apply({ snapToEdge: v })}
       />
       Snap to screen edges
     </label>
-    <label class="check">
-      <input
-        type="checkbox"
+    <label class="check" class:dis={!s.snapEnabled}>
+      <ToggleSwitch
+        size="sm"
         disabled={!s.snapEnabled}
         checked={s.snapToSource}
-        onchange={(e) => void apply({ snapToSource: e.currentTarget.checked })}
+        onchange={(v) => void apply({ snapToSource: v })}
       />
       Snap to other sources
     </label>
-    <label class="check">
-      <input
-        type="checkbox"
+    <label class="check" class:dis={!s.snapEnabled}>
+      <ToggleSwitch
+        size="sm"
         disabled={!s.snapEnabled}
         checked={s.snapToCenter}
-        onchange={(e) => void apply({ snapToCenter: e.currentTarget.checked })}
+        onchange={(v) => void apply({ snapToCenter: v })}
       />
       Snap to center
     </label>
@@ -134,10 +135,10 @@
   <section class="group">
     <h4>Projectors</h4>
     <label class="check">
-      <input
-        type="checkbox"
+      <ToggleSwitch
+        size="sm"
         checked={s.projectorAlwaysOnTop}
-        onchange={(e) => void apply({ projectorAlwaysOnTop: e.currentTarget.checked })}
+        onchange={(v) => void apply({ projectorAlwaysOnTop: v })}
       />
       Make projectors always on top
     </label>
@@ -146,27 +147,23 @@
   <section class="group">
     <h4>Streaming</h4>
     <label class="check">
-      <input
-        type="checkbox"
-        checked={goLivePref.askStreamInfo}
-        onchange={(e) => setAskStreamInfo(e.currentTarget.checked)}
-      />
+      <ToggleSwitch size="sm" checked={goLivePref.askStreamInfo} onchange={(v) => setAskStreamInfo(v)} />
       Ask for stream info on Go Live
     </label>
     <p class="dim note">Open the Stream Information panel when going live. When off, Go Live starts instantly with the last-saved metadata.</p>
     <label class="check">
-      <input
-        type="checkbox"
+      <ToggleSwitch
+        size="sm"
         checked={s.warnBeforeGoLive}
-        onchange={(e) => void apply({ warnBeforeGoLive: e.currentTarget.checked })}
+        onchange={(v) => void apply({ warnBeforeGoLive: v })}
       />
       Warn before going live
     </label>
     <label class="check">
-      <input
-        type="checkbox"
+      <ToggleSwitch
+        size="sm"
         checked={s.warnBeforeStop}
-        onchange={(e) => void apply({ warnBeforeStop: e.currentTarget.checked })}
+        onchange={(v) => void apply({ warnBeforeStop: v })}
       />
       Warn before stopping the stream
     </label>
@@ -175,26 +172,26 @@
   <section class="group">
     <h4>System Tray</h4>
     <label class="check">
-      <input
-        type="checkbox"
+      <ToggleSwitch
+        size="sm"
         checked={s.minimizeToTray}
-        onchange={(e) => void apply({ minimizeToTray: e.currentTarget.checked })}
+        onchange={(v) => void apply({ minimizeToTray: v })}
       />
       Minimize to system tray
     </label>
     <label class="check">
-      <input
-        type="checkbox"
+      <ToggleSwitch
+        size="sm"
         checked={s.startMinimized}
-        onchange={(e) => void apply({ startMinimized: e.currentTarget.checked })}
+        onchange={(v) => void apply({ startMinimized: v })}
       />
       Start minimized
     </label>
     <label class="check">
-      <input
-        type="checkbox"
+      <ToggleSwitch
+        size="sm"
         checked={s.alwaysShowTray}
-        onchange={(e) => void apply({ alwaysShowTray: e.currentTarget.checked })}
+        onchange={(v) => void apply({ alwaysShowTray: v })}
       />
       Always show tray icon
     </label>
@@ -212,18 +209,18 @@
       </select>
     </div>
     <label class="check">
-      <input
-        type="checkbox"
+      <ToggleSwitch
+        size="sm"
         checked={s.multiviewDrawNames}
-        onchange={(e) => void apply({ multiviewDrawNames: e.currentTarget.checked })}
+        onchange={(v) => void apply({ multiviewDrawNames: v })}
       />
       Draw scene names
     </label>
     <label class="check">
-      <input
-        type="checkbox"
+      <ToggleSwitch
+        size="sm"
         checked={s.multiviewDrawSafeAreas}
-        onchange={(e) => void apply({ multiviewDrawSafeAreas: e.currentTarget.checked })}
+        onchange={(v) => void apply({ multiviewDrawSafeAreas: v })}
       />
       Draw safe areas
     </label>
@@ -233,10 +230,10 @@
   <section class="group">
     <h4>Importer</h4>
     <label class="check">
-      <input
-        type="checkbox"
+      <ToggleSwitch
+        size="sm"
         checked={s.importerPrompts}
-        onchange={(e) => void apply({ importerPrompts: e.currentTarget.checked })}
+        onchange={(v) => void apply({ importerPrompts: v })}
       />
       Prompt to import from other software
     </label>
@@ -293,10 +290,7 @@
     color: var(--color-text);
     cursor: pointer;
   }
-  .check input {
-    cursor: pointer;
-  }
-  .check:has(input:disabled) {
+  .check.dis {
     color: var(--color-muted);
     cursor: default;
   }

@@ -3,9 +3,8 @@
   // OBS Browser Source loads), plus a row of per-event-type test buttons that fire a
   // synthetic event to THIS widget only (overlays.test -> BroadcastTo). The iframe is
   // keyed on reloadKey so the page can force a reload after a debounced update lands.
-  // TYPE_LABEL/TYPE_COLOR are re-declared here (not imported) to stay decoupled from
-  // the EventsDock — they are local consts there.
   import { obs, type EventType } from "../bridge";
+  import { EVENT_TYPE_COLORS, EVENT_TYPE_LABELS } from "../theme/platformColors";
 
   let { url, widgetId, reloadKey }: { url: string; widgetId: string; reloadKey: number } = $props();
 
@@ -20,28 +19,6 @@
     "supersticker",
     "member",
   ];
-  const TYPE_LABEL: Record<EventType, string> = {
-    follow: "Follow",
-    sub: "Sub",
-    resub: "Resub",
-    subgift: "Gift Sub",
-    cheer: "Cheer",
-    raid: "Raid",
-    superchat: "Super Chat",
-    supersticker: "Super Sticker",
-    member: "Member",
-  };
-  const TYPE_COLOR: Record<EventType, string> = {
-    follow: "#3ea6ff",
-    sub: "#a970ff",
-    resub: "#a970ff",
-    subgift: "#ffb62c",
-    cheer: "#1fd1c3",
-    raid: "#ff8a3d",
-    superchat: "#2ecc71",
-    supersticker: "#2ecc71",
-    member: "#ffb62c",
-  };
 
   function test(type: EventType): void {
     obs
@@ -55,8 +32,8 @@
     <span class="kicker">Test alerts</span>
     <div class="test-row">
       {#each TEST_TYPES as t (t)}
-        <button class="test-btn" style:--dot={TYPE_COLOR[t]} onclick={() => test(t)}>
-          <span class="dot"></span>{TYPE_LABEL[t]}
+        <button class="test-btn" style:--dot={EVENT_TYPE_COLORS[t]} onclick={() => test(t)}>
+          <span class="dot"></span>{EVENT_TYPE_LABELS[t]}
         </button>
       {/each}
     </div>
@@ -122,13 +99,13 @@
     flex: 1;
     min-height: 0;
     border: var(--border-weight) solid var(--color-border);
-    background: #101014;
+    background: var(--color-base);
   }
   iframe {
     display: block;
     width: 100%;
     height: 100%;
     border: 0;
-    background: #101014;
+    background: var(--color-base);
   }
 </style>

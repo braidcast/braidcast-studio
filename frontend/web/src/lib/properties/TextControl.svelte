@@ -48,14 +48,14 @@
   }
   .info {
     margin: 0;
-    color: var(--text-dim);
+    color: var(--color-muted);
     font-size: 12px;
     grid-column: 1 / -1;
   }
   .info.warning {
-    color: var(--warn, #d6a13a);
+    color: var(--color-warn);
   }
   .info.error {
-    color: var(--off, #d65a5a);
+    color: var(--color-live);
   }
 </style>

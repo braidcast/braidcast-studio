@@ -10,6 +10,8 @@
 </script>
 
 <script lang="ts">
+  import Icon from "./dock/Icon.svelte";
+
   // One menu-bar dropdown. `items` is a data list; clicking the label toggles open;
   // a document click closes. One component reused by every menu-bar entry.
   let { label, items }: { label: string; items: (MenuItem | null)[] } = $props();
@@ -63,7 +65,7 @@
               run(item);
             }}
           >
-            <span class="mark">{item.checked ? "✓" : ""}</span>{item.label}
+            <span class="mark">{#if item.checked}<Icon name="check" size={11} />{/if}</span>{item.label}
           </button>
         {/if}
       {/each}
@@ -129,8 +131,11 @@
   }
   .mark {
     width: 12px;
+    height: 11px;
     flex: 0 0 12px;
-    display: inline-block;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     color: var(--color-accent);
   }
   .divider {

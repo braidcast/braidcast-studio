@@ -6,6 +6,7 @@
   import { dockById } from "./lib/dock/dockRegistry";
   import CanvasDock from "./lib/docks/CanvasDock.svelte";
   import type { CanvasInfo } from "./lib/bridge";
+  import Icon from "./lib/dock/Icon.svelte";
 
   // Apply the saved (or default Industrial) theme in this window too.
   void themeStore.hydrate();
@@ -55,7 +56,10 @@
 <div class="detached">
   <header class="bar">
     <span class="title">{title}</span>
-    <button class="redock" title="Return to main window" onclick={redock}>⧈ REDOCK</button>
+    <button class="redock" title="Return to main window" onclick={redock}>
+      <Icon name="redock" size={12} />
+      REDOCK
+    </button>
   </header>
   <div class="body" bind:this={host}></div>
 </div>
@@ -88,6 +92,9 @@
   }
   .redock {
     height: auto;
+    display: flex;
+    align-items: center;
+    gap: 5px;
     padding: 2px 8px;
     font-family: var(--font-ui);
     font-size: 9px;

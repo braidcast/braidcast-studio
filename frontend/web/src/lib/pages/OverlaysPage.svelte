@@ -12,6 +12,9 @@
   import FieldsDesigner from "../overlays/FieldsDesigner.svelte";
   import PreviewPane from "../overlays/PreviewPane.svelte";
   import CollectionDialog, { type DialogSpec } from "../CollectionDialog.svelte";
+  import PageHeader from "../PageHeader.svelte";
+  import EmptyState from "../EmptyState.svelte";
+  import Icon from "../dock/Icon.svelte";
 
   let items = $state<OverlayListItem[]>([]);
   let selectedId = $state<string | null>(null);
@@ -230,12 +233,7 @@
 </script>
 
 <div class="page">
-  <header class="head">
-    <div class="head-titles">
-      <span class="title">Overlays</span>
-      <span class="sub">loopback widgets · copy a URL into a browser source</span>
-    </div>
-  </header>
+  <PageHeader title="Overlays" sub="loopback widgets · copy a URL into a browser source" />
 
   {#if serverDown}
     <div class="banner down">Overlay server isn't running — widget URLs won't load in a Browser Source.</div>
@@ -277,7 +275,7 @@
       {/if}
       <div class="addwrap">
         <button class="addnav" aria-haspopup="menu" aria-expanded={typeMenuOpen} onclick={() => (typeMenuOpen = !typeMenuOpen)}>
-          ＋ New overlay
+          <Icon name="plus" size={12} /> New overlay
         </button>
         {#if typeMenuOpen}
           <div class="typemenu" role="menu">
@@ -293,9 +291,9 @@
       {#if error}<p class="err">{error}</p>{/if}
 
       {#if !loaded}
-        <p class="dim">Loading overlays…</p>
+        <EmptyState title="Loading overlays…" />
       {:else if !widget}
-        <p class="dim">No overlay selected. Create one, or pick a widget from the list.</p>
+        <EmptyState title="No overlay selected" sub="Create one, or pick a widget from the list." />
       {:else}
         <div class="editor">
           <div class="editor-bar">
@@ -359,32 +357,6 @@
     min-height: 0;
     background: var(--color-base);
     color: var(--color-text);
-  }
-  .head {
-    flex: 0 0 auto;
-    height: 58px;
-    display: flex;
-    align-items: center;
-    padding: 0 24px;
-    border-bottom: var(--border-weight) solid var(--color-border);
-    background: var(--color-surface);
-  }
-  .head-titles {
-    display: flex;
-    align-items: baseline;
-    gap: 12px;
-    min-width: 0;
-  }
-  .title {
-    font-family: var(--font-ui);
-    font-size: 16px;
-    font-weight: 600;
-    letter-spacing: -0.01em;
-  }
-  .sub {
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--color-muted);
   }
   .banner {
     flex: 0 0 auto;
@@ -492,6 +464,9 @@
   .addnav {
     margin: 8px 12px 4px;
     padding: 8px 10px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
     text-align: left;
     background: transparent;
     border: var(--border-weight) dashed var(--color-border);
@@ -677,10 +652,6 @@
     min-height: 0;
     overflow: auto;
     padding-right: 4px;
-  }
-  .dim {
-    color: var(--color-muted);
-    margin: 0;
   }
   .err {
     margin: 0 0 12px;

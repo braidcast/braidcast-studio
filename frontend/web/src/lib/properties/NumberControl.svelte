@@ -56,7 +56,7 @@
     width: 90px;
   }
   .suffix {
-    color: var(--text-dim);
+    color: var(--color-muted);
     font-size: 12px;
   }
 </style>

@@ -1,5 +1,8 @@
 <script lang="ts">
   import { obs, type Stats, type OutputStat, type ViewerCounts, type ChatPlatform } from "../bridge";
+  import PageHeader from "../PageHeader.svelte";
+  import EmptyState from "../EmptyState.svelte";
+  import { PLATFORM_COLORS, PLATFORM_LABELS, PLATFORM_ORDER } from "../theme/platformColors";
 
   // Live performance view. stats.get has no push, so this page owns a 1s poll; it
   // unmounts when off-page (App renders it conditionally), which clears the timer.
@@ -75,12 +78,6 @@
   }
 
   // Aggregate viewer count (Phase 9.0), pushed via viewers.changed while live.
-  const PLATFORM_COLOR: Record<ChatPlatform, string> = {
-    twitch: "#a970ff",
-    youtube: "#ff4e45",
-    kick: "#53fc18",
-  };
-  const PLATFORM_LABEL: Record<ChatPlatform, string> = { twitch: "TWITCH", youtube: "YOUTUBE", kick: "KICK" };
   let viewers = $state<ViewerCounts | null>(null);
   // viewers.changed only pushes while live and never sends a final zero, so clear
   // on stream-stop; otherwise the TOTAL + per-platform cards (live-only) keep the
@@ -99,17 +96,14 @@
   // One per-platform card for each platform reporting a count (stable order).
   let viewerCards = $derived.by<{ p: ChatPlatform; label: string; color: string; v: number }[]>(() => {
     const per = viewers?.perPlatform ?? {};
-    return (["twitch", "youtube", "kick"] as ChatPlatform[])
+    return (PLATFORM_ORDER as readonly ChatPlatform[])
       .filter((p) => per[p] !== undefined)
-      .map((p) => ({ p, label: PLATFORM_LABEL[p], color: PLATFORM_COLOR[p], v: per[p] ?? 0 }));
+      .map((p) => ({ p, label: PLATFORM_LABELS[p], color: PLATFORM_COLORS[p], v: per[p] ?? 0 }));
   });
 </script>
 
 <div class="page">
-  <header class="head">
-    <span class="title">Monitor</span>
-    <span class="sub">live performance · polled 1×/s</span>
-  </header>
+  <PageHeader title="Monitor" sub="live performance · polled 1×/s" />
 
   <div class="body">
     <div class="cards">
@@ -151,7 +145,9 @@
         <span>DURATION</span>
       </div>
       {#if !stats || stats.outputs.length === 0}
-        <div class="trow empty">No outputs configured</div>
+        <div class="table-empty">
+          <EmptyState title="No outputs configured" sub="Bind a destination to a canvas to see per-output stats." />
+        </div>
       {:else}
         {#each stats.outputs as o (o.bindingUuid)}
           {@const live = o.state === "Live"}
@@ -179,29 +175,6 @@
     flex-direction: column;
     background: var(--color-base);
     color: var(--color-text);
-  }
-  .head {
-    flex: 0 0 auto;
-    height: 58px;
-    display: flex;
-    align-items: baseline;
-    gap: 12px;
-    padding: 0 24px;
-    border-bottom: var(--border-weight) solid var(--color-border);
-    background: var(--color-surface);
-  }
-  .title {
-    font-family: var(--font-ui);
-    font-size: 16px;
-    font-weight: 600;
-    letter-spacing: -0.01em;
-    align-self: center;
-  }
-  .sub {
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--color-muted);
-    align-self: center;
   }
   .body {
     flex: 1;
@@ -290,9 +263,9 @@
     font-size: 11px;
     color: var(--color-dim);
   }
-  .trow.empty {
-    display: block;
-    color: var(--color-muted);
+  .table-empty {
+    padding: 22px 16px;
+    border-top: var(--border-weight) solid var(--color-border-2);
   }
   .out {
     display: flex;

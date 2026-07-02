@@ -2,6 +2,7 @@
   import { obs } from "../bridge";
   import type { ControlProps } from "./controls";
   import type { EditableListProperty, EditableListItem } from "../bridge";
+  import Icon from "../dock/Icon.svelte";
   let { prop, value, onChange }: ControlProps = $props();
 
   const p = $derived(prop as EditableListProperty);
@@ -65,21 +66,21 @@
           class="icon"
           title="Move up"
           disabled={!prop.enabled || idx === 0}
-          onclick={() => move(idx, -1)}>↑</button
+          onclick={() => move(idx, -1)}><Icon name="up" size={12} /></button
         >
         <button
           type="button"
           class="icon"
           title="Move down"
           disabled={!prop.enabled || idx === items.length - 1}
-          onclick={() => move(idx, 1)}>↓</button
+          onclick={() => move(idx, 1)}><Icon name="down" size={12} /></button
         >
         <button
           type="button"
           class="icon remove"
           title="Remove"
           disabled={!prop.enabled}
-          onclick={() => remove(idx)}>✕</button
+          onclick={() => remove(idx)}><Icon name="x" size={12} /></button
         >
       </div>
     {/each}
@@ -134,14 +135,16 @@
   .icon {
     width: 28px;
     flex: none;
-    text-align: center;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
   }
   .remove {
-    color: var(--off, var(--text-dim));
+    color: var(--color-live);
   }
   .empty {
     margin: 0;
-    color: var(--text-dim);
+    color: var(--color-muted);
     font-size: 12px;
   }
   .add {

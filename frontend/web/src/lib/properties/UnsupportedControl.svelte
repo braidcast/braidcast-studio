@@ -16,13 +16,12 @@
     align-items: center;
     gap: 8px;
     font-size: 12px;
-    color: var(--text-dim);
+    color: var(--color-muted);
   }
   .badge {
     font-family: var(--mono, ui-monospace, monospace);
-    background: var(--bg-sunken);
-    border: 1px solid var(--border);
-    border-radius: 4px;
+    background: var(--color-base);
+    border: 1px solid var(--color-border);
     padding: 1px 6px;
   }
 </style>

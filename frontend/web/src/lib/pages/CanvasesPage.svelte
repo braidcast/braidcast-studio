@@ -11,6 +11,10 @@
   import CanvasEditor from "../CanvasEditor.svelte";
   import CollectionDialog, { type DialogSpec } from "../CollectionDialog.svelte";
   import { suspendPreview } from "../previewGate.svelte";
+  import PageHeader from "../PageHeader.svelte";
+  import Modal from "../Modal.svelte";
+  import ToggleSwitch from "../ToggleSwitch.svelte";
+  import Icon from "../dock/Icon.svelte";
 
   // Canvases page: a gallery of large canvas tiles (an outline aspect-ratio preview
   // box per canvas). Clicking a tile opens a modal with that canvas's editor + its
@@ -299,22 +303,14 @@
   function noop(): void {}
 </script>
 
-<svelte:window
-  onkeydown={(e) => {
-    if (e.key === "Escape" && editingUuid !== null) closeEditor();
-  }}
-/>
-
 <div class="page">
-  <header class="head">
-    <div class="head-titles">
-      <span class="title">Canvases</span>
-      <span class="sub">encode targets · one per resolution/FPS</span>
-    </div>
-    {#if loaded}
-      <span class="head-count">{canvases.length} canvas{canvases.length === 1 ? "" : "es"}</span>
-    {/if}
-  </header>
+  <PageHeader title="Canvases" sub="encode targets · one per resolution/FPS">
+    {#snippet actions()}
+      {#if loaded}
+        <span class="head-count">{canvases.length} canvas{canvases.length === 1 ? "" : "es"}</span>
+      {/if}
+    {/snippet}
+  </PageHeader>
 
   <div class="body">
     {#if error}<p class="err">{error}</p>{/if}
@@ -359,7 +355,7 @@
         {/each}
 
         <button class="tile add-tile" onclick={addCanvas}>
-          <span class="add-plus">＋</span>
+          <Icon name="plus" size={16} />
           <span>Add canvas</span>
         </button>
       </div>
@@ -368,115 +364,93 @@
 </div>
 
 {#if editingCanvas}
-  <div
-    class="modal-scrim"
-    role="presentation"
-    onclick={(e) => {
-      if (e.target === e.currentTarget) closeEditor();
-    }}
-  >
-    <div class="modal" role="dialog" aria-modal="true" aria-label="Edit canvas" tabindex="-1">
-      <header class="modal-head">
-        <span class="modal-title">{editingCanvas.name}</span>
-        {#if editingCanvas.isDefault}<span class="badge">Default</span>{/if}
-        <span class="spacer"></span>
-        <button class="modal-x" title="Close" aria-label="Close" onclick={closeEditor}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
-            <path d="M6 6l12 12M18 6L6 18" />
-          </svg>
-        </button>
-      </header>
+  {@const c = editingCanvas}
+  <Modal title={c.name} onClose={closeEditor} width={680}>
+    {#snippet headExtra()}
+      {#if c.isDefault}<span class="badge">Default</span>{/if}
+    {/snippet}
 
-      <div class="modal-body">
-        <section class="section">
-          <div class="sec-bar">
-            <h3 class="sec-head">Settings</h3>
-          </div>
-          <p class="sec-desc">Resolution, frame rate, and encoders for this encode target.</p>
-          <CanvasEditor
-            canvas={editingCanvas}
-            {videoEncoders}
-            {audioEncoders}
-            embedded
-            onClose={noop}
-            onSaved={() => {
-              void loadCanvases();
-              closeEditor();
-            }}
-          />
-        </section>
-
-        <section class="section">
-          <div class="sec-bar">
-            <h3 class="sec-head">Destinations</h3>
-            <span class="sec-count"
-              >{canvasBindings.filter((b) => b.enabled).length}/{canvasBindings.length} enabled</span
-            >
-            <span class="spacer"></span>
-            {#if canvasBindings.length > 0}
-              <label class="switch" title={canvasEnabled ? "Disable all" : "Enable all"}>
-                <input type="checkbox" checked={canvasEnabled} onchange={() => void toggleCanvas()} />
-                <span class="track"><span class="thumb2"></span></span>
-              </label>
-            {/if}
-          </div>
-
-          {#if canvasBindings.length === 0 && !adding}
-            <p class="empty">No destinations bound to this canvas yet.</p>
-          {/if}
-
-          <div class="rows">
-            {#each canvasBindings as b (b.uuid)}
-              {@const s = rowState(b)}
-              <div class="row" class:off={!b.enabled}>
-                <label class="switch sm" title={b.enabled ? "Disable" : "Enable"}>
-                  <input type="checkbox" checked={b.enabled} onchange={(e) => void toggleRow(b, e.currentTarget.checked)} />
-                  <span class="track"><span class="thumb2"></span></span>
-                </label>
-                <div class="row-col">
-                  <div class="row-line1">
-                    <span class="row-name" class:deleted={isDangling(b.profileLabel)} class:unset={isUnset(b.profileLabel)}>
-                      {rowName(b)}
-                    </span>
-                    <span class="row-state" style:color={STATE_COLOR[s]} style:background={STATE_TAG_BG[s]}>
-                      {titleState(s).toUpperCase()}
-                    </span>
-                  </div>
-                  <div class="row-sub">{encName(videoEncoders, editingCanvas.videoEncoder)}</div>
-                </div>
-                <button class="trash" title="Remove destination" aria-label="Remove destination" onclick={() => void removeRow(b)}>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
-                    <path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13" />
-                  </svg>
-                </button>
-              </div>
-            {/each}
-
-            {#if adding}
-              <div class="row add-form">
-                <span class="add-label">New destination</span>
-                <select bind:value={addProfile}>
-                  <option value="">No destination (placeholder)</option>
-                  {#each profiles as p (p.uuid)}
-                    <option value={p.uuid}>{p.label || p.platform}</option>
-                  {/each}
-                </select>
-                <div class="add-actions">
-                  <button class="ghost" onclick={cancelAdd}>Cancel</button>
-                  <button class="accent" onclick={() => void confirmAdd()}>Add</button>
-                </div>
-              </div>
-            {:else}
-              <button class="add-tile-row" onclick={startAdd}>
-                <span class="add-plus">＋</span>
-                <span>Bind destination</span>
-              </button>
-            {/if}
-          </div>
-        </section>
+    <section class="section">
+      <div class="sec-bar">
+        <h3 class="sec-head">Settings</h3>
       </div>
-    </div>
-  </div>
+      <p class="sec-desc">Resolution, frame rate, and encoders for this encode target.</p>
+      <CanvasEditor
+        canvas={c}
+        {videoEncoders}
+        {audioEncoders}
+        embedded
+        onClose={noop}
+        onSaved={() => {
+          void loadCanvases();
+          closeEditor();
+        }}
+      />
+    </section>
+
+    <section class="section">
+      <div class="sec-bar">
+        <h3 class="sec-head">Destinations</h3>
+        <span class="sec-count">{canvasBindings.filter((b) => b.enabled).length}/{canvasBindings.length} enabled</span>
+        <span class="spacer"></span>
+        {#if canvasBindings.length > 0}
+          <span class="toggle-wrap" title={canvasEnabled ? "Disable all" : "Enable all"}>
+            <ToggleSwitch size="sm" checked={canvasEnabled} onchange={() => void toggleCanvas()} />
+          </span>
+        {/if}
+      </div>
+
+      {#if canvasBindings.length === 0 && !adding}
+        <p class="empty">No destinations bound to this canvas yet.</p>
+      {/if}
+
+      <div class="rows">
+        {#each canvasBindings as b (b.uuid)}
+          {@const s = rowState(b)}
+          <div class="row" class:off={!b.enabled}>
+            <span class="toggle-wrap" title={b.enabled ? "Disable" : "Enable"}>
+              <ToggleSwitch size="sm" checked={b.enabled} onchange={(v) => void toggleRow(b, v)} />
+            </span>
+            <div class="row-col">
+              <div class="row-line1">
+                <span class="row-name" class:deleted={isDangling(b.profileLabel)} class:unset={isUnset(b.profileLabel)}>
+                  {rowName(b)}
+                </span>
+                <span class="row-state" style:color={STATE_COLOR[s]} style:background={STATE_TAG_BG[s]}>
+                  {titleState(s).toUpperCase()}
+                </span>
+              </div>
+              <div class="row-sub">{encName(videoEncoders, c.videoEncoder)}</div>
+            </div>
+            <button class="trash" title="Remove destination" aria-label="Remove destination" onclick={() => void removeRow(b)}>
+              <Icon name="trash" size={14} />
+            </button>
+          </div>
+        {/each}
+
+        {#if adding}
+          <div class="row add-form">
+            <span class="add-label">New destination</span>
+            <select bind:value={addProfile}>
+              <option value="">No destination (placeholder)</option>
+              {#each profiles as p (p.uuid)}
+                <option value={p.uuid}>{p.label || p.platform}</option>
+              {/each}
+            </select>
+            <div class="add-actions">
+              <button class="ghost" onclick={cancelAdd}>Cancel</button>
+              <button class="accent" onclick={() => void confirmAdd()}>Add</button>
+            </div>
+          </div>
+        {:else}
+          <button class="add-tile-row" onclick={startAdd}>
+            <Icon name="plus" size={13} />
+            <span>Bind destination</span>
+          </button>
+        {/if}
+      </div>
+    </section>
+  </Modal>
 {/if}
 
 {#if dialog}
@@ -492,35 +466,7 @@
     background: var(--color-base);
     color: var(--color-text);
   }
-  .head {
-    flex: 0 0 auto;
-    height: 58px;
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    padding: 0 24px;
-    border-bottom: var(--border-weight) solid var(--color-border);
-    background: var(--color-surface);
-  }
-  .head-titles {
-    display: flex;
-    align-items: baseline;
-    gap: 12px;
-    min-width: 0;
-  }
-  .title {
-    font-family: var(--font-ui);
-    font-size: 16px;
-    font-weight: 600;
-    letter-spacing: -0.01em;
-  }
-  .sub {
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--color-muted);
-  }
   .head-count {
-    margin-left: auto;
     font-family: var(--font-mono);
     font-size: 10px;
     letter-spacing: 0.06em;
@@ -693,10 +639,6 @@
     color: var(--color-accent);
     transform: none;
   }
-  .add-plus {
-    font-size: 15px;
-    line-height: 1;
-  }
 
   .badge {
     font-family: var(--font-mono);
@@ -721,63 +663,7 @@
     font-size: 12px;
   }
 
-  /* ---- modal ------------------------------------------------------------- */
-  .modal-scrim {
-    position: fixed;
-    inset: 0;
-    z-index: 60;
-    display: flex;
-    align-items: flex-start;
-    justify-content: center;
-    padding: 48px 24px;
-    background: rgba(0, 0, 0, 0.55);
-    overflow: auto;
-  }
-  .modal {
-    width: min(680px, 100%);
-    max-height: calc(100vh - 96px);
-    background: var(--color-base);
-    border: var(--border-weight) solid var(--color-border);
-    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.6);
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-  }
-  .modal-head {
-    flex: 0 0 auto;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 14px 16px;
-    border-bottom: var(--border-weight) solid var(--color-border);
-    background: var(--color-surface);
-  }
-  .modal-title {
-    font-family: var(--font-ui);
-    font-size: 15px;
-    font-weight: 600;
-  }
-  .modal-x {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 28px;
-    height: 26px;
-    background: none;
-    border: var(--border-weight) solid var(--color-border);
-    color: var(--color-muted);
-    cursor: pointer;
-  }
-  .modal-x:hover {
-    color: var(--color-text);
-    border-color: var(--color-accent);
-  }
-  .modal-body {
-    flex: 1;
-    min-height: 0;
-    padding: 20px 22px 26px;
-    overflow: auto;
-  }
+  /* ---- modal body -------------------------------------------------------- */
   .section {
     margin-bottom: 28px;
   }
@@ -893,62 +779,10 @@
     border-color: var(--color-live);
   }
 
-  /* enable/disable switch (square thumb per the 0-radius rule). */
-  .switch {
+  .toggle-wrap {
     flex: 0 0 auto;
     display: inline-flex;
     align-items: center;
-    cursor: pointer;
-  }
-  .switch input {
-    position: absolute;
-    opacity: 0;
-    width: 0;
-    height: 0;
-  }
-  .track {
-    display: block;
-    width: 36px;
-    height: 20px;
-    background: var(--color-base);
-    border: var(--border-weight) solid var(--color-border);
-    position: relative;
-    transition: background 0.12s ease;
-  }
-  .switch.sm .track {
-    width: 32px;
-    height: 18px;
-  }
-  .thumb2 {
-    position: absolute;
-    top: 50%;
-    left: 3px;
-    width: 12px;
-    height: 12px;
-    transform: translateY(-50%);
-    background: var(--color-muted);
-    transition:
-      left 0.12s ease,
-      background 0.12s ease;
-  }
-  .switch.sm .thumb2 {
-    width: 10px;
-    height: 10px;
-  }
-  .switch input:checked + .track {
-    background: color-mix(in srgb, var(--color-accent) 30%, transparent);
-    border-color: var(--color-accent);
-  }
-  .switch input:checked + .track .thumb2 {
-    left: calc(100% - 12px - 3px);
-    background: var(--color-accent);
-  }
-  .switch.sm input:checked + .track .thumb2 {
-    left: calc(100% - 10px - 3px);
-  }
-  .switch input:focus-visible + .track {
-    outline: 1px solid var(--color-accent);
-    outline-offset: 1px;
   }
 
   .add-tile-row {

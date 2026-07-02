@@ -5,6 +5,7 @@
   import { WINDOW_ID } from "../windowContext";
   import ContextMenu, { type ContextMenuItem } from "../ContextMenu.svelte";
   import PropertyForm from "../properties/PropertyForm.svelte";
+  import Modal from "../Modal.svelte";
   import { openFilters } from "../filterDialogOpener.svelte";
   import { openTransform } from "../transformOpener.svelte";
   import { prefetchMonitors, projectorItems } from "../projectorMenu";
@@ -168,23 +169,9 @@
 {/if}
 
 {#if propsForSource}
-  <div
-    class="modal-backdrop"
-    role="presentation"
-    onclick={(e) => {
-      if (e.target === e.currentTarget) closeProps();
-    }}
-  >
-    <div class="modal" role="dialog" aria-modal="true" aria-label="Source properties">
-      <header class="modal-head">
-        <h3>Properties — {propsForSource}</h3>
-        <button class="dock-icon close" title="Close" onclick={closeProps}>✕</button>
-      </header>
-      <div class="modal-body">
-        <PropertyForm kind="source" ref={propsForSource} />
-      </div>
-    </div>
-  </div>
+  <Modal title={"Properties — " + propsForSource} onClose={closeProps} width={560} maxHeight="80vh">
+    <PropertyForm kind="source" ref={propsForSource} />
+  </Modal>
 {/if}
 
 <style>
@@ -206,47 +193,5 @@
     text-transform: var(--label-case);
     color: var(--color-muted);
     pointer-events: none;
-  }
-  .modal-backdrop {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.55);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 100;
-    padding: 24px;
-  }
-  .modal {
-    background: var(--color-surface);
-    border: var(--border-weight) solid var(--color-border);
-    width: min(560px, 100%);
-    max-height: 80vh;
-    display: flex;
-    flex-direction: column;
-  }
-  .modal-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 12px 16px;
-    border-bottom: var(--border-weight) solid var(--color-border);
-  }
-  .modal-head h3 {
-    margin: 0;
-    font-size: 12px;
-    font-family: var(--font-ui);
-    letter-spacing: var(--letter-spacing);
-    text-transform: var(--label-case);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .modal-body {
-    padding: 16px;
-    overflow: auto;
-  }
-  .close {
-    font-size: 13px;
   }
 </style>
