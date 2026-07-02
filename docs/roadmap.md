@@ -1157,8 +1157,19 @@ The Overlays editor create flow now has a widget-type picker (alert box / chat b
 /WX, `bun run check` 0/0, smoke `leaks: 2` + overlay SSE selftests green. **Live render in a real
 Browser Source GUI-owed.**
 
-**Remaining Phase 9 (planned):** moderation · pre-live chat · more widget types (goal bar, ticker,
-labels) on the 9.3 overlay infra.
+**9.3c (Event ticker overlay widget) ✅ DONE 2026-07-02** (`ui-redesign`, commit on `origin/ui-redesign`).
+Third overlay widget type: a continuously scrolling ticker of recent events (follows/subs/gifts/
+cheers/raids/super chats) as a browser source. **Web-only** — events already broadcast over the widget
+SSE stream and the runtime already has `OBSOverlay.onEvent`, so no backend/runtime change. A
+`default-ticker` template runs a JS conveyor over a capped rolling buffer (append-at-back/drop-at-front
+off-screen so appends never stutter); RTL = a CSS `scaleX(-1)` mirror + counter-flip (one code path
+both directions). Event phrasing/emoji/money-format/palette ported from EventsDock; XSS-safe. Fields:
+font/size/colors, scroll speed, direction, separator, platform tag, max items, idle text. Editor
+type picker gains it. check 0/0, build green, smoke `leaks: 2`. **Live Browser-Source render GUI-owed**
+(esp. the RTL mirror).
+
+**Remaining Phase 9 (planned):** moderation · pre-live chat · more widget types (goal bar, labels)
+on the 9.3 overlay infra.
 
 **Goal:** the Streamlabs/StreamElements-style live layer the fork lacks — unified **multichat**
 (read+send across every connected platform in one pane), **aggregate viewer count** (sum of live
