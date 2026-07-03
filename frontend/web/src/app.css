@@ -1250,3 +1250,41 @@ input[type="color"] {
   margin-bottom: 0;
   flex-wrap: wrap;
 }
+
+/* --- canvas audio tracks --- */
+.cv-tracks {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.cv-track {
+  height: 34px;
+  padding: 0 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: var(--border-weight) solid var(--color-border);
+  background: var(--color-surface-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--color-dim);
+}
+.cv-track.on {
+  border-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  color: var(--color-accent);
+}
+.cv-track.on::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  background: var(--color-accent);
+}
+.cv-track.ghost {
+  border-style: dashed;
+  color: var(--color-muted);
+  cursor: default;
+  background: transparent;
+}

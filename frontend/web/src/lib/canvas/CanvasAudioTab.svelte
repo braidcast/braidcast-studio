@@ -51,5 +51,17 @@
         <PropertyForm kind="encoder" ref={`${canvasUuid}:audio`} />
       {/key}
     {/if}
+
+    <div class="cv-field">
+      <div class="cv-field__l">Tracks</div>
+      <div class="cv-tracks">
+        <span class="cv-track on">Track 1 · Active</span>
+        <span class="cv-track ghost">Tracks 2 – 6 · Planned</span>
+      </div>
+      <div class="cv-field__h">
+        This canvas streams a single audio track. Per-track configuration (Track 1–6, independent bitrate and
+        routing) is planned.
+      </div>
+    </div>
   {/if}
 </div>
