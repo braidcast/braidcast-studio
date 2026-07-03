@@ -1,6 +1,7 @@
 #include "properties_serializer.hpp"
 
 #include <obs-properties.h>
+#include <util/dstr.h>
 
 namespace PropertiesSerializer {
 
@@ -187,6 +188,28 @@ void SerializeListItems(obs_property_t *prop, json &out)
 // Forward declaration; groups recurse back into the per-property serializer.
 void SerializeProperty(obs_property_t *prop, obs_data_t *settings, json &out);
 
+// A string-list's stored value may not case-match any item's value -- e.g. NVENC
+// seeds rate_control="cbr" via get_defaults while the list item's value is "CBR".
+// libobs reads such fields case-insensitively, but the UI selects by exact value,
+// so the control would render blank. Resolve to the item's canonical casing when
+// it matches case-insensitively; otherwise pass the value through unchanged.
+json NormalizeStringListValue(obs_property_t *prop, const char *raw)
+{
+	if (!raw || !*raw) {
+		return json("");
+	}
+	const size_t count = obs_property_list_item_count(prop);
+	for (size_t i = 0; i < count; i++) {
+		const char *item = obs_property_list_item_string(prop, i);
+		if (item && astrcmpi(raw, item) == 0) {
+			// List item values are unique, so the first case-insensitive match
+			// is the intended one; return its canonical casing.
+			return json(std::string(item));
+		}
+	}
+	return json(std::string(raw));
+}
+
 // Read the live value for `prop` from `settings` and stuff it under "value".
 // Mirrors the legacy Qt renderer's per-type obs_data getters so the UI binds the
 // same data the source would read. Composite types (font/editable_list/
@@ -229,7 +252,7 @@ void SerializeValue(obs_property_t *prop, obs_data_t *settings, json &out)
 			break;
 		case OBS_COMBO_FORMAT_STRING:
 		default:
-			out["value"] = Str(obs_data_get_string(settings, name));
+			out["value"] = NormalizeStringListValue(prop, obs_data_get_string(settings, name));
 			break;
 		}
 		break;

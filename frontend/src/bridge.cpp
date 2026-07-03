@@ -3499,6 +3499,16 @@ bool BuildPropertiesResult(const PropertyKind *kind, void *obj, json &result, st
 	obs_properties_t *props = kind->get_props(obj);
 	obs_data_t *settings = kind->get_settings(obj); // addref'd
 
+	// Run each property's modified-callback against the current settings before
+	// serializing, mirroring the legacy Qt properties view. This resolves dynamic
+	// state (e.g. NVENC hides bitrate/cqp fields per rate_control, services
+	// populate server lists) so the form reflects the encoder's real field set
+	// rather than every field shown unconditionally. Idempotent and side-effect
+	// free for display -- callbacks only re-evaluate visibility/enabled/items.
+	if (props && settings) {
+		obs_properties_apply_settings(props, settings);
+	}
+
 	json descriptors = PropertiesSerializer::SerializeProperties(props, settings);
 
 	// Build the value map from the serialized descriptors (default-aware) rather
