@@ -16,6 +16,9 @@
     /** CSS max-height for the panel (default 86vh). */
     maxHeight?: string;
     closeOnBackdrop?: boolean;
+    /** Drag the header to reposition the panel (kept within the viewport). Off by
+     * default so every other modal keeps its fixed centered placement. */
+    draggable?: boolean;
     /** Header-embedded controls (e.g. a segmented switch), right of the title. */
     headExtra?: Snippet;
     footer?: Snippet;
@@ -27,10 +30,66 @@
     width = 520,
     maxHeight = "86vh",
     closeOnBackdrop = true,
+    draggable = false,
     headExtra,
     footer,
     children,
   }: Props = $props();
+
+  // Header pointer-drag repositioning (opt-in). The offset is applied as a direct
+  // transform on the panel (synchronous, so clamping can read the live rect); it is
+  // never reset on close since the panel remounts per open.
+  let modalEl = $state<HTMLDivElement | undefined>();
+  let dragging = false;
+  let curX = 0;
+  let curY = 0;
+  let lastX = 0;
+  let lastY = 0;
+
+  function onHeadPointerDown(e: PointerEvent) {
+    // Never start a drag from an interactive control in the header (close button,
+    // headExtra switches) — those must keep click behavior.
+    if (!draggable || (e.target as HTMLElement).closest("button")) {
+      return;
+    }
+    dragging = true;
+    lastX = e.clientX;
+    lastY = e.clientY;
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    e.preventDefault();
+  }
+  function onHeadPointerMove(e: PointerEvent) {
+    if (!dragging || !modalEl) {
+      return;
+    }
+    let nx = curX + (e.clientX - lastX);
+    let ny = curY + (e.clientY - lastY);
+    lastX = e.clientX;
+    lastY = e.clientY;
+    // Clamp so the panel stays fully on screen. baseLeft/baseTop = the untranslated
+    // origin (rect minus the transform currently applied).
+    const r = modalEl.getBoundingClientRect();
+    const m = 8;
+    const baseLeft = r.left - curX;
+    const baseTop = r.top - curY;
+    const minX = m - baseLeft;
+    const maxX = window.innerWidth - m - r.width - baseLeft;
+    const minY = m - baseTop;
+    const maxY = window.innerHeight - m - r.height - baseTop;
+    nx = Math.min(Math.max(nx, minX), Math.max(minX, maxX));
+    ny = Math.min(Math.max(ny, minY), Math.max(minY, maxY));
+    curX = nx;
+    curY = ny;
+    modalEl.style.transform = `translate(${curX}px, ${curY}px)`;
+  }
+  function onHeadPointerUp(e: PointerEvent) {
+    dragging = false;
+    try {
+      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    } catch {
+      // capture may already be gone; ignore
+    }
+  }
 
   // Gate Escape so a menu (or nested modal) stacked above this one closes first;
   // only the topmost Escape owner acts.
@@ -64,10 +123,18 @@
     role="dialog"
     aria-modal="true"
     aria-label={title}
+    bind:this={modalEl}
     style:width={`min(${width}px, 100%)`}
     style:max-height={maxHeight}
   >
-    <header class="modal-head">
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <header
+      class="modal-head"
+      class:draggable
+      onpointerdown={onHeadPointerDown}
+      onpointermove={onHeadPointerMove}
+      onpointerup={onHeadPointerUp}
+    >
       <h3>{title}</h3>
       {#if headExtra}
         <div class="head-extra">{@render headExtra()}</div>
@@ -112,6 +179,10 @@
     gap: 8px;
     padding: 8px 11px;
     border-bottom: var(--border-weight) solid var(--color-border);
+  }
+  .modal-head.draggable {
+    cursor: move;
+    touch-action: none;
   }
   .modal-head h3 {
     margin: 0 auto 0 0;

@@ -3,7 +3,6 @@
   import { obs, type SceneInfo } from "../bridge";
   import { defaultCanvas } from "./defaultCanvasStore.svelte";
   import ContextMenu, { type ContextMenuItem } from "../ContextMenu.svelte";
-  import { prefetchMonitors, projectorItems } from "../projectorMenu";
   import ListToolbar, { type ToolAction } from "../dock/ListToolbar.svelte";
   import FilterReveal from "../dock/FilterReveal.svelte";
 
@@ -12,7 +11,6 @@
 
   onMount(() => {
     defaultCanvas.start();
-    prefetchMonitors();
     obs
       .call("settings.getGeneral")
       .then((g) => (gridMode = g.scenesGridMode))
@@ -143,8 +141,7 @@
       items: [
         { label: "Rename", action: () => beginRename(name) },
         { label: "Duplicate", action: () => duplicate(name) },
-        null,
-        ...projectorItems({ kind: "scene", name }),
+        // Projector entries hidden pending the projector redesign.
         null,
         { label: "Remove", danger: true, disabled: defaultCanvas.scenes.length <= 1, action: () => void remove(name) },
       ],

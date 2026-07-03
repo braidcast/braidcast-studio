@@ -472,22 +472,12 @@
       .catch((e) => console.log("projector.open failed: " + (e as Error).message));
   }
 
-  // CANVASES-bar overflow contents: a windowed program projector, one fullscreen
-  // entry per monitor, then the dock-lock toggle (a leading ✓ marks it on, since
-  // ContextMenu items have no native checked state).
+  // CANVASES-bar overflow contents. The program/multiview projector entries are
+  // hidden pending the projector redesign (the openProgram*/openMultiview* code
+  // paths + monitor enumeration are kept so they can be re-surfaced then); only the
+  // dock-lock toggle remains (a leading ✓ marks it on, since ContextMenu items have
+  // no native checked state).
   let overflowItems = $derived<(ContextMenuItem | null)[]>([
-    { label: "Windowed Projector (Program)", action: openProgramWindowed },
-    ...monitors.map((m) => ({
-      label: `Fullscreen Projector (Program) — ${m.name} (${m.width}×${m.height})`,
-      action: () => openProgramFullscreen(m.index),
-    })),
-    null,
-    { label: "Multiview (Windowed)", action: openMultiviewWindowed },
-    ...monitors.map((m) => ({
-      label: `Multiview (Fullscreen) — ${m.name} (${m.width}×${m.height})`,
-      action: () => openMultiviewFullscreen(m.index),
-    })),
-    null,
     { label: (docksLocked ? "✓ " : "") + "Lock Docks", action: toggleLock },
   ]);
 
@@ -990,10 +980,14 @@
     border-color: var(--color-accent);
     color: var(--color-accent);
   }
+  /* Elastic gap that lets the canvas chips sit flush-left and the restore/utility
+     clusters pin flush-right so the bar reads edge-to-edge. No border of its own:
+     the .canvases segment's right hairline already divides here, and .restore/.util
+     draw their own left hairline — a border here just doubled the divider and made
+     the empty stretch read as a seam / dead space. */
   .spacer {
     flex: 1;
     min-width: 8px;
-    border-left: var(--border-weight) solid var(--color-border);
   }
   /* Restore-docks segment: bordered chips on --color-base, left hairline divider. */
   .restore {
@@ -1237,8 +1231,13 @@
   .perf .v {
     color: var(--color-dim);
   }
-  /* GO LIVE: full-height right-edge accent block; red END STREAM when live. */
+  /* GO LIVE: full-height right-edge accent block; red END STREAM when live. The
+     global `button { height: var(--control-height) }` would otherwise pin it to 30px
+     and float it in the 60px bar — height:auto + align-self:stretch make it fill the
+     bar edge-to-edge like the Screenshot/VCAM/perf/Edit cells beside it. */
   .golive {
+    height: auto;
+    align-self: stretch;
     display: flex;
     align-items: center;
     gap: 9px;

@@ -7,8 +7,7 @@
   import PropertyForm from "../properties/PropertyForm.svelte";
   import Modal from "../Modal.svelte";
   import { openFilters } from "../filterDialogOpener.svelte";
-  import { openTransform } from "../transformOpener.svelte";
-  import { prefetchMonitors, projectorItems } from "../projectorMenu";
+  import { transformMenu } from "../transformMenu";
 
   let {}: Record<string, unknown> = $props();
 
@@ -51,11 +50,7 @@
         },
       },
       { label: "Filters", disabled: !p.source, action: () => p.source && openFilters(p.source) },
-      {
-        label: "Edit Transform",
-        action: () =>
-          p.id != null && openTransform({ scene: p.scene ?? undefined, id: p.id }, p.source ?? "(unnamed)"),
-      },
+      ...(p.id != null ? [transformMenu({ scene: p.scene ?? undefined, id: p.id }, p.source ?? "(unnamed)")] : []),
       null,
       { label: p.visible ? "Hide" : "Show", action: () => void call("sceneItems.setVisible", { scene: p.scene, id: p.id, visible: !p.visible }) },
       { label: p.locked ? "Unlock" : "Lock", action: () => void call("sceneItems.setLocked", { scene: p.scene, id: p.id, locked: !p.locked }) },
@@ -64,9 +59,8 @@
       { label: "Move Down", action: () => void call("sceneItems.reorder", { scene: p.scene, id: p.id, direction: "down" }) },
       { label: "Move to Top", action: () => void call("sceneItems.reorder", { scene: p.scene, id: p.id, direction: "top" }) },
       { label: "Move to Bottom", action: () => void call("sceneItems.reorder", { scene: p.scene, id: p.id, direction: "bottom" }) },
-      null,
-      // Project the program / default mix (the Default surface == channel 0).
-      ...projectorItems({ kind: "program" }),
+      // Projector entries hidden pending the projector redesign (projectorMenu + its
+      // bridge path are kept, just not surfaced here).
       null,
       { label: "Remove", danger: true, action: () => void call("sceneItems.remove", { scene: p.scene, id: p.id }) },
     ];
@@ -80,6 +74,13 @@
 
   function reportRect() {
     if (!previewEl) {
+      return;
+    }
+    // While a modal/overlay holds the preview gate, never re-assert the rect: a
+    // stray resize/scroll/ResizeObserver tick during the modal's lifetime would
+    // otherwise raise the native child window back above CEF, over the modal.
+    if (previewSuspended()) {
+      hidePreview();
       return;
     }
     const r = previewEl.getBoundingClientRect();
@@ -112,7 +113,6 @@
   }
 
   onMount(() => {
-    prefetchMonitors();
     reportRect();
     const ro = new ResizeObserver(reportRect);
     if (previewEl) {

@@ -10,8 +10,7 @@
   import { clipboard } from "../clipboardStore.svelte";
   import { sourceSelection } from "../sourceSelectionStore.svelte";
   import { openFilters } from "../filterDialogOpener.svelte";
-  import { openTransform } from "../transformOpener.svelte";
-  import { prefetchMonitors, projectorItems } from "../projectorMenu";
+  import { transformMenu } from "../transformMenu";
   import { scaleFilterMenu } from "../scaleFilterMenu";
   import { deinterlaceMenu } from "../deinterlaceMenu";
   import { colorMenu } from "../colorMenu";
@@ -24,7 +23,6 @@
 
   onMount(() => {
     defaultCanvas.start();
-    prefetchMonitors();
   });
 
   // The default canvas's current scene drives this list (global channel-0 path).
@@ -346,10 +344,7 @@
         ...(item.interactive && item.source
           ? [{ label: "Interact", action: () => void obs.call("sources.interact", { source: item.source }).catch(report) }]
           : []),
-        {
-          label: "Edit Transform",
-          action: () => openTransform({ scene: currentScene ?? undefined, id: item.id }, item.source ?? "(unnamed)"),
-        },
+        transformMenu({ scene: currentScene ?? undefined, id: item.id }, item.source ?? "(unnamed)"),
         { label: "Rename", action: () => beginRename(item) },
         scaleFilterMenu(item.scaleFilter, (filter) =>
           void obs.call("sceneItems.setScaleFilter", { scene: currentScene, id: item.id, filter }).catch(report),
@@ -397,7 +392,8 @@
           disabled: filtering || idx === items.length - 1,
           action: () => void reorder(item, "bottom"),
         },
-        ...(item.source ? [null, ...projectorItems({ kind: "source", name: item.source })] : []),
+        // Projector entries hidden pending the projector redesign (projectorMenu +
+        // its bridge path are kept, just not surfaced here).
         null,
         { label: "Remove", danger: true, action: () => void remove(item) },
       ],

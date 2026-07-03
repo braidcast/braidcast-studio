@@ -31,6 +31,10 @@
 
   // Names already taken, so the name step can flag collisions without a round-trip.
   let existingNames = $state<Set<string>>(new Set());
+  // The same list, raw + in order, for the "Add existing" section. sources.listExisting
+  // returns the input sources NOT already in the target scene — exactly the add-existing
+  // candidates. It carries names only (no type/caps), so the rows use a generic glyph.
+  let existingSources = $state<string[]>([]);
 
   async function load() {
     error = null;
@@ -40,11 +44,26 @@
         obs.call("sources.listExisting", { canvas, scene }),
       ]);
       types = list;
+      existingSources = existing;
       existingNames = new Set(existing.map((n) => n.toLowerCase()));
     } catch (e) {
       error = (e as Error).message;
     } finally {
       loaded = true;
+    }
+  }
+
+  // Add a reference to an already-created source into this canvas's current scene.
+  async function addExisting(sourceName: string) {
+    if (creating) return;
+    creating = true;
+    error = null;
+    try {
+      const created = await obs.call("sources.addExisting", { canvas, scene, name: sourceName });
+      onCreated(created);
+    } catch (e) {
+      error = (e as Error).message;
+      creating = false;
     }
   }
 
@@ -119,19 +138,35 @@
   {#if !selectedType}
     {#if !loaded}
       <p class="dim">Loading source types…</p>
-    {:else if types.length === 0}
-      <EmptyState compact title="No source types available" />
     {:else}
-      <ul class="types">
-        {#each types as t (t.id)}
-          <li>
-            <button class="type" onclick={() => pickType(t)}>
-              <span class="glyph"><Icon name={typeIcon(t)} size={16} /></span>
-              <span class="type-name">{t.name}</span>
-            </button>
-          </li>
-        {/each}
-      </ul>
+      {#if existingSources.length > 0}
+        <div class="sec-label">Existing sources · add to this scene</div>
+        <ul class="types existing">
+          {#each existingSources as srcName (srcName)}
+            <li>
+              <button class="type" disabled={creating} onclick={() => void addExisting(srcName)}>
+                <span class="glyph"><Icon name="link" size={16} /></span>
+                <span class="type-name">{srcName}</span>
+              </button>
+            </li>
+          {/each}
+        </ul>
+        <div class="sec-label">New source</div>
+      {/if}
+      {#if types.length === 0}
+        <EmptyState compact title="No source types available" />
+      {:else}
+        <ul class="types">
+          {#each types as t (t.id)}
+            <li>
+              <button class="type" onclick={() => pickType(t)}>
+                <span class="glyph"><Icon name={typeIcon(t)} size={16} /></span>
+                <span class="type-name">{t.name}</span>
+              </button>
+            </li>
+          {/each}
+        </ul>
+      {/if}
     {/if}
   {:else}
     <div class="name-step">
@@ -152,12 +187,30 @@
 </Modal>
 
 <style>
+  /* Section divider between the "add existing" list and the new-source type list. */
+  .sec-label {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--color-muted);
+    padding: 4px 2px 6px;
+  }
+  .sec-label:not(:first-child) {
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: var(--border-weight) solid var(--color-border);
+  }
   .types {
     list-style: none;
     margin: 0;
     padding: 0;
     display: flex;
     flex-direction: column;
+  }
+  /* Existing-source rows read as references (accent link glyph) vs new-source types. */
+  .types.existing .glyph {
+    color: var(--color-accent);
   }
   .types li {
     border-bottom: var(--border-weight) solid var(--color-border);

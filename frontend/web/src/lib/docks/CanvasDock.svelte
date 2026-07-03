@@ -15,8 +15,7 @@
   import ContextMenu, { type ContextMenuItem } from "../ContextMenu.svelte";
   import { clipboard } from "../clipboardStore.svelte";
   import { openFilters } from "../filterDialogOpener.svelte";
-  import { openTransform } from "../transformOpener.svelte";
-  import { prefetchMonitors, projectorItems } from "../projectorMenu";
+  import { transformMenu } from "../transformMenu";
   import { scaleFilterMenu } from "../scaleFilterMenu";
   import { deinterlaceMenu } from "../deinterlaceMenu";
   import { colorMenu } from "../colorMenu";
@@ -62,9 +61,34 @@
 
   // ---- inline preview region (native overlay scoped to this canvas) -----------
   let previewEl = $state<HTMLElement | undefined>();
+  // True once we've asserted a valid rect and the native surface should be painting;
+  // drives hiding the DOM stage outline so it doesn't linger as a ghost frame over
+  // the live video (it re-appears as the placeholder frame whenever we hide).
+  let surfaceActive = $state(false);
+
+  // Coalesce rect recomputes to one per frame. ResizeObserver can fire a burst per
+  // drag frame; flooding preview.setRect makes the async native reposition trail
+  // (the drift). One send per frame with the latest rect keeps the surface tracking.
+  let rectRaf = 0;
+  function scheduleRect() {
+    if (rectRaf) {
+      return;
+    }
+    rectRaf = requestAnimationFrame(() => {
+      rectRaf = 0;
+      reportRect();
+    });
+  }
 
   function reportRect() {
     if (!previewEl) {
+      return;
+    }
+    // While a modal/overlay holds the preview gate, never re-assert the rect: a stray
+    // resize/scroll/ResizeObserver tick during the modal's lifetime would otherwise
+    // raise this canvas's native child window back above CEF, over the modal.
+    if (previewSuspended()) {
+      hidePreview();
       return;
     }
     const r = previewEl.getBoundingClientRect();
@@ -76,6 +100,7 @@
       hidePreview();
       return;
     }
+    surfaceActive = true;
     obs
       .call("preview.setRect", {
         canvas: canvasUuid,
@@ -89,6 +114,7 @@
       .catch((e) => console.log("preview.setRect failed: " + (e as Error).message));
   }
   function hidePreview() {
+    surfaceActive = false;
     obs.call("preview.hide", { canvas: canvasUuid, window: WINDOW_ID }).catch(() => {});
   }
   function destroyPreview() {
@@ -500,14 +526,7 @@
         ...(item.interactive && item.source
           ? [{ label: "Interact", action: () => void obs.call("sources.interact", { source: item.source }).catch(report) }]
           : []),
-        {
-          label: "Edit Transform",
-          action: () =>
-            openTransform(
-              { canvas: canvasUuid, scene: currentScene ?? undefined, id: item.id },
-              item.source ?? "(unnamed)",
-            ),
-        },
+        transformMenu({ canvas: canvasUuid, scene: currentScene ?? undefined, id: item.id }, item.source ?? "(unnamed)"),
         { label: "Rename", action: () => beginRenameSource(item) },
         scaleFilterMenu(item.scaleFilter, (filter) =>
           void obs
@@ -558,7 +577,7 @@
         { label: "Move Down", disabled: idx === items.length - 1, action: () => void reorder(item, "down") },
         { label: "Move to Top", disabled: idx === 0, action: () => void reorder(item, "top") },
         { label: "Move to Bottom", disabled: idx === items.length - 1, action: () => void reorder(item, "bottom") },
-        ...(item.source ? [null, ...projectorItems({ kind: "source", name: item.source })] : []),
+        // Projector entries hidden pending the projector redesign.
         null,
         { label: "Remove", danger: true, action: () => void remove(item) },
       ],
@@ -583,12 +602,9 @@
     const currentFilter = items.find((i) => i.id === p.id)?.scaleFilter ?? "disable";
     const currentColor = items.find((i) => i.id === p.id)?.color ?? "";
     return [
-      {
-        label: "Edit Transform",
-        action: () =>
-          p.id != null &&
-          openTransform({ canvas: canvasUuid, scene: p.scene ?? undefined, id: p.id }, p.source ?? "(unnamed)"),
-      },
+      ...(p.id != null
+        ? [transformMenu({ canvas: canvasUuid, scene: p.scene ?? undefined, id: p.id }, p.source ?? "(unnamed)")]
+        : []),
       scaleFilterMenu(currentFilter, (filter) => void call("sceneItems.setScaleFilter", { filter })),
       ...(p.source
         ? [
@@ -610,9 +626,7 @@
       { label: "Move Down", action: () => void call("sceneItems.reorder", { direction: "down" }) },
       { label: "Move to Top", action: () => void call("sceneItems.reorder", { direction: "top" }) },
       { label: "Move to Bottom", action: () => void call("sceneItems.reorder", { direction: "bottom" }) },
-      null,
-      // Project this canvas (addressed by its uuid).
-      ...projectorItems({ kind: "canvas", canvas: canvasUuid }),
+      // Projector entries hidden pending the projector redesign.
       null,
       { label: "Remove", danger: true, action: () => void call("sceneItems.remove", {}) },
     ];
@@ -704,7 +718,6 @@
 
   // ---- lifecycle -------------------------------------------------------------
   onMount(() => {
-    prefetchMonitors();
     defaultCanvas.start();
     loadCanvasInfo();
     void loadScenes();
@@ -719,12 +732,19 @@
     })();
 
     reportRect();
-    const ro = new ResizeObserver(reportRect);
+    // Observe BOTH the stage and the whole dock body: the stage catches aspect/size
+    // changes; the dock body catches resizes/relayouts that move the stage without
+    // changing its own box (splitter drags elsewhere, dock re-tiling). Both feed the
+    // rAF-coalesced scheduler so a resize burst collapses to one send per frame.
+    const ro = new ResizeObserver(scheduleRect);
     if (previewEl) {
       ro.observe(previewEl);
     }
-    window.addEventListener("resize", reportRect);
-    window.addEventListener("scroll", reportRect, true);
+    if (dockBodyEl) {
+      ro.observe(dockBodyEl);
+    }
+    window.addEventListener("resize", scheduleRect);
+    window.addEventListener("scroll", scheduleRect, true);
 
     // This canvas's own scene/item events carry its uuid.
     const offScenes = obs.on("scenes.changed", (p) => {
@@ -772,8 +792,11 @@
 
     return () => {
       ro.disconnect();
-      window.removeEventListener("resize", reportRect);
-      window.removeEventListener("scroll", reportRect, true);
+      if (rectRaf) {
+        cancelAnimationFrame(rectRaf);
+      }
+      window.removeEventListener("resize", scheduleRect);
+      window.removeEventListener("scroll", scheduleRect, true);
       offScenes();
       offLinks();
       offDefaultScenes();
@@ -823,7 +846,7 @@
        are the mock's stage overlays (res top-left, LIVE top-right, scene label
        bottom-left). pointer-events:none so they never intercept overlay input. -->
   <div class="stage-area">
-    <div class="stage" class:vertical bind:this={previewEl}>
+    <div class="stage" class:vertical class:active={surfaceActive} bind:this={previewEl}>
       {#if resText}
         <span class="res-chip">{resText}</span>
       {/if}
@@ -956,7 +979,7 @@
     <span class="dot" style:background={STATE_COLOR_EXT[liveState]} title={liveState}></span>
     <span class="foot-name">{canvasName}</span>
     <button class="foot-gear" title="Edit canvas (Canvases)" onclick={() => setPage("canvases")}>
-      <Icon name="gear" size={13} />
+      <Icon name="edit" size={13} />
     </button>
   </footer>
 </div>
@@ -1009,6 +1032,13 @@
     aspect-ratio: 16 / 9;
     max-width: 100%;
     max-height: 100%;
+  }
+  /* Once the native surface is asserted it paints the whole stage, so drop the DOM
+     outline — otherwise it lingers as a ghost frame (visible drifting during a
+     resize while the async native window trails). It returns as the placeholder
+     frame whenever the surface is hidden/suspended. */
+  .stage.active {
+    box-shadow: none;
   }
   .stage.vertical {
     width: auto;

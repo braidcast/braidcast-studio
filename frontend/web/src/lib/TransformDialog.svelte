@@ -151,7 +151,7 @@
   const showBounds = $derived(xf != null && xf.boundsType !== 0);
 </script>
 
-<Modal title="Edit Transform — {label}" {onClose} width={560}>
+<Modal title="Edit Transform — {label}" {onClose} width={560} draggable>
   {#if error}<p class="error">{error}</p>{/if}
 
   {#if !loaded}

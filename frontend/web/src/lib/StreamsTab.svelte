@@ -139,11 +139,23 @@
       : "New Stream Profile",
   );
 
+  // Prefer "Streaming Services" (rtmp_common) as the new-profile default — most users
+  // pick a platform, not a custom RTMP URL. serviceTypes are sorted by display name,
+  // so match by id (then a "stream"-named type) rather than trusting index 0.
+  function defaultServiceId(): string {
+    return (
+      serviceTypes.find((s) => s.id === "rtmp_common")?.id ??
+      serviceTypes.find((s) => s.name.toLowerCase().includes("stream"))?.id ??
+      serviceTypes[0]?.id ??
+      "rtmp_common"
+    );
+  }
+
   function openAdd() {
     editingUuid = null;
     editingProfile = null;
     fLabel = "";
-    fService = serviceTypes[0]?.id ?? "rtmp_common";
+    fService = defaultServiceId();
     connMode = "key";
     formError = null;
     formOpen = true;
