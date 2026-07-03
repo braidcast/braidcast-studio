@@ -10,17 +10,14 @@
   } from "../bridge";
   import CanvasEditor from "../CanvasEditor.svelte";
   import CollectionDialog, { type DialogSpec } from "../CollectionDialog.svelte";
-  import { suspendPreview } from "../previewGate.svelte";
   import { STATE_COLOR_EXT } from "../theme/stateColors";
   import { callOrToast } from "../callToast";
   import PageHeader from "../PageHeader.svelte";
-  import Modal from "../Modal.svelte";
-  import ToggleSwitch from "../ToggleSwitch.svelte";
   import Icon from "../dock/Icon.svelte";
 
-  // Canvases page: a gallery of large canvas tiles (an outline aspect-ratio preview
-  // box per canvas). Clicking a tile opens a modal with that canvas's editor + its
-  // destinations. Going live is the Studio GO-LIVE bar, never per-row here.
+  // Canvases page: a master-detail layout. The left list selects a canvas; the right
+  // pane is that canvas's live-applied detail editor (Video · Encoding · Audio ·
+  // Destinations · Advanced). Going live is the Studio GO-LIVE bar, never per-row here.
   let canvases = $state<CanvasInfo[]>([]);
   let bindings = $state<OutputBindingInfo[]>([]);
   let profiles = $state<StreamProfileInfo[]>([]);
@@ -30,23 +27,11 @@
   let loaded = $state(false);
   let error = $state<string | null>(null);
 
-  // The canvas whose editor modal is open (null => the gallery grid).
-  let editingUuid = $state<string | null>(null);
-
-  // Per-canvas current scene name, for the tile's scene pill.
-  let sceneByCanvas = $state<Record<string, string>>({});
-
-  // Add-canvas name prompt (reuses the Studio inline canvas.create flow).
   let dialog = $state<DialogSpec | null>(null);
-
-  // Inline "bind destination" picker inside the modal.
-  let adding = $state(false);
-  let addProfile = $state("");
 
   async function loadCanvases(): Promise<void> {
     try {
       canvases = await obs.call("canvas.list");
-      void loadScenes();
     } catch (e) {
       error = (e as Error).message;
     }
@@ -70,23 +55,6 @@
       .catch(() => {});
   }
 
-  // Each canvas's current scene name (Default reads the global scenes; additional
-  // canvases carry their uuid). Best-effort per canvas; blanks fall back to the name.
-  async function loadScenes(): Promise<void> {
-    const list = canvases;
-    const entries = await Promise.all(
-      list.map(async (c) => {
-        try {
-          const scenes = await obs.call("scenes.list", c.isDefault ? {} : { canvas: c.uuid });
-          return [c.uuid, scenes.find((s) => s.current)?.name ?? ""] as const;
-        } catch {
-          return [c.uuid, ""] as const;
-        }
-      }),
-    );
-    sceneByCanvas = Object.fromEntries(entries);
-  }
-
   async function loadAll(): Promise<void> {
     error = null;
     try {
@@ -104,7 +72,6 @@
       bindings = binds;
       profiles = profs;
       live = status.outputs;
-      void loadScenes();
     } catch (e) {
       error = (e as Error).message;
     } finally {
@@ -115,7 +82,6 @@
   $effect(() => {
     void loadAll();
     const offCanvas = obs.on("canvas.changed", () => void loadCanvases());
-    const offScenes = obs.on("scenes.changed", () => void loadScenes());
     const offBindings = obs.on("outputBinding.changed", () => {
       loadBindings();
       loadLive();
@@ -124,23 +90,11 @@
     const offProfiles = obs.on("streamProfile.changed", loadProfiles);
     return () => {
       offCanvas();
-      offScenes();
       offBindings();
       offMulti();
       offProfiles();
     };
   });
-
-  // Suspend the native preview overlay while the modal is open so it can never paint
-  // over the dialog (defensive: the overlay is already gated off the Canvases page).
-  $effect(() => {
-    if (editingUuid !== null) {
-      return suspendPreview();
-    }
-  });
-
-  const editingCanvas = $derived(editingUuid ? (canvases.find((c) => c.uuid === editingUuid) ?? null) : null);
-  const canvasBindings = $derived(bindings.filter((b) => b.canvasUuid === editingUuid));
 
   // bindingUuid -> live status row.
   const statusByBinding = $derived.by<Map<string, MultistreamStatus>>(() => {
@@ -151,23 +105,7 @@
     return m;
   });
 
-  function fpsText(c: CanvasInfo): string {
-    if (!(c.fpsDen > 0)) return String(c.fpsNum);
-    return c.fpsDen > 1 ? (c.fpsNum / c.fpsDen).toFixed(2) : String(c.fpsNum);
-  }
-  function isVertical(c: CanvasInfo): boolean {
-    return c.outputHeight > c.outputWidth;
-  }
-  function encName(list: EncoderType[], id: string): string {
-    return list.find((e) => e.id === id)?.name ?? id;
-  }
-
-  // Per-canvas rollup for the tile footer: how many destinations, and the strongest
-  // live state across its enabled bindings.
-  function canvasDests(uuid: string): { enabled: number; total: number } {
-    const rows = bindings.filter((b) => b.canvasUuid === uuid);
-    return { enabled: rows.filter((b) => b.enabled).length, total: rows.length };
-  }
+  // The strongest live state across a canvas's enabled bindings (drives the list dot).
   function canvasState(uuid: string): MultistreamState | "off" {
     const rows = bindings.filter((b) => b.canvasUuid === uuid && b.enabled);
     if (rows.length === 0) return "off";
@@ -177,132 +115,26 @@
     if (states.includes("connecting")) return "connecting";
     return "idle";
   }
-  const STATE_TAG_BG: Record<MultistreamState | "disabled", string> = {
-    disabled: "color-mix(in srgb, var(--color-muted) 10%, transparent)",
-    idle: "color-mix(in srgb, var(--color-muted) 12%, transparent)",
-    connecting: "color-mix(in srgb, var(--meter-yellow) 14%, transparent)",
-    live: "color-mix(in srgb, var(--meter-green) 14%, transparent)",
-    error: "color-mix(in srgb, var(--color-live) 14%, transparent)",
-  };
-  function titleState(s: string): string {
-    return s.charAt(0).toUpperCase() + s.slice(1);
+
+  function fpsText(c: CanvasInfo): string {
+    if (!(c.fpsDen > 0)) return String(c.fpsNum);
+    return c.fpsDen > 1 ? (c.fpsNum / c.fpsDen).toFixed(2) : String(c.fpsNum);
   }
 
-  // The effective state of a destination row: disabled bindings never go live.
-  function rowState(b: OutputBindingInfo): MultistreamState | "disabled" {
-    if (!b.enabled) {
-      return "disabled";
-    }
-    return statusByBinding.get(b.uuid)?.state ?? "idle";
-  }
-  function isDangling(label: string): boolean {
-    return label === "(deleted)";
-  }
-  function isUnset(label: string): boolean {
-    return label === "(unset)";
-  }
-  function rowName(b: OutputBindingInfo): string {
-    if (isUnset(b.profileLabel)) {
-      return "No destination";
-    }
-    return b.profileLabel;
-  }
-
-  // Per-canvas enabled = any binding enabled; the master toggle sets them all.
-  const canvasEnabled = $derived(canvasBindings.some((b) => b.enabled));
-  async function toggleCanvas(): Promise<void> {
-    const rows = canvasBindings;
-    if (rows.length === 0) return;
-    const target = !canvasEnabled;
-    try {
-      await Promise.all(rows.map((b) => obs.call("outputBinding.setEnabled", { uuid: b.uuid, enabled: target })));
-      loadBindings();
-    } catch (e) {
-      error = (e as Error).message;
-    }
-  }
-  async function toggleRow(b: OutputBindingInfo, enabled: boolean): Promise<void> {
-    try {
-      await obs.call("outputBinding.setEnabled", { uuid: b.uuid, enabled });
-      loadBindings();
-    } catch (e) {
-      error = (e as Error).message;
-      // Revert the optimistic toggle (checked is two-way bound to b.enabled).
-      b.enabled = !enabled;
-    }
-  }
-  function confirmRemoveRow(b: OutputBindingInfo): void {
-    dialog = {
-      kind: "confirm",
-      title: "Unbind Destination",
-      message: `Unbind "${rowName(b)}" from this canvas?`,
-      confirmLabel: "Unbind",
-      onCommit: () => void removeRow(b),
-    };
-  }
-  async function removeRow(b: OutputBindingInfo): Promise<void> {
-    try {
-      await obs.call("outputBinding.remove", { uuid: b.uuid });
-      loadBindings();
-    } catch (e) {
-      error = (e as Error).message;
-    }
-  }
-
-  // Whether the editing canvas has any live/connecting output (blocks deletion +
-  // canvas-video resets). Reuses the per-canvas rollup used by the tile dots.
-  const editingLive = $derived(
-    editingUuid ? canvasState(editingUuid) === "live" || canvasState(editingUuid) === "connecting" : false,
+  // Selection: default to the Default canvas (or first) once loaded, and re-pick if the
+  // current selection disappears (deleted).
+  let selectedUuid = $state<string | null>(null);
+  $effect(() => {
+    if (selectedUuid && canvases.some((c) => c.uuid === selectedUuid)) return;
+    selectedUuid = (canvases.find((c) => c.isDefault) ?? canvases[0])?.uuid ?? null;
+  });
+  const selected = $derived(canvases.find((c) => c.uuid === selectedUuid) ?? null);
+  const selectedLive = $derived(
+    selectedUuid ? canvasState(selectedUuid) === "live" || canvasState(selectedUuid) === "connecting" : false,
   );
-  function confirmDeleteCanvas(c: CanvasInfo): void {
-    dialog = {
-      kind: "confirm",
-      title: "Delete Canvas",
-      message: `Delete canvas "${c.name}"? This removes the canvas and unbinds its destinations.`,
-      confirmLabel: "Delete",
-      onCommit: () => void deleteCanvas(c),
-    };
-  }
-  async function deleteCanvas(c: CanvasInfo): Promise<void> {
-    const res = await callOrToast("canvas.remove", { uuid: c.uuid }, "Delete canvas failed");
-    // On success close the modal; the gallery refreshes via the canvas.changed sub.
-    if (res !== null) {
-      closeEditor();
-    }
-  }
 
-  function startAdd(): void {
-    adding = true;
-    addProfile = profiles[0]?.uuid ?? "";
-  }
-  function cancelAdd(): void {
-    adding = false;
-  }
-  async function confirmAdd(): Promise<void> {
-    if (!editingUuid) return;
-    try {
-      await obs.call("outputBinding.create", {
-        canvasUuid: editingUuid,
-        ...(addProfile ? { profileUuid: addProfile } : {}),
-      });
-      adding = false;
-      loadBindings();
-    } catch (e) {
-      error = (e as Error).message;
-    }
-  }
-
-  function openEditor(uuid: string): void {
-    adding = false;
-    editingUuid = uuid;
-  }
-  function closeEditor(): void {
-    editingUuid = null;
-    adding = false;
-  }
-
-  // Inline add-canvas: a name prompt -> canvas.create seeded with the Default
-  // canvas's resolution/FPS. The new canvas appears via canvas.changed; open it.
+  // Inline add-canvas: a name prompt -> canvas.create seeded with the Default canvas's
+  // resolution/FPS and the spec's inheritance defaults (Audio + Advanced inherited).
   function addCanvas(): void {
     dialog = {
       kind: "prompt",
@@ -317,185 +149,83 @@
             name,
             baseWidth: def?.baseWidth ?? 1920,
             baseHeight: def?.baseHeight ?? 1080,
-            outputWidth: def?.outputWidth,
-            outputHeight: def?.outputHeight,
             fpsNum: def?.fpsNum ?? 60,
             fpsDen: def?.fpsDen ?? 1,
+            audioUseDefault: true,
+            color: { useDefault: true },
           },
           "Create canvas failed",
         );
-        if (r) editingUuid = r.uuid;
+        if (r) selectedUuid = r.uuid;
       },
     };
   }
-
-  function noop(): void {}
+  function confirmDeleteCanvas(c: CanvasInfo): void {
+    dialog = {
+      kind: "confirm",
+      title: "Delete Canvas",
+      message: `Delete canvas "${c.name}"? This removes the canvas and unbinds its destinations.`,
+      confirmLabel: "Delete",
+      onCommit: () => void callOrToast("canvas.remove", { uuid: c.uuid }, "Delete canvas failed"),
+    };
+  }
+  function confirmRemoveBinding(b: OutputBindingInfo): void {
+    const label = b.profileLabel === "(unset)" ? "No destination" : b.profileLabel;
+    dialog = {
+      kind: "confirm",
+      title: "Unbind Destination",
+      message: `Unbind "${label}" from this canvas?`,
+      confirmLabel: "Unbind",
+      onCommit: async () => {
+        await callOrToast("outputBinding.remove", { uuid: b.uuid }, "Unbind failed");
+        loadBindings();
+      },
+    };
+  }
 </script>
 
 <div class="page">
-  <PageHeader title="Canvases" sub="encode targets · one per resolution/FPS">
-    {#snippet actions()}
-      {#if loaded}
-        <span class="head-count">{canvases.length} canvas{canvases.length === 1 ? "" : "es"}</span>
-      {/if}
-    {/snippet}
-  </PageHeader>
-
-  <div class="body">
-    {#if error}<p class="err">{error}</p>{/if}
-
-    {#if !loaded}
-      <p class="dim">Loading canvases…</p>
-    {:else}
-      <div class="grid">
+  <PageHeader title="Canvases" sub="encode targets · one per resolution/FPS" />
+  {#if error}<p class="err">{error}</p>{/if}
+  {#if !loaded}
+    <p class="dim">Loading canvases…</p>
+  {:else}
+    <div class="split">
+      <aside class="list">
         {#each canvases as c (c.uuid)}
           {@const st = canvasState(c.uuid)}
-          {@const d = canvasDests(c.uuid)}
-          <button class="tile" onclick={() => openEditor(c.uuid)}>
-            <div class="media">
-              <div class="stage" class:vertical={isVertical(c)}>
-                <span class="res-chip">{c.outputWidth} × {c.outputHeight}</span>
-                {#if st === "live"}<span class="live-chip">● LIVE</span>{/if}
-                <div class="scene-tag">
-                  <span class="scene-bar"></span>
-                  <span class="scene-pill">{sceneByCanvas[c.uuid] || c.name}</span>
-                </div>
-              </div>
-            </div>
-            <div class="tile-info">
-              <div class="tile-foot">
-                <span class="tile-name">{c.name}</span>
-                {#if c.isDefault}<span class="badge">Default</span>{/if}
-                <span class="spacer"></span>
-                <span class="tile-fps">{fpsText(c)} fps</span>
-              </div>
-              <div class="tile-status">
-                <span class="dot" style:background={STATE_COLOR_EXT[st]}></span>
-                <span class="tile-dests">
-                  {#if d.total === 0}
-                    No destinations
-                  {:else}
-                    {d.enabled}/{d.total} destination{d.total === 1 ? "" : "s"}
-                  {/if}
-                </span>
-              </div>
-            </div>
-          </button>
-        {/each}
-
-        <button class="tile add-tile" onclick={addCanvas}>
-          <Icon name="plus" size={16} />
-          <span>Add canvas</span>
-        </button>
-      </div>
-    {/if}
-  </div>
-</div>
-
-{#if editingCanvas}
-  {@const c = editingCanvas}
-  <Modal title={c.name} onClose={closeEditor} width={680}>
-    {#snippet headExtra()}
-      {#if c.isDefault}<span class="badge">Default</span>{/if}
-    {/snippet}
-
-    {#snippet footer()}
-      <button
-        class="del-btn"
-        disabled={c.isDefault || editingLive}
-        title={c.isDefault
-          ? "The Default canvas can't be deleted"
-          : editingLive
-            ? "Stop the stream first"
-            : "Delete this canvas"}
-        onclick={() => confirmDeleteCanvas(c)}
-      >
-        <Icon name="trash" size={13} /> Delete canvas
-      </button>
-    {/snippet}
-
-    <section class="section">
-      <div class="sec-bar">
-        <h3 class="sec-head">Settings</h3>
-      </div>
-      <p class="sec-desc">Resolution, frame rate, and encoders for this encode target.</p>
-      <CanvasEditor
-        canvas={c}
-        {videoEncoders}
-        {audioEncoders}
-        embedded
-        onClose={noop}
-        onSaved={() => {
-          void loadCanvases();
-          closeEditor();
-        }}
-      />
-    </section>
-
-    <section class="section">
-      <div class="sec-bar">
-        <h3 class="sec-head">Destinations</h3>
-        <span class="sec-count">{canvasBindings.filter((b) => b.enabled).length}/{canvasBindings.length} enabled</span>
-        <span class="spacer"></span>
-        {#if canvasBindings.length > 0}
-          <span class="toggle-wrap" title={canvasEnabled ? "Disable all" : "Enable all"}>
-            <ToggleSwitch size="sm" checked={canvasEnabled} onchange={() => void toggleCanvas()} />
-          </span>
-        {/if}
-      </div>
-
-      {#if canvasBindings.length === 0 && !adding}
-        <p class="empty">No destinations bound to this canvas yet.</p>
-      {/if}
-
-      <div class="rows">
-        {#each canvasBindings as b (b.uuid)}
-          {@const s = rowState(b)}
-          <div class="row" class:off={!b.enabled}>
-            <span class="toggle-wrap" title={b.enabled ? "Disable" : "Enable"}>
-              <ToggleSwitch size="sm" bind:checked={b.enabled} onchange={(v) => void toggleRow(b, v)} />
+          <button class="ci" class:on={c.uuid === selectedUuid} onclick={() => (selectedUuid = c.uuid)}>
+            <span class="ci-dot" style:background={STATE_COLOR_EXT[st]}></span>
+            <span class="ci-body">
+              <span class="ci-name">{c.name}</span>
+              <span class="ci-sub">{c.outputWidth}×{c.outputHeight} · {fpsText(c)}fps</span>
             </span>
-            <div class="row-col">
-              <div class="row-line1">
-                <span class="row-name" class:deleted={isDangling(b.profileLabel)} class:unset={isUnset(b.profileLabel)}>
-                  {rowName(b)}
-                </span>
-                <span class="row-state" style:color={STATE_COLOR_EXT[s]} style:background={STATE_TAG_BG[s]}>
-                  {titleState(s).toUpperCase()}
-                </span>
-              </div>
-              <div class="row-sub">{encName(videoEncoders, c.videoEncoder)}</div>
-            </div>
-            <button class="trash" title="Remove destination" aria-label="Remove destination" onclick={() => confirmRemoveRow(b)}>
-              <Icon name="trash" size={14} />
-            </button>
-          </div>
-        {/each}
-
-        {#if adding}
-          <div class="row add-form">
-            <span class="add-label">New destination</span>
-            <select bind:value={addProfile}>
-              <option value="">No destination (placeholder)</option>
-              {#each profiles as p (p.uuid)}
-                <option value={p.uuid}>{p.label || p.platform}</option>
-              {/each}
-            </select>
-            <div class="add-actions">
-              <button class="ghost" onclick={cancelAdd}>Cancel</button>
-              <button class="accent" onclick={() => void confirmAdd()}>Add</button>
-            </div>
-          </div>
-        {:else}
-          <button class="add-tile-row" onclick={startAdd}>
-            <Icon name="plus" size={13} />
-            <span>Bind destination</span>
+            {#if c.isDefault}<span class="ci-badge">DEF</span>{/if}
           </button>
+        {/each}
+        <button class="ci-add" onclick={addCanvas}><Icon name="plus" size={13} /><span>New Canvas</span></button>
+      </aside>
+      <section class="pane">
+        {#if selected}
+          {#key selected.uuid}
+            <CanvasEditor
+              canvas={selected}
+              {videoEncoders}
+              {audioEncoders}
+              {bindings}
+              {profiles}
+              {statusByBinding}
+              isLive={selectedLive}
+              onDelete={() => confirmDeleteCanvas(selected)}
+              onBindingsChanged={loadBindings}
+              onRemoveBinding={confirmRemoveBinding}
+            />
+          {/key}
         {/if}
-      </div>
-    </section>
-  </Modal>
-{/if}
+      </section>
+    </div>
+  {/if}
+</div>
 
 {#if dialog}
   <CollectionDialog {...dialog} onClose={() => (dialog = null)} />
@@ -510,412 +240,99 @@
     background: var(--color-base);
     color: var(--color-text);
   }
-  .head-count {
-    font-family: var(--font-mono);
-    font-size: 10px;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--color-muted);
-  }
-
-  .body {
+  .split {
     flex: 1;
     min-height: 0;
-    overflow: auto;
-    padding: 22px 24px 32px;
+    display: flex;
   }
-
-  /* ---- tile gallery ------------------------------------------------------ */
-  .grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-    gap: 18px;
-    align-content: start;
-  }
-  .tile {
+  .list {
+    flex: 0 0 260px;
     display: flex;
     flex-direction: column;
+    border-right: var(--border-weight) solid var(--color-border);
+    overflow: auto;
+  }
+  .ci {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 14px;
     text-align: left;
-    padding: 0;
-    height: auto;
-    background: var(--color-surface);
-    border: var(--border-weight) solid var(--color-border);
+    background: none;
+    border: 0;
+    border-bottom: var(--border-weight) solid var(--color-border);
     color: var(--color-text);
     cursor: pointer;
-    transition:
-      border-color 0.12s ease,
-      transform 0.12s ease;
   }
-  .tile:hover {
-    border-color: color-mix(in srgb, var(--color-accent) 60%, var(--color-border));
-    transform: translateY(-2px);
+  .ci:hover {
+    background: var(--color-surface);
   }
-  .tile:focus-visible {
-    outline: var(--border-weight) solid var(--color-accent);
-    outline-offset: 2px;
+  .ci.on {
+    background: var(--color-surface-2);
+    box-shadow: inset 3px 0 0 var(--color-accent);
   }
-
-  /* Representational preview: ONE block-level aspect box (the .stage), framed by a
-     padded media band on the base color. No native video here -- text chips only. */
-  /* Fixed-height band for BOTH orientations: the stage takes a definite height from
-     the band and derives its WIDTH via aspect-ratio. Deriving height from width:100%
-     is not honored by this Chromium build, so we never rely on it. */
-  .media {
-    position: relative;
-    height: 200px;
-    padding: 16px;
-    box-sizing: border-box;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: var(--color-base);
-    border-bottom: var(--border-weight) solid var(--color-border);
-  }
-  .stage {
-    position: relative;
-    height: 100%;
-    aspect-ratio: 16 / 9;
-    max-width: 100%;
-    background: color-mix(in srgb, var(--color-text) 2.5%, transparent);
-    box-shadow: 0 0 0 1px var(--color-border);
-  }
-  .stage.vertical {
-    aspect-ratio: 9 / 16;
-  }
-  .res-chip {
-    position: absolute;
-    left: 8px;
-    top: 8px;
-    font-family: var(--font-mono);
-    font-size: 9px;
-    letter-spacing: 0.06em;
-    color: rgba(255, 255, 255, 0.5);
-    border: var(--border-weight) solid rgba(255, 255, 255, 0.16);
-    padding: 2px 6px;
-  }
-  .live-chip {
-    position: absolute;
-    right: 8px;
-    top: 8px;
-    font-family: var(--font-mono);
-    font-size: 9px;
-    color: #fff;
-    background: var(--color-live);
-    padding: 2px 6px;
-  }
-  .scene-tag {
-    position: absolute;
-    left: 0;
-    bottom: 0;
-    display: flex;
-    align-items: stretch;
-    max-width: 100%;
-  }
-  .scene-bar {
-    width: 4px;
-    background: var(--color-accent);
-  }
-  .scene-pill {
-    background: rgba(8, 8, 10, 0.78);
-    padding: 5px 10px;
-    font-size: 11px;
-    font-weight: 600;
-    color: #fff;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .tile-info {
-    padding: 12px 13px 13px;
-  }
-  .tile-foot {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .tile-name {
-    font-family: var(--font-ui);
-    font-size: 14px;
-    font-weight: 600;
-    letter-spacing: -0.01em;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .tile-fps {
-    flex: 0 0 auto;
-    font-family: var(--font-mono);
-    font-size: 10px;
-    color: var(--color-muted);
-  }
-  .tile-status {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    margin-top: 8px;
-  }
-  .tile-status .dot {
+  .ci-dot {
     width: 7px;
     height: 7px;
     flex: 0 0 auto;
   }
-  .tile-dests {
+  .ci-body {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    flex: 1;
+  }
+  .ci-name {
+    font-size: 13px;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .ci-sub {
     font-family: var(--font-mono);
     font-size: 10px;
     color: var(--color-muted);
-    letter-spacing: 0.02em;
   }
-
-  .add-tile {
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    min-height: 190px;
-    border-style: dashed;
-    background: transparent;
-    color: var(--color-dim);
-    font-family: var(--font-ui);
-    font-size: 13px;
-  }
-  .add-tile:hover {
-    border-color: var(--color-accent);
-    color: var(--color-accent);
-    transform: none;
-  }
-
-  .badge {
+  .ci-badge {
     font-family: var(--font-mono);
     font-size: 8px;
-    text-transform: uppercase;
     letter-spacing: 0.06em;
     color: var(--color-accent-ink);
     background: var(--color-accent);
-    padding: 2px 5px;
+    padding: 2px 4px;
     flex: 0 0 auto;
   }
-  .spacer {
-    flex: 1;
-  }
-  .dim {
-    color: var(--color-muted);
-    margin: 0;
-  }
-  .err {
-    margin: 0 0 12px;
-    color: var(--color-live);
-    font-size: 12px;
-  }
-
-  /* ---- modal body -------------------------------------------------------- */
-  .section {
-    margin-bottom: 28px;
-  }
-  .section:last-child {
-    margin-bottom: 0;
-  }
-  .sec-head {
-    margin: 0;
-    font-family: var(--font-mono);
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--color-dim);
-  }
-  .sec-desc {
-    margin: 6px 0 0;
-    font-size: 12px;
-    color: var(--color-muted);
-  }
-  .sec-count {
-    font-family: var(--font-mono);
-    font-size: 9px;
-    letter-spacing: 0.06em;
-    color: var(--color-muted);
-  }
-  .sec-bar {
+  .ci-add {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding-bottom: 10px;
-    border-bottom: var(--border-weight) solid var(--color-border-2);
-    margin-bottom: 12px;
-  }
-  .empty {
-    margin: 4px 0 12px;
-    font-family: var(--font-mono);
-    font-size: 11px;
-    color: var(--color-muted);
-  }
-  .rows {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-  }
-  .row {
-    display: flex;
-    align-items: center;
-    gap: 14px;
+    justify-content: center;
+    gap: 8px;
     padding: 12px 14px;
-    border: var(--border-weight) solid var(--color-border);
-    background: var(--color-surface);
+    background: none;
+    border: 0;
+    border-top: var(--border-weight) dashed var(--color-border);
+    color: var(--color-dim);
+    cursor: pointer;
+    font-family: var(--font-ui);
+    font-size: 12px;
+    margin-top: auto;
   }
-  .row.off {
-    background: var(--color-base);
+  .ci-add:hover {
+    color: var(--color-accent);
   }
-  .row-col {
+  .pane {
     flex: 1;
     min-width: 0;
   }
-  .row-line1 {
-    display: flex;
-    align-items: center;
-    gap: 8px;
+  .dim {
+    color: var(--color-muted);
+    margin: 16px 24px;
   }
-  .row-name {
-    font-size: 14px;
-    font-weight: 500;
-    color: var(--color-text);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .row-name.deleted {
+  .err {
+    margin: 12px 24px;
     color: var(--color-live);
-    font-style: italic;
-  }
-  .row-name.unset {
-    color: var(--color-muted);
-    font-style: italic;
-    font-weight: 400;
-  }
-  .row-state {
-    flex: 0 0 auto;
-    font-family: var(--font-mono);
-    font-size: 8px;
-    letter-spacing: 0.06em;
-    padding: 2px 6px;
-  }
-  .row-sub {
-    margin-top: 3px;
-    font-family: var(--font-mono);
-    font-size: 10px;
-    color: var(--color-muted);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .trash {
-    flex: 0 0 auto;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 28px;
-    height: 26px;
-    padding: 0;
-    background: none;
-    border: var(--border-weight) solid var(--color-border);
-    color: var(--color-muted);
-    cursor: pointer;
-  }
-  .trash:hover {
-    color: var(--color-live);
-    border-color: var(--color-live);
-  }
-
-  .toggle-wrap {
-    flex: 0 0 auto;
-    display: inline-flex;
-    align-items: center;
-  }
-
-  /* Delete-canvas: bottom-left of the modal footer (margin-right:auto pushes it
-     away from the footer's flex-end group), danger-tinted. */
-  .del-btn {
-    margin-right: auto;
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    height: auto;
-    padding: 7px 12px;
-    background: none;
-    border: var(--border-weight) solid var(--color-border);
-    color: var(--color-live);
-    cursor: pointer;
-    font: inherit;
     font-size: 12px;
-  }
-  .del-btn:hover:not(:disabled) {
-    border-color: var(--color-live);
-    background: color-mix(in srgb, var(--color-live) 12%, transparent);
-  }
-  .del-btn:disabled {
-    color: var(--color-muted);
-    cursor: default;
-  }
-
-  .add-tile-row {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    padding: 12px 16px;
-    border: var(--border-weight) dashed var(--color-border);
-    background: transparent;
-    color: var(--color-dim);
-    cursor: pointer;
-    font-family: var(--font-ui);
-    font-size: 12px;
-  }
-  .add-tile-row:hover {
-    border-color: var(--color-accent);
-    color: var(--color-accent);
-  }
-  .add-form {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 10px;
-  }
-  .add-label {
-    font-family: var(--font-mono);
-    font-size: 9px;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: var(--color-muted);
-  }
-  .add-form select {
-    background: var(--color-base);
-    border: var(--border-weight) solid var(--color-border);
-    color: var(--color-text);
-    font: inherit;
-    font-size: 13px;
-    padding: 7px 10px;
-  }
-  .add-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: 8px;
-  }
-  .add-actions .ghost {
-    padding: 7px 14px;
-    background: none;
-    border: var(--border-weight) solid var(--color-border);
-    color: var(--color-dim);
-    cursor: pointer;
-    font: inherit;
-    font-size: 12px;
-  }
-  .add-actions .ghost:hover {
-    color: var(--color-text);
-  }
-  .add-actions .accent {
-    padding: 7px 16px;
-    background: var(--color-accent);
-    border: 0;
-    color: var(--color-accent-ink);
-    cursor: pointer;
-    font: inherit;
-    font-size: 12px;
-    font-weight: 600;
   }
 </style>
