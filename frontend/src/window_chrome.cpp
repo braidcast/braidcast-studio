@@ -9,6 +9,15 @@
 
 #include "include/cef_browser.h"
 
+// Win11 corner-rounding opt-out. These are defined in the Windows 11 SDK's dwmapi.h;
+// fall back to the documented literals so the build works against an older SDK.
+#ifndef DWMWA_WINDOW_CORNER_PREFERENCE
+#define DWMWA_WINDOW_CORNER_PREFERENCE 33
+#endif
+#ifndef DWMWCP_DONOTROUND
+#define DWMWCP_DONOTROUND 1
+#endif
+
 namespace WindowChrome {
 namespace {
 
@@ -171,6 +180,11 @@ void Init(HWND hwnd, const Config &cfg)
 	// snap/maximize animations) on a window whose caption we have eaten.
 	const MARGINS shadow = {0, 0, 1, 0};
 	DwmExtendFrameIntoClientArea(hwnd, &shadow);
+
+	// Square corners: Windows 11 rounds top-level window corners by default, which
+	// clashes with the zero-radius command-deck chrome. Opt out (no-op pre-Win11).
+	const DWORD corner = DWMWCP_DONOTROUND;
+	DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));
 
 	// Recompute the non-client area now that WM_NCCALCSIZE is intercepted.
 	SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,

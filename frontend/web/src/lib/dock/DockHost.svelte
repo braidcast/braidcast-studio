@@ -41,6 +41,9 @@
       // defaultTabComponent names it so panels need not set tabComponent per-panel.
       defaultTabComponent: "obs-tab",
       createTabComponent: () => new DockTab(),
+      // A lone dock's header spans the whole group width instead of hugging its
+      // label as a left-aligned chip (the boxed-header look on floating canvas docks).
+      singleTabMode: "fullwidth",
     };
   }
 
