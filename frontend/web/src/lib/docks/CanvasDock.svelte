@@ -11,6 +11,7 @@
   } from "../bridge";
   import { setPage } from "../pageStore.svelte";
   import { previewSuspended, suspendPreview } from "../previewGate.svelte";
+import { dockLayout } from "../dockLayoutSignal.svelte";
   import { WINDOW_ID } from "../windowContext";
   import ContextMenu, { type ContextMenuItem } from "../ContextMenu.svelte";
   import { clipboard } from "../clipboardStore.svelte";
@@ -822,6 +823,14 @@
     } else {
       reportRect();
     }
+  });
+
+  // Re-measure on any dock layout change. A reorder/move swaps panel positions
+  // without resizing them, so ResizeObserver never fires and this canvas's overlay
+  // would stay at its old screen position while the DOM slots swapped.
+  $effect(() => {
+    dockLayout.v;
+    scheduleRect();
   });
 
   // The preview menu opens at the cursor inside the overlay (which sits above CEF

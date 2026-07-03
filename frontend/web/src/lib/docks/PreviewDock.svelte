@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { obs } from "../bridge";
   import { previewSuspended, suspendPreview } from "../previewGate.svelte";
+import { dockLayout } from "../dockLayoutSignal.svelte";
   import { WINDOW_ID } from "../windowContext";
   import ContextMenu, { type ContextMenuItem } from "../ContextMenu.svelte";
   import PropertyForm from "../properties/PropertyForm.svelte";
@@ -149,6 +150,14 @@
     } else {
       reportRect();
     }
+  });
+
+  // Re-measure on any dock layout change. A reorder/move swaps panel positions
+  // without resizing them, so ResizeObserver never fires — measure next frame,
+  // after Dockview has settled the new positions.
+  $effect(() => {
+    dockLayout.v;
+    requestAnimationFrame(reportRect);
   });
 
   // The context menu opens at the cursor inside the preview; the native overlay

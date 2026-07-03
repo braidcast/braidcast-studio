@@ -4,6 +4,7 @@
   import DockHost from "../dock/DockHost.svelte";
   import { DOCKS, panelOptions } from "../dock/dockRegistry";
   import { layoutStore } from "../dock/layoutStore.svelte";
+import { bumpDockLayout } from "../dockLayoutSignal.svelte";
   import {
     startCanvasDockReconciler,
     reconcileCanvasDocks,
@@ -378,6 +379,10 @@
     dv.onDidLayoutChange(() => {
       refreshVisible();
       persistLayoutSoon(dv);
+      // A reorder/move changes panel POSITIONS without resizing them, so the
+      // native-preview docks' ResizeObserver never fires; ping them to re-assert
+      // their overlay rect so the native HWNDs follow their slots.
+      bumpDockLayout();
     });
     // Restore the saved arrangement if one exists; otherwise build the default.
     // fromJSON itself fires onDidLayoutChange, which re-persists the restored
