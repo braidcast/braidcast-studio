@@ -58,22 +58,24 @@
     void load();
   });
 
-  // Functional buckets (Recently Used prepended in the rail list below).
   const buckets = $derived(bucketTypes(types));
-  // The rail tabs actually shown: Recently Used first (always, even if empty so the
-  // user can find it), then each non-empty functional category.
-  const railTabs = $derived<Rail[]>(["recent", ...buckets.map((b) => b.category)]);
-
   // Resolve the MRU type ids against the live type list (skip unregistered ones).
   const recentTypes = $derived(
     recentSources.ids.map((id) => types.find((t) => t.id === id)).filter((t): t is SourceType => t !== undefined),
   );
+  // Rail tabs: Recently Used ONLY when it has entries (an empty one is an
+  // unselectable dead tab), then each non-empty functional category.
+  const railTabs = $derived<Rail[]>([
+    ...(recentTypes.length > 0 ? (["recent"] as Rail[]) : []),
+    ...buckets.map((b) => b.category),
+  ]);
   // Types shown in the right pane for the active rail tab.
   const paneTypes = $derived<SourceType[]>(
     rail === "recent" ? recentTypes : (buckets.find((b) => b.category === rail)?.types ?? []),
   );
 
-  // When Recently Used is empty on first open, land on the first functional category.
+  // The initial rail state is "recent"; when it's empty (and thus hidden), fall the
+  // selection through to the first functional category so the pane is never blank.
   $effect(() => {
     if (loaded && rail === "recent" && recentTypes.length === 0 && buckets.length > 0) {
       rail = buckets[0].category;
@@ -207,11 +209,17 @@
     </div>
   {:else}
     <div class="picker">
-      <nav class="rail">
+      <div class="rail" role="tablist" aria-label="Source categories">
         {#each railTabs as tab (tab)}
-          <button class="railtab" class:on={rail === tab} onclick={() => (rail = tab)}>{CATEGORY_LABEL[tab]}</button>
+          <button
+            class="railtab"
+            class:on={rail === tab}
+            role="tab"
+            aria-selected={rail === tab}
+            onclick={() => (rail = tab)}>{CATEGORY_LABEL[tab]}</button
+          >
         {/each}
-      </nav>
+      </div>
       <div class="pane">
         {#if paneTypes.length === 0}
           <EmptyState compact title={rail === "recent" ? "No recently used sources" : "No sources in this category"} />
