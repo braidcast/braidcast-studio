@@ -262,6 +262,17 @@ input[type="color"] {
   height: 100%;
 }
 
+/* Full-width dock header: tabs share the strip evenly (2 tabs -> 50% each) instead
+   of hugging their labels and leaving an empty void on the right. The void that
+   dockview normally grows to fill the remainder is collapsed so the tabs own it. */
+.dockview-theme-obs .dv-tabs-container > .dv-tab {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.dockview-theme-obs .dv-tabs-and-actions-container .dv-void-container {
+  flex-grow: 0;
+}
+
 /* Custom dock-header chrome (DockTab renderer): optional status dot + title +
    optional `S/S` badge + ⧉ tear-out + ✕ close, per the redesign mock's dockHead.
    Replaces dockview's default tab content; styled here so it re-skins live with the
