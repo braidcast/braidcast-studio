@@ -672,7 +672,10 @@
         {#each DOCKS as d (d.id)}
           {#if visibleDocks[d.id] === false}
             <button class="restorechip" onclick={() => toggleDock(d.id)}>
-              <span class="plus">+</span>{d.title}
+              <svg class="plus" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 5v14M5 12h14" />
+              </svg>
+              {d.title}
             </button>
           {/if}
         {/each}
@@ -1019,8 +1022,7 @@
     background: var(--color-surface);
   }
   .restorechip .plus {
-    font-family: var(--font-mono);
-    font-weight: 600;
+    flex: 0 0 auto;
     color: var(--color-accent);
   }
   /* Utility segment: undo / redo / reset / more as bordered blocks, left divider. */
