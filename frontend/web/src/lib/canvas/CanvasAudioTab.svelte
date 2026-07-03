@@ -55,7 +55,6 @@
 </div>
 
 <style>
-  /* .field / .flabel / select ported verbatim from CanvasEditor.svelte. */
   .body {
     display: block;
   }

@@ -233,7 +233,6 @@
 </div>
 
 <style>
-  /* Ported verbatim from CanvasEditor.svelte. */
   .body {
     display: block;
   }

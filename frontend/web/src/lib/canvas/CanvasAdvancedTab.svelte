@@ -99,7 +99,6 @@
 </div>
 
 <style>
-  /* .field / .flabel / select / .wh / .x / input[type=number] ported verbatim from CanvasEditor.svelte. */
   .body {
     display: block;
   }

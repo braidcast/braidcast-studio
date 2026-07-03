@@ -174,7 +174,6 @@
 </div>
 
 <style>
-  /* Destinations block styles ported verbatim from CanvasesPage.svelte. */
   .body {
     display: block;
   }

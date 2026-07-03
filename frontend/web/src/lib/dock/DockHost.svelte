@@ -29,8 +29,8 @@
   // component "canvas" + JSON-safe params {canvasUuid, canvasName}); register the
   // one shared renderer here since they are not static DOCKS entries.
   renderers["canvas"] = createContentRenderer(CanvasDock as unknown as Component<Record<string, unknown>>);
-  // User-defined browser docks (Task 12): one shared renderer for all
-  // `browserdock:<id>` panels; browserDockReconciler supplies {url,title} params.
+  // User-defined browser docks: one shared renderer for all `browserdock:<id>`
+  // panels; browserDockReconciler supplies {url,title} params.
   renderers["browserdock"] = createContentRenderer(BrowserDock as unknown as Component<Record<string, unknown>>);
 
   function buildOptions(): DockviewComponentOptions {
