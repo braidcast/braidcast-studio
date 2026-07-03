@@ -12,46 +12,42 @@
   let { prop, value, onChange, onButton, lookup }: Props = $props();
 
   const Control = $derived(controlFor(prop.type));
-  // bool/button/info/group own their full-width row and render their own label,
-  // so the form grid's label cell is suppressed for them.
-  const ownsLabel = $derived(
-    prop.type === "bool" ||
-      prop.type === "button" ||
-      prop.type === "group" ||
-      (prop.type === "text" && (prop as { text_type?: string }).text_type === "info"),
+
+  // Info text renders its own full-width note.
+  const isInfo = $derived(
+    prop.type === "text" && (prop as { text_type?: string }).text_type === "info",
   );
+  // Group/button/info own their full-width chrome (legend, note, button label).
+  const isFull = $derived(prop.type === "group" || prop.type === "button" || isInfo);
+  // Booleans render as a label-left / toggle-right row (the mock's tglField).
+  const isRow = $derived(prop.type === "bool");
+
+  const label = $derived(prop.label ?? prop.name);
+  const hint = $derived(prop.long_description ?? "");
 </script>
 
 {#if prop.visible}
-  <div class="row" class:full={ownsLabel}>
-    {#if !ownsLabel}
-      <label class="label" for={`p-${prop.name}`} title={prop.long_description ?? ""}>
-        {prop.label ?? prop.name}
-      </label>
-    {/if}
-    <div class="control">
+  {#if isFull}
+    <div class="cv-field cv-field--full">
       <Control {prop} {value} {onChange} {onButton} {lookup} />
     </div>
-  </div>
+  {:else if isRow}
+    <div class="cv-field cv-field--row">
+      <div class="cv-field__l">
+        {label}
+        {#if hint}<span class="cv-field__sub">{hint}</span>{/if}
+      </div>
+      <div class="cv-field__c cv-field__c--end">
+        <Control {prop} {value} {onChange} {onButton} {lookup} />
+      </div>
+    </div>
+  {:else}
+    <div class="cv-field">
+      <div class="cv-field__l">{label}</div>
+      <div class="cv-field__c">
+        <Control {prop} {value} {onChange} {onButton} {lookup} />
+      </div>
+      {#if hint}<div class="cv-field__h">{hint}</div>{/if}
+    </div>
+  {/if}
 {/if}
-
-<style>
-  .row {
-    display: grid;
-    grid-template-columns: minmax(120px, 0.4fr) 1fr;
-    gap: 10px 14px;
-    align-items: center;
-  }
-  .row.full {
-    grid-template-columns: 1fr;
-  }
-  .label {
-    text-align: right;
-    font-size: 13px;
-    color: var(--color-text);
-    overflow-wrap: anywhere;
-  }
-  .control {
-    min-width: 0;
-  }
-</style>

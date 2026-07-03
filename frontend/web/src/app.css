@@ -1180,6 +1180,38 @@ input[type="color"] {
   border-left: var(--border-weight) solid var(--color-border);
   background: var(--color-surface);
 }
+/* Custom up/down steppers (mock's num__step). Native spinners are hidden on the
+   opted-in `.cv-num--step` variant so the two don't stack. */
+.cv-num--step input[type="number"]::-webkit-inner-spin-button,
+.cv-num--step input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.cv-num__step {
+  display: flex;
+  flex-direction: column;
+  border-left: var(--border-weight) solid var(--color-border);
+}
+.cv-num__step button {
+  width: 22px;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-muted);
+  background: var(--color-surface);
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+.cv-num__step button:hover {
+  color: var(--color-accent);
+  background: var(--color-surface-2);
+  border: 0;
+}
+.cv-num__step button + button {
+  border-top: var(--border-weight) solid var(--color-border);
+}
 .cv-numrow {
   display: flex;
   align-items: center;
@@ -1197,4 +1229,24 @@ input[type="color"] {
   max-width: 460px;
   height: 34px;
   background-color: var(--color-surface-2);
+}
+
+/* --- generic property-row scaffold (label / control / hint) ---
+   Shared by the property forms (source Properties, stream-service, encoder) so a
+   descriptor of any kind reads as one command-deck system. */
+.cv-field__c {
+  min-width: 0;
+}
+.cv-field__c--end {
+  margin-left: auto;
+}
+.cv-field--row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.cv-field--row .cv-field__l {
+  margin-bottom: 0;
+  flex-wrap: wrap;
 }

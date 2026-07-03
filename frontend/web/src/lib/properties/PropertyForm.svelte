@@ -105,7 +105,6 @@
   .rows {
     display: flex;
     flex-direction: column;
-    gap: 14px;
   }
   .dim {
     color: var(--color-muted);

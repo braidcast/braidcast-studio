@@ -5,6 +5,13 @@
 
   const p = $derived(prop as ListProperty);
 
+  // A small, fixed choice set reads best as a segmented control; larger sets stay
+  // a select. One-line threshold change if the cutoff ever needs tuning.
+  const SEGMENTED_MAX = 4;
+  const segmented = $derived(
+    (p.combo_type === "list" || p.combo_type === "radio") && p.items.length <= SEGMENTED_MAX,
+  );
+
   // <select> values are strings, but item values may be int/float/bool. Index by
   // position and report the item's real typed value back. Match the current
   // value to an item to seed the selection.
@@ -17,25 +24,11 @@
   }
 </script>
 
-{#if p.combo_type === "radio"}
-  <div class="radio-group" title={prop.long_description ?? ""}>
-    {#each p.items as item, idx (idx)}
-      <label class="radio">
-        <input
-          type="radio"
-          name={prop.name}
-          checked={item.value === value}
-          disabled={!prop.enabled || item.disabled}
-          onchange={() => onChange(prop.name, item.value)}
-        />
-        <span>{item.name ?? String(item.value)}</span>
-      </label>
-    {/each}
-  </div>
-{:else if p.combo_type === "editable"}
+{#if p.combo_type === "editable"}
   <!-- Editable combo: free text + datalist of suggestions (string format). -->
   <input
     type="text"
+    class="cv-editable"
     list={`dl-${prop.name}`}
     value={value == null ? "" : String(value)}
     disabled={!prop.enabled}
@@ -47,8 +40,25 @@
       <option value={String(item.value)}>{item.name ?? ""}</option>
     {/each}
   </datalist>
+{:else if segmented}
+  <div class="cv-seg" class:dis={!prop.enabled} role="radiogroup" aria-label={prop.label ?? prop.name}>
+    {#each p.items as item, idx (idx)}
+      <button
+        type="button"
+        class="cv-segbtn"
+        class:on={item.value === value}
+        role="radio"
+        aria-checked={item.value === value}
+        disabled={!prop.enabled || item.disabled}
+        onclick={() => onChange(prop.name, item.value)}
+      >
+        {item.name ?? String(item.value)}
+      </button>
+    {/each}
+  </div>
 {:else}
   <select
+    class="cv-select"
     disabled={!prop.enabled}
     title={prop.long_description ?? ""}
     value={String(selectedIdx)}
@@ -61,19 +71,8 @@
 {/if}
 
 <style>
-  select,
-  input {
+  .cv-editable {
     width: 100%;
-  }
-  .radio-group {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-  .radio {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    cursor: pointer;
+    max-width: 460px;
   }
 </style>
