@@ -372,7 +372,14 @@ export interface CanvasCreateParams {
   audioEncoder?: string;
   videoUseDefault?: boolean;
   audioUseDefault?: boolean;
-  color?: { format?: string; space?: string; range?: string; useDefault?: boolean };
+  color?: {
+    format?: string;
+    space?: string;
+    range?: string;
+    sdrWhiteLevel?: number;
+    hdrNominalPeakLevel?: number;
+    useDefault?: boolean;
+  };
 }
 
 /** Fields accepted by canvas.update (all but uuid optional; name always allowed). */
@@ -391,7 +398,14 @@ export interface CanvasUpdateParams {
   audioEncoder?: string;
   videoUseDefault?: boolean;
   audioUseDefault?: boolean;
-  color?: { format?: string; space?: string; range?: string; useDefault?: boolean };
+  color?: {
+    format?: string;
+    space?: string;
+    range?: string;
+    sdrWhiteLevel?: number;
+    hdrNominalPeakLevel?: number;
+    useDefault?: boolean;
+  };
 }
 
 /** An encoder type as reported by encoderTypes.list. */
