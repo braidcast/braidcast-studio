@@ -333,9 +333,12 @@ bool TwitchEvents::connect(const EventContext &ctx, OAuth::OAuthAccount &acct, s
 	const std::string broadcasterId = acct.userId;
 	if (broadcasterId.empty()) {
 		// The account-connect lifecycle only starts accounts that ran fetchIdentity, so
-		// this is a hard misconfiguration rather than a transient -- fail (the hub backs
-		// off and retries) instead of subscribing with an empty condition.
+		// this is a hard misconfiguration rather than a transient -- mark it permanent so
+		// the hub stops retrying instead of subscribing with an empty condition.
 		err = "Twitch events: broadcaster user id unavailable; reconnect the account";
+		if (ctx.markFatal) {
+			ctx.markFatal();
+		}
 		return false;
 	}
 

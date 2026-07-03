@@ -27,6 +27,15 @@ namespace Events {
 struct EventContext {
 	std::function<void(const NormalizedEvent &)> emit;
 	std::function<bool()> canceled;
+
+	// Optional: a transport calls this from connect()/backfill() right before it
+	// returns a PERMANENT failure -- one that will never succeed on retry without an
+	// explicit re-Start or account change (e.g. the build lacks WebSocket support, or
+	// the account has no resolvable broadcaster/channel id). The hub then stops the
+	// reconnect loop for this account instead of spinning it forever. A transient
+	// failure (dropped socket, network blip) simply does not call this. Always
+	// populated by the hub; transports still guard `if (ctx.markFatal)` for safety.
+	std::function<void()> markFatal;
 };
 
 class EventTransport {

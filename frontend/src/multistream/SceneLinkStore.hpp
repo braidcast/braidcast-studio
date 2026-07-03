@@ -12,6 +12,12 @@
 // under the shared <config>/obs-multistream/basic directory. Mirrors
 // OutputBindingStore exactly; the wire format is the SAME "canvas_scene_links"
 // array CanvasSceneLink::ToDataArray/FromDataArray produce.
+//
+// THREADING: UI-thread-only, exactly like its siblings CanvasStore /
+// OutputBindingStore. Every accessor runs on the CEF UI thread (bridge sceneLink.*
+// methods, bootstrap Start/Stop, scene-collection switch); no chat/events/overlay
+// worker touches it, so it carries no lock. Do NOT call into it from a worker
+// thread -- marshal onto the UI thread first (AsyncTask::PostToUi).
 class SceneLinkStore {
 public:
 	void Load();                        // read the ACTIVE collection's links (empty if absent)

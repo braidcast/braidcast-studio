@@ -1,6 +1,7 @@
 #ifndef OBS_MULTISTREAM_FRONTEND_ASYNC_TASK_HPP_
 #define OBS_MULTISTREAM_FRONTEND_ASYNC_TASK_HPP_
 
+#include <chrono>
 #include <functional>
 
 // Off-thread work + UI-thread marshal helpers for the bridge (Phase 8a). Lets
@@ -22,6 +23,14 @@ void PostToUi(std::function<void()> fn);
 // Toggle the alive-guard. Called with false during bridge teardown (on the UI
 // thread) so any in-flight PostToUi no-ops thereafter.
 void SetAlive(bool alive);
+
+// Block until every live RunAsync worker has returned, or `timeout` elapses.
+// Called once during bridge teardown BEFORE the hubs/statics those workers may
+// touch are torn down, so a detached worker can't resurrect a stopped hub or
+// dereference a freed static mid-shutdown. Returns true if all workers drained,
+// false if the timeout was hit (the remaining count is logged by the caller).
+// Detached-thread semantics stay for the normal path; only shutdown waits.
+bool WaitForDrain(std::chrono::milliseconds timeout);
 
 } // namespace AsyncTask
 

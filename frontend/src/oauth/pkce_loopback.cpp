@@ -14,6 +14,7 @@
 #include <utility>
 
 #include "../http_client.hpp"
+#include "../log.hpp"
 #include "token_store.hpp"
 
 namespace OAuth {
@@ -251,16 +252,17 @@ bool PkceLoopbackStrategy::authorize(const AuthContext &ctx, OAuthAccount &acct,
 	}
 	const std::string challenge = Base64Url(digest, sizeof digest);
 
-	// Bind a 127.0.0.1-ONLY ephemeral listener (never INADDR_ANY/0.0.0.0).
+	// Bind a 127.0.0.1-only ephemeral listener (never INADDR_ANY/0.0.0.0), then a
+	// matching [::1] listener on the SAME port below so both loopback families work.
 	WsaGuard wsa;
 	if (!wsa.ok) {
 		err = "Winsock init failed";
 		return false;
 	}
 
-	SocketGuard listener;
-	listener.s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-	if (listener.s == INVALID_SOCKET) {
+	SocketGuard listener4;
+	listener4.s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+	if (listener4.s == INVALID_SOCKET) {
 		err = "failed to create loopback socket";
 		return false;
 	}
@@ -269,26 +271,50 @@ bool PkceLoopbackStrategy::authorize(const AuthContext &ctx, OAuthAccount &acct,
 	addr.sin_family = AF_INET;
 	addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK); // 127.0.0.1 only
 	addr.sin_port = 0;                             // ephemeral port
-	if (bind(listener.s, reinterpret_cast<sockaddr *>(&addr), sizeof addr) == SOCKET_ERROR) {
+	if (bind(listener4.s, reinterpret_cast<sockaddr *>(&addr), sizeof addr) == SOCKET_ERROR) {
 		err = "failed to bind loopback listener";
 		return false;
 	}
-	if (listen(listener.s, 1) == SOCKET_ERROR) {
+	if (listen(listener4.s, 1) == SOCKET_ERROR) {
 		err = "failed to listen on loopback socket";
 		return false;
 	}
 
 	sockaddr_in bound{};
 	int boundLen = sizeof bound;
-	if (getsockname(listener.s, reinterpret_cast<sockaddr *>(&bound), &boundLen) == SOCKET_ERROR) {
+	if (getsockname(listener4.s, reinterpret_cast<sockaddr *>(&bound), &boundLen) == SOCKET_ERROR) {
 		err = "failed to resolve loopback port";
 		return false;
 	}
 	const unsigned port = ntohs(bound.sin_port);
 
-	// The listener is bound to 127.0.0.1 (above); only the advertised redirect host
-	// varies. Kick's OAuth frontend rewrites a literal 127.0.0.1, so it advertises
-	// "localhost" -- which still resolves to the loopback listener on Windows.
+	// Kick advertises the redirect host as "localhost", which resolves to ::1 before
+	// 127.0.0.1 on IPv6-preferring hosts; an IPv4-only listener would then never see
+	// the redirect. Bind a second listener on [::1] sharing the SAME ephemeral port
+	// (IPV6_V6ONLY so it does not collide with the v4 bind). Best-effort: on any
+	// failure, log and proceed IPv4-only rather than failing the whole flow.
+	SocketGuard listener6;
+	listener6.s = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
+	if (listener6.s == INVALID_SOCKET) {
+		HostLog("PkceLoopback: IPv6 loopback socket unavailable; listening IPv4-only");
+	} else {
+		DWORD v6only = 1;
+		setsockopt(listener6.s, IPPROTO_IPV6, IPV6_V6ONLY, reinterpret_cast<const char *>(&v6only),
+			   sizeof v6only);
+		sockaddr_in6 addr6{};
+		addr6.sin6_family = AF_INET6;
+		addr6.sin6_addr = in6addr_loopback; // ::1 only
+		addr6.sin6_port = htons(static_cast<unsigned short>(port));
+		if (bind(listener6.s, reinterpret_cast<sockaddr *>(&addr6), sizeof addr6) == SOCKET_ERROR ||
+		    listen(listener6.s, 1) == SOCKET_ERROR) {
+			HostLog("PkceLoopback: IPv6 loopback bind/listen failed; listening IPv4-only");
+			closesocket(listener6.s);
+			listener6.s = INVALID_SOCKET;
+		}
+	}
+
+	// redirectHost is the advertised host string only (the listeners above cover both
+	// loopback families); Kick uses "localhost", others "127.0.0.1".
 	const std::string redirectUri =
 		"http://" + config_.redirectHost + ":" + std::to_string(port) + config_.redirectPath;
 
@@ -341,7 +367,10 @@ bool PkceLoopbackStrategy::authorize(const AuthContext &ctx, OAuthAccount &acct,
 
 		fd_set readfds;
 		FD_ZERO(&readfds);
-		FD_SET(listener.s, &readfds);
+		FD_SET(listener4.s, &readfds);
+		if (listener6.s != INVALID_SOCKET) {
+			FD_SET(listener6.s, &readfds);
+		}
 		timeval tv{};
 		tv.tv_sec = 0;
 		tv.tv_usec = 500 * 1000; // 0.5s; re-check cancel/deadline between waits
@@ -353,7 +382,10 @@ bool PkceLoopbackStrategy::authorize(const AuthContext &ctx, OAuthAccount &acct,
 		if (sel == 0) {
 			continue; // nothing yet
 		}
-		conn.s = accept(listener.s, nullptr, nullptr);
+		// Accept from whichever loopback family the browser connected on. sel != 0
+		// guarantees one of the sockets in the set is readable.
+		const SOCKET ready = FD_ISSET(listener4.s, &readfds) ? listener4.s : listener6.s;
+		conn.s = accept(ready, nullptr, nullptr);
 		if (conn.s == INVALID_SOCKET) {
 			continue; // transient; keep waiting within the deadline
 		}
@@ -432,7 +464,7 @@ bool PkceLoopbackStrategy::authorize(const AuthContext &ctx, OAuthAccount &acct,
 				     std::to_string(html.size()) + "\r\nConnection: close\r\n\r\n" + html;
 	send(conn.s, response.data(), static_cast<int>(response.size()), 0);
 	shutdown(conn.s, SD_SEND);
-	// listener + conn close via their SocketGuards on every return below.
+	// listeners + conn close via their SocketGuards on every return below.
 
 	if (!oauthError.empty()) {
 		err = "authorization denied: " + oauthError;
@@ -446,6 +478,13 @@ bool PkceLoopbackStrategy::authorize(const AuthContext &ctx, OAuthAccount &acct,
 	if (returnedState != state) {
 		err = "state mismatch on authorization redirect";
 		return false;
+	}
+
+	// The exchange below spends the one-time code. If the attempt was canceled or
+	// superseded while the browser was redirecting, bail before burning it so a retry
+	// gets a fresh grant. SocketGuards close the listeners + conn on return.
+	if (ctx.canceled()) {
+		return false; // user closed the modal / bridge tore down / superseded
 	}
 
 	// Exchange the code for tokens (PKCE verifier proves possession; the secret is

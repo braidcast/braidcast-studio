@@ -498,6 +498,11 @@ MultistreamEngine &ObsBootstrap::Multistream()
 	return *g_multistream;
 }
 
+bool ObsBootstrap::MultistreamAlive()
+{
+	return g_multistream != nullptr;
+}
+
 ::AudioMonitor &ObsBootstrap::AudioMonitor()
 {
 	// Valid between Start() (constructs g_audioMonitor after the default scene +
@@ -2492,13 +2497,15 @@ void ObsBootstrap::Stop()
 	// Tear the engine down before the stores it references clear and before
 	// obs_shutdown: StopAll releases its services/outputs/encoders while libobs
 	// is still up. The dtor also calls StopAll (defensive), but reset here so the
-	// order against Clear() is explicit. Safe to notify during the explicit
-	// StopAll because (a) Bridge::Shutdown ran above and the CEF loop has already
-	// returned, so any TID_UI emit task is drained before this point, and (b) the
-	// deferred DoEmit reads no engine state -- BuildStatusArray runs synchronously
-	// at post time. The dtor clears onStatusChanged before its own StopAll, so the
-	// reset()-nulled global is never dereferenced.
+	// order against Clear() is explicit. Null onStatusChanged FIRST: obs_output_stop
+	// inside StopAll can fire its "stop" signal asynchronously on the output thread,
+	// whose OnOutputStop -> EmitMultistreamChanged posts a TID_UI task that outlives
+	// this reset(). CefShutdown drains that task later and would call
+	// BuildStatusArray -> Multistream() on the now-null g_multistream. Disconnecting
+	// the callback stops new emits at the source; EmitMultistreamChanged also guards
+	// any already-queued task with MultistreamAlive().
 	if (g_multistream) {
+		g_multistream->onStatusChanged = nullptr;
 		g_multistream->StopAll();
 		g_multistream.reset();
 	}

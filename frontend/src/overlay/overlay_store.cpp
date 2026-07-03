@@ -8,6 +8,8 @@
 #include <util/platform.h>
 #include <util/util.hpp>
 
+#include <windows.h>
+
 #include <bcrypt.h>
 
 #include <algorithm>
@@ -280,8 +282,13 @@ std::string OverlayStore::AddAsset(const std::string &id, const std::string &key
 		return std::string();
 	}
 	const std::string full = dir + "/" + safeKey;
+	const std::filesystem::path fullPath = std::filesystem::u8path(full);
+	const std::filesystem::path tmpPath = std::filesystem::u8path(full + ".tmp");
+	// Atomic write: a crash or partial write must never leave a truncated asset the
+	// overlay would then serve. Write the whole blob to a sibling temp, then atomically
+	// replace the real file (mirrors OAuth::TokenStore::SaveLocked).
 	{
-		std::ofstream out(std::filesystem::u8path(full), std::ios::binary | std::ios::trunc);
+		std::ofstream out(tmpPath, std::ios::binary | std::ios::trunc);
 		if (!out) {
 			return std::string();
 		}
@@ -289,9 +296,19 @@ std::string OverlayStore::AddAsset(const std::string &id, const std::string &key
 			out.write(reinterpret_cast<const char *>(bytes.data()),
 				  static_cast<std::streamsize>(bytes.size()));
 		}
+		out.flush();
 		if (!out) {
+			std::error_code ec;
+			std::filesystem::remove(tmpPath, ec);
 			return std::string();
 		}
+	}
+	// MOVEFILE_REPLACE_EXISTING handles the first-write case too (dst absent -> plain
+	// rename); MOVEFILE_WRITE_THROUGH flushes the metadata to disk.
+	if (!MoveFileExW(tmpPath.c_str(), fullPath.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+		std::error_code ec;
+		std::filesystem::remove(tmpPath, ec);
+		return std::string();
 	}
 	bool exists = false;
 	for (const json &a : target->assets) {

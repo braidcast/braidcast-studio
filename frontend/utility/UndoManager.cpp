@@ -1,5 +1,6 @@
 #include "UndoManager.hpp"
 
+#include <cstddef>
 #include <utility>
 
 namespace {
@@ -22,6 +23,12 @@ void UndoManager::AddAction(const std::string &name, const Cb &undo, const Cb &r
 	}
 
 	undoItems.push_back(Item{name, undoData, redoData, undo, redo});
+	// Cap the history like stock OBS: an unbounded stack would grow the payload
+	// snapshots without limit over a long session. Drop the oldest past the cap.
+	constexpr size_t kMaxUndo = 5000;
+	while (undoItems.size() > kMaxUndo) {
+		undoItems.pop_front();
+	}
 	// A fresh action invalidates the redo branch.
 	redoItems.clear();
 	notify();

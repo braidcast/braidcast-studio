@@ -179,6 +179,11 @@ bool KickChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, const 
 	const auto canceled = [&] { return stop_.load(std::memory_order_acquire) || ctx.canceled(); };
 
 	std::string chatroomId; // resolved once, cached for the session
+	// Third-party (7TV/BTTV) emote map, local to this worker: built once after the
+	// channel id resolves and read only by this worker's read loop. A member would
+	// race a previous generation's still-running worker (ChatHub::Start does not join
+	// the old worker and the provider returns the same KickChat instance).
+	std::unordered_map<std::string, std::string> thirdPartyEmotes;
 	Backoff backoff;
 
 	while (!canceled()) {
@@ -199,7 +204,7 @@ bool KickChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, const 
 			// Build the third-party emote map once, on this worker, from the resolved
 			// channel id. Best-effort + cancel-polled; a failure just yields fewer
 			// emotes. Cached across reconnects since chatroomId now stays non-empty.
-			thirdPartyEmotes_ = FetchThirdPartyEmotes(EmotePlatform::Kick, "", channelId, canceled);
+			thirdPartyEmotes = FetchThirdPartyEmotes(EmotePlatform::Kick, "", channelId, canceled);
 		}
 
 		WsClient ws;
@@ -248,7 +253,7 @@ bool KickChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, const 
 				// auto-PONGs); reply with an app-level pong.
 				ws.sendText("{\"event\":\"pusher:pong\",\"data\":{}}");
 			} else if (event == "App\\Events\\ChatMessageEvent") {
-				HandleChatMessage(outer, ctx, chatroomId, thirdPartyEmotes_);
+				HandleChatMessage(outer, ctx, chatroomId, thirdPartyEmotes);
 			} else if (event == "pusher:error") {
 				HostLog("[chat] kick pusher error: " + frame);
 			}

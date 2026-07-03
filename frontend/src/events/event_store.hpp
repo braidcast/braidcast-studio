@@ -2,6 +2,7 @@
 #define OBS_MULTISTREAM_FRONTEND_EVENTS_EVENT_STORE_HPP_
 
 #include <cstddef>
+#include <cstdint>
 #include <deque>
 #include <mutex>
 #include <string>
@@ -33,18 +34,35 @@ public:
 	// Drop all history + persist the empty file, for events.clear.
 	void Clear();
 
+	// Persist any coalesced pending write immediately. Called on clean shutdown so a
+	// debounced trailing event isn't lost. No-op when nothing is dirty.
+	void Flush();
+
 	// <config>/obs-multistream/basic/events.json.
 	static std::string FilePath();
 
 private:
-	void Load();       // read events.json into events_/ids_ (called from the ctor)
-	void Save() const; // write events.json atomically (caller holds mutex_)
+	void Load(); // read events.json into events_/ids_ (called from the ctor)
+
+	// Serialize events_ into the on-disk shape. Caller must hold mutex_.
+	json BuildJsonLocked() const;
+	// Write a prebuilt snapshot to disk. Does its own file I/O with NO deque lock held
+	// (serialized against other writers by writeMutex_), so a write never blocks Add's
+	// deque access -- the point of the debounce.
+	void WriteToDisk(const json &root) const;
 
 	static constexpr size_t kCap = 500;
+	// Coalesce disk writes to at most one per this interval; bursts of events (a raid,
+	// a sub train) then cost a single write instead of one rewrite per event.
+	static constexpr uint64_t kSaveIntervalNs = 3'000'000'000ULL; // 3s
 
 	mutable std::mutex mutex_;
 	std::deque<NormalizedEvent> events_;  // oldest at front, newest at back
 	std::unordered_set<std::string> ids_; // dedupe index over events_
+	bool dirty_ = false;                  // unpersisted change pending (guarded by mutex_)
+	uint64_t lastSaveNs_ = 0;             // last WriteToDisk time (guarded by mutex_)
+
+	mutable std::mutex writeMutex_; // serializes WriteToDisk; never held with mutex_
 };
 
 } // namespace Events

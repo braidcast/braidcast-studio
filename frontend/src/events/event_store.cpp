@@ -44,17 +44,35 @@ std::string EventStore::FilePath()
 
 bool EventStore::Add(const NormalizedEvent &ev)
 {
-	std::lock_guard<std::mutex> lock(mutex_);
-	if (ev.id.empty() || ids_.count(ev.id)) {
-		return false; // no id (undedupable) or already stored -> drop
+	json snapshot;
+	bool doWrite = false;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		if (ev.id.empty() || ids_.count(ev.id)) {
+			return false; // no id (undedupable) or already stored -> drop
+		}
+		ids_.insert(ev.id);
+		events_.push_back(ev);
+		while (events_.size() > kCap) {
+			ids_.erase(events_.front().id);
+			events_.pop_front();
+		}
+		dirty_ = true;
+		// Debounce: write at most once per kSaveIntervalNs. The gate is evaluated under
+		// mutex_, so only one Add per interval commits a write. A trailing dirty state
+		// that never reaches the interval is persisted by the next Add or by Flush() on
+		// clean shutdown (a hard kill loses at most the last few seconds of feed cache).
+		const uint64_t now = os_gettime_ns();
+		if (lastSaveNs_ == 0 || now - lastSaveNs_ >= kSaveIntervalNs) {
+			snapshot = BuildJsonLocked();
+			lastSaveNs_ = now;
+			dirty_ = false;
+			doWrite = true;
+		}
 	}
-	ids_.insert(ev.id);
-	events_.push_back(ev);
-	while (events_.size() > kCap) {
-		ids_.erase(events_.front().id);
-		events_.pop_front();
+	if (doWrite) {
+		WriteToDisk(snapshot);
 	}
-	Save();
 	return true;
 }
 
@@ -66,10 +84,31 @@ std::vector<NormalizedEvent> EventStore::List() const
 
 void EventStore::Clear()
 {
-	std::lock_guard<std::mutex> lock(mutex_);
-	events_.clear();
-	ids_.clear();
-	Save();
+	json snapshot;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		events_.clear();
+		ids_.clear();
+		snapshot = BuildJsonLocked(); // empty feed
+		dirty_ = false;
+		lastSaveNs_ = os_gettime_ns();
+	}
+	WriteToDisk(snapshot);
+}
+
+void EventStore::Flush()
+{
+	json snapshot;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		if (!dirty_) {
+			return;
+		}
+		snapshot = BuildJsonLocked();
+		dirty_ = false;
+		lastSaveNs_ = os_gettime_ns();
+	}
+	WriteToDisk(snapshot);
 }
 
 void EventStore::Load()
@@ -103,14 +142,21 @@ void EventStore::Load()
 	}
 }
 
-void EventStore::Save() const
+json EventStore::BuildJsonLocked() const
 {
 	json arr = json::array();
 	for (const NormalizedEvent &ev : events_) {
 		arr.push_back(ev.ToJson());
 	}
-	json root = json{{"events", std::move(arr)}};
+	return json{{"events", std::move(arr)}};
+}
 
+void EventStore::WriteToDisk(const json &root) const
+{
+	// Serialize concurrent writers (Add vs. Flush) so two passes can't interleave on
+	// the shared tmp path; mutex_ is NOT held here, so the deque stays writable during
+	// the (slow) file I/O.
+	std::lock_guard<std::mutex> wlock(writeMutex_);
 	OBSDataAutoRelease data = obs_data_create_from_json(root.dump().c_str());
 
 	// Ensure the parent dir exists (it does once a profile is created, but be safe).

@@ -36,6 +36,8 @@ constexpr std::array<int, 5> kScanBands = {43000, 47000, 51000, 55000, 59000};
 constexpr DWORD kSseRecvTimeoutMs = 15000;   // keepalive cadence
 constexpr DWORD kSseSendTimeoutMs = 3000;    // I3: bounded send so a stuck reader can't hold sseMutex_
 constexpr DWORD kHeaderRecvTimeoutMs = 10000; // I1: backstop so a silent client can't park a thread
+constexpr DWORD kResponseSendTimeoutMs = 3000; // bounded plain-HTTP send so a stuck reader can't park a thread
+constexpr size_t kMaxSseConnections = 64;      // ceiling on concurrent live SSE streams; excess rejected 503
 
 struct ReasonPhrase {
 	int status;
@@ -43,13 +45,14 @@ struct ReasonPhrase {
 };
 
 // Data-driven reason map (not a switch) so adding a status is a one-line edit.
-constexpr std::array<ReasonPhrase, 6> kReasons = {{
+constexpr std::array<ReasonPhrase, 7> kReasons = {{
 	{200, "OK"},
 	{403, "Forbidden"},
 	{404, "Not Found"},
 	{405, "Method Not Allowed"},
 	{413, "Payload Too Large"},
 	{500, "Internal Server Error"},
+	{503, "Service Unavailable"},
 }};
 
 const char *ReasonFor(int status)
@@ -210,30 +213,60 @@ std::string AssembleDocument(const Widget &w, int port)
 
 // ---- Broadcast --------------------------------------------------------------
 
-// A failed send drops the socket from the registry and shutdown()s it (NOT close): the
-// owning RunSse is the sole closer of its fd, so shutdown unblocks that thread's recv
-// without freeing the fd -- the OS can't recycle the fd value onto a NEW connection and
-// have this thread later close the wrong socket (the fd-reuse hazard). caller holds sseMutex_.
+// Snapshot the live socket handles under sseMutex_, then send OUTSIDE the lock so a
+// single slow/dead client (bounded by SO_SNDTIMEO) can't hold the mutex and stall
+// delivery to every other client (head-of-line blocking). Dead sockets are pruned on a
+// re-lock. A failed send drops the socket from the registry and shutdown()s it (NOT
+// close): the owning RunSse is the sole closer of its fd, so shutdown unblocks that
+// thread's recv without freeing the fd -- the OS can't recycle the fd value onto a NEW
+// connection and have this thread later close the wrong socket (the fd-reuse hazard).
+// broadcastDepth_ (incremented while unlocked) makes RunSse defer its own closesocket()
+// so an in-flight send here can never land on a recycled fd.
 void OverlayServer::BroadcastFrame(const std::string &frame)
 {
-	std::lock_guard<std::mutex> lock(sseMutex_);
-	std::vector<std::pair<std::string, uintptr_t>> dead;
-	for (auto &[wid, socks] : sockets_) {
-		for (uintptr_t s : socks) {
-			if (!SendAll((SOCKET)s, frame.data(), frame.size())) {
-				dead.emplace_back(wid, s);
+	std::vector<std::pair<std::string, uintptr_t>> targets;
+	{
+		std::lock_guard<std::mutex> lock(sseMutex_);
+		for (auto &[wid, socks] : sockets_) {
+			for (uintptr_t s : socks) {
+				targets.emplace_back(wid, s);
 			}
 		}
+		++broadcastDepth_;
 	}
-	for (auto &[wid, s] : dead) {
-		auto it = sockets_.find(wid);
-		if (it != sockets_.end()) {
+
+	std::vector<std::pair<std::string, uintptr_t>> dead;
+	for (auto &[wid, s] : targets) {
+		if (!SendAll((SOCKET)s, frame.data(), frame.size())) {
+			dead.emplace_back(wid, s);
+		}
+	}
+
+	std::vector<uintptr_t> toClose;
+	{
+		std::lock_guard<std::mutex> lock(sseMutex_);
+		for (auto &[wid, s] : dead) {
+			// Re-check membership by handle: RunSse may have dropped (and deferred the
+			// close of) this socket while we were unlocked. Only shutdown() one still
+			// registered, so we never touch an fd another path is already tearing down.
+			auto it = sockets_.find(wid);
+			if (it == sockets_.end() || !it->second.count(s)) {
+				continue;
+			}
 			it->second.erase(s);
 			if (it->second.empty()) {
 				sockets_.erase(it);
 			}
+			shutdown((SOCKET)s, SD_BOTH);
 		}
-		shutdown((SOCKET)s, SD_BOTH);
+		if (--broadcastDepth_ == 0 && !deferredCloseSse_.empty()) {
+			toClose.assign(deferredCloseSse_.begin(), deferredCloseSse_.end());
+			deferredCloseSse_.clear();
+		}
+	}
+	// Now that no broadcast is mid-send, it is safe to close the fds RunSse parked.
+	for (uintptr_t s : toClose) {
+		CloseClient(s);
 	}
 }
 
@@ -507,6 +540,9 @@ void OverlayServer::HandleConnection(uintptr_t clientSocket)
 	// otherwise park this thread forever and hang Stop()'s join. Stop() also shutdown()s
 	// the fd, but the timeout is the standalone backstop.
 	setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&kHeaderRecvTimeoutMs, sizeof(kHeaderRecvTimeoutMs));
+	// Bounded response send: a client that stops reading mid-response must not park this
+	// thread in SendAll forever (the SSE path resets this to its own timeout below).
+	setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (const char *)&kResponseSendTimeoutMs, sizeof(kResponseSendTimeoutMs));
 
 	// Read the header block until "\r\n\r\n", capping total size.
 	std::string buffer;
@@ -667,18 +703,36 @@ void OverlayServer::RunSse(uintptr_t clientSocket, const std::string &widgetId)
 	// Broadcast; a timed-out send is treated as a failed send -> the socket is dropped.
 	setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (const char *)&kSseSendTimeoutMs, sizeof(kSseSendTimeoutMs));
 
+	bool atCapacity = false;
 	{
 		std::lock_guard<std::mutex> lock(sseMutex_);
-		const char *head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
-				   "Cache-Control: no-cache\r\nConnection: keep-alive\r\n"
-				   "Access-Control-Allow-Origin: *\r\n\r\n";
-		if (send(sock, head, (int)strlen(head), 0) <= 0) {
-			CloseClient(clientSocket); // not yet registered in sockets_; just close+deregister
-			return;
+		// Cap concurrent live streams so a runaway client (or a page reload storm) can't
+		// exhaust threads/fds. Count under the lock, before committing this connection.
+		size_t total = 0;
+		for (const auto &[wid, socks] : sockets_) {
+			total += socks.size();
 		}
-		// Initial comment so EventSource fires onopen promptly.
-		send(sock, ": connected\n\n", 13, 0);
-		sockets_[widgetId].insert(clientSocket);
+		if (total >= kMaxSseConnections) {
+			atCapacity = true;
+		} else {
+			const char *head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
+					   "Cache-Control: no-cache\r\nConnection: keep-alive\r\n"
+					   "Access-Control-Allow-Origin: *\r\n\r\n";
+			if (send(sock, head, (int)strlen(head), 0) <= 0) {
+				CloseClient(clientSocket); // not yet registered in sockets_; just close+deregister
+				return;
+			}
+			// Initial comment so EventSource fires onopen promptly.
+			send(sock, ": connected\n\n", 13, 0);
+			sockets_[widgetId].insert(clientSocket);
+		}
+	}
+	if (atCapacity) {
+		HostLog("[overlay] SSE connection rejected: at capacity (" + std::to_string(kMaxSseConnections) +
+			" streams)");
+		WriteResponse(sock, 503, "text/plain", "overlay server at capacity");
+		CloseClient(clientSocket);
+		return;
 	}
 
 	// The 15s recv timeout drives the keepalive; recv also detects a client close.
@@ -706,22 +760,25 @@ void OverlayServer::RunSse(uintptr_t clientSocket, const std::string &widgetId)
 		// Ignore any client->server bytes.
 	}
 	// This thread owns the fd: deregister from the SSE registry, then close it exactly
-	// once. Broadcast/Stop only ever shutdown() it, so no other thread closes this fd.
-	UnregisterSse(widgetId, clientSocket);
+	// once. Broadcast/Stop only ever shutdown() it, so no other thread closes this fd --
+	// EXCEPT while a broadcast is mid-send (broadcastDepth_ > 0): its snapshot may still
+	// hold this handle, so park the fd in deferredCloseSse_ and let the last broadcast to
+	// finish close it, so no in-flight send lands on a recycled fd.
+	{
+		std::lock_guard<std::mutex> lock(sseMutex_);
+		auto it = sockets_.find(widgetId);
+		if (it != sockets_.end()) {
+			it->second.erase(clientSocket);
+			if (it->second.empty()) {
+				sockets_.erase(it);
+			}
+		}
+		if (broadcastDepth_ > 0) {
+			deferredCloseSse_.insert(clientSocket);
+			return;
+		}
+	}
 	CloseClient(clientSocket);
-}
-
-void OverlayServer::UnregisterSse(const std::string &widgetId, uintptr_t sock)
-{
-	std::lock_guard<std::mutex> lock(sseMutex_);
-	auto it = sockets_.find(widgetId);
-	if (it == sockets_.end()) {
-		return;
-	}
-	it->second.erase(sock);
-	if (it->second.empty()) {
-		sockets_.erase(it);
-	}
 }
 
 void OverlayServer::CloseClient(uintptr_t sock)

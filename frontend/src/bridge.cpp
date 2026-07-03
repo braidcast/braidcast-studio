@@ -105,6 +105,12 @@ std::unordered_map<std::string, AsyncMethodFn> g_asyncMethods;
 // no-op via the AsyncTask alive-guard; this stops the loop body too).
 std::atomic<bool> g_oauthRunning{true};
 
+// Set true at the very top of Shutdown(), before the chat/events hubs are stopped.
+// A detached OAuth connect worker that finished authorize() just as teardown began
+// would otherwise resurrect a just-stopped hub (StartAccount/Start) -- it probes
+// this flag immediately before that block and bails if teardown has begun.
+std::atomic<bool> g_bridgeShutdown{false};
+
 // Per-connect cancel signal: oauth.cancelConnect sets it so an in-flight
 // device-code poll worker bails when the user closes the connect modal. Reset to
 // false when a new oauth.connect starts.
@@ -6728,7 +6734,7 @@ bool MethodSettingsRestore(const json &params, json &result, std::string &error)
 	EmitEvent("canvas.changed", json::object());
 	EmitEvent("streamProfile.changed", json::object());
 	EmitEvent("outputBinding.changed", json::object());
-	EmitEvent("multistream.changed", json::object());
+	EmitEvent("multistream.changed", json{{"outputs", BuildStatusArray()}});
 	EmitEvent("mcp.changed", json::object());
 	result = json{{"ok", true}};
 	return true;
@@ -7513,9 +7519,10 @@ try {
 		HostLog("[oauth] fetchStreamKey skipped for " + providerId + ": " + keyErr);
 	}
 
-	// A newer connect has taken over; don't persist tokens or flip the UI from this
-	// superseded worker.
-	if (superseded()) {
+	// A newer connect has taken over, or the bridge is tearing down; don't persist
+	// tokens, flip the UI, or -- crucially -- resurrect a hub that Shutdown() may have
+	// just stopped. Probe both immediately before the StartAccount/Start block below.
+	if (superseded() || g_bridgeShutdown.load(std::memory_order_acquire)) {
 		return;
 	}
 
@@ -8448,22 +8455,34 @@ void Init()
 
 void Shutdown()
 {
-	// Phase 9.0: stop the chat hub + viewer poller BEFORE the alive-guard flips, so
-	// every transport/poll loop is signaled + disconnected and its emits are still
-	// routed cleanly (rather than silently dropped) as the loops unwind.
+	// Signal every detached worker to stop BEFORE anything it might touch is torn
+	// down. The shutdown flag makes an OAuth connect worker bail before it can
+	// resurrect a stopped hub; clearing g_oauthRunning drops the ctx.canceled() latch
+	// so any device-code poll unwinds; the alive-guard no-ops late PostToUi marshals
+	// (the CEF loop has already returned by the time Stop() reaches here).
+	g_bridgeShutdown.store(true, std::memory_order_release);
+	g_oauthRunning.store(false, std::memory_order_release);
+	AsyncTask::SetAlive(false);
+
+	// Give the now-signaled detached workers a bounded window to unwind before the
+	// hubs/statics they may still be mid-call on are torn down below. On a clean quit
+	// with no in-flight worker this returns immediately (count is already zero).
+	if (!AsyncTask::WaitForDrain(std::chrono::seconds(5))) {
+		HostLog("[bridge] shutdown: async workers still running after drain timeout");
+	}
+
+	// Phase 9.0: stop the chat hub + viewer poller; every transport/poll loop is
+	// signaled + disconnected as the loops unwind.
 	Chat::Hub().Stop();
 	Chat::Viewers().Stop();
 	Events::Hub().StopAll();
+	// Persist any debounced trailing event now that the workers are stopped and no
+	// further Add can race the write (the store coalesces writes; this is the flush).
+	Events::Store().Flush();
 	// Phase 9.3: stop the overlay loopback server (closes every SSE socket + joins its
 	// threads) after the event transports are down, so no in-flight Broadcast races the
 	// teardown, and before CEF shutdown so no dangling send hits a torn-down host.
 	Overlay::Server().Stop();
-	// Block any further off-thread PostToUi from a detached worker: the CEF loop
-	// has already returned by the time Stop() reaches here, so a late marshal must
-	// no-op rather than touch CEF.
-	AsyncTask::SetAlive(false);
-	// Stop any in-flight OAuth poll loop on a detached worker from spinning on.
-	g_oauthRunning.store(false, std::memory_order_release);
 	obs_frontend_remove_event_callback(OnFrontendEvent, nullptr);
 	// Drop the undo->event hook so the g_undo.Clear() later in Stop() (after the CEF
 	// loop has returned) doesn't try to emit through a torn-down bridge.
@@ -8519,7 +8538,18 @@ bool Dispatch(const std::string &method, const json &params, json &result, std::
 		error = "unknown method: " + method;
 		return false;
 	}
-	return it->second(params, result, error);
+	// Exception barrier for the sync lane (mirrors RunAsyncMethod on the async lane):
+	// a handler that throws must become a clean Failure, never escape into the CEF
+	// query dispatch and terminate the process.
+	try {
+		return it->second(params, result, error);
+	} catch (const std::exception &e) {
+		error = "unhandled exception in " + method + ": " + e.what();
+		return false;
+	} catch (...) {
+		error = "unhandled exception in " + method;
+		return false;
+	}
 }
 
 bool DispatchAsync(const std::string &method, const json &params,
@@ -8535,7 +8565,16 @@ bool DispatchAsync(const std::string &method, const json &params,
 
 void EmitEvent(const std::string &name, const json &payload)
 {
-	const std::string payloadDump = payload.dump();
+	std::string payloadDump;
+	// A malformed payload (e.g. invalid UTF-8) makes dump() throw; drop the event
+	// rather than let it escape -- EmitEvent runs from off-thread-posted CEF tasks
+	// where an escaped exception would terminate the process.
+	try {
+		payloadDump = payload.dump();
+	} catch (const std::exception &e) {
+		HostLog("[bridge] EmitEvent(" + name + ") payload dump failed: " + e.what());
+		return;
+	}
 	if (CefCurrentlyOn(TID_UI)) {
 		DoEmit(name, payloadDump);
 		return;
@@ -8552,6 +8591,12 @@ void EmitMultistreamChanged()
 	// (vector reallocation under the read -> torn read / iterator invalidation).
 	if (!CefCurrentlyOn(TID_UI)) {
 		CefPostTask(TID_UI, base::BindOnce(&EmitMultistreamChanged));
+		return;
+	}
+	// An async output-stop signal can post this task in the window between Stop()
+	// resetting g_multistream and CefShutdown draining the CEF loop; bail before
+	// BuildStatusArray dereferences the gone engine (mirrors AudioMonitorAlive).
+	if (!ObsBootstrap::MultistreamAlive()) {
 		return;
 	}
 	EmitEvent("multistream.changed", json{{"outputs", BuildStatusArray()}});
@@ -8652,12 +8697,25 @@ bool ObsQueryHandler::OnQuery(CefRefPtr<CefBrowser> /*browser*/, CefRefPtr<CefFr
 
 	json result;
 	std::string error;
-	if (Bridge::Dispatch(method, params, result, error)) {
-		callback->Success(result.dump());
-		HostLog("[bridge] " + method + " -> ok");
-	} else {
-		callback->Failure(404, error);
-		HostLog("[bridge] " + method + " -> FAIL (" + error + ")");
+	// Wrap dispatch + result.dump(): Dispatch already traps handler throws, but the
+	// dump can still throw (e.g. invalid UTF-8 in the result), which must not escape
+	// into CEF. Convert to the same Failure shape the async lane produces.
+	try {
+		if (Bridge::Dispatch(method, params, result, error)) {
+			callback->Success(result.dump());
+			HostLog("[bridge] " + method + " -> ok");
+		} else {
+			callback->Failure(404, error);
+			HostLog("[bridge] " + method + " -> FAIL (" + error + ")");
+		}
+	} catch (const std::exception &e) {
+		const std::string msg = "unhandled exception in " + method + ": " + e.what();
+		callback->Failure(500, msg);
+		HostLog("[bridge] " + msg);
+	} catch (...) {
+		const std::string msg = "unhandled exception in " + method;
+		callback->Failure(500, msg);
+		HostLog("[bridge] " + msg);
 	}
 	return true;
 }

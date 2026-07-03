@@ -395,15 +395,6 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const json &fields, std:
 		return false;
 	}
 
-	// Invalidate any prior broadcast's chat + viewer-count target: a new go-live
-	// attempt supersedes it, and the new ids are committed only once this apply fully
-	// succeeds (below).
-	{
-		const std::lock_guard<std::mutex> guard(liveChatMutex_);
-		liveChatId_.clear();
-		broadcastId_.clear();
-	}
-
 	// Read every field up front (tolerant defaults; YouTube rejects empties on the
 	// required fields, so substitute safe values rather than send "").
 	std::string title = Str(fields, "title");
@@ -459,6 +450,26 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const json &fields, std:
 		}
 		outJson = ParseJson(resp.body);
 		return true;
+	};
+
+	// Best-effort teardown of a broadcast we created but couldn't fully bring up, so a
+	// failed (re-)apply doesn't leave an orphan liveBroadcast on the channel. Errors here
+	// are logged and swallowed -- they must not mask the original failure that triggered it.
+	auto deleteOrphanBroadcast = [&](const std::string &id) {
+		if (id.empty()) {
+			return;
+		}
+		Http::HttpReq req;
+		req.method = "DELETE";
+		req.url = std::string(kLiveBroadcastsUrl) + "?id=" + Http::UrlEncode(id);
+		Http::HttpResponse resp;
+		std::string delErr;
+		if (!SendAuthed(acct, req, resp, delErr)) {
+			HostLog("[oauth] YouTube orphan liveBroadcasts.delete failed (ignored): " + delErr);
+		} else if (resp.status < 200 || resp.status >= 300) {
+			HostLog("[oauth] YouTube orphan liveBroadcasts.delete failed (ignored): HTTP " +
+				std::to_string(resp.status) + ": " + resp.body);
+		}
 	};
 
 	// 1. liveBroadcasts.insert -- the broadcast id doubles as the videoId. CRITICAL.
@@ -523,6 +534,7 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const json &fields, std:
 	if (!sendJson("POST", std::string(kLiveStreamsUrl) + "?part=snippet,cdn,contentDetails", streamBody, sResp,
 		      stepErr)) {
 		err = "YouTube liveStreams.insert failed: " + stepErr;
+		deleteOrphanBroadcast(broadcastId);
 		return false;
 	}
 	const std::string streamId = Str(sResp, "id");
@@ -537,6 +549,7 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const json &fields, std:
 	}
 	if (streamId.empty() || streamName.empty() || ingestionAddress.empty()) {
 		err = "YouTube liveStreams.insert returned no stream key";
+		deleteOrphanBroadcast(broadcastId);
 		return false;
 	}
 
@@ -546,7 +559,18 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const json &fields, std:
 	json bindResp;
 	if (!sendJson("POST", bindUrl, json::object(), bindResp, stepErr)) {
 		err = "YouTube liveBroadcasts.bind failed: " + stepErr;
+		deleteOrphanBroadcast(broadcastId);
 		return false;
+	}
+
+	// The new broadcast now exists and is bound. Only here do we invalidate any prior
+	// broadcast's chat + viewer-count target -- if any earlier step had failed, the
+	// previously-live broadcast stays intact rather than being torn down for one that
+	// never came up. The new ids are committed once this apply fully succeeds (below).
+	{
+		const std::lock_guard<std::mutex> guard(liveChatMutex_);
+		liveChatId_.clear();
+		broadcastId_.clear();
 	}
 
 	// 4. videos.update -- category + tags live on the video, not the broadcast.
@@ -611,6 +635,7 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const json &fields, std:
 	// so the key is present before the caller triggers go-live. CRITICAL.
 	if (!WriteIngestToProfile(acct.profileUuid, ingestionAddress, streamName)) {
 		err = "failed to write the YouTube ingest endpoint into the stream profile";
+		deleteOrphanBroadcast(broadcastId);
 		return false;
 	}
 

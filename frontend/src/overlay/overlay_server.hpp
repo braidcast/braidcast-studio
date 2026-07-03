@@ -62,7 +62,6 @@ private:
 	// Send a prebuilt SSE frame to every open widget socket; shared by Broadcast/BroadcastChat.
 	void BroadcastFrame(const std::string &frame);
 	void RunSse(uintptr_t sock, const std::string &widgetId); // owns the socket for its lifetime
-	void UnregisterSse(const std::string &widgetId, uintptr_t sock); // erase from SSE registry; NEVER closes
 	void CloseClient(uintptr_t sock); // the OWNING thread's sole close point: erase from clientSockets_ + close
 	void ReapFinishedThreads();       // join+erase threads whose done flag is set
 
@@ -76,8 +75,16 @@ private:
 	bool portChanged_ = false;
 	std::string lastError_;
 
-	std::mutex sseMutex_;                                 // guards sockets_ + every socket write
+	std::mutex sseMutex_;                                 // guards sockets_ + the fields below
 	std::map<std::string, std::set<uintptr_t>> sockets_; // widgetId -> SSE sockets
+
+	// BroadcastFrame snapshots handles then sends OUTSIDE sseMutex_ so one slow client
+	// can't stall the others; broadcastDepth_ counts those in-flight sends. While it is
+	// non-zero an owning RunSse thread that tears down must NOT closesocket() its fd (a
+	// concurrent send could then land on a recycled fd) -- it parks the fd in
+	// deferredCloseSse_ instead, and the last broadcast to finish closes them.
+	int broadcastDepth_ = 0;
+	std::set<uintptr_t> deferredCloseSse_;
 
 	// Every accepted client fd (SSE and plain), so Stop() can shutdown() them all to
 	// unblock parked recv/send loops without closing (the owning thread closes). The

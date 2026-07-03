@@ -62,6 +62,10 @@ void EventHub::StartAccount(const std::string &providerId, const OAuth::OAuthAcc
 
 		EventContext ctx;
 		ctx.canceled = canceled;
+		// Set by a transport just before it returns a permanent failure (see
+		// EventContext::markFatal); the reconnect loop below reads it to stop retrying.
+		bool fatal = false;
+		ctx.markFatal = [&fatal] { fatal = true; };
 		ctx.emit = [this, stop](const NormalizedEvent &ev) {
 			if (stop->load(std::memory_order_acquire)) {
 				return; // generation stopped; drop late emits
@@ -117,6 +121,7 @@ void EventHub::StartAccount(const std::string &providerId, const OAuth::OAuthAcc
 		//    token (CancelableSleep) so StopAccount/Shutdown unwind promptly.
 		const int pollMs = transport->pollIntervalMs();
 		while (!canceled()) {
+			fatal = false;
 			std::string err;
 			bool ok = false;
 			try {
@@ -132,6 +137,13 @@ void EventHub::StartAccount(const std::string &providerId, const OAuth::OAuthAcc
 				HostLog("[events] transport '" + providerId + "' ended: " + err);
 			}
 			if (canceled()) {
+				break;
+			}
+			if (!ok && fatal) {
+				// Permanent failure (misconfigured account / missing WS support): retrying
+				// would just spin the loop. Stop until the next explicit Start re-arms it.
+				HostLog("[events] transport '" + providerId +
+					"' permanently failed; not retrying until reconnect");
 				break;
 			}
 

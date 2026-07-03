@@ -75,6 +75,12 @@ void PruneSceneLinksForCanvasScene(const std::string &canvasUuid, const std::str
 // it. Valid between Start() and Stop().
 MultistreamEngine &Multistream();
 
+// Whether the streaming engine is currently constructed (true between Start()
+// and Stop()). Lets the deferred multistream.changed emit skip a build that a
+// CEF task queued (from an async output-stop signal) before Stop() runs during
+// CefShutdown, after the engine was reset.
+bool MultistreamAlive();
+
 // The live obs_canvas_t mixes for the additional (non-Default) canvases, owned by
 // the bootstrap (built in Start after the model loads, torn down in Stop before
 // the stores clear). Exposed so the canvas CRUD bridge methods can keep the mixes

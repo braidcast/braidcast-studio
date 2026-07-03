@@ -199,12 +199,18 @@ bool KickEvents::connect(const EventContext &ctx, OAuth::OAuthAccount &acct, std
 
 	if (!Chat::WsClient::WebSocketsSupported()) {
 		err = "libcurl lacks WebSocket support; Kick events unavailable";
-		return false; // fatal: logged by the hub
+		if (ctx.markFatal) {
+			ctx.markFatal(); // build-level: retrying can never help
+		}
+		return false;
 	}
 
 	const std::string slug = acct.login; // the Kick channel slug (= account login)
 	if (slug.empty()) {
 		err = "Kick events: channel slug unavailable; reconnect the account";
+		if (ctx.markFatal) {
+			ctx.markFatal(); // hard misconfiguration; retrying can never help
+		}
 		return false;
 	}
 	const std::string url = Chat::KickPusherUrl();
