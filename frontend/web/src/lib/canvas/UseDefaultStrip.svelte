@@ -4,18 +4,16 @@
   interface Props {
     checked: boolean;
     label?: string;
-    sub?: string;
     disabled?: boolean;
     onchange: (v: boolean) => void;
   }
-  let { checked, label = "Use Default", sub, disabled = false, onchange }: Props = $props();
+  let { checked, label = "Use Default", disabled = false, onchange }: Props = $props();
 </script>
 
 <div class="strip">
   <ToggleSwitch size="sm" {checked} {disabled} {onchange} />
   <div class="txt">
     <span class="l">{label}</span>
-    {#if sub}<span class="s">{sub}</span>{/if}
   </div>
 </div>
 
@@ -38,10 +36,5 @@
   .l {
     font-size: 12px;
     color: var(--color-text);
-  }
-  .s {
-    font-family: var(--font-mono);
-    font-size: 10px;
-    color: var(--color-muted);
   }
 </style>
