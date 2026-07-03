@@ -35,6 +35,7 @@
   import { sourceSelection } from "./lib/sourceSelectionStore.svelte";
   import Toast from "./lib/Toast.svelte";
   import { showToast } from "./lib/toastStore.svelte";
+  import { callOrToast } from "./lib/callToast";
 
   // Apply the saved (or default Industrial) theme before first paint settles.
   void themeStore.hydrate();
@@ -78,7 +79,11 @@
       // Paste a reference of the copied source into the global current scene.
       if (clipboard.source && sourceSelection.scene) {
         e.preventDefault();
-        obs.call("sources.addExisting", { scene: sourceSelection.scene, name: clipboard.source.ref }).catch(() => {});
+        void callOrToast(
+          "sources.addExisting",
+          { scene: sourceSelection.scene, name: clipboard.source.ref },
+          "Paste failed",
+        );
       }
     } else if (key === "s" && e.shiftKey) {
       // Ctrl+Shift+S: screenshot the program (Default canvas). OBS leaves its

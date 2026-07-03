@@ -5,6 +5,8 @@
   import { WINDOW_ID, DETACHED_DOCK } from "./lib/windowContext";
   import { dockById } from "./lib/dock/dockRegistry";
   import CanvasDock from "./lib/docks/CanvasDock.svelte";
+  import BrowserDock from "./lib/docks/BrowserDock.svelte";
+  import { browserDockStore } from "./lib/browserDockStore.svelte";
   import type { CanvasInfo } from "./lib/bridge";
   import Icon from "./lib/dock/Icon.svelte";
 
@@ -31,6 +33,17 @@
       comp = CanvasDock as unknown as Component<Record<string, unknown>>;
       props = { canvasUuid: uuid, canvasName: name };
       title = "Canvas · " + name;
+    } else if (DETACHED_DOCK.startsWith("browserdock:")) {
+      // A user-defined browser dock: resolve its {url,title} from the store by id
+      // (loaded via the store's own bridge call in this window) and render the same
+      // iframe body the main-window panel uses.
+      const id = DETACHED_DOCK.slice("browserdock:".length);
+      await browserDockStore.load();
+      const dock = browserDockStore.byId(id);
+      if (!dock) return;
+      comp = BrowserDock as unknown as Component<Record<string, unknown>>;
+      props = { url: dock.url, title: dock.title };
+      title = dock.title || "Browser";
     } else {
       const def = dockById(DETACHED_DOCK);
       if (!def) return;

@@ -19,11 +19,12 @@
 
 <script lang="ts">
   // A reusable right-click popup. Positioned at (x, y) in viewport coordinates,
-  // clamped to stay on screen. Mirrors Menu.svelte's dropdown look (same tokens,
-  // same box-shadow). Auto-closes on outside click (deferred so the opening
-  // right-click doesn't dismiss it), Escape, resize, and scroll.
+  // clamped to stay on screen. Shares the shell's dropdown look (same tokens, same
+  // box-shadow). Auto-closes on outside click (deferred so the opening right-click
+  // doesn't dismiss it), Escape, resize, and scroll.
   import Self from "./ContextMenu.svelte";
   import Icon from "./dock/Icon.svelte";
+  import { pushEsc, popEsc, isTopEsc } from "./escStack";
 
   let {
     x,
@@ -89,11 +90,13 @@
     ready = true;
   });
 
-  // Dismissal listeners, all torn down together.
+  // Dismissal listeners, all torn down together. The Escape token gates so a menu
+  // opened over a modal (or a submenu over its parent) only closes the topmost layer.
   $effect(() => {
+    const token = pushEsc();
     const close = () => onClose();
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
+      if (e.key === "Escape" && isTopEsc(token)) {
         onClose();
       }
     };
@@ -103,6 +106,7 @@
     window.addEventListener("resize", close);
     document.addEventListener("scroll", close, true);
     return () => {
+      popEsc(token);
       clearTimeout(id);
       document.removeEventListener("click", close);
       document.removeEventListener("keydown", onKey);
@@ -120,7 +124,7 @@
   style:top="{top}px"
   style:visibility={ready ? "visible" : "hidden"}
 >
-  {#each items as item, i (item ? item.label : "div-" + i)}
+  {#each items as item, i (i)}
     {#if item === null}
       <div class="divider" role="separator" onmouseenter={() => (openSub = null)}></div>
     {:else if item.children}

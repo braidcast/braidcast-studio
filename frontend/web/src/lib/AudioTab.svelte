@@ -63,6 +63,9 @@
       monitoringDevice = applied.monitoringDevice;
     } catch (e) {
       audioError = (e as Error).message;
+      // The optimistic values above may not match what the backend kept; reload the
+      // authoritative state so the controls reflect reality after a failed apply.
+      void load();
     }
   }
 

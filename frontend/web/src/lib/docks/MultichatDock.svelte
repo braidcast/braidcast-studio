@@ -1,6 +1,8 @@
 <script lang="ts">
   import { obs, type ChatMessage, type ChatState, type ChatPlatform } from "../bridge";
   import { PLATFORM_COLORS, PLATFORM_LABELS, PLATFORM_ORDER as ORDER } from "../theme/platformColors";
+  import { FeedVirtualizer } from "../feedVirtualizer.svelte";
+  import { callOrToast } from "../callToast";
   import EmptyState from "../EmptyState.svelte";
   import Icon from "../dock/Icon.svelte";
 
@@ -13,147 +15,11 @@
   // Stable chip order so the dest selector / connected chips never reshuffle.
   const PLATFORM_ORDER: readonly ChatPlatform[] = ORDER;
 
-  // --- merged scrollback (ring-capped + virtualized) ------------------------
-  // Hard cap on retained messages so sustained chat can't grow the array or the
-  // measured-height map without bound; trimming prunes both in lockstep.
-  const MAX = 500;
-  const ESTIMATE = 30; // px height estimate for an unmeasured row
-  const OVERSCAN = 6; // rows rendered beyond the viewport on each side
-  const STICK_PX = 24; // within this of the bottom counts as "stuck to latest"
-
-  // Each row carries a client-assigned monotonic key so the render key never
-  // depends on the host-supplied m.id (which could arrive empty or duplicated and
-  // would throw each_key_duplicate). m.id is retained on the message for any
-  // host-side identity needs; the keyed list + heights map use clientKey only.
-  let messages = $state<{ clientKey: number; m: ChatMessage }[]>([]);
-  let seq = 0;
-  // clientKey -> measured row height. Plain map (not deep-reactive); a height change
-  // bumps `measureVersion` to recompute the layout. Pruned alongside the ring trim.
-  const heights = new Map<number, number>();
-  let measureVersion = $state(0);
-
-  let scrollEl: HTMLDivElement | undefined;
-  let viewTop = $state(0);
-  let viewH = $state(0);
-  let autoStick = $state(true);
-
-  // Batch incoming messages onto a single rAF flush so a burst re-renders once
-  // (not once per message) and the array is rebuilt at most once per frame.
-  let pending: ChatMessage[] = [];
-  let rafId = 0;
-  function enqueue(m: ChatMessage): void {
-    pending.push(m);
-    if (!rafId) rafId = requestAnimationFrame(flush);
-  }
-  function flush(): void {
-    rafId = 0;
-    if (pending.length === 0) return;
-    let next = messages.concat(pending.map((m) => ({ clientKey: ++seq, m })));
-    pending = [];
-    if (next.length > MAX) {
-      // clientKeys are unique+monotonic, so trimmed rows never alias a kept one --
-      // prune their heights directly, in lockstep with the ring trim.
-      for (const d of next.slice(0, next.length - MAX)) heights.delete(d.clientKey);
-      next = next.slice(next.length - MAX);
-    }
-    messages = next;
-  }
-
-  // Cumulative row offsets + total height; recomputed when the message set or any
-  // measured height changes. O(n) over the <=MAX ring -- cheap.
-  let layout = $derived.by<{ tops: number[]; total: number }>(() => {
-    void measureVersion;
-    const tops = new Array<number>(messages.length);
-    let acc = 0;
-    for (let i = 0; i < messages.length; i++) {
-      tops[i] = acc;
-      acc += heights.get(messages[i].clientKey) ?? ESTIMATE;
-    }
-    return { tops, total: acc };
-  });
-
-  // Visible window [start, end) including overscan, from the scroll offset.
-  let range = $derived.by<{ start: number; end: number }>(() => {
-    const { tops } = layout;
-    const n = messages.length;
-    if (n === 0) return { start: 0, end: 0 };
-    const top = viewTop;
-    const bottom = viewTop + viewH;
-    let start = n - 1;
-    for (let i = 0; i < n; i++) {
-      const h = heights.get(messages[i].clientKey) ?? ESTIMATE;
-      if (tops[i] + h > top) {
-        start = i;
-        break;
-      }
-    }
-    let end = n;
-    for (let i = start; i < n; i++) {
-      if (tops[i] > bottom) {
-        end = i;
-        break;
-      }
-    }
-    return { start: Math.max(0, start - OVERSCAN), end: Math.min(n, end + OVERSCAN) };
-  });
-
-  let visible = $derived(
-    messages.slice(range.start, range.end).map((row, i) => ({ ...row, top: layout.tops[range.start + i] })),
-  );
-
-  // Measure each rendered row; a height delta bumps measureVersion so the layout
-  // (and thus the bottom anchor) reflects real wrapped/emote heights.
-  function measureRow(node: HTMLElement, key: number): { destroy(): void } {
-    const apply = (): void => {
-      const h = node.offsetHeight;
-      if (h > 0 && heights.get(key) !== h) {
-        heights.set(key, h);
-        measureVersion++;
-      }
-    };
-    const ro = new ResizeObserver(apply);
-    ro.observe(node);
-    apply();
-    return {
-      destroy() {
-        ro.disconnect();
-      },
-    };
-  }
-
-  function onScroll(): void {
-    if (!scrollEl) return;
-    viewTop = scrollEl.scrollTop;
-    viewH = scrollEl.clientHeight;
-    autoStick = scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight <= STICK_PX;
-  }
-
-  function jumpToLatest(): void {
-    autoStick = true;
-    if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
-  }
-
-  // Keep the view pinned to the newest message while stuck to the bottom. Depends
-  // on layout.total so it re-pins after a freshly measured row grows the sizer.
-  $effect(() => {
-    void layout.total;
-    if (autoStick && scrollEl) {
-      scrollEl.scrollTop = scrollEl.scrollHeight;
-      // Keep the window state coherent without waiting on the async scroll event.
-      viewTop = scrollEl.scrollTop;
-    }
-  });
-
-  // Track the viewport height (jump-to-latest visibility + range both need it).
-  $effect(() => {
-    if (!scrollEl) return;
-    viewH = scrollEl.clientHeight;
-    const ro = new ResizeObserver(() => {
-      if (scrollEl) viewH = scrollEl.clientHeight;
-    });
-    ro.observe(scrollEl);
-    return () => ro.disconnect();
-  });
+  // Merged, ring-capped, virtualized scrollback. Rows carry a client-assigned key
+  // (m.id could arrive empty/duplicated); 30px estimate for an unmeasured row.
+  const feed = new FeedVirtualizer<ChatMessage>({ max: 500, estimate: 30 });
+  const measureRow = feed.measureRow;
+  const feedScroll = feed.scroll;
 
   // --- connection state + send destination ----------------------------------
   // platform -> latest ChatState. The chat.state METHOD returns the full array
@@ -187,8 +53,13 @@
     const text = draft.trim();
     if (!text || !anyConnected) return;
     const platforms = dest === "all" ? [] : [dest];
-    obs.call("chat.send", { platforms, text }).catch(() => {});
+    // Clear optimistically; restore the message (if the box is still empty) when the
+    // send is rejected so the user doesn't silently lose what they typed.
     draft = "";
+    void (async () => {
+      const res = await callOrToast("chat.send", { platforms, text }, "Message not sent");
+      if (res === null && draft === "") draft = text;
+    })();
   }
 
   function onKeydown(e: KeyboardEvent): void {
@@ -200,7 +71,7 @@
 
   $effect(() => {
     refreshStates();
-    const offMsg = obs.on("chat.message", (m) => enqueue(m));
+    const offMsg = obs.on("chat.message", (m) => feed.enqueue(m));
     const offState = obs.on("chat.state", (s) => {
       const next = new Map(states);
       next.set(s.platform, s);
@@ -213,21 +84,19 @@
       offMsg();
       offState();
       offStreaming();
-      if (rafId) cancelAnimationFrame(rafId);
-      rafId = 0;
-      pending = [];
+      feed.dispose();
     };
   });
 </script>
 
 <div class="chat">
-  <div class="scroll" bind:this={scrollEl} onscroll={onScroll}>
-    {#if messages.length === 0}
+  <div class="scroll" use:feedScroll>
+    {#if feed.rows.length === 0}
       <EmptyState compact title={anyConnected ? "Waiting for chat…" : "Chat appears here while you are live."} />
     {:else}
-      <div class="sizer" style:height={layout.total + "px"}>
-        {#each visible as row (row.clientKey)}
-          {@const m = row.m}
+      <div class="sizer" style:height={feed.layout.total + "px"}>
+        {#each feed.visible as row (row.clientKey)}
+          {@const m = row.item}
           {@const authorColor = m.author.color || PLATFORM_COLOR[m.platform]}
           <div class="row" style:top={row.top + "px"} use:measureRow={row.clientKey}>
             <span class="pdot" style:background={PLATFORM_COLOR[m.platform]} title={PLATFORM_LABEL[m.platform]}
@@ -259,8 +128,8 @@
     {/if}
   </div>
 
-  {#if !autoStick && messages.length > 0}
-    <button class="jump" onclick={jumpToLatest}><Icon name="jump-down" size={11} /> Jump to latest</button>
+  {#if !feed.autoStick && feed.rows.length > 0}
+    <button class="jump" onclick={feed.jumpToLatest}><Icon name="jump-down" size={11} /> Jump to latest</button>
   {/if}
 
   <div class="composer">

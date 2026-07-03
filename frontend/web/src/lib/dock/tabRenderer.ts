@@ -1,4 +1,5 @@
 import type { ITabRenderer, PanelUpdateEvent, TabPartInitParameters } from "dockview-core";
+import { requestDetach } from "./detachRegistry";
 
 // Inline-SVG chrome for the two tab affordances. Raw markup (not the Svelte <Icon>)
 // because DockTab is a vanilla dockview ITabRenderer with no Svelte context. A
@@ -24,8 +25,9 @@ function stopPress(e: Event): void {
 // init/update params + its DockviewPanelApi.
 //
 // - close calls api.close() -> the panel is removed; the Docks menu reopens it.
-// - tear-out calls the detachDock seam threaded through params.__detach (P1: logs
-//   only; real floating-window detach lands next phase per the P1 floating-deferral).
+// - tear-out calls requestDetach(panelId), resolved at click time against the
+//   handler the main window registered (see detachRegistry) -- so a panel rebuilt
+//   from a saved layout detaches identically to a freshly-added one.
 // - `__accent` tints the title (and badge) to match the accent docks in the mock.
 // - `__dot` (CSS color) shows a 7px status dot; `__badge` (text) shows the mono
 //   `GLOBAL/OWN S/S` badge on canvas docks. Both absent -> nothing renders, so the
@@ -41,7 +43,7 @@ export class DockTab implements ITabRenderer {
   private readonly _detachBtn: HTMLButtonElement;
   private readonly _closeBtn: HTMLButtonElement;
   private _params: Record<string, unknown> = {};
-  private _onDetach: (() => void) | undefined;
+  private _panelId = "";
   private _onClose: (() => void) | undefined;
 
   constructor() {
@@ -102,9 +104,7 @@ export class DockTab implements ITabRenderer {
     this._params = { ...(params.params ?? {}) };
     this.render();
 
-    const panelId = params.api.id;
-    const detach = this._params.__detach as ((id: string) => void) | undefined;
-    this._onDetach = detach ? () => detach(panelId) : undefined;
+    this._panelId = params.api.id;
     this._onClose = () => params.api.close();
   }
 
@@ -130,7 +130,7 @@ export class DockTab implements ITabRenderer {
 
   private readonly handleDetach = (e: MouseEvent): void => {
     e.stopPropagation();
-    this._onDetach?.();
+    requestDetach(this._panelId);
   };
 
   private readonly handleClose = (e: MouseEvent): void => {

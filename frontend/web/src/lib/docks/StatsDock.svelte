@@ -1,59 +1,23 @@
 <script lang="ts">
-  import { obs, type Stats, type OutputStat } from "../bridge";
   import Icon from "../dock/Icon.svelte";
+  import { OUTPUT_STATE_COLOR } from "../theme/stateColors";
+  import { fmtBitrate, fmtDuration } from "../format";
+  import { statsStore } from "../statsStore.svelte";
 
   // Host supplies tab chrome + strips __* keys; this body declares no props.
   let {}: Record<string, unknown> = $props();
 
-  // Title-cased state -> dot color, same token mapping the Multistream dock uses.
-  const STATE_COLOR: Record<OutputStat["state"], string> = {
-    Idle: "var(--color-muted)",
-    Connecting: "var(--meter-yellow)",
-    Live: "var(--meter-green)",
-    Error: "var(--color-live)",
-  };
-
-  // Polling cadence (ms). There is no push for stats, so the dock owns the loop.
-  const POLL_MS = 1000;
   // A non-trivial lag/skip pct that warrants the warn color.
   const WARN_PCT = 1;
 
-  let stats = $state<Stats | null>(null);
-  let loaded = $state(false);
-  let error = $state<string | null>(null);
-
-  async function load() {
-    try {
-      stats = await obs.call("stats.get");
-      error = null;
-    } catch (e) {
-      error = (e as Error).message;
-    } finally {
-      loaded = true;
-    }
-  }
-
-  $effect(() => {
-    void load();
-    const timer = setInterval(() => void load(), POLL_MS);
-    return () => clearInterval(timer);
-  });
+  // Shared 1 Hz poll (also feeds the Studio bottom bar + Monitor page).
+  const stats = $derived(statsStore.stats);
+  const error = $derived(statsStore.error);
+  const loaded = $derived(statsStore.stats !== null || statsStore.error !== null);
+  $effect(() => statsStore.subscribe());
 
   function fmtMemory(mb: number): string {
     return mb >= 1024 ? (mb / 1024).toFixed(1) + " GB" : Math.round(mb) + " MB";
-  }
-
-  function fmtBitrate(kbps: number): string {
-    return kbps >= 1000 ? (kbps / 1000).toFixed(1) + " Mb/s" : Math.round(kbps) + " kb/s";
-  }
-
-  function fmtDuration(ms: number): string {
-    const total = Math.floor(ms / 1000);
-    const h = Math.floor(total / 3600);
-    const m = Math.floor((total % 3600) / 60);
-    const s = total % 60;
-    const pad = (n: number) => String(n).padStart(2, "0");
-    return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
   }
 
   function fmtPct(pct: number): string {
@@ -99,7 +63,7 @@
         <ul class="list">
           {#each stats.outputs as o (o.bindingUuid)}
             <li class="row">
-              <span class="dot" style:background={STATE_COLOR[o.state]} title={o.state}></span>
+              <span class="dot" style:background={OUTPUT_STATE_COLOR[o.state]} title={o.state}></span>
               <div class="info">
                 <div class="line1">
                   <span class="name">{o.profileLabel}</span>

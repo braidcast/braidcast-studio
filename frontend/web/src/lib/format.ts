@@ -1,0 +1,22 @@
+// Shared numeric formatters that were re-declared across the stats/live surfaces.
+
+const pad = (n: number): string => String(n).padStart(2, "0");
+
+// Elapsed time from milliseconds.
+//   default  -> compact "h:mm:ss" (hours group dropped when zero): Stats / Monitor
+//   fixed    -> always zero-padded "hh:mm:ss": StudioPage live badge
+export function fmtDuration(ms: number, opts?: { fixed?: boolean }): string {
+  const total = Math.floor(ms / 1000);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (opts?.fixed) {
+    return pad(h) + ":" + pad(m) + ":" + pad(s);
+  }
+  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+}
+
+// Bitrate: Mb/s at or above 1000 kbps, else kb/s.
+export function fmtBitrate(kbps: number): string {
+  return kbps >= 1000 ? (kbps / 1000).toFixed(1) + " Mb/s" : Math.round(kbps) + " kb/s";
+}

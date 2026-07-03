@@ -9,8 +9,7 @@
 // synchronously in the right-click handler (the dock assigns the item array into
 // $state at click time). To bridge that, we cache the monitor list at module
 // scope: docks call `prefetchMonitors()` on mount, and `projectorItems(target)`
-// reads the cache synchronously when a menu opens. The async `projectorMenuItems`
-// is the same builder for callers that can await (it ensures the cache first).
+// reads the cache synchronously when a menu opens.
 //
 // If the monitor enumeration fails (or hasn't resolved yet), we degrade to just
 // the "Windowed Projector" entry, which needs no monitor.
@@ -63,14 +62,4 @@ export function projectorItems(target: ProjectorTarget): ContextMenuItem[] {
     });
   }
   return items;
-}
-
-/** Async variant matching the spec contract: ensures monitors are loaded, then
- * builds the same flat item list. Use where awaiting before showing the menu is
- * acceptable; docks prefer prefetch + the synchronous `projectorItems`. */
-export async function projectorMenuItems(target: ProjectorTarget): Promise<ContextMenuItem[]> {
-  if (monitors.length === 0) {
-    await (inFlight ?? fetchMonitors());
-  }
-  return projectorItems(target);
 }

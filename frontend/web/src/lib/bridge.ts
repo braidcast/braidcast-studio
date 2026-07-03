@@ -701,13 +701,6 @@ export type ProjectorTarget =
   | { kind: "canvas"; canvas: string }
   | { kind: "multiview"; canvas?: string };
 
-/** A live projector as reported by projector.list / returned by projector.open. */
-export interface ProjectorInfo {
-  projectorId: number;
-  target: ProjectorTarget;
-  mode: "fullscreen" | "windowed";
-  monitor: number | null;
-}
 
 // --- hotkeys (global + per-object key bindings) ------------------------------
 
@@ -1108,6 +1101,7 @@ export interface ObsMethods {
   // (4.4.5b). setRect params: {x,y,w,h,dpr,canvas?}; hide/select: {...,canvas?}.
   "preview.setRect": null;
   "preview.hide": null;
+  "preview.destroy": null;
   "preview.select": { selected: number | null };
   // Scenes. `current` = the scene bound to channel 0 of the addressed canvas. Pass
   // an optional `canvas` uuid to operate on an additional canvas's own scenes;
@@ -1254,10 +1248,9 @@ export interface ObsMethods {
   "sceneLink.list": { links: SceneLinkInfo[] };
   "sceneLink.set": Record<string, never>;
   "sceneLink.clear": Record<string, never>;
-  // Multistream live status + per-row control (fan-out engine, 4.4.4).
+  // Multistream live status (fan-out engine, 4.4.4). Start/stop is a single global
+  // action via streaming.start/stop; there is no per-row control method.
   "multistream.status": { outputs: MultistreamStatus[] };
-  "multistream.startOutput": { ok: boolean };
-  "multistream.stopOutput": { ok: boolean };
   // Virtual camera (output one canvas's video as a system webcam). start/stop
   // toggle the output; status reports the live state; get/setConfig read/write the
   // target canvas (empty/unknown/Default uuid -> the global program video). start/
@@ -1324,15 +1317,11 @@ export interface ObsMethods {
   // dock on a ~1s interval; there is no push, so the dock owns the cadence.
   "stats.get": Stats;
   // Native projectors (standalone windows rendering a target on a monitor, P3).
-  // listMonitors enumerates the displays a fullscreen projector can target.
-  // open spawns a projector (fullscreen needs `monitor`); the window closes
-  // itself (Esc / window close), so there is no UI-driven close path beyond
-  // projector.close. list enumerates the live projectors. projector.changed is
-  // pushed whenever the set opens/closes.
+  // listMonitors enumerates the displays a fullscreen projector can target. open
+  // spawns a projector (fullscreen needs `monitor`); the window closes itself (Esc /
+  // window close), and projector.changed is pushed whenever the set opens/closes.
   "display.listMonitors": { monitors: Monitor[] };
   "projector.open": { projectorId: number };
-  "projector.close": { closed: boolean };
-  "projector.list": { projectors: ProjectorInfo[] };
   // Shell persistence (P1). theme.* stores an opaque JSON blob the JS theme store
   // stringifies/parses into its own schema (active id + live tokens + custom
   // themes); layout.* stores the serialized Dockview state (a JSON string). load
@@ -1476,7 +1465,7 @@ export interface ObsEvents {
   // hotkeys.list to refresh its rows.
   "hotkeys.changed": Record<string, never>;
   // The set of live native projectors changed (opened/closed, incl. user OS-close
-  // or Esc); a consumer re-runs projector.list to refresh.
+  // or Esc). Projectors are fire-and-forget windows, so nothing subscribes today.
   "projector.changed": Record<string, never>;
   // The embedded MCP server's config or listening status changed (enable/disable,
   // port change, token regenerate, or a bind error); the UI re-runs mcp.getConfig.

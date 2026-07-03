@@ -11,6 +11,8 @@
   import CanvasEditor from "../CanvasEditor.svelte";
   import CollectionDialog, { type DialogSpec } from "../CollectionDialog.svelte";
   import { suspendPreview } from "../previewGate.svelte";
+  import { STATE_COLOR_EXT } from "../theme/stateColors";
+  import { callOrToast } from "../callToast";
   import PageHeader from "../PageHeader.svelte";
   import Modal from "../Modal.svelte";
   import ToggleSwitch from "../ToggleSwitch.svelte";
@@ -157,7 +159,7 @@
     return c.outputHeight > c.outputWidth;
   }
   function encName(list: EncoderType[], id: string): string {
-    return list.find((e) => e.id === id)?.name ?? id ?? "—";
+    return list.find((e) => e.id === id)?.name ?? id;
   }
 
   // Per-canvas rollup for the tile footer: how many destinations, and the strongest
@@ -175,14 +177,6 @@
     if (states.includes("connecting")) return "connecting";
     return "idle";
   }
-  const STATE_COLOR: Record<MultistreamState | "off" | "disabled", string> = {
-    off: "var(--color-muted)",
-    disabled: "var(--color-muted)",
-    idle: "var(--color-muted)",
-    connecting: "var(--meter-yellow)",
-    live: "var(--meter-green)",
-    error: "var(--color-live)",
-  };
   const STATE_TAG_BG: Record<MultistreamState | "disabled", string> = {
     disabled: "color-mix(in srgb, var(--color-muted) 10%, transparent)",
     idle: "color-mix(in srgb, var(--color-muted) 12%, transparent)",
@@ -233,7 +227,18 @@
       loadBindings();
     } catch (e) {
       error = (e as Error).message;
+      // Revert the optimistic toggle (checked is two-way bound to b.enabled).
+      b.enabled = !enabled;
     }
+  }
+  function confirmRemoveRow(b: OutputBindingInfo): void {
+    dialog = {
+      kind: "confirm",
+      title: "Unbind Destination",
+      message: `Unbind "${rowName(b)}" from this canvas?`,
+      confirmLabel: "Unbind",
+      onCommit: () => void removeRow(b),
+    };
   }
   async function removeRow(b: OutputBindingInfo): Promise<void> {
     try {
@@ -241,6 +246,28 @@
       loadBindings();
     } catch (e) {
       error = (e as Error).message;
+    }
+  }
+
+  // Whether the editing canvas has any live/connecting output (blocks deletion +
+  // canvas-video resets). Reuses the per-canvas rollup used by the tile dots.
+  const editingLive = $derived(
+    editingUuid ? canvasState(editingUuid) === "live" || canvasState(editingUuid) === "connecting" : false,
+  );
+  function confirmDeleteCanvas(c: CanvasInfo): void {
+    dialog = {
+      kind: "confirm",
+      title: "Delete Canvas",
+      message: `Delete canvas "${c.name}"? This removes the canvas and unbinds its destinations.`,
+      confirmLabel: "Delete",
+      onCommit: () => void deleteCanvas(c),
+    };
+  }
+  async function deleteCanvas(c: CanvasInfo): Promise<void> {
+    const res = await callOrToast("canvas.remove", { uuid: c.uuid }, "Delete canvas failed");
+    // On success close the modal; the gallery refreshes via the canvas.changed sub.
+    if (res !== null) {
+      closeEditor();
     }
   }
 
@@ -281,11 +308,12 @@
       kind: "prompt",
       title: "New Canvas",
       confirmLabel: "Create",
-      onCommit: (name) => {
+      onCommit: async (name) => {
         if (!name) return;
         const def = canvases.find((c) => c.isDefault);
-        obs
-          .call("canvas.create", {
+        const r = await callOrToast(
+          "canvas.create",
+          {
             name,
             baseWidth: def?.baseWidth ?? 1920,
             baseHeight: def?.baseHeight ?? 1080,
@@ -293,9 +321,10 @@
             outputHeight: def?.outputHeight,
             fpsNum: def?.fpsNum ?? 60,
             fpsDen: def?.fpsDen ?? 1,
-          })
-          .then((r) => (editingUuid = r.uuid))
-          .catch(() => {});
+          },
+          "Create canvas failed",
+        );
+        if (r) editingUuid = r.uuid;
       },
     };
   }
@@ -341,7 +370,7 @@
                 <span class="tile-fps">{fpsText(c)} fps</span>
               </div>
               <div class="tile-status">
-                <span class="dot" style:background={STATE_COLOR[st]}></span>
+                <span class="dot" style:background={STATE_COLOR_EXT[st]}></span>
                 <span class="tile-dests">
                   {#if d.total === 0}
                     No destinations
@@ -368,6 +397,21 @@
   <Modal title={c.name} onClose={closeEditor} width={680}>
     {#snippet headExtra()}
       {#if c.isDefault}<span class="badge">Default</span>{/if}
+    {/snippet}
+
+    {#snippet footer()}
+      <button
+        class="del-btn"
+        disabled={c.isDefault || editingLive}
+        title={c.isDefault
+          ? "The Default canvas can't be deleted"
+          : editingLive
+            ? "Stop the stream first"
+            : "Delete this canvas"}
+        onclick={() => confirmDeleteCanvas(c)}
+      >
+        <Icon name="trash" size={13} /> Delete canvas
+      </button>
     {/snippet}
 
     <section class="section">
@@ -409,20 +453,20 @@
           {@const s = rowState(b)}
           <div class="row" class:off={!b.enabled}>
             <span class="toggle-wrap" title={b.enabled ? "Disable" : "Enable"}>
-              <ToggleSwitch size="sm" checked={b.enabled} onchange={(v) => void toggleRow(b, v)} />
+              <ToggleSwitch size="sm" bind:checked={b.enabled} onchange={(v) => void toggleRow(b, v)} />
             </span>
             <div class="row-col">
               <div class="row-line1">
                 <span class="row-name" class:deleted={isDangling(b.profileLabel)} class:unset={isUnset(b.profileLabel)}>
                   {rowName(b)}
                 </span>
-                <span class="row-state" style:color={STATE_COLOR[s]} style:background={STATE_TAG_BG[s]}>
+                <span class="row-state" style:color={STATE_COLOR_EXT[s]} style:background={STATE_TAG_BG[s]}>
                   {titleState(s).toUpperCase()}
                 </span>
               </div>
               <div class="row-sub">{encName(videoEncoders, c.videoEncoder)}</div>
             </div>
-            <button class="trash" title="Remove destination" aria-label="Remove destination" onclick={() => void removeRow(b)}>
+            <button class="trash" title="Remove destination" aria-label="Remove destination" onclick={() => confirmRemoveRow(b)}>
               <Icon name="trash" size={14} />
             </button>
           </div>
@@ -783,6 +827,31 @@
     flex: 0 0 auto;
     display: inline-flex;
     align-items: center;
+  }
+
+  /* Delete-canvas: bottom-left of the modal footer (margin-right:auto pushes it
+     away from the footer's flex-end group), danger-tinted. */
+  .del-btn {
+    margin-right: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: auto;
+    padding: 7px 12px;
+    background: none;
+    border: var(--border-weight) solid var(--color-border);
+    color: var(--color-live);
+    cursor: pointer;
+    font: inherit;
+    font-size: 12px;
+  }
+  .del-btn:hover:not(:disabled) {
+    border-color: var(--color-live);
+    background: color-mix(in srgb, var(--color-live) 12%, transparent);
+  }
+  .del-btn:disabled {
+    color: var(--color-muted);
+    cursor: default;
   }
 
   .add-tile-row {

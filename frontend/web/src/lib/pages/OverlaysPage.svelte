@@ -29,6 +29,9 @@
   let saving = $state(false);
   let dialog = $state<DialogSpec | null>(null);
   let typeMenuOpen = $state(false);
+  // True while the local editor buffer has edits not yet flushed to the backend, so
+  // an external overlays.changed refetch never clobbers in-flight typing.
+  let dirty = $state(false);
 
   // The widget types a user can create. Adding one is a single row here, not a new
   // branch: label + backend type + the default name a fresh widget gets.
@@ -67,7 +70,14 @@
     selectedId = id;
     tab = "code";
     try {
-      widget = await obs.call("overlays.get", { id });
+      const w = await obs.call("overlays.get", { id });
+      // A newer select() may have superseded this one while the fetch was in flight;
+      // don't overwrite the current selection with a stale widget.
+      if (selectedId !== id) {
+        return;
+      }
+      widget = w;
+      dirty = false;
       reloadKey++;
     } catch (e) {
       error = (e as Error).message;
@@ -79,6 +89,7 @@
     if (!widget) {
       return;
     }
+    dirty = true;
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => void flushSave(), 500);
   }
@@ -99,6 +110,7 @@
         js: w.js,
         fields: w.fields,
       });
+      dirty = false;
       reloadKey++;
       // Keep the list row's name label in sync without a full re-fetch.
       items = items.map((it) => (it.id === w.id ? { ...it, name: w.name } : it));
@@ -214,6 +226,32 @@
     }
   }
 
+  // A widget changed somewhere (create/update/duplicate/delete, or a test). The
+  // payload carries no id, so re-run the list and — per the bridge contract —
+  // re-fetch the open widget so external edits show. Skip the refetch while the
+  // local buffer is dirty (a pending debounced save) so we never clobber unsaved
+  // edits; and only swap when the server copy actually differs, so our own save
+  // echo doesn't force a needless preview reload.
+  async function onOverlaysChanged(): Promise<void> {
+    refresh();
+    const id = selectedId;
+    if (!id || dirty) {
+      return;
+    }
+    try {
+      const w = await obs.call("overlays.get", { id });
+      if (selectedId !== id || dirty) {
+        return;
+      }
+      if (JSON.stringify(w) !== JSON.stringify(widget)) {
+        widget = w;
+        reloadKey++;
+      }
+    } catch {
+      // vanished/transient; refresh() already dropped a stale selection.
+    }
+  }
+
   onMount(() => {
     refresh();
     obs
@@ -223,7 +261,7 @@
         serverDown = s ? !s.listening : false;
       })
       .catch(() => {});
-    return obs.on("overlays.changed", refresh);
+    return obs.on("overlays.changed", onOverlaysChanged);
   });
 
   onDestroy(() => {

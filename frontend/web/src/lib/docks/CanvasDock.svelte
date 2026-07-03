@@ -30,6 +30,7 @@
   import FilterReveal from "../dock/FilterReveal.svelte";
   import Splitter from "../dock/Splitter.svelte";
   import { getPaneSizes, setEmbedH, setScenesW } from "../dock/canvasPaneSizes";
+  import { STATE_COLOR_EXT } from "../theme/stateColors";
 
   // A composite, inseparable dock for one NON-DEFAULT canvas (hierarchy-model.html
   // §1 right column): an inline preview + this canvas's own scenes + its own
@@ -279,13 +280,21 @@
       : items,
   );
 
+  // Request-generation guard: a fast scene switch must not let a slow prior list
+  // response overwrite the newer scene's sources.
+  let itemsSeq = 0;
   async function loadItems() {
     if (!currentScene) {
       items = [];
       return;
     }
+    const mine = ++itemsSeq;
     try {
-      items = await obs.call("sceneItems.list", { canvas: canvasUuid, scene: currentScene });
+      const list = await obs.call("sceneItems.list", { canvas: canvasUuid, scene: currentScene });
+      if (mine !== itemsSeq) {
+        return;
+      }
+      items = list;
       if (selectedId !== null && !items.some((i) => i.id === selectedId)) {
         selectedId = null;
       }
@@ -295,7 +304,7 @@
   }
   function selectItem(item: SceneItem) {
     selectedId = item.id;
-    void obs.call("preview.select", { canvas: canvasUuid, window: WINDOW_ID, scene: currentScene, id: item.id });
+    void obs.call("preview.select", { canvas: canvasUuid, window: WINDOW_ID, scene: currentScene, id: item.id }).catch(() => {});
   }
   async function toggleVisible(item: SceneItem) {
     try {
@@ -625,14 +634,6 @@
       liveState = "idle";
     }
   }
-  const STATE_COLOR: Record<MultistreamState | "off", string> = {
-    off: "var(--color-muted)",
-    idle: "var(--color-muted)",
-    connecting: "var(--meter-yellow)",
-    live: "var(--meter-green)",
-    error: "var(--color-live)",
-  };
-
   // ---- toolbar actions (bottom bars, act on the selected row) ----------------
   let scenesLeft = $derived<ToolAction[]>([
     { icon: "plus", title: "Add scene", onClick: beginAddScene },
@@ -952,7 +953,7 @@
   </div>
 
   <footer class="foot">
-    <span class="dot" style:background={STATE_COLOR[liveState]} title={liveState}></span>
+    <span class="dot" style:background={STATE_COLOR_EXT[liveState]} title={liveState}></span>
     <span class="foot-name">{canvasName}</span>
     <button class="foot-gear" title="Edit canvas (Canvases)" onclick={() => setPage("canvases")}>
       <Icon name="gear" size={13} />

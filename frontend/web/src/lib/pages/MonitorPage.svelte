@@ -1,32 +1,17 @@
 <script lang="ts">
-  import { obs, type Stats, type OutputStat, type ViewerCounts, type ChatPlatform } from "../bridge";
+  import { obs, type ViewerCounts, type ChatPlatform } from "../bridge";
   import PageHeader from "../PageHeader.svelte";
   import EmptyState from "../EmptyState.svelte";
   import { PLATFORM_COLORS, PLATFORM_LABELS, PLATFORM_ORDER } from "../theme/platformColors";
+  import { OUTPUT_STATE_COLOR } from "../theme/stateColors";
+  import { fmtDuration } from "../format";
+  import { statsStore } from "../statsStore.svelte";
 
-  // Live performance view. stats.get has no push, so this page owns a 1s poll; it
-  // unmounts when off-page (App renders it conditionally), which clears the timer.
-  let stats = $state<Stats | null>(null);
-
-  function loadStats(): void {
-    obs
-      .call("stats.get")
-      .then((s) => (stats = s))
-      .catch(() => {});
-  }
-
-  $effect(() => {
-    loadStats();
-    const timer = setInterval(loadStats, 1000);
-    return () => clearInterval(timer);
-  });
-
-  const STATE_COLOR: Record<OutputStat["state"], string> = {
-    Idle: "var(--color-muted)",
-    Connecting: "var(--meter-yellow)",
-    Live: "var(--meter-green)",
-    Error: "var(--color-live)",
-  };
+  // Live performance view. stats.get has no push; the shared 1 Hz store owns the
+  // interval. This page subscribes while mounted (App renders it conditionally, so
+  // leaving the page unsubscribes and, if no other consumer remains, stops the poll).
+  const stats = $derived(statsStore.stats);
+  $effect(() => statsStore.subscribe());
 
   // Six summary cards, derived from stats.general. value/unit/color per the mock.
   let cards = $derived.by<{ k: string; v: string; u: string; c: string }[]>(() => {
@@ -67,15 +52,6 @@
       },
     ];
   });
-
-  function fmtDuration(ms: number): string {
-    const total = Math.floor(ms / 1000);
-    const h = Math.floor(total / 3600);
-    const m = Math.floor((total % 3600) / 60);
-    const s = total % 60;
-    const pad = (n: number): string => String(n).padStart(2, "0");
-    return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
-  }
 
   // Aggregate viewer count (Phase 9.0), pushed via viewers.changed while live.
   let viewers = $state<ViewerCounts | null>(null);
@@ -153,10 +129,10 @@
           {@const live = o.state === "Live"}
           <div class="trow">
             <span class="out">
-              <span class="out-dot" style:background={STATE_COLOR[o.state]}></span>
+              <span class="out-dot" style:background={OUTPUT_STATE_COLOR[o.state]}></span>
               <span class="out-name">{o.profileLabel} &nbsp;→&nbsp; {o.canvasName}</span>
             </span>
-            <span style:color={STATE_COLOR[o.state]}>{o.state}</span>
+            <span style:color={OUTPUT_STATE_COLOR[o.state]}>{o.state}</span>
             <span>{live ? (o.bitrateKbps / 1000).toFixed(1) + " Mb/s" : "—"}</span>
             <span>{live ? String(o.droppedFrames) : "—"}</span>
             <span>{live ? o.congestionPct.toFixed(1) + "%" : "—"}</span>

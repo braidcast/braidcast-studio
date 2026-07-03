@@ -193,7 +193,7 @@
         {#if result.warnings.length > 0}
           <p class="dim note">Warnings:</p>
           <ul class="warnings">
-            {#each result.warnings as w (w)}
+            {#each result.warnings as w, i (i)}
               <li class="dim">{w}</li>
             {/each}
           </ul>

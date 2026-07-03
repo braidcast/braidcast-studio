@@ -53,16 +53,15 @@ export function dockById(id: string): DockDef | undefined {
   return DOCKS.find((d) => d.id === id);
 }
 
-// Build the AddPanelOptions for a dock id. Title + accent flag + the detach seam
-// ride in params so the custom tab can read them (keys prefixed __ are stripped
-// before reaching the Svelte content body by the mount adapter). Standalone (not a
-// DockHost method) so callers don't depend on a `bind:this` ref that Svelte 5 only
-// assigns after the child mounts — onReady fires during that mount.
-export function panelOptions(
-  id: string,
-  detachDock: (panelId: string) => void,
-  extra: Partial<AddPanelOptions> = {},
-): AddPanelOptions {
+// Build the AddPanelOptions for a dock id. Title + accent flag ride in params so
+// the custom tab can read them (keys prefixed __ are stripped before reaching the
+// Svelte content body by the mount adapter). The tear-out handler is NOT threaded
+// through params — it is resolved at click time from detachRegistry, so a panel
+// rebuilt from a saved layout (which JSON.stringify strips functions from) still
+// detaches. Standalone (not a DockHost method) so callers don't depend on a
+// `bind:this` ref that Svelte 5 only assigns after the child mounts — onReady fires
+// during that mount.
+export function panelOptions(id: string, extra: Partial<AddPanelOptions> = {}): AddPanelOptions {
   const def = dockById(id);
   if (!def) {
     throw new Error(`panelOptions: unknown dock id "${id}"`);
@@ -71,7 +70,7 @@ export function panelOptions(
     id: def.id,
     component: def.id,
     title: def.title,
-    params: { ...def.params, __accent: def.accent ?? false, __detach: detachDock },
+    params: { ...def.params, __accent: def.accent ?? false },
     ...extra,
   };
 }

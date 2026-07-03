@@ -38,7 +38,7 @@ export function clearCanvasUserHidden(): void {
 // Reassert the wanted canvas-dock set against the live panels. Safe to call any
 // time (idempotent): on boot, on canvas.changed/outputBinding.changed, and after a
 // layout reset/restore that may have cleared the dynamic docks.
-export async function reconcileCanvasDocks(api: DockviewApi, detachDock: (panelId: string) => void): Promise<void> {
+export async function reconcileCanvasDocks(api: DockviewApi): Promise<void> {
   let canvases: CanvasInfo[];
   try {
     canvases = await obs.call("canvas.list");
@@ -81,7 +81,6 @@ export async function reconcileCanvasDocks(api: DockviewApi, detachDock: (panelI
         __accent: true,
         __dot: "var(--color-muted)",
         __badge: "OWN S/S",
-        __detach: detachDock,
       },
       position: hasAnchor ? { referencePanel: refId, direction: "right" } : undefined,
     });
@@ -89,10 +88,10 @@ export async function reconcileCanvasDocks(api: DockviewApi, detachDock: (panelI
   }
 }
 
-export function startCanvasDockReconciler(api: DockviewApi, detachDock: (panelId: string) => void): () => void {
-  void reconcileCanvasDocks(api, detachDock);
-  const offCanvas = obs.on("canvas.changed", () => void reconcileCanvasDocks(api, detachDock));
-  const offBindings = obs.on("outputBinding.changed", () => void reconcileCanvasDocks(api, detachDock));
+export function startCanvasDockReconciler(api: DockviewApi): () => void {
+  void reconcileCanvasDocks(api);
+  const offCanvas = obs.on("canvas.changed", () => void reconcileCanvasDocks(api));
+  const offBindings = obs.on("outputBinding.changed", () => void reconcileCanvasDocks(api));
   return () => {
     offCanvas();
     offBindings();

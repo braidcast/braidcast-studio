@@ -135,6 +135,45 @@
     return Number.isInteger(n) && n > 0 && n <= max;
   }
 
+  // Snap a resolution to match a newly-picked orientation so the segment never shows
+  // an orientation the width/height contradict. A rotate that lands on a preset is
+  // preferred (1920×1080 -> 1080×1920), else the nearest preset by area. Custom is
+  // left untouched — its number inputs show whatever the values are.
+  function nearestPreset(list: ResPreset[], w: number, h: number): ResPreset {
+    const rotated = list.find((p) => p.w === h && p.h === w);
+    if (rotated) {
+      return rotated;
+    }
+    const area = w * h;
+    return list.reduce((best, p) => (Math.abs(p.w * p.h - area) < Math.abs(best.w * best.h - area) ? p : best), list[0]);
+  }
+  function pickResOrient(o: Orient): void {
+    resOrient = o;
+    if (o === "custom") {
+      return;
+    }
+    const list = presetsFor(o);
+    if (list.some((p) => p.w === fWidth && p.h === fHeight)) {
+      return;
+    }
+    const p = nearestPreset(list, fWidth, fHeight);
+    fWidth = p.w;
+    fHeight = p.h;
+  }
+  function pickOutOrient(o: Orient): void {
+    outOrient = o;
+    if (o === "custom") {
+      return;
+    }
+    const list = presetsFor(o);
+    if (list.some((p) => p.w === fOutWidth && p.h === fOutHeight)) {
+      return;
+    }
+    const p = nearestPreset(list, fOutWidth, fOutHeight);
+    fOutWidth = p.w;
+    fOutHeight = p.h;
+  }
+
   // The Default canvas has nothing to inherit, so it shows no "use default" toggles
   // and its name is fixed.
   const editingDefaultCanvas = $derived(canvas?.isDefault ?? false);
@@ -242,7 +281,7 @@
 
   <div class="field">
     <span class="flabel">Resolution</span>
-    {@render segmented(resOrient, fUseDefaultRes, (o) => (resOrient = o))}
+    {@render segmented(resOrient, fUseDefaultRes, pickResOrient)}
     {#if resOrient === "custom"}
       <div class="wh">
         <input
@@ -275,7 +314,7 @@
     <span class="flabel">Output Resolution (scaled)</span>
     {@render toggle(fOutSameAsBase, fUseDefaultRes, "Same as base", (v) => (fOutSameAsBase = v))}
     {#if !fOutSameAsBase}
-      {@render segmented(outOrient, fUseDefaultRes, (o) => (outOrient = o))}
+      {@render segmented(outOrient, fUseDefaultRes, pickOutOrient)}
       {#if outOrient === "custom"}
         <div class="wh">
           <input

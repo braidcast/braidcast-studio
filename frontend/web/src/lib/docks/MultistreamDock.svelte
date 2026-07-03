@@ -1,18 +1,11 @@
 <script lang="ts">
-  import { obs, type MultistreamStatus, type MultistreamState } from "../bridge";
+  import { obs, type MultistreamStatus } from "../bridge";
   import { setPage } from "../pageStore.svelte";
+  import { STATE_COLOR } from "../theme/stateColors";
   import Icon from "../dock/Icon.svelte";
 
   // Host supplies tab chrome + strips __* keys; this body declares no props.
   let {}: Record<string, unknown> = $props();
-
-  // State -> dot color, mapped to theme tokens (re-skins with the active preset).
-  const STATE_COLOR: Record<MultistreamState, string> = {
-    idle: "var(--color-muted)",
-    connecting: "var(--meter-yellow)",
-    live: "var(--meter-green)",
-    error: "var(--color-live)",
-  };
 
   let outputs = $state<MultistreamStatus[]>([]);
   let loaded = $state(false);

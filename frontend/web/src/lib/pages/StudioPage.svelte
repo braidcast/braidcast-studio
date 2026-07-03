@@ -11,15 +11,13 @@
     clearCanvasUserHidden,
   } from "../dock/canvasReconciler";
   import { startBrowserDockReconciler, reconcileBrowserDocks } from "../dock/browserDockReconciler";
+  import { setDetachHandler } from "../dock/detachRegistry";
   import { browserDockStore } from "../browserDockStore.svelte";
-  import {
-    obs,
-    type CanvasInfo,
-    type Monitor,
-    type MultistreamStatus,
-    type MultistreamState,
-    type Stats,
-  } from "../bridge";
+  import { obs, type CanvasInfo, type Monitor, type MultistreamStatus, type MultistreamState } from "../bridge";
+  import { STATE_COLOR } from "../theme/stateColors";
+  import { fmtDuration, fmtBitrate } from "../format";
+  import { callOrToast } from "../callToast";
+  import { statsStore } from "../statsStore.svelte";
   import { pageStore } from "../pageStore.svelte";
   import { suspendPreview } from "../previewGate.svelte";
   import { undoStore } from "../undoStore.svelte";
@@ -33,11 +31,13 @@
   let canvasDocksPresent = $state<Set<string>>(new Set());
   let stopReconciler: (() => void) | undefined;
   let stopBrowserReconciler: (() => void) | undefined;
+  let offWindowClosed: (() => void) | undefined;
 
   // CANVASES bar + GO-LIVE bar data, read independently of the Dockview lifecycle.
   let canvases = $state<CanvasInfo[]>([]);
   let outputs = $state<MultistreamStatus[]>([]);
-  let stats = $state<Stats | null>(null);
+  // Shared 1 Hz stats poll (also feeds the Stats dock + Monitor page).
+  let stats = $derived(statsStore.stats);
   let focusedCanvasUuid = $state<string | null>(null);
   let busy = $state(false);
   let dialog = $state<DialogSpec | null>(null);
@@ -64,15 +64,6 @@
   let overflowPos = $state<{ x: number; y: number } | null>(null);
   let monitors = $state<Monitor[]>([]);
   let docksLocked = $state(false);
-
-  // State -> color, same token mapping the Multistream/Stats docks use. Used for
-  // the per-canvas dock header dots (idle = muted).
-  const STATE_COLOR: Record<MultistreamState, string> = {
-    idle: "var(--color-muted)",
-    connecting: "var(--meter-yellow)",
-    live: "var(--meter-green)",
-    error: "var(--color-live)",
-  };
 
   // The focused canvas drives the bottom bar: default to the active CANVASES chip,
   // else the Default canvas, else the first canvas. `null` only before the list
@@ -134,12 +125,6 @@
     return max;
   });
 
-  function fmtDuration(ms: number): string {
-    const s = Math.floor(ms / 1000);
-    const pad = (n: number): string => String(n).padStart(2, "0");
-    return pad(Math.floor(s / 3600)) + ":" + pad(Math.floor((s % 3600) / 60)) + ":" + pad(s % 60);
-  }
-
   // Perf summary for the bottom bar, derived from the polled stats snapshot. NET is
   // the summed output bitrate; em-dash when stats are absent or no outputs exist.
   let perfRow = $derived.by<{ k: string; v: string }[]>(() => {
@@ -154,12 +139,7 @@
     }
     const g = stats.general;
     const totalKbps = stats.outputs.reduce((sum, o) => sum + o.bitrateKbps, 0);
-    const net =
-      stats.outputs.length === 0
-        ? "—"
-        : totalKbps >= 1000
-          ? (totalKbps / 1000).toFixed(1) + " Mb/s"
-          : Math.round(totalKbps) + " kb/s";
+    const net = stats.outputs.length === 0 ? "—" : fmtBitrate(totalKbps);
     return [
       { k: "CPU", v: g.cpu.toFixed(1) + "%" },
       { k: "FPS", v: String(Math.round(g.fps)) },
@@ -172,6 +152,8 @@
   onDestroy(() => {
     stopReconciler?.();
     stopBrowserReconciler?.();
+    offWindowClosed?.();
+    clearTimeout(saveTimer);
   });
 
   // Store-change reactivity for the user-defined browser docks. The store is a
@@ -181,7 +163,7 @@
   $effect(() => {
     if (!api) return;
     void browserDockStore.docks;
-    reconcileBrowserDocks(api, detachDock);
+    reconcileBrowserDocks(api);
   });
 
   // Explicitly suspend every native preview overlay (Default + each CanvasDock,
@@ -193,20 +175,13 @@
     }
   });
 
-  // Gate the 1s stats poll on the Studio page. StudioPage never unmounts (it just
-  // hides), so an onMount interval would poll app-wide; this starts the poll only
-  // while Studio is shown and clears it on leave / destroy.
-  function loadStats(): void {
-    obs
-      .call("stats.get")
-      .then((s) => (stats = s))
-      .catch(() => {});
-  }
+  // Gate the shared 1 Hz stats poll on the Studio page. StudioPage never unmounts
+  // (it just hides), so subscribing unconditionally would poll app-wide; this
+  // subscribes only while Studio is shown and unsubscribes on leave / destroy. The
+  // ref-counted store runs a single interval no matter how many consumers subscribe.
   $effect(() => {
     if (pageStore.page !== "studio") return;
-    loadStats();
-    const timer = setInterval(loadStats, 1000);
-    return () => clearInterval(timer);
+    return statsStore.subscribe();
   });
 
   // Drive each per-canvas dock header dot off that canvas's own live state, so the
@@ -255,12 +230,16 @@
         .catch(() => {});
     };
     loadCanvases();
-    loadStatus();
-    // Authoritative initial seed for the GLOBAL live flag: any enabled output
-    // running anywhere => live. Subsequent transitions arrive via streaming.changed.
+    // Single initial status read seeds BOTH the per-canvas outputs list and the
+    // authoritative GLOBAL live flag (any enabled output running anywhere => live).
+    // Later transitions arrive via multistream.changed / outputBinding.changed
+    // (outputs) and streaming.changed (anyRunning).
     obs
       .call("multistream.status")
-      .then((res) => (anyRunning = res.outputs.some((o) => o.state === "live" || o.state === "connecting")))
+      .then((res) => {
+        outputs = res.outputs;
+        anyRunning = res.outputs.some((o) => o.state === "live" || o.state === "connecting");
+      })
       .catch(() => {});
     obs
       .call("settings.getGeneral")
@@ -335,12 +314,12 @@
   // the nav-rail Settings page replace it.
   function buildDefaultLayout(dv: DockviewApi): void {
     dv.clear();
-    dv.addPanel(panelOptions("preview", detachDock));
+    dv.addPanel(panelOptions("preview"));
     // Bottom docks row, anchored below the previews row, then left-to-right.
-    dv.addPanel(panelOptions("scenes", detachDock, { position: { referencePanel: "preview", direction: "below" } }));
-    dv.addPanel(panelOptions("sources", detachDock, { position: { referencePanel: "scenes", direction: "right" } }));
-    dv.addPanel(panelOptions("stats", detachDock, { position: { referencePanel: "sources", direction: "right" } }));
-    dv.addPanel(panelOptions("mixer", detachDock, { position: { referencePanel: "stats", direction: "right" } }));
+    dv.addPanel(panelOptions("scenes", { position: { referencePanel: "preview", direction: "below" } }));
+    dv.addPanel(panelOptions("sources", { position: { referencePanel: "scenes", direction: "right" } }));
+    dv.addPanel(panelOptions("stats", { position: { referencePanel: "sources", direction: "right" } }));
+    dv.addPanel(panelOptions("mixer", { position: { referencePanel: "stats", direction: "right" } }));
     sizeStudioRows(dv);
     logDocks(dv);
     refreshVisible();
@@ -393,6 +372,9 @@
 
   async function onReady(dv: DockviewApi): Promise<void> {
     api = dv;
+    // Register the tear-out handler once; the custom tab resolves it at click time
+    // (see detachRegistry) so detach survives a layout restore.
+    setDetachHandler(detachDock);
     dv.onDidLayoutChange(() => {
       refreshVisible();
       persistLayoutSoon(dv);
@@ -408,23 +390,23 @@
       buildDefaultLayout(dv);
     }
     // Output-gated per-canvas composite docks (added/removed as canvases enable).
-    stopReconciler = startCanvasDockReconciler(dv, detachDock);
+    stopReconciler = startCanvasDockReconciler(dv);
     // User-defined browser docks (iframe panels). Loads the set + asserts panels;
     // ongoing add/edit/remove reactivity is the $effect above.
-    stopBrowserReconciler = startBrowserDockReconciler(dv, detachDock);
+    stopBrowserReconciler = startBrowserDockReconciler(dv);
 
     // A detached window closed (explicit redock or user OS-close): restore the
     // dock to the main window. Static docks re-add from DOCKS; dynamic canvas docks
     // are left to the reconciler. Main-window only -- App mounts only here.
-    obs.on("window.closed", (p) => {
+    offWindowClosed = obs.on("window.closed", (p) => {
       if (!api) return;
       if (api.getPanel(p.dock)) return; // already present
       if (p.dock.startsWith("canvas:")) {
-        void reconcileCanvasDocks(api, detachDock);
+        void reconcileCanvasDocks(api);
       } else if (p.dock.startsWith("browserdock:")) {
-        reconcileBrowserDocks(api, detachDock);
+        reconcileBrowserDocks(api);
       } else if (DOCKS.some((d) => d.id === p.dock)) {
-        api.addPanel(panelOptions(p.dock, detachDock));
+        api.addPanel(panelOptions(p.dock));
       }
       refreshVisible();
     });
@@ -436,7 +418,7 @@
     if (existing) {
       api.removePanel(existing);
     } else {
-      api.addPanel(panelOptions(id, detachDock));
+      api.addPanel(panelOptions(id));
     }
     refreshVisible();
   }
@@ -449,9 +431,9 @@
     buildDefaultLayout(api);
     // buildDefaultLayout clears the dynamic canvas docks; re-assert them (the
     // reconciler's event subscriptions stay live but only fire on canvas changes).
-    void reconcileCanvasDocks(api, detachDock);
+    void reconcileCanvasDocks(api);
     // Likewise re-assert the user-defined browser docks dropped by the clear.
-    reconcileBrowserDocks(api, detachDock);
+    reconcileBrowserDocks(api);
   }
 
   // Dockview 6.6.1 has no `locked` api setter; disabling drag-and-drop via
@@ -526,7 +508,7 @@
       return;
     }
     setCanvasUserHidden(c.uuid, canvasShown(c));
-    void reconcileCanvasDocks(api, detachDock).then(() => refreshVisible());
+    void reconcileCanvasDocks(api).then(() => refreshVisible());
   }
 
   function canvasShown(c: CanvasInfo): boolean {
@@ -545,8 +527,9 @@
       onCommit: (name) => {
         if (!name) return;
         const def = canvases.find((c) => c.isDefault);
-        obs
-          .call("canvas.create", {
+        void callOrToast(
+          "canvas.create",
+          {
             name,
             baseWidth: def?.baseWidth ?? 1920,
             baseHeight: def?.baseHeight ?? 1080,
@@ -554,8 +537,9 @@
             outputHeight: def?.outputHeight,
             fpsNum: def?.fpsNum ?? 60,
             fpsDen: def?.fpsDen ?? 1,
-          })
-          .catch(() => {});
+          },
+          "Create canvas failed",
+        );
       },
     };
   }
@@ -754,7 +738,7 @@
       <span class="focus-dot" style:background={focusDotColor}></span>
       <span class="focus-name">{focusedLabel}</span>
       {#if liveState === "live"}
-        <span class="livebadge"><span class="rec"></span>LIVE {fmtDuration(liveDurationMs)}</span>
+        <span class="livebadge"><span class="rec"></span>LIVE {fmtDuration(liveDurationMs, { fixed: true })}</span>
       {/if}
       {#if anyRunning && viewerTotal !== null}
         <span class="viewers" title="Aggregate viewers across connected platforms">

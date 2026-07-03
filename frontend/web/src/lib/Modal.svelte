@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
   import Icon from "./dock/Icon.svelte";
+  import { pushEsc, popEsc, isTopEsc } from "./escStack";
 
   // Shared modal shell: backdrop + surface panel + mono micro-label head + body,
   // with an optional footer. Replaces the hand-rolled per-dialog copies; a caller
@@ -31,8 +32,19 @@
     children,
   }: Props = $props();
 
+  // Gate Escape so a menu (or nested modal) stacked above this one closes first;
+  // only the topmost Escape owner acts.
+  let escToken: symbol | undefined;
+  $effect(() => {
+    escToken = pushEsc();
+    return () => {
+      if (escToken) popEsc(escToken);
+      escToken = undefined;
+    };
+  });
+
   function onKeydown(e: KeyboardEvent) {
-    if (e.key === "Escape") {
+    if (e.key === "Escape" && escToken && isTopEsc(escToken)) {
       onClose();
     }
   }

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
   import { obs, type StreamCategory } from "./bridge";
 
   // Debounced category typeahead (mock `Category ▾`). Calls
@@ -69,6 +70,12 @@
     // Delay so a result click registers before the dropdown unmounts.
     setTimeout(() => (open = false), 120);
   }
+
+  onDestroy(() => {
+    if (timer !== null) {
+      clearTimeout(timer);
+    }
+  });
 </script>
 
 <div class="cat">

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, onDestroy } from "svelte";
   import { obs, type SceneItem, type ReorderDirection } from "../bridge";
   import { defaultCanvas } from "./defaultCanvasStore.svelte";
   import AddSourceModal from "../AddSourceModal.svelte";
@@ -94,7 +94,7 @@
 
   function selectItem(item: SceneItem) {
     selectedItemId = item.id;
-    void obs.call("preview.select", { scene: currentScene, id: item.id });
+    void obs.call("preview.select", { scene: currentScene, id: item.id }).catch(() => {});
   }
 
   // The properties modal overlaps the preview; suspend the native overlay while open.
@@ -114,15 +114,23 @@
     });
   });
 
+  // Request-generation guard: a fast scene switch must not let a slow prior list
+  // response overwrite the newer scene's sources.
+  let loadSeq = 0;
   async function load() {
     if (!currentScene) {
       items = [];
       loaded = true;
       return;
     }
+    const mine = ++loadSeq;
     error = null;
     try {
-      items = await obs.call("sceneItems.list", { scene: currentScene });
+      const list = await obs.call("sceneItems.list", { scene: currentScene });
+      if (mine !== loadSeq) {
+        return;
+      }
+      items = list;
       if (selectedItemId !== null && !items.some((i) => i.id === selectedItemId)) {
         selectedItemId = null;
       }
@@ -143,6 +151,16 @@
   $effect(() => {
     sourceSelection.scene = currentScene;
     sourceSelection.item = items.find((i) => i.id === selectedItemId) ?? null;
+  });
+
+  // Drop our published selection on teardown so the app-level Ctrl+C/Ctrl+V doesn't
+  // act on a stale scene/item after this dock unmounts — but only if the store still
+  // points at what we published (another surface may have taken over).
+  onDestroy(() => {
+    if (sourceSelection.scene === currentScene) {
+      sourceSelection.scene = null;
+      sourceSelection.item = null;
+    }
   });
 
   // Refresh on item mutations targeting the global path (canvas=null) for our scene.

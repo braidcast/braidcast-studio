@@ -27,7 +27,7 @@ function panelId(id: string): string {
 
 // Reassert the wanted browser-dock set against the live panels. Idempotent: safe on
 // boot, on every store mutation, and after a layout reset/restore.
-export function reconcileBrowserDocks(api: DockviewApi, detachDock: (panelId: string) => void): void {
+export function reconcileBrowserDocks(api: DockviewApi): void {
   const wanted = browserDockStore.docks;
   const wantedIds = new Set(wanted.map((d) => panelId(d.id)));
 
@@ -56,17 +56,17 @@ export function reconcileBrowserDocks(api: DockviewApi, detachDock: (panelId: st
       id,
       component: "browserdock",
       title,
-      params: { url: d.url, title, __detach: detachDock },
+      params: { url: d.url, title },
       position: hasAnchor ? { referencePanel: refId, direction: "right" } : undefined,
     });
     refId = id;
   }
 }
 
-export function startBrowserDockReconciler(api: DockviewApi, detachDock: (panelId: string) => void): () => void {
+export function startBrowserDockReconciler(api: DockviewApi): () => void {
   // Load once, then assert the set. The ongoing store-change reactivity is owned by
   // StudioPage's $effect (the store is rune-based, not event-based).
-  void browserDockStore.load().then(() => reconcileBrowserDocks(api, detachDock));
-  reconcileBrowserDocks(api, detachDock);
+  void browserDockStore.load().then(() => reconcileBrowserDocks(api));
+  reconcileBrowserDocks(api);
   return () => {};
 }

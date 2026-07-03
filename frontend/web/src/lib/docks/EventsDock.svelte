@@ -7,6 +7,7 @@
     EVENT_TYPE_COLORS,
     EVENT_TYPE_LABELS,
   } from "../theme/platformColors";
+  import { FeedVirtualizer, type FeedRow } from "../feedVirtualizer.svelte";
   import EmptyState from "../EmptyState.svelte";
   import Icon from "../dock/Icon.svelte";
 
@@ -71,203 +72,46 @@
   }
 
   // --- feed (ring-capped + virtualized) -------------------------------------
-  // Hard cap on retained events so a sustained feed can't grow the array or the
-  // measured-height map without bound; trimming prunes both in lockstep.
-  const MAX = 500;
-  const ESTIMATE = 38; // px height estimate for an unmeasured row
-  const OVERSCAN = 6; // rows rendered beyond the viewport on each side
-  const STICK_PX = 24; // within this of the bottom counts as "stuck to latest"
-
-  // Each row carries a client-assigned monotonic key so the render key never
-  // depends on the host-supplied ev.id (which could arrive empty or duplicated and
-  // would throw each_key_duplicate). ev.id is retained for any host-side identity
-  // needs; the keyed list + heights map use clientKey only.
-  let events = $state<{ clientKey: number; e: NormalizedEvent }[]>([]);
-  let seq = 0;
-  // clientKey -> measured row height. Plain map (not deep-reactive); a height change
-  // bumps `measureVersion` to recompute the layout. Pruned alongside the ring trim.
-  const heights = new Map<number, number>();
-  let measureVersion = $state(0);
-
   // Platform filter: "all" or one platform. Filtering feeds the virtualizer a
   // derived subset -- heights stay keyed by the stable clientKey, so a filtered-out
   // row keeps its measured height and re-appears at the right size when re-shown.
   let filter = $state<"all" | ChatPlatform>("all");
-  let filtered = $derived(filter === "all" ? events : events.filter((r) => r.e.platform === filter));
-
-  let scrollEl: HTMLDivElement | undefined;
-  let viewTop = $state(0);
-  let viewH = $state(0);
-  let autoStick = $state(true);
-
-  // Batch incoming events onto a single rAF flush so a burst re-renders once
-  // (not once per event) and the array is rebuilt at most once per frame.
-  let pending: NormalizedEvent[] = [];
-  let rafId = 0;
-  function enqueue(e: NormalizedEvent): void {
-    pending.push(e);
-    if (!rafId) rafId = requestAnimationFrame(flush);
-  }
-  function flush(): void {
-    rafId = 0;
-    if (pending.length === 0) return;
-    let next = events.concat(pending.map((e) => ({ clientKey: ++seq, e })));
-    pending = [];
-    if (next.length > MAX) {
-      // clientKeys are unique+monotonic, so trimmed rows never alias a kept one --
-      // prune their heights directly, in lockstep with the ring trim.
-      for (const d of next.slice(0, next.length - MAX)) heights.delete(d.clientKey);
-      next = next.slice(next.length - MAX);
-    }
-    events = next;
-  }
-
-  // Replace the whole feed. events.list / events.backfill arrive newest-first, so
-  // reverse into oldest->newest (top->bottom) to match the enqueue-at-bottom order.
-  // Drops any pending appends and clears the measured heights (fresh clientKeys).
-  function setFeed(list: NormalizedEvent[]): void {
-    pending = [];
-    if (rafId) {
-      cancelAnimationFrame(rafId);
-      rafId = 0;
-    }
-    heights.clear();
-    const rows: { clientKey: number; e: NormalizedEvent }[] = new Array(list.length);
-    for (let i = 0; i < list.length; i++) {
-      rows[i] = { clientKey: ++seq, e: list[list.length - 1 - i] };
-    }
-    events = rows;
-    measureVersion++;
-    autoStick = true;
-  }
-
-  // Cumulative row offsets + total height over the FILTERED set; recomputed when the
-  // filtered set or any measured height changes. O(n) over the <=MAX ring -- cheap.
-  let layout = $derived.by<{ tops: number[]; total: number }>(() => {
-    void measureVersion;
-    const rows = filtered;
-    const tops = new Array<number>(rows.length);
-    let acc = 0;
-    for (let i = 0; i < rows.length; i++) {
-      tops[i] = acc;
-      acc += heights.get(rows[i].clientKey) ?? ESTIMATE;
-    }
-    return { tops, total: acc };
-  });
-
-  // Visible window [start, end) including overscan, from the scroll offset.
-  let range = $derived.by<{ start: number; end: number }>(() => {
-    const { tops } = layout;
-    const rows = filtered;
-    const n = rows.length;
-    if (n === 0) return { start: 0, end: 0 };
-    const top = viewTop;
-    const bottom = viewTop + viewH;
-    let start = n - 1;
-    for (let i = 0; i < n; i++) {
-      const h = heights.get(rows[i].clientKey) ?? ESTIMATE;
-      if (tops[i] + h > top) {
-        start = i;
-        break;
-      }
-    }
-    let end = n;
-    for (let i = start; i < n; i++) {
-      if (tops[i] > bottom) {
-        end = i;
-        break;
-      }
-    }
-    return { start: Math.max(0, start - OVERSCAN), end: Math.min(n, end + OVERSCAN) };
-  });
-
-  let visible = $derived(
-    filtered.slice(range.start, range.end).map((row, i) => ({ ...row, top: layout.tops[range.start + i] })),
+  const feed = new FeedVirtualizer<NormalizedEvent>({ max: 500, estimate: 38, getDisplay: () => filtered });
+  // Explicitly typed to break the feed <-> filtered inference cycle (getDisplay
+  // closes over filtered, which reads feed.rows).
+  let filtered: FeedRow<NormalizedEvent>[] = $derived(
+    filter === "all" ? feed.rows : feed.rows.filter((r) => r.item.platform === filter),
   );
-
-  // Measure each rendered row; a height delta bumps measureVersion so the layout
-  // (and thus the bottom anchor) reflects real wrapped heights.
-  function measureRow(node: HTMLElement, key: number): { destroy(): void } {
-    const apply = (): void => {
-      const h = node.offsetHeight;
-      if (h > 0 && heights.get(key) !== h) {
-        heights.set(key, h);
-        measureVersion++;
-      }
-    };
-    const ro = new ResizeObserver(apply);
-    ro.observe(node);
-    apply();
-    return {
-      destroy() {
-        ro.disconnect();
-      },
-    };
-  }
-
-  function onScroll(): void {
-    if (!scrollEl) return;
-    viewTop = scrollEl.scrollTop;
-    viewH = scrollEl.clientHeight;
-    autoStick = scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight <= STICK_PX;
-  }
-
-  function jumpToLatest(): void {
-    autoStick = true;
-    if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
-  }
+  const measureRow = feed.measureRow;
+  const feedScroll = feed.scroll;
 
   // Switching the filter changes the visible set; re-pin to the newest of the new
   // subset so the user always lands on the latest matching event.
   function setFilter(f: "all" | ChatPlatform): void {
     filter = f;
-    autoStick = true;
+    feed.restick();
   }
-
-  // Keep the view pinned to the newest event while stuck to the bottom. Reads
-  // `filtered` (re-pin on filter change) and layout.total (re-pin after a freshly
-  // measured row grows the sizer).
-  $effect(() => {
-    void filtered;
-    void layout.total;
-    if (autoStick && scrollEl) {
-      scrollEl.scrollTop = scrollEl.scrollHeight;
-      // Keep the window state coherent without waiting on the async scroll event.
-      viewTop = scrollEl.scrollTop;
-    }
-  });
-
-  // Track the viewport height (jump-to-latest visibility + range both need it).
-  $effect(() => {
-    if (!scrollEl) return;
-    viewH = scrollEl.clientHeight;
-    const ro = new ResizeObserver(() => {
-      if (scrollEl) viewH = scrollEl.clientHeight;
-    });
-    ro.observe(scrollEl);
-    return () => ro.disconnect();
-  });
 
   function clear(): void {
     // The host clears its store then emits an empty events.backfill; setFeed([])
     // below is a local echo so the feed empties immediately even if the push lags.
     obs.call("events.clear").catch(() => {});
-    setFeed([]);
+    feed.setFeed([], true);
   }
 
   $effect(() => {
     obs
       .call("events.list")
-      .then((list) => setFeed(list))
+      // events.list / events.backfill arrive newest-first; setFeed reverses into
+      // oldest->newest (top->bottom) to match the enqueue-at-bottom order.
+      .then((list) => feed.setFeed(list, true))
       .catch(() => {});
-    const offNew = obs.on("events.new", (e) => enqueue(e));
-    const offBackfill = obs.on("events.backfill", (batch) => setFeed(batch));
+    const offNew = obs.on("events.new", (e) => feed.enqueue(e));
+    const offBackfill = obs.on("events.backfill", (batch) => feed.setFeed(batch, true));
     return () => {
       offNew();
       offBackfill();
-      if (rafId) cancelAnimationFrame(rafId);
-      rafId = 0;
-      pending = [];
+      feed.dispose();
     };
   });
 </script>
@@ -329,15 +173,15 @@
     {/each}
   </div>
 
-  <div class="scroll" bind:this={scrollEl} onscroll={onScroll}>
-    {#if events.length === 0}
+  <div class="scroll" use:feedScroll>
+    {#if feed.rows.length === 0}
       <EmptyState compact title="Follows, subs, gifts and cheers from your connected accounts appear here." />
     {:else if filtered.length === 0}
       <EmptyState compact title={"No " + (filter === "all" ? "" : PLATFORM_LABEL[filter] + " ") + "events yet."} />
     {:else}
-      <div class="sizer" style:height={layout.total + "px"}>
-        {#each visible as row (row.clientKey)}
-          {@const e = row.e}
+      <div class="sizer" style:height={feed.layout.total + "px"}>
+        {#each feed.visible as row (row.clientKey)}
+          {@const e = row.item}
           {@const platformColor = PLATFORM_COLOR[e.platform] ?? "var(--color-muted)"}
           {@const actorColor = e.actorColor || platformColor}
           {@const accent = TYPE_COLOR[e.type] ?? "var(--color-muted)"}
@@ -358,12 +202,12 @@
     {/if}
   </div>
 
-  {#if !autoStick && filtered.length > 0}
-    <button class="jump" onclick={jumpToLatest}><Icon name="jump-down" size={11} /> Jump to latest</button>
+  {#if !feed.autoStick && filtered.length > 0}
+    <button class="jump" onclick={feed.jumpToLatest}><Icon name="jump-down" size={11} /> Jump to latest</button>
   {/if}
 
   <div class="footer">
-    <button class="clearbtn" disabled={events.length === 0} onclick={clear}>Clear</button>
+    <button class="clearbtn" disabled={feed.rows.length === 0} onclick={clear}>Clear</button>
   </div>
 </div>
 

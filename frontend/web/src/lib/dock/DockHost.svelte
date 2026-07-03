@@ -44,10 +44,6 @@
     };
   }
 
-  export function getApi(): DockviewApi | undefined {
-    return api;
-  }
-
   onMount(() => {
     api = createDockview(container, buildOptions());
     onReady?.(api);

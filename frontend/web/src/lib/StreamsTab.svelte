@@ -10,6 +10,7 @@
   } from "./bridge";
   import PropertyForm from "./properties/PropertyForm.svelte";
   import { openOAuthConnect } from "./oauthConnectOpener.svelte";
+  import CollectionDialog, { type DialogSpec } from "./CollectionDialog.svelte";
   import Icon from "./dock/Icon.svelte";
   import Segmented from "./Segmented.svelte";
   import EmptyState from "./EmptyState.svelte";
@@ -35,6 +36,8 @@
   let formError = $state<string | null>(null);
   // Connection sub-path: "connect" (OAuth account) vs "key" (manual stream key).
   let connMode = $state<"connect" | "key">("key");
+  // Confirm dialog (destructive profile removal).
+  let dialog = $state<DialogSpec | null>(null);
 
   async function loadProfiles() {
     try {
@@ -224,6 +227,16 @@
     }
   }
 
+  function confirmRemove(p: StreamProfileInfo) {
+    dialog = {
+      kind: "confirm",
+      title: "Remove Profile",
+      message: `Remove profile "${displayName(p)}"? Its stream key will be forgotten.`,
+      confirmLabel: "Remove",
+      onCommit: () => void remove(p),
+    };
+  }
+
   async function remove(p: StreamProfileInfo) {
     try {
       await obs.call("streamProfile.remove", { uuid: p.uuid });
@@ -297,7 +310,7 @@
                 <span class="star"><Icon name="star" size={12} /></span> Primary
               </button>
             {/if}
-            <button class="mini danger" title="Remove" onclick={() => editingProfile && void remove(editingProfile)}>
+            <button class="mini danger" title="Remove" onclick={() => editingProfile && confirmRemove(editingProfile)}>
               <svg
                 width="13"
                 height="13"
@@ -384,7 +397,7 @@
               {/if}
             {:else}
               <div class="settings">
-                {#key editingUuid + ":" + fService}
+                {#key editingUuid + ":" + (editingProfile?.service ?? "")}
                   <PropertyForm kind="service" ref={editingUuid} />
                 {/key}
               </div>
@@ -425,6 +438,10 @@
     {/if}
   </div>
 </div>
+
+{#if dialog}
+  <CollectionDialog {...dialog} onClose={() => (dialog = null)} />
+{/if}
 
 <style>
   .streams {
