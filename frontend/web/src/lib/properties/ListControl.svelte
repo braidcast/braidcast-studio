@@ -5,11 +5,17 @@
 
   const p = $derived(prop as ListProperty);
 
-  // A small, fixed choice set reads best as a segmented control; larger sets stay
-  // a select. One-line threshold change if the cutoff ever needs tuning.
-  const SEGMENTED_MAX = 4;
+  // A small choice set with short labels reads best as a segmented control (e.g.
+  // rate control CBR/VBR/CQP); larger sets, or short sets whose labels are long
+  // enough to overflow a button (Multipass, Tuning), stay a select. Both cutoffs
+  // are one-line tunables.
+  const SEGMENTED_MAX_OPTIONS = 4;
+  const SEGMENTED_MAX_LABEL = 10;
   const segmented = $derived(
-    (p.combo_type === "list" || p.combo_type === "radio") && p.items.length <= SEGMENTED_MAX,
+    (p.combo_type === "list" || p.combo_type === "radio") &&
+      p.items.length > 0 &&
+      p.items.length <= SEGMENTED_MAX_OPTIONS &&
+      p.items.every((it) => (it.name ?? String(it.value)).length <= SEGMENTED_MAX_LABEL),
   );
 
   // <select> values are strings, but item values may be int/float/bool. Index by
