@@ -48,8 +48,9 @@ private:
 	json BuildJsonLocked() const;
 	// Write a prebuilt snapshot to disk. Does its own file I/O with NO deque lock held
 	// (serialized against other writers by writeMutex_), so a write never blocks Add's
-	// deque access -- the point of the debounce.
-	void WriteToDisk(const json &root) const;
+	// deque access -- the point of the debounce. `seq` is the epoch the snapshot was
+	// captured at; a snapshot older than the last one written is dropped (see below).
+	void WriteToDisk(const json &root, uint64_t seq) const;
 
 	static constexpr size_t kCap = 500;
 	// Coalesce disk writes to at most one per this interval; bursts of events (a raid,
@@ -62,7 +63,16 @@ private:
 	bool dirty_ = false;                  // unpersisted change pending (guarded by mutex_)
 	uint64_t lastSaveNs_ = 0;             // last WriteToDisk time (guarded by mutex_)
 
+	// Monotonic write-epoch counter, bumped by Clear() (a content discontinuity) under
+	// mutex_. Add/Clear/Flush capture its value with their snapshot; WriteToDisk drops any
+	// snapshot older than the last written epoch, so a stale in-flight Add that built its
+	// snapshot before a Clear can't win writeMutex_ afterward and resurrect the wiped feed.
+	uint64_t seq_ = 0; // guarded by mutex_
+
 	mutable std::mutex writeMutex_; // serializes WriteToDisk; never held with mutex_
+	// Highest epoch written to disk. Guarded by writeMutex_ ONLY (never mutex_), so the
+	// "never hold mutex_ and writeMutex_ together" rule is preserved.
+	mutable uint64_t lastWrittenSeq_ = 0;
 };
 
 } // namespace Events

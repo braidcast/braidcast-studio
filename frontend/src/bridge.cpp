@@ -8239,12 +8239,27 @@ void RunAsyncMethod(std::string method, const json &params,
 		}
 		AsyncTask::PostToUi([method = std::move(method), ok, result = std::move(result),
 				     error = std::move(error), callback]() {
-			if (ok) {
-				callback->Success(result.dump());
-				HostLog("[bridge] " + method + " -> ok (async)");
-			} else {
-				callback->Failure(404, error);
-				HostLog("[bridge] " + method + " -> FAIL (async: " + error + ")");
+			// Wrap result.dump(): the handler already ran in the worker's try/catch, but
+			// dump() can still throw (e.g. invalid UTF-8 in the result), which must not
+			// escape into CEF. Convert to the same 500 Failure shape the sync lane
+			// produces, and tag the FAIL message with the method name (which the async
+			// lane's callback body otherwise dropped) for parity with the sync lane's log.
+			try {
+				if (ok) {
+					callback->Success(result.dump());
+					HostLog("[bridge] " + method + " -> ok (async)");
+				} else {
+					callback->Failure(404, method + ": " + error);
+					HostLog("[bridge] " + method + " -> FAIL (async: " + error + ")");
+				}
+			} catch (const std::exception &e) {
+				const std::string msg = "unhandled exception in " + method + ": " + e.what();
+				callback->Failure(500, msg);
+				HostLog("[bridge] " + msg);
+			} catch (...) {
+				const std::string msg = "unhandled exception in " + method;
+				callback->Failure(500, msg);
+				HostLog("[bridge] " + msg);
 			}
 		});
 	});
@@ -8464,15 +8479,28 @@ void Shutdown()
 	g_oauthRunning.store(false, std::memory_order_release);
 	AsyncTask::SetAlive(false);
 
-	// Give the now-signaled detached workers a bounded window to unwind before the
-	// hubs/statics they may still be mid-call on are torn down below. On a clean quit
-	// with no in-flight worker this returns immediately (count is already zero).
+	// Signal the always-on hub/poller loops to stop BEFORE the drain. They spawn on the
+	// shared RunAsync worker counter (chat hub, event hub, viewer poller) and only ever
+	// unwind when their generation's cancel flag is set here, so draining first would
+	// always time out with a connected account (the loops never exit on their own). Each
+	// Stop/StopAll is signal-only (set the cancel flag + disconnect the transport, no
+	// thread join), so it just lets the drain observe the loops exiting.
+	Chat::Hub().Stop();
+	Chat::Viewers().Stop();
+	Events::Hub().StopAll();
+
+	// Now give the signaled workers a bounded window to actually unwind before the
+	// hubs/statics they may still be mid-call on are torn down below. With the loops
+	// already signaled this returns as soon as each transport's connect()/sleep observes
+	// the cancel; a clean quit with no in-flight worker returns immediately.
 	if (!AsyncTask::WaitForDrain(std::chrono::seconds(5))) {
 		HostLog("[bridge] shutdown: async workers still running after drain timeout");
 	}
 
-	// Phase 9.0: stop the chat hub + viewer poller; every transport/poll loop is
-	// signaled + disconnected as the loops unwind.
+	// Repeat the idempotent stops to catch a worker an OAuth connect worker may have
+	// resurrected between the first stop and its g_bridgeShutdown probe (a late account
+	// re-Start slipping past the flag). Signal-only again; any resurrected worker is
+	// detached and unwinds on its own after this returns.
 	Chat::Hub().Stop();
 	Chat::Viewers().Stop();
 	Events::Hub().StopAll();

@@ -33,10 +33,18 @@ void RouteEmit(const json &payload)
 	}
 	// Fan chat messages (never connection-state frames) to overlay widgets as a named
 	// `chat` SSE event, alongside the bridge emit the multichat dock consumes.
-	if (event == "chat.message") {
-		Overlay::Server().BroadcastChat(body);
+	// BroadcastChat's dump() can throw on a malformed payload (invalid UTF-8); RouteEmit
+	// runs on the CEF UI thread via the unguarded InvokeOnUi trampoline, so an escaped
+	// exception here would terminate the process. Drop the frame instead (EmitEvent is
+	// already internally guarded, but sits behind the same barrier for free).
+	try {
+		if (event == "chat.message") {
+			Overlay::Server().BroadcastChat(body);
+		}
+		Bridge::EmitEvent(event, body);
+	} catch (...) {
+		// malformed chat payload -> drop it rather than crash the UI thread
 	}
-	Bridge::EmitEvent(event, body);
 }
 
 } // namespace
