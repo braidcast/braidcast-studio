@@ -5,13 +5,23 @@
   interface Props {
     kind: PropertyKind;
     ref: string;
+    // Property names to omit from the rendered form (e.g. a control promoted to a
+    // parent component). Excluded rows are still fetched and pushed normally; only
+    // their row is hidden.
+    exclude?: string[];
   }
-  let { kind, ref }: Props = $props();
+  let { kind, ref, exclude }: Props = $props();
 
   let descriptors = $state<PropertyDescriptor[]>([]);
   let values = $state<Record<string, unknown>>({});
   let loaded = $state(false);
   let error = $state<string | null>(null);
+
+  // Descriptors minus any names a parent promoted out of this form (e.g. the
+  // service picker). Excluded rows are still fetched/pushed; only hidden here.
+  const visibleDescriptors = $derived(
+    exclude?.length ? descriptors.filter((d) => !exclude.includes(d.name)) : descriptors,
+  );
 
   // Resolve a property's live value from the flat settings map; descriptors also
   // carry a `value`, but the settings map is the source of truth across re-fetch.
@@ -84,11 +94,11 @@
     <p class="error">{error}</p>
   {:else if !loaded}
     <p class="dim">Loading properties…</p>
-  {:else if descriptors.length === 0}
+  {:else if visibleDescriptors.length === 0}
     <p class="dim">No properties</p>
   {:else}
     <div class="rows">
-      {#each descriptors as prop (prop.name)}
+      {#each visibleDescriptors as prop (prop.name)}
         <PropertyRow {prop} value={lookup(prop.name)} {onChange} {onButton} {lookup} />
       {/each}
     </div>

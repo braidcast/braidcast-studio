@@ -7,6 +7,7 @@
     type StreamProfileUpdateParams,
     type OAuthProvider,
     type OAuthStatus,
+    type ListProperty,
   } from "./bridge";
   import PropertyForm from "./properties/PropertyForm.svelte";
   import { openOAuthConnect } from "./oauthConnectOpener.svelte";
@@ -38,6 +39,20 @@
   let connMode = $state<"connect" | "key">("key");
   // Confirm dialog (destructive profile removal).
   let dialog = $state<DialogSpec | null>(null);
+
+  // The three connection types the top-level segmented splits into. The split is
+  // fixed; the labels come from serviceTypes (live) so a build that renames them
+  // stays in sync, and an absent id drops its option gracefully.
+  const RTMP_COMMON = "rtmp_common";
+  const RTMP_CUSTOM = "rtmp_custom";
+  const WHIP_CUSTOM = "whip_custom";
+  const CONN_TYPE_IDS = [RTMP_COMMON, RTMP_CUSTOM, WHIP_CUSTOM];
+
+  // The promoted platform picker (rtmp_common only): the backend service object's
+  // `service` list property, surfaced ABOVE the auth method instead of buried in
+  // the stream-key form. Null when the type has no platform list or none loaded.
+  let serviceProp = $state<ListProperty | null>(null);
+  let serviceValue = $state("");
 
   async function loadProfiles() {
     try {
@@ -139,6 +154,14 @@
       : "New Stream Profile",
   );
 
+  // Top-level connection-type options: the three fixed ids, labelled from live
+  // serviceTypes; any id missing from this build is silently dropped.
+  const connTypeOptions = $derived(
+    CONN_TYPE_IDS.map((id) => serviceTypes.find((s) => s.id === id))
+      .filter((s): s is ServiceType => !!s)
+      .map((s) => ({ label: s.name, value: s.id })),
+  );
+
   // Prefer "Streaming Services" (rtmp_common) as the new-profile default — most users
   // pick a platform, not a custom RTMP URL. serviceTypes are sorted by display name,
   // so match by id (then a "stream"-named type) rather than trusting index 0.
@@ -192,6 +215,85 @@
     try {
       await obs.call("oauth.disconnect", { profileUuid: editingUuid });
       await refreshStatus();
+    } catch (e) {
+      formError = (e as Error).message;
+    }
+  }
+
+  // Load the promoted platform list for the current edit target (rtmp_common only).
+  async function loadServiceOptions(uuid: string) {
+    try {
+      const r = await obs.call("properties.get", { kind: "service", ref: uuid });
+      const d = r.props.find((p) => p.name === "service");
+      if (d && d.type === "list") {
+        serviceProp = d;
+        serviceValue = String(r.values.service ?? d.value ?? "");
+      } else {
+        serviceProp = null;
+      }
+    } catch {
+      // Non-fatal: leave the promoted picker hidden; the key-path form still lists it.
+      serviceProp = null;
+    }
+  }
+
+  // Keep the promoted platform picker in sync with the edit target and its
+  // connection type. Only rtmp_common exposes a platform list.
+  $effect(() => {
+    const uuid = editingUuid;
+    if (uuid && fService === RTMP_COMMON) {
+      void loadServiceOptions(uuid);
+    } else {
+      serviceProp = null;
+    }
+  });
+
+  // 10d fix: commit the connection-type change immediately in edit mode so the
+  // backend service is re-pointed and the fields below re-fetch. Add mode just
+  // tracks it locally — Create already sends `service`.
+  async function changeConnType(newId: string) {
+    if (newId === fService) return;
+    if (!editingUuid) {
+      fService = newId;
+      return;
+    }
+    saving = true;
+    formError = null;
+    try {
+      const updated = await obs.call("streamProfile.update", {
+        uuid: editingUuid,
+        label: fLabel.trim(),
+        service: newId,
+      });
+      fService = updated.service;
+      editingProfile = updated;
+      await loadProfiles();
+    } catch (e) {
+      formError = (e as Error).message;
+    } finally {
+      saving = false;
+    }
+  }
+
+  // 10c fix: push the promoted platform choice onto the backend service, then
+  // refresh so the provider derivation (Connect Account) and the key-path fields
+  // follow the new platform.
+  async function changeService(value: string) {
+    if (!editingUuid || value === serviceValue) return;
+    serviceValue = value;
+    formError = null;
+    try {
+      const r = await obs.call("properties.set", {
+        kind: "service",
+        ref: editingUuid,
+        settings: { service: value },
+      });
+      const d = r.props.find((p) => p.name === "service");
+      if (d && d.type === "list") {
+        serviceProp = d;
+        serviceValue = String(r.values.service ?? value);
+      }
+      await loadProfiles();
     } catch (e) {
       formError = (e as Error).message;
     }
@@ -346,78 +448,97 @@
 
         <div class="field">
           <span class="flabel">Connection type</span>
-          <select bind:value={fService}>
-            {#each serviceTypes as s (s.id)}
-              <option value={s.id}>{s.name}</option>
-            {/each}
-          </select>
-          <span class="fhint">Pick the platform and server below.</span>
+          <Segmented options={connTypeOptions} value={fService} onChange={(v) => void changeConnType(v)} />
+          <span class="fhint">How this profile reaches its destination.</span>
         </div>
 
         {#if editingUuid}
-          <div class="sect">
-            <div class="exp-head">Connection</div>
-
-            {#if editingProvider}
-              <div class="conn-seg">
-                <Segmented
-                  options={[
-                    { label: "Connect Account", value: "connect" },
-                    { label: "Use Stream Key", value: "key" },
-                  ]}
-                  value={connMode}
-                  onChange={(v) => (connMode = v as "connect" | "key")}
-                />
+          {#if fService === RTMP_COMMON}
+            {#if serviceProp}
+              <div class="field">
+                <span class="flabel">Service</span>
+                <select value={serviceValue} onchange={(e) => void changeService(e.currentTarget.value)}>
+                  {#each serviceProp.items as it (String(it.value))}
+                    <option value={String(it.value)} disabled={it.disabled}>{it.name ?? String(it.value)}</option>
+                  {/each}
+                </select>
               </div>
+            {/if}
 
-              {#if connMode === "connect"}
-                {#if connectedStatus}
-                  <div class="conn">
-                    <span class="dot"><Icon name="dot" size={10} /></span>
-                    <span class="who">
-                      <b>{connectedStatus.displayName || connectedStatus.login}</b>
-                      <small>Stream key auto-filled · stream info editing enabled</small>
-                    </span>
-                    <button class="lnk" onclick={() => void disconnect()}>Disconnect</button>
-                  </div>
-                {:else if needsReconnectStatus}
-                  <div class="conn warn">
-                    <span class="dot warn"><Icon name="warn" size={13} /></span>
-                    <span class="who">
-                      <b>Reconnect needed</b>
-                      <small>Your authorization is out of date — reconnect to keep editing stream info.</small>
-                    </span>
-                  </div>
-                  <button class="btn connect" onclick={connect}>
-                    Reconnect {editingProvider.displayName} <Icon name="caret-right" size={12} />
-                  </button>
+            <div class="sect">
+              <div class="exp-head">Authentication</div>
+
+              {#if editingProvider}
+                <div class="conn-seg">
+                  <Segmented
+                    options={[
+                      { label: "Connect Account", value: "connect" },
+                      { label: "Use Stream Key", value: "key" },
+                    ]}
+                    value={connMode}
+                    onChange={(v) => (connMode = v as "connect" | "key")}
+                  />
+                </div>
+
+                {#if connMode === "connect"}
+                  {#if connectedStatus}
+                    <div class="conn">
+                      <span class="dot"><Icon name="dot" size={10} /></span>
+                      <span class="who">
+                        <b>{connectedStatus.displayName || connectedStatus.login}</b>
+                        <small>Stream key auto-filled · stream info editing enabled</small>
+                      </span>
+                      <button class="lnk" onclick={() => void disconnect()}>Disconnect</button>
+                    </div>
+                  {:else if needsReconnectStatus}
+                    <div class="conn warn">
+                      <span class="dot warn"><Icon name="warn" size={13} /></span>
+                      <span class="who">
+                        <b>Reconnect needed</b>
+                        <small>Your authorization is out of date — reconnect to keep editing stream info.</small>
+                      </span>
+                    </div>
+                    <button class="btn connect" onclick={connect}>
+                      Reconnect {editingProvider.displayName} <Icon name="caret-right" size={12} />
+                    </button>
+                  {:else}
+                    <button class="btn connect" onclick={connect}>
+                      Connect {editingProvider.displayName} <Icon name="caret-right" size={12} />
+                    </button>
+                  {/if}
+                  <p class="note">
+                    Connected accounts unlock the Go Live "Stream Information" panel (title / category / tags /
+                    thumbnail). Switch to <b>Use Stream Key</b> to paste a key manually — that still streams, just without
+                    metadata editing.
+                  </p>
                 {:else}
-                  <button class="btn connect" onclick={connect}>
-                    Connect {editingProvider.displayName} <Icon name="caret-right" size={12} />
-                  </button>
+                  <div class="settings">
+                    {#key editingUuid + ":" + fService + ":" + serviceValue}
+                      <PropertyForm kind="service" ref={editingUuid} exclude={["service"]} />
+                    {/key}
+                  </div>
                 {/if}
-                <p class="note">
-                  Connected accounts unlock the Go Live "Stream Information" panel (title / category / tags / thumbnail).
-                  Switch to <b>Use Stream Key</b> to paste a key manually — that still streams, just without metadata editing.
-                </p>
               {:else}
                 <div class="settings">
-                  {#key editingUuid + ":" + fService}
-                    <PropertyForm kind="service" ref={editingUuid} />
+                  {#key editingUuid + ":" + fService + ":" + serviceValue}
+                    <PropertyForm kind="service" ref={editingUuid} exclude={["service"]} />
                   {/key}
                 </div>
+                {#if providers.length === 0}
+                  <p class="note">Account connection unavailable in this build.</p>
+                {/if}
               {/if}
-            {:else}
+            </div>
+          {:else}
+            <div class="sect">
+              <div class="exp-head">{fService === WHIP_CUSTOM ? "WHIP endpoint" : "Server"}</div>
               <div class="settings">
-                {#key editingUuid + ":" + (editingProfile?.service ?? "")}
+                {#key editingUuid + ":" + fService}
                   <PropertyForm kind="service" ref={editingUuid} />
                 {/key}
               </div>
-              {#if providers.length === 0}
-                <p class="note">Account connection unavailable in this build.</p>
-              {/if}
-            {/if}
-          </div>
+            </div>
+          {/if}
         {/if}
 
         {#if formError}<p class="error">{formError}</p>{/if}
