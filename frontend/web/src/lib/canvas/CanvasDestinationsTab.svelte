@@ -102,12 +102,12 @@
   }
 </script>
 
-<div class="body">
+<div class="cv-body">
   {#if error}<p class="err">{error}</p>{/if}
 
   <section class="section">
     <div class="sec-bar">
-      <h3 class="sec-head">Destinations</h3>
+      <h3 class="sec-head">Output Bindings for this Canvas</h3>
       <span class="sec-count">{rows.filter((b) => b.enabled).length}/{rows.length} enabled</span>
       <span class="spacer"></span>
       {#if rows.length > 0}
@@ -116,6 +116,10 @@
         </span>
       {/if}
     </div>
+    <p class="sec-hint">
+      Toggle-only. Each row pairs a global stream profile with this canvas. A canvas encodes only while
+      <b>at least one</b> binding is enabled.
+    </p>
 
     {#if rows.length === 0 && !adding}
       <p class="empty">No destinations bound to this canvas yet.</p>
@@ -174,9 +178,6 @@
 </div>
 
 <style>
-  .body {
-    display: block;
-  }
   .err {
     margin: 0 0 12px;
     color: var(--color-live);
@@ -190,8 +191,19 @@
     font-family: var(--font-mono);
     font-size: 10px;
     text-transform: uppercase;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.09em;
     color: var(--color-dim);
+  }
+  .sec-hint {
+    margin: 0 0 14px;
+    font-size: 10.5px;
+    color: var(--color-muted);
+    line-height: 1.4;
+    max-width: 60ch;
+  }
+  .sec-hint b {
+    color: var(--color-dim);
+    font-weight: 500;
   }
   .sec-count {
     font-family: var(--font-mono);

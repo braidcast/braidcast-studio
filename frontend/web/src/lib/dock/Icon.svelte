@@ -48,7 +48,14 @@
     | "film"
     | "image"
     | "audio-wave"
-    | "puzzle";
+    | "puzzle"
+    // canvas config sub-tabs (canvases-redesign mock)
+    | "canvas"
+    | "video"
+    | "cpu"
+    | "audio"
+    | "advanced"
+    | "destinations";
 </script>
 
 <script lang="ts">
@@ -139,4 +146,16 @@
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4" /></svg>
 {:else if name === "puzzle"}
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M4 8h4a2.5 2.5 0 1 1 5 0h4v4a2.5 2.5 0 1 1 0 5v3H4Z" /></svg>
+{:else if name === "canvas"}
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="5" width="18" height="14" /><path d="M3 9h18" /></svg>
+{:else if name === "video"}
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="6" width="13" height="12" /><path d="M16 10l5-3v10l-5-3" /></svg>
+{:else if name === "cpu"}
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="7" y="7" width="10" height="10" /><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3" /></svg>
+{:else if name === "audio"}
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M4 9v6h4l5 5V4L8 9H4Z" /><path d="M17 8a5 5 0 0 1 0 8" /></svg>
+{:else if name === "advanced"}
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="8" /><path d="M12 4a8 8 0 0 0 0 16" /><circle cx="9" cy="9" r="1.4" /><circle cx="15" cy="14" r="1.4" /></svg>
+{:else if name === "destinations"}
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="3" /><path d="M12 2v4M12 18v4M2 12h4M18 12h4M5 5l3 3M16 16l3 3M19 5l-3 3M8 16l-3 3" /></svg>
 {/if}

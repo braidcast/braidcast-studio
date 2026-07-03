@@ -12,7 +12,6 @@
   import CollectionDialog, { type DialogSpec } from "../CollectionDialog.svelte";
   import { STATE_COLOR_EXT } from "../theme/stateColors";
   import { callOrToast } from "../callToast";
-  import PageHeader from "../PageHeader.svelte";
   import Icon from "../dock/Icon.svelte";
 
   // Canvases page: a master-detail layout. The left list selects a canvas; the right
@@ -120,6 +119,10 @@
     if (!(c.fpsDen > 0)) return String(c.fpsNum);
     return c.fpsDen > 1 ? (c.fpsNum / c.fpsDen).toFixed(2) : String(c.fpsNum);
   }
+  // Destinations bound to a canvas (drives the "· N dest" meta on each list row).
+  function destCount(uuid: string): number {
+    return bindings.filter((b) => b.canvasUuid === uuid).length;
+  }
 
   // Selection: default to the Default canvas (or first) once loaded, and re-pick if the
   // current selection disappears (deleted).
@@ -192,25 +195,40 @@
 </script>
 
 <div class="page">
-  <PageHeader title="Canvases" sub="encode targets · one per resolution/FPS" />
+  <div class="cv-crumb">
+    <span class="cv-crumb__ic"><Icon name="canvas" size={15} /></span>
+    <span class="cv-crumb__t">Canvases</span>
+    <span class="cv-crumb__sep">/</span>
+    <span class="cv-crumb__sub">Configuration</span>
+    <span class="cv-crumb__spacer"></span>
+    <span class="cv-crumb__note">Each canvas = one independent encode target</span>
+  </div>
   {#if error}<p class="err">{error}</p>{/if}
   {#if !loaded}
     <p class="dim">Loading canvases…</p>
   {:else}
     <div class="split">
-      <aside class="list">
-        {#each canvases as c (c.uuid)}
-          {@const st = canvasState(c.uuid)}
-          <button class="ci" class:on={c.uuid === selectedUuid} onclick={() => (selectedUuid = c.uuid)}>
-            <span class="ci-dot" style:background={STATE_COLOR_EXT[st]}></span>
-            <span class="ci-body">
-              <span class="ci-name">{c.name}</span>
-              <span class="ci-sub">{c.outputWidth}×{c.outputHeight} · {fpsText(c)}fps</span>
-            </span>
-            {#if c.isDefault}<span class="ci-badge">DEF</span>{/if}
-          </button>
-        {/each}
-        <button class="ci-add" onclick={addCanvas}><Icon name="plus" size={13} /><span>New Canvas</span></button>
+      <aside class="cv-clist">
+        <div class="cv-clist__head">
+          <span class="cv-clist__title">Canvases</span>
+          <span class="cv-clist__count">{canvases.length}</span>
+        </div>
+        <div class="cv-clist__body">
+          {#each canvases as c (c.uuid)}
+            {@const st = canvasState(c.uuid)}
+            <button class="cv-ci" class:on={c.uuid === selectedUuid} onclick={() => (selectedUuid = c.uuid)}>
+              <span class="cv-ci__dot" style:background={STATE_COLOR_EXT[st]}></span>
+              <span class="cv-ci__body">
+                <span class="cv-ci__name">{c.name}</span>
+                <span class="cv-ci__sub">{c.outputWidth}×{c.outputHeight} · {fpsText(c)}fps · {destCount(c.uuid)} dest</span>
+              </span>
+              {#if c.isDefault}<span class="cv-ci__badge">DEF</span>{/if}
+            </button>
+          {/each}
+        </div>
+        <div class="cv-clist__foot">
+          <button class="cv-newcanvas" onclick={addCanvas}><Icon name="plus" size={13} /><span>New Canvas</span></button>
+        </div>
       </aside>
       <section class="pane">
         {#if selected}
@@ -251,83 +269,6 @@
     flex: 1;
     min-height: 0;
     display: flex;
-  }
-  .list {
-    flex: 0 0 260px;
-    display: flex;
-    flex-direction: column;
-    border-right: var(--border-weight) solid var(--color-border);
-    overflow: auto;
-  }
-  .ci {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 12px 14px;
-    text-align: left;
-    background: none;
-    border: 0;
-    border-bottom: var(--border-weight) solid var(--color-border);
-    color: var(--color-text);
-    cursor: pointer;
-  }
-  .ci:hover {
-    background: var(--color-surface);
-  }
-  .ci.on {
-    background: var(--color-surface-2);
-    box-shadow: inset 3px 0 0 var(--color-accent);
-  }
-  .ci-dot {
-    width: 7px;
-    height: 7px;
-    flex: 0 0 auto;
-  }
-  .ci-body {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    min-width: 0;
-    flex: 1;
-  }
-  .ci-name {
-    font-size: 13px;
-    font-weight: 600;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .ci-sub {
-    font-family: var(--font-mono);
-    font-size: 10px;
-    color: var(--color-muted);
-  }
-  .ci-badge {
-    font-family: var(--font-mono);
-    font-size: 8px;
-    letter-spacing: 0.06em;
-    color: var(--color-accent-ink);
-    background: var(--color-accent);
-    padding: 2px 4px;
-    flex: 0 0 auto;
-  }
-  .ci-add {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    padding: 12px 14px;
-    background: none;
-    border: 0;
-    border-top: var(--border-weight) dashed var(--color-border);
-    color: var(--color-dim);
-    cursor: pointer;
-    font-family: var(--font-ui);
-    font-size: 12px;
-    margin-top: auto;
-  }
-  .ci-add:hover {
-    color: var(--color-accent);
   }
   .pane {
     flex: 1;

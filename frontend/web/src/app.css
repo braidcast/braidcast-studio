@@ -569,3 +569,632 @@ input[type="color"] {
 .splitter.dragging {
   background: var(--color-accent);
 }
+
+/* ============================================================
+   Canvases page — "command-deck" configuration UI.
+   Structure/tokens mirror docs/superpowers/design-redesign/
+   canvases-redesign-mock.html (Layout A). Global (unscoped) so the
+   page, editor, and the five tabs share one field/segment/preset
+   system instead of repeating it per component. Tints are color-mixed
+   off the accent/live tokens so they track the active theme.
+   ============================================================ */
+
+/* --- breadcrumb strip (page context) --- */
+.cv-crumb {
+  flex: 0 0 auto;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 16px;
+  background: var(--color-surface);
+  border-bottom: var(--border-weight) solid var(--color-border);
+}
+.cv-crumb__ic {
+  flex: 0 0 auto;
+  color: var(--color-accent);
+  display: inline-flex;
+}
+.cv-crumb__t {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--color-dim);
+}
+.cv-crumb__sep {
+  color: var(--color-muted);
+}
+.cv-crumb__sub {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+}
+.cv-crumb__spacer {
+  flex: 1;
+}
+.cv-crumb__note {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+  border: var(--border-weight) solid var(--color-border-2);
+  padding: 3px 8px;
+  white-space: nowrap;
+}
+
+/* --- master canvas list --- */
+.cv-clist {
+  flex: 0 0 236px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--color-rail);
+  border-right: var(--border-weight) solid var(--color-border);
+}
+.cv-clist__head {
+  flex: 0 0 auto;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px 0 14px;
+  border-bottom: var(--border-weight) solid var(--color-border);
+}
+.cv-clist__title {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+}
+.cv-clist__count {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--color-muted);
+}
+.cv-clist__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px;
+}
+.cv-ci {
+  width: 100%;
+  height: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  text-align: left;
+  background: none;
+  border: var(--border-weight) solid transparent;
+  color: var(--color-text);
+  cursor: pointer;
+}
+.cv-ci + .cv-ci {
+  margin-top: 2px;
+}
+.cv-ci:hover {
+  background: var(--color-surface);
+  border-color: transparent;
+}
+.cv-ci.on {
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  border-color: var(--color-accent);
+}
+.cv-ci__dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border: var(--border-weight) solid color-mix(in srgb, var(--color-text) 20%, transparent);
+}
+.cv-ci__body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.cv-ci__name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--color-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cv-ci.on .cv-ci__name {
+  color: var(--color-text);
+}
+.cv-ci__sub {
+  font-size: 9px;
+  letter-spacing: 0.03em;
+  color: var(--color-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cv-ci__badge {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.1em;
+  color: var(--color-accent);
+  border: var(--border-weight) solid var(--color-accent);
+  background: transparent;
+  padding: 2px 4px;
+  flex: 0 0 auto;
+}
+.cv-clist__foot {
+  flex: 0 0 auto;
+  padding: 6px;
+  border-top: var(--border-weight) solid var(--color-border-2);
+}
+.cv-newcanvas {
+  width: 100%;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 10px;
+  background: none;
+  border: var(--border-weight) dashed var(--color-border);
+  color: var(--color-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.cv-newcanvas:hover {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+/* --- detail header (name / badges / summary / lock subline) --- */
+.cfhead {
+  flex: 0 0 auto;
+  padding: 16px 22px 14px;
+  border-bottom: var(--border-weight) solid var(--color-border);
+  background: var(--color-surface);
+}
+.cfhead__top {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.cfhead__id {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.cfhead__name {
+  background: transparent;
+  border: var(--border-weight) solid transparent;
+  color: var(--color-text);
+  font-family: var(--font-ui);
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  height: auto;
+  padding: 3px 8px;
+  margin-left: -8px;
+  min-width: 60px;
+  max-width: 340px;
+}
+.cfhead__name:hover:not(:disabled),
+.cfhead__name:focus {
+  border-color: var(--color-border);
+  outline: none;
+}
+.cfhead__name:focus {
+  background: var(--color-base);
+}
+.cv-badge {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 4px 7px;
+  flex: 0 0 auto;
+}
+.cv-badge--default {
+  color: var(--color-accent);
+  border: var(--border-weight) solid var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+}
+.cv-badge--live {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-live);
+  border: var(--border-weight) solid color-mix(in srgb, var(--color-live) 55%, transparent);
+  background: color-mix(in srgb, var(--color-live) 14%, transparent);
+}
+.cv-badge--live i {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  background: var(--color-live);
+}
+.cfhead__meta {
+  margin-left: auto;
+  font-size: 11.5px;
+  letter-spacing: 0.02em;
+  color: var(--color-dim);
+  white-space: nowrap;
+}
+.cfhead__meta b {
+  color: var(--color-accent);
+  font-weight: 500;
+}
+.cfhead__del {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  background: none;
+  border: var(--border-weight) solid var(--color-border);
+  color: var(--color-muted);
+  cursor: pointer;
+}
+.cfhead__del:hover:not(:disabled) {
+  color: var(--color-live);
+  border-color: var(--color-live);
+}
+.cfhead__del:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.cfhead__note {
+  margin-top: 11px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+}
+.cfhead__note.live {
+  color: var(--color-live);
+}
+
+/* --- sub-tab strip (icon + label) --- */
+.cv-subtabs {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: stretch;
+  height: 40px;
+  background: var(--color-surface-2);
+  border-bottom: var(--border-weight) solid var(--color-border);
+  padding: 0 12px;
+}
+.cv-subtab {
+  height: 100%;
+  padding: 0 16px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  position: relative;
+  background: none;
+  border: 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+  cursor: pointer;
+}
+.cv-subtab:hover {
+  color: var(--color-dim);
+  border: 0;
+}
+.cv-subtab.on {
+  color: var(--color-accent);
+}
+.cv-subtab.on::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 2px;
+  background: var(--color-accent);
+}
+.cv-subtab__n {
+  margin-left: 2px;
+  font-size: 8.5px;
+  color: var(--color-muted);
+}
+
+/* --- tab body + field --- */
+.cv-body {
+  display: block;
+  padding: 18px 22px 24px;
+}
+.cv-field {
+  padding: 11px 0;
+  border-bottom: var(--border-weight) solid var(--color-border-2);
+}
+.cv-field:last-child {
+  border-bottom: none;
+}
+.cv-field__l {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--color-dim);
+  margin-bottom: 9px;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.cv-field__sub {
+  font-size: 9px;
+  letter-spacing: 0.02em;
+  color: var(--color-muted);
+  text-transform: none;
+  font-weight: 400;
+}
+.cv-field__h {
+  margin-top: 8px;
+  font-size: 10.5px;
+  color: var(--color-muted);
+  line-height: 1.4;
+  max-width: 60ch;
+}
+.cv-field__h b {
+  color: var(--color-dim);
+  font-weight: 500;
+}
+
+/* --- segmented control --- */
+.cv-seg {
+  display: inline-flex;
+  border: var(--border-weight) solid var(--color-border);
+  background: var(--color-surface);
+}
+.cv-seg.dis {
+  opacity: 0.4;
+  pointer-events: none;
+}
+.cv-segbtn {
+  height: 32px;
+  padding: 0 15px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  color: var(--color-dim);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.cv-segbtn + .cv-segbtn {
+  border-left: var(--border-weight) solid var(--color-border);
+}
+.cv-segbtn:hover {
+  background: var(--color-surface-2);
+  color: var(--color-text);
+  border-color: var(--color-border);
+}
+.cv-segbtn.on {
+  background: var(--color-accent);
+  color: var(--color-accent-ink);
+  font-weight: 600;
+}
+.cv-segbtn:disabled {
+  cursor: default;
+}
+.cv-seg--orient .cv-segbtn {
+  flex-direction: column;
+  gap: 7px;
+  height: auto;
+  padding: 11px 20px;
+}
+.cv-orient-ph {
+  width: 28px;
+  height: 24px;
+  display: block;
+}
+
+/* --- resolution preset ladder --- */
+.cv-pgrid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--color-border);
+  border: var(--border-weight) solid var(--color-border);
+  max-width: 620px;
+}
+.cv-pgrid.dis {
+  opacity: 0.4;
+  pointer-events: none;
+}
+.cv-preset {
+  background: var(--color-surface);
+  padding: 11px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
+  height: auto;
+  border: 0;
+  cursor: pointer;
+}
+.cv-preset:hover {
+  background: var(--color-surface-2);
+  border: 0;
+}
+.cv-preset.on {
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  box-shadow: inset 0 0 0 1px var(--color-accent);
+}
+.cv-preset:disabled {
+  cursor: default;
+}
+.cv-preset__r {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-dim);
+}
+.cv-preset.on .cv-preset__r {
+  color: var(--color-accent);
+}
+.cv-preset__t {
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+}
+
+/* --- inherit ("use default") strip --- */
+.cv-inheritstrip {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  border: var(--border-weight) solid var(--color-border-2);
+  background: var(--color-surface-2);
+}
+.cv-inheritstrip__l {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.cv-inheritstrip__t {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-dim);
+}
+.cv-inheritstrip__d {
+  font-size: 10.5px;
+  color: var(--color-muted);
+}
+
+/* --- encoder-properties subhead --- */
+.cv-subhead {
+  margin: 6px 0 4px;
+  padding: 9px 0 8px;
+  border-top: var(--border-weight) solid var(--color-border);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.cv-subhead::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  background: var(--color-accent);
+}
+
+/* --- live-lock banner (video tab) --- */
+.cv-lockrow {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-top: 12px;
+  padding: 9px 12px;
+  border: var(--border-weight) solid color-mix(in srgb, var(--color-live) 55%, transparent);
+  background: color-mix(in srgb, var(--color-live) 14%, transparent);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--color-live);
+}
+
+/* --- inline note when a group inherits the Default canvas --- */
+.cv-inherit-note {
+  margin: 0;
+  padding: 11px 0;
+  font-size: 12px;
+  color: var(--color-muted);
+}
+
+/* --- number field (input + unit) --- */
+.cv-num {
+  display: inline-flex;
+  align-items: stretch;
+  border: var(--border-weight) solid var(--color-border);
+  background: var(--color-surface-2);
+}
+.cv-num.dis {
+  opacity: 0.4;
+  pointer-events: none;
+}
+.cv-num input {
+  width: 108px;
+  height: 34px;
+  background: transparent;
+  border: 0;
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  padding: 0 11px;
+  text-align: right;
+}
+.cv-num input:focus {
+  outline: none;
+  border: 0;
+}
+.cv-num:focus-within {
+  border-color: var(--color-accent);
+}
+.cv-num__u {
+  display: flex;
+  align-items: center;
+  padding: 0 11px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  color: var(--color-muted);
+  border-left: var(--border-weight) solid var(--color-border);
+  background: var(--color-surface);
+}
+.cv-numrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.cv-numrow .slash {
+  color: var(--color-muted);
+  font-family: var(--font-mono);
+  font-size: 15px;
+}
+
+/* --- full-width select (encoder / filter pickers) --- */
+.cv-select {
+  width: 100%;
+  max-width: 460px;
+  height: 34px;
+  background-color: var(--color-surface-2);
+}

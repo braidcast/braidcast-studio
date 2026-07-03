@@ -4,37 +4,23 @@
   interface Props {
     checked: boolean;
     label?: string;
+    description?: string;
     disabled?: boolean;
     onchange: (v: boolean) => void;
   }
-  let { checked, label = "Use Default", disabled = false, onchange }: Props = $props();
+  let {
+    checked,
+    label = "Use Default canvas settings",
+    description = "Follow the Default canvas for this group; controls below gray out.",
+    disabled = false,
+    onchange,
+  }: Props = $props();
 </script>
 
-<div class="strip">
+<div class="cv-inheritstrip">
   <ToggleSwitch size="sm" {checked} {disabled} {onchange} />
-  <div class="txt">
-    <span class="l">{label}</span>
+  <div class="cv-inheritstrip__l">
+    <span class="cv-inheritstrip__t">{label}</span>
+    {#if description}<span class="cv-inheritstrip__d">{description}</span>{/if}
   </div>
 </div>
-
-<style>
-  .strip {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 10px 12px;
-    margin-bottom: 16px;
-    border: var(--border-weight) solid var(--color-border);
-    background: var(--color-surface);
-  }
-  .txt {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    min-width: 0;
-  }
-  .l {
-    font-size: 12px;
-    color: var(--color-text);
-  }
-</style>

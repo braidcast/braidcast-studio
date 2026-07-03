@@ -15,22 +15,24 @@
   type Orient = "h" | "v" | "custom";
   interface ResPreset {
     label: string;
+    sub: string;
     w: number;
     h: number;
   }
 
   const H_PRESETS: ResPreset[] = [
-    { label: "3840 × 2160", w: 3840, h: 2160 },
-    { label: "2560 × 1440", w: 2560, h: 1440 },
-    { label: "1920 × 1080", w: 1920, h: 1080 },
-    { label: "1600 × 900", w: 1600, h: 900 },
-    { label: "1280 × 720", w: 1280, h: 720 },
+    { label: "3840×2160", sub: "4K UHD", w: 3840, h: 2160 },
+    { label: "2560×1440", sub: "QHD", w: 2560, h: 1440 },
+    { label: "1920×1080", sub: "1080p FHD", w: 1920, h: 1080 },
+    { label: "1600×900", sub: "900p HD", w: 1600, h: 900 },
+    { label: "1280×720", sub: "720p HD", w: 1280, h: 720 },
   ];
   const V_PRESETS: ResPreset[] = [
-    { label: "2160 × 3840", w: 2160, h: 3840 },
-    { label: "1440 × 2560", w: 1440, h: 2560 },
-    { label: "1080 × 1920", w: 1080, h: 1920 },
-    { label: "720 × 1280", w: 720, h: 1280 },
+    { label: "2160×3840", sub: "4K UHD", w: 2160, h: 3840 },
+    { label: "1440×2560", sub: "QHD", w: 1440, h: 2560 },
+    { label: "1080×1920", sub: "1080p FHD", w: 1080, h: 1920 },
+    { label: "900×1600", sub: "900p HD", w: 900, h: 1600 },
+    { label: "720×1280", sub: "720p HD", w: 720, h: 1280 },
   ];
   const ORIENTS: { value: Orient; label: string }[] = [
     { value: "h", label: "Horizontal" },
@@ -108,7 +110,7 @@
   }
 </script>
 
-<div class="body">
+<div class="cv-body">
   {#if !isDefault}
     <UseDefaultStrip
       checked={form.useDefaultRes}
@@ -121,78 +123,102 @@
     />
   {/if}
 
-  <div class="field">
-    <span class="flabel">Orientation</span>
-    <div class="seg" class:dis={locked} role="tablist" aria-label="Orientation">
+  <div class="cv-field">
+    <div class="cv-field__l">Orientation</div>
+    <div class="cv-seg cv-seg--orient" class:dis={locked} role="tablist" aria-label="Orientation">
       {#each ORIENTS as o (o.value)}
         <button
           type="button"
-          class="seg-btn"
+          class="cv-segbtn"
           class:on={orient === o.value}
           role="tab"
           aria-selected={orient === o.value}
           disabled={locked}
-          onclick={() => pickOrient(o.value)}>{o.label}</button
+          onclick={() => pickOrient(o.value)}
         >
+          <svg class="cv-orient-ph" viewBox="0 0 28 26" fill="none" stroke="currentColor" stroke-width="1.6">
+            {#if o.value === "h"}
+              <rect x="3.5" y="7" width="21" height="12" />
+            {:else if o.value === "v"}
+              <rect x="9" y="3.5" width="10" height="19" />
+            {:else}
+              <rect x="4.5" y="6" width="19" height="14" stroke-dasharray="3 2.5" />
+            {/if}
+          </svg>
+          <span>{o.label}</span>
+        </button>
       {/each}
     </div>
+    <div class="cv-field__h">Presets below switch between landscape and portrait ladders.</div>
   </div>
 
-  <div class="field">
-    <span class="flabel">Resolution</span>
+  <div class="cv-field">
+    <div class="cv-field__l">Resolution</div>
     {#if orient === "custom"}
-      <div class="wh">
-        <input
-          type="number"
-          min="1"
-          max="16384"
-          bind:value={form.width}
-          disabled={locked}
-          aria-label="Width"
-          onchange={commit}
-        />
-        <span class="x">×</span>
-        <input
-          type="number"
-          min="1"
-          max="16384"
-          bind:value={form.height}
-          disabled={locked}
-          aria-label="Height"
-          onchange={commit}
-        />
+      <div class="cv-numrow">
+        <div class="cv-num" class:dis={locked}>
+          <input
+            type="number"
+            min="1"
+            max="16384"
+            bind:value={form.width}
+            disabled={locked}
+            aria-label="Width"
+            onchange={commit}
+          />
+          <span class="cv-num__u">W</span>
+        </div>
+        <span class="slash">×</span>
+        <div class="cv-num" class:dis={locked}>
+          <input
+            type="number"
+            min="1"
+            max="16384"
+            bind:value={form.height}
+            disabled={locked}
+            aria-label="Height"
+            onchange={commit}
+          />
+          <span class="cv-num__u">H</span>
+        </div>
       </div>
     {:else}
-      <div class="presets">
+      <div class="cv-pgrid" class:dis={locked}>
         {#each presetsFor(orient) as p (p.label)}
           <button
             type="button"
-            class="chip"
-            class:active={form.width === p.w && form.height === p.h}
+            class="cv-preset"
+            class:on={form.width === p.w && form.height === p.h}
             disabled={locked}
-            onclick={() => pickRes(p.w, p.h)}>{p.label}</button
+            onclick={() => pickRes(p.w, p.h)}
           >
+            <span class="cv-preset__r">{p.label}</span>
+            <span class="cv-preset__t">{p.sub}</span>
+          </button>
         {/each}
       </div>
     {/if}
+    <div class="cv-field__h">
+      The canvas is composited and encoded at this size. <b>Independent per canvas.</b>
+    </div>
   </div>
 
-  <div class="field">
-    <span class="flabel">Frame Rate (FPS)</span>
-    <div class="presets">
+  <div class="cv-field">
+    <div class="cv-field__l">Frame Rate</div>
+    <div class="cv-seg" class:dis={locked} role="tablist" aria-label="Frame rate">
       {#each FPS_PRESETS as p (p)}
         <button
           type="button"
-          class="chip"
-          class:active={!form.fpsCustom && form.fpsNum === p && form.fpsDen === 1}
+          class="cv-segbtn"
+          class:on={!form.fpsCustom && form.fpsNum === p && form.fpsDen === 1}
           disabled={locked}
           onclick={() => pickFpsPreset(p)}>{p}</button
         >
       {/each}
       <button
         type="button"
-        class="chip"
-        class:active={form.fpsCustom}
+        class="cv-segbtn"
+        class:on={form.fpsCustom}
         disabled={locked}
         onclick={() => {
           form.fpsCustom = true;
@@ -200,7 +226,7 @@
       >
     </div>
     {#if form.fpsCustom}
-      <div class="wh">
+      <div class="customnum cv-num" class:dis={locked}>
         <input
           type="number"
           min="1"
@@ -211,14 +237,15 @@
           aria-label="Custom frame rate"
           onchange={applyCustomFps}
         />
-        <span class="x">fps</span>
+        <span class="cv-num__u">fps</span>
       </div>
     {/if}
+    <div class="cv-field__h">Pick a preset, or Custom to enter any value.</div>
   </div>
 
-  <div class="field">
-    <span class="flabel">Downscale Filter</span>
-    <select bind:value={form.scaleType} disabled={locked} onchange={commit}>
+  <div class="cv-field">
+    <div class="cv-field__l">Downscale Filter</div>
+    <select class="cv-select" bind:value={form.scaleType} disabled={locked} onchange={commit}>
       {#each scaleTypes as s (s.value)}
         <option value={s.value}>{s.label}</option>
       {/each}
@@ -226,132 +253,14 @@
   </div>
 
   {#if isLive}
-    <div class="lockrow">
+    <div class="cv-lockrow">
       <Icon name="lock" size={13} /> Resolution &amp; frame rate are locked while this canvas is live.
     </div>
   {/if}
 </div>
 
 <style>
-  .body {
-    display: block;
-  }
-  .field {
-    margin-bottom: 12px;
-  }
-  .flabel {
-    display: block;
-    font-size: 12px;
-    color: var(--color-text);
-    margin-bottom: 6px;
-  }
-  .presets {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    margin-bottom: 6px;
-  }
-  .chip {
-    border: 1px solid var(--color-border);
-    background: var(--color-base);
-    color: var(--color-text);
-    padding: 4px 11px;
-    font: inherit;
-    font-size: 12px;
-    cursor: pointer;
-  }
-  .chip:hover:not(:disabled) {
-    color: var(--color-text);
-  }
-  .chip.active {
-    background: var(--color-accent);
-    border-color: var(--color-accent);
-    color: var(--color-accent-contrast);
-  }
-  .chip:disabled {
-    opacity: 0.4;
-    cursor: default;
-  }
-  .wh {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .x {
-    color: var(--color-muted);
-  }
-  input,
-  select {
-    background: var(--color-base);
-    border: 1px solid var(--color-border);
-    padding: 7px 10px;
-    color: var(--color-text);
-    font: inherit;
-  }
-  input[type="number"] {
-    width: 96px;
-  }
-  select {
-    width: 100%;
-    max-width: 420px;
-  }
-  input:focus,
-  select:focus {
-    outline: none;
-    border-color: var(--color-accent);
-  }
-  input:disabled,
-  select:disabled {
-    opacity: 0.4;
-    cursor: default;
-  }
-
-  /* ---- orientation segmented control -------------------------------------- */
-  .seg {
-    display: inline-flex;
-    margin-bottom: 6px;
-    border: var(--border-weight) solid var(--color-border);
-  }
-  .seg.dis {
-    opacity: 0.4;
-  }
-  .seg-btn {
-    border: 0;
-    border-right: var(--border-weight) solid var(--color-border);
-    background: var(--color-base);
-    color: var(--color-muted);
-    font-family: var(--font-mono);
-    font-size: 10px;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    padding: 5px 12px;
-    cursor: pointer;
-  }
-  .seg-btn:last-child {
-    border-right: 0;
-  }
-  .seg-btn:hover:not(:disabled) {
-    color: var(--color-text);
-  }
-  .seg-btn.on {
-    background: var(--color-accent);
-    color: var(--color-accent-ink);
-  }
-  .seg-btn:disabled {
-    cursor: default;
-  }
-
-  .lockrow {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-top: 4px;
-    padding: 9px 12px;
-    border: var(--border-weight) solid var(--color-live);
-    background: color-mix(in srgb, var(--color-live) 10%, transparent);
-    color: var(--color-live);
-    font-family: var(--font-mono);
-    font-size: 10px;
-    letter-spacing: 0.04em;
+  .customnum {
+    margin-top: 9px;
   }
 </style>

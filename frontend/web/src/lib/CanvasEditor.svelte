@@ -8,7 +8,7 @@
   } from "./bridge";
   import { seedForm, toUpdateParams } from "./canvas/canvasForm";
   import { callOrToast } from "./callToast";
-  import Icon from "./dock/Icon.svelte";
+  import Icon, { type IconName } from "./dock/Icon.svelte";
   import CanvasVideoTab from "./canvas/CanvasVideoTab.svelte";
   import CanvasEncodingTab from "./canvas/CanvasEncodingTab.svelte";
   import CanvasAudioTab from "./canvas/CanvasAudioTab.svelte";
@@ -41,12 +41,14 @@
   }: Props = $props();
 
   type Tab = "video" | "encoding" | "audio" | "destinations" | "advanced";
-  const TABS: { id: Tab; label: string }[] = [
-    { id: "video", label: "Video" },
-    { id: "encoding", label: "Encoding" },
-    { id: "audio", label: "Audio" },
-    { id: "destinations", label: "Destinations" },
-    { id: "advanced", label: "Advanced" },
+  // Each sub-tab carries its mock icon; `noInherit` marks a tab with no Use-Default
+  // strip (Destinations) so it shows the mock's trailing "·" marker.
+  const TABS: { id: Tab; label: string; icon: IconName; noInherit?: boolean }[] = [
+    { id: "video", label: "Video", icon: "video" },
+    { id: "encoding", label: "Encoding", icon: "cpu" },
+    { id: "audio", label: "Audio", icon: "audio" },
+    { id: "destinations", label: "Destinations", icon: "destinations", noInherit: true },
+    { id: "advanced", label: "Advanced", icon: "advanced" },
   ];
 
   // Seeded once. The parent keys this component by canvas uuid, so it remounts (and
@@ -88,45 +90,57 @@
   function fpsText(): string {
     return form.fpsDen > 1 ? (form.fpsNum / form.fpsDen).toFixed(2) : String(form.fpsNum);
   }
-  const summary = $derived(`${form.width}×${form.height} · ${fpsText()}fps · ${encName(videoEncoders, form.videoEnc)}`);
 </script>
 
 <div class="detail">
-  <header class="head">
-    <input
-      class="name"
-      type="text"
-      bind:value={form.name}
-      disabled={isDefault}
-      placeholder="Canvas name"
-      aria-label="Canvas name"
-      onchange={commit}
-    />
-    {#if isDefault}<span class="badge">Default</span>{/if}
-    {#if isLive}<span class="live">● LIVE</span>{/if}
-    <span class="spacer"></span>
-    <span class="summary">{summary}</span>
-    {#if !isDefault}
-      <button
-        class="del"
-        disabled={isLive}
-        title={isLive ? "Stop the stream first" : "Delete this canvas"}
-        aria-label="Delete this canvas"
-        onclick={onDelete}><Icon name="trash" size={13} /></button
-      >
-    {/if}
+  <header class="cfhead">
+    <div class="cfhead__top">
+      <div class="cfhead__id">
+        <input
+          class="cfhead__name"
+          type="text"
+          bind:value={form.name}
+          disabled={isDefault}
+          placeholder="Canvas name"
+          aria-label="Canvas name"
+          onchange={commit}
+        />
+        {#if isDefault}<span class="cv-badge cv-badge--default">Default</span>{/if}
+        {#if isLive}<span class="cv-badge cv-badge--live"><i></i>Live</span>{/if}
+      </div>
+      <div class="cfhead__meta">
+        <b>{form.width}×{form.height}</b> · {fpsText()}fps · {encName(videoEncoders, form.videoEnc)}
+      </div>
+      {#if !isDefault}
+        <button
+          class="cfhead__del"
+          disabled={isLive}
+          title={isLive ? "Stop the stream first" : "Delete this canvas"}
+          aria-label="Delete this canvas"
+          onclick={onDelete}><Icon name="trash" size={14} /></button
+        >
+      {/if}
+    </div>
+    <div class="cfhead__note" class:live={isLive}>
+      <Icon name="lock" size={12} />
+      <span>Resolution &amp; FPS lock while live · encoding edits apply on next stream start</span>
+    </div>
   </header>
 
-  <div class="subtabs" role="tablist" aria-label="Canvas settings">
+  <div class="cv-subtabs" role="tablist" aria-label="Canvas settings">
     {#each TABS as t (t.id)}
       <button
         type="button"
-        class="subtab"
+        class="cv-subtab"
         class:on={activeTab === t.id}
         role="tab"
         aria-selected={activeTab === t.id}
-        onclick={() => (activeTab = t.id)}>{t.label}</button
+        onclick={() => (activeTab = t.id)}
       >
+        <Icon name={t.icon} size={14} />
+        <span>{t.label}</span>
+        {#if t.noInherit}<span class="cv-subtab__n">·</span>{/if}
+      </button>
     {/each}
   </div>
 
@@ -167,100 +181,9 @@
     height: 100%;
     min-height: 0;
   }
-  .head {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 16px 20px;
-    border-bottom: var(--border-weight) solid var(--color-border);
-  }
-  .name {
-    background: none;
-    border: var(--border-weight) solid transparent;
-    color: var(--color-text);
-    font: inherit;
-    font-size: 16px;
-    font-weight: 600;
-    padding: 4px 6px;
-    max-width: 320px;
-  }
-  .name:hover:not(:disabled),
-  .name:focus {
-    border-color: var(--color-border);
-    outline: none;
-  }
-  .badge {
-    font-family: var(--font-mono);
-    font-size: 8px;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--color-accent-ink);
-    background: var(--color-accent);
-    padding: 2px 5px;
-  }
-  .live {
-    font-family: var(--font-mono);
-    font-size: 9px;
-    color: #fff;
-    background: var(--color-live);
-    padding: 2px 6px;
-  }
-  .spacer {
-    flex: 1;
-  }
-  .summary {
-    font-family: var(--font-mono);
-    font-size: 10px;
-    color: var(--color-muted);
-  }
-  .del {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 28px;
-    height: 26px;
-    background: none;
-    border: var(--border-weight) solid var(--color-border);
-    color: var(--color-muted);
-    cursor: pointer;
-  }
-  .del:hover:not(:disabled) {
-    color: var(--color-live);
-    border-color: var(--color-live);
-  }
-  .del:disabled {
-    opacity: 0.4;
-    cursor: default;
-  }
-  .subtabs {
-    display: flex;
-    gap: 0;
-    padding: 0 20px;
-    border-bottom: var(--border-weight) solid var(--color-border);
-  }
-  .subtab {
-    border: 0;
-    border-bottom: 2px solid transparent;
-    background: none;
-    color: var(--color-muted);
-    font-family: var(--font-ui);
-    font-size: 12px;
-    font-weight: 600;
-    padding: 10px 14px;
-    margin-bottom: -1px;
-    cursor: pointer;
-  }
-  .subtab:hover {
-    color: var(--color-text);
-  }
-  .subtab.on {
-    color: var(--color-text);
-    border-bottom-color: var(--color-accent);
-  }
   .panel {
     flex: 1;
     min-height: 0;
     overflow: auto;
-    padding: 20px;
   }
 </style>

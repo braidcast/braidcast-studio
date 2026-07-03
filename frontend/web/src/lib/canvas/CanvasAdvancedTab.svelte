@@ -35,7 +35,7 @@
   const dis = $derived(form.colorUseDefault && !isDefault);
 </script>
 
-<div class="body">
+<div class="cv-body">
   {#if !isDefault}
     <UseDefaultStrip
       checked={form.colorUseDefault}
@@ -48,27 +48,42 @@
     />
   {/if}
 
-  <div class="field">
-    <span class="flabel">Color Format</span>
-    <select bind:value={form.colorFormat} disabled={dis || isLive} onchange={commit}>
+  <div class="cv-field">
+    <div class="cv-field__l">Color Format</div>
+    <select class="cv-select" bind:value={form.colorFormat} disabled={dis || isLive} onchange={commit}>
       {#each colorFormats as f (f.value)}<option value={f.value}>{f.label}</option>{/each}
     </select>
+    <div class="cv-field__h">8-bit NV12 for SDR; 10-bit P010 for HDR.</div>
   </div>
-  <div class="field">
-    <span class="flabel">Color Space</span>
-    <select bind:value={form.colorSpace} disabled={dis || isLive} onchange={commit}>
+  <div class="cv-field">
+    <div class="cv-field__l">Color Space</div>
+    <select class="cv-select" bind:value={form.colorSpace} disabled={dis || isLive} onchange={commit}>
       {#each colorSpaces as cs (cs.value)}<option value={cs.value}>{cs.label}</option>{/each}
     </select>
   </div>
-  <div class="field">
-    <span class="flabel">Color Range</span>
-    <select bind:value={form.colorRange} disabled={dis || isLive} onchange={commit}>
-      {#each colorRanges as r (r.value)}<option value={r.value}>{r.label}</option>{/each}
-    </select>
+  <div class="cv-field">
+    <div class="cv-field__l">Color Range</div>
+    <div class="cv-seg" class:dis={dis || isLive} role="tablist" aria-label="Color range">
+      {#each colorRanges as r (r.value)}
+        <button
+          type="button"
+          class="cv-segbtn"
+          class:on={form.colorRange === r.value}
+          role="tab"
+          aria-selected={form.colorRange === r.value}
+          disabled={dis || isLive}
+          onclick={() => {
+            form.colorRange = r.value;
+            commit();
+          }}>{r.label}</button
+        >
+      {/each}
+    </div>
+    <div class="cv-field__h">Partial (limited) for streaming; Full for recording.</div>
   </div>
-  <div class="field">
-    <span class="flabel">SDR White Level</span>
-    <div class="wh">
+  <div class="cv-field">
+    <div class="cv-field__l">SDR White Level</div>
+    <div class="cv-num" class:dis={dis || isLive}>
       <input
         type="number"
         min="80"
@@ -78,12 +93,12 @@
         aria-label="SDR white level"
         onchange={commit}
       />
-      <span class="x">nits</span>
+      <span class="cv-num__u">nits</span>
     </div>
   </div>
-  <div class="field">
-    <span class="flabel">HDR Nominal Peak Level</span>
-    <div class="wh">
+  <div class="cv-field">
+    <div class="cv-field__l">HDR Nominal Peak Level</div>
+    <div class="cv-num" class:dis={dis || isLive}>
       <input
         type="number"
         min="400"
@@ -93,55 +108,8 @@
         aria-label="HDR nominal peak level"
         onchange={commit}
       />
-      <span class="x">nits</span>
+      <span class="cv-num__u">nits</span>
     </div>
+    <div class="cv-field__h">Only used when Color Space is a Rec. 2100 profile.</div>
   </div>
 </div>
-
-<style>
-  .body {
-    display: block;
-  }
-  .field {
-    margin-bottom: 12px;
-  }
-  .flabel {
-    display: block;
-    font-size: 12px;
-    color: var(--color-text);
-    margin-bottom: 6px;
-  }
-  .wh {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .x {
-    color: var(--color-muted);
-  }
-  input,
-  select {
-    background: var(--color-base);
-    border: 1px solid var(--color-border);
-    padding: 7px 10px;
-    color: var(--color-text);
-    font: inherit;
-  }
-  input[type="number"] {
-    width: 96px;
-  }
-  select {
-    width: 100%;
-    max-width: 420px;
-  }
-  input:focus,
-  select:focus {
-    outline: none;
-    border-color: var(--color-accent);
-  }
-  input:disabled,
-  select:disabled {
-    opacity: 0.4;
-    cursor: default;
-  }
-</style>
