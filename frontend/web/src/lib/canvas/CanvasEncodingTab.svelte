@@ -26,6 +26,7 @@
     <UseDefaultStrip
       checked={form.videoUseDefault}
       label="Use Default video encoder"
+      disabled={isLive}
       onchange={(v) => {
         form.videoUseDefault = v;
         commit();

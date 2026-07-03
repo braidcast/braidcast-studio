@@ -94,13 +94,13 @@
   let customFps = $state(form.fpsDen > 1 ? +(form.fpsNum / form.fpsDen).toFixed(3) : form.fpsNum);
   function applyCustomFps(): void {
     const v = Number(customFps);
-    if (!(v > 0)) return;
+    if (!Number.isFinite(v) || v <= 0) return;
     if (Number.isInteger(v)) {
       form.fpsNum = v;
       form.fpsDen = 1;
     } else {
-      // Two-decimal fractional rates map to the /1001 broadcast convention; else /1000.
-      const den = Math.abs(v * 1001 - Math.round(v * 1001)) < 1e-6 ? 1001 : 1000;
+      // NTSC rates (59.94/29.97/23.976) reconstruct as .../1001; others use /1000.
+      const den = Math.round(v * 1001) % 1000 === 0 ? 1001 : 1000;
       form.fpsNum = Math.round(v * den);
       form.fpsDen = den;
     }
@@ -113,6 +113,7 @@
     <UseDefaultStrip
       checked={form.useDefaultRes}
       label="Use Default resolution & frame rate"
+      disabled={isLive}
       onchange={(v) => {
         form.useDefaultRes = v;
         commit();
@@ -128,6 +129,8 @@
           type="button"
           class="seg-btn"
           class:on={orient === o.value}
+          role="tab"
+          aria-selected={orient === o.value}
           disabled={locked}
           onclick={() => pickOrient(o.value)}>{o.label}</button
         >

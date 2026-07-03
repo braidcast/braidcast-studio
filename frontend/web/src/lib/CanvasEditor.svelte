@@ -61,7 +61,6 @@
   // PropertyForm re-fetches.
   let timer: ReturnType<typeof setTimeout> | null = null;
   async function push(): Promise<void> {
-    if (!form.name.trim()) return; // name required; skip until valid
     await callOrToast("canvas.update", toUpdateParams(canvas.uuid, form), "Update canvas failed");
   }
   function commit(): void {
@@ -71,6 +70,10 @@
       void push();
     }, 200);
   }
+  // Cancel any pending debounced commit if this editor is torn down ({#key}-remount).
+  $effect(() => () => {
+    if (timer) clearTimeout(timer);
+  });
   async function commitNow(): Promise<void> {
     if (timer) {
       clearTimeout(timer);
@@ -141,7 +144,7 @@
         {commitNow}
       />
     {:else if activeTab === "audio"}
-      <CanvasAudioTab {form} canvasUuid={canvas.uuid} {audioEncoders} {isDefault} {commit} {commitNow} />
+      <CanvasAudioTab {form} canvasUuid={canvas.uuid} {audioEncoders} {isLive} {isDefault} {commit} {commitNow} />
     {:else if activeTab === "destinations"}
       <CanvasDestinationsTab
         canvasUuid={canvas.uuid}
@@ -152,7 +155,7 @@
         onRemove={onRemoveBinding}
       />
     {:else}
-      <CanvasAdvancedTab {form} {isDefault} {commit} />
+      <CanvasAdvancedTab {form} {isLive} {isDefault} {commit} />
     {/if}
   </div>
 </div>

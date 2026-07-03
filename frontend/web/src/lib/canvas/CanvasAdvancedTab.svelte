@@ -4,10 +4,11 @@
 
   interface Props {
     form: CanvasForm;
+    isLive: boolean;
     isDefault: boolean;
     commit: () => void;
   }
-  let { form, isDefault, commit }: Props = $props();
+  let { form, isLive, isDefault, commit }: Props = $props();
 
   const colorFormats = [
     { label: "NV12 (8-bit)", value: "NV12" },
@@ -39,6 +40,7 @@
     <UseDefaultStrip
       checked={form.colorUseDefault}
       label="Use Default color settings"
+      disabled={isLive}
       onchange={(v) => {
         form.colorUseDefault = v;
         commit();
@@ -48,19 +50,19 @@
 
   <div class="field">
     <span class="flabel">Color Format</span>
-    <select bind:value={form.colorFormat} disabled={dis} onchange={commit}>
+    <select bind:value={form.colorFormat} disabled={dis || isLive} onchange={commit}>
       {#each colorFormats as f (f.value)}<option value={f.value}>{f.label}</option>{/each}
     </select>
   </div>
   <div class="field">
     <span class="flabel">Color Space</span>
-    <select bind:value={form.colorSpace} disabled={dis} onchange={commit}>
+    <select bind:value={form.colorSpace} disabled={dis || isLive} onchange={commit}>
       {#each colorSpaces as cs (cs.value)}<option value={cs.value}>{cs.label}</option>{/each}
     </select>
   </div>
   <div class="field">
     <span class="flabel">Color Range</span>
-    <select bind:value={form.colorRange} disabled={dis} onchange={commit}>
+    <select bind:value={form.colorRange} disabled={dis || isLive} onchange={commit}>
       {#each colorRanges as r (r.value)}<option value={r.value}>{r.label}</option>{/each}
     </select>
   </div>
@@ -72,7 +74,7 @@
         min="80"
         max="480"
         bind:value={form.sdrWhiteLevel}
-        disabled={dis}
+        disabled={dis || isLive}
         aria-label="SDR white level"
         onchange={commit}
       />
@@ -87,7 +89,7 @@
         min="400"
         max="10000"
         bind:value={form.hdrNominalPeakLevel}
-        disabled={dis}
+        disabled={dis || isLive}
         aria-label="HDR nominal peak level"
         onchange={commit}
       />

@@ -124,8 +124,15 @@
   // Selection: default to the Default canvas (or first) once loaded, and re-pick if the
   // current selection disappears (deleted).
   let selectedUuid = $state<string | null>(null);
+  let wantUuid = $state<string | null>(null);
   $effect(() => {
+    if (wantUuid && canvases.some((c) => c.uuid === wantUuid)) {
+      selectedUuid = wantUuid;
+      wantUuid = null;
+      return;
+    }
     if (selectedUuid && canvases.some((c) => c.uuid === selectedUuid)) return;
+    if (wantUuid) return; // waiting for the new canvas to appear in the list
     selectedUuid = (canvases.find((c) => c.isDefault) ?? canvases[0])?.uuid ?? null;
   });
   const selected = $derived(canvases.find((c) => c.uuid === selectedUuid) ?? null);
@@ -156,7 +163,7 @@
           },
           "Create canvas failed",
         );
-        if (r) selectedUuid = r.uuid;
+        if (r) wantUuid = r.uuid;
       },
     };
   }

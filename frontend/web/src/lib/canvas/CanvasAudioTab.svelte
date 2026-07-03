@@ -8,11 +8,12 @@
     form: CanvasForm;
     canvasUuid: string;
     audioEncoders: EncoderType[];
+    isLive: boolean;
     isDefault: boolean;
     commit: () => void;
     commitNow: () => Promise<void>;
   }
-  let { form, canvasUuid, audioEncoders, isDefault, commit, commitNow }: Props = $props();
+  let { form, canvasUuid, audioEncoders, isLive, isDefault, commit, commitNow }: Props = $props();
 
   async function onEncoder(e: Event): Promise<void> {
     form.audioEnc = (e.currentTarget as HTMLSelectElement).value;
@@ -25,6 +26,7 @@
     <UseDefaultStrip
       checked={form.audioUseDefault}
       label="Use Default audio encoder"
+      disabled={isLive}
       onchange={(v) => {
         form.audioUseDefault = v;
         commit();
@@ -37,7 +39,7 @@
   {:else}
     <div class="field">
       <span class="flabel">Audio Encoder</span>
-      <select value={form.audioEnc} onchange={onEncoder}>
+      <select value={form.audioEnc} disabled={isLive} onchange={onEncoder}>
         {#each audioEncoders as e (e.id)}
           <option value={e.id}>{e.name}</option>
         {/each}
