@@ -74,6 +74,14 @@ export interface SourceType {
   caps: { video: boolean; audio: boolean };
 }
 
+/** An existing source offered by sources.listExisting, with its type id and
+ * coarse caps so the UI can render a per-type icon. */
+export interface ExistingSource {
+  name: string;
+  typeId: string;
+  caps: { video: boolean; audio: boolean };
+}
+
 // --- generic obs_properties descriptors (4.3.2) -----------------------------
 
 /** Editable-object kind a property set belongs to. "filter" addresses a filter
@@ -674,7 +682,18 @@ export interface Transform {
 }
 
 /** Quick-action verbs accepted by sceneItems.transformAction. */
-export type TransformAction = "reset" | "center" | "fitToScreen" | "stretchToScreen" | "flipH" | "flipV";
+export type TransformAction =
+  | "reset"
+  | "center"
+  | "fitToScreen"
+  | "stretchToScreen"
+  | "flipH"
+  | "flipV"
+  | "rotate90cw"
+  | "rotate90ccw"
+  | "rotate180"
+  | "centerVertical"
+  | "centerHorizontal";
 
 // --- projectors (native standalone windows rendering a target, P3) ----------
 
@@ -1145,7 +1164,7 @@ export interface ObsMethods {
   "sources.create": { id: number; source: string };
   // Rename a scene item's underlying source (canvas/scene optional, default current).
   "sources.rename": { id: number; source: string };
-  "sources.listExisting": string[];
+  "sources.listExisting": ExistingSource[];
   "sources.addExisting": { id: number; source: string };
   // Duplicate the source of a scene item in place (undo-recorded).
   "sources.duplicate": { id: number; source: string };

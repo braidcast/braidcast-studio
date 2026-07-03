@@ -91,6 +91,10 @@ public:
 	// emit preview.contextMenu so JS can open a DOM context menu. UI thread.
 	void OnRightUp(int mx, int my);
 
+	// Settle-timer callback (WM_TIMER on the overlay HWND): apply the last pending
+	// rect from a rapid-resize burst and re-show the surface. UI thread. See SetRect.
+	void OnResizeSettled();
+
 	// Per-surface impl state (selection + letterbox transform shared with the
 	// render thread, drag state, box buffer). Defined in the .cpp so this header
 	// stays free of libobs + graphics types; declared here only so the .cpp's
@@ -100,6 +104,11 @@ public:
 private:
 	void EnsureCreated();
 
+	// Position/size the overlay HWND + resize its obs_display to (cx,cy) and show it.
+	// The synchronous SetWindowPos keeps the HWND tracking the DOM; the obs_display
+	// resize + present lag is what SetRect's debounce hides during a resize burst.
+	void ApplyRect(int x, int y, int cx, int cy);
+
 	State *state_;
 
 	HWND host_;
@@ -108,6 +117,20 @@ private:
 	int windowId_ = 0;           // owning window id (0 = main); carried in preview.contextMenu
 	HWND hwnd_ = nullptr;        // overlay child HWND; null until first SetRect
 	void *display_ = nullptr;    // obs_display_t* (opaque here)
+
+	// Rapid-resize debounce (UI thread only). During a drag-resize the DOM fires a
+	// rect every frame; the obs_display swapchain resize lags a frame or backlogs,
+	// so the letterboxed video visibly trails the HWND. We hide the surface for the
+	// duration of the burst and snap it to the final rect once the rects stop (the
+	// settle timer fires). lastCx_/lastCy_ are the size last applied via ApplyRect
+	// (0 = never applied → first rect shows immediately, no hide/delay).
+	int lastCx_ = 0;
+	int lastCy_ = 0;
+	int pendingX_ = 0;
+	int pendingY_ = 0;
+	int pendingCx_ = 0;
+	int pendingCy_ = 0;
+	bool resizeDeferred_ = false;
 };
 
 // Owns the native preview surfaces, keyed by (windowId, canvasUuid). windowId 0 is

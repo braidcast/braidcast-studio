@@ -2,7 +2,7 @@
   import Modal from "./Modal.svelte";
   import Icon, { type IconName } from "./dock/Icon.svelte";
   import EmptyState from "./EmptyState.svelte";
-  import { obs, type SourceType } from "./bridge";
+  import { obs, type SourceType, type ExistingSource } from "./bridge";
   import { suspendPreview } from "./previewGate.svelte";
 
   interface Props {
@@ -31,10 +31,10 @@
 
   // Names already taken, so the name step can flag collisions without a round-trip.
   let existingNames = $state<Set<string>>(new Set());
-  // The same list, raw + in order, for the "Add existing" section. sources.listExisting
+  // The same list, in order, for the "Add existing" section. sources.listExisting
   // returns the input sources NOT already in the target scene — exactly the add-existing
-  // candidates. It carries names only (no type/caps), so the rows use a generic glyph.
-  let existingSources = $state<string[]>([]);
+  // candidates — with each source's type caps so rows show a per-type icon.
+  let existingSources = $state<ExistingSource[]>([]);
 
   async function load() {
     error = null;
@@ -45,7 +45,7 @@
       ]);
       types = list;
       existingSources = existing;
-      existingNames = new Set(existing.map((n) => n.toLowerCase()));
+      existingNames = new Set(existing.map((s) => s.name.toLowerCase()));
     } catch (e) {
       error = (e as Error).message;
     } finally {
@@ -113,10 +113,10 @@
   }
 
   // Source-type icon by capability (video+audio media, video-only, audio-only, other).
-  function typeIcon(t: SourceType): IconName {
-    if (t.caps.video && t.caps.audio) return "film";
-    if (t.caps.video) return "image";
-    if (t.caps.audio) return "audio-wave";
+  function typeIcon(caps: { video: boolean; audio: boolean }): IconName {
+    if (caps.video && caps.audio) return "film";
+    if (caps.video) return "image";
+    if (caps.audio) return "audio-wave";
     return "puzzle";
   }
 
@@ -142,11 +142,11 @@
       {#if existingSources.length > 0}
         <div class="sec-label">Existing sources · add to this scene</div>
         <ul class="types existing">
-          {#each existingSources as srcName (srcName)}
+          {#each existingSources as src (src.name)}
             <li>
-              <button class="type" disabled={creating} onclick={() => void addExisting(srcName)}>
-                <span class="glyph"><Icon name="link" size={16} /></span>
-                <span class="type-name">{srcName}</span>
+              <button class="type" disabled={creating} onclick={() => void addExisting(src.name)}>
+                <span class="glyph"><Icon name={typeIcon(src.caps)} size={16} /></span>
+                <span class="type-name">{src.name}</span>
               </button>
             </li>
           {/each}
@@ -160,7 +160,7 @@
           {#each types as t (t.id)}
             <li>
               <button class="type" onclick={() => pickType(t)}>
-                <span class="glyph"><Icon name={typeIcon(t)} size={16} /></span>
+                <span class="glyph"><Icon name={typeIcon(t.caps)} size={16} /></span>
                 <span class="type-name">{t.name}</span>
               </button>
             </li>
@@ -207,10 +207,6 @@
     padding: 0;
     display: flex;
     flex-direction: column;
-  }
-  /* Existing-source rows read as references (accent link glyph) vs new-source types. */
-  .types.existing .glyph {
-    color: var(--color-accent);
   }
   .types li {
     border-bottom: var(--border-weight) solid var(--color-border);

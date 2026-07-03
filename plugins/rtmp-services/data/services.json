@@ -206,6 +206,26 @@
             ]
         },
         {
+            "name": "Kick",
+            "common": true,
+            "more_info_link": "https://kick.com",
+            "stream_key_link": "https://kick.com/dashboard/settings/stream",
+            "supported video codecs": [
+                "h264"
+            ],
+            "servers": [
+                {
+                    "name": "Primary (Amazon IVS)",
+                    "url": "rtmps://fa723fc1b171.global-contribute.live-video.net:443/app/"
+                }
+            ],
+            "recommended": {
+                "keyint": 2,
+                "max video bitrate": 8000,
+                "max audio bitrate": 160
+            }
+        },
+        {
             "name": "YouTube - HLS",
             "common": false,
             "more_info_link": "https://developers.google.com/youtube/v3/live/guides/ingestion-protocol-comparison",

@@ -48,6 +48,13 @@ constexpr float kHandleRadius = 4.0f;     // handle half-size in screen px
 constexpr float kHandleSelRadius = 6.0f;  // hit-test radius (kHandleRadius * 1.5)
 constexpr float kBoxLineThickness = 2.0f; // selection outline thickness in screen px
 
+// Rapid-resize debounce (SetRect): while a drag-resize keeps changing the rect the
+// overlay is hidden; the surface snaps to the final rect this long after the last
+// rect arrives. ~100ms reliably reads as "resize stopped" against the DOM's ~16ms
+// per-frame cadence. The timer is per-overlay-HWND, which has no other timers.
+constexpr UINT_PTR kResizeSettleTimerId = 1;
+constexpr UINT kResizeSettleMs = 100;
+
 enum class ItemHandle : uint32_t {
 	None = 0,
 	TopLeft = ITEM_TOP | ITEM_LEFT,
@@ -1198,6 +1205,23 @@ void PreviewSurface::EnsureCreated()
 	}
 }
 
+void PreviewSurface::ApplyRect(int x, int y, int cx, int cy)
+{
+	if (!hwnd_) {
+		return;
+	}
+	// Position in host-client device pixels and keep above the CEF browser HWND
+	// (HWND_TOP raises within the sibling z-order). SWP_SHOWWINDOW reveals it on
+	// the first sized call.
+	SetWindowPos(hwnd_, HWND_TOP, x, y, cx, cy, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+
+	if (display_) {
+		obs_display_resize(static_cast<obs_display_t *>(display_), uint32_t(cx), uint32_t(cy));
+	}
+	lastCx_ = cx;
+	lastCy_ = cy;
+}
+
 void PreviewSurface::SetRect(int x, int y, int cx, int cy)
 {
 	if (cx <= 0 || cy <= 0) {
@@ -1210,18 +1234,59 @@ void PreviewSurface::SetRect(int x, int y, int cx, int cy)
 		return;
 	}
 
-	// Position in host-client device pixels and keep above the CEF browser HWND
-	// (HWND_TOP raises within the sibling z-order). SWP_SHOWWINDOW reveals it on
-	// the first sized call.
-	SetWindowPos(hwnd_, HWND_TOP, x, y, cx, cy, SWP_NOACTIVATE | SWP_SHOWWINDOW);
-
-	if (display_) {
-		obs_display_resize(static_cast<obs_display_t *>(display_), uint32_t(cx), uint32_t(cy));
+	// A pure move (same size), or the very first rect after creation/hide, applies
+	// immediately so the surface appears without a debounce delay and a dock drag
+	// keeps the video tracking. Only a size change during a burst is deferred.
+	const bool sizeChanged = (cx != lastCx_ || cy != lastCy_);
+	const bool firstRect = (lastCx_ == 0 && lastCy_ == 0);
+	if (firstRect || !sizeChanged) {
+		if (resizeDeferred_) {
+			resizeDeferred_ = false;
+			KillTimer(hwnd_, kResizeSettleTimerId);
+		}
+		ApplyRect(x, y, cx, cy);
+		return;
 	}
+
+	// Mid-resize: hide the overlay so its trailing/half-resized swapchain never shows
+	// over the DOM, stash the target rect, and (re)arm the settle timer. The final
+	// rect lands in OnResizeSettled once the rects stop for kResizeSettleMs. Hide the
+	// HWND directly (not Hide()) so lastCx_/lastCy_ stay as the burst's size baseline.
+	if (IsWindowVisible(hwnd_)) {
+		ShowWindow(hwnd_, SW_HIDE);
+	}
+	pendingX_ = x;
+	pendingY_ = y;
+	pendingCx_ = cx;
+	pendingCy_ = cy;
+	resizeDeferred_ = true;
+	SetTimer(hwnd_, kResizeSettleTimerId, kResizeSettleMs, nullptr);
+}
+
+void PreviewSurface::OnResizeSettled()
+{
+	if (!hwnd_) {
+		return;
+	}
+	KillTimer(hwnd_, kResizeSettleTimerId);
+	if (!resizeDeferred_) {
+		return;
+	}
+	resizeDeferred_ = false;
+	ApplyRect(pendingX_, pendingY_, pendingCx_, pendingCy_);
 }
 
 void PreviewSurface::Hide()
 {
+	// Cancel any pending resize snap so a settle timer doesn't re-show a surface the
+	// caller just hid (modal/suspend/tab-hidden). Reset the size baseline so the next
+	// SetRect re-applies immediately (firstRect path) rather than waiting a debounce.
+	if (resizeDeferred_ && hwnd_) {
+		resizeDeferred_ = false;
+		KillTimer(hwnd_, kResizeSettleTimerId);
+	}
+	lastCx_ = 0;
+	lastCy_ = 0;
 	if (hwnd_) {
 		ShowWindow(hwnd_, SW_HIDE);
 	}
@@ -1243,9 +1308,17 @@ void PreviewSurface::Destroy()
 		state_->boxBuffer = nullptr;
 	}
 	if (hwnd_) {
+		// Kill a pending settle timer before the HWND goes away (defensive; the timer
+		// dies with the window regardless).
+		if (resizeDeferred_) {
+			KillTimer(hwnd_, kResizeSettleTimerId);
+			resizeDeferred_ = false;
+		}
 		DestroyWindow(hwnd_);
 		hwnd_ = nullptr;
 	}
+	lastCx_ = 0;
+	lastCy_ = 0;
 }
 
 bool PreviewSurface::SelectFromBridge(const std::string &scene, int64_t id, bool hasId)
@@ -1350,6 +1423,11 @@ LRESULT CALLBACK PreviewWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpara
 		return 0;
 	case WM_CAPTURECHANGED:
 		surface->CancelDrag();
+		return 0;
+	case WM_TIMER:
+		if (wparam == kResizeSettleTimerId) {
+			surface->OnResizeSettled();
+		}
 		return 0;
 	default:
 		break;

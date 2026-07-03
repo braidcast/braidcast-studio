@@ -2550,10 +2550,12 @@ bool MethodSceneItemsSetTransform(const json &params, json &result, std::string 
 	return true;
 }
 
-// Center the item in the base canvas, replicating the old frontend's
-// CenterSelectedSceneItems(CenterType::Scene): shift the item's axis-aligned box
-// so its center lands on the canvas center (accounts for rotation/bounds).
-void CenterItemInBase(obs_sceneitem_t *item, uint32_t baseWidth, uint32_t baseHeight)
+// Center the item along the requested axes in the base canvas, replicating the
+// old frontend's CenterSelectedSceneItems: shift the item's axis-aligned box so
+// its center lands on the canvas center (accounts for rotation/bounds). Applies
+// the offset only on the axes requested so "center horizontally/vertically" move
+// a single axis while leaving the other coordinate untouched.
+void CenterItemAxis(obs_sceneitem_t *item, uint32_t baseWidth, uint32_t baseHeight, bool horizontal, bool vertical)
 {
 	vec3 tl, br;
 	GetSceneItemBox(item, tl, br);
@@ -2571,16 +2573,26 @@ void CenterItemInBase(obs_sceneitem_t *item, uint32_t baseWidth, uint32_t baseHe
 	// Translate the existing top-left by the offset (SetItemTL math).
 	vec2 pos;
 	obs_sceneitem_get_pos(item, &pos);
-	pos.x += offset.x;
-	pos.y += offset.y;
+	if (horizontal) {
+		pos.x += offset.x;
+	}
+	if (vertical) {
+		pos.y += offset.y;
+	}
 	obs_sceneitem_set_pos(item, &pos);
+}
+
+void CenterItemInBase(obs_sceneitem_t *item, uint32_t baseWidth, uint32_t baseHeight)
+{
+	CenterItemAxis(item, baseWidth, baseHeight, true, true);
 }
 
 bool MethodSceneItemsTransformAction(const json &params, json &result, std::string &error)
 {
 	const std::string action = OptString(params, "action");
-	static const char *kActions[] = {"reset",  "center", "fitToScreen",
-					 "stretchToScreen", "flipH",  "flipV"};
+	static const char *kActions[] = {"reset",       "center",         "fitToScreen",     "stretchToScreen",
+					 "flipH",       "flipV",          "rotate90cw",      "rotate90ccw",
+					 "rotate180",   "centerVertical", "centerHorizontal"};
 	bool known = false;
 	for (const char *a : kActions) {
 		if (action == a) {
@@ -2590,7 +2602,8 @@ bool MethodSceneItemsTransformAction(const json &params, json &result, std::stri
 	}
 	if (!known) {
 		error = "transformAction 'action' must be one of "
-			"reset|center|fitToScreen|stretchToScreen|flipH|flipV";
+			"reset|center|fitToScreen|stretchToScreen|flipH|flipV|"
+			"rotate90cw|rotate90ccw|rotate180|centerVertical|centerHorizontal";
 		return false;
 	}
 
@@ -2645,6 +2658,24 @@ bool MethodSceneItemsTransformAction(const json &params, json &result, std::stri
 		vec2_set(&info.bounds, float(baseW), float(baseH));
 		info.crop_to_bounds = obs_sceneitem_get_bounds_crop(item);
 		obs_sceneitem_set_info2(item, &info);
+	} else if (action == "rotate90cw" || action == "rotate90ccw" || action == "rotate180") {
+		// Rotation only, matching classic OBS: leave pos/scale untouched and
+		// normalize the result to [0, 360).
+		float rot = obs_sceneitem_get_rot(item);
+		if (action == "rotate90cw") {
+			rot += 90.0f;
+		} else if (action == "rotate90ccw") {
+			rot -= 90.0f;
+		} else {
+			rot += 180.0f;
+		}
+		rot = std::fmod(rot, 360.0f);
+		if (rot < 0.0f) {
+			rot += 360.0f;
+		}
+		obs_sceneitem_set_rot(item, rot);
+	} else if (action == "centerHorizontal" || action == "centerVertical") {
+		CenterItemAxis(item, baseW, baseH, action == "centerHorizontal", action == "centerVertical");
 	} else { // center
 		CenterItemInBase(item, baseW, baseH);
 	}
@@ -2766,7 +2797,8 @@ bool MethodSourcesCreate(const json &params, json &result, std::string &error)
 }
 
 // List existing input sources NOT already present in the target scene, so the
-// UI can offer "Add existing". params: {scene?}.
+// UI can offer "Add existing". params: {scene?}. Each entry carries the source
+// name, its type id, and coarse video/audio caps so the UI can pick an icon.
 bool MethodSourcesListExisting(const json &params, json &result, std::string &error)
 {
 	obs_source_t *sceneSource = ResolveTargetScene(params); // addref'd
@@ -2790,24 +2822,33 @@ bool MethodSourcesListExisting(const json &params, json &result, std::string &er
 		},
 		&inScene);
 
-	json names = json::array();
+	json sources = json::array();
 	struct Ctx {
 		json *arr;
 		std::unordered_map<std::string, bool> *inScene;
-	} ctx{&names, &inScene};
+	} ctx{&sources, &inScene};
 	obs_enum_sources(
 		[](void *param, obs_source_t *source) -> bool {
 			auto *c = static_cast<Ctx *>(param);
 			const char *n = obs_source_get_name(source);
 			if (n && c->inScene->find(n) == c->inScene->end()) {
-				c->arr->push_back(n);
+				const char *typeId = obs_source_get_id(source);
+				const uint32_t flags = obs_source_get_output_flags(source);
+				c->arr->push_back(json{
+					{"name", n},
+					{"typeId", typeId ? json(typeId) : json("")},
+					{"caps", json{
+							{"video", (flags & OBS_SOURCE_VIDEO) != 0},
+							{"audio", (flags & OBS_SOURCE_AUDIO) != 0},
+						}},
+				});
 			}
 			return true;
 		},
 		&ctx);
 
 	obs_source_release(sceneSource);
-	result = std::move(names);
+	result = std::move(sources);
 	return true;
 }
 

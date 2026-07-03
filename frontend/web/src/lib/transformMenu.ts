@@ -10,16 +10,18 @@ export interface TransformMenuTarget {
   id: number;
 }
 
-// The quick transform verbs the bridge exposes via sceneItems.transformAction.
-// NOTE — the classic OBS submenu also has Rotate 90° CW / 90° CCW / 180°, Center
-// Vertically, and Center Horizontally; the bridge has NO action verb for those
-// (see TransformAction in bridge.ts), so they are intentionally omitted here. Add
-// them once the host grows the corresponding transformAction verbs.
+// The quick transform verbs the bridge exposes via sceneItems.transformAction,
+// ordered to mirror the classic OBS Transform submenu.
 const ACTIONS: { label: string; action: TransformAction }[] = [
   { label: "Reset Transform", action: "reset" },
   { label: "Fit to Screen", action: "fitToScreen" },
   { label: "Stretch to Screen", action: "stretchToScreen" },
   { label: "Center to Screen", action: "center" },
+  { label: "Rotate 90° CW", action: "rotate90cw" },
+  { label: "Rotate 90° CCW", action: "rotate90ccw" },
+  { label: "Rotate 180°", action: "rotate180" },
+  { label: "Center Vertically", action: "centerVertical" },
+  { label: "Center Horizontally", action: "centerHorizontal" },
   { label: "Flip Horizontal", action: "flipH" },
   { label: "Flip Vertical", action: "flipV" },
 ];
