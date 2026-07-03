@@ -22,6 +22,7 @@
 #include "scene_persistence.hpp"
 #include "scheme.hpp"
 #include "tray.hpp"
+#include "window_chrome.hpp"
 #include "window_manager.hpp"
 
 namespace {
@@ -109,9 +110,22 @@ void LayoutBrowser(HWND host)
 
 LRESULT CALLBACK HostWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 {
+	// Frameless command-deck chrome (custom caption, resize borders, drag regions,
+	// min size) is applied first; anything it fully handles short-circuits here.
+	LRESULT chromeResult = 0;
+	if (WindowChrome::HandleMessage(hwnd, msg, wparam, lparam, chromeResult)) {
+		return chromeResult;
+	}
+
 	switch (msg) {
 	case WM_SIZE:
 		LayoutBrowser(hwnd);
+		// Reflect maximize/restore so the web title bar's glyph can toggle. Main
+		// window is windowId 0.
+		if (wparam == SIZE_MAXIMIZED || wparam == SIZE_RESTORED) {
+			Bridge::EmitEvent("window.stateChanged",
+					  Bridge::json{{"windowId", 0}, {"maximized", wparam == SIZE_MAXIMIZED}});
+		}
 		return 0;
 	case TrayIcon::kTrayCallbackMsg:
 		if (g_tray) {
@@ -179,6 +193,7 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 	case WM_DESTROY:
 		// Closing the host destroys its child browser window, which drives
 		// Client::OnBeforeClose -> CefQuitMessageLoop.
+		WindowChrome::Discard(hwnd);
 		return 0;
 	default:
 		break;
@@ -258,6 +273,9 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 		CefShutdown();
 		return 1;
 	}
+	// Remove the stock caption + enable the frameless chrome before the window is
+	// shown, so no framed frame flashes on first paint.
+	WindowChrome::Init(host, WindowChrome::kMainWindow);
 	ShowWindow(host, SW_SHOW);
 	UpdateWindow(host);
 

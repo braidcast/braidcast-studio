@@ -5,6 +5,7 @@
 
 #include "bridge.hpp"
 #include "log.hpp"
+#include "window_chrome.hpp"
 
 Client::Client() = default;
 
@@ -94,6 +95,13 @@ bool Client::OnConsoleMessage(CefRefPtr<CefBrowser> /*browser*/, cef_log_severit
 {
 	HostLog("[console] " + message.ToString() + " (" + source.ToString() + ":" + std::to_string(line) + ")");
 	return false;
+}
+
+void Client::OnDraggableRegionsChanged(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> /*frame*/,
+				       const std::vector<CefDraggableRegion> &regions)
+{
+	CEF_REQUIRE_UI_THREAD();
+	WindowChrome::SetDraggableRegions(browser, regions);
 }
 
 void Client::OnLoadEnd(CefRefPtr<CefBrowser> /*browser*/, CefRefPtr<CefFrame> frame, int http_status_code)

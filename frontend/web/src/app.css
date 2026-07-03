@@ -112,10 +112,15 @@ html,
 body {
   height: 100%;
   margin: 0;
+  /* The custom title bar owns the window chrome; the document itself must never
+     scroll (shrinking the window clips into the panes, never a page-wide scrollbar).
+     Every scroll region lives inside a dock/page, not on the document. */
+  overflow: hidden;
 }
 
 #app {
   height: 100%;
+  overflow: hidden;
 }
 
 button {

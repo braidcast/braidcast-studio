@@ -74,6 +74,8 @@ target_sources(
     src/preview_window.cpp
     src/preview_window.hpp
     src/window_manager.cpp
+    # Frameless custom-titlebar chrome (WM_NCCALCSIZE/NCHITTEST + CEF drag regions).
+    src/window_chrome.cpp
     src/window_manager.hpp
     src/projector_window.cpp
     src/projector_window.hpp
@@ -379,6 +381,10 @@ target_link_libraries(
     ws2_32
     # CNG (BCryptGenRandom/SHA-256) backs the PKCE verifier/challenge + CSRF state.
     bcrypt
+    # DwmExtendFrameIntoClientArea (frameless drop shadow) + SetWindowSubclass
+    # (drag-region hit-test fall-through) for the custom title bar.
+    dwmapi
+    comctl32
 )
 
 # CEF's /DELAYLOAD list (from SET_EXECUTABLE_TARGET_PROPERTIES) names DLLs this

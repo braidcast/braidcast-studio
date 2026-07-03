@@ -6253,6 +6253,66 @@ bool MethodWindowToggleFullscreen(const json & /*params*/, json &result, std::st
 	return true;
 }
 
+// Resolve the caller-supplied windowId (0 = main shell; >0 = a detached window) to
+// its top-level host HWND. The window controls below all act on the calling window
+// via the same id plumbing detached windows already use for redock.
+HWND ResolveWindowHwnd(const json &params)
+{
+	int windowId = 0;
+	if (params.is_object() && params.contains("windowId") && params["windowId"].is_number_integer()) {
+		windowId = params["windowId"].get<int>();
+	}
+	if (windowId == 0) {
+		PreviewManager *pm = Preview::Instance();
+		return pm ? pm->MainHostHwnd() : nullptr;
+	}
+	WindowManager *wm = WindowManager::Instance();
+	return wm ? wm->HwndFor(windowId) : nullptr;
+}
+
+bool MethodWindowMinimize(const json &params, json &result, std::string &error)
+{
+	HWND hwnd = ResolveWindowHwnd(params);
+	if (!hwnd) {
+		error = "no such window";
+		return false;
+	}
+	// Route through WM_SYSCOMMAND so the main window's minimize-to-tray policy (its
+	// WM_SYSCOMMAND handler) still applies; detached windows just minimize.
+	PostMessageW(hwnd, WM_SYSCOMMAND, SC_MINIMIZE, 0);
+	result = json{{"ok", true}};
+	return true;
+}
+
+bool MethodWindowToggleMaximize(const json &params, json &result, std::string &error)
+{
+	HWND hwnd = ResolveWindowHwnd(params);
+	if (!hwnd) {
+		error = "no such window";
+		return false;
+	}
+	const bool wasMaximized = IsZoomed(hwnd) != FALSE;
+	ShowWindow(hwnd, wasMaximized ? SW_RESTORE : SW_MAXIMIZE);
+	// The authoritative window.stateChanged push comes from the WM_SIZE handler; the
+	// return value is a convenience echo.
+	result = json{{"maximized", !wasMaximized}};
+	return true;
+}
+
+bool MethodWindowClose(const json &params, json &result, std::string &error)
+{
+	HWND hwnd = ResolveWindowHwnd(params);
+	if (!hwnd) {
+		error = "no such window";
+		return false;
+	}
+	// Post (not send) so the caller's cefQuery returns before the window teardown
+	// runs its own message pump.
+	PostMessageW(hwnd, WM_CLOSE, 0, 0);
+	result = json{{"ok", true}};
+	return true;
+}
+
 // Native projectors (fullscreen / windowed) — drive ProjectorManager and broadcast
 // projector.changed on open/close.
 
@@ -8434,6 +8494,9 @@ void Init()
 		{"window.redock", MethodWindowRedock},
 		{"window.list", MethodWindowList},
 		{"window.toggleFullscreen", MethodWindowToggleFullscreen},
+		{"window.minimize", MethodWindowMinimize},
+		{"window.toggleMaximize", MethodWindowToggleMaximize},
+		{"window.close", MethodWindowClose},
 		{"display.listMonitors", MethodDisplayListMonitors},
 		{"projector.open", MethodProjectorOpen},
 		{"projector.close", MethodProjectorClose},

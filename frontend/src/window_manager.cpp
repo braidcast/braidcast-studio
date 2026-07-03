@@ -7,6 +7,7 @@
 #include "client.hpp"
 #include "log.hpp"
 #include "preview_window.hpp"
+#include "window_chrome.hpp"
 
 namespace {
 constexpr wchar_t kDetachedClassName[] = L"ObsMultiStreamDetached";
@@ -86,6 +87,8 @@ int WindowManager::Detach(const std::string &dockId)
 		HostLog("[window] CreateWindowExW FAILED for windowId=" + std::to_string(windowId));
 		return 0;
 	}
+	// Same frameless command-deck chrome as the main shell, with a smaller size floor.
+	WindowChrome::Init(hwnd, WindowChrome::kDetachedWindow);
 	ShowWindow(hwnd, SW_SHOW);
 	UpdateWindow(hwnd);
 
@@ -166,6 +169,16 @@ std::vector<WindowManager::WindowInfo> WindowManager::List() const
 	return out;
 }
 
+HWND WindowManager::HwndFor(int windowId) const
+{
+	for (const Window &w : windows_) {
+		if (w.windowId == windowId) {
+			return w.hwnd;
+		}
+	}
+	return nullptr;
+}
+
 void WindowManager::CloseAll()
 {
 	// App is shutting down: suppress the per-window "window.closed" redock broadcast
@@ -203,6 +216,13 @@ void WindowManager::DestroyAll()
 LRESULT CALLBACK WindowManager::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 {
 	WindowManager *wm = g_wm;
+
+	// Frameless chrome (custom caption, resize borders, drag regions, min size).
+	LRESULT chromeResult = 0;
+	if (WindowChrome::HandleMessage(hwnd, msg, wparam, lparam, chromeResult)) {
+		return chromeResult;
+	}
+
 	switch (msg) {
 	case WM_SIZE:
 		if (wm) {
@@ -214,10 +234,18 @@ LRESULT CALLBACK WindowManager::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPAR
 						SetWindowPos(bh, nullptr, 0, 0, rc.right - rc.left, rc.bottom - rc.top,
 							     SWP_NOZORDER | SWP_NOACTIVATE);
 					}
+					if (wparam == SIZE_MAXIMIZED || wparam == SIZE_RESTORED) {
+						Bridge::EmitEvent("window.stateChanged",
+								  Bridge::json{{"windowId", w->windowId},
+									       {"maximized", wparam == SIZE_MAXIMIZED}});
+					}
 				}
 			}
 		}
 		return 0;
+	case WM_NCDESTROY:
+		WindowChrome::Discard(hwnd);
+		break;
 	case WM_CLOSE:
 		if (wm) {
 			if (Window *w = wm->FindByHwnd(hwnd)) {

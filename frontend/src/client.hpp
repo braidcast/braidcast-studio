@@ -7,6 +7,7 @@
 #include "include/cef_client.h"
 #include "include/cef_context_menu_handler.h"
 #include "include/cef_display_handler.h"
+#include "include/cef_drag_handler.h"
 #include "include/cef_load_handler.h"
 #include "include/cef_request_handler.h"
 #include "include/wrapper/cef_message_router.h"
@@ -21,6 +22,7 @@ class ObsQueryHandler;
 class Client : public CefClient,
 	       public CefLifeSpanHandler,
 	       public CefDisplayHandler,
+	       public CefDragHandler,
 	       public CefLoadHandler,
 	       public CefRequestHandler,
 	       public CefContextMenuHandler {
@@ -38,6 +40,7 @@ public:
 	// CefClient methods:
 	CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override { return this; }
 	CefRefPtr<CefDisplayHandler> GetDisplayHandler() override { return this; }
+	CefRefPtr<CefDragHandler> GetDragHandler() override { return this; }
 	CefRefPtr<CefLoadHandler> GetLoadHandler() override { return this; }
 	CefRefPtr<CefRequestHandler> GetRequestHandler() override { return this; }
 	CefRefPtr<CefContextMenuHandler> GetContextMenuHandler() override { return this; }
@@ -59,6 +62,12 @@ public:
 	// CefDisplayHandler methods:
 	bool OnConsoleMessage(CefRefPtr<CefBrowser> browser, cef_log_severity_t level, const CefString &message,
 			      const CefString &source, int line) override;
+
+	// CefDragHandler methods:
+	// The Svelte title bar marks its background `-webkit-app-region: drag`; forward
+	// the reported regions to the frameless host so that strip becomes the drag grip.
+	void OnDraggableRegionsChanged(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame,
+				       const std::vector<CefDraggableRegion> &regions) override;
 
 	// CefLoadHandler methods:
 	void OnLoadEnd(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, int http_status_code) override;

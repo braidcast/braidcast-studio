@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import TitleBar from "./lib/TitleBar.svelte";
   import NavRail from "./lib/NavRail.svelte";
   import { pageStore } from "./lib/pageStore.svelte";
   import StudioPage from "./lib/pages/StudioPage.svelte";
@@ -108,9 +109,11 @@
   });
 </script>
 
-<div class="shell">
-  <NavRail />
-  <main class="view">
+<div class="app-root">
+  <TitleBar />
+  <div class="shell">
+    <NavRail />
+    <main class="view">
     <!-- Studio stays permanently mounted (hidden, not unmounted, off-page) so the
          Dockview workspace + reconciler keep their single onReady lifecycle exactly
          as before — switching pages must not tear down or rebuild the docks. -->
@@ -130,7 +133,8 @@
     {:else if pageStore.page === "settings"}
       <SettingsPage />
     {/if}
-  </main>
+    </main>
+  </div>
 </div>
 
 {#if filterDialogOpener.open && filterDialogOpener.source}
@@ -172,10 +176,20 @@
 <Toast />
 
 <style>
+  /* Column shell: custom title bar on top, the app body fills the rest. Clips at the
+     root so the document never scrolls (overflow lives inside the panes/pages). */
+  .app-root {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+  }
   .shell {
+    flex: 1;
+    min-height: 0;
     display: flex;
     flex-direction: row;
-    height: 100%;
+    overflow: hidden;
     background: var(--color-base);
   }
   .view {

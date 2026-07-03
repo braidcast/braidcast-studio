@@ -8,7 +8,7 @@
   import BrowserDock from "./lib/docks/BrowserDock.svelte";
   import { browserDockStore } from "./lib/browserDockStore.svelte";
   import type { CanvasInfo } from "./lib/bridge";
-  import Icon from "./lib/dock/Icon.svelte";
+  import TitleBar from "./lib/TitleBar.svelte";
 
   // Apply the saved (or default Industrial) theme in this window too.
   void themeStore.hydrate();
@@ -67,13 +67,7 @@
 </script>
 
 <div class="detached">
-  <header class="bar">
-    <span class="title">{title}</span>
-    <button class="redock" title="Return to main window" onclick={redock}>
-      <Icon name="redock" size={12} />
-      REDOCK
-    </button>
-  </header>
+  <TitleBar variant="detached" {title} onRedock={redock} />
   <div class="body" bind:this={host}></div>
 </div>
 
@@ -82,44 +76,8 @@
     display: flex;
     flex-direction: column;
     height: 100%;
-    background: var(--color-base);
-  }
-  .bar {
-    flex: 0 0 auto;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 4px 8px;
-    background: var(--color-surface);
-    border-bottom: var(--border-weight) solid var(--color-border);
-  }
-  .title {
-    font-family: var(--font-ui);
-    font-size: 9px;
-    letter-spacing: var(--letter-spacing);
-    text-transform: uppercase;
-    color: var(--color-accent);
     overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .redock {
-    height: auto;
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    padding: 2px 8px;
-    font-family: var(--font-ui);
-    font-size: 9px;
-    letter-spacing: var(--letter-spacing);
-    text-transform: uppercase;
-    background: transparent;
-    border: var(--border-weight) solid var(--color-border);
-    color: var(--color-muted);
-  }
-  .redock:hover {
-    color: var(--color-accent);
-    border-color: var(--color-accent);
+    background: var(--color-base);
   }
   .body {
     flex: 1;

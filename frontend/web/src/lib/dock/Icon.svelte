@@ -26,6 +26,11 @@
     | "submenu"
     | "jump-down"
     | "redock"
+    // window controls (custom title bar)
+    | "window-min"
+    | "window-max"
+    | "window-restore"
+    | "window-close"
     // status / affordances
     | "star"
     | "star-filled"
@@ -96,6 +101,14 @@
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M6 10l6 6 6-6" /><path d="M5 20h14" /></svg>
 {:else if name === "redock"}
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4H4v16h16v-4" /><path d="M21 3l-10 10" /><path d="M11 7v6h6" /></svg>
+{:else if name === "window-min"}
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12" /></svg>
+{:else if name === "window-max"}
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" /></svg>
+{:else if name === "window-restore"}
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><rect x="5" y="8" width="11" height="11" /><path d="M8 8V5h11v11h-3" /></svg>
+{:else if name === "window-close"}
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18" /></svg>
 {:else if name === "star"}
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.7 5.9 6.3.7-4.7 4.3 1.3 6.1-5.6-3.2-5.6 3.2 1.3-6.1L2.9 9.6l6.4-.7z" /></svg>
 {:else if name === "star-filled"}

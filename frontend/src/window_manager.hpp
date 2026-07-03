@@ -38,6 +38,10 @@ public:
 	};
 	std::vector<WindowInfo> List() const;
 
+	// The top-level HWND backing `windowId`, or null if unknown. Used by the window
+	// control bridge (minimize/maximize/close) to act on a detached window.
+	HWND HwndFor(int windowId) const;
+
 	// Tear down every detached window's preview surfaces + browser. Called at
 	// global teardown BEFORE ObsBootstrap::Stop() frees canvas mixes.
 	void DestroyAll();

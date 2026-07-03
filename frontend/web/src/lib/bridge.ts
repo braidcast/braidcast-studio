@@ -1374,6 +1374,13 @@ export interface ObsMethods {
   "window.list": { windows: { windowId: number; dock: string }[] };
   // Toggles the host window's borderless fullscreen; returns the new state.
   "window.toggleFullscreen": { fullscreen: boolean };
+  // Custom-title-bar window controls. Each acts on the calling window (windowId 0 =
+  // main shell; >0 = a detached window). minimize/close post their message and
+  // return immediately; toggleMaximize echoes the resulting state (the authoritative
+  // update arrives via the window.stateChanged push).
+  "window.minimize": { ok: boolean };
+  "window.toggleMaximize": { maximized: boolean };
+  "window.close": { ok: boolean };
   // Engine undo stack. state reports can-undo/can-redo + the next action names;
   // undo/redo pop/replay the top entry. All emit undo.changed after mutating.
   "undo.state": UndoState;
@@ -1497,6 +1504,9 @@ export interface ObsEvents {
   // explicit redock AND on user OS-close (NOT during app shutdown).
   "window.opened": { windowId: number; dock: string };
   "window.closed": { windowId: number; dock: string };
+  // The host window was maximized or restored; the custom title bar's maximize glyph
+  // toggles. Broadcast to all windows; each filters by `windowId` (main = 0).
+  "window.stateChanged": { windowId: number; maximized: boolean };
   // The undo stack changed (a recorded mutation, an undo, or a redo); the mirror
   // re-applies the pushed state to refresh the shortcuts + toolbar buttons.
   "undo.changed": UndoState;
