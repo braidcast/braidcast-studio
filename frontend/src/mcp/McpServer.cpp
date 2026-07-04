@@ -700,7 +700,7 @@ Mcp::HttpResponse McpServer::HandleRequest(const Mcp::HttpRequest &req)
 	if (method == "initialize") {
 		json result = json{{"protocolVersion", "2024-11-05"},
 				   {"capabilities", json{{"tools", json::object()}}},
-				   {"serverInfo", json{{"name", "obs-multistream"}, {"version", ServerVersion()}}}};
+				   {"serverInfo", json{{"name", "braidcast"}, {"version", ServerVersion()}}}};
 		return JsonResponse(200, RpcResult(id, result));
 	}
 	if (method == "notifications/initialized") {

@@ -68,7 +68,7 @@ const char *ReasonFor(int status)
 // Absolute path to the offline bundle root (copy of scheme.cpp::BundleRoot).
 std::string BundleRoot()
 {
-	return RundirRoot() + "/data/obs-multistream/web";
+	return RundirRoot() + "/data/braidcast/web";
 }
 
 // Map a file extension to a MIME type (copy of scheme.cpp::ContentTypeForPath).

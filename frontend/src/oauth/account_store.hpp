@@ -9,7 +9,7 @@
 #include "provider.hpp"
 
 // The OAuth account store: OAuthAccount records keyed by AccountId (providerId:userId),
-// persisted to <config>/obs-multistream/oauth_tokens.json, DPAPI-wrapped at rest
+// persisted to <config>/braidcast/oauth_tokens.json, DPAPI-wrapped at rest
 // (CryptProtectData) so the access/refresh tokens are not on disk in plaintext.
 // Touched from both the CEF UI thread (bridge methods) and detached OAuth worker
 // threads, so every accessor is mutex-guarded. A corrupt/undecryptable file (host
@@ -24,7 +24,7 @@ public:
 	void Remove(const std::string &accountId);
 	std::map<std::string, OAuthAccount> All();
 
-	// <config>/obs-multistream/oauth_tokens.json (the DPAPI blob, not JSON text).
+	// <config>/braidcast/oauth_tokens.json (the DPAPI blob, not JSON text).
 	static std::string FilePath();
 
 private:

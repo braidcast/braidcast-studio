@@ -7,7 +7,7 @@ inline constexpr char kAppScheme[] = "app";
 inline constexpr char kAppHost[] = "app";
 
 // Register the scheme handler factory that serves the offline bundle from the
-// rundir's data/obs-multistream/web/ directory. Browser process, after init.
+// rundir's data/braidcast/web/ directory. Browser process, after init.
 void RegisterAppSchemeHandlerFactory();
 
 #endif // OBS_MULTISTREAM_FRONTEND_SCHEME_HPP_

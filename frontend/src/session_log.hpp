@@ -5,7 +5,7 @@
 
 // Per-session libobs log file. Init() installs a base log handler that chains to
 // whatever handler was already registered (so stderr/HostLog keep working) and
-// additionally mirrors every blog() line to <config>/obs-multistream/logs/
+// additionally mirrors every blog() line to <config>/braidcast/logs/
 // <YYYY-MM-DD HH-MM-SS>.txt, rotating older files. Must be called AFTER the
 // existing handler is installed so it can capture and chain to it.
 namespace SessionLog {

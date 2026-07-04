@@ -527,7 +527,7 @@ bool ObsBootstrap::Start()
 	base_set_log_handler(ObsLogHandler, nullptr);
 
 	// Chain a per-session file writer onto the stderr/HostLog handler installed
-	// above so every blog() line is also persisted under .../obs-multistream/logs.
+	// above so every blog() line is also persisted under .../braidcast/logs.
 	SessionLog::Init();
 
 	if (!obs_startup("en-US", nullptr, nullptr)) {

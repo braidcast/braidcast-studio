@@ -240,7 +240,7 @@ problem was purely the **native window geometry / presentation**.
 
 5. **W1 config separation — not the cause, only the exposure.**
    Pre-W1 a direct launch loaded the user's populated `%APPDATA%\obs-studio`
-   (worked); post-W1 it loads a fresh `%APPDATA%\obs-multistream`. W1 only
+   (worked); post-W1 it loads a fresh `%APPDATA%\braidcast`. W1 only
    changed *which* config was loaded, surfacing the underlying issue more often.
 
 ### Root cause

@@ -5,7 +5,7 @@
 
 // Save/load of the main-canvas scene collection -- scenes, their sources, and
 // the full per-scene item layout -- to a per-collection JSON file under the
-// shared obs-multistream/basic config dir. The new CEF frontend otherwise
+// shared braidcast/basic config dir. The new CEF frontend otherwise
 // rebuilds a placeholder scene every boot and never persists user content, so
 // anything added vanished on restart.
 //

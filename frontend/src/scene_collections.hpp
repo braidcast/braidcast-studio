@@ -7,7 +7,7 @@
 // Registry of scene collections for the CEF frontend. A scene collection is the
 // per-collection set of scenes/sources that scene_persistence captures (main
 // canvas scenes + plain inputs), each stored in its own file under the shared
-// obs-multistream/basic config dir. The registry itself persists to an index,
+// braidcast/basic config dir. The registry itself persists to an index,
 // scene_collections.json, holding the ordered list plus which one is active.
 //
 // Canvases (canvases.json) and stream profiles (streams.json) stay GLOBAL and
@@ -19,7 +19,7 @@
 struct SceneCollectionRecord {
 	std::string id;        // stable uuid
 	std::string name;      // user-facing label
-	std::string sceneFile; // path relative to <config>/obs-multistream/basic/
+	std::string sceneFile; // path relative to <config>/braidcast/basic/
 };
 
 class SceneCollections {
@@ -100,7 +100,7 @@ public:
 	// clean or genuinely-absent load.
 	bool IndexWasCorrupt() const { return indexCorrupt_; }
 
-	// <config>/obs-multistream/basic/scene_collections.json.
+	// <config>/braidcast/basic/scene_collections.json.
 	static std::string IndexPath();
 
 private:

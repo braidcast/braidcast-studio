@@ -16,9 +16,9 @@ config_t *FrontendCallbacks::EnsureConfig()
 	DWORD n = GetTempPathA(MAX_PATH, tempPath);
 	std::string path;
 	if (n > 0 && n < MAX_PATH) {
-		path = std::string(tempPath) + "obs-multistream-frontend.ini";
+		path = std::string(tempPath) + "braidcast-frontend.ini";
 	} else {
-		path = "obs-multistream-frontend.ini";
+		path = "braidcast-frontend.ini";
 	}
 
 	config = config_create(path.c_str());

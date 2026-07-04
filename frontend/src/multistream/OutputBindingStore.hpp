@@ -9,7 +9,7 @@
 // Holds the OutputBindings (profile x canvas routing edges) for the new frontend
 // and round-trips them to a per-scene-collection JSON sibling of the collection's
 // scene file (scenes/<slug>.json -> scenes/<slug>.output_bindings.json) under the
-// shared <config>/obs-multistream/basic directory.
+// shared <config>/braidcast/basic directory.
 //
 // Bindings are PER scene-collection (each show routes to its own destinations);
 // canvases + stream profiles stay global. The no-arg Load()/Save() target the
@@ -38,7 +38,7 @@ public:
 	// Drop all bindings for teardown leak measurement.
 	void Clear() { bindings.bindings.clear(); }
 
-	// The legacy single global file, <config>/obs-multistream/basic/output_bindings.json.
+	// The legacy single global file, <config>/braidcast/basic/output_bindings.json.
 	// Pre-6a bindings lived here; now used only as the first-run migration source.
 	static std::string FilePath();
 

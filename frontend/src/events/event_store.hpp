@@ -12,7 +12,7 @@
 #include "event_model.hpp"
 
 // The persisted, de-duplicated event history (Phase 9.2a). A single global file
-// (<config>/obs-multistream/basic/events.json -- the same dir as streams.json,
+// (<config>/braidcast/basic/events.json -- the same dir as streams.json,
 // since events are per-account and shared across scene collections) loaded on
 // construction so the dock shows history immediately. A bounded ring (cap 500,
 // most-recent-wins) plus an id set for O(1) dedupe. Thread-safe: EventHub workers
@@ -38,7 +38,7 @@ public:
 	// debounced trailing event isn't lost. No-op when nothing is dirty.
 	void Flush();
 
-	// <config>/obs-multistream/basic/events.json.
+	// <config>/braidcast/basic/events.json.
 	static std::string FilePath();
 
 private:

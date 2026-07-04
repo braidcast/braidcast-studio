@@ -7,7 +7,7 @@
 
 // Read-only importer of an EXTERNAL OBS Studio install's data into THIS fork.
 //
-// The fork stores its own data under <config>/obs-multistream and never shares
+// The fork stores its own data under <config>/braidcast and never shares
 // files with a real OBS Studio install (<config>/obs-studio). This importer reads
 // the obs-studio tree STRICTLY READ-ONLY -- scene collections (basic/scenes/*.json),
 // the active profile's stream service (basic/profiles/<dir>/service.json) and its
@@ -15,7 +15,7 @@
 // collections / stream profiles / canvas + audio state. It NEVER opens an
 // obs-studio path for writing: JSON is read with obs_data_create_from_json_file and
 // the ini with config_open(..., CONFIG_OPEN_EXISTING), both read-only; the only
-// files written are under the fork's own obs-multistream/basic dir.
+// files written are under the fork's own braidcast/basic dir.
 namespace ObsImporter {
 
 // Inventory an obs-studio config dir without mutating anything. `path` empty ->

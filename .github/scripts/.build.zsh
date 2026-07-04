@@ -105,7 +105,7 @@ build() {
     setup_ubuntu
   }
 
-  local product_name='obs-multistream'
+  local product_name='braidcast'
 
   pushd ${project_root}
 

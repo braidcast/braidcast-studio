@@ -103,7 +103,7 @@ package() {
 
   check_${host_os}
 
-  local product_name='obs-multistream'
+  local product_name='braidcast'
 
   local commit_version='0.0.0'
   local commit_distance='0'
@@ -118,9 +118,9 @@ package() {
 
   local output_name
   if (( commit_distance > 0 )) {
-    output_name="obs-multistream-${commit_version}-${commit_hash}"
+    output_name="braidcast-${commit_version}-${commit_hash}"
   } else {
-    output_name="obs-multistream-${commit_version}"
+    output_name="braidcast-${commit_version}"
   }
 
   if [[ ${host_os} == macos ]] {
@@ -134,9 +134,9 @@ package() {
 
     local volume_name
     if (( commit_distance > 0 )) {
-      volume_name="OBS MultiStream ${commit_version}-${commit_hash} (${arch_names[${target##*-}]})"
+      volume_name="Braidcast ${commit_version}-${commit_hash} (${arch_names[${target##*-}]})"
     } else {
-      volume_name="OBS MultiStream ${commit_version} (${arch_names[${target##*-}]})"
+      volume_name="Braidcast ${commit_version} (${arch_names[${target##*-}]})"
     }
 
     if (( package )) {
@@ -217,9 +217,9 @@ package() {
       output_name="${output_name}-${target##*-}-ubuntu-gnu"
 
       pushd ${project_root}/build_${target%%-*}
-      local -a files=(obs-multistream-*-Linux*.(ddeb|deb|ddeb.sha256|deb.sha256))
+      local -a files=(braidcast-*-Linux*.(ddeb|deb|ddeb.sha256|deb.sha256))
       for file (${files}) {
-        mv ${file} ${file//obs-multistream-*-Linux/${output_name}}
+        mv ${file} ${file//braidcast-*-Linux/${output_name}}
       }
       popd
       popd
@@ -237,9 +237,9 @@ package() {
     output_name="${output_name}-sources"
 
     pushd ${project_root}/build_${target%%-*}
-    local -a files=(obs-multistream-*-sources.tar.*)
+    local -a files=(braidcast-*-sources.tar.*)
     for file (${files}) {
-      mv ${file} ${file//obs-multistream-*-sources/${output_name}}
+      mv ${file} ${file//braidcast-*-sources/${output_name}}
     }
     popd
     popd

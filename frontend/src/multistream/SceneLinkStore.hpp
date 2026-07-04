@@ -9,7 +9,7 @@
 // Holds the CanvasSceneLink (main-scene -> per-canvas scene activation map) for
 // the new frontend and round-trips it to a per-scene-collection JSON sibling of
 // the collection's scene file (scenes/<slug>.json -> scenes/<slug>.scene_links.json)
-// under the shared <config>/obs-multistream/basic directory. Mirrors
+// under the shared <config>/braidcast/basic directory. Mirrors
 // OutputBindingStore exactly; the wire format is the SAME "canvas_scene_links"
 // array CanvasSceneLink::ToDataArray/FromDataArray produce.
 //

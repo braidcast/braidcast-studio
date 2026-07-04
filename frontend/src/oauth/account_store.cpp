@@ -55,7 +55,7 @@ bool ProtectBytes(const std::string &plain, std::vector<unsigned char> &out)
 
 	DATA_BLOB blob = {};
 	// CRYPTPROTECT_UI_FORBIDDEN: a background-thread Put must never block on a UI prompt.
-	if (!CryptProtectData(&in, L"obs-multistream oauth", nullptr, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN,
+	if (!CryptProtectData(&in, L"braidcast oauth", nullptr, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN,
 			      &blob)) {
 		return false;
 	}
@@ -85,7 +85,7 @@ bool UnprotectBytes(const std::vector<unsigned char> &wrapped, std::string &plai
 std::string AccountStore::FilePath()
 {
 	char buf[512];
-	if (os_get_config_path(buf, sizeof(buf), "obs-multistream/oauth_tokens.json") <= 0) {
+	if (os_get_config_path(buf, sizeof(buf), "braidcast/oauth_tokens.json") <= 0) {
 		return std::string();
 	}
 	return std::string(buf);

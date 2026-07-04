@@ -40,7 +40,7 @@ add_subdirectory("${CEF_LIBCEF_DLL_WRAPPER_PATH}" libcef_dll_wrapper)
 # Logical target for libcef.lib (the import library) per the CEF macro contract.
 add_logical_target("libcef_lib" "${CEF_LIB_DEBUG}" "${CEF_LIB_RELEASE}")
 
-set(_target obs-multistream-frontend)
+set(_target braidcast-frontend)
 
 add_executable(${_target} WIN32)
 add_executable(OBS::studio ALIAS ${_target})
@@ -239,11 +239,11 @@ target_sources(
 )
 
 # Windows resource: embed the app icon + version/product metadata so the exe and
-# its taskbar/Explorer entry show the OBS MultiStream mark instead of the default
+# its taskbar/Explorer entry show the Braidcast mark instead of the default
 # blank icon. configure_file substitutes the icon path (forward slashes, which the
 # resource compiler accepts) and the shared OBS_VERSION_*/OBS_LEGAL_COPYRIGHT.
 if(OS_WINDOWS)
-  set(OBS_FRONTEND_ICON "${CMAKE_CURRENT_SOURCE_DIR}/cmake/windows/obs-multistream.ico")
+  set(OBS_FRONTEND_ICON "${CMAKE_CURRENT_SOURCE_DIR}/cmake/windows/braidcast.ico")
   configure_file(cmake/windows/obs.rc.in obs.rc)
   target_sources(${_target} PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/obs.rc")
 endif()
@@ -434,8 +434,8 @@ set_source_files_properties(
 
 # Place the exe in the OBS rundir (bin/64bit) like other targets; keep a distinct
 # OUTPUT_NAME so it does not collide with the legacy obs64 in a shared rundir
-# during the transition. It still reads the shared obs-multistream config dir.
-set_target_properties_obs(${_target} PROPERTIES FOLDER frontend OUTPUT_NAME obs-multistream)
+# during the transition. It still reads the shared braidcast config dir.
+set_target_properties_obs(${_target} PROPERTIES FOLDER frontend OUTPUT_NAME braidcast)
 
 # Copy the CEF runtime binaries + resources next to the exe in the rundir so it
 # launches in place. The dist only ships Release/Debug; the OBS build is
@@ -452,7 +452,7 @@ find_program(BUN_EXECUTABLE bun REQUIRED)
 
 set(_web_dir "${CMAKE_CURRENT_SOURCE_DIR}/web")
 set(_web_dist "${_web_dir}/dist")
-set(_web_install "${OBS_OUTPUT_DIR}/$<CONFIG>/${OBS_DATA_DESTINATION}/obs-multistream/web")
+set(_web_install "${OBS_OUTPUT_DIR}/$<CONFIG>/${OBS_DATA_DESTINATION}/braidcast/web")
 
 # Always-run target: bun install (idempotent) then vite build. bun/vite are fast
 # and incremental, so an unconditional rebuild is cheap and avoids stale bundles

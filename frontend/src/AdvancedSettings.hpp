@@ -5,7 +5,7 @@
 #include <string>
 
 // Global "Advanced settings" bag, persisted to advanced.json in the shared
-// obs-multistream config dir. Mirrors GeneralSettings exactly: a plain struct
+// braidcast config dir. Mirrors GeneralSettings exactly: a plain struct
 // whose fields are the single source of truth, round-tripped through descriptor
 // tables shared by the persistence layer and the bridge so the two can't drift.
 // Some fields drive behavior now (process priority at startup, per-output stream

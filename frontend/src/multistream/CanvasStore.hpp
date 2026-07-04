@@ -9,7 +9,7 @@
 
 // Owns the global list of canvas definitions for the new (non-Qt) frontend,
 // persisted to the SAME standalone canvases.json the legacy frontend uses
-// (<config>/obs-multistream/basic/canvases.json). De-Qt'd port of the legacy
+// (<config>/braidcast/basic/canvases.json). De-Qt'd port of the legacy
 // CanvasManager: the only behavioral difference is FilePath() resolves the
 // config dir via libobs os_get_config_path instead of OBSApp.
 //
@@ -46,7 +46,7 @@ public:
 	// teardown only, so the leak count is measured against an empty model.
 	void Clear() { definitions.clear(); }
 
-	// <config>/obs-multistream/basic/canvases.json -- identical to the legacy path.
+	// <config>/braidcast/basic/canvases.json -- identical to the legacy path.
 	static std::string FilePath();
 
 private:

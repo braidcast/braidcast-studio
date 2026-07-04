@@ -163,7 +163,7 @@ Widget OverlayStore::Create(const std::string &name, const std::string &type)
 	w.type = type;
 
 	// Seed html/css/js/fields from the on-disk default template for this type.
-	const std::string dir = RundirRoot() + "/data/obs-multistream/web/overlay/default-" + type + "/";
+	const std::string dir = RundirRoot() + "/data/braidcast/web/overlay/default-" + type + "/";
 	const bool haveHtml = ReadWholeFile(dir + "template.html", w.html);
 	ReadWholeFile(dir + "template.css", w.css);
 	ReadWholeFile(dir + "template.js", w.js);

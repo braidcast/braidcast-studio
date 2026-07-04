@@ -9,7 +9,7 @@
 
 // Owns the global list of stream profiles for the new (non-Qt) frontend,
 // persisted to the SAME standalone streams.json the legacy frontend uses
-// (<config>/obs-multistream/basic/streams.json). De-Qt'd port of the legacy
+// (<config>/braidcast/basic/streams.json). De-Qt'd port of the legacy
 // StreamProfileManager; FilePath() resolves the config dir via libobs
 // os_get_config_path instead of OBSApp.
 //
@@ -39,7 +39,7 @@ public:
 	// Drop all profiles (releasing their obs_data) for teardown leak measurement.
 	void Clear() { profiles.clear(); }
 
-	// <config>/obs-multistream/basic/streams.json -- identical to the legacy path.
+	// <config>/braidcast/basic/streams.json -- identical to the legacy path.
 	static std::string FilePath();
 
 private:

@@ -35,7 +35,7 @@ namespace {
 //
 // Every function here only ever READS from the obs-studio tree. The single
 // "write" primitive used by the importer (WriteForkSceneFile) targets the fork's
-// own obs-multistream dir via MultistreamBasicPath, never an obs-studio path.
+// own braidcast dir via MultistreamBasicPath, never an obs-studio path.
 
 // Resolve the obs-studio config dir. Empty `path` -> os_get_config_path.
 std::string ResolveBase(const std::string &path)
@@ -452,7 +452,7 @@ void WarnUnsupportedTypes(obs_data_array_t *filtered, const std::string &collect
 
 // Write the new fork collection's scene file in the FORK format (the exact shape
 // scene_persistence reads: {"sources":[...],"current_scene":"..."}). Targets the
-// fork's obs-multistream dir only, via MultistreamBasicPath.
+// fork's braidcast dir only, via MultistreamBasicPath.
 bool WriteForkSceneFile(const std::string &relFile, obs_data_array_t *filtered, const std::string &currentScene)
 {
 	OBSDataAutoRelease root = obs_data_create();

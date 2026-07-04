@@ -6028,7 +6028,7 @@ void DoEmit(const std::string &name, const std::string &payloadDump)
 
 // --- theme + layout persistence (P1) ----------------------------------------
 // The Svelte shell persists the active theme preset and the Dockview layout JSON
-// to <config>/obs-multistream/basic/{theme,layout}.json, reusing the same
+// to <config>/braidcast/basic/{theme,layout}.json, reusing the same
 // obs_data_* round-trip the stream/canvas stores use. The payloads are opaque
 // strings to C++ (the shell owns their shape); we read and write them verbatim.
 // WriteJsonString/ReadJsonString are defined at namespace-Bridge scope (below the
@@ -7339,13 +7339,13 @@ std::string SanitizeScreenshotName(const std::string &name, const char *fallback
 	return out;
 }
 
-// Build <config>/obs-multistream/screenshots/<name>_<YYYY-MM-DD_HH-MM-SS>.png,
+// Build <config>/braidcast/screenshots/<name>_<YYYY-MM-DD_HH-MM-SS>.png,
 // creating the directory if needed. Returns false (with errOut) when the path
 // can't be resolved or the directory can't be created.
 bool BuildScreenshotPath(const std::string &name, const char *fallback, std::string &fullPath, std::string &errOut)
 {
 	char dir[512];
-	if (os_get_config_path(dir, sizeof(dir), "obs-multistream/screenshots") <= 0) {
+	if (os_get_config_path(dir, sizeof(dir), "braidcast/screenshots") <= 0) {
 		errOut = "failed to resolve screenshots directory";
 		return false;
 	}

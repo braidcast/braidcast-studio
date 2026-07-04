@@ -19,7 +19,7 @@ namespace {
 // Absolute path to the offline bundle root, under the shared rundir data dir.
 std::string BundleRoot()
 {
-	return RundirRoot() + "/data/obs-multistream/web";
+	return RundirRoot() + "/data/braidcast/web";
 }
 
 // Map a file extension to a MIME type. Anything unknown serves as octet-stream.

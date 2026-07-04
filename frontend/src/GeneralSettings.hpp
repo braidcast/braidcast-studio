@@ -4,7 +4,7 @@
 #include <string>
 
 // Global "General settings" bag, persisted to general.json in the shared
-// obs-multistream config dir. Some fields drive behavior now (projector
+// braidcast config dir. Some fields drive behavior now (projector
 // always-on-top); the rest are persisted prefs that later backlog items
 // (Multiview, System Tray, Importer) read. A plain struct in the style of
 // CanvasDefinition.
