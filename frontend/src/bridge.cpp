@@ -7751,6 +7751,21 @@ bool MethodOAuthDisconnect(const json &params, json &result, std::string &error)
 		error = "oauth.disconnect requires a non-empty 'accountId'";
 		return false;
 	}
+	const bool force = params.is_object() && params.value("force", false);
+
+	// An account referenced by more than one profile gets a confirm gate: unlinking it
+	// drops it from every profile at once, so name them and require force to proceed.
+	json refs = json::array();
+	for (const StreamProfile &p : ObsBootstrap::StreamProfiles().Profiles()) {
+		if (p.accountId == accountId) {
+			refs.push_back(json{{"uuid", p.uuid}, {"name", p.label}});
+		}
+	}
+	if (!force && refs.size() > 1) {
+		result = json{{"needsConfirm", true}, {"profiles", std::move(refs)}};
+		return true;
+	}
+
 	OAuth::Accounts().Remove(accountId);
 	Events::Hub().StopAccount(accountId);
 	// Pre-live chat: re-resolve chat after the account is removed so the disconnected
@@ -7766,6 +7781,62 @@ bool MethodOAuthDisconnect(const json &params, json &result, std::string &error)
 	ObsBootstrap::StreamProfiles().Save();
 	EmitEvent("streamProfile.changed", json::object());
 	EmitEvent("oauth.status", BuildOAuthStatusArray());
+	result = json{{"ok", true}};
+	return true;
+}
+
+// The connected accounts for one provider -- the reuse-picker source. Filters the
+// account store by providerId; needsReconnect flags a scope-stale token (same rule as
+// oauth.status) so the picker can label it.
+bool MethodOAuthAccounts(const json &params, json &result, std::string &error)
+{
+	const std::string providerId = OptString(params, "providerId");
+	if (providerId.empty()) {
+		error = "oauth.accounts requires a non-empty 'providerId'";
+		return false;
+	}
+	OAuth::StreamProvider *provider = OAuth::Registry().Get(providerId);
+	json arr = json::array();
+	for (const auto &entry : OAuth::Accounts().All()) {
+		const OAuth::OAuthAccount &acct = entry.second;
+		if (acct.providerId != providerId) {
+			continue;
+		}
+		const bool scopeCurrent = !provider || provider->isTokenScopeCurrent(acct);
+		arr.push_back(json{
+			{"accountId", entry.first},
+			{"login", acct.login},
+			{"displayName", acct.displayName},
+			{"needsReconnect", !scopeCurrent},
+		});
+	}
+	result = std::move(arr);
+	return true;
+}
+
+// Link a profile to an already-connected account (connect-once reuse -- no grant). The
+// account must exist in the store; this is the sole difference from the connect flow's
+// implicit link (which runs after a fresh grant).
+bool MethodOAuthLinkAccount(const json &params, json &result, std::string &error)
+{
+	const std::string profileUuid = OptString(params, "profileUuid");
+	const std::string accountId = OptString(params, "accountId");
+	if (profileUuid.empty() || accountId.empty()) {
+		error = "oauth.linkAccount requires 'profileUuid' and 'accountId'";
+		return false;
+	}
+	if (!OAuth::Accounts().Get(accountId)) {
+		error = "account not found; reconnect";
+		return false;
+	}
+	StreamProfile *p = ObsBootstrap::StreamProfiles().Find(profileUuid);
+	if (!p) {
+		error = "profile not found";
+		return false;
+	}
+	p->accountId = accountId;
+	ObsBootstrap::StreamProfiles().Save();
+	EmitEvent("streamProfile.changed", json::object());
 	result = json{{"ok", true}};
 	return true;
 }
@@ -8558,6 +8629,8 @@ void Init()
 		{"oauth.connect", MethodOAuthConnect},
 		{"oauth.cancelConnect", MethodOAuthCancelConnect},
 		{"oauth.disconnect", MethodOAuthDisconnect},
+		{"oauth.accounts", MethodOAuthAccounts},
+		{"oauth.linkAccount", MethodOAuthLinkAccount},
 		{"oauth.status", MethodOAuthStatus},
 		{"chat.state", MethodChatState},
 		{"events.list", MethodEventsList},
