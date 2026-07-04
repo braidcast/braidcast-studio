@@ -1,0 +1,88 @@
+---
+import Layout from '../layouts/Layout.astro';
+import { SITE } from '../config';
+
+const updated = new Date().toISOString().slice(0, 10);
+---
+
+<!-- LEGAL REVIEW NEEDED: placeholder copy -->
+<Layout title="Privacy Policy" description={`Privacy policy for ${SITE.name}.`}>
+  <p class="review-note">
+    LEGAL REVIEW NEEDED — this is placeholder copy. Final wording comes from the
+    OAuth research document before public launch.
+  </p>
+
+  <h1>Privacy Policy</h1>
+  <p class="muted">Last updated: {updated}</p>
+
+  <p class="lede">
+    {SITE.name} is a desktop application. It runs entirely on your computer and
+    is designed so that your data stays on your device.
+  </p>
+
+  <h2>Data we access</h2>
+  <p>
+    When you connect a streaming account, {SITE.name} requests an OAuth access
+    token (and, where applicable, a refresh token) from that platform. These
+    tokens authorize {SITE.name} to start broadcasts and read basic channel
+    information on your behalf. {SITE.name} requests the minimum scopes required
+    to enable streaming.
+  </p>
+
+  <h2>Where your data is stored</h2>
+  <p>
+    OAuth tokens and connection settings are stored locally on your device and
+    are encrypted at rest. On Windows this uses the operating system's Data
+    Protection API (DPAPI), which binds the encrypted data to your user account.
+    {SITE.name} does not transmit these tokens to any server operated by us.
+  </p>
+
+  <h2>Data we do not collect</h2>
+  <p>
+    We do not operate an account system and we do not send your personal data,
+    credentials, or stream content to our own servers. Your broadcast media
+    travels directly from your device to the streaming platforms you connect.
+  </p>
+
+  <h2>Third-party services</h2>
+  <p>
+    When you choose to connect a platform, your use of that platform is governed
+    by its own privacy policy and terms:
+  </p>
+  <ul>
+    <li>Google / YouTube (YouTube Live streaming)</li>
+    <li>Twitch</li>
+    <li>Kick</li>
+  </ul>
+  <p>
+    {SITE.name} interacts with these services only to authenticate your account
+    and manage your broadcasts, using the tokens described above.
+  </p>
+
+  <h2>Data retention and deletion</h2>
+  <p>
+    Because tokens are stored only on your device, you remain in control of them
+    at all times. You can disconnect a platform inside {SITE.name} to remove its
+    stored tokens, or delete the application's local configuration to remove all
+    stored data. You may also revoke {SITE.name}'s access at any time from the
+    security settings of the connected platform.
+  </p>
+
+  <h2>Children's privacy</h2>
+  <p>
+    {SITE.name} is not directed to children and does not knowingly collect
+    information from them.
+  </p>
+
+  <h2>Changes to this policy</h2>
+  <p>
+    We may update this policy as the application evolves. Material changes will
+    be reflected on this page with a new "last updated" date.
+  </p>
+
+  <h2>Contact</h2>
+  <p>
+    Questions about this policy can be sent to
+    <a href={`mailto:${SITE.supportEmail}`}>{SITE.supportEmail}</a>.
+  </p>
+</Layout>

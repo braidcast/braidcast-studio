@@ -12,6 +12,7 @@
 !/plugins
 !/shared
 !/test
+!/website
 !.cirrus.xml
 !.clang-format
 !.editorconfig
