@@ -92,8 +92,6 @@ void CanvasRuntime::EnsureCanvas(const CanvasDefinition &def)
 		     def.name.c_str(), def.uuid.c_str());
 	}
 
-	EnsureScene(canvas);
-
 	canvases.push_back(Entry{def.uuid, canvas});
 }
 
@@ -103,6 +101,13 @@ void CanvasRuntime::SyncFromDefinitions()
 		if (!def.isDefault) {
 			EnsureCanvas(def);
 		}
+	}
+}
+
+void CanvasRuntime::EnsureScenes()
+{
+	for (const Entry &e : canvases) {
+		EnsureScene(e.canvas); // no-op when the canvas already has a scene
 	}
 }
 

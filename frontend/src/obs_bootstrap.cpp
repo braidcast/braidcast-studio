@@ -640,6 +640,16 @@ bool ObsBootstrap::Start()
 		(activeCollection ? activeCollection->name : "(none)") + "' file=" +
 		g_sceneCollections.ActiveScenePath());
 
+	// Load the multistream model (canvas defs / stream profiles / output bindings)
+	// and bring up the additional-canvas obs_canvas_t mixes BEFORE restoring scenes,
+	// so each saved scene's canvas_uuid rebinds to its real canvas instead of
+	// falling back to the main canvas (libobs obs_load_source_type). Bindings load
+	// from the active collection's path, so this must run after the registry +
+	// bindings migration above.
+	LoadMultistreamModel();
+	g_canvasRuntime = std::make_unique<::CanvasRuntime>(g_canvases);
+	g_canvasRuntime->SyncFromDefinitions();
+
 	// Restore the active collection's scenes; first run with no scene file falls
 	// back to the placeholder default scene. On the Load path g_scene stays null,
 	// which the null-safe TeardownScene handles.
@@ -647,12 +657,16 @@ bool ObsBootstrap::Start()
 		CreateDefaultScene();
 	}
 
+	// Seed a placeholder scene for any additional canvas the collection load left
+	// empty (first run / newly-added canvas). Restored canvas scenes are untouched.
+	if (g_canvasRuntime) {
+		g_canvasRuntime->EnsureScenes();
+	}
+
 	// Route channel 0 through the program transition: it wraps the scene just bound
 	// above and rebinds itself to channel 0, so scene switches animate (Fade by
 	// default). Sized to the base canvas, hence after obs_reset_video above.
 	Transitions::Init();
-
-	LoadMultistreamModel();
 
 	// Populate the OAuth provider registry (Phase 8a). Empty in Task 3 (framework
 	// only); Task 4 registers the Twitch provider. Done after the model loads so a
@@ -704,11 +718,6 @@ bool ObsBootstrap::Start()
 			}
 		}
 	}
-
-	// Bring up the live obs_canvas_t mixes for the additional canvases before the
-	// engine, which resolves canvas video through the runtime below.
-	g_canvasRuntime = std::make_unique<::CanvasRuntime>(g_canvases);
-	g_canvasRuntime->SyncFromDefinitions();
 
 	// Build the fan-out engine over the now-loaded stores. The Default canvas
 	// encodes from the global mix; additional canvases encode from their

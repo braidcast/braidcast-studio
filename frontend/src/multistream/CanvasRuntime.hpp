@@ -19,7 +19,7 @@ public:
 	~CanvasRuntime();
 
 	void SyncFromDefinitions();                     // create any missing non-Default canvas (idempotent)
-	void EnsureCanvas(const CanvasDefinition &def); // create one if absent (+ default scene on ch0)
+	void EnsureCanvas(const CanvasDefinition &def); // create one if absent (no scene; see EnsureScenes)
 	void RemoveCanvas(const std::string &uuid);     // obs_canvas_remove + release; no-op if absent
 	bool ResetVideo(const CanvasDefinition &def);   // obs_canvas_reset_video to def res/fps
 
@@ -49,6 +49,12 @@ public:
 	obs_source_t *CreateScene(const std::string &uuid, const std::string &name);
 	bool RemoveScene(const std::string &uuid, const std::string &sceneName);
 	bool RenameScene(const std::string &uuid, const std::string &from, const std::string &to);
+
+	// Seed a default scene (bound to channel 0) for any live canvas that currently
+	// has none. Idempotent: a canvas whose scenes were already restored is skipped.
+	// Call AFTER SceneCollection::Load so restored canvas scenes are preserved and
+	// only genuinely-empty canvases (first run / brand-new) get a placeholder.
+	void EnsureScenes();
 
 	void ClearAll(); // destroy all live canvases (teardown, before obs_shutdown)
 
