@@ -1,6 +1,7 @@
 #ifndef OBS_MULTISTREAM_FRONTEND_OAUTH_KICK_PROVIDER_HPP_
 #define OBS_MULTISTREAM_FRONTEND_OAUTH_KICK_PROVIDER_HPP_
 
+#include <memory>
 #include <string>
 
 #include "../chat/kick_chat.hpp"
@@ -40,16 +41,16 @@ public:
 			   std::string &err) override;
 	bool viewerCount(OAuthAccount &acct, int &out, std::string &err) override;
 
-	// The Kick chat transport (Phase 9.0): Pusher read + REST send. Owned here,
-	// run by the ChatHub on a worker thread between go-live and stop. The default
+	// The Kick chat transport (Phase 9.0): Pusher read + REST send. A fresh instance
+	// per account, run by the ChatHub between go-live and stop. The default
 	// chatChannelRef (acct.login = the Kick slug) is what the transport resolves the
 	// chatroom id from internally.
-	Chat::ChatTransport *chat() override { return &chat_; }
+	std::unique_ptr<Chat::ChatTransport> makeChat(const OAuthAccount &acct) override;
 
 	// The Kick Pusher event transport (Phase 9.2d): best-effort reverse-engineered
-	// sub/gift/host(raid)/(rarely)follow. Owned here, run by the EventHub on the
-	// account-connect lifecycle. events:subscribe is already in kKickScopes.
-	Events::EventTransport *events() override { return &events_; }
+	// sub/gift/host(raid)/(rarely)follow. A fresh instance per account, run by the
+	// EventHub on the account-connect lifecycle. events:subscribe is already in kKickScopes.
+	std::unique_ptr<Events::EventTransport> makeEvents(const OAuthAccount &acct) override;
 
 private:
 	// Send an authenticated Kick request: ensureFresh proactively, stamp the bearer
@@ -63,10 +64,6 @@ private:
 	friend class Chat::KickChat;
 
 	PkceLoopbackStrategy auth_;
-	Chat::KickChat chat_{*this};
-	// Stores only the provider pointer at construction, so passing a not-yet-fully-
-	// constructed `this` is safe.
-	Events::KickEvents events_{this};
 };
 
 } // namespace OAuth

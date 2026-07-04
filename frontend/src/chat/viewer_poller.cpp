@@ -40,7 +40,7 @@ void ViewerPoller::Start()
 	}
 
 	// The worker owns only the generation cancel flag (by shared_ptr). It reads the
-	// token store + registry singletons (alive to process exit) and never touches CEF
+	// account store + registry singletons (alive to process exit) and never touches CEF
 	// except through the alive-guarded PostToUi, so it is safe even if it outlives a
 	// Stop() (it is detached, not joined).
 	AsyncTask::RunAsync([stop]() {

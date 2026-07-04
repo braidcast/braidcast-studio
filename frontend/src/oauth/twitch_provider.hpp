@@ -1,6 +1,7 @@
 #ifndef OBS_MULTISTREAM_FRONTEND_OAUTH_TWITCH_PROVIDER_HPP_
 #define OBS_MULTISTREAM_FRONTEND_OAUTH_TWITCH_PROVIDER_HPP_
 
+#include <memory>
 #include <string>
 
 #include "../chat/twitch_chat.hpp"
@@ -34,8 +35,8 @@ public:
 	json capabilityJson() const override;
 
 	AuthStrategy *auth() override { return &auth_; }
-	Chat::ChatTransport *chat() override { return &chat_; }
-	Events::EventTransport *events() override { return &events_; }
+	std::unique_ptr<Chat::ChatTransport> makeChat(const OAuthAccount &acct) override;
+	std::unique_ptr<Events::EventTransport> makeEvents(const OAuthAccount &acct) override;
 
 	bool fetchIdentity(OAuthAccount &acct, std::string &err) override;
 	bool getMetadata(OAuthAccount &acct, json &out, std::string &err) override;
@@ -59,13 +60,6 @@ private:
 	bool SendAuthed(OAuthAccount &acct, Http::HttpReq req, Http::HttpResponse &resp, std::string &err);
 
 	DeviceCodeStrategy auth_;
-	// Declared after auth_ so it is constructed second -- chat_ captures &auth_ for a
-	// reactive token refresh, so auth_ must already exist.
-	TwitchChat chat_{&auth_};
-	// The EventSub transport captures the provider (this) so it can reuse SendAuthed for
-	// its authed Helix calls. It only stores the pointer at construction, so passing a
-	// not-yet-fully-constructed `this` is safe.
-	Events::TwitchEvents events_{this};
 };
 
 } // namespace OAuth

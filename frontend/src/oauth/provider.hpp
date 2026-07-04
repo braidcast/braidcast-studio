@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 
 #include <nlohmann/json.hpp>
@@ -31,10 +32,11 @@ namespace OAuth {
 
 using json = nlohmann::json;
 
-// The persisted OAuth record, keyed in the token store by stream-profile uuid.
-// `expireTime` is absolute epoch seconds (the "valid credential = refresh token
-// present" model from the legacy OAuth port). `scopeVer` lets a provider force
-// re-auth on installs holding tokens issued under an older scope set.
+// The persisted OAuth record, keyed in the account store by AccountId
+// (providerId:userId). `expireTime` is absolute epoch seconds (the "valid
+// credential = refresh token present" model from the legacy OAuth port).
+// `scopeVer` lets a provider force re-auth on installs holding tokens issued
+// under an older scope set.
 struct OAuthAccount {
 	std::string providerId;
 	std::string access;
@@ -168,17 +170,19 @@ public:
 		return false;
 	}
 
-	// The provider's chat transport (Phase 9.0), or nullptr when the provider has no
-	// chat stream. Owned by the provider (like auth()); the ChatHub runs it on a
-	// worker thread between go-live and stop. Default null so a provider without chat
-	// needs no override.
-	virtual Chat::ChatTransport *chat() { return nullptr; }
+	// Construct a FRESH chat transport for `acct` (Phase 9.0), or nullptr when the
+	// provider has no chat stream. Ownership transfers to the caller (the ChatHub,
+	// which holds it for the account's live session). One instance per account: each
+	// owns its own socket + state, so two accounts on one platform never share a
+	// connection or a mutex. The base default returns null (defined out-of-line in
+	// provider.cpp, where Chat::ChatTransport is complete -- unique_ptr's deleter needs
+	// the full type) so a provider without chat needs no override.
+	virtual std::unique_ptr<Chat::ChatTransport> makeChat(const OAuthAccount &acct);
 
-	// The provider's event transport (Phase 9.2a), or nullptr when the provider has
-	// no live-events source. Owned by the provider (like chat()); the EventHub runs
-	// it on the account-connect lifecycle. Default null so a provider without events
-	// needs no override. No provider returns non-null until later 9.2 tasks.
-	virtual Events::EventTransport *events() { return nullptr; }
+	// Construct a FRESH event transport for `acct` (Phase 9.2a), or nullptr. Same
+	// per-account ownership contract as makeChat; base default returns null (out-of-line
+	// for the same completeness reason).
+	virtual std::unique_ptr<Events::EventTransport> makeEvents(const OAuthAccount &acct);
 
 	// Report the platform's current concurrent viewer count for `acct` into `out`
 	// (Phase 9.0 aggregate viewer poller). `acct` is non-const so a reactive token
@@ -200,12 +204,11 @@ public:
 	// channel-resolution branches.
 	virtual std::string chatChannelRef(const OAuthAccount &acct) { return acct.login; }
 
-	// Drop any active-broadcast chat/viewer-count target on stream stop (Phase 9.0).
-	// Providers that edit a persistent channel (Twitch/Kick) have nothing to clear;
-	// YouTube creates a per-go-live broadcast and overrides this to zero its cached
-	// liveChatId/broadcastId so a subsequent go-live without a fresh applyMetadata
-	// cannot poll a stale, ended broadcast. Default: no-op.
-	virtual void clearActiveBroadcast() {}
+	// Drop the active-broadcast chat/viewer target for ONE account on stream stop
+	// (Phase 9.0). Providers editing a persistent channel (Twitch/Kick) have nothing
+	// to clear; YouTube overrides to zero the account's cached liveChatId/broadcastId
+	// so a later go-live without a fresh applyMetadata can't poll a stale broadcast.
+	virtual void clearActiveBroadcast(const std::string &accountId) { (void)accountId; }
 };
 
 } // namespace OAuth

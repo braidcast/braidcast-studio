@@ -96,6 +96,20 @@ KickProvider::KickProvider()
 {
 }
 
+std::unique_ptr<Chat::ChatTransport> KickProvider::makeChat(const OAuthAccount &acct)
+{
+	(void)acct; // KickChat resolves the chatroom id from acct.login at connect
+	// KickChat reaches back through this provider for SendAuthed (token coherence).
+	return std::make_unique<Chat::KickChat>(*this);
+}
+
+std::unique_ptr<Events::EventTransport> KickProvider::makeEvents(const OAuthAccount &acct)
+{
+	(void)acct; // KickEvents reads acct fresh per call via SendAuthed
+	// KickEvents stores only the provider pointer (this) at construction.
+	return std::make_unique<Events::KickEvents>(this);
+}
+
 json KickProvider::capabilityJson() const
 {
 	json scopes = json::array();

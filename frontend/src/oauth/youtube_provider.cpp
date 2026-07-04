@@ -146,30 +146,36 @@ YouTubeProvider::YouTubeProvider()
 		  {{"access_type", "offline"}, {"prompt", "consent"}}, // extraAuthParams (force a refresh token)
 	  })
 {
-	chat_ = std::make_unique<Chat::YouTubeChat>(*this);
 }
 
-// Out-of-line so unique_ptr<Chat::YouTubeChat> can hold an incomplete type in the
-// header (the dtor sees the complete type via the include above).
+// Out-of-line default dtor: the header only forward-declares Chat::YouTubeChat (used
+// by makeChat + the friend grant), so the translation unit that destroys the provider
+// needs the complete-type context this .cpp provides.
 YouTubeProvider::~YouTubeProvider() = default;
 
-Chat::ChatTransport *YouTubeProvider::chat()
+std::unique_ptr<Chat::ChatTransport> YouTubeProvider::makeChat(const OAuthAccount &acct)
 {
-	return chat_.get();
+	(void)acct; // YouTubeChat reads chatChannelRef(acct) for the account's liveChatId
+	return std::make_unique<Chat::YouTubeChat>(*this);
+}
+
+std::unique_ptr<Events::EventTransport> YouTubeProvider::makeEvents(const OAuthAccount &acct)
+{
+	(void)acct; // YouTubeEvents reads acct fresh per call via SendAuthed
+	return std::make_unique<Events::YouTubeEvents>(this);
 }
 
 std::string YouTubeProvider::chatChannelRef(const OAuthAccount &acct)
 {
-	(void)acct; // YouTube chat keys off the broadcast liveChatId, not the account
-	const std::lock_guard<std::mutex> guard(liveChatMutex_);
-	return liveChatId_;
+	const std::lock_guard<std::mutex> guard(broadcastMutex_);
+	auto it = broadcasts_.find(AccountId(acct));
+	return it != broadcasts_.end() ? it->second.liveChatId : std::string();
 }
 
-void YouTubeProvider::clearActiveBroadcast()
+void YouTubeProvider::clearActiveBroadcast(const std::string &accountId)
 {
-	const std::lock_guard<std::mutex> guard(liveChatMutex_);
-	liveChatId_.clear();
-	broadcastId_.clear();
+	const std::lock_guard<std::mutex> guard(broadcastMutex_);
+	broadcasts_.erase(accountId);
 }
 
 json YouTubeProvider::capabilityJson() const
@@ -564,14 +570,16 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 		return false;
 	}
 
-	// The new broadcast now exists and is bound. Only here do we invalidate any prior
-	// broadcast's chat + viewer-count target -- if any earlier step had failed, the
-	// previously-live broadcast stays intact rather than being torn down for one that
-	// never came up. The new ids are committed once this apply fully succeeds (below).
+	// The new broadcast now exists and is bound. Only here do we invalidate this
+	// account's prior broadcast chat + viewer-count target -- if any earlier step had
+	// failed, the previously-live broadcast stays intact rather than being torn down for
+	// one that never came up. The new ids are committed once this apply fully succeeds
+	// (below).
 	{
-		const std::lock_guard<std::mutex> guard(liveChatMutex_);
-		liveChatId_.clear();
-		broadcastId_.clear();
+		const std::lock_guard<std::mutex> guard(broadcastMutex_);
+		BroadcastState &bs = broadcasts_[AccountId(acct)];
+		bs.liveChatId.clear();
+		bs.broadcastId.clear();
 	}
 
 	// 4. videos.update -- category + tags live on the video, not the broadcast.
@@ -644,9 +652,10 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 	// transport knows which chat to poll) and broadcastId (so the viewer poller can
 	// read its concurrentViewers), both started right after by streaming.start.
 	{
-		const std::lock_guard<std::mutex> guard(liveChatMutex_);
-		liveChatId_ = liveChatId;
-		broadcastId_ = broadcastId;
+		const std::lock_guard<std::mutex> guard(broadcastMutex_);
+		BroadcastState &bs = broadcasts_[AccountId(acct)];
+		bs.liveChatId = liveChatId;
+		bs.broadcastId = broadcastId;
 	}
 	return true;
 }
@@ -657,8 +666,11 @@ bool YouTubeProvider::viewerCount(OAuthAccount &acct, int &out, std::string &err
 
 	std::string broadcastId;
 	{
-		const std::lock_guard<std::mutex> guard(liveChatMutex_);
-		broadcastId = broadcastId_;
+		const std::lock_guard<std::mutex> guard(broadcastMutex_);
+		auto it = broadcasts_.find(AccountId(acct));
+		if (it != broadcasts_.end()) {
+			broadcastId = it->second.broadcastId;
+		}
 	}
 	if (broadcastId.empty()) {
 		// No active broadcast -> not live; the poller omits YouTube this cycle.

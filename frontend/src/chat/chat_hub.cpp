@@ -69,9 +69,9 @@ void ChatHub::Start()
 		if (!provider || !provider->isTokenScopeCurrent(acct)) {
 			continue;
 		}
-		ChatTransport *transport = provider->chat();
+		std::shared_ptr<ChatTransport> transport = provider->makeChat(acct);
 		if (!transport) {
-			continue; // provider has no chat (every provider in Task 2)
+			continue; // provider has no chat for this account
 		}
 		const std::string providerId = acct.providerId;
 		const std::string channelRef = provider->chatChannelRef(acct);
@@ -84,11 +84,13 @@ void ChatHub::Start()
 			active_[accountId] = std::move(a);
 		}
 
-		// The worker owns `acct` by value, the generation cancel flag by shared_ptr,
-		// and the transport pointer (owned by the registry-singleton provider, never
-		// dangling). It captures the hub (`this`) only for mutex-guarded status
-		// writeback -- safe because the hub is a singleton living to process exit. All
-		// JS emits go through Bridge::EmitEvent (alive-guarded), never raw CEF.
+		// The worker owns `acct` by value, the generation cancel flag by shared_ptr, and
+		// a shared_ptr COPY of the transport. The copy keeps the transport alive until the
+		// worker itself exits, so a per-account Stop() (which drops the hub's ref and calls
+		// disconnect()) can't use-after-free an in-flight connect(). It captures the hub
+		// (`this`) only for mutex-guarded status writeback -- safe because the hub is a
+		// singleton living to process exit. All JS emits go through Bridge::EmitEvent
+		// (alive-guarded), never raw CEF.
 		AsyncTask::RunAsync([this, accountId, providerId, channelRef, acct, transport, stop]() mutable {
 			ChatContext ctx;
 			ctx.canceled = [stop] { return stop->load(std::memory_order_acquire); };
@@ -194,9 +196,11 @@ void ChatHub::SendToPlatforms(const std::vector<std::string> &platforms, const s
 	for (auto &t : targets) {
 		const std::string accountId = t.first;
 		const std::string providerId = t.second.providerId;
-		ChatTransport *transport = t.second.transport;
+		std::shared_ptr<ChatTransport> transport = t.second.transport;
 		const std::string msg = text;
-		// One worker per send so a slow REST send never blocks the caller.
+		// One worker per send so a slow REST send never blocks the caller. The worker
+		// captures the shared_ptr (not a raw ptr) so a concurrent Stop() can't free the
+		// transport mid-send.
 		AsyncTask::RunAsync([accountId, providerId, transport, msg]() {
 			// Load the account fresh from the store so ensureFresh stays the sole token
 			// writer (no pre-call snapshot writeback -- mirrors the streamMeta.* path).

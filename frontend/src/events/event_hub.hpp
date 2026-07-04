@@ -18,7 +18,7 @@ struct OAuthAccount;
 
 // The EventHub (Phase 9.2a): owns the set of live per-platform event transports on
 // the ACCOUNT-CONNECT lifecycle (not go-live, unlike ChatHub). Per connected
-// account with an events() transport it runs one detached worker that (1) seeds the
+// account with a makeEvents() transport it runs one detached worker that (1) seeds the
 // store via backfill (emitting one events.backfill batch), then (2) drives the
 // transport's real-time connect() plus an optional poll() cadence. Normalized
 // events funnel through Ingest -> dedupe in the shared EventStore -> alive-guarded
@@ -34,19 +34,18 @@ class EventHub {
 public:
 	// Start (or restart) the transport for one connected account. Idempotent per
 	// accountId: stops any prior worker for that account first. A no-op when the
-	// provider is unknown or has no events() transport (every provider in 9.2a).
+	// provider is unknown or makeEvents(acct) returns null.
 	void StartAccount(const std::string &accountId, const OAuth::OAuthAccount &acct);
 
 	// Stop + disconnect the transport for one accountId. Idempotent.
 	void StopAccount(const std::string &accountId);
 
 	// One-time startup sweep: StartAccount every connected, scope-current account in
-	// the token store. Enforces the always-on/account-lifecycle model (spec §2/§11) so
+	// the account store. Enforces the always-on/account-lifecycle model (spec §2/§11) so
 	// accounts connected in a PRIOR session resume events at boot without a manual
 	// reconnect -- the interactive oauth.connect path only covers newly connected
-	// accounts. Idempotent via StartAccount (keyed per providerId). Call once after the
-	// provider registry + token store are ready. Inert until a provider's events() is
-	// non-null (9.2b+).
+	// accounts. Idempotent via StartAccount (keyed per accountId). Call once after the
+	// provider registry + account store are ready.
 	void StartConnectedAccounts();
 
 	// Stop + disconnect every transport. Idempotent; called from Bridge::Shutdown.
@@ -59,7 +58,7 @@ public:
 
 private:
 	struct Active {
-		EventTransport *transport = nullptr; // owned by the provider (lives to exit)
+		std::shared_ptr<EventTransport> transport; // hub-owned, shared with the worker
 		std::shared_ptr<std::atomic<bool>> stop;
 	};
 

@@ -11,12 +11,15 @@
 
 #include <nlohmann/json.hpp>
 
-// The ChatHub (Phase 9.0): owns the set of live per-platform chat transports
-// between go-live and stop. On Start it enumerates connected, scope-current
-// accounts, asks each provider for its ChatTransport (chat()), and runs every
-// non-null transport on its own detached worker (AsyncTask::RunAsync), fanning
-// normalized messages and state to JS via the alive-guarded PostToUi + EmitEvent
-// path. Stop signals every loop, disconnects each transport, and clears the set.
+// The ChatHub (Phase 9.0): owns the set of live per-account chat transports between
+// go-live and stop. On Start it enumerates connected, scope-current accounts, builds a
+// fresh transport per account via provider->makeChat(acct), and runs every non-null
+// transport on its own detached worker (AsyncTask::RunAsync), fanning normalized
+// messages and state to JS via the alive-guarded PostToUi + EmitEvent path. Each
+// transport is hub-owned as a shared_ptr shared with its worker, so Stop (which drops
+// the hub's ref, signals every loop, and disconnects each transport) can't free a
+// transport out from under an in-flight connect(); the object survives until the
+// worker's captured copy also drops.
 //
 // Thread-safety: the active-transport map is mutex-guarded. Start/Stop are driven
 // from the UI thread (streaming.start/stop + Bridge::Shutdown) so they never run
@@ -24,9 +27,6 @@
 // idempotent and Start calls it first, so a re-Start never leaves stale workers.
 // A function-local-static singleton (Chat::Hub()) so it outlives the detached
 // workers to process exit (the workers capture it raw, which is therefore safe).
-//
-// In Task 2 the foundation ships with NO platform transports: every provider's
-// chat() returns null, so Start finds nothing to run and the hub stays idle.
 namespace Chat {
 
 using json = nlohmann::json;
@@ -55,7 +55,7 @@ public:
 private:
 	struct Active {
 		std::string providerId;
-		ChatTransport *transport = nullptr; // owned by the provider (lives to exit)
+		std::shared_ptr<ChatTransport> transport; // hub-owned, shared with the worker
 		bool connected = false;
 		std::string error;
 	};

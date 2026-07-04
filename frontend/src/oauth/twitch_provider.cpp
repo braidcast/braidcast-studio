@@ -118,6 +118,21 @@ TwitchProvider::TwitchProvider()
 {
 }
 
+std::unique_ptr<Chat::ChatTransport> TwitchProvider::makeChat(const OAuthAccount &acct)
+{
+	(void)acct; // Twitch chat resolves its channel from chatChannelRef(acct) at connect
+	// TwitchChat captures &auth_ for its reactive token refresh, so it shares this
+	// provider's single strategy (the token store is the real shared state).
+	return std::make_unique<TwitchChat>(&auth_);
+}
+
+std::unique_ptr<Events::EventTransport> TwitchProvider::makeEvents(const OAuthAccount &acct)
+{
+	(void)acct; // the EventSub transport reads acct fresh per call via SendAuthed
+	// TwitchEvents stores only the provider pointer (this) at construction.
+	return std::make_unique<Events::TwitchEvents>(this);
+}
+
 json TwitchProvider::capabilityJson() const
 {
 	json scopes = json::array();

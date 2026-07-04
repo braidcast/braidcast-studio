@@ -2,6 +2,7 @@
 #define OBS_MULTISTREAM_FRONTEND_OAUTH_YOUTUBE_PROVIDER_HPP_
 
 #include <atomic>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -13,9 +14,10 @@
 #include "pkce_loopback.hpp"
 #include "provider.hpp"
 
-// The YouTube live-chat transport (Phase 9.0) is owned by the provider and held by
-// unique_ptr to an incomplete type (its dtor is defined out-of-line so this header
-// stays free of the chat include + the header cycle it would create).
+// The YouTube live-chat transport (Phase 9.0) is constructed per account in
+// makeChat(), defined out-of-line in the .cpp where the complete type is available so
+// this header stays free of the chat include + the header cycle it would create. Only
+// forward-declared here for the friend grant below.
 namespace Chat {
 class YouTubeChat;
 }
@@ -60,21 +62,24 @@ public:
 	// videos.list liveStreamingDetails.concurrentViewers (absent -> 0).
 	bool viewerCount(OAuthAccount &acct, int &out, std::string &err) override;
 
-	// The YouTube live-chat transport, active only while a broadcast is live.
-	Chat::ChatTransport *chat() override;
+	// A fresh YouTube live-chat transport for `acct`, active only while a broadcast is
+	// live for that account.
+	std::unique_ptr<Chat::ChatTransport> makeChat(const OAuthAccount &acct) override;
 
-	// The YouTube REST event transport (Phase 9.2c): Super Chats / subscribers, run by
-	// the EventHub on the account-connect lifecycle (real-time events arrive via chat).
-	Events::EventTransport *events() override { return &events_; }
+	// A fresh YouTube REST event transport (Phase 9.2c): Super Chats / subscribers, run
+	// by the EventHub on the account-connect lifecycle (real-time events arrive via chat).
+	std::unique_ptr<Events::EventTransport> makeEvents(const OAuthAccount &acct) override;
 
 	// YouTube chat keys off the per-broadcast liveChatId (resolved in applyMetadata),
 	// not the account login -- so override the default channel-ref resolution. Empty
-	// when no broadcast is currently live, which the hub/transport treat as no chat.
+	// when no broadcast is currently live for `acct`, which the hub/transport treat as
+	// no chat.
 	std::string chatChannelRef(const OAuthAccount &acct) override;
 
-	// Zero the cached liveChatId/broadcastId (mutex-guarded) so a stream stop drops
-	// the active-broadcast chat + viewer-count target. Called from streaming.stop.
-	void clearActiveBroadcast() override;
+	// Zero the account's cached liveChatId/broadcastId (mutex-guarded) so a stream stop
+	// drops that account's active-broadcast chat + viewer-count target. Called per
+	// connected account from streaming.stop.
+	void clearActiveBroadcast(const std::string &accountId) override;
 
 	// True while YouTubeChat is actively polling a live broadcast's chat. During that
 	// window the chat forward is the authoritative, real-time source of Super Chats, so
@@ -103,22 +108,19 @@ private:
 
 	PkceLoopbackStrategy auth_;
 
-	std::unique_ptr<Chat::YouTubeChat> chat_;
-
-	// The REST event transport. Value member (unlike chat_'s unique_ptr) because
-	// youtube_events.hpp forward-declares this provider and only stores the pointer, so
-	// including it creates no header cycle. It captures `this` at construction but only
-	// stashes the pointer, so passing a not-yet-fully-constructed provider is safe.
-	Events::YouTubeEvents events_{this};
-
-	// The active broadcast's liveChatId + broadcast/video id, set on a successful
-	// applyMetadata (the only place a broadcast is created) and read by the chat
-	// transport (liveChatId_) and the viewer poller (broadcastId_). Guarded by the
-	// same mutex because applyMetadata runs on a worker thread while chatChannelRef
-	// and viewerCount are read from other threads. Empty when no broadcast is live.
-	std::mutex liveChatMutex_;
-	std::string liveChatId_;
-	std::string broadcastId_;
+	// The active broadcast's liveChatId + broadcast/video id, PER ACCOUNT. Set on a
+	// successful applyMetadata (the only place a broadcast is created) and read by the
+	// chat transport (liveChatId) and the viewer poller (broadcastId). Guarded by
+	// broadcastMutex_ because applyMetadata runs on a worker thread while chatChannelRef
+	// and viewerCount are read from other threads. A per-accountId map so two YouTube
+	// accounts never bleed broadcast state across each other; an account is absent when
+	// no broadcast is live for it.
+	struct BroadcastState {
+		std::string liveChatId;
+		std::string broadcastId;
+	};
+	std::mutex broadcastMutex_;
+	std::map<std::string /*accountId*/, BroadcastState> broadcasts_;
 
 	// The assignable videoCategories list, fetched once per process and reused
 	// (it is static content). Guarded because searchCategories runs on worker

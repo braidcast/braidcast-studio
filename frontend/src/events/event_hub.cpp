@@ -35,9 +35,9 @@ void EventHub::StartAccount(const std::string &accountId, const OAuth::OAuthAcco
 	if (!provider) {
 		return;
 	}
-	EventTransport *transport = provider->events();
+	std::shared_ptr<EventTransport> transport = provider->makeEvents(acct);
 	if (!transport) {
-		return; // provider has no event transport (every provider in 9.2a)
+		return; // provider has no event transport for this account
 	}
 
 	// Idempotent per accountId: tear down any prior generation (signals its worker +
@@ -55,11 +55,13 @@ void EventHub::StartAccount(const std::string &accountId, const OAuth::OAuthAcco
 
 	OAuth::OAuthAccount acctCopy = acct; // the worker owns the account by value
 
-	// The worker owns `acct` by value, the generation cancel flag by shared_ptr, and
-	// the transport pointer (owned by the registry-singleton provider, never
-	// dangling). It captures the hub (`this`) only via Ingest -- safe because the hub
-	// is a singleton living to process exit. All JS emits go through the alive-guarded
-	// Bridge::EmitEvent path, never raw CEF.
+	// The worker owns `acct` by value, the generation cancel flag by shared_ptr, and a
+	// shared_ptr COPY of the transport. The copy keeps the transport alive until the
+	// worker itself exits, so a per-account StopAccount() (which drops the hub's ref and
+	// calls disconnect()) can't use-after-free an in-flight connect(). It captures the
+	// hub (`this`) only via Ingest -- safe because the hub is a singleton living to
+	// process exit. All JS emits go through the alive-guarded Bridge::EmitEvent path,
+	// never raw CEF.
 	AsyncTask::RunAsync([this, providerId, acctCopy, transport, stop]() mutable {
 		auto canceled = [stop] { return stop->load(std::memory_order_acquire); };
 

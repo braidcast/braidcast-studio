@@ -105,6 +105,7 @@ target_sources(
     # device-code auth strategy, and a DPAPI-wrapped per-stream-profile token
     # store. provider.hpp is the interface set the registry + bridge dispatch
     # through; concrete providers (Twitch) plug in at Task 4.
+    src/oauth/provider.cpp
     src/oauth/provider.hpp
     src/oauth/device_code.cpp
     src/oauth/device_code.hpp

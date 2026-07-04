@@ -280,8 +280,11 @@ bool MethodStreamingStop(const json & /*params*/, json &result, std::string & /*
 	// re-resolve below sees YouTube's liveChatId as gone (its transport no-ops off-live)
 	// while Twitch/Kick keep running. clearActiveBroadcast is a no-op except on YouTube.
 	Chat::Viewers().Stop();
-	for (OAuth::StreamProvider *provider : OAuth::Registry().All()) {
-		provider->clearActiveBroadcast();
+	for (const auto &entry : OAuth::Accounts().All()) {
+		OAuth::StreamProvider *provider = OAuth::Registry().Get(entry.second.providerId);
+		if (provider) {
+			provider->clearActiveBroadcast(entry.first); // entry.first == accountId
+		}
 	}
 	Chat::Hub().Start();
 	ObsBootstrap::Multistream().StopAll();
