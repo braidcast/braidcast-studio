@@ -15,6 +15,7 @@
 #include <util/platform.h>
 
 #include <filesystem>
+#include <map>
 #include <string>
 
 namespace SceneCollection {
@@ -52,6 +53,18 @@ bool SaveFilter(void *data, obs_source_t *source)
 		}
 	}
 	return true;
+}
+
+// Seed a default scene for any additional canvas left empty, then bind each to its
+// saved active scene. Idempotent; safe to call after any Load outcome. Runs on the
+// live CanvasRuntime, which exists before any Load on every reachable path.
+void RestoreCanvasScenes(const std::map<std::string, std::string> &current)
+{
+	::CanvasRuntime &runtime = ObsBootstrap::CanvasRuntime();
+	runtime.EnsureScenes();
+	for (const auto &[uuid, sceneName] : current) {
+		runtime.SetCurrentScene(uuid, sceneName); // no-op if unresolved
+	}
 }
 
 } // namespace
@@ -105,35 +118,37 @@ void Save(const std::string &path)
 	}
 }
 
-bool Load(std::map<std::string, std::string> *outCanvasCurrent)
+bool Load()
 {
-	return Load(ObsBootstrap::SceneCollections().ActiveScenePath(), outCanvasCurrent);
+	return Load(ObsBootstrap::SceneCollections().ActiveScenePath());
 }
 
-bool Load(const std::string &path, std::map<std::string, std::string> *outCanvasCurrent)
+bool Load(const std::string &path)
 {
 	OBSDataAutoRelease root = obs_data_create_from_json_file_safe(path.c_str(), "bak");
 	if (!root) {
+		RestoreCanvasScenes({}); // never-saved collection: still seed empty additional canvases
 		return false;
 	}
 
 	OBSDataArrayAutoRelease sources = obs_data_get_array(root, "sources");
 	if (!sources || obs_data_array_count(sources) == 0) {
+		RestoreCanvasScenes({}); // no main scenes, but additional canvases still need seeding
 		return false;
 	}
 
 	obs_load_sources(sources, nullptr, nullptr);
 
-	if (outCanvasCurrent) {
-		outCanvasCurrent->clear();
-		OBSDataAutoRelease canvasCurrent = obs_data_get_obj(root, "canvas_current");
-		if (canvasCurrent) {
-			for (obs_data_item_t *item = obs_data_first(canvasCurrent); item; obs_data_item_next(&item)) {
-				const char *uuid = obs_data_item_get_name(item);
-				const char *scene = obs_data_item_get_string(item);
-				if (uuid && *uuid && scene && *scene) {
-					(*outCanvasCurrent)[uuid] = scene;
-				}
+	// Additional-canvas active scenes { canvas uuid -> scene name }, restored after
+	// the main channel-0 bind below via RestoreCanvasScenes.
+	std::map<std::string, std::string> canvasCurrent;
+	OBSDataAutoRelease canvasCurrentObj = obs_data_get_obj(root, "canvas_current");
+	if (canvasCurrentObj) {
+		for (obs_data_item_t *item = obs_data_first(canvasCurrentObj); item; obs_data_item_next(&item)) {
+			const char *uuid = obs_data_item_get_name(item);
+			const char *scene = obs_data_item_get_string(item);
+			if (uuid && *uuid && scene && *scene) {
+				canvasCurrent[uuid] = scene;
 			}
 		}
 	}
@@ -159,11 +174,13 @@ bool Load(const std::string &path, std::map<std::string, std::string> *outCanvas
 		scene = first; // takes ownership of the ref the enum added
 	}
 	if (!scene) {
+		RestoreCanvasScenes(canvasCurrent); // main canvas had no scene, but additional canvases still restore
 		return false;
 	}
 
 	obs_set_output_source(0, scene);
 	HostLog(std::string("[scene] loaded collection, current='") + obs_source_get_name(scene) + "'");
+	RestoreCanvasScenes(canvasCurrent);
 	return true;
 }
 
@@ -200,6 +217,9 @@ void ClearCurrent()
 	for (const CanvasDefinition &def : ObsBootstrap::Canvases().Definitions()) {
 		if (def.isDefault) {
 			continue;
+		}
+		if (obs_canvas_t *canvas = ObsBootstrap::CanvasRuntime().Find(def.uuid)) {
+			obs_canvas_set_channel(canvas, 0, nullptr); // drop the stale current before removing scenes
 		}
 		for (const CanvasRuntime::SceneInfo &s : ObsBootstrap::CanvasRuntime().Scenes(def.uuid)) {
 			OBSSourceAutoRelease scene = obs_get_source_by_uuid(s.uuid.c_str());

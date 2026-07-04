@@ -4542,6 +4542,7 @@ bool MethodCanvasCreate(const json &params, json &result, std::string &error)
 
 	// Bring up the live obs_canvas_t mix so the new canvas can encode immediately.
 	ObsBootstrap::CanvasRuntime().EnsureCanvas(added);
+	ObsBootstrap::CanvasRuntime().EnsureScenes(); // seed the new canvas with a default scene (Task-1 decoupled seeding from EnsureCanvas)
 
 	EmitEvent("canvas.changed", json::object());
 	result = json{{"uuid", uuid}};
