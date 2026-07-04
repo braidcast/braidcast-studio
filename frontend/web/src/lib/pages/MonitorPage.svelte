@@ -69,9 +69,15 @@
     };
   });
 
-  // One per-platform card for each platform reporting a count (stable order).
+  // One per-platform card for each platform reporting a count (stable order). The host
+  // emits per accountId ("providerId:userId"); sum by providerId so two accounts on one
+  // platform add into a single card.
   let viewerCards = $derived.by<{ p: ChatPlatform; label: string; color: string; v: number }[]>(() => {
-    const per = viewers?.perPlatform ?? {};
+    const per: Partial<Record<ChatPlatform, number>> = {};
+    for (const [accountId, n] of Object.entries(viewers?.perAccount ?? {})) {
+      const providerId = accountId.split(":")[0] as ChatPlatform;
+      per[providerId] = (per[providerId] ?? 0) + n;
+    }
     return (PLATFORM_ORDER as readonly ChatPlatform[])
       .filter((p) => per[p] !== undefined)
       .map((p) => ({ p, label: PLATFORM_LABELS[p], color: PLATFORM_COLORS[p], v: per[p] ?? 0 }));

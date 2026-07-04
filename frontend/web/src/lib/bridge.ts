@@ -1009,10 +1009,12 @@ export interface ChatState {
   error?: string;
 }
 
-/** Aggregate viewer count (the `viewers.changed` event). `perPlatform` maps a
- * platform to its current concurrent viewers; `total` is the sum. */
+/** Aggregate viewer count (the `viewers.changed` event). `perAccount` maps an
+ * accountId ("providerId:userId") to its current concurrent viewers; `total` is the
+ * sum across accounts. A per-platform breakdown is derived by summing the entries
+ * whose accountId prefix matches a providerId (two accounts on one platform add up). */
 export interface ViewerCounts {
-  perPlatform: Partial<Record<ChatPlatform, number>>;
+  perAccount: Record<string, number>;
   total: number;
 }
 
@@ -1533,7 +1535,7 @@ export interface ObsEvents {
   // time, so a consumer merges it by `platform`). Chat is only active while live.
   "chat.message": ChatMessage;
   "chat.state": ChatState;
-  // Aggregate viewer count (perPlatform + total), pushed by the host's viewer
+  // Aggregate viewer count (perAccount + total), pushed by the host's viewer
   // poller while live; the Multichat dock / Monitor card / Studio chip render off it.
   "viewers.changed": ViewerCounts;
   // Cross-platform events feed (Phase 9.2). new = one normalized event appended to
