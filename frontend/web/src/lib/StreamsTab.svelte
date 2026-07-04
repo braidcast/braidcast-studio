@@ -15,6 +15,7 @@
   import Icon from "./dock/Icon.svelte";
   import Segmented from "./Segmented.svelte";
   import EmptyState from "./EmptyState.svelte";
+  import ToggleSwitch from "./ToggleSwitch.svelte";
 
   let profiles = $state<StreamProfileInfo[]>([]);
   let serviceTypes = $state<ServiceType[]>([]);
@@ -53,6 +54,10 @@
   // the stream-key form. Null when the type has no platform list or none loaded.
   let serviceProp = $state<ListProperty | null>(null);
   let serviceValue = $state("");
+  // "Show all services" (rtmp_common's `show_all` bool): rebuilds the `service`
+  // list between the popular subset and every known service. Surfaced beside the
+  // promoted picker instead of buried in the key-path form.
+  let showAll = $state(false);
 
   async function loadProfiles() {
     try {
@@ -231,9 +236,12 @@
       } else {
         serviceProp = null;
       }
+      const sa = r.props.find((p) => p.name === "show_all");
+      showAll = Boolean(r.values.show_all ?? (sa && sa.type === "bool" ? sa.value : false));
     } catch {
       // Non-fatal: leave the promoted picker hidden; the key-path form still lists it.
       serviceProp = null;
+      showAll = false;
     }
   }
 
@@ -245,6 +253,7 @@
       void loadServiceOptions(uuid);
     } else {
       serviceProp = null;
+      showAll = false;
     }
   });
 
@@ -293,6 +302,32 @@
         serviceProp = d;
         serviceValue = String(r.values.service ?? value);
       }
+      await loadProfiles();
+    } catch (e) {
+      formError = (e as Error).message;
+    }
+  }
+
+  // Toggling "Show all services" rebuilds the backend's `service` list (popular
+  // subset <-> everything) via its modified callback; refresh the promoted picker
+  // + selection from the response exactly like changeService does.
+  async function changeShowAll(value: boolean) {
+    if (!editingUuid) return;
+    showAll = value;
+    formError = null;
+    try {
+      const r = await obs.call("properties.set", {
+        kind: "service",
+        ref: editingUuid,
+        settings: { show_all: value },
+      });
+      const d = r.props.find((p) => p.name === "service");
+      if (d && d.type === "list") {
+        serviceProp = d;
+        serviceValue = String(r.values.service ?? serviceValue);
+      }
+      const sa = r.props.find((p) => p.name === "show_all");
+      showAll = Boolean(r.values.show_all ?? (sa && sa.type === "bool" ? sa.value : value));
       await loadProfiles();
     } catch (e) {
       formError = (e as Error).message;
@@ -462,6 +497,10 @@
                     <option value={String(it.value)} disabled={it.disabled}>{it.name ?? String(it.value)}</option>
                   {/each}
                 </select>
+                <div class="show-all">
+                  <ToggleSwitch size="sm" checked={showAll} onchange={(v) => void changeShowAll(v)} />
+                  <span class="fhint show-all-txt">Show all services</span>
+                </div>
               </div>
             {/if}
 
@@ -514,14 +553,14 @@
                 {:else}
                   <div class="settings">
                     {#key editingUuid + ":" + fService + ":" + serviceValue}
-                      <PropertyForm kind="service" ref={editingUuid} exclude={["service"]} />
+                      <PropertyForm kind="service" ref={editingUuid} exclude={["service", "show_all"]} />
                     {/key}
                   </div>
                 {/if}
               {:else}
                 <div class="settings">
                   {#key editingUuid + ":" + fService + ":" + serviceValue}
-                    <PropertyForm kind="service" ref={editingUuid} exclude={["service"]} />
+                    <PropertyForm kind="service" ref={editingUuid} exclude={["service", "show_all"]} />
                   {/key}
                 </div>
                 {#if providers.length === 0}
@@ -821,6 +860,15 @@
     font-family: var(--font-mono);
     font-size: 10px;
     color: var(--color-muted);
+  }
+  .show-all {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+  }
+  .show-all-txt {
+    margin-top: 0;
   }
 
   .sect {
