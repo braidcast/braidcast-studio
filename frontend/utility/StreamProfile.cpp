@@ -44,6 +44,7 @@ OBSDataAutoRelease StreamProfile::ToData() const
 	obs_data_set_string(data, "label", label.c_str());
 	obs_data_set_string(data, "service_id", serviceId.c_str());
 	obs_data_set_bool(data, "primary", isPrimary);
+	obs_data_set_string(data, "account_id", accountId.c_str());
 	if (settings) {
 		obs_data_set_obj(data, "settings", settings);
 	}
@@ -60,6 +61,7 @@ StreamProfile StreamProfile::FromData(obs_data_t *data)
 		p.serviceId = sid;
 	}
 	p.isPrimary = obs_data_get_bool(data, "primary");
+	p.accountId = obs_data_get_string(data, "account_id");
 	p.settings = obs_data_get_obj(data, "settings"); // null-safe; returns owning ref or null
 	return p;
 }

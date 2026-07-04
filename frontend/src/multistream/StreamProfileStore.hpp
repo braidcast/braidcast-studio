@@ -28,6 +28,7 @@ public:
 	void FromJson(const nlohmann::json &j);
 
 	const std::vector<StreamProfile> &Profiles() const { return profiles; }
+	std::vector<StreamProfile> &AllMutable() { return profiles; } // in-place edits (e.g. unlink an account)
 	bool Empty() const { return profiles.empty(); }
 	StreamProfile *Primary(); // the isPrimary profile, or nullptr if none yet
 	StreamProfile *Find(const std::string &uuid);

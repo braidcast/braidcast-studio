@@ -61,7 +61,7 @@ private:
 	};
 
 	std::mutex mutex_;
-	std::map<std::string, Active> active_;    // keyed by profileUuid
+	std::map<std::string, Active> active_;    // keyed by accountId
 	std::shared_ptr<std::atomic<bool>> stop_; // current generation's cancel flag
 
 	// Monotonic sequence for synthesizing unique fallback message ids when a

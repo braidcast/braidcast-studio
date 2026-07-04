@@ -67,7 +67,7 @@
 #include "multistream/VirtualCamManager.hpp"
 #include "oauth/provider.hpp"
 #include "oauth/registry.hpp"
-#include "oauth/token_store.hpp"
+#include "oauth/account_store.hpp"
 #include "overlay/overlay_server.hpp"
 #include "overlay/overlay_store.hpp"
 #include <util/dstr.h>
@@ -7508,18 +7508,20 @@ bool MethodLogGetCurrent(const json & /*params*/, json &result, std::string & /*
 // per-platform branches here -- everything routes through the provider the registry
 // resolves by id, and the per-strategy grant lives in AuthStrategy::authorize.
 
-// Per-profile connection state from the token store: one row per stored account.
+// Connection state from the account store: one row per stored account, keyed by
+// accountId (providerId:userId).
 json BuildOAuthStatusArray()
 {
 	json arr = json::array();
-	for (const auto &entry : OAuth::Tokens().All()) {
+	for (const auto &entry : OAuth::Accounts().All()) {
+		const std::string &accountId = entry.first;
 		const OAuth::OAuthAccount &acct = entry.second;
 		// A token issued under an older scope set is unusable until reconnected; an
 		// unregistered provider (e.g. unconfigured) is left as-is, not flagged.
 		OAuth::StreamProvider *provider = OAuth::Registry().Get(acct.providerId);
 		const bool scopeCurrent = !provider || provider->isTokenScopeCurrent(acct);
 		arr.push_back(json{
-			{"profileUuid", entry.first},
+			{"accountId", accountId},
 			{"providerId", acct.providerId},
 			{"connected", scopeCurrent},
 			{"needsReconnect", !scopeCurrent},
@@ -7601,7 +7603,6 @@ try {
 
 	OAuth::OAuthAccount acct;
 	acct.providerId = providerId;
-	acct.profileUuid = profileUuid;
 
 	std::string err;
 	if (!auth->authorize(ctx, acct, err)) {
@@ -7638,13 +7639,32 @@ try {
 		return;
 	}
 
-	OAuth::Tokens().Put(profileUuid, acct);
+	// An account with no userId cannot be keyed (identity fetch failed). Do not
+	// persist a headless record; surface a connect error so the UI can retry.
+	if (acct.userId.empty()) {
+		EmitOAuthConnectError(profileUuid, providerId, "identity fetch failed; try connecting again");
+		return;
+	}
+	const std::string accountId = OAuth::AccountId(acct);
+	OAuth::Accounts().Put(accountId, acct);
+
+	// Link the originating stream profile to this account (UI-thread-owned store).
+	AsyncTask::PostToUi([profileUuid, accountId] {
+		StreamProfile *p = ObsBootstrap::StreamProfiles().Find(profileUuid);
+		if (!p) {
+			return;
+		}
+		p->accountId = accountId;
+		ObsBootstrap::StreamProfiles().Save();
+		EmitEvent("streamProfile.changed", json::object());
+	});
+
 	EmitOAuthStatus();
 
 	// Phase 9.2a: start the account's live-events transport now that it is connected
 	// (the events feed is account-lifecycle, not go-live). No-op until a provider
 	// returns a non-null events() transport.
-	Events::Hub().StartAccount(providerId, acct);
+	Events::Hub().StartAccount(accountId, acct);
 
 	// Pre-live chat: bring the new account's chat transport up immediately (not at
 	// go-live). Start() re-enumerates all connected accounts; it's idempotent, so the
@@ -7722,24 +7742,25 @@ bool MethodOAuthConnect(const json &params, json &result, std::string &error)
 
 bool MethodOAuthDisconnect(const json &params, json &result, std::string &error)
 {
-	const std::string profileUuid = OptString(params, "profileUuid");
-	if (profileUuid.empty()) {
-		error = "oauth.disconnect requires a non-empty 'profileUuid'";
+	const std::string accountId = OptString(params, "accountId");
+	if (accountId.empty()) {
+		error = "oauth.disconnect requires a non-empty 'accountId'";
 		return false;
 	}
-	// Resolve the providerId before removing the record so we can stop its live-events
-	// transport (the EventHub is keyed by providerId, Phase 9.2a).
-	std::string providerId;
-	if (std::optional<OAuth::OAuthAccount> stored = OAuth::Tokens().Get(profileUuid)) {
-		providerId = stored->providerId;
-	}
-	OAuth::Tokens().Remove(profileUuid);
-	if (!providerId.empty()) {
-		Events::Hub().StopAccount(providerId);
-	}
-	// Pre-live chat: re-resolve chat after the token is removed so the disconnected
+	OAuth::Accounts().Remove(accountId);
+	Events::Hub().StopAccount(accountId);
+	// Pre-live chat: re-resolve chat after the account is removed so the disconnected
 	// account's transport drops (Start() enumerates only still-connected accounts).
 	Chat::Hub().Start();
+
+	// Unlink every profile that referenced this account.
+	for (StreamProfile &p : ObsBootstrap::StreamProfiles().AllMutable()) {
+		if (p.accountId == accountId) {
+			p.accountId.clear();
+		}
+	}
+	ObsBootstrap::StreamProfiles().Save();
+	EmitEvent("streamProfile.changed", json::object());
 	EmitEvent("oauth.status", BuildOAuthStatusArray());
 	result = json{{"ok", true}};
 	return true;
@@ -7761,10 +7782,11 @@ bool MethodOAuthCancelConnect(const json & /*params*/, json &result, std::string
 // ---- streamMeta (Phase 8a; async lane Phase 8b) ----------------------------
 //
 // Platform stream-metadata read/search/write, dispatched through the provider the
-// registry resolves. Coherence: load the account from the store (Get/All stamp the
-// store key onto acct.profileUuid) and let the provider refresh it in place via
-// ensureFresh, which is the SOLE token writer -- it re-reads + writes back rotated
-// tokens under its single-flight lock. The handler bodies must NEVER Put a pre-call
+// registry resolves. Coherence: load the account from the store (by accountId, which
+// the read/write handlers resolve from the profile's accountId reference) and let the
+// provider refresh it in place via ensureFresh, which is the SOLE token writer -- it
+// re-reads + writes back rotated tokens under its single-flight lock (keyed by
+// AccountId(acct)). The handler bodies must NEVER Put a pre-call
 // snapshot back: with concurrent same-profile calls a non-refreshing caller would
 // clobber a peer's freshly rotated (one-time-use) refresh token, bricking the
 // account. So they read tokens via Get and never write them.
@@ -7782,7 +7804,12 @@ bool MethodStreamMetaGet(const json &params, json &result, std::string &error)
 		error = "streamMeta.get requires a non-empty 'profileUuid'";
 		return false;
 	}
-	std::optional<OAuth::OAuthAccount> stored = OAuth::Tokens().Get(profileUuid);
+	StreamProfile *p = ObsBootstrap::StreamProfiles().Find(profileUuid);
+	if (!p || p->accountId.empty()) {
+		error = "not connected";
+		return false;
+	}
+	std::optional<OAuth::OAuthAccount> stored = OAuth::Accounts().Get(p->accountId);
 	if (!stored) {
 		error = "not connected";
 		return false;
@@ -7833,16 +7860,16 @@ bool MethodStreamMetaSearchCategories(const json &params, json &result, std::str
 
 	// Use any connected, scope-current account for this provider (search needs a
 	// user token; a behind-scope token must not be used).
-	std::string accountUuid;
+	bool found = false;
 	OAuth::OAuthAccount acct;
-	for (const auto &entry : OAuth::Tokens().All()) {
+	for (const auto &entry : OAuth::Accounts().All()) {
 		if (entry.second.providerId == providerId && provider->isTokenScopeCurrent(entry.second)) {
-			accountUuid = entry.first;
 			acct = entry.second;
+			found = true;
 			break;
 		}
 	}
-	if (accountUuid.empty()) {
+	if (!found) {
 		error = "connect an account first";
 		return false;
 	}
@@ -7856,7 +7883,7 @@ bool MethodStreamMetaSearchCategories(const json &params, json &result, std::str
 		error = std::string("streamMeta.searchCategories failed: ") + e.what();
 		return false;
 	}
-	// No Put: ensureFresh is the sole token writer (acct carries profileUuid from All()).
+	// No Put: ensureFresh is the sole token writer (it re-reads/writes by AccountId).
 	if (!ok) {
 		error = err;
 		return false;
@@ -7872,7 +7899,12 @@ bool MethodStreamMetaSet(const json &params, json &result, std::string &error)
 		error = "streamMeta.set requires a non-empty 'profileUuid'";
 		return false;
 	}
-	std::optional<OAuth::OAuthAccount> stored = OAuth::Tokens().Get(profileUuid);
+	StreamProfile *p = ObsBootstrap::StreamProfiles().Find(profileUuid);
+	if (!p || p->accountId.empty()) {
+		error = "not connected";
+		return false;
+	}
+	std::optional<OAuth::OAuthAccount> stored = OAuth::Accounts().Get(p->accountId);
 	if (!stored) {
 		error = "not connected";
 		return false;
@@ -7892,7 +7924,7 @@ bool MethodStreamMetaSet(const json &params, json &result, std::string &error)
 	std::string err;
 	bool ok;
 	try {
-		ok = provider->applyMetadata(acct, fields, err);
+		ok = provider->applyMetadata(acct, profileUuid, fields, err);
 	} catch (const std::exception &e) {
 		error = std::string("streamMeta.set failed: ") + e.what();
 		return false;
@@ -7915,7 +7947,7 @@ bool MethodStreamMetaSet(const json &params, json &result, std::string &error)
 // leave C++. Events the hub + the T6 viewer poller push to JS:
 //   - "chat.message"    one normalized message (see chat_transport.hpp)
 //   - "chat.state"      per-platform { platform, connected, error? }
-//   - "viewers.changed" { perPlatform: {platform:n}, total }  (emitted directly
+//   - "viewers.changed" { perAccount: {accountId:n}, total }  (emitted directly
 //                        by the T6 ViewerPoller via Bridge::EmitEvent)
 // All three flow through the existing alive-guarded EmitEvent path -- no new emit
 // plumbing is needed; the chat.* helpers live in the hub (RouteEmit).

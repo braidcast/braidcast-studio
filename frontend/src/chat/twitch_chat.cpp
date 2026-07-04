@@ -530,7 +530,7 @@ bool TwitchChat::connect(const Chat::ChatContext &ctx, OAuthAccount &acct, const
 			}
 			++reauthAttempts;
 			std::string refreshErr;
-			if (!auth_->ensureFresh(acct, acct.profileUuid, refreshErr, /*force=*/true)) {
+			if (!auth_->ensureFresh(acct, refreshErr, /*force=*/true)) {
 				ctx.emit(json{{"event", "chat.state"},
 					      {"platform", "twitch"},
 					      {"connected", false},

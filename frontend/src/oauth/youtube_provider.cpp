@@ -248,7 +248,7 @@ bool YouTubeProvider::SendAuthed(OAuthAccount &acct, Http::HttpReq req, Http::Ht
 	// Proactive refresh inside the skew window (best-effort: if it fails the token
 	// may still be valid, so we let the request proceed and rely on the 401 path).
 	std::string freshErr;
-	auth_.ensureFresh(acct, acct.profileUuid, freshErr);
+	auth_.ensureFresh(acct, freshErr);
 
 	// YouTube authenticates with the bearer alone (no Client-Id header like Twitch).
 	auto stamp = [&](Http::HttpReq &r) { r.headers.push_back("Authorization: Bearer " + acct.access); };
@@ -269,7 +269,7 @@ bool YouTubeProvider::SendAuthed(OAuthAccount &acct, Http::HttpReq req, Http::Ht
 	// re-read + written back under the same single-flight lock the proactive path
 	// uses.
 	std::string refreshErr;
-	if (!auth_.ensureFresh(acct, acct.profileUuid, refreshErr, /*force=*/true)) {
+	if (!auth_.ensureFresh(acct, refreshErr, /*force=*/true)) {
 		err = "re-authentication required";
 		return false;
 	}
@@ -388,7 +388,8 @@ bool YouTubeProvider::searchCategories(OAuthAccount &acct, const std::string &qu
 	return true;
 }
 
-bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const json &fields, std::string &err)
+bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profileUuid, const json &fields,
+				    std::string &err)
 {
 	if (!fields.is_object()) {
 		err = "stream metadata fields must be an object";
@@ -633,7 +634,7 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const json &fields, std:
 	// 6. Ingest writeback -- put the CDN endpoint + key into the linked profile so
 	// the modal's streaming.start streams to YouTube. Blocks on the UI-thread write
 	// so the key is present before the caller triggers go-live. CRITICAL.
-	if (!WriteIngestToProfile(acct.profileUuid, ingestionAddress, streamName)) {
+	if (!WriteIngestToProfile(profileUuid, ingestionAddress, streamName)) {
 		err = "failed to write the YouTube ingest endpoint into the stream profile";
 		deleteOrphanBroadcast(broadcastId);
 		return false;

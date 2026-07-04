@@ -9,7 +9,7 @@
 #include "../log.hpp"
 #include "../oauth/provider.hpp"
 #include "../oauth/registry.hpp"
-#include "../oauth/token_store.hpp"
+#include "../oauth/account_store.hpp"
 #include "../overlay/overlay_server.hpp" // OverlayServer::BroadcastChat
 #include "../overlay/overlay_store.hpp"  // Overlay::Server()
 #include "chat_transport.hpp"
@@ -62,9 +62,9 @@ void ChatHub::Start()
 	}
 
 	int started = 0;
-	for (const auto &entry : OAuth::Tokens().All()) {
-		const std::string profileUuid = entry.first;
-		OAuth::OAuthAccount acct = entry.second; // copy: All() stamps acct.profileUuid
+	for (const auto &entry : OAuth::Accounts().All()) {
+		OAuth::OAuthAccount acct = entry.second;
+		const std::string accountId = OAuth::AccountId(acct);
 		OAuth::StreamProvider *provider = OAuth::Registry().Get(acct.providerId);
 		if (!provider || !provider->isTokenScopeCurrent(acct)) {
 			continue;
@@ -81,7 +81,7 @@ void ChatHub::Start()
 			Active a;
 			a.providerId = providerId;
 			a.transport = transport;
-			active_[profileUuid] = std::move(a);
+			active_[accountId] = std::move(a);
 		}
 
 		// The worker owns `acct` by value, the generation cancel flag by shared_ptr,
@@ -89,10 +89,10 @@ void ChatHub::Start()
 		// dangling). It captures the hub (`this`) only for mutex-guarded status
 		// writeback -- safe because the hub is a singleton living to process exit. All
 		// JS emits go through Bridge::EmitEvent (alive-guarded), never raw CEF.
-		AsyncTask::RunAsync([this, profileUuid, providerId, channelRef, acct, transport, stop]() mutable {
+		AsyncTask::RunAsync([this, accountId, providerId, channelRef, acct, transport, stop]() mutable {
 			ChatContext ctx;
 			ctx.canceled = [stop] { return stop->load(std::memory_order_acquire); };
-			ctx.emit = [this, profileUuid, stop](const json &payload) {
+			ctx.emit = [this, accountId, stop](const json &payload) {
 				if (stop->load(std::memory_order_acquire)) {
 					return; // generation stopped; drop late emits
 				}
@@ -101,7 +101,7 @@ void ChatHub::Start()
 				if (ev != payload.end() && ev->is_string() &&
 				    ev->get<std::string>() == "chat.state") {
 					std::lock_guard<std::mutex> lock(mutex_);
-					auto a = active_.find(profileUuid);
+					auto a = active_.find(accountId);
 					if (a != active_.end()) {
 						if (payload.contains("connected") &&
 						    payload["connected"].is_boolean()) {
@@ -177,7 +177,7 @@ void ChatHub::Stop()
 
 void ChatHub::SendToPlatforms(const std::vector<std::string> &platforms, const std::string &text)
 {
-	std::vector<std::pair<std::string, Active>> targets; // (profileUuid, Active)
+	std::vector<std::pair<std::string, Active>> targets; // (accountId, Active)
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
 		for (const auto &entry : active_) {
@@ -192,15 +192,15 @@ void ChatHub::SendToPlatforms(const std::vector<std::string> &platforms, const s
 	}
 
 	for (auto &t : targets) {
-		const std::string profileUuid = t.first;
+		const std::string accountId = t.first;
 		const std::string providerId = t.second.providerId;
 		ChatTransport *transport = t.second.transport;
 		const std::string msg = text;
 		// One worker per send so a slow REST send never blocks the caller.
-		AsyncTask::RunAsync([profileUuid, providerId, transport, msg]() {
+		AsyncTask::RunAsync([accountId, providerId, transport, msg]() {
 			// Load the account fresh from the store so ensureFresh stays the sole token
 			// writer (no pre-call snapshot writeback -- mirrors the streamMeta.* path).
-			std::optional<OAuth::OAuthAccount> stored = OAuth::Tokens().Get(profileUuid);
+			std::optional<OAuth::OAuthAccount> stored = OAuth::Accounts().Get(accountId);
 			if (!stored) {
 				return;
 			}

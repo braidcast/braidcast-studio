@@ -11,7 +11,7 @@
 #include "../log.hpp"
 #include "../oauth/provider.hpp"
 #include "../oauth/registry.hpp"
-#include "../oauth/token_store.hpp"
+#include "../oauth/account_store.hpp"
 #include "../overlay/overlay_server.hpp"
 #include "../overlay/overlay_store.hpp" // Overlay::Server()
 
@@ -26,8 +26,11 @@ constexpr std::chrono::milliseconds kReconnectDelay(1000);
 
 } // namespace
 
-void EventHub::StartAccount(const std::string &providerId, const OAuth::OAuthAccount &acct)
+void EventHub::StartAccount(const std::string &accountId, const OAuth::OAuthAccount &acct)
 {
+	// The provider is resolved off the account (providerId), not the key -- the key is
+	// now the accountId. Log lines keep using providerId for readability.
+	const std::string providerId = acct.providerId;
 	OAuth::StreamProvider *provider = OAuth::Registry().Get(providerId);
 	if (!provider) {
 		return;
@@ -37,9 +40,9 @@ void EventHub::StartAccount(const std::string &providerId, const OAuth::OAuthAcc
 		return; // provider has no event transport (every provider in 9.2a)
 	}
 
-	// Idempotent per providerId: tear down any prior generation (signals its worker +
+	// Idempotent per accountId: tear down any prior generation (signals its worker +
 	// disconnects the transport, outside the lock) before arming a fresh one.
-	StopAccount(providerId);
+	StopAccount(accountId);
 
 	auto stop = std::make_shared<std::atomic<bool>>(false);
 	{
@@ -47,7 +50,7 @@ void EventHub::StartAccount(const std::string &providerId, const OAuth::OAuthAcc
 		Active a;
 		a.transport = transport;
 		a.stop = stop;
-		active_[providerId] = std::move(a);
+		active_[accountId] = std::move(a);
 	}
 
 	OAuth::OAuthAccount acctCopy = acct; // the worker owns the account by value
@@ -171,24 +174,24 @@ void EventHub::StartAccount(const std::string &providerId, const OAuth::OAuthAcc
 void EventHub::StartConnectedAccounts()
 {
 	// Mirror the chat hub's account enumeration, but run ONCE at boot rather than on
-	// go-live: All() stamps acct.profileUuid, and StartAccount is idempotent per
-	// providerId, so this can't double-start an account the connect path also starts.
-	for (const auto &entry : OAuth::Tokens().All()) {
+	// go-live: StartAccount is idempotent per accountId, so this can't double-start an
+	// account the connect path also starts.
+	for (const auto &entry : OAuth::Accounts().All()) {
 		OAuth::OAuthAccount acct = entry.second;
 		OAuth::StreamProvider *provider = OAuth::Registry().Get(acct.providerId);
 		if (!provider || !provider->isTokenScopeCurrent(acct)) {
 			continue;
 		}
-		StartAccount(acct.providerId, acct);
+		StartAccount(OAuth::AccountId(acct), acct);
 	}
 }
 
-void EventHub::StopAccount(const std::string &providerId)
+void EventHub::StopAccount(const std::string &accountId)
 {
 	Active a;
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
-		auto it = active_.find(providerId);
+		auto it = active_.find(accountId);
 		if (it == active_.end()) {
 			return;
 		}

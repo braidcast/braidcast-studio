@@ -11,7 +11,7 @@
 #include "../log.hpp"
 #include "../oauth/provider.hpp"
 #include "../oauth/registry.hpp"
-#include "../oauth/token_store.hpp"
+#include "../oauth/account_store.hpp"
 #include "ws_client.hpp" // CancelableSleep
 
 namespace Chat {
@@ -47,13 +47,13 @@ void ViewerPoller::Start()
 		auto canceled = [stop] { return stop->load(std::memory_order_acquire); };
 
 		while (!canceled()) {
-			json perPlatform = json::object();
+			json perAccount = json::object();
 			long long total = 0;
 
 			// Re-read accounts each cycle so a connect/disconnect mid-stream is picked
-			// up. All() stamps acct.profileUuid; viewerCount's SendAuthed/ensureFresh is
-			// store-coherent, so polling on a by-value copy is safe.
-			for (const auto &entry : OAuth::Tokens().All()) {
+			// up. viewerCount's SendAuthed/ensureFresh is store-coherent, so polling on
+			// a by-value copy is safe.
+			for (const auto &entry : OAuth::Accounts().All()) {
 				if (canceled()) {
 					break;
 				}
@@ -88,8 +88,9 @@ void ViewerPoller::Start()
 					count = 0;
 				}
 
-				// Aggregate per providerId (sums multiple accounts of the same platform).
-				perPlatform[acct.providerId] = perPlatform.value(acct.providerId, 0) + count;
+				// Aggregate per accountId (each connected account counted once;
+				// two accounts on one platform are distinct rows).
+				perAccount[OAuth::AccountId(acct)] = count;
 				total += count;
 			}
 
@@ -97,7 +98,7 @@ void ViewerPoller::Start()
 				break;
 			}
 
-			json payload = json{{"perPlatform", std::move(perPlatform)}, {"total", total}};
+			json payload = json{{"perAccount", std::move(perAccount)}, {"total", total}};
 			AsyncTask::PostToUi(
 				[payload = std::move(payload)] { Bridge::EmitEvent("viewers.changed", payload); });
 

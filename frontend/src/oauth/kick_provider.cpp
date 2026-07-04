@@ -131,7 +131,7 @@ bool KickProvider::SendAuthed(OAuthAccount &acct, Http::HttpReq req, Http::HttpR
 	// Proactive refresh inside the skew window (best-effort: if it fails the token
 	// may still be valid, so we let the request proceed and rely on the 401 path).
 	std::string freshErr;
-	auth_.ensureFresh(acct, acct.profileUuid, freshErr);
+	auth_.ensureFresh(acct, freshErr);
 
 	auto stamp = [&](Http::HttpReq &r) { r.headers.push_back("Authorization: Bearer " + acct.access); };
 
@@ -152,7 +152,7 @@ bool KickProvider::SendAuthed(OAuthAccount &acct, Http::HttpReq req, Http::HttpR
 	// uses (a bare refresh() would rotate in memory and drop the new token, bricking
 	// the account on the next refresh).
 	std::string refreshErr;
-	if (!auth_.ensureFresh(acct, acct.profileUuid, refreshErr, /*force=*/true)) {
+	if (!auth_.ensureFresh(acct, refreshErr, /*force=*/true)) {
 		err = "re-authentication required";
 		return false;
 	}
@@ -295,8 +295,10 @@ bool KickProvider::searchCategories(OAuthAccount &acct, const std::string &query
 	return true;
 }
 
-bool KickProvider::applyMetadata(OAuthAccount &acct, const json &fields, std::string &err)
+bool KickProvider::applyMetadata(OAuthAccount &acct, const std::string &profileUuid, const json &fields,
+				 std::string &err)
 {
+	(void)profileUuid; // Kick edits a persistent channel; no per-profile ingest writeback
 	if (!fields.is_object()) {
 		err = "stream metadata fields must be an object";
 		return false;

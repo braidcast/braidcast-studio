@@ -44,13 +44,17 @@ struct OAuthAccount {
 	std::string displayName;
 	int64_t expireTime = 0;
 	int scopeVer = 0;
-
-	// Transient (never serialized): the stream-profile uuid this record is stored
-	// under. The store stamps it on read so a provider's deep call chain can hand
-	// it to ensureFresh for store-coherent single-flight refresh without threading
-	// the uuid through every metadata hook. AccountToJson/FromJson ignore it.
-	std::string profileUuid;
 };
+
+// The account's stable identity: providerId + ":" + userId. Pure function of the
+// record (userId is always populated for a connected account), so no field stores
+// it. This is the single key used by the account store and every live hub. Returns
+// "<providerId>:" (empty-user tail) for a record whose identity fetch never
+// completed -- such a record must not be persisted (see the connect flow).
+inline std::string AccountId(const OAuthAccount &a)
+{
+	return a.providerId + ":" + a.userId;
+}
 
 // The runtime context the framework hands an AuthStrategy for one interactive
 // grant. `emitProgress` reports a phase payload to JS (wired to the
@@ -86,18 +90,15 @@ public:
 	// false + `err` on failure; invalid_grant means the caller must force re-auth.
 	virtual bool refresh(OAuthAccount &acct, std::string &err) = 0;
 
-	// Lazily refresh `acct` only when it is within the skew window of expiry,
-	// single-flight per account so concurrent callers don't double-refresh. When
-	// `profileUuid` is non-empty the refresh is store-coherent: the account is
-	// re-read from the token store inside the flight lock and the rotated token is
-	// written back, so concurrent callers with stale copies never invalidate each
-	// other's one-time-use refresh token. true when the token is usable afterward.
-	// `force` bypasses the skew/expiry check (a reactive 401 means the access token
-	// is dead regardless of its stored expiry), but keeps the SAME single-flight +
-	// store-coherent re-read + write-back path so a rotated refresh token is still
-	// persisted rather than dropped.
-	virtual bool ensureFresh(OAuthAccount &acct, const std::string &profileUuid, std::string &err,
-				 bool force = false) = 0;
+	// Lazily refresh `acct` only when within the skew window (or always, when
+	// `force`). Single-flight per account so concurrent callers don't double-refresh.
+	// Store-coherent: the account is re-read from the account store (keyed by
+	// AccountId(acct)) inside the flight lock and the rotated token written back, so
+	// concurrent callers with stale copies never invalidate each other's one-time-use
+	// refresh token. true when the token is usable afterward. `force` bypasses the
+	// skew/expiry check (a reactive 401 means the access token is dead) but keeps the
+	// same single-flight + re-read + write-back path.
+	virtual bool ensureFresh(OAuthAccount &acct, std::string &err, bool force = false) = 0;
 
 	// The scope version this strategy currently requests. Tokens stored with a
 	// lower scopeVer were issued under an older permission set and must reconnect.
@@ -148,9 +149,13 @@ public:
 	// `acct` is non-const for the same refresh-propagation reason as getMetadata.
 	virtual bool searchCategories(OAuthAccount &acct, const std::string &query, json &out, std::string &err) = 0;
 
-	// Push the resolved metadata `fields` to the platform. false + `err` on
-	// failure (a per-platform failure warns but must not block going live).
-	virtual bool applyMetadata(OAuthAccount &acct, const json &fields, std::string &err) = 0;
+	// Push the resolved metadata `fields` to the platform. `profileUuid` is the
+	// stream profile this apply targets (distinct from the shared account identity):
+	// a provider that writes a per-go-live ingest endpoint back into the profile
+	// (YouTube) needs it; Twitch/Kick ignore it. false + `err` on failure (a
+	// per-platform failure warns but must not block going live).
+	virtual bool applyMetadata(OAuthAccount &acct, const std::string &profileUuid, const json &fields,
+				   std::string &err) = 0;
 
 	// Optionally fetch the platform stream key for `acct` (Twitch exposes one via
 	// /helix/streams/key; most providers do not). Default: unsupported. On success

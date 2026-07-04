@@ -32,8 +32,7 @@ public:
 
 	bool authorize(const AuthContext &ctx, OAuthAccount &acct, std::string &err) override;
 	bool refresh(OAuthAccount &acct, std::string &err) override;
-	bool ensureFresh(OAuthAccount &acct, const std::string &profileUuid, std::string &err,
-			 bool force = false) override;
+	bool ensureFresh(OAuthAccount &acct, std::string &err, bool force = false) override;
 	int scopeVer() const override { return config_.scopeVer; }
 
 private:

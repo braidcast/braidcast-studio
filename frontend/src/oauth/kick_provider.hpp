@@ -36,7 +36,8 @@ public:
 	bool fetchIdentity(OAuthAccount &acct, std::string &err) override;
 	bool getMetadata(OAuthAccount &acct, json &out, std::string &err) override;
 	bool searchCategories(OAuthAccount &acct, const std::string &query, json &out, std::string &err) override;
-	bool applyMetadata(OAuthAccount &acct, const json &fields, std::string &err) override;
+	bool applyMetadata(OAuthAccount &acct, const std::string &profileUuid, const json &fields,
+			   std::string &err) override;
 	bool viewerCount(OAuthAccount &acct, int &out, std::string &err) override;
 
 	// The Kick chat transport (Phase 9.0): Pusher read + REST send. Owned here,

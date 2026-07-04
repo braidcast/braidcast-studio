@@ -7,7 +7,7 @@
 
 // The ViewerPoller (Phase 9.0): a single background worker that, while live,
 // polls each connected, scope-current account's platform viewer count on a modest
-// interval, aggregates them into { perPlatform: {<providerId>: n}, total }, and
+// interval, aggregates them into { perAccount: {<accountId>: n}, total }, and
 // emits the `viewers.changed` bridge event. The per-platform call sits behind
 // StreamProvider::viewerCount so the poller has no per-platform branching; a
 // platform reporting "not live / unsupported" (viewerCount returns false) is

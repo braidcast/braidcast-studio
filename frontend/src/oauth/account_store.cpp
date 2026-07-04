@@ -1,4 +1,4 @@
-#include "token_store.hpp"
+#include "account_store.hpp"
 
 #include <filesystem>
 #include <fstream>
@@ -82,7 +82,7 @@ bool UnprotectBytes(const std::vector<unsigned char> &wrapped, std::string &plai
 
 } // namespace
 
-std::string TokenStore::FilePath()
+std::string AccountStore::FilePath()
 {
 	char buf[512];
 	if (os_get_config_path(buf, sizeof(buf), "obs-multistream/oauth_tokens.json") <= 0) {
@@ -91,7 +91,7 @@ std::string TokenStore::FilePath()
 	return std::string(buf);
 }
 
-void TokenStore::EnsureLoadedLocked()
+void AccountStore::EnsureLoadedLocked()
 {
 	if (loaded_) {
 		return;
@@ -129,7 +129,7 @@ void TokenStore::EnsureLoadedLocked()
 	}
 }
 
-void TokenStore::SaveLocked()
+void AccountStore::SaveLocked()
 {
 	const std::string path = FilePath();
 	if (path.empty()) {
@@ -183,50 +183,44 @@ void TokenStore::SaveLocked()
 	}
 }
 
-std::optional<OAuthAccount> TokenStore::Get(const std::string &profileUuid)
+std::optional<OAuthAccount> AccountStore::Get(const std::string &accountId)
 {
 	const std::lock_guard<std::mutex> guard(mutex_);
 	EnsureLoadedLocked();
-	auto it = accounts_.find(profileUuid);
+	auto it = accounts_.find(accountId);
 	if (it == accounts_.end()) {
 		return std::nullopt;
 	}
-	OAuthAccount acct = it->second;
-	acct.profileUuid = profileUuid; // stamp the store key for store-coherent refresh
-	return acct;
+	return it->second;
 }
 
-void TokenStore::Put(const std::string &profileUuid, const OAuthAccount &account)
+void AccountStore::Put(const std::string &accountId, const OAuthAccount &account)
 {
 	const std::lock_guard<std::mutex> guard(mutex_);
 	EnsureLoadedLocked();
-	accounts_[profileUuid] = account;
+	accounts_[accountId] = account;
 	SaveLocked();
 }
 
-void TokenStore::Remove(const std::string &profileUuid)
+void AccountStore::Remove(const std::string &accountId)
 {
 	const std::lock_guard<std::mutex> guard(mutex_);
 	EnsureLoadedLocked();
-	if (accounts_.erase(profileUuid) > 0) {
+	if (accounts_.erase(accountId) > 0) {
 		SaveLocked();
 	}
 }
 
-std::map<std::string, OAuthAccount> TokenStore::All()
+std::map<std::string, OAuthAccount> AccountStore::All()
 {
 	const std::lock_guard<std::mutex> guard(mutex_);
 	EnsureLoadedLocked();
-	std::map<std::string, OAuthAccount> out = accounts_;
-	for (auto &entry : out) {
-		entry.second.profileUuid = entry.first; // stamp the store key on each record
-	}
-	return out;
+	return accounts_;
 }
 
-TokenStore &Tokens()
+AccountStore &Accounts()
 {
-	static TokenStore store;
+	static AccountStore store;
 	return store;
 }
 

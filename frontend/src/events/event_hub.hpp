@@ -33,12 +33,12 @@ namespace Events {
 class EventHub {
 public:
 	// Start (or restart) the transport for one connected account. Idempotent per
-	// providerId: stops any prior worker for that id first. A no-op when the provider
-	// is unknown or has no events() transport (every provider in 9.2a).
-	void StartAccount(const std::string &providerId, const OAuth::OAuthAccount &acct);
+	// accountId: stops any prior worker for that account first. A no-op when the
+	// provider is unknown or has no events() transport (every provider in 9.2a).
+	void StartAccount(const std::string &accountId, const OAuth::OAuthAccount &acct);
 
-	// Stop + disconnect the transport for one providerId. Idempotent.
-	void StopAccount(const std::string &providerId);
+	// Stop + disconnect the transport for one accountId. Idempotent.
+	void StopAccount(const std::string &accountId);
 
 	// One-time startup sweep: StartAccount every connected, scope-current account in
 	// the token store. Enforces the always-on/account-lifecycle model (spec §2/§11) so
@@ -64,7 +64,7 @@ private:
 	};
 
 	std::mutex mutex_;
-	std::map<std::string, Active> active_; // keyed by providerId
+	std::map<std::string, Active> active_; // keyed by accountId
 };
 
 // Process-wide singletons (function-local statics, mirroring the chat hub + stores).

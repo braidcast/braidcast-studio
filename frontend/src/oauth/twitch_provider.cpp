@@ -179,7 +179,7 @@ bool TwitchProvider::SendAuthed(OAuthAccount &acct, Http::HttpReq req, Http::Htt
 	// Proactive refresh inside the skew window (best-effort: if it fails the token
 	// may still be valid, so we let the request proceed and rely on the 401 path).
 	std::string freshErr;
-	auth_.ensureFresh(acct, acct.profileUuid, freshErr);
+	auth_.ensureFresh(acct, freshErr);
 
 	const std::string clientId = TwitchClientId();
 	auto stamp = [&](Http::HttpReq &r) {
@@ -204,7 +204,7 @@ bool TwitchProvider::SendAuthed(OAuthAccount &acct, Http::HttpReq req, Http::Htt
 	// uses. Benign for Twitch (its refresh tokens do not rotate) but keeps both
 	// providers on one store-coherent path.
 	std::string refreshErr;
-	if (!auth_.ensureFresh(acct, acct.profileUuid, refreshErr, /*force=*/true)) {
+	if (!auth_.ensureFresh(acct, refreshErr, /*force=*/true)) {
 		err = "re-authentication required";
 		return false;
 	}
@@ -324,8 +324,10 @@ bool TwitchProvider::searchCategories(OAuthAccount &acct, const std::string &que
 	return true;
 }
 
-bool TwitchProvider::applyMetadata(OAuthAccount &acct, const json &fields, std::string &err)
+bool TwitchProvider::applyMetadata(OAuthAccount &acct, const std::string &profileUuid, const json &fields,
+				   std::string &err)
 {
+	(void)profileUuid; // Twitch edits a persistent channel; no per-profile ingest writeback
 	if (acct.userId.empty()) {
 		err = "Twitch account identity missing; reconnect the account";
 		return false;

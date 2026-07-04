@@ -15,6 +15,7 @@ struct StreamProfile {
 	std::string serviceId = "rtmp_common"; // "rtmp_common" | "rtmp_custom" | "whip_custom"
 	OBSDataAutoRelease settings;           // obs_service settings blob (may be null -> empty)
 	bool isPrimary = false;
+	std::string accountId; // linked OAuth account (providerId:userId); empty for key/RTMP/WHIP
 
 	/* Platform shown as the display prefix. For rtmp_common it is the
 	 * "service" key (e.g. "YouTube - RTMPS" -> "YouTube"); for custom/WHIP a

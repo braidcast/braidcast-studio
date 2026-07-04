@@ -15,7 +15,7 @@
 
 #include "../http_client.hpp"
 #include "../log.hpp"
-#include "token_store.hpp"
+#include "account_store.hpp"
 
 namespace OAuth {
 
@@ -590,7 +590,7 @@ bool PkceLoopbackStrategy::refresh(OAuthAccount &acct, std::string &err)
 	return true;
 }
 
-bool PkceLoopbackStrategy::ensureFresh(OAuthAccount &acct, const std::string &profileUuid, std::string &err, bool force)
+bool PkceLoopbackStrategy::ensureFresh(OAuthAccount &acct, std::string &err, bool force)
 {
 	if (acct.refresh.empty()) {
 		err = "no refresh token";
@@ -602,20 +602,17 @@ bool PkceLoopbackStrategy::ensureFresh(OAuthAccount &acct, const std::string &pr
 		return true; // still fresh; no network
 	}
 
-	// Single-flight: serialize concurrent refreshes for the same account. Key on
-	// the stream-profile uuid (the store key) when known, else the user/provider id.
-	const std::string key =
-		!profileUuid.empty() ? profileUuid : (acct.userId.empty() ? acct.providerId : acct.userId);
-	const std::shared_ptr<std::mutex> lock = FlightLock(key);
+	// Single-flight: serialize concurrent refreshes for the same account, keyed by
+	// the account's stable identity (the account store key).
+	const std::string accountId = AccountId(acct);
+	const std::shared_ptr<std::mutex> lock = FlightLock(accountId);
 	const std::lock_guard<std::mutex> guard(*lock);
 
 	// Re-read the authoritative copy from the store inside the lock so a prior
-	// holder's rotated one-time-use refresh token is the one we use.
-	if (!profileUuid.empty()) {
-		const std::optional<OAuthAccount> stored = Tokens().Get(profileUuid);
-		if (stored) {
-			acct = *stored;
-		}
+	// holder's rotated one-time-use refresh token is the one we use. When the
+	// account isn't stored yet, Get is a no-op and we keep the caller's copy.
+	if (const std::optional<OAuthAccount> stored = Accounts().Get(accountId)) {
+		acct = *stored;
 	}
 
 	// Re-check after the store re-read: a prior holder may have just refreshed.
@@ -632,9 +629,7 @@ bool PkceLoopbackStrategy::ensureFresh(OAuthAccount &acct, const std::string &pr
 
 	// Persist the rotated token inside the lock so the next single-flight holder
 	// re-reads the new refresh token, not the spent one.
-	if (!profileUuid.empty()) {
-		Tokens().Put(profileUuid, acct);
-	}
+	Accounts().Put(accountId, acct);
 	return true;
 }
 
