@@ -226,7 +226,7 @@
     await Promise.all(
       connectedDests.map(async (d) => {
         try {
-          const m = await obs.call("streamMeta.get", { profileUuid: d.profileUuid });
+          const m = await obs.call("streamMeta.get", { accountId: d.profile.accountId });
           if (m.category?.id) {
             setField(d.profileUuid, "category", { id: m.category.id, name: m.category.name });
           }
@@ -274,7 +274,13 @@
     submitting = true;
     const targets = connectedDests;
     const results = await Promise.allSettled(
-      targets.map((d) => obs.call("streamMeta.set", { profileUuid: d.profileUuid, fields: effectiveFields(d) })),
+      targets.map((d) =>
+        obs.call("streamMeta.set", {
+          accountId: d.profile.accountId,
+          profileUuid: d.profileUuid,
+          fields: effectiveFields(d),
+        }),
+      ),
     );
     // Partial-failure tolerance: a failed metadata push never blocks going live. One
     // aggregate toast (showToast replaces, so per-destination toasts would clobber

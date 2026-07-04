@@ -455,6 +455,9 @@ export interface StreamProfileInfo {
   /** Full selected service string (e.g. "YouTube - RTMPS"); for WHIP/custom the
    * server URL or a generic label. Never empty. */
   serviceLabel: string;
+  /** Linked OAuth account ("providerId:userId"); empty for key/RTMP/WHIP modes.
+   * The reuse link: several profiles may carry the same accountId. */
+  accountId: string;
 }
 
 /** Fields accepted by streamProfile.create. */
@@ -1263,10 +1266,11 @@ export interface ObsMethods {
   "oauth.disconnect": { ok: boolean };
   "oauth.status": OAuthStatus[];
   // Stream metadata (Go Live "Stream Information": title / category / language).
-  // get loads a profile's current metadata ({title, category:{id,name}, language});
-  // searchCategories resolves a query to game/category matches ({id, name, boxArt});
-  // set ({profileUuid, fields}) persists and returns {ok:true}, emitting
-  // streamMeta.changed.
+  // get ({accountId}) loads the account's current metadata ({title, category:{id,name},
+  // language}); searchCategories resolves a query to game/category matches ({id, name,
+  // boxArt}); set ({accountId, profileUuid, fields}) persists and returns {ok:true},
+  // emitting streamMeta.changed. accountId keys the token/provider; profileUuid is only
+  // forwarded into the write's UI-thread-marshalled ingest writeback.
   "streamMeta.get": StreamMeta;
   "streamMeta.searchCategories": StreamCategory[];
   "streamMeta.set": { ok: true };

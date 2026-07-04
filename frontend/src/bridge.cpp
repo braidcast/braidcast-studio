@@ -4817,6 +4817,7 @@ json StreamProfileToJson(const StreamProfile &p)
 		{"service", p.serviceId},
 		{"platform", p.PlatformName()},
 		{"serviceLabel", StreamProfileServiceLabel(p)},
+		{"accountId", p.accountId},
 	};
 }
 
@@ -7785,8 +7786,9 @@ bool MethodOAuthCancelConnect(const json & /*params*/, json &result, std::string
 // ---- streamMeta (Phase 8a; async lane Phase 8b) ----------------------------
 //
 // Platform stream-metadata read/search/write, dispatched through the provider the
-// registry resolves. Coherence: load the account from the store (by accountId, which
-// the read/write handlers resolve from the profile's accountId reference) and let the
+// registry resolves. Coherence: load the account from the store by accountId (passed
+// directly by the caller -- the frontend resolves it from the profile's linked account,
+// so this async lane never touches the UI-thread-owned StreamProfileStore) and let the
 // provider refresh it in place via ensureFresh, which is the SOLE token writer -- it
 // re-reads + writes back rotated tokens under its single-flight lock (keyed by
 // AccountId(acct)). The handler bodies must NEVER Put a pre-call
@@ -7802,17 +7804,12 @@ bool MethodOAuthCancelConnect(const json & /*params*/, json &result, std::string
 
 bool MethodStreamMetaGet(const json &params, json &result, std::string &error)
 {
-	const std::string profileUuid = OptString(params, "profileUuid");
-	if (profileUuid.empty()) {
-		error = "streamMeta.get requires a non-empty 'profileUuid'";
+	const std::string accountId = OptString(params, "accountId");
+	if (accountId.empty()) {
+		error = "streamMeta.get requires a non-empty 'accountId'";
 		return false;
 	}
-	StreamProfile *p = ObsBootstrap::StreamProfiles().Find(profileUuid);
-	if (!p || p->accountId.empty()) {
-		error = "not connected";
-		return false;
-	}
-	std::optional<OAuth::OAuthAccount> stored = OAuth::Accounts().Get(p->accountId);
+	std::optional<OAuth::OAuthAccount> stored = OAuth::Accounts().Get(accountId);
 	if (!stored) {
 		error = "not connected";
 		return false;
@@ -7897,17 +7894,16 @@ bool MethodStreamMetaSearchCategories(const json &params, json &result, std::str
 
 bool MethodStreamMetaSet(const json &params, json &result, std::string &error)
 {
+	// accountId identifies the account whose token/provider the write goes through;
+	// profileUuid is forwarded only into applyMetadata, which marshals its ingest
+	// writeback (WriteIngestToProfile) to the UI thread -- the sole safe profile touch.
+	const std::string accountId = OptString(params, "accountId");
 	const std::string profileUuid = OptString(params, "profileUuid");
-	if (profileUuid.empty()) {
-		error = "streamMeta.set requires a non-empty 'profileUuid'";
+	if (accountId.empty()) {
+		error = "streamMeta.set requires a non-empty 'accountId'";
 		return false;
 	}
-	StreamProfile *p = ObsBootstrap::StreamProfiles().Find(profileUuid);
-	if (!p || p->accountId.empty()) {
-		error = "not connected";
-		return false;
-	}
-	std::optional<OAuth::OAuthAccount> stored = OAuth::Accounts().Get(p->accountId);
+	std::optional<OAuth::OAuthAccount> stored = OAuth::Accounts().Get(accountId);
 	if (!stored) {
 		error = "not connected";
 		return false;
