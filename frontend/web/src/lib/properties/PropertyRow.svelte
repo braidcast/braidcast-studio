@@ -19,7 +19,8 @@
   );
   // Group/button/info own their full-width chrome (legend, note, button label).
   const isFull = $derived(prop.type === "group" || prop.type === "button" || isInfo);
-  // Booleans render as a label-left / toggle-right row (the mock's tglField).
+  // Booleans render as a left-aligned toggle + label (never pushed to the far
+  // edge), matching the stacked left-alignment of every other field.
   const isRow = $derived(prop.type === "bool");
 
   const label = $derived(prop.label ?? prop.name);
@@ -32,14 +33,14 @@
       <Control {prop} {value} {onChange} {onButton} {lookup} />
     </div>
   {:else if isRow}
-    <div class="cv-field cv-field--row">
-      <div class="cv-field__l">
-        {label}
-        {#if hint}<span class="cv-field__sub">{hint}</span>{/if}
-      </div>
-      <div class="cv-field__c cv-field__c--end">
+    <div class="cv-field cv-field--bool">
+      <label class="cv-boolrow">
         <Control {prop} {value} {onChange} {onButton} {lookup} />
-      </div>
+        <span class="cv-field__l">
+          {label}
+          {#if hint}<span class="cv-field__sub">{hint}</span>{/if}
+        </span>
+      </label>
     </div>
   {:else}
     <div class="cv-field">

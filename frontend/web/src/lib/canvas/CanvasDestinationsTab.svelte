@@ -107,14 +107,13 @@
 
   <section class="section">
     <div class="sec-bar">
-      <h3 class="sec-head">Output Bindings for this Canvas</h3>
-      <span class="sec-count">{rows.filter((b) => b.enabled).length}/{rows.length} enabled</span>
-      <span class="spacer"></span>
       {#if rows.length > 0}
         <span class="toggle-wrap" title={canvasEnabled ? "Disable all" : "Enable all"}>
           <ToggleSwitch size="sm" checked={canvasEnabled} onchange={() => void toggleCanvas()} />
         </span>
       {/if}
+      <h3 class="sec-head">Output Bindings for this Canvas</h3>
+      <span class="sec-count">{rows.filter((b) => b.enabled).length}/{rows.length} enabled</span>
     </div>
     <p class="sec-hint">
       Toggle-only. Each row pairs a global stream profile with this canvas. A canvas encodes only while
@@ -218,9 +217,6 @@
     padding-bottom: 10px;
     border-bottom: var(--border-weight) solid var(--color-border-2);
     margin-bottom: 12px;
-  }
-  .spacer {
-    flex: 1;
   }
   .empty {
     margin: 4px 0 12px;

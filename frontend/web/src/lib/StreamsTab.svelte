@@ -218,26 +218,50 @@
       .map((s) => ({ label: s.name, value: s.id })),
   );
 
-  // Does a promoted-picker item match an OAuth provider? Case-insensitive: exact or
-  // prefix match against either the provider's id or its displayName, so "YouTube -
-  // RTMPS" matches provider "YouTube" without a data edit on either side.
-  function itemMatchesProvider(itemName: string, provider: OAuthProvider): boolean {
+  // Platforms Braidcast can OAuth-connect, listed under "Connectable accounts" in the
+  // promoted Service picker. The live `providers` list (oauth.providers) is the source
+  // of truth, but a build can omit a platform's client id — e.g. KickConfigured()==false —
+  // so that platform's provider is absent from oauth.providers even though the platform
+  // itself is OAuth-capable (and its service item, like "Kick", is common:true). This
+  // static allowlist bridges that gap so Twitch/YouTube/Kick always group as connectable,
+  // regardless of which providers this build actually registered. Add a platform => one
+  // entry. Purely a grouping hint: the Connect button still requires a real registered
+  // provider (providerForProfile), so this never fakes a link.
+  const CONNECTABLE_PLATFORM_KEYS = ["twitch", "youtube", "kick"];
+
+  // Lower-cased name prefixes that mark a service item as connectable: the static
+  // allowlist unioned with every live provider's id + displayName, so a newly
+  // registered provider joins automatically with no code change here.
+  const connectablePrefixes = $derived.by(() => {
+    const set = new Set<string>(CONNECTABLE_PLATFORM_KEYS);
+    for (const p of providers) {
+      set.add(p.id.trim().toLowerCase());
+      set.add(p.displayName.trim().toLowerCase());
+    }
+    set.delete("");
+    return set;
+  });
+
+  // Does a promoted-picker item name start with any connectable-platform prefix?
+  // Case-insensitive prefix match, so both "YouTube - RTMPS" and "YouTube - HLS" match
+  // "youtube", and "Kick" matches "kick", without a data edit on either side.
+  function itemIsConnectable(itemName: string, prefixes: Set<string>): boolean {
     const n = itemName.trim().toLowerCase();
-    const id = provider.id.trim().toLowerCase();
-    const dn = provider.displayName.trim().toLowerCase();
-    return n === id || n === dn || n.startsWith(id) || n.startsWith(dn);
+    for (const key of prefixes) {
+      if (n === key || n.startsWith(key)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   // Float OAuth-connectable platforms (Twitch/Kick/YouTube) to the top of the
   // promoted Service picker instead of leaving them buried among ~15 common
-  // services. Falls back to the flat, unmodified list when there are no providers
-  // (no OAuth build) or none of them match an item.
+  // services. Falls back to the flat, unmodified list when none of the items match.
   const serviceGroups = $derived.by(() => {
     const items = serviceProp?.items ?? [];
-    if (providers.length === 0) {
-      return { connectable: [] as typeof items, rest: items };
-    }
-    const connectable = items.filter((it) => providers.some((p) => itemMatchesProvider(it.name ?? String(it.value), p)));
+    const prefixes = connectablePrefixes;
+    const connectable = items.filter((it) => itemIsConnectable(it.name ?? String(it.value), prefixes));
     if (connectable.length === 0) {
       return { connectable: [] as typeof items, rest: items };
     }

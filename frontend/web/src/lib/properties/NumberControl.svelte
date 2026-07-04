@@ -7,7 +7,9 @@
   // Covers both int and float; the descriptor carries min/max/step + a
   // slider-vs-scroller hint and an optional unit suffix.
   const p = $derived(prop as IntProperty | FloatProperty);
-  const num = $derived(Number(value ?? 0));
+  // Seed from the descriptor's default when the live value is absent so a real
+  // default doesn't collapse to a misleading 0 (e.g. "0 s").
+  const num = $derived(Number(value ?? p.value ?? 0));
   const step = $derived(p.step || 1);
   const slider = $derived(
     (p.type === "int" ? (p as IntProperty).int_type : (p as FloatProperty).float_type) === "slider",

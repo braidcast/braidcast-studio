@@ -227,7 +227,7 @@
         },
         {
             "name": "YouTube - HLS",
-            "common": false,
+            "common": true,
             "more_info_link": "https://developers.google.com/youtube/v3/live/guides/ingestion-protocol-comparison",
             "stream_key_link": "https://www.youtube.com/live_dashboard",
             "protocol": "HLS",

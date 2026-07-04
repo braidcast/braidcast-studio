@@ -1254,16 +1254,14 @@ input[type="color"] {
 .cv-field__c {
   min-width: 0;
 }
-.cv-field__c--end {
-  margin-left: auto;
-}
-.cv-field--row {
+/* Booleans: toggle + label grouped on the LEFT, never pushed to the far edge. */
+.cv-field--bool .cv-boolrow {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
+  gap: 12px;
+  cursor: pointer;
 }
-.cv-field--row .cv-field__l {
+.cv-field--bool .cv-field__l {
   margin-bottom: 0;
   flex-wrap: wrap;
 }

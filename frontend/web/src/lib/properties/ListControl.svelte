@@ -5,6 +5,10 @@
 
   const p = $derived(prop as ListProperty);
 
+  // Seed from the descriptor's own default when the live value is absent, so the
+  // select/segmented control never renders with nothing selected.
+  const cur = $derived(value ?? p.value);
+
   // A small choice set with short labels reads best as a segmented control (e.g.
   // rate control CBR/VBR/CQP); larger sets, or short sets whose labels are long
   // enough to overflow a button (Multipass, Tuning), stay a select. Both cutoffs
@@ -19,9 +23,10 @@
   );
 
   // <select> values are strings, but item values may be int/float/bool. Index by
-  // position and report the item's real typed value back. Match the current
-  // value to an item to seed the selection.
-  const selectedIdx = $derived(p.items.findIndex((it) => it.value === value));
+  // position and report the item's real typed value back. Match the current value
+  // to an item to seed the selection, comparing stringified so an int item.value
+  // still matches a value that arrived as a string (or vice versa).
+  const selectedIdx = $derived(p.items.findIndex((it) => String(it.value) === String(cur)));
 
   function pickByIndex(idxStr: string) {
     const idx = parseInt(idxStr, 10);
@@ -36,7 +41,7 @@
     type="text"
     class="cv-editable"
     list={`dl-${prop.name}`}
-    value={value == null ? "" : String(value)}
+    value={cur == null ? "" : String(cur)}
     disabled={!prop.enabled}
     title={prop.long_description ?? ""}
     oninput={(e) => onChange(prop.name, (e.currentTarget as HTMLInputElement).value)}
@@ -52,9 +57,9 @@
       <button
         type="button"
         class="cv-segbtn"
-        class:on={item.value === value}
+        class:on={String(item.value) === String(cur)}
         role="radio"
-        aria-checked={item.value === value}
+        aria-checked={String(item.value) === String(cur)}
         disabled={!prop.enabled || item.disabled}
         onclick={() => onChange(prop.name, item.value)}
       >

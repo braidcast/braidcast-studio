@@ -23,10 +23,15 @@
     exclude?.length ? descriptors.filter((d) => !exclude.includes(d.name)) : descriptors,
   );
 
-  // Resolve a property's live value from the flat settings map; descriptors also
-  // carry a `value`, but the settings map is the source of truth across re-fetch.
+  // Resolve a property's live value from the flat settings map. The settings map
+  // is the source of truth across re-fetch, but it can omit a key (or carry a
+  // null) the first time a form loads; fall back to the descriptor's own default
+  // so a control never renders blank/zero when a real default exists.
   function lookup(name: string): unknown {
-    return values[name];
+    const v = values[name];
+    if (v !== undefined && v !== null) return v;
+    const d = descriptors.find((desc) => desc.name === name) as { value?: unknown } | undefined;
+    return d?.value ?? v;
   }
 
   async function fetchProps() {
