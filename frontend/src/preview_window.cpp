@@ -42,7 +42,7 @@
 
 namespace {
 
-constexpr wchar_t kPreviewClassName[] = L"ObsMultiStreamPreview";
+constexpr wchar_t kPreviewClassName[] = L"BraidcastPreview";
 
 constexpr float kHandleRadius = 4.0f;     // handle half-size in screen px
 constexpr float kHandleSelRadius = 6.0f;  // hit-test radius (kHandleRadius * 1.5)

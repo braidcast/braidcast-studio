@@ -2,9 +2,9 @@
 // The product name is under trademark review — NEVER hardcode a product name
 // in markup. Reference these values everywhere instead.
 export const SITE = {
-  name: "Multistream",
+  name: "Braidcast",
   tagline: "Stream to every platform at once.",
-  domain: "example.com",
-  supportEmail: "hello@example.com",
+  domain: "braidcast.com",
+  supportEmail: "hello@braidcast.com",
   builtOn: "OBS Studio",
 } as const;

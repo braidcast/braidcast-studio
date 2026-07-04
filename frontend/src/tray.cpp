@@ -24,7 +24,7 @@ enum TrayCommand : UINT {
 	CmdExit,
 };
 
-constexpr wchar_t kTooltip[] = L"OBS MultiStream";
+constexpr wchar_t kTooltip[] = L"Braidcast";
 
 } // namespace
 

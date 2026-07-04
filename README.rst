@@ -1,35 +1,69 @@
-.. image:: .github/obs-multistream-logo.png
-   :alt: OBS MultiStream
+.. image:: .github/braidcast-logo.png
+   :alt: Braidcast
    :width: 160
    :align: center
 
-OBS MultiStream
-===============
+Braidcast
+=========
 
-OBS MultiStream — native multi-destination streaming, a fork of `OBS Studio
-<https://obsproject.com>`_.
+**Stream to every platform at once.**
 
-What is OBS MultiStream?
-------------------------
+Braidcast is a native multi-destination live-streaming studio: build one
+composited production and fan it out to Twitch, YouTube, Kick, and more,
+simultaneously.
 
-OBS MultiStream is an OBS Studio fork that streams one composited production
-to many destinations at once. Instead of a single output, it builds on
-multiple canvases (each with its own resolution, FPS, and encoder settings)
-and multiplexes the encoded output to every enabled destination bound to a
-canvas — encode once per canvas, fan out to many. The desktop UI is a
+What is Braidcast?
+------------------
+
+Instead of a single output, Braidcast is organized around **canvases** — each
+canvas has its own resolution, FPS, and encoder settings. You bind any number
+of streaming destinations to a canvas, and Braidcast **encodes once per canvas
+and multiplexes** the encoded stream out to every enabled destination bound to
+it. One production, many platforms, encoded once. The desktop UI is a
 CEF-hosted Svelte frontend.
 
-It is built on `OBS Studio <https://obsproject.com>`_ as its upstream base,
-inheriting its capture, compositing, encoding, and plugin ecosystem.
+Features
+--------
 
-It's distributed under the GNU General Public License v2 (or any later
-version) - see the accompanying COPYING file for more details.
+- **Multi-destination streaming** — go live to Twitch, YouTube, Kick, and other
+  RTMP/RTMPS destinations at the same time from a single Go Live.
+- **Canvas-based pipeline** — independent encode targets (resolution, FPS,
+  encoder) with per-canvas preview docks and scene layout.
+- **Encode-once fan-out** — encode a canvas once, multiplex to every enabled
+  destination bound to it.
+- **Platform accounts + Go Live** — OAuth sign-in and stream metadata for
+  supported platforms, with a single Go Live flow.
+- **Creator engagement** — unified multichat, aggregate viewer counts, an
+  events/alerts feed, and browser-source overlay widgets.
+
+Built on OBS Studio
+-------------------
+
+Braidcast is **forked from OBS Studio** (https://obsproject.com), licensed
+GPLv2+. It inherits OBS Studio's capture, compositing, encoding, and plugin
+ecosystem as its upstream base. Braidcast is an independent product and is not
+affiliated with or endorsed by the OBS Project.
+
+It is distributed under the GNU General Public License v2 (or any later
+version) — see the accompanying COPYING file for more details.
+
+Build
+-----
+
+Braidcast uses CMake presets (see ``CMakePresets.json``); there is no plain
+``cmake .`` flow. Fetch submodules, then configure and build for your platform,
+for example on Windows::
+
+    git submodule update --init --recursive
+    cmake --preset windows-x64
+    cmake --build --preset windows-x64 --config RelWithDebInfo
 
 Upstream OBS Studio resources
 -----------------------------
 
 The following are genuine OBS Studio (upstream) resources. They cover the
-underlying engine and contribution process, not fork-specific workflows:
+underlying engine and its contribution process, not Braidcast-specific
+workflows:
 
 - OBS Studio website: https://obsproject.com
 
@@ -43,28 +77,10 @@ underlying engine and contribution process, not fork-specific workflows:
 
 - OBS Studio Bug Tracker: https://github.com/obsproject/obs-studio/issues
 
-Contributing
-------------
-
-- OBS MultiStream is a fork. Coding and commit guidelines, code style, and
-  the code of conduct are inherited from OBS Studio (upstream):
-
-  - Coding and commit guidelines:
-    https://github.com/obsproject/obs-studio/blob/master/CONTRIBUTING.md
-
-  - Code style guidelines:
-    https://github.com/obsproject/obs-studio/blob/master/CODESTYLE.md
-
-  - Code of Conduct:
-    https://github.com/obsproject/obs-studio/blob/master/COC.rst
-
-- Developer/API documentation for the underlying engine can be found here:
-  https://obsproject.com/docs
-
-- If you would like to help fund or sponsor upstream OBS Studio, you can do
-  so via `Patreon <https://www.patreon.com/obsproject>`_, `OpenCollective
+- If you would like to help fund or sponsor upstream OBS Studio, you can do so
+  via `Patreon <https://www.patreon.com/obsproject>`_, `OpenCollective
   <https://opencollective.com/obsproject>`_, or `PayPal
-  <https://www.paypal.me/obsproject>`_.  See the OBS Studio `contribute page
+  <https://www.paypal.me/obsproject>`_. See the OBS Studio `contribute page
   <https://obsproject.com/contribute>`_ for more information.
 
 SAST Tools

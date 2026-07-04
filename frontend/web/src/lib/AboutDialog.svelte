@@ -24,8 +24,8 @@
 </script>
 
 <Modal title="About" {onClose} width={380}>
-  <div class="wordmark">OBS MultiStream</div>
-  <p class="tagline">Native multi-destination streaming, built on OBS Studio.</p>
+  <div class="wordmark">Braidcast</div>
+  <p class="tagline">Stream to every platform at once. Built on OBS Studio.</p>
 
   <dl class="facts">
     <div class="fact">

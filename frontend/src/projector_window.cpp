@@ -25,7 +25,7 @@
 
 namespace {
 
-constexpr wchar_t kProjectorClassName[] = L"ObsMultiStreamProjector";
+constexpr wchar_t kProjectorClassName[] = L"BraidcastProjector";
 
 // Default windowed client size before the user resizes it.
 constexpr int kWindowedClientW = 1280;

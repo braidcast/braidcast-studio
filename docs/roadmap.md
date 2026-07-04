@@ -1,4 +1,4 @@
-# OBS MultiStream — Roadmap
+# Braidcast — Roadmap
 
 Native multistreaming built into this OBS Studio fork via **canvas / output
 multiplexing**: canvases (resolution + fps + encoder settings) become the unit
@@ -7,7 +7,7 @@ of streaming, each wired to one or more destinations. Built on OBS's existing
 and plugin ecosystem.
 
 This is a **private fork**, not submitted upstream. The app is rebranded
-"OBS MultiStream."
+**Braidcast** (forked from OBS Studio, licensed GPLv2+).
 
 Status legend: ✅ done · 🔧 in progress · 🐛 open bug · 🔭 planned · 💭 in design
 · ⏸ deferred
@@ -687,7 +687,7 @@ unchanged). Output bindings *are* per-collection.
 ### Phase 6b — OBS Studio data importer ✅ COMPLETE 2026-06-28 (as Phase-7 backlog Item 17)
 
 A read-only importer: detect a real OBS Studio install (`%APPDATA%/obs-studio`) and
-recreate its data inside this fork (`%APPDATA%/obs-multistream`), **never modifying the
+recreate its data inside this fork (`%APPDATA%/braidcast`), **never modifying the
 original OBS data**. Built on the 6a multi-collection foundation.
 
 > **Shipped on `ui-redesign`** (backend `3738f09a0` `frontend/src/obs_importer.{cpp,hpp}`
@@ -830,7 +830,7 @@ review (SHIP_WITH_FIXES → all fixed; tip `0b4f22e2e`).
   system tray. **12** browser / custom docks (iframe-based, bridge-persisted). **13** F11
   fullscreen + scenes grid mode. **14** source extras — missing-file relink, per-source
   deinterlacing, scene-item color tag + row tint. **15** screenshot (program + per-source,
-  WIC PNG, `%APPDATA%/obs-multistream/screenshots/`, Ctrl+Shift+S, toast). **16** session log
+  WIC PNG, `%APPDATA%/braidcast/screenshots/`, Ctrl+Shift+S, toast). **16** session log
   writer + Log Viewer + `shell.revealPath`/Open Folder. **17** = **Phase 6b** OBS-Studio
   importer, read-only (see below).
 
@@ -965,7 +965,7 @@ this phase.
   natively, and reuses the portable old OAuth logic. New bridge methods (sketch):
   `oauth.connect{platform}` / `oauth.disconnect` / `oauth.status`, `streamMeta.getCategories`
   (search/typeahead), `streamMeta.get`/`streamMeta.set{profile, fields}`. Svelte owns the modal.
-- **Token store:** `%APPDATA%/obs-multistream/oauth_tokens.json` (ideally DPAPI-wrapped on
+- **Token store:** `%APPDATA%/braidcast/oauth_tokens.json` (ideally DPAPI-wrapped on
   Windows; at least not world-readable). Per-platform refresh handling.
 - **Account ↔ profile link:** a connected OAuth account attaches to a stream profile (which
   already carries platform + key); metadata editing for a destination requires its account

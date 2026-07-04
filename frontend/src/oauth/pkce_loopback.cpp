@@ -451,13 +451,13 @@ bool PkceLoopbackStrategy::authorize(const AuthContext &ctx, OAuthAccount &acct,
 	std::string bodyHtml;
 	if (ok) {
 		bodyHtml =
-			"<p>Authorization complete \xE2\x80\x94 you can close this window and return to OBS MultiStream.</p>";
+			"<p>Authorization complete \xE2\x80\x94 you can close this window and return to Braidcast.</p>";
 	} else {
 		bodyHtml =
-			"<p>Authorization failed \xE2\x80\x94 close this window and return to OBS MultiStream to try again.</p>";
+			"<p>Authorization failed \xE2\x80\x94 close this window and return to Braidcast to try again.</p>";
 	}
 	const std::string html =
-		"<!doctype html><html><head><meta charset=\"utf-8\"><title>OBS MultiStream</title></head>"
+		"<!doctype html><html><head><meta charset=\"utf-8\"><title>Braidcast</title></head>"
 		"<body style=\"font-family:system-ui,sans-serif;padding:2rem\">" +
 		bodyHtml + "</body></html>";
 	const std::string response = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: " +

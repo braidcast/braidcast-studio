@@ -7,12 +7,12 @@ BEGIN
   BEGIN
     BLOCK "040904B0"
     BEGIN
-      VALUE "CompanyName", "OBS MultiStream"
-      VALUE "FileDescription", "OBS MultiStream"
+      VALUE "CompanyName", "Braidcast"
+      VALUE "FileDescription", "Braidcast"
       VALUE "FileVersion", "${OBS_VERSION_CANONICAL}"
-      VALUE "InternalName", "obs-multistream"
-      VALUE "OriginalFilename", "obs-multistream.exe"
-      VALUE "ProductName", "OBS MultiStream"
+      VALUE "InternalName", "braidcast"
+      VALUE "OriginalFilename", "braidcast.exe"
+      VALUE "ProductName", "Braidcast"
       VALUE "ProductVersion", "${OBS_VERSION_CANONICAL}"
       VALUE "Comments", "Free and open source software for video recording and live streaming"
       VALUE "LegalCopyright", "${OBS_LEGAL_COPYRIGHT}"

@@ -29,7 +29,7 @@ namespace {
 
 constexpr int kHostWidth = 1280;
 constexpr int kHostHeight = 720;
-constexpr wchar_t kHostClassName[] = L"ObsMultiStreamShell";
+constexpr wchar_t kHostClassName[] = L"BraidcastShell";
 constexpr UINT_PTR kSizeProbeTimerId = 1;
 constexpr UINT_PTR kSmokeQuitTimerId = 2;
 
@@ -218,7 +218,7 @@ HWND CreateHostWindow(HINSTANCE instance)
 	const DWORD style = WS_OVERLAPPEDWINDOW;
 	AdjustWindowRect(&rc, style, FALSE);
 
-	return CreateWindowExW(0, kHostClassName, L"OBS MultiStream", style, CW_USEDEFAULT, CW_USEDEFAULT,
+	return CreateWindowExW(0, kHostClassName, L"Braidcast", style, CW_USEDEFAULT, CW_USEDEFAULT,
 			       rc.right - rc.left, rc.bottom - rc.top, nullptr, nullptr, instance, nullptr);
 }
 

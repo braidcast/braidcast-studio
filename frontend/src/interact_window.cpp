@@ -18,7 +18,7 @@
 
 namespace {
 
-constexpr wchar_t kInteractClassName[] = L"ObsMultiStreamInteract";
+constexpr wchar_t kInteractClassName[] = L"BraidcastInteract";
 
 // Default client size before the source's aspect is known.
 constexpr int kDefaultClientW = 1280;

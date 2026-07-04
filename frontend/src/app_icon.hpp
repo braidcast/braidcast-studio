@@ -4,7 +4,7 @@
 
 // The embedded application icon's resource id. Must match the numeric id used in
 // cmake/windows/obs.rc.in. Loaded onto each top-level window class so the title-bar
-// caption shows the OBS MultiStream mark (the taskbar already resolves the exe's
+// caption shows the Braidcast mark (the taskbar already resolves the exe's
 // icon resource; the caption uses the window class hIcon/hIconSm, which are null
 // unless set here).
 inline constexpr WORD kAppIconResId = 101;

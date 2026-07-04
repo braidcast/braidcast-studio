@@ -10,7 +10,7 @@
 #include "window_chrome.hpp"
 
 namespace {
-constexpr wchar_t kDetachedClassName[] = L"ObsMultiStreamDetached";
+constexpr wchar_t kDetachedClassName[] = L"BraidcastDetached";
 WindowManager *g_wm = nullptr;
 
 ATOM RegisterDetachedClass(HINSTANCE instance)
@@ -80,7 +80,7 @@ int WindowManager::Detach(const std::string &dockId)
 	RECT rc = {0, 0, 960, 540};
 	const DWORD style = WS_OVERLAPPEDWINDOW;
 	AdjustWindowRect(&rc, style, FALSE);
-	HWND hwnd = CreateWindowExW(0, kDetachedClassName, L"OBS MultiStream — Detached", style, CW_USEDEFAULT,
+	HWND hwnd = CreateWindowExW(0, kDetachedClassName, L"Braidcast — Detached", style, CW_USEDEFAULT,
 				   CW_USEDEFAULT, rc.right - rc.left, rc.bottom - rc.top, nullptr, nullptr, instance_,
 				   nullptr);
 	if (!hwnd) {
