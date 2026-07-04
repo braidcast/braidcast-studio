@@ -17,7 +17,7 @@
 //   - backfill() seeds recent Super Chats + subscribers once on connect;
 //   - poll() re-fetches them on a ~90s cadence (the store dedupes, so overlap with
 //     backfill and with the live chat forward is harmless).
-// Owned by YouTubeProvider and handed to the EventHub via StreamProvider::events();
+// Constructed per account by YouTubeProvider::makeEvents and owned by the EventHub;
 // reuses the provider's SendAuthed for the same proactive-refresh + reactive-401
 // path the metadata/chat calls use.
 namespace OAuth {

@@ -197,8 +197,8 @@ public:
 		return false;
 	}
 
-	// The platform-specific channel reference the hub passes into chat()->connect for
-	// `acct`: the channel login/slug for Twitch IRC / Kick Pusher, the per-broadcast
+	// The platform-specific channel reference the hub passes into the chat transport's
+	// connect() for `acct`: the channel login/slug for Twitch IRC / Kick Pusher, the per-broadcast
 	// liveChatId for YouTube. Default = the account login; providers whose chat keys
 	// off something else override it, keeping the hub free of per-platform
 	// channel-resolution branches.

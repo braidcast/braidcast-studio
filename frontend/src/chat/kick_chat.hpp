@@ -8,9 +8,9 @@
 #include "chat_transport.hpp"
 
 // Kick chat transport (Phase 9.0): reads live chat off Kick's Pusher WebSocket
-// and sends via Kick's official REST chat API. Owned by KickProvider and returned
-// from KickProvider::chat(); the ChatHub runs connect() on a worker thread between
-// go-live and stop.
+// and sends via Kick's official REST chat API. Constructed per account by
+// KickProvider::makeChat and owned by the ChatHub; the hub runs connect() on a worker
+// thread between go-live and stop.
 //
 // Read path is REVERSE-ENGINEERED from the Kick web client (Pusher app key /
 // cluster, the kick.com/api/v2 chatroom-id lookup, the `[emote:id:name]` markup);

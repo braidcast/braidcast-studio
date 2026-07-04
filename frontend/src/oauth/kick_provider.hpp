@@ -4,11 +4,17 @@
 #include <memory>
 #include <string>
 
-#include "../chat/kick_chat.hpp"
-#include "../events/kick_events.hpp"
 #include "../http_client.hpp"
 #include "pkce_loopback.hpp"
 #include "provider.hpp"
+
+// The Kick chat/event transports are constructed per account in makeChat/makeEvents,
+// defined out-of-line in the .cpp where the complete types are available -- so this
+// header only forward-declares the chat transport for the friend grant below (the
+// makeChat/makeEvents return types are the base interfaces provider.hpp forward-declares).
+namespace Chat {
+class KickChat;
+}
 
 // The Kick stream provider: auth-code + PKCE over a loopback redirect (Kick is a
 // confidential client, so the token calls also carry a client_secret) plus the

@@ -2,6 +2,8 @@
 
 #include <array>
 
+#include "../chat/kick_chat.hpp"
+#include "../events/kick_events.hpp"
 #include "../http_client.hpp"
 #include "../provider_creds.hpp"
 

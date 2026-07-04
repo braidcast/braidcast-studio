@@ -7667,7 +7667,7 @@ try {
 
 	// Phase 9.2a: start the account's live-events transport now that it is connected
 	// (the events feed is account-lifecycle, not go-live). No-op until a provider
-	// returns a non-null events() transport.
+	// returns a non-null makeEvents(acct) transport.
 	Events::Hub().StartAccount(accountId, acct);
 
 	// Pre-live chat: bring the new account's chat transport up immediately (not at

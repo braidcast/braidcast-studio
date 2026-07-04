@@ -11,12 +11,13 @@
 // The per-platform live-event transport interface (Phase 9.2a), the sibling of
 // ChatTransport. One concrete transport per platform (Twitch EventSub WS, Kick
 // Pusher, YouTube REST) lives in its own file under frontend/src/events/ and is
-// owned by that platform's StreamProvider (returned from StreamProvider::events()).
-// The EventHub runs each transport on its own worker on the ACCOUNT-CONNECT
+// constructed per account by that platform's StreamProvider (StreamProvider::makeEvents),
+// then owned by the EventHub (as a shared_ptr shared with its worker) for the account's
+// live session. The EventHub runs each transport on its own worker on the ACCOUNT-CONNECT
 // lifecycle (not go-live, unlike ChatHub), normalizes every source into
 // NormalizedEvent, and fans it to the store + JS. A transport never touches the
 // hub: the hub passes in the emit/cancel context, so adding a platform is purely
-// one new file + the provider's events() override.
+// one new file + the provider's makeEvents() override.
 namespace Events {
 
 // The runtime context the hub hands a transport for one live connection. `emit`

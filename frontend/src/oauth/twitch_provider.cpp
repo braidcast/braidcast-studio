@@ -2,6 +2,8 @@
 
 #include <array>
 
+#include "../chat/twitch_chat.hpp"
+#include "../events/twitch_events.hpp"
 #include "../http_client.hpp"
 #include "../provider_creds.hpp"
 

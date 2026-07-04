@@ -670,7 +670,7 @@ bool ObsBootstrap::Start()
 
 	// Phase 9.2a: resume the live-events feed for accounts connected in a prior
 	// session (the events feed is account-lifecycle, always-on). Run once here now
-	// that the registry + token store are ready; inert until a provider's events()
+	// that the registry + account store are ready; inert until a provider's makeEvents()
 	// transport is non-null (9.2b+).
 	Events::Hub().StartConnectedAccounts();
 

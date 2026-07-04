@@ -9,8 +9,8 @@
 #include "event_transport.hpp"
 
 // The Kick Pusher event transport (Phase 9.2d): the always-on best-effort source
-// for sub / gifted-sub / host(raid) / (rarely) follow. Owned by KickProvider and
-// handed to the EventHub via StreamProvider::events(). connect() resolves the
+// for sub / gifted-sub / host(raid) / (rarely) follow. Constructed per account by
+// KickProvider::makeEvents and owned by the EventHub. connect() resolves the
 // slug to its chatroom id + numeric channel id, opens ITS OWN Pusher socket
 // (separate from kick_chat's -- events are account-lifecycle, chat is go-live, so
 // when live there are two Pusher connections to Kick), subscribes to

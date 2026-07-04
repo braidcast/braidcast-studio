@@ -11,8 +11,8 @@
 #include "event_transport.hpp"
 
 // The Twitch EventSub-over-WebSocket event transport (Phase 9.2b): the always-on
-// real-time source for follow/sub/resub/subgift/cheer/raid. Owned by TwitchProvider
-// and handed to the EventHub via StreamProvider::events(). connect() opens a single
+// real-time source for follow/sub/resub/subgift/cheer/raid. Constructed per account by
+// TwitchProvider::makeEvents and owned by the EventHub. connect() opens a single
 // socket to wss://eventsub.wss.twitch.tv/ws, reads the session_welcome to learn the
 // session id, then POSTs one Helix subscription per event type bound to that session
 // (attempt-and-skip on 401/403 so a missing scope degrades gracefully rather than

@@ -10,8 +10,8 @@
 #include "ws_client.hpp"
 
 // The Twitch chat transport (Phase 9.0): IRC-over-WebSocket against
-// wss://irc-ws.chat.twitch.tv:443, read + send over one persistent socket. Owned
-// by TwitchProvider and handed to the ChatHub via StreamProvider::chat(). The hub
+// wss://irc-ws.chat.twitch.tv:443, read + send over one persistent socket.
+// Constructed per account by TwitchProvider::makeChat and owned by the ChatHub. The hub
 // runs connect() on a dedicated worker between go-live and stop; send() is invoked
 // from a separate hub worker, so every libcurl handle access is serialized by
 // wsMutex_ (libcurl easy handles are not safe for concurrent use). connect() is

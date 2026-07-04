@@ -4,11 +4,17 @@
 #include <memory>
 #include <string>
 
-#include "../chat/twitch_chat.hpp"
-#include "../events/twitch_events.hpp"
 #include "../http_client.hpp"
 #include "device_code.hpp"
 #include "provider.hpp"
+
+// The Twitch chat/event transports are constructed per account in makeChat/makeEvents,
+// defined out-of-line in the .cpp where the complete types are available -- so this
+// header only forward-declares the event transport for the friend grant below (the
+// makeChat/makeEvents return types are the base interfaces provider.hpp forward-declares).
+namespace Events {
+class TwitchEvents;
+}
 
 // The Twitch stream provider: device-code auth (no secret) plus the net-new
 // Helix stream-metadata hooks (title / category / tags / language / content

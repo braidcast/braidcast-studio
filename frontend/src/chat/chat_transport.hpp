@@ -10,15 +10,16 @@
 
 // The per-platform chat transport interface (Phase 9.0). One concrete transport
 // per platform (Twitch IRC-over-WebSocket, YouTube liveChat poll, Kick Pusher)
-// lives in its own file under frontend/src/chat/ and is owned by that platform's
-// StreamProvider (returned from StreamProvider::chat()). The ChatHub runs each
-// live transport on its own worker thread between go-live and stop, normalizes
-// the stream into one model, and fans it to JS.
+// lives in its own file under frontend/src/chat/ and is constructed per account by
+// that platform's StreamProvider (StreamProvider::makeChat), then owned by the
+// ChatHub (as a shared_ptr shared with its worker) for the account's live session.
+// The ChatHub runs each live transport on its own worker thread between go-live and
+// stop, normalizes the stream into one model, and fans it to JS.
 //
 // A transport NEVER touches the ChatHub: the hub passes in the emit/cancel
 // context and the platform-specific `channelRef` it resolved via
 // StreamProvider::chatChannelRef, so adding a platform is purely one new file +
-// the provider's chat() override.
+// the provider's makeChat() override.
 namespace Chat {
 
 using json = nlohmann::json;
