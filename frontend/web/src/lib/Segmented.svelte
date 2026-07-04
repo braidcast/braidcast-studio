@@ -14,14 +14,16 @@
     options,
     value,
     onChange,
+    size = "sm",
   }: {
     options: SegmentedOption[];
     value: string;
     onChange: (v: string) => void;
+    size?: "sm" | "md";
   } = $props();
 </script>
 
-<div class="seg" role="radiogroup">
+<div class="seg" data-size={size} role="radiogroup">
   {#each options as opt (opt.value)}
     <button
       type="button"
@@ -61,5 +63,9 @@
   .cell.on {
     background: color-mix(in srgb, var(--color-accent) 18%, transparent);
     color: var(--color-accent);
+  }
+  .seg[data-size="md"] .cell {
+    padding: 9px 12px;
+    font-size: 11px;
   }
 </style>

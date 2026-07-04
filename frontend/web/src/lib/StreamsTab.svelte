@@ -167,6 +167,33 @@
       .map((s) => ({ label: s.name, value: s.id })),
   );
 
+  // Does a promoted-picker item match an OAuth provider? Case-insensitive: exact or
+  // prefix match against either the provider's id or its displayName, so "YouTube -
+  // RTMPS" matches provider "YouTube" without a data edit on either side.
+  function itemMatchesProvider(itemName: string, provider: OAuthProvider): boolean {
+    const n = itemName.trim().toLowerCase();
+    const id = provider.id.trim().toLowerCase();
+    const dn = provider.displayName.trim().toLowerCase();
+    return n === id || n === dn || n.startsWith(id) || n.startsWith(dn);
+  }
+
+  // Float OAuth-connectable platforms (Twitch/Kick/YouTube) to the top of the
+  // promoted Service picker instead of leaving them buried among ~15 common
+  // services. Falls back to the flat, unmodified list when there are no providers
+  // (no OAuth build) or none of them match an item.
+  const serviceGroups = $derived.by(() => {
+    const items = serviceProp?.items ?? [];
+    if (providers.length === 0) {
+      return { connectable: [] as typeof items, rest: items };
+    }
+    const connectable = items.filter((it) => providers.some((p) => itemMatchesProvider(it.name ?? String(it.value), p)));
+    if (connectable.length === 0) {
+      return { connectable: [] as typeof items, rest: items };
+    }
+    const connectableValues = new Set(connectable.map((it) => String(it.value)));
+    return { connectable, rest: items.filter((it) => !connectableValues.has(String(it.value))) };
+  });
+
   // Prefer "Streaming Services" (rtmp_common) as the new-profile default — most users
   // pick a platform, not a custom RTMP URL. serviceTypes are sorted by display name,
   // so match by id (then a "stream"-named type) rather than trusting index 0.
@@ -483,7 +510,7 @@
 
         <div class="field">
           <span class="flabel">Connection type</span>
-          <Segmented options={connTypeOptions} value={fService} onChange={(v) => void changeConnType(v)} />
+          <Segmented options={connTypeOptions} value={fService} onChange={(v) => void changeConnType(v)} size="md" />
           <span class="fhint">How this profile reaches its destination.</span>
         </div>
 
@@ -493,9 +520,22 @@
               <div class="field">
                 <span class="flabel">Service</span>
                 <select value={serviceValue} onchange={(e) => void changeService(e.currentTarget.value)}>
-                  {#each serviceProp.items as it (String(it.value))}
-                    <option value={String(it.value)} disabled={it.disabled}>{it.name ?? String(it.value)}</option>
-                  {/each}
+                  {#if serviceGroups.connectable.length > 0}
+                    <optgroup label="Connectable accounts">
+                      {#each serviceGroups.connectable as it (String(it.value))}
+                        <option value={String(it.value)} disabled={it.disabled}>{it.name ?? String(it.value)}</option>
+                      {/each}
+                    </optgroup>
+                    <optgroup label="All services">
+                      {#each serviceGroups.rest as it (String(it.value))}
+                        <option value={String(it.value)} disabled={it.disabled}>{it.name ?? String(it.value)}</option>
+                      {/each}
+                    </optgroup>
+                  {:else}
+                    {#each serviceGroups.rest as it (String(it.value))}
+                      <option value={String(it.value)} disabled={it.disabled}>{it.name ?? String(it.value)}</option>
+                    {/each}
+                  {/if}
                 </select>
                 <div class="show-all">
                   <ToggleSwitch size="sm" checked={showAll} onchange={(v) => void changeShowAll(v)} />
@@ -853,6 +893,12 @@
   input,
   select {
     width: 100%;
+  }
+  optgroup {
+    color: var(--color-muted);
+  }
+  option {
+    color: var(--color-text);
   }
   .fhint {
     display: block;
