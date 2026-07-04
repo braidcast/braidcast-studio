@@ -1225,6 +1225,62 @@ ships and the platform accounts/scopes are proven.
 
 ---
 
+## Phase 10 — Account entity, public website & OAuth compliance 🔧 in progress (2026-07-04)
+
+Hardening the platform-integration layer for a real (verifiable) public launch:
+a first-class Account entity, a public marketing/legal website, and the OAuth
+verification groundwork. Prompted by an entity-independence audit + the Google
+OAuth verification question.
+
+### 10.1 — First-class Account entity 🔧 Phase 1 done
+Replaces the `profileUuid`-as-account-identity conflation (audit finding: three
+subsystems keyed the same account three ways; a 2nd same-platform account
+evicted/deadlocked). `accountId = "providerId:userId"` becomes the single identity
+across a renamed `AccountStore`, all three hubs (chat/events/viewers), and
+per-account transport instances; stream profiles reference an account by id, which
+also delivers **connect-once account reuse** (deferred 10e). Spec + plan:
+`docs/superpowers/{specs,plans}/2026-07-04-account-entity*` (gitignored).
+- ✅ **Phase 1** — entity + `AccountStore` re-key + `ensureFresh` cleanup +
+  `StreamProfile.accountId` + bridge connect/status/disconnect rework
+  (`6d10529e1`, build-green + smoke `leaks: 2`, spec-review SPEC-COMPLIANT).
+- 🔧 **Phase 2+3** — provider transport factories (`makeChat`/`makeEvents` per
+  account, hub-owned `shared_ptr` shared with the worker) + accountId-keyed hubs +
+  YouTube per-account `BroadcastState`.
+- 🔭 **Phase 4** — `oauth.accounts`/`linkAccount` + Streams reuse picker +
+  disconnect-with-refs confirm. **Folds in a required fix:** `streamMeta.get/set`
+  must take `accountId` directly (they currently read the unguarded profile store
+  off the async worker lane — a latent UAF; see the spec-review).
+
+### 10.2 — Public website (Astro) 🔭 scaffolding
+A lightweight, high-Lighthouse **Astro** static site (minimal/zero client JS). Its
+jobs: (1) the **OAuth homepage + privacy policy + terms** URLs Google/Meta
+verification require; (2) later, host the **Facebook Login** flow (Meta needs a
+public privacy-policy + data-deletion callback URL). Built **brand-agnostic** (one
+`BRAND` config constant) because the product name is gated on the trademark review
+below. Lives in `website/`.
+
+### 10.3 — OAuth verification & compliance 🔭 research
+- **Google/YouTube:** one **sensitive** scope (`youtube.force-ssl`) — **not**
+  restricted, so **no CASA security audit** ever. Nothing owed while the OAuth
+  consent screen stays in **Testing** mode (≤100 testers; note the 7-day
+  refresh-token expiry). Full sensitive-scope verification (homepage + privacy
+  policy + verified domain + demo video) owed only at public launch.
+- **Twitch / Kick:** app-registration requirements captured in the research doc.
+- **Facebook/Meta (8f, still deferred):** App Review + Business Verification +
+  data-deletion callback — needs the website first.
+- Grounded research: `docs/research/oauth-verification-requirements.md`.
+
+### 10.4 — Brand / trademark clearance 🔭 gating the name
+**"OBS" is the OBS Project's trademark; GPLv2 licenses the code, not the name.** A
+public product / OAuth app almost certainly **cannot** ship as "OBS MultiStreamer"
+(both the OBS trademark policy and Google/Meta OAuth app-name/brand rules are at
+issue). Likely outcome: a **distinctive standalone brand** that merely *describes*
+itself as "built on OBS Studio" (nominative fair use) in body copy. Decision gates
+the website name/domain and the OAuth consent-screen app name. Grounded research:
+`docs/research/branding-trademark.md`.
+
+---
+
 ## Backlog & deferred decisions ⏸
 
 - ⏸ **GoLive / Multitrack Video** — currently dormant. It's Twitch Enhanced
