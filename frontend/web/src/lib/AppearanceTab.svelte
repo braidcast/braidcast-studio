@@ -3,11 +3,12 @@
   import { ACCENT_VALUES } from "./theme/presets";
   import type { AccentName, ThemeMode, ThemeTokens } from "./theme/tokens";
   import Segmented, { type SegmentedOption } from "./Segmented.svelte";
+  import Icon from "./dock/Icon.svelte";
 
-  // Decision C/D: the full per-token theme editor lives inline here. Quick axes
-  // (accent / mode / density) sit at the top; the complete palette, typography,
-  // element styles, preset save/delete, and a live preview follow below. Every
-  // change is a live tweak on the global theme store (applies + persists at once).
+  // Variant C — Control-Panel Grid. A dense telemetry strip on top (accent /
+  // mode / density / element-style toggles), then three working columns:
+  // palette editor, typography + presets, and a live preview. Everything is a
+  // live tweak on the global theme store (applies + persists at once).
 
   // --- quick axes ------------------------------------------------------------
 
@@ -25,7 +26,7 @@
 
   // --- data-driven axis tables (DRY) -----------------------------------------
 
-  // One entry per color token; the short label sits beneath the swatch (mock .sw span).
+  // One entry per color token; the short label is the source-of-truth name.
   const PALETTE: { key: keyof ThemeTokens; label: string }[] = [
     { key: "colorBase", label: "base" },
     { key: "colorRail", label: "rail" },
@@ -42,6 +43,17 @@
     { key: "meterGreen", label: "mtr-grn" },
     { key: "meterYellow", label: "mtr-yel" },
     { key: "meterRed", label: "mtr-red" },
+  ];
+
+  // Palette tokens grouped by role (Variant C group micro-labels). Keys resolve
+  // their display label + live value from PALETTE, keeping it the single source.
+  const PALETTE_LABEL = new Map(PALETTE.map((p) => [p.key, p.label]));
+  const PALETTE_GROUPS: { group: string; keys: (keyof ThemeTokens)[] }[] = [
+    { group: "Surfaces", keys: ["colorBase", "colorRail", "colorSurface", "colorSurface2"] },
+    { group: "Lines", keys: ["colorBorder", "colorBorder2"] },
+    { group: "Text", keys: ["colorText", "colorDim", "colorMuted"] },
+    { group: "Accent & Status", keys: ["colorAccent", "colorAccentContrast", "colorLive"] },
+    { group: "Meters", keys: ["meterGreen", "meterYellow", "meterRed"] },
   ];
 
   // Font stacks the presets use plus a few common extras. If the live value isn't
@@ -126,420 +138,612 @@
 </script>
 
 <div class="appearance">
-  <h2 class="title">Appearance</h2>
+  <!-- crumb header -->
+  <div class="crumb">
+    <span class="dot"></span>
+    <span class="c1">Settings</span>
+    <span class="sep">/</span>
+    <h2 class="c2">Appearance</h2>
+    <span class="spacer"></span>
+    <span class="live-note">Edits apply live · saved to theme</span>
+  </div>
 
-  <section class="block">
-    <div class="block-label">Accent</div>
-    <div class="accent-swatches">
-      {#each ACCENTS as a (a)}
-        <button
-          class="swatch"
-          class:on={themeStore.tokens.accent === a}
-          title={a}
-          aria-label={a}
-          aria-pressed={themeStore.tokens.accent === a}
-          style:background={ACCENT_VALUES[a].accent}
-          onclick={() => themeStore.setToken("accent", a)}
-        ></button>
-      {/each}
+  <!-- telemetry strip -->
+  <div class="strip">
+    <div class="unit">
+      <div class="flabel">Accent</div>
+      <div class="accents">
+        {#each ACCENTS as a (a)}
+          <button
+            class="acc"
+            class:on={themeStore.tokens.accent === a}
+            title={a}
+            aria-label={a}
+            aria-pressed={themeStore.tokens.accent === a}
+            style:background={ACCENT_VALUES[a].accent}
+            onclick={() => themeStore.setToken("accent", a)}
+          ></button>
+        {/each}
+      </div>
     </div>
-    <p class="note">
-      Accent, mode, and density are live tweaks applied to the whole interface. Light mode is supported for venues that
-      need it.
-    </p>
-  </section>
-
-  <section class="block row2">
-    <div class="axis">
-      <div class="block-label">Mode</div>
+    <div class="unit">
+      <div class="flabel">Mode</div>
       <Segmented
         options={MODE_OPTS}
         value={themeStore.tokens.mode}
         onChange={(v) => themeStore.setToken("mode", v as ThemeMode)}
       />
     </div>
-    <div class="axis">
-      <div class="block-label">Density</div>
+    <div class="unit">
+      <div class="flabel">Density</div>
       <Segmented
         options={DENSITY_OPTS}
         value={themeStore.tokens.density}
         onChange={(v) => themeStore.setToken("density", v as ThemeTokens["density"])}
       />
     </div>
-  </section>
+    <div class="unit elem">
+      <div class="flabel">Element Styles</div>
+      <div class="mini">
+        <Segmented
+          options={METER_OPTS}
+          value={themeStore.tokens.meterStyle}
+          onChange={(v) => themeStore.setToken("meterStyle", v as ThemeTokens["meterStyle"])}
+        />
+        <Segmented
+          options={SELECTION_OPTS}
+          value={themeStore.tokens.selectionStyle}
+          onChange={(v) => themeStore.setToken("selectionStyle", v as ThemeTokens["selectionStyle"])}
+        />
+        <Segmented
+          options={BORDER_OPTS}
+          value={themeStore.tokens.borderWeight}
+          onChange={(v) => themeStore.setToken("borderWeight", v)}
+        />
+      </div>
+    </div>
+  </div>
 
-  <div class="block-label">Theme editor</div>
-  <p class="note editor-note">
-    Full control over individual colors, fonts, and element styles. Edits apply live across the whole interface; save a
-    set of tokens as a named preset to reuse it.
-  </p>
-
-  <!-- inline per-token editor (was the Theme Editor modal) -->
-  <div class="wrap">
-    <!-- left: editor groups -->
-    <div class="editor">
-      <section class="grp">
-        <div class="glbl">Palette</div>
-        <div class="palette-row">
-          {#each PALETTE as p (p.key)}
-            <label class="sw" title={p.label}>
-              <input
-                type="color"
-                value={themeStore.tokens[p.key]}
-                oninput={(e) => onColorInput(p.key, e)}
-                aria-label={p.label}
-              />
-              <span>{p.label}</span>
-            </label>
+  <!-- three working columns -->
+  <div class="cols">
+    <!-- col 1: palette -->
+    <div class="col">
+      <section class="panel">
+        <div class="panel__hd">
+          <h3>Palette</h3>
+          <span class="count">{PALETTE.length} tokens</span>
+        </div>
+        <div class="panel__bd">
+          {#each PALETTE_GROUPS as grp (grp.group)}
+            <div class="tokgroup">
+              <div class="tokgroup__l">{grp.group}</div>
+              <div class="tokgrid">
+                {#each grp.keys as key (key)}
+                  <label class="tok" style:background={themeStore.tokens[key]} title={PALETTE_LABEL.get(key)}>
+                    <input
+                      type="color"
+                      value={themeStore.tokens[key]}
+                      oninput={(e) => onColorInput(key, e)}
+                      aria-label={PALETTE_LABEL.get(key)}
+                    />
+                    <span class="tok__cap">
+                      <span class="tok__name">{PALETTE_LABEL.get(key)}</span>
+                      <span class="tok__hex">{String(themeStore.tokens[key]).toUpperCase()}</span>
+                    </span>
+                  </label>
+                {/each}
+              </div>
+            </div>
           {/each}
         </div>
       </section>
-
-      <section class="grp">
-        <div class="glbl">Typography</div>
-        <div class="ctl">
-          <span class="ctl-lbl">UI font</span>
-          <select
-            class="pick"
-            value={themeStore.tokens.fontUi}
-            onchange={(e) => themeStore.setToken("fontUi", (e.currentTarget as HTMLSelectElement).value)}
-          >
-            {#each uiFontOptions as o (o.value)}
-              <option value={o.value}>{o.label}</option>
-            {/each}
-          </select>
-        </div>
-        <div class="ctl">
-          <span class="ctl-lbl">Mono font</span>
-          <select
-            class="pick"
-            value={themeStore.tokens.fontMono}
-            onchange={(e) => themeStore.setToken("fontMono", (e.currentTarget as HTMLSelectElement).value)}
-          >
-            {#each monoFontOptions as o (o.value)}
-              <option value={o.value}>{o.label}</option>
-            {/each}
-          </select>
-        </div>
-        <div class="ctl">
-          <span class="ctl-lbl">Label case</span>
-          <Segmented
-            options={LABEL_CASE_OPTS}
-            value={themeStore.tokens.labelCase}
-            onChange={(v) => themeStore.setToken("labelCase", v as ThemeTokens["labelCase"])}
-          />
-        </div>
-        <div class="ctl">
-          <span class="ctl-lbl">Spacing</span>
-          <Segmented
-            options={LETTER_SPACING_OPTS}
-            value={themeStore.tokens.letterSpacing}
-            onChange={(v) => themeStore.setToken("letterSpacing", v)}
-          />
-        </div>
-      </section>
-
-      <section class="grp">
-        <div class="glbl">Element styles</div>
-        <div class="ctl">
-          <span class="ctl-lbl">Meter</span>
-          <Segmented
-            options={METER_OPTS}
-            value={themeStore.tokens.meterStyle}
-            onChange={(v) => themeStore.setToken("meterStyle", v as ThemeTokens["meterStyle"])}
-          />
-        </div>
-        <div class="ctl">
-          <span class="ctl-lbl">Selection</span>
-          <Segmented
-            options={SELECTION_OPTS}
-            value={themeStore.tokens.selectionStyle}
-            onChange={(v) => themeStore.setToken("selectionStyle", v as ThemeTokens["selectionStyle"])}
-          />
-        </div>
-        <div class="ctl">
-          <span class="ctl-lbl">Border</span>
-          <Segmented
-            options={BORDER_OPTS}
-            value={themeStore.tokens.borderWeight}
-            onChange={(v) => themeStore.setToken("borderWeight", v)}
-          />
-        </div>
-      </section>
-
-      <div class="presets">
-        {#each themeStore.allThemes as t (t.id)}
-          <button class="preset" class:on={themeStore.activeId === t.id} onclick={() => themeStore.selectPreset(t.id)}>
-            <span class="preset-name">{t.name}</span>
-            {#if t.id.startsWith("custom-")}
-              <span
-                class="preset-del"
-                role="button"
-                tabindex="0"
-                title="Delete theme"
-                onclick={(e) => {
-                  e.stopPropagation();
-                  themeStore.deleteCustom(t.id);
-                }}
-                onkeydown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.stopPropagation();
-                    themeStore.deleteCustom(t.id);
-                  }
-                }}>✕</span
-              >
-            {/if}
-          </button>
-        {/each}
-        {#if saving}
-          <input
-            class="save-input"
-            placeholder="Theme name"
-            bind:value={saveName}
-            onkeydown={onSaveKey}
-            onblur={commitSave}
-            use:focusOnMount
-          />
-        {:else}
-          <button class="preset save" onclick={beginSave}>+ Save…</button>
-        {/if}
-      </div>
     </div>
 
-    <!-- right: live preview (built entirely from token vars; repaints live) -->
-    <div class="prev-col">
-      <p class="plbl">Live preview</p>
-      <div class="prev">
-        <div class="prev-hd"><span>Scenes</span><span>⧉ ✕</span></div>
-        <div class="prev-bd">
-          <div class="prev-it">Intro</div>
-          <div class="prev-it sel">Live · Main</div>
-          <div class="prev-it">BRB</div>
-          <div class="prev-btn">● Go Live</div>
-          <div class="prev-mt"><div class="prev-mt-unlit"></div></div>
+    <!-- col 2: typography + presets -->
+    <div class="col">
+      <section class="panel">
+        <div class="panel__hd"><h3>Typography</h3></div>
+        <div class="panel__bd">
+          <div class="crow stack">
+            <span class="crow__l">UI Font</span>
+            <select
+              class="pick"
+              value={themeStore.tokens.fontUi}
+              onchange={(e) => themeStore.setToken("fontUi", (e.currentTarget as HTMLSelectElement).value)}
+            >
+              {#each uiFontOptions as o (o.value)}
+                <option value={o.value}>{o.label}</option>
+              {/each}
+            </select>
+          </div>
+          <div class="crow stack">
+            <span class="crow__l">Mono Font</span>
+            <select
+              class="pick"
+              value={themeStore.tokens.fontMono}
+              onchange={(e) => themeStore.setToken("fontMono", (e.currentTarget as HTMLSelectElement).value)}
+            >
+              {#each monoFontOptions as o (o.value)}
+                <option value={o.value}>{o.label}</option>
+              {/each}
+            </select>
+          </div>
+          <div class="crow">
+            <span class="crow__l">Label Case</span>
+            <Segmented
+              options={LABEL_CASE_OPTS}
+              value={themeStore.tokens.labelCase}
+              onChange={(v) => themeStore.setToken("labelCase", v as ThemeTokens["labelCase"])}
+            />
+          </div>
+          <div class="crow">
+            <span class="crow__l">Spacing</span>
+            <Segmented
+              options={LETTER_SPACING_OPTS}
+              value={themeStore.tokens.letterSpacing}
+              onChange={(v) => themeStore.setToken("letterSpacing", v)}
+            />
+          </div>
         </div>
-      </div>
-      <p class="cap">Editing tokens on the left repaints this instantly.</p>
+      </section>
+
+      <section class="panel">
+        <div class="panel__hd">
+          <h3>Presets</h3>
+          <span class="count">{themeStore.allThemes.length} saved</span>
+        </div>
+        <div class="panel__bd">
+          <div class="presets">
+            {#each themeStore.allThemes as t (t.id)}
+              <button
+                class="preset"
+                class:on={themeStore.activeId === t.id}
+                onclick={() => themeStore.selectPreset(t.id)}
+              >
+                <span class="swz" style:background={t.tokens.colorAccent}></span>
+                <span class="preset-name">{t.name}</span>
+                {#if t.id.startsWith("custom-")}
+                  <span
+                    class="preset-del"
+                    role="button"
+                    tabindex="0"
+                    title="Delete theme"
+                    onclick={(e) => {
+                      e.stopPropagation();
+                      themeStore.deleteCustom(t.id);
+                    }}
+                    onkeydown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.stopPropagation();
+                        themeStore.deleteCustom(t.id);
+                      }
+                    }}
+                  >
+                    <Icon name="x" size={11} />
+                  </span>
+                {/if}
+              </button>
+            {/each}
+            {#if saving}
+              <input
+                class="save-input"
+                placeholder="Theme name"
+                bind:value={saveName}
+                onkeydown={onSaveKey}
+                onblur={commitSave}
+                use:focusOnMount
+              />
+            {:else}
+              <button class="preset save" onclick={beginSave}>
+                <Icon name="plus" size={11} />
+                Save…
+              </button>
+            {/if}
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- col 3: live preview (pure token-var DOM; repaints on every setToken) -->
+    <div class="col">
+      <section class="panel">
+        <div class="panel__hd"><h3>Live Preview</h3></div>
+        <div class="panel__bd">
+          <div class="prev">
+            <div class="prev-hd">
+              <span>Scenes</span>
+              <span class="win"><Icon name="window-restore" size={11} /><Icon name="x" size={11} /></span>
+            </div>
+            <div class="prev-bd">
+              <div class="prev-it">Intro</div>
+              <div class="prev-it sel">Live · Main</div>
+              <div class="prev-it">BRB</div>
+              <div class="prev-btn"><i></i>Go Live</div>
+              <div class="prev-mt"><div class="prev-mt-unlit"></div></div>
+            </div>
+          </div>
+          <p class="cap">Editing any token repaints this instantly.</p>
+        </div>
+      </section>
     </div>
   </div>
 </div>
 
 <style>
   .appearance {
-    max-width: 960px;
+    max-width: 1180px;
   }
-  .title {
-    margin: 0 0 18px;
-    font-size: 15px;
-    font-weight: 600;
-  }
-  .block {
-    margin-bottom: 24px;
-  }
-  .row2 {
+
+  /* --- crumb header ---------------------------------------------------------- */
+  .crumb {
     display: flex;
-    gap: 28px;
-    flex-wrap: wrap;
+    align-items: center;
+    gap: 9px;
+    margin-bottom: 16px;
   }
-  .axis {
-    min-width: 200px;
+  .crumb .dot {
+    width: 7px;
+    height: 7px;
+    flex: 0 0 auto;
+    background: var(--color-accent);
   }
-  .block-label {
-    font-size: 12px;
+  .crumb .c1 {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
     color: var(--color-dim);
-    margin-bottom: 10px;
   }
-  .accent-swatches {
+  .crumb .sep {
+    color: var(--color-muted);
+  }
+  .crumb .c2 {
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 400;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--color-muted);
+  }
+  .crumb .spacer {
+    flex: 1;
+  }
+  .crumb .live-note {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--color-muted);
+    border: var(--border-weight) solid var(--color-border-2);
+    padding: 3px 8px;
+    white-space: nowrap;
+  }
+
+  /* --- telemetry strip ------------------------------------------------------- */
+  .strip {
     display: flex;
+    flex-wrap: wrap;
+    gap: 14px 22px;
+    align-items: flex-start;
+    padding: 12px 16px;
+    border: var(--border-weight) solid var(--color-border);
+    background: var(--color-surface);
+    margin-bottom: 14px;
+  }
+  .unit {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+  }
+  .unit.elem {
+    margin-left: auto;
+  }
+  .mini {
+    display: flex;
+    flex-wrap: wrap;
     gap: 10px;
   }
-  .swatch {
-    width: 34px;
-    height: 34px;
+  .flabel {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--color-dim);
+  }
+  .accents {
+    display: flex;
+    gap: 9px;
+  }
+  .acc {
+    width: 30px;
+    height: 30px;
+    flex: 0 0 auto;
     padding: 0;
     cursor: pointer;
     border: 0;
+    position: relative;
     box-shadow: 0 0 0 1px var(--color-border);
   }
-  .swatch.on {
+  .acc.on {
     box-shadow: 0 0 0 2px var(--color-text);
   }
-  .note {
-    margin: 12px 0 0;
-    font-size: 11px;
-    color: var(--color-muted);
-    line-height: 1.5;
-  }
-  .editor-note {
-    margin: 0 0 12px;
+  .acc.on::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border: 2px solid var(--color-base);
   }
 
-  /* --- inline editor --------------------------------------------------------- */
-  .wrap {
-    display: flex;
-    gap: 16px;
-    align-items: flex-start;
+  /* --- three-column body ----------------------------------------------------- */
+  .cols {
+    display: grid;
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.9fr) minmax(0, 300px);
+    gap: 14px;
+    align-items: start;
   }
-  .editor {
-    flex: 1;
+  .col {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
     min-width: 0;
-    background: var(--color-base);
+  }
+
+  /* --- panel primitive ------------------------------------------------------- */
+  .panel {
+    background: var(--color-surface);
     border: var(--border-weight) solid var(--color-border);
   }
-
-  .grp {
-    padding: 10px 11px;
+  .panel__hd {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 9px 13px;
+    background: var(--color-surface-2);
     border-bottom: var(--border-weight) solid var(--color-border);
   }
-  .glbl {
-    font-size: 9px;
-    color: var(--color-muted);
-    letter-spacing: 0.08em;
+  .panel__hd::before {
+    content: "";
+    width: 7px;
+    height: 7px;
+    flex: 0 0 auto;
+    background: var(--color-accent);
+  }
+  .panel__hd h3 {
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.14em;
     text-transform: uppercase;
-    margin-bottom: 9px;
+    color: var(--color-dim);
+    font-weight: 600;
+  }
+  .panel__hd .count {
+    margin-left: auto;
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: 0.06em;
+    color: var(--color-muted);
+  }
+  .panel__bd {
+    padding: 13px;
   }
 
-  .palette-row {
+  /* --- palette: fully-filled token rectangles -------------------------------- */
+  .tokgroup {
+    margin-bottom: 14px;
+  }
+  .tokgroup:last-child {
+    margin-bottom: 0;
+  }
+  .tokgroup__l {
     display: flex;
-    gap: 6px;
-    flex-wrap: wrap;
-    row-gap: 20px;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--color-muted);
+    margin-bottom: 8px;
   }
-  .sw {
-    position: relative;
-    width: 30px;
-    height: 24px;
+  .tokgroup__l::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--color-border-2);
+  }
+  /* 1px grid gap on a border-colored bed => hairline seams between fills. */
+  .tokgrid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1px;
+    background: var(--color-border);
     border: var(--border-weight) solid var(--color-border);
-    cursor: pointer;
-    display: block;
   }
-  .sw input[type="color"] {
+  /* The rectangle IS the swatch: its background is the token color; a caption
+     strip on --color-surface carries the name + hex so text stays legible on
+     ANY fill (dark bases through light text tokens) without computing contrast. */
+  .tok {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    min-height: 46px;
+    cursor: pointer;
+    overflow: hidden;
+  }
+  .tok input[type="color"] {
+    position: absolute;
+    inset: 0;
     width: 100%;
     height: 100%;
     padding: 0;
     margin: 0;
-    border: none;
+    border: 0;
     background: none;
+    opacity: 0;
     cursor: pointer;
+    z-index: 1;
   }
-  /* Make the native color well fill the swatch with no chrome. */
-  .sw input[type="color"]::-webkit-color-swatch-wrapper {
-    padding: 0;
+  .tok__cap {
+    position: relative;
+    z-index: 0;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 6px;
+    padding: 4px 7px;
+    background: var(--color-surface);
+    border-top: var(--border-weight) solid var(--color-border);
   }
-  .sw input[type="color"]::-webkit-color-swatch {
-    border: none;
+  .tok__name {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--color-dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
-  .sw span {
-    position: absolute;
-    bottom: -14px;
-    left: 50%;
-    transform: translateX(-50%);
-    font-size: 7px;
+  .tok__hex {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: 0.04em;
     color: var(--color-muted);
     white-space: nowrap;
   }
+  .tok:hover .tok__hex {
+    color: var(--color-accent);
+  }
 
-  .ctl {
+  /* --- typography controls --------------------------------------------------- */
+  .crow {
     display: flex;
-    gap: 8px;
     align-items: center;
-    margin-bottom: 7px;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 0;
+    border-bottom: var(--border-weight) solid var(--color-border-2);
   }
-  .ctl:last-child {
-    margin-bottom: 0;
+  .crow:first-child {
+    padding-top: 0;
   }
-  .ctl-lbl {
-    font-size: 9px;
-    color: var(--color-muted);
-    letter-spacing: 0.06em;
+  .crow:last-child {
+    padding-bottom: 0;
+    border-bottom: none;
+  }
+  .crow.stack {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 7px;
+  }
+  .crow__l {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.07em;
     text-transform: uppercase;
-    width: 64px;
+    color: var(--color-muted);
     flex: 0 0 auto;
   }
   .pick {
-    flex: 1;
-    min-width: 0;
-    height: auto;
-    background: var(--color-base);
+    width: 100%;
+    height: 32px;
+    padding: 0 30px 0 11px;
+    background: var(--color-surface-2);
     border: var(--border-weight) solid var(--color-border);
     color: var(--color-text);
     font-family: var(--font-ui);
-    font-size: 10px;
-    padding: 4px 8px;
+    font-size: 12px;
+    appearance: none;
+    -webkit-appearance: none;
+    cursor: pointer;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%23888890' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 9l7 7 7-7'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    background-size: 10px;
+  }
+  .pick:hover {
+    border-color: var(--color-muted);
   }
   .pick:focus {
     outline: none;
     border-color: var(--color-accent);
   }
 
+  /* --- presets --------------------------------------------------------------- */
   .presets {
     display: flex;
-    gap: 6px;
+    gap: 7px;
     flex-wrap: wrap;
     align-items: center;
-    padding: 10px 11px;
   }
   .preset {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    height: auto;
-    padding: 5px 10px;
-    font-family: var(--font-ui);
-    font-size: 10px;
-    background: transparent;
+    gap: 8px;
+    height: 30px;
+    padding: 0 12px;
     border: var(--border-weight) solid var(--color-border);
-    color: var(--color-text);
+    background: transparent;
+    color: var(--color-dim);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
   }
   .preset:hover {
     border-color: var(--color-accent);
+    color: var(--color-text);
   }
   .preset.on {
     border-color: var(--color-accent);
     color: var(--color-accent);
-    background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+    background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  }
+  .swz {
+    width: 9px;
+    height: 9px;
+    flex: 0 0 auto;
+    box-shadow: 0 0 0 1px var(--color-border);
   }
   .preset-name {
     letter-spacing: var(--letter-spacing);
     text-transform: var(--label-case);
   }
   .preset-del {
-    font-size: 9px;
-    line-height: 1;
+    display: inline-flex;
+    align-items: center;
     color: var(--color-muted);
   }
   .preset-del:hover {
     color: var(--color-live);
   }
   .preset.save {
+    border-style: dashed;
     color: var(--color-muted);
   }
+  .preset.save:hover {
+    border-color: var(--color-accent);
+    color: var(--color-accent);
+  }
   .save-input {
-    height: auto;
-    padding: 5px 8px;
-    background: var(--color-base);
+    height: 30px;
+    padding: 0 10px;
+    background: var(--color-surface-2);
     border: var(--border-weight) solid var(--color-accent);
     color: var(--color-text);
     font-family: var(--font-ui);
-    font-size: 10px;
+    font-size: 11px;
     width: 130px;
   }
   .save-input:focus {
     outline: none;
   }
 
-  /* --- live preview: pure token-var DOM, repaints on every setToken --------- */
-  .prev-col {
-    flex: 0 0 auto;
-    width: 210px;
-  }
-  .plbl {
-    font-size: 9px;
-    color: var(--color-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    margin: 0 0 6px;
-  }
+  /* --- live preview: pure token-var DOM, repaints on every setToken ---------- */
   .prev {
     background: var(--color-base);
     border: var(--border-weight) solid var(--color-border);
@@ -548,21 +752,28 @@
   .prev-hd {
     display: flex;
     justify-content: space-between;
+    align-items: center;
     background: var(--color-surface);
     border-bottom: var(--border-weight) solid var(--color-border);
-    padding: 6px 9px;
+    padding: 7px 10px;
     font-size: 9px;
     letter-spacing: var(--letter-spacing);
     text-transform: var(--label-case);
     color: var(--color-accent);
   }
+  .prev-hd .win {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--color-muted);
+  }
   .prev-bd {
-    padding: 9px;
+    padding: 10px;
   }
   .prev-it {
     font-size: 11px;
     color: var(--color-text);
-    padding: 5px 7px;
+    padding: 6px 8px;
     border-bottom: var(--border-weight) solid var(--color-border);
     border-left: 3px solid transparent;
     letter-spacing: var(--letter-spacing);
@@ -578,21 +789,31 @@
     color: var(--color-accent);
   }
   .prev-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
     background: var(--color-accent);
     color: var(--color-accent-contrast);
     font-size: 11px;
-    padding: 7px;
+    padding: 8px;
     text-align: center;
-    margin-top: 8px;
+    margin-top: 9px;
     font-weight: 700;
     letter-spacing: var(--letter-spacing);
     text-transform: var(--label-case);
   }
+  .prev-btn i {
+    width: 7px;
+    height: 7px;
+    flex: 0 0 auto;
+    background: var(--color-accent-contrast);
+  }
   /* Meter idiom from AudioMixerDock: zone gradient track + segmented mask. */
   .prev-mt {
     position: relative;
-    height: 8px;
-    margin-top: 8px;
+    height: 9px;
+    margin-top: 9px;
     overflow: hidden;
     background-color: var(--color-base);
     background-image: linear-gradient(
@@ -612,13 +833,38 @@
     top: 0;
     right: 0;
     bottom: 0;
-    width: 30%;
+    width: 32%;
     background: var(--color-base);
   }
   .cap {
+    font-family: var(--font-mono);
     font-size: 9px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
     color: var(--color-muted);
-    margin: 10px 0 0;
+    margin: 9px 0 0;
     line-height: 1.6;
+  }
+
+  /* Variant C is dense; collapse the three columns before the app body would
+     scroll horizontally on a narrow settings pane. */
+  @media (max-width: 900px) {
+    .cols {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    }
+    .col:last-child {
+      grid-column: 1 / -1;
+    }
+  }
+  @media (max-width: 620px) {
+    .cols {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .col:last-child {
+      grid-column: auto;
+    }
+    .unit.elem {
+      margin-left: 0;
+    }
   }
 </style>
