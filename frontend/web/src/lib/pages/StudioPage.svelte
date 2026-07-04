@@ -19,6 +19,7 @@ import { bumpDockLayout } from "../dockLayoutSignal.svelte";
   import { fmtDuration, fmtBitrate } from "../format";
   import { callOrToast } from "../callToast";
   import { statsStore } from "../statsStore.svelte";
+  import { oauthStore } from "../oauthStore.svelte";
   import { pageStore } from "../pageStore.svelte";
   import { suspendPreview } from "../previewGate.svelte";
   import { undoStore } from "../undoStore.svelte";
@@ -184,6 +185,22 @@ import { bumpDockLayout } from "../dockLayoutSignal.svelte";
     if (pageStore.page !== "studio") return;
     return statsStore.subscribe();
   });
+
+  // Shared OAuth-account store: gates the Events/Multichat restore chips (and their
+  // toggle) so an empty, meaningless panel can't be opened with zero logged-in
+  // accounts. Studio-only, mirroring the stats subscription above.
+  $effect(() => {
+    if (pageStore.page !== "studio") return;
+    return oauthStore.subscribe();
+  });
+
+  // Docks whose content is meaningless without a logged-in platform account. Their
+  // restore chip is hidden and toggleDock refuses to open them while none is connected;
+  // an already-open one falls back to its own empty state (handled in the dock body).
+  const OAUTH_GATED_DOCKS = new Set(["events", "multichat"]);
+  function dockOpenable(id: string): boolean {
+    return !OAUTH_GATED_DOCKS.has(id) || oauthStore.hasAnyConnected;
+  }
 
   // Drive each per-canvas dock header dot off that canvas's own live state, so the
   // dot tracks the output state instead of the reconciler's static placeholder.
@@ -423,6 +440,9 @@ import { bumpDockLayout } from "../dockLayoutSignal.svelte";
     if (existing) {
       api.removePanel(existing);
     } else {
+      // Refuse to open an OAuth-gated dock (Events/Multichat) with no connected
+      // account -- it would only show its own empty state.
+      if (!dockOpenable(id)) return;
       api.addPanel(panelOptions(id));
     }
     refreshVisible();
@@ -672,10 +692,10 @@ import { bumpDockLayout } from "../dockLayoutSignal.svelte";
 
     <div class="spacer"></div>
 
-    {#if DOCKS.some((d) => visibleDocks[d.id] === false)}
+    {#if DOCKS.some((d) => visibleDocks[d.id] === false && dockOpenable(d.id))}
       <div class="restore">
         {#each DOCKS as d (d.id)}
-          {#if visibleDocks[d.id] === false}
+          {#if visibleDocks[d.id] === false && dockOpenable(d.id)}
             <button class="restorechip" onclick={() => toggleDock(d.id)}>
               <svg class="plus" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M12 5v14M5 12h14" />

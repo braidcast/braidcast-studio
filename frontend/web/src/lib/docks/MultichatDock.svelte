@@ -40,11 +40,17 @@
   let connected = $derived(PLATFORM_ORDER.filter((p) => states.get(p)?.connected === true));
   let anyConnected = $derived(connected.length > 0);
 
-  // "all" or a single connected platform. Falls back to "all" if the chosen
-  // platform disconnects.
+  // "all" or a single connected platform. The "All" dest (and its chip) is only
+  // meaningful with >=2 connected platforms; with exactly one, pin the dest to it so
+  // its lone chip reads active. Falls back to "all" if the chosen platform disconnects.
   let dest = $state<"all" | ChatPlatform>("all");
+  let showAllChip = $derived(connected.length >= 2);
   $effect(() => {
-    if (dest !== "all" && !connected.includes(dest)) dest = "all";
+    if (connected.length === 1) {
+      if (dest !== connected[0]) dest = connected[0];
+    } else if (dest !== "all" && !connected.includes(dest)) {
+      dest = "all";
+    }
   });
 
   let draft = $state("");
@@ -134,9 +140,9 @@
 
   <div class="composer">
     <div class="dests">
-      <button class="chip" class:on={dest === "all"} disabled={!anyConnected} onclick={() => (dest = "all")}>
-        All
-      </button>
+      {#if showAllChip}
+        <button class="chip" class:on={dest === "all"} onclick={() => (dest = "all")}> All </button>
+      {/if}
       {#each connected as p (p)}
         <button
           class="chip"

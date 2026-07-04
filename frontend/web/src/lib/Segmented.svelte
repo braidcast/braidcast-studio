@@ -64,8 +64,15 @@
     background: color-mix(in srgb, var(--color-accent) 18%, transparent);
     color: var(--color-accent);
   }
+  /* md cells carry longer labels (e.g. "Custom Streaming Server", "WHIP Service").
+     Let them shrink and wrap centered instead of overrunning the cell border. */
   .seg[data-size="md"] .cell {
-    padding: 9px 12px;
+    padding: 8px 10px;
     font-size: 11px;
+    min-width: 0;
+    white-space: normal;
+    text-align: center;
+    line-height: 1.25;
+    overflow-wrap: anywhere;
   }
 </style>

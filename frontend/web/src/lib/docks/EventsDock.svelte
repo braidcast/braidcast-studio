@@ -3,13 +3,13 @@
   import {
     PLATFORM_COLORS,
     PLATFORM_LABELS,
-    PLATFORM_ORDER as ORDER,
     EVENT_TYPE_COLORS,
     EVENT_TYPE_LABELS,
   } from "../theme/platformColors";
   import { FeedVirtualizer, type FeedRow } from "../feedVirtualizer.svelte";
   import EmptyState from "../EmptyState.svelte";
   import Icon from "../dock/Icon.svelte";
+  import { oauthStore } from "../oauthStore.svelte";
 
   // Host supplies tab chrome + strips __* keys; this body declares no props.
   let {}: Record<string, unknown> = $props();
@@ -17,8 +17,6 @@
   // Platform dot/tag color + label (matches the Multichat dock).
   const PLATFORM_COLOR = PLATFORM_COLORS;
   const PLATFORM_LABEL = PLATFORM_LABELS;
-  // Stable chip order so the platform filter never reshuffles.
-  const PLATFORM_ORDER: readonly ChatPlatform[] = ORDER;
 
   // Human labels per event type -- the summary carries the phrasing; this is the
   // fallback the summary/aria fall back to for an unknown type.
@@ -76,6 +74,14 @@
   // derived subset -- heights stay keyed by the stable clientKey, so a filtered-out
   // row keeps its measured height and re-appears at the right size when re-shown.
   let filter = $state<"all" | ChatPlatform>("all");
+
+  // Platform chips are gated on logged-in OAuth accounts, not the fixed platform list:
+  // 0 connected -> empty state, no chips; 1 -> just that platform (no "All", which is
+  // meaningless with one); >=2 -> "All" + each connected platform. Live via oauthStore.
+  $effect(() => oauthStore.subscribe());
+  let connectedPlatforms = $derived(oauthStore.connectedPlatforms);
+  let showAllChip = $derived(connectedPlatforms.length >= 2);
+
   const feed = new FeedVirtualizer<NormalizedEvent>({ max: 500, estimate: 38, getDisplay: () => filtered });
   // Explicitly typed to break the feed <-> filtered inference cycle (getDisplay
   // closes over filtered, which reads feed.rows).
@@ -84,6 +90,21 @@
   );
   const measureRow = feed.measureRow;
   const feedScroll = feed.scroll;
+
+  // Keep the active filter valid as accounts connect/disconnect: with exactly one
+  // platform, pin the filter to it (its chip is the only one, so it must read active);
+  // otherwise drop a filter whose platform is no longer connected back to "all".
+  $effect(() => {
+    if (connectedPlatforms.length === 1) {
+      if (filter !== connectedPlatforms[0]) {
+        filter = connectedPlatforms[0];
+        feed.restick();
+      }
+    } else if (filter !== "all" && !connectedPlatforms.includes(filter as ChatPlatform)) {
+      filter = "all";
+      feed.restick();
+    }
+  });
 
   // Switching the filter changes the visible set; re-pin to the newest of the new
   // subset so the user always lands on the latest matching event.
@@ -158,23 +179,29 @@
 {/snippet}
 
 <div class="events">
-  <div class="bar">
-    <button class="chip" class:on={filter === "all"} onclick={() => setFilter("all")}>All</button>
-    {#each PLATFORM_ORDER as p (p)}
-      <button
-        class="chip"
-        class:on={filter === p}
-        style:--chip={PLATFORM_COLOR[p]}
-        onclick={() => setFilter(p)}
-      >
-        <span class="cdot" style:background={PLATFORM_COLOR[p]}></span>
-        {PLATFORM_LABEL[p]}
-      </button>
-    {/each}
-  </div>
+  {#if connectedPlatforms.length > 0}
+    <div class="bar">
+      {#if showAllChip}
+        <button class="chip" class:on={filter === "all"} onclick={() => setFilter("all")}>All</button>
+      {/if}
+      {#each connectedPlatforms as p (p)}
+        <button
+          class="chip"
+          class:on={filter === p}
+          style:--chip={PLATFORM_COLOR[p]}
+          onclick={() => setFilter(p)}
+        >
+          <span class="cdot" style:background={PLATFORM_COLOR[p]}></span>
+          {PLATFORM_LABEL[p]}
+        </button>
+      {/each}
+    </div>
+  {/if}
 
   <div class="scroll" use:feedScroll>
-    {#if feed.rows.length === 0}
+    {#if connectedPlatforms.length === 0}
+      <EmptyState compact title="Connect an account to see events." />
+    {:else if feed.rows.length === 0}
       <EmptyState compact title="Follows, subs, gifts and cheers from your connected accounts appear here." />
     {:else if filtered.length === 0}
       <EmptyState compact title={"No " + (filter === "all" ? "" : PLATFORM_LABEL[filter] + " ") + "events yet."} />

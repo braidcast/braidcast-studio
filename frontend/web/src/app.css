@@ -349,6 +349,23 @@ input[type="color"] {
   border: 0;
 }
 
+/* Active-tab distinction in tabbed dock groups. Dockview 6.x toggles
+   dv-active-tab / dv-inactive-tab on the .dv-tab wrapper around our .obs-dock-tab
+   renderer (it never touches our element), so key off that wrapper: the current tab
+   keeps the raised strip surface, its title stays bright, and it gains a 2px amber top
+   cue; inactive tabs recede to the darker body surface with a muted title, so the
+   focused panel reads as clearly current. Accent (canvas) docks keep their amber title
+   identity in both states -- only the surface + top cue mark active there. */
+.dockview-theme-obs .dv-tab.dv-active-tab .obs-dock-tab {
+  box-shadow: inset 0 2px 0 var(--color-accent);
+}
+.dockview-theme-obs .dv-tab.dv-inactive-tab .obs-dock-tab {
+  background: var(--color-surface);
+}
+.dockview-theme-obs .dv-tab.dv-inactive-tab .obs-dock-tab:not(.accent) .obs-dock-title {
+  color: var(--color-muted);
+}
+
 /* Shared dock-body primitives. Every wired dock (Scenes, Sources, Audio Mixer,
    Multistream, canvas composite) is a vertical list on the surface color; these
    classes hold the common structure + selection styling in ONE place, so a dock

@@ -6,8 +6,9 @@
   // Shared modal shell: backdrop + surface panel + mono micro-label head + body,
   // with an optional footer. Replaces the hand-rolled per-dialog copies; a caller
   // owns only its body/footer content (and any preview-gate suspension it needs).
-  // Esc always closes; callers with unsaved state pass closeOnBackdrop={false} to
-  // keep a stray backdrop click from discarding work.
+  // Esc and the header close button always close; a backdrop click never does
+  // (closeOnBackdrop defaults off so a stray click can't discard work). A caller
+  // may opt back in with closeOnBackdrop={true}.
   interface Props {
     title: string;
     onClose: () => void;
@@ -29,7 +30,7 @@
     onClose,
     width = 520,
     maxHeight = "86vh",
-    closeOnBackdrop = true,
+    closeOnBackdrop = false,
     draggable = false,
     headExtra,
     footer,
@@ -225,13 +226,27 @@
     padding: 16px 14px;
     overflow: auto;
   }
+  /* Footer action bar. The primary button (.accent, or a non-ghost .btn) fills the
+     bar full-height and sits flush to the corner — the same edge-to-edge block as
+     the Studio GO LIVE button — while notes and secondary buttons stay centered with
+     left padding. min-height gives the bar a definite height for the stretch. */
   .modal-foot {
     flex: 0 0 auto;
     display: flex;
     align-items: center;
     justify-content: flex-end;
     gap: 8px;
-    padding: 8px 11px;
+    min-height: 42px;
+    padding: 0 0 0 12px;
     border-top: var(--border-weight) solid var(--color-border);
+  }
+  .modal-foot :global(.accent),
+  .modal-foot :global(.btn:not(.ghost)) {
+    align-self: stretch;
+    height: auto;
+    margin: 0;
+    padding: 0 22px;
+    border: 0;
+    border-left: var(--border-weight) solid var(--color-border);
   }
 </style>

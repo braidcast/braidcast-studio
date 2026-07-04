@@ -15,6 +15,22 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
   let menu = $state<{ x: number; y: number; items: (ContextMenuItem | null)[] } | null>(null);
   let propsForSource = $state<string | null>(null);
 
+  // Output-gate the Default canvas preview, mirroring the additional canvases (which
+  // the reconciler adds/removes on their own `enabled` flag). CanvasInfo.enabled for
+  // the Default canvas is `AnyEnabledForCanvas(default)` server-side, so the native
+  // preview paints only while >=1 destination is enabled; otherwise the overlay is
+  // hidden and a muted placeholder takes its place. This panel is the QMainWindow-
+  // central anchor for the docks row, so it is never removed — only its content flips.
+  // `enabled` recomputes on canvas.changed AND outputBinding.changed (a binding toggle
+  // signals via the latter), so we re-fetch canvas.list on both, like the reconciler.
+  let defaultEnabled = $state(true);
+  function loadDefaultEnabled(): void {
+    obs
+      .call("canvas.list")
+      .then((list) => (defaultEnabled = list.find((c) => c.isDefault)?.enabled ?? false))
+      .catch(() => {});
+  }
+
   // The Properties modal overlaps the native overlay. Acquire/release the preview
   // suspension together with `propsForSource` (not in a reactive $effect) so the
   // gate ref-count never transiently hits zero during the context-menu -> modal
@@ -77,6 +93,12 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
     if (!previewEl) {
       return;
     }
+    // Output-gated off (no enabled destination on the Default canvas): keep the
+    // native overlay hidden and let the muted placeholder show through.
+    if (!defaultEnabled) {
+      hidePreview();
+      return;
+    }
     // While a modal/overlay holds the preview gate, never re-assert the rect: a
     // stray resize/scroll/ResizeObserver tick during the modal's lifetime would
     // otherwise raise the native child window back above CEF, over the modal.
@@ -114,6 +136,9 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
   }
 
   onMount(() => {
+    loadDefaultEnabled();
+    const offCanvas = obs.on("canvas.changed", loadDefaultEnabled);
+    const offBindings = obs.on("outputBinding.changed", loadDefaultEnabled);
     reportRect();
     const ro = new ResizeObserver(reportRect);
     if (previewEl) {
@@ -137,9 +162,21 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
       ro.disconnect();
       window.removeEventListener("resize", reportRect);
       window.removeEventListener("scroll", reportRect, true);
+      offCanvas();
+      offBindings();
       offMenu();
       destroyPreview();
     };
+  });
+
+  // React to the output-gate flipping: paint the native overlay when re-enabled,
+  // hide it when the last destination is disabled (the placeholder shows through).
+  $effect(() => {
+    if (defaultEnabled) {
+      reportRect();
+    } else {
+      hidePreview();
+    }
   });
 
   // The global previewGate suspends every native overlay while a modal is open;
@@ -169,8 +206,14 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
   });
 </script>
 
-<section class="preview" bind:this={previewEl}>
+<section class="preview" class:gated={!defaultEnabled} bind:this={previewEl}>
   <span class="label">Default</span>
+  {#if !defaultEnabled}
+    <div class="placeholder">
+      <p class="ph-title">Preview off</p>
+      <p class="ph-sub">No enabled destination — turn one on in Canvases.</p>
+    </div>
+  {/if}
 </section>
 
 {#if menu}
@@ -191,6 +234,36 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
     /* Transparent: the native overlay HWND paints this region. */
     background: transparent;
     overflow: hidden;
+  }
+  /* Output-gated off: no native overlay paints here, so give the region an opaque
+     surface + a muted empty-state message instead of a see-through hole. */
+  .preview.gated {
+    background: var(--color-base);
+  }
+  .placeholder {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    text-align: center;
+    padding: 20px;
+    pointer-events: none;
+  }
+  .ph-title {
+    margin: 0;
+    font-family: var(--font-ui);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--color-dim);
+  }
+  .ph-sub {
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--color-muted);
   }
   .label {
     position: absolute;
