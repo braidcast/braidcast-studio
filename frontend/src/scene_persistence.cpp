@@ -5,6 +5,11 @@
 #include "scene_collections.hpp"
 #include "transitions.hpp"
 
+#include "multistream/CanvasRuntime.hpp"
+#include "multistream/CanvasStore.hpp"
+
+#include <CanvasDefinition.hpp>
+
 #include <obs.h>
 #include <obs.hpp>
 #include <util/platform.h>
@@ -27,12 +32,11 @@ struct SaveContext {
 
 // obs_save_sources_filtered predicate: keep public, global, non-audio sources.
 // libobs already excludes filters, removed sources, and private sources before
-// invoking this; we additionally drop (a) the global audio channel sources and
-// (b) additional-canvas scoped sources. In this libobs the Default canvas IS a
-// real obs_canvas_t (the main canvas) on which obs_scene_create places scenes, so
-// a non-null canvas alone is not "additional" -- only a canvas other than the
-// main canvas is. Plain inputs (color/browser/etc.) have a null canvas and are
-// always kept; main-canvas scenes are kept; additional-canvas sources are dropped.
+// invoking this; we additionally drop only the global audio channel sources. Both
+// main-canvas and additional-canvas scoped sources are kept -- libobs stamps each
+// scene's canvas_uuid on save and rebinds it on load (the canvas already exists by
+// then), so per-canvas scenes round-trip. Plain inputs (color/browser/etc.) are
+// always kept.
 bool SaveFilter(void *data, obs_source_t *source)
 {
 	const auto *ctx = static_cast<const SaveContext *>(data);
@@ -46,10 +50,6 @@ bool SaveFilter(void *data, obs_source_t *source)
 		if (audio && source == audio) {
 			return false;
 		}
-	}
-	OBSCanvasAutoRelease canvas = obs_source_get_canvas(source);
-	if (canvas && canvas != ctx->mainCanvas) {
-		return false;
 	}
 	return true;
 }
@@ -81,6 +81,22 @@ void Save(const std::string &path)
 	obs_data_set_array(root, "sources", sources);
 	obs_data_set_string(root, "current_scene", currentName ? currentName : "");
 
+	// Persist each additional canvas's active scene (its channel-0 binding), keyed
+	// by canvas uuid. Per-collection, mirroring current_scene for the main canvas.
+	OBSDataAutoRelease canvasCurrent = obs_data_create();
+	::CanvasRuntime &runtime = ObsBootstrap::CanvasRuntime();
+	for (const CanvasDefinition &def : ObsBootstrap::Canvases().Definitions()) {
+		if (def.isDefault) {
+			continue;
+		}
+		OBSSourceAutoRelease cur = runtime.CurrentScene(def.uuid); // addref'd or null
+		const char *name = cur ? obs_source_get_name(cur) : nullptr;
+		if (name && *name) {
+			obs_data_set_string(canvasCurrent, def.uuid.c_str(), name);
+		}
+	}
+	obs_data_set_obj(root, "canvas_current", canvasCurrent);
+
 	std::filesystem::path dir = std::filesystem::u8path(path).parent_path();
 	os_mkdirs(dir.u8string().c_str());
 
@@ -89,12 +105,12 @@ void Save(const std::string &path)
 	}
 }
 
-bool Load()
+bool Load(std::map<std::string, std::string> *outCanvasCurrent)
 {
-	return Load(ObsBootstrap::SceneCollections().ActiveScenePath());
+	return Load(ObsBootstrap::SceneCollections().ActiveScenePath(), outCanvasCurrent);
 }
 
-bool Load(const std::string &path)
+bool Load(const std::string &path, std::map<std::string, std::string> *outCanvasCurrent)
 {
 	OBSDataAutoRelease root = obs_data_create_from_json_file_safe(path.c_str(), "bak");
 	if (!root) {
@@ -107,6 +123,20 @@ bool Load(const std::string &path)
 	}
 
 	obs_load_sources(sources, nullptr, nullptr);
+
+	if (outCanvasCurrent) {
+		outCanvasCurrent->clear();
+		OBSDataAutoRelease canvasCurrent = obs_data_get_obj(root, "canvas_current");
+		if (canvasCurrent) {
+			for (obs_data_item_t *item = obs_data_first(canvasCurrent); item; obs_data_item_next(&item)) {
+				const char *uuid = obs_data_item_get_name(item);
+				const char *scene = obs_data_item_get_string(item);
+				if (uuid && *uuid && scene && *scene) {
+					(*outCanvasCurrent)[uuid] = scene;
+				}
+			}
+		}
+	}
 
 	// Bind channel 0 to the saved current scene; fall back to the first scene.
 	const char *savedName = obs_data_get_string(root, "current_scene");

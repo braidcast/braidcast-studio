@@ -17,6 +17,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <map>
 #include <optional>
 #include <set>
 #include <string>
@@ -653,14 +654,20 @@ bool ObsBootstrap::Start()
 	// Restore the active collection's scenes; first run with no scene file falls
 	// back to the placeholder default scene. On the Load path g_scene stays null,
 	// which the null-safe TeardownScene handles.
-	if (!SceneCollection::Load()) {
+	std::map<std::string, std::string> canvasCurrent;
+	if (!SceneCollection::Load(&canvasCurrent)) {
 		CreateDefaultScene();
 	}
 
 	// Seed a placeholder scene for any additional canvas the collection load left
-	// empty (first run / newly-added canvas). Restored canvas scenes are untouched.
+	// empty (first run / newly-added canvas), then bind each additional canvas to
+	// its saved active scene (falls back to the first scene inside EnsureScenes when
+	// the map lacks it). Restored canvas scenes are untouched.
 	if (g_canvasRuntime) {
 		g_canvasRuntime->EnsureScenes();
+		for (const auto &[uuid, sceneName] : canvasCurrent) {
+			g_canvasRuntime->SetCurrentScene(uuid, sceneName); // no-op if unresolved
+		}
 	}
 
 	// Route channel 0 through the program transition: it wraps the scene just bound

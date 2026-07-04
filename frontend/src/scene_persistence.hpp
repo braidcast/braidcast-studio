@@ -1,6 +1,7 @@
 #ifndef OBS_MULTISTREAM_FRONTEND_SCENE_PERSISTENCE_HPP_
 #define OBS_MULTISTREAM_FRONTEND_SCENE_PERSISTENCE_HPP_
 
+#include <map>
 #include <string>
 
 // Save/load of the main-canvas scene collection -- scenes, their sources, and
@@ -27,9 +28,12 @@ void Save(const std::string &path);
 // scene (falling back to the first loaded scene). Returns true when a collection
 // was loaded and a scene bound; false when no file exists or it holds no scenes,
 // in which case the caller builds the placeholder default scene.
-bool Load();
+// Restore the active collection. When `outCanvasCurrent` is non-null it is filled
+// with { additional-canvas uuid -> active scene name } parsed from the file, for
+// the caller to re-bind after CanvasRuntime::EnsureScenes.
+bool Load(std::map<std::string, std::string> *outCanvasCurrent = nullptr);
 // Restore from an explicit file path.
-bool Load(const std::string &path);
+bool Load(const std::string &path, std::map<std::string, std::string> *outCanvasCurrent = nullptr);
 
 // Remove the active collection's scene world from libobs -- main-canvas scenes +
 // plain inputs (exactly the set Save persists) -- preserving the channel 1-6 global
