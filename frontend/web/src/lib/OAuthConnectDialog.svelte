@@ -75,9 +75,14 @@
 
   async function checkConnected() {
     try {
-      const statuses = await obs.call("oauth.status");
-      const me = statuses.find((s) => s.profileUuid === req.profileUuid);
-      if (me && me.connected) {
+      // Status rows are keyed by accountId, not profileUuid; resolve this profile's
+      // linked accountId (set by the backend on a successful grant) and match on it.
+      const [profileList, statuses] = await Promise.all([
+        obs.call("streamProfile.list"),
+        obs.call("oauth.status"),
+      ]);
+      const accountId = profileList.find((p) => p.uuid === req.profileUuid)?.accountId;
+      if (accountId && statuses.some((s) => s.accountId === accountId && s.connected)) {
         // Linked: the poll already finished, so the close below must not cancel it.
         markOAuthConnected();
         onClose();
@@ -113,6 +118,8 @@
       }
     });
     const offStatus = obs.on("oauth.status", () => void checkConnected());
+    // The link (profile.accountId) and the status emit race; re-check on either.
+    const offProfile = obs.on("streamProfile.changed", () => void checkConnected());
     const offErr = obs.on("oauth.connectError", (p) => {
       if (p.profileUuid !== req.profileUuid) {
         return;
@@ -124,6 +131,7 @@
     return () => {
       offProgress();
       offStatus();
+      offProfile();
       offErr();
       stopTimer();
     };

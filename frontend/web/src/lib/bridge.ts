@@ -509,19 +509,32 @@ export interface OAuthProvider {
   fields: OAuthProviderField[];
 }
 
-/** Connection state of one stream profile (oauth.status). `connected` gates the
- * green "linked" panel/chip; `displayName`/`login` name the linked account.
- * `needsReconnect` flags a token issued under an older scope set: it reports
- * `connected:false` but is distinct from "never linked" — the backend refuses
- * streamMeta for it, so the UI shows a warn "reconnect" state instead of a plain
- * key-only state. */
+/** Connection state of one connected account (oauth.status). Rows are keyed by
+ * `accountId` ("providerId:userId") — one row per account, NOT per profile, so
+ * several profiles that reuse the same account share a single row. A profile
+ * resolves its state by matching its own `accountId` against these rows.
+ * `connected` gates the green "linked" panel/chip; `displayName`/`login` name the
+ * account. `needsReconnect` flags a token issued under an older scope set: it
+ * reports `connected:false` but is distinct from "never linked" — the backend
+ * refuses streamMeta for it, so the UI shows a warn "reconnect" state instead of a
+ * plain key-only state. */
 export interface OAuthStatus {
-  profileUuid: string;
+  accountId: string;
   providerId: string;
   connected: boolean;
   needsReconnect: boolean;
   login: string;
   displayName: string;
+}
+
+/** One connected account for a provider (oauth.accounts). Powers the Streams
+ * "reuse existing account" picker: link an already-connected account to a second
+ * profile without a fresh grant. `needsReconnect` marks a stale-scope token. */
+export interface OAuthAccountRow {
+  accountId: string;
+  login: string;
+  displayName: string;
+  needsReconnect: boolean;
 }
 
 /** Connect progress pushed during oauth.connect (oauth.connectProgress). `phase`
@@ -1251,19 +1264,25 @@ export interface ObsMethods {
   "streamProfile.remove": { removed: string };
   "streamProfile.setPrimary": { uuid: string; isPrimary: boolean };
   "serviceTypes.list": ServiceType[];
-  // Platform OAuth (Connect Account dual path, Phase 8). providers enumerates the
-  // platforms that support account connection (empty in a build without a client
-  // id -> stream-key only); connect ({providerId, profileUuid}) kicks off the
-  // connect flow and returns immediately ({pending:true}) -- the real result
-  // arrives via the oauth.connectProgress / oauth.status / oauth.connectError events;
-  // disconnect ({profileUuid}) clears a profile's linked account (emits oauth.status);
-  // status reports the per-profile link state.
+  // Platform OAuth (Connect Account dual path, Phase 8; account entity, Phase 4).
+  // providers enumerates the platforms that support account connection (empty in a
+  // build without a client id -> stream-key only); connect ({providerId,
+  // profileUuid}) kicks off the connect flow and returns immediately ({pending:true})
+  // -- the real result arrives via the oauth.connectProgress / oauth.status /
+  // oauth.connectError events; accounts ({providerId}) lists a provider's connected
+  // accounts for the reuse picker; linkAccount ({profileUuid, accountId}) links an
+  // already-connected account to another profile (connect-once reuse); disconnect
+  // ({accountId, force?}) removes an account -- returns {needsConfirm, profiles} when
+  // >1 profile references it (retry with force:true); status reports per-account link
+  // state (keyed by accountId).
   "oauth.providers": OAuthProvider[];
   "oauth.connect": { ok: boolean; pending: boolean };
   // Cancel an in-flight connect (dialog closed before authorization);
   // aborts the backend flow so the profile is not linked after the modal is gone.
   "oauth.cancelConnect": { ok: true };
-  "oauth.disconnect": { ok: boolean };
+  "oauth.accounts": OAuthAccountRow[];
+  "oauth.linkAccount": { ok: true };
+  "oauth.disconnect": { ok: true } | { needsConfirm: true; profiles: { uuid: string; name: string }[] };
   "oauth.status": OAuthStatus[];
   // Stream metadata (Go Live "Stream Information": title / category / language).
   // get ({accountId}) loads the account's current metadata ({title, category:{id,name},
@@ -1645,6 +1664,27 @@ function emit(event: string, payload: unknown): void {
 }
 
 export const obs: ObsBridge = { call, on };
+
+// --- typed OAuth account helpers (Phase 4 reuse UI) --------------------------
+// Thin wrappers over obs.call for the account-entity methods so callers don't
+// repeat the method string + params shape. Return types flow from the ObsMethods
+// map above.
+
+/** A provider's already-connected accounts (Streams reuse picker source). */
+export const oauthAccounts = (providerId: string): Promise<OAuthAccountRow[]> =>
+  obs.call("oauth.accounts", { providerId });
+
+/** Link an already-connected account to another profile (no fresh grant). */
+export const oauthLinkAccount = (profileUuid: string, accountId: string): Promise<{ ok: true }> =>
+  obs.call("oauth.linkAccount", { profileUuid, accountId });
+
+/** Disconnect an account. Resolves to {needsConfirm, profiles} when >1 profile
+ * references it (unless `force`); retry with force:true to unlink them all. */
+export const oauthDisconnect = (
+  accountId: string,
+  force = false,
+): Promise<{ ok: true } | { needsConfirm: true; profiles: { uuid: string; name: string }[] }> =>
+  obs.call("oauth.disconnect", { accountId, force });
 
 // Install the push sink and keep window.obs assigned for parity with the
 // vanilla client / any non-module consumer.

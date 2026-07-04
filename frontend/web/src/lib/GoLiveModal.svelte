@@ -146,7 +146,8 @@
         continue;
       }
       seen.add(b.profileUuid);
-      const status = statuses.find((s) => s.profileUuid === b.profileUuid) ?? null;
+      // Status rows are keyed by accountId now; resolve via the profile's link.
+      const status = profile.accountId ? (statuses.find((s) => s.accountId === profile.accountId) ?? null) : null;
       const provider = resolveProvider(profile, status);
       out.push({
         profileUuid: b.profileUuid,

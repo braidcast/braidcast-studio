@@ -1,12 +1,16 @@
 <script lang="ts">
   import {
     obs,
+    oauthAccounts,
+    oauthLinkAccount,
+    oauthDisconnect,
     type StreamProfileInfo,
     type ServiceType,
     type StreamProfileCreateParams,
     type StreamProfileUpdateParams,
     type OAuthProvider,
     type OAuthStatus,
+    type OAuthAccountRow,
     type ListProperty,
   } from "./bridge";
   import PropertyForm from "./properties/PropertyForm.svelte";
@@ -136,20 +140,67 @@
     return providers.find((pv) => pv.id.toLowerCase() === plat || pv.displayName.toLowerCase() === plat) ?? null;
   }
 
-  function connectedStatusFor(uuid: string): OAuthStatus | null {
-    return statuses.find((s) => s.profileUuid === uuid && s.connected) ?? null;
+  // Status rows are keyed by accountId now (one row per connected account, shared
+  // by every profile that reuses it). A profile resolves its state by matching its
+  // own accountId; an empty accountId means "not linked".
+  function connectedStatusFor(p: StreamProfileInfo): OAuthStatus | null {
+    if (!p.accountId) {
+      return null;
+    }
+    return statuses.find((s) => s.accountId === p.accountId && s.connected) ?? null;
   }
 
   // A token whose scopes are stale: reports connected:false but needsReconnect:true.
-  // Distinct from "never linked" (no row / both false) so the UI can prompt a relink.
-  function needsReconnectFor(uuid: string): OAuthStatus | null {
-    return statuses.find((s) => s.profileUuid === uuid && s.needsReconnect && !s.connected) ?? null;
+  // Distinct from "never linked" (no accountId / no row) so the UI can prompt a relink.
+  function needsReconnectFor(p: StreamProfileInfo): OAuthStatus | null {
+    if (!p.accountId) {
+      return null;
+    }
+    return statuses.find((s) => s.accountId === p.accountId && s.needsReconnect && !s.connected) ?? null;
   }
 
   // The provider + connection state for the profile in the open edit form.
   const editingProvider = $derived(editingProfile ? providerForProfile(editingProfile) : null);
-  const connectedStatus = $derived(editingUuid ? connectedStatusFor(editingUuid) : null);
-  const needsReconnectStatus = $derived(editingUuid ? needsReconnectFor(editingUuid) : null);
+  const connectedStatus = $derived(editingProfile ? connectedStatusFor(editingProfile) : null);
+  const needsReconnectStatus = $derived(editingProfile ? needsReconnectFor(editingProfile) : null);
+
+  // Reuse picker (10e): a provider's already-connected accounts, offered on the
+  // Connect-account path when this profile has no link yet. Selecting one links it
+  // without a fresh grant; "Connect a different account" falls back to oauth.connect.
+  let existing = $state<OAuthAccountRow[]>([]);
+
+  async function loadExisting(providerId: string) {
+    try {
+      existing = await oauthAccounts(providerId);
+    } catch {
+      existing = [];
+    }
+  }
+
+  // Keep the reuse list in sync with the selected provider + connection set. Reading
+  // `statuses` makes a fresh connect/disconnect (elsewhere) re-populate the list.
+  $effect(() => {
+    const prov = editingProvider;
+    void statuses;
+    if (prov && connMode === "connect") {
+      void loadExisting(prov.id);
+    } else {
+      existing = [];
+    }
+  });
+
+  async function reuse(accountId: string) {
+    if (!editingUuid) {
+      return;
+    }
+    formError = null;
+    try {
+      await oauthLinkAccount(editingUuid, accountId);
+      await Promise.all([loadProfiles(), refreshStatus()]);
+    } catch (e) {
+      formError = (e as Error).message;
+    }
+  }
 
   // The detail pane's title: while editing, prefer the live label field, else the
   // saved display name; the add form has no target yet.
@@ -223,8 +274,7 @@
     fService = p.service || serviceTypes[0]?.id || "rtmp_common";
     // Default to Connect when an account is linked OR needs a relink (so the warn
     // panel shows); otherwise (incl. no provider) start on the stream-key path.
-    connMode =
-      providerForProfile(p) && (connectedStatusFor(p.uuid) || needsReconnectFor(p.uuid)) ? "connect" : "key";
+    connMode = providerForProfile(p) && (connectedStatusFor(p) || needsReconnectFor(p)) ? "connect" : "key";
     formError = null;
     formOpen = true;
   }
@@ -241,12 +291,36 @@
   }
 
   async function disconnect() {
-    if (!editingUuid) {
+    const accountId = editingProfile?.accountId;
+    if (!accountId) {
       return;
     }
+    formError = null;
     try {
-      await obs.call("oauth.disconnect", { profileUuid: editingUuid });
-      await refreshStatus();
+      const res = await oauthDisconnect(accountId);
+      if ("needsConfirm" in res) {
+        // The account is reused by several profiles; confirm before unlinking all.
+        const names = res.profiles.map((p) => p.name).join(", ");
+        dialog = {
+          kind: "confirm",
+          title: "Disconnect Account",
+          message: `This account is linked to ${res.profiles.length} profiles (${names}). Disconnecting removes it and unlinks all of them.`,
+          confirmLabel: "Disconnect All",
+          onCommit: () => void forceDisconnect(accountId),
+        };
+        return;
+      }
+      await Promise.all([loadProfiles(), refreshStatus()]);
+    } catch (e) {
+      formError = (e as Error).message;
+    }
+  }
+
+  async function forceDisconnect(accountId: string) {
+    formError = null;
+    try {
+      await oauthDisconnect(accountId, true);
+      await Promise.all([loadProfiles(), refreshStatus()]);
     } catch (e) {
       formError = (e as Error).message;
     }
@@ -455,9 +529,9 @@
             <span class="nav-sub">
               <span class="nav-plat">{p.serviceLabel}</span>
               {#if providerForProfile(p)}
-                {#if connectedStatusFor(p.uuid)}
+                {#if connectedStatusFor(p)}
                   <span class="chip ok">linked</span>
-                {:else if needsReconnectFor(p.uuid)}
+                {:else if needsReconnectFor(p)}
                   <span class="chip warn">reconnect</span>
                 {/if}
               {/if}
@@ -579,6 +653,19 @@
                     </div>
                     <button class="btn connect" onclick={connect}>
                       Reconnect {editingProvider.displayName} <Icon name="caret-right" size={12} />
+                    </button>
+                  {:else if existing.length > 0}
+                    <div class="reuse">
+                      <div class="reuse-label">Reuse existing account</div>
+                      {#each existing as a (a.accountId)}
+                        <button class="reuse-item" onclick={() => void reuse(a.accountId)}>
+                          <span class="reuse-name">{a.displayName || a.login}</span>
+                          {#if a.needsReconnect}<span class="reuse-flag">reconnect</span>{/if}
+                        </button>
+                      {/each}
+                    </div>
+                    <button class="btn connect" onclick={connect}>
+                      Connect a different account <Icon name="caret-right" size={12} />
                     </button>
                   {:else}
                     <button class="btn connect" onclick={connect}>
@@ -982,6 +1069,59 @@
   }
   .lnk:hover {
     text-decoration: underline;
+  }
+  .reuse {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 8px;
+  }
+  .reuse-label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--color-muted);
+    margin-bottom: 2px;
+  }
+  .reuse-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    text-align: left;
+    padding: 9px 11px;
+    background: var(--color-base);
+    border: var(--border-weight) solid var(--color-border);
+    color: var(--color-text);
+    cursor: pointer;
+    font: inherit;
+    font-size: 12px;
+    transition:
+      border-color 0.1s ease,
+      background 0.1s ease;
+  }
+  .reuse-item:hover {
+    border-color: var(--color-accent);
+    background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+  }
+  .reuse-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 600;
+  }
+  .reuse-flag {
+    flex: 0 0 auto;
+    font-family: var(--font-mono);
+    font-size: 8px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--color-accent);
+    border: var(--border-weight) solid var(--color-accent);
+    padding: 1px 5px;
   }
   .note {
     font-size: 11px;
