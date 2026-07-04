@@ -195,6 +195,20 @@ void ClearCurrent()
 	obs_enum_scenes(removeIfOwned, &ctx);
 	obs_enum_sources(removeIfOwned, &ctx);
 
+	// obs_enum_scenes is main-canvas-scoped; also sweep each additional canvas's
+	// scenes so a collection switch tears down ALL scene content symmetrically.
+	for (const CanvasDefinition &def : ObsBootstrap::Canvases().Definitions()) {
+		if (def.isDefault) {
+			continue;
+		}
+		for (const CanvasRuntime::SceneInfo &s : ObsBootstrap::CanvasRuntime().Scenes(def.uuid)) {
+			OBSSourceAutoRelease scene = obs_get_source_by_uuid(s.uuid.c_str());
+			if (scene) {
+				obs_source_remove(scene);
+			}
+		}
+	}
+
 	// Deferred source destruction can cascade across the destruction-task thread;
 	// drain in a loop until no more work is spawned, mirroring shutdown's teardown.
 	while (obs_wait_for_destroy_queue()) {
