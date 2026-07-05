@@ -26,6 +26,7 @@ class SceneCollections;
 class UndoManager;
 class VirtualCamManager;
 class GlobalAudioChannels;
+class StreamMetaStore;
 struct GeneralSettings;
 struct AdvancedSettings;
 
@@ -128,6 +129,12 @@ VirtualCamManager &VirtualCam();
 // obs_shutdown). Exposed so the audio.* bridge methods can read/set the per-channel
 // devices over it. Valid between Start() and Stop().
 GlobalAudioChannels &GlobalAudioChannels();
+
+// The remembered stream-metadata store (per-channel defaults keyed by accountId,
+// per-stream overrides keyed by profileUuid, persisted to stream_meta.json).
+// Owned by the bootstrap; it loads in its ctor, so it is valid for the whole
+// process. Exposed so the streamMeta.* bridge methods can read/write over it.
+StreamMetaStore &StreamMeta();
 
 // The global "General settings" bag (projector always-on-top, snapping prefs,
 // tray/multiview/importer prefs), persisted to general.json. Owned by the

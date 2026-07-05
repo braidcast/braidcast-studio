@@ -38,6 +38,7 @@
 #include "multistream/MultistreamEngine.hpp"
 #include "multistream/OutputBindingStore.hpp"
 #include "multistream/SceneLinkStore.hpp"
+#include "multistream/StreamMetaStore.hpp"
 #include "multistream/StreamProfileStore.hpp"
 #include "multistream/VirtualCamManager.hpp"
 #include "oauth/registry.hpp"
@@ -314,6 +315,10 @@ std::unique_ptr<AudioMonitor> g_audioMonitor;
 // map), so a plain member -- no teardown state of its own.
 GlobalAudioChannels g_globalAudio;
 
+// The remembered stream-metadata store. Loads stream_meta.json in its ctor; a
+// plain member with no teardown state of its own.
+StreamMetaStore g_streamMeta;
+
 // The embedded MCP server. Constructed at the end of Start() (after the audio
 // monitor is up) and torn down at the very top of Stop() (before Bridge::Shutdown,
 // so its accept thread is joined while the bridge + libobs are still alive).
@@ -432,6 +437,11 @@ VirtualCamManager &ObsBootstrap::VirtualCam()
 ::GlobalAudioChannels &ObsBootstrap::GlobalAudioChannels()
 {
 	return g_globalAudio;
+}
+
+::StreamMetaStore &ObsBootstrap::StreamMeta()
+{
+	return g_streamMeta;
 }
 
 GeneralSettings &ObsBootstrap::General()
