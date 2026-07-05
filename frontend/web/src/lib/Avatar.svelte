@@ -2,17 +2,19 @@
   // Avatar with a monogram fallback: shows the image when a URL loads, else the
   // first character of `name` on a neutral tile. `size` in px. Square, zero-radius.
   let { url = "", name = "", size = 24 }: { url?: string; name?: string; size?: number } = $props();
-  let failed = $state(false);
+  // Track the URL that failed (not a boolean) so a later valid `url` clears the
+  // fallback automatically — the render gate re-passes once `url !== failedUrl`.
+  let failedUrl = $state("");
   const initial = $derived((name.trim()[0] ?? "?").toUpperCase());
 </script>
 
-{#if url && !failed}
+{#if url && url !== failedUrl}
   <img
     class="avatar"
     src={url}
     alt={name}
     style="width:{size}px;height:{size}px"
-    onerror={() => (failed = true)}
+    onerror={() => (failedUrl = url)}
   />
 {:else}
   <span class="avatar mono" style="width:{size}px;height:{size}px;font-size:{Math.round(size * 0.45)}px">
@@ -32,6 +34,6 @@
   }
   .mono {
     font-family: var(--font-mono);
-    color: var(--color-muted, #888);
+    color: var(--color-muted);
   }
 </style>
