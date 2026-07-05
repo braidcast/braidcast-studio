@@ -59,6 +59,10 @@ jobs:
 
   macos-build:
     name: macOS 🍏
+    # MVP: Braidcast ships Windows-x64 only. Disabled to keep CI green on a
+    # fork without macOS signing/notarization secrets. Remove `if: false` to
+    # re-enable multi-platform builds.
+    if: false
     runs-on: macos-26
     needs: check-event
     strategy:
@@ -124,7 +128,7 @@ jobs:
           notarizationUser: ${{ secrets.MACOS_NOTARIZATION_USERNAME }}
           notarizationPassword: ${{ secrets.MACOS_NOTARIZATION_PASSWORD }}
 
-      - name: Build OBS Studio 🧱
+      - name: Build Braidcast 🧱
         uses: ./.github/actions/build-obs
         env:
           TWITCH_CLIENTID: ${{ secrets.TWITCH_CLIENT_ID }}
@@ -144,7 +148,7 @@ jobs:
           codesignTeam: ${{ steps.codesign.outputs.codesignTeam }}
           provisioningProfileUUID: ${{ steps.codesign.outputs.provisioningProfileUUID }}
 
-      - name: Package OBS Studio 📀
+      - name: Package Braidcast 📀
         uses: ./.github/actions/package-obs
         with:
           target: ${{ matrix.target }}
@@ -160,14 +164,14 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: obs-studio-macos-${{ matrix.target }}-${{ needs.check-event.outputs.commitHash }}
-          path: ${{ github.workspace }}/build_macos/obs-studio-*-macos-${{ steps.setup.outputs.cpuName }}.*
+          path: ${{ github.workspace }}/build_macos/braidcast-*-macos-${{ steps.setup.outputs.cpuName }}.*
 
       - name: Upload Debug Symbol Artifacts 🪲
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: ${{ needs.check-event.outputs.config == 'Release' }}
         with:
           name: obs-studio-macos-${{ matrix.target }}-${{ needs.check-event.outputs.commitHash }}-dSYMs
-          path: ${{ github.workspace }}/build_macos/obs-studio-*-macos-${{ steps.setup.outputs.cpuName }}-dSYMs.tar.xz
+          path: ${{ github.workspace }}/build_macos/braidcast-*-macos-${{ steps.setup.outputs.cpuName }}-dSYMs.tar.xz
 
       - uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         if: github.event_name != 'pull_request' && steps.xcode-cache.outputs.cache-hit != 'true'
@@ -177,6 +181,9 @@ jobs:
 
   ubuntu-build:
     name: Ubuntu 🐧
+    # MVP: disabled — Braidcast ships Windows-x64 only. Remove `if: false` to
+    # re-enable the Ubuntu build.
+    if: false
     strategy:
       matrix:
         os: [ubuntu-24.04]
@@ -199,7 +206,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-${{ matrix.os }}-ccache-x86_64-
 
-      - name: Build OBS Studio 🧱
+      - name: Build Braidcast 🧱
         uses: ./.github/actions/build-obs
         env:
           TWITCH_CLIENTID: ${{ secrets.TWITCH_CLIENT_ID }}
@@ -214,7 +221,7 @@ jobs:
           target: x86_64
           config: ${{ needs.check-event.outputs.config }}
 
-      - name: Package OBS Studio 📀
+      - name: Package Braidcast 📀
         uses: ./.github/actions/package-obs
         with:
           target: x86_64
@@ -225,20 +232,20 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: obs-studio-${{ matrix.os }}-sources-${{ needs.check-event.outputs.commitHash }}
-          path: ${{ github.workspace }}/build_ubuntu/obs-studio-*-sources.*
+          path: ${{ github.workspace }}/build_ubuntu/braidcast-*-sources.*
 
       - name: Upload Artifacts 📡
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: obs-studio-${{ matrix.os }}-x86_64-${{ needs.check-event.outputs.commitHash }}
-          path: ${{ github.workspace }}/build_ubuntu/obs-studio-*-x86_64-ubuntu-gnu.*
+          path: ${{ github.workspace }}/build_ubuntu/braidcast-*-x86_64-ubuntu-gnu.*
 
       - name: Upload Debug Symbol Artifacts 🪲
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: ${{ fromJSON(needs.check-event.outputs.package) }}
         with:
           name: obs-studio-${{ matrix.os }}-x86_64-${{ needs.check-event.outputs.commitHash }}-dbgsym
-          path: ${{ github.workspace }}/build_ubuntu/obs-studio-*-x86_64-ubuntu-gnu-dbgsym.ddeb
+          path: ${{ github.workspace }}/build_ubuntu/braidcast-*-x86_64-ubuntu-gnu-dbgsym.ddeb
 
       - uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         if: github.event_name != 'pull_request' && steps.ccache-cache.outputs.cache-hit != 'true'
@@ -248,6 +255,9 @@ jobs:
 
   flatpak-build:
     name: Flatpak 📦
+    # MVP: disabled — Braidcast ships Windows-x64 only. Remove `if: false` to
+    # re-enable the Flatpak build.
+    if: false
     runs-on: ubuntu-24.04
     needs: check-event
     defaults:
@@ -378,7 +388,10 @@ jobs:
     name: Windows 🪟
     strategy:
       matrix:
-        architecture: [x64, arm64]
+        architecture:
+          - x64
+          # MVP: Windows-x64 only. Uncomment to restore the arm64 build.
+          # - arm64
     runs-on: windows-2022
     needs: check-event
     defaults:
@@ -390,7 +403,7 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
-      - name: Build OBS Studio 🧱
+      - name: Build Braidcast 🧱
         uses: ./.github/actions/build-obs
         env:
           TWITCH_CLIENTID: ${{ secrets.TWITCH_CLIENT_ID }}
@@ -406,7 +419,7 @@ jobs:
           target: ${{ matrix.architecture }}
           config: ${{ needs.check-event.outputs.config }}
 
-      - name: Package OBS Studio 📀
+      - name: Package Braidcast 📀
         uses: ./.github/actions/package-obs
         with:
           target: ${{ matrix.architecture }}
@@ -417,4 +430,4 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: obs-studio-windows-${{ matrix.architecture }}-${{ needs.check-event.outputs.commitHash }}
-          path: ${{ github.workspace }}/build_${{ matrix.architecture }}/obs-studio-*-windows-${{ matrix.architecture }}.zip
+          path: ${{ github.workspace }}/build_${{ matrix.architecture }}/braidcast-*-windows-${{ matrix.architecture }}.zip

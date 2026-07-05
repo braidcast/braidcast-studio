@@ -15,7 +15,7 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
-      - name: Build OBS Studio 🧱
+      - name: Build Braidcast 🧱
         uses: ./.github/actions/build-obs
         env:
           TWITCH_CLIENTID: ${{ secrets.TWITCH_CLIENT_ID }}
@@ -89,7 +89,7 @@ jobs:
           notarizationUser: ${{ secrets.MACOS_NOTARIZATION_USERNAME }}
           notarizationPassword: ${{ secrets.MACOS_NOTARIZATION_PASSWORD }}
 
-      - name: Build OBS Studio 🧱
+      - name: Build Braidcast 🧱
         env:
           TWITCH_CLIENTID: ${{ secrets.TWITCH_CLIENT_ID }}
           TWITCH_HASH: ${{ secrets.TWITCH_HASH }}

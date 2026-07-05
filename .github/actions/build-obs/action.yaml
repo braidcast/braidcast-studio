@@ -31,6 +31,15 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Set Up bun 🥟
+      # The Braidcast Svelte frontend is built at CMake-configure time via
+      # `find_program(BUN_EXECUTABLE bun REQUIRED)` (frontend/CMakeLists.txt).
+      # bun must be on PATH before the platform build steps below run configure.
+      # setup-bun writes to GITHUB_PATH, which persists to later steps in the job.
+      uses: oven-sh/setup-bun@v2
+      with:
+        bun-version: latest
+
     - name: Run macOS Build
       if: runner.os == 'macOS'
       shell: zsh --no-rcs --errexit --pipefail {0}
