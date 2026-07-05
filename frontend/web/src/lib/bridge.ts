@@ -525,6 +525,7 @@ export interface OAuthStatus {
   needsReconnect: boolean;
   login: string;
   displayName: string;
+  avatarUrl: string;
 }
 
 /** One connected account for a provider (oauth.accounts). Powers the Streams
@@ -1032,6 +1033,19 @@ export interface ChatState {
 export interface ViewerCounts {
   perAccount: Record<string, number>;
   total: number;
+}
+
+// `channels.stats` event: audience totals per account. audienceCount === -1 means
+// unknown/hidden; audienceKind labels it ("followers" | "subscribers"); viewers is
+// merged in from viewers.changed by the store, not carried here.
+export interface ChannelStatEntry {
+  audienceCount: number;
+  audienceKind: "followers" | "subscribers" | "";
+  audienceHidden: boolean;
+  audienceUpdatedNs: number;
+}
+export interface ChannelStats {
+  perAccount: Record<string, ChannelStatEntry>;
 }
 
 /** The kind of platform event surfaced in the cross-platform events feed. */
@@ -1567,6 +1581,9 @@ export interface ObsEvents {
   // Aggregate viewer count (perAccount + total), pushed by the host's viewer
   // poller while live; the Multichat dock / Monitor card / Studio chip render off it.
   "viewers.changed": ViewerCounts;
+  // Per-account audience totals (followers/subscribers), pushed by the host's
+  // channels.stats poller. Merged with viewers.changed by the store, not carried here.
+  "channels.stats": ChannelStats;
   // Cross-platform events feed (Phase 9.2). new = one normalized event appended to
   // the feed. backfill = a batch of events (newest-first) that REPLACES the feed;
   // it is also fired empty after events.clear, so treat it as "set the feed to

@@ -7282,6 +7282,7 @@ json BuildOAuthStatusArray()
 			{"needsReconnect", !scopeCurrent},
 			{"login", acct.login},
 			{"displayName", acct.displayName},
+			{"avatarUrl", acct.avatarUrl},
 		});
 	}
 	return arr;
