@@ -45,6 +45,13 @@
   let formError = $state<string | null>(null);
   // Connection sub-path: "connect" (OAuth account) vs "key" (manual stream key).
   let connMode = $state<"connect" | "key">("key");
+  // Add-flow auth default: a freshly-added profile opens its AUTHENTICATION toggle
+  // on "Connect Account" once its OAuth provider resolves (service supports OAuth).
+  // Editing an existing profile keeps openEdit's conservative default so a key-based
+  // profile is never yanked off its key. `authDefaultApplied` fires the flip once,
+  // so a manual switch back to "key" sticks.
+  let justAdded = $state(false);
+  let authDefaultApplied = $state(false);
   // Confirm dialog (destructive profile removal).
   let dialog = $state<DialogSpec | null>(null);
 
@@ -270,6 +277,8 @@
     fLabel = "";
     fService = defaultServiceId();
     connMode = "key";
+    justAdded = true;
+    authDefaultApplied = false;
     formError = null;
     formOpen = true;
   }
@@ -280,11 +289,29 @@
     fLabel = p.label;
     fService = p.service || serviceTypes[0]?.id || "rtmp_common";
     // Default to Connect when an account is linked OR needs a relink (so the warn
-    // panel shows); otherwise (incl. no provider) start on the stream-key path.
+    // panel shows); otherwise (incl. no provider) start on the stream-key path so an
+    // existing key-based profile is never yanked off its key.
     connMode = providerForProfile(p) && (connectedStatusFor(p) || needsReconnectFor(p)) ? "connect" : "key";
+    justAdded = false;
+    authDefaultApplied = true;
     formError = null;
     formOpen = true;
   }
+
+  // Add flow only: when a freshly-added profile's service resolves to an OAuth
+  // provider and it isn't linked yet, default the AUTHENTICATION toggle to
+  // "Connect Account". Fires once (authDefaultApplied) so a manual switch to "key"
+  // is respected. A key-only service (no provider) leaves the "Use Stream Key"
+  // default untouched.
+  $effect(() => {
+    if (!formOpen || !justAdded || authDefaultApplied) {
+      return;
+    }
+    if (editingProvider && !connectedStatus && !needsReconnectStatus) {
+      connMode = "connect";
+      authDefaultApplied = true;
+    }
+  });
 
   function connect() {
     if (!editingUuid || !editingProvider) {
@@ -528,22 +555,31 @@
         <p class="dim pad">No stream profiles yet.</p>
       {:else}
         {#each profiles as p (p.uuid)}
+          {@const linked = connectedStatusFor(p)}
+          {@const reconnect = needsReconnectFor(p)}
+          {@const acctName = linked ? linked.displayName || linked.login : ""}
           <button class="nav-item" class:active={formOpen && editingUuid === p.uuid} onclick={() => openEdit(p)}>
-            <span class="nav-name">
-              {#if p.isPrimary}<span class="star" title="Primary"><Icon name="star-filled" size={11} /></span>{/if}
-              <span class="nav-label">{displayName(p)}</span>
+            <span class="nav-av">
+              <Avatar url={linked?.avatarUrl} name={acctName || displayName(p)} size={36} />
             </span>
-            <span class="nav-sub">
-              <span class="nav-plat">{p.serviceLabel}</span>
-              {#if providerForProfile(p)}
-                {@const linked = connectedStatusFor(p)}
-                {#if linked}
-                  <Avatar url={linked.avatarUrl} name={linked.displayName || linked.login} size={16} />
-                  <span class="acct-name">{linked.displayName || linked.login}</span>
-                  <span class="chip ok">linked</span>
-                {:else if needsReconnectFor(p)}
-                  <span class="chip warn">reconnect</span>
+            <span class="nav-text">
+              <span class="nav-name">
+                {#if p.isPrimary}<span class="star" title="Primary"><Icon name="star-filled" size={11} /></span>{/if}
+                <span class="nav-label">{displayName(p)}</span>
+              </span>
+              <span class="nav-sub">
+                {#if acctName}
+                  <span class="acct-name">{acctName}</span>
+                  <span class="sep">|</span>
                 {/if}
+                <span class="nav-plat">{p.serviceLabel}</span>
+              </span>
+            </span>
+            <span class="nav-status">
+              {#if linked}
+                <span class="conn-dot" title="Connected"></span>
+              {:else if reconnect}
+                <span class="chip warn">⟳ Reconnect</span>
               {/if}
             </span>
           </button>
@@ -648,7 +684,11 @@
                 {#if connMode === "connect"}
                   {#if connectedStatus}
                     <div class="conn">
-                      <span class="dot"><Icon name="dot" size={10} /></span>
+                      <Avatar
+                        url={connectedStatus.avatarUrl}
+                        name={connectedStatus.displayName || connectedStatus.login}
+                        size={26}
+                      />
                       <span class="who">
                         <b>{connectedStatus.displayName || connectedStatus.login}</b>
                         <small>Stream key auto-filled · stream info editing enabled</small>
@@ -806,13 +846,14 @@
     gap: 5px;
   }
   .nav-item {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 11px;
     width: 100%;
     height: auto;
     text-align: left;
-    padding: 10px 11px;
+    padding: 9px 11px;
     background: var(--color-base);
     border: var(--border-weight) solid var(--color-border);
     border-left: 3px solid transparent;
@@ -829,6 +870,27 @@
   .nav-item.active {
     border-left-color: var(--color-accent);
     background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+  }
+  .nav-av {
+    display: inline-flex;
+    flex: 0 0 auto;
+  }
+  .nav-text {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+  .nav-status {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 auto;
+  }
+  .conn-dot {
+    width: 8px;
+    height: 8px;
+    background: var(--color-ok);
+    flex: 0 0 auto;
   }
   .nav-name {
     display: flex;
@@ -859,20 +921,18 @@
   .nav-sub {
     display: flex;
     align-items: center;
-    gap: 7px;
+    gap: 5px;
     min-width: 0;
   }
   .nav-plat {
     font-family: var(--font-mono);
     font-size: 10px;
     color: var(--color-muted);
-    overflow: hidden;
-    text-overflow: ellipsis;
     white-space: nowrap;
     flex: 0 0 auto;
   }
   .acct-name {
-    flex: 1 1 auto;
+    flex: 0 1 auto;
     min-width: 0;
     font-family: var(--font-ui);
     font-size: 11px;
@@ -880,6 +940,12 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .sep {
+    flex: 0 0 auto;
+    color: var(--color-muted);
+    font-family: var(--font-mono);
+    font-size: 10px;
   }
   .chip {
     flex: 0 0 auto;
@@ -889,10 +955,6 @@
     text-transform: uppercase;
     padding: 1px 5px;
     border: var(--border-weight) solid var(--color-border);
-  }
-  .chip.ok {
-    color: var(--color-ok);
-    border-color: color-mix(in srgb, var(--color-ok) 45%, transparent);
   }
   .chip.warn {
     color: var(--color-accent);
