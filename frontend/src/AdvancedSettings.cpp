@@ -9,8 +9,6 @@
 #include <windows.h>
 #endif
 
-#include <filesystem>
-
 void AdvancedSettings::Load()
 {
 	OBSDataAutoRelease root =
@@ -47,10 +45,7 @@ void AdvancedSettings::Save() const
 		obs_data_set_int(root, f.file, this->*f.member);
 	}
 
-	const std::string path = MultistreamBasicPath("advanced.json");
-	std::filesystem::path dir = std::filesystem::u8path(path).parent_path();
-	os_mkdirs(dir.u8string().c_str());
-	obs_data_save_json_pretty_safe(root, path.c_str(), "tmp", "bak");
+	SaveJsonAtomic(root, MultistreamBasicPath("advanced.json"));
 }
 
 void ApplyProcessPriority(const std::string &token)

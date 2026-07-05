@@ -18,7 +18,6 @@
 #include <util/dstr.h>
 #include <util/platform.h>
 
-#include <filesystem>
 #include <queue>
 #include <string>
 #include <unordered_map>
@@ -459,10 +458,7 @@ bool WriteForkSceneFile(const std::string &relFile, obs_data_array_t *filtered, 
 	obs_data_set_array(root, "sources", filtered);
 	obs_data_set_string(root, "current_scene", currentScene.c_str());
 
-	const std::string path = MultistreamBasicPath(relFile.c_str());
-	std::filesystem::path dir = std::filesystem::u8path(path).parent_path();
-	os_mkdirs(dir.u8string().c_str());
-	return obs_data_save_json_pretty_safe(root, path.c_str(), "tmp", "bak");
+	return SaveJsonAtomic(root, MultistreamBasicPath(relFile.c_str()));
 }
 
 // A fork collection name unique against the current registry: the requested name,

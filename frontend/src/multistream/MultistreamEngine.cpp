@@ -159,10 +159,24 @@ MultistreamEngine::CanvasEncoders *MultistreamEngine::EnsureCanvasEncoders(const
 
 void MultistreamEngine::InvalidateCanvasEncoders(const std::string &canvasUuid)
 {
-	for (auto it = canvasEncoders.begin(); it != canvasEncoders.end(); ++it) {
-		if (it->canvasUuid == canvasUuid) {
-			canvasEncoders.erase(it);
-			return;
+	/* Canvases with an empty/use-default encoder id inherit the Default canvas's
+	 * resolved encoder (see EnsureCanvasEncoders), so editing the Default staleifies
+	 * every inheritor's cached pair too -- drop those as well when the Default is the
+	 * one invalidated. */
+	const bool defaultInvalidated = (canvasUuid == canvases.Default().uuid);
+	for (auto it = canvasEncoders.begin(); it != canvasEncoders.end();) {
+		bool drop = (it->canvasUuid == canvasUuid);
+		if (!drop && defaultInvalidated) {
+			const CanvasDefinition *cdef = canvases.Find(it->canvasUuid);
+			if (cdef && (cdef->video.useDefault || cdef->video.id.empty() || cdef->audio.useDefault ||
+				     cdef->audio.id.empty())) {
+				drop = true;
+			}
+		}
+		if (drop) {
+			it = canvasEncoders.erase(it);
+		} else {
+			++it;
 		}
 	}
 }
@@ -396,6 +410,23 @@ void MultistreamEngine::RemoveLive(const std::string &bindingUuid)
 	}
 }
 
+MultistreamEngine::BindingMeta MultistreamEngine::ResolveBindingMeta(const OutputBinding &b) const
+{
+	BindingMeta meta;
+	if (!b.profileUuid.empty()) {
+		if (StreamProfile *p = profiles.Find(b.profileUuid)) {
+			meta.profileLabel = p->DisplayName();
+		}
+	}
+	const CanvasDefinition &def = canvases.Default();
+	if (b.canvasUuid == def.uuid) {
+		meta.canvasName = def.name;
+	} else if (const CanvasDefinition *cdef = canvases.Find(b.canvasUuid)) {
+		meta.canvasName = cdef->name;
+	}
+	return meta;
+}
+
 std::vector<MultistreamEngine::OutputStatus> MultistreamEngine::Statuses() const
 {
 	std::lock_guard<std::mutex> lock(liveMutex);
@@ -407,17 +438,9 @@ std::vector<MultistreamEngine::OutputStatus> MultistreamEngine::Statuses() const
 		OutputStatus st;
 		st.bindingUuid = b.uuid;
 		st.canvasUuid = b.canvasUuid;
-		if (!b.profileUuid.empty()) {
-			if (StreamProfile *p = profiles.Find(b.profileUuid)) {
-				st.profileLabel = p->DisplayName();
-			}
-		}
-		const CanvasDefinition &def = canvases.Default();
-		if (b.canvasUuid == def.uuid) {
-			st.canvasName = def.name;
-		} else if (const CanvasDefinition *cdef = canvases.Find(b.canvasUuid)) {
-			st.canvasName = cdef->name;
-		}
+		BindingMeta meta = ResolveBindingMeta(b);
+		st.profileLabel = std::move(meta.profileLabel);
+		st.canvasName = std::move(meta.canvasName);
 		for (const auto &lo : live) {
 			if (lo->bindingUuid == b.uuid) {
 				st.state = lo->state;
@@ -441,17 +464,9 @@ std::vector<MultistreamEngine::OutputStats> MultistreamEngine::StatsSnapshot() c
 		OutputStats st;
 		st.bindingUuid = b.uuid;
 		st.canvasUuid = b.canvasUuid;
-		if (!b.profileUuid.empty()) {
-			if (StreamProfile *p = profiles.Find(b.profileUuid)) {
-				st.profileLabel = p->DisplayName();
-			}
-		}
-		const CanvasDefinition &def = canvases.Default();
-		if (b.canvasUuid == def.uuid) {
-			st.canvasName = def.name;
-		} else if (const CanvasDefinition *cdef = canvases.Find(b.canvasUuid)) {
-			st.canvasName = cdef->name;
-		}
+		BindingMeta meta = ResolveBindingMeta(b);
+		st.profileLabel = std::move(meta.profileLabel);
+		st.canvasName = std::move(meta.canvasName);
 		for (const auto &lo : live) {
 			if (lo->bindingUuid != b.uuid) {
 				continue;

@@ -77,6 +77,17 @@ bool OutputBindings::ProfileEnabledElsewhere(const std::string &bindingUuid, con
 	return false;
 }
 
+bool OutputBindings::HasPair(const std::string &profileUuid, const std::string &canvasUuid,
+			     const std::string &excludeUuid) const
+{
+	for (const OutputBinding &b : bindings) {
+		if (b.uuid != excludeUuid && b.profileUuid == profileUuid && b.canvasUuid == canvasUuid) {
+			return true;
+		}
+	}
+	return false;
+}
+
 OBSDataArrayAutoRelease OutputBindings::ToDataArray() const
 {
 	OBSDataArrayAutoRelease arr = obs_data_array_create();

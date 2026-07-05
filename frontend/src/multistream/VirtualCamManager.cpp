@@ -7,8 +7,6 @@
 
 #include <util/platform.h>
 
-#include <filesystem>
-
 // The output id registered by the win-dshow virtual-camera module (legacy
 // VIRTUAL_CAM_ID). Create with this id + a fixed name; absent (module not built)
 // obs_output_create returns null and Start() reports the failure.
@@ -100,10 +98,7 @@ void VirtualCamManager::Save() const
 	OBSDataAutoRelease root = obs_data_create();
 	obs_data_set_string(root, "canvas", targetCanvas_.c_str());
 
-	const std::string path = MultistreamBasicPath("virtualcam.json");
-	std::filesystem::path dir = std::filesystem::u8path(path).parent_path();
-	os_mkdirs(dir.u8string().c_str());
-	obs_data_save_json_pretty_safe(root, path.c_str(), "tmp", "bak");
+	SaveJsonAtomic(root, MultistreamBasicPath("virtualcam.json"));
 }
 
 void VirtualCamManager::NotifyChanged()

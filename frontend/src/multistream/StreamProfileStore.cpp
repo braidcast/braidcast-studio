@@ -5,8 +5,6 @@
 #include <util/platform.h>
 #include <util/util.hpp>
 
-#include <filesystem>
-
 std::string StreamProfileStore::FilePath()
 {
 	return MultistreamBasicPath("streams.json");
@@ -67,11 +65,7 @@ void StreamProfileStore::Load()
 void StreamProfileStore::Save() const
 {
 	OBSDataAutoRelease root = obs_data_create_from_json(ToJson().dump().c_str());
-
-	std::filesystem::path dir = std::filesystem::u8path(FilePath()).parent_path();
-	os_mkdirs(dir.u8string().c_str());
-
-	obs_data_save_json_pretty_safe(root, FilePath().c_str(), "tmp", "bak");
+	SaveJsonAtomic(root, FilePath());
 }
 
 StreamProfile *StreamProfileStore::Primary()

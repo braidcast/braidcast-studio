@@ -41,6 +41,11 @@ struct OutputBindings {
 	/* True if some OTHER binding with the same non-empty profile is already
 	 * enabled (single RTMP key = one live stream). Used for the "in use" guard. */
 	bool ProfileEnabledElsewhere(const std::string &bindingUuid, const std::string &profileUuid) const;
+	/* True if a binding with this exact (profile x canvas) pair already exists,
+	 * ignoring the binding whose uuid == excludeUuid (empty excludes none). Guards
+	 * the create/update duplicate-pair check. */
+	bool HasPair(const std::string &profileUuid, const std::string &canvasUuid,
+		     const std::string &excludeUuid = std::string()) const;
 
 	[[nodiscard]] OBSDataArrayAutoRelease ToDataArray() const;
 	static OutputBindings FromDataArray(obs_data_array_t *arr);

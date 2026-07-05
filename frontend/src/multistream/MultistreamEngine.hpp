@@ -12,6 +12,7 @@
 class CanvasStore;
 class StreamProfileStore;
 class OutputBindingStore;
+struct OutputBinding;
 
 /* Encode-once, fan-out streaming engine, independent of the single-stream
  * BasicOutputHandler. For each ENABLED output binding it streams the binding's
@@ -114,6 +115,14 @@ private:
 		State state = State::Connecting;
 		std::string lastError;
 	};
+
+	/* Display strings shared by Statuses()/StatsSnapshot() for one binding: the
+	 * profile's "{platform} - {label}" and the canvas's name. */
+	struct BindingMeta {
+		std::string profileLabel;
+		std::string canvasName;
+	};
+	BindingMeta ResolveBindingMeta(const OutputBinding &b) const;
 
 	/* Get-or-create the shared encoder pair for a canvas, bound to that
 	 * canvas's video mix + the global audio. Returns nullptr on failure. */

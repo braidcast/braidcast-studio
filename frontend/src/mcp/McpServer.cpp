@@ -9,7 +9,6 @@
 #include <array>
 #include <chrono>
 #include <cstdlib> // rand_s
-#include <filesystem>
 #include <future>
 #include <memory>
 #include <set>
@@ -394,8 +393,6 @@ void McpServer::Save() const
 	if (path.empty()) {
 		return;
 	}
-	std::filesystem::path dir = std::filesystem::u8path(path).parent_path();
-	os_mkdirs(dir.u8string().c_str());
 
 	OBSDataAutoRelease root = obs_data_create();
 	obs_data_set_bool(root, "enabled", config_.enabled);
@@ -403,7 +400,7 @@ void McpServer::Save() const
 	obs_data_set_string(root, "token", config_.token.c_str());
 	obs_data_set_bool(root, "allowMutations", config_.allowMutations);
 	obs_data_set_bool(root, "allowGoLive", config_.allowGoLive);
-	obs_data_save_json_pretty_safe(root, path.c_str(), "tmp", "bak");
+	SaveJsonAtomic(root, path);
 }
 
 void McpServer::Start()

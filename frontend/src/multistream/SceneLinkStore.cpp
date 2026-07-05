@@ -1,12 +1,11 @@
 #include "SceneLinkStore.hpp"
 
+#include "StorePaths.hpp"
 #include "../obs_bootstrap.hpp"
 #include "../scene_collections.hpp"
 
 #include <util/platform.h>
 #include <util/util.hpp>
-
-#include <filesystem>
 
 nlohmann::json SceneLinkStore::ToJson() const
 {
@@ -51,9 +50,5 @@ void SceneLinkStore::Save() const
 void SceneLinkStore::Save(const std::string &path) const
 {
 	OBSDataAutoRelease root = obs_data_create_from_json(ToJson().dump().c_str());
-
-	std::filesystem::path dir = std::filesystem::u8path(path).parent_path();
-	os_mkdirs(dir.u8string().c_str());
-
-	obs_data_save_json_pretty_safe(root, path.c_str(), "tmp", "bak");
+	SaveJsonAtomic(root, path);
 }

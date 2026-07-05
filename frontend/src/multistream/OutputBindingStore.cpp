@@ -8,8 +8,6 @@
 #include <util/platform.h>
 #include <util/util.hpp>
 
-#include <filesystem>
-
 std::string OutputBindingStore::FilePath()
 {
 	return MultistreamBasicPath("output_bindings.json");
@@ -58,9 +56,5 @@ void OutputBindingStore::Save() const
 void OutputBindingStore::Save(const std::string &path) const
 {
 	OBSDataAutoRelease root = obs_data_create_from_json(ToJson().dump().c_str());
-
-	std::filesystem::path dir = std::filesystem::u8path(path).parent_path();
-	os_mkdirs(dir.u8string().c_str());
-
-	obs_data_save_json_pretty_safe(root, path.c_str(), "tmp", "bak");
+	SaveJsonAtomic(root, path);
 }

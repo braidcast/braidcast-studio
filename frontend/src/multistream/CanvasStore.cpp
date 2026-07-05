@@ -5,8 +5,6 @@
 #include <util/platform.h>
 #include <util/util.hpp>
 
-#include <filesystem>
-
 std::string CanvasStore::FilePath()
 {
 	return MultistreamBasicPath("canvases.json");
@@ -55,12 +53,7 @@ void CanvasStore::Load()
 void CanvasStore::Save() const
 {
 	OBSDataAutoRelease root = obs_data_create_from_json(ToJson().dump().c_str());
-
-	// Ensure the parent dir exists (it does once a profile is created, but be safe).
-	std::filesystem::path dir = std::filesystem::u8path(FilePath()).parent_path();
-	os_mkdirs(dir.u8string().c_str());
-
-	obs_data_save_json_pretty_safe(root, FilePath().c_str(), "tmp", "bak");
+	SaveJsonAtomic(root, FilePath());
 }
 
 void CanvasStore::EnsureDefault()

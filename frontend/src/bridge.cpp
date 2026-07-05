@@ -5096,11 +5096,9 @@ bool MethodOutputBindingCreate(const json &params, json &result, std::string &er
 	OutputBindings &bindings = ObsBootstrap::OutputBindings().Bindings();
 
 	// Reject an exact duplicate: the same (profile x canvas) pair already bound.
-	for (const OutputBinding &b : bindings.bindings) {
-		if (b.profileUuid == profileUuid && b.canvasUuid == canvasUuid) {
-			error = "that profile is already bound to this canvas";
-			return false;
-		}
+	if (bindings.HasPair(profileUuid, canvasUuid)) {
+		error = "that profile is already bound to this canvas";
+		return false;
 	}
 
 	OutputBinding &created = bindings.Add(canvasUuid);
@@ -5154,11 +5152,9 @@ bool MethodOutputBindingUpdate(const json &params, json &result, std::string &er
 		}
 	}
 
-	for (const OutputBinding &other : bindings.bindings) {
-		if (other.uuid != uuid && other.profileUuid == newProfile && other.canvasUuid == newCanvas) {
-			error = "that profile is already bound to this canvas";
-			return false;
-		}
+	if (bindings.HasPair(newProfile, newCanvas, uuid)) {
+		error = "that profile is already bound to this canvas";
+		return false;
 	}
 
 	b->profileUuid = newProfile;
@@ -7128,10 +7124,7 @@ bool MethodBrowserDocksSet(const json &params, json &result, std::string &error)
 	}
 	obs_data_set_array(root, "docks", arr);
 
-	const std::string path = MultistreamBasicPath("browser_docks.json");
-	std::filesystem::path dir = std::filesystem::u8path(path).parent_path();
-	os_mkdirs(dir.u8string().c_str());
-	if (!obs_data_save_json_pretty_safe(root, path.c_str(), "tmp", "bak")) {
+	if (!SaveJsonAtomic(root, MultistreamBasicPath("browser_docks.json"))) {
 		error = "failed to write browser_docks.json";
 		return false;
 	}
@@ -7147,11 +7140,9 @@ bool WriteJsonString(const char *file, const char *key, const std::string &value
 	if (path.empty()) {
 		return false;
 	}
-	std::filesystem::path dir = std::filesystem::u8path(path).parent_path();
-	os_mkdirs(dir.u8string().c_str());
 	OBSDataAutoRelease root = obs_data_create();
 	obs_data_set_string(root, key, value.c_str());
-	return obs_data_save_json_pretty_safe(root, path.c_str(), "tmp", "bak");
+	return SaveJsonAtomic(root, path);
 }
 
 std::string ReadJsonString(const char *file, const char *key)

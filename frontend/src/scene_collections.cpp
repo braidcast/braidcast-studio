@@ -207,10 +207,7 @@ void SceneCollections::Save() const
 	obs_data_set_string(root, "active", activeId_.c_str());
 
 	const std::string path = IndexPath();
-	std::filesystem::path dir = std::filesystem::u8path(path).parent_path();
-	os_mkdirs(dir.u8string().c_str());
-
-	if (!obs_data_save_json_pretty_safe(root, path.c_str(), "tmp", "bak")) {
+	if (!SaveJsonAtomic(root, path)) {
 		HostLog("[scene] failed to save scene-collection index to " + path);
 	}
 }

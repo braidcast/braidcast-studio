@@ -5,8 +5,6 @@
 #include <obs.hpp>
 #include <util/platform.h>
 
-#include <filesystem>
-
 namespace Events {
 
 namespace {
@@ -174,12 +172,7 @@ void EventStore::WriteToDisk(const json &root, uint64_t seq) const
 	}
 	lastWrittenSeq_ = seq;
 	OBSDataAutoRelease data = obs_data_create_from_json(root.dump().c_str());
-
-	// Ensure the parent dir exists (it does once a profile is created, but be safe).
-	std::filesystem::path dir = std::filesystem::u8path(FilePath()).parent_path();
-	os_mkdirs(dir.u8string().c_str());
-
-	obs_data_save_json_pretty_safe(data, FilePath().c_str(), "tmp", "bak");
+	SaveJsonAtomic(data, FilePath());
 }
 
 } // namespace Events

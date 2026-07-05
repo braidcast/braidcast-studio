@@ -21,3 +21,12 @@ inline std::string MultistreamBasicPath(const char *file)
 	path += file;
 	return path;
 }
+
+struct obs_data;
+typedef struct obs_data obs_data_t;
+
+// Atomically persist `root` to the absolute `absPath`: create the parent
+// directory, then obs_data_save_json_pretty_safe (write "<absPath>.tmp", rename
+// into place, keep "<absPath>.bak"). Returns true on success. Centralizes the
+// save envelope the multistream stores share.
+bool SaveJsonAtomic(obs_data_t *root, const std::string &absPath);
