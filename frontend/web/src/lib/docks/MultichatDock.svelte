@@ -75,9 +75,29 @@
     }
   }
 
+  // The host emits each message once (chat workers are keyed by account, so two
+  // profiles on one channel share a worker). Guard the render path anyway: drop a
+  // repeated platform-native id so a transport reconnect that replays recent
+  // history can't double a line. Bounded ring; ids are optional per platform.
+  const seenIds = new Set<string>();
+  const seenOrder: string[] = [];
+  function enqueueMessage(m: ChatMessage): void {
+    if (m.id) {
+      const key = m.platform + ":" + m.id;
+      if (seenIds.has(key)) return;
+      seenIds.add(key);
+      seenOrder.push(key);
+      if (seenOrder.length > 500) {
+        const old = seenOrder.shift();
+        if (old !== undefined) seenIds.delete(old);
+      }
+    }
+    feed.enqueue(m);
+  }
+
   $effect(() => {
     refreshStates();
-    const offMsg = obs.on("chat.message", (m) => feed.enqueue(m));
+    const offMsg = obs.on("chat.message", (m) => enqueueMessage(m));
     const offState = obs.on("chat.state", (s) => {
       const next = new Map(states);
       next.set(s.platform, s);
