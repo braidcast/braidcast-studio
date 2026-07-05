@@ -5361,7 +5361,7 @@ bool MethodStatsGet(const json & /*params*/, json &result, std::string & /*error
 			{"totalFrames", s.totalFrames},
 			{"dropPct", dropPct},
 			{"congestionPct", s.congestion * 100.0},
-			{"durationMs", s.connectTimeMs},
+			{"durationMs", s.uptimeMs},
 		});
 	}
 	bitrateCache.swap(nextCache);
@@ -7881,10 +7881,12 @@ bool MethodStreamMetaGet(const json &params, json &result, std::string &error)
 		error = "unknown provider: " + stored->providerId;
 		return false;
 	}
-	if (!provider->isTokenScopeCurrent(*stored)) {
-		error = "reconnect required: this account was authorized under an older permission set";
-		return false;
-	}
+	// No scopeVer gate here: reading channel metadata uses a scope present in every
+	// scope version (Twitch's Get Channel Information needs no user scope at all), so
+	// gating on scopeVer would force needless reconnects on tokens that can already
+	// read it. A genuinely missing/insufficient scope surfaces as an HTTP 403 that
+	// getMetadata already returns. Newly-added event scopes stay gated on their own
+	// paths (chat/event hubs, viewer poller).
 
 	OAuth::OAuthAccount acct = *stored;
 	json out;
@@ -7975,10 +7977,13 @@ bool MethodStreamMetaSet(const json &params, json &result, std::string &error)
 		error = "unknown provider: " + stored->providerId;
 		return false;
 	}
-	if (!provider->isTokenScopeCurrent(*stored)) {
-		error = "reconnect required: this account was authorized under an older permission set";
-		return false;
-	}
+	// No scopeVer gate here: writing channel metadata needs only the channel-edit
+	// scope (Twitch channel:manage:broadcast), which predates every scopeVer bump --
+	// the v3 bump added EventSub read scopes, unrelated to editing title/category. A
+	// token issued before the bump is fully authorized to edit channel info, so gating
+	// on scopeVer would block it needlessly. A genuinely missing scope surfaces as an
+	// HTTP 403 that applyMetadata already returns. Newly-added event scopes stay gated
+	// on their own paths (chat/event hubs, viewer poller).
 	const json fields = params.is_object() && params.contains("fields") ? params["fields"] : json::object();
 
 	OAuth::OAuthAccount acct = *stored;

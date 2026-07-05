@@ -11,6 +11,8 @@
 #include <OutputBinding.hpp>
 #include <StreamProfile.hpp>
 
+#include <util/platform.h>
+
 #include <array>
 #include <cstring>
 
@@ -480,8 +482,7 @@ std::vector<MultistreamEngine::OutputStats> MultistreamEngine::StatsSnapshot() c
 				st.droppedFrames = obs_output_get_frames_dropped(o);
 				st.totalFrames = obs_output_get_total_frames(o);
 				st.congestion = obs_output_get_congestion(o);
-				int connectMs = obs_output_get_connect_time_ms(o);
-				st.connectTimeMs = connectMs > 0 ? static_cast<uint64_t>(connectMs) : 0;
+				st.uptimeMs = lo->liveStartNs ? (os_gettime_ns() - lo->liveStartNs) / 1000000ULL : 0;
 			}
 			break;
 		}
@@ -506,6 +507,7 @@ void MultistreamEngine::OnOutputStart(void *data, calldata_t *cd)
 		for (auto &lo : self->live) {
 			if (lo->output == out) {
 				lo->state = State::Live;
+				lo->liveStartNs = os_gettime_ns();
 				break;
 			}
 		}

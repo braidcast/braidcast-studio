@@ -51,7 +51,7 @@ public:
 		int droppedFrames = 0;
 		int totalFrames = 0;
 		double congestion = 0.0; // 0..1
-		uint64_t connectTimeMs = 0;
+		uint64_t uptimeMs = 0;
 	};
 
 	/* Resolver: video_t* for a canvas uuid (Default -> obs_get_video();
@@ -114,6 +114,10 @@ private:
 		OBSSignal stopSignal;
 		State state = State::Connecting;
 		std::string lastError;
+		/* Set when the output signals start (goes Live); the stats snapshot derives
+		 * elapsed uptime from it. obs_output_get_connect_time_ms is a one-time
+		 * handshake latency, not a running counter, so it can't drive the badge. */
+		uint64_t liveStartNs = 0;
 	};
 
 	/* Display strings shared by Statuses()/StatsSnapshot() for one binding: the
