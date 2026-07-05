@@ -13,6 +13,7 @@
   import { streamProfileStore } from "./streamProfileStore.svelte";
   import { oauthStore } from "./oauthStore.svelte";
   import { showToast } from "./toastStore.svelte";
+  import Avatar from "./Avatar.svelte";
   import GoLiveFieldInput from "./GoLiveFieldInput.svelte";
   import Modal from "./Modal.svelte";
   import Segmented from "./Segmented.svelte";
@@ -82,22 +83,6 @@
   let collapsed = $state<Record<string, boolean>>({});
   function toggleCollapsed(id: string): void {
     collapsed[id] = !collapsed[id];
-  }
-
-  // Monogram ink: pick black/white text off the brand color's luminance so a light
-  // brand (Kick green) reads as dark ink and a dark brand (Twitch purple) as white.
-  function monoInk(bg: string): string {
-    const h = bg.replace("#", "");
-    if (h.length < 6) {
-      return "#fff";
-    }
-    const r = parseInt(h.slice(0, 2), 16);
-    const g = parseInt(h.slice(2, 4), 16);
-    const b = parseInt(h.slice(4, 6), 16);
-    return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.6 ? "#0a0a0b" : "#fff";
-  }
-  function monoLetter(c: Channel): string {
-    return (c.provider?.displayName || c.login || "?").trim().charAt(0).toUpperCase();
   }
 
   // Reconnect a stale-scope channel via the shared OAuth connect dialog (the same flow
@@ -660,11 +645,7 @@
                 aria-expanded={!isCollapsed}
                 onclick={() => toggleCollapsed(c.accountId)}
               >
-                <span
-                  class="mono"
-                  style:background={c.provider.brandColor || "var(--color-accent)"}
-                  style:color={monoInk(c.provider.brandColor || "#e7a338")}>{monoLetter(c)}</span
-                >
+                <Avatar url={c.status?.avatarUrl ?? ""} name={c.provider.displayName || c.login} size={20} />
                 <span class="plat">{c.provider.displayName}</span>
                 <span class="nm">{c.login}</span>
                 {#if c.streams.length > 1}
@@ -773,11 +754,7 @@
                  (the shared OAuth connect flow), never silently dropped. -->
             <div class="ch warn">
               <div class="warnstrip">
-                <span
-                  class="mono"
-                  style:background={c.provider?.brandColor || "var(--color-warn)"}
-                  style:color={monoInk(c.provider?.brandColor || "#e6b03e")}>{monoLetter(c)}</span
-                >
+                <Avatar url={c.status?.avatarUrl ?? ""} name={c.provider?.displayName || c.login} size={20} />
                 <span class="msg">
                   <b>{c.login}</b> — reconnect to edit
                   {c.provider?.displayName ?? "this platform"} stream info
@@ -950,17 +927,6 @@
   }
   .chh.nb {
     border-bottom: 0;
-  }
-  .mono {
-    width: 20px;
-    height: 20px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-family: var(--font-mono);
-    font-weight: 800;
-    font-size: 11px;
-    flex: 0 0 auto;
   }
   .plat {
     font-family: var(--font-mono);
