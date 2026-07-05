@@ -203,8 +203,6 @@
               {#if c.isDefault}<span class="cv-ci__badge">DEF</span>{/if}
             </button>
           {/each}
-        </div>
-        <div class="cv-clist__foot">
           <button class="cv-newcanvas" onclick={addCanvas}><Icon name="plus" size={13} /><span>New Canvas</span></button>
         </div>
       </aside>

@@ -545,8 +545,10 @@
           </button>
         {/each}
       {/if}
+      {#if loaded}
+        <button class="add-btn" onclick={openAdd}><Icon name="plus" size={13} /> Add Stream Profile</button>
+      {/if}
     </div>
-    <button class="add-btn" onclick={openAdd}><Icon name="plus" size={13} /> Add Stream Profile</button>
   </div>
 
   <div class="detail">
@@ -887,10 +889,10 @@
     align-items: center;
     justify-content: center;
     gap: 6px;
+    width: 100%;
     height: auto;
-    padding: 12px;
-    border: 0;
-    border-top: var(--border-weight) solid var(--color-border);
+    padding: 11px;
+    border: var(--border-weight) dashed var(--color-border);
     background: transparent;
     color: var(--color-dim);
     font-family: var(--font-ui);

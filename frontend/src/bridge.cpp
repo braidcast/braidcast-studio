@@ -5007,6 +5007,7 @@ bool MethodOutputBindingCreate(const json &params, json &result, std::string &er
 
 	OutputBinding &created = bindings.Add(canvasUuid);
 	created.profileUuid = profileUuid;
+	created.enabled = true;
 	const std::string uuid = created.uuid;
 	ObsBootstrap::OutputBindings().Save();
 
