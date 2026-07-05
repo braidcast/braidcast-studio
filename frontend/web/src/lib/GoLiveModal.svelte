@@ -83,6 +83,14 @@
   // Toggling off clears that stream's overrides so it cleanly inherits again.
   let streamOverrideOn = $state<Record<string, boolean>>({});
 
+  // Shared-block keys the user has edited by hand. Prefill must never seed or diverge
+  // a key the user owns, otherwise a shared edit made while the (fired-not-awaited)
+  // get/getSaved are in flight would be silently overridden by a stale live value.
+  const touchedShared = new Set<string>();
+  function setSharedField(key: string, val: unknown): void {
+    touchedShared.add(key);
+    sharedValues = { ...sharedValues, [key]: val };
+  }
   function setField(id: string, key: string, val: unknown): void {
     channelValues[id] = { ...(channelValues[id] ?? {}), [key]: val };
   }
@@ -322,7 +330,10 @@
           obs.call("streamMeta.getSaved", { accountId: c.accountId, profileUuids }),
           obs.call("streamMeta.get", { accountId: c.accountId }),
         ]);
-        const saved = savedR.status === "fulfilled" ? savedR.value : { channel: {}, streams: {} };
+        // Default channel/streams to {} even on the fulfilled path so a malformed
+        // response missing a field can't throw and reject the whole prefill.
+        const savedRaw = savedR.status === "fulfilled" ? savedR.value : undefined;
+        const saved = { channel: savedRaw?.channel ?? {}, streams: savedRaw?.streams ?? {} };
         const live = liveR.status === "fulfilled" ? liveR.value : undefined;
 
         // Channel bag: saved base, live over. Seed a key only when the current value
@@ -350,6 +361,9 @@
             continue;
           }
           if (f?.shareable) {
+            if (touchedShared.has(key)) {
+              continue;
+            }
             if (isEmptyVal(type, sharedValues[key])) {
               sharedValues = { ...sharedValues, [key]: val };
             } else if (!valuesEqual(type, sharedValues[key], val) && isEmptyVal(type, getVal(c.accountId, key))) {
@@ -452,7 +466,11 @@
           }
           return obs.call("streamMeta.save", {
             accountId: c.accountId,
-            channel: channelValues[c.accountId] ?? {},
+            // Persist the EFFECTIVE channel-level defaults (shared shareable keys
+            // merged with channel values, empties dropped) so shared-block values —
+            // which live in sharedValues, not channelValues — are actually saved.
+            // Prefill routes them back into the shared layer (first-wins + dedup).
+            channel: effectiveFields(c, undefined),
             streams,
           });
         }),
@@ -494,7 +512,7 @@
             {#each sharedFields as f, i (f.key)}
               <div class="fld" class:last={i === sharedFields.length - 1}>
                 <span class="fl">{f.label}</span>
-                <GoLiveFieldInput field={f} value={sharedValues[f.key]} onChange={(v) => (sharedValues[f.key] = v)} />
+                <GoLiveFieldInput field={f} value={sharedValues[f.key]} onChange={(v) => setSharedField(f.key, v)} />
               </div>
             {/each}
           </div>
