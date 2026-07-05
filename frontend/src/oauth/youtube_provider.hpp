@@ -62,6 +62,11 @@ public:
 	// videos.list liveStreamingDetails.concurrentViewers (absent -> 0).
 	bool viewerCount(OAuthAccount &acct, int &out, std::string &err) override;
 
+	// Report the channel's subscriber total (channels.list statistics). Reuses the
+	// identity `channels` scope -- no new grant. hiddenSubscriberCount -> hidden=true
+	// with count=-1; a successful read is authoritative even when hidden.
+	bool audienceCount(OAuthAccount &acct, AudienceResult &out, std::string &err) override;
+
 	// A fresh YouTube live-chat transport for `acct`, active only while a broadcast is
 	// live for that account.
 	std::unique_ptr<Chat::ChatTransport> makeChat(const OAuthAccount &acct) override;

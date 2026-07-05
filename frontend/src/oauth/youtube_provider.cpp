@@ -718,4 +718,44 @@ bool YouTubeProvider::viewerCount(OAuthAccount &acct, int &out, std::string &err
 	return true;
 }
 
+bool YouTubeProvider::audienceCount(OAuthAccount &acct, AudienceResult &out, std::string &err)
+{
+	Http::HttpReq req;
+	req.method = "GET";
+	req.url = std::string(kChannelsUrl) + "?part=statistics&mine=true";
+
+	Http::HttpResponse resp;
+	if (!SendAuthed(acct, req, resp, err)) {
+		return false;
+	}
+	if (resp.status < 200 || resp.status >= 300) {
+		err = "YouTube channels request failed (HTTP " + std::to_string(resp.status) + "): " + resp.body;
+		return false;
+	}
+
+	const json item = FirstItem(ParseJson(resp.body));
+	if (!item.is_object() || !item.contains("statistics") || !item["statistics"].is_object()) {
+		err = "YouTube channels response missing statistics";
+		return false;
+	}
+
+	const json &stats = item["statistics"];
+	out.kind = AudienceKind::Subscribers;
+	out.hidden = Bool(stats, "hiddenSubscriberCount", false);
+	if (out.hidden) {
+		out.count = -1;
+	} else {
+		// subscriberCount is a STRING in the API, API-rounded to 3 sig figs above 1000.
+		try {
+			out.count = std::stoll(Str(stats, "subscriberCount"));
+		} catch (const std::exception &) {
+			out.available = false;
+			err = "YouTube subscriberCount was not a parseable number";
+			return false;
+		}
+	}
+	out.available = true; // a successful read is authoritative even when hidden
+	return true;
+}
+
 } // namespace OAuth

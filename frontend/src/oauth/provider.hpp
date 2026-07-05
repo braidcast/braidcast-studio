@@ -58,6 +58,16 @@ inline AudienceKind AudienceKindFromName(const std::string &s)
 	return AudienceKind::Unknown;
 }
 
+// Result of an audience-total read. `available` is false when the platform has no
+// REST total (Kick) or the read failed / is unsupported; the poller then leaves the
+// account's cached count untouched.
+struct AudienceResult {
+	int64_t count = -1;
+	AudienceKind kind = AudienceKind::Unknown;
+	bool hidden = false;
+	bool available = false;
+};
+
 // The persisted OAuth record, keyed in the account store by AccountId
 // (providerId:userId). `expireTime` is absolute epoch seconds (the "valid
 // credential = refresh token present" model from the legacy OAuth port).
@@ -224,6 +234,18 @@ public:
 	// offline) on a usable read; false when unsupported or not currently live -- the
 	// poller then omits this platform from the aggregate. Default: unsupported.
 	virtual bool viewerCount(OAuthAccount &acct, int &out, std::string &err)
+	{
+		(void)acct;
+		(void)out;
+		(void)err;
+		return false;
+	}
+
+	// Report the account's follower/subscriber TOTAL (distinct from concurrent
+	// viewers). `acct` is non-const so a reactive token refresh propagates back.
+	// Returns true with `out.available` set on a usable read; false / available=false
+	// when unsupported or not currently obtainable. Default: unsupported.
+	virtual bool audienceCount(OAuthAccount &acct, AudienceResult &out, std::string &err)
 	{
 		(void)acct;
 		(void)out;

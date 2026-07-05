@@ -46,6 +46,7 @@ public:
 	bool applyMetadata(OAuthAccount &acct, const std::string &profileUuid, const json &fields,
 			   std::string &err) override;
 	bool viewerCount(OAuthAccount &acct, int &out, std::string &err) override;
+	bool audienceCount(OAuthAccount &acct, AudienceResult &out, std::string &err) override;
 
 	// The Kick chat transport (Phase 9.0): Pusher read + REST send. A fresh instance
 	// per account, run by the ChatHub between go-live and stop. The default

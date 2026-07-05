@@ -416,4 +416,14 @@ bool KickProvider::viewerCount(OAuthAccount &acct, int &out, std::string &err)
 	return true;
 }
 
+bool KickProvider::audienceCount(OAuthAccount &acct, AudienceResult &out, std::string &err)
+{
+	// Kick exposes no REST follower total; a later task pushes the live count instead.
+	(void)acct;
+	(void)err;
+	out.available = false;
+	out.kind = AudienceKind::Followers;
+	return false;
+}
+
 } // namespace OAuth

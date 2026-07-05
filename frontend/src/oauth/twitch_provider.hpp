@@ -51,6 +51,7 @@ public:
 			   std::string &err) override;
 	bool fetchStreamKey(OAuthAccount &acct, std::string &key, std::string &err) override;
 	bool viewerCount(OAuthAccount &acct, int &out, std::string &err) override;
+	bool audienceCount(OAuthAccount &acct, AudienceResult &out, std::string &err) override;
 
 private:
 	// The event transport reuses SendAuthed for its EventSub subscribe POSTs and the

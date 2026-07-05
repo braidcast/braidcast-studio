@@ -533,4 +533,38 @@ bool TwitchProvider::viewerCount(OAuthAccount &acct, int &out, std::string &err)
 	return true;
 }
 
+bool TwitchProvider::audienceCount(OAuthAccount &acct, AudienceResult &out, std::string &err)
+{
+	if (acct.userId.empty()) {
+		err = "Twitch account identity missing; reconnect the account";
+		return false;
+	}
+
+	Http::HttpReq req;
+	req.method = "GET";
+	// `total` is returned regardless of the page size; first=1 keeps the payload minimal.
+	req.url = std::string(kHelixBase) + "channels/followers?broadcaster_id=" + Http::UrlEncode(acct.userId) +
+		  "&first=1";
+
+	Http::HttpResponse resp;
+	if (!SendAuthed(acct, req, resp, err)) {
+		return false;
+	}
+	if (resp.status < 200 || resp.status >= 300) {
+		err = "Twitch followers request failed (HTTP " + std::to_string(resp.status) + "): " + resp.body;
+		return false;
+	}
+
+	const json body = ParseJson(resp.body);
+	if (!body.is_object()) {
+		err = "Twitch followers response was not a JSON object";
+		return false;
+	}
+	out.count = body.value("total", static_cast<int64_t>(-1));
+	out.kind = AudienceKind::Followers;
+	out.hidden = false;
+	out.available = out.count >= 0;
+	return out.available;
+}
+
 } // namespace OAuth
