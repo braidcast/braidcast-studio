@@ -125,6 +125,24 @@
     }
   }
 
+  // Type-aware value equality, used to tell a genuine per-channel divergence from a
+  // value that merely echoes the shared default. Plain === is wrong for category (two
+  // equal {id,name} objects are distinct references) and tags (array identity), which
+  // would reintroduce the spurious "overrides shared" chip.
+  function valuesEqual(type: string, a: unknown, b: unknown): boolean {
+    if (type === "category") {
+      const ai = a && typeof a === "object" ? (a as { id?: string }).id : undefined;
+      const bi = b && typeof b === "object" ? (b as { id?: string }).id : undefined;
+      return ai === bi;
+    }
+    if (type === "tags" || type === "labelset") {
+      const aa = Array.isArray(a) ? [...(a as unknown[])].sort() : [];
+      const bb = Array.isArray(b) ? [...(b as unknown[])].sort() : [];
+      return aa.length === bb.length && aa.every((v, i) => v === bb[i]);
+    }
+    return a === b;
+  }
+
   // Human-readable shared value for a field's inherit ghost (any shareable key).
   function sharedGhostText(f: OAuthProviderField): string {
     const v = sharedValues[f.key];
@@ -319,9 +337,25 @@
         if (live?.language) {
           merged.language = live.language;
         }
+        // Route each merged key by tier so shareable values land in the SHARED layer
+        // (first channel wins), not as a spurious per-channel override: a channel only
+        // takes an override when it genuinely diverges from the shared value. Without
+        // this, two channels live-reporting the same title would each read as
+        // "overrides shared". Non-shareable keys stand alone in channelValues. Every
+        // write is guarded so a user edit before this resolves is never clobbered.
         for (const [key, val] of Object.entries(merged)) {
-          const type = c.provider?.fields.find((f) => f.key === key)?.type ?? "text";
-          if (!isEmptyVal(type, val) && isEmptyVal(type, getVal(c.accountId, key))) {
+          const f = c.provider?.fields.find((fd) => fd.key === key);
+          const type = f?.type ?? "text";
+          if (isEmptyVal(type, val)) {
+            continue;
+          }
+          if (f?.shareable) {
+            if (isEmptyVal(type, sharedValues[key])) {
+              sharedValues = { ...sharedValues, [key]: val };
+            } else if (!valuesEqual(type, sharedValues[key], val) && isEmptyVal(type, getVal(c.accountId, key))) {
+              setField(c.accountId, key, val);
+            }
+          } else if (isEmptyVal(type, getVal(c.accountId, key))) {
             setField(c.accountId, key, val);
           }
         }
@@ -333,14 +367,6 @@
             streamOverrides[uuid] = { ...bag };
             streamOverrideOn[uuid] = true;
           }
-        }
-
-        // Shared title: first channel to report one wins (prefer live, fall back to
-        // saved). Guarded so a user-typed shared title is never overwritten.
-        const savedTitle = typeof saved.channel.title === "string" ? saved.channel.title : "";
-        const title = live?.title || savedTitle;
-        if (title && !sharedValues.title) {
-          sharedValues.title = title;
         }
       }),
     );
