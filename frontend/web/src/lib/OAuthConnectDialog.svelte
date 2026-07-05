@@ -1,6 +1,8 @@
 <script lang="ts">
   import Modal from "./Modal.svelte";
   import { obs, type DeviceCodeProgress } from "./bridge";
+  import { streamProfileStore } from "./streamProfileStore.svelte";
+  import { oauthStore } from "./oauthStore.svelte";
   import { markOAuthConnected, type OAuthConnectRequest } from "./oauthConnectOpener.svelte";
 
   interface Props {
@@ -73,27 +75,23 @@
     }
   }
 
-  async function checkConnected() {
-    try {
-      // Status rows are keyed by accountId, not profileUuid; resolve this profile's
-      // linked accountId (set by the backend on a successful grant) and match on it.
-      const [profileList, statuses] = await Promise.all([
-        obs.call("streamProfile.list"),
-        obs.call("oauth.status"),
-      ]);
-      const accountId = profileList.find((p) => p.uuid === req.profileUuid)?.accountId;
-      if (accountId && statuses.some((s) => s.accountId === accountId && s.connected)) {
-        // Linked: the poll already finished, so the close below must not cancel it.
-        markOAuthConnected();
-        onClose();
-      }
-    } catch {
-      // Ignore: the Streams tab's own oauth.status subscription also refreshes.
+  // Detect this profile's account going connected off the shared stores. Status rows
+  // are keyed by accountId (set by the backend on a successful grant), so resolve this
+  // profile's linked accountId and match on it. Reacting to the stores (rather than
+  // re-fetching on each event) closes the link/status emit race the old code noted:
+  // the effect re-runs when EITHER the profile's accountId or the status arrives.
+  $effect(() => {
+    const accountId = streamProfileStore.byUuid(req.profileUuid)?.accountId;
+    if (accountId && oauthStore.statuses.some((s) => s.accountId === accountId && s.connected)) {
+      markOAuthConnected();
+      onClose();
     }
-  }
+  });
 
   $effect(() => {
     void begin();
+    streamProfileStore.start();
+    const offOauth = oauthStore.subscribe();
     const offProgress = obs.on("oauth.connectProgress", (p) => {
       if (p.profileUuid !== req.profileUuid) {
         return;
@@ -117,9 +115,6 @@
         }
       }
     });
-    const offStatus = obs.on("oauth.status", () => void checkConnected());
-    // The link (profile.accountId) and the status emit race; re-check on either.
-    const offProfile = obs.on("streamProfile.changed", () => void checkConnected());
     const offErr = obs.on("oauth.connectError", (p) => {
       if (p.profileUuid !== req.profileUuid) {
         return;
@@ -130,8 +125,7 @@
     });
     return () => {
       offProgress();
-      offStatus();
-      offProfile();
+      offOauth();
       offErr();
       stopTimer();
     };

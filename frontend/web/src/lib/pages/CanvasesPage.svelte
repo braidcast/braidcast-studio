@@ -8,6 +8,9 @@
     type MultistreamStatus,
     type MultistreamState,
   } from "../bridge";
+  import { canvasStore } from "../canvasStore.svelte";
+  import { outputBindingStore } from "../outputBindingStore.svelte";
+  import { streamProfileStore } from "../streamProfileStore.svelte";
   import CanvasEditor from "../CanvasEditor.svelte";
   import CollectionDialog, { type DialogSpec } from "../CollectionDialog.svelte";
   import { STATE_COLOR_EXT } from "../theme/stateColors";
@@ -17,9 +20,11 @@
   // Canvases page: a master-detail layout. The left list selects a canvas; the right
   // pane is that canvas's live-applied detail editor (Video · Encoding · Audio ·
   // Destinations · Advanced). Going live is the Studio GO-LIVE bar, never per-row here.
-  let canvases = $state<CanvasInfo[]>([]);
-  let bindings = $state<OutputBindingInfo[]>([]);
-  let profiles = $state<StreamProfileInfo[]>([]);
+  // Canvas / binding / profile lists come from the shared stores (one source of
+  // truth); encoders + live-status rows stay local to this page.
+  let canvases = $derived(canvasStore.canvases);
+  let bindings = $derived(outputBindingStore.bindings);
+  let profiles = $derived(streamProfileStore.profiles);
   let live = $state<MultistreamStatus[]>([]);
   let videoEncoders = $state<EncoderType[]>([]);
   let audioEncoders = $state<EncoderType[]>([]);
@@ -28,25 +33,6 @@
 
   let dialog = $state<DialogSpec | null>(null);
 
-  async function loadCanvases(): Promise<void> {
-    try {
-      canvases = await obs.call("canvas.list");
-    } catch (e) {
-      error = (e as Error).message;
-    }
-  }
-  function loadBindings(): void {
-    obs
-      .call("outputBinding.list")
-      .then((l) => (bindings = l))
-      .catch(() => {});
-  }
-  function loadProfiles(): void {
-    obs
-      .call("streamProfile.list")
-      .then((l) => (profiles = l))
-      .catch(() => {});
-  }
   function loadLive(): void {
     obs
       .call("multistream.status")
@@ -57,19 +43,13 @@
   async function loadAll(): Promise<void> {
     error = null;
     try {
-      const [list, venc, aenc, binds, profs, status] = await Promise.all([
-        obs.call("canvas.list"),
+      const [venc, aenc, status] = await Promise.all([
         obs.call("encoderTypes.list", { kind: "video" }),
         obs.call("encoderTypes.list", { kind: "audio" }),
-        obs.call("outputBinding.list"),
-        obs.call("streamProfile.list"),
         obs.call("multistream.status"),
       ]);
-      canvases = list;
       videoEncoders = venc;
       audioEncoders = aenc;
-      bindings = binds;
-      profiles = profs;
       live = status.outputs;
     } catch (e) {
       error = (e as Error).message;
@@ -79,19 +59,17 @@
   }
 
   $effect(() => {
+    canvasStore.start();
+    outputBindingStore.start();
+    streamProfileStore.start();
     void loadAll();
-    const offCanvas = obs.on("canvas.changed", () => void loadCanvases());
-    const offBindings = obs.on("outputBinding.changed", () => {
-      loadBindings();
-      loadLive();
-    });
+    // A binding toggle changes live status; re-poll (the binding LIST refreshes via
+    // the store's own outputBinding.changed subscription).
+    const offBindings = obs.on("outputBinding.changed", () => loadLive());
     const offMulti = obs.on("multistream.changed", (p) => (live = p.outputs));
-    const offProfiles = obs.on("streamProfile.changed", loadProfiles);
     return () => {
-      offCanvas();
       offBindings();
       offMulti();
-      offProfiles();
     };
   });
 
@@ -188,7 +166,7 @@
       confirmLabel: "Unbind",
       onCommit: async () => {
         await callOrToast("outputBinding.remove", { uuid: b.uuid }, "Unbind failed");
-        loadBindings();
+        void outputBindingStore.refresh();
       },
     };
   }
@@ -242,7 +220,7 @@
               {statusByBinding}
               isLive={selectedLive}
               onDelete={() => confirmDeleteCanvas(selected)}
-              onBindingsChanged={loadBindings}
+              onBindingsChanged={() => void outputBindingStore.refresh()}
               onRemoveBinding={confirmRemoveBinding}
             />
           {/key}

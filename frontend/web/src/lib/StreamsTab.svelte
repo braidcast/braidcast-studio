@@ -14,6 +14,8 @@
     type ListProperty,
   } from "./bridge";
   import PropertyForm from "./properties/PropertyForm.svelte";
+  import { streamProfileStore } from "./streamProfileStore.svelte";
+  import { oauthStore } from "./oauthStore.svelte";
   import { openOAuthConnect } from "./oauthConnectOpener.svelte";
   import CollectionDialog, { type DialogSpec } from "./CollectionDialog.svelte";
   import Icon from "./dock/Icon.svelte";
@@ -21,7 +23,7 @@
   import EmptyState from "./EmptyState.svelte";
   import ToggleSwitch from "./ToggleSwitch.svelte";
 
-  let profiles = $state<StreamProfileInfo[]>([]);
+  let profiles = $derived(streamProfileStore.profiles);
   let serviceTypes = $state<ServiceType[]>([]);
   let loaded = $state(false);
   let error = $state<string | null>(null);
@@ -29,8 +31,8 @@
   // Platform OAuth: the providers that support account connection (empty in a build
   // without a client id) + the per-profile link status. Drives the dual-path
   // Connection section and the tile "linked" chips.
-  let providers = $state<OAuthProvider[]>([]);
-  let statuses = $state<OAuthStatus[]>([]);
+  let providers = $derived(oauthStore.providers);
+  let statuses = $derived(oauthStore.statuses);
 
   // Inline add/edit form. `editingUuid` null => the add form; a uuid => editing.
   let formOpen = $state(false);
@@ -63,43 +65,16 @@
   // promoted picker instead of buried in the key-path form.
   let showAll = $state(false);
 
-  async function loadProfiles() {
-    try {
-      profiles = await obs.call("streamProfile.list");
-      // Keep the open form's profile snapshot fresh so its derived provider/platform
-      // re-resolves after a save or an external change.
-      if (editingUuid) {
-        editingProfile = profiles.find((p) => p.uuid === editingUuid) ?? editingProfile;
-      }
-    } catch (e) {
-      error = (e as Error).message;
-    }
-  }
-
-  async function loadOAuth() {
-    try {
-      const [provs, stats] = await Promise.all([obs.call("oauth.providers"), obs.call("oauth.status")]);
-      providers = provs;
-      statuses = stats;
-    } catch {
-      // Non-fatal: a build without OAuth support leaves both empty (key-only).
-    }
-  }
-
-  async function refreshStatus() {
-    try {
-      statuses = await obs.call("oauth.status");
-    } catch {
-      // Ignore; the next mount/load reconciles.
-    }
-  }
+  // Profiles + OAuth status/providers come from the shared stores (one source of
+  // truth); these thin wrappers keep the existing post-mutation call sites, which
+  // await a refresh to sequence the form snapshot below.
+  const loadProfiles = (): Promise<void> => streamProfileStore.refresh();
+  const refreshStatus = (): Promise<void> => oauthStore.refresh();
 
   async function loadAll() {
     error = null;
     try {
-      const [list, svc] = await Promise.all([obs.call("streamProfile.list"), obs.call("serviceTypes.list")]);
-      profiles = list;
-      serviceTypes = svc;
+      serviceTypes = await obs.call("serviceTypes.list");
     } catch (e) {
       error = (e as Error).message;
     } finally {
@@ -108,17 +83,24 @@
   }
 
   $effect(() => {
+    streamProfileStore.start();
     void loadAll();
-    // Live-refresh the list when any profile mutates (this tab or elsewhere).
-    const off = obs.on("streamProfile.changed", () => void loadProfiles());
-    return off;
   });
 
+  // Subscribe to the shared OAuth store for this tab's lifetime (ref-counted).
+  $effect(() => oauthStore.subscribe());
+
+  // Keep the open form's profile snapshot fresh so its derived provider/platform
+  // re-resolves after a save or an external change (was a side-effect of the old
+  // loadProfiles reload).
   $effect(() => {
-    void loadOAuth();
-    // Re-fetch link status whenever a profile connects/disconnects (any window).
-    const off = obs.on("oauth.status", () => void refreshStatus());
-    return off;
+    const list = streamProfileStore.profiles;
+    if (editingUuid) {
+      const found = list.find((p) => p.uuid === editingUuid);
+      if (found && found !== editingProfile) {
+        editingProfile = found;
+      }
+    }
   });
 
   // Robust display name: a fresh profile can have an empty label AND empty platform

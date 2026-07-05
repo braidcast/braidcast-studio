@@ -8,6 +8,9 @@
     type StreamProfileInfo,
   } from "./bridge";
   import { goLiveModal, closeGoLiveModal } from "./goLiveModalOpener.svelte";
+  import { outputBindingStore } from "./outputBindingStore.svelte";
+  import { streamProfileStore } from "./streamProfileStore.svelte";
+  import { oauthStore } from "./oauthStore.svelte";
   import { showToast } from "./toastStore.svelte";
   import GoLiveFieldInput from "./GoLiveFieldInput.svelte";
   import Modal from "./Modal.svelte";
@@ -38,10 +41,12 @@
     needsReconnect: boolean;
   }
 
-  let providers = $state<OAuthProvider[]>([]);
-  let statuses = $state<OAuthStatus[]>([]);
-  let bindings = $state<OutputBindingInfo[]>([]);
-  let profiles = $state<StreamProfileInfo[]>([]);
+  // Provider/status/binding/profile lists come from the shared stores (one source of
+  // truth); `loaded` gates the modal until they + the live flag have settled.
+  let providers = $derived(oauthStore.providers);
+  let statuses = $derived(oauthStore.statuses);
+  let bindings = $derived(outputBindingStore.bindings);
+  let profiles = $derived(streamProfileStore.profiles);
   let loaded = $state(false);
   let isLive = $state(false);
   let submitting = $state(false);
@@ -243,20 +248,18 @@
 
   $effect(() => {
     let active = true;
+    const offOauth = oauthStore.subscribe();
+    // Gate prefill on all four data sources being ready so connectedDests is populated
+    // before the best-effort get runs (whenReady starts each store).
     Promise.all([
-      obs.call("oauth.providers").catch(() => [] as OAuthProvider[]),
-      obs.call("oauth.status").catch(() => [] as OAuthStatus[]),
-      obs.call("outputBinding.list").catch(() => [] as OutputBindingInfo[]),
-      obs.call("streamProfile.list").catch(() => [] as StreamProfileInfo[]),
+      oauthStore.whenReady(),
+      outputBindingStore.whenReady(),
+      streamProfileStore.whenReady(),
       obs.call("getStreamingState").catch(() => ({ active: false })),
-    ]).then(([prov, stat, binds, profs, st]) => {
+    ]).then(([, , , st]) => {
       if (!active) {
         return;
       }
-      providers = prov;
-      statuses = stat;
-      bindings = binds;
-      profiles = profs;
       isLive = !!st.active;
       loaded = true;
       void prefill();
@@ -264,6 +267,7 @@
     const off = obs.on("streaming.changed", (p) => (isLive = p.active));
     return () => {
       active = false;
+      offOauth();
       off();
     };
   });

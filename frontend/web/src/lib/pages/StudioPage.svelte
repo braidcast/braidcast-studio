@@ -15,6 +15,7 @@ import { bumpDockLayout } from "../dockLayoutSignal.svelte";
   import { setDetachHandler } from "../dock/detachRegistry";
   import { browserDockStore } from "../browserDockStore.svelte";
   import { obs, type CanvasInfo, type Monitor, type MultistreamStatus, type MultistreamState } from "../bridge";
+  import { canvasStore } from "../canvasStore.svelte";
   import { STATE_COLOR } from "../theme/stateColors";
   import { fmtDuration, fmtBitrate } from "../format";
   import { callOrToast } from "../callToast";
@@ -36,7 +37,8 @@ import { bumpDockLayout } from "../dockLayoutSignal.svelte";
   let offWindowClosed: (() => void) | undefined;
 
   // CANVASES bar + GO-LIVE bar data, read independently of the Dockview lifecycle.
-  let canvases = $state<CanvasInfo[]>([]);
+  // The canvas list comes from the shared store (one source of truth).
+  let canvases = $derived(canvasStore.canvases);
   let outputs = $state<MultistreamStatus[]>([]);
   // Shared 1 Hz stats poll (also feeds the Stats dock + Monitor page).
   let stats = $derived(statsStore.stats);
@@ -74,6 +76,16 @@ import { bumpDockLayout } from "../dockLayoutSignal.svelte";
     focusedCanvasUuid ?? canvases.find((c) => c.isDefault)?.uuid ?? canvases[0]?.uuid ?? null,
   );
   let focusedOutputs = $derived(outputs.filter((o) => o.canvasUuid === activeCanvasUuid));
+
+  // A focused canvas that was deleted/disabled would otherwise stick the GO-LIVE bar
+  // on a non-existent canvas; drop the focus so it falls back to the Default canvas
+  // via the activeCanvasUuid derivation. Reacts to the shared store's list.
+  $effect(() => {
+    const list = canvasStore.canvases;
+    if (focusedCanvasUuid && !list.some((c) => c.uuid === focusedCanvasUuid)) {
+      focusedCanvasUuid = null;
+    }
+  });
 
   // Live state across the FOCUSED canvas's enabled outputs: live wins, then
   // connecting, then error, else idle. Drives the focus dot, live badge, button.
@@ -227,27 +239,13 @@ import { bumpDockLayout } from "../dockLayoutSignal.svelte";
   // Chip + bottom-bar data, refreshed off the same engine pushes the docks use.
   onMount(() => {
     undoStore.start();
-    const loadCanvases = () => {
-      obs
-        .call("canvas.list")
-        .then((list) => {
-          canvases = list;
-          // A focused canvas that was deleted/disabled would otherwise stick the
-          // GO-LIVE bar on a non-existent canvas; drop it so focus falls back to
-          // the Default canvas via the activeCanvasUuid derivation.
-          if (focusedCanvasUuid && !list.some((c) => c.uuid === focusedCanvasUuid)) {
-            focusedCanvasUuid = null;
-          }
-        })
-        .catch(() => {});
-    };
+    canvasStore.start();
     const loadStatus = () => {
       obs
         .call("multistream.status")
         .then((res) => (outputs = res.outputs))
         .catch(() => {});
     };
-    loadCanvases();
     // Single initial status read seeds BOTH the per-canvas outputs list and the
     // authoritative GLOBAL live flag (any enabled output running anywhere => live).
     // Later transitions arrive via multistream.changed / outputBinding.changed
@@ -277,7 +275,6 @@ import { bumpDockLayout } from "../dockLayoutSignal.svelte";
         vcamCanvas = s.canvas;
       })
       .catch(() => {});
-    const offCanvas = obs.on("canvas.changed", loadCanvases);
     const offMulti = obs.on("multistream.changed", (p) => (outputs = p.outputs));
     const offStreaming = obs.on("streaming.changed", (p) => {
       anyRunning = p.active;
@@ -296,7 +293,6 @@ import { bumpDockLayout } from "../dockLayoutSignal.svelte";
       warnStop = g.warnBeforeStop;
     });
     return () => {
-      offCanvas();
       offMulti();
       offStreaming();
       offBindings();

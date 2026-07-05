@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { obs, type CanvasInfo, type StreamProfileInfo } from "../bridge";
+  import { canvasStore } from "../canvasStore.svelte";
+  import { streamProfileStore } from "../streamProfileStore.svelte";
   import PageHeader from "../PageHeader.svelte";
   import Modal from "../Modal.svelte";
   import Icon from "../dock/Icon.svelte";
@@ -63,23 +64,11 @@
   let nextId = $state(4);
 
   // --- real canvas + stream-profile lists for the modal chips (read-only) -------
-  let canvases = $state<CanvasInfo[]>([]);
-  let profiles = $state<StreamProfileInfo[]>([]);
-
-  $effect(() => {
-    obs.call("canvas.list").then((l) => (canvases = l)).catch(() => {});
-    obs.call("streamProfile.list").then((l) => (profiles = l)).catch(() => {});
-    const offCanvas = obs.on("canvas.changed", () => {
-      obs.call("canvas.list").then((l) => (canvases = l)).catch(() => {});
-    });
-    const offProfiles = obs.on("streamProfile.changed", () => {
-      obs.call("streamProfile.list").then((l) => (profiles = l)).catch(() => {});
-    });
-    return () => {
-      offCanvas();
-      offProfiles();
-    };
-  });
+  // Sourced from the shared stores (one source of truth); read-only here.
+  canvasStore.start();
+  streamProfileStore.start();
+  let canvases = $derived(canvasStore.canvases);
+  let profiles = $derived(streamProfileStore.profiles);
 
   // Chip option lists: real data when present, else placeholder labels from the
   // mock so the modal is never empty.

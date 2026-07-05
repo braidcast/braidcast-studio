@@ -1,12 +1,13 @@
 <script lang="ts">
   import {
     obs,
-    type CanvasInfo,
     type OutputBindingInfo,
     type MultistreamStatus,
     type MultistreamState,
   } from "../bridge";
   import { setPage } from "../pageStore.svelte";
+  import { canvasStore } from "../canvasStore.svelte";
+  import { outputBindingStore } from "../outputBindingStore.svelte";
   import { STATE_COLOR_EXT } from "../theme/stateColors";
   import ToggleSwitch from "../ToggleSwitch.svelte";
   import Icon from "../dock/Icon.svelte";
@@ -17,24 +18,14 @@
   // A compact, dockable mirror of the Canvases -> Destinations toggles: group
   // bindings by canvas, one master toggle per canvas + one per destination. Toggling
   // is the only interaction; full management lives on the Canvases page.
-  let canvases = $state<CanvasInfo[]>([]);
-  let bindings = $state<OutputBindingInfo[]>([]);
+  // Canvas + binding lists come from the shared stores (one source of truth); the
+  // live-status rows stay local (this dock owns the multistream.status poll).
+  let canvases = $derived(canvasStore.canvases);
+  let bindings = $derived(outputBindingStore.bindings);
   let live = $state<MultistreamStatus[]>([]);
   let loaded = $state(false);
   let error = $state<string | null>(null);
 
-  function loadCanvases(): void {
-    obs
-      .call("canvas.list")
-      .then((l) => (canvases = l))
-      .catch((e) => (error = (e as Error).message));
-  }
-  function loadBindings(): void {
-    obs
-      .call("outputBinding.list")
-      .then((l) => (bindings = l))
-      .catch((e) => (error = (e as Error).message));
-  }
   function loadLive(): void {
     obs
       .call("multistream.status")
@@ -42,15 +33,9 @@
       .catch(() => {});
   }
 
-  async function loadAll(): Promise<void> {
+  async function loadStatus(): Promise<void> {
     try {
-      const [cl, bl, status] = await Promise.all([
-        obs.call("canvas.list"),
-        obs.call("outputBinding.list"),
-        obs.call("multistream.status"),
-      ]);
-      canvases = cl;
-      bindings = bl;
+      const status = await obs.call("multistream.status");
       live = status.outputs;
       error = null;
     } catch (e) {
@@ -61,15 +46,14 @@
   }
 
   $effect(() => {
-    void loadAll();
-    const offCanvas = obs.on("canvas.changed", () => loadCanvases());
-    const offBindings = obs.on("outputBinding.changed", () => {
-      loadBindings();
-      loadLive();
-    });
+    canvasStore.start();
+    outputBindingStore.start();
+    void loadStatus();
+    // A binding toggle changes which rows are live, so re-poll status on it (the
+    // binding LIST itself refreshes via outputBindingStore).
+    const offBindings = obs.on("outputBinding.changed", () => loadLive());
     const offMulti = obs.on("multistream.changed", (p) => (live = p.outputs));
     return () => {
-      offCanvas();
       offBindings();
       offMulti();
     };
@@ -124,7 +108,6 @@
     const target = !rows.some((b) => b.enabled);
     try {
       await Promise.all(rows.map((b) => obs.call("outputBinding.setEnabled", { uuid: b.uuid, enabled: target })));
-      loadBindings();
       loadLive();
     } catch (e) {
       error = (e as Error).message;

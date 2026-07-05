@@ -7,7 +7,7 @@
   import CanvasDock from "./lib/docks/CanvasDock.svelte";
   import BrowserDock from "./lib/docks/BrowserDock.svelte";
   import { browserDockStore } from "./lib/browserDockStore.svelte";
-  import type { CanvasInfo } from "./lib/bridge";
+  import { canvasStore } from "./lib/canvasStore.svelte";
   import TitleBar from "./lib/TitleBar.svelte";
 
   // Apply the saved (or default Industrial) theme in this window too.
@@ -25,8 +25,8 @@
       const uuid = DETACHED_DOCK.slice("canvas:".length);
       let name = "Canvas";
       try {
-        const list = await obs.call("canvas.list");
-        name = list.find((c: CanvasInfo) => c.uuid === uuid)?.name ?? "Canvas";
+        await canvasStore.whenReady();
+        name = canvasStore.byUuid(uuid)?.name ?? "Canvas";
       } catch {
         // fall back to a generic name
       }

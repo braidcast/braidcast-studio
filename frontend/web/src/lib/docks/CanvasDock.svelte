@@ -6,7 +6,6 @@
     type SceneItem,
     type ReorderDirection,
     type MultistreamState,
-    type CanvasInfo,
     type SceneLinkInfo,
   } from "../bridge";
   import { setPage } from "../pageStore.svelte";
@@ -22,6 +21,7 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
   import { colorMenu } from "../colorMenu";
   import type { DeinterlaceMode, DeinterlaceFieldOrder } from "../bridge";
   import { defaultCanvas } from "./defaultCanvasStore.svelte";
+  import { canvasStore } from "../canvasStore.svelte";
   import AddSourceModal from "../AddSourceModal.svelte";
   import PropertyForm from "../properties/PropertyForm.svelte";
   import Modal from "../Modal.svelte";
@@ -127,13 +127,7 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
   // aspect (9:16 vertical vs 16:9). CanvasDock receives only uuid+name, so look
   // this canvas up in canvas.list and refresh on canvas.changed. Nothing in the
   // scene/source/preview path depends on it.
-  let canvasInfo = $state<CanvasInfo | null>(null);
-  function loadCanvasInfo() {
-    obs
-      .call("canvas.list")
-      .then((list) => (canvasInfo = list.find((c) => c.uuid === canvasUuid) ?? null))
-      .catch(() => {});
-  }
+  let canvasInfo = $derived(canvasStore.byUuid(canvasUuid) ?? null);
   let vertical = $derived(!!canvasInfo && canvasInfo.outputHeight > canvasInfo.outputWidth);
   let resText = $derived(canvasInfo ? canvasInfo.outputWidth + " × " + canvasInfo.outputHeight : "");
 
@@ -720,7 +714,7 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
   // ---- lifecycle -------------------------------------------------------------
   onMount(() => {
     defaultCanvas.start();
-    loadCanvasInfo();
+    canvasStore.start();
     void loadScenes();
     void loadLinks();
     void (async () => {
@@ -771,7 +765,6 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
       }
     });
     const offStatus = obs.on("multistream.changed", (p) => recomputeState(p.outputs));
-    const offCanvasInfo = obs.on("canvas.changed", loadCanvasInfo);
 
     // Right-click in this canvas's overlay: filter to our uuid in this window with
     // a real hit, then map the device-px cursor to viewport coords via the rect.
@@ -804,7 +797,6 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
       offItems();
       offSel();
       offStatus();
-      offCanvasInfo();
       offMenu();
       destroyPreview();
     };

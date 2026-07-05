@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { obs } from "../bridge";
+  import { canvasStore } from "../canvasStore.svelte";
   import { previewSuspended, suspendPreview } from "../previewGate.svelte";
 import { dockLayout } from "../dockLayoutSignal.svelte";
   import { WINDOW_ID } from "../windowContext";
@@ -22,14 +23,11 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
   // hidden and a muted placeholder takes its place. This panel is the QMainWindow-
   // central anchor for the docks row, so it is never removed — only its content flips.
   // `enabled` recomputes on canvas.changed AND outputBinding.changed (a binding toggle
-  // signals via the latter), so we re-fetch canvas.list on both, like the reconciler.
-  let defaultEnabled = $state(true);
-  function loadDefaultEnabled(): void {
-    obs
-      .call("canvas.list")
-      .then((list) => (defaultEnabled = list.find((c) => c.isDefault)?.enabled ?? false))
-      .catch(() => {});
-  }
+  // signals via the latter); the shared canvasStore refreshes on both, so derive off
+  // it. Before the first load (empty list) default to painting (matches the old init).
+  let defaultEnabled = $derived(
+    canvasStore.canvases.find((c) => c.isDefault)?.enabled ?? !canvasStore.loaded,
+  );
 
   // The Properties modal overlaps the native overlay. Acquire/release the preview
   // suspension together with `propsForSource` (not in a reactive $effect) so the
@@ -136,9 +134,7 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
   }
 
   onMount(() => {
-    loadDefaultEnabled();
-    const offCanvas = obs.on("canvas.changed", loadDefaultEnabled);
-    const offBindings = obs.on("outputBinding.changed", loadDefaultEnabled);
+    canvasStore.start();
     reportRect();
     const ro = new ResizeObserver(reportRect);
     if (previewEl) {
@@ -162,8 +158,6 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
       ro.disconnect();
       window.removeEventListener("resize", reportRect);
       window.removeEventListener("scroll", reportRect, true);
-      offCanvas();
-      offBindings();
       offMenu();
       destroyPreview();
     };
