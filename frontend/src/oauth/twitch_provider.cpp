@@ -560,7 +560,12 @@ bool TwitchProvider::audienceCount(OAuthAccount &acct, AudienceResult &out, std:
 		err = "Twitch followers response was not a JSON object";
 		return false;
 	}
-	out.count = body.value("total", static_cast<int64_t>(-1));
+	// Guard against a malformed body where `total` is present but non-integer
+	// (null/string) -- a bare value<>() would throw type_error.302 on such input.
+	auto it = body.find("total");
+	if (it != body.end() && it->is_number_integer()) {
+		out.count = it->get<int64_t>();
+	}
 	out.kind = AudienceKind::Followers;
 	out.hidden = false;
 	out.available = out.count >= 0;
