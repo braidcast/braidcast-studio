@@ -33,7 +33,7 @@
     {#if variant === "detached"}
       <span class="name detached-title">{title}</span>
     {:else}
-      <span class="name">OBS MULTISTREAMER</span>
+      <span class="name">BRAIDCAST</span>
     {/if}
   </div>
 

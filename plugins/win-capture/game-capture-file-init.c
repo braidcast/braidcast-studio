@@ -157,7 +157,7 @@ char *get_hook_path(bool b64)
 {
 	wchar_t path[MAX_PATH];
 
-	get_programdata_path(path, L"obs-multistream-hook\\");
+	get_programdata_path(path, L"braidcast-hook\\");
 	make_filename(path, L"graphics-hook", L".dll");
 
 	if ((b64 && programdata64_hook_exists) || (!b64 && programdata32_hook_exists)) {
@@ -200,7 +200,7 @@ static bool update_hook_file(bool b64)
 		return false;
 	}
 
-	get_programdata_path(temp, L"obs-multistream-hook\\");
+	get_programdata_path(temp, L"braidcast-hook\\");
 	StringCbCopyW(dst_json, sizeof(dst_json), temp);
 	StringCbCopyW(dst, sizeof(dst), temp);
 	make_filename(dst_json, L"obs-vulkan", L".json");
@@ -274,7 +274,7 @@ static void init_vulkan_registry(bool b64)
 	LSTATUS s;
 
 	wchar_t path[MAX_PATH];
-	get_programdata_path(path, L"obs-multistream-hook\\");
+	get_programdata_path(path, L"braidcast-hook\\");
 	make_filename(path, L"obs-vulkan", L".json");
 
 	s = get_reg(HKEY_LOCAL_MACHINE, IMPLICIT_LAYERS, path, b64);

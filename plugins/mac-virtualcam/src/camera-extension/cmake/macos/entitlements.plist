@@ -6,7 +6,7 @@
         <true/>
         <key>com.apple.security.application-groups</key>
         <array>
-            <string>$(TeamIdentifierPrefix)com.obsproject.obs-multistream</string>
+            <string>$(TeamIdentifierPrefix)com.braidcast.Braidcast</string>
         </array>
     </dict>
 </plist>
