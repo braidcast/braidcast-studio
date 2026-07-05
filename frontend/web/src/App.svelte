@@ -31,6 +31,7 @@
   import GoLiveModal from "./lib/GoLiveModal.svelte";
   import { goLiveModal } from "./lib/goLiveModalOpener.svelte";
   import { undoStore } from "./lib/undoStore.svelte";
+  import { channelsStore } from "./lib/channelsStore.svelte";
   import { obs } from "./lib/bridge";
   import { clipboard } from "./lib/clipboardStore.svelte";
   import { sourceSelection } from "./lib/sourceSelectionStore.svelte";
@@ -96,6 +97,7 @@
 
   onMount(() => {
     undoStore.start();
+    const offChannels = channelsStore.init();
     window.addEventListener("keydown", onKeydown);
     // Surface every saved screenshot (program or source) as a transient toast.
     const offShot = obs.on("screenshot.saved", (p) => {
@@ -105,6 +107,7 @@
     return () => {
       window.removeEventListener("keydown", onKeydown);
       offShot();
+      offChannels();
     };
   });
 </script>
