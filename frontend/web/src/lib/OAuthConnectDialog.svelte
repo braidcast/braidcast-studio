@@ -161,11 +161,13 @@
 
   {#snippet footer()}
     {#if phase === "error"}
-      <button onclick={() => void begin()}>Retry</button>
+      <button class="ghost" onclick={onClose}>Close</button>
+      <button class="btn" onclick={() => void begin()}>Retry</button>
+    {:else}
+      <button class="btn" onclick={onClose}>
+        {phase === "waiting" || phase === "starting" ? "Cancel" : "Close"}
+      </button>
     {/if}
-    <button onclick={onClose}>
-      {phase === "waiting" || phase === "starting" ? "Cancel" : "Close"}
-    </button>
   {/snippet}
 </Modal>
 

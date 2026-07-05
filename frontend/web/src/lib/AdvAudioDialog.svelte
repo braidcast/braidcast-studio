@@ -199,7 +199,7 @@
   {/if}
 
   {#snippet footer()}
-    <button onclick={onClose}>Close</button>
+    <button class="btn" onclick={onClose}>Close</button>
   {/snippet}
 </Modal>
 

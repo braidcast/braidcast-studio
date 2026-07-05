@@ -376,7 +376,7 @@
     </div>
 
     {#snippet footer()}
-      <button onclick={closeModal}>Cancel</button>
+      <button class="ghost" onclick={closeModal}>Cancel</button>
       <button class="accent" onclick={scheduleStream}>Schedule Stream</button>
     {/snippet}
   </Modal>

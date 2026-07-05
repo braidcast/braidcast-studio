@@ -71,10 +71,10 @@
   {/if}
 
   {#snippet footer()}
-    <button onclick={() => void copy()}>{copied ? "Copied" : "Copy"}</button>
-    <button onclick={() => void load()}>Refresh</button>
-    <button disabled={!path} onclick={() => void openFolder()}>Open Folder</button>
-    <button onclick={onClose}>Close</button>
+    <button class="ghost" onclick={() => void copy()}>{copied ? "Copied" : "Copy"}</button>
+    <button class="ghost" onclick={() => void load()}>Refresh</button>
+    <button class="ghost" disabled={!path} onclick={() => void openFolder()}>Open Folder</button>
+    <button class="btn" onclick={onClose}>Close</button>
   {/snippet}
 </Modal>
 

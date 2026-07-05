@@ -75,7 +75,7 @@
 
   {#snippet footer()}
     {#if kind !== "alert"}
-      <button onclick={onClose}>Cancel</button>
+      <button class="ghost" onclick={onClose}>Cancel</button>
     {/if}
     <button class="accent" disabled={!valid} onclick={commit}>{confirmLabel}</button>
   {/snippet}

@@ -249,4 +249,19 @@
     border: 0;
     border-left: var(--border-weight) solid var(--color-border);
   }
+  /* Secondary/cancel action: a de-emphasized ghost that keeps its natural height
+     (never stretched) so the primary block stays the dominant edge-to-edge cell.
+     Centralized here so every modal footer's Cancel reads like the GO LIVE one. */
+  .modal-foot :global(.ghost) {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: var(--letter-spacing);
+    text-transform: uppercase;
+    color: var(--color-dim);
+    background: var(--color-surface);
+  }
+  .modal-foot :global(.ghost:hover) {
+    color: var(--color-text);
+    border-color: var(--color-border);
+  }
 </style>
