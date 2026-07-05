@@ -315,8 +315,9 @@ std::unique_ptr<AudioMonitor> g_audioMonitor;
 // map), so a plain member -- no teardown state of its own.
 GlobalAudioChannels g_globalAudio;
 
-// The remembered stream-metadata store. Loads stream_meta.json in its ctor; a
-// plain member with no teardown state of its own.
+// The remembered stream-metadata store. Trivial ctor; Load()ed early in Start()
+// (after obs_startup + portable config) like the other stores. A plain member
+// with no teardown state of its own.
 StreamMetaStore g_streamMeta;
 
 // The embedded MCP server. Constructed at the end of Start() (after the audio
@@ -377,6 +378,7 @@ void LoadMultistreamModel()
 		g_canvases.Save();
 	}
 	g_streamProfiles.Load();
+	g_streamMeta.Load();
 	g_outputBindings.Load();
 	g_sceneLinks.Load();
 

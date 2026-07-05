@@ -28,7 +28,7 @@ json ParseObjectBlob(obs_data_t *root, const char *key)
 
 } // namespace
 
-StreamMetaStore::StreamMetaStore()
+void StreamMetaStore::Load()
 {
 	// Read the two stringified-JSON blobs ("channels" / "streams") from
 	// stream_meta.json (key/value envelope like audio_devices.json's "state").
@@ -40,12 +40,14 @@ StreamMetaStore::StreamMetaStore()
 
 json StreamMetaStore::ChannelDefaults(const std::string &accountId) const
 {
-	return channels_.contains(accountId) ? channels_[accountId] : json::object();
+	const auto it = channels_.find(accountId);
+	return it != channels_.end() ? *it : json::object();
 }
 
 json StreamMetaStore::StreamOverride(const std::string &profileUuid) const
 {
-	return streams_.contains(profileUuid) ? streams_[profileUuid] : json::object();
+	const auto it = streams_.find(profileUuid);
+	return it != streams_.end() ? *it : json::object();
 }
 
 void StreamMetaStore::PutChannelDefaults(const std::string &accountId, const json &fields)

@@ -9,14 +9,19 @@
 // object uses -- the store never interprets them):
 //   - per-channel defaults keyed by accountId  ("channels")
 //   - per-stream overrides keyed by profileUuid ("streams")
-// Loaded in the ctor, saved via SaveJsonAtomic. Owned by the bootstrap for a
-// clear lifecycle owner; no Start/Stop hook needed (it loads on construction).
+// Owned by the bootstrap. Like the other stores it has a trivial ctor and loads
+// explicitly via Load() inside Start() -- after obs_startup and after portable
+// config is applied -- so the on-disk path resolves correctly. Saved via
+// SaveJsonAtomic.
 class StreamMetaStore {
 public:
-	StreamMetaStore(); // loads stream_meta.json if present
+	StreamMetaStore() = default;
 
 	StreamMetaStore(const StreamMetaStore &) = delete;
 	StreamMetaStore &operator=(const StreamMetaStore &) = delete;
+
+	// Read stream_meta.json (if present) into the two maps. Call from Start().
+	void Load();
 
 	// The remembered field bag for a channel/stream, or an empty object if none.
 	// Never throws.
