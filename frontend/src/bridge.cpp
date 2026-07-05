@@ -34,6 +34,7 @@
 #include "async_task.hpp"
 #include "audio/AudioMonitor.hpp"
 #include "chat/chat_hub.hpp"
+#include "chat/channel_stats_poller.hpp"
 #include "chat/viewer_poller.hpp"
 #include "chat/ws_client.hpp"
 #include "events/event_hub.hpp"
@@ -8522,6 +8523,7 @@ void Shutdown()
 	// thread join), so it just lets the drain observe the loops exiting.
 	Chat::Hub().Stop();
 	Chat::Viewers().Stop();
+	Chat::Channels().Stop();
 	Events::Hub().StopAll();
 
 	// Now give the signaled workers a bounded window to actually unwind before the
@@ -8538,6 +8540,7 @@ void Shutdown()
 	// detached and unwinds on its own after this returns.
 	Chat::Hub().Stop();
 	Chat::Viewers().Stop();
+	Chat::Channels().Stop();
 	Events::Hub().StopAll();
 	// Persist any debounced trailing event now that the workers are stopped and no
 	// further Add can race the write (the store coalesces writes; this is the flush).

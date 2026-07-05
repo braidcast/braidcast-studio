@@ -156,6 +156,11 @@ target_sources(
     # HTTP only via the providers, no obs.h.
     src/chat/viewer_poller.cpp
     src/chat/viewer_poller.hpp
+    # Channel identity: always-on audience-total poller. One worker reads each
+    # connected provider's audienceCount() on a ~90s jittered cadence, persists a
+    # changed total, and emits channels.stats; HTTP only via the providers, no obs.h.
+    src/chat/channel_stats_poller.cpp
+    src/chat/channel_stats_poller.hpp
     # Phase 9.2a events-feed foundation: the normalized cross-platform event model +
     # transport interface, a persisted/de-duplicated store, and the EventHub that runs
     # live event transports on the account-connect lifecycle. Per-platform transports

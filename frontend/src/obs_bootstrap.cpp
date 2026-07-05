@@ -26,6 +26,7 @@
 #include "bridge.hpp"
 #include "frontend_callbacks.hpp"
 #include "log.hpp"
+#include "chat/channel_stats_poller.hpp"
 #include "chat/chat_hub.hpp"
 #include "events/event_hub.hpp"
 #include "events/event_store.hpp"
@@ -720,6 +721,11 @@ bool ObsBootstrap::Start()
 	// scope-current account; YouTube's transport no-ops until a live broadcast supplies
 	// its liveChatId (re-resolved at go-live), while Twitch/Kick connect immediately.
 	Chat::Hub().Start();
+
+	// Channel identity: the audience-total poller is always-on (account-lifecycle,
+	// not go-live-gated), so follower/subscriber totals refresh before/after
+	// streaming. Stopped in Bridge::Shutdown alongside the other always-on workers.
+	Chat::Channels().Start();
 
 	// Phase 9.3: bring up the overlay-widget loopback server (127.0.0.1). Started
 	// after the model + providers so a widget URL is immediately servable; stopped in
