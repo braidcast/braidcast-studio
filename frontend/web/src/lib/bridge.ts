@@ -1293,6 +1293,12 @@ export interface ObsMethods {
   "streamMeta.get": StreamMeta;
   "streamMeta.searchCategories": StreamCategory[];
   "streamMeta.set": { ok: true };
+  // Remembered-metadata store (no provider/network). getSaved ({accountId,
+  // profileUuids}) returns the persisted channel defaults plus per-profile overrides
+  // (only uuids that have a stored bag); save ({accountId, channel, streams}) writes
+  // both and persists to stream_meta.json.
+  "streamMeta.getSaved": { channel: Record<string, unknown>; streams: Record<string, Record<string, unknown>> };
+  "streamMeta.save": { ok: true };
   // Output bindings (profile x canvas routing edges, 4.4.3).
   "outputBinding.list": OutputBindingInfo[];
   "outputBinding.create": { uuid: string };

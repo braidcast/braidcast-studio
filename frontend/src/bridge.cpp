@@ -65,6 +65,7 @@
 #include "multistream/OutputBindingStore.hpp"
 #include "multistream/SceneLinkStore.hpp"
 #include "multistream/StorePaths.hpp"
+#include "multistream/StreamMetaStore.hpp"
 #include "multistream/StreamProfileStore.hpp"
 #include "multistream/VirtualCamManager.hpp"
 #include "oauth/provider.hpp"
@@ -7764,6 +7765,57 @@ bool MethodStreamMetaSet(const json &params, json &result, std::string &error)
 	return true;
 }
 
+// getSaved/save read and write the remembered-metadata store (StreamMetaStore).
+// Unlike get/set/searchCategories these touch no provider and no network, so they
+// stay on the normal synchronous methods table -- a thin JSON<->store adapter that
+// never interprets the field bags.
+bool MethodStreamMetaGetSaved(const json &params, json &result, std::string &error)
+{
+	const std::string accountId = OptString(params, "accountId");
+	if (accountId.empty()) {
+		error = "streamMeta.getSaved requires a non-empty 'accountId'";
+		return false;
+	}
+	StreamMetaStore &store = ObsBootstrap::StreamMeta();
+	json streams = json::object();
+	if (params.is_object() && params.contains("profileUuids") && params["profileUuids"].is_array()) {
+		for (const auto &entry : params["profileUuids"]) {
+			if (!entry.is_string()) {
+				continue;
+			}
+			const std::string uuid = entry.get<std::string>();
+			json bag = store.StreamOverride(uuid);
+			if (bag.is_object() && !bag.empty()) {
+				streams[uuid] = std::move(bag);
+			}
+		}
+	}
+	result = json{{"channel", store.ChannelDefaults(accountId)}, {"streams", std::move(streams)}};
+	return true;
+}
+
+bool MethodStreamMetaSave(const json &params, json &result, std::string &error)
+{
+	const std::string accountId = OptString(params, "accountId");
+	if (accountId.empty()) {
+		error = "streamMeta.save requires a non-empty 'accountId'";
+		return false;
+	}
+	StreamMetaStore &store = ObsBootstrap::StreamMeta();
+	const json channel = params.is_object() && params.contains("channel") && params["channel"].is_object()
+				     ? params["channel"]
+				     : json::object();
+	store.PutChannelDefaults(accountId, channel);
+	if (params.is_object() && params.contains("streams") && params["streams"].is_object()) {
+		for (const auto &entry : params["streams"].items()) {
+			store.PutStreamOverride(entry.key(), entry.value());
+		}
+	}
+	store.Save();
+	result = json{{"ok", true}};
+	return true;
+}
+
 // ---- chat (Phase 9.0) ------------------------------------------------------
 //
 // The multichat send/state surface, routed through the ChatHub (Chat::Hub()).
@@ -8387,6 +8439,8 @@ void Init()
 		{"oauth.linkAccount", MethodOAuthLinkAccount},
 		{"oauth.status", MethodOAuthStatus},
 		{"chat.state", MethodChatState},
+		{"streamMeta.getSaved", MethodStreamMetaGetSaved},
+		{"streamMeta.save", MethodStreamMetaSave},
 		{"events.list", MethodEventsList},
 		{"events.clear", MethodEventsClear},
 		{"overlays.list", MethodOverlaysList},
