@@ -6,9 +6,15 @@
 
 #include <nlohmann/json.hpp>
 
+#include <util/platform.h> // os_gettime_ns
+
+#include "../async_task.hpp"
+#include "../bridge.hpp"
 #include "../chat/kick_pusher.hpp"
 #include "../chat/ws_client.hpp"
 #include "../log.hpp"
+#include "../oauth/account_store.hpp"
+#include "../oauth/provider.hpp"
 
 // !!! REVERSE-ENGINEERED + BEST-EFFORT (see kick_events.hpp) !!!
 // The Pusher channel names and `App\Events\...` event names + payload field names
@@ -186,6 +192,43 @@ bool Normalize(const std::string &event, const json &outer, NormalizedEvent &ev)
 	return false; // ChatMessageEvent, bans, pins, reactions, count-only follower pings, ...
 }
 
+// A FollowersUpdated push carries the channel's LIVE follower total (followersCount).
+// Kick exposes no REST follower endpoint, so this push is the ONLY source of the number;
+// feed it into the same channels.stats path the audience poller uses (Task 4) so the
+// Channels panel shows a live Kick figure while streaming. This fires for the count-only
+// (nameless) ping too -- which Normalize drops -- so the number updates on every follow
+// AND unfollow, independent of the normalized follow event. Field-scoped store write
+// (never round-trips access/refresh, so a concurrent token refresh isn't clobbered) plus
+// the alive-guarded PostToUi so a late emit after Shutdown is dropped, never touching CEF.
+// Best-effort: a missing / mistyped count does nothing (no update, no emit).
+void EmitKickFollowerCount(const json &outer, const OAuth::OAuthAccount &acct)
+{
+	const json d = InnerData(outer);
+	if (!d.is_object()) {
+		return;
+	}
+	auto it = d.find("followersCount");
+	if (it == d.end() || !it->is_number()) {
+		return; // count absent / mistyped -> non-fatal
+	}
+	const int64_t pushedCount = it->get<int64_t>();
+	const std::string accountId = OAuth::AccountId(acct); // providerId:userId store key
+	const int64_t nowNs = (int64_t)os_gettime_ns();
+
+	OAuth::Accounts().UpdateAudience(accountId, pushedCount, OAuth::AudienceKind::Followers, false, nowNs);
+
+	json perAccount = json::object();
+	perAccount[accountId] = json{
+		{"audienceCount", pushedCount},
+		{"audienceKind", "followers"},
+		{"audienceHidden", false},
+		{"audienceUpdatedNs", nowNs},
+	};
+	AsyncTask::PostToUi([p = json{{"perAccount", std::move(perAccount)}}]() mutable {
+		Bridge::EmitEvent("channels.stats", p);
+	});
+}
+
 } // namespace
 
 bool KickEvents::connect(const EventContext &ctx, OAuth::OAuthAccount &acct, std::string &err)
@@ -298,6 +341,13 @@ bool KickEvents::connect(const EventContext &ctx, OAuth::OAuthAccount &acct, std
 			} else if (event == "pusher:error") {
 				HostLog("[events] kick pusher error: " + frame);
 			} else {
+				if (event == "App\\Events\\FollowersUpdated") {
+					// Feed the live follower total into channels.stats regardless of
+					// whether this ping also names a follower (Normalize drops nameless
+					// ones). Both channel.<id> and channel_<id> deliver it -> a duplicate
+					// emit carries the same count, so it is idempotent.
+					EmitKickFollowerCount(outer, acct);
+				}
 				NormalizedEvent ev;
 				if (Normalize(event, outer, ev)) {
 					ctx.emit(ev);
