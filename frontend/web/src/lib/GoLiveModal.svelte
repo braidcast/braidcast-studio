@@ -62,22 +62,46 @@
   let submitting = $state(false);
   let view = $state<"simple" | "advanced">("simple");
 
-  // Shared defaults every destination inherits (mock "Shared defaults" block),
-  // keyed by field key. Driven by the union of connected providers' shareable
-  // fields (see `sharedFields`), so any shareable field — not just title/tags —
-  // gets a shared source.
-  let shared = $state<Record<string, unknown>>({});
-
-  // Per-channel overrides, keyed by accountId then field key. An empty shareable
-  // field inherits the shared value; a non-shareable field stands alone. One field
-  // set per channel is applied to every stream in that channel on confirm.
-  let perDest = $state<Record<string, Record<string, unknown>>>({});
+  // Three inheritance layers, resolved shared -> channel -> stream by
+  // effectiveFields (later wins, empties omitted). `sharedValues` holds only
+  // shareable keys (mock "Shared defaults" block), driven by `sharedFields`, so
+  // any shareable field — not just title/tags — gets a shared source.
+  let sharedValues = $state<Record<string, unknown>>({});
+  // Per-channel defaults, keyed by accountId then field key. An empty shareable
+  // field inherits the shared value; a non-shareable field stands alone. Applied
+  // to every stream in the channel unless the stream overrides it.
+  let channelValues = $state<Record<string, Record<string, unknown>>>({});
+  // Per-stream overrides, keyed by profileUuid. A filled key diverges that single
+  // broadcast from its channel default; empty keys inherit the channel. Advanced
+  // mode only — never written in Simple mode.
+  let streamOverrides = $state<Record<string, Record<string, unknown>>>({});
+  // Advanced-only UI state: which streams have their override field set expanded.
+  // Toggling off clears that stream's overrides so it cleanly inherits again.
+  let streamOverrideOn = $state<Record<string, boolean>>({});
 
   function setField(id: string, key: string, val: unknown): void {
-    perDest[id] = { ...(perDest[id] ?? {}), [key]: val };
+    channelValues[id] = { ...(channelValues[id] ?? {}), [key]: val };
   }
   function getVal(id: string, key: string): unknown {
-    return perDest[id]?.[key];
+    return channelValues[id]?.[key];
+  }
+  function setStreamField(uuid: string, key: string, val: unknown): void {
+    streamOverrides[uuid] = { ...(streamOverrides[uuid] ?? {}), [key]: val };
+  }
+  function getStreamVal(uuid: string, key: string): unknown {
+    return streamOverrides[uuid]?.[key];
+  }
+  function toggleStreamOverride(uuid: string): void {
+    const on = !streamOverrideOn[uuid];
+    streamOverrideOn[uuid] = on;
+    if (!on) {
+      delete streamOverrides[uuid];
+      streamOverrides = { ...streamOverrides };
+    }
+  }
+  function streamOverrideCount(uuid: string, p: OAuthProvider): number {
+    const ov = streamOverrides[uuid] ?? {};
+    return p.fields.filter((f) => !isEmptyVal(f.type, ov[f.key])).length;
   }
 
   // "Empty" per descriptor type — the inheritance/omission predicate. A bool that
@@ -99,7 +123,7 @@
 
   // Human-readable shared value for a field's inherit ghost (any shareable key).
   function sharedGhostText(f: OAuthProviderField): string {
-    const v = shared[f.key];
+    const v = sharedValues[f.key];
     if (f.type === "tags" || f.type === "labelset") {
       return Array.isArray(v) ? v.join(", ") : "";
     }
@@ -123,7 +147,7 @@
   }
 
   function isOverridden(id: string, f: OAuthProviderField): boolean {
-    return !isEmptyVal(f.type, perDest[id]?.[f.key]);
+    return !isEmptyVal(f.type, channelValues[id]?.[f.key]);
   }
   function overrideChip(c: Channel): string {
     if (!c.provider) {
@@ -237,26 +261,25 @@
       : "Metadata is pushed to each connected platform. A failure on one won't affect the others.",
   );
 
-  // Resolve effective values per the inheritance rule and push them. Shareable empty
-  // -> shared value (omitted if the shared value is also empty); non-shareable -> its
-  // own value (omitted when empty). Empty fields are never emitted, so a provider
-  // that treats "present" as "set" can't blank a channel by inheriting nothing.
-  function effectiveFields(c: Channel): Record<string, unknown> {
+  // Resolve effective values through the three layers and push them: a stream
+  // override wins over the channel default, which wins over the shared value
+  // (shared only supplies shareable keys). Empty fields are never emitted at any
+  // layer, so a provider that treats "present" as "set" can't blank a channel by
+  // inheriting nothing. `stream` omitted (or its map empty) => channel default.
+  function effectiveFields(c: Channel, stream: Stream | undefined): Record<string, unknown> {
     const out: Record<string, unknown> = {};
     if (!c.provider) {
       return out;
     }
-    const pd = perDest[c.accountId] ?? {};
+    const cv = channelValues[c.accountId] ?? {};
+    const sv = stream ? (streamOverrides[stream.profileUuid] ?? {}) : {};
     for (const f of c.provider.fields) {
-      const v = pd[f.key];
-      if (f.shareable) {
-        if (!isEmptyVal(f.type, v)) {
-          out[f.key] = v;
-        } else if (!isEmptyVal(f.type, shared[f.key])) {
-          out[f.key] = shared[f.key];
-        }
-      } else if (!isEmptyVal(f.type, v)) {
-        out[f.key] = v;
+      if (!isEmptyVal(f.type, sv[f.key])) {
+        out[f.key] = sv[f.key];
+      } else if (!isEmptyVal(f.type, cv[f.key])) {
+        out[f.key] = cv[f.key];
+      } else if (f.shareable && !isEmptyVal(f.type, sharedValues[f.key])) {
+        out[f.key] = sharedValues[f.key];
       }
     }
     return out;
@@ -274,8 +297,8 @@
           if (m.category?.id) {
             setField(c.accountId, "category", { id: m.category.id, name: m.category.name });
           }
-          if (m.title && !shared.title) {
-            shared.title = m.title;
+          if (m.title && !sharedValues.title) {
+            sharedValues.title = m.title;
           }
         } catch {
           // Ignore: prefill is best-effort.
@@ -315,13 +338,12 @@
       return;
     }
     submitting = true;
-    // One job per stream: the channel's effective fields (computed once) are applied
-    // to every stream in it. YouTube needs the per-profile call; Twitch/Kick applying
-    // the same channel twice is idempotent.
-    const jobs = connectedChannels.flatMap((c) => {
-      const fields = effectiveFields(c);
-      return c.streams.map((s) => ({ channel: c, stream: s, fields }));
-    });
+    // One job per stream: each stream's effective fields merge the channel default
+    // with that stream's own overrides. YouTube needs the per-profile call; Twitch/
+    // Kick applying the same channel twice (no divergence) is idempotent.
+    const jobs = connectedChannels.flatMap((c) =>
+      c.streams.map((s) => ({ channel: c, stream: s, fields: effectiveFields(c, s) })),
+    );
     const results = await Promise.allSettled(
       jobs.map((j) =>
         obs.call("streamMeta.set", {
@@ -380,7 +402,7 @@
             {#each sharedFields as f, i (f.key)}
               <div class="fld" class:last={i === sharedFields.length - 1}>
                 <span class="fl">{f.label}</span>
-                <GoLiveFieldInput field={f} value={shared[f.key]} onChange={(v) => (shared[f.key] = v)} />
+                <GoLiveFieldInput field={f} value={sharedValues[f.key]} onChange={(v) => (sharedValues[f.key] = v)} />
               </div>
             {/each}
           </div>
@@ -481,6 +503,68 @@
                       {/each}
                     {/if}
                   </div>
+                </div>
+
+                <!-- Per-stream overrides: each broadcast can diverge from the channel
+                     default. OFF = inherit (no fields shown); ON = an inline field set
+                     writing streamOverrides[profileUuid]. Shown even for a single
+                     stream, kept unobtrusive. -->
+                <div class="streamlist">
+                  {#each c.streams as s (s.profileUuid)}
+                    {@const on = !!streamOverrideOn[s.profileUuid]}
+                    <div class="srow">
+                      <div class="srh">
+                        <span class="sico" class:on>{on ? "▾" : "▸"}</span>
+                        <span class="sn">{s.label}</span>
+                        <span class="scanvas">{s.canvasName}</span>
+                        <span class="sbadge">
+                          {#if on}
+                            {@const n = streamOverrideCount(s.profileUuid, c.provider)}
+                            <span class="sov">{n} override{n === 1 ? "" : "s"}</span>
+                          {:else}
+                            <span class="sinh">Uses channel defaults</span>
+                          {/if}
+                          <button
+                            type="button"
+                            class="sw"
+                            class:on
+                            title={on ? "Overriding channel defaults" : "Override channel defaults"}
+                            onclick={() => toggleStreamOverride(s.profileUuid)}
+                          >
+                            <i></i>
+                          </button>
+                        </span>
+                      </div>
+                      {#if on}
+                        <div class="srb">
+                          {#each c.provider.fields as f (f.key)}
+                            {#if f.type === "bool"}
+                              <div class="togrow">
+                                <GoLiveFieldInput
+                                  field={f}
+                                  value={getStreamVal(s.profileUuid, f.key)}
+                                  onChange={(v) => setStreamField(s.profileUuid, f.key, v)}
+                                />
+                                {f.label}
+                              </div>
+                            {:else}
+                              <div class="fld">
+                                <span class="fl">{f.label}</span>
+                                <GoLiveFieldInput
+                                  field={f}
+                                  value={getStreamVal(s.profileUuid, f.key)}
+                                  providerId={c.provider.id}
+                                  narrow={f.type === "enum"}
+                                  onChange={(v) => setStreamField(s.profileUuid, f.key, v)}
+                                />
+                              </div>
+                            {/if}
+                          {/each}
+                          <p class="inhnote">Empty fields inherit this channel's defaults.</p>
+                        </div>
+                      {/if}
+                    </div>
+                  {/each}
                 </div>
               </div>
             {/if}
@@ -659,6 +743,95 @@
     gap: 8px;
     font-size: 12px;
     margin-bottom: 6px;
+  }
+  .streamlist {
+    border-top: var(--border-weight) solid var(--color-border);
+  }
+  .srow {
+    border-bottom: var(--border-weight) solid var(--color-border);
+  }
+  .srow:last-child {
+    border-bottom: 0;
+  }
+  .srh {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 9px 12px;
+  }
+  .sico {
+    font-size: 9px;
+    color: var(--color-muted);
+    flex: 0 0 auto;
+  }
+  .sico.on {
+    color: var(--color-accent);
+  }
+  .sn {
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .scanvas {
+    font-size: 11px;
+    color: var(--color-dim);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .sbadge {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 0 0 auto;
+  }
+  .sinh {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--color-muted);
+  }
+  .sov {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--color-accent);
+  }
+  .sw {
+    width: 32px;
+    height: 17px;
+    padding: 0;
+    border: var(--border-weight) solid var(--color-border);
+    background: var(--color-surface-2);
+    position: relative;
+    flex: 0 0 auto;
+    cursor: pointer;
+  }
+  .sw.on {
+    border-color: var(--color-accent);
+    background: color-mix(in srgb, var(--color-accent) 28%, transparent);
+  }
+  .sw i {
+    position: absolute;
+    top: 1px;
+    left: 1px;
+    width: 13px;
+    height: 13px;
+    background: var(--color-muted);
+  }
+  .sw.on i {
+    left: auto;
+    right: 1px;
+    background: var(--color-accent);
+  }
+  .srb {
+    padding: 8px 12px 12px 33px;
+    background: var(--color-surface-2);
+  }
+  .inhnote {
+    font-size: 10px;
+    color: var(--color-muted);
+    margin: 4px 0 0;
   }
   .simple-dest {
     border: var(--border-weight) solid var(--color-border);
