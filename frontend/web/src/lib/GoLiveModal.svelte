@@ -343,10 +343,11 @@
       const name = failed[0].job.channel.provider?.displayName || failed[0].job.stream.label || "this platform";
       showToast("Couldn't update " + name + " stream info" + tail, failed[0].reason?.message ?? "metadata push failed");
     } else if (failed.length > 1) {
-      const names = [
-        ...new Set(failed.map((f) => f.job.channel.provider?.displayName || f.job.stream.label)),
-      ].join(", ");
-      showToast("Couldn't update stream info for " + failed.length + " destinations" + tail, names);
+      // Count distinct channels, not per-stream jobs: two failing streams on one
+      // channel are one destination, so the count agrees with the listed names.
+      const nameSet = new Set(failed.map((f) => f.job.channel.provider?.displayName || f.job.stream.label));
+      const names = [...nameSet].join(", ");
+      showToast("Couldn't update stream info for " + nameSet.size + " destinations" + tail, names);
     }
     if (goLiveModal.mode === "golive") {
       try {
