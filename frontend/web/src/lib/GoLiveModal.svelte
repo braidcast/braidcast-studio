@@ -15,7 +15,6 @@
   import GoLiveFieldInput from "./GoLiveFieldInput.svelte";
   import Modal from "./Modal.svelte";
   import Segmented from "./Segmented.svelte";
-  import Icon from "./dock/Icon.svelte";
 
   const VIEW_OPTIONS = [
     { label: "Simple", value: "simple" },
@@ -27,18 +26,29 @@
   // tags/category/image/enum/bool/labelset) — never by platform id — so a new
   // provider (or a new field type) renders with zero changes here.
 
-  // One armed destination: a stream profile bound via an enabled output binding.
-  // `connected` (provider resolved + OAuth linked) gates the full card vs the muted
-  // key-only card.
-  interface Dest {
+  // One stream feeding a channel: a distinct stream profile bound via an enabled
+  // output binding. Several streams (e.g. a 16:9 + a 9:16 profile) can post to the
+  // same channel; `canvasName` carries which canvas armed this stream.
+  interface Stream {
     profileUuid: string;
     profile: StreamProfileInfo;
+    label: string;
+    canvasName: string;
+  }
+
+  // One channel = one account identity (`accountId` = "providerId:userId"). Profiles
+  // that reuse the same account collapse into this single card; `streams` lists them.
+  // `connected` (provider resolved + OAuth linked) gates the editable card.
+  interface Channel {
+    accountId: string;
     provider: OAuthProvider | null;
-    status: OAuthStatus | null;
+    status: OAuthStatus | undefined;
+    login: string;
     connected: boolean;
-    // Token scopes are stale: the backend refuses streamMeta, so this card is shown
-    // muted (like key-only) and excluded from the push — it still goes live via key.
+    // Token scopes are stale: the backend refuses streamMeta, so this channel is
+    // connected:false — excluded from the push. It still goes live via key.
     needsReconnect: boolean;
+    streams: Stream[];
   }
 
   // Provider/status/binding/profile lists come from the shared stores (one source of
@@ -58,15 +68,16 @@
   // gets a shared source.
   let shared = $state<Record<string, unknown>>({});
 
-  // Per-destination overrides, keyed by profile uuid then field key. An empty
-  // shareable field inherits the shared value; a non-shareable field stands alone.
+  // Per-channel overrides, keyed by accountId then field key. An empty shareable
+  // field inherits the shared value; a non-shareable field stands alone. One field
+  // set per channel is applied to every stream in that channel on confirm.
   let perDest = $state<Record<string, Record<string, unknown>>>({});
 
-  function setField(uuid: string, key: string, val: unknown): void {
-    perDest[uuid] = { ...(perDest[uuid] ?? {}), [key]: val };
+  function setField(id: string, key: string, val: unknown): void {
+    perDest[id] = { ...(perDest[id] ?? {}), [key]: val };
   }
-  function getVal(uuid: string, key: string): unknown {
-    return perDest[uuid]?.[key];
+  function getVal(id: string, key: string): unknown {
+    return perDest[id]?.[key];
   }
 
   // "Empty" per descriptor type — the inheritance/omission predicate. A bool that
@@ -111,20 +122,20 @@
     return p.fields.filter((f) => f.tier === "advanced");
   }
 
-  function isOverridden(uuid: string, f: OAuthProviderField): boolean {
-    return !isEmptyVal(f.type, perDest[uuid]?.[f.key]);
+  function isOverridden(id: string, f: OAuthProviderField): boolean {
+    return !isEmptyVal(f.type, perDest[id]?.[f.key]);
   }
-  function overrideChip(d: Dest): string {
-    if (!d.provider) {
+  function overrideChip(c: Channel): string {
+    if (!c.provider) {
       return "inherits shared";
     }
-    const hit = simpleShareable(d.provider).find((f) => isOverridden(d.profileUuid, f));
+    const hit = simpleShareable(c.provider).find((f) => isOverridden(c.accountId, f));
     return hit ? hit.label.toLowerCase() + " overridden" : "inherits shared";
   }
 
   // Resolve a profile's provider: prefer the linked account's providerId, else match
   // the display platform against a provider id/displayName (mirrors StreamsTab).
-  function resolveProvider(p: StreamProfileInfo, status: OAuthStatus | null): OAuthProvider | null {
+  function resolveProvider(p: StreamProfileInfo, status: OAuthStatus | undefined): OAuthProvider | null {
     if (status?.connected) {
       const byId = providers.find((pv) => pv.id === status.providerId);
       if (byId) {
@@ -138,37 +149,63 @@
     return providers.find((pv) => pv.id.toLowerCase() === plat || pv.displayName.toLowerCase() === plat) ?? null;
   }
 
-  // Armed destinations: enabled bindings -> their profile, deduped by profile.
-  const armed = $derived.by<Dest[]>(() => {
+  // Channels: enabled bindings -> their profile, grouped by accountId (the channel
+  // identity). Profiles with no accountId (key/RTMP/WHIP) carry no channel metadata
+  // and are dropped — they stream via key but are out of scope for this dialog. A
+  // profile enabled on several canvases is deduped to one stream per profileUuid.
+  const channels = $derived.by<Channel[]>(() => {
+    const map = new Map<string, Channel>();
+    for (const b of bindings) {
+      if (!b.enabled || !b.profileUuid) {
+        continue;
+      }
+      const profile = profiles.find((p) => p.uuid === b.profileUuid);
+      if (!profile || !profile.accountId) {
+        continue;
+      }
+      const accountId = profile.accountId;
+      let ch = map.get(accountId);
+      if (!ch) {
+        // Status rows are keyed by accountId; one row per account.
+        const status = statuses.find((s) => s.accountId === accountId);
+        const provider = resolveProvider(profile, status);
+        ch = {
+          accountId,
+          provider,
+          status,
+          login: status?.login || status?.displayName || profile.label,
+          connected: !!(provider && status?.connected),
+          needsReconnect: !!(provider && status?.needsReconnect && !status?.connected),
+          streams: [],
+        };
+        map.set(accountId, ch);
+      }
+      if (!ch.streams.some((s) => s.profileUuid === b.profileUuid)) {
+        ch.streams.push({ profileUuid: b.profileUuid, profile, label: profile.label, canvasName: b.canvasName });
+      }
+    }
+    return [...map.values()];
+  });
+  // Only fully-connected channels are editable (prefill get + confirm set). A
+  // needsReconnect channel is connected:false, so it is excluded here and still goes
+  // live via its streams' keys.
+  const connectedChannels = $derived(channels.filter((c) => c.connected));
+
+  // Footer gating mirrors the old `armed.length === 0`: the modal (esp. Go Live) must
+  // still work when only key-only profiles are enabled, so gate on the distinct count
+  // of enabled profiles regardless of channel identity, not on connectedChannels.
+  const armedProfileCount = $derived.by<number>(() => {
     const seen = new Set<string>();
-    const out: Dest[] = [];
     for (const b of bindings) {
       if (!b.enabled || !b.profileUuid || seen.has(b.profileUuid)) {
         continue;
       }
-      const profile = profiles.find((p) => p.uuid === b.profileUuid);
-      if (!profile) {
-        continue;
+      if (profiles.find((p) => p.uuid === b.profileUuid)) {
+        seen.add(b.profileUuid);
       }
-      seen.add(b.profileUuid);
-      // Status rows are keyed by accountId now; resolve via the profile's link.
-      const status = profile.accountId ? (statuses.find((s) => s.accountId === profile.accountId) ?? null) : null;
-      const provider = resolveProvider(profile, status);
-      out.push({
-        profileUuid: b.profileUuid,
-        profile,
-        provider,
-        status,
-        connected: !!(provider && status?.connected),
-        needsReconnect: !!(provider && status?.needsReconnect && !status?.connected),
-      });
     }
-    return out;
+    return seen.size;
   });
-  // Only fully-connected destinations are pushed to (prefill get + confirm set). A
-  // needsReconnect destination is connected:false, so it is excluded from BOTH loops
-  // here and still goes live via its stream key.
-  const connectedDests = $derived(armed.filter((d) => d.connected));
 
   // Shared-defaults descriptor: the UNION of every shareable field across connected
   // providers, deduped by key (first provider's label/type wins). Drives the shared
@@ -177,11 +214,11 @@
   const sharedFields = $derived.by<OAuthProviderField[]>(() => {
     const seen = new Set<string>();
     const out: OAuthProviderField[] = [];
-    for (const d of connectedDests) {
-      if (!d.provider) {
+    for (const c of connectedChannels) {
+      if (!c.provider) {
         continue;
       }
-      for (const f of d.provider.fields) {
+      for (const f of c.provider.fields) {
         if (f.shareable && !seen.has(f.key)) {
           seen.add(f.key);
           out.push(f);
@@ -204,13 +241,13 @@
   // -> shared value (omitted if the shared value is also empty); non-shareable -> its
   // own value (omitted when empty). Empty fields are never emitted, so a provider
   // that treats "present" as "set" can't blank a channel by inheriting nothing.
-  function effectiveFields(d: Dest): Record<string, unknown> {
+  function effectiveFields(c: Channel): Record<string, unknown> {
     const out: Record<string, unknown> = {};
-    if (!d.provider) {
+    if (!c.provider) {
       return out;
     }
-    const pd = perDest[d.profileUuid] ?? {};
-    for (const f of d.provider.fields) {
+    const pd = perDest[c.accountId] ?? {};
+    for (const f of c.provider.fields) {
       const v = pd[f.key];
       if (f.shareable) {
         if (!isEmptyVal(f.type, v)) {
@@ -226,15 +263,16 @@
   }
 
   // Best-effort prefill (fired, not awaited, so a slow get never blocks the open):
-  // seed each connected destination's category + seed the shared title from the
-  // first platform that reports one. Per-destination titles stay empty (inherit).
+  // seed each connected channel's category (once per channel, not per stream) + seed
+  // the shared title from the first platform that reports one. Per-channel titles stay
+  // empty (inherit).
   async function prefill(): Promise<void> {
     await Promise.all(
-      connectedDests.map(async (d) => {
+      connectedChannels.map(async (c) => {
         try {
-          const m = await obs.call("streamMeta.get", { accountId: d.profile.accountId });
+          const m = await obs.call("streamMeta.get", { accountId: c.accountId });
           if (m.category?.id) {
-            setField(d.profileUuid, "category", { id: m.category.id, name: m.category.name });
+            setField(c.accountId, "category", { id: m.category.id, name: m.category.name });
           }
           if (m.title && !shared.title) {
             shared.title = m.title;
@@ -249,7 +287,7 @@
   $effect(() => {
     let active = true;
     const offOauth = oauthStore.subscribe();
-    // Gate prefill on all four data sources being ready so connectedDests is populated
+    // Gate prefill on all four data sources being ready so connectedChannels is populated
     // before the best-effort get runs (whenReady starts each store).
     Promise.all([
       oauthStore.whenReady(),
@@ -277,29 +315,37 @@
       return;
     }
     submitting = true;
-    const targets = connectedDests;
+    // One job per stream: the channel's effective fields (computed once) are applied
+    // to every stream in it. YouTube needs the per-profile call; Twitch/Kick applying
+    // the same channel twice is idempotent.
+    const jobs = connectedChannels.flatMap((c) => {
+      const fields = effectiveFields(c);
+      return c.streams.map((s) => ({ channel: c, stream: s, fields }));
+    });
     const results = await Promise.allSettled(
-      targets.map((d) =>
+      jobs.map((j) =>
         obs.call("streamMeta.set", {
-          accountId: d.profile.accountId,
-          profileUuid: d.profileUuid,
-          fields: effectiveFields(d),
+          accountId: j.channel.accountId,
+          profileUuid: j.stream.profileUuid,
+          fields: j.fields,
         }),
       ),
     );
     // Partial-failure tolerance: a failed metadata push never blocks going live. One
     // aggregate toast (showToast replaces, so per-destination toasts would clobber
-    // each other) names the platform(s) in human terms, not raw API strings.
+    // each other) names the channel(s) in human terms, not raw API strings.
     const failed = results
-      .map((r, i) => (r.status === "rejected" ? { dest: targets[i], reason: r.reason as Error } : null))
-      .filter((x): x is { dest: Dest; reason: Error } => x !== null);
+      .map((r, i) => (r.status === "rejected" ? { job: jobs[i], reason: r.reason as Error } : null))
+      .filter((x): x is { job: (typeof jobs)[number]; reason: Error } => x !== null);
     const goingLive = goLiveModal.mode === "golive";
     const tail = goingLive ? " — going live anyway" : "";
     if (failed.length === 1) {
-      const name = failed[0].dest.provider?.displayName || failed[0].dest.profile.label || "this platform";
+      const name = failed[0].job.channel.provider?.displayName || failed[0].job.stream.label || "this platform";
       showToast("Couldn't update " + name + " stream info" + tail, failed[0].reason?.message ?? "metadata push failed");
     } else if (failed.length > 1) {
-      const names = failed.map((f) => f.dest.provider?.displayName || f.dest.profile.label).join(", ");
+      const names = [
+        ...new Set(failed.map((f) => f.job.channel.provider?.displayName || f.job.stream.label)),
+      ].join(", ");
       showToast("Couldn't update stream info for " + failed.length + " destinations" + tail, names);
     }
     if (goLiveModal.mode === "golive") {
@@ -339,42 +385,45 @@
           </div>
         {/if}
 
-        {#if armed.length === 0}
+        {#if armedProfileCount === 0}
           <p class="note">
             No armed destinations. Enable a destination on a canvas to push stream information.
           </p>
         {:else if view === "advanced"}
-          <p class="eh">Per-destination (overrides shared when filled)</p>
+          <p class="eh">Per-channel (overrides shared when filled)</p>
 
-          {#each armed as d (d.profileUuid)}
-            {#if d.connected && d.provider}
+          {#each connectedChannels as c (c.accountId)}
+            {#if c.provider}
               <div class="dest">
                 <div class="dh">
-                  <span class="pdot" style:background={d.provider.brandColor || "var(--color-accent)"}></span>
-                  <span class="pname">{d.provider.displayName}</span>
-                  <span class="pacct">· {d.profile.label}</span>
-                  {#if overrideChip(d) === "inherits shared"}
+                  <span class="pdot" style:background={c.provider.brandColor || "var(--color-accent)"}></span>
+                  <span class="pname">{c.provider.displayName}</span>
+                  <span class="pacct">· {c.login}</span>
+                  {#if c.streams.length > 1}
+                    <span class="streams">{c.streams.length} streams</span>
+                  {/if}
+                  {#if overrideChip(c) === "inherits shared"}
                     <span class="inh">inherits shared</span>
                   {:else}
-                    <span class="ovrflag">{overrideChip(d)}</span>
+                    <span class="ovrflag">{overrideChip(c)}</span>
                   {/if}
                 </div>
                 <div class="body">
                   <!-- Shareable simple fields render as overrides (ghost / amber). -->
-                  {#each simpleShareable(d.provider) as f (f.key)}
-                    {@const filled = isOverridden(d.profileUuid, f)}
+                  {#each simpleShareable(c.provider) as f (f.key)}
+                    {@const filled = isOverridden(c.accountId, f)}
                     <div class="fld">
                       <span class="fl">{f.label}</span>
                       <GoLiveFieldInput
                         field={f}
-                        value={getVal(d.profileUuid, f.key)}
-                        providerId={d.provider.id}
+                        value={getVal(c.accountId, f.key)}
+                        providerId={c.provider.id}
                         ghostText={sharedGhostText(f)}
                         accent={filled}
-                        onChange={(v) => setField(d.profileUuid, f.key, v)}
+                        onChange={(v) => setField(c.accountId, f.key, v)}
                       />
                       {#if filled}
-                        <div class="hint acc">overrides shared for {d.provider.displayName}</div>
+                        <div class="hint acc">overrides shared for {c.provider.displayName}</div>
                       {:else}
                         <div class="hint">empty → using shared {f.label.toLowerCase()}</div>
                       {/if}
@@ -382,16 +431,16 @@
                   {/each}
 
                   <!-- Non-shareable simple fields render normally. -->
-                  {#if simpleNonShareable(d.provider).length}
+                  {#if simpleNonShareable(c.provider).length}
                     <div class="drow">
-                      {#each simpleNonShareable(d.provider) as f (f.key)}
+                      {#each simpleNonShareable(c.provider) as f (f.key)}
                         <div class="fld last">
                           <span class="fl">{f.label}</span>
                           <GoLiveFieldInput
                             field={f}
-                            value={getVal(d.profileUuid, f.key)}
-                            providerId={d.provider.id}
-                            onChange={(v) => setField(d.profileUuid, f.key, v)}
+                            value={getVal(c.accountId, f.key)}
+                            providerId={c.provider.id}
+                            onChange={(v) => setField(c.accountId, f.key, v)}
                           />
                         </div>
                       {/each}
@@ -400,19 +449,19 @@
 
                   <!-- Advanced / platform-only fields under the dashed divider. -->
                   <div class="adv">
-                    <div class="advlbl">{d.provider.displayName}-only</div>
-                    {#if advancedFields(d.provider).length === 0}
+                    <div class="advlbl">{c.provider.displayName}-only</div>
+                    {#if advancedFields(c.provider).length === 0}
                       <p class="note">
-                        {d.provider.displayName}'s API exposes only title / category / tags — nothing extra to show.
+                        {c.provider.displayName}'s API exposes only title / category / tags — nothing extra to show.
                       </p>
                     {:else}
-                      {#each advancedFields(d.provider) as f (f.key)}
+                      {#each advancedFields(c.provider) as f (f.key)}
                         {#if f.type === "bool"}
                           <div class="togrow">
                             <GoLiveFieldInput
                               field={f}
-                              value={getVal(d.profileUuid, f.key)}
-                              onChange={(v) => setField(d.profileUuid, f.key, v)}
+                              value={getVal(c.accountId, f.key)}
+                              onChange={(v) => setField(c.accountId, f.key, v)}
                             />
                             {f.label}
                           </div>
@@ -421,10 +470,10 @@
                             <span class="fl">{f.label}</span>
                             <GoLiveFieldInput
                               field={f}
-                              value={getVal(d.profileUuid, f.key)}
-                              providerId={d.provider.id}
+                              value={getVal(c.accountId, f.key)}
+                              providerId={c.provider.id}
                               narrow={f.type === "enum"}
-                              onChange={(v) => setField(d.profileUuid, f.key, v)}
+                              onChange={(v) => setField(c.accountId, f.key, v)}
                             />
                           </div>
                         {/if}
@@ -433,48 +482,31 @@
                   </div>
                 </div>
               </div>
-            {:else}
-              <!-- Key-only / unconnected / stale-token: muted card, no fields. -->
-              <div class="dest keyonly">
-                <div class="dh">
-                  <span class="pdot" style:background={d.needsReconnect ? "var(--color-accent)" : "var(--color-muted)"}
-                  ></span>
-                  <span class="pname">{d.provider?.displayName || d.profile.platform || d.profile.label}</span>
-                  <span class="pacct">· {d.profile.label}</span>
-                </div>
-                <div class="body">
-                  {#if d.needsReconnect}
-                    <p class="note warn">
-                      <Icon name="warn" size={11} /> Authorization expired — reconnect in Streams to edit metadata. Streams
-                      as-is.
-                    </p>
-                  {:else}
-                    <p class="note">Key-only profile — no metadata API. Streams as-is.</p>
-                  {/if}
-                </div>
-              </div>
             {/if}
           {/each}
         {:else}
-          <!-- Simple mode: shared block + only non-shareable per-platform fields. -->
-          {#each armed as d (d.profileUuid)}
-            {#if d.connected && d.provider}
+          <!-- Simple mode: shared block + only non-shareable per-channel fields. -->
+          {#each connectedChannels as c (c.accountId)}
+            {#if c.provider}
               <div class="simple-dest">
                 <div class="sd-head">
-                  <span class="pdot" style:background={d.provider.brandColor || "var(--color-accent)"}></span>
-                  <span class="pname">{d.provider.displayName}</span>
-                  <span class="pacct">· {d.profile.label}</span>
+                  <span class="pdot" style:background={c.provider.brandColor || "var(--color-accent)"}></span>
+                  <span class="pname">{c.provider.displayName}</span>
+                  <span class="pacct">· {c.login}</span>
+                  {#if c.streams.length > 1}
+                    <span class="streams">{c.streams.length} streams</span>
+                  {/if}
                 </div>
-                {#if simpleNonShareable(d.provider).length}
+                {#if simpleNonShareable(c.provider).length}
                   <div class="drow">
-                    {#each simpleNonShareable(d.provider) as f (f.key)}
+                    {#each simpleNonShareable(c.provider) as f (f.key)}
                       <div class="fld last">
                         <span class="fl">{f.label}</span>
                         <GoLiveFieldInput
                           field={f}
-                          value={getVal(d.profileUuid, f.key)}
-                          providerId={d.provider.id}
-                          onChange={(v) => setField(d.profileUuid, f.key, v)}
+                          value={getVal(c.accountId, f.key)}
+                          providerId={c.provider.id}
+                          onChange={(v) => setField(c.accountId, f.key, v)}
                         />
                       </div>
                     {/each}
@@ -483,21 +515,6 @@
                   <p class="note">Uses the shared defaults.</p>
                 {/if}
               </div>
-            {:else}
-              <div class="simple-dest keyonly">
-                <div class="sd-head">
-                  <span class="pdot" style:background={d.needsReconnect ? "var(--color-accent)" : "var(--color-muted)"}
-                  ></span>
-                  <span class="pname">{d.provider?.displayName || d.profile.platform || d.profile.label}</span>
-                  {#if d.needsReconnect}
-                    <span class="pacct"
-                      >· {d.profile.label} — <Icon name="warn" size={10} /> reconnect in Streams to edit metadata, streams as-is</span
-                    >
-                  {:else}
-                    <span class="pacct">· {d.profile.label} — key-only, streams as-is</span>
-                  {/if}
-                </div>
-              </div>
             {/if}
           {/each}
         {/if}
@@ -505,7 +522,7 @@
 
   {#snippet footer()}
     <span class="foot-note">{footerNote}</span>
-    <button class="accent" disabled={submitting || !loaded || armed.length === 0} onclick={() => void confirm()}>
+    <button class="accent" disabled={submitting || !loaded || armedProfileCount === 0} onclick={() => void confirm()}>
       {submitting ? "Working…" : primaryLabel}
     </button>
   {/snippet}
@@ -561,10 +578,6 @@
     background: var(--color-base);
     margin-bottom: 10px;
   }
-  .dest.keyonly,
-  .simple-dest.keyonly {
-    opacity: 0.7;
-  }
   .dh {
     display: flex;
     align-items: center;
@@ -600,6 +613,15 @@
     margin-left: auto;
     font-size: 10px;
     color: var(--color-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    flex: 0 0 auto;
+  }
+  .streams {
+    font-size: 10px;
+    color: var(--color-accent);
+    border: var(--border-weight) solid var(--color-border);
+    padding: 2px 6px;
     text-transform: uppercase;
     letter-spacing: 0.05em;
     flex: 0 0 auto;
@@ -653,12 +675,6 @@
     font-size: 11px;
     color: var(--color-muted);
     margin: 0;
-  }
-  .note.warn {
-    color: var(--color-accent);
-    display: flex;
-    align-items: center;
-    gap: 4px;
   }
   .foot-note {
     flex: 1 1 auto;
