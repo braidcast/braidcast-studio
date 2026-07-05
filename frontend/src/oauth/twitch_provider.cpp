@@ -269,6 +269,7 @@ bool TwitchProvider::fetchIdentity(OAuthAccount &acct, std::string &err)
 	if (acct.displayName.empty()) {
 		acct.displayName = acct.login;
 	}
+	acct.avatarUrl = Str(row, "profile_image_url");
 	if (acct.userId.empty()) {
 		err = "Twitch users response missing user id";
 		return false;
