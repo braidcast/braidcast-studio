@@ -213,6 +213,15 @@ void EmitKickFollowerCount(const json &outer, const OAuth::OAuthAccount &acct)
 	}
 	const int64_t pushedCount = it->get<int64_t>();
 	const std::string accountId = OAuth::AccountId(acct); // providerId:userId store key
+
+	// Dedupe the double-channel delivery (channel.<id> AND channel_<id> both carry this):
+	// skip the redundant DPAPI-encrypt + disk write (UpdateAudience always persists) and
+	// the identical emit when the total hasn't changed. Freshness for a newly-opened
+	// browser is covered by the poller re-emitting the cached last-known each tick.
+	auto existing = OAuth::Accounts().Get(accountId);
+	if (existing && existing->audienceCount == pushedCount) {
+		return;
+	}
 	const int64_t nowNs = (int64_t)os_gettime_ns();
 
 	OAuth::Accounts().UpdateAudience(accountId, pushedCount, OAuth::AudienceKind::Followers, false, nowNs);
