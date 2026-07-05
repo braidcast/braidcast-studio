@@ -215,29 +215,7 @@ bool KickProvider::fetchIdentity(OAuthAccount &acct, std::string &err)
 	acct.userId = std::to_string(uid);
 	acct.login = Str(row, "name");
 	acct.displayName = acct.login;
-
-	// The avatar lives on the channels payload, not the users payload, so issue one
-	// extra authed read against the same endpoint viewerCount uses. This is best-effort:
-	// a failed or empty read must not break connect (a monogram fallback covers it).
-	Http::HttpReq chReq;
-	chReq.method = "GET";
-	chReq.url = std::string(kKickApiBase) + "/public/v1/channels?broadcaster_user_id[]=" + Http::UrlEncode(acct.userId);
-	Http::HttpResponse chResp;
-	std::string chErr;
-	if (SendAuthed(acct, chReq, chResp, chErr) && chResp.status >= 200 && chResp.status < 300) {
-		const json chRow = FirstDataRow(ParseJson(chResp.body));
-		if (chRow.is_object()) {
-			for (const char *key : {"profile_picture", "banner_picture"}) {
-				acct.avatarUrl = Str(chRow, key);
-				if (!acct.avatarUrl.empty()) {
-					break;
-				}
-			}
-			if (acct.avatarUrl.empty() && chRow.contains("user") && chRow["user"].is_object()) {
-				acct.avatarUrl = Str(chRow["user"], "profile_picture");
-			}
-		}
-	}
+	acct.avatarUrl = Str(row, "profile_picture");
 	return true;
 }
 
