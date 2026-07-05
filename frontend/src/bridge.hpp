@@ -36,16 +36,6 @@ void Init();
 // is still up (before obs_shutdown), on the UI thread.
 void Shutdown();
 
-// Seed (first run) or restore (subsequent runs) the global audio devices (Desktop
-// Audio / Mic) on output channels 1..6 from audio_devices.json, the way stock OBS
-// sets them up. Call after modules load and the default scene is bound, before the
-// AudioMonitor is constructed so its initial Rebuild sees the seeded devices.
-void SeedGlobalAudio();
-
-// Unbind every global audio channel so the wasapi sources are destroyed before
-// obs_shutdown. Call during teardown while libobs is still up.
-void ClearGlobalAudio();
-
 // Register / unregister a live browser as an EmitEvent target. Called from the
 // CEF UI thread (Client life-span callbacks). EmitEvent broadcasts to ALL
 // registered browsers so a state change in one window updates every window.

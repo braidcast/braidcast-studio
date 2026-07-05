@@ -58,6 +58,7 @@
 
 #include "multistream/CanvasRuntime.hpp"
 #include "multistream/CanvasStore.hpp"
+#include "multistream/GlobalAudioChannels.hpp"
 #include "multistream/Hotkeys.hpp"
 #include "multistream/MultistreamEngine.hpp"
 #include "multistream/OutputBindingStore.hpp"
@@ -5731,36 +5732,10 @@ bool MethodAudioListMonitorDevices(const json & /*params*/, json &result, std::s
 }
 
 // --- global audio devices (Desktop Audio / Mic on output channels 1..6) ------
-// Stock OBS seeds these on first run; the new frontend never did, so the mixer
-// stayed empty. One row per global output channel: a wasapi capture source bound
-// to the channel shows in the mixer (AudioMonitor enumerates channels 1..6).
-
-struct GlobalAudioSlot {
-	int channel;          // obs output channel 1..6
-	bool input;           // true = mic/aux (wasapi_input_capture), false = desktop (wasapi_output_capture)
-	const char *sourceId; // "wasapi_input_capture" | "wasapi_output_capture"
-	const char *label;    // "Desktop Audio", "Mic/Aux", ...
-	const char *role;     // "desktop" | "mic"
-};
-
-static const GlobalAudioSlot kGlobalAudioSlots[] = {
-	{1, false, "wasapi_output_capture", "Desktop Audio", "desktop"},
-	{2, false, "wasapi_output_capture", "Desktop Audio 2", "desktop"},
-	{3, true, "wasapi_input_capture", "Mic/Aux", "mic"},
-	{4, true, "wasapi_input_capture", "Mic/Aux 2", "mic"},
-	{5, true, "wasapi_input_capture", "Mic/Aux 3", "mic"},
-	{6, true, "wasapi_input_capture", "Mic/Aux 4", "mic"},
-};
-
-const GlobalAudioSlot *SlotForChannel(int ch)
-{
-	for (const GlobalAudioSlot &slot : kGlobalAudioSlots) {
-		if (slot.channel == ch) {
-			return &slot;
-		}
-	}
-	return nullptr;
-}
+// The per-channel slot table + seed/restore/persist/apply now live in the
+// bootstrap-owned GlobalAudioChannels subsystem; the handlers below drive it. The
+// device enumeration helper stays here since it serves the generic audio.listDevices
+// method, not the global-channel state.
 
 // Enumerate {id,name} audio devices for the matching wasapi type. Reads the
 // "device_id" string-list property off the source type. Some libobs builds need a
@@ -5816,119 +5791,6 @@ std::vector<std::pair<std::string, std::string>> EnumAudioDevices(bool input)
 	return out;
 }
 
-// Persist the current per-channel device map ({"<channel>":"<deviceId>", ...})
-// for every channel that has a slot source bound, as a stringified-JSON blob under
-// "state" in audio_devices.json (the theme.json convention).
-void PersistGlobalAudio()
-{
-	json obj = json::object();
-	for (const GlobalAudioSlot &slot : kGlobalAudioSlots) {
-		OBSSourceAutoRelease cur = obs_get_output_source(slot.channel); // addref'd; may be null
-		if (!cur) {
-			continue;
-		}
-		OBSDataAutoRelease settings = obs_source_get_settings(cur);
-		const char *deviceId = settings ? obs_data_get_string(settings, "device_id") : nullptr;
-		obj[std::to_string(slot.channel)] = deviceId ? std::string(deviceId) : std::string();
-	}
-	WriteJsonString("audio_devices.json", "state", obj.dump());
-}
-
-// Bind/update/disable the device on one global channel. Does NOT persist or
-// rebuild -- callers do, so seeding can batch.
-bool ApplyGlobalDevice(int ch, const std::string &deviceId, std::string &error)
-{
-	const GlobalAudioSlot *slot = SlotForChannel(ch);
-	if (!slot) {
-		error = "channel " + std::to_string(ch) + " is not a global audio slot";
-		return false;
-	}
-
-	if (deviceId.empty()) {
-		// DISABLE: drop the channel's ref so the source is destroyed.
-		obs_set_output_source(ch, nullptr);
-		return true;
-	}
-
-	// If the channel already carries this slot's source type, just update its
-	// device_id in place rather than recreating it.
-	OBSSourceAutoRelease cur = obs_get_output_source(ch); // addref'd; may be null
-	if (cur) {
-		const char *curId = obs_source_get_id(cur);
-		if (curId && std::string(curId) == slot->sourceId) {
-			OBSDataAutoRelease s = obs_source_get_settings(cur);
-			obs_data_set_string(s, "device_id", deviceId.c_str());
-			obs_source_update(cur, s);
-			return true;
-		}
-	}
-
-	// Otherwise create a fresh source and bind it (the channel takes its own ref).
-	OBSDataAutoRelease settings = obs_data_create();
-	obs_data_set_string(settings, "device_id", deviceId.c_str());
-	obs_source_t *source = obs_source_create(slot->sourceId, slot->label, settings, nullptr); // create-ref
-	if (!source) {
-		error = std::string("obs_source_create failed for ") + slot->sourceId;
-		return false;
-	}
-	obs_set_output_source(ch, source); // channel takes its own ref
-	obs_source_release(source);        // drop the create-ref
-	return true;
-}
-
-// First run: seed Desktop Audio (ch1) + Mic/Aux (ch3) to the OS default device and
-// persist. Subsequent runs: restore the saved per-channel map. Never throws.
-void SeedOrRestoreGlobalAudio()
-{
-	const std::string state = ReadJsonString("audio_devices.json", "state");
-
-	auto firstRunSeed = []() {
-		std::string err;
-		ApplyGlobalDevice(1, "default", err);
-		ApplyGlobalDevice(3, "default", err);
-		PersistGlobalAudio();
-		HostLog("[bridge] global audio: first-run seed (Desktop Audio + Mic/Aux -> default)");
-	};
-
-	if (state.empty()) {
-		firstRunSeed();
-		return;
-	}
-
-	json parsed;
-	try {
-		parsed = json::parse(state);
-	} catch (...) {
-		HostLog("[bridge] global audio: state parse failed; falling back to first-run seed");
-		firstRunSeed();
-		return;
-	}
-	if (!parsed.is_object()) {
-		firstRunSeed();
-		return;
-	}
-
-	int restored = 0;
-	for (auto it = parsed.begin(); it != parsed.end(); ++it) {
-		int ch = 0;
-		try {
-			ch = std::stoi(it.key());
-		} catch (...) {
-			continue;
-		}
-		if (!it.value().is_string()) {
-			continue;
-		}
-		std::string err;
-		if (ApplyGlobalDevice(ch, it.value().get<std::string>(), err)) {
-			++restored;
-		} else {
-			HostLog("[bridge] global audio: restore ch" + std::to_string(ch) + " failed: " + err);
-		}
-	}
-	HostLog("[bridge] global audio: restored " + std::to_string(restored) + " channel(s) from audio_devices.json");
-}
-
 bool MethodAudioListDevices(const json &params, json &result, std::string & /*error*/)
 {
 	const std::string kind = OptString(params, "kind");
@@ -5943,22 +5805,18 @@ bool MethodAudioListDevices(const json &params, json &result, std::string & /*er
 
 bool MethodAudioGetGlobalDevices(const json & /*params*/, json &result, std::string & /*error*/)
 {
+	GlobalAudioChannels &audio = ObsBootstrap::GlobalAudioChannels();
 	json arr = json::array();
-	for (const GlobalAudioSlot &slot : kGlobalAudioSlots) {
-		OBSSourceAutoRelease cur = obs_get_output_source(slot.channel); // addref'd; may be null
-		json deviceId = nullptr;
-		if (cur) {
-			OBSDataAutoRelease settings = obs_source_get_settings(cur);
-			const char *id = settings ? obs_data_get_string(settings, "device_id") : nullptr;
-			deviceId = id ? json(std::string(id)) : json(std::string());
-		}
+	for (const GlobalAudioChannels::Slot &slot : audio.Slots()) {
+		std::optional<std::string> device = audio.CurrentDevice(slot.channel);
+		json deviceId = device ? json(*device) : json(nullptr);
 		arr.push_back(json{
 			{"channel", slot.channel},
 			{"role", slot.role},
 			{"label", slot.label},
 			{"isInput", slot.input},
 			{"deviceId", deviceId},
-			{"active", !deviceId.is_null()},
+			{"active", device.has_value()},
 		});
 	}
 	result = std::move(arr);
@@ -5980,10 +5838,11 @@ bool MethodAudioSetGlobalDevice(const json &params, json &result, std::string &e
 		deviceId = it->get<std::string>();
 	}
 
-	if (!ApplyGlobalDevice(channel, deviceId, error)) {
+	GlobalAudioChannels &audio = ObsBootstrap::GlobalAudioChannels();
+	if (!audio.ApplyDevice(channel, deviceId, error)) {
 		return false;
 	}
-	PersistGlobalAudio();
+	audio.Persist();
 	ObsBootstrap::AudioMonitor().Rebuild();
 	EmitEvent("audio.changed", json::object());
 
@@ -8737,19 +8596,6 @@ void Shutdown()
 		g_cpuInfo = nullptr;
 	}
 	g_bitrateCache.clear();
-}
-
-void SeedGlobalAudio()
-{
-	SeedOrRestoreGlobalAudio();
-}
-
-void ClearGlobalAudio()
-{
-	// Drop each global channel's ref so the wasapi sources die before obs_shutdown.
-	for (const GlobalAudioSlot &slot : kGlobalAudioSlots) {
-		obs_set_output_source(slot.channel, nullptr);
-	}
 }
 
 void AddBrowser(CefRefPtr<CefBrowser> browser)

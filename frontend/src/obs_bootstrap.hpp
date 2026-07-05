@@ -24,6 +24,7 @@ class AudioMonitor;
 class SceneCollections;
 class UndoManager;
 class VirtualCamManager;
+class GlobalAudioChannels;
 struct GeneralSettings;
 struct AdvancedSettings;
 
@@ -111,6 +112,13 @@ UndoManager &Undo();
 // down). Exposed so the bridge can serve virtualCam.* over it. Valid between
 // Start() and Stop().
 VirtualCamManager &VirtualCam();
+
+// The global desktop/mic audio channels (wasapi capture sources on OBS output
+// channels 1..6), owned by the bootstrap. SeedOrRestore() runs in Start (before the
+// AudioMonitor's first Rebuild), Clear() in Stop (after the monitor teardown, before
+// obs_shutdown). Exposed so the audio.* bridge methods can read/set the per-channel
+// devices over it. Valid between Start() and Stop().
+GlobalAudioChannels &GlobalAudioChannels();
 
 // The global "General settings" bag (projector always-on-top, snapping prefs,
 // tray/multiview/importer prefs), persisted to general.json. Owned by the

@@ -31,6 +31,7 @@
 #include "events/event_store.hpp"
 #include "multistream/CanvasRuntime.hpp"
 #include "multistream/CanvasStore.hpp"
+#include "multistream/GlobalAudioChannels.hpp"
 #include "multistream/Hotkeys.hpp"
 #include "mcp/McpServer.hpp"
 #include "multistream/MultistreamEngine.hpp"
@@ -299,6 +300,12 @@ std::unique_ptr<CanvasRuntime> g_canvasRuntime;
 // signals below rebuild its set + push audio.changed so the UI re-lists.
 std::unique_ptr<AudioMonitor> g_audioMonitor;
 
+// The global desktop/mic audio channels (wasapi sources on output channels 1..6).
+// Seeded/restored in Start before the audio monitor is built, unbound in Stop after
+// the monitor teardown. Stateless (operates on the live OBS channels + the on-disk
+// map), so a plain member -- no teardown state of its own.
+GlobalAudioChannels g_globalAudio;
+
 // The embedded MCP server. Constructed at the end of Start() (after the audio
 // monitor is up) and torn down at the very top of Stop() (before Bridge::Shutdown,
 // so its accept thread is joined while the bridge + libobs are still alive).
@@ -412,6 +419,11 @@ UndoManager &ObsBootstrap::Undo()
 VirtualCamManager &ObsBootstrap::VirtualCam()
 {
 	return g_virtualCam;
+}
+
+::GlobalAudioChannels &ObsBootstrap::GlobalAudioChannels()
+{
+	return g_globalAudio;
 }
 
 GeneralSettings &ObsBootstrap::General()
@@ -743,7 +755,7 @@ bool ObsBootstrap::Start()
 	// output channels 1..6 -- stock OBS sets these up but the new frontend never did,
 	// leaving the mixer empty. Done before the AudioMonitor below so its initial
 	// Rebuild enumerates the seeded channels.
-	Bridge::SeedGlobalAudio();
+	g_globalAudio.SeedOrRestore();
 
 	// Bring up the audio mixer manager and seed it from the current active audio
 	// sources, then arm the global signals that change which sources have audio so
@@ -2490,7 +2502,7 @@ void ObsBootstrap::Stop()
 	// are destroyed before obs_shutdown, mirroring the channel-0 unbind in
 	// TeardownScene. Done after the monitor teardown (its volmeters are detached
 	// first) and before the drain loop so the source frees are captured here.
-	Bridge::ClearGlobalAudio();
+	g_globalAudio.Clear();
 
 	// Deferred source destruction can cascade across the destruction-task
 	// thread; drain in a loop until no more work is spawned before
