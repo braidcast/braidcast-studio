@@ -116,7 +116,7 @@
       {/if}
       <button class="thumb-x" title="Remove" aria-label="Remove image" onclick={clearImage}>×</button>
     </div>
-    <div class="thumb-meta">{basename(str)} · PNG/JPG, ≤2 MB</div>
+    <div class="thumb-meta">{basename(str)}</div>
   {:else}
     <button
       class="thumb"
@@ -233,8 +233,8 @@
     cursor: pointer;
   }
   .thumb {
-    width: 104px;
-    height: 58px;
+    width: 150px;
+    height: 84px;
     border: var(--border-weight) dashed var(--color-border);
     color: var(--color-muted);
     font-size: 10px;

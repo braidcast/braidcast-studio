@@ -8,6 +8,7 @@
     type StreamProfileInfo,
   } from "./bridge";
   import { goLiveModal, closeGoLiveModal } from "./goLiveModalOpener.svelte";
+  import { openOAuthConnect } from "./oauthConnectOpener.svelte";
   import { outputBindingStore } from "./outputBindingStore.svelte";
   import { streamProfileStore } from "./streamProfileStore.svelte";
   import { oauthStore } from "./oauthStore.svelte";
@@ -65,6 +66,51 @@
   // go-live prefills from them. Default ON — most valuable for YouTube, whose live
   // metadata comes back empty.
   let remember = $state(true);
+
+  // Per-channel save outcome, keyed by accountId, surfaced as the header chip. Set to
+  // "saving" while confirm() awaits each channel's streamMeta.set, then mapped from the
+  // allSettled results back to each channel ("saved" unless any of its streams failed).
+  type SaveState = "idle" | "saving" | "saved" | "error";
+  let channelSaveState = $state<Record<string, SaveState>>({});
+  const SAVE_LABEL: Record<SaveState, string> = {
+    idle: "",
+    saving: "Saving…",
+    saved: "Saved",
+    error: "Failed",
+  };
+  // Channel cards collapse to just their header. Default expanded; the caret toggles.
+  let collapsed = $state<Record<string, boolean>>({});
+  function toggleCollapsed(id: string): void {
+    collapsed[id] = !collapsed[id];
+  }
+
+  // Monogram ink: pick black/white text off the brand color's luminance so a light
+  // brand (Kick green) reads as dark ink and a dark brand (Twitch purple) as white.
+  function monoInk(bg: string): string {
+    const h = bg.replace("#", "");
+    if (h.length < 6) {
+      return "#fff";
+    }
+    const r = parseInt(h.slice(0, 2), 16);
+    const g = parseInt(h.slice(2, 4), 16);
+    const b = parseInt(h.slice(4, 6), 16);
+    return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.6 ? "#0a0a0b" : "#fff";
+  }
+  function monoLetter(c: Channel): string {
+    return (c.provider?.displayName || c.login || "?").trim().charAt(0).toUpperCase();
+  }
+
+  // Reconnect a stale-scope channel via the shared OAuth connect dialog (the same flow
+  // the Streams tab uses). Any of the channel's stream profiles carries the account, so
+  // the first drives the relink; on success the store refreshes and the card re-renders
+  // as connected. The needsReconnect channel is skipped by prefill/confirm/save until then.
+  function reconnect(c: Channel): void {
+    const first = c.streams[0];
+    if (!first || !c.provider) {
+      return;
+    }
+    openOAuthConnect({ profileUuid: first.profileUuid, providerId: c.provider.id, platformName: c.provider.displayName });
+  }
 
   // Three inheritance layers, resolved shared -> channel -> stream by
   // effectiveFields (later wins, empties omitted). `sharedValues` holds only
@@ -179,13 +225,6 @@
   function isOverridden(id: string, f: OAuthProviderField): boolean {
     return !isEmptyVal(f.type, channelValues[id]?.[f.key]);
   }
-  function overrideChip(c: Channel): string {
-    if (!c.provider) {
-      return "inherits shared";
-    }
-    const hit = simpleShareable(c.provider).find((f) => isOverridden(c.accountId, f));
-    return hit ? hit.label.toLowerCase() + " overridden" : "inherits shared";
-  }
 
   // Resolve a profile's provider: prefer the linked account's providerId, else match
   // the display platform against a provider id/displayName (mirrors StreamsTab).
@@ -285,11 +324,28 @@
   const primaryLabel = $derived(
     goLiveModal.mode === "golive" ? "Go Live now" : isLive ? "Update info" : "Save info",
   );
-  const footerNote = $derived(
-    goLiveModal.mode === "golive"
-      ? "Metadata pushed to each platform, then the stream starts. A failure on one platform won't block going live."
-      : "Metadata is pushed to each connected platform. A failure on one won't affect the others.",
-  );
+
+  // Channels that go live via key but can't push metadata until relinked, plus the total
+  // stream count across every channel — both drive the footer summary and reconnect strips.
+  const reconnectChannels = $derived(channels.filter((c) => c.needsReconnect));
+  const channelStreamCount = $derived(channels.reduce((n, c) => n + c.streams.length, 0));
+  // Footer summary (mock: "3 channels · 5 streams · all ready"). When any channel needs a
+  // relink, count ready vs. need-reconnect instead so the strips are accounted for. Falls
+  // back to a key-only line when no account-linked channels are armed.
+  const footerNote = $derived.by<string>(() => {
+    if (channels.length === 0) {
+      return armedProfileCount > 0
+        ? `${armedProfileCount} destination${armedProfileCount === 1 ? "" : "s"} via stream key`
+        : "No destinations armed.";
+    }
+    const streams = `${channelStreamCount} stream${channelStreamCount === 1 ? "" : "s"}`;
+    if (reconnectChannels.length > 0) {
+      const ready = `${connectedChannels.length} ready`;
+      return `${ready} · ${streams} · ${reconnectChannels.length} need reconnect`;
+    }
+    const chans = `${channels.length} channel${channels.length === 1 ? "" : "s"}`;
+    return `${chans} · ${streams} · all ready`;
+  });
 
   // Resolve effective values through the three layers and push them: a stream
   // override wins over the channel default, which wins over the shared value
@@ -417,11 +473,21 @@
       return;
     }
     submitting = true;
+    // Header chips go "saving" for every connected channel while the pushes are in flight.
+    channelSaveState = Object.fromEntries(
+      connectedChannels.map((c) => [c.accountId, "saving"] as [string, SaveState]),
+    );
     // One job per stream: each stream's effective fields merge the channel default
     // with that stream's own overrides. YouTube needs the per-profile call; Twitch/
-    // Kick applying the same channel twice (no divergence) is idempotent.
+    // Kick applying the same channel twice (no divergence) is idempotent. The stream
+    // layer applies ONLY when its override toggle is on, so an orphaned overrides bag
+    // (toggle off) can never diverge a live broadcast — the toggle is the sole authority.
     const jobs = connectedChannels.flatMap((c) =>
-      c.streams.map((s) => ({ channel: c, stream: s, fields: effectiveFields(c, s) })),
+      c.streams.map((s) => ({
+        channel: c,
+        stream: s,
+        fields: effectiveFields(c, streamOverrideOn[s.profileUuid] ? s : undefined),
+      })),
     );
     const results = await Promise.allSettled(
       jobs.map((j) =>
@@ -438,17 +504,30 @@
     const failed = results
       .map((r, i) => (r.status === "rejected" ? { job: jobs[i], reason: r.reason as Error } : null))
       .filter((x): x is { job: (typeof jobs)[number]; reason: Error } => x !== null);
+    // Collapse failures to distinct CHANNELS: two failing streams on one channel are one
+    // destination, so the count, the singular/plural branch, and the header chip all agree.
+    const failedByChannel = new Map<string, { name: string; reason: Error }>();
+    for (const f of failed) {
+      if (!failedByChannel.has(f.job.channel.accountId)) {
+        failedByChannel.set(f.job.channel.accountId, {
+          name: f.job.channel.provider?.displayName || f.job.stream.label || "this platform",
+          reason: f.reason,
+        });
+      }
+    }
+    channelSaveState = Object.fromEntries(
+      connectedChannels.map(
+        (c) => [c.accountId, failedByChannel.has(c.accountId) ? "error" : "saved"] as [string, SaveState],
+      ),
+    );
     const goingLive = goLiveModal.mode === "golive";
     const tail = goingLive ? " — going live anyway" : "";
-    if (failed.length === 1) {
-      const name = failed[0].job.channel.provider?.displayName || failed[0].job.stream.label || "this platform";
-      showToast("Couldn't update " + name + " stream info" + tail, failed[0].reason?.message ?? "metadata push failed");
-    } else if (failed.length > 1) {
-      // Count distinct channels, not per-stream jobs: two failing streams on one
-      // channel are one destination, so the count agrees with the listed names.
-      const nameSet = new Set(failed.map((f) => f.job.channel.provider?.displayName || f.job.stream.label));
-      const names = [...nameSet].join(", ");
-      showToast("Couldn't update stream info for " + nameSet.size + " destinations" + tail, names);
+    if (failedByChannel.size === 1) {
+      const only = [...failedByChannel.values()][0];
+      showToast("Couldn't update " + only.name + " stream info" + tail, only.reason?.message ?? "metadata push failed");
+    } else if (failedByChannel.size > 1) {
+      const names = [...failedByChannel.values()].map((v) => v.name).join(", ");
+      showToast("Couldn't update stream info for " + failedByChannel.size + " destinations" + tail, names);
     }
     // Remember these details for next time — best-effort, fired without awaiting so a
     // slow or failing save never blocks going live. One save per channel with its raw
@@ -495,246 +574,243 @@
   }
 </script>
 
-<Modal title="Stream Information" onClose={closeGoLiveModal} width={580} maxHeight="88vh">
+<!-- One field row, shared by the shared block, the channel body, and the per-stream
+     override set (was ~3 copies of the bool/togrow-vs-labelled-field branch). `opts`
+     carries the per-site extras (provider id for the category typeahead, the inherit
+     ghost + accent for override fields, an optional hint line, narrow for enums). -->
+{#snippet fieldRow(
+  f: OAuthProviderField,
+  value: unknown,
+  onChange: (v: unknown) => void,
+  opts: {
+    providerId?: string;
+    ghostText?: string;
+    accent?: boolean;
+    narrow?: boolean;
+    hint?: string;
+    tag?: string;
+  },
+)}
+  {#if f.type === "bool"}
+    <div class="togrow">
+      <GoLiveFieldInput field={f} {value} {onChange} />
+      <span class="toglbl">{f.label}</span>
+    </div>
+  {:else}
+    <div class="field">
+      <span class="fl">
+        {f.label}{#if opts.tag}<span class="fl-tag" class:acc={opts.accent}>{opts.tag}</span>{/if}
+      </span>
+      <GoLiveFieldInput
+        field={f}
+        {value}
+        {onChange}
+        providerId={opts.providerId ?? ""}
+        ghostText={opts.ghostText ?? ""}
+        accent={opts.accent ?? false}
+        narrow={opts.narrow ?? false}
+      />
+      {#if opts.hint}<div class="hint" class:acc={opts.accent}>{opts.hint}</div>{/if}
+    </div>
+  {/if}
+{/snippet}
+
+<Modal
+  title="Stream Information"
+  onClose={closeGoLiveModal}
+  width={view === "advanced" ? 760 : 580}
+  maxHeight="88vh"
+>
   {#snippet headExtra()}
     {#if isLive}<span class="live-dot" title="Live"></span>{/if}
     <Segmented options={VIEW_OPTIONS} value={view} onChange={(v) => (view = v as "simple" | "advanced")} />
   {/snippet}
 
-  {#if !loaded}
-        <p class="note">Loading destinations…</p>
-      {:else}
-        <!-- Shared defaults: the union of connected providers' shareable fields
-             (mock `.shared`), present in both modes whenever anything is shareable. -->
-        {#if sharedFields.length}
-          <div class="shared">
-            <p class="eh tight">Shared defaults</p>
-            {#each sharedFields as f, i (f.key)}
-              <div class="fld" class:last={i === sharedFields.length - 1}>
-                <span class="fl">{f.label}</span>
-                <GoLiveFieldInput field={f} value={sharedValues[f.key]} onChange={(v) => setSharedField(f.key, v)} />
-              </div>
-            {/each}
-          </div>
-        {/if}
-
-        {#if armedProfileCount === 0}
-          <p class="note">
-            No armed destinations. Enable a destination on a canvas to push stream information.
+  <div class="mb" class:adv={view === "advanced"}>
+    {#if !loaded}
+      <p class="note">Loading destinations…</p>
+    {:else}
+      <!-- Shared defaults: the union of connected providers' shareable fields (mock
+           `.shared`), one row each, present in both modes whenever anything is shareable. -->
+      {#if sharedFields.length}
+        <div class="shared">
+          <p class="eh">
+            Shared defaults
+            {#if connectedChannels.length > 1}<span class="eh-note">— across all {connectedChannels.length} channels</span>{/if}
           </p>
-        {:else if view === "advanced"}
-          <p class="eh">Per-channel (overrides shared when filled)</p>
-
-          {#each connectedChannels as c (c.accountId)}
-            {#if c.provider}
-              <div class="dest">
-                <div class="dh">
-                  <span class="pdot" style:background={c.provider.brandColor || "var(--color-accent)"}></span>
-                  <span class="pname">{c.provider.displayName}</span>
-                  <span class="pacct">· {c.login}</span>
-                  {#if c.streams.length > 1}
-                    <span class="streams">{c.streams.length} streams</span>
-                  {/if}
-                  {#if overrideChip(c) === "inherits shared"}
-                    <span class="inh">inherits shared</span>
-                  {:else}
-                    <span class="ovrflag">{overrideChip(c)}</span>
-                  {/if}
-                </div>
-                <div class="body">
-                  <!-- Shareable simple fields render as overrides (ghost / amber). -->
-                  {#each simpleShareable(c.provider) as f (f.key)}
-                    {@const filled = isOverridden(c.accountId, f)}
-                    <div class="fld">
-                      <span class="fl">{f.label}</span>
-                      <GoLiveFieldInput
-                        field={f}
-                        value={getVal(c.accountId, f.key)}
-                        providerId={c.provider.id}
-                        ghostText={sharedGhostText(f)}
-                        accent={filled}
-                        onChange={(v) => setField(c.accountId, f.key, v)}
-                      />
-                      {#if filled}
-                        <div class="hint acc">overrides shared for {c.provider.displayName}</div>
-                      {:else}
-                        <div class="hint">empty → using shared {f.label.toLowerCase()}</div>
-                      {/if}
-                    </div>
-                  {/each}
-
-                  <!-- Non-shareable simple fields render normally. -->
-                  {#if simpleNonShareable(c.provider).length}
-                    <div class="drow">
-                      {#each simpleNonShareable(c.provider) as f (f.key)}
-                        <div class="fld last">
-                          <span class="fl">{f.label}</span>
-                          <GoLiveFieldInput
-                            field={f}
-                            value={getVal(c.accountId, f.key)}
-                            providerId={c.provider.id}
-                            onChange={(v) => setField(c.accountId, f.key, v)}
-                          />
-                        </div>
-                      {/each}
-                    </div>
-                  {/if}
-
-                  <!-- Advanced / platform-only fields under the dashed divider. -->
-                  <div class="adv">
-                    <div class="advlbl">{c.provider.displayName}-only</div>
-                    {#if advancedFields(c.provider).length === 0}
-                      <p class="note">
-                        {c.provider.displayName}'s API exposes only title / category / tags — nothing extra to show.
-                      </p>
-                    {:else}
-                      {#each advancedFields(c.provider) as f (f.key)}
-                        {#if f.type === "bool"}
-                          <div class="togrow">
-                            <GoLiveFieldInput
-                              field={f}
-                              value={getVal(c.accountId, f.key)}
-                              onChange={(v) => setField(c.accountId, f.key, v)}
-                            />
-                            {f.label}
-                          </div>
-                        {:else}
-                          <div class="fld last advfld">
-                            <span class="fl">{f.label}</span>
-                            <GoLiveFieldInput
-                              field={f}
-                              value={getVal(c.accountId, f.key)}
-                              providerId={c.provider.id}
-                              narrow={f.type === "enum"}
-                              onChange={(v) => setField(c.accountId, f.key, v)}
-                            />
-                          </div>
-                        {/if}
-                      {/each}
-                    {/if}
-                  </div>
-                </div>
-
-                <!-- Per-stream overrides: each broadcast can diverge from the channel
-                     default. OFF = inherit (no fields shown); ON = an inline field set
-                     writing streamOverrides[profileUuid]. Shown even for a single
-                     stream, kept unobtrusive. -->
-                <div class="streamlist">
-                  {#each c.streams as s (s.profileUuid)}
-                    {@const on = !!streamOverrideOn[s.profileUuid]}
-                    <div class="srow">
-                      <div class="srh">
-                        <span class="sico" class:on>{on ? "▾" : "▸"}</span>
-                        <span class="sn">{s.label}</span>
-                        <span class="scanvas">{s.canvasName}</span>
-                        <span class="sbadge">
-                          {#if on}
-                            {@const n = streamOverrideCount(s.profileUuid, c.provider)}
-                            <span class="sov">{n} override{n === 1 ? "" : "s"}</span>
-                          {:else}
-                            <span class="sinh">Uses channel defaults</span>
-                          {/if}
-                          <button
-                            type="button"
-                            class="sw"
-                            class:on
-                            title={on ? "Overriding channel defaults" : "Override channel defaults"}
-                            onclick={() => toggleStreamOverride(s.profileUuid)}
-                          >
-                            <i></i>
-                          </button>
-                        </span>
-                      </div>
-                      {#if on}
-                        <div class="srb">
-                          {#each c.provider.fields as f (f.key)}
-                            {#if f.type === "bool"}
-                              <div class="togrow">
-                                <GoLiveFieldInput
-                                  field={f}
-                                  value={getStreamVal(s.profileUuid, f.key)}
-                                  onChange={(v) => setStreamField(s.profileUuid, f.key, v)}
-                                />
-                                {f.label}
-                              </div>
-                            {:else}
-                              <div class="fld">
-                                <span class="fl">{f.label}</span>
-                                <GoLiveFieldInput
-                                  field={f}
-                                  value={getStreamVal(s.profileUuid, f.key)}
-                                  providerId={c.provider.id}
-                                  narrow={f.type === "enum"}
-                                  onChange={(v) => setStreamField(s.profileUuid, f.key, v)}
-                                />
-                              </div>
-                            {/if}
-                          {/each}
-                          <p class="inhnote">Empty fields inherit this channel's defaults.</p>
-                        </div>
-                      {/if}
-                    </div>
-                  {/each}
-                </div>
-              </div>
-            {/if}
+          {#each sharedFields as f (f.key)}
+            {@render fieldRow(f, sharedValues[f.key], (v) => setSharedField(f.key, v), {})}
           {/each}
-        {:else}
-          <!-- Simple mode: shared block + only non-shareable per-channel fields. -->
-          {#each connectedChannels as c (c.accountId)}
-            {#if c.provider}
-              <div class="simple-dest">
-                <div class="sd-head">
-                  <span class="pdot" style:background={c.provider.brandColor || "var(--color-accent)"}></span>
-                  <span class="pname">{c.provider.displayName}</span>
-                  <span class="pacct">· {c.login}</span>
-                  {#if c.streams.length > 1}
-                    <span class="streams">{c.streams.length} streams</span>
-                  {/if}
-                </div>
-                {#if simpleNonShareable(c.provider).length}
-                  <div class="drow">
-                    {#each simpleNonShareable(c.provider) as f (f.key)}
-                      <div class="fld last">
-                        <span class="fl">{f.label}</span>
-                        <GoLiveFieldInput
-                          field={f}
-                          value={getVal(c.accountId, f.key)}
-                          providerId={c.provider.id}
-                          onChange={(v) => setField(c.accountId, f.key, v)}
-                        />
-                      </div>
-                    {/each}
-                  </div>
-                {:else}
-                  <p class="note">Uses the shared defaults.</p>
-                {/if}
-              </div>
-            {/if}
-          {/each}
-        {/if}
-      {/if}
-
-      {#if loaded}
-        <div class="savebar">
-          <button
-            type="button"
-            class="sw"
-            class:on={remember}
-            role="switch"
-            aria-checked={remember}
-            title={remember ? "Details will be remembered" : "Details won't be remembered"}
-            onclick={() => (remember = !remember)}
-          >
-            <i></i>
-          </button>
-          <span class="sbl">Save these details for next time</span>
-          <span class="sbh">prefill this dialog on your next go-live</span>
         </div>
       {/if}
 
+      {#if armedProfileCount === 0}
+        <p class="note">No armed destinations. Enable a destination on a canvas to push stream information.</p>
+      {:else}
+        {#each channels as c (c.accountId)}
+          {#if c.connected && c.provider}
+            {@const isCollapsed = !!collapsed[c.accountId]}
+            {@const stt = channelSaveState[c.accountId]}
+            <div class="ch">
+              <button
+                type="button"
+                class="chh"
+                class:nb={isCollapsed}
+                aria-expanded={!isCollapsed}
+                onclick={() => toggleCollapsed(c.accountId)}
+              >
+                <span
+                  class="mono"
+                  style:background={c.provider.brandColor || "var(--color-accent)"}
+                  style:color={monoInk(c.provider.brandColor || "#e7a338")}>{monoLetter(c)}</span
+                >
+                <span class="plat">{c.provider.displayName}</span>
+                <span class="nm">{c.login}</span>
+                {#if c.streams.length > 1}
+                  <span class="streams">{c.streams.length} streams</span>
+                {/if}
+                {#if stt && stt !== "idle"}
+                  <span class="st" class:saving={stt === "saving"} class:ok={stt === "saved"} class:err={stt === "error"}>
+                    <span class="dot"></span>{SAVE_LABEL[stt]}
+                  </span>
+                {/if}
+                <span class="car">{isCollapsed ? "▸" : "▾"}</span>
+              </button>
+
+              {#if !isCollapsed}
+                <div class="chb">
+                  {#if c.streams.length > 1}
+                    <div class="dedupe">
+                      All <b>{c.streams.length} streams</b> post to this one channel — its title, category and thumbnail
+                      are set once here.
+                    </div>
+                  {/if}
+
+                  <!-- Shareable fields as per-channel overrides (ghost cue when inheriting
+                       the shared value, amber when the channel diverges). -->
+                  {#each simpleShareable(c.provider) as f (f.key)}
+                    {@const filled = isOverridden(c.accountId, f)}
+                    {@render fieldRow(f, getVal(c.accountId, f.key), (v) => setField(c.accountId, f.key, v), {
+                      providerId: c.provider.id,
+                      ghostText: sharedGhostText(f),
+                      accent: filled,
+                      tag: filled ? "— overrides shared" : "↳ using shared",
+                      hint: filled ? "Overrides the shared " + f.label.toLowerCase() + " for this channel." : undefined,
+                    })}
+                  {/each}
+
+                  <!-- Non-shareable fields (category / thumbnail / privacy / …), one per row. -->
+                  {#each simpleNonShareable(c.provider) as f (f.key)}
+                    {@render fieldRow(f, getVal(c.accountId, f.key), (v) => setField(c.accountId, f.key, v), {
+                      providerId: c.provider.id,
+                    })}
+                  {/each}
+
+                  {#if view === "advanced"}
+                    <!-- Advanced / platform-only fields under the dashed divider. -->
+                    {#if advancedFields(c.provider).length}
+                      <div class="adv-fields">
+                        <div class="advlbl">{c.provider.displayName}-only</div>
+                        {#each advancedFields(c.provider) as f (f.key)}
+                          {@render fieldRow(f, getVal(c.accountId, f.key), (v) => setField(c.accountId, f.key, v), {
+                            providerId: c.provider.id,
+                            narrow: f.type === "enum",
+                          })}
+                        {/each}
+                      </div>
+                    {/if}
+
+                    <!-- Per-stream overrides: OFF = inherit the channel default; ON = an
+                         inline field set writing streamOverrides[profileUuid]. -->
+                    <div class="streamlist">
+                      {#each c.streams as s (s.profileUuid)}
+                        {@const on = !!streamOverrideOn[s.profileUuid]}
+                        <div class="srow">
+                          <div class="srh">
+                            <span class="sico" class:on>{on ? "▾" : "▸"}</span>
+                            <span class="sn">{s.label}</span>
+                            <span class="scanvas">{s.canvasName}</span>
+                            <span class="sbadge">
+                              {#if on}
+                                {@const n = streamOverrideCount(s.profileUuid, c.provider)}
+                                <span class="sov">{n} override{n === 1 ? "" : "s"}</span>
+                              {:else}
+                                <span class="sinh">Uses channel defaults</span>
+                              {/if}
+                              <button
+                                type="button"
+                                class="sw"
+                                class:on
+                                title={on ? "Overriding channel defaults" : "Override channel defaults"}
+                                onclick={() => toggleStreamOverride(s.profileUuid)}
+                              >
+                                <i></i>
+                              </button>
+                            </span>
+                          </div>
+                          {#if on}
+                            <div class="srb">
+                              {#each c.provider.fields as f (f.key)}
+                                {@render fieldRow(f, getStreamVal(s.profileUuid, f.key), (v) => setStreamField(s.profileUuid, f.key, v), {
+                                  providerId: c.provider.id,
+                                  narrow: f.type === "enum",
+                                })}
+                              {/each}
+                              <p class="inhnote">Empty fields inherit this channel's defaults.</p>
+                            </div>
+                          {/if}
+                        </div>
+                      {/each}
+                    </div>
+                  {/if}
+                </div>
+              {/if}
+            </div>
+          {:else if c.needsReconnect}
+            <!-- Stale-scope channel: still goes live via key, but can't push metadata
+                 until relinked. Kept visible as a warn strip with a Reconnect action
+                 (the shared OAuth connect flow), never silently dropped. -->
+            <div class="ch warn">
+              <div class="warnstrip">
+                <span
+                  class="mono"
+                  style:background={c.provider?.brandColor || "var(--color-warn)"}
+                  style:color={monoInk(c.provider?.brandColor || "#e6b03e")}>{monoLetter(c)}</span
+                >
+                <span class="msg">
+                  <b>{c.login}</b> — reconnect to edit
+                  {c.provider?.displayName ?? "this platform"} stream info
+                </span>
+                <button type="button" class="rbtn" onclick={() => reconnect(c)}>Reconnect</button>
+              </div>
+            </div>
+          {/if}
+        {/each}
+      {/if}
+    {/if}
+
+    {#if loaded}
+      <div class="savebar">
+        <button
+          type="button"
+          class="sw big"
+          class:on={remember}
+          role="switch"
+          aria-checked={remember}
+          title={remember ? "Details will be remembered" : "Details won't be remembered"}
+          onclick={() => (remember = !remember)}
+        >
+          <i></i>
+        </button>
+        <span class="sbl">Save these details for next time</span>
+        <span class="sbh">— prefill this dialog on your next go-live</span>
+      </div>
+    {/if}
+  </div>
+
   {#snippet footer()}
     <span class="foot-note">{footerNote}</span>
+    <button class="ghost" onclick={closeGoLiveModal}>Cancel</button>
     <button class="accent" disabled={submitting || !loaded || armedProfileCount === 0} onclick={() => void confirm()}>
       {submitting ? "Working…" : primaryLabel}
     </button>
@@ -748,135 +824,240 @@
     height: 7px;
     background: var(--color-live);
   }
-  .eh {
+  .note {
     font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--color-dim);
-    margin: 0 0 10px;
+    color: var(--color-muted);
+    margin: 0;
   }
-  .eh.tight {
-    margin-bottom: 8px;
-  }
-  .fl {
+  /* Body wrapper: no padding of its own (Modal's .modal-body owns the scroll + pad);
+     the `adv` flag caps the wider Advanced modal's text inputs so they don't stretch
+     edge-to-edge. */
+  .mb {
     display: block;
-    font-size: 12px;
-    color: var(--color-dim);
-    margin-bottom: 4px;
   }
-  .fld {
-    margin-bottom: 10px;
+  .mb.adv .ch .field :global(input.inp),
+  .mb.adv .ch .field :global(select.inp) {
+    max-width: 460px;
   }
-  .fld.last {
-    margin-bottom: 0;
-  }
-  .drow {
+
+  /* Section head ("Shared defaults") — mono micro-label with an optional plain-text note. */
+  .eh {
     display: flex;
-    gap: 10px;
-    align-items: flex-start;
+    align-items: baseline;
+    gap: 8px;
     flex-wrap: wrap;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--color-muted);
+    margin: 0 0 8px;
   }
-  .drow > * {
-    flex: 1;
-    min-width: 160px;
+  .eh-note {
+    font-family: var(--font-ui);
+    font-size: 10px;
+    letter-spacing: 0;
+    text-transform: none;
+    font-weight: 400;
+    color: var(--color-muted);
   }
   .shared {
-    background: var(--color-surface-2);
     border: var(--border-weight) solid var(--color-border);
+    background: var(--color-surface-2);
     padding: 12px;
     margin-bottom: 14px;
   }
-  .dest {
-    border: var(--border-weight) solid var(--color-border);
-    background: var(--color-base);
-    margin-bottom: 10px;
+
+  /* Field row (label + control + optional hint). Label is a mono micro-caps line; a
+     plain-text tag (inherit / override cue) trails it. */
+  .field {
+    margin-bottom: 12px;
   }
-  .dh {
+  .field:last-child {
+    margin-bottom: 0;
+  }
+  .fl {
     display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 10px 12px;
-    border-bottom: var(--border-weight) solid var(--color-border);
-    background: var(--color-surface-2);
-  }
-  .pdot {
-    width: 8px;
-    height: 8px;
-    flex: 0 0 auto;
-  }
-  .pname {
-    font-weight: 600;
-  }
-  .pacct {
-    color: var(--color-dim);
-    font-size: 12px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .ovrflag {
-    margin-left: auto;
+    align-items: baseline;
+    gap: 7px;
+    font-family: var(--font-mono);
     font-size: 10px;
-    color: var(--color-accent);
+    letter-spacing: 0.07em;
     text-transform: uppercase;
-    letter-spacing: 0.05em;
-    flex: 0 0 auto;
-  }
-  .inh {
-    margin-left: auto;
-    font-size: 10px;
     color: var(--color-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    flex: 0 0 auto;
+    margin-bottom: 5px;
   }
-  .streams {
+  .fl-tag {
+    font-family: var(--font-ui);
     font-size: 10px;
-    color: var(--color-accent);
-    border: var(--border-weight) solid var(--color-border);
-    padding: 2px 6px;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    flex: 0 0 auto;
+    letter-spacing: 0;
+    text-transform: none;
+    font-weight: 400;
+    color: var(--color-muted);
   }
-  .body {
-    padding: 12px;
+  .fl-tag.acc {
+    color: var(--color-accent);
   }
   .hint {
     font-size: 10px;
+    line-height: 1.4;
     color: var(--color-muted);
-    margin-top: 3px;
+    margin-top: 4px;
   }
   .hint.acc {
     color: var(--color-accent);
   }
-  .adv {
-    margin-top: 10px;
-    padding-top: 10px;
-    border-top: var(--border-weight) dashed var(--color-border);
-  }
-  .advlbl {
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--color-accent);
-    margin-bottom: 8px;
-  }
-  .advfld {
-    margin-top: 6px;
-  }
   .togrow {
     display: flex;
     align-items: center;
-    gap: 8px;
-    font-size: 12px;
-    margin-bottom: 6px;
+    gap: 9px;
+    margin-bottom: 12px;
   }
+  .togrow:last-child {
+    margin-bottom: 0;
+  }
+  .toglbl {
+    font-size: 11px;
+    color: var(--color-dim);
+  }
+
+  /* Channel card. */
+  .ch {
+    border: var(--border-weight) solid var(--color-border);
+    background: var(--color-surface);
+    margin-bottom: 12px;
+  }
+  .ch.warn {
+    border-color: color-mix(in srgb, var(--color-warn) 45%, var(--color-border));
+  }
+  .chh {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    width: 100%;
+    height: auto;
+    padding: 9px 11px;
+    background: var(--color-surface-2);
+    border: 0;
+    border-bottom: var(--border-weight) solid var(--color-border);
+    text-align: left;
+    cursor: pointer;
+  }
+  .chh:hover {
+    border-color: var(--color-border);
+  }
+  .chh.nb {
+    border-bottom: 0;
+  }
+  .mono {
+    width: 20px;
+    height: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font-mono);
+    font-weight: 800;
+    font-size: 11px;
+    flex: 0 0 auto;
+  }
+  .plat {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--color-muted);
+    flex: 0 0 auto;
+  }
+  .nm {
+    font-weight: 700;
+    font-size: 12px;
+    color: var(--color-text);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .streams {
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    color: var(--color-accent);
+    border: var(--border-weight) solid color-mix(in srgb, var(--color-accent) 40%, var(--color-border));
+    padding: 3px 6px;
+    flex: 0 0 auto;
+  }
+  .st {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin-left: 4px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--color-muted);
+    flex: 0 0 auto;
+  }
+  .st.saving {
+    color: var(--color-dim);
+  }
+  .st.ok {
+    color: var(--color-ok);
+  }
+  .st.err {
+    color: var(--color-warn);
+  }
+  .st .dot {
+    width: 6px;
+    height: 6px;
+    background: currentColor;
+    flex: 0 0 auto;
+  }
+  .car {
+    margin-left: auto;
+    color: var(--color-muted);
+    font-size: 11px;
+    flex: 0 0 auto;
+  }
+  .chb {
+    padding: 11px;
+  }
+  .dedupe {
+    font-size: 10px;
+    line-height: 1.4;
+    color: var(--color-muted);
+    margin: 0 0 11px;
+    padding: 6px 9px;
+    background: var(--color-base);
+    border: var(--border-weight) dashed var(--color-border);
+  }
+  .dedupe b {
+    color: var(--color-dim);
+    font-weight: 600;
+  }
+
+  /* Advanced: platform-only fields under a dashed divider. */
+  .adv-fields {
+    margin-top: 12px;
+    padding-top: 11px;
+    border-top: var(--border-weight) dashed var(--color-border);
+  }
+  .advlbl {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--color-accent);
+    margin-bottom: 9px;
+  }
+
+  /* Per-stream override list (bleeds to the card edges below the channel fields). */
   .streamlist {
+    margin: 11px -11px -11px;
     border-top: var(--border-weight) solid var(--color-border);
   }
   .srow {
-    border-bottom: var(--border-weight) solid var(--color-border);
+    border-bottom: var(--border-weight) solid var(--color-border-2);
   }
   .srow:last-child {
     border-bottom: 0;
@@ -896,12 +1077,16 @@
     color: var(--color-accent);
   }
   .sn {
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 600;
+    color: var(--color-text);
+    flex: 0 0 auto;
   }
   .scanvas {
-    font-size: 11px;
-    color: var(--color-dim);
+    font-family: var(--font-mono);
+    font-size: 9px;
+    color: var(--color-muted);
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -914,15 +1099,17 @@
     flex: 0 0 auto;
   }
   .sinh {
-    font-size: 10px;
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: 0.04em;
     text-transform: uppercase;
-    letter-spacing: 0.05em;
     color: var(--color-muted);
   }
   .sov {
-    font-size: 10px;
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: 0.04em;
     text-transform: uppercase;
-    letter-spacing: 0.05em;
     color: var(--color-accent);
   }
   .sw {
@@ -934,6 +1121,9 @@
     position: relative;
     flex: 0 0 auto;
     cursor: pointer;
+  }
+  .sw:hover {
+    border-color: var(--color-accent);
   }
   .sw.on {
     border-color: var(--color-accent);
@@ -952,40 +1142,62 @@
     right: 1px;
     background: var(--color-accent);
   }
+  .sw.big {
+    width: 34px;
+    height: 18px;
+  }
+  .sw.big i {
+    width: 14px;
+    height: 14px;
+  }
   .srb {
-    padding: 8px 12px 12px 33px;
-    background: var(--color-surface-2);
+    padding: 2px 12px 12px 33px;
+    background: var(--color-base);
   }
   .inhnote {
     font-size: 10px;
+    line-height: 1.4;
     color: var(--color-muted);
-    margin: 4px 0 0;
+    margin: 8px 0 0;
   }
-  .simple-dest {
-    border: var(--border-weight) solid var(--color-border);
-    background: var(--color-base);
-    padding: 12px;
-    margin-bottom: 10px;
-  }
-  .sd-head {
+
+  /* Reconnect strip (stale-scope channel). */
+  .warnstrip {
     display: flex;
     align-items: center;
-    gap: 8px;
-    margin-bottom: 10px;
+    gap: 10px;
+    padding: 10px 11px;
   }
-  .note {
+  .warnstrip .msg {
     font-size: 11px;
-    color: var(--color-muted);
-    margin: 0;
+    line-height: 1.4;
+    color: var(--color-warn);
   }
-  .foot-note {
-    flex: 1 1 auto;
-    font-size: 11px;
-    color: var(--color-muted);
+  .warnstrip .msg b {
+    color: var(--color-text);
+    font-weight: 600;
   }
-  /* Persisted just above the footer: sticks to the bottom of the scroll body and
-     bleeds to its edges (cancelling the body padding) so it reads as a distinct
-     strip between the scrollable content and the action bar. */
+  .rbtn {
+    height: 28px;
+    padding: 0 11px;
+    margin-left: auto;
+    border: var(--border-weight) solid var(--color-warn);
+    background: var(--color-surface);
+    color: var(--color-warn);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    flex: 0 0 auto;
+  }
+  .rbtn:hover {
+    background: color-mix(in srgb, var(--color-warn) 14%, transparent);
+    border-color: var(--color-warn);
+  }
+
+  /* Save-for-next-time strip: sticks to the bottom of the scroll body and bleeds to
+     its edges (cancelling the body padding) so it reads as a distinct strip between
+     the scrollable content and the action bar. */
   .savebar {
     position: sticky;
     bottom: -16px;
@@ -1004,5 +1216,24 @@
   .sbh {
     font-size: 10px;
     color: var(--color-muted);
+  }
+
+  /* Footer bar. */
+  .foot-note {
+    flex: 1 1 auto;
+    font-size: 11px;
+    color: var(--color-muted);
+  }
+  .ghost {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--color-dim);
+    background: var(--color-surface);
+  }
+  .ghost:hover {
+    color: var(--color-text);
+    border-color: var(--color-border);
   }
 </style>
