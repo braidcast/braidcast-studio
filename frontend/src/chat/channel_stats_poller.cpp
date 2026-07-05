@@ -101,7 +101,11 @@ void ChannelStatsPoller::Start()
 					acct.audienceKind = out.kind;
 					acct.audienceHidden = out.hidden;
 					acct.audienceUpdatedNs = (int64_t)os_gettime_ns();
-					OAuth::Accounts().Put(OAuth::AccountId(acct), acct);
+					// Field-scoped persist: never round-trips access/refresh, so a
+					// concurrent token refresh on this account isn't clobbered by our
+					// stale copy (and a mid-poll removal isn't resurrected).
+					OAuth::Accounts().UpdateAudience(OAuth::AccountId(acct), out.count, out.kind,
+									 out.hidden, acct.audienceUpdatedNs);
 				}
 
 				// Always include an available read in the emit (even unchanged) so a

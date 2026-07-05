@@ -216,6 +216,26 @@ void AccountStore::Put(const std::string &accountId, const OAuthAccount &account
 	SaveLocked();
 }
 
+void AccountStore::UpdateAudience(const std::string &accountId, int64_t count, AudienceKind kind, bool hidden,
+				 int64_t updatedNs)
+{
+	// Field-scoped write: a background poller must never round-trip a whole record it
+	// read ~90s ago, or it would clobber a token that a reactive 401-refresh rotated in
+	// the meantime. Touch only the audience fields on the CURRENT stored record, and
+	// never re-insert an account removed mid-poll.
+	const std::lock_guard<std::mutex> guard(mutex_);
+	EnsureLoadedLocked();
+	auto it = accounts_.find(accountId);
+	if (it == accounts_.end()) {
+		return;
+	}
+	it->second.audienceCount = count;
+	it->second.audienceKind = kind;
+	it->second.audienceHidden = hidden;
+	it->second.audienceUpdatedNs = updatedNs;
+	SaveLocked();
+}
+
 void AccountStore::Remove(const std::string &accountId)
 {
 	const std::lock_guard<std::mutex> guard(mutex_);

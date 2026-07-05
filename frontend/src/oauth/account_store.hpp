@@ -21,6 +21,10 @@ class AccountStore {
 public:
 	std::optional<OAuthAccount> Get(const std::string &accountId);
 	void Put(const std::string &accountId, const OAuthAccount &account);
+	// Update only the audience fields of an existing account (background-thread safe;
+	// never touches tokens). No-op if the account was removed. Persists on write.
+	void UpdateAudience(const std::string &accountId, int64_t count, AudienceKind kind, bool hidden,
+			    int64_t updatedNs);
 	void Remove(const std::string &accountId);
 	std::map<std::string, OAuthAccount> All();
 
