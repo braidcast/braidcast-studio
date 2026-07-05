@@ -9,6 +9,9 @@ on:
       - 'release/**'
     tags:
       - '*'
+      # Fork release tags (v-prefixed) are handled by release-braidcast.yaml;
+      # exclude them here so the project is not built twice on one tag push.
+      - '!v*'
 permissions:
   contents: write
 jobs:
