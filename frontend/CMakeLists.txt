@@ -223,6 +223,8 @@ target_sources(
     src/multistream/MultistreamEngine.hpp
     src/multistream/CanvasRuntime.cpp
     src/multistream/CanvasRuntime.hpp
+    src/multistream/CanvasService.cpp
+    src/multistream/CanvasService.hpp
     src/multistream/GlobalAudioChannels.cpp
     src/multistream/GlobalAudioChannels.hpp
     src/multistream/Hotkeys.cpp
@@ -429,6 +431,7 @@ set_source_files_properties(
   src/multistream/SceneLinkStore.cpp
   src/multistream/MultistreamEngine.cpp
   src/multistream/CanvasRuntime.cpp
+  src/multistream/CanvasService.cpp
   src/multistream/GlobalAudioChannels.cpp
   src/multistream/Hotkeys.cpp
   src/multistream/VirtualCamManager.cpp

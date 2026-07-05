@@ -20,6 +20,7 @@ class OutputBindingStore;
 class SceneLinkStore;
 class MultistreamEngine;
 class CanvasRuntime;
+class CanvasService;
 class AudioMonitor;
 class SceneCollections;
 class UndoManager;
@@ -87,6 +88,14 @@ bool MultistreamAlive();
 // the stores clear). Exposed so the canvas CRUD bridge methods can keep the mixes
 // in sync with the definitions. Valid between Start() and Stop().
 CanvasRuntime &CanvasRuntime();
+
+// The canvas update/reconciliation domain service (structural diff, live-refusal
+// gate, Default->global-video coupling, commit + reset ordering, inheritor-aware
+// encoder invalidation). Owned by the bootstrap (constructed in Start after the
+// CanvasRuntime + MultistreamEngine, reset in Stop before them). Exposed so the
+// bridge's canvas.update handler can drive it as a thin JSON adapter. Valid between
+// Start() and Stop().
+CanvasService &CanvasService();
 
 // The audio mixer's per-source fader/volmeter manager, owned by the bootstrap
 // (built in Start after the default scene + modules, torn down in Stop BEFORE

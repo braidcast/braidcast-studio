@@ -30,6 +30,7 @@
 #include "events/event_hub.hpp"
 #include "events/event_store.hpp"
 #include "multistream/CanvasRuntime.hpp"
+#include "multistream/CanvasService.hpp"
 #include "multistream/CanvasStore.hpp"
 #include "multistream/GlobalAudioChannels.hpp"
 #include "multistream/Hotkeys.hpp"
@@ -294,6 +295,13 @@ std::unique_ptr<MultistreamEngine> g_multistream;
 // engine is gone but while libobs is still up.
 std::unique_ptr<CanvasRuntime> g_canvasRuntime;
 
+// The canvas update/reconciliation domain service. Constructed after the runtime +
+// engine (it holds references to both plus the canvas model) and reset in Stop
+// before them. Its GlobalVideoApplier is Bridge::ApplyDefaultCanvasVideo, so the
+// domain layer owns the ordering while the bridge keeps the preview/transition
+// side-effects of a global video reset.
+std::unique_ptr<CanvasService> g_canvasService;
+
 // The audio mixer's per-source fader/volmeter manager. Built in Start after the
 // default scene + modules, torn down in Stop BEFORE obs_shutdown (its volmeter
 // callbacks are removed first by ClearAll). The global source activate/deactivate
@@ -442,6 +450,15 @@ AdvancedSettings &ObsBootstrap::Advanced()
 	// Stop() (resets it). Like Multistream(), every caller is a bridge method
 	// driven by JS, so the pointer is non-null on every reachable path.
 	return *g_canvasRuntime;
+}
+
+::CanvasService &ObsBootstrap::CanvasService()
+{
+	// Valid between Start() (constructs g_canvasService after the runtime + engine)
+	// and Stop() (resets it). Its only caller is the canvas.update bridge method,
+	// driven by JS after the CEF page loads, so the pointer is non-null on every
+	// reachable path.
+	return *g_canvasService;
 }
 
 void ObsBootstrap::ApplyCanvasSceneLinks(const std::string &mainSceneUuid)
@@ -735,6 +752,13 @@ bool ObsBootstrap::Start()
 			return uuid == g_canvases.Default().uuid ? obs_get_video() : g_canvasRuntime->VideoFor(uuid);
 		});
 	g_multistream->onStatusChanged = [] { Bridge::EmitMultistreamChanged(); };
+
+	// Build the canvas update/reconciliation service over the shared model, runtime,
+	// and engine (it holds references to all three). The Default->global-video
+	// coupling is injected as Bridge::ApplyDefaultCanvasVideo so the service owns the
+	// ordering while the bridge keeps the pipeline-reset side-effects.
+	g_canvasService = std::make_unique<::CanvasService>(g_canvases, *g_canvasRuntime, *g_multistream,
+							    Bridge::ApplyDefaultCanvasVideo);
 
 	// Restore the virtual camera's target canvas and route its start/stop signal
 	// state changes to the virtualCam.changed push. Done after the CanvasRuntime is
@@ -2509,6 +2533,11 @@ void ObsBootstrap::Stop()
 	// obs_shutdown, mirroring the Qt frontend's ClearSceneData.
 	while (obs_wait_for_destroy_queue()) {
 	}
+
+	// Drop the canvas service first: it holds references to the engine + runtime +
+	// model reset below. Stateless beyond those references (no libobs resources of
+	// its own), so a bare reset is enough.
+	g_canvasService.reset();
 
 	// Tear the engine down before the stores it references clear and before
 	// obs_shutdown: StopAll releases its services/outputs/encoders while libobs

@@ -23,6 +23,8 @@
 // Browsers register via Bridge::AddBrowser / drop via Bridge::RemoveBrowser;
 // emits no-op safely before any browser exists or after all are gone. With a
 // single registered browser this is behavior-identical to a single-target emit.
+struct CanvasDefinition;
+
 namespace Bridge {
 
 using json = nlohmann::json;
@@ -59,6 +61,14 @@ bool DispatchAsync(const std::string &method, const json &params,
 // Fan a server-push event to JS. Thread-safe: posts to TID_UI if not already
 // there. payload is any JSON value (object/array/scalar/null).
 void EmitEvent(const std::string &name, const json &payload);
+
+// Apply a Default-canvas definition's resolution/color to the global/main video
+// pipeline (obs_reset_video, preserving the non-color fields and re-letterboxing
+// the preview + resizing the program transition). Injected into CanvasService as
+// its GlobalVideoApplier so the domain layer owns the ordering while the bridge
+// keeps the preview/transition side-effects. Returns false + sets `error` on a
+// failed reset (the config is rolled back first). Runs on the UI thread.
+bool ApplyDefaultCanvasVideo(const CanvasDefinition &desired, std::string &error);
 
 // Push the current multistream output statuses as the "multistream.changed"
 // event. Wired as the engine's onStatusChanged; safe to call off the UI thread

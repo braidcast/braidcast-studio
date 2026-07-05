@@ -57,6 +57,7 @@
 #include "UndoManager.hpp"
 
 #include "multistream/CanvasRuntime.hpp"
+#include "multistream/CanvasService.hpp"
 #include "multistream/CanvasStore.hpp"
 #include "multistream/GlobalAudioChannels.hpp"
 #include "multistream/Hotkeys.hpp"
@@ -4564,144 +4565,46 @@ bool MethodCanvasUpdate(const json &params, json &result, std::string &error)
 		error = "canvas.update requires a non-empty 'uuid'";
 		return false;
 	}
+	// Read the current def only to fold absent JSON keys to their existing values (the
+	// parse helpers seed `out` from these). The domain apply -- diff, live-refusal
+	// gate, Default->global-video coupling, commit, reset ordering, encoder
+	// invalidation -- lives in CanvasService; this handler is a pure JSON adapter.
 	CanvasStore &store = ObsBootstrap::Canvases();
-	CanvasDefinition *def = store.Find(uuid);
+	const CanvasDefinition *def = store.Find(uuid);
 	if (!def) {
 		error = "no canvas with uuid '" + uuid + "'";
 		return false;
 	}
 
-	// Name change is always allowed. Structural fields (resolution/fps/encoder) are
-	// refused while the canvas is live.
-	const std::string name = OptString(params, "name");
-	if (!name.empty()) {
-		def->name = name;
-	}
-
-	// Resolve the requested structural values first so we can tell whether any
-	// actually changed before deciding to refuse.
-	uint32_t newW = def->width, newH = def->height, newFpsN = def->fpsNum, newFpsD = def->fpsDen;
-	uint32_t newOutW = def->outputWidth, newOutH = def->outputHeight;
-	std::string newScale = def->scaleType;
-	if (!ReadCanvasDim(params, "baseWidth", def->width, newW, error) ||
-	    !ReadCanvasDim(params, "baseHeight", def->height, newH, error) ||
-	    !ReadCanvasOutputDim(params, "outputWidth", def->outputWidth, newOutW, error) ||
-	    !ReadCanvasOutputDim(params, "outputHeight", def->outputHeight, newOutH, error) ||
-	    !ReadCanvasScale(params, "scaleType", def->scaleType, newScale, error) ||
-	    !ReadCanvasFps(params, "fpsNum", def->fpsNum, newFpsN, error) ||
-	    !ReadCanvasFps(params, "fpsDen", def->fpsDen, newFpsD, error)) {
+	CanvasUpdateRequest req;
+	req.uuid = uuid;
+	req.name = OptString(params, "name"); // empty -> no change (applied by the service)
+	if (!ReadCanvasDim(params, "baseWidth", def->width, req.width, error) ||
+	    !ReadCanvasDim(params, "baseHeight", def->height, req.height, error) ||
+	    !ReadCanvasOutputDim(params, "outputWidth", def->outputWidth, req.outputWidth, error) ||
+	    !ReadCanvasOutputDim(params, "outputHeight", def->outputHeight, req.outputHeight, error) ||
+	    !ReadCanvasScale(params, "scaleType", def->scaleType, req.scaleType, error) ||
+	    !ReadCanvasFps(params, "fpsNum", def->fpsNum, req.fpsNum, error) ||
+	    !ReadCanvasFps(params, "fpsDen", def->fpsDen, req.fpsDen, error)) {
 		return false;
 	}
-	CanvasColorDef newColor;
-	if (!ReadCanvasColor(params, def->color, newColor, error)) {
+	if (!ReadCanvasColor(params, def->color, req.color, error)) {
 		return false;
 	}
-	const std::string venc = OptString(params, "videoEncoder");
-	const std::string aenc = OptString(params, "audioEncoder");
+	req.videoEncoderId = OptString(params, "videoEncoder");
+	req.audioEncoderId = OptString(params, "audioEncoder");
+	req.useDefaultResolution = ReadOptBool(params, "useDefaultResolution", def->useDefaultResolution);
+	req.videoUseDefault = ReadOptBool(params, "videoUseDefault", def->video.useDefault);
+	req.audioUseDefault = ReadOptBool(params, "audioUseDefault", def->audio.useDefault);
 
-	// Per-section inheritance toggles. useDefaultResolution swaps the effective
-	// resolution/fps (Default vs this canvas) via ToVideoInfo, so it resizes the live
-	// mix like a raw resolution change; video/audio useDefault swap the effective
-	// encoder the engine builds, like an encoder-id change. The Default canvas has no
-	// canvas to inherit from, so its resolution toggle is inert (BuildVideoInfo is
-	// never called for it) and not treated as structural.
-	const bool newUseDefRes = ReadOptBool(params, "useDefaultResolution", def->useDefaultResolution);
-	const bool newVideoUseDefault = ReadOptBool(params, "videoUseDefault", def->video.useDefault);
-	const bool newAudioUseDefault = ReadOptBool(params, "audioUseDefault", def->audio.useDefault);
-	const bool useDefResChanged = newUseDefRes != def->useDefaultResolution && !def->isDefault;
-	const bool videoUseDefaultChanged = newVideoUseDefault != def->video.useDefault;
-	const bool audioUseDefaultChanged = newAudioUseDefault != def->audio.useDefault;
-
-	// Output res and the downscale filter resize/reconfigure the live mix just like
-	// base res, so they are structural and gated by the same live refusal + reset.
-	const bool resChanged = newW != def->width || newH != def->height || newFpsN != def->fpsNum ||
-				newFpsD != def->fpsDen || newOutW != def->outputWidth ||
-				newOutH != def->outputHeight || newScale != def->scaleType || useDefResChanged;
-	// A color change rewrites the obs_video_info (output_format/colorspace/range), so
-	// it resets the canvas video and rebuilds its encoders exactly like a resolution
-	// change -- structural, gated by the same live refusal + reset. Only these three
-	// fields reach the pipeline (via ToVideoInfo); the sdr/hdr nit levels and
-	// useDefault are persisted below but never force a reset or block while-live.
-	const bool colorChanged = newColor.format != def->color.format || newColor.space != def->color.space ||
-				  newColor.range != def->color.range;
-	const bool vencChanged = !venc.empty() && venc != def->video.id;
-	const bool aencChanged = !aenc.empty() && aenc != def->audio.id;
-	// Toggling an encoder's inheritance swaps the effective encoder just like an
-	// id change, so it is gated by the same live refusal + encoder-cache invalidation.
-	const bool encDefChanged = videoUseDefaultChanged || audioUseDefaultChanged;
-
-	if ((resChanged || colorChanged || vencChanged || aencChanged || encDefChanged) && CanvasIsLive(uuid)) {
-		error = "cannot change resolution/fps/color/encoder while the canvas is live";
+	CanvasUpdateResult r = ObsBootstrap::CanvasService().Update(req);
+	if (!r.ok) {
+		error = r.error;
 		return false;
 	}
 
-	// The Default canvas has no runtime mix -- a resolution/fps/color change drives
-	// the global/main video pipeline instead. Apply it BEFORE committing any def
-	// fields so a failed reset (rolled back inside ApplyGlobalVideo) leaves the def
-	// -- and thus canvases.json -- untouched and consistent with the live pipeline.
-	if ((resChanged || colorChanged) && def->isDefault) {
-		obs_scale_type st = OBS_SCALE_BICUBIC;
-		ScaleFilterFromToken(newScale, st); // validated by ReadCanvasScale above
-		// Resolve the color tokens to libobs enums via ToVideoInfo (single source of
-		// truth for the token->enum mapping), then override only the color fields of
-		// the global reset.
-		CanvasDefinition scratch;
-		scratch.width = newW;
-		scratch.height = newH;
-		scratch.outputWidth = newOutW;
-		scratch.outputHeight = newOutH;
-		scratch.fpsNum = newFpsN;
-		scratch.fpsDen = newFpsD;
-		scratch.scaleType = newScale;
-		scratch.color = newColor;
-		obs_video_info tovi = {};
-		scratch.ToVideoInfo(tovi);
-		if (!ApplyGlobalVideo(newW, newH, newOutW, newOutH, newFpsN, newFpsD, st, error, &tovi.output_format,
-				      &tovi.colorspace, &tovi.range)) {
-			return false;
-		}
-	}
-
-	def->width = newW;
-	def->height = newH;
-	def->outputWidth = newOutW;
-	def->outputHeight = newOutH;
-	def->scaleType = newScale;
-	def->fpsNum = newFpsN;
-	def->fpsDen = newFpsD;
-	def->color = newColor;
-	def->useDefaultResolution = newUseDefRes;
-	def->video.useDefault = newVideoUseDefault;
-	def->audio.useDefault = newAudioUseDefault;
-	// Switching an encoder id replaces its stored settings with that type's
-	// defaults (the prior blob belongs to a different encoder schema).
-	if (vencChanged) {
-		def->video.id = venc;
-		def->video.settings = obs_encoder_defaults(venc.c_str());
-	}
-	if (aencChanged) {
-		def->audio.id = aenc;
-		def->audio.settings = obs_encoder_defaults(aenc.c_str());
-	}
-
-	// A structural change invalidates the engine's cached encoder pair (bound to
-	// the old resolution/color/id), so a later restart rebuilds it against the new
-	// mix.
-	if (resChanged || colorChanged || vencChanged || aencChanged || encDefChanged) {
-		ObsBootstrap::Multistream().InvalidateCanvasEncoders(uuid);
-	}
-	// Resolution/fps changes resize the live mix; the guard above already refused
-	// while the canvas is live, so this only runs on an idle canvas. (Encoder-id
-	// changes don't touch the mix.) The Default canvas was already handled above
-	// (it drives global video, not a runtime mix); ResetVideo reads *def so it must
-	// run after the commit.
-	if ((resChanged || colorChanged) && !def->isDefault) {
-		ObsBootstrap::CanvasRuntime().ResetVideo(*def);
-	}
-
-	store.Save();
 	EmitEvent("canvas.changed", json::object());
-	result = CanvasToJson(*def);
+	result = CanvasToJson(*r.def);
 	return true;
 }
 
@@ -6678,18 +6581,13 @@ bool MethodSettingsRestore(const json &params, json &result, std::string &error)
 		}
 
 		// 4) Make global video follow the restored Default canvas def so the main
-		// pipeline (and output resolution + color) reverts too. Reuse Task 1's path;
-		// skip while an output is live (a live pipeline can't be reset). Resolve the
-		// color tokens to libobs enums via ToVideoInfo, like MethodCanvasUpdate.
+		// pipeline (and output resolution + color) reverts too. Same apply the
+		// single-canvas edit uses; skip while an output is live (a live pipeline
+		// can't be reset). The reconcile ignores a failed reset so one bad canvas
+		// can't abort the whole restore.
 		if (!AnyOutputActive()) {
-			const CanvasDefinition &def = cs.Default();
 			std::string e;
-			obs_scale_type st = OBS_SCALE_BICUBIC;
-			ScaleFilterFromToken(def.scaleType, st);
-			obs_video_info tovi = {};
-			def.ToVideoInfo(tovi);
-			ApplyGlobalVideo(def.width, def.height, def.outputWidth, def.outputHeight, def.fpsNum,
-					 def.fpsDen, st, e, &tovi.output_format, &tovi.colorspace, &tovi.range);
+			ApplyDefaultCanvasVideo(cs.Default(), e);
 		}
 	}
 
@@ -8669,6 +8567,20 @@ void EmitEvent(const std::string &name, const json &payload)
 		return;
 	}
 	CefPostTask(TID_UI, base::BindOnce(&DoEmit, name, payloadDump));
+}
+
+bool ApplyDefaultCanvasVideo(const CanvasDefinition &desired, std::string &error)
+{
+	// Resolve the scale + color tokens to libobs enums via ToVideoInfo (single source
+	// of truth for the token->enum mapping), then drive the global pipeline reset with
+	// only the color fields overridden. The resolution/fps are passed explicitly.
+	obs_scale_type st = OBS_SCALE_BICUBIC;
+	ScaleFilterFromToken(desired.scaleType, st); // validated by the bridge parse
+	obs_video_info tovi = {};
+	desired.ToVideoInfo(tovi);
+	return ApplyGlobalVideo(desired.width, desired.height, desired.outputWidth, desired.outputHeight,
+				desired.fpsNum, desired.fpsDen, st, error, &tovi.output_format, &tovi.colorspace,
+				&tovi.range);
 }
 
 void EmitMultistreamChanged()
