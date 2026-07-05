@@ -6,6 +6,7 @@ import SourcesDock from "../docks/SourcesDock.svelte";
 import MultistreamDock from "../docks/MultistreamDock.svelte";
 import MultichatDock from "../docks/MultichatDock.svelte";
 import EventsDock from "../docks/EventsDock.svelte";
+import ChannelsDock from "../docks/ChannelsDock.svelte";
 import AudioMixerDock from "../docks/AudioMixerDock.svelte";
 import TransitionsDock from "../docks/TransitionsDock.svelte";
 import StatsDock from "../docks/StatsDock.svelte";
@@ -46,6 +47,11 @@ export const DOCKS: DockDef[] = [
   // Phase 9.2). Like Multichat it is NOT in the default layout -- it opens from the
   // CANVASES-bar restore chip -- but stays registered so it is addable/restorable.
   { id: "events", title: "Events", component: EventsDock, params: {}, accent: true },
+  // Per-account identity + audience (Channel-identity feature). Like Events/Multichat
+  // it is meaningless without a logged-in account, so it is NOT in the default layout
+  // and is OAuth-gated -- it opens from the CANVASES-bar restore chip once an account
+  // is connected, but stays registered so it is addable/restorable.
+  { id: "channels", title: "Channels", component: ChannelsDock, params: {} },
   { id: "stats", title: "Stats", component: StatsDock, params: {} },
 ];
 

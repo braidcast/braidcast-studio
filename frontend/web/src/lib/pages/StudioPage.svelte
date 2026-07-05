@@ -209,7 +209,7 @@ import { bumpDockLayout } from "../dockLayoutSignal.svelte";
   // Docks whose content is meaningless without a logged-in platform account. Their
   // restore chip is hidden and toggleDock refuses to open them while none is connected;
   // an already-open one falls back to its own empty state (handled in the dock body).
-  const OAUTH_GATED_DOCKS = new Set(["events", "multichat"]);
+  const OAUTH_GATED_DOCKS = new Set(["events", "multichat", "channels"]);
   function dockOpenable(id: string): boolean {
     return !OAUTH_GATED_DOCKS.has(id) || oauthStore.hasAnyConnected;
   }
