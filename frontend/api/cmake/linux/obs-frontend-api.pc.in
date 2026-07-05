@@ -4,7 +4,7 @@ libdir=${prefix}/lib
 includedir=${prefix}/include
 
 Name: obs-frontend-api
-Description: OBS Studio frontend API library
+Description: Braidcast frontend API library
 Version: @OBS_VERSION_CANONICAL@
 
 Requires:
