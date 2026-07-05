@@ -79,43 +79,50 @@ void ChannelStatsPoller::Start()
 					ok = false;
 					err = "audience count crashed: unknown error";
 				}
-				if (!ok) {
-					// false = unsupported / not obtainable / errored -> leave the cached
-					// count untouched. Log only a real error; the slow cadence already
+				if (!ok && !err.empty()) {
+					// A real error (not merely unsupported) -> log, but still fall through
+					// to the cached-fallback below so the panel keeps its last-known value
+					// rather than blanking on a transient failure. The slow cadence already
 					// paces retries, so never abort the cycle.
-					if (!err.empty()) {
-						HostLog("[channels] '" + acct.providerId + "' skipped: " + err);
+					HostLog("[channels] '" + acct.providerId + "' skipped: " + err);
+				}
+
+				if (ok && out.available) {
+					// Persist only on a real change so a steady total doesn't churn the
+					// DPAPI blob every 90s.
+					if (out.count != acct.audienceCount || out.kind != acct.audienceKind ||
+					    out.hidden != acct.audienceHidden) {
+						acct.audienceCount = out.count;
+						acct.audienceKind = out.kind;
+						acct.audienceHidden = out.hidden;
+						acct.audienceUpdatedNs = (int64_t)os_gettime_ns();
+						// Field-scoped persist: never round-trips access/refresh, so a
+						// concurrent token refresh on this account isn't clobbered by our
+						// stale copy (and a mid-poll removal isn't resurrected).
+						OAuth::Accounts().UpdateAudience(OAuth::AccountId(acct), out.count, out.kind,
+										 out.hidden, acct.audienceUpdatedNs);
 					}
-					continue;
-				}
-				if (!out.available) {
-					// No REST total (Kick); its number arrives live via kick_events.
-					continue;
-				}
 
-				// Persist only on a real change so a steady total doesn't churn the
-				// DPAPI blob every 90s.
-				if (out.count != acct.audienceCount || out.kind != acct.audienceKind ||
-				    out.hidden != acct.audienceHidden) {
-					acct.audienceCount = out.count;
-					acct.audienceKind = out.kind;
-					acct.audienceHidden = out.hidden;
-					acct.audienceUpdatedNs = (int64_t)os_gettime_ns();
-					// Field-scoped persist: never round-trips access/refresh, so a
-					// concurrent token refresh on this account isn't clobbered by our
-					// stale copy (and a mid-poll removal isn't resurrected).
-					OAuth::Accounts().UpdateAudience(OAuth::AccountId(acct), out.count, out.kind,
-									 out.hidden, acct.audienceUpdatedNs);
+					// Include a fresh read every tick (even unchanged) so a freshly-loaded
+					// UI / a new CEF browser always receives current values.
+					perAccount[OAuth::AccountId(acct)] = json{
+						{"audienceCount", out.count},
+						{"audienceKind", OAuth::AudienceKindName(out.kind)},
+						{"audienceHidden", out.hidden},
+						{"audienceUpdatedNs", acct.audienceUpdatedNs},
+					};
+				} else if (acct.audienceCount >= 0) {
+					// No live read this tick (Kick has no REST total, or the read failed),
+					// but a persisted last-known value exists -> emit the CACHED record so
+					// the panel shows "last-known + as-of" off-stream instead of "—". No
+					// persist and no store write: nothing changed.
+					perAccount[OAuth::AccountId(acct)] = json{
+						{"audienceCount", acct.audienceCount},
+						{"audienceKind", OAuth::AudienceKindName(acct.audienceKind)},
+						{"audienceHidden", acct.audienceHidden},
+						{"audienceUpdatedNs", acct.audienceUpdatedNs},
+					};
 				}
-
-				// Always include an available read in the emit (even unchanged) so a
-				// freshly-loaded UI / a new CEF browser always receives current values.
-				perAccount[OAuth::AccountId(acct)] = json{
-					{"audienceCount", out.count},
-					{"audienceKind", OAuth::AudienceKindName(out.kind)},
-					{"audienceHidden", out.hidden},
-					{"audienceUpdatedNs", acct.audienceUpdatedNs},
-				};
 			}
 
 			if (canceled()) {
