@@ -21,10 +21,19 @@ namespace {
 json AccountToJson(const OAuthAccount &a)
 {
 	return json{
-		{"providerId", a.providerId}, {"access", a.access},
-		{"refresh", a.refresh},       {"userId", a.userId},
-		{"login", a.login},           {"displayName", a.displayName},
-		{"expireTime", a.expireTime}, {"scopeVer", a.scopeVer},
+		{"providerId", a.providerId},
+		{"access", a.access},
+		{"refresh", a.refresh},
+		{"userId", a.userId},
+		{"login", a.login},
+		{"displayName", a.displayName},
+		{"expireTime", a.expireTime},
+		{"scopeVer", a.scopeVer},
+		{"avatarUrl", a.avatarUrl},
+		{"audienceCount", a.audienceCount},
+		{"audienceKind", AudienceKindName(a.audienceKind)},
+		{"audienceHidden", a.audienceHidden},
+		{"audienceUpdatedNs", a.audienceUpdatedNs},
 	};
 }
 
@@ -42,6 +51,11 @@ OAuthAccount AccountFromJson(const json &j)
 	a.displayName = j.value("displayName", std::string());
 	a.expireTime = j.value("expireTime", static_cast<int64_t>(0));
 	a.scopeVer = j.value("scopeVer", 0);
+	a.avatarUrl = j.value("avatarUrl", std::string());
+	a.audienceCount = j.value("audienceCount", static_cast<int64_t>(-1));
+	a.audienceKind = AudienceKindFromName(j.value("audienceKind", std::string()));
+	a.audienceHidden = j.value("audienceHidden", false);
+	a.audienceUpdatedNs = j.value("audienceUpdatedNs", static_cast<int64_t>(0));
 	return a;
 }
 

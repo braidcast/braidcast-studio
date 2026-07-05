@@ -32,6 +32,32 @@ namespace OAuth {
 
 using json = nlohmann::json;
 
+// Which audience total a platform reports for an account. Drives the panel label.
+enum class AudienceKind { Unknown, Followers, Subscribers };
+
+inline const char *AudienceKindName(AudienceKind k)
+{
+	switch (k) {
+	case AudienceKind::Followers:
+		return "followers";
+	case AudienceKind::Subscribers:
+		return "subscribers";
+	default:
+		return "";
+	}
+}
+
+inline AudienceKind AudienceKindFromName(const std::string &s)
+{
+	if (s == "followers") {
+		return AudienceKind::Followers;
+	}
+	if (s == "subscribers") {
+		return AudienceKind::Subscribers;
+	}
+	return AudienceKind::Unknown;
+}
+
 // The persisted OAuth record, keyed in the account store by AccountId
 // (providerId:userId). `expireTime` is absolute epoch seconds (the "valid
 // credential = refresh token present" model from the legacy OAuth port).
@@ -46,6 +72,14 @@ struct OAuthAccount {
 	std::string displayName;
 	int64_t expireTime = 0;
 	int scopeVer = 0;
+	// Identity + audience (Channel identity feature). Persisted so the panel
+	// shows cached avatar/count instantly on launch. audienceCount == -1 means
+	// "not yet known"; audienceHidden reflects YouTube's hiddenSubscriberCount.
+	std::string avatarUrl;
+	int64_t audienceCount = -1;
+	AudienceKind audienceKind = AudienceKind::Unknown;
+	bool audienceHidden = false;
+	int64_t audienceUpdatedNs = 0;
 };
 
 // The account's stable identity: providerId + ":" + userId. Pure function of the
