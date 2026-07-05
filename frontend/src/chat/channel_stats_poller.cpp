@@ -56,7 +56,7 @@ void ChannelStatsPoller::Start()
 			// Re-read accounts each cycle so a connect/disconnect between ticks is
 			// picked up. audienceCount's SendAuthed/ensureFresh is store-coherent, so
 			// polling on a by-value copy is safe; a changed total is written back via
-			// Put below.
+			// the field-scoped UpdateAudience below (never a whole-record Put).
 			for (const auto &entry : OAuth::Accounts().All()) {
 				if (canceled()) {
 					break;
@@ -95,6 +95,10 @@ void ChannelStatsPoller::Start()
 						acct.audienceCount = out.count;
 						acct.audienceKind = out.kind;
 						acct.audienceHidden = out.hidden;
+						// Monotonic since boot, not wall-clock: this is an opaque
+						// change-marker only. It is persisted, so it must NOT be diffed
+						// against a fresh os_gettime_ns() across a restart (e.g. an
+						// "updated N ago" label) -- switch to an epoch clock first if ever rendered.
 						acct.audienceUpdatedNs = (int64_t)os_gettime_ns();
 						// Field-scoped persist: never round-trips access/refresh, so a
 						// concurrent token refresh on this account isn't clobbered by our
