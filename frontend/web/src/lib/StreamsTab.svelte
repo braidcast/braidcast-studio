@@ -22,6 +22,7 @@
   import Segmented from "./Segmented.svelte";
   import EmptyState from "./EmptyState.svelte";
   import ToggleSwitch from "./ToggleSwitch.svelte";
+  import Avatar from "./Avatar.svelte";
 
   let profiles = $derived(streamProfileStore.profiles);
   let serviceTypes = $state<ServiceType[]>([]);
@@ -535,7 +536,10 @@
             <span class="nav-sub">
               <span class="nav-plat">{p.serviceLabel}</span>
               {#if providerForProfile(p)}
-                {#if connectedStatusFor(p)}
+                {@const linked = connectedStatusFor(p)}
+                {#if linked}
+                  <Avatar url={linked.avatarUrl} name={linked.displayName || linked.login} size={16} />
+                  <span class="acct-name">{linked.displayName || linked.login}</span>
                   <span class="chip ok">linked</span>
                 {:else if needsReconnectFor(p)}
                   <span class="chip warn">reconnect</span>
@@ -862,6 +866,17 @@
     font-family: var(--font-mono);
     font-size: 10px;
     color: var(--color-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 0 0 auto;
+  }
+  .acct-name {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-family: var(--font-ui);
+    font-size: 11px;
+    color: var(--color-dim);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
