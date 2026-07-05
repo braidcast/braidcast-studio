@@ -60,6 +60,11 @@ void StreamMetaStore::PutStreamOverride(const std::string &profileUuid, const js
 	streams_[profileUuid] = fields;
 }
 
+void StreamMetaStore::RemoveStreamOverride(const std::string &profileUuid)
+{
+	streams_.erase(profileUuid);
+}
+
 void StreamMetaStore::Save() const
 {
 	OBSDataAutoRelease root = obs_data_create();

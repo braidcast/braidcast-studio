@@ -7807,8 +7807,16 @@ bool MethodStreamMetaSave(const json &params, json &result, std::string &error)
 				     : json::object();
 	store.PutChannelDefaults(accountId, channel);
 	if (params.is_object() && params.contains("streams") && params["streams"].is_object()) {
+		// The frontend sends the channel's COMPLETE stream set on every save: a
+		// non-empty bag upserts that override, an empty bag ({}) clears it. Without
+		// the clear path a toggled-off override would linger on disk and resurrect
+		// (and re-apply) on the next go-live.
 		for (const auto &entry : params["streams"].items()) {
-			store.PutStreamOverride(entry.key(), entry.value());
+			if (entry.value().is_object() && !entry.value().empty()) {
+				store.PutStreamOverride(entry.key(), entry.value());
+			} else {
+				store.RemoveStreamOverride(entry.key());
+			}
 		}
 	}
 	store.Save();

@@ -33,6 +33,10 @@ public:
 	void PutChannelDefaults(const std::string &accountId, const nlohmann::json &fields);
 	void PutStreamOverride(const std::string &profileUuid, const nlohmann::json &fields);
 
+	// Forget a stream's override so it inherits the channel default again. Used
+	// when a remembered override is toggled off on save; a no-op if none exists.
+	void RemoveStreamOverride(const std::string &profileUuid);
+
 	// Persist both maps to stream_meta.json via SaveJsonAtomic.
 	void Save() const;
 

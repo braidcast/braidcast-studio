@@ -531,17 +531,18 @@
     }
     // Remember these details for next time — best-effort, fired without awaiting so a
     // slow or failing save never blocks going live. One save per channel with its raw
-    // layers: the channel bag plus only the streams carrying an enabled, non-empty
-    // override.
+    // layers: the channel bag plus the channel's COMPLETE stream set. Streams with an
+    // enabled, non-empty override carry their bag; every other stream carries {} so the
+    // store clears any override toggled off this session (otherwise it would resurrect
+    // and re-apply on the next go-live).
     if (remember) {
       void Promise.allSettled(
         connectedChannels.map((c) => {
           const streams: Record<string, Record<string, unknown>> = {};
           for (const s of c.streams) {
             const ov = streamOverrides[s.profileUuid] ?? {};
-            if (streamOverrideOn[s.profileUuid] && Object.keys(ov).length) {
-              streams[s.profileUuid] = ov;
-            }
+            streams[s.profileUuid] =
+              streamOverrideOn[s.profileUuid] && Object.keys(ov).length ? ov : {};
           }
           return obs.call("streamMeta.save", {
             accountId: c.accountId,
