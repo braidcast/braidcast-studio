@@ -61,6 +61,10 @@
   let isLive = $state(false);
   let submitting = $state(false);
   let view = $state<"simple" | "advanced">("simple");
+  // Persist this dialog's values to the remembered store on confirm so the next
+  // go-live prefills from them. Default ON — most valuable for YouTube, whose live
+  // metadata comes back empty.
+  let remember = $state(true);
 
   // Three inheritance layers, resolved shared -> channel -> stream by
   // effectiveFields (later wins, empties omitted). `sharedValues` holds only
@@ -285,23 +289,58 @@
     return out;
   }
 
-  // Best-effort prefill (fired, not awaited, so a slow get never blocks the open):
-  // seed each connected channel's category (once per channel, not per stream) + seed
-  // the shared title from the first platform that reports one. Per-channel titles stay
-  // empty (inherit).
+  // Best-effort prefill (fired, not awaited, so a slow get never blocks the open).
+  // Per channel it pulls BOTH the remembered store (streamMeta.getSaved) and the live
+  // provider metadata (streamMeta.get) and merges them: saved defaults are the base,
+  // live values layer over them (live wins where present — Twitch/Kick report the
+  // current title/category; saved fills the gaps and is the only source for YouTube,
+  // whose live metadata is empty). Every seed is guarded so a value the user edits
+  // before this resolves is never clobbered.
   async function prefill(): Promise<void> {
     await Promise.all(
       connectedChannels.map(async (c) => {
-        try {
-          const m = await obs.call("streamMeta.get", { accountId: c.accountId });
-          if (m.category?.id) {
-            setField(c.accountId, "category", { id: m.category.id, name: m.category.name });
+        const profileUuids = c.streams.map((s) => s.profileUuid);
+        const [savedR, liveR] = await Promise.allSettled([
+          obs.call("streamMeta.getSaved", { accountId: c.accountId, profileUuids }),
+          obs.call("streamMeta.get", { accountId: c.accountId }),
+        ]);
+        const saved = savedR.status === "fulfilled" ? savedR.value : { channel: {}, streams: {} };
+        const live = liveR.status === "fulfilled" ? liveR.value : undefined;
+
+        // Channel bag: saved base, live over. Seed a key only when the current value
+        // is empty (user hasn't touched it), matching the old title guard.
+        const merged: Record<string, unknown> = { ...saved.channel };
+        if (live?.title) {
+          merged.title = live.title;
+        }
+        if (live?.category?.id) {
+          merged.category = { id: live.category.id, name: live.category.name };
+        }
+        if (live?.language) {
+          merged.language = live.language;
+        }
+        for (const [key, val] of Object.entries(merged)) {
+          const type = c.provider?.fields.find((f) => f.key === key)?.type ?? "text";
+          if (!isEmptyVal(type, val) && isEmptyVal(type, getVal(c.accountId, key))) {
+            setField(c.accountId, key, val);
           }
-          if (m.title && !sharedValues.title) {
-            sharedValues.title = m.title;
+        }
+
+        // Restore remembered per-stream overrides and expand them in Advanced. Skip a
+        // stream the user has already toggled or edited.
+        for (const [uuid, bag] of Object.entries(saved.streams)) {
+          if (bag && Object.keys(bag).length && !streamOverrideOn[uuid] && !streamOverrides[uuid]) {
+            streamOverrides[uuid] = { ...bag };
+            streamOverrideOn[uuid] = true;
           }
-        } catch {
-          // Ignore: prefill is best-effort.
+        }
+
+        // Shared title: first channel to report one wins (prefer live, fall back to
+        // saved). Guarded so a user-typed shared title is never overwritten.
+        const savedTitle = typeof saved.channel.title === "string" ? saved.channel.title : "";
+        const title = live?.title || savedTitle;
+        if (title && !sharedValues.title) {
+          sharedValues.title = title;
         }
       }),
     );
@@ -371,6 +410,33 @@
       const names = [...nameSet].join(", ");
       showToast("Couldn't update stream info for " + nameSet.size + " destinations" + tail, names);
     }
+    // Remember these details for next time — best-effort, fired without awaiting so a
+    // slow or failing save never blocks going live. One save per channel with its raw
+    // layers: the channel bag plus only the streams carrying an enabled, non-empty
+    // override.
+    if (remember) {
+      void Promise.allSettled(
+        connectedChannels.map((c) => {
+          const streams: Record<string, Record<string, unknown>> = {};
+          for (const s of c.streams) {
+            const ov = streamOverrides[s.profileUuid] ?? {};
+            if (streamOverrideOn[s.profileUuid] && Object.keys(ov).length) {
+              streams[s.profileUuid] = ov;
+            }
+          }
+          return obs.call("streamMeta.save", {
+            accountId: c.accountId,
+            channel: channelValues[c.accountId] ?? {},
+            streams,
+          });
+        }),
+      ).then((rs) => {
+        if (rs.some((r) => r.status === "rejected")) {
+          console.warn("streamMeta.save: some channels failed to persist");
+        }
+      });
+    }
+
     if (goLiveModal.mode === "golive") {
       try {
         await obs.call("streaming.start");
@@ -603,6 +669,24 @@
             {/if}
           {/each}
         {/if}
+      {/if}
+
+      {#if loaded}
+        <div class="savebar">
+          <button
+            type="button"
+            class="sw"
+            class:on={remember}
+            role="switch"
+            aria-checked={remember}
+            title={remember ? "Details will be remembered" : "Details won't be remembered"}
+            onclick={() => (remember = !remember)}
+          >
+            <i></i>
+          </button>
+          <span class="sbl">Save these details for next time</span>
+          <span class="sbh">prefill this dialog on your next go-live</span>
+        </div>
       {/if}
 
   {#snippet footer()}
@@ -853,6 +937,28 @@
   .foot-note {
     flex: 1 1 auto;
     font-size: 11px;
+    color: var(--color-muted);
+  }
+  /* Persisted just above the footer: sticks to the bottom of the scroll body and
+     bleeds to its edges (cancelling the body padding) so it reads as a distinct
+     strip between the scrollable content and the action bar. */
+  .savebar {
+    position: sticky;
+    bottom: -16px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 14px -14px -16px;
+    padding: 10px 14px;
+    border-top: var(--border-weight) solid var(--color-border);
+    background: var(--color-base);
+  }
+  .sbl {
+    font-size: 11px;
+    color: var(--color-dim);
+  }
+  .sbh {
+    font-size: 10px;
     color: var(--color-muted);
   }
 </style>
