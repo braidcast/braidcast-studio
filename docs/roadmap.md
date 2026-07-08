@@ -916,7 +916,11 @@ Key asymmetry: **Twitch/Kick = one PATCH**; **YouTube = a whole broadcast-lifecy
 — hide the field for them; the capability descriptor drives this automatically).
 **Can't reuse `auth.obsproject.com`** (OBS's own proxy) — use direct platform flows + our own
 registered OAuth clients. **Kick has no public-client path** — embed an (obfuscated) client secret
-or run a thin token-exchange proxy.
+or run a thin token-exchange proxy. **RESOLVED (Phase 10.5, 2026-07-08):** built our own
+token-exchange **broker** at `auth.braidcast.com` and routed **all three** providers through it
+(not just Kick) so **no secret ships** in the binary; Twitch keeps only its public client id for
+the Helix header. The MVP `device-code` / `pkce-loopback` strategies below were superseded by the
+single `broker` strategy.
 
 ### Candidate providers beyond the MVP three (2026-06-28 research)
 
@@ -1228,9 +1232,12 @@ ships and the platform accounts/scopes are proven.
 ## Phase 10 — Account entity, public website & OAuth compliance 🔧 in progress (2026-07-04)
 
 Hardening the platform-integration layer for a real (verifiable) public launch:
-a first-class Account entity, a public marketing/legal website, and the OAuth
-verification groundwork. Prompted by an entity-independence audit + the Google
-OAuth verification question.
+a first-class Account entity, a public marketing/legal website, an **OAuth
+token-exchange broker** (10.5, built 2026-07-08 — moves all provider secrets out
+of the binary), and the OAuth verification groundwork. Prompted by an
+entity-independence audit + the Google OAuth verification question. Brand
+**resolved to Braidcast** (10.4); the broker + site live in a separate repo
+(`braidcast-website`) under the public **`braidcast` GitHub org**.
 
 ### 10.1 — First-class Account entity 🔧 Phase 1 done
 Replaces the `profileUuid`-as-account-identity conflation (audit finding: three
@@ -1251,33 +1258,88 @@ also delivers **connect-once account reuse** (deferred 10e). Spec + plan:
   must take `accountId` directly (they currently read the unguarded profile store
   off the async worker lane — a latent UAF; see the spec-review).
 
-### 10.2 — Public website (Astro) 🔭 scaffolding
-A lightweight, high-Lighthouse **Astro** static site (minimal/zero client JS). Its
-jobs: (1) the **OAuth homepage + privacy policy + terms** URLs Google/Meta
-verification require; (2) later, host the **Facebook Login** flow (Meta needs a
-public privacy-policy + data-deletion callback URL). Built **brand-agnostic** (one
-`BRAND` config constant) because the product name is gated on the trademark review
-below. Lives in `website/`.
+### 10.2 — Public website + broker repo 🔧 scaffolded (`braidcast-website`)
+Lives in a **separate repo `braidcast-website`** (not `website/` in the fork; not a
+monorepo) with two halves: `broker/` (the 10.5 Worker) and `web/` (the static site).
+The site's jobs: (1) the **OAuth homepage + privacy policy + terms** URLs Google/Meta
+verification require (a plain-HTML stub exists — `web/index.html` + `web/privacy.html`;
+a richer marketing site, e.g. Astro, is a follow-on); (2) later, host the **Facebook
+Login** flow (Meta needs a public privacy-policy + data-deletion callback URL). Deploys
+as a **Cloudflare Pages** project on `braidcast.com`. Brand is resolved (10.4 → Braidcast),
+so the earlier brand-agnostic-constant caveat is moot.
 
 ### 10.3 — OAuth verification & compliance 🔭 research
 - **Google/YouTube:** one **sensitive** scope (`youtube.force-ssl`) — **not**
   restricted, so **no CASA security audit** ever. Nothing owed while the OAuth
   consent screen stays in **Testing** mode (≤100 testers; note the 7-day
   refresh-token expiry). Full sensitive-scope verification (homepage + privacy
-  policy + verified domain + demo video) owed only at public launch.
+  policy + verified domain + demo video) owed only at public launch. **The Google
+  client secret is now broker-held (10.5)** → the current **Desktop** client must be
+  replaced with a **NEW "Web application" client** (app type is immutable) whose
+  redirect URI is `https://auth.braidcast.com/v1/youtube/callback`.
 - **Twitch / Kick:** app-registration requirements captured in the research doc.
 - **Facebook/Meta (8f, still deferred):** App Review + Business Verification +
   data-deletion callback — needs the website first.
 - Grounded research: `docs/research/oauth-verification-requirements.md`.
 
-### 10.4 — Brand / trademark clearance 🔭 gating the name
+### 10.4 — Brand / trademark clearance ✅ RESOLVED → **Braidcast** (2026-07-04)
 **"OBS" is the OBS Project's trademark; GPLv2 licenses the code, not the name.** A
-public product / OAuth app almost certainly **cannot** ship as "OBS MultiStreamer"
-(both the OBS trademark policy and Google/Meta OAuth app-name/brand rules are at
-issue). Likely outcome: a **distinctive standalone brand** that merely *describes*
-itself as "built on OBS Studio" (nominative fair use) in body copy. Decision gates
-the website name/domain and the OAuth consent-screen app name. Grounded research:
-`docs/research/branding-trademark.md`.
+public product / OAuth app **cannot** ship as "OBS MultiStreamer" (OBS trademark
+policy + Google/Meta OAuth app-name/brand rules). **Resolved:** rebranded to the
+distinctive standalone brand **Braidcast** (exe/target/config/app-id/repo all
+`braidcast`; app icon = the amber "rope" mark), describing itself as "built on OBS
+Studio" (nominative fair use) in body copy only. Domain `braidcast.com` bought;
+GitHub org `braidcast` created. The on-disk git folder stays named `obs-multistream`.
+Grounded research: `docs/research/branding-trademark.md`. (Rebrand detail is in the
+`obs-rebrand` project memory.)
+
+### 10.5 — OAuth token-exchange broker ✅ BUILT 2026-07-08 (local; deploy + live-test owed)
+
+A **stateless Cloudflare Worker** at `auth.braidcast.com` (mirrors OBS's
+`auth.obsproject.com`) that holds the platform client **secrets** and proxies the
+OAuth **code-exchange + refresh** so the desktop app ships **no secrets** — closing
+the Phase-8 seam (a leaked YouTube/Google client id inherits OBS's verified elevated
+quota with zero verification). **All three providers brokered.** Two work streams,
+both build-green, holistic review = **SHIP** (3 minors fixed), **nothing pushed**:
+
+- **Broker + site** (new repo `braidcast-website`, TypeScript + Hono on Cloudflare
+  Workers, vitest, `bun`) — routes `/v1/:platform/{start,callback,token}`;
+  **HMAC-signed state** (`{p,port,nonce}` + HMAC-SHA256); `/callback` 302s only to a
+  **hardcoded** `http://127.0.0.1:{validated-port}/` (no open-redirect); `/token`
+  injects `client_id`+`client_secret` from **env only** (ignores client-supplied
+  creds), grant-type allowlisted, response passed through verbatim; PKCE forwarded
+  only for `pkce:true` (kick/youtube; twitch `pkce:false`). Stateless — **no DB**
+  (refresh tokens stay client-side). 20/20 vitest; `wrangler deploy --dry-run` clean.
+  Commits **local** `b682e22..33b8bf8`.
+- **Client migration** (`obs-multistream`, branch `ui-redesign`, `eef013605..25ee8c256`
+  + `e53cb5d36`) — new `frontend/src/oauth/broker_strategy.*` (`BrokerStrategy :
+  AuthStrategy`) + `loopback_listener.*` (dual-stack Winsock, extracted from the old
+  pkce-loopback); all three providers rewired (`capabilityJson` `strategy:"broker"`,
+  `needsSecret:false`); dead `device_code.*` + `pkce_loopback.*` deleted; `provider_creds`
+  trimmed to Twitch-only; `BRAIDCAST_BROKER_URL` compile-time macro (env-overridable,
+  default `https://auth.braidcast.com`). **KEY INVARIANT:** Twitch keeps its **PUBLIC**
+  client id baked (obfuscated) for the Helix `Client-Id` header (broker proxies only
+  OAuth, not Helix); Kick/YouTube ship **nothing** and register **unconditionally** in
+  `BootProviders()`, Twitch stays gated on `TwitchConfigured()`.
+
+Spec/plan: `docs/superpowers/{specs,plans}/2026-07-05-oauth-broker*`; research
+`docs/research/oauth-broker-obs-mechanics.md`. **Handover for the next thread:**
+`docs/superpowers/sessions/2026-07-08-oauth-broker-handover.md` (deployment checklist,
+folder-move costs, memory-migration steps, auto-update options).
+
+**Owed (user-side, then live):** create the `braidcast-website` remote (org exists) →
+push; Cloudflare zone + `auth.braidcast.com` route + Pages; register redirect URIs
+(**YouTube = new Web-app client**); `wrangler secret put` the 7 secrets; then one real
+connect→token→refresh round-trip per provider + confirm no Kick/YouTube creds in the binary.
+
+### 10.6 — Auto-update 🔭 NOT built (design pending)
+CI cuts a **Windows-x64 draft GitHub Release on `v*` tags**; there is no update-check /
+feed / in-app updater yet. Options (recommend the MVP first): **(a) GitHub Releases
+check** — poll the Releases API on launch, toast + open the installer download (reuses
+what CI produces; no delta patches); **(b) WinSparkle appcast** on braidcast.com (signed,
+background install); **(c) OBS's native updater** (signed manifest + delta patches — its
+own project: signing key, CDN/R2, manifest gen in CI). Release assets are free/unlimited
+on public repos (separate from the 500 MB Packages quota).
 
 ---
 
@@ -1296,6 +1358,9 @@ the website name/domain and the OAuth consent-screen app name. Grounded research
 - ✅ **Canvas-editor input clamping** — FPS num/den (`setRange(1, …)`), SDR white
   level (`setRange(80, 480)`), and the `WxH` parse (`cx > 0 && cy > 0`) already
   floor every numeric input above 0 through the dialog; no separate guard needed.
-- ✅ **`canvas-foundation` branch** — Phases 1–3 merged to `master` (fast-forward) +
-  pushed to origin 2026-06-21. Phase 4 (frontend rewrite) continues on the
-  `frontend-rewrite` branch (off `master`).
+- ✅ **Branch history** — `canvas-foundation` (Phases 1–3) fast-forward-merged to
+  `master` + pushed 2026-06-21; `frontend-rewrite` (Phase 4) fast-forward-merged to
+  `master` 2026-06-25; both branches deleted (local + origin). Phase 6+ work
+  (importer, Phase 7 UI redesign, Phase 8 OAuth, Phase 9 engagement, Phase 10 broker)
+  is on the **`ui-redesign`** branch — feature-complete, pushed, **held for GUI/live
+  acceptance, not yet merged to `master`**. `upstream/*` OBS branches untouched.
