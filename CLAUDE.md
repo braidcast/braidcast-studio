@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is the **OBS Studio** codebase (a fork tracking `obsproject/obs-studio`). OBS Studio captures, composites, encodes, records, and streams video. It is C/C++ (core + plugins) with a Qt 6 desktop frontend, built with CMake. Licensed GPLv2+.
 
-The repo name "obs-multistream" refers to OBS's built-in **Multitrack Video** (a.k.a. GoLive / multi-platform streaming) feature, not a separate product. That code lives in `frontend/utility/` (`MultitrackVideoOutput`, `GoLiveAPI_*`, `BasicOutputHandler`).
+The fork is rebranded **Braidcast**; its repo/folder is **braidcast-studio** (GitHub `braidcast/braidcast-studio`). The old folder name "obs-multistream" referred to OBS's built-in **Multitrack Video** (GoLive) feature — Braidcast's own native multistreaming is canvas-based instead (see "Fork-specific architecture"). (Note: this file's "Qt 6 frontend" description below is pre-Phase-4; the frontend has since been rewritten to a CEF-hosted Svelte UI — see `docs/roadmap.md` Phase 4. A fuller CLAUDE.md refresh is owed.)
 
 ## Architecture
 

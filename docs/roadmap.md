@@ -1289,7 +1289,8 @@ policy + Google/Meta OAuth app-name/brand rules). **Resolved:** rebranded to the
 distinctive standalone brand **Braidcast** (exe/target/config/app-id/repo all
 `braidcast`; app icon = the amber "rope" mark), describing itself as "built on OBS
 Studio" (nominative fair use) in body copy only. Domain `braidcast.com` bought;
-GitHub org `braidcast` created. The on-disk git folder stays named `obs-multistream`.
+GitHub org `braidcast` created; fork repo `braidcast/braidcast-studio`; on-disk folder
+renamed `obs-multistream` → `D:\Projects\gui\braidcast\braidcast-studio` (2026-07-08).
 Grounded research: `docs/research/branding-trademark.md`. (Rebrand detail is in the
 `obs-rebrand` project memory.)
 
@@ -1327,11 +1328,16 @@ Spec/plan: `docs/superpowers/{specs,plans}/2026-07-05-oauth-broker*`; research
 `docs/superpowers/sessions/2026-07-08-oauth-broker-handover.md` (deployment checklist,
 folder-move costs, memory-migration steps, auto-update options).
 
-**Repos live (2026-07-08):** fork → `braidcast/braidcast-studio`, broker → `braidcast/braidcast-website`
-(both public, pushed). **Owed (user-side, then live):** Cloudflare zone + `auth.braidcast.com`
-route + Pages; register redirect URIs (**YouTube = new Web-app client**); `wrangler secret put`
-the 7 secrets; then one real connect→token→refresh round-trip per provider + confirm no
-Kick/YouTube creds in the binary.
+**DEPLOYED LIVE (2026-07-08):** fork → `braidcast/braidcast-studio`, broker → `braidcast/braidcast-website`
+(both public). Worker on custom domain `auth.braidcast.com` + Pages site on `braidcast.com`;
+all 7 secrets set; verified end-to-end (all 3 `/start` 302 to the right host with a populated
+`client_id`). Secret naming unified to `*_CLIENTID`/`*_CLIENTSECRET` (+ `STATE_HMAC_KEY`) across
+`.env` build var + broker + CF. Providers registered (YouTube = Web-app client; Twitch = Confidential).
+**Owed:** (1) **Twitch rebuild** — the current binary bakes the OLD, now-deleted Twitch app; set
+`.env TWITCH_CLIENTID` to the new app id + rebuild (Kick/YouTube need none); (2) a real
+connect→token→refresh round-trip per provider from the app; (3) a per-IP rate-limit rule (CF
+dashboard); (4) confirm no Kick/YouTube creds in the binary. Handover:
+`docs/superpowers/sessions/2026-07-08-oauth-broker-handover.md`.
 
 ### 10.6 — Auto-update 🔭 NOT built (design pending)
 CI cuts a **Windows-x64 draft GitHub Release on `v*` tags**; there is no update-check /
