@@ -12,3 +12,7 @@
 #define YOUTUBE_HASH        0x@YOUTUBE_HASH@
 #define YOUTUBE_SECRET      "@YOUTUBE_SECRET@"
 #define YOUTUBE_SECRET_HASH 0x@YOUTUBE_SECRET_HASH@
+
+// The OAuth broker base URL (no trailing slash). Not a secret; overridable for self-host
+// / third-party builds via the BRAIDCAST_BROKER_URL env var at configure time.
+#define BRAIDCAST_BROKER_URL "@BRAIDCAST_BROKER_URL@"

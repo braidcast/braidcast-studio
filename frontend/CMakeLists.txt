@@ -360,6 +360,14 @@ endif()
 
 include(cmake/feature-youtube.cmake)
 
+# OAuth broker base URL (public, not a secret). Defaults to production; override with the
+# BRAIDCAST_BROKER_URL env var for self-host / dev builds.
+if(DEFINED ENV{BRAIDCAST_BROKER_URL} AND NOT "$ENV{BRAIDCAST_BROKER_URL}" STREQUAL "")
+  set(BRAIDCAST_BROKER_URL "$ENV{BRAIDCAST_BROKER_URL}" CACHE STRING "Braidcast OAuth broker base URL")
+else()
+  set(BRAIDCAST_BROKER_URL "https://auth.braidcast.com" CACHE STRING "Braidcast OAuth broker base URL")
+endif()
+
 # Generate ui-config.h into a dedicated dir and put it on the include path so
 # provider_creds.cpp can #include "ui-config.h".
 set(_generated_dir "${CMAKE_CURRENT_BINARY_DIR}/generated")
