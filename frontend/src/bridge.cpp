@@ -2236,7 +2236,7 @@ obs_source_t *FindFallbackScene(obs_canvas_t *canvas, obs_source_t *target)
 			obs_source_get_ref(source);
 			c->fallback = source;
 		}
-		return true;
+		return !c->fallback;
 	};
 	if (canvas) {
 		obs_canvas_enum_scenes(canvas, proc, &ctx);
@@ -2312,8 +2312,11 @@ void RemoveDuplicatedCanvasScene(const json &state)
 // (scene_load), which nothing but obs_load_sources's own two-pass loop invokes.
 // So this mirrors that loop: create every child source first and hold all of
 // them alive (in `restoredSources`, for the rest of this function) so they're
-// still resolvable by uuid, THEN explicitly trigger the scene's .load callback
-// via obs_source_load2 once every source exists.
+// still resolvable by uuid, THEN explicitly trigger every created source's
+// .load callback via obs_source_load2 -- including restoredScene itself and
+// any restoredSources entry that is itself a nested scene/group (from an
+// OBS_SCENE_DUP_COPY duplicate), which otherwise ends up with an empty item
+// list of its own.
 void RestoreDuplicatedCanvasScene(const json &state)
 {
 	std::vector<OBSSourceAutoRelease> restoredSources;
@@ -2344,6 +2347,14 @@ void RestoreDuplicatedCanvasScene(const json &state)
 	if (!restoredScene || !obs_scene_from_source(restoredScene)) {
 		HostLog("[bridge] RestoreDuplicatedCanvasScene: obs_load_source failed to recreate the scene");
 		return;
+	}
+	// Load every child source first (matching obs_load_sources's two-pass order) so
+	// that any of them which is itself a nested scene/group gets its own item list
+	// populated, then the top-level scene.
+	for (auto &src : restoredSources) {
+		if (src) {
+			obs_source_load2(src);
+		}
 	}
 	obs_source_load2(restoredScene); // fires scene_load, populating items from restoredSources above
 
