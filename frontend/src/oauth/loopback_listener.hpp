@@ -34,6 +34,7 @@ public:
 	const std::map<std::string, std::string> &Params() const;
 
 	// Write the terminal HTML page to the held browser connection and close it.
+	// Only valid after Await() returned true (else the connection socket is invalid).
 	void Respond(bool ok);
 
 private:
