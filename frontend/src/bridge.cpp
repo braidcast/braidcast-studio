@@ -1567,8 +1567,7 @@ std::string FreeSceneNameOnCanvas(const std::string &baseName, const std::string
 // `outNewSceneUuid` and `outDuplicatedSourceUuids` so callers can build undo state.
 bool DuplicateSceneToCanvasCore(const std::string &sceneName, const std::string &srcCanvasUuid,
 				 const std::string &destCanvasUuid, std::string &outNewSceneUuid,
-				 std::vector<std::string> &outDuplicatedSourceUuids, std::string &outNewName,
-				 std::string &error)
+				 std::string &outNewName, json &outUndoState, std::string &error)
 {
 	OBSSourceAutoRelease srcScene = ResolveNamedSceneOnCanvas(sceneName, srcCanvasUuid);
 	if (!srcScene || !obs_scene_from_source(srcScene)) {
@@ -1593,32 +1592,51 @@ bool DuplicateSceneToCanvasCore(const std::string &sceneName, const std::string 
 	}
 	obs_canvas_move_scene(dup, dest.canvas);
 
-	std::vector<std::string> dupUuids;
+	// Serialize every duplicated child source (uuid + full data) BEFORE releasing
+	// `dup`, so undo/redo can restore them exactly, mirroring CaptureItemSnapshot.
+	json sourcesJson = json::array();
 	struct Ctx {
-		std::vector<std::string> *out;
-	} ctx{&dupUuids};
+		json *out;
+	} ctx{&sourcesJson};
 	obs_scene_enum_items(
 		dup,
 		[](obs_scene_t *, obs_sceneitem_t *item, void *param) -> bool {
 			auto *c = static_cast<Ctx *>(param);
 			obs_source_t *src = obs_sceneitem_get_source(item); // borrowed
-			const char *uuid = src ? obs_source_get_uuid(src) : nullptr;
-			if (uuid) {
-				c->out->push_back(uuid);
+			if (!src) {
+				return true;
 			}
+			const char *uuid = obs_source_get_uuid(src);
+			OBSDataAutoRelease data = obs_save_source(src);
+			const char *jsonStr = data ? obs_data_get_json(data) : nullptr;
+			c->out->push_back(json{{"uuid", uuid ? uuid : ""}, {"sourceData", jsonStr ? jsonStr : ""}});
 			return true;
 		},
 		&ctx);
 
 	obs_source_t *dupSource = obs_scene_get_source(dup); // borrowed from `dup`
 	const char *dupUuidC = obs_source_get_uuid(dupSource);
+	OBSDataAutoRelease sceneData = obs_save_source(dupSource);
+	const char *sceneJsonStr = sceneData ? obs_data_get_json(sceneData) : nullptr;
+
 	outNewSceneUuid = dupUuidC ? dupUuidC : std::string();
-	outDuplicatedSourceUuids = std::move(dupUuids);
 	outNewName = newName;
+	outUndoState = json{
+		{"newSceneUuid", outNewSceneUuid},
+		{"sceneData", sceneJsonStr ? sceneJsonStr : ""},
+		{"destCanvas", destCanvasUuid},
+		{"sources", sourcesJson},
+	};
 
 	obs_scene_release(dup); // the registry holds it now, matching MethodScenesDuplicate's own release
 	return true;
 }
+
+// Defined near the other Cb adapters (kAddItemFromSnapshot/kRemoveItemBySource);
+// forward-declared here since MethodScenesDuplicateToCanvas below registers them
+// with UndoManager before that point in the file.
+extern const UndoManager::Cb kUndoDuplicateSceneToCanvas;
+extern const UndoManager::Cb kRedoDuplicateSceneToCanvas;
 
 // scenes.duplicateToCanvas {name, canvas?, destCanvas}: deep-copy a scene (its own
 // scene-level filters + every item's SOURCE, incl. that source's filters, via
@@ -1636,16 +1654,19 @@ bool MethodScenesDuplicateToCanvas(const json &params, json &result, std::string
 	const std::string destCanvasUuid = OptString(params, "destCanvas");
 
 	std::string newSceneUuid, newName;
-	std::vector<std::string> dupSourceUuids;
-	if (!DuplicateSceneToCanvasCore(name, srcCanvasUuid, destCanvasUuid, newSceneUuid, dupSourceUuids, newName,
-					 error)) {
+	json undoState;
+	if (!DuplicateSceneToCanvasCore(name, srcCanvasUuid, destCanvasUuid, newSceneUuid, newName, undoState, error)) {
 		return false;
 	}
 
-	EmitScenesChanged(destCanvasUuid.empty() || destCanvasUuid == ObsBootstrap::Canvases().Default().uuid
-				   ? std::string()
-				   : destCanvasUuid);
+	const std::string emitCanvas =
+		destCanvasUuid.empty() || destCanvasUuid == ObsBootstrap::Canvases().Default().uuid ? std::string()
+												      : destCanvasUuid;
+	EmitScenesChanged(emitCanvas);
 	SceneCollection::Save();
+
+	ObsBootstrap::Undo().AddAction("Duplicate '" + name + "' to canvas", kUndoDuplicateSceneToCanvas,
+					kRedoDuplicateSceneToCanvas, undoState.dump(), undoState.dump());
 
 	result = json{{"name", newName}, {"uuid", newSceneUuid}};
 	return true;
@@ -2195,6 +2216,97 @@ const UndoManager::Cb kRemoveItemBySource = [](const std::string &d) {
 	json s = json::parse(d, nullptr, false);
 	if (!s.is_discarded()) {
 		RemoveItemBySource(s);
+	}
+};
+
+// Undo for scenes.duplicateToCanvas: remove the duplicated scene and every one of
+// its duplicated child sources by uuid, in one step (not the per-item undo used
+// elsewhere -- this is a genuinely new grouped/composite undo shape).
+void RemoveDuplicatedCanvasScene(const json &state)
+{
+	const std::string newSceneUuid = OptString(state, "newSceneUuid");
+	const std::string destCanvasUuid = OptString(state, "destCanvas");
+
+	OBSSourceAutoRelease sceneSource = obs_get_source_by_uuid(newSceneUuid.c_str());
+	if (sceneSource && obs_scene_from_source(sceneSource)) {
+		obs_source_remove(sceneSource);
+	}
+
+	if (auto it = state.find("sources"); it != state.end() && it->is_array()) {
+		for (const auto &entry : *it) {
+			const std::string srcUuid = entry.value("uuid", std::string());
+			if (srcUuid.empty()) {
+				continue;
+			}
+			OBSSourceAutoRelease src = obs_get_source_by_uuid(srcUuid.c_str());
+			if (src) {
+				obs_source_remove(src);
+			}
+		}
+	}
+
+	ObsBootstrap::PruneSceneLinksForCanvasScene(destCanvasUuid, newSceneUuid); // no-op if none was set
+	EmitScenesChanged(destCanvasUuid.empty() || destCanvasUuid == ObsBootstrap::Canvases().Default().uuid
+				   ? std::string()
+				   : destCanvasUuid);
+	SceneCollection::Save();
+}
+
+// Redo for scenes.duplicateToCanvas: restore the scene and its child sources from
+// their captured obs_save_source data, preserving the SAME uuids captured at
+// initial-duplicate time (obs_load_source restores the saved uuid as long as
+// nothing currently holds it -- same contract AddItemFromSnapshot already relies
+// on), then re-place the scene on its destination canvas.
+void RestoreDuplicatedCanvasScene(const json &state)
+{
+	if (auto it = state.find("sources"); it != state.end() && it->is_array()) {
+		for (const auto &entry : *it) {
+			const std::string sourceData = entry.value("sourceData", std::string());
+			if (sourceData.empty()) {
+				continue;
+			}
+			OBSDataAutoRelease data = obs_data_create_from_json(sourceData.c_str());
+			if (data) {
+				OBSSourceAutoRelease restored = obs_load_source(data); // create-ref
+			}
+		}
+	}
+
+	const std::string sceneData = OptString(state, "sceneData");
+	if (sceneData.empty()) {
+		return;
+	}
+	OBSDataAutoRelease data = obs_data_create_from_json(sceneData.c_str());
+	if (!data) {
+		return;
+	}
+	OBSSourceAutoRelease restoredScene = obs_load_source(data); // create-ref
+	if (!restoredScene || !obs_scene_from_source(restoredScene)) {
+		return;
+	}
+
+	const std::string destCanvasUuid = OptString(state, "destCanvas");
+	ResolvedDestCanvas dest = ResolveDestCanvas(destCanvasUuid);
+	if (dest.canvas) {
+		obs_canvas_move_scene(obs_scene_from_source(restoredScene), dest.canvas);
+	}
+
+	EmitScenesChanged(destCanvasUuid.empty() || destCanvasUuid == ObsBootstrap::Canvases().Default().uuid
+				   ? std::string()
+				   : destCanvasUuid);
+	SceneCollection::Save();
+}
+
+const UndoManager::Cb kUndoDuplicateSceneToCanvas = [](const std::string &d) {
+	json s = json::parse(d, nullptr, false);
+	if (!s.is_discarded()) {
+		RemoveDuplicatedCanvasScene(s);
+	}
+};
+const UndoManager::Cb kRedoDuplicateSceneToCanvas = [](const std::string &d) {
+	json s = json::parse(d, nullptr, false);
+	if (!s.is_discarded()) {
+		RestoreDuplicatedCanvasScene(s);
 	}
 };
 
