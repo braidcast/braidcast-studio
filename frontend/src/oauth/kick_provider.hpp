@@ -5,7 +5,7 @@
 #include <string>
 
 #include "../http_client.hpp"
-#include "pkce_loopback.hpp"
+#include "broker_strategy.hpp"
 #include "provider.hpp"
 
 // The Kick chat/event transports are constructed per account in makeChat/makeEvents,
@@ -70,7 +70,7 @@ private:
 	// KickChat sends chat via SendAuthed (same token-coherence path as metadata).
 	friend class Chat::KickChat;
 
-	PkceLoopbackStrategy auth_;
+	BrokerStrategy auth_;
 };
 
 } // namespace OAuth

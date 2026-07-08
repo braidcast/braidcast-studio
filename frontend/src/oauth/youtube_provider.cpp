@@ -10,7 +10,7 @@
 #include "../http_client.hpp"
 #include "../ingest_writeback.hpp"
 #include "../log.hpp"
-#include "../provider_creds.hpp"
+#include "ui-config.h"
 
 namespace OAuth {
 
@@ -134,16 +134,10 @@ std::string SniffImageMime(const std::string &bytes)
 } // namespace
 
 YouTubeProvider::YouTubeProvider()
-	: auth_(PkceLoopbackStrategy::Config{
-		  "https://accounts.google.com/o/oauth2/v2/auth", // authorizeUrl
-		  "https://oauth2.googleapis.com/token",          // tokenUrl
-		  YouTubeClientId(),                              // clientId
-		  YouTubeClientSecret(),                          // clientSecret (Google ships a non-confidential one; optional)
-		  {kYouTubeScope},                                // scopes
-		  YOUTUBE_SCOPE_VERSION,                          // scopeVer
-		  "/",                                            // redirectPath
-		  "127.0.0.1",                                    // redirectHost (Google desktop loopback ignores the port)
-		  {{"access_type", "offline"}, {"prompt", "consent"}}, // extraAuthParams (force a refresh token)
+	: auth_(BrokerStrategy::Config{
+		  BRAIDCAST_BROKER_URL,  // brokerBaseUrl
+		  "youtube",             // platform
+		  YOUTUBE_SCOPE_VERSION, // scopeVer
 	  })
 {
 }
@@ -244,7 +238,7 @@ json YouTubeProvider::capabilityJson() const
 		{"id", id()},
 		{"displayName", displayName()},
 		{"brandColor", brandColor()},
-		{"auth", json{{"strategy", "pkce-loopback"}, {"scopes", scopes}, {"needsSecret", false}}},
+		{"auth", json{{"strategy", "broker"}, {"scopes", scopes}, {"needsSecret", false}}},
 		{"fields", fields},
 	};
 }

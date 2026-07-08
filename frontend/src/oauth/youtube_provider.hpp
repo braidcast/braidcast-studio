@@ -11,7 +11,7 @@
 
 #include "../events/youtube_events.hpp"
 #include "../http_client.hpp"
-#include "pkce_loopback.hpp"
+#include "broker_strategy.hpp"
 #include "provider.hpp"
 
 // The YouTube live-chat transport (Phase 9.0) is constructed per account in
@@ -111,7 +111,7 @@ private:
 	// otherwise returns true with the status/body left for the caller to interpret.
 	bool SendAuthed(OAuthAccount &acct, Http::HttpReq req, Http::HttpResponse &resp, std::string &err);
 
-	PkceLoopbackStrategy auth_;
+	BrokerStrategy auth_;
 
 	// The active broadcast's liveChatId + broadcast/video id, PER ACCOUNT. Set on a
 	// successful applyMetadata (the only place a broadcast is created) and read by the

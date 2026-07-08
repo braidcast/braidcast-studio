@@ -5,7 +5,7 @@
 #include "../chat/kick_chat.hpp"
 #include "../events/kick_events.hpp"
 #include "../http_client.hpp"
-#include "../provider_creds.hpp"
+#include "ui-config.h"
 
 namespace OAuth {
 
@@ -85,15 +85,10 @@ json FirstDataRow(const json &j)
 } // namespace
 
 KickProvider::KickProvider()
-	: auth_(PkceLoopbackStrategy::Config{
-		  "https://id.kick.com/oauth/authorize",        // authorizeUrl
-		  "https://id.kick.com/oauth/token",            // tokenUrl
-		  KickClientId(),                               // clientId
-		  KickClientSecret(),                           // clientSecret (Kick is confidential)
-		  {kKickScopes.begin(), kKickScopes.end()},     // scopes
-		  KICK_SCOPE_VERSION,                           // scopeVer
-		  "/callback",                                  // redirectPath
-		  "localhost",                                  // redirectHost (Kick rewrites 127.0.0.1)
+	: auth_(BrokerStrategy::Config{
+		  BRAIDCAST_BROKER_URL, // brokerBaseUrl
+		  "kick",               // platform
+		  KICK_SCOPE_VERSION,   // scopeVer
 	  })
 {
 }
@@ -137,7 +132,7 @@ json KickProvider::capabilityJson() const
 		{"id", id()},
 		{"displayName", displayName()},
 		{"brandColor", brandColor()},
-		{"auth", json{{"strategy", "pkce-loopback"}, {"scopes", scopes}, {"needsSecret", true}}},
+		{"auth", json{{"strategy", "broker"}, {"scopes", scopes}, {"needsSecret", false}}},
 		{"fields", fields},
 	};
 }
