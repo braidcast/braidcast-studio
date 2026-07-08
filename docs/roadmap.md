@@ -1327,10 +1327,11 @@ Spec/plan: `docs/superpowers/{specs,plans}/2026-07-05-oauth-broker*`; research
 `docs/superpowers/sessions/2026-07-08-oauth-broker-handover.md` (deployment checklist,
 folder-move costs, memory-migration steps, auto-update options).
 
-**Owed (user-side, then live):** create the `braidcast-website` remote (org exists) →
-push; Cloudflare zone + `auth.braidcast.com` route + Pages; register redirect URIs
-(**YouTube = new Web-app client**); `wrangler secret put` the 7 secrets; then one real
-connect→token→refresh round-trip per provider + confirm no Kick/YouTube creds in the binary.
+**Repos live (2026-07-08):** fork → `braidcast/braidcast-studio`, broker → `braidcast/braidcast-website`
+(both public, pushed). **Owed (user-side, then live):** Cloudflare zone + `auth.braidcast.com`
+route + Pages; register redirect URIs (**YouTube = new Web-app client**); `wrangler secret put`
+the 7 secrets; then one real connect→token→refresh round-trip per provider + confirm no
+Kick/YouTube creds in the binary.
 
 ### 10.6 — Auto-update 🔭 NOT built (design pending)
 CI cuts a **Windows-x64 draft GitHub Release on `v*` tags**; there is no update-check /
