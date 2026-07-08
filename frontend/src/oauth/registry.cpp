@@ -47,12 +47,10 @@ void BootProviders()
 	if (TwitchConfigured()) {
 		Registry().Register(std::make_unique<TwitchProvider>());
 	}
-	if (KickConfigured()) {
-		Registry().Register(std::make_unique<KickProvider>());
-	}
-	if (YouTubeConfigured()) {
-		Registry().Register(std::make_unique<YouTubeProvider>());
-	}
+	// Kick and YouTube carry no baked credentials -- their OAuth runs entirely through
+	// the broker -- so they always register.
+	Registry().Register(std::make_unique<KickProvider>());
+	Registry().Register(std::make_unique<YouTubeProvider>());
 	HostLog("[oauth] provider registry booted: " + std::to_string(Registry().All().size()) + " provider(s)");
 }
 

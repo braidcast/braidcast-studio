@@ -210,7 +210,7 @@
 
   // Platforms Braidcast can OAuth-connect, listed under "Connectable accounts" in the
   // promoted Service picker. The live `providers` list (oauth.providers) is the source
-  // of truth, but a build can omit a platform's client id — e.g. KickConfigured()==false —
+  // of truth, but a build can omit a platform's client id — e.g. TwitchConfigured()==false —
   // so that platform's provider is absent from oauth.providers even though the platform
   // itself is OAuth-capable (and its service item, like "Kick", is common:true). This
   // static allowlist bridges that gap so Twitch/YouTube/Kick always group as connectable,
