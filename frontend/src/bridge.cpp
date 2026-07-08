@@ -1696,6 +1696,25 @@ bool MethodScenesDuplicateToCanvas(const json &params, json &result, std::string
 	EmitScenesChanged(emitCanvas);
 	SceneCollection::Save();
 
+	// Copy any scene-link mapping: every main scene currently linked to the SOURCE
+	// scene (on srcCanvasUuid) gets an additional/updated link pointing at the new
+	// duplicate on destCanvasUuid. Only meaningful when the source scene lives on
+	// an additional canvas -- main scenes are never link targets.
+	if (!srcCanvasUuid.empty() && srcCanvasUuid != ObsBootstrap::Canvases().Default().uuid) {
+		OBSSourceAutoRelease srcSceneForLink = ResolveNamedSceneOnCanvas(name, srcCanvasUuid);
+		const char *srcSceneUuidC = srcSceneForLink ? obs_source_get_uuid(srcSceneForLink) : nullptr;
+		if (srcSceneUuidC) {
+			const std::string srcSceneUuid = srcSceneUuidC;
+			for (const auto &[mainUuid, perCanvas] : ObsBootstrap::SceneLinks().Links().map) {
+				auto it = perCanvas.find(srcCanvasUuid);
+				if (it != perCanvas.end() && it->second == srcSceneUuid) {
+					ObsBootstrap::SceneLinks().Links().Set(mainUuid, destCanvasUuid, newSceneUuid);
+				}
+			}
+		}
+		ObsBootstrap::SceneLinks().Save();
+	}
+
 	ObsBootstrap::Undo().AddAction("Duplicate '" + name + "' to canvas", kUndoDuplicateSceneToCanvas,
 					kRedoDuplicateSceneToCanvas, undoState.dump(), undoState.dump());
 
