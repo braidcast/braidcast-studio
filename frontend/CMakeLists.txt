@@ -111,6 +111,8 @@ target_sources(
     src/oauth/device_code.hpp
     src/oauth/pkce_loopback.cpp
     src/oauth/pkce_loopback.hpp
+    src/oauth/loopback_listener.cpp
+    src/oauth/loopback_listener.hpp
     src/oauth/account_store.cpp
     src/oauth/account_store.hpp
     src/oauth/registry.cpp
