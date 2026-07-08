@@ -101,16 +101,12 @@ target_sources(
     src/obf.h
     src/provider_creds.cpp
     src/provider_creds.hpp
-    # Phase 8a OAuth foundation: provider registry + capability descriptors, the
-    # device-code auth strategy, and a DPAPI-wrapped per-stream-profile token
-    # store. provider.hpp is the interface set the registry + bridge dispatch
-    # through; concrete providers (Twitch) plug in at Task 4.
+    # OAuth foundation: provider registry + capability descriptors, the broker auth
+    # strategy (loopback listener + BrokerStrategy), and a DPAPI-wrapped
+    # per-stream-profile token store. provider.hpp is the interface set the registry +
+    # bridge dispatch through; concrete providers (Twitch/Kick/YouTube) plug in.
     src/oauth/provider.cpp
     src/oauth/provider.hpp
-    src/oauth/device_code.cpp
-    src/oauth/device_code.hpp
-    src/oauth/pkce_loopback.cpp
-    src/oauth/pkce_loopback.hpp
     src/oauth/loopback_listener.cpp
     src/oauth/loopback_listener.hpp
     src/oauth/broker_strategy.cpp
