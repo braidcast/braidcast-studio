@@ -1505,6 +1505,152 @@ bool MethodScenesDuplicate(const json &params, json &result, std::string &error)
 	return true;
 }
 
+// Resolve a scene by name on an explicit source canvas (Default when
+// srcCanvasUuid is empty or equals the Default canvas's uuid). Addref'd;
+// caller releases. Mirrors MethodScenesDuplicate's own-canvas resolution but
+// ALSO supports an additional canvas as the source (which MethodScenesDuplicate
+// explicitly rejects).
+obs_source_t *ResolveNamedSceneOnCanvas(const std::string &sceneName, const std::string &srcCanvasUuid)
+{
+	if (!srcCanvasUuid.empty() && srcCanvasUuid != ObsBootstrap::Canvases().Default().uuid) {
+		obs_canvas_t *srcCanvas = ObsBootstrap::CanvasRuntime().Find(srcCanvasUuid);
+		if (!srcCanvas) {
+			return nullptr;
+		}
+		return obs_canvas_get_source_by_name(srcCanvas, sceneName.c_str()); // addref'd
+	}
+	return obs_get_source_by_name(sceneName.c_str()); // addref'd
+}
+
+// Resolve an obs_canvas_t* for a destination-canvas uuid (empty or the Default
+// canvas's uuid => the main canvas). For the main-canvas case, the returned
+// OBSCanvasAutoRelease `mainCanvasHolder` keeps the addref'd main-canvas pointer
+// alive for the caller's use; ignore it when isAdditionalDest is true.
+struct ResolvedDestCanvas {
+	obs_canvas_t *canvas = nullptr;
+	OBSCanvasAutoRelease mainCanvasHolder; // only populated for the Default/main case
+};
+ResolvedDestCanvas ResolveDestCanvas(const std::string &destCanvasUuid)
+{
+	ResolvedDestCanvas r;
+	if (destCanvasUuid.empty() || destCanvasUuid == ObsBootstrap::Canvases().Default().uuid) {
+		r.mainCanvasHolder = obs_get_main_canvas(); // addref'd
+		r.canvas = r.mainCanvasHolder;
+		return r;
+	}
+	r.canvas = ObsBootstrap::CanvasRuntime().Find(destCanvasUuid);
+	return r;
+}
+
+// Find a free "<name> N" (N starting at 2) in the DESTINATION canvas's own
+// namespace, mirroring MethodScenesDuplicate's auto-suffix but scoped per-canvas.
+std::string FreeSceneNameOnCanvas(const std::string &baseName, const std::string &destCanvasUuid,
+				   bool destIsAdditional, obs_canvas_t *destCanvas)
+{
+	for (int n = 2;; ++n) {
+		std::string candidate = baseName + " " + std::to_string(n);
+		OBSSourceAutoRelease taken = destIsAdditional
+						      ? obs_canvas_get_source_by_name(destCanvas, candidate.c_str())
+						      : obs_get_source_by_name(candidate.c_str());
+		if (taken) {
+			continue;
+		}
+		return candidate;
+	}
+}
+
+// The shared duplicate-to-canvas core: deep-copies `sceneName` (on `srcCanvasUuid`,
+// "" = Default) onto `destCanvasUuid` ("" = Default) via OBS_SCENE_DUP_COPY (scene
+// filters + every item's source + that source's own filters, all fresh copies) then
+// obs_canvas_move_scene to place it. Does NOT touch SceneLinkStore or UndoManager --
+// callers (the bridge method, and later the redo path) own that. On success, fills
+// `outNewSceneUuid` and `outDuplicatedSourceUuids` so callers can build undo state.
+bool DuplicateSceneToCanvasCore(const std::string &sceneName, const std::string &srcCanvasUuid,
+				 const std::string &destCanvasUuid, std::string &outNewSceneUuid,
+				 std::vector<std::string> &outDuplicatedSourceUuids, std::string &outNewName,
+				 std::string &error)
+{
+	OBSSourceAutoRelease srcScene = ResolveNamedSceneOnCanvas(sceneName, srcCanvasUuid);
+	if (!srcScene || !obs_scene_from_source(srcScene)) {
+		error = "no scene named '" + sceneName + "'";
+		return false;
+	}
+
+	ResolvedDestCanvas dest = ResolveDestCanvas(destCanvasUuid);
+	if (!dest.canvas) {
+		error = "unknown destination canvas";
+		return false;
+	}
+	const bool destIsAdditional = !destCanvasUuid.empty() && destCanvasUuid != ObsBootstrap::Canvases().Default().uuid;
+
+	const std::string newName = FreeSceneNameOnCanvas(sceneName, destCanvasUuid, destIsAdditional, dest.canvas);
+
+	obs_scene_t *srcSceneObj = obs_scene_from_source(srcScene);
+	obs_scene_t *dup = obs_scene_duplicate(srcSceneObj, newName.c_str(), OBS_SCENE_DUP_COPY); // new ref
+	if (!dup) {
+		error = "obs_scene_duplicate failed";
+		return false;
+	}
+	obs_canvas_move_scene(dup, dest.canvas);
+
+	std::vector<std::string> dupUuids;
+	struct Ctx {
+		std::vector<std::string> *out;
+	} ctx{&dupUuids};
+	obs_scene_enum_items(
+		dup,
+		[](obs_scene_t *, obs_sceneitem_t *item, void *param) -> bool {
+			auto *c = static_cast<Ctx *>(param);
+			obs_source_t *src = obs_sceneitem_get_source(item); // borrowed
+			const char *uuid = src ? obs_source_get_uuid(src) : nullptr;
+			if (uuid) {
+				c->out->push_back(uuid);
+			}
+			return true;
+		},
+		&ctx);
+
+	obs_source_t *dupSource = obs_scene_get_source(dup); // borrowed from `dup`
+	const char *dupUuidC = obs_source_get_uuid(dupSource);
+	outNewSceneUuid = dupUuidC ? dupUuidC : std::string();
+	outDuplicatedSourceUuids = std::move(dupUuids);
+	outNewName = newName;
+
+	obs_scene_release(dup); // the registry holds it now, matching MethodScenesDuplicate's own release
+	return true;
+}
+
+// scenes.duplicateToCanvas {name, canvas?, destCanvas}: deep-copy a scene (its own
+// scene-level filters + every item's SOURCE, incl. that source's filters, via
+// OBS_SCENE_DUP_COPY) from its current canvas onto ANY other canvas (or the same
+// one). Independent of the existing scenes.duplicate, which stays REFS-only,
+// Default-canvas-only, and unchanged.
+bool MethodScenesDuplicateToCanvas(const json &params, json &result, std::string &error)
+{
+	const std::string name = OptString(params, "name");
+	if (name.empty()) {
+		error = "scenes.duplicateToCanvas requires a non-empty 'name'";
+		return false;
+	}
+	const std::string srcCanvasUuid = OptString(params, "canvas");
+	const std::string destCanvasUuid = OptString(params, "destCanvas");
+
+	std::string newSceneUuid, newName;
+	std::vector<std::string> dupSourceUuids;
+	if (!DuplicateSceneToCanvasCore(name, srcCanvasUuid, destCanvasUuid, newSceneUuid, dupSourceUuids, newName,
+					 error)) {
+		return false;
+	}
+
+	EmitScenesChanged(destCanvasUuid.empty() || destCanvasUuid == ObsBootstrap::Canvases().Default().uuid
+				   ? std::string()
+				   : destCanvasUuid);
+	SceneCollection::Save();
+
+	result = json{{"name", newName}, {"uuid", newSceneUuid}};
+	return true;
+}
+
 // scenes.reorder {name, direction:"up"|"down", canvas?}: reorder a scene within
 // the (canvas or global) scene list.
 //
@@ -8314,6 +8460,7 @@ void Init()
 		{"scenes.setCurrent", MethodScenesSetCurrent},
 		{"scenes.rename", MethodScenesRename},
 		{"scenes.duplicate", MethodScenesDuplicate},
+		{"scenes.duplicateToCanvas", MethodScenesDuplicateToCanvas},
 		{"scenes.reorder", MethodScenesReorder},
 		{"collections.list", MethodCollectionsList},
 		{"collections.create", MethodCollectionsCreate},
