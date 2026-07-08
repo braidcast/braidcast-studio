@@ -1585,6 +1585,30 @@ bool DuplicateSceneToCanvasCore(const std::string &sceneName, const std::string 
 	const std::string newName = FreeSceneNameOnCanvas(sceneName, destCanvasUuid, destIsAdditional, dest.canvas);
 
 	obs_scene_t *srcSceneObj = obs_scene_from_source(srcScene);
+
+	// obs_source_duplicate (libobs/obs-source.c) does not always copy: for a
+	// nested-scene item or one flagged OBS_SOURCE_DO_NOT_DUPLICATE, it hands back
+	// a ref to the ORIGINAL source instead. Snapshot the source scene's own item
+	// uuids first so the post-duplicate loop below can tell shared refs apart
+	// from real copies, without re-deriving libobs's internal duplicate-vs-share
+	// branching (which could drift or miss a flag).
+	std::unordered_set<std::string> origItemUuids;
+	obs_scene_enum_items(
+		srcSceneObj,
+		[](obs_scene_t *, obs_sceneitem_t *item, void *param) -> bool {
+			auto *out = static_cast<std::unordered_set<std::string> *>(param);
+			obs_source_t *src = obs_sceneitem_get_source(item); // borrowed
+			if (!src) {
+				return true;
+			}
+			const char *uuid = obs_source_get_uuid(src);
+			if (uuid) {
+				out->insert(uuid);
+			}
+			return true;
+		},
+		&origItemUuids);
+
 	obs_scene_t *dup = obs_scene_duplicate(srcSceneObj, newName.c_str(), OBS_SCENE_DUP_COPY); // new ref
 	if (!dup) {
 		error = "obs_scene_duplicate failed";
@@ -1592,12 +1616,16 @@ bool DuplicateSceneToCanvasCore(const std::string &sceneName, const std::string 
 	}
 	obs_canvas_move_scene(dup, dest.canvas);
 
-	// Serialize every duplicated child source (uuid + full data) BEFORE releasing
-	// `dup`, so undo/redo can restore them exactly, mirroring CaptureItemSnapshot.
+	// Serialize every genuinely duplicated child source (uuid + full data) BEFORE
+	// releasing `dup`, so undo/redo can restore them exactly, mirroring
+	// CaptureItemSnapshot. Items whose uuid matches origItemUuids are shared refs
+	// (see above) rather than copies: we don't own them, so they're excluded here
+	// and must never be deleted/restored by our undo/redo handlers.
 	json sourcesJson = json::array();
 	struct Ctx {
 		json *out;
-	} ctx{&sourcesJson};
+		const std::unordered_set<std::string> *origUuids;
+	} ctx{&sourcesJson, &origItemUuids};
 	obs_scene_enum_items(
 		dup,
 		[](obs_scene_t *, obs_sceneitem_t *item, void *param) -> bool {
@@ -1607,6 +1635,9 @@ bool DuplicateSceneToCanvasCore(const std::string &sceneName, const std::string 
 				return true;
 			}
 			const char *uuid = obs_source_get_uuid(src);
+			if (uuid && c->origUuids->count(uuid)) {
+				return true;
+			}
 			OBSDataAutoRelease data = obs_save_source(src);
 			const char *jsonStr = data ? obs_data_get_json(data) : nullptr;
 			c->out->push_back(json{{"uuid", uuid ? uuid : ""}, {"sourceData", jsonStr ? jsonStr : ""}});
