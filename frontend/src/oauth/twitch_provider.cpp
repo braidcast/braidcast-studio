@@ -6,6 +6,7 @@
 #include "../events/twitch_events.hpp"
 #include "../http_client.hpp"
 #include "../provider_creds.hpp"
+#include "ui-config.h"
 
 namespace OAuth {
 
@@ -13,7 +14,7 @@ namespace {
 
 const char *kHelixBase = "https://api.twitch.tv/helix/";
 
-// The scope set the device-code grant requests. channel:read:stream_key backs the
+// The scope set the broker requests for Twitch. channel:read:stream_key backs the
 // stream-key autofill; channel:manage:broadcast backs the title/category PATCH.
 // User identity (GET /helix/users) needs no special scope. chat:read + chat:edit
 // back the Phase 9.0 multichat IRC-over-WebSocket read + send. user:read:chat +
@@ -109,13 +110,10 @@ bool TagValid(const std::string &tag)
 } // namespace
 
 TwitchProvider::TwitchProvider()
-	: auth_(DeviceCodeStrategy::Config{
-		  "https://id.twitch.tv/oauth2/device", // deviceUrl
-		  "https://id.twitch.tv/oauth2/token",  // tokenUrl
-		  TwitchClientId(),                     // clientId
-		  {kTwitchScopes.begin(), kTwitchScopes.end()}, // scopes
-		  TWITCH_SCOPE_VERSION,                 // scopeVer
-		  "scopes",                             // scopeParam (Twitch names it "scopes")
+	: auth_(BrokerStrategy::Config{
+		  BRAIDCAST_BROKER_URL, // brokerBaseUrl
+		  "twitch",             // platform
+		  TWITCH_SCOPE_VERSION, // scopeVer
 	  })
 {
 }
@@ -186,7 +184,7 @@ json TwitchProvider::capabilityJson() const
 		{"id", id()},
 		{"displayName", displayName()},
 		{"brandColor", brandColor()},
-		{"auth", json{{"strategy", "device-code"}, {"scopes", scopes}, {"needsSecret", false}}},
+		{"auth", json{{"strategy", "broker"}, {"scopes", scopes}, {"needsSecret", false}}},
 		{"fields", fields},
 	};
 }

@@ -5,7 +5,7 @@
 #include <string>
 
 #include "../http_client.hpp"
-#include "device_code.hpp"
+#include "broker_strategy.hpp"
 #include "provider.hpp"
 
 // The Twitch chat/event transports are constructed per account in makeChat/makeEvents,
@@ -16,7 +16,7 @@ namespace Events {
 class TwitchEvents;
 }
 
-// The Twitch stream provider: device-code auth (no secret) plus the net-new
+// The Twitch stream provider: broker auth (public client id kept for Helix) plus the net-new
 // Helix stream-metadata hooks (title / category / tags / language / content
 // classification / branded content) the Go Live modal reads and writes. The
 // legacy client only ever fetched the user + stream key, so every metadata call
@@ -66,7 +66,7 @@ private:
 	// returns true with the status/body left for the caller to interpret.
 	bool SendAuthed(OAuthAccount &acct, Http::HttpReq req, Http::HttpResponse &resp, std::string &err);
 
-	DeviceCodeStrategy auth_;
+	BrokerStrategy auth_;
 };
 
 } // namespace OAuth
