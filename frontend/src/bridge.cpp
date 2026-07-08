@@ -1698,9 +1698,13 @@ bool MethodScenesDuplicateToCanvas(const json &params, json &result, std::string
 
 	// Copy any scene-link mapping: every main scene currently linked to the SOURCE
 	// scene (on srcCanvasUuid) gets an additional/updated link pointing at the new
-	// duplicate on destCanvasUuid. Only meaningful when the source scene lives on
-	// an additional canvas -- main scenes are never link targets.
-	if (!srcCanvasUuid.empty() && srcCanvasUuid != ObsBootstrap::Canvases().Default().uuid) {
+	// duplicate on destCanvasUuid. Only meaningful when both the source and the
+	// destination are real additional canvases (main scenes are never link
+	// targets) and the destination differs from the source -- a same-canvas
+	// duplicate must leave the original scene's link untouched.
+	if (!srcCanvasUuid.empty() && srcCanvasUuid != ObsBootstrap::Canvases().Default().uuid &&
+	    !destCanvasUuid.empty() && destCanvasUuid != ObsBootstrap::Canvases().Default().uuid &&
+	    destCanvasUuid != srcCanvasUuid) {
 		OBSSourceAutoRelease srcSceneForLink = ResolveNamedSceneOnCanvas(name, srcCanvasUuid);
 		const char *srcSceneUuidC = srcSceneForLink ? obs_source_get_uuid(srcSceneForLink) : nullptr;
 		if (srcSceneUuidC) {
