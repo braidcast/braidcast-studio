@@ -311,53 +311,9 @@ endif()
 
 include(cmake/feature-twitch.cmake)
 
-# Phase 8c: inject the Kick OAuth client_id AND client_secret at build time (Kick
-# is a confidential client: auth-code + PKCE still requires the secret on token
-# calls). Each has its own obfuscation hash defaulting to 0 (plaintext) so the
-# "0x@..._HASH@" template expands to a valid literal on the no-credential path.
-# Env input names match .env / CI secrets (KICK_CLIENT_ID / KICK_CLIENT_SECRET).
-set(KICK_CLIENTID "$ENV{KICK_CLIENT_ID}" CACHE STRING "Kick OAuth client id (public; PKCE-loopback flow)")
-if(DEFINED ENV{KICK_CLIENT_ID})
-  set(KICK_CLIENTID "$ENV{KICK_CLIENT_ID}" CACHE STRING "Kick OAuth client id (public; PKCE-loopback flow)" FORCE)
-endif()
-set(KICK_HASH "$ENV{KICK_HASH}" CACHE STRING "Obfuscation key for KICK_CLIENTID; 0 means plaintext")
-set(KICK_SECRET "$ENV{KICK_CLIENT_SECRET}" CACHE STRING "Kick OAuth client secret (confidential)")
-if(DEFINED ENV{KICK_CLIENT_SECRET})
-  set(KICK_SECRET "$ENV{KICK_CLIENT_SECRET}" CACHE STRING "Kick OAuth client secret (confidential)" FORCE)
-endif()
-set(KICK_SECRET_HASH "$ENV{KICK_SECRET_HASH}" CACHE STRING "Obfuscation key for KICK_SECRET; 0 means plaintext")
-if(NOT KICK_HASH)
-  set(KICK_HASH "0")
-endif()
-if(NOT KICK_SECRET_HASH)
-  set(KICK_SECRET_HASH "0")
-endif()
-
+# Kick and YouTube OAuth run through the broker (no baked client_id/secret); the
+# feature files enable them unconditionally.
 include(cmake/feature-kick.cmake)
-
-# Phase 8d: inject the YouTube (Google) OAuth client_id and optional client_secret
-# at build time. YouTube reuses the PKCE-loopback strategy; the secret is OPTIONAL
-# (Google desktop clients ship a non-confidential one sent only when present). Each
-# has its own obfuscation hash defaulting to 0 (plaintext) so the "0x@..._HASH@"
-# template expands to a valid literal on the no-credential path.
-# Env input names match .env / CI secrets (GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET).
-set(YOUTUBE_CLIENTID "$ENV{GOOGLE_CLIENT_ID}" CACHE STRING "YouTube OAuth client id (public; PKCE-loopback flow)")
-if(DEFINED ENV{GOOGLE_CLIENT_ID})
-  set(YOUTUBE_CLIENTID "$ENV{GOOGLE_CLIENT_ID}" CACHE STRING "YouTube OAuth client id (public; PKCE-loopback flow)" FORCE)
-endif()
-set(YOUTUBE_HASH "$ENV{YOUTUBE_HASH}" CACHE STRING "Obfuscation key for YOUTUBE_CLIENTID; 0 means plaintext")
-set(YOUTUBE_SECRET "$ENV{GOOGLE_CLIENT_SECRET}" CACHE STRING "YouTube OAuth client secret (optional)")
-if(DEFINED ENV{GOOGLE_CLIENT_SECRET})
-  set(YOUTUBE_SECRET "$ENV{GOOGLE_CLIENT_SECRET}" CACHE STRING "YouTube OAuth client secret (optional)" FORCE)
-endif()
-set(YOUTUBE_SECRET_HASH "$ENV{YOUTUBE_SECRET_HASH}" CACHE STRING "Obfuscation key for YOUTUBE_SECRET; 0 means plaintext")
-if(NOT YOUTUBE_HASH)
-  set(YOUTUBE_HASH "0")
-endif()
-if(NOT YOUTUBE_SECRET_HASH)
-  set(YOUTUBE_SECRET_HASH "0")
-endif()
-
 include(cmake/feature-youtube.cmake)
 
 # OAuth broker base URL (public, not a secret). Defaults to production; override with the

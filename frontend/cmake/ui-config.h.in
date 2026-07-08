@@ -1,17 +1,10 @@
 #pragma once
 
+// Twitch's PUBLIC client_id stays baked: Twitch Helix requires a Client-Id header on
+// every API call, which the broker does not proxy. The secret is broker-held. Kick and
+// YouTube ship nothing (their API calls use Bearer only); their OAuth goes through the broker.
 #define TWITCH_CLIENTID "@TWITCH_CLIENTID@"
 #define TWITCH_HASH     0x@TWITCH_HASH@
-
-#define KICK_CLIENTID    "@KICK_CLIENTID@"
-#define KICK_HASH        0x@KICK_HASH@
-#define KICK_SECRET      "@KICK_SECRET@"
-#define KICK_SECRET_HASH 0x@KICK_SECRET_HASH@
-
-#define YOUTUBE_CLIENTID    "@YOUTUBE_CLIENTID@"
-#define YOUTUBE_HASH        0x@YOUTUBE_HASH@
-#define YOUTUBE_SECRET      "@YOUTUBE_SECRET@"
-#define YOUTUBE_SECRET_HASH 0x@YOUTUBE_SECRET_HASH@
 
 // The OAuth broker base URL (no trailing slash). Not a secret; overridable for self-host
 // / third-party builds via the BRAIDCAST_BROKER_URL env var at configure time.
