@@ -224,6 +224,18 @@ void RunCanvasRuntimeSelfTest();
 // the temp canvas afterward; never Saves, so the user's files are untouched. Gated
 // by the caller to the smoke path.
 void RunCanvasSceneSelfTest();
+// Headless proof for scenes.duplicateToCanvas: bring up two temporary additional
+// canvases (source + destination), create a scene with one color source on the
+// source canvas, then drive scenes.duplicateToCanvas onto the destination canvas.
+// Asserts the new scene lands on the destination with exactly one item whose
+// source has a DIFFERENT uuid than the original (a real deep copy, not a shared
+// ref), that Undo() removes the duplicated scene, and that Redo() restores it
+// with the SAME item source uuid captured after the initial duplicate (proving
+// restore-from-snapshot rather than a fresh re-duplicate). Removes both temp
+// canvases afterward; never Saves explicitly (the bridge calls it drives do their
+// own normal Save, matching the other canvas-scene self-tests). Gated by the
+// caller to the smoke path.
+void RunSceneDuplicateSelfTest();
 // Headless proof for 4.4.5b sub-phase B: bring up an additional canvas with a live
 // mix + a source in its current scene, address its preview surface by uuid, and
 // drive a hit-test + a select + a move on it. Assert the edit lands on the

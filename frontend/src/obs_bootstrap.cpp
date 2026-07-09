@@ -1831,6 +1831,200 @@ void ObsBootstrap::RunCanvasSceneSelfTest()
 		"; canvases now " + std::to_string(g_canvases.Definitions().size()));
 }
 
+void ObsBootstrap::RunSceneDuplicateSelfTest()
+{
+	using Bridge::json;
+
+	auto run = [](const std::string &method, const json &params, bool &ok) -> json {
+		json result;
+		std::string error;
+		ok = Bridge::Dispatch(method, params, result, error);
+		if (!ok) {
+			HostLog("[selftest] " + method + " FAILED: " + error);
+			return json(nullptr);
+		}
+		return result;
+	};
+
+	// Bring up two temporary ADDITIONAL canvases (source + destination), exactly
+	// like the canvas-scene selftest. Operate ONLY on the in-memory stores (never
+	// Save explicitly) so the user's files stay untouched. The point is to prove
+	// scenes.duplicateToCanvas performs a real deep copy across canvases, with
+	// undo/redo that preserves the copied source's uuid on restore.
+	auto makeTempCanvas = [](const char *name) -> std::string {
+		CanvasDefinition def;
+		def.name = name;
+		def.isDefault = false;
+		def.width = 1280;
+		def.height = 720;
+		def.fpsNum = 30;
+		def.fpsDen = 1;
+		const CanvasDefinition &added = g_canvases.Add(std::move(def));
+		const std::string uuid = added.uuid;
+		g_canvasRuntime->EnsureCanvas(added);
+		return uuid;
+	};
+	const std::string srcCanvasUuid = makeTempCanvas("selftest-duplicate-src-canvas");
+	const std::string destCanvasUuid = makeTempCanvas("selftest-duplicate-dest-canvas");
+
+	bool ok = false;
+
+	// 1) Create + select a scene on the source canvas, then add one color source.
+	const char *kSceneName = "selftest-duplicate-scene";
+	run("scenes.create", json{{"canvas", srcCanvasUuid}, {"name", kSceneName}}, ok);
+	HostLog(std::string("[selftest] scene-duplicate scenes.create -> ") + (ok ? "ok" : "FAIL (BUG)"));
+
+	run("scenes.setCurrent", json{{"canvas", srcCanvasUuid}, {"name", kSceneName}}, ok);
+	HostLog(std::string("[selftest] scene-duplicate scenes.setCurrent -> ") + (ok ? "ok" : "FAIL (BUG)"));
+
+	// Explicit unique name: sources.create's default (the type's display name,
+	// "Color") collides globally against any source already named that in the
+	// user's loaded scene collection, which would fail this step for reasons
+	// having nothing to do with what's under test here.
+	json srcCreated = run("sources.create",
+			       json{{"canvas", srcCanvasUuid}, {"type", "color_source"}, {"name", "selftest-duplicate-color"}},
+			       ok);
+	const int64_t srcItemId = ok ? srcCreated.value("id", int64_t(0)) : 0;
+	const std::string srcSrcName = ok ? srcCreated.value("source", std::string()) : std::string();
+	HostLog(std::string("[selftest] scene-duplicate sources.create -> ") +
+		(ok ? "id=" + std::to_string(srcItemId) + " source='" + srcSrcName + "'" : "FAIL (BUG)"));
+
+	std::string origSrcUuid;
+	if (!srcSrcName.empty()) {
+		OBSSourceAutoRelease s = obs_get_source_by_name(srcSrcName.c_str());
+		if (s) {
+			const char *u = obs_source_get_uuid(s);
+			origSrcUuid = u ? u : std::string();
+		}
+	}
+	HostLog(std::string("[selftest] scene-duplicate original source uuid -> ") +
+		(origSrcUuid.empty() ? "MISSING (BUG)" : origSrcUuid));
+
+	// 2) Duplicate the scene from the source canvas onto the destination canvas.
+	json dup = run("scenes.duplicateToCanvas",
+		       json{{"name", kSceneName}, {"canvas", srcCanvasUuid}, {"destCanvas", destCanvasUuid}}, ok);
+	const std::string newSceneName = ok ? dup.value("name", std::string()) : std::string();
+	HostLog(std::string("[selftest] scene-duplicate scenes.duplicateToCanvas -> ") +
+		(ok ? "ok name='" + newSceneName + "'" : "FAIL (BUG)"));
+
+	// Helper: does the destination canvas's scene list contain `sceneName`?
+	auto sceneExistsOnDest = [&](const std::string &sceneName) -> bool {
+		bool listOk = false;
+		json scenes = run("scenes.list", json{{"canvas", destCanvasUuid}}, listOk);
+		if (!listOk || !scenes.is_array()) {
+			return false;
+		}
+		for (const auto &s : scenes) {
+			if (s.value("name", std::string()) == sceneName) {
+				return true;
+			}
+		}
+		return false;
+	};
+
+	// Helper: make `sceneName` current on the destination canvas, assert it has
+	// exactly one item, and return that item's source uuid (empty on any failure).
+	auto singleItemSourceUuid = [&](const std::string &sceneName, int64_t &outItemId,
+					 std::string &outSrcName) -> std::string {
+		bool setOk = false;
+		run("scenes.setCurrent", json{{"canvas", destCanvasUuid}, {"name", sceneName}}, setOk);
+		if (!setOk) {
+			return {};
+		}
+		bool listOk = false;
+		json items = run("sceneItems.list", json{{"canvas", destCanvasUuid}}, listOk);
+		if (!listOk || !items.is_array() || items.size() != 1) {
+			return {};
+		}
+		outItemId = items[0].value("id", int64_t(0));
+		outSrcName = items[0].value("source", std::string());
+		if (outSrcName.empty()) {
+			return {};
+		}
+		OBSSourceAutoRelease s = obs_get_source_by_name(outSrcName.c_str());
+		if (!s) {
+			return {};
+		}
+		const char *u = obs_source_get_uuid(s);
+		return u ? u : std::string();
+	};
+
+	// 3) Assert the new scene exists on the destination canvas with exactly one
+	// item whose source uuid differs from the original -- a real copy.
+	const bool foundOnDest = sceneExistsOnDest(newSceneName);
+	HostLog(std::string("[selftest] scene-duplicate destCanvas scenes.list -> scene present=") +
+		(foundOnDest ? "true" : "false (BUG)"));
+
+	int64_t dupItemId = 0;
+	std::string dupSrcName;
+	const std::string dupSrcUuid =
+		foundOnDest ? singleItemSourceUuid(newSceneName, dupItemId, dupSrcName) : std::string();
+	const bool isRealCopy = !dupSrcUuid.empty() && dupSrcUuid != origSrcUuid;
+	HostLog(std::string("[selftest] scene-duplicate item copy -> uuid=") +
+		(dupSrcUuid.empty() ? "MISSING (BUG)" : dupSrcUuid) +
+		"; independent-of-original=" + (isRealCopy ? "true" : "false (BUG)"));
+
+	// 4) Undo: the duplicated scene must disappear from the destination canvas.
+	// The removed scene + its child source only fully leave the uuid/name
+	// registry once the destruction-task thread processes their deferred
+	// obs_source_destroy (obs_source_remove only marks them removed); drain it
+	// synchronously so the redo below restores into a clean registry instead of
+	// racing a still-live duplicate of the same uuid, mirroring the drain-loop
+	// idiom Stop() already uses around canvas/scene teardown.
+	ObsBootstrap::Undo().Undo();
+	while (obs_wait_for_destroy_queue()) {
+	}
+	const bool goneAfterUndo = !sceneExistsOnDest(newSceneName);
+	HostLog(std::string("[selftest] scene-duplicate undo -> scene removed=") +
+		(goneAfterUndo ? "true" : "false (BUG)"));
+
+	// 5) Redo: the scene must come back with the SAME item source uuid captured
+	// above -- proof of uuid-preserving restore-from-snapshot, not a fresh
+	// re-duplicate (which would mint a new uuid).
+	ObsBootstrap::Undo().Redo();
+	const bool backAfterRedo = sceneExistsOnDest(newSceneName);
+	HostLog(std::string("[selftest] scene-duplicate redo -> scene restored=") +
+		(backAfterRedo ? "true" : "false (BUG)"));
+
+	int64_t redoItemId = 0;
+	std::string redoSrcName;
+	const std::string redoSrcUuid =
+		backAfterRedo ? singleItemSourceUuid(newSceneName, redoItemId, redoSrcName) : std::string();
+	const bool uuidPreserved = !redoSrcUuid.empty() && redoSrcUuid == dupSrcUuid;
+	HostLog(std::string("[selftest] scene-duplicate redo uuid-preserved -> ") +
+		(uuidPreserved ? "true" : "false (BUG)") + " (uuid=" + redoSrcUuid + ")");
+
+	// Clean up: remove the source items + underlying sources we created, then
+	// destroy both temp canvases, returning the in-memory model to baseline.
+	if (redoItemId) {
+		run("sceneItems.remove", json{{"canvas", destCanvasUuid}, {"id", redoItemId}}, ok);
+		obs_source_t *s = obs_get_source_by_name(redoSrcName.c_str());
+		if (s) {
+			obs_source_remove(s);
+			obs_source_release(s);
+		}
+	}
+	if (srcItemId) {
+		run("sceneItems.remove", json{{"canvas", srcCanvasUuid}, {"id", srcItemId}}, ok);
+		obs_source_t *s = obs_get_source_by_name(srcSrcName.c_str());
+		if (s) {
+			obs_source_remove(s);
+			obs_source_release(s);
+		}
+	}
+	g_multistream->InvalidateCanvasEncoders(destCanvasUuid);
+	g_multistream->InvalidateCanvasEncoders(srcCanvasUuid);
+	g_canvasRuntime->RemoveCanvas(destCanvasUuid);
+	g_canvasRuntime->RemoveCanvas(srcCanvasUuid);
+	g_canvases.Remove(destCanvasUuid);
+	g_canvases.Remove(srcCanvasUuid);
+	const bool gone = g_canvasRuntime->Find(destCanvasUuid) == nullptr && g_canvases.Find(destCanvasUuid) == nullptr &&
+			   g_canvasRuntime->Find(srcCanvasUuid) == nullptr && g_canvases.Find(srcCanvasUuid) == nullptr;
+	HostLog(std::string("[selftest] scene-duplicate cleanup: temp canvases ") +
+		(gone ? "removed" : "STILL PRESENT (BUG)") + "; canvases now " +
+		std::to_string(g_canvases.Definitions().size()));
+}
+
 void ObsBootstrap::RunPreviewSurfaceIsolationSelfTest()
 {
 	using Bridge::json;

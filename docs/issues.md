@@ -5,6 +5,40 @@ out, and how they were resolved. Newest first.
 
 ---
 
+## #5 — Cross-canvas scene duplicate undo/redo: nested-group and duplicate-source-usage edge cases
+
+**Status:** OPEN (known, non-blocking follow-up) — 2026-07-09, `scenes.duplicateToCanvas`
+(`frontend/src/bridge.cpp`, commits `6e6ce4ea3`..`4330bcef7`).
+
+Four review rounds on the new cross-canvas scene-duplicate undo/redo closed every bug that
+reproduces on any ordinary scene (redo not loading items; restored sources destroyed before
+the scene could resolve them; nested scenes/groups not getting their own `.load` call; undo
+deleting unrelated shared sources for nested-scene/`OBS_SOURCE_DO_NOT_DUPLICATE` items). Two
+narrower gaps remain, found on the final pass, scoped to less common scene compositions:
+
+- **Nested group's own children lost on redo.** `obs_scene_enum_items` only enumerates one
+  level, so the capture loop serializes a group item itself but never the group's own
+  children. A group's genuinely-duplicated grandchildren (e.g. a webcam+overlay grouped
+  together, duplicated to another canvas) get destroyed on undo along with the group
+  (harmless) but never restored on redo (`scene_load`'s internal `obs_get_source_by_uuid`
+  lookup for the missing grandchild silently fails via a `blog` warning the bridge never
+  surfaces).
+- **Same source used twice within one duplicated scene** produces two identical
+  `{uuid, sourceData}` entries in the undo/redo state (per-item, not per-source, capture);
+  restoring both on redo would create two `obs_source_t` objects claiming the same uuid,
+  making later uuid lookups ambiguous. Libobs's `obs_context_data_init_wrap` never enforces
+  uuid uniqueness, so this doesn't crash, just corrupts the source registry's uuid index.
+
+**Why not blocking:** both require a specific scene composition (a group, or a source
+referenced twice within the same scene) rather than triggering on any duplicate. The common
+case — any scene, any number of distinct non-grouped sources — is fully correct.
+
+**Fix direction (not yet built):** capture per-*source* (deduped by uuid) rather than
+per-*item*, and recurse one level into any captured group's own item list, serializing its
+children the same way the top-level scene's are serialized today.
+
+---
+
 ## #4 — Additional canvas previews are view-only (no drag layout editing)
 
 **Status:** RESOLVED (implemented, build-green + reviewed; runtime GUI acceptance
