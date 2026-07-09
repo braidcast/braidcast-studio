@@ -1180,9 +1180,11 @@ void PreviewSurface::OnMouseMove(int mx, int my)
 			obs_sceneitem_set_pos(item, &newPos);
 		} else if (state_->drag.mode == DragMode::Resize) {
 			const GeneralSettings &gs = ObsBootstrap::General();
+			const bool ctrlHeld = GetKeyState(VK_CONTROL) < 0;
 			obs_video_info ovi;
 			float snapBaseW = 0.0f, snapBaseH = 0.0f;
-			if (SurfaceVideoInfo(targetCanvas_, ovi) && ovi.base_width && ovi.base_height) {
+			if (gs.snapEnabled && !ctrlHeld && SurfaceVideoInfo(targetCanvas_, ovi) && ovi.base_width &&
+			    ovi.base_height) {
 				snapBaseW = float(ovi.base_width);
 				snapBaseH = float(ovi.base_height);
 			}
