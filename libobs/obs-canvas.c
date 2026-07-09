@@ -547,6 +547,9 @@ static bool enum_move_cb(obs_scene_t *scene, obs_sceneitem_t *item, void *param)
 	if (obs_source_is_group(source)) {
 		obs_canvas_remove_source(source);
 		obs_canvas_insert_source(dst, source);
+		/* Restore the global-mutex invariant after re-parenting the
+		 * group; see obs_canvas_move_scene below. */
+		source->context.mutex = &obs->data.sources_mutex;
 	}
 
 	return true;
@@ -557,6 +560,14 @@ void obs_canvas_move_scene(obs_scene_t *scene, obs_canvas_t *dst)
 	obs_source_t *source = scene->source;
 	obs_canvas_remove_source(source);
 	obs_canvas_insert_source(dst, source);
+
+	/* obs_canvas_insert_source pins context.mutex at the destination
+	 * canvas's sources_mutex, but the normal-creation path always ends by
+	 * re-pinning it back to the global sources_mutex (obs_context_data_insert_uuid,
+	 * called last from obs_source_init_finalize). A move never runs that step,
+	 * so mirror it here: a live source's context.mutex must always be the
+	 * global mutex, or it dangles once the destination canvas is freed. */
+	source->context.mutex = &obs->data.sources_mutex;
 
 	/* Also move all groups within this scene */
 	obs_scene_enum_items(scene, enum_move_cb, dst);
