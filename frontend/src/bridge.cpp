@@ -2796,6 +2796,27 @@ void GetSceneItemBox(obs_sceneitem_t *item, vec3 &tl, vec3 &br)
 	}
 }
 
+// After a rotation change has already been committed (box_transform reflects the
+// NEW rot), shift pos so the item's visual center matches where it was BEFORE
+// the rotation -- overriding libobs's default alignment-anchor pivot with a
+// center pivot, so rotating never flings an item far from where it started.
+void RepositionForCenterPivot(obs_sceneitem_t *item, const vec3 &beforeTl, const vec3 &beforeBr)
+{
+	vec3 afterTl, afterBr;
+	GetSceneItemBox(item, afterTl, afterBr);
+
+	const float centerBeforeX = (beforeTl.x + beforeBr.x) / 2.0f;
+	const float centerBeforeY = (beforeTl.y + beforeBr.y) / 2.0f;
+	const float centerAfterX = (afterTl.x + afterBr.x) / 2.0f;
+	const float centerAfterY = (afterTl.y + afterBr.y) / 2.0f;
+
+	vec2 pos;
+	obs_sceneitem_get_pos(item, &pos);
+	pos.x += centerBeforeX - centerAfterX;
+	pos.y += centerBeforeY - centerAfterY;
+	obs_sceneitem_set_pos(item, &pos);
+}
+
 // Resolve the scene + item shared by all three transform methods. On success
 // `sceneSource` is addref'd (caller releases) and `item` is borrowed from it.
 bool ResolveTransformTarget(const json &params, obs_source_t *&sceneSource, obs_sceneitem_t *&item,
@@ -2855,12 +2876,18 @@ bool MethodSceneItemsSetTransform(const json &params, json &result, std::string 
 	obs_source_t *undoSrc = obs_sceneitem_get_source(item);
 	const char *undoSrcName = undoSrc ? obs_source_get_name(undoSrc) : nullptr;
 
+	// Capture the box BEFORE any mutation so a rotation change below can be
+	// corrected to pivot around the item's visual center (see Step 1).
+	vec3 boxBeforeTl, boxBeforeBr;
+	GetSceneItemBox(item, boxBeforeTl, boxBeforeBr);
+
 	// Partial update: start from the current transform and overlay only the
 	// fields the caller supplied so the UI can send just what changed.
 	obs_transform_info info;
 	obs_sceneitem_get_info2(item, &info);
 	obs_sceneitem_crop crop;
 	obs_sceneitem_get_crop(item, &crop);
+	const float rotBefore = info.rot;
 
 	const json *t = nullptr;
 	if (params.is_object()) {
@@ -2925,10 +2952,16 @@ bool MethodSceneItemsSetTransform(const json &params, json &result, std::string 
 		}
 	}
 
+	const bool rotChanged = fabsf(info.rot - rotBefore) > 0.0001f;
+
 	obs_sceneitem_defer_update_begin(item);
 	obs_sceneitem_set_info2(item, &info);
 	obs_sceneitem_set_crop(item, &crop);
 	obs_sceneitem_defer_update_end(item);
+
+	if (rotChanged) {
+		RepositionForCenterPivot(item, boxBeforeTl, boxBeforeBr);
+	}
 
 	CommitSceneItemChange(params, sceneSource);
 
@@ -3012,6 +3045,12 @@ bool MethodSceneItemsTransformAction(const json &params, json &result, std::stri
 	uint32_t baseW = 0, baseH = 0;
 	ResolveBaseSize(params, baseW, baseH);
 
+	vec3 boxBeforeTl, boxBeforeBr;
+	const bool isRotateAction = (action == "rotate90cw" || action == "rotate90ccw" || action == "rotate180");
+	if (isRotateAction) {
+		GetSceneItemBox(item, boxBeforeTl, boxBeforeBr);
+	}
+
 	obs_sceneitem_defer_update_begin(item);
 
 	if (action == "reset") {
@@ -3073,6 +3112,10 @@ bool MethodSceneItemsTransformAction(const json &params, json &result, std::stri
 	}
 
 	obs_sceneitem_defer_update_end(item);
+
+	if (isRotateAction) {
+		RepositionForCenterPivot(item, boxBeforeTl, boxBeforeBr);
+	}
 
 	CommitSceneItemChange(params, sceneSource);
 
