@@ -1352,6 +1352,44 @@ on public repos (separate from the 500 MB Packages quota).
 
 ## Backlog & deferred decisions ⏸
 
+- 🔭 **Theme packs (full style selector)** — today's Appearance only varies accent/
+  mode/density on ONE fixed visual language (0-radius, current card/chip chrome —
+  locked design decision from 7.0). Add a top-level **Theme** selector alongside it:
+  each pack bundles corner-radius, shadow/elevation treatment, card and pill/chip
+  shape, and spacing rhythm as one named preset — accent/mode/density still apply
+  *within* whichever pack is active, they don't pick the pack. Ship with 2 packs at
+  launch: **Studio Dark** (current look, becomes the default pack) and a new
+  **rounded/soft-card pack** seeded from a mockup the user liked (`unified.png` —
+  dark bg, amber accent, rounded-xl cards/buttons, pill badges, softer modal
+  chrome) — reusing the mock's spirit, not a literal pixel port. Needs: (a) a token
+  schema extension beyond today's per-token color/mode axes — radius/shadow/shape
+  become pack-level, not user-editable per-token like color is; (b) decide whether
+  the existing custom per-token theme editor becomes "customize within a pack" or
+  stays pack-agnostic; (c) Appearance page UI for the pack picker (Phase 7.3's
+  Settings → Appearance is the natural home). Design-level only — not spec'd or
+  planned yet.
+- ✅ **Cross-canvas scene duplicate** (2026-07-09) — `scenes.duplicateToCanvas`
+  bridge method deep-copies a scene (scene filters + every item's source, incl.
+  that source's own filters, via `OBS_SCENE_DUP_COPY`) from any canvas onto any
+  other canvas, reparented via `obs_canvas_move_scene`. Grouped undo/redo (one
+  Ctrl+Z removes the whole duplicate; redo restores from captured snapshot data,
+  uuid-preserving). Scene-link mapping copied to the destination when the source
+  scene is itself a link target. "Duplicate to canvas ▸" submenu in both
+  `CanvasDock.svelte` and `ScenesDock.svelte`. Headless self-test
+  (`RunSceneDuplicateSelfTest`) passes clean (real independent copy, undo, redo,
+  uuid-stable restore). Along the way, found and fixed a real pre-existing
+  use-after-free in `libobs/obs-canvas.c`'s `obs_canvas_move_scene`/
+  `obs_canvas_insert_source` (a moved scene's `context.mutex` stayed pinned to its
+  prior canvas indefinitely, dangling once that canvas was destroyed — reachable
+  via source destroy AND scene rename; fixed at both the write site and
+  defense-in-depth at the destroy site). Two known narrow follow-ups logged in
+  `docs/issues.md` #5 (nested-group grandchildren not captured on redo;
+  duplicate-uuid collision when the same source is used twice in one scene) —
+  non-blocking, don't trigger on ordinary scenes. **GUI acceptance owed**
+  (submenu rendering/visual placement, real drag-independence check between
+  original and duplicate, undo/redo via actual Ctrl+Z/Y keypress rather than the
+  self-test's direct `Undo()`/`Redo()` calls, scene-link copy visually confirmed
+  in the Scene Link UI).
 - ⏸ **GoLive / Multitrack Video** — currently dormant. It's Twitch Enhanced
   Broadcasting (many quality renditions → one Twitch ingest), orthogonal to our
   many-platforms goal. Decision at the multi-destination phase: delete the
