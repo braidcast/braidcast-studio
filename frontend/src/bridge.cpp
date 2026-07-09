@@ -2805,15 +2805,17 @@ void RepositionForCenterPivot(obs_sceneitem_t *item, const vec3 &beforeTl, const
 	vec3 afterTl, afterBr;
 	GetSceneItemBox(item, afterTl, afterBr);
 
-	const float centerBeforeX = (beforeTl.x + beforeBr.x) / 2.0f;
-	const float centerBeforeY = (beforeTl.y + beforeBr.y) / 2.0f;
-	const float centerAfterX = (afterTl.x + afterBr.x) / 2.0f;
-	const float centerAfterY = (afterTl.y + afterBr.y) / 2.0f;
+	vec3 centerBefore, centerAfter;
+	vec3_set(&centerBefore, (beforeTl.x + beforeBr.x) / 2.0f, (beforeTl.y + beforeBr.y) / 2.0f, 0.0f);
+	vec3_set(&centerAfter, (afterTl.x + afterBr.x) / 2.0f, (afterTl.y + afterBr.y) / 2.0f, 0.0f);
+
+	vec3 delta;
+	vec3_sub(&delta, &centerBefore, &centerAfter);
 
 	vec2 pos;
 	obs_sceneitem_get_pos(item, &pos);
-	pos.x += centerBeforeX - centerAfterX;
-	pos.y += centerBeforeY - centerAfterY;
+	pos.x += delta.x;
+	pos.y += delta.y;
 	obs_sceneitem_set_pos(item, &pos);
 }
 
@@ -2875,11 +2877,6 @@ bool MethodSceneItemsSetTransform(const json &params, json &result, std::string 
 	const json undoBefore = CaptureTransformState(params, item);
 	obs_source_t *undoSrc = obs_sceneitem_get_source(item);
 	const char *undoSrcName = undoSrc ? obs_source_get_name(undoSrc) : nullptr;
-
-	// Capture the box BEFORE any mutation so a rotation change below can be
-	// corrected to pivot around the item's visual center (see Step 1).
-	vec3 boxBeforeTl, boxBeforeBr;
-	GetSceneItemBox(item, boxBeforeTl, boxBeforeBr);
 
 	// Partial update: start from the current transform and overlay only the
 	// fields the caller supplied so the UI can send just what changed.
@@ -2953,13 +2950,21 @@ bool MethodSceneItemsSetTransform(const json &params, json &result, std::string 
 	}
 
 	const bool rotChanged = fabsf(info.rot - rotBefore) > 0.0001f;
+	const bool posProvided = t && t->find("pos") != t->end();
+
+	// Capture the box BEFORE any mutation so a rotation change below can be
+	// corrected to pivot around the item's visual center (see Step 1).
+	vec3 boxBeforeTl, boxBeforeBr;
+	if (rotChanged) {
+		GetSceneItemBox(item, boxBeforeTl, boxBeforeBr);
+	}
 
 	obs_sceneitem_defer_update_begin(item);
 	obs_sceneitem_set_info2(item, &info);
 	obs_sceneitem_set_crop(item, &crop);
 	obs_sceneitem_defer_update_end(item);
 
-	if (rotChanged) {
+	if (rotChanged && !posProvided) {
 		RepositionForCenterPivot(item, boxBeforeTl, boxBeforeBr);
 	}
 
