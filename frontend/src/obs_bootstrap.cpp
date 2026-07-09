@@ -2219,6 +2219,220 @@ void ObsBootstrap::RunTransformPivotSelfTest()
 		(gone ? "removed" : "STILL PRESENT (BUG)"));
 }
 
+void ObsBootstrap::RunRotationBoundsSelfTest()
+{
+	using Bridge::json;
+
+	auto run = [](const std::string &method, const json &params, bool &ok) -> json {
+		json result;
+		std::string error;
+		ok = Bridge::Dispatch(method, params, result, error);
+		if (!ok) {
+			HostLog("[selftest] " + method + " FAILED: " + error);
+			return json(nullptr);
+		}
+		return result;
+	};
+
+	// Bring up a temporary ADDITIONAL canvas, same in-memory-only pattern as the
+	// transform-pivot self-test. The point: prove that a 90-degree rotation swaps
+	// a non-square item's AABB width/height correctly for BOTH OBS_BOUNDS_NONE
+	// (plain scale) and OBS_BOUNDS_SCALE_INNER (fixed bounds box) -- the
+	// bounds-mode case is the specific hypothesis behind the user-reported
+	// "selection outline stays sized for the old orientation after rotate" bug
+	// (design spec S4): if a bounds-mode item's box_transform footprint doesn't
+	// reflect the rotated shape, the outline -- which reads box_transform live
+	// every frame, per the earlier static review of DrawSelection -- would
+	// visibly lag even though the draw code itself is correct.
+	CanvasDefinition def;
+	def.name = "selftest-rotation-bounds-canvas";
+	def.isDefault = false;
+	def.width = 1280;
+	def.height = 720;
+	def.fpsNum = 30;
+	def.fpsDen = 1;
+	const CanvasDefinition &added = g_canvases.Add(std::move(def));
+	const std::string canvasUuid = added.uuid;
+	g_canvasRuntime->EnsureCanvas(added);
+
+	// Read the axis-aligned box of a scene item by id -- identical to
+	// RunTransformPivotSelfTest's readBox helper (bridge.cpp's GetSceneItemBox
+	// isn't exposed outside its translation unit, so each self-test resolves its
+	// own copy against the live libobs item).
+	auto readBox = [&](int64_t itemId, vec3 &tl, vec3 &br) -> bool {
+		obs_source_t *scene = g_canvasRuntime->CurrentScene(canvasUuid); // addref'd
+		if (!scene) {
+			return false;
+		}
+		struct FindCtx {
+			int64_t id;
+			obs_sceneitem_t *found;
+		} fc{itemId, nullptr};
+		obs_scene_enum_items(
+			obs_scene_from_source(scene),
+			[](obs_scene_t *, obs_sceneitem_t *it, void *p) -> bool {
+				auto *c = static_cast<FindCtx *>(p);
+				if (obs_sceneitem_get_id(it) == c->id) {
+					c->found = it;
+					return false;
+				}
+				return true;
+			},
+			&fc);
+		if (!fc.found) {
+			obs_source_release(scene);
+			return false;
+		}
+		matrix4 boxTransform;
+		obs_sceneitem_get_box_transform(fc.found, &boxTransform);
+		vec3_set(&tl, M_INFINITE, M_INFINITE, 0.0f);
+		vec3_set(&br, -M_INFINITE, -M_INFINITE, 0.0f);
+		const float corners[4][2] = {{0.0f, 0.0f}, {1.0f, 0.0f}, {0.0f, 1.0f}, {1.0f, 1.0f}};
+		for (const auto &c : corners) {
+			vec3 pos;
+			vec3_set(&pos, c[0], c[1], 0.0f);
+			vec3_transform(&pos, &pos, &boxTransform);
+			vec3_min(&tl, &tl, &pos);
+			vec3_max(&br, &br, &pos);
+		}
+		obs_source_release(scene);
+		return true;
+	};
+
+	constexpr float kSwapEpsilonPx = 1.0f;
+
+	bool ok = false;
+	const char *kSceneName = "selftest-rotation-bounds-scene";
+	run("scenes.create", json{{"canvas", canvasUuid}, {"name", kSceneName}}, ok);
+	run("scenes.setCurrent", json{{"canvas", canvasUuid}, {"name", kSceneName}}, ok);
+	HostLog(std::string("[selftest] rotation-bounds scene setup -> ") + (ok ? "ok" : "FAIL (BUG)"));
+
+	// One case per bounds mode: a fresh color source given a known 400x100
+	// footprint (non-square, so a correct 90-degree rotation must swap which
+	// axis is longer), then rotated and re-measured. boundsType < 0 means "leave
+	// at the item's default (OBS_BOUNDS_NONE)" and derive the footprint via scale
+	// instead of bounds, matching how the plain-scale case is actually driven
+	// through the Transform dialog.
+	struct BoundsCase {
+		const char *label;
+		int boundsType;
+		float boxW;
+		float boxH;
+	};
+	const BoundsCase cases[] = {
+		{"none", -1, 400.0f, 100.0f},
+		{"scale_inner", static_cast<int>(OBS_BOUNDS_SCALE_INNER), 400.0f, 100.0f},
+	};
+
+	std::vector<int64_t> createdItemIds;
+	std::vector<std::string> createdSourceNames;
+	bool allSwapped = true;
+
+	for (const BoundsCase &c : cases) {
+		json srcCreated = run("sources.create",
+				      json{{"canvas", canvasUuid},
+					   {"type", "color_source"},
+					   {"name", std::string("selftest-rotation-bounds-") + c.label}},
+				      ok);
+		const int64_t itemId = ok ? srcCreated.value("id", int64_t(0)) : 0;
+		const std::string srcName = ok ? srcCreated.value("source", std::string()) : std::string();
+		HostLog(std::string("[selftest] rotation-bounds sources.create (") + c.label + ") -> " +
+			(itemId ? "id=" + std::to_string(itemId) : "FAIL (BUG)"));
+		if (!itemId) {
+			allSwapped = false;
+			continue;
+		}
+		createdItemIds.push_back(itemId);
+		createdSourceNames.push_back(srcName);
+
+		json transform{{"pos", json{{"x", 100.0}, {"y", 300.0}}}};
+		if (c.boundsType >= 0) {
+			transform["boundsType"] = c.boundsType;
+			transform["bounds"] = json{{"x", c.boxW}, {"y", c.boxH}};
+		} else {
+			json xform = run("sceneItems.getTransform", json{{"canvas", canvasUuid}, {"id", itemId}}, ok);
+			const uint32_t srcW = ok ? xform.value("sourceWidth", uint32_t(0)) : 0;
+			const uint32_t srcH = ok ? xform.value("sourceHeight", uint32_t(0)) : 0;
+			transform["scale"] = json{{"x", srcW ? double(c.boxW) / double(srcW) : 1.0},
+						   {"y", srcH ? double(c.boxH) / double(srcH) : 1.0}};
+		}
+		run("sceneItems.setTransform", json{{"canvas", canvasUuid}, {"id", itemId}, {"transform", transform}}, ok);
+
+		vec3 beforeTl, beforeBr;
+		const bool haveBefore = ok && readBox(itemId, beforeTl, beforeBr);
+		const float widthBefore = haveBefore ? beforeBr.x - beforeTl.x : -1.0f;
+		const float heightBefore = haveBefore ? beforeBr.y - beforeTl.y : -1.0f;
+
+		run("sceneItems.setTransform", json{{"canvas", canvasUuid}, {"id", itemId}, {"transform", json{{"rot", 90.0}}}},
+		    ok);
+
+		vec3 afterTl, afterBr;
+		const bool haveAfter = ok && readBox(itemId, afterTl, afterBr);
+		const float widthAfter = haveAfter ? afterBr.x - afterTl.x : -1.0f;
+		const float heightAfter = haveAfter ? afterBr.y - afterTl.y : -1.0f;
+
+		const bool swapped = haveBefore && haveAfter && std::fabs(widthAfter - heightBefore) <= kSwapEpsilonPx &&
+				      std::fabs(heightAfter - widthBefore) <= kSwapEpsilonPx;
+		allSwapped = allSwapped && swapped;
+		HostLog(std::string("[selftest] rotation-bounds ") + c.label + " -> swapped=" +
+			(swapped ? "true" : "false (BUG)") + " (before=" + std::to_string(widthBefore) + "x" +
+			std::to_string(heightBefore) + " after=" + std::to_string(widthAfter) + "x" +
+			std::to_string(heightAfter) + ")");
+	}
+
+	// Also drive the SAME bounds-mode item through sceneItems.transformAction's
+	// rotate90cw entry point -- the actual "Rotate 90 CW" quick-action a user
+	// clicks, distinct from the setTransform dialog path exercised above, and
+	// the specific code path a frontend investigation of this bug flagged as
+	// unverified (MethodSceneItemsTransformAction's rotate branch calls
+	// obs_sceneitem_set_rot then RepositionForCenterPivot, rather than
+	// obs_sceneitem_set_info2 -- same underlying update_item_transform, but
+	// worth proving empirically rather than by inference alone).
+	if (createdItemIds.size() == std::size(cases) && cases[1].boundsType >= 0) {
+		const int64_t boundsItemId = createdItemIds[1];
+		run("sceneItems.setTransform", json{{"canvas", canvasUuid}, {"id", boundsItemId}, {"transform", json{{"rot", 0.0}}}},
+		    ok);
+		vec3 beforeTl, beforeBr;
+		const bool haveBefore = ok && readBox(boundsItemId, beforeTl, beforeBr);
+		const float widthBefore = haveBefore ? beforeBr.x - beforeTl.x : -1.0f;
+		const float heightBefore = haveBefore ? beforeBr.y - beforeTl.y : -1.0f;
+
+		run("sceneItems.transformAction", json{{"canvas", canvasUuid}, {"id", boundsItemId}, {"action", "rotate90cw"}},
+		    ok);
+		vec3 afterTl, afterBr;
+		const bool haveAfter = ok && readBox(boundsItemId, afterTl, afterBr);
+		const float widthAfter = haveAfter ? afterBr.x - afterTl.x : -1.0f;
+		const float heightAfter = haveAfter ? afterBr.y - afterTl.y : -1.0f;
+
+		const bool swapped = haveBefore && haveAfter && std::fabs(widthAfter - heightBefore) <= kSwapEpsilonPx &&
+				      std::fabs(heightAfter - widthBefore) <= kSwapEpsilonPx;
+		allSwapped = allSwapped && swapped;
+		HostLog(std::string("[selftest] rotation-bounds scale_inner-quickaction -> swapped=") +
+			(swapped ? "true" : "false (BUG)") + " (before=" + std::to_string(widthBefore) + "x" +
+			std::to_string(heightBefore) + " after=" + std::to_string(widthAfter) + "x" +
+			std::to_string(heightAfter) + ")");
+	}
+
+	// Clean up: remove each item + its source, then destroy the temp canvas,
+	// returning the in-memory model to baseline (nothing Saved beyond what the
+	// bridge calls above already do normally).
+	for (size_t i = 0; i < createdItemIds.size(); ++i) {
+		run("sceneItems.remove", json{{"canvas", canvasUuid}, {"id", createdItemIds[i]}}, ok);
+		obs_source_t *s = obs_get_source_by_name(createdSourceNames[i].c_str());
+		if (s) {
+			obs_source_remove(s);
+			obs_source_release(s);
+		}
+	}
+	g_multistream->InvalidateCanvasEncoders(canvasUuid);
+	g_canvasRuntime->RemoveCanvas(canvasUuid);
+	g_canvases.Remove(canvasUuid);
+	const bool gone = g_canvasRuntime->Find(canvasUuid) == nullptr && g_canvases.Find(canvasUuid) == nullptr;
+	HostLog(std::string("[selftest] rotation-bounds cleanup: temp canvas ") +
+		(gone ? "removed" : "STILL PRESENT (BUG)"));
+	HostLog(std::string("[selftest] rotation-bounds overall -> ") + (allSwapped ? "PASS" : "FAIL (BUG)"));
+}
+
 void ObsBootstrap::RunPreviewSurfaceIsolationSelfTest()
 {
 	using Bridge::json;

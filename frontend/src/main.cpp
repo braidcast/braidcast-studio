@@ -163,6 +163,7 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 				ObsBootstrap::RunCanvasSceneSelfTest();
 				ObsBootstrap::RunSceneDuplicateSelfTest();
 				ObsBootstrap::RunTransformPivotSelfTest();
+				ObsBootstrap::RunRotationBoundsSelfTest();
 				ObsBootstrap::RunPreviewSurfaceIsolationSelfTest();
 				ObsBootstrap::RunProjectorSelfTest();
 				ObsBootstrap::RunAudioMixerSelfTest();

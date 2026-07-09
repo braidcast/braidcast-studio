@@ -247,6 +247,22 @@ void RunSceneDuplicateSelfTest();
 // canvas -- proof the off-canvas clamp fired. Removes the temp canvas
 // afterward; never Saves. Gated by the caller to the smoke path.
 void RunTransformPivotSelfTest();
+// Headless proof for the outline/aspect-mismatch-after-rotation investigation
+// (transform-ux-fixes plan Task 5): bring up a temporary additional canvas with
+// two non-square color-source items -- one plain-scaled (OBS_BOUNDS_NONE), one
+// bounds-locked (OBS_BOUNDS_SCALE_INNER) -- each given a known 400x100 footprint,
+// then rotate each 90 degrees and re-read its AABB (via the same local box-read
+// helper RunTransformPivotSelfTest uses). Asserts the AABB's width/height swap
+// within ~1px for BOTH bounds modes, since a 90-degree rotation of a non-square
+// box should always flip which axis is longer. This directly tests whether the
+// "box footprint" that a selection outline would draw from actually updates
+// across rotation for the bounds-locked case, which is the specific hypothesis
+// behind the user-reported "outline stays sized for the old orientation" bug.
+// Also drives the bounds-locked item through sceneItems.transformAction's
+// rotate90cw entry point (the actual "Rotate 90 CW" quick-action), not just
+// setTransform, to prove both real rotation entry points agree. Removes the
+// temp canvas afterward; never Saves. Gated by the caller to the smoke path.
+void RunRotationBoundsSelfTest();
 // Headless proof for 4.4.5b sub-phase B: bring up an additional canvas with a live
 // mix + a source in its current scene, address its preview surface by uuid, and
 // drive a hit-test + a select + a move on it. Assert the edit lands on the
