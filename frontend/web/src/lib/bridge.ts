@@ -1178,6 +1178,10 @@ export interface ObsMethods {
   "scenes.rename": { name: string };
   // Duplicate a scene (global channel-0 path only; additional canvases unsupported).
   "scenes.duplicate": { name: string };
+  // Deep-copy a scene (its own scene-level filters + every item's SOURCE, filters
+  // included) from one canvas onto another (or the same one). Params: {name,
+  // canvas?, destCanvas}; canvas omitted/empty means the Default canvas.
+  "scenes.duplicateToCanvas": { name: string; uuid: string };
   // Scene reorder is NOT supported by the backend: libobs enumerates scenes in
   // creation order and the new frontend has no scene-collection persistence to
   // store a custom order, so this method always rejects with a clear error. Kept

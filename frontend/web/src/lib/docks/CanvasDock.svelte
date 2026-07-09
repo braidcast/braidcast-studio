@@ -22,6 +22,8 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
   import type { DeinterlaceMode, DeinterlaceFieldOrder } from "../bridge";
   import { defaultCanvas } from "./defaultCanvasStore.svelte";
   import { canvasStore } from "../canvasStore.svelte";
+  import { callOrToast } from "../callToast";
+  import { showToast } from "../toastStore.svelte";
   import AddSourceModal from "../AddSourceModal.svelte";
   import PropertyForm from "../properties/PropertyForm.svelte";
   import Modal from "../Modal.svelte";
@@ -261,6 +263,20 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
       : scenes,
   );
 
+  // Duplicates a scene from THIS canvas onto another canvas (a deep copy, unlike
+  // the same-canvas sceneItems.duplicate above which is a ref duplicate). See
+  // scenes.duplicateToCanvas in bridge.ts.
+  async function duplicateSceneToCanvas(sceneName: string, destUuid: string) {
+    const r = await callOrToast(
+      "scenes.duplicateToCanvas",
+      { name: sceneName, canvas: canvasUuid, destCanvas: destUuid },
+      "Duplicate failed",
+    );
+    if (r) {
+      showToast(`Duplicated "${sceneName}"`, r.name);
+    }
+  }
+
   function openSceneMenu(e: MouseEvent, name: string) {
     e.preventDefault();
     const linkChildren =
@@ -271,12 +287,21 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
             checked: isLinked(name, ms.name),
             action: () => toggleLink(name, ms.name),
           }));
+    const otherCanvases = canvasStore.canvases.filter((c) => c.uuid !== canvasUuid);
+    const duplicateChildren =
+      otherCanvases.length === 0
+        ? [{ label: "(no other canvases)", disabled: true }]
+        : otherCanvases.map((c) => ({
+            label: c.name,
+            action: () => void duplicateSceneToCanvas(name, c.uuid),
+          }));
     menu = {
       x: e.clientX,
       y: e.clientY,
       items: [
         { label: "Rename", action: () => beginRenameScene(name) },
         { label: "Link to", children: linkChildren },
+        { label: "Duplicate to canvas", children: duplicateChildren },
         null,
         { label: "Remove", danger: true, disabled: scenes.length <= 1, action: () => removeScene(name) },
       ],
