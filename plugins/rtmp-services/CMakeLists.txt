@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.28...3.30)
 
-option(ENABLE_SERVICE_UPDATES "Checks for service updates" ON)
+# Braidcast ships its own services.json (adds Kick, promotes YouTube-HLS to
+# common). Upstream's package is still v285 and would re-download over the
+# bundled file, dropping Kick again; keep runtime service updates off so the
+# fork's list is authoritative.
+option(ENABLE_SERVICE_UPDATES "Checks for service updates" OFF)
 
 set(
   RTMP_SERVICES_URL
