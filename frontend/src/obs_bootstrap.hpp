@@ -236,6 +236,17 @@ void RunCanvasSceneSelfTest();
 // own normal Save, matching the other canvas-scene self-tests). Gated by the
 // caller to the smoke path.
 void RunSceneDuplicateSelfTest();
+// Headless proof for the transform pivot/clamp fixes: bring up a temporary
+// additional canvas with one wide, off-center, non-uniformly scaled color
+// source, then drive setTransform{rot:90} and transformAction{rotate90cw}
+// and assert (via a local AABB read mirroring bridge.cpp's GetSceneItemBox)
+// that the item's visual center barely moves -- proof rotation pivots around
+// the center rather than libobs's default alignment-anchor corner. Also
+// drives an extreme pos-only setTransform that would leave the item fully
+// off-canvas and asserts the resulting box regains positive overlap with the
+// canvas -- proof the off-canvas clamp fired. Removes the temp canvas
+// afterward; never Saves. Gated by the caller to the smoke path.
+void RunTransformPivotSelfTest();
 // Headless proof for 4.4.5b sub-phase B: bring up an additional canvas with a live
 // mix + a source in its current scene, address its preview surface by uuid, and
 // drive a hit-test + a select + a move on it. Assert the edit lands on the

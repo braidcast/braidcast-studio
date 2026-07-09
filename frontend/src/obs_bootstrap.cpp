@@ -12,6 +12,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <filesystem>
@@ -2023,6 +2024,199 @@ void ObsBootstrap::RunSceneDuplicateSelfTest()
 	HostLog(std::string("[selftest] scene-duplicate cleanup: temp canvases ") +
 		(gone ? "removed" : "STILL PRESENT (BUG)") + "; canvases now " +
 		std::to_string(g_canvases.Definitions().size()));
+}
+
+void ObsBootstrap::RunTransformPivotSelfTest()
+{
+	using Bridge::json;
+
+	auto run = [](const std::string &method, const json &params, bool &ok) -> json {
+		json result;
+		std::string error;
+		ok = Bridge::Dispatch(method, params, result, error);
+		if (!ok) {
+			HostLog("[selftest] " + method + " FAILED: " + error);
+			return json(nullptr);
+		}
+		return result;
+	};
+
+	// Bring up a temporary ADDITIONAL canvas, exactly like the canvas-scene
+	// selftest. In-memory only (never Save). The point is to prove, against a
+	// real libobs scene item, that setTransform/transformAction rotations pivot
+	// around the item's visual center (Task 1) and that an off-canvas transform
+	// gets nudged back on-screen (Task 2).
+	CanvasDefinition def;
+	def.name = "selftest-transform-pivot-canvas";
+	def.isDefault = false;
+	def.width = 1280;
+	def.height = 720;
+	def.fpsNum = 30;
+	def.fpsDen = 1;
+	const CanvasDefinition &added = g_canvases.Add(std::move(def));
+	const std::string canvasUuid = added.uuid;
+	g_canvasRuntime->EnsureCanvas(added);
+
+	// Read the axis-aligned box of a scene item on the temp canvas's current
+	// scene by id, mirroring bridge.cpp's GetSceneItemBox exactly (corner-
+	// transform via obs_sceneitem_get_box_transform), but resolved locally
+	// since the bridge doesn't expose a ready-made AABB over the wire.
+	auto readBox = [&](int64_t itemId, vec3 &tl, vec3 &br) -> bool {
+		obs_source_t *scene = g_canvasRuntime->CurrentScene(canvasUuid); // addref'd
+		if (!scene) {
+			return false;
+		}
+		struct FindCtx {
+			int64_t id;
+			obs_sceneitem_t *found;
+		} fc{itemId, nullptr};
+		obs_scene_enum_items(
+			obs_scene_from_source(scene),
+			[](obs_scene_t *, obs_sceneitem_t *it, void *p) -> bool {
+				auto *c = static_cast<FindCtx *>(p);
+				if (obs_sceneitem_get_id(it) == c->id) {
+					c->found = it;
+					return false;
+				}
+				return true;
+			},
+			&fc);
+		if (!fc.found) {
+			obs_source_release(scene);
+			return false;
+		}
+		matrix4 boxTransform;
+		obs_sceneitem_get_box_transform(fc.found, &boxTransform);
+		vec3_set(&tl, M_INFINITE, M_INFINITE, 0.0f);
+		vec3_set(&br, -M_INFINITE, -M_INFINITE, 0.0f);
+		const float corners[4][2] = {{0.0f, 0.0f}, {1.0f, 0.0f}, {0.0f, 1.0f}, {1.0f, 1.0f}};
+		for (const auto &c : corners) {
+			vec3 pos;
+			vec3_set(&pos, c[0], c[1], 0.0f);
+			vec3_transform(&pos, &pos, &boxTransform);
+			vec3_min(&tl, &tl, &pos);
+			vec3_max(&br, &br, &pos);
+		}
+		obs_source_release(scene);
+		return true;
+	};
+	auto centerOf = [](const vec3 &tl, const vec3 &br) -> vec3 {
+		vec3 c;
+		vec3_set(&c, (tl.x + br.x) / 2.0f, (tl.y + br.y) / 2.0f, 0.0f);
+		return c;
+	};
+	constexpr float kCenterEpsilonPx = 1.0f;
+
+	bool ok = false;
+
+	// 1) Create + select a scene on the temp canvas (its current channel-0 scene
+	// is otherwise empty until one is set), then add a color source to it and
+	// read its native size back through the bridge so the wide/off-center test
+	// box is derived from the real source size rather than a guessed constant.
+	const char *kSceneName = "selftest-transform-pivot-scene";
+	run("scenes.create", json{{"canvas", canvasUuid}, {"name", kSceneName}}, ok);
+	run("scenes.setCurrent", json{{"canvas", canvasUuid}, {"name", kSceneName}}, ok);
+	HostLog(std::string("[selftest] transform-pivot scene setup -> ") + (ok ? "ok" : "FAIL (BUG)"));
+
+	json srcCreated = run("sources.create",
+			      json{{"canvas", canvasUuid}, {"type", "color_source"}, {"name", "selftest-transform-pivot-color"}},
+			      ok);
+	const int64_t itemId = ok ? srcCreated.value("id", int64_t(0)) : 0;
+	const std::string srcName = ok ? srcCreated.value("source", std::string()) : std::string();
+	HostLog(std::string("[selftest] transform-pivot sources.create -> ") +
+		(itemId ? "id=" + std::to_string(itemId) + " source='" + srcName + "'" : "FAIL (BUG)"));
+	if (!itemId) {
+		g_canvasRuntime->RemoveCanvas(canvasUuid);
+		g_canvases.Remove(canvasUuid);
+		return;
+	}
+
+	json xform = run("sceneItems.getTransform", json{{"canvas", canvasUuid}, {"id", itemId}}, ok);
+	const uint32_t srcW = ok ? xform.value("sourceWidth", uint32_t(0)) : 0;
+	const uint32_t srcH = ok ? xform.value("sourceHeight", uint32_t(0)) : 0;
+	const float scaleX = srcW ? 400.0f / float(srcW) : 1.0f;
+	const float scaleY = srcH ? 100.0f / float(srcH) : 1.0f;
+
+	// 2) Position it wide, off-center, non-uniformly scaled -- ~400x100 near a
+	// corner of the 1280x720 canvas -- so a non-center rotation pivot would
+	// visibly move it.
+	run("sceneItems.setTransform",
+	    json{{"canvas", canvasUuid},
+		 {"id", itemId},
+		 {"transform", json{{"pos", json{{"x", 100.0}, {"y", 300.0}}}, {"scale", json{{"x", scaleX}, {"y", scaleY}}}}}},
+	    ok);
+	vec3 setupTl, setupBr;
+	const bool haveSetupBox = ok && readBox(itemId, setupTl, setupBr);
+	HostLog(std::string("[selftest] transform-pivot setup box -> ") +
+		(haveSetupBox ? "ok" : "FAIL (BUG)"));
+
+	// 3) Rotate 90 degrees via setTransform (no pos in the same call, so Task 1's
+	// center-pivot correction is the only thing moving pos). Assert the visual
+	// center barely moved.
+	vec3 beforeRotTl, beforeRotBr;
+	const bool haveBeforeRot = haveSetupBox && readBox(itemId, beforeRotTl, beforeRotBr);
+	const vec3 centerBeforeRot = centerOf(beforeRotTl, beforeRotBr);
+	run("sceneItems.setTransform", json{{"canvas", canvasUuid}, {"id", itemId}, {"transform", json{{"rot", 90.0}}}},
+	    ok);
+	vec3 afterRotTl, afterRotBr;
+	const bool haveAfterRot = ok && readBox(itemId, afterRotTl, afterRotBr);
+	const vec3 centerAfterRot = centerOf(afterRotTl, afterRotBr);
+	const float rotDrift = haveBeforeRot && haveAfterRot
+					? std::hypot(centerAfterRot.x - centerBeforeRot.x, centerAfterRot.y - centerBeforeRot.y)
+					: -1.0f;
+	const bool rotCenterHeld = haveBeforeRot && haveAfterRot && rotDrift <= kCenterEpsilonPx;
+	HostLog(std::string("[selftest] transform-pivot rotate-center (setTransform) -> ") +
+		(rotCenterHeld ? "true" : "false (BUG)") + " (drift=" + std::to_string(rotDrift) + "px)");
+
+	// 4) Reset rotation back to 0 (also exercises the center-pivot correction on
+	// the way back), then drive the SAME property through transformAction's
+	// rotate90cw entry point.
+	run("sceneItems.setTransform", json{{"canvas", canvasUuid}, {"id", itemId}, {"transform", json{{"rot", 0.0}}}},
+	    ok);
+	vec3 beforeActionTl, beforeActionBr;
+	const bool haveBeforeAction = ok && readBox(itemId, beforeActionTl, beforeActionBr);
+	const vec3 centerBeforeAction = centerOf(beforeActionTl, beforeActionBr);
+	run("sceneItems.transformAction", json{{"canvas", canvasUuid}, {"id", itemId}, {"action", "rotate90cw"}}, ok);
+	vec3 afterActionTl, afterActionBr;
+	const bool haveAfterAction = ok && readBox(itemId, afterActionTl, afterActionBr);
+	const vec3 centerAfterAction = centerOf(afterActionTl, afterActionBr);
+	const float actionDrift =
+		haveBeforeAction && haveAfterAction
+			? std::hypot(centerAfterAction.x - centerBeforeAction.x, centerAfterAction.y - centerBeforeAction.y)
+			: -1.0f;
+	const bool actionCenterHeld = haveBeforeAction && haveAfterAction && actionDrift <= kCenterEpsilonPx;
+	HostLog(std::string("[selftest] transform-pivot rotate-center (transformAction) -> ") +
+		(actionCenterHeld ? "true" : "false (BUG)") + " (drift=" + std::to_string(actionDrift) + "px)");
+
+	// 5) Send it fully off-canvas via an extreme pos-only setTransform (no rot in
+	// this call, staying clear of Task 1's pos-vs-rot gating), then assert the
+	// clamp nudged it back to have positive overlap with the canvas.
+	run("sceneItems.setTransform",
+	    json{{"canvas", canvasUuid}, {"id", itemId}, {"transform", json{{"pos", json{{"x", -10000.0}, {"y", -10000.0}}}}}},
+	    ok);
+	vec3 clampedTl, clampedBr;
+	const bool haveClampedBox = ok && readBox(itemId, clampedTl, clampedBr);
+	const float overlapW = haveClampedBox ? std::min(clampedBr.x, 1280.0f) - std::max(clampedTl.x, 0.0f) : -1.0f;
+	const float overlapH = haveClampedBox ? std::min(clampedBr.y, 720.0f) - std::max(clampedTl.y, 0.0f) : -1.0f;
+	const bool clamped = haveClampedBox && overlapW > 0.0f && overlapH > 0.0f;
+	HostLog(std::string("[selftest] transform-pivot off-canvas clamp -> ") + (clamped ? "true" : "false (BUG)") +
+		" (overlapW=" + std::to_string(overlapW) + " overlapH=" + std::to_string(overlapH) + ")");
+
+	// Clean up: remove the source + its item, then destroy the temp canvas,
+	// returning the in-memory model to baseline (nothing Saved beyond what the
+	// bridge calls above already do normally).
+	run("sceneItems.remove", json{{"canvas", canvasUuid}, {"id", itemId}}, ok);
+	obs_source_t *s = obs_get_source_by_name(srcName.c_str());
+	if (s) {
+		obs_source_remove(s);
+		obs_source_release(s);
+	}
+	g_multistream->InvalidateCanvasEncoders(canvasUuid);
+	g_canvasRuntime->RemoveCanvas(canvasUuid);
+	g_canvases.Remove(canvasUuid);
+	const bool gone = g_canvasRuntime->Find(canvasUuid) == nullptr && g_canvases.Find(canvasUuid) == nullptr;
+	HostLog(std::string("[selftest] transform-pivot cleanup: temp canvas ") +
+		(gone ? "removed" : "STILL PRESENT (BUG)"));
 }
 
 void ObsBootstrap::RunPreviewSurfaceIsolationSelfTest()
