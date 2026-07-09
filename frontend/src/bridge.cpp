@@ -2819,6 +2819,53 @@ void RepositionForCenterPivot(obs_sceneitem_t *item, const vec3 &beforeTl, const
 	obs_sceneitem_set_pos(item, &pos);
 }
 
+// If the item's bounding box has near-zero overlap with the canvas after a
+// transform, nudge it back so at least kMinVisiblePx of it stays reachable --
+// prevents an item from becoming invisible/unselectable until Undo.
+constexpr float kMinVisiblePx = 32.0f;
+void ClampItemToCanvas(obs_sceneitem_t *item, uint32_t baseWidth, uint32_t baseHeight)
+{
+	vec3 tl, br;
+	GetSceneItemBox(item, tl, br);
+
+	const float overlapW = std::min(br.x, float(baseWidth)) - std::max(tl.x, 0.0f);
+	const float overlapH = std::min(br.y, float(baseHeight)) - std::max(tl.y, 0.0f);
+	if (overlapW > 0.0f && overlapH > 0.0f) {
+		return;
+	}
+
+	vec2 pos;
+	obs_sceneitem_get_pos(item, &pos);
+	float dx = 0.0f, dy = 0.0f;
+
+	if (overlapW <= 0.0f) {
+		const float itemW = br.x - tl.x;
+		const float minX = kMinVisiblePx - itemW;
+		const float maxX = float(baseWidth) - kMinVisiblePx;
+		if (tl.x < minX) {
+			dx = minX - tl.x;
+		} else if (tl.x > maxX) {
+			dx = maxX - tl.x;
+		}
+	}
+	if (overlapH <= 0.0f) {
+		const float itemH = br.y - tl.y;
+		const float minY = kMinVisiblePx - itemH;
+		const float maxY = float(baseHeight) - kMinVisiblePx;
+		if (tl.y < minY) {
+			dy = minY - tl.y;
+		} else if (tl.y > maxY) {
+			dy = maxY - tl.y;
+		}
+	}
+
+	if (dx != 0.0f || dy != 0.0f) {
+		pos.x += dx;
+		pos.y += dy;
+		obs_sceneitem_set_pos(item, &pos);
+	}
+}
+
 // Resolve the scene + item shared by all three transform methods. On success
 // `sceneSource` is addref'd (caller releases) and `item` is borrowed from it.
 bool ResolveTransformTarget(const json &params, obs_source_t *&sceneSource, obs_sceneitem_t *&item,
@@ -2966,6 +3013,11 @@ bool MethodSceneItemsSetTransform(const json &params, json &result, std::string 
 
 	if (rotChanged && !posProvided) {
 		RepositionForCenterPivot(item, boxBeforeTl, boxBeforeBr);
+	}
+
+	uint32_t clampBaseW = 0, clampBaseH = 0;
+	if (ResolveBaseSize(params, clampBaseW, clampBaseH)) {
+		ClampItemToCanvas(item, clampBaseW, clampBaseH);
 	}
 
 	CommitSceneItemChange(params, sceneSource);
@@ -3121,6 +3173,8 @@ bool MethodSceneItemsTransformAction(const json &params, json &result, std::stri
 	if (isRotateAction) {
 		RepositionForCenterPivot(item, boxBeforeTl, boxBeforeBr);
 	}
+
+	ClampItemToCanvas(item, baseW, baseH);
 
 	CommitSceneItemChange(params, sceneSource);
 
