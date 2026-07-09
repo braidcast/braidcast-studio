@@ -1368,6 +1368,21 @@ on public repos (separate from the 500 MB Packages quota).
   stays pack-agnostic; (c) Appearance page UI for the pack picker (Phase 7.3's
   Settings → Appearance is the natural home). Design-level only — not spec'd or
   planned yet.
+- 🔭 **Smart canvas settings** — today, creating a canvas leaves resolution/FPS/
+  encoder entirely to the user (`CanvasEditorDialog`). Add an optional "auto"
+  mode that proposes sane defaults instead: resolution/FPS inferred from the
+  canvas's intended destinations (e.g. a canvas bound only to a 1080p60 output
+  shouldn't default to 4K30), and encoder/bitrate ballpark inferred from local
+  hardware (GPU encoder availability via existing NVENC/QSV/AMF capability
+  probing, CPU core count for x264 fallback). Proposal only, never silently
+  overrides an explicit user choice — surfaces as a suggestion in the canvas
+  editor, not a hidden default. Needs: (a) decide the signal source for
+  "intended destinations" (an output binding may not exist yet when the canvas
+  is first created — chicken/egg with the Outputs tab), (b) a hardware-capability
+  → bitrate/preset heuristic table (or reuse whatever auto-config logic
+  upstream OBS already ships, if any, rather than inventing one), (c) whether
+  this lives in `CanvasEditorDialog` itself or a separate "New canvas" wizard
+  flow. Design-level only — not spec'd or planned yet.
 - ✅ **Cross-canvas scene duplicate** (2026-07-09) — `scenes.duplicateToCanvas`
   bridge method deep-copies a scene (scene filters + every item's source, incl.
   that source's own filters, via `OBS_SCENE_DUP_COPY`) from any canvas onto any
