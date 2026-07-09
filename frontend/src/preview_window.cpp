@@ -323,10 +323,18 @@ void ClampAspect(ItemHandle handle, vec3 &tl, vec3 &br, vec2 &size, const vec2 &
 	}
 }
 
+// Defined later in the file's other anonymous-namespace block; same translation
+// unit, so declaring it here lets StretchItem's resize-snap reuse it unchanged.
+vec3 CanvasSnapOffset(const GeneralSettings &gs, obs_scene_t *scene, int64_t draggedId, const vec3 &tl, const vec3 &br,
+		      float baseW, float baseH);
+
 // Resize the active drag item to the current mouse canvas pos. Single-select,
 // OBS_BOUNDS_NONE (scale) and bounds paths; aspect is preserved on corner drags.
+// Snaps the moving edge(s) to canvas edges/center/other sources, mirroring
+// move-drag's CanvasSnapOffset via a per-live-edge probe box (see below).
 // TODO(deferred): Shift = free aspect / Ctrl = no snap, crop (Alt) drag.
-void StretchItem(const DragState &drag, obs_sceneitem_t *item, const vec2 &canvasPos)
+void StretchItem(const DragState &drag, obs_sceneitem_t *item, const vec2 &canvasPos, obs_scene_t *scene,
+		 const GeneralSettings &gs, float snapBaseW, float snapBaseH)
 {
 	const obs_bounds_type boundsType = obs_sceneitem_get_bounds_type(item);
 	const uint32_t flags = uint32_t(drag.handle);
@@ -348,6 +356,70 @@ void StretchItem(const DragState &drag, obs_sceneitem_t *item, const vec2 &canva
 	} else if (flags & ITEM_BOTTOM) {
 		br.y = pos3.y;
 	}
+
+	// --- resize-snap ---
+	// Only one edge per live axis moves; the opposite edge is a fixed anchor.
+	// Build a canvas-space probe box where the anchor edge is collapsed onto the
+	// moving edge's coordinate, so CanvasSnapOffset's left/right/center checks all
+	// evaluate against the true moving edge. Non-live axes pass the real box and
+	// discard the returned offset for that axis.
+	const bool xLive = (flags & (ITEM_LEFT | ITEM_RIGHT)) != 0;
+	const bool yLive = (flags & (ITEM_TOP | ITEM_BOTTOM)) != 0;
+	const bool ctrlHeld = GetKeyState(VK_CONTROL) < 0;
+	if (gs.snapEnabled && !ctrlHeld && snapBaseW > 0.0f && snapBaseH > 0.0f && (xLive || yLive)) {
+		vec3 canvasTl, canvasBr;
+		vec3_transform(&canvasTl, &tl, &drag.itemToScreen);
+		vec3_transform(&canvasBr, &br, &drag.itemToScreen);
+
+		vec3 probeTl = canvasTl, probeBr = canvasBr;
+		if (xLive) {
+			if (flags & ITEM_LEFT) {
+				probeBr.x = probeTl.x;
+			} else {
+				probeTl.x = probeBr.x;
+			}
+		}
+		if (yLive) {
+			if (flags & ITEM_TOP) {
+				probeBr.y = probeTl.y;
+			} else {
+				probeTl.y = probeBr.y;
+			}
+		}
+		if (probeTl.x > probeBr.x) {
+			std::swap(probeTl.x, probeBr.x);
+		}
+		if (probeTl.y > probeBr.y) {
+			std::swap(probeTl.y, probeBr.y);
+		}
+
+		vec3 snap = CanvasSnapOffset(gs, scene, drag.id, probeTl, probeBr, snapBaseW, snapBaseH);
+
+		// Canvas->item-local is rotation-only for a delta (itemToScreen has no
+		// scale component: local and canvas share units, differing by rotation
+		// and translation, and translation drops out for a delta).
+		vec3 localSnap;
+		matrix4 rotationOnly;
+		matrix4_identity(&rotationOnly);
+		matrix4_rotate_aa4f(&rotationOnly, &rotationOnly, 0.0f, 0.0f, 1.0f, RAD(-obs_sceneitem_get_rot(item)));
+		vec3_transform(&localSnap, &snap, &rotationOnly);
+
+		if (xLive) {
+			if (flags & ITEM_LEFT) {
+				tl.x += localSnap.x;
+			} else {
+				br.x += localSnap.x;
+			}
+		}
+		if (yLive) {
+			if (flags & ITEM_TOP) {
+				tl.y += localSnap.y;
+			} else {
+				br.y += localSnap.y;
+			}
+		}
+	}
+	// --- end resize-snap ---
 
 	obs_source_t *source = obs_sceneitem_get_source(item);
 	const uint32_t source_cx = obs_source_get_width(source);
@@ -1107,7 +1179,14 @@ void PreviewSurface::OnMouseMove(int mx, int my)
 			newPos.y = std::round(state_->drag.startItemPos.y + offY);
 			obs_sceneitem_set_pos(item, &newPos);
 		} else if (state_->drag.mode == DragMode::Resize) {
-			StretchItem(state_->drag, item, canvasPos);
+			const GeneralSettings &gs = ObsBootstrap::General();
+			obs_video_info ovi;
+			float snapBaseW = 0.0f, snapBaseH = 0.0f;
+			if (SurfaceVideoInfo(targetCanvas_, ovi) && ovi.base_width && ovi.base_height) {
+				snapBaseW = float(ovi.base_width);
+				snapBaseH = float(ovi.base_height);
+			}
+			StretchItem(state_->drag, item, canvasPos, scene, gs, snapBaseW, snapBaseH);
 		}
 	}
 	obs_source_release(sceneSource);
