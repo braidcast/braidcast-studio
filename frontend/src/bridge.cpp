@@ -3100,7 +3100,7 @@ bool MethodSceneItemsTransformAction(const json &params, json &result, std::stri
 	const char *undoSrcName = undoSrc ? obs_source_get_name(undoSrc) : nullptr;
 
 	uint32_t baseW = 0, baseH = 0;
-	ResolveBaseSize(params, baseW, baseH);
+	const bool haveBaseSize = ResolveBaseSize(params, baseW, baseH);
 
 	vec3 boxBeforeTl, boxBeforeBr;
 	const bool isRotateAction = (action == "rotate90cw" || action == "rotate90ccw" || action == "rotate180");
@@ -3174,7 +3174,9 @@ bool MethodSceneItemsTransformAction(const json &params, json &result, std::stri
 		RepositionForCenterPivot(item, boxBeforeTl, boxBeforeBr);
 	}
 
-	ClampItemToCanvas(item, baseW, baseH);
+	if (haveBaseSize) {
+		ClampItemToCanvas(item, baseW, baseH);
+	}
 
 	CommitSceneItemChange(params, sceneSource);
 
