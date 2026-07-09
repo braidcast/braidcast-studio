@@ -273,7 +273,10 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
       "Duplicate failed",
     );
     if (r) {
-      showToast(`Duplicated "${sceneName}"`, r.name);
+      const destName = canvasStore.byUuid(destUuid)?.name;
+      const to = destName ? ` to "${destName}"` : "";
+      const as = r.name !== sceneName ? ` as "${r.name}"` : "";
+      showToast(`Duplicated "${sceneName}"${to}${as}`, r.name);
     }
   }
 
