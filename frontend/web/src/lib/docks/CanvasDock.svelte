@@ -33,6 +33,7 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
   import Splitter from "../dock/Splitter.svelte";
   import { getPaneSizes, setEmbedH, setScenesW } from "../dock/canvasPaneSizes";
   import { STATE_COLOR_EXT } from "../theme/stateColors";
+  import { multistreamStatusStore } from "../multistreamStatusStore.svelte";
 
   // A composite, inseparable dock for one NON-DEFAULT canvas (hierarchy-model.html
   // §1 right column): an inline preview + this canvas's own scenes + its own
@@ -655,22 +656,11 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
     ];
   }
 
-  // ---- footer: polled live-status dot for this canvas ------------------------
-  let liveState = $state<MultistreamState | "off">("off");
-  function recomputeState(rows: { canvasUuid: string; state: MultistreamState }[]) {
-    const mine = rows.filter((r) => r.canvasUuid === canvasUuid);
-    if (mine.length === 0) {
-      liveState = "off";
-    } else if (mine.some((r) => r.state === "live")) {
-      liveState = "live";
-    } else if (mine.some((r) => r.state === "error")) {
-      liveState = "error";
-    } else if (mine.some((r) => r.state === "connecting")) {
-      liveState = "connecting";
-    } else {
-      liveState = "idle";
-    }
-  }
+  // ---- footer: live-status dot for this canvas, off the shared status store ----
+  let liveState = $derived.by<MultistreamState | "off">(() => {
+    const mine = multistreamStatusStore.forCanvas(canvasUuid);
+    return mine.length === 0 ? "off" : multistreamStatusStore.deriveOutputsState(mine);
+  });
   // ---- toolbar actions (bottom bars, act on the selected row) ----------------
   let scenesLeft = $derived<ToolAction[]>([
     { icon: "plus", title: "Add scene", onClick: beginAddScene },
@@ -745,14 +735,10 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
     canvasStore.start();
     void loadScenes();
     void loadLinks();
-    void (async () => {
-      try {
-        const res = await obs.call("multistream.status");
-        recomputeState(res.outputs);
-      } catch {
-        // status optional; dot stays off
-      }
-    })();
+    // Live status (fetch + multistream.changed + outputBinding.changed) is owned by
+    // the shared store; liveState derives off it. Keep the subscription for the
+    // dock's lifetime.
+    const offStatus = multistreamStatusStore.subscribe();
 
     reportRect();
     // Observe BOTH the stage and the whole dock body: the stage catches aspect/size
@@ -792,7 +778,6 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
         selectedId = p.id;
       }
     });
-    const offStatus = obs.on("multistream.changed", (p) => recomputeState(p.outputs));
 
     // Right-click in this canvas's overlay: filter to our uuid in this window with
     // a real hit, then map the device-px cursor to viewport coords via the rect.

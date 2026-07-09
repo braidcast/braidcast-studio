@@ -63,7 +63,7 @@ void ChannelStatsPoller::Start()
 				}
 				OAuth::OAuthAccount acct = entry.second;
 				OAuth::StreamProvider *provider = OAuth::Registry().Get(acct.providerId);
-				if (!provider || !provider->isTokenScopeCurrent(acct)) {
+				if (!OAuth::IsAccountConnected(acct)) {
 					continue;
 				}
 

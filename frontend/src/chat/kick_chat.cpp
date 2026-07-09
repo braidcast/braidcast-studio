@@ -1,10 +1,9 @@
 #include "kick_chat.hpp"
 
-#include <chrono>
-
 #include "../http_client.hpp"
 #include "../log.hpp"
 #include "../oauth/kick_provider.hpp"
+#include "../time_util.hpp"
 #include "kick_pusher.hpp"
 #include "third_party_emotes.hpp"
 #include "ws_client.hpp"
@@ -19,12 +18,7 @@ namespace {
 constexpr const char *kEmoteCdnPrefix = "https://files.kick.com/emotes/";
 constexpr const char *kEmoteCdnSuffix = "/fullsize";
 
-long long NowMs()
-{
-	return std::chrono::duration_cast<std::chrono::milliseconds>(
-		       std::chrono::system_clock::now().time_since_epoch())
-		.count();
-}
+using TimeUtil::NowMs;
 
 // Split `content` into normalized fragments, mapping Kick's inline emote markup
 // `[emote:<id>:<name>]` to emote fragments and everything else to text.
@@ -75,11 +69,7 @@ json ParseFragments(const std::string &content)
 
 void EmitState(const ChatContext &ctx, bool connected, const std::string &error)
 {
-	json p = json{{"event", "chat.state"}, {"platform", "kick"}, {"connected", connected}};
-	if (!error.empty()) {
-		p["error"] = error;
-	}
-	ctx.emit(p);
+	EmitChatState(ctx, "kick", connected, error);
 }
 
 // Decode one App\Events\ChatMessageEvent Pusher frame and emit a normalized

@@ -1,16 +1,15 @@
 #include "youtube_chat.hpp"
 
 #include <algorithm>
-#include <cctype>
 #include <chrono>
-#include <cstdio>
-#include <ctime>
 #include <unordered_map>
 
 #include "../events/event_hub.hpp"   // Events::Hub().Ingest for monetization/membership events
 #include "../events/event_model.hpp" // Events::NormalizedEvent
 #include "../http_client.hpp"
+#include "../json_util.hpp"
 #include "../oauth/youtube_provider.hpp"
+#include "../time_util.hpp"
 #include "third_party_emotes.hpp"
 #include "ws_client.hpp" // CancelableSleep / Backoff
 
@@ -25,105 +24,12 @@ const char *kLiveChatMessagesUrl = "https://www.googleapis.com/youtube/v3/liveCh
 constexpr long kDefaultPollMs = 5000;
 constexpr long kMinPollMs = 1500;
 
-json ParseJson(const std::string &body)
-{
-	return json::parse(body, nullptr, false);
-}
-
-std::string Str(const json &j, const char *key)
-{
-	if (!j.is_object()) {
-		return std::string();
-	}
-	auto it = j.find(key);
-	if (it == j.end() || !it->is_string()) {
-		return std::string();
-	}
-	return it->get<std::string>();
-}
-
-bool Bool(const json &j, const char *key)
-{
-	if (!j.is_object()) {
-		return false;
-	}
-	auto it = j.find(key);
-	return it != j.end() && it->is_boolean() && it->get<bool>();
-}
-
-// Read an integer field that YouTube may serialize either as a JSON number or, for
-// 64-bit quantities like amountMicros, as a numeric string. Missing/garbage -> 0.
-int64_t NumLoose(const json &j, const char *key)
-{
-	if (!j.is_object()) {
-		return 0;
-	}
-	auto it = j.find(key);
-	if (it == j.end()) {
-		return 0;
-	}
-	if (it->is_number()) {
-		return it->get<int64_t>();
-	}
-	if (it->is_string()) {
-		try {
-			return std::stoll(it->get<std::string>());
-		} catch (const std::exception &) {
-			return 0;
-		}
-	}
-	return 0;
-}
-
-// Return a reference to `j[key]` when `j` is an object holding it, else a shared null
-// json -- lets the nested-detail accessors chain without intermediate null checks.
-const json &Obj(const json &j, const char *key)
-{
-	static const json kNull = json(nullptr);
-	if (!j.is_object()) {
-		return kNull;
-	}
-	auto it = j.find(key);
-	return it == j.end() ? kNull : *it;
-}
-
-// Parse an RFC3339 / ISO-8601 UTC instant ("2024-01-02T03:04:05.678Z") into epoch
-// milliseconds. Returns the current wall-clock ms on any parse failure so a
-// message never carries a zero/garbage timestamp.
-double Rfc3339ToEpochMs(const std::string &iso)
-{
-	int y = 0, mon = 0, d = 0, h = 0, mi = 0, s = 0;
-	if (std::sscanf(iso.c_str(), "%d-%d-%dT%d:%d:%d", &y, &mon, &d, &h, &mi, &s) == 6) {
-		std::tm tm{};
-		tm.tm_year = y - 1900;
-		tm.tm_mon = mon - 1;
-		tm.tm_mday = d;
-		tm.tm_hour = h;
-		tm.tm_min = mi;
-		tm.tm_sec = s;
-		const std::time_t epoch = _mkgmtime(&tm); // MSVC UTC mktime
-		if (epoch != static_cast<std::time_t>(-1)) {
-			long long millis = 0;
-			// Optional fractional seconds after a '.': capture up to 3 digits.
-			const auto dot = iso.find('.');
-			if (dot != std::string::npos) {
-				std::string frac;
-				for (size_t i = dot + 1; i < iso.size() && std::isdigit(static_cast<unsigned char>(iso[i])) &&
-						 frac.size() < 3;
-				     ++i) {
-					frac.push_back(iso[i]);
-				}
-				while (frac.size() < 3) {
-					frac.push_back('0');
-				}
-				millis = std::stoll(frac);
-			}
-			return static_cast<double>(static_cast<long long>(epoch) * 1000 + millis);
-		}
-	}
-	const auto now = std::chrono::system_clock::now().time_since_epoch();
-	return static_cast<double>(std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
-}
+using JsonUtil::Bool;
+using JsonUtil::NumLoose;
+using JsonUtil::Obj;
+using JsonUtil::ParseJson;
+using JsonUtil::Str;
+using TimeUtil::Rfc3339ToEpochMs;
 
 // authorDetails.{isChatOwner,isChatModerator,isChatSponsor} -> normalized badge
 // kinds. YouTube ships no badge image URLs on live-chat items, so url is omitted.
@@ -281,8 +187,7 @@ bool YouTubeChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, con
 
 	auto canceled = [&] { return stop_.load(std::memory_order_acquire) || (ctx.canceled && ctx.canceled()); };
 	auto emitState = [&](bool connected, const std::string &stateErr) {
-		ctx.emit(json{{"event", "chat.state"}, {"platform", "youtube"}, {"connected", connected},
-			      {"error", stateErr}});
+		EmitChatState(ctx, "youtube", connected, stateErr);
 	};
 
 	// Build the third-party (7TV/BTTV) emote map once for this session, keyed by the

@@ -45,20 +45,33 @@
     onChange(arr.includes(v) ? arr.filter((o) => o !== v) : [...arr, v]);
   }
 
-  // Render a local OS path as a CEF-loadable URL: normalize Windows backslashes to
-  // forward slashes, ensure a leading slash, and encode spaces/specials. Windows
-  // "C:\a b.png" -> file:///C:/a%20b.png; POSIX "/home/x.png" -> file:///home/x.png.
-  function toFileUrl(p: string): string {
-    const norm = p.replace(/\\/g, "/");
-    return encodeURI("file://" + (norm.startsWith("/") ? norm : "/" + norm));
-  }
-
-  // Reset the load-failure flag whenever a different path is selected so a new pick
-  // re-attempts the preview after a prior file failed to load.
+  // CEF serves the app from a custom app:// scheme and refuses to load file://
+  // local resources from it, so the preview can't point at the OS path directly.
+  // Instead the bridge reads the picked file and returns a base64 data: URI, which
+  // renders inline. Re-runs on each new path; a stale async resolve is discarded via
+  // the path guard so a fast re-pick can't show the wrong image, and a read failure
+  // falls back to the filename via imgError.
   let imgError = $state(false);
+  let dataUri = $state("");
   $effect(() => {
-    void str;
+    const path = str;
     imgError = false;
+    dataUri = "";
+    if (!path) {
+      return;
+    }
+    obs
+      .call("file.readDataUri", { path })
+      .then((r) => {
+        if (str === path) {
+          dataUri = r.dataUri;
+        }
+      })
+      .catch(() => {
+        if (str === path) {
+          imgError = true;
+        }
+      });
   });
 
   async function pickImage(): Promise<void> {
@@ -109,10 +122,10 @@
 {:else if field.type === "image"}
   {#if str}
     <div class="thumb has">
-      {#if imgError}
+      {#if imgError || !dataUri}
         <span class="fname">{basename(str)}</span>
       {:else}
-        <img class="preview" src={toFileUrl(str)} alt={basename(str)} onerror={() => (imgError = true)} />
+        <img class="preview" src={dataUri} alt={basename(str)} onerror={() => (imgError = true)} />
       {/if}
       <button class="thumb-x" title="Remove" aria-label="Remove image" onclick={clearImage}>×</button>
     </div>

@@ -9,6 +9,7 @@
   import { FeedVirtualizer, type FeedRow } from "../feedVirtualizer.svelte";
   import EmptyState from "../EmptyState.svelte";
   import Icon from "../dock/Icon.svelte";
+  import PlatformChips from "../PlatformChips.svelte";
   import { oauthStore } from "../oauthStore.svelte";
 
   // Host supplies tab chrome + strips __* keys; this body declares no props.
@@ -181,20 +182,7 @@
 <div class="events">
   {#if connectedPlatforms.length > 0}
     <div class="bar">
-      {#if showAllChip}
-        <button class="chip" class:on={filter === "all"} onclick={() => setFilter("all")}>All</button>
-      {/if}
-      {#each connectedPlatforms as p (p)}
-        <button
-          class="chip"
-          class:on={filter === p}
-          style:--chip={PLATFORM_COLOR[p]}
-          onclick={() => setFilter(p)}
-        >
-          <span class="cdot" style:background={PLATFORM_COLOR[p]}></span>
-          {PLATFORM_LABEL[p]}
-        </button>
-      {/each}
+      <PlatformChips platforms={connectedPlatforms} value={filter} showAll={showAllChip} onSelect={setFilter} />
     </div>
   {/if}
 
@@ -256,28 +244,6 @@
     padding: 6px 8px;
     border-bottom: var(--border-weight) solid var(--color-border);
     background: var(--color-surface-2);
-  }
-  .chip {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    padding: 3px 8px;
-    font-size: 10px;
-    font-family: var(--font-ui);
-    color: var(--color-dim);
-    background: transparent;
-    border: var(--border-weight) solid var(--color-border);
-    cursor: pointer;
-  }
-  .chip.on {
-    border-color: var(--chip, var(--color-accent));
-    color: var(--chip, var(--color-accent));
-    background: color-mix(in srgb, var(--chip, var(--color-accent)) 14%, transparent);
-  }
-  .cdot {
-    width: 6px;
-    height: 6px;
-    flex: 0 0 auto;
   }
   .scroll {
     flex: 1;

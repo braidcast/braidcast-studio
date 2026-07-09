@@ -5,12 +5,12 @@
     type EncoderType,
     type OutputBindingInfo,
     type StreamProfileInfo,
-    type MultistreamStatus,
     type MultistreamState,
   } from "../bridge";
   import { canvasStore } from "../canvasStore.svelte";
   import { outputBindingStore } from "../outputBindingStore.svelte";
   import { streamProfileStore } from "../streamProfileStore.svelte";
+  import { multistreamStatusStore } from "../multistreamStatusStore.svelte";
   import CanvasEditor from "../CanvasEditor.svelte";
   import CollectionDialog, { type DialogSpec } from "../CollectionDialog.svelte";
   import { STATE_COLOR_EXT } from "../theme/stateColors";
@@ -20,12 +20,12 @@
   // Canvases page: a master-detail layout. The left list selects a canvas; the right
   // pane is that canvas's live-applied detail editor (Video · Encoding · Audio ·
   // Destinations · Advanced). Going live is the Studio GO-LIVE bar, never per-row here.
-  // Canvas / binding / profile lists come from the shared stores (one source of
-  // truth); encoders + live-status rows stay local to this page.
+  // Canvas / binding / profile lists AND live status come from the shared stores
+  // (one source of truth per leg); only the encoder lists stay local to this page.
   let canvases = $derived(canvasStore.canvases);
   let bindings = $derived(outputBindingStore.bindings);
   let profiles = $derived(streamProfileStore.profiles);
-  let live = $state<MultistreamStatus[]>([]);
+  let statusByBinding = $derived(multistreamStatusStore.statusByBinding);
   let videoEncoders = $state<EncoderType[]>([]);
   let audioEncoders = $state<EncoderType[]>([]);
   let loaded = $state(false);
@@ -33,24 +33,15 @@
 
   let dialog = $state<DialogSpec | null>(null);
 
-  function loadLive(): void {
-    obs
-      .call("multistream.status")
-      .then((r) => (live = r.outputs))
-      .catch(() => {});
-  }
-
-  async function loadAll(): Promise<void> {
+  async function loadEncoders(): Promise<void> {
     error = null;
     try {
-      const [venc, aenc, status] = await Promise.all([
+      const [venc, aenc] = await Promise.all([
         obs.call("encoderTypes.list", { kind: "video" }),
         obs.call("encoderTypes.list", { kind: "audio" }),
-        obs.call("multistream.status"),
       ]);
       videoEncoders = venc;
       audioEncoders = aenc;
-      live = status.outputs;
     } catch (e) {
       error = (e as Error).message;
     } finally {
@@ -62,35 +53,15 @@
     canvasStore.start();
     outputBindingStore.start();
     streamProfileStore.start();
-    void loadAll();
-    // A binding toggle changes live status; re-poll (the binding LIST refreshes via
-    // the store's own outputBinding.changed subscription).
-    const offBindings = obs.on("outputBinding.changed", () => loadLive());
-    const offMulti = obs.on("multistream.changed", (p) => (live = p.outputs));
-    return () => {
-      offBindings();
-      offMulti();
-    };
-  });
-
-  // bindingUuid -> live status row.
-  const statusByBinding = $derived.by<Map<string, MultistreamStatus>>(() => {
-    const m = new Map<string, MultistreamStatus>();
-    for (const o of live) {
-      m.set(o.bindingUuid, o);
-    }
-    return m;
+    void loadEncoders();
+    // Live status (fetch + multistream.changed + outputBinding.changed re-poll) is
+    // owned by the shared store.
+    return multistreamStatusStore.subscribe();
   });
 
   // The strongest live state across a canvas's enabled bindings (drives the list dot).
   function canvasState(uuid: string): MultistreamState | "off" {
-    const rows = bindings.filter((b) => b.canvasUuid === uuid && b.enabled);
-    if (rows.length === 0) return "off";
-    const states = rows.map((b) => statusByBinding.get(b.uuid)?.state ?? "idle");
-    if (states.includes("live")) return "live";
-    if (states.includes("error")) return "error";
-    if (states.includes("connecting")) return "connecting";
-    return "idle";
+    return multistreamStatusStore.deriveCanvasState(bindings.filter((b) => b.canvasUuid === uuid));
   }
 
   function fpsText(c: CanvasInfo): string {

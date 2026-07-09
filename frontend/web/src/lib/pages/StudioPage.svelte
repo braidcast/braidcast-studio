@@ -14,8 +14,9 @@ import { bumpDockLayout } from "../dockLayoutSignal.svelte";
   import { startBrowserDockReconciler, reconcileBrowserDocks } from "../dock/browserDockReconciler";
   import { setDetachHandler } from "../dock/detachRegistry";
   import { browserDockStore } from "../browserDockStore.svelte";
-  import { obs, type CanvasInfo, type Monitor, type MultistreamStatus, type MultistreamState } from "../bridge";
+  import { obs, type CanvasInfo, type Monitor, type MultistreamState } from "../bridge";
   import { canvasStore } from "../canvasStore.svelte";
+  import { multistreamStatusStore } from "../multistreamStatusStore.svelte";
   import { STATE_COLOR } from "../theme/stateColors";
   import { fmtDuration, fmtBitrate } from "../format";
   import { callOrToast } from "../callToast";
@@ -39,7 +40,9 @@ import { bumpDockLayout } from "../dockLayoutSignal.svelte";
   // CANVASES bar + GO-LIVE bar data, read independently of the Dockview lifecycle.
   // The canvas list comes from the shared store (one source of truth).
   let canvases = $derived(canvasStore.canvases);
-  let outputs = $state<MultistreamStatus[]>([]);
+  // Live per-output status comes from the shared store (fetch + multistream.changed +
+  // outputBinding.changed re-poll owned there); this page reads the reactive list.
+  let outputs = $derived(multistreamStatusStore.outputs);
   // Shared 1 Hz stats poll (also feeds the Stats dock + Monitor page).
   let stats = $derived(statsStore.stats);
   let focusedCanvasUuid = $state<string | null>(null);
@@ -87,14 +90,9 @@ import { bumpDockLayout } from "../dockLayoutSignal.svelte";
     }
   });
 
-  // Live state across the FOCUSED canvas's enabled outputs: live wins, then
-  // connecting, then error, else idle. Drives the focus dot, live badge, button.
-  let liveState = $derived.by<MultistreamState>(() => {
-    if (focusedOutputs.some((o) => o.state === "live")) return "live";
-    if (focusedOutputs.some((o) => o.state === "connecting")) return "connecting";
-    if (focusedOutputs.some((o) => o.state === "error")) return "error";
-    return "idle";
-  });
+  // Live state across the FOCUSED canvas's outputs (shared reduction; drives the
+  // focus dot, live badge, button).
+  let liveState = $derived(multistreamStatusStore.deriveOutputsState(focusedOutputs));
   // Authoritative GLOBAL live flag for the GO LIVE button: streaming.changed
   // drives it, seeded once on mount from the initial multistream.status read.
   // (The per-canvas focus dot / LIVE badge above still derive from focusedOutputs.)
@@ -224,14 +222,7 @@ import { bumpDockLayout } from "../dockLayoutSignal.svelte";
       // dot mapping (updateParameters merges, so only __dot is touched).
       const panel = api.getPanel(c.isDefault ? "preview" : "canvas:" + c.uuid);
       if (!panel) continue;
-      const co = outputs.filter((o) => o.canvasUuid === c.uuid);
-      const state: MultistreamState = co.some((o) => o.state === "live")
-        ? "live"
-        : co.some((o) => o.state === "connecting")
-          ? "connecting"
-          : co.some((o) => o.state === "error")
-            ? "error"
-            : "idle";
+      const state = multistreamStatusStore.deriveOutputsState(outputs.filter((o) => o.canvasUuid === c.uuid));
       panel.api.updateParameters({ __dot: STATE_COLOR[state] });
     }
   });
@@ -240,23 +231,14 @@ import { bumpDockLayout } from "../dockLayoutSignal.svelte";
   onMount(() => {
     undoStore.start();
     canvasStore.start();
-    const loadStatus = () => {
-      obs
-        .call("multistream.status")
-        .then((res) => (outputs = res.outputs))
-        .catch(() => {});
-    };
-    // Single initial status read seeds BOTH the per-canvas outputs list and the
-    // authoritative GLOBAL live flag (any enabled output running anywhere => live).
-    // Later transitions arrive via multistream.changed / outputBinding.changed
-    // (outputs) and streaming.changed (anyRunning).
-    obs
-      .call("multistream.status")
-      .then((res) => {
-        outputs = res.outputs;
-        anyRunning = res.outputs.some((o) => o.state === "live" || o.state === "connecting");
-      })
-      .catch(() => {});
+    // The per-canvas outputs list is owned by the shared status store (`outputs`
+    // derives off it). Subscribe for this page's lifetime; seed the authoritative
+    // GLOBAL live flag once from the store's first refresh (later transitions come
+    // via streaming.changed).
+    const offStatus = multistreamStatusStore.subscribe();
+    void multistreamStatusStore.refresh().then(() => {
+      anyRunning = multistreamStatusStore.outputs.some((o) => o.state === "live" || o.state === "connecting");
+    });
     obs
       .call("settings.getGeneral")
       .then((g) => {
@@ -275,14 +257,12 @@ import { bumpDockLayout } from "../dockLayoutSignal.svelte";
         vcamCanvas = s.canvas;
       })
       .catch(() => {});
-    const offMulti = obs.on("multistream.changed", (p) => (outputs = p.outputs));
     const offStreaming = obs.on("streaming.changed", (p) => {
       anyRunning = p.active;
       // The viewer poller stops on stream-stop without a final zero push; clear the
       // chip so a stale count never lingers after going offline.
       if (!p.active) viewerTotal = null;
     });
-    const offBindings = obs.on("outputBinding.changed", loadStatus);
     const offViewers = obs.on("viewers.changed", (p) => (viewerTotal = p.total));
     const offVcam = obs.on("virtualCam.changed", (s) => {
       vcamActive = s.active;
@@ -293,9 +273,8 @@ import { bumpDockLayout } from "../dockLayoutSignal.svelte";
       warnStop = g.warnBeforeStop;
     });
     return () => {
-      offMulti();
+      offStatus();
       offStreaming();
-      offBindings();
       offViewers();
       offVcam();
       offGeneral();
@@ -526,6 +505,26 @@ import { bumpDockLayout } from "../dockLayoutSignal.svelte";
     return c.isDefault ? !!visibleDocks["preview"] : canvasDocksPresent.has("canvas:" + c.uuid);
   }
 
+  // The CANVASES bar is a set of dock toggles: press a chip to dock/undock that
+  // canvas's preview window; the chip reads active while its dock is open. Only
+  // dockable canvases appear -- the Default (its preview dock always exists) plus
+  // any non-default canvas that an enabled output binds (CanvasInfo.enabled gates
+  // whether its dock exists at all). Toggling on also focuses it so the bottom
+  // status bar tracks the canvas you just brought up.
+  let dockableCanvases = $derived(canvases.filter((c) => c.isDefault || c.enabled));
+
+  function toggleCanvasChip(c: CanvasInfo): void {
+    // A canvas with no enabled destination isn't a real preview target -- its chip is
+    // disabled (the button won't fire), so this is just a guard for completeness.
+    if (!c.enabled) {
+      return;
+    }
+    if (!canvasShown(c)) {
+      focusedCanvasUuid = c.uuid;
+    }
+    toggleCanvasPreview(c);
+  }
+
   // Inline add-canvas: a name prompt -> canvas.create with the Default canvas's
   // resolution/FPS as defaults (1920x1080@60 if no Default is loaded yet). The new
   // canvas appears in the chip list via the canvas.changed subscription; its dock
@@ -650,33 +649,31 @@ import { bumpDockLayout } from "../dockLayoutSignal.svelte";
     <span class="bar-label">Canvases</span>
 
     <div class="canvases">
-      {#each canvases as c (c.uuid)}
-        <div class="chip" data-active={c.uuid === activeCanvasUuid ? "1" : "0"}>
-          <button class="chip-main" onclick={() => (focusedCanvasUuid = c.uuid)}>
+      {#each dockableCanvases as c (c.uuid)}
+        {@const docked = canvasShown(c)}
+        <button
+          class="chip"
+          data-active={docked ? "1" : "0"}
+          aria-pressed={docked}
+          disabled={!c.enabled}
+          title={!c.enabled
+            ? c.name + " has no enabled destination — bind one to preview it"
+            : docked
+              ? "Close " + c.name + " preview"
+              : "Open " + c.name + " preview"}
+          onclick={() => toggleCanvasChip(c)}
+        >
+          <span class="dockdot" class:on={docked}></span>
+          <span class="chip-body">
             <span class="chip-name">{c.name}</span>
             <span class="chip-sub">{c.outputWidth}×{c.outputHeight} · {Math.round(c.fpsNum / c.fpsDen)}</span>
-          </button>
-          <button
-            class="eye"
-            class:off={!canvasShown(c)}
-            title={canvasShown(c) ? "Hide preview" : "Show preview"}
-            onclick={() => toggleCanvasPreview(c)}
-          >
-            {#if canvasShown(c)}
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
-                <path d="M1.5 12S5 5.5 12 5.5 22.5 12 22.5 12 19 18.5 12 18.5 1.5 12 1.5 12Z" />
-                <circle cx="12" cy="12" r="3" />
-              </svg>
-            {:else}
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
-                <path
-                  d="M4 4l16 16M9.5 9.6A3 3 0 0014.4 14.5M6.5 6.7C3.5 8.3 1.5 12 1.5 12s3.5 6.5 10.5 6.5c1.7 0 3.2-.4 4.5-1M14 5.8C13.4 5.6 12.7 5.5 12 5.5"
-                />
-              </svg>
-            {/if}
-          </button>
-        </div>
+          </span>
+        </button>
       {/each}
+
+      {#if dockableCanvases.length === 0}
+        <span class="canvas-empty">No canvases with enabled destinations</span>
+      {/if}
 
       <button class="add" title="Add canvas" onclick={addCanvas}>
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
@@ -903,40 +900,62 @@ import { bumpDockLayout } from "../dockLayoutSignal.svelte";
     padding: 0 8px 0 10px;
     border-right: var(--border-weight) solid var(--color-border);
   }
+  /* Each chip is a dock toggle: active (data-active=1) = the canvas's preview
+     dock is open; inactive reads dimmer/hollow so the bar shows at a glance which
+     previews are up. Clicking flips the dock. */
   .chip {
     flex: 0 0 auto;
     display: flex;
     align-items: center;
     gap: 8px;
     height: 30px;
-    padding: 0 8px 0 10px;
+    padding: 0 11px 0 9px;
     border: var(--border-weight) solid var(--color-border-2);
     background: var(--color-base);
     color: var(--color-dim);
     white-space: nowrap;
+    cursor: pointer;
     transition:
       border-color 0.12s,
-      background 0.12s;
+      background 0.12s,
+      opacity 0.12s;
   }
-  .chip:hover {
+  .chip[data-active="0"] {
+    opacity: 0.62;
+  }
+  .chip:hover:not(:disabled) {
     border-color: var(--color-muted);
+    opacity: 1;
+  }
+  /* No enabled destination -> not a real preview target. Dim it out and kill the
+     pointer so the bar doesn't invite "toggle a preview" on a dead canvas. */
+  .chip:disabled {
+    opacity: 0.34;
+    cursor: not-allowed;
+    border-style: dashed;
   }
   .chip[data-active="1"] {
     border-color: var(--color-accent);
     background: color-mix(in srgb, var(--color-accent) 12%, transparent);
   }
-  .chip-main {
+  /* Dock-open indicator: a filled accent dot when docked, hollow when closed. */
+  .dockdot {
+    flex: 0 0 auto;
+    width: 7px;
+    height: 7px;
+    border: var(--border-weight) solid var(--color-muted);
+    background: transparent;
+  }
+  .dockdot.on {
+    border-color: var(--color-accent);
+    background: var(--color-accent);
+  }
+  .chip-body {
     display: flex;
     flex-direction: column;
     align-items: flex-start;
     gap: 2px;
     line-height: 1;
-    background: none;
-    border: 0;
-    padding: 0;
-    height: auto;
-    cursor: pointer;
-    color: inherit;
     text-align: left;
   }
   .chip-name {
@@ -955,31 +974,13 @@ import { bumpDockLayout } from "../dockLayoutSignal.svelte";
     color: var(--color-muted);
     line-height: 1;
   }
-  /* Per-chip eye toggle: kept inside the chip, hairline-separated on the left. */
-  .eye {
-    flex: 0 0 auto;
-    width: 22px;
-    height: 22px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: none;
-    border: 0;
-    border-left: var(--border-weight) solid var(--color-border-2);
+  .canvas-empty {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
     color: var(--color-muted);
-    cursor: pointer;
-  }
-  .eye:hover {
-    color: var(--color-dim);
-  }
-  /* Hidden-preview state: the mock dims the glyph below --color-muted; no token
-     for this deep grey, so keep it inline like the mock. */
-  .eye.off {
-    color: #54545c;
-  }
-  .chip[data-active="1"] .eye {
-    border-left-color: color-mix(in srgb, var(--color-accent) 18%, transparent);
-    color: var(--color-accent);
+    padding: 0 6px;
   }
   /* Dashed add-canvas: plus glyph + mono "CANVAS" label. */
   .add {

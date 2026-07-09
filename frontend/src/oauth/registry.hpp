@@ -38,6 +38,31 @@ ProviderRegistry &Registry();
 // registers nothing (the framework only); Task 4 adds the Twitch provider here.
 void BootProviders();
 
+// --- Account connection state (single source of truth) ---------------------
+//
+// "Logged in" for an account means all three hold: its provider is registered,
+// its token scope is current, and it carries a refresh token ("valid credential
+// = refresh token present", see OAuthAccount). A record left by a partial/aborted
+// connect (identity fetched, no refresh token) is NOT connected. Every consumer
+// -- the oauth.status chip gate, the chat/events hubs, the audience/viewer
+// pollers, the search-token lookup -- must funnel through these so the definition
+// can't drift per call site (the drift was exactly the "shows a platform I never
+// signed into" bug).
+
+// Is this specific account currently usable for authenticated calls?
+bool IsAccountConnected(const OAuthAccount &acct);
+
+// Account has a credential but its token was issued under an older scope set, so
+// it must be reconnected before use. (Connected and needs-reconnect are mutually
+// exclusive; a no-credential partial record is neither.)
+bool AccountNeedsReconnect(const OAuthAccount &acct);
+
+// Is at least one account for `providerId` connected? (e.g. IsProviderConnected("twitch").)
+bool IsProviderConnected(const std::string &providerId);
+
+// Distinct provider ids with >=1 connected account (e.g. {"twitch","kick"}).
+std::vector<std::string> ConnectedProviders();
+
 } // namespace OAuth
 
 #endif // OBS_MULTISTREAM_FRONTEND_OAUTH_REGISTRY_HPP_

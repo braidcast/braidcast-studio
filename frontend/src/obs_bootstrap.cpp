@@ -532,6 +532,24 @@ void ObsBootstrap::PruneSceneLinksForCanvasScene(const std::string &canvasUuid, 
 	SceneLinks().Save();
 }
 
+size_t ObsBootstrap::PruneOutputBindingsForProfile(const std::string &profileUuid)
+{
+	// Only the ACTIVE collection's bindings are in memory; inactive collections keep
+	// their stale rows on disk and fall back to the ProfileLabelFor "(deleted)" label
+	// until they load. `bindings` is the raw vector (auto& avoids naming the struct,
+	// whose name the OutputBindings() accessor shadows here).
+	auto &bindings = OutputBindings().Bindings().bindings;
+	const size_t before = bindings.size();
+	bindings.erase(std::remove_if(bindings.begin(), bindings.end(),
+				      [&profileUuid](const OutputBinding &b) { return b.profileUuid == profileUuid; }),
+		       bindings.end());
+	const size_t removed = before - bindings.size();
+	if (removed > 0) {
+		OutputBindings().Save();
+	}
+	return removed;
+}
+
 MultistreamEngine &ObsBootstrap::Multistream()
 {
 	// Valid only between Start() (constructs g_multistream after the stores load)

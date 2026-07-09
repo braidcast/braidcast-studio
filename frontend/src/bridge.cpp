@@ -4248,6 +4248,94 @@ bool MethodShellRevealPath(const json &params, json &result, std::string &error)
 	return true;
 }
 
+// Standard-base64 encoder (RFC 4648) used to inline a small local file as a data
+// URI. No standard-alphabet encoder existed in this TU (DecodeBase64 is decode
+// only; the OAuth helper is base64url).
+std::string EncodeBase64(const std::vector<unsigned char> &in)
+{
+	static const char tbl[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+	std::string out;
+	out.reserve((in.size() + 2) / 3 * 4);
+	size_t i = 0;
+	for (; i + 2 < in.size(); i += 3) {
+		const uint32_t n = (static_cast<uint32_t>(in[i]) << 16) | (static_cast<uint32_t>(in[i + 1]) << 8) |
+				   static_cast<uint32_t>(in[i + 2]);
+		out.push_back(tbl[(n >> 18) & 0x3F]);
+		out.push_back(tbl[(n >> 12) & 0x3F]);
+		out.push_back(tbl[(n >> 6) & 0x3F]);
+		out.push_back(tbl[n & 0x3F]);
+	}
+	const size_t rem = in.size() - i;
+	if (rem == 1) {
+		const uint32_t n = static_cast<uint32_t>(in[i]) << 16;
+		out.push_back(tbl[(n >> 18) & 0x3F]);
+		out.push_back(tbl[(n >> 12) & 0x3F]);
+		out.push_back('=');
+		out.push_back('=');
+	} else if (rem == 2) {
+		const uint32_t n = (static_cast<uint32_t>(in[i]) << 16) | (static_cast<uint32_t>(in[i + 1]) << 8);
+		out.push_back(tbl[(n >> 18) & 0x3F]);
+		out.push_back(tbl[(n >> 12) & 0x3F]);
+		out.push_back(tbl[(n >> 6) & 0x3F]);
+		out.push_back('=');
+	}
+	return out;
+}
+
+// file.readDataUri {path} -> {dataUri:"data:<mime>;base64,..."}. CEF serves the
+// app from a custom app:// scheme and refuses to load file:// local resources
+// from that origin, so an image preview (e.g. a Go Live thumbnail) must be
+// inlined as a data URI. Reads binary, caps the size so the bridge payload stays
+// bounded, and infers the MIME from the file extension.
+bool MethodFileReadDataUri(const json &params, json &result, std::string &error)
+{
+	const std::string path = OptString(params, "path");
+	if (path.empty()) {
+		error = "file.readDataUri requires a non-empty 'path'";
+		return false;
+	}
+
+	const std::filesystem::path fsPath = std::filesystem::u8path(path);
+	std::error_code ec;
+	const uintmax_t size = std::filesystem::file_size(fsPath, ec);
+	if (ec) {
+		error = "cannot stat file: " + path;
+		return false;
+	}
+	constexpr uintmax_t kMaxBytes = 10u * 1024 * 1024;
+	if (size > kMaxBytes) {
+		error = "file exceeds 10 MB";
+		return false;
+	}
+
+	std::ifstream file(fsPath, std::ios::in | std::ios::binary);
+	if (!file) {
+		error = "cannot open file: " + path;
+		return false;
+	}
+	std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+	if (file.bad()) {
+		error = "failed to read file: " + path;
+		return false;
+	}
+
+	std::string ext = fsPath.extension().string();
+	for (char &c : ext) {
+		if (c >= 'A' && c <= 'Z') {
+			c = static_cast<char>(c - 'A' + 'a');
+		}
+	}
+	static const std::unordered_map<std::string, std::string> kMimeByExt = {
+		{".jpg", "image/jpeg"}, {".jpeg", "image/jpeg"}, {".png", "image/png"},
+		{".gif", "image/gif"},  {".webp", "image/webp"}, {".bmp", "image/bmp"},
+	};
+	auto it = kMimeByExt.find(ext);
+	const std::string mime = it != kMimeByExt.end() ? it->second : "application/octet-stream";
+
+	result = json{{"dataUri", "data:" + mime + ";base64," + EncodeBase64(bytes)}};
+	return true;
+}
+
 // Read+validate {kind, ref} -> resolved object + its kind. Caller releases the
 // object via kind->release on success.
 bool ResolvePropertyTarget(const json &params, const PropertyKind *&kind, void *&obj, std::string &error)
@@ -5373,6 +5461,14 @@ bool MethodStreamProfileRemove(const json &params, json &result, std::string &er
 	store.Remove(uuid);
 	store.Save();
 
+	// Cascade: drop every output binding that routed this profile so no dangling
+	// (deleted) edge lingers for the user to unbind by hand. Only the active
+	// collection is pruned in memory; other collections keep the "(deleted)" label
+	// until they load (see PruneOutputBindingsForProfile).
+	if (ObsBootstrap::PruneOutputBindingsForProfile(uuid) > 0) {
+		EmitEvent("outputBinding.changed", json::object());
+	}
+
 	EmitEvent("streamProfile.changed", json::object());
 	result = json{{"removed", uuid}};
 	return true;
@@ -5768,6 +5864,10 @@ bool MethodStatsGet(const json & /*params*/, json &result, std::string & /*error
 
 // --- audio mixer (per-source faders + volmeters, levels) --------------------
 
+// Defined below (in the advanced-audio block); forward-declared so the earlier
+// per-source setters can share the one uuid|name resolver.
+obs_source_t *ResolveAudioSource(const json &params);
+
 bool MethodAudioList(const json & /*params*/, json &result, std::string & /*error*/)
 {
 	json arr = json::array();
@@ -5808,24 +5908,20 @@ bool MethodAudioSetDeflection(const json &params, json &result, std::string &err
 
 bool MethodAudioSetMuted(const json &params, json &result, std::string &error)
 {
-	const std::string uuid = OptString(params, "uuid");
-	if (uuid.empty()) {
-		error = "audio.setMuted requires a non-empty 'uuid'";
-		return false;
-	}
 	if (!params.is_object() || !params.contains("muted") || !params["muted"].is_boolean()) {
 		error = "audio.setMuted requires a boolean 'muted'";
 		return false;
 	}
-	obs_source_t *source = obs_get_source_by_uuid(uuid.c_str()); // addref'd
+	// Resolve by uuid or name (via the shared resolver) so name-addressing works
+	// the same as its sibling audio handlers (getAdvanced/setAdvanced).
+	OBSSourceAutoRelease source = ResolveAudioSource(params);
 	if (!source) {
-		error = "no source with uuid '" + uuid + "'";
+		error = "audio.setMuted: no source for the given 'uuid'/'source'";
 		return false;
 	}
 	const bool muted = params["muted"].get<bool>();
 	obs_source_set_muted(source, muted);
-	obs_source_release(source);
-	result = json{{"uuid", uuid}, {"muted", muted}};
+	result = json{{"uuid", obs_source_get_uuid(source)}, {"muted", muted}};
 	return true;
 }
 
@@ -7760,15 +7856,14 @@ json BuildOAuthStatusArray()
 	for (const auto &entry : OAuth::Accounts().All()) {
 		const std::string &accountId = entry.first;
 		const OAuth::OAuthAccount &acct = entry.second;
-		// A token issued under an older scope set is unusable until reconnected; an
-		// unregistered provider (e.g. unconfigured) is left as-is, not flagged.
-		OAuth::StreamProvider *provider = OAuth::Registry().Get(acct.providerId);
-		const bool scopeCurrent = !provider || provider->isTokenScopeCurrent(acct);
+		// Connected and needs-reconnect are the shared OAuth gates (see registry.hpp):
+		// connected requires a current-scope token WITH a refresh credential; a partial
+		// no-refresh record is neither, so it stops surfacing chips in Events/Multichat.
 		arr.push_back(json{
 			{"accountId", accountId},
 			{"providerId", acct.providerId},
-			{"connected", scopeCurrent},
-			{"needsReconnect", !scopeCurrent},
+			{"connected", OAuth::IsAccountConnected(acct)},
+			{"needsReconnect", OAuth::AccountNeedsReconnect(acct)},
 			{"login", acct.login},
 			{"displayName", acct.displayName},
 			{"avatarUrl", acct.avatarUrl},
@@ -7926,6 +8021,13 @@ try {
 				p->settings = obs_data_create();
 			}
 			obs_data_set_string(p->settings, "key", streamKey.c_str());
+			// rtmp_common resolves an ingest URL only when "server" == "auto"
+			// (see rtmp-common.c rtmp_common_url); an OAuth key writeback with no
+			// server leaves it empty, so obs_output_start bails with no error.
+			// Seed "auto" once so the service can pick its recommended ingest.
+			if (!obs_data_has_user_value(p->settings, "server")) {
+				obs_data_set_string(p->settings, "server", "auto");
+			}
 			ObsBootstrap::StreamProfiles().Save();
 			EmitEvent("streamProfile.changed", json::object());
 		});
@@ -8036,19 +8138,17 @@ bool MethodOAuthAccounts(const json &params, json &result, std::string &error)
 		error = "oauth.accounts requires a non-empty 'providerId'";
 		return false;
 	}
-	OAuth::StreamProvider *provider = OAuth::Registry().Get(providerId);
 	json arr = json::array();
 	for (const auto &entry : OAuth::Accounts().All()) {
 		const OAuth::OAuthAccount &acct = entry.second;
 		if (acct.providerId != providerId) {
 			continue;
 		}
-		const bool scopeCurrent = !provider || provider->isTokenScopeCurrent(acct);
 		arr.push_back(json{
 			{"accountId", entry.first},
 			{"login", acct.login},
 			{"displayName", acct.displayName},
-			{"needsReconnect", !scopeCurrent},
+			{"needsReconnect", OAuth::AccountNeedsReconnect(acct)},
 		});
 	}
 	result = std::move(arr);
@@ -8172,12 +8272,12 @@ bool MethodStreamMetaSearchCategories(const json &params, json &result, std::str
 		return false;
 	}
 
-	// Use any connected, scope-current account for this provider (search needs a
-	// user token; a behind-scope token must not be used).
+	// Use any connected account for this provider (search needs a usable user token;
+	// a behind-scope or partial no-refresh account must not be used). Shared gate.
 	bool found = false;
 	OAuth::OAuthAccount acct;
 	for (const auto &entry : OAuth::Accounts().All()) {
-		if (entry.second.providerId == providerId && provider->isTokenScopeCurrent(entry.second)) {
+		if (entry.second.providerId == providerId && OAuth::IsAccountConnected(entry.second)) {
 			acct = entry.second;
 			found = true;
 			break;
@@ -8842,6 +8942,7 @@ void Init()
 		{"properties.button", MethodPropertiesButton},
 		{"dialog.openFile", MethodDialogOpenFile},
 	{"shell.revealPath", MethodShellRevealPath},
+		{"file.readDataUri", MethodFileReadDataUri},
 		{"filterTypes.list", MethodFilterTypesList},
 		{"filters.list", MethodFiltersList},
 		{"filters.add", MethodFiltersAdd},

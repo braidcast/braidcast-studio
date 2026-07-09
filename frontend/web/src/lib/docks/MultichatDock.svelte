@@ -5,6 +5,7 @@
   import { callOrToast } from "../callToast";
   import EmptyState from "../EmptyState.svelte";
   import Icon from "../dock/Icon.svelte";
+  import PlatformChips from "../PlatformChips.svelte";
 
   // Host supplies tab chrome + strips __* keys; this body declares no props.
   let {}: Record<string, unknown> = $props();
@@ -160,20 +161,7 @@
 
   <div class="composer">
     <div class="dests">
-      {#if showAllChip}
-        <button class="chip" class:on={dest === "all"} onclick={() => (dest = "all")}> All </button>
-      {/if}
-      {#each connected as p (p)}
-        <button
-          class="chip"
-          class:on={dest === p}
-          style:--chip={PLATFORM_COLOR[p]}
-          onclick={() => (dest = p)}
-        >
-          <span class="cdot" style:background={PLATFORM_COLOR[p]}></span>
-          {PLATFORM_LABEL[p]}
-        </button>
-      {/each}
+      <PlatformChips platforms={connected} value={dest} showAll={showAllChip} onSelect={(v) => (dest = v)} />
     </div>
     <div class="inputrow">
       <textarea
@@ -300,32 +288,6 @@
     flex-wrap: wrap;
     gap: 4px;
     padding: 6px 8px 0;
-  }
-  .chip {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    padding: 3px 8px;
-    font-size: 10px;
-    font-family: var(--font-ui);
-    color: var(--color-dim);
-    background: transparent;
-    border: var(--border-weight) solid var(--color-border);
-    cursor: pointer;
-  }
-  .chip:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
-  .chip.on {
-    border-color: var(--chip, var(--color-accent));
-    color: var(--chip, var(--color-accent));
-    background: color-mix(in srgb, var(--chip, var(--color-accent)) 14%, transparent);
-  }
-  .cdot {
-    width: 6px;
-    height: 6px;
-    flex: 0 0 auto;
   }
   .inputrow {
     display: flex;

@@ -72,6 +72,14 @@ void PruneSceneLinksForMainScene(const std::string &mainSceneUuid);
 void PruneSceneLinksForCanvas(const std::string &canvasUuid);
 void PruneSceneLinksForCanvasScene(const std::string &canvasUuid, const std::string &canvasSceneUuid);
 
+// Remove every output binding in the ACTIVE collection that routes the deleted
+// stream profile, then persist. Call from the stream-profile removal path so no
+// dangling (profile x canvas) edge survives. Returns the number pruned (0 = no
+// change, so callers can skip the outputBinding.changed emit). Only the active
+// collection's in-memory store is reachable here; bindings in other collections
+// live on disk and keep the ProfileLabelFor "(deleted)" fallback until loaded.
+size_t PruneOutputBindingsForProfile(const std::string &profileUuid);
+
 // The encode-once / fan-out streaming engine, owned by the bootstrap
 // (constructed in Start after the stores load, torn down in Stop before they
 // clear). Exposed so the bridge can drive streaming + report live status over

@@ -1,6 +1,7 @@
 <script lang="ts">
   // Avatar with a monogram fallback: shows the image when a URL loads, else the
-  // first character of `name` on a neutral tile. `size` in px. Square, zero-radius.
+  // first character of `name` on a neutral tile. `size` in px. Rounded to match
+  // how every streaming platform renders channel avatars.
   let { url = "", name = "", size = 24 }: { url?: string; name?: string; size?: number } = $props();
   // Track the URL that failed (not a boolean) so a later valid `url` clears the
   // fallback automatically — the render gate re-passes once `url !== failedUrl`.
@@ -30,6 +31,7 @@
     object-fit: cover;
     background: var(--color-surface-2);
     border: 1px solid var(--color-border);
+    border-radius: 50%;
     flex: none;
   }
   .mono {

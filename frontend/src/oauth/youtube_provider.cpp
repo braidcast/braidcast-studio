@@ -9,6 +9,7 @@
 #include "../chat/youtube_chat.hpp"
 #include "../http_client.hpp"
 #include "../ingest_writeback.hpp"
+#include "../json_util.hpp"
 #include "../log.hpp"
 #include "ui-config.h"
 
@@ -41,36 +42,9 @@ const std::streamoff kMaxThumbnailBytes = 2 * 1024 * 1024;
 // videoCategories.list -- no narrower per-call scope is needed.
 const char *kYouTubeScope = "https://www.googleapis.com/auth/youtube.force-ssl";
 
-json ParseJson(const std::string &body)
-{
-	return json::parse(body, nullptr, false);
-}
-
-// Read a string field tolerantly: missing/non-string -> "".
-std::string Str(const json &j, const char *key)
-{
-	if (!j.is_object()) {
-		return std::string();
-	}
-	auto it = j.find(key);
-	if (it == j.end() || !it->is_string()) {
-		return std::string();
-	}
-	return it->get<std::string>();
-}
-
-// Read a boolean field tolerantly: missing/non-bool -> `fallback`.
-bool Bool(const json &j, const char *key, bool fallback)
-{
-	if (!j.is_object()) {
-		return fallback;
-	}
-	auto it = j.find(key);
-	if (it == j.end() || !it->is_boolean()) {
-		return fallback;
-	}
-	return it->get<bool>();
-}
+using JsonUtil::Bool;
+using JsonUtil::ParseJson;
+using JsonUtil::Str;
 
 // The first element of `j["items"]`, or a null json when absent/empty.
 json FirstItem(const json &j)

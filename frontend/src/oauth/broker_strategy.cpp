@@ -13,6 +13,7 @@
 #include <nlohmann/json.hpp>
 
 #include "../http_client.hpp"
+#include "../json_util.hpp"
 #include "account_store.hpp"
 #include "loopback_listener.hpp"
 
@@ -22,42 +23,9 @@ using json = nlohmann::json;
 
 namespace {
 
-std::string JsonStr(const json &j, const char *key)
-{
-	if (!j.is_object()) {
-		return std::string();
-	}
-	auto it = j.find(key);
-	if (it == j.end() || !it->is_string()) {
-		return std::string();
-	}
-	return it->get<std::string>();
-}
-
-int JsonInt(const json &j, const char *key, int fallback)
-{
-	if (!j.is_object()) {
-		return fallback;
-	}
-	auto it = j.find(key);
-	if (it == j.end()) {
-		return fallback;
-	}
-	if (it->is_number_integer()) {
-		return it->get<int>();
-	}
-	if (it->is_number()) {
-		return static_cast<int>(it->get<double>());
-	}
-	if (it->is_string()) {
-		try {
-			return std::stoi(it->get<std::string>());
-		} catch (const std::exception &) {
-			return fallback;
-		}
-	}
-	return fallback;
-}
+using JsonUtil::NumLoose;
+using JsonUtil::ParseJson;
+using JsonUtil::Str;
 
 void AppendForm(std::string &body, const char *key, const std::string &value)
 {
@@ -75,11 +43,6 @@ void AppendQuery(std::string &url, const char *key, const std::string &value)
 	url += key;
 	url += "=";
 	url += Http::UrlEncode(value);
-}
-
-json ParseJson(const std::string &body)
-{
-	return json::parse(body, nullptr, false);
 }
 
 // base64url without padding (RFC 4648 §5) -- PKCE + the nonce use it.
@@ -227,22 +190,22 @@ bool BrokerStrategy::authorize(const AuthContext &ctx, OAuthAccount &acct, std::
 		return false;
 	}
 
-	const std::string access = JsonStr(j, "access_token");
+	const std::string access = Str(j, "access_token");
 	if (access.empty()) {
-		std::string code2 = JsonStr(j, "error");
+		std::string code2 = Str(j, "error");
 		if (code2.empty()) {
-			code2 = JsonStr(j, "message");
+			code2 = Str(j, "message");
 		}
 		err = code2.empty() ? ("token exchange rejected (HTTP " + std::to_string(resp.status) + ")") : code2;
 		return false;
 	}
 
 	acct.access = access;
-	const std::string rotated = JsonStr(j, "refresh_token");
+	const std::string rotated = Str(j, "refresh_token");
 	if (!rotated.empty()) {
 		acct.refresh = rotated;
 	}
-	acct.expireTime = static_cast<int64_t>(time(nullptr)) + JsonInt(j, "expires_in", 0);
+	acct.expireTime = static_cast<int64_t>(time(nullptr)) + NumLoose(j, "expires_in", 0);
 	acct.scopeVer = config_.scopeVer;
 	return true;
 }
@@ -276,19 +239,19 @@ bool BrokerStrategy::refresh(OAuthAccount &acct, std::string &err)
 		return false;
 	}
 
-	const std::string access = JsonStr(j, "access_token");
+	const std::string access = Str(j, "access_token");
 	if (access.empty()) {
-		std::string code = JsonStr(j, "error");
+		std::string code = Str(j, "error");
 		if (code.empty()) {
-			code = JsonStr(j, "message");
+			code = Str(j, "message");
 		}
 		err = code.empty() ? ("token refresh rejected (HTTP " + std::to_string(resp.status) + ")") : code;
 		return false;
 	}
 
 	acct.access = access;
-	acct.expireTime = static_cast<int64_t>(time(nullptr)) + JsonInt(j, "expires_in", 0);
-	const std::string rotated = JsonStr(j, "refresh_token");
+	acct.expireTime = static_cast<int64_t>(time(nullptr)) + NumLoose(j, "expires_in", 0);
+	const std::string rotated = Str(j, "refresh_token");
 	if (!rotated.empty()) {
 		acct.refresh = rotated;
 	}

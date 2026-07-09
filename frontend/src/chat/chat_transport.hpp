@@ -54,6 +54,15 @@ struct ChatContext {
 	std::function<bool()> canceled;
 };
 
+// Emit one connection-state frame with a FIXED key set (event/platform/connected/
+// error) every time, so the wire shape can't drift per platform or per call site
+// (the drift this replaces: some sites omitted `error`, others always sent it).
+// `error` defaults to "" for the connected/success case.
+inline void EmitChatState(const ChatContext &ctx, const char *platform, bool connected, const std::string &error = "")
+{
+	ctx.emit(json{{"event", "chat.state"}, {"platform", platform}, {"connected", connected}, {"error", error}});
+}
+
 class ChatTransport {
 public:
 	virtual ~ChatTransport() = default;

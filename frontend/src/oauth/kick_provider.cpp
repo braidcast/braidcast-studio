@@ -5,6 +5,7 @@
 #include "../chat/kick_chat.hpp"
 #include "../events/kick_events.hpp"
 #include "../http_client.hpp"
+#include "../json_util.hpp"
 #include "ui-config.h"
 
 namespace OAuth {
@@ -24,50 +25,9 @@ const char *kKickApiBase = "https://api.kick.com";
 const std::array<const char *, 5> kKickScopes = {"channel:read", "channel:write", "user:read",
 						 "chat:write",   "events:subscribe"};
 
-json ParseJson(const std::string &body)
-{
-	return json::parse(body, nullptr, false);
-}
-
-// Read a string field tolerantly: missing/non-string -> "".
-std::string Str(const json &j, const char *key)
-{
-	if (!j.is_object()) {
-		return std::string();
-	}
-	auto it = j.find(key);
-	if (it == j.end() || !it->is_string()) {
-		return std::string();
-	}
-	return it->get<std::string>();
-}
-
-// Read an integer field tolerantly (Kick ids/user_id are JSON integers; accept a
-// numeric string too). Missing/unparseable -> 0.
-int Int(const json &j, const char *key)
-{
-	if (!j.is_object()) {
-		return 0;
-	}
-	auto it = j.find(key);
-	if (it == j.end()) {
-		return 0;
-	}
-	if (it->is_number_integer()) {
-		return it->get<int>();
-	}
-	if (it->is_number()) {
-		return static_cast<int>(it->get<double>());
-	}
-	if (it->is_string()) {
-		try {
-			return std::stoi(it->get<std::string>());
-		} catch (const std::exception &) {
-			return 0;
-		}
-	}
-	return 0;
-}
+using JsonUtil::NumLoose;
+using JsonUtil::ParseJson;
+using JsonUtil::Str;
 
 // The first element of `j["data"]`, or a null json when absent/empty.
 json FirstDataRow(const json &j)
@@ -202,7 +162,7 @@ bool KickProvider::fetchIdentity(OAuthAccount &acct, std::string &err)
 		err = "Kick users response missing data";
 		return false;
 	}
-	const int uid = Int(row, "user_id");
+	const int64_t uid = NumLoose(row, "user_id");
 	if (uid <= 0) {
 		err = "Kick users response missing user id";
 		return false;
@@ -217,7 +177,7 @@ bool KickProvider::fetchIdentity(OAuthAccount &acct, std::string &err)
 bool KickProvider::getMetadata(OAuthAccount &acct, json &out, std::string &err)
 {
 	// The channels lookup keys on the user_id, so ensure identity is resolved first.
-	if (acct.userId.empty() && !fetchIdentity(acct, err)) {
+	if (!ensureIdentity(acct, err)) {
 		return false;
 	}
 
@@ -247,7 +207,7 @@ bool KickProvider::getMetadata(OAuthAccount &acct, json &out, std::string &err)
 	json category = json::object();
 	if (row.contains("category") && row["category"].is_object()) {
 		const json &cat = row["category"];
-		category = json{{"id", std::to_string(Int(cat, "id"))}, {"name", Str(cat, "name")}};
+		category = json{{"id", std::to_string(NumLoose(cat, "id"))}, {"name", Str(cat, "name")}};
 	} else {
 		category = json{{"id", std::string("0")}, {"name", std::string()}};
 	}
@@ -297,7 +257,7 @@ bool KickProvider::searchCategories(OAuthAccount &acct, const std::string &query
 			for (const json &row : *it) {
 				// Stringify id for cross-provider wire consistency (see getMetadata).
 				out.push_back(json{
-					{"id", std::to_string(Int(row, "id"))},
+					{"id", std::to_string(NumLoose(row, "id"))},
 					{"name", Str(row, "name")},
 					{"boxArt", Str(row, "thumbnail")},
 				});
@@ -326,11 +286,11 @@ bool KickProvider::applyMetadata(OAuthAccount &acct, const std::string &profileU
 		}
 	}
 
-	// Category: the wire id is a string; Int() parses the numeric string back to the
-	// integer category_id Kick's PATCH expects. Send it only when one is actually
+	// Category: the wire id is a string; NumLoose() parses the numeric string back to
+	// the integer category_id Kick's PATCH expects. Send it only when one is actually
 	// chosen (a zero/empty id would otherwise clear or reject the field).
 	if (fields.contains("category") && fields["category"].is_object()) {
-		const int catId = Int(fields["category"], "id");
+		const int64_t catId = NumLoose(fields["category"], "id");
 		if (catId > 0) {
 			body["category_id"] = catId;
 		}
@@ -385,7 +345,7 @@ bool KickProvider::viewerCount(OAuthAccount &acct, int &out, std::string &err)
 	out = 0;
 
 	// The channels lookup keys on the user_id, so ensure identity is resolved first.
-	if (acct.userId.empty() && !fetchIdentity(acct, err)) {
+	if (!ensureIdentity(acct, err)) {
 		return false;
 	}
 
@@ -406,7 +366,7 @@ bool KickProvider::viewerCount(OAuthAccount &acct, int &out, std::string &err)
 	// stream object is absent -> a usable read of 0 viewers.
 	const json row = FirstDataRow(ParseJson(resp.body));
 	if (row.is_object() && row.contains("stream") && row["stream"].is_object()) {
-		out = Int(row["stream"], "viewer_count");
+		out = static_cast<int>(NumLoose(row["stream"], "viewer_count"));
 	}
 	return true;
 }

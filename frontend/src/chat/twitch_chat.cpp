@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cctype>
-#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <map>
@@ -15,6 +14,7 @@
 #include "../log.hpp"
 #include "../oauth/provider.hpp"
 #include "../provider_creds.hpp"
+#include "../time_util.hpp"
 #include "third_party_emotes.hpp"
 
 namespace OAuth {
@@ -49,12 +49,7 @@ std::string SanitizeOutbound(const std::string &text)
 	return out;
 }
 
-int64_t NowMs()
-{
-	return std::chrono::duration_cast<std::chrono::milliseconds>(
-		       std::chrono::system_clock::now().time_since_epoch())
-		.count();
-}
+using TimeUtil::NowMs;
 
 bool ContainsCI(const std::string &haystack, const std::string &needleLower)
 {
@@ -394,10 +389,7 @@ bool TwitchChat::connect(const Chat::ChatContext &ctx, OAuthAccount &acct, const
 			}
 		}
 		if (!ws_.connected()) {
-			ctx.emit(json{{"event", "chat.state"},
-				      {"platform", "twitch"},
-				      {"connected", false},
-				      {"error", err}});
+			Chat::EmitChatState(ctx, "twitch", false, err);
 			if (Chat::CancelableSleep(backoff.next(), canceled)) {
 				break;
 			}
@@ -460,9 +452,7 @@ bool TwitchChat::connect(const Chat::ChatContext &ctx, OAuthAccount &acct, const
 					// gets its one force-refresh retry, while a no-connect auth-fail
 					// loop (never reaching 001) stays bounded.
 					reauthAttempts = 0;
-					ctx.emit(json{{"event", "chat.state"},
-						      {"platform", "twitch"},
-						      {"connected", true}});
+					Chat::EmitChatState(ctx, "twitch", true);
 					continue;
 				}
 				if (m.command == "NOTICE" &&
@@ -521,20 +511,14 @@ bool TwitchChat::connect(const Chat::ChatContext &ctx, OAuthAccount &acct, const
 			// Reactive token issue. Twitch refresh tokens don't rotate, so one
 			// force-refresh + reconnect (re-PASS) suffices; never loop on it.
 			if (reauthAttempts >= 1 || !auth_) {
-				ctx.emit(json{{"event", "chat.state"},
-					      {"platform", "twitch"},
-					      {"connected", false},
-					      {"error", "re-authentication required"}});
+				Chat::EmitChatState(ctx, "twitch", false, "re-authentication required");
 				err = "Twitch chat: re-authentication required";
 				break;
 			}
 			++reauthAttempts;
 			std::string refreshErr;
 			if (!auth_->ensureFresh(acct, refreshErr, /*force=*/true)) {
-				ctx.emit(json{{"event", "chat.state"},
-					      {"platform", "twitch"},
-					      {"connected", false},
-					      {"error", "re-authentication required"}});
+				Chat::EmitChatState(ctx, "twitch", false, "re-authentication required");
 				err = "Twitch chat: re-authentication required";
 				break;
 			}
@@ -542,7 +526,7 @@ bool TwitchChat::connect(const Chat::ChatContext &ctx, OAuthAccount &acct, const
 		}
 
 		// Unexpected drop: report disconnected and back off before reconnecting.
-		ctx.emit(json{{"event", "chat.state"}, {"platform", "twitch"}, {"connected", false}, {"error", err}});
+		Chat::EmitChatState(ctx, "twitch", false, err);
 		if (Chat::CancelableSleep(backoff.next(), canceled)) {
 			break;
 		}

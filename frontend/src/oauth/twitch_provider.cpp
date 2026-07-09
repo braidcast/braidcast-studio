@@ -5,6 +5,7 @@
 #include "../chat/twitch_chat.hpp"
 #include "../events/twitch_events.hpp"
 #include "../http_client.hpp"
+#include "../json_util.hpp"
 #include "../provider_creds.hpp"
 #include "ui-config.h"
 
@@ -60,24 +61,8 @@ const std::array<LangOption, 24> kLanguages = {{
 	{"sv", "Swedish"},   {"th", "Thai"},      {"uk", "Ukrainian"}, {"vi", "Vietnamese"},
 }};
 
-// Parse a body into a JSON object, tolerating garbage (returns null on failure).
-json ParseJson(const std::string &body)
-{
-	return json::parse(body, nullptr, false);
-}
-
-// Read a string field tolerantly: missing/non-string -> "".
-std::string Str(const json &j, const char *key)
-{
-	if (!j.is_object()) {
-		return std::string();
-	}
-	auto it = j.find(key);
-	if (it == j.end() || !it->is_string()) {
-		return std::string();
-	}
-	return it->get<std::string>();
-}
+using JsonUtil::ParseJson;
+using JsonUtil::Str;
 
 // The first element of `j["data"]`, or a null json when absent/empty.
 json FirstDataRow(const json &j)
@@ -277,8 +262,7 @@ bool TwitchProvider::fetchIdentity(OAuthAccount &acct, std::string &err)
 
 bool TwitchProvider::getMetadata(OAuthAccount &acct, json &out, std::string &err)
 {
-	if (acct.userId.empty()) {
-		err = "Twitch account identity missing; reconnect the account";
+	if (!ensureIdentity(acct, err)) {
 		return false;
 	}
 
@@ -344,8 +328,7 @@ bool TwitchProvider::applyMetadata(OAuthAccount &acct, const std::string &profil
 				   std::string &err)
 {
 	(void)profileUuid; // Twitch edits a persistent channel; no per-profile ingest writeback
-	if (acct.userId.empty()) {
-		err = "Twitch account identity missing; reconnect the account";
+	if (!ensureIdentity(acct, err)) {
 		return false;
 	}
 	if (!fields.is_object()) {
@@ -472,8 +455,7 @@ bool TwitchProvider::applyMetadata(OAuthAccount &acct, const std::string &profil
 bool TwitchProvider::fetchStreamKey(OAuthAccount &acct, std::string &key, std::string &err)
 {
 	key.clear();
-	if (acct.userId.empty()) {
-		err = "Twitch account identity missing; reconnect the account";
+	if (!ensureIdentity(acct, err)) {
 		return false;
 	}
 
@@ -502,8 +484,7 @@ bool TwitchProvider::fetchStreamKey(OAuthAccount &acct, std::string &key, std::s
 bool TwitchProvider::viewerCount(OAuthAccount &acct, int &out, std::string &err)
 {
 	out = 0;
-	if (acct.userId.empty()) {
-		err = "Twitch account identity missing; reconnect the account";
+	if (!ensureIdentity(acct, err)) {
 		return false;
 	}
 
@@ -533,8 +514,7 @@ bool TwitchProvider::viewerCount(OAuthAccount &acct, int &out, std::string &err)
 
 bool TwitchProvider::audienceCount(OAuthAccount &acct, AudienceResult &out, std::string &err)
 {
-	if (acct.userId.empty()) {
-		err = "Twitch account identity missing; reconnect the account";
+	if (!ensureIdentity(acct, err)) {
 		return false;
 	}
 

@@ -59,6 +59,8 @@ target_sources(
     src/bridge.hpp
     src/http_client.cpp
     src/http_client.hpp
+    src/json_util.hpp
+    src/time_util.hpp
     src/async_task.cpp
     src/async_task.hpp
     src/properties_serializer.cpp
@@ -416,6 +418,45 @@ set_source_files_properties(
 # OUTPUT_NAME so it does not collide with the legacy obs64 in a shared rundir
 # during the transition. It still reads the shared braidcast config dir.
 set_target_properties_obs(${_target} PROPERTIES FOLDER frontend OUTPUT_NAME braidcast)
+
+# braidcast-frontend is a custom executable rather than the upstream
+# obs-studio target, so the Windows helper does not run _bundle_dependencies()
+# for it. Stage the complete recursive runtime graph (libcurl, FFmpeg, etc.);
+# otherwise the executable links successfully but Windows cannot launch it
+# from the rundir.
+if(WIN32)
+  # CMake can follow linked targets, but the prebuilt FFmpeg DLLs have further
+  # PE-level imports (zlib, x264, RIST, SRT) that are not represented in the
+  # target graph. CURL lives in the same obs-deps bin directory, so use its
+  # imported location to collect the complete prebuilt runtime bundle.
+  get_target_property(_obs_deps_runtime_dir CURL::libcurl IMPORTED_LOCATION_RELWITHDEBINFO)
+  if(NOT _obs_deps_runtime_dir)
+    get_target_property(_obs_deps_runtime_dir CURL::libcurl IMPORTED_LOCATION_RELEASE)
+  endif()
+  if(NOT _obs_deps_runtime_dir)
+    get_target_property(_obs_deps_runtime_dir CURL::libcurl IMPORTED_LOCATION)
+  endif()
+  cmake_path(GET _obs_deps_runtime_dir PARENT_PATH _obs_deps_runtime_dir)
+  file(
+    GLOB _obs_deps_runtime_dlls
+    CONFIGURE_DEPENDS
+    "${_obs_deps_runtime_dir}/*.dll"
+  )
+
+  add_custom_command(
+    TARGET ${_target}
+    POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E make_directory
+            "${OBS_OUTPUT_DIR}/$<CONFIG>/${OBS_EXECUTABLE_DESTINATION}"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "$<TARGET_RUNTIME_DLLS:${_target}>"
+            "${_obs_deps_runtime_dlls}"
+            "${OBS_OUTPUT_DIR}/$<CONFIG>/${OBS_EXECUTABLE_DESTINATION}"
+    COMMENT "Copy runtime dependencies to binary directory"
+    VERBATIM
+    COMMAND_EXPAND_LISTS
+  )
+endif()
 
 # Copy the CEF runtime binaries + resources next to the exe in the rundir so it
 # launches in place. The dist only ships Release/Debug; the OBS build is

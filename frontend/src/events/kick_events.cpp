@@ -1,7 +1,6 @@
 #include "kick_events.hpp"
 
 #include <array>
-#include <chrono>
 #include <cstdint>
 
 #include <nlohmann/json.hpp>
@@ -12,9 +11,11 @@
 #include "../bridge.hpp"
 #include "../chat/kick_pusher.hpp"
 #include "../chat/ws_client.hpp"
+#include "../json_util.hpp"
 #include "../log.hpp"
 #include "../oauth/account_store.hpp"
 #include "../oauth/provider.hpp"
+#include "../time_util.hpp"
 
 // !!! REVERSE-ENGINEERED + BEST-EFFORT (see kick_events.hpp) !!!
 // The Pusher channel names and `App\Events\...` event names + payload field names
@@ -29,53 +30,12 @@ using json = nlohmann::json;
 
 namespace {
 
-int64_t NowMs()
-{
-	return std::chrono::duration_cast<std::chrono::milliseconds>(
-		       std::chrono::system_clock::now().time_since_epoch())
-		.count();
-}
-
 // --- Tolerant field accessors (an unofficial payload may omit or re-type anything).
-std::string Str(const json &j, const char *key)
-{
-	if (!j.is_object()) {
-		return std::string();
-	}
-	auto it = j.find(key);
-	if (it == j.end() || !it->is_string()) {
-		return std::string();
-	}
-	return it->get<std::string>();
-}
-
-int64_t Num(const json &j, const char *key)
-{
-	if (!j.is_object()) {
-		return 0;
-	}
-	auto it = j.find(key);
-	return (it != j.end() && it->is_number()) ? it->get<int64_t>() : 0;
-}
-
-bool Bool(const json &j, const char *key)
-{
-	if (!j.is_object()) {
-		return false;
-	}
-	auto it = j.find(key);
-	return it != j.end() && it->is_boolean() && it->get<bool>();
-}
-
-const json &Obj(const json &j, const char *key)
-{
-	static const json kNull = json(nullptr);
-	if (!j.is_object()) {
-		return kNull;
-	}
-	auto it = j.find(key);
-	return it == j.end() ? kNull : *it;
-}
+using JsonUtil::Bool;
+using JsonUtil::NumLoose;
+using JsonUtil::Obj;
+using JsonUtil::Str;
+using TimeUtil::NowMs;
 
 // Pusher wraps each event's payload in a `data` field that is itself a JSON-ENCODED
 // STRING (double-encoded); decode it again. Some client libraries observe `data`
@@ -124,7 +84,7 @@ bool Normalize(const std::string &event, const json &outer, NormalizedEvent &ev)
 		if (ev.actorName.empty()) {
 			return false;
 		}
-		ev.months = static_cast<int>(Num(d, "months")); // cumulative; omitted from JSON when 0
+		ev.months = static_cast<int>(NumLoose(d, "months")); // cumulative; omitted from JSON when 0
 		ev.id = "kick:sub:" + ev.actorName + ":" + std::to_string(ev.ts);
 		return true;
 	}
@@ -149,7 +109,7 @@ bool Normalize(const std::string &event, const json &outer, NormalizedEvent &ev)
 		if (ev.actorName.empty()) {
 			return false;
 		}
-		ev.amount = Num(d, "number_viewers");
+		ev.amount = NumLoose(d, "number_viewers");
 		ev.id = "kick:raid:" + ev.actorName + ":" + std::to_string(ev.ts);
 		return true;
 	}
@@ -164,7 +124,7 @@ bool Normalize(const std::string &event, const json &outer, NormalizedEvent &ev)
 		if (ev.actorName.empty()) {
 			return false;
 		}
-		ev.amount = Num(msg, "numberOfViewers");
+		ev.amount = NumLoose(msg, "numberOfViewers");
 		const std::string mid = Str(msg, "id");
 		ev.id = mid.empty() ? ("kick:raid:" + ev.actorName + ":" + std::to_string(ev.ts)) : ("kick:raid:" + mid);
 		return true;
@@ -183,7 +143,7 @@ bool Normalize(const std::string &event, const json &outer, NormalizedEvent &ev)
 		ev.actorName = username;
 		// created_at is an integer tick count (not a date) -> a stable per-follow suffix
 		// so a redelivery (e.g. on both channel.<id> and channel_<id>) dedupes.
-		const int64_t createdAt = Num(d, "created_at");
+		const int64_t createdAt = NumLoose(d, "created_at");
 		ev.id = "kick:follow:" + username + ":" +
 			(createdAt != 0 ? std::to_string(createdAt) : std::to_string(ev.ts));
 		return true;

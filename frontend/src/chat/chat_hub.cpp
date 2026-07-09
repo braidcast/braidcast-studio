@@ -66,7 +66,10 @@ void ChatHub::Start()
 		OAuth::OAuthAccount acct = entry.second;
 		const std::string accountId = OAuth::AccountId(acct);
 		OAuth::StreamProvider *provider = OAuth::Registry().Get(acct.providerId);
-		if (!provider || !provider->isTokenScopeCurrent(acct)) {
+		// A never-finished sign-in must not arm a chat transport (it would show a
+		// Multichat chip for a platform the user never connected). IsAccountConnected
+		// is the shared gate: registered provider + current scope + refresh token.
+		if (!OAuth::IsAccountConnected(acct)) {
 			continue;
 		}
 		std::shared_ptr<ChatTransport> transport = provider->makeChat(acct);

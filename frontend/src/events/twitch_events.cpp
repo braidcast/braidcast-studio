@@ -1,18 +1,16 @@
 #include "twitch_events.hpp"
 
 #include <array>
-#include <cctype>
-#include <chrono>
 #include <cstdint>
-#include <cstdio>
-#include <ctime>
 #include <utility>
 
 #include <nlohmann/json.hpp>
 
 #include "../http_client.hpp"
+#include "../json_util.hpp"
 #include "../log.hpp"
 #include "../oauth/twitch_provider.hpp"
+#include "../time_util.hpp"
 
 namespace Events {
 
@@ -34,91 +32,12 @@ constexpr int64_t kWelcomeTimeoutMs = 15000;
 // keepalive window, so no frame for keepalive + margin means the link is gone.
 constexpr int64_t kKeepaliveMarginMs = 10000;
 
-int64_t NowMs()
-{
-	return std::chrono::duration_cast<std::chrono::milliseconds>(
-		       std::chrono::system_clock::now().time_since_epoch())
-		.count();
-}
-
-std::string Str(const json &j, const char *key)
-{
-	if (!j.is_object()) {
-		return std::string();
-	}
-	auto it = j.find(key);
-	if (it == j.end() || !it->is_string()) {
-		return std::string();
-	}
-	return it->get<std::string>();
-}
-
-bool Bool(const json &j, const char *key)
-{
-	if (!j.is_object()) {
-		return false;
-	}
-	auto it = j.find(key);
-	return it != j.end() && it->is_boolean() && it->get<bool>();
-}
-
-int64_t Num(const json &j, const char *key)
-{
-	if (!j.is_object()) {
-		return 0;
-	}
-	auto it = j.find(key);
-	return (it != j.end() && it->is_number()) ? it->get<int64_t>() : 0;
-}
-
-// Return a reference to `j[key]` when `j` is an object holding it, else a shared null
-// json -- lets the nested-field accessors chain (Obj(Obj(msg,"payload"),"session"))
-// without intermediate copies or null checks at each hop.
-const json &Obj(const json &j, const char *key)
-{
-	static const json kNull = json(nullptr);
-	if (!j.is_object()) {
-		return kNull;
-	}
-	auto it = j.find(key);
-	return it == j.end() ? kNull : *it;
-}
-
-// Parse an RFC3339 / ISO-8601 UTC instant ("2024-01-02T03:04:05.678Z") into epoch
-// milliseconds; falls back to the current wall clock on a parse failure so an event
-// never carries a zero timestamp. Mirrors youtube_chat's parser (MSVC _mkgmtime).
-int64_t Rfc3339ToEpochMs(const std::string &iso)
-{
-	int y = 0, mon = 0, d = 0, h = 0, mi = 0, s = 0;
-	if (std::sscanf(iso.c_str(), "%d-%d-%dT%d:%d:%d", &y, &mon, &d, &h, &mi, &s) == 6) {
-		std::tm tm{};
-		tm.tm_year = y - 1900;
-		tm.tm_mon = mon - 1;
-		tm.tm_mday = d;
-		tm.tm_hour = h;
-		tm.tm_min = mi;
-		tm.tm_sec = s;
-		const std::time_t epoch = _mkgmtime(&tm);
-		if (epoch != static_cast<std::time_t>(-1)) {
-			int64_t millis = 0;
-			const auto dot = iso.find('.');
-			if (dot != std::string::npos) {
-				std::string frac;
-				for (size_t i = dot + 1;
-				     i < iso.size() && std::isdigit(static_cast<unsigned char>(iso[i])) && frac.size() < 3;
-				     ++i) {
-					frac.push_back(iso[i]);
-				}
-				while (frac.size() < 3) {
-					frac.push_back('0');
-				}
-				millis = std::stoll(frac);
-			}
-			return static_cast<int64_t>(epoch) * 1000 + millis;
-		}
-	}
-	return NowMs();
-}
+using JsonUtil::Bool;
+using JsonUtil::NumLoose;
+using JsonUtil::Obj;
+using JsonUtil::Str;
+using TimeUtil::NowMs;
+using TimeUtil::Rfc3339ToEpochMs;
 
 // Map Twitch's numeric sub tier ("1000"/"2000"/"3000") to a human label; pass any
 // other value (e.g. "Prime") through unchanged.
@@ -211,22 +130,22 @@ bool Normalize(const json &msg, NormalizedEvent &ev)
 		ev.type = "resub";
 		ev.actorName = Str(event, "user_name");
 		ev.tier = TierLabel(Str(event, "tier"));
-		ev.months = static_cast<int>(Num(event, "cumulative_months"));
+		ev.months = static_cast<int>(NumLoose(event, "cumulative_months"));
 		ev.message = Str(Obj(event, "message"), "text");
 	} else if (subType == "channel.subscription.gift") {
 		ev.type = "subgift";
 		ev.actorName = Bool(event, "is_anonymous") ? "Anonymous" : Str(event, "user_name");
-		ev.count = static_cast<int>(Num(event, "total"));
+		ev.count = static_cast<int>(NumLoose(event, "total"));
 		ev.tier = TierLabel(Str(event, "tier"));
 	} else if (subType == "channel.cheer") {
 		ev.type = "cheer";
 		ev.actorName = Bool(event, "is_anonymous") ? "Anonymous" : Str(event, "user_name");
-		ev.amount = Num(event, "bits");
+		ev.amount = NumLoose(event, "bits");
 		ev.message = Str(event, "message");
 	} else if (subType == "channel.raid") {
 		ev.type = "raid";
 		ev.actorName = Str(event, "from_broadcaster_user_name");
-		ev.amount = Num(event, "viewers");
+		ev.amount = NumLoose(event, "viewers");
 	} else {
 		return false; // unhandled subscription type
 	}
@@ -397,7 +316,7 @@ bool TwitchEvents::connect(const EventContext &ctx, OAuth::OAuthAccount &acct, s
 			if (Str(Obj(msg, "metadata"), "message_type") == "session_welcome") {
 				const json &session = Obj(Obj(msg, "payload"), "session");
 				sessionId = Str(session, "id");
-				const int64_t k = Num(session, "keepalive_timeout_seconds");
+				const int64_t k = NumLoose(session, "keepalive_timeout_seconds");
 				if (k > 0) {
 					keepaliveMs = k * 1000;
 				}

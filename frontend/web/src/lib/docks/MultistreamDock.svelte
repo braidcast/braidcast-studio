@@ -1,13 +1,9 @@
 <script lang="ts">
-  import {
-    obs,
-    type OutputBindingInfo,
-    type MultistreamStatus,
-    type MultistreamState,
-  } from "../bridge";
+  import { obs, type OutputBindingInfo, type MultistreamState } from "../bridge";
   import { setPage } from "../pageStore.svelte";
   import { canvasStore } from "../canvasStore.svelte";
   import { outputBindingStore } from "../outputBindingStore.svelte";
+  import { multistreamStatusStore } from "../multistreamStatusStore.svelte";
   import { STATE_COLOR_EXT } from "../theme/stateColors";
   import ToggleSwitch from "../ToggleSwitch.svelte";
   import Icon from "../dock/Icon.svelte";
@@ -18,55 +14,20 @@
   // A compact, dockable mirror of the Canvases -> Destinations toggles: group
   // bindings by canvas, one master toggle per canvas + one per destination. Toggling
   // is the only interaction; full management lives on the Canvases page.
-  // Canvas + binding lists come from the shared stores (one source of truth); the
-  // live-status rows stay local (this dock owns the multistream.status poll).
+  // Canvas + binding lists + live status all come from the shared stores (one source
+  // of truth for each leg of the model).
   let canvases = $derived(canvasStore.canvases);
   let bindings = $derived(outputBindingStore.bindings);
-  let live = $state<MultistreamStatus[]>([]);
-  let loaded = $state(false);
   let error = $state<string | null>(null);
-
-  function loadLive(): void {
-    obs
-      .call("multistream.status")
-      .then((r) => (live = r.outputs))
-      .catch(() => {});
-  }
-
-  async function loadStatus(): Promise<void> {
-    try {
-      const status = await obs.call("multistream.status");
-      live = status.outputs;
-      error = null;
-    } catch (e) {
-      error = (e as Error).message;
-    } finally {
-      loaded = true;
-    }
-  }
+  let loaded = $derived(multistreamStatusStore.loaded);
 
   $effect(() => {
     canvasStore.start();
     outputBindingStore.start();
-    void loadStatus();
-    // A binding toggle changes which rows are live, so re-poll status on it (the
-    // binding LIST itself refreshes via outputBindingStore).
-    const offBindings = obs.on("outputBinding.changed", () => loadLive());
-    const offMulti = obs.on("multistream.changed", (p) => (live = p.outputs));
-    return () => {
-      offBindings();
-      offMulti();
-    };
+    return multistreamStatusStore.subscribe();
   });
 
-  // bindingUuid -> live status row (only enabled bindings appear in `live`).
-  const statusByBinding = $derived.by<Map<string, MultistreamStatus>>(() => {
-    const m = new Map<string, MultistreamStatus>();
-    for (const o of live) {
-      m.set(o.bindingUuid, o);
-    }
-    return m;
-  });
+  const statusByBinding = $derived(multistreamStatusStore.statusByBinding);
 
   // Canvases with >=1 binding, in canvas.list order (each carries its own rows).
   const groups = $derived(
@@ -78,13 +39,7 @@
 
   // The strongest live state across a canvas's enabled bindings (drives the header dot).
   function canvasState(rows: OutputBindingInfo[]): MultistreamState | "off" {
-    const on = rows.filter((b) => b.enabled);
-    if (on.length === 0) return "off";
-    const states = on.map((b) => statusByBinding.get(b.uuid)?.state ?? "idle");
-    if (states.includes("live")) return "live";
-    if (states.includes("error")) return "error";
-    if (states.includes("connecting")) return "connecting";
-    return "idle";
+    return multistreamStatusStore.deriveCanvasState(rows);
   }
 
   // A destination's effective state: disabled bindings never go live.
@@ -108,7 +63,7 @@
     const target = !rows.some((b) => b.enabled);
     try {
       await Promise.all(rows.map((b) => obs.call("outputBinding.setEnabled", { uuid: b.uuid, enabled: target })));
-      loadLive();
+      void multistreamStatusStore.refresh();
     } catch (e) {
       error = (e as Error).message;
     }
@@ -116,7 +71,7 @@
   async function toggleRow(b: OutputBindingInfo, enabled: boolean): Promise<void> {
     try {
       await obs.call("outputBinding.setEnabled", { uuid: b.uuid, enabled });
-      loadLive();
+      void multistreamStatusStore.refresh();
     } catch (e) {
       error = (e as Error).message;
       // Revert the optimistic toggle (checked is two-way bound to b.enabled).

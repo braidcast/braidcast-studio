@@ -22,4 +22,12 @@ std::unique_ptr<Events::EventTransport> StreamProvider::makeEvents(const OAuthAc
 	return nullptr;
 }
 
+bool StreamProvider::ensureIdentity(OAuthAccount &acct, std::string &err)
+{
+	if (!acct.userId.empty()) {
+		return true;
+	}
+	return fetchIdentity(acct, err);
+}
+
 } // namespace OAuth

@@ -185,6 +185,14 @@ public:
 	// after a successful grant. false + `err` on failure.
 	virtual bool fetchIdentity(OAuthAccount &acct, std::string &err) = 0;
 
+	// Ensure `acct` carries a resolved userId, self-healing a record whose identity
+	// fetch never completed: if userId is empty, fetch it via fetchIdentity and fail
+	// only if that also fails. Read paths (metadata / stream key / viewer + audience
+	// counts) call this instead of hard-aborting on a transiently-empty identity, so
+	// every platform self-heals the same way. Non-virtual: the recovery policy is
+	// uniform; only the fetch it delegates to is per-platform.
+	bool ensureIdentity(OAuthAccount &acct, std::string &err);
+
 	// Fetch the channel's current stream metadata (title/category/...) into `out`
 	// for prefill. `acct` is non-const so a reactive token refresh (proactive skew
 	// or a 401 retry) propagates back for the caller to persist. false + `err` on

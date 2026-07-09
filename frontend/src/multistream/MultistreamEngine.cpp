@@ -134,8 +134,8 @@ MultistreamEngine::CanvasEncoders *MultistreamEngine::EnsureCanvasEncoders(const
 	/* Resolve encoder ids/settings, honoring 'use default' inheritance from the
 	 * Default canvas. If the id is empty or marked use-default, fall back to the
 	 * Default canvas encoder. */
-	const CanvasEncoderDef &vdef = (cdef->video.useDefault || cdef->video.id.empty()) ? def.video : cdef->video;
-	const CanvasEncoderDef &adef = (cdef->audio.useDefault || cdef->audio.id.empty()) ? def.audio : cdef->audio;
+	const CanvasEncoderDef &vdef = cdef->video.InheritsDefault() ? def.video : cdef->video;
+	const CanvasEncoderDef &adef = cdef->audio.InheritsDefault() ? def.audio : cdef->audio;
 	if (vdef.id.empty() || adef.id.empty()) {
 		blog(LOG_WARNING, "Multistream: canvas %s has no usable encoders", canvasUuid.c_str());
 		return nullptr;
@@ -170,8 +170,7 @@ void MultistreamEngine::InvalidateCanvasEncoders(const std::string &canvasUuid)
 		bool drop = (it->canvasUuid == canvasUuid);
 		if (!drop && defaultInvalidated) {
 			const CanvasDefinition *cdef = canvases.Find(it->canvasUuid);
-			if (cdef && (cdef->video.useDefault || cdef->video.id.empty() || cdef->audio.useDefault ||
-				     cdef->audio.id.empty())) {
+			if (cdef && (cdef->video.InheritsDefault() || cdef->audio.InheritsDefault())) {
 				drop = true;
 			}
 		}
@@ -190,7 +189,10 @@ bool MultistreamEngine::ProfileLiveElsewhere(const std::string &bindingUuid, con
 	}
 	std::lock_guard<std::mutex> lock(liveMutex);
 	for (const auto &lo : live) {
-		if (lo->bindingUuid != bindingUuid && lo->profileUuid == profileUuid) {
+		// A live output is inherently enabled, so pass rowEnabled = true to the
+		// shared predicate (the config-layer guard supplies the real enable flag).
+		if (BindingMatchesProfile(lo->bindingUuid, lo->profileUuid, /*rowEnabled=*/true, bindingUuid,
+					  profileUuid)) {
 			return true;
 		}
 	}

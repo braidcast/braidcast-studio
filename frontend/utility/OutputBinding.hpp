@@ -20,6 +20,20 @@ struct OutputBinding {
 	}
 };
 
+/* Single-live-stream business rule, shared by the config-layer guard
+ * (OutputBindings::ProfileEnabledElsewhere, over persisted bindings) and the
+ * engine-layer guard (MultistreamEngine::ProfileLiveElsewhere, over live outputs)
+ * so the two layers can't drift. A row "occupies" a profile when it is a DIFFERENT
+ * binding, is enabled, and targets the same profile (one RTMP key = one live
+ * stream). Callers pre-check profileUuid non-empty. Live outputs are inherently
+ * enabled, so that caller passes rowEnabled = true. */
+inline bool BindingMatchesProfile(const std::string &rowBindingUuid, const std::string &rowProfileUuid,
+				  bool rowEnabled, const std::string &excludeBindingUuid,
+				  const std::string &profileUuid)
+{
+	return rowBindingUuid != excludeBindingUuid && rowEnabled && rowProfileUuid == profileUuid;
+}
+
 /* Collection of bindings, serialized inside the scene-collection JSON as an
  * "output_bindings" array. Mirrors CanvasSceneLink. */
 struct OutputBindings {

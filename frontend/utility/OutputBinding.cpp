@@ -70,7 +70,7 @@ bool OutputBindings::ProfileEnabledElsewhere(const std::string &bindingUuid, con
 		return false;
 	}
 	for (const OutputBinding &b : bindings) {
-		if (b.uuid != bindingUuid && b.enabled && b.profileUuid == profileUuid) {
+		if (BindingMatchesProfile(b.uuid, b.profileUuid, b.enabled, bindingUuid, profileUuid)) {
 			return true;
 		}
 	}

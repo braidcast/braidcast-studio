@@ -180,8 +180,9 @@ void EventHub::StartConnectedAccounts()
 	// account the connect path also starts.
 	for (const auto &entry : OAuth::Accounts().All()) {
 		OAuth::OAuthAccount acct = entry.second;
-		OAuth::StreamProvider *provider = OAuth::Registry().Get(acct.providerId);
-		if (!provider || !provider->isTokenScopeCurrent(acct)) {
+		// Shared connection gate: a never-finished sign-in must not arm an events
+		// transport. See OAuth::IsAccountConnected.
+		if (!OAuth::IsAccountConnected(acct)) {
 			continue;
 		}
 		StartAccount(OAuth::AccountId(acct), acct);

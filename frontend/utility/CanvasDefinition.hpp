@@ -11,6 +11,13 @@ struct CanvasEncoderDef {
 	std::string id;                 // e.g. "obs_x264", "ffmpeg_aac"
 	OBSDataAutoRelease settings;    // encoder settings blob (may be null -> defaults)
 	bool useDefault = false;        // live-follow the Default canvas
+
+	/* This encoder slot resolves to the Default canvas's encoder: either it is
+	 * explicitly flagged use-default, or it was never configured (empty id, so
+	 * there is nothing to build). Unlike resolution/color inheritance (a pure
+	 * use-default flag), an encoder carries an id, so the empty-id case must
+	 * inherit too rather than yield a broken encoder. */
+	bool InheritsDefault() const { return useDefault || id.empty(); }
 };
 
 struct CanvasColorDef {
