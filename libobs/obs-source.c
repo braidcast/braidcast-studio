@@ -758,6 +758,15 @@ void obs_source_destroy(struct obs_source *source)
 
 	source_profiler_remove_source(source);
 
+	/* obs_canvas_insert_source (via obs_canvas_move_scene, e.g. scene duplication
+	 * across canvases) leaves context.mutex pointing at that canvas's own
+	 * sources_mutex, with nothing to bind it back to the always-live global one
+	 * the way obs_context_data_insert_uuid does at creation time. Now that the
+	 * context has been removed from every registry above, pin it back to the
+	 * global sources_mutex so obs_context_wait() in the deferred destroy below
+	 * can't lock a mutex whose owning canvas has since been freed. */
+	source->context.mutex = &obs->data.sources_mutex;
+
 	/* defer source destroy */
 	os_task_queue_queue_task(obs->destruction_task_thread, (os_task_t)obs_source_destroy_defer, source);
 }
