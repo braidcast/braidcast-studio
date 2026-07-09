@@ -1390,6 +1390,46 @@ on public repos (separate from the 500 MB Packages quota).
   original and duplicate, undo/redo via actual Ctrl+Z/Y keypress rather than the
   self-test's direct `Undo()`/`Redo()` calls, scene-link copy visually confirmed
   in the Scene Link UI).
+- ✅ **Transform UX fixes: rotate-out-of-bounds, resize snapping, outline/aspect
+  investigation** (2026-07-09) — three bundled fixes to canvas-item transform.
+  (1) **Rotate-about-center**: `obs_sceneitem_set_rot` pivots around the item's
+  alignment-anchor corner, not its visual center, so rotating flung items off
+  into unreachable space. `RepositionForCenterPivot` (`bridge.cpp`) now measures
+  the item's AABB before/after rotation via `GetSceneItemBox` and corrects `pos`
+  to keep the visual center fixed, wired into both `sceneItems.setTransform` and
+  the rotate quick-actions — gated off when the caller supplies an explicit `pos`
+  in the same call (paste-transform, MCP `set_item_transform`) so it never
+  overrides an intentional move. (2) **Bounds-safety clamp**: `ClampItemToCanvas`
+  nudges `pos` post-transform so at least ~32px of the item's AABB stays
+  overlapping the canvas, applied to `setTransform` and every transform
+  quick-action (reset/flip/rotate90*) — explicitly excluded from the undo/redo
+  path, which restores exact prior state. (3) **Resize-drag snapping**: edge/
+  center snap (already wired for move-drag via `CanvasSnapOffset`) extended to
+  `StretchItem` using a "probe box" technique — collapses the fixed anchor edge
+  onto the live moving edge per axis, reuses `CanvasSnapOffset` unchanged, and
+  converts the returned canvas-space delta back to item-local space via a
+  rotation-only inverse matrix. Headless self-tests
+  (`RunTransformPivotSelfTest`, `RunRotationBoundsSelfTest`) pass clean:
+  zero center-drift across both rotation entry points, clamp recovers an
+  off-canvas item, and AABB width/height swap correctly across a 90° rotation
+  for both `OBS_BOUNDS_NONE` and `OBS_BOUNDS_SCALE_INNER`. **Outline/aspect
+  mismatch investigation outcome: no bug found.** The user-reported "resize
+  outline stays sized for the pre-rotation aspect" was investigated at both the
+  native geometry layer (`update_item_transform` in `libobs/obs-scene.c` — no
+  divergence between bounds and non-bounds branches) and the Svelte/TS UI layer
+  (no cached width/height/rotation state exists client-side; `DrawSelection`
+  redraws from a live `obs_sceneitem_get_box_transform` read every frame) —
+  both are provably correct across every code path a rotation can take. Live
+  GUI visual confirmation was attempted but aborted for safety (the app loads
+  the user's real, connected production scene collection with live
+  destinations; no safe isolated repro window was available) — **if the outline
+  lag still reproduces in practice, it needs precise repro steps (source type,
+  whether Fit-to-screen was used first, which canvas) and ideally a screen
+  recording**, since nothing in the codebase explains it. Resize-drag snapping
+  has no bridge-callable entry point for a headless self-test — **GUI
+  acceptance owed** (drag-resize near an edge/center and confirm it snaps;
+  confirm rotate no longer flings items unreachable; confirm an
+  extreme-position transform recovers visibly on-canvas).
 - ⏸ **GoLive / Multitrack Video** — currently dormant. It's Twitch Enhanced
   Broadcasting (many quality renditions → one Twitch ingest), orthogonal to our
   many-platforms goal. Decision at the multi-destination phase: delete the
