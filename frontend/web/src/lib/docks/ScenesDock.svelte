@@ -2,6 +2,9 @@
   import { onMount } from "svelte";
   import { obs, type SceneInfo } from "../bridge";
   import { defaultCanvas } from "./defaultCanvasStore.svelte";
+  import { canvasStore } from "../canvasStore.svelte";
+  import { callOrToast } from "../callToast";
+  import { showToast } from "../toastStore.svelte";
   import ContextMenu, { type ContextMenuItem } from "../ContextMenu.svelte";
   import ListToolbar, { type ToolAction } from "../dock/ListToolbar.svelte";
   import FilterReveal from "../dock/FilterReveal.svelte";
@@ -11,6 +14,7 @@
 
   onMount(() => {
     defaultCanvas.start();
+    canvasStore.start();
     obs
       .call("settings.getGeneral")
       .then((g) => (gridMode = g.scenesGridMode))
@@ -124,6 +128,20 @@
     defaultCanvas.duplicate(name).catch(report);
   }
 
+  // Duplicates a scene from the Default canvas onto another canvas (a deep copy,
+  // unlike the same-canvas duplicate() above which is a ref duplicate). No `canvas`
+  // param is sent, mirroring defaultCanvasStore's other calls (omitted = Default).
+  // See scenes.duplicateToCanvas in bridge.ts.
+  async function duplicateToCanvas(sceneName: string, destUuid: string) {
+    const r = await callOrToast("scenes.duplicateToCanvas", { name: sceneName, destCanvas: destUuid }, "Duplicate failed");
+    if (r) {
+      const destName = canvasStore.byUuid(destUuid)?.name;
+      const to = destName ? ` to "${destName}"` : "";
+      const as = r.name !== sceneName ? ` as "${r.name}"` : "";
+      showToast(`Duplicated "${sceneName}"${to}${as}`, r.name);
+    }
+  }
+
   async function remove(name: string) {
     actionError = null;
     try {
@@ -135,12 +153,21 @@
 
   function openMenu(e: MouseEvent, name: string) {
     e.preventDefault();
+    const otherCanvases = canvasStore.canvases.filter((c) => !c.isDefault);
+    const duplicateChildren =
+      otherCanvases.length === 0
+        ? [{ label: "(no other canvases)", disabled: true }]
+        : otherCanvases.map((c) => ({
+            label: c.name,
+            action: () => void duplicateToCanvas(name, c.uuid),
+          }));
     menu = {
       x: e.clientX,
       y: e.clientY,
       items: [
         { label: "Rename", action: () => beginRename(name) },
         { label: "Duplicate", action: () => duplicate(name) },
+        { label: "Duplicate to canvas", children: duplicateChildren },
         // Projector entries hidden pending the projector redesign.
         null,
         { label: "Remove", danger: true, disabled: defaultCanvas.scenes.length <= 1, action: () => void remove(name) },
