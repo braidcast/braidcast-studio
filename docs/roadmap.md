@@ -1451,6 +1451,25 @@ on public repos (separate from the 500 MB Packages quota).
   Twitch-specific `GoLiveAPI`/config, or harvest `MultitrackVideoOutput`'s
   multi-output/encoder-sharing plumbing for our fan-out handler.
 - ⏸ **WHIP simulcast encoder-id divergence** — conscious deferral from 4b.
+- 🔭 **Code-health deferrals (2026-07-10)** — surfaced during the centralization/
+  dedup sweep; each deferred as a separate task to keep that sweep surgical:
+  (a) **Scenes/Sources embedded-row fork** — `CanvasDock.svelte`'s inline mini
+  scene/source lists (`es-*` classes) duplicate the standalone `ScenesDock`/
+  `SourcesDock` (`dock-*` classes) but with divergent behavior (Sources adds
+  dblclick-properties, Scenes a grid layout). Sharing needs a skinnable row
+  component merging two class namespaces — visual-regression risk, not a
+  surgical extraction. (b) **`MonitorPage.svelte` inline bitrate** diverges from
+  `format.ts` `fmtBitrate` (drops the sub-1000 → `kb/s` branch, always `Mb/s`);
+  routing it through the shared helper would change rendered sub-Mbps output —
+  needs a display decision before unifying. (c) **`AudioMonitor.cpp` /
+  `preview_window.cpp` by-uuid finds** not centralized onto entity accessors
+  like the rest (compound `(windowId,uuid)` keys, mutex-guarded bodies, an
+  iterator needed for `erase`) — a targeted follow-up, not the generic
+  find-by-uuid pass. (d) **Stats per-output color model** (2026-07-10) — summary
+  strip uses `grade` (green at 0), rows use `elevated` (neutral→yellow→red), and
+  congestion severity band is `[30,60]%`; chosen so healthy rows stay calm and
+  the errored overlay is the loudest signal — **GUI acceptance owed** to confirm
+  the thresholds feel right in practice.
 - ✅ **C1 — output-binding edits now honor Settings → Cancel.** Edits still commit
   live (previews react immediately), but the dialog snapshots the bindings on open,
   reverts on Cancel/Esc, and re-baselines on Apply/OK — mirroring the Stream tab.
