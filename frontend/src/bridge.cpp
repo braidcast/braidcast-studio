@@ -9401,8 +9401,23 @@ bool ObsQueryHandler::OnQuery(CefRefPtr<CefBrowser> /*browser*/, CefRefPtr<CefFr
 	// off-thread and resolves `callback` later, on the UI thread. We hand off the
 	// ref-counted callback and return without touching the sync path, so there is
 	// exactly one resolution per query.
-	if (Bridge::DispatchAsync(method, params, callback)) {
-		HostLog("[bridge] " + method + " -> async dispatched");
+	// The async lane spawns a worker thread; if that spawn throws (thread/handle
+	// exhaustion) it must become a clean Failure, not escape OnQuery and terminate
+	// the process with the callback left hung.
+	try {
+		if (Bridge::DispatchAsync(method, params, callback)) {
+			HostLog("[bridge] " + method + " -> async dispatched");
+			return true;
+		}
+	} catch (const std::exception &e) {
+		const std::string msg = "async dispatch failed for " + method + ": " + e.what();
+		callback->Failure(500, msg);
+		HostLog("[bridge] " + msg);
+		return true;
+	} catch (...) {
+		const std::string msg = "async dispatch failed for " + method;
+		callback->Failure(500, msg);
+		HostLog("[bridge] " + msg);
 		return true;
 	}
 

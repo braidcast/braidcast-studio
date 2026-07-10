@@ -45,20 +45,33 @@ void RunAsync(std::function<void()> work)
 		std::lock_guard<std::mutex> lock(g_workerMutex);
 		++g_workerCount;
 	}
-	std::thread([work = std::move(work)]() mutable {
-		try {
-			work();
-		} catch (...) {
-			// Never let an escaped exception skip the count decrement below
-			// (it would wedge WaitForDrain forever). RunOAuthConnect and
-			// RunAsyncMethod already wrap their own bodies; this is belt-and-braces.
-		}
+	try {
+		std::thread([work = std::move(work)]() mutable {
+			try {
+				work();
+			} catch (...) {
+				// Never let an escaped exception skip the count decrement below
+				// (it would wedge WaitForDrain forever). RunOAuthConnect and
+				// RunAsyncMethod already wrap their own bodies; this is belt-and-braces.
+			}
+			{
+				std::lock_guard<std::mutex> lock(g_workerMutex);
+				--g_workerCount;
+			}
+			g_workerCv.notify_all();
+		}).detach();
+	} catch (...) {
+		// The std::thread ctor threw (thread/handle exhaustion) before the worker
+		// could run, so the decrement above never fires -- undo the reserved count
+		// here or WaitForDrain wedges the full timeout at shutdown. Rethrow so the
+		// caller resolves its callback with a failure instead of hanging.
 		{
 			std::lock_guard<std::mutex> lock(g_workerMutex);
 			--g_workerCount;
 		}
 		g_workerCv.notify_all();
-	}).detach();
+		throw;
+	}
 }
 
 bool WaitForDrain(std::chrono::milliseconds timeout)
