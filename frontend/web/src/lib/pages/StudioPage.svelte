@@ -20,10 +20,9 @@ import { EV } from "../eventNames";
   import { multistreamStatusStore } from "../multistreamStatusStore.svelte";
   import { STATE_COLOR } from "../theme/stateColors";
   import { fmtDuration, fmtBitrate } from "../format";
-  import { callOrToast } from "../callToast";
   import { statsStore } from "../statsStore.svelte";
   import { oauthStore } from "../oauthStore.svelte";
-  import { pageStore } from "../pageStore.svelte";
+  import { pageStore, setPage } from "../pageStore.svelte";
   import { suspendPreview } from "../previewGate.svelte";
   import { undoStore } from "../undoStore.svelte";
   import CollectionDialog, { type DialogSpec } from "../CollectionDialog.svelte";
@@ -109,6 +108,12 @@ import { EV } from "../eventNames";
         : liveState === "error"
           ? "var(--color-live)"
           : "var(--color-accent)",
+  );
+
+  // Off-air status label for the bottom bar's left block (the live badge replaces it
+  // once streaming). Keeps that block substantial instead of a lone floating dot.
+  let liveLabel = $derived(
+    liveState === "connecting" ? "Connecting" : liveState === "error" ? "Stream Error" : "Offline",
   );
 
   let focusedCanvas = $derived(canvases.find((c) => c.uuid === activeCanvasUuid) ?? null);
@@ -546,33 +551,10 @@ import { EV } from "../eventNames";
     toggleCanvasPreview(c);
   }
 
-  // Inline add-canvas: a name prompt -> canvas.create with the Default canvas's
-  // resolution/FPS as defaults (1920x1080@60 if no Default is loaded yet). The new
-  // canvas appears in the chip list via the canvas.changed subscription; its dock
-  // only materializes once an enabled output binds it (output-gating).
+  // "+ CANVAS" opens the full Canvases config page (name, resolution/FPS, and
+  // destination bindings) rather than an inline name-only prompt.
   function addCanvas(): void {
-    dialog = {
-      kind: "prompt",
-      title: "New Canvas",
-      confirmLabel: "Create",
-      onCommit: (name) => {
-        if (!name) return;
-        const def = canvases.find((c) => c.isDefault);
-        void callOrToast(
-          "canvas.create",
-          {
-            name,
-            baseWidth: def?.baseWidth ?? 1920,
-            baseHeight: def?.baseHeight ?? 1080,
-            outputWidth: def?.outputWidth,
-            outputHeight: def?.outputHeight,
-            fpsNum: def?.fpsNum ?? 60,
-            fpsDen: def?.fpsDen ?? 1,
-          },
-          "Create canvas failed",
-        );
-      },
-    };
+    setPage("canvases");
   }
 
   async function doToggleLive(): Promise<void> {
@@ -770,6 +752,8 @@ import { EV } from "../eventNames";
       <span class="focus-dot" style:background={focusDotColor}></span>
       {#if liveState === "live"}
         <span class="livebadge"><span class="rec"></span>LIVE {fmtDuration(liveDurationMs, { fixed: true })}</span>
+      {:else}
+        <span class="bb-state">{liveLabel}</span>
       {/if}
       {#if anyRunning && viewerTotal !== null}
         <span class="viewers" title="Aggregate viewers across connected platforms">
@@ -859,6 +843,15 @@ import { EV } from "../eventNames";
     min-height: 0;
     display: flex;
     flex-direction: column;
+    /* Subtle horizontal command-deck grid used by both bars' structural surfaces
+       (the rgba stripe has no token, so it lives here rather than in the theme). */
+    --structural-grid: repeating-linear-gradient(
+      0deg,
+      transparent 0,
+      transparent 3px,
+      rgba(255, 255, 255, 0.02) 3px,
+      rgba(255, 255, 255, 0.02) 4px
+    );
   }
   .studio.hidden {
     display: none;
@@ -884,8 +877,8 @@ import { EV } from "../eventNames";
     background: var(--color-surface-2);
     overflow: hidden;
   }
-  /* "CANVASES" label: surface block w/ a subtle horizontal structural-grid gradient
-     (the rgba stripe has no token, so it stays inline like the mock), right hairline. */
+  /* "CANVASES" label: surface block w/ the shared structural-grid gradient, right
+     hairline. */
   .bar-label {
     flex: 0 0 auto;
     display: flex;
@@ -900,15 +893,7 @@ import { EV } from "../eventNames";
     white-space: nowrap;
     color: var(--color-muted);
     border-right: var(--border-weight) solid var(--color-border);
-    background:
-      repeating-linear-gradient(
-        0deg,
-        transparent 0,
-        transparent 3px,
-        rgba(255, 255, 255, 0.02) 3px,
-        rgba(255, 255, 255, 0.02) 4px
-      ),
-      var(--color-surface);
+    background: var(--structural-grid), var(--color-surface);
   }
   /* Canvases segment: chips on --color-base, right hairline divider. */
   .canvases {
@@ -1134,7 +1119,7 @@ import { EV } from "../eventNames";
      ============================================================ */
   .golive-bar {
     flex: 0 0 auto;
-    height: 60px;
+    height: 52px;
     display: flex;
     align-items: stretch;
     gap: 0;
@@ -1142,21 +1127,32 @@ import { EV } from "../eventNames";
     border-top: var(--border-weight) solid var(--color-border);
     background: var(--color-surface);
   }
-  /* Left cluster: focus dot + label (+ live badge / viewers when live), right
-     hairline, on --color-surface. */
+  /* Left cluster: focus dot + status label (+ live badge / viewers when live), right
+     hairline, on the shared structural-grid surface — mirrors the top bar's label
+     block so the dot never floats alone in an empty band. */
   .bb-left {
     display: flex;
     align-items: center;
-    gap: 14px;
+    gap: 11px;
     min-width: 0;
     padding: 0 14px;
-    background: var(--color-surface);
+    background: var(--structural-grid), var(--color-surface);
     border-right: var(--border-weight) solid var(--color-border);
   }
   .focus-dot {
     width: 9px;
     height: 9px;
     flex: 0 0 auto;
+  }
+  /* Off-air status label (mono micro-label, same treatment as the top bar's). */
+  .bb-state {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    color: var(--color-muted);
   }
   .livebadge {
     display: flex;
@@ -1205,11 +1201,12 @@ import { EV } from "../eventNames";
   .viewers svg {
     color: var(--color-muted);
   }
-  /* Base-colored spacer between the clusters. */
+  /* Spacer between the clusters: the shared structural-grid surface (not the darker
+     base, which read as a dead void) so the middle stays intentional command-deck. */
   .bb-spacer {
     flex: 1;
     min-width: 8px;
-    background: var(--color-base);
+    background: var(--structural-grid), var(--color-surface);
   }
   /* Right cluster: text buttons + perf readout + GO LIVE, all gapless full-height. */
   .bb-right {
@@ -1270,7 +1267,7 @@ import { EV } from "../eventNames";
   }
   /* GO LIVE: full-height right-edge accent block; red END STREAM when live. The
      global `button { height: var(--control-height) }` would otherwise pin it to 30px
-     and float it in the 60px bar — height:auto + align-self:stretch make it fill the
+     and float it in the 52px bar — height:auto + align-self:stretch make it fill the
      bar edge-to-edge like the Screenshot/VCAM/perf/Edit cells beside it. */
   .golive {
     height: auto;
