@@ -23,14 +23,27 @@ subscriptions, `streamMeta.get/set` refresh-present gate + refuse persisting a r
 record (deliberate no-scopeVer carve-out preserved), the four stores' in-flight refresh guard,
 `oauthStore.whenReady`, and the `channelsStore` audience/viewer prune.
 
-**Still open (low / enhancement, deliberately deferred):** provider raw-body → UI/log
-disclosure; DPAPI secondary entropy; `flightLocks_` prune on account removal; the fully-dead
-`interact.changed` + `obs.event` per-frontend-event `ExecuteJavaScript` overhead; `settings.videoChanged`
-/ `window.opened` emitted with no consuming surface (left as-is — no surface needs them);
-`projector.changed` payload vs `Record<string, never>` type mismatch; `audio.setAdvanced`
-`tracks` shorter than 6 zeroing trailing mixer tracks; the per-canvas dot `updateParameters`
-layout-save write amplification; the discarded `onDidLayoutChange` disposer (harmless). Original
-finding detail retained below.
+**Low / enhancement resolved 2026-07-10** (commits `frontend: remove dead obs.event/interact
+forwards`, `frontend: dispose onDidLayoutChange with drop handlers`): `flightLocks_` prune on
+disconnect (`ForgetAccount`); removed the consumer-less `obs.event` per-frontend-event forward
+and the dead `interact.changed` emit (plus the now-purposeless `FireSceneChanged` re-fire that
+only existed to prove that chain); `projector.changed` typed `{ opened?, closed? }`;
+`audio.setAdvanced` `tracks` now all-or-nothing (rejects a short array instead of zeroing
+trailing mixers); `onDidLayoutChange` disposer pushed to `dropDisposers`.
+
+**Verified non-issues:** the per-canvas dot `updateParameters` write-amplification — traced
+dockview-core 6.6.1: `updateParameters` never fires `onDidLayoutChange`, so no `layout.json`
+churn (nothing to fix). `settings.videoChanged` / `window.opened` emitted with no consumer —
+left as-is (rare, cheap; kept for potential surfaces).
+
+**Deliberately not done (net-negative / low-ROI):** provider raw-body → UI/log disclosure —
+provider error bodies are non-secret (verified: not tokens) and useful for debugging; redacting
+to generic messages hurts UX for ~zero security gain, so kept. DPAPI secondary entropy — a
+fixed app-embedded entropy is extractable from the binary (theater); real value needs
+per-install entropy under separate ACLs, and a same-user attacker defeats DPAPI regardless
+(matches OBS norms). Revisit only if a concrete threat model justifies the per-install design.
+
+Original finding detail retained below.
 
 ### High — real bugs, action first
 - **Stale-encoder UAF after a video reset.** `settings.setVideo` and `settings.restore`
