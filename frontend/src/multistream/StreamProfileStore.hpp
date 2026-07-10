@@ -40,6 +40,8 @@ public:
 	bool ReferencesAccount(const std::string &accountId) const;
 	StreamProfile &Add(StreamProfile p);  // assigns uuid if empty; first add becomes primary
 	void Remove(const std::string &uuid); // re-points primary if the primary was removed
+	// Reorder profiles to match `order`; unknown ids ignored, missing ids kept at end. Leaves isPrimary intact.
+	void Reorder(const std::vector<std::string> &order);
 	bool SetPrimary(const std::string &uuid); // marks uuid primary, clears the rest; false if not found
 
 	// Drop all profiles (releasing their obs_data) for teardown leak measurement.

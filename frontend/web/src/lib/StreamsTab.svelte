@@ -23,8 +23,27 @@
   import EmptyState from "./EmptyState.svelte";
   import ToggleSwitch from "./ToggleSwitch.svelte";
   import Avatar from "./Avatar.svelte";
+  import SplitPane from "./SplitPane.svelte";
+  import { createReorder } from "./listReorder.svelte";
 
   let profiles = $derived(streamProfileStore.profiles);
+
+  // Pointer drag-to-reorder the profile list. Optimistically reorders the shared store
+  // array (avoids flicker), then persists via streamProfile.reorder; the backend's
+  // streamProfile.changed emit + store refresh reconciles, so a failed call is non-fatal.
+  const reorder = createReorder({
+    getIds: () => streamProfileStore.profiles.map((p) => p.uuid),
+    commit: async (order) => {
+      const by = new Map(streamProfileStore.profiles.map((p) => [p.uuid, p]));
+      streamProfileStore.profiles = order.map((id) => by.get(id)).filter((p): p is StreamProfileInfo => !!p);
+      try {
+        await obs.call("streamProfile.reorder", { order });
+      } catch {
+        // Reconciled by the streamProfile.changed emit + store refresh.
+      }
+    },
+  });
+  const dragRow = reorder.row;
   let serviceTypes = $state<ServiceType[]>([]);
   let loaded = $state(false);
   let error = $state<string | null>(null);
@@ -543,6 +562,10 @@
 </script>
 
 <div class="streams">
+  <SplitPane storageKey="braidcast.split.streams" default={264} left={masterList} right={detailPane} />
+</div>
+
+{#snippet masterList()}
   <div class="master">
     <div class="master-head">
       <span class="mh-title">Profiles</span>
@@ -554,11 +577,21 @@
       {:else if profiles.length === 0}
         <p class="dim pad">No stream profiles yet.</p>
       {:else}
-        {#each profiles as p (p.uuid)}
+        {#each profiles as p, i (p.uuid)}
           {@const linked = connectedStatusFor(p)}
           {@const reconnect = needsReconnectFor(p)}
           {@const acctName = linked ? linked.displayName || linked.login : ""}
-          <button class="nav-item" class:active={formOpen && editingUuid === p.uuid} onclick={() => openEdit(p)}>
+          {#if reorder.dragging && reorder.dropIndex === i}<div class="reorder-line"></div>{/if}
+          <button
+            class="nav-item"
+            class:active={formOpen && editingUuid === p.uuid}
+            class:lifting={reorder.dragIndex === i}
+            use:dragRow={i}
+            onclick={() => {
+              if (reorder.consumeClick()) return;
+              openEdit(p);
+            }}
+          >
             <span class="nav-av">
               <Avatar url={linked?.avatarUrl} name={acctName || displayName(p)} size={36} />
             </span>
@@ -584,13 +617,16 @@
             </span>
           </button>
         {/each}
+        {#if reorder.dragging && reorder.dropIndex === profiles.length}<div class="reorder-line"></div>{/if}
       {/if}
       {#if loaded}
         <button class="add-btn" onclick={openAdd}><Icon name="plus" size={13} /> Add Stream Profile</button>
       {/if}
     </div>
   </div>
+{/snippet}
 
+{#snippet detailPane()}
   <div class="detail">
     {#if error}<p class="error">{error}</p>{/if}
 
@@ -788,7 +824,7 @@
       </EmptyState>
     {/if}
   </div>
-</div>
+{/snippet}
 
 {#if dialog}
   <CollectionDialog {...dialog} onClose={() => (dialog = null)} />
@@ -804,12 +840,21 @@
 
   /* ---- master (profile list) -------------------------------------------- */
   .master {
-    flex: 0 0 264px;
+    flex: 1 1 auto;
+    min-width: 0;
     display: flex;
     flex-direction: column;
     min-height: 0;
     border-right: var(--border-weight) solid var(--color-border);
     background: var(--color-surface);
+  }
+  .reorder-line {
+    height: 2px;
+    margin: 0 8px;
+    background: var(--color-accent);
+  }
+  .nav-item.lifting {
+    opacity: 0.4;
   }
   .master-head {
     flex: 0 0 auto;

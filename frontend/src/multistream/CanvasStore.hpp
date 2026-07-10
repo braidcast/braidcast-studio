@@ -41,6 +41,8 @@ public:
 	CanvasDefinition *Find(const std::string &uuid);
 	CanvasDefinition &Add(CanvasDefinition def); // assigns uuid if empty
 	void Remove(const std::string &uuid);        // no-op for the Default
+	// Reorder definitions to match `order`; unknown ids ignored, missing ids kept at end.
+	void Reorder(const std::vector<std::string> &order);
 
 	// Drop all definitions (releasing their obs_data) without re-seeding. For
 	// teardown only, so the leak count is measured against an empty model.

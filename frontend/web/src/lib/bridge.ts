@@ -410,6 +410,11 @@ export interface CanvasUpdateParams {
   };
 }
 
+/** Fields accepted by canvas.reorder / streamProfile.reorder: the full ordered list of uuids. */
+export interface ReorderParams {
+  order: string[];
+}
+
 /** An encoder type as reported by encoderTypes.list. */
 export interface EncoderType {
   id: string;
@@ -1266,6 +1271,8 @@ export interface ObsMethods {
   "canvas.create": { uuid: string };
   "canvas.update": CanvasInfo;
   "canvas.remove": { removed: string };
+  // Persisted drag order (echoes applied uuids); supported, unlike scenes.reorder (never).
+  "canvas.reorder": { order: string[] };
   "encoderTypes.list": EncoderType[];
   // Source filters. filterTypes.list enumerates creatable filter types (optionally
   // narrowed by kind); filters.list returns one source's chain in draw order. add/
@@ -1287,6 +1294,8 @@ export interface ObsMethods {
   "streamProfile.update": StreamProfileInfo;
   "streamProfile.remove": { removed: string };
   "streamProfile.setPrimary": { uuid: string; isPrimary: boolean };
+  // Persisted drag order (echoes applied uuids); supported, unlike scenes.reorder (never).
+  "streamProfile.reorder": { order: string[] };
   "serviceTypes.list": ServiceType[];
   // Platform OAuth (Connect Account dual path, Phase 8; account entity, Phase 4).
   // providers enumerates the platforms that support account connection (empty in a

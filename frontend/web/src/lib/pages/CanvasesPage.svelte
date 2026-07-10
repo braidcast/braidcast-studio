@@ -17,6 +17,8 @@
   import { STATE_COLOR_EXT } from "../theme/stateColors";
   import { callOrToast } from "../callToast";
   import Icon from "../dock/Icon.svelte";
+  import SplitPane from "../SplitPane.svelte";
+  import { createReorder } from "../listReorder.svelte";
 
   // Canvases page: a master-detail layout. The left list selects a canvas; the right
   // pane is that canvas's live-applied detail editor (Video · Encoding · Audio ·
@@ -89,6 +91,23 @@
     selectedUuid ? canvasState(selectedUuid) === "live" || canvasState(selectedUuid) === "connecting" : false,
   );
 
+  // Pointer drag-to-reorder the canvas list. Optimistically reorders the shared store
+  // array (avoids flicker), then persists via canvas.reorder; the backend's
+  // canvas.changed emit + store refresh reconciles, so a failed call is non-fatal.
+  const reorder = createReorder({
+    getIds: () => canvasStore.canvases.map((c) => c.uuid),
+    commit: async (order) => {
+      const by = new Map(canvasStore.canvases.map((c) => [c.uuid, c]));
+      canvasStore.canvases = order.map((id) => by.get(id)).filter((c): c is CanvasInfo => !!c);
+      try {
+        await obs.call("canvas.reorder", { order });
+      } catch {
+        // Reconciled by the canvas.changed emit + store refresh.
+      }
+    },
+  });
+  const dragRow = reorder.row;
+
   // Inline add-canvas: a name prompt -> canvas.create seeded with the Default canvas's
   // resolution/FPS and the spec's inheritance defaults (Audio + Advanced inherited).
   function addCanvas(): void {
@@ -154,47 +173,65 @@
     <p class="dim">Loading canvases…</p>
   {:else}
     <div class="split">
-      <aside class="cv-clist">
-        <div class="cv-clist__head">
-          <span class="cv-clist__title">Canvases</span>
-          <span class="cv-clist__count">{canvases.length}</span>
-        </div>
-        <div class="cv-clist__body">
-          {#each canvases as c (c.uuid)}
-            {@const st = canvasState(c.uuid)}
-            <button class="cv-ci" class:on={c.uuid === selectedUuid} onclick={() => (selectedUuid = c.uuid)}>
-              <span class="cv-ci__dot" style:background={STATE_COLOR_EXT[st]}></span>
-              <span class="cv-ci__body">
-                <span class="cv-ci__name">{c.name}</span>
-                <span class="cv-ci__sub">{c.outputWidth}×{c.outputHeight} · {fmtFps(c.fpsNum, c.fpsDen)}fps · {destCount(c.uuid)} dest</span>
-              </span>
-              {#if c.isDefault}<span class="cv-ci__badge">DEF</span>{/if}
-            </button>
-          {/each}
-          <button class="cv-newcanvas" onclick={addCanvas}><Icon name="plus" size={13} /><span>New Canvas</span></button>
-        </div>
-      </aside>
-      <section class="pane">
-        {#if selected}
-          {#key selected.uuid}
-            <CanvasEditor
-              canvas={selected}
-              {videoEncoders}
-              {audioEncoders}
-              {bindings}
-              {profiles}
-              {statusByBinding}
-              isLive={selectedLive}
-              onDelete={() => confirmDeleteCanvas(selected)}
-              onBindingsChanged={() => void outputBindingStore.refresh()}
-              onRemoveBinding={confirmRemoveBinding}
-            />
-          {/key}
-        {/if}
-      </section>
+      <SplitPane storageKey="braidcast.split.canvases" default={236} left={leftList} right={detailPane} />
     </div>
   {/if}
 </div>
+
+{#snippet leftList()}
+  <aside class="cv-clist">
+    <div class="cv-clist__head">
+      <span class="cv-clist__title">Canvases</span>
+      <span class="cv-clist__count">{canvases.length}</span>
+    </div>
+    <div class="cv-clist__body">
+      {#each canvases as c, i (c.uuid)}
+        {@const st = canvasState(c.uuid)}
+        {#if reorder.dragging && reorder.dropIndex === i}<div class="reorder-line"></div>{/if}
+        <button
+          class="cv-ci"
+          class:on={c.uuid === selectedUuid}
+          class:lifting={reorder.dragIndex === i}
+          use:dragRow={i}
+          onclick={() => {
+            if (reorder.consumeClick()) return;
+            selectedUuid = c.uuid;
+          }}
+        >
+          <span class="cv-ci__dot" style:background={STATE_COLOR_EXT[st]}></span>
+          <span class="cv-ci__body">
+            <span class="cv-ci__name">{c.name}</span>
+            <span class="cv-ci__sub">{c.outputWidth}×{c.outputHeight} · {fmtFps(c.fpsNum, c.fpsDen)}fps · {destCount(c.uuid)} dest</span>
+          </span>
+          {#if c.isDefault}<span class="cv-ci__badge">DEF</span>{/if}
+        </button>
+      {/each}
+      {#if reorder.dragging && reorder.dropIndex === canvases.length}<div class="reorder-line"></div>{/if}
+      <button class="cv-newcanvas" onclick={addCanvas}><Icon name="plus" size={13} /><span>New Canvas</span></button>
+    </div>
+  </aside>
+{/snippet}
+
+{#snippet detailPane()}
+  <section class="pane">
+    {#if selected}
+      {#key selected.uuid}
+        <CanvasEditor
+          canvas={selected}
+          {videoEncoders}
+          {audioEncoders}
+          {bindings}
+          {profiles}
+          {statusByBinding}
+          isLive={selectedLive}
+          onDelete={() => confirmDeleteCanvas(selected)}
+          onBindingsChanged={() => void outputBindingStore.refresh()}
+          onRemoveBinding={confirmRemoveBinding}
+        />
+      {/key}
+    {/if}
+  </section>
+{/snippet}
 
 {#if dialog}
   <CollectionDialog {...dialog} onClose={() => (dialog = null)} />
@@ -226,5 +263,13 @@
     margin: 12px 24px;
     color: var(--color-live);
     font-size: 12px;
+  }
+  .reorder-line {
+    height: 2px;
+    margin: 0 6px;
+    background: var(--color-accent);
+  }
+  .cv-ci.lifting {
+    opacity: 0.4;
   }
 </style>

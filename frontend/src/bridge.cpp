@@ -5214,6 +5214,36 @@ bool MethodCanvasRemove(const json &params, json &result, std::string &error)
 	return true;
 }
 
+bool MethodCanvasReorder(const json &params, json &result, std::string &error)
+{
+	if (!RequireObject(params, "canvas.reorder", error)) {
+		return false;
+	}
+	auto it = params.find("order");
+	if (it == params.end() || !it->is_array()) {
+		error = "canvas.reorder 'order' must be an array of uuids";
+		return false;
+	}
+	std::vector<std::string> order;
+	for (const json &el : *it) {
+		if (el.is_string()) {
+			order.push_back(el.get<std::string>());
+		}
+	}
+
+	CanvasStore &store = ObsBootstrap::Canvases();
+	store.Reorder(order);
+	store.Save();
+	EmitEvent(EventNames::kCanvasChanged, json::object());
+
+	json arr = json::array();
+	for (const CanvasDefinition &def : store.Definitions()) {
+		arr.push_back(def.uuid);
+	}
+	result = json{{"order", arr}};
+	return true;
+}
+
 // List registered encoder types of a kind ("video"|"audio") as {id, name}.
 // Filters obs_enum_encoder_types by obs_get_encoder_type. Sorted by display name.
 bool MethodEncoderTypesList(const json &params, json &result, std::string &error)
@@ -5479,6 +5509,36 @@ bool MethodStreamProfileSetPrimary(const json &params, json &result, std::string
 
 	EmitEvent(EventNames::kStreamProfileChanged, json::object());
 	result = json{{"uuid", uuid}, {"isPrimary", true}};
+	return true;
+}
+
+bool MethodStreamProfileReorder(const json &params, json &result, std::string &error)
+{
+	if (!RequireObject(params, "streamProfile.reorder", error)) {
+		return false;
+	}
+	auto it = params.find("order");
+	if (it == params.end() || !it->is_array()) {
+		error = "streamProfile.reorder 'order' must be an array of uuids";
+		return false;
+	}
+	std::vector<std::string> order;
+	for (const json &el : *it) {
+		if (el.is_string()) {
+			order.push_back(el.get<std::string>());
+		}
+	}
+
+	StreamProfileStore &store = ObsBootstrap::StreamProfiles();
+	store.Reorder(order);
+	store.Save();
+	EmitEvent(EventNames::kStreamProfileChanged, json::object());
+
+	json arr = json::array();
+	for (const StreamProfile &p : store.Profiles()) {
+		arr.push_back(p.uuid);
+	}
+	result = json{{"order", arr}};
 	return true;
 }
 
@@ -9047,12 +9107,14 @@ void Init()
 		{"canvas.create", MethodCanvasCreate},
 		{"canvas.update", MethodCanvasUpdate},
 		{"canvas.remove", MethodCanvasRemove},
+		{"canvas.reorder", MethodCanvasReorder},
 		{"encoderTypes.list", MethodEncoderTypesList},
 		{"streamProfile.list", MethodStreamProfileList},
 		{"streamProfile.create", MethodStreamProfileCreate},
 		{"streamProfile.update", MethodStreamProfileUpdate},
 		{"streamProfile.remove", MethodStreamProfileRemove},
 		{"streamProfile.setPrimary", MethodStreamProfileSetPrimary},
+		{"streamProfile.reorder", MethodStreamProfileReorder},
 		{"serviceTypes.list", MethodServiceTypesList},
 		{"outputBinding.list", MethodOutputBindingList},
 		{"outputBinding.create", MethodOutputBindingCreate},

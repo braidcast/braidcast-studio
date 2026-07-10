@@ -159,3 +159,8 @@ void CanvasStore::Remove(const std::string &uuid)
 		}
 	}
 }
+
+void CanvasStore::Reorder(const std::vector<std::string> &order)
+{
+	ReorderByUuid(definitions, order);
+}

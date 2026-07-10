@@ -144,3 +144,8 @@ void StreamProfileStore::Remove(const std::string &uuid)
 		}
 	}
 }
+
+void StreamProfileStore::Reorder(const std::vector<std::string> &order)
+{
+	ReorderByUuid(profiles, order);
+}
