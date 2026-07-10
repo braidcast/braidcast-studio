@@ -135,66 +135,83 @@ bool WsClient::recv(std::string &outFrame, bool &isText, std::string &err)
 	}
 	CURL *curl = static_cast<CURL *>(easy_);
 
-	// Wait briefly for readability so a caller loop can re-check cancellation
-	// instead of blocking indefinitely inside curl_ws_recv.
-	if (sock_ >= 0) {
-		fd_set rfds;
-		FD_ZERO(&rfds);
-		FD_SET(static_cast<curl_socket_t>(sock_), &rfds);
-		timeval tv;
-		tv.tv_sec = 0;
-		tv.tv_usec = kPollMicros;
-		// nfds is ignored on Windows; pass 0.
-		const int sel = select(0, &rfds, nullptr, nullptr, &tv);
-		if (sel == 0) {
-			return true; // timeout, no data -- caller loops and re-checks canceled()
+	// CONNECT_ONLY WebSocket pattern: read FIRST, wait only on CURLE_AGAIN. Over
+	// wss:// libcurl/TLS decodes and buffers whole frames ABOVE the socket, so when
+	// two frames share one TLS record the socket goes unreadable after the first is
+	// pulled -- a select()-before-recv would then block until fresh socket activity
+	// and strand the buffered frame. Calling curl_ws_recv first drains that buffer;
+	// only when it reports CURLE_AGAIN (nothing decoded, nothing on the socket) do we
+	// wait on the socket for one poll slice and retry. recv still returns within
+	// ~kPollMicros so the caller loop can re-check its cancel flag promptly. Buffered
+	// frames drain one-per-recv across the caller's loop (no select between them).
+	for (;;) {
+		char buf[65536];
+		size_t n = 0;
+		const struct curl_ws_frame *meta = nullptr;
+		const CURLcode code = curl_ws_recv(curl, buf, sizeof(buf), &n, &meta);
+		if (code != CURLE_OK && code != CURLE_AGAIN) {
+			err = std::string("websocket recv failed: ") + curl_easy_strerror(code);
+			return false;
 		}
-		// sel < 0 falls through and lets curl_ws_recv surface the error/again.
-	}
+		if (code == CURLE_OK) {
+			if (!meta) {
+				return true;
+			}
+			if (meta->flags & CURLWS_CLOSE) {
+				err = "websocket closed by peer";
+				return false;
+			}
+			if (meta->flags & CURLWS_PING) {
+				// Echo the ping payload back as a pong to keep the connection alive.
+				size_t sent = 0;
+				curl_ws_send(curl, buf, n, &sent, 0, CURLWS_PONG);
+				return true;
+			}
 
-	char buf[65536];
-	size_t n = 0;
-	const struct curl_ws_frame *meta = nullptr;
-	const CURLcode code = curl_ws_recv(curl, buf, sizeof(buf), &n, &meta);
-	if (code == CURLE_AGAIN) {
-		return true; // spurious wakeup, no complete frame yet
-	}
-	if (code != CURLE_OK) {
-		err = std::string("websocket recv failed: ") + curl_easy_strerror(code);
-		return false;
-	}
-	if (!meta) {
-		return true;
-	}
-	if (meta->flags & CURLWS_CLOSE) {
-		err = "websocket closed by peer";
-		return false;
-	}
-	if (meta->flags & CURLWS_PING) {
-		// Echo the ping payload back as a pong to keep the connection alive.
-		size_t sent = 0;
-		curl_ws_send(curl, buf, n, &sent, 0, CURLWS_PONG);
-		return true;
-	}
+			// Data frame. curl may deliver a frame larger than `buf` across multiple
+			// recv calls (meta->bytesleft > 0 until the last chunk); accumulate until the
+			// payload is complete, then hand the whole frame to the caller. The chat
+			// protocols in scope (Pusher, Twitch IRC) use small single frames, so this is
+			// the only fragmentation that occurs in practice.
+			if (accum_.empty()) {
+				accumText_ = (meta->flags & CURLWS_TEXT) != 0;
+			}
+			accum_.append(buf, n);
+			if (meta->bytesleft > 0) {
+				return true; // more chunks of this frame still to come
+			}
 
-	// Data frame. curl may deliver a frame larger than `buf` across multiple
-	// recv calls (meta->bytesleft > 0 until the last chunk); accumulate until the
-	// payload is complete, then hand the whole frame to the caller. The chat
-	// protocols in scope (Pusher, Twitch IRC) use small single frames, so this is
-	// the only fragmentation that occurs in practice.
-	if (accum_.empty()) {
-		accumText_ = (meta->flags & CURLWS_TEXT) != 0;
-	}
-	accum_.append(buf, n);
-	if (meta->bytesleft > 0) {
-		return true; // more chunks of this frame still to come
-	}
+			outFrame = std::move(accum_);
+			accum_.clear();
+			isText = accumText_;
+			accumText_ = false;
+			return true;
+		}
 
-	outFrame = std::move(accum_);
-	accum_.clear();
-	isText = accumText_;
-	accumText_ = false;
-	return true;
+		// CURLE_AGAIN: nothing buffered. Wait for readability (bounded by the poll
+		// slice) then retry, so a caller loop can re-check cancellation instead of
+		// blocking indefinitely inside curl_ws_recv.
+		if (sock_ >= 0) {
+			fd_set rfds;
+			FD_ZERO(&rfds);
+			FD_SET(static_cast<curl_socket_t>(sock_), &rfds);
+			timeval tv;
+			tv.tv_sec = 0;
+			tv.tv_usec = kPollMicros;
+			// nfds is ignored on Windows; pass 0.
+			const int sel = select(0, &rfds, nullptr, nullptr, &tv);
+			if (sel <= 0) {
+				return true; // timeout or select error -- caller loops and re-checks canceled()
+			}
+			// Readable: loop and drain via curl_ws_recv.
+		} else {
+			// No pollable socket handle (CURLINFO_ACTIVESOCKET was CURL_SOCKET_BAD).
+			// select() is impossible, so sleep one poll slice and return rather than
+			// spin curl_ws_recv uninterruptibly -- the caller re-checks its cancel flag.
+			std::this_thread::sleep_for(std::chrono::microseconds(kPollMicros));
+			return true;
+		}
+	}
 }
 
 void WsClient::close()

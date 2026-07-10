@@ -163,6 +163,13 @@ bool BuildEventFromChat(const json &item, Events::NormalizedEvent &ev)
 bool YouTubeChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, const std::string &channelRef,
 			  std::string &err)
 {
+	// Serialize against an overlapping re-Start: the hub does not join old workers, so a
+	// prior connect() might still be unwinding. Held for the whole call (declared before
+	// ActiveGuard, so released only after it destructs) -- this guarantees the old
+	// generation's ActiveGuard has cleared LiveChatActive before the new generation sets
+	// it, so the announced-once flag set/clear on the shared provider can't invert.
+	std::lock_guard<std::mutex> run(runMutex_);
+
 	// Defensive: clear the live-chat-active flag up front so it can never survive on a
 	// fragile invariant (e.g. a prior run that exited before the RAII guard armed).
 	owner_.SetLiveChatActive(false);

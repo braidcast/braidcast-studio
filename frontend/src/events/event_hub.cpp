@@ -41,17 +41,35 @@ void EventHub::StartAccount(const std::string &accountId, const OAuth::OAuthAcco
 		return; // provider has no event transport for this account
 	}
 
-	// Idempotent per accountId: tear down any prior generation (signals its worker +
-	// disconnects the transport, outside the lock) before arming a fresh one.
-	StopAccount(accountId);
-
+	// Idempotent per accountId: displace any prior generation atomically. Reading the
+	// old entry and installing the new one happen under ONE lock so two concurrent
+	// StartAccount(sameId) (e.g. boot's StartConnectedAccounts racing the oauth.connect
+	// path) can't both find nothing and both insert -- exactly one survives, and the
+	// displaced generation is always signalled. Its worker holds its own transport
+	// shared_ptr copy, so signalling + disconnecting it outside the lock can't
+	// use-after-free an in-flight connect().
 	auto stop = std::make_shared<std::atomic<bool>>(false);
+	Active prev;
+	bool hadPrev = false;
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
+		auto it = active_.find(accountId);
+		if (it != active_.end()) {
+			prev = it->second;
+			hadPrev = true;
+		}
 		Active a;
 		a.transport = transport;
 		a.stop = stop;
 		active_[accountId] = std::move(a);
+	}
+	if (hadPrev) {
+		if (prev.stop) {
+			prev.stop->store(true, std::memory_order_release);
+		}
+		if (prev.transport) {
+			prev.transport->disconnect();
+		}
 	}
 
 	OAuth::OAuthAccount acctCopy = acct; // the worker owns the account by value

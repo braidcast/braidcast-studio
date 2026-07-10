@@ -2,6 +2,7 @@
 #define OBS_MULTISTREAM_FRONTEND_CHAT_YOUTUBE_CHAT_HPP_
 
 #include <atomic>
+#include <mutex>
 #include <string>
 
 #include "chat_transport.hpp"
@@ -45,7 +46,8 @@ public:
 
 private:
 	OAuth::YouTubeProvider &owner_;
-	std::atomic<bool> stop_{false};
+	std::mutex runMutex_;              // serializes connect() across overlapping Start/Stop
+	std::atomic<bool> stop_{false};    // set by disconnect(); secondary to ctx.canceled()
 };
 
 } // namespace Chat
