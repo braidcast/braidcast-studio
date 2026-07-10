@@ -63,8 +63,13 @@ public:
 			  VideoResolver resolver);
 	~MultistreamEngine();
 
-	/* Start/stop one binding by uuid (used by the bridge per-row toggle). */
+	/* Start/stop one binding by uuid (used by the bridge per-row toggle). The
+	 * error-returning overload fills `error` with the reason a start refused/failed
+	 * (empty profile, profile live elsewhere, encoder build, obs_output_start), so the
+	 * caller can surface WHY a row won't go live instead of a bare false; the reason is
+	 * also stashed on the binding's status (Statuses().lastError). */
 	bool StartOutput(const std::string &bindingUuid);
+	bool StartOutput(const std::string &bindingUuid, std::string &error);
 	void StopOutput(const std::string &bindingUuid);
 	/* Start every enabled binding; logs per-binding failures. */
 	void StartAllEnabled();
@@ -134,6 +139,13 @@ private:
 	/* video_t for a canvas: delegates to the injected resolver (obs_get_video()
 	 * for the Default, the additional canvas's mix otherwise, NULL if none). */
 	video_t *VideoForCanvas(const std::string &canvasUuid);
+	/* A binding "occupies" its canvas/profile only while its output is actively
+	 * connecting or streaming. An Error (failed start or dropped mid-stream) or Idle
+	 * entry is a dead output: it must NOT count as live (else IsCanvasLive stays true
+	 * for a dead stream, blocking canvas edits) yet it lingers in `live` so its
+	 * lastError still surfaces, until a retry reaps it or StopOutput/StopAll clears it. */
+	static bool IsActiveState(State state) { return state == State::Connecting || state == State::Live; }
+
 	/* FindLive/RemoveLive assume the caller already holds liveMutex. */
 	LiveOutput *FindLive(const std::string &bindingUuid);
 	void RemoveLive(const std::string &bindingUuid);

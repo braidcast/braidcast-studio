@@ -532,6 +532,14 @@ static bool ApplyGlobalVideo(uint32_t baseW, uint32_t baseH, uint32_t outW, uint
 		return false;
 	}
 
+	// obs_reset_video just freed and rebuilt the global video mix that the Default
+	// canvas's cached encoders were bound to; drop that stale pair so the next start
+	// rebuilds it against the new mix (mirrors CanvasService::Update's reset-then-
+	// invalidate for runtime canvases). One call covers both the setVideo path and the
+	// scene-collection restore, which share this chokepoint. Skipped above on a no-op or
+	// failed reset, so an untouched mix keeps its still-valid cache.
+	ObsBootstrap::Multistream().InvalidateCanvasEncoders(ObsBootstrap::Canvases().Default().uuid);
+
 	// The obs_display swapchain survives a video reset; just invalidate the cached
 	// letterbox transform so the next frame re-letterboxes to the new base size.
 	Preview::OnVideoReset();
@@ -5585,6 +5593,14 @@ bool MethodOutputBindingCreate(const json &params, json &result, std::string &er
 		return false;
 	}
 
+	// A new binding is created enabled, so it must obey the single-live-stream rule:
+	// refuse if this profile is already enabled on another canvas (one RTMP key = one
+	// live stream). Mirrors the engine-layer ProfileLiveElsewhere guard.
+	if (!profileUuid.empty() && bindings.ProfileEnabledElsewhere(std::string(), profileUuid)) {
+		error = "that stream profile is already enabled on another canvas";
+		return false;
+	}
+
 	OutputBinding &created = bindings.Add(canvasUuid);
 	created.profileUuid = profileUuid;
 	created.enabled = true;
@@ -5640,9 +5656,33 @@ bool MethodOutputBindingUpdate(const json &params, json &result, std::string &er
 		return false;
 	}
 
+	// Retargeting an ENABLED binding onto a profile already enabled elsewhere would
+	// violate the single-live-stream rule; refuse before touching config or the engine.
+	if (b->enabled && !newProfile.empty() && bindings.ProfileEnabledElsewhere(uuid, newProfile)) {
+		error = "that stream profile is already enabled on another canvas";
+		return false;
+	}
+
+	// Keep config and the live output coherent: if this binding is live and the edit
+	// changes WHAT/WHERE it streams (its profile or canvas), the running output still
+	// carries the old pair, so stop it, commit the new pair, then restart on the new
+	// pair (if still enabled). A pure no-op keeps streaming untouched. Engine
+	// start/stop manage their own locking; we hold none across them.
+	MultistreamEngine &engine = ObsBootstrap::Multistream();
+	const bool targetChanged = newProfile != b->profileUuid || newCanvas != b->canvasUuid;
+	const bool wasLive = targetChanged && engine.IsLive(uuid);
+	if (wasLive) {
+		engine.StopOutput(uuid);
+	}
+
 	b->profileUuid = newProfile;
 	b->canvasUuid = newCanvas;
 	ObsBootstrap::OutputBindings().Save();
+
+	if (wasLive && b->enabled) {
+		std::string startError;
+		engine.StartOutput(uuid, startError);
+	}
 
 	EmitEvent(EventNames::kOutputBindingChanged, json::object());
 	result = OutputBindingToJson(*b);
@@ -5667,8 +5707,24 @@ bool MethodOutputBindingSetEnabled(const json &params, json &result, std::string
 	}
 
 	const bool enabled = params["enabled"].get<bool>();
+
+	// Enabling must obey the single-live-stream rule: refuse if this profile is already
+	// enabled on another canvas (one RTMP key = one live stream). Mirrors the engine's
+	// ProfileLiveElsewhere guard so config and the live layer agree.
+	if (enabled && !b->profileUuid.empty() && bindings.ProfileEnabledElsewhere(uuid, b->profileUuid)) {
+		error = "that stream profile is already enabled on another canvas";
+		return false;
+	}
+
 	b->enabled = enabled;
 	ObsBootstrap::OutputBindings().Save();
+
+	// A disabled binding must not stay live: the canvas stops rendering for it, so a
+	// still-running output would encode a frozen frame. StopOutput is a no-op if the
+	// binding isn't live; it manages its own locking (we hold none across it).
+	if (!enabled) {
+		ObsBootstrap::Multistream().StopOutput(uuid);
+	}
 
 	// outputBinding.changed is also the hook 4.4.4/4.4.5 use to re-decide whether a
 	// canvas renders (AnyEnabledForCanvas may have flipped on this toggle).
@@ -5688,6 +5744,10 @@ bool MethodOutputBindingRemove(const json &params, json &result, std::string &er
 		error = "no output binding with uuid '" + uuid + "'";
 		return false;
 	}
+	// Stop a still-running output before deleting its binding, else it keeps streaming
+	// orphaned (gone from the UI, its encoder leaked until shutdown, IsCanvasLive stuck
+	// true). No-op if the binding isn't live; manages its own locking.
+	ObsBootstrap::Multistream().StopOutput(uuid);
 	bindings.Remove(uuid);
 	ObsBootstrap::OutputBindings().Save();
 
@@ -5710,7 +5770,14 @@ bool MethodMultistreamStartOutput(const json &params, json &result, std::string 
 	if (!RequireStr(params, "multistream.startOutput", "uuid", uuid, error)) {
 		return false;
 	}
-	result = json{{"ok", ObsBootstrap::Multistream().StartOutput(uuid)}};
+	std::string startError;
+	const bool ok = ObsBootstrap::Multistream().StartOutput(uuid, startError);
+	result = json{{"ok", ok}};
+	if (!ok && !startError.empty()) {
+		// Surface the refusal/failure reason so the row shows WHY it won't go live
+		// instead of a bare {ok:false} (the same reason is on multistream.changed).
+		result["error"] = startError;
+	}
 	return true;
 }
 

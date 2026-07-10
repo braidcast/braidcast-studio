@@ -189,10 +189,12 @@ bool MultistreamEngine::ProfileLiveElsewhere(const std::string &bindingUuid, con
 	}
 	std::lock_guard<std::mutex> lock(liveMutex);
 	for (const auto &lo : live) {
-		// A live output is inherently enabled, so pass rowEnabled = true to the
-		// shared predicate (the config-layer guard supplies the real enable flag).
-		if (BindingMatchesProfile(lo->bindingUuid, lo->profileUuid, /*rowEnabled=*/true, bindingUuid,
-					  profileUuid)) {
+		// Only an actively-connecting/streaming output reserves the profile; a dead
+		// (Error/Idle) entry does not. A live output is inherently enabled, so pass
+		// rowEnabled = true to the shared predicate (the config-layer guard supplies
+		// the real enable flag).
+		if (IsActiveState(lo->state) && BindingMatchesProfile(lo->bindingUuid, lo->profileUuid,
+								      /*rowEnabled=*/true, bindingUuid, profileUuid)) {
 			return true;
 		}
 	}
@@ -201,24 +203,67 @@ bool MultistreamEngine::ProfileLiveElsewhere(const std::string &bindingUuid, con
 
 bool MultistreamEngine::StartOutput(const std::string &bindingUuid)
 {
-	if (IsLive(bindingUuid)) {
-		return true;
-	}
+	std::string error;
+	return StartOutput(bindingUuid, error);
+}
+
+bool MultistreamEngine::StartOutput(const std::string &bindingUuid, std::string &error)
+{
 	OutputBinding *b = bindings.Bindings().Find(bindingUuid);
-	if (!b || b->profileUuid.empty()) {
+
+	// Record a failure reason on the binding's status so a bare start refusal still
+	// tells the UI WHY the row won't go live. The Error entry lingers in `live` (it is
+	// not "active", so it never blocks canvas edits) until a retry reaps it. On a
+	// binding that vanished mid-call there is nothing to attach status to, so only the
+	// returned error is set.
+	auto fail = [&](const std::string &reason) -> bool {
+		error = reason;
+		auto lo = std::make_unique<LiveOutput>();
+		lo->bindingUuid = bindingUuid;
+		lo->profileUuid = b ? b->profileUuid : std::string();
+		lo->canvasUuid = b ? b->canvasUuid : std::string();
+		lo->state = State::Error;
+		lo->lastError = reason;
+		{
+			std::lock_guard<std::mutex> lock(liveMutex);
+			RemoveLive(bindingUuid);
+			live.push_back(std::move(lo));
+		}
+		NotifyChanged();
 		return false;
+	};
+
+	// An actively connecting/streaming output for this binding needs no action; a
+	// lingering dead (Error/Idle) entry from a prior failure or mid-stream drop is
+	// reaped here on the UI thread so this start actually restarts it (rather than the
+	// old short-circuit that returned true on any existing entry, dead or not).
+	{
+		std::lock_guard<std::mutex> lock(liveMutex);
+		if (LiveOutput *existing = FindLive(bindingUuid)) {
+			if (IsActiveState(existing->state)) {
+				return true;
+			}
+			RemoveLive(bindingUuid);
+		}
+	}
+
+	if (!b) {
+		error = "no output binding with uuid '" + bindingUuid + "'";
+		return false;
+	}
+	if (b->profileUuid.empty()) {
+		return fail("no stream profile is set for this output");
 	}
 	if (ProfileLiveElsewhere(bindingUuid, b->profileUuid)) {
-		blog(LOG_WARNING, "Multistream: profile already live; refusing second output");
-		return false;
+		return fail("that stream profile is already live on another canvas");
 	}
 	StreamProfile *p = profiles.Find(b->profileUuid);
 	if (!p) {
-		return false;
+		return fail("the bound stream profile no longer exists");
 	}
 	CanvasEncoders *ce = EnsureCanvasEncoders(b->canvasUuid);
 	if (!ce) {
-		return false;
+		return fail("could not build encoders for this canvas");
 	}
 
 	auto lo = std::make_unique<LiveOutput>();
@@ -230,7 +275,7 @@ bool MultistreamEngine::StartOutput(const std::string &bindingUuid)
 	lo->service =
 		OBSServiceAutoRelease(obs_service_create(p->serviceId.c_str(), sname.c_str(), p->settings, nullptr));
 	if (!lo->service) {
-		return false;
+		return fail("could not create the streaming service");
 	}
 
 	const char *type = GetStreamOutputType(lo->service);
@@ -240,7 +285,7 @@ bool MultistreamEngine::StartOutput(const std::string &bindingUuid)
 	std::string oname = "multistream_out_" + bindingUuid;
 	lo->output = OBSOutputAutoRelease(obs_output_create(type, oname.c_str(), nullptr, nullptr));
 	if (!lo->output) {
-		return false;
+		return fail("could not create the streaming output");
 	}
 
 	lo->startSignal.Connect(obs_output_get_signal_handler(lo->output), "start", OnOutputStart, this);
@@ -296,12 +341,14 @@ bool MultistreamEngine::StartOutput(const std::string &bindingUuid)
 	 * erases `live`. The handler may flip raw->state, so guard the failure write. */
 	if (!obs_output_start(raw->output)) {
 		const char *err = obs_output_get_last_error(raw->output);
+		const std::string reason = err && *err ? err : "the output failed to start";
 		{
 			std::lock_guard<std::mutex> lock(liveMutex);
-			raw->lastError = err ? err : "";
+			raw->lastError = reason;
 			raw->state = State::Error;
 		}
-		blog(LOG_WARNING, "Multistream: output '%s' failed to start: %s", oname.c_str(), err ? err : "");
+		error = reason;
+		blog(LOG_WARNING, "Multistream: output '%s' failed to start: %s", oname.c_str(), reason.c_str());
 		NotifyChanged();
 		return false;
 	}
@@ -336,7 +383,13 @@ void MultistreamEngine::StartAllEnabled()
 {
 	for (auto &b : bindings.Bindings().bindings) {
 		if (b.enabled) {
-			StartOutput(b.uuid);
+			std::string err;
+			if (!StartOutput(b.uuid, err)) {
+				// The reason is also recorded on the row's status (Statuses().lastError)
+				// so the UI can show WHY the row stayed down; log it for the session too.
+				blog(LOG_WARNING, "Multistream: binding %s did not go live: %s", b.uuid.c_str(),
+				     err.c_str());
+			}
 		}
 	}
 }
@@ -370,7 +423,7 @@ bool MultistreamEngine::IsLive(const std::string &bindingUuid) const
 {
 	std::lock_guard<std::mutex> lock(liveMutex);
 	for (const auto &lo : live) {
-		if (lo->bindingUuid == bindingUuid) {
+		if (lo->bindingUuid == bindingUuid && IsActiveState(lo->state)) {
 			return true;
 		}
 	}
@@ -381,7 +434,7 @@ bool MultistreamEngine::IsCanvasLive(const std::string &canvasUuid) const
 {
 	std::lock_guard<std::mutex> lock(liveMutex);
 	for (const auto &lo : live) {
-		if (lo->canvasUuid == canvasUuid) {
+		if (lo->canvasUuid == canvasUuid && IsActiveState(lo->state)) {
 			return true;
 		}
 	}
@@ -391,7 +444,12 @@ bool MultistreamEngine::IsCanvasLive(const std::string &canvasUuid) const
 bool MultistreamEngine::AnyLive() const
 {
 	std::lock_guard<std::mutex> lock(liveMutex);
-	return !live.empty();
+	for (const auto &lo : live) {
+		if (IsActiveState(lo->state)) {
+			return true;
+		}
+	}
+	return false;
 }
 
 MultistreamEngine::LiveOutput *MultistreamEngine::FindLive(const std::string &bindingUuid)
