@@ -20,3 +20,12 @@ export function fmtDuration(ms: number, opts?: { fixed?: boolean }): string {
 export function fmtBitrate(kbps: number): string {
   return kbps >= 1000 ? (kbps / 1000).toFixed(1) + " Mb/s" : Math.round(kbps) + " kb/s";
 }
+
+// Frame rate from a numerator/denominator pair: a fractional rate (den > 1) reads to
+// two decimals (59.94), an integer rate (or a missing/zero den) reads whole (60).
+export function fmtFps(num: number, den: number): string {
+  if (!(den > 0)) {
+    return String(num);
+  }
+  return den > 1 ? (num / den).toFixed(2) : String(num);
+}

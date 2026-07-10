@@ -7,6 +7,7 @@
     type MultistreamStatus,
   } from "./bridge";
   import { seedForm, toUpdateParams } from "./canvas/canvasForm";
+  import { fmtFps } from "./format";
   import { callOrToast } from "./callToast";
   import Icon, { type IconName } from "./dock/Icon.svelte";
   import CanvasVideoTab from "./canvas/CanvasVideoTab.svelte";
@@ -87,9 +88,6 @@
   function encName(list: EncoderType[], id: string): string {
     return list.find((e) => e.id === id)?.name ?? id;
   }
-  function fpsText(): string {
-    return form.fpsDen > 1 ? (form.fpsNum / form.fpsDen).toFixed(2) : String(form.fpsNum);
-  }
 </script>
 
 <div class="detail">
@@ -109,7 +107,7 @@
         {#if isLive}<span class="cv-badge cv-badge--live"><i></i>Live</span>{/if}
       </div>
       <div class="cfhead__meta">
-        <b>{form.width}×{form.height}</b> · {fpsText()}fps · {encName(videoEncoders, form.videoEnc)}
+        <b>{form.width}×{form.height}</b> · {fmtFps(form.fpsNum, form.fpsDen)}fps · {encName(videoEncoders, form.videoEnc)}
       </div>
       {#if !isDefault}
         <button

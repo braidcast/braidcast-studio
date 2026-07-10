@@ -27,6 +27,20 @@ export function reduceStates(states: MultistreamState[]): MultistreamState {
   return "idle";
 }
 
+// The effective state of a single destination row: a disabled binding never goes
+// live; otherwise its live row's state (idle before the row exists). Takes the
+// status map so prop-driven consumers keep their own reference. ONE definition,
+// shared by the Multistream dock and the Canvases destinations tab.
+export function bindingRowState(
+  b: OutputBindingInfo,
+  statusByBinding: Map<string, MultistreamStatus>,
+): MultistreamState | "disabled" {
+  if (!b.enabled) {
+    return "disabled";
+  }
+  return statusByBinding.get(b.uuid)?.state ?? "idle";
+}
+
 class MultistreamStatusStore {
   outputs = $state<MultistreamStatus[]>([]);
   loaded = $state(false);

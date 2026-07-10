@@ -6,6 +6,17 @@
   import { PLATFORM_COLORS, PLATFORM_LABELS, PLATFORM_ORDER } from "../theme/platformColors";
   import { OUTPUT_STATE_COLOR } from "../theme/stateColors";
   import { fmtDuration } from "../format";
+  import {
+    METER_TEXT,
+    METER_GREEN,
+    fmtNum,
+    fmtMem,
+    elevated,
+    grade,
+    pushRing,
+    sparkPoints,
+    sparkArea,
+  } from "../statsMeter";
   import { statsStore } from "../statsStore.svelte";
 
   // Live performance view. stats.get has no push; the shared 1 Hz store owns the
@@ -26,12 +37,7 @@
     render: [],
     encode: [],
   });
-  function push(arr: number[], v: number): void {
-    arr.push(v);
-    if (arr.length > HIST) {
-      arr.shift();
-    }
-  }
+  const push = (arr: number[], v: number): void => pushRing(arr, v, HIST);
   $effect(() => {
     const g = statsStore.stats?.general;
     if (!g) {
@@ -47,24 +53,6 @@
     });
   });
 
-  const TEXT = "var(--color-text)";
-  const GREEN = "var(--meter-green)";
-  const YELLOW = "var(--meter-yellow)";
-  const RED = "var(--meter-red)";
-  // Baseline neutral, warns as the value climbs (CPU load, frame time).
-  function elevated(v: number, warn: number, crit: number): string {
-    return v >= crit ? RED : v >= warn ? YELLOW : TEXT;
-  }
-  // "Healthy is green" grade for the drop metrics (0 % is a positive signal).
-  function grade(v: number, warn: number, crit: number): string {
-    return v >= crit ? RED : v >= warn ? YELLOW : GREEN;
-  }
-  // FPS leaks a raw float from the engine; show up to 2 decimals, trailing zeros
-  // stripped, so a locked 60 reads "60" and a variable rate "59.94".
-  function fmtNum(n: number, dp: number): string {
-    return Number(n.toFixed(dp)).toString();
-  }
-
   interface Card {
     k: string;
     v: string;
@@ -77,7 +65,7 @@
   // Six summary cards, derived from stats.general. value/unit/color per the mock.
   let cards = $derived.by<Card[]>(() => {
     if (!stats) {
-      const e = { v: "—", c: TEXT, series: [] as number[] };
+      const e = { v: "—", c: METER_TEXT, series: [] as number[] };
       return [
         { ...e, k: "CPU", u: "% utilization" },
         { ...e, k: "MEMORY", u: "resident" },
@@ -88,17 +76,17 @@
       ];
     }
     const g = stats.general;
-    const memGb = g.memoryMB >= 1024;
+    const mem = fmtMem(g.memoryMB);
     return [
       { k: "CPU", v: g.cpu.toFixed(1), u: "% utilization", c: elevated(g.cpu, 60, 85), series: hist.cpu, domain: [0, 100] },
       {
         k: "MEMORY",
-        v: memGb ? (g.memoryMB / 1024).toFixed(1) : String(Math.round(g.memoryMB)),
-        u: memGb ? "GB resident" : "MB resident",
-        c: TEXT,
+        v: mem.v,
+        u: mem.gb ? "GB resident" : "MB resident",
+        c: METER_TEXT,
         series: hist.mem,
       },
-      { k: "FPS", v: fmtNum(g.fps, 2), u: "target", c: GREEN, series: hist.fps },
+      { k: "FPS", v: fmtNum(g.fps, 2), u: "target", c: METER_GREEN, series: hist.fps },
       { k: "FRAME TIME", v: g.avgFrameMs.toFixed(1), u: "ms average", c: elevated(g.avgFrameMs, 20, 40), series: hist.frame },
       {
         k: "RENDER LAG",
@@ -120,38 +108,6 @@
   // Sparkline geometry — fixed 100×26 viewBox stretched to the card width.
   const SW = 100;
   const SH = 26;
-  function sparkPoints(series: number[], domain: [number, number] | undefined): string {
-    const n = series.length;
-    if (n < 2) {
-      return "";
-    }
-    let lo: number;
-    let hi: number;
-    if (domain) {
-      [lo, hi] = domain;
-    } else {
-      lo = Math.min(...series);
-      hi = Math.max(...series);
-      if (hi - lo < 1e-6) {
-        hi = lo + 1;
-        lo = Math.max(0, lo - 1);
-      }
-      const pad = (hi - lo) * 0.15;
-      lo -= pad;
-      hi += pad;
-    }
-    const span = hi - lo || 1;
-    return series
-      .map((val, i) => {
-        const x = (i / (n - 1)) * SW;
-        const t = Math.max(0, Math.min(1, (val - lo) / span));
-        return `${x.toFixed(1)},${(SH - t * SH).toFixed(1)}`;
-      })
-      .join(" ");
-  }
-  function sparkArea(pts: string): string {
-    return pts === "" ? "" : `${pts} ${SW},${SH} 0,${SH}`;
-  }
 
   // Aggregate viewer count (Phase 9.0), pushed via viewers.changed while live.
   let viewers = $state<ViewerCounts | null>(null);
@@ -190,14 +146,14 @@
   <div class="body">
     <div class="cards">
       {#each cards as c (c.k)}
-        {@const pts = sparkPoints(c.series, c.domain)}
+        {@const pts = sparkPoints(c.series, c.domain, SW, SH)}
         <div class="metric" style:--sev={c.c}>
           <span class="metric-k">{c.k}</span>
           <span class="metric-v" style:color={c.c}>{c.v}</span>
           <span class="metric-u">{c.u}</span>
           <svg class="spark" viewBox="0 0 {SW} {SH}" preserveAspectRatio="none" aria-hidden="true">
             {#if pts}
-              <polygon class="spark-fill" points={sparkArea(pts)} style:fill={c.c} />
+              <polygon class="spark-fill" points={sparkArea(pts, SW, SH)} style:fill={c.c} />
               <polyline class="spark-line" points={pts} style:stroke={c.c} />
             {:else}
               <line class="spark-flat" x1="0" y1={SH - 1} x2={SW} y2={SH - 1} />

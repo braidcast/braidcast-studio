@@ -5,6 +5,7 @@
   import { previewSuspended, suspendPreview } from "../previewGate.svelte";
 import { dockLayout } from "../dockLayoutSignal.svelte";
   import { WINDOW_ID } from "../windowContext";
+  import { syncPreviewRect, hidePreview, destroyPreview, mapOverlayCursor } from "../dock/previewSurface";
   import ContextMenu, { type ContextMenuItem } from "../ContextMenu.svelte";
   import PropertyForm from "../properties/PropertyForm.svelte";
   import Modal from "../Modal.svelte";
@@ -91,46 +92,15 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
     if (!previewEl) {
       return;
     }
-    // Output-gated off (no enabled destination on the Default canvas): keep the
-    // native overlay hidden and let the muted placeholder show through.
-    if (!defaultEnabled) {
+    // Output-gated off (no enabled destination on the Default canvas), or a modal
+    // holds the preview gate: keep the native overlay hidden. Re-asserting the rect
+    // during either would raise the native child window back above CEF (over the
+    // modal, or over the muted placeholder).
+    if (!defaultEnabled || previewSuspended()) {
       hidePreview();
       return;
     }
-    // While a modal/overlay holds the preview gate, never re-assert the rect: a
-    // stray resize/scroll/ResizeObserver tick during the modal's lifetime would
-    // otherwise raise the native child window back above CEF, over the modal.
-    if (previewSuspended()) {
-      hidePreview();
-      return;
-    }
-    const r = previewEl.getBoundingClientRect();
-    // The native overlay HWND sits above CEF and ignores Dockview tab visibility:
-    // when this dock is tab-stacked in the background (display:none) or collapsed,
-    // hide the overlay instead of leaving it painting at its stale rect on top of
-    // whatever is now visible.
-    if (!previewEl.offsetParent || r.width < 1 || r.height < 1) {
-      hidePreview();
-      return;
-    }
-    obs
-      .call("preview.setRect", {
-        window: WINDOW_ID,
-        x: r.left,
-        y: r.top,
-        w: r.width,
-        h: r.height,
-        dpr: window.devicePixelRatio || 1,
-      })
-      .catch((e) => console.log("preview.setRect failed: " + (e as Error).message));
-  }
-
-  function hidePreview() {
-    obs.call("preview.hide", { window: WINDOW_ID }).catch(() => {});
-  }
-
-  function destroyPreview() {
-    obs.call("preview.destroy", { window: WINDOW_ID }).catch(() => {});
+    syncPreviewRect(previewEl);
   }
 
   onMount(() => {
@@ -149,9 +119,8 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
       if (p.canvas != null || p.window !== WINDOW_ID || p.id == null || !previewEl) {
         return;
       }
-      const r = previewEl.getBoundingClientRect();
-      const dpr = window.devicePixelRatio || 1;
-      menu = { x: r.left + p.x / dpr, y: r.top + p.y / dpr, items: buildItems(p) };
+      const { x, y } = mapOverlayCursor(previewEl, p);
+      menu = { x, y, items: buildItems(p) };
     });
 
     return () => {

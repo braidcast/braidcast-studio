@@ -6,6 +6,23 @@
 import { obs } from "./bridge";
 import type { OutputBindingInfo } from "./bridge";
 
+// Sentinel profileLabel values the host emits for a binding with no profile, or one
+// whose profile was deleted out from under it. Centralized so the row-label logic
+// can't drift from the strings the host actually sends.
+const LABEL_UNSET = "(unset)";
+const LABEL_DELETED = "(deleted)";
+
+export function isBindingUnset(label: string): boolean {
+  return label === LABEL_UNSET;
+}
+export function isBindingDangling(label: string): boolean {
+  return label === LABEL_DELETED;
+}
+// Display name for a destination row: the unset placeholder reads "No destination".
+export function bindingDisplayName(b: OutputBindingInfo): string {
+  return isBindingUnset(b.profileLabel) ? "No destination" : b.profileLabel;
+}
+
 class OutputBindingStore {
   bindings = $state<OutputBindingInfo[]>([]);
   loaded = $state(false);

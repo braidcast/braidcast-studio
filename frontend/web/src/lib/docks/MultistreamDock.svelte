@@ -2,8 +2,13 @@
   import { obs, type OutputBindingInfo, type MultistreamState } from "../bridge";
   import { setPage } from "../pageStore.svelte";
   import { canvasStore } from "../canvasStore.svelte";
-  import { outputBindingStore } from "../outputBindingStore.svelte";
-  import { multistreamStatusStore } from "../multistreamStatusStore.svelte";
+  import {
+    outputBindingStore,
+    bindingDisplayName,
+    isBindingDangling,
+    isBindingUnset,
+  } from "../outputBindingStore.svelte";
+  import { multistreamStatusStore, bindingRowState } from "../multistreamStatusStore.svelte";
   import { STATE_COLOR_EXT } from "../theme/stateColors";
   import ToggleSwitch from "../ToggleSwitch.svelte";
   import Icon from "../dock/Icon.svelte";
@@ -40,22 +45,6 @@
   // The strongest live state across a canvas's enabled bindings (drives the header dot).
   function canvasState(rows: OutputBindingInfo[]): MultistreamState | "off" {
     return multistreamStatusStore.deriveCanvasState(rows);
-  }
-
-  // A destination's effective state: disabled bindings never go live.
-  function rowState(b: OutputBindingInfo): MultistreamState | "disabled" {
-    if (!b.enabled) return "disabled";
-    return statusByBinding.get(b.uuid)?.state ?? "idle";
-  }
-
-  function isDangling(label: string): boolean {
-    return label === "(deleted)";
-  }
-  function isUnset(label: string): boolean {
-    return label === "(unset)";
-  }
-  function rowName(b: OutputBindingInfo): string {
-    return isUnset(b.profileLabel) ? "No destination" : b.profileLabel;
   }
 
   async function toggleCanvas(rows: OutputBindingInfo[]): Promise<void> {
@@ -111,17 +100,17 @@
             </span>
           </div>
           {#each g.rows as b (b.uuid)}
-            {@const rs = rowState(b)}
+            {@const rs = bindingRowState(b, statusByBinding)}
             <div class="drow" class:off={!b.enabled}>
               <span class="toggle-wrap" title={b.enabled ? "Disable" : "Enable"}>
                 <ToggleSwitch size="sm" bind:checked={b.enabled} onchange={(v) => void toggleRow(b, v)} />
               </span>
               <span
                 class="dname"
-                class:deleted={isDangling(b.profileLabel)}
-                class:unset={isUnset(b.profileLabel)}
+                class:deleted={isBindingDangling(b.profileLabel)}
+                class:unset={isBindingUnset(b.profileLabel)}
               >
-                {rowName(b)}
+                {bindingDisplayName(b)}
               </span>
               <span class="dtag" style:color={STATE_COLOR_EXT[rs]}>{rs.toUpperCase()}</span>
             </div>

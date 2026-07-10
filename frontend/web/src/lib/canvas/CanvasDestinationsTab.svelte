@@ -9,6 +9,8 @@
   import ToggleSwitch from "../ToggleSwitch.svelte";
   import Icon from "../dock/Icon.svelte";
   import { STATE_COLOR_EXT } from "../theme/stateColors";
+  import { bindingDisplayName, isBindingDangling, isBindingUnset } from "../outputBindingStore.svelte";
+  import { bindingRowState } from "../multistreamStatusStore.svelte";
 
   interface Props {
     canvasUuid: string;
@@ -38,26 +40,6 @@
   };
   function titleState(s: string): string {
     return s.charAt(0).toUpperCase() + s.slice(1);
-  }
-
-  // The effective state of a destination row: disabled bindings never go live.
-  function rowState(b: OutputBindingInfo): MultistreamState | "disabled" {
-    if (!b.enabled) {
-      return "disabled";
-    }
-    return statusByBinding.get(b.uuid)?.state ?? "idle";
-  }
-  function isDangling(label: string): boolean {
-    return label === "(deleted)";
-  }
-  function isUnset(label: string): boolean {
-    return label === "(unset)";
-  }
-  function rowName(b: OutputBindingInfo): string {
-    if (isUnset(b.profileLabel)) {
-      return "No destination";
-    }
-    return b.profileLabel;
   }
 
   async function toggleCanvas(): Promise<void> {
@@ -126,15 +108,15 @@
 
     <div class="rows">
       {#each rows as b (b.uuid)}
-        {@const s = rowState(b)}
+        {@const s = bindingRowState(b, statusByBinding)}
         <div class="row" class:off={!b.enabled}>
           <span class="toggle-wrap" title={b.enabled ? "Disable" : "Enable"}>
             <ToggleSwitch size="sm" bind:checked={b.enabled} onchange={(v) => void toggleRow(b, v)} />
           </span>
           <div class="row-col">
             <div class="row-line1">
-              <span class="row-name" class:deleted={isDangling(b.profileLabel)} class:unset={isUnset(b.profileLabel)}>
-                {rowName(b)}
+              <span class="row-name" class:deleted={isBindingDangling(b.profileLabel)} class:unset={isBindingUnset(b.profileLabel)}>
+                {bindingDisplayName(b)}
               </span>
               <span class="row-state" style:color={STATE_COLOR_EXT[s]} style:background={STATE_TAG_BG[s]}>
                 {titleState(s).toUpperCase()}

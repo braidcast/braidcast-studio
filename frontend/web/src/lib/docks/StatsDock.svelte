@@ -4,6 +4,17 @@
   import EmptyState from "../EmptyState.svelte";
   import { OUTPUT_STATE_COLOR } from "../theme/stateColors";
   import { fmtBitrate, fmtDuration } from "../format";
+  import {
+    METER_TEXT,
+    METER_GREEN,
+    fmtNum,
+    fmtMem,
+    elevated,
+    grade,
+    pushRing,
+    sparkPoints,
+    sparkArea,
+  } from "../statsMeter";
   import { statsStore } from "../statsStore.svelte";
   import type { GeneralStats } from "../bridge";
 
@@ -31,12 +42,7 @@
     encode: [],
   });
 
-  function push(arr: number[], v: number): void {
-    arr.push(v);
-    if (arr.length > HIST) {
-      arr.shift();
-    }
-  }
+  const push = (arr: number[], v: number): void => pushRing(arr, v, HIST);
 
   $effect(() => {
     const g = statsStore.stats?.general;
@@ -52,29 +58,6 @@
       push(hist.encode, g.encodeSkipPct);
     });
   });
-
-  // --- formatting -------------------------------------------------------------
-  const TEXT = "var(--color-text)";
-  const GREEN = "var(--meter-green)";
-  const YELLOW = "var(--meter-yellow)";
-  const RED = "var(--meter-red)";
-
-  // FPS leaks a raw float from the engine (60.0000024…); show up to 2 decimals with
-  // trailing zeros stripped so a locked 60 reads "60", a variable rate "59.94".
-  function fmtNum(n: number, dp: number): string {
-    return Number(n.toFixed(dp)).toString();
-  }
-  function fmtMem(mb: number): { v: string; u: string } {
-    return mb >= 1024 ? { v: (mb / 1024).toFixed(1), u: "GB" } : { v: String(Math.round(mb)), u: "MB" };
-  }
-  // Baseline neutral, warns as the value climbs (CPU load, frame time).
-  function elevated(v: number, warn: number, crit: number): string {
-    return v >= crit ? RED : v >= warn ? YELLOW : TEXT;
-  }
-  // "Healthy is green" grade for the drop metrics (0 % is a positive signal).
-  function grade(v: number, warn: number, crit: number): string {
-    return v >= crit ? RED : v >= warn ? YELLOW : GREEN;
-  }
 
   interface Metric {
     k: string;
@@ -94,8 +77,8 @@
     const mem = fmtMem(g.memoryMB);
     return [
       { k: "CPU", v: g.cpu.toFixed(1), u: "%", color: elevated(g.cpu, 60, 85), series: hist.cpu, domain: [0, 100] },
-      { k: "MEM", v: mem.v, u: mem.u, color: TEXT, series: hist.mem },
-      { k: "FPS", v: fmtNum(g.fps, 2), u: "fps", color: GREEN, series: hist.fps },
+      { k: "MEM", v: mem.v, u: mem.gb ? "GB" : "MB", color: METER_TEXT, series: hist.mem },
+      { k: "FPS", v: fmtNum(g.fps, 2), u: "fps", color: METER_GREEN, series: hist.fps },
       { k: "FRAME", v: g.avgFrameMs.toFixed(1), u: "ms", color: elevated(g.avgFrameMs, 20, 40), series: hist.frame },
       {
         k: "RENDER LAG",
@@ -121,41 +104,6 @@
   const SW = 100;
   const SH = 24;
 
-  function sparkPoints(series: number[], domain: [number, number] | undefined): string {
-    const n = series.length;
-    if (n < 2) {
-      return "";
-    }
-    let lo: number;
-    let hi: number;
-    if (domain) {
-      [lo, hi] = domain;
-    } else {
-      lo = Math.min(...series);
-      hi = Math.max(...series);
-      if (hi - lo < 1e-6) {
-        hi = lo + 1;
-        lo = Math.max(0, lo - 1);
-      }
-      const pad = (hi - lo) * 0.15;
-      lo -= pad;
-      hi += pad;
-    }
-    const span = hi - lo || 1;
-    return series
-      .map((val, i) => {
-        const x = (i / (n - 1)) * SW;
-        const t = Math.max(0, Math.min(1, (val - lo) / span));
-        const y = SH - t * SH;
-        return `${x.toFixed(1)},${y.toFixed(1)}`;
-      })
-      .join(" ");
-  }
-  // Close the line into a filled area against the baseline.
-  function sparkArea(pts: string): string {
-    return pts === "" ? "" : `${pts} ${SW},${SH} 0,${SH}`;
-  }
-
   const outputs = $derived(stats?.outputs ?? []);
 </script>
 
@@ -174,7 +122,7 @@
       </div>
       <div class="metrics">
         {#each metrics as m (m.k)}
-          {@const pts = sparkPoints(m.series, m.domain)}
+          {@const pts = sparkPoints(m.series, m.domain, SW, SH)}
           <div class="cell" style:--sev={m.color}>
             <div class="cell-head">
               <span class="k">{m.k}</span>
@@ -186,7 +134,7 @@
             </div>
             <svg class="spark" viewBox="0 0 {SW} {SH}" preserveAspectRatio="none" aria-hidden="true">
               {#if pts}
-                <polygon class="spark-fill" points={sparkArea(pts)} style:fill={m.color} />
+                <polygon class="spark-fill" points={sparkArea(pts, SW, SH)} style:fill={m.color} />
                 <polyline class="spark-line" points={pts} style:stroke={m.color} />
               {:else}
                 <line class="spark-flat" x1="0" y1={SH - 1} x2={SW} y2={SH - 1} />

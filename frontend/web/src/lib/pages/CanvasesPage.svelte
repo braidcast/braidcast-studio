@@ -8,9 +8,10 @@
     type MultistreamState,
   } from "../bridge";
   import { canvasStore } from "../canvasStore.svelte";
-  import { outputBindingStore } from "../outputBindingStore.svelte";
+  import { outputBindingStore, bindingDisplayName } from "../outputBindingStore.svelte";
   import { streamProfileStore } from "../streamProfileStore.svelte";
   import { multistreamStatusStore } from "../multistreamStatusStore.svelte";
+  import { fmtFps } from "../format";
   import CanvasEditor from "../CanvasEditor.svelte";
   import CollectionDialog, { type DialogSpec } from "../CollectionDialog.svelte";
   import { STATE_COLOR_EXT } from "../theme/stateColors";
@@ -64,10 +65,6 @@
     return multistreamStatusStore.deriveCanvasState(bindings.filter((b) => b.canvasUuid === uuid));
   }
 
-  function fpsText(c: CanvasInfo): string {
-    if (!(c.fpsDen > 0)) return String(c.fpsNum);
-    return c.fpsDen > 1 ? (c.fpsNum / c.fpsDen).toFixed(2) : String(c.fpsNum);
-  }
   // Destinations bound to a canvas (drives the "· N dest" meta on each list row).
   function destCount(uuid: string): number {
     return bindings.filter((b) => b.canvasUuid === uuid).length;
@@ -129,7 +126,7 @@
     };
   }
   function confirmRemoveBinding(b: OutputBindingInfo): void {
-    const label = b.profileLabel === "(unset)" ? "No destination" : b.profileLabel;
+    const label = bindingDisplayName(b);
     dialog = {
       kind: "confirm",
       title: "Unbind Destination",
@@ -169,7 +166,7 @@
               <span class="cv-ci__dot" style:background={STATE_COLOR_EXT[st]}></span>
               <span class="cv-ci__body">
                 <span class="cv-ci__name">{c.name}</span>
-                <span class="cv-ci__sub">{c.outputWidth}×{c.outputHeight} · {fpsText(c)}fps · {destCount(c.uuid)} dest</span>
+                <span class="cv-ci__sub">{c.outputWidth}×{c.outputHeight} · {fmtFps(c.fpsNum, c.fpsDen)}fps · {destCount(c.uuid)} dest</span>
               </span>
               {#if c.isDefault}<span class="cv-ci__badge">DEF</span>{/if}
             </button>

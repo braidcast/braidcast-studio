@@ -12,6 +12,7 @@
   import { previewSuspended, suspendPreview } from "../previewGate.svelte";
 import { dockLayout } from "../dockLayoutSignal.svelte";
   import { WINDOW_ID } from "../windowContext";
+  import { syncPreviewRect, hidePreview as hidePreviewSurface, destroyPreview, mapOverlayCursor } from "../dock/previewSurface";
   import ContextMenu, { type ContextMenuItem } from "../ContextMenu.svelte";
   import { clipboard } from "../clipboardStore.svelte";
   import { openFilters } from "../filterDialogOpener.svelte";
@@ -95,34 +96,14 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
       hidePreview();
       return;
     }
-    const r = previewEl.getBoundingClientRect();
-    // A native overlay HWND sits above CEF and ignores Dockview's tab visibility:
-    // when this dock is tab-stacked in the background (display:none) or collapsed,
-    // its overlay would keep painting at its last rect and bleed over whatever is
-    // now on top. Detect the hidden/zero case and hide the overlay instead.
-    if (!previewEl.offsetParent || r.width < 1 || r.height < 1) {
-      hidePreview();
-      return;
-    }
-    surfaceActive = true;
-    obs
-      .call("preview.setRect", {
-        canvas: canvasUuid,
-        window: WINDOW_ID,
-        x: r.left,
-        y: r.top,
-        w: r.width,
-        h: r.height,
-        dpr: window.devicePixelRatio || 1,
-      })
-      .catch((e) => console.log("preview.setRect failed: " + (e as Error).message));
+    // syncPreviewRect asserts the rect (or hides on a zero/hidden box) and reports
+    // whether the surface is now painting; mirror that into surfaceActive so the DOM
+    // stage outline drops only while the native surface owns the stage.
+    surfaceActive = syncPreviewRect(previewEl, canvasUuid);
   }
   function hidePreview() {
     surfaceActive = false;
-    obs.call("preview.hide", { canvas: canvasUuid, window: WINDOW_ID }).catch(() => {});
-  }
-  function destroyPreview() {
-    obs.call("preview.destroy", { canvas: canvasUuid, window: WINDOW_ID }).catch(() => {});
+    hidePreviewSurface(canvasUuid);
   }
 
   // ---- canvas geometry (stage res chip + aspect) -----------------------------
@@ -785,10 +766,7 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
       if (p.canvas !== canvasUuid || p.window !== WINDOW_ID || p.id == null || !previewEl) {
         return;
       }
-      const r = previewEl.getBoundingClientRect();
-      const dpr = window.devicePixelRatio || 1;
-      const x = r.left + p.x / dpr;
-      const y = r.top + p.y / dpr;
+      const { x, y } = mapOverlayCursor(previewEl, p);
       void (async () => {
         const deint = p.source
           ? await fetchDeint(p.source)
@@ -811,7 +789,7 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
       offSel();
       offStatus();
       offMenu();
-      destroyPreview();
+      destroyPreview(canvasUuid);
     };
   });
 
