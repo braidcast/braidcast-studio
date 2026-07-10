@@ -2,6 +2,7 @@
   import type { Snippet } from "svelte";
   import Icon from "./dock/Icon.svelte";
   import { pushEsc, popEsc, isTopEsc } from "./escStack";
+  import { suspendPreview } from "./previewGate.svelte";
 
   // Shared modal shell: backdrop + surface panel + mono micro-label head + body,
   // with an optional footer. Replaces the hand-rolled per-dialog copies; a caller
@@ -91,6 +92,11 @@
       // capture may already be gone; ignore
     }
   }
+
+  // The native OBS preview is a child HWND z-ordered above CEF, so any modal would
+  // paint behind it. Suspend the preview for this modal's lifetime; the effect
+  // cleanup (the release fn suspendPreview returns) re-asserts it on destroy.
+  $effect(() => suspendPreview());
 
   // Gate Escape so a menu (or nested modal) stacked above this one closes first;
   // only the topmost Escape owner acts.
