@@ -1,5 +1,6 @@
 <script lang="ts">
   import { obs, type SpeakerLayout, type AudioDevice, type GlobalAudioSlot, type MonitorDevice } from "./bridge";
+  import { EV } from "./eventNames";
 
   // Audio settings, lifted verbatim from the former SettingsModal audio pane.
   // Applies live on change (the page model has no Apply boundary).
@@ -48,6 +49,14 @@
 
   $effect(() => {
     void load();
+    // Keep the open tab in sync with external audio-settings edits (MCP / a second
+    // window), mirroring AdvancedTab/GeneralTab. The push carries the full state.
+    const off = obs.on(EV.settingsAudioChanged, (a) => {
+      sampleRate = a.sampleRate;
+      speakers = a.speakers;
+      monitoringDevice = a.monitoringDevice;
+    });
+    return off;
   });
 
   async function setAudio(patch: { sampleRate?: number; speakers?: SpeakerLayout; monitoringDevice?: MonitorDevice }) {

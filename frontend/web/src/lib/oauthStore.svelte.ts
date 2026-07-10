@@ -17,16 +17,6 @@ class OAuthStore {
   providers = $state<OAuthProvider[]>([]);
   #subs = 0;
   #off: (() => void) | undefined;
-  #ready: Promise<void>;
-  #resolveReady: () => void = () => {};
-
-  constructor() {
-    this.#ready = new Promise((r) => (this.#resolveReady = r));
-  }
-
-  #load(): void {
-    void this.refresh().finally(() => this.#resolveReady());
-  }
 
   /** Re-fetch status + providers now. Callers awaiting a post-mutation refresh (a
    * connect/disconnect that also emits oauth.status, refreshing subscribers) use this
@@ -38,13 +28,13 @@ class OAuthStore {
     ]);
   }
 
-  /** Resolves after the first status+providers load settles, for one-shot consumers
-   * (the Go Live modal's prefill gate). Opens a subscription if none is active. */
-  whenReady(): Promise<void> {
-    if (this.#subs === 0) {
-      this.#load();
-    }
-    return this.#ready;
+  /** Resolves after a FRESH status+providers load settles, for one-shot consumers
+   * (the Go Live modal's prefill gate). Does NOT open a subscription — it awaits a
+   * fresh one-shot fetch each call, so the awaiter never resolves against a stale
+   * snapshot while a refetch is still in flight. A live subscription (if any) keeps
+   * `statuses` current afterward. */
+  async whenReady(): Promise<void> {
+    await this.refresh();
   }
 
   /** Accounts with a live token (green "linked" state). Excludes needs-reconnect rows,
@@ -68,7 +58,7 @@ class OAuthStore {
   subscribe(): () => void {
     this.#subs++;
     if (this.#subs === 1) {
-      this.#load();
+      void this.refresh();
       this.#off = obs.on(EV.oauthStatus, (s) => (this.statuses = s));
     }
     return () => {

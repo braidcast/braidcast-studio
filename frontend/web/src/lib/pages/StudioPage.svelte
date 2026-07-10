@@ -164,6 +164,10 @@ import { EV } from "../eventNames";
   // effect above; the reconcile is idempotent.
   $effect(() => {
     if (!api) return;
+    // Wait for the store's first load: reconciling against an empty, not-yet-loaded
+    // list would remove `browserdock:` panels a layout restore recreated, then re-add
+    // them at the default position instead of the user's saved one.
+    if (!browserDockStore.loaded) return;
     void browserDockStore.docks;
     reconcileBrowserDocks(api);
   });

@@ -16,6 +16,9 @@ class StreamProfileStore {
   #started = false;
   #ready: Promise<void>;
   #resolveReady: () => void = () => {};
+  // Per-refresh token: drop a stale resolution so concurrent refreshes can't let a
+  // slow earlier call overwrite a newer one (last-issued wins, not last-resolved).
+  #seq = 0;
 
   constructor() {
     this.#ready = new Promise((r) => (this.#resolveReady = r));
@@ -36,10 +39,18 @@ class StreamProfileStore {
   }
 
   async refresh(): Promise<void> {
+    const seq = ++this.#seq;
     try {
-      this.profiles = await obs.call("streamProfile.list");
+      const profiles = await obs.call("streamProfile.list");
+      if (seq !== this.#seq) {
+        return;
+      }
+      this.profiles = profiles;
       this.error = null;
     } catch (e) {
+      if (seq !== this.#seq) {
+        return;
+      }
       this.error = (e as Error).message;
     } finally {
       this.loaded = true;

@@ -66,9 +66,11 @@ export function reconcileBrowserDocks(api: DockviewApi): void {
 }
 
 export function startBrowserDockReconciler(api: DockviewApi): () => void {
-  // Load once, then assert the set. The ongoing store-change reactivity is owned by
-  // StudioPage's $effect (the store is rune-based, not event-based).
+  // Load, THEN assert the set. Reconciling before the store loads would diff the
+  // wanted set against an empty list and remove `browserdock:` panels a layout
+  // restore just recreated. The ongoing store-change reactivity is owned by
+  // StudioPage's $effect (also gated on browserDockStore.loaded), since the store is
+  // rune-based, not event-based.
   void browserDockStore.load().then(() => reconcileBrowserDocks(api));
-  reconcileBrowserDocks(api);
   return () => {};
 }

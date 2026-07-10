@@ -447,10 +447,17 @@ import { EV } from "./eventNames";
       void prefill();
     });
     const off = obs.on(EV.streamingChanged, (p) => (isLive = p.active));
+    // External metadata edit (MCP / another window / a prior apply): re-run the
+    // best-effort prefill so still-empty fields pick up the fresh values. Prefill's
+    // touched/non-empty guards keep it from clobbering anything the user has edited.
+    const offMeta = obs.on(EV.streamMetaChanged, () => {
+      if (loaded) void prefill();
+    });
     return () => {
       active = false;
       offOauth();
       off();
+      offMeta();
     };
   });
 

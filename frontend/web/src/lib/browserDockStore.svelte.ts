@@ -22,18 +22,25 @@ function genId(title: string): string {
 
 class BrowserDockStore {
   docks = $state<BrowserDock[]>([]);
-  private loaded = false;
+  // Reactive so consumers can gate a reconcile on the list having actually loaded.
+  // Flips true only AFTER the fetch settles (not when it starts), so `docks` is
+  // populated by the time gated readers run.
+  loaded = $state(false);
+  #loading = false;
 
   // Load once on first use; idempotent. Callers can await or fire-and-forget.
   async load(): Promise<void> {
-    if (this.loaded) {
+    if (this.loaded || this.#loading) {
       return;
     }
-    this.loaded = true;
+    this.#loading = true;
     try {
       this.docks = await obs.call("browserDocks.list");
     } catch {
       this.docks = [];
+    } finally {
+      this.#loading = false;
+      this.loaded = true;
     }
   }
 

@@ -17,6 +17,9 @@ class CanvasStore {
   #started = false;
   #ready: Promise<void>;
   #resolveReady: () => void = () => {};
+  // Per-refresh token: drop a stale resolution so concurrent refreshes can't let a
+  // slow earlier call overwrite a newer one (last-issued wins, not last-resolved).
+  #seq = 0;
 
   constructor() {
     this.#ready = new Promise((r) => (this.#resolveReady = r));
@@ -45,10 +48,18 @@ class CanvasStore {
   }
 
   async refresh(): Promise<void> {
+    const seq = ++this.#seq;
     try {
-      this.canvases = await obs.call("canvas.list");
+      const canvases = await obs.call("canvas.list");
+      if (seq !== this.#seq) {
+        return;
+      }
+      this.canvases = canvases;
       this.error = null;
     } catch (e) {
+      if (seq !== this.#seq) {
+        return;
+      }
       this.error = (e as Error).message;
     } finally {
       this.loaded = true;

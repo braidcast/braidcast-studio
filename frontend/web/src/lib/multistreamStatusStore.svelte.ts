@@ -49,6 +49,9 @@ class MultistreamStatusStore {
 
   #subs = 0;
   #off: (() => void) | null = null;
+  // Per-refresh token: a burst of change events launches concurrent refreshes; drop
+  // any resolution that isn't the latest issued so a slow earlier call can't win.
+  #seq = 0;
 
   // bindingUuid -> its live status row (only enabled bindings appear in `outputs`).
   statusByBinding = $derived.by<Map<string, MultistreamStatus>>(() => {
@@ -84,11 +87,18 @@ class MultistreamStatusStore {
   }
 
   async refresh(): Promise<void> {
+    const seq = ++this.#seq;
     try {
       const status = await obs.call("multistream.status");
+      if (seq !== this.#seq) {
+        return;
+      }
       this.outputs = status.outputs;
       this.error = null;
     } catch (e) {
+      if (seq !== this.#seq) {
+        return;
+      }
       this.error = (e as Error).message;
     } finally {
       this.loaded = true;

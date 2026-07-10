@@ -1,7 +1,23 @@
+import { untrack } from "svelte";
 import { obs } from "./bridge";
 import { EV } from "./eventNames";
 import type { ChannelStats, ChannelStatEntry, ViewerCounts } from "./bridge";
 import { oauthStore } from "./oauthStore.svelte";
+
+// Return a copy of `map` with only the keys in `valid`, or null when nothing was
+// dropped (so callers skip a no-op reassignment that would re-trigger reactivity).
+function prunedToSet<T>(map: Record<string, T>, valid: Set<string>): Record<string, T> | null {
+  let dropped = false;
+  const out: Record<string, T> = {};
+  for (const key of Object.keys(map)) {
+    if (valid.has(key)) {
+      out[key] = map[key];
+    } else {
+      dropped = true;
+    }
+  }
+  return dropped ? out : null;
+}
 
 // One merged row per connected account, combining the three sources that each
 // describe the same channel from a different angle:
@@ -67,8 +83,28 @@ class ChannelsStore {
     }
     this.#started = true;
     const offOauth = oauthStore.subscribe();
+    // Prune audience/viewer entries for accounts that have left the connected set, so
+    // the merge maps can't accumulate rows for disconnected accounts. Depends only on
+    // `statuses`; the map reads are untracked so a stats/viewers push doesn't re-run
+    // this, and the guarded reassignment avoids a self-triggering write.
+    const disposePrune = $effect.root(() => {
+      $effect(() => {
+        const valid = new Set(oauthStore.statuses.map((s) => s.accountId));
+        untrack(() => {
+          const a = prunedToSet(this.#audience, valid);
+          if (a) {
+            this.#audience = a;
+          }
+          const v = prunedToSet(this.#viewers, valid);
+          if (v) {
+            this.#viewers = v;
+          }
+        });
+      });
+    });
     this.#off = [
       offOauth,
+      disposePrune,
       obs.on(EV.channelsStats, (p: ChannelStats) => {
         this.#audience = { ...this.#audience, ...p.perAccount };
       }),
