@@ -2,7 +2,7 @@
   import { onDestroy, onMount } from "svelte";
   import type { DockviewApi } from "dockview-core";
   import DockHost from "../dock/DockHost.svelte";
-  import { DOCKS, panelOptions } from "../dock/dockRegistry";
+  import { DOCKS, panelOptions, SIDE_DOCK_WIDTH } from "../dock/dockRegistry";
   import { layoutStore } from "../dock/layoutStore.svelte";
 import { bumpDockLayout } from "../dockLayoutSignal.svelte";
   import {
@@ -36,6 +36,7 @@ import { bumpDockLayout } from "../dockLayoutSignal.svelte";
   let stopReconciler: (() => void) | undefined;
   let stopBrowserReconciler: (() => void) | undefined;
   let offWindowClosed: (() => void) | undefined;
+  let dropDisposers: { dispose(): void }[] = [];
 
   // CANVASES bar + GO-LIVE bar data, read independently of the Dockview lifecycle.
   // The canvas list comes from the shared store (one source of truth).
@@ -165,6 +166,7 @@ import { bumpDockLayout } from "../dockLayoutSignal.svelte";
     stopReconciler?.();
     stopBrowserReconciler?.();
     offWindowClosed?.();
+    for (const d of dropDisposers) d.dispose();
     clearTimeout(saveTimer);
   });
 
@@ -368,6 +370,31 @@ import { bumpDockLayout } from "../dockLayoutSignal.svelte";
     // Register the tear-out handler once; the custom tab resolves it at click time
     // (see detachRegistry) so detach survives a layout restore.
     setDetachHandler(detachDock);
+    // Dockview equalizes every sibling column on a drag-drop (its splitview falls
+    // back to Sizing.Distribute for the drop path, which has no size hook), so a
+    // reposition silently resets the user's manually-narrowed docks. A drop is a
+    // move, not a resize: snapshot every group's width before the drop and re-assert
+    // it after, so only the group that actually moved changes size (a brand-new
+    // group from a split isn't in the snapshot and keeps the leftover space).
+    let widthsBeforeDrop: Map<string, number> | undefined;
+    dropDisposers.push(
+      dv.onWillDrop(() => {
+        widthsBeforeDrop = new Map(dv.groups.map((g) => [g.id, g.api.width]));
+      }),
+    );
+    dropDisposers.push(
+      dv.onDidDrop(() => {
+        const snap = widthsBeforeDrop;
+        widthsBeforeDrop = undefined;
+        if (!snap || snap.size < 2) return;
+        for (const g of dv.groups) {
+          const w = snap.get(g.id);
+          if (w !== undefined && Math.abs(g.api.width - w) > 1) {
+            g.api.setSize({ width: w });
+          }
+        }
+      }),
+    );
     dv.onDidLayoutChange(() => {
       refreshVisible();
       persistLayoutSoon(dv);
@@ -403,7 +430,7 @@ import { bumpDockLayout } from "../dockLayoutSignal.svelte";
       } else if (p.dock.startsWith("browserdock:")) {
         reconcileBrowserDocks(api);
       } else if (DOCKS.some((d) => d.id === p.dock)) {
-        api.addPanel(panelOptions(p.dock));
+        api.addPanel(panelOptions(p.dock, { initialWidth: SIDE_DOCK_WIDTH }));
       }
       refreshVisible();
     });
@@ -418,7 +445,7 @@ import { bumpDockLayout } from "../dockLayoutSignal.svelte";
       // Refuse to open an OAuth-gated dock (Events/Multichat) with no connected
       // account -- it would only show its own empty state.
       if (!dockOpenable(id)) return;
-      api.addPanel(panelOptions(id));
+      api.addPanel(panelOptions(id, { initialWidth: SIDE_DOCK_WIDTH }));
     }
     refreshVisible();
   }

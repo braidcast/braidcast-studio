@@ -1,5 +1,6 @@
 import { obs, type CanvasInfo } from "../bridge";
 import type { DockviewApi } from "dockview-core";
+import { SIDE_DOCK_WIDTH } from "./dockRegistry";
 
 // Output-gated composite canvas docks. A non-default canvas gets ONE inline dock
 // (preview + its own scenes + sources, see CanvasDock.svelte) only while >=1
@@ -83,6 +84,7 @@ export async function reconcileCanvasDocks(api: DockviewApi): Promise<void> {
         __badge: "OWN S/S",
       },
       position: hasAnchor ? { referencePanel: refId, direction: "right" } : undefined,
+      initialWidth: SIDE_DOCK_WIDTH,
     });
     refId = id;
   }

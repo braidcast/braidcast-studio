@@ -1,5 +1,6 @@
 import type { DockviewApi } from "dockview-core";
 import { browserDockStore } from "../browserDockStore.svelte";
+import { SIDE_DOCK_WIDTH } from "./dockRegistry";
 
 // User-defined browser docks. Each stored {id,title,url} maps to ONE Dockview
 // panel hosting an <iframe> (see BrowserDock.svelte). This reconciler diffs the
@@ -58,6 +59,7 @@ export function reconcileBrowserDocks(api: DockviewApi): void {
       title,
       params: { url: d.url, title },
       position: hasAnchor ? { referencePanel: refId, direction: "right" } : undefined,
+      initialWidth: SIDE_DOCK_WIDTH,
     });
     refId = id;
   }

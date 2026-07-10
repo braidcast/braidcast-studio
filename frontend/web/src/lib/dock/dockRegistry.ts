@@ -23,6 +23,14 @@ export interface DockDef {
   accent?: boolean;
 }
 
+// Default width (px) for a dock added programmatically into a horizontal row
+// (restore chip, redock, canvas/browser reconciler). Passing an explicit size
+// makes Dockview's splitview take THIS width from its neighbors instead of
+// falling back to Sizing.Distribute, which equalizes every sibling column and
+// wipes a user's manually-narrowed dock. Also the single knob for "a bit
+// narrower by default" — tune here, not per call site.
+export const SIDE_DOCK_WIDTH = 320;
+
 export const DOCKS: DockDef[] = [
   // Default canvas preview. The tab carries a status dot + a `GLOBAL S/S` badge
   // (mock dockHead): the Default canvas renders the global scenes/sources, so its
