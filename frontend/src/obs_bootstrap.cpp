@@ -726,6 +726,13 @@ bool ObsBootstrap::Start()
 	// provider can read configured credentials.
 	OAuth::BootProviders();
 
+	// Reclaim OAuth accounts stranded by a deleted stream profile before the hubs read
+	// them: an account is only ever created by a profile's connect flow, so one no
+	// profile references is unowned and must not resume its chat/events transports.
+	// Runs after the profile + account stores loaded and the registry is populated
+	// (needed by the shared teardown), before StartConnectedAccounts/Chat::Start below.
+	Bridge::ReconcileOrphanedAccounts();
+
 	// Phase 9.2a: resume the live-events feed for accounts connected in a prior
 	// session (the events feed is account-lifecycle, always-on). Run once here now
 	// that the registry + account store are ready; inert until a provider's makeEvents()

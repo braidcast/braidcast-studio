@@ -32,6 +32,12 @@ public:
 	bool Empty() const { return profiles.empty(); }
 	StreamProfile *Primary(); // the isPrimary profile, or nullptr if none yet
 	StreamProfile *Find(const std::string &uuid);
+
+	// True if any profile links the given OAuth account (providerId:userId). An empty
+	// accountId matches nothing (key/RTMP/WHIP profiles carry no account). The single
+	// "is this account still owned?" query -- used by the disconnect/profile-delete
+	// cleanup and the boot orphan reconcile.
+	bool ReferencesAccount(const std::string &accountId) const;
 	StreamProfile &Add(StreamProfile p);  // assigns uuid if empty; first add becomes primary
 	void Remove(const std::string &uuid); // re-points primary if the primary was removed
 	bool SetPrimary(const std::string &uuid); // marks uuid primary, clears the rest; false if not found

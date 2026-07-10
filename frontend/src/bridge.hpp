@@ -61,6 +61,13 @@ bool DispatchAsync(const std::string &method, const json &params,
 // there. payload is any JSON value (object/array/scalar/null).
 void EmitEvent(const std::string &name, const json &payload);
 
+// Boot-time reclaim: remove every stored OAuth account that no stream profile
+// references (an orphan stranded when its owning profile was deleted before the delete
+// path cleaned up accounts). Runs the shared account teardown per orphan and pushes
+// oauth.status. Call once at bootstrap, after the profile + account stores load and the
+// provider registry is populated, before the chat/events hubs start. UI thread only.
+void ReconcileOrphanedAccounts();
+
 // Apply a Default-canvas definition's resolution/color to the global/main video
 // pipeline (obs_reset_video, preserving the non-color fields and re-letterboxing
 // the preview + resizing the program transition). Injected into CanvasService as

@@ -88,6 +88,19 @@ StreamProfile *StreamProfileStore::Find(const std::string &uuid)
 	return nullptr;
 }
 
+bool StreamProfileStore::ReferencesAccount(const std::string &accountId) const
+{
+	if (accountId.empty()) {
+		return false;
+	}
+	for (const StreamProfile &p : profiles) {
+		if (p.accountId == accountId) {
+			return true;
+		}
+	}
+	return false;
+}
+
 StreamProfile &StreamProfileStore::Add(StreamProfile p)
 {
 	if (p.uuid.empty()) {

@@ -85,6 +85,12 @@
 
 namespace Bridge {
 
+// The single OAuth-account teardown path (defined in the OAuth section below). Shared
+// by manual disconnect, profile-delete cleanup, and the boot orphan reconcile; declared
+// here so MethodStreamProfileRemove (anonymous namespace, above the definition) can call
+// it. Bridge scope so all three call sites resolve to the same function.
+void TeardownAccount(const std::string &accountId);
+
 namespace {
 
 // The param-guard helpers (defined with OptString further down) are called by the
@@ -5424,10 +5430,15 @@ bool MethodStreamProfileRemove(const json &params, json &result, std::string &er
 		return false;
 	}
 	StreamProfileStore &store = ObsBootstrap::StreamProfiles();
-	if (!store.Find(uuid)) {
+	StreamProfile *victim = store.Find(uuid);
+	if (!victim) {
 		error = "no stream profile with uuid '" + uuid + "'";
 		return false;
 	}
+	// Capture the linked account before the profile is gone; if this was the last
+	// profile referencing it, the account is orphaned and gets reclaimed below.
+	const std::string linkedAccount = victim->accountId;
+
 	// Remove re-points the primary internally when the primary was removed.
 	store.Remove(uuid);
 	store.Save();
@@ -5441,6 +5452,15 @@ bool MethodStreamProfileRemove(const json &params, json &result, std::string &er
 	}
 
 	EmitEvent(EventNames::kStreamProfileChanged, json::object());
+
+	// Account lifecycle is profile-owned: an OAuth account is only ever created by a
+	// profile's connect flow, so an account no remaining profile references is unowned.
+	// Reclaim it through the shared teardown (store + flight lock + chat/events + status)
+	// so a deleted profile can't strand an account that keeps surfacing in chat/events.
+	if (!store.ReferencesAccount(linkedAccount) && OAuth::Accounts().Get(linkedAccount)) {
+		TeardownAccount(linkedAccount);
+	}
+
 	result = json{{"removed", uuid}};
 	return true;
 }
@@ -8115,6 +8135,35 @@ bool MethodOAuthConnect(const json &params, json &result, std::string &error)
 	return true;
 }
 
+// Full teardown for one OAuth account: drop it from the store, forget its refresh
+// flight lock, stop its live-events + chat transports, unlink every profile still
+// pointing at it, then re-resolve chat and push the updated profile/oauth status. The
+// single teardown path shared by manual disconnect (MethodOAuthDisconnect), profile
+// delete (MethodStreamProfileRemove), and the boot orphan reconcile. UI thread only.
+void TeardownAccount(const std::string &accountId)
+{
+	OAuth::Accounts().Remove(accountId);
+	// Prune the provider's per-account refresh flight lock along with the account so a
+	// disconnected account leaves no mutex behind (accountId is "<providerId>:<userId>").
+	if (OAuth::StreamProvider *prov = OAuth::Registry().Get(accountId.substr(0, accountId.find(':')))) {
+		prov->auth()->ForgetAccount(accountId);
+	}
+	Events::Hub().StopAccount(accountId);
+	// Pre-live chat: re-resolve chat after the account is removed so the disconnected
+	// account's transport drops (Start() enumerates only still-connected accounts).
+	Chat::Hub().Start();
+
+	// Unlink every profile that referenced this account.
+	for (StreamProfile &p : ObsBootstrap::StreamProfiles().AllMutable()) {
+		if (p.accountId == accountId) {
+			p.accountId.clear();
+		}
+	}
+	ObsBootstrap::StreamProfiles().Save();
+	EmitEvent(EventNames::kStreamProfileChanged, json::object());
+	EmitEvent(EventNames::kOauthStatus, BuildOAuthStatusArray());
+}
+
 bool MethodOAuthDisconnect(const json &params, json &result, std::string &error)
 {
 	std::string accountId;
@@ -8136,28 +8185,27 @@ bool MethodOAuthDisconnect(const json &params, json &result, std::string &error)
 		return true;
 	}
 
-	OAuth::Accounts().Remove(accountId);
-	// Prune the provider's per-account refresh flight lock along with the account so a
-	// disconnected account leaves no mutex behind (accountId is "<providerId>:<userId>").
-	if (OAuth::StreamProvider *prov = OAuth::Registry().Get(accountId.substr(0, accountId.find(':')))) {
-		prov->auth()->ForgetAccount(accountId);
-	}
-	Events::Hub().StopAccount(accountId);
-	// Pre-live chat: re-resolve chat after the account is removed so the disconnected
-	// account's transport drops (Start() enumerates only still-connected accounts).
-	Chat::Hub().Start();
-
-	// Unlink every profile that referenced this account.
-	for (StreamProfile &p : ObsBootstrap::StreamProfiles().AllMutable()) {
-		if (p.accountId == accountId) {
-			p.accountId.clear();
-		}
-	}
-	ObsBootstrap::StreamProfiles().Save();
-	EmitEvent(EventNames::kStreamProfileChanged, json::object());
-	EmitEvent(EventNames::kOauthStatus, BuildOAuthStatusArray());
+	TeardownAccount(accountId);
 	result = json{{"ok", true}};
 	return true;
+}
+
+void ReconcileOrphanedAccounts()
+{
+	// Reclaim every stored account no profile references -- an orphan left behind when
+	// its owning stream profile was deleted before the delete path cleaned up accounts
+	// (pre-fix leak). All() returns a snapshot copy, and TeardownAccount mutates the
+	// store, so collect the orphan ids first, then tear each down through the shared path.
+	std::vector<std::string> orphans;
+	for (const auto &entry : OAuth::Accounts().All()) {
+		if (!ObsBootstrap::StreamProfiles().ReferencesAccount(entry.first)) {
+			orphans.push_back(entry.first);
+		}
+	}
+	for (const std::string &accountId : orphans) {
+		HostLog("[oauth] reclaiming orphaned account (no stream profile references it): " + accountId);
+		TeardownAccount(accountId);
+	}
 }
 
 // The connected accounts for one provider -- the reuse-picker source. Filters the
