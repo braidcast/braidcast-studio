@@ -29,7 +29,6 @@
 #include "frontend_callbacks.hpp"
 #include "log.hpp"
 #include "chat/channel_stats_poller.hpp"
-#include "chat/chat_hub.hpp"
 #include "events/event_hub.hpp"
 #include "events/event_store.hpp"
 #include "multistream/CanvasRuntime.hpp"
@@ -738,12 +737,6 @@ bool ObsBootstrap::Start()
 	// that the registry + account store are ready; inert until a provider's makeEvents()
 	// transport is non-null (9.2b+).
 	Events::Hub().StartConnectedAccounts();
-
-	// Pre-live chat: the chat hub is account-lifecycle (always-on), not go-live-gated,
-	// so multichat is live before/after streaming. Start() enumerates every connected,
-	// scope-current account; YouTube's transport no-ops until a live broadcast supplies
-	// its liveChatId (re-resolved at go-live), while Twitch/Kick connect immediately.
-	Chat::Hub().Start();
 
 	// Channel identity: the audience-total poller is always-on (account-lifecycle,
 	// not go-live-gated), so follower/subscriber totals refresh before/after
