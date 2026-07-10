@@ -103,9 +103,60 @@
     };
   });
 
+  // Focus management: move focus into the panel on open, trap Tab within it, and
+  // return focus to the trigger on close so AT/keyboard users can't reach the
+  // obscured page behind the modal.
+  const FOCUSABLE =
+    'a[href],area[href],input:not([disabled]),select:not([disabled]),' +
+    'textarea:not([disabled]),button:not([disabled]),iframe,object,embed,' +
+    '[contenteditable],audio[controls],video[controls],[tabindex]:not([tabindex="-1"])';
+
+  function focusables(): HTMLElement[] {
+    if (!modalEl) {
+      return [];
+    }
+    return Array.from(modalEl.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
+      (el) => el.offsetParent !== null || getComputedStyle(el).position === "fixed",
+    );
+  }
+
+  let triggerEl: HTMLElement | null = null;
+  $effect(() => {
+    triggerEl = document.activeElement as HTMLElement | null;
+    (focusables()[0] ?? modalEl)?.focus();
+    return () => {
+      if (triggerEl && document.contains(triggerEl)) {
+        triggerEl.focus();
+      }
+    };
+  });
+
   function onKeydown(e: KeyboardEvent) {
-    if (e.key === "Escape" && escToken && isTopEsc(escToken)) {
+    if (!escToken || !isTopEsc(escToken)) {
+      return;
+    }
+    if (e.key === "Escape") {
       onClose();
+      return;
+    }
+    if (e.key === "Tab") {
+      const items = focusables();
+      if (items.length === 0) {
+        e.preventDefault();
+        modalEl?.focus();
+        return;
+      }
+      const first = items[0];
+      const last = items[items.length - 1];
+      const active = document.activeElement as HTMLElement | null;
+      const outside = !modalEl?.contains(active);
+      if (e.shiftKey && (active === first || outside)) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && (active === last || outside)) {
+        e.preventDefault();
+        first.focus();
+      }
     }
   }
 </script>
@@ -124,6 +175,7 @@
     role="dialog"
     aria-modal="true"
     aria-label={title}
+    tabindex="-1"
     bind:this={modalEl}
     style:width={`min(${width}px, 100%)`}
     style:max-height={maxHeight}
