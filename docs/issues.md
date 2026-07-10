@@ -7,10 +7,30 @@ out, and how they were resolved. Newest first.
 
 ## #6 — Full code-review findings (2026-07-10)
 
-**Status:** OPEN (triage list) — a 5-agent read-only review of the fork-specific code
-(multistream engine, OAuth/token, chat/events threading, bridge surface, Svelte UI).
-Each finding was verified against source; confidence flagged where it is inference.
-Ranked by severity. Nothing here is fixed yet.
+**Status:** MOSTLY RESOLVED (2026-07-10) — a 5-agent read-only review of the fork-specific
+code (multistream engine, OAuth/token, chat/events threading, bridge surface, Svelte UI).
+Each finding was verified against source; confidence flagged where it is inference. Ranked
+by severity.
+
+**Fixed 2026-07-10** (commits on `ui-redesign`; all build-green, **live/GUI acceptance owed**
+for the streaming/auth/WS-timing paths that can't be verified headless): both HIGH bugs
+(stale-encoder UAF, binding-CRUD live reconcile), and every MEDIUM — WsClient recv
+starvation, YouTubeChat `runMutex_`, EventHub atomic start, async-dispatch spawn barrier,
+`ensureFresh(force)` peer short-circuit, browser-dock restore position, Modal focus trap —
+plus the GAPS: `ProfileEnabledElsewhere` wired, `StartOutput` failure reasons surfaced +
+failed output no longer counts live, the missing `settings.audioChanged` / `streamMeta.changed`
+subscriptions, `streamMeta.get/set` refresh-present gate + refuse persisting a refresh-less
+record (deliberate no-scopeVer carve-out preserved), the four stores' in-flight refresh guard,
+`oauthStore.whenReady`, and the `channelsStore` audience/viewer prune.
+
+**Still open (low / enhancement, deliberately deferred):** provider raw-body → UI/log
+disclosure; DPAPI secondary entropy; `flightLocks_` prune on account removal; the fully-dead
+`interact.changed` + `obs.event` per-frontend-event `ExecuteJavaScript` overhead; `settings.videoChanged`
+/ `window.opened` emitted with no consuming surface (left as-is — no surface needs them);
+`projector.changed` payload vs `Record<string, never>` type mismatch; `audio.setAdvanced`
+`tracks` shorter than 6 zeroing trailing mixer tracks; the per-canvas dot `updateParameters`
+layout-save write amplification; the discarded `onDidLayoutChange` disposer (harmless). Original
+finding detail retained below.
 
 ### High — real bugs, action first
 - **Stale-encoder UAF after a video reset.** `settings.setVideo` and `settings.restore`
