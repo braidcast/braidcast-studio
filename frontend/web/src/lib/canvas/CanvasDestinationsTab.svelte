@@ -8,6 +8,7 @@
   } from "../bridge";
   import ToggleSwitch from "../ToggleSwitch.svelte";
   import Icon from "../dock/Icon.svelte";
+  import ProfileSelect from "../ProfileSelect.svelte";
   import { STATE_COLOR_EXT } from "../theme/stateColors";
   import { bindingDisplayName, isBindingDangling, isBindingUnset } from "../outputBindingStore.svelte";
   import { bindingRowState } from "../multistreamStatusStore.svelte";
@@ -23,10 +24,13 @@
   let { canvasUuid, bindings, profiles, statusByBinding, onChanged, onRemove }: Props = $props();
 
   let adding = $state(false);
-  let addProfile = $state("");
   let error = $state<string | null>(null);
 
   const rows = $derived(bindings.filter((b) => b.canvasUuid === canvasUuid));
+
+  // Profiles already bound to this canvas — omitted from the picker so a
+  // destination can't be double-bound.
+  const boundProfileUuids = $derived(rows.map((b) => b.profileUuid).filter(Boolean));
 
   // Per-canvas enabled = any binding enabled; the master toggle sets them all.
   const canvasEnabled = $derived(rows.some((b) => b.enabled));
@@ -65,16 +69,15 @@
 
   function startAdd(): void {
     adding = true;
-    addProfile = profiles[0]?.uuid ?? "";
   }
   function cancelAdd(): void {
     adding = false;
   }
-  async function confirmAdd(): Promise<void> {
+  async function confirmAdd(profileUuid: string): Promise<void> {
     try {
       await obs.call("outputBinding.create", {
         canvasUuid,
-        ...(addProfile ? { profileUuid: addProfile } : {}),
+        ...(profileUuid ? { profileUuid } : {}),
       });
       adding = false;
       onChanged();
@@ -137,15 +140,14 @@
       {#if adding}
         <div class="row add-form">
           <span class="add-label">New destination</span>
-          <select bind:value={addProfile}>
-            <option value="">No destination (placeholder)</option>
-            {#each profiles as p (p.uuid)}
-              <option value={p.uuid}>{p.label || p.platform}</option>
-            {/each}
-          </select>
+          <ProfileSelect
+            {profiles}
+            hideUuids={boundProfileUuids}
+            onSelect={(uuid) => void confirmAdd(uuid)}
+          />
           <div class="add-actions">
             <button class="ghost" onclick={cancelAdd}>Cancel</button>
-            <button class="accent" onclick={() => void confirmAdd()}>Add</button>
+            <button class="ghost" onclick={() => void confirmAdd("")}>No destination</button>
           </div>
         </div>
       {:else}
@@ -306,14 +308,6 @@
     text-transform: uppercase;
     color: var(--color-muted);
   }
-  .add-form select {
-    background: var(--color-base);
-    border: var(--border-weight) solid var(--color-border);
-    color: var(--color-text);
-    font: inherit;
-    font-size: 13px;
-    padding: 7px 10px;
-  }
   .add-actions {
     display: flex;
     justify-content: flex-end;
@@ -330,15 +324,5 @@
   }
   .add-actions .ghost:hover {
     color: var(--color-text);
-  }
-  .add-actions .accent {
-    padding: 7px 16px;
-    background: var(--color-accent);
-    border: 0;
-    color: var(--color-accent-ink);
-    cursor: pointer;
-    font: inherit;
-    font-size: 12px;
-    font-weight: 600;
   }
 </style>
