@@ -488,13 +488,9 @@ void ObsBootstrap::ApplyCanvasSceneLinks(const std::string &mainSceneUuid)
 	::CanvasRuntime &runtime = CanvasRuntime();
 	for (const auto &[canvasUuid, canvasSceneUuid] : it->second) {
 		// Resolve the stored canvas-scene uuid -> its current name, then switch.
-		for (const CanvasRuntime::SceneInfo &s : runtime.Scenes(canvasUuid)) {
-			if (s.uuid == canvasSceneUuid) {
-				if (runtime.SetCurrentScene(canvasUuid, s.name)) {
-					Bridge::EmitEvent("scenes.changed", nlohmann::json{{"canvas", canvasUuid}});
-				}
-				break;
-			}
+		const std::string sceneName = runtime.SceneNameForUuid(canvasUuid, canvasSceneUuid);
+		if (!sceneName.empty() && runtime.SetCurrentScene(canvasUuid, sceneName)) {
+			Bridge::EmitEvent("scenes.changed", nlohmann::json{{"canvas", canvasUuid}});
 		}
 	}
 }

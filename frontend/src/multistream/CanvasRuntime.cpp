@@ -203,6 +203,16 @@ std::vector<CanvasRuntime::SceneInfo> CanvasRuntime::Scenes(const std::string &u
 	return scenes;
 }
 
+std::string CanvasRuntime::SceneNameForUuid(const std::string &uuid, const std::string &sceneUuid) const
+{
+	for (const SceneInfo &s : Scenes(uuid)) {
+		if (s.uuid == sceneUuid) {
+			return s.name;
+		}
+	}
+	return std::string();
+}
+
 bool CanvasRuntime::SetCurrentScene(const std::string &uuid, const std::string &sceneName)
 {
 	obs_canvas_t *canvas = Find(uuid);

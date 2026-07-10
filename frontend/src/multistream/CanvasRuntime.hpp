@@ -43,6 +43,9 @@ public:
 	// releases. null for an unknown/Default canvas or an unbound channel.
 	obs_source_t *CurrentScene(const std::string &uuid) const;
 	std::vector<SceneInfo> Scenes(const std::string &uuid) const; // enum the canvas's scenes
+	// The name of the scene with `sceneUuid` in canvas `uuid`, or empty if none
+	// matches (unknown/Default canvas, or a stale/deleted scene uuid).
+	std::string SceneNameForUuid(const std::string &uuid, const std::string &sceneUuid) const;
 	bool SetCurrentScene(const std::string &uuid, const std::string &sceneName);
 	// Create a scene in the canvas (addref'd scene source, caller releases) or null
 	// on failure / unknown canvas. Does NOT bind it to channel 0.

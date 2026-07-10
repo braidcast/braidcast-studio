@@ -1204,13 +1204,8 @@ bool MethodSceneLinkList(const json &params, json &result, std::string &error)
 	for (const auto &[mainUuid, perCanvas] : link.map) {
 		const std::string mainName = MainSceneNameFromUuid(mainUuid);
 		for (const auto &[canvasUuid, canvasSceneUuid] : perCanvas) {
-			std::string canvasSceneName;
-			for (const CanvasRuntime::SceneInfo &s : ObsBootstrap::CanvasRuntime().Scenes(canvasUuid)) {
-				if (s.uuid == canvasSceneUuid) {
-					canvasSceneName = s.name;
-					break;
-				}
-			}
+			const std::string canvasSceneName =
+				ObsBootstrap::CanvasRuntime().SceneNameForUuid(canvasUuid, canvasSceneUuid);
 			rows.push_back(json{{"mainScene", mainUuid},
 					    {"mainSceneName", mainName},
 					    {"canvas", canvasUuid},
