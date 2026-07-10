@@ -5,6 +5,112 @@ out, and how they were resolved. Newest first.
 
 ---
 
+## #6 — Full code-review findings (2026-07-10)
+
+**Status:** OPEN (triage list) — a 5-agent read-only review of the fork-specific code
+(multistream engine, OAuth/token, chat/events threading, bridge surface, Svelte UI).
+Each finding was verified against source; confidence flagged where it is inference.
+Ranked by severity. Nothing here is fixed yet.
+
+### High — real bugs, action first
+- **Stale-encoder UAF after a video reset.** `settings.setVideo` and `settings.restore`
+  reset the global video pipeline (`obs_reset_video` via `ApplyGlobalVideo`,
+  `bridge.cpp:480/550/7157`) but never call `InvalidateCanvasEncoders(Default)`. The
+  engine keeps the Default canvas's cached video encoder across `StopAll` and never
+  re-binds it on reuse (`MultistreamEngine.cpp:117-121,364-365`), so the next
+  `streaming.start` after a resolution change reuses an encoder bound to the freed
+  `video_t` → UAF/crash. Every canvas-runtime reset path (`CanvasService::Update`)
+  already invalidates; these two bridge paths are the omission. Fix: invalidate the
+  Default canvas encoders inside `ApplyGlobalVideo` (after every global `obs_reset_video`).
+- **Binding CRUD doesn't reconcile a live output.** `outputBinding.remove/update/setEnabled`
+  (`bridge.cpp:5599/5652/5680`) mutate/delete the persisted binding with no `IsLive`
+  check, unlike canvas CRUD (`MethodCanvasRemove` refuses while live). Remove-while-live
+  → orphaned stream still hitting RTMP but gone from the UI + `IsCanvasLive` stuck true
+  (blocks canvas edits) + leaked refs until shutdown. Update changing canvas/profile →
+  streams the old pair while config claims the new. Disable → canvas stops rendering but
+  the output keeps encoding a frozen frame. Fix: refuse, or stop/restart the live output,
+  in each handler.
+
+### Medium
+- **`WsClient::recv` waits on `select()` before `curl_ws_recv`** (`ws_client.cpp:140-153`,
+  PLAUSIBLE). libcurl buffers decoded frames above the socket; when two frames share a TLS
+  segment the second isn't read until fresh socket activity, so on quiet channels a
+  chat/EventSub/Pusher message is delayed until the next keepalive. Affects all four WS
+  transports. Fix: call `curl_ws_recv` first, `select()` only on `CURLE_AGAIN`. (Related
+  low: the `sock_ < 0` path calls recv with no timeout → cancellation can hang.)
+- **YouTubeChat missing `runMutex_`** (`youtube_chat.cpp`). The only transport without
+  generation-serialization; an overlapping re-Start can invert the `ActiveGuard` ordering
+  and leave provider `LiveChatActive` stuck false → youtube_events REST-polls superchats
+  the whole stream (wasted quota). Fix: add the `runMutex_` its three siblings use.
+- **Async-lane throw escapes the exception barrier** (`bridge.cpp:9319`, `async_task.cpp:46-48`).
+  `DispatchAsync` runs before `OnQuery`'s try; a `std::thread` ctor throw under
+  thread/FD exhaustion → process terminate, plus a leaked worker count (5s shutdown block)
+  and a hung JS promise. Fix: wrap the async spawn in the same try/Failure shape; decrement
+  the count if the spawn throws.
+- **`ensureFresh(force)` never short-circuits on a peer's fresh token** (`broker_strategy.cpp:280`).
+  Under two concurrent 401s the forced refresh re-refreshes even after the store re-read
+  shows a peer just rotated; the redundant rotation can 401 the other caller's in-flight
+  retry → spurious "re-authentication required" + an extra Kick rotation. Fix: after the
+  re-read, skip the refresh if `access` changed since the caller's 401.
+- **Restored browser docks snap to a default position on restart**
+  (`browserDockReconciler.ts:71`, `StudioPage.svelte:165`). The reconciler runs against an
+  empty store before `load()` resolves, deleting the panels `layoutStore.restore` just
+  re-created, then re-adds them right-of-preview. Canvas docks are safe (they await
+  `canvas.list`). Fix: only reconcile inside `load().then(...)`.
+- **`Modal.svelte` has no focus trap / initial focus / focus-return** (a11y). Every modal
+  (GoLive, OAuthConnect, Filter, Transform, …) lets keyboard/AT users Tab into the obscured
+  page behind the dialog. Fix centrally in Modal: move focus in on open, trap Tab, restore
+  on close.
+
+### Gaps — missing behavior / stale-UI / dead events
+- **`ProfileEnabledElsewhere` is defined but unwired** (`OutputBinding.cpp:67`). The same
+  profile enabled on two canvases is allowed; at start the engine silently refuses the
+  second (`blog` only) → it shows Idle with no reason. Fix: call it in setEnabled/create/update.
+- **`StartOutput` failure reasons never reach the UI** (`MultistreamEngine.cpp:207-222`).
+  Bare `false` for every distinct cause; the row's status has no `lastError`. Fix: return/emit
+  a reason into the per-output status.
+- **Emitted events with no subscriber → UI goes stale on external (MCP/2nd-window) mutation:**
+  `streamMeta.changed`, `settings.audioChanged`, `settings.videoChanged`, `window.opened`
+  are fired by C++ but no `obs.on` consumes them (`bridge.ts` documents a refresh that never
+  happens). `interact.changed` and `obs.event` are fully dead — and `obs.event` fires an
+  `ExecuteJavaScript` round-trip on *every* OBS frontend event to zero listeners (pure
+  overhead). Fix: subscribe in the stale surfaces (AudioTab/video tab, stream-info UI), or
+  drop the dead emits + gate `obs.event`.
+- **`streamMeta.get/set` skip `IsAccountConnected`** (`bridge.cpp:8196/8290`) and the connect
+  flow can persist a refresh-less record (`broker_strategy.cpp:204`, `bridge.cpp:7959`). Not a
+  cross-account authz break (same-user desktop), a gate-consistency gap. Fix: route through
+  the connection gate; reject the `Put` when `acct.refresh` is empty.
+
+### Low / enhancements
+- Provider raw response bodies echoed into UI error strings + `HostLog` (API-internals
+  disclosure, not tokens — verified) — map to body-free messages, log raw at debug.
+- DPAPI blob uses no secondary entropy (`account_store.cpp:72`) — matches OBS norms; add
+  per-install entropy as defense-in-depth.
+- `flightLocks_` (broker) and `channelsStore` `#audience`/`#viewers` maps never prune removed
+  accounts — bounded memory growth.
+- `event_hub.cpp:44` `StartAccount` non-atomic stop-then-insert — worker leak only if ever
+  called off the UI thread.
+- Store `refresh()` has no in-flight guard (`multistreamStatusStore`/`canvasStore`/
+  `outputBindingStore`/`streamProfileStore`) — latent last-writer-wins on event bursts.
+- `oauthStore.whenReady` comment/behavior mismatch (one-shot `#ready`, not a subscription) —
+  stale-read risk only if the permanent `channelsStore` sub is removed.
+- `projector.changed` payload (`{opened}`) disagrees with its `Record<string, never>` type.
+- `audio.setAdvanced` `tracks` shorter than 6 silently disables the trailing mixer tracks
+  despite being a documented partial patch.
+- Per-canvas header-dot `updateParameters` on every status push rewrites `layout.json`
+  (write amplification); `onDidLayoutChange` disposer in StudioPage discarded (harmless —
+  relies on `api.dispose()`).
+
+### Verified clean (no action)
+Dispatch is exception-safe on both lanes; per-element JSON type guards consistent; all 40
+`EventNames` have a C++ producer and no orphan TS consumer; async completions are alive-guarded
++ drained; ref-counted store `subscribe()`/unsubscribe are balanced (no leaks); PKCE/CSRF/
+loopback binding, no token logging, no bare-`refresh()` bypass, secrets hygiene (only public
+client-id/signing-key committed). Engine locking/teardown/encode-once sharing is sound.
+(The "errored output stays in the live set" bug is tracked separately at 4.4.4 below.)
+
+---
+
 ## #5 — Cross-canvas scene duplicate undo/redo: nested-group and duplicate-source-usage edge cases
 
 **Status:** OPEN (known, non-blocking follow-up) — 2026-07-09, `scenes.duplicateToCanvas`
