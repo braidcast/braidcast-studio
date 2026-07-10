@@ -34,13 +34,11 @@ export const EV = {
   sceneItemsChanged: "sceneItems.changed",
   sceneItemSelected: "sceneItem.selected",
   previewContextMenu: "preview.contextMenu",
-  interactChanged: "interact.changed",
   chatState: "chat.state",
   chatMessage: "chat.message",
   channelsStats: "channels.stats",
   viewersChanged: "viewers.changed",
   audioLevels: "audio.levels",
-  obsEvent: "obs.event",
 } as const;
 
 export type BridgeEvent = (typeof EV)[keyof typeof EV];

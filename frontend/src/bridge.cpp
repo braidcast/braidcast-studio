@@ -141,39 +141,6 @@ std::atomic<uint64_t> g_oauthGen{0};
 std::mutex g_browser_mutex;
 std::vector<CefRefPtr<CefBrowser>> g_browsers;
 
-// obs frontend event enum -> stable string name forwarded to JS. Data-driven so
-// adding a forwarded event is one row, not a switch arm.
-struct EventName {
-	obs_frontend_event event;
-	const char *name;
-};
-const EventName kForwardedEvents[] = {
-	{OBS_FRONTEND_EVENT_FINISHED_LOADING, "OBS_FRONTEND_EVENT_FINISHED_LOADING"},
-	{OBS_FRONTEND_EVENT_SCENE_CHANGED, "OBS_FRONTEND_EVENT_SCENE_CHANGED"},
-	{OBS_FRONTEND_EVENT_SCENE_LIST_CHANGED, "OBS_FRONTEND_EVENT_SCENE_LIST_CHANGED"},
-};
-
-const char *ForwardedEventName(obs_frontend_event event)
-{
-	for (const auto &e : kForwardedEvents) {
-		if (e.event == event) {
-			return e.name;
-		}
-	}
-	return nullptr;
-}
-
-// obs->shim->bridge->JS: forward whitelisted obs frontend events to JS as
-// "obs.event" with {event:<enum name>}. Proves the full chain the real UI uses.
-void OnFrontendEvent(enum obs_frontend_event event, void * /*data*/)
-{
-	const char *name = ForwardedEventName(event);
-	if (!name) {
-		return;
-	}
-	EmitEvent(EventNames::kObsEvent, json{{"event", name}});
-}
-
 // Build the multistream status JSON array (one object per enabled binding) from
 // the engine's current Statuses(). The state enum is carried as its lowercase
 // name (StateName); the Svelte side maps it to a status-dot color.
@@ -6084,6 +6051,18 @@ bool MethodAudioSetAdvanced(const json &params, json &result, std::string &error
 		setMonitoring = true;
 	}
 
+	// tracks is all-or-nothing: setAdvanced is a partial patch, but a short/partial
+	// tracks array would silently disable the trailing mixer tracks. Require the full
+	// mixer-count array up front (reject otherwise) so a partial send can't zero
+	// tracks; an absent tracks leaves the mixer mask untouched.
+	if (auto it = params.find("tracks"); it != params.end()) {
+		if (!it->is_array() || it->size() != MAX_AUDIO_MIXES) {
+			error = "audio.setAdvanced: 'tracks' must be a " + std::to_string(MAX_AUDIO_MIXES) +
+				"-element boolean array";
+			return false;
+		}
+	}
+
 	if (auto it = params.find("volumeDb"); it != params.end() && it->is_number()) {
 		obs_source_set_volume(s, obs_db_to_mul(it->get<float>()));
 	}
@@ -6106,10 +6085,10 @@ bool MethodAudioSetAdvanced(const json &params, json &result, std::string &error
 		obs_source_set_sync_offset(s, it->get<int64_t>() * 1000000);
 	}
 
-	if (auto it = params.find("tracks"); it != params.end() && it->is_array()) {
+	if (auto it = params.find("tracks"); it != params.end()) {
 		uint32_t mask = 0;
 		const json &arr = *it;
-		for (size_t i = 0; i < arr.size() && i < 6; ++i) {
+		for (size_t i = 0; i < MAX_AUDIO_MIXES; ++i) {
 			if (arr[i].is_boolean() && arr[i].get<bool>()) {
 				mask |= (1u << i);
 			}
@@ -8158,6 +8137,11 @@ bool MethodOAuthDisconnect(const json &params, json &result, std::string &error)
 	}
 
 	OAuth::Accounts().Remove(accountId);
+	// Prune the provider's per-account refresh flight lock along with the account so a
+	// disconnected account leaves no mutex behind (accountId is "<providerId>:<userId>").
+	if (OAuth::StreamProvider *prov = OAuth::Registry().Get(accountId.substr(0, accountId.find(':')))) {
+		prov->auth()->ForgetAccount(accountId);
+	}
 	Events::Hub().StopAccount(accountId);
 	// Pre-live chat: re-resolve chat after the account is removed so the disconnected
 	// account's transport drops (Start() enumerates only still-connected accounts).
@@ -9143,9 +9127,8 @@ void Init()
 	// any chat transport tries to connect.
 	Chat::WsClient::EnsureInit();
 
-	obs_frontend_add_event_callback(OnFrontendEvent, nullptr);
 	HostLog("[bridge] init: " + std::to_string(g_methods.size()) + " methods, " +
-		std::to_string(g_asyncMethods.size()) + " async methods, obs event forwarding armed");
+		std::to_string(g_asyncMethods.size()) + " async methods");
 }
 
 void Shutdown()
@@ -9193,7 +9176,6 @@ void Shutdown()
 	// threads) after the event transports are down, so no in-flight Broadcast races the
 	// teardown, and before CEF shutdown so no dangling send hits a torn-down host.
 	Overlay::Server().Stop();
-	obs_frontend_remove_event_callback(OnFrontendEvent, nullptr);
 	// Drop the undo->event hook so the g_undo.Clear() later in Stop() (after the CEF
 	// loop has returned) doesn't try to emit through a torn-down bridge.
 	ObsBootstrap::Undo().onChanged = nullptr;

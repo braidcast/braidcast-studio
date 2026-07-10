@@ -159,9 +159,6 @@ GeneralSettings &General();
 // options at StartOutput. Valid between Start() and Stop().
 AdvancedSettings &Advanced();
 
-// Re-fire OBS_FRONTEND_EVENT_SCENE_CHANGED through the shim so the loaded UI page
-// observes a forwarded obs.event (proves obs->shim->bridge->JS post-load).
-void FireSceneChanged();
 void TeardownScene();
 // Stand up a fresh placeholder Default scene bound to channel 0, owned by libobs's
 // source list (NOT tracked by the boot g_scene). Used by the scene-collection

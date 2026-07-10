@@ -876,15 +876,6 @@ void ObsBootstrap::TeardownScene()
 	HostLog("[obs] default scene released");
 }
 
-void ObsBootstrap::FireSceneChanged()
-{
-	// Re-announce the bound scene so the (now-loaded) page observes a forwarded
-	// obs.event end-to-end. The shim fans this to the bridge's event callback.
-	if (g_frontend) {
-		g_frontend->on_event(OBS_FRONTEND_EVENT_SCENE_CHANGED);
-	}
-}
-
 void ObsBootstrap::RunPropertiesSelfTest()
 {
 	using Bridge::json;

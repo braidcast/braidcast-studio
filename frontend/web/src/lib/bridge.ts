@@ -1496,7 +1496,6 @@ export interface ObsMethods {
 /** Known server->client push events and their payload shapes. */
 export interface ObsEvents {
   "streaming.changed": { active: boolean };
-  "obs.event": { event: string };
   // `canvas` is the addressed canvas uuid, or null for the global channel-0 path;
   // a per-canvas panel filters to its own canvas before reacting (4.4.5b).
   "scenes.changed": { canvas: string | null };
@@ -1560,8 +1559,9 @@ export interface ObsEvents {
   // hotkeys.list to refresh its rows.
   "hotkeys.changed": Record<string, never>;
   // The set of live native projectors changed (opened/closed, incl. user OS-close
-  // or Esc). Projectors are fire-and-forget windows, so nothing subscribes today.
-  "projector.changed": Record<string, never>;
+  // or Esc). Carries the projector id under `opened` or `closed` depending on which
+  // side changed. Projectors are fire-and-forget windows, so nothing subscribes today.
+  "projector.changed": { opened?: number; closed?: number };
   // The embedded MCP server's config or listening status changed (enable/disable,
   // port change, token regenerate, or a bind error); the UI re-runs mcp.getConfig.
   "mcp.changed": Record<string, never>;
@@ -1609,7 +1609,7 @@ export interface ObsEvents {
 
 // Every payload-typed event key must be a known EV constant (eventNames.ts); this
 // fails to compile if an ObsEvents key is renamed or typed for a non-existent event.
-// EV may hold more (fire-and-forget events with no TS payload, e.g. interact.changed).
+// EV may hold more (fire-and-forget events with no TS payload).
 type AssertTrue<T extends true> = T;
 type _EventNamesInSync = AssertTrue<[keyof ObsEvents] extends [BridgeEvent] ? true : false>;
 

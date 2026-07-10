@@ -29,13 +29,12 @@ namespace Bridge {
 
 using json = nlohmann::json;
 
-// Build the method registry. Idempotent; call once during bootstrap. Also
-// registers the obs frontend event callback that forwards obs->JS as
-// "obs.event". Safe to call before the UI browser exists.
+// Build the method registry. Idempotent; call once during bootstrap. Safe to
+// call before the UI browser exists.
 void Init();
 
-// Unregister the obs frontend event callback. Call during teardown while libobs
-// is still up (before obs_shutdown), on the UI thread.
+// Tear down the bridge (stop async workers, hubs, and pollers). Call during
+// teardown while libobs is still up (before obs_shutdown), on the UI thread.
 void Shutdown();
 
 // Register / unregister a live browser as an EmitEvent target. Called from the

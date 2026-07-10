@@ -38,13 +38,11 @@ inline constexpr const char *kStreamMetaChanged = "streamMeta.changed";
 inline constexpr const char *kSceneItemsChanged = "sceneItems.changed";
 inline constexpr const char *kSceneItemSelected = "sceneItem.selected";
 inline constexpr const char *kPreviewContextMenu = "preview.contextMenu";
-inline constexpr const char *kInteractChanged = "interact.changed";
 inline constexpr const char *kChatState = "chat.state";
 inline constexpr const char *kChatMessage = "chat.message";
 inline constexpr const char *kChannelsStats = "channels.stats";
 inline constexpr const char *kViewersChanged = "viewers.changed";
 inline constexpr const char *kAudioLevels = "audio.levels";
-inline constexpr const char *kObsEvent = "obs.event";
 } // namespace EventNames
 
 #endif // OBS_MULTISTREAM_FRONTEND_EVENT_NAMES_HPP_

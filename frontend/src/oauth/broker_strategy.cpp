@@ -306,4 +306,14 @@ std::shared_ptr<std::mutex> BrokerStrategy::FlightLock(const std::string &key)
 	return slot;
 }
 
+void BrokerStrategy::ForgetAccount(const std::string &accountId)
+{
+	// Called only on explicit account removal (UI thread), where the just-disconnected
+	// account has no refresh in flight -- so no caller is holding the erased mutex. Even
+	// if one were, FlightLock hands out a shared_ptr copy, so the mutex object outlives
+	// the map slot until that copy drops; erasing the slot only forgets the key.
+	const std::lock_guard<std::mutex> guard(flightMapMutex_);
+	flightLocks_.erase(accountId);
+}
+
 } // namespace OAuth

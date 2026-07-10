@@ -146,9 +146,6 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 		if (wparam == kSizeProbeTimerId) {
 			KillTimer(hwnd, kSizeProbeTimerId);
 			HostLog("[obs] active fps=" + std::to_string(obs_get_active_fps()));
-			// Page is loaded by now: re-fire SCENE_CHANGED so the UI observes a
-			// forwarded obs.event end-to-end (obs->shim->bridge->JS).
-			ObsBootstrap::FireSceneChanged();
 			// In the headless smoke path, prove the 4.3.2 properties bridge
 			// round-trips before self-quit.
 			if (getenv("FE_SMOKE_QUIT_SECONDS")) {

@@ -2,7 +2,6 @@
 // GetNextSibling that <windows.h> would otherwise macro-clobber. Include it (and
 // thus CEF) before any Windows header so CEF parses clean.
 #include "app_icon.hpp"
-#include "event_names.hpp"
 #include "bridge.hpp"
 
 #include "interact_window.hpp"
@@ -285,7 +284,6 @@ void SelfClose(InteractWindow *self)
 	}
 	const int id = self->Id();
 	Interact::Instance()->Close(id);
-	Bridge::EmitEvent(EventNames::kInteractChanged, Bridge::json{{"closed", id}});
 }
 
 LRESULT CALLBACK InteractWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)

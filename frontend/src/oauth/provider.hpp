@@ -154,6 +154,11 @@ public:
 	// same single-flight + re-read + write-back path.
 	virtual bool ensureFresh(OAuthAccount &acct, std::string &err, bool force = false) = 0;
 
+	// Drop any per-account bookkeeping the strategy holds (e.g. the single-flight
+	// refresh lock) when an account is removed, so a disconnected account leaves
+	// nothing behind. Default no-op; strategies with per-account state override.
+	virtual void ForgetAccount(const std::string &accountId) { (void)accountId; }
+
 	// The scope version this strategy currently requests. Tokens stored with a
 	// lower scopeVer were issued under an older permission set and must reconnect.
 	virtual int scopeVer() const { return 0; }
