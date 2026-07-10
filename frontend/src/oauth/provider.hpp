@@ -28,6 +28,14 @@ namespace Events {
 class EventTransport;
 }
 
+// SendAuthed takes an Http::HttpReq by value and fills an Http::HttpResponse; the full
+// definitions live in http_client.hpp, which provider.cpp includes. By-value + reference
+// parameters only need the incomplete types at the declaration, so forward-declare here.
+namespace Http {
+struct HttpReq;
+struct HttpResponse;
+} // namespace Http
+
 namespace OAuth {
 
 using json = nlohmann::json;
@@ -193,6 +201,16 @@ public:
 	// uniform; only the fetch it delegates to is per-platform.
 	bool ensureIdentity(OAuthAccount &acct, std::string &err);
 
+	// Send an authenticated platform request: proactively ensureFresh, stamp the auth
+	// headers via stampAuth, then on a 401 force one refresh + retry with the new bearer.
+	// `req` is taken by value so the headers are re-applied cleanly on the retry (the
+	// bearer changes after a refresh). false + `err` only on a transport failure or an
+	// unrecoverable 401 ("re-authentication required"); an HTTP error otherwise returns
+	// true with the status/body left for the caller to interpret. Non-virtual: the
+	// proactive-refresh + reactive-401 policy is uniform; only the header stamp is
+	// per-platform (see stampAuth).
+	bool SendAuthed(OAuthAccount &acct, Http::HttpReq req, Http::HttpResponse &resp, std::string &err);
+
 	// Fetch the channel's current stream metadata (title/category/...) into `out`
 	// for prefill. `acct` is non-const so a reactive token refresh (proactive skew
 	// or a 401 retry) propagates back for the caller to persist. false + `err` on
@@ -273,6 +291,12 @@ public:
 	// to clear; YouTube overrides to zero the account's cached liveChatId/broadcastId
 	// so a later go-live without a fresh applyMetadata can't poll a stale broadcast.
 	virtual void clearActiveBroadcast(const std::string &accountId) { (void)accountId; }
+
+protected:
+	// Stamp the per-request auth headers onto `r`, called by SendAuthed for each attempt.
+	// Base default: `Authorization: Bearer <access>`. Twitch overrides to prepend its
+	// `Client-Id` header; Kick/YouTube authenticate with the bearer alone and keep this.
+	virtual void stampAuth(Http::HttpReq &r, const OAuthAccount &acct) const;
 };
 
 } // namespace OAuth

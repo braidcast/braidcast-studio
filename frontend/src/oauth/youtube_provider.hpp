@@ -104,13 +104,6 @@ private:
 	// YouTubeEvents reuses SendAuthed for its Data API GETs (same refresh/401 path).
 	friend class Events::YouTubeEvents;
 
-	// Send an authenticated YouTube request: ensureFresh proactively, stamp the
-	// bearer header, and on a 401 force one refresh + retry with the new token.
-	// `req` is taken by value so headers are re-applied cleanly on the retry. false
-	// + `err` only on a transport failure or an unrecoverable 401; an HTTP error
-	// otherwise returns true with the status/body left for the caller to interpret.
-	bool SendAuthed(OAuthAccount &acct, Http::HttpReq req, Http::HttpResponse &resp, std::string &err);
-
 	BrokerStrategy auth_;
 
 	// The active broadcast's liveChatId + broadcast/video id, PER ACCOUNT. Set on a

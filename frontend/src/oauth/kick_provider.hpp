@@ -60,13 +60,6 @@ public:
 	std::unique_ptr<Events::EventTransport> makeEvents(const OAuthAccount &acct) override;
 
 private:
-	// Send an authenticated Kick request: ensureFresh proactively, stamp the bearer
-	// header, and on a 401 force one refresh + retry with the new token. `req` is
-	// taken by value so headers are re-applied cleanly on the retry. false + `err`
-	// only on a transport failure or an unrecoverable 401; an HTTP error otherwise
-	// returns true with the status/body left for the caller to interpret.
-	bool SendAuthed(OAuthAccount &acct, Http::HttpReq req, Http::HttpResponse &resp, std::string &err);
-
 	// KickChat sends chat via SendAuthed (same token-coherence path as metadata).
 	friend class Chat::KickChat;
 

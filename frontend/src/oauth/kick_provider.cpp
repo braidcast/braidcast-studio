@@ -97,50 +97,6 @@ json KickProvider::capabilityJson() const
 	};
 }
 
-bool KickProvider::SendAuthed(OAuthAccount &acct, Http::HttpReq req, Http::HttpResponse &resp, std::string &err)
-{
-	// Proactive refresh inside the skew window (best-effort: if it fails the token
-	// may still be valid, so we let the request proceed and rely on the 401 path).
-	std::string freshErr;
-	auth_.ensureFresh(acct, freshErr);
-
-	auto stamp = [&](Http::HttpReq &r) { r.headers.push_back("Authorization: Bearer " + acct.access); };
-
-	Http::HttpReq attempt = req;
-	stamp(attempt);
-	resp = Http::HttpRequest(attempt);
-	if (resp.status == 0) {
-		err = "Kick request failed: " + resp.error;
-		return false;
-	}
-	if (resp.status != 401) {
-		return true;
-	}
-
-	// Reactive 401: force one refresh + retry with the new bearer. Route through
-	// ensureFresh(force) -- NOT a bare refresh() -- so Kick's rotated refresh token
-	// is re-read + written back under the same single-flight lock the proactive path
-	// uses (a bare refresh() would rotate in memory and drop the new token, bricking
-	// the account on the next refresh).
-	std::string refreshErr;
-	if (!auth_.ensureFresh(acct, refreshErr, /*force=*/true)) {
-		err = "re-authentication required";
-		return false;
-	}
-	Http::HttpReq retry = req;
-	stamp(retry);
-	resp = Http::HttpRequest(retry);
-	if (resp.status == 0) {
-		err = "Kick request failed: " + resp.error;
-		return false;
-	}
-	if (resp.status == 401) {
-		err = "re-authentication required";
-		return false;
-	}
-	return true;
-}
-
 bool KickProvider::fetchIdentity(OAuthAccount &acct, std::string &err)
 {
 	// No id param -> the authenticated user.

@@ -217,50 +217,6 @@ json YouTubeProvider::capabilityJson() const
 	};
 }
 
-bool YouTubeProvider::SendAuthed(OAuthAccount &acct, Http::HttpReq req, Http::HttpResponse &resp, std::string &err)
-{
-	// Proactive refresh inside the skew window (best-effort: if it fails the token
-	// may still be valid, so we let the request proceed and rely on the 401 path).
-	std::string freshErr;
-	auth_.ensureFresh(acct, freshErr);
-
-	// YouTube authenticates with the bearer alone (no Client-Id header like Twitch).
-	auto stamp = [&](Http::HttpReq &r) { r.headers.push_back("Authorization: Bearer " + acct.access); };
-
-	Http::HttpReq attempt = req;
-	stamp(attempt);
-	resp = Http::HttpRequest(attempt);
-	if (resp.status == 0) {
-		err = "YouTube request failed: " + resp.error;
-		return false;
-	}
-	if (resp.status != 401) {
-		return true;
-	}
-
-	// Reactive 401: force one refresh + retry with the new bearer. Route through
-	// ensureFresh(force) -- NOT a bare refresh() -- so a rotated refresh token is
-	// re-read + written back under the same single-flight lock the proactive path
-	// uses.
-	std::string refreshErr;
-	if (!auth_.ensureFresh(acct, refreshErr, /*force=*/true)) {
-		err = "re-authentication required";
-		return false;
-	}
-	Http::HttpReq retry = req;
-	stamp(retry);
-	resp = Http::HttpRequest(retry);
-	if (resp.status == 0) {
-		err = "YouTube request failed: " + resp.error;
-		return false;
-	}
-	if (resp.status == 401) {
-		err = "re-authentication required";
-		return false;
-	}
-	return true;
-}
-
 bool YouTubeProvider::fetchIdentity(OAuthAccount &acct, std::string &err)
 {
 	Http::HttpReq req;

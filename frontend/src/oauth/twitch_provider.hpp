@@ -53,18 +53,15 @@ public:
 	bool viewerCount(OAuthAccount &acct, int &out, std::string &err) override;
 	bool audienceCount(OAuthAccount &acct, AudienceResult &out, std::string &err) override;
 
+protected:
+	// Twitch stamps its public Client-Id ahead of the bearer (Helix requires both);
+	// the base SendAuthed calls this per attempt. Client-Id first, then Authorization.
+	void stampAuth(Http::HttpReq &r, const OAuthAccount &acct) const override;
+
 private:
 	// The event transport reuses SendAuthed for its EventSub subscribe POSTs and the
 	// followers backfill GET (same proactive-refresh + reactive-401 path as metadata).
 	friend class Events::TwitchEvents;
-
-	// Send an authenticated Helix request: ensureFresh proactively, stamp the
-	// Client-Id + bearer headers, and on a 401 force one refresh + retry. `req` is
-	// taken by value so headers are re-applied cleanly on the retry (the bearer
-	// changes after a refresh). false + `err` only on a transport failure or an
-	// unrecoverable 401 ("re-authentication required"); an HTTP error otherwise
-	// returns true with the status/body left for the caller to interpret.
-	bool SendAuthed(OAuthAccount &acct, Http::HttpReq req, Http::HttpResponse &resp, std::string &err);
 
 	BrokerStrategy auth_;
 };

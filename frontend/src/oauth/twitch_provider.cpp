@@ -174,52 +174,10 @@ json TwitchProvider::capabilityJson() const
 	};
 }
 
-bool TwitchProvider::SendAuthed(OAuthAccount &acct, Http::HttpReq req, Http::HttpResponse &resp, std::string &err)
+void TwitchProvider::stampAuth(Http::HttpReq &r, const OAuthAccount &acct) const
 {
-	// Proactive refresh inside the skew window (best-effort: if it fails the token
-	// may still be valid, so we let the request proceed and rely on the 401 path).
-	std::string freshErr;
-	auth_.ensureFresh(acct, freshErr);
-
-	const std::string clientId = TwitchClientId();
-	auto stamp = [&](Http::HttpReq &r) {
-		r.headers.push_back("Client-Id: " + clientId);
-		r.headers.push_back("Authorization: Bearer " + acct.access);
-	};
-
-	Http::HttpReq attempt = req;
-	stamp(attempt);
-	resp = Http::HttpRequest(attempt);
-	if (resp.status == 0) {
-		err = "Twitch request failed: " + resp.error;
-		return false;
-	}
-	if (resp.status != 401) {
-		return true;
-	}
-
-	// Reactive 401: force one refresh + retry with the new bearer. Route through
-	// ensureFresh(force) -- NOT a bare refresh() -- so a rotated refresh token is
-	// re-read + written back under the same single-flight lock the proactive path
-	// uses. Benign for Twitch (its refresh tokens do not rotate) but keeps both
-	// providers on one store-coherent path.
-	std::string refreshErr;
-	if (!auth_.ensureFresh(acct, refreshErr, /*force=*/true)) {
-		err = "re-authentication required";
-		return false;
-	}
-	Http::HttpReq retry = req;
-	stamp(retry);
-	resp = Http::HttpRequest(retry);
-	if (resp.status == 0) {
-		err = "Twitch request failed: " + resp.error;
-		return false;
-	}
-	if (resp.status == 401) {
-		err = "re-authentication required";
-		return false;
-	}
-	return true;
+	r.headers.push_back("Client-Id: " + TwitchClientId());
+	r.headers.push_back("Authorization: Bearer " + acct.access);
 }
 
 bool TwitchProvider::fetchIdentity(OAuthAccount &acct, std::string &err)
