@@ -274,10 +274,19 @@ bool BrokerStrategy::ensureFresh(OAuthAccount &acct, std::string &err, bool forc
 	const std::shared_ptr<std::mutex> lock = FlightLock(accountId);
 	const std::lock_guard<std::mutex> guard(*lock);
 
+	const std::string priorAccess = acct.access;
 	if (const std::optional<OAuthAccount> stored = Accounts().Get(accountId)) {
 		acct = *stored;
 	}
 	if (!force && static_cast<int64_t>(time(nullptr)) <= acct.expireTime - skew) {
+		return true;
+	}
+	// Forced (reactive-401) path: if a peer rotated the token while we waited on the
+	// flight lock, the re-read access token differs from the one the caller held when
+	// it 401'd. Use that fresh token instead of refreshing again -- a redundant
+	// rotation could invalidate the peer's in-flight access token (and burns an extra
+	// rotation on providers that rotate their refresh token per refresh, e.g. Kick).
+	if (force && !priorAccess.empty() && acct.access != priorAccess) {
 		return true;
 	}
 	if (!refresh(acct, err)) {

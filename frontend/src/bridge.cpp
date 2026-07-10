@@ -8027,6 +8027,13 @@ try {
 		EmitOAuthConnectError(profileUuid, providerId, "identity fetch failed; try connecting again");
 		return;
 	}
+	// A record with no refresh token is unusable -- IsAccountConnected treats it as not
+	// connected, yet other paths would still act on its access token until it expires.
+	// Refuse to persist it and surface a connect error so the UI can retry.
+	if (acct.refresh.empty()) {
+		EmitOAuthConnectError(profileUuid, providerId, "no refresh token returned; try connecting again");
+		return;
+	}
 	const std::string accountId = OAuth::AccountId(acct);
 	OAuth::Accounts().Put(accountId, acct);
 
@@ -8275,7 +8282,13 @@ bool MethodStreamMetaGet(const json &params, json &result, std::string &error)
 	// gating on scopeVer would force needless reconnects on tokens that can already
 	// read it. A genuinely missing/insufficient scope surfaces as an HTTP 403 that
 	// getMetadata already returns. Newly-added event scopes stay gated on their own
-	// paths (chat/event hubs, viewer poller).
+	// paths (chat/event hubs, viewer poller). A refresh-less record is still refused:
+	// it is a broken/partial connect that must not drive a read on an access token
+	// that can't be renewed.
+	if (stored->refresh.empty()) {
+		error = "account not connected; reconnect";
+		return false;
+	}
 
 	OAuth::OAuthAccount acct = *stored;
 	json out;
@@ -8370,7 +8383,12 @@ bool MethodStreamMetaSet(const json &params, json &result, std::string &error)
 	// token issued before the bump is fully authorized to edit channel info, so gating
 	// on scopeVer would block it needlessly. A genuinely missing scope surfaces as an
 	// HTTP 403 that applyMetadata already returns. Newly-added event scopes stay gated
-	// on their own paths (chat/event hubs, viewer poller).
+	// on their own paths (chat/event hubs, viewer poller). A refresh-less record is
+	// still refused: a broken/partial connect must not drive a write.
+	if (stored->refresh.empty()) {
+		error = "account not connected; reconnect";
+		return false;
+	}
 	const json fields = params.is_object() && params.contains("fields") ? params["fields"] : json::object();
 
 	OAuth::OAuthAccount acct = *stored;
