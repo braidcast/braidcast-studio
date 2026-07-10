@@ -153,6 +153,11 @@ target_sources(
     # referenced by both kick_chat and kick_events so the app key lives in ONE place.
     src/chat/kick_pusher.cpp
     src/chat/kick_pusher.hpp
+    # Shared account-poller skeleton: idempotent Start/Stop lifecycle + the per-cycle
+    # account-iteration scaffold behind pure-virtual hooks, subclassed by the viewer
+    # and channel-stats pollers below.
+    src/chat/account_poller.cpp
+    src/chat/account_poller.hpp
     # Phase 9.0 Task 6: aggregate viewer-count poller. One worker polls each
     # connected provider's viewerCount() while live and emits viewers.changed;
     # HTTP only via the providers, no obs.h.
