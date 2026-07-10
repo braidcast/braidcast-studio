@@ -387,14 +387,16 @@ import { EV } from "../eventNames";
         }
       }),
     );
-    dv.onDidLayoutChange(() => {
-      refreshVisible();
-      persistLayoutSoon(dv);
-      // A reorder/move changes panel POSITIONS without resizing them, so the
-      // native-preview docks' ResizeObserver never fires; ping them to re-assert
-      // their overlay rect so the native HWNDs follow their slots.
-      bumpDockLayout();
-    });
+    dropDisposers.push(
+      dv.onDidLayoutChange(() => {
+        refreshVisible();
+        persistLayoutSoon(dv);
+        // A reorder/move changes panel POSITIONS without resizing them, so the
+        // native-preview docks' ResizeObserver never fires; ping them to re-assert
+        // their overlay rect so the native HWNDs follow their slots.
+        bumpDockLayout();
+      }),
+    );
     // Restore the saved arrangement if one exists; otherwise build the default.
     // fromJSON itself fires onDidLayoutChange, which re-persists the restored
     // (or default) layout, so the on-disk copy stays current.
