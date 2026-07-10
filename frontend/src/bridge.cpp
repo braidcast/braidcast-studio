@@ -43,6 +43,7 @@
 #include "overlay/overlay_store.hpp"
 #include "mcp/McpServer.hpp"
 #include "interact_window.hpp"
+#include "json_util.hpp"
 #include "obs_bootstrap.hpp"
 #include "obs_importer.hpp"
 #include "AdvancedSettings.hpp"
@@ -84,6 +85,11 @@
 namespace Bridge {
 
 namespace {
+
+// The param-guard helpers (defined with OptString further down) are called by the
+// settings handlers above their definition, so forward-declare them here.
+static bool RequireStr(const json &params, const char *method, const char *key, std::string &out, std::string &error);
+static bool RequireObject(const json &params, const char *method, std::string &error);
 
 // One method: (params) -> (result | error). Returns false and fills `error` on
 // failure. Runs on the browser UI thread.
@@ -542,8 +548,7 @@ static bool ApplyGlobalVideo(uint32_t baseW, uint32_t baseH, uint32_t outW, uint
 // reality), emits settings.videoChanged + re-validates the preview.
 bool MethodSettingsSetVideo(const json &params, json &result, std::string &error)
 {
-	if (!params.is_object()) {
-		error = "setVideo expects an object";
+	if (!RequireObject(params, "setVideo", error)) {
 		return false;
 	}
 	if (AnyOutputActive()) {
@@ -645,8 +650,7 @@ bool MethodSettingsGetGeneral(const json & /*params*/, json &result, std::string
 
 bool MethodSettingsSetGeneral(const json &params, json &result, std::string &error)
 {
-	if (!params.is_object()) {
-		error = "setGeneral expects an object";
+	if (!RequireObject(params, "setGeneral", error)) {
 		return false;
 	}
 	GeneralSettings &g = ObsBootstrap::General();
@@ -709,8 +713,7 @@ bool MethodSettingsGetAdvanced(const json & /*params*/, json &result, std::strin
 
 bool MethodSettingsSetAdvanced(const json &params, json &result, std::string &error)
 {
-	if (!params.is_object()) {
-		error = "setAdvanced expects an object";
+	if (!RequireObject(params, "setAdvanced", error)) {
 		return false;
 	}
 	// Validate the one enum field up front so a bad token rejects the whole call
@@ -794,8 +797,7 @@ bool MethodSettingsGetAudio(const json & /*params*/, json &result, std::string &
 
 bool MethodSettingsSetAudio(const json &params, json &result, std::string &error)
 {
-	if (!params.is_object()) {
-		error = "setAudio expects an object";
+	if (!RequireObject(params, "setAudio", error)) {
 		return false;
 	}
 
@@ -888,11 +890,31 @@ bool MethodSettingsSetAudio(const json &params, json &result, std::string &error
 // string. Treats an empty string the same as absent for scene resolution.
 std::string OptString(const json &params, const char *key)
 {
-	if (!params.is_object()) {
-		return std::string();
+	return JsonUtil::Str(params, key);
+}
+
+// Read a required string param via the tolerant JsonUtil::Str reader; on
+// missing/empty set the bridge's uniform "<method> requires a non-empty
+// '<key>'" error and return false so the caller returns straight through.
+static bool RequireStr(const json &params, const char *method, const char *key, std::string &out, std::string &error)
+{
+	out = JsonUtil::Str(params, key);
+	if (!out.empty()) {
+		return true;
 	}
-	auto it = params.find(key);
-	return (it != params.end() && it->is_string()) ? it->get<std::string>() : std::string();
+	error = std::string(method) + " requires a non-empty '" + key + "'";
+	return false;
+}
+
+// Guard that params is a JSON object, setting the uniform "<method> expects an
+// object" error otherwise.
+static bool RequireObject(const json &params, const char *method, std::string &error)
+{
+	if (params.is_object()) {
+		return true;
+	}
+	error = std::string(method) + " expects an object";
+	return false;
 }
 
 // Resolve a scene source by name, addref'd (caller releases). When `name` is
@@ -1094,9 +1116,8 @@ bool MethodScenesList(const json &params, json &result, std::string &error)
 
 bool MethodScenesCreate(const json &params, json &result, std::string &error)
 {
-	const std::string name = OptString(params, "name");
-	if (name.empty()) {
-		error = "scenes.create requires a non-empty 'name'";
+	std::string name;
+	if (!RequireStr(params, "scenes.create", "name", name, error)) {
 		return false;
 	}
 
@@ -1268,9 +1289,8 @@ bool MethodSceneLinkClear(const json &params, json &result, std::string &error)
 
 bool MethodScenesRemove(const json &params, json &result, std::string &error)
 {
-	const std::string name = OptString(params, "name");
-	if (name.empty()) {
-		error = "scenes.remove requires a non-empty 'name'";
+	std::string name;
+	if (!RequireStr(params, "scenes.remove", "name", name, error)) {
 		return false;
 	}
 
@@ -1365,9 +1385,8 @@ bool MethodScenesRemove(const json &params, json &result, std::string &error)
 
 bool MethodScenesSetCurrent(const json &params, json &result, std::string &error)
 {
-	const std::string name = OptString(params, "name");
-	if (name.empty()) {
-		error = "scenes.setCurrent requires a non-empty 'name'";
+	std::string name;
+	if (!RequireStr(params, "scenes.setCurrent", "name", name, error)) {
 		return false;
 	}
 
@@ -1458,9 +1477,8 @@ bool MethodScenesRename(const json &params, json &result, std::string &error)
 // duplication is unsupported (same limitation as scenes.reorder).
 bool MethodScenesDuplicate(const json &params, json &result, std::string &error)
 {
-	const std::string name = OptString(params, "name");
-	if (name.empty()) {
-		error = "scenes.duplicate requires a non-empty 'name'";
+	std::string name;
+	if (!RequireStr(params, "scenes.duplicate", "name", name, error)) {
 		return false;
 	}
 	const CanvasTarget target = ResolveCanvasTarget(params);
@@ -1676,9 +1694,8 @@ extern const UndoManager::Cb kRedoDuplicateSceneToCanvas;
 // Default-canvas-only, and unchanged.
 bool MethodScenesDuplicateToCanvas(const json &params, json &result, std::string &error)
 {
-	const std::string name = OptString(params, "name");
-	if (name.empty()) {
-		error = "scenes.duplicateToCanvas requires a non-empty 'name'";
+	std::string name;
+	if (!RequireStr(params, "scenes.duplicateToCanvas", "name", name, error)) {
 		return false;
 	}
 	const std::string srcCanvasUuid = OptString(params, "canvas");
@@ -1743,10 +1760,9 @@ bool MethodScenesDuplicateToCanvas(const json &params, json &result, std::string
 // persistence exists to back a real order.
 bool MethodScenesReorder(const json &params, json & /*result*/, std::string &error)
 {
-	const std::string name = OptString(params, "name");
+	std::string name;
 	const std::string direction = OptString(params, "direction");
-	if (name.empty()) {
-		error = "scenes.reorder requires a non-empty 'name'";
+	if (!RequireStr(params, "scenes.reorder", "name", name, error)) {
 		return false;
 	}
 	if (direction != "up" && direction != "down") {
@@ -3231,9 +3247,8 @@ bool MethodSourceTypesList(const json & /*params*/, json &result, std::string & 
 // name that collides with an existing source.
 bool MethodSourcesCreate(const json &params, json &result, std::string &error)
 {
-	const std::string type = OptString(params, "type");
-	if (type.empty()) {
-		error = "sources.create requires a non-empty 'type'";
+	std::string type;
+	if (!RequireStr(params, "sources.create", "type", type, error)) {
 		return false;
 	}
 	std::string name = OptString(params, "name");
@@ -3351,9 +3366,8 @@ bool MethodSourcesListExisting(const json &params, json &result, std::string &er
 // Add an already-existing source to a scene. params: {name, scene?}.
 bool MethodSourcesAddExisting(const json &params, json &result, std::string &error)
 {
-	const std::string name = OptString(params, "name");
-	if (name.empty()) {
-		error = "sources.addExisting requires a non-empty 'name'";
+	std::string name;
+	if (!RequireStr(params, "sources.addExisting", "name", name, error)) {
 		return false;
 	}
 	obs_source_t *source = obs_get_source_by_name(name.c_str()); // addref'd
@@ -3611,9 +3625,8 @@ bool MethodSourcesRename(const json &params, json &result, std::string &error)
 	if (!ItemIdFromParams(params, id, error)) {
 		return false;
 	}
-	const std::string name = OptString(params, "name");
-	if (name.empty()) {
-		error = "sources.rename requires a non-empty 'name'";
+	std::string name;
+	if (!RequireStr(params, "sources.rename", "name", name, error)) {
 		return false;
 	}
 	obs_source_t *sceneSource = ResolveTargetScene(params); // addref'd
@@ -4221,9 +4234,8 @@ bool MethodDialogOpenFile(const json &params, json &result, std::string &error)
 // containing folder; a directory is opened directly.
 bool MethodShellRevealPath(const json &params, json &result, std::string &error)
 {
-	const std::string path = OptString(params, "path");
-	if (path.empty()) {
-		error = "shell.revealPath requires a non-empty 'path'";
+	std::string path;
+	if (!RequireStr(params, "shell.revealPath", "path", path, error)) {
 		return false;
 	}
 	const std::wstring widePath = Utf8ToWide(path);
@@ -4289,9 +4301,8 @@ std::string EncodeBase64(const std::vector<unsigned char> &in)
 // bounded, and infers the MIME from the file extension.
 bool MethodFileReadDataUri(const json &params, json &result, std::string &error)
 {
-	const std::string path = OptString(params, "path");
-	if (path.empty()) {
-		error = "file.readDataUri requires a non-empty 'path'";
+	std::string path;
+	if (!RequireStr(params, "file.readDataUri", "path", path, error)) {
 		return false;
 	}
 
@@ -4446,9 +4457,8 @@ bool MethodPropertiesButton(const json &params, json &result, std::string &error
 // unknown.
 obs_source_t *ResolveFilterParent(const json &params, std::string &error)
 {
-	const std::string name = OptString(params, "source");
-	if (name.empty()) {
-		error = "filters requires a non-empty 'source'";
+	std::string name;
+	if (!RequireStr(params, "filters", "source", name, error)) {
 		return nullptr;
 	}
 	obs_source_t *parent = obs_get_source_by_name(name.c_str());
@@ -5077,13 +5087,11 @@ bool ReadOptBool(const json &params, const char *key, bool current)
 
 bool MethodCanvasCreate(const json &params, json &result, std::string &error)
 {
-	if (!params.is_object()) {
-		error = "canvas.create expects an object";
+	if (!RequireObject(params, "canvas.create", error)) {
 		return false;
 	}
-	const std::string name = OptString(params, "name");
-	if (name.empty()) {
-		error = "canvas.create requires a non-empty 'name'";
+	std::string name;
+	if (!RequireStr(params, "canvas.create", "name", name, error)) {
 		return false;
 	}
 
@@ -5135,13 +5143,11 @@ bool MethodCanvasCreate(const json &params, json &result, std::string &error)
 
 bool MethodCanvasUpdate(const json &params, json &result, std::string &error)
 {
-	if (!params.is_object()) {
-		error = "canvas.update expects an object";
+	if (!RequireObject(params, "canvas.update", error)) {
 		return false;
 	}
-	const std::string uuid = OptString(params, "uuid");
-	if (uuid.empty()) {
-		error = "canvas.update requires a non-empty 'uuid'";
+	std::string uuid;
+	if (!RequireStr(params, "canvas.update", "uuid", uuid, error)) {
 		return false;
 	}
 	// Read the current def only to fold absent JSON keys to their existing values (the
@@ -5189,9 +5195,8 @@ bool MethodCanvasUpdate(const json &params, json &result, std::string &error)
 
 bool MethodCanvasRemove(const json &params, json &result, std::string &error)
 {
-	const std::string uuid = OptString(params, "uuid");
-	if (uuid.empty()) {
-		error = "canvas.remove requires a non-empty 'uuid'";
+	std::string uuid;
+	if (!RequireStr(params, "canvas.remove", "uuid", uuid, error)) {
 		return false;
 	}
 	CanvasStore &store = ObsBootstrap::Canvases();
@@ -5353,13 +5358,11 @@ bool MethodStreamProfileList(const json & /*params*/, json &result, std::string 
 
 bool MethodStreamProfileCreate(const json &params, json &result, std::string &error)
 {
-	if (!params.is_object()) {
-		error = "streamProfile.create expects an object";
+	if (!RequireObject(params, "streamProfile.create", error)) {
 		return false;
 	}
-	const std::string label = OptString(params, "label");
-	if (label.empty()) {
-		error = "streamProfile.create requires a non-empty 'label'";
+	std::string label;
+	if (!RequireStr(params, "streamProfile.create", "label", label, error)) {
 		return false;
 	}
 
@@ -5387,13 +5390,11 @@ bool MethodStreamProfileCreate(const json &params, json &result, std::string &er
 
 bool MethodStreamProfileUpdate(const json &params, json &result, std::string &error)
 {
-	if (!params.is_object()) {
-		error = "streamProfile.update expects an object";
+	if (!RequireObject(params, "streamProfile.update", error)) {
 		return false;
 	}
-	const std::string uuid = OptString(params, "uuid");
-	if (uuid.empty()) {
-		error = "streamProfile.update requires a non-empty 'uuid'";
+	std::string uuid;
+	if (!RequireStr(params, "streamProfile.update", "uuid", uuid, error)) {
 		return false;
 	}
 	StreamProfileStore &store = ObsBootstrap::StreamProfiles();
@@ -5447,9 +5448,8 @@ bool MethodStreamProfileUpdate(const json &params, json &result, std::string &er
 
 bool MethodStreamProfileRemove(const json &params, json &result, std::string &error)
 {
-	const std::string uuid = OptString(params, "uuid");
-	if (uuid.empty()) {
-		error = "streamProfile.remove requires a non-empty 'uuid'";
+	std::string uuid;
+	if (!RequireStr(params, "streamProfile.remove", "uuid", uuid, error)) {
 		return false;
 	}
 	StreamProfileStore &store = ObsBootstrap::StreamProfiles();
@@ -5476,9 +5476,8 @@ bool MethodStreamProfileRemove(const json &params, json &result, std::string &er
 
 bool MethodStreamProfileSetPrimary(const json &params, json &result, std::string &error)
 {
-	const std::string uuid = OptString(params, "uuid");
-	if (uuid.empty()) {
-		error = "streamProfile.setPrimary requires a non-empty 'uuid'";
+	std::string uuid;
+	if (!RequireStr(params, "streamProfile.setPrimary", "uuid", uuid, error)) {
 		return false;
 	}
 	StreamProfileStore &store = ObsBootstrap::StreamProfiles();
@@ -5565,13 +5564,11 @@ bool MethodOutputBindingList(const json & /*params*/, json &result, std::string 
 
 bool MethodOutputBindingCreate(const json &params, json &result, std::string &error)
 {
-	if (!params.is_object()) {
-		error = "outputBinding.create expects an object";
+	if (!RequireObject(params, "outputBinding.create", error)) {
 		return false;
 	}
-	const std::string canvasUuid = OptString(params, "canvasUuid");
-	if (canvasUuid.empty()) {
-		error = "outputBinding.create requires a non-empty 'canvasUuid'";
+	std::string canvasUuid;
+	if (!RequireStr(params, "outputBinding.create", "canvasUuid", canvasUuid, error)) {
 		return false;
 	}
 	if (!ObsBootstrap::Canvases().Find(canvasUuid)) {
@@ -5605,13 +5602,11 @@ bool MethodOutputBindingCreate(const json &params, json &result, std::string &er
 
 bool MethodOutputBindingUpdate(const json &params, json &result, std::string &error)
 {
-	if (!params.is_object()) {
-		error = "outputBinding.update expects an object";
+	if (!RequireObject(params, "outputBinding.update", error)) {
 		return false;
 	}
-	const std::string uuid = OptString(params, "uuid");
-	if (uuid.empty()) {
-		error = "outputBinding.update requires a non-empty 'uuid'";
+	std::string uuid;
+	if (!RequireStr(params, "outputBinding.update", "uuid", uuid, error)) {
 		return false;
 	}
 	OutputBindings &bindings = ObsBootstrap::OutputBindings().Bindings();
@@ -5660,9 +5655,8 @@ bool MethodOutputBindingUpdate(const json &params, json &result, std::string &er
 
 bool MethodOutputBindingSetEnabled(const json &params, json &result, std::string &error)
 {
-	const std::string uuid = OptString(params, "uuid");
-	if (uuid.empty()) {
-		error = "outputBinding.setEnabled requires a non-empty 'uuid'";
+	std::string uuid;
+	if (!RequireStr(params, "outputBinding.setEnabled", "uuid", uuid, error)) {
 		return false;
 	}
 	if (!params.is_object() || !params.contains("enabled") || !params["enabled"].is_boolean()) {
@@ -5689,9 +5683,8 @@ bool MethodOutputBindingSetEnabled(const json &params, json &result, std::string
 
 bool MethodOutputBindingRemove(const json &params, json &result, std::string &error)
 {
-	const std::string uuid = OptString(params, "uuid");
-	if (uuid.empty()) {
-		error = "outputBinding.remove requires a non-empty 'uuid'";
+	std::string uuid;
+	if (!RequireStr(params, "outputBinding.remove", "uuid", uuid, error)) {
 		return false;
 	}
 	OutputBindings &bindings = ObsBootstrap::OutputBindings().Bindings();
@@ -5717,9 +5710,8 @@ bool MethodMultistreamStatus(const json & /*params*/, json &result, std::string 
 
 bool MethodMultistreamStartOutput(const json &params, json &result, std::string &error)
 {
-	const std::string uuid = OptString(params, "uuid");
-	if (uuid.empty()) {
-		error = "multistream.startOutput requires a non-empty 'uuid'";
+	std::string uuid;
+	if (!RequireStr(params, "multistream.startOutput", "uuid", uuid, error)) {
 		return false;
 	}
 	result = json{{"ok", ObsBootstrap::Multistream().StartOutput(uuid)}};
@@ -5728,9 +5720,8 @@ bool MethodMultistreamStartOutput(const json &params, json &result, std::string 
 
 bool MethodMultistreamStopOutput(const json &params, json &result, std::string &error)
 {
-	const std::string uuid = OptString(params, "uuid");
-	if (uuid.empty()) {
-		error = "multistream.stopOutput requires a non-empty 'uuid'";
+	std::string uuid;
+	if (!RequireStr(params, "multistream.stopOutput", "uuid", uuid, error)) {
 		return false;
 	}
 	ObsBootstrap::Multistream().StopOutput(uuid);
@@ -5886,9 +5877,8 @@ bool MethodAudioList(const json & /*params*/, json &result, std::string & /*erro
 
 bool MethodAudioSetDeflection(const json &params, json &result, std::string &error)
 {
-	const std::string uuid = OptString(params, "uuid");
-	if (uuid.empty()) {
-		error = "audio.setDeflection requires a non-empty 'uuid'";
+	std::string uuid;
+	if (!RequireStr(params, "audio.setDeflection", "uuid", uuid, error)) {
 		return false;
 	}
 	if (!params.is_object() || !params.contains("deflection") || !params["deflection"].is_number()) {
@@ -6010,8 +6000,7 @@ bool MethodAudioGetAdvanced(const json &params, json &result, std::string &error
 
 bool MethodAudioSetAdvanced(const json &params, json &result, std::string &error)
 {
-	if (!params.is_object()) {
-		error = "audio.setAdvanced expects an object";
+	if (!RequireObject(params, "audio.setAdvanced", error)) {
 		return false;
 	}
 	OBSSourceAutoRelease s = ResolveAudioSource(params);
@@ -6157,8 +6146,7 @@ bool MethodSourcesGetDeinterlace(const json &params, json &result, std::string &
 
 bool MethodSourcesSetDeinterlace(const json &params, json &result, std::string &error)
 {
-	if (!params.is_object()) {
-		error = "sources.setDeinterlace expects an object";
+	if (!RequireObject(params, "sources.setDeinterlace", error)) {
 		return false;
 	}
 	OBSSourceAutoRelease s = ResolveAudioSource(params);
@@ -6404,9 +6392,8 @@ bool MethodTransitionsGetCurrent(const json & /*params*/, json &result, std::str
 
 bool MethodTransitionsSetCurrent(const json &params, json &result, std::string &error)
 {
-	const std::string id = OptString(params, "id");
-	if (id.empty()) {
-		error = "transitions.setCurrent requires a non-empty 'id'";
+	std::string id;
+	if (!RequireStr(params, "transitions.setCurrent", "id", id, error)) {
 		return false;
 	}
 	if (!Transitions::SetCurrentType(id, error)) {
@@ -6504,9 +6491,8 @@ bool MethodWindowDetach(const json &params, json &result, std::string &error)
 		error = "window manager not active";
 		return false;
 	}
-	const std::string dock = OptString(params, "dock");
-	if (dock.empty()) {
-		error = "window.detach requires a non-empty 'dock'";
+	std::string dock;
+	if (!RequireStr(params, "window.detach", "dock", dock, error)) {
 		return false;
 	}
 	const int windowId = wm->Detach(dock);
@@ -7044,8 +7030,7 @@ bool MethodSettingsSnapshot(const json & /*params*/, json &result, std::string &
 
 bool MethodSettingsRestore(const json &params, json &result, std::string &error)
 {
-	if (!params.is_object()) {
-		error = "settings.restore expects an object";
+	if (!RequireObject(params, "settings.restore", error)) {
 		return false;
 	}
 
@@ -7222,9 +7207,8 @@ bool MethodCollectionsCreate(const json &params, json &result, std::string &erro
 		error = "scene collection index is corrupt; cannot modify collections";
 		return false;
 	}
-	const std::string name = OptString(params, "name");
-	if (name.empty()) {
-		error = "collections.create requires a non-empty 'name'";
+	std::string name;
+	if (!RequireStr(params, "collections.create", "name", name, error)) {
 		return false;
 	}
 	const SceneCollectionRecord &added = ObsBootstrap::SceneCollections().Create(name);
@@ -7239,14 +7223,12 @@ bool MethodCollectionsRename(const json &params, json &result, std::string &erro
 		error = "scene collection index is corrupt; cannot modify collections";
 		return false;
 	}
-	const std::string id = OptString(params, "id");
-	const std::string name = OptString(params, "name");
-	if (id.empty()) {
-		error = "collections.rename requires a non-empty 'id'";
+	std::string id;
+	if (!RequireStr(params, "collections.rename", "id", id, error)) {
 		return false;
 	}
-	if (name.empty()) {
-		error = "collections.rename requires a non-empty 'name'";
+	std::string name;
+	if (!RequireStr(params, "collections.rename", "name", name, error)) {
 		return false;
 	}
 	if (!ObsBootstrap::SceneCollections().Rename(id, name)) {
@@ -7265,9 +7247,8 @@ bool MethodCollectionsDuplicate(const json &params, json &result, std::string &e
 		error = "scene collection index is corrupt; cannot modify collections";
 		return false;
 	}
-	const std::string name = OptString(params, "name");
-	if (name.empty()) {
-		error = "collections.duplicate requires a non-empty 'name'";
+	std::string name;
+	if (!RequireStr(params, "collections.duplicate", "name", name, error)) {
 		return false;
 	}
 	// Reject a name already in use so the duplicate stays distinguishable in the list.
@@ -7297,9 +7278,8 @@ bool MethodCollectionsSwitch(const json &params, json &result, std::string &erro
 		error = "scene collection index is corrupt; cannot modify collections";
 		return false;
 	}
-	const std::string id = OptString(params, "id");
-	if (id.empty()) {
-		error = "collections.switch requires a non-empty 'id'";
+	std::string id;
+	if (!RequireStr(params, "collections.switch", "id", id, error)) {
 		return false;
 	}
 	if (!ObsBootstrap::SceneCollections().Switch(id, error)) {
@@ -7316,9 +7296,8 @@ bool MethodCollectionsRemove(const json &params, json &result, std::string &erro
 		error = "scene collection index is corrupt; cannot modify collections";
 		return false;
 	}
-	const std::string id = OptString(params, "id");
-	if (id.empty()) {
-		error = "collections.remove requires a non-empty 'id'";
+	std::string id;
+	if (!RequireStr(params, "collections.remove", "id", id, error)) {
 		return false;
 	}
 	if (!ObsBootstrap::SceneCollections().Remove(id, error)) {
@@ -8089,9 +8068,8 @@ bool MethodOAuthConnect(const json &params, json &result, std::string &error)
 
 bool MethodOAuthDisconnect(const json &params, json &result, std::string &error)
 {
-	const std::string accountId = OptString(params, "accountId");
-	if (accountId.empty()) {
-		error = "oauth.disconnect requires a non-empty 'accountId'";
+	std::string accountId;
+	if (!RequireStr(params, "oauth.disconnect", "accountId", accountId, error)) {
 		return false;
 	}
 	const bool force = params.is_object() && params.value("force", false);
@@ -8133,9 +8111,8 @@ bool MethodOAuthDisconnect(const json &params, json &result, std::string &error)
 // oauth.status) so the picker can label it.
 bool MethodOAuthAccounts(const json &params, json &result, std::string &error)
 {
-	const std::string providerId = OptString(params, "providerId");
-	if (providerId.empty()) {
-		error = "oauth.accounts requires a non-empty 'providerId'";
+	std::string providerId;
+	if (!RequireStr(params, "oauth.accounts", "providerId", providerId, error)) {
 		return false;
 	}
 	json arr = json::array();
@@ -8216,9 +8193,8 @@ bool MethodOAuthCancelConnect(const json & /*params*/, json &result, std::string
 
 bool MethodStreamMetaGet(const json &params, json &result, std::string &error)
 {
-	const std::string accountId = OptString(params, "accountId");
-	if (accountId.empty()) {
-		error = "streamMeta.get requires a non-empty 'accountId'";
+	std::string accountId;
+	if (!RequireStr(params, "streamMeta.get", "accountId", accountId, error)) {
 		return false;
 	}
 	std::optional<OAuth::OAuthAccount> stored = OAuth::Accounts().Get(accountId);
@@ -8260,10 +8236,9 @@ bool MethodStreamMetaGet(const json &params, json &result, std::string &error)
 
 bool MethodStreamMetaSearchCategories(const json &params, json &result, std::string &error)
 {
-	const std::string providerId = OptString(params, "providerId");
+	std::string providerId;
 	const std::string query = OptString(params, "query");
-	if (providerId.empty()) {
-		error = "streamMeta.searchCategories requires a non-empty 'providerId'";
+	if (!RequireStr(params, "streamMeta.searchCategories", "providerId", providerId, error)) {
 		return false;
 	}
 	OAuth::StreamProvider *provider = OAuth::Registry().Get(providerId);
@@ -8311,10 +8286,9 @@ bool MethodStreamMetaSet(const json &params, json &result, std::string &error)
 	// accountId identifies the account whose token/provider the write goes through;
 	// profileUuid is forwarded only into applyMetadata, which marshals its ingest
 	// writeback (WriteIngestToProfile) to the UI thread -- the sole safe profile touch.
-	const std::string accountId = OptString(params, "accountId");
+	std::string accountId;
 	const std::string profileUuid = OptString(params, "profileUuid");
-	if (accountId.empty()) {
-		error = "streamMeta.set requires a non-empty 'accountId'";
+	if (!RequireStr(params, "streamMeta.set", "accountId", accountId, error)) {
 		return false;
 	}
 	std::optional<OAuth::OAuthAccount> stored = OAuth::Accounts().Get(accountId);
@@ -8362,9 +8336,8 @@ bool MethodStreamMetaSet(const json &params, json &result, std::string &error)
 // never interprets the field bags.
 bool MethodStreamMetaGetSaved(const json &params, json &result, std::string &error)
 {
-	const std::string accountId = OptString(params, "accountId");
-	if (accountId.empty()) {
-		error = "streamMeta.getSaved requires a non-empty 'accountId'";
+	std::string accountId;
+	if (!RequireStr(params, "streamMeta.getSaved", "accountId", accountId, error)) {
 		return false;
 	}
 	StreamMetaStore &store = ObsBootstrap::StreamMeta();
@@ -8387,9 +8360,8 @@ bool MethodStreamMetaGetSaved(const json &params, json &result, std::string &err
 
 bool MethodStreamMetaSave(const json &params, json &result, std::string &error)
 {
-	const std::string accountId = OptString(params, "accountId");
-	if (accountId.empty()) {
-		error = "streamMeta.save requires a non-empty 'accountId'";
+	std::string accountId;
+	if (!RequireStr(params, "streamMeta.save", "accountId", accountId, error)) {
 		return false;
 	}
 	StreamMetaStore &store = ObsBootstrap::StreamMeta();
@@ -8437,9 +8409,8 @@ bool MethodChatSend(const json &params, json &result, std::string &error)
 			}
 		}
 	}
-	const std::string text = OptString(params, "text");
-	if (text.empty()) {
-		error = "chat.send requires a non-empty 'text'";
+	std::string text;
+	if (!RequireStr(params, "chat.send", "text", text, error)) {
 		return false;
 	}
 	// Empty platforms = send to every connected platform. Each transport's send runs
