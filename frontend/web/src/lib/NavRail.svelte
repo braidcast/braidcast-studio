@@ -11,6 +11,7 @@ import { EV } from "./eventNames";
   import { pageStore, setPage, type Page } from "./pageStore.svelte";
   import { openAbout } from "./aboutOpener.svelte";
   import CollectionDialog, { type DialogSpec } from "./CollectionDialog.svelte";
+  import { seamStore, SEAM, bumpDiagonals, offsetRight, polygon } from "./seamStore.svelte";
 
   // One entry per nav button; the icon is rendered by the matching {#if} in the
   // markup keyed off this id, so adding a view is a single entry + one icon branch.
@@ -23,6 +24,43 @@ import { EV } from "./eventNames";
     { id: "ai", label: "AI", title: "AI Control" },
     { id: "settings", label: "Settings", title: "Settings" },
   ];
+
+  // --- Seam bump: measure the active item's center Y and publish it to seamStore ---
+  let railEl = $state<HTMLElement>();
+
+  // The bump is the rail's own material; the accent rim is a LINE-px normal offset of
+  // its gap-facing diagonals, so it traces the active triangle at a constant width.
+  const bumpClip = $derived(polygon(bumpDiagonals(seamStore.ym)));
+  const bumpEdgeClip = $derived.by(() => {
+    const ym = seamStore.ym;
+    const rim = offsetRight(bumpDiagonals(ym), SEAM.LINE);
+    return polygon([...rim, [0, ym + SEAM.HALF], [0, ym - SEAM.HALF]]);
+  });
+
+  // Center Y of the active button relative to the rail top. The active element is the
+  // .home button on Studio, else the matching .nav-item; footer buttons are never
+  // active pages, so a single .active selector is unambiguous. Measured (not derived
+  // from static offsets) because the home button, divider, and gap:2px make hand-rolled
+  // offsets fragile across layout/resize/font-load.
+  function measureSeam(): void {
+    const rail = railEl;
+    if (!rail) {
+      return;
+    }
+    const el = rail.querySelector<HTMLElement>(".active");
+    if (!el) {
+      return;
+    }
+    const r = el.getBoundingClientRect();
+    seamStore.ym = r.top - rail.getBoundingClientRect().top + r.height / 2;
+  }
+
+  // Runs after DOM updates and before paint, so the class toggle for the new page is
+  // already applied when we measure — the bump lands without a mount slide.
+  $effect(() => {
+    pageStore.page;
+    measureSeam();
+  });
 
   // --- Scene Collection switcher (rehomed from the menu bar, Phase 6a logic) ---
   let collections = $state<CollectionInfo[]>([]);
@@ -40,7 +78,16 @@ import { EV } from "./eventNames";
 
   onMount(() => {
     refreshCollections();
-    return obs.on(EV.collectionsChanged, refreshCollections);
+    const offCollections = obs.on(EV.collectionsChanged, refreshCollections);
+    // Rail height/layout shifts (window resize, font load) move the active center too.
+    const ro = new ResizeObserver(() => measureSeam());
+    if (railEl) {
+      ro.observe(railEl);
+    }
+    return () => {
+      offCollections();
+      ro.disconnect();
+    };
   });
 
   function showError(e: unknown) {
@@ -125,14 +172,16 @@ import { EV } from "./eventNames";
   }
 </script>
 
-<nav class="rail">
+<nav class="rail" bind:this={railEl}>
+  <span class="bump-edge" style="width:{SEAM.D + 4}px; clip-path:{bumpEdgeClip}"></span>
+  <span class="bump" style="width:{SEAM.D}px; clip-path:{bumpClip}"></span>
+
   <button
     class="home"
     class:active={pageStore.page === "studio"}
     title="Home · Studio"
     onclick={() => setPage("studio")}
   >
-    <span class="chev"></span>
     <div class="logo">
       <div class="logo-back"></div>
       <div class="logo-fore"><span class="logo-tri"></span></div>
@@ -149,7 +198,6 @@ import { EV } from "./eventNames";
         title={item.title}
         onclick={() => setPage(item.id)}
       >
-        <span class="chev"></span>
         {#if item.id === "canvases"}
           <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
             <rect x="3.5" y="3.5" width="12" height="9" />
@@ -250,17 +298,10 @@ import { EV } from "./eventNames";
 
 <style>
   .rail {
+    position: relative;
     width: 70px;
     flex: 0 0 70px;
     background: var(--color-rail);
-    /* Seam B: double hairline with a 2px base-colored channel. Layered box-shadows
-       paint (topmost first) a --color-border hairline, then a 2px --color-base
-       channel, then a --color-border-2 hairline — all in the 4px gap App.svelte's
-       .view leaves via margin-left. Replaces the plain border-right. */
-    box-shadow:
-      var(--border-weight) 0 0 0 var(--color-border),
-      3px 0 0 0 var(--color-base),
-      4px 0 0 0 var(--color-border-2);
     display: flex;
     flex-direction: column;
     align-items: stretch;
@@ -268,20 +309,30 @@ import { EV } from "./eventNames";
     z-index: 5;
   }
 
-  /* Active left-edge chevron indicator (mock _navItem.c / home.chev). */
-  .chev {
+  /* Rail bump: the rail's own material juts to a point at the active item. Sits just
+     past the straight edge (left:100%) with the rail's overflow visible, so it reads as
+     one shape with the rail. Both layers clip in px from seamStore.ym; the accent rim
+     sits behind so only its LINE-px edge shows. */
+  .bump,
+  .bump-edge {
     position: absolute;
     left: 100%;
     top: 0;
-    bottom: 0;
-    width: 11px;
-    background: var(--color-accent);
-    clip-path: polygon(0 0, 100% 50%, 0 100%);
+    height: 100%;
+    pointer-events: none;
     z-index: 6;
-    display: none;
   }
-  .active .chev {
-    display: block;
+  .bump {
+    background: var(--color-rail);
+  }
+  .bump-edge {
+    background: var(--color-accent);
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .bump,
+    .bump-edge {
+      transition: clip-path 0.28s cubic-bezier(0.4, 0, 0.15, 1);
+    }
   }
 
   /* Home / logo button (mock home.s). */

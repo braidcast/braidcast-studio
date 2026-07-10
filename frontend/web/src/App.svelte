@@ -3,6 +3,7 @@
   import TitleBar from "./lib/TitleBar.svelte";
   import NavRail from "./lib/NavRail.svelte";
   import { pageStore } from "./lib/pageStore.svelte";
+  import { seamStore, SEAM, railSeam, offsetRight, polygon } from "./lib/seamStore.svelte";
   import StudioPage from "./lib/pages/StudioPage.svelte";
   import CanvasesPage from "./lib/pages/CanvasesPage.svelte";
   import StreamsPage from "./lib/pages/StreamsPage.svelte";
@@ -42,6 +43,18 @@ import { EV } from "./lib/eventNames";
 
   // Apply the saved (or default Industrial) theme before first paint settles.
   void themeStore.hydrate();
+
+  // Content notch: the view subtracts a triangle congruent to the rail's bump, offset
+  // by a constant perpendicular gap G (offsetRight — a true normal offset, so the gap
+  // stays even around the point). The liner is the same notch pulled LINE px back so a
+  // --color-border hairline traces the whole seam behind the view. Same vertex count
+  // every time so clip-path transitions smoothly. EXTENT covers the view's right/bottom.
+  const notchTail: [number, number][] = [
+    [SEAM.EXTENT, SEAM.EXTENT],
+    [SEAM.EXTENT, 0],
+  ];
+  const viewClip = $derived(polygon([...offsetRight(railSeam(seamStore.ym), SEAM.G), ...notchTail]));
+  const linerClip = $derived(polygon([...offsetRight(railSeam(seamStore.ym), SEAM.G - SEAM.LINE), ...notchTail]));
 
   // Skip the global undo/redo shortcut when the focus is in a text-editing field so
   // native per-field undo (and rename/search typing) keeps working.
@@ -117,7 +130,8 @@ import { EV } from "./lib/eventNames";
   <TitleBar />
   <div class="shell">
     <NavRail />
-    <main class="view">
+    <div class="seam-liner" style="left:{SEAM.W}px; clip-path:{linerClip}"></div>
+    <main class="view" style="clip-path:{viewClip}">
     <!-- Studio stays permanently mounted (hidden, not unmounted, off-page) so the
          Dockview workspace + reconciler keep their single onReady lifecycle exactly
          as before — switching pages must not tear down or rebuild the docks. -->
@@ -189,12 +203,29 @@ import { EV } from "./lib/eventNames";
     overflow: hidden;
   }
   .shell {
+    position: relative;
+    z-index: 0;
     flex: 1;
     min-height: 0;
     display: flex;
     flex-direction: row;
     overflow: hidden;
+    /* Base shows through the constant-width seam channel where both the view and the
+       liner are clipped away. z-index:0 makes .shell the stacking context so the liner
+       (z:-1) paints above this background but below the in-flow view content. */
     background: var(--color-base);
+  }
+  /* Seam hairline: the notch pulled LINE px toward the rail, in --color-border. The
+     view clip reveals a LINE-px strip of it along the whole edge (straight + triangle),
+     so a base channel + border hairline flank the seam instead of a bare gap. */
+  .seam-liner {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: -1;
+    background: var(--color-border);
+    pointer-events: none;
   }
   .view {
     flex: 1;
@@ -202,9 +233,14 @@ import { EV } from "./lib/eventNames";
     min-height: 0;
     display: flex;
     flex-direction: column;
-    /* Seam B: the rail paints a double-hairline + 2px base channel via box-shadow
-       (see NavRail .rail); the content column shifts 4px right so it clears the
-       channel. App-wide — every page starts flush inside this offset column. */
-    margin-left: 4px;
+    /* Left edge at the rail's straight edge (abs 70); the clip geometry — not a margin
+       — now owns the gap. clip-path is authored in this frame (view-local x = frame x). */
+    will-change: clip-path;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .seam-liner,
+    .view {
+      transition: clip-path 0.28s cubic-bezier(0.4, 0, 0.15, 1);
+    }
   }
 </style>
