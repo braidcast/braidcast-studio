@@ -2,6 +2,7 @@
   import { untrack } from "svelte";
   import Icon from "../dock/Icon.svelte";
   import EmptyState from "../EmptyState.svelte";
+  import Modal from "../Modal.svelte";
   import { OUTPUT_STATE_COLOR } from "../theme/stateColors";
   import { fmtBitrate, fmtDuration } from "../format";
   import {
@@ -16,7 +17,8 @@
     sparkArea,
   } from "../statsMeter";
   import { statsStore } from "../statsStore.svelte";
-  import type { GeneralStats } from "../bridge";
+  import { multistreamStatusStore } from "../multistreamStatusStore.svelte";
+  import type { GeneralStats, OutputStat } from "../bridge";
 
   // Host supplies tab chrome + strips __* keys; this body declares no props.
   let {}: Record<string, unknown> = $props();
@@ -105,6 +107,55 @@
   const SH = 24;
 
   const outputs = $derived(stats?.outputs ?? []);
+
+  // Severity thresholds (warn, crit) fed to statsMeter grade() for the drop-frame
+  // and congestion reads. Drop mirrors the engine's %-health metrics (render lag /
+  // encode skip); congestion is a slower-moving network-pressure gauge, so its band
+  // sits higher before it reads red.
+  const DROP_GRADE: [number, number] = [1, 5];
+  const CONG_GRADE: [number, number] = [30, 60];
+
+  // Cumulative read across every output, so trouble is visible before drilling into
+  // rows: live/total, error count, summed dropped frames + worst drop%, summed
+  // outgoing bitrate, and peak congestion.
+  const summary = $derived.by(() => {
+    const live = outputs.filter((o) => o.state === "Live").length;
+    const errors = outputs.filter((o) => o.state === "Error").length;
+    let droppedFrames = 0;
+    let worstDropPct = 0;
+    let bitrateKbps = 0;
+    let maxCongestionPct = 0;
+    for (const o of outputs) {
+      droppedFrames += o.droppedFrames;
+      bitrateKbps += o.bitrateKbps;
+      if (o.dropPct > worstDropPct) worstDropPct = o.dropPct;
+      if (o.congestionPct > maxCongestionPct) maxCongestionPct = o.congestionPct;
+    }
+    return { total: outputs.length, live, errors, droppedFrames, worstDropPct, bitrateKbps, maxCongestionPct };
+  });
+
+  // Per-stream error detail lives in the shared status store (statusByBinding carries
+  // {state, lastError}); subscribe ref-counted (same pattern as statsStore above) and
+  // read it when an errored row is opened. Never refetch here — one source of truth.
+  $effect(() => multistreamStatusStore.subscribe());
+
+  let errorRow = $state<OutputStat | null>(null);
+  const errorDetail = $derived(
+    errorRow
+      ? (multistreamStatusStore.statusByBinding.get(errorRow.bindingUuid)?.lastError ?? "").trim() ||
+          "Stream error (no detail reported)"
+      : "",
+  );
+
+  function openError(o: OutputStat): void {
+    errorRow = o;
+  }
+  function onRowKey(e: KeyboardEvent, o: OutputStat): void {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      openError(o);
+    }
+  }
 </script>
 
 <div class="dock-body">
@@ -163,10 +214,49 @@
           </EmptyState>
         </div>
       {:else}
+        <div class="summary">
+          <span class="sm">
+            <span class="sm-k">Live</span>
+            <span class="sm-v">{summary.live}/{summary.total}</span>
+          </span>
+          {#if summary.errors > 0}
+            <span class="sm err">
+              <span class="sm-k">Err</span>
+              <span class="sm-v">{summary.errors}</span>
+            </span>
+          {/if}
+          <span class="sm">
+            <span class="sm-k">Drop</span>
+            <span class="sm-v" style:color={grade(summary.worstDropPct, DROP_GRADE[0], DROP_GRADE[1])}>
+              {summary.droppedFrames} · {summary.worstDropPct.toFixed(1)}%
+            </span>
+          </span>
+          <span class="sm">
+            <span class="sm-k">Net</span>
+            <span class="sm-v">{fmtBitrate(summary.bitrateKbps)}</span>
+          </span>
+          <span class="sm">
+            <span class="sm-k">Cong</span>
+            <span class="sm-v" style:color={grade(summary.maxCongestionPct, CONG_GRADE[0], CONG_GRADE[1])}>
+              {summary.maxCongestionPct.toFixed(1)}%
+            </span>
+          </span>
+        </div>
         <ul class="list">
           {#each outputs as o (o.bindingUuid)}
             {@const color = OUTPUT_STATE_COLOR[o.state]}
-            <li class="row" style:--dot={color}>
+            {@const isErr = o.state === "Error"}
+            <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+            <li
+              class="row"
+              class:err={isErr}
+              style:--dot={color}
+              role={isErr ? "button" : undefined}
+              tabindex={isErr ? 0 : undefined}
+              title={isErr ? "Show stream error detail" : undefined}
+              onclick={isErr ? () => openError(o) : undefined}
+              onkeydown={isErr ? (e) => onRowKey(e, o) : undefined}
+            >
               <span class="dot" style:background={color} title={o.state}></span>
               <div class="info">
                 <div class="line1">
@@ -177,12 +267,20 @@
                 </div>
                 <div class="line2">
                   <span class="stat">{fmtBitrate(o.bitrateKbps)}</span>
-                  <span class="stat" class:warn={o.dropPct > 0}>
+                  <span class="stat" style:color={elevated(o.dropPct, DROP_GRADE[0], DROP_GRADE[1])}>
                     drop {o.droppedFrames}
                     <span class="q">({o.dropPct.toFixed(1)}%)</span>
                   </span>
-                  <span class="stat">cong {o.congestionPct.toFixed(1)}%</span>
+                  <span class="stat" style:color={elevated(o.congestionPct, CONG_GRADE[0], CONG_GRADE[1])}>
+                    cong {o.congestionPct.toFixed(1)}%
+                  </span>
                   <span class="stat">{fmtDuration(o.durationMs)}</span>
+                  {#if isErr}
+                    <div class="err-cover">
+                      <Icon name="warn" size={12} />
+                      <span>Error</span>
+                    </div>
+                  {/if}
                 </div>
               </div>
             </li>
@@ -192,6 +290,15 @@
     </section>
   {/if}
 </div>
+
+{#if errorRow}
+  <Modal title={"Stream error · " + errorRow.profileLabel} onClose={() => (errorRow = null)} width={440}>
+    <div class="err-modal">
+      <div class="err-target">{errorRow.profileLabel} → {errorRow.canvasName}</div>
+      <p class="err-text">{errorDetail}</p>
+    </div>
+  </Modal>
+{/if}
 
 <style>
   .dock-body {
@@ -340,13 +447,27 @@
     gap: 4px;
   }
   .row {
+    position: relative;
     display: flex;
     align-items: stretch;
     gap: 8px;
     padding: 7px 9px 7px 8px;
     border: var(--border-weight) solid var(--color-border);
-    border-left: 2px solid var(--dot);
-    background: var(--color-base);
+    border-left: 3px solid var(--dot);
+    background: color-mix(in srgb, var(--dot) 7%, var(--color-base));
+  }
+  /* Errored rows are clickable (open the detail modal); the stronger border + hover
+     read as interactive without competing with the line2 overlay's loud signal. */
+  .row.err {
+    cursor: pointer;
+    border-color: color-mix(in srgb, var(--color-live) 55%, var(--color-border));
+  }
+  .row.err:hover {
+    background: color-mix(in srgb, var(--color-live) 14%, var(--color-base));
+  }
+  .row.err:focus-visible {
+    outline: var(--border-weight) solid var(--color-live);
+    outline-offset: 1px;
   }
   .dot {
     width: 7px;
@@ -394,6 +515,7 @@
     flex-shrink: 0;
   }
   .line2 {
+    position: relative;
     display: flex;
     flex-wrap: wrap;
     gap: 4px 10px;
@@ -410,7 +532,75 @@
   .stat .q {
     color: var(--color-muted);
   }
-  .stat.warn {
-    color: var(--meter-yellow);
+  /* Red-tinted, blurred cover over the (meaningless) error-state numbers; line1
+     stays visible so the user still sees which stream failed. */
+  .err-cover {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 4px;
+    color: var(--color-live);
+    background: color-mix(in srgb, var(--color-live) 22%, transparent);
+    backdrop-filter: blur(3px);
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  .summary {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px 12px;
+    padding: 6px 9px;
+    background: var(--color-surface);
+    border-bottom: var(--border-weight) solid var(--color-border);
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+  .sm {
+    display: flex;
+    align-items: baseline;
+    gap: 5px;
+  }
+  .sm-k {
+    font-size: 8.5px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--color-muted);
+  }
+  .sm-v {
+    font-size: 10px;
+    color: var(--color-dim);
+  }
+  .sm.err .sm-v {
+    color: var(--meter-red);
+  }
+
+  .err-modal {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .err-target {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    color: var(--color-muted);
+  }
+  .err-text {
+    margin: 0;
+    padding: 10px 11px;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--color-text);
+    background: var(--color-base);
+    border: var(--border-weight) solid var(--color-border);
+    border-left: 2px solid var(--color-live);
+    white-space: pre-wrap;
+    word-break: break-word;
   }
 </style>

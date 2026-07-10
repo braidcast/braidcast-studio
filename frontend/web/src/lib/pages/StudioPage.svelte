@@ -80,7 +80,6 @@ import { EV } from "../eventNames";
   let activeCanvasUuid = $derived(
     focusedCanvasUuid ?? canvases.find((c) => c.isDefault)?.uuid ?? canvases[0]?.uuid ?? null,
   );
-  let focusedOutputs = $derived(outputs.filter((o) => o.canvasUuid === activeCanvasUuid));
 
   // A focused canvas that was deleted/disabled would otherwise stick the GO-LIVE bar
   // on a non-existent canvas; drop the focus so it falls back to the Default canvas
@@ -92,12 +91,12 @@ import { EV } from "../eventNames";
     }
   });
 
-  // Live state across the FOCUSED canvas's outputs (shared reduction; drives the
-  // focus dot, live badge, button).
-  let liveState = $derived(multistreamStatusStore.deriveOutputsState(focusedOutputs));
+  // Live state across ALL outputs (shared reduction; drives the status dot + live
+  // badge). Global, not focused-canvas-scoped, so the elapsed-time badge shows
+  // whenever any canvas is streaming.
+  let liveState = $derived(multistreamStatusStore.deriveOutputsState(outputs));
   // Authoritative GLOBAL live flag for the GO LIVE button: streaming.changed
   // drives it, seeded once on mount from the initial multistream.status read.
-  // (The per-canvas focus dot / LIVE badge above still derive from focusedOutputs.)
   let anyRunning = $state(false);
 
   // Mock focusedDot: green when live, accent otherwise (connecting/error keep the
@@ -113,25 +112,13 @@ import { EV } from "../eventNames";
   );
 
   let focusedCanvas = $derived(canvases.find((c) => c.uuid === activeCanvasUuid) ?? null);
-  // Mock focusedLabel: "Name · WxH · fps".
-  let focusedLabel = $derived(
-    focusedCanvas
-      ? focusedCanvas.name +
-          " · " +
-          focusedCanvas.outputWidth +
-          "×" +
-          focusedCanvas.outputHeight +
-          " · " +
-          Math.round(focusedCanvas.fpsNum / focusedCanvas.fpsDen)
-      : "Default Canvas",
-  );
 
-  // Real elapsed for the live badge: the longest-running live output bound to the
-  // focused canvas (stats.outputs carry durationMs, joined by bindingUuid). Updates
-  // with the 1s stats poll.
+  // Real elapsed for the live badge: the longest-running live output across ALL
+  // canvases (stats.outputs carry durationMs, joined by bindingUuid). Updates with
+  // the 1s stats poll.
   let liveDurationMs = $derived.by<number>(() => {
     if (!stats) return 0;
-    const ids = new Set(focusedOutputs.filter((o) => o.state === "live").map((o) => o.bindingUuid));
+    const ids = new Set(outputs.filter((o) => o.state === "live").map((o) => o.bindingUuid));
     let max = 0;
     for (const o of stats.outputs) {
       if (ids.has(o.bindingUuid) && o.durationMs > max) max = o.durationMs;
@@ -775,7 +762,6 @@ import { EV } from "../eventNames";
   <div class="golive-bar">
     <div class="bb-left">
       <span class="focus-dot" style:background={focusDotColor}></span>
-      <span class="focus-name">{focusedLabel}</span>
       {#if liveState === "live"}
         <span class="livebadge"><span class="rec"></span>LIVE {fmtDuration(liveDurationMs, { fixed: true })}</span>
       {/if}
@@ -1165,13 +1151,6 @@ import { EV } from "../eventNames";
     width: 9px;
     height: 9px;
     flex: 0 0 auto;
-  }
-  .focus-name {
-    font-size: 14px;
-    font-weight: 600;
-    letter-spacing: -0.01em;
-    color: var(--color-text);
-    white-space: nowrap;
   }
   .livebadge {
     display: flex;
