@@ -1,5 +1,6 @@
 <script lang="ts">
   import { obs, type TransitionType, type TransitionState } from "../bridge";
+import { EV } from "../eventNames";
 
   // The active scene transition: a type dropdown + a duration (ms) field, wired
   // to transitionTypes.list / transitions.getCurrent / setCurrent / setDuration
@@ -32,7 +33,7 @@
         error = (e as Error).message;
       }
     })();
-    const offChanged = obs.on("transitions.changed", () => void refresh());
+    const offChanged = obs.on(EV.transitionsChanged, () => void refresh());
     return () => {
       offChanged();
     };

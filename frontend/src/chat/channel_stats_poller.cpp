@@ -1,4 +1,5 @@
 #include "channel_stats_poller.hpp"
+#include "../event_names.hpp"
 
 #include <chrono>
 #include <string>
@@ -31,7 +32,7 @@ const char *ChannelStatsPoller::LogTag() const
 
 const char *ChannelStatsPoller::EventName() const
 {
-	return "channels.stats";
+	return EventNames::kChannelsStats;
 }
 
 std::chrono::milliseconds ChannelStatsPoller::Interval(unsigned long long tick) const

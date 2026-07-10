@@ -1,4 +1,5 @@
 #include "window_manager.hpp"
+#include "event_names.hpp"
 
 #include "include/cef_browser.h"
 
@@ -235,7 +236,7 @@ LRESULT CALLBACK WindowManager::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPAR
 							     SWP_NOZORDER | SWP_NOACTIVATE);
 					}
 					if (wparam == SIZE_MAXIMIZED || wparam == SIZE_RESTORED) {
-						Bridge::EmitEvent("window.stateChanged",
+						Bridge::EmitEvent(EventNames::kWindowStateChanged,
 								  Bridge::json{{"windowId", w->windowId},
 									       {"maximized", wparam == SIZE_MAXIMIZED}});
 					}
@@ -273,7 +274,7 @@ LRESULT CALLBACK WindowManager::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPAR
 				// A user-driven OS close (not app shutdown) must return the dock to
 				// the main window, so broadcast the same lifecycle event Redock does.
 				if (announce) {
-					Bridge::EmitEvent("window.closed",
+					Bridge::EmitEvent(EventNames::kWindowClosed,
 							  Bridge::json{{"windowId", windowId}, {"dock", dockId}});
 				}
 			}

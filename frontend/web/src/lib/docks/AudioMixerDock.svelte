@@ -1,5 +1,6 @@
 <script lang="ts">
   import { obs, type AudioSource } from "../bridge";
+import { EV } from "../eventNames";
   import { openFilters } from "../filterDialogOpener.svelte";
   import { openAdvAudio } from "../advAudioOpener.svelte";
   import Icon from "../dock/Icon.svelte";
@@ -67,7 +68,7 @@
 
   $effect(() => {
     void load();
-    const offLevels = obs.on("audio.levels", (p) => {
+    const offLevels = obs.on(EV.audioLevels, (p) => {
       for (const l of p.levels) {
         const cur = latest.get(l.uuid);
         if (cur) {
@@ -79,7 +80,7 @@
       }
       scheduleFlush();
     });
-    const offChanged = obs.on("audio.changed", () => void load());
+    const offChanged = obs.on(EV.audioChanged, () => void load());
     return () => {
       offLevels();
       offChanged();

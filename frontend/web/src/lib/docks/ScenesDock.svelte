@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { obs, type SceneInfo } from "../bridge";
+import { EV } from "../eventNames";
   import { defaultCanvas } from "./defaultCanvasStore.svelte";
   import { canvasStore } from "../canvasStore.svelte";
   import { callOrToast } from "../callToast";
@@ -19,7 +20,7 @@
       .call("settings.getGeneral")
       .then((g) => (gridMode = g.scenesGridMode))
       .catch(() => {});
-    const offGeneral = obs.on("settings.generalChanged", (g) => (gridMode = g.scenesGridMode));
+    const offGeneral = obs.on(EV.settingsGeneralChanged, (g) => (gridMode = g.scenesGridMode));
     return () => offGeneral();
   });
 

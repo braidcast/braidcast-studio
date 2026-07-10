@@ -33,6 +33,7 @@
   import { undoStore } from "./lib/undoStore.svelte";
   import { channelsStore } from "./lib/channelsStore.svelte";
   import { obs } from "./lib/bridge";
+import { EV } from "./lib/eventNames";
   import { clipboard } from "./lib/clipboardStore.svelte";
   import { sourceSelection } from "./lib/sourceSelectionStore.svelte";
   import Toast from "./lib/Toast.svelte";
@@ -100,7 +101,7 @@
     const offChannels = channelsStore.init();
     window.addEventListener("keydown", onKeydown);
     // Surface every saved screenshot (program or source) as a transient toast.
-    const offShot = obs.on("screenshot.saved", (p) => {
+    const offShot = obs.on(EV.screenshotSaved, (p) => {
       const file = p.path.split(/[\\/]/).pop() || p.path;
       showToast("Screenshot saved: " + file, p.path);
     });

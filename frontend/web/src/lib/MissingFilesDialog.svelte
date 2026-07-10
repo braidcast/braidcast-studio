@@ -1,6 +1,7 @@
 <script lang="ts">
   import Modal from "./Modal.svelte";
   import { obs, type MissingFile } from "./bridge";
+import { EV } from "./eventNames";
 
   interface Props {
     onClose: () => void;
@@ -51,7 +52,7 @@
 
   // A relink mutates the scene; re-scan when anything changes externally too.
   $effect(() => {
-    return obs.on("scenes.changed", () => void load());
+    return obs.on(EV.scenesChanged, () => void load());
   });
 
   async function locate(row: MissingFile) {

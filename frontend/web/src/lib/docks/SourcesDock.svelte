@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { obs, type SceneItem, type ReorderDirection } from "../bridge";
+import { EV } from "../eventNames";
   import { defaultCanvas } from "./defaultCanvasStore.svelte";
   import AddSourceModal from "../AddSourceModal.svelte";
   import PropertyForm from "../properties/PropertyForm.svelte";
@@ -104,7 +105,7 @@
 
   // Reflect preview-driven selection (click in the overlay) back into the list.
   $effect(() => {
-    return obs.on("sceneItem.selected", (p) => {
+    return obs.on(EV.sceneItemSelected, (p) => {
       // Global channel-0 path: only the Default surface (canvas=null) drives this.
       if (p.canvas == null && (!p.scene || p.scene === currentScene)) {
         selectedItemId = p.id;
@@ -163,7 +164,7 @@
 
   // Refresh on item mutations targeting the global path (canvas=null) for our scene.
   $effect(() => {
-    return obs.on("sceneItems.changed", (p) => {
+    return obs.on(EV.sceneItemsChanged, (p) => {
       if (p.canvas == null && (!p.scene || p.scene === currentScene)) {
         void load();
       }

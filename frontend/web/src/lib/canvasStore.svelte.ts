@@ -6,6 +6,7 @@
 // reads the reactive `canvases` array. Mirrors defaultCanvasStore's lifecycle.
 
 import { obs } from "./bridge";
+import { EV } from "./eventNames";
 import type { CanvasInfo } from "./bridge";
 
 class CanvasStore {
@@ -27,11 +28,11 @@ class CanvasStore {
       return;
     }
     this.#started = true;
-    obs.on("canvas.changed", () => void this.refresh());
+    obs.on(EV.canvasChanged, () => void this.refresh());
     // Each CanvasInfo.enabled is AnyEnabledForCanvas(canvas) server-side, so a pure
     // binding toggle (outputBinding.changed, no canvas.changed) still flips a canvas's
     // enabled flag -- refresh on it too so `enabled` stays authoritative.
-    obs.on("outputBinding.changed", () => void this.refresh());
+    obs.on(EV.outputBindingChanged, () => void this.refresh());
     void this.refresh();
   }
 

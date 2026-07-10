@@ -1,5 +1,6 @@
 <script lang="ts">
   import { obs, type McpConfig, type McpSetConfigParams } from "../bridge";
+import { EV } from "../eventNames";
   import PageHeader from "../PageHeader.svelte";
 
   // MCP control page. Logic mirrors McpTab.svelte (load + mcp.changed subscription,
@@ -26,7 +27,7 @@
 
   $effect(() => {
     load();
-    const off = obs.on("mcp.changed", () => load());
+    const off = obs.on(EV.mcpChanged, () => load());
     return () => {
       off();
       if (copyTimer) {

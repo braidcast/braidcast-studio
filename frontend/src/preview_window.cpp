@@ -2,6 +2,7 @@
 // GetNextSibling that <windows.h> would otherwise macro-clobber. Include it (and
 // thus CEF) before any Windows header so CEF parses clean.
 #include "bridge.hpp"
+#include "event_names.hpp"
 
 #include "preview_window.hpp"
 
@@ -743,7 +744,7 @@ void EmitSelection(obs_canvas_t *targetCanvas, int64_t id)
 		{"id", id >= 0 ? json(id) : json(nullptr)},
 		{"canvas", canvasField},
 	};
-	Bridge::EmitEvent("sceneItem.selected", payload);
+	Bridge::EmitEvent(EventNames::kSceneItemSelected, payload);
 }
 
 // Emit preview.contextMenu for a right-click at device-px (mx,my) in the overlay
@@ -798,7 +799,7 @@ void EmitContextMenu(obs_canvas_t *targetCanvas, int windowId, obs_scene_t *scen
 		{"visible", visible},
 		{"locked", locked},
 	};
-	Bridge::EmitEvent("preview.contextMenu", payload);
+	Bridge::EmitEvent(EventNames::kPreviewContextMenu, payload);
 }
 
 // Draw callback: fired by libobs once per frame on the render thread. cx/cy are

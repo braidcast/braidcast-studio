@@ -1,4 +1,5 @@
 #include "obs_importer.hpp"
+#include "event_names.hpp"
 
 #include "bridge.hpp"
 #include "log.hpp"
@@ -768,16 +769,16 @@ json Import(const json &params)
 
 	// Emit only the events whose data actually changed so each window resyncs.
 	if (importedCollections > 0) {
-		Bridge::EmitEvent("collections.changed", json::object());
+		Bridge::EmitEvent(EventNames::kCollectionsChanged, json::object());
 	}
 	if (serviceImported) {
-		Bridge::EmitEvent("streamProfile.changed", json::object());
+		Bridge::EmitEvent(EventNames::kStreamProfileChanged, json::object());
 	}
 	if (videoImported) {
-		Bridge::EmitEvent("canvas.changed", json::object());
+		Bridge::EmitEvent(EventNames::kCanvasChanged, json::object());
 		obs_video_info applied = {};
 		if (obs_get_video_info(&applied)) {
-			Bridge::EmitEvent("settings.videoChanged",
+			Bridge::EmitEvent(EventNames::kSettingsVideoChanged,
 					  json{{"baseWidth", applied.base_width},
 					       {"baseHeight", applied.base_height},
 					       {"outputWidth", applied.output_width},
@@ -787,7 +788,7 @@ json Import(const json &params)
 		}
 	}
 	if (audioImported) {
-		Bridge::EmitEvent("settings.audioChanged", json::object());
+		Bridge::EmitEvent(EventNames::kSettingsAudioChanged, json::object());
 	}
 
 	HostLog("[importer] imported collections=" + std::to_string(importedCollections) +

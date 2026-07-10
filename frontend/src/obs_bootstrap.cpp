@@ -1,4 +1,5 @@
 #include "obs_bootstrap.hpp"
+#include "event_names.hpp"
 
 #include <obs.h>
 #include <obs-frontend-internal.hpp>
@@ -490,7 +491,7 @@ void ObsBootstrap::ApplyCanvasSceneLinks(const std::string &mainSceneUuid)
 		// Resolve the stored canvas-scene uuid -> its current name, then switch.
 		const std::string sceneName = runtime.SceneNameForUuid(canvasUuid, canvasSceneUuid);
 		if (!sceneName.empty() && runtime.SetCurrentScene(canvasUuid, sceneName)) {
-			Bridge::EmitEvent("scenes.changed", nlohmann::json{{"canvas", canvasUuid}});
+			Bridge::EmitEvent(EventNames::kScenesChanged, nlohmann::json{{"canvas", canvasUuid}});
 		}
 	}
 }

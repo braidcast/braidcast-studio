@@ -5,6 +5,7 @@
 // This singleton is the one source of truth; mirrors canvasStore's lifecycle.
 
 import { obs } from "./bridge";
+import { EV } from "./eventNames";
 import type { StreamProfileInfo } from "./bridge";
 
 class StreamProfileStore {
@@ -25,7 +26,7 @@ class StreamProfileStore {
       return;
     }
     this.#started = true;
-    obs.on("streamProfile.changed", () => void this.refresh());
+    obs.on(EV.streamProfileChanged, () => void this.refresh());
     void this.refresh();
   }
 

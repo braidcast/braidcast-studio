@@ -1,4 +1,5 @@
 #include "bridge.hpp"
+#include "event_names.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -170,7 +171,7 @@ void OnFrontendEvent(enum obs_frontend_event event, void * /*data*/)
 	if (!name) {
 		return;
 	}
-	EmitEvent("obs.event", json{{"event", name}});
+	EmitEvent(EventNames::kObsEvent, json{{"event", name}});
 }
 
 // Build the multistream status JSON array (one object per enabled binding) from
@@ -210,7 +211,7 @@ json UndoStateJson()
 // direct EmitEvent suffices.
 void EmitUndoChanged()
 {
-	EmitEvent("undo.changed", UndoStateJson());
+	EmitEvent(EventNames::kUndoChanged, UndoStateJson());
 }
 
 // --- method bodies ----------------------------------------------------------
@@ -272,7 +273,7 @@ bool MethodStreamingStart(const json & /*params*/, json &result, std::string & /
 	ObsBootstrap::Multistream().StartAllEnabled();
 	const bool active = ObsBootstrap::Multistream().AnyLive();
 	result = json{{"active", active}};
-	EmitEvent("streaming.changed", result);
+	EmitEvent(EventNames::kStreamingChanged, result);
 	// The viewer poller is live-only. The chat hub is already always-on (started on
 	// connect/boot), but re-Start() here so YouTube's chat transport picks up the
 	// liveChatId that exists only once the broadcast is live. Both Start()s are idempotent.
@@ -299,7 +300,7 @@ bool MethodStreamingStop(const json & /*params*/, json &result, std::string & /*
 	Chat::Hub().Start();
 	ObsBootstrap::Multistream().StopAll();
 	result = json{{"active", false}};
-	EmitEvent("streaming.changed", result);
+	EmitEvent(EventNames::kStreamingChanged, result);
 	return true;
 }
 
@@ -611,12 +612,12 @@ bool MethodSettingsSetVideo(const json &params, json &result, std::string &error
 			def->fpsNum = applied.fps_num;
 			def->fpsDen = applied.fps_den;
 			canvases.Save();
-			EmitEvent("canvas.changed", json::object());
+			EmitEvent(EventNames::kCanvasChanged, json::object());
 		}
 	}
 
 	result = VideoInfoToJson(applied);
-	EmitEvent("settings.videoChanged", result);
+	EmitEvent(EventNames::kSettingsVideoChanged, result);
 	HostLog("[bridge] settings.setVideo -> " + std::to_string(applied.base_width) + "x" +
 		std::to_string(applied.base_height) + " out " + std::to_string(applied.output_width) + "x" +
 		std::to_string(applied.output_height) + " @ " + std::to_string(applied.fps_num) + "/" +
@@ -683,7 +684,7 @@ bool MethodSettingsSetGeneral(const json &params, json &result, std::string &err
 	}
 
 	result = GeneralToJson(g);
-	EmitEvent("settings.generalChanged", result);
+	EmitEvent(EventNames::kSettingsGeneralChanged, result);
 	return true;
 }
 
@@ -771,7 +772,7 @@ bool MethodSettingsSetAdvanced(const json &params, json &result, std::string &er
 	}
 
 	result = AdvancedToJson(a);
-	EmitEvent("settings.advancedChanged", result);
+	EmitEvent(EventNames::kSettingsAdvancedChanged, result);
 	return true;
 }
 
@@ -878,7 +879,7 @@ bool MethodSettingsSetAudio(const json &params, json &result, std::string &error
 		 json{{"id", monId ? std::string(monId) : std::string("default")},
 		      {"name", monName ? std::string(monName) : std::string("Default")}}},
 	};
-	EmitEvent("settings.audioChanged", result);
+	EmitEvent(EventNames::kSettingsAudioChanged, result);
 	HostLog("[bridge] settings.setAudio -> " + std::to_string(applied.samples_per_sec) + "Hz " +
 		SpeakerLayoutName(applied.speakers));
 	return true;
@@ -1066,7 +1067,7 @@ bool MethodPreviewSelect(const json &params, json &result, std::string &error)
 // global path) so a per-canvas panel filters to its own canvas's scene list.
 void EmitScenesChanged(const std::string &canvasUuid)
 {
-	EmitEvent("scenes.changed", json{{"canvas", canvasUuid.empty() ? json(nullptr) : json(canvasUuid)}});
+	EmitEvent(EventNames::kScenesChanged, json{{"canvas", canvasUuid.empty() ? json(nullptr) : json(canvasUuid)}});
 }
 
 bool MethodScenesList(const json &params, json &result, std::string &error)
@@ -1252,7 +1253,7 @@ bool MethodSceneLinkSet(const json &params, json &result, std::string &error)
 		}
 	}
 
-	EmitEvent("sceneLink.changed", json::object());
+	EmitEvent(EventNames::kSceneLinkChanged, json::object());
 	result = json::object();
 	return true;
 }
@@ -1277,7 +1278,7 @@ bool MethodSceneLinkClear(const json &params, json &result, std::string &error)
 		}
 		ObsBootstrap::SceneLinks().Save();
 	}
-	EmitEvent("sceneLink.changed", json::object());
+	EmitEvent(EventNames::kSceneLinkChanged, json::object());
 	result = json::object();
 	return true;
 }
@@ -1777,7 +1778,7 @@ bool MethodScenesReorder(const json &params, json & /*result*/, std::string &err
 void EmitSceneItemsChanged(obs_source_t *sceneSource, const std::string &canvasUuid)
 {
 	const char *name = sceneSource ? obs_source_get_name(sceneSource) : nullptr;
-	EmitEvent("sceneItems.changed",
+	EmitEvent(EventNames::kSceneItemsChanged,
 		  json{{"scene", name ? json(name) : json(nullptr)},
 		       {"canvas", canvasUuid.empty() ? json(nullptr) : json(canvasUuid)}});
 }
@@ -3930,7 +3931,7 @@ const PropertyKind kPropertyKinds[] = {
 			// (same instance the def holds), then persist + announce.
 			obs_data_apply(ctx->settings, settings);
 			ObsBootstrap::Canvases().Save();
-			EmitEvent("canvas.changed", json::object());
+			EmitEvent(EventNames::kCanvasChanged, json::object());
 		},
 		[](void *obj) { delete static_cast<EncoderRefCtx *>(obj); },
 	},
@@ -3955,7 +3956,7 @@ const PropertyKind kPropertyKinds[] = {
 			obs_data_apply(ctx->settings, settings);
 			obs_service_update(ctx->service.Get(), settings);
 			ObsBootstrap::StreamProfiles().Save();
-			EmitEvent("streamProfile.changed", json::object());
+			EmitEvent(EventNames::kStreamProfileChanged, json::object());
 		},
 		[](void *obj) { delete static_cast<ServiceRefCtx *>(obj); },
 	},
@@ -5131,7 +5132,7 @@ bool MethodCanvasCreate(const json &params, json &result, std::string &error)
 	ObsBootstrap::CanvasRuntime().EnsureCanvas(added);
 	ObsBootstrap::CanvasRuntime().EnsureScenes(); // seed the new canvas with a default scene (Task-1 decoupled seeding from EnsureCanvas)
 
-	EmitEvent("canvas.changed", json::object());
+	EmitEvent(EventNames::kCanvasChanged, json::object());
 	result = json{{"uuid", uuid}};
 	return true;
 }
@@ -5183,7 +5184,7 @@ bool MethodCanvasUpdate(const json &params, json &result, std::string &error)
 		return false;
 	}
 
-	EmitEvent("canvas.changed", json::object());
+	EmitEvent(EventNames::kCanvasChanged, json::object());
 	result = CanvasToJson(*r.def);
 	return true;
 }
@@ -5228,7 +5229,7 @@ bool MethodCanvasRemove(const json &params, json &result, std::string &error)
 	store.Remove(uuid);
 	store.Save();
 	ObsBootstrap::PruneSceneLinksForCanvas(uuid);
-	EmitEvent("canvas.changed", json::object());
+	EmitEvent(EventNames::kCanvasChanged, json::object());
 	result = json{{"removed", uuid}};
 	return true;
 }
@@ -5378,7 +5379,7 @@ bool MethodStreamProfileCreate(const json &params, json &result, std::string &er
 	const std::string uuid = store.Add(std::move(p)).uuid;
 	store.Save();
 
-	EmitEvent("streamProfile.changed", json::object());
+	EmitEvent(EventNames::kStreamProfileChanged, json::object());
 	result = json{{"uuid", uuid}};
 	return true;
 }
@@ -5436,7 +5437,7 @@ bool MethodStreamProfileUpdate(const json &params, json &result, std::string &er
 	p->settings = std::move(candidate.settings);
 	store.Save();
 
-	EmitEvent("streamProfile.changed", json::object());
+	EmitEvent(EventNames::kStreamProfileChanged, json::object());
 	result = StreamProfileToJson(*p);
 	return true;
 }
@@ -5461,10 +5462,10 @@ bool MethodStreamProfileRemove(const json &params, json &result, std::string &er
 	// collection is pruned in memory; other collections keep the "(deleted)" label
 	// until they load (see PruneOutputBindingsForProfile).
 	if (ObsBootstrap::PruneOutputBindingsForProfile(uuid) > 0) {
-		EmitEvent("outputBinding.changed", json::object());
+		EmitEvent(EventNames::kOutputBindingChanged, json::object());
 	}
 
-	EmitEvent("streamProfile.changed", json::object());
+	EmitEvent(EventNames::kStreamProfileChanged, json::object());
 	result = json{{"removed", uuid}};
 	return true;
 }
@@ -5482,7 +5483,7 @@ bool MethodStreamProfileSetPrimary(const json &params, json &result, std::string
 	}
 	store.Save();
 
-	EmitEvent("streamProfile.changed", json::object());
+	EmitEvent(EventNames::kStreamProfileChanged, json::object());
 	result = json{{"uuid", uuid}, {"isPrimary", true}};
 	return true;
 }
@@ -5590,7 +5591,7 @@ bool MethodOutputBindingCreate(const json &params, json &result, std::string &er
 	const std::string uuid = created.uuid;
 	ObsBootstrap::OutputBindings().Save();
 
-	EmitEvent("outputBinding.changed", json::object());
+	EmitEvent(EventNames::kOutputBindingChanged, json::object());
 	result = json{{"uuid", uuid}};
 	return true;
 }
@@ -5643,7 +5644,7 @@ bool MethodOutputBindingUpdate(const json &params, json &result, std::string &er
 	b->canvasUuid = newCanvas;
 	ObsBootstrap::OutputBindings().Save();
 
-	EmitEvent("outputBinding.changed", json::object());
+	EmitEvent(EventNames::kOutputBindingChanged, json::object());
 	result = OutputBindingToJson(*b);
 	return true;
 }
@@ -5671,7 +5672,7 @@ bool MethodOutputBindingSetEnabled(const json &params, json &result, std::string
 
 	// outputBinding.changed is also the hook 4.4.4/4.4.5 use to re-decide whether a
 	// canvas renders (AnyEnabledForCanvas may have flipped on this toggle).
-	EmitEvent("outputBinding.changed", json::object());
+	EmitEvent(EventNames::kOutputBindingChanged, json::object());
 	result = json{{"uuid", uuid}, {"enabled", enabled}};
 	return true;
 }
@@ -5690,7 +5691,7 @@ bool MethodOutputBindingRemove(const json &params, json &result, std::string &er
 	bindings.Remove(uuid);
 	ObsBootstrap::OutputBindings().Save();
 
-	EmitEvent("outputBinding.changed", json::object());
+	EmitEvent(EventNames::kOutputBindingChanged, json::object());
 	result = json{{"removed", uuid}};
 	return true;
 }
@@ -6054,7 +6055,7 @@ bool MethodAudioSetAdvanced(const json &params, json &result, std::string &error
 	}
 
 	result = BuildAdvancedAudio(s);
-	EmitEvent("audio.changed", json::object());
+	EmitEvent(EventNames::kAudioChanged, json::object());
 	return true;
 }
 
@@ -6318,7 +6319,7 @@ bool MethodAudioSetGlobalDevice(const json &params, json &result, std::string &e
 	}
 	audio.Persist();
 	ObsBootstrap::AudioMonitor().Rebuild();
-	EmitEvent("audio.changed", json::object());
+	EmitEvent(EventNames::kAudioChanged, json::object());
 
 	result = json{{"channel", channel}, {"deviceId", deviceId.empty() ? json(nullptr) : json(deviceId)}};
 	return true;
@@ -6400,7 +6401,7 @@ bool MethodTransitionsSetCurrent(const json &params, json &result, std::string &
 	uint32_t durationMs = 0;
 	Transitions::Current(curId, curName, durationMs);
 	result = json{{"id", curId}, {"name", curName}};
-	EmitEvent("transitions.changed", json::object());
+	EmitEvent(EventNames::kTransitionsChanged, json::object());
 	return true;
 }
 
@@ -6427,7 +6428,7 @@ bool MethodTransitionsSetDuration(const json &params, json &result, std::string 
 	}
 	Transitions::SetDuration(static_cast<uint32_t>(ms));
 	result = json{{"durationMs", static_cast<uint32_t>(ms)}};
-	EmitEvent("transitions.changed", json::object());
+	EmitEvent(EventNames::kTransitionsChanged, json::object());
 	return true;
 }
 
@@ -6495,7 +6496,7 @@ bool MethodWindowDetach(const json &params, json &result, std::string &error)
 		error = "failed to create detached window";
 		return false;
 	}
-	EmitEvent("window.opened", json{{"windowId", windowId}, {"dock", dock}});
+	EmitEvent(EventNames::kWindowOpened, json{{"windowId", windowId}, {"dock", dock}});
 	HostLog("[bridge] window.detach -> ok id=" + std::to_string(windowId) + " dock=" + dock);
 	result = json{{"windowId", windowId}};
 	return true;
@@ -6526,7 +6527,7 @@ bool MethodWindowRedock(const json &params, json &result, std::string &error)
 		error = "no detached window with id " + std::to_string(windowId);
 		return false;
 	}
-	EmitEvent("window.closed", json{{"windowId", windowId}, {"dock", dock}});
+	EmitEvent(EventNames::kWindowClosed, json{{"windowId", windowId}, {"dock", dock}});
 	HostLog("[bridge] window.redock -> ok id=" + std::to_string(windowId));
 	result = json{{"redocked", windowId}};
 	return true;
@@ -6835,7 +6836,7 @@ bool MethodProjectorOpen(const json &params, json &result, std::string &error)
 		return false;
 	}
 
-	EmitEvent("projector.changed", json{{"opened", id}});
+	EmitEvent(EventNames::kProjectorChanged, json{{"opened", id}});
 	HostLog("[bridge] projector.open -> ok id=" + std::to_string(id) + " kind=" + KindToString(kind) + " mode=" +
 		mode);
 	result = json{{"projectorId", id}};
@@ -6855,7 +6856,7 @@ bool MethodProjectorClose(const json &params, json &result, std::string &error)
 	}
 	const int id = params["projectorId"].get<int>();
 	const bool closed = pm->Close(id);
-	EmitEvent("projector.changed", json{{"closed", id}});
+	EmitEvent(EventNames::kProjectorChanged, json{{"closed", id}});
 	HostLog("[bridge] projector.close id=" + std::to_string(id) + " -> " + (closed ? "ok" : "not found"));
 	result = json{{"closed", closed}};
 	return true;
@@ -6963,7 +6964,7 @@ bool MethodMcpSetConfig(const json &params, json &result, std::string &error)
 		      {"listening", v.listening},
 		      {"lastError", v.lastError},
 		      {"endpoint", v.endpoint}};
-	EmitEvent("mcp.changed", json::object());
+	EmitEvent(EventNames::kMcpChanged, json::object());
 	return true;
 }
 
@@ -6976,7 +6977,7 @@ bool MethodMcpRegenerateToken(const json &, json &result, std::string &error)
 	}
 	const std::string token = server->RegenerateToken();
 	result = json{{"token", token}};
-	EmitEvent("mcp.changed", json::object());
+	EmitEvent(EventNames::kMcpChanged, json::object());
 	return true;
 }
 
@@ -7168,11 +7169,11 @@ bool MethodSettingsRestore(const json &params, json &result, std::string &error)
 		MethodMcpSetConfig(params["mcp"], r, e);
 	}
 
-	EmitEvent("canvas.changed", json::object());
-	EmitEvent("streamProfile.changed", json::object());
-	EmitEvent("outputBinding.changed", json::object());
-	EmitEvent("multistream.changed", json{{"outputs", BuildStatusArray()}});
-	EmitEvent("mcp.changed", json::object());
+	EmitEvent(EventNames::kCanvasChanged, json::object());
+	EmitEvent(EventNames::kStreamProfileChanged, json::object());
+	EmitEvent(EventNames::kOutputBindingChanged, json::object());
+	EmitEvent(EventNames::kMultistreamChanged, json{{"outputs", BuildStatusArray()}});
+	EmitEvent(EventNames::kMcpChanged, json::object());
 	result = json{{"ok", true}};
 	return true;
 }
@@ -7208,7 +7209,7 @@ bool MethodCollectionsCreate(const json &params, json &result, std::string &erro
 	}
 	const SceneCollectionRecord &added = ObsBootstrap::SceneCollections().Create(name);
 	result = json{{"id", added.id}};
-	EmitEvent("collections.changed", json::object());
+	EmitEvent(EventNames::kCollectionsChanged, json::object());
 	return true;
 }
 
@@ -7231,7 +7232,7 @@ bool MethodCollectionsRename(const json &params, json &result, std::string &erro
 		return false;
 	}
 	result = json{{"id", id}, {"name", name}};
-	EmitEvent("collections.changed", json::object());
+	EmitEvent(EventNames::kCollectionsChanged, json::object());
 	return true;
 }
 
@@ -7263,7 +7264,7 @@ bool MethodCollectionsDuplicate(const json &params, json &result, std::string &e
 		return false;
 	}
 	result = json{{"id", added->id}, {"name", added->name}};
-	EmitEvent("collections.changed", json::object());
+	EmitEvent(EventNames::kCollectionsChanged, json::object());
 	return true;
 }
 
@@ -7299,7 +7300,7 @@ bool MethodCollectionsRemove(const json &params, json &result, std::string &erro
 		return false;
 	}
 	result = json{{"removed", id}};
-	EmitEvent("collections.changed", json::object());
+	EmitEvent(EventNames::kCollectionsChanged, json::object());
 	return true;
 }
 
@@ -7725,7 +7726,7 @@ bool MethodScreenshotTakeProgram(const json &params, json &result, std::string &
 	}
 
 	blog(LOG_INFO, "Saved program screenshot to '%s'", fullPath.c_str());
-	EmitEvent("screenshot.saved", json{{"path", fullPath}});
+	EmitEvent(EventNames::kScreenshotSaved, json{{"path", fullPath}});
 	result = json{{"ok", true}, {"path", fullPath}};
 	return true;
 }
@@ -7781,7 +7782,7 @@ bool MethodScreenshotTakeSource(const json &params, json &result, std::string &e
 	}
 
 	blog(LOG_INFO, "Saved source screenshot to '%s'", fullPath.c_str());
-	EmitEvent("screenshot.saved", json{{"path", fullPath}});
+	EmitEvent(EventNames::kScreenshotSaved, json{{"path", fullPath}});
 	result = json{{"ok", true}, {"path", fullPath}};
 	return true;
 }
@@ -7848,13 +7849,13 @@ json BuildOAuthStatusArray()
 
 void EmitOAuthStatus()
 {
-	AsyncTask::PostToUi([] { EmitEvent("oauth.status", BuildOAuthStatusArray()); });
+	AsyncTask::PostToUi([] { EmitEvent(EventNames::kOauthStatus, BuildOAuthStatusArray()); });
 }
 
 void EmitOAuthConnectError(const std::string &profileUuid, const std::string &providerId, const std::string &message)
 {
 	AsyncTask::PostToUi([profileUuid, providerId, message] {
-		EmitEvent("oauth.connectError",
+		EmitEvent(EventNames::kOauthConnectError,
 			  json{{"profileUuid", profileUuid}, {"providerId", providerId}, {"error", message}});
 	});
 }
@@ -7908,7 +7909,7 @@ try {
 		AsyncTask::PostToUi([profileUuid, providerId, p, openUrl] {
 			json event = json{{"profileUuid", profileUuid}, {"providerId", providerId}};
 			event.update(p);
-			EmitEvent("oauth.connectProgress", event);
+			EmitEvent(EventNames::kOauthConnectProgress, event);
 			if (!openUrl.empty()) {
 				OpenUrlInBrowser(openUrl);
 			}
@@ -7970,7 +7971,7 @@ try {
 		}
 		p->accountId = accountId;
 		ObsBootstrap::StreamProfiles().Save();
-		EmitEvent("streamProfile.changed", json::object());
+		EmitEvent(EventNames::kStreamProfileChanged, json::object());
 	});
 
 	EmitOAuthStatus();
@@ -8003,7 +8004,7 @@ try {
 				obs_data_set_string(p->settings, "server", "auto");
 			}
 			ObsBootstrap::StreamProfiles().Save();
-			EmitEvent("streamProfile.changed", json::object());
+			EmitEvent(EventNames::kStreamProfileChanged, json::object());
 		});
 	}
 } catch (const std::exception &e) {
@@ -8095,8 +8096,8 @@ bool MethodOAuthDisconnect(const json &params, json &result, std::string &error)
 		}
 	}
 	ObsBootstrap::StreamProfiles().Save();
-	EmitEvent("streamProfile.changed", json::object());
-	EmitEvent("oauth.status", BuildOAuthStatusArray());
+	EmitEvent(EventNames::kStreamProfileChanged, json::object());
+	EmitEvent(EventNames::kOauthStatus, BuildOAuthStatusArray());
 	result = json{{"ok", true}};
 	return true;
 }
@@ -8149,7 +8150,7 @@ bool MethodOAuthLinkAccount(const json &params, json &result, std::string &error
 	}
 	p->accountId = accountId;
 	ObsBootstrap::StreamProfiles().Save();
-	EmitEvent("streamProfile.changed", json::object());
+	EmitEvent(EventNames::kStreamProfileChanged, json::object());
 	result = json{{"ok", true}};
 	return true;
 }
@@ -8320,7 +8321,7 @@ bool MethodStreamMetaSet(const json &params, json &result, std::string &error)
 		error = err;
 		return false;
 	}
-	EmitEvent("streamMeta.changed", json{{"profileUuid", profileUuid}});
+	EmitEvent(EventNames::kStreamMetaChanged, json{{"profileUuid", profileUuid}});
 	result = json{{"ok", true}};
 	return true;
 }
@@ -8442,7 +8443,7 @@ bool MethodEventsList(const json & /*params*/, json &result, std::string & /*err
 bool MethodEventsClear(const json & /*params*/, json &result, std::string & /*error*/)
 {
 	Events::Store().Clear();
-	EmitEvent("events.backfill", json::array());
+	EmitEvent(EventNames::kEventsBackfill, json::array());
 	result = json{{"ok", true}};
 	return true;
 }
@@ -8534,7 +8535,7 @@ bool MethodOverlaysCreate(const json &p, json &result, std::string & /*error*/)
 	Overlay::Widget w = Overlay::Store().Create(name.empty() ? "New Overlay" : name, type);
 	result = w.ToJson();
 	result["url"] = Overlay::WidgetUrl(w, Overlay::Store().Port());
-	EmitEvent("overlays.changed", json::object());
+	EmitEvent(EventNames::kOverlaysChanged, json::object());
 	return true;
 }
 
@@ -8545,7 +8546,7 @@ bool MethodOverlaysUpdate(const json &p, json &result, std::string &error)
 		error = "no such overlay: " + id;
 		return false;
 	}
-	EmitEvent("overlays.changed", json::object());
+	EmitEvent(EventNames::kOverlaysChanged, json::object());
 	result = json{{"ok", true}};
 	return true;
 }
@@ -8560,7 +8561,7 @@ bool MethodOverlaysDuplicate(const json &p, json &result, std::string &error)
 	}
 	result = w->ToJson();
 	result["url"] = Overlay::WidgetUrl(*w, Overlay::Store().Port());
-	EmitEvent("overlays.changed", json::object());
+	EmitEvent(EventNames::kOverlaysChanged, json::object());
 	return true;
 }
 
@@ -8571,7 +8572,7 @@ bool MethodOverlaysDelete(const json &p, json &result, std::string &error)
 		error = "no such overlay: " + id;
 		return false;
 	}
-	EmitEvent("overlays.changed", json::object());
+	EmitEvent(EventNames::kOverlaysChanged, json::object());
 	result = json{{"removed", id}};
 	return true;
 }
@@ -9224,7 +9225,7 @@ void EmitMultistreamChanged()
 	if (!ObsBootstrap::MultistreamAlive()) {
 		return;
 	}
-	EmitEvent("multistream.changed", json{{"outputs", BuildStatusArray()}});
+	EmitEvent(EventNames::kMultistreamChanged, json{{"outputs", BuildStatusArray()}});
 }
 
 void EmitVirtualCamChanged()
@@ -9236,7 +9237,7 @@ void EmitVirtualCamChanged()
 		CefPostTask(TID_UI, base::BindOnce(&EmitVirtualCamChanged));
 		return;
 	}
-	EmitEvent("virtualCam.changed", VirtualCamStatusJson());
+	EmitEvent(EventNames::kVirtualCamChanged, VirtualCamStatusJson());
 }
 
 void EmitAudioLevels()
@@ -9280,12 +9281,12 @@ void EmitAudioLevels()
 		arr.push_back(json{{"uuid", uuid}, {"magnitude", level.magnitude}, {"peak", level.peak}});
 	}
 	lastEmitNs = now;
-	EmitEvent("audio.levels", json{{"levels", std::move(arr)}});
+	EmitEvent(EventNames::kAudioLevels, json{{"levels", std::move(arr)}});
 }
 
 void EmitAudioChanged()
 {
-	EmitEvent("audio.changed", json::object());
+	EmitEvent(EventNames::kAudioChanged, json::object());
 }
 
 } // namespace Bridge

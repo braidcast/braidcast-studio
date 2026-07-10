@@ -1,4 +1,5 @@
 import { obs, type CanvasInfo } from "../bridge";
+import { EV } from "../eventNames";
 import type { DockviewApi } from "dockview-core";
 import { SIDE_DOCK_WIDTH } from "./dockRegistry";
 
@@ -92,8 +93,8 @@ export async function reconcileCanvasDocks(api: DockviewApi): Promise<void> {
 
 export function startCanvasDockReconciler(api: DockviewApi): () => void {
   void reconcileCanvasDocks(api);
-  const offCanvas = obs.on("canvas.changed", () => void reconcileCanvasDocks(api));
-  const offBindings = obs.on("outputBinding.changed", () => void reconcileCanvasDocks(api));
+  const offCanvas = obs.on(EV.canvasChanged, () => void reconcileCanvasDocks(api));
+  const offBindings = obs.on(EV.outputBindingChanged, () => void reconcileCanvasDocks(api));
   return () => {
     offCanvas();
     offBindings();

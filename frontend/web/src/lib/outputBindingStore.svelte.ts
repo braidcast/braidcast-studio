@@ -4,6 +4,7 @@
 // This singleton is the one source of truth; mirrors canvasStore's lifecycle.
 
 import { obs } from "./bridge";
+import { EV } from "./eventNames";
 import type { OutputBindingInfo } from "./bridge";
 
 // Sentinel profileLabel values the host emits for a binding with no profile, or one
@@ -41,7 +42,7 @@ class OutputBindingStore {
       return;
     }
     this.#started = true;
-    obs.on("outputBinding.changed", () => void this.refresh());
+    obs.on(EV.outputBindingChanged, () => void this.refresh());
     void this.refresh();
   }
 

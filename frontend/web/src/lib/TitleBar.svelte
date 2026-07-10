@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { obs } from "./bridge";
+import { EV } from "./eventNames";
   import Icon from "./dock/Icon.svelte";
   import { WINDOW_ID } from "./windowContext";
 
@@ -17,7 +18,7 @@
   // The native host pushes window.stateChanged on maximize/restore so the glyph can
   // toggle; each window filters to its own id (main = 0).
   onMount(() =>
-    obs.on("window.stateChanged", (p) => {
+    obs.on(EV.windowStateChanged, (p) => {
       if (p.windowId === WINDOW_ID) maximized = p.maximized;
     }),
   );

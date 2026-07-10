@@ -1,4 +1,5 @@
 #include "scene_collections.hpp"
+#include "event_names.hpp"
 
 #include "bridge.hpp"
 #include "log.hpp"
@@ -378,11 +379,11 @@ bool SceneCollections::Switch(const std::string &id, std::string &error)
 	// Resync every window: the active collection, its scene list, and the transition
 	// (re-created above) all changed; the bindings swap re-decides preview-gating
 	// (outputBinding.changed) and refreshes the Multistream dock (multistream.changed).
-	Bridge::EmitEvent("collections.changed", nlohmann::json::object());
-	Bridge::EmitEvent("scenes.changed", nlohmann::json{{"canvas", nullptr}});
-	Bridge::EmitEvent("transitions.changed", nlohmann::json::object());
-	Bridge::EmitEvent("outputBinding.changed", nlohmann::json::object());
-	Bridge::EmitEvent("sceneLink.changed", nlohmann::json::object());
+	Bridge::EmitEvent(EventNames::kCollectionsChanged, nlohmann::json::object());
+	Bridge::EmitEvent(EventNames::kScenesChanged, nlohmann::json{{"canvas", nullptr}});
+	Bridge::EmitEvent(EventNames::kTransitionsChanged, nlohmann::json::object());
+	Bridge::EmitEvent(EventNames::kOutputBindingChanged, nlohmann::json::object());
+	Bridge::EmitEvent(EventNames::kSceneLinkChanged, nlohmann::json::object());
 	Bridge::EmitMultistreamChanged();
 
 	HostLog("[scene] switched to collection '" + it->name + "' file=" + ActiveScenePath());

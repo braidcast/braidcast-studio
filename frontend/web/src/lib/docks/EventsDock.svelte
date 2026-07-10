@@ -1,5 +1,6 @@
 <script lang="ts">
   import { obs, type NormalizedEvent, type ChatPlatform, type EventType } from "../bridge";
+import { EV } from "../eventNames";
   import {
     PLATFORM_COLORS,
     PLATFORM_LABELS,
@@ -128,8 +129,8 @@
       // oldest->newest (top->bottom) to match the enqueue-at-bottom order.
       .then((list) => feed.setFeed(list, true))
       .catch(() => {});
-    const offNew = obs.on("events.new", (e) => feed.enqueue(e));
-    const offBackfill = obs.on("events.backfill", (batch) => feed.setFeed(batch, true));
+    const offNew = obs.on(EV.eventsNew, (e) => feed.enqueue(e));
+    const offBackfill = obs.on(EV.eventsBackfill, (batch) => feed.setFeed(batch, true));
     return () => {
       offNew();
       offBackfill();

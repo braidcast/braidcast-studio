@@ -8,6 +8,7 @@
   // push keep the list in sync.
   import { onMount, onDestroy } from "svelte";
   import { obs, type OverlayListItem, type OverlayWidget, type OverlayField } from "../bridge";
+import { EV } from "../eventNames";
   import CodePane from "../overlays/CodePane.svelte";
   import FieldsDesigner from "../overlays/FieldsDesigner.svelte";
   import PreviewPane from "../overlays/PreviewPane.svelte";
@@ -261,7 +262,7 @@
         serverDown = s ? !s.listening : false;
       })
       .catch(() => {});
-    return obs.on("overlays.changed", onOverlaysChanged);
+    return obs.on(EV.overlaysChanged, onOverlaysChanged);
   });
 
   onDestroy(() => {

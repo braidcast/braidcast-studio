@@ -1,4 +1,5 @@
 #include "Hotkeys.hpp"
+#include "../event_names.hpp"
 
 #include "StorePaths.hpp"
 #include "bridge.hpp"
@@ -212,7 +213,7 @@ void OnStartStreaming(void * /*data*/, obs_hotkey_id /*id*/, obs_hotkey_t * /*ho
 		return;
 	}
 	ObsBootstrap::Multistream().StartAllEnabled();
-	Bridge::EmitEvent("streaming.changed", json{{"active", ObsBootstrap::Multistream().AnyLive()}});
+	Bridge::EmitEvent(EventNames::kStreamingChanged, json{{"active", ObsBootstrap::Multistream().AnyLive()}});
 }
 
 void OnStopStreaming(void * /*data*/, obs_hotkey_id /*id*/, obs_hotkey_t * /*hotkey*/, bool pressed)
@@ -221,7 +222,7 @@ void OnStopStreaming(void * /*data*/, obs_hotkey_id /*id*/, obs_hotkey_t * /*hot
 		return;
 	}
 	ObsBootstrap::Multistream().StopAll();
-	Bridge::EmitEvent("streaming.changed", json{{"active", false}});
+	Bridge::EmitEvent(EventNames::kStreamingChanged, json{{"active", false}});
 }
 
 } // namespace
@@ -370,7 +371,7 @@ void RestoreFromSnapshot(const json &snap)
 		&ctx);
 
 	Save();
-	Bridge::EmitEvent("hotkeys.changed", json::object());
+	Bridge::EmitEvent(EventNames::kHotkeysChanged, json::object());
 }
 
 bool MethodList(const json & /*params*/, json &result, std::string & /*error*/)
@@ -454,7 +455,7 @@ bool MethodSet(const json &params, json &result, std::string &error)
 	Save();
 
 	result = json{{"bindings", BindingsArray(id)}};
-	Bridge::EmitEvent("hotkeys.changed", json::object());
+	Bridge::EmitEvent(EventNames::kHotkeysChanged, json::object());
 	return true;
 }
 
@@ -467,7 +468,7 @@ bool MethodClear(const json &params, json &result, std::string &error)
 	obs_hotkey_load_bindings(id, nullptr, 0);
 	Save();
 	result = json{{"bindings", json::array()}};
-	Bridge::EmitEvent("hotkeys.changed", json::object());
+	Bridge::EmitEvent(EventNames::kHotkeysChanged, json::object());
 	return true;
 }
 

@@ -1,4 +1,5 @@
 #include <obs.h>
+#include "event_names.hpp"
 
 #include <windows.h>
 
@@ -123,7 +124,7 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 		// Reflect maximize/restore so the web title bar's glyph can toggle. Main
 		// window is windowId 0.
 		if (wparam == SIZE_MAXIMIZED || wparam == SIZE_RESTORED) {
-			Bridge::EmitEvent("window.stateChanged",
+			Bridge::EmitEvent(EventNames::kWindowStateChanged,
 					  Bridge::json{{"windowId", 0}, {"maximized", wparam == SIZE_MAXIMIZED}});
 		}
 		return 0;

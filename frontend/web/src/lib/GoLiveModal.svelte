@@ -7,6 +7,7 @@
     type OutputBindingInfo,
     type StreamProfileInfo,
   } from "./bridge";
+import { EV } from "./eventNames";
   import { goLiveModal, closeGoLiveModal } from "./goLiveModalOpener.svelte";
   import { openOAuthConnect } from "./oauthConnectOpener.svelte";
   import { outputBindingStore } from "./outputBindingStore.svelte";
@@ -445,7 +446,7 @@
       loaded = true;
       void prefill();
     });
-    const off = obs.on("streaming.changed", (p) => (isLive = p.active));
+    const off = obs.on(EV.streamingChanged, (p) => (isLive = p.active));
     return () => {
       active = false;
       offOauth();

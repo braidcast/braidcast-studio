@@ -1,6 +1,7 @@
 <script lang="ts">
   import Modal from "./Modal.svelte";
   import { obs, type AdvancedAudio, type AudioMonitoringType } from "./bridge";
+import { EV } from "./eventNames";
 
   interface Props {
     source: string;
@@ -47,7 +48,7 @@
 
   // Reload on external edits (the source may be edited elsewhere, e.g. the mixer).
   $effect(() => {
-    return obs.on("audio.changed", () => void load());
+    return obs.on(EV.audioChanged, () => void load());
   });
 
   // Apply a partial: optimistic local merge, then reconcile from the authoritative

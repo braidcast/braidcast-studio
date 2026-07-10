@@ -8,6 +8,7 @@
     type MultistreamState,
     type SceneLinkInfo,
   } from "../bridge";
+import { EV } from "../eventNames";
   import { setPage } from "../pageStore.svelte";
   import { previewSuspended, suspendPreview } from "../previewGate.svelte";
 import { dockLayout } from "../dockLayoutSignal.svelte";
@@ -737,24 +738,24 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
     window.addEventListener("scroll", scheduleRect, true);
 
     // This canvas's own scene/item events carry its uuid.
-    const offScenes = obs.on("scenes.changed", (p) => {
+    const offScenes = obs.on(EV.scenesChanged, (p) => {
       if (p.canvas === canvasUuid) {
         void loadScenes();
         void loadLinks();
       }
     });
-    const offLinks = obs.on("sceneLink.changed", () => void loadLinks());
+    const offLinks = obs.on(EV.sceneLinkChanged, () => void loadLinks());
     // Renaming a Default (main) scene emits scenes.changed{canvas:null}; reload so
     // the 🔗 tooltip + submenu checks reflect the new main-scene name immediately.
-    const offDefaultScenes = obs.on("scenes.changed", (p) => {
+    const offDefaultScenes = obs.on(EV.scenesChanged, (p) => {
       if (p.canvas == null) void loadLinks();
     });
-    const offItems = obs.on("sceneItems.changed", (p) => {
+    const offItems = obs.on(EV.sceneItemsChanged, (p) => {
       if (p.canvas === canvasUuid && (!p.scene || p.scene === currentScene)) {
         void loadItems();
       }
     });
-    const offSel = obs.on("sceneItem.selected", (p) => {
+    const offSel = obs.on(EV.sceneItemSelected, (p) => {
       if (p.canvas === canvasUuid && (!p.scene || p.scene === currentScene)) {
         selectedId = p.id;
       }
@@ -762,7 +763,7 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
 
     // Right-click in this canvas's overlay: filter to our uuid in this window with
     // a real hit, then map the device-px cursor to viewport coords via the rect.
-    const offMenu = obs.on("preview.contextMenu", (p) => {
+    const offMenu = obs.on(EV.previewContextMenu, (p) => {
       if (p.canvas !== canvasUuid || p.window !== WINDOW_ID || p.id == null || !previewEl) {
         return;
       }

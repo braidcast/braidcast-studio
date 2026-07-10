@@ -1,4 +1,5 @@
 #include "event_hub.hpp"
+#include "../event_names.hpp"
 
 #include <chrono>
 #include <string>
@@ -115,7 +116,7 @@ void EventHub::StartAccount(const std::string &accountId, const OAuth::OAuthAcco
 					for (const NormalizedEvent &ev : Store().List()) {
 						snapshot.push_back(ev.ToJson());
 					}
-					Bridge::EmitEvent("events.backfill", snapshot);
+					Bridge::EmitEvent(EventNames::kEventsBackfill, snapshot);
 				});
 			}
 		}
@@ -233,7 +234,7 @@ void EventHub::Ingest(const NormalizedEvent &ev)
 		return; // duplicate / no id -> already emitted or unusable; drop
 	}
 	json payload = ev.ToJson();
-	AsyncTask::PostToUi([payload = std::move(payload)]() { Bridge::EmitEvent("events.new", payload); });
+	AsyncTask::PostToUi([payload = std::move(payload)]() { Bridge::EmitEvent(EventNames::kEventsNew, payload); });
 	// Phase 9.3: fan the same event to every open overlay widget (SSE). Called off the
 	// event worker thread; Broadcast is mutex-guarded + thread-safe. Only reached for a
 	// newly-stored (non-duplicate) event, so widgets never double-fire.

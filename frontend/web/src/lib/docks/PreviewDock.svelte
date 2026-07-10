@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { obs } from "../bridge";
+import { EV } from "../eventNames";
   import { canvasStore } from "../canvasStore.svelte";
   import { previewSuspended, suspendPreview } from "../previewGate.svelte";
 import { dockLayout } from "../dockLayoutSignal.svelte";
@@ -115,7 +116,7 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
 
     // Right-click in the overlay: filter to the Default surface in this window with
     // a real hit, then map the device-px cursor to viewport coords via the rect.
-    const offMenu = obs.on("preview.contextMenu", (p) => {
+    const offMenu = obs.on(EV.previewContextMenu, (p) => {
       if (p.canvas != null || p.window !== WINDOW_ID || p.id == null || !previewEl) {
         return;
       }

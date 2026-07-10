@@ -1,6 +1,7 @@
 <script lang="ts">
   import Modal from "./Modal.svelte";
   import { obs, type DeviceCodeProgress } from "./bridge";
+import { EV } from "./eventNames";
   import { streamProfileStore } from "./streamProfileStore.svelte";
   import { oauthStore } from "./oauthStore.svelte";
   import { markOAuthConnected, type OAuthConnectRequest } from "./oauthConnectOpener.svelte";
@@ -92,7 +93,7 @@
     void begin();
     streamProfileStore.start();
     const offOauth = oauthStore.subscribe();
-    const offProgress = obs.on("oauth.connectProgress", (p) => {
+    const offProgress = obs.on(EV.oauthConnectProgress, (p) => {
       if (p.profileUuid !== req.profileUuid) {
         return;
       }
@@ -115,7 +116,7 @@
         }
       }
     });
-    const offErr = obs.on("oauth.connectError", (p) => {
+    const offErr = obs.on(EV.oauthConnectError, (p) => {
       if (p.profileUuid !== req.profileUuid) {
         return;
       }

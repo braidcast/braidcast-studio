@@ -1,4 +1,5 @@
 #include "ingest_writeback.hpp"
+#include "event_names.hpp"
 
 #include <chrono>
 #include <future>
@@ -38,7 +39,7 @@ bool WriteIngestToProfile(const std::string &profileUuid, const std::string &ser
 		}
 		obs_data_set_string(p->settings, "key", key.c_str());
 		ObsBootstrap::StreamProfiles().Save();
-		Bridge::EmitEvent("streamProfile.changed", nlohmann::json::object());
+		Bridge::EmitEvent(EventNames::kStreamProfileChanged, nlohmann::json::object());
 		done->set_value(true);
 	});
 

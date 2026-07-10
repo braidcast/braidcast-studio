@@ -1,4 +1,5 @@
 #include "youtube_chat.hpp"
+#include "../event_names.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -76,7 +77,7 @@ json NormalizeItem(const json &item, const std::string &liveChatId,
 	fragments = ApplyThirdPartyEmotes(fragments, thirdPartyEmotes);
 
 	return json{
-		{"event", "chat.message"},
+		{"event", EventNames::kChatMessage},
 		{"platform", "youtube"},
 		{"channelId", liveChatId},
 		{"id", Str(item, "id")},

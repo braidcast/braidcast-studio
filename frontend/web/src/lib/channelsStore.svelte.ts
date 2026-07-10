@@ -1,4 +1,5 @@
 import { obs } from "./bridge";
+import { EV } from "./eventNames";
 import type { ChannelStats, ChannelStatEntry, ViewerCounts } from "./bridge";
 import { oauthStore } from "./oauthStore.svelte";
 
@@ -68,10 +69,10 @@ class ChannelsStore {
     const offOauth = oauthStore.subscribe();
     this.#off = [
       offOauth,
-      obs.on("channels.stats", (p: ChannelStats) => {
+      obs.on(EV.channelsStats, (p: ChannelStats) => {
         this.#audience = { ...this.#audience, ...p.perAccount };
       }),
-      obs.on("viewers.changed", (p: ViewerCounts) => {
+      obs.on(EV.viewersChanged, (p: ViewerCounts) => {
         this.#viewers = { ...(p.perAccount ?? {}) };
       }),
     ];

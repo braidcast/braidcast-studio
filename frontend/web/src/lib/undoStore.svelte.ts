@@ -6,6 +6,7 @@
 // initial state via undo.state.
 
 import { obs } from "./bridge";
+import { EV } from "./eventNames";
 import type { UndoState } from "./bridge";
 
 class UndoStore {
@@ -22,7 +23,7 @@ class UndoStore {
       return;
     }
     this.#started = true;
-    obs.on("undo.changed", (s) => this.apply(s));
+    obs.on(EV.undoChanged, (s) => this.apply(s));
     void this.refresh();
   }
 

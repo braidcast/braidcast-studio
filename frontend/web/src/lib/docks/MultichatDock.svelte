@@ -1,5 +1,6 @@
 <script lang="ts">
   import { obs, type ChatMessage, type ChatState, type ChatPlatform } from "../bridge";
+import { EV } from "../eventNames";
   import { PLATFORM_COLORS, PLATFORM_LABELS, PLATFORM_ORDER as ORDER } from "../theme/platformColors";
   import { FeedVirtualizer } from "../feedVirtualizer.svelte";
   import { callOrToast } from "../callToast";
@@ -98,15 +99,15 @@
 
   $effect(() => {
     refreshStates();
-    const offMsg = obs.on("chat.message", (m) => enqueueMessage(m));
-    const offState = obs.on("chat.state", (s) => {
+    const offMsg = obs.on(EV.chatMessage, (m) => enqueueMessage(m));
+    const offState = obs.on(EV.chatState, (s) => {
       const next = new Map(states);
       next.set(s.platform, s);
       states = next;
     });
     // No teardown event fires when the host stops the transports on stream-stop,
     // so re-snapshot the (now empty) state set whenever streaming flips.
-    const offStreaming = obs.on("streaming.changed", () => refreshStates());
+    const offStreaming = obs.on(EV.streamingChanged, () => refreshStates());
     return () => {
       offMsg();
       offState();

@@ -9,6 +9,8 @@
 //   obs.call(method, params) -> Promise<result>
 //   obs.on(event, handler)   -> unsubscribe()
 
+import type { BridgeEvent } from "./eventNames";
+
 // --- ambient CEF / push surface ---------------------------------------------
 
 interface CefQueryRequest {
@@ -1605,6 +1607,12 @@ export interface ObsEvents {
   "overlays.changed": Record<string, never>;
 }
 
+// Every payload-typed event key must be a known EV constant (eventNames.ts); this
+// fails to compile if an ObsEvents key is renamed or typed for a non-existent event.
+// EV may hold more (fire-and-forget events with no TS payload, e.g. interact.changed).
+type AssertTrue<T extends true> = T;
+type _EventNamesInSync = AssertTrue<[keyof ObsEvents] extends [BridgeEvent] ? true : false>;
+
 export interface BridgeError extends Error {
   code?: number;
 }
@@ -1615,7 +1623,7 @@ export interface ObsBridge {
   call<K extends keyof ObsMethods>(method: K, params?: unknown): Promise<ObsMethods[K]>;
   call<T = unknown>(method: string, params?: unknown): Promise<T>;
   on<K extends keyof ObsEvents>(event: K, handler: (payload: ObsEvents[K]) => void): Unsubscribe;
-  on(event: string, handler: (payload: unknown) => void): Unsubscribe;
+  on(event: BridgeEvent, handler: (payload: unknown) => void): Unsubscribe;
 }
 
 // --- implementation ----------------------------------------------------------

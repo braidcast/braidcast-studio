@@ -57,6 +57,7 @@ target_sources(
     src/scheme.hpp
     src/bridge.cpp
     src/bridge.hpp
+    src/event_names.hpp
     src/http_client.cpp
     src/http_client.hpp
     src/json_util.hpp

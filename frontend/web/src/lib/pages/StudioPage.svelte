@@ -15,6 +15,7 @@ import { bumpDockLayout } from "../dockLayoutSignal.svelte";
   import { setDetachHandler } from "../dock/detachRegistry";
   import { browserDockStore } from "../browserDockStore.svelte";
   import { obs, type CanvasInfo, type Monitor, type MultistreamState } from "../bridge";
+import { EV } from "../eventNames";
   import { canvasStore } from "../canvasStore.svelte";
   import { multistreamStatusStore } from "../multistreamStatusStore.svelte";
   import { STATE_COLOR } from "../theme/stateColors";
@@ -259,18 +260,18 @@ import { bumpDockLayout } from "../dockLayoutSignal.svelte";
         vcamCanvas = s.canvas;
       })
       .catch(() => {});
-    const offStreaming = obs.on("streaming.changed", (p) => {
+    const offStreaming = obs.on(EV.streamingChanged, (p) => {
       anyRunning = p.active;
       // The viewer poller stops on stream-stop without a final zero push; clear the
       // chip so a stale count never lingers after going offline.
       if (!p.active) viewerTotal = null;
     });
-    const offViewers = obs.on("viewers.changed", (p) => (viewerTotal = p.total));
-    const offVcam = obs.on("virtualCam.changed", (s) => {
+    const offViewers = obs.on(EV.viewersChanged, (p) => (viewerTotal = p.total));
+    const offVcam = obs.on(EV.virtualCamChanged, (s) => {
       vcamActive = s.active;
       vcamCanvas = s.canvas;
     });
-    const offGeneral = obs.on("settings.generalChanged", (g) => {
+    const offGeneral = obs.on(EV.settingsGeneralChanged, (g) => {
       warnGoLive = g.warnBeforeGoLive;
       warnStop = g.warnBeforeStop;
     });
@@ -422,7 +423,7 @@ import { bumpDockLayout } from "../dockLayoutSignal.svelte";
     // A detached window closed (explicit redock or user OS-close): restore the
     // dock to the main window. Static docks re-add from DOCKS; dynamic canvas docks
     // are left to the reconciler. Main-window only -- App mounts only here.
-    offWindowClosed = obs.on("window.closed", (p) => {
+    offWindowClosed = obs.on(EV.windowClosed, (p) => {
       if (!api) return;
       if (api.getPanel(p.dock)) return; // already present
       if (p.dock.startsWith("canvas:")) {

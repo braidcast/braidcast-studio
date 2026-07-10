@@ -5,6 +5,7 @@
 // instance both read this singleton so they agree on the current scene.
 
 import { obs } from "../bridge";
+import { EV } from "../eventNames";
 import type { SceneInfo } from "../bridge";
 
 class DefaultCanvasStore {
@@ -21,7 +22,7 @@ class DefaultCanvasStore {
       return;
     }
     this.#started = true;
-    obs.on("scenes.changed", (p) => {
+    obs.on(EV.scenesChanged, (p) => {
       // Default canvas == the global channel-0 path, emitted with canvas=null.
       if (p.canvas == null) {
         void this.refresh();

@@ -7,6 +7,7 @@
   // (--c-* → --color-*). Zero border-radius.
   import { onMount } from "svelte";
   import { obs, type CollectionInfo } from "./bridge";
+import { EV } from "./eventNames";
   import { pageStore, setPage, type Page } from "./pageStore.svelte";
   import { openAbout } from "./aboutOpener.svelte";
   import CollectionDialog, { type DialogSpec } from "./CollectionDialog.svelte";
@@ -39,7 +40,7 @@
 
   onMount(() => {
     refreshCollections();
-    return obs.on("collections.changed", refreshCollections);
+    return obs.on(EV.collectionsChanged, refreshCollections);
   });
 
   function showError(e: unknown) {

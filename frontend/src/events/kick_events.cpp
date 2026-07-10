@@ -1,4 +1,5 @@
 #include "kick_events.hpp"
+#include "../event_names.hpp"
 
 #include <array>
 #include <cstdint>
@@ -194,7 +195,7 @@ void EmitKickFollowerCount(const json &outer, const OAuth::OAuthAccount &acct)
 		{"audienceUpdatedNs", nowNs},
 	};
 	AsyncTask::PostToUi([p = json{{"perAccount", std::move(perAccount)}}]() mutable {
-		Bridge::EmitEvent("channels.stats", p);
+		Bridge::EmitEvent(EventNames::kChannelsStats, p);
 	});
 }
 

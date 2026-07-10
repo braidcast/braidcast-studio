@@ -1,5 +1,6 @@
 <script lang="ts">
   import { obs, type GeneralSettings } from "./bridge";
+import { EV } from "./eventNames";
   import { openMissingFiles } from "./missingFilesOpener.svelte";
   import { openLogViewer } from "./logViewerOpener.svelte";
   import { openImporter } from "./importerOpener.svelte";
@@ -56,7 +57,7 @@
       .finally(() => {
         if (active) loaded = true;
       });
-    const off = obs.on("settings.generalChanged", (g) => (s = g));
+    const off = obs.on(EV.settingsGeneralChanged, (g) => (s = g));
     return () => {
       active = false;
       off();

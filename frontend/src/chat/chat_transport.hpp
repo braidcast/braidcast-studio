@@ -2,6 +2,7 @@
 #define OBS_MULTISTREAM_FRONTEND_CHAT_CHAT_TRANSPORT_HPP_
 
 #include <functional>
+#include "../event_names.hpp"
 #include <string>
 
 #include <nlohmann/json.hpp>
@@ -60,7 +61,7 @@ struct ChatContext {
 // `error` defaults to "" for the connected/success case.
 inline void EmitChatState(const ChatContext &ctx, const char *platform, bool connected, const std::string &error = "")
 {
-	ctx.emit(json{{"event", "chat.state"}, {"platform", platform}, {"connected", connected}, {"error", error}});
+	ctx.emit(json{{"event", EventNames::kChatState}, {"platform", platform}, {"connected", connected}, {"error", error}});
 }
 
 class ChatTransport {

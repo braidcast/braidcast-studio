@@ -1,6 +1,7 @@
 <script lang="ts">
   import Modal from "./Modal.svelte";
   import { obs, type Transform, type TransformTarget, type TransformAction } from "./bridge";
+import { EV } from "./eventNames";
 
   interface Props {
     target: TransformTarget;
@@ -89,7 +90,7 @@
 
   // Reload on external edits (e.g. dragging in the preview) that concern this item.
   $effect(() => {
-    return obs.on("sceneItems.changed", (p) => {
+    return obs.on(EV.sceneItemsChanged, (p) => {
       const sameCanvas = (p.canvas ?? null) === (target.canvas ?? null);
       const sameScene = !p.scene || !target.scene || p.scene === target.scene;
       if (sameCanvas && sameScene) {

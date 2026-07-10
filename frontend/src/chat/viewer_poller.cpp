@@ -1,4 +1,5 @@
 #include "viewer_poller.hpp"
+#include "../event_names.hpp"
 
 #include <chrono>
 #include <string>
@@ -27,7 +28,7 @@ const char *ViewerPoller::LogTag() const
 
 const char *ViewerPoller::EventName() const
 {
-	return "viewers.changed";
+	return EventNames::kViewersChanged;
 }
 
 std::chrono::milliseconds ViewerPoller::Interval(unsigned long long) const

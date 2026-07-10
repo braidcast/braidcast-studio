@@ -9,6 +9,7 @@
 // is the one source of truth, and deriveCanvasState() is the one reduction.
 
 import { obs } from "./bridge";
+import { EV } from "./eventNames";
 import type { MultistreamStatus, MultistreamState, OutputBindingInfo } from "./bridge";
 
 // The strongest live state across a set of outputs: live wins, then connecting,
@@ -64,10 +65,10 @@ class MultistreamStatusStore {
     this.#subs++;
     if (this.#subs === 1) {
       void this.refresh();
-      const offMulti = obs.on("multistream.changed", (p) => (this.outputs = p.outputs));
+      const offMulti = obs.on(EV.multistreamChanged, (p) => (this.outputs = p.outputs));
       // A binding enable/disable changes which outputs are live but doesn't push a
       // multistream.changed, so re-poll on it too.
-      const offBindings = obs.on("outputBinding.changed", () => void this.refresh());
+      const offBindings = obs.on(EV.outputBindingChanged, () => void this.refresh());
       this.#off = () => {
         offMulti();
         offBindings();

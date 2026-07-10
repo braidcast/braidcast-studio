@@ -2,6 +2,7 @@
 // GetNextSibling that <windows.h> would otherwise macro-clobber. Include it (and
 // thus CEF) before any Windows header so CEF parses clean.
 #include "app_icon.hpp"
+#include "event_names.hpp"
 #include "bridge.hpp"
 
 #include "projector_window.hpp"
@@ -899,7 +900,7 @@ LRESULT CALLBACK ProjectorWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpa
 			if (self && Projector::Instance()) {
 				const int id = self->Id();
 				Projector::Instance()->Close(id);
-				Bridge::EmitEvent("projector.changed", Bridge::json{{"closed", id}});
+				Bridge::EmitEvent(EventNames::kProjectorChanged, Bridge::json{{"closed", id}});
 			}
 			return 0;
 		}
@@ -911,7 +912,7 @@ LRESULT CALLBACK ProjectorWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpa
 		if (self && Projector::Instance()) {
 			const int id = self->Id();
 			Projector::Instance()->Close(id);
-			Bridge::EmitEvent("projector.changed", Bridge::json{{"closed", id}});
+			Bridge::EmitEvent(EventNames::kProjectorChanged, Bridge::json{{"closed", id}});
 		} else {
 			DestroyWindow(hwnd);
 		}

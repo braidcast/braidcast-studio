@@ -1,4 +1,5 @@
 #include "chat_hub.hpp"
+#include "../event_names.hpp"
 
 #include <algorithm>
 #include <optional>
@@ -24,7 +25,7 @@ namespace {
 // thread (posted there by the worker's emit) via the alive-guarded EmitEvent.
 void RouteEmit(const json &payload)
 {
-	std::string event = "chat.message";
+	std::string event = EventNames::kChatMessage;
 	json body = payload;
 	auto it = body.find("event");
 	if (it != body.end() && it->is_string()) {
@@ -38,7 +39,7 @@ void RouteEmit(const json &payload)
 	// exception here would terminate the process. Drop the frame instead (EmitEvent is
 	// already internally guarded, but sits behind the same barrier for free).
 	try {
-		if (event == "chat.message") {
+		if (event == EventNames::kChatMessage) {
 			Overlay::Server().BroadcastChat(body);
 		}
 		Bridge::EmitEvent(event, body);
@@ -104,7 +105,7 @@ void ChatHub::Start()
 				// Cache connection state for State() on chat.state events.
 				auto ev = payload.find("event");
 				if (ev != payload.end() && ev->is_string() &&
-				    ev->get<std::string>() == "chat.state") {
+				    ev->get<std::string>() == EventNames::kChatState) {
 					std::lock_guard<std::mutex> lock(mutex_);
 					auto a = active_.find(accountId);
 					if (a != active_.end()) {
@@ -123,7 +124,7 @@ void ChatHub::Start()
 				// uniqueness even within a single frame.
 				auto pev = p.find("event");
 				if (pev != p.end() && pev->is_string() &&
-				    pev->get<std::string>() == "chat.message") {
+				    pev->get<std::string>() == EventNames::kChatMessage) {
 					auto id = p.find("id");
 					const bool missing = id == p.end() || !id->is_string() ||
 							     id->get<std::string>().empty();
@@ -223,7 +224,7 @@ void ChatHub::SendToPlatforms(const std::vector<std::string> &platforms, const s
 			}
 			if (!ok) {
 				AsyncTask::PostToUi([providerId, err] {
-					Bridge::EmitEvent("chat.state", json{{"platform", providerId},
+					Bridge::EmitEvent(EventNames::kChatState, json{{"platform", providerId},
 									     {"connected", true},
 									     {"error", err}});
 				});

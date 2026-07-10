@@ -1,4 +1,5 @@
 #include "kick_chat.hpp"
+#include "../event_names.hpp"
 
 #include "../http_client.hpp"
 #include "../log.hpp"
@@ -137,7 +138,7 @@ void HandleChatMessage(const json &outer, const ChatContext &ctx, const std::str
 	const std::string content = inner.value("content", std::string());
 
 	ctx.emit(json{
-		{"event", "chat.message"},
+		{"event", EventNames::kChatMessage},
 		{"platform", "kick"},
 		{"channelId", chatroomId},
 		{"id", msgId},

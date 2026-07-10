@@ -1,6 +1,7 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import { obs, type ViewerCounts, type ChatPlatform } from "../bridge";
+import { EV } from "../eventNames";
   import PageHeader from "../PageHeader.svelte";
   import EmptyState from "../EmptyState.svelte";
   import { PLATFORM_COLORS, PLATFORM_LABELS, PLATFORM_ORDER } from "../theme/platformColors";
@@ -115,8 +116,8 @@
   // on stream-stop; otherwise the TOTAL + per-platform cards (live-only) keep the
   // last counts until navigation. Mirrors StudioPage's streaming.changed clear.
   $effect(() => {
-    const offViewers = obs.on("viewers.changed", (p) => (viewers = p));
-    const offStreaming = obs.on("streaming.changed", (s) => {
+    const offViewers = obs.on(EV.viewersChanged, (p) => (viewers = p));
+    const offStreaming = obs.on(EV.streamingChanged, (s) => {
       if (!s.active) viewers = null;
     });
     return () => {

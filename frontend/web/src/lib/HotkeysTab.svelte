@@ -1,5 +1,6 @@
 <script lang="ts">
   import { obs, type Hotkey, type HotkeyCombo, type HotkeyRegisterer } from "./bridge";
+import { EV } from "./eventNames";
 
   let hotkeys = $state<Hotkey[]>([]);
   let loaded = $state(false);
@@ -35,7 +36,7 @@
 
   $effect(() => {
     void loadHotkeys();
-    const off = obs.on("hotkeys.changed", () => void loadHotkeys());
+    const off = obs.on(EV.hotkeysChanged, () => void loadHotkeys());
     return off;
   });
 

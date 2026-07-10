@@ -1,4 +1,5 @@
 import { obs, type OAuthStatus, type OAuthProvider, type ChatPlatform } from "./bridge";
+import { EV } from "./eventNames";
 import { PLATFORM_ORDER } from "./theme/platformColors";
 
 // Shared reactive OAuth-account store. `oauth.status` has a push event (fired on any
@@ -68,7 +69,7 @@ class OAuthStore {
     this.#subs++;
     if (this.#subs === 1) {
       this.#load();
-      this.#off = obs.on("oauth.status", (s) => (this.statuses = s));
+      this.#off = obs.on(EV.oauthStatus, (s) => (this.statuses = s));
     }
     return () => {
       this.#subs--;

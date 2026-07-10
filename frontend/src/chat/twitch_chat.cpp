@@ -1,4 +1,5 @@
 #include "twitch_chat.hpp"
+#include "../event_names.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -478,7 +479,7 @@ bool TwitchChat::connect(const Chat::ChatContext &ctx, OAuthAccount &acct, const
 						ts = std::strtoll(tsTag.c_str(), nullptr, 10);
 					}
 					ctx.emit(json{
-						{"event", "chat.message"},
+						{"event", EventNames::kChatMessage},
 						{"platform", "twitch"},
 						{"channelId", channel},
 						{"id", tag("id")},

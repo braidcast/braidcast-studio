@@ -1,5 +1,6 @@
 <script lang="ts">
   import { obs, type AdvancedSettings } from "./bridge";
+import { EV } from "./eventNames";
   import ToggleSwitch from "./ToggleSwitch.svelte";
 
   // Advanced app settings, live-applied (the page model has no Apply boundary):
@@ -43,7 +44,7 @@
       .finally(() => {
         if (active) loaded = true;
       });
-    const off = obs.on("settings.advancedChanged", (a) => (s = a));
+    const off = obs.on(EV.settingsAdvancedChanged, (a) => (s = a));
     return () => {
       active = false;
       off();
