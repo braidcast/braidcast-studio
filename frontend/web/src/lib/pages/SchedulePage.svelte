@@ -482,22 +482,27 @@
     min-height: 0;
     display: grid;
     grid-template-columns: repeat(7, 1fr);
-    grid-auto-rows: minmax(108px, 1fr);
+    grid-auto-rows: minmax(96px, 1fr);
     gap: var(--border-weight);
     background: var(--color-border);
     border-bottom: var(--border-weight) solid var(--color-border);
   }
   .cell {
+    width: 100%;
+    height: 100%;
     min-height: 0;
     background: var(--color-surface);
-    padding: 6px 8px;
+    padding: 5px 6px 7px;
     overflow: hidden;
     cursor: pointer;
     border: 0;
     text-align: left;
     display: flex;
     flex-direction: column;
+    align-items: stretch;
     gap: 3px;
+    font: inherit;
+    color: inherit;
     transition: background 0.12s ease;
   }
   .cell:hover:not(.out) {
@@ -536,6 +541,7 @@
   }
   .chip-ev {
     flex: 0 0 auto;
+    width: 100%;
     display: flex;
     align-items: baseline;
     gap: 6px;
