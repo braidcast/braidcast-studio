@@ -185,12 +185,12 @@
     top: calc(100% + 4px);
     left: 0;
     right: 0;
-    max-height: 268px;
+    max-height: 320px;
     overflow-y: auto;
     display: flex;
     flex-direction: column;
-    gap: 4px;
-    padding: 5px;
+    gap: 6px;
+    padding: 7px;
     background: var(--color-surface);
     border: var(--border-weight) solid var(--color-border);
   }
@@ -207,7 +207,7 @@
     gap: 11px;
     width: 100%;
     text-align: left;
-    padding: 8px 10px;
+    padding: 11px 12px;
     background: var(--color-base);
     border: var(--border-weight) solid var(--color-border);
     border-left: 3px solid transparent;
