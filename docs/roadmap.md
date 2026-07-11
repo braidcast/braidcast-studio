@@ -1594,6 +1594,47 @@ prompt cleanly to relink*, not auto-fix. Work:
   account's refresh token and pre-flags stale ones — so relink is prompted at a
   calm moment, not mid-stream. Non-blocking, same threading discipline as Part 3.
 
+**Part 5 — stream-credential (ingest) self-heal + the Kick provisioning gap.**
+The OAuth connect flow provisions streaming credentials per platform, and the gaps
+leave an rtmp_common profile unstreamable — `obs_output_start` bails deep in libobs
+(empty `last_error`) so the UI only ever showed the generic "the output failed to
+start". Review 2026-07-12 (a live incident where Twitch + Kick failed while YouTube
+streamed) mapped it:
+- **Twitch** — `TwitchProvider::fetchStreamKey` supplies the key and the connect
+  flow seeds `server="auto"` (bridge.cpp ~8130). But profiles connected *before*
+  that line are **stale** (key present, `server` absent) and can't go live until a
+  reconnect. rtmp_common resolves the Twitch ingest only when `server=="auto"`.
+- **Kick** — `KickProvider::fetchStreamKey` is unimplemented → connect writes
+  neither key nor server. Kick's ingest is **per-broadcaster** (not resolvable via
+  rtmp_common `"auto"`), so it needs the API to supply BOTH the ingest URL and key.
+- **Shipped alongside this review:** a pre-flight guard in
+  `MultistreamEngine::StartOutput` that fails an rtmp_common binding with a precise,
+  platform-named reason ("<platform> has no stream key / ingest server — reconnect")
+  instead of the generic downstream error.
+
+Self-heal work (background, launch + pre-go-live, same discipline as Parts 3/4):
+- For a keyed rtmp_common profile linked to a **connected** account with a missing
+  `server` or `key`, re-run the provider's credential fetch and write it back via
+  `ingest_writeback` — heals the stale-Twitch case with no manual reconnect.
+- Minimal seed: set `server="auto"` for any rtmp_common profile that has a key but
+  no server.
+
+Kick streamkey provisioning — **BLOCKED, not a client-only change:**
+- Kick exposes the stream URL + key via the `streamkey:read` scope ("Read a user's
+  stream URL and stream key", docs.kick.com). **But the fork does not control Kick's
+  scopes** — `kKickScopes` is display-only (`capabilityJson`); the real scope set is
+  owned by the **broker** (`auth.braidcast.com`), whose `BrokerStrategy` is built
+  with only platform + `KICK_SCOPE_VERSION` (no client scope list).
+- Enabling it therefore requires, in order: (1) the **broker** registering
+  `streamkey:read` on its Kick OAuth app + Kick approving that scope; (2) a
+  coordinated **`KICK_SCOPE_VERSION` bump** (forces every Kick user to re-consent via
+  `AccountNeedsReconnect`); (3) client `KickProvider::fetchStreamKey` calling the
+  streamkey endpoint (confirm the exact path at docs.kick.com) + writing url+key
+  through `ingest_writeback`.
+- Until the broker grants the scope, an OAuth-connected Kick account **cannot go
+  live**; the manual fallback is pasting server+key from
+  kick.com/dashboard/settings/stream into the profile.
+
 ---
 
 ## Phase 12 — Studio Profiles + global destinations 🏗️ PLANNED (design-first, largest task)
