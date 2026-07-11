@@ -1483,3 +1483,39 @@ on public repos (separate from the 500 MB Packages quota).
   (importer, Phase 7 UI redesign, Phase 8 OAuth, Phase 9 engagement, Phase 10 broker)
   is on the **`ui-redesign`** branch — feature-complete, pushed, **held for GUI/live
   acceptance, not yet merged to `master`**. `upstream/*` OBS branches untouched.
+
+---
+
+## Phase 11 — Debug logging + deep app audit 🔭 PLANNED
+
+**Motivation.** Debugging is currently near-blind: native `HostLog` writes to
+`OutputDebugStringA` (invisible without an attached debugger) and CEF `console.*`
+routes to the same sink, so neither reaches the session log file. Pinning the
+preview-suspend double-count race (2026-07-11) took several build round-trips of
+*temporary* `blog()` instrumentation plus hand-routing `console` → `blog`. A
+permanent, gated debug channel would have made it a single trace read. That race
+was also **latent in every modal** (each opener double-suspended on top of
+`Modal.svelte`) — the archetype of a bug class that is invisible until you can
+watch the app narrate itself.
+
+**Part 1 — gated debug logging (do first).**
+- A `DEBUG` flag, **default OFF**, overridable by env (e.g. `BRAIDCAST_DEBUG=1`),
+  Django-style; ideally also a runtime toggle (Settings switch / hotkey) so a live
+  session can flip it without a relaunch.
+- When ON: route native `HostLog` **and** CEF `console.*` into the session log via
+  `blog(LOG_INFO, …)` so everything lands in one readable file. Tag by **category**
+  (`preview`, `gate`, `oauth`, `chat`, `events`, `bridge`, `engine`, `canvas`, …)
+  with optional per-category filtering.
+- **Zero-cost when OFF:** gate before building the message string (no formatting,
+  no `blog`), so shipping with the calls in place costs nothing in the default path.
+- Instrument the seams that bit us and will bite again: the preview gate ref-count
+  (suspend/release balance), preview `SetRect`/`Hide`/display create-destroy, bridge
+  method dispatch, OAuth/token lifecycle, chat/events transport start-stop, and the
+  multistream engine start/stop.
+
+**Part 2 — deep audit (with DEBUG on).** Drive **every window** (main, detached
+canvas docks, projectors, settings) and **every feature** (go-live + edit-info,
+chat/events, reorder/splitters, schedule, sources/filters/transform, virtual cam,
+screenshots, importer, …), capture the traces, and hunt latent bugs the way the
+suspend race surfaced. Deliverable: a windows × features coverage matrix with the
+observed traces, and filed issues for every anomaly.
