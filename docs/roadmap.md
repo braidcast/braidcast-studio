@@ -1576,3 +1576,65 @@ prompt cleanly to relink*, not auto-fix. Work:
   launch thread and/or a pre-go-live probe) that validates each connected
   account's refresh token and pre-flags stale ones — so relink is prompted at a
   calm moment, not mid-stream. Non-blocking, same threading discipline as Part 3.
+
+---
+
+## Phase 12 — Studio Profiles + global destinations 🏗️ PLANNED (design-first, largest task)
+
+**Motivation.** Output bindings (destinations) are the only canvas/profile-level
+entity stored **per scene-collection**, and that coupling is arbitrary: a binding
+pairs a **canvas** (global) with a **stream profile** (global) — no scene is
+involved, unlike scene links (scene → canvas), which are legitimately
+per-collection. The visible cost (2026-07-11): switching to or importing a
+scene-collection resets destinations for every canvas and empties the canvas bar,
+because canvas-chip/preview visibility is gated on the active collection's
+bindings (`AnyEnabledForCanvas`, `bridge.cpp:4883`; `StudioPage.svelte:540`).
+No data is lost — canvases are global (`canvases.json`), and each collection's
+bindings are saved to its own sibling file before a switch — but the model
+surprises the user and makes a valid collection look broken.
+
+Stock OBS separated two orthogonal switchers: **Scene Collections** (content —
+scenes/sources) and **Profiles** (config — output/encoding/service, and in OBS
+also video/audio/hotkeys). Braidcast dropped the Profile concept. This phase
+brings back a Braidcast-native equivalent and fixes the coupling in one coherent
+model.
+
+**Part A — decouple destinations from collections (routing is global).**
+- Move output bindings from per-collection sibling files
+  (`scenes/<slug>.output_bindings.json`) to a **global** store, like `streams.json`
+  and `canvases.json`. Routing (canvas → destination) becomes collection-independent.
+- Keep **scene links** (scene → canvas) per-collection — those genuinely involve
+  scenes. Clean split: **routing global, content per-collection**. Switching or
+  importing a collection then changes only *what each canvas shows*, never *where
+  it streams* or *whether canvases exist*.
+- One-time **migration** of existing per-collection bindings (consolidate; resolve
+  the case where the same canvas is bound differently across collections). Drops
+  per-show routing — a speculative capability that appears unused.
+
+**Part B — Studio Profiles (a switchable setup bundle).**
+- A **Profile** is a named, switchable bundle that carries **destinations**
+  (the now-global output bindings), the **canvas set**, and the **studio layout**
+  (dock positions/sizes/visibility, splitter ratios) — independent of scene
+  collections, exactly as OBS's Profile is independent of its Scene Collection.
+- **Terminology hazard — disambiguate first:** "stream profile" already means a
+  *destination credential* (platform + key, `streams.json`). The OBS-style Profile
+  here is a *setup/config bundle*. Pick a distinct name (e.g. **Studio Profile** /
+  **Setup**) before writing any code, or the two will be conflated everywhere.
+- **Open design questions (resolve in a design pass before implementing):**
+  - Canvas scope — canvases are global today; do they become **profile-scoped**
+    (each profile its own canvas set) or stay global with the profile only owning
+    the *bindings*? This is the crux and shapes everything else.
+  - How Profiles compose with Scene Collections — two orthogonal switchers (OBS
+    model), or one merged concept? What does switching each do?
+  - Exact contents of a Profile — bindings + canvases + dock layout at minimum;
+    possibly video/audio/output settings too.
+  - Dock-layout persistence — where the dockview layout lives today and how to
+    scope it per profile so each remembers its window arrangement.
+
+**Sequencing.** This is the **largest** item on the roadmap and is **design-first**:
+brainstorm + a written spec (data model, migration, terminology, the canvas-scope
+decision) before any implementation. Part A (global destinations) can ship ahead
+of Part B and already removes the empty-canvas-bar surprise; Part B is the full
+Profiles system. A small **interim** option exists if the empty canvas bar needs
+relief before this lands: stop gating the canvas bar on bindings (show canvases
+regardless) — not started, separable from the phase.
