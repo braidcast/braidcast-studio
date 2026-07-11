@@ -1519,3 +1519,25 @@ chat/events, reorder/splitters, schedule, sources/filters/transform, virtual cam
 screenshots, importer, …), capture the traces, and hunt latent bugs the way the
 suspend race surfaced. Deliverable: a windows × features coverage matrix with the
 observed traces, and filed issues for every anomaly.
+
+**Part 3 — config/data self-heal on launch.** Bundled data files and their
+per-user caches drift silently, and OBS prefers the user cache
+(`obs_module_config_path`) over the bundled copy (`obs_module_file`) — so a
+stale cache, or a stale *bundled* copy, wins invisibly. Live example
+(2026-07-11): the rtmp_common Service picker dropped **Kick** and
+**YouTube - HLS** because the read-path `services.json`
+(`bin/64bit/rtmp-services/services.json`, the obs2_update package copy) was an
+old 84-service/5-common snapshot while source already had the 85-service/
+7-common list. Diagnosis meant hand-tracing four candidate paths; recovery was a
+manual file copy + a `.stale-vNNN.bak` rename. Build a startup reconciliation
+that does this automatically:
+- A registry of **managed canonical data files** (start: `rtmp-services/services.json`;
+  generalize to any bundled data with a version/format stamp).
+- On boot, validate each cache + bundled copy: parse-check, `format_version`
+  match, and version/hash compare against the app's shipped canonical. If a cache
+  is missing/older/unparseable/format-mismatched → evict it so the bundled copy
+  wins; if the bundled read-path copy is older than the shipped canonical →
+  refresh it. Rule of thumb for this fork (we don't run OBS's updater): **shipped
+  canonical wins unless a cache is strictly newer AND valid.**
+- Log every decision through the Part 1 DEBUG channel (`config` category), so the
+  next drift is a single trace read, not a four-path hand-hunt.
