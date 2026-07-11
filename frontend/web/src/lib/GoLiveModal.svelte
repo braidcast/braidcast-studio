@@ -514,13 +514,24 @@ import { EV } from "./eventNames";
       ),
     );
     const goingLive = goLiveModal.mode === "golive";
-    const tail = goingLive ? " — going live anyway" : "";
-    if (failedByChannel.size === 1) {
-      const only = [...failedByChannel.values()][0];
-      showToast("Couldn't update " + only.name + " stream info" + tail, only.reason?.message ?? "metadata push failed");
-    } else if (failedByChannel.size > 1) {
-      const names = [...failedByChannel.values()].map((v) => v.name).join(", ");
-      showToast("Couldn't update stream info for " + failedByChannel.size + " destinations" + tail, names);
+    // Stream info is a precondition, not a courtesy: if any channel's metadata push
+    // failed, going live would stream with stale/wrong title+category. Block the start
+    // on ANY failure (all OAuth providers) and keep the modal open so the user can retry
+    // or fix the offending channel. Update-info mode has no start to block, so it only
+    // reports the failure.
+    if (failedByChannel.size > 0) {
+      const lead = goingLive ? "Not going live — couldn't update " : "Couldn't update ";
+      if (failedByChannel.size === 1) {
+        const only = [...failedByChannel.values()][0];
+        showToast(lead + only.name + " stream info", only.reason?.message ?? "metadata push failed");
+      } else {
+        const names = [...failedByChannel.values()].map((v) => v.name).join(", ");
+        showToast(lead + failedByChannel.size + " destinations", names);
+      }
+      if (goingLive) {
+        submitting = false;
+        return;
+      }
     }
     // Remember these details for next time — best-effort, fired without awaiting so a
     // slow or failing save never blocks going live. One save per channel with its raw
