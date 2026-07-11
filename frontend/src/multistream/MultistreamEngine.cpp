@@ -261,6 +261,26 @@ bool MultistreamEngine::StartOutput(const std::string &bindingUuid, std::string 
 	if (!p) {
 		return fail("the bound stream profile no longer exists");
 	}
+
+	// Pre-flight the destination credentials for keyed RTMP services. rtmp_common's
+	// can_try_to_connect needs BOTH a non-empty ingest server and a key; when either
+	// is missing obs_output_start bails deep in libobs with an empty last_error, so
+	// the UI only ever sees the generic "the output failed to start". Surface the real
+	// reason here. (WHIP/custom carry their own URL, so this covers rtmp_common only --
+	// the OAuth-provisioned platforms whose key/server come from the connect flow.)
+	if (p->serviceId == "rtmp_common") {
+		const std::string platform = p->PlatformName();
+		const char *server = p->settings ? obs_data_get_string(p->settings, "server") : "";
+		if (p->Key().empty()) {
+			return fail(platform + " has no stream key yet -- reconnect " + platform +
+				    " in Settings, or paste a key into its stream profile");
+		}
+		if (!server || !*server) {
+			return fail(platform + " has no ingest server -- reconnect " + platform +
+				    " in Settings to provision it");
+		}
+	}
+
 	CanvasEncoders *ce = EnsureCanvasEncoders(b->canvasUuid);
 	if (!ce) {
 		return fail("could not build encoders for this canvas");
