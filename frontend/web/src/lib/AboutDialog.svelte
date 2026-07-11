@@ -1,16 +1,15 @@
 <script lang="ts">
   import Modal from "./Modal.svelte";
   import { obs } from "./bridge";
-  import { suspendPreview } from "./previewGate.svelte";
 
   interface Props {
     onClose: () => void;
   }
   let { onClose }: Props = $props();
 
-  // Overlaps the native preview overlay (a sibling HWND above CEF); suspend it
-  // while open so the overlay doesn't occlude the modal (same as TransformDialog).
-  $effect(() => suspendPreview());
+  // Modal.svelte owns the preview suspension for its whole lifetime; this dialog
+  // must not self-suspend on top of it (a second, separately-released suspension
+  // would race the modal's on close and leave the preview stuck hidden).
 
   // libobs version, loaded on open; "…" until resolved.
   let version = $state("…");

@@ -4,8 +4,6 @@
 // streaming.start; `edit` only pushes (used by the "Edit stream info" button,
 // before and mid-stream).
 
-import { suspendPreview } from "./previewGate.svelte";
-
 export type GoLiveModalMode = "golive" | "edit";
 
 export const goLiveModal = $state<{ open: boolean; mode: GoLiveModalMode }>({
@@ -13,18 +11,14 @@ export const goLiveModal = $state<{ open: boolean; mode: GoLiveModalMode }>({
   mode: "golive",
 });
 
-// Hold the native preview suspension across the modal's lifetime so the overlay
-// never raises above it (the modal sits over the Studio preview surfaces).
-let release: (() => void) | null = null;
-
+// Preview suspension is owned by Modal.svelte (GoLiveModal wraps it), so the opener
+// must NOT suspend too: a second, separately-released suspension raced the modal's on
+// close and left the count stuck above zero, so the preview never re-showed.
 export function openGoLiveModal(mode: GoLiveModalMode): void {
   goLiveModal.mode = mode;
   goLiveModal.open = true;
-  release ??= suspendPreview();
 }
 
 export function closeGoLiveModal(): void {
   goLiveModal.open = false;
-  release?.();
-  release = null;
 }

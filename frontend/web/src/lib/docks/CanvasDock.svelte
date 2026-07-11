@@ -824,14 +824,6 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
       return suspendPreview();
     }
   });
-
-  // The properties modal overlaps the preview; suspend the native overlay while open.
-  // (AddSourceModal suspends itself; this covers the PropertyForm modal.)
-  $effect(() => {
-    if (propsForSource) {
-      return suspendPreview();
-    }
-  });
 </script>
 
 <div class="dock-body" bind:this={dockBodyEl}>

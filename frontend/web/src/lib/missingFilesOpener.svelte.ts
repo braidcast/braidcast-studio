@@ -2,22 +2,17 @@
 // App owns the single MissingFilesDialog mount gated on `.open`; the Settings page
 // (a source/data tool) calls openMissingFiles() to request it.
 
-import { suspendPreview } from "./previewGate.svelte";
-
 export const missingFilesOpen = $state<{ open: boolean }>({ open: false });
 
-// Hold the preview suspension across the dialog lifetime so the native overlay
-// never raises above the modal.
-let release: (() => void) | null = null;
+// Preview suspension is owned by Modal.svelte (MissingFilesDialog wraps it), so the opener
+// must NOT suspend too: a second, separately-released suspension raced the modal's on
+// close and left the count stuck above zero, so the preview never re-showed.
 
 /** Open the Missing Files relink dialog. */
 export function openMissingFiles(): void {
   missingFilesOpen.open = true;
-  release ??= suspendPreview();
 }
 
 export function closeMissingFiles(): void {
   missingFilesOpen.open = false;
-  release?.();
-  release = null;
 }

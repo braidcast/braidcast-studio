@@ -2,22 +2,17 @@
 // App owns the single LogViewerDialog mount gated on `.open`; the Settings page
 // (a diagnostics tool) calls openLogViewer() to request it.
 
-import { suspendPreview } from "./previewGate.svelte";
-
 export const logViewerOpen = $state<{ open: boolean }>({ open: false });
 
-// Hold the preview suspension across the dialog lifetime so the native overlay
-// never raises above the modal.
-let release: (() => void) | null = null;
+// Preview suspension is owned by Modal.svelte (LogViewerDialog wraps it), so the opener
+// must NOT suspend too: a second, separately-released suspension raced the modal's on
+// close and left the count stuck above zero, so the preview never re-showed.
 
 /** Open the Log Viewer modal. */
 export function openLogViewer(): void {
   logViewerOpen.open = true;
-  release ??= suspendPreview();
 }
 
 export function closeLogViewer(): void {
   logViewerOpen.open = false;
-  release?.();
-  release = null;
 }

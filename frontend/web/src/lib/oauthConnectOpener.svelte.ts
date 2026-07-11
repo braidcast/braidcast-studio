@@ -3,7 +3,6 @@
 // `.open`; the Streams tab requests it with the profile + provider via openOAuthConnect().
 
 import { obs } from "./bridge";
-import { suspendPreview } from "./previewGate.svelte";
 
 /** The profile being connected + which provider drives the connect flow. */
 export interface OAuthConnectRequest {
@@ -17,9 +16,9 @@ export const oauthConnect = $state<{ open: boolean; req: OAuthConnectRequest | n
   req: null,
 });
 
-// Hold the preview suspension across the dialog lifetime so the native overlay
-// never raises above the modal.
-let release: (() => void) | null = null;
+// Preview suspension is owned by Modal.svelte (OAuthConnectDialog wraps it), so the
+// opener must NOT suspend too: a second, separately-released suspension raced the
+// modal's on close and left the count stuck above zero, so the preview never re-showed.
 
 // Set by the dialog once the connect flow has linked the account, so closing
 // the (now-finished) modal does not abort the already-completed flow.
@@ -30,7 +29,6 @@ export function openOAuthConnect(req: OAuthConnectRequest): void {
   connected = false;
   oauthConnect.req = req;
   oauthConnect.open = true;
-  release ??= suspendPreview();
 }
 
 /** The dialog calls this on a successful link so the following close won't cancel. */
@@ -48,6 +46,4 @@ export function closeOAuthConnect(): void {
   connected = false;
   oauthConnect.open = false;
   oauthConnect.req = null;
-  release?.();
-  release = null;
 }

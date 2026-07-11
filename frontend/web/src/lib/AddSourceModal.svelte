@@ -3,7 +3,6 @@
   import Icon, { type IconName } from "./dock/Icon.svelte";
   import EmptyState from "./EmptyState.svelte";
   import { obs, type SourceType, type ExistingSource } from "./bridge";
-  import { suspendPreview } from "./previewGate.svelte";
   import { recentSources, pushRecent } from "./addSourceRecent.svelte";
   import { bucketTypes, categoryOf, CATEGORY_LABEL, type Category } from "./addSourceCategories";
 
@@ -19,8 +18,9 @@
   }
   let { canvas, scene, onCreated, onClose }: Props = $props();
 
-  // Hide the native preview overlay while this modal is open.
-  $effect(() => suspendPreview());
+  // Modal.svelte owns the preview suspension for its whole lifetime; this modal must
+  // not self-suspend on top of it (a second, separately-released suspension would race
+  // the modal's on close and leave the preview stuck hidden).
 
   let types = $state<SourceType[]>([]);
   let existingSources = $state<ExistingSource[]>([]);
