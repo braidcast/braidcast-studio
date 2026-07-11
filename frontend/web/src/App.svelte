@@ -109,10 +109,33 @@ import { EV } from "./lib/eventNames";
     }
   }
 
+  // Ctrl+wheel (and trackpad pinch, which arrives as ctrl+wheel) zooms the whole page
+  // in a browser; a desktop app must not. The keyboard zoom keys are killed natively
+  // in the CEF client; this covers the wheel path, which a key handler can't see.
+  function onWheel(e: WheelEvent): void {
+    if (e.ctrlKey) e.preventDefault();
+  }
+
+  // A file/text/link dropped anywhere on the window makes CEF navigate to it, which
+  // blows away the SPA. Cancel the default on the window so a stray drop is inert;
+  // real drop targets still receive their own (bubbling) drop event to read the data.
+  function onDragOver(e: DragEvent): void {
+    e.preventDefault();
+  }
+  function onWindowDrop(e: DragEvent): void {
+    e.preventDefault();
+  }
+
   onMount(() => {
     undoStore.start();
     const offChannels = channelsStore.init();
+    // Kill browser spellcheck squiggles app-wide (inherited); real prose fields can
+    // still opt back in with spellcheck="true".
+    document.body.spellcheck = false;
     window.addEventListener("keydown", onKeydown);
+    window.addEventListener("wheel", onWheel, { passive: false });
+    window.addEventListener("dragover", onDragOver);
+    window.addEventListener("drop", onWindowDrop);
     // Surface every saved screenshot (program or source) as a transient toast.
     const offShot = obs.on(EV.screenshotSaved, (p) => {
       const file = p.path.split(/[\\/]/).pop() || p.path;
@@ -120,6 +143,9 @@ import { EV } from "./lib/eventNames";
     });
     return () => {
       window.removeEventListener("keydown", onKeydown);
+      window.removeEventListener("wheel", onWheel);
+      window.removeEventListener("dragover", onDragOver);
+      window.removeEventListener("drop", onWindowDrop);
       offShot();
       offChannels();
     };

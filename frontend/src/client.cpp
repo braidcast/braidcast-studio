@@ -155,6 +155,52 @@ void Client::OnBeforeContextMenu(CefRefPtr<CefBrowser> /*browser*/, CefRefPtr<Ce
 	model->Clear();
 }
 
+bool Client::OnPreKeyEvent(CefRefPtr<CefBrowser> /*browser*/, const CefKeyEvent &event, CefEventHandle /*os_event*/,
+			   bool * /*is_keyboard_shortcut*/)
+{
+	CEF_REQUIRE_UI_THREAD();
+
+	if (event.type != KEYEVENT_RAWKEYDOWN && event.type != KEYEVENT_KEYDOWN) {
+		return false;
+	}
+
+	const bool ctrl = (event.modifiers & EVENTFLAG_CONTROL_DOWN) != 0;
+	const bool alt = (event.modifiers & EVENTFLAG_ALT_DOWN) != 0;
+	const int key = event.windows_key_code;
+
+	// Ctrl-combos that are pure browser chrome in a frameless desktop app: reload,
+	// print, find / find-next, view-source, and the three zoom keys (+, -, 0 for both
+	// the main row and the numpad). None carry app meaning, so consume them.
+	if (ctrl) {
+		switch (key) {
+		case 'R':
+		case 'P':
+		case 'F':
+		case 'G':
+		case 'U':
+		case '0':
+		case VK_OEM_PLUS:
+		case VK_OEM_MINUS:
+		case VK_ADD:
+		case VK_SUBTRACT:
+			return true;
+		default:
+			break;
+		}
+	}
+
+	// F5 reload (with or without Ctrl) and Alt+Left/Right history navigation would
+	// tear down or navigate away from the single-page app; swallow them too.
+	if (key == VK_F5) {
+		return true;
+	}
+	if (alt && (key == VK_LEFT || key == VK_RIGHT)) {
+		return true;
+	}
+
+	return false;
+}
+
 bool Client::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame,
 				      CefProcessId source_process, CefRefPtr<CefProcessMessage> message)
 {

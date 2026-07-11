@@ -8,6 +8,7 @@
 #include "include/cef_context_menu_handler.h"
 #include "include/cef_display_handler.h"
 #include "include/cef_drag_handler.h"
+#include "include/cef_keyboard_handler.h"
 #include "include/cef_load_handler.h"
 #include "include/cef_request_handler.h"
 #include "include/wrapper/cef_message_router.h"
@@ -25,7 +26,8 @@ class Client : public CefClient,
 	       public CefDragHandler,
 	       public CefLoadHandler,
 	       public CefRequestHandler,
-	       public CefContextMenuHandler {
+	       public CefContextMenuHandler,
+	       public CefKeyboardHandler {
 public:
 	Client();
 
@@ -44,6 +46,7 @@ public:
 	CefRefPtr<CefLoadHandler> GetLoadHandler() override { return this; }
 	CefRefPtr<CefRequestHandler> GetRequestHandler() override { return this; }
 	CefRefPtr<CefContextMenuHandler> GetContextMenuHandler() override { return this; }
+	CefRefPtr<CefKeyboardHandler> GetKeyboardHandler() override { return this; }
 	bool OnProcessMessageReceived(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame,
 				      CefProcessId source_process, CefRefPtr<CefProcessMessage> message) override;
 
@@ -86,6 +89,14 @@ public:
 	// menus where it needs them.
 	void OnBeforeContextMenu(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame,
 				 CefRefPtr<CefContextMenuParams> params, CefRefPtr<CefMenuModel> model) override;
+
+	// CefKeyboardHandler methods:
+	// Swallow the browser-chrome shortcuts (reload / whole-UI zoom / find / print /
+	// view-source / history back-forward) so the frameless app never acts on them.
+	// App shortcuts and the libobs global-hotkey thread run on separate paths, so no
+	// user-bindable key is lost here.
+	bool OnPreKeyEvent(CefRefPtr<CefBrowser> browser, const CefKeyEvent &event, CefEventHandle os_event,
+			   bool *is_keyboard_shortcut) override;
 
 private:
 	// Live browser windows. Only accessed on the CEF UI thread.
