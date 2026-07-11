@@ -745,6 +745,23 @@ build (C++ scan/apply bridge methods via super-languages; the wizard via super-f
 Reuses the libobs load path + the three-layer canvas/profile/binding model; do not
 invent a parallel persistence format.
 
+**Follow-on — partial / à-la-carte imports (not started, requested 2026-07-11).**
+The importer today only imports *into a new scene collection*: every toggle is
+gated on selecting a collection, so pulling just the global-audio devices+filters
+(`importGlobalAudio`) or just a stream credential still creates/switches a
+collection as a side effect. Add a **partial import** path that applies a chosen
+artifact to the *current* setup with **no collection creation/switch**:
+- **Global audio devices + their filters** — graft OBS `DesktopAudioDevice*` /
+  `AuxAudioDevice*` source blobs (incl. `filters`) onto the fork's global channels
+  via `GlobalAudioChannels().Persist()` + `AudioMonitor().Rebuild()`. (This is the
+  need that forced the 2026-07-11 hacky hand-recovery of lost mixer filters.)
+- **A single stream credential** into `streams.json` without touching scenes.
+- **Video / audio settings** onto the current config.
+Same OBS parse path, but the apply targets live global stores instead of a new
+collection. Decouple the wizard's per-artifact toggles from the
+collection-selection loop so each artifact imports independently. Small, separable
+from the Phase-12 Studio Profiles work.
+
 ---
 
 ## Phase 7 — Full UI redesign: nav-rail multi-page app 🔧 FEATURE-COMPLETE (GUI acceptance + merge owed)
