@@ -1541,3 +1541,9 @@ that does this automatically:
   canonical wins unless a cache is strictly newer AND valid.**
 - Log every decision through the Part 1 DEBUG channel (`config` category), so the
   next drift is a single trace read, not a four-path hand-hunt.
+- **Non-blocking:** run on a background thread at launch — the app opens
+  immediately. The work is parse + version-compare + an occasional file copy (a
+  few ms). Caveat: managed files are read lazily, not at splash
+  (`services.json` loads when the profile editor builds the Service list), so the
+  heal must either beat first read (it fires at boot; the user takes seconds to
+  reach the editor) or invalidate + reload the affected view if it lands after.
