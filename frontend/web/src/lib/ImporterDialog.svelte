@@ -290,12 +290,14 @@
 
   {#snippet footer()}
     {#if scan && scan.found && !result}
-      <button class="btn ghost" disabled={scanning} onclick={() => void browse()}>Browse…</button>
-      <button class="btn" disabled={!canImport} onclick={() => void runImport()}>
+      <button class="ghost" disabled={scanning} onclick={() => void browse()}>Browse…</button>
+    {/if}
+    <button class="ghost" onclick={onClose}>Close</button>
+    {#if scan && scan.found && !result}
+      <button class="accent" disabled={!canImport} onclick={() => void runImport()}>
         {busy ? "Importing…" : "Import"}
       </button>
     {/if}
-    <button class="btn ghost" onclick={onClose}>Close</button>
   {/snippet}
 </Modal>
 
