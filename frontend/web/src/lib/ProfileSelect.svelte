@@ -6,6 +6,7 @@
   // rendering (avatar / name / platform label + color) is defined ONCE here.
   import Avatar from "./Avatar.svelte";
   import { PLATFORM_COLORS, PLATFORM_LABELS } from "./theme/platformColors";
+  import { oauthStore } from "./oauthStore.svelte";
   import type { StreamProfileInfo } from "./bridge";
 
   interface Props {
@@ -16,6 +17,16 @@
     placeholder?: string;
   }
   let { profiles, hideUuids = [], onSelect, placeholder = "Search destinations…" }: Props = $props();
+
+  // Populate oauth statuses so a profile's linked channel avatar resolves the same way
+  // the Streams list does (ref-counted; free when another consumer already subscribes).
+  $effect(() => oauthStore.subscribe());
+
+  // The real channel avatar for a profile's linked account, or "" to fall back to the
+  // monogram. Same account-id resolution as the Streams rows (one accessor, no drift).
+  function avatarFor(p: StreamProfileInfo): string {
+    return oauthStore.connectedStatusForAccount(p.accountId)?.avatarUrl ?? "";
+  }
 
   let query = $state("");
   let open = $state(false);
@@ -135,7 +146,7 @@
             onmouseenter={() => (active = i)}
             onclick={() => choose(p)}
           >
-            <span class="ps-av"><Avatar name={profileName(p)} size={30} /></span>
+            <span class="ps-av"><Avatar url={avatarFor(p)} name={profileName(p)} size={30} /></span>
             <span class="ps-text">
               <span class="ps-name">{profileName(p)}</span>
               <span class="ps-sub">

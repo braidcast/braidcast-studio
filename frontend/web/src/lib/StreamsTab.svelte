@@ -153,10 +153,7 @@
   // by every profile that reuses it). A profile resolves its state by matching its
   // own accountId; an empty accountId means "not linked".
   function connectedStatusFor(p: StreamProfileInfo): OAuthStatus | null {
-    if (!p.accountId) {
-      return null;
-    }
-    return statuses.find((s) => s.accountId === p.accountId && s.connected) ?? null;
+    return oauthStore.connectedStatusForAccount(p.accountId);
   }
 
   // A token whose scopes are stale: reports connected:false but needsReconnect:true.

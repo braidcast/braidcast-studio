@@ -53,6 +53,16 @@ class OAuthStore {
     return this.connectedAccounts.length > 0;
   }
 
+  /** The connected status row an account id resolves to (empty id -> null). One place
+   * for avatar/name resolution shared by every profile-facing list (the Streams rows,
+   * the canvas destination picker), so both read the same account metadata. */
+  connectedStatusForAccount(accountId: string): OAuthStatus | null {
+    if (!accountId) {
+      return null;
+    }
+    return this.statuses.find((s) => s.accountId === accountId && s.connected) ?? null;
+  }
+
   /** Ref-counted subscription; returns an unsubscribe. Fetch + subscribe on the first
    * subscriber, tear down on the last. */
   subscribe(): () => void {
