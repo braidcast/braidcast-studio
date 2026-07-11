@@ -201,7 +201,7 @@ import { EV } from "../eventNames";
           {@const platformColor = PLATFORM_COLOR[e.platform] ?? "var(--color-muted)"}
           {@const actorColor = e.actorColor || platformColor}
           {@const accent = TYPE_COLOR[e.type] ?? "var(--color-muted)"}
-          <div class="row" style:top={row.top + "px"} use:measureRow={row.clientKey}>
+          <div class="row selectable" style:top={row.top + "px"} use:measureRow={row.clientKey}>
             <div class="line">
               <span class="pdot" style:background={platformColor} title={PLATFORM_LABEL[e.platform] ?? e.platform}
               ></span>

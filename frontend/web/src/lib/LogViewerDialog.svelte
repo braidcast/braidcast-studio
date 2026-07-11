@@ -67,7 +67,7 @@
   {#if !loaded}
     <p class="dim">Loading…</p>
   {:else}
-    <pre bind:this={pre} class="log">{contents}</pre>
+    <pre bind:this={pre} class="log selectable">{contents}</pre>
   {/if}
 
   {#snippet footer()}

@@ -108,6 +108,24 @@
   border-radius: 0 !important;
 }
 
+/* Desktop app, not a web page: a mouse drag must never rubber-band a text selection
+   across labels/panels. Suppress selection app-wide, then restore it only where text
+   is genuinely typed (form controls) or meant to be copied (opt-in `.selectable` —
+   chat lines, the log viewer). */
+:root {
+  user-select: none;
+  -webkit-user-select: none;
+}
+input,
+textarea,
+[contenteditable="true"],
+[contenteditable=""],
+.selectable,
+.selectable * {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
 html,
 body {
   height: 100%;

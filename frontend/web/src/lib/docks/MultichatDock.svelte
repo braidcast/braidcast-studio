@@ -126,7 +126,7 @@ import { EV } from "../eventNames";
         {#each feed.visible as row (row.clientKey)}
           {@const m = row.item}
           {@const authorColor = m.author.color || PLATFORM_COLOR[m.platform]}
-          <div class="row" style:top={row.top + "px"} use:measureRow={row.clientKey}>
+          <div class="row selectable" style:top={row.top + "px"} use:measureRow={row.clientKey}>
             <span class="pdot" style:background={PLATFORM_COLOR[m.platform]} title={PLATFORM_LABEL[m.platform]}
             ></span>
             {#each m.author.badges as b (b.kind + (b.url ?? ""))}
