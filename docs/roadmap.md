@@ -1547,3 +1547,32 @@ that does this automatically:
   (`services.json` loads when the profile editor builds the Service list), so the
   heal must either beat first read (it fires at boot; the user takes seconds to
   reach the editor) or invalidate + reload the affected view if it lands after.
+
+**Part 4 — proactive credential health (dead-refresh-token detection).**
+Access-token expiry is already handled well: `ensureFresh` refreshes in a skew
+window before each authed call plus a reactive 401 retry, single-flight and
+store-coherent — silent to the user. The gap is **refresh-token death** (password
+change → revoke, 30-day inactivity, manual revoke). Today that path is invisible
+until it bites:
+- The connected gate is `isTokenScopeCurrent && !refresh.empty()`, and a revoked
+  token is still a non-empty string, so the account shows **green until first
+  real use** (go-live apply / metadata / chat connect), where `refresh()` fails
+  with the raw broker error.
+- `AccountNeedsReconnect` trips only on **scope version**, never on a refresh
+  *rejection* — so a dead token doesn't even self-classify as needs-reconnect.
+  `provider.hpp` documents "invalid_grant means the caller must force re-auth" but
+  **no caller wires it up** — declared, unimplemented.
+
+Note the hard limit: a revoked refresh token **cannot** be silently re-granted —
+re-auth requires user consent in the browser. So the goal is *detect early +
+prompt cleanly to relink*, not auto-fix. Work:
+- Distinguish `invalid_grant` (dead credential, needs relink) from a transient
+  network/5xx refresh failure (retry, don't relink) in the broker refresh path,
+  and surface that classification up to the account status.
+- Extend the needs-reconnect signal to include "refresh rejected", so the UI flips
+  the account to the amber relink state instead of a raw mid-action error, and the
+  go-live modal prompts relink before the user commits.
+- Optionally, a lightweight **background health check** (piggybacking the Part 3
+  launch thread and/or a pre-go-live probe) that validates each connected
+  account's refresh token and pre-flags stale ones — so relink is prompted at a
+  calm moment, not mid-stream. Non-blocking, same threading discipline as Part 3.
