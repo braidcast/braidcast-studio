@@ -27,6 +27,10 @@
   let importService = $state(false);
   let importVideo = $state(false);
   let importAudio = $state(false);
+  // Global audio devices (Desktop/Mic) + their filters live at each collection's root,
+  // not in the settings scan. Off by default: importing overwrites the fork's single
+  // shared global audio set, so it is an explicit opt-in (also the lost-filter recovery).
+  let importGlobalAudio = $state(false);
 
   let busy = $state(false);
   let result = $state<ImporterImportResult | null>(null);
@@ -55,6 +59,7 @@
     importService = s.service?.present ?? false;
     importVideo = s.video != null;
     importAudio = s.audio != null;
+    importGlobalAudio = false;
   }
 
   // Pass path="" to auto-detect the OBS Studio install; a real path re-scans there.
@@ -163,6 +168,7 @@
         importService,
         importVideo,
         importAudio,
+        importGlobalAudio,
       });
       result = res;
       error = null;
@@ -246,7 +252,7 @@
           </ul>
         {/if}
 
-        {#if scan.service || scan.video || scan.audio}
+        {#if scan.service || scan.video || scan.audio || scan.collections.length}
           <h4 class="section">Settings</h4>
           {#if scan.service}
             <label class="check">
@@ -264,6 +270,16 @@
             <label class="check">
               <input type="checkbox" checked={importAudio} onchange={(e) => (importAudio = e.currentTarget.checked)} />
               Audio settings ({scan.audio.sampleRate} Hz, {scan.audio.channels})
+            </label>
+          {/if}
+          {#if scan.collections.length}
+            <label class="check">
+              <input
+                type="checkbox"
+                checked={importGlobalAudio}
+                onchange={(e) => (importGlobalAudio = e.currentTarget.checked)}
+              />
+              Desktop &amp; Mic audio devices, with their filters
             </label>
           {/if}
         {/if}

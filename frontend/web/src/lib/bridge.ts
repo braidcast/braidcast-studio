@@ -975,6 +975,7 @@ export interface ImporterImportRequest {
   importService: boolean;
   importVideo: boolean;
   importAudio: boolean;
+  importGlobalAudio: boolean;
 }
 
 /** Result of an import run (`importer.import`). */

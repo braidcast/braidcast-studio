@@ -9,6 +9,7 @@
 #include "transitions.hpp"
 
 #include "multistream/CanvasStore.hpp"
+#include "multistream/GlobalAudioChannels.hpp"
 #include "multistream/MultistreamEngine.hpp"
 #include "multistream/StorePaths.hpp"
 #include "multistream/StreamProfileStore.hpp"
@@ -19,6 +20,7 @@
 #include <util/dstr.h>
 #include <util/platform.h>
 
+#include <array>
 #include <queue>
 #include <string>
 #include <unordered_map>
@@ -632,6 +634,46 @@ json Scan(const std::string &path)
 	return result;
 }
 
+// Restore the global audio device sources (Desktop Audio / Mic-Aux) OBS stores at a
+// scene-collection root as full obs_save_source blobs -- keyed DesktopAudioDevice1/2
+// and AuxAudioDevice1-4 -- onto the fork's global output channels 1-6, filters and
+// all. Returns how many channels were applied. Maps to the same channel layout as
+// GlobalAudioChannels::Slots (desktop -> 1/2, mic -> 3/4/5/6).
+int ApplyGlobalAudioDevices(obs_data_t *root)
+{
+	struct Map {
+		const char *key;
+		int channel;
+	};
+	static const std::array<Map, 6> kMap = {{
+		{"DesktopAudioDevice1", 1},
+		{"DesktopAudioDevice2", 2},
+		{"AuxAudioDevice1", 3},
+		{"AuxAudioDevice2", 4},
+		{"AuxAudioDevice3", 5},
+		{"AuxAudioDevice4", 6},
+	}};
+
+	int applied = 0;
+	for (const Map &m : kMap) {
+		if (!obs_data_has_user_value(root, m.key)) {
+			continue;
+		}
+		OBSDataAutoRelease blob = obs_data_get_obj(root, m.key);
+		if (!blob) {
+			continue;
+		}
+		obs_source_t *src = obs_load_source(blob); // create-ref; restores the "filters" array
+		if (!src) {
+			continue;
+		}
+		obs_set_output_source(m.channel, src); // channel takes its own ref
+		obs_source_release(src);               // drop the create-ref
+		applied++;
+	}
+	return applied;
+}
+
 json Import(const json &params)
 {
 	// Refuse BEFORE any mutation while live: the scene world / video / audio mixes
@@ -767,6 +809,37 @@ json Import(const json &params)
 		}
 	}
 
+	// ---- global audio devices (Desktop/Mic sources + their FILTERS) -> shared mix ----
+	// OBS stores these at each scene-collection root as full obs_save_source blobs; the
+	// fork keeps ONE shared global set, so import from a single collection (the first with
+	// device data wins, deterministically) and persist it. This is the path that recovers
+	// the filters/volume/mute the fork's own persistence never captured before.
+	bool globalAudioImported = false;
+	if (params.value("importGlobalAudio", false) && params.contains("collections") &&
+	    params["collections"].is_array()) {
+		for (const json &req : params["collections"]) {
+			if (!req.is_object() || !req.contains("file") || !req["file"].is_string()) {
+				continue;
+			}
+			const std::string file = req["file"].get<std::string>();
+			OBSDataAutoRelease root =
+				obs_data_create_from_json_file((ScenesDir(base) + "/" + file).c_str()); // read-only
+			if (!root) {
+				continue;
+			}
+			if (ApplyGlobalAudioDevices(root) > 0) {
+				globalAudioImported = true;
+				break; // first collection with global audio wins; the fork has one shared set
+			}
+		}
+		if (globalAudioImported) {
+			ObsBootstrap::GlobalAudioChannels().Persist();
+			ObsBootstrap::AudioMonitor().Rebuild();
+		} else {
+			warnings.push_back("no global audio devices found to import");
+		}
+	}
+
 	// Emit only the events whose data actually changed so each window resyncs.
 	if (importedCollections > 0) {
 		Bridge::EmitEvent(EventNames::kCollectionsChanged, json::object());
@@ -789,6 +862,9 @@ json Import(const json &params)
 	}
 	if (audioImported) {
 		Bridge::EmitEvent(EventNames::kSettingsAudioChanged, json::object());
+	}
+	if (globalAudioImported) {
+		Bridge::EmitEvent(EventNames::kAudioChanged, json::object());
 	}
 
 	HostLog("[importer] imported collections=" + std::to_string(importedCollections) +
