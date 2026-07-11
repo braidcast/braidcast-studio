@@ -194,7 +194,7 @@ bool KickProvider::searchCategories(OAuthAccount &acct, const std::string &query
 {
 	Http::HttpReq req;
 	req.method = "GET";
-	req.url = std::string(kKickApiBase) + "/public/v2/categories?name[]=" + Http::UrlEncode(query);
+	req.url = std::string(kKickApiBase) + "/public/v2/categories?name=" + Http::UrlEncode(query);
 
 	Http::HttpResponse resp;
 	if (!SendAuthed(acct, req, resp, err)) {
