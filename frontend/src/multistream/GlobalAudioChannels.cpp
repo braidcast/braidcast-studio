@@ -95,14 +95,33 @@ void GlobalAudioChannels::Persist() const
 		if (!cur) {
 			continue;
 		}
-		OBSDataAutoRelease settings = obs_source_get_settings(cur);
-		const char *deviceId = settings ? obs_data_get_string(settings, "device_id") : nullptr;
-		obj[std::to_string(slot.channel)] = deviceId ? std::string(deviceId) : std::string();
+		// Save the FULL source blob (settings + volume/mute/monitoring/sync + the
+		// "filters" array), not just device_id -- these channel sources are excluded
+		// from the scene-collection save (SaveFilter), so this file is the only place
+		// their filters and mixer state can persist. A blob that won't round-trip
+		// through JSON degrades to the legacy device_id string.
+		OBSDataAutoRelease saved = obs_save_source(cur); // full obs_save_source blob
+		const char *savedJson = saved ? obs_data_get_json(saved) : nullptr;
+		bool stored = false;
+		if (savedJson && *savedJson) {
+			try {
+				obj[std::to_string(slot.channel)] = json::parse(savedJson);
+				stored = true;
+			} catch (...) {
+				stored = false;
+			}
+		}
+		if (!stored) {
+			OBSDataAutoRelease settings = obs_source_get_settings(cur);
+			const char *deviceId = settings ? obs_data_get_string(settings, "device_id") : nullptr;
+			obj[std::to_string(slot.channel)] = deviceId ? std::string(deviceId) : std::string();
+		}
 	}
 
 	// Store the map as a stringified-JSON blob under "state", the same key/value
-	// envelope theme.json/layout.json use, so the file stays byte-identical to the
-	// legacy WriteJsonString("audio_devices.json", "state", ...) writer.
+	// envelope theme.json/layout.json use. Each channel value is either a full source
+	// blob (object) or, for legacy/degraded records, a device_id (string) -- restore
+	// dispatches on the type.
 	OBSDataAutoRelease root = obs_data_create();
 	obs_data_set_string(root, "state", obj.dump().c_str());
 	SaveJsonAtomic(root, MultistreamBasicPath("audio_devices.json"));
@@ -156,14 +175,32 @@ void GlobalAudioChannels::SeedOrRestore()
 		} catch (...) {
 			continue;
 		}
-		if (!it.value().is_string()) {
+		if (!SlotForChannel(channel)) {
 			continue;
 		}
-		std::string err;
-		if (ApplyDevice(channel, it.value().get<std::string>(), err)) {
-			++restored;
-		} else {
-			HostLog("[audio] global audio: restore ch" + std::to_string(channel) + " failed: " + err);
+		if (it.value().is_object()) {
+			// Full source blob: recreate the source with its filters + mixer state and
+			// bind it to the channel. obs_load_source restores the "filters" array.
+			const std::string blob = it.value().dump();
+			OBSDataAutoRelease data = obs_data_create_from_json(blob.c_str());
+			obs_source_t *src = data ? obs_load_source(data) : nullptr; // create-ref
+			if (src) {
+				obs_set_output_source(channel, src); // channel takes its own ref
+				obs_source_release(src);              // drop the create-ref
+				++restored;
+			} else {
+				HostLog("[audio] global audio: restore ch" + std::to_string(channel) +
+					" blob load failed");
+			}
+		} else if (it.value().is_string()) {
+			// Legacy device_id map (pre-blob installs): recreate a bare source.
+			std::string err;
+			if (ApplyDevice(channel, it.value().get<std::string>(), err)) {
+				++restored;
+			} else {
+				HostLog("[audio] global audio: restore ch" + std::to_string(channel) +
+					" failed: " + err);
+			}
 		}
 	}
 	HostLog("[audio] global audio: restored " + std::to_string(restored) + " channel(s) from audio_devices.json");
