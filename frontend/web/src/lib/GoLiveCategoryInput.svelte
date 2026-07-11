@@ -16,6 +16,7 @@
   let results = $state<StreamCategory[]>([]);
   let open = $state(false);
   let loading = $state(false);
+  let rootEl = $state<HTMLDivElement | null>(null);
   let timer: ReturnType<typeof setTimeout> | null = null;
   let seq = 0;
 
@@ -66,10 +67,22 @@
     results = [];
   }
 
-  function onBlur(): void {
-    // Delay so a result click registers before the dropdown unmounts.
-    setTimeout(() => (open = false), 120);
-  }
+  // Close on a click outside the widget rather than on input blur: an input-blur
+  // close fires the moment the pointer leaves the field to grab the dropdown's
+  // scrollbar, collapsing the list mid-scroll. A click-outside check keeps the
+  // menu open while the user interacts with it (scrollbar drag, wheel, item click).
+  $effect(() => {
+    if (!open) {
+      return;
+    }
+    const onDoc = (e: MouseEvent): void => {
+      if (rootEl && !rootEl.contains(e.target as Node)) {
+        open = false;
+      }
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  });
 
   onDestroy(() => {
     if (timer !== null) {
@@ -78,7 +91,7 @@
   });
 </script>
 
-<div class="cat">
+<div class="cat" bind:this={rootEl}>
   <input
     class="inp"
     type="text"
@@ -88,7 +101,6 @@
     onfocus={() => {
       if (results.length) open = true;
     }}
-    onblur={onBlur}
   />
   {#if open && results.length}
     <ul class="menu">
