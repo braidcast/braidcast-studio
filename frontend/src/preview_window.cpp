@@ -1270,10 +1270,21 @@ void PreviewSurface::EnsureCreated()
 	}
 	SetWindowLongPtrW(hwnd_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
 	HostLog("[obs] preview overlay HWND created");
+}
 
+void PreviewSurface::EnsureDisplay(int cx, int cy)
+{
+	if (display_ || !hwnd_) {
+		return;
+	}
+
+	// Create the swapchain at the target size so the fresh display presents at the
+	// right resolution immediately (a following obs_display_resize to the same size
+	// is a no-op). ApplyRect always feeds a positive rect here (zero/negative sizes
+	// hide in SetRect before reaching ApplyRect).
 	gs_init_data init = {};
-	init.cx = 16;
-	init.cy = 16;
+	init.cx = uint32_t(cx);
+	init.cy = uint32_t(cy);
 	init.format = GS_BGRA;
 	init.zsformat = GS_ZS_NONE;
 	init.window.hwnd = hwnd_; // child HWND passthrough (gs_window.hwnd is void*)
@@ -1297,6 +1308,8 @@ void PreviewSurface::ApplyRect(int x, int y, int cx, int cy)
 	// the first sized call.
 	SetWindowPos(hwnd_, HWND_TOP, x, y, cx, cy, SWP_NOACTIVATE | SWP_SHOWWINDOW);
 
+	// Rebuild the swapchain if a prior Hide() dropped it, then size it to the rect.
+	EnsureDisplay(cx, cy);
 	if (display_) {
 		obs_display_resize(static_cast<obs_display_t *>(display_), uint32_t(cx), uint32_t(cy));
 	}
@@ -1372,9 +1385,16 @@ void PreviewSurface::Hide()
 	if (hwnd_) {
 		ShowWindow(hwnd_, SW_HIDE);
 	}
+
+	// Drop the swapchain while hidden. A flip-model swapchain presented to an
+	// SW_HIDE window latches an occluded/black state that a same-size reshow never
+	// clears (render_display_begin skips gs_resize when the size is unchanged, and
+	// Present ignores DXGI_STATUS_OCCLUDED). Destroying it here forces ApplyRect to
+	// build a fresh one on the next show, mirroring stock OBS's recreate-on-show.
+	TeardownDisplay();
 }
 
-void PreviewSurface::Destroy()
+void PreviewSurface::TeardownDisplay()
 {
 	if (display_) {
 		obs_display_t *display = static_cast<obs_display_t *>(display_);
@@ -1383,6 +1403,11 @@ void PreviewSurface::Destroy()
 		display_ = nullptr;
 		HostLog("[obs] preview display destroyed");
 	}
+}
+
+void PreviewSurface::Destroy()
+{
+	TeardownDisplay();
 	if (state_->boxBuffer) {
 		obs_enter_graphics();
 		gs_vertexbuffer_destroy(state_->boxBuffer);

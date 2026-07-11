@@ -102,7 +102,21 @@ public:
 	struct State;
 
 private:
+	// Create the overlay child HWND (no display) on first use. Idempotent.
 	void EnsureCreated();
+
+	// (Re)create the obs_display + its swapchain at (cx,cy) and register the draw
+	// callback, when none exists yet. Hide() destroys the display so a suspended
+	// overlay drops its swapchain; this rebuilds a fresh one on the next SetRect,
+	// so a hidden-then-shown flip-model swapchain never resurfaces black (an
+	// unchanged-size reshow would otherwise skip gs_resize and keep the occluded
+	// buffers). No-op while a display already exists or before the HWND is created.
+	void EnsureDisplay(int cx, int cy);
+
+	// Remove the draw callback + destroy the obs_display (the swapchain), leaving
+	// the overlay HWND intact. Shared by Hide() (drop swapchain on suspend) and
+	// Destroy() (full teardown).
+	void TeardownDisplay();
 
 	// Position/size the overlay HWND + resize its obs_display to (cx,cy) and show it.
 	// The synchronous SetWindowPos keeps the HWND tracking the DOM; the obs_display
