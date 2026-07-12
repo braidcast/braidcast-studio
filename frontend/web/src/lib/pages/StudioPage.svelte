@@ -209,7 +209,12 @@ import { EV } from "../eventNames";
   // restore chip is hidden and toggleDock refuses to open them while none is connected;
   // an already-open one falls back to its own empty state (handled in the dock body).
   const OAUTH_GATED_DOCKS = new Set(["events", "multichat", "channels"]);
+  // Same enabled predicate PreviewDock uses to output-gate the Default canvas surface
+  // (CanvasInfo.enabled is AnyEnabledForCanvas(default) server-side); reused here so the
+  // "preview" restore chip hides exactly when a non-default canvas's chip would.
+  let defaultCanvasEnabled = $derived(canvases.find((c) => c.isDefault)?.enabled ?? true);
   function dockOpenable(id: string): boolean {
+    if (id === "preview" && !defaultCanvasEnabled) return false;
     return !OAUTH_GATED_DOCKS.has(id) || oauthStore.hasAnyConnected;
   }
 
@@ -502,10 +507,11 @@ import { EV } from "../eventNames";
 
   // CANVASES-bar overflow contents. The program/multiview projector entries are
   // hidden pending the projector redesign (the openProgram*/openMultiview* code
-  // paths + monitor enumeration are kept so they can be re-surfaced then); only the
-  // dock-lock toggle remains (a leading ✓ marks it on, since ContextMenu items have
-  // no native checked state).
+  // paths + monitor enumeration are kept so they can be re-surfaced then); Reset
+  // Layout and the dock-lock toggle remain (a leading ✓ marks Lock Docks on, since
+  // ContextMenu items have no native checked state).
   let overflowItems = $derived<(ContextMenuItem | null)[]>([
+    { label: "Reset Layout", action: resetLayout },
     { label: (docksLocked ? "✓ " : "") + "Lock Docks", action: toggleLock },
   ]);
 
@@ -737,12 +743,6 @@ import { EV } from "../eventNames";
           <path d="M21 8H10a6 6 0 0 0 0 12h6" />
           <path d="M17 4l4 4-4 4" />
         </svg>
-      </button>
-      <button class="txtbtn" title="Reset dock layout" onclick={resetLayout}>
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
-          <path d="M20 11A8 8 0 105.6 6.5M4 3v4h4" />
-        </svg>
-        Reset Layout
       </button>
       <button class="iconbtn" title="More" aria-label="More studio actions" onclick={openOverflow}>
         <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
