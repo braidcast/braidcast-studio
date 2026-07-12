@@ -8,6 +8,7 @@
 #include "scene_collections.hpp"
 #include "transitions.hpp"
 
+#include "audio/AudioMonitor.hpp"
 #include "multistream/CanvasStore.hpp"
 #include "multistream/GlobalAudioChannels.hpp"
 #include "multistream/MultistreamEngine.hpp"
