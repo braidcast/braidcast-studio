@@ -24,7 +24,9 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <mutex>
 #include <atomic>
 #include <string>
+#if !defined(_WIN32)
 #include <QDirIterator>
+#endif
 #include <obs-module.h>
 #include "aeffectx.h"
 #include "vst-plugin-callbacks.hpp"
@@ -36,8 +38,12 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 class EditorWidget;
 
+#if defined(_WIN32)
+class VSTPlugin {
+#else
 class VSTPlugin : public QObject {
 	Q_OBJECT
+#endif
 
 	/* Because effect is always changed in UI thread, so lockEffect is only necessary for these situations:
 	1. access effect object outside of UI thread;
@@ -100,9 +106,11 @@ public:
 	bool vstLoaded();
 
 	bool isEditorOpen();
+#if !defined(_WIN32)
 	void onEditorClosed();
 
 public slots:
+#endif
 	void openEditor();
 	void closeEditor();
 };

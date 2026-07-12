@@ -18,6 +18,89 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #include "headers/VSTPlugin.h"
 #include <util/platform.h>
+#include <vector>
+#include <cstdint>
+
+#if defined(_WIN32)
+// Qt (qglobal.h) used to supply this typedef via the includes we dropped.
+using uint = unsigned int;
+
+static const char kB64Chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+static std::string base64Encode(const unsigned char *data, size_t len)
+{
+	std::string out;
+	out.reserve(((len + 2) / 3) * 4);
+
+	size_t i = 0;
+	for (; i + 2 < len; i += 3) {
+		uint32_t n = (uint32_t(data[i]) << 16) | (uint32_t(data[i + 1]) << 8) | data[i + 2];
+		out.push_back(kB64Chars[(n >> 18) & 0x3F]);
+		out.push_back(kB64Chars[(n >> 12) & 0x3F]);
+		out.push_back(kB64Chars[(n >> 6) & 0x3F]);
+		out.push_back(kB64Chars[n & 0x3F]);
+	}
+
+	if (i < len) {
+		bool two = (i + 1 < len);
+		uint32_t n = uint32_t(data[i]) << 16;
+		if (two) {
+			n |= uint32_t(data[i + 1]) << 8;
+		}
+		out.push_back(kB64Chars[(n >> 18) & 0x3F]);
+		out.push_back(kB64Chars[(n >> 12) & 0x3F]);
+		out.push_back(two ? kB64Chars[(n >> 6) & 0x3F] : '=');
+		out.push_back('=');
+	}
+
+	return out;
+}
+
+static std::vector<unsigned char> base64Decode(const std::string &in)
+{
+	auto value = [](char c) -> int {
+		if (c >= 'A' && c <= 'Z') {
+			return c - 'A';
+		}
+		if (c >= 'a' && c <= 'z') {
+			return c - 'a' + 26;
+		}
+		if (c >= '0' && c <= '9') {
+			return c - '0' + 52;
+		}
+		if (c == '+') {
+			return 62;
+		}
+		if (c == '/') {
+			return 63;
+		}
+		return -1;
+	};
+
+	std::vector<unsigned char> out;
+	out.reserve((in.size() / 4) * 3);
+
+	uint32_t buffer = 0;
+	int bits = 0;
+	for (char c : in) {
+		if (c == '=') {
+			break;
+		}
+		int v = value(c);
+		if (v < 0) {
+			continue; // skip whitespace / stray characters
+		}
+		buffer = (buffer << 6) | uint32_t(v);
+		bits += 6;
+		if (bits >= 8) {
+			bits -= 8;
+			out.push_back((unsigned char)((buffer >> bits) & 0xFF));
+		}
+	}
+
+	return out;
+}
+#endif
 
 intptr_t VSTPlugin::hostCallback_static(AEffect *effect, int32_t opcode, int32_t index, intptr_t value, void *ptr,
 					float opt)
@@ -59,7 +142,7 @@ intptr_t VSTPlugin::hostCallback_static(AEffect *effect, int32_t opcode, int32_t
 	// index: width, value: height
 	case audioMasterSizeWindow:
 		if (plugin && plugin->editorWidget) {
-			plugin->editorWidget->handleResizeRequest(index, value);
+			plugin->editorWidget->handleResizeRequest(index, (int)value);
 		}
 		return 1;
 
@@ -70,13 +153,13 @@ intptr_t VSTPlugin::hostCallback_static(AEffect *effect, int32_t opcode, int32_t
 
 VstTimeInfo *VSTPlugin::GetTimeInfo()
 {
-	mTimeInfo.nanoSeconds = os_gettime_ns() / 1000000;
+	mTimeInfo.nanoSeconds = (double)(os_gettime_ns() / 1000000);
 	return &mTimeInfo;
 }
 
 float VSTPlugin::GetSampleRate()
 {
-	return mTimeInfo.sampleRate;
+	return (float)mTimeInfo.sampleRate;
 }
 
 VSTPlugin::VSTPlugin(obs_source_t *sourceContext) : sourceContext{sourceContext} {}
@@ -193,14 +276,14 @@ void VSTPlugin::loadEffectFromPath(const std::string &path)
 
 		// Initialize time info
 		memset(&mTimeInfo, 0, sizeof(mTimeInfo));
-		mTimeInfo.sampleRate = sampleRate;
-		mTimeInfo.nanoSeconds = os_gettime_ns() / 1000000;
+		mTimeInfo.sampleRate = (double)sampleRate;
+		mTimeInfo.nanoSeconds = (double)(os_gettime_ns() / 1000000);
 		mTimeInfo.tempo = 120.0;
 		mTimeInfo.timeSigNumerator = 4;
 		mTimeInfo.timeSigDenominator = 4;
 		mTimeInfo.flags = kVstTempoValid | kVstNanosValid | kVstTransportPlaying;
 
-		effect->dispatcher(effect, effSetSampleRate, 0, 0, nullptr, sampleRate);
+		effect->dispatcher(effect, effSetSampleRate, 0, 0, nullptr, (float)sampleRate);
 		int blocksize = BLOCK_SIZE;
 		effect->dispatcher(effect, effSetBlockSize, 0, blocksize, nullptr, 0.0f);
 
@@ -290,9 +373,16 @@ void VSTPlugin::unloadEffect()
 
 bool VSTPlugin::isEditorOpen()
 {
+#if defined(_WIN32)
+	// Reclaim an editor the user closed via its own window controls.
+	if (editorWidget && editorWidget->isFinished()) {
+		closeEditor();
+	}
+#endif
 	return editorWidget ? true : false;
 }
 
+#if !defined(_WIN32)
 void VSTPlugin::onEditorClosed()
 {
 	if (!editorWidget) {
@@ -307,9 +397,16 @@ void VSTPlugin::onEditorClosed()
 		effect->dispatcher(effect, effEditClose, 0, 0, nullptr, 0);
 	}
 }
+#endif
 
 void VSTPlugin::openEditor()
 {
+#if defined(_WIN32)
+	// Reclaim a user-closed editor so it can be reopened.
+	if (editorWidget && editorWidget->isFinished()) {
+		closeEditor();
+	}
+#endif
 	if (effect && !editorWidget) {
 		// This check logic is refer to open source project : Audacity
 		if (!(effect->flags & effFlagsHasEditor)) {
@@ -325,12 +422,22 @@ void VSTPlugin::openEditor()
 			sourceName = "VST 2.x";
 		}
 
+#if defined(_WIN32)
+		std::string windowTitle;
+		if (filterName.empty()) {
+			windowTitle = sourceName + " - " + effectName;
+		} else {
+			windowTitle = sourceName + ": " + filterName + " - " + effectName;
+		}
+		editorWidget->setWindowTitle(windowTitle);
+#else
 		if (filterName.empty()) {
 			editorWidget->setWindowTitle(QString("%1 - %2").arg(sourceName.c_str(), effectName));
 		} else {
 			editorWidget->setWindowTitle(
 				QString("%1: %2 - %3").arg(sourceName.c_str(), filterName.c_str(), effectName));
 		}
+#endif
 		editorWidget->show();
 	}
 }
@@ -338,7 +445,15 @@ void VSTPlugin::openEditor()
 void VSTPlugin::closeEditor()
 {
 	if (editorWidget) {
+		// Synchronous on Windows: close() tears the window down and joins
+		// the UI thread (running effEditClose) before we free the object,
+		// so unloadEffect() can safely FreeLibrary afterwards.
 		editorWidget->close();
+#if defined(_WIN32)
+		delete editorWidget;
+		editorWidget = nullptr;
+		editorOpened = false;
+#endif
 	}
 }
 
@@ -358,8 +473,12 @@ std::string VSTPlugin::getChunk()
 
 		intptr_t chunkSize = effect->dispatcher(effect, effGetChunk, 1, 0, &buf, 0.0);
 
+#if defined(_WIN32)
+		return base64Encode(reinterpret_cast<const unsigned char *>(buf), (size_t)chunkSize);
+#else
 		QByteArray data = QByteArray((char *)buf, chunkSize);
 		return QString(data.toBase64()).toStdString();
+#endif
 	} else {
 		std::vector<float> params;
 		for (int i = 0; i < effect->numParams; i++) {
@@ -367,10 +486,15 @@ std::string VSTPlugin::getChunk()
 			params.push_back(parameter);
 		}
 
+#if defined(_WIN32)
+		return base64Encode(reinterpret_cast<const unsigned char *>(params.data()),
+				    sizeof(float) * params.size());
+#else
 		const char *bytes = reinterpret_cast<const char *>(&params[0]);
 		QByteArray data = QByteArray(bytes, (int)(sizeof(float) * params.size()));
 		std::string encoded = QString(data.toBase64()).toStdString();
 		return encoded;
+#endif
 	}
 }
 
@@ -381,12 +505,31 @@ void VSTPlugin::setChunk(const std::string &data)
 	}
 
 	if (effect->flags & effFlagsProgramChunks) {
+#if defined(_WIN32)
+		std::vector<unsigned char> chunkData = base64Decode(data);
+		effect->dispatcher(effect, effSetChunk, 1, (intptr_t)chunkData.size(),
+				   chunkData.empty() ? nullptr : chunkData.data(), 0);
+#else
 		QByteArray base64Data = QByteArray(data.c_str(), (int)data.length());
 		QByteArray chunkData = QByteArray::fromBase64(base64Data);
 		void *buf = nullptr;
 		buf = chunkData.data();
 		effect->dispatcher(effect, effSetChunk, 1, chunkData.length(), buf, 0);
+#endif
 	} else {
+#if defined(_WIN32)
+		std::vector<unsigned char> paramData = base64Decode(data);
+		const size_t size = paramData.size() / sizeof(float);
+
+		if (size != (size_t)effect->numParams) {
+			return;
+		}
+
+		const float *p_floats = reinterpret_cast<const float *>(paramData.data());
+		for (int i = 0; i < effect->numParams; i++) {
+			effect->setParameter(effect, i, p_floats[i]);
+		}
+#else
 		QByteArray base64Data = QByteArray(data.c_str(), (int)data.length());
 		QByteArray paramData = QByteArray::fromBase64(base64Data);
 
@@ -404,6 +547,7 @@ void VSTPlugin::setChunk(const std::string &data)
 		for (int i = 0; i < effect->numParams; i++) {
 			effect->setParameter(effect, i, params[i]);
 		}
+#endif
 	}
 }
 
@@ -418,7 +562,7 @@ void VSTPlugin::setProgram(const int programNumber)
 
 int VSTPlugin::getProgram()
 {
-	return effect->dispatcher(effect, effGetProgram, 0, 0, NULL, 0.0f);
+	return (int)effect->dispatcher(effect, effGetProgram, 0, 0, NULL, 0.0f);
 }
 
 void VSTPlugin::getSourceNames()

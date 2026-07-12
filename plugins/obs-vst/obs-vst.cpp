@@ -17,7 +17,19 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 *****************************************************************************/
 
 #include "headers/VSTPlugin.h"
+#if defined(_WIN32)
+#include <windows.h>
+#include <bcrypt.h>
+#include <util/platform.h>
+#include <vector>
+#include <string>
+#include <utility>
+#include <filesystem>
+#include <algorithm>
+#include <system_error>
+#else
 #include <QCryptographicHash>
+#endif
 
 #define OPEN_VST_SETTINGS "open_vst_settings"
 #define CLOSE_VST_SETTINGS "close_vst_settings"
@@ -43,7 +55,11 @@ static bool open_editor_button_clicked(obs_properties_t *props, obs_property_t *
 
 	if (vstPlugin && vstPlugin->vstLoaded()) {
 
+#if defined(_WIN32)
+		vstPlugin->openEditor();
+#else
 		QMetaObject::invokeMethod(vstPlugin, "openEditor");
+#endif
 
 		obs_property_set_visible(obs_properties_get(props, OPEN_VST_SETTINGS), false);
 		obs_property_set_visible(obs_properties_get(props, CLOSE_VST_SETTINGS), true);
@@ -60,7 +76,11 @@ static bool close_editor_button_clicked(obs_properties_t *props, obs_property_t 
 
 	if (vstPlugin && vstPlugin->vstLoaded() && vstPlugin->isEditorOpen()) {
 
+#if defined(_WIN32)
+		vstPlugin->closeEditor();
+#else
 		QMetaObject::invokeMethod(vstPlugin, "closeEditor");
+#endif
 
 		obs_property_set_visible(obs_properties_get(props, OPEN_VST_SETTINGS), true);
 		obs_property_set_visible(obs_properties_get(props, CLOSE_VST_SETTINGS), false);
@@ -69,6 +89,68 @@ static bool close_editor_button_clicked(obs_properties_t *props, obs_property_t 
 	return true;
 }
 
+#if defined(_WIN32)
+static std::string wideToUtf8(const std::wstring &w)
+{
+	if (w.empty()) {
+		return std::string();
+	}
+	int len = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), nullptr, 0, nullptr, nullptr);
+	std::string s(len, '\0');
+	WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), s.data(), len, nullptr, nullptr);
+	return s;
+}
+
+std::string getFileMD5(const char *file)
+{
+	wchar_t *wpath = nullptr;
+	os_utf8_to_wcs_ptr(file, 0, &wpath);
+	HANDLE h = wpath ? CreateFileW(wpath, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+				       FILE_ATTRIBUTE_NORMAL, nullptr)
+			 : INVALID_HANDLE_VALUE;
+	if (wpath) {
+		bfree(wpath);
+	}
+	if (h == INVALID_HANDLE_VALUE) {
+		return std::string();
+	}
+
+	BCRYPT_ALG_HANDLE alg = nullptr;
+	BCRYPT_HASH_HANDLE hash = nullptr;
+	unsigned char digest[16];
+	std::string result;
+
+	if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_MD5_ALGORITHM, nullptr, 0) == 0 &&
+	    BCryptCreateHash(alg, &hash, nullptr, 0, nullptr, 0, 0) == 0) {
+		unsigned char buf[65536];
+		DWORD read = 0;
+		bool ok = true;
+		while (ReadFile(h, buf, sizeof(buf), &read, nullptr) && read > 0) {
+			if (BCryptHashData(hash, buf, read, 0) != 0) {
+				ok = false;
+				break;
+			}
+		}
+		if (ok && BCryptFinishHash(hash, digest, sizeof(digest), 0) == 0) {
+			static const char hex[] = "0123456789abcdef";
+			result.reserve(sizeof(digest) * 2);
+			for (unsigned char b : digest) {
+				result.push_back(hex[b >> 4]);
+				result.push_back(hex[b & 0xF]);
+			}
+		}
+	}
+
+	if (hash) {
+		BCryptDestroyHash(hash);
+	}
+	if (alg) {
+		BCryptCloseAlgorithmProvider(alg, 0);
+	}
+	CloseHandle(h);
+	return result;
+}
+#else
 std::string getFileMD5(const char *file)
 {
 	QFile f(file);
@@ -81,6 +163,7 @@ std::string getFileMD5(const char *file)
 
 	return std::string();
 }
+#endif
 
 static const char *vst_name(void *unused)
 {
@@ -91,8 +174,13 @@ static const char *vst_name(void *unused)
 static void vst_destroy(void *data)
 {
 	VSTPlugin *vstPlugin = (VSTPlugin *)data;
+#if defined(_WIN32)
+	vstPlugin->closeEditor();
+	delete vstPlugin;
+#else
 	QMetaObject::invokeMethod(vstPlugin, "closeEditor");
 	vstPlugin->deleteLater();
+#endif
 }
 
 static void vst_update(void *data, obs_data_t *settings)
@@ -159,6 +247,62 @@ static struct obs_audio_data *vst_filter_audio(void *data, struct obs_audio_data
 	return audio;
 }
 
+#if defined(_WIN32)
+static void fill_out_plugins(obs_property_t *list)
+{
+	std::vector<std::wstring> dir_list;
+	auto add_env_dir = [&](const wchar_t *env, const wchar_t *suffix) {
+		wchar_t buf[MAX_PATH];
+		DWORD n = GetEnvironmentVariableW(env, buf, MAX_PATH);
+		if (n > 0 && n < MAX_PATH) {
+			dir_list.push_back(std::wstring(buf) + suffix);
+		}
+	};
+
+	add_env_dir(L"ProgramFiles", L"\\Steinberg\\VstPlugins\\");
+	add_env_dir(L"CommonProgramFiles", L"\\Steinberg\\Shared Components\\");
+	add_env_dir(L"CommonProgramFiles", L"\\VST2");
+	add_env_dir(L"CommonProgramFiles", L"\\Steinberg\\VST2");
+	add_env_dir(L"CommonProgramFiles", L"\\VSTPlugins\\");
+	add_env_dir(L"ProgramFiles", L"\\VSTPlugins\\");
+
+	std::vector<std::pair<std::string, std::string>> vst_list;
+
+	namespace fs = std::filesystem;
+	for (const std::wstring &dir : dir_list) {
+		std::error_code ec;
+		fs::recursive_directory_iterator it(
+			dir, fs::directory_options::follow_directory_symlink | fs::directory_options::skip_permission_denied,
+			ec);
+		if (ec) {
+			continue;
+		}
+		fs::recursive_directory_iterator end;
+		for (; it != end; it.increment(ec)) {
+			if (ec) {
+				break;
+			}
+			const fs::path &p = it->path();
+			std::error_code fec;
+			if (!fs::is_regular_file(p, fec)) {
+				continue;
+			}
+			if (_wcsicmp(p.extension().wstring().c_str(), L".dll") != 0) {
+				continue;
+			}
+			vst_list.emplace_back(wideToUtf8(p.stem().wstring()), wideToUtf8(p.wstring()));
+		}
+	}
+
+	std::stable_sort(vst_list.begin(), vst_list.end(),
+			 [](const auto &a, const auto &b) { return a.first < b.first; });
+
+	obs_property_list_add_string(list, "{Please select a plug-in}", nullptr);
+	for (const auto &entry : vst_list) {
+		obs_property_list_add_string(list, entry.first.c_str(), entry.second.c_str());
+	}
+}
+#else
 static void fill_out_plugins(obs_property_t *list)
 {
 	QStringList dir_list;
@@ -266,6 +410,7 @@ static void fill_out_plugins(obs_property_t *list)
 					     vst_sorted.mid(vst_sorted.indexOf('=') + 1).toStdString().c_str());
 	}
 }
+#endif
 
 static bool vst_changed(void *data, obs_properties_t *props, obs_property_t *list, obs_data_t *settings)
 {

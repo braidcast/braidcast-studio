@@ -10,18 +10,9 @@ endif()
 add_library(obs-vst MODULE)
 add_library(OBS::vst ALIAS obs-vst)
 
-find_package(Qt6 REQUIRED Widgets)
-
 target_sources(
   obs-vst
   PRIVATE
-    $<$<PLATFORM_ID:Darwin>:mac/EditorWidget-osx.mm>
-    $<$<PLATFORM_ID:Darwin>:mac/VSTPlugin-osx.mm>
-    $<$<PLATFORM_ID:Linux,FreeBSD,OpenBSD>:linux/EditorWidget-linux.cpp>
-    $<$<PLATFORM_ID:Linux,FreeBSD,OpenBSD>:linux/VSTPlugin-linux.cpp>
-    $<$<PLATFORM_ID:Windows>:win/EditorWidget-win.cpp>
-    $<$<PLATFORM_ID:Windows>:win/VSTPlugin-win.cpp>
-    EditorWidget.cpp
     headers/EditorWidget.h
     headers/vst-plugin-callbacks.hpp
     headers/VSTPlugin.h
@@ -32,24 +23,37 @@ target_sources(
 
 target_include_directories(obs-vst PRIVATE vst_header)
 
-target_link_libraries(
-  obs-vst
-  PRIVATE
-    OBS::libobs
-    Qt::Widgets
-    "$<$<PLATFORM_ID:Darwin>:$<LINK_LIBRARY:FRAMEWORK,Cocoa.framework>>"
-    "$<$<PLATFORM_ID:Darwin>:$<LINK_LIBRARY:FRAMEWORK,Foundation.framework>>"
-)
+target_link_libraries(obs-vst PRIVATE OBS::libobs)
 
 if(OS_WINDOWS)
-  set_property(TARGET obs-vst APPEND PROPERTY AUTORCC_OPTIONS --format-version 1)
+  # The Braidcast CEF build ships no Qt6, so the Windows VST editor is hosted in
+  # a raw Win32 window (win/EditorWidget-win.cpp) and this module links no Qt.
+  target_sources(obs-vst PRIVATE win/EditorWidget-win.cpp win/VSTPlugin-win.cpp)
+  target_link_libraries(obs-vst PRIVATE bcrypt)
+else()
+  find_package(Qt6 REQUIRED Widgets)
+  target_sources(
+    obs-vst
+    PRIVATE
+      EditorWidget.cpp
+      $<$<PLATFORM_ID:Darwin>:mac/EditorWidget-osx.mm>
+      $<$<PLATFORM_ID:Darwin>:mac/VSTPlugin-osx.mm>
+      $<$<PLATFORM_ID:Linux,FreeBSD,OpenBSD>:linux/EditorWidget-linux.cpp>
+      $<$<PLATFORM_ID:Linux,FreeBSD,OpenBSD>:linux/VSTPlugin-linux.cpp>
+  )
+  target_link_libraries(
+    obs-vst
+    PRIVATE
+      Qt::Widgets
+      "$<$<PLATFORM_ID:Darwin>:$<LINK_LIBRARY:FRAMEWORK,Cocoa.framework>>"
+      "$<$<PLATFORM_ID:Darwin>:$<LINK_LIBRARY:FRAMEWORK,Foundation.framework>>"
+  )
+  set_target_properties(
+    obs-vst
+    PROPERTIES AUTOMOC ON
+               AUTOUIC ON
+               AUTORCC ON
+  )
 endif()
 
-set_target_properties_obs(
-  obs-vst
-  PROPERTIES FOLDER plugins
-             PREFIX ""
-             AUTOMOC ON
-             AUTOUIC ON
-             AUTORCC ON
-)
+set_target_properties_obs(obs-vst PROPERTIES FOLDER plugins PREFIX "")
