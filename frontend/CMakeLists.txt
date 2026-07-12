@@ -213,6 +213,11 @@ target_sources(
     # stream profile on TID_UI; includes obs.h -> in the /wd4201 set below).
     src/ingest_writeback.cpp
     src/ingest_writeback.hpp
+    # Automated live perf-repro self-test (regression gate for the Main-composite
+    # compositor-starvation incident). BRAIDCAST_SELFTEST_STREAM=perf-repro-gated,
+    # driven by its own WM_TIMER (see main.cpp); includes obs.hpp -> /wd4201 set.
+    src/perf_repro_selftest.cpp
+    src/perf_repro_selftest.hpp
     api-impl/frontend_callbacks.cpp
     api-impl/frontend_callbacks.hpp
     # Phase 4.4.0 native-multistream data model. These five model files are
@@ -403,6 +408,7 @@ set_source_files_properties(
   src/tray.cpp
   src/transitions.cpp
   src/ingest_writeback.cpp
+  src/perf_repro_selftest.cpp
   api-impl/frontend_callbacks.cpp
   utility/CanvasDefinition.cpp
   utility/OBSCanvas.cpp

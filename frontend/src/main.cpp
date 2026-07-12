@@ -18,6 +18,7 @@
 #include "interact_window.hpp"
 #include "log.hpp"
 #include "obs_bootstrap.hpp"
+#include "perf_repro_selftest.hpp"
 #include "preview_window.hpp"
 #include "projector_window.hpp"
 #include "scene_persistence.hpp"
@@ -33,6 +34,10 @@ constexpr int kHostHeight = 720;
 constexpr wchar_t kHostClassName[] = L"BraidcastShell";
 constexpr UINT_PTR kSizeProbeTimerId = 1;
 constexpr UINT_PTR kSmokeQuitTimerId = 2;
+// Drives the perf-repro self-test state machine (BRAIDCAST_SELFTEST_STREAM=
+// perf-repro); distinct from both timers above so the two selftest modes never
+// collide on one id.
+constexpr UINT_PTR kPerfReproTimerId = 3;
 
 // Host-window-owned handles. Single-threaded (browser process UI thread).
 CefRefPtr<CefBrowser> g_browser;
@@ -175,6 +180,12 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 			KillTimer(hwnd, kSmokeQuitTimerId);
 			HostLog("[host] smoke-quit timer fired -> WM_CLOSE");
 			PostMessageW(hwnd, WM_CLOSE, 0, 0);
+		} else if (wparam == kPerfReproTimerId) {
+			if (ObsBootstrap::RunPerfReproSelfTest()) {
+				KillTimer(hwnd, kPerfReproTimerId);
+				HostLog("[host] perf-repro selftest finished -> WM_CLOSE");
+				PostMessageW(hwnd, WM_CLOSE, 0, 0);
+			}
 		}
 		return 0;
 	case WM_CLOSE:
@@ -332,6 +343,22 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 		}
 	}
 
+	// Env-gated automated live perf-repro self-test: the regression gate for the
+	// Main-composite compositor-starvation incident. Goes live for real on the
+	// user's REAL current scene collection + REAL enabled YouTube output
+	// bindings (forced to broadcast-private only), measures render-lag, then
+	// quits with a PASS/FAIL exit code. Inert without
+	// BRAIDCAST_SELFTEST_STREAM=perf-repro.
+	bool perfReproArmed = false;
+	if (const char *mode = getenv("BRAIDCAST_SELFTEST_STREAM")) {
+		if (std::string(mode) == "perf-repro") {
+			HostLog("[host] perf-repro selftest armed");
+			ObsBootstrap::ArmPerfReproSelfTest();
+			SetTimer(host, kPerfReproTimerId, 500, nullptr);
+			perfReproArmed = true;
+		}
+	}
+
 	// ONE Client for the whole process, published via Client::SetShared so future
 	// additional browsers (e.g. detached windows) reuse it: all browsers land in the
 	// same browser_list_ + Bridge emit registry and the loop quits only when the
@@ -436,5 +463,8 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 
 	CefShutdown();
 	HostLog("[cef] shutdown complete");
-	return 0;
+	// Propagate the perf-repro self-test's PASS/FAIL/skip/error exit code (see
+	// perf_repro_selftest.hpp) so it can gate CI; every other path keeps the
+	// existing always-0 exit.
+	return perfReproArmed ? ObsBootstrap::PerfReproSelfTestExitCode() : 0;
 }
