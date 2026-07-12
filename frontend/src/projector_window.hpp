@@ -125,8 +125,9 @@ private:
 	obs_canvas_t *canvas_; // borrowed for canvas kind; null otherwise
 
 	HWND hwnd_ = nullptr;
-	void *display_ = nullptr; // obs_display_t* (opaque here)
-	bool mvTimerSet_ = false;  // a Multiview refresh WM_TIMER is armed on hwnd_
+	void *display_ = nullptr;         // obs_display_t* (opaque here)
+	bool mvTimerSet_ = false;         // a Multiview refresh WM_TIMER is armed on hwnd_
+	bool mainRenderRefHeld_ = false;  // Program kind holds a CanvasRuntime Default main-composite ref
 };
 
 // Owns the live projectors, each a top-level window. unique_ptr so every window

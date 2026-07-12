@@ -638,6 +638,16 @@ bool ProjectorWindow::Create(HINSTANCE instance, const RECT &monitorRect)
 	if (!display) {
 		return false;
 	}
+	// A Program projector samples obs_render_main_texture every frame; ref the Default
+	// canvas's main composite BEFORE registering the draw callback, so the gate is
+	// already held the first time the callback runs (no stale-texture at-open window).
+	// Balanced in Destroy after the callback is removed. Other kinds render their own
+	// target and need no ref.
+	if (kind_ == ProjectorKind::Program) {
+		ObsBootstrap::CanvasRuntime().AddPreview(std::string());
+		mainRenderRefHeld_ = true;
+	}
+
 	obs_display_add_draw_callback(display, RenderProjector, state_);
 
 	// Multiview: build the first scene snapshot now (so the first frames have
@@ -677,6 +687,13 @@ void ProjectorWindow::Destroy()
 		obs_display_destroy(display);
 		display_ = nullptr;
 		HostLog("[projector] display destroyed id=" + std::to_string(projectorId_));
+	}
+
+	// Drop the Program main-composite ref only AFTER the draw callback is gone, so the
+	// gate can never fire while this projector's callback still samples the texture.
+	if (mainRenderRefHeld_) {
+		ObsBootstrap::CanvasRuntime().RemovePreview(std::string());
+		mainRenderRefHeld_ = false;
 	}
 
 	// Multiview snapshot: the render thread (the only other reader) is gone now that

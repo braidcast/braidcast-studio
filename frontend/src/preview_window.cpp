@@ -76,7 +76,7 @@ PreviewManager *g_instance = nullptr;
 // address it by the Default canvas's own uuid, which normalizes to "" here.
 bool IsDefaultCanvasUuid(const std::string &uuid)
 {
-	return uuid.empty() || uuid == ObsBootstrap::Canvases().Default().uuid;
+	return ObsBootstrap::Canvases().IsDefaultUuid(uuid);
 }
 
 // The letterbox transform the draw callback computed last frame, in HWND device
@@ -1624,6 +1624,10 @@ PreviewSurface *PreviewManager::SurfaceFor(int windowId, const std::string &canv
 			ObsBootstrap::CanvasRuntime().RemovePreview(canvasUuid); // balance: no surface created
 			return nullptr;
 		}
+	} else {
+		// Default surface renders obs_render_main_texture; ref the main composite so
+		// the gate keeps it alive while this preview is open (balanced in teardown).
+		ObsBootstrap::CanvasRuntime().AddPreview(canvasUuid);
 	}
 
 	impl_->surfaces.push_back(
@@ -1658,11 +1662,11 @@ void PreviewManager::Destroy(int windowId, const std::string &canvasUuid)
 	for (auto it = impl_->surfaces.begin(); it != impl_->surfaces.end(); ++it) {
 		if (it->windowId == windowId && it->uuid == key) {
 			it->surface->Destroy();
-			const std::string closedKey = it->uuid; // non-empty => a runtime canvas
+			const std::string closedKey = it->uuid; // "" => Default surface
 			impl_->surfaces.erase(it);
-			if (!closedKey.empty()) {
-				ObsBootstrap::CanvasRuntime().RemovePreview(closedKey);
-			}
+			// RemovePreview after Destroy() removed the draw callback (teardown order):
+			// "" balances the Default main-composite ref, a uuid the canvas mix ref.
+			ObsBootstrap::CanvasRuntime().RemovePreview(closedKey);
 			return;
 		}
 	}
@@ -1689,11 +1693,11 @@ void PreviewManager::DestroyWindow(int windowId)
 	for (auto it = impl_->surfaces.begin(); it != impl_->surfaces.end();) {
 		if (it->windowId == windowId) {
 			it->surface->Destroy();
-			const std::string closedKey = it->uuid;
+			const std::string closedKey = it->uuid; // "" => Default surface
 			it = impl_->surfaces.erase(it);
-			if (!closedKey.empty()) {
-				ObsBootstrap::CanvasRuntime().RemovePreview(closedKey);
-			}
+			// RemovePreview after Destroy() removed the draw callback (teardown order);
+			// "" balances the Default main-composite ref (see SurfaceFor).
+			ObsBootstrap::CanvasRuntime().RemovePreview(closedKey);
 			++destroyed;
 		} else {
 			++it;

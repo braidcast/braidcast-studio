@@ -48,7 +48,10 @@ public:
 
 	// Preview open/close refcount. AddPreview builds the mix if needed BEFORE the
 	// caller resolves the canvas for rendering; RemovePreview may let it go inert.
-	// No-op for an unknown/Default uuid. Balanced 1:1 by PreviewManager.
+	// For the Default canvas (empty/Default uuid, no runtime mix) this instead holds
+	// a libobs main-composite ref (obs_inc/dec_main_render_needed) per open consumer,
+	// so libobs keeps compositing the main mix while one is open. No-op for an unknown
+	// non-Default uuid. Balanced 1:1 by PreviewManager / ProjectorManager.
 	void AddPreview(const std::string &uuid);
 	void RemovePreview(const std::string &uuid);
 

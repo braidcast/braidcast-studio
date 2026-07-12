@@ -32,6 +32,11 @@ public:
 	const std::vector<CanvasDefinition> &Definitions() const { return definitions; }
 	const CanvasDefinition &Default() const; // always present (see invariant above)
 
+	// The single source of truth for "is this uuid the Default canvas": the empty
+	// string, or the Default definition's uuid. Both the preview manager and the
+	// canvas runtime route through here so the two can never disagree on Default.
+	bool IsDefaultUuid(const std::string &uuid) const { return uuid.empty() || uuid == Default().uuid; }
+
 	// Seed the Default canvas's stream encoders if unset. Call AFTER modules load
 	// (obs_encoder_defaults needs registered encoders). Returns true if it changed
 	// anything (caller should Save()).
