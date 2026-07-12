@@ -695,6 +695,10 @@ bool ObsBootstrap::Start()
 	}
 	HostLog("[obs] obs_reset_video ok (1920x1080@60, D3D11)");
 
+	// Re-apply the seeded DEBUG gate now that obs exists: the boot seed above ran
+	// through Log::SetDebug before obs_startup, when obs_set_render_debug no-ops.
+	obs_set_render_debug(Log::DebugEnabled());
+
 	obs_audio_info oai = {};
 	oai.samples_per_sec = 48000;
 	oai.speakers = SPEAKERS_STEREO;

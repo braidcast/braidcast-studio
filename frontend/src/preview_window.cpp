@@ -845,7 +845,7 @@ void RenderPreview(void *data, uint32_t cx, uint32_t cy)
 	gs_set_viewport(drawX, drawY, drawCX, drawCY);
 
 	if (targetCanvas) {
-		obs_canvas_render(targetCanvas);
+		obs_render_canvas_texture(targetCanvas);
 	} else {
 		obs_render_main_texture();
 	}
