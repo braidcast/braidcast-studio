@@ -108,7 +108,17 @@ void ObsLogHandler(int level, const char *format, va_list args, void *)
 {
 	char buf[4096];
 	vsnprintf(buf, sizeof(buf), format, args);
-	HostLog(std::string("[obs:log] ") + buf);
+	// Write blog() output straight to the debugger + stderr here. Do NOT route it
+	// through HostLog: HostLog now emits via blog(), so calling it from the blog
+	// handler recurses (blog -> handler -> HostLog -> blog ...) until the stack
+	// overflows. SessionLog's chained handler separately persists every blog() line
+	// to the session file, so HostLog's own lifecycle lines (HostLog -> blog) land
+	// in that file too -- without this handler ever calling back into HostLog.
+	OutputDebugStringA("[obs:log] ");
+	OutputDebugStringA(buf);
+	OutputDebugStringA("\n");
+	fprintf(stderr, "[obs:log] %s\n", buf);
+	fflush(stderr);
 	(void)level;
 }
 
