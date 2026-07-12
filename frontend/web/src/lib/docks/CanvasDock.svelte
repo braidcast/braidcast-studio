@@ -962,7 +962,6 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
 
   <footer class="foot">
     <span class="dot" style:background={STATE_COLOR_EXT[liveState]} title={liveState}></span>
-    <span class="foot-name">{canvasName}</span>
     <button class="foot-gear" title="Edit canvas (Canvases)" onclick={() => setPage("canvases")}>
       <Icon name="edit" size={13} />
     </button>
@@ -1252,18 +1251,9 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
     height: 8px;
     flex-shrink: 0;
   }
-  .foot-name {
-    flex: 1;
-    font-size: 10px;
-    letter-spacing: var(--letter-spacing);
-    text-transform: var(--label-case);
-    color: var(--color-muted);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
   .foot-gear {
     flex: 0 0 auto;
+    margin-left: auto;
     display: flex;
     align-items: center;
     justify-content: center;
