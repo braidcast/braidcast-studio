@@ -428,6 +428,13 @@ struct obs_core_video {
 	gs_timer_range_t *debug_composite_ranges[NUM_TEXTURES];
 	uint8_t debug_composite_range_idx;
 
+	/* Ref count for the Main/Default canvas composite (see obs_inc/dec_main_render_needed).
+	 * The main mix can never be dropped from mixes[], so the graphics thread skips its
+	 * composite when it feeds no output and no consumer (preview/projector/decklink/
+	 * screenshot) holds a ref here. A count, not a flag, so independent consumers hold
+	 * it without clobbering each other. */
+	volatile long main_render_refs;
+
 	gs_texture_t *transparent_texture;
 
 	gs_effect_t *deinterlace_discard_effect;

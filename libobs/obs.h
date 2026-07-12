@@ -830,6 +830,15 @@ EXPORT gs_texture_t *obs_get_main_texture(void);
  * default and zero-cost when off; safe to call before obs is initialized. */
 EXPORT void obs_set_render_debug(bool enabled);
 
+/** Ref-count that keeps the Main/Default canvas composited for consumers that sample
+ * its texture (obs_render_main_texture / obs_get_main_texture) but raise no output --
+ * previews, projectors, the decklink main output, a one-shot screenshot. Outputs
+ * (streaming/recording/vcam) drive the composite automatically via the mix's raw/gpu
+ * active state and need no ref. Balanced inc/dec; a stray dec is clamped at 0. Zero by
+ * default and safe to call before obs is initialized. */
+EXPORT void obs_inc_main_render_needed(void);
+EXPORT void obs_dec_main_render_needed(void);
+
 /** Saves a source to settings data */
 EXPORT obs_data_t *obs_save_source(obs_source_t *source);
 
