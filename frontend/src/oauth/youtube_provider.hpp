@@ -2,6 +2,7 @@
 #define OBS_MULTISTREAM_FRONTEND_OAUTH_YOUTUBE_PROVIDER_HPP_
 
 #include <atomic>
+#include <chrono>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -119,6 +120,15 @@ private:
 	};
 	std::mutex broadcastMutex_;
 	std::map<std::string /*accountId*/, BroadcastState> broadcasts_;
+
+	// Cache-miss recovery for `broadcasts_` (e.g. after a Studio restart mid-stream, or a
+	// stream started outside this session): probes liveBroadcasts.list for the account's
+	// currently-active broadcast and repopulates the cache, including liveChatId so
+	// chatChannelRef recovers chat for free on the next read. Throttled by
+	// lastBroadcastProbe_ (same mutex) so an idle connected account does not burn quota
+	// every poll cycle.
+	bool EnsureActiveBroadcast(OAuthAccount &acct, BroadcastState &out, std::string &err);
+	std::map<std::string /*accountId*/, std::chrono::steady_clock::time_point> lastBroadcastProbe_;
 
 	// The assignable videoCategories list, fetched once per process and reused
 	// (it is static content). Guarded because searchCategories runs on worker

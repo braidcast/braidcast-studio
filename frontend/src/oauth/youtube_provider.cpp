@@ -42,6 +42,10 @@ const std::streamoff kMaxThumbnailBytes = 2 * 1024 * 1024;
 // videoCategories.list -- no narrower per-call scope is needed.
 const char *kYouTubeScope = "https://www.googleapis.com/auth/youtube.force-ssl";
 
+// Throttles EnsureActiveBroadcast's liveBroadcasts.list cache-miss probe, per account, so
+// an idle connected account does not burn API quota every poll cycle.
+constexpr std::chrono::seconds kBroadcastProbeThrottle{15};
+
 using JsonUtil::Bool;
 using JsonUtil::ParseJson;
 using JsonUtil::Str;
@@ -595,27 +599,82 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 	return true;
 }
 
-bool YouTubeProvider::viewerCount(OAuthAccount &acct, int &out, std::string &err)
+bool YouTubeProvider::EnsureActiveBroadcast(OAuthAccount &acct, BroadcastState &out, std::string &err)
 {
-	out = 0;
+	err.clear();
+	const std::string accountId = AccountId(acct);
 
-	std::string broadcastId;
 	{
 		const std::lock_guard<std::mutex> guard(broadcastMutex_);
-		auto it = broadcasts_.find(AccountId(acct));
-		if (it != broadcasts_.end()) {
-			broadcastId = it->second.broadcastId;
+		auto it = broadcasts_.find(accountId);
+		if (it != broadcasts_.end() && !it->second.broadcastId.empty()) {
+			out = it->second;
+			return true;
 		}
+
+		const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+		auto probeIt = lastBroadcastProbe_.find(accountId);
+		if (probeIt != lastBroadcastProbe_.end() && now - probeIt->second < kBroadcastProbeThrottle) {
+			return false;
+		}
+		lastBroadcastProbe_[accountId] = now;
 	}
-	if (broadcastId.empty()) {
+
+	// Lock released across the network call -- SendAuthed blocks on I/O (plus a possible
+	// token refresh), and holding broadcastMutex_ here would stall chatChannelRef/
+	// clearActiveBroadcast on other threads for the duration.
+	Http::HttpReq req;
+	req.method = "GET";
+	req.url = std::string(kLiveBroadcastsUrl) + "?part=id,snippet&broadcastStatus=active&mine=true";
+
+	Http::HttpResponse resp;
+	if (!SendAuthed(acct, req, resp, err)) {
+		return false;
+	}
+	if (resp.status < 200 || resp.status >= 300) {
+		err = "YouTube liveBroadcasts request failed (HTTP " + std::to_string(resp.status) + "): " + resp.body;
+		return false;
+	}
+
+	const json item = FirstItem(ParseJson(resp.body));
+	if (!item.is_object()) {
 		// No active broadcast -> not live; the poller omits YouTube this cycle.
 		err.clear();
 		return false;
 	}
 
+	BroadcastState bs;
+	bs.broadcastId = Str(item, "id");
+	if (item.contains("snippet") && item["snippet"].is_object()) {
+		// Recovering liveChatId here (not just broadcastId) means the next chatChannelRef
+		// read picks it up for free -- no separate network call or signature change needed.
+		bs.liveChatId = Str(item["snippet"], "liveChatId");
+	}
+	if (bs.broadcastId.empty()) {
+		err.clear();
+		return false;
+	}
+
+	{
+		const std::lock_guard<std::mutex> guard(broadcastMutex_);
+		broadcasts_[accountId] = bs;
+	}
+	out = bs;
+	return true;
+}
+
+bool YouTubeProvider::viewerCount(OAuthAccount &acct, int &out, std::string &err)
+{
+	out = 0;
+
+	BroadcastState broadcast;
+	if (!EnsureActiveBroadcast(acct, broadcast, err)) {
+		return false;
+	}
+
 	Http::HttpReq req;
 	req.method = "GET";
-	req.url = std::string(kVideosUrl) + "?part=liveStreamingDetails&id=" + Http::UrlEncode(broadcastId);
+	req.url = std::string(kVideosUrl) + "?part=liveStreamingDetails&id=" + Http::UrlEncode(broadcast.broadcastId);
 
 	Http::HttpResponse resp;
 	if (!SendAuthed(acct, req, resp, err)) {
