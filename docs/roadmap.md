@@ -1409,17 +1409,47 @@ on public repos (separate from the 500 MB Packages quota).
   skips download/encode). A destination-less/disabled runtime canvas (e.g. the
   idle 4K "51k AV1") still pays a full composite → render-thread overload →
   dropped *stream* frames + laggy preview (they share the one graphics thread).
-  **Tier 1 (in progress 2026-07-12):** runtime canvases go fully inert (mix
-  removed from `obs->video.mixes`) when they have no enabled destination AND no
-  open preview; rebuilt on destination-enable or preview-open. Makes
-  destination-toggling actually disable a canvas everywhere, not just its
-  encoder. **Tier 2 (deferred):** also gate the Main/Default canvas composite on
-  having a consumer (a libobs change to `render_main_texture`/`output_frames`,
-  upstream-divergent) — OBS always composites the main canvas, so this makes
-  Braidcast *beat* OBS on idle cost. Do Tier 2 once Tier 1 proves out. Also
-  consider a **preview-fps cap + real occlusion detection** — per-canvas previews
-  currently render at full output fps, unthrottled, and only stop on DOM-hidden,
-  not OS-window occlusion (`previewSurface.ts` / `render_displays`).
+  **Tier 1 (✅ 2026-07-12, verified in `2026-07-12 23-05-12.txt`):** runtime
+  canvases go fully inert (mix removed from `obs->video.mixes`) when they have no
+  enabled destination AND no open preview; rebuilt on destination-enable or
+  preview-open. Makes destination-toggling actually disable a canvas everywhere,
+  not just its encoder. Together with **preview-composite dedup** (per-canvas
+  preview docks now blit the already-composited texture instead of
+  re-compositing), a live 4-canvas session went from the 25.6% / 48.2% incident
+  range to ~0.47% frame loss. **Tier 2 (✅ 2026-07-12, pending live black-screen
+  test):** the Main/Default canvas composite is now gated on having a consumer
+  via a libobs refcount (`obs_inc/dec_main_render_needed`, checked in
+  `output_frame`), held by the central preview, program projector, DeckLink main
+  output, and program screenshot. Gated per-mix `[render-debug]` composite
+  timing confirmed Main burned 5.1%-frame GPU with zero consumers — OBS always
+  composites the main canvas, so this makes Braidcast *beat* OBS on idle cost.
+  Still open: a **preview-fps cap + real occlusion detection** — per-canvas
+  previews currently render at full output fps, unthrottled, and only stop on
+  DOM-hidden, not OS-window occlusion (`previewSurface.ts` / `render_displays`).
+- 🔧 **Adaptive compositor — load-aware parallelism** — the multi-canvas model
+  composites once *per canvas per frame* on a single serial graphics thread
+  (upstream OBS composites once), so compositor cost scales with canvas count.
+  Beyond the work-*reduction* wins above, the ceiling lift is a **two-layer**
+  design, gated on measured load — NOT a static GPU tier:
+  - **Always-on (every GPU, no gate):** work reduction — inert canvases +
+    preview dedup + the Main gate (done), plus **shared/derived compositing**
+    (render the scene once, derive the 16:9 / 9:16 / … variants by crop/scale
+    instead of a full re-composite per canvas). Pure win, and the *biggest*
+    lever for weak GPUs since it cuts total fill work rather than spreading it.
+  - **Adaptive (measured-headroom gate):** composite canvases concurrently and
+    overlap composite↔encode (separate silicon), enabled only when there is
+    spare frame-time margin and falling back to serial when saturated. Gate on
+    *measured* per-frame margin + encoder-starvation + GPU util (the
+    `[render-debug]` signals), NOT a small/med/large lookup: a mid GPU on a
+    heavy scene is saturated too, and hardware detection (naming / driver /
+    iGPU / laptop power) rots. Self-tunes as the scene changes mid-stream; ships
+    with a manual override (auto / force-serial / force-parallel) and the margin
+    surfaced for debugging.
+  Rationale: parallelism only reclaims *idle* GPU time, so it helps GPUs with
+  headroom (the 5070 Ti incident: ~50% util, NVENC idle), not a genuinely
+  saturated small GPU — those win from the always-on reduction + shared-composite
+  track. Design-level; sequence work-reduction first (mostly shipped), the
+  adaptive layer later.
 - 🔧 **Modern audio-plugin host (VST3 + CLAP)** — `obs-vst` is in-tree and
   maintained upstream (the archived standalone repo was folded into the
   obs-studio monorepo), but it is **VST2-only** and **Qt-coupled**, so it can't
