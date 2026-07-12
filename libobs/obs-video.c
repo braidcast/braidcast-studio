@@ -937,24 +937,37 @@ static inline void output_frame(struct obs_core_video_mix *video, bool debug, ui
 
 	memset(&frame, 0, sizeof(struct video_data));
 
+	/* The Main/Default mix cannot be dropped from mixes[] (libobs refuses MAIN),
+	 * so skip its full-res composite when it feeds no output (raw/gpu inactive)
+	 * and no consumer holds a main_render_refs ref. The gs context, flush and
+	 * cur_texture advance below stay unchanged; the raw-download block no-ops (it is
+	 * guarded by raw_active, false here), and texture_rendered is left untouched so
+	 * downstream consumers see the never/last-composited state. */
+	const bool main_inert = (video == obs->data.main_canvas->mix) && !raw_active && !gpu_active &&
+				os_atomic_load_long(&obs->video.main_render_refs) == 0;
+
 	profile_start(output_frame_gs_context_name);
 	gs_enter_context(obs->video.graphics);
 
+	/* Gate the composite timing with the composite itself so a skipped main mix is
+	 * never recorded as a real composite (it contributes no CPU/GPU sample). */
 	uint64_t debug_cpu_start = 0;
 	gs_timer_t *debug_timer = NULL;
-	if (debug) {
+	if (debug && !main_inert) {
 		debug_cpu_start = os_gettime_ns();
 		debug_timer = gs_timer_create();
 		gs_timer_begin(debug_timer);
 	}
 
-	profile_start(output_frame_render_video_name);
-	GS_DEBUG_MARKER_BEGIN(GS_DEBUG_COLOR_RENDER_VIDEO, output_frame_render_video_name);
-	render_video(video, raw_active, gpu_active, cur_texture);
-	GS_DEBUG_MARKER_END();
-	profile_end(output_frame_render_video_name);
+	if (!main_inert) {
+		profile_start(output_frame_render_video_name);
+		GS_DEBUG_MARKER_BEGIN(GS_DEBUG_COLOR_RENDER_VIDEO, output_frame_render_video_name);
+		render_video(video, raw_active, gpu_active, cur_texture);
+		GS_DEBUG_MARKER_END();
+		profile_end(output_frame_render_video_name);
+	}
 
-	if (debug) {
+	if (debug && !main_inert) {
 		gs_timer_end(debug_timer);
 		video->debug_composite_cpu_accum += os_gettime_ns() - debug_cpu_start;
 		video->debug_composite_cpu_count++;
