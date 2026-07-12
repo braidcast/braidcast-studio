@@ -2686,6 +2686,18 @@ EXPORT obs_scene_t *obs_canvas_get_scene_by_name(obs_canvas_t *canvas, const cha
 EXPORT bool obs_canvas_reset_video(obs_canvas_t *canvas, struct obs_video_info *ovi);
 /** Returns true if the canvas video is configured */
 EXPORT bool obs_canvas_has_video(obs_canvas_t *canvas);
+/** Ensure a canvas has a video mix, creating one from `ovi` if it has none.
+ *  No-op returning true if the canvas already has a mix. Unlike
+ *  obs_canvas_reset_video this does NOT refuse while obs_video_active(): it only
+ *  ADDS a mix to a mix-less canvas (never resets an in-use one), so bringing an
+ *  inert canvas online while another canvas is streaming is safe. Refuses the
+ *  main canvas. */
+EXPORT bool obs_canvas_ensure_video(obs_canvas_t *canvas, struct obs_video_info *ovi);
+/** Drop a canvas's video mix (removing it from the composite set) while keeping
+ *  the canvas and its scenes. No-op if it has no mix or is the main canvas. The
+ *  caller must ensure the canvas's mix is not being encoded (no live output) and
+ *  is not being rendered (no preview) before calling. */
+EXPORT void obs_canvas_clear_video(obs_canvas_t *canvas);
 /** Get canvas video output */
 EXPORT video_t *obs_canvas_get_video(const obs_canvas_t *canvas);
 /** Get canvas video info (if it exists) */
