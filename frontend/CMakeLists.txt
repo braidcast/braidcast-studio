@@ -302,6 +302,9 @@ if(EXISTS "${_env_file}")
     endif()
   endforeach()
   message(STATUS "Loaded build credentials from ${_env_file}")
+  # Bake the dev .env path so the runtime debug gate can read BRAIDCAST_DEBUG from
+  # it (edit .env + relaunch to toggle; no rebuild). Not defined in CI/ship builds.
+  target_compile_definitions(${_target} PRIVATE BRAIDCAST_ENV_FILE="${_env_file}")
 endif()
 
 # Env input name matches .env / CI (TWITCH_CLIENTID); the cache var keeps the

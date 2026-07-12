@@ -88,15 +88,60 @@ std::string BaseNameNoExt(const std::string &filename)
 	return dot == std::string::npos ? filename : filename.substr(0, dot);
 }
 
+// A BRAIDCAST_DEBUG value is truthy when it is 1/true/on (case-insensitive).
+bool ParseDebugFlag(const std::string &raw)
+{
+	const std::string v = LowerCopy(raw);
+	return v == "1" || v == "true" || v == "on";
+}
+
+// Read BRAIDCAST_DEBUG from a KEY=VALUE .env file (CRLF- and whitespace-
+// tolerant). nullopt when the file is missing or has no such key, so the caller
+// falls through to the next source.
+std::optional<bool> DebugFromEnvFile(const char *path)
+{
+	std::ifstream f(path);
+	if (!f) {
+		return std::nullopt;
+	}
+	const auto trim = [](std::string s) {
+		const size_t b = s.find_first_not_of(" \t\r");
+		if (b == std::string::npos) {
+			return std::string();
+		}
+		return s.substr(b, s.find_last_not_of(" \t\r") - b + 1);
+	};
+	std::string line;
+	while (std::getline(f, line)) {
+		const size_t eq = line.find('=');
+		if (eq == std::string::npos) {
+			continue;
+		}
+		if (trim(line.substr(0, eq)) != "BRAIDCAST_DEBUG") {
+			continue;
+		}
+		return ParseDebugFlag(trim(line.substr(eq + 1)));
+	}
+	return std::nullopt;
+}
+
 // Seed the gated DEBUG channel: the BRAIDCAST_DEBUG env var (1/true/on,
-// case-insensitive) wins when set; otherwise the persisted
+// case-insensitive) wins when set; otherwise the same key in the gitignored
+// repo-root .env (dev builds only); otherwise the persisted
 // DiagnosticsSettings.debugLogging; otherwise off.
 bool SeedDebugGate()
 {
 	if (const char *env = getenv("BRAIDCAST_DEBUG")) {
-		const std::string v = LowerCopy(env);
-		return v == "1" || v == "true" || v == "on";
+		return ParseDebugFlag(env);
 	}
+#ifdef BRAIDCAST_ENV_FILE
+	// Dev convenience: the .env path is baked at configure time and is absent in
+	// CI/shipped builds. Edit .env and relaunch to flip debug logging -- no
+	// rebuild, no env var. The live process env above still wins when set.
+	if (const std::optional<bool> v = DebugFromEnvFile(BRAIDCAST_ENV_FILE)) {
+		return *v;
+	}
+#endif
 	DiagnosticsSettings ds;
 	ds.Load();
 	return ds.debugLogging;
