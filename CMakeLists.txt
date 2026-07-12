@@ -18,6 +18,7 @@ include(helpers)
 option(ENABLE_FRONTEND "Enable building with UI (requires Qt)" ON)
 option(ENABLE_SCRIPTING "Enable scripting support" ON)
 option(ENABLE_HEVC "Enable HEVC encoders" ON)
+option(ENABLE_INTEGRATION_TESTS "Build headless backend integration tests (test/integration)" OFF)
 
 add_subdirectory(libobs)
 if(OS_WINDOWS)
@@ -34,6 +35,11 @@ add_subdirectory(test/test-input)
 
 if(ENABLE_FRONTEND)
   add_subdirectory(frontend)
+endif()
+
+if(ENABLE_INTEGRATION_TESTS)
+  enable_testing()
+  add_subdirectory(test/integration)
 endif()
 
 message_configuration()
