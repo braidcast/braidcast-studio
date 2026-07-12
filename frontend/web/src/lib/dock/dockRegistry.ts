@@ -38,7 +38,7 @@ export const DOCKS: DockDef[] = [
   // __-prefixed keys feed the custom tab and are stripped before the Svelte body.
   {
     id: "preview",
-    title: "Preview · Default Canvas",
+    title: "Preview · Main",
     component: PreviewDock,
     params: { __dot: "var(--color-muted)", __badge: "GLOBAL S/S" },
   },

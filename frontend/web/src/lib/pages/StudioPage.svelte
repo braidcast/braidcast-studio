@@ -642,8 +642,8 @@ import { EV } from "../eventNames";
   }
 
   // Target-canvas label for the button tooltip: the canvas matching vcamCanvas, else
-  // "Default" (empty target or a uuid that no longer resolves -> global program).
-  let vcamTargetName = $derived(canvases.find((c) => c.uuid === vcamCanvas)?.name ?? "Default");
+  // "Main" (empty target or a uuid that no longer resolves -> global program).
+  let vcamTargetName = $derived(canvases.find((c) => c.uuid === vcamCanvas)?.name ?? "Main");
 
   function openVcamMenu(e: MouseEvent): void {
     e.preventDefault();

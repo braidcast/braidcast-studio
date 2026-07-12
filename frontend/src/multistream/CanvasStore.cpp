@@ -58,14 +58,17 @@ void CanvasStore::Save() const
 
 void CanvasStore::EnsureDefault()
 {
-	for (const CanvasDefinition &def : definitions) {
+	for (CanvasDefinition &def : definitions) {
 		if (def.isDefault) {
+			// Base canvas name is immutable and not user-editable; force it so
+			// collections persisted under the old "Default Canvas" label flip to "Main".
+			def.name = "Main";
 			return;
 		}
 	}
 	CanvasDefinition def;
 	def.isDefault = true;
-	def.name = "Default Canvas";
+	def.name = "Main";
 	def.uuid = []() {
 		BPtr<char> id = os_generate_uuid();
 		return std::string(id.Get());
