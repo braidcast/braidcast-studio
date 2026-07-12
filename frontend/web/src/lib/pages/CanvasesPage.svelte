@@ -26,6 +26,10 @@
   // Canvas / binding / profile lists AND live status come from the shared stores
   // (one source of truth per leg); only the encoder lists stay local to this page.
   let canvases = $derived(canvasStore.canvases);
+  // The Default canvas is pinned to the top of the list and excluded from
+  // drag-to-reorder; only the remaining canvases participate in reorder.
+  let defaultCanvas = $derived(canvases.find((c) => c.isDefault) ?? null);
+  let otherCanvases = $derived(canvases.filter((c) => !c.isDefault));
   let bindings = $derived(outputBindingStore.bindings);
   let profiles = $derived(streamProfileStore.profiles);
   let statusByBinding = $derived(multistreamStatusStore.statusByBinding);
@@ -91,16 +95,22 @@
     selectedUuid ? canvasState(selectedUuid) === "live" || canvasState(selectedUuid) === "connecting" : false,
   );
 
-  // Pointer drag-to-reorder the canvas list. Optimistically reorders the shared store
-  // array (avoids flicker), then persists via canvas.reorder; the backend's
-  // canvas.changed emit + store refresh reconciles, so a failed call is non-fatal.
+  // Pointer drag-to-reorder the canvas list, restricted to the non-default canvases
+  // (the Default canvas is pinned first and never part of `order`). Optimistically
+  // reorders the shared store array (avoids flicker), then persists via
+  // canvas.reorder; the backend's canvas.changed emit + store refresh reconciles, so
+  // a failed call is non-fatal. The Default's uuid is re-prepended before the
+  // backend call so ReorderByUuid (which appends ids absent from `order`) can't drop
+  // it to the end of the persisted order.
   const reorder = createReorder({
-    getIds: () => canvasStore.canvases.map((c) => c.uuid),
+    getIds: () => canvasStore.canvases.filter((c) => !c.isDefault).map((c) => c.uuid),
     commit: async (order) => {
       const by = new Map(canvasStore.canvases.map((c) => [c.uuid, c]));
-      canvasStore.canvases = order.map((id) => by.get(id)).filter((c): c is CanvasInfo => !!c);
+      const def = canvasStore.canvases.find((c) => c.isDefault);
+      const reordered = order.map((id) => by.get(id)).filter((c): c is CanvasInfo => !!c);
+      canvasStore.canvases = def ? [def, ...reordered] : reordered;
       try {
-        await obs.call("canvas.reorder", { order });
+        await obs.call("canvas.reorder", { order: def ? [def.uuid, ...order] : order });
       } catch {
         // Reconciled by the canvas.changed emit + store refresh.
       }
@@ -185,7 +195,24 @@
       <span class="cv-clist__count">{canvases.length}</span>
     </div>
     <div class="cv-clist__body">
-      {#each canvases as c, i (c.uuid)}
+      {#if defaultCanvas}
+        {@const c = defaultCanvas}
+        {@const st = canvasState(c.uuid)}
+        <button
+          class="cv-ci"
+          class:on={c.uuid === selectedUuid}
+          onclick={() => (selectedUuid = c.uuid)}
+        >
+          <span class="cv-ci__dot" style:background={STATE_COLOR_EXT[st]}></span>
+          <span class="cv-ci__body">
+            <span class="cv-ci__name">{c.name}</span>
+            <span class="cv-ci__sub">{c.outputWidth}×{c.outputHeight} · {fmtFps(c.fpsNum, c.fpsDen)}fps · {destCount(c.uuid)} dest</span>
+          </span>
+          <span class="cv-ci__badge">DEF</span>
+        </button>
+        <div class="cv-clist__divider" role="separator"></div>
+      {/if}
+      {#each otherCanvases as c, i (c.uuid)}
         {@const st = canvasState(c.uuid)}
         {#if reorder.dragging && reorder.dropIndex === i}<div class="reorder-line"></div>{/if}
         <button
@@ -203,10 +230,9 @@
             <span class="cv-ci__name">{c.name}</span>
             <span class="cv-ci__sub">{c.outputWidth}×{c.outputHeight} · {fmtFps(c.fpsNum, c.fpsDen)}fps · {destCount(c.uuid)} dest</span>
           </span>
-          {#if c.isDefault}<span class="cv-ci__badge">DEF</span>{/if}
         </button>
       {/each}
-      {#if reorder.dragging && reorder.dropIndex === canvases.length}<div class="reorder-line"></div>{/if}
+      {#if reorder.dragging && reorder.dropIndex === otherCanvases.length}<div class="reorder-line"></div>{/if}
       <button class="cv-newcanvas" onclick={addCanvas}><Icon name="plus" size={13} /><span>New Canvas</span></button>
     </div>
   </aside>

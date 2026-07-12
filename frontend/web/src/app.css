@@ -782,6 +782,11 @@ input[type="color"] {
   padding: 2px 4px;
   flex: 0 0 auto;
 }
+.cv-clist__divider {
+  height: var(--border-weight);
+  margin: 6px 4px;
+  background: var(--color-border);
+}
 .cv-newcanvas {
   width: 100%;
   height: 34px;
