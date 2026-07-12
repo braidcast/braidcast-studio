@@ -1400,6 +1400,40 @@ on public repos (separate from the 500 MB Packages quota).
   upstream OBS already ships, if any, rather than inventing one), (c) whether
   this lives in `CanvasEditorDialog` itself or a separate "New canvas" wizard
   flow. Design-level only — not spec'd or planned yet.
+- 🔧 **Render-thread efficiency — inert idle canvases** — RCA (2026-07-12) of a
+  live frame-drop incident (`2026-07-11 22-49-38.txt`): rendering-lag and
+  encoding-lag tracked ~1:1 at 25.6% with zero network drops, i.e. the encoders
+  were *starved by the compositor*, not saturated. Root cause: the graphics
+  thread composites EVERY canvas mix each tick regardless of any consumer
+  (`obs-video.c:547` composites unconditionally; the `raw/gpu_active` gate only
+  skips download/encode). A destination-less/disabled runtime canvas (e.g. the
+  idle 4K "51k AV1") still pays a full composite → render-thread overload →
+  dropped *stream* frames + laggy preview (they share the one graphics thread).
+  **Tier 1 (in progress 2026-07-12):** runtime canvases go fully inert (mix
+  removed from `obs->video.mixes`) when they have no enabled destination AND no
+  open preview; rebuilt on destination-enable or preview-open. Makes
+  destination-toggling actually disable a canvas everywhere, not just its
+  encoder. **Tier 2 (deferred):** also gate the Main/Default canvas composite on
+  having a consumer (a libobs change to `render_main_texture`/`output_frames`,
+  upstream-divergent) — OBS always composites the main canvas, so this makes
+  Braidcast *beat* OBS on idle cost. Do Tier 2 once Tier 1 proves out. Also
+  consider a **preview-fps cap + real occlusion detection** — per-canvas previews
+  currently render at full output fps, unthrottled, and only stop on DOM-hidden,
+  not OS-window occlusion (`previewSurface.ts` / `render_displays`).
+- 🔧 **Modern audio-plugin host (VST3 + CLAP)** — `obs-vst` is in-tree and
+  maintained upstream (the archived standalone repo was folded into the
+  obs-studio monorepo), but it is **VST2-only** and **Qt-coupled**, so it can't
+  load in the CEF build (Qt6 not deployed) — the VST filter is currently dead.
+  **Near-term (B, 2026-07-12 greenlit):** make it Qt-free by hosting the VST2
+  editor in a native Win32 `HWND` instead of a `QWidget` — full VST2 incl. its
+  editor GUI, zero Qt = backward compatibility for existing plugins. **Forward
+  (surpass-OBS):** add a **VST3 + CLAP** host — OBS being VST2-only is a real
+  weakness to leapfrog; modern plugins ship VST3/CLAP. Together = backward
+  (VST2) + forward (VST3/CLAP) coverage, ahead of stock OBS. Needs: SDK
+  integration (VST3 SDK license/GPL-compat check; CLAP is permissive), plugin
+  scanning + ideally out-of-process sandboxing, cross-platform native editor
+  hosting (Win32/NSView/X11), parameter persistence. B is near-term impl;
+  VST3/CLAP is design-level.
 - ✅ **Cross-canvas scene duplicate** (2026-07-09) — `scenes.duplicateToCanvas`
   bridge method deep-copies a scene (scene filters + every item's source, incl.
   that source's own filters, via `OBS_SCENE_DUP_COPY`) from any canvas onto any
