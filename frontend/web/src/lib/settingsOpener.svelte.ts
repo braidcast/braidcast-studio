@@ -3,7 +3,7 @@
 // call setSettingsTab. (Canvases + Stream Profiles moved out to their own nav-rail
 // pages.)
 
-export type SettingsTab = "general" | "audio" | "hotkeys" | "browserDocks" | "appearance" | "advanced";
+export type SettingsTab = "general" | "audio" | "hotkeys" | "browserDocks" | "appearance" | "advanced" | "diagnostics";
 
 export const settingsNav = $state<{ tab: SettingsTab }>({
   tab: "general",

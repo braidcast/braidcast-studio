@@ -7,6 +7,8 @@
 // count is non-zero and re-asserts its rect when it returns to zero.
 
 import { untrack } from "svelte";
+import { log } from "./log";
+import { Cat } from "./logCategories";
 
 let count = $state(0);
 
@@ -17,12 +19,20 @@ export function suspendPreview(): () => void {
 	// effect to its own write -> effect_update_depth_exceeded. Untracking the
 	// read keeps the gate one-directional: writers bump the count without
 	// subscribing; only previewSuspended() readers below take the dependency.
-	untrack(() => count++);
+	// log.dbg reads the reactive DEBUG gate, so it stays inside untrack too, else
+	// the caller's effect would subscribe to the gate and re-run on a debug toggle.
+	untrack(() => {
+		count++;
+		log.dbg(Cat.preview, "suspend -> count=" + count);
+	});
 	let released = false;
 	return () => {
 		if (!released) {
 			released = true;
-			untrack(() => (count = Math.max(0, count - 1)));
+			untrack(() => {
+				count = Math.max(0, count - 1);
+				log.dbg(Cat.preview, "release -> count=" + count);
+			});
 		}
 	};
 }

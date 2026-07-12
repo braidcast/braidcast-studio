@@ -33,6 +33,7 @@
   import { goLiveModal } from "./lib/goLiveModalOpener.svelte";
   import { undoStore } from "./lib/undoStore.svelte";
   import { channelsStore } from "./lib/channelsStore.svelte";
+  import { diagnosticsStore } from "./lib/diagnosticsStore.svelte";
   import { obs } from "./lib/bridge";
 import { EV } from "./lib/eventNames";
   import { clipboard } from "./lib/clipboardStore.svelte";
@@ -128,6 +129,8 @@ import { EV } from "./lib/eventNames";
 
   onMount(() => {
     undoStore.start();
+    // Seed the DEBUG gate + log path early so log.dbg is gated correctly app-wide.
+    diagnosticsStore.start();
     const offChannels = channelsStore.init();
     // Kill browser spellcheck squiggles app-wide (inherited); real prose fields can
     // still opt back in with spellcheck="true".

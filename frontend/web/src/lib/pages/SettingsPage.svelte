@@ -5,6 +5,7 @@
   import BrowserDocksTab from "../BrowserDocksTab.svelte";
   import AppearanceTab from "../AppearanceTab.svelte";
   import AdvancedTab from "../AdvancedTab.svelte";
+  import DiagnosticsTab from "../DiagnosticsTab.svelte";
   import PageHeader from "../PageHeader.svelte";
   import { settingsNav, setSettingsTab, type SettingsTab } from "../settingsOpener.svelte";
 
@@ -20,6 +21,7 @@
     { id: "browserDocks", label: "Browser Docks" },
     { id: "appearance", label: "Appearance" },
     { id: "advanced", label: "Advanced" },
+    { id: "diagnostics", label: "Diagnostics" },
   ];
 </script>
 
@@ -51,6 +53,8 @@
         <AppearanceTab />
       {:else if settingsNav.tab === "advanced"}
         <AdvancedTab />
+      {:else if settingsNav.tab === "diagnostics"}
+        <DiagnosticsTab />
       {/if}
     </div>
   </div>

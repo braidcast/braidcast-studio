@@ -29,6 +29,8 @@ import { EV } from "../eventNames";
   import ContextMenu, { type ContextMenuItem } from "../ContextMenu.svelte";
   import { openGoLiveModal } from "../goLiveModalOpener.svelte";
   import { goLivePref } from "../goLivePrefStore.svelte";
+  import { log } from "../log";
+  import { Cat } from "../logCategories";
 
   let api = $state<DockviewApi | undefined>(undefined);
   let visibleDocks = $state<Record<string, boolean>>({});
@@ -560,11 +562,13 @@ import { EV } from "../eventNames";
   async function doToggleLive(): Promise<void> {
     if (busy) return;
     busy = true;
+    const action = anyRunning ? "streaming.stop" : "streaming.start";
+    log.dbg(Cat.bridge, "go-live: calling " + action);
     try {
       // Single source of truth: start/stop every enabled binding across all canvases.
       // The engine no-ops if nothing is armed; the authoritative live flag arrives
       // back via streaming.changed.
-      await obs.call(anyRunning ? "streaming.stop" : "streaming.start");
+      await obs.call(action);
     } catch (e) {
       console.log("streaming toggle failed: " + (e as Error).message);
     } finally {
@@ -577,6 +581,12 @@ import { EV } from "../eventNames";
   // calls streaming.start itself. With the pref off, fall back to the optional
   // warn-confirm + instant start. Stopping keeps the single warn/stop path.
   function toggleLive(): void {
+    log.dbg(Cat.bridge, "go-live: toggle", {
+      anyRunning,
+      askStreamInfo: goLivePref.askStreamInfo,
+      warnGoLive,
+      warnStop,
+    });
     if (anyRunning && warnStop) {
       dialog = {
         kind: "confirm",

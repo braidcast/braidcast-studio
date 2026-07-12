@@ -39,6 +39,7 @@ export const EV = {
   channelsStats: "channels.stats",
   viewersChanged: "viewers.changed",
   audioLevels: "audio.levels",
+  debugChanged: "debug.changed",
 } as const;
 
 export type BridgeEvent = (typeof EV)[keyof typeof EV];

@@ -1501,6 +1501,13 @@ export interface ObsMethods {
   "overlays.serverInfo": OverlayServerInfo;
   "overlays.uploadAsset": { path: string };
   "overlays.addToScene": { id: number; source: string };
+  // Gated DEBUG logging (Phase 11 Part 1). get seeds the diagnostics store with the
+  // live gate + the current session-log path (SessionLog::CurrentPath); setDebug
+  // persists + flips the live gate + emits debug.changed, echoing the applied state;
+  // openLogFolder reveals the logs/ directory in the OS file manager.
+  "diagnostics.get": { debug: boolean; logPath: string };
+  "diagnostics.setDebug": { debug: boolean };
+  "diagnostics.openLogFolder": { ok: boolean };
 }
 
 /** Known server->client push events and their payload shapes. */
@@ -1615,6 +1622,9 @@ export interface ObsEvents {
   // A widget was created/updated/duplicated/deleted; the Overlays page re-runs
   // overlays.list (and re-fetches the open widget if it changed elsewhere).
   "overlays.changed": Record<string, never>;
+  // The DEBUG gate flipped (Settings toggle or any setDebug caller); the diagnostics
+  // store updates `debug` from the payload without a re-fetch.
+  "debug.changed": { debug: boolean };
 }
 
 // Every payload-typed event key must be a known EV constant (eventNames.ts); this
