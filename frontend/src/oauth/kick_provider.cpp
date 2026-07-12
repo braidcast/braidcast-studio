@@ -158,14 +158,16 @@ bool KickProvider::getMetadata(OAuthAccount &acct, json &out, std::string &err)
 
 	// Kick's category id is a wire integer, but the cross-provider contract models
 	// category id as a STRING (Twitch's game_id is a string), so stringify it here.
-	// applyMetadata parses it back to the int category_id and only pushes when
-	// non-zero, so an unset category ("0") round-trips without clearing.
+	// An unset category must use an EMPTY id, not "0": the Go Live modal treats any
+	// truthy live category id as authoritative and would overwrite the user's saved
+	// selection on every open. applyMetadata's NumLoose("") is 0, so an empty id
+	// still round-trips as "don't push" without clearing the field.
 	json category = json::object();
 	if (row.contains("category") && row["category"].is_object()) {
 		const json &cat = row["category"];
 		category = json{{"id", std::to_string(NumLoose(cat, "id"))}, {"name", Str(cat, "name")}};
 	} else {
-		category = json{{"id", std::string("0")}, {"name", std::string()}};
+		category = json{{"id", std::string()}, {"name", std::string()}};
 	}
 
 	// Tags live under stream.custom_tags (array of strings).
