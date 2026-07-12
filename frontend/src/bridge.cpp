@@ -1065,32 +1065,22 @@ bool MethodScenesList(const json &params, json &result, std::string &error)
 		return true;
 	}
 	(void)error;
-	// Enumerate scene sources in creation order. `current` flags the scene bound
-	// to output channel 0 (unwrapped from the program transition).
-	obs_source_t *current = Transitions::GetProgramScene(); // addref'd; may be null
+	// List in the persisted user order (SceneCollection::SceneOrder) rather than
+	// obs_enum_scenes' creation order -- libobs has no scene-ordering primitive of
+	// its own; SceneOrder() is the only record of the user's chosen order.
+	// `current` flags the scene bound to output channel 0 (unwrapped from the
+	// program transition).
+	OBSSourceAutoRelease current = Transitions::GetProgramScene(); // addref'd; may be null
 	const char *currentName = current ? obs_source_get_name(current) : nullptr;
 	const std::string currentStr = currentName ? currentName : std::string();
 
 	json scenes = json::array();
-	struct Ctx {
-		json *arr;
-		const std::string *current;
-	} ctx{&scenes, &currentStr};
-
-	obs_enum_scenes(
-		[](void *param, obs_source_t *source) -> bool {
-			auto *c = static_cast<Ctx *>(param);
-			const char *name = obs_source_get_name(source);
-			if (name) {
-				c->arr->push_back(json{{"name", name}, {"current", !c->current->empty() &&
-											      *c->current == name}});
-			}
-			return true; // keep enumerating
-		},
-		&ctx);
-
-	if (current) {
-		obs_source_release(current);
+	for (const std::string &uuid : SceneCollection::SceneOrder()) {
+		OBSSourceAutoRelease scene = obs_get_source_by_uuid(uuid.c_str()); // addref'd
+		const char *name = scene ? obs_source_get_name(scene) : nullptr;
+		if (name) {
+			scenes.push_back(json{{"name", name}, {"current", !currentStr.empty() && currentStr == name}});
+		}
 	}
 	result = std::move(scenes);
 	return true;
@@ -1721,21 +1711,18 @@ bool MethodScenesDuplicateToCanvas(const json &params, json &result, std::string
 }
 
 // scenes.reorder {name, direction:"up"|"down", canvas?}: reorder a scene within
-// the (canvas or global) scene list.
+// the global scene list.
 //
 // HONEST LIMITATION: libobs has no scene-ordering primitive. Unlike scene ITEMS
 // (obs_sceneitem_set_order), global scenes are plain sources enumerated by
-// obs_enum_scenes in CREATION order, and an additional canvas's scenes are
-// enumerated by obs_canvas_enum_scenes -- neither exposes a settable order. The
-// legacy Qt frontend's scene order is a UI-only concept: it persists a
-// "scene_order" array inside each scene-collection JSON (SaveSceneListOrder reads
-// the QListWidget row order). The new CEF frontend has NO scene-collection
-// save/load layer yet (OutputBindingStore notes this), so there is nowhere to
-// persist a user-defined order. Implementing a session-only order that
-// scenes.list does not consult would be a no-op disguised as success. Per the
-// plan ("do NOT fake it"), this returns a clear error until scene-collection
-// persistence exists to back a real order.
-bool MethodScenesReorder(const json &params, json & /*result*/, std::string &error)
+// obs_enum_scenes in CREATION order -- it exposes no settable order. Mirroring
+// the legacy Qt frontend's SaveSceneListOrder, the order lives OUTSIDE libobs: a
+// "scene_order" array persisted alongside the rest of the scene collection (see
+// SceneCollection::SceneOrder/ReorderScene in scene_persistence.cpp), which
+// scenes.list now consults instead of raw creation order. An additional canvas's
+// scenes (obs_canvas_enum_scenes, same limitation) aren't tracked by that order
+// yet, so reordering there still isn't supported.
+bool MethodScenesReorder(const json &params, json &result, std::string &error)
 {
 	std::string name;
 	const std::string direction = OptString(params, "direction");
@@ -1746,9 +1733,24 @@ bool MethodScenesReorder(const json &params, json & /*result*/, std::string &err
 		error = "scenes.reorder 'direction' must be 'up' or 'down'";
 		return false;
 	}
-	error = "scene reordering is not supported: libobs enumerates scenes in creation order and "
-		"the new frontend has no scene-collection persistence to store a custom order";
-	return false;
+	if (ResolveCanvasTarget(params).isAdditional) {
+		error = "scene reordering is not yet supported for additional canvases";
+		return false;
+	}
+	OBSSourceAutoRelease scene = obs_get_source_by_name(name.c_str()); // addref'd
+	if (!scene || !obs_scene_from_source(scene)) {
+		error = "no scene named '" + name + "'";
+		return false;
+	}
+	const char *uuid = obs_source_get_uuid(scene);
+	if (!uuid || !SceneCollection::ReorderScene(uuid, direction)) {
+		error = "scene reordering failed";
+		return false;
+	}
+	EmitScenesChanged(std::string());
+	SceneCollection::Save();
+	result = json{{"name", name}, {"direction", direction}};
+	return true;
 }
 
 // --- scene items ------------------------------------------------------------
@@ -1851,15 +1853,42 @@ bool ResolveStateItem(const json &state, obs_source_t *&sceneSource, obs_sceneit
 	return true;
 }
 
-// Emit + persist after an Apply, matching what the original mutation does so the
-// UI refreshes and the undo persists.
-void CommitStateChange(const json &state, obs_source_t *sceneSource)
+// Persist a mutated source to whichever store owns it. A source bound to a
+// global output channel (1..6) is excluded from the scene-collection save (see
+// SaveFilter in scene_persistence.cpp) and must persist via GlobalAudioChannels
+// instead; every other source -- including additional-canvas scene items, since
+// SceneCollection::Save() already covers every canvas's scenes in the one
+// collection file (SaveFilter keeps both main- and additional-canvas scoped
+// sources) -- persists via SceneCollection::Save(). The single choke point every
+// mutating handler (scene items, audio, source/filter properties) should call
+// exactly once after applying its change.
+void PersistSourceState(obs_source_t *source)
 {
-	const CanvasTarget target = ResolveCanvasTarget(state);
-	EmitSceneItemsChanged(sceneSource, target.uuid);
-	if (!target.isAdditional) {
-		SceneCollection::Save();
+	// A filter isn't itself bound to an output channel; resolve to its parent so a
+	// filter edit on a global audio channel (e.g. a noise-suppression filter on
+	// Desktop Audio) persists via the channel's own store too -- SaveFilter
+	// excludes channel 1..6 sources (and everything attached to them) from the
+	// scene-collection save entirely.
+	obs_source_t *owner = source;
+	if (obs_source_t *parent = obs_filter_get_parent(source)) {
+		owner = parent;
 	}
+	for (int ch = GlobalAudioChannels::kFirstChannel; ch <= GlobalAudioChannels::kLastChannel; ch++) {
+		OBSSourceAutoRelease channelSource = obs_get_output_source(ch); // addref'd; may be null
+		if (channelSource && channelSource.Get() == owner) {
+			ObsBootstrap::GlobalAudioChannels().Persist();
+			return;
+		}
+	}
+	SceneCollection::Save();
+}
+
+// Emit + persist after a scene-item mutation (or an undo Apply), matching what
+// the original mutation does so the UI refreshes and the undo persists.
+void CommitSceneItemChange(const json &params, obs_source_t *sceneSource)
+{
+	EmitSceneItemsChanged(sceneSource, ResolveCanvasTarget(params).uuid);
+	PersistSourceState(sceneSource);
 }
 
 // {canvas, scene, source-uuid} -- the re-resolution keys shared by every state.
@@ -1978,7 +2007,7 @@ void ApplyTransform(const std::string &data)
 
 	SetItemGeometry(item, state);
 
-	CommitStateChange(state, sceneSource);
+	CommitSceneItemChange(state, sceneSource);
 	obs_source_release(sceneSource);
 }
 
@@ -1994,7 +2023,7 @@ void ApplyVisible(const std::string &data)
 		return;
 	}
 	obs_sceneitem_set_visible(item, state.value("visible", false));
-	CommitStateChange(state, sceneSource);
+	CommitSceneItemChange(state, sceneSource);
 	obs_source_release(sceneSource);
 }
 
@@ -2010,7 +2039,7 @@ void ApplyLocked(const std::string &data)
 		return;
 	}
 	obs_sceneitem_set_locked(item, state.value("locked", false));
-	CommitStateChange(state, sceneSource);
+	CommitSceneItemChange(state, sceneSource);
 	obs_source_release(sceneSource);
 }
 
@@ -2028,7 +2057,7 @@ void ApplyScaleFilter(const std::string &data)
 	obs_scale_type type;
 	if (ScaleFilterFromToken(OptString(state, "filter"), type)) {
 		obs_sceneitem_set_scale_filter(item, type);
-		CommitStateChange(state, sceneSource);
+		CommitSceneItemChange(state, sceneSource);
 	}
 	obs_source_release(sceneSource);
 }
@@ -2052,7 +2081,7 @@ void ApplyRename(const std::string &data)
 	if (src) {
 		obs_source_set_name(src, name.c_str());
 	}
-	CommitStateChange(state, sceneSource);
+	CommitSceneItemChange(state, sceneSource);
 	obs_source_release(sceneSource);
 }
 
@@ -2125,7 +2154,7 @@ void ApplyOrder(const std::string &data)
 	if (!ordered.empty() && ordered.size() == byUuid.size()) {
 		obs_scene_reorder_items(scene, ordered.data(), ordered.size());
 	}
-	CommitStateChange(state, sceneSource);
+	CommitSceneItemChange(state, sceneSource);
 	obs_source_release(sceneSource);
 }
 
@@ -2143,7 +2172,7 @@ void RemoveItemBySource(const json &state)
 		return;
 	}
 	obs_sceneitem_remove(item);
-	CommitStateChange(state, sceneSource);
+	CommitSceneItemChange(state, sceneSource);
 	obs_source_release(sceneSource);
 }
 
@@ -2194,7 +2223,7 @@ void AddItemFromSnapshot(const json &state)
 		obs_sceneitem_set_order_position(item, pos < 0 ? 0 : pos);
 	}
 
-	CommitStateChange(state, sceneSource);
+	CommitSceneItemChange(state, sceneSource);
 	obs_source_release(sceneSource);
 }
 
@@ -2500,11 +2529,8 @@ bool MethodSceneItemsSetVisible(const json &params, json &result, std::string &e
 	json after = StateBase(params, itemSrc);
 	after["visible"] = visible;
 	obs_sceneitem_set_visible(item, visible);
-	EmitSceneItemsChanged(sceneSource, ResolveCanvasTarget(params).uuid);
+	CommitSceneItemChange(params, sceneSource);
 	obs_source_release(sceneSource);
-	if (!ResolveCanvasTarget(params).isAdditional) {
-		SceneCollection::Save();
-	}
 	RecordUndo(visible ? "Show" : "Hide", ApplyVisible, before, after);
 	result = json{{"id", id}, {"visible", visible}};
 	return true;
@@ -2535,11 +2561,8 @@ bool MethodSceneItemsSetLocked(const json &params, json &result, std::string &er
 	json after = StateBase(params, itemSrc);
 	after["locked"] = locked;
 	obs_sceneitem_set_locked(item, locked);
-	EmitSceneItemsChanged(sceneSource, ResolveCanvasTarget(params).uuid);
+	CommitSceneItemChange(params, sceneSource);
 	obs_source_release(sceneSource);
-	if (!ResolveCanvasTarget(params).isAdditional) {
-		SceneCollection::Save();
-	}
 	RecordUndo(locked ? "Lock" : "Unlock", ApplyLocked, before, after);
 	result = json{{"id", id}, {"locked", locked}};
 	return true;
@@ -2572,11 +2595,8 @@ bool MethodSceneItemsRemove(const json &params, json &result, std::string &error
 	const json after = StateBase(params, itemSrc);
 
 	obs_sceneitem_remove(item);
-	EmitSceneItemsChanged(sceneSource, ResolveCanvasTarget(params).uuid);
+	CommitSceneItemChange(params, sceneSource);
 	obs_source_release(sceneSource);
-	if (!ResolveCanvasTarget(params).isAdditional) {
-		SceneCollection::Save();
-	}
 	// undo == re-add the snapshot; redo == remove by source uuid.
 	ObsBootstrap::Undo().AddAction("Remove " + name, kAddItemFromSnapshot, kRemoveItemBySource, before.dump(),
 				       after.dump());
@@ -2629,11 +2649,8 @@ bool MethodSceneItemsReorder(const json &params, json &result, std::string &erro
 	json before = CaptureOrderState(params, sceneSource);
 	obs_sceneitem_set_order(item, *movement);
 	json after = CaptureOrderState(params, sceneSource);
-	EmitSceneItemsChanged(sceneSource, ResolveCanvasTarget(params).uuid);
+	CommitSceneItemChange(params, sceneSource);
 	obs_source_release(sceneSource);
-	if (!ResolveCanvasTarget(params).isAdditional) {
-		SceneCollection::Save();
-	}
 	RecordUndo("Reorder", ApplyOrder, before, after);
 	result = json{{"id", id}, {"direction", direction}};
 	return true;
@@ -2669,11 +2686,8 @@ bool MethodSceneItemsSetScaleFilter(const json &params, json &result, std::strin
 	json after = StateBase(params, itemSrc);
 	after["filter"] = filter;
 	obs_sceneitem_set_scale_filter(item, type);
-	EmitSceneItemsChanged(sceneSource, ResolveCanvasTarget(params).uuid);
+	CommitSceneItemChange(params, sceneSource);
 	obs_source_release(sceneSource);
-	if (!ResolveCanvasTarget(params).isAdditional) {
-		SceneCollection::Save();
-	}
 	RecordUndo("Scale Filtering", ApplyScaleFilter, before, after);
 	result = json{{"id", id}, {"filter", filter}};
 	return true;
@@ -2705,11 +2719,8 @@ bool MethodSceneItemsSetColor(const json &params, json &result, std::string &err
 	// obs_sceneitem_get_private_settings returns an addref'd ref; OBSDataAutoRelease releases it.
 	OBSDataAutoRelease priv = obs_sceneitem_get_private_settings(item);
 	obs_data_set_string(priv, "color", color.c_str());
-	EmitSceneItemsChanged(sceneSource, ResolveCanvasTarget(params).uuid);
+	CommitSceneItemChange(params, sceneSource);
 	obs_source_release(sceneSource);
-	if (!ResolveCanvasTarget(params).isAdditional) {
-		SceneCollection::Save();
-	}
 	result = json{{"ok", true}};
 	return true;
 }
@@ -2881,15 +2892,6 @@ bool ResolveTransformTarget(const json &params, obs_source_t *&sceneSource, obs_
 		return false;
 	}
 	return true;
-}
-
-// Persist + notify after a transform mutation, matching the sibling item methods.
-void CommitSceneItemChange(const json &params, obs_source_t *sceneSource)
-{
-	EmitSceneItemsChanged(sceneSource, ResolveCanvasTarget(params).uuid);
-	if (!ResolveCanvasTarget(params).isAdditional) {
-		SceneCollection::Save();
-	}
 }
 
 bool MethodSceneItemsGetTransform(const json &params, json &result, std::string &error)
@@ -3269,15 +3271,14 @@ bool MethodSourcesCreate(const json &params, json &result, std::string &error)
 	obs_source_release(source); // drop the create-ref; scene holds the source
 
 	EmitSceneItemsChanged(sceneSource, ResolveCanvasTarget(params).uuid);
-	obs_source_release(sceneSource);
 
 	if (!item) {
+		obs_source_release(sceneSource);
 		error = "obs_scene_add failed";
 		return false;
 	}
-	if (!ResolveCanvasTarget(params).isAdditional) {
-		SceneCollection::Save();
-	}
+	PersistSourceState(sceneSource);
+	obs_source_release(sceneSource);
 	ObsBootstrap::Undo().AddAction("Add " + name, kRemoveItemBySource, kAddItemFromSnapshot, before.dump(),
 				       after.dump());
 	result = json{{"id", itemId}, {"source", name}};
@@ -3373,15 +3374,14 @@ bool MethodSourcesAddExisting(const json &params, json &result, std::string &err
 	obs_source_release(source); // drop our lookup ref
 
 	EmitSceneItemsChanged(sceneSource, ResolveCanvasTarget(params).uuid);
-	obs_source_release(sceneSource);
 
 	if (!item) {
+		obs_source_release(sceneSource);
 		error = "obs_scene_add failed";
 		return false;
 	}
-	if (!ResolveCanvasTarget(params).isAdditional) {
-		SceneCollection::Save();
-	}
+	PersistSourceState(sceneSource);
+	obs_source_release(sceneSource);
 	ObsBootstrap::Undo().AddAction("Add " + name, kRemoveItemBySource, kAddItemFromSnapshot, before.dump(),
 				       after.dump());
 	result = json{{"id", itemId}, {"source", name}};
@@ -3470,15 +3470,14 @@ bool MethodSourcesDuplicate(const json &params, json &result, std::string &error
 	// scene holds its own ref via obs_scene_add.
 
 	EmitSceneItemsChanged(sceneSource, ResolveCanvasTarget(params).uuid);
-	obs_source_release(sceneSource);
 
 	if (!newItem) {
+		obs_source_release(sceneSource);
 		error = "obs_scene_add failed";
 		return false;
 	}
-	if (!ResolveCanvasTarget(params).isAdditional) {
-		SceneCollection::Save();
-	}
+	PersistSourceState(sceneSource);
+	obs_source_release(sceneSource);
 	ObsBootstrap::Undo().AddAction("Add " + uniqueName, kRemoveItemBySource, kAddItemFromSnapshot, before.dump(),
 				       after.dump());
 	result = json{{"id", newId}, {"source", uniqueName}};
@@ -3543,11 +3542,8 @@ bool MethodSceneItemsGroup(const json &params, json &result, std::string &error)
 	const char *groupUuid = groupSrc ? obs_source_get_uuid(groupSrc) : nullptr;
 	const std::string uuid = groupUuid ? groupUuid : "";
 
-	EmitSceneItemsChanged(sceneSource, ResolveCanvasTarget(params).uuid);
+	CommitSceneItemChange(params, sceneSource);
 	obs_source_release(sceneSource);
-	if (!ResolveCanvasTarget(params).isAdditional) {
-		SceneCollection::Save();
-	}
 	result = json{{"id", groupId}, {"source", uuid}};
 	return true;
 }
@@ -3584,11 +3580,8 @@ bool MethodSceneItemsUngroup(const json &params, json &result, std::string &erro
 	// call. We hold no extra ref on it (FindSceneItem borrows) -- nothing to free.
 	obs_sceneitem_group_ungroup(item);
 
-	EmitSceneItemsChanged(sceneSource, ResolveCanvasTarget(params).uuid);
+	CommitSceneItemChange(params, sceneSource);
 	obs_source_release(sceneSource);
-	if (!ResolveCanvasTarget(params).isAdditional) {
-		SceneCollection::Save();
-	}
 	result = json{{"ungrouped", true}};
 	return true;
 }
@@ -3642,11 +3635,8 @@ bool MethodSourcesRename(const json &params, json &result, std::string &error)
 	json after = StateBase(params, src);
 	after["name"] = name;
 	obs_source_set_name(src, name.c_str());
-	EmitSceneItemsChanged(sceneSource, ResolveCanvasTarget(params).uuid);
+	CommitSceneItemChange(params, sceneSource);
 	obs_source_release(sceneSource);
-	if (!ResolveCanvasTarget(params).isAdditional) {
-		SceneCollection::Save();
-	}
 	RecordUndo("Rename", ApplyRename, before, after);
 	result = json{{"id", id}, {"source", name}};
 	return true;
@@ -4384,13 +4374,14 @@ bool MethodPropertiesSet(const json &params, json &result, std::string &error)
 		if (settings) {
 			kind->update(obj, settings);
 			obs_data_release(settings);
-			// Persist source-setting edits to the global collection (encoder/service
-			// kinds persist their own stores in their update closures). Filters
-			// serialize with their parent source, so persist them the same way. Skip
-			// the additional-canvas path -- those are persisted per-canvas later.
+			// Persist source-setting edits (encoder/service kinds persist their own
+			// stores in their update closures). Filters serialize with their parent
+			// source, so persist them the same way; PersistSourceState resolves
+			// whether that's the scene collection or (for a global audio channel's
+			// filter) GlobalAudioChannels.
 			const std::string kindName = kind->name;
-			if ((kindName == "source" || kindName == "filter") && !ResolveCanvasTarget(params).isAdditional) {
-				SceneCollection::Save();
+			if (kindName == "source" || kindName == "filter") {
+				PersistSourceState(static_cast<obs_source_t *>(obj));
 			}
 		}
 	}
@@ -6024,6 +6015,9 @@ bool MethodAudioSetDeflection(const json &params, json &result, std::string &err
 		error = "no active audio source with uuid '" + uuid + "'";
 		return false;
 	}
+	if (OBSSourceAutoRelease source = obs_get_source_by_uuid(uuid.c_str())) {
+		PersistSourceState(source);
+	}
 	result = json{{"uuid", uuid}, {"deflection", appliedDef}, {"volumeDb", appliedDb}};
 	return true;
 }
@@ -6043,6 +6037,7 @@ bool MethodAudioSetMuted(const json &params, json &result, std::string &error)
 	}
 	const bool muted = params["muted"].get<bool>();
 	obs_source_set_muted(source, muted);
+	PersistSourceState(source);
 	result = json{{"uuid", obs_source_get_uuid(source)}, {"muted", muted}};
 	return true;
 }
@@ -6202,6 +6197,7 @@ bool MethodAudioSetAdvanced(const json &params, json &result, std::string &error
 		obs_source_set_monitoring_type(s, monitoringType);
 	}
 
+	PersistSourceState(s);
 	result = BuildAdvancedAudio(s);
 	EmitEvent(EventNames::kAudioChanged, json::object());
 	return true;
@@ -9032,15 +9028,14 @@ bool MethodOverlaysAddToScene(const json &params, json &result, std::string &err
 	obs_source_release(source); // drop the create-ref; scene holds the source
 
 	EmitSceneItemsChanged(sceneSource, ResolveCanvasTarget(params).uuid);
-	obs_source_release(sceneSource);
 
 	if (!item) {
+		obs_source_release(sceneSource);
 		error = "obs_scene_add failed";
 		return false;
 	}
-	if (!ResolveCanvasTarget(params).isAdditional) {
-		SceneCollection::Save();
-	}
+	PersistSourceState(sceneSource);
+	obs_source_release(sceneSource);
 	ObsBootstrap::Undo().AddAction("Add " + name, kRemoveItemBySource, kAddItemFromSnapshot, before.dump(),
 				       after.dump());
 	result = json{{"id", itemId}, {"source", name}};

@@ -2,6 +2,7 @@
 #define OBS_MULTISTREAM_FRONTEND_SCENE_PERSISTENCE_HPP_
 
 #include <string>
+#include <vector>
 
 // Save/load of the main-canvas scene collection -- scenes, their sources, and
 // the full per-scene item layout -- to a per-collection JSON file under the
@@ -9,14 +10,29 @@
 // rebuilds a placeholder scene every boot and never persists user content, so
 // anything added vanished on restart.
 //
-// Excluded from the save (restored separately or deferred): the channel 1-6
-// global audio sources (re-seeded from audio_devices.json) and additional-canvas
-// scoped sources (per-canvas persistence is a later phase).
+// Excluded from the save (restored separately): only the channel 1-6 global
+// audio sources (re-seeded from audio_devices.json) and the channel-0 program
+// transition (re-seeded from transitions.json). Additional-canvas scoped sources
+// ARE included -- SaveFilter keeps them, obs_load_sources rebinds them to their
+// canvas via the canvas_uuid libobs stamps on save, so per-canvas scenes round-
+// trip through this same file.
 //
 // The no-arg Save()/Load() target the ACTIVE scene collection's file (resolved
 // through the SceneCollections registry); the explicit-path overloads operate on
 // a specific file (used by the registry/switch machinery).
 namespace SceneCollection {
+
+// The main-canvas scene list's user-defined order, as scene uuids. Self-healing:
+// always reconciled against the scenes that currently exist (stale uuids
+// dropped, untracked scenes appended in creation order) before it is returned, so
+// callers never see a stale list. Empty only when the collection has no scenes.
+const std::vector<std::string> &SceneOrder();
+
+// Move the scene named by `sceneUuid` one slot toward `direction` ("up"|"down")
+// within SceneOrder(). Returns false if the uuid isn't a known main-canvas scene;
+// a move already at the relevant edge is a no-op success (matches sceneItems'
+// boundary behavior). Does not save -- the caller persists via Save().
+bool ReorderScene(const std::string &sceneUuid, const std::string &direction);
 
 // Persist the active collection. No-op-safe; logs on failure.
 void Save();
