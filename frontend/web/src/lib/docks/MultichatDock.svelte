@@ -7,6 +7,10 @@ import { EV } from "../eventNames";
   import EmptyState from "../EmptyState.svelte";
   import Icon from "../dock/Icon.svelte";
   import PlatformChips from "../PlatformChips.svelte";
+  import { outputBindingStore } from "../outputBindingStore.svelte";
+  import { streamProfileStore } from "../streamProfileStore.svelte";
+  import { multistreamStatusStore } from "../multistreamStatusStore.svelte";
+  import { oauthStore } from "../oauthStore.svelte";
 
   // Host supplies tab chrome + strips __* keys; this body declares no props.
   let {}: Record<string, unknown> = $props();
@@ -39,21 +43,58 @@ import { EV } from "../eventNames";
       .catch(() => {});
   }
 
-  let connected = $derived(PLATFORM_ORDER.filter((p) => states.get(p)?.connected === true));
+  // The multichat channel set = an ENABLED output binding (multistreamStatusStore only
+  // ever carries a row for an enabled binding) whose linked account is OAuth-connected
+  // (oauthStore.connectedStatusForAccount, backed by the shared IsAccountConnected
+  // gate) -- NOT "every connected account". A destination the user disabled must not
+  // show a tab or receive chat traffic. Reactive off the two shared stores, so toggling
+  // a destination live updates the set without a page reload.
+  $effect(() => {
+    outputBindingStore.start();
+    streamProfileStore.start();
+    const offStatus = multistreamStatusStore.subscribe();
+    const offOauth = oauthStore.subscribe();
+    return () => {
+      offStatus();
+      offOauth();
+    };
+  });
+
+  let enabledChannels = $derived.by<Set<ChatPlatform>>(() => {
+    const set = new Set<ChatPlatform>();
+    for (const row of multistreamStatusStore.outputs) {
+      const binding = outputBindingStore.bindings.find((b) => b.uuid === row.bindingUuid);
+      const profile = binding ? streamProfileStore.byUuid(binding.profileUuid) : undefined;
+      if (!profile?.accountId) continue;
+      const status = oauthStore.connectedStatusForAccount(profile.accountId);
+      if (status) set.add(status.providerId as ChatPlatform);
+    }
+    return set;
+  });
+
+  let connected = $derived(
+    PLATFORM_ORDER.filter((p) => states.get(p)?.connected === true && enabledChannels.has(p)),
+  );
   let anyConnected = $derived(connected.length > 0);
 
-  // "all" or a single connected platform. The "All" dest (and its chip) is only
-  // meaningful with >=2 connected platforms; with exactly one, pin the dest to it so
-  // its lone chip reads active. Falls back to "all" if the chosen platform disconnects.
+  // "all" or a single connected platform. Defaults to "all" and STAYS there unless the
+  // user explicitly picks a platform -- a channel connecting (even the first one live)
+  // must never auto-narrow the view to just it, or a second channel going live moments
+  // later gets silently hidden. The effect only ever falls back to "all", when the
+  // current selection stops being valid (its channel disconnected or got disabled);
+  // it never advances dest to a specific platform on its own.
   let dest = $state<"all" | ChatPlatform>("all");
   let showAllChip = $derived(connected.length >= 2);
   $effect(() => {
-    if (connected.length === 1) {
-      if (dest !== connected[0]) dest = connected[0];
-    } else if (dest !== "all" && !connected.includes(dest)) {
+    if (dest !== "all" && !connected.includes(dest)) {
       dest = "all";
     }
   });
+
+  // Presentation only: with exactly one eligible channel, highlight its chip even
+  // though `dest` itself stays "all" -- so a 2nd channel connecting later isn't
+  // fighting a `dest` state that got stuck on the first. Never fed back into `dest`.
+  let displayDest = $derived(connected.length === 1 ? connected[0] : dest);
 
   let draft = $state("");
 
@@ -162,7 +203,7 @@ import { EV } from "../eventNames";
 
   <div class="composer">
     <div class="dests">
-      <PlatformChips platforms={connected} value={dest} showAll={showAllChip} onSelect={(v) => (dest = v)} />
+      <PlatformChips platforms={connected} value={displayDest} showAll={showAllChip} onSelect={(v) => (dest = v)} />
     </div>
     <div class="inputrow">
       <textarea
@@ -172,7 +213,7 @@ import { EV } from "../eventNames";
         onkeydown={onKeydown}
         disabled={!anyConnected}
         placeholder={anyConnected
-          ? "Message " + (dest === "all" ? "all platforms" : PLATFORM_LABEL[dest as ChatPlatform]) + "…"
+          ? "Message " + (displayDest === "all" ? "all platforms" : PLATFORM_LABEL[displayDest as ChatPlatform]) + "…"
           : states.size > 0
             ? "No connected accounts"
             : "Go live to chat"}

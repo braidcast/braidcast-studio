@@ -12,9 +12,10 @@
 #include <nlohmann/json.hpp>
 
 // The ChatHub (Phase 9.0): owns the set of live per-account chat transports between
-// go-live and stop. On Start it enumerates connected, scope-current accounts, builds a
-// fresh transport per account via provider->makeChat(acct), and runs every non-null
-// transport on its own detached worker (AsyncTask::RunAsync), fanning normalized
+// go-live and stop. On Start it enumerates connected, scope-current accounts targeted
+// by an ENABLED output binding, builds a fresh transport per account via
+// provider->makeChat(acct), and runs every non-null transport on its own detached
+// worker (AsyncTask::RunAsync), fanning normalized
 // messages and state to JS via the alive-guarded PostToUi + EmitEvent path. Each
 // transport is hub-owned as a shared_ptr shared with its worker, so Stop (which drops
 // the hub's ref, signals every loop, and disconnects each transport) can't free a

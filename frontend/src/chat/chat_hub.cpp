@@ -3,14 +3,18 @@
 
 #include <algorithm>
 #include <optional>
+#include <set>
 #include <utility>
 
 #include "../async_task.hpp"
 #include "../bridge.hpp"
 #include "../log.hpp"
+#include "../multistream/OutputBindingStore.hpp"
+#include "../multistream/StreamProfileStore.hpp"
 #include "../oauth/provider.hpp"
 #include "../oauth/registry.hpp"
 #include "../oauth/account_store.hpp"
+#include "../obs_bootstrap.hpp"
 #include "../overlay/overlay_server.hpp" // OverlayServer::BroadcastChat
 #include "../overlay/overlay_store.hpp"  // Overlay::Server()
 #include "chat_transport.hpp"
@@ -48,6 +52,26 @@ void RouteEmit(const json &payload)
 	}
 }
 
+// Account ids targeted by >=1 ENABLED output binding (any canvas): the destinations
+// actually going out over the wire on this go-live. Chat must only connect to (and
+// thus only poll) these -- connecting every OAuth-connected account regardless of
+// binding state wastes transports and polls a channel's chat the user explicitly
+// disabled.
+std::set<std::string> EnabledChatAccountIds()
+{
+	std::set<std::string> ids;
+	for (const OutputBinding &b : ObsBootstrap::OutputBindings().Bindings().bindings) {
+		if (!b.enabled) {
+			continue;
+		}
+		StreamProfile *profile = ObsBootstrap::StreamProfiles().Find(b.profileUuid);
+		if (profile && !profile->accountId.empty()) {
+			ids.insert(profile->accountId);
+		}
+	}
+	return ids;
+}
+
 } // namespace
 
 void ChatHub::Start()
@@ -63,9 +87,15 @@ void ChatHub::Start()
 	}
 
 	int started = 0;
+	const std::set<std::string> enabledAccountIds = EnabledChatAccountIds();
 	for (const auto &entry : OAuth::Accounts().All()) {
 		OAuth::OAuthAccount acct = entry.second;
 		const std::string accountId = OAuth::AccountId(acct);
+		// No enabled destination targets this account -- don't connect (or poll) its
+		// chat. Checked before IsAccountConnected purely as the cheaper filter first.
+		if (!enabledAccountIds.count(accountId)) {
+			continue;
+		}
 		OAuth::StreamProvider *provider = OAuth::Registry().Get(acct.providerId);
 		// A never-finished sign-in must not arm a chat transport (it would show a
 		// Multichat chip for a platform the user never connected). IsAccountConnected

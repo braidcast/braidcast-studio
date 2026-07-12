@@ -130,8 +130,9 @@ target_sources(
     # Phase 9.0 chat transport foundation: a reusable libcurl-WebSocket client, the
     # ChatTransport interface, and the ChatHub that runs live transports between
     # go-live and stop. Per-platform transports (Twitch/YouTube/Kick) land in later
-    # Phase 9 tasks; the hub manages an empty set until then. None include obs.h, so
-    # they stay out of the /wd4201 set.
+    # Phase 9 tasks. chat_hub.cpp includes obs.h (via OutputBindingStore/
+    # StreamProfileStore, to scope transports to enabled destinations) -> /wd4201 set;
+    # the rest stay obs-free.
     src/chat/ws_client.cpp
     src/chat/ws_client.hpp
     src/chat/chat_transport.hpp
@@ -398,6 +399,7 @@ set_source_files_properties(
   src/AdvancedSettings.cpp
   src/DiagnosticsSettings.cpp
   src/bridge.cpp
+  src/chat/chat_hub.cpp
   src/properties_serializer.cpp
   src/preview_window.cpp
   src/projector_window.cpp
