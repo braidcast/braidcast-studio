@@ -270,6 +270,22 @@ import { EV } from "./eventNames";
   // live via its streams' keys.
   const connectedChannels = $derived(channels.filter((c) => c.connected));
 
+  // Modal width grows with the number of editable channel columns so a wide window
+  // shows them side by side instead of one narrow stacked column, capped well short
+  // of an ultrawide edge-to-edge span. COL_W mirrors the .chgrid minmax below so the
+  // computed width actually fits that many columns per row; needsReconnect strips
+  // span the full row and don't count toward the column budget.
+  const COL_W: Record<"simple" | "advanced", number> = { simple: 340, advanced: 420 };
+  const MIN_MODAL_W: Record<"simple" | "advanced", number> = { simple: 580, advanced: 760 };
+  const MAX_MODAL_W = 1360;
+  const GRID_GAP = 12;
+  const BODY_PAD = 28; // Modal .modal-body left+right padding
+  const modalWidth = $derived.by<number>(() => {
+    const cols = Math.max(connectedChannels.length, 1);
+    const w = COL_W[view] * cols + GRID_GAP * (cols - 1) + BODY_PAD;
+    return Math.min(Math.max(w, MIN_MODAL_W[view]), MAX_MODAL_W);
+  });
+
   // Footer gating mirrors the old `armed.length === 0`: the modal (esp. Go Live) must
   // still work when only key-only profiles are enabled, so gate on the distinct count
   // of enabled profiles regardless of channel identity, not on connectedChannels.
@@ -623,7 +639,7 @@ import { EV } from "./eventNames";
 <Modal
   title="Stream Information"
   onClose={closeGoLiveModal}
-  width={view === "advanced" ? 760 : 580}
+  width={modalWidth}
   maxHeight="88vh"
 >
   {#snippet headExtra()}
@@ -652,6 +668,11 @@ import { EV } from "./eventNames";
       {#if armedProfileCount === 0}
         <p class="note">No armed destinations. Enable a destination on a canvas to push stream information.</p>
       {:else}
+        <!-- Per-channel cards: side-by-side columns on wide windows, one stacked
+             column on narrow ones. auto-fit + minmax means no explicit breakpoint is
+             needed — a track collapses to one column once it can't fit the minmax
+             floor. Reconnect strips (below) span every column as a full-width banner. -->
+        <div class="chgrid">
         {#each channels as c (c.accountId)}
           {#if c.connected && c.provider}
             {@const isCollapsed = !!collapsed[c.accountId]}
@@ -783,6 +804,7 @@ import { EV } from "./eventNames";
             </div>
           {/if}
         {/each}
+        </div>
       {/if}
     {/if}
 
@@ -826,15 +848,32 @@ import { EV } from "./eventNames";
     color: var(--color-muted);
     margin: 0;
   }
-  /* Body wrapper: no padding of its own (Modal's .modal-body owns the scroll + pad);
-     the `adv` flag caps the wider Advanced modal's text inputs so they don't stretch
-     edge-to-edge. */
+  /* Body wrapper: no padding of its own (Modal's .modal-body owns the scroll + pad).
+     Field inputs are capped to a readable width wherever they render -- the shared
+     block, a channel column, or an advanced field -- so a wide modal (several
+     channel columns) never stretches a text input edge-to-edge. */
   .mb {
     display: block;
   }
-  .mb.adv .ch .field :global(input.inp),
-  .mb.adv .ch .field :global(select.inp) {
+  .field :global(input.inp),
+  .field :global(select.inp) {
     max-width: 460px;
+  }
+
+  /* Channel grid: side-by-side columns on wide windows, one stacked column on
+     narrow ones. auto-fit + minmax needs no explicit breakpoint -- a track
+     collapses to a single column once the available width can't fit the minmax
+     floor, matching how ScenesDock/StatsDock/MonitorPage already do responsive
+     card grids in this app. Advanced mode's columns carry more (platform-only
+     fields, per-stream overrides) so they get a wider floor. */
+  .chgrid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    align-items: start;
+    gap: 12px;
+  }
+  .mb.adv .chgrid {
+    grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
   }
 
   /* Section head ("Shared defaults") — mono micro-label with an optional plain-text note. */
@@ -862,6 +901,9 @@ import { EV } from "./eventNames";
   .shared {
     border: var(--border-weight) solid var(--color-border);
     background: var(--color-surface-2);
+    /* Caps at roughly two channel columns wide so the shared block stays readable
+       instead of stretching edge-to-edge on a modal sized for 3+ channels. */
+    max-width: 720px;
     padding: 12px;
     margin-bottom: 14px;
   }
@@ -919,13 +961,16 @@ import { EV } from "./eventNames";
     color: var(--color-dim);
   }
 
-  /* Channel card. */
+  /* Channel card: a grid item in .chgrid (spacing comes from the grid gap, not a
+     margin). A needsReconnect warn strip has no per-channel fields to lay out
+     side-by-side, so it spans every column as one full-width banner. */
   .ch {
     border: var(--border-weight) solid var(--color-border);
     background: var(--color-surface);
-    margin-bottom: 12px;
+    min-width: 0;
   }
   .ch.warn {
+    grid-column: 1 / -1;
     border-color: color-mix(in srgb, var(--color-warn) 45%, var(--color-border));
   }
   .chh {
