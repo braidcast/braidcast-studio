@@ -826,6 +826,10 @@ EXPORT void obs_render_canvas_texture_src_color_only(obs_canvas_t *canvas);
  * is unavailable. */
 EXPORT gs_texture_t *obs_get_main_texture(void);
 
+/** Enables/disables per-mix and per-source composite render timing. Off by
+ * default and zero-cost when off; safe to call before obs is initialized. */
+EXPORT void obs_set_render_debug(bool enabled);
+
 /** Saves a source to settings data */
 EXPORT obs_data_t *obs_save_source(obs_source_t *source);
 

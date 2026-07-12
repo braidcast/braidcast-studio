@@ -135,6 +135,21 @@ obs_canvas_t *obs_weak_canvas_get_canvas(obs_weak_canvas_t *weak)
 
 /*** Creation / Destruction ***/
 
+/* Override the mix's fallback WxH composite-timing label with the canvas name
+ * (or "Main" for the main canvas). Keeps the WxH fallback when unnamed. */
+static void obs_canvas_set_mix_debug_label(obs_canvas_t *canvas)
+{
+	if (!canvas->mix)
+		return;
+
+	const char *name = (canvas->flags & MAIN) ? "Main" : canvas->context.name;
+	if (!name || !*name)
+		return;
+
+	bfree((void *)canvas->mix->debug_label);
+	canvas->mix->debug_label = bstrdup(name);
+}
+
 static obs_canvas_t *obs_canvas_create_internal(const char *name, const char *uuid, struct obs_video_info *ovi,
 						uint32_t flags, bool private)
 {
@@ -166,6 +181,7 @@ static obs_canvas_t *obs_canvas_create_internal(const char *name, const char *uu
 		if (canvas->mix) {
 			canvas->mix->view = &canvas->view;
 			canvas->mix->mix_audio = (flags & MIX_AUDIO) != 0;
+			obs_canvas_set_mix_debug_label(canvas);
 
 			pthread_mutex_lock(&obs->video.mixes_mutex);
 			da_push_back(obs->video.mixes, &canvas->mix);
@@ -310,6 +326,7 @@ bool obs_canvas_reset_video_internal(obs_canvas_t *canvas, struct obs_video_info
 	if (canvas->mix) {
 		canvas->mix->view = &canvas->view;
 		canvas->mix->mix_audio = (canvas->flags & MIX_AUDIO) != 0;
+		obs_canvas_set_mix_debug_label(canvas);
 
 		pthread_mutex_lock(&obs->video.mixes_mutex);
 		da_push_back(obs->video.mixes, &canvas->mix);

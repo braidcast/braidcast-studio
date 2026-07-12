@@ -381,6 +381,16 @@ struct obs_core_video_mix {
 	long encoder_refs;
 
 	bool mix_audio;
+
+	/* Composite timing diagnostics, gated on obs->video.render_debug.
+	 * debug_composite_timers holds one in-flight GPU timer per texture slot;
+	 * results resolve one frame late (see output_frames). */
+	const char *debug_label;
+	gs_timer_t *debug_composite_timers[NUM_TEXTURES];
+	uint64_t debug_composite_cpu_accum;
+	uint64_t debug_composite_gpu_accum;
+	uint32_t debug_composite_cpu_count;
+	uint32_t debug_composite_gpu_count;
 };
 
 extern struct obs_core_video_mix *obs_create_video_mix(struct obs_video_info *ovi);
@@ -410,6 +420,13 @@ struct obs_core_video {
 	uint32_t total_frames;
 	uint32_t lagged_frames;
 	bool thread_initialized;
+
+	/* Per-mix composite timing diagnostics (see obs_set_render_debug).
+	 * debug_composite_ranges give GPU frequency/disjoint state per texture
+	 * slot; debug_composite_range_idx advances once per rendered frame. */
+	volatile bool render_debug;
+	gs_timer_range_t *debug_composite_ranges[NUM_TEXTURES];
+	uint8_t debug_composite_range_idx;
 
 	gs_texture_t *transparent_texture;
 

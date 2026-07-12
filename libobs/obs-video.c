@@ -23,6 +23,8 @@
 #include "graphics/vec4.h"
 #include "media-io/format-conversion.h"
 #include "media-io/video-frame.h"
+#include "util/source-profiler.h"
+#include "util/util_uint64.h"
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -860,12 +862,70 @@ static inline void video_sleep(struct obs_core_video *video, uint64_t *p_time, u
 	pthread_mutex_unlock(&obs->video.mixes_mutex);
 }
 
+/* Composite-timing diagnostics (behind obs->video.render_debug). GPU results
+ * resolve one frame late; see debug_resolve_composite_gpu / output_frames. */
+static void debug_composite_range_begin(uint8_t slot)
+{
+	gs_enter_context(obs->video.graphics);
+	if (!obs->video.debug_composite_ranges[slot])
+		obs->video.debug_composite_ranges[slot] = gs_timer_range_create();
+	gs_timer_range_begin(obs->video.debug_composite_ranges[slot]);
+	gs_leave_context();
+}
+
+static void debug_composite_range_end(uint8_t slot)
+{
+	if (!obs->video.debug_composite_ranges[slot])
+		return;
+	gs_enter_context(obs->video.graphics);
+	gs_timer_range_end(obs->video.debug_composite_ranges[slot]);
+	gs_leave_context();
+}
+
+/* Resolve the GPU composite timers written one frame earlier (the read slot),
+ * accumulate their durations, then free them so the slot can be reused. */
+static void debug_resolve_composite_gpu(uint8_t write_slot)
+{
+	const uint8_t read_slot = (write_slot + 1) % NUM_TEXTURES;
+	bool disjoint = false;
+	bool ready = false;
+	uint64_t freq = 0;
+
+	gs_enter_context(obs->video.graphics);
+
+	if (obs->video.debug_composite_ranges[read_slot]) {
+		ready = true;
+		gs_timer_range_get_data(obs->video.debug_composite_ranges[read_slot], &disjoint, &freq);
+	}
+
+	for (size_t i = 0, num = obs->video.mixes.num; i < num; i++) {
+		struct obs_core_video_mix *mix = obs->video.mixes.array[i];
+		if (!mix)
+			continue;
+
+		gs_timer_t *timer = mix->debug_composite_timers[read_slot];
+		if (!timer)
+			continue;
+
+		uint64_t ticks = 0;
+		if (ready && !disjoint && freq && gs_timer_get_data(timer, &ticks)) {
+			mix->debug_composite_gpu_accum += util_mul_div64(ticks, 1000000000ULL, freq);
+			mix->debug_composite_gpu_count++;
+		}
+
+		gs_timer_destroy(timer);
+		mix->debug_composite_timers[read_slot] = NULL;
+	}
+
+	gs_leave_context();
+}
+
 static const char *output_frame_gs_context_name = "gs_context(video->graphics)";
 static const char *output_frame_render_video_name = "render_video";
 static const char *output_frame_download_frame_name = "download_frame";
 static const char *output_frame_gs_flush_name = "gs_flush";
 static const char *output_frame_output_video_data_name = "output_video_data";
-static inline void output_frame(struct obs_core_video_mix *video)
+static inline void output_frame(struct obs_core_video_mix *video, bool debug, uint8_t debug_slot)
 {
 	const bool raw_active = video->raw_was_active;
 	const bool gpu_active = video->gpu_was_active;
@@ -880,11 +940,28 @@ static inline void output_frame(struct obs_core_video_mix *video)
 	profile_start(output_frame_gs_context_name);
 	gs_enter_context(obs->video.graphics);
 
+	uint64_t debug_cpu_start = 0;
+	gs_timer_t *debug_timer = NULL;
+	if (debug) {
+		debug_cpu_start = os_gettime_ns();
+		debug_timer = gs_timer_create();
+		gs_timer_begin(debug_timer);
+	}
+
 	profile_start(output_frame_render_video_name);
 	GS_DEBUG_MARKER_BEGIN(GS_DEBUG_COLOR_RENDER_VIDEO, output_frame_render_video_name);
 	render_video(video, raw_active, gpu_active, cur_texture);
 	GS_DEBUG_MARKER_END();
 	profile_end(output_frame_render_video_name);
+
+	if (debug) {
+		gs_timer_end(debug_timer);
+		video->debug_composite_cpu_accum += os_gettime_ns() - debug_cpu_start;
+		video->debug_composite_cpu_count++;
+		if (video->debug_composite_timers[debug_slot])
+			gs_timer_destroy(video->debug_composite_timers[debug_slot]);
+		video->debug_composite_timers[debug_slot] = debug_timer;
+	}
 
 	if (raw_active) {
 		profile_start(output_frame_download_frame_name);
@@ -916,10 +993,20 @@ static inline void output_frame(struct obs_core_video_mix *video)
 static inline void output_frames(void)
 {
 	pthread_mutex_lock(&obs->video.mixes_mutex);
+
+	const bool debug = os_atomic_load_bool(&obs->video.render_debug);
+	uint8_t debug_slot = 0;
+	if (debug) {
+		obs->video.debug_composite_range_idx = (obs->video.debug_composite_range_idx + 1) % NUM_TEXTURES;
+		debug_slot = obs->video.debug_composite_range_idx;
+		debug_resolve_composite_gpu(debug_slot);
+		debug_composite_range_begin(debug_slot);
+	}
+
 	for (size_t i = 0, num = obs->video.mixes.num; i < num; i++) {
 		struct obs_core_video_mix *mix = obs->video.mixes.array[i];
 		if (mix->view) {
-			output_frame(mix);
+			output_frame(mix, debug, debug_slot);
 		} else {
 			obs->video.mixes.array[i] = NULL;
 			obs_free_video_mix(mix);
@@ -928,6 +1015,10 @@ static inline void output_frames(void)
 			num--;
 		}
 	}
+
+	if (debug)
+		debug_composite_range_end(debug_slot);
+
 	pthread_mutex_unlock(&obs->video.mixes_mutex);
 }
 
@@ -1094,6 +1185,56 @@ static inline bool stop_requested(void)
 	return success;
 }
 
+static bool debug_emit_source_stats_cb(void *param, obs_source_t *source)
+{
+	UNUSED_PARAMETER(param);
+
+	struct profiler_result res;
+	if (source_profiler_fill_result(source, &res) && (res.render_sum || res.render_gpu_sum)) {
+		blog(LOG_INFO, "[render-debug]   source '%s': render CPU %.1f" NBSP "us, GPU %.1f" NBSP "us",
+		     obs_source_get_name(source), (double)res.render_sum / 1000.0, (double)res.render_gpu_sum / 1000.0);
+	}
+	return true;
+}
+
+/* Once-per-second rollup of composite timing collected while render_debug is on.
+ * Emits one line per mix (canvas), then per-source render aggregates. */
+static void debug_emit_composite_stats(void)
+{
+	const double fps = obs->video.video_fps;
+	const double budget_ns = fps > 0.0 ? 1.0e9 / fps : 0.0;
+
+	pthread_mutex_lock(&obs->video.mixes_mutex);
+	for (size_t i = 0, num = obs->video.mixes.num; i < num; i++) {
+		struct obs_core_video_mix *mix = obs->video.mixes.array[i];
+		if (!mix)
+			continue;
+
+		const uint64_t cpu_avg = mix->debug_composite_cpu_count
+						 ? mix->debug_composite_cpu_accum / mix->debug_composite_cpu_count
+						 : 0;
+		const uint64_t gpu_avg = mix->debug_composite_gpu_count
+						 ? mix->debug_composite_gpu_accum / mix->debug_composite_gpu_count
+						 : 0;
+		const double cpu_pct = budget_ns > 0.0 ? (double)cpu_avg / budget_ns * 100.0 : 0.0;
+		const double gpu_pct = budget_ns > 0.0 ? (double)gpu_avg / budget_ns * 100.0 : 0.0;
+
+		blog(LOG_INFO,
+		     "[render-debug] mix '%s': composite CPU %.1f" NBSP "us (%.1f%% frame), GPU %.1f" NBSP
+		     "us (%.1f%% frame)",
+		     mix->debug_label ? mix->debug_label : "?", (double)cpu_avg / 1000.0, cpu_pct,
+		     (double)gpu_avg / 1000.0, gpu_pct);
+
+		mix->debug_composite_cpu_accum = 0;
+		mix->debug_composite_gpu_accum = 0;
+		mix->debug_composite_cpu_count = 0;
+		mix->debug_composite_gpu_count = 0;
+	}
+	pthread_mutex_unlock(&obs->video.mixes_mutex);
+
+	obs_enum_all_sources(debug_emit_source_stats_cb, NULL);
+}
+
 bool obs_graphics_thread_loop(struct obs_graphics_context *context)
 {
 	uint64_t frame_start = os_gettime_ns();
@@ -1149,6 +1290,9 @@ bool obs_graphics_thread_loop(struct obs_graphics_context *context)
 		obs->video.video_fps =
 			(double)context->fps_total_frames / ((double)context->fps_total_ns / 1000000000.0);
 		obs->video.video_avg_frame_time_ns = context->frame_time_total_ns / (uint64_t)context->fps_total_frames;
+
+		if (os_atomic_load_bool(&obs->video.render_debug))
+			debug_emit_composite_stats();
 
 		context->frame_time_total_ns = 0;
 		context->fps_total_ns = 0;

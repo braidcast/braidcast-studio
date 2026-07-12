@@ -22,6 +22,7 @@
 
 #include "obs.h"
 #include "obs-internal.h"
+#include "util/source-profiler.h"
 
 struct obs_core *obs = NULL;
 
@@ -611,6 +612,11 @@ static int obs_init_video_mix(struct obs_video_info *ovi, struct obs_core_video_
 	make_video_info(&vi, ovi);
 	video->ovi = *ovi;
 
+	/* Fallback composite-timing label; canvas mixes override with their name. */
+	char debug_label[32];
+	snprintf(debug_label, sizeof(debug_label), "%ux%u", ovi->base_width, ovi->base_height);
+	video->debug_label = bstrdup(debug_label);
+
 	/* main view graphics thread drives all frame output,
 	 * so share FPS settings for aux views */
 	pthread_mutex_lock(&obs->video.mixes_mutex);
@@ -817,6 +823,22 @@ void obs_free_video_mix(struct obs_core_video_mix *video)
 		video->gpu_encoder_active = 0;
 		video->cur_texture = 0;
 	}
+
+	bool has_debug_timers = false;
+	for (size_t i = 0; i < NUM_TEXTURES; i++)
+		has_debug_timers |= video->debug_composite_timers[i] != NULL;
+	if (has_debug_timers) {
+		gs_enter_context(obs->video.graphics);
+		for (size_t i = 0; i < NUM_TEXTURES; i++) {
+			if (video->debug_composite_timers[i]) {
+				gs_timer_destroy(video->debug_composite_timers[i]);
+				video->debug_composite_timers[i] = NULL;
+			}
+		}
+		gs_leave_context();
+	}
+	bfree((void *)video->debug_label);
+
 	bfree(video);
 }
 
@@ -860,6 +882,13 @@ static void obs_free_graphics(void)
 		gs_enter_context(video->graphics);
 
 		gs_texture_destroy(video->transparent_texture);
+
+		for (size_t i = 0; i < NUM_TEXTURES; i++) {
+			if (video->debug_composite_ranges[i]) {
+				gs_timer_range_destroy(video->debug_composite_ranges[i]);
+				video->debug_composite_ranges[i] = NULL;
+			}
+		}
 
 		gs_samplerstate_destroy(video->point_sampler);
 
@@ -2256,6 +2285,16 @@ gs_texture_t *obs_get_main_texture(void)
 		return NULL;
 
 	return video->render_texture;
+}
+
+void obs_set_render_debug(bool enabled)
+{
+	if (!obs)
+		return;
+
+	os_atomic_set_bool(&obs->video.render_debug, enabled);
+	source_profiler_enable(enabled);
+	source_profiler_gpu_enable(enabled);
 }
 
 static obs_source_t *obs_load_source_type(obs_data_t *source_data, bool is_private)
