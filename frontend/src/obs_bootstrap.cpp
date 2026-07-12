@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -26,6 +27,7 @@
 
 #include "audio/AudioMonitor.hpp"
 #include "bridge.hpp"
+#include "DiagnosticsSettings.hpp"
 #include "frontend_callbacks.hpp"
 #include "log.hpp"
 #include "chat/channel_stats_poller.hpp"
@@ -84,6 +86,20 @@ std::string BaseNameNoExt(const std::string &filename)
 {
 	const size_t dot = filename.find_last_of('.');
 	return dot == std::string::npos ? filename : filename.substr(0, dot);
+}
+
+// Seed the gated DEBUG channel: the BRAIDCAST_DEBUG env var (1/true/on,
+// case-insensitive) wins when set; otherwise the persisted
+// DiagnosticsSettings.debugLogging; otherwise off.
+bool SeedDebugGate()
+{
+	if (const char *env = getenv("BRAIDCAST_DEBUG")) {
+		const std::string v = LowerCopy(env);
+		return v == "1" || v == "true" || v == "on";
+	}
+	DiagnosticsSettings ds;
+	ds.Load();
+	return ds.debugLogging;
 }
 
 // Route libobs/plugin blog() output to stderr so plugin lifecycle logging (e.g.
@@ -586,6 +602,11 @@ bool ObsBootstrap::Start()
 	// Chain a per-session file writer onto the stderr/HostLog handler installed
 	// above so every blog() line is also persisted under .../braidcast/logs.
 	SessionLog::Init();
+
+	// Seed the gated DEBUG channel before anything else logs: env override wins,
+	// else the persisted diagnostics setting. Off by default -> DBG() costs nothing.
+	Log::SetDebug(SeedDebugGate());
+	DBG(LogCat::Lifecycle, "bootstrap start (debug=%d)", (int)Log::DebugEnabled());
 
 	if (!obs_startup("en-US", nullptr, nullptr)) {
 		HostLog("[obs] obs_startup failed");
@@ -3111,6 +3132,8 @@ void ObsBootstrap::RunEventSelfTest()
 
 void ObsBootstrap::Stop()
 {
+	DBG(LogCat::Lifecycle, "bootstrap stop");
+
 	// Stop the MCP server FIRST: set its shutdown flag and join its accept thread so
 	// no new request is accepted and any in-flight marshalled call bails. The CEF
 	// loop has already returned by the time Stop() runs (main.cpp pumps then stops),

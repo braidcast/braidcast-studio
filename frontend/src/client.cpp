@@ -93,7 +93,44 @@ void Client::OnBeforeClose(CefRefPtr<CefBrowser> browser)
 bool Client::OnConsoleMessage(CefRefPtr<CefBrowser> /*browser*/, cef_log_severity_t /*level*/, const CefString &message,
 			      const CefString &source, int line)
 {
-	HostLog("[console] " + message.ToString() + " (" + source.ToString() + ":" + std::to_string(line) + ")");
+	const std::string msg = message.ToString();
+	const std::string loc = " (" + source.ToString() + ":" + std::to_string(line) + ")";
+
+	// The web logger prefixes each line with "[<L>][<cat>]" (L in D/I/W/E). Parse
+	// it and re-emit through blog at the matching level so the line lands in the
+	// session file with its level + category. Anything without the prefix is stray
+	// library console output; capture it untagged under [cef] at INFO.
+	int level = 0;
+	if (msg.size() >= 5 && msg[0] == '[' && msg[2] == ']' && msg[3] == '[') {
+		switch (msg[1]) {
+		case 'D':
+			level = LOG_DEBUG;
+			break;
+		case 'I':
+			level = LOG_INFO;
+			break;
+		case 'W':
+			level = LOG_WARNING;
+			break;
+		case 'E':
+			level = LOG_ERROR;
+			break;
+		default:
+			break;
+		}
+	}
+
+	const size_t catEnd = level != 0 ? msg.find(']', 4) : std::string::npos;
+	if (level != 0 && catEnd != std::string::npos && catEnd > 4) {
+		const std::string cat = msg.substr(4, catEnd - 4);
+		std::string rest = msg.substr(catEnd + 1);
+		if (!rest.empty() && rest[0] == ' ') {
+			rest.erase(0, 1);
+		}
+		blog(level, "[%s] %s%s", cat.c_str(), rest.c_str(), loc.c_str());
+	} else {
+		blog(LOG_INFO, "[cef] %s%s", msg.c_str(), loc.c_str());
+	}
 	return false;
 }
 

@@ -144,6 +144,7 @@ void ChatHub::Start()
 
 			std::string err;
 			bool ok = false;
+			DBG(LogCat::Chat, "connecting transport '%s' (channel %s)", providerId.c_str(), channelRef.c_str());
 			try {
 				ok = transport->connect(ctx, acct, channelRef, err);
 			} catch (const std::exception &e) {

@@ -48,6 +48,7 @@
 #include "obs_bootstrap.hpp"
 #include "obs_importer.hpp"
 #include "AdvancedSettings.hpp"
+#include "DiagnosticsSettings.hpp"
 #include "GeneralSettings.hpp"
 #include "preview_window.hpp"
 #include "projector_window.hpp"
@@ -4206,15 +4207,11 @@ bool MethodDialogOpenFile(const json &params, json &result, std::string &error)
 	return true;
 }
 
-// Reveal a path in the system file manager. A file is highlighted inside its
-// containing folder; a directory is opened directly.
-bool MethodShellRevealPath(const json &params, json &result, std::string &error)
+// Reveal a wide path in the system file manager: a directory opens directly, a
+// file is highlighted inside its containing folder. Shared by shell.revealPath and
+// diagnostics.openLogFolder so the ShellExecute reveal lives in one place.
+bool RevealInFileManager(const std::wstring &widePath, std::string &error)
 {
-	std::string path;
-	if (!RequireStr(params, "shell.revealPath", "path", path, error)) {
-		return false;
-	}
-	const std::wstring widePath = Utf8ToWide(path);
 	const DWORD attrs = GetFileAttributesW(widePath.c_str());
 	if (attrs == INVALID_FILE_ATTRIBUTES) {
 		error = "path does not exist";
@@ -4230,6 +4227,20 @@ bool MethodShellRevealPath(const json &params, json &result, std::string &error)
 	}
 	if (reinterpret_cast<INT_PTR>(rc) <= 32) {
 		error = "failed to open file manager";
+		return false;
+	}
+	return true;
+}
+
+// Reveal a path in the system file manager. A file is highlighted inside its
+// containing folder; a directory is opened directly.
+bool MethodShellRevealPath(const json &params, json &result, std::string &error)
+{
+	std::string path;
+	if (!RequireStr(params, "shell.revealPath", "path", path, error)) {
+		return false;
+	}
+	if (!RevealInFileManager(Utf8ToWide(path), error)) {
 		return false;
 	}
 	result = json{{"ok", true}};
@@ -7939,6 +7950,55 @@ bool MethodLogGetCurrent(const json & /*params*/, json &result, std::string & /*
 	return true;
 }
 
+// ---- diagnostics (gated DEBUG channel) -------------------------------------
+
+// The current DEBUG gate + this session's log file path (so the UI can show and
+// open it).
+bool MethodDiagnosticsGet(const json & /*params*/, json &result, std::string & /*error*/)
+{
+	result = json{{"debug", Log::DebugEnabled()}, {"logPath", SessionLog::CurrentPath()}};
+	return true;
+}
+
+// Flip + persist the DEBUG gate, then push debug.changed so every window updates.
+bool MethodDiagnosticsSetDebug(const json &params, json &result, std::string &error)
+{
+	if (!RequireObject(params, "diagnostics.setDebug", error)) {
+		return false;
+	}
+	auto it = params.find("enabled");
+	if (it == params.end() || !it->is_boolean()) {
+		error = "diagnostics.setDebug: 'enabled' must be a boolean";
+		return false;
+	}
+	const bool enabled = it->get<bool>();
+
+	DiagnosticsSettings ds;
+	ds.Load();
+	ds.debugLogging = enabled;
+	ds.Save();
+	Log::SetDebug(enabled);
+
+	result = json{{"debug", enabled}};
+	EmitEvent(EventNames::kDebugChanged, result);
+	return true;
+}
+
+// Reveal the session log's containing folder in the OS file manager.
+bool MethodDiagnosticsOpenLogFolder(const json & /*params*/, json &result, std::string &error)
+{
+	const std::string path = SessionLog::CurrentPath();
+	if (path.empty()) {
+		error = "no session log file open";
+		return false;
+	}
+	if (!RevealInFileManager(std::filesystem::u8path(path).parent_path().wstring(), error)) {
+		return false;
+	}
+	result = json{{"ok", true}};
+	return true;
+}
+
 // ---- OAuth (Phase 8a) ------------------------------------------------------
 //
 // Generic, registry-dispatched account-connection surface. The interactive grant
@@ -9175,6 +9235,9 @@ void Init()
 		{"browserDocks.list", MethodBrowserDocksList},
 		{"browserDocks.set", MethodBrowserDocksSet},
 		{"log.getCurrent", MethodLogGetCurrent},
+		{"diagnostics.get", MethodDiagnosticsGet},
+		{"diagnostics.setDebug", MethodDiagnosticsSetDebug},
+		{"diagnostics.openLogFolder", MethodDiagnosticsOpenLogFolder},
 		{"oauth.providers", MethodOAuthProviders},
 		{"oauth.connect", MethodOAuthConnect},
 		{"oauth.cancelConnect", MethodOAuthCancelConnect},

@@ -14,6 +14,7 @@
 
 #include "../http_client.hpp"
 #include "../json_util.hpp"
+#include "../log.hpp"
 #include "account_store.hpp"
 #include "loopback_listener.hpp"
 
@@ -128,6 +129,7 @@ bool BrokerStrategy::authorize(const AuthContext &ctx, OAuthAccount &acct, std::
 	AppendQuery(startUrl, "nonce", nonce);
 	AppendQuery(startUrl, "code_challenge", challenge);
 
+	DBG(LogCat::OAuth, "broker authorize begin (platform %s, port %u)", config_.platform.c_str(), listener.Port());
 	ctx.emitProgress(json{{"phase", "browser"},
 			      {"message", "Waiting for browser authorization\xE2\x80\xA6"},
 			      {"timeoutSec", 180},
@@ -146,6 +148,8 @@ bool BrokerStrategy::authorize(const AuthContext &ctx, OAuthAccount &acct, std::
 	const std::string code = getParam("code");
 	const std::string returnedNonce = getParam("nonce");
 	const bool ok = oauthError.empty() && !code.empty() && returnedNonce == nonce;
+	DBG(LogCat::OAuth, "broker authorize returned (platform %s, ok=%d, error='%s')", config_.platform.c_str(),
+	    (int)ok, oauthError.c_str());
 
 	listener.Respond(ok);
 
@@ -179,6 +183,7 @@ bool BrokerStrategy::authorize(const AuthContext &ctx, OAuthAccount &acct, std::
 	req.body = body;
 
 	const Http::HttpResponse resp = Http::HttpRequest(req);
+	DBG(LogCat::OAuth, "broker token exchange (platform %s, http=%d)", config_.platform.c_str(), resp.status);
 	if (resp.status == 0) {
 		err = "token exchange failed: " + resp.error;
 		return false;

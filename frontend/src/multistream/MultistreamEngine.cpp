@@ -1,6 +1,7 @@
 #include "MultistreamEngine.hpp"
 
 #include "AdvancedSettings.hpp"
+#include "log.hpp"
 #include "obs_bootstrap.hpp"
 
 #include "CanvasStore.hpp"
@@ -218,6 +219,7 @@ bool MultistreamEngine::StartOutput(const std::string &bindingUuid, std::string 
 	// returned error is set.
 	auto fail = [&](const std::string &reason) -> bool {
 		error = reason;
+		DBG(LogCat::Stream, "start refused for binding %s: %s", bindingUuid.c_str(), reason.c_str());
 		auto lo = std::make_unique<LiveOutput>();
 		lo->bindingUuid = bindingUuid;
 		lo->profileUuid = b ? b->profileUuid : std::string();
@@ -310,6 +312,8 @@ bool MultistreamEngine::StartOutput(const std::string &bindingUuid, std::string 
 
 	lo->startSignal.Connect(obs_output_get_signal_handler(lo->output), "start", OnOutputStart, this);
 	lo->stopSignal.Connect(obs_output_get_signal_handler(lo->output), "stop", OnOutputStop, this);
+	DBG(LogCat::Stream, "output created for binding %s (canvas %s, type %s)", bindingUuid.c_str(),
+	    b->canvasUuid.c_str(), type);
 
 	// Apply the global Advanced settings to this output. These are output-level (not
 	// encoder-level) options, so they are compatible with the encode-once model: the
@@ -359,6 +363,7 @@ bool MultistreamEngine::StartOutput(const std::string &bindingUuid, std::string 
 
 	/* obs_output_start is async; raw stays valid because only this (UI) thread
 	 * erases `live`. The handler may flip raw->state, so guard the failure write. */
+	DBG(LogCat::Stream, "starting output for binding %s", bindingUuid.c_str());
 	if (!obs_output_start(raw->output)) {
 		const char *err = obs_output_get_last_error(raw->output);
 		const std::string reason = err && *err ? err : "the output failed to start";
@@ -390,6 +395,7 @@ void MultistreamEngine::StopOutput(const std::string &bindingUuid)
 	/* Stop outside the lock: obs_output_stop can fire "stop" synchronously,
 	 * which re-enters OnOutputStop and would deadlock on liveMutex. */
 	if (out) {
+		DBG(LogCat::Stream, "stopping output for binding %s", bindingUuid.c_str());
 		obs_output_stop(out);
 	}
 	{
@@ -588,6 +594,8 @@ void MultistreamEngine::OnOutputStart(void *data, calldata_t *cd)
 			if (lo->output == out) {
 				lo->state = State::Live;
 				lo->liveStartNs = os_gettime_ns();
+				DBG(LogCat::Net, "rtmp connected (binding %s, canvas %s)", lo->bindingUuid.c_str(),
+				    lo->canvasUuid.c_str());
 				break;
 			}
 		}
@@ -610,8 +618,11 @@ void MultistreamEngine::OnOutputStop(void *data, calldata_t *cd)
 				if (code != OBS_OUTPUT_SUCCESS) {
 					lo->state = State::Error;
 					lo->lastError = lastError ? lastError : "";
+					DBG(LogCat::Net, "rtmp stopped (binding %s, code %d): %s",
+					    lo->bindingUuid.c_str(), code, lo->lastError.c_str());
 				} else {
 					lo->state = State::Idle;
+					DBG(LogCat::Net, "rtmp stopped cleanly (binding %s)", lo->bindingUuid.c_str());
 				}
 				break;
 			}

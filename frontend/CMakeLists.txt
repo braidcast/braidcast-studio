@@ -74,6 +74,8 @@ target_sources(
     src/GeneralSettings.hpp
     src/AdvancedSettings.cpp
     src/AdvancedSettings.hpp
+    src/DiagnosticsSettings.cpp
+    src/DiagnosticsSettings.hpp
     src/preview_window.cpp
     src/preview_window.hpp
     src/window_manager.cpp
@@ -96,6 +98,7 @@ target_sources(
     src/transitions.hpp
     src/session_log.cpp
     src/session_log.hpp
+    src/log.cpp
     src/log.hpp
     # Build-time platform OAuth credential injection (Phase 8a). obf.c is the
     # symmetric nibble-XOR deobfuscator; provider_creds reads the configured
@@ -385,6 +388,7 @@ set_source_files_properties(
   src/obs_importer.cpp
   src/GeneralSettings.cpp
   src/AdvancedSettings.cpp
+  src/DiagnosticsSettings.cpp
   src/bridge.cpp
   src/properties_serializer.cpp
   src/preview_window.cpp

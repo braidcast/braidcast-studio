@@ -148,6 +148,7 @@ void EventHub::StartAccount(const std::string &accountId, const OAuth::OAuthAcco
 			fatal = false;
 			std::string err;
 			bool ok = false;
+			DBG(LogCat::Events, "connecting transport '%s'", providerId.c_str());
 			try {
 				ok = transport->connect(ctx, acctCopy, err);
 			} catch (const std::exception &e) {

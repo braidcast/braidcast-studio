@@ -356,6 +356,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 		CefShutdown();
 		return 1;
 	}
+	DBG(LogCat::Lifecycle, "cef browser created");
 
 	// Both siblings clip each other so neither overdraws the boundary: the obs
 	// overlay floats above the browser without flicker (browser HWND gets the bit
