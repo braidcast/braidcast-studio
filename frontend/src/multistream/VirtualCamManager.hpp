@@ -49,9 +49,17 @@ private:
 	static void OnStart(void *data, calldata_t *cd);
 	static void OnStop(void *data, calldata_t *cd);
 	void NotifyChanged();
+	// Drop the preview refcount held on heldCanvas_ (see Start), but only once the
+	// output is confirmed down -- its media still references the mix's video_t while
+	// active, so freeing the mix under a live output would be a UAF. A still-active
+	// (async-stopping) output defers the release to the next Stop()/Shutdown().
+	void ReleaseTargetPreview();
 
 	OBSOutputAutoRelease vcam_; // owned: created lazily, released in Shutdown
 	std::string targetCanvas_;
+	// The runtime canvas we activated (via CanvasRuntime::AddPreview) to guarantee a
+	// mix while feeding the vcam; empty when none held. Balances 1:1 with AddPreview.
+	std::string heldCanvas_;
 	OBSSignal startSignal_;
 	OBSSignal stopSignal_;
 };

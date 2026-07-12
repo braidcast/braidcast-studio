@@ -69,13 +69,13 @@ void CanvasRuntime::EnsureCanvas(const CanvasDefinition &def)
 		return;
 	}
 
-	obs_video_info ovi = {};
-	BuildVideoInfo(def, ovi);
-
 	// Preserve the definition's uuid: obs_load_canvas restores the stored uuid,
 	// while obs_canvas_create would mint a fresh one each launch and break the
 	// engine resolver's binding->mix match. PROGRAM = ACTIVATE | MIX_AUDIO |
-	// SCENE_REF, mirroring the legacy AddCanvas flags.
+	// SCENE_REF, mirroring the legacy AddCanvas flags. The canvas object is
+	// created mix-less; the mix is added by ReconcileEntry only when the canvas
+	// is active (>=1 enabled destination or an open preview), so an inert canvas
+	// costs zero composite in output_frames().
 	OBSDataAutoRelease data = obs_data_create();
 	obs_data_set_string(data, "name", def.name.c_str());
 	obs_data_set_string(data, "uuid", def.uuid.c_str());
@@ -87,12 +87,9 @@ void CanvasRuntime::EnsureCanvas(const CanvasDefinition &def)
 		     def.uuid.c_str());
 		return;
 	}
-	if (!obs_canvas_reset_video(canvas, &ovi)) {
-		blog(LOG_WARNING, "CanvasRuntime: canvas '%s' (uuid %s) created without a video mix; reset_video failed",
-		     def.name.c_str(), def.uuid.c_str());
-	}
 
-	canvases.push_back(Entry{def.uuid, canvas});
+	canvases.push_back(Entry{def.uuid, canvas, false, 0});
+	ReconcileEntry(canvases.back()); // builds the mix now iff already active
 }
 
 void CanvasRuntime::SyncFromDefinitions()
@@ -102,6 +99,118 @@ void CanvasRuntime::SyncFromDefinitions()
 			EnsureCanvas(def);
 		}
 	}
+}
+
+void CanvasRuntime::SetEnabledPredicate(std::function<bool(const std::string &)> fn)
+{
+	enabledFn = std::move(fn);
+}
+
+void CanvasRuntime::SetOutputActivePredicate(std::function<bool(const std::string &)> fn)
+{
+	outputActiveFn = std::move(fn);
+}
+
+void CanvasRuntime::SetEncoderInvalidator(std::function<void(const std::string &)> fn)
+{
+	invalidateEncodersFn = std::move(fn);
+}
+
+CanvasRuntime::Entry *CanvasRuntime::FindEntry(const std::string &uuid)
+{
+	for (Entry &e : canvases) {
+		if (e.uuid == uuid) {
+			return &e;
+		}
+	}
+	return nullptr;
+}
+
+bool CanvasRuntime::IsActive(const Entry &e) const
+{
+	if (e.previewCount > 0) {
+		return true;
+	}
+	return enabledFn ? enabledFn(e.uuid) : false;
+}
+
+void CanvasRuntime::ReconcileEntry(Entry &e)
+{
+	const bool want = IsActive(e);
+	if (want == e.active) {
+		return;
+	}
+	if (want) {
+		const CanvasDefinition *def = defs.Find(e.uuid);
+		if (!def) {
+			return;
+		}
+		obs_video_info ovi = {};
+		BuildVideoInfo(*def, ovi);
+		if (obs_canvas_ensure_video(e.canvas, &ovi)) {
+			e.active = true;
+			// The mix (and its video_t) is freshly built; drop any cached encoder pair
+			// bound to a prior activation's video_t so the next StartOutput rebinds to
+			// this new mix instead of a freed one.
+			if (invalidateEncodersFn) {
+				invalidateEncodersFn(e.uuid);
+			}
+			blog(LOG_DEBUG, "CanvasRuntime: canvas '%s' activated (mix built)", e.uuid.c_str());
+		} else {
+			blog(LOG_WARNING, "CanvasRuntime: failed to build mix for canvas '%s'", e.uuid.c_str());
+		}
+	} else {
+		// Do NOT free the mix while a streaming output is still truly active on this
+		// canvas: its encoder holds this video_t (obs_encoder_set_video) until the async
+		// stop drains, so freeing it here is a UAF. Defer -- OnOutputStop re-runs this
+		// reconcile once the output actually stops (mirrors the vcam obs_output_active
+		// guard in VirtualCamManager::ReleaseTargetPreview).
+		if (outputActiveFn && outputActiveFn(e.uuid)) {
+			return;
+		}
+		obs_canvas_clear_video(e.canvas);
+		e.active = false;
+		// The video_t is now freed; drop the cached encoder pair bound to it so a later
+		// StartOutput can't bind an output to a dangling video mix.
+		if (invalidateEncodersFn) {
+			invalidateEncodersFn(e.uuid);
+		}
+		blog(LOG_DEBUG, "CanvasRuntime: canvas '%s' went inert (mix dropped, scenes kept)", e.uuid.c_str());
+	}
+}
+
+void CanvasRuntime::Reconcile(const std::string &uuid)
+{
+	if (Entry *e = FindEntry(uuid)) {
+		ReconcileEntry(*e);
+	}
+}
+
+void CanvasRuntime::ReconcileAll()
+{
+	for (Entry &e : canvases) {
+		ReconcileEntry(e);
+	}
+}
+
+void CanvasRuntime::AddPreview(const std::string &uuid)
+{
+	Entry *e = FindEntry(uuid);
+	if (!e) {
+		return;
+	}
+	e->previewCount++;
+	ReconcileEntry(*e); // builds the mix before the surface renders it
+}
+
+void CanvasRuntime::RemovePreview(const std::string &uuid)
+{
+	Entry *e = FindEntry(uuid);
+	if (!e || e->previewCount <= 0) {
+		return;
+	}
+	e->previewCount--;
+	ReconcileEntry(*e); // may drop the mix if now inert
 }
 
 void CanvasRuntime::EnsureScenes()
@@ -124,13 +233,13 @@ void CanvasRuntime::RemoveCanvas(const std::string &uuid)
 
 bool CanvasRuntime::ResetVideo(const CanvasDefinition &def)
 {
-	obs_canvas_t *canvas = Find(def.uuid);
-	if (!canvas) {
-		return false;
+	Entry *e = FindEntry(def.uuid);
+	if (!e || !e->active) {
+		return false; // inactive: no mix to reset; it builds fresh on activation
 	}
 	obs_video_info ovi = {};
 	BuildVideoInfo(def, ovi);
-	return obs_canvas_reset_video(canvas, &ovi);
+	return obs_canvas_reset_video(e->canvas, &ovi);
 }
 
 obs_canvas_t *CanvasRuntime::Find(const std::string &uuid) const

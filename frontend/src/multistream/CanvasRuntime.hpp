@@ -2,6 +2,7 @@
 
 #include <obs.hpp>
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -22,6 +23,34 @@ public:
 	void EnsureCanvas(const CanvasDefinition &def); // create one if absent (no scene; see EnsureScenes)
 	void RemoveCanvas(const std::string &uuid);     // obs_canvas_remove + release; no-op if absent
 	bool ResetVideo(const CanvasDefinition &def);   // obs_canvas_reset_video to def res/fps
+
+	// Inject the "does this canvas have an enabled destination" predicate (wraps
+	// OutputBindings::AnyEnabledForCanvas). Set once at bootstrap before Sync.
+	void SetEnabledPredicate(std::function<bool(const std::string &)> fn);
+
+	// Inject the "is a streaming output still truly active on this canvas" query
+	// (wraps MultistreamEngine::CanvasHasActiveOutput). Gates the mix-drop so a
+	// canvas is never made inert while an encoder still pulls from its video mix
+	// during an async output stop. Set once at bootstrap after the engine exists.
+	void SetOutputActivePredicate(std::function<bool(const std::string &)> fn);
+
+	// Inject the "drop this canvas's cached encoder pair" hook (wraps
+	// MultistreamEngine::InvalidateCanvasEncoders). Called whenever a canvas's video
+	// mix is built or dropped, so the engine's cached encoders (bound once to the old
+	// video_t) never dangle across a mix rebuild. Set once at bootstrap.
+	void SetEncoderInvalidator(std::function<void(const std::string &)> fn);
+
+	// Reconcile a canvas's mix against its active state: a canvas is active iff it
+	// has an enabled destination OR an open preview. Active w/o a mix -> build it;
+	// inactive with a mix -> drop it (scenes/definition preserved). Idempotent.
+	void Reconcile(const std::string &uuid); // one canvas
+	void ReconcileAll();                     // every runtime canvas
+
+	// Preview open/close refcount. AddPreview builds the mix if needed BEFORE the
+	// caller resolves the canvas for rendering; RemovePreview may let it go inert.
+	// No-op for an unknown/Default uuid. Balanced 1:1 by PreviewManager.
+	void AddPreview(const std::string &uuid);
+	void RemovePreview(const std::string &uuid);
 
 	obs_canvas_t *Find(const std::string &uuid) const; // null for Default/unknown
 	video_t *VideoFor(const std::string &uuid) const;  // obs_canvas_get_video or null
@@ -70,9 +99,27 @@ private:
 
 	struct Entry {
 		std::string uuid;
-		obs_canvas_t *canvas; // owned: obs_canvas_remove + obs_canvas_release on teardown
+		obs_canvas_t *canvas; // owned object (may be mix-less when inactive)
+		bool active = false;  // true iff canvas currently has a video mix
+		int previewCount = 0; // open PreviewSurfaces targeting this canvas
 	};
+
+	bool IsActive(const Entry &e) const; // enabledFn(uuid) || previewCount>0
+	void ReconcileEntry(Entry &e);       // build/drop mix to match IsActive
+	Entry *FindEntry(const std::string &uuid);
 
 	CanvasStore &defs;
 	std::vector<Entry> canvases;
+	// Returns true iff the canvas uuid has >=1 enabled output binding. Injected by
+	// the bootstrap so CanvasRuntime need not depend on OutputBindingStore. Unset =>
+	// treated as false (no enabled destinations).
+	std::function<bool(const std::string &)> enabledFn;
+	// Returns true iff a streaming output is still actively running on the canvas.
+	// Injected by the bootstrap so CanvasRuntime need not depend on MultistreamEngine.
+	// Unset => treated as false (no active output; safe to drop the mix).
+	std::function<bool(const std::string &)> outputActiveFn;
+	// Drops the engine's cached encoder pair for a canvas whose video mix just changed
+	// (built or cleared). Injected by the bootstrap; unset => no-op (e.g. bootstrap
+	// Sync, before the engine is wired).
+	std::function<void(const std::string &)> invalidateEncodersFn;
 };

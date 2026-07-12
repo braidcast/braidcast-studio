@@ -18,6 +18,11 @@ bool VirtualCamManager::Start(std::string &err)
 		return true;
 	}
 
+	// Release a canvas still held from a prior async stop before acquiring the new
+	// target: the output is now down (not active), so freeing that mix is safe, and
+	// this prevents a target change across stop/start from leaking the old refcount.
+	ReleaseTargetPreview();
+
 	if (!vcam_) {
 		vcam_ = OBSOutputAutoRelease(obs_output_create(kVirtualCamId, kVirtualCamId, nullptr, nullptr));
 		if (!vcam_) {
@@ -29,6 +34,15 @@ bool VirtualCamManager::Start(std::string &err)
 		stopSignal_.Connect(sh, "stop", OnStop, this);
 	}
 
+	// Activate the target canvas so its mix exists before binding the output to it:
+	// in the lazy model an inert runtime canvas has no mix, so without this VideoFor
+	// would return null and we would wrongly feed the global program video. The held
+	// preview refcount also keeps the mix alive for the whole live duration, so a
+	// ReconcileAll from an unrelated binding edit cannot free it under the output.
+	// AddPreview no-ops for the Default/empty/unknown uuid (VideoFor then falls back).
+	ObsBootstrap::CanvasRuntime().AddPreview(targetCanvas_);
+	heldCanvas_ = targetCanvas_;
+
 	// Resolve the target canvas's mix; the Default/unknown/inactive canvas has no
 	// runtime mix, so fall back to the global program video pipeline.
 	video_t *video = ObsBootstrap::CanvasRuntime().VideoFor(targetCanvas_);
@@ -37,6 +51,7 @@ bool VirtualCamManager::Start(std::string &err)
 	}
 	if (!video) {
 		err = "no video pipeline available for virtual camera";
+		ReleaseTargetPreview(); // balance: output never went live (still inactive)
 		return false;
 	}
 
@@ -44,6 +59,7 @@ bool VirtualCamManager::Start(std::string &err)
 	if (!obs_output_start(vcam_)) {
 		const char *e = obs_output_get_last_error(vcam_);
 		err = e ? e : "failed to start virtual camera";
+		ReleaseTargetPreview(); // balance: start failed, output not active
 		return false;
 	}
 	// onChanged fires from the "start" signal once the output is actually live.
@@ -55,6 +71,9 @@ void VirtualCamManager::Stop()
 	if (IsActive()) {
 		obs_output_stop(vcam_);
 	}
+	// Let the target canvas go inert now if the stop was synchronous; a still-active
+	// (async-stopping) output defers the release to Shutdown (guarded inside).
+	ReleaseTargetPreview();
 }
 
 bool VirtualCamManager::IsActive() const
@@ -81,6 +100,22 @@ void VirtualCamManager::Shutdown()
 		obs_output_stop(vcam_);
 	}
 	vcam_ = nullptr;
+	// The output is released; the vcam_-null guard in ReleaseTargetPreview now passes,
+	// so any canvas still held for the vcam is dropped before CanvasRuntime is torn
+	// down (Shutdown runs before g_canvasRuntime->ClearAll in the bootstrap teardown).
+	ReleaseTargetPreview();
+}
+
+void VirtualCamManager::ReleaseTargetPreview()
+{
+	if (heldCanvas_.empty()) {
+		return;
+	}
+	if (vcam_ && obs_output_active(vcam_)) {
+		return; // output still pulling this mix's video; defer the free
+	}
+	ObsBootstrap::CanvasRuntime().RemovePreview(heldCanvas_);
+	heldCanvas_.clear();
 }
 
 void VirtualCamManager::Load()

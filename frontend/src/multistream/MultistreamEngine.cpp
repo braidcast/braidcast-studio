@@ -105,6 +105,7 @@ MultistreamEngine::~MultistreamEngine()
 	 * unique_ptr that holds us is mid-reset(), so its global accessor is already
 	 * null). The owner runs StopAll explicitly before destroying us anyway. */
 	onStatusChanged = nullptr;
+	onOutputStopped = nullptr;
 	StopAll();
 }
 
@@ -467,6 +468,23 @@ bool MultistreamEngine::IsCanvasLive(const std::string &canvasUuid) const
 	return false;
 }
 
+bool MultistreamEngine::CanvasHasActiveOutput(const std::string &canvasUuid) const
+{
+	std::lock_guard<std::mutex> lock(liveMutex);
+	for (const auto &lo : live) {
+		// Query the real output handle, not lo->state: a user stop may have flipped the
+		// state (or the entry may linger post-stop) while the RTMP output is still
+		// draining, and its encoder keeps the canvas mix bound until obs_output_active
+		// clears. IsActiveState too, so a lingering dead entry whose handle briefly
+		// still reports active during the stop-signal/active-flag lag isn't counted.
+		if (lo->canvasUuid == canvasUuid && lo->output && IsActiveState(lo->state) &&
+		    obs_output_active(lo->output)) {
+			return true;
+		}
+	}
+	return false;
+}
+
 bool MultistreamEngine::AnyLive() const
 {
 	std::lock_guard<std::mutex> lock(liveMutex);
@@ -609,10 +627,12 @@ void MultistreamEngine::OnOutputStop(void *data, calldata_t *cd)
 	obs_output_t *out = (obs_output_t *)calldata_ptr(cd, "output");
 	int code = (int)calldata_int(cd, "code");
 	const char *lastError = calldata_string(cd, "last_error");
+	std::string canvasUuid;
 	{
 		std::lock_guard<std::mutex> lock(self->liveMutex);
 		for (auto &lo : self->live) {
 			if (lo->output == out) {
+				canvasUuid = lo->canvasUuid;
 				/* A non-success code means the stream dropped or never
 				 * connected (e.g. a bad key); surface it as Error. */
 				if (code != OBS_OUTPUT_SUCCESS) {
@@ -629,4 +649,10 @@ void MultistreamEngine::OnOutputStop(void *data, calldata_t *cd)
 		}
 	}
 	self->NotifyChanged();
+	/* The output has fully stopped, so a canvas that went inert while it was still
+	 * async-stopping can now safely drop its mix. The bootstrap marshals this to the
+	 * UI thread (where every CanvasRuntime reconcile runs) and re-runs Reconcile. */
+	if (self->onOutputStopped && !canvasUuid.empty()) {
+		self->onOutputStopped(canvasUuid);
+	}
 }

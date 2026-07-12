@@ -5663,6 +5663,7 @@ bool MethodOutputBindingCreate(const json &params, json &result, std::string &er
 	created.enabled = true;
 	const std::string uuid = created.uuid;
 	ObsBootstrap::OutputBindings().Save();
+	ObsBootstrap::CanvasRuntime().ReconcileAll(); // new enabled binding -> its canvas activates
 
 	EmitEvent(EventNames::kOutputBindingChanged, json::object());
 	result = json{{"uuid", uuid}};
@@ -5736,6 +5737,12 @@ bool MethodOutputBindingUpdate(const json &params, json &result, std::string &er
 	b->canvasUuid = newCanvas;
 	ObsBootstrap::OutputBindings().Save();
 
+	// Build/drop the old+new canvas mixes BEFORE (re)starting the output: StartOutput ->
+	// EnsureCanvasEncoders -> VideoForCanvas must resolve the new canvas's mix, so it has
+	// to exist first. Retargeting onto a previously-inert canvas would otherwise fail the
+	// encoder build ("no video mix for canvas") and the stream would silently die.
+	ObsBootstrap::CanvasRuntime().ReconcileAll(); // retarget may (de)activate old+new canvas
+
 	if (wasLive && b->enabled) {
 		std::string startError;
 		engine.StartOutput(uuid, startError);
@@ -5783,6 +5790,10 @@ bool MethodOutputBindingSetEnabled(const json &params, json &result, std::string
 		ObsBootstrap::Multistream().StopOutput(uuid);
 	}
 
+	// Enabling builds the canvas mix (before any StartOutput); disabling the last
+	// enabled destination lets it go inert (StopOutput above already stopped it).
+	ObsBootstrap::CanvasRuntime().ReconcileAll();
+
 	// outputBinding.changed is also the hook 4.4.4/4.4.5 use to re-decide whether a
 	// canvas renders (AnyEnabledForCanvas may have flipped on this toggle).
 	EmitEvent(EventNames::kOutputBindingChanged, json::object());
@@ -5807,6 +5818,7 @@ bool MethodOutputBindingRemove(const json &params, json &result, std::string &er
 	ObsBootstrap::Multistream().StopOutput(uuid);
 	bindings.Remove(uuid);
 	ObsBootstrap::OutputBindings().Save();
+	ObsBootstrap::CanvasRuntime().ReconcileAll(); // removed the last enabled dest -> inert
 
 	EmitEvent(EventNames::kOutputBindingChanged, json::object());
 	result = json{{"removed", uuid}};
@@ -7257,9 +7269,10 @@ bool MethodSettingsRestore(const json &params, json &result, std::string &error)
 			rt.RemoveCanvas(p.uuid);
 		}
 
-		// 2) (Re)create mixes for any restored canvas missing one (removed during the
-		// edit, brought back by the revert). EnsureCanvas is idempotent.
+		// 2) (Re)create objects for any restored canvas missing one (removed during
+		// the edit, brought back by the revert). EnsureCanvas is idempotent.
 		rt.SyncFromDefinitions();
+		rt.ReconcileAll(); // gate restored canvases' mixes on their post-revert active state
 
 		// 3) Revert the live mix resolution/color for surviving non-Default canvases
 		// whose resolution or pipeline-affecting color changed during the edit,

@@ -25,6 +25,7 @@
 #include <string>
 #include <vector>
 
+#include "async_task.hpp"
 #include "audio/AudioMonitor.hpp"
 #include "bridge.hpp"
 #include "DiagnosticsSettings.hpp"
@@ -781,6 +782,12 @@ bool ObsBootstrap::Start()
 	// bindings migration above.
 	LoadMultistreamModel();
 	g_canvasRuntime = std::make_unique<::CanvasRuntime>(g_canvases);
+	// Reuse OutputBindings::AnyEnabledForCanvas as the "has enabled destination"
+	// half of the active predicate. Set before Sync so only canvases with an
+	// enabled destination get a mix at bootstrap; inert ones stay mix-less (zero
+	// composite) until a destination is enabled or a preview opens.
+	g_canvasRuntime->SetEnabledPredicate(
+		[](const std::string &uuid) { return g_outputBindings.Bindings().AnyEnabledForCanvas(uuid); });
 	g_canvasRuntime->SyncFromDefinitions();
 
 	// Restore the active collection's scenes; first run with no scene file falls
@@ -862,6 +869,30 @@ bool ObsBootstrap::Start()
 			return uuid == g_canvases.Default().uuid ? obs_get_video() : g_canvasRuntime->VideoFor(uuid);
 		});
 	g_multistream->onStatusChanged = [] { Bridge::EmitMultistreamChanged(); };
+
+	// Wire CanvasRuntime <-> engine now that both exist (deferred past g_canvasRuntime's
+	// own construction to avoid a cycle; injected callbacks mirror SetEnabledPredicate):
+	//  - the runtime gates its mix-drop on the engine's real-handle liveness so a video
+	//    mix is never freed while an output's encoder still pulls from it (async stop);
+	//  - the runtime drops the engine's cached encoder pair whenever a mix is (re)built
+	//    or cleared, so the once-bound encoder video_t never dangles across a rebuild;
+	//  - the engine re-runs the runtime's reconcile once an async output stop completes,
+	//    marshaled to the UI thread (where all CanvasRuntime ops run) so the mix is never
+	//    freed off the libobs stop-signal thread.
+	g_canvasRuntime->SetOutputActivePredicate(
+		[](const std::string &uuid) { return g_multistream && g_multistream->CanvasHasActiveOutput(uuid); });
+	g_canvasRuntime->SetEncoderInvalidator([](const std::string &uuid) {
+		if (g_multistream) {
+			g_multistream->InvalidateCanvasEncoders(uuid);
+		}
+	});
+	g_multistream->onOutputStopped = [](const std::string &canvasUuid) {
+		AsyncTask::PostToUi([canvasUuid] {
+			if (g_canvasRuntime) {
+				g_canvasRuntime->Reconcile(canvasUuid);
+			}
+		});
+	};
 
 	// Build the canvas update/reconciliation service over the shared model, runtime,
 	// and engine (it holds references to all three). The Default->global-video
@@ -1749,14 +1780,6 @@ void ObsBootstrap::RunCanvasRuntimeSelfTest()
 	const std::string canvasUuid = added.uuid;
 	g_canvasRuntime->EnsureCanvas(added);
 
-	obs_canvas_t *canvas = g_canvasRuntime->Find(canvasUuid);
-	video_t *video = g_canvasRuntime->VideoFor(canvasUuid);
-	const char *liveUuid = canvas ? obs_canvas_get_uuid(canvas) : nullptr;
-	const bool uuidMatches = liveUuid && canvasUuid == liveUuid;
-	HostLog(std::string("[selftest] canvas-runtime EnsureCanvas -> Find=") + (canvas ? "ok" : "null (BUG)") +
-		"; VideoFor=" + (video ? "ok" : "null (BUG)") + "; uuid " + (uuidMatches ? "preserved" : "MISMATCH (BUG)") +
-		" (" + canvasUuid + " vs " + (liveUuid ? liveUuid : "(null)") + ")");
-
 	StreamProfile prof;
 	prof.label = "selftest-runtime";
 	prof.serviceId = "rtmp_custom";
@@ -1769,6 +1792,19 @@ void ObsBootstrap::RunCanvasRuntimeSelfTest()
 	binding.profileUuid = profileUuid;
 	binding.enabled = true;
 	const std::string bindingUuid = binding.uuid;
+
+	// In the lazy model EnsureCanvas creates a mix-less object; the enabled binding
+	// above makes the canvas active, so reconcile builds its mix (mirrors what
+	// MethodOutputBindingCreate/SetEnabled do after Save). VideoFor is null until then.
+	g_canvasRuntime->ReconcileAll();
+
+	obs_canvas_t *canvas = g_canvasRuntime->Find(canvasUuid);
+	video_t *video = g_canvasRuntime->VideoFor(canvasUuid);
+	const char *liveUuid = canvas ? obs_canvas_get_uuid(canvas) : nullptr;
+	const bool uuidMatches = liveUuid && canvasUuid == liveUuid;
+	HostLog(std::string("[selftest] canvas-runtime EnsureCanvas -> Find=") + (canvas ? "ok" : "null (BUG)") +
+		"; VideoFor=" + (video ? "ok" : "null (BUG)") + "; uuid " + (uuidMatches ? "preserved" : "MISMATCH (BUG)") +
+		" (" + canvasUuid + " vs " + (liveUuid ? liveUuid : "(null)") + ")");
 
 	// Start: this could only return true if the additional canvas has a real mix
 	// (the resolver returns it) so the engine could bind encoders to it. Before the

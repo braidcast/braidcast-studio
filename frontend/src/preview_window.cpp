@@ -1613,12 +1613,15 @@ PreviewSurface *PreviewManager::SurfaceFor(int windowId, const std::string &canv
 	}
 
 	// First use of this (window, canvas): bind the surface to the right mix.
-	// Default => null targetCanvas (global mix); otherwise resolve the live
-	// obs_canvas_t. An unknown non-Default uuid (no live mix) gets no surface.
+	// Default => null targetCanvas (global mix); otherwise activate the canvas
+	// (build its mix if it was inert) then resolve it. An unknown non-Default uuid
+	// gets no surface.
 	obs_canvas_t *targetCanvas = nullptr;
 	if (!isDefault) {
+		ObsBootstrap::CanvasRuntime().AddPreview(canvasUuid); // build mix before render
 		targetCanvas = ObsBootstrap::CanvasRuntime().Find(canvasUuid);
 		if (!targetCanvas) {
+			ObsBootstrap::CanvasRuntime().RemovePreview(canvasUuid); // balance: no surface created
 			return nullptr;
 		}
 	}
@@ -1655,7 +1658,11 @@ void PreviewManager::Destroy(int windowId, const std::string &canvasUuid)
 	for (auto it = impl_->surfaces.begin(); it != impl_->surfaces.end(); ++it) {
 		if (it->windowId == windowId && it->uuid == key) {
 			it->surface->Destroy();
+			const std::string closedKey = it->uuid; // non-empty => a runtime canvas
 			impl_->surfaces.erase(it);
+			if (!closedKey.empty()) {
+				ObsBootstrap::CanvasRuntime().RemovePreview(closedKey);
+			}
 			return;
 		}
 	}
@@ -1663,6 +1670,10 @@ void PreviewManager::Destroy(int windowId, const std::string &canvasUuid)
 
 void PreviewManager::DestroyAll()
 {
+	// Teardown path (~PreviewManager / shutdown before CanvasRuntime::ClearAll):
+	// preview counts are NOT decremented because ClearAll drops every mix
+	// regardless, and calling back into a tearing-down CanvasRuntime risks
+	// ordering hazards.
 	for (ManagedSurface &s : impl_->surfaces) {
 		s.surface->Destroy();
 	}
@@ -1678,7 +1689,11 @@ void PreviewManager::DestroyWindow(int windowId)
 	for (auto it = impl_->surfaces.begin(); it != impl_->surfaces.end();) {
 		if (it->windowId == windowId) {
 			it->surface->Destroy();
+			const std::string closedKey = it->uuid;
 			it = impl_->surfaces.erase(it);
+			if (!closedKey.empty()) {
+				ObsBootstrap::CanvasRuntime().RemovePreview(closedKey);
+			}
 			++destroyed;
 		} else {
 			++it;

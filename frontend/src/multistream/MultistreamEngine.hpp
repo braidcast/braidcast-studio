@@ -81,6 +81,13 @@ public:
 	 * canvas's encoders are bound to its video mix, so the mix must not be reset
 	 * (obs_canvas_reset_video frees it -> UAF). */
 	bool IsCanvasLive(const std::string &canvasUuid) const;
+	/* True iff a streaming output on this canvas is still truly active per libobs
+	 * (obs_output_active on the real handle), NOT merely per our live-list state. A
+	 * user stop may have flipped the state while the RTMP output is still draining
+	 * asynchronously, and its encoder keeps the canvas mix bound until the handle goes
+	 * inactive. CanvasRuntime gates its mix-drop on this so the video mix is never
+	 * freed while an encoder still pulls from it. */
+	bool CanvasHasActiveOutput(const std::string &canvasUuid) const;
 	bool AnyLive() const;
 	/* True if some OTHER currently-live output uses this profile. */
 	bool ProfileLiveElsewhere(const std::string &bindingUuid, const std::string &profileUuid) const;
@@ -102,6 +109,12 @@ public:
 	 * whenever any output's state changes. The bridge target routes through its
 	 * thread-safe EmitEvent, so off-thread invocation is fine. */
 	std::function<void()> onStatusChanged;
+
+	/* Invoked (off the libobs thread, from an output's stop signal) with the canvas
+	 * uuid once one of its outputs has fully stopped. The bootstrap marshals this to
+	 * the UI thread and re-runs CanvasRuntime::Reconcile, so a canvas that went inert
+	 * while an output was still async-stopping drops its mix once the stop completes. */
+	std::function<void(const std::string &canvasUuid)> onOutputStopped;
 
 private:
 	struct CanvasEncoders {
