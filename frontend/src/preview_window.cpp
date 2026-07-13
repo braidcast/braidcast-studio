@@ -24,6 +24,7 @@
 
 #include <windowsx.h>
 
+#include <algorithm>
 #include <cmath>
 #include <memory>
 #include <mutex>
@@ -329,19 +330,16 @@ void ClampAspect(ItemHandle handle, vec3 &tl, vec3 &br, vec2 &size, const vec2 &
 vec3 CanvasSnapOffset(const GeneralSettings &gs, obs_scene_t *scene, int64_t draggedId, const vec3 &tl, const vec3 &br,
 		      float baseW, float baseH);
 
-// Resize the active drag item to the current mouse canvas pos. Single-select,
-// OBS_BOUNDS_NONE (scale) and bounds paths; aspect is preserved on corner and
-// edge drags unless shiftHeld requests free aspect.
-// Snaps the moving edge(s) to canvas edges/center/other sources, mirroring
-// move-drag's CanvasSnapOffset via a per-live-edge probe box (see below).
-// TODO(deferred): crop (Alt) drag.
-void StretchItem(const DragState &drag, obs_sceneitem_t *item, const vec2 &canvasPos, obs_scene_t *scene,
-		 const GeneralSettings &gs, float snapBaseW, float snapBaseH, bool shiftHeld)
+// Seeds the item-local box corners from the drag-start size (tl at the origin, br
+// at drag.stretchItemSize) and moves the live-dragged edge(s) to the mouse's
+// current item-local position (canvasPos mapped through drag.screenToItem, the
+// same matrix BeginResize captured at mousedown). Shared by StretchItem
+// (scale/bounds resize) and CropItem (Alt-crop) so both drag modes read the
+// identical canvas->item-local mapping and the identical live-edge selection.
+void DragBoxLocal(const DragState &drag, const vec2 &canvasPos, vec3 &tl, vec3 &br, vec3 &pos3)
 {
-	const obs_bounds_type boundsType = obs_sceneitem_get_bounds_type(item);
 	const uint32_t flags = uint32_t(drag.handle);
 
-	vec3 tl, br, pos3;
 	vec3_zero(&tl);
 	vec3_set(&br, drag.stretchItemSize.x, drag.stretchItemSize.y, 0.0f);
 
@@ -358,6 +356,21 @@ void StretchItem(const DragState &drag, obs_sceneitem_t *item, const vec2 &canva
 	} else if (flags & ITEM_BOTTOM) {
 		br.y = pos3.y;
 	}
+}
+
+// Resize the active drag item to the current mouse canvas pos. Single-select,
+// OBS_BOUNDS_NONE (scale) and bounds paths; aspect is preserved on corner and
+// edge drags unless shiftHeld requests free aspect.
+// Snaps the moving edge(s) to canvas edges/center/other sources, mirroring
+// move-drag's CanvasSnapOffset via a per-live-edge probe box (see below).
+void StretchItem(const DragState &drag, obs_sceneitem_t *item, const vec2 &canvasPos, obs_scene_t *scene,
+		 const GeneralSettings &gs, float snapBaseW, float snapBaseH, bool shiftHeld)
+{
+	const obs_bounds_type boundsType = obs_sceneitem_get_bounds_type(item);
+	const uint32_t flags = uint32_t(drag.handle);
+
+	vec3 tl, br, pos3;
+	DragBoxLocal(drag, canvasPos, tl, br, pos3);
 
 	// --- resize-snap ---
 	// Only one edge per live axis moves; the opposite edge is a fixed anchor.
@@ -457,6 +470,85 @@ void StretchItem(const DragState &drag, obs_sceneitem_t *item, const vec2 &canva
 		vec2_div(&size, &size, &baseSize);
 		obs_sceneitem_set_scale(item, &size);
 	}
+
+	pos3 = CalculateStretchPos(item, tl, br);
+	vec3_transform(&pos3, &pos3, &drag.itemToScreen);
+	vec2 newPos;
+	vec2_set(&newPos, std::round(pos3.x), std::round(pos3.y));
+	obs_sceneitem_set_pos(item, &newPos);
+}
+
+// Crop the active drag item to the current mouse canvas pos (Alt-drag). Adjusts
+// obs_sceneitem_crop's per-edge left/right/top/bottom in source px; unlike
+// StretchItem this never touches scale, so the item's on-screen scale is exactly
+// what it was before the crop drag started. Never snaps (OBS's crop drag ignores
+// snapping outright), so this intentionally skips the CanvasSnapOffset step.
+// OBS_BOUNDS_NONE only: in bounds mode the item's scale is auto-derived from the
+// (source size - crop) to fill the fixed bounds box, so cropping would implicitly
+// rescale it too, breaking the "scale stays put" invariant this function relies
+// on; that case is left deferred, same posture as this file's rotation-drag gap.
+void CropItem(const DragState &drag, obs_sceneitem_t *item, const vec2 &canvasPos)
+{
+	if (obs_sceneitem_get_bounds_type(item) != OBS_BOUNDS_NONE) {
+		return;
+	}
+
+	const uint32_t flags = uint32_t(drag.handle);
+
+	vec3 tl, br, pos3;
+	DragBoxLocal(drag, canvasPos, tl, br, pos3);
+
+	vec2 scale;
+	obs_sceneitem_get_scale(item, &scale);
+	if (scale.x == 0.0f || scale.y == 0.0f) {
+		return;
+	}
+
+	obs_source_t *source = obs_sceneitem_get_source(item);
+	const int source_cx = int(obs_source_get_width(source));
+	const int source_cy = int(obs_source_get_height(source));
+	if (!source_cx || !source_cy) {
+		return;
+	}
+
+	// Item-local (box-unit) delta -> source-px delta: box-unit and source-px
+	// differ only by the item's scale, since box_size = (source_size - crop) *
+	// scale (see GetItemSize above).
+	obs_sceneitem_crop crop = drag.startCrop;
+	if (flags & ITEM_LEFT) {
+		crop.left += int(std::round(tl.x / scale.x));
+	} else if (flags & ITEM_RIGHT) {
+		crop.right += int(std::round((drag.stretchItemSize.x - br.x) / scale.x));
+	}
+	if (flags & ITEM_TOP) {
+		crop.top += int(std::round(tl.y / scale.y));
+	} else if (flags & ITEM_BOTTOM) {
+		crop.bottom += int(std::round((drag.stretchItemSize.y - br.y) / scale.y));
+	}
+
+	// Corner handles touch two edges on two different axes (e.g. top-left ->
+	// left+top), never two edges of the same axis, so each live edge clamps
+	// independently against its own untouched opposite edge. A 1px sliver of
+	// source is kept visible so a drag can never crop past the far edge.
+	if (flags & ITEM_LEFT) {
+		crop.left = std::clamp(crop.left, 0, std::max(0, source_cx - 1 - crop.right));
+	} else if (flags & ITEM_RIGHT) {
+		crop.right = std::clamp(crop.right, 0, std::max(0, source_cx - 1 - crop.left));
+	}
+	if (flags & ITEM_TOP) {
+		crop.top = std::clamp(crop.top, 0, std::max(0, source_cy - 1 - crop.bottom));
+	} else if (flags & ITEM_BOTTOM) {
+		crop.bottom = std::clamp(crop.bottom, 0, std::max(0, source_cy - 1 - crop.top));
+	}
+
+	obs_sceneitem_set_crop(item, &crop);
+
+	// Re-derive tl/br from the (possibly clamped) crop so the position update
+	// below reflects what was actually applied, not the raw unclamped drag.
+	tl.x = float(crop.left - drag.startCrop.left) * scale.x;
+	br.x = drag.stretchItemSize.x - float(crop.right - drag.startCrop.right) * scale.x;
+	tl.y = float(crop.top - drag.startCrop.top) * scale.y;
+	br.y = drag.stretchItemSize.y - float(crop.bottom - drag.startCrop.bottom) * scale.y;
 
 	pos3 = CalculateStretchPos(item, tl, br);
 	vec3_transform(&pos3, &pos3, &drag.itemToScreen);
@@ -1186,14 +1278,19 @@ void PreviewSurface::OnMouseMove(int mx, int my)
 			const GeneralSettings &gs = ObsBootstrap::General();
 			const bool ctrlHeld = GetKeyState(VK_CONTROL) < 0;
 			const bool shiftHeld = GetKeyState(VK_SHIFT) < 0;
-			obs_video_info ovi;
-			float snapBaseW = 0.0f, snapBaseH = 0.0f;
-			if (gs.snapEnabled && !ctrlHeld && SurfaceVideoInfo(targetCanvas_, ovi) && ovi.base_width &&
-			    ovi.base_height) {
-				snapBaseW = float(ovi.base_width);
-				snapBaseH = float(ovi.base_height);
+			const bool altHeld = GetKeyState(VK_MENU) < 0;
+			if (altHeld) {
+				CropItem(state_->drag, item, canvasPos);
+			} else {
+				obs_video_info ovi;
+				float snapBaseW = 0.0f, snapBaseH = 0.0f;
+				if (gs.snapEnabled && !ctrlHeld && SurfaceVideoInfo(targetCanvas_, ovi) &&
+				    ovi.base_width && ovi.base_height) {
+					snapBaseW = float(ovi.base_width);
+					snapBaseH = float(ovi.base_height);
+				}
+				StretchItem(state_->drag, item, canvasPos, scene, gs, snapBaseW, snapBaseH, shiftHeld);
 			}
-			StretchItem(state_->drag, item, canvasPos, scene, gs, snapBaseW, snapBaseH, shiftHeld);
 		}
 	}
 	obs_source_release(sceneSource);
