@@ -15,6 +15,7 @@ import { EV } from "./eventNames";
 
   let s = $state<AdvancedSettings>({
     processPriority: "normal",
+    disableAudioDucking: false,
     streamDelayEnabled: false,
     streamDelaySec: 0,
     streamDelayPreserve: false,
@@ -79,6 +80,14 @@ import { EV } from "./eventNames";
       </select>
     </div>
     <p class="dim note">Applies immediately and on next launch.</p>
+    <label class="check">
+      <ToggleSwitch
+        size="sm"
+        checked={s.disableAudioDucking}
+        onchange={(v) => void apply({ disableAudioDucking: v })}
+      />
+      Disable Windows audio ducking
+    </label>
   </section>
 
   <section class="group">

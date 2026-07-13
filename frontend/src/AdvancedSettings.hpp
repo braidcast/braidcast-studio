@@ -14,6 +14,7 @@
 struct AdvancedSettings {
 	// --- process (Windows) ---
 	std::string processPriority = "normal"; // normal | aboveNormal | high
+	bool disableAudioDucking = false;
 	// --- stream delay (per output) ---
 	bool streamDelayEnabled = false;
 	uint32_t streamDelaySec = 20;
@@ -67,6 +68,7 @@ inline constexpr AdvancedBoolField kAdvancedBoolFields[] = {
 	{"lowLatencyMode", "low_latency_mode", &AdvancedSettings::lowLatencyMode},
 	{"dynamicBitrate", "dynamic_bitrate", &AdvancedSettings::dynamicBitrate},
 	{"browserHwAccel", "browser_hw_accel", &AdvancedSettings::browserHwAccel},
+	{"disableAudioDucking", "disable_audio_ducking", &AdvancedSettings::disableAudioDucking},
 };
 inline constexpr AdvancedStringField kAdvancedStringFields[] = {
 	{"processPriority", "process_priority", &AdvancedSettings::processPriority},
@@ -85,5 +87,10 @@ inline constexpr const char *kProcessPriorityTokens[] = {"normal", "aboveNormal"
 // Apply a process-priority token to the current process. On Windows this maps to
 // SetPriorityClass; on other platforms it is a no-op. Unknown tokens are ignored.
 void ApplyProcessPriority(const std::string &token);
+
+// Opt this process's default-render audio session out of (or back into) Windows'
+// automatic ducking. On Windows this maps to IAudioSessionControl2::SetDuckingPreference;
+// on other platforms it is a no-op.
+void DisableAudioDucking(bool disable);
 
 #endif // OBS_MULTISTREAM_FRONTEND_ADVANCED_SETTINGS_HPP_

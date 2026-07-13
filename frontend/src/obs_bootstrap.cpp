@@ -729,7 +729,9 @@ bool ObsBootstrap::Start()
 	// StartOutput; browserHwAccel is store-only.
 	g_advanced.Load();
 	ApplyProcessPriority(g_advanced.processPriority);
-	HostLog("[obs] advanced settings loaded; process priority=" + g_advanced.processPriority);
+	DisableAudioDucking(g_advanced.disableAudioDucking);
+	HostLog("[obs] advanced settings loaded; process priority=" + g_advanced.processPriority +
+		"; audio ducking disabled=" + std::string(g_advanced.disableAudioDucking ? "true" : "false"));
 
 	LoadCuratedModules();
 

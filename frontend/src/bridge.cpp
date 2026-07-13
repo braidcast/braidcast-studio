@@ -723,6 +723,7 @@ bool MethodSettingsSetAdvanced(const json &params, json &result, std::string &er
 
 	AdvancedSettings &a = ObsBootstrap::Advanced();
 	const std::string oldPriority = a.processPriority;
+	const bool oldDisableAudioDucking = a.disableAudioDucking;
 	// Apply ONLY present keys of the matching type; unknown keys are ignored.
 	for (const AdvancedBoolField &f : kAdvancedBoolFields) {
 		auto it = params.find(f.json);
@@ -751,6 +752,9 @@ bool MethodSettingsSetAdvanced(const json &params, json &result, std::string &er
 	// StartOutput, so they apply to newly started outputs (live ones on restart).
 	if (a.processPriority != oldPriority) {
 		ApplyProcessPriority(a.processPriority);
+	}
+	if (a.disableAudioDucking != oldDisableAudioDucking) {
+		DisableAudioDucking(a.disableAudioDucking);
 	}
 
 	result = AdvancedToJson(a);

@@ -293,6 +293,7 @@ export interface GeneralSettings {
  * uints (streamDelaySec, reconnectRetryDelaySec, reconnectMaxRetries). */
 export interface AdvancedSettings {
   processPriority: string;
+  disableAudioDucking: boolean;
   streamDelayEnabled: boolean;
   streamDelaySec: number;
   streamDelayPreserve: boolean;
