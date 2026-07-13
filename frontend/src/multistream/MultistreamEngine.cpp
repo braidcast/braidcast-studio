@@ -279,8 +279,12 @@ bool MultistreamEngine::StartOutput(const std::string &bindingUuid, std::string 
 				    " in Settings, or paste a key into its stream profile");
 		}
 		if (!server || !*server) {
-			return fail(platform + " has no ingest server -- reconnect " + platform +
-				    " in Settings to provision it");
+			// The key is present (checked above) but the ingest server was never
+			// seeded -- a profile linked before the connect flow started writing
+			// server=auto. Seed it inline so rtmp_common resolves the platform ingest
+			// from the service's recommended server, instead of failing the go-live.
+			obs_data_set_string(p->settings, "server", "auto");
+			profiles.Save();
 		}
 	}
 
