@@ -3354,6 +3354,10 @@ void ObsBootstrap::Stop()
 
 	obs_shutdown();
 
+	// Self-gates on OBS_TRACK_ALLOCS=1; a no-op otherwise. Dumps symbolized
+	// stacks for every still-outstanding allocation before the count below.
+	bmem_dump_outstanding();
+
 	// Same counter the legacy frontend prints. Nonzero == fixed libobs static
 	// residuals (no per-run growth), not host-introduced leaks.
 	HostLog("[obs] leaks: " + std::to_string(bnum_allocs()));
