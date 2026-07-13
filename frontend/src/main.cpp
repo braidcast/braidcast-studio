@@ -269,6 +269,12 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 		return exit_code;
 	}
 
+	// Install the unhandled-exception filter as the first thing the main process
+	// does, so a crash anywhere below -- CEF init, obs startup, the message loop --
+	// writes a minidump for field diagnosis. Main process only; the CEF subprocesses
+	// returned above.
+	obs_init_win32_crash_handler();
+
 	// Opt the main process out of Windows background power throttling. When
 	// Braidcast loses the foreground (e.g. a fullscreen game grabs focus on
 	// another monitor) Windows otherwise drops it into Efficiency Mode (EcoQoS)
