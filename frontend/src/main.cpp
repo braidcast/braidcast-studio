@@ -2,6 +2,8 @@
 #include "event_names.hpp"
 
 #include <windows.h>
+#include <objbase.h>
+#include <rtworkq.h>
 
 #include <cstdlib>
 #include <memory>
@@ -82,6 +84,35 @@ const char *StartupUrl()
 	return "app://app/index.html";
 }
 
+// Enable the process privileges the hardened startup path wants: SE_DEBUG (parity
+// with upstream OBS's process hardening) and SE_INC_BASE_PRIORITY, which the
+// GPU_PRIORITY_VAL-gated D3D11 GPU-scheduling-priority path needs to succeed. Ported
+// from win-capture/inject-helper's load_debug_privilege, extended to both privileges.
+void load_debug_privilege()
+{
+	const DWORD flags = TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY;
+	const wchar_t *const privileges[] = {SE_DEBUG_NAME, SE_INC_BASE_PRIORITY_NAME};
+	TOKEN_PRIVILEGES tp;
+	HANDLE token;
+	LUID val;
+
+	if (!OpenProcessToken(GetCurrentProcess(), flags, &token)) {
+		return;
+	}
+
+	for (const wchar_t *privilege : privileges) {
+		if (!!LookupPrivilegeValue(nullptr, privilege, &val)) {
+			tp.PrivilegeCount = 1;
+			tp.Privileges[0].Luid = val;
+			tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+
+			AdjustTokenPrivileges(token, false, &tp, sizeof(tp), nullptr, nullptr);
+		}
+	}
+
+	CloseHandle(token);
+}
+
 // Point the loader at the rundir bin dir so obs.dll + libobs-d3d11.dll resolve
 // before any obs call. Derived from the exe path -- the exe sits in that dir.
 void AddObsBinDirToSearchPath()
@@ -94,6 +125,12 @@ void AddObsBinDirToSearchPath()
 		dir.resize(slash);
 	}
 	SetDllDirectoryW(dir.c_str());
+	// Under SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS) the
+	// SetDllDirectoryW directory is not searched, so also register this dir via
+	// AddDllDirectory (LOAD_LIBRARY_SEARCH_USER_DIRS, which DEFAULT_DIRS includes) --
+	// obs.dll + its co-located deps still resolve. The SetDllDirectoryW call above is
+	// harmless and kept.
+	AddDllDirectory(dir.c_str());
 }
 
 // The CEF UI browser fills the whole host client area. The obs preview is a
@@ -269,10 +306,46 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 		return exit_code;
 	}
 
+	// Windows process hardening, mirroring upstream OBS's frontend/obs-main.cpp
+	// startup preamble (never replicated in this from-scratch CEF entry). Main process
+	// only -- the CEF subprocesses returned above -- and run before the crash handler
+	// and any DLL load so it governs the whole process lifetime.
+
+	// Suppress the OS hard-error popups (missing-DLL / disk-not-ready modal dialogs);
+	// a failure then surfaces in our log path instead of a blocking message box.
+	SetErrorMode(SEM_FAILCRITICALERRORS);
+
+	// Give this process a high orderly-shutdown priority (0x300, above the 0x280
+	// default) and do not retry shutdown if a blocking callback fails.
+	SetProcessShutdownParameters(0x300, SHUTDOWN_NORETRY);
+
+	// Safe DLL search: enable safe-search mode and restrict the default search set to
+	// System32, the application dir, and AddDllDirectory-registered dirs. This drops
+	// the SetDllDirectoryW path from the search order, so AddObsBinDirToSearchPath()
+	// also registers the exe dir via AddDllDirectory (LOAD_LIBRARY_SEARCH_USER_DIRS)
+	// -- obs.dll + its co-located deps still resolve.
+	SetSearchPathMode(BASE_SEARCH_PATH_ENABLE_SAFE_SEARCHMODE | BASE_SEARCH_PATH_PERMANENT);
+	SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+
+	// Force system-critical DLLs to load only from System32, blocking DLL-planting via
+	// a co-located same-named DLL. Only affects system DLL resolution, so it is safe
+	// for the co-located obs.dll. Copied from win-capture/inject-helper.
+	PROCESS_MITIGATION_IMAGE_LOAD_POLICY image_load_policy = {0};
+	image_load_policy.PreferSystem32Images = 1;
+	SetProcessMitigationPolicy(ProcessImageLoadPolicy, &image_load_policy, sizeof(image_load_policy));
+
+	// Enable SE_DEBUG + SE_INC_BASE_PRIORITY for this process (see load_debug_privilege).
+	load_debug_privilege();
+
+	// Bring up the Media Foundation Real-Time Work Queue so MF hardware-encoder worker
+	// threads get real-time scheduling; paired with RtwqShutdown() on the normal
+	// teardown path below.
+	RtwqStartup();
+
 	// Install the unhandled-exception filter as the first thing the main process
-	// does, so a crash anywhere below -- CEF init, obs startup, the message loop --
-	// writes a minidump for field diagnosis. Main process only; the CEF subprocesses
-	// returned above.
+	// does after hardening, so a crash anywhere below -- CEF init, obs startup, the
+	// message loop -- writes a minidump for field diagnosis. Main process only; the
+	// CEF subprocesses returned above.
 	obs_init_win32_crash_handler();
 
 	// Opt the main process out of Windows background power throttling. When
@@ -487,6 +560,11 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 
 	CefShutdown();
 	HostLog("[cef] shutdown complete");
+
+	// Pair the startup RtwqStartup(): tear the MF Real-Time Work Queue down on the
+	// normal exit path, now that obs (and its MF encoders) have stopped.
+	RtwqShutdown();
+
 	// Propagate the perf-repro self-test's PASS/FAIL/skip/error exit code (see
 	// perf_repro_selftest.hpp) so it can gate CI; every other path keeps the
 	// existing always-0 exit.

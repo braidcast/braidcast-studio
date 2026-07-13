@@ -382,6 +382,9 @@ target_link_libraries(
     # (drag-region hit-test fall-through) for the custom title bar.
     dwmapi
     comctl32
+    # RtwqStartup/RtwqShutdown (Media Foundation Real-Time Work Queue) in the
+    # Windows process-hardening preamble.
+    RTWorkQ
 )
 
 # CEF's /DELAYLOAD list (from SET_EXECUTABLE_TARGET_PROPERTIES) names DLLs this
