@@ -330,12 +330,13 @@ vec3 CanvasSnapOffset(const GeneralSettings &gs, obs_scene_t *scene, int64_t dra
 		      float baseW, float baseH);
 
 // Resize the active drag item to the current mouse canvas pos. Single-select,
-// OBS_BOUNDS_NONE (scale) and bounds paths; aspect is preserved on corner drags.
+// OBS_BOUNDS_NONE (scale) and bounds paths; aspect is preserved on corner and
+// edge drags unless shiftHeld requests free aspect.
 // Snaps the moving edge(s) to canvas edges/center/other sources, mirroring
 // move-drag's CanvasSnapOffset via a per-live-edge probe box (see below).
-// TODO(deferred): Shift = free aspect / Ctrl = no snap, crop (Alt) drag.
+// TODO(deferred): crop (Alt) drag.
 void StretchItem(const DragState &drag, obs_sceneitem_t *item, const vec2 &canvasPos, obs_scene_t *scene,
-		 const GeneralSettings &gs, float snapBaseW, float snapBaseH)
+		 const GeneralSettings &gs, float snapBaseW, float snapBaseH, bool shiftHeld)
 {
 	const obs_bounds_type boundsType = obs_sceneitem_get_bounds_type(item);
 	const uint32_t flags = uint32_t(drag.handle);
@@ -449,7 +450,9 @@ void StretchItem(const DragState &drag, obs_sceneitem_t *item, const vec2 &canva
 		baseSize.x -= float(crop.left + crop.right);
 		baseSize.y -= float(crop.top + crop.bottom);
 
-		ClampAspect(drag.handle, tl, br, size, baseSize);
+		if (!shiftHeld) {
+			ClampAspect(drag.handle, tl, br, size, baseSize);
+		}
 
 		vec2_div(&size, &size, &baseSize);
 		obs_sceneitem_set_scale(item, &size);
@@ -1182,6 +1185,7 @@ void PreviewSurface::OnMouseMove(int mx, int my)
 		} else if (state_->drag.mode == DragMode::Resize) {
 			const GeneralSettings &gs = ObsBootstrap::General();
 			const bool ctrlHeld = GetKeyState(VK_CONTROL) < 0;
+			const bool shiftHeld = GetKeyState(VK_SHIFT) < 0;
 			obs_video_info ovi;
 			float snapBaseW = 0.0f, snapBaseH = 0.0f;
 			if (gs.snapEnabled && !ctrlHeld && SurfaceVideoInfo(targetCanvas_, ovi) && ovi.base_width &&
@@ -1189,7 +1193,7 @@ void PreviewSurface::OnMouseMove(int mx, int my)
 				snapBaseW = float(ovi.base_width);
 				snapBaseH = float(ovi.base_height);
 			}
-			StretchItem(state_->drag, item, canvasPos, scene, gs, snapBaseW, snapBaseH);
+			StretchItem(state_->drag, item, canvasPos, scene, gs, snapBaseW, snapBaseH, shiftHeld);
 		}
 	}
 	obs_source_release(sceneSource);
