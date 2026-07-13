@@ -765,6 +765,7 @@
                       <div class="reuse-label">Reuse existing account</div>
                       {#each existing as a (a.accountId)}
                         <button class="reuse-item" onclick={() => void reuse(a.accountId)}>
+                          <Avatar url={a.avatarUrl} name={a.displayName || a.login} size={26} />
                           <span class="reuse-name">{a.displayName || a.login}</span>
                           {#if a.needsReconnect}<span class="reuse-flag">reconnect</span>{/if}
                         </button>

@@ -544,6 +544,7 @@ export interface OAuthAccountRow {
   login: string;
   displayName: string;
   needsReconnect: boolean;
+  avatarUrl: string;
 }
 
 /** Connect progress pushed during oauth.connect (oauth.connectProgress). `phase`

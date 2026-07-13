@@ -8455,6 +8455,7 @@ bool MethodOAuthAccounts(const json &params, json &result, std::string &error)
 			{"login", acct.login},
 			{"displayName", acct.displayName},
 			{"needsReconnect", OAuth::AccountNeedsReconnect(acct)},
+			{"avatarUrl", acct.avatarUrl},
 		});
 	}
 	result = std::move(arr);
