@@ -21,7 +21,14 @@ if(NOT DEFINED OBS_VERSION_OVERRIDE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.git
   endif()
 
   if(_obs_version_result EQUAL 0)
-    string(REGEX REPLACE "([0-9]+)\\.([0-9]+)\\.([0-9]+).*" "\\1;\\2;\\3" _obs_version_canonical ${_obs_version})
+    # Fork release tags are `v`-prefixed (e.g. v0.0.1); strip it so the numeric
+    # version parses. A describe with no reachable tag returns a bare commit
+    # hash that does not match the version pattern -- keep the default version
+    # then rather than feeding a non-version string to list(GET) below.
+    string(REGEX REPLACE "^v" "" _obs_version "${_obs_version}")
+    if(_obs_version MATCHES "[0-9]+[.][0-9]+[.][0-9]+")
+      string(REGEX REPLACE "([0-9]+)[.]([0-9]+)[.]([0-9]+).*" "\\1;\\2;\\3" _obs_version_canonical ${_obs_version})
+    endif()
   endif()
 elseif(DEFINED OBS_VERSION_OVERRIDE)
   if(OBS_VERSION_OVERRIDE MATCHES "([0-9]+)\\.([0-9]+)\\.([0-9]+).*")
