@@ -39,6 +39,7 @@
 #include "chat/viewer_poller.hpp"
 #include "chat/ws_client.hpp"
 #include "events/event_hub.hpp"
+#include "ingest_writeback.hpp"
 #include "log.hpp"
 #include "overlay/overlay_server.hpp"
 #include "overlay/overlay_store.hpp"
@@ -8343,6 +8344,97 @@ void ReconcileOrphanedAccounts()
 	for (const std::string &accountId : orphans) {
 		HostLog("[oauth] reclaiming orphaned account (no stream profile references it): " + accountId);
 		TeardownAccount(accountId);
+	}
+}
+
+// One rtmp_common profile whose key predates the OAuth connect flow's key writeback
+// and must be re-fetched from the provider (see SelfHealStreamCredentials below).
+struct StaleCredentialProfile {
+	std::string profileUuid;
+	std::string accountId;
+};
+
+// Re-fetch + write back the stream key for each profile in `profiles`, one at a time
+// on this detached worker (fetchStreamKey does blocking network and may rotate the
+// account's token, so it must not run on the UI thread). WriteIngestToProfile
+// marshals its own writeback to TID_UI; a fetch failure is logged and the profile is
+// left untouched -- this is best-effort background healing, never a user-facing
+// connect error. Spawned once by SelfHealStreamCredentials.
+void SelfHealFetchWorker(std::vector<StaleCredentialProfile> profiles)
+{
+	for (const StaleCredentialProfile &sp : profiles) {
+		if (g_bridgeShutdown.load(std::memory_order_acquire)) {
+			return;
+		}
+		std::optional<OAuth::OAuthAccount> acct = OAuth::Accounts().Get(sp.accountId);
+		if (!acct) {
+			continue;
+		}
+		OAuth::StreamProvider *provider = OAuth::Registry().Get(acct->providerId);
+		if (!provider) {
+			continue;
+		}
+		std::string key, err;
+		if (!provider->fetchStreamKey(*acct, key, err) || key.empty()) {
+			HostLog("[oauth] self-heal: fetchStreamKey failed for profile " + sp.profileUuid +
+				(err.empty() ? "" : (": " + err)));
+			continue;
+		}
+		if (WriteIngestToProfile(sp.profileUuid, "auto", key)) {
+			HostLog("[oauth] self-heal: re-fetched stream key for profile " + sp.profileUuid);
+		}
+	}
+}
+
+// Launch-time self-heal for stream profiles seeded before the OAuth connect flow
+// wrote "server=auto" alongside the key (see RunOAuthConnect above): such a profile
+// has a key but no server, so rtmp_common can't resolve an ingest and
+// obs_output_start bails deep in libobs with an empty error. Only rtmp_common
+// profiles linked to a currently connected account are touched -- custom-RTMP/WHIP
+// profiles carry a user-entered server/key, and YouTube profiles are never
+// rtmp_common (their ingest is seeded per-broadcast by WriteIngestToProfile at go
+// live, and the base fetchStreamKey it doesn't override returns false), so both are
+// naturally excluded. The key-present/server-missing case is healed inline here (no
+// network); a profile missing its key entirely is snapshotted and re-fetched on a
+// background worker. Call once, on the UI thread, after the profile + account stores
+// load.
+void SelfHealStreamCredentials()
+{
+	std::vector<StaleCredentialProfile> needFetch;
+	bool changed = false;
+
+	for (StreamProfile &p : ObsBootstrap::StreamProfiles().AllMutable()) {
+		if (p.accountId.empty() || p.serviceId != "rtmp_common") {
+			continue;
+		}
+		std::optional<OAuth::OAuthAccount> acct = OAuth::Accounts().Get(p.accountId);
+		if (!acct || !OAuth::IsAccountConnected(*acct)) {
+			continue;
+		}
+
+		const std::string key = p.Key();
+		const bool hasServer = p.settings && obs_data_has_user_value(p.settings, "server");
+		if (!key.empty() && hasServer) {
+			continue; // already fully seeded
+		}
+		if (!key.empty()) {
+			if (!p.settings) {
+				p.settings = obs_data_create();
+			}
+			obs_data_set_string(p.settings, "server", "auto");
+			HostLog("[oauth] self-heal: seeded server=auto for stale stream profile " + p.uuid);
+			changed = true;
+			continue;
+		}
+		needFetch.push_back({p.uuid, p.accountId});
+	}
+
+	if (changed) {
+		ObsBootstrap::StreamProfiles().Save();
+		EmitEvent(EventNames::kStreamProfileChanged, json::object());
+	}
+	if (!needFetch.empty()) {
+		std::thread(SelfHealFetchWorker, std::move(needFetch)).detach();
 	}
 }
 

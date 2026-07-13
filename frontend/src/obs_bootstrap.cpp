@@ -825,6 +825,12 @@ bool ObsBootstrap::Start()
 	// transport is non-null (9.2b+).
 	Events::Hub().StartConnectedAccounts();
 
+	// Launch-time credential self-heal: some stream profiles were linked before the
+	// connect flow started seeding "server=auto" alongside the key, leaving them
+	// unable to go live with no visible error. Runs once here, now that the profile +
+	// account stores and provider registry are all ready.
+	Bridge::SelfHealStreamCredentials();
+
 	// Channel identity: the audience-total poller is always-on (account-lifecycle,
 	// not go-live-gated), so follower/subscriber totals refresh before/after
 	// streaming. Stopped in Bridge::Shutdown alongside the other always-on workers.

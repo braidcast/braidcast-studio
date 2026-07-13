@@ -68,6 +68,16 @@ void EmitEvent(const std::string &name, const json &payload);
 // provider registry is populated, before the chat/events hubs start. UI thread only.
 void ReconcileOrphanedAccounts();
 
+// Launch-time self-heal: seed "server=auto" (and, if the key itself is missing,
+// re-fetch it) for rtmp_common stream profiles that predate the OAuth connect
+// flow's key writeback, so a stale profile's obs_output_start no longer silently
+// bails. Only touches rtmp_common profiles linked to a currently connected account;
+// custom-RTMP/WHIP and YouTube profiles are unaffected. The key-present case heals
+// inline; a missing key is re-fetched on a detached background worker. Call once,
+// on the UI thread, after the profile + account stores load and the provider
+// registry is populated (same seam as ReconcileOrphanedAccounts).
+void SelfHealStreamCredentials();
+
 // Apply a Default-canvas definition's resolution/color to the global/main video
 // pipeline (obs_reset_video, preserving the non-color fields and re-letterboxing
 // the preview + resizing the program transition). Injected into CanvasService as
