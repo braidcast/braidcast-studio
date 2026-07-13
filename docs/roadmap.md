@@ -1480,17 +1480,20 @@ on public repos (separate from the 500 MB Packages quota).
   Windows could blank the display or sleep the machine mid-broadcast; now wired
   into `MultistreamEngine` output start/stop. (b) **main-process crash handler /
   minidump** — `obs_init_win32_crash_handler` was never called, so a main-process
-  crash produced no dump; now called first thing in `wWinMain`. **🔭 Deferred:**
-  (a) **audio-ducking opt-out** — upstream's `DisableAudioDucking`
-  (`IAudioSessionControl2::SetDuckingPreference`) + a settings toggle so capturing
-  audio doesn't auto-duck other apps; absent here (no ducking control at all).
-  (b) **process-hardening preamble** — DLL-blocklist hook, mitigation policies,
-  `SetErrorMode`, safe DLL-search (`SetDefaultDllDirectories`/`SetDllDirectoryW`),
-  `SetProcessShutdownParameters`, `RtwqStartup` (Media Foundation RT work-queue —
-  affects MF hardware-encoder thread scheduling), and `load_debug_privilege`
-  (`SE_INC_BASE_PRIORITY_NAME`, the privilege the `GPU_PRIORITY_VAL`-gated D3D11
-  GPU-priority path needs to succeed); all in upstream's `obs-main.cpp`, none in
-  this fork's main process. Non-gaps confirmed present-and-correct or matching
+  crash produced no dump; now called in `wWinMain`. (c) **audio-ducking opt-out** —
+  `DisableAudioDucking` (`IAudioSessionControl2::SetDuckingPreference`) + an
+  Advanced-tab toggle, so capturing audio no longer force-ducks other apps (default
+  off, matching OBS). (d) **process-hardening preamble** in `wWinMain` — mitigation
+  policy (`PreferSystem32Images`), `SetErrorMode`, safe DLL-search
+  (`SetSearchPathMode` + `SetDefaultDllDirectories`, reconciled with the app's
+  loader via `AddDllDirectory`, boot-tested), `SetProcessShutdownParameters`,
+  `RtwqStartup`/`RtwqShutdown` (MF hardware-encoder thread scheduling), and
+  `load_debug_privilege` (`SE_DEBUG` + `SE_INC_BASE_PRIORITY_NAME`, the privilege
+  the `GPU_PRIORITY_VAL`-gated D3D11 GPU-priority path needs). **🔭 Deferred:** the
+  **DLL-blocklist hook** (`install_dll_blocklist_hook`) — a `LoadLibrary` interposer
+  with a maintained blocklist of known-bad DLLs; not in-tree (would need to port
+  upstream's detour), disproportionate for a controlled private fork, low return.
+  Non-gaps confirmed present-and-correct or matching
   upstream: `timeBeginPeriod(1)` (fires via libobs `DllMain`), DPI awareness,
   process priority class, MMCSS (audio-thread-only, same as upstream), COM init +
   hotkey thread (libobs-internal). Note: upstream OBS is NOT ahead here in a way a
