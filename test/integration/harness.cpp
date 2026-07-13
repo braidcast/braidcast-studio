@@ -12,6 +12,7 @@
 #include <obs.h>
 #include <obs.hpp>
 #include <util/platform.h>
+#include <util/bmem.h>
 
 #include <windows.h>
 
@@ -169,6 +170,8 @@ void Harness::ShutdownObs()
 	// Drop the runtime (destroys obs_canvas mixes) while libobs is still up.
 	g_runtime.reset();
 	obs_shutdown();
+	// Dump whatever survived shutdown (no-op unless OBS_TRACK_ALLOCS=1).
+	bmem_dump_outstanding();
 	g_booted = false;
 }
 
