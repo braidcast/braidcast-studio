@@ -31,6 +31,17 @@ export function openOAuthConnect(req: OAuthConnectRequest): void {
   oauthConnect.open = true;
 }
 
+// openOAuthConnect() itself is a synchronous state flip (no obs.call), so there is no
+// call-duration window to bracket with a local try/finally busy flag. The actual
+// in-flight window is "the connect modal is open for this profile" — OAuthConnectDialog
+// owns cancel-then-connect sequencing once mounted. Callers that want a busy-disabled
+// reconnect button (immediate feedback + no duplicate-open) should key off this instead
+// of inventing a parallel flag that can't reflect that window.
+/** Whether the connect modal is currently open for this profile. */
+export function isOAuthConnecting(profileUuid: string): boolean {
+  return oauthConnect.open && oauthConnect.req?.profileUuid === profileUuid;
+}
+
 /** The dialog calls this on a successful link so the following close won't cancel. */
 export function markOAuthConnected(): void {
   connected = true;

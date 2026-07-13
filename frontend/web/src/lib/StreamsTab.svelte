@@ -73,6 +73,10 @@
   let authDefaultApplied = $state(false);
   // Confirm dialog (destructive profile removal).
   let dialog = $state<DialogSpec | null>(null);
+  // Row-scoped in-flight guard for Set-primary/Remove, keyed by profile uuid so a
+  // double-click can't fire either action twice; both buttons on that row disable
+  // together since neither should race the other.
+  let busyProfileUuid = $state<string | null>(null);
 
   // The three connection types the top-level segmented splits into. The split is
   // fixed; the labels come from serviceTypes (live) so a build that renames them
@@ -538,22 +542,29 @@
   }
 
   async function remove(p: StreamProfileInfo) {
+    if (busyProfileUuid === p.uuid) return;
+    busyProfileUuid = p.uuid;
     try {
       await obs.call("streamProfile.remove", { uuid: p.uuid });
       if (editingUuid === p.uuid) formOpen = false;
       await loadProfiles();
     } catch (e) {
       error = (e as Error).message;
+    } finally {
+      busyProfileUuid = null;
     }
   }
 
   async function setPrimary(p: StreamProfileInfo) {
-    if (p.isPrimary) return;
+    if (p.isPrimary || busyProfileUuid === p.uuid) return;
+    busyProfileUuid = p.uuid;
     try {
       await obs.call("streamProfile.setPrimary", { uuid: p.uuid });
       await loadProfiles();
     } catch (e) {
       error = (e as Error).message;
+    } finally {
+      busyProfileUuid = null;
     }
   }
 </script>
@@ -637,11 +648,21 @@
           <span class="fh-spacer"></span>
           {#if editingUuid && editingProfile}
             {#if !editingProfile.isPrimary}
-              <button class="mini" title="Set as primary" onclick={() => editingProfile && void setPrimary(editingProfile)}>
+              <button
+                class="mini"
+                title="Set as primary"
+                disabled={busyProfileUuid === editingProfile.uuid}
+                onclick={() => editingProfile && void setPrimary(editingProfile)}
+              >
                 <span class="star"><Icon name="star" size={12} /></span> Primary
               </button>
             {/if}
-            <button class="mini danger" title="Remove" onclick={() => editingProfile && confirmRemove(editingProfile)}>
+            <button
+              class="mini danger"
+              title="Remove"
+              disabled={busyProfileUuid === editingProfile.uuid}
+              onclick={() => editingProfile && confirmRemove(editingProfile)}
+            >
               <svg
                 width="13"
                 height="13"

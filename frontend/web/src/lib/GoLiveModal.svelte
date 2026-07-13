@@ -9,7 +9,7 @@
   } from "./bridge";
 import { EV } from "./eventNames";
   import { goLiveModal, closeGoLiveModal } from "./goLiveModalOpener.svelte";
-  import { openOAuthConnect } from "./oauthConnectOpener.svelte";
+  import { openOAuthConnect, isOAuthConnecting } from "./oauthConnectOpener.svelte";
   import { outputBindingStore } from "./outputBindingStore.svelte";
   import { streamProfileStore } from "./streamProfileStore.svelte";
   import { oauthStore } from "./oauthStore.svelte";
@@ -96,6 +96,14 @@ import { EV } from "./eventNames";
       return;
     }
     openOAuthConnect({ profileUuid: first.profileUuid, providerId: c.provider.id, platformName: c.provider.displayName });
+  }
+
+  // Disables the Reconnect button while this channel's connect flow is already open
+  // (keyed off its first stream's profile, mirroring reconnect()'s own resolution),
+  // so a double-click can't stack a second open.
+  function reconnectBusy(c: Channel): boolean {
+    const first = c.streams[0];
+    return !!first && isOAuthConnecting(first.profileUuid);
   }
 
   // Three inheritance layers, resolved shared -> channel -> stream by
@@ -799,7 +807,7 @@ import { EV } from "./eventNames";
                   <b>{c.login}</b> — reconnect to edit
                   {c.provider?.displayName ?? "this platform"} stream info
                 </span>
-                <button type="button" class="rbtn" onclick={() => reconnect(c)}>Reconnect</button>
+                <button type="button" class="rbtn" disabled={reconnectBusy(c)} onclick={() => reconnect(c)}>Reconnect</button>
               </div>
             </div>
           {/if}

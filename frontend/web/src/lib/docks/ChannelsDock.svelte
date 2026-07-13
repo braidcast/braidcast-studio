@@ -5,7 +5,7 @@
   // channelsStore.rows — never the three underlying feeds directly.
   import { channelsStore } from "../channelsStore.svelte";
   import { streamProfileStore } from "../streamProfileStore.svelte";
-  import { openOAuthConnect } from "../oauthConnectOpener.svelte";
+  import { openOAuthConnect, isOAuthConnecting } from "../oauthConnectOpener.svelte";
   import { PLATFORM_COLORS, PLATFORM_LABELS } from "../theme/platformColors";
   import Avatar from "../Avatar.svelte";
   import type { StreamProfileInfo } from "../bridge";
@@ -52,6 +52,13 @@
     }
     openOAuthConnect({ profileUuid: p.uuid, providerId: r.providerId, platformName: platformName(r) });
   }
+
+  // Disables the chip while its account's connect flow is already open, so a
+  // double-click can't stack a second open (also true immediately after the click).
+  function reconnectBusy(accountId: string): boolean {
+    const p = profileForAccount(accountId);
+    return !!p && isOAuthConnecting(p.uuid);
+  }
 </script>
 
 <div class="dock-body">
@@ -72,7 +79,7 @@
             {#if r.needsReconnect}
               <button
                 class="chip warn"
-                disabled={!hasProfile}
+                disabled={!hasProfile || reconnectBusy(r.accountId)}
                 title={hasProfile ? "Reconnect this account" : "No stream profile bound to this account"}
                 onclick={() => reconnect(r)}
               >
