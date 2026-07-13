@@ -643,6 +643,18 @@ void MultistreamEngine::OnOutputStop(void *data, calldata_t *cd)
 				} else {
 					lo->state = State::Idle;
 					DBG(LogCat::Net, "rtmp stopped cleanly (binding %s)", lo->bindingUuid.c_str());
+					/* libobs only logs a drop summary when frames were actually
+					 * dropped, so a clean session is silent -- "no drops" then
+					 * reads as absence, not confirmation. Emit an unconditional
+					 * per-output summary so the log positively states the result. */
+					const int totalFrames = obs_output_get_total_frames(out);
+					const int droppedFrames = obs_output_get_frames_dropped(out);
+					const double droppedPct =
+						totalFrames > 0 ? (double)droppedFrames / (double)totalFrames * 100.0 : 0.0;
+					blog(LOG_INFO,
+					     "Multistream: output stopped cleanly (binding %s, canvas %s) -- %d/%d frames dropped (%.2f%%)",
+					     lo->bindingUuid.c_str(), lo->canvasUuid.c_str(), droppedFrames, totalFrames,
+					     droppedPct);
 				}
 				break;
 			}
