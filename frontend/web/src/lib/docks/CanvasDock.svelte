@@ -14,6 +14,7 @@ import { EV } from "../eventNames";
 import { dockLayout } from "../dockLayoutSignal.svelte";
   import { WINDOW_ID } from "../windowContext";
   import { syncPreviewRect, hidePreview as hidePreviewSurface, destroyPreview, mapOverlayCursor } from "../dock/previewSurface";
+  import { isPreviewDisabled, setPreviewDisabled } from "../dock/previewDisabledStore.svelte";
   import ContextMenu, { type ContextMenuItem } from "../ContextMenu.svelte";
   import { clipboard } from "../clipboardStore.svelte";
   import { openFilters } from "../filterDialogOpener.svelte";
@@ -90,10 +91,13 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
     if (!previewEl) {
       return;
     }
-    // While a modal/overlay holds the preview gate, never re-assert the rect: a stray
-    // resize/scroll/ResizeObserver tick during the modal's lifetime would otherwise
-    // raise this canvas's native child window back above CEF, over the modal.
-    if (previewSuspended()) {
+    // While a modal/overlay holds the preview gate, or the user disabled this
+    // canvas's preview, never re-assert the rect: a stray resize/scroll/
+    // ResizeObserver tick would otherwise raise this canvas's native child window
+    // back above CEF, over the modal or over the placeholder. While disabled the
+    // surface is already destroyed (see disablePreview below), so hidePreview here
+    // is a harmless idempotent no-op.
+    if (previewSuspended() || isPreviewDisabled(canvasUuid)) {
       hidePreview();
       return;
     }
@@ -105,6 +109,22 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
   function hidePreview() {
     surfaceActive = false;
     hidePreviewSurface(canvasUuid);
+  }
+
+  // OBS parity: "Disable Preview" stops rendering the native surface to save GPU.
+  // Destroying (not hiding) is what actually matters -- the native preview surface
+  // holds a main-render ref that keeps this canvas compositing every frame; only
+  // releasing the surface via destroy() drops that ref and lets it go idle.
+  function disablePreview() {
+    setPreviewDisabled(canvasUuid, true);
+    destroyPreview(canvasUuid);
+  }
+
+  // Re-enable: flip the flag, then measure immediately so the surface repaints on
+  // this frame instead of waiting for the next resize/layout event to trigger it.
+  function enablePreview() {
+    setPreviewDisabled(canvasUuid, false);
+    requestAnimationFrame(reportRect);
   }
 
   // ---- canvas geometry (stage res chip + aspect) -----------------------------
@@ -635,6 +655,8 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
       // Projector entries hidden pending the projector redesign.
       null,
       { label: "Remove", danger: true, action: () => void call("sceneItems.remove", {}) },
+      null,
+      { label: "Disable Preview", action: disablePreview },
     ];
   }
 
@@ -842,6 +864,13 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
         <span class="scene-bar"></span>
         <span class="scene-pill">{currentScene ?? canvasName}</span>
       </div>
+      {#if isPreviewDisabled(canvasUuid)}
+        <div class="placeholder">
+          <p class="ph-title">Preview disabled</p>
+          <p class="ph-sub">Rendering is stopped to save GPU.</p>
+          <button class="accent" onclick={enablePreview}>Re-enable Preview</button>
+        </div>
+      {/if}
     </div>
   </div>
 
@@ -1080,6 +1109,37 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .placeholder {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    text-align: center;
+    padding: 20px;
+    pointer-events: none;
+  }
+  /* The disabled-preview placeholder adds a real action (Re-enable); opt back into
+     pointer events for just that button rather than the whole overlay. */
+  .placeholder button {
+    pointer-events: auto;
+    margin-top: 10px;
+  }
+  .ph-title {
+    margin: 0;
+    font-family: var(--font-ui);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--color-dim);
+  }
+  .ph-sub {
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--color-muted);
   }
 
   /* ---- embedded scenes / sources lists --------------------------------- */

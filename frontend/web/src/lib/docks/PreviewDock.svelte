@@ -7,7 +7,7 @@ import { EV } from "../eventNames";
 import { dockLayout } from "../dockLayoutSignal.svelte";
   import { WINDOW_ID } from "../windowContext";
   import { syncPreviewRect, hidePreview, destroyPreview, mapOverlayCursor } from "../dock/previewSurface";
-  import { previewDisabledPref, setPreviewDisabled } from "../dock/previewDisabledStore.svelte";
+  import { isPreviewDisabled, setPreviewDisabled, DEFAULT_PREVIEW_KEY } from "../dock/previewDisabledStore.svelte";
   import ContextMenu, { type ContextMenuItem } from "../ContextMenu.svelte";
   import PropertyForm from "../properties/PropertyForm.svelte";
   import Modal from "../Modal.svelte";
@@ -52,14 +52,14 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
   // holds a main-render ref that keeps the Main canvas compositing every frame;
   // only releasing the surface via destroy() drops that ref and lets it go idle.
   function disablePreview() {
-    setPreviewDisabled(true);
+    setPreviewDisabled(DEFAULT_PREVIEW_KEY, true);
     destroyPreview();
   }
 
   // Re-enable: flip the flag, then measure immediately so the surface repaints on
   // this frame instead of waiting for the next resize/layout event to trigger it.
   function enablePreview() {
-    setPreviewDisabled(false);
+    setPreviewDisabled(DEFAULT_PREVIEW_KEY, false);
     requestAnimationFrame(reportRect);
   }
 
@@ -118,7 +118,7 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
     // native child window back above CEF (over the modal, or over the placeholder).
     // While disabled the surface is already destroyed (see disablePreview above),
     // so hidePreview here is a harmless idempotent no-op.
-    if (!defaultEnabled || previewSuspended() || previewDisabledPref.disabled) {
+    if (!defaultEnabled || previewSuspended() || isPreviewDisabled(DEFAULT_PREVIEW_KEY)) {
       hidePreview();
       return;
     }
@@ -191,9 +191,9 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
   });
 </script>
 
-<section class="preview" class:gated={!defaultEnabled || previewDisabledPref.disabled} bind:this={previewEl}>
+<section class="preview" class:gated={!defaultEnabled || isPreviewDisabled(DEFAULT_PREVIEW_KEY)} bind:this={previewEl}>
   <span class="label">Default</span>
-  {#if previewDisabledPref.disabled}
+  {#if isPreviewDisabled(DEFAULT_PREVIEW_KEY)}
     <div class="placeholder">
       <p class="ph-title">Preview disabled</p>
       <p class="ph-sub">Rendering is stopped to save GPU.</p>
