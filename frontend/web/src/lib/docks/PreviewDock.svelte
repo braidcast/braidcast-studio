@@ -7,6 +7,7 @@ import { EV } from "../eventNames";
 import { dockLayout } from "../dockLayoutSignal.svelte";
   import { WINDOW_ID } from "../windowContext";
   import { syncPreviewRect, hidePreview, destroyPreview, mapOverlayCursor } from "../dock/previewSurface";
+  import { previewDisabledPref, setPreviewDisabled } from "../dock/previewDisabledStore.svelte";
   import ContextMenu, { type ContextMenuItem } from "../ContextMenu.svelte";
   import PropertyForm from "../properties/PropertyForm.svelte";
   import Modal from "../Modal.svelte";
@@ -46,6 +47,22 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
     propsRelease = null;
   }
 
+  // OBS parity: "Disable Preview" stops rendering the native surface to save GPU.
+  // Destroying (not hiding) is what actually matters -- the native preview surface
+  // holds a main-render ref that keeps the Main canvas compositing every frame;
+  // only releasing the surface via destroy() drops that ref and lets it go idle.
+  function disablePreview() {
+    setPreviewDisabled(true);
+    destroyPreview();
+  }
+
+  // Re-enable: flip the flag, then measure immediately so the surface repaints on
+  // this frame instead of waiting for the next resize/layout event to trigger it.
+  function enablePreview() {
+    setPreviewDisabled(false);
+    requestAnimationFrame(reportRect);
+  }
+
   // Source context menu for the right-clicked scene item. Default surface, so every
   // call OMITS the canvas param (global channel-0 path).
   function buildItems(p: {
@@ -80,6 +97,8 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
       // bridge path are kept, just not surfaced here).
       null,
       { label: "Remove", danger: true, action: () => void call("sceneItems.remove", { scene: p.scene, id: p.id }) },
+      null,
+      { label: "Disable Preview", action: disablePreview },
     ];
   }
 
@@ -93,11 +112,13 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
     if (!previewEl) {
       return;
     }
-    // Output-gated off (no enabled destination on the Default canvas), or a modal
-    // holds the preview gate: keep the native overlay hidden. Re-asserting the rect
-    // during either would raise the native child window back above CEF (over the
-    // modal, or over the muted placeholder).
-    if (!defaultEnabled || previewSuspended()) {
+    // Output-gated off (no enabled destination on the Default canvas), a modal
+    // holds the preview gate, or the user disabled the preview: keep the native
+    // overlay hidden. Re-asserting the rect during any of these would raise the
+    // native child window back above CEF (over the modal, or over the placeholder).
+    // While disabled the surface is already destroyed (see disablePreview above),
+    // so hidePreview here is a harmless idempotent no-op.
+    if (!defaultEnabled || previewSuspended() || previewDisabledPref.disabled) {
       hidePreview();
       return;
     }
@@ -170,9 +191,15 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
   });
 </script>
 
-<section class="preview" class:gated={!defaultEnabled} bind:this={previewEl}>
+<section class="preview" class:gated={!defaultEnabled || previewDisabledPref.disabled} bind:this={previewEl}>
   <span class="label">Default</span>
-  {#if !defaultEnabled}
+  {#if previewDisabledPref.disabled}
+    <div class="placeholder">
+      <p class="ph-title">Preview disabled</p>
+      <p class="ph-sub">Rendering is stopped to save GPU.</p>
+      <button class="accent" onclick={enablePreview}>Re-enable Preview</button>
+    </div>
+  {:else if !defaultEnabled}
     <div class="placeholder">
       <p class="ph-title">Preview off</p>
       <p class="ph-sub">No enabled destination — turn one on in Canvases.</p>
@@ -215,6 +242,12 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
     text-align: center;
     padding: 20px;
     pointer-events: none;
+  }
+  /* The disabled-preview placeholder adds a real action (Re-enable); opt back into
+     pointer events for just that button rather than the whole overlay. */
+  .placeholder button {
+    pointer-events: auto;
+    margin-top: 10px;
   }
   .ph-title {
     margin: 0;
