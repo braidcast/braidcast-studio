@@ -25,7 +25,7 @@ namespace OAuth {
 
 // Bumped whenever the requested scope set changes, forcing installs holding
 // tokens issued under an older scope set to re-auth (see OAuthAccount::scopeVer).
-constexpr int KICK_SCOPE_VERSION = 2;
+constexpr int KICK_SCOPE_VERSION = 3;
 
 class KickProvider : public StreamProvider {
 public:
@@ -47,6 +47,7 @@ public:
 			   std::string &err) override;
 	bool viewerCount(OAuthAccount &acct, int &out, std::string &err) override;
 	bool audienceCount(OAuthAccount &acct, AudienceResult &out, std::string &err) override;
+	bool fetchStreamKey(OAuthAccount &acct, std::string &key, std::string &err) override;
 
 	// The Kick chat transport (Phase 9.0): Pusher read + REST send. A fresh instance
 	// per account, run by the ChatHub between go-live and stop. The default

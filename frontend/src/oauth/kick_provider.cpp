@@ -20,10 +20,11 @@ const char *kKickApiBase = "https://api.kick.com";
 
 // channel:read/write back the title/category/tags read + PATCH; user:read backs
 // the identity lookup. chat:write backs the Phase 9.0 multichat REST send;
-// events:subscribe backs the Pusher chat event subscription. Verified against
-// docs.kick.com (2026-06).
-const std::array<const char *, 5> kKickScopes = {"channel:read", "channel:write", "user:read",
-						 "chat:write",   "events:subscribe"};
+// events:subscribe backs the Pusher chat event subscription. streamkey:read backs
+// the go-live stream-key autofill (channels.stream.key). Verified against
+// docs.kick.com (2026-07).
+const std::array<const char *, 6> kKickScopes = {"channel:read", "channel:write", "streamkey:read",
+						 "user:read",   "chat:write",    "events:subscribe"};
 
 using JsonUtil::NumLoose;
 using JsonUtil::ParseJson;
@@ -325,6 +326,42 @@ bool KickProvider::viewerCount(OAuthAccount &acct, int &out, std::string &err)
 	const json row = FirstDataRow(ParseJson(resp.body));
 	if (row.is_object() && row.contains("stream") && row["stream"].is_object()) {
 		out = static_cast<int>(NumLoose(row["stream"], "viewer_count"));
+	}
+	return true;
+}
+
+bool KickProvider::fetchStreamKey(OAuthAccount &acct, std::string &key, std::string &err)
+{
+	key.clear();
+
+	// The channels lookup keys on the user_id, so ensure identity is resolved first.
+	if (!ensureIdentity(acct, err)) {
+		return false;
+	}
+
+	Http::HttpReq req;
+	req.method = "GET";
+	req.url = std::string(kKickApiBase) + "/public/v1/channels?broadcaster_user_id[]=" + Http::UrlEncode(acct.userId);
+
+	Http::HttpResponse resp;
+	if (!SendAuthed(acct, req, resp, err)) {
+		return false;
+	}
+	if (resp.status < 200 || resp.status >= 300) {
+		err = "Kick channels request failed (HTTP " + std::to_string(resp.status) + "): " + resp.body;
+		return false;
+	}
+
+	// The key rides in stream.key, gated by the streamkey:read scope. A token issued
+	// before that scope was added (scopeVer < 3) reconnects rather than reaching here,
+	// so a missing key here means the API withheld it, not a stale grant.
+	const json row = FirstDataRow(ParseJson(resp.body));
+	if (row.is_object() && row.contains("stream") && row["stream"].is_object()) {
+		key = Str(row["stream"], "key");
+	}
+	if (key.empty()) {
+		err = "Kick stream-key response missing stream.key";
+		return false;
 	}
 	return true;
 }
