@@ -2,6 +2,8 @@
 
 #include <obs.hpp>
 
+#include <util/platform.h>
+
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -164,6 +166,12 @@ private:
 	void RemoveLive(const std::string &bindingUuid);
 	void NotifyChanged();
 
+	/* Sets the shared sleep-inhibit handle's active state to AnyLive(). Idempotent
+	 * (safe to call repeatedly with the same desired state), so every call site that
+	 * mutates `live` can call it unconditionally after releasing liveMutex rather than
+	 * tracking the empty<->non-empty edge itself. */
+	void UpdateSleepInhibit();
+
 	static void OnOutputStart(void *data, calldata_t *cd);
 	static void OnOutputStop(void *data, calldata_t *cd);
 
@@ -180,4 +188,9 @@ private:
 	 * re-lock -> deadlock), only around the bare vector operations. */
 	mutable std::mutex liveMutex;
 	std::vector<std::unique_ptr<LiveOutput>> live;
+
+	/* One shared handle for the whole engine (not one per output), held active for
+	 * as long as any output is connecting/streaming. Created with the engine,
+	 * destroyed with it. */
+	os_inhibit_t *sleepInhibit = nullptr;
 };

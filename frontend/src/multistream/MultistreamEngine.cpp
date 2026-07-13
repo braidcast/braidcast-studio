@@ -94,7 +94,8 @@ MultistreamEngine::MultistreamEngine(CanvasStore &canvases_, StreamProfileStore 
 	: canvases(canvases_),
 	  profiles(profiles_),
 	  bindings(bindings_),
-	  resolver(std::move(resolver_))
+	  resolver(std::move(resolver_)),
+	  sleepInhibit(os_inhibit_sleep_create("Braidcast streaming"))
 {
 }
 
@@ -107,6 +108,12 @@ MultistreamEngine::~MultistreamEngine()
 	onStatusChanged = nullptr;
 	onOutputStopped = nullptr;
 	StopAll();
+	os_inhibit_sleep_destroy(sleepInhibit);
+}
+
+void MultistreamEngine::UpdateSleepInhibit()
+{
+	os_inhibit_sleep_set_active(sleepInhibit, AnyLive());
 }
 
 video_t *MultistreamEngine::VideoForCanvas(const std::string &canvasUuid)
@@ -232,6 +239,7 @@ bool MultistreamEngine::StartOutput(const std::string &bindingUuid, std::string 
 			RemoveLive(bindingUuid);
 			live.push_back(std::move(lo));
 		}
+		UpdateSleepInhibit();
 		NotifyChanged();
 		return false;
 	};
@@ -365,6 +373,7 @@ bool MultistreamEngine::StartOutput(const std::string &bindingUuid, std::string 
 		std::lock_guard<std::mutex> lock(liveMutex);
 		live.push_back(std::move(lo));
 	}
+	UpdateSleepInhibit();
 
 	/* obs_output_start is async; raw stays valid because only this (UI) thread
 	 * erases `live`. The handler may flip raw->state, so guard the failure write. */
@@ -377,6 +386,7 @@ bool MultistreamEngine::StartOutput(const std::string &bindingUuid, std::string 
 			raw->lastError = reason;
 			raw->state = State::Error;
 		}
+		UpdateSleepInhibit();
 		error = reason;
 		blog(LOG_WARNING, "Multistream: output '%s' failed to start: %s", oname.c_str(), reason.c_str());
 		NotifyChanged();
@@ -407,6 +417,7 @@ void MultistreamEngine::StopOutput(const std::string &bindingUuid)
 		std::lock_guard<std::mutex> lock(liveMutex);
 		RemoveLive(bindingUuid);
 	}
+	UpdateSleepInhibit();
 	NotifyChanged();
 }
 
@@ -445,6 +456,7 @@ void MultistreamEngine::StopAll()
 		std::lock_guard<std::mutex> lock(liveMutex);
 		live.clear();
 	}
+	UpdateSleepInhibit();
 	/* Encoders are released when the handler is destroyed or rebuilt; keep the
 	 * cache so a quick restart reuses them, but they hold no output refs now. */
 	NotifyChanged();
@@ -664,6 +676,7 @@ void MultistreamEngine::OnOutputStop(void *data, calldata_t *cd)
 			}
 		}
 	}
+	self->UpdateSleepInhibit();
 	self->NotifyChanged();
 	/* The output has fully stopped, so a canvas that went inert while it was still
 	 * async-stopping can now safely drop its mix. The bootstrap marshals this to the
