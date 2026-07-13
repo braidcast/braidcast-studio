@@ -24,10 +24,15 @@ const char *kHelixBase = "https://api.twitch.tv/helix/";
 // channel:read:subscriptions, and bits:read back the Phase 9.2b EventSub feed
 // (follower backfill + follow/sub/resub/gift + cheer notifications; channel.raid
 // needs no scope). Verified against dev.twitch.tv (2026-07).
-const std::array<const char *, 9> kTwitchScopes = {
-	"channel:read:stream_key", "channel:manage:broadcast",   "chat:read",
-	"chat:edit",               "user:read:chat",             "user:write:chat",
-	"moderator:read:followers", "channel:read:subscriptions", "bits:read"};
+const std::array<const char *, 9> kTwitchScopes = {"channel:read:stream_key",
+						   "channel:manage:broadcast",
+						   "chat:read",
+						   "chat:edit",
+						   "user:read:chat",
+						   "user:write:chat",
+						   "moderator:read:followers",
+						   "channel:read:subscriptions",
+						   "bits:read"};
 
 // Twitch's settable content-classification label ids (the PATCH-writable set;
 // "MatureGame" is auto-derived from the game rating and is NOT settable here).
@@ -53,12 +58,11 @@ struct LangOption {
 	const char *label;
 };
 const std::array<LangOption, 24> kLanguages = {{
-	{"en", "English"},   {"es", "Spanish"},   {"fr", "French"},   {"de", "German"},
-	{"it", "Italian"},   {"pt", "Portuguese"}, {"ru", "Russian"},  {"ja", "Japanese"},
-	{"ko", "Korean"},    {"zh", "Chinese"},   {"nl", "Dutch"},    {"pl", "Polish"},
-	{"tr", "Turkish"},   {"ar", "Arabic"},    {"cs", "Czech"},    {"da", "Danish"},
-	{"fi", "Finnish"},   {"el", "Greek"},     {"hu", "Hungarian"}, {"no", "Norwegian"},
-	{"sv", "Swedish"},   {"th", "Thai"},      {"uk", "Ukrainian"}, {"vi", "Vietnamese"},
+	{"en", "English"},    {"es", "Spanish"}, {"fr", "French"},    {"de", "German"},     {"it", "Italian"},
+	{"pt", "Portuguese"}, {"ru", "Russian"}, {"ja", "Japanese"},  {"ko", "Korean"},     {"zh", "Chinese"},
+	{"nl", "Dutch"},      {"pl", "Polish"},  {"tr", "Turkish"},   {"ar", "Arabic"},     {"cs", "Czech"},
+	{"da", "Danish"},     {"fi", "Finnish"}, {"el", "Greek"},     {"hu", "Hungarian"},  {"no", "Norwegian"},
+	{"sv", "Swedish"},    {"th", "Thai"},    {"uk", "Ukrainian"}, {"vi", "Vietnamese"},
 }};
 
 using JsonUtil::ParseJson;
@@ -136,10 +140,17 @@ json TwitchProvider::capabilityJson() const
 	}
 
 	json fields = json::array();
-	fields.push_back(json{
-		{"key", "title"}, {"label", "Title"}, {"type", "text"}, {"tier", "simple"}, {"shareable", true}, {"max", 140}});
-	fields.push_back(json{
-		{"key", "category"}, {"label", "Category"}, {"type", "category"}, {"tier", "simple"}, {"shareable", false}});
+	fields.push_back(json{{"key", "title"},
+			      {"label", "Title"},
+			      {"type", "text"},
+			      {"tier", "simple"},
+			      {"shareable", true},
+			      {"max", 140}});
+	fields.push_back(json{{"key", "category"},
+			      {"label", "Category"},
+			      {"type", "category"},
+			      {"tier", "simple"},
+			      {"shareable", false}});
 	fields.push_back(json{{"key", "tags"},
 			      {"label", "Tags"},
 			      {"type", "tags"},

@@ -224,7 +224,9 @@ std::unordered_map<std::string, std::string> FetchThirdPartyEmotes(EmotePlatform
 	// A GET can't observe the cancel flag mid-transfer, but polling before each one
 	// lets a Stop() bail out of the remaining fetches promptly rather than paying the
 	// full run of per-request timeouts. Returns whatever partial map is built so far.
-	const auto stop = [&] { return canceled && canceled(); };
+	const auto stop = [&] {
+		return canceled && canceled();
+	};
 
 	// Precedence: channel sets beat global sets, and within either tier 7TV > BTTV >
 	// FFZ. A single map with last-write-wins encodes both rules by inserting in

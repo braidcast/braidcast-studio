@@ -61,7 +61,10 @@ struct ChatContext {
 // `error` defaults to "" for the connected/success case.
 inline void EmitChatState(const ChatContext &ctx, const char *platform, bool connected, const std::string &error = "")
 {
-	ctx.emit(json{{"event", EventNames::kChatState}, {"platform", platform}, {"connected", connected}, {"error", error}});
+	ctx.emit(json{{"event", EventNames::kChatState},
+		      {"platform", platform},
+		      {"connected", connected},
+		      {"error", error}});
 }
 
 class ChatTransport {

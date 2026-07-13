@@ -80,7 +80,7 @@ class VSTPlugin : public QObject {
 #elif WIN32
 	HINSTANCE dllHandle = nullptr;
 #elif __linux__
-	void *soHandle = nullptr;
+void *soHandle = nullptr;
 #endif
 
 	void unloadLibrary();

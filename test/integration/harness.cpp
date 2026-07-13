@@ -185,9 +185,9 @@ void Harness::BeginTest()
 	static std::atomic<uint32_t> counter{0};
 	char tmp[MAX_PATH] = {};
 	GetTempPathA(sizeof(tmp), tmp);
-	std::filesystem::path dir = std::filesystem::u8path(tmp) /
-				    ("braidcast_it_" + std::to_string(GetCurrentProcessId()) + "_" +
-				     std::to_string(counter.fetch_add(1)));
+	std::filesystem::path dir =
+		std::filesystem::u8path(tmp) /
+		("braidcast_it_" + std::to_string(GetCurrentProcessId()) + "_" + std::to_string(counter.fetch_add(1)));
 	os_mkdirs(dir.u8string().c_str());
 
 	g_scenePath = (dir / "collection.json").u8string();

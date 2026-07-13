@@ -666,11 +666,12 @@ void MultistreamEngine::OnOutputStop(void *data, calldata_t *cd)
 					const int totalFrames = obs_output_get_total_frames(out);
 					const int droppedFrames = obs_output_get_frames_dropped(out);
 					const double droppedPct =
-						totalFrames > 0 ? (double)droppedFrames / (double)totalFrames * 100.0 : 0.0;
+						totalFrames > 0 ? (double)droppedFrames / (double)totalFrames * 100.0
+								: 0.0;
 					blog(LOG_INFO,
 					     "Multistream: output stopped cleanly (binding %s, canvas %s) -- %d/%d frames dropped (%.2f%%)",
-					     lo->bindingUuid.c_str(), lo->canvasUuid.c_str(), droppedFrames, totalFrames,
-					     droppedPct);
+					     lo->bindingUuid.c_str(), lo->canvasUuid.c_str(), droppedFrames,
+					     totalFrames, droppedPct);
 				}
 				break;
 			}

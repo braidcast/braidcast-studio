@@ -461,21 +461,15 @@ if(WIN32)
     get_target_property(_obs_deps_runtime_dir CURL::libcurl IMPORTED_LOCATION)
   endif()
   cmake_path(GET _obs_deps_runtime_dir PARENT_PATH _obs_deps_runtime_dir)
-  file(
-    GLOB _obs_deps_runtime_dlls
-    CONFIGURE_DEPENDS
-    "${_obs_deps_runtime_dir}/*.dll"
-  )
+  file(GLOB _obs_deps_runtime_dlls CONFIGURE_DEPENDS "${_obs_deps_runtime_dir}/*.dll")
 
   add_custom_command(
     TARGET ${_target}
     POST_BUILD
-    COMMAND "${CMAKE_COMMAND}" -E make_directory
-            "${OBS_OUTPUT_DIR}/$<CONFIG>/${OBS_EXECUTABLE_DESTINATION}"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "$<TARGET_RUNTIME_DLLS:${_target}>"
-            "${_obs_deps_runtime_dlls}"
-            "${OBS_OUTPUT_DIR}/$<CONFIG>/${OBS_EXECUTABLE_DESTINATION}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${OBS_OUTPUT_DIR}/$<CONFIG>/${OBS_EXECUTABLE_DESTINATION}"
+    COMMAND
+      "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_RUNTIME_DLLS:${_target}>" "${_obs_deps_runtime_dlls}"
+      "${OBS_OUTPUT_DIR}/$<CONFIG>/${OBS_EXECUTABLE_DESTINATION}"
     COMMENT "Copy runtime dependencies to binary directory"
     VERBATIM
     COMMAND_EXPAND_LISTS

@@ -267,8 +267,8 @@ HWND CreateHostWindow(HINSTANCE instance)
 	const DWORD style = WS_OVERLAPPEDWINDOW;
 	AdjustWindowRect(&rc, style, FALSE);
 
-	return CreateWindowExW(0, kHostClassName, L"Braidcast", style, CW_USEDEFAULT, CW_USEDEFAULT,
-			       rc.right - rc.left, rc.bottom - rc.top, nullptr, nullptr, instance, nullptr);
+	return CreateWindowExW(0, kHostClassName, L"Braidcast", style, CW_USEDEFAULT, CW_USEDEFAULT, rc.right - rc.left,
+			       rc.bottom - rc.top, nullptr, nullptr, instance, nullptr);
 }
 
 // Drain CEF-posted teardown tasks (BrowserSource `delete this` + CloseBrowser)
@@ -360,15 +360,15 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 	// pre-1709 Windows.
 	PROCESS_POWER_THROTTLING_STATE throttling = {};
 	throttling.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
-	throttling.ControlMask =
-		PROCESS_POWER_THROTTLING_EXECUTION_SPEED | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
+	throttling.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED |
+				 PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
 	throttling.StateMask = 0;
 	SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &throttling, sizeof(throttling));
 
 	CefSettings settings;
 	settings.no_sandbox = true;
 	settings.multi_threaded_message_loop = false; // we drive CefRunMessageLoop()
-	settings.windowless_rendering_enabled = true;  // required for obs-browser OSR sources
+	settings.windowless_rendering_enabled = true; // required for obs-browser OSR sources
 
 	if (!CefInitialize(main_args, settings, app.get(), nullptr)) {
 		return CefGetExitCode();
@@ -468,8 +468,8 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 	GetClientRect(host, &host_rc);
 	window_info.SetAsChild(host, CefRect(0, 0, host_rc.right - host_rc.left, host_rc.bottom - host_rc.top));
 
-	g_browser = CefBrowserHost::CreateBrowserSync(window_info, client, app->startup_url(), browser_settings, nullptr,
-						      nullptr);
+	g_browser = CefBrowserHost::CreateBrowserSync(window_info, client, app->startup_url(), browser_settings,
+						      nullptr, nullptr);
 	if (!g_browser) {
 		// No browser means OnBeforeClose never fires to quit the loop; bail
 		// rather than hang in CefRunMessageLoop with no way out.

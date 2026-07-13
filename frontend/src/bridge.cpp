@@ -377,9 +377,8 @@ struct SpeakerName {
 	const char *name;
 };
 const SpeakerName kSpeakerNames[] = {
-	{SPEAKERS_MONO, "mono"},     {SPEAKERS_STEREO, "stereo"}, {SPEAKERS_2POINT1, "2.1"},
-	{SPEAKERS_4POINT0, "4.0"},   {SPEAKERS_4POINT1, "4.1"},   {SPEAKERS_5POINT1, "5.1"},
-	{SPEAKERS_7POINT1, "7.1"},
+	{SPEAKERS_MONO, "mono"},   {SPEAKERS_STEREO, "stereo"}, {SPEAKERS_2POINT1, "2.1"}, {SPEAKERS_4POINT0, "4.0"},
+	{SPEAKERS_4POINT1, "4.1"}, {SPEAKERS_5POINT1, "5.1"},   {SPEAKERS_7POINT1, "7.1"},
 };
 
 const char *SpeakerLayoutName(speaker_layout layout)
@@ -406,9 +405,8 @@ bool SpeakerLayoutFromName(const std::string &name, speaker_layout &out)
 json VideoInfoToJson(const obs_video_info &ovi)
 {
 	return json{
-		{"baseWidth", ovi.base_width},   {"baseHeight", ovi.base_height},
-		{"outputWidth", ovi.output_width}, {"outputHeight", ovi.output_height},
-		{"fpsNum", ovi.fps_num},         {"fpsDen", ovi.fps_den},
+		{"baseWidth", ovi.base_width},       {"baseHeight", ovi.base_height}, {"outputWidth", ovi.output_width},
+		{"outputHeight", ovi.output_height}, {"fpsNum", ovi.fps_num},         {"fpsDen", ovi.fps_den},
 	};
 }
 
@@ -775,9 +773,8 @@ bool MethodSettingsGetAudio(const json & /*params*/, json &result, std::string &
 	result = json{
 		{"sampleRate", oai.samples_per_sec},
 		{"speakers", SpeakerLayoutName(oai.speakers)},
-		{"monitoringDevice",
-		 json{{"id", monId ? std::string(monId) : std::string("default")},
-		      {"name", monName ? std::string(monName) : std::string("Default")}}},
+		{"monitoringDevice", json{{"id", monId ? std::string(monId) : std::string("default")},
+					  {"name", monName ? std::string(monName) : std::string("Default")}}},
 	};
 	return true;
 }
@@ -861,9 +858,8 @@ bool MethodSettingsSetAudio(const json &params, json &result, std::string &error
 	result = json{
 		{"sampleRate", applied.samples_per_sec},
 		{"speakers", SpeakerLayoutName(applied.speakers)},
-		{"monitoringDevice",
-		 json{{"id", monId ? std::string(monId) : std::string("default")},
-		      {"name", monName ? std::string(monName) : std::string("Default")}}},
+		{"monitoringDevice", json{{"id", monId ? std::string(monId) : std::string("default")},
+					  {"name", monName ? std::string(monName) : std::string("Default")}}},
 	};
 	EmitEvent(EventNames::kSettingsAudioChanged, result);
 	HostLog("[bridge] settings.setAudio -> " + std::to_string(applied.samples_per_sec) + "Hz " +
@@ -929,7 +925,7 @@ obs_source_t *ResolveSceneSource(const std::string &name)
 // canvas uuid all resolve exactly as before (global output-0), keeping the
 // Default/absent path byte-identical.
 struct CanvasTarget {
-	std::string uuid;     // the additional canvas's uuid; empty => global path
+	std::string uuid;          // the additional canvas's uuid; empty => global path
 	bool isAdditional = false; // true only when uuid names a non-Default canvas
 };
 
@@ -1534,14 +1530,14 @@ ResolvedDestCanvas ResolveDestCanvas(const std::string &destCanvasUuid)
 
 // Find a free "<name> N" (N starting at 2) in the DESTINATION canvas's own
 // namespace, mirroring MethodScenesDuplicate's auto-suffix but scoped per-canvas.
-std::string FreeSceneNameOnCanvas(const std::string &baseName, const std::string &destCanvasUuid,
-				   bool destIsAdditional, obs_canvas_t *destCanvas)
+std::string FreeSceneNameOnCanvas(const std::string &baseName, const std::string &destCanvasUuid, bool destIsAdditional,
+				  obs_canvas_t *destCanvas)
 {
 	for (int n = 2;; ++n) {
 		std::string candidate = baseName + " " + std::to_string(n);
 		OBSSourceAutoRelease taken = destIsAdditional
-						      ? obs_canvas_get_source_by_name(destCanvas, candidate.c_str())
-						      : obs_get_source_by_name(candidate.c_str());
+						     ? obs_canvas_get_source_by_name(destCanvas, candidate.c_str())
+						     : obs_get_source_by_name(candidate.c_str());
 		if (taken) {
 			continue;
 		}
@@ -1556,8 +1552,8 @@ std::string FreeSceneNameOnCanvas(const std::string &baseName, const std::string
 // callers (the bridge method, and later the redo path) own that. On success, fills
 // `outNewSceneUuid`, `outNewName`, and `outUndoState` so callers can build undo state.
 bool DuplicateSceneToCanvasCore(const std::string &sceneName, const std::string &srcCanvasUuid,
-				 const std::string &destCanvasUuid, std::string &outNewSceneUuid,
-				 std::string &outNewName, json &outUndoState, std::string &error)
+				const std::string &destCanvasUuid, std::string &outNewSceneUuid,
+				std::string &outNewName, json &outUndoState, std::string &error)
 {
 	OBSSourceAutoRelease srcScene = ResolveNamedSceneOnCanvas(sceneName, srcCanvasUuid);
 	if (!srcScene || !obs_scene_from_source(srcScene)) {
@@ -1570,7 +1566,8 @@ bool DuplicateSceneToCanvasCore(const std::string &sceneName, const std::string 
 		error = "unknown destination canvas";
 		return false;
 	}
-	const bool destIsAdditional = !destCanvasUuid.empty() && destCanvasUuid != ObsBootstrap::Canvases().Default().uuid;
+	const bool destIsAdditional = !destCanvasUuid.empty() &&
+				      destCanvasUuid != ObsBootstrap::Canvases().Default().uuid;
 
 	const std::string newName = FreeSceneNameOnCanvas(sceneName, destCanvasUuid, destIsAdditional, dest.canvas);
 
@@ -1681,7 +1678,7 @@ bool MethodScenesDuplicateToCanvas(const json &params, json &result, std::string
 
 	const std::string emitCanvas =
 		destCanvasUuid.empty() || destCanvasUuid == ObsBootstrap::Canvases().Default().uuid ? std::string()
-												      : destCanvasUuid;
+												    : destCanvasUuid;
 	EmitScenesChanged(emitCanvas);
 	SceneCollection::Save();
 
@@ -1709,7 +1706,7 @@ bool MethodScenesDuplicateToCanvas(const json &params, json &result, std::string
 	}
 
 	ObsBootstrap::Undo().AddAction("Duplicate '" + name + "' to canvas", kUndoDuplicateSceneToCanvas,
-					kRedoDuplicateSceneToCanvas, undoState.dump(), undoState.dump());
+				       kRedoDuplicateSceneToCanvas, undoState.dump(), undoState.dump());
 
 	result = json{{"name", newName}, {"uuid", newSceneUuid}};
 	return true;
@@ -2340,8 +2337,8 @@ void RemoveDuplicatedCanvasScene(const json &state)
 		// If the target is the active program/channel-0 scene, switch to a
 		// fallback first -- mirrors MethodScenesRemove's safeguard ("the target
 		// is about to be removed"), scoped to whichever canvas it lives on.
-		const bool isMainCanvas =
-			destCanvasUuid.empty() || destCanvasUuid == ObsBootstrap::Canvases().Default().uuid;
+		const bool isMainCanvas = destCanvasUuid.empty() ||
+					  destCanvasUuid == ObsBootstrap::Canvases().Default().uuid;
 		if (isMainCanvas) {
 			OBSSourceAutoRelease current = Transitions::GetProgramScene();
 			if (current && current == sceneSource) {
@@ -2377,8 +2374,8 @@ void RemoveDuplicatedCanvasScene(const json &state)
 
 	ObsBootstrap::PruneSceneLinksForCanvasScene(destCanvasUuid, newSceneUuid); // no-op if none was set
 	EmitScenesChanged(destCanvasUuid.empty() || destCanvasUuid == ObsBootstrap::Canvases().Default().uuid
-				   ? std::string()
-				   : destCanvasUuid);
+				  ? std::string()
+				  : destCanvasUuid);
 	SceneCollection::Save();
 }
 
@@ -2446,8 +2443,8 @@ void RestoreDuplicatedCanvasScene(const json &state)
 	}
 
 	EmitScenesChanged(destCanvasUuid.empty() || destCanvasUuid == ObsBootstrap::Canvases().Default().uuid
-				   ? std::string()
-				   : destCanvasUuid);
+				  ? std::string()
+				  : destCanvasUuid);
 	SceneCollection::Save();
 }
 
@@ -2487,19 +2484,18 @@ bool MethodSceneItemsList(const json &params, json &result, std::string &error)
 			OBSDataAutoRelease priv = obs_sceneitem_get_private_settings(item);
 			const char *color = priv ? obs_data_get_string(priv, "color") : "";
 			// Prepend to invert bottom-first enumeration into top-first.
-			arr->insert(arr->begin(), json{
-							  {"id", obs_sceneitem_get_id(item)},
-							  {"source", srcName ? json(srcName) : json(nullptr)},
-							  {"visible", obs_sceneitem_visible(item)},
-							  {"locked", obs_sceneitem_locked(item)},
-							  {"scaleFilter",
-							   ScaleFilterToToken(obs_sceneitem_get_scale_filter(item))},
-							  {"interactive",
-							   src ? ((obs_source_get_output_flags(src) &
-								   OBS_SOURCE_INTERACTION) != 0)
-							       : false},
-							  {"color", color ? color : ""},
-						  });
+			arr->insert(arr->begin(),
+				    json{
+					    {"id", obs_sceneitem_get_id(item)},
+					    {"source", srcName ? json(srcName) : json(nullptr)},
+					    {"visible", obs_sceneitem_visible(item)},
+					    {"locked", obs_sceneitem_locked(item)},
+					    {"scaleFilter", ScaleFilterToToken(obs_sceneitem_get_scale_filter(item))},
+					    {"interactive",
+					     src ? ((obs_source_get_output_flags(src) & OBS_SOURCE_INTERACTION) != 0)
+						 : false},
+					    {"color", color ? color : ""},
+				    });
 			return true;
 		},
 		&items);
@@ -2708,7 +2704,7 @@ bool MethodSceneItemsSetColor(const json &params, json &result, std::string &err
 	if (!ItemIdFromParams(params, id, error)) {
 		return false;
 	}
-	const std::string color = OptString(params, "color"); // empty string clears the tag
+	const std::string color = OptString(params, "color");   // empty string clears the tag
 	obs_source_t *sceneSource = ResolveTargetScene(params); // addref'd
 	if (!sceneSource) {
 		error = "no scene";
@@ -2877,8 +2873,7 @@ void ClampItemToCanvas(obs_sceneitem_t *item, uint32_t baseWidth, uint32_t baseH
 
 // Resolve the scene + item shared by all three transform methods. On success
 // `sceneSource` is addref'd (caller releases) and `item` is borrowed from it.
-bool ResolveTransformTarget(const json &params, obs_source_t *&sceneSource, obs_sceneitem_t *&item,
-			    std::string &error)
+bool ResolveTransformTarget(const json &params, obs_source_t *&sceneSource, obs_sceneitem_t *&item, std::string &error)
 {
 	int64_t id = 0;
 	if (!ItemIdFromParams(params, id, error)) {
@@ -3072,9 +3067,9 @@ void CenterItemInBase(obs_sceneitem_t *item, uint32_t baseWidth, uint32_t baseHe
 bool MethodSceneItemsTransformAction(const json &params, json &result, std::string &error)
 {
 	const std::string action = OptString(params, "action");
-	static const char *kActions[] = {"reset",       "center",         "fitToScreen",     "stretchToScreen",
-					 "flipH",       "flipV",          "rotate90cw",      "rotate90ccw",
-					 "rotate180",   "centerVertical", "centerHorizontal"};
+	static const char *kActions[] = {"reset",     "center",         "fitToScreen",     "stretchToScreen",
+					 "flipH",     "flipV",          "rotate90cw",      "rotate90ccw",
+					 "rotate180", "centerVertical", "centerHorizontal"};
 	bool known = false;
 	for (const char *a : kActions) {
 		if (action == a) {
@@ -3210,10 +3205,11 @@ bool MethodSourceTypesList(const json & /*params*/, json &result, std::string & 
 		types.push_back(json{
 			{"id", id},
 			{"name", display ? json(display) : json(id)},
-			{"caps", json{
-					{"video", (flags & OBS_SOURCE_VIDEO) != 0},
-					{"audio", (flags & OBS_SOURCE_AUDIO) != 0},
-				}},
+			{"caps",
+			 json{
+				 {"video", (flags & OBS_SOURCE_VIDEO) != 0},
+				 {"audio", (flags & OBS_SOURCE_AUDIO) != 0},
+			 }},
 		});
 	}
 
@@ -3331,10 +3327,11 @@ bool MethodSourcesListExisting(const json &params, json &result, std::string &er
 				c->arr->push_back(json{
 					{"name", n},
 					{"typeId", typeId ? json(typeId) : json("")},
-					{"caps", json{
-							{"video", (flags & OBS_SOURCE_VIDEO) != 0},
-							{"audio", (flags & OBS_SOURCE_AUDIO) != 0},
-						}},
+					{"caps",
+					 json{
+						 {"video", (flags & OBS_SOURCE_VIDEO) != 0},
+						 {"audio", (flags & OBS_SOURCE_AUDIO) != 0},
+					 }},
 				});
 			}
 			return true;
@@ -3745,11 +3742,11 @@ bool MethodSourcesRelinkMissing(const json &params, json &result, std::string &e
 // `update` operate on the void* handle.
 struct PropertyKind {
 	const char *name;
-	void *(*resolve)(const std::string &ref);                   // addref'd; null if not found
-	obs_properties_t *(*get_props)(void *obj);                  // caller frees with obs_properties_destroy
-	obs_data_t *(*get_settings)(void *obj);                     // addref'd; caller releases
-	void (*update)(void *obj, obs_data_t *settings);            // apply settings
-	void (*release)(void *obj);                                 // drop the resolve ref
+	void *(*resolve)(const std::string &ref);        // addref'd; null if not found
+	obs_properties_t *(*get_props)(void *obj);       // caller frees with obs_properties_destroy
+	obs_data_t *(*get_settings)(void *obj);          // addref'd; caller releases
+	void (*update)(void *obj, obs_data_t *settings); // apply settings
+	void (*release)(void *obj);                      // drop the resolve ref
 };
 
 // A canvas encoder is a *stored* (non-instantiated) id + obs_data settings living
@@ -3829,8 +3826,8 @@ void *ResolveEncoderRef(const std::string &ref)
 // streamProfile.changed. Heap-allocated by resolve, freed by release.
 struct ServiceRefCtx {
 	std::string profileUuid;
-	OBSServiceAutoRelease service;  // transient instance bound to the stored settings
-	OBSDataAutoRelease settings;    // the StreamProfile's settings (same obs_data instance)
+	OBSServiceAutoRelease service; // transient instance bound to the stored settings
+	OBSDataAutoRelease settings;   // the StreamProfile's settings (same obs_data instance)
 };
 
 void *ResolveServiceRef(const std::string &ref)
@@ -4071,7 +4068,8 @@ std::vector<DialogFilterSpec> ParseDialogFilter(const std::string &filter)
 		std::string patterns;
 		if (paren != std::string::npos) {
 			const size_t close = entry.find(')', paren);
-			patterns = entry.substr(paren + 1, close == std::string::npos ? std::string::npos : close - paren - 1);
+			patterns = entry.substr(paren + 1,
+						close == std::string::npos ? std::string::npos : close - paren - 1);
 		}
 		// Patterns are space-separated in OBS form; Win32 wants ';'-separated.
 		std::wstring widePatterns;
@@ -4990,8 +4988,7 @@ bool ReadCanvasScale(const json &params, const char *key, const std::string &cur
 // VideoFormatFromName / VideoColorSpaceFromName / VideoRangeFromName maps. "RGB"
 // is the editor token for the BGRA packed format. Unknown tokens are rejected
 // rather than silently coerced to a fallback.
-const std::unordered_set<std::string> kColorFormats = {"NV12", "I420", "I444", "I010",
-						       "P010", "P216", "P416", "RGB"};
+const std::unordered_set<std::string> kColorFormats = {"NV12", "I420", "I444", "I010", "P010", "P216", "P416", "RGB"};
 const std::unordered_set<std::string> kColorSpaces = {"601", "709", "2100PQ", "2100HLG", "sRGB"};
 const std::unordered_set<std::string> kColorRanges = {"Partial", "Full"};
 
@@ -5117,7 +5114,8 @@ bool MethodCanvasCreate(const json &params, json &result, std::string &error)
 
 	// Bring up the live obs_canvas_t mix so the new canvas can encode immediately.
 	ObsBootstrap::CanvasRuntime().EnsureCanvas(added);
-	ObsBootstrap::CanvasRuntime().EnsureScenes(); // seed the new canvas with a default scene (Task-1 decoupled seeding from EnsureCanvas)
+	ObsBootstrap::CanvasRuntime()
+		.EnsureScenes(); // seed the new canvas with a default scene (Task-1 decoupled seeding from EnsureCanvas)
 
 	EmitEvent(EventNames::kCanvasChanged, json::object());
 	result = json{{"uuid", uuid}};
@@ -6215,10 +6213,10 @@ bool MethodAudioSetAdvanced(const json &params, json &result, std::string &error
 // collection (libobs persists "deinterlace_mode"/"deinterlace_field_order").
 
 static const std::pair<obs_deinterlace_mode, const char *> kDeinterlaceModes[] = {
-	{OBS_DEINTERLACE_MODE_DISABLE, "disable"},     {OBS_DEINTERLACE_MODE_DISCARD, "discard"},
-	{OBS_DEINTERLACE_MODE_RETRO, "retro"},         {OBS_DEINTERLACE_MODE_BLEND, "blend"},
-	{OBS_DEINTERLACE_MODE_BLEND_2X, "blend2x"},    {OBS_DEINTERLACE_MODE_LINEAR, "linear"},
-	{OBS_DEINTERLACE_MODE_LINEAR_2X, "linear2x"},  {OBS_DEINTERLACE_MODE_YADIF, "yadif"},
+	{OBS_DEINTERLACE_MODE_DISABLE, "disable"},    {OBS_DEINTERLACE_MODE_DISCARD, "discard"},
+	{OBS_DEINTERLACE_MODE_RETRO, "retro"},        {OBS_DEINTERLACE_MODE_BLEND, "blend"},
+	{OBS_DEINTERLACE_MODE_BLEND_2X, "blend2x"},   {OBS_DEINTERLACE_MODE_LINEAR, "linear"},
+	{OBS_DEINTERLACE_MODE_LINEAR_2X, "linear2x"}, {OBS_DEINTERLACE_MODE_YADIF, "yadif"},
 	{OBS_DEINTERLACE_MODE_YADIF_2X, "yadif2x"},
 };
 
@@ -6970,7 +6968,8 @@ bool MethodProjectorOpen(const json &params, json &result, std::string &error)
 	const int monitorCount = int(EnumerateMonitors().size());
 	if (fullscreen) {
 		if (monitor < 0 || monitor >= monitorCount) {
-			error = "fullscreen requires a valid 'monitor' index in [0," + std::to_string(monitorCount) + ")";
+			error = "fullscreen requires a valid 'monitor' index in [0," + std::to_string(monitorCount) +
+				")";
 			return false;
 		}
 	} else if (monitor < 0 || monitor >= monitorCount) {
@@ -6986,8 +6985,8 @@ bool MethodProjectorOpen(const json &params, json &result, std::string &error)
 	}
 
 	EmitEvent(EventNames::kProjectorChanged, json{{"opened", id}});
-	HostLog("[bridge] projector.open -> ok id=" + std::to_string(id) + " kind=" + KindToString(kind) + " mode=" +
-		mode);
+	HostLog("[bridge] projector.open -> ok id=" + std::to_string(id) + " kind=" + KindToString(kind) +
+		" mode=" + mode);
 	result = json{{"projectorId", id}};
 	return true;
 }
@@ -7046,9 +7045,10 @@ bool MethodProjectorList(const json & /*params*/, json &result, std::string & /*
 json McpConfigToJson(const McpServer *server)
 {
 	if (!server) {
-		return json{{"enabled", false}, {"port", 47800},      {"token", ""},
-			    {"allowMutations", true}, {"allowGoLive", false}, {"listening", false},
-			    {"lastError", ""},        {"endpoint", "http://127.0.0.1:47800/mcp"}};
+		return json{{"enabled", false},     {"port", 47800},
+			    {"token", ""},          {"allowMutations", true},
+			    {"allowGoLive", false}, {"listening", false},
+			    {"lastError", ""},      {"endpoint", "http://127.0.0.1:47800/mcp"}};
 	}
 	const McpServer::ConfigView v = server->GetConfigView();
 	return json{{"enabled", v.enabled},
@@ -7234,9 +7234,8 @@ bool MethodSettingsRestore(const json &params, json &result, std::string &error)
 		std::vector<Prev> before;
 		for (const CanvasDefinition &d : cs.Definitions()) {
 			if (!d.isDefault) {
-				before.push_back({d.uuid, d.width, d.height, d.outputWidth, d.outputHeight,
-						  d.fpsNum, d.fpsDen, d.scaleType, d.color.format, d.color.space,
-						  d.color.range});
+				before.push_back({d.uuid, d.width, d.height, d.outputWidth, d.outputHeight, d.fpsNum,
+						  d.fpsDen, d.scaleType, d.color.format, d.color.space, d.color.range});
 			}
 		}
 
@@ -7582,8 +7581,8 @@ bool MethodBrowserDocksSet(const json &params, json &result, std::string &error)
 		auto titleIt = d.find("title");
 		const std::string id = idIt->get<std::string>();
 		const std::string url = urlIt->get<std::string>();
-		const std::string title =
-			(titleIt != d.end() && titleIt->is_string()) ? titleIt->get<std::string>() : std::string();
+		const std::string title = (titleIt != d.end() && titleIt->is_string()) ? titleIt->get<std::string>()
+										       : std::string();
 
 		OBSDataAutoRelease item = obs_data_create();
 		obs_data_set_string(item, "id", id.c_str());
@@ -7753,8 +7752,7 @@ bool CaptureToPng(uint32_t w, uint32_t h, const std::function<void()> &renderFn,
 		if (gs_stagesurface_map(stage, &data, &linesize)) {
 			pixels.resize((size_t)w * h * 4);
 			for (uint32_t y = 0; y < h; ++y) {
-				memcpy(pixels.data() + (size_t)y * w * 4, data + (size_t)y * linesize,
-				       (size_t)w * 4);
+				memcpy(pixels.data() + (size_t)y * w * 4, data + (size_t)y * linesize, (size_t)w * 4);
 			}
 			gs_stagesurface_unmap(stage);
 			mapped = true;
@@ -7849,7 +7847,9 @@ bool MethodScreenshotTakeProgram(const json &params, json &result, std::string &
 		}
 		w = ovi.base_width;
 		h = ovi.base_height;
-		renderFn = [cv]() { obs_canvas_render(cv); };
+		renderFn = [cv]() {
+			obs_canvas_render(cv);
+		};
 		const char *n = obs_canvas_get_name(cv);
 		name = (n && *n) ? n : "Program";
 	} else {
@@ -7860,7 +7860,9 @@ bool MethodScreenshotTakeProgram(const json &params, json &result, std::string &
 		}
 		w = ovi.base_width;
 		h = ovi.base_height;
-		renderFn = []() { obs_render_main_texture(); };
+		renderFn = []() {
+			obs_render_main_texture();
+		};
 		name = ObsBootstrap::Canvases().Default().name;
 		if (name.empty()) {
 			name = "Program";
@@ -8079,7 +8081,9 @@ void OpenUrlInBrowser(const std::string &url)
 void RunOAuthConnect(std::string providerId, std::string profileUuid, uint64_t gen)
 try {
 	// This worker owns the connect flow only while it remains the newest attempt.
-	const auto superseded = [gen] { return g_oauthGen.load(std::memory_order_acquire) != gen; };
+	const auto superseded = [gen] {
+		return g_oauthGen.load(std::memory_order_acquire) != gen;
+	};
 
 	OAuth::StreamProvider *provider = OAuth::Registry().Get(providerId);
 	if (!provider) {
@@ -8969,8 +8973,14 @@ bool MethodOverlaysTest(const json &p, json &result, std::string &error)
 	ev.actorName = "Test User";
 
 	static const std::unordered_map<std::string, std::function<void(Events::NormalizedEvent &)>> kDefaults = {
-		{"cheer", [](Events::NormalizedEvent &e) { e.amount = 500; }},
-		{"raid", [](Events::NormalizedEvent &e) { e.amount = 12; }},
+		{"cheer",
+		 [](Events::NormalizedEvent &e) {
+			 e.amount = 500;
+		 }},
+		{"raid",
+		 [](Events::NormalizedEvent &e) {
+			 e.amount = 12;
+		 }},
 		{"sub",
 		 [](Events::NormalizedEvent &e) {
 			 e.tier = "1000";
@@ -9146,8 +9156,8 @@ bool MethodOverlaysAddToScene(const json &params, json &result, std::string &err
 // exception on the worker becomes a Failure rather than escaping the thread.
 // `work` may call EmitEvent (e.g. streamMeta.set's "streamMeta.changed") -- that
 // self-marshals to TID_UI. This is the shared lane 8c/8d platform calls reuse.
-void RunAsyncMethod(std::string method, const json &params,
-		    CefRefPtr<CefMessageRouterBrowserSide::Callback> callback, MethodFn work)
+void RunAsyncMethod(std::string method, const json &params, CefRefPtr<CefMessageRouterBrowserSide::Callback> callback,
+		    MethodFn work)
 {
 	AsyncTask::RunAsync([method = std::move(method), params, callback, work = std::move(work)]() mutable {
 		json result;
@@ -9247,7 +9257,7 @@ void Init()
 		{"properties.set", MethodPropertiesSet},
 		{"properties.button", MethodPropertiesButton},
 		{"dialog.openFile", MethodDialogOpenFile},
-	{"shell.revealPath", MethodShellRevealPath},
+		{"shell.revealPath", MethodShellRevealPath},
 		{"file.readDataUri", MethodFileReadDataUri},
 		{"filterTypes.list", MethodFilterTypesList},
 		{"filters.list", MethodFiltersList},
@@ -9395,7 +9405,9 @@ void Init()
 
 	// Notify JS whenever the undo stack changes (add/undo/redo/clear) so the UI's
 	// undo/redo affordance re-reads canUndo/canRedo + names.
-	ObsBootstrap::Undo().onChanged = [] { EmitUndoChanged(); };
+	ObsBootstrap::Undo().onChanged = [] {
+		EmitUndoChanged();
+	};
 
 	// Phase 9.0: libcurl global init + a one-time WebSocket-support feature check,
 	// logged at startup so a dep bundle built without WebSockets fails loudly before

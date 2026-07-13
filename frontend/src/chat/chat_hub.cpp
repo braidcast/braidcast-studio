@@ -127,7 +127,9 @@ void ChatHub::Start()
 		// (alive-guarded), never raw CEF.
 		AsyncTask::RunAsync([this, accountId, providerId, channelRef, acct, transport, stop]() mutable {
 			ChatContext ctx;
-			ctx.canceled = [stop] { return stop->load(std::memory_order_acquire); };
+			ctx.canceled = [stop] {
+				return stop->load(std::memory_order_acquire);
+			};
 			ctx.emit = [this, accountId, stop](const json &payload) {
 				if (stop->load(std::memory_order_acquire)) {
 					return; // generation stopped; drop late emits
@@ -174,7 +176,8 @@ void ChatHub::Start()
 
 			std::string err;
 			bool ok = false;
-			DBG(LogCat::Chat, "connecting transport '%s' (channel %s)", providerId.c_str(), channelRef.c_str());
+			DBG(LogCat::Chat, "connecting transport '%s' (channel %s)", providerId.c_str(),
+			    channelRef.c_str());
 			try {
 				ok = transport->connect(ctx, acct, channelRef, err);
 			} catch (const std::exception &e) {
@@ -218,10 +221,8 @@ void ChatHub::SendToPlatforms(const std::vector<std::string> &platforms, const s
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
 		for (const auto &entry : active_) {
-			const bool match =
-				platforms.empty() ||
-				std::find(platforms.begin(), platforms.end(), entry.second.providerId) !=
-					platforms.end();
+			const bool match = platforms.empty() || std::find(platforms.begin(), platforms.end(),
+									  entry.second.providerId) != platforms.end();
 			if (match) {
 				targets.emplace_back(entry.first, entry.second);
 			}
@@ -256,8 +257,8 @@ void ChatHub::SendToPlatforms(const std::vector<std::string> &platforms, const s
 			if (!ok) {
 				AsyncTask::PostToUi([providerId, err] {
 					Bridge::EmitEvent(EventNames::kChatState, json{{"platform", providerId},
-									     {"connected", true},
-									     {"error", err}});
+										       {"connected", true},
+										       {"error", err}});
 				});
 			}
 		});

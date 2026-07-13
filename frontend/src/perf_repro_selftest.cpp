@@ -68,8 +68,8 @@ constexpr double kDefaultMaxLagPct = 2.0;
 // <windows.h> that the SetProcessInformation call uses. ControlMask having both
 // set = the process is asserting control; StateMask having both clear = it is not
 // being throttled.
-constexpr ULONG kOptOutBits =
-	PROCESS_POWER_THROTTLING_EXECUTION_SPEED | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
+constexpr ULONG kOptOutBits = PROCESS_POWER_THROTTLING_EXECUTION_SPEED |
+			      PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
 
 int EnvInt(const char *name, int fallback)
 {
@@ -211,9 +211,8 @@ void WriteSummary(State &st)
 		}
 	}
 
-	HostLog(std::string("[selftest-stream] perf-repro ") + resultName +
-		" worstRenderLagPct=" + std::to_string(st.worstRenderLagPct) +
-		" worstEncodeSkipPct=" + std::to_string(st.worstEncodeSkipPct) +
+	HostLog(std::string("[selftest-stream] perf-repro ") + resultName + " worstRenderLagPct=" +
+		std::to_string(st.worstRenderLagPct) + " worstEncodeSkipPct=" + std::to_string(st.worstEncodeSkipPct) +
 		" threshold=" + std::to_string(st.maxLagPct) + " summary=" + (path.empty() ? "(unwritten)" : path));
 }
 

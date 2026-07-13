@@ -194,7 +194,9 @@ void TwitchEvents::createSubscriptions(OAuth::OAuthAccount &acct, const std::str
 bool TwitchEvents::backfill(const EventContext &ctx, OAuth::OAuthAccount &acct, std::vector<NormalizedEvent> &out,
 			    std::string &err)
 {
-	const auto canceled = [&] { return stopped_.load() || (ctx.canceled && ctx.canceled()); };
+	const auto canceled = [&] {
+		return stopped_.load() || (ctx.canceled && ctx.canceled());
+	};
 
 	const std::string broadcasterId = acct.userId;
 	if (broadcasterId.empty() || canceled()) {
@@ -247,7 +249,9 @@ bool TwitchEvents::connect(const EventContext &ctx, OAuth::OAuthAccount &acct, s
 	std::lock_guard<std::mutex> run(runMutex_);
 	stopped_.store(false);
 
-	const auto canceled = [&] { return stopped_.load() || (ctx.canceled && ctx.canceled()); };
+	const auto canceled = [&] {
+		return stopped_.load() || (ctx.canceled && ctx.canceled());
+	};
 
 	const std::string broadcasterId = acct.userId;
 	if (broadcasterId.empty()) {
@@ -402,8 +406,8 @@ bool TwitchEvents::connect(const EventContext &ctx, OAuth::OAuthAccount &acct, s
 				// token just 403-skips every re-POST and settles connected-but-idle (no
 				// tight loop, as no further revocations arrive with nothing subscribed).
 				const json &sub = Obj(Obj(msg, "payload"), "subscription");
-				HostLog("[events] twitch: subscription revoked (" + Str(sub, "type") + ", status=" +
-					Str(sub, "status") + ") -> reconnecting to re-subscribe");
+				HostLog("[events] twitch: subscription revoked (" + Str(sub, "type") +
+					", status=" + Str(sub, "status") + ") -> reconnecting to re-subscribe");
 				break;
 			}
 		}

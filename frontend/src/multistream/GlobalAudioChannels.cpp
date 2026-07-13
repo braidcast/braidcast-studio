@@ -186,7 +186,7 @@ void GlobalAudioChannels::SeedOrRestore()
 			obs_source_t *src = data ? obs_load_source(data) : nullptr; // create-ref
 			if (src) {
 				obs_set_output_source(channel, src); // channel takes its own ref
-				obs_source_release(src);              // drop the create-ref
+				obs_source_release(src);             // drop the create-ref
 				++restored;
 			} else {
 				HostLog("[audio] global audio: restore ch" + std::to_string(channel) +

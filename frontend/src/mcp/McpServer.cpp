@@ -3,8 +3,8 @@
 #include "mcp/McpServer.hpp"
 
 #include <obs.h>
-#include <obs.hpp>          // OBSDataAutoRelease
-#include <util/platform.h>  // os_mkdirs
+#include <obs.hpp>         // OBSDataAutoRelease
+#include <util/platform.h> // os_mkdirs
 
 #include <array>
 #include <chrono>
@@ -156,24 +156,25 @@ const std::vector<ToolDescriptor> &ToolRegistry()
 	using json = McpServer::json;
 	static const std::vector<ToolDescriptor> kTools = {
 		{"obs_call", "",
-		 MakeDescriptor("obs_call", "Escape hatch: call any OBS bridge method by name with params.",
-				SchemaObject(json{{"method", Prop("string", "The bridge method name, e.g. 'scenes.list'.")},
-						  {"params", json{{"type", "object"},
-								  {"description", "Method-specific params object."}}}},
-					     json::array({"method"})))},
+		 MakeDescriptor(
+			 "obs_call", "Escape hatch: call any OBS bridge method by name with params.",
+			 SchemaObject(json{{"method", Prop("string", "The bridge method name, e.g. 'scenes.list'.")},
+					   {"params", json{{"type", "object"},
+							   {"description", "Method-specific params object."}}}},
+				      json::array({"method"})))},
 
 		{"list_scenes", "scenes.list",
-		 MakeDescriptor("list_scenes",
-				"List the scenes of a canvas. Omit 'canvas' for the Default canvas.",
+		 MakeDescriptor("list_scenes", "List the scenes of a canvas. Omit 'canvas' for the Default canvas.",
 				SchemaObject(json{{"canvas", Prop("string", "Optional canvas uuid; omit for Default.")}},
 					     json::array()))},
 
 		{"switch_scene", "scenes.setCurrent",
-		 MakeDescriptor("switch_scene",
-				"Switch the active (program) scene by name. Optional 'canvas' uuid targets an additional canvas.",
-				SchemaObject(json{{"name", Prop("string", "Scene name to make current.")},
-						  {"canvas", Prop("string", "Optional canvas uuid; omit for Default.")}},
-					     json::array({"name"})))},
+		 MakeDescriptor(
+			 "switch_scene",
+			 "Switch the active (program) scene by name. Optional 'canvas' uuid targets an additional canvas.",
+			 SchemaObject(json{{"name", Prop("string", "Scene name to make current.")},
+					   {"canvas", Prop("string", "Optional canvas uuid; omit for Default.")}},
+				      json::array({"name"})))},
 
 		{"create_scene", "scenes.create",
 		 MakeDescriptor("create_scene",
@@ -183,86 +184,98 @@ const std::vector<ToolDescriptor> &ToolRegistry()
 					     json::array({"name"})))},
 
 		{"list_scene_items", "sceneItems.list",
-		 MakeDescriptor("list_scene_items",
-				"List the items (sources) of a scene, topmost first. Defaults to the current scene.",
-				SchemaObject(json{{"scene", Prop("string", "Optional scene name; defaults to current.")},
-						  {"canvas", Prop("string", "Optional canvas uuid; omit for Default.")}},
-					     json::array()))},
+		 MakeDescriptor(
+			 "list_scene_items",
+			 "List the items (sources) of a scene, topmost first. Defaults to the current scene.",
+			 SchemaObject(json{{"scene", Prop("string", "Optional scene name; defaults to current.")},
+					   {"canvas", Prop("string", "Optional canvas uuid; omit for Default.")}},
+				      json::array()))},
 
 		{"set_item_visible", "sceneItems.setVisible",
-		 MakeDescriptor("set_item_visible", "Show or hide a scene item by its numeric id.",
-				SchemaObject(json{{"id", Prop("integer", "Scene-item id (from list_scene_items).")},
-						  {"visible", Prop("boolean", "True to show, false to hide.")},
-						  {"scene", Prop("string", "Optional scene name; defaults to current.")},
-						  {"canvas", Prop("string", "Optional canvas uuid; omit for Default.")}},
-					     json::array({"id", "visible"})))},
+		 MakeDescriptor(
+			 "set_item_visible", "Show or hide a scene item by its numeric id.",
+			 SchemaObject(json{{"id", Prop("integer", "Scene-item id (from list_scene_items).")},
+					   {"visible", Prop("boolean", "True to show, false to hide.")},
+					   {"scene", Prop("string", "Optional scene name; defaults to current.")},
+					   {"canvas", Prop("string", "Optional canvas uuid; omit for Default.")}},
+				      json::array({"id", "visible"})))},
 
 		{"get_item_transform", "sceneItems.getTransform",
-		 MakeDescriptor("get_item_transform", "Read a scene item's full geometry (position, scale, rotation, crop).",
-				SchemaObject(json{{"id", Prop("integer", "Scene-item id (from list_scene_items).")},
-						  {"scene", Prop("string", "Optional scene name; defaults to current.")},
-						  {"canvas", Prop("string", "Optional canvas uuid; omit for Default.")}},
-					     json::array({"id"})))},
+		 MakeDescriptor(
+			 "get_item_transform", "Read a scene item's full geometry (position, scale, rotation, crop).",
+			 SchemaObject(json{{"id", Prop("integer", "Scene-item id (from list_scene_items).")},
+					   {"scene", Prop("string", "Optional scene name; defaults to current.")},
+					   {"canvas", Prop("string", "Optional canvas uuid; omit for Default.")}},
+				      json::array({"id"})))},
 
 		{"set_item_transform", "sceneItems.setTransform",
-		 MakeDescriptor("set_item_transform",
-				"Apply a partial transform to a scene item (send only the fields that change).",
-				SchemaObject(json{{"id", Prop("integer", "Scene-item id (from list_scene_items).")},
-						  {"transform", json{{"type", "object"},
-								     {"description",
-								      "Partial geometry: pos {x,y}, scale {x,y}, "
-								      "rotation, crop {left,top,right,bottom}, etc."}}},
-						  {"scene", Prop("string", "Optional scene name; defaults to current.")},
-						  {"canvas", Prop("string", "Optional canvas uuid; omit for Default.")}},
-					     json::array({"id", "transform"})))},
+		 MakeDescriptor(
+			 "set_item_transform",
+			 "Apply a partial transform to a scene item (send only the fields that change).",
+			 SchemaObject(json{{"id", Prop("integer", "Scene-item id (from list_scene_items).")},
+					   {"transform",
+					    json{{"type", "object"},
+						 {"description", "Partial geometry: pos {x,y}, scale {x,y}, "
+								 "rotation, crop {left,top,right,bottom}, etc."}}},
+					   {"scene", Prop("string", "Optional scene name; defaults to current.")},
+					   {"canvas", Prop("string", "Optional canvas uuid; omit for Default.")}},
+				      json::array({"id", "transform"})))},
 
 		{"create_source", "sources.create",
-		 MakeDescriptor("create_source",
-				"Create a new source of the given type and add it to a scene.",
-				SchemaObject(json{{"type", Prop("string", "Source kind id, e.g. 'color_source' or 'browser_source'.")},
-						  {"name", Prop("string", "Optional source name; defaults to the type's display name.")},
-						  {"scene", Prop("string", "Optional scene name; defaults to current.")},
-						  {"canvas", Prop("string", "Optional canvas uuid; omit for Default.")}},
-					     json::array({"type"})))},
+		 MakeDescriptor(
+			 "create_source", "Create a new source of the given type and add it to a scene.",
+			 SchemaObject(json{{"type",
+					    Prop("string", "Source kind id, e.g. 'color_source' or 'browser_source'.")},
+					   {"name", Prop("string",
+							 "Optional source name; defaults to the type's display name.")},
+					   {"scene", Prop("string", "Optional scene name; defaults to current.")},
+					   {"canvas", Prop("string", "Optional canvas uuid; omit for Default.")}},
+				      json::array({"type"})))},
 
 		{"rename_source", "sources.rename",
-		 MakeDescriptor("rename_source", "Rename the source backing a scene item.",
-				SchemaObject(json{{"id", Prop("integer", "Scene-item id (from list_scene_items).")},
-						  {"name", Prop("string", "New source name.")},
-						  {"scene", Prop("string", "Optional scene name; defaults to current.")},
-						  {"canvas", Prop("string", "Optional canvas uuid; omit for Default.")}},
-					     json::array({"id", "name"})))},
+		 MakeDescriptor(
+			 "rename_source", "Rename the source backing a scene item.",
+			 SchemaObject(json{{"id", Prop("integer", "Scene-item id (from list_scene_items).")},
+					   {"name", Prop("string", "New source name.")},
+					   {"scene", Prop("string", "Optional scene name; defaults to current.")},
+					   {"canvas", Prop("string", "Optional canvas uuid; omit for Default.")}},
+				      json::array({"id", "name"})))},
 
 		{"remove_source", "sceneItems.remove",
-		 MakeDescriptor("remove_source", "Remove a scene item (the source) from its scene by numeric id.",
-				SchemaObject(json{{"id", Prop("integer", "Scene-item id (from list_scene_items).")},
-						  {"scene", Prop("string", "Optional scene name; defaults to current.")},
-						  {"canvas", Prop("string", "Optional canvas uuid; omit for Default.")}},
-					     json::array({"id"})))},
+		 MakeDescriptor(
+			 "remove_source", "Remove a scene item (the source) from its scene by numeric id.",
+			 SchemaObject(json{{"id", Prop("integer", "Scene-item id (from list_scene_items).")},
+					   {"scene", Prop("string", "Optional scene name; defaults to current.")},
+					   {"canvas", Prop("string", "Optional canvas uuid; omit for Default.")}},
+				      json::array({"id"})))},
 
 		{"get_current_transition", "transitions.getCurrent",
 		 MakeDescriptor("get_current_transition", "Get the active scene transition type, name, and duration.",
 				SchemaObject(json::object(), json::array()))},
 
 		{"set_transition", "transitions.setCurrent",
-		 MakeDescriptor("set_transition", "Set the active scene transition by its type id.",
-				SchemaObject(json{{"id", Prop("string", "Transition type id (from transitionTypes.list).")}},
-					     json::array({"id"})))},
+		 MakeDescriptor(
+			 "set_transition", "Set the active scene transition by its type id.",
+			 SchemaObject(json{{"id", Prop("string", "Transition type id (from transitionTypes.list).")}},
+				      json::array({"id"})))},
 
 		{"list_canvases", "canvas.list",
 		 MakeDescriptor("list_canvases", "List all canvases (encode targets) with their resolution and FPS.",
 				SchemaObject(json::object(), json::array()))},
 
 		{"list_stream_profiles", "streamProfile.list",
-		 MakeDescriptor("list_stream_profiles", "List the saved stream destination profiles (platform + credential).",
+		 MakeDescriptor("list_stream_profiles",
+				"List the saved stream destination profiles (platform + credential).",
 				SchemaObject(json::object(), json::array()))},
 
 		{"list_outputs", "outputBinding.list",
-		 MakeDescriptor("list_outputs", "List the output bindings (stream-profile x canvas pairings) and their enabled state.",
+		 MakeDescriptor("list_outputs",
+				"List the output bindings (stream-profile x canvas pairings) and their enabled state.",
 				SchemaObject(json::object(), json::array()))},
 
 		{"multistream_status", "multistream.status",
-		 MakeDescriptor("multistream_status", "Get live status of every enabled output binding (idle/connecting/live/error).",
+		 MakeDescriptor("multistream_status",
+				"Get live status of every enabled output binding (idle/connecting/live/error).",
 				SchemaObject(json::object(), json::array()))},
 
 		{"start_output", "multistream.startOutput",
@@ -276,8 +289,10 @@ const std::vector<ToolDescriptor> &ToolRegistry()
 					     json::array({"uuid"})))},
 
 		{"get_stats", "stats.get",
-		 MakeDescriptor("get_stats", "Get a performance + per-output streaming stats snapshot (fps, cpu, bitrate, dropped frames).",
-				SchemaObject(json::object(), json::array()))},
+		 MakeDescriptor(
+			 "get_stats",
+			 "Get a performance + per-output streaming stats snapshot (fps, cpu, bitrate, dropped frames).",
+			 SchemaObject(json::object(), json::array()))},
 	};
 	return kTools;
 }
@@ -410,7 +425,8 @@ void McpServer::Start()
 		HostLog("[mcp] server disabled (mcp.json enabled=false); not listening");
 		return;
 	}
-	const bool ok = httpServer_.Start(config_.port, [this](const Mcp::HttpRequest &req) { return HandleRequest(req); });
+	const bool ok =
+		httpServer_.Start(config_.port, [this](const Mcp::HttpRequest &req) { return HandleRequest(req); });
 	if (ok) {
 		HostLog("[mcp] server listening on http://127.0.0.1:" + std::to_string(config_.port) +
 			"/mcp (token required)");
@@ -636,13 +652,13 @@ McpServer::json McpServer::HandleToolsCall(const json &params) const
 	}
 
 	const json arguments = params.contains("arguments") && params["arguments"].is_object() ? params["arguments"]
-											     : json::object();
+											       : json::object();
 
 	// obs_call (empty bridgeMethod): the method + params come from the arguments.
 	if (found->bridgeMethod[0] == '\0') {
 		if (!arguments.contains("method") || !arguments["method"].is_string()) {
-			return json{
-				{"__rpcError", json{{"code", -32602}, {"message", "obs_call requires arguments.method"}}}};
+			return json{{"__rpcError",
+				     json{{"code", -32602}, {"message", "obs_call requires arguments.method"}}}};
 		}
 		const std::string method = arguments["method"].get<std::string>();
 		const json callParams = arguments.contains("params") && arguments["params"].is_object()

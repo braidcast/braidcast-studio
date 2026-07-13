@@ -98,8 +98,8 @@ std::string UrlEncode(const std::string &value)
 	std::string out;
 	out.reserve(value.size() * 3);
 	for (unsigned char c : value) {
-		const bool unreserved = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-					(c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~';
+		const bool unreserved = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+					c == '-' || c == '_' || c == '.' || c == '~';
 		if (unreserved) {
 			out.push_back(static_cast<char>(c));
 		} else {

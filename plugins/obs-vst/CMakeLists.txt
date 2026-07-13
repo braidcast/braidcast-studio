@@ -50,9 +50,7 @@ else()
   )
   set_target_properties(
     obs-vst
-    PROPERTIES AUTOMOC ON
-               AUTOUIC ON
-               AUTORCC ON
+    PROPERTIES AUTOMOC ON AUTOUIC ON AUTORCC ON
   )
 endif()
 

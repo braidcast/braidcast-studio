@@ -26,24 +26,12 @@ std::string BundleRoot()
 std::string ContentTypeForPath(const std::string &path)
 {
 	static const std::vector<std::pair<std::string, std::string>> kTypes = {
-		{".html", "text/html"},
-		{".htm", "text/html"},
-		{".js", "text/javascript"},
-		{".mjs", "text/javascript"},
-		{".css", "text/css"},
-		{".json", "application/json"},
-		{".svg", "image/svg+xml"},
-		{".png", "image/png"},
-		{".jpg", "image/jpeg"},
-		{".jpeg", "image/jpeg"},
-		{".gif", "image/gif"},
-		{".ico", "image/x-icon"},
-		{".woff", "font/woff"},
-		{".woff2", "font/woff2"},
-		{".ttf", "font/ttf"},
-		{".wasm", "application/wasm"},
-		{".map", "application/json"},
-		{".txt", "text/plain"},
+		{".html", "text/html"},        {".htm", "text/html"},        {".js", "text/javascript"},
+		{".mjs", "text/javascript"},   {".css", "text/css"},         {".json", "application/json"},
+		{".svg", "image/svg+xml"},     {".png", "image/png"},        {".jpg", "image/jpeg"},
+		{".jpeg", "image/jpeg"},       {".gif", "image/gif"},        {".ico", "image/x-icon"},
+		{".woff", "font/woff"},        {".woff2", "font/woff2"},     {".ttf", "font/ttf"},
+		{".wasm", "application/wasm"}, {".map", "application/json"}, {".txt", "text/plain"},
 	};
 
 	size_t dot = path.find_last_of('.');
@@ -122,7 +110,8 @@ public:
 		return true;
 	}
 
-	void GetResponseHeaders(CefRefPtr<CefResponse> response, int64_t &response_length, CefString &redirect_url) override
+	void GetResponseHeaders(CefRefPtr<CefResponse> response, int64_t &response_length,
+				CefString &redirect_url) override
 	{
 		CEF_REQUIRE_IO_THREAD();
 		redirect_url.clear();
@@ -146,7 +135,8 @@ public:
 		response_length = int64_t(data_.size());
 	}
 
-	bool Read(void *data_out, int bytes_to_read, int &bytes_read, CefRefPtr<CefResourceReadCallback> callback) override
+	bool Read(void *data_out, int bytes_to_read, int &bytes_read,
+		  CefRefPtr<CefResourceReadCallback> callback) override
 	{
 		CEF_REQUIRE_IO_THREAD();
 		bytes_read = 0;

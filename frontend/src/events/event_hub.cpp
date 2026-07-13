@@ -82,14 +82,18 @@ void EventHub::StartAccount(const std::string &accountId, const OAuth::OAuthAcco
 	// process exit. All JS emits go through the alive-guarded Bridge::EmitEvent path,
 	// never raw CEF.
 	AsyncTask::RunAsync([this, providerId, acctCopy, transport, stop]() mutable {
-		auto canceled = [stop] { return stop->load(std::memory_order_acquire); };
+		auto canceled = [stop] {
+			return stop->load(std::memory_order_acquire);
+		};
 
 		EventContext ctx;
 		ctx.canceled = canceled;
 		// Set by a transport just before it returns a permanent failure (see
 		// EventContext::markFatal); the reconnect loop below reads it to stop retrying.
 		bool fatal = false;
-		ctx.markFatal = [&fatal] { fatal = true; };
+		ctx.markFatal = [&fatal] {
+			fatal = true;
+		};
 		ctx.emit = [this, stop](const NormalizedEvent &ev) {
 			if (stop->load(std::memory_order_acquire)) {
 				return; // generation stopped; drop late emits
@@ -176,8 +180,7 @@ void EventHub::StartAccount(const std::string &accountId, const OAuth::OAuthAcco
 				try {
 					transport->poll(ctx, acctCopy);
 				} catch (const std::exception &e) {
-					HostLog(std::string("[events] poll '") + providerId +
-						"' crashed: " + e.what());
+					HostLog(std::string("[events] poll '") + providerId + "' crashed: " + e.what());
 				} catch (...) {
 					HostLog("[events] poll '" + providerId + "' crashed: unknown error");
 				}

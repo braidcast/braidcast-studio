@@ -82,7 +82,7 @@ void DisableAudioDucking(bool disable)
 
 	ComPtr<IMMDeviceEnumerator> enumerator;
 	HRESULT hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
-				       IID_PPV_ARGS(enumerator.GetAddressOf()));
+				      IID_PPV_ARGS(enumerator.GetAddressOf()));
 	if (FAILED(hr)) {
 		blog(LOG_WARNING, "AdvancedSettings: CoCreateInstance(MMDeviceEnumerator) failed (hr=0x%08lX)", hr);
 		return;
@@ -97,7 +97,7 @@ void DisableAudioDucking(bool disable)
 
 	ComPtr<IAudioSessionManager2> sessionManager;
 	hr = device->Activate(__uuidof(IAudioSessionManager2), CLSCTX_ALL, nullptr,
-			       (void **)sessionManager.GetAddressOf());
+			      (void **)sessionManager.GetAddressOf());
 	if (FAILED(hr)) {
 		blog(LOG_WARNING, "AdvancedSettings: IMMDevice::Activate(IAudioSessionManager2) failed (hr=0x%08lX)",
 		     hr);

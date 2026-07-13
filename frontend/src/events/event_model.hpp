@@ -16,10 +16,10 @@ namespace Events {
 using json = nlohmann::json;
 
 struct NormalizedEvent {
-	std::string id;         // stable, platform-unique; the dedupe key
-	std::string platform;   // "twitch" | "youtube" | "kick"
-	std::string type;       // follow|sub|resub|subgift|cheer|raid|superchat|supersticker|member
-	int64_t ts = 0;         // ms since epoch (event time if the API gives one, else receipt)
+	std::string id;       // stable, platform-unique; the dedupe key
+	std::string platform; // "twitch" | "youtube" | "kick"
+	std::string type;     // follow|sub|resub|subgift|cheer|raid|superchat|supersticker|member
+	int64_t ts = 0;       // ms since epoch (event time if the API gives one, else receipt)
 	std::string actorName;
 	std::string actorColor; // "" if unknown
 	// Optional, per-type (omitted from JSON when empty-string / zero):
@@ -36,11 +36,7 @@ struct NormalizedEvent {
 	json ToJson() const
 	{
 		json j = json{
-			{"id", id},
-			{"platform", platform},
-			{"type", type},
-			{"ts", ts},
-			{"actorName", actorName},
+			{"id", id}, {"platform", platform}, {"type", type}, {"ts", ts}, {"actorName", actorName},
 		};
 		if (!actorColor.empty()) {
 			j["actorColor"] = actorColor;

@@ -303,10 +303,9 @@ void LoopbackListener::Respond(bool ok)
 		bodyHtml =
 			"<p>Authorization failed \xE2\x80\x94 close this window and return to Braidcast to try again.</p>";
 	}
-	const std::string html =
-		"<!doctype html><html><head><meta charset=\"utf-8\"><title>Braidcast</title></head>"
-		"<body style=\"font-family:system-ui,sans-serif;padding:2rem\">" +
-		bodyHtml + "</body></html>";
+	const std::string html = "<!doctype html><html><head><meta charset=\"utf-8\"><title>Braidcast</title></head>"
+				 "<body style=\"font-family:system-ui,sans-serif;padding:2rem\">" +
+				 bodyHtml + "</body></html>";
 	const std::string response = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: " +
 				     std::to_string(html.size()) + "\r\nConnection: close\r\n\r\n" + html;
 	send(impl_->conn.s, response.data(), static_cast<int>(response.size()), 0);

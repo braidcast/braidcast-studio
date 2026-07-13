@@ -173,8 +173,8 @@ bool Client::OnBeforeBrowse(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> f
 	return false;
 }
 
-void Client::OnRenderProcessTerminated(CefRefPtr<CefBrowser> browser, TerminationStatus /*status*/,
-				       int /*error_code*/, const CefString & /*error_string*/)
+void Client::OnRenderProcessTerminated(CefRefPtr<CefBrowser> browser, TerminationStatus /*status*/, int /*error_code*/,
+				       const CefString & /*error_string*/)
 {
 	CEF_REQUIRE_UI_THREAD();
 

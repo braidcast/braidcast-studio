@@ -60,10 +60,10 @@ public:
 	bool connected() const { return easy_ != nullptr; }
 
 private:
-	void *easy_ = nullptr;    // CURL* (opaque to keep curl out of the header)
-	long long sock_ = -1;     // curl_socket_t cached from CURLINFO_ACTIVESOCKET
-	std::string accum_;       // reassembly buffer for a chunked (large) frame
-	bool accumText_ = false;  // whether the in-progress frame is text
+	void *easy_ = nullptr;   // CURL* (opaque to keep curl out of the header)
+	long long sock_ = -1;    // curl_socket_t cached from CURLINFO_ACTIVESOCKET
+	std::string accum_;      // reassembly buffer for a chunked (large) frame
+	bool accumText_ = false; // whether the in-progress frame is text
 };
 
 // Exponential backoff with a cap, for transports reconnecting after a drop.

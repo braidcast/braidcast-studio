@@ -16,7 +16,8 @@ namespace TimeUtil {
 // Current wall-clock time in epoch milliseconds.
 inline int64_t NowMs()
 {
-	return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+	return std::chrono::duration_cast<std::chrono::milliseconds>(
+		       std::chrono::system_clock::now().time_since_epoch())
 		.count();
 }
 
@@ -42,7 +43,8 @@ inline int64_t Rfc3339ToEpochMs(const std::string &iso)
 			if (dot != std::string::npos) {
 				std::string frac;
 				for (size_t i = dot + 1;
-				     i < iso.size() && std::isdigit(static_cast<unsigned char>(iso[i])) && frac.size() < 3;
+				     i < iso.size() && std::isdigit(static_cast<unsigned char>(iso[i])) &&
+				     frac.size() < 3;
 				     ++i) {
 					frac.push_back(iso[i]);
 				}

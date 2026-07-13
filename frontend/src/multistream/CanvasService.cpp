@@ -11,7 +11,10 @@
 
 CanvasService::CanvasService(CanvasStore &canvases, CanvasRuntime &runtime, MultistreamEngine &engine,
 			     GlobalVideoApplier applyGlobalVideo)
-	: canvases(canvases), runtime(runtime), engine(engine), applyGlobalVideo(std::move(applyGlobalVideo))
+	: canvases(canvases),
+	  runtime(runtime),
+	  engine(engine),
+	  applyGlobalVideo(std::move(applyGlobalVideo))
 {
 }
 
@@ -57,8 +60,8 @@ CanvasUpdateResult CanvasService::Update(const CanvasUpdateRequest &req)
 	// Output res and the downscale filter resize/reconfigure the live mix just like
 	// base res, so they are structural and gated by the same live refusal + reset.
 	const bool resChanged = newW != def->width || newH != def->height || newFpsN != def->fpsNum ||
-				newFpsD != def->fpsDen || newOutW != def->outputWidth ||
-				newOutH != def->outputHeight || newScale != def->scaleType || useDefResChanged;
+				newFpsD != def->fpsDen || newOutW != def->outputWidth || newOutH != def->outputHeight ||
+				newScale != def->scaleType || useDefResChanged;
 	// A color change rewrites the obs_video_info (output_format/colorspace/range), so
 	// it resets the canvas video and rebuilds its encoders exactly like a resolution
 	// change -- structural, gated by the same live refusal + reset. Only these three

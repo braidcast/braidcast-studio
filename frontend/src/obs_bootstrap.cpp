@@ -262,15 +262,33 @@ void RunProbes()
 	auto encCreate = [](const char *id) -> void * {
 		return obs_video_encoder_create(id, "probe-enc", nullptr, nullptr);
 	};
-	auto svcCreate = [](const char *id) -> void * { return obs_service_create(id, "probe-svc", nullptr, nullptr); };
-	auto outCreate = [](const char *id) -> void * { return obs_output_create(id, "probe-out", nullptr, nullptr); };
-	auto srcCreate = [](const char *id) -> void * { return obs_source_create(id, "probe-web", nullptr, nullptr); };
+	auto svcCreate = [](const char *id) -> void * {
+		return obs_service_create(id, "probe-svc", nullptr, nullptr);
+	};
+	auto outCreate = [](const char *id) -> void * {
+		return obs_output_create(id, "probe-out", nullptr, nullptr);
+	};
+	auto srcCreate = [](const char *id) -> void * {
+		return obs_source_create(id, "probe-web", nullptr, nullptr);
+	};
 
 	const Probe probes[] = {
-		{"encoder", "obs_x264", encCreate, [](void *p) { obs_encoder_release((obs_encoder_t *)p); }},
-		{"service", "rtmp_custom", svcCreate, [](void *p) { obs_service_release((obs_service_t *)p); }},
-		{"output", "rtmp_output", outCreate, [](void *p) { obs_output_release((obs_output_t *)p); }},
-		{"source", "browser_source", srcCreate, [](void *p) { obs_source_release((obs_source_t *)p); }},
+		{"encoder", "obs_x264", encCreate,
+		 [](void *p) {
+			 obs_encoder_release((obs_encoder_t *)p);
+		 }},
+		{"service", "rtmp_custom", svcCreate,
+		 [](void *p) {
+			 obs_service_release((obs_service_t *)p);
+		 }},
+		{"output", "rtmp_output", outCreate,
+		 [](void *p) {
+			 obs_output_release((obs_output_t *)p);
+		 }},
+		{"source", "browser_source", srcCreate,
+		 [](void *p) {
+			 obs_source_release((obs_source_t *)p);
+		 }},
 	};
 
 	for (const auto &p : probes) {
@@ -457,9 +475,9 @@ void LoadMultistreamModel()
 	g_sceneLinks.Load();
 
 	const CanvasDefinition &def = g_canvases.Default();
-	HostLog("[obs] multistream: " + std::to_string(g_canvases.Definitions().size()) +
-		" canvas(es); default='" + def.name + "' uuid=" + def.uuid + " " + std::to_string(def.width) + "x" +
-		std::to_string(def.height) + "@" + std::to_string(def.fpsNum) + "/" + std::to_string(def.fpsDen) +
+	HostLog("[obs] multistream: " + std::to_string(g_canvases.Definitions().size()) + " canvas(es); default='" +
+		def.name + "' uuid=" + def.uuid + " " + std::to_string(def.width) + "x" + std::to_string(def.height) +
+		"@" + std::to_string(def.fpsNum) + "/" + std::to_string(def.fpsDen) +
 		" venc=" + (def.video.id.empty() ? "(unset)" : def.video.id) +
 		" aenc=" + (def.audio.id.empty() ? "(unset)" : def.audio.id));
 
@@ -777,8 +795,8 @@ bool ObsBootstrap::Start()
 	}
 	const SceneCollectionRecord *activeCollection = g_sceneCollections.Active();
 	HostLog("[scene] " + std::to_string(g_sceneCollections.List().size()) + " scene collection(s); active='" +
-		(activeCollection ? activeCollection->name : "(none)") + "' file=" +
-		g_sceneCollections.ActiveScenePath());
+		(activeCollection ? activeCollection->name : "(none)") +
+		"' file=" + g_sceneCollections.ActiveScenePath());
 
 	// Load the multistream model (canvas defs / stream profiles / output bindings)
 	// and bring up the additional-canvas obs_canvas_t mixes BEFORE restoring scenes,
@@ -851,9 +869,8 @@ bool ObsBootstrap::Start()
 	{
 		const CanvasDefinition &def = g_canvases.Default();
 		obs_video_info cur = {};
-		if (obs_get_video_info(&cur) &&
-		    (cur.base_width != def.width || cur.base_height != def.height || cur.fps_num != def.fpsNum ||
-		     cur.fps_den != def.fpsDen)) {
+		if (obs_get_video_info(&cur) && (cur.base_width != def.width || cur.base_height != def.height ||
+						 cur.fps_num != def.fpsNum || cur.fps_den != def.fpsDen)) {
 			obs_video_info want = cur;
 			want.base_width = def.width;
 			want.base_height = def.height;
@@ -880,7 +897,9 @@ bool ObsBootstrap::Start()
 		g_canvases, g_streamProfiles, g_outputBindings, [](const std::string &uuid) -> video_t * {
 			return uuid == g_canvases.Default().uuid ? obs_get_video() : g_canvasRuntime->VideoFor(uuid);
 		});
-	g_multistream->onStatusChanged = [] { Bridge::EmitMultistreamChanged(); };
+	g_multistream->onStatusChanged = [] {
+		Bridge::EmitMultistreamChanged();
+	};
 
 	// Wire CanvasRuntime <-> engine now that both exist (deferred past g_canvasRuntime's
 	// own construction to avoid a cycle; injected callbacks mirror SetEnabledPredicate):
@@ -919,7 +938,9 @@ bool ObsBootstrap::Start()
 	// hook, EmitVirtualCamChanged marshals to TID_UI so the off-thread signal is
 	// safe.
 	g_virtualCam.Load();
-	g_virtualCam.onChanged = [] { Bridge::EmitVirtualCamChanged(); };
+	g_virtualCam.onChanged = [] {
+		Bridge::EmitVirtualCamChanged();
+	};
 
 	// Register the frontend-owned hotkeys (Start/Stop Streaming, wired to the engine
 	// above) and load saved bindings. Done after modules + scenes load (so every
@@ -1019,8 +1040,7 @@ void ObsBootstrap::RunPropertiesSelfTest()
 	for (const auto &p : props) {
 		names += " " + p.value("name", std::string("?")) + "(" + p.value("type", std::string("?")) + ")";
 	}
-	HostLog("[selftest] properties.get color_source -> " + std::to_string(props.size()) +
-		" props:" + names);
+	HostLog("[selftest] properties.get color_source -> " + std::to_string(props.size()) + " props:" + names);
 	const int64_t before = got["values"].value("color", int64_t(0));
 	HostLog("[selftest] color before = " + std::to_string(before));
 
@@ -1084,8 +1104,8 @@ void ObsBootstrap::RunPropertiesSelfTest()
 		if (created.is_object()) {
 			const int64_t id = created.value("id", int64_t(0));
 			const std::string src = created.value("source", std::string("?"));
-			HostLog("[selftest] sources.create " + std::string(type) + " -> id=" +
-				std::to_string(id) + " source='" + src + "'");
+			HostLog("[selftest] sources.create " + std::string(type) + " -> id=" + std::to_string(id) +
+				" source='" + src + "'");
 
 			// Transform round-trip on the first created item: set pos, prove
 			// getTransform reads it back, then exercise a quick action.
@@ -1354,10 +1374,11 @@ void ObsBootstrap::RunCanvasBridgeSelfTest()
 						   c.value("fpsNum", 0u) == 60000u && c.value("fpsDen", 0u) == 1001u;
 				HostLog("[selftest] canvas.create output/scale/fps round-trip -> out " +
 					std::to_string(c.value("outputWidth", 0u)) + "x" +
-					std::to_string(c.value("outputHeight", 0u)) + " scale=" +
-					c.value("scaleType", std::string("?")) + " fps=" +
-					std::to_string(c.value("fpsNum", 0u)) + "/" +
-					std::to_string(c.value("fpsDen", 0u)) + " (" + (match ? "OK" : "MISMATCH") + ")");
+					std::to_string(c.value("outputHeight", 0u)) +
+					" scale=" + c.value("scaleType", std::string("?")) +
+					" fps=" + std::to_string(c.value("fpsNum", 0u)) + "/" +
+					std::to_string(c.value("fpsDen", 0u)) + " (" + (match ? "OK" : "MISMATCH") +
+					")");
 				break;
 			}
 		}
@@ -1374,9 +1395,9 @@ void ObsBootstrap::RunCanvasBridgeSelfTest()
 			       : "MISSING"));
 	}
 
-	json updated = run("canvas.update",
-			   json{{"uuid", uuid}, {"name", "selftest-renamed"}, {"baseWidth", 1920}, {"baseHeight", 1080}},
-			   ok);
+	json updated =
+		run("canvas.update",
+		    json{{"uuid", uuid}, {"name", "selftest-renamed"}, {"baseWidth", 1920}, {"baseHeight", 1080}}, ok);
 	if (ok && updated.is_object()) {
 		HostLog("[selftest] canvas.update -> name='" + updated.value("name", std::string("?")) + "' " +
 			std::to_string(updated.value("baseWidth", 0u)) + "x" +
@@ -1391,8 +1412,8 @@ void ObsBootstrap::RunCanvasBridgeSelfTest()
 	// Encoder properties.get through the generic serializer (kind:"encoder").
 	json encProps = run("properties.get", json{{"kind", "encoder"}, {"ref", uuid + ":video"}}, ok);
 	if (ok && encProps.is_object() && encProps.contains("props")) {
-		HostLog("[selftest] properties.get encoder(video) -> " +
-			std::to_string(encProps["props"].size()) + " descriptors");
+		HostLog("[selftest] properties.get encoder(video) -> " + std::to_string(encProps["props"].size()) +
+			" descriptors");
 	}
 
 	json removed = run("canvas.remove", json{{"uuid", uuid}}, ok);
@@ -1405,8 +1426,9 @@ void ObsBootstrap::RunCanvasBridgeSelfTest()
 		CanvasStore reloaded;
 		reloaded.Load();
 		const bool gone = reloaded.Find(uuid) == nullptr;
-		HostLog(std::string("[selftest] canvas.remove restored file: ") + (gone ? "OK (temp gone)" : "STILL PRESENT") +
-			"; store now " + std::to_string(reloaded.Definitions().size()));
+		HostLog(std::string("[selftest] canvas.remove restored file: ") +
+			(gone ? "OK (temp gone)" : "STILL PRESENT") + "; store now " +
+			std::to_string(reloaded.Definitions().size()));
 	}
 }
 
@@ -1432,9 +1454,9 @@ void ObsBootstrap::RunStreamProfileBridgeSelfTest()
 	if (ok && list.is_array()) {
 		std::string names;
 		for (const auto &p : list) {
-			names += " '" + p.value("label", std::string("?")) + "'(" + p.value("platform", std::string("?")) +
-				 "/" + p.value("service", std::string("?")) + (p.value("isPrimary", false) ? ",primary" : "") +
-				 ")";
+			names += " '" + p.value("label", std::string("?")) + "'(" +
+				 p.value("platform", std::string("?")) + "/" + p.value("service", std::string("?")) +
+				 (p.value("isPrimary", false) ? ",primary" : "") + ")";
 		}
 		HostLog("[selftest] streamProfile.list -> " + std::to_string(list.size()) + " profile(s):" + names);
 	}
@@ -1452,11 +1474,12 @@ void ObsBootstrap::RunStreamProfileBridgeSelfTest()
 	// 3) create -> update -> setPrimary -> (service properties.get) -> remove
 	// round-trip, proving each persists to streams.json and the file ends as it
 	// began.
-	json created = run("streamProfile.create",
-			   json{{"label", "selftest-bridge-profile"},
-				{"service", "rtmp_custom"},
-				{"settings", json{{"server", "rtmp://selftest.example/app"}, {"key", "selftest-key-1"}}}},
-			   ok);
+	json created =
+		run("streamProfile.create",
+		    json{{"label", "selftest-bridge-profile"},
+			 {"service", "rtmp_custom"},
+			 {"settings", json{{"server", "rtmp://selftest.example/app"}, {"key", "selftest-key-1"}}}},
+		    ok);
 	if (!ok || !created.is_object()) {
 		return;
 	}
@@ -1476,20 +1499,19 @@ void ObsBootstrap::RunStreamProfileBridgeSelfTest()
 	{
 		json dupResult;
 		std::string dupError;
-		const bool dupOk =
-			Bridge::Dispatch("streamProfile.create",
-					 json{{"label", "selftest-dup"},
-					      {"service", "rtmp_custom"},
-					      {"settings", json{{"server", "rtmp://other.example/app"},
-								{"key", "selftest-key-1"}}}},
-					 dupResult, dupError);
+		const bool dupOk = Bridge::Dispatch(
+			"streamProfile.create",
+			json{{"label", "selftest-dup"},
+			     {"service", "rtmp_custom"},
+			     {"settings", json{{"server", "rtmp://other.example/app"}, {"key", "selftest-key-1"}}}},
+			dupResult, dupError);
 		HostLog(std::string("[selftest] duplicate-key create -> ") +
 			(dupOk ? "ACCEPTED (BUG: should reject)" : "REJECTED (\"" + dupError + "\")"));
 	}
 
-	json updated = run("streamProfile.update",
-			   json{{"uuid", uuid}, {"label", "selftest-renamed"}, {"settings", json{{"key", "selftest-key-2"}}}},
-			   ok);
+	json updated = run(
+		"streamProfile.update",
+		json{{"uuid", uuid}, {"label", "selftest-renamed"}, {"settings", json{{"key", "selftest-key-2"}}}}, ok);
 	if (ok && updated.is_object()) {
 		HostLog("[selftest] streamProfile.update -> label='" + updated.value("label", std::string("?")) +
 			"' (round-trip " +
@@ -1550,8 +1572,8 @@ void ObsBootstrap::RunOutputBindingBridgeSelfTest()
 		std::string rows;
 		for (const auto &b : list) {
 			rows += " [" + b.value("profileLabel", std::string("?")) + " -> " +
-				b.value("canvasName", std::string("?")) +
-				(b.value("enabled", false) ? ",on" : ",off") + "]";
+				b.value("canvasName", std::string("?")) + (b.value("enabled", false) ? ",on" : ",off") +
+				"]";
 		}
 		HostLog("[selftest] outputBinding.list -> " + std::to_string(list.size()) + " binding(s):" + rows);
 	}
@@ -1751,8 +1773,8 @@ void ObsBootstrap::RunMultistreamEngineSelfTest()
 	const bool started = g_multistream->StartOutput(bindingUuid);
 	const bool canvasLive = g_multistream->IsCanvasLive(canvasUuid);
 	std::vector<MultistreamEngine::OutputStatus> statuses = g_multistream->Statuses();
-	const std::string firstState =
-		statuses.empty() ? "(none)" : MultistreamEngine::StateName(statuses.front().state);
+	const std::string firstState = statuses.empty() ? "(none)"
+							: MultistreamEngine::StateName(statuses.front().state);
 	HostLog(std::string("[selftest] engine StartOutput -> ") + (started ? "true" : "false") +
 		"; IsCanvasLive(default)=" + (canvasLive ? "true" : "false") + "; first status state=" + firstState +
 		" (" + std::to_string(statuses.size()) + " enabled)");
@@ -1767,8 +1789,8 @@ void ObsBootstrap::RunMultistreamEngineSelfTest()
 	// Restore the model to baseline (in-memory only; nothing was Saved).
 	g_outputBindings.Bindings().Remove(bindingUuid);
 	g_streamProfiles.Remove(profileUuid);
-	HostLog("[selftest] engine cleanup: profiles " + std::to_string(g_streamProfiles.Profiles().size()) +
-		" (was " + std::to_string(profilesBefore) + "), bindings " +
+	HostLog("[selftest] engine cleanup: profiles " + std::to_string(g_streamProfiles.Profiles().size()) + " (was " +
+		std::to_string(profilesBefore) + "), bindings " +
 		std::to_string(g_outputBindings.Bindings().bindings.size()) + " (was " +
 		std::to_string(bindingsBefore) + ")");
 }
@@ -1815,8 +1837,9 @@ void ObsBootstrap::RunCanvasRuntimeSelfTest()
 	const char *liveUuid = canvas ? obs_canvas_get_uuid(canvas) : nullptr;
 	const bool uuidMatches = liveUuid && canvasUuid == liveUuid;
 	HostLog(std::string("[selftest] canvas-runtime EnsureCanvas -> Find=") + (canvas ? "ok" : "null (BUG)") +
-		"; VideoFor=" + (video ? "ok" : "null (BUG)") + "; uuid " + (uuidMatches ? "preserved" : "MISMATCH (BUG)") +
-		" (" + canvasUuid + " vs " + (liveUuid ? liveUuid : "(null)") + ")");
+		"; VideoFor=" + (video ? "ok" : "null (BUG)") + "; uuid " +
+		(uuidMatches ? "preserved" : "MISMATCH (BUG)") + " (" + canvasUuid + " vs " +
+		(liveUuid ? liveUuid : "(null)") + ")");
 
 	// Start: this could only return true if the additional canvas has a real mix
 	// (the resolver returns it) so the engine could bind encoders to it. Before the
@@ -1839,8 +1862,9 @@ void ObsBootstrap::RunCanvasRuntimeSelfTest()
 	g_canvasRuntime->RemoveCanvas(canvasUuid);
 	g_canvases.Remove(canvasUuid);
 	const bool gone = g_canvasRuntime->Find(canvasUuid) == nullptr && g_canvases.Find(canvasUuid) == nullptr;
-	HostLog(std::string("[selftest] canvas-runtime cleanup: temp canvas ") + (gone ? "removed" : "STILL PRESENT (BUG)") +
-		"; canvases now " + std::to_string(g_canvases.Definitions().size()));
+	HostLog(std::string("[selftest] canvas-runtime cleanup: temp canvas ") +
+		(gone ? "removed" : "STILL PRESENT (BUG)") + "; canvases now " +
+		std::to_string(g_canvases.Definitions().size()));
 }
 
 void ObsBootstrap::RunCanvasSceneSelfTest()
@@ -1905,9 +1929,9 @@ void ObsBootstrap::RunCanvasSceneSelfTest()
 		}
 	}
 	HostLog(std::string("[selftest] canvas-scene scenes.list -> canvas has scene=") +
-		(inCanvasList ? "true" : "false (BUG)") + " (" + std::to_string(canvasScenes.size()) + ":" + canvasNames +
-		" ); global has scene=" + (inGlobalList ? "true (BUG: not isolated)" : "false") + " (isolation " +
-		((inCanvasList && !inGlobalList) ? "OK" : "BUG") + ")");
+		(inCanvasList ? "true" : "false (BUG)") + " (" + std::to_string(canvasScenes.size()) + ":" +
+		canvasNames + " ); global has scene=" + (inGlobalList ? "true (BUG: not isolated)" : "false") +
+		" (isolation " + ((inCanvasList && !inGlobalList) ? "OK" : "BUG") + ")");
 
 	// 3) Make it the canvas's current scene (its channel 0, NOT output 0).
 	json setCur = run("scenes.setCurrent", json{{"canvas", canvasUuid}, {"name", kSceneName}}, ok);
@@ -1939,8 +1963,8 @@ void ObsBootstrap::RunCanvasSceneSelfTest()
 	const bool inCanvasScene = sceneHasItem(json{{"canvas", canvasUuid}});
 	const bool inGlobalScene = sceneHasItem(json(nullptr));
 	HostLog(std::string("[selftest] canvas-scene source placement -> in canvas scene=") +
-		(inCanvasScene ? "true" : "false (BUG)") + "; in global scene=" +
-		(inGlobalScene ? "true (BUG: leaked to output 0)" : "false") + " (placement " +
+		(inCanvasScene ? "true" : "false (BUG)") +
+		"; in global scene=" + (inGlobalScene ? "true (BUG: leaked to output 0)" : "false") + " (placement " +
 		((inCanvasScene && !inGlobalScene) ? "OK" : "BUG") + ")");
 
 	// Clean up: remove the source from the canvas scene, then destroy the temp
@@ -1958,8 +1982,9 @@ void ObsBootstrap::RunCanvasSceneSelfTest()
 	g_canvasRuntime->RemoveCanvas(canvasUuid);
 	g_canvases.Remove(canvasUuid);
 	const bool gone = g_canvasRuntime->Find(canvasUuid) == nullptr && g_canvases.Find(canvasUuid) == nullptr;
-	HostLog(std::string("[selftest] canvas-scene cleanup: temp canvas ") + (gone ? "removed" : "STILL PRESENT (BUG)") +
-		"; canvases now " + std::to_string(g_canvases.Definitions().size()));
+	HostLog(std::string("[selftest] canvas-scene cleanup: temp canvas ") +
+		(gone ? "removed" : "STILL PRESENT (BUG)") + "; canvases now " +
+		std::to_string(g_canvases.Definitions().size()));
 }
 
 void ObsBootstrap::RunSceneDuplicateSelfTest()
@@ -2012,9 +2037,9 @@ void ObsBootstrap::RunSceneDuplicateSelfTest()
 	// "Color") collides globally against any source already named that in the
 	// user's loaded scene collection, which would fail this step for reasons
 	// having nothing to do with what's under test here.
-	json srcCreated = run("sources.create",
-			       json{{"canvas", srcCanvasUuid}, {"type", "color_source"}, {"name", "selftest-duplicate-color"}},
-			       ok);
+	json srcCreated = run(
+		"sources.create",
+		json{{"canvas", srcCanvasUuid}, {"type", "color_source"}, {"name", "selftest-duplicate-color"}}, ok);
 	const int64_t srcItemId = ok ? srcCreated.value("id", int64_t(0)) : 0;
 	const std::string srcSrcName = ok ? srcCreated.value("source", std::string()) : std::string();
 	HostLog(std::string("[selftest] scene-duplicate sources.create -> ") +
@@ -2056,7 +2081,7 @@ void ObsBootstrap::RunSceneDuplicateSelfTest()
 	// Helper: make `sceneName` current on the destination canvas, assert it has
 	// exactly one item, and return that item's source uuid (empty on any failure).
 	auto singleItemSourceUuid = [&](const std::string &sceneName, int64_t &outItemId,
-					 std::string &outSrcName) -> std::string {
+					std::string &outSrcName) -> std::string {
 		bool setOk = false;
 		run("scenes.setCurrent", json{{"canvas", destCanvasUuid}, {"name", sceneName}}, setOk);
 		if (!setOk) {
@@ -2088,8 +2113,8 @@ void ObsBootstrap::RunSceneDuplicateSelfTest()
 
 	int64_t dupItemId = 0;
 	std::string dupSrcName;
-	const std::string dupSrcUuid =
-		foundOnDest ? singleItemSourceUuid(newSceneName, dupItemId, dupSrcName) : std::string();
+	const std::string dupSrcUuid = foundOnDest ? singleItemSourceUuid(newSceneName, dupItemId, dupSrcName)
+						   : std::string();
 	const bool isRealCopy = !dupSrcUuid.empty() && dupSrcUuid != origSrcUuid;
 	HostLog(std::string("[selftest] scene-duplicate item copy -> uuid=") +
 		(dupSrcUuid.empty() ? "MISSING (BUG)" : dupSrcUuid) +
@@ -2119,8 +2144,8 @@ void ObsBootstrap::RunSceneDuplicateSelfTest()
 
 	int64_t redoItemId = 0;
 	std::string redoSrcName;
-	const std::string redoSrcUuid =
-		backAfterRedo ? singleItemSourceUuid(newSceneName, redoItemId, redoSrcName) : std::string();
+	const std::string redoSrcUuid = backAfterRedo ? singleItemSourceUuid(newSceneName, redoItemId, redoSrcName)
+						      : std::string();
 	const bool uuidPreserved = !redoSrcUuid.empty() && redoSrcUuid == dupSrcUuid;
 	HostLog(std::string("[selftest] scene-duplicate redo uuid-preserved -> ") +
 		(uuidPreserved ? "true" : "false (BUG)") + " (uuid=" + redoSrcUuid + ")");
@@ -2149,8 +2174,9 @@ void ObsBootstrap::RunSceneDuplicateSelfTest()
 	g_canvasRuntime->RemoveCanvas(srcCanvasUuid);
 	g_canvases.Remove(destCanvasUuid);
 	g_canvases.Remove(srcCanvasUuid);
-	const bool gone = g_canvasRuntime->Find(destCanvasUuid) == nullptr && g_canvases.Find(destCanvasUuid) == nullptr &&
-			   g_canvasRuntime->Find(srcCanvasUuid) == nullptr && g_canvases.Find(srcCanvasUuid) == nullptr;
+	const bool gone = g_canvasRuntime->Find(destCanvasUuid) == nullptr &&
+			  g_canvases.Find(destCanvasUuid) == nullptr &&
+			  g_canvasRuntime->Find(srcCanvasUuid) == nullptr && g_canvases.Find(srcCanvasUuid) == nullptr;
 	HostLog(std::string("[selftest] scene-duplicate cleanup: temp canvases ") +
 		(gone ? "removed" : "STILL PRESENT (BUG)") + "; canvases now " +
 		std::to_string(g_canvases.Definitions().size()));
@@ -2248,9 +2274,9 @@ void ObsBootstrap::RunTransformPivotSelfTest()
 	run("scenes.setCurrent", json{{"canvas", canvasUuid}, {"name", kSceneName}}, ok);
 	HostLog(std::string("[selftest] transform-pivot scene setup -> ") + (ok ? "ok" : "FAIL (BUG)"));
 
-	json srcCreated = run("sources.create",
-			      json{{"canvas", canvasUuid}, {"type", "color_source"}, {"name", "selftest-transform-pivot-color"}},
-			      ok);
+	json srcCreated = run(
+		"sources.create",
+		json{{"canvas", canvasUuid}, {"type", "color_source"}, {"name", "selftest-transform-pivot-color"}}, ok);
 	const int64_t itemId = ok ? srcCreated.value("id", int64_t(0)) : 0;
 	const std::string srcName = ok ? srcCreated.value("source", std::string()) : std::string();
 	HostLog(std::string("[selftest] transform-pivot sources.create -> ") +
@@ -2273,12 +2299,12 @@ void ObsBootstrap::RunTransformPivotSelfTest()
 	run("sceneItems.setTransform",
 	    json{{"canvas", canvasUuid},
 		 {"id", itemId},
-		 {"transform", json{{"pos", json{{"x", 100.0}, {"y", 300.0}}}, {"scale", json{{"x", scaleX}, {"y", scaleY}}}}}},
+		 {"transform",
+		  json{{"pos", json{{"x", 100.0}, {"y", 300.0}}}, {"scale", json{{"x", scaleX}, {"y", scaleY}}}}}},
 	    ok);
 	vec3 setupTl, setupBr;
 	const bool haveSetupBox = ok && readBox(itemId, setupTl, setupBr);
-	HostLog(std::string("[selftest] transform-pivot setup box -> ") +
-		(haveSetupBox ? "ok" : "FAIL (BUG)"));
+	HostLog(std::string("[selftest] transform-pivot setup box -> ") + (haveSetupBox ? "ok" : "FAIL (BUG)"));
 
 	// 3) Rotate 90 degrees via setTransform (no pos in the same call, so Task 1's
 	// center-pivot correction is the only thing moving pos). Assert the visual
@@ -2291,9 +2317,9 @@ void ObsBootstrap::RunTransformPivotSelfTest()
 	vec3 afterRotTl, afterRotBr;
 	const bool haveAfterRot = ok && readBox(itemId, afterRotTl, afterRotBr);
 	const vec3 centerAfterRot = centerOf(afterRotTl, afterRotBr);
-	const float rotDrift = haveBeforeRot && haveAfterRot
-					? std::hypot(centerAfterRot.x - centerBeforeRot.x, centerAfterRot.y - centerBeforeRot.y)
-					: -1.0f;
+	const float rotDrift = haveBeforeRot && haveAfterRot ? std::hypot(centerAfterRot.x - centerBeforeRot.x,
+									  centerAfterRot.y - centerBeforeRot.y)
+							     : -1.0f;
 	const bool rotCenterHeld = haveBeforeRot && haveAfterRot && rotDrift <= kCenterEpsilonPx;
 	HostLog(std::string("[selftest] transform-pivot rotate-center (setTransform) -> ") +
 		(rotCenterHeld ? "true" : "false (BUG)") + " (drift=" + std::to_string(rotDrift) + "px)");
@@ -2310,10 +2336,10 @@ void ObsBootstrap::RunTransformPivotSelfTest()
 	vec3 afterActionTl, afterActionBr;
 	const bool haveAfterAction = ok && readBox(itemId, afterActionTl, afterActionBr);
 	const vec3 centerAfterAction = centerOf(afterActionTl, afterActionBr);
-	const float actionDrift =
-		haveBeforeAction && haveAfterAction
-			? std::hypot(centerAfterAction.x - centerBeforeAction.x, centerAfterAction.y - centerBeforeAction.y)
-			: -1.0f;
+	const float actionDrift = haveBeforeAction && haveAfterAction
+					  ? std::hypot(centerAfterAction.x - centerBeforeAction.x,
+						       centerAfterAction.y - centerBeforeAction.y)
+					  : -1.0f;
 	const bool actionCenterHeld = haveBeforeAction && haveAfterAction && actionDrift <= kCenterEpsilonPx;
 	HostLog(std::string("[selftest] transform-pivot rotate-center (transformAction) -> ") +
 		(actionCenterHeld ? "true" : "false (BUG)") + " (drift=" + std::to_string(actionDrift) + "px)");
@@ -2322,7 +2348,9 @@ void ObsBootstrap::RunTransformPivotSelfTest()
 	// this call, staying clear of Task 1's pos-vs-rot gating), then assert the
 	// clamp nudged it back to have positive overlap with the canvas.
 	run("sceneItems.setTransform",
-	    json{{"canvas", canvasUuid}, {"id", itemId}, {"transform", json{{"pos", json{{"x", -10000.0}, {"y", -10000.0}}}}}},
+	    json{{"canvas", canvasUuid},
+		 {"id", itemId},
+		 {"transform", json{{"pos", json{{"x", -10000.0}, {"y", -10000.0}}}}}},
 	    ok);
 	vec3 clampedTl, clampedBr;
 	const bool haveClampedBox = ok && readBox(itemId, clampedTl, clampedBr);
@@ -2484,30 +2512,32 @@ void ObsBootstrap::RunRotationBoundsSelfTest()
 			const uint32_t srcW = ok ? xform.value("sourceWidth", uint32_t(0)) : 0;
 			const uint32_t srcH = ok ? xform.value("sourceHeight", uint32_t(0)) : 0;
 			transform["scale"] = json{{"x", srcW ? double(c.boxW) / double(srcW) : 1.0},
-						   {"y", srcH ? double(c.boxH) / double(srcH) : 1.0}};
+						  {"y", srcH ? double(c.boxH) / double(srcH) : 1.0}};
 		}
-		run("sceneItems.setTransform", json{{"canvas", canvasUuid}, {"id", itemId}, {"transform", transform}}, ok);
+		run("sceneItems.setTransform", json{{"canvas", canvasUuid}, {"id", itemId}, {"transform", transform}},
+		    ok);
 
 		vec3 beforeTl, beforeBr;
 		const bool haveBefore = ok && readBox(itemId, beforeTl, beforeBr);
 		const float widthBefore = haveBefore ? beforeBr.x - beforeTl.x : -1.0f;
 		const float heightBefore = haveBefore ? beforeBr.y - beforeTl.y : -1.0f;
 
-		run("sceneItems.setTransform", json{{"canvas", canvasUuid}, {"id", itemId}, {"transform", json{{"rot", 90.0}}}},
-		    ok);
+		run("sceneItems.setTransform",
+		    json{{"canvas", canvasUuid}, {"id", itemId}, {"transform", json{{"rot", 90.0}}}}, ok);
 
 		vec3 afterTl, afterBr;
 		const bool haveAfter = ok && readBox(itemId, afterTl, afterBr);
 		const float widthAfter = haveAfter ? afterBr.x - afterTl.x : -1.0f;
 		const float heightAfter = haveAfter ? afterBr.y - afterTl.y : -1.0f;
 
-		const bool swapped = haveBefore && haveAfter && std::fabs(widthAfter - heightBefore) <= kSwapEpsilonPx &&
-				      std::fabs(heightAfter - widthBefore) <= kSwapEpsilonPx;
+		const bool swapped = haveBefore && haveAfter &&
+				     std::fabs(widthAfter - heightBefore) <= kSwapEpsilonPx &&
+				     std::fabs(heightAfter - widthBefore) <= kSwapEpsilonPx;
 		allSwapped = allSwapped && swapped;
-		HostLog(std::string("[selftest] rotation-bounds ") + c.label + " -> swapped=" +
-			(swapped ? "true" : "false (BUG)") + " (before=" + std::to_string(widthBefore) + "x" +
-			std::to_string(heightBefore) + " after=" + std::to_string(widthAfter) + "x" +
-			std::to_string(heightAfter) + ")");
+		HostLog(std::string("[selftest] rotation-bounds ") + c.label +
+			" -> swapped=" + (swapped ? "true" : "false (BUG)") +
+			" (before=" + std::to_string(widthBefore) + "x" + std::to_string(heightBefore) +
+			" after=" + std::to_string(widthAfter) + "x" + std::to_string(heightAfter) + ")");
 	}
 
 	// Also drive the SAME bounds-mode item through sceneItems.transformAction's
@@ -2520,22 +2550,23 @@ void ObsBootstrap::RunRotationBoundsSelfTest()
 	// worth proving empirically rather than by inference alone).
 	if (createdItemIds.size() == std::size(cases) && cases[1].boundsType >= 0) {
 		const int64_t boundsItemId = createdItemIds[1];
-		run("sceneItems.setTransform", json{{"canvas", canvasUuid}, {"id", boundsItemId}, {"transform", json{{"rot", 0.0}}}},
-		    ok);
+		run("sceneItems.setTransform",
+		    json{{"canvas", canvasUuid}, {"id", boundsItemId}, {"transform", json{{"rot", 0.0}}}}, ok);
 		vec3 beforeTl, beforeBr;
 		const bool haveBefore = ok && readBox(boundsItemId, beforeTl, beforeBr);
 		const float widthBefore = haveBefore ? beforeBr.x - beforeTl.x : -1.0f;
 		const float heightBefore = haveBefore ? beforeBr.y - beforeTl.y : -1.0f;
 
-		run("sceneItems.transformAction", json{{"canvas", canvasUuid}, {"id", boundsItemId}, {"action", "rotate90cw"}},
-		    ok);
+		run("sceneItems.transformAction",
+		    json{{"canvas", canvasUuid}, {"id", boundsItemId}, {"action", "rotate90cw"}}, ok);
 		vec3 afterTl, afterBr;
 		const bool haveAfter = ok && readBox(boundsItemId, afterTl, afterBr);
 		const float widthAfter = haveAfter ? afterBr.x - afterTl.x : -1.0f;
 		const float heightAfter = haveAfter ? afterBr.y - afterTl.y : -1.0f;
 
-		const bool swapped = haveBefore && haveAfter && std::fabs(widthAfter - heightBefore) <= kSwapEpsilonPx &&
-				      std::fabs(heightAfter - widthBefore) <= kSwapEpsilonPx;
+		const bool swapped = haveBefore && haveAfter &&
+				     std::fabs(widthAfter - heightBefore) <= kSwapEpsilonPx &&
+				     std::fabs(heightAfter - widthBefore) <= kSwapEpsilonPx;
 		allSwapped = allSwapped && swapped;
 		HostLog(std::string("[selftest] rotation-bounds scale_inner-quickaction -> swapped=") +
 			(swapped ? "true" : "false (BUG)") + " (before=" + std::to_string(widthBefore) + "x" +
@@ -2656,8 +2687,8 @@ void ObsBootstrap::RunPreviewSurfaceIsolationSelfTest()
 	const int64_t defaultSelAfter = defaultSurface ? defaultSurface->SelectedIdForTest() : -2;
 	HostLog(std::string("[selftest] preview-isolation: select on additional -> ") + (selOk ? "ok" : "FAIL") +
 		"; additional sel=" + std::to_string(canvasSel) + " (expect " + std::to_string(canvasItemId) + ")" +
-		"; default sel before=" + std::to_string(defaultSelBefore) + " after=" + std::to_string(defaultSelAfter) +
-		" (isolation " +
+		"; default sel before=" + std::to_string(defaultSelBefore) +
+		" after=" + std::to_string(defaultSelAfter) + " (isolation " +
 		((canvasSel == canvasItemId && defaultSelAfter == defaultSelBefore) ? "OK" : "BUG: bled into Default") +
 		")");
 
@@ -2699,7 +2730,8 @@ void ObsBootstrap::RunPreviewSurfaceIsolationSelfTest()
 			obs_source_release(canvasScene);
 		}
 	}
-	HostLog(std::string("[selftest] preview-isolation: canvas item move -> ") + (movedOk ? "ok (restored)" : "FAIL"));
+	HostLog(std::string("[selftest] preview-isolation: canvas item move -> ") +
+		(movedOk ? "ok (restored)" : "FAIL"));
 
 	// Clear the additional surface's selection so it leaves no committed state, then
 	// tear down the temp canvas (drops its surface's mix; the surface itself is
@@ -2811,8 +2843,8 @@ void ObsBootstrap::RunAudioMixerSelfTest()
 	const char *uuidPtr = obs_source_get_uuid(audioSrc);
 	const std::string uuid = uuidPtr ? uuidPtr : std::string();
 	const bool audioActive = obs_source_audio_active(audioSrc);
-	HostLog("[selftest] audio-mixer temp source created -> uuid=" + uuid + " audioActive=" +
-		(audioActive ? "true" : "false"));
+	HostLog("[selftest] audio-mixer temp source created -> uuid=" + uuid +
+		" audioActive=" + (audioActive ? "true" : "false"));
 
 	g_audioMonitor->Rebuild();
 
@@ -2864,8 +2896,8 @@ void ObsBootstrap::RunAudioMixerSelfTest()
 	obs_source_release(audioSrc);
 	g_audioMonitor->Rebuild();
 	json list2 = run("audio.list", json(nullptr), ok);
-	const size_t finalCount =
-		(ok && list2.is_object() && list2["sources"].is_array()) ? list2["sources"].size() : 0;
+	const size_t finalCount = (ok && list2.is_object() && list2["sources"].is_array()) ? list2["sources"].size()
+											   : 0;
 	HostLog("[selftest] audio-mixer cleanup -> audio.list back to " + std::to_string(finalCount) +
 		" source(s) (was " + std::to_string(baseCount) + ")");
 }
@@ -2906,9 +2938,8 @@ void ObsBootstrap::RunHotkeysSelfTest()
 			startHadBindings = h["bindings"].is_array() && !h["bindings"].empty();
 		}
 	}
-	HostLog("[selftest] hotkeys.list -> " + std::to_string(total) + " hotkey(s), " +
-		std::to_string(frontendCount) + " frontend; Start Streaming id=" +
-		(startId.empty() ? "(MISSING -- BUG)" : startId));
+	HostLog("[selftest] hotkeys.list -> " + std::to_string(total) + " hotkey(s), " + std::to_string(frontendCount) +
+		" frontend; Start Streaming id=" + (startId.empty() ? "(MISSING -- BUG)" : startId));
 	if (startId.empty()) {
 		return;
 	}
@@ -3021,9 +3052,10 @@ void ObsBootstrap::RunMcpSelfTest()
 	json init = call(json{{"jsonrpc", "2.0"}, {"id", 1}, {"method", "initialize"}, {"params", json::object()}});
 	const bool hasServerInfo = init.is_object() && init.contains("result") && init["result"].contains("serverInfo");
 	HostLog(std::string("[selftest] mcp initialize -> serverInfo ") + (hasServerInfo ? "present" : "MISSING") +
-		(hasServerInfo ? " (name='" + init["result"]["serverInfo"].value("name", std::string("?")) +
-					 "' version=" + init["result"]["serverInfo"].value("version", std::string("?")) + ")"
-			       : ""));
+		(hasServerInfo
+			 ? " (name='" + init["result"]["serverInfo"].value("name", std::string("?")) +
+				   "' version=" + init["result"]["serverInfo"].value("version", std::string("?")) + ")"
+			 : ""));
 
 	// 2) tools/list -> contains obs_call AND the curated tools (e.g. switch_scene,
 	// get_stats).
@@ -3051,11 +3083,12 @@ void ObsBootstrap::RunMcpSelfTest()
 		", get_stats " + (hasGetStats ? "present" : "MISSING") + " (" + (curatedOk ? "OK" : "MISMATCH") + ")");
 
 	// 3) tools/call obs_call scenes.list -> isError false + parsed text is an array.
-	json scenesCall = call(json{{"jsonrpc", "2.0"},
-				    {"id", 3},
-				    {"method", "tools/call"},
-				    {"params", json{{"name", "obs_call"},
-						    {"arguments", json{{"method", "scenes.list"}, {"params", json::object()}}}}}});
+	json scenesCall = call(
+		json{{"jsonrpc", "2.0"},
+		     {"id", 3},
+		     {"method", "tools/call"},
+		     {"params", json{{"name", "obs_call"},
+				     {"arguments", json{{"method", "scenes.list"}, {"params", json::object()}}}}}});
 	bool scenesOk = false;
 	bool scenesArray = false;
 	if (scenesCall.is_object() && scenesCall.contains("result")) {
@@ -3146,7 +3179,8 @@ void ObsBootstrap::RunMcpSelfTest()
 	const bool configReadBlocked = deniedFromMcp("mcp.getConfig", json::object());
 	const bool mcpNsGuarded = escalationBlocked && configReadBlocked;
 	HostLog(std::string("[selftest] mcp namespace guard -> setConfig blocked=") +
-		(escalationBlocked ? "true" : "false") + " getConfig blocked=" + (configReadBlocked ? "true" : "false") +
+		(escalationBlocked ? "true" : "false") +
+		" getConfig blocked=" + (configReadBlocked ? "true" : "false") +
 		(mcpNsGuarded ? " (OK, no self-config via MCP)" : " (MISMATCH -- privilege escalation!)"));
 
 	if (hasServerInfo && hasObsCall && curatedOk && scenesOk && scenesArray && gateOk && statsOk && statsObject &&

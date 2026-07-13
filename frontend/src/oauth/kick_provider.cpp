@@ -24,7 +24,7 @@ const char *kKickApiBase = "https://api.kick.com";
 // the go-live stream-key autofill (channels.stream.key). Verified against
 // docs.kick.com (2026-07).
 const std::array<const char *, 6> kKickScopes = {"channel:read", "channel:write", "streamkey:read",
-						 "user:read",   "chat:write",    "events:subscribe"};
+						 "user:read",    "chat:write",    "events:subscribe"};
 
 using JsonUtil::NumLoose;
 using JsonUtil::ParseJson;
@@ -79,9 +79,13 @@ json KickProvider::capabilityJson() const
 	// empty-advanced "nothing extra to show" path. Title has no documented length
 	// cap (the API enforces its own), so `max` is omitted.
 	json fields = json::array();
-	fields.push_back(json{{"key", "title"}, {"label", "Title"}, {"type", "text"}, {"tier", "simple"}, {"shareable", true}});
-	fields.push_back(json{
-		{"key", "category"}, {"label", "Category"}, {"type", "category"}, {"tier", "simple"}, {"shareable", false}});
+	fields.push_back(
+		json{{"key", "title"}, {"label", "Title"}, {"type", "text"}, {"tier", "simple"}, {"shareable", true}});
+	fields.push_back(json{{"key", "category"},
+			      {"label", "Category"},
+			      {"type", "category"},
+			      {"tier", "simple"},
+			      {"shareable", false}});
 	fields.push_back(json{{"key", "tags"},
 			      {"label", "Tags"},
 			      {"type", "tags"},
@@ -140,7 +144,8 @@ bool KickProvider::getMetadata(OAuthAccount &acct, json &out, std::string &err)
 
 	Http::HttpReq req;
 	req.method = "GET";
-	req.url = std::string(kKickApiBase) + "/public/v1/channels?broadcaster_user_id[]=" + Http::UrlEncode(acct.userId);
+	req.url =
+		std::string(kKickApiBase) + "/public/v1/channels?broadcaster_user_id[]=" + Http::UrlEncode(acct.userId);
 
 	Http::HttpResponse resp;
 	if (!SendAuthed(acct, req, resp, err)) {
@@ -310,7 +315,8 @@ bool KickProvider::viewerCount(OAuthAccount &acct, int &out, std::string &err)
 
 	Http::HttpReq req;
 	req.method = "GET";
-	req.url = std::string(kKickApiBase) + "/public/v1/channels?broadcaster_user_id[]=" + Http::UrlEncode(acct.userId);
+	req.url =
+		std::string(kKickApiBase) + "/public/v1/channels?broadcaster_user_id[]=" + Http::UrlEncode(acct.userId);
 
 	Http::HttpResponse resp;
 	if (!SendAuthed(acct, req, resp, err)) {
@@ -341,7 +347,8 @@ bool KickProvider::fetchStreamKey(OAuthAccount &acct, std::string &key, std::str
 
 	Http::HttpReq req;
 	req.method = "GET";
-	req.url = std::string(kKickApiBase) + "/public/v1/channels?broadcaster_user_id[]=" + Http::UrlEncode(acct.userId);
+	req.url =
+		std::string(kKickApiBase) + "/public/v1/channels?broadcaster_user_id[]=" + Http::UrlEncode(acct.userId);
 
 	Http::HttpResponse resp;
 	if (!SendAuthed(acct, req, resp, err)) {

@@ -90,7 +90,7 @@ void EditorWidget::runWindow()
 	windowExStyle = 0;
 
 	HWND hwnd = CreateWindowExW(windowExStyle, kEditorWindowClass, title.c_str(), windowStyle, CW_USEDEFAULT,
-				   CW_USEDEFAULT, 300, 300, nullptr, nullptr, GetModuleHandleW(nullptr), this);
+				    CW_USEDEFAULT, 300, 300, nullptr, nullptr, GetModuleHandleW(nullptr), this);
 	windowHandle.store(hwnd);
 
 	if (hwnd && effect) {

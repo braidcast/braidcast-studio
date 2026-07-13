@@ -69,8 +69,7 @@ bool ProtectBytes(const std::string &plain, std::vector<unsigned char> &out)
 
 	DATA_BLOB blob = {};
 	// CRYPTPROTECT_UI_FORBIDDEN: a background-thread Put must never block on a UI prompt.
-	if (!CryptProtectData(&in, L"braidcast oauth", nullptr, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN,
-			      &blob)) {
+	if (!CryptProtectData(&in, L"braidcast oauth", nullptr, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &blob)) {
 		return false;
 	}
 	out.assign(blob.pbData, blob.pbData + blob.cbData);
@@ -121,8 +120,7 @@ void AccountStore::EnsureLoadedLocked()
 	if (!f) {
 		return; // first run: no file yet
 	}
-	const std::vector<unsigned char> wrapped((std::istreambuf_iterator<char>(f)),
-						 std::istreambuf_iterator<char>());
+	const std::vector<unsigned char> wrapped((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
 	if (wrapped.empty()) {
 		return;
 	}
@@ -217,7 +215,7 @@ void AccountStore::Put(const std::string &accountId, const OAuthAccount &account
 }
 
 void AccountStore::UpdateAudience(const std::string &accountId, int64_t count, AudienceKind kind, bool hidden,
-				 int64_t updatedNs)
+				  int64_t updatedNs)
 {
 	// Field-scoped write: a background poller must never round-trip a whole record it
 	// read ~90s ago, or it would clobber a token that a reactive 401-refresh rotated in

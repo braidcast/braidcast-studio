@@ -180,8 +180,8 @@ static void test_audio_state_roundtrip(void **)
 	Harness::Save();
 
 	const std::set<std::string> saved = SavedSourceNames(Harness::ScenePath());
-	assert_true(saved.count("Audio") == 1);  // scene source persisted
-	assert_true(saved.count("Chan1") == 0);  // global-channel source excluded
+	assert_true(saved.count("Audio") == 1); // scene source persisted
+	assert_true(saved.count("Chan1") == 0); // global-channel source excluded
 
 	// Unbind channel 1 before teardown so ClearCurrent (which is channel-exempt)
 	// no longer sees Chan1 as a protected channel source and cleans it up.

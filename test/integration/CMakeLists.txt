@@ -13,12 +13,13 @@ set(_fe "${CMAKE_SOURCE_DIR}/frontend")
 # REAL SceneCollection::Save/Load + the REAL multistream stores run. These TUs
 # reference no Bridge/CEF/ObsBootstrap symbols; bootstrap_shim.cpp supplies the
 # four ObsBootstrap/Transitions seams they resolve their singletons through.
-set(_fe_sources
-    "${_fe}/src/scene_persistence.cpp"
-    "${_fe}/src/multistream/CanvasRuntime.cpp"
-    "${_fe}/src/multistream/CanvasStore.cpp"
-    "${_fe}/src/multistream/StorePaths.cpp"
-    "${_fe}/utility/CanvasDefinition.cpp"
+set(
+  _fe_sources
+  "${_fe}/src/scene_persistence.cpp"
+  "${_fe}/src/multistream/CanvasRuntime.cpp"
+  "${_fe}/src/multistream/CanvasStore.cpp"
+  "${_fe}/src/multistream/StorePaths.cpp"
+  "${_fe}/utility/CanvasDefinition.cpp"
 )
 
 set(_target test_persistence)
@@ -33,13 +34,7 @@ add_executable(
   ${_fe_sources}
 )
 
-target_include_directories(
-  ${_target}
-  PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}"
-    "${_fe}/src"
-    "${_fe}/utility"
-)
+target_include_directories(${_target} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${_fe}/src" "${_fe}/utility")
 
 # Third-party headers as SYSTEM so the project's global /W4 /WX does not flag them.
 target_include_directories(${_target} SYSTEM PRIVATE ${CMOCKA_INCLUDE_DIR})
@@ -65,9 +60,7 @@ endif()
 # runtime, so it must sit in the OBS rundir bin dir like the other executables.
 set_target_properties(
   ${_target}
-  PROPERTIES
-    FOLDER tests
-    RUNTIME_OUTPUT_DIRECTORY "${OBS_OUTPUT_DIR}/$<CONFIG>/${OBS_EXECUTABLE_DESTINATION}"
+  PROPERTIES FOLDER tests RUNTIME_OUTPUT_DIRECTORY "${OBS_OUTPUT_DIR}/$<CONFIG>/${OBS_EXECUTABLE_DESTINATION}"
 )
 
 add_test(

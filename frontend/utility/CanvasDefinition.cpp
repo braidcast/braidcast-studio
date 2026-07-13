@@ -55,7 +55,7 @@ obs_scale_type ScaleTypeFromName(const std::string &name)
 	}
 	return OBS_SCALE_BICUBIC; // includes "bicubic" and any unknown/empty token
 }
-}
+} // namespace
 
 static OBSDataAutoRelease EncoderToData(const CanvasEncoderDef &enc)
 {
@@ -168,7 +168,7 @@ void CanvasDefinition::ToVideoInfo(struct obs_video_info &ovi, const CanvasDefin
 	ovi.output_height = res->outputHeight ? res->outputHeight : res->height; // 0 = mirror base
 	ovi.fps_num = res->fpsNum;
 	ovi.fps_den = res->fpsDen;
-	ovi.gpu_conversion = true;  // GPU colorspace conversion, matching the main video pipeline
+	ovi.gpu_conversion = true; // GPU colorspace conversion, matching the main video pipeline
 	ovi.output_format = VideoFormatFromName(col.format);
 	ovi.colorspace = VideoColorSpaceFromName(col.space);
 	ovi.range = VideoRangeFromName(col.range);

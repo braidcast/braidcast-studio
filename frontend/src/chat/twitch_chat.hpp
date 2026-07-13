@@ -37,12 +37,12 @@ private:
 
 	AuthStrategy *auth_; // the provider's auth strategy, for a reactive token refresh
 
-	std::mutex runMutex_;       // serializes connect() across overlapping Start/Stop
-	std::mutex wsMutex_;        // serializes every ws_ access (recv vs send vs connect/close)
-	Chat::WsClient ws_;         // the shared libcurl-WS socket (guarded by wsMutex_)
+	std::mutex runMutex_;              // serializes connect() across overlapping Start/Stop
+	std::mutex wsMutex_;               // serializes every ws_ access (recv vs send vs connect/close)
+	Chat::WsClient ws_;                // the shared libcurl-WS socket (guarded by wsMutex_)
 	std::atomic<bool> stopped_{false}; // set by disconnect(); secondary to ctx.canceled()
 	std::atomic<bool> ready_{false};   // true between JOIN and drop -- gates send()
-	std::string channel_;       // joined channel (lowercased); guarded by wsMutex_
+	std::string channel_;              // joined channel (lowercased); guarded by wsMutex_
 
 	// Third-party (7TV/BTTV/FFZ) emote code -> image URL, built once at the top of
 	// connect() and only READ by the read loop on that same worker thread, so it

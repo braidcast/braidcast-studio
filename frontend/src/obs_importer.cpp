@@ -129,10 +129,22 @@ struct FpsCommon {
 	uint32_t den;
 };
 const FpsCommon kFpsCommon[] = {
-	{"10", 10, 1},      {"20", 20, 1},          {"24", 24, 1},     {"24 NTSC", 24000, 1001},
-	{"23.976", 24000, 1001}, {"25", 25, 1},     {"29.97", 30000, 1001}, {"30", 30, 1},
-	{"48", 48, 1},      {"50", 50, 1},          {"59.94", 60000, 1001}, {"60", 60, 1},
-	{"119.88", 120000, 1001}, {"120", 120, 1},  {"144", 144, 1},   {"240", 240, 1},
+	{"10", 10, 1},
+	{"20", 20, 1},
+	{"24", 24, 1},
+	{"24 NTSC", 24000, 1001},
+	{"23.976", 24000, 1001},
+	{"25", 25, 1},
+	{"29.97", 30000, 1001},
+	{"30", 30, 1},
+	{"48", 48, 1},
+	{"50", 50, 1},
+	{"59.94", 60000, 1001},
+	{"60", 60, 1},
+	{"119.88", 120000, 1001},
+	{"120", 120, 1},
+	{"144", 144, 1},
+	{"240", 240, 1},
 };
 
 void ResolveFpsCommon(const char *label, uint32_t &num, uint32_t &den)
@@ -213,9 +225,8 @@ struct ChannelMap {
 	speaker_layout layout;
 };
 const ChannelMap kChannelSetups[] = {
-	{"Mono", SPEAKERS_MONO},     {"Stereo", SPEAKERS_STEREO}, {"2.1", SPEAKERS_2POINT1},
-	{"4.0", SPEAKERS_4POINT0},   {"4.1", SPEAKERS_4POINT1},   {"5.1", SPEAKERS_5POINT1},
-	{"7.1", SPEAKERS_7POINT1},
+	{"Mono", SPEAKERS_MONO},   {"Stereo", SPEAKERS_STEREO}, {"2.1", SPEAKERS_2POINT1}, {"4.0", SPEAKERS_4POINT0},
+	{"4.1", SPEAKERS_4POINT1}, {"5.1", SPEAKERS_5POINT1},   {"7.1", SPEAKERS_7POINT1},
 };
 
 struct AudioInfo {
@@ -327,8 +338,7 @@ json SceneNames(obs_data_array_t *sources)
 // scene/group's settings.items[].name, then emit the original source objects whose
 // name was reached, preserving file order. Referenced-but-missing names are simply
 // not emitted (a source can't be included if the collection doesn't define it).
-OBSDataArrayAutoRelease BuildFilteredSources(obs_data_array_t *sources,
-					     const std::unordered_set<std::string> &selected)
+OBSDataArrayAutoRelease BuildFilteredSources(obs_data_array_t *sources, const std::unordered_set<std::string> &selected)
 {
 	const size_t count = sources ? obs_data_array_count(sources) : 0;
 	if (selected.empty()) {
@@ -618,8 +628,10 @@ json Scan(const std::string &path)
 
 	VideoInfo v;
 	if (ParseVideo(base, profileDir, v)) {
-		result["video"] = json{{"baseWidth", v.baseW},   {"baseHeight", v.baseH},
-				       {"outputWidth", v.outW},  {"outputHeight", v.outH},
+		result["video"] = json{{"baseWidth", v.baseW},
+				       {"baseHeight", v.baseH},
+				       {"outputWidth", v.outW},
+				       {"outputHeight", v.outH},
 				       {"fps", double(v.fpsNum) / double(v.fpsDen)}};
 	} else {
 		result["video"] = nullptr;
@@ -729,7 +741,8 @@ json Import(const json &params)
 			}
 
 			std::string display;
-			if (req.contains("name") && req["name"].is_string() && !req["name"].get<std::string>().empty()) {
+			if (req.contains("name") && req["name"].is_string() &&
+			    !req["name"].get<std::string>().empty()) {
 				display = req["name"].get<std::string>();
 			} else {
 				const char *nm = obs_data_get_string(root, "name");
@@ -873,11 +886,10 @@ json Import(const json &params)
 		" audio=" + (audioImported ? "1" : "0") + " warnings=" + std::to_string(warnings.size()));
 
 	return json{{"ok", true},
-		    {"imported",
-		     json{{"collections", importedCollections},
-			  {"service", serviceImported},
-			  {"video", videoImported},
-			  {"audio", audioImported}}},
+		    {"imported", json{{"collections", importedCollections},
+				      {"service", serviceImported},
+				      {"video", videoImported},
+				      {"audio", audioImported}}},
 		    {"warnings", std::move(warnings)}};
 }
 

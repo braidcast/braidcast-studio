@@ -30,7 +30,7 @@
 namespace WindowChrome {
 
 struct Config {
-	int minWidth;  // logical (96-dpi) px; scaled per-window at WM_GETMINMAXINFO
+	int minWidth; // logical (96-dpi) px; scaled per-window at WM_GETMINMAXINFO
 	int minHeight;
 };
 

@@ -21,8 +21,9 @@ void deobfuscate_str(char *str, uint64_t val)
 
 		*ch ^= xor;
 
-		if (++i == sizeof(uint64_t) * 2)
+		if (++i == sizeof(uint64_t) * 2) {
 			i = 0;
+		}
 
 		str++;
 	}

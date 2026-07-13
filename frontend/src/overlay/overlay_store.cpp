@@ -80,9 +80,8 @@ std::string SanitizeAssetKey(const std::string &key)
 json Widget::ToJson() const
 {
 	return json{
-		{"id", id},     {"token", token}, {"name", name},     {"type", type},
-		{"html", html}, {"css", css},     {"js", js},         {"fields", fields},
-		{"assets", assets},
+		{"id", id},   {"token", token}, {"name", name},     {"type", type},     {"html", html},
+		{"css", css}, {"js", js},       {"fields", fields}, {"assets", assets},
 	};
 }
 
@@ -184,8 +183,7 @@ Widget OverlayStore::Create(const std::string &name, const std::string &type)
 		}
 	}
 	if (!haveHtml && w.fields.empty()) {
-		HostLog("[overlay] Create: no template for type '" + type + "' at " + dir +
-			" -- seeding empty widget");
+		HostLog("[overlay] Create: no template for type '" + type + "' at " + dir + " -- seeding empty widget");
 	}
 
 	std::lock_guard<std::mutex> lock(mutex_);
@@ -246,8 +244,7 @@ bool OverlayStore::Delete(const std::string &id)
 {
 	std::lock_guard<std::mutex> lock(mutex_);
 	const size_t before = widgets_.size();
-	widgets_.erase(std::remove_if(widgets_.begin(), widgets_.end(),
-				      [&](const Widget &w) { return w.id == id; }),
+	widgets_.erase(std::remove_if(widgets_.begin(), widgets_.end(), [&](const Widget &w) { return w.id == id; }),
 		       widgets_.end());
 	if (widgets_.size() == before) {
 		return false;
@@ -333,8 +330,7 @@ void OverlayStore::InjectForTest(const Widget &w)
 void OverlayStore::RemoveForTest(const std::string &id)
 {
 	std::lock_guard<std::mutex> lock(mutex_);
-	widgets_.erase(std::remove_if(widgets_.begin(), widgets_.end(),
-				      [&](const Widget &w) { return w.id == id; }),
+	widgets_.erase(std::remove_if(widgets_.begin(), widgets_.end(), [&](const Widget &w) { return w.id == id; }),
 		       widgets_.end());
 }
 

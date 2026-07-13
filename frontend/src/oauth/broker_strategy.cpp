@@ -77,8 +77,7 @@ std::string Base64Url(const unsigned char *data, size_t len)
 
 bool RandomBytes(unsigned char *buf, size_t len)
 {
-	return BCRYPT_SUCCESS(
-		BCryptGenRandom(nullptr, buf, static_cast<ULONG>(len), BCRYPT_USE_SYSTEM_PREFERRED_RNG));
+	return BCRYPT_SUCCESS(BCryptGenRandom(nullptr, buf, static_cast<ULONG>(len), BCRYPT_USE_SYSTEM_PREFERRED_RNG));
 }
 
 bool Sha256(const std::string &in, unsigned char out[32])
@@ -87,8 +86,9 @@ bool Sha256(const std::string &in, unsigned char out[32])
 	if (!BCRYPT_SUCCESS(BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr, 0))) {
 		return false;
 	}
-	const bool ok = BCRYPT_SUCCESS(BCryptHash(alg, nullptr, 0, reinterpret_cast<PUCHAR>(const_cast<char *>(in.data())),
-						  static_cast<ULONG>(in.size()), out, 32));
+	const bool ok =
+		BCRYPT_SUCCESS(BCryptHash(alg, nullptr, 0, reinterpret_cast<PUCHAR>(const_cast<char *>(in.data())),
+					  static_cast<ULONG>(in.size()), out, 32));
 	BCryptCloseAlgorithmProvider(alg, 0);
 	return ok;
 }

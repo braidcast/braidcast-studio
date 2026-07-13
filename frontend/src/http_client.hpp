@@ -14,18 +14,18 @@
 namespace Http {
 
 struct HttpReq {
-	std::string method;              // "GET" / "POST" / "PATCH" / "PUT"
-	std::string url;                 // absolute URL
+	std::string method;               // "GET" / "POST" / "PATCH" / "PUT"
+	std::string url;                  // absolute URL
 	std::vector<std::string> headers; // each entry "Key: Value"
-	std::string body;                // request body (POST/PATCH/PUT)
-	std::string contentType;         // sets Content-Type when non-empty
-	int timeoutSec = 30;             // whole-request timeout
+	std::string body;                 // request body (POST/PATCH/PUT)
+	std::string contentType;          // sets Content-Type when non-empty
+	int timeoutSec = 30;              // whole-request timeout
 };
 
 struct HttpResponse {
-	long status = 0;     // HTTP status code (0 if the transport failed)
-	std::string body;    // response body
-	std::string error;   // transport error string; empty on success
+	long status = 0;   // HTTP status code (0 if the transport failed)
+	std::string body;  // response body
+	std::string error; // transport error string; empty on success
 };
 
 // Perform a blocking request. On a transport-level failure `error` is set and

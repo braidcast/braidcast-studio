@@ -49,7 +49,9 @@ void AccountPoller::Stop()
 
 void AccountPoller::RunPollLoop(const std::shared_ptr<std::atomic<bool>> &stop)
 {
-	auto canceled = [stop] { return stop->load(std::memory_order_acquire); };
+	auto canceled = [stop] {
+		return stop->load(std::memory_order_acquire);
+	};
 
 	unsigned long long tick = 0;
 	while (!canceled()) {

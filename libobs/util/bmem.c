@@ -80,12 +80,14 @@ static void *a_realloc(void *ptr, size_t size)
 #elif ALIGNMENT_HACK
 	long diff;
 
-	if (!ptr)
+	if (!ptr) {
 		return a_malloc(size);
+	}
 	diff = ((char *)ptr)[-1];
 	ptr = realloc((char *)ptr - diff, size + diff);
-	if (ptr)
+	if (ptr) {
 		ptr = (char *)ptr + diff;
+	}
 	return ptr;
 #else
 	return realloc(ptr, size);
@@ -97,8 +99,9 @@ static void a_free(void *ptr)
 #ifdef ALIGNED_MALLOC
 	_aligned_free(ptr);
 #elif ALIGNMENT_HACK
-	if (ptr)
+	if (ptr) {
 		free((char *)ptr - ((char *)ptr)[-1]);
+	}
 #else
 	free(ptr);
 #endif
@@ -153,8 +156,9 @@ static void alloc_registry_grow(void)
 {
 	size_t new_count = alloc_reg.bucket_count ? alloc_reg.bucket_count * 2 : 1024;
 	struct alloc_entry **new_buckets = calloc(new_count, sizeof(*new_buckets));
-	if (!new_buckets)
+	if (!new_buckets) {
 		return;
+	}
 
 	for (size_t i = 0; i < alloc_reg.bucket_count; i++) {
 		struct alloc_entry *e = alloc_reg.buckets[i];
@@ -174,14 +178,17 @@ static void alloc_registry_grow(void)
 
 static void alloc_registry_insert(void *ptr, size_t size, void *const *frames, unsigned short frame_count)
 {
-	if (alloc_reg.entry_count + 1 > (alloc_reg.bucket_count * 3) / 4)
+	if (alloc_reg.entry_count + 1 > (alloc_reg.bucket_count * 3) / 4) {
 		alloc_registry_grow();
-	if (!alloc_reg.bucket_count)
+	}
+	if (!alloc_reg.bucket_count) {
 		return;
+	}
 
 	struct alloc_entry *e = malloc(sizeof(*e));
-	if (!e)
+	if (!e) {
 		return;
+	}
 
 	e->ptr = ptr;
 	e->size = size;
@@ -196,8 +203,9 @@ static void alloc_registry_insert(void *ptr, size_t size, void *const *frames, u
 
 static void alloc_registry_remove(void *ptr)
 {
-	if (!alloc_reg.bucket_count)
+	if (!alloc_reg.bucket_count) {
 		return;
+	}
 
 	size_t idx = alloc_hash_ptr(ptr, alloc_reg.bucket_count);
 	struct alloc_entry **link = &alloc_reg.buckets[idx];
@@ -255,16 +263,18 @@ void *bmalloc(size_t size)
 
 	os_atomic_inc_long(&num_allocs);
 
-	if (alloc_tracking_enabled())
+	if (alloc_tracking_enabled()) {
 		alloc_track_add(ptr, size);
+	}
 
 	return ptr;
 }
 
 void *brealloc(void *ptr, size_t size)
 {
-	if (!ptr)
+	if (!ptr) {
 		os_atomic_inc_long(&num_allocs);
+	}
 
 	if (!size) {
 		os_breakpoint();
@@ -280,8 +290,9 @@ void *brealloc(void *ptr, size_t size)
 	}
 
 	if (alloc_tracking_enabled()) {
-		if (old_ptr)
+		if (old_ptr) {
 			alloc_track_remove(old_ptr);
+		}
 		alloc_track_add(ptr, size);
 	}
 
@@ -292,8 +303,9 @@ void bfree(void *ptr)
 {
 	if (ptr) {
 		os_atomic_dec_long(&num_allocs);
-		if (alloc_tracking_enabled())
+		if (alloc_tracking_enabled()) {
 			alloc_track_remove(ptr);
+		}
 		a_free(ptr);
 	}
 }
@@ -311,8 +323,9 @@ int base_get_alignment(void)
 void *bmemdup(const void *ptr, size_t size)
 {
 	void *out = bmalloc(size);
-	if (size)
+	if (size) {
 		memcpy(out, ptr, size);
+	}
 
 	return out;
 }
@@ -321,8 +334,9 @@ void *bmemdup(const void *ptr, size_t size)
  * per-allocation fast path only stores raw frame addresses. */
 void bmem_dump_outstanding(void)
 {
-	if (!alloc_tracking_enabled())
+	if (!alloc_tracking_enabled()) {
 		return;
+	}
 
 	pthread_mutex_lock(&alloc_mutex);
 
@@ -352,17 +366,19 @@ void bmem_dump_outstanding(void)
 				mod.SizeOfStruct = sizeof(mod);
 				const char *modname = SymGetModuleInfo64(process, addr, &mod) ? mod.ModuleName : "?";
 
-				if (SymFromAddr(process, addr, &disp, sym))
+				if (SymFromAddr(process, addr, &disp, sym)) {
 					blog(LOG_WARNING, "    %s!%s+0x%llx", modname, sym->Name,
 					     (unsigned long long)disp);
-				else
+				} else {
 					blog(LOG_WARNING, "    %s!%p", modname, e->frames[f]);
+				}
 			}
 #else
 			char **syms = backtrace_symbols(e->frames, e->frame_count);
 			if (syms) {
-				for (unsigned short f = 0; f < e->frame_count; f++)
+				for (unsigned short f = 0; f < e->frame_count; f++) {
 					blog(LOG_WARNING, "    %s", syms[f]);
+				}
 				/* backtrace_symbols returns a stdlib-malloc'd buffer */
 				free(syms);
 			}

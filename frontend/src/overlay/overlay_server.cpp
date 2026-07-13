@@ -33,9 +33,9 @@ constexpr int kPreferredPort = 43000;              // persisted default; tried f
 // WSL/Docker reserve large contiguous ranges) can't kill the feature. 5 x 50 = 250.
 constexpr int kBandSize = 50;
 constexpr std::array<int, 5> kScanBands = {43000, 47000, 51000, 55000, 59000};
-constexpr DWORD kSseRecvTimeoutMs = 15000;   // keepalive cadence
-constexpr DWORD kSseSendTimeoutMs = 3000;    // I3: bounded send so a stuck reader can't hold sseMutex_
-constexpr DWORD kHeaderRecvTimeoutMs = 10000; // I1: backstop so a silent client can't park a thread
+constexpr DWORD kSseRecvTimeoutMs = 15000;     // keepalive cadence
+constexpr DWORD kSseSendTimeoutMs = 3000;      // I3: bounded send so a stuck reader can't hold sseMutex_
+constexpr DWORD kHeaderRecvTimeoutMs = 10000;  // I1: backstop so a silent client can't park a thread
 constexpr DWORD kResponseSendTimeoutMs = 3000; // bounded plain-HTTP send so a stuck reader can't park a thread
 constexpr size_t kMaxSseConnections = 64;      // ceiling on concurrent live SSE streams; excess rejected 503
 
@@ -75,20 +75,19 @@ std::string BundleRoot()
 std::string ContentTypeForPath(const std::string &path)
 {
 	static const std::vector<std::pair<std::string, std::string>> kTypes = {
-		{".html", "text/html"}, {".htm", "text/html"},  {".js", "text/javascript"},
-		{".mjs", "text/javascript"}, {".css", "text/css"}, {".json", "application/json"},
-		{".svg", "image/svg+xml"}, {".png", "image/png"}, {".jpg", "image/jpeg"},
-		{".jpeg", "image/jpeg"}, {".gif", "image/gif"}, {".ico", "image/x-icon"},
-		{".woff", "font/woff"}, {".woff2", "font/woff2"}, {".ttf", "font/ttf"},
+		{".html", "text/html"},        {".htm", "text/html"},        {".js", "text/javascript"},
+		{".mjs", "text/javascript"},   {".css", "text/css"},         {".json", "application/json"},
+		{".svg", "image/svg+xml"},     {".png", "image/png"},        {".jpg", "image/jpeg"},
+		{".jpeg", "image/jpeg"},       {".gif", "image/gif"},        {".ico", "image/x-icon"},
+		{".woff", "font/woff"},        {".woff2", "font/woff2"},     {".ttf", "font/ttf"},
 		{".wasm", "application/wasm"}, {".map", "application/json"}, {".txt", "text/plain"},
-		{".mp3", "audio/mpeg"}, {".ogg", "audio/ogg"}, {".wav", "audio/wav"},
+		{".mp3", "audio/mpeg"},        {".ogg", "audio/ogg"},        {".wav", "audio/wav"},
 		{".webp", "image/webp"},
 	};
 	size_t dot = path.find_last_of('.');
 	if (dot != std::string::npos) {
 		std::string ext = path.substr(dot);
-		std::transform(ext.begin(), ext.end(), ext.begin(),
-			       [](unsigned char c) { return char(::tolower(c)); });
+		std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return char(::tolower(c)); });
 		for (const auto &[suffix, type] : kTypes) {
 			if (ext == suffix) {
 				return type;
@@ -132,8 +131,7 @@ std::string QueryToken(const std::string &pathWithQuery, std::string &pathOut)
 	size_t pos = 0;
 	while (pos < query.size()) {
 		const size_t amp = query.find('&', pos);
-		const std::string pair =
-			query.substr(pos, amp == std::string::npos ? std::string::npos : amp - pos);
+		const std::string pair = query.substr(pos, amp == std::string::npos ? std::string::npos : amp - pos);
 		const size_t eq = pair.find('=');
 		if (eq != std::string::npos && pair.substr(0, eq) == "t") {
 			return pair.substr(eq + 1);
@@ -324,8 +322,8 @@ bool OverlayServer::BindOn(int port)
 	addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK); // 127.0.0.1 ONLY
 	addr.sin_port = htons((unsigned short)port);
 	if (bind(listenSock, (sockaddr *)&addr, sizeof(addr)) == SOCKET_ERROR) {
-		lastError_ =
-			"bind(127.0.0.1:" + std::to_string(port) + ") failed (" + std::to_string(WSAGetLastError()) + ")";
+		lastError_ = "bind(127.0.0.1:" + std::to_string(port) + ") failed (" +
+			     std::to_string(WSAGetLastError()) + ")";
 		closesocket(listenSock);
 		return false;
 	}
@@ -542,7 +540,8 @@ void OverlayServer::HandleConnection(uintptr_t clientSocket)
 	setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&kHeaderRecvTimeoutMs, sizeof(kHeaderRecvTimeoutMs));
 	// Bounded response send: a client that stops reading mid-response must not park this
 	// thread in SendAll forever (the SSE path resets this to its own timeout below).
-	setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (const char *)&kResponseSendTimeoutMs, sizeof(kResponseSendTimeoutMs));
+	setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (const char *)&kResponseSendTimeoutMs,
+		   sizeof(kResponseSendTimeoutMs));
 
 	// Read the header block until "\r\n\r\n", capping total size.
 	std::string buffer;

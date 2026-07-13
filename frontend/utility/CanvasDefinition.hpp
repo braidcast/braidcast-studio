@@ -8,9 +8,9 @@
  * settings are stored as raw obs_data JSON blobs and only rehydrated into real
  * encoders in Sub-plan 4. */
 struct CanvasEncoderDef {
-	std::string id;                 // e.g. "obs_x264", "ffmpeg_aac"
-	OBSDataAutoRelease settings;    // encoder settings blob (may be null -> defaults)
-	bool useDefault = false;        // live-follow the Default canvas
+	std::string id;              // e.g. "obs_x264", "ffmpeg_aac"
+	OBSDataAutoRelease settings; // encoder settings blob (may be null -> defaults)
+	bool useDefault = false;     // live-follow the Default canvas
 
 	/* This encoder slot resolves to the Default canvas's encoder: either it is
 	 * explicitly flagged use-default, or it was never configured (empty id, so
@@ -21,30 +21,30 @@ struct CanvasEncoderDef {
 };
 
 struct CanvasColorDef {
-	std::string format = "NV12";    // ColorFormat
-	std::string space = "709";      // ColorSpace
-	std::string range = "Partial";  // ColorRange
+	std::string format = "NV12";   // ColorFormat
+	std::string space = "709";     // ColorSpace
+	std::string range = "Partial"; // ColorRange
 	uint32_t sdrWhiteLevel = 300;
 	uint32_t hdrNominalPeakLevel = 1000;
-	bool useDefault = true;         // inherit global/Default advanced color
+	bool useDefault = true; // inherit global/Default advanced color
 };
 
 struct CanvasDefinition {
-	std::string uuid;               // correlates with obs_canvas context uuid
+	std::string uuid; // correlates with obs_canvas context uuid
 	std::string name;
-	bool isDefault = false;         // the immutable base canvas
+	bool isDefault = false; // the immutable base canvas
 
 	uint32_t width = 1920;
 	uint32_t height = 1080;
-	uint32_t outputWidth = 0;       // scaled encode size; 0 = mirror base width
-	uint32_t outputHeight = 0;      // scaled encode size; 0 = mirror base height
+	uint32_t outputWidth = 0;  // scaled encode size; 0 = mirror base width
+	uint32_t outputHeight = 0; // scaled encode size; 0 = mirror base height
 	uint32_t fpsNum = 60;
 	uint32_t fpsDen = 1;
 	std::string scaleType = "bicubic"; // downscale filter token (see kScaleFilters)
 	bool useDefaultResolution = false;
 
 	CanvasEncoderDef video;
-	CanvasEncoderDef audio;         // Phase 1: single audio track (mixer 0)
+	CanvasEncoderDef audio; // Phase 1: single audio track (mixer 0)
 	CanvasColorDef color;
 
 	/* Serialize to a single obs_data object (one array element in canvases.json). */

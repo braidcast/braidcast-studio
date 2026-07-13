@@ -113,8 +113,11 @@ void ObsBootstrap::RunOverlaySelfTest()
 	w.html = "<div id=\"a\"></div>";
 	w.css = "#a{color:#fff}";
 	w.js = "OBSOverlay.onEvent(function(e){});";
-	w.fields = Overlay::json::array({Overlay::json{
-		{"key", "accent"}, {"type", "color"}, {"label", "Accent"}, {"default", "#9147ff"}, {"value", "#9147ff"}}});
+	w.fields = Overlay::json::array({Overlay::json{{"key", "accent"},
+						       {"type", "color"},
+						       {"label", "Accent"},
+						       {"default", "#9147ff"},
+						       {"value", "#9147ff"}}});
 	Overlay::Store().InjectForTest(w);
 
 	Overlay::OverlayServer server;
@@ -170,8 +173,7 @@ void ObsBootstrap::RunOverlaySelfTest()
 			if (n > 0) {
 				acc.append(buf, (size_t)n);
 			}
-			if (acc.find("data:") != std::string::npos &&
-			    acc.find("selftest-ovl-1") != std::string::npos) {
+			if (acc.find("data:") != std::string::npos && acc.find("selftest-ovl-1") != std::string::npos) {
 				deliveryOk = true;
 			}
 		}

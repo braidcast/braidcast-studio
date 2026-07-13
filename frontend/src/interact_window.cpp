@@ -479,7 +479,9 @@ LRESULT CALLBACK InteractWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
 } // namespace
 
 InteractWindow::InteractWindow(int interactId, obs_source_t *source)
-	: interactId_(interactId), state_(new State()), source_(source)
+	: interactId_(interactId),
+	  state_(new State()),
+	  source_(source)
 {
 	const char *uuid = source ? obs_source_get_uuid(source) : nullptr;
 	if (uuid) {

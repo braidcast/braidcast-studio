@@ -146,12 +146,13 @@ static bool gl_init_extensions(struct gs_device *device)
 
 	gl_enable(GL_TEXTURE_CUBE_MAP_SEAMLESS);
 
-	if (GLAD_GL_VERSION_4_3 || GLAD_GL_ARB_copy_image)
+	if (GLAD_GL_VERSION_4_3 || GLAD_GL_ARB_copy_image) {
 		device->copy_type = COPY_TYPE_ARB;
-	else if (GLAD_GL_NV_copy_image)
+	} else if (GLAD_GL_NV_copy_image) {
 		device->copy_type = COPY_TYPE_NV;
-	else
+	} else {
 		device->copy_type = COPY_TYPE_FBO_BLIT;
+	}
 
 	return true;
 }
@@ -183,13 +184,15 @@ void convert_sampler_info(struct gs_sampler_state *sampler, const struct gs_samp
 		gl_success("glGetIntegerv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT)");
 	}
 
-	if (1 <= sampler->max_anisotropy && sampler->max_anisotropy <= max_anisotropy_max)
+	if (1 <= sampler->max_anisotropy && sampler->max_anisotropy <= max_anisotropy_max) {
 		return;
+	}
 
-	if (sampler->max_anisotropy < 1)
+	if (sampler->max_anisotropy < 1) {
 		sampler->max_anisotropy = 1;
-	else if (sampler->max_anisotropy > max_anisotropy_max)
+	} else if (sampler->max_anisotropy > max_anisotropy_max) {
 		sampler->max_anisotropy = max_anisotropy_max;
+	}
 
 	vec4_from_rgba(&sampler->border_color, info->border_color);
 
@@ -269,8 +272,9 @@ int device_create(gs_device_t **p_device, uint32_t adapter)
 	blog(LOG_INFO, "Initializing OpenGL...");
 
 	device->plat = gl_platform_create(device, adapter);
-	if (!device->plat)
+	if (!device->plat) {
 		goto fail;
+	}
 
 	const char *glVendor = (const char *)glGetString(GL_VENDOR);
 	const char *glRenderer = (const char *)glGetString(GL_RENDERER);
@@ -327,8 +331,9 @@ fail:
 void device_destroy(gs_device_t *device)
 {
 	if (device) {
-		while (device->first_program)
+		while (device->first_program) {
 			gs_program_destroy(device->first_program);
+		}
 
 		samplerstate_release(device->raw_load_sampler);
 		gl_delete_vertex_arrays(1, &device->empty_vao);
@@ -381,8 +386,9 @@ enum gs_color_space device_get_color_space(gs_device_t *device)
 
 void device_update_color_space(gs_device_t *device)
 {
-	if (!device->cur_swap)
+	if (!device->cur_swap) {
 		blog(LOG_WARNING, "device_display_change (GL): No active swap");
+	}
 }
 
 void device_get_size(const gs_device_t *device, uint32_t *cx, uint32_t *cy)
@@ -437,8 +443,9 @@ gs_timer_t *device_timer_create(gs_device_t *device)
 
 	GLuint queries[2];
 	glGenQueries(2, queries);
-	if (!gl_success("glGenQueries"))
+	if (!gl_success("glGenQueries")) {
 		return NULL;
+	}
 
 	timer = bzalloc(sizeof(struct gs_timer));
 	timer->queries[0] = queries[0];
@@ -492,39 +499,50 @@ static bool load_texture_sampler(gs_texture_t *tex, gs_samplerstate_t *ss)
 	bool success = true;
 	GLint min_filter;
 
-	if (tex->cur_sampler == ss)
+	if (tex->cur_sampler == ss) {
 		return true;
+	}
 
-	if (tex->cur_sampler)
+	if (tex->cur_sampler) {
 		samplerstate_release(tex->cur_sampler);
+	}
 	tex->cur_sampler = ss;
-	if (!ss)
+	if (!ss) {
 		return true;
+	}
 
 	samplerstate_addref(ss);
 
 	min_filter = ss->min_filter;
-	if (gs_texture_is_rect(tex))
+	if (gs_texture_is_rect(tex)) {
 		strip_mipmap_filter(&min_filter);
+	}
 
-	if (!gl_tex_param_i(tex->gl_target, GL_TEXTURE_MIN_FILTER, min_filter))
+	if (!gl_tex_param_i(tex->gl_target, GL_TEXTURE_MIN_FILTER, min_filter)) {
 		success = false;
-	if (!gl_tex_param_i(tex->gl_target, GL_TEXTURE_MAG_FILTER, ss->mag_filter))
+	}
+	if (!gl_tex_param_i(tex->gl_target, GL_TEXTURE_MAG_FILTER, ss->mag_filter)) {
 		success = false;
-	if (!gl_tex_param_i(tex->gl_target, GL_TEXTURE_WRAP_S, ss->address_u))
+	}
+	if (!gl_tex_param_i(tex->gl_target, GL_TEXTURE_WRAP_S, ss->address_u)) {
 		success = false;
-	if (!gl_tex_param_i(tex->gl_target, GL_TEXTURE_WRAP_T, ss->address_v))
+	}
+	if (!gl_tex_param_i(tex->gl_target, GL_TEXTURE_WRAP_T, ss->address_v)) {
 		success = false;
-	if (!gl_tex_param_i(tex->gl_target, GL_TEXTURE_WRAP_R, ss->address_w))
+	}
+	if (!gl_tex_param_i(tex->gl_target, GL_TEXTURE_WRAP_R, ss->address_w)) {
 		success = false;
+	}
 	if (ss->address_u == GL_CLAMP_TO_BORDER || ss->address_v == GL_CLAMP_TO_BORDER ||
 	    ss->address_w == GL_CLAMP_TO_BORDER) {
-		if (!gl_tex_param_fv(tex->gl_target, GL_TEXTURE_BORDER_COLOR, ss->border_color.ptr))
+		if (!gl_tex_param_fv(tex->gl_target, GL_TEXTURE_BORDER_COLOR, ss->border_color.ptr)) {
 			success = false;
+		}
 	}
 	if (GLAD_GL_EXT_texture_filter_anisotropic) {
-		if (!gl_tex_param_i(tex->gl_target, GL_TEXTURE_MAX_ANISOTROPY_EXT, ss->max_anisotropy))
+		if (!gl_tex_param_i(tex->gl_target, GL_TEXTURE_MAX_ANISOTROPY_EXT, ss->max_anisotropy)) {
 			success = false;
+		}
 	}
 
 	apply_swizzle(tex);
@@ -540,8 +558,9 @@ static inline struct gs_shader_param *get_texture_param(gs_device_t *device, int
 	for (i = 0; i < shader->params.num; i++) {
 		struct gs_shader_param *param = shader->params.array + i;
 		if (param->type == GS_SHADER_PARAM_TEXTURE) {
-			if (param->texture_id == unit)
+			if (param->texture_id == unit) {
 				return param;
+			}
 		}
 	}
 
@@ -555,43 +574,53 @@ static void device_load_texture_internal(gs_device_t *device, gs_texture_t *tex,
 	struct gs_texture *cur_tex = device->cur_textures[unit];
 
 	/* need a pixel shader to properly bind textures */
-	if (!device->cur_pixel_shader)
+	if (!device->cur_pixel_shader) {
 		goto fail;
+	}
 
-	if (cur_tex == tex)
+	if (cur_tex == tex) {
 		return;
+	}
 
-	if (!gl_active_texture(GL_TEXTURE0 + unit))
+	if (!gl_active_texture(GL_TEXTURE0 + unit)) {
 		goto fail;
+	}
 
 	/* the target for the previous text may not be the same as the
 	 * next texture, so unbind the previous texture first to be safe */
-	if (cur_tex && (!tex || cur_tex->gl_target != tex->gl_target))
+	if (cur_tex && (!tex || cur_tex->gl_target != tex->gl_target)) {
 		gl_bind_texture(cur_tex->gl_target, 0);
+	}
 
 	device->cur_textures[unit] = tex;
 	param = get_texture_param(device, unit);
-	if (!param)
+	if (!param) {
 		return;
+	}
 
 	param->texture = tex;
 
-	if (!tex)
+	if (!tex) {
 		return;
+	}
 
-	if (param->sampler_id != (size_t)-1)
+	if (param->sampler_id != (size_t)-1) {
 		sampler = device->cur_samplers[param->sampler_id];
-	else
+	} else {
 		sampler = device->raw_load_sampler;
+	}
 
-	if (!gl_bind_texture(tex->gl_target, tex->texture))
+	if (!gl_bind_texture(tex->gl_target, tex->texture)) {
 		goto fail;
+	}
 
-	if (!gl_tex_param_i(tex->gl_target, GL_TEXTURE_SRGB_DECODE_EXT, decode))
+	if (!gl_tex_param_i(tex->gl_target, GL_TEXTURE_SRGB_DECODE_EXT, decode)) {
 		goto fail;
+	}
 
-	if (sampler && !load_texture_sampler(tex, sampler))
+	if (sampler && !load_texture_sampler(tex, sampler)) {
 		goto fail;
+	}
 
 	return;
 
@@ -619,10 +648,12 @@ static bool load_sampler_on_textures(gs_device_t *device, gs_samplerstate_t *ss,
 
 		if (param->type == GS_SHADER_PARAM_TEXTURE && param->sampler_id == (uint32_t)sampler_unit &&
 		    param->texture) {
-			if (!gl_active_texture(GL_TEXTURE0 + param->texture_id))
+			if (!gl_active_texture(GL_TEXTURE0 + param->texture_id)) {
 				return false;
-			if (!load_texture_sampler(param->texture, ss))
+			}
+			if (!load_texture_sampler(param->texture, ss)) {
 				return false;
+			}
 		}
 	}
 
@@ -632,27 +663,32 @@ static bool load_sampler_on_textures(gs_device_t *device, gs_samplerstate_t *ss,
 void device_load_samplerstate(gs_device_t *device, gs_samplerstate_t *ss, int unit)
 {
 	/* need a pixel shader to properly bind samplers */
-	if (!device->cur_pixel_shader)
+	if (!device->cur_pixel_shader) {
 		ss = NULL;
+	}
 
-	if (device->cur_samplers[unit] == ss)
+	if (device->cur_samplers[unit] == ss) {
 		return;
+	}
 
 	device->cur_samplers[unit] = ss;
 
-	if (!ss)
+	if (!ss) {
 		return;
+	}
 
-	if (!load_sampler_on_textures(device, ss, unit))
+	if (!load_sampler_on_textures(device, ss, unit)) {
 		blog(LOG_ERROR, "device_load_samplerstate (GL) failed");
+	}
 
 	return;
 }
 
 void device_load_vertexshader(gs_device_t *device, gs_shader_t *vertshader)
 {
-	if (device->cur_vertex_shader == vertshader)
+	if (device->cur_vertex_shader == vertshader) {
 		return;
+	}
 
 	if (vertshader && vertshader->type != GS_SHADER_VERTEX) {
 		blog(LOG_ERROR, "Specified shader is not a vertex shader");
@@ -666,22 +702,25 @@ void device_load_vertexshader(gs_device_t *device, gs_shader_t *vertshader)
 static void load_default_pixelshader_samplers(struct gs_device *device, struct gs_shader *ps)
 {
 	size_t i;
-	if (!ps)
+	if (!ps) {
 		return;
+	}
 
 	for (i = 0; i < ps->samplers.num; i++) {
 		struct gs_sampler_state *ss = ps->samplers.array[i];
 		device->cur_samplers[i] = ss;
 	}
 
-	for (; i < GS_MAX_TEXTURES; i++)
+	for (; i < GS_MAX_TEXTURES; i++) {
 		device->cur_samplers[i] = NULL;
+	}
 }
 
 void device_load_pixelshader(gs_device_t *device, gs_shader_t *pixelshader)
 {
-	if (device->cur_pixel_shader == pixelshader)
+	if (device->cur_pixel_shader == pixelshader) {
 		return;
+	}
 
 	if (pixelshader && pixelshader->type != GS_SHADER_PIXEL) {
 		blog(LOG_ERROR, "Specified shader is not a pixel shader");
@@ -692,8 +731,9 @@ void device_load_pixelshader(gs_device_t *device, gs_shader_t *pixelshader)
 
 	clear_textures(device);
 
-	if (pixelshader)
+	if (pixelshader) {
 		load_default_pixelshader_samplers(device, pixelshader);
+	}
 	return;
 
 fail:
@@ -753,13 +793,15 @@ static bool get_tex_dimensions(gs_texture_t *tex, uint32_t *width, uint32_t *hei
  */
 struct fbo_info *get_fbo(gs_texture_t *tex, uint32_t width, uint32_t height)
 {
-	if (tex->fbo && tex->fbo->width == width && tex->fbo->height == height && tex->fbo->format == tex->format)
+	if (tex->fbo && tex->fbo->width == width && tex->fbo->height == height && tex->fbo->format == tex->format) {
 		return tex->fbo;
+	}
 
 	GLuint fbo;
 	glGenFramebuffers(1, &fbo);
-	if (!gl_success("glGenFramebuffers"))
+	if (!gl_success("glGenFramebuffers")) {
 		return NULL;
+	}
 
 	tex->fbo = bmalloc(sizeof(struct fbo_info));
 	tex->fbo->fbo = fbo;
@@ -776,8 +818,9 @@ struct fbo_info *get_fbo(gs_texture_t *tex, uint32_t width, uint32_t height)
 static inline struct fbo_info *get_fbo_by_tex(gs_texture_t *tex)
 {
 	uint32_t width, height;
-	if (!get_tex_dimensions(tex, &width, &height))
+	if (!get_tex_dimensions(tex, &width, &height)) {
 		return NULL;
+	}
 
 	return get_fbo(tex, width, height);
 }
@@ -786,8 +829,9 @@ static bool set_current_fbo(gs_device_t *device, struct fbo_info *fbo)
 {
 	if (device->cur_fbo != fbo) {
 		GLuint fbo_obj = fbo ? fbo->fbo : 0;
-		if (!gl_bind_framebuffer(GL_DRAW_FRAMEBUFFER, fbo_obj))
+		if (!gl_bind_framebuffer(GL_DRAW_FRAMEBUFFER, fbo_obj)) {
 			return false;
+		}
 
 		if (device->cur_fbo) {
 			device->cur_fbo->cur_render_target = NULL;
@@ -801,8 +845,9 @@ static bool set_current_fbo(gs_device_t *device, struct fbo_info *fbo)
 
 static bool attach_rendertarget(struct fbo_info *fbo, gs_texture_t *tex, int side)
 {
-	if (fbo->cur_render_target == tex)
+	if (fbo->cur_render_target == tex) {
 		return true;
+	}
 
 	fbo->cur_render_target = tex;
 
@@ -825,8 +870,9 @@ static bool attach_zstencil(struct fbo_info *fbo, gs_zstencil_t *zs)
 	GLuint zsbuffer = 0;
 	GLenum zs_attachment = GL_DEPTH_STENCIL_ATTACHMENT;
 
-	if (fbo->cur_zstencil_buffer == zs)
+	if (fbo->cur_zstencil_buffer == zs) {
 		return true;
+	}
 
 	fbo->cur_zstencil_buffer = zs;
 
@@ -836,8 +882,9 @@ static bool attach_zstencil(struct fbo_info *fbo, gs_zstencil_t *zs)
 	}
 
 	glFramebufferRenderbuffer(GL_DRAW_FRAMEBUFFER, zs_attachment, GL_RENDERBUFFER, zsbuffer);
-	if (!gl_success("glFramebufferRenderbuffer"))
+	if (!gl_success("glFramebufferRenderbuffer")) {
 		return false;
+	}
 
 	return true;
 }
@@ -846,26 +893,31 @@ static bool set_target(gs_device_t *device, gs_texture_t *tex, int side, gs_zste
 {
 	device->cur_color_space = space;
 
-	if (device->cur_render_target == tex && device->cur_zstencil_buffer == zs && device->cur_render_side == side)
+	if (device->cur_render_target == tex && device->cur_zstencil_buffer == zs && device->cur_render_side == side) {
 		return true;
+	}
 
 	device->cur_render_target = tex;
 	device->cur_render_side = side;
 	device->cur_zstencil_buffer = zs;
 
-	if (!tex)
+	if (!tex) {
 		return set_current_fbo(device, NULL);
+	}
 
 	struct fbo_info *const fbo = get_fbo_by_tex(tex);
-	if (!fbo)
+	if (!fbo) {
 		return false;
+	}
 
 	set_current_fbo(device, fbo);
 
-	if (!attach_rendertarget(fbo, tex, side))
+	if (!attach_rendertarget(fbo, tex, side)) {
 		return false;
-	if (!attach_zstencil(fbo, zs))
+	}
+	if (!attach_zstencil(fbo, zs)) {
 		return false;
+	}
 
 	return true;
 }
@@ -884,8 +936,9 @@ void device_set_render_target(gs_device_t *device, gs_texture_t *tex, gs_zstenci
 		}
 	}
 
-	if (!set_target(device, tex, 0, zstencil, GS_CS_SRGB))
+	if (!set_target(device, tex, 0, zstencil, GS_CS_SRGB)) {
 		goto fail;
+	}
 
 	return;
 
@@ -908,8 +961,9 @@ void device_set_render_target_with_color_space(gs_device_t *device, gs_texture_t
 		}
 	}
 
-	if (!set_target(device, tex, 0, zstencil, space))
+	if (!set_target(device, tex, 0, zstencil, space)) {
 		goto fail;
+	}
 
 	return;
 
@@ -931,8 +985,9 @@ void device_set_cube_render_target(gs_device_t *device, gs_texture_t *cubetex, i
 		}
 	}
 
-	if (!set_target(device, cubetex, side, zstencil, GS_CS_SRGB))
+	if (!set_target(device, cubetex, side, zstencil, GS_CS_SRGB)) {
 		goto fail;
+	}
 
 	return;
 
@@ -944,10 +999,11 @@ void device_enable_framebuffer_srgb(gs_device_t *device, bool enable)
 {
 	UNUSED_PARAMETER(device);
 
-	if (enable)
+	if (enable) {
 		gl_enable(GL_FRAMEBUFFER_SRGB);
-	else
+	} else {
 		gl_disable(GL_FRAMEBUFFER_SRGB);
+	}
 }
 
 bool device_framebuffer_srgb_enabled(gs_device_t *device)
@@ -995,8 +1051,9 @@ void device_copy_texture_region(gs_device_t *device, gs_texture_t *dst, uint32_t
 		goto fail;
 	}
 
-	if (!gl_copy_texture(device, dst, dst_x, dst_y, src, src_x, src_y, nw, nh))
+	if (!gl_copy_texture(device, dst, dst_x, dst_y, src, src_x, src_y, nw, nh)) {
 		goto fail;
+	}
 
 	return;
 
@@ -1069,8 +1126,9 @@ static void update_viewproj_matrix(struct gs_device *device)
 	matrix4_mul(&device->cur_viewproj, &device->cur_view, &cur_proj);
 	matrix4_transpose(&device->cur_viewproj, &device->cur_viewproj);
 
-	if (vs->viewproj)
+	if (vs->viewproj) {
 		gs_shader_set_matrix4(vs->viewproj, &device->cur_viewproj);
+	}
 }
 
 static inline struct gs_program *find_program(const struct gs_device *device)
@@ -1079,8 +1137,9 @@ static inline struct gs_program *find_program(const struct gs_device *device)
 
 	while (program) {
 		if (program->vertex_shader == device->cur_vertex_shader &&
-		    program->pixel_shader == device->cur_pixel_shader)
+		    program->pixel_shader == device->cur_pixel_shader) {
 			return program;
+		}
 
 		program = program->next;
 	}
@@ -1092,8 +1151,9 @@ static inline struct gs_program *get_shader_program(struct gs_device *device)
 {
 	struct gs_program *program = find_program(device);
 
-	if (!program)
+	if (!program) {
 		program = gs_program_create(device);
+	}
 
 	return program;
 }
@@ -1106,20 +1166,24 @@ void device_draw(gs_device_t *device, enum gs_draw_mode draw_mode, uint32_t star
 	gs_effect_t *effect = gs_get_effect();
 	struct gs_program *program;
 
-	if (!can_render(device, num_verts))
+	if (!can_render(device, num_verts)) {
 		goto fail;
+	}
 
-	if (effect)
+	if (effect) {
 		gs_effect_update_params(effect);
+	}
 
 	program = get_shader_program(device);
-	if (!program)
+	if (!program) {
 		goto fail;
+	}
 
-	if (vb)
+	if (vb) {
 		load_vb_buffers(program, vb, ib);
-	else
+	} else {
 		gl_bind_vertex_array(device->empty_vao);
+	}
 
 	if (program != device->cur_program && device->cur_program) {
 		glUseProgram(0);
@@ -1130,8 +1194,9 @@ void device_draw(gs_device_t *device, enum gs_draw_mode draw_mode, uint32_t star
 		device->cur_program = program;
 
 		glUseProgram(program->obj);
-		if (!gl_success("glUseProgram"))
+		if (!gl_success("glUseProgram")) {
 			goto fail;
+		}
 	}
 
 	update_viewproj_matrix(device);
@@ -1139,18 +1204,22 @@ void device_draw(gs_device_t *device, enum gs_draw_mode draw_mode, uint32_t star
 	program_update_params(program);
 
 	if (ib) {
-		if (num_verts == 0)
+		if (num_verts == 0) {
 			num_verts = (uint32_t)device->cur_index_buffer->num;
+		}
 		glDrawElements(topology, num_verts, ib->gl_type, (const GLvoid *)(start_vert * ib->width));
-		if (!gl_success("glDrawElements"))
+		if (!gl_success("glDrawElements")) {
 			goto fail;
+		}
 
 	} else {
-		if (num_verts == 0)
+		if (num_verts == 0) {
 			num_verts = (uint32_t)device->cur_vertex_buffer->num;
+		}
 		glDrawArrays(topology, start_vert, num_verts);
-		if (!gl_success("glDrawArrays"))
+		if (!gl_success("glDrawArrays")) {
 			goto fail;
+		}
 	}
 
 	return;
@@ -1185,8 +1254,9 @@ void device_clear(gs_device_t *device, uint32_t clear_flags, const struct vec4 *
 	}
 
 	glClear(gl_flags);
-	if (!gl_success("glClear"))
+	if (!gl_success("glClear")) {
 		blog(LOG_ERROR, "device_clear (GL) failed");
+	}
 
 	UNUSED_PARAMETER(device);
 }
@@ -1194,8 +1264,9 @@ void device_clear(gs_device_t *device, uint32_t clear_flags, const struct vec4 *
 void device_flush(gs_device_t *device)
 {
 #ifdef __APPLE__
-	if (!device->cur_swap)
+	if (!device->cur_swap) {
 		glFlush();
+	}
 #else
 	glFlush();
 
@@ -1205,20 +1276,23 @@ void device_flush(gs_device_t *device)
 
 void device_set_cull_mode(gs_device_t *device, enum gs_cull_mode mode)
 {
-	if (device->cur_cull_mode == mode)
+	if (device->cur_cull_mode == mode) {
 		return;
+	}
 
-	if (device->cur_cull_mode == GS_NEITHER)
+	if (device->cur_cull_mode == GS_NEITHER) {
 		gl_enable(GL_CULL_FACE);
+	}
 
 	device->cur_cull_mode = mode;
 
-	if (mode == GS_BACK)
+	if (mode == GS_BACK) {
 		gl_cull_face(GL_BACK);
-	else if (mode == GS_FRONT)
+	} else if (mode == GS_FRONT) {
 		gl_cull_face(GL_FRONT);
-	else
+	} else {
 		gl_disable(GL_CULL_FACE);
+	}
 }
 
 enum gs_cull_mode device_get_cull_mode(const gs_device_t *device)
@@ -1228,40 +1302,44 @@ enum gs_cull_mode device_get_cull_mode(const gs_device_t *device)
 
 void device_enable_blending(gs_device_t *device, bool enable)
 {
-	if (enable)
+	if (enable) {
 		gl_enable(GL_BLEND);
-	else
+	} else {
 		gl_disable(GL_BLEND);
+	}
 
 	UNUSED_PARAMETER(device);
 }
 
 void device_enable_depth_test(gs_device_t *device, bool enable)
 {
-	if (enable)
+	if (enable) {
 		gl_enable(GL_DEPTH_TEST);
-	else
+	} else {
 		gl_disable(GL_DEPTH_TEST);
+	}
 
 	UNUSED_PARAMETER(device);
 }
 
 void device_enable_stencil_test(gs_device_t *device, bool enable)
 {
-	if (enable)
+	if (enable) {
 		gl_enable(GL_STENCIL_TEST);
-	else
+	} else {
 		gl_disable(GL_STENCIL_TEST);
+	}
 
 	UNUSED_PARAMETER(device);
 }
 
 void device_enable_stencil_write(gs_device_t *device, bool enable)
 {
-	if (enable)
+	if (enable) {
 		glStencilMask(0xFFFFFFFF);
-	else
+	} else {
 		glStencilMask(0);
+	}
 
 	UNUSED_PARAMETER(device);
 }
@@ -1279,8 +1357,9 @@ void device_blend_function(gs_device_t *device, enum gs_blend_type src, enum gs_
 	GLenum gl_dst = convert_gs_blend_type(dest);
 
 	glBlendFunc(gl_src, gl_dst);
-	if (!gl_success("glBlendFunc"))
+	if (!gl_success("glBlendFunc")) {
 		blog(LOG_ERROR, "device_blend_function (GL) failed");
+	}
 
 	UNUSED_PARAMETER(device);
 }
@@ -1294,8 +1373,9 @@ void device_blend_function_separate(gs_device_t *device, enum gs_blend_type src_
 	GLenum gl_dst_a = convert_gs_blend_type(dest_a);
 
 	glBlendFuncSeparate(gl_src_c, gl_dst_c, gl_src_a, gl_dst_a);
-	if (!gl_success("glBlendFuncSeparate"))
+	if (!gl_success("glBlendFuncSeparate")) {
 		blog(LOG_ERROR, "device_blend_function_separate (GL) failed");
+	}
 
 	UNUSED_PARAMETER(device);
 }
@@ -1305,8 +1385,9 @@ void device_blend_op(gs_device_t *device, enum gs_blend_op_type op)
 	GLenum gl_blend_op = convert_gs_blend_op_type(op);
 
 	glBlendEquation(gl_blend_op);
-	if (!gl_success("glBlendEquation"))
+	if (!gl_success("glBlendEquation")) {
 		blog(LOG_ERROR, "device_blend_op (GL) failed");
+	}
 
 	UNUSED_PARAMETER(device);
 }
@@ -1316,8 +1397,9 @@ void device_depth_function(gs_device_t *device, enum gs_depth_test test)
 	GLenum gl_test = convert_gs_depth_test(test);
 
 	glDepthFunc(gl_test);
-	if (!gl_success("glDepthFunc"))
+	if (!gl_success("glDepthFunc")) {
 		blog(LOG_ERROR, "device_depth_function (GL) failed");
+	}
 
 	UNUSED_PARAMETER(device);
 }
@@ -1328,8 +1410,9 @@ void device_stencil_function(gs_device_t *device, enum gs_stencil_side side, enu
 	GLenum gl_test = convert_gs_depth_test(test);
 
 	glStencilFuncSeparate(gl_side, gl_test, 0, 0xFFFFFFFF);
-	if (!gl_success("glStencilFuncSeparate"))
+	if (!gl_success("glStencilFuncSeparate")) {
 		blog(LOG_ERROR, "device_stencil_function (GL) failed");
+	}
 
 	UNUSED_PARAMETER(device);
 }
@@ -1343,21 +1426,24 @@ void device_stencil_op(gs_device_t *device, enum gs_stencil_side side, enum gs_s
 	GLenum gl_zpass = convert_gs_stencil_op(zpass);
 
 	glStencilOpSeparate(gl_side, gl_fail, gl_zfail, gl_zpass);
-	if (!gl_success("glStencilOpSeparate"))
+	if (!gl_success("glStencilOpSeparate")) {
 		blog(LOG_ERROR, "device_stencil_op (GL) failed");
+	}
 
 	UNUSED_PARAMETER(device);
 }
 
 static inline uint32_t get_target_height(const struct gs_device *device)
 {
-	if (!device->cur_render_target)
+	if (!device->cur_render_target) {
 		return device_get_height(device);
+	}
 
-	if (device->cur_render_target->type == GS_TEXTURE_2D)
+	if (device->cur_render_target->type == GS_TEXTURE_2D) {
 		return gs_texture_get_height(device->cur_render_target);
-	else /* cube map */
+	} else { /* cube map */
 		return gs_cubetexture_get_size(device->cur_render_target);
+	}
 }
 
 void device_set_viewport(gs_device_t *device, int x, int y, int width, int height)
@@ -1373,12 +1459,14 @@ void device_set_viewport(gs_device_t *device, int x, int y, int width, int heigh
 	}
 
 	GLint gl_y = y;
-	if (base_height && !device->cur_fbo)
+	if (base_height && !device->cur_fbo) {
 		gl_y = base_height - y - height;
+	}
 
 	glViewport(x, gl_y, width, height);
-	if (!gl_success("glViewport"))
+	if (!gl_success("glViewport")) {
 		blog(LOG_ERROR, "device_set_viewport (GL) failed");
+	}
 
 	device->cur_viewport.x = x;
 	device->cur_viewport.y = y;
@@ -1397,8 +1485,9 @@ void device_set_scissor_rect(gs_device_t *device, const struct gs_rect *rect)
 
 	if (rect != NULL) {
 		glScissor(rect->x, rect->y, rect->cx, rect->cy);
-		if (gl_success("glScissor") && gl_enable(GL_SCISSOR_TEST))
+		if (gl_success("glScissor") && gl_enable(GL_SCISSOR_TEST)) {
 			return;
+		}
 
 	} else if (gl_disable(GL_SCISSOR_TEST)) {
 		return;
@@ -1466,8 +1555,9 @@ void device_projection_push(gs_device_t *device)
 void device_projection_pop(gs_device_t *device)
 {
 	struct matrix4 *end;
-	if (!device->proj_stack.num)
+	if (!device->proj_stack.num) {
 		return;
+	}
 
 	end = da_end(device->proj_stack);
 	device->cur_proj = *end;
@@ -1491,11 +1581,13 @@ void device_debug_marker_end(gs_device_t *device)
 
 void gs_swapchain_destroy(gs_swapchain_t *swapchain)
 {
-	if (!swapchain)
+	if (!swapchain) {
 		return;
+	}
 
-	if (swapchain->device->cur_swap == swapchain)
+	if (swapchain->device->cur_swap == swapchain) {
 		device_load_swapchain(swapchain->device, NULL);
+	}
 
 	gl_platform_cleanup_swapchain(swapchain);
 
@@ -1553,21 +1645,26 @@ enum gs_color_format gs_voltexture_get_color_format(const gs_texture_t *voltex)
 
 void gs_samplerstate_destroy(gs_samplerstate_t *samplerstate)
 {
-	if (!samplerstate)
+	if (!samplerstate) {
 		return;
+	}
 
-	if (samplerstate->device)
-		for (int i = 0; i < GS_MAX_TEXTURES; i++)
-			if (samplerstate->device->cur_samplers[i] == samplerstate)
+	if (samplerstate->device) {
+		for (int i = 0; i < GS_MAX_TEXTURES; i++) {
+			if (samplerstate->device->cur_samplers[i] == samplerstate) {
 				samplerstate->device->cur_samplers[i] = NULL;
+			}
+		}
+	}
 
 	samplerstate_release(samplerstate);
 }
 
 void gs_timer_destroy(gs_timer_t *timer)
 {
-	if (!timer)
+	if (!timer) {
 		return;
+	}
 
 	glDeleteQueries(2, timer->queries);
 	gl_success("glDeleteQueries");

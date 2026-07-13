@@ -50,10 +50,12 @@ static inline void canvas_dosignal(obs_canvas_t *canvas, const char *signal_obs,
 
 	calldata_init_fixed(&data, stack, sizeof(stack));
 	calldata_set_ptr(&data, "canvas", canvas);
-	if (signal_obs)
+	if (signal_obs) {
 		signal_handler_signal(obs->signals, signal_obs, &data);
-	if (signal_source)
+	}
+	if (signal_source) {
 		signal_handler_signal(canvas->context.signals, signal_source, &data);
+	}
 }
 
 static inline void canvas_dosignal_source(const char *signal, obs_canvas_t *canvas, obs_source_t *source)
@@ -77,8 +79,9 @@ void obs_canvas_release(obs_canvas_t *canvas)
 		return;
 	}
 
-	if (!canvas)
+	if (!canvas) {
 		return;
+	}
 
 	obs_weak_canvas_t *control = (obs_weak_canvas_t *)canvas->context.control;
 	if (obs_ref_release(&control->ref)) {
@@ -89,33 +92,38 @@ void obs_canvas_release(obs_canvas_t *canvas)
 
 void obs_weak_canvas_addref(obs_weak_canvas_t *weak)
 {
-	if (!weak)
+	if (!weak) {
 		return;
+	}
 
 	obs_weak_ref_addref(&weak->ref);
 }
 
 void obs_weak_canvas_release(obs_weak_canvas_t *weak)
 {
-	if (!weak)
+	if (!weak) {
 		return;
+	}
 
-	if (obs_weak_ref_release(&weak->ref))
+	if (obs_weak_ref_release(&weak->ref)) {
 		bfree(weak);
+	}
 }
 
 obs_canvas_t *obs_canvas_get_ref(obs_canvas_t *canvas)
 {
-	if (!canvas)
+	if (!canvas) {
 		return NULL;
+	}
 
 	return obs_weak_canvas_get_canvas((obs_weak_canvas_t *)canvas->context.control);
 }
 
 obs_weak_canvas_t *obs_canvas_get_weak_canvas(obs_canvas_t *canvas)
 {
-	if (!canvas)
+	if (!canvas) {
 		return NULL;
+	}
 
 	obs_weak_canvas_t *weak = (obs_weak_canvas_t *)canvas->context.control;
 	obs_weak_canvas_addref(weak);
@@ -124,11 +132,13 @@ obs_weak_canvas_t *obs_canvas_get_weak_canvas(obs_canvas_t *canvas)
 
 obs_canvas_t *obs_weak_canvas_get_canvas(obs_weak_canvas_t *weak)
 {
-	if (!weak)
+	if (!weak) {
 		return NULL;
+	}
 
-	if (obs_weak_ref_get_ref(&weak->ref))
+	if (obs_weak_ref_get_ref(&weak->ref)) {
 		return weak->canvas;
+	}
 
 	return NULL;
 }
@@ -139,12 +149,14 @@ obs_canvas_t *obs_weak_canvas_get_canvas(obs_weak_canvas_t *weak)
  * (or "Main" for the main canvas). Keeps the WxH fallback when unnamed. */
 static void obs_canvas_set_mix_debug_label(obs_canvas_t *canvas)
 {
-	if (!canvas->mix)
+	if (!canvas->mix) {
 		return;
+	}
 
 	const char *name = (canvas->flags & MAIN) ? "Main" : canvas->context.name;
-	if (!name || !*name)
+	if (!name || !*name) {
 		return;
+	}
 
 	bfree((void *)canvas->mix->debug_label);
 	canvas->mix->debug_label = bstrdup(name);
@@ -156,8 +168,9 @@ static obs_canvas_t *obs_canvas_create_internal(const char *name, const char *uu
 	struct obs_canvas *canvas = bzalloc(sizeof(struct obs_canvas));
 	canvas->flags = flags;
 
-	if (!obs_context_data_init(&canvas->context, OBS_OBJ_TYPE_CANVAS, NULL, name, uuid, NULL, private))
+	if (!obs_context_data_init(&canvas->context, OBS_OBJ_TYPE_CANVAS, NULL, name, uuid, NULL, private)) {
 		return NULL;
+	}
 
 	if (!signal_handler_add_array(canvas->context.signals, canvas_signals)) {
 		obs_context_data_free(&canvas->context);
@@ -228,8 +241,9 @@ void obs_canvas_destroy(obs_canvas_t *canvas)
 	obs_source_t *source = canvas->sources;
 	while (source) {
 		/* Canvases can hold strong refs to scene sources, release them here. */
-		if (canvas->flags & SCENE_REF && obs_source_is_scene(source))
+		if (canvas->flags & SCENE_REF && obs_source_is_scene(source)) {
 			obs_source_release(source);
+		}
 
 		source = source->context.hh.next;
 	}
@@ -252,8 +266,9 @@ void obs_canvas_destroy(obs_canvas_t *canvas)
 
 obs_data_t *obs_save_canvas(obs_canvas_t *canvas)
 {
-	if (canvas->flags & (EPHEMERAL | REMOVED))
+	if (canvas->flags & (EPHEMERAL | REMOVED)) {
 		return NULL;
+	}
 
 	obs_data_t *canvas_data = obs_data_create();
 
@@ -281,8 +296,9 @@ obs_canvas_t *obs_load_canvas(obs_data_t *data)
 /* Free canvas mix (if any) */
 void obs_canvas_clear_mix(obs_canvas_t *canvas)
 {
-	if (!canvas->mix)
+	if (!canvas->mix) {
 		return;
+	}
 
 	pthread_mutex_lock(&obs->video.mixes_mutex);
 	for (size_t i = 0; i < obs->video.mixes.num; i++) {
@@ -340,10 +356,12 @@ bool obs_canvas_reset_video_internal(obs_canvas_t *canvas, struct obs_video_info
 
 void obs_canvas_insert_source(obs_canvas_t *canvas, obs_source_t *source)
 {
-	if (canvas->flags & SCENE_REF && obs_source_is_scene(source))
+	if (canvas->flags & SCENE_REF && obs_source_is_scene(source)) {
 		obs_source_get_ref(source);
-	if (source->canvas)
+	}
+	if (source->canvas) {
 		obs_canvas_remove_source(source);
+	}
 
 	source->canvas = obs_canvas_get_weak_canvas(canvas);
 	obs_context_data_insert_name(&source->context, &canvas->sources_mutex, &canvas->sources);
@@ -355,8 +373,9 @@ static bool remove_groups_items_cb(obs_scene_t *scene, obs_sceneitem_t *item, vo
 	UNUSED_PARAMETER(scene);
 
 	obs_source_t *source = param;
-	if (item->source == source)
+	if (item->source == source) {
 		obs_sceneitem_remove(item);
+	}
 
 	return true;
 }
@@ -378,12 +397,14 @@ void obs_canvas_remove_source(obs_source_t *source)
 		obs_context_data_remove_name(&source->context, &canvas->sources_mutex, &canvas->sources);
 
 		canvas_dosignal_source("source_remove", canvas, source);
-		if (canvas->flags & SCENE_REF && obs_source_is_scene(source))
+		if (canvas->flags & SCENE_REF && obs_source_is_scene(source)) {
 			obs_source_release(source);
+		}
 
 		/* If source is a group, also remove it from all other scenes in the old canvas */
-		if (obs_source_is_group(source))
+		if (obs_source_is_group(source)) {
 			obs_canvas_enum_scenes(canvas, remove_groups_enum_cb, source);
+		}
 
 		obs_canvas_release(canvas);
 	}
@@ -406,8 +427,9 @@ void obs_canvas_rename_source(obs_source_t *source, const char *name)
 
 		signal_handler_signal(source->context.signals, "rename", &data);
 		signal_handler_signal(canvas->context.signals, "source_rename", &data);
-		if (canvas->flags & MAIN)
+		if (canvas->flags & MAIN) {
 			signal_handler_signal(obs->signals, "source_rename", &data);
+		}
 
 		calldata_free(&data);
 		bfree(prev_name);
@@ -420,25 +442,29 @@ void obs_canvas_rename_source(obs_source_t *source, const char *name)
 
 bool obs_canvas_reset_video(obs_canvas_t *canvas, struct obs_video_info *ovi)
 {
-	if (!ovi || canvas->flags & MAIN || obs_video_active())
+	if (!ovi || canvas->flags & MAIN || obs_video_active()) {
 		return false;
+	}
 
 	return obs_canvas_reset_video_internal(canvas, ovi);
 }
 
 bool obs_canvas_ensure_video(obs_canvas_t *canvas, struct obs_video_info *ovi)
 {
-	if (!ovi || !canvas || canvas->flags & MAIN)
+	if (!ovi || !canvas || canvas->flags & MAIN) {
 		return false;
-	if (canvas->mix)
+	}
+	if (canvas->mix) {
 		return true;
+	}
 	return obs_canvas_reset_video_internal(canvas, ovi);
 }
 
 void obs_canvas_clear_video(obs_canvas_t *canvas)
 {
-	if (!canvas || canvas->flags & MAIN || !canvas->mix)
+	if (!canvas || canvas->flags & MAIN || !canvas->mix) {
 		return;
+	}
 	obs_canvas_clear_mix(canvas);
 }
 
@@ -449,8 +475,9 @@ video_t *obs_canvas_get_video(const obs_canvas_t *canvas)
 
 bool obs_canvas_get_video_info(const obs_canvas_t *canvas, struct obs_video_info *ovi)
 {
-	if (!obs->video.graphics || !canvas->mix)
+	if (!obs->video.graphics || !canvas->mix) {
 		return false;
+	}
 
 	*ovi = canvas->mix->ovi;
 	return true;
@@ -465,8 +492,9 @@ void obs_canvas_set_channel(obs_canvas_t *canvas, uint32_t channel, obs_source_t
 {
 	assert(channel < MAX_CHANNELS);
 
-	if (channel >= MAX_CHANNELS)
+	if (channel >= MAX_CHANNELS) {
 		return;
+	}
 
 	struct obs_view *view = &canvas->view;
 
@@ -489,8 +517,9 @@ void obs_canvas_set_channel(obs_canvas_t *canvas, uint32_t channel, obs_source_t
 	calldata_set_ptr(&params, "source", source);
 
 	signal_handler_signal(canvas->context.signals, "channel_change", &params);
-	if (canvas->flags & MAIN)
+	if (canvas->flags & MAIN) {
 		signal_handler_signal(obs->signals, "channel_change", &params);
+	}
 
 	/* For some reason the original implementation allows overriding the source from the callback,
 	 * so just in case support that here as well. This isn't used anywhere in OBS itself. */
@@ -500,8 +529,9 @@ void obs_canvas_set_channel(obs_canvas_t *canvas, uint32_t channel, obs_source_t
 	calldata_free(&params);
 	pthread_mutex_unlock(&view->channels_mutex);
 
-	if (source)
+	if (source) {
 		obs_source_activate(source, view->type);
+	}
 
 	if (prev_source) {
 		obs_source_deactivate(prev_source, view->type);
@@ -527,19 +557,23 @@ void obs_canvas_scene_remove(obs_scene_t *scene)
 
 void obs_canvas_set_name(obs_canvas_t *canvas, const char *name)
 {
-	if (!name || !*name)
+	if (!name || !*name) {
 		return;
-	if (canvas->flags & MAIN) /* Do not allow renaming main canvases. */
+	}
+	if (canvas->flags & MAIN) { /* Do not allow renaming main canvases. */
 		return;
-	if (strcmp(name, canvas->context.name) == 0)
+	}
+	if (strcmp(name, canvas->context.name) == 0) {
 		return;
+	}
 
 	char *prev_name = bstrdup(canvas->context.name);
 
-	if (canvas->context.private)
+	if (canvas->context.private) {
 		obs_context_data_setname(&canvas->context, name);
-	else
+	} else {
 		obs_context_data_setname_ht(&canvas->context, name, &obs->data.named_canvases);
+	}
 
 	struct calldata data;
 	calldata_init(&data);
@@ -548,8 +582,9 @@ void obs_canvas_set_name(obs_canvas_t *canvas, const char *name)
 	calldata_set_string(&data, "prev_name", prev_name);
 	signal_handler_signal(canvas->context.signals, "rename", &data);
 
-	if (!canvas->context.private)
+	if (!canvas->context.private) {
 		signal_handler_signal(obs->signals, "canvas_rename", &data);
+	}
 
 	calldata_free(&data);
 	bfree(prev_name);
@@ -609,8 +644,9 @@ void obs_canvas_move_scene(obs_scene_t *scene, obs_canvas_t *dst)
 void obs_canvas_remove(obs_canvas_t *canvas)
 {
 	/* Do not allow removing the main canvas, or canvases already marked as removed. */
-	if (canvas->flags & (REMOVED | MAIN))
+	if (canvas->flags & (REMOVED | MAIN)) {
 		return;
+	}
 
 	obs_canvas_t *c = obs_canvas_get_ref(canvas);
 	if (c) {

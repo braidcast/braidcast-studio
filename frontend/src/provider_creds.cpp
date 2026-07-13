@@ -10,10 +10,12 @@
 std::string TwitchClientId()
 {
 	std::string id = TWITCH_CLIENTID;
-	if (id.empty())
+	if (id.empty()) {
 		return id;
-	if (TWITCH_HASH == 0)
+	}
+	if (TWITCH_HASH == 0) {
 		return id;
+	}
 	deobfuscate_str(&id[0], TWITCH_HASH);
 	return id;
 }

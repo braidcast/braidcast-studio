@@ -76,8 +76,7 @@ std::vector<std::string> ConnectedProviders()
 	std::vector<std::string> out;
 	for (const auto &entry : Accounts().All()) {
 		const std::string &providerId = entry.second.providerId;
-		if (IsAccountConnected(entry.second) &&
-		    std::find(out.begin(), out.end(), providerId) == out.end()) {
+		if (IsAccountConnected(entry.second) && std::find(out.begin(), out.end(), providerId) == out.end()) {
 			out.push_back(providerId);
 		}
 	}

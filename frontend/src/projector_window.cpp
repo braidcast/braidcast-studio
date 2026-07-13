@@ -38,11 +38,8 @@ struct KindName {
 	const char *name;
 };
 const KindName kKindNames[] = {
-	{ProjectorKind::Program, "program"},
-	{ProjectorKind::Scene, "scene"},
-	{ProjectorKind::Source, "source"},
-	{ProjectorKind::Canvas, "canvas"},
-	{ProjectorKind::Multiview, "multiview"},
+	{ProjectorKind::Program, "program"}, {ProjectorKind::Scene, "scene"},         {ProjectorKind::Source, "source"},
+	{ProjectorKind::Canvas, "canvas"},   {ProjectorKind::Multiview, "multiview"},
 };
 
 // How many scene cells each General `multiviewLayout` value maps to. The legacy
@@ -80,8 +77,8 @@ constexpr UINT kMultiviewRefreshMs = 500;
 
 // Cell chrome colors (0xAARRGGBB, as gs_effect_set_color consumes them -- matches
 // the legacy Multiview palette where programColor 0xFFD00000 renders red).
-constexpr uint32_t kMvCellBorder = 0xFF3C3C3C;   // inactive cell outline (dark gray)
-constexpr uint32_t kMvActiveBorder = 0xFFD00000; // active/program cell outline (red)
+constexpr uint32_t kMvCellBorder = 0xFF3C3C3C;      // inactive cell outline (dark gray)
+constexpr uint32_t kMvActiveBorder = 0xFFD00000;    // active/program cell outline (red)
 constexpr uint32_t kMvLabelBackground = 0xCC000000; // translucent black label plate
 
 ProjectorManager *g_instance = nullptr;
@@ -370,8 +367,8 @@ void DrawMultiviewLabel(obs_source_t *label, float cellX, float cellY, float cel
 		return;
 	}
 	const float pad = 4.0f;
-	float s = (cellH * 0.10f) / lh;             // target ~10% of cell height
-	const float maxW = cellW - 2.0f * pad;      // never wider than the cell
+	float s = (cellH * 0.10f) / lh;        // target ~10% of cell height
+	const float maxW = cellW - 2.0f * pad; // never wider than the cell
 	if (maxW > 0.0f && lw * s > maxW) {
 		s = maxW / lw;
 	}
@@ -950,8 +947,8 @@ ProjectorManager::~ProjectorManager()
 	DestroyAll();
 }
 
-int ProjectorManager::Open(ProjectorKind kind, const std::string &name, const std::string &canvasUuid,
-			   bool fullscreen, int monitorIndex, std::string &error)
+int ProjectorManager::Open(ProjectorKind kind, const std::string &name, const std::string &canvasUuid, bool fullscreen,
+			   int monitorIndex, std::string &error)
 {
 	// Resolve the chosen monitor's rect. Fullscreen requires a valid index;
 	// windowed falls back to the primary (or the first) monitor.
@@ -1053,8 +1050,8 @@ std::vector<ProjectorManager::ProjectorInfo> ProjectorManager::List() const
 {
 	std::vector<ProjectorInfo> out;
 	for (const auto &p : projectors_) {
-		out.push_back(ProjectorInfo{p->Id(), p->Kind(), p->Name(), p->CanvasUuid(), p->Mode(),
-					    p->MonitorIndex()});
+		out.push_back(
+			ProjectorInfo{p->Id(), p->Kind(), p->Name(), p->CanvasUuid(), p->Mode(), p->MonitorIndex()});
 	}
 	return out;
 }

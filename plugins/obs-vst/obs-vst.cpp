@@ -271,9 +271,10 @@ static void fill_out_plugins(obs_property_t *list)
 	namespace fs = std::filesystem;
 	for (const std::wstring &dir : dir_list) {
 		std::error_code ec;
-		fs::recursive_directory_iterator it(
-			dir, fs::directory_options::follow_directory_symlink | fs::directory_options::skip_permission_denied,
-			ec);
+		fs::recursive_directory_iterator it(dir,
+						    fs::directory_options::follow_directory_symlink |
+							    fs::directory_options::skip_permission_denied,
+						    ec);
 		if (ec) {
 			continue;
 		}

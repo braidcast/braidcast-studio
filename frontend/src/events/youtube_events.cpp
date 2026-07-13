@@ -43,7 +43,9 @@ using TimeUtil::Rfc3339ToEpochMs;
 void YouTubeEvents::collect(const EventContext &ctx, OAuth::OAuthAccount &acct,
 			    const std::function<void(NormalizedEvent &&)> &sink)
 {
-	const auto canceled = [&] { return stopped_.load() || (ctx.canceled && ctx.canceled()); };
+	const auto canceled = [&] {
+		return stopped_.load() || (ctx.canceled && ctx.canceled());
+	};
 
 	// Small helper: one authed GET, tolerant of a 401 (SendAuthed refreshes) and
 	// graceful on any other non-2xx (missing enablement / disabled feature / quota) --
@@ -84,8 +86,8 @@ void YouTubeEvents::collect(const EventContext &ctx, OAuth::OAuthAccount &acct,
 	//    only catches ones from connect-time onward.
 	if (!provider_->LiveChatActive()) {
 		json j;
-		const std::string url = std::string(kSuperChatEventsUrl) +
-					"?part=snippet&maxResults=" + std::to_string(kMaxResults);
+		const std::string url =
+			std::string(kSuperChatEventsUrl) + "?part=snippet&maxResults=" + std::to_string(kMaxResults);
 		if (fetch("superChatEvents", url, j)) {
 			const json &items = Obj(j, "items");
 			if (items.is_array()) {
@@ -101,10 +103,11 @@ void YouTubeEvents::collect(const EventContext &ctx, OAuth::OAuthAccount &acct,
 					// superChatEvents.list reports Super Stickers too; label them like the live
 					// path so the two content keys align (else a sticker would still double).
 					const std::string type = Bool(snippet, "isSuperStickerEvent") ? "supersticker"
-											      : "superchat";
+												      : "superchat";
 					const int64_t micros = NumLoose(snippet, "amountMicros");
 					const int64_t createdMs = Rfc3339ToEpochMs(Str(snippet, "createdAt"));
-					const std::string supporterChannelId = Str(Obj(snippet, "supporterDetails"), "channelId");
+					const std::string supporterChannelId =
+						Str(Obj(snippet, "supporterDetails"), "channelId");
 
 					NormalizedEvent ev;
 					ev.platform = "youtube";
@@ -116,7 +119,8 @@ void YouTubeEvents::collect(const EventContext &ctx, OAuth::OAuthAccount &acct,
 					// then won't cross-path-dedupe, an accepted edge.
 					ev.id = supporterChannelId.empty()
 							? ("youtube:" + type + ":" + itemId)
-							: YouTubeMoneyEventId(type, supporterChannelId, micros, createdMs / 1000);
+							: YouTubeMoneyEventId(type, supporterChannelId, micros,
+									      createdMs / 1000);
 					ev.actorName = Str(Obj(snippet, "supporterDetails"), "displayName");
 					// amountMicros is micros of the currency; store MINOR units (cents) for the
 					// dock to format: micros / 10000 = cents.
@@ -134,9 +138,9 @@ void YouTubeEvents::collect(const EventContext &ctx, OAuth::OAuthAccount &acct,
 	//    membership -> type "follow" (memberships arrive as newSponsor via the live chat).
 	{
 		json j;
-		const std::string url = std::string(kSubscriptionsUrl) +
-					"?part=subscriberSnippet&myRecentSubscribers=true&maxResults=" +
-					std::to_string(kMaxResults);
+		const std::string url =
+			std::string(kSubscriptionsUrl) +
+			"?part=subscriberSnippet&myRecentSubscribers=true&maxResults=" + std::to_string(kMaxResults);
 		if (fetch("subscriptions", url, j)) {
 			const json &items = Obj(j, "items");
 			if (items.is_array()) {

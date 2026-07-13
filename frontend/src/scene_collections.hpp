@@ -73,7 +73,8 @@ public:
 	// in-memory scenes/bindings/links are flushed to disk first so the copy captures
 	// the live state. Does NOT switch the active collection. Saves the index.
 	// Returns the new record, or nullptr (with `error`) when `sourceId` is unknown.
-	const SceneCollectionRecord *Duplicate(const std::string &sourceId, const std::string &name, std::string &error);
+	const SceneCollectionRecord *Duplicate(const std::string &sourceId, const std::string &name,
+					       std::string &error);
 
 	// Switch the active collection to `id`: persist the outgoing collection's scenes,
 	// tear its scene world down leak-safely (mirroring shutdown's drain), make `id`
@@ -92,7 +93,11 @@ public:
 	bool Remove(const std::string &id, std::string &error);
 
 	// Drop the in-memory list without touching disk. For teardown symmetry.
-	void Clear() { collections_.clear(); activeId_.clear(); }
+	void Clear()
+	{
+		collections_.clear();
+		activeId_.clear();
+	}
 
 	// True when the last Load() found the index file present but unparseable (its
 	// .bak also failed). The caller must then NOT first-run-seed -- a fresh seed

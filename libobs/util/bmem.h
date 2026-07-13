@@ -46,16 +46,18 @@ EXPORT void bmem_dump_outstanding(void);
 static inline void *bzalloc(size_t size)
 {
 	void *mem = bmalloc(size);
-	if (mem)
+	if (mem) {
 		memset(mem, 0, size);
+	}
 	return mem;
 }
 
 static inline char *bstrdup_n(const char *str, size_t n)
 {
 	char *dup;
-	if (!str)
+	if (!str) {
 		return NULL;
+	}
 
 	dup = (char *)bmemdup(str, n + 1);
 	dup[n] = 0;
@@ -66,8 +68,9 @@ static inline char *bstrdup_n(const char *str, size_t n)
 static inline wchar_t *bwstrdup_n(const wchar_t *str, size_t n)
 {
 	wchar_t *dup;
-	if (!str)
+	if (!str) {
 		return NULL;
+	}
 
 	dup = (wchar_t *)bmemdup(str, (n + 1) * sizeof(wchar_t));
 	dup[n] = 0;
@@ -77,16 +80,18 @@ static inline wchar_t *bwstrdup_n(const wchar_t *str, size_t n)
 
 static inline char *bstrdup(const char *str)
 {
-	if (!str)
+	if (!str) {
 		return NULL;
+	}
 
 	return bstrdup_n(str, strlen(str));
 }
 
 static inline wchar_t *bwstrdup(const wchar_t *str)
 {
-	if (!str)
+	if (!str) {
 		return NULL;
+	}
 
 	return bwstrdup_n(str, wcslen(str));
 }

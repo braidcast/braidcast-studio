@@ -46,8 +46,8 @@ public:
 
 private:
 	OAuth::YouTubeProvider &owner_;
-	std::mutex runMutex_;              // serializes connect() across overlapping Start/Stop
-	std::atomic<bool> stop_{false};    // set by disconnect(); secondary to ctx.canceled()
+	std::mutex runMutex_;           // serializes connect() across overlapping Start/Stop
+	std::atomic<bool> stop_{false}; // set by disconnect(); secondary to ctx.canceled()
 };
 
 } // namespace Chat

@@ -60,9 +60,8 @@ json ParseFragments(const std::string &content)
 			pos = start + 1;
 			continue;
 		}
-		frags.push_back(json{{"type", "emote"},
-				     {"code", name},
-				     {"url", kEmoteCdnPrefix + id + kEmoteCdnSuffix}});
+		frags.push_back(
+			json{{"type", "emote"}, {"code", name}, {"url", kEmoteCdnPrefix + id + kEmoteCdnSuffix}});
 		pos = close + 1;
 	}
 	return frags;
@@ -167,7 +166,9 @@ bool KickChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, const 
 
 	const std::string pusherUrl = KickPusherUrl();
 
-	const auto canceled = [&] { return stop_.load(std::memory_order_acquire) || ctx.canceled(); };
+	const auto canceled = [&] {
+		return stop_.load(std::memory_order_acquire) || ctx.canceled();
+	};
 
 	std::string chatroomId; // resolved once, cached for the session
 	// Third-party (7TV/BTTV) emote map, local to this worker: built once after the
@@ -233,8 +234,8 @@ bool KickChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, const 
 			if (event == "pusher:connection_established") {
 				// Public channel -> empty auth (research §Subscribe frame).
 				ws.sendText(json{{"event", "pusher:subscribe"},
-						 {"data", json{{"auth", ""},
-							       {"channel", "chatrooms." + chatroomId + ".v2"}}}}
+						 {"data",
+						  json{{"auth", ""}, {"channel", "chatrooms." + chatroomId + ".v2"}}}}
 						    .dump());
 			} else if (event == "pusher_internal:subscription_succeeded") {
 				backoff.reset();

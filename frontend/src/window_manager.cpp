@@ -35,7 +35,8 @@ ATOM RegisterDetachedClass(HINSTANCE instance)
 } // namespace
 
 WindowManager::WindowManager(HINSTANCE instance, const std::string &bundleBaseUrl)
-	: instance_(instance), bundleBaseUrl_(bundleBaseUrl)
+	: instance_(instance),
+	  bundleBaseUrl_(bundleBaseUrl)
 {
 	RegisterDetachedClass(instance_);
 }
@@ -81,9 +82,8 @@ int WindowManager::Detach(const std::string &dockId)
 	RECT rc = {0, 0, 960, 540};
 	const DWORD style = WS_OVERLAPPEDWINDOW;
 	AdjustWindowRect(&rc, style, FALSE);
-	HWND hwnd = CreateWindowExW(0, kDetachedClassName, L"Braidcast — Detached", style, CW_USEDEFAULT,
-				   CW_USEDEFAULT, rc.right - rc.left, rc.bottom - rc.top, nullptr, nullptr, instance_,
-				   nullptr);
+	HWND hwnd = CreateWindowExW(0, kDetachedClassName, L"Braidcast — Detached", style, CW_USEDEFAULT, CW_USEDEFAULT,
+				    rc.right - rc.left, rc.bottom - rc.top, nullptr, nullptr, instance_, nullptr);
 	if (!hwnd) {
 		HostLog("[window] CreateWindowExW FAILED for windowId=" + std::to_string(windowId));
 		return 0;
@@ -99,8 +99,7 @@ int WindowManager::Detach(const std::string &dockId)
 	CefWindowInfo window_info;
 	RECT client_rc;
 	GetClientRect(hwnd, &client_rc);
-	window_info.SetAsChild(hwnd,
-			       CefRect(0, 0, client_rc.right - client_rc.left, client_rc.bottom - client_rc.top));
+	window_info.SetAsChild(hwnd, CefRect(0, 0, client_rc.right - client_rc.left, client_rc.bottom - client_rc.top));
 
 	CefRefPtr<CefBrowser> browser =
 		CefBrowserHost::CreateBrowserSync(window_info, client, url, browser_settings, nullptr, nullptr);
@@ -236,9 +235,10 @@ LRESULT CALLBACK WindowManager::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPAR
 							     SWP_NOZORDER | SWP_NOACTIVATE);
 					}
 					if (wparam == SIZE_MAXIMIZED || wparam == SIZE_RESTORED) {
-						Bridge::EmitEvent(EventNames::kWindowStateChanged,
-								  Bridge::json{{"windowId", w->windowId},
-									       {"maximized", wparam == SIZE_MAXIMIZED}});
+						Bridge::EmitEvent(
+							EventNames::kWindowStateChanged,
+							Bridge::json{{"windowId", w->windowId},
+								     {"maximized", wparam == SIZE_MAXIMIZED}});
 					}
 				}
 			}

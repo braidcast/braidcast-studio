@@ -27,9 +27,8 @@ struct OutputBinding {
  * binding, is enabled, and targets the same profile (one RTMP key = one live
  * stream). Callers pre-check profileUuid non-empty. Live outputs are inherently
  * enabled, so that caller passes rowEnabled = true. */
-inline bool BindingMatchesProfile(const std::string &rowBindingUuid, const std::string &rowProfileUuid,
-				  bool rowEnabled, const std::string &excludeBindingUuid,
-				  const std::string &profileUuid)
+inline bool BindingMatchesProfile(const std::string &rowBindingUuid, const std::string &rowProfileUuid, bool rowEnabled,
+				  const std::string &excludeBindingUuid, const std::string &profileUuid)
 {
 	return rowBindingUuid != excludeBindingUuid && rowEnabled && rowProfileUuid == profileUuid;
 }

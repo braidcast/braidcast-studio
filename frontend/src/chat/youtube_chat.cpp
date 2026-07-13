@@ -193,7 +193,9 @@ bool YouTubeChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, con
 		~ActiveGuard() { p.SetLiveChatActive(false); }
 	} activeGuard{owner_};
 
-	auto canceled = [&] { return stop_.load(std::memory_order_acquire) || (ctx.canceled && ctx.canceled()); };
+	auto canceled = [&] {
+		return stop_.load(std::memory_order_acquire) || (ctx.canceled && ctx.canceled());
+	};
 	auto emitState = [&](bool connected, const std::string &stateErr) {
 		EmitChatState(ctx, "youtube", connected, stateErr);
 	};
@@ -210,8 +212,8 @@ bool YouTubeChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, con
 	Backoff backoff(std::chrono::milliseconds(2000), std::chrono::milliseconds(30000));
 
 	while (!canceled()) {
-		std::string url = std::string(kLiveChatMessagesUrl) +
-				  "?liveChatId=" + Http::UrlEncode(liveChatId) + "&part=snippet,authorDetails";
+		std::string url = std::string(kLiveChatMessagesUrl) + "?liveChatId=" + Http::UrlEncode(liveChatId) +
+				  "&part=snippet,authorDetails";
 		if (!pageToken.empty()) {
 			url += "&pageToken=" + Http::UrlEncode(pageToken);
 		}

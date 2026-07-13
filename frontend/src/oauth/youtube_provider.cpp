@@ -69,11 +69,9 @@ bool ContainsCI(const std::string &haystack, const std::string &needle)
 	if (needle.empty()) {
 		return true;
 	}
-	const auto it = std::search(haystack.begin(), haystack.end(), needle.begin(), needle.end(),
-				    [](char a, char b) {
-					    return std::tolower(static_cast<unsigned char>(a)) ==
-						   std::tolower(static_cast<unsigned char>(b));
-				    });
+	const auto it = std::search(haystack.begin(), haystack.end(), needle.begin(), needle.end(), [](char a, char b) {
+		return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b));
+	});
 	return it != haystack.end();
 }
 
@@ -162,16 +160,22 @@ json YouTubeProvider::capabilityJson() const
 			      {"tier", "simple"},
 			      {"shareable", true},
 			      {"max", 100}});
-	fields.push_back(json{
-		{"key", "category"}, {"label", "Category"}, {"type", "category"}, {"tier", "simple"}, {"shareable", false}});
+	fields.push_back(json{{"key", "category"},
+			      {"label", "Category"},
+			      {"type", "category"},
+			      {"tier", "simple"},
+			      {"shareable", false}});
 	fields.push_back(json{{"key", "tags"},
 			      {"label", "Tags"},
 			      {"type", "tags"},
 			      {"tier", "simple"},
 			      {"shareable", true},
 			      {"max", 500}});
-	fields.push_back(json{
-		{"key", "thumbnail"}, {"label", "Thumbnail"}, {"type", "image"}, {"tier", "simple"}, {"shareable", false}});
+	fields.push_back(json{{"key", "thumbnail"},
+			      {"label", "Thumbnail"},
+			      {"type", "image"},
+			      {"tier", "simple"},
+			      {"shareable", false}});
 	fields.push_back(json{{"key", "description"},
 			      {"label", "Description"},
 			      {"type", "textarea"},
@@ -193,8 +197,8 @@ json YouTubeProvider::capabilityJson() const
 			      {"options", json::array({json{{"value", "normal"}, {"label", "Normal"}},
 						       json{{"value", "low"}, {"label", "Low latency"}},
 						       json{{"value", "ultraLow"}, {"label", "Ultra-low latency"}}})}});
-	fields.push_back(json{
-		{"key", "dvr"}, {"label", "DVR"}, {"type", "bool"}, {"tier", "advanced"}, {"shareable", false}});
+	fields.push_back(
+		json{{"key", "dvr"}, {"label", "DVR"}, {"type", "bool"}, {"tier", "advanced"}, {"shareable", false}});
 	fields.push_back(json{{"key", "madeForKids"},
 			      {"label", "Made for kids"},
 			      {"type", "bool"},
@@ -302,7 +306,8 @@ bool YouTubeProvider::searchCategories(OAuthAccount &acct, const std::string &qu
 			auto it = j.find("items");
 			if (it != j.end() && it->is_array()) {
 				for (const json &row : *it) {
-					if (!row.is_object() || !row.contains("snippet") || !row["snippet"].is_object()) {
+					if (!row.is_object() || !row.contains("snippet") ||
+					    !row["snippet"].is_object()) {
 						continue;
 					}
 					const json &snippet = row["snippet"];

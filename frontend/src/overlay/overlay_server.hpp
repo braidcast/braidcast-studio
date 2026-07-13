@@ -75,7 +75,7 @@ private:
 	bool portChanged_ = false;
 	std::string lastError_;
 
-	std::mutex sseMutex_;                                 // guards sockets_ + the fields below
+	std::mutex sseMutex_;                                // guards sockets_ + the fields below
 	std::map<std::string, std::set<uintptr_t>> sockets_; // widgetId -> SSE sockets
 
 	// BroadcastFrame snapshots handles then sends OUTSIDE sseMutex_ so one slow client

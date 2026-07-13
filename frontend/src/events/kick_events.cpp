@@ -127,7 +127,8 @@ bool Normalize(const std::string &event, const json &outer, NormalizedEvent &ev)
 		}
 		ev.amount = NumLoose(msg, "numberOfViewers");
 		const std::string mid = Str(msg, "id");
-		ev.id = mid.empty() ? ("kick:raid:" + ev.actorName + ":" + std::to_string(ev.ts)) : ("kick:raid:" + mid);
+		ev.id = mid.empty() ? ("kick:raid:" + ev.actorName + ":" + std::to_string(ev.ts))
+				    : ("kick:raid:" + mid);
 		return true;
 	}
 
@@ -208,7 +209,9 @@ bool KickEvents::connect(const EventContext &ctx, OAuth::OAuthAccount &acct, std
 	std::lock_guard<std::mutex> run(runMutex_);
 	stopped_.store(false);
 
-	const auto canceled = [&] { return stopped_.load() || (ctx.canceled && ctx.canceled()); };
+	const auto canceled = [&] {
+		return stopped_.load() || (ctx.canceled && ctx.canceled());
+	};
 
 	if (!Chat::WsClient::WebSocketsSupported()) {
 		err = "libcurl lacks WebSocket support; Kick events unavailable";

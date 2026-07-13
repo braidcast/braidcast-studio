@@ -319,7 +319,8 @@ json BuildBadges(const std::string &badgeTag)
 	size_t p = 0;
 	while (p < badgeTag.size()) {
 		const size_t comma = badgeTag.find(',', p);
-		const std::string entry = badgeTag.substr(p, (comma == std::string::npos ? badgeTag.size() : comma) - p);
+		const std::string entry =
+			badgeTag.substr(p, (comma == std::string::npos ? badgeTag.size() : comma) - p);
 		const std::string kind = entry.substr(0, entry.find('/'));
 		if (!kind.empty()) {
 			// Twitch badge images need the Get Chat Badges API to map set-id ->
@@ -364,7 +365,9 @@ bool TwitchChat::connect(const Chat::ChatContext &ctx, OAuthAccount &acct, const
 		channel_ = channel;
 	}
 
-	const auto canceled = [&] { return stopped_.load() || (ctx.canceled && ctx.canceled()); };
+	const auto canceled = [&] {
+		return stopped_.load() || (ctx.canceled && ctx.canceled());
+	};
 
 	// Build the third-party emote map ONCE, before the (re)connect loop starts. This
 	// runs on the chat worker thread and the read loop only READS the map on that same
@@ -456,10 +459,9 @@ bool TwitchChat::connect(const Chat::ChatContext &ctx, OAuthAccount &acct, const
 					Chat::EmitChatState(ctx, "twitch", true);
 					continue;
 				}
-				if (m.command == "NOTICE" &&
-				    (ContainsCI(m.trailing, "authentication failed") ||
-				     ContainsCI(m.trailing, "login unsuccessful") ||
-				     ContainsCI(m.trailing, "login authentication"))) {
+				if (m.command == "NOTICE" && (ContainsCI(m.trailing, "authentication failed") ||
+							      ContainsCI(m.trailing, "login unsuccessful") ||
+							      ContainsCI(m.trailing, "login authentication"))) {
 					authFailed = true;
 					err = "Twitch chat login failed: " + m.trailing;
 					break;
@@ -488,9 +490,9 @@ bool TwitchChat::connect(const Chat::ChatContext &ctx, OAuthAccount &acct, const
 								{"color", tag("color")},
 								{"badges", BuildBadges(tag("badges"))}}},
 						{"fragments",
-						 Chat::ApplyThirdPartyEmotes(
-							 BuildFragments(m.trailing, ParseEmotes(tag("emotes"))),
-							 thirdPartyEmotes_)},
+						 Chat::ApplyThirdPartyEmotes(BuildFragments(m.trailing,
+											    ParseEmotes(tag("emotes"))),
+									     thirdPartyEmotes_)},
 					});
 				}
 			}

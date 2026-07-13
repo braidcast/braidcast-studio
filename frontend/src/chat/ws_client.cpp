@@ -121,8 +121,7 @@ bool WsClient::sendText(const std::string &text)
 		return false;
 	}
 	size_t sent = 0;
-	const CURLcode code =
-		curl_ws_send(static_cast<CURL *>(easy_), text.data(), text.size(), &sent, 0, CURLWS_TEXT);
+	const CURLcode code = curl_ws_send(static_cast<CURL *>(easy_), text.data(), text.size(), &sent, 0, CURLWS_TEXT);
 	return code == CURLE_OK;
 }
 

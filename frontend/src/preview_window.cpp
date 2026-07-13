@@ -971,7 +971,11 @@ void RenderPreview(void *data, uint32_t cx, uint32_t cy)
 } // namespace
 
 PreviewSurface::PreviewSurface(HWND host, HINSTANCE instance, obs_canvas_t *targetCanvas, int windowId)
-	: state_(new State()), host_(host), instance_(instance), targetCanvas_(targetCanvas), windowId_(windowId)
+	: state_(new State()),
+	  host_(host),
+	  instance_(instance),
+	  targetCanvas_(targetCanvas),
+	  windowId_(windowId)
 {
 	state_->targetCanvas = targetCanvas;
 }
@@ -1147,8 +1151,8 @@ bool SourceSnapCb(obs_scene_t * /* scene */, obs_sceneitem_t *item, void *param)
 // lines, or other items' edges. Ports the legacy GetSnapOffset (edges/center)
 // and SnapItemMovement (source) combine logic. snapDistance is already in canvas
 // space here, so unlike the legacy we do NOT divide by the surface scale.
-vec3 CanvasSnapOffset(const GeneralSettings &gs, obs_scene_t *scene, int64_t draggedId, const vec3 &tl,
-		      const vec3 &br, float baseW, float baseH)
+vec3 CanvasSnapOffset(const GeneralSettings &gs, obs_scene_t *scene, int64_t draggedId, const vec3 &tl, const vec3 &br,
+		      float baseW, float baseH)
 {
 	vec3 clampOffset;
 	vec3_zero(&clampOffset);
@@ -1264,8 +1268,8 @@ void PreviewSurface::OnMouseMove(int mx, int my)
 				tl.y += shiftY;
 				br.y += shiftY;
 
-				vec3 snap = CanvasSnapOffset(gs, scene, state_->drag.id, tl, br,
-							     float(ovi.base_width), float(ovi.base_height));
+				vec3 snap = CanvasSnapOffset(gs, scene, state_->drag.id, tl, br, float(ovi.base_width),
+							     float(ovi.base_height));
 				offX += snap.x;
 				offY += snap.y;
 			}
@@ -1649,7 +1653,7 @@ LRESULT CALLBACK PreviewWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpara
 // surface) and the owned PreviewSurface. unique_ptr so the surface keeps a stable
 // address while the list grows (the WndProc maps an HWND to a surface by pointer).
 struct ManagedSurface {
-	int windowId; // 0 = main window
+	int windowId;     // 0 = main window
 	std::string uuid; // "" => Default surface
 	std::unique_ptr<PreviewSurface> surface;
 };
@@ -1731,8 +1735,8 @@ PreviewSurface *PreviewManager::SurfaceFor(int windowId, const std::string &canv
 		ObsBootstrap::CanvasRuntime().AddPreview(canvasUuid);
 	}
 
-	impl_->surfaces.push_back(
-		ManagedSurface{windowId, key, std::make_unique<PreviewSurface>(host, instance_, targetCanvas, windowId)});
+	impl_->surfaces.push_back(ManagedSurface{
+		windowId, key, std::make_unique<PreviewSurface>(host, instance_, targetCanvas, windowId)});
 	HostLog("[preview] surface created window=" + std::to_string(windowId) +
 		(key.empty() ? " canvas=Default" : " canvas=" + key));
 	return impl_->surfaces.back().surface.get();
@@ -1804,8 +1808,8 @@ void PreviewManager::DestroyWindow(int windowId)
 			++it;
 		}
 	}
-	HostLog("[preview] DestroyWindow(windowId=" + std::to_string(windowId) +
-		") destroyed " + std::to_string(destroyed) + " surface(s)");
+	HostLog("[preview] DestroyWindow(windowId=" + std::to_string(windowId) + ") destroyed " +
+		std::to_string(destroyed) + " surface(s)");
 }
 
 void PreviewManager::OnVideoResetAll()

@@ -1052,10 +1052,12 @@ static inline void obs_source_dosignal(struct obs_source *source, const char *si
 
 	calldata_init_fixed(&data, stack, sizeof(stack));
 	calldata_set_ptr(&data, "source", source);
-	if (signal_obs && !source->context.private)
+	if (signal_obs && !source->context.private) {
 		signal_handler_signal(obs->signals, signal_obs, &data);
-	if (signal_source)
+	}
+	if (signal_source) {
 		signal_handler_signal(source->context.signals, signal_source, &data);
+	}
 }
 
 static inline void obs_source_dosignal_canvas(struct obs_source *source, struct obs_canvas *canvas,
@@ -1067,10 +1069,12 @@ static inline void obs_source_dosignal_canvas(struct obs_source *source, struct 
 	calldata_init_fixed(&data, stack, sizeof(stack));
 	calldata_set_ptr(&data, "source", source);
 	calldata_set_ptr(&data, "canvas", canvas);
-	if (signal_obs && !source->context.private)
+	if (signal_obs && !source->context.private) {
 		signal_handler_signal(obs->signals, signal_obs, &data);
-	if (signal_source)
+	}
+	if (signal_source) {
 		signal_handler_signal(source->context.signals, signal_source, &data);
+	}
 }
 
 /* maximum timestamp variance in nanoseconds */
@@ -1078,10 +1082,11 @@ static inline void obs_source_dosignal_canvas(struct obs_source *source, struct 
 
 static inline bool frame_out_of_bounds(const obs_source_t *source, uint64_t ts)
 {
-	if (ts < source->last_frame_ts)
+	if (ts < source->last_frame_ts) {
 		return ((source->last_frame_ts - ts) > MAX_TS_VAR);
-	else
+	} else {
 		return ((ts - source->last_frame_ts) > MAX_TS_VAR);
+	}
 }
 
 static inline enum gs_color_format convert_video_format(enum video_format format, enum video_trc trc)

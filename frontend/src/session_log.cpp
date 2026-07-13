@@ -23,7 +23,7 @@ constexpr size_t kLineBuf = 8192;
 
 std::mutex g_mutex; // guards g_file (blog is called from many threads)
 std::ofstream g_file;
-std::string g_path;     // absolute path to this session's log, "" if unopened
+std::string g_path; // absolute path to this session's log, "" if unopened
 bool g_initialized = false;
 
 log_handler_t g_prevHandler = nullptr;
