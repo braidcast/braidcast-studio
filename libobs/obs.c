@@ -2304,27 +2304,6 @@ void obs_set_render_debug(bool enabled)
 	source_profiler_gpu_enable(enabled);
 }
 
-void obs_inc_main_render_needed(void)
-{
-	if (!obs)
-		return;
-
-	os_atomic_inc_long(&obs->video.main_render_refs);
-}
-
-void obs_dec_main_render_needed(void)
-{
-	if (!obs)
-		return;
-
-	/* An unbalanced dec (no paired inc) leaves the count negative, which fails SAFE:
-	 * the gate's refs==0 test stays false so the Main mix keeps compositing (wasteful,
-	 * never black). Log it loudly rather than masking it with a non-atomic reset that
-	 * could steal a concurrent valid inc from another thread. */
-	if (os_atomic_dec_long(&obs->video.main_render_refs) < 0)
-		blog(LOG_WARNING, "obs_dec_main_render_needed: unbalanced dec (main_render_refs < 0)");
-}
-
 static obs_source_t *obs_load_source_type(obs_data_t *source_data, bool is_private)
 {
 	obs_data_array_t *filters = obs_data_get_array(source_data, "filters");

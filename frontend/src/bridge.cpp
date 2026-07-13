@@ -7867,18 +7867,7 @@ bool MethodScreenshotTakeProgram(const json &params, json &result, std::string &
 	if (!BuildScreenshotPath(name, "Program", fullPath, error)) {
 		return false;
 	}
-	// The Default program samples the main texture; hold a transient main-composite
-	// ref across the capture so a screenshot taken with no preview/output open still
-	// composites the main mix rather than reading a stale/black cached texture. The
-	// additional-canvas branch renders its own canvas mix and needs no ref.
-	const bool needMainRef = !t.isAdditional;
-	if (needMainRef) {
-		obs_inc_main_render_needed();
-	}
 	const bool captured = CaptureToPng(w, h, renderFn, fullPath, error);
-	if (needMainRef) {
-		obs_dec_main_render_needed();
-	}
 	if (!captured) {
 		return false;
 	}

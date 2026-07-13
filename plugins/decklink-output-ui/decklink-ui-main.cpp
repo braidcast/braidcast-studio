@@ -62,9 +62,6 @@ static void decklink_ui_render(void *param);
 void output_stop()
 {
 	obs_remove_main_rendered_callback(decklink_ui_render, &context);
-	// Drop the main-composite ref only AFTER the render callback is removed, so the
-	// gate can never fire while the callback still samples obs_get_main_texture.
-	obs_dec_main_render_needed();
 
 	obs_output_stop(context.output);
 	obs_output_release(context.output);
@@ -132,11 +129,6 @@ void output_start()
 			video_output_open(&context.video_queue, &vi);
 
 			context.current_source = nullptr;
-			// This output samples obs_get_main_texture every frame off its own
-			// video_queue (it raises no main-mix raw/gpu state). Inc BEFORE adding the
-			// render callback so the gate is already held the first time it runs.
-			// Balanced in output_stop (also called on the !started path below).
-			obs_inc_main_render_needed();
 			obs_add_main_rendered_callback(decklink_ui_render, &context);
 
 			obs_output_set_media(context.output, context.video_queue, obs_get_audio());

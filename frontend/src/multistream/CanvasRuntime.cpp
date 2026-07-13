@@ -196,10 +196,8 @@ void CanvasRuntime::ReconcileAll()
 void CanvasRuntime::AddPreview(const std::string &uuid)
 {
 	if (defs.IsDefaultUuid(uuid)) {
-		// The Default canvas has no Entry/mix; hold a libobs main-composite ref
-		// instead. libobs is the single counter, so each default consumer (this
-		// preview, a program projector) holds its own ref independently.
-		obs_inc_main_render_needed();
+		// The Default canvas has no Entry/mix; it composites through the main
+		// pipeline unconditionally, so a preview on it needs no activation here.
 		return;
 	}
 	Entry *e = FindEntry(uuid);
@@ -213,7 +211,6 @@ void CanvasRuntime::AddPreview(const std::string &uuid)
 void CanvasRuntime::RemovePreview(const std::string &uuid)
 {
 	if (defs.IsDefaultUuid(uuid)) {
-		obs_dec_main_render_needed(); // balances this consumer's AddPreview ref
 		return;
 	}
 	Entry *e = FindEntry(uuid);
