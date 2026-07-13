@@ -41,6 +41,8 @@ EXPORT long bnum_allocs(void);
 
 EXPORT void *bmemdup(const void *ptr, size_t size);
 
+EXPORT void bmem_dump_outstanding(void);
+
 static inline void *bzalloc(size_t size)
 {
 	void *mem = bmalloc(size);
