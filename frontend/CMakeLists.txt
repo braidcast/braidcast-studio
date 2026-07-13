@@ -553,4 +553,10 @@ add_custom_command(
   VERBATIM
 )
 
+# Mirror that copy into the install tree so the packaged app ships the UI. The
+# app:// scheme serves this from data/braidcast/web; without it CEF loads an
+# empty document and the window renders blank. Trailing slash installs the
+# bundle contents (index.html, assets/, overlay/) into the destination.
+install(DIRECTORY "${_web_dist}/" DESTINATION "${OBS_DATA_DESTINATION}/braidcast/web" COMPONENT Runtime)
+
 print_cef_config()
