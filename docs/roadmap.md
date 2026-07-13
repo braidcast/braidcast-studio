@@ -1423,16 +1423,38 @@ on public repos (separate from the 500 MB Packages quota).
   output, and program screenshot. Gated per-mix `[render-debug]` composite
   timing confirmed Main burned 5.1%-frame GPU with zero consumers — OBS always
   composites the main canvas, so this makes Braidcast *beat* OBS on idle cost.
+  **↩️ Tier 2 REVERTED (2026-07-13, commit `ec09070b0`).** The Main gate was
+  built for a *render-lag* diagnosis that proved wrong: the render lag the user
+  actually hit is **focus-dependent** (Braidcast fully visible on a 2nd monitor,
+  lagging only while a game holds the foreground on the 1st — refocusing stops
+  it), which is **Windows background power throttling** (EcoQoS + `timeBeginPeriod`
+  revocation on foreground loss), NOT compositor starvation. Fixed in `main.cpp`
+  with a `SetProcessInformation(ProcessPowerThrottling)` opt-out clearing
+  EXECUTION_SPEED + IGNORE_TIMER_RESOLUTION (commit `0a997b78e`). The Main gate
+  saved compositing only while *fully idle* (never during streaming — an output
+  keeps Main composited) and added ref-balance black-screen fragility, so it was
+  reverted to stock OBS unconditional Main composite. **Tier 1 (inert non-default
+  canvases) is unaffected and stays** — it fixed a genuine idle-canvas composite
+  cost. The perf-repro self-test was retargeted off the starvation theory to guard
+  the throttle opt-out (commit `d1149dc6b`). Note: upstream OBS has NO main-process
+  throttle opt-out either (verified), so *why* stock OBS doesn't show this lag is
+  unconfirmed — live focus-loss test owed.
   Still open: a **preview-fps cap + real occlusion detection** — per-canvas
   previews currently render at full output fps, unthrottled, and only stop on
   DOM-hidden, not OS-window occlusion (`previewSurface.ts` / `render_displays`).
-- 🔧 **Adaptive compositor — load-aware parallelism** — the multi-canvas model
-  composites once *per canvas per frame* on a single serial graphics thread
-  (upstream OBS composites once), so compositor cost scales with canvas count.
-  Beyond the work-*reduction* wins above, the ceiling lift is a **two-layer**
-  design, gated on measured load — NOT a static GPU tier:
+- 🔭 **Adaptive compositor — load-aware parallelism** — **DEPRIORITIZED
+  (2026-07-13).** Partly motivated by the render-lag incident that turned out to
+  be Windows background throttling (fixed — see the inert-idle-canvases entry
+  above), not compositor cost. The per-canvas composite cost is real but only
+  bites under heavy multi-canvas high-res load, which has not been measured as the
+  ceiling on any real session since Tier 1 shipped. Do NOT build this speculatively;
+  revisit only if measured multi-canvas load proves composite time is the bottleneck.
+  Design retained for reference. The multi-canvas model composites once *per canvas
+  per frame* on a single serial graphics thread (upstream OBS composites once), so
+  compositor cost scales with canvas count. Were this pursued, the ceiling lift is
+  a **two-layer** design, gated on measured load — NOT a static GPU tier:
   - **Always-on (every GPU, no gate):** work reduction — inert canvases +
-    preview dedup + the Main gate (done), plus **shared/derived compositing**
+    preview dedup (Main gate reverted, see above), plus **shared/derived compositing**
     (render the scene once, derive the 16:9 / 9:16 / … variants by crop/scale
     instead of a full re-composite per canvas). Pure win, and the *biggest*
     lever for weak GPUs since it cuts total fill work rather than spreading it.
@@ -1450,6 +1472,31 @@ on public repos (separate from the 500 MB Packages quota).
   saturated small GPU — those win from the always-on reduction + shared-composite
   track. Design-level; sequence work-reduction first (mostly shipped), the
   adaptive layer later.
+- 🔧 **Windows process-init parity** — audit (2026-07-13, prompted by the
+  background-throttle miss) of what the from-scratch CEF `wWinMain` never
+  replicated from upstream's `frontend/obs-main.cpp` process/thread setup.
+  **✅ Shipped:** (a) **sleep/display inhibit around output start/stop** —
+  `os_inhibit_sleep_*` was defined in libobs but never called from `frontend/`, so
+  Windows could blank the display or sleep the machine mid-broadcast; now wired
+  into `MultistreamEngine` output start/stop. (b) **main-process crash handler /
+  minidump** — `obs_init_win32_crash_handler` was never called, so a main-process
+  crash produced no dump; now called first thing in `wWinMain`. **🔭 Deferred:**
+  (a) **audio-ducking opt-out** — upstream's `DisableAudioDucking`
+  (`IAudioSessionControl2::SetDuckingPreference`) + a settings toggle so capturing
+  audio doesn't auto-duck other apps; absent here (no ducking control at all).
+  (b) **process-hardening preamble** — DLL-blocklist hook, mitigation policies,
+  `SetErrorMode`, safe DLL-search (`SetDefaultDllDirectories`/`SetDllDirectoryW`),
+  `SetProcessShutdownParameters`, `RtwqStartup` (Media Foundation RT work-queue —
+  affects MF hardware-encoder thread scheduling), and `load_debug_privilege`
+  (`SE_INC_BASE_PRIORITY_NAME`, the privilege the `GPU_PRIORITY_VAL`-gated D3D11
+  GPU-priority path needs to succeed); all in upstream's `obs-main.cpp`, none in
+  this fork's main process. Non-gaps confirmed present-and-correct or matching
+  upstream: `timeBeginPeriod(1)` (fires via libobs `DllMain`), DPI awareness,
+  process priority class, MMCSS (audio-thread-only, same as upstream), COM init +
+  hotkey thread (libobs-internal). Note: upstream OBS is NOT ahead here in a way a
+  merge would fix — the fork tracks upstream closely (merge-base 2026-06-09,
+  upstream +3 CI-only commits since); these are from the CEF entry rewrite, not
+  from lagging upstream.
 - 🔧 **Modern audio-plugin host (VST3 + CLAP)** — `obs-vst` is in-tree and
   maintained upstream (the archived standalone repo was folded into the
   obs-studio monorepo), but it is **VST2-only** and **Qt-coupled**, so it can't
