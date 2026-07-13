@@ -474,6 +474,17 @@ if(WIN32)
     VERBATIM
     COMMAND_EXPAND_LISTS
   )
+
+  # The POST_BUILD copy only populates the rundir; it emits no install() rules,
+  # so CPack would ship a launch-broken package missing the entire dependency
+  # graph. helpers.cmake bundles these deps only for the literal obs-studio
+  # target (via _bundle_dependencies), which this deliberately renamed target is
+  # not, so mirror the same file set into the install tree here.
+  install(
+    FILES "$<TARGET_RUNTIME_DLLS:${_target}>" ${_obs_deps_runtime_dlls}
+    DESTINATION "${OBS_EXECUTABLE_DESTINATION}"
+    COMPONENT Runtime
+  )
 endif()
 
 # Copy the CEF runtime binaries + resources next to the exe in the rundir so it
@@ -483,6 +494,30 @@ endif()
 set(_cef_rundir "${OBS_OUTPUT_DIR}/$<CONFIG>/${OBS_EXECUTABLE_DESTINATION}")
 copy_files(${_target} "${CEF_BINARY_FILES}" "${CEF_ROOT}/Release" "${_cef_rundir}")
 copy_files(${_target} "${CEF_RESOURCE_FILES}" "${CEF_RESOURCE_DIR}" "${_cef_rundir}")
+
+# copy_files() only stages CEF into the rundir. Mirror the same binary and
+# resource sets into the install tree so the packaged app ships the Chromium
+# runtime; _bundle_dependencies explicitly skips CEF::Library, so nothing else
+# installs it. Binaries and .pak/.dat resources are flat files next to the exe;
+# the locales resource is a directory, matching the rundir layout copy_files
+# produces.
+set(_cef_install_binaries "")
+foreach(_cef_binary IN LISTS CEF_BINARY_FILES)
+  list(APPEND _cef_install_binaries "${CEF_ROOT}/Release/${_cef_binary}")
+endforeach()
+install(FILES ${_cef_install_binaries} DESTINATION "${OBS_EXECUTABLE_DESTINATION}" COMPONENT Runtime)
+
+foreach(_cef_resource IN LISTS CEF_RESOURCE_FILES)
+  if(IS_DIRECTORY "${CEF_RESOURCE_DIR}/${_cef_resource}")
+    install(
+      DIRECTORY "${CEF_RESOURCE_DIR}/${_cef_resource}"
+      DESTINATION "${OBS_EXECUTABLE_DESTINATION}"
+      COMPONENT Runtime
+    )
+  else()
+    install(FILES "${CEF_RESOURCE_DIR}/${_cef_resource}" DESTINATION "${OBS_EXECUTABLE_DESTINATION}" COMPONENT Runtime)
+  endif()
+endforeach()
 
 # Build the offline Svelte UI bundle with bun, then install it into the shared
 # config-named data dir. bun is required (no npm/pnpm/yarn fallback) so the build
