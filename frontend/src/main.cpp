@@ -360,17 +360,18 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 		}
 	}
 
-	// Env-gated automated live perf-repro self-test: the regression gate for the
-	// Main-composite compositor-starvation incident. Goes live for real on the
-	// user's REAL current scene collection + REAL enabled YouTube output
-	// bindings (forced to broadcast-private only), measures render-lag, then
+	// Env-gated automated perf-repro self-test: the regression gate for the
+	// background power-throttling opt-out above (the SetProcessInformation/
+	// ProcessPowerThrottling call). Network-free and deterministic -- it verifies
+	// the opt-out is in force, minimizes the host window to simulate losing the
+	// foreground, samples render pacing via stats.get for a fixed window, then
 	// quits with a PASS/FAIL exit code. Inert without
 	// BRAIDCAST_SELFTEST_STREAM=perf-repro.
 	bool perfReproArmed = false;
 	if (const char *mode = getenv("BRAIDCAST_SELFTEST_STREAM")) {
 		if (std::string(mode) == "perf-repro") {
 			HostLog("[host] perf-repro selftest armed");
-			ObsBootstrap::ArmPerfReproSelfTest();
+			ObsBootstrap::ArmPerfReproSelfTest(host);
 			SetTimer(host, kPerfReproTimerId, 500, nullptr);
 			perfReproArmed = true;
 		}
