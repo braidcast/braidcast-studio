@@ -29,7 +29,7 @@
 </script>
 
 {#snippet btn(a: ToolAction)}
-  <button class="tool-btn" class:active={a.active} title={a.title} disabled={a.disabled} onclick={a.onClick}>
+  <button class="tool-btn" class:active={a.active} title={a.title} aria-label={a.title} disabled={a.disabled} onclick={a.onClick}>
     <Icon name={a.icon} size={a.size ?? 13} />
   </button>
 {/snippet}

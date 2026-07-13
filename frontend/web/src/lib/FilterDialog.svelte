@@ -227,18 +227,25 @@
                 </button>
               {/if}
               <span class="dock-actions">
-                <button class="dock-icon" title="Move up" disabled={idx === 0} onclick={() => void reorder(f, "up")}>
+                <button
+                  class="dock-icon"
+                  title="Move up"
+                  aria-label="Move up"
+                  disabled={idx === 0}
+                  onclick={() => void reorder(f, "up")}
+                >
                   <Icon name="up" size={12} />
                 </button>
                 <button
                   class="dock-icon"
                   title="Move down"
+                  aria-label="Move down"
                   disabled={idx === filters.length - 1}
                   onclick={() => void reorder(f, "down")}
                 >
                   <Icon name="down" size={12} />
                 </button>
-                <button class="dock-icon danger" title="Remove" onclick={() => void remove(f)}>
+                <button class="dock-icon danger" title="Remove" aria-label="Remove" onclick={() => void remove(f)}>
                   <Icon name="trash" size={12} />
                 </button>
               </span>

@@ -428,11 +428,13 @@ import { EV } from "../eventNames";
             class="dock-toggle"
             class:off={!item.visible}
             title={item.visible ? "Hide" : "Show"}
+            aria-label={item.visible ? "Hide" : "Show"}
             onclick={() => void toggleVisible(item)}><Icon name={item.visible ? "eye" : "eye-off"} size={14} /></button
           >
           <button
             class="dock-toggle"
             title={item.locked ? "Unlock" : "Lock"}
+            aria-label={item.locked ? "Unlock" : "Lock"}
             onclick={() => void toggleLocked(item)}><Icon name={item.locked ? "lock" : "lock-open"} size={12} /></button
           >
           {#if renamingId === item.id}

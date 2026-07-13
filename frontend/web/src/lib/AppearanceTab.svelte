@@ -308,6 +308,7 @@
                     role="button"
                     tabindex="0"
                     title="Delete theme"
+                    aria-label="Delete theme"
                     onclick={(e) => {
                       e.stopPropagation();
                       themeStore.deleteCustom(t.id);

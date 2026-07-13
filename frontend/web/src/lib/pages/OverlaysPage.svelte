@@ -349,7 +349,7 @@ import { EV } from "../eventNames";
             </div>
             <span class="editor-spacer"></span>
             <span class="save-state">{saving ? "Saving…" : "Saved"}</span>
-            <button class="accent" onclick={() => void flushSave()}>Save</button>
+            <button class="accent" disabled={saving} onclick={() => void flushSave()}>Save</button>
             <button class="ghost" onclick={duplicate}>Duplicate</button>
             <button class="ghost danger" onclick={confirmDelete}>Delete</button>
           </div>

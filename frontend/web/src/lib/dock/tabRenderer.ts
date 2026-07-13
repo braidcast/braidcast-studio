@@ -67,12 +67,14 @@ export class DockTab implements ITabRenderer {
     this._detachBtn = document.createElement("button");
     this._detachBtn.className = "obs-dock-btn";
     this._detachBtn.title = "Tear out to its own window";
+    this._detachBtn.setAttribute("aria-label", "Tear out to its own window");
     this._detachBtn.innerHTML = DETACH_SVG;
     this.wireButton(this._detachBtn, this.handleDetach);
 
     this._closeBtn = document.createElement("button");
     this._closeBtn.className = "obs-dock-btn";
     this._closeBtn.title = "Close (reopen from Docks menu)";
+    this._closeBtn.setAttribute("aria-label", "Close (reopen from Docks menu)");
     this._closeBtn.innerHTML = CLOSE_SVG;
     this.wireButton(this._closeBtn, this.handleClose);
 

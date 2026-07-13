@@ -154,17 +154,19 @@ import { EV } from "../eventNames";
               class="tool-btn mute"
               class:on={src.muted}
               title={src.muted ? "Unmute" : "Mute"}
+              aria-label={src.muted ? "Unmute" : "Mute"}
               aria-pressed={src.muted}
               onclick={() => void toggleMuted(src)}
             >
               <Icon name={src.muted ? "mute" : "volume"} size={13} />
             </button>
-            <button class="tool-btn" title="Filters" onclick={() => openFilters(src.name, "audio")}>
+            <button class="tool-btn" title="Filters" aria-label="Filters" onclick={() => openFilters(src.name, "audio")}>
               <Icon name="sliders" size={13} />
             </button>
             <button
               class="tool-btn"
               title="Advanced Audio Properties"
+              aria-label="Advanced Audio Properties"
               onclick={() => openAdvAudio(src.name, src.name)}
             >
               <Icon name="gear" size={13} />

@@ -71,7 +71,7 @@
 
 <div class="dock-body">
   <div class="dock-toolbar">
-    <button class="dock-add" title="Manage in Canvases" onclick={() => setPage("canvases")}>
+    <button class="dock-add" title="Manage in Canvases" aria-label="Manage in Canvases" onclick={() => setPage("canvases")}>
       <Icon name="plus" size={12} />
     </button>
   </div>

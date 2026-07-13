@@ -42,7 +42,7 @@ import { EV } from "./eventNames";
 
   <div class="controls">
     {#if variant === "detached" && onRedock}
-      <button class="redock" title="Return to main window" onclick={onRedock}>
+      <button class="redock" title="Return to main window" aria-label="Return to main window" onclick={onRedock}>
         <Icon name="redock" size={12} />
         REDOCK
       </button>

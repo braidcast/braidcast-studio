@@ -927,6 +927,7 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
               class="es-eye"
               class:off={!item.visible}
               title={item.visible ? "Hide" : "Show"}
+              aria-label={item.visible ? "Hide" : "Show"}
               onclick={() => void toggleVisible(item)}><Icon name={item.visible ? "eye" : "eye-off"} size={14} /></button
             >
             {#if renamingId === item.id}
@@ -944,6 +945,7 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
               class="es-lock"
               class:locked={item.locked}
               title={item.locked ? "Unlock" : "Lock"}
+              aria-label={item.locked ? "Unlock" : "Lock"}
               onclick={() => void toggleLocked(item)}><Icon name={item.locked ? "lock" : "lock-open"} size={12} /></button
             >
           </li>
@@ -962,7 +964,7 @@ import { dockLayout } from "../dockLayoutSignal.svelte";
 
   <footer class="foot">
     <span class="dot" style:background={STATE_COLOR_EXT[liveState]} title={liveState}></span>
-    <button class="foot-gear" title="Edit canvas (Canvases)" onclick={() => setPage("canvases")}>
+    <button class="foot-gear" title="Edit canvas (Canvases)" aria-label="Edit canvas (Canvases)" onclick={() => setPage("canvases")}>
       <Icon name="edit" size={13} />
     </button>
   </footer>

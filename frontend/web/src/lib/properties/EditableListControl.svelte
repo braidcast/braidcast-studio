@@ -65,6 +65,7 @@
           type="button"
           class="icon"
           title="Move up"
+          aria-label="Move up"
           disabled={!prop.enabled || idx === 0}
           onclick={() => move(idx, -1)}><Icon name="up" size={12} /></button
         >
@@ -72,6 +73,7 @@
           type="button"
           class="icon"
           title="Move down"
+          aria-label="Move down"
           disabled={!prop.enabled || idx === items.length - 1}
           onclick={() => move(idx, 1)}><Icon name="down" size={12} /></button
         >
@@ -79,6 +81,7 @@
           type="button"
           class="icon remove"
           title="Remove"
+          aria-label="Remove"
           disabled={!prop.enabled}
           onclick={() => remove(idx)}><Icon name="x" size={12} /></button
         >

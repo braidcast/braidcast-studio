@@ -33,7 +33,13 @@
 </script>
 
 <div class="filter-reveal" class:shown>
-  <button class="tool-btn" title={shown ? "Hide filter" : "Filter…"} aria-pressed={shown} onclick={toggle}>
+  <button
+    class="tool-btn"
+    title={shown ? "Hide filter" : "Filter…"}
+    aria-label={shown ? "Hide filter" : "Filter…"}
+    aria-pressed={shown}
+    onclick={toggle}
+  >
     <Icon name="search" size={13} />
   </button>
   {#if shown}

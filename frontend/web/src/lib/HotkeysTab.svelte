@@ -220,6 +220,7 @@ import { EV } from "./eventNames";
                   <button
                     class="mini"
                     title="Clear binding"
+                    aria-label="Clear binding"
                     disabled={h.bindings.length === 0}
                     onclick={() => void clearBinding(h.id)}>✕</button
                   >
