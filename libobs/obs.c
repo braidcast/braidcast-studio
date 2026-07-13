@@ -1481,6 +1481,13 @@ void obs_shutdown(void)
 	}
 	da_free(obs->module_paths);
 
+	/* Data search paths live in a file-static global, not in obs, so obs_shutdown
+	 * must free them explicitly or the paths added at startup survive teardown. */
+	for (size_t i = 0; i < core_module_paths.num; i++) {
+		dstr_free(&core_module_paths.array[i]);
+	}
+	da_free(core_module_paths);
+
 	for (size_t i = 0; i < obs->safe_modules.num; i++) {
 		bfree(obs->safe_modules.array[i]);
 	}
