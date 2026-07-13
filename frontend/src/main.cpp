@@ -269,6 +269,23 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 		return exit_code;
 	}
 
+	// Opt the main process out of Windows background power throttling. When
+	// Braidcast loses the foreground (e.g. a fullscreen game grabs focus on
+	// another monitor) Windows otherwise drops it into Efficiency Mode (EcoQoS)
+	// and revokes the 1ms timer libobs asked for, which coarsens compositor and
+	// encoder frame pacing and surfaces as render lag until the window is
+	// refocused. Clearing both control bits (StateMask 0) keeps the process at
+	// full speed and honors its timer request while backgrounded, matching OBS's
+	// fix for obsproject/obs-studio#12982. The OSR browser subprocess sets its
+	// own opt-out; this covers the process that runs the video pipeline. No-op on
+	// pre-1709 Windows.
+	PROCESS_POWER_THROTTLING_STATE throttling = {};
+	throttling.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+	throttling.ControlMask =
+		PROCESS_POWER_THROTTLING_EXECUTION_SPEED | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
+	throttling.StateMask = 0;
+	SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &throttling, sizeof(throttling));
+
 	CefSettings settings;
 	settings.no_sandbox = true;
 	settings.multi_threaded_message_loop = false; // we drive CefRunMessageLoop()
