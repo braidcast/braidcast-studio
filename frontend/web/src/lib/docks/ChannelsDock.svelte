@@ -3,12 +3,12 @@
   // link state (CONNECTED / RECONNECT chip), the audience total with its per-platform
   // label, and live viewers when the account is streaming. Reads the merged
   // channelsStore.rows — never the three underlying feeds directly.
-  import { channelsStore } from "../channelsStore.svelte";
-  import { streamProfileStore } from "../streamProfileStore.svelte";
-  import { openOAuthConnect, isOAuthConnecting } from "../oauthConnectOpener.svelte";
-  import { PLATFORM_COLORS, PLATFORM_LABELS } from "../theme/platformColors";
-  import Avatar from "../Avatar.svelte";
-  import type { StreamProfileInfo } from "../bridge";
+  import { channelsStore } from "$lib/stores/channelsStore.svelte";
+  import { streamProfileStore } from "$lib/stores/streamProfileStore.svelte";
+  import { openOAuthConnect, isOAuthConnecting } from "$lib/dialogs/oauthConnectOpener.svelte";
+  import { PLATFORM_COLORS, PLATFORM_LABELS } from "$lib/theme/platformColors";
+  import Avatar from "$lib/ui/Avatar.svelte";
+  import type { StreamProfileInfo } from "$lib/api/bridge";
 
   // Host supplies tab chrome + strips __* keys; this body declares no props.
   let {}: Record<string, unknown> = $props();

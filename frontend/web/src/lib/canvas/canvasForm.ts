@@ -1,4 +1,4 @@
-import type { CanvasInfo, CanvasUpdateParams } from "../bridge";
+import type { CanvasInfo, CanvasUpdateParams } from "$lib/api/bridge";
 
 /** Integer frame-rate presets; fractional rates (59.94 = 60000/1001) are Custom. */
 export const FPS_PRESETS = [24, 30, 48, 60, 120];

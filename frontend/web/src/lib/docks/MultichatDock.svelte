@@ -1,16 +1,16 @@
 <script lang="ts">
-  import { obs, type ChatMessage, type ChatState, type ChatPlatform } from "../bridge";
-import { EV } from "../eventNames";
-  import { PLATFORM_COLORS, PLATFORM_LABELS, PLATFORM_ORDER as ORDER } from "../theme/platformColors";
-  import { FeedVirtualizer } from "../feedVirtualizer.svelte";
-  import { callOrToast } from "../callToast";
-  import EmptyState from "../EmptyState.svelte";
-  import Icon from "../dock/Icon.svelte";
-  import PlatformChips from "../PlatformChips.svelte";
-  import { outputBindingStore } from "../outputBindingStore.svelte";
-  import { streamProfileStore } from "../streamProfileStore.svelte";
-  import { multistreamStatusStore } from "../multistreamStatusStore.svelte";
-  import { oauthStore } from "../oauthStore.svelte";
+  import { obs, type ChatMessage, type ChatState, type ChatPlatform } from "$lib/api/bridge";
+import { EV } from "$lib/utils/eventNames";
+  import { PLATFORM_COLORS, PLATFORM_LABELS, PLATFORM_ORDER as ORDER } from "$lib/theme/platformColors";
+  import { FeedVirtualizer } from "$lib/utils/feedVirtualizer.svelte";
+  import { callOrToast } from "$lib/utils/callToast";
+  import EmptyState from "$lib/ui/EmptyState.svelte";
+  import Icon from "$lib/ui/Icon.svelte";
+  import PlatformChips from "$lib/ui/PlatformChips.svelte";
+  import { outputBindingStore } from "$lib/stores/outputBindingStore.svelte";
+  import { streamProfileStore } from "$lib/stores/streamProfileStore.svelte";
+  import { multistreamStatusStore } from "$lib/stores/multistreamStatusStore.svelte";
+  import { oauthStore } from "$lib/stores/oauthStore.svelte";
 
   // Host supplies tab chrome + strips __* keys; this body declares no props.
   let {}: Record<string, unknown> = $props();

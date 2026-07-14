@@ -7,7 +7,7 @@
   // NOTE: some sites block framing via X-Frame-Options / CSP frame-ancestors (full
   // platform dashboards); chat/widget popout URLs embed fine. That caveat is
   // surfaced in the Browser Docks settings manager, not per-panel.
-  import EmptyState from "../EmptyState.svelte";
+  import EmptyState from "$lib/ui/EmptyState.svelte";
 
   interface Props {
     url: string;

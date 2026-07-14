@@ -1,36 +1,36 @@
 <script lang="ts">
   import { onDestroy, onMount } from "svelte";
   import type { DockviewApi } from "dockview-core";
-  import DockHost from "../dock/DockHost.svelte";
-  import { DOCKS, panelOptions, SIDE_DOCK_WIDTH } from "../dock/dockRegistry";
-  import { layoutStore } from "../dock/layoutStore.svelte";
-import { bumpDockLayout } from "../dockLayoutSignal.svelte";
+  import DockHost from "$lib/docking/DockHost.svelte";
+  import { DOCKS, panelOptions, SIDE_DOCK_WIDTH } from "$lib/docking/dockRegistry";
+  import { layoutStore } from "$lib/docking/layoutStore.svelte";
+import { bumpDockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   import {
     startCanvasDockReconciler,
     reconcileCanvasDocks,
     setCanvasUserHidden,
     clearCanvasUserHidden,
-  } from "../dock/canvasReconciler";
-  import { startBrowserDockReconciler, reconcileBrowserDocks } from "../dock/browserDockReconciler";
-  import { setDetachHandler } from "../dock/detachRegistry";
-  import { browserDockStore } from "../browserDockStore.svelte";
-  import { obs, type CanvasInfo, type Monitor, type MultistreamState } from "../bridge";
-import { EV } from "../eventNames";
-  import { canvasStore } from "../canvasStore.svelte";
-  import { multistreamStatusStore } from "../multistreamStatusStore.svelte";
-  import { STATE_COLOR } from "../theme/stateColors";
-  import { fmtDuration, fmtBitrate } from "../format";
-  import { statsStore } from "../statsStore.svelte";
-  import { oauthStore } from "../oauthStore.svelte";
-  import { pageStore, setPage } from "../pageStore.svelte";
-  import { suspendPreview } from "../previewGate.svelte";
-  import { undoStore } from "../undoStore.svelte";
-  import CollectionDialog, { type DialogSpec } from "../CollectionDialog.svelte";
-  import ContextMenu, { type ContextMenuItem } from "../ContextMenu.svelte";
-  import { openGoLiveModal } from "../goLiveModalOpener.svelte";
-  import { goLivePref } from "../goLivePrefStore.svelte";
-  import { log } from "../log";
-  import { Cat } from "../logCategories";
+  } from "$lib/docking/canvasReconciler";
+  import { startBrowserDockReconciler, reconcileBrowserDocks } from "$lib/docking/browserDockReconciler";
+  import { setDetachHandler } from "$lib/docking/detachRegistry";
+  import { browserDockStore } from "$lib/stores/browserDockStore.svelte";
+  import { obs, type CanvasInfo, type Monitor, type MultistreamState } from "$lib/api/bridge";
+import { EV } from "$lib/utils/eventNames";
+  import { canvasStore } from "$lib/stores/canvasStore.svelte";
+  import { multistreamStatusStore } from "$lib/stores/multistreamStatusStore.svelte";
+  import { STATE_COLOR } from "$lib/theme/stateColors";
+  import { fmtDuration, fmtBitrate } from "$lib/utils/format";
+  import { statsStore } from "$lib/stores/statsStore.svelte";
+  import { oauthStore } from "$lib/stores/oauthStore.svelte";
+  import { pageStore, setPage } from "$lib/stores/pageStore.svelte";
+  import { suspendPreview } from "$lib/stores/previewGate.svelte";
+  import { undoStore } from "$lib/stores/undoStore.svelte";
+  import CollectionDialog, { type DialogSpec } from "$lib/dialogs/CollectionDialog.svelte";
+  import ContextMenu, { type ContextMenuItem } from "$lib/menus/ContextMenu.svelte";
+  import { openGoLiveModal } from "$lib/dialogs/golive/goLiveModalOpener.svelte";
+  import { goLivePref } from "$lib/stores/goLivePrefStore.svelte";
+  import { log } from "$lib/utils/log";
+  import { Cat } from "$lib/utils/logCategories";
 
   let api = $state<DockviewApi | undefined>(undefined);
   let visibleDocks = $state<Record<string, boolean>>({});

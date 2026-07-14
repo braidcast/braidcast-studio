@@ -4,9 +4,9 @@
 // accepted when `canvas == null`. The Scenes dock and the (separate) Sources dock
 // instance both read this singleton so they agree on the current scene.
 
-import { obs } from "../bridge";
-import { EV } from "../eventNames";
-import type { SceneInfo } from "../bridge";
+import { obs } from "$lib/api/bridge";
+import { EV } from "$lib/utils/eventNames";
+import type { SceneInfo } from "$lib/api/bridge";
 
 class DefaultCanvasStore {
   scenes = $state<SceneInfo[]>([]);

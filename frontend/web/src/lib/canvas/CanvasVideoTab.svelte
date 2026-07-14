@@ -1,8 +1,8 @@
 <script lang="ts">
-  import type { CanvasForm } from "./canvasForm";
-  import { FPS_PRESETS } from "./canvasForm";
-  import UseDefaultStrip from "./UseDefaultStrip.svelte";
-  import Icon from "../dock/Icon.svelte";
+  import type { CanvasForm } from "$lib/canvas/canvasForm";
+  import { FPS_PRESETS } from "$lib/canvas/canvasForm";
+  import UseDefaultStrip from "$lib/canvas/UseDefaultStrip.svelte";
+  import Icon from "$lib/ui/Icon.svelte";
 
   interface Props {
     form: CanvasForm;

@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { obs, type McpConfig, type McpSetConfigParams } from "../bridge";
-import { EV } from "../eventNames";
-  import PageHeader from "../PageHeader.svelte";
+  import { obs, type McpConfig, type McpSetConfigParams } from "$lib/api/bridge";
+import { EV } from "$lib/utils/eventNames";
+  import PageHeader from "$lib/ui/PageHeader.svelte";
 
   // MCP control page. Logic mirrors McpTab.svelte (load + mcp.changed subscription,
   // optimistic apply, copy-to-clipboard, token mask, regenerate confirm) laid out to

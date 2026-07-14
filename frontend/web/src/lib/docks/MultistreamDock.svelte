@@ -1,17 +1,17 @@
 <script lang="ts">
-  import { obs, type OutputBindingInfo, type MultistreamState } from "../bridge";
-  import { setPage } from "../pageStore.svelte";
-  import { canvasStore } from "../canvasStore.svelte";
+  import { obs, type OutputBindingInfo, type MultistreamState } from "$lib/api/bridge";
+  import { setPage } from "$lib/stores/pageStore.svelte";
+  import { canvasStore } from "$lib/stores/canvasStore.svelte";
   import {
     outputBindingStore,
     bindingDisplayName,
     isBindingDangling,
     isBindingUnset,
-  } from "../outputBindingStore.svelte";
-  import { multistreamStatusStore, bindingRowState } from "../multistreamStatusStore.svelte";
-  import { STATE_COLOR_EXT } from "../theme/stateColors";
-  import ToggleSwitch from "../ToggleSwitch.svelte";
-  import Icon from "../dock/Icon.svelte";
+  } from "$lib/stores/outputBindingStore.svelte";
+  import { multistreamStatusStore, bindingRowState } from "$lib/stores/multistreamStatusStore.svelte";
+  import { STATE_COLOR_EXT } from "$lib/theme/stateColors";
+  import ToggleSwitch from "$lib/ui/ToggleSwitch.svelte";
+  import Icon from "$lib/ui/Icon.svelte";
 
   // Host supplies tab chrome + strips __* keys; this body declares no props.
   let {}: Record<string, unknown> = $props();

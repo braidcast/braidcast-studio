@@ -2,20 +2,20 @@
 // that renders it. Keeps PropertyForm data-driven: a new property type is one
 // import + one map entry, not another if/else branch.
 import type { Component } from "svelte";
-import type { PropertyDescriptor } from "../bridge";
+import type { PropertyDescriptor } from "$lib/api/bridge";
 
-import BoolControl from "./BoolControl.svelte";
-import NumberControl from "./NumberControl.svelte";
-import TextControl from "./TextControl.svelte";
-import PathControl from "./PathControl.svelte";
-import ListControl from "./ListControl.svelte";
-import ColorControl from "./ColorControl.svelte";
-import ButtonControl from "./ButtonControl.svelte";
-import GroupControl from "./GroupControl.svelte";
-import FontControl from "./FontControl.svelte";
-import EditableListControl from "./EditableListControl.svelte";
-import FrameRateControl from "./FrameRateControl.svelte";
-import UnsupportedControl from "./UnsupportedControl.svelte";
+import BoolControl from "$lib/properties/BoolControl.svelte";
+import NumberControl from "$lib/properties/NumberControl.svelte";
+import TextControl from "$lib/properties/TextControl.svelte";
+import PathControl from "$lib/properties/PathControl.svelte";
+import ListControl from "$lib/properties/ListControl.svelte";
+import ColorControl from "$lib/properties/ColorControl.svelte";
+import ButtonControl from "$lib/properties/ButtonControl.svelte";
+import GroupControl from "$lib/properties/GroupControl.svelte";
+import FontControl from "$lib/properties/FontControl.svelte";
+import EditableListControl from "$lib/properties/EditableListControl.svelte";
+import FrameRateControl from "$lib/properties/FrameRateControl.svelte";
+import UnsupportedControl from "$lib/properties/UnsupportedControl.svelte";
 
 // Props every control receives. `value` is the current value; `onChange` reports
 // a new value for `prop.name` (the form debounces + pushes to properties.set).

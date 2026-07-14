@@ -1,14 +1,14 @@
 <script lang="ts">
   import { onMount, mount, unmount, type Component } from "svelte";
-  import { obs } from "./lib/bridge";
-  import { themeStore } from "./lib/theme/themeStore.svelte";
-  import { WINDOW_ID, DETACHED_DOCK } from "./lib/windowContext";
-  import { dockById } from "./lib/dock/dockRegistry";
-  import CanvasDock from "./lib/docks/CanvasDock.svelte";
-  import BrowserDock from "./lib/docks/BrowserDock.svelte";
-  import { browserDockStore } from "./lib/browserDockStore.svelte";
-  import { canvasStore } from "./lib/canvasStore.svelte";
-  import TitleBar from "./lib/TitleBar.svelte";
+  import { obs } from "$lib/api/bridge";
+  import { themeStore } from "$lib/theme/themeStore.svelte";
+  import { WINDOW_ID, DETACHED_DOCK } from "$lib/utils/windowContext";
+  import { dockById } from "$lib/docking/dockRegistry";
+  import CanvasDock from "$lib/docks/CanvasDock.svelte";
+  import BrowserDock from "$lib/docks/BrowserDock.svelte";
+  import { browserDockStore } from "$lib/stores/browserDockStore.svelte";
+  import { canvasStore } from "$lib/stores/canvasStore.svelte";
+  import TitleBar from "$lib/ui/TitleBar.svelte";
 
   // Apply the saved (or default Industrial) theme in this window too.
   void themeStore.hydrate();

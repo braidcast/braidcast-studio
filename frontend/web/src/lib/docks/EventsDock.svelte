@@ -1,17 +1,17 @@
 <script lang="ts">
-  import { obs, type NormalizedEvent, type ChatPlatform, type EventType } from "../bridge";
-import { EV } from "../eventNames";
+  import { obs, type NormalizedEvent, type ChatPlatform, type EventType } from "$lib/api/bridge";
+import { EV } from "$lib/utils/eventNames";
   import {
     PLATFORM_COLORS,
     PLATFORM_LABELS,
     EVENT_TYPE_COLORS,
     EVENT_TYPE_LABELS,
-  } from "../theme/platformColors";
-  import { FeedVirtualizer, type FeedRow } from "../feedVirtualizer.svelte";
-  import EmptyState from "../EmptyState.svelte";
-  import Icon from "../dock/Icon.svelte";
-  import PlatformChips from "../PlatformChips.svelte";
-  import { oauthStore } from "../oauthStore.svelte";
+  } from "$lib/theme/platformColors";
+  import { FeedVirtualizer, type FeedRow } from "$lib/utils/feedVirtualizer.svelte";
+  import EmptyState from "$lib/ui/EmptyState.svelte";
+  import Icon from "$lib/ui/Icon.svelte";
+  import PlatformChips from "$lib/ui/PlatformChips.svelte";
+  import { oauthStore } from "$lib/stores/oauthStore.svelte";
 
   // Host supplies tab chrome + strips __* keys; this body declares no props.
   let {}: Record<string, unknown> = $props();

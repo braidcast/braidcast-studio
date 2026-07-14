@@ -1,4 +1,4 @@
-import type { MultistreamState, OutputStat } from "../bridge";
+import type { MultistreamState, OutputStat } from "$lib/api/bridge";
 
 // Single source for the live-state -> token color mapping that was re-declared per
 // consumer (StudioPage, CanvasDock, CanvasesPage, MultistreamDock, StatsDock,

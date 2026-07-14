@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
+import { fileURLToPath } from "node:url";
 
 // base './' makes the built index.html reference assets relatively (./assets/*),
 // which the C++ app:// scheme handler resolves as app://app/assets/* off the
@@ -7,6 +8,11 @@ import { svelte } from "@sveltejs/vite-plugin-svelte";
 export default defineConfig({
   base: "./",
   plugins: [svelte()],
+  resolve: {
+    alias: {
+      $lib: fileURLToPath(new URL("./src/lib", import.meta.url)),
+    },
+  },
   // Dev server for live UI work (HMR): run `bun run dev`, then launch the host with
   // FE_DEV_URL=http://localhost:5173 to point CEF at this instead of the app:// bundle.
   // Fixed port so FE_DEV_URL stays stable across restarts.

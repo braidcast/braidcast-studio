@@ -5,8 +5,8 @@
   // upload via FileReader base64 -> overlays.uploadAsset, storing the returned served
   // path as the field value). Fields are treated immutably: every mutation builds the
   // next array and hands it to onChange, which the page debounces into overlays.update.
-  import { obs, type OverlayField } from "../bridge";
-  import Icon from "../dock/Icon.svelte";
+  import { obs, type OverlayField } from "$lib/api/bridge";
+  import Icon from "$lib/ui/Icon.svelte";
 
   let {
     fields,

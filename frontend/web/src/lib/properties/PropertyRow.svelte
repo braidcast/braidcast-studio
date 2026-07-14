@@ -1,6 +1,6 @@
 <script lang="ts">
-  import type { PropertyDescriptor } from "../bridge";
-  import { controlFor } from "./controls";
+  import type { PropertyDescriptor } from "$lib/api/bridge";
+  import { controlFor } from "$lib/properties/controls";
 
   interface Props {
     prop: PropertyDescriptor;

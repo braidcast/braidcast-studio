@@ -1,8 +1,8 @@
 <script lang="ts">
-  import { obs } from "../bridge";
-  import type { ControlProps } from "./controls";
-  import type { EditableListProperty, EditableListItem } from "../bridge";
-  import Icon from "../dock/Icon.svelte";
+  import { obs } from "$lib/api/bridge";
+  import type { ControlProps } from "$lib/properties/controls";
+  import type { EditableListProperty, EditableListItem } from "$lib/api/bridge";
+  import Icon from "$lib/ui/Icon.svelte";
   let { prop, value, onChange }: ControlProps = $props();
 
   const p = $derived(prop as EditableListProperty);

@@ -7,36 +7,36 @@
     type ReorderDirection,
     type MultistreamState,
     type SceneLinkInfo,
-  } from "../bridge";
-import { EV } from "../eventNames";
-  import { setPage } from "../pageStore.svelte";
-  import { previewSuspended, suspendPreview } from "../previewGate.svelte";
-import { dockLayout } from "../dockLayoutSignal.svelte";
-  import { WINDOW_ID } from "../windowContext";
-  import { syncPreviewRect, hidePreview as hidePreviewSurface, destroyPreview, mapOverlayCursor } from "../dock/previewSurface";
-  import { isPreviewDisabled, setPreviewDisabled } from "../dock/previewDisabledStore.svelte";
-  import ContextMenu, { type ContextMenuItem } from "../ContextMenu.svelte";
-  import { clipboard } from "../clipboardStore.svelte";
-  import { openFilters } from "../filterDialogOpener.svelte";
-  import { transformMenu } from "../transformMenu";
-  import { scaleFilterMenu } from "../scaleFilterMenu";
-  import { deinterlaceMenu } from "../deinterlaceMenu";
-  import { colorMenu } from "../colorMenu";
-  import type { DeinterlaceMode, DeinterlaceFieldOrder } from "../bridge";
-  import { defaultCanvas } from "./defaultCanvasStore.svelte";
-  import { canvasStore } from "../canvasStore.svelte";
-  import { callOrToast } from "../callToast";
-  import { showToast } from "../toastStore.svelte";
-  import AddSourceModal from "../AddSourceModal.svelte";
-  import PropertyForm from "../properties/PropertyForm.svelte";
-  import Modal from "../Modal.svelte";
-  import Icon from "../dock/Icon.svelte";
-  import ListToolbar, { type ToolAction } from "../dock/ListToolbar.svelte";
-  import FilterReveal from "../dock/FilterReveal.svelte";
-  import Splitter from "../dock/Splitter.svelte";
-  import { getPaneSizes, setEmbedH, setScenesW } from "../dock/canvasPaneSizes";
-  import { STATE_COLOR_EXT } from "../theme/stateColors";
-  import { multistreamStatusStore } from "../multistreamStatusStore.svelte";
+  } from "$lib/api/bridge";
+import { EV } from "$lib/utils/eventNames";
+  import { setPage } from "$lib/stores/pageStore.svelte";
+  import { previewSuspended, suspendPreview } from "$lib/stores/previewGate.svelte";
+import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
+  import { WINDOW_ID } from "$lib/utils/windowContext";
+  import { syncPreviewRect, hidePreview as hidePreviewSurface, destroyPreview, mapOverlayCursor } from "$lib/docking/previewSurface";
+  import { isPreviewDisabled, setPreviewDisabled } from "$lib/docking/previewDisabledStore.svelte";
+  import ContextMenu, { type ContextMenuItem } from "$lib/menus/ContextMenu.svelte";
+  import { clipboard } from "$lib/stores/clipboardStore.svelte";
+  import { openFilters } from "$lib/dialogs/filterDialogOpener.svelte";
+  import { transformMenu } from "$lib/menus/transformMenu";
+  import { scaleFilterMenu } from "$lib/menus/scaleFilterMenu";
+  import { deinterlaceMenu } from "$lib/menus/deinterlaceMenu";
+  import { colorMenu } from "$lib/menus/colorMenu";
+  import type { DeinterlaceMode, DeinterlaceFieldOrder } from "$lib/api/bridge";
+  import { defaultCanvas } from "$lib/docks/defaultCanvasStore.svelte";
+  import { canvasStore } from "$lib/stores/canvasStore.svelte";
+  import { callOrToast } from "$lib/utils/callToast";
+  import { showToast } from "$lib/stores/toastStore.svelte";
+  import AddSourceModal from "$lib/dialogs/add-source/AddSourceModal.svelte";
+  import PropertyForm from "$lib/properties/PropertyForm.svelte";
+  import Modal from "$lib/ui/Modal.svelte";
+  import Icon from "$lib/ui/Icon.svelte";
+  import ListToolbar, { type ToolAction } from "$lib/docking/ListToolbar.svelte";
+  import FilterReveal from "$lib/docking/FilterReveal.svelte";
+  import Splitter from "$lib/docking/Splitter.svelte";
+  import { getPaneSizes, setEmbedH, setScenesW } from "$lib/docking/canvasPaneSizes";
+  import { STATE_COLOR_EXT } from "$lib/theme/stateColors";
+  import { multistreamStatusStore } from "$lib/stores/multistreamStatusStore.svelte";
 
   // A composite, inseparable dock for one NON-DEFAULT canvas (hierarchy-model.html
   // §1 right column): an inline preview + this canvas's own scenes + its own

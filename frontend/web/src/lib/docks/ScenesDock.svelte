@@ -1,14 +1,14 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { obs, type SceneInfo } from "../bridge";
-import { EV } from "../eventNames";
-  import { defaultCanvas } from "./defaultCanvasStore.svelte";
-  import { canvasStore } from "../canvasStore.svelte";
-  import { callOrToast } from "../callToast";
-  import { showToast } from "../toastStore.svelte";
-  import ContextMenu, { type ContextMenuItem } from "../ContextMenu.svelte";
-  import ListToolbar, { type ToolAction } from "../dock/ListToolbar.svelte";
-  import FilterReveal from "../dock/FilterReveal.svelte";
+  import { obs, type SceneInfo } from "$lib/api/bridge";
+import { EV } from "$lib/utils/eventNames";
+  import { defaultCanvas } from "$lib/docks/defaultCanvasStore.svelte";
+  import { canvasStore } from "$lib/stores/canvasStore.svelte";
+  import { callOrToast } from "$lib/utils/callToast";
+  import { showToast } from "$lib/stores/toastStore.svelte";
+  import ContextMenu, { type ContextMenuItem } from "$lib/menus/ContextMenu.svelte";
+  import ListToolbar, { type ToolAction } from "$lib/docking/ListToolbar.svelte";
+  import FilterReveal from "$lib/docking/FilterReveal.svelte";
 
   // The mount adapter strips internal __* keys; this dock declares no props.
   let {}: Record<string, unknown> = $props();

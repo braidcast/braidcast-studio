@@ -7,15 +7,15 @@
   // button flushes immediately. Create/Duplicate/Delete + the host's overlays.changed
   // push keep the list in sync.
   import { onMount, onDestroy } from "svelte";
-  import { obs, type OverlayListItem, type OverlayWidget, type OverlayField } from "../bridge";
-import { EV } from "../eventNames";
-  import CodePane from "../overlays/CodePane.svelte";
-  import FieldsDesigner from "../overlays/FieldsDesigner.svelte";
-  import PreviewPane from "../overlays/PreviewPane.svelte";
-  import CollectionDialog, { type DialogSpec } from "../CollectionDialog.svelte";
-  import PageHeader from "../PageHeader.svelte";
-  import EmptyState from "../EmptyState.svelte";
-  import Icon from "../dock/Icon.svelte";
+  import { obs, type OverlayListItem, type OverlayWidget, type OverlayField } from "$lib/api/bridge";
+import { EV } from "$lib/utils/eventNames";
+  import CodePane from "$lib/overlays/CodePane.svelte";
+  import FieldsDesigner from "$lib/overlays/FieldsDesigner.svelte";
+  import PreviewPane from "$lib/overlays/PreviewPane.svelte";
+  import CollectionDialog, { type DialogSpec } from "$lib/dialogs/CollectionDialog.svelte";
+  import PageHeader from "$lib/ui/PageHeader.svelte";
+  import EmptyState from "$lib/ui/EmptyState.svelte";
+  import Icon from "$lib/ui/Icon.svelte";
 
   let items = $state<OverlayListItem[]>([]);
   let selectedId = $state<string | null>(null);

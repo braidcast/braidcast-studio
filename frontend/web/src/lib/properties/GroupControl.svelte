@@ -1,7 +1,7 @@
 <script lang="ts">
-  import type { ControlProps } from "./controls";
-  import type { GroupProperty } from "../bridge";
-  import PropertyRow from "./PropertyRow.svelte";
+  import type { ControlProps } from "$lib/properties/controls";
+  import type { GroupProperty } from "$lib/api/bridge";
+  import PropertyRow from "$lib/properties/PropertyRow.svelte";
 
   let { prop, value, onChange, onButton, lookup }: ControlProps = $props();
 

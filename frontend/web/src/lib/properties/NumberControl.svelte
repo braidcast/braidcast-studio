@@ -1,7 +1,7 @@
 <script lang="ts">
-  import type { ControlProps } from "./controls";
-  import type { IntProperty, FloatProperty } from "../bridge";
-  import Icon from "../dock/Icon.svelte";
+  import type { ControlProps } from "$lib/properties/controls";
+  import type { IntProperty, FloatProperty } from "$lib/api/bridge";
+  import Icon from "$lib/ui/Icon.svelte";
   let { prop, value, onChange }: ControlProps = $props();
 
   // Covers both int and float; the descriptor carries min/max/step + a

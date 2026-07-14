@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { ControlProps } from "./controls";
+  import type { ControlProps } from "$lib/properties/controls";
   let { prop }: ControlProps = $props();
   // font / editable_list / frame_rate: serialized best-effort by the backend but
   // not yet editable here. Show a clear placeholder rather than a broken control.

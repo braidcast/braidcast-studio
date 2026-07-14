@@ -2,7 +2,7 @@
   // Shared scaffold for the not-yet-built views: the shared PageHeader over a
   // centered "coming in Phase 7.x" body. Real content lands in later phases (see
   // plan); each page file passes its own title/sub/phase. Tokens only, zero-radius.
-  import PageHeader from "../PageHeader.svelte";
+  import PageHeader from "$lib/ui/PageHeader.svelte";
   let { title, sub, phase }: { title: string; sub: string; phase: string } = $props();
 </script>
 

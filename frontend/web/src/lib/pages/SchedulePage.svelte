@@ -1,9 +1,9 @@
 <script lang="ts">
-  import { canvasStore } from "../canvasStore.svelte";
-  import { streamProfileStore } from "../streamProfileStore.svelte";
-  import PageHeader from "../PageHeader.svelte";
-  import Modal from "../Modal.svelte";
-  import Icon from "../dock/Icon.svelte";
+  import { canvasStore } from "$lib/stores/canvasStore.svelte";
+  import { streamProfileStore } from "$lib/stores/streamProfileStore.svelte";
+  import PageHeader from "$lib/ui/PageHeader.svelte";
+  import Modal from "$lib/ui/Modal.svelte";
+  import Icon from "$lib/ui/Icon.svelte";
 
   // SHELL ONLY (redesign Decision A): this page is a UI preview of the planned
   // scheduling feature. There is NO backend -- nothing is persisted (no

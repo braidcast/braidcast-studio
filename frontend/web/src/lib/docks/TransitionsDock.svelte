@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { obs, type TransitionType, type TransitionState } from "../bridge";
-import { EV } from "../eventNames";
+  import { obs, type TransitionType, type TransitionState } from "$lib/api/bridge";
+import { EV } from "$lib/utils/eventNames";
 
   // The active scene transition: a type dropdown + a duration (ms) field, wired
   // to transitionTypes.list / transitions.getCurrent / setCurrent / setDuration

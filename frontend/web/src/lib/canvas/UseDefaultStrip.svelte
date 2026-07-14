@@ -1,5 +1,5 @@
 <script lang="ts">
-  import ToggleSwitch from "../ToggleSwitch.svelte";
+  import ToggleSwitch from "$lib/ui/ToggleSwitch.svelte";
 
   interface Props {
     checked: boolean;

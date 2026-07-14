@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { ControlProps } from "./controls";
+  import type { ControlProps } from "$lib/properties/controls";
   let { prop, value, onChange }: ControlProps = $props();
 
   // OBS packs color as ABGR int: R | G<<8 | B<<16 | A<<24. Native <input

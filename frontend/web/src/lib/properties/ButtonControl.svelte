@@ -1,6 +1,6 @@
 <script lang="ts">
-  import type { ControlProps } from "./controls";
-  import type { ButtonProperty } from "../bridge";
+  import type { ControlProps } from "$lib/properties/controls";
+  import type { ButtonProperty } from "$lib/api/bridge";
   let { prop, onButton }: ControlProps = $props();
 
   const p = $derived(prop as ButtonProperty);

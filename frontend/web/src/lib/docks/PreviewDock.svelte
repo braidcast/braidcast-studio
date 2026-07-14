@@ -1,18 +1,18 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { obs } from "../bridge";
-import { EV } from "../eventNames";
-  import { canvasStore } from "../canvasStore.svelte";
-  import { previewSuspended, suspendPreview } from "../previewGate.svelte";
-import { dockLayout } from "../dockLayoutSignal.svelte";
-  import { WINDOW_ID } from "../windowContext";
-  import { syncPreviewRect, hidePreview, destroyPreview, mapOverlayCursor } from "../dock/previewSurface";
-  import { isPreviewDisabled, setPreviewDisabled, DEFAULT_PREVIEW_KEY } from "../dock/previewDisabledStore.svelte";
-  import ContextMenu, { type ContextMenuItem } from "../ContextMenu.svelte";
-  import PropertyForm from "../properties/PropertyForm.svelte";
-  import Modal from "../Modal.svelte";
-  import { openFilters } from "../filterDialogOpener.svelte";
-  import { transformMenu } from "../transformMenu";
+  import { obs } from "$lib/api/bridge";
+import { EV } from "$lib/utils/eventNames";
+  import { canvasStore } from "$lib/stores/canvasStore.svelte";
+  import { previewSuspended, suspendPreview } from "$lib/stores/previewGate.svelte";
+import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
+  import { WINDOW_ID } from "$lib/utils/windowContext";
+  import { syncPreviewRect, hidePreview, destroyPreview, mapOverlayCursor } from "$lib/docking/previewSurface";
+  import { isPreviewDisabled, setPreviewDisabled, DEFAULT_PREVIEW_KEY } from "$lib/docking/previewDisabledStore.svelte";
+  import ContextMenu, { type ContextMenuItem } from "$lib/menus/ContextMenu.svelte";
+  import PropertyForm from "$lib/properties/PropertyForm.svelte";
+  import Modal from "$lib/ui/Modal.svelte";
+  import { openFilters } from "$lib/dialogs/filterDialogOpener.svelte";
+  import { transformMenu } from "$lib/menus/transformMenu";
 
   let {}: Record<string, unknown> = $props();
 

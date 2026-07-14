@@ -1,8 +1,8 @@
 <script lang="ts">
-  import type { CanvasForm } from "./canvasForm";
-  import type { EncoderType } from "../bridge";
-  import UseDefaultStrip from "./UseDefaultStrip.svelte";
-  import PropertyForm from "../properties/PropertyForm.svelte";
+  import type { CanvasForm } from "$lib/canvas/canvasForm";
+  import type { EncoderType } from "$lib/api/bridge";
+  import UseDefaultStrip from "$lib/canvas/UseDefaultStrip.svelte";
+  import PropertyForm from "$lib/properties/PropertyForm.svelte";
 
   interface Props {
     form: CanvasForm;

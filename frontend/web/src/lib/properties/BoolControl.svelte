@@ -1,6 +1,6 @@
 <script lang="ts">
-  import type { ControlProps } from "./controls";
-  import ToggleSwitch from "../ToggleSwitch.svelte";
+  import type { ControlProps } from "$lib/properties/controls";
+  import ToggleSwitch from "$lib/ui/ToggleSwitch.svelte";
   let { prop, value, onChange }: ControlProps = $props();
   const checked = $derived(Boolean(value));
 </script>

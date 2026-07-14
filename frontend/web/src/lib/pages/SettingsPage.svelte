@@ -1,13 +1,13 @@
 <script lang="ts">
-  import GeneralTab from "../GeneralTab.svelte";
-  import HotkeysTab from "../HotkeysTab.svelte";
-  import AudioTab from "../AudioTab.svelte";
-  import BrowserDocksTab from "../BrowserDocksTab.svelte";
-  import AppearanceTab from "../AppearanceTab.svelte";
-  import AdvancedTab from "../AdvancedTab.svelte";
-  import DiagnosticsTab from "../DiagnosticsTab.svelte";
-  import PageHeader from "../PageHeader.svelte";
-  import { settingsNav, setSettingsTab, type SettingsTab } from "../settingsOpener.svelte";
+  import GeneralTab from "$lib/settings/GeneralTab.svelte";
+  import HotkeysTab from "$lib/settings/HotkeysTab.svelte";
+  import AudioTab from "$lib/settings/AudioTab.svelte";
+  import BrowserDocksTab from "$lib/settings/BrowserDocksTab.svelte";
+  import AppearanceTab from "$lib/settings/AppearanceTab.svelte";
+  import AdvancedTab from "$lib/settings/AdvancedTab.svelte";
+  import DiagnosticsTab from "$lib/settings/DiagnosticsTab.svelte";
+  import PageHeader from "$lib/ui/PageHeader.svelte";
+  import { settingsNav, setSettingsTab, type SettingsTab } from "$lib/dialogs/settingsOpener.svelte";
 
   // Full Settings page: header + a 196px left sub-nav + a content pane that renders
   // the selected tab's component. AI/MCP is its own nav-rail page; output bindings

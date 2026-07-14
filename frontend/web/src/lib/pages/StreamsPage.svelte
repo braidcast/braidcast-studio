@@ -1,6 +1,6 @@
 <script lang="ts">
-  import StreamsTab from "../StreamsTab.svelte";
-  import PageHeader from "../PageHeader.svelte";
+  import StreamsTab from "$lib/settings/StreamsTab.svelte";
+  import PageHeader from "$lib/ui/PageHeader.svelte";
 </script>
 
 <div class="page">

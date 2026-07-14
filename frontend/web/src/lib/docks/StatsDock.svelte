@@ -1,10 +1,10 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import Icon from "../dock/Icon.svelte";
-  import EmptyState from "../EmptyState.svelte";
-  import Modal from "../Modal.svelte";
-  import { OUTPUT_STATE_COLOR } from "../theme/stateColors";
-  import { fmtBitrate, fmtDuration } from "../format";
+  import Icon from "$lib/ui/Icon.svelte";
+  import EmptyState from "$lib/ui/EmptyState.svelte";
+  import Modal from "$lib/ui/Modal.svelte";
+  import { OUTPUT_STATE_COLOR } from "$lib/theme/stateColors";
+  import { fmtBitrate, fmtDuration } from "$lib/utils/format";
   import {
     METER_TEXT,
     METER_GREEN,
@@ -15,10 +15,10 @@
     pushRing,
     sparkPoints,
     sparkArea,
-  } from "../statsMeter";
-  import { statsStore } from "../statsStore.svelte";
-  import { multistreamStatusStore } from "../multistreamStatusStore.svelte";
-  import type { GeneralStats, OutputStat } from "../bridge";
+  } from "$lib/utils/statsMeter";
+  import { statsStore } from "$lib/stores/statsStore.svelte";
+  import { multistreamStatusStore } from "$lib/stores/multistreamStatusStore.svelte";
+  import type { GeneralStats, OutputStat } from "$lib/api/bridge";
 
   // Host supplies tab chrome + strips __* keys; this body declares no props.
   let {}: Record<string, unknown> = $props();

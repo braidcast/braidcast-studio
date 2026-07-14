@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { obs, type PropertyKind, type PropertyDescriptor } from "../bridge";
-  import PropertyRow from "./PropertyRow.svelte";
+  import { obs, type PropertyKind, type PropertyDescriptor } from "$lib/api/bridge";
+  import PropertyRow from "$lib/properties/PropertyRow.svelte";
 
   interface Props {
     kind: PropertyKind;

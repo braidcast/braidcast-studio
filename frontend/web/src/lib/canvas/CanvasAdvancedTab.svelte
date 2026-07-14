@@ -1,6 +1,6 @@
 <script lang="ts">
-  import type { CanvasForm } from "./canvasForm";
-  import UseDefaultStrip from "./UseDefaultStrip.svelte";
+  import type { CanvasForm } from "$lib/canvas/canvasForm";
+  import UseDefaultStrip from "$lib/canvas/UseDefaultStrip.svelte";
 
   interface Props {
     form: CanvasForm;

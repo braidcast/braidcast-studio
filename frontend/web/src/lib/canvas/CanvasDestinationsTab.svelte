@@ -5,13 +5,13 @@
     type StreamProfileInfo,
     type MultistreamStatus,
     type MultistreamState,
-  } from "../bridge";
-  import ToggleSwitch from "../ToggleSwitch.svelte";
-  import Icon from "../dock/Icon.svelte";
-  import ProfileSelect from "../ProfileSelect.svelte";
-  import { STATE_COLOR_EXT } from "../theme/stateColors";
-  import { bindingDisplayName, isBindingDangling, isBindingUnset } from "../outputBindingStore.svelte";
-  import { bindingRowState } from "../multistreamStatusStore.svelte";
+  } from "$lib/api/bridge";
+  import ToggleSwitch from "$lib/ui/ToggleSwitch.svelte";
+  import Icon from "$lib/ui/Icon.svelte";
+  import ProfileSelect from "$lib/ui/ProfileSelect.svelte";
+  import { STATE_COLOR_EXT } from "$lib/theme/stateColors";
+  import { bindingDisplayName, isBindingDangling, isBindingUnset } from "$lib/stores/outputBindingStore.svelte";
+  import { bindingRowState } from "$lib/stores/multistreamStatusStore.svelte";
 
   interface Props {
     canvasUuid: string;

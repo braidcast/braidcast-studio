@@ -1,12 +1,12 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import { obs, type ViewerCounts, type ChatPlatform } from "../bridge";
-import { EV } from "../eventNames";
-  import PageHeader from "../PageHeader.svelte";
-  import EmptyState from "../EmptyState.svelte";
-  import { PLATFORM_COLORS, PLATFORM_LABELS, PLATFORM_ORDER } from "../theme/platformColors";
-  import { OUTPUT_STATE_COLOR } from "../theme/stateColors";
-  import { fmtDuration } from "../format";
+  import { obs, type ViewerCounts, type ChatPlatform } from "$lib/api/bridge";
+import { EV } from "$lib/utils/eventNames";
+  import PageHeader from "$lib/ui/PageHeader.svelte";
+  import EmptyState from "$lib/ui/EmptyState.svelte";
+  import { PLATFORM_COLORS, PLATFORM_LABELS, PLATFORM_ORDER } from "$lib/theme/platformColors";
+  import { OUTPUT_STATE_COLOR } from "$lib/theme/stateColors";
+  import { fmtDuration } from "$lib/utils/format";
   import {
     METER_TEXT,
     METER_GREEN,
@@ -17,8 +17,8 @@ import { EV } from "../eventNames";
     pushRing,
     sparkPoints,
     sparkArea,
-  } from "../statsMeter";
-  import { statsStore } from "../statsStore.svelte";
+  } from "$lib/utils/statsMeter";
+  import { statsStore } from "$lib/stores/statsStore.svelte";
 
   // Live performance view. stats.get has no push; the shared 1 Hz store owns the
   // interval. This page subscribes while mounted (App renders it conditionally, so

@@ -1,6 +1,6 @@
 <script lang="ts">
-  import type { ControlProps } from "./controls";
-  import type { FontProperty, FontValue } from "../bridge";
+  import type { ControlProps } from "$lib/properties/controls";
+  import type { FontProperty, FontValue } from "$lib/api/bridge";
   let { prop, value, onChange }: ControlProps = $props();
 
   // flags bitmask: BOLD=1, ITALIC=2, UNDERLINE=4, STRIKEOUT=8.

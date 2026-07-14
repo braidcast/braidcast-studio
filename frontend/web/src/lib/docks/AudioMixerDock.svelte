@@ -1,9 +1,9 @@
 <script lang="ts">
-  import { obs, type AudioSource } from "../bridge";
-import { EV } from "../eventNames";
-  import { openFilters } from "../filterDialogOpener.svelte";
-  import { openAdvAudio } from "../advAudioOpener.svelte";
-  import Icon from "../dock/Icon.svelte";
+  import { obs, type AudioSource } from "$lib/api/bridge";
+import { EV } from "$lib/utils/eventNames";
+  import { openFilters } from "$lib/dialogs/filterDialogOpener.svelte";
+  import { openAdvAudio } from "$lib/dialogs/advAudioOpener.svelte";
+  import Icon from "$lib/ui/Icon.svelte";
 
   // Per-source faders + live dB meters. Levels arrive on the audio.levels push
   // (~30 Hz x N sources); we coalesce into a Map and flush once per animation

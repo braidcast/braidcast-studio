@@ -1,24 +1,24 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import { obs, type SceneItem, type ReorderDirection } from "../bridge";
-import { EV } from "../eventNames";
-  import { defaultCanvas } from "./defaultCanvasStore.svelte";
-  import AddSourceModal from "../AddSourceModal.svelte";
-  import PropertyForm from "../properties/PropertyForm.svelte";
-  import Modal from "../Modal.svelte";
-  import { suspendPreview } from "../previewGate.svelte";
-  import ContextMenu, { type ContextMenuItem } from "../ContextMenu.svelte";
-  import { clipboard } from "../clipboardStore.svelte";
-  import { sourceSelection } from "../sourceSelectionStore.svelte";
-  import { openFilters } from "../filterDialogOpener.svelte";
-  import { transformMenu } from "../transformMenu";
-  import { scaleFilterMenu } from "../scaleFilterMenu";
-  import { deinterlaceMenu } from "../deinterlaceMenu";
-  import { colorMenu } from "../colorMenu";
-  import type { DeinterlaceMode, DeinterlaceFieldOrder } from "../bridge";
-  import Icon from "../dock/Icon.svelte";
-  import ListToolbar, { type ToolAction } from "../dock/ListToolbar.svelte";
-  import FilterReveal from "../dock/FilterReveal.svelte";
+  import { obs, type SceneItem, type ReorderDirection } from "$lib/api/bridge";
+import { EV } from "$lib/utils/eventNames";
+  import { defaultCanvas } from "$lib/docks/defaultCanvasStore.svelte";
+  import AddSourceModal from "$lib/dialogs/add-source/AddSourceModal.svelte";
+  import PropertyForm from "$lib/properties/PropertyForm.svelte";
+  import Modal from "$lib/ui/Modal.svelte";
+  import { suspendPreview } from "$lib/stores/previewGate.svelte";
+  import ContextMenu, { type ContextMenuItem } from "$lib/menus/ContextMenu.svelte";
+  import { clipboard } from "$lib/stores/clipboardStore.svelte";
+  import { sourceSelection } from "$lib/stores/sourceSelectionStore.svelte";
+  import { openFilters } from "$lib/dialogs/filterDialogOpener.svelte";
+  import { transformMenu } from "$lib/menus/transformMenu";
+  import { scaleFilterMenu } from "$lib/menus/scaleFilterMenu";
+  import { deinterlaceMenu } from "$lib/menus/deinterlaceMenu";
+  import { colorMenu } from "$lib/menus/colorMenu";
+  import type { DeinterlaceMode, DeinterlaceFieldOrder } from "$lib/api/bridge";
+  import Icon from "$lib/ui/Icon.svelte";
+  import ListToolbar, { type ToolAction } from "$lib/docking/ListToolbar.svelte";
+  import FilterReveal from "$lib/docking/FilterReveal.svelte";
 
   let {}: Record<string, unknown> = $props();
 

@@ -6,19 +6,19 @@
     type OutputBindingInfo,
     type StreamProfileInfo,
     type MultistreamState,
-  } from "../bridge";
-  import { canvasStore } from "../canvasStore.svelte";
-  import { outputBindingStore, bindingDisplayName } from "../outputBindingStore.svelte";
-  import { streamProfileStore } from "../streamProfileStore.svelte";
-  import { multistreamStatusStore } from "../multistreamStatusStore.svelte";
-  import { fmtFps } from "../format";
-  import CanvasEditor from "../CanvasEditor.svelte";
-  import CollectionDialog, { type DialogSpec } from "../CollectionDialog.svelte";
-  import { STATE_COLOR_EXT } from "../theme/stateColors";
-  import { callOrToast } from "../callToast";
-  import Icon from "../dock/Icon.svelte";
-  import SplitPane from "../SplitPane.svelte";
-  import { createReorder } from "../listReorder.svelte";
+  } from "$lib/api/bridge";
+  import { canvasStore } from "$lib/stores/canvasStore.svelte";
+  import { outputBindingStore, bindingDisplayName } from "$lib/stores/outputBindingStore.svelte";
+  import { streamProfileStore } from "$lib/stores/streamProfileStore.svelte";
+  import { multistreamStatusStore } from "$lib/stores/multistreamStatusStore.svelte";
+  import { fmtFps } from "$lib/utils/format";
+  import CanvasEditor from "$lib/canvas/CanvasEditor.svelte";
+  import CollectionDialog, { type DialogSpec } from "$lib/dialogs/CollectionDialog.svelte";
+  import { STATE_COLOR_EXT } from "$lib/theme/stateColors";
+  import { callOrToast } from "$lib/utils/callToast";
+  import Icon from "$lib/ui/Icon.svelte";
+  import SplitPane from "$lib/ui/SplitPane.svelte";
+  import { createReorder } from "$lib/utils/listReorder.svelte";
 
   // Canvases page: a master-detail layout. The left list selects a canvas; the right
   // pane is that canvas's live-applied detail editor (Video · Encoding · Audio ·

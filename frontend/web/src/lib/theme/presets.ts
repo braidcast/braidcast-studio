@@ -1,4 +1,4 @@
-import type { AccentName, ThemeMode, ThemeTokens } from "./tokens";
+import type { AccentName, ThemeMode, ThemeTokens } from "$lib/theme/tokens";
 
 // Density-derived spacing/height: both ship presets use "comfortable" per §5.2.
 const COMFORTABLE = { spaceUnit: "8px", controlHeight: "30px" } as const;

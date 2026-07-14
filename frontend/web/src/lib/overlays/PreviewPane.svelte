@@ -3,8 +3,8 @@
   // OBS Browser Source loads), plus a row of per-event-type test buttons that fire a
   // synthetic event to THIS widget only (overlays.test -> BroadcastTo). The iframe is
   // keyed on reloadKey so the page can force a reload after a debounced update lands.
-  import { obs, type EventType } from "../bridge";
-  import { EVENT_TYPE_COLORS, EVENT_TYPE_LABELS } from "../theme/platformColors";
+  import { obs, type EventType } from "$lib/api/bridge";
+  import { EVENT_TYPE_COLORS, EVENT_TYPE_LABELS } from "$lib/theme/platformColors";
 
   let { url, widgetId, reloadKey }: { url: string; widgetId: string; reloadKey: number } = $props();
 

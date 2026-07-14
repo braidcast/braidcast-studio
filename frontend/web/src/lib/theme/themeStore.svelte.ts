@@ -1,5 +1,5 @@
-import { obs } from "../bridge";
-import { applyTheme, type ThemeTokens } from "./tokens";
+import { obs } from "$lib/api/bridge";
+import { applyTheme, type ThemeTokens } from "$lib/theme/tokens";
 import {
   ACCENT_VALUES,
   MODE_VALUES,
@@ -7,7 +7,7 @@ import {
   DEFAULT_PRESET_ID,
   defaultTokens,
   type PresetEntry,
-} from "./presets";
+} from "$lib/theme/presets";
 
 // Persisted theme schema. The store owns it and (de)serializes it into the opaque
 // `state` blob carried by theme.save / theme.load. activeTokens is the LIVE token

@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { obs } from "../bridge";
-  import type { ControlProps } from "./controls";
-  import type { PathProperty } from "../bridge";
+  import { obs } from "$lib/api/bridge";
+  import type { ControlProps } from "$lib/properties/controls";
+  import type { PathProperty } from "$lib/api/bridge";
   let { prop, value, onChange }: ControlProps = $props();
 
   const p = $derived(prop as PathProperty);

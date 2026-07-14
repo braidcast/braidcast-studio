@@ -1,6 +1,6 @@
 <script lang="ts">
-  import type { ControlProps } from "./controls";
-  import type { FrameRateProperty, FrameRateValue } from "../bridge";
+  import type { ControlProps } from "$lib/properties/controls";
+  import type { FrameRateProperty, FrameRateValue } from "$lib/api/bridge";
   let { prop, value, onChange }: ControlProps = $props();
 
   const p = $derived(prop as FrameRateProperty);
