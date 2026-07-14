@@ -13,6 +13,7 @@
 #include <util/platform.h>
 
 #include "../log.hpp"
+#include "../multistream/StorePaths.hpp"
 
 namespace OAuth {
 
@@ -97,11 +98,7 @@ bool UnprotectBytes(const std::vector<unsigned char> &wrapped, std::string &plai
 
 std::string AccountStore::FilePath()
 {
-	char buf[512];
-	if (os_get_config_path(buf, sizeof(buf), "braidcast/oauth_tokens.json") <= 0) {
-		return std::string();
-	}
-	return std::string(buf);
+	return BraidcastConfigPath("oauth_tokens.json");
 }
 
 void AccountStore::EnsureLoadedLocked()

@@ -5,6 +5,8 @@
 #include <objbase.h>
 #include <rtworkq.h>
 
+#include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <memory>
 #include <string>
@@ -19,12 +21,14 @@
 #include "settings/GeneralSettings.hpp"
 #include "windowing/interact_window.hpp"
 #include "log.hpp"
+#include "multistream/StorePaths.hpp"
 #include "obs_bootstrap.hpp"
 #include "perf_repro_selftest.hpp"
 #include "windowing/preview_window.hpp"
 #include "windowing/projector_window.hpp"
 #include "scene/scene_persistence.hpp"
 #include "scheme.hpp"
+#include "util/paths.hpp"
 #include "windowing/tray.hpp"
 #include "windowing/window_chrome.hpp"
 #include "windowing/window_manager.hpp"
@@ -70,6 +74,13 @@ std::unique_ptr<InteractManager> g_interact;
 // actions reach into the engine + settings). NIM_DELETE'd in WM_CLOSE before the
 // host window is destroyed.
 std::unique_ptr<TrayIcon> g_tray;
+
+// Process-lifetime single-instance guard. Held from startup to a clean exit; the
+// OS releases it if the process dies. Keyed on the resolved config dir so a
+// portable dev build and an installed release (different config bases) never block
+// each other -- only "same config launched twice", the real state-corruption
+// hazard, is refused.
+HANDLE g_instance_mutex = nullptr;
 
 // The UI loads from the offline app:// bundle served by scheme.cpp. For live UI
 // development, set FE_DEV_URL (e.g. http://localhost:5173) to point the window at a
@@ -117,13 +128,7 @@ void load_debug_privilege()
 // before any obs call. Derived from the exe path -- the exe sits in that dir.
 void AddObsBinDirToSearchPath()
 {
-	wchar_t exe_path[MAX_PATH] = {0};
-	GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
-	std::wstring dir(exe_path);
-	size_t slash = dir.find_last_of(L"\\/");
-	if (slash != std::wstring::npos) {
-		dir.resize(slash);
-	}
+	const std::wstring dir = ExecutableDir();
 	SetDllDirectoryW(dir.c_str());
 	// Under SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS) the
 	// SetDllDirectoryW directory is not searched, so also register this dir via
@@ -131,6 +136,42 @@ void AddObsBinDirToSearchPath()
 	// obs.dll + its co-located deps still resolve. The SetDllDirectoryW call above is
 	// harmless and kept.
 	AddDllDirectory(dir.c_str());
+}
+
+// FNV-1a of the config dir, ASCII-case-folded so path-casing variance can't split
+// one install into two instances. Yields a mutex-name-safe hex token: a raw path
+// can't name a mutex (backslash is the object-namespace separator).
+std::wstring ConfigInstanceToken(const std::string &configDir)
+{
+	uint64_t hash = 1469598103934665603ULL;
+	for (unsigned char c : configDir) {
+		if (c >= 'A' && c <= 'Z') {
+			c = static_cast<unsigned char>(c - 'A' + 'a');
+		}
+		hash ^= c;
+		hash *= 1099511628211ULL;
+	}
+	wchar_t token[17];
+	swprintf(token, 17, L"%016llx", static_cast<unsigned long long>(hash));
+	return std::wstring(token);
+}
+
+// Become the single instance for `configDir`. Returns false when another instance
+// already owns it, after a best-effort raise of that instance's host window.
+bool AcquireSingleInstance(const std::string &configDir)
+{
+	const std::wstring name = L"Local\\braidcast-singleton-" + ConfigInstanceToken(configDir);
+	g_instance_mutex = CreateMutexW(nullptr, TRUE, name.c_str());
+	if (g_instance_mutex && GetLastError() == ERROR_ALREADY_EXISTS) {
+		if (HWND existing = FindWindowW(kHostClassName, nullptr)) {
+			if (IsIconic(existing)) {
+				ShowWindow(existing, SW_RESTORE);
+			}
+			SetForegroundWindow(existing);
+		}
+		return false;
+	}
+	return true;
 }
 
 // The CEF UI browser fills the whole host client area. The obs preview is a
@@ -365,6 +406,21 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 	throttling.StateMask = 0;
 	SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &throttling, sizeof(throttling));
 
+	// Point the loader at the rundir bin dir before the first obs call: portable-mode
+	// detection below resolves the config base through os_get_config_path in the
+	// non-portable case, and every later obs/D3D11 load needs this in place too.
+	AddObsBinDirToSearchPath();
+
+	// Single-instance guard, before any CEF/libobs/window bring-up so a rejected
+	// second launch exits cleanly with no partial state. Keyed on the resolved
+	// config dir (BraidcastConfigDir, shared with every store) so only a launch
+	// against the SAME config is refused -- a portable dev build and an installed
+	// release keep their own single instances without blocking each other.
+	if (!AcquireSingleInstance(BraidcastConfigDir())) {
+		HostLog("[host] another instance already owns this config -- exiting");
+		return 0;
+	}
+
 	CefSettings settings;
 	settings.no_sandbox = true;
 	settings.multi_threaded_message_loop = false; // we drive CefRunMessageLoop()
@@ -386,8 +442,6 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 	WindowChrome::Init(host, WindowChrome::kMainWindow);
 	ShowWindow(host, SW_SHOW);
 	UpdateWindow(host);
-
-	AddObsBinDirToSearchPath();
 
 	if (!ObsBootstrap::Start()) {
 		HostLog("[obs] ObsBootstrap::Start() failed -- aborting");
@@ -564,6 +618,14 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 	// Pair the startup RtwqStartup(): tear the MF Real-Time Work Queue down on the
 	// normal exit path, now that obs (and its MF encoders) have stopped.
 	RtwqShutdown();
+
+	// Release the single-instance guard on the clean-exit path (abort paths above
+	// rely on process teardown, which frees it too).
+	if (g_instance_mutex) {
+		ReleaseMutex(g_instance_mutex);
+		CloseHandle(g_instance_mutex);
+		g_instance_mutex = nullptr;
+	}
 
 	// Propagate the perf-repro self-test's PASS/FAIL/skip/error exit code (see
 	// perf_repro_selftest.hpp) so it can gate CI; every other path keeps the

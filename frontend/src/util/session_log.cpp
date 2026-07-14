@@ -12,6 +12,8 @@
 #include <util/base.h>
 #include <util/platform.h>
 
+#include "../multistream/StorePaths.hpp"
+
 namespace SessionLog {
 
 namespace {
@@ -97,14 +99,14 @@ void Init()
 	}
 	g_initialized = true;
 
-	char dir[512];
-	if (os_get_config_path(dir, sizeof(dir), "braidcast/logs") <= 0) {
+	const std::string dir = BraidcastConfigPath("logs");
+	if (dir.empty()) {
 		// Can't resolve the dir: still chain so logging keeps working.
 		base_get_log_handler(&g_prevHandler, &g_prevParam);
 		base_set_log_handler(SessionLogHandler, nullptr);
 		return;
 	}
-	os_mkdirs(dir);
+	os_mkdirs(dir.c_str());
 
 	const std::filesystem::path logsDir = std::filesystem::u8path(dir);
 	const std::filesystem::path full = logsDir / std::filesystem::u8path(GenerateTimestampName());

@@ -559,4 +559,17 @@ add_custom_command(
 # bundle contents (index.html, assets/, overlay/) into the destination.
 install(DIRECTORY "${_web_dist}/" DESTINATION "${OBS_DATA_DESTINATION}/braidcast/web" COMPONENT Runtime)
 
+# Drop the OBS-style portable marker into the DEV rundir only, so an in-tree build
+# runs self-contained against <rundir>/bin/64bit/config instead of the shared
+# per-user config dir (StorePaths detects this file next to the exe). Deliberately
+# NOT mirrored into any install() rule, so the packaged release ships without the
+# marker and end users keep the per-user %APPDATA%/braidcast config.
+add_custom_command(
+  TARGET ${_target}
+  POST_BUILD
+  COMMAND "${CMAKE_COMMAND}" -E touch "${OBS_OUTPUT_DIR}/$<CONFIG>/${OBS_EXECUTABLE_DESTINATION}/braidcast_portable.txt"
+  COMMENT "Mark dev rundir as portable (isolated config)"
+  VERBATIM
+)
+
 print_cef_config()

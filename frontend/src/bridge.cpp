@@ -7803,12 +7803,12 @@ std::string SanitizeScreenshotName(const std::string &name, const char *fallback
 // can't be resolved or the directory can't be created.
 bool BuildScreenshotPath(const std::string &name, const char *fallback, std::string &fullPath, std::string &errOut)
 {
-	char dir[512];
-	if (os_get_config_path(dir, sizeof(dir), "braidcast/screenshots") <= 0) {
+	const std::string dir = BraidcastConfigPath("screenshots");
+	if (dir.empty()) {
 		errOut = "failed to resolve screenshots directory";
 		return false;
 	}
-	if (os_mkdirs(dir) == MKDIR_ERROR) {
+	if (os_mkdirs(dir.c_str()) == MKDIR_ERROR) {
 		errOut = "failed to create screenshots directory";
 		return false;
 	}
@@ -7819,7 +7819,7 @@ bool BuildScreenshotPath(const std::string &name, const char *fallback, std::str
 	char ts[32];
 	strftime(ts, sizeof(ts), "%Y-%m-%d_%H-%M-%S", &lt);
 
-	fullPath = std::string(dir) + "/" + SanitizeScreenshotName(name, fallback) + "_" + ts + ".png";
+	fullPath = dir + "/" + SanitizeScreenshotName(name, fallback) + "_" + ts + ".png";
 	return true;
 }
 

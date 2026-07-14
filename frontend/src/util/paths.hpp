@@ -30,3 +30,18 @@ inline std::string RundirRoot()
 	WideCharToMultiByte(CP_UTF8, 0, dir.c_str(), -1, utf8.data(), len, nullptr, nullptr);
 	return utf8;
 }
+
+// Absolute wide path to the directory that holds the running executable
+// (<rundir>/bin/64bit). Kept as a native wide string so it feeds both the Win32
+// loader APIs and std::filesystem::path directly without a UTF-8 round-trip.
+inline std::wstring ExecutableDir()
+{
+	wchar_t exe_path[MAX_PATH] = {0};
+	GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
+	std::wstring dir(exe_path);
+	size_t slash = dir.find_last_of(L"\\/");
+	if (slash != std::wstring::npos) {
+		dir.resize(slash);
+	}
+	return dir;
+}

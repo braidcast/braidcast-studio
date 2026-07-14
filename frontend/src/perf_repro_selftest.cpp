@@ -12,6 +12,7 @@
 
 #include "bridge.hpp"
 #include "log.hpp"
+#include "multistream/StorePaths.hpp"
 #include "util/session_log.hpp"
 
 namespace {
@@ -92,21 +93,17 @@ double EnvDouble(const char *name, double fallback)
 	return (end && end != v) ? d : fallback;
 }
 
-// <config>/braidcast/selftest/<file>, mirroring the shape of MultistreamBasicPath
-// (StorePaths.hpp) / SessionLog's "braidcast/logs" -- a fresh subdir, so the same
-// one-line os_get_config_path idiom, not a shared helper (there is nothing to
-// factor: each caller resolves a different, genuinely distinct subdir).
+// <config base>/selftest/<file>, resolved through the shared BraidcastConfigPath
+// seam (StorePaths.hpp) so the self-test's scratch files follow portable mode
+// with every other store.
 std::string SelfTestConfigPath(const std::string &file)
 {
-	char base[512];
-	if (os_get_config_path(base, sizeof(base), "braidcast/selftest") <= 0) {
+	const std::string base = BraidcastConfigPath("selftest");
+	if (base.empty()) {
 		return std::string();
 	}
-	os_mkdirs(base);
-	std::string path = base;
-	path += "/";
-	path += file;
-	return path;
+	os_mkdirs(base.c_str());
+	return base + "/" + file;
 }
 
 // Reuse SessionLog's own per-session timestamp (its filename is already
