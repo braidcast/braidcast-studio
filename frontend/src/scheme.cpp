@@ -12,7 +12,7 @@
 #include "include/cef_scheme.h"
 #include "include/wrapper/cef_helpers.h"
 
-#include "paths.hpp"
+#include "util/paths.hpp"
 
 namespace {
 

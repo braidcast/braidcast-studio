@@ -4,9 +4,9 @@
 #include "bridge.hpp"
 #include "log.hpp"
 #include "obs_bootstrap.hpp"
-#include "preview_window.hpp"
-#include "scene_collections.hpp"
-#include "transitions.hpp"
+#include "windowing/preview_window.hpp"
+#include "scene/scene_collections.hpp"
+#include "scene/transitions.hpp"
 
 #include "audio/AudioMonitor.hpp"
 #include "multistream/CanvasStore.hpp"

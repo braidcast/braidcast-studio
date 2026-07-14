@@ -2,7 +2,7 @@
 
 #include "../chat/chat_transport.hpp"
 #include "../events/event_transport.hpp"
-#include "../http_client.hpp"
+#include "util/http_client.hpp"
 
 // The base StreamProvider's transport factories default to "no transport". They are
 // defined here rather than inline in the header because the return type is a

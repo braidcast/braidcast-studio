@@ -6,12 +6,12 @@
 
 #include "preview_window.hpp"
 
-#include "GeneralSettings.hpp"
+#include "settings/GeneralSettings.hpp"
 #include "multistream/CanvasRuntime.hpp"
 #include "multistream/CanvasStore.hpp"
 #include "obs_bootstrap.hpp"
-#include "transitions.hpp"
-#include "scene_persistence.hpp"
+#include "scene/transitions.hpp"
+#include "scene/scene_persistence.hpp"
 
 #include <CanvasDefinition.hpp>
 

@@ -2,7 +2,7 @@
 
 #include "StorePaths.hpp"
 #include "../obs_bootstrap.hpp"
-#include "../scene_collections.hpp"
+#include "scene/scene_collections.hpp"
 
 #include <util/platform.h>
 #include <util/util.hpp>

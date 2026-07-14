@@ -4,8 +4,8 @@
 
 #include "../chat/kick_chat.hpp"
 #include "../events/kick_events.hpp"
-#include "../http_client.hpp"
-#include "../json_util.hpp"
+#include "util/http_client.hpp"
+#include "util/json_util.hpp"
 #include "ui-config.h"
 
 namespace OAuth {

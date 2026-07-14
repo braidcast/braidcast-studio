@@ -4,7 +4,7 @@
 #include <memory>
 #include <string>
 
-#include "../http_client.hpp"
+#include "util/http_client.hpp"
 #include "broker_strategy.hpp"
 #include "provider.hpp"
 

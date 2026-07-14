@@ -11,11 +11,11 @@
 
 #include <nlohmann/json.hpp>
 
-#include "../http_client.hpp"
+#include "util/http_client.hpp"
 #include "../log.hpp"
 #include "../oauth/provider.hpp"
-#include "../provider_creds.hpp"
-#include "../time_util.hpp"
+#include "oauth/provider_creds.hpp"
+#include "util/time_util.hpp"
 #include "third_party_emotes.hpp"
 
 namespace OAuth {

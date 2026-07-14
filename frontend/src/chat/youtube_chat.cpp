@@ -7,10 +7,10 @@
 
 #include "../events/event_hub.hpp"   // Events::Hub().Ingest for monetization/membership events
 #include "../events/event_model.hpp" // Events::NormalizedEvent
-#include "../http_client.hpp"
-#include "../json_util.hpp"
+#include "util/http_client.hpp"
+#include "util/json_util.hpp"
 #include "../oauth/youtube_provider.hpp"
-#include "../time_util.hpp"
+#include "util/time_util.hpp"
 #include "third_party_emotes.hpp"
 #include "ws_client.hpp" // CancelableSleep / Backoff
 

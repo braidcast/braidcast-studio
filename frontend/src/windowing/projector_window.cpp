@@ -10,8 +10,8 @@
 #include "multistream/CanvasRuntime.hpp"
 #include "multistream/CanvasStore.hpp"
 #include "obs_bootstrap.hpp"
-#include "GeneralSettings.hpp"
-#include "transitions.hpp"
+#include "settings/GeneralSettings.hpp"
+#include "scene/transitions.hpp"
 
 #include <obs.h>
 

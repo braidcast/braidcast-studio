@@ -5,11 +5,11 @@
 
 #include <nlohmann/json.hpp>
 
-#include "../http_client.hpp"
-#include "../json_util.hpp"
+#include "util/http_client.hpp"
+#include "util/json_util.hpp"
 #include "../log.hpp"
 #include "../oauth/youtube_provider.hpp"
-#include "../time_util.hpp"
+#include "util/time_util.hpp"
 
 namespace Events {
 

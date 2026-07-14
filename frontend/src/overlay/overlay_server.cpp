@@ -16,7 +16,7 @@
 #include <nlohmann/json.hpp>
 
 #include "../log.hpp"
-#include "../paths.hpp"      // RundirRoot
+#include "util/paths.hpp"    // RundirRoot
 #include "overlay_store.hpp" // Overlay::Store(), Widget, WidgetUrl
 
 #pragma comment(lib, "ws2_32.lib")

@@ -2,7 +2,7 @@
 
 #include "../log.hpp"
 #include "../multistream/StorePaths.hpp"
-#include "../paths.hpp"
+#include "util/paths.hpp"
 
 #include <obs.hpp>
 #include <util/platform.h>

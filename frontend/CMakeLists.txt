@@ -58,55 +58,55 @@ target_sources(
     src/bridge.cpp
     src/bridge.hpp
     src/event_names.hpp
-    src/http_client.cpp
-    src/http_client.hpp
-    src/json_util.hpp
-    src/time_util.hpp
-    src/async_task.cpp
-    src/async_task.hpp
-    src/properties_serializer.cpp
-    src/properties_serializer.hpp
+    src/util/http_client.cpp
+    src/util/http_client.hpp
+    src/util/json_util.hpp
+    src/util/time_util.hpp
+    src/util/async_task.cpp
+    src/util/async_task.hpp
+    src/util/properties_serializer.cpp
+    src/util/properties_serializer.hpp
     src/obs_bootstrap.cpp
     src/obs_bootstrap.hpp
     src/obs_importer.cpp
     src/obs_importer.hpp
-    src/GeneralSettings.cpp
-    src/GeneralSettings.hpp
-    src/AdvancedSettings.cpp
-    src/AdvancedSettings.hpp
-    src/DiagnosticsSettings.cpp
-    src/DiagnosticsSettings.hpp
-    src/preview_window.cpp
-    src/preview_window.hpp
-    src/window_manager.cpp
+    src/settings/GeneralSettings.cpp
+    src/settings/GeneralSettings.hpp
+    src/settings/AdvancedSettings.cpp
+    src/settings/AdvancedSettings.hpp
+    src/settings/DiagnosticsSettings.cpp
+    src/settings/DiagnosticsSettings.hpp
+    src/windowing/preview_window.cpp
+    src/windowing/preview_window.hpp
+    src/windowing/window_manager.cpp
     # Frameless custom-titlebar chrome (WM_NCCALCSIZE/NCHITTEST + CEF drag regions).
-    src/window_chrome.cpp
-    src/window_manager.hpp
-    src/projector_window.cpp
-    src/projector_window.hpp
-    src/interact_window.cpp
-    src/interact_window.hpp
+    src/windowing/window_chrome.cpp
+    src/windowing/window_manager.hpp
+    src/windowing/projector_window.cpp
+    src/windowing/projector_window.hpp
+    src/windowing/interact_window.cpp
+    src/windowing/interact_window.hpp
     src/audio/AudioMonitor.cpp
     src/audio/AudioMonitor.hpp
-    src/scene_collections.cpp
-    src/scene_collections.hpp
-    src/scene_persistence.cpp
-    src/scene_persistence.hpp
-    src/tray.cpp
-    src/tray.hpp
-    src/transitions.cpp
-    src/transitions.hpp
-    src/session_log.cpp
-    src/session_log.hpp
+    src/scene/scene_collections.cpp
+    src/scene/scene_collections.hpp
+    src/scene/scene_persistence.cpp
+    src/scene/scene_persistence.hpp
+    src/windowing/tray.cpp
+    src/windowing/tray.hpp
+    src/scene/transitions.cpp
+    src/scene/transitions.hpp
+    src/util/session_log.cpp
+    src/util/session_log.hpp
     src/log.cpp
     src/log.hpp
     # Build-time platform OAuth credential injection (Phase 8a). obf.c is the
     # symmetric nibble-XOR deobfuscator; provider_creds reads the configured
     # ui-config.h and returns the plaintext-or-deobfuscated client_id.
-    src/obf.c
-    src/obf.h
-    src/provider_creds.cpp
-    src/provider_creds.hpp
+    src/oauth/obf.c
+    src/oauth/obf.h
+    src/oauth/provider_creds.cpp
+    src/oauth/provider_creds.hpp
     # OAuth foundation: provider registry + capability descriptors, the broker auth
     # strategy (loopback listener + BrokerStrategy), and a DPAPI-wrapped
     # per-stream-profile token store. provider.hpp is the interface set the registry +
@@ -398,20 +398,20 @@ set_source_files_properties(
   src/main.cpp
   src/obs_bootstrap.cpp
   src/obs_importer.cpp
-  src/GeneralSettings.cpp
-  src/AdvancedSettings.cpp
-  src/DiagnosticsSettings.cpp
+  src/settings/GeneralSettings.cpp
+  src/settings/AdvancedSettings.cpp
+  src/settings/DiagnosticsSettings.cpp
   src/bridge.cpp
   src/chat/chat_hub.cpp
-  src/properties_serializer.cpp
-  src/preview_window.cpp
-  src/projector_window.cpp
-  src/interact_window.cpp
+  src/util/properties_serializer.cpp
+  src/windowing/preview_window.cpp
+  src/windowing/projector_window.cpp
+  src/windowing/interact_window.cpp
   src/audio/AudioMonitor.cpp
-  src/scene_collections.cpp
-  src/scene_persistence.cpp
-  src/tray.cpp
-  src/transitions.cpp
+  src/scene/scene_collections.cpp
+  src/scene/scene_persistence.cpp
+  src/windowing/tray.cpp
+  src/scene/transitions.cpp
   src/ingest_writeback.cpp
   src/perf_repro_selftest.cpp
   api-impl/frontend_callbacks.cpp

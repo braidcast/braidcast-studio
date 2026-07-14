@@ -5,7 +5,7 @@
 #include <utility>
 
 #include "../log.hpp"
-#include "../provider_creds.hpp"
+#include "provider_creds.hpp"
 #include "account_store.hpp"
 #include "kick_provider.hpp"
 #include "twitch_provider.hpp"

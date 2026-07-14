@@ -25,10 +25,10 @@
 #include <string>
 #include <vector>
 
-#include "async_task.hpp"
+#include "util/async_task.hpp"
 #include "audio/AudioMonitor.hpp"
 #include "bridge.hpp"
-#include "DiagnosticsSettings.hpp"
+#include "settings/DiagnosticsSettings.hpp"
 #include "frontend_callbacks.hpp"
 #include "log.hpp"
 #include "chat/channel_stats_poller.hpp"
@@ -49,15 +49,15 @@
 #include "oauth/registry.hpp"
 #include "overlay/overlay_server.hpp"
 #include "overlay/overlay_store.hpp"
-#include "AdvancedSettings.hpp"
-#include "GeneralSettings.hpp"
-#include "paths.hpp"
-#include "preview_window.hpp"
-#include "projector_window.hpp"
-#include "scene_collections.hpp"
-#include "session_log.hpp"
-#include "scene_persistence.hpp"
-#include "transitions.hpp"
+#include "settings/AdvancedSettings.hpp"
+#include "settings/GeneralSettings.hpp"
+#include "util/paths.hpp"
+#include "windowing/preview_window.hpp"
+#include "windowing/projector_window.hpp"
+#include "scene/scene_collections.hpp"
+#include "util/session_log.hpp"
+#include "scene/scene_persistence.hpp"
+#include "scene/transitions.hpp"
 #include "UndoManager.hpp"
 
 namespace {

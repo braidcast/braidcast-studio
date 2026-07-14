@@ -1,10 +1,10 @@
 #include "kick_chat.hpp"
 #include "../event_names.hpp"
 
-#include "../http_client.hpp"
+#include "util/http_client.hpp"
 #include "../log.hpp"
 #include "../oauth/kick_provider.hpp"
-#include "../time_util.hpp"
+#include "util/time_util.hpp"
 #include "kick_pusher.hpp"
 #include "third_party_emotes.hpp"
 #include "ws_client.hpp"

@@ -11,7 +11,7 @@
 #include <vector>
 
 #include "../events/youtube_events.hpp"
-#include "../http_client.hpp"
+#include "util/http_client.hpp"
 #include "broker_strategy.hpp"
 #include "provider.hpp"
 

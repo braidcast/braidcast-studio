@@ -1,6 +1,6 @@
 #include "MultistreamEngine.hpp"
 
-#include "AdvancedSettings.hpp"
+#include "settings/AdvancedSettings.hpp"
 #include "log.hpp"
 #include "obs_bootstrap.hpp"
 

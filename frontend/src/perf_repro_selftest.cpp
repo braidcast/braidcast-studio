@@ -12,7 +12,7 @@
 
 #include "bridge.hpp"
 #include "log.hpp"
-#include "session_log.hpp"
+#include "util/session_log.hpp"
 
 namespace {
 

@@ -4,7 +4,7 @@
 
 #include <nlohmann/json.hpp>
 
-#include "../http_client.hpp"
+#include "util/http_client.hpp"
 #include "../log.hpp"
 
 namespace Chat {

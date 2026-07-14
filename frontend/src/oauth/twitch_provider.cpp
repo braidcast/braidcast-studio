@@ -4,9 +4,9 @@
 
 #include "../chat/twitch_chat.hpp"
 #include "../events/twitch_events.hpp"
-#include "../http_client.hpp"
-#include "../json_util.hpp"
-#include "../provider_creds.hpp"
+#include "util/http_client.hpp"
+#include "util/json_util.hpp"
+#include "provider_creds.hpp"
 #include "ui-config.h"
 
 namespace OAuth {

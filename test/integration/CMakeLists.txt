@@ -15,7 +15,7 @@ set(_fe "${CMAKE_SOURCE_DIR}/frontend")
 # four ObsBootstrap/Transitions seams they resolve their singletons through.
 set(
   _fe_sources
-  "${_fe}/src/scene_persistence.cpp"
+  "${_fe}/src/scene/scene_persistence.cpp"
   "${_fe}/src/multistream/CanvasRuntime.cpp"
   "${_fe}/src/multistream/CanvasStore.cpp"
   "${_fe}/src/multistream/StorePaths.cpp"

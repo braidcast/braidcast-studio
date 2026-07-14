@@ -8,15 +8,15 @@
 
 #include <util/platform.h> // os_gettime_ns
 
-#include "../async_task.hpp"
+#include "util/async_task.hpp"
 #include "../bridge.hpp"
 #include "../chat/kick_pusher.hpp"
 #include "../chat/ws_client.hpp"
-#include "../json_util.hpp"
+#include "util/json_util.hpp"
 #include "../log.hpp"
 #include "../oauth/account_store.hpp"
 #include "../oauth/provider.hpp"
-#include "../time_util.hpp"
+#include "util/time_util.hpp"
 
 // !!! REVERSE-ENGINEERED + BEST-EFFORT (see kick_events.hpp) !!!
 // The Pusher channel names and `App\Events\...` event names + payload field names

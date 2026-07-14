@@ -12,8 +12,8 @@
 
 #include <nlohmann/json.hpp>
 
-#include "../http_client.hpp"
-#include "../json_util.hpp"
+#include "util/http_client.hpp"
+#include "util/json_util.hpp"
 #include "../log.hpp"
 #include "account_store.hpp"
 #include "loopback_listener.hpp"

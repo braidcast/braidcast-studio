@@ -4,7 +4,7 @@
 
 #include <string>
 
-#include "GeneralSettings.hpp"
+#include "settings/GeneralSettings.hpp"
 #include "app_icon.hpp"
 #include "log.hpp"
 #include "multistream/MultistreamEngine.hpp"

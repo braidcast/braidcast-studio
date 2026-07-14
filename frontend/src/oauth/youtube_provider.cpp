@@ -7,9 +7,9 @@
 #include <iterator>
 
 #include "../chat/youtube_chat.hpp"
-#include "../http_client.hpp"
+#include "util/http_client.hpp"
 #include "../ingest_writeback.hpp"
-#include "../json_util.hpp"
+#include "util/json_util.hpp"
 #include "../log.hpp"
 #include "ui-config.h"
 

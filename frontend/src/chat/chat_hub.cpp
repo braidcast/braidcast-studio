@@ -6,7 +6,7 @@
 #include <set>
 #include <utility>
 
-#include "../async_task.hpp"
+#include "util/async_task.hpp"
 #include "../bridge.hpp"
 #include "../log.hpp"
 #include "../multistream/OutputBindingStore.hpp"

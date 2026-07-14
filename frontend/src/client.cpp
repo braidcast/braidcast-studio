@@ -5,7 +5,7 @@
 
 #include "bridge.hpp"
 #include "log.hpp"
-#include "window_chrome.hpp"
+#include "windowing/window_chrome.hpp"
 
 Client::Client() = default;
 

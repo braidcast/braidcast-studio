@@ -6,7 +6,7 @@
 #include <utility>
 #include <vector>
 
-#include "../async_task.hpp"
+#include "util/async_task.hpp"
 #include "../bridge.hpp"
 #include "../chat/ws_client.hpp" // Chat::CancelableSleep
 #include "../log.hpp"
