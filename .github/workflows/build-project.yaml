@@ -431,3 +431,31 @@ jobs:
         with:
           name: obs-studio-windows-${{ matrix.architecture }}-${{ needs.check-event.outputs.commitHash }}
           path: ${{ github.workspace }}/build_${{ matrix.architecture }}/braidcast-*-windows-${{ matrix.architecture }}.zip
+
+      - name: Boot-Smoke Package 🔬
+        shell: pwsh
+        # Prove the CPack zip actually launches with its UI, not merely that it
+        # compiled. The frontend exe target (braidcast-frontend) is not literally
+        # `obs-studio`, so OBS's set_target_properties_obs skips
+        # _bundle_dependencies(); the dev rundir is populated by POST_BUILD copies
+        # while the zip has historically shipped gutted (missing dep DLLs, CEF, or
+        # the Svelte web bundle -> white window). This gate fails the build for all
+        # three. Runs after upload so the (possibly gutted) artifact is preserved
+        # for post-mortem while the job still goes red. Reference DLL set is derived
+        # from the same build's rundir; liveness is best-effort (see the script).
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $arch = '${{ matrix.architecture }}'
+          $config = '${{ needs.check-event.outputs.config }}'
+          $buildDir = Join-Path '${{ github.workspace }}' "build_${arch}"
+          $zip = Get-ChildItem -Path $buildDir -Filter "braidcast-*-windows-${arch}.zip" -File |
+            Select-Object -First 1
+          if ( -not $zip ) {
+            throw "No braidcast-*-windows-${arch}.zip found in ${buildDir}"
+          }
+          $unzip = Join-Path $Env:RUNNER_TEMP 'smoke-pkg'
+          if ( Test-Path $unzip ) { Remove-Item $unzip -Recurse -Force }
+          Expand-Archive -Path $zip.FullName -DestinationPath $unzip -Force
+          .github/scripts/Smoke-Package.ps1 `
+            -PackageRoot $unzip `
+            -ReferenceRoot (Join-Path $buildDir "rundir/${config}")
