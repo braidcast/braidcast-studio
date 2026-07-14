@@ -64,14 +64,39 @@ function Package {
         $CpackArgs += ('--verbose')
     }
 
+    # The NSIS CPack generator (portable ZIP + system installer) needs makensis.
+    # The GitHub windows-2022 runner ships NSIS; install defensively only if a
+    # runner image ever drops it so the installer artifact is never silently
+    # skipped. CPack locates makensis via the registry/standard install path, so
+    # PATH does not need updating here.
+    if (
+        -not ( Get-Command makensis -ErrorAction SilentlyContinue ) -and
+        -not ( Test-Path 'C:\Program Files (x86)\NSIS\makensis.exe' )
+    ) {
+        Log-Information 'NSIS (makensis) not found; installing via Chocolatey...'
+        choco install nsis --yes --no-progress
+    }
+
     Log-Group "Packaging obs-studio..."
 
     Push-Location -Stack PackageTemp "build_${Target}"
 
     cpack @CpackArgs
 
-    $Package = Get-ChildItem -filter "braidcast-*-windows-${Target}.zip" -File
-    Move-Item -Path $Package -Destination "${OutputName}-windows-${Target}.zip"
+    # CPack emits both generators named from CPACK_PACKAGE_FILE_NAME:
+    # braidcast-<canonical>-windows-<arch>.{zip,exe}. Rename each to the
+    # git-describe OutputName so the release/upload globs stay version-agnostic.
+    $Zip = Get-ChildItem -Filter "braidcast-*-windows-${Target}.zip" -File | Select-Object -First 1
+    if ( -not $Zip ) {
+        throw "CPack did not produce a braidcast-*-windows-${Target}.zip"
+    }
+    Move-Item -Path $Zip -Destination "${OutputName}-windows-${Target}.zip" -Force
+
+    $Installer = Get-ChildItem -Filter "braidcast-*-windows-${Target}.exe" -File | Select-Object -First 1
+    if ( -not $Installer ) {
+        throw "CPack did not produce a braidcast-*-windows-${Target}.exe (NSIS installer)"
+    }
+    Move-Item -Path $Installer -Destination "${OutputName}-windows-${Target}.exe" -Force
 
     Pop-Location -Stack PackageTemp
 }

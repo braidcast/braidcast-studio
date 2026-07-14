@@ -47,20 +47,33 @@ jobs:
           : Stage Release Files 📦
           if [[ "${RUNNER_DEBUG}" ]]; then set -x; fi
 
-          # The Windows package (Package-Windows.ps1 -> CPack) emits
-          # braidcast-<version>-windows-x64.zip inside the uploaded artifact,
-          # regardless of the internal artifact name. Match it by glob so the
-          # release is agnostic to the git-describe version embedded by CPack.
+          # The Windows package (Package-Windows.ps1 -> CPack) emits both a
+          # portable zip and an NSIS system installer inside the uploaded
+          # artifact: braidcast-<version>-windows-x64.{zip,exe}, regardless of
+          # the internal artifact name. Match each by glob so the release is
+          # agnostic to the git-describe version embedded by CPack.
+          version="${{ steps.version.outputs.version }}"
+
           zip="$(find artifacts -type f -name 'braidcast-*-windows-x64.zip' | head -1)"
           if [[ -z "${zip}" ]]; then
             echo "::error::No braidcast-*-windows-x64.zip found in artifacts"
             find artifacts -type f
             exit 1
           fi
+          zip_out="Braidcast-${version}-Windows-x64.zip"
+          mv -v "${zip}" "${zip_out}"
 
-          out="Braidcast-${{ steps.version.outputs.version }}-Windows-x64.zip"
-          mv -v "${zip}" "${out}"
-          echo "asset=${out}" >> "$GITHUB_OUTPUT"
+          installer="$(find artifacts -type f -name 'braidcast-*-windows-x64.exe' | head -1)"
+          if [[ -z "${installer}" ]]; then
+            echo "::error::No braidcast-*-windows-x64.exe (NSIS installer) found in artifacts"
+            find artifacts -type f
+            exit 1
+          fi
+          installer_out="Braidcast-${version}-Windows-x64-Installer.exe"
+          mv -v "${installer}" "${installer_out}"
+
+          echo "asset=${zip_out}" >> "$GITHUB_OUTPUT"
+          echo "installer=${installer_out}" >> "$GITHUB_OUTPUT"
 
       - name: Create Draft Release 🛫
         uses: softprops/action-gh-release@c062e08bd532815e2082a85e87e3ef29c3e6d191 # v2.4.1
@@ -68,4 +81,6 @@ jobs:
           draft: true
           tag_name: ${{ github.ref_name }}
           name: Braidcast ${{ steps.version.outputs.version }}
-          files: ${{ steps.stage.outputs.asset }}
+          files: |
+            ${{ steps.stage.outputs.asset }}
+            ${{ steps.stage.outputs.installer }}

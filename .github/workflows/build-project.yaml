@@ -430,7 +430,9 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: obs-studio-windows-${{ matrix.architecture }}-${{ needs.check-event.outputs.commitHash }}
-          path: ${{ github.workspace }}/build_${{ matrix.architecture }}/braidcast-*-windows-${{ matrix.architecture }}.zip
+          path: |
+            ${{ github.workspace }}/build_${{ matrix.architecture }}/braidcast-*-windows-${{ matrix.architecture }}.zip
+            ${{ github.workspace }}/build_${{ matrix.architecture }}/braidcast-*-windows-${{ matrix.architecture }}.exe
 
       - name: Boot-Smoke Package 🔬
         shell: pwsh
@@ -459,3 +461,35 @@ jobs:
           .github/scripts/Smoke-Package.ps1 `
             -PackageRoot $unzip `
             -ReferenceRoot (Join-Path $buildDir "rundir/${config}")
+
+      - name: Boot-Smoke Installer 🔬
+        shell: pwsh
+        # The NSIS installer must package the SAME file set as the zip (a gutted
+        # installer is as broken as a gutted zip). Silent-install it to a temp dir
+        # (`/S /D=<dir>` -- NSIS requires /D last, unquoted, no trailing slash) and
+        # reuse the exact same manifest assertions against the install tree. File
+        # checks only (-SkipLiveness); the zip step already exercised liveness, and
+        # this validates payload completeness, not a second launch.
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $arch = '${{ matrix.architecture }}'
+          $config = '${{ needs.check-event.outputs.config }}'
+          $buildDir = Join-Path '${{ github.workspace }}' "build_${arch}"
+          $installer = Get-ChildItem -Path $buildDir -Filter "braidcast-*-windows-${arch}.exe" -File |
+            Select-Object -First 1
+          if ( -not $installer ) {
+            throw "No braidcast-*-windows-${arch}.exe (NSIS installer) found in ${buildDir}"
+          }
+          $dest = Join-Path $Env:RUNNER_TEMP 'smoke-inst'
+          if ( Test-Path $dest ) { Remove-Item $dest -Recurse -Force }
+          $proc = Start-Process -FilePath $installer.FullName -ArgumentList '/S', "/D=$dest" -Wait -PassThru
+          if ( $proc.ExitCode -ne 0 ) {
+            throw "Silent install failed with exit code $($proc.ExitCode)"
+          }
+          if ( -not ( Test-Path (Join-Path $dest 'bin/64bit/braidcast.exe') ) ) {
+            throw "Installer did not populate the install dir: ${dest}"
+          }
+          .github/scripts/Smoke-Package.ps1 `
+            -PackageRoot $dest `
+            -ReferenceRoot (Join-Path $buildDir "rundir/${config}") `
+            -SkipLiveness
