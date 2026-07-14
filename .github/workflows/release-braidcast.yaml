@@ -81,6 +81,7 @@ jobs:
           draft: true
           tag_name: ${{ github.ref_name }}
           name: Braidcast ${{ steps.version.outputs.version }}
+          generate_release_notes: true
           files: |
             ${{ steps.stage.outputs.asset }}
             ${{ steps.stage.outputs.installer }}
