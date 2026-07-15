@@ -1372,8 +1372,11 @@ folder-move costs, memory-migration steps, auto-update options).
 all 7 secrets set; verified end-to-end (all 3 `/start` 302 to the right host with a populated
 `client_id`). Secret naming unified to `*_CLIENTID`/`*_CLIENTSECRET` (+ `STATE_HMAC_KEY`) across
 `.env` build var + broker + CF. Providers registered (YouTube = Web-app client; Twitch = Confidential).
-**Owed:** (1) **Twitch rebuild** — the current binary bakes the OLD, now-deleted Twitch app; set
-`.env TWITCH_CLIENTID` to the new app id + rebuild (Kick/YouTube need none); (2) a real
+**Owed:** (1) ~~**Twitch rebuild** — the current binary bakes the OLD, now-deleted Twitch app~~
+**RESOLVED 2026-07-15 — the claim was false.** The id in `.env` is live: Twitch's token endpoint
+returns `403 invalid client secret` for it (a deleted app returns `400 invalid client`, as a bogus
+control id does). No rebuild owed. Still unverified: CI bakes `secrets.TWITCH_CLIENT_ID`, which
+can't be read back, so confirm it matches `.env`; (2) a real
 connect→token→refresh round-trip per provider from the app; (3) a per-IP rate-limit rule (CF
 dashboard); (4) confirm no Kick/YouTube creds in the binary. Handover:
 `docs/superpowers/sessions/2026-07-08-oauth-broker-handover.md`.
@@ -1697,7 +1700,16 @@ was also **latent in every modal** (each opener double-suspended on top of
 `Modal.svelte`) — the archetype of a bug class that is invisible until you can
 watch the app narrate itself.
 
-**Part 1 — gated debug logging (do first).**
+**Part 1 — gated debug logging ✅ SHIPPED** (`82468650b` + WS2; per-category filtering
+`fe4f302a6` 2026-07-15). Design spec: `docs/superpowers/specs/2026-07-12-debug-logging-design.md`.
+Delivered: the `DBG()` macro, `LogCat` (16 categories, one X-macro table), the `HostLog`→`blog`
+fold, `Client::OnConsoleMessage` `[L][cat]` parsing, env/.env/persisted boot seed,
+`DiagnosticsSettings` + `diagnostics.*` bridge methods + Settings toggle, and the web logger
+(`lib/utils/log.ts`). `BRAIDCAST_DEBUG` takes a category list; `1`/`true`/`on`/`all` enable all.
+**Known trap for Part 2:** `diagnosticsStore.start()` seeds via an async `diagnostics.get`, so web
+`log.dbg` calls before that resolves are silently dropped (its comment claims otherwise). Also:
+tag-only greps can't prove gating — pre-existing always-on `HostLog` lines share the `[cat]`
+convention and the session log stores no level prefix. Original spec below.
 - A `DEBUG` flag, **default OFF**, overridable by env (e.g. `BRAIDCAST_DEBUG=1`),
   Django-style; ideally also a runtime toggle (Settings switch / hotkey) so a live
   session can flip it without a relaunch.
