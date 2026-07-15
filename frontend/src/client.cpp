@@ -123,6 +123,14 @@ bool Client::OnConsoleMessage(CefRefPtr<CefBrowser> /*browser*/, cef_log_severit
 	const size_t catEnd = level != 0 ? msg.find(']', 4) : std::string::npos;
 	if (level != 0 && catEnd != std::string::npos && catEnd > 4) {
 		const std::string cat = msg.substr(4, catEnd - 4);
+		// Apply the category filter host-side: the web logger gates only on the
+		// coarse DEBUG flag, so a filtered spec (BRAIDCAST_DEBUG=preview) must drop
+		// the other categories' debug lines here. Info/warn/error always pass --
+		// they are not part of the gated channel.
+		LogCat parsed{};
+		if (level == LOG_DEBUG && LogCatFromName(cat, parsed) && !Log::DebugEnabled(parsed)) {
+			return false;
+		}
 		std::string rest = msg.substr(catEnd + 1);
 		if (!rest.empty() && rest[0] == ' ') {
 			rest.erase(0, 1);

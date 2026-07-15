@@ -9505,11 +9505,16 @@ bool Dispatch(const std::string &method, const json &params, json &result, std::
 		error = "unknown method: " + method;
 		return false;
 	}
+	DBG(LogCat::Bridge, "dispatch %s", method.c_str());
 	// Exception barrier for the sync lane (mirrors RunAsyncMethod on the async lane):
 	// a handler that throws must become a clean Failure, never escape into the CEF
 	// query dispatch and terminate the process.
 	try {
-		return it->second(params, result, error);
+		const bool ok = it->second(params, result, error);
+		if (!ok) {
+			DBG(LogCat::Bridge, "dispatch %s failed: %s", method.c_str(), error.c_str());
+		}
+		return ok;
 	} catch (const std::exception &e) {
 		error = "unhandled exception in " + method + ": " + e.what();
 		return false;
@@ -9526,6 +9531,7 @@ bool DispatchAsync(const std::string &method, const json &params,
 	if (it == g_asyncMethods.end()) {
 		return false;
 	}
+	DBG(LogCat::Bridge, "dispatch %s (async)", method.c_str());
 	it->second(params, callback);
 	return true;
 }

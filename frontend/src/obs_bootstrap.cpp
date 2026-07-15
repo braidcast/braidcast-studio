@@ -89,17 +89,11 @@ std::string BaseNameNoExt(const std::string &filename)
 	return dot == std::string::npos ? filename : filename.substr(0, dot);
 }
 
-// A BRAIDCAST_DEBUG value is truthy when it is 1/true/on (case-insensitive).
-bool ParseDebugFlag(const std::string &raw)
-{
-	const std::string v = LowerCopy(raw);
-	return v == "1" || v == "true" || v == "on";
-}
-
 // Read BRAIDCAST_DEBUG from a KEY=VALUE .env file (CRLF- and whitespace-
-// tolerant). nullopt when the file is missing or has no such key, so the caller
-// falls through to the next source.
-std::optional<bool> DebugFromEnvFile(const char *path)
+// tolerant). Yields the raw spec string (Log::ParseDebugSpec owns interpreting
+// it); nullopt when the file is missing or has no such key, so the caller falls
+// through to the next source.
+std::optional<std::string> DebugFromEnvFile(const char *path)
 {
 	std::ifstream f(path);
 	if (!f) {
@@ -121,31 +115,32 @@ std::optional<bool> DebugFromEnvFile(const char *path)
 		if (trim(line.substr(0, eq)) != "BRAIDCAST_DEBUG") {
 			continue;
 		}
-		return ParseDebugFlag(trim(line.substr(eq + 1)));
+		return trim(line.substr(eq + 1));
 	}
 	return std::nullopt;
 }
 
-// Seed the gated DEBUG channel: the BRAIDCAST_DEBUG env var (1/true/on,
-// case-insensitive) wins when set; otherwise the same key in the gitignored
-// repo-root .env (dev builds only); otherwise the persisted
-// DiagnosticsSettings.debugLogging; otherwise off.
-bool SeedDebugGate()
+// Seed the gated DEBUG channel: the BRAIDCAST_DEBUG env var wins when set;
+// otherwise the same key in the gitignored repo-root .env (dev builds only);
+// otherwise the persisted DiagnosticsSettings.debugLogging; otherwise off. The
+// spec is either a whole-channel switch (1/true/on/all) or a category filter
+// ("preview,bridge") -- Log::ParseDebugSpec is the single interpreter.
+Log::CatMask SeedDebugGate()
 {
 	if (const char *env = getenv("BRAIDCAST_DEBUG")) {
-		return ParseDebugFlag(env);
+		return Log::ParseDebugSpec(env);
 	}
 #ifdef BRAIDCAST_ENV_FILE
 	// Dev convenience: the .env path is baked at configure time and is absent in
 	// CI/shipped builds. Edit .env and relaunch to flip debug logging -- no
 	// rebuild, no env var. The live process env above still wins when set.
-	if (const std::optional<bool> v = DebugFromEnvFile(BRAIDCAST_ENV_FILE)) {
-		return *v;
+	if (const std::optional<std::string> v = DebugFromEnvFile(BRAIDCAST_ENV_FILE)) {
+		return Log::ParseDebugSpec(*v);
 	}
 #endif
 	DiagnosticsSettings ds;
 	ds.Load();
-	return ds.debugLogging;
+	return ds.debugLogging ? Log::kAllCats : Log::kNoCats;
 }
 
 // Route libobs/plugin blog() output to stderr so plugin lifecycle logging (e.g.
@@ -679,8 +674,8 @@ bool ObsBootstrap::Start()
 
 	// Seed the gated DEBUG channel before anything else logs: env override wins,
 	// else the persisted diagnostics setting. Off by default -> DBG() costs nothing.
-	Log::SetDebug(SeedDebugGate());
-	DBG(LogCat::Lifecycle, "bootstrap start (debug=%d)", (int)Log::DebugEnabled());
+	Log::SetDebugMask(SeedDebugGate());
+	DBG(LogCat::Lifecycle, "bootstrap start (debug categories=0x%x)", (unsigned)Log::DebugMask());
 
 	if (!obs_startup("en-US", nullptr, nullptr)) {
 		HostLog("[obs] obs_startup failed");

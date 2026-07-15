@@ -1,6 +1,7 @@
 #include "log.hpp"
 
 #include <atomic>
+#include <cctype>
 #include <cstdarg>
 #include <cstdio>
 
@@ -10,25 +11,83 @@
 extern "C" void obs_set_render_debug(bool enabled);
 
 namespace {
-// The single process-wide DEBUG gate. Default OFF: gated DBG() calls cost one
-// relaxed atomic read until the boot seed or diagnostics.setDebug flips it.
-std::atomic<bool> g_debugEnabled{false};
+// The single process-wide DEBUG gate, one bit per LogCat. Default OFF (no bits):
+// gated DBG() calls cost one relaxed atomic read plus a bit test until the boot
+// seed or diagnostics.setDebug sets it.
+std::atomic<Log::CatMask> g_debugMask{Log::kNoCats};
+
+std::string LowerTrim(const std::string &s)
+{
+	const size_t b = s.find_first_not_of(" \t\r\n");
+	if (b == std::string::npos) {
+		return std::string();
+	}
+	std::string out = s.substr(b, s.find_last_not_of(" \t\r\n") - b + 1);
+	for (char &c : out) {
+		c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+	}
+	return out;
+}
 } // namespace
 
 namespace Log {
 
 bool DebugEnabled()
 {
-	return g_debugEnabled.load(std::memory_order_relaxed);
+	return g_debugMask.load(std::memory_order_relaxed) != kNoCats;
+}
+
+bool DebugEnabled(LogCat cat)
+{
+	return (g_debugMask.load(std::memory_order_relaxed) & CatBit(cat)) != 0;
+}
+
+CatMask DebugMask()
+{
+	return g_debugMask.load(std::memory_order_relaxed);
+}
+
+void SetDebugMask(CatMask mask)
+{
+	g_debugMask.store(mask, std::memory_order_relaxed);
+	// Flip render-thread composite timing alongside the DEBUG gate. This is the
+	// single seam the boot seed, the live diagnostics.setDebug toggle, and a
+	// filtered env spec all funnel through; obs_set_render_debug no-ops safely
+	// before obs startup. It follows the coarse gate (any category on) because
+	// the timing it enables is a render-thread property, not a per-category line.
+	obs_set_render_debug(mask != kNoCats);
 }
 
 void SetDebug(bool enabled)
 {
-	g_debugEnabled.store(enabled, std::memory_order_relaxed);
-	// Flip render-thread composite timing alongside the DEBUG gate. This is the
-	// single seam both the boot seed and the live diagnostics.setDebug toggle
-	// funnel through; obs_set_render_debug no-ops safely before obs startup.
-	obs_set_render_debug(enabled);
+	SetDebugMask(enabled ? kAllCats : kNoCats);
+}
+
+CatMask ParseDebugSpec(const std::string &spec)
+{
+	const std::string v = LowerTrim(spec);
+	if (v.empty() || v == "0" || v == "false" || v == "off") {
+		return kNoCats;
+	}
+	if (v == "1" || v == "true" || v == "on" || v == "all") {
+		return kAllCats;
+	}
+
+	CatMask mask = kNoCats;
+	size_t pos = 0;
+	while (pos <= v.size()) {
+		size_t end = v.find_first_of(", ", pos);
+		if (end == std::string::npos) {
+			end = v.size();
+		}
+		const std::string name = LowerTrim(v.substr(pos, end - pos));
+		LogCat cat{};
+		if (!name.empty() && LogCatFromName(name, cat)) {
+			mask |= CatBit(cat);
+		}
+		pos = end + 1;
+	}
+	return mask;
 }
 
 void Debug(LogCat cat, const char *fmt, ...)
