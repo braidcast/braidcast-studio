@@ -1759,7 +1759,19 @@ that does this automatically:
   heal must either beat first read (it fires at boot; the user takes seconds to
   reach the editor) or invalidate + reload the affected view if it lands after.
 
-**Part 4 — proactive credential health (dead-refresh-token detection).**
+**Part 4 — proactive credential health (dead-refresh-token detection) ✅ SHIPPED** (`28fab105e`
+2026-07-15). `oauth/refresh_failure.hpp` classifies refresh failures: `invalid_grant` → Dead, all
+else (5xx / network / timeout / 429) → Transient. HTTP status is consulted **before** the response
+body, so a 5xx echoing `invalid_grant` stays transient and cannot strand a working account. All
+three providers share it via `BrokerStrategy::RefreshOnce` — the only refresh path in the tree, so
+no per-provider copies. `refreshDead` persists on `OAuthAccount`; `AccountNeedsReconnect` now
+returns `!isTokenScopeCurrent || refreshDead` and `IsAccountConnected` gained `&& !refreshDead`, so
+dead tokens surface on the **existing** amber relink state with zero web changes. Detection rides
+the always-on `ChannelStatsPoller` → `SendAuthed` → `ensureFresh` cadence; no separate health
+thread was needed (the roadmap's optional background check is therefore deliberately not built).
+Classifier proven 20/20 against the real header incl. the backwards-classification trap.
+**GUI-owed:** the live connect→revoke→refresh→amber round-trip (needs a browser consent flow).
+Original spec below.
 Access-token expiry is already handled well: `ensureFresh` refreshes in a skew
 window before each authed call plus a reactive 401 retry, single-flight and
 store-coherent — silent to the user. The gap is **refresh-token death** (password
@@ -1788,7 +1800,16 @@ prompt cleanly to relink*, not auto-fix. Work:
   account's refresh token and pre-flags stale ones — so relink is prompted at a
   calm moment, not mid-stream. Non-blocking, same threading discipline as Part 3.
 
-**Part 5 — stream-credential (ingest) self-heal + the Kick provisioning gap.**
+**Part 5 — stream-credential (ingest) self-heal ✅ ALREADY SHIPPED** (predates 2026-07-15; found
+during Part 4). Both bullets are wired, contrary to this entry: `Bridge::SelfHealStreamCredentials()`
+(`bridge.cpp:8398`, declared `bridge.hpp:73`) runs at launch from `obs_bootstrap.cpp:847`, after the
+profile + account stores load and the registry populates. Re-fetch + writeback: `SelfHealFetchWorker`
+(`bridge.cpp:8359`) calls `provider->fetchStreamKey` then `WriteIngestToProfile(uuid, "auto", key)`
+on a detached worker, reusing the existing ingest_writeback seam. Minimal seed: inline `server="auto"`
+for the key-present/server-missing case, plus a second seed at go-live in
+`MultistreamEngine::StartOutput` (`MultistreamEngine.cpp:292`) behind the platform-named pre-flight
+guard. The Kick provisioning question (does Kick actually return `stream.key`) remains genuinely
+owed — it needs a real account. Original spec below.
 The OAuth connect flow provisions streaming credentials per platform, and the gaps
 leave an rtmp_common profile unstreamable — `obs_output_start` bails deep in libobs
 (empty `last_error`) so the UI only ever showed the generic "the output failed to
