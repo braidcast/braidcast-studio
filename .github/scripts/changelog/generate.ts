@@ -34,7 +34,9 @@ import {
   getGitDiff,
   loadChangelogConfig,
   parseCommits,
+  resolveRepoConfig,
   type ChangelogConfig,
+  type RepoConfig,
 } from "changelogen";
 import declared from "../../../changelog.config";
 
@@ -45,6 +47,13 @@ type Config = ChangelogConfig & {
 
 const PLUGIN_SECTION = "plugins";
 const FALLBACK_SECTION = "misc";
+
+// GitHub rejects a release whose body exceeds 125,000 characters, and takes the whole
+// draft down with it. Trimmed notes beat a release that fails to publish, so stay well
+// under the cap. Emoji count as several UTF-16 units in `.length`, which errs high --
+// the safe direction.
+const GITHUB_BODY_LIMIT = 125_000;
+const MAX_BODY = 100_000;
 
 // `<prefix>: <subject>` per CONTRIBUTING.md; a trailing `!` marks a breaking change.
 const SUBJECT_RE = /^(?<prefix>[^\s:()!]+)(?<breaking>!)?:[ \t]+(?<rest>\S.*)$/;
@@ -104,7 +113,7 @@ export function retype(message: string, config: Config, root: string): string {
   return `${section}${scope}${breaking ?? ""}: ${rest}`;
 }
 
-function polish(markdown: string): string {
+function polish(markdown: string): { body: string; compare?: string } {
   const compare = markdown.match(COMPARE_RE)?.groups?.url;
   const body = markdown
     .replace(/^## .*$/m, "")
@@ -113,7 +122,42 @@ function polish(markdown: string): string {
     .replace(/^#### /gm, "### ")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
-  return compare ? `${body}\n\n**Full Changelog**: ${compare}` : body;
+  return { body, compare };
+}
+
+// Trims at a line boundary so the same range always yields the same body, and keeps
+// the compare link reachable in the note -- the trimmed entries are still one click away.
+export function fit(body: string, compare?: string): string {
+  const footer = compare ? `\n\n**Full Changelog**: ${compare}` : "";
+  if (body.length + footer.length <= MAX_BODY) {
+    return body + footer;
+  }
+
+  const note =
+    "\n\n> **Notes truncated** — this release has more changes than a GitHub release body can hold." +
+    (compare ? `\n> See the [full changelog](${compare}) for the complete list.` : "");
+  const budget = MAX_BODY - note.length - footer.length;
+
+  const kept: string[] = [];
+  let used = 0;
+  for (const line of body.split("\n")) {
+    if (used + line.length + 1 > budget) {
+      break;
+    }
+    kept.push(line);
+    used += line.length + 1;
+  }
+  return kept.join("\n").trimEnd() + note + footer;
+}
+
+// First release: nothing to diff against. The fork carries all of upstream's history,
+// so rendering the range would emit ~16k entries and blow the body limit -- and
+// refusing outright would cut no draft at all. Point at the tree instead.
+export function initialRelease(repo: RepoConfig | undefined, to: string): string {
+  const body = `## 🎉 Initial Release\n\n- First tagged release of Braidcast.`;
+  return repo?.domain && repo.repo
+    ? `${body}\n\n**Full Changelog**: https://${repo.domain}/${repo.repo}/commits/${to}`
+    : body;
 }
 
 export async function resolveConfig(root: string, from: string, to: string): Promise<Config> {
@@ -134,8 +178,8 @@ async function main(): Promise<void> {
     arg("from") ?? tryGit(root, "describe", "--tags", "--abbrev=0", "--match", "v*", `${to}^`);
 
   if (!from) {
-    console.error(`No previous v* tag before ${to}; refusing to render the whole history.`);
-    process.exit(1);
+    console.log(initialRelease(await resolveRepoConfig(root), to));
+    return;
   }
 
   const config = await resolveConfig(root, from, to);
@@ -148,7 +192,8 @@ async function main(): Promise<void> {
     config,
   );
 
-  console.log(polish(await generateMarkDown(commits, config)));
+  const { body, compare } = polish(await generateMarkDown(commits, config));
+  console.log(fit(body, compare));
 }
 
 if (import.meta.main) {
