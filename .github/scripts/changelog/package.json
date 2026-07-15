@@ -1,0 +1,12 @@
+{
+  "name": "braidcast-changelog",
+  "private": true,
+  "type": "module",
+  "description": "Release-notes generator for v* tags. Not part of the app build.",
+  "scripts": {
+    "generate": "bun run generate.ts"
+  },
+  "dependencies": {
+    "changelogen": "0.6.2"
+  }
+}

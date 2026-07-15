@@ -24,6 +24,7 @@
 !.swift-format
 !AUTHORS
 !buildspec.json
+!changelog.config.ts
 !CLAUDE.md
 !CMakeLists.txt
 !CMakePresets.json
@@ -65,3 +66,6 @@ build-aux/flatpak-github-action-modified-*
 # Frontend Svelte UI build artifacts (source + bun.lock are tracked)
 /frontend/web/node_modules/
 /frontend/web/dist/
+
+# Release-notes generator dependencies (source + bun.lock are tracked)
+/.github/scripts/changelog/node_modules/
