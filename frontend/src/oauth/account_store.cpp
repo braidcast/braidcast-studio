@@ -30,6 +30,7 @@ json AccountToJson(const OAuthAccount &a)
 		{"displayName", a.displayName},
 		{"expireTime", a.expireTime},
 		{"scopeVer", a.scopeVer},
+		{"refreshDead", a.refreshDead},
 		{"avatarUrl", a.avatarUrl},
 		{"audienceCount", a.audienceCount},
 		{"audienceKind", AudienceKindName(a.audienceKind)},
@@ -52,6 +53,7 @@ OAuthAccount AccountFromJson(const json &j)
 	a.displayName = j.value("displayName", std::string());
 	a.expireTime = j.value("expireTime", static_cast<int64_t>(0));
 	a.scopeVer = j.value("scopeVer", 0);
+	a.refreshDead = j.value("refreshDead", false);
 	a.avatarUrl = j.value("avatarUrl", std::string());
 	a.audienceCount = j.value("audienceCount", static_cast<int64_t>(-1));
 	a.audienceKind = AudienceKindFromName(j.value("audienceKind", std::string()));
@@ -229,6 +231,23 @@ void AccountStore::UpdateAudience(const std::string &accountId, int64_t count, A
 	it->second.audienceHidden = hidden;
 	it->second.audienceUpdatedNs = updatedNs;
 	SaveLocked();
+}
+
+bool AccountStore::SetRefreshDead(const std::string &accountId, bool dead)
+{
+	// Field-scoped for the same reason as UpdateAudience: the refresh path reaches here
+	// holding a record it read before a blocking HTTP call, so writing the whole thing
+	// back could clobber a token a concurrent flight rotated in the meantime. Touch only
+	// the verdict on the CURRENT stored record, and never re-insert a removed account.
+	const std::lock_guard<std::mutex> guard(mutex_);
+	EnsureLoadedLocked();
+	auto it = accounts_.find(accountId);
+	if (it == accounts_.end() || it->second.refreshDead == dead) {
+		return false;
+	}
+	it->second.refreshDead = dead;
+	SaveLocked();
+	return true;
 }
 
 void AccountStore::Remove(const std::string &accountId)

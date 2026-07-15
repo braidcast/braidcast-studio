@@ -52,9 +52,11 @@ void BootProviders();
 // Is this specific account currently usable for authenticated calls?
 bool IsAccountConnected(const OAuthAccount &acct);
 
-// Account has a credential but its token was issued under an older scope set, so
-// it must be reconnected before use. (Connected and needs-reconnect are mutually
-// exclusive; a no-credential partial record is neither.)
+// Account has a credential that cannot be used as-is and only a fresh interactive
+// grant recovers: its token was issued under an older scope set, or the broker
+// rejected its refresh with invalid_grant (revoked/expired). One signal for both, so
+// the UI has a single relink state to render. (Connected and needs-reconnect are
+// mutually exclusive; a no-credential partial record is neither.)
 bool AccountNeedsReconnect(const OAuthAccount &acct);
 
 // Is at least one account for `providerId` connected? (e.g. IsProviderConnected("twitch").)

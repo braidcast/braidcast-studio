@@ -25,6 +25,11 @@ public:
 	// never touches tokens). No-op if the account was removed. Persists on write.
 	void UpdateAudience(const std::string &accountId, int64_t count, AudienceKind kind, bool hidden,
 			    int64_t updatedNs);
+	// Update only the dead-refresh-token verdict of an existing account (worker-thread
+	// safe; never touches tokens). No-op if the account was removed. Returns true when
+	// the flag actually changed, so the caller can push oauth.status only on a real
+	// transition. Persists on change.
+	bool SetRefreshDead(const std::string &accountId, bool dead);
 	void Remove(const std::string &accountId);
 	std::map<std::string, OAuthAccount> All();
 

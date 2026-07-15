@@ -78,6 +78,12 @@ void ReconcileOrphanedAccounts();
 // registry is populated (same seam as ReconcileOrphanedAccounts).
 void SelfHealStreamCredentials();
 
+// Push the current OAuth account connection state as the "oauth.status" event, so a
+// state change discovered off the UI thread (e.g. the broker rejecting a refresh
+// token as dead) reaches the account chips without waiting for the next poll. Safe
+// to call from any thread; marshals to TID_UI and no-ops after teardown.
+void EmitOAuthStatus();
+
 // Apply a Default-canvas definition's resolution/color to the global/main video
 // pipeline (obs_reset_video, preserving the non-color fields and re-letterboxing
 // the preview + resizing the program transition). Injected into CanvasService as

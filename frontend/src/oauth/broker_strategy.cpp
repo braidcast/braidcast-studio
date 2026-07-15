@@ -14,6 +14,7 @@
 
 #include "util/http_client.hpp"
 #include "util/json_util.hpp"
+#include "../bridge.hpp"
 #include "../log.hpp"
 #include "account_store.hpp"
 #include "loopback_listener.hpp"
@@ -217,6 +218,13 @@ bool BrokerStrategy::authorize(const AuthContext &ctx, OAuthAccount &acct, std::
 
 bool BrokerStrategy::refresh(OAuthAccount &acct, std::string &err)
 {
+	RefreshFailureKind kind = RefreshFailureKind::Transient;
+	return RefreshOnce(acct, err, kind);
+}
+
+bool BrokerStrategy::RefreshOnce(OAuthAccount &acct, std::string &err, RefreshFailureKind &kind)
+{
+	kind = RefreshFailureKind::Transient;
 	if (acct.refresh.empty()) {
 		err = "no refresh token";
 		return false;
@@ -234,23 +242,30 @@ bool BrokerStrategy::refresh(OAuthAccount &acct, std::string &err)
 
 	const Http::HttpResponse resp = Http::HttpRequest(req);
 	if (resp.status == 0) {
+		kind = ClassifyRefreshFailure(0, std::string());
 		err = "token refresh failed: " + resp.error;
 		return false;
 	}
 
 	const json j = ParseJson(resp.body);
 	if (j.is_discarded() || !j.is_object()) {
+		kind = ClassifyRefreshFailure(resp.status, std::string());
 		err = "token refresh returned an unparseable body (HTTP " + std::to_string(resp.status) + ")";
 		return false;
 	}
 
 	const std::string access = Str(j, "access_token");
 	if (access.empty()) {
-		std::string code = Str(j, "error");
-		if (code.empty()) {
-			code = Str(j, "message");
-		}
-		err = code.empty() ? ("token refresh rejected (HTTP " + std::to_string(resp.status) + ")") : code;
+		// Classify on the RFC 6749 `error` code alone. `message` is a human-readable
+		// string some brokers send instead, fine for the error text but never a verdict
+		// on the credential -- feeding it to the classifier would let arbitrary prose
+		// decide whether the account gets signed out.
+		const std::string code = Str(j, "error");
+		kind = ClassifyRefreshFailure(resp.status, code);
+		std::string text = code.empty() ? Str(j, "message") : code;
+		err = text.empty() ? ("token refresh rejected (HTTP " + std::to_string(resp.status) + ")") : text;
+		DBG(LogCat::OAuth, "refresh rejected (platform %s, http=%d, error='%s') -> %s",
+		    config_.platform.c_str(), resp.status, code.c_str(), RefreshFailureKindName(kind));
 		return false;
 	}
 
@@ -260,6 +275,9 @@ bool BrokerStrategy::refresh(OAuthAccount &acct, std::string &err)
 	if (!rotated.empty()) {
 		acct.refresh = rotated;
 	}
+	// A refresh that succeeds proves the credential is alive, so it retires any earlier
+	// dead verdict (e.g. the token was revoked, then the user relinked out of band).
+	acct.refreshDead = false;
 	return true;
 }
 
@@ -294,7 +312,28 @@ bool BrokerStrategy::ensureFresh(OAuthAccount &acct, std::string &err, bool forc
 	if (force && !priorAccess.empty() && acct.access != priorAccess) {
 		return true;
 	}
-	if (!refresh(acct, err)) {
+	RefreshFailureKind kind = RefreshFailureKind::Transient;
+	if (!RefreshOnce(acct, err, kind)) {
+		if (kind == RefreshFailureKind::Dead) {
+			// The contract provider.hpp declares for refresh(): invalid_grant means
+			// re-auth, and no silent recovery exists. Record the verdict so the shared
+			// connected/needs-reconnect gates (registry.hpp) flip this account to the
+			// amber relink state instead of leaving it green until it dies mid-stream.
+			// Field-scoped: `acct` is a pre-HTTP snapshot, so writing it whole could
+			// clobber a token a concurrent flight rotated.
+			acct.refreshDead = true;
+			if (Accounts().SetRefreshDead(accountId, true)) {
+				DBG(LogCat::OAuth, "account %s marked needs-reconnect (refresh token dead)",
+				    accountId.c_str());
+				Bridge::EmitOAuthStatus();
+			}
+		} else {
+			// Transient: the credential is unproven, not dead. Leave the account
+			// connected and let the next call retry -- flagging here would sign a user
+			// out over a broker hiccup.
+			DBG(LogCat::OAuth, "refresh failed transiently for %s (retryable): %s", accountId.c_str(),
+			    err.c_str());
+		}
 		return false;
 	}
 	Accounts().Put(accountId, acct);

@@ -48,17 +48,22 @@ bool IsAccountConnected(const OAuthAccount &acct)
 {
 	StreamProvider *provider = Registry().Get(acct.providerId);
 	// An unregistered provider (e.g. Twitch without baked creds) can't be used, so
-	// it isn't connected. Scope must be current, and a refresh token must exist
-	// ("valid credential = refresh token present").
-	return provider && provider->isTokenScopeCurrent(acct) && !acct.refresh.empty();
+	// it isn't connected. Scope must be current, a refresh token must exist ("valid
+	// credential = refresh token present"), and that token must not have been rejected
+	// as dead -- a revoked token is still a non-empty string, so presence alone read
+	// green right up until the account died mid-stream.
+	return provider && provider->isTokenScopeCurrent(acct) && !acct.refresh.empty() && !acct.refreshDead;
 }
 
 bool AccountNeedsReconnect(const OAuthAccount &acct)
 {
 	StreamProvider *provider = Registry().Get(acct.providerId);
-	// Has a credential the user established, but the token predates the current
-	// scope set. Distinct from a partial no-refresh record (which is just ignored).
-	return provider && !acct.refresh.empty() && !provider->isTokenScopeCurrent(acct);
+	// Has a credential the user established, but it can no longer be used as-is:
+	// either the token predates the current scope set, or the broker rejected its
+	// refresh with invalid_grant. Both recover only through a fresh interactive grant,
+	// so both surface on the one relink signal. Distinct from a partial no-refresh
+	// record (which is just ignored).
+	return provider && !acct.refresh.empty() && (!provider->isTokenScopeCurrent(acct) || acct.refreshDead);
 }
 
 bool IsProviderConnected(const std::string &providerId)

@@ -90,6 +90,13 @@ struct OAuthAccount {
 	std::string displayName;
 	int64_t expireTime = 0;
 	int scopeVer = 0;
+	// The broker rejected this record's refresh token with invalid_grant: it is
+	// revoked/expired and only a fresh interactive grant can recover it. Persisted so
+	// the verdict survives a relaunch, and cleared by any refresh that succeeds (and
+	// naturally by a reconnect, which stores a brand-new record). Kept distinct from an
+	// empty `refresh` -- the dead token is still a non-empty string, which is exactly
+	// why the connected gate could not see it.
+	bool refreshDead = false;
 	// Identity + audience (Channel identity feature). Persisted so the panel
 	// shows cached avatar/count instantly on launch. audienceCount == -1 means
 	// "not yet known"; audienceHidden reflects YouTube's hiddenSubscriberCount.

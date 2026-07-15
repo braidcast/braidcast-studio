@@ -7,6 +7,7 @@
 #include <string>
 
 #include "provider.hpp"
+#include "refresh_failure.hpp"
 
 // Authorization-code grant driven through the Braidcast OAuth broker
 // (auth.braidcast.com). The app opens the system browser at the broker's /start,
@@ -35,6 +36,13 @@ public:
 	int scopeVer() const override { return config_.scopeVer; }
 
 private:
+	// The refresh POST + response parse, reporting via `kind` WHY a rejection failed.
+	// Both refresh() (the AuthStrategy contract entry point) and ensureFresh() funnel
+	// through here, so the wire format is parsed and classified in exactly one place;
+	// only ensureFresh acts on `kind`, since it is the one that owns the account id and
+	// the store write-back.
+	bool RefreshOnce(OAuthAccount &acct, std::string &err, RefreshFailureKind &kind);
+
 	std::shared_ptr<std::mutex> FlightLock(const std::string &key);
 
 	Config config_;
