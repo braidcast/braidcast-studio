@@ -49,12 +49,14 @@ canvas); recording, replay buffer, and multitrack/GoLive are hidden and inert.
 
 ## Open bugs 🐛
 
-- 🐛 **"Use Default resolution" toggle stretched full-width** in the canvas
+- ✅ **MOOT — "Use Default resolution" toggle stretched full-width** in the canvas
   editor — the idian `ToggleSwitch` fills its layout cell and reads like a
-  slider, though it behaves as a toggle. Fix deferred pending the Phase 2
-  editor/dock decision (the control may relocate).
-- ⏸ **Pre-existing `verticalLayout_35` AUTOUIC name-collision warning** —
-  cosmetic; uic auto-renames. Not introduced by this work.
+  slider, though it behaves as a toggle. **Not codeable as written:** the Qt
+  frontend was deleted outright (commit `9aa092af3`), so no `ToggleSwitch` and no
+  Qt canvas editor exist. The canvas editor is now a Svelte modal (Phase 4/7).
+- ✅ **MOOT — Pre-existing `verticalLayout_35` AUTOUIC name-collision warning** —
+  cosmetic; uic auto-renames. Gone with the Qt tree (`9aa092af3`) — there is no
+  `.ui` file or AUTOUIC step in the build anymore.
 
 ## Verification owed (manual, can't be driven headlessly)
 
@@ -214,9 +216,12 @@ main program canvas in several places.
 - 🔭 **3b — Per-canvas Studio Mode.** Make preview/program staging + transitions
   work per canvas, not Default-only. Superset of 3a (adds per-canvas transition +
   program staging on top of an editable surface); the hardest item. Do after 3a.
-- 💭 **3c — Default-preview / canvas-in-center layout (decision deferred).** Two
-  related questions about the QMainWindow **central widget** (which dock widgets
-  can't occupy):
+- ✅ **3c — MOOT (superseded by the Phase 4/7 frontend).** Both questions below were
+  about the QMainWindow **central widget**; Phase 4 replaced Qt with the CEF/Svelte UI
+  and Phase 7 replaced the workspace with the nav-rail page model, so there is no
+  central widget to gate or reparent — CSS layout removes the whole constraint class
+  (the stated "Why" of Phase 4 at the section below). Original questions kept for
+  history:
   - When the Default canvas is output-gated (disabled), should the central
     "Preview Disabled" placeholder *collapse* (`hide()` it — Qt's `display:none`
     equivalent) so the space is reclaimed, accepting that surrounding docks reflow
@@ -248,7 +253,10 @@ main program canvas in several places.
   Edit-Transform-open-then-destroy-dock, full type-picker attaches to canvas scene.
   Excluded by design (main-window-only): Multiview, projectors, grouping/multi-select,
   copy/paste, interact, grid mode, Studio Mode. Original scope below:
-- 🔭 **3d (original scope).** The canvas dock's
+- ✅ **3d (original scope) — SUPERSEDED by the shipped ✅ 3d entry directly above**
+  (add-source type-picker, source + scene context menus, Edit Transform all landed
+  there; the scene-menu's Multiview / Projector items were **excluded by design** as
+  main-window-only, per that entry's exclusion list). Kept for history. The canvas dock's
   scene/source lists are stripped down vs the main window's; bring them to parity:
   - **Add Source** — the dock's `+` (`CanvasDock::AddSource`) only lists *existing*
     global input sources to attach (Model 1: shared sources), so it shows however
@@ -270,7 +278,10 @@ main program canvas in several places.
     canvas.
   Sequence after 3a (the editable preview is the foundation; the context menus and
   add-source reuse the same main-scene-decoupling).
-- 🔭 **3e — Stats dock: multi-stream monitoring (needs design).** OBS's stock Stats
+- ✅ **3e — Stats dock: multi-stream monitoring — SHIPPED.** See "Stats dock (3e) —
+  DONE 2026-06-25" under Phase 4 → Remaining work; the open question below resolved
+  as **build a new multistream-stats panel** reading `MultistreamEngine::
+  StatsSnapshot()` rather than extending stock `OBSBasicStats`. Original brief: OBS's stock Stats
   dock reports a single output (the main stream/recording). With the encode-once
   fan-out engine, the user wants to monitor **all** outputs at once — per-binding
   bitrate / dropped frames / reconnects / CPU-GPU, grouped by canvas, plus the
@@ -512,10 +523,11 @@ build-green, headless-smoke clean (leaks 2 baseline), and pushed.
   fit/stretch/flip; per-canvas base res; round-trip + center math runtime-verified in
   the boot self-test). Numeric Transform dialog reachable from the Sources/Canvas/
   Preview source context menus + the Edit→Transform menu item.
-- ⏸ **Undo / Redo — DEFERRED (decided 2026-06-24).** No undo infrastructure exists;
-  it's a from-scratch cross-cutting subsystem (every mutation needs paired undo/redo
-  actions + an action stack), not a quick parity fix. Tackle as its own planned effort
-  later (after Studio Mode / Stats). Edit→Undo/Redo stay disabled until then.
+- ✅ **Undo / Redo — SHIPPED as OBS-parity backlog Item 1** (see "OBS-parity backlog
+  (Items 0–17) ✅ COMPLETE 2026-06-28" under Phase 7): `UndoManager`, `undo.*` bridge,
+  Ctrl+Z/Y, apply-target-state keyed on source uuid, add/remove snapshot-recreate.
+  Supersedes the 2026-06-24 deferral (recorded then as: no undo infrastructure exists;
+  a from-scratch cross-cutting subsystem, not a quick parity fix).
 - ⏸ **Recording / Replay buffer — KEPT DORMANT (decided 2026-06-24).** The app stays
   streaming-only; recording remains hidden/inert (no bridge). Revisit only if the need
   arises.
@@ -532,9 +544,9 @@ build-green, headless-smoke clean (leaks 2 baseline), and pushed.
   Preview/Canvas context menus + the View menu (program). Selftest + monitor-enum
   verified; on-screen rendering/fullscreen placement is GUI-owed. (Fullscreen Preview =
   a program projector.) Recordings list is moot — recording is dormant.
-- 🔭 **Multiview** — a grid render of all scenes in one window. Larger: needs a custom
-  multi-scene grid render (not a single `obs_display` of one target like projectors).
-  Own scoping pass before building.
+- ✅ **Multiview — SHIPPED as OBS-parity backlog Item 10** ("Multiview projector"; see
+  the backlog section under Phase 7). Was: a grid render of all scenes in one window,
+  needing a custom multi-scene grid render rather than a single-target `obs_display`.
 - ✅ **Hotkeys settings — DONE 2026-06-24.** Enumerate libobs hotkeys, bind key combos,
   persist (`hotkeys.json`, keyed by name), restore on boot. `hotkeys.list/set/clear`
   (UI sends DOM `KeyboardEvent.code` + modifiers → a data-table maps to `obs_key`);
@@ -550,10 +562,10 @@ build-green, headless-smoke clean (leaks 2 baseline), and pushed.
 
 **Cleanup / infra:**
 
-- 🔭 **`frontend_old` retirement** — the new build still references `frontend_old/api`
-  + the utility model `.cpp`s (`CanvasDefinition`/`OBSCanvas`/`CanvasSceneLink`/
-  `OutputBinding`/`StreamProfile`, see `frontend/CMakeLists.txt`) + the cpack license.
-  Relocate those into `frontend/`, then delete the old Qt tree.
+- ✅ **`frontend_old` retirement — DONE.** The shared pieces moved into `frontend/`
+  (`frontend/api` + `frontend/api-impl`, the Qt-free models in `frontend/utility/`),
+  then the whole Qt tree was **deleted outright** — commit `9aa092af3` ("chore: remove
+  dead legacy Qt frontend (frontend_old)"). Nothing references `frontend_old/` now.
 - 🔭 **Cross-platform preview** — Windows-only today (HWND + D3D11). macOS
   (NSView + IOSurface) and Linux (X11/GL) embedding are later efforts.
 - 🔧 **Live broadcast test** (owed since Phase 2) + **GUI acceptance** of the recent
@@ -601,7 +613,13 @@ existing registry, **not** a reimplementation of OBS control — the same envelo
 (`{method, params} -> result`) that `window.obs.call` uses is what an MCP tool would
 invoke. Events (`EmitEvent`) can surface as MCP notifications/resources for live state.
 
-**Open design questions (resolve before building):**
+**Open design questions — ✅ ALL RESOLVED by the shipped MVP above (2026-06-25).**
+Topology → (a) embedded, localhost HTTP. Tool granularity → curated set (20 tools) +
+the generic `obs_call` escape hatch. Safety/gating → `127.0.0.1`-only + token auth +
+the Read/Mutate/GoLive capability split (`allowGoLive` default off). Schema generation
+→ hand-authored for the MVP; annotating `g_methods` stays a post-MVP DRY item. State
+exposure → deferred with SSE/resources to "Later (post-MVP)". Original text kept for
+the reasoning:
 
 - **Topology** — (a) MCP server *embedded in the app process* exposing `g_methods`
   directly over stdio/HTTP, vs (b) a *sidecar* process that relays to the app. (a)
@@ -766,7 +784,7 @@ from the Phase-12 Studio Profiles work.
 
 ## Phase 7 — Full UI redesign: nav-rail multi-page app 🔧 FEATURE-COMPLETE (GUI acceptance + merge owed)
 
-> All six phases (7.0–7.5) built + reviewed on `ui-redesign` (final holistic = SHIP_WITH_MINOR); pushed, **not merged** — held for the user's GUI acceptance pass. Two behavior changes to confirm: existing users must **Reset Layout** once to see the studio reorg (a saved `layout.json` restores the old arrangement); **Settings now live-applies with no Cancel/undo** (the modal's transactional revert, incl. the issues.md-C1 output-binding revert, was intentionally dropped for the page model).
+> All six phases (7.0–7.5) built + reviewed (final holistic = SHIP_WITH_MINOR) and **merged to `master`** (the `ui-redesign` branch was fast-forwarded in and deleted — see "Branch history"). **GUI acceptance is still owed** — the merge didn't consume it. Two behavior changes to confirm: existing users must **Reset Layout** once to see the studio reorg (a saved `layout.json` restores the old arrangement); **Settings now live-applies with no Cancel/undo** (the modal's transactional revert, incl. the issues.md-C1 output-binding revert, was intentionally dropped for the page model).
 
 
 A ground-up reconception of the frontend IA, driven by a Claude Design mock the user
@@ -797,8 +815,8 @@ the mock's bespoke float/dock system); Studio is a re-skin + re-IA.
 **Phasing (plan `docs/superpowers/plans/2026-06-26-phase7-shell.md`):**
 
 - ✅ **7.0 — Tokens + nav-rail shell + view router — SHIPPED** (commits `a312a0c` tokens,
-  `5bddaa061` nav-rail+router, `c71a2e39d` studio page; holistic review = SHIP, pushed to
-  `origin/ui-redesign`, not merged). Studio Dark default palette + Geist offline +
+  `5bddaa061` nav-rail+router, `c71a2e39d` studio page; holistic review = SHIP; now on
+  `master`). Studio Dark default palette + Geist offline +
   accent/mode axes (theme editor kept); 70px NavRail (6 views + footer scene-collection
   switcher + About) replacing the menu bar (MenuBar kept, unrendered); page router;
   `StudioPage` (DockHost lifecycle a verbatim move, kept mounted + `display:none`, not
@@ -808,26 +826,26 @@ the mock's bespoke float/dock system); Studio is a re-skin + re-IA.
   CanvasDock off-Studio. `bun run check` 0/0, build green, smoke `leaks: 2`. **All visual
   fidelity GUI-owed.** Subagent-driven; caught + fixed a Critical `--accent` CSS-var
   collision in review.
-- 🔧 **7.1 — Studio reorg.** Preview-row over bottom-docks-row layout, Dockview restyle to
+- ✅ **7.1 — Studio reorg — SHIPPED** (see the Update note below this list). Preview-row over bottom-docks-row layout, Dockview restyle to
   the mock's dock chrome (headers w/ float/close, tokens, zero-radius), embedded
   scenes/sources in additional-canvas docks, full CANVASES-bar + GO-LIVE-bar fidelity.
   Carry-ins from 7.0: gate the stats poll on `page==='studio'`; focused-canvas (not
   all-outputs) live state; persistent per-canvas hide; a real add-canvas flow (`+`
   currently routes to Settings).
-- 🔭 **7.2 — Stream + Monitor + AI pages.** Re-IA the MultistreamDock / StatsDock /
+- ✅ **7.2 — Stream + Monitor + AI pages — SHIPPED** (`06a0bd8b4`). Re-IA the MultistreamDock / StatsDock /
   McpTab content into full pages.
-- 🔭 **7.3 — Settings page + Appearance.** Full page w/ 196px left sub-nav (Canvases /
+- ✅ **7.3 — Settings page + Appearance — SHIPPED** (`52d6654ae`). Full page w/ 196px left sub-nav (Canvases /
   Stream Profiles / Outputs / Audio / Hotkeys / Appearance); Appearance hosts the accent/
   mode/density presets + the existing per-token theme editor (re-exposes the Theme Editor,
   which is unreachable in the 7.0–7.2 interim — theme still applies).
-- 🔭 **7.4 — Schedule (UI shell).** Calendar grid + Upcoming + New-Stream modal on local
+- ✅ **7.4 — Schedule (UI shell) — SHIPPED** (`06036fb1d`). Calendar grid + Upcoming + New-Stream modal on local
   state (no backend per Decision A).
-- 🔭 **7.5 — Orphan homes + polish + holistic review.** Studio "⋯" overflow (projectors),
+- ✅ **7.5 — Orphan homes + polish + holistic review — SHIPPED** (`7893013`). Studio "⋯" overflow (projectors),
   remaining Edit/View/Docks menu actions, final fidelity pass, then merge to `master`.
 
-> **Update:** 7.1–7.5 all SHIPPED to `origin/ui-redesign` (commits 7.2 `06a0bd8b4`, 7.3
-> `52d6654ae`, 7.4 `06036fb1d`, 7.5 `7893013`, cleanup `b68467213`) + a GUI-acceptance fix
-> batch (2026-06-27). Still not merged (GUI acceptance owed).
+> **Update:** 7.1–7.5 all SHIPPED (commits 7.2 `06a0bd8b4`, 7.3 `52d6654ae`, 7.4 `06036fb1d`,
+> 7.5 `7893013`, cleanup `b68467213`) + a GUI-acceptance fix batch (2026-06-27). **Merged to
+> `master`** with the rest of `ui-redesign`; **GUI acceptance still owed.**
 
 ### OBS-parity backlog (Items 0–17) ✅ COMPLETE 2026-06-28
 
@@ -1044,7 +1062,7 @@ this phase.
   from the modal push + shown as "authorization expired" — still streams via key); human
   platform-named partial-failure toasts. (Mid-stream edit + debounced typeahead already shipped in
   8b.) Frontend-only; check 0/0, build EXIT=0.
-- **Phase 8 MVP (8a–8e) COMPLETE + pushed to `origin/ui-redesign`; NOT merged.** Acceptance owed
+- **Phase 8 MVP (8a–8e) COMPLETE + merged to `master`.** Acceptance owed
   (live, can't headless — needs the registered apps + creds): real connect round-trips per platform,
   metadata push, YouTube create-per-go-live + auto-transition + thumbnail + ingest writeback, Kick
   variable-loopback-port acceptance (RFC 8252), refresh/reconnect, DPAPI read/write. NOTE: portable
@@ -1052,26 +1070,29 @@ this phase.
   appears in the headless shell (reproduces with the pre-8e bundle; subagents smoke the same binary
   clean; outside OBS's crash handler) — a teardown/GPU artifact, not a Phase 8 regression; confirm
   close behavior in a real GUI session.
-- **8f — Facebook Page (optional, post-MVP).** A `facebook` provider on the `auth-code+secret`/
-  `proxy` strategy: `live_videos` create + title/description/privacy + `thumbnails` upload (test
-  the live-timing gap first). Requires a token-exchange proxy (or accepted-risk embedded secret)
-  and Meta App Review (start that paperwork before building). **Instagram is excluded** — no
+- **8f — Facebook Page (optional, post-MVP). ⏸ STILL DEFERRED — but the reason changed.** A
+  `facebook` provider on the **broker** strategy: `live_videos` create + title/description/
+  privacy + `thumbnails` upload (test the live-timing gap first). **The token-exchange-proxy
+  blocker is gone** — 10.5 shipped `auth.braidcast.com` (deployed, all three providers brokered),
+  so adding Facebook is a `providers.ts` + provider-class addition, not a new service. **The
+  remaining gate is Meta App Review** (+ Business Verification + a data-deletion callback, which
+  needs the 10.2 website) — start that paperwork before building. **Instagram is excluded** — no
   official live API.
 
-### Open decisions (resolve before building)
+### Open decisions — ✅ ALL RESOLVED (by the shipped 8a–8e MVP + the 10.5 broker)
 
-1. **Thumbnail YouTube-only** acceptable? (Twitch/Kick can't via API.)
-2. **Kick secret:** embed obfuscated in the binary (open-source tradeoff, like OBS's old Twitch)
-   vs run a thin token-exchange proxy? (Recommend embed for now.)
-3. **YouTube model:** create-a-broadcast-per-go-live (OBS style, full control) vs update-the-
-   existing/auto-created broadcast? (Recommend create-per-go-live — matches the old dialog.)
-4. **OAuth in the C++ bridge** (recommended, secrets out of JS) confirmed?
-5. Sequencing: **Twitch → Kick → YouTube** (by API simplicity + verification gate) confirmed?
-6. **Facebook Page** — in scope as a later provider (8f)? It needs a **token-exchange proxy**
-   (Meta forbids embedding the secret + has no device/PKCE flow) and App Review. Are we willing to
-   run a tiny proxy service? If not, Facebook (and any future secret-required, no-public-flow
-   provider) is embed-with-accepted-risk or dropped.
-7. **Instagram** — confirmed out-of-scope (no official live API; manual key paste only)?
+1. **Thumbnail YouTube-only** — ✅ yes, accepted; shipped YouTube-only (8d/8e).
+2. **Kick secret** — ✅ **DEAD QUESTION.** Neither horn was taken: the **10.5 OAuth broker**
+   (`auth.braidcast.com`) brokers code-exchange + refresh for **all three** providers, so **no
+   secret ships in the binary at all** — Kick/YouTube ship nothing; only Twitch's *public*
+   client id stays baked (obfuscated) for the Helix `Client-Id` header. See 10.5.
+3. **YouTube model** — ✅ create-per-go-live, as recommended (shipped in 8d).
+4. **OAuth in the C++ bridge** — ✅ confirmed; lives in `frontend/src/oauth/`.
+5. Sequencing **Twitch → Kick → YouTube** — ✅ confirmed; shipped in that order (8b→8c→8d).
+6. **Facebook Page** — ✅ scoped as the later 8f provider, still deferred. The proxy question is
+   answered: `auth.braidcast.com` exists and is deployed (10.5), so the remaining gate is Meta
+   App Review, not proxy willingness. See 8f above.
+7. **Instagram** — ✅ confirmed out-of-scope (no official live API; manual key paste only).
 
 ### Risks
 
@@ -1102,7 +1123,7 @@ now auto-loads a CR-tolerant repo-root `.env` under the `.env`/CI names → Twit
 check 0/0, build EXIT=0, smoke 3 providers / leaks 2 / clean OBS shutdown. **GUI/credential
 acceptance owed** (headless can't drive real chat): per-platform connect/read/send, viewer counts,
 esp. the reverse-engineered Kick Pusher path (app key/`/api/v2` chatroom id/slug casing) + a >4h
-Twitch session (reauth) + an empty-id message. NOT merged to master.
+Twitch session (reauth) + an empty-id message. Merged to `master`.
 
 **9.1 (Third-party emotes — Twitch) ✅ DONE 2026-07-01** (`ui-redesign`). 7TV + BetterTTV +
 FrankerFaceZ emotes in the Twitch multichat feed, host-side only (the dock already renders
@@ -1291,9 +1312,10 @@ so the earlier brand-agnostic-constant caveat is moot.
   consent screen stays in **Testing** mode (≤100 testers; note the 7-day
   refresh-token expiry). Full sensitive-scope verification (homepage + privacy
   policy + verified domain + demo video) owed only at public launch. **The Google
-  client secret is now broker-held (10.5)** → the current **Desktop** client must be
-  replaced with a **NEW "Web application" client** (app type is immutable) whose
-  redirect URI is `https://auth.braidcast.com/v1/youtube/callback`.
+  client secret is now broker-held (10.5)** → the **Desktop** client had to be replaced
+  with a NEW "Web application" client (app type is immutable) whose redirect URI is
+  `https://auth.braidcast.com/v1/youtube/callback` — **✅ DONE**, see 10.5 "DEPLOYED LIVE
+  (2026-07-08)": providers registered with YouTube on a Web-app client.
 - **Twitch / Kick:** app-registration requirements captured in the research doc.
 - **Facebook/Meta (8f, still deferred):** App Review + Business Verification +
   data-deletion callback — needs the website first.
@@ -1364,6 +1386,27 @@ what CI produces; no delta patches); **(b) WinSparkle appcast** on braidcast.com
 background install); **(c) OBS's native updater** (signed manifest + delta patches — its
 own project: signing key, CDN/R2, manifest gen in CI). Release assets are free/unlimited
 on public repos (separate from the 500 MB Packages quota).
+
+### 10.7 — Packaging, install & release gates ✅ SHIPPED
+
+- ✅ **Boot-smoke CI gate** (`214ba9817`) — `.github/scripts/Smoke-Package.ps1` asserts the
+  packaged **zip** *and* the **NSIS installer** each contain the web bundle, the CEF runtime,
+  and every dependency DLL, plus a best-effort launch; wired into the `windows-build` job.
+  Closes the "CI green didn't prove the package launches" gap that shipped three gutted
+  packages (rundir `POST_BUILD` copies without matching `install()` rules).
+- ✅ **NSIS installer** (`9bc5ec366`) — `CPACK_GENERATOR "ZIP;NSIS"` + `CPACK_MONOLITHIC_INSTALL`;
+  releases now ship a portable **zip** *and* an **installer**.
+- ✅ **Portable / isolated config + single-instance guard** (`8b555a1f5`) —
+  `StorePaths::BraidcastConfigDir()` is the single seam every store resolves through: a
+  `braidcast_portable.txt` marker next to the exe redirects config to `<exe_dir>/config`,
+  else `%APPDATA%\braidcast`. The dev rundir auto-isolates via a rundir-only marker (the
+  package omits it), so dev runs can't touch the user's real config. `main.cpp` holds a named
+  mutex keyed on the resolved config dir — two portable copies coexist, two instances on one
+  config don't.
+- ✅ **Subsystem release changelog** (`987a163c9`, `2599e8597`) — changelogen renders release
+  notes grouped by the module prefixes `CONTRIBUTING.md` mandates (`libobs:`, `frontend:`,
+  `cmake:`, `CI:`, …); handles the first-release (no previous tag) case and caps body length
+  under GitHub's 125k limit.
 
 ---
 
@@ -1502,18 +1545,30 @@ on public repos (separate from the 500 MB Packages quota).
   from lagging upstream.
 - 🔧 **Modern audio-plugin host (VST3 + CLAP)** — `obs-vst` is in-tree and
   maintained upstream (the archived standalone repo was folded into the
-  obs-studio monorepo), but it is **VST2-only** and **Qt-coupled**, so it can't
-  load in the CEF build (Qt6 not deployed) — the VST filter is currently dead.
-  **Near-term (B, 2026-07-12 greenlit):** make it Qt-free by hosting the VST2
-  editor in a native Win32 `HWND` instead of a `QWidget` — full VST2 incl. its
-  editor GUI, zero Qt = backward compatibility for existing plugins. **Forward
+  obs-studio monorepo). It was **VST2-only** and **Qt-coupled**, so it couldn't
+  load in the CEF build (Qt6 not deployed) — the VST filter was dead.
+  **✅ Near-term (B) — SHIPPED (Windows), verified 2026-07-15:** the VST2 editor
+  is hosted in a native Win32 `HWND` instead of a `QWidget`, so the module links
+  **no Qt** and loads in the CEF build — full VST2 incl. its editor GUI = backward
+  compatibility for existing plugins. Verified in-tree: `plugins/obs-vst/
+  CMakeLists.txt` takes an `OS_WINDOWS` branch that adds `win/EditorWidget-win.cpp`
+  + `win/VSTPlugin-win.cpp` and links only `OBS::libobs` + `bcrypt` — `find_package(
+  Qt6)`/`Qt::Widgets` and the AUTOMOC/AUTOUIC properties are confined to the `else()`
+  (macOS/Linux) branch, which is **still Qt-coupled**. `EditorWidget-win.cpp` is a
+  real Win32 host (`WNDCLASSEXW` + `CreateWindowExW` + `wndProc`, zero Qt includes),
+  and `obs-vst` is **absent from `kDenylist` in `frontend/src/obs_bootstrap.cpp`**
+  (`{frontend-tools, decklink-output-ui, decklink-captions, aja-output-ui,
+  obs-websocket}`), so the curated full-set loader loads it. **Still owed:** the
+  macOS/Linux editors remain `QWidget`-based (cross-platform Qt-free port), and a
+  GUI pass loading a real VST2 plugin + opening its editor. **Forward
   (surpass-OBS):** add a **VST3 + CLAP** host — OBS being VST2-only is a real
   weakness to leapfrog; modern plugins ship VST3/CLAP. Together = backward
   (VST2) + forward (VST3/CLAP) coverage, ahead of stock OBS. Needs: SDK
   integration (VST3 SDK license/GPL-compat check; CLAP is permissive), plugin
   scanning + ideally out-of-process sandboxing, cross-platform native editor
-  hosting (Win32/NSView/X11), parameter persistence. B is near-term impl;
-  VST3/CLAP is design-level.
+  hosting (Win32/NSView/X11), parameter persistence. **B is done on Windows** (the
+  Win32 editor host also de-risks the VST3/CLAP editor-hosting piece); VST3/CLAP
+  remains design-level.
 - ✅ **Cross-canvas scene duplicate** (2026-07-09) — `scenes.duplicateToCanvas`
   bridge method deep-copies a scene (scene filters + every item's source, incl.
   that source's own filters, via `OBS_SCENE_DUP_COPY`) from any canvas onto any
@@ -1582,6 +1637,11 @@ on public repos (separate from the 500 MB Packages quota).
   Twitch-specific `GoLiveAPI`/config, or harvest `MultitrackVideoOutput`'s
   multi-output/encoder-sharing plumbing for our fan-out handler.
 - ⏸ **WHIP simulcast encoder-id divergence** — conscious deferral from 4b.
+- ✅ **Frontend source reorg** (`11fc0e97f`, `4a5ee2abe`) — flat source dirs grouped by
+  domain, no behavior change. `frontend/web/src/lib` → api/stores/dialogs/settings/menus/
+  ui/utils/canvas + `dock/`→`docking/`, with a `$lib` alias replacing deep relative
+  imports; `frontend/src` → windowing/settings/scene/util, with `creds` folded into
+  `oauth/`. Makes the "where does this belong" answer structural.
 - 🔭 **Code-health deferrals (2026-07-10)** — surfaced during the centralization/
   dedup sweep; each deferred as a separate task to keep that sweep surgical:
   (a) **Scenes/Sources embedded-row fork** — `CanvasDock.svelte`'s inline mini
@@ -1610,10 +1670,18 @@ on public repos (separate from the 500 MB Packages quota).
   floor every numeric input above 0 through the dialog; no separate guard needed.
 - ✅ **Branch history** — `canvas-foundation` (Phases 1–3) fast-forward-merged to
   `master` + pushed 2026-06-21; `frontend-rewrite` (Phase 4) fast-forward-merged to
-  `master` 2026-06-25; both branches deleted (local + origin). Phase 6+ work
-  (importer, Phase 7 UI redesign, Phase 8 OAuth, Phase 9 engagement, Phase 10 broker)
-  is on the **`ui-redesign`** branch — feature-complete, pushed, **held for GUI/live
-  acceptance, not yet merged to `master`**. `upstream/*` OBS branches untouched.
+  `master` 2026-06-25; both branches deleted (local + origin). **`ui-redesign` (Phase 6+
+  — importer, Phase 7 UI redesign, Phase 8 OAuth, Phase 9 engagement, Phase 10 broker)
+  is likewise fast-forward-merged to `master`, and the branch is deleted (local +
+  origin).** Everything through Phase 10 is on `master` (tip `2599e8597`); **no merge is
+  owed anywhere.** Remote branches are now exactly **`master` + `dev`**; ongoing work
+  flows **`dev` → `master`**. `upstream/*` OBS branches untouched.
+  > **Note on `ui-redesign` mentions elsewhere in this doc:** every remaining reference
+  > (e.g. "shipped on `ui-redesign`", "commit on `origin/ui-redesign`") is **historical
+  > provenance only** — it records where the work was authored. That branch no longer
+  > exists; resolve any such commit on `master`. Where an entry still says GUI/live
+  > **acceptance is owed, that is current and unrelated to the merge** — acceptance was
+  > never a merge gate in the end.
 
 ---
 
