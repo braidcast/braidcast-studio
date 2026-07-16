@@ -115,9 +115,9 @@ Enforcement
 -----------
 
 Instances of unacceptable behavior may be reported privately to the
-project maintainers via the repo's GitHub private vulnerability
-reporting channel (Security tab → "Report a vulnerability", or
-directly at
+project maintainers by email to security@braidcast.com, or via the
+repo's GitHub private vulnerability reporting channel (Security tab →
+"Report a vulnerability", or directly at
 https://github.com/braidcast/braidcast-studio/security/advisories/new).
 All complaints will be reviewed and investigated, and will result in a
 response that is deemed necessary and appropriate to the circumstances.
@@ -138,7 +138,8 @@ Feedback
 Suggestions for changes can be made by submitting a pull request on the
 `braidcast/braidcast-studio <https://github.com/braidcast/braidcast-studio>`__
 repo, or if you wish to privately discuss your concerns, you can instead
-use the repo's GitHub private vulnerability reporting channel.
+email security@braidcast.com or use the repo's GitHub private
+vulnerability reporting channel.
 
 Attribution
 -----------
