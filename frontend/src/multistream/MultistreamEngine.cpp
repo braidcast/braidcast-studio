@@ -81,6 +81,74 @@ const char *GetStreamOutputType(const obs_service_t *service)
 	return nullptr;
 }
 
+// True when `url`'s scheme is one the given first-party stream output can actually write
+// to. rtmp_common re-derives the output type/protocol from the service on an in-place
+// service switch but leaves a concrete `server` carried over from the prior protocol
+// untouched (it only auto-corrects an out-of-list server for Facebook, see
+// ensure_valid_url), so a YouTube profile flipped RTMP->HLS keeps its rtmp:// server and
+// ffmpeg_hls_muxer then cannot write the HLS segments to it. An unlisted (third-party)
+// output id matches any scheme.
+bool UrlSchemeMatchesOutput(const char *outputType, const char *url)
+{
+	if (!outputType || !url || !*url) {
+		return true;
+	}
+	struct OutputSchemes {
+		const char *outputType;
+		std::array<const char *, 2> prefixes;
+	};
+	static const std::array<OutputSchemes, 3> kOutputSchemes = {{
+		{"rtmp_output", {{"rtmp://", "rtmps://"}}},
+		{"ffmpeg_hls_muxer", {{"http://", "https://"}}},
+		{"ffmpeg_mpegts_muxer", {{"srt://", "rist://"}}},
+	}};
+	for (const OutputSchemes &entry : kOutputSchemes) {
+		if (strcmp(outputType, entry.outputType) != 0) {
+			continue;
+		}
+		for (const char *prefix : entry.prefixes) {
+			if (strncmp(url, prefix, strlen(prefix)) == 0) {
+				return true;
+			}
+		}
+		return false;
+	}
+	return true;
+}
+
+// The service's currently-offered ingest server that fits `outputType`, when the stored
+// `currentServer` is no longer one the selected service lists (e.g. a stale rtmp:// server
+// on a now-HLS YouTube profile). Reads the service's own "server" property list -- filled
+// by rtmp_common from services.json for the live service name -- so it stays general across
+// every platform and preserves the raw URL, including HLS's "...cid={stream_key}..." token
+// that the HLS muxer substitutes from the stream key. Empty means "keep the current server".
+std::string ReconcileServerToService(obs_service_t *service, const char *outputType, const char *currentServer)
+{
+	obs_properties_t *props = obs_service_properties(service);
+	if (!props) {
+		return {};
+	}
+	std::string replacement;
+	if (obs_property_t *prop = obs_properties_get(props, "server")) {
+		const size_t count = obs_property_list_item_count(prop);
+		for (size_t i = 0; i < count; i++) {
+			const char *url = obs_property_list_item_string(prop, i);
+			if (!url || !*url) {
+				continue;
+			}
+			if (strcmp(url, currentServer) == 0) {
+				replacement.clear();
+				break;
+			}
+			if (replacement.empty() && UrlSchemeMatchesOutput(outputType, url)) {
+				replacement = url;
+			}
+		}
+	}
+	obs_properties_destroy(props);
+	return replacement;
+}
+
 } // namespace
 
 const char *MultistreamEngine::StateName(State state)
@@ -324,6 +392,27 @@ bool MultistreamEngine::StartOutput(const std::string &bindingUuid, std::string 
 	if (!type) {
 		type = "rtmp_output";
 	}
+
+	// Reconcile a stale ingest server left over from a prior protocol against the service
+	// the profile now targets. An in-place service switch (RTMP->HLS, or any platform
+	// change) re-derives the output type above but rtmp_common keeps the carried-over
+	// `server`, so without this the HLS muxer would write to the old rtmp:// endpoint. Only
+	// a concrete URL is checked; the "auto"/"auto-rtmp" sentinels carry no scheme and are
+	// resolved by rtmp_common itself, so they are left alone.
+	if (p->serviceId == "rtmp_common") {
+		const char *server = p->settings ? obs_data_get_string(p->settings, "server") : "";
+		if (server && strstr(server, "://")) {
+			const std::string derived = ReconcileServerToService(lo->service, type, server);
+			if (!derived.empty()) {
+				obs_data_set_string(p->settings, "server", derived.c_str());
+				obs_service_update(lo->service, p->settings);
+				profiles.Save();
+				DBG(LogCat::Stream, "re-derived ingest server for binding %s (%s): %s",
+				    bindingUuid.c_str(), type, derived.c_str());
+			}
+		}
+	}
+
 	std::string oname = "multistream_out_" + bindingUuid;
 	lo->output = OBSOutputAutoRelease(obs_output_create(type, oname.c_str(), nullptr, nullptr));
 	if (!lo->output) {
