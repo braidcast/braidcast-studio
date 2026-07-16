@@ -85,6 +85,16 @@ std::unique_ptr<TrayIcon> g_tray;
 // hazard, is refused.
 HANDLE g_instance_mutex = nullptr;
 
+// Init-stage guards for the two Teardown() steps that are only valid once their
+// subsystem is actually up. An early bail-out reaches the one shared Teardown()
+// before CEF or libobs exist, so these gate the steps that would otherwise touch
+// an uninitialized subsystem. Set true at the single real init site; checked in
+// Teardown(). (RTWQ needs no such flag: RtwqStartup() runs unconditionally before
+// every bail-out, so RtwqShutdown() is always paired.) Because ObsBootstrap::Start()
+// runs after CefInitialize(), g_obsStarted implies g_cefInitialized.
+bool g_cefInitialized = false;
+bool g_obsStarted = false;
+
 // The UI loads from the offline app:// bundle served by scheme.cpp. For live UI
 // development, set FE_DEV_URL (e.g. http://localhost:5173) to point the window at a
 // Vite dev server instead -- enables HMR. The native bridge is injected per-frame by
@@ -326,13 +336,15 @@ void DrainCefTasks()
 	}
 }
 
-// The one ordered teardown every exit runs. The clean-exit path (after
-// CefRunMessageLoop returns) and the CreateBrowserSync-failure abort reach it at
-// the same init stage -- libobs up, RTWQ started, single-instance mutex held --
-// so each step's existing guard covers the only differences the abort has (no
-// g_windows or g_browser yet). Order is load-bearing: every obs_display-backed
-// surface is destroyed before ObsBootstrap::Stop() frees the canvas mixes those
-// surfaces render.
+// The one ordered teardown every exit runs -- the clean-exit path (after
+// CefRunMessageLoop returns), the CreateBrowserSync-failure abort, and the earlier
+// !CefInitialize / !host / !Start() bail-outs. The later callers have libobs up,
+// CEF up, RTWQ started and the mutex held; the early callers reach here before
+// libobs (and, for !CefInitialize, before CEF) exist. Per-owner guards cover the
+// window/surface differences, g_cefInitialized / g_obsStarted gate the CEF/libobs
+// steps for the early callers, and RTWQ + the mutex are always paired by this
+// point. Order is load-bearing: every obs_display-backed surface is destroyed
+// before ObsBootstrap::Stop() frees the canvas mixes those surfaces render.
 void Teardown()
 {
 	g_browser = nullptr;
@@ -380,28 +392,39 @@ void Teardown()
 		g_preview.reset();
 	}
 
-	// Capture the latest global scene collection while channel 0 and every scene
-	// source are still bound -- TeardownScene below unbinds and removes the
-	// placeholder default scene, so this must run first.
-	SceneCollection::Save();
+	// libobs teardown, only once ObsBootstrap::Start() fully succeeded. An early
+	// bail-out before/at Start() reaches here with libobs not up, where these steps
+	// (channel-0 scene save, scene unbind, engine Stop) would touch an uninitialized
+	// engine. g_obsStarted implies g_cefInitialized, so the CEF pumps below are live.
+	if (g_obsStarted) {
+		// Capture the latest global scene collection while channel 0 and every scene
+		// source are still bound -- TeardownScene below unbinds and removes the
+		// placeholder default scene, so this must run first.
+		SceneCollection::Save();
 
-	// Release the test scene + browser source, then pump CEF so the source's
-	// posted `delete this` / CloseBrowser tasks drain (the run-loop has already
-	// returned; these would otherwise leak/dangle into CefShutdown).
-	ObsBootstrap::TeardownScene();
-	DrainCefTasks();
+		// Release the test scene + browser source, then pump CEF so the source's
+		// posted `delete this` / CloseBrowser tasks drain (the run-loop has already
+		// returned; these would otherwise leak/dangle into CefShutdown).
+		ObsBootstrap::TeardownScene();
+		DrainCefTasks();
 
-	// Tear libobs down before CEF: obs holds a D3D11 device + module handles.
-	// Stop pumps the injected drain after its source-removal sweep -- the browser
-	// sources a loaded scene collection restored die there, not in TeardownScene
-	// above, and their posted TID_UI teardown must run before CefShutdown.
-	ObsBootstrap::Stop(DrainCefTasks);
+		// Tear libobs down before CEF: obs holds a D3D11 device + module handles.
+		// Stop pumps the injected drain after its source-removal sweep -- the browser
+		// sources a loaded scene collection restored die there, not in TeardownScene
+		// above, and their posted TID_UI teardown must run before CefShutdown.
+		ObsBootstrap::Stop(DrainCefTasks);
+	}
 
-	CefShutdown();
-	HostLog("[cef] shutdown complete");
+	// Only valid once CefInitialize() succeeded; the !CefInitialize bail-out reaches
+	// here with CEF not up, where CefShutdown() must not be called.
+	if (g_cefInitialized) {
+		CefShutdown();
+		HostLog("[cef] shutdown complete");
+	}
 
-	// Pair the startup RtwqStartup(): tear the MF Real-Time Work Queue down now
-	// that obs (and its MF encoders) have stopped.
+	// Pair the startup RtwqStartup(): tear the MF Real-Time Work Queue down now that
+	// obs (and its MF encoders) have stopped. Unconditional -- RtwqStartup() runs
+	// before every bail-out that reaches Teardown(), so the pair is never unbalanced.
 	RtwqShutdown();
 
 	// Release the single-instance guard acquired at startup. Guarded so an early
@@ -514,6 +537,10 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 	// release keep their own single instances without blocking each other.
 	if (!AcquireSingleInstance(BraidcastConfigDir())) {
 		HostLog("[host] another instance already owns this config -- exiting");
+		// RtwqStartup() already ran; route through Teardown() to shut it down and
+		// drop our (unowned) mutex handle. CEF/libobs steps are skipped (flags still
+		// false), and ReleaseMutex on the mutex we do not own is a harmless no-op.
+		Teardown();
 		return 0;
 	}
 
@@ -551,14 +578,19 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 	}
 
 	if (!CefInitialize(main_args, settings, app.get(), nullptr)) {
-		return CefGetExitCode();
+		// CEF is not up, so Teardown() skips its CEF steps (g_cefInitialized still
+		// false); it still shuts RTWQ down and releases the mutex acquired above.
+		const int code = CefGetExitCode();
+		Teardown();
+		return code;
 	}
+	g_cefInitialized = true;
 	HostLog("[cef] initialized");
 
 	HWND host = CreateHostWindow(hInstance);
 	if (!host) {
 		HostLog("[host] CreateHostWindow failed -- aborting");
-		CefShutdown();
+		Teardown();
 		return 1;
 	}
 	// Remove the stock caption + enable the frameless chrome before the window is
@@ -569,9 +601,10 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 
 	if (!ObsBootstrap::Start()) {
 		HostLog("[obs] ObsBootstrap::Start() failed -- aborting");
-		CefShutdown();
+		Teardown();
 		return 1;
 	}
+	g_obsStarted = true;
 
 	// Create the preview manager now that libobs is up. Each canvas's overlay HWND +
 	// obs_display are created lazily on its first preview.setRect from the UI, so a
