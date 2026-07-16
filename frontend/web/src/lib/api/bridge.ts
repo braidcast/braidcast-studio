@@ -1270,6 +1270,13 @@ export interface ObsMethods {
   // the full post-apply state.
   "settings.getAdvanced": AdvancedSettings;
   "settings.setAdvanced": AdvancedSettings;
+  // Reverts a settings.snapshot blob (partial-application: earlier sections can
+  // commit before a later one fails, so `failed` lists every section that didn't
+  // apply rather than an all-or-nothing result). No current caller -- the
+  // Settings page's OK/Apply/Cancel footer this backed was dropped for the
+  // Phase 7 live-apply page model (see docs/roadmap.md); kept typed for the
+  // C++ round-trip self-test and any future revert UI.
+  "settings.restore": { ok: boolean; failed?: { section: string; error: string }[] };
   // Canvases (native multistream encode targets, 4.4.1).
   "canvas.list": CanvasInfo[];
   "canvas.create": { uuid: string };
