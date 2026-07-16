@@ -3,6 +3,7 @@
 
 #include <chrono>
 #include <functional>
+#include <random>
 #include <string>
 
 // A reusable libcurl-WebSocket client (Phase 9.0), the shared transport the
@@ -78,7 +79,8 @@ public:
 	explicit Backoff(std::chrono::milliseconds base = std::chrono::milliseconds(1000),
 			 std::chrono::milliseconds cap = std::chrono::milliseconds(30000))
 		: base_(base),
-		  cap_(cap)
+		  cap_(cap),
+		  rng_(std::random_device{}())
 	{
 	}
 
@@ -92,6 +94,9 @@ private:
 	std::chrono::milliseconds base_;
 	std::chrono::milliseconds cap_;
 	int attempt_ = 0;
+	// Seeded once at construction; each Backoff lives on a single worker thread, so
+	// the generator needs no locking and is never reseeded per call.
+	std::mt19937 rng_;
 };
 
 // Sleep `total` in small slices, returning early (true) as soon as canceled()

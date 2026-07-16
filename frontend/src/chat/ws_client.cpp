@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <mutex>
+#include <random>
 #include <thread>
 
 // curl.h pulls <winsock2.h> on Windows; include it BEFORE log.hpp (which pulls
@@ -278,7 +279,15 @@ std::chrono::milliseconds Backoff::next()
 		ms = cap_.count();
 	}
 	++attempt_;
-	return std::chrono::milliseconds(ms);
+
+	// Equal jitter over the computed delay: half fixed, half random. Randomizing
+	// keeps many clients that dropped on the same server blip from waking in lockstep
+	// (a thundering-herd retry storm); the fixed half keeps a sane floor. The result
+	// stays within [ms/2, ms], so the cap clamp above still bounds it and the delay
+	// never drops below half the computed value.
+	const long long half = ms / 2;
+	std::uniform_int_distribution<long long> dist(0, ms - half);
+	return std::chrono::milliseconds(half + dist(rng_));
 }
 
 bool CancelableSleep(std::chrono::milliseconds total, const std::function<bool()> &canceled)
