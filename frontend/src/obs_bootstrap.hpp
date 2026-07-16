@@ -14,6 +14,14 @@
 // `delete this` to TID_UI, and ActuallyCloseBrowser posts the CEF close -- both
 // drain only via the CEF message loop. The caller (main.cpp) runs this and then
 // pumps CefDoMessageLoopWork() before Stop()/CefShutdown().
+//
+// The same invariant governs Stop() itself: on a run that loaded a saved scene
+// collection, TeardownScene() no-ops (g_scene is null) and the restored browser
+// sources die inside Stop()'s source-removal sweep instead -- which again only
+// posts their `delete this` to TID_UI. Stop() therefore takes the caller's CEF
+// pump and runs it after the sweep, while libobs is still up, so no live
+// browser survives into CefShutdown (libcef CHECK-crashes on that) and no CEF
+// close task lands after obs_shutdown.
 class CanvasStore;
 class StreamProfileStore;
 class OutputBindingStore;
@@ -320,7 +328,11 @@ void RunEventSelfTest();
 // in-memory only (never persisted), so it leaves overlays.json untouched. Gated by the
 // caller to the smoke path.
 void RunOverlaySelfTest();
-void Stop();
+// `drainCefTasks` is main.cpp's bounded CefDoMessageLoopWork pump (the frontend
+// owns CEF, so it is injected rather than called directly); see the header
+// comment for why Stop must pump between its source-removal sweep and
+// obs_shutdown.
+void Stop(void (*drainCefTasks)());
 } // namespace ObsBootstrap
 
 #endif // OBS_MULTISTREAM_FRONTEND_OBS_BOOTSTRAP_HPP_

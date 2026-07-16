@@ -537,7 +537,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 		HostLog("[cef] CreateBrowserSync failed -- aborting");
 		ObsBootstrap::TeardownScene();
 		DrainCefTasks();
-		ObsBootstrap::Stop();
+		ObsBootstrap::Stop(DrainCefTasks);
 		CefShutdown();
 		return 1;
 	}
@@ -617,7 +617,10 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 	DrainCefTasks();
 
 	// Tear libobs down before CEF: obs holds a D3D11 device + module handles.
-	ObsBootstrap::Stop();
+	// Stop pumps the injected drain after its source-removal sweep -- the browser
+	// sources a loaded scene collection restored die there, not in TeardownScene
+	// above, and their posted TID_UI teardown must run before CefShutdown.
+	ObsBootstrap::Stop(DrainCefTasks);
 
 	CefShutdown();
 	HostLog("[cef] shutdown complete");

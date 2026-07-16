@@ -3262,7 +3262,7 @@ void ObsBootstrap::RunEventSelfTest()
 		(origMain ? "(original contents)" : "(removed test file)"));
 }
 
-void ObsBootstrap::Stop()
+void ObsBootstrap::Stop(void (*drainCefTasks)())
 {
 	DBG(LogCat::Lifecycle, "bootstrap stop");
 
@@ -3370,6 +3370,16 @@ void ObsBootstrap::Stop()
 	obs_enum_scenes(removeCb, nullptr);
 	obs_enum_sources(removeCb, nullptr);
 	while (obs_wait_for_destroy_queue()) {
+	}
+
+	// The sweep above is where browser sources restored from a loaded scene
+	// collection actually die, and BrowserSource::Destroy only *posts* its
+	// `delete this` + browser close to TID_UI -- the destroy-queue drain above
+	// cannot run those tasks. Pump CEF now, while libobs is still up, so no live
+	// CefBrowser survives into CefShutdown (libcef CHECK-crashes on that) and no
+	// CEF close task runs after obs_shutdown.
+	if (drainCefTasks) {
+		drainCefTasks();
 	}
 
 	// Release the multistream model's obs_data while libobs is still up, so the
