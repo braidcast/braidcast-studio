@@ -169,6 +169,7 @@ void GlobalAudioChannels::SeedOrRestore()
 	}
 
 	int restored = 0;
+	bool pruned = false;
 	for (auto it = parsed.begin(); it != parsed.end(); ++it) {
 		int channel = 0;
 		try {
@@ -180,6 +181,16 @@ void GlobalAudioChannels::SeedOrRestore()
 			continue;
 		}
 		if (it.value().is_object()) {
+			// Drop a leaked self-test source: the audio-mixer self-test binds a temporary
+			// "selftest-audio" source to a global channel; an interrupted run persists it here,
+			// where it comes back as an unremovable mixer entry. Never restore it, and re-persist
+			// below so it is dropped from audio_devices.json for good.
+			if (it.value().value("name", std::string()) == kSelfTestSourceName) {
+				HostLog("[audio] global audio: pruned leaked self-test source on ch" +
+					std::to_string(channel));
+				pruned = true;
+				continue;
+			}
 			// Full source blob: recreate the source with its filters + mixer state and
 			// bind it to the channel. obs_load_source restores the "filters" array.
 			const std::string blob = it.value().dump();
@@ -205,6 +216,11 @@ void GlobalAudioChannels::SeedOrRestore()
 		}
 	}
 	HostLog("[audio] global audio: restored " + std::to_string(restored) + " channel(s) from audio_devices.json");
+	if (pruned) {
+		// Rewrite the file without the pruned self-test channel(s). Persist saves only the
+		// currently-bound slots, so the unbound channel is now absent from disk.
+		Persist();
+	}
 }
 
 void GlobalAudioChannels::Clear()

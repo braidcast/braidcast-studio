@@ -41,6 +41,12 @@ public:
 	// Whether `channel` is a global audio channel (and thus excluded from scene save).
 	static bool IsGlobalChannel(int channel) { return channel >= kFirstChannel && channel <= kLastChannel; }
 
+	// Name of the temporary source the audio-mixer self-test (smoke path) binds to a
+	// global channel. An interrupted self-test run can persist it into audio_devices.json,
+	// where it resurfaces as a mixer entry the user can't remove; SeedOrRestore prunes any
+	// blob carrying this name on load. Shared with the self-test so the two stay in lockstep.
+	static constexpr const char *kSelfTestSourceName = "selftest-audio";
+
 	// The per-channel slot definitions (Desktop Audio on 1..2, Mic/Aux on 3..6).
 	static const std::array<Slot, 6> &Slots();
 	// The slot for `channel`, or nullptr if `channel` is not a global audio slot.

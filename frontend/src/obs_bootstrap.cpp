@@ -2851,7 +2851,8 @@ void ObsBootstrap::RunAudioMixerSelfTest()
 	// audio source: audio_active stays true even without a live device.
 	constexpr int kTempChannel = 6; // high channel, unlikely bound by the bootstrap
 	OBSSourceAutoRelease prior = obs_get_output_source(kTempChannel); // save to restore
-	obs_source_t *audioSrc = obs_source_create("wasapi_output_capture", "selftest-audio", nullptr, nullptr);
+	obs_source_t *audioSrc =
+		obs_source_create("wasapi_output_capture", GlobalAudioChannels::kSelfTestSourceName, nullptr, nullptr);
 	if (!audioSrc) {
 		HostLog("[selftest] audio-mixer: wasapi_output_capture create FAILED (skipping)");
 		return;
