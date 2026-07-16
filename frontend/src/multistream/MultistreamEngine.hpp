@@ -161,9 +161,19 @@ private:
 	 * lastError still surfaces, until a retry reaps it or StopOutput/StopAll clears it. */
 	static bool IsActiveState(State state) { return state == State::Connecting || state == State::Live; }
 
-	/* FindLive/RemoveLive assume the caller already holds liveMutex. */
+	/* FindLive/TakeLive assume the caller already holds liveMutex. TakeLive moves
+	 * the entry out of `live` and returns it so the caller destroys it AFTER
+	 * releasing liveMutex. ~LiveOutput must never run under liveMutex: it
+	 * disconnects the output's signals (~OBSSignal blocks on the signal's mutex,
+	 * which libobs holds across the whole dispatch) and releases the output
+	 * (obs_output_destroy blocks on the output thread) -- while OnOutputStart/
+	 * OnOutputStop, running on that output thread inside that dispatch, take
+	 * liveMutex. Destroying under the lock closes a cross-thread lock cycle (hard
+	 * freeze while live). Destroyed outside the lock, a stop fired synchronously
+	 * on this thread just re-enters OnOutputStop, which acquires the now-free
+	 * liveMutex and finds no entry -- a no-op. */
 	LiveOutput *FindLive(const std::string &bindingUuid);
-	void RemoveLive(const std::string &bindingUuid);
+	std::unique_ptr<LiveOutput> TakeLive(const std::string &bindingUuid);
 	void NotifyChanged();
 
 	/* Sets the shared sleep-inhibit handle's active state to AnyLive(). Idempotent
@@ -185,7 +195,8 @@ private:
 	/* The off-thread output start/stop signal handlers read `live` while the UI
 	 * thread inserts/erases it; liveMutex guards every access. It is never held
 	 * across an obs_output_start/stop call (those can fire signals -> handler ->
-	 * re-lock -> deadlock), only around the bare vector operations. */
+	 * re-lock -> deadlock), only around the bare vector operations -- and never
+	 * while a LiveOutput destructs (see TakeLive). */
 	mutable std::mutex liveMutex;
 	std::vector<std::unique_ptr<LiveOutput>> live;
 

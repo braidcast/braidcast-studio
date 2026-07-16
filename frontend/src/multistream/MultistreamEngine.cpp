@@ -234,9 +234,11 @@ bool MultistreamEngine::StartOutput(const std::string &bindingUuid, std::string 
 		lo->canvasUuid = b ? b->canvasUuid : std::string();
 		lo->state = State::Error;
 		lo->lastError = reason;
+		/* A reaped prior entry destructs after the lock scope ends (see TakeLive). */
+		std::unique_ptr<LiveOutput> reaped;
 		{
 			std::lock_guard<std::mutex> lock(liveMutex);
-			RemoveLive(bindingUuid);
+			reaped = TakeLive(bindingUuid);
 			live.push_back(std::move(lo));
 		}
 		UpdateSleepInhibit();
@@ -249,12 +251,16 @@ bool MultistreamEngine::StartOutput(const std::string &bindingUuid, std::string 
 	// reaped here on the UI thread so this start actually restarts it (rather than the
 	// old short-circuit that returned true on any existing entry, dead or not).
 	{
-		std::lock_guard<std::mutex> lock(liveMutex);
-		if (LiveOutput *existing = FindLive(bindingUuid)) {
-			if (IsActiveState(existing->state)) {
-				return true;
+		/* The reaped entry destructs after the lock scope ends (see TakeLive). */
+		std::unique_ptr<LiveOutput> reaped;
+		{
+			std::lock_guard<std::mutex> lock(liveMutex);
+			if (LiveOutput *existing = FindLive(bindingUuid)) {
+				if (IsActiveState(existing->state)) {
+					return true;
+				}
+				reaped = TakeLive(bindingUuid);
 			}
-			RemoveLive(bindingUuid);
 		}
 	}
 
@@ -413,9 +419,13 @@ void MultistreamEngine::StopOutput(const std::string &bindingUuid)
 		DBG(LogCat::Stream, "stopping output for binding %s", bindingUuid.c_str());
 		obs_output_stop(out);
 	}
+	/* Take the entry out under the lock but destroy it outside: ~LiveOutput blocks
+	 * on libobs signal/thread machinery while the output thread's stop dispatch may
+	 * be blocked on liveMutex (see TakeLive). */
+	std::unique_ptr<LiveOutput> dead;
 	{
 		std::lock_guard<std::mutex> lock(liveMutex);
-		RemoveLive(bindingUuid);
+		dead = TakeLive(bindingUuid);
 	}
 	UpdateSleepInhibit();
 	NotifyChanged();
@@ -452,9 +462,13 @@ void MultistreamEngine::StopAll()
 	for (obs_output_t *out : toStop) {
 		obs_output_stop(out);
 	}
+	/* Swap the entries out under the lock but destroy them outside it: ~LiveOutput
+	 * blocks on libobs signal/thread machinery while an output thread's stop
+	 * dispatch may be blocked on liveMutex (see TakeLive). */
+	std::vector<std::unique_ptr<LiveOutput>> dead;
 	{
 		std::lock_guard<std::mutex> lock(liveMutex);
-		live.clear();
+		dead.swap(live);
 	}
 	UpdateSleepInhibit();
 	/* Encoders are released when the handler is destroyed or rebuilt; keep the
@@ -522,14 +536,16 @@ MultistreamEngine::LiveOutput *MultistreamEngine::FindLive(const std::string &bi
 	return nullptr;
 }
 
-void MultistreamEngine::RemoveLive(const std::string &bindingUuid)
+std::unique_ptr<MultistreamEngine::LiveOutput> MultistreamEngine::TakeLive(const std::string &bindingUuid)
 {
 	for (auto it = live.begin(); it != live.end(); ++it) {
 		if ((*it)->bindingUuid == bindingUuid) {
+			std::unique_ptr<LiveOutput> taken = std::move(*it);
 			live.erase(it);
-			return;
+			return taken;
 		}
 	}
+	return nullptr;
 }
 
 MultistreamEngine::BindingMeta MultistreamEngine::ResolveBindingMeta(const OutputBinding &b) const
