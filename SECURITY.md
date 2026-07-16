@@ -2,10 +2,10 @@
 Braidcast is a private fork of the open source application OBS Studio. This policy covers vulnerabilities in Braidcast's own code (the fork-specific frontend, multistream engine, and any other Braidcast-authored changes). Vulnerabilities in unmodified upstream OBS Studio code should be reported to the OBS Project instead.
 
 ## How to Report
-Do not open a public issue. Report vulnerabilities privately via GitHub's private vulnerability reporting:
+Do not open a public issue. Report vulnerabilities privately by either:
 
-- Go to https://github.com/braidcast/braidcast-studio/security/advisories/new
-- Or from the repo: Security tab → "Report a vulnerability"
+- Email: security@braidcast.com
+- GitHub private advisory: https://github.com/braidcast/braidcast-studio/security/advisories/new (Security tab → "Report a vulnerability" — available to repo collaborators)
 
 ## What to Include
 - Steps to reproduce, ideally a minimal proof-of-concept
