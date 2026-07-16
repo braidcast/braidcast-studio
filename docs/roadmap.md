@@ -2159,9 +2159,19 @@ mid-broadcast is unrecoverable — the user is live in front of an audience.
   `clientSocket_` (not a `std::set`) suffices: `Stop()` now `shutdown(SD_BOTH)`s the parked
   socket, with `kHeaderRecvTimeoutMs = 10000` (same as overlay_server) as the standalone
   backstop.
-- 🔴 **R14 — `event_names.hpp:33-34`: no transport health channel exists.** Only
-  `events.new`/`events.backfill`; every transport death terminates at `HostLog`. This is the
-  amplifier that makes most of the above invisible-with-a-green-badge.
+- ✅ **R14 — `event_names.hpp`: no transport health channel exists.** Only
+  `events.new`/`events.backfill`; every transport death terminated at `HostLog`, so a dead
+  transport still showed a green badge — the amplifier that made most failures above invisible.
+  **Fixed `e62272006` (with G1).** New `TransportHealth` aggregator
+  (`events/transport_health.*`) holds a mutex-guarded per-transport state map
+  (connecting/connected/reconnecting/failed/disconnected + last error), reports at each transport's
+  existing state seams (one shared `EmitChatState` helper covers all three chat platforms; the
+  event hubs + overlay lifecycle report at connect/fail/stop), and emits the bridge
+  `transports.healthChanged` event + `transports.health` snapshot method — mirroring the
+  `multistream.status`/`multistream.changed` pattern at every layer. Notifies outside the lock so
+  the TID_UI emit can't re-enter the mutex; a function-local singleton like the hubs (detached
+  workers outlive `Stop()` and would UAF a reset instance). Web `transportHealthStore` mirrors
+  `multistreamStatusStore`. **Data only — no health widget wired in** (see G1 note).
 - ✅ **R15 — `overlay_server.cpp:286` (`BroadcastTo`) holds `sseMutex_` across blocking
   sends** — the exact hazard `BroadcastFrame`'s comment exists to avoid. The fix landed in one
   sibling, not the other. **Fixed `25ccd4514`** alongside R5. `BroadcastFrame` gained an
@@ -2268,8 +2278,13 @@ R3's fix. Both are report-only so far.
 
 ### Gaps vs the premium bar
 
-- 🔴 **G1 — no health channel** for events/chat/overlay. Highest-leverage addition; converts
-  most Importants above from silent to visible. Same root as R14.
+- 🟡 **G1 — no health channel** for events/chat/overlay. Highest-leverage addition; converts
+  most Importants above from silent to visible. Same root as R14. **Backend + data path shipped
+  `e62272006`** (see R14): the full channel exists and the web `transportHealthStore` is ready to
+  consume. **Open — visual surface (design call):** no health indicator is wired into the UI yet.
+  The natural first consumer is `MultichatDock.svelte`'s per-platform chat chips (today binary
+  connected/live-only); `EventsDock.svelte` / `ChannelsDock.svelte` are secondary. Left for a
+  design decision rather than inventing a badge unilaterally.
 - 🟡 **G2 — no recovery anywhere.** `client.cpp:184-192` `OnRenderProcessTerminated` comments
   out *every* parameter (`status`, `error_code`, `error_string`) and never reloads. A dead
   renderer mid-stream leaves a permanently blank UI while the stream runs blind. **Partially
