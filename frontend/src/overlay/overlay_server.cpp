@@ -34,7 +34,7 @@ constexpr int kPreferredPort = 43000;              // persisted default; tried f
 constexpr int kBandSize = 50;
 constexpr std::array<int, 5> kScanBands = {43000, 47000, 51000, 55000, 59000};
 constexpr DWORD kSseRecvTimeoutMs = 15000;     // keepalive cadence
-constexpr DWORD kSseSendTimeoutMs = 3000;      // I3: bounded send so a stuck reader can't hold sseMutex_
+constexpr DWORD kSseSendTimeoutMs = 3000;      // I3: bound on one SSE send so a stuck reader can't park a sender
 constexpr DWORD kHeaderRecvTimeoutMs = 10000;  // I1: backstop so a silent client can't park a thread
 constexpr DWORD kResponseSendTimeoutMs = 3000; // bounded plain-HTTP send so a stuck reader can't park a thread
 constexpr size_t kMaxSseConnections = 64;      // ceiling on concurrent live SSE streams; excess rejected 503
@@ -220,12 +220,15 @@ std::string AssembleDocument(const Widget &w, int port)
 // connection and have this thread later close the wrong socket (the fd-reuse hazard).
 // broadcastDepth_ (incremented while unlocked) makes RunSse defer its own closesocket()
 // so an in-flight send here can never land on a recycled fd.
-void OverlayServer::BroadcastFrame(const std::string &frame)
+void OverlayServer::BroadcastFrame(const std::string &frame, const std::string *onlyWidgetId)
 {
 	std::vector<std::pair<std::string, uintptr_t>> targets;
 	{
 		std::lock_guard<std::mutex> lock(sseMutex_);
 		for (auto &[wid, socks] : sockets_) {
+			if (onlyWidgetId && wid != *onlyWidgetId) {
+				continue;
+			}
 			for (uintptr_t s : socks) {
 				targets.emplace_back(wid, s);
 			}
@@ -274,7 +277,8 @@ void OverlayServer::Broadcast(const Events::NormalizedEvent &ev)
 }
 
 // Named `chat` event so widgets can select it independently of the default `message`
-// (alert) stream; body matches chat.message post-`RouteEmit` (the `event` key stripped).
+// (alert) stream; body matches the chat.message the bridge emits (the `event` key
+// stripped by the chat hub's emit). Called on the chat transport worker, never TID_UI.
 void OverlayServer::BroadcastChat(const nlohmann::json &chatMsg)
 {
 	BroadcastFrame("event: chat\ndata: " + chatMsg.dump() + "\n\n");
@@ -282,25 +286,7 @@ void OverlayServer::BroadcastChat(const nlohmann::json &chatMsg)
 
 void OverlayServer::BroadcastTo(const std::string &widgetId, const Events::NormalizedEvent &ev)
 {
-	const std::string frame = "data: " + ev.ToJson().dump() + "\n\n";
-	std::lock_guard<std::mutex> lock(sseMutex_);
-	auto it = sockets_.find(widgetId);
-	if (it == sockets_.end()) {
-		return;
-	}
-	std::vector<uintptr_t> dead;
-	for (uintptr_t s : it->second) {
-		if (!SendAll((SOCKET)s, frame.data(), frame.size())) {
-			dead.push_back(s);
-		}
-	}
-	for (uintptr_t s : dead) {
-		it->second.erase(s); // `it` stays valid: erasing set elements, not map entries
-		shutdown((SOCKET)s, SD_BOTH);
-	}
-	if (it->second.empty()) {
-		sockets_.erase(it);
-	}
+	BroadcastFrame("data: " + ev.ToJson().dump() + "\n\n", &widgetId);
 }
 
 // ---- Lifecycle --------------------------------------------------------------
@@ -698,32 +684,25 @@ void OverlayServer::ServeWidget(uintptr_t clientSocket, const std::string &path,
 void OverlayServer::RunSse(uintptr_t clientSocket, const std::string &widgetId)
 {
 	const SOCKET sock = (SOCKET)clientSocket;
-	// Bounded send so a stuck reader (full send buffer) can't hold sseMutex_ in
-	// Broadcast; a timed-out send is treated as a failed send -> the socket is dropped.
+	// Bounded send so a stuck reader (full send buffer) can't park a broadcast pass or
+	// this thread indefinitely; a timed-out send is a failed send -> the socket is dropped.
 	setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (const char *)&kSseSendTimeoutMs, sizeof(kSseSendTimeoutMs));
 
 	bool atCapacity = false;
 	{
 		std::lock_guard<std::mutex> lock(sseMutex_);
 		// Cap concurrent live streams so a runaway client (or a page reload storm) can't
-		// exhaust threads/fds. Count under the lock, before committing this connection.
-		size_t total = 0;
+		// exhaust threads/fds. Count live + reserved under the lock and reserve a slot,
+		// so the handshake below runs WITHOUT holding sseMutex_ (its sends are blocking,
+		// bounded by SO_SNDTIMEO, and must never stall broadcasts).
+		size_t total = ssePending_;
 		for (const auto &[wid, socks] : sockets_) {
 			total += socks.size();
 		}
 		if (total >= kMaxSseConnections) {
 			atCapacity = true;
 		} else {
-			const char *head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
-					   "Cache-Control: no-cache\r\nConnection: keep-alive\r\n"
-					   "Access-Control-Allow-Origin: *\r\n\r\n";
-			if (send(sock, head, (int)strlen(head), 0) <= 0) {
-				CloseClient(clientSocket); // not yet registered in sockets_; just close+deregister
-				return;
-			}
-			// Initial comment so EventSource fires onopen promptly.
-			send(sock, ": connected\n\n", 13, 0);
-			sockets_[widgetId].insert(clientSocket);
+			++ssePending_;
 		}
 	}
 	if (atCapacity) {
@@ -731,6 +710,30 @@ void OverlayServer::RunSse(uintptr_t clientSocket, const std::string &widgetId)
 			" streams)");
 		WriteResponse(sock, 503, "text/plain", "overlay server at capacity");
 		CloseClient(clientSocket);
+		return;
+	}
+
+	// The handshake must complete BEFORE the socket is registered: once it is in
+	// sockets_ a concurrent broadcast may write frames, and no frame may precede the
+	// HTTP header on the wire. Until registration the reserved slot keeps the capacity
+	// count honest.
+	const char *head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
+			   "Cache-Control: no-cache\r\nConnection: keep-alive\r\n"
+			   "Access-Control-Allow-Origin: *\r\n\r\n";
+	const bool headOk = send(sock, head, (int)strlen(head), 0) > 0;
+	if (headOk) {
+		// Initial comment so EventSource fires onopen promptly.
+		send(sock, ": connected\n\n", 13, 0);
+	}
+	{
+		std::lock_guard<std::mutex> lock(sseMutex_);
+		--ssePending_;
+		if (headOk) {
+			sockets_[widgetId].insert(clientSocket);
+		}
+	}
+	if (!headOk) {
+		CloseClient(clientSocket); // never registered in sockets_; just close+deregister
 		return;
 	}
 
@@ -744,11 +747,17 @@ void OverlayServer::RunSse(uintptr_t clientSocket, const std::string &widgetId)
 		}
 		if (n == SOCKET_ERROR) {
 			if (WSAGetLastError() == WSAETIMEDOUT) {
-				std::lock_guard<std::mutex> lock(sseMutex_);
-				auto it = sockets_.find(widgetId);
-				if (it == sockets_.end() || !it->second.count(clientSocket)) {
-					break; // dropped by Broadcast/Stop (shutdown will also break recv)
+				{
+					std::lock_guard<std::mutex> lock(sseMutex_);
+					auto it = sockets_.find(widgetId);
+					if (it == sockets_.end() || !it->second.count(clientSocket)) {
+						break; // dropped by Broadcast/Stop (shutdown will also break recv)
+					}
 				}
+				// Ping OUTSIDE sseMutex_: a stuck reader blocks this send for up to
+				// kSseSendTimeoutMs, which must never stall broadcasts. Safe unlocked --
+				// this thread owns the fd, and Broadcast/Stop only ever shutdown() it
+				// (a concurrent drop just makes this send fail -> break).
 				if (send(sock, ": ping\n\n", 8, 0) <= 0) {
 					break;
 				}

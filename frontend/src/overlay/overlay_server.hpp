@@ -59,8 +59,11 @@ private:
 	void HandleConnection(uintptr_t clientSocket); // runs on its own thread; closes the socket
 	void ServeRuntime(uintptr_t sock, const std::string &path, const std::string &token);
 	void ServeWidget(uintptr_t sock, const std::string &path, const std::string &token);
-	// Send a prebuilt SSE frame to every open widget socket; shared by Broadcast/BroadcastChat.
-	void BroadcastFrame(const std::string &frame);
+	// Send a prebuilt SSE frame to every open widget socket, or (with onlyWidgetId set)
+	// to one widget's sockets only. The single snapshot-under-lock / send-unlocked
+	// implementation shared by Broadcast/BroadcastChat/BroadcastTo, so sseMutex_ is
+	// never held across the bounded-blocking sends.
+	void BroadcastFrame(const std::string &frame, const std::string *onlyWidgetId = nullptr);
 	void RunSse(uintptr_t sock, const std::string &widgetId); // owns the socket for its lifetime
 	void CloseClient(uintptr_t sock); // the OWNING thread's sole close point: erase from clientSockets_ + close
 	void ReapFinishedThreads();       // join+erase threads whose done flag is set
@@ -77,6 +80,12 @@ private:
 
 	std::mutex sseMutex_;                                // guards sockets_ + the fields below
 	std::map<std::string, std::set<uintptr_t>> sockets_; // widgetId -> SSE sockets
+
+	// SSE connections mid-handshake: RunSse reserves a capacity slot under sseMutex_,
+	// then sends the HTTP header WITHOUT holding the lock (a blocking send must never
+	// hold sseMutex_), and only registers into sockets_ once the header is on the wire
+	// (a broadcast frame must never precede it).
+	size_t ssePending_ = 0;
 
 	// BroadcastFrame snapshots handles then sends OUTSIDE sseMutex_ so one slow client
 	// can't stall the others; broadcastDepth_ counts those in-flight sends. While it is

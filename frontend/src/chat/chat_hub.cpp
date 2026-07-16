@@ -23,29 +23,17 @@ namespace Chat {
 
 namespace {
 
-// Route one transport-emitted payload to its bridge event. The payload carries a
-// top-level "event" naming the bridge event; strip it and forward the rest, so
-// the hub stays free of per-platform / per-message-type branches. Runs on the UI
-// thread (posted there by the worker's emit) via the alive-guarded EmitEvent.
-void RouteEmit(const json &payload)
+// Forward one transport-emitted event to the bridge (the multichat dock's feed).
+// Runs on the CEF UI thread (posted there by the worker's emit) via the unguarded
+// InvokeOnUi trampoline, so an escaped exception here would terminate the process --
+// EmitEvent's dump() can throw on a malformed payload (invalid UTF-8); drop the
+// frame instead (EmitEvent is already internally guarded, but sits behind the same
+// barrier for free). Nothing here may block: every browser source on stream renders
+// on this thread, so the overlay SSE fan-out (blocking socket sends) happens on the
+// chat transport worker BEFORE this hop (see ctx.emit in ChatHub::Start), never here.
+void RouteEmit(const std::string &event, const json &body)
 {
-	std::string event = EventNames::kChatMessage;
-	json body = payload;
-	auto it = body.find("event");
-	if (it != body.end() && it->is_string()) {
-		event = it->get<std::string>();
-		body.erase(it);
-	}
-	// Fan chat messages (never connection-state frames) to overlay widgets as a named
-	// `chat` SSE event, alongside the bridge emit the multichat dock consumes.
-	// BroadcastChat's dump() can throw on a malformed payload (invalid UTF-8); RouteEmit
-	// runs on the CEF UI thread via the unguarded InvokeOnUi trampoline, so an escaped
-	// exception here would terminate the process. Drop the frame instead (EmitEvent is
-	// already internally guarded, but sits behind the same barrier for free).
 	try {
-		if (event == EventNames::kChatMessage) {
-			Overlay::Server().BroadcastChat(body);
-		}
 		Bridge::EmitEvent(event, body);
 	} catch (...) {
 		// malformed chat payload -> drop it rather than crash the UI thread
@@ -134,44 +122,63 @@ void ChatHub::Start()
 				if (stop->load(std::memory_order_acquire)) {
 					return; // generation stopped; drop late emits
 				}
+				// The payload carries a top-level "event" naming the bridge event; split
+				// it from the forwarded body here so the hub stays free of per-platform /
+				// per-message-type branches.
+				json body = payload;
+				std::string event = EventNames::kChatMessage;
+				auto ev = body.find("event");
+				if (ev != body.end() && ev->is_string()) {
+					event = ev->get<std::string>();
+					body.erase(ev);
+				}
 				// Cache connection state for State() on chat.state events.
-				auto ev = payload.find("event");
-				if (ev != payload.end() && ev->is_string() &&
-				    ev->get<std::string>() == EventNames::kChatState) {
+				if (event == EventNames::kChatState) {
 					std::lock_guard<std::mutex> lock(mutex_);
 					auto a = active_.find(accountId);
 					if (a != active_.end()) {
-						if (payload.contains("connected") &&
-						    payload["connected"].is_boolean()) {
-							a->second.connected = payload["connected"].get<bool>();
+						if (body.contains("connected") && body["connected"].is_boolean()) {
+							a->second.connected = body["connected"].get<bool>();
 						}
-						a->second.error = payload.value("error", std::string());
+						a->second.error = body.value("error", std::string());
 					}
 				}
-				json p = payload;
-				// Single fan-out point for every transport: synthesize a unique
-				// fallback id for any chat.message lacking one, so the frontend's
-				// keyed list never throws each_key_duplicate. Real ids are left
-				// untouched (dedupe relies on them); the monotonic seq guarantees
-				// uniqueness even within a single frame.
-				auto pev = p.find("event");
-				if (pev != p.end() && pev->is_string() &&
-				    pev->get<std::string>() == EventNames::kChatMessage) {
-					auto id = p.find("id");
-					const bool missing = id == p.end() || !id->is_string() ||
+				if (event == EventNames::kChatMessage) {
+					// Single fan-out point for every transport: synthesize a unique
+					// fallback id for any chat.message lacking one, so the frontend's
+					// keyed list never throws each_key_duplicate. Real ids are left
+					// untouched (dedupe relies on them); the monotonic seq guarantees
+					// uniqueness even within a single frame.
+					auto id = body.find("id");
+					const bool missing = id == body.end() || !id->is_string() ||
 							     id->get<std::string>().empty();
 					if (missing) {
-						const std::string platform = p.value("platform", std::string());
+						const std::string platform = body.value("platform", std::string());
 						std::string tsStr = "0";
-						auto tsIt = p.find("ts");
-						if (tsIt != p.end() && tsIt->is_number()) {
+						auto tsIt = body.find("ts");
+						if (tsIt != body.end() && tsIt->is_number()) {
 							tsStr = std::to_string(tsIt->get<long long>());
 						}
 						const uint64_t seq = idSeq_.fetch_add(1, std::memory_order_relaxed);
-						p["id"] = platform + ":" + tsStr + ":" + std::to_string(seq);
+						body["id"] = platform + ":" + tsStr + ":" + std::to_string(seq);
+					}
+					// Fan chat messages (never connection-state frames) to overlay
+					// widgets as a named `chat` SSE event, HERE on the transport worker
+					// rather than after the UI hop (mirrors EventHub::Ingest):
+					// BroadcastChat does blocking socket sends (bounded by the overlay
+					// server's send timeout), and every browser source on stream renders
+					// on the frontend's TID_UI, so one stalled overlay reader would
+					// freeze them all. This account's single worker also keeps its lines
+					// in order. dump() can throw on a malformed payload (invalid UTF-8):
+					// skip the fan-out and still forward to the (guarded) bridge.
+					try {
+						Overlay::Server().BroadcastChat(body);
+					} catch (...) {
+						// malformed chat payload -> skip the overlay fan-out
 					}
 				}
-				AsyncTask::PostToUi([p = std::move(p)] { RouteEmit(p); });
+				AsyncTask::PostToUi(
+					[event = std::move(event), body = std::move(body)] { RouteEmit(event, body); });
 			};
 
 			std::string err;

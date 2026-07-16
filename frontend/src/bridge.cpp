@@ -8960,7 +8960,10 @@ bool MethodOverlaysServerInfo(const json & /*params*/, json &result, std::string
 
 // overlays.test {id,type,overrides?}: fire a synthetic event straight to one widget's
 // SSE sockets (never the store, so test alerts don't persist or dedupe against real
-// events). Per-type defaults are a data table so a new type is a data change.
+// events). Per-type defaults are a data table so a new type is a data change. Runs on
+// the async lane: BroadcastTo does blocking socket sends (bounded by the overlay
+// server's send timeout), which must never run on TID_UI -- every browser source on
+// stream renders there.
 bool MethodOverlaysTest(const json &p, json &result, std::string &error)
 {
 	const std::string id = OptString(p, "id");
@@ -9383,14 +9386,14 @@ void Init()
 		{"overlays.duplicate", MethodOverlaysDuplicate},
 		{"overlays.delete", MethodOverlaysDelete},
 		{"overlays.url", MethodOverlaysUrl},
-		{"overlays.test", MethodOverlaysTest},
 		{"overlays.serverInfo", MethodOverlaysServerInfo},
 		{"overlays.addToScene", MethodOverlaysAddToScene},
 	};
 
-	// streamMeta.* go on the async lane: their provider calls block on libcurl, so
-	// they run off-thread and resolve the CEF callback later (same JS contract).
-	// Each body is the existing MethodFn, driven off-thread by RunAsyncMethod.
+	// Methods whose bodies block go on the async lane (libcurl platform calls, the
+	// overlay server's socket sends): they run off-thread and resolve the CEF
+	// callback later (same JS contract). Each body is the existing MethodFn, driven
+	// off-thread by RunAsyncMethod.
 	g_asyncMethods = {
 		{"streamMeta.get",
 		 [](const json &p, CefRefPtr<CefMessageRouterBrowserSide::Callback> cb) {
@@ -9411,6 +9414,10 @@ void Init()
 		{"overlays.uploadAsset",
 		 [](const json &p, CefRefPtr<CefMessageRouterBrowserSide::Callback> cb) {
 			 RunAsyncMethod("overlays.uploadAsset", p, cb, MethodOverlaysUploadAsset);
+		 }},
+		{"overlays.test",
+		 [](const json &p, CefRefPtr<CefMessageRouterBrowserSide::Callback> cb) {
+			 RunAsyncMethod("overlays.test", p, cb, MethodOverlaysTest);
 		 }},
 	};
 
