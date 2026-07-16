@@ -5174,6 +5174,31 @@ bool MethodCanvasUpdate(const json &params, json &result, std::string &error)
 	return true;
 }
 
+// Tear down every consumer of a canvas's mix, then the mix itself. Ordering is
+// the whole point, since the mix must not be freed while any obs_display draw
+// callback can still reach it from the render thread:
+//   1. projectors first -- a Canvas/Multiview projector BORROWS the mix without
+//      a CanvasRuntime preview ref, so it must be gone before step 2, where the
+//      last RemovePreview can already drop the mix via Reconcile;
+//   2. preview surfaces on EVERY window (detached windows mint their own
+//      windowId, so a per-window destroy would miss them);
+//   3. the engine's cached encoder pair (bound to the dying mix), then the mix.
+// Destroying an obs_display synchronizes with the render thread, so after 1+2
+// no draw callback is in flight. Callers refuse a live canvas before this runs.
+void RemoveCanvasMixAndConsumers(const std::string &uuid)
+{
+	if (ProjectorManager *pj = Projector::Instance()) {
+		for (int id : pj->CloseForCanvas(uuid)) {
+			EmitEvent(EventNames::kProjectorChanged, json{{"closed", id}});
+		}
+	}
+	if (PreviewManager *pm = Preview::Instance()) {
+		pm->DestroyForCanvas(uuid);
+	}
+	ObsBootstrap::Multistream().InvalidateCanvasEncoders(uuid);
+	ObsBootstrap::CanvasRuntime().RemoveCanvas(uuid);
+}
+
 bool MethodCanvasRemove(const json &params, json &result, std::string &error)
 {
 	std::string uuid;
@@ -5197,19 +5222,9 @@ bool MethodCanvasRemove(const json &params, json &result, std::string &error)
 		error = "cannot remove a canvas while it is live";
 		return false;
 	}
-	// Destroy this canvas's preview surface FIRST: its obs_display renders the
-	// canvas mix on the render thread, so the display (and its draw callback) must
-	// be torn down -- synchronizing with the render thread -- before RemoveCanvas
-	// frees the mix, else the next render dereferences freed memory (UAF). A live
-	// output is already refused above; an idle-but-previewed canvas is not, which
-	// is exactly the case this guards.
-	if (PreviewManager *pm = Preview::Instance()) {
-		pm->Destroy(uuid);
-	}
-	// Drop the engine's cached encoder pair for the removed canvas (it is bound to
-	// a mix that goes away with the canvas), then destroy the live mix itself.
-	ObsBootstrap::Multistream().InvalidateCanvasEncoders(uuid);
-	ObsBootstrap::CanvasRuntime().RemoveCanvas(uuid);
+	// A live output is refused above; an idle-but-projected/previewed canvas is
+	// not, which is exactly what the consumer reap guards (see the helper).
+	RemoveCanvasMixAndConsumers(uuid);
 
 	store.Remove(uuid);
 	store.Save();
@@ -7252,9 +7267,8 @@ bool MethodSettingsRestore(const json &params, json &result, std::string &error)
 		CanvasRuntime &rt = ObsBootstrap::CanvasRuntime();
 
 		// 1) Tear down mixes for canvases created during the edit but absent after the
-		// revert. Mirror MethodCanvasRemove's teardown order: preview surface first
-		// (its obs_display reads the mix on the render thread), then the engine's
-		// cached encoders, then the mix. Skip a live canvas.
+		// revert -- consumers first, then the mix, same as canvas.remove. Skip a
+		// live canvas.
 		for (const Prev &p : before) {
 			if (after.count(p.uuid)) {
 				continue;
@@ -7262,11 +7276,7 @@ bool MethodSettingsRestore(const json &params, json &result, std::string &error)
 			if (CanvasIsLive(p.uuid)) {
 				continue;
 			}
-			if (PreviewManager *pm = Preview::Instance()) {
-				pm->Destroy(p.uuid);
-			}
-			ObsBootstrap::Multistream().InvalidateCanvasEncoders(p.uuid);
-			rt.RemoveCanvas(p.uuid);
+			RemoveCanvasMixAndConsumers(p.uuid);
 		}
 
 		// 2) (Re)create objects for any restored canvas missing one (removed during

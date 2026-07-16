@@ -1665,6 +1665,26 @@ struct PreviewManager::Impl {
 	std::vector<std::pair<int, HWND>> windowHosts; // windowId -> host HWND
 };
 
+namespace {
+
+// Destroy one managed surface and erase it, then balance its CanvasRuntime
+// preview ref. RemovePreview runs after Destroy() removed the draw callback
+// (teardown order): "" balances the Default main-composite ref, a uuid the
+// canvas mix ref. Returns the iterator following the erased element. Shared by
+// the single-surface, per-window, and per-canvas reap paths (NOT DestroyAll,
+// which deliberately skips RemovePreview at shutdown).
+std::vector<ManagedSurface>::iterator ReapSurface(std::vector<ManagedSurface> &surfaces,
+						  std::vector<ManagedSurface>::iterator it)
+{
+	it->surface->Destroy();
+	const std::string closedKey = it->uuid; // "" => Default surface
+	it = surfaces.erase(it);
+	ObsBootstrap::CanvasRuntime().RemovePreview(closedKey);
+	return it;
+}
+
+} // namespace
+
 PreviewManager::PreviewManager(HWND host, HINSTANCE instance) : impl_(new Impl()), host_(host), instance_(instance) {}
 
 PreviewManager::~PreviewManager()
@@ -1766,15 +1786,30 @@ void PreviewManager::Destroy(int windowId, const std::string &canvasUuid)
 	const std::string key = IsDefaultCanvasUuid(canvasUuid) ? std::string() : canvasUuid;
 	for (auto it = impl_->surfaces.begin(); it != impl_->surfaces.end(); ++it) {
 		if (it->windowId == windowId && it->uuid == key) {
-			it->surface->Destroy();
-			const std::string closedKey = it->uuid; // "" => Default surface
-			impl_->surfaces.erase(it);
-			// RemovePreview after Destroy() removed the draw callback (teardown order):
-			// "" balances the Default main-composite ref, a uuid the canvas mix ref.
-			ObsBootstrap::CanvasRuntime().RemovePreview(closedKey);
+			ReapSurface(impl_->surfaces, it);
 			return;
 		}
 	}
+}
+
+void PreviewManager::DestroyForCanvas(const std::string &canvasUuid)
+{
+	// Canvas-removal reap: the same canvas can have a surface on the main window
+	// AND on detached windows (each minted its own windowId), so sweep every
+	// windowId for this uuid -- a per-window Destroy would leave a detached
+	// surface's obs_display rendering the mix after it is freed.
+	const std::string key = IsDefaultCanvasUuid(canvasUuid) ? std::string() : canvasUuid;
+	int destroyed = 0;
+	for (auto it = impl_->surfaces.begin(); it != impl_->surfaces.end();) {
+		if (it->uuid == key) {
+			it = ReapSurface(impl_->surfaces, it);
+			++destroyed;
+		} else {
+			++it;
+		}
+	}
+	HostLog("[preview] DestroyForCanvas(" + (key.empty() ? std::string("Default") : key) + ") destroyed " +
+		std::to_string(destroyed) + " surface(s)");
 }
 
 void PreviewManager::DestroyAll()
@@ -1797,12 +1832,7 @@ void PreviewManager::DestroyWindow(int windowId)
 	int destroyed = 0;
 	for (auto it = impl_->surfaces.begin(); it != impl_->surfaces.end();) {
 		if (it->windowId == windowId) {
-			it->surface->Destroy();
-			const std::string closedKey = it->uuid; // "" => Default surface
-			it = impl_->surfaces.erase(it);
-			// RemovePreview after Destroy() removed the draw callback (teardown order);
-			// "" balances the Default main-composite ref (see SurfaceFor).
-			ObsBootstrap::CanvasRuntime().RemovePreview(closedKey);
+			it = ReapSurface(impl_->surfaces, it);
 			++destroyed;
 		} else {
 			++it;

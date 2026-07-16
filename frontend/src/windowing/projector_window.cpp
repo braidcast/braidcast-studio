@@ -1046,6 +1046,25 @@ bool ProjectorManager::Close(int projectorId)
 	return false;
 }
 
+std::vector<int> ProjectorManager::CloseForCanvas(const std::string &canvasUuid)
+{
+	std::vector<int> closed;
+	if (canvasUuid.empty()) {
+		return closed;
+	}
+	for (const auto &p : projectors_) {
+		if (p->CanvasUuid() == canvasUuid) {
+			closed.push_back(p->Id());
+		}
+	}
+	// Two passes so the ordered, re-entrancy-safe Close path (display before
+	// window, erase after destroy) is reused rather than duplicated here.
+	for (int id : closed) {
+		Close(id);
+	}
+	return closed;
+}
+
 std::vector<ProjectorManager::ProjectorInfo> ProjectorManager::List() const
 {
 	std::vector<ProjectorInfo> out;

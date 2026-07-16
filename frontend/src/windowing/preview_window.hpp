@@ -193,7 +193,12 @@ public:
 		SetRect(0, canvasUuid, x, y, cx, cy);
 	}
 	void Hide(const std::string &canvasUuid) { Hide(0, canvasUuid); }
-	void Destroy(const std::string &canvasUuid) { Destroy(0, canvasUuid); }
+
+	// Tear down this canvas's surface on EVERY window (display + overlay HWND),
+	// erasing each from the registry. A detached window carries its own windowId,
+	// so a canvas being removed can have surfaces beyond windowId 0; all of them
+	// render the canvas mix and must die before that mix is freed (the UAF rule).
+	void DestroyForCanvas(const std::string &canvasUuid);
 
 	// Destroy every surface's display + overlay HWND. Called at teardown before the
 	// canvas mixes (CanvasRuntime::ClearAll) and obs_shutdown.

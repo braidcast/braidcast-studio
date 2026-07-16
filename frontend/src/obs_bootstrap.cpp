@@ -2733,7 +2733,7 @@ void ObsBootstrap::RunPreviewSurfaceIsolationSelfTest()
 	// reaped by DestroyAll at shutdown, but its display already has no mix to render
 	// once the canvas is gone -- so destroy the surface now to keep ordering clean).
 	Preview::SelectFromBridge(canvasUuid, "", 0, false);
-	Preview::Instance()->Destroy(canvasUuid);
+	Preview::Instance()->DestroyForCanvas(canvasUuid);
 
 	if (canvasItemId) {
 		obs_source_t *s = obs_get_source_by_name(canvasSrcName.c_str());

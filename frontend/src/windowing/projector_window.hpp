@@ -158,6 +158,14 @@ public:
 	// missing id is a no-op (false). Emits no event itself (the caller does).
 	bool Close(int projectorId);
 
+	// Close every projector bound to `canvasUuid` (Canvas + Multiview kinds; the
+	// only kinds that carry a canvas uuid). Their displays render the canvas mix
+	// they BORROW from CanvasRuntime, so they must be closed before that mix is
+	// freed (canvas removal). Returns the closed projector ids; emits no events
+	// itself (the caller does, matching Close). A no-op for an empty uuid (the
+	// Default canvas is never removed).
+	std::vector<int> CloseForCanvas(const std::string &canvasUuid);
+
 	// One projector's tracked metadata, for projector.list.
 	struct ProjectorInfo {
 		int projectorId;
