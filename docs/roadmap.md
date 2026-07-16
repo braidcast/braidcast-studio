@@ -2191,8 +2191,15 @@ mid-broadcast is unrecoverable — the user is live in front of an audience.
   `Save()`/`Persist()` (now `void`→`bool`) through it. **Bounded follow-up (open):** ~25
   single-mutation bridge handlers (`canvas.update`, `streams.*`, …) still answer `{ok:true}` but
   now log on failure — surfacing those to the caller is a separate pass, not silently skipped.
-- 🔴 **R18 — `main.cpp:527-536`: the `CreateBrowserSync` abort path is a hand-copied partial
-  duplicate of the real teardown** — leaks a ghost tray icon, skips RTWQ/mutex cleanup.
+- ✅ **R18 — `main.cpp`: the `CreateBrowserSync` abort path is a hand-copied partial
+  duplicate of the real teardown** — leaks a ghost tray icon, skips RTWQ/mutex cleanup. **Fixed
+  `cd4a83593`.** Extracted the clean-exit sequence into one `Teardown()` both the clean path and
+  the abort call, so teardown order lives in one place; each step keeps its existing init guard
+  so it is safe at the abort's stage. Also closed the leaked shared-Client ref, preview/projector/
+  interact HWNDs, and the Stop()-before-surface-destruction ordering hazard (Stop() frees mixes
+  those surfaces render). *Follow-up (minor, open):* the earlier `!host` / `!Start()` bailouts
+  still do bare `CefShutdown(); return 1;` and leak mutex+RTWQ — unifying those needs init-stage
+  flags, out of R18's scope.
 - ✅ **R19 — unbounded buffers.** `ws_client.cpp:178` (`accum_` uncapped) and
   `http_client.cpp:20` + `:79` (no `CURLOPT_MAXFILESIZE`, with gzip decompression, against
   third-party emote hosts on the go-live path). OOM lands in the encoders' address space.
@@ -2210,9 +2217,12 @@ mid-broadcast is unrecoverable — the user is live in front of an audience.
   sections run, no rollback), so it now aggregates per-section failures across **all 8**
   restorable sections (video, audio, globalDevices, streamProfiles, outputBindings, canvases,
   hotkeys, mcp) and returns `{ok:false, failed:[{section,error}]}`, the soft-failure shape
-  `multistream.startOutput` already uses. **`frontend/web` follow-up (open):** the JS contract
-  changed — `settings.restore` can now resolve `{ok:false, failed:[...]}`; the web should check
-  `result.ok` and surface `result.failed` (R12/R16/R17 are transparent to JS).
+  `multistream.startOutput` already uses. **`frontend/web` follow-up — resolved `2b0a2eccf`:**
+  `settings.restore` has **zero** live web callers — the Cancel/revert footer it backed was
+  intentionally dropped for the live-apply page model (kept server-side only for the headless
+  self-test), so nothing on the web assumes success. Added just the typed `{ok, failed?[]}`
+  contract entry to `bridge.ts` so a future caller / the self-test path is compile-time safe
+  against the real shape; did not resurrect the dropped revert UI (would be a design pivot).
 
 ### Pass 1 addendum — surfaced while fixing (2026-07-16)
 
@@ -2220,19 +2230,23 @@ Found by the R3 implementation agent while reading the projector lifetime model.
 as R3 (a borrowed canvas mix freed under a live consumer), different trigger, so they survive
 R3's fix. Both are report-only so far.
 
-- 🔴 **R22 — a projector's borrowed mix can be freed by `ReconcileEntry` without any canvas
-  removal.** Canvas/Multiview projectors hold **no** `AddPreview` ref (only the Program kind
-  refs the main composite, `projector_window.cpp:643-646`). Disabling a canvas's last enabled
-  binding, or closing its last preview, drives `ReconcileEntry` to `obs_canvas_clear_video`
-  while an open projector still draws that mix. R3's fix does not cover this — no canvas is
-  removed, so the reap never runs. *Fix direction:* `AddPreview`/`RemovePreview` in
-  `ProjectorWindow` for the canvas-bound kinds, which is what makes the projector a first-class
-  mix consumer instead of a silent borrower.
-- 🔴 **R23 — `CanvasIsLive` does not cover the virtual camera.** `VirtualCamManager` holds an
-  `AddPreview` ref on its target canvas, but `MultistreamEngine::IsCanvasLive` only knows about
-  outputs, so removing a canvas the vcam is feeding from frees the mix under the vcam's
-  `video_t`. Strong inference from the ref/gate reading, **not fully traced** — confirm the vcam
-  path before fixing.
+- ✅ **R22 — a projector's borrowed mix can be freed by `ReconcileEntry` without any canvas
+  removal.** Canvas/Multiview projectors held **no** `AddPreview` ref (only the Program kind).
+  Disabling a canvas's last enabled binding, or closing its last preview, drove `ReconcileEntry`
+  to `obs_canvas_clear_video` while an open projector still drew that mix. **Fixed `7b11d91e6`.**
+  Canvas/Multiview projectors now `AddPreview`/`RemovePreview` on their target uuid — a
+  first-class mix consumer instead of a silent borrower — balanced 1:1 across every close path
+  (normal close, `CloseForCanvas`, app-quit `DestroyAll`, dtor, open-failure), released after
+  `obs_display_destroy` so no draw callback can reach a freed mix.
+- ✅ **R23 — `CanvasIsLive` does not cover the virtual camera.** `VirtualCamManager` holds an
+  `AddPreview` ref on its target canvas, but `IsCanvasLive` knew only outputs. **Confirmed and
+  fixed `7b11d91e6`.** Traced: `canvas.remove` (and the revert reap) gate on `IsCanvasLive`,
+  which missed the vcam, so removal ran the free chain (`obs_canvas_remove`→`release`→`destroy`→
+  `clear_mix`) under the vcam's live `video_t` → render-thread UAF. Fixed by teaching
+  `IsCanvasLive` / `IsCanvasOrInheritorLive` about the vcam via a new
+  `VirtualCamManager::FeedsCanvas` (reuses `heldCanvas_`, no duplicate lookup). The structural-edit
+  path was already safe — `obs_canvas_reset_video` is guarded by `obs_video_active()`, which
+  scans canvas mixes too; only *removal* was unguarded.
 - 🔴 **R24 — `OutputStat.state` is typed Title-cased but the host sends lowercase, so Stats and
   Monitor have never worked.** Found by the R10 web agent, **confirmed on both sides**:
   `bridge.cpp:5986` sends `MultistreamEngine::StateName(s.state)` — the *same* lowercase
@@ -2264,12 +2278,24 @@ R3's fix. Both are report-only so far.
   routed to software-mode fallback, so it no longer silently blanks the app. Still open: no
   minidump/crashpad for CEF subprocesses (a true crash report, vs. the detect-and-degrade the
   sentinel gives), and the render/GPU subprocesses still run with no filter.
-- 🔴 **G4 — no jitter in `Backoff::next()`** (`ws_client.cpp:227`); all four WS transports walk
-  an identical ladder in lockstep. `channel_stats_poller.cpp:42` already models the fix.
-- 🔴 **G5 — no watchdogs, no `State::Connecting` deadline**; self-tests run ~20 synchronous
-  tests on the CEF UI thread including a real RTMP connect.
-- 🔴 **G6 — silent startup degradation.** `LoadCuratedModules` logs `init-failed` and
-  continues; if `obs-x264` fails to load the app looks healthy until Go Live.
+- ✅ **G4 — no jitter in `Backoff::next()`** (`ws_client.cpp`); all WS transports walked an
+  identical ladder in lockstep. **Fixed `5fc5c72e9`.** Equal jitter applied after the existing
+  clamp — delay lands in `[floor(ms/2), ms]`, keeping a sane floor while de-correlating retries;
+  per-`Backoff` `std::mt19937` seeded once from `random_device` (member, so each per-thread
+  transport has its own with no lock/race).
+- 🟡 **G5 — no watchdogs, no `State::Connecting` deadline.** **Partially resolved (2026-07-16):**
+  the chat/events WS path (`ws_client.cpp`) is **already** deadline-bounded — `connect()` is
+  synchronous under `CURLOPT_CONNECTTIMEOUT=15` + `CURLOPT_TIMEOUT_MS=kUpgradeTimeoutMs=30000`,
+  which covers the exact "TLS up, no HTTP 101" stall; on timeout it falls to the existing
+  backoff/reconnect. **Still open:** the real `State::Connecting` enum is in
+  `MultistreamEngine.hpp:27` (the RTMP output engine), whose connect has no deadline — that is the
+  remaining G5 work, deferred to a MultistreamEngine pass. Self-tests still run ~20 synchronous
+  tests on the CEF UI thread.
+- ✅ **G6 — silent startup degradation.** `LoadCuratedModules` logged `init-failed`/`open-failed`
+  through `HostLog` (LOG_INFO), indistinguishable from routine startup chatter, so a failed
+  `obs-x264` looked healthy until Go Live. **Fixed `0d43a5f96`.** The two failure paths and their
+  per-category summaries now log at `LOG_WARNING`, so a warning scan catches which module did not
+  load and why; log-and-continue behavior unchanged (no required-module concept in the list).
 
 ### Open question — RESOLVED (2026-07-16)
 
