@@ -2058,8 +2058,15 @@ mid-broadcast is unrecoverable — the user is live in front of an audience.
   no inspectable artifact, and why the CI boot-smoke gate green-lights a crashed app.**
   *Fix:* port `main_crash_handler`, register before the filter, exit non-zero, and harden the
   smoke gate so a crashed process cannot pass.
-- 🔴 **R7 — `bridge.cpp:3512-3520`: `sceneItems.group` never dedupes `ids`, null-derefing
-  libobs.** No seen-guard in the resolve loop; libobs's guard (`obs-scene.c:3541-3545`)
+- ✅ **R7 — `bridge.cpp:3512-3520`: `sceneItems.group` never dedupes `ids`, null-derefing
+  libobs.** **Fixed `304091e14`.** Order-preserving `std::find` skip in the resolve loop, first
+  occurrence wins. **Silent dedupe, not an error** — it follows the method's own established
+  convention: non-integer entries, unresolvable ids, and group items are all silently skipped,
+  and only an all-skipped array errors. The null-write chain was re-confirmed against in-tree
+  libobs (`obs-scene.c:3541-3545` guard, `:3565-3569` per-element detach, `:294-305`
+  `detach_sceneitem` nulls `parent` but leaves `prev`/`next`, `:299` the null write). **The
+  finding understated it:** a duplicate that is *not* first also corrupts — the relink loop at
+  `:3570-3582` self-links the item. The dedupe covers both. No seen-guard in the resolve loop; libobs's guard (`obs-scene.c:3541-3545`)
   rejects only foreign-parent/group items, so a duplicate pointer passes and
   `obs-scene.c:3565-3569` runs `detach_sceneitem` once per element. The second call finds
   `parent == NULL`, and when the item is the scene's first (`prev == NULL`) it takes
@@ -2067,7 +2074,19 @@ mid-broadcast is unrecoverable — the user is live in front of an audience.
   *Scenario:* `sceneItems.group {scene:"Main", ids:[5,5]}` with item 5 first. Reachable from a
   renderer multi-select bug *and* from the MCP server, which proxies any registered method
   through `Bridge::Dispatch`. *Fix:* dedupe before `obs_scene_insert_group`.
-- 🔴 **R8 — `ws_client.cpp:93-101`: the WebSocket upgrade has no whole-request timeout.**
+- ✅ **R8 — `ws_client.cpp:93-101`: the WebSocket upgrade has no whole-request timeout.**
+  **Fixed `bf46940c5`.** `kUpgradeTimeoutMs = 30s` via `CURLOPT_TIMEOUT_MS` — it must exceed
+  the 15 s `CONNECTTIMEOUT` it subsumes, and matches `util/http_client.cpp:70`'s 30 s default.
+  **Session-safety proven from curl source** (`lib/ws.c` @ `curl-8_12_1`, matching the vendored
+  8.12.1-DEV header): `curl_ws_recv` consults no timeout at all and `curl_ws_send`'s non-raw
+  path takes `Curl_senddata`; the file's only `Curl_timeleft` check is in
+  `ws_send_raw_blocking`, unreachable here. So the bound covers the 101 handshake only.
+  **All four transports share `Chat::WsClient`** — no private copies of the defect.
+  `TwitchChat`'s lock-held connect is fixed by handshaking on a stack-local client and
+  move-assigning under `wsMutex_` (new `WsClient::operator=(WsClient &&)`), so only the O(1)
+  handoff is serialized; dropping the lock outright would have raced `sendText` against
+  `connect`'s handle mutation. `twitch_events.cpp:277`/`kick_events.cpp:251` also connect under
+  their mutex but are single-worker with no contender, so the timeout alone suffices there.
   `CONNECTTIMEOUT 15L` is set; `CURLOPT_TIMEOUT` is not (it appears only at
   `http_client.cpp:71`). With `CONNECT_ONLY=2L` the HTTP 101 happens in the *perform* phase,
   governed by `CURLOPT_TIMEOUT` (default 0 = unlimited). `disconnect()` only flips an atomic
