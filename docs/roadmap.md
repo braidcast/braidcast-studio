@@ -2216,11 +2216,19 @@ R3's fix. Both are report-only so far.
 
 - 🔴 **G1 — no health channel** for events/chat/overlay. Highest-leverage addition; converts
   most Importants above from silent to visible. Same root as R14.
-- 🔴 **G2 — no recovery anywhere.** `client.cpp:184-192` `OnRenderProcessTerminated` comments
+- 🟡 **G2 — no recovery anywhere.** `client.cpp:184-192` `OnRenderProcessTerminated` comments
   out *every* parameter (`status`, `error_code`, `error_string`) and never reloads. A dead
-  renderer mid-stream leaves a permanently blank UI while the stream runs blind.
-- 🔴 **G3 — no crash coverage for CEF subprocesses.** `main.cpp:345-348` returns before the
-  filter installs; `no_sandbox = true` with no crashpad config.
+  renderer mid-stream leaves a permanently blank UI while the stream runs blind. **Partially
+  addressed `73e881a42`:** the GPU-subprocess crash-loop (the blank-screen case, the resolved
+  `80000003`) now auto-recovers — a boot that never paints trips a persistent software-rendering
+  fallback next launch. Still open: mid-stream **render-process** death (`OnRenderProcessTerminated`)
+  is not yet reloaded/recovered.
+- 🟡 **G3 — no crash coverage for CEF subprocesses.** `main.cpp:345-348` returns before the
+  filter installs; `no_sandbox = true` with no crashpad config. **Partially addressed
+  `73e881a42`:** the GPU subprocess's crash is now *detected* (via the boot sentinel) and
+  routed to software-mode fallback, so it no longer silently blanks the app. Still open: no
+  minidump/crashpad for CEF subprocesses (a true crash report, vs. the detect-and-degrade the
+  sentinel gives), and the render/GPU subprocesses still run with no filter.
 - 🔴 **G4 — no jitter in `Backoff::next()`** (`ws_client.cpp:227`); all four WS transports walk
   an identical ladder in lockstep. `channel_stats_poller.cpp:42` already models the fix.
 - 🔴 **G5 — no watchdogs, no `State::Connecting` deadline**; self-tests run ~20 synchronous
@@ -2228,18 +2236,24 @@ R3's fix. Both are report-only so far.
 - 🔴 **G6 — silent startup degradation.** `LoadCuratedModules` logs `init-failed` and
   continues; if `obs-x264` fails to load the app looks healthy until Go Live.
 
-### Open question
+### Open question — RESOLVED (2026-07-16)
 
-- ❓ **`Unhandled exception: 80000003`** (seen in a 2026-07-14 smoke log, since lost). Cannot be
-  pinned from code alone. The string is libobs's own handler (`obs-win-crash-handler.c:259`),
-  so it fired in the main process with no debugger. Most plausible producer: a `libcef.dll`
-  `CHECK()` — Chromium's `IMMEDIATE_CRASH()` is `__debugbreak()` on MSVC, raising exactly
-  `EXCEPTION_BREAKPOINT`. Ruled out: zero `__debugbreak`/`abort` in `frontend/src`; CRT
-  `assert` compiled out under `NDEBUG`; `abort`/`terminate` gives `0xC0000409`; heap corruption
-  gives `0xC0000374`. **R4 is the natural trigger** — `CefShutdown()` with live browsers is
-  exactly what Chromium `CHECK()`s on. The handler prints `Fault address: %llX (%s)` where
-  `%s` is the module: **`libcef.dll` confirms, `obs.dll` refutes.** Fix R6 first and this
-  answers itself.
+- ✅ **`Unhandled exception: 80000003` — it is the CEF GPU subprocess crash-looping at
+  startup, and it is what produces the blank-white-screen "app won't load."** Confirmed on a
+  live machine (RTX 5070 Ti): the CEF `debug.log` shows `GPU process exited unexpectedly:
+  exit_code=-2147483645` (= `0x80000003`, EXCEPTION_BREAKPOINT) within ~6 s of launch, in a
+  loop (`GpuProcessHost` reinitializes it, it crashes again). The mechanism the open question
+  guessed was right — a `libcef.dll` `CHECK()` / `IMMEDIATE_CRASH()` = `__debugbreak()` on
+  MSVC — but the **location was wrong**: it is the **GPU subprocess at startup**, not the main
+  process at `CefShutdown()` (R4 is a genuine but separate main-process bug). A GPU newer than
+  CEF 6533/Chromium 127 makes the GPU process reject the driver. When it dies the renderer
+  never composites: the session log shows `[cef] browser created` then **zero** web activity
+  (no page-load, no bridge calls) then a clean libobs shutdown — the backend loads every canvas
+  fine, but the Svelte UI never paints → blank white window that reads as "no data / fresh
+  start." **Verified fix:** launching with `--disable-gpu` eliminates the crash and the UI
+  loads fully (SwiftShader compositing). Shipped as an automatic, persistent safe-mode fallback
+  in `73e881a42` (see G2/G3). Manual escape hatch for an install whose UI never comes up:
+  create `braidcast_disable_gpu.txt` beside `braidcast.exe`, or launch with `--disable-gpu`.
 
 ### Verified solid (do not re-raise)
 
