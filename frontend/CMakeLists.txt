@@ -55,6 +55,10 @@ target_sources(
     src/client.hpp
     src/gpu_safe_mode.cpp
     src/gpu_safe_mode.hpp
+    # Mid-session GPU-load diagnostics (env-gated sampler + browser-source A/B kill
+    # switch) for the CEF GPU-process crash that gpu_safe_mode's boot sentinel misses.
+    src/diag/gpu_diag.cpp
+    src/diag/gpu_diag.hpp
     src/scheme.cpp
     src/scheme.hpp
     src/bridge.cpp
@@ -405,6 +409,7 @@ target_link_options(${_target} PRIVATE "/IGNORE:4199")
 set_source_files_properties(
   src/main.cpp
   src/gpu_safe_mode.cpp
+  src/diag/gpu_diag.cpp
   src/obs_bootstrap.cpp
   src/obs_importer.cpp
   src/settings/GeneralSettings.cpp

@@ -19,6 +19,7 @@
 #include "windowing/app_icon.hpp"
 #include "bridge.hpp"
 #include "client.hpp"
+#include "diag/gpu_diag.hpp"
 #include "gpu_safe_mode.hpp"
 #include "settings/GeneralSettings.hpp"
 #include "windowing/interact_window.hpp"
@@ -347,6 +348,12 @@ void DrainCefTasks()
 // before ObsBootstrap::Stop() frees the canvas mixes those surfaces render.
 void Teardown()
 {
+	// Stop the GPU-diagnostics sampler and disconnect its source_create hook before
+	// any obs teardown: the sampler thread enumerates live obs sources/outputs, so it
+	// must be joined before ObsBootstrap::Stop()/obs_shutdown free them. Idempotent
+	// and safe on early-abort paths where the diagnostics never armed.
+	GpuDiag::Stop();
+
 	g_browser = nullptr;
 
 	// Drop the process-wide shared Client ref so it doesn't outlive teardown.
@@ -399,8 +406,12 @@ void Teardown()
 	if (g_obsStarted) {
 		// Capture the latest global scene collection while channel 0 and every scene
 		// source are still bound -- TeardownScene below unbinds and removes the
-		// placeholder default scene, so this must run first.
-		SceneCollection::Save();
+		// placeholder default scene, so this must run first. Skipped under the
+		// browser-source kill switch: that run blanked every browser source's URL in
+		// memory, so saving would persist about:blank over the user's real URLs.
+		if (!GpuDiag::BrowserSourcesDisabled()) {
+			SceneCollection::Save();
+		}
 
 		// Release the test scene + browser source, then pump CEF so the source's
 		// posted `delete this` / CloseBrowser tasks drain (the run-loop has already
@@ -577,6 +588,18 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 		CefString(&settings.root_cache_path).FromString(cefCache);
 	}
 
+	// Pin CEF's own debug.log to a known, findable path under the config base
+	// instead of the default (cwd/"debug.log" in the rundir). This is where the CEF
+	// GPU-process crash signature lands -- "GPU process exited unexpectedly",
+	// GpuControl.CreateCommandBuffer failures, "tile memory limits exceeded" -- with
+	// millisecond timestamps to correlate against the "[gpudiag]" sampler timeline.
+	// Severity is left at the default (INFO): the crash lines already emit at
+	// WARNING/ERROR, and raising to VERBOSE would flood the log and perturb timing.
+	const std::string cefLog = BraidcastConfigPath("cef_debug.log");
+	if (!cefLog.empty()) {
+		CefString(&settings.log_file).FromString(cefLog);
+	}
+
 	if (!CefInitialize(main_args, settings, app.get(), nullptr)) {
 		// CEF is not up, so Teardown() skips its CEF steps (g_cefInitialized still
 		// false); it still shuts RTWQ down and releases the mutex acquired above.
@@ -605,6 +628,13 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 		return 1;
 	}
 	g_obsStarted = true;
+
+	// GPU-crash diagnostics (both env-gated, default off). Arm the browser-source
+	// A/B kill switch first (it sweeps the sources the initial scene collection just
+	// loaded inside Start()), then start the periodic "[gpudiag]" sampler. Both are
+	// torn down in Teardown() before ObsBootstrap::Stop().
+	GpuDiag::InstallBrowserSourceKillSwitch();
+	GpuDiag::Start();
 
 	// Create the preview manager now that libobs is up. Each canvas's overlay HWND +
 	// obs_display are created lazily on its first preview.setRect from the UI, so a
