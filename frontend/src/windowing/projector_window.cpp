@@ -635,14 +635,26 @@ bool ProjectorWindow::Create(HINSTANCE instance, const RECT &monitorRect)
 	if (!display) {
 		return false;
 	}
-	// A Program projector samples obs_render_main_texture every frame; ref the Default
-	// canvas's main composite BEFORE registering the draw callback, so the gate is
-	// already held the first time the callback runs (no stale-texture at-open window).
-	// Balanced in Destroy after the callback is removed. Other kinds render their own
-	// target and need no ref.
-	if (kind_ == ProjectorKind::Program) {
-		ObsBootstrap::CanvasRuntime().AddPreview(std::string());
-		mainRenderRefHeld_ = true;
+	// A projector that samples a shared mix must keep that mix alive for its whole
+	// lifetime: ReconcileEntry frees a canvas's video mix the instant it goes inert
+	// (its last enabled binding disabled or its last preview closed), which this
+	// display's draw callback would then UAF on the render thread. Take the same
+	// AddPreview ref the preview surfaces use, BEFORE registering the callback so the
+	// mix is already built the first frame; balanced in Destroy after the callback is
+	// removed. Program consumes the Default main composite (empty canvasUuid_); a
+	// Canvas/Multiview projector consumes its canvas's runtime mix (canvasUuid_ names
+	// it, and is empty for a Default multiview -> AddPreview no-ops). Scene/Source pin
+	// their target by source addref instead and need no mix ref.
+	switch (kind_) {
+	case ProjectorKind::Program:
+	case ProjectorKind::Canvas:
+	case ProjectorKind::Multiview:
+		ObsBootstrap::CanvasRuntime().AddPreview(canvasUuid_);
+		mixRefHeld_ = true;
+		break;
+	case ProjectorKind::Scene:
+	case ProjectorKind::Source:
+		break;
 	}
 
 	obs_display_add_draw_callback(display, RenderProjector, state_);
@@ -686,11 +698,11 @@ void ProjectorWindow::Destroy()
 		HostLog("[projector] display destroyed id=" + std::to_string(projectorId_));
 	}
 
-	// Drop the Program main-composite ref only AFTER the draw callback is gone, so the
-	// gate can never fire while this projector's callback still samples the texture.
-	if (mainRenderRefHeld_) {
-		ObsBootstrap::CanvasRuntime().RemovePreview(std::string());
-		mainRenderRefHeld_ = false;
+	// Drop the shared-mix ref only AFTER the draw callback is gone, so ReconcileEntry
+	// can never free the mix while this projector's callback still samples it.
+	if (mixRefHeld_) {
+		ObsBootstrap::CanvasRuntime().RemovePreview(canvasUuid_);
+		mixRefHeld_ = false;
 	}
 
 	// Multiview snapshot: the render thread (the only other reader) is gone now that

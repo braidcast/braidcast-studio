@@ -7,6 +7,7 @@
 #include "CanvasStore.hpp"
 #include "OutputBindingStore.hpp"
 #include "StreamProfileStore.hpp"
+#include "VirtualCamManager.hpp"
 
 #include <CanvasDefinition.hpp>
 #include <OutputBinding.hpp>
@@ -495,8 +496,25 @@ bool MultistreamEngine::IsLive(const std::string &bindingUuid) const
 	return false;
 }
 
+namespace {
+
+// True while the virtual camera still feeds (holds a live mix ref on) this canvas.
+// Reuses VirtualCamManager's own heldCanvas_ accounting via FeedsCanvas -- no
+// duplicate target lookup -- so the canvas.remove / live-edit gates treat a
+// vcam-fed canvas as live and never free its mix (video_t) under the running
+// output on the render thread. Queried before liveMutex; FeedsCanvas takes no lock.
+bool VcamFeedsCanvas(const std::string &canvasUuid)
+{
+	return ObsBootstrap::VirtualCam().FeedsCanvas(canvasUuid);
+}
+
+} // namespace
+
 bool MultistreamEngine::IsCanvasLive(const std::string &canvasUuid) const
 {
+	if (VcamFeedsCanvas(canvasUuid)) {
+		return true;
+	}
 	std::lock_guard<std::mutex> lock(liveMutex);
 	for (const auto &lo : live) {
 		if (lo->canvasUuid == canvasUuid && IsActiveState(lo->state)) {
@@ -508,6 +526,9 @@ bool MultistreamEngine::IsCanvasLive(const std::string &canvasUuid) const
 
 bool MultistreamEngine::IsCanvasOrInheritorLive(const std::string &canvasUuid) const
 {
+	if (VcamFeedsCanvas(canvasUuid)) {
+		return true;
+	}
 	const bool isDefault = (canvasUuid == canvases.Default().uuid);
 	std::lock_guard<std::mutex> lock(liveMutex);
 	for (const auto &lo : live) {

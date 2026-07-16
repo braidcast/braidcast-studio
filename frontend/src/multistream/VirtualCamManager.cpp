@@ -88,6 +88,14 @@ void VirtualCamManager::SetTargetCanvas(const std::string &uuid)
 	targetCanvas_ = uuid;
 }
 
+bool VirtualCamManager::FeedsCanvas(const std::string &uuid) const
+{
+	// heldCanvas_ is set (non-empty) exactly while the AddPreview mix ref is held --
+	// from Start until ReleaseTargetPreview confirms the output down -- so this
+	// matches the live-mix-reference window precisely.
+	return !heldCanvas_.empty() && heldCanvas_ == uuid;
+}
+
 void VirtualCamManager::Shutdown()
 {
 	// Disconnect FIRST: after this the static start/stop callbacks can no longer

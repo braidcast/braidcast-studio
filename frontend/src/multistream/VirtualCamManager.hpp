@@ -32,6 +32,14 @@ public:
 	void SetTargetCanvas(const std::string &uuid);
 	const std::string &TargetCanvas() const { return targetCanvas_; }
 
+	// True while the vcam still holds a live mix ref on canvas `uuid`: its output's
+	// video_t references that canvas's mix from Start until the async stop drains.
+	// Reports heldCanvas_ (the canvas actually being fed), NOT targetCanvas_, which
+	// may already point at a not-yet-applied next target. Lets the canvas.remove /
+	// live-edit gate treat a vcam-fed canvas as live so its mix is never freed under
+	// the running output (render-thread UAF).
+	bool FeedsCanvas(const std::string &uuid) const;
+
 	// Stop + disconnect the signals + release the output. Call during teardown
 	// while libobs is still up, BEFORE the canvases/runtime it feeds are torn down.
 	void Shutdown();
