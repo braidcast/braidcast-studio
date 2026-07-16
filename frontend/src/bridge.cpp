@@ -8480,7 +8480,11 @@ void SelfHealStreamCredentials()
 		EmitEvent(EventNames::kStreamProfileChanged, json::object());
 	}
 	if (!needFetch.empty()) {
-		std::thread(SelfHealFetchWorker, std::move(needFetch)).detach();
+		// Route through the registered-async seam (not a raw detached thread) so
+		// WaitForDrain counts this worker at teardown; otherwise it is invisible to the
+		// drain and can touch the profile store / bridge after shutdown frees them.
+		AsyncTask::RunAsync(
+			[profiles = std::move(needFetch)]() mutable { SelfHealFetchWorker(std::move(profiles)); });
 	}
 }
 
