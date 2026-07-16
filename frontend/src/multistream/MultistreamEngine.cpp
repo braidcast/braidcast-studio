@@ -84,7 +84,7 @@ const char *GetStreamOutputType(const obs_service_t *service)
 
 const char *MultistreamEngine::StateName(State state)
 {
-	static constexpr std::array<const char *, 4> kNames = {{"idle", "connecting", "live", "error"}};
+	static constexpr std::array<const char *, 5> kNames = {{"idle", "connecting", "live", "error", "reconnecting"}};
 	size_t idx = static_cast<size_t>(state);
 	return kNames[idx < kNames.size() ? idx : 0];
 }
@@ -331,6 +331,14 @@ bool MultistreamEngine::StartOutput(const std::string &bindingUuid, std::string 
 
 	lo->startSignal.Connect(obs_output_get_signal_handler(lo->output), "start", OnOutputStart, this);
 	lo->stopSignal.Connect(obs_output_get_signal_handler(lo->output), "stop", OnOutputStop, this);
+	/* On a reconnectable drop libobs SUPPRESSES "stop" (obs_output_signal_stop ->
+	 * can_reconnect) and fires "reconnect" per retry instead, then
+	 * "reconnect_success" (not "start") when the stream comes back; only exhausted
+	 * retries or a user stop end in "stop". Without these two the row would show
+	 * "live" through the whole retry window. */
+	lo->reconnectSignal.Connect(obs_output_get_signal_handler(lo->output), "reconnect", OnOutputReconnect, this);
+	lo->reconnectSuccessSignal.Connect(obs_output_get_signal_handler(lo->output), "reconnect_success",
+					   OnOutputReconnectSuccess, this);
 	DBG(LogCat::Stream, "output created for binding %s (canvas %s, type %s)", bindingUuid.c_str(),
 	    b->canvasUuid.c_str(), type);
 
@@ -492,6 +500,28 @@ bool MultistreamEngine::IsCanvasLive(const std::string &canvasUuid) const
 	std::lock_guard<std::mutex> lock(liveMutex);
 	for (const auto &lo : live) {
 		if (lo->canvasUuid == canvasUuid && IsActiveState(lo->state)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool MultistreamEngine::IsCanvasOrInheritorLive(const std::string &canvasUuid) const
+{
+	const bool isDefault = (canvasUuid == canvases.Default().uuid);
+	std::lock_guard<std::mutex> lock(liveMutex);
+	for (const auto &lo : live) {
+		if (!IsActiveState(lo->state)) {
+			continue;
+		}
+		if (lo->canvasUuid == canvasUuid) {
+			return true;
+		}
+		if (!isDefault) {
+			continue;
+		}
+		const CanvasDefinition *cdef = canvases.Find(lo->canvasUuid);
+		if (cdef && cdef->InheritsAnyDefault()) {
 			return true;
 		}
 	}
@@ -701,4 +731,46 @@ void MultistreamEngine::OnOutputStop(void *data, calldata_t *cd)
 	if (self->onOutputStopped && !canvasUuid.empty()) {
 		self->onOutputStopped(canvasUuid);
 	}
+}
+
+/* Runs on the output thread, once per scheduled retry. Only flips state under
+ * liveMutex -- never destroys a LiveOutput (see TakeLive). */
+void MultistreamEngine::OnOutputReconnect(void *data, calldata_t *cd)
+{
+	auto self = static_cast<MultistreamEngine *>(data);
+	obs_output_t *out = (obs_output_t *)calldata_ptr(cd, "output");
+	{
+		std::lock_guard<std::mutex> lock(self->liveMutex);
+		for (auto &lo : self->live) {
+			if (lo->output == out) {
+				lo->state = State::Reconnecting;
+				const char *err = obs_output_get_last_error(out);
+				lo->lastError = err ? err : "";
+				DBG(LogCat::Net, "rtmp dropped, reconnecting in %d s (binding %s): %s",
+				    (int)calldata_int(cd, "timeout_sec"), lo->bindingUuid.c_str(),
+				    lo->lastError.c_str());
+				break;
+			}
+		}
+	}
+	self->NotifyChanged();
+}
+
+void MultistreamEngine::OnOutputReconnectSuccess(void *data, calldata_t *cd)
+{
+	auto self = static_cast<MultistreamEngine *>(data);
+	obs_output_t *out = (obs_output_t *)calldata_ptr(cd, "output");
+	{
+		std::lock_guard<std::mutex> lock(self->liveMutex);
+		for (auto &lo : self->live) {
+			if (lo->output == out) {
+				lo->state = State::Live;
+				lo->lastError.clear();
+				DBG(LogCat::Net, "rtmp reconnected (binding %s, canvas %s)", lo->bindingUuid.c_str(),
+				    lo->canvasUuid.c_str());
+				break;
+			}
+		}
+	}
+	self->NotifyChanged();
 }

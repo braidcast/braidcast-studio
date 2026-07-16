@@ -22,7 +22,12 @@ public:
 	void SyncFromDefinitions();                     // create any missing non-Default canvas (idempotent)
 	void EnsureCanvas(const CanvasDefinition &def); // create one if absent (no scene; see EnsureScenes)
 	void RemoveCanvas(const std::string &uuid);     // obs_canvas_remove + release; no-op if absent
-	bool ResetVideo(const CanvasDefinition &def);   // obs_canvas_reset_video to def res/fps
+	// obs_canvas_reset_video to def res/fps. True when the live mix now matches the
+	// def, including the inactive case (no mix; it builds fresh from the def on
+	// activation). False only when a mix exists and the reset failed -- libobs
+	// refuses canvas resets globally while ANY output is video-active, not just
+	// one on this canvas.
+	bool ResetVideo(const CanvasDefinition &def);
 
 	// Inject the "does this canvas have an enabled destination" predicate (wraps
 	// OutputBindings::AnyEnabledForCanvas). Set once at bootstrap before Sync.

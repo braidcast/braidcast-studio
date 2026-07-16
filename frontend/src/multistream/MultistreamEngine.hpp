@@ -24,7 +24,7 @@ struct OutputBinding;
  * bridge routes through its thread-safe EmitEvent (no QMetaObject). */
 class MultistreamEngine {
 public:
-	enum class State { Idle, Connecting, Live, Error };
+	enum class State { Idle, Connecting, Live, Error, Reconnecting };
 
 	/* Lowercase state name carried in the status JSON; the Svelte side maps it
 	 * to a status-dot color. Single source of truth for the contract. */
@@ -83,6 +83,14 @@ public:
 	 * canvas's encoders are bound to its video mix, so the mix must not be reset
 	 * (obs_canvas_reset_video frees it -> UAF). */
 	bool IsCanvasLive(const std::string &canvasUuid) const;
+	/* IsCanvasLive extended to inheritance: also true when `canvasUuid` is the
+	 * Default and any live canvas inherits part of its effective config from it
+	 * (encoders / resolution / color -- CanvasDefinition::InheritsAnyDefault). The
+	 * live-edit gate must refuse those edits too: a Default edit mutates a live
+	 * inheritor's effective config, and invalidating its cached encoder pair would
+	 * let a second binding build a duplicate pair on the live canvas, breaking
+	 * encode-once. */
+	bool IsCanvasOrInheritorLive(const std::string &canvasUuid) const;
 	/* True iff a streaming output on this canvas is still truly active per libobs
 	 * (obs_output_active on the real handle), NOT merely per our live-list state. A
 	 * user stop may have flipped the state while the RTMP output is still draining
@@ -132,6 +140,8 @@ private:
 		OBSOutputAutoRelease output;
 		OBSSignal startSignal;
 		OBSSignal stopSignal;
+		OBSSignal reconnectSignal;
+		OBSSignal reconnectSuccessSignal;
 		State state = State::Connecting;
 		std::string lastError;
 		/* Set when the output signals start (goes Live); the stats snapshot derives
@@ -155,11 +165,17 @@ private:
 	 * for the Default, the additional canvas's mix otherwise, NULL if none). */
 	video_t *VideoForCanvas(const std::string &canvasUuid);
 	/* A binding "occupies" its canvas/profile only while its output is actively
-	 * connecting or streaming. An Error (failed start or dropped mid-stream) or Idle
-	 * entry is a dead output: it must NOT count as live (else IsCanvasLive stays true
-	 * for a dead stream, blocking canvas edits) yet it lingers in `live` so its
-	 * lastError still surfaces, until a retry reaps it or StopOutput/StopAll clears it. */
-	static bool IsActiveState(State state) { return state == State::Connecting || state == State::Live; }
+	 * connecting, streaming, or reconnecting. Reconnecting counts: libobs keeps the
+	 * output active across the retry window (obs_output_active stays true, the
+	 * encoders stay attached), so the canvas mix must not be reset and the profile
+	 * stays reserved. An Error (failed start, dropped past retries) or Idle entry is
+	 * a dead output: it must NOT count as live (else IsCanvasLive stays true for a
+	 * dead stream, blocking canvas edits) yet it lingers in `live` so its lastError
+	 * still surfaces, until a retry reaps it or StopOutput/StopAll clears it. */
+	static bool IsActiveState(State state)
+	{
+		return state == State::Connecting || state == State::Live || state == State::Reconnecting;
+	}
 
 	/* FindLive/TakeLive assume the caller already holds liveMutex. TakeLive moves
 	 * the entry out of `live` and returns it so the caller destroys it AFTER
@@ -184,6 +200,8 @@ private:
 
 	static void OnOutputStart(void *data, calldata_t *cd);
 	static void OnOutputStop(void *data, calldata_t *cd);
+	static void OnOutputReconnect(void *data, calldata_t *cd);
+	static void OnOutputReconnectSuccess(void *data, calldata_t *cd);
 
 	CanvasStore &canvases;
 	StreamProfileStore &profiles;

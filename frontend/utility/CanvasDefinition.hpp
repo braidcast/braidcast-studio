@@ -52,6 +52,16 @@ struct CanvasDefinition {
 	/* Build from one obs_data object; missing keys fall back to struct defaults. */
 	static CanvasDefinition FromData(obs_data_t *data);
 
+	/* Part of this canvas's effective pipeline config resolves from the Default
+	 * canvas: an encoder slot (InheritsDefault), base/output resolution + fps
+	 * (useDefaultResolution), or color (color.useDefault) -- see ToVideoInfo and
+	 * MultistreamEngine::EnsureCanvasEncoders. Editing the Default therefore
+	 * changes this canvas's effective config too. */
+	bool InheritsAnyDefault() const
+	{
+		return video.InheritsDefault() || audio.InheritsDefault() || useDefaultResolution || color.useDefault;
+	}
+
 	/* Fill an obs_video_info from this definition's resolution/fps/color. */
 	void ToVideoInfo(struct obs_video_info &ovi, const CanvasDefinition *inheritFrom = nullptr) const;
 };

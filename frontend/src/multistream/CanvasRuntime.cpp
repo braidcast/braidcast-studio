@@ -243,7 +243,7 @@ bool CanvasRuntime::ResetVideo(const CanvasDefinition &def)
 {
 	Entry *e = FindEntry(def.uuid);
 	if (!e || !e->active) {
-		return false; // inactive: no mix to reset; it builds fresh on activation
+		return true; // inactive: no mix to reset; it builds fresh from the def on activation
 	}
 	obs_video_info ovi = {};
 	BuildVideoInfo(def, ovi);

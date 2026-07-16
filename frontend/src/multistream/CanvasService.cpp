@@ -75,10 +75,15 @@ CanvasUpdateResult CanvasService::Update(const CanvasUpdateRequest &req)
 	// id change, so it is gated by the same live refusal + encoder-cache invalidation.
 	const bool encDefChanged = videoUseDefaultChanged || audioUseDefaultChanged;
 
+	// Inheritors gate too: canvases inherit encoders/resolution/color from the
+	// Default, so editing the idle Default while an inheritor is live would mutate
+	// that live canvas's effective config (and invalidating its cached encoder pair
+	// would let a second binding build a duplicate pair, breaking encode-once).
 	if ((resChanged || colorChanged || vencChanged || aencChanged || encDefChanged) &&
-	    engine.IsCanvasLive(req.uuid)) {
+	    engine.IsCanvasOrInheritorLive(req.uuid)) {
 		result.refusedLive = true;
-		result.error = "cannot change resolution/fps/color/encoder while the canvas is live";
+		result.error =
+			"cannot change resolution/fps/color/encoder while the canvas (or a canvas inheriting from it) is live";
 		return result;
 	}
 
@@ -99,6 +104,31 @@ CanvasUpdateResult CanvasService::Update(const CanvasUpdateRequest &req)
 		std::string e;
 		if (!applyGlobalVideo(scratch, e)) {
 			result.error = e;
+			return result;
+		}
+	}
+
+	// A non-Default canvas's live mix is likewise reset against a scratch def
+	// BEFORE the commit, mirroring the Default path above: obs_canvas_reset_video
+	// refuses globally while ANY output is video-active (obs_video_active(), not
+	// per-canvas), so it can fail even though this canvas passed the live gate.
+	// Bailing here leaves the def -- and thus canvases.json -- consistent with the
+	// live mix. (Encoder-id changes don't touch the mix.)
+	if ((resChanged || colorChanged) && !def->isDefault) {
+		CanvasDefinition scratch;
+		scratch.uuid = def->uuid;
+		scratch.width = newW;
+		scratch.height = newH;
+		scratch.outputWidth = newOutW;
+		scratch.outputHeight = newOutH;
+		scratch.fpsNum = newFpsN;
+		scratch.fpsDen = newFpsD;
+		scratch.scaleType = newScale;
+		scratch.color = newColor;
+		scratch.useDefaultResolution = newUseDefRes;
+		if (!runtime.ResetVideo(scratch)) {
+			result.error =
+				"cannot apply the new resolution/color: canvas video resets are refused while any output is live";
 			return result;
 		}
 	}
@@ -131,14 +161,6 @@ CanvasUpdateResult CanvasService::Update(const CanvasUpdateRequest &req)
 	// every inheriting canvas's cached pair too.
 	if (resChanged || colorChanged || vencChanged || aencChanged || encDefChanged) {
 		engine.InvalidateCanvasEncoders(req.uuid);
-	}
-	// Resolution/fps changes resize the live mix; the guard above already refused
-	// while the canvas is live, so this only runs on an idle canvas. (Encoder-id
-	// changes don't touch the mix.) The Default canvas was already handled above
-	// (it drives global video, not a runtime mix); ResetVideo reads *def so it must
-	// run after the commit.
-	if ((resChanged || colorChanged) && !def->isDefault) {
-		runtime.ResetVideo(*def);
 	}
 
 	canvases.Save();
