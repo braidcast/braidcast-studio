@@ -2144,9 +2144,12 @@ mid-broadcast is unrecoverable — the user is live in front of an audience.
   (`MultistreamEngine.cpp:146-147`), so editing the idle Default while an inheritor is live
   passes the gate, giving divergence plus a duplicate encoder pair on a live canvas (breaks
   encode-once). No UAF.
-- 🔴 **R12 — `broker_strategy.cpp:339`: unconditional `Accounts().Put` resurrects an account
+- ✅ **R12 — `broker_strategy.cpp:339`: unconditional `Accounts().Put` resurrects an account
   disconnected mid-refresh**, re-persisting deleted credentials. Every sibling writer refuses
-  this (`account_store.cpp:245`: "never re-insert a removed account").
+  this (`account_store.cpp:245`: "never re-insert a removed account"). **Fixed `14be488dd`.**
+  New `AccountStore::UpdateExisting()` reuses the exact lock+`find`+return-if-absent guard the
+  sibling writers use; `broker_strategy.cpp` calls it instead of `Put`. A disconnect in flight
+  during a refresh stays removed; the refresh still succeeds for the in-flight caller.
 - ✅ **R13 — `mcp/HttpServer.cpp:220`: no `SO_RCVTIMEO`, no client-socket registry**, so
   closing the listen socket will not unblock a parked `recv` and `Stop()`'s `join()` hangs
   forever, on the UI thread, mid-stream, on an MCP toggle. `overlay_server.cpp:93,466` already
@@ -2168,12 +2171,26 @@ mid-broadcast is unrecoverable — the user is live in front of an audience.
   which sent under the lock to the *quietest* socket, i.e. the one likeliest to be wedged, for
   up to 3 s every 15 s per stuck client. Safe because the sending thread owns the fd and the
   prune path only `shutdown()`s, never `closesocket()`s.
-- 🔴 **R16 — `scene_collections.cpp:146-165`: a doubly-corrupt index refuses to reseed
-  (correctly) but nothing rebuilds from the intact `scenes/*.json` on disk**, so the user boots
-  to a blank Default scene with their collections stranded, signalled only by a log line.
-- 🔴 **R17 — fire-and-forget saves.** `SaveJsonAtomic` (`StorePaths.cpp:56-63`) is genuinely
+- ✅ **R16 — `scene_collections.cpp:146-165` (real path `frontend/src/scene/`): a doubly-corrupt
+  index refuses to reseed (correctly) but nothing rebuilds from the intact `scenes/*.json` on
+  disk**, so the user boots to a blank Default scene with their collections stranded, signalled
+  only by a log line. **Fixed `14be488dd`.** New `SceneCollections::RebuildFromScenes()`, wired
+  in `obs_bootstrap` after `Load()` and gated on the existing `IndexWasCorrupt()`. Scans
+  `scenes/*.json` (excluding the `.output_bindings`/`.scene_links` siblings), validates each via
+  `obs_data_create_from_json_file_safe(...,"bak")`, skips individually-corrupt files, **renames**
+  the corrupt index to `.corrupt` (never deletes), and rebuilds. **Honest degradation:** the
+  display `name` and `active` pointer are not stored in a scene file, so names fall back to the
+  filename slug and active to the first found — stated in the log. (Scene-file byte-shape was
+  inferred from `scene_persistence.cpp`, not directly observed; the `_safe` validate covers a
+  wrong guess.)
+- ✅ **R17 — fire-and-forget saves.** `SaveJsonAtomic` (`StorePaths.cpp:56-63`) is genuinely
   atomic (temp+bak+rename) and returns `bool`; **every caller discards it**. Disk-full
-  mid-session loses a whole session's edits silently.
+  mid-session loses a whole session's edits silently. **Fixed `14be488dd`.** One shared
+  `ReportSaveResult(bool, path)` in `StorePaths` logs `[storage] failed to save <path>` and
+  forwards the bool; **11 stores + `event_store`/`McpServer`/`overlay_store`** route their
+  `Save()`/`Persist()` (now `void`→`bool`) through it. **Bounded follow-up (open):** ~25
+  single-mutation bridge handlers (`canvas.update`, `streams.*`, …) still answer `{ok:true}` but
+  now log on failure — surfacing those to the caller is a separate pass, not silently skipped.
 - 🔴 **R18 — `main.cpp:527-536`: the `CreateBrowserSync` abort path is a hand-copied partial
   duplicate of the real teardown** — leaks a ghost tray icon, skips RTWQ/mutex cleanup.
 - ✅ **R19 — unbounded buffers.** `ws_client.cpp:178` (`accum_` uncapped) and
@@ -2187,8 +2204,15 @@ mid-broadcast is unrecoverable — the user is live in front of an audience.
   `third_party_emotes.cpp:43` (7TV/BTTV/FFZ-style hosts) at go-live.
 - 🔴 **R20 — `bridge.cpp:8434`: the file's only raw `std::thread(...).detach()`**, invisible to
   `WaitForDrain`.
-- 🔴 **R21 — `bridge.cpp:7176-7327`: `settings.restore` discards six setters' errors and
-  returns `{ok:true}`** — a Cancel that silently does not revert.
+- ✅ **R21 — `bridge.cpp:7176-7327`: `settings.restore` discards six setters' errors and
+  returns `{ok:true}`** — a Cancel that silently does not revert. **Fixed `14be488dd`.** Partial
+  application is unavoidable (video/audio/canvas setters commit to libobs+disk before later
+  sections run, no rollback), so it now aggregates per-section failures across **all 8**
+  restorable sections (video, audio, globalDevices, streamProfiles, outputBindings, canvases,
+  hotkeys, mcp) and returns `{ok:false, failed:[{section,error}]}`, the soft-failure shape
+  `multistream.startOutput` already uses. **`frontend/web` follow-up (open):** the JS contract
+  changed — `settings.restore` can now resolve `{ok:false, failed:[...]}`; the web should check
+  `result.ok` and surface `result.failed` (R12/R16/R17 are transparent to JS).
 
 ### Pass 1 addendum — surfaced while fixing (2026-07-16)
 
