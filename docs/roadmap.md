@@ -2278,13 +2278,16 @@ R3's fix. Both are report-only so far.
 
 ### Gaps vs the premium bar
 
-- 🟡 **G1 — no health channel** for events/chat/overlay. Highest-leverage addition; converts
-  most Importants above from silent to visible. Same root as R14. **Backend + data path shipped
-  `e62272006`** (see R14): the full channel exists and the web `transportHealthStore` is ready to
-  consume. **Open — visual surface (design call):** no health indicator is wired into the UI yet.
-  The natural first consumer is `MultichatDock.svelte`'s per-platform chat chips (today binary
-  connected/live-only); `EventsDock.svelte` / `ChannelsDock.svelte` are secondary. Left for a
-  design decision rather than inventing a badge unilaterally.
+- ✅ **G1 — no health channel** for events/chat/overlay. Highest-leverage addition; converts most
+  Importants above from silent to visible. Same root as R14. **Backend + data path shipped
+  `e62272006`** (see R14); **visual surface wired `704ced03f`.** `MultichatDock`'s per-platform
+  chips now key off `transportHealthStore` instead of the binary `chat.state`: reconnecting/failed
+  transports stay visible and colored (reusing the `STATE_COLOR` tokens via a
+  `TRANSPORT_STATE_COLOR` remap, no new palette) with the last error on hover, via opt-in
+  `dotColorOf`/`titleOf`/`disabledOf` props on the shared `PlatformChips` (EventsDock unchanged).
+  The now-redundant `chat.state` listener + its teardown-workaround re-snapshot were removed.
+  **Optional future consumers (not built):** events-transport (`events:<id>`) and overlay
+  (`"overlay"`) health have no UI row yet.
 - 🟡 **G2 — no recovery anywhere.** `client.cpp:184-192` `OnRenderProcessTerminated` comments
   out *every* parameter (`status`, `error_code`, `error_string`) and never reloads. A dead
   renderer mid-stream leaves a permanently blank UI while the stream runs blind. **Partially
