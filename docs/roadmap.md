@@ -1990,8 +1990,18 @@ mid-broadcast is unrecoverable — the user is live in front of an audience.
   taking canvas A's live stream with it**. *Fix:* a `DestroyForCanvas(uuid)` sweeping every
   windowId and closing matching projectors; the convenience overload is the real defect, two
   call sites already drifted onto it.
-- 🔴 **R4 — `obs_bootstrap.cpp:3365-3373` + `main.cpp:610-615`: browser sources destroyed
-  *after* the last CEF pump, then handed to `CefShutdown()`.** `obs_bootstrap.hpp:12-16`
+- ✅ **R4 — `obs_bootstrap.cpp:3365-3373` + `main.cpp:610-615`: browser sources destroyed
+  *after* the last CEF pump, then handed to `CefShutdown()`.** **Fixed `285c33153`.** `Stop()`
+  now takes `main.cpp`'s existing bounded `DrainCefTasks` pump (injected — the frontend keeps
+  CEF ownership) and runs it after the source-removal sweep, before the store clears and
+  `obs_shutdown()`. **Draining after `Stop()` returns was rejected:** `Stop()` runs
+  `obs_shutdown()` itself, so the close cascade would execute against freed graphics and
+  cleared stores. The `g_scene` claim was **confirmed** — its only assignment is
+  `CreateDefaultScene()` (`:340`), whose only caller is under `if (!SceneCollection::Load())`
+  (`:817`). Verified no double-free: `BrowserSource::Destroy()` frees its textures
+  synchronously (covered by the pre-existing `obs_wait_for_destroy_queue` drain) and the
+  destructor is CEF-only, touching no libobs object. `TeardownScene()`'s `g_scene` early-return
+  is left as a separate wart — the sweep compensates and now drains correctly. `obs_bootstrap.hpp:12-16`
   states the invariant (browser sources "MUST be called while CEF is still pumpable" —
   `Destroy()` only *posts* `delete this` to TID_UI). But `TeardownScene()` early-returns on
   `!g_scene` (`:1000-1002`) and `g_scene` is set only on the `CreateDefaultScene()` fallback,
@@ -2003,8 +2013,19 @@ mid-broadcast is unrecoverable — the user is live in front of an audience.
   "teardown/GPU artifact, not a regression" dismissal is wrong** — it is an older latent
   defect, which is exactly why it was not a Phase 8 regression. *Fix:* pump `DrainCefTasks()`
   between the source-removal sweep and `CefShutdown()`.
-- 🔴 **R5 — `overlay_server.cpp:238` via `chat_hub.cpp:45-47`: chat SSE does blocking 3 s
-  socket sends on the CEF UI thread, which obs-browser shares.** `chat_hub.cpp:42` states its
+- ✅ **R5 — `overlay_server.cpp:238` via `chat_hub.cpp:45-47`: chat SSE does blocking 3 s
+  socket sends on the CEF UI thread, which obs-browser shares.** **Fixed `25ccd4514`.**
+  `BroadcastChat` moved into `ctx.emit` on the chat transport worker, before the `PostToUi`
+  hop — mirroring `EventHub::Ingest`. **Order is preserved:** `EventHub` broadcasts inline on
+  the transport's single long-lived worker rather than spawning one per event, so per-account
+  chat order is inherent; only cross-platform interleaving between the overlay and dock feeds
+  changes, which was never guaranteed. **No queue was added** — the broadcast back-pressures
+  that one platform's read loop via TCP, bounded by the 3 s send timeout, so there is nothing
+  to overflow. The workers ride `AsyncTask::RunAsync` and so participate in `WaitForDrain`.
+  `FrontendOwnsCef()` **confirmed** end to end (`obs_bootstrap.cpp:667` sets the env,
+  `obs-browser-plugin.cpp:87/284` reads it and skips its own `CefInitialize`;
+  `multi_threaded_message_loop = false` at `main.cpp:433`) — this froze the **stream**, not
+  just the UI. `overlays.test` had the same defect and moved to the existing async lane. `chat_hub.cpp:42` states its
   own thread ("RouteEmit runs on the CEF UI thread") then calls `BroadcastChat`, which
   `SendAll`s with `kSseSendTimeoutMs = 3000`. `obs-browser-plugin.cpp:284-291`
   (`if (FrontendOwnsCef()) { ... return; }`) means **every browser source on stream renders
@@ -2083,9 +2104,15 @@ mid-broadcast is unrecoverable — the user is live in front of an audience.
 - 🔴 **R14 — `event_names.hpp:33-34`: no transport health channel exists.** Only
   `events.new`/`events.backfill`; every transport death terminates at `HostLog`. This is the
   amplifier that makes most of the above invisible-with-a-green-badge.
-- 🔴 **R15 — `overlay_server.cpp:286` (`BroadcastTo`) holds `sseMutex_` across blocking
+- ✅ **R15 — `overlay_server.cpp:286` (`BroadcastTo`) holds `sseMutex_` across blocking
   sends** — the exact hazard `BroadcastFrame`'s comment exists to avoid. The fix landed in one
-  sibling, not the other.
+  sibling, not the other. **Fixed `25ccd4514`** alongside R5. `BroadcastFrame` gained an
+  optional widget filter and `BroadcastTo` delegates to it, deleting the duplicated loop.
+  **Two more sites the finding missed**, both swept: the SSE handshake sent under the lock
+  (now reserves an `ssePending_` capacity slot and sends unlocked) and the keepalive ping —
+  which sent under the lock to the *quietest* socket, i.e. the one likeliest to be wedged, for
+  up to 3 s every 15 s per stuck client. Safe because the sending thread owns the fd and the
+  prune path only `shutdown()`s, never `closesocket()`s.
 - 🔴 **R16 — `scene_collections.cpp:146-165`: a doubly-corrupt index refuses to reseed
   (correctly) but nothing rebuilds from the intact `scenes/*.json` on disk**, so the user boots
   to a blank Default scene with their collections stranded, signalled only by a log line.
