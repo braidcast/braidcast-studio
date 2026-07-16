@@ -26,6 +26,7 @@ export const EV = {
   oauthConnectProgress: "oauth.connectProgress",
   oauthConnectError: "oauth.connectError",
   multistreamChanged: "multistream.changed",
+  transportsHealthChanged: "transports.healthChanged",
   eventsNew: "events.new",
   eventsBackfill: "events.backfill",
   virtualCamChanged: "virtualCam.changed",

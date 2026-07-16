@@ -97,6 +97,12 @@ bool ApplyDefaultCanvasVideo(const CanvasDefinition &desired, std::string &error
 // (EmitEvent marshals to TID_UI).
 void EmitMultistreamChanged();
 
+// Push the current transport health rows as the "transports.healthChanged" event.
+// Wired as Transports::Health().onChanged; safe to call off the UI thread (it
+// marshals to TID_UI before reading the aggregator snapshot). Mirrors
+// EmitMultistreamChanged.
+void EmitTransportsHealthChanged();
+
 // Push the virtual-camera state ({active, canvas}) as the "virtualCam.changed"
 // event. Wired as the VirtualCamManager's onChanged; safe to call off the UI
 // thread (it marshals to TID_UI before reading the manager + emitting).

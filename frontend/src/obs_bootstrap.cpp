@@ -34,6 +34,7 @@
 #include "chat/channel_stats_poller.hpp"
 #include "events/event_hub.hpp"
 #include "events/event_store.hpp"
+#include "events/transport_health.hpp"
 #include "multistream/CanvasRuntime.hpp"
 #include "multistream/CanvasService.hpp"
 #include "multistream/CanvasStore.hpp"
@@ -870,7 +871,13 @@ bool ObsBootstrap::Start()
 	// Phase 9.3: bring up the overlay-widget loopback server (127.0.0.1). Started
 	// after the model + providers so a widget URL is immediately servable; stopped in
 	// Bridge::Shutdown before CEF teardown (alongside the chat/events transports).
-	Overlay::Server().Start();
+	// The bind result feeds the transport-health surface (Connected when listening,
+	// Failed when no port in range binds).
+	const bool overlayUp = Overlay::Server().Start();
+	Transports::Health().Report(Transports::kOverlayTransportId,
+				    overlayUp ? Transports::TransportHealth::State::Connected
+					      : Transports::TransportHealth::State::Failed,
+				    overlayUp ? "" : Overlay::Server().LastError());
 
 	// Boot reconcile: the global video pipeline was initialized to a fixed default
 	// above (before modules could load), but the persisted Default canvas def is the

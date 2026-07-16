@@ -7,6 +7,7 @@
 
 #include "../oauth/provider.hpp"
 #include "event_model.hpp"
+#include "transport_health.hpp"
 
 // The per-platform live-event transport interface (Phase 9.2a), the sibling of
 // ChatTransport. One concrete transport per platform (Twitch EventSub WS, Kick
@@ -37,6 +38,13 @@ struct EventContext {
 	// failure (dropped socket, network blip) simply does not call this. Always
 	// populated by the hub; transports still guard `if (ctx.markFatal)` for safety.
 	std::function<void()> markFatal;
+
+	// Report this transport's connection-health transition to the shared aggregator
+	// (R14/G1). Always populated by the hub with the transport id bound in; a real-time
+	// transport calls it with Connected once its socket is established and handshaked.
+	// The Connecting/Reconnecting/Failed/Disconnected lifecycle is reported by the hub,
+	// which owns the connect/retry loop. Guard `if (ctx.reportHealth)` for safety.
+	std::function<void(Transports::TransportHealth::State state, const std::string &error)> reportHealth;
 };
 
 class EventTransport {

@@ -30,6 +30,7 @@ inline constexpr const char *kOauthStatus = "oauth.status";
 inline constexpr const char *kOauthConnectProgress = "oauth.connectProgress";
 inline constexpr const char *kOauthConnectError = "oauth.connectError";
 inline constexpr const char *kMultistreamChanged = "multistream.changed";
+inline constexpr const char *kTransportsHealthChanged = "transports.healthChanged";
 inline constexpr const char *kEventsNew = "events.new";
 inline constexpr const char *kEventsBackfill = "events.backfill";
 inline constexpr const char *kVirtualCamChanged = "virtualCam.changed";

@@ -15,6 +15,7 @@
 #include "../oauth/account_store.hpp"
 #include "../overlay/overlay_server.hpp"
 #include "../overlay/overlay_store.hpp" // Overlay::Server()
+#include "transport_health.hpp"
 
 namespace Events {
 
@@ -59,6 +60,7 @@ void EventHub::StartAccount(const std::string &accountId, const OAuth::OAuthAcco
 			hadPrev = true;
 		}
 		Active a;
+		a.providerId = providerId;
 		a.transport = transport;
 		a.stop = stop;
 		active_[accountId] = std::move(a);
@@ -99,6 +101,16 @@ void EventHub::StartAccount(const std::string &accountId, const OAuth::OAuthAcco
 				return; // generation stopped; drop late emits
 			}
 			Ingest(ev);
+		};
+		// Route health transitions to the shared aggregator, keyed by platform. Dropped
+		// once the generation stops so a late report can't override the Disconnected that
+		// StopAccount/StopAll writes as the authoritative terminal.
+		ctx.reportHealth = [providerId, stop](Transports::TransportHealth::State st,
+						      const std::string &healthErr) {
+			if (stop->load(std::memory_order_acquire)) {
+				return;
+			}
+			Transports::Health().Report(Transports::EventsTransportId(providerId), st, healthErr);
 		};
 
 		// 1) One-shot REST backfill: dedupe each result into the store, then emit ONE
@@ -148,6 +160,11 @@ void EventHub::StartAccount(const std::string &accountId, const OAuth::OAuthAcco
 		//    tick poll() on that cadence between connect returns. Both honor the cancel
 		//    token (CancelableSleep) so StopAccount/Shutdown unwind promptly.
 		const int pollMs = transport->pollIntervalMs();
+		// Connecting bookend: a real-time transport reports Connected itself once its
+		// socket handshakes; the reconnect below re-marks Reconnecting on a drop.
+		if (ctx.reportHealth) {
+			ctx.reportHealth(Transports::TransportHealth::State::Connecting, "");
+		}
 		while (!canceled()) {
 			fatal = false;
 			std::string err;
@@ -173,7 +190,16 @@ void EventHub::StartAccount(const std::string &accountId, const OAuth::OAuthAcco
 				// would just spin the loop. Stop until the next explicit Start re-arms it.
 				HostLog("[events] transport '" + providerId +
 					"' permanently failed; not retrying until reconnect");
+				if (ctx.reportHealth) {
+					ctx.reportHealth(Transports::TransportHealth::State::Failed, err);
+				}
 				break;
+			}
+			// A non-fatal drop (socket closed / network blip): the loop backs off and
+			// reconnects below. A clean return (ok) is a poll-only transport idling
+			// between ticks -- leave its Connected state untouched.
+			if (!ok && ctx.reportHealth) {
+				ctx.reportHealth(Transports::TransportHealth::State::Reconnecting, err);
 			}
 
 			if (pollMs > 0) {
@@ -230,6 +256,10 @@ void EventHub::StopAccount(const std::string &accountId)
 	if (a.transport) {
 		a.transport->disconnect();
 	}
+	// Authoritative terminal for this account's health (its worker's late reports are
+	// now dropped by the set generation flag and cannot override this).
+	Transports::Health().Report(Transports::EventsTransportId(a.providerId),
+				    Transports::TransportHealth::State::Disconnected);
 }
 
 void EventHub::StopAll()
@@ -247,6 +277,8 @@ void EventHub::StopAll()
 		if (entry.second.transport) {
 			entry.second.transport->disconnect();
 		}
+		Transports::Health().Report(Transports::EventsTransportId(entry.second.providerId),
+					    Transports::TransportHealth::State::Disconnected);
 	}
 }
 

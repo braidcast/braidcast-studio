@@ -14,6 +14,7 @@
 #include "../oauth/provider.hpp"
 #include "../oauth/registry.hpp"
 #include "../oauth/account_store.hpp"
+#include "../events/transport_health.hpp"
 #include "../obs_bootstrap.hpp"
 #include "../overlay/overlay_server.hpp" // OverlayServer::BroadcastChat
 #include "../overlay/overlay_store.hpp"  // Overlay::Server()
@@ -180,11 +181,24 @@ void ChatHub::Start()
 				AsyncTask::PostToUi(
 					[event = std::move(event), body = std::move(body)] { RouteEmit(event, body); });
 			};
+			// Route this transport's health transitions to the shared aggregator, keyed by
+			// platform. Dropped once the generation stops so a late worker report can't
+			// override the Disconnected that Stop() writes as the authoritative terminal.
+			ctx.reportHealth = [providerId, stop](Transports::TransportHealth::State st,
+							      const std::string &healthErr) {
+				if (stop->load(std::memory_order_acquire)) {
+					return;
+				}
+				Transports::Health().Report(Transports::ChatTransportId(providerId), st, healthErr);
+			};
 
 			std::string err;
 			bool ok = false;
 			DBG(LogCat::Chat, "connecting transport '%s' (channel %s)", providerId.c_str(),
 			    channelRef.c_str());
+			// Connecting bookend: the transport reports Connected/Reconnecting itself via
+			// EmitChatState once its socket is up or drops.
+			ctx.reportHealth(Transports::TransportHealth::State::Connecting, "");
 			try {
 				ok = transport->connect(ctx, acct, channelRef, err);
 			} catch (const std::exception &e) {
@@ -219,6 +233,10 @@ void ChatHub::Stop()
 		if (entry.second.transport) {
 			entry.second.transport->disconnect();
 		}
+		// Authoritative terminal for this transport's health: the generation flag is now
+		// set, so its worker's own late reports are dropped and cannot override this.
+		Transports::Health().Report(Transports::ChatTransportId(entry.second.providerId),
+					    Transports::TransportHealth::State::Disconnected);
 	}
 }
 

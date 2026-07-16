@@ -645,6 +645,25 @@ export interface MultistreamStatus {
   lastError: string;
 }
 
+// --- transport health (chat/events/overlay connection surface, R14/G1) -------
+
+/** Connection lifecycle of one chat/events/overlay transport. Lowercase mirror of
+ * the native Transports::TransportHealth::State (StateName). */
+export type TransportHealthState = "connecting" | "connected" | "reconnecting" | "failed" | "disconnected";
+
+/**
+ * One transport health row reported by transports.health / pushed on
+ * transports.healthChanged. `id` is a stable transport key ("chat:twitch",
+ * "events:kick", "overlay"). `lastError` carries the drop/failure reason in the
+ * "reconnecting"/"failed" states. `updatedAt` is epoch ms of the last transition.
+ */
+export interface TransportHealth {
+  id: string;
+  state: TransportHealthState;
+  lastError: string;
+  updatedAt: number;
+}
+
 // --- audio mixer (per-source faders + volmeters, levels) --------------------
 
 /** One active audio source as reported by audio.list. */
@@ -1359,6 +1378,9 @@ export interface ObsMethods {
   // Multistream live status (fan-out engine, 4.4.4). Start/stop is a single global
   // action via streaming.start/stop; there is no per-row control method.
   "multistream.status": { outputs: MultistreamStatus[] };
+  // Transport health snapshot (chat/events/overlay connection state, R14/G1). One row
+  // per reporting transport; pushed on transports.healthChanged when any row changes.
+  "transports.health": { transports: TransportHealth[] };
   // Virtual camera (output one canvas's video as a system webcam). start/stop
   // toggle the output; status reports the live state; get/setConfig read/write the
   // target canvas (empty/unknown/Default uuid -> the global program video). start/
@@ -1570,6 +1592,9 @@ export interface ObsEvents {
   // A scene link was created/updated/removed; a consumer re-runs sceneLink.list.
   "sceneLink.changed": Record<string, never>;
   "multistream.changed": { outputs: MultistreamStatus[] };
+  // A transport's connection health changed (chat/events/overlay); carries the full
+  // current row set so a consumer replaces its state wholesale.
+  "transports.healthChanged": { transports: TransportHealth[] };
   // The virtual camera started/stopped or its target canvas changed (fires on
   // start, stop, AND setConfig); the UI re-syncs its toggle + target label.
   "virtualCam.changed": VirtualCamStatus;

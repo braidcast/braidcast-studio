@@ -306,6 +306,9 @@ bool KickEvents::connect(const EventContext &ctx, OAuth::OAuthAccount &acct, std
 				}
 			} else if (event == "pusher_internal:subscription_succeeded") {
 				backoff.reset(); // a successful subscribe proves a healthy connection
+				if (ctx.reportHealth) {
+					ctx.reportHealth(Transports::TransportHealth::State::Connected, "");
+				}
 			} else if (event == "pusher:ping") {
 				// App-level Pusher ping (distinct from the WS-level ping WsClient
 				// auto-PONGs); reply with an app-level pong.

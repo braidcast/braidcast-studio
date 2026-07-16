@@ -188,6 +188,11 @@ target_sources(
     src/events/event_store.hpp
     src/events/event_hub.cpp
     src/events/event_hub.hpp
+    # R14/G1: cross-cutting transport-health aggregator shared by the chat, events, and
+    # overlay transports (obs-free); the bridge surfaces it as transports.health +
+    # transports.healthChanged, mirroring the multistream status surface.
+    src/events/transport_health.cpp
+    src/events/transport_health.hpp
     # Phase 9.2b: Twitch EventSub-over-WebSocket event transport (follow/sub/resub/
     # gift/cheer/raid), owned by TwitchProvider. HTTP + WS only, no obs.h.
     src/events/twitch_events.cpp

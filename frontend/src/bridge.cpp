@@ -39,6 +39,7 @@
 #include "chat/viewer_poller.hpp"
 #include "chat/ws_client.hpp"
 #include "events/event_hub.hpp"
+#include "events/transport_health.hpp"
 #include "ingest_writeback.hpp"
 #include "log.hpp"
 #include "overlay/overlay_server.hpp"
@@ -163,6 +164,23 @@ json BuildStatusArray()
 			{"canvasName", st.canvasName},
 			{"state", MultistreamEngine::StateName(st.state)},
 			{"lastError", st.lastError},
+		});
+	}
+	return arr;
+}
+
+// Build the transport health JSON array (one object per reporting transport) from
+// the aggregator's current Snapshot(). The state enum is carried as its lowercase
+// name (StateName); the Svelte side maps it to a badge. Mirrors BuildStatusArray.
+json BuildTransportHealthArray()
+{
+	json arr = json::array();
+	for (const Transports::TransportHealth::Entry &e : Transports::Health().Snapshot()) {
+		arr.push_back(json{
+			{"id", e.id},
+			{"state", Transports::TransportHealth::StateName(e.state)},
+			{"lastError", e.lastError},
+			{"updatedAt", e.updatedAtMs},
 		});
 	}
 	return arr;
@@ -5846,6 +5864,12 @@ bool MethodMultistreamStatus(const json & /*params*/, json &result, std::string 
 	return true;
 }
 
+bool MethodTransportsHealth(const json & /*params*/, json &result, std::string & /*error*/)
+{
+	result = json{{"transports", BuildTransportHealthArray()}};
+	return true;
+}
+
 bool MethodMultistreamStartOutput(const json &params, json &result, std::string &error)
 {
 	std::string uuid;
@@ -9357,6 +9381,7 @@ void Init()
 		{"sceneLink.set", MethodSceneLinkSet},
 		{"sceneLink.clear", MethodSceneLinkClear},
 		{"multistream.status", MethodMultistreamStatus},
+		{"transports.health", MethodTransportsHealth},
 		{"multistream.startOutput", MethodMultistreamStartOutput},
 		{"multistream.stopOutput", MethodMultistreamStopOutput},
 		{"virtualCam.start", MethodVirtualCamStart},
@@ -9475,6 +9500,11 @@ void Init()
 	// any chat transport tries to connect.
 	Chat::WsClient::EnsureInit();
 
+	// R14/G1: route every transport health transition (chat/events/overlay) to the
+	// transports.healthChanged push. Mirrors the engine's onStatusChanged wiring; the
+	// aggregator is a permanent singleton, so this is set once and cleared in Shutdown.
+	Transports::Health().onChanged = EmitTransportsHealthChanged;
+
 	HostLog("[bridge] init: " + std::to_string(g_methods.size()) + " methods, " +
 		std::to_string(g_asyncMethods.size()) + " async methods");
 }
@@ -9524,6 +9554,14 @@ void Shutdown()
 	// threads) after the event transports are down, so no in-flight Broadcast races the
 	// teardown, and before CEF shutdown so no dangling send hits a torn-down host.
 	Overlay::Server().Stop();
+	// The overlay server is down; mark it so, then stop routing health transitions and
+	// drop every row. The hub Stops above already reported their transports Disconnected
+	// (onChanged was still live, so those pushes reached the UI); nulling onChanged now
+	// keeps a late detached-worker report from emitting through the tearing-down bridge,
+	// and Clear() leaves the aggregator empty for the next session.
+	Transports::Health().Report(Transports::kOverlayTransportId, Transports::TransportHealth::State::Disconnected);
+	Transports::Health().onChanged = nullptr;
+	Transports::Health().Clear();
 	// Drop the undo->event hook so the g_undo.Clear() later in Stop() (after the CEF
 	// loop has returned) doesn't try to emit through a torn-down bridge.
 	ObsBootstrap::Undo().onChanged = nullptr;
@@ -9647,6 +9685,19 @@ void EmitMultistreamChanged()
 		return;
 	}
 	EmitEvent(EventNames::kMultistreamChanged, json{{"outputs", BuildStatusArray()}});
+}
+
+void EmitTransportsHealthChanged()
+{
+	// Wired as Transports::Health().onChanged and fired from chat/events transport
+	// worker threads. The aggregator is a permanent singleton (its Snapshot() is always
+	// valid), but marshal to TID_UI so the emit + snapshot read never races a concurrent
+	// UI-thread report and so EmitEvent broadcasts from the CEF UI thread it requires.
+	if (!CefCurrentlyOn(TID_UI)) {
+		CefPostTask(TID_UI, base::BindOnce(&EmitTransportsHealthChanged));
+		return;
+	}
+	EmitEvent(EventNames::kTransportsHealthChanged, json{{"transports", BuildTransportHealthArray()}});
 }
 
 void EmitVirtualCamChanged()

@@ -172,10 +172,15 @@ bool YouTubeEvents::connect(const EventContext &ctx, OAuth::OAuthAccount &acct, 
 	// No real-time socket: YouTube's push events arrive via the live chat sink
 	// (youtube_chat forwards them to Events::Hub().Ingest). The hub loop drives poll()
 	// on the pollIntervalMs() cadence after this returns, so return cleanly at once.
-	(void)ctx;
 	(void)acct;
 	stopped_.store(false);
 	err.clear();
+	// No socket to establish, but the REST transport is armed and polling: report it
+	// Connected so the health surface reflects an active account rather than a
+	// perpetual "connecting".
+	if (ctx.reportHealth) {
+		ctx.reportHealth(Transports::TransportHealth::State::Connected, "");
+	}
 	return true;
 }
 

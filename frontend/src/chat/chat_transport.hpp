@@ -7,6 +7,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "../events/transport_health.hpp"
 #include "../oauth/provider.hpp"
 
 // The per-platform chat transport interface (Phase 9.0). One concrete transport
@@ -53,6 +54,12 @@ using json = nlohmann::json;
 struct ChatContext {
 	std::function<void(const json &payload)> emit;
 	std::function<bool()> canceled;
+
+	// Report this transport's connection-health transition to the shared aggregator
+	// (R14/G1). Always populated by the hub with the transport id bound in; transports
+	// reach it through EmitChatState below, so a per-platform transport never names an
+	// id or the aggregator. Guard `if (ctx.reportHealth)` for safety.
+	std::function<void(Transports::TransportHealth::State state, const std::string &error)> reportHealth;
 };
 
 // Emit one connection-state frame with a FIXED key set (event/platform/connected/
@@ -65,6 +72,16 @@ inline void EmitChatState(const ChatContext &ctx, const char *platform, bool con
 		      {"platform", platform},
 		      {"connected", connected},
 		      {"error", error}});
+	// The one shared chat state seam every platform routes through, so it also feeds the
+	// transport-health surface here (one place, all platforms): a connected frame is
+	// Connected; a not-connected frame is the transport dropping and about to retry
+	// (Reconnecting). The Connecting bookend (pre-connect) and the terminal Disconnected
+	// (hub Stop) are reported by the hub, which owns that lifecycle.
+	if (ctx.reportHealth) {
+		ctx.reportHealth(connected ? Transports::TransportHealth::State::Connected
+					   : Transports::TransportHealth::State::Reconnecting,
+				 error);
+	}
 }
 
 class ChatTransport {

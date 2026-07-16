@@ -346,6 +346,9 @@ bool TwitchEvents::connect(const EventContext &ctx, OAuth::OAuthAccount &acct, s
 			continue;
 		}
 		backoff.reset(); // a welcome proves a healthy connection
+		if (ctx.reportHealth) {
+			ctx.reportHealth(Transports::TransportHealth::State::Connected, "");
+		}
 
 		// A session_reconnect socket resumes the SAME subscriptions, so only a fresh
 		// connection creates them.

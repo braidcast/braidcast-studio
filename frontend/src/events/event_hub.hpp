@@ -58,6 +58,7 @@ public:
 
 private:
 	struct Active {
+		std::string providerId;                    // for the transport-health id on stop
 		std::shared_ptr<EventTransport> transport; // hub-owned, shared with the worker
 		std::shared_ptr<std::atomic<bool>> stop;
 	};
