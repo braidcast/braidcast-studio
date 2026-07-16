@@ -124,17 +124,24 @@ CatMask DebugMask();
 // bridge method and the persisted DiagnosticsSettings default drive.
 void SetDebug(bool enabled);
 
-// Set the exact category mask. The boot seed uses this so BRAIDCAST_DEBUG can
-// name a subset.
+// Set the exact category mask. The boot resolver uses this so
+// BRAIDCAST_DEBUG_COMPONENTS can name a subset.
 void SetDebugMask(CatMask mask);
 
-// Parse a BRAIDCAST_DEBUG spec into a category mask:
-//   "1" / "true" / "on" / "all"   -> every category
-//   "preview,bridge"              -> just those (comma- or space-separated)
-//   "0" / "" / unrecognized names -> no categories
-// Case-insensitive. An unknown name is skipped rather than failing the whole
-// spec, so a stale category in someone's env still yields the ones that exist.
-CatMask ParseDebugSpec(const std::string &spec);
+// The components resolved from a BRAIDCAST_DEBUG_COMPONENTS list: the categories
+// to enable plus whether the non-category gpudiag sampler subsystem is requested.
+struct DebugComponents {
+	CatMask logMask = kNoCats;
+	bool gpuDiag = false;
+};
+
+// Parse a BRAIDCAST_DEBUG_COMPONENTS list (comma- or space-separated, case-
+// insensitive) into its components, accumulatively:
+//   "all"          -> |= kDefaultCats (every category except the render firehose)
+//   a category name -> |= that category's bit (e.g. "render" opts the firehose in)
+//   "gpudiag"      -> gpuDiag = true
+//   anything else  -> ignored, so a stale token still yields the rest
+DebugComponents ParseComponents(const std::string &spec);
 
 // Emit one gated DEBUG line: builds "[<cat>] " + formatted fmt via vsnprintf and
 // hands it to blog(LOG_DEBUG, ...). Prefer the DBG() macro so arguments aren't

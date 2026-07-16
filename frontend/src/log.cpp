@@ -64,19 +64,10 @@ void SetDebug(bool enabled)
 	SetDebugMask(enabled ? kDefaultCats : kNoCats);
 }
 
-CatMask ParseDebugSpec(const std::string &spec)
+DebugComponents ParseComponents(const std::string &spec)
 {
+	DebugComponents out;
 	const std::string v = LowerTrim(spec);
-	if (v.empty() || v == "0" || v == "false" || v == "off") {
-		return kNoCats;
-	}
-	if (v == "1" || v == "true" || v == "on" || v == "all") {
-		// "all" means every human-facing category, NOT the render-thread firehose;
-		// name it explicitly (BRAIDCAST_DEBUG=render) to enable [render-debug].
-		return kDefaultCats;
-	}
-
-	CatMask mask = kNoCats;
 	size_t pos = 0;
 	while (pos <= v.size()) {
 		size_t end = v.find_first_of(", ", pos);
@@ -84,13 +75,21 @@ CatMask ParseDebugSpec(const std::string &spec)
 			end = v.size();
 		}
 		const std::string name = LowerTrim(v.substr(pos, end - pos));
-		LogCat cat{};
-		if (!name.empty() && LogCatFromName(name, cat)) {
-			mask |= CatBit(cat);
+		if (!name.empty()) {
+			LogCat cat{};
+			if (name == "all") {
+				// Every human-facing category, NOT the render-thread firehose;
+				// name "render" explicitly to opt [render-debug] in.
+				out.logMask |= kDefaultCats;
+			} else if (name == "gpudiag") {
+				out.gpuDiag = true;
+			} else if (LogCatFromName(name, cat)) {
+				out.logMask |= CatBit(cat);
+			}
 		}
 		pos = end + 1;
 	}
-	return mask;
+	return out;
 }
 
 void Debug(LogCat cat, const char *fmt, ...)

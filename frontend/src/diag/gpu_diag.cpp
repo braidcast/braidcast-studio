@@ -14,6 +14,7 @@
 #include <thread>
 
 #include "../log.hpp"
+#include "../obs_bootstrap.hpp"
 
 namespace {
 
@@ -216,7 +217,7 @@ void GpuDiag::InstallBrowserSourceKillSwitch()
 
 void GpuDiag::Start()
 {
-	if (!EnvEnabled("BRAIDCAST_GPUDIAG") || g_running.load()) {
+	if (!ObsBootstrap::GpuDiagRequested() || g_running.load()) {
 		return;
 	}
 	int intervalMs = kDefaultIntervalMs;

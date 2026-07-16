@@ -3,16 +3,20 @@
 // Mid-session GPU-load diagnostics for pinning down the CEF GPU-process crash
 // that gpu_safe_mode cannot catch: gpu_safe_mode only detects a GPU that never
 // paints at boot, whereas this observes a GPU that dies mid-session after a clean
-// first paint (crash-loops under go-live load). Two independent, env-gated
+// first paint (crash-loops under go-live load). Two independent, opt-in
 // facilities, both default OFF so they cost nothing unless explicitly enabled:
 //
-//   BRAIDCAST_GPUDIAG=1              periodic "[gpudiag]" sampler thread: on each
+//   BRAIDCAST_DEBUG=1 +              periodic "[gpudiag]" sampler thread: on each
+//   BRAIDCAST_DEBUG_COMPONENTS=gpudiag
 //                                    tick logs the count + WxH of every obs-browser
 //                                    OSR source, the number of live outputs, and
 //                                    process resident memory, plus edge-detected
 //                                    go-live / stream-stop markers. Correlate the
 //                                    timeline against the CEF debug.log crash
 //                                    timestamps (see main.cpp CefSettings.log_file).
+//                                    gpudiag is a non-category component of the
+//                                    two-var debug scheme (ObsBootstrap resolves it;
+//                                    see docs/dev-env-vars.md).
 //   BRAIDCAST_GPUDIAG_INTERVAL_MS=n  override the 5000ms sample interval (min 250).
 //   BRAIDCAST_DISABLE_BROWSER_SOURCES=1
 //                                    A/B kill switch: neutralize every obs-browser
@@ -42,9 +46,9 @@ bool BrowserSourcesDisabled();
 // Call once after ObsBootstrap::Start() (obs_get_signal_handler valid). Idempotent.
 void InstallBrowserSourceKillSwitch();
 
-// Start the periodic sampler thread when BRAIDCAST_GPUDIAG is set; a no-op
-// otherwise (zero cost when off -- no thread is created). Call once after
-// ObsBootstrap::Start().
+// Start the periodic sampler thread when the gpudiag component is active
+// (ObsBootstrap::GpuDiagRequested()); a no-op otherwise (zero cost when off -- no
+// thread is created). Call once after ObsBootstrap::Start().
 void Start();
 
 // Stop and join the sampler thread and disconnect the source_create hook. MUST

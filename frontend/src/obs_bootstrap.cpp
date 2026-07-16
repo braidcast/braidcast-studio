@@ -13,6 +13,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
@@ -90,11 +91,10 @@ std::string BaseNameNoExt(const std::string &filename)
 	return dot == std::string::npos ? filename : filename.substr(0, dot);
 }
 
-// Read BRAIDCAST_DEBUG from a KEY=VALUE .env file (CRLF- and whitespace-
-// tolerant). Yields the raw spec string (Log::ParseDebugSpec owns interpreting
-// it); nullopt when the file is missing or has no such key, so the caller falls
-// through to the next source.
-std::optional<std::string> DebugFromEnvFile(const char *path)
+// Read `key`'s value from a KEY=VALUE .env file (CRLF- and whitespace-tolerant).
+// Yields the raw value string; nullopt when the file is missing or has no such
+// key, so the caller falls through to the next source.
+std::optional<std::string> DebugFromEnvFile(const char *path, const char *key)
 {
 	std::ifstream f(path);
 	if (!f) {
@@ -113,7 +113,7 @@ std::optional<std::string> DebugFromEnvFile(const char *path)
 		if (eq == std::string::npos) {
 			continue;
 		}
-		if (trim(line.substr(0, eq)) != "BRAIDCAST_DEBUG") {
+		if (trim(line.substr(0, eq)) != key) {
 			continue;
 		}
 		return trim(line.substr(eq + 1));
@@ -121,27 +121,66 @@ std::optional<std::string> DebugFromEnvFile(const char *path)
 	return std::nullopt;
 }
 
-// Seed the gated DEBUG channel: the BRAIDCAST_DEBUG env var wins when set;
-// otherwise the same key in the gitignored repo-root .env (dev builds only);
-// otherwise the persisted DiagnosticsSettings.debugLogging; otherwise off. The
-// spec is either a whole-channel switch (1/true/on/all) or a category filter
-// ("preview,bridge") -- Log::ParseDebugSpec is the single interpreter.
-Log::CatMask SeedDebugGate()
+// Resolve one debug key's raw value: the process env var wins, else the same key
+// in the gitignored repo-root .env (dev builds only; the path is baked at
+// configure time and absent in CI/shipped builds), else nullopt. Edit .env and
+// relaunch to flip debug logging without a rebuild or env var.
+std::optional<std::string> ResolveDebugRaw(const char *key)
 {
-	if (const char *env = getenv("BRAIDCAST_DEBUG")) {
-		return Log::ParseDebugSpec(env);
+	if (const char *env = getenv(key)) {
+		return std::string(env);
 	}
 #ifdef BRAIDCAST_ENV_FILE
-	// Dev convenience: the .env path is baked at configure time and is absent in
-	// CI/shipped builds. Edit .env and relaunch to flip debug logging -- no
-	// rebuild, no env var. The live process env above still wins when set.
-	if (const std::optional<std::string> v = DebugFromEnvFile(BRAIDCAST_ENV_FILE)) {
-		return Log::ParseDebugSpec(*v);
+	if (const std::optional<std::string> v = DebugFromEnvFile(BRAIDCAST_ENV_FILE, key)) {
+		return v;
 	}
 #endif
-	DiagnosticsSettings ds;
-	ds.Load();
-	return ds.debugLogging ? Log::kAllCats : Log::kNoCats;
+	return std::nullopt;
+}
+
+// The pure-boolean master grammar: 1/true/on/yes (case-insensitive) are on;
+// everything else -- 0/false/off/no/empty -- is off.
+bool ParseBool(const std::string &raw)
+{
+	std::string v;
+	for (const char c : raw) {
+		if (!std::isspace(static_cast<unsigned char>(c))) {
+			v += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+		}
+	}
+	return v == "1" || v == "true" || v == "on" || v == "yes";
+}
+
+// Whether the gpudiag sampler was requested via BRAIDCAST_DEBUG_COMPONENTS;
+// resolved once in Start() and read back by ObsBootstrap::GpuDiagRequested().
+bool g_gpuDiagRequested = false;
+
+// Resolve the two-var debug scheme into the applied config. The master
+// BRAIDCAST_DEBUG (env -> .env -> persisted DiagnosticsSettings.debugLogging ->
+// off) is a pure boolean; while on, BRAIDCAST_DEBUG_COMPONENTS (env -> .env ->
+// empty) selects the categories + subsystems, defaulting to kDefaultCats (every
+// category except the render firehose) when empty/unset. Log::ParseComponents
+// owns the component vocabulary.
+Log::DebugComponents ResolveDebugConfig()
+{
+	bool master;
+	if (const std::optional<std::string> raw = ResolveDebugRaw("BRAIDCAST_DEBUG")) {
+		master = ParseBool(*raw);
+	} else {
+		DiagnosticsSettings ds;
+		ds.Load();
+		master = ds.debugLogging;
+	}
+	if (!master) {
+		return Log::DebugComponents{};
+	}
+
+	const std::optional<std::string> comps = ResolveDebugRaw("BRAIDCAST_DEBUG_COMPONENTS");
+	const bool compsEmpty = !comps || comps->find_first_not_of(" \t\r\n") == std::string::npos;
+	if (compsEmpty) {
+		return Log::DebugComponents{Log::kDefaultCats, false};
+	}
+	return Log::ParseComponents(*comps);
 }
 
 // Route libobs/plugin blog() output to stderr so plugin lifecycle logging (e.g.
@@ -672,6 +711,11 @@ bool ObsBootstrap::AudioMonitorAlive()
 	return g_audioMonitor != nullptr;
 }
 
+bool ObsBootstrap::GpuDiagRequested()
+{
+	return g_gpuDiagRequested;
+}
+
 bool ObsBootstrap::Start()
 {
 	// obs-browser checks this in its guarded path to skip CefInitialize (the
@@ -684,10 +728,14 @@ bool ObsBootstrap::Start()
 	// above so every blog() line is also persisted under .../braidcast/logs.
 	SessionLog::Init();
 
-	// Seed the gated DEBUG channel before anything else logs: env override wins,
-	// else the persisted diagnostics setting. Off by default -> DBG() costs nothing.
-	Log::SetDebugMask(SeedDebugGate());
-	DBG(LogCat::Lifecycle, "bootstrap start (debug categories=0x%x)", (unsigned)Log::DebugMask());
+	// Resolve + apply the two-var debug scheme before anything else logs: master
+	// BRAIDCAST_DEBUG gates, BRAIDCAST_DEBUG_COMPONENTS selects. Off by default ->
+	// DBG() costs nothing. The resolved gpudiag flag is stashed for GpuDiag::Start.
+	const Log::DebugComponents dbg = ResolveDebugConfig();
+	Log::SetDebugMask(dbg.logMask);
+	g_gpuDiagRequested = dbg.gpuDiag;
+	DBG(LogCat::Lifecycle, "bootstrap start (debug categories=0x%x gpudiag=%d)", (unsigned)Log::DebugMask(),
+	    dbg.gpuDiag ? 1 : 0);
 
 	if (!obs_startup("en-US", nullptr, nullptr)) {
 		HostLog("[obs] obs_startup failed");

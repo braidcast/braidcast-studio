@@ -41,6 +41,12 @@ struct AdvancedSettings;
 namespace ObsBootstrap {
 bool Start();
 
+// Whether BRAIDCAST_DEBUG_COMPONENTS requested the gpudiag sampler subsystem,
+// resolved once during Start() from the two-var debug scheme. GpuDiag::Start()
+// reads this instead of a standalone env var so the scheme is the single source.
+// Valid after Start() has run.
+bool GpuDiagRequested();
+
 // The scene-collection registry (per-collection scene sets, persisted to
 // scene_collections.json + one scene file each). Owned by the bootstrap (loaded
 // + migrated in Start, cleared in Stop). Exposed so the bridge can serve
