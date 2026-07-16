@@ -2209,8 +2209,13 @@ mid-broadcast is unrecoverable — the user is live in front of an audience.
   actual decompressed bytes (a chunked/gzip-bombed response can omit or lie about
   `Content-Length`). Gzip auto-decompress confirmed on; the attacker-influenced path is
   `third_party_emotes.cpp:43` (7TV/BTTV/FFZ-style hosts) at go-live.
-- 🔴 **R20 — `bridge.cpp:8434`: the file's only raw `std::thread(...).detach()`**, invisible to
-  `WaitForDrain`.
+- ✅ **R20 — `bridge.cpp`: the file's only raw `std::thread(...).detach()`**, invisible to
+  `WaitForDrain`. **Fixed `edf8d4a46`.** The self-heal stream-credential worker
+  (`SelfHealStreamCredentials` → `SelfHealFetchWorker`) did blocking network then wrote the
+  profile store / emitted a bridge event on completion. Routed through `AsyncTask::RunAsync` (the
+  seam every other registered worker uses) so `WaitForDrain` counts it; its `PostToUi` writeback
+  already drops after `SetAlive(false)`, so a late completion no-ops. No new registry, no deadlock
+  (the only worker→UI wait self-times-out).
 - ✅ **R21 — `bridge.cpp:7176-7327`: `settings.restore` discards six setters' errors and
   returns `{ok:true}`** — a Cancel that silently does not revert. **Fixed `14be488dd`.** Partial
   application is unavoidable (video/audio/canvas setters commit to libobs+disk before later
@@ -2283,14 +2288,17 @@ R3's fix. Both are report-only so far.
   clamp — delay lands in `[floor(ms/2), ms]`, keeping a sane floor while de-correlating retries;
   per-`Backoff` `std::mt19937` seeded once from `random_device` (member, so each per-thread
   transport has its own with no lock/race).
-- 🟡 **G5 — no watchdogs, no `State::Connecting` deadline.** **Partially resolved (2026-07-16):**
-  the chat/events WS path (`ws_client.cpp`) is **already** deadline-bounded — `connect()` is
-  synchronous under `CURLOPT_CONNECTTIMEOUT=15` + `CURLOPT_TIMEOUT_MS=kUpgradeTimeoutMs=30000`,
-  which covers the exact "TLS up, no HTTP 101" stall; on timeout it falls to the existing
-  backoff/reconnect. **Still open:** the real `State::Connecting` enum is in
-  `MultistreamEngine.hpp:27` (the RTMP output engine), whose connect has no deadline — that is the
-  remaining G5 work, deferred to a MultistreamEngine pass. Self-tests still run ~20 synchronous
-  tests on the CEF UI thread.
+- ✅ **G5 — no watchdogs, no `State::Connecting` deadline.** **Resolved (2026-07-16) — both halves
+  already bounded, no change needed.** The chat/events WS path (`ws_client.cpp`) is deadline-bounded
+  — synchronous `connect()` under `CURLOPT_CONNECTTIMEOUT=15` + `CURLOPT_TIMEOUT_MS=30000`, covering
+  the "TLS up, no HTTP 101" stall. The `MultistreamEngine` `State::Connecting` is signal-driven and
+  bounded by librtmp: happy-eyeballs 25 s TCP connect + `SO_RCVTIMEO` 30 s + `SO_SNDTIMEO` 15 s →
+  `connect_thread` always fires `stop`/`reconnect`, so a binding leaves `Connecting` in ≤~30 s
+  (`CONNECT_FAILED` on a first attempt routes through `end_data_capture`→`signal_stop`→`Error`). A
+  redundant engine watchdog was rejected as a net negative: it would race the connect-thread
+  teardown (the UAF class R22/R23 fix) and false-kill slow-but-valid connects. Unaudited (flagged):
+  an adversarial dribble-a-byte-per-30 s server, and non-RTMP output types (HLS/SRT/RIST/WHIP) which
+  carry their own connect timeouts. Self-tests still run ~20 synchronous tests on the CEF UI thread.
 - ✅ **G6 — silent startup degradation.** `LoadCuratedModules` logged `init-failed`/`open-failed`
   through `HostLog` (LOG_INFO), indistinguishable from routine startup chatter, so a failed
   `obs-x264` looked healthy until Go Live. **Fixed `0d43a5f96`.** The two failure paths and their
