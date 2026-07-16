@@ -69,3 +69,6 @@ build-aux/flatpak-github-action-modified-*
 
 # Release-notes generator dependencies (source + bun.lock are tracked)
 /.github/scripts/changelog/node_modules/
+
+# Legacy Qt frontend kept locally for reference only — never built, never tracked.
+/frontend_old/
