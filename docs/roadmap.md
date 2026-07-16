@@ -2098,17 +2098,48 @@ mid-broadcast is unrecoverable — the user is live in front of an audience.
 
 ### Important
 
-- 🔴 **R9 — `CanvasService.cpp:140-147`: `ResetVideo`'s bool is discarded.**
+- ✅ **R9 — `CanvasService.cpp:140-147`: `ResetVideo`'s bool is discarded.**
+  **Fixed `558c4bc93`.** The non-Default reset now runs against a **scratch def before the
+  commit**, mirroring the Default path (`bridge.cpp:462-505` via `applyGlobalVideo`), and fails
+  the request rather than persisting a resolution the mix never took. The global refusal was
+  re-confirmed (`obs-canvas.c:443-450` gates on `obs_video_active()`, a global counter).
+  `CanvasRuntime::ResetVideo` now returns true for an **inactive** canvas (no mix; it builds
+  fresh from the def on activation) and false only on a real reset failure. One pre-existing
+  edge left alone: if `obs_canvas_reset_video_internal` fails *after* clearing the old mix
+  (`obs-canvas.c:338-354`), the canvas is left mix-less — the def now at least stays consistent
+  and the error surfaces.
   `obs-canvas.c:443-447` refuses the reset **globally** while `obs_video_active()`, and the
   default encoder is software `obs_x264`, so *any* canvas streaming makes it a silent no-op
   for *every* canvas. `canvases.json` persists the new resolution, the UI reports success, the
   mix keeps the old one. The Default path (`bridge.cpp:497-505`) rolls back correctly; the
   non-Default path does not.
-- 🔴 **R10 — `MultistreamEngine.cpp:326-327`: only `"start"`/`"stop"` are connected.**
+- ✅ **R10 — `MultistreamEngine.cpp:326-327`: only `"start"`/`"stop"` are connected.**
   `obs-output.c:3026-3030` **suppresses `"stop"`** on a reconnectable drop and fires
   `"reconnect"`, which is never connected. UI shows green "live" for up to 25 x 10 s, roughly
-  **250 s**, while nothing reaches the platform.
-- 🔴 **R11 — `CanvasService.cpp:78-79`: the live-edit gate checks only the edited canvas.**
+  **250 s**, while nothing reaches the platform. **Fixed `558c4bc93`** (host) + `767c87652`
+  (web). Both `"reconnect"` and `"reconnect_success"` are connected; the latter matters because
+  libobs fires it **instead of `"start"`** on resume (`obs-output.c:2667-2672, 2792-2801`).
+  Exhausted retries fire a real `"stop"` with `OBS_OUTPUT_DISCONNECTED` (`:2963-2969`), so the
+  existing `OnOutputStop`→`Error` path already covers terminal failure. New `State::Reconnecting`
+  (appended, so `StateName` indices stay stable) **counts as active** in `IsActiveState` — libobs
+  keeps `obs_output_active()` true and the encoders attached across the window, so treating it
+  as Idle would reopen the UAF the live gate prevents. **The "~250 s" was the floor:** those are
+  Braidcast's `AdvancedSettings` defaults (25 x 10 s), not libobs's (20 x 2 s), and exponential
+  backoff (x1.3, capped 15 min) makes the real window longer. Web side ranks it
+  `live > reconnecting > connecting > error > idle`, colors it from mixed red/yellow meter
+  tokens (connecting is already amber), and both `live || connecting` gates now call one shared
+  `isActiveState` predicate. Verified: `bun run check` 311 files, 0 errors, 0 warnings.
+- ✅ **R11 — `CanvasService.cpp:78-79`: the live-edit gate checks only the edited canvas.**
+  **Fixed `558c4bc93`.** The gate calls `MultistreamEngine::IsCanvasOrInheritorLive`, which
+  follows inheritance only when the edited canvas is the Default (nothing inherits from a
+  non-Default). Inheritance is **three-dimensional**, and the composite is now named once as
+  `CanvasDefinition::InheritsAnyDefault()` on the entity that owns it: encoder slots
+  (`CanvasEncoderDef::InheritsDefault()`), resolution/fps (`useDefaultResolution`), and color
+  (`color.useDefault`). `InvalidateCanvasEncoders` (which lives in `MultistreamEngine:171-192`,
+  **not** `CanvasService` as CLAUDE.md phrases it) was deliberately **not** widened to the
+  composite predicate — its encoder-only scope is correct for an encoder cache. The gate is
+  intentionally broad: any inheritance dimension refuses any structural edit, costing a
+  conservative refusal of a Default encoder edit while a color-only inheritor is live.
   Inheriting canvases take resolution/encoders from the Default
   (`MultistreamEngine.cpp:146-147`), so editing the idle Default while an inheritor is live
   passes the gate, giving divergence plus a duplicate encoder pair on a live canvas (breaks
@@ -2167,6 +2198,19 @@ R3's fix. Both are report-only so far.
   outputs, so removing a canvas the vcam is feeding from frees the mix under the vcam's
   `video_t`. Strong inference from the ref/gate reading, **not fully traced** — confirm the vcam
   path before fixing.
+- 🔴 **R24 — `OutputStat.state` is typed Title-cased but the host sends lowercase, so Stats and
+  Monitor have never worked.** Found by the R10 web agent, **confirmed on both sides**:
+  `bridge.cpp:5986` sends `MultistreamEngine::StateName(s.state)` — the *same* lowercase
+  `StateName` the multistream path uses — while `bridge.ts:819` declares
+  `"Idle" | "Connecting" | "Live" | "Error"` and its doc comment at `:813-814` explicitly (and
+  wrongly) claims the stats bridge title-cases. Consequences, all dead code today:
+  `OUTPUT_STATE_COLOR` never matches so every Stats/Monitor dot is unstyled
+  (`StatsDock.svelte:247`, `MonitorPage.svelte:204,207`); `StatsDock.svelte:122`/`:123` mean the
+  **live and error counters are permanently 0**; `:248`'s click-to-open **error detail is
+  unreachable**; `MonitorPage.svelte:201` likewise. Pre-existing, not caused by R10. *Fix:*
+  retype `state: MultistreamState`, collapse `OUTPUT_STATE_COLOR` into `STATE_COLOR` (it becomes
+  an exact duplicate), migrate the four comparisons — ~10 lines, and Stats/Monitor get the
+  reconnecting color for free.
 
 ### Gaps vs the premium bar
 
