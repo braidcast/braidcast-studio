@@ -1967,8 +1967,19 @@ mid-broadcast is unrecoverable — the user is live in front of an audience.
   `sig->mutex`, **hard freeze while live, requires a kill**. Window widens on network stalls
   and on `StopAll` at quit. *Fix:* move the `unique_ptr` out under the lock, destroy after
   releasing.
-- 🔴 **R3 — `bridge.cpp:5206-5212` and `:7265-7269`: `canvas.remove` reaps only windowId 0's
+- ✅ **R3 — `bridge.cpp:5206-5212` and `:7265-7269`: `canvas.remove` reaps only windowId 0's
   preview surface and never reaps projectors, giving a render-thread UAF.**
+  **Fixed `f597e3409`.** One shared `RemoveCanvasMixAndConsumers()` at both sites: projectors
+  (new `ProjectorManager::CloseForCanvas`, reusing the existing ordered `Close(id)` path), then
+  every windowId's preview (new `PreviewManager::DestroyForCanvas`), then encoders + mix. The
+  `Destroy(uuid)` overload is **gone** — caller census: two meant "this canvas everywhere" and
+  were the bug, one (a self-test) was indifferent, **zero** legitimately meant windowId 0.
+  **Ordering is load-bearing:** projectors must die first because they hold no `AddPreview`
+  ref, so reaping previews first can drop the count to zero and let `ReconcileEntry` clear the
+  video under a live projector display. **Multiview needs no separate reap** — it is a
+  `ProjectorKind` carrying the canvas uuid, so `CloseForCanvas` covers it; its 500 ms timer
+  and draw callback both die with `Close`. Ref-instead-of-close was rejected: `RemoveCanvas`
+  frees the canvas regardless of preview refcount, so a ref would not even prevent the crash.
   `preview_window.hpp:196` resolves `Destroy(uuid)` to `Destroy(0, uuid)`, and the loop
   matches `it->windowId == windowId` (`preview_window.cpp:1768`), so a detached surface is
   skipped — `WindowManager::Detach` (`window_manager.cpp:68-126`) mints a new windowId on an
@@ -2090,6 +2101,26 @@ mid-broadcast is unrecoverable — the user is live in front of an audience.
   `WaitForDrain`.
 - 🔴 **R21 — `bridge.cpp:7176-7327`: `settings.restore` discards six setters' errors and
   returns `{ok:true}`** — a Cancel that silently does not revert.
+
+### Pass 1 addendum — surfaced while fixing (2026-07-16)
+
+Found by the R3 implementation agent while reading the projector lifetime model. Same family
+as R3 (a borrowed canvas mix freed under a live consumer), different trigger, so they survive
+R3's fix. Both are report-only so far.
+
+- 🔴 **R22 — a projector's borrowed mix can be freed by `ReconcileEntry` without any canvas
+  removal.** Canvas/Multiview projectors hold **no** `AddPreview` ref (only the Program kind
+  refs the main composite, `projector_window.cpp:643-646`). Disabling a canvas's last enabled
+  binding, or closing its last preview, drives `ReconcileEntry` to `obs_canvas_clear_video`
+  while an open projector still draws that mix. R3's fix does not cover this — no canvas is
+  removed, so the reap never runs. *Fix direction:* `AddPreview`/`RemovePreview` in
+  `ProjectorWindow` for the canvas-bound kinds, which is what makes the projector a first-class
+  mix consumer instead of a silent borrower.
+- 🔴 **R23 — `CanvasIsLive` does not cover the virtual camera.** `VirtualCamManager` holds an
+  `AddPreview` ref on its target canvas, but `MultistreamEngine::IsCanvasLive` only knows about
+  outputs, so removing a canvas the vcam is feeding from frees the mix under the vcam's
+  `video_t`. Strong inference from the ref/gate reading, **not fully traced** — confirm the vcam
+  path before fixing.
 
 ### Gaps vs the premium bar
 
