@@ -1,7 +1,8 @@
 <script lang="ts">
-  import { obs, type ChatMessage, type ChatState, type ChatPlatform } from "$lib/api/bridge";
+  import { obs, type ChatMessage, type ChatPlatform } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
   import { PLATFORM_COLORS, PLATFORM_LABELS, PLATFORM_ORDER as ORDER } from "$lib/theme/platformColors";
+  import { TRANSPORT_STATE_COLOR } from "$lib/theme/stateColors";
   import { FeedVirtualizer } from "$lib/utils/feedVirtualizer.svelte";
   import { callOrToast } from "$lib/utils/callToast";
   import EmptyState from "$lib/ui/EmptyState.svelte";
@@ -11,6 +12,7 @@ import { EV } from "$lib/utils/eventNames";
   import { streamProfileStore } from "$lib/stores/streamProfileStore.svelte";
   import { multistreamStatusStore } from "$lib/stores/multistreamStatusStore.svelte";
   import { oauthStore } from "$lib/stores/oauthStore.svelte";
+  import { transportHealthStore } from "$lib/stores/transportHealthStore.svelte";
 
   // Host supplies tab chrome + strips __* keys; this body declares no props.
   let {}: Record<string, unknown> = $props();
@@ -28,19 +30,19 @@ import { EV } from "$lib/utils/eventNames";
   const feedScroll = feed.scroll;
 
   // --- connection state + send destination ----------------------------------
-  // platform -> latest ChatState. The chat.state METHOD returns the full array
-  // (snapshot); the chat.state EVENT reports ONE platform, merged here by key.
-  let states = $state<Map<ChatPlatform, ChatState>>(new Map());
+  // Chat transport health id, matching the native Transports::ChatTransportId
+  // convention ("chat:" + providerId) -- the format the store's rows are keyed by.
+  function chatTransportId(p: ChatPlatform): string {
+    return "chat:" + p;
+  }
 
-  function refreshStates(): void {
-    obs
-      .call("chat.state")
-      .then((rows) => {
-        const next = new Map<ChatPlatform, ChatState>();
-        for (const r of rows) next.set(r.platform, r);
-        states = next;
-      })
-      .catch(() => {});
+  // Hover detail for a chip in trouble: the drop/failure reason, empty otherwise.
+  function chipTitle(p: ChatPlatform): string | undefined {
+    const row = transportHealthStore.byId.get(chatTransportId(p));
+    if (row && (row.state === "failed" || row.state === "reconnecting") && row.lastError) {
+      return row.lastError;
+    }
+    return undefined;
   }
 
   // The multichat channel set = an ENABLED output binding (multistreamStatusStore only
@@ -54,9 +56,11 @@ import { EV } from "$lib/utils/eventNames";
     streamProfileStore.start();
     const offStatus = multistreamStatusStore.subscribe();
     const offOauth = oauthStore.subscribe();
+    const offHealth = transportHealthStore.subscribe();
     return () => {
       offStatus();
       offOauth();
+      offHealth();
     };
   });
 
@@ -72,8 +76,19 @@ import { EV } from "$lib/utils/eventNames";
     return set;
   });
 
+  // Chips to render: every enabled channel whose transport has ever reported
+  // (i.e. not still "disconnected"/never-started) -- so a reconnecting or failed
+  // transport stays VISIBLE and distinguishable instead of silently vanishing like
+  // the old binary chat.state.connected check did (the G1 bug this replaces).
+  let visibleChannels = $derived(
+    PLATFORM_ORDER.filter(
+      (p) => enabledChannels.has(p) && transportHealthStore.stateOf(chatTransportId(p)) !== "disconnected",
+    ),
+  );
+  // Sendable = actually connected. Reconnecting/failed channels stay visible above
+  // but can't be picked as a send destination.
   let connected = $derived(
-    PLATFORM_ORDER.filter((p) => states.get(p)?.connected === true && enabledChannels.has(p)),
+    visibleChannels.filter((p) => transportHealthStore.stateOf(chatTransportId(p)) === "connected"),
   );
   let anyConnected = $derived(connected.length > 0);
 
@@ -139,20 +154,9 @@ import { EV } from "$lib/utils/eventNames";
   }
 
   $effect(() => {
-    refreshStates();
     const offMsg = obs.on(EV.chatMessage, (m) => enqueueMessage(m));
-    const offState = obs.on(EV.chatState, (s) => {
-      const next = new Map(states);
-      next.set(s.platform, s);
-      states = next;
-    });
-    // No teardown event fires when the host stops the transports on stream-stop,
-    // so re-snapshot the (now empty) state set whenever streaming flips.
-    const offStreaming = obs.on(EV.streamingChanged, () => refreshStates());
     return () => {
       offMsg();
-      offState();
-      offStreaming();
       feed.dispose();
     };
   });
@@ -203,7 +207,15 @@ import { EV } from "$lib/utils/eventNames";
 
   <div class="composer">
     <div class="dests">
-      <PlatformChips platforms={connected} value={displayDest} showAll={showAllChip} onSelect={(v) => (dest = v)} />
+      <PlatformChips
+        platforms={visibleChannels}
+        value={displayDest}
+        showAll={showAllChip}
+        onSelect={(v) => (dest = v)}
+        dotColorOf={(p) => TRANSPORT_STATE_COLOR[transportHealthStore.stateOf(chatTransportId(p))]}
+        titleOf={chipTitle}
+        disabledOf={(p) => transportHealthStore.stateOf(chatTransportId(p)) !== "connected"}
+      />
     </div>
     <div class="inputrow">
       <textarea
@@ -214,7 +226,7 @@ import { EV } from "$lib/utils/eventNames";
         disabled={!anyConnected}
         placeholder={anyConnected
           ? "Message " + (displayDest === "all" ? "all platforms" : PLATFORM_LABEL[displayDest as ChatPlatform]) + "…"
-          : states.size > 0
+          : visibleChannels.length > 0
             ? "No connected accounts"
             : "Go live to chat"}
         aria-label="Chat message"
