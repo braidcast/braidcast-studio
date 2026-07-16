@@ -1754,6 +1754,44 @@ regardless) — not started, separable from the phase.
 
 ---
 
+## Broker hardening — studio-side tasks 🔭
+
+**Master roadmap:** `braidcast-website/docs/roadmap.md` — the OAuth broker lives
+in that repo (`auth/` Worker at `auth.braidcast.com`), so the abuse-resistance
+design, phase ordering, and the OBS benchmark are authoritative there. This
+section tracks only the **client-side counterparts** the studio app owns.
+
+Context: a desktop app is a public client — it **cannot be proven genuine** to
+the broker (any shipped credential is extractable; code signing doesn't help —
+the private key isn't in the app, the public cert is replayable). Goal is
+accountable/throttleable abuse, done broker-side; the studio's job is to ship
+**no secrets** and to plumb the few phases that need a client half.
+
+- ⏸/💭 **Braidcast-account gate (broker Phase B) — client half.** For the broker
+  to gate `/start` on a Braidcast session, the app must acquire and send a
+  Braidcast session bearer. Needs a client-side login story. Do this for
+  **attribution + per-user quota**, *not* as an abuse fix (per OBS evidence,
+  account-gating isn't what prevents proxy abuse). Not started.
+- 🔭 **Least-privilege scope audit.** Reconcile each provider's requested scopes
+  (`frontend/src/oauth/*_provider.cpp` `capabilityJson`/`scopeVer`) against the
+  broker's `PROVIDERS[].scopes` — request the minimum per platform (OBS's Twitch
+  scope is exactly `channel:read:stream_key`).
+- ✅ **Fork seam exists.** `BRAIDCAST_BROKER_URL` (`frontend/cmake/ui-config.h.in`)
+  already lets a fork point at its own broker instead of ours — mirrors OBS's
+  `OAUTH_BASE_URL`. Keep it; the website roadmap owns documenting it as the
+  supported fork path.
+- ⏸ **Device-bound install token (broker Phase C) — deprioritized.** Would need
+  DPAPI/Keychain sealing client-side. Contradicted by OBS's lived experience:
+  a client-side secret behind obfuscation is trivially extractable (their YouTube
+  secret literally is) — high effort, defeatable. Parked unless a concrete abuse
+  pattern demands it.
+
+Studio-side invariant to keep: ship **no** client secrets; only Twitch's *public*
+`client_id` is baked (for the Helix `Client-Id` header). Kick/YouTube auth with
+Bearer alone and bake nothing.
+
+---
+
 # Issues & Enhancements
 
 Moved to [review-findings.md](./review-findings.md) — the deep-review findings tracker (R1–R24, G1–G6) lives there now.
