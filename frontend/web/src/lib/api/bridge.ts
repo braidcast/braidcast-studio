@@ -811,13 +811,13 @@ export interface GeneralStats {
   encodeSkipPct: number;
 }
 
-/** Per-output live stats row reported in stats.get's `outputs`. `state` mirrors
- * the multistream live state but is reported title-cased by the stats bridge. */
+/** Per-output live stats row reported in stats.get's `outputs`. `state` is the
+ * same lowercase state name the multistream status events report. */
 export interface OutputStat {
   bindingUuid: string;
   profileLabel: string;
   canvasName: string;
-  state: "Idle" | "Connecting" | "Live" | "Error";
+  state: MultistreamState;
   bitrateKbps: number;
   droppedFrames: number;
   totalFrames: number;

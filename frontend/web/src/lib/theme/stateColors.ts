@@ -1,4 +1,4 @@
-import type { MultistreamState, OutputStat } from "$lib/api/bridge";
+import type { MultistreamState } from "$lib/api/bridge";
 
 // Single source for the live-state -> token color mapping that was re-declared per
 // consumer (StudioPage, CanvasDock, CanvasesPage, MultistreamDock, StatsDock,
@@ -22,12 +22,4 @@ export const STATE_COLOR_EXT: Record<MultistreamState | "off" | "disabled", stri
   ...STATE_COLOR,
   off: "var(--color-muted)",
   disabled: "var(--color-muted)",
-};
-
-/** Title-cased OutputStat.state -> the same tokens (Stats / Monitor). */
-export const OUTPUT_STATE_COLOR: Record<OutputStat["state"], string> = {
-  Idle: STATE_COLOR.idle,
-  Connecting: STATE_COLOR.connecting,
-  Live: STATE_COLOR.live,
-  Error: STATE_COLOR.error,
 };

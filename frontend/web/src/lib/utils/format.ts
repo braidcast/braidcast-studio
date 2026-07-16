@@ -1,4 +1,4 @@
-// Shared numeric formatters that were re-declared across the stats/live surfaces.
+// Shared formatters that were re-declared across the stats/live surfaces.
 
 const pad = (n: number): string => String(n).padStart(2, "0");
 
@@ -19,6 +19,11 @@ export function fmtDuration(ms: number, opts?: { fixed?: boolean }): string {
 // Bitrate: Mb/s at or above 1000 kbps, else kb/s.
 export function fmtBitrate(kbps: number): string {
   return kbps >= 1000 ? (kbps / 1000).toFixed(1) + " Mb/s" : Math.round(kbps) + " kb/s";
+}
+
+// Title-cased label for a lowercase live-state name ("live" -> "Live").
+export function titleState(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 // Frame rate from a numerator/denominator pair: a fractional rate (den > 1) reads to

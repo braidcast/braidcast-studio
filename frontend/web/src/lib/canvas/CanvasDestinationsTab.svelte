@@ -12,6 +12,7 @@
   import { STATE_COLOR_EXT } from "$lib/theme/stateColors";
   import { bindingDisplayName, isBindingDangling, isBindingUnset } from "$lib/stores/outputBindingStore.svelte";
   import { bindingRowState, bindingRowDetail } from "$lib/stores/multistreamStatusStore.svelte";
+  import { titleState } from "$lib/utils/format";
 
   interface Props {
     canvasUuid: string;
@@ -43,9 +44,6 @@
     live: "color-mix(in srgb, var(--meter-green) 14%, transparent)",
     error: "color-mix(in srgb, var(--color-live) 14%, transparent)",
   };
-  function titleState(s: string): string {
-    return s.charAt(0).toUpperCase() + s.slice(1);
-  }
 
   async function toggleCanvas(): Promise<void> {
     if (rows.length === 0) return;

@@ -5,8 +5,8 @@ import { EV } from "$lib/utils/eventNames";
   import PageHeader from "$lib/ui/PageHeader.svelte";
   import EmptyState from "$lib/ui/EmptyState.svelte";
   import { PLATFORM_COLORS, PLATFORM_LABELS, PLATFORM_ORDER } from "$lib/theme/platformColors";
-  import { OUTPUT_STATE_COLOR } from "$lib/theme/stateColors";
-  import { fmtDuration } from "$lib/utils/format";
+  import { STATE_COLOR } from "$lib/theme/stateColors";
+  import { fmtDuration, titleState } from "$lib/utils/format";
   import {
     METER_TEXT,
     METER_GREEN,
@@ -198,13 +198,13 @@ import { EV } from "$lib/utils/eventNames";
         </div>
       {:else}
         {#each stats.outputs as o (o.bindingUuid)}
-          {@const live = o.state === "Live"}
+          {@const live = o.state === "live"}
           <div class="trow">
             <span class="out">
-              <span class="out-dot" style:background={OUTPUT_STATE_COLOR[o.state]}></span>
+              <span class="out-dot" style:background={STATE_COLOR[o.state]}></span>
               <span class="out-name">{o.profileLabel} &nbsp;→&nbsp; {o.canvasName}</span>
             </span>
-            <span style:color={OUTPUT_STATE_COLOR[o.state]}>{o.state}</span>
+            <span style:color={STATE_COLOR[o.state]}>{titleState(o.state)}</span>
             <span>{live ? (o.bitrateKbps / 1000).toFixed(1) + " Mb/s" : "—"}</span>
             <span>{live ? String(o.droppedFrames) : "—"}</span>
             <span>{live ? o.congestionPct.toFixed(1) + "%" : "—"}</span>

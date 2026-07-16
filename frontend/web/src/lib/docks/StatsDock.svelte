@@ -3,8 +3,8 @@
   import Icon from "$lib/ui/Icon.svelte";
   import EmptyState from "$lib/ui/EmptyState.svelte";
   import Modal from "$lib/ui/Modal.svelte";
-  import { OUTPUT_STATE_COLOR } from "$lib/theme/stateColors";
-  import { fmtBitrate, fmtDuration } from "$lib/utils/format";
+  import { STATE_COLOR } from "$lib/theme/stateColors";
+  import { fmtBitrate, fmtDuration, titleState } from "$lib/utils/format";
   import {
     METER_TEXT,
     METER_GREEN,
@@ -119,8 +119,8 @@
   // rows: live/total, error count, summed dropped frames + worst drop%, summed
   // outgoing bitrate, and peak congestion.
   const summary = $derived.by(() => {
-    const live = outputs.filter((o) => o.state === "Live").length;
-    const errors = outputs.filter((o) => o.state === "Error").length;
+    const live = outputs.filter((o) => o.state === "live").length;
+    const errors = outputs.filter((o) => o.state === "error").length;
     let droppedFrames = 0;
     let worstDropPct = 0;
     let bitrateKbps = 0;
@@ -244,8 +244,8 @@
         </div>
         <ul class="list">
           {#each outputs as o (o.bindingUuid)}
-            {@const color = OUTPUT_STATE_COLOR[o.state]}
-            {@const isErr = o.state === "Error"}
+            {@const color = STATE_COLOR[o.state]}
+            {@const isErr = o.state === "error"}
             <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
             <li
               class="row"
@@ -257,13 +257,13 @@
               onclick={isErr ? () => openError(o) : undefined}
               onkeydown={isErr ? (e) => onRowKey(e, o) : undefined}
             >
-              <span class="dot" style:background={color} title={o.state}></span>
+              <span class="dot" style:background={color} title={titleState(o.state)}></span>
               <div class="info">
                 <div class="line1">
                   <span class="name">{o.profileLabel}</span>
                   <span class="arrow"><Icon name="caret-right" size={10} /></span>
                   <span class="canvas">{o.canvasName}</span>
-                  <span class="state" style:color>{o.state}</span>
+                  <span class="state" style:color>{titleState(o.state)}</span>
                 </div>
                 <div class="line2">
                   <span class="stat">{fmtBitrate(o.bitrateKbps)}</span>
