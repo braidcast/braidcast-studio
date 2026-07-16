@@ -1909,3 +1909,200 @@ of Part B and already removes the empty-canvas-bar surprise; Part B is the full
 Profiles system. A small **interim** option exists if the empty canvas bar needs
 relief before this lands: stop gating the canvas bar on bindings (show canvases
 regardless) — not started, separable from the phase.
+
+---
+
+# Issues & Enhancements
+
+Findings from the deep review sweep started 2026-07-15, tracked to closure. Review agents
+**append** findings here; implementation agents **update status in place** and record the
+fixing commit. Status: 🔴 open · 🔧 in progress · ✅ fixed · ⏸ won't fix (with reason) ·
+❌ withdrawn (not a real defect).
+
+Every finding was re-derived against source by the reviewer and cites the decisive line.
+Two claims were **withdrawn during review** and are recorded so nobody re-raises them: a
+`sources.relinkMissing` deadlock (libobs's `sources_mutex` is recursive) and an obs-browser
+module-unload UAF (`obs-module.c:792` never `dlclose`s).
+
+## Pass 1 — C++ host reliability (2026-07-15)
+
+Scope: `frontend/src/**`, `frontend/utility/`. Bar: a crash, freeze, or silent failure
+mid-broadcast is unrecoverable — the user is live in front of an audience.
+
+### Critical
+
+- 🔴 **R1 — `Hotkeys.cpp:286-302`: Start/Stop Streaming hotkeys drive the engine off
+  libobs's hotkey thread with no synchronization.** The comment audits `EmitEvent` and stops
+  there, but `StartAllEnabled` iterates the unguarded `bindings.bindings` vector
+  (`MultistreamEngine.cpp:426`) and `canvasEncoders` (`MultistreamEngine.hpp:184`) has no
+  mutex. Stock OBS's Qt frontend called `obs_hotkey_enable_callback_rerouting` to marshal
+  hotkeys onto the UI thread; the CEF port dropped it — **zero hits under `frontend/`**.
+  *Scenario:* hotkey pressed while the Outputs tab adds a binding, `push_back` reallocs
+  mid-iteration, crash or start against freed memory. *Fix:* marshal via
+  `AsyncTask::PostToUi`, as `onOutputStopped` already does.
+- 🔴 **R2 — `MultistreamEngine.cpp:416-419`: `LiveOutput` destroyed while holding
+  `liveMutex`, closing a deadlock cycle against the stop signal.** The comment defends the
+  *synchronous* re-entry and misses the *asynchronous* one. Edges verified: `OnOutputStop`
+  takes `liveMutex` (`:648`); `signal.c:298-321` holds `sig->mutex` across the callback
+  while `signal_handler_disconnect` (`:260`) locks it; `obs_output_destroy` blocks
+  (`obs-output.c:301-303`). *Scenario:* output drops mid-stream, RTMP thread holds
+  `sig->mutex` and waits `liveMutex`, UI thread holds `liveMutex` and `~OBSSignal` waits
+  `sig->mutex`, **hard freeze while live, requires a kill**. Window widens on network stalls
+  and on `StopAll` at quit. *Fix:* move the `unique_ptr` out under the lock, destroy after
+  releasing.
+- 🔴 **R3 — `bridge.cpp:5206-5212` and `:7265-7269`: `canvas.remove` reaps only windowId 0's
+  preview surface and never reaps projectors, giving a render-thread UAF.**
+  `preview_window.hpp:196` resolves `Destroy(uuid)` to `Destroy(0, uuid)`, and the loop
+  matches `it->windowId == windowId` (`preview_window.cpp:1768`), so a detached surface is
+  skipped — `WindowManager::Detach` (`window_manager.cpp:68-126`) mints a new windowId on an
+  ordinary detach click. `Projector::Instance()` never appears in the removal path
+  (`bridge.cpp` 662/6883/6996/7015 only); `projector_window.cpp:996` borrows the canvas
+  unref'd. *Scenario:* open a projector for idle canvas B, delete B, `CanvasIsLive(B)` is
+  false so the gate passes, mix freed, Multiview's 500 ms timer derefs it, **process dies,
+  taking canvas A's live stream with it**. *Fix:* a `DestroyForCanvas(uuid)` sweeping every
+  windowId and closing matching projectors; the convenience overload is the real defect, two
+  call sites already drifted onto it.
+- 🔴 **R4 — `obs_bootstrap.cpp:3365-3373` + `main.cpp:610-615`: browser sources destroyed
+  *after* the last CEF pump, then handed to `CefShutdown()`.** `obs_bootstrap.hpp:12-16`
+  states the invariant (browser sources "MUST be called while CEF is still pumpable" —
+  `Destroy()` only *posts* `delete this` to TID_UI). But `TeardownScene()` early-returns on
+  `!g_scene` (`:1000-1002`) and `g_scene` is set only on the `CreateDefaultScene()` fallback,
+  so on **every run with a saved collection** the `main.cpp:610` drain drains nothing and the
+  real sources die at `Stop()`'s `obs_enum_sources(removeCb)`. `CefDoMessageLoopWork` exists
+  at one site (`main.cpp:321`), called only from 532 and 610, both before `Stop()` at 613,
+  with `CefShutdown()` at 615. `obs_bootstrap.cpp:3360`'s own comment admits the sweep exists
+  because `TeardownScene()` no-ops. **This is the "intermittent CEF-exit segfault"; the
+  "teardown/GPU artifact, not a regression" dismissal is wrong** — it is an older latent
+  defect, which is exactly why it was not a Phase 8 regression. *Fix:* pump `DrainCefTasks()`
+  between the source-removal sweep and `CefShutdown()`.
+- 🔴 **R5 — `overlay_server.cpp:238` via `chat_hub.cpp:45-47`: chat SSE does blocking 3 s
+  socket sends on the CEF UI thread, which obs-browser shares.** `chat_hub.cpp:42` states its
+  own thread ("RouteEmit runs on the CEF UI thread") then calls `BroadcastChat`, which
+  `SendAll`s with `kSseSendTimeoutMs = 3000`. `obs-browser-plugin.cpp:284-291`
+  (`if (FrontendOwnsCef()) { ... return; }`) means **every browser source on stream renders
+  on that same TID_UI**. *Scenario:* one overlay widget stops draining its socket, buffer
+  fills, next chat line blocks TID_UI up to 3 s, **every browser source on air freezes on its
+  last frame**; repeats during a raid. The events path does this correctly
+  (`event_hub.cpp:259` broadcasts on a worker). *Fix:* hop to a worker before
+  `BroadcastFrame`, mirroring `EventHub::Ingest`.
+- 🔴 **R6 — `main.cpp:390` + `libobs/util/base.c:57-66`: the crash handler has no sink.**
+  `obs_init_win32_crash_handler()` installs the exception *filter*, ending in `bcrash(...)`,
+  but `base_set_crash_handler` has **zero callers tree-wide**, so the default runs:
+  `vfprintf(stderr, ...); exit(0);`. `minidump_write_dump` is resolved
+  (`obs-win-crash-handler.c:134`) and **never called**. Port regression:
+  `frontend_old/obs-main.cpp:958` had `base_set_crash_handler(main_crash_handler, nullptr)`
+  and wrote real dumps; `main.cpp` copied that file's privilege/mitigation/RTWQ setup and
+  dropped only the sink. *Scenario:* crash 40 min into a stream in a `wWinMain` process with
+  no console, output goes nowhere, bypasses `blog()` so SessionLog never sees it, and the
+  process reports **success** to Windows, so `Smoke-Package.ps1:345` scores it
+  `"process exited 0"` = **pass**. **Force multiplier: this is why R4 and the `80000003` left
+  no inspectable artifact, and why the CI boot-smoke gate green-lights a crashed app.**
+  *Fix:* port `main_crash_handler`, register before the filter, exit non-zero, and harden the
+  smoke gate so a crashed process cannot pass.
+- 🔴 **R7 — `bridge.cpp:3512-3520`: `sceneItems.group` never dedupes `ids`, null-derefing
+  libobs.** No seen-guard in the resolve loop; libobs's guard (`obs-scene.c:3541-3545`)
+  rejects only foreign-parent/group items, so a duplicate pointer passes and
+  `obs-scene.c:3565-3569` runs `detach_sceneitem` once per element. The second call finds
+  `parent == NULL`, and when the item is the scene's first (`prev == NULL`) it takes
+  `else -> item->parent->first_item` (`obs-scene.c:299`), a **null-pointer write**.
+  *Scenario:* `sceneItems.group {scene:"Main", ids:[5,5]}` with item 5 first. Reachable from a
+  renderer multi-select bug *and* from the MCP server, which proxies any registered method
+  through `Bridge::Dispatch`. *Fix:* dedupe before `obs_scene_insert_group`.
+- 🔴 **R8 — `ws_client.cpp:93-101`: the WebSocket upgrade has no whole-request timeout.**
+  `CONNECTTIMEOUT 15L` is set; `CURLOPT_TIMEOUT` is not (it appears only at
+  `http_client.cpp:71`). With `CONNECT_ONLY=2L` the HTTP 101 happens in the *perform* phase,
+  governed by `CURLOPT_TIMEOUT` (default 0 = unlimited). `disconnect()` only flips an atomic
+  and cannot break it. *Scenario:* Twitch IRC drops mid-stream, reconnect calls `ws_.connect`
+  **while holding `wsMutex_`**, a captive portal completes TLS but never sends 101, chat is
+  dead for the rest of the stream and the detached worker never unwinds so `WaitForDrain(5s)`
+  always times out at quit. *Fix:* set `CURLOPT_TIMEOUT_MS`; move `connect` out from under the
+  mutex.
+
+### Important
+
+- 🔴 **R9 — `CanvasService.cpp:140-147`: `ResetVideo`'s bool is discarded.**
+  `obs-canvas.c:443-447` refuses the reset **globally** while `obs_video_active()`, and the
+  default encoder is software `obs_x264`, so *any* canvas streaming makes it a silent no-op
+  for *every* canvas. `canvases.json` persists the new resolution, the UI reports success, the
+  mix keeps the old one. The Default path (`bridge.cpp:497-505`) rolls back correctly; the
+  non-Default path does not.
+- 🔴 **R10 — `MultistreamEngine.cpp:326-327`: only `"start"`/`"stop"` are connected.**
+  `obs-output.c:3026-3030` **suppresses `"stop"`** on a reconnectable drop and fires
+  `"reconnect"`, which is never connected. UI shows green "live" for up to 25 x 10 s, roughly
+  **250 s**, while nothing reaches the platform.
+- 🔴 **R11 — `CanvasService.cpp:78-79`: the live-edit gate checks only the edited canvas.**
+  Inheriting canvases take resolution/encoders from the Default
+  (`MultistreamEngine.cpp:146-147`), so editing the idle Default while an inheritor is live
+  passes the gate, giving divergence plus a duplicate encoder pair on a live canvas (breaks
+  encode-once). No UAF.
+- 🔴 **R12 — `broker_strategy.cpp:339`: unconditional `Accounts().Put` resurrects an account
+  disconnected mid-refresh**, re-persisting deleted credentials. Every sibling writer refuses
+  this (`account_store.cpp:245`: "never re-insert a removed account").
+- 🔴 **R13 — `mcp/HttpServer.cpp:220`: no `SO_RCVTIMEO`, no client-socket registry**, so
+  closing the listen socket will not unblock a parked `recv` and `Stop()`'s `join()` hangs
+  forever, on the UI thread, mid-stream, on an MCP toggle. `overlay_server.cpp:93,466` already
+  implements the correct seam — reuse it.
+- 🔴 **R14 — `event_names.hpp:33-34`: no transport health channel exists.** Only
+  `events.new`/`events.backfill`; every transport death terminates at `HostLog`. This is the
+  amplifier that makes most of the above invisible-with-a-green-badge.
+- 🔴 **R15 — `overlay_server.cpp:286` (`BroadcastTo`) holds `sseMutex_` across blocking
+  sends** — the exact hazard `BroadcastFrame`'s comment exists to avoid. The fix landed in one
+  sibling, not the other.
+- 🔴 **R16 — `scene_collections.cpp:146-165`: a doubly-corrupt index refuses to reseed
+  (correctly) but nothing rebuilds from the intact `scenes/*.json` on disk**, so the user boots
+  to a blank Default scene with their collections stranded, signalled only by a log line.
+- 🔴 **R17 — fire-and-forget saves.** `SaveJsonAtomic` (`StorePaths.cpp:56-63`) is genuinely
+  atomic (temp+bak+rename) and returns `bool`; **every caller discards it**. Disk-full
+  mid-session loses a whole session's edits silently.
+- 🔴 **R18 — `main.cpp:527-536`: the `CreateBrowserSync` abort path is a hand-copied partial
+  duplicate of the real teardown** — leaks a ghost tray icon, skips RTWQ/mutex cleanup.
+- 🔴 **R19 — unbounded buffers.** `ws_client.cpp:178` (`accum_` uncapped) and
+  `http_client.cpp:20` + `:79` (no `CURLOPT_MAXFILESIZE`, with gzip decompression, against
+  third-party emote hosts on the go-live path). OOM lands in the encoders' address space.
+- 🔴 **R20 — `bridge.cpp:8434`: the file's only raw `std::thread(...).detach()`**, invisible to
+  `WaitForDrain`.
+- 🔴 **R21 — `bridge.cpp:7176-7327`: `settings.restore` discards six setters' errors and
+  returns `{ok:true}`** — a Cancel that silently does not revert.
+
+### Gaps vs the premium bar
+
+- 🔴 **G1 — no health channel** for events/chat/overlay. Highest-leverage addition; converts
+  most Importants above from silent to visible. Same root as R14.
+- 🔴 **G2 — no recovery anywhere.** `client.cpp:184-192` `OnRenderProcessTerminated` comments
+  out *every* parameter (`status`, `error_code`, `error_string`) and never reloads. A dead
+  renderer mid-stream leaves a permanently blank UI while the stream runs blind.
+- 🔴 **G3 — no crash coverage for CEF subprocesses.** `main.cpp:345-348` returns before the
+  filter installs; `no_sandbox = true` with no crashpad config.
+- 🔴 **G4 — no jitter in `Backoff::next()`** (`ws_client.cpp:227`); all four WS transports walk
+  an identical ladder in lockstep. `channel_stats_poller.cpp:42` already models the fix.
+- 🔴 **G5 — no watchdogs, no `State::Connecting` deadline**; self-tests run ~20 synchronous
+  tests on the CEF UI thread including a real RTMP connect.
+- 🔴 **G6 — silent startup degradation.** `LoadCuratedModules` logs `init-failed` and
+  continues; if `obs-x264` fails to load the app looks healthy until Go Live.
+
+### Open question
+
+- ❓ **`Unhandled exception: 80000003`** (seen in a 2026-07-14 smoke log, since lost). Cannot be
+  pinned from code alone. The string is libobs's own handler (`obs-win-crash-handler.c:259`),
+  so it fired in the main process with no debugger. Most plausible producer: a `libcef.dll`
+  `CHECK()` — Chromium's `IMMEDIATE_CRASH()` is `__debugbreak()` on MSVC, raising exactly
+  `EXCEPTION_BREAKPOINT`. Ruled out: zero `__debugbreak`/`abort` in `frontend/src`; CRT
+  `assert` compiled out under `NDEBUG`; `abort`/`terminate` gives `0xC0000409`; heap corruption
+  gives `0xC0000374`. **R4 is the natural trigger** — `CefShutdown()` with live browsers is
+  exactly what Chromium `CHECK()`s on. The handler prints `Fault address: %llX (%s)` where
+  `%s` is the module: **`libcef.dll` confirms, `obs.dll` refutes.** Fix R6 first and this
+  answers itself.
+
+### Verified solid (do not re-raise)
+
+`interact_window.cpp` (hard source ref + `remove`-signal to `WM_CLOSE` deferral +
+disconnect-before-release). The **preview gate refcount is balanced** — the historical
+imbalance is genuinely fixed; the lifetime bugs migrated to consumers the gate does not cover.
+The recorded `streamMeta` UAF is properly fixed with **no siblings on the async lane** (all 5
+async methods hit mutex-guarded or marshaled state; the hotkey lane in R1 is a *different* lane
+the fix never reached). Bridge callback resolution and exception barriers are airtight, with no
+hung-promise path. Atomic writes plus `.bak` recovery are real end-to-end. `Stop()`'s ordering
+rationale, obs refcounting across ~40 resolve/release methods, OAuth single-flight refresh,
+Multiview's snapshot design, and `event_store`'s bounded 500-cap concurrency all check out. All
+three servers bind `INADDR_LOOPBACK`, never `INADDR_ANY`. No client secret ships (`obf.h`
+obfuscates a public `client_id`; the broker injects secrets server-side).
