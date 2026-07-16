@@ -326,6 +326,93 @@ void DrainCefTasks()
 	}
 }
 
+// The one ordered teardown every exit runs. The clean-exit path (after
+// CefRunMessageLoop returns) and the CreateBrowserSync-failure abort reach it at
+// the same init stage -- libobs up, RTWQ started, single-instance mutex held --
+// so each step's existing guard covers the only differences the abort has (no
+// g_windows or g_browser yet). Order is load-bearing: every obs_display-backed
+// surface is destroyed before ObsBootstrap::Stop() frees the canvas mixes those
+// surfaces render.
+void Teardown()
+{
+	g_browser = nullptr;
+
+	// Drop the process-wide shared Client ref so it doesn't outlive teardown.
+	Client::SetShared(nullptr);
+
+	// Tray icon was already NIM_DELETE'd in WM_CLOSE (while the HWND was valid);
+	// drop the owner here. Remove() is idempotent if WM_CLOSE didn't run.
+	if (g_tray) {
+		g_tray->Remove();
+		g_tray.reset();
+	}
+
+	// Tear down every detached window's surfaces + browser BEFORE g_preview->DestroyAll()
+	// and ObsBootstrap::Stop() free the canvas mixes those surfaces render (UAF discipline).
+	if (g_windows) {
+		WindowManager::SetInstance(nullptr);
+		g_windows->DestroyAll();
+		g_windows.reset();
+	}
+
+	// Destroy every preview surface's obs_display + overlay HWND while libobs is
+	// still up. This must precede ObsBootstrap::Stop(): an additional canvas's
+	// surface renders that canvas's mix, and Stop() (via CanvasRuntime::ClearAll)
+	// frees those mixes, so the displays must die first. The Default surface renders
+	// the global mix, freed even later by obs_shutdown.
+	// Tear down every projector's obs_display + window while libobs is up and BEFORE
+	// the canvas mixes are freed (a canvas projector's display renders a canvas mix).
+	if (g_projector) {
+		Projector::SetInstance(nullptr);
+		g_projector->DestroyAll();
+		g_projector.reset();
+	}
+
+	if (g_interact) {
+		Interact::SetInstance(nullptr);
+		g_interact->DestroyAll();
+		g_interact.reset();
+	}
+
+	if (g_preview) {
+		Preview::SetInstance(nullptr);
+		g_preview->DestroyAll();
+		g_preview.reset();
+	}
+
+	// Capture the latest global scene collection while channel 0 and every scene
+	// source are still bound -- TeardownScene below unbinds and removes the
+	// placeholder default scene, so this must run first.
+	SceneCollection::Save();
+
+	// Release the test scene + browser source, then pump CEF so the source's
+	// posted `delete this` / CloseBrowser tasks drain (the run-loop has already
+	// returned; these would otherwise leak/dangle into CefShutdown).
+	ObsBootstrap::TeardownScene();
+	DrainCefTasks();
+
+	// Tear libobs down before CEF: obs holds a D3D11 device + module handles.
+	// Stop pumps the injected drain after its source-removal sweep -- the browser
+	// sources a loaded scene collection restored die there, not in TeardownScene
+	// above, and their posted TID_UI teardown must run before CefShutdown.
+	ObsBootstrap::Stop(DrainCefTasks);
+
+	CefShutdown();
+	HostLog("[cef] shutdown complete");
+
+	// Pair the startup RtwqStartup(): tear the MF Real-Time Work Queue down now
+	// that obs (and its MF encoders) have stopped.
+	RtwqShutdown();
+
+	// Release the single-instance guard acquired at startup. Guarded so an early
+	// bail-out that never acquired it is still safe.
+	if (g_instance_mutex) {
+		ReleaseMutex(g_instance_mutex);
+		CloseHandle(g_instance_mutex);
+		g_instance_mutex = nullptr;
+	}
+}
+
 } // namespace
 
 // Entry point for every CEF process (the browser process plus the render/GPU/
@@ -562,13 +649,10 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 	g_browser = CefBrowserHost::CreateBrowserSync(window_info, client, app->startup_url(), browser_settings,
 						      nullptr, nullptr);
 	if (!g_browser) {
-		// No browser means OnBeforeClose never fires to quit the loop; bail
-		// rather than hang in CefRunMessageLoop with no way out.
+		// No browser means OnBeforeClose never fires to quit the loop; run the
+		// shared teardown rather than hang in CefRunMessageLoop with no way out.
 		HostLog("[cef] CreateBrowserSync failed -- aborting");
-		ObsBootstrap::TeardownScene();
-		DrainCefTasks();
-		ObsBootstrap::Stop(DrainCefTasks);
-		CefShutdown();
+		Teardown();
 		return 1;
 	}
 	DBG(LogCat::Lifecycle, "cef browser created");
@@ -590,82 +674,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 
 	CefRunMessageLoop();
 
-	g_browser = nullptr;
-
-	// Drop the process-wide shared Client ref so it doesn't outlive teardown.
-	Client::SetShared(nullptr);
-
-	// Tray icon was already NIM_DELETE'd in WM_CLOSE (while the HWND was valid);
-	// drop the owner here. Remove() is idempotent if WM_CLOSE didn't run.
-	if (g_tray) {
-		g_tray->Remove();
-		g_tray.reset();
-	}
-
-	// Tear down every detached window's surfaces + browser BEFORE g_preview->DestroyAll()
-	// and ObsBootstrap::Stop() free the canvas mixes those surfaces render (UAF discipline).
-	if (g_windows) {
-		WindowManager::SetInstance(nullptr);
-		g_windows->DestroyAll();
-		g_windows.reset();
-	}
-
-	// Destroy every preview surface's obs_display + overlay HWND while libobs is
-	// still up. This must precede ObsBootstrap::Stop(): an additional canvas's
-	// surface renders that canvas's mix, and Stop() (via CanvasRuntime::ClearAll)
-	// frees those mixes, so the displays must die first. The Default surface renders
-	// the global mix, freed even later by obs_shutdown.
-	// Tear down every projector's obs_display + window while libobs is up and BEFORE
-	// the canvas mixes are freed (a canvas projector's display renders a canvas mix).
-	if (g_projector) {
-		Projector::SetInstance(nullptr);
-		g_projector->DestroyAll();
-		g_projector.reset();
-	}
-
-	if (g_interact) {
-		Interact::SetInstance(nullptr);
-		g_interact->DestroyAll();
-		g_interact.reset();
-	}
-
-	if (g_preview) {
-		Preview::SetInstance(nullptr);
-		g_preview->DestroyAll();
-		g_preview.reset();
-	}
-
-	// Capture the latest global scene collection on a clean exit, while channel 0
-	// and every scene source are still bound -- TeardownScene below unbinds and
-	// removes the placeholder default scene, so this must run first.
-	SceneCollection::Save();
-
-	// Release the test scene + browser source, then pump CEF so the source's
-	// posted `delete this` / CloseBrowser tasks drain (the run-loop has already
-	// returned; these would otherwise leak/dangle into CefShutdown).
-	ObsBootstrap::TeardownScene();
-	DrainCefTasks();
-
-	// Tear libobs down before CEF: obs holds a D3D11 device + module handles.
-	// Stop pumps the injected drain after its source-removal sweep -- the browser
-	// sources a loaded scene collection restored die there, not in TeardownScene
-	// above, and their posted TID_UI teardown must run before CefShutdown.
-	ObsBootstrap::Stop(DrainCefTasks);
-
-	CefShutdown();
-	HostLog("[cef] shutdown complete");
-
-	// Pair the startup RtwqStartup(): tear the MF Real-Time Work Queue down on the
-	// normal exit path, now that obs (and its MF encoders) have stopped.
-	RtwqShutdown();
-
-	// Release the single-instance guard on the clean-exit path (abort paths above
-	// rely on process teardown, which frees it too).
-	if (g_instance_mutex) {
-		ReleaseMutex(g_instance_mutex);
-		CloseHandle(g_instance_mutex);
-		g_instance_mutex = nullptr;
-	}
+	Teardown();
 
 	// Propagate the perf-repro self-test's PASS/FAIL/skip/error exit code (see
 	// perf_repro_selftest.hpp) so it can gate CI; every other path keeps the
