@@ -41,11 +41,11 @@ if("${CMAKE_CURRENT_BINARY_DIR}" STREQUAL "${CMAKE_CURRENT_SOURCE_DIR}")
 endif()
 
 # Set default global project variables
-set(OBS_COMPANY_NAME "OBS Project")
+set(OBS_COMPANY_NAME "Braidcast")
 set(OBS_PRODUCT_NAME "Braidcast")
-set(OBS_WEBSITE "https://www.obsproject.com")
+set(OBS_WEBSITE "https://braidcast.com")
 set(OBS_COMMENTS "Free and open source software for video recording and live streaming")
-set(OBS_LEGAL_COPYRIGHT "(C) Lain Bailey")
+set(OBS_LEGAL_COPYRIGHT "(C) Lain Bailey and OBS Studio contributors; portions (C) Braidcast")
 set(OBS_CMAKE_VERSION 3.0.0)
 
 # Configure default version strings

@@ -114,28 +114,31 @@ within our community:
 Enforcement
 -----------
 
-Instances of unacceptable behavior may be reported by contacting an
-enforcement team member at one of the following addresses:
-coc@obsproject.com. All complaints will be reviewed and investigated,
-and will result in a response that is deemed necessary and appropriate
-to the circumstances. The project team is obligated to maintain
-confidentiality with regard to the reporter of an incident. Further
-details of specific enforcement policies may be posted separately.
+Instances of unacceptable behavior may be reported privately to the
+project maintainers via the repo's GitHub private vulnerability
+reporting channel (Security tab → "Report a vulnerability", or
+directly at
+https://github.com/braidcast/braidcast-studio/security/advisories/new).
+All complaints will be reviewed and investigated, and will result in a
+response that is deemed necessary and appropriate to the circumstances.
+The project team is obligated to maintain confidentiality with regard
+to the reporter of an incident. Further details of specific enforcement
+policies may be posted separately.
 
 In other cases where behavior is against the general guidelines set out
-in this Code of Conduct, this may be brought up with a moderator through
-either a Discord DM, or through an email to an enforcement member. In
-these cases, it is always assumed in the first instance that a person
-means well, and action will only be taken in the case of repeated
-failure to follow the guidelines.
+in this Code of Conduct, this may be brought up with a maintainer
+through the same private reporting channel. In these cases, it is
+always assumed in the first instance that a person means well, and
+action will only be taken in the case of repeated failure to follow the
+guidelines.
 
 Feedback
 --------
 
 Suggestions for changes can be made by submitting a pull request on the
-`obsproject/obs-studio <https://github.com/obsproject/obs-studio>`__
+`braidcast/braidcast-studio <https://github.com/braidcast/braidcast-studio>`__
 repo, or if you wish to privately discuss your concerns, you can instead
-email coc@obsproject.com.
+use the repo's GitHub private vulnerability reporting channel.
 
 Attribution
 -----------
