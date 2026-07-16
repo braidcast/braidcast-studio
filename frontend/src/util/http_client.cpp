@@ -17,10 +17,21 @@ void EnsureGlobalInit()
 	std::call_once(once, [] { curl_global_init(CURL_GLOBAL_DEFAULT); });
 }
 
+// Ceiling on a response body, generous for the images/JSON API responses this client
+// fetches (including third-party emote/badge hosts on the go-live chat path).
+// CURLOPT_MAXFILESIZE_LARGE below rejects a response whose declared Content-Length
+// exceeds this, but a chunked/gzip-bombed response can lie about or omit
+// Content-Length entirely -- WriteToString enforces the same ceiling against the
+// actual decompressed bytes as they arrive, so the cap holds either way.
+constexpr curl_off_t kMaxResponseBytes = 20 * 1024 * 1024;
+
 size_t WriteToString(char *ptr, size_t size, size_t nmemb, void *userdata)
 {
 	const size_t total = size * nmemb;
 	auto *out = static_cast<std::string *>(userdata);
+	if (out->size() + total > static_cast<size_t>(kMaxResponseBytes)) {
+		return 0; // short return -> curl aborts the transfer with CURLE_WRITE_ERROR
+	}
 	out->append(ptr, total);
 	return total;
 }
@@ -66,6 +77,7 @@ HttpResponse HttpRequest(const HttpReq &req)
 
 	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteToString);
 	curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp.body);
+	curl_easy_setopt(curl, CURLOPT_MAXFILESIZE_LARGE, kMaxResponseBytes);
 
 	const long timeout = req.timeoutSec > 0 ? req.timeoutSec : 30;
 	curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout);

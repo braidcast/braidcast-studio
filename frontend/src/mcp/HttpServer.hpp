@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <functional>
+#include <mutex>
 #include <string>
 #include <thread>
 
@@ -13,7 +14,9 @@
 // The accept loop runs on its own thread and handles one connection at a time
 // (accept -> read -> handler -> write -> close). For the MVP a single in-flight
 // request is acceptable: MCP clients are sequential. Stop() unblocks accept by
-// closing the listen socket and joins the thread.
+// closing the listen socket, unblocks a parked recv by shutdown()ing the current
+// client socket, and joins the thread -- so Stop() can never hang on a client that
+// connected but never sent data.
 
 namespace Mcp {
 
@@ -46,8 +49,8 @@ public:
 	// thread for each request.
 	bool Start(int port, HttpHandler handler);
 
-	// Stop the accept thread (closes the listen socket to unblock accept, joins),
-	// and balance the WSAStartup. Idempotent.
+	// Stop the accept thread (closes the listen socket to unblock accept, shuts down
+	// any parked client socket, joins), and balance the WSAStartup. Idempotent.
 	void Stop();
 
 	bool IsListening() const { return running_.load(); }
@@ -63,6 +66,12 @@ private:
 	bool wsaUp_ = false;
 	HttpHandler handler_;
 	std::string lastError_;
+
+	// The one client socket HandleConnection may currently be parked in recv() on (this
+	// server handles a single connection at a time). Stop() shutdown()s it so a parked
+	// recv unblocks immediately instead of waiting out kHeaderRecvTimeoutMs.
+	std::mutex clientMutex_;
+	uintptr_t clientSocket_ = ~uintptr_t(0);
 };
 
 } // namespace Mcp

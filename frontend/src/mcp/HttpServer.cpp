@@ -21,6 +21,12 @@ namespace {
 constexpr size_t kMaxHeaderBytes = 16 * 1024;     // 16 KB header block
 constexpr size_t kMaxBodyBytes = 1 * 1024 * 1024; // 1 MB body
 
+// Bounded recv so a client that connects but never sends data can't park the accept
+// thread (and thus Stop()'s join) forever. Stop() also shutdown()s the live client
+// socket directly for an immediate unblock; this is the standalone backstop for the
+// case where the server keeps running (mirrors overlay_server's kHeaderRecvTimeoutMs).
+constexpr DWORD kHeaderRecvTimeoutMs = 10000;
+
 struct ReasonPhrase {
 	int status;
 	const char *phrase;
@@ -182,6 +188,15 @@ void HttpServer::Stop()
 		closesocket((SOCKET)listenSocket_);
 		listenSocket_ = ~uintptr_t(0);
 	}
+	// shutdown() (NOT close) any client socket HandleConnection is currently parked on:
+	// this unblocks its recv without freeing the fd, so HandleConnection remains the sole
+	// closer once it returns (mirrors overlay_server's Stop()).
+	{
+		std::lock_guard<std::mutex> lock(clientMutex_);
+		if (clientSocket_ != ~uintptr_t(0)) {
+			shutdown((SOCKET)clientSocket_, SD_BOTH);
+		}
+	}
 	if (acceptThread_.joinable()) {
 		acceptThread_.join();
 	}
@@ -203,7 +218,15 @@ void HttpServer::AcceptLoop()
 			}
 			continue;
 		}
+		{
+			std::lock_guard<std::mutex> lock(clientMutex_);
+			clientSocket_ = (uintptr_t)client;
+		}
 		HandleConnection((uintptr_t)client);
+		{
+			std::lock_guard<std::mutex> lock(clientMutex_);
+			clientSocket_ = ~uintptr_t(0);
+		}
 		closesocket(client);
 	}
 }
@@ -211,6 +234,7 @@ void HttpServer::AcceptLoop()
 void HttpServer::HandleConnection(uintptr_t clientSocket)
 {
 	const SOCKET sock = (SOCKET)clientSocket;
+	setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&kHeaderRecvTimeoutMs, sizeof(kHeaderRecvTimeoutMs));
 
 	// 1) Read the header block until "\r\n\r\n", capping total size.
 	std::string buffer;

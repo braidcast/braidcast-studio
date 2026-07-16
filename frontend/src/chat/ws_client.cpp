@@ -72,6 +72,13 @@ constexpr long kPollMicros = 250 * 1000;
 // reachable only in raw mode or from inside curl callbacks -- neither used here).
 constexpr long kUpgradeTimeoutMs = 30 * 1000;
 
+// Ceiling on accum_, the reassembly buffer for one (possibly fragmented) WebSocket
+// frame. Chat frames (Twitch IRC, Kick/Pusher) are at most a few KB; this is a wide
+// margin against legitimate traffic while bounding a hostile or misbehaving peer that
+// keeps extending a frame (meta->bytesleft > 0 forever) from growing accum_ without
+// limit.
+constexpr size_t kMaxAccumBytes = 4 * 1024 * 1024;
+
 } // namespace
 
 void WsClient::EnsureInit()
@@ -207,6 +214,12 @@ bool WsClient::recv(std::string &outFrame, bool &isText, std::string &err)
 				accumText_ = (meta->flags & CURLWS_TEXT) != 0;
 			}
 			accum_.append(buf, n);
+			if (accum_.size() > kMaxAccumBytes) {
+				accum_.clear();
+				accumText_ = false;
+				err = "websocket frame exceeded max size";
+				return false;
+			}
 			if (meta->bytesleft > 0) {
 				return true; // more chunks of this frame still to come
 			}
