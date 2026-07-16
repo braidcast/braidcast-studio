@@ -3508,13 +3508,17 @@ bool MethodSceneItemsGroup(const json &params, json &result, std::string &error)
 
 	// Resolve ids -> items (borrowed; owned by the scene). Drop unresolved ids and
 	// existing groups, both of which obs_scene_insert_group would reject outright.
+	// Drop duplicate ids too: a repeated pointer passes libobs's guard, but its
+	// per-element detach then corrupts the scene's item list (a null-parent write
+	// when the item is the scene's first).
 	std::vector<obs_sceneitem_t *> items;
 	for (const auto &entry : params["ids"]) {
 		if (!entry.is_number_integer()) {
 			continue;
 		}
 		obs_sceneitem_t *item = FindSceneItem(scene, entry.get<int64_t>());
-		if (item && !obs_sceneitem_is_group(item)) {
+		if (item && !obs_sceneitem_is_group(item) &&
+		    std::find(items.begin(), items.end(), item) == items.end()) {
 			items.push_back(item);
 		}
 	}
