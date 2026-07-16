@@ -1,4 +1,5 @@
 #include <obs.h>
+#include <util/platform.h>
 #include "event_names.hpp"
 
 #include <windows.h>
@@ -18,6 +19,7 @@
 #include "windowing/app_icon.hpp"
 #include "bridge.hpp"
 #include "client.hpp"
+#include "gpu_safe_mode.hpp"
 #include "settings/GeneralSettings.hpp"
 #include "windowing/interact_window.hpp"
 #include "log.hpp"
@@ -428,10 +430,38 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 		return 0;
 	}
 
+	// Decide GPU vs. software rendering BEFORE CEF spins up its GPU subprocess. On
+	// some machines (e.g. a GPU newer than this libcef) the CEF GPU process
+	// CHECK()-crashes in a loop and the renderer never composites, so the UI paints as
+	// a blank window. A prior boot that created the browser but never confirmed a
+	// paint trips an automatic, persistent fallback to software (SwiftShader)
+	// rendering here; App reads this in OnBeforeCommandLineProcessing.
+	const GpuSafeMode::BootDecision gpuDecision = GpuSafeMode::DecideAtBoot();
+	app->set_software_mode(gpuDecision.disableGpu);
+	if (gpuDecision.autoFellBack) {
+		blog(LOG_WARNING,
+		     "[gpu] a previous launch never confirmed a GPU paint -- rendering in software mode "
+		     "(SwiftShader). Delete \"%s\" to re-probe the GPU.",
+		     gpuDecision.safeModeFile.c_str());
+	} else if (gpuDecision.disableGpu) {
+		HostLog("[gpu] software rendering forced (disable-gpu marker or persisted safe mode)");
+	}
+
 	CefSettings settings;
 	settings.no_sandbox = true;
 	settings.multi_threaded_message_loop = false; // we drive CefRunMessageLoop()
 	settings.windowless_rendering_enabled = true; // required for obs-browser OSR sources
+
+	// Give CEF an explicit cache root under our config base. Without it CEF warns and
+	// derives a process-singleton lock from a default AppData\Local\CEF path that can
+	// collide across installs; scoping it here silences the warning and pins the
+	// singleton to this install. cache_path is left empty (unchanged in-memory profile
+	// behavior); only installation data lands on disk under this root.
+	const std::string cefCache = BraidcastConfigPath("cef_cache");
+	if (!cefCache.empty()) {
+		os_mkdirs(cefCache.c_str());
+		CefString(&settings.root_cache_path).FromString(cefCache);
+	}
 
 	if (!CefInitialize(main_args, settings, app.get(), nullptr)) {
 		return CefGetExitCode();

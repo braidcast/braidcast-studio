@@ -16,6 +16,20 @@ void App::OnRegisterCustomSchemes(CefRawPtr<CefSchemeRegistrar> registrar)
 						       CEF_SCHEME_OPTION_FETCH_ENABLED);
 }
 
+void App::OnBeforeCommandLineProcessing(const CefString &process_type, CefRefPtr<CefCommandLine> command_line)
+{
+	// Only customize the browser process (empty type). Chromium propagates the
+	// GPU-disable decision to the GPU/renderer subprocesses it spawns, so the switch
+	// need not (and cannot reliably, this early) be appended per subprocess.
+	// --disable-gpu stops the CEF GPU-subprocess crash loop (EXCEPTION_BREAKPOINT on
+	// hardware newer than this libcef); compositing then runs via SwiftShader.
+	if (!process_type.empty() || !software_mode_.load()) {
+		return;
+	}
+	command_line->AppendSwitch("disable-gpu");
+	command_line->AppendSwitch("disable-gpu-compositing");
+}
+
 void App::OnContextInitialized()
 {
 	// Factory registration must happen in the browser process after init.

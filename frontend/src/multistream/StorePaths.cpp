@@ -17,14 +17,10 @@ constexpr wchar_t kPortableMarker[] = L"braidcast_portable.txt";
 std::string ResolveConfigBase()
 {
 	const std::wstring exeDir = ExecutableDir();
-	if (!exeDir.empty()) {
-		std::error_code ec;
-		const std::filesystem::path base(exeDir);
-		if (std::filesystem::exists(base / kPortableMarker, ec)) {
-			const std::filesystem::path cfg = base / L"config";
-			os_mkdirs(cfg.generic_u8string().c_str());
-			return cfg.generic_u8string();
-		}
+	if (!exeDir.empty() && MarkerFileBesideExe(kPortableMarker)) {
+		const std::filesystem::path cfg = std::filesystem::path(exeDir) / L"config";
+		os_mkdirs(cfg.generic_u8string().c_str());
+		return cfg.generic_u8string();
 	}
 	char buf[512];
 	if (os_get_config_path(buf, sizeof(buf), "braidcast") <= 0) {
@@ -51,6 +47,16 @@ std::string BraidcastConfigPath(const char *relative)
 	path += "/";
 	path += relative;
 	return path;
+}
+
+bool MarkerFileBesideExe(const wchar_t *name)
+{
+	const std::wstring exeDir = ExecutableDir();
+	if (exeDir.empty()) {
+		return false;
+	}
+	std::error_code ec;
+	return std::filesystem::exists(std::filesystem::path(exeDir) / name, ec);
 }
 
 bool SaveJsonAtomic(obs_data_t *root, const std::string &absPath)

@@ -53,6 +53,8 @@ target_sources(
     src/app.hpp
     src/client.cpp
     src/client.hpp
+    src/gpu_safe_mode.cpp
+    src/gpu_safe_mode.hpp
     src/scheme.cpp
     src/scheme.hpp
     src/bridge.cpp
@@ -397,6 +399,7 @@ target_link_options(${_target} PRIVATE "/IGNORE:4199")
 # only on the TUs that include obs.h.
 set_source_files_properties(
   src/main.cpp
+  src/gpu_safe_mode.cpp
   src/obs_bootstrap.cpp
   src/obs_importer.cpp
   src/settings/GeneralSettings.cpp

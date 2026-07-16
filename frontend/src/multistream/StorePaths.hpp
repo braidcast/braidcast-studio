@@ -20,6 +20,12 @@ const std::string &BraidcastConfigDir();
 // through, so portable-mode redirection lives in exactly one place.
 std::string BraidcastConfigPath(const char *relative);
 
+// True when a marker file of this name sits next to the executable. The OBS-style
+// portable-marker idiom -- a file's mere presence beside the exe flips a mode --
+// shared by the portable-config marker here and the GPU-disable override marker in
+// gpu_safe_mode. Wide name so it feeds std::filesystem directly.
+bool MarkerFileBesideExe(const wchar_t *name);
+
 // Resolves a file under the Braidcast "basic" state dir (<config base>/basic) --
 // the SAME files the legacy Qt frontend wrote as userProfilesLocation +
 // "/braidcast/basic/<file>". Routed through BraidcastConfigPath so it stays

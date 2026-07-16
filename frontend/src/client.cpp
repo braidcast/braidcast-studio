@@ -4,6 +4,7 @@
 #include "include/wrapper/cef_helpers.h"
 
 #include "bridge.hpp"
+#include "gpu_safe_mode.hpp"
 #include "log.hpp"
 #include "windowing/window_chrome.hpp"
 
@@ -153,6 +154,10 @@ void Client::OnLoadEnd(CefRefPtr<CefBrowser> /*browser*/, CefRefPtr<CefFrame> fr
 {
 	CEF_REQUIRE_UI_THREAD();
 	if (frame->IsMain()) {
+		// A completed main-frame load proves the renderer composited this run, so the
+		// GPU path is healthy: clear the boot sentinel a crash-looping GPU subprocess
+		// would otherwise leave behind for next-boot fallback detection.
+		GpuSafeMode::NotePaintSuccess();
 		HostLog("[cef] page loaded: " + frame->GetURL().ToString() +
 			" (status=" + std::to_string(http_status_code) + ")");
 	}
