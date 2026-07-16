@@ -207,6 +207,20 @@ void EmitUndoChanged()
 	EmitEvent(EventNames::kUndoChanged, UndoStateJson());
 }
 
+// Turn a store save that returned false (disk full / permission -- already logged by
+// ReportSaveResult with the path) into the handler's caller-visible failure, so the
+// web's window.obs.call rejects instead of resolving on a silently-dropped edit. A
+// handler keeps its post-save side effects, then `return PersistOrFail(saved, error)`
+// at its existing terminal return: on success (saved==true) `error` is untouched and
+// the same true is returned, so the success path is unchanged.
+bool PersistOrFail(bool saved, std::string &error)
+{
+	if (!saved) {
+		error = "failed to save the change to disk; it may be lost on restart";
+	}
+	return saved;
+}
+
 // --- method bodies ----------------------------------------------------------
 
 bool MethodGetVersion(const json & /*params*/, json &result, std::string & /*error*/)
@@ -674,7 +688,7 @@ bool MethodSettingsSetGeneral(const json &params, json &result, std::string &err
 			g.*f.member = v;
 		}
 	}
-	g.Save();
+	const bool saved = g.Save();
 
 	// Live-apply the one wired effect: re-pin open projectors' always-on-top.
 	if (Projector::Instance()) {
@@ -683,7 +697,7 @@ bool MethodSettingsSetGeneral(const json &params, json &result, std::string &err
 
 	result = GeneralToJson(g);
 	EmitEvent(EventNames::kSettingsGeneralChanged, result);
-	return true;
+	return PersistOrFail(saved, error);
 }
 
 // Build the full Advanced-settings wire object (camelCase keys) from the struct.
@@ -761,7 +775,7 @@ bool MethodSettingsSetAdvanced(const json &params, json &result, std::string &er
 			a.*f.member = (uint32_t)v;
 		}
 	}
-	a.Save();
+	const bool saved = a.Save();
 
 	// Live-apply the one wired side effect: re-pin the process priority when it
 	// changed. Stream delay / reconnect / network options are read per output at
@@ -775,7 +789,7 @@ bool MethodSettingsSetAdvanced(const json &params, json &result, std::string &er
 
 	result = AdvancedToJson(a);
 	EmitEvent(EventNames::kSettingsAdvancedChanged, result);
-	return true;
+	return PersistOrFail(saved, error);
 }
 
 bool MethodSettingsGetAudio(const json & /*params*/, json &result, std::string &error)
@@ -1232,7 +1246,7 @@ bool MethodSceneLinkSet(const json &params, json &result, std::string &error)
 	}
 
 	ObsBootstrap::SceneLinks().Links().Set(mainUuid, canvasUuid, canvasSceneUuid);
-	ObsBootstrap::SceneLinks().Save();
+	const bool saved = ObsBootstrap::SceneLinks().Save();
 
 	// Instant feedback: if the linked main scene is live now, switch the canvas.
 	OBSSourceAutoRelease program = Transitions::GetProgramScene();
@@ -1245,7 +1259,7 @@ bool MethodSceneLinkSet(const json &params, json &result, std::string &error)
 
 	EmitEvent(EventNames::kSceneLinkChanged, json::object());
 	result = json::object();
-	return true;
+	return PersistOrFail(saved, error);
 }
 
 // params: {mainScene:<name>, canvas:<uuid>}. Removes that canvas's link for the
@@ -1261,16 +1275,17 @@ bool MethodSceneLinkClear(const json &params, json &result, std::string &error)
 	const std::string mainUuid = MainSceneUuidFromName(mainName);
 	CanvasSceneLink &link = ObsBootstrap::SceneLinks().Links();
 	auto it = link.map.find(mainUuid);
+	bool saved = true;
 	if (it != link.map.end()) {
 		it->second.erase(canvasUuid);
 		if (it->second.empty()) {
 			link.map.erase(it);
 		}
-		ObsBootstrap::SceneLinks().Save();
+		saved = ObsBootstrap::SceneLinks().Save();
 	}
 	EmitEvent(EventNames::kSceneLinkChanged, json::object());
 	result = json::object();
-	return true;
+	return PersistOrFail(saved, error);
 }
 
 bool MethodScenesRemove(const json &params, json &result, std::string &error)
@@ -5132,7 +5147,7 @@ bool MethodCanvasCreate(const json &params, json &result, std::string &error)
 	CanvasStore &store = ObsBootstrap::Canvases();
 	const CanvasDefinition &added = store.Add(std::move(def));
 	const std::string uuid = added.uuid;
-	store.Save();
+	const bool saved = store.Save();
 
 	// Bring up the live obs_canvas_t mix so the new canvas can encode immediately.
 	ObsBootstrap::CanvasRuntime().EnsureCanvas(added);
@@ -5141,7 +5156,7 @@ bool MethodCanvasCreate(const json &params, json &result, std::string &error)
 
 	EmitEvent(EventNames::kCanvasChanged, json::object());
 	result = json{{"uuid", uuid}};
-	return true;
+	return PersistOrFail(saved, error);
 }
 
 bool MethodCanvasUpdate(const json &params, json &result, std::string &error)
@@ -5249,11 +5264,11 @@ bool MethodCanvasRemove(const json &params, json &result, std::string &error)
 	RemoveCanvasMixAndConsumers(uuid);
 
 	store.Remove(uuid);
-	store.Save();
+	const bool saved = store.Save();
 	ObsBootstrap::PruneSceneLinksForCanvas(uuid);
 	EmitEvent(EventNames::kCanvasChanged, json::object());
 	result = json{{"removed", uuid}};
-	return true;
+	return PersistOrFail(saved, error);
 }
 
 bool MethodCanvasReorder(const json &params, json &result, std::string &error)
@@ -5275,7 +5290,7 @@ bool MethodCanvasReorder(const json &params, json &result, std::string &error)
 
 	CanvasStore &store = ObsBootstrap::Canvases();
 	store.Reorder(order);
-	store.Save();
+	const bool saved = store.Save();
 	EmitEvent(EventNames::kCanvasChanged, json::object());
 
 	json arr = json::array();
@@ -5283,7 +5298,7 @@ bool MethodCanvasReorder(const json &params, json &result, std::string &error)
 		arr.push_back(def.uuid);
 	}
 	result = json{{"order", arr}};
-	return true;
+	return PersistOrFail(saved, error);
 }
 
 // List registered encoder types of a kind ("video"|"audio") as {id, name}.
@@ -5429,11 +5444,11 @@ bool MethodStreamProfileCreate(const json &params, json &result, std::string &er
 
 	StreamProfileStore &store = ObsBootstrap::StreamProfiles();
 	const std::string uuid = store.Add(std::move(p)).uuid;
-	store.Save();
+	const bool saved = store.Save();
 
 	EmitEvent(EventNames::kStreamProfileChanged, json::object());
 	result = json{{"uuid", uuid}};
-	return true;
+	return PersistOrFail(saved, error);
 }
 
 bool MethodStreamProfileUpdate(const json &params, json &result, std::string &error)
@@ -5487,11 +5502,11 @@ bool MethodStreamProfileUpdate(const json &params, json &result, std::string &er
 	p->label = candidate.label;
 	p->serviceId = candidate.serviceId;
 	p->settings = std::move(candidate.settings);
-	store.Save();
+	const bool saved = store.Save();
 
 	EmitEvent(EventNames::kStreamProfileChanged, json::object());
 	result = StreamProfileToJson(*p);
-	return true;
+	return PersistOrFail(saved, error);
 }
 
 bool MethodStreamProfileRemove(const json &params, json &result, std::string &error)
@@ -5512,7 +5527,7 @@ bool MethodStreamProfileRemove(const json &params, json &result, std::string &er
 
 	// Remove re-points the primary internally when the primary was removed.
 	store.Remove(uuid);
-	store.Save();
+	const bool saved = store.Save();
 
 	// Cascade: drop every output binding that routed this profile so no dangling
 	// (deleted) edge lingers for the user to unbind by hand. Only the active
@@ -5533,7 +5548,7 @@ bool MethodStreamProfileRemove(const json &params, json &result, std::string &er
 	}
 
 	result = json{{"removed", uuid}};
-	return true;
+	return PersistOrFail(saved, error);
 }
 
 bool MethodStreamProfileSetPrimary(const json &params, json &result, std::string &error)
@@ -5547,11 +5562,11 @@ bool MethodStreamProfileSetPrimary(const json &params, json &result, std::string
 		error = "no stream profile with uuid '" + uuid + "'";
 		return false;
 	}
-	store.Save();
+	const bool saved = store.Save();
 
 	EmitEvent(EventNames::kStreamProfileChanged, json::object());
 	result = json{{"uuid", uuid}, {"isPrimary", true}};
-	return true;
+	return PersistOrFail(saved, error);
 }
 
 bool MethodStreamProfileReorder(const json &params, json &result, std::string &error)
@@ -5573,7 +5588,7 @@ bool MethodStreamProfileReorder(const json &params, json &result, std::string &e
 
 	StreamProfileStore &store = ObsBootstrap::StreamProfiles();
 	store.Reorder(order);
-	store.Save();
+	const bool saved = store.Save();
 	EmitEvent(EventNames::kStreamProfileChanged, json::object());
 
 	json arr = json::array();
@@ -5581,7 +5596,7 @@ bool MethodStreamProfileReorder(const json &params, json &result, std::string &e
 		arr.push_back(p.uuid);
 	}
 	result = json{{"order", arr}};
-	return true;
+	return PersistOrFail(saved, error);
 }
 
 // List registered service types as {id, name} (e.g. rtmp_common, rtmp_custom,
@@ -5693,12 +5708,12 @@ bool MethodOutputBindingCreate(const json &params, json &result, std::string &er
 	created.profileUuid = profileUuid;
 	created.enabled = true;
 	const std::string uuid = created.uuid;
-	ObsBootstrap::OutputBindings().Save();
+	const bool saved = ObsBootstrap::OutputBindings().Save();
 	ObsBootstrap::CanvasRuntime().ReconcileAll(); // new enabled binding -> its canvas activates
 
 	EmitEvent(EventNames::kOutputBindingChanged, json::object());
 	result = json{{"uuid", uuid}};
-	return true;
+	return PersistOrFail(saved, error);
 }
 
 bool MethodOutputBindingUpdate(const json &params, json &result, std::string &error)
@@ -5766,7 +5781,7 @@ bool MethodOutputBindingUpdate(const json &params, json &result, std::string &er
 
 	b->profileUuid = newProfile;
 	b->canvasUuid = newCanvas;
-	ObsBootstrap::OutputBindings().Save();
+	const bool saved = ObsBootstrap::OutputBindings().Save();
 
 	// Build/drop the old+new canvas mixes BEFORE (re)starting the output: StartOutput ->
 	// EnsureCanvasEncoders -> VideoForCanvas must resolve the new canvas's mix, so it has
@@ -5781,7 +5796,7 @@ bool MethodOutputBindingUpdate(const json &params, json &result, std::string &er
 
 	EmitEvent(EventNames::kOutputBindingChanged, json::object());
 	result = OutputBindingToJson(*b);
-	return true;
+	return PersistOrFail(saved, error);
 }
 
 bool MethodOutputBindingSetEnabled(const json &params, json &result, std::string &error)
@@ -5812,7 +5827,7 @@ bool MethodOutputBindingSetEnabled(const json &params, json &result, std::string
 	}
 
 	b->enabled = enabled;
-	ObsBootstrap::OutputBindings().Save();
+	const bool saved = ObsBootstrap::OutputBindings().Save();
 
 	// A disabled binding must not stay live: the canvas stops rendering for it, so a
 	// still-running output would encode a frozen frame. StopOutput is a no-op if the
@@ -5829,7 +5844,7 @@ bool MethodOutputBindingSetEnabled(const json &params, json &result, std::string
 	// canvas renders (AnyEnabledForCanvas may have flipped on this toggle).
 	EmitEvent(EventNames::kOutputBindingChanged, json::object());
 	result = json{{"uuid", uuid}, {"enabled", enabled}};
-	return true;
+	return PersistOrFail(saved, error);
 }
 
 bool MethodOutputBindingRemove(const json &params, json &result, std::string &error)
@@ -5848,12 +5863,12 @@ bool MethodOutputBindingRemove(const json &params, json &result, std::string &er
 	// true). No-op if the binding isn't live; manages its own locking.
 	ObsBootstrap::Multistream().StopOutput(uuid);
 	bindings.Remove(uuid);
-	ObsBootstrap::OutputBindings().Save();
+	const bool saved = ObsBootstrap::OutputBindings().Save();
 	ObsBootstrap::CanvasRuntime().ReconcileAll(); // removed the last enabled dest -> inert
 
 	EmitEvent(EventNames::kOutputBindingChanged, json::object());
 	result = json{{"removed", uuid}};
-	return true;
+	return PersistOrFail(saved, error);
 }
 
 // --- multistream live status + per-row control (4.4.4) ----------------------
@@ -6507,12 +6522,12 @@ bool MethodAudioSetGlobalDevice(const json &params, json &result, std::string &e
 	if (!audio.ApplyDevice(channel, deviceId, error)) {
 		return false;
 	}
-	audio.Persist();
+	const bool saved = audio.Persist();
 	ObsBootstrap::AudioMonitor().Rebuild();
 	EmitEvent(EventNames::kAudioChanged, json::object());
 
 	result = json{{"channel", channel}, {"deviceId", deviceId.empty() ? json(nullptr) : json(deviceId)}};
-	return true;
+	return PersistOrFail(saved, error);
 }
 
 // Post the actual ExecuteJavaScript on TID_UI, broadcasting to every registered
@@ -7596,10 +7611,10 @@ bool MethodVirtualCamSetConfig(const json &params, json &result, std::string &er
 	}
 	const std::string canvas = OptString(params, "canvas");
 	ObsBootstrap::VirtualCam().SetTargetCanvas(canvas);
-	ObsBootstrap::VirtualCam().Save();
+	const bool saved = ObsBootstrap::VirtualCam().Save();
 	result = json{{"canvas", canvas}};
 	EmitVirtualCamChanged();
-	return true;
+	return PersistOrFail(saved, error);
 }
 
 // Custom browser docks (user-defined {id,title,url} web panels, Task 12). A flat
@@ -8066,12 +8081,12 @@ bool MethodDiagnosticsSetDebug(const json &params, json &result, std::string &er
 	DiagnosticsSettings ds;
 	ds.Load();
 	ds.debugLogging = enabled;
-	ds.Save();
+	const bool saved = ds.Save();
 	Log::SetDebug(enabled);
 
 	result = json{{"debug", enabled}};
 	EmitEvent(EventNames::kDebugChanged, result);
-	return true;
+	return PersistOrFail(saved, error);
 }
 
 // Reveal the session log's containing folder in the OS file manager.
@@ -8560,10 +8575,10 @@ bool MethodOAuthLinkAccount(const json &params, json &result, std::string &error
 		return false;
 	}
 	p->accountId = accountId;
-	ObsBootstrap::StreamProfiles().Save();
+	const bool saved = ObsBootstrap::StreamProfiles().Save();
 	EmitEvent(EventNames::kStreamProfileChanged, json::object());
 	result = json{{"ok", true}};
-	return true;
+	return PersistOrFail(saved, error);
 }
 
 bool MethodOAuthStatus(const json & /*params*/, json &result, std::string & /*error*/)
@@ -8800,9 +8815,9 @@ bool MethodStreamMetaSave(const json &params, json &result, std::string &error)
 			}
 		}
 	}
-	store.Save();
+	const bool saved = store.Save();
 	result = json{{"ok", true}};
-	return true;
+	return PersistOrFail(saved, error);
 }
 
 // ---- chat (Phase 9.0) ------------------------------------------------------
