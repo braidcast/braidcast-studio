@@ -27,8 +27,9 @@ void RegisterFrontendHotkeys();
 void UnregisterFrontendHotkeys();
 
 // Persist EVERY hotkey's current bindings to hotkeys.json, keyed by hotkey NAME
-// (stable across runs; ids are per-session). Atomic save with a .bak.
-void Save();
+// (stable across runs; ids are per-session). Atomic save with a .bak. Returns false
+// on write failure (already logged).
+bool Save();
 
 // Load saved bindings from hotkeys.json: for each saved name, resolve the live
 // hotkey id and apply its bindings. Hotkeys with no saved entry keep whatever
@@ -43,8 +44,9 @@ json Snapshot();
 // Revert every live hotkey to the bindings in `snap` (a blob from Snapshot()):
 // each named entry's bindings are loaded, and a hotkey absent from the snapshot is
 // cleared, so a binding added after the snapshot is undone. Persists + emits
-// hotkeys.changed. Used by settings.restore.
-void RestoreFromSnapshot(const json &snap);
+// hotkeys.changed. Used by settings.restore. Returns false on a malformed snapshot or
+// a failed persist (already logged).
+bool RestoreFromSnapshot(const json &snap);
 
 // Bridge method bodies (registered in g_methods). See bridge.cpp / the header doc
 // on each for the JSON contract.

@@ -5,6 +5,7 @@
 
 #include <filesystem>
 
+#include "../log.hpp"
 #include "../util/paths.hpp"
 
 namespace {
@@ -66,4 +67,12 @@ bool SaveJsonAtomic(obs_data_t *root, const std::string &absPath)
 		os_mkdirs(dir.u8string().c_str());
 	}
 	return obs_data_save_json_pretty_safe(root, absPath.c_str(), "tmp", "bak");
+}
+
+bool ReportSaveResult(bool saved, const std::string &path)
+{
+	if (!saved) {
+		HostLog("[storage] failed to save " + path);
+	}
+	return saved;
 }

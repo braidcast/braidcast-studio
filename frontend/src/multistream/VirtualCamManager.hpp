@@ -38,7 +38,7 @@ public:
 
 	// Persist/restore the target canvas to virtualcam.json (key "canvas").
 	void Load();
-	void Save() const;
+	bool Save() const;
 
 	// Fired (possibly off the libobs thread, via the output start/stop signals)
 	// whenever the active state changes. The bridge routes it through its

@@ -62,10 +62,11 @@ void StreamProfileStore::Load()
 	FromJson(js ? nlohmann::json::parse(js) : nlohmann::json::object());
 }
 
-void StreamProfileStore::Save() const
+bool StreamProfileStore::Save() const
 {
 	OBSDataAutoRelease root = obs_data_create_from_json(ToJson().dump().c_str());
-	SaveJsonAtomic(root, FilePath());
+	const std::string path = FilePath();
+	return ReportSaveResult(SaveJsonAtomic(root, path), path);
 }
 
 StreamProfile *StreamProfileStore::Primary()

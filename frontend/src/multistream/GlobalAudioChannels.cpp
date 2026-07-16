@@ -87,7 +87,7 @@ std::optional<std::string> GlobalAudioChannels::CurrentDevice(int channel) const
 	return std::string(id ? id : "");
 }
 
-void GlobalAudioChannels::Persist() const
+bool GlobalAudioChannels::Persist() const
 {
 	json obj = json::object();
 	for (const Slot &slot : Slots()) {
@@ -124,7 +124,8 @@ void GlobalAudioChannels::Persist() const
 	// dispatches on the type.
 	OBSDataAutoRelease root = obs_data_create();
 	obs_data_set_string(root, "state", obj.dump().c_str());
-	SaveJsonAtomic(root, MultistreamBasicPath("audio_devices.json"));
+	const std::string path = MultistreamBasicPath("audio_devices.json");
+	return ReportSaveResult(SaveJsonAtomic(root, path), path);
 }
 
 void GlobalAudioChannels::SeedOrRestore()

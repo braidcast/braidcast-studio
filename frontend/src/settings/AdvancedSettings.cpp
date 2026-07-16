@@ -37,7 +37,7 @@ void AdvancedSettings::Load()
 	}
 }
 
-void AdvancedSettings::Save() const
+bool AdvancedSettings::Save() const
 {
 	OBSDataAutoRelease root = obs_data_create();
 	for (const AdvancedBoolField &f : kAdvancedBoolFields) {
@@ -50,7 +50,8 @@ void AdvancedSettings::Save() const
 		obs_data_set_int(root, f.file, this->*f.member);
 	}
 
-	SaveJsonAtomic(root, MultistreamBasicPath("advanced.json"));
+	const std::string path = MultistreamBasicPath("advanced.json");
+	return ReportSaveResult(SaveJsonAtomic(root, path), path);
 }
 
 void ApplyProcessPriority(const std::string &token)

@@ -37,8 +37,9 @@ public:
 	// when a remembered override is toggled off on save; a no-op if none exists.
 	void RemoveStreamOverride(const std::string &profileUuid);
 
-	// Persist both maps to stream_meta.json via SaveJsonAtomic.
-	void Save() const;
+	// Persist both maps to stream_meta.json via SaveJsonAtomic. Returns false on write
+	// failure (already logged).
+	bool Save() const;
 
 private:
 	nlohmann::json channels_; // object of accountId  -> fields

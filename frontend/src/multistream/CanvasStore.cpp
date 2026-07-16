@@ -50,10 +50,11 @@ void CanvasStore::Load()
 	FromJson(js ? nlohmann::json::parse(js) : nlohmann::json::object());
 }
 
-void CanvasStore::Save() const
+bool CanvasStore::Save() const
 {
 	OBSDataAutoRelease root = obs_data_create_from_json(ToJson().dump().c_str());
-	SaveJsonAtomic(root, FilePath());
+	const std::string path = FilePath();
+	return ReportSaveResult(SaveJsonAtomic(root, path), path);
 }
 
 void CanvasStore::EnsureDefault()

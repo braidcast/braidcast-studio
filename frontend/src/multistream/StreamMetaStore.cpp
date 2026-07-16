@@ -65,10 +65,11 @@ void StreamMetaStore::RemoveStreamOverride(const std::string &profileUuid)
 	streams_.erase(profileUuid);
 }
 
-void StreamMetaStore::Save() const
+bool StreamMetaStore::Save() const
 {
 	OBSDataAutoRelease root = obs_data_create();
 	obs_data_set_string(root, "channels", channels_.dump().c_str());
 	obs_data_set_string(root, "streams", streams_.dump().c_str());
-	SaveJsonAtomic(root, MultistreamBasicPath("stream_meta.json"));
+	const std::string path = MultistreamBasicPath("stream_meta.json");
+	return ReportSaveResult(SaveJsonAtomic(root, path), path);
 }

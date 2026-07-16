@@ -28,7 +28,7 @@ void GeneralSettings::Load()
 	}
 }
 
-void GeneralSettings::Save() const
+bool GeneralSettings::Save() const
 {
 	OBSDataAutoRelease root = obs_data_create();
 	for (const GeneralBoolField &f : kGeneralBoolFields) {
@@ -41,5 +41,6 @@ void GeneralSettings::Save() const
 		obs_data_set_double(root, f.file, this->*f.member);
 	}
 
-	SaveJsonAtomic(root, MultistreamBasicPath("general.json"));
+	const std::string path = MultistreamBasicPath("general.json");
+	return ReportSaveResult(SaveJsonAtomic(root, path), path);
 }

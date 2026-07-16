@@ -7198,15 +7198,29 @@ bool MethodSettingsRestore(const json &params, json &result, std::string &error)
 		return false;
 	}
 
+	// Restore applies each section for real before the next can fail, and the earlier
+	// setters (video/audio/global devices) commit side effects to libobs and disk that
+	// can't be rolled back once a later section fails -- so this is partial-application,
+	// not all-or-nothing. Collect each section's failure instead of discarding it, and
+	// report an honest aggregate at the end rather than a blanket {ok:true}.
+	json failures = json::array();
+	auto fail = [&failures](const char *section, const std::string &e) {
+		failures.push_back(json{{"section", section}, {"error", e}});
+	};
+
 	if (params.contains("video")) {
 		json r;
 		std::string e;
-		MethodSettingsSetVideo(params["video"], r, e);
+		if (!MethodSettingsSetVideo(params["video"], r, e)) {
+			fail("video", e);
+		}
 	}
 	if (params.contains("audio")) {
 		json r;
 		std::string e;
-		MethodSettingsSetAudio(params["audio"], r, e);
+		if (!MethodSettingsSetAudio(params["audio"], r, e)) {
+			fail("audio", e);
+		}
 	}
 	if (params.contains("globalDevices") && params["globalDevices"].is_array()) {
 		for (const json &slot : params["globalDevices"]) {
@@ -7221,19 +7235,25 @@ bool MethodSettingsRestore(const json &params, json &result, std::string &error)
 							: json(nullptr);
 			json r;
 			std::string e;
-			MethodAudioSetGlobalDevice(setParams, r, e);
+			if (!MethodAudioSetGlobalDevice(setParams, r, e)) {
+				fail("globalDevices", e);
+			}
 		}
 	}
 
 	if (params.contains("streamProfiles")) {
 		StreamProfileStore &s = ObsBootstrap::StreamProfiles();
 		s.FromJson(params["streamProfiles"]);
-		s.Save();
+		if (!s.Save()) {
+			fail("streamProfiles", "failed to persist stream profiles");
+		}
 	}
 	if (params.contains("outputBindings")) {
 		OutputBindingStore &s = ObsBootstrap::OutputBindings();
 		s.FromJson(params["outputBindings"]);
-		s.Save();
+		if (!s.Save()) {
+			fail("outputBindings", "failed to persist output bindings");
+		}
 	}
 
 	if (params.contains("canvases")) {
@@ -7259,7 +7279,9 @@ bool MethodSettingsRestore(const json &params, json &result, std::string &error)
 		}
 
 		cs.FromJson(params["canvases"]);
-		cs.Save();
+		if (!cs.Save()) {
+			fail("canvases", "failed to persist canvases");
+		}
 
 		std::unordered_set<std::string> after;
 		for (const CanvasDefinition &d : cs.Definitions()) {
@@ -7324,12 +7346,16 @@ bool MethodSettingsRestore(const json &params, json &result, std::string &error)
 	}
 
 	if (params.contains("hotkeys")) {
-		Hotkeys::RestoreFromSnapshot(params["hotkeys"]);
+		if (!Hotkeys::RestoreFromSnapshot(params["hotkeys"])) {
+			fail("hotkeys", "failed to restore or persist hotkeys");
+		}
 	}
 	if (params.contains("mcp")) {
 		json r;
 		std::string e;
-		MethodMcpSetConfig(params["mcp"], r, e);
+		if (!MethodMcpSetConfig(params["mcp"], r, e)) {
+			fail("mcp", e);
+		}
 	}
 
 	EmitEvent(EventNames::kCanvasChanged, json::object());
@@ -7337,7 +7363,16 @@ bool MethodSettingsRestore(const json &params, json &result, std::string &error)
 	EmitEvent(EventNames::kOutputBindingChanged, json::object());
 	EmitEvent(EventNames::kMultistreamChanged, json{{"outputs", BuildStatusArray()}});
 	EmitEvent(EventNames::kMcpChanged, json::object());
-	result = json{{"ok", true}};
+
+	// Honest aggregate: some sections applied, others may have failed after committing
+	// side effects. Report which failed rather than a blanket {ok:true}. Returns true so
+	// the partial result (and the events already emitted) reach JS; ok=false + the
+	// per-section list is the same soft-failure shape multistream.startOutput uses.
+	const bool ok = failures.empty();
+	result = json{{"ok", ok}};
+	if (!ok) {
+		result["failed"] = std::move(failures);
+	}
 	return true;
 }
 

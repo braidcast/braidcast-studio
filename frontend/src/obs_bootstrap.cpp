@@ -765,6 +765,11 @@ bool ObsBootstrap::Start()
 	// user's existing scenes carry over with zero data loss -- as the sole
 	// "Untitled" collection.
 	g_sceneCollections.Load();
+	if (g_sceneCollections.IndexWasCorrupt()) {
+		// A doubly-corrupt index would otherwise strand intact scenes/*.json behind a
+		// blank app; rebuild the index from the scene files still on disk.
+		g_sceneCollections.RebuildFromScenes();
+	}
 	if (g_sceneCollections.List().empty() && !g_sceneCollections.IndexWasCorrupt()) {
 		g_sceneCollections.SeedExisting("Untitled", "scene_collection.json");
 		HostLog("[scene] migrated single-file scenes into collection 'Untitled'");

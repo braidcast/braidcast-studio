@@ -172,7 +172,8 @@ void EventStore::WriteToDisk(const json &root, uint64_t seq) const
 	}
 	lastWrittenSeq_ = seq;
 	OBSDataAutoRelease data = obs_data_create_from_json(root.dump().c_str());
-	SaveJsonAtomic(data, FilePath());
+	const std::string path = FilePath();
+	ReportSaveResult(SaveJsonAtomic(data, path), path);
 }
 
 } // namespace Events

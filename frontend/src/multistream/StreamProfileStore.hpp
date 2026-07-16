@@ -18,7 +18,7 @@
 class StreamProfileStore {
 public:
 	void Load(); // read streams.json (replaces contents; re-points primary if missing)
-	void Save() const;
+	bool Save() const;
 
 	// The whole model as JSON, in the SAME shape streams.json holds (the single
 	// serializer; Load/Save route through it). FromJson replaces contents and

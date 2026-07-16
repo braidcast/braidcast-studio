@@ -35,7 +35,7 @@ struct AdvancedSettings {
 	// Round-trip every field to advanced.json (file keys snake_case). Missing keys
 	// fall back to the struct defaults. Save() is called on each bridge set.
 	void Load();
-	void Save() const;
+	bool Save() const;
 };
 
 // Field descriptors: the SINGLE source for the wire (camelCase) <-> file

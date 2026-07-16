@@ -13,7 +13,7 @@ struct DiagnosticsSettings {
 	// Round-trip every field to diagnostics.json (file keys snake_case). Missing
 	// keys fall back to the struct defaults.
 	void Load();
-	void Save() const;
+	bool Save() const;
 };
 
 // Field descriptor: the SINGLE source for the file (snake_case) <-> struct-member

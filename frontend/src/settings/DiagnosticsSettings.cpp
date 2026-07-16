@@ -17,12 +17,13 @@ void DiagnosticsSettings::Load()
 	}
 }
 
-void DiagnosticsSettings::Save() const
+bool DiagnosticsSettings::Save() const
 {
 	OBSDataAutoRelease root = obs_data_create();
 	for (const DiagnosticsBoolField &f : kDiagnosticsBoolFields) {
 		obs_data_set_bool(root, f.file, this->*f.member);
 	}
 
-	SaveJsonAtomic(root, MultistreamBasicPath("diagnostics.json"));
+	const std::string path = MultistreamBasicPath("diagnostics.json");
+	return ReportSaveResult(SaveJsonAtomic(root, path), path);
 }

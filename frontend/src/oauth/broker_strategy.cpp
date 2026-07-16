@@ -336,7 +336,11 @@ bool BrokerStrategy::ensureFresh(OAuthAccount &acct, std::string &err, bool forc
 		}
 		return false;
 	}
-	Accounts().Put(accountId, acct);
+	// Persist the rotated token, but never re-insert the account: a disconnect that
+	// landed while this refresh was in flight must stay removed, not be resurrected by
+	// the write-back. If it was removed, the refresh still succeeded for the in-flight
+	// caller's current request.
+	Accounts().UpdateExisting(accountId, acct);
 	return true;
 }
 

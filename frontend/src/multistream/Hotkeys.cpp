@@ -349,7 +349,7 @@ void UnregisterFrontendHotkeys()
 	}
 }
 
-void Save()
+bool Save()
 {
 	OBSDataAutoRelease root = obs_data_create();
 
@@ -374,9 +374,9 @@ void Save()
 
 	const std::string path = MultistreamBasicPath("hotkeys.json");
 	if (path.empty()) {
-		return;
+		return false;
 	}
-	SaveJsonAtomic(root, path);
+	return ReportSaveResult(SaveJsonAtomic(root, path), path);
 }
 
 void Load()
@@ -431,14 +431,14 @@ json Snapshot()
 	return js ? json::parse(js) : json::object();
 }
 
-void RestoreFromSnapshot(const json &snap)
+bool RestoreFromSnapshot(const json &snap)
 {
 	if (!snap.is_object()) {
-		return;
+		return false;
 	}
 	OBSDataAutoRelease root = obs_data_create_from_json(snap.dump().c_str());
 	if (!root) {
-		return;
+		return false;
 	}
 
 	// For each live hotkey, load its snapshot bindings by NAME. A hotkey with no
@@ -463,8 +463,9 @@ void RestoreFromSnapshot(const json &snap)
 		},
 		&ctx);
 
-	Save();
+	const bool saved = Save();
 	Bridge::EmitEvent(EventNames::kHotkeysChanged, json::object());
+	return saved;
 }
 
 bool MethodList(const json & /*params*/, json &result, std::string & /*error*/)

@@ -368,7 +368,8 @@ void OverlayStore::Save() const
 	json root = json{{"port", port_}, {"widgets", std::move(arr)}};
 
 	OBSDataAutoRelease data = obs_data_create_from_json(root.dump().c_str());
-	SaveJsonAtomic(data, FilePath());
+	const std::string path = FilePath();
+	ReportSaveResult(SaveJsonAtomic(data, path), path);
 }
 
 OverlayStore &Store()

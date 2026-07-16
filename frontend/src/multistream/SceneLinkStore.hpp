@@ -22,8 +22,8 @@ class SceneLinkStore {
 public:
 	void Load();                        // read the ACTIVE collection's links (empty if absent)
 	void Load(const std::string &path); // read from an explicit file (empty if absent)
-	void Save() const;                  // write the ACTIVE collection's links
-	void Save(const std::string &path) const;
+	bool Save() const;                  // write the ACTIVE collection's links; false on failure (logged)
+	bool Save(const std::string &path) const;
 
 	nlohmann::json ToJson() const;
 	void FromJson(const nlohmann::json &j);

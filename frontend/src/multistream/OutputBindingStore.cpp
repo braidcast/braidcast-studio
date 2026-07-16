@@ -48,13 +48,13 @@ void OutputBindingStore::Load(const std::string &path)
 	FromJson(js ? nlohmann::json::parse(js) : nlohmann::json::object());
 }
 
-void OutputBindingStore::Save() const
+bool OutputBindingStore::Save() const
 {
-	Save(ObsBootstrap::SceneCollections().ActiveBindingsPath());
+	return Save(ObsBootstrap::SceneCollections().ActiveBindingsPath());
 }
 
-void OutputBindingStore::Save(const std::string &path) const
+bool OutputBindingStore::Save(const std::string &path) const
 {
 	OBSDataAutoRelease root = obs_data_create_from_json(ToJson().dump().c_str());
-	SaveJsonAtomic(root, path);
+	return ReportSaveResult(SaveJsonAtomic(root, path), path);
 }

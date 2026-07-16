@@ -213,6 +213,102 @@ void SceneCollections::Save() const
 	}
 }
 
+bool SceneCollections::RebuildFromScenes()
+{
+	// Only ever runs after Load() flagged BOTH the index and its .bak unreadable, so it
+	// can never clobber a good index. Recovers the collection list from the scene files
+	// still intact on disk instead of stranding the user on a blank app with their
+	// scenes marooned. The collection name and the active pointer are NOT stored in a
+	// scene file, so they are unrecoverable: names fall back to the filename slug and
+	// the active collection to the first found (deterministic by relative path).
+	if (!indexCorrupt_) {
+		return false;
+	}
+
+	struct Found {
+		std::string sceneFile; // relative to <config>/braidcast/basic/
+		std::string name;      // display label (filename slug; real name is unrecoverable)
+	};
+	std::vector<Found> found;
+
+	auto tryScene = [&](const std::string &relFile, const std::string &displayName) {
+		const std::string abs = MultistreamBasicPath(relFile.c_str());
+		if (!os_file_exists(abs.c_str())) {
+			return;
+		}
+		// An individual corrupt scene file (its own .bak also unreadable) is skipped, not
+		// allowed to abort the whole rebuild.
+		OBSDataAutoRelease data = obs_data_create_from_json_file_safe(abs.c_str(), "bak");
+		if (!data) {
+			HostLog("[scene] rebuild: skipping unreadable scene file " + relFile);
+			return;
+		}
+		found.push_back({relFile, displayName});
+	};
+
+	// The legacy single-file collection (adopted in place before the scenes/ layout).
+	tryScene("scene_collection.json", "Untitled");
+
+	// Every per-collection scene file under scenes/, excluding the per-collection
+	// siblings (output bindings, scene links) and any .bak.
+	const std::string scenesDir = MultistreamBasicPath("scenes");
+	std::error_code scanEc;
+	for (std::filesystem::directory_iterator it(std::filesystem::u8path(scenesDir), scanEc), end;
+	     !scanEc && it != end; it.increment(scanEc)) {
+		if (!it->is_regular_file()) {
+			continue;
+		}
+		const std::string fname = it->path().filename().u8string();
+		const std::string suffix = ".json";
+		if (fname.size() <= suffix.size() ||
+		    fname.compare(fname.size() - suffix.size(), suffix.size(), suffix) != 0) {
+			continue;
+		}
+		if (fname.find(".output_bindings.json") != std::string::npos ||
+		    fname.find(".scene_links.json") != std::string::npos) {
+			continue;
+		}
+		const std::string slug = fname.substr(0, fname.size() - suffix.size());
+		tryScene("scenes/" + fname, slug);
+	}
+
+	if (found.empty()) {
+		// Nothing recoverable on disk. Leave indexCorrupt_ set so the caller keeps
+		// refusing to reseed -- the read may have failed transiently, and a fresh seed
+		// would still drop any references the corrupt index held.
+		return false;
+	}
+
+	std::sort(found.begin(), found.end(), [](const Found &a, const Found &b) { return a.sceneFile < b.sceneFile; });
+
+	// Preserve the corrupt index and its corrupt .bak aside (not deleted) so a later
+	// manual recovery still has the original bytes.
+	const std::string idx = IndexPath();
+	std::error_code renameEc;
+	std::filesystem::rename(std::filesystem::u8path(idx), std::filesystem::u8path(idx + ".corrupt"), renameEc);
+	std::filesystem::rename(std::filesystem::u8path(idx + ".bak"), std::filesystem::u8path(idx + ".bak.corrupt"),
+				renameEc);
+
+	collections_.clear();
+	for (const Found &f : found) {
+		SceneCollectionRecord rec;
+		rec.id = NewUuid();
+		rec.name = f.name;
+		rec.sceneFile = f.sceneFile;
+		collections_.push_back(std::move(rec));
+	}
+	activeId_ = collections_.front().id;
+	// The rebuilt index written below is valid, so clear the flag to unblock the
+	// collection-mutation bridge methods that refuse while the index is corrupt.
+	indexCorrupt_ = false;
+	Save();
+
+	HostLog("[scene] scene_collections.json unreadable; rebuilt index from " + std::to_string(collections_.size()) +
+		" scene file(s) on disk (names reset to filenames; verify the active collection). Corrupt index kept at " +
+		idx + ".corrupt");
+	return true;
+}
+
 const SceneCollectionRecord &SceneCollections::SeedExisting(const std::string &name, const std::string &existingRelFile)
 {
 	SceneCollectionRecord rec;

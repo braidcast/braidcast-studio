@@ -65,8 +65,9 @@ public:
 
 	// Persist the current per-channel device map ({"<channel>":"<deviceId>", ...}) for
 	// every channel with a bound source to audio_devices.json, as a stringified-JSON
-	// blob under "state" (the same envelope theme.json/layout.json use).
-	void Persist() const;
+	// blob under "state" (the same envelope theme.json/layout.json use). Returns false
+	// if the write failed (already logged); callers may ignore it (batched seeding).
+	bool Persist() const;
 
 	// Unbind every global audio channel so the wasapi sources are destroyed before
 	// obs_shutdown. Call during teardown while libobs is still up.

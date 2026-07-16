@@ -20,7 +20,7 @@ public:
 	CanvasStore() { EnsureDefault(); }
 
 	void Load();       // read canvases.json (replaces contents; re-seeds Default if absent)
-	void Save() const; // write canvases.json atomically
+	bool Save() const; // write canvases.json atomically; false on write failure (logged)
 
 	// The whole model as JSON, in the SAME shape canvases.json holds (the single
 	// serializer; Load/Save route through it). FromJson replaces contents and

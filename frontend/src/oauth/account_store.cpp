@@ -213,6 +213,19 @@ void AccountStore::Put(const std::string &accountId, const OAuthAccount &account
 	SaveLocked();
 }
 
+bool AccountStore::UpdateExisting(const std::string &accountId, const OAuthAccount &account)
+{
+	const std::lock_guard<std::mutex> guard(mutex_);
+	EnsureLoadedLocked();
+	auto it = accounts_.find(accountId);
+	if (it == accounts_.end()) {
+		return false;
+	}
+	it->second = account;
+	SaveLocked();
+	return true;
+}
+
 void AccountStore::UpdateAudience(const std::string &accountId, int64_t count, AudienceKind kind, bool hidden,
 				  int64_t updatedNs)
 {

@@ -22,8 +22,8 @@ class OutputBindingStore {
 public:
 	void Load();                        // read the ACTIVE collection's bindings (empty if absent)
 	void Load(const std::string &path); // read from an explicit file (empty if absent)
-	void Save() const;                  // write the ACTIVE collection's bindings
-	void Save(const std::string &path) const;
+	bool Save() const;                  // write the ACTIVE collection's bindings; false on failure (logged)
+	bool Save(const std::string &path) const;
 
 	// The whole model as JSON, in the SAME shape output_bindings.json holds (the
 	// single serializer; Load/Save route through it). FromJson replaces contents,

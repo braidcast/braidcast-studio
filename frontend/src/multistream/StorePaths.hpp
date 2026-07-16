@@ -47,6 +47,13 @@ typedef struct obs_data obs_data_t;
 // save envelope the multistream stores share.
 bool SaveJsonAtomic(obs_data_t *root, const std::string &absPath);
 
+// Log-and-forward the result of a SaveJsonAtomic (or any atomic save): on failure
+// emit a "[storage] failed to save <path>" line so a disk-full/permission loss is
+// never silent, then return `saved` unchanged so callers can propagate it. The one
+// place every store routes its save result through, so the failure log reads
+// identically wherever a session's edits are dropped.
+bool ReportSaveResult(bool saved, const std::string &path);
+
 // Reorder `items` (move-only elements exposing a `.uuid`) to match `order`: for
 // each uuid, move the first not-yet-moved match into place; unknown ids are
 // ignored and any items absent from `order` keep their relative order at the end

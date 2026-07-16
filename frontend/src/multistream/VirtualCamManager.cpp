@@ -128,12 +128,13 @@ void VirtualCamManager::Load()
 	}
 }
 
-void VirtualCamManager::Save() const
+bool VirtualCamManager::Save() const
 {
 	OBSDataAutoRelease root = obs_data_create();
 	obs_data_set_string(root, "canvas", targetCanvas_.c_str());
 
-	SaveJsonAtomic(root, MultistreamBasicPath("virtualcam.json"));
+	const std::string path = MultistreamBasicPath("virtualcam.json");
+	return ReportSaveResult(SaveJsonAtomic(root, path), path);
 }
 
 void VirtualCamManager::NotifyChanged()

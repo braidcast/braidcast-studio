@@ -21,6 +21,12 @@ class AccountStore {
 public:
 	std::optional<OAuthAccount> Get(const std::string &accountId);
 	void Put(const std::string &accountId, const OAuthAccount &account);
+	// Overwrite an EXISTING account's whole record under the lock -- used by the refresh
+	// path to persist a freshly rotated token. Unlike Put, it never re-inserts an
+	// account removed mid-refresh: a disconnect that lands while a refresh is in flight
+	// must stay removed, not be resurrected by the refresh's write-back. Returns false
+	// (nothing written) when the account is absent.
+	bool UpdateExisting(const std::string &accountId, const OAuthAccount &account);
 	// Update only the audience fields of an existing account (background-thread safe;
 	// never touches tokens). No-op if the account was removed. Persists on write.
 	void UpdateAudience(const std::string &accountId, int64_t count, AudienceKind kind, bool hidden,

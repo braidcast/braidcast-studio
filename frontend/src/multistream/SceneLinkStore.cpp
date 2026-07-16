@@ -42,13 +42,13 @@ void SceneLinkStore::Load(const std::string &path)
 	FromJson(js ? nlohmann::json::parse(js) : nlohmann::json::object());
 }
 
-void SceneLinkStore::Save() const
+bool SceneLinkStore::Save() const
 {
-	Save(ObsBootstrap::SceneCollections().ActiveSceneLinksPath());
+	return Save(ObsBootstrap::SceneCollections().ActiveSceneLinksPath());
 }
 
-void SceneLinkStore::Save(const std::string &path) const
+bool SceneLinkStore::Save(const std::string &path) const
 {
 	OBSDataAutoRelease root = obs_data_create_from_json(ToJson().dump().c_str());
-	SaveJsonAtomic(root, path);
+	return ReportSaveResult(SaveJsonAtomic(root, path), path);
 }

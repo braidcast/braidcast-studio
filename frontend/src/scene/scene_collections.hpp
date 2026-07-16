@@ -105,6 +105,15 @@ public:
 	// clean or genuinely-absent load.
 	bool IndexWasCorrupt() const { return indexCorrupt_; }
 
+	// Recover the collection list from the scene files still on disk after Load() found
+	// the index (and its .bak) unparseable, so an intact scenes/*.json set is not
+	// stranded behind a blank app. No-op unless IndexWasCorrupt(). On success it writes
+	// a fresh index (preserving the corrupt one at <index>.corrupt), clears the corrupt
+	// flag, and returns true; the recovered names fall back to filename slugs and the
+	// active collection to the first found (neither is stored in a scene file). Returns
+	// false when nothing was recoverable, leaving the corrupt flag set.
+	bool RebuildFromScenes();
+
 	// <config>/braidcast/basic/scene_collections.json.
 	static std::string IndexPath();
 

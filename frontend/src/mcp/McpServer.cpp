@@ -415,7 +415,7 @@ void McpServer::Save() const
 	obs_data_set_string(root, "token", config_.token.c_str());
 	obs_data_set_bool(root, "allowMutations", config_.allowMutations);
 	obs_data_set_bool(root, "allowGoLive", config_.allowGoLive);
-	SaveJsonAtomic(root, path);
+	ReportSaveResult(SaveJsonAtomic(root, path), path);
 }
 
 void McpServer::Start()
