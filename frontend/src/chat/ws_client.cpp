@@ -60,6 +60,18 @@ void DoInit()
 // well within the ~0.5s the ChatHub expects for a prompt Stop().
 constexpr long kPollMicros = 250 * 1000;
 
+// Whole-upgrade bound for connect()'s curl_easy_perform. CONNECTTIMEOUT covers
+// only TCP+TLS, so a peer that completes TLS but never answers the HTTP 101
+// (captive portal, wedged proxy) would otherwise park the perform forever --
+// CURLOPT_TIMEOUT defaults to unlimited. 30s gives the upgrade exchange as long
+// again as the 15s connect phase it includes, and matches the 30s default
+// whole-request timeout in util/http_client.cpp. It cannot kill the long-lived
+// session afterwards: with CONNECT_ONLY=2 the perform returns at the 101, and
+// the curl_ws_send/curl_ws_recv paths used from then on never consult the
+// handle timeout (curl lib/ws.c: only ws_send_raw_blocking checks Curl_timeleft,
+// reachable only in raw mode or from inside curl callbacks -- neither used here).
+constexpr long kUpgradeTimeoutMs = 30 * 1000;
+
 } // namespace
 
 void WsClient::EnsureInit()
@@ -77,6 +89,22 @@ bool WsClient::WebSocketsSupported()
 WsClient::~WsClient()
 {
 	close();
+}
+
+WsClient &WsClient::operator=(WsClient &&other) noexcept
+{
+	if (this != &other) {
+		close();
+		easy_ = other.easy_;
+		sock_ = other.sock_;
+		accum_ = std::move(other.accum_);
+		accumText_ = other.accumText_;
+		other.easy_ = nullptr;
+		other.sock_ = -1;
+		other.accum_.clear();
+		other.accumText_ = false;
+	}
+	return *this;
 }
 
 bool WsClient::connect(const std::string &url, std::string &err)
@@ -97,6 +125,9 @@ bool WsClient::connect(const std::string &url, std::string &err)
 	// SIGALRM otherwise, unsafe in a multithreaded process).
 	curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
 	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
+	// Bounds the whole upgrade handshake, NOT the later curl_ws_* session (see
+	// kUpgradeTimeoutMs for why that holds under CONNECT_ONLY=2).
+	curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, kUpgradeTimeoutMs);
 
 	const CURLcode code = curl_easy_perform(curl);
 	if (code != CURLE_OK) {

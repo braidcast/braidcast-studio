@@ -25,6 +25,12 @@ public:
 	WsClient(const WsClient &) = delete;
 	WsClient &operator=(const WsClient &) = delete;
 
+	// Transfer `other`'s live connection into this client, closing any prior
+	// connection this side held. Lets a worker run the blocking connect() on a
+	// stack-local client outside its mutex, then hand the socket to the shared,
+	// mutex-guarded instance in O(1) under the lock.
+	WsClient &operator=(WsClient &&other) noexcept;
+
 	// Global libcurl init plus a one-time CURL_VERSION_WEBSOCKETS feature check
 	// that HostLogs a clear diagnostic when the linked libcurl lacks WebSocket
 	// support, so a future dep swap fails loudly rather than silently. Idempotent;

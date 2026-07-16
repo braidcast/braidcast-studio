@@ -384,13 +384,19 @@ bool TwitchChat::connect(const Chat::ChatContext &ctx, OAuthAccount &acct, const
 	int reauthAttempts = 0;
 
 	while (!canceled()) {
-		// (Re)open the socket.
+		// (Re)open the socket. The blocking upgrade handshake runs on a stack-local
+		// client OUTSIDE wsMutex_ so the hub's send worker cannot be blocked behind
+		// it; only the O(1) handoff into ws_ takes the lock. A sendLine racing the
+		// handshake fails fast on the old (dead) handle instead, which is correct:
+		// the fresh socket cannot carry a PRIVMSG before its IRC handshake anyway.
 		{
-			std::lock_guard<std::mutex> lock(wsMutex_);
+			Chat::WsClient fresh;
 			std::string cerr;
-			if (!ws_.connect(kTwitchIrcUrl, cerr)) {
+			if (!fresh.connect(kTwitchIrcUrl, cerr)) {
 				err = cerr;
 			}
+			std::lock_guard<std::mutex> lock(wsMutex_);
+			ws_ = std::move(fresh);
 		}
 		if (!ws_.connected()) {
 			Chat::EmitChatState(ctx, "twitch", false, err);
