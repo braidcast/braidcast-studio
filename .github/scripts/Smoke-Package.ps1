@@ -20,8 +20,11 @@
         bugs without launching anything. Requires only an unzipped package root
         and, ideally, a known-good rundir to diff the DLL set against.
       * Liveness (SECONDARY) -- launches the packaged braidcast.exe under
-        FE_SMOKE_QUIT_SECONDS, asserts a clean exit-0 within a timeout, and
-        scans the captured log for the UI-loaded marker and crash patterns.
+        FE_SMOKE_QUIT_SECONDS and asserts the run was genuinely alive: exit 0
+        arriving only AFTER the smoke window elapsed (the app's own
+        self-terminate path is the only legitimate exit-0), no crash report
+        left behind, and a log scan for the UI-loaded marker and crash
+        patterns.
 
 .PARAMETER PackageRoot
     Path to an UNZIPPED package root (the directory that contains bin/, data/,
@@ -317,12 +320,16 @@ if ( $SkipLiveness ) {
         $started = $false
         $ranToExit = $false
         $exitCode = $null
+        $launchedAt = $null
+        $elapsedSeconds = $null
         try {
             Write-Host "  launching (FE_SMOKE_QUIT_SECONDS=$LivenessSeconds, timeout=${LivenessTimeoutSeconds}s)..."
+            $launchedAt = Get-Date
             $proc = Start-Process -FilePath $exe -WorkingDirectory $workDir -PassThru -NoNewWindow `
                 -RedirectStandardOutput $outFile -RedirectStandardError $errFile
             $started = $true
             $ranToExit = $proc.WaitForExit($LivenessTimeoutSeconds * 1000)
+            $elapsedSeconds = [math]::Round(((Get-Date) - $launchedAt).TotalSeconds, 1)
             if ( $ranToExit ) {
                 $exitCode = $proc.ExitCode
             } else {
@@ -342,10 +349,39 @@ if ( $SkipLiveness ) {
         if ( $started ) {
             if ( -not $ranToExit ) {
                 Add-Failure "process did not exit within ${LivenessTimeoutSeconds}s (killed)"
-            } elseif ( $exitCode -eq 0 ) {
-                Add-Pass "process exited 0"
-            } else {
+            } elseif ( $exitCode -ne 0 ) {
                 Add-Failure "process exited with code $exitCode"
+            } elseif ( $elapsedSeconds -lt $LivenessSeconds ) {
+                # Exit 0 is only trustworthy when it came from the app's own
+                # FE_SMOKE_QUIT_SECONDS self-terminate timer, which cannot fire
+                # before the smoke window elapses. An earlier exit-0 is some
+                # other path (single-instance bounce, a crash misreporting
+                # success) and means the app never proved it was alive.
+                Add-Failure "process exited 0 after ${elapsedSeconds}s, before the ${LivenessSeconds}s smoke window elapsed"
+            } else {
+                Add-Pass "process exited 0 after the full ${LivenessSeconds}s smoke window (${elapsedSeconds}s)"
+            }
+
+            # The crash sink writes <config>/crashes/*.txt before exiting, so a
+            # crash report from this run is a hard failure regardless of exit
+            # code. Config resolves to %APPDATA%/braidcast, or to
+            # <exe dir>/config when a portable marker sits next to the exe.
+            $crashDirs = @(
+                (Join-Path $env:APPDATA 'braidcast/crashes'),
+                (Join-Path $workDir 'config/crashes')
+            )
+            $newCrashFiles = foreach ( $dir in $crashDirs ) {
+                if ( Test-Path -LiteralPath $dir -PathType Container ) {
+                    Get-ChildItem -LiteralPath $dir -Filter '*.txt' -File |
+                        Where-Object { $_.LastWriteTime -ge $launchedAt }
+                }
+            }
+            if ( $newCrashFiles ) {
+                foreach ( $f in $newCrashFiles ) {
+                    Add-Failure "crash report written during run: $($f.FullName)"
+                }
+            } else {
+                Add-Pass 'no crash report left behind'
             }
 
             # Merge captured streams (blog's default handler writes to stderr).

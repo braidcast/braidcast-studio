@@ -29,6 +29,7 @@
 #include "scene/scene_persistence.hpp"
 #include "scheme.hpp"
 #include "util/paths.hpp"
+#include "util/session_log.hpp"
 #include "windowing/tray.hpp"
 #include "windowing/window_chrome.hpp"
 #include "windowing/window_manager.hpp"
@@ -383,10 +384,16 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 	// teardown path below.
 	RtwqStartup();
 
+	// Route bcrash() to a real sink BEFORE the exception filter below is
+	// installed: libobs' default crash handler prints to stderr (invisible in a
+	// GUI process) and exits 0, so a crash would both vanish and report
+	// success. The sink writes <config>/crashes/ and exits non-zero.
+	SessionLog::InstallCrashHandler();
+
 	// Install the unhandled-exception filter as the first thing the main process
 	// does after hardening, so a crash anywhere below -- CEF init, obs startup, the
-	// message loop -- writes a minidump for field diagnosis. Main process only; the
-	// CEF subprocesses returned above.
+	// message loop -- writes a crash report for field diagnosis. Main process only;
+	// the CEF subprocesses returned above.
 	obs_init_win32_crash_handler();
 
 	// Opt the main process out of Windows background power throttling. When

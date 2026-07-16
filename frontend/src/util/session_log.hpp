@@ -22,6 +22,14 @@ std::string CurrentPath();
 // the file on exit if this is skipped.
 void Shutdown();
 
+// Register the libobs crash sink (base_set_crash_handler). When bcrash() fires
+// -- notably from the Win32 unhandled-exception filter -- the crash report is
+// written to <config base>/crashes/Crash <ts>.txt (rotated like session logs)
+// and the process exits non-zero so a crash can never score as success. Must
+// run BEFORE obs_init_win32_crash_handler() installs the filter, so the filter
+// can never fire while libobs' default sink (stderr + exit 0) is still live.
+void InstallCrashHandler();
+
 } // namespace SessionLog
 
 #endif // OBS_MULTISTREAM_FRONTEND_SESSION_LOG_HPP_

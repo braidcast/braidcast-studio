@@ -1,8 +1,12 @@
 #include "session_log.hpp"
 
+#include <windows.h>
+
 #include <algorithm>
 #include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -90,6 +94,71 @@ void SessionLogHandler(int level, const char *format, va_list args, void *)
 	}
 }
 
+// Cap on a formatted crash report. Matches the legacy frontend's crash writer.
+constexpr size_t kMaxCrashReport = 200 * 1024;
+
+// Resolved once at install so the handler does zero path resolution while the
+// process is crashed.
+std::string g_crashDir;
+// Headless smoke/selftest runs must never block on a modal message box.
+bool g_crashQuiet = false;
+// Off-stack: the crashing thread's stack may be nearly exhausted (e.g. a
+// stack-overflow fault), so the report is formatted into static storage.
+char g_crashText[kMaxCrashReport];
+volatile LONG g_crashEntered = 0;
+
+// bcrash() sink. Runs inside a crashed process: work is limited to formatting
+// into a static buffer and one file write on a precomputed path. Never returns.
+void CrashSinkHandler(const char *format, va_list args, void *)
+{
+	// A crash inside this handler -- or a second thread crashing
+	// concurrently -- must not re-enter the file write; die immediately,
+	// still reporting failure.
+	if (InterlockedExchange(&g_crashEntered, 1)) {
+		TerminateProcess(GetCurrentProcess(), static_cast<UINT>(-1));
+	}
+
+	vsnprintf(g_crashText, sizeof(g_crashText), format, args);
+
+	std::string path;
+	if (!g_crashDir.empty()) {
+		path = g_crashDir + "/Crash " + GenerateTimestampName();
+		std::ofstream file(std::filesystem::u8path(path), std::ios::out | std::ios::trunc | std::ios::binary);
+		if (file.is_open()) {
+			file << g_crashText;
+		}
+	}
+
+	if (!g_crashQuiet) {
+		std::replace(path.begin(), path.end(), '/', '\\');
+		char message[1024];
+		snprintf(message, sizeof(message),
+			 "Woops, Braidcast has crashed!\n\nWould you like to copy the crash log "
+			 "to the clipboard? The crash log will still be saved to:\n\n%s",
+			 path.empty() ? "(unavailable)" : path.c_str());
+		const int ret =
+			MessageBoxA(nullptr, message, "Braidcast has crashed!", MB_YESNO | MB_ICONERROR | MB_TASKMODAL);
+		if (ret == IDYES) {
+			const size_t len = strlen(g_crashText) + 1;
+			if (HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, len)) {
+				if (void *dst = GlobalLock(mem)) {
+					memcpy(dst, g_crashText, len);
+					GlobalUnlock(mem);
+					if (OpenClipboard(nullptr)) {
+						EmptyClipboard();
+						SetClipboardData(CF_TEXT, mem);
+						CloseClipboard();
+					}
+				}
+			}
+		}
+	}
+
+	// _exit, not exit: atexit handlers and static destructors must not run in
+	// a crashed process, and the exit code must report failure -- never 0.
+	_exit(-1);
+}
+
 } // namespace
 
 void Init()
@@ -138,6 +207,19 @@ void Shutdown()
 		g_file.close();
 	}
 	g_initialized = false;
+}
+
+void InstallCrashHandler()
+{
+	g_crashDir = BraidcastConfigPath("crashes");
+	if (!g_crashDir.empty()) {
+		os_mkdirs(g_crashDir.c_str());
+		// Rotate at install, not at crash time, so the handler itself never
+		// iterates a directory inside a crashed process.
+		RotateOldLogs(std::filesystem::u8path(g_crashDir));
+	}
+	g_crashQuiet = getenv("FE_SMOKE_QUIT_SECONDS") != nullptr || getenv("BRAIDCAST_SELFTEST_STREAM") != nullptr;
+	base_set_crash_handler(CrashSinkHandler, nullptr);
 }
 
 } // namespace SessionLog
