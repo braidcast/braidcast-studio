@@ -1792,6 +1792,47 @@ Bearer alone and bake nothing.
 
 ---
 
+## OBS rebranding & cross-platform shipping 🔭
+
+Residual official-OBS identity cleanup, plus the goal of matching OBS Studio's
+full shipping-output matrix. (Broker/OAuth identity is separate — see the broker
+roadmap in the `braidcast-website` repo.)
+
+**Rebranded ✅ (done).** SECURITY.md → Braidcast policy via GitHub private
+vulnerability reporting (upstream-OBS vulns still go to OBS); `COC.rst` contacts
++ repo link; macOS Sparkle feed neutralised (was OBS's live appcast URL + EdDSA
+key); cmake `OBS_COMPANY_NAME`→Braidcast, `OBS_WEBSITE`→braidcast.com; binary
+`OBS_LEGAL_COPYRIGHT` appends Braidcast (Lain Bailey + OBS attribution retained
+per GPL); `.github/FUNDING.yml` removed; services-validator bot author de-OBS'd.
+`README`/`AboutDialog` were already correct nominative-fair-use ("built on OBS
+Studio" + not-affiliated disclaimer).
+
+**Shipping parity 🔭 (planned).** Braidcast ships **Windows only** today. Goal:
+match OBS Studio's full output set — macOS (`.app`/`.dmg`, notarised, with a
+**Braidcast-owned** Sparkle appcast + signing key) and Linux/FreeBSD packages.
+Sparkle is intentionally disabled (blank URL/key) until Braidcast stands up its
+own update infra — re-enabling it against OBS's server must never happen.
+
+**Deferred rebrand ⏸ (gated on shipping parity / CI verification).**
+- macOS `com.obsproject.*` bundle-ids on every dylib/framework/module →
+  `com.braidcast.*` — touches code-signing/notarisation; do with the macOS work.
+- `.github/workflows/push.yaml`: the upstream
+  `obsproject/obs-studio/.github/workflows/sign-windows.yaml@…` reusable-workflow
+  ref, the `obsproject.com` docs redirect, and the Sparkle customLink — verify
+  which jobs actually run for Braidcast before repointing (risk: breaking Windows
+  signing CI).
+- App config directory is still the hardcoded literal `obs-studio`
+  (`cmake/windows/helpers.cmake`) — renaming orphans existing user configs; needs
+  a migration path first.
+- `braidcast/braidcast-browser` submodule still ships `com.obsproject.obs-browser`
+  bundle-ids — audit inside that repo.
+
+**MUST-KEEP (GPL).** `COPYING` (stock GPLv2), `AUTHORS` (Lain Bailey +
+contributors), `.mailmap`, and vendored per-file copyright headers — retained by
+law; never strip.
+
+---
+
 # Issues & Enhancements
 
 Moved to [review-findings.md](./review-findings.md) — the deep-review findings tracker (R1–R24, G1–G6) lives there now.
