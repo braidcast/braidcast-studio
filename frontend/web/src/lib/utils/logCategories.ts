@@ -21,6 +21,9 @@ export const Cat = {
   mcp: "mcp",
   net: "net",
   cef: "cef",
+  // Gate-only: toggles libobs's per-frame render-thread timing ([render-debug]) on
+  // the host; excluded from the blanket debug toggle. No web log.dbg uses it.
+  render: "render",
 } as const;
 
 export type LogCategory = (typeof Cat)[keyof typeof Cat];

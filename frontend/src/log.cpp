@@ -50,17 +50,18 @@ CatMask DebugMask()
 void SetDebugMask(CatMask mask)
 {
 	g_debugMask.store(mask, std::memory_order_relaxed);
-	// Flip render-thread composite timing alongside the DEBUG gate. This is the
-	// single seam the boot seed, the live diagnostics.setDebug toggle, and a
-	// filtered env spec all funnel through; obs_set_render_debug no-ops safely
-	// before obs startup. It follows the coarse gate (any category on) because
-	// the timing it enables is a render-thread property, not a per-category line.
-	obs_set_render_debug(mask != kNoCats);
+	// Flip render-thread composite timing on ONLY when the render category is set.
+	// This is the single seam the boot seed, the live diagnostics.setDebug toggle,
+	// and a filtered env spec all funnel through; obs_set_render_debug no-ops safely
+	// before obs startup. Gated on LogCat::Render (not the coarse any-category gate)
+	// so the binary debug toggle doesn't flood the log with per-frame [render-debug]
+	// lines; opt in with BRAIDCAST_DEBUG=render.
+	obs_set_render_debug((mask & CatBit(LogCat::Render)) != 0);
 }
 
 void SetDebug(bool enabled)
 {
-	SetDebugMask(enabled ? kAllCats : kNoCats);
+	SetDebugMask(enabled ? kDefaultCats : kNoCats);
 }
 
 CatMask ParseDebugSpec(const std::string &spec)
@@ -70,7 +71,9 @@ CatMask ParseDebugSpec(const std::string &spec)
 		return kNoCats;
 	}
 	if (v == "1" || v == "true" || v == "on" || v == "all") {
-		return kAllCats;
+		// "all" means every human-facing category, NOT the render-thread firehose;
+		// name it explicitly (BRAIDCAST_DEBUG=render) to enable [render-debug].
+		return kDefaultCats;
 	}
 
 	CatMask mask = kNoCats;

@@ -13,6 +13,12 @@
 // BRAIDCAST_DEBUG filter spec and the CEF console parser share. Adding a
 // category is one line here.
 // keep in sync with frontend/web/src/lib/utils/logCategories.ts
+//
+// Render is a GATE-ONLY category: nothing emits a "[render]" line -- it exists
+// solely to toggle libobs's per-frame render-thread timing (obs_set_render_debug,
+// tagged "[render-debug]"), a firehose that would otherwise flood the log. It is
+// excluded from kDefaultCats, so the binary debug toggle never enables it; opt in
+// explicitly with BRAIDCAST_DEBUG=render.
 #define BRAIDCAST_LOG_CATEGORIES(X) \
 	X(Lifecycle, "lifecycle")   \
 	X(Bridge, "bridge")         \
@@ -29,7 +35,8 @@
 	X(Scene, "scene")           \
 	X(Mcp, "mcp")               \
 	X(Net, "net")               \
-	X(Cef, "cef")
+	X(Cef, "cef")               \
+	X(Render, "render")
 
 enum class LogCat {
 #define BRAIDCAST_LOG_CAT_ENUM(sym, name) sym,
@@ -94,6 +101,11 @@ constexpr CatMask CatBit(LogCat cat)
 
 inline constexpr CatMask kNoCats = 0;
 inline constexpr CatMask kAllCats = (CatMask{1} << kLogCatCount) - 1;
+// Every category EXCEPT the render-thread firehose. The binary debug toggle
+// (SetDebug / diagnostics.setDebug) and the "all"/"on"/"true" spec map to this, so
+// enabling debug never floods the per-frame [render-debug] timing -- opt into that
+// explicitly with BRAIDCAST_DEBUG=render.
+inline constexpr CatMask kDefaultCats = kAllCats & ~CatBit(LogCat::Render);
 
 // Whether any category is on. The coarse gate: what diagnostics.get reports and
 // what the web logger mirrors, since the per-category filter is applied
