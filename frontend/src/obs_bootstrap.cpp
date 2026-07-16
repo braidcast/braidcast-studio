@@ -215,8 +215,11 @@ void LoadCuratedModules()
 		const int r = obs_open_module(&mod, fullPath.c_str(), dataPath.c_str());
 		if (r != MODULE_SUCCESS || !mod) {
 			openFailed.push_back(name);
-			HostLog("[obs] module " + name + " open-failed (code=" + std::to_string(r) +
-				", likely non-module)");
+			// WARNING, not HostLog's INFO: a curated module that silently fails to
+			// open ships the app with a missing encoder/source/output and nothing
+			// to point at (finding G6).
+			blog(LOG_WARNING, "[obs] module '%s' open-failed (code=%d, likely non-module)", name.c_str(),
+			     r);
 			continue;
 		}
 		if (obs_init_module(mod)) {
@@ -224,23 +227,31 @@ void LoadCuratedModules()
 			HostLog("[obs] module " + name + " loaded");
 		} else {
 			initFailed.push_back(name);
-			HostLog("[obs] module " + name + " init-failed");
+			blog(LOG_WARNING, "[obs] module '%s' init-failed (obs_init_module returned false)",
+			     name.c_str());
 		}
 	} while (FindNextFileA(h, &fd));
 	FindClose(h);
 
-	auto joinList = [](const char *label, const std::vector<std::string> &v) {
+	// warnIfAny promotes a non-empty failure category from HostLog's always-on
+	// INFO to WARNING, so a scan for warnings alone surfaces the disposition
+	// summary even if the per-module lines above scroll past.
+	auto joinList = [](const char *label, const std::vector<std::string> &v, bool warnIfAny) {
 		std::string line = std::string("[obs] ") + label + " (" + std::to_string(v.size()) + "):";
 		for (const auto &n : v) {
 			line += " " + n;
 		}
-		HostLog(line);
+		if (warnIfAny && !v.empty()) {
+			blog(LOG_WARNING, "%s", line.c_str());
+		} else {
+			HostLog(line);
+		}
 	};
-	joinList("loaded", loaded);
-	joinList("init-failed (environmental)", initFailed);
-	joinList("open-failed/non-module", openFailed);
-	joinList("skipped denylist", skippedDeny);
-	joinList("skipped helper-dll", skippedHelper);
+	joinList("loaded", loaded, false);
+	joinList("init-failed (environmental)", initFailed, true);
+	joinList("open-failed/non-module", openFailed, true);
+	joinList("skipped denylist", skippedDeny, false);
+	joinList("skipped helper-dll", skippedHelper, false);
 }
 
 // Functional probes: create-then-release one of each core object kind to confirm
