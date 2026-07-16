@@ -1931,8 +1931,16 @@ mid-broadcast is unrecoverable — the user is live in front of an audience.
 
 ### Critical
 
-- 🔴 **R1 — `Hotkeys.cpp:286-302`: Start/Stop Streaming hotkeys drive the engine off
-  libobs's hotkey thread with no synchronization.** The comment audits `EmitEvent` and stops
+- ✅ **R1 — `Hotkeys.cpp:286-302`: Start/Stop Streaming hotkeys drive the engine off
+  libobs's hotkey thread with no synchronization.** **Fixed `fc25f7c82`.** Both callbacks now
+  hop through `AsyncTask::PostToUi` — the marshal `onOutputStopped`'s wiring already uses
+  (`obs_bootstrap.cpp:915-921`) — with a `MultistreamAlive()` guard for the task `CefShutdown`
+  drains after `Stop()` resets the engine. `PostToUi` drops tasks once `Bridge::Shutdown()`
+  clears the alive flag, which runs before the engine dies. The five `obs_enum_hotkeys` lambdas
+  and the `hotkeys.*` bridge methods were audited and left alone: they run on the caller's
+  thread and touch only the hotkey API, which holds its own recursive mutex.
+  `obs_hotkey_enable_callback_rerouting` was rejected — it needs a frontend-side pump nothing
+  in this tree drains, and `PostToUi` is the existing seam. The comment audits `EmitEvent` and stops
   there, but `StartAllEnabled` iterates the unguarded `bindings.bindings` vector
   (`MultistreamEngine.cpp:426`) and `canvasEncoders` (`MultistreamEngine.hpp:184`) has no
   mutex. Stock OBS's Qt frontend called `obs_hotkey_enable_callback_rerouting` to marshal
@@ -1940,8 +1948,17 @@ mid-broadcast is unrecoverable — the user is live in front of an audience.
   *Scenario:* hotkey pressed while the Outputs tab adds a binding, `push_back` reallocs
   mid-iteration, crash or start against freed memory. *Fix:* marshal via
   `AsyncTask::PostToUi`, as `onOutputStopped` already does.
-- 🔴 **R2 — `MultistreamEngine.cpp:416-419`: `LiveOutput` destroyed while holding
-  `liveMutex`, closing a deadlock cycle against the stop signal.** The comment defends the
+- ✅ **R2 — `MultistreamEngine.cpp:416-419`: `LiveOutput` destroyed while holding
+  `liveMutex`, closing a deadlock cycle against the stop signal.** **Fixed `c163c4417`.**
+  `RemoveLive` became `TakeLive`, returning the moved-out `unique_ptr` so the caller destroys
+  it after the guard releases. **Four sites, not one** — `StopOutput` (the cited one), `StopAll`
+  (`dead.swap(live)`; also covers `~MultistreamEngine`), and both reap paths in `StartOutput`.
+  The cycle was re-confirmed against in-tree libobs (`callback/signal.c:298-321` holds
+  `sig->mutex` across the callback, `:251-260` disconnect locks it, `obs-output.c:291-303`
+  blocks) and is **not stop-specific** — `"start"`/`OnOutputStart` closes the same cycle.
+  `obs_output_active`/`obs_output_get_*` under the lock are safe (atomic/field reads). The
+  deferred `UpdateSleepInhibit`/`NotifyChanged` ordering is inert: both only observe `live`,
+  already emptied atomically under the lock. The comment defends the
   *synchronous* re-entry and misses the *asynchronous* one. Edges verified: `OnOutputStop`
   takes `liveMutex` (`:648`); `signal.c:298-321` holds `sig->mutex` across the callback
   while `signal_handler_disconnect` (`:260`) locks it; `obs_output_destroy` blocks
@@ -1985,7 +2002,17 @@ mid-broadcast is unrecoverable — the user is live in front of an audience.
   last frame**; repeats during a raid. The events path does this correctly
   (`event_hub.cpp:259` broadcasts on a worker). *Fix:* hop to a worker before
   `BroadcastFrame`, mirroring `EventHub::Ingest`.
-- 🔴 **R6 — `main.cpp:390` + `libobs/util/base.c:57-66`: the crash handler has no sink.**
+- ✅ **R6 — `main.cpp:390` + `libobs/util/base.c:57-66`: the crash handler has no sink.**
+  **Fixed `2cb8822b2`.** `SessionLog::InstallCrashHandler()` at `main.cpp:391`, before the
+  filter install, so the filter can never fire while the default sink is live. The sink writes
+  `<config>/crashes/Crash <ts>.txt` reusing `session_log`'s own rotation/timestamp helpers,
+  resolves its path at install time (no path work in a crashed process), guards re-entry, and
+  `_exit(-1)`s. `Smoke-Package.ps1` now requires exit 0 *after* the `FE_SMOKE_QUIT_SECONDS`
+  window and no crash report from the run. **One claim below was wrong:** `minidump_write_dump`
+  is resolved at `libobs/obs-win-crash-handler.c:134` and referenced nowhere else — it is dead
+  code **upstream too**, so the old frontend never wrote dumps either. `bcrash()` (`:518`)
+  carries the full text report (header, all-thread stacks, module list); that is what the sink
+  persists. Real minidumps would need a `libobs/` change — see G3.
   `obs_init_win32_crash_handler()` installs the exception *filter*, ending in `bcrash(...)`,
   but `base_set_crash_handler` has **zero callers tree-wide**, so the default runs:
   `vfprintf(stderr, ...); exit(0);`. `minidump_write_dump` is resolved
