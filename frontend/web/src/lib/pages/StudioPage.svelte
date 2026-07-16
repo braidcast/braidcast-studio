@@ -17,7 +17,7 @@ import { bumpDockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   import { obs, type CanvasInfo, type Monitor, type MultistreamState } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
   import { canvasStore } from "$lib/stores/canvasStore.svelte";
-  import { multistreamStatusStore } from "$lib/stores/multistreamStatusStore.svelte";
+  import { multistreamStatusStore, isActiveState } from "$lib/stores/multistreamStatusStore.svelte";
   import { STATE_COLOR } from "$lib/theme/stateColors";
   import { fmtDuration, fmtBitrate } from "$lib/utils/format";
   import { statsStore } from "$lib/stores/statsStore.svelte";
@@ -100,22 +100,20 @@ import { EV } from "$lib/utils/eventNames";
   // drives it, seeded once on mount from the initial multistream.status read.
   let anyRunning = $state(false);
 
-  // Mock focusedDot: green when live, accent otherwise (connecting/error keep the
-  // meter colors so the dot still reads transient states).
-  let focusDotColor = $derived(
-    liveState === "live"
-      ? "var(--meter-green)"
-      : liveState === "connecting"
-        ? "var(--meter-yellow)"
-        : liveState === "error"
-          ? "var(--color-live)"
-          : "var(--color-accent)",
-  );
+  // Mock focusedDot: idle reads the accent (not muted); every other state reads the
+  // shared STATE_COLOR token so the dot still shows the transient states.
+  let focusDotColor = $derived(liveState === "idle" ? "var(--color-accent)" : STATE_COLOR[liveState]);
 
   // Off-air status label for the bottom bar's left block (the live badge replaces it
   // once streaming). Keeps that block substantial instead of a lone floating dot.
   let liveLabel = $derived(
-    liveState === "connecting" ? "Connecting" : liveState === "error" ? "Stream Error" : "Offline",
+    liveState === "connecting"
+      ? "Connecting"
+      : liveState === "reconnecting"
+        ? "Reconnecting"
+        : liveState === "error"
+          ? "Stream Error"
+          : "Offline",
   );
 
   let focusedCanvas = $derived(canvases.find((c) => c.uuid === activeCanvasUuid) ?? null);
@@ -243,7 +241,7 @@ import { EV } from "$lib/utils/eventNames";
     // via streaming.changed).
     const offStatus = multistreamStatusStore.subscribe();
     void multistreamStatusStore.refresh().then(() => {
-      anyRunning = multistreamStatusStore.outputs.some((o) => o.state === "live" || o.state === "connecting");
+      anyRunning = multistreamStatusStore.outputs.some((o) => isActiveState(o.state));
     });
     obs
       .call("settings.getGeneral")

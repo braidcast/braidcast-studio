@@ -11,6 +11,9 @@ export const STATE_COLOR: Record<MultistreamState, string> = {
   connecting: "var(--meter-yellow)",
   live: "var(--meter-green)",
   error: "var(--color-live)",
+  // Orange, mixed from the meter tokens (there is no orange theme axis): reads
+  // between connecting (yellow) and error (red) and re-skins with every preset.
+  reconnecting: "color-mix(in srgb, var(--meter-red) 50%, var(--meter-yellow))",
 };
 
 /** MultistreamState plus the "off"/"disabled" aliases (an absent or disabled

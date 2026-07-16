@@ -9,9 +9,10 @@ const DETACH_SVG =
 const CLOSE_SVG =
   '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M5 5l14 14M19 5L5 19"/></svg>';
 
-// A tab-header status dot only carries meaning while a canvas is connecting / live /
-// errored (StudioPage recolors it live via updateParameters). Idle is the muted
-// token or empty -> the dot is hidden so an idle dock shows no grey square.
+// A tab-header status dot only carries meaning while a canvas is connecting /
+// reconnecting / live / errored (StudioPage recolors it live via updateParameters).
+// Idle is the muted token or empty -> the dot is hidden so an idle dock shows no
+// grey square.
 const IDLE_DOT = new Set(["", "var(--color-muted)"]);
 
 function stopPress(e: Event): void {

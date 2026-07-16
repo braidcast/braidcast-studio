@@ -12,12 +12,16 @@ import { obs } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
 import type { MultistreamStatus, MultistreamState, OutputBindingInfo } from "$lib/api/bridge";
 
-// The strongest live state across a set of outputs: live wins, then connecting,
-// then error, else idle. ONE ordering, shared by every consumer -- see the file
-// header for why this can't live per call site.
+// The strongest live state across a set of outputs: live wins, then reconnecting
+// (a dropped stream the engine is still retrying), then connecting, then error,
+// else idle. ONE ordering, shared by every consumer -- see the file header for
+// why this can't live per call site.
 export function reduceStates(states: MultistreamState[]): MultistreamState {
   if (states.includes("live")) {
     return "live";
+  }
+  if (states.includes("reconnecting")) {
+    return "reconnecting";
   }
   if (states.includes("connecting")) {
     return "connecting";
@@ -26,6 +30,13 @@ export function reduceStates(states: MultistreamState[]): MultistreamState {
     return "error";
   }
   return "idle";
+}
+
+// A state whose output is running (connected, or still dialing/retrying) --
+// mirrors the native IsCanvasLive gate, which holds the canvas through a
+// reconnect. ONE predicate; consumers must not re-derive it per call site.
+export function isActiveState(state: MultistreamState | "off" | "disabled"): boolean {
+  return state === "live" || state === "connecting" || state === "reconnecting";
 }
 
 // The effective state of a single destination row: a disabled binding never goes
@@ -40,6 +51,20 @@ export function bindingRowState(
     return "disabled";
   }
   return statusByBinding.get(b.uuid)?.state ?? "idle";
+}
+
+// Hover detail for a row's state tag: the drop reason while the engine retries
+// (the tag alone says "reconnecting" but not why). Empty when there is nothing
+// to surface. ONE formatting, shared by the same two consumers as bindingRowState.
+export function bindingRowDetail(
+  b: OutputBindingInfo,
+  statusByBinding: Map<string, MultistreamStatus>,
+): string {
+  const row = statusByBinding.get(b.uuid);
+  if (row?.state !== "reconnecting" || !row.lastError) {
+    return "";
+  }
+  return `Reconnecting: ${row.lastError}`;
 }
 
 class MultistreamStatusStore {

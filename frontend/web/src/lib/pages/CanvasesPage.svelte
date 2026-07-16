@@ -10,7 +10,7 @@
   import { canvasStore } from "$lib/stores/canvasStore.svelte";
   import { outputBindingStore, bindingDisplayName } from "$lib/stores/outputBindingStore.svelte";
   import { streamProfileStore } from "$lib/stores/streamProfileStore.svelte";
-  import { multistreamStatusStore } from "$lib/stores/multistreamStatusStore.svelte";
+  import { multistreamStatusStore, isActiveState } from "$lib/stores/multistreamStatusStore.svelte";
   import { fmtFps } from "$lib/utils/format";
   import CanvasEditor from "$lib/canvas/CanvasEditor.svelte";
   import CollectionDialog, { type DialogSpec } from "$lib/dialogs/CollectionDialog.svelte";
@@ -91,9 +91,7 @@
     selectedUuid = (canvases.find((c) => c.isDefault) ?? canvases[0])?.uuid ?? null;
   });
   const selected = $derived(canvases.find((c) => c.uuid === selectedUuid) ?? null);
-  const selectedLive = $derived(
-    selectedUuid ? canvasState(selectedUuid) === "live" || canvasState(selectedUuid) === "connecting" : false,
-  );
+  const selectedLive = $derived(selectedUuid ? isActiveState(canvasState(selectedUuid)) : false);
 
   // Pointer drag-to-reorder the canvas list, restricted to the non-default canvases
   // (the Default canvas is pinned first and never part of `order`). Optimistically

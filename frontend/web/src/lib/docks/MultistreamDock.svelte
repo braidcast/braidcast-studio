@@ -8,7 +8,7 @@
     isBindingDangling,
     isBindingUnset,
   } from "$lib/stores/outputBindingStore.svelte";
-  import { multistreamStatusStore, bindingRowState } from "$lib/stores/multistreamStatusStore.svelte";
+  import { multistreamStatusStore, bindingRowState, bindingRowDetail } from "$lib/stores/multistreamStatusStore.svelte";
   import { STATE_COLOR_EXT } from "$lib/theme/stateColors";
   import ToggleSwitch from "$lib/ui/ToggleSwitch.svelte";
   import Icon from "$lib/ui/Icon.svelte";
@@ -112,7 +112,9 @@
               >
                 {bindingDisplayName(b)}
               </span>
-              <span class="dtag" style:color={STATE_COLOR_EXT[rs]}>{rs.toUpperCase()}</span>
+              <span class="dtag" style:color={STATE_COLOR_EXT[rs]} title={bindingRowDetail(b, statusByBinding) || undefined}>
+                {rs.toUpperCase()}
+              </span>
             </div>
           {/each}
         </section>

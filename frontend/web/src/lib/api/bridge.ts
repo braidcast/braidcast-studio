@@ -629,11 +629,12 @@ export interface SceneLinkInfo {
 // --- multistream live status (fan-out engine, 4.4.4) -------------------------
 
 /** Live state of one enabled output binding. */
-export type MultistreamState = "idle" | "connecting" | "live" | "error";
+export type MultistreamState = "idle" | "connecting" | "live" | "error" | "reconnecting";
 
 /**
  * One status row reported by multistream.status / pushed on multistream.changed
- * (one per enabled binding). `lastError` is set only in the "error" state.
+ * (one per enabled binding). `lastError` is set in the "error" and
+ * "reconnecting" states (the drop reason while the engine retries).
  */
 export interface MultistreamStatus {
   bindingUuid: string;

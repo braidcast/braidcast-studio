@@ -11,7 +11,7 @@
   import ProfileSelect from "$lib/ui/ProfileSelect.svelte";
   import { STATE_COLOR_EXT } from "$lib/theme/stateColors";
   import { bindingDisplayName, isBindingDangling, isBindingUnset } from "$lib/stores/outputBindingStore.svelte";
-  import { bindingRowState } from "$lib/stores/multistreamStatusStore.svelte";
+  import { bindingRowState, bindingRowDetail } from "$lib/stores/multistreamStatusStore.svelte";
 
   interface Props {
     canvasUuid: string;
@@ -39,6 +39,7 @@
     disabled: "color-mix(in srgb, var(--color-muted) 10%, transparent)",
     idle: "color-mix(in srgb, var(--color-muted) 12%, transparent)",
     connecting: "color-mix(in srgb, var(--meter-yellow) 14%, transparent)",
+    reconnecting: `color-mix(in srgb, ${STATE_COLOR_EXT.reconnecting} 14%, transparent)`,
     live: "color-mix(in srgb, var(--meter-green) 14%, transparent)",
     error: "color-mix(in srgb, var(--color-live) 14%, transparent)",
   };
@@ -121,7 +122,12 @@
               <span class="row-name" class:deleted={isBindingDangling(b.profileLabel)} class:unset={isBindingUnset(b.profileLabel)}>
                 {bindingDisplayName(b)}
               </span>
-              <span class="row-state" style:color={STATE_COLOR_EXT[s]} style:background={STATE_TAG_BG[s]}>
+              <span
+                class="row-state"
+                style:color={STATE_COLOR_EXT[s]}
+                style:background={STATE_TAG_BG[s]}
+                title={bindingRowDetail(b, statusByBinding) || undefined}
+              >
                 {titleState(s).toUpperCase()}
               </span>
             </div>
