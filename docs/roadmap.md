@@ -2147,10 +2147,15 @@ mid-broadcast is unrecoverable — the user is live in front of an audience.
 - 🔴 **R12 — `broker_strategy.cpp:339`: unconditional `Accounts().Put` resurrects an account
   disconnected mid-refresh**, re-persisting deleted credentials. Every sibling writer refuses
   this (`account_store.cpp:245`: "never re-insert a removed account").
-- 🔴 **R13 — `mcp/HttpServer.cpp:220`: no `SO_RCVTIMEO`, no client-socket registry**, so
+- ✅ **R13 — `mcp/HttpServer.cpp:220`: no `SO_RCVTIMEO`, no client-socket registry**, so
   closing the listen socket will not unblock a parked `recv` and `Stop()`'s `join()` hangs
   forever, on the UI thread, mid-stream, on an MCP toggle. `overlay_server.cpp:93,466` already
-  implements the correct seam — reuse it.
+  implements the correct seam — reuse it. **Fixed `35c1011ec`.** Call path confirmed:
+  `mcp.setConfig` (UI thread) → `McpServer::ApplyConfigPatch` → `RestartListener` →
+  `HttpServer::Stop()`. `HttpServer` handles one connection at a time, so a single tracked
+  `clientSocket_` (not a `std::set`) suffices: `Stop()` now `shutdown(SD_BOTH)`s the parked
+  socket, with `kHeaderRecvTimeoutMs = 10000` (same as overlay_server) as the standalone
+  backstop.
 - 🔴 **R14 — `event_names.hpp:33-34`: no transport health channel exists.** Only
   `events.new`/`events.backfill`; every transport death terminates at `HostLog`. This is the
   amplifier that makes most of the above invisible-with-a-green-badge.
@@ -2171,9 +2176,15 @@ mid-broadcast is unrecoverable — the user is live in front of an audience.
   mid-session loses a whole session's edits silently.
 - 🔴 **R18 — `main.cpp:527-536`: the `CreateBrowserSync` abort path is a hand-copied partial
   duplicate of the real teardown** — leaks a ghost tray icon, skips RTWQ/mutex cleanup.
-- 🔴 **R19 — unbounded buffers.** `ws_client.cpp:178` (`accum_` uncapped) and
+- ✅ **R19 — unbounded buffers.** `ws_client.cpp:178` (`accum_` uncapped) and
   `http_client.cpp:20` + `:79` (no `CURLOPT_MAXFILESIZE`, with gzip decompression, against
   third-party emote hosts on the go-live path). OOM lands in the encoders' address space.
+  **Fixed `35c1011ec`.** WS reassembly capped at `kMaxAccumBytes = 4 MB` → existing
+  disconnect/reconnect path. HTTP capped at `kMaxResponseBytes = 20 MB`, enforced **both** via
+  `CURLOPT_MAXFILESIZE_LARGE` (honest `Content-Length`) **and** in `WriteToString` against the
+  actual decompressed bytes (a chunked/gzip-bombed response can omit or lie about
+  `Content-Length`). Gzip auto-decompress confirmed on; the attacker-influenced path is
+  `third_party_emotes.cpp:43` (7TV/BTTV/FFZ-style hosts) at go-live.
 - 🔴 **R20 — `bridge.cpp:8434`: the file's only raw `std::thread(...).detach()`**, invisible to
   `WaitForDrain`.
 - 🔴 **R21 — `bridge.cpp:7176-7327`: `settings.restore` discards six setters' errors and
