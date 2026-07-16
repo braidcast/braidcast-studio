@@ -6,6 +6,7 @@
 #include "log.hpp"
 #include "obs_bootstrap.hpp"
 #include "MultistreamEngine.hpp"
+#include "util/async_task.hpp"
 
 #include <obs.hpp>
 #include <util/dstr.hpp>
@@ -281,15 +282,26 @@ obs_hotkey_id g_stopStreamingId = OBS_INVALID_HOTKEY_ID;
 
 // Drive the engine start/stop through the SAME path the streaming.start/stop bridge
 // methods use, then mirror their streaming.changed push so the UI updates. Fired on
-// key-down only (pressed==true) from libobs's hotkey thread; EmitEvent marshals to
-// the CEF UI thread, so the off-thread call is safe.
+// key-down only (pressed==true) from libobs's hotkey thread. The engine's binding
+// list and encoder cache are UI-thread-owned (no locks of their own; every bridge
+// method mutates them on the CEF UI thread), so hop there via AsyncTask::PostToUi --
+// the same marshal the engine's onOutputStopped wiring uses -- instead of driving
+// the engine from the hotkey thread. PostToUi drops the task once the bridge is
+// torn down; the MultistreamAlive() guard covers a task CefShutdown drains after
+// Stop() reset the engine (mirrors EmitMultistreamChanged).
 void OnStartStreaming(void * /*data*/, obs_hotkey_id /*id*/, obs_hotkey_t * /*hotkey*/, bool pressed)
 {
 	if (!pressed) {
 		return;
 	}
-	ObsBootstrap::Multistream().StartAllEnabled();
-	Bridge::EmitEvent(EventNames::kStreamingChanged, json{{"active", ObsBootstrap::Multistream().AnyLive()}});
+	AsyncTask::PostToUi([] {
+		if (!ObsBootstrap::MultistreamAlive()) {
+			return;
+		}
+		ObsBootstrap::Multistream().StartAllEnabled();
+		Bridge::EmitEvent(EventNames::kStreamingChanged,
+				  json{{"active", ObsBootstrap::Multistream().AnyLive()}});
+	});
 }
 
 void OnStopStreaming(void * /*data*/, obs_hotkey_id /*id*/, obs_hotkey_t * /*hotkey*/, bool pressed)
@@ -297,8 +309,13 @@ void OnStopStreaming(void * /*data*/, obs_hotkey_id /*id*/, obs_hotkey_t * /*hot
 	if (!pressed) {
 		return;
 	}
-	ObsBootstrap::Multistream().StopAll();
-	Bridge::EmitEvent(EventNames::kStreamingChanged, json{{"active", false}});
+	AsyncTask::PostToUi([] {
+		if (!ObsBootstrap::MultistreamAlive()) {
+			return;
+		}
+		ObsBootstrap::Multistream().StopAll();
+		Bridge::EmitEvent(EventNames::kStreamingChanged, json{{"active", false}});
+	});
 }
 
 } // namespace
