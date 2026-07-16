@@ -9,7 +9,6 @@
     type SceneLinkInfo,
   } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
-  import { setPage } from "$lib/stores/pageStore.svelte";
   import { previewSuspended, suspendPreview } from "$lib/stores/previewGate.svelte";
 import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   import { WINDOW_ID } from "$lib/utils/windowContext";
@@ -35,7 +34,6 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   import FilterReveal from "$lib/docking/FilterReveal.svelte";
   import Splitter from "$lib/docking/Splitter.svelte";
   import { getPaneSizes, setEmbedH, setScenesW } from "$lib/docking/canvasPaneSizes";
-  import { STATE_COLOR_EXT } from "$lib/theme/stateColors";
   import { multistreamStatusStore } from "$lib/stores/multistreamStatusStore.svelte";
 
   // A composite, inseparable dock for one NON-DEFAULT canvas (hierarchy-model.html
@@ -660,7 +658,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     ];
   }
 
-  // ---- footer: live-status dot for this canvas, off the shared status store ----
+  // ---- live state for this canvas (drives the stage LIVE chip), off the shared status store ----
   let liveState = $derived.by<MultistreamState | "off">(() => {
     const mine = multistreamStatusStore.forCanvas(canvasUuid);
     return mine.length === 0 ? "off" : multistreamStatusStore.deriveOutputsState(mine);
@@ -991,12 +989,6 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     </div>
   </div>
 
-  <footer class="foot">
-    <span class="dot" style:background={STATE_COLOR_EXT[liveState]} title={liveState}></span>
-    <button class="foot-gear" title="Edit canvas (Canvases)" aria-label="Edit canvas (Canvases)" onclick={() => setPage("canvases")}>
-      <Icon name="edit" size={13} />
-    </button>
-  </footer>
 </div>
 
 {#if addingSource}
@@ -1296,39 +1288,6 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   }
   .inline:focus {
     outline: none;
-  }
-
-  /* ---- footer ---------------------------------------------------------- */
-  .foot {
-    flex: 0 0 auto;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 5px 9px;
-    border-top: var(--border-weight) solid var(--color-border);
-    background: var(--color-surface-2);
-  }
-  .dot {
-    width: 8px;
-    height: 8px;
-    flex-shrink: 0;
-  }
-  .foot-gear {
-    flex: 0 0 auto;
-    margin-left: auto;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 22px;
-    height: 20px;
-    background: none;
-    border: 0;
-    padding: 0;
-    cursor: pointer;
-    color: var(--color-muted);
-  }
-  .foot-gear:hover {
-    color: var(--color-accent);
   }
 
   /* This dock only ever shows an error message; keep it tight, no tracking. */
