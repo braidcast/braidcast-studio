@@ -1350,9 +1350,11 @@ export interface ObsMethods {
   // Stream metadata (Go Live "Stream Information": title / category / language).
   // get ({accountId}) loads the account's current metadata ({title, category:{id,name},
   // language}); searchCategories resolves a query to game/category matches ({id, name,
-  // boxArt}); set ({accountId, profileUuid, fields}) persists and returns {ok:true},
-  // emitting streamMeta.changed. accountId keys the token/provider; profileUuid is only
-  // forwarded into the write's UI-thread-marshalled ingest writeback.
+  // boxArt}); set ({accountId, profileUuid, fields, goingLive?}) persists and returns
+  // {ok:true}, emitting streamMeta.changed. accountId keys the token/provider; profileUuid
+  // is only forwarded into the write's UI-thread-marshalled ingest writeback. goingLive
+  // (default false) is true only when the push immediately precedes streaming.start, so a
+  // create-per-go-live provider (YouTube) skips creating a broadcast for a standalone edit.
   "streamMeta.get": StreamMeta;
   "streamMeta.searchCategories": StreamCategory[];
   "streamMeta.set": { ok: true };

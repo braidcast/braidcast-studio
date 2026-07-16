@@ -339,7 +339,7 @@ bool YouTubeProvider::searchCategories(OAuthAccount &acct, const std::string &qu
 }
 
 bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profileUuid, const json &fields,
-				    std::string &err)
+				    bool goingLive, std::string &err)
 {
 	if (!fields.is_object()) {
 		err = "stream metadata fields must be an object";
@@ -422,6 +422,135 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 				std::to_string(resp.status) + ": " + resp.body);
 		}
 	};
+
+	// Steps 4 + 5 (video category/tags, then thumbnail) apply identically whether the
+	// broadcast was just created for go-live or is already live for a mid-stream edit, so
+	// both paths call this instead of duplicating the blocks. Both are NON-CRITICAL:
+	// failures are logged and skipped, never surfaced as an apply failure.
+	auto applyVideoTagsAndThumbnail = [&](const std::string &videoId) {
+		// 4. videos.update -- category + tags live on the video, not the broadcast.
+		// part=snippet REPLACES the whole snippet, so title + categoryId must be
+		// re-sent or the call 400s / wipes them. Only worth a call when a category was
+		// chosen or tags exist; categoryId 24 (Entertainment) is a safe assignable
+		// default needed only when tags exist without a chosen category.
+		if (!categoryId.empty() || !tags.empty()) {
+			const std::string effectiveCategory = categoryId.empty() ? "24" : categoryId;
+			json videoSnippet = json{
+				{"title", title},
+				{"description", description},
+				{"categoryId", effectiveCategory},
+				{"tags", tags},
+			};
+			json videoBody = json{{"id", videoId}, {"snippet", videoSnippet}};
+			json vResp;
+			std::string vErr;
+			if (!sendJson("PUT", std::string(kVideosUrl) + "?part=snippet", videoBody, vResp, vErr)) {
+				HostLog("[oauth] YouTube videos.update failed (continuing): " + vErr);
+			}
+		}
+
+		// 5. thumbnails.set -- raw binary upload (image bytes as the body, sniffed
+		// Content-Type), NOT multipart. data: URLs are Phase 8e.
+		if (!thumbnailPath.empty() && thumbnailPath.rfind("data:", 0) != 0) {
+			std::ifstream file(thumbnailPath, std::ios::binary | std::ios::ate);
+			if (!file) {
+				HostLog("[oauth] YouTube thumbnail skipped: cannot open " + thumbnailPath);
+			} else if (const std::streamoff size = file.tellg(); size > kMaxThumbnailBytes) {
+				// Non-fatal: thumbnail is non-critical, so skip oversized files rather than fail.
+				HostLog("[oauth] YouTube thumbnail skipped: file exceeds YouTube's 2 MB limit (" +
+					std::to_string(static_cast<long long>(size)) + " bytes) " + thumbnailPath);
+			} else {
+				file.seekg(0, std::ios::beg);
+				const std::string bytes((std::istreambuf_iterator<char>(file)),
+							std::istreambuf_iterator<char>());
+				if (bytes.empty()) {
+					HostLog("[oauth] YouTube thumbnail skipped: empty file " + thumbnailPath);
+				} else {
+					Http::HttpReq req;
+					req.method = "POST";
+					req.url =
+						std::string(kThumbnailsSetUrl) + "?videoId=" + Http::UrlEncode(videoId);
+					req.contentType = SniffImageMime(bytes);
+					req.body = bytes;
+					Http::HttpResponse resp;
+					std::string thumbErr;
+					if (!SendAuthed(acct, req, resp, thumbErr)) {
+						HostLog("[oauth] YouTube thumbnails.set failed (continuing): " +
+							thumbErr);
+					} else if (resp.status < 200 || resp.status >= 300) {
+						HostLog("[oauth] YouTube thumbnails.set failed (continuing): HTTP " +
+							std::to_string(resp.status) + ": " + resp.body);
+					}
+				}
+			}
+		} else if (!thumbnailPath.empty()) {
+			HostLog("[oauth] YouTube thumbnail skipped: data: URL handling is Phase 8e");
+		}
+	};
+
+	// A standalone "Edit stream info" push (not the prelude to streaming.start). Under
+	// create-per-go-live a broadcast exists ONLY during/after go-live, so this edit must
+	// never insert/bind a broadcast: doing so would leave a stale "Upcoming" broadcast
+	// pre-live, or rebind ingest and break a running stream when edited mid-stream.
+	if (!goingLive) {
+		BroadcastState active;
+		if (EnsureActiveBroadcast(acct, active, err)) {
+			// Mid-stream edit: update the live broadcast in place. No insert, no bind, no
+			// ingest rebind, no broadcasts_ mutation -- only its editable metadata. YouTube
+			// requires snippet.title AND snippet.scheduledStartTime together on a
+			// part=snippet update and rejects a fresh time for an already-started
+			// broadcast, so echo the existing scheduledStartTime read back here.
+			Http::HttpReq getReq;
+			getReq.method = "GET";
+			getReq.url = std::string(kLiveBroadcastsUrl) +
+				     "?part=snippet,status&id=" + Http::UrlEncode(active.broadcastId);
+			Http::HttpResponse getResp;
+			if (!SendAuthed(acct, getReq, getResp, err)) {
+				return false;
+			}
+			if (getResp.status < 200 || getResp.status >= 300) {
+				err = "YouTube liveBroadcasts.list failed (HTTP " + std::to_string(getResp.status) +
+				      "): " + getResp.body;
+				return false;
+			}
+			const json existing = FirstItem(ParseJson(getResp.body));
+			std::string scheduledStart;
+			if (existing.is_object() && existing.contains("snippet") && existing["snippet"].is_object()) {
+				scheduledStart = Str(existing["snippet"], "scheduledStartTime");
+			}
+			if (scheduledStart.empty()) {
+				scheduledStart = NowIso8601Utc();
+			}
+
+			// contentDetails (latency/dvr/autoStart) is intentionally omitted: those are
+			// go-live-time settings, immutable once the broadcast is testing/live (a PUT
+			// including them would 400).
+			json updSnippet = json{{"title", title},
+					       {"description", description},
+					       {"scheduledStartTime", scheduledStart}};
+			json updStatus = json{{"privacyStatus", privacy}, {"selfDeclaredMadeForKids", madeForKids}};
+			json updBody = json{{"id", active.broadcastId}, {"snippet", updSnippet}, {"status", updStatus}};
+			json updResp;
+			std::string updErr;
+			if (!sendJson("PUT", std::string(kLiveBroadcastsUrl) + "?part=snippet,status", updBody, updResp,
+				      updErr)) {
+				err = "YouTube liveBroadcasts.update failed: " + updErr;
+				return false;
+			}
+
+			applyVideoTagsAndThumbnail(active.broadcastId);
+			return true;
+		}
+		// EnsureActiveBroadcast returned false: a non-empty err is a genuine API/network
+		// failure (propagate it); an EMPTY err means no active broadcast (or the probe was
+		// throttled) -- a pre-live edit with no target to update. The metadata is already
+		// remembered client-side (streamMeta.save) and gets applied when Go Live creates
+		// the broadcast, so no-op here rather than creating one.
+		if (!err.empty()) {
+			return false;
+		}
+		return true;
+	}
 
 	// 1. liveBroadcasts.insert -- the broadcast id doubles as the videoId. CRITICAL.
 	json snippet = json{{"title", title}, {"description", description}, {"scheduledStartTime", NowIso8601Utc()}};
@@ -526,62 +655,9 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 		bs.broadcastId.clear();
 	}
 
-	// 4. videos.update -- category + tags live on the video, not the broadcast.
-	// part=snippet REPLACES the whole snippet, so title + categoryId must be
-	// re-sent or the call 400s / wipes them. Only worth a call when a category was
-	// chosen or tags exist; categoryId 24 (Entertainment) is a safe assignable
-	// default needed only when tags exist without a chosen category. NON-CRITICAL.
-	if (!categoryId.empty() || !tags.empty()) {
-		const std::string effectiveCategory = categoryId.empty() ? "24" : categoryId;
-		json videoSnippet = json{
-			{"title", title},
-			{"description", description},
-			{"categoryId", effectiveCategory},
-			{"tags", tags},
-		};
-		json videoBody = json{{"id", broadcastId}, {"snippet", videoSnippet}};
-		json vResp;
-		std::string vErr;
-		if (!sendJson("PUT", std::string(kVideosUrl) + "?part=snippet", videoBody, vResp, vErr)) {
-			HostLog("[oauth] YouTube videos.update failed (continuing): " + vErr);
-		}
-	}
-
-	// 5. thumbnails.set -- raw binary upload (image bytes as the body, sniffed
-	// Content-Type), NOT multipart. data: URLs are Phase 8e. NON-CRITICAL.
-	if (!thumbnailPath.empty() && thumbnailPath.rfind("data:", 0) != 0) {
-		std::ifstream file(thumbnailPath, std::ios::binary | std::ios::ate);
-		if (!file) {
-			HostLog("[oauth] YouTube thumbnail skipped: cannot open " + thumbnailPath);
-		} else if (const std::streamoff size = file.tellg(); size > kMaxThumbnailBytes) {
-			// Non-fatal: thumbnail is non-critical, so skip oversized files rather than fail.
-			HostLog("[oauth] YouTube thumbnail skipped: file exceeds YouTube's 2 MB limit (" +
-				std::to_string(static_cast<long long>(size)) + " bytes) " + thumbnailPath);
-		} else {
-			file.seekg(0, std::ios::beg);
-			const std::string bytes((std::istreambuf_iterator<char>(file)),
-						std::istreambuf_iterator<char>());
-			if (bytes.empty()) {
-				HostLog("[oauth] YouTube thumbnail skipped: empty file " + thumbnailPath);
-			} else {
-				Http::HttpReq req;
-				req.method = "POST";
-				req.url = std::string(kThumbnailsSetUrl) + "?videoId=" + Http::UrlEncode(broadcastId);
-				req.contentType = SniffImageMime(bytes);
-				req.body = bytes;
-				Http::HttpResponse resp;
-				std::string thumbErr;
-				if (!SendAuthed(acct, req, resp, thumbErr)) {
-					HostLog("[oauth] YouTube thumbnails.set failed (continuing): " + thumbErr);
-				} else if (resp.status < 200 || resp.status >= 300) {
-					HostLog("[oauth] YouTube thumbnails.set failed (continuing): HTTP " +
-						std::to_string(resp.status) + ": " + resp.body);
-				}
-			}
-		}
-	} else if (!thumbnailPath.empty()) {
-		HostLog("[oauth] YouTube thumbnail skipped: data: URL handling is Phase 8e");
-	}
+	// 4 + 5. Video category/tags, then thumbnail (both NON-CRITICAL). Shared with the
+	// mid-stream edit path.
+	applyVideoTagsAndThumbnail(broadcastId);
 
 	// 6. Ingest writeback -- put the CDN endpoint + key into the linked profile so
 	// the modal's streaming.start streams to YouTube. Blocks on the UI-thread write

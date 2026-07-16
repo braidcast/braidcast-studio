@@ -512,6 +512,7 @@ import { EV } from "$lib/utils/eventNames";
           accountId: j.channel.accountId,
           profileUuid: j.stream.profileUuid,
           fields: j.fields,
+          goingLive: goLiveModal.mode === "golive",
         }),
       ),
     );

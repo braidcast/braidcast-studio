@@ -231,10 +231,11 @@ bool KickProvider::searchCategories(OAuthAccount &acct, const std::string &query
 	return true;
 }
 
-bool KickProvider::applyMetadata(OAuthAccount &acct, const std::string &profileUuid, const json &fields,
+bool KickProvider::applyMetadata(OAuthAccount &acct, const std::string &profileUuid, const json &fields, bool goingLive,
 				 std::string &err)
 {
 	(void)profileUuid; // Kick edits a persistent channel; no per-profile ingest writeback
+	(void)goingLive;   // persistent channel: edit is intent-agnostic, same push whether or not going live
 	if (!fields.is_object()) {
 		err = "stream metadata fields must be an object";
 		return false;

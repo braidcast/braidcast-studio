@@ -236,10 +236,14 @@ public:
 	// Push the resolved metadata `fields` to the platform. `profileUuid` is the
 	// stream profile this apply targets (distinct from the shared account identity):
 	// a provider that writes a per-go-live ingest endpoint back into the profile
-	// (YouTube) needs it; Twitch/Kick ignore it. false + `err` on failure (a
-	// per-platform failure warns but must not block going live).
+	// (YouTube) needs it; Twitch/Kick ignore it. `goingLive` is true ONLY when this
+	// apply is the immediate prelude to streaming.start; a create-per-go-live provider
+	// (YouTube) uses it to avoid creating a broadcast for a standalone pre-live edit,
+	// while persistent-channel providers (Twitch/Kick) ignore it and edit regardless of
+	// intent. false + `err` on failure (a per-platform failure warns but must not block
+	// going live).
 	virtual bool applyMetadata(OAuthAccount &acct, const std::string &profileUuid, const json &fields,
-				   std::string &err) = 0;
+				   bool goingLive, std::string &err) = 0;
 
 	// Optionally fetch the platform stream key for `acct` (Twitch exposes one via
 	// /helix/streams/key; most providers do not). Default: unsupported. On success

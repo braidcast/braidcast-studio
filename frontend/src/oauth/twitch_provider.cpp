@@ -294,9 +294,10 @@ bool TwitchProvider::searchCategories(OAuthAccount &acct, const std::string &que
 }
 
 bool TwitchProvider::applyMetadata(OAuthAccount &acct, const std::string &profileUuid, const json &fields,
-				   std::string &err)
+				   bool goingLive, std::string &err)
 {
 	(void)profileUuid; // Twitch edits a persistent channel; no per-profile ingest writeback
+	(void)goingLive;   // persistent channel: edit is intent-agnostic, same push whether or not going live
 	if (!ensureIdentity(acct, err)) {
 		return false;
 	}

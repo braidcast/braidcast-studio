@@ -8742,12 +8742,17 @@ bool MethodStreamMetaSet(const json &params, json &result, std::string &error)
 		return false;
 	}
 	const json fields = params.is_object() && params.contains("fields") ? params["fields"] : json::object();
+	// goingLive distinguishes the go-live prelude from a standalone "Edit stream info"
+	// push (same account state otherwise). A create-per-go-live provider (YouTube) uses
+	// it to avoid creating a broadcast for a pre-live edit; persistent-channel providers
+	// ignore it. Absent -> false.
+	const bool goingLive = params.is_object() && params.value("goingLive", false);
 
 	OAuth::OAuthAccount acct = *stored;
 	std::string err;
 	bool ok;
 	try {
-		ok = provider->applyMetadata(acct, profileUuid, fields, err);
+		ok = provider->applyMetadata(acct, profileUuid, fields, goingLive, err);
 	} catch (const std::exception &e) {
 		error = std::string("streamMeta.set failed: ") + e.what();
 		return false;

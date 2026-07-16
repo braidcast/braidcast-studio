@@ -55,7 +55,7 @@ public:
 	bool fetchIdentity(OAuthAccount &acct, std::string &err) override;
 	bool getMetadata(OAuthAccount &acct, json &out, std::string &err) override;
 	bool searchCategories(OAuthAccount &acct, const std::string &query, json &out, std::string &err) override;
-	bool applyMetadata(OAuthAccount &acct, const std::string &profileUuid, const json &fields,
+	bool applyMetadata(OAuthAccount &acct, const std::string &profileUuid, const json &fields, bool goingLive,
 			   std::string &err) override;
 
 	// Report the active broadcast's concurrent viewer count (Phase 9.0). Returns
