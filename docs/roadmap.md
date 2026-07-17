@@ -1813,14 +1813,27 @@ match OBS Studio's full output set — macOS (`.app`/`.dmg`, notarised, with a
 Sparkle is intentionally disabled (blank URL/key) until Braidcast stands up its
 own update infra — re-enabling it against OBS's server must never happen.
 
+**Rebranded ✅ (done, cont'd).** `.github/workflows/push.yaml`: removed the dead
+upstream `obsproject/obs-studio/.github/workflows/sign-windows.yaml@…`
+reusable-workflow job (`sign-windows-build`) and its `.github/actions/windows-signing/`
+machinery (OBS's own GCP-KMS/DigiCert EV signing — never reachable for this fork,
+gated `github.repository_owner == 'obsproject'`), plus the other OBS-owner-gated
+dead jobs it fed: the Sparkle appcast job (`create-appcast`/`merge-appcasts`,
+`obsproject.com` customLink/urlPrefix), the `obsproject.com` docs-redirect
+Cloudflare deploy (`deploy-documentation`), and the bare-tag `create-release`
+job (upstream's own `OBS Studio X.Y.Z` release flow, unreachable since Braidcast
+only tags `v*`). `update-documentation` is left in place but is now an orphan
+(still owner-gated, no remaining consumer) — flagged for a future pass, not
+removed since it's zero-cost as-is.
+
+**In progress 🔧.** Windows code signing via [SignPath](https://signpath.io/)
+OSS — CI wired in `release-braidcast.yaml` (`sign-windows` job, no-ops
+gracefully until secrets exist); pending SignPath Foundation approval + the
+`SIGNPATH_*` secret/variable config. Full runbook: [docs/signing.md](./signing.md).
+
 **Deferred rebrand ⏸ (gated on shipping parity / CI verification).**
 - macOS `com.obsproject.*` bundle-ids on every dylib/framework/module →
   `com.braidcast.*` — touches code-signing/notarisation; do with the macOS work.
-- `.github/workflows/push.yaml`: the upstream
-  `obsproject/obs-studio/.github/workflows/sign-windows.yaml@…` reusable-workflow
-  ref, the `obsproject.com` docs redirect, and the Sparkle customLink — verify
-  which jobs actually run for Braidcast before repointing (risk: breaking Windows
-  signing CI).
 - App config directory is still the hardcoded literal `obs-studio`
   (`cmake/windows/helpers.cmake`) — renaming orphans existing user configs; needs
   a migration path first.

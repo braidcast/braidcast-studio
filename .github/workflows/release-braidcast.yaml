@@ -2,10 +2,14 @@ name: Release Braidcast
 run-name: ${{ github.ref_name }} Braidcast release 🚀
 # Fork-owned Windows-x64 release. Runs on a `v`-prefixed tag (e.g. v0.1.0),
 # builds via the shared build-project workflow, and cuts a DRAFT GitHub
-# release with the unsigned Windows-x64 zip. No secrets, no signing, no
-# notarization. `push.yaml` deliberately excludes `v*` tags so the build is
-# not run twice; upstream-style bare tags (e.g. 0.1.0) still flow through
-# push.yaml's obsproject release path.
+# release with the Windows-x64 zip and NSIS installer. `push.yaml`
+# deliberately excludes `v*` tags so the build is not run twice.
+#
+# Signing: the sign-windows job submits the packaged zip/installer to
+# SignPath (see docs/signing.md) and the release is attached with the
+# signed payload. Until SIGNPATH_API_TOKEN is configured, sign-windows
+# no-ops and the release ships unsigned (today's behavior) rather than
+# failing the tag push.
 on:
   push:
     tags:
@@ -20,10 +24,88 @@ jobs:
     permissions:
       contents: read
 
+  sign-windows:
+    name: Sign Windows Build ✍️
+    runs-on: ubuntu-24.04
+    needs: [build-project]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check SignPath Configuration 🔑
+        id: check
+        run: |
+          : Check SignPath Configuration 🔑
+          if [[ "${RUNNER_DEBUG}" ]]; then set -x; fi
+
+          if [[ -n "${SIGNPATH_API_TOKEN}" ]]; then
+            echo 'configured=true' >> "$GITHUB_OUTPUT"
+          else
+            echo '::notice::SIGNPATH_API_TOKEN is not set; this release will ship unsigned. See docs/signing.md.'
+            echo 'configured=false' >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+
+      - name: Download Windows Build 📥
+        if: fromJSON(steps.check.outputs.configured)
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: obs-studio-windows-x64-*
+          path: unsigned
+
+      - name: Stage Unsigned Payload 📦
+        if: fromJSON(steps.check.outputs.configured)
+        run: |
+          : Stage Unsigned Payload 📦
+          if [[ "${RUNNER_DEBUG}" ]]; then set -x; fi
+
+          # windows-build (build-project.yaml) uploads the CPack zip and NSIS
+          # installer together under one artifact. Re-stage just those two
+          # files so the SignPath artifact configuration signs exactly the
+          # payload it needs to (braidcast.exe, bundled plugin/hook DLLs
+          # inside the zip, and the installer exe itself) and nothing else.
+          mkdir -p unsigned-payload
+          find unsigned -type f \( -name 'braidcast-*-windows-x64.zip' -o -name 'braidcast-*-windows-x64.exe' \) \
+            -exec cp -v {} unsigned-payload/ \;
+
+          if [[ -z "$(ls -A unsigned-payload 2>/dev/null)" ]]; then
+            echo '::error::No braidcast-*-windows-x64.{zip,exe} found to sign'
+            exit 1
+          fi
+
+      - name: Upload Unsigned Payload 📡
+        if: fromJSON(steps.check.outputs.configured)
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: braidcast-windows-x64-unsigned
+          path: unsigned-payload/*
+
+      - name: Submit Signing Request ✍️
+        if: fromJSON(steps.check.outputs.configured)
+        uses: signpath/github-action-submit-signing-request@b9d91eadd323de506c0c81cf0c7fe7438f3360fd # v2.2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID || vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIG_SLUG }}
+          github-artifact-id: ${{ steps.upload.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed-payload
+
+      - name: Upload Signed Payload 📡
+        if: fromJSON(steps.check.outputs.configured)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: braidcast-windows-x64-signed
+          path: signed-payload/*
+
   create-release:
     name: Create Braidcast Release 🛫
     runs-on: ubuntu-24.04
-    needs: [build-project]
+    needs: [build-project, sign-windows]
     defaults:
       run:
         shell: bash
@@ -78,21 +160,33 @@ jobs:
           # portable zip and an NSIS system installer inside the uploaded
           # artifact: braidcast-<version>-windows-x64.{zip,exe}, regardless of
           # the internal artifact name. Match each by glob so the release is
-          # agnostic to the git-describe version embedded by CPack.
+          # agnostic to the git-describe version embedded by CPack. Prefer the
+          # SignPath-signed payload (sign-windows job) when it exists; fall
+          # back to the raw build output when SIGNPATH_API_TOKEN isn't
+          # configured yet (see docs/signing.md), so releases still ship.
           version="${{ steps.version.outputs.version }}"
 
-          zip="$(find artifacts -type f -name 'braidcast-*-windows-x64.zip' | head -1)"
+          signed_dir="artifacts/braidcast-windows-x64-signed"
+          if [[ -d "${signed_dir}" ]]; then
+            search_dir="${signed_dir}"
+            echo '::notice::Attaching SignPath-signed Windows artifacts'
+          else
+            search_dir="artifacts"
+            echo '::warning::SIGNPATH_API_TOKEN not configured; attaching UNSIGNED Windows artifacts (see docs/signing.md)'
+          fi
+
+          zip="$(find "${search_dir}" -type f -name 'braidcast-*-windows-x64.zip' | head -1)"
           if [[ -z "${zip}" ]]; then
-            echo "::error::No braidcast-*-windows-x64.zip found in artifacts"
+            echo "::error::No braidcast-*-windows-x64.zip found in ${search_dir}"
             find artifacts -type f
             exit 1
           fi
           zip_out="Braidcast-${version}-Windows-x64.zip"
           mv -v "${zip}" "${zip_out}"
 
-          installer="$(find artifacts -type f -name 'braidcast-*-windows-x64.exe' | head -1)"
+          installer="$(find "${search_dir}" -type f -name 'braidcast-*-windows-x64.exe' | head -1)"
           if [[ -z "${installer}" ]]; then
-            echo "::error::No braidcast-*-windows-x64.exe (NSIS installer) found in artifacts"
+            echo "::error::No braidcast-*-windows-x64.exe (NSIS installer) found in ${search_dir}"
             find artifacts -type f
             exit 1
           fi
