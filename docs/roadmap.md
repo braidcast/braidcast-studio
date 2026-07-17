@@ -1831,6 +1831,13 @@ OSS — CI wired in `release-braidcast.yaml` (`sign-windows` job, no-ops
 gracefully until secrets exist); pending SignPath Foundation approval + the
 `SIGNPATH_*` secret/variable config. Full runbook: [docs/signing.md](./signing.md).
 
+**Antivirus / SmartScreen false positives 🔧.** Braidcast is an OBS-class
+capture app (process injection / API hooks / screen capture / virtual-cam
+driver), so it triggers AV heuristics regardless of signature — signing alone
+will not clear it. Handled as a per-release process (free VirusTotal diagnosis +
+Norton/Defender/Avast/Kaspersky false-positive submissions + prevalence), with
+signing as the longer-term prerequisite. Runbook: [docs/antivirus.md](./antivirus.md).
+
 **Deferred rebrand ⏸ (gated on shipping parity / CI verification).**
 - macOS `com.obsproject.*` bundle-ids on every dylib/framework/module →
   `com.braidcast.*` — touches code-signing/notarisation; do with the macOS work.
