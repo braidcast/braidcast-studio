@@ -20,7 +20,7 @@ BEGIN
   BEGIN
     BLOCK "040904B0"
     BEGIN
-      VALUE "CompanyName", "OBS Project"
+      VALUE "CompanyName", "Braidcast"
       VALUE "FileDescription", "OBS Graphics Hook"
       VALUE "FileVersion", HOOK_VERSION_NAME
       VALUE "InternalName", "graphics-hook"
