@@ -1902,10 +1902,13 @@ whitelist gap that made `SECURITY.md` invisible to grep/ripgrep (`!SECURITY.md`)
   data-layout literal is cosmetic-only and load-bearing (couples to install rules
   + the packaging-compensation logic — the gutted-zip gotcha), so it's parked as
   low-value/high-risk, not a pending bug.
-- `graphics-hook/graphics-hook.rc` `CompanyName "OBS Project"` — the hook DLL
-  injects into games; rebranding is correct long-term but needs a game-capture
-  test vs anticheat first (anticheat mostly keys off signing certs, not
-  CompanyName — strong inference, unverified). Held pending that test.
+- ✅ `graphics-hook/graphics-hook.rc` `CompanyName "OBS Project"`→`Braidcast`
+  (shipped `cca3cb98b`). Anticheat concern **cleared 2026-07-18**: Game Capture on
+  a Ricochet-protected COD shows a black screen on Braidcast **and identically on
+  stock OBS Studio**, with no flag/kick on either — so the rename introduced no
+  regression (parity with upstream). The COD black screen itself is the
+  pre-existing OBS Game-Capture issue (GPU mismatch / non-elevated / Ricochet
+  anti-tamper), not Braidcast-specific and unrelated to the rename.
 
 **Deferred rebrand ⏸ (gated on shipping parity / CI verification).**
 - macOS `com.obsproject.*` bundle-ids on every dylib/framework/module →
