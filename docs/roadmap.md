@@ -1838,10 +1838,15 @@ will not clear it. Handled as a per-release process (free VirusTotal diagnosis +
 Norton/Defender/Avast/Kaspersky false-positive submissions + prevalence), with
 signing as the longer-term prerequisite. Runbook: [docs/antivirus.md](./antivirus.md).
 
-**Microsoft Store / MSIX 🔭 (planned, secondary channel).** A Store listing is a
-free-signing path (MS signs the MSIX) and a reputation/prevalence accelerator
-that runs *alongside* direct GitHub-release downloads — it does **not** cover the
-direct-download `.exe`, so SignPath + AV submissions stay the primary track.
+**Microsoft Store / MSIX 🔭 (planned).** A Store MSIX listing is the **only free
+path with zero SmartScreen warnings from day one** — MS re-signs the package
+after certification, no cert to buy (per Microsoft's
+[code-signing-options](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/code-signing-options)).
+SignPath / Azure Artifact Signing / OV all still ramp reputation before warnings
+clear, so for the SmartScreen half the Store beats them. It runs *alongside*
+direct GitHub-release downloads and does **not** cover the direct-download
+`.exe`/`.zip` (those still need SignPath), and it does **not** fix the AV/Norton
+heuristic half (behavior-driven — see antivirus.md). Store dev account is free.
 Full-trust MSIX permits Braidcast's injection / API hooks / capture as-is; the
 only real porting work is the **virtual camera**:
 - Braidcast's virtual cam is the classic OBS **DirectShow COM filter**

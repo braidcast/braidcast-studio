@@ -88,13 +88,40 @@ certificate, not EV (Extended Validation). Practical effect:
   of accumulated downloads/telemetry — it is not instant. Expect early
   SignPath-signed releases to still trip a SmartScreen "Windows protected your
   PC" prompt until enough install telemetry accumulates against the cert.
-- **EV certs get instant SmartScreen reputation**, but require a registered
-  legal entity (business registration, notarized identity verification) to
-  purchase — Braidcast doesn't have one yet, so EV is explicitly deferred, not
-  chosen against. Revisit if/when Braidcast incorporates.
+- **EV certs no longer bypass SmartScreen.** That instant-reputation behavior
+  was removed in 2024 — EV-signed files now go through the same per-file-hash
+  reputation ramp as OV. So the EV premium ($400+/yr, plus a registered legal
+  entity to purchase) buys **nothing** for the SmartScreen problem; not worth
+  pursuing for that reason. (Source: Microsoft,
+  [Code signing options](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/code-signing-options).)
 
 This is a real limitation to communicate to users during the ramp-up window,
 not a bug in the CI wiring.
+
+## The one free path with zero SmartScreen warnings: the Microsoft Store (MSIX)
+
+Every option above (SignPath OV, Azure Artifact Signing, OV, EV) still trips a
+SmartScreen prompt until per-file reputation accrues. **The only free path that
+shows no SmartScreen warning from day one is publishing an MSIX through the
+Microsoft Store** — Microsoft re-signs the package after certification, no cert
+to buy or manage, Store dev account is free. Per Microsoft: *"If you publish
+your app as an MSIX package through the Microsoft Store, code signing is free and
+handled for you automatically."* This only covers the Store MSIX bundle — the
+direct-download `.exe`/`.zip` from GitHub releases still needs SignPath (above).
+The MSIX packaging + virtualcam-manifest work is tracked in
+[roadmap.md](./roadmap.md) ("Microsoft Store / MSIX"). Note this fixes only the
+**SmartScreen** half — Norton/AV heuristic flags are behavior-driven and are
+handled separately in [antivirus.md](./antivirus.md).
+
+## Non-Store alternative: Azure Artifact Signing (formerly Trusted Signing)
+
+Microsoft's own signing service, renamed from **Trusted Signing** to **Azure
+Artifact Signing**. ~$9.99/month, CI-integrated (no hardware token), OV-level
+SmartScreen behavior (reputation ramp, not instant). **Geo-gated:** organizations
+in USA/Canada/EU/UK; **individual developers only in USA and Canada.** An
+individual maintainer outside US/Canada cannot use it — SignPath (free OSS) or a
+traditional OV cert are the alternatives. Not currently pursued for Braidcast
+(SignPath is free and covers the same OV-level ground).
 
 ## Reference
 
