@@ -38,9 +38,13 @@ inline on each row (**✅ Fixed `<commit>`** / 🔧 in progress / 🔴 queued /
 | §16.1 YouTube privacy → silent public | Blocker | ✅ Fixed `acd9a432b` |
 | §1.1 drag-reorder source list | Blocker | ✅ Fixed `d5722e492` |
 | §4.1 Properties OK/Cancel/Restore Defaults | Blocker | ✅ Fixed `98a30814e` |
-| §4.2 blind preview while editing | Blocker | 🔴 queued |
+| §4.2 blind preview while editing | Blocker | ⏸ deferred — approach decision |
+| §2.1 scene reorder (buttons/menu/drag) | Major | ✅ Fixed `a7d15bb7d` |
 
-**Deferred (needs user decision when back):** _(none yet)_
+Blockers cleared (3 fixed, §4.2 deferred). Now working Major gaps in severity order.
+
+**Deferred (needs user decision when back):**
+- **§4.2 — live preview while editing the Properties/Filters dialog.** The native preview is an always-on-top child HWND, so `Modal.svelte` suspends it for every modal's lifetime → property/filter edits are invisible until close. The only robust fix is an **in-dialog `obs_display` child surface** (a preview pane inside the modal, like Qt's `OBSQTDisplay` above the form) — reusing the `preview_window.cpp` machinery. Sub-scope needs a call: (a) which source kinds get a pane (Qt: any video source), (b) whether transitions get the A/B "Preview Transition" pane, (c) pane placement (above the form vs. beside it). Recommend: in-dialog pane for video sources first; transition A/B as a follow-up. Not a lighter per-modal-opt-out job — un-suspending without an in-dialog surface just lets the native window paint over the modal.
 
 The five user-reported seed gaps are all confirmed (§1.1, §3.1, §1.7, §3.2,
 §4.1) — two with refinements: sources DO have up/down reorder (drag is what's
@@ -77,7 +81,7 @@ Qt baseline: `frontend_old/components/SceneTree.{hpp,cpp}`,
 
 | # | Gap | Qt did | Current | Severity | Fix lives in |
 | --- | --- | --- | --- | --- | --- |
-| 2.1 | **No scene reorder at all** | `SceneTree` InternalMove drag (incl. grid-mode math) + toolbar Move Up/Down + Order submenu | **Missing** — no drag, no buttons, no menu items; bridge **`scenes.reorder` exists and is unused** by `ScenesDock.svelte` | Major | `ScenesDock.svelte` (+ `CanvasDock.svelte` scene list) → `scenes.reorder` |
+| 2.1 | **No scene reorder at all** | `SceneTree` InternalMove drag (incl. grid-mode math) + toolbar Move Up/Down + Order submenu | ✅ **Fixed `a7d15bb7d`** — ScenesDock Move Up/Down buttons + Order submenu (Up/Down/Top/Bottom) + drag-to-reorder (list & grid). `scenes.reorder` gained a `to` index; native `ReorderScene` gained top/bottom + `MoveSceneToIndex`. **Default canvas only** — additional-canvas scene reorder (`CanvasDock` scene list) still refused by the bridge; separate native gap | Major | `ScenesDock.svelte`, `scene_persistence.{hpp,cpp}`, `bridge.cpp` |
 | 2.2 | **No Filters on a scene** (incl. copy/paste scene filters) | Scenes menu: Filters, Copy Filters, Paste Filters (`on_scenes_customContextMenuRequested`) | **Missing** — scene context menu is Rename/Duplicate/Duplicate-to-canvas/Remove only (`ScenesDock.svelte:168-176`). `filters.*` bridge methods resolve by source name — scenes are sources, so this is likely UI-only | Major | `ScenesDock.svelte` context menu → existing `filters.*` / `filters.copyChain`/`pasteChain` |
 | 2.3 | Screenshot Scene missing | "Screenshot Scene" in scene menu | **Missing** — only per-source + program screenshots exist | Minor-UX | scene menu → `screenshot.takeSource` (scene is a source) |
 | 2.4 | Show-in-Multiview toggle missing | Per-scene checkable "Show in Multiview" (private setting `show_in_multiview`) | **Missing** (multiview shipped as backlog Item 10, but no per-scene inclusion toggle) | Minor-UX | scene menu + multiview render filter |
