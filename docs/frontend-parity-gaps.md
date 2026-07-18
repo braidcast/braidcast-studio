@@ -37,7 +37,7 @@ inline on each row (**✅ Fixed `<commit>`** / 🔧 in progress / 🔴 queued /
 | --- | --- | --- |
 | §16.1 YouTube privacy → silent public | Blocker | ✅ Fixed `acd9a432b` |
 | §1.1 drag-reorder source list | Blocker | ✅ Fixed `d5722e492` |
-| §4.1 Properties OK/Cancel/Restore Defaults | Blocker | 🔴 queued |
+| §4.1 Properties OK/Cancel/Restore Defaults | Blocker | ✅ Fixed `98a30814e` |
 | §4.2 blind preview while editing | Blocker | 🔴 queued |
 
 **Deferred (needs user decision when back):** _(none yet)_
@@ -105,7 +105,7 @@ Qt baseline: `frontend_old/dialogs/OBSBasicProperties.{hpp,cpp}` +
 
 | # | Gap | Qt did | Current | Severity | Fix lives in |
 | --- | --- | --- | --- | --- | --- |
-| 4.1 | **No OK / Cancel / Restore Defaults** (seed 5) | `buttonBox` OK+Cancel + `defaultsButton`; Cancel restores the `oldSettings` snapshot taken at open; closing via X with changes asks Save/Discard/Cancel | **Missing** — live-apply (`properties.set`, 150 ms debounce, `PropertyForm.svelte:64-84`) with only the header X + Esc; no revert path, no defaults. Whether property edits are captured by `UndoManager` is unverified | **Blocker** | the three Properties call sites (footer snippet on `Modal`) + a snapshot/revert (client-side settings snapshot at open, or a `properties.snapshot/restore` bridge pair; defaults ≈ Qt's `obs_data_clear` + reload) |
+| 4.1 | **No OK / Cancel / Restore Defaults** (seed 5) | `buttonBox` OK+Cancel + `defaultsButton`; Cancel restores the `oldSettings` snapshot taken at open; closing via X with changes asks Save/Discard/Cancel | ✅ **Fixed `98a30814e`** — new `PropertiesModal.svelte` wraps `Modal`+`PropertyForm` with a Restore Defaults · Cancel · OK footer; `PropertyForm` snapshots settings once on open and exposes `revert()`/`restoreDefaults()`; Cancel/Esc/X revert (merge-push the snapshot), OK keeps. New bridge `properties.defaults` = `obs_data_clear`+update. **Decision baked in:** Esc/X = discard (not the Qt Save/Discard/Cancel 3-way prompt); UndoManager capture of edits still not wired (separate) | **Blocker** | `PropertiesModal.svelte`, `PropertyForm.svelte`, `bridge.cpp` (`properties.defaults`) |
 | 4.2 | **No live preview while editing — the dialog edits blind** | `OBSQTDisplay` preview pane above the form for any video source; transitions get an A/B preview + "Preview Transition" button | **Missing, and worse than absent**: `Modal.svelte:99` suspends the native preview overlay for the modal's lifetime, so the main preview is hidden too — property changes are invisible until the dialog closes. Same mechanism blinds the Filters dialog (§5.1) | **Blocker** | `Modal.svelte`/`previewGate` (per-modal opt-out of suspension) or an in-dialog `obs_display` child surface (`preview_window.cpp` machinery) |
 
 ## 5. Filters dialog
