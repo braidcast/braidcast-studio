@@ -36,7 +36,7 @@ inline on each row (**✅ Fixed `<commit>`** / 🔧 in progress / 🔴 queued /
 | Gap | Sev | Status |
 | --- | --- | --- |
 | §16.1 YouTube privacy → silent public | Blocker | ✅ Fixed `acd9a432b` |
-| §1.1 drag-reorder source list | Blocker | 🔧 in progress |
+| §1.1 drag-reorder source list | Blocker | ✅ Fixed `d5722e492` |
 | §4.1 Properties OK/Cancel/Restore Defaults | Blocker | 🔴 queued |
 | §4.2 blind preview while editing | Blocker | 🔴 queued |
 
@@ -58,7 +58,7 @@ and the embedded rows in `lib/docks/CanvasDock.svelte`.
 
 | # | Gap | Qt did | Current | Severity | Fix lives in |
 | --- | --- | --- | --- | --- | --- |
-| 1.1 | **No drag-reorder in the source list** (seed 1) | `SourceTree::dropEvent` — internal-move DnD incl. multi-select drags, drop into/out of groups, one undo action (`SourceTree.cpp`) | **Partial** — up/down toolbar buttons (`SourcesDock.svelte:64-77`) + Move Up/Down/Top/Bottom menu (`:388-395`) exist; no `draggable`/`dragstart` anywhere. Bridge `sceneItems.reorder` already exists | **Blocker** | `SourcesDock.svelte`, `CanvasDock.svelte` (DnD) → `sceneItems.reorder` |
+| 1.1 | **No drag-reorder in the source list** (seed 1) | `SourceTree::dropEvent` — internal-move DnD incl. multi-select drags, drop into/out of groups, one undo action (`SourceTree.cpp`) | ✅ **Fixed `d5722e492`** — HTML5 DnD on both dock source rows; `sceneItems.reorder` gained a top-first `to` index (one undo action, shares `ApplyOrder`). Multi-select drags + drop-into-groups still owed (tracked under §1.2 multi-select / groups) | **Blocker** | `SourcesDock.svelte`, `CanvasDock.svelte` (DnD) → `sceneItems.reorder` |
 | 1.2 | **No multi-select** | `ExtendedSelection` on the list (`forms/OBSBasic.ui`); gates group-N-items, batch remove ("Remove N Items"), batch transform ops | **Missing** — single `selectedItemId` (`SourcesDock.svelte:42`) | Major | selection model in `SourcesDock`/`CanvasDock` + `sourceSelection` store; bridge ops loop per item |
 | 1.3 | **Double-click does not open Properties in canvas-dock source lists** (seed 3) | `SourceTreeItem::mouseDoubleClickEvent` → Properties for any configurable source | **Partial** — standalone dock has it (`SourcesDock.svelte:443` `ondblclick`); the embedded `CanvasDock.svelte` source rows have **no** dblclick handler (only scene-rename at `:901`). Already flagged as list-fork drift in roadmap "Code-health deferrals (a)" | Major | `CanvasDock.svelte` embedded rows (or the shared-row extraction from the code-health deferral) |
 | 1.4 | **Blending Mode / Blending Method submenus missing** | `AddBlendingModeMenu` (Normal/Additive/Subtract/Screen/Multiply/Lighten/Darken) + `AddBlendingMethodMenu` (Default/SRGB Off), per item, undo-wrapped (`OBSBasic_SceneItems.cpp`) | **Missing** — no menu, and **no bridge method** (`bridge.cpp` has no blend setter) | Major | new `sceneItems.setBlend*` bridge methods + a `blendMenu.ts` beside `scaleFilterMenu.ts` |
