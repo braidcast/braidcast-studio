@@ -792,7 +792,7 @@ is a data/registry design, not a `switch (platform)`:
 |---|---|---|---|---|---|---|
 | **Twitch** | ✓ | ✓ game_id | ✓ ≤10, lowercase-alnum-25 | ✗ (no API) | **Device Code Flow**, no secret | `PATCH /helix/channels` (one call). 4 h token; refresh one-time-use, 30-day inactivity expiry. |
 | **Kick** | ✓ | ✓ category_id | ✓ ≤10 | ✗ (read-only field) | Auth-code **+ PKCE but secret STILL required**; no device flow | `PATCH /public/v1/channels` (one call). Official API exists (`api.kick.com`). Youngest API. |
-| **YouTube** | ✓ | ✓ (on the video, separate call) | ✓ | ✓ `thumbnails.set` (2 MB, phone-verified acct) | **PKCE loopback** (Desktop client) or device flow, no secret | Full broadcast lifecycle: create→bind→set meta→thumbnail→transition. **Sensitive scope ⇒ Google app verification; 100-user cap until verified (weeks).** Quota fine. |
+| **YouTube** | ✓ | ✓ (on the video, separate call) | ✓ | ✓ `thumbnails.set` (2 MB, phone-verified acct) | **PKCE loopback** (Desktop client) or device flow, no secret | Full broadcast lifecycle: create→bind→set meta→thumbnail→transition. **Sensitive scope ⇒ Google app verification; 100-user cap + 7-day refresh-token expiry while in Testing.** ⚠️ Quota NOT fine — see YouTube pre-launch note below. |
 
 Key asymmetry: **Twitch/Kick = one PATCH**; **YouTube = a whole broadcast-lifecycle integration**.
 **Thumbnail support: YouTube ✓, Facebook ✓, Twitch ✗, Kick ✗** (the latter two have no write API
@@ -804,6 +804,20 @@ token-exchange **broker** at `auth.braidcast.com` and routed **all three** provi
 (not just Kick) so **no secret ships** in the binary; Twitch keeps only its public client id for
 the Helix header. The MVP `device-code` / `pkce-loopback` strategies below were superseded by the
 single `broker` strategy.
+
+> **⚠️ YouTube pre-launch blockers (observed live 2026-07-18).** Two hard gates before public launch:
+> 1. **OAuth app still in Testing / unverified.** The Google consent screen is unpublished → capped at
+>    100 test users AND **refresh tokens expire after 7 days** (connected users silently dropped weekly).
+>    Fix = submit for **OAuth verification** (sensitive-scope audit, ~weeks).
+> 2. **Data API quota is the real constraint (the earlier "Quota fine" was wrong).** The default
+>    **10,000 units/day is per-project, shared across ALL Braidcast users** (one broker client). Live-chat
+>    polling (`liveChatMessages.list` = 5 units) + viewer counts + sub/superchat events, ×N accounts,
+>    drains it in about an hour; a day of testing (10+ sessions × 2 YouTube accounts) exhausted the shared
+>    pool 34 min into an evening stream → chat/viewers/events all 403 `youtube.quota` until the midnight-PT
+>    reset. Twitch/Kick have no equivalent limit. Fix = **YouTube API Services audit + quota increase**
+>    (same review track as verification). The client is already quota-conscious (no `search.list`, honors
+>    `pollingIntervalMillis`, throttled broadcast probe), so micro-optimizing polling cannot fix a shared
+>    10k pool — the quota bump is the actual answer.
 
 ### Candidate providers beyond the MVP three (2026-06-28 research)
 
