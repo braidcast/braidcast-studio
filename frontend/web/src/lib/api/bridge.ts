@@ -504,6 +504,9 @@ export interface OAuthProviderField {
   options?: { value: string; label: string }[];
   /** Soft max length (text/tags) carried for hint/validation; advisory only. */
   max?: number;
+  /** Provider-supplied default. Prefill seeds it only where saved + live left the
+   * field empty, so a remembered value always wins over it. */
+  default?: unknown;
 }
 
 /** A streaming platform that supports account connection (oauth.providers). The

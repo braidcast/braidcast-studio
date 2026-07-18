@@ -181,11 +181,15 @@ json YouTubeProvider::capabilityJson() const
 			      {"type", "textarea"},
 			      {"tier", "simple"},
 			      {"shareable", true}});
+	// Privacy defaults to "private": broadcasting publicly must be an explicit
+	// choice, never the result of leaving the field untouched. The modal's prefill
+	// seeds this default only when no remembered value exists for the account.
 	fields.push_back(json{{"key", "privacy"},
 			      {"label", "Privacy"},
 			      {"type", "enum"},
 			      {"tier", "simple"},
 			      {"shareable", false},
+			      {"default", "private"},
 			      {"options", json::array({json{{"value", "public"}, {"label", "Public"}},
 						       json{{"value", "unlisted"}, {"label", "Unlisted"}},
 						       json{{"value", "private"}, {"label", "Private"}}})}});
@@ -355,7 +359,10 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 	const std::string description = Str(fields, "description");
 	std::string privacy = Str(fields, "privacy");
 	if (privacy != "public" && privacy != "unlisted" && privacy != "private") {
-		privacy = "public";
+		// Last-resort guard only -- the real default is the capability field's
+		// remembered-else-"private" (seeded by the modal). An absent/invalid value
+		// must resolve to the safest visibility; it must never silently go public.
+		privacy = "private";
 	}
 	std::string latency = Str(fields, "latency");
 	if (latency != "normal" && latency != "low" && latency != "ultraLow") {

@@ -414,6 +414,15 @@ import { EV } from "$lib/utils/eventNames";
         if (live?.language) {
           merged.language = live.language;
         }
+        // Descriptor-supplied defaults are the floor under saved + live: they fill
+        // only keys both left empty, so a field like YouTube's privacy always
+        // resolves to a concrete, safe selection (remembered value wins) instead
+        // of an unset "—" the backend would have to guess for.
+        for (const f of c.provider?.fields ?? []) {
+          if (f.default !== undefined && isEmptyVal(f.type, merged[f.key])) {
+            merged[f.key] = f.default;
+          }
+        }
         // Route each merged key by tier so shareable values land in the SHARED layer
         // (first channel wins), not as a spurious per-channel override: a channel only
         // takes an override when it genuinely diverges from the shared value. Without
