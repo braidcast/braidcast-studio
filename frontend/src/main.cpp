@@ -206,6 +206,58 @@ void LayoutBrowser(HWND host)
 	}
 }
 
+// Persist the main host window's placement (last monitor + maximized state) to
+// window.json so it reopens where it last closed. A minimized window is stored as
+// normal so the app never reopens hidden to the taskbar.
+void SaveHostPlacement(HWND host)
+{
+	WINDOWPLACEMENT wp;
+	wp.length = sizeof(wp);
+	if (!GetWindowPlacement(host, &wp)) {
+		return;
+	}
+	const UINT showCmd = wp.showCmd == SW_SHOWMINIMIZED ? UINT(SW_SHOWNORMAL) : wp.showCmd;
+
+	obs_data_t *root = obs_data_create();
+	obs_data_set_int(root, "showCmd", showCmd);
+	obs_data_set_int(root, "flags", wp.flags);
+	obs_data_set_int(root, "left", wp.rcNormalPosition.left);
+	obs_data_set_int(root, "top", wp.rcNormalPosition.top);
+	obs_data_set_int(root, "right", wp.rcNormalPosition.right);
+	obs_data_set_int(root, "bottom", wp.rcNormalPosition.bottom);
+	const std::string path = MultistreamBasicPath("window.json");
+	ReportSaveResult(SaveJsonAtomic(root, path), path);
+	obs_data_release(root);
+}
+
+// Restore the placement saved by SaveHostPlacement before the window is first
+// shown. Skips restore when the saved rect no longer intersects any monitor (a
+// display was disconnected) so the window can't reopen off-screen, leaving the
+// default CW_USEDEFAULT placement in that case.
+void RestoreHostPlacement(HWND host)
+{
+	const std::string path = MultistreamBasicPath("window.json");
+	obs_data_t *root = obs_data_create_from_json_file(path.c_str());
+	if (!root) {
+		return;
+	}
+
+	WINDOWPLACEMENT wp = {};
+	wp.length = sizeof(wp);
+	wp.showCmd = UINT(obs_data_get_int(root, "showCmd"));
+	wp.flags = UINT(obs_data_get_int(root, "flags"));
+	wp.rcNormalPosition.left = LONG(obs_data_get_int(root, "left"));
+	wp.rcNormalPosition.top = LONG(obs_data_get_int(root, "top"));
+	wp.rcNormalPosition.right = LONG(obs_data_get_int(root, "right"));
+	wp.rcNormalPosition.bottom = LONG(obs_data_get_int(root, "bottom"));
+	obs_data_release(root);
+
+	if (!MonitorFromRect(&wp.rcNormalPosition, MONITOR_DEFAULTTONULL)) {
+		return;
+	}
+	SetWindowPlacement(host, &wp);
+}
+
 LRESULT CALLBACK HostWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 {
 	// Frameless command-deck chrome (custom caption, resize borders, drag regions,
@@ -281,6 +333,9 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 		}
 		return 0;
 	case WM_CLOSE:
+		// Snapshot the placement while the HWND is still valid so the next launch
+		// reopens on the last monitor / maximized state.
+		SaveHostPlacement(hwnd);
 		// Remove the tray icon while the host HWND is still valid (NIM_DELETE keys
 		// off it); otherwise a ghost icon lingers in the notification area.
 		if (g_tray) {
@@ -619,6 +674,12 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 	// Remove the stock caption + enable the frameless chrome before the window is
 	// shown, so no framed frame flashes on first paint.
 	WindowChrome::Init(host, WindowChrome::kMainWindow);
+	// Restore the last-session placement before the first show (the window has no
+	// WS_VISIBLE yet, so SetWindowPlacement's maximized state survives to SW_SHOW).
+	// Skipped under the headless smoke path so those runs stay deterministic.
+	if (!getenv("FE_SMOKE_QUIT_SECONDS")) {
+		RestoreHostPlacement(host);
+	}
 	ShowWindow(host, SW_SHOW);
 	UpdateWindow(host);
 

@@ -34,6 +34,16 @@ int FrameSize(HWND hwnd)
 	return GetSystemMetricsForDpi(SM_CXFRAME, dpi) + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
 }
 
+// A 1px top frame extension keeps the DWM drop shadow (and smooth snap/maximize
+// animations) on a window whose caption we have eaten. When maximized there is no
+// shadow, and that band composites see-through at screen-top (a wallpaper sliver),
+// so drop the top band while maximized.
+void ApplyShadowFrame(HWND hwnd, bool maximized)
+{
+	const MARGINS shadow = {0, 0, maximized ? 0 : 1, 0};
+	DwmExtendFrameIntoClientArea(hwnd, &shadow);
+}
+
 // True if an auto-hidden taskbar sits on `edge` of the given monitor. A maximized
 // borderless window that exactly covers the monitor must leave a 1px sliver on that
 // edge or the taskbar can never be summoned by a mouse-to-edge gesture.
@@ -55,12 +65,10 @@ void HandleNcCalcSize(HWND hwnd, LPARAM lparam, LRESULT &result)
 
 	if (IsZoomed(hwnd)) {
 		// Maximized: keep DefWindowProc's L/R/B frame inset (so content isn't
-		// clipped off-screen), but reclaim the caption band at the top.
-		WINDOWINFO wi = {};
-		wi.cbSize = sizeof(wi);
-		GetWindowInfo(hwnd, &wi);
+		// clipped off-screen), but reclaim the caption band at the top. The top
+		// inset uses FrameSize so it matches the FrameSize-based L/R/B insets.
 		rect->left = client.left;
-		rect->top = nonclient.top + int(wi.cyWindowBorders);
+		rect->top = nonclient.top + FrameSize(hwnd);
 		rect->right = client.right;
 		rect->bottom = client.bottom;
 
@@ -176,10 +184,7 @@ void Init(HWND hwnd, const Config &cfg)
 {
 	g_configs[hwnd] = cfg;
 
-	// A 1px frame extension is what keeps the DWM drop shadow (and the smooth
-	// snap/maximize animations) on a window whose caption we have eaten.
-	const MARGINS shadow = {0, 0, 1, 0};
-	DwmExtendFrameIntoClientArea(hwnd, &shadow);
+	ApplyShadowFrame(hwnd, IsZoomed(hwnd));
 
 	// Square corners: Windows 11 rounds top-level window corners by default, which
 	// clashes with the zero-radius command-deck chrome. Opt out (no-op pre-Win11).
@@ -204,6 +209,12 @@ bool HandleMessage(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam, LRESULT &r
 		}
 		HandleNcCalcSize(hwnd, lparam, result);
 		return true;
+	case WM_SIZE:
+		// Re-apply the shadow frame on maximize/restore so the top band vanishes
+		// while maximized. Return false so the host's own WM_SIZE handler still runs
+		// (LayoutBrowser + the window-state-changed event).
+		ApplyShadowFrame(hwnd, wparam == SIZE_MAXIMIZED);
+		return false;
 	case WM_NCHITTEST:
 		result = HandleNcHitTest(hwnd, lparam);
 		return true;
