@@ -18,18 +18,14 @@ const char *kHelixBase = "https://api.twitch.tv/helix/";
 // The scope set the broker requests for Twitch. channel:read:stream_key backs the
 // stream-key autofill; channel:manage:broadcast backs the title/category PATCH.
 // User identity (GET /helix/users) needs no special scope. chat:read + chat:edit
-// back the Phase 9.0 multichat IRC-over-WebSocket read + send. user:read:chat +
-// user:write:chat are requested now (unused yet) so the future EventSub-receive +
-// Helix-send migration doesn't force a second re-auth. moderator:read:followers,
+// back the Phase 9.0 multichat IRC-over-WebSocket read + send. moderator:read:followers,
 // channel:read:subscriptions, and bits:read back the Phase 9.2b EventSub feed
 // (follower backfill + follow/sub/resub/gift + cheer notifications; channel.raid
 // needs no scope). Verified against dev.twitch.tv (2026-07).
-const std::array<const char *, 9> kTwitchScopes = {"channel:read:stream_key",
+const std::array<const char *, 7> kTwitchScopes = {"channel:read:stream_key",
 						   "channel:manage:broadcast",
 						   "chat:read",
 						   "chat:edit",
-						   "user:read:chat",
-						   "user:write:chat",
 						   "moderator:read:followers",
 						   "channel:read:subscriptions",
 						   "bits:read"};

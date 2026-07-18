@@ -57,7 +57,8 @@ public:
 
 	// The Kick Pusher event transport (Phase 9.2d): best-effort reverse-engineered
 	// sub/gift/host(raid)/(rarely)follow. A fresh instance per account, run by the
-	// EventHub on the account-connect lifecycle. events:subscribe is already in kKickScopes.
+	// EventHub on the account-connect lifecycle. The public Pusher WS is
+	// unauthenticated, so it needs no OAuth scope.
 	std::unique_ptr<Events::EventTransport> makeEvents(const OAuthAccount &acct) override;
 
 private:

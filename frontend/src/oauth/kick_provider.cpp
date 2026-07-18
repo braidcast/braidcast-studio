@@ -19,12 +19,12 @@ namespace {
 const char *kKickApiBase = "https://api.kick.com";
 
 // channel:read/write back the title/category/tags read + PATCH; user:read backs
-// the identity lookup. chat:write backs the Phase 9.0 multichat REST send;
-// events:subscribe backs the Pusher chat event subscription. streamkey:read backs
-// the go-live stream-key autofill (channels.stream.key). Verified against
-// docs.kick.com (2026-07).
-const std::array<const char *, 6> kKickScopes = {"channel:read", "channel:write", "streamkey:read",
-						 "user:read",    "chat:write",    "events:subscribe"};
+// the identity lookup. chat:write backs the Phase 9.0 multichat REST send.
+// streamkey:read backs the go-live stream-key autofill (channels.stream.key).
+// The Pusher chat/event WS is public (unauthenticated), so it needs no scope.
+// Verified against docs.kick.com (2026-07).
+const std::array<const char *, 5> kKickScopes = {"channel:read", "channel:write", "streamkey:read",
+						 "user:read",    "chat:write"};
 
 using JsonUtil::NumLoose;
 using JsonUtil::ParseJson;
