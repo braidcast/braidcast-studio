@@ -1881,14 +1881,43 @@ the **Windows 10 fallback** (dual-path — the direction modern OBS is moving).
 Independent of the Store work above; either can land first. Aligns with the
 surpass-OBS goal.
 
+**Residual-string sweep ✅ (done 2026-07-18, `b86e38617`).** A classification
+audit over all git-tracked files found 41 residual `obs-studio`/`OBS Project`
+references safe to rebrand (of ~1000 total — the rest are GPL headers, nominative
+fork disclosures, upstream doc citations, or load-bearing literals). Swept: the
+INSTALL wiki URL, sphinx theme repo, CoC scope paragraph, configure-log/comment/
+action strings across cmake + CI, the CMakePresets Ubuntu description, MPEG-TS
+`service_provider` metadata, and the CI artifact names (producers +
+release-braidcast download pattern + owner-gated steam-upload, renamed
+`obs-studio-*`→`braidcast-*` as one coupled set). Also fixed a `.gitignore`
+whitelist gap that made `SECURITY.md` invisible to grep/ripgrep (`!SECURITY.md`).
+
+**Held / not a bug (post-audit clarifications).**
+- **Runtime config dir is already `braidcast`** — `StorePaths.cpp` uses
+  `os_get_config_path("braidcast")`. The remaining `obs-studio` in
+  `cmake/*/helpers.cmake` is the **install-tree data-layout literal**
+  (`${OBS_DATA_DESTINATION}/obs-studio`, ships AUTHORS/locale/themes), and
+  `obs_importer.*`'s `os_get_config_path("obs-studio")` reads *real OBS installs*
+  by design. So there is **no stale user-config dir to migrate**; renaming the
+  data-layout literal is cosmetic-only and load-bearing (couples to install rules
+  + the packaging-compensation logic — the gutted-zip gotcha), so it's parked as
+  low-value/high-risk, not a pending bug.
+- `graphics-hook/graphics-hook.rc` `CompanyName "OBS Project"` — the hook DLL
+  injects into games; rebranding is correct long-term but needs a game-capture
+  test vs anticheat first (anticheat mostly keys off signing certs, not
+  CompanyName — strong inference, unverified). Held pending that test.
+
 **Deferred rebrand ⏸ (gated on shipping parity / CI verification).**
 - macOS `com.obsproject.*` bundle-ids on every dylib/framework/module →
-  `com.braidcast.*` — touches code-signing/notarisation; do with the macOS work.
-- App config directory is still the hardcoded literal `obs-studio`
-  (`cmake/windows/helpers.cmake`) — renaming orphans existing user configs; needs
-  a migration path first.
+  `com.braidcast.*` (+ `libobs/obs-cocoa.m`'s `com.obsproject.libobs` runtime
+  lookup, in lockstep) — touches code-signing/notarisation; do with the macOS work.
 - `braidcast/braidcast-browser` submodule still ships `com.obsproject.obs-browser`
   bundle-ids — audit inside that repo.
+- CMake **project/target name** `obs-studio` (`CMakeLists.txt`, the
+  `if(target STREQUAL obs-studio)` dispatch, `.sln`/`.xcodeproj` refs) is
+  load-bearing and its STREQUAL branches are currently dead (app target is
+  `braidcast-frontend`); a rename must revisit the packaging-compensation logic
+  or it re-breaks the package. Parked with the other load-bearing literals.
 
 **MUST-KEEP (GPL).** `COPYING` (stock GPLv2), `AUTHORS` (Lain Bailey +
 contributors), `.mailmap`, and vendored per-file copyright headers — retained by
