@@ -66,11 +66,12 @@ constexpr long kPollMicros = 250 * 1000;
 // (captive portal, wedged proxy) would otherwise park the perform forever --
 // CURLOPT_TIMEOUT defaults to unlimited. 30s gives the upgrade exchange as long
 // again as the 15s connect phase it includes, and matches the 30s default
-// whole-request timeout in util/http_client.cpp. It cannot kill the long-lived
-// session afterwards: with CONNECT_ONLY=2 the perform returns at the 101, and
-// the curl_ws_send/curl_ws_recv paths used from then on never consult the
-// handle timeout (curl lib/ws.c: only ws_send_raw_blocking checks Curl_timeleft,
-// reachable only in raw mode or from inside curl callbacks -- neither used here).
+// whole-request timeout in util/http_client.cpp. This bound MUST be cleared once
+// the upgrade returns (connect() resets it to 0): the schannel backend consults
+// Curl_timeleft on every TLS write, so a lingering timeout makes every
+// curl_ws_send past the deadline fail with CURLE_OPERATION_TIMEDOUT -- including
+// the auto-pong curl_ws_recv sends in reply to a server ping, which then surfaces
+// as a bogus "recv failed" and kills the long-lived session ~30s in.
 constexpr long kUpgradeTimeoutMs = 30 * 1000;
 
 // Ceiling on accum_, the reassembly buffer for one (possibly fragmented) WebSocket
@@ -133,8 +134,8 @@ bool WsClient::connect(const std::string &url, std::string &err)
 	// SIGALRM otherwise, unsafe in a multithreaded process).
 	curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
 	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
-	// Bounds the whole upgrade handshake, NOT the later curl_ws_* session (see
-	// kUpgradeTimeoutMs for why that holds under CONNECT_ONLY=2).
+	// Bounds the whole upgrade handshake only; cleared below once the 101 returns
+	// (see kUpgradeTimeoutMs -- schannel_send checks Curl_timeleft on every write).
 	curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, kUpgradeTimeoutMs);
 
 	const CURLcode code = curl_easy_perform(curl);
@@ -143,6 +144,11 @@ bool WsClient::connect(const std::string &url, std::string &err)
 		curl_easy_cleanup(curl);
 		return false;
 	}
+
+	// Upgrade done: drop the whole-request timeout so the long-lived curl_ws_*
+	// session is unbounded. Left set, schannel_send fails every write (and the
+	// server-ping auto-pong) once Curl_timeleft goes negative ~30s in.
+	curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 0L);
 
 	curl_socket_t sock = CURL_SOCKET_BAD;
 	curl_easy_getinfo(curl, CURLINFO_ACTIVESOCKET, &sock);

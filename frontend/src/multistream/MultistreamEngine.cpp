@@ -393,15 +393,19 @@ bool MultistreamEngine::StartOutput(const std::string &bindingUuid, std::string 
 		type = "rtmp_output";
 	}
 
-	// Reconcile a stale ingest server left over from a prior protocol against the service
-	// the profile now targets. An in-place service switch (RTMP->HLS, or any platform
-	// change) re-derives the output type above but rtmp_common keeps the carried-over
-	// `server`, so without this the HLS muxer would write to the old rtmp:// endpoint. Only
-	// a concrete URL is checked; the "auto"/"auto-rtmp" sentinels carry no scheme and are
-	// resolved by rtmp_common itself, so they are left alone.
+	// Reconcile the ingest server against the service the profile now targets. Two cases:
+	// (1) a stale concrete URL left from a prior protocol -- an in-place service switch
+	// (RTMP->HLS, or any platform change) re-derives the output type above but rtmp_common
+	// keeps the carried-over `server`, so without this the HLS muxer would write to the old
+	// rtmp:// endpoint. (2) an unresolvable "auto" sentinel -- rtmp_common_url only resolves
+	// "auto"/"auto-rtmp(s)" for Twitch/IVS/Nimo; for a service like Kick it falls through to
+	// the literal string "auto", which the output rejects ("No :// in url"). The helper
+	// covers both: a value the service itself lists (Twitch/IVS keep their sentinel) returns
+	// empty and is left alone, anything else maps to the service's first scheme-compatible
+	// ingest.
 	if (p->serviceId == "rtmp_common") {
 		const char *server = p->settings ? obs_data_get_string(p->settings, "server") : "";
-		if (server && strstr(server, "://")) {
+		if (server && *server) {
 			const std::string derived = ReconcileServerToService(lo->service, type, server);
 			if (!derived.empty()) {
 				obs_data_set_string(p->settings, "server", derived.c_str());
