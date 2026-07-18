@@ -18,12 +18,26 @@ void App::OnRegisterCustomSchemes(CefRawPtr<CefSchemeRegistrar> registrar)
 
 void App::OnBeforeCommandLineProcessing(const CefString &process_type, CefRefPtr<CefCommandLine> command_line)
 {
-	// Only customize the browser process (empty type). Chromium propagates the
-	// GPU-disable decision to the GPU/renderer subprocesses it spawns, so the switch
-	// need not (and cannot reliably, this early) be appended per subprocess.
+	// Only customize the browser process (empty type). Chromium propagates these
+	// decisions to the GPU/renderer subprocesses it spawns, so they need not (and
+	// cannot reliably, this early) be appended per subprocess.
+	if (!process_type.empty()) {
+		return;
+	}
+
+	// Keep rasterizing and presenting the UI when the host window is occluded or
+	// backgrounded (the user alt-tabs to the game while live). At Chromium defaults
+	// the renderer's memory/raster budget is cut and NativeWinOcclusion blanks the
+	// composited output; under the GPU load of the live encoders that starves the
+	// tile rasterizer, leaving black/stale tiles across the UI until a resize forces
+	// a re-raster.
+	command_line->AppendSwitch("disable-renderer-backgrounding");
+	command_line->AppendSwitch("disable-backgrounding-occluded-windows");
+	command_line->AppendSwitchWithValue("disable-features", "CalculateNativeWinOcclusion");
+
 	// --disable-gpu stops the CEF GPU-subprocess crash loop (EXCEPTION_BREAKPOINT on
 	// hardware newer than this libcef); compositing then runs via SwiftShader.
-	if (!process_type.empty() || !software_mode_.load()) {
+	if (!software_mode_.load()) {
 		return;
 	}
 	command_line->AppendSwitch("disable-gpu");
