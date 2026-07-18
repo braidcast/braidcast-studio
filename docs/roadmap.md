@@ -685,6 +685,12 @@ the mock's bespoke float/dock system); Studio is a re-skin + re-IA.
 - ✅ **7.5 — Orphan homes + polish + holistic review — SHIPPED** (`7893013`). Studio "⋯" overflow (projectors),
   remaining Edit/View/Docks menu actions, final fidelity pass, then merge to `master`.
 
+> **Current state (2026-07-18):** the **projector + multiview UI entry points are
+> intentionally hidden** (menu callers not wired). The code paths exist and work;
+> they're parked pending a clear value case for exposing them (user decision), so
+> their absence from the UI is deferred-by-design, NOT an accidental orphan — see
+> the "Deferred by design" note in [frontend-parity-gaps.md](./frontend-parity-gaps.md).
+
 > **Update:** 7.1–7.5 all SHIPPED (commits 7.2 `06a0bd8b4`, 7.3 `52d6654ae`, 7.4 `06036fb1d`,
 > 7.5 `7893013`, cleanup `b68467213`) + a GUI-acceptance fix batch (2026-06-27). **Merged to
 > `master`** with the rest of `ui-redesign`; **GUI acceptance still owed.**
