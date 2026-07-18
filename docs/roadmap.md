@@ -1772,10 +1772,17 @@ accountable/throttleable abuse, done broker-side; the studio's job is to ship
   Braidcast session bearer. Needs a client-side login story. Do this for
   **attribution + per-user quota**, *not* as an abuse fix (per OBS evidence,
   account-gating isn't what prevents proxy abuse). Not started.
-- 🔭 **Least-privilege scope audit.** Reconcile each provider's requested scopes
-  (`frontend/src/oauth/*_provider.cpp` `capabilityJson`/`scopeVer`) against the
-  broker's `PROVIDERS[].scopes` — request the minimum per platform (OBS's Twitch
-  scope is exactly `channel:read:stream_key`).
+- ✅ **Least-privilege scope audit — DONE 2026-07-18.** Reconciled each provider's
+  requested scopes against consuming code + the broker's `PROVIDERS[].scopes`.
+  Dropped three scopes with no consumer: Twitch `user:read:chat` +
+  `user:write:chat` (unused pre-provisioning) and Kick `events:subscribe` (the
+  Pusher chat/event WS is unauthenticated, `auth:""`, so the webhook scope is
+  never exercised). Removed from both the broker (`providers.ts`) and the studio
+  mirror arrays; `scopeVer` deliberately not bumped (silent shrink — existing
+  tokens keep the unused grant until natural reconnect, no forced re-consent).
+  Twitch is now 7 scopes (vs OBS's single `channel:read:stream_key`, justified by
+  metadata-write + chat + events); YouTube already at its floor
+  (`youtube.force-ssl`). Broker change takes effect on next `wrangler deploy`.
 - ✅ **Fork seam exists.** `BRAIDCAST_BROKER_URL` (`frontend/cmake/ui-config.h.in`)
   already lets a fork point at its own broker instead of ours — mirrors OBS's
   `OAUTH_BASE_URL`. Keep it; the website roadmap owns documenting it as the
