@@ -1838,6 +1838,37 @@ will not clear it. Handled as a per-release process (free VirusTotal diagnosis +
 Norton/Defender/Avast/Kaspersky false-positive submissions + prevalence), with
 signing as the longer-term prerequisite. Runbook: [docs/antivirus.md](./antivirus.md).
 
+**Microsoft Store / MSIX 🔭 (planned, secondary channel).** A Store listing is a
+free-signing path (MS signs the MSIX) and a reputation/prevalence accelerator
+that runs *alongside* direct GitHub-release downloads — it does **not** cover the
+direct-download `.exe`, so SignPath + AV submissions stay the primary track.
+Full-trust MSIX permits Braidcast's injection / API hooks / capture as-is; the
+only real porting work is the **virtual camera**:
+- Braidcast's virtual cam is the classic OBS **DirectShow COM filter**
+  (`obs-virtualcam-module{32,64}.dll`, CLSID under `HKLM\...\CLSID\{GUID}`),
+  registered **at runtime, user-initiated** on *Start Virtual Camera*
+  (`VirtualCamManager::Start` → `obs_output_create`), **not** at install time —
+  the NSIS installer runs no `regsvr32`. It is a user-mode COM server, not a
+  kernel driver, so Store Policy §10.2.4 (drivers/NT services) does not hard-bite.
+- **Frame Server API is NOT a Store prerequisite.** OBS ships this same
+  DirectShow filter (no `MFCreateVirtualCamera`) and *is* on the Store — MSIX
+  allows the filter via **manifest-declared COM registration**
+  (`com`/`comServer` appxmanifest extensions) instead of runtime `regsvr32`.
+  The one genuine Store-porting task is declaring the virtualcam CLSID in the
+  appxmanifest. (Ref: OBS issue #13439 — the DirectShow cam needs the
+  `EnableFrameServerMode` reg key on Win11 22H2+; it's a legacy filter Windows
+  shims, historically the flaky part of the Store build.)
+- **MSIX packaging step** is separate from CPack (`makeappx` + a hand-authored
+  `AppxManifest.xml`); not wired yet. Store account is now free (May 2026).
+
+**Virtual-camera Frame Server API migration 🔭 (quality upgrade, not a gate).**
+Move the Windows virtual cam to Media Foundation `MFCreateVirtualCamera`
+(Windows 11+): driver-free, no `regsvr32`/HKLM/admin, lower AV surface, no 22H2
+frame-server-mode breakage, cleaner MSIX fit. Keep the DirectShow COM filter as
+the **Windows 10 fallback** (dual-path — the direction modern OBS is moving).
+Independent of the Store work above; either can land first. Aligns with the
+surpass-OBS goal.
+
 **Deferred rebrand ⏸ (gated on shipping parity / CI verification).**
 - macOS `com.obsproject.*` bundle-ids on every dylib/framework/module →
   `com.braidcast.*` — touches code-signing/notarisation; do with the macOS work.
