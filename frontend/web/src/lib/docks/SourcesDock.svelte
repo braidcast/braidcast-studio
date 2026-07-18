@@ -202,6 +202,63 @@ import { EV } from "$lib/utils/eventNames";
     }
   }
 
+  // Drag-to-reorder. `to` is the drop row's top-first index (the same order this
+  // list renders and sceneItems.list returns); the bridge moves the dragged item
+  // there as one undo action, the same as the up/down buttons. Disabled while
+  // filtering, since indices only make sense against the full ordering.
+  let dragId = $state<number | null>(null);
+  let dragOverIdx = $state<number | null>(null);
+
+  function onDragStart(e: DragEvent, item: SceneItem) {
+    if (filtering) {
+      return;
+    }
+    dragId = item.id;
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", String(item.id)); // Firefox requires data
+    }
+  }
+
+  function onDragOver(e: DragEvent, idx: number) {
+    if (dragId === null) {
+      return;
+    }
+    e.preventDefault(); // mark this a valid drop target
+    if (e.dataTransfer) {
+      e.dataTransfer.dropEffect = "move";
+    }
+    dragOverIdx = idx;
+  }
+
+  function onDrop(e: DragEvent, idx: number) {
+    e.preventDefault();
+    const id = dragId;
+    dragId = null;
+    dragOverIdx = null;
+    if (id === null) {
+      return;
+    }
+    const from = items.findIndex((i) => i.id === id);
+    if (from < 0 || from === idx) {
+      return;
+    }
+    void reorderTo(id, idx);
+  }
+
+  function onDragEnd() {
+    dragId = null;
+    dragOverIdx = null;
+  }
+
+  async function reorderTo(id: number, to: number) {
+    try {
+      await obs.call("sceneItems.reorder", { scene: currentScene, id, to });
+    } catch (e) {
+      report(e);
+    }
+  }
+
   async function remove(item: SceneItem) {
     try {
       await obs.call("sceneItems.remove", { scene: currentScene, id: item.id });
@@ -421,7 +478,13 @@ import { EV } from "$lib/utils/eventNames";
           class="dock-row"
           class:sel={item.id === selectedItemId}
           class:dimmed={!item.visible}
+          class:dropTarget={dragOverIdx === idx && dragId !== null && dragId !== item.id}
           style:box-shadow={item.color ? `inset 3px 0 0 ${item.color}` : null}
+          draggable={!filtering}
+          ondragstart={(e) => onDragStart(e, item)}
+          ondragover={(e) => onDragOver(e, idx)}
+          ondrop={(e) => onDrop(e, idx)}
+          ondragend={onDragEnd}
           oncontextmenu={(e) => void openMenu(e, item, idx)}
         >
           <button
@@ -475,6 +538,12 @@ import { EV } from "$lib/utils/eventNames";
   /* Sources rows are one row shorter than the shared default (5px 7px). */
   .dock-row {
     padding: 4px 7px;
+  }
+  /* Drag-reorder drop indicator. Outline avoids layout shift and the inline
+     box-shadow the color tag already uses. */
+  .dock-row.dropTarget {
+    outline: var(--border-weight) solid var(--color-accent);
+    outline-offset: -1px;
   }
   .inline {
     flex: 1;

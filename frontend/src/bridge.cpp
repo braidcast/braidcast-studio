@@ -2663,8 +2663,17 @@ bool MethodSceneItemsReorder(const json &params, json &result, std::string &erro
 			break;
 		}
 	}
-	if (!movement) {
-		error = "reorder 'direction' must be one of up|down|top|bottom";
+	// Drag-and-drop alternative to `direction`: an explicit target index `to` in
+	// the UI's top-first ordering (as returned by sceneItems.list). Same undo
+	// record as the direction path, so a multi-slot drag is one undo action.
+	int uiTo = -1;
+	bool hasTo = false;
+	if (auto it = params.find("to"); it != params.end() && it->is_number_integer()) {
+		uiTo = it->get<int>();
+		hasTo = true;
+	}
+	if (!movement && !hasTo) {
+		error = "reorder needs 'direction' (up|down|top|bottom) or an integer 'to' index";
 		return false;
 	}
 
@@ -2681,12 +2690,27 @@ bool MethodSceneItemsReorder(const json &params, json &result, std::string &erro
 		return false;
 	}
 	json before = CaptureOrderState(params, sceneSource);
-	obs_sceneitem_set_order(item, *movement);
+	if (hasTo) {
+		// `to` is a top-first UI index (the sceneItems.list order); libobs order
+		// positions are bottom-first, so invert against the item count and clamp
+		// a drag past either end back into range.
+		const int count = static_cast<int>(before["order"].size());
+		int pos = count - 1 - uiTo;
+		if (pos < 0) {
+			pos = 0;
+		}
+		if (pos > count - 1) {
+			pos = count - 1;
+		}
+		obs_sceneitem_set_order_position(item, pos);
+	} else {
+		obs_sceneitem_set_order(item, *movement);
+	}
 	json after = CaptureOrderState(params, sceneSource);
 	CommitSceneItemChange(params, sceneSource);
 	obs_source_release(sceneSource);
 	RecordUndo("Reorder", ApplyOrder, before, after);
-	result = json{{"id", id}, {"direction", direction}};
+	result = json{{"id", id}, {"direction", direction}, {"to", hasTo ? json(uiTo) : json(nullptr)}};
 	return true;
 }
 

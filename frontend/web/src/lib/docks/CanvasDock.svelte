@@ -387,6 +387,63 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
       report(e);
     }
   }
+
+  // Drag-to-reorder. `to` is the drop row's top-first index (the same order this
+  // list renders and sceneItems.list returns); the bridge moves the dragged item
+  // there as one undo action, the same as the up/down buttons. Disabled while
+  // filtering, since indices only make sense against the full ordering.
+  let dragId = $state<number | null>(null);
+  let dragOverIdx = $state<number | null>(null);
+
+  function onDragStart(e: DragEvent, item: SceneItem) {
+    if (sourceFiltering) {
+      return;
+    }
+    dragId = item.id;
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", String(item.id)); // Firefox requires data
+    }
+  }
+
+  function onDragOver(e: DragEvent, idx: number) {
+    if (dragId === null) {
+      return;
+    }
+    e.preventDefault(); // mark this a valid drop target
+    if (e.dataTransfer) {
+      e.dataTransfer.dropEffect = "move";
+    }
+    dragOverIdx = idx;
+  }
+
+  function onDrop(e: DragEvent, idx: number) {
+    e.preventDefault();
+    const id = dragId;
+    dragId = null;
+    dragOverIdx = null;
+    if (id === null) {
+      return;
+    }
+    const from = items.findIndex((i) => i.id === id);
+    if (from < 0 || from === idx) {
+      return;
+    }
+    void reorderTo(id, idx);
+  }
+
+  function onDragEnd() {
+    dragId = null;
+    dragOverIdx = null;
+  }
+
+  async function reorderTo(id: number, to: number) {
+    try {
+      await obs.call("sceneItems.reorder", { canvas: canvasUuid, scene: currentScene, id, to });
+    } catch (e) {
+      report(e);
+    }
+  }
   async function remove(item: SceneItem) {
     try {
       await obs.call("sceneItems.remove", { canvas: canvasUuid, scene: currentScene, id: item.id });
@@ -942,12 +999,18 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     <div class="col sources-col">
       <div class="embed-head">Sources{currentScene ? " · " + currentScene : ""}</div>
       <ul class="list">
-        {#each filteredItems as item (item.id)}
+        {#each filteredItems as item, idx (item.id)}
           <li
             class="es-row src"
             class:on={item.id === selectedId}
             class:hidden-src={!item.visible}
+            class:dropTarget={dragOverIdx === idx && dragId !== null && dragId !== item.id}
             style:box-shadow={item.color ? `inset 3px 0 0 ${item.color}` : null}
+            draggable={!sourceFiltering}
+            ondragstart={(e) => onDragStart(e, item)}
+            ondragover={(e) => onDragOver(e, idx)}
+            ondrop={(e) => onDrop(e, idx)}
+            ondragend={onDragEnd}
             oncontextmenu={(e) => void openSourceMenu(e, item)}
           >
             <button
@@ -1193,6 +1256,12 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   }
   .es-row.on {
     background: color-mix(in srgb, var(--color-accent) 11%, transparent);
+  }
+  /* Drag-reorder drop indicator. Outline avoids layout shift and the inline
+     box-shadow the color tag already uses. */
+  .es-row.src.dropTarget {
+    outline: var(--border-weight) solid var(--color-accent);
+    outline-offset: -1px;
   }
   .es-bar {
     position: absolute;
