@@ -16,7 +16,7 @@
   import FilterDialog from "$lib/dialogs/FilterDialog.svelte";
   import { filterDialogOpener, closeFilters } from "$lib/dialogs/filterDialogOpener.svelte";
   import TransformDialog from "$lib/dialogs/TransformDialog.svelte";
-  import { transformOpener, closeTransform } from "$lib/dialogs/transformOpener.svelte";
+  import { transformOpener, closeTransform, openTransform } from "$lib/dialogs/transformOpener.svelte";
   import AdvAudioDialog from "$lib/dialogs/AdvAudioDialog.svelte";
   import { advAudioOpener, closeAdvAudio } from "$lib/dialogs/advAudioOpener.svelte";
   import AboutDialog from "$lib/dialogs/AboutDialog.svelte";
@@ -34,7 +34,7 @@
   import { undoStore } from "$lib/stores/undoStore.svelte";
   import { channelsStore } from "$lib/stores/channelsStore.svelte";
   import { diagnosticsStore } from "$lib/stores/diagnosticsStore.svelte";
-  import { obs } from "$lib/api/bridge";
+  import { obs, type TransformAction } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
   import { clipboard } from "$lib/stores/clipboardStore.svelte";
   import { sourceSelection } from "$lib/stores/sourceSelectionStore.svelte";
@@ -67,6 +67,24 @@ import { EV } from "$lib/utils/eventNames";
     return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || t.isContentEditable;
   }
 
+  // Quick transform verbs (reset/fit/stretch/center) all shape the same bridge call
+  // against the globally-selected scene item — mirrors the calls transformMenu.ts's
+  // "Transform" submenu makes via sceneItems.transformAction. No-op, no preventDefault,
+  // when nothing is selected, so e.g. Ctrl+F still falls through to nothing rather than
+  // eating the keystroke.
+  function quickTransform(e: KeyboardEvent, action: TransformAction, errPrefix: string): void {
+    const it = sourceSelection.item;
+    if (!it) {
+      return;
+    }
+    e.preventDefault();
+    void callOrToast(
+      "sceneItems.transformAction",
+      { scene: sourceSelection.scene ?? undefined, id: it.id, action },
+      errPrefix,
+    );
+  }
+
   function onKeydown(e: KeyboardEvent): void {
     // Fullscreen toggles regardless of focus (not gated on editable target).
     if (e.key === "F11") {
@@ -85,14 +103,14 @@ import { EV } from "$lib/utils/eventNames";
     } else if ((key === "z" && e.shiftKey) || key === "y") {
       e.preventDefault();
       undoStore.redo();
-    } else if (key === "c") {
+    } else if (key === "c" && !e.shiftKey) {
       // Copy the globally-selected source as a reference (name) for later paste.
       const it = sourceSelection.item;
       if (it?.source) {
         e.preventDefault();
         clipboard.source = { ref: it.source, name: it.source };
       }
-    } else if (key === "v") {
+    } else if (key === "v" && !e.shiftKey) {
       // Paste a reference of the copied source into the global current scene.
       if (clipboard.source && sourceSelection.scene) {
         e.preventDefault();
@@ -102,11 +120,54 @@ import { EV } from "$lib/utils/eventNames";
           "Paste failed",
         );
       }
+    } else if (key === "c" && e.shiftKey) {
+      // Copy the transform of the globally-selected scene item (mirrors the
+      // "Copy Transform" context-menu action / clipboard.transform in SourcesDock).
+      const it = sourceSelection.item;
+      if (it) {
+        e.preventDefault();
+        void callOrToast(
+          "sceneItems.getTransform",
+          { scene: sourceSelection.scene ?? undefined, id: it.id },
+          "Copy transform failed",
+        ).then((t) => {
+          if (t) {
+            clipboard.transform = t;
+          }
+        });
+      }
+    } else if (key === "v" && e.shiftKey) {
+      // Paste the copied transform onto the globally-selected scene item.
+      const it = sourceSelection.item;
+      if (it && clipboard.transform) {
+        e.preventDefault();
+        void callOrToast(
+          "sceneItems.setTransform",
+          { scene: sourceSelection.scene ?? undefined, id: it.id, transform: clipboard.transform },
+          "Paste transform failed",
+        );
+      }
     } else if (key === "s" && e.shiftKey) {
       // Ctrl+Shift+S: screenshot the program (Default canvas). OBS leaves its
       // screenshot hotkey unbound by default, so this is our own clear default.
       e.preventDefault();
       void obs.call("screenshot.takeProgram").catch(() => {});
+    } else if (key === "s" && !e.shiftKey) {
+      quickTransform(e, "stretchToScreen", "Stretch to screen failed");
+    } else if (key === "e") {
+      // Edit transform: open the same numeric dialog the context menu's
+      // "Edit Transform" item opens.
+      const it = sourceSelection.item;
+      if (it) {
+        e.preventDefault();
+        openTransform({ scene: sourceSelection.scene ?? undefined, id: it.id }, it.source ?? "(unnamed)");
+      }
+    } else if (key === "r") {
+      quickTransform(e, "reset", "Reset transform failed");
+    } else if (key === "f") {
+      quickTransform(e, "fitToScreen", "Fit to screen failed");
+    } else if (key === "d") {
+      quickTransform(e, "center", "Center transform failed");
     }
   }
 
