@@ -19,7 +19,7 @@ function(set_target_xcode_properties target)
   endwhile()
 endfunction()
 
-# set_target_properties_obs: Set target properties for use in obs-studio
+# set_target_properties_obs: Set target properties for use in braidcast
 function(set_target_properties_obs target)
   set(options "")
   set(oneValueArgs "")

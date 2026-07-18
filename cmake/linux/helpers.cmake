@@ -4,7 +4,7 @@ include_guard(GLOBAL)
 
 include(helpers_common)
 
-# set_target_properties_obs: Set target properties for use in obs-studio
+# set_target_properties_obs: Set target properties for use in braidcast
 function(set_target_properties_obs target)
   set(options "")
   set(oneValueArgs "")

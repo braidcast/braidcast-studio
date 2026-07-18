@@ -118,7 +118,7 @@
     {
       "name": "ubuntu",
       "displayName": "Ubuntu",
-      "description": "obs-studio for Ubuntu",
+      "description": "Braidcast for Ubuntu",
       "inherits": ["environmentVars"],
       "condition": {
         "type": "equals",

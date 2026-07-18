@@ -23,14 +23,15 @@ intend to speak for the project or not.
 A person is considered to be representing the project if they’re
 speaking as a code contributor, support volunteer, member involved with
 the project, or if they have some kind of visible role in an official
-channel for OBS. This does not include roles for Sponsors or Patrons.
+channel for the Braidcast project. This does not include roles for
+Sponsors or Patrons.
 
-Official channels for OBS include the Discord server, the forum, any
-GitHub repositories within the OBS Project organization, any social
-media accounts for OBS Project, any public events where OBS Project has
-a presence, any presentations given on behalf of OBS Project, or any
-other situation that can be reasonably interpreted as being hosted,
-attended or communicated by the OBS Project.
+Official channels for the Braidcast project include the
+braidcast/braidcast-studio GitHub repository, any other GitHub
+repositories within the Braidcast project organization, and any
+official Braidcast communication channels, or any other situation
+that can be reasonably interpreted as being hosted, attended or
+communicated by the Braidcast project.
 
 This Code of Conduct is subject to change, and any changes will have a 2
 week notice period before taking immediate effect. Changes will not be

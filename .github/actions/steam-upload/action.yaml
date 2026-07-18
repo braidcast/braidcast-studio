@@ -1,5 +1,5 @@
 name: Steam Upload
-description: Creates and uploads stable and nightly builds of obs-studio and beta builds (if available)
+description: Creates and uploads stable and nightly builds of Braidcast and beta builds (if available)
 inputs:
   steamSecret:
     description: Steam auth code
@@ -142,11 +142,11 @@ runs:
             ;;
           schedule)
             local short_hash="${GITHUB_SHA:0:9}"
-            mv obs-studio-windows-x64-${short_hash}/obs-studio-*-windows-x64.zip \
+            mv braidcast-windows-x64-${short_hash}/braidcast-*-windows-x64.zip \
               ${root_dir}
-            mv obs-studio-macos-arm64-${short_hash}/obs-studio-*-macos-apple.dmg \
+            mv braidcast-macos-arm64-${short_hash}/braidcast-*-macos-apple.dmg \
               ${root_dir}
-            mv obs-studio-macos-x86_64-${short_hash}/obs-studio-*-macos-intel.dmg \
+            mv braidcast-macos-x86_64-${short_hash}/braidcast-*-macos-intel.dmg \
               ${root_dir}
 
             description="g${GITHUB_SHA:0:9}"
@@ -168,8 +168,8 @@ runs:
 
         print '::group::Prepare Windows x64 assets'
         mkdir -p steam-windows && pushd steam-windows
-        unzip ${root_dir}/(#i)obs-studio-*-windows-x64.zip
-        rm ${root_dir}/(#i)obs-studio-*-windows*.zip
+        unzip ${root_dir}/(#i)braidcast-*-windows-x64.zip
+        rm ${root_dir}/(#i)braidcast-*-windows*.zip
 
         cp -r ${root_dir}/build-aux/steam/scripts_windows scripts
         touch disable_updater
@@ -178,18 +178,18 @@ runs:
 
         print '::group::Prepare macOS Apple assets'
         mkdir -p steam-macos/arm64/OBS.app
-        hdiutil attach -noverify -readonly -noautoopen -mountpoint /Volumes/obs-studio-arm64 ${root_dir}/(#i)obs-studio-*-macos-apple.dmg
-        ditto /Volumes/obs-studio-arm64/OBS.app steam-macos/arm64/OBS.app
-        hdiutil unmount /Volumes/obs-studio-arm64
-        rm ${root_dir}/(#i)obs-studio-*-macos-apple.dmg
+        hdiutil attach -noverify -readonly -noautoopen -mountpoint /Volumes/braidcast-arm64 ${root_dir}/(#i)braidcast-*-macos-apple.dmg
+        ditto /Volumes/braidcast-arm64/OBS.app steam-macos/arm64/OBS.app
+        hdiutil unmount /Volumes/braidcast-arm64
+        rm ${root_dir}/(#i)braidcast-*-macos-apple.dmg
         print '::endgroup::'
 
         print '::group::Prepare macOS Intel assets'
         mkdir -p steam-macos/x86_64/OBS.app
-        hdiutil attach -noverify -readonly -noautoopen -mountpoint /Volumes/obs-studio-x86_64 ${root_dir}/(#i)obs-studio-*-macos-intel.dmg
-        ditto /Volumes/obs-studio-x86_64/OBS.app steam-macos/x86_64/OBS.app
-        hdiutil unmount /Volumes/obs-studio-x86_64
-        rm ${root_dir}/(#i)obs-studio-*-macos-intel.dmg
+        hdiutil attach -noverify -readonly -noautoopen -mountpoint /Volumes/braidcast-x86_64 ${root_dir}/(#i)braidcast-*-macos-intel.dmg
+        ditto /Volumes/braidcast-x86_64/OBS.app steam-macos/x86_64/OBS.app
+        hdiutil unmount /Volumes/braidcast-x86_64
+        rm ${root_dir}/(#i)braidcast-*-macos-intel.dmg
         print '::endgroup::'
 
         cp ${root_dir}/build-aux/steam/scripts_macos/launch.sh steam-macos/launch.sh

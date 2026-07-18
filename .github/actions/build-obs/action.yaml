@@ -1,8 +1,8 @@
-name: Set Up and Build obs-studio
-description: Builds obs-studio for specified architecture and build config
+name: Set Up and Build Braidcast
+description: Builds Braidcast for specified architecture and build config
 inputs:
   target:
-    description: Build target for obs-studio
+    description: Build target for Braidcast
     required: true
   config:
     description: Build configuration

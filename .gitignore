@@ -36,6 +36,7 @@
 !INSTALL
 !magefile.go
 !README.rst
+!SECURITY.md
 
 # Exclude lock files
 *.lock.json

@@ -1,5 +1,5 @@
-name: Package obs-studio
-description: Packages obs-studio for specified architecture and build config
+name: Package Braidcast
+description: Packages Braidcast for specified architecture and build config
 inputs:
   target:
     description: Build target for dependencies

@@ -110,8 +110,8 @@ html_favicon = 'favicon.ico'
 
 html_context = {
     "display_github": True, # Integrate GitHub
-    "github_user": "OBSProject", # Username
-    "github_repo": "obs-studio", # Repo name
+    "github_user": "braidcast", # Username
+    "github_repo": "braidcast-studio", # Repo name
     "github_version": "master", # Version
     "conf_py_path": "/docs/sphinx/", # Path in the checkout to the docs root
 }

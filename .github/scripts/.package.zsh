@@ -186,7 +186,7 @@ package() {
       }
       popd
     } else {
-      log_group "Archiving obs-studio..."
+      log_group "Archiving Braidcast..."
       pushd build_macos
       XZ_OPT=-T0 tar -cvJf ${output_name}.tar.xz OBS.app
       popd
@@ -211,7 +211,7 @@ package() {
     if (( debug )) cmake_args+=(--verbose)
 
     if (( package )) {
-      log_group "Packaging obs-studio..."
+      log_group "Packaging Braidcast..."
       pushd ${project_root}
       ${cmake_bin} --build build_${target%%-*} --config ${config} --target package ${cmake_args}
       output_name="${output_name}-${target##*-}-ubuntu-gnu"
@@ -224,7 +224,7 @@ package() {
       popd
       popd
     } else {
-      log_group "Archiving obs-studio..."
+      log_group "Archiving Braidcast..."
       output_name="${output_name}-${target##*-}-ubuntu-gnu"
 
       pushd ${project_root}/build_${target%%-*}/install/${config}

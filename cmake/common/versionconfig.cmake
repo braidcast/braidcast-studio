@@ -66,14 +66,14 @@ if(OBS_RELEASE_CANDIDATE GREATER 0)
   message(
     AUTHOR_WARNING
     "******************************************************************************\n"
-    "  + OBS-Studio - Release candidate detected, OBS_VERSION is now: ${OBS_VERSION}\n"
+    "  + Braidcast - Release candidate detected, OBS_VERSION is now: ${OBS_VERSION}\n"
     "******************************************************************************"
   )
 elseif(OBS_BETA GREATER 0)
   message(
     AUTHOR_WARNING
     "******************************************************************************\n"
-    "  + OBS-Studio - Beta detected, OBS_VERSION is now: ${OBS_VERSION}\n"
+    "  + Braidcast - Beta detected, OBS_VERSION is now: ${OBS_VERSION}\n"
     "******************************************************************************"
   )
 endif()

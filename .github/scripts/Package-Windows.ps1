@@ -18,11 +18,11 @@ if ( $env:CI -eq $null ) {
 }
 
 if ( ! ( [System.Environment]::Is64BitOperatingSystem ) ) {
-    throw "obs-studio requires a 64-bit system to build and run."
+    throw "Braidcast requires a 64-bit system to build and run."
 }
 
 if ( $PSVersionTable.PSVersion -lt '7.2.0' ) {
-    Write-Warning 'The obs-studio packaging script requires PowerShell Core 7. Install or upgrade your PowerShell version: https://aka.ms/pscore6'
+    Write-Warning 'The Braidcast packaging script requires PowerShell Core 7. Install or upgrade your PowerShell version: https://aka.ms/pscore6'
     exit 2
 }
 
@@ -77,7 +77,7 @@ function Package {
         choco install nsis --yes --no-progress
     }
 
-    Log-Group "Packaging obs-studio..."
+    Log-Group "Packaging Braidcast..."
 
     Push-Location -Stack PackageTemp "build_${Target}"
 
