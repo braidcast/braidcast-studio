@@ -102,6 +102,17 @@ public:
 	// the same refresh-propagation reason as connect.
 	virtual bool send(OAuth::OAuthAccount &acct, const std::string &text, std::string &err) = 0;
 
+	// Whether the platform's read transport reflects the sender's own outbound
+	// messages back to us (so the chat pane shows them without a local echo).
+	// Default false: echo locally so a sent message is never invisible.
+	virtual bool reflectsOwnSend() const { return false; }
+
+	// The channel id this transport's incoming chat.message frames carry, so the
+	// hub's local echo (for a !reflectsOwnSend() platform) groups identically to
+	// real messages in the frontend. "" until connect() has resolved it. Default ""
+	// -- transports that reflect never need an echo, so they skip the override.
+	virtual std::string channelId() const { return std::string(); }
+
 	// Signal the read loop to stop and close any open sockets. May be called from a
 	// different thread than connect()'s worker, so it must only flip a flag / shut
 	// the socket so the worker's loop returns promptly -- the worker owns the actual

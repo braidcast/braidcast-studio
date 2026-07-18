@@ -30,6 +30,15 @@ public:
 	bool send(OAuthAccount &acct, const std::string &text, std::string &err) override;
 	void disconnect() override;
 
+	// Twitch IRC never reflects the sender's own PRIVMSG back over the socket, so
+	// the base's reflectsOwnSend()=false stands and the hub echoes sends locally,
+	// grouped under the joined channel.
+	std::string channelId() const override
+	{
+		std::lock_guard<std::mutex> lock(wsMutex_);
+		return channel_;
+	}
+
 private:
 	// Lock wsMutex_ and write one already-CRLF-terminated IRC line. false if the
 	// socket is gone. Never called while wsMutex_ is already held.
@@ -38,7 +47,7 @@ private:
 	AuthStrategy *auth_; // the provider's auth strategy, for a reactive token refresh
 
 	std::mutex runMutex_;              // serializes connect() across overlapping Start/Stop
-	std::mutex wsMutex_;               // serializes every ws_ access (recv vs send vs connect/close)
+	mutable std::mutex wsMutex_;       // serializes every ws_ access (recv vs send vs connect/close)
 	Chat::WsClient ws_;                // the shared libcurl-WS socket (guarded by wsMutex_)
 	std::atomic<bool> stopped_{false}; // set by disconnect(); secondary to ctx.canceled()
 	std::atomic<bool> ready_{false};   // true between JOIN and drop -- gates send()

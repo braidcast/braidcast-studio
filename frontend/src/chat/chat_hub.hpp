@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -57,6 +58,11 @@ private:
 	struct Active {
 		std::string providerId;
 		std::shared_ptr<ChatTransport> transport; // hub-owned, shared with the worker
+		// The account's transport emit path (the same closure handed to the worker as
+		// ctx.emit: stop-guard -> fallback-id synthesis -> overlay fan-out -> alive-
+		// guarded UI post). Stored so SendToPlatforms can route the local echo of an
+		// outbound message through the identical path a real incoming message takes.
+		std::function<void(const json &payload)> emit;
 		bool connected = false;
 		std::string error;
 	};

@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "util/async_task.hpp"
+#include "util/time_util.hpp"
 #include "../bridge.hpp"
 #include "../log.hpp"
 #include "../multistream/OutputBindingStore.hpp"
@@ -99,11 +100,78 @@ void ChatHub::Start()
 		const std::string providerId = acct.providerId;
 		const std::string channelRef = provider->chatChannelRef(acct);
 
+		// The account's one emit path toward JS, built here (not inside the worker) so
+		// SendToPlatforms can route a local echo of an outbound message through the
+		// IDENTICAL pipeline a real incoming message takes (stop-guard, event split,
+		// state cache, fallback-id synthesis, overlay fan-out, alive-guarded UI post).
+		std::function<void(const json &payload)> emitFn = [this, accountId, stop](const json &payload) {
+			if (stop->load(std::memory_order_acquire)) {
+				return; // generation stopped; drop late emits
+			}
+			// The payload carries a top-level "event" naming the bridge event; split
+			// it from the forwarded body here so the hub stays free of per-platform /
+			// per-message-type branches.
+			json body = payload;
+			std::string event = EventNames::kChatMessage;
+			auto ev = body.find("event");
+			if (ev != body.end() && ev->is_string()) {
+				event = ev->get<std::string>();
+				body.erase(ev);
+			}
+			// Cache connection state for State() on chat.state events.
+			if (event == EventNames::kChatState) {
+				std::lock_guard<std::mutex> lock(mutex_);
+				auto a = active_.find(accountId);
+				if (a != active_.end()) {
+					if (body.contains("connected") && body["connected"].is_boolean()) {
+						a->second.connected = body["connected"].get<bool>();
+					}
+					a->second.error = body.value("error", std::string());
+				}
+			}
+			if (event == EventNames::kChatMessage) {
+				// Single fan-out point for every transport: synthesize a unique
+				// fallback id for any chat.message lacking one, so the frontend's
+				// keyed list never throws each_key_duplicate. Real ids are left
+				// untouched (dedupe relies on them); the monotonic seq guarantees
+				// uniqueness even within a single frame.
+				auto id = body.find("id");
+				const bool missing = id == body.end() || !id->is_string() ||
+						     id->get<std::string>().empty();
+				if (missing) {
+					const std::string platform = body.value("platform", std::string());
+					std::string tsStr = "0";
+					auto tsIt = body.find("ts");
+					if (tsIt != body.end() && tsIt->is_number()) {
+						tsStr = std::to_string(tsIt->get<long long>());
+					}
+					const uint64_t seq = idSeq_.fetch_add(1, std::memory_order_relaxed);
+					body["id"] = platform + ":" + tsStr + ":" + std::to_string(seq);
+				}
+				// Fan chat messages (never connection-state frames) to overlay
+				// widgets as a named `chat` SSE event, HERE on the emitting worker
+				// rather than after the UI hop (mirrors EventHub::Ingest):
+				// BroadcastChat does blocking socket sends (bounded by the overlay
+				// server's send timeout), and every browser source on stream renders
+				// on the frontend's TID_UI, so one stalled overlay reader would
+				// freeze them all. This account's single read worker also keeps its
+				// lines in order. dump() can throw on a malformed payload (invalid
+				// UTF-8): skip the fan-out and still forward to the (guarded) bridge.
+				try {
+					Overlay::Server().BroadcastChat(body);
+				} catch (...) {
+					// malformed chat payload -> skip the overlay fan-out
+				}
+			}
+			AsyncTask::PostToUi([event = std::move(event), body = std::move(body)] { RouteEmit(event, body); });
+		};
+
 		{
 			std::lock_guard<std::mutex> lock(mutex_);
 			Active a;
 			a.providerId = providerId;
 			a.transport = transport;
+			a.emit = emitFn;
 			active_[accountId] = std::move(a);
 		}
 
@@ -114,73 +182,12 @@ void ChatHub::Start()
 		// (`this`) only for mutex-guarded status writeback -- safe because the hub is a
 		// singleton living to process exit. All JS emits go through Bridge::EmitEvent
 		// (alive-guarded), never raw CEF.
-		AsyncTask::RunAsync([this, accountId, providerId, channelRef, acct, transport, stop]() mutable {
+		AsyncTask::RunAsync([this, accountId, providerId, channelRef, acct, transport, stop, emitFn]() mutable {
 			ChatContext ctx;
 			ctx.canceled = [stop] {
 				return stop->load(std::memory_order_acquire);
 			};
-			ctx.emit = [this, accountId, stop](const json &payload) {
-				if (stop->load(std::memory_order_acquire)) {
-					return; // generation stopped; drop late emits
-				}
-				// The payload carries a top-level "event" naming the bridge event; split
-				// it from the forwarded body here so the hub stays free of per-platform /
-				// per-message-type branches.
-				json body = payload;
-				std::string event = EventNames::kChatMessage;
-				auto ev = body.find("event");
-				if (ev != body.end() && ev->is_string()) {
-					event = ev->get<std::string>();
-					body.erase(ev);
-				}
-				// Cache connection state for State() on chat.state events.
-				if (event == EventNames::kChatState) {
-					std::lock_guard<std::mutex> lock(mutex_);
-					auto a = active_.find(accountId);
-					if (a != active_.end()) {
-						if (body.contains("connected") && body["connected"].is_boolean()) {
-							a->second.connected = body["connected"].get<bool>();
-						}
-						a->second.error = body.value("error", std::string());
-					}
-				}
-				if (event == EventNames::kChatMessage) {
-					// Single fan-out point for every transport: synthesize a unique
-					// fallback id for any chat.message lacking one, so the frontend's
-					// keyed list never throws each_key_duplicate. Real ids are left
-					// untouched (dedupe relies on them); the monotonic seq guarantees
-					// uniqueness even within a single frame.
-					auto id = body.find("id");
-					const bool missing = id == body.end() || !id->is_string() ||
-							     id->get<std::string>().empty();
-					if (missing) {
-						const std::string platform = body.value("platform", std::string());
-						std::string tsStr = "0";
-						auto tsIt = body.find("ts");
-						if (tsIt != body.end() && tsIt->is_number()) {
-							tsStr = std::to_string(tsIt->get<long long>());
-						}
-						const uint64_t seq = idSeq_.fetch_add(1, std::memory_order_relaxed);
-						body["id"] = platform + ":" + tsStr + ":" + std::to_string(seq);
-					}
-					// Fan chat messages (never connection-state frames) to overlay
-					// widgets as a named `chat` SSE event, HERE on the transport worker
-					// rather than after the UI hop (mirrors EventHub::Ingest):
-					// BroadcastChat does blocking socket sends (bounded by the overlay
-					// server's send timeout), and every browser source on stream renders
-					// on the frontend's TID_UI, so one stalled overlay reader would
-					// freeze them all. This account's single worker also keeps its lines
-					// in order. dump() can throw on a malformed payload (invalid UTF-8):
-					// skip the fan-out and still forward to the (guarded) bridge.
-					try {
-						Overlay::Server().BroadcastChat(body);
-					} catch (...) {
-						// malformed chat payload -> skip the overlay fan-out
-					}
-				}
-				AsyncTask::PostToUi(
-					[event = std::move(event), body = std::move(body)] { RouteEmit(event, body); });
-			};
+			ctx.emit = emitFn;
 			// Route this transport's health transitions to the shared aggregator, keyed by
 			// platform. Dropped once the generation stops so a late worker report can't
 			// override the Disconnected that Stop() writes as the authoritative terminal.
@@ -258,11 +265,12 @@ void ChatHub::SendToPlatforms(const std::vector<std::string> &platforms, const s
 		const std::string accountId = t.first;
 		const std::string providerId = t.second.providerId;
 		std::shared_ptr<ChatTransport> transport = t.second.transport;
+		std::function<void(const json &payload)> emit = t.second.emit;
 		const std::string msg = text;
 		// One worker per send so a slow REST send never blocks the caller. The worker
 		// captures the shared_ptr (not a raw ptr) so a concurrent Stop() can't free the
 		// transport mid-send.
-		AsyncTask::RunAsync([accountId, providerId, transport, msg]() {
+		AsyncTask::RunAsync([accountId, providerId, transport, emit, msg]() {
 			// Load the account fresh from the store so ensureFresh stays the sole token
 			// writer (no pre-call snapshot writeback -- mirrors the streamMeta.* path).
 			std::optional<OAuth::OAuthAccount> stored = OAuth::Accounts().Get(accountId);
@@ -284,6 +292,25 @@ void ChatHub::SendToPlatforms(const std::vector<std::string> &platforms, const s
 					Bridge::EmitEvent(EventNames::kChatState, json{{"platform", providerId},
 										       {"connected", true},
 										       {"error", err}});
+				});
+				return;
+			}
+			if (!transport->reflectsOwnSend() && emit) {
+				// A platform whose read transport never reflects the sender's own
+				// message (Twitch IRC) would leave the streamer's send invisible in
+				// their own pane, so echo it locally through the account's regular
+				// emit path -- the identical pipeline a real incoming message takes
+				// (overlay fan-out, alive-guarded UI post). No "id" on purpose: the
+				// emit path's fallback-id synthesis mints a unique one from idSeq_,
+				// and a non-reflecting platform has no real id to dedupe against.
+				const std::string name = acct.displayName.empty() ? acct.login : acct.displayName;
+				emit(json{
+					{"event", EventNames::kChatMessage},
+					{"platform", providerId},
+					{"channelId", transport->channelId()},
+					{"ts", TimeUtil::NowMs()},
+					{"author", json{{"name", name}, {"color", ""}, {"badges", json::array()}}},
+					{"fragments", json::array({json{{"type", "text"}, {"text", msg}}})},
 				});
 			}
 		});

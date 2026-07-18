@@ -38,6 +38,13 @@ public:
 	// force refresh handled by KickProvider::SendAuthed).
 	bool send(OAuth::OAuthAccount &acct, const std::string &text, std::string &err) override;
 
+	// The read socket is an ANONYMOUS public subscription to the chatroom's Pusher
+	// channel (empty auth, no socket_id correlated with the REST send), so the
+	// server cannot exclude it from the ChatMessageEvent broadcast every viewer
+	// receives -- our own REST-sent message comes back like anyone else's. A local
+	// echo would therefore double it in the pane.
+	bool reflectsOwnSend() const override { return true; }
+
 	// Signal the read loop to stop. May run on a different thread than connect()'s
 	// worker, so it only flips the flag -- the worker owns the WsClient teardown
 	// (curl handles are not safe for concurrent use). The worker's recv polls at

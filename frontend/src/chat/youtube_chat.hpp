@@ -40,6 +40,11 @@ public:
 	// liveChatMessages.insert a textMessageEvent into the active broadcast's chat.
 	bool send(OAuth::OAuthAccount &acct, const std::string &text, std::string &err) override;
 
+	// liveChatMessages.list returns EVERY message in the chat -- including ones
+	// this account inserted via send() -- so the poll loop already emits the
+	// sender's own messages (on the next poll). A local echo would double them.
+	bool reflectsOwnSend() const override { return true; }
+
 	// Flip the stop flag so the poll loop returns promptly (the worker that owns the
 	// loop performs the actual teardown; nothing socket-bound is held here).
 	void disconnect() override { stop_.store(true, std::memory_order_release); }
