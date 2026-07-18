@@ -1215,11 +1215,11 @@ export interface ObsMethods {
   // included) from one canvas onto another (or the same one). Params: {name,
   // canvas?, destCanvas}; canvas omitted/empty means the Default canvas.
   "scenes.duplicateToCanvas": { name: string; uuid: string };
-  // Scene reorder is NOT supported by the backend: libobs enumerates scenes in
-  // creation order and the new frontend has no scene-collection persistence to
-  // store a custom order, so this method always rejects with a clear error. Kept
-  // typed so a caller gets a compile-time shape; expect the call to throw.
-  "scenes.reorder": never;
+  // Reorder a scene within the persisted scene_order (Default canvas only; an
+  // additional canvas's scene list is not yet reorderable). Either
+  // {name, direction} (relative) or {name, to} (absolute, top-first UI index
+  // matching scenes.list order, for drag-and-drop).
+  "scenes.reorder": { name: string; direction: ReorderDirection | ""; to: number | null };
   // Scene items (top-first draw order; omit `scene` to target the current scene).
   // Pass an optional `canvas` uuid to target an additional canvas's current scene.
   "sceneItems.list": SceneItem[];
@@ -1305,7 +1305,7 @@ export interface ObsMethods {
   "canvas.create": { uuid: string };
   "canvas.update": CanvasInfo;
   "canvas.remove": { removed: string };
-  // Persisted drag order (echoes applied uuids); supported, unlike scenes.reorder (never).
+  // Persisted drag order (echoes applied uuids).
   "canvas.reorder": { order: string[] };
   "encoderTypes.list": EncoderType[];
   // Source filters. filterTypes.list enumerates creatable filter types (optionally
@@ -1328,7 +1328,7 @@ export interface ObsMethods {
   "streamProfile.update": StreamProfileInfo;
   "streamProfile.remove": { removed: string };
   "streamProfile.setPrimary": { uuid: string; isPrimary: boolean };
-  // Persisted drag order (echoes applied uuids); supported, unlike scenes.reorder (never).
+  // Persisted drag order (echoes applied uuids).
   "streamProfile.reorder": { order: string[] };
   "serviceTypes.list": ServiceType[];
   // Platform OAuth (Connect Account dual path, Phase 8; account entity, Phase 4).

@@ -132,8 +132,37 @@ bool ReorderScene(const std::string &sceneUuid, const std::string &direction)
 		std::swap(g_sceneOrder[idx], g_sceneOrder[idx - 1]);
 	} else if (direction == "down" && idx + 1 < g_sceneOrder.size()) {
 		std::swap(g_sceneOrder[idx], g_sceneOrder[idx + 1]);
+	} else if (direction == "top" && idx > 0) {
+		std::string uuid = std::move(g_sceneOrder[idx]);
+		g_sceneOrder.erase(g_sceneOrder.begin() + static_cast<std::ptrdiff_t>(idx));
+		g_sceneOrder.insert(g_sceneOrder.begin(), std::move(uuid));
+	} else if (direction == "bottom" && idx + 1 < g_sceneOrder.size()) {
+		std::string uuid = std::move(g_sceneOrder[idx]);
+		g_sceneOrder.erase(g_sceneOrder.begin() + static_cast<std::ptrdiff_t>(idx));
+		g_sceneOrder.push_back(std::move(uuid));
 	}
 	// Already at the relevant edge: no-op success, matching sceneItems.reorder.
+	return true;
+}
+
+bool MoveSceneToIndex(const std::string &sceneUuid, int index)
+{
+	ReconcileSceneOrder();
+	auto it = std::find(g_sceneOrder.begin(), g_sceneOrder.end(), sceneUuid);
+	if (it == g_sceneOrder.end()) {
+		return false;
+	}
+	std::string uuid = std::move(*it);
+	g_sceneOrder.erase(it);
+
+	if (index < 0) {
+		index = 0;
+	}
+	const int maxIndex = static_cast<int>(g_sceneOrder.size());
+	if (index > maxIndex) {
+		index = maxIndex;
+	}
+	g_sceneOrder.insert(g_sceneOrder.begin() + index, std::move(uuid));
 	return true;
 }
 

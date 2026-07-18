@@ -28,11 +28,19 @@ namespace SceneCollection {
 // callers never see a stale list. Empty only when the collection has no scenes.
 const std::vector<std::string> &SceneOrder();
 
-// Move the scene named by `sceneUuid` one slot toward `direction` ("up"|"down")
-// within SceneOrder(). Returns false if the uuid isn't a known main-canvas scene;
-// a move already at the relevant edge is a no-op success (matches sceneItems'
-// boundary behavior). Does not save -- the caller persists via Save().
+// Move the scene named by `sceneUuid` one slot toward `direction`
+// ("up"|"down"), or to the relevant edge ("top"|"bottom"), within SceneOrder().
+// Returns false if the uuid isn't a known main-canvas scene; a move already at
+// the relevant edge is a no-op success (matches sceneItems' boundary behavior).
+// Does not save -- the caller persists via Save().
 bool ReorderScene(const std::string &sceneUuid, const std::string &direction);
+
+// Move the scene named by `sceneUuid` to an absolute position within
+// SceneOrder() (the drag-and-drop counterpart to ReorderScene's relative
+// moves). `index` is clamped to [0, SceneOrder().size() - 1]. Returns false
+// only if the uuid isn't a known main-canvas scene. Does not save -- the
+// caller persists via Save().
+bool MoveSceneToIndex(const std::string &sceneUuid, int index);
 
 // Persist the active collection. No-op-safe; logs on failure.
 void Save();

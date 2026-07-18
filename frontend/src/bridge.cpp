@@ -1745,18 +1745,24 @@ bool MethodScenesDuplicateToCanvas(const json &params, json &result, std::string
 	return true;
 }
 
-// scenes.reorder {name, direction:"up"|"down", canvas?}: reorder a scene within
-// the global scene list.
+// scenes.reorder {name, direction:"up"|"down"|"top"|"bottom", canvas?} or
+// {name, to, canvas?}: reorder a scene within the global scene list, either
+// relatively (`direction`) or to an absolute index (`to`, a top-first UI index
+// matching scenes.list order -- see below).
 //
 // HONEST LIMITATION: libobs has no scene-ordering primitive. Unlike scene ITEMS
 // (obs_sceneitem_set_order), global scenes are plain sources enumerated by
 // obs_enum_scenes in CREATION order -- it exposes no settable order. Mirroring
 // the legacy Qt frontend's SaveSceneListOrder, the order lives OUTSIDE libobs: a
 // "scene_order" array persisted alongside the rest of the scene collection (see
-// SceneCollection::SceneOrder/ReorderScene in scene_persistence.cpp), which
-// scenes.list now consults instead of raw creation order. An additional canvas's
-// scenes (obs_canvas_enum_scenes, same limitation) aren't tracked by that order
-// yet, so reordering there still isn't supported.
+// SceneCollection::SceneOrder/ReorderScene/MoveSceneToIndex in
+// scene_persistence.cpp), which scenes.list now consults instead of raw
+// creation order. scenes.list pushes SceneOrder() straight through with no
+// inversion (unlike sceneItems.list, which inverts libobs' bottom-to-top
+// enumeration) -- SceneOrder()[0] IS the UI list's top entry, so a `to` index
+// here maps directly onto MoveSceneToIndex with no inversion. An additional
+// canvas's scenes (obs_canvas_enum_scenes, same limitation) aren't tracked by
+// that order yet, so reordering there still isn't supported.
 bool MethodScenesReorder(const json &params, json &result, std::string &error)
 {
 	std::string name;
@@ -1764,8 +1770,14 @@ bool MethodScenesReorder(const json &params, json &result, std::string &error)
 	if (!RequireStr(params, "scenes.reorder", "name", name, error)) {
 		return false;
 	}
-	if (direction != "up" && direction != "down") {
-		error = "scenes.reorder 'direction' must be 'up' or 'down'";
+	int to = -1;
+	bool hasTo = false;
+	if (auto it = params.find("to"); it != params.end() && it->is_number_integer()) {
+		to = it->get<int>();
+		hasTo = true;
+	}
+	if (!hasTo && direction != "up" && direction != "down" && direction != "top" && direction != "bottom") {
+		error = "scenes.reorder needs 'direction' (up|down|top|bottom) or an integer 'to' index";
 		return false;
 	}
 	if (ResolveCanvasTarget(params).isAdditional) {
@@ -1778,13 +1790,15 @@ bool MethodScenesReorder(const json &params, json &result, std::string &error)
 		return false;
 	}
 	const char *uuid = obs_source_get_uuid(scene);
-	if (!uuid || !SceneCollection::ReorderScene(uuid, direction)) {
+	const bool ok = uuid && (hasTo ? SceneCollection::MoveSceneToIndex(uuid, to)
+					: SceneCollection::ReorderScene(uuid, direction));
+	if (!ok) {
 		error = "scene reordering failed";
 		return false;
 	}
 	EmitScenesChanged(std::string());
 	SceneCollection::Save();
-	result = json{{"name", name}, {"direction", direction}};
+	result = json{{"name", name}, {"direction", direction}, {"to", hasTo ? json(to) : json(nullptr)}};
 	return true;
 }
 
