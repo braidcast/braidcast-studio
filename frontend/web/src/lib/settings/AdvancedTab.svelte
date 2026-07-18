@@ -14,7 +14,7 @@ import { EV } from "$lib/utils/eventNames";
   ];
 
   let s = $state<AdvancedSettings>({
-    processPriority: "normal",
+    processPriority: "aboveNormal",
     disableAudioDucking: false,
     streamDelayEnabled: false,
     streamDelaySec: 0,

@@ -13,7 +13,7 @@
 // browserHwAccel is store-only (obs-browser reads its own config).
 struct AdvancedSettings {
 	// --- process (Windows) ---
-	std::string processPriority = "normal"; // normal | aboveNormal | high
+	std::string processPriority = "aboveNormal"; // normal | aboveNormal | high
 	bool disableAudioDucking = false;
 	// --- stream delay (per output) ---
 	bool streamDelayEnabled = false;
