@@ -27,8 +27,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   import { callOrToast } from "$lib/utils/callToast";
   import { showToast } from "$lib/stores/toastStore.svelte";
   import AddSourceModal from "$lib/dialogs/add-source/AddSourceModal.svelte";
-  import PropertyForm from "$lib/properties/PropertyForm.svelte";
-  import Modal from "$lib/ui/Modal.svelte";
+  import PropertiesModal from "$lib/properties/PropertiesModal.svelte";
   import Icon from "$lib/ui/Icon.svelte";
   import ListToolbar, { type ToolAction } from "$lib/docking/ListToolbar.svelte";
   import FilterReveal from "$lib/docking/FilterReveal.svelte";
@@ -1064,9 +1063,12 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
 {/if}
 
 {#if propsForSource}
-  <Modal title={"Properties — " + propsForSource} onClose={() => (propsForSource = null)} width={560} maxHeight="80vh">
-    <PropertyForm kind="source" ref={propsForSource} />
-  </Modal>
+  <PropertiesModal
+    kind="source"
+    ref={propsForSource}
+    title={"Properties — " + propsForSource}
+    onClose={() => (propsForSource = null)}
+  />
 {/if}
 
 {#if menu}

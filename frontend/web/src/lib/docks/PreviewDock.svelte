@@ -9,8 +9,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   import { syncPreviewRect, hidePreview, destroyPreview, mapOverlayCursor } from "$lib/docking/previewSurface";
   import { isPreviewDisabled, setPreviewDisabled, DEFAULT_PREVIEW_KEY } from "$lib/docking/previewDisabledStore.svelte";
   import ContextMenu, { type ContextMenuItem } from "$lib/menus/ContextMenu.svelte";
-  import PropertyForm from "$lib/properties/PropertyForm.svelte";
-  import Modal from "$lib/ui/Modal.svelte";
+  import PropertiesModal from "$lib/properties/PropertiesModal.svelte";
   import { openFilters } from "$lib/dialogs/filterDialogOpener.svelte";
   import { transformMenu } from "$lib/menus/transformMenu";
 
@@ -212,9 +211,12 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
 {/if}
 
 {#if propsForSource}
-  <Modal title={"Properties — " + propsForSource} onClose={closeProps} width={560} maxHeight="80vh">
-    <PropertyForm kind="source" ref={propsForSource} />
-  </Modal>
+  <PropertiesModal
+    kind="source"
+    ref={propsForSource}
+    title={"Properties — " + propsForSource}
+    onClose={closeProps}
+  />
 {/if}
 
 <style>

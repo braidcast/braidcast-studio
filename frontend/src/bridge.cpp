@@ -4457,6 +4457,31 @@ bool MethodPropertiesSet(const json &params, json &result, std::string &error)
 	return ok;
 }
 
+bool MethodPropertiesDefaults(const json &params, json &result, std::string &error)
+{
+	const PropertyKind *kind = nullptr;
+	void *obj = nullptr;
+	if (!ResolvePropertyTarget(params, kind, obj, error)) {
+		return false;
+	}
+	// Restore Defaults == Qt's obs_data_clear(settings) + update: drop every explicit
+	// value so the type's registered defaults take over again, then re-apply so the
+	// object's runtime + persisted state reflect it.
+	obs_data_t *settings = kind->get_settings(obj); // addref'd
+	if (settings) {
+		obs_data_clear(settings);
+		kind->update(obj, settings);
+		obs_data_release(settings);
+		const std::string kindName = kind->name;
+		if (kindName == "source" || kindName == "filter") {
+			PersistSourceState(static_cast<obs_source_t *>(obj));
+		}
+	}
+	const bool ok = BuildPropertiesResult(kind, obj, result, error);
+	kind->release(obj);
+	return ok;
+}
+
 bool MethodPropertiesButton(const json &params, json &result, std::string &error)
 {
 	const PropertyKind *kind = nullptr;
@@ -9380,6 +9405,7 @@ void Init()
 		{"sources.setDeinterlace", MethodSourcesSetDeinterlace},
 		{"properties.get", MethodPropertiesGet},
 		{"properties.set", MethodPropertiesSet},
+		{"properties.defaults", MethodPropertiesDefaults},
 		{"properties.button", MethodPropertiesButton},
 		{"dialog.openFile", MethodDialogOpenFile},
 		{"shell.revealPath", MethodShellRevealPath},

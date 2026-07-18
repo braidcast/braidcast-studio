@@ -17,6 +17,13 @@
   let loaded = $state(false);
   let error = $state<string | null>(null);
 
+  // Settings snapshot taken on the first successful load after the target changes,
+  // so a Properties dialog wrapper can revert to it on Cancel/Esc. Never overwritten
+  // by a later re-fetch (flush/restoreDefaults) — only fetchProps' target-change path
+  // resets it, and only once per target.
+  let initialValues: Record<string, unknown> = {};
+  let hasSnapshot = false;
+
   // Descriptors minus any names a parent promoted out of this form (e.g. the
   // service picker). Excluded rows are still fetched/pushed; only hidden here.
   const visibleDescriptors = $derived(
@@ -40,6 +47,10 @@
       const r = await obs.call("properties.get", { kind, ref });
       descriptors = r.props;
       values = r.values ?? {};
+      if (!hasSnapshot) {
+        initialValues = { ...values };
+        hasSnapshot = true;
+      }
     } catch (e) {
       error = (e as Error).message;
     } finally {
@@ -52,6 +63,7 @@
     void kind;
     void ref;
     loaded = false;
+    hasSnapshot = false;
     void fetchProps();
   });
 
@@ -86,6 +98,37 @@
   async function onButton(name: string) {
     try {
       const r = await obs.call("properties.button", { kind, ref, prop: name });
+      descriptors = r.props;
+      values = r.values ?? {};
+    } catch (e) {
+      error = (e as Error).message;
+    }
+  }
+
+  // Revert to the open-time snapshot. properties.set MERGES settings, so pushing the
+  // full snapshot back overwrites every key the form could have touched — nothing can
+  // be left orphaned. Cancel any pending debounced edit first so it can't re-apply
+  // after the revert lands.
+  export async function revert() {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    pending = {};
+    try {
+      const r = await obs.call("properties.set", { kind, ref, settings: initialValues });
+      descriptors = r.props;
+      values = r.values ?? {};
+    } catch (e) {
+      error = (e as Error).message;
+    }
+  }
+
+  // Reset to the type's registered defaults. Does not touch initialValues, so a
+  // subsequent Cancel can still revert past this back to the dialog's open state.
+  export async function restoreDefaults() {
+    try {
+      const r = await obs.call("properties.defaults", { kind, ref });
       descriptors = r.props;
       values = r.values ?? {};
     } catch (e) {

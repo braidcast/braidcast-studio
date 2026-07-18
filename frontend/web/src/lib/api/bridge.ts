@@ -1265,6 +1265,7 @@ export interface ObsMethods {
   // Generic obs_properties renderer (4.3.2).
   "properties.get": PropertiesResult;
   "properties.set": PropertiesResult;
+  "properties.defaults": PropertiesResult;
   "properties.button": PropertiesResult;
   // Native OS file dialog (path / editable_list Browse). `mode` picks an open,
   // save, or directory chooser; `filter` is an OBS-style filter string. Returns

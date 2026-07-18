@@ -4,8 +4,7 @@
 import { EV } from "$lib/utils/eventNames";
   import { defaultCanvas } from "$lib/docks/defaultCanvasStore.svelte";
   import AddSourceModal from "$lib/dialogs/add-source/AddSourceModal.svelte";
-  import PropertyForm from "$lib/properties/PropertyForm.svelte";
-  import Modal from "$lib/ui/Modal.svelte";
+  import PropertiesModal from "$lib/properties/PropertiesModal.svelte";
   import { suspendPreview } from "$lib/stores/previewGate.svelte";
   import ContextMenu, { type ContextMenuItem } from "$lib/menus/ContextMenu.svelte";
   import { clipboard } from "$lib/stores/clipboardStore.svelte";
@@ -525,9 +524,12 @@ import { EV } from "$lib/utils/eventNames";
 {/if}
 
 {#if propsForSource}
-  <Modal title={"Properties — " + propsForSource} onClose={() => (propsForSource = null)} width={560} maxHeight="80vh">
-    <PropertyForm kind="source" ref={propsForSource} />
-  </Modal>
+  <PropertiesModal
+    kind="source"
+    ref={propsForSource}
+    title={"Properties — " + propsForSource}
+    onClose={() => (propsForSource = null)}
+  />
 {/if}
 
 {#if menu}
