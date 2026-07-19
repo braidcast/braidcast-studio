@@ -746,7 +746,7 @@ bool MethodSettingsSetAdvanced(const json &params, json &result, std::string &er
 			}
 		}
 		if (!ok) {
-			error = "processPriority must be one of normal, aboveNormal, high";
+			error = "processPriority must be one of normal, aboveNormal, high, auto";
 			return false;
 		}
 	}
@@ -781,7 +781,9 @@ bool MethodSettingsSetAdvanced(const json &params, json &result, std::string &er
 	// changed. Stream delay / reconnect / network options are read per output at
 	// StartOutput, so they apply to newly started outputs (live ones on restart).
 	if (a.processPriority != oldPriority) {
-		ApplyProcessPriority(a.processPriority);
+		// UI thread: safe to read AnyLive() directly. "auto" resolves against it now
+		// and re-pins on later live transitions via the engine's onLiveStateChanged.
+		ApplyEffectivePriority(a.processPriority, ObsBootstrap::Multistream().AnyLive());
 	}
 	if (a.disableAudioDucking != oldDisableAudioDucking) {
 		DisableAudioDucking(a.disableAudioDucking);

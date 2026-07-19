@@ -716,6 +716,23 @@ bool ObsBootstrap::GpuDiagRequested()
 	return g_gpuDiagRequested;
 }
 
+// Re-pin the process priority to the current live state. In "auto" mode this is HIGH
+// while any output is live and ABOVE_NORMAL when idle; a manual override just re-applies
+// its fixed class (idempotent). The engine fires onLiveStateChanged from the libobs
+// output-signal thread, but g_advanced is only ever written on the CEF UI thread (the
+// setAdvanced bridge setter), so reading it off-thread would race. Marshal to the UI
+// thread and re-read AnyLive() there so the resolution sees a consistent snapshot.
+// PostToUi's alive-guard drops the task after teardown; g_multistream is re-checked in
+// case Stop() already ran.
+static void SyncProcessPriorityToLiveState()
+{
+	AsyncTask::PostToUi([] {
+		if (g_multistream) {
+			ApplyEffectivePriority(g_advanced.processPriority, g_multistream->AnyLive());
+		}
+	});
+}
+
 bool ObsBootstrap::Start()
 {
 	// obs-browser checks this in its guarded path to skip CefInitialize (the
@@ -801,7 +818,9 @@ bool ObsBootstrap::Start()
 	// The engine reads the rest (stream delay / reconnect / network) per output at
 	// StartOutput; browserHwAccel is store-only.
 	g_advanced.Load();
-	ApplyProcessPriority(g_advanced.processPriority);
+	// Nothing can be live at startup, and g_multistream is not constructed yet, so
+	// resolve "auto" against an idle state (false) rather than calling AnyLive().
+	ApplyEffectivePriority(g_advanced.processPriority, false);
 	DisableAudioDucking(g_advanced.disableAudioDucking);
 	HostLog("[obs] advanced settings loaded; process priority=" + g_advanced.processPriority +
 		"; audio ducking disabled=" + std::string(g_advanced.disableAudioDucking ? "true" : "false"));
@@ -989,6 +1008,14 @@ bool ObsBootstrap::Start()
 				g_canvasRuntime->Reconcile(canvasUuid);
 			}
 		});
+	};
+
+	// Re-pin the process priority at every live transition (the seam UpdateSleepInhibit
+	// fires on). "auto" tracks live state -> HIGH live, ABOVE_NORMAL idle; a manual
+	// override re-applies its fixed class. SyncProcessPriorityToLiveState marshals the
+	// g_advanced read onto the UI thread since this fires off the libobs signal thread.
+	g_multistream->onLiveStateChanged = [] {
+		SyncProcessPriorityToLiveState();
 	};
 
 	// Build the canvas update/reconciliation service over the shared model, runtime,
@@ -3404,6 +3431,9 @@ void ObsBootstrap::Stop(void (*drainCefTasks)())
 	// any already-queued task with MultistreamAlive().
 	if (g_multistream) {
 		g_multistream->onStatusChanged = nullptr;
+		// Same rationale: StopAll's async stop fires UpdateSleepInhibit -> onLiveStateChanged,
+		// which would post a priority re-pin that outlives this reset. Disconnect it here.
+		g_multistream->onLiveStateChanged = nullptr;
 		g_multistream->StopAll();
 		g_multistream.reset();
 	}

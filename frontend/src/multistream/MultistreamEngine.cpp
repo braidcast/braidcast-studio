@@ -176,6 +176,7 @@ MultistreamEngine::~MultistreamEngine()
 	 * null). The owner runs StopAll explicitly before destroying us anyway. */
 	onStatusChanged = nullptr;
 	onOutputStopped = nullptr;
+	onLiveStateChanged = nullptr;
 	StopAll();
 	os_inhibit_sleep_destroy(sleepInhibit);
 }
@@ -183,6 +184,11 @@ MultistreamEngine::~MultistreamEngine()
 void MultistreamEngine::UpdateSleepInhibit()
 {
 	os_inhibit_sleep_set_active(sleepInhibit, AnyLive());
+	/* Same live-transition seam drives the process-priority re-pin; the target
+	 * re-reads AnyLive() at apply time, so this needs no live flag of its own. */
+	if (onLiveStateChanged) {
+		onLiveStateChanged();
+	}
 }
 
 video_t *MultistreamEngine::VideoForCanvas(const std::string &canvasUuid)

@@ -54,7 +54,12 @@ bool AdvancedSettings::Save() const
 	return ReportSaveResult(SaveJsonAtomic(root, path), path);
 }
 
-void ApplyProcessPriority(const std::string &token)
+namespace {
+
+// Map a concrete priority token to a Win32 priority class and apply it. Only ever
+// sees the manual tokens (normal/aboveNormal/high) -- ApplyEffectivePriority resolves
+// "auto" to one of these first. Unknown tokens are ignored.
+void ApplyPriorityClass(const std::string &token)
 {
 #ifdef _WIN32
 	static const struct {
@@ -74,6 +79,17 @@ void ApplyProcessPriority(const std::string &token)
 #else
 	(void)token;
 #endif
+}
+
+} // namespace
+
+void ApplyEffectivePriority(const std::string &token, bool live)
+{
+	const bool isAuto = token == "auto";
+	const std::string effective = isAuto ? (live ? "high" : "aboveNormal") : token;
+	ApplyPriorityClass(effective);
+	HostLog("[obs] process priority applied: token=" + token + " effective=" + effective +
+		(isAuto ? (live ? " (auto/live)" : " (auto/idle)") : " (manual override)"));
 }
 
 void DisableAudioDucking(bool disable)

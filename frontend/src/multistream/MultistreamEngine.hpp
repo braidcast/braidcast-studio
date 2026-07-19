@@ -126,6 +126,13 @@ public:
 	 * while an output was still async-stopping drops its mix once the stop completes. */
 	std::function<void(const std::string &canvasUuid)> onOutputStopped;
 
+	/* Invoked (possibly off the libobs thread, from the output start/stop signal
+	 * handlers) at every live-state transition -- the same seam UpdateSleepInhibit
+	 * fires on. The bootstrap uses it to re-pin the process priority to the live
+	 * state; its target marshals to the UI thread, so off-thread invocation is fine.
+	 * The engine stays priority-agnostic: it only fires this, it never reads it. */
+	std::function<void()> onLiveStateChanged;
+
 private:
 	struct CanvasEncoders {
 		std::string canvasUuid;

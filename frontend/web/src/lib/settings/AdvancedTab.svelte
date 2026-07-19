@@ -8,13 +8,14 @@ import { EV } from "$lib/utils/eventNames";
   // reconciles from the returned full state. settings.advancedChanged keeps this in
   // sync with any external edit.
   const priorities: { label: string; value: string }[] = [
+    { label: "Auto — High while live, Above Normal idle", value: "auto" },
     { label: "Normal", value: "normal" },
     { label: "Above Normal", value: "aboveNormal" },
     { label: "High", value: "high" },
   ];
 
   let s = $state<AdvancedSettings>({
-    processPriority: "aboveNormal",
+    processPriority: "auto",
     disableAudioDucking: false,
     streamDelayEnabled: false,
     streamDelaySec: 0,

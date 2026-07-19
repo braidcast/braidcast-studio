@@ -13,7 +13,7 @@
 // browserHwAccel is store-only (obs-browser reads its own config).
 struct AdvancedSettings {
 	// --- process (Windows) ---
-	std::string processPriority = "aboveNormal"; // normal | aboveNormal | high
+	std::string processPriority = "auto"; // auto | normal | aboveNormal | high
 	bool disableAudioDucking = false;
 	// --- stream delay (per output) ---
 	bool streamDelayEnabled = false;
@@ -80,13 +80,16 @@ inline constexpr AdvancedUIntField kAdvancedUIntFields[] = {
 	{"reconnectMaxRetries", "reconnect_max_retries", &AdvancedSettings::reconnectMaxRetries, 0, 10000},
 };
 
-// Accepted process-priority tokens (validated by the bridge; mapped to a Win32
-// priority class by ApplyProcessPriority).
-inline constexpr const char *kProcessPriorityTokens[] = {"normal", "aboveNormal", "high"};
+// Accepted process-priority tokens (validated by the bridge). "auto" resolves to a
+// concrete class at apply time -- HIGH while any output is live, ABOVE_NORMAL when
+// idle; the other three are manual overrides mapped straight to a Win32 class.
+inline constexpr const char *kProcessPriorityTokens[] = {"normal", "aboveNormal", "high", "auto"};
 
-// Apply a process-priority token to the current process. On Windows this maps to
-// SetPriorityClass; on other platforms it is a no-op. Unknown tokens are ignored.
-void ApplyProcessPriority(const std::string &token);
+// Apply a process-priority token to the current process, resolving "auto" against the
+// supplied live state (live -> "high", idle -> "aboveNormal"); any other token applies
+// verbatim. On Windows this maps to SetPriorityClass; elsewhere it is a no-op apart
+// from the log line. Unknown tokens are ignored.
+void ApplyEffectivePriority(const std::string &token, bool live);
 
 // Opt this process's default-render audio session out of (or back into) Windows'
 // automatic ducking. On Windows this maps to IAudioSessionControl2::SetDuckingPreference;

@@ -302,8 +302,9 @@ export interface GeneralSettings {
 
 /** Advanced app settings (process priority, stream delay, auto-reconnect, network,
  * browser HW accel). A flat object; setAdvanced applies any present subset, persists,
- * and echoes the full post-apply state. `processPriority` is one of normal/aboveNormal/
- * high; `bindIP` is "default" or an IP string; the rest are booleans except the three
+ * and echoes the full post-apply state. `processPriority` is one of auto/normal/aboveNormal/
+ * high (auto = High while any output is live, Above Normal when idle); `bindIP` is
+ * "default" or an IP string; the rest are booleans except the three
  * uints (streamDelaySec, reconnectRetryDelaySec, reconnectMaxRetries). */
 export interface AdvancedSettings {
   processPriority: string;
