@@ -44,6 +44,7 @@ inline on each row (**✅ Fixed `<commit>`** / 🔧 in progress / 🔴 queued /
 | §1.4 blending mode/method submenus | Major | ✅ Fixed `ba36733c9` |
 | §2.2 scene filters (Filters/Copy/Paste) | Major | ✅ Fixed `088941459` |
 | §11.2 arrow-key nudge | Major | ✅ Fixed `71ed2b357` |
+| §3.2 add-source thumbnails (seed) | Major | ✅ Fixed `4f96b6e1f` (visual check owed) |
 
 Blockers cleared (3 fixed, §4.2 deferred). Now working Major gaps in severity order.
 
@@ -100,7 +101,7 @@ thumbnail tiles of existing sources). Current:
 | # | Gap | Qt did | Current | Severity | Fix lives in |
 | --- | --- | --- | --- | --- | --- |
 | 3.1 | **Reuse is not the default when an existing source of the type exists** (seed 2) | If the type has ≥1 existing source, the first existing tile is **pre-checked** so "Add Existing" is the primed default action (`sourceTypeSelected` heuristic); otherwise focus goes to the new-name field | **Partial** — "Use existing" radio exists with a preselected candidate, but `mode` defaults to `"new"` unconditionally (`AddSourceModal.svelte:100-104`) | Major | `AddSourceModal.svelte` — default `mode = existing.length ? "existing" : "new"` |
-| 3.2 | **No preview of sources in the dialog** (seed 4) | Per-source **thumbnail tiles** (`SourceSelectButton` + `ThumbnailManager`) for every existing source — you see what you're re-adding (no full live pane in Qt either) | **Missing** — text-only radio list, no thumbnails, no preview | Major | `AddSourceModal.svelte` + a thumbnail path (`screenshot.takeSource` → `file.readDataUri`, or a new `sources.thumbnail` bridge method) |
+| 3.2 | **No preview of sources in the dialog** (seed 4) | Per-source **thumbnail tiles** (`SourceSelectButton` + `ThumbnailManager`) for every existing source — you see what you're re-adding (no full live pane in Qt either) | ✅ **Fixed `4f96b6e1f`** — new `sources.thumbnail` bridge (reuses the render-to-texture capture core via factored `RenderToRgbaPixels` + in-memory WIC PNG `EncodePngMemory`, 160px cap, inline data URI, no temp files); `AddSourceModal` existing-source list became a responsive tile grid (lazy per-tile load, cached, type-icon fallback on no-video/failure). **Visual render not yet human-verified** (build only proves compile) | Major | `bridge.cpp`, `AddSourceModal.svelte` |
 | 3.3 | "Add Visible" checkbox missing | `sourceVisible` checkbox (default checked) controls initial item visibility | **Missing** | Minor-UX | `AddSourceModal.svelte` + `sceneItems.setVisible` after add |
 | 3.4 | Multi-select add-existing missing | Ctrl/shift multi-select tiles, "Add N Existing" | **Missing** — one existing source at a time | Minor-UX | `AddSourceModal.svelte` |
 
