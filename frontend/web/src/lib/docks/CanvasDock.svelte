@@ -281,6 +281,25 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     }
   }
 
+  async function copySceneFilters(name: string) {
+    try {
+      clipboard.filters = (await obs.call("filters.copyChain", { source: name })).filters;
+    } catch (e) {
+      report(e);
+    }
+  }
+
+  async function pasteSceneFilters(name: string) {
+    if (!clipboard.filters) {
+      return;
+    }
+    try {
+      await obs.call("filters.pasteChain", { source: name, filters: clipboard.filters });
+    } catch (e) {
+      report(e);
+    }
+  }
+
   function openSceneMenu(e: MouseEvent, name: string) {
     e.preventDefault();
     const linkChildren =
@@ -304,8 +323,12 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
       y: e.clientY,
       items: [
         { label: "Rename", action: () => beginRenameScene(name) },
+        { label: "Filters", action: () => openFilters(name) },
         { label: "Link to", children: linkChildren },
         { label: "Duplicate to canvas", children: duplicateChildren },
+        null,
+        { label: "Copy Filters", action: () => void copySceneFilters(name) },
+        { label: "Paste Filters", disabled: !clipboard.filters, action: () => void pasteSceneFilters(name) },
         null,
         { label: "Remove", danger: true, disabled: scenes.length <= 1, action: () => removeScene(name) },
       ],

@@ -9,6 +9,8 @@ import { EV } from "$lib/utils/eventNames";
   import ContextMenu, { type ContextMenuItem } from "$lib/menus/ContextMenu.svelte";
   import ListToolbar, { type ToolAction } from "$lib/docking/ListToolbar.svelte";
   import FilterReveal from "$lib/docking/FilterReveal.svelte";
+  import { clipboard } from "$lib/stores/clipboardStore.svelte";
+  import { openFilters } from "$lib/dialogs/filterDialogOpener.svelte";
 
   // The mount adapter strips internal __* keys; this dock declares no props.
   let {}: Record<string, unknown> = $props();
@@ -149,6 +151,27 @@ import { EV } from "$lib/utils/eventNames";
     defaultCanvas.duplicate(name).catch(report);
   }
 
+  async function copySceneFilters(name: string) {
+    actionError = null;
+    try {
+      clipboard.filters = (await obs.call("filters.copyChain", { source: name })).filters;
+    } catch (e) {
+      report(e);
+    }
+  }
+
+  async function pasteSceneFilters(name: string) {
+    if (!clipboard.filters) {
+      return;
+    }
+    actionError = null;
+    try {
+      await obs.call("filters.pasteChain", { source: name, filters: clipboard.filters });
+    } catch (e) {
+      report(e);
+    }
+  }
+
   // Duplicates a scene from the Default canvas onto another canvas (a deep copy,
   // unlike the same-canvas duplicate() above which is a ref duplicate). No `canvas`
   // param is sent, mirroring defaultCanvasStore's other calls (omitted = Default).
@@ -269,9 +292,13 @@ import { EV } from "$lib/utils/eventNames";
       y: e.clientY,
       items: [
         { label: "Rename", action: () => beginRename(name) },
+        { label: "Filters", action: () => openFilters(name) },
         { label: "Duplicate", action: () => duplicate(name) },
         { label: "Duplicate to canvas", children: duplicateChildren },
         { label: "Order", children: orderChildren },
+        null,
+        { label: "Copy Filters", action: () => void copySceneFilters(name) },
+        { label: "Paste Filters", disabled: !clipboard.filters, action: () => void pasteSceneFilters(name) },
         // Projector entries hidden pending the projector redesign.
         null,
         { label: "Remove", danger: true, disabled: defaultCanvas.scenes.length <= 1, action: () => void remove(name) },
