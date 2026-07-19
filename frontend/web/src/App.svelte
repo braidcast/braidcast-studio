@@ -31,6 +31,8 @@
   import { oauthConnect, closeOAuthConnect } from "$lib/dialogs/oauthConnectOpener.svelte";
   import GoLiveModal from "$lib/dialogs/golive/GoLiveModal.svelte";
   import { goLiveModal } from "$lib/dialogs/golive/goLiveModalOpener.svelte";
+  import CollectionDialog, { type DialogSpec } from "$lib/dialogs/CollectionDialog.svelte";
+  import { planFile, planText, createDropped, type DropPlan } from "$lib/dialogs/add-source/dropSource";
   import { undoStore } from "$lib/stores/undoStore.svelte";
   import { channelsStore } from "$lib/stores/channelsStore.svelte";
   import { diagnosticsStore } from "$lib/stores/diagnosticsStore.svelte";
@@ -264,13 +266,61 @@ import { EV } from "$lib/utils/eventNames";
   }
 
   // A file/text/link dropped anywhere on the window makes CEF navigate to it, which
-  // blows away the SPA. Cancel the default on the window so a stray drop is inert;
-  // real drop targets still receive their own (bubbling) drop event to read the data.
+  // blows away the SPA. Cancel the default on the window so a stray drop never
+  // navigates; real drop targets still receive their own (bubbling) drop event.
   function onDragOver(e: DragEvent): void {
     e.preventDefault();
   }
-  function onWindowDrop(e: DragEvent): void {
+
+  // §1.6 parity: a drop becomes a source. Files -> image/media, a URL/.html ->
+  // browser (after a confirm), other text -> a text source. dataTransfer is only
+  // live during dispatch, so read every field synchronously before any await.
+  let dropConfirm = $state<DialogSpec | null>(null);
+  async function onWindowDrop(e: DragEvent): Promise<void> {
     e.preventDefault();
+    const dt = e.dataTransfer;
+    if (!dt) return;
+    // Files take precedence over the synthetic uri-list/plain text a file drag also
+    // carries. planFile returns null when this build hides File.path (see dropSource).
+    const files = Array.from(dt.files) as (File & { path?: string })[];
+    if (files.length > 0) {
+      for (const file of files) {
+        const plan = planFile(file);
+        if (plan) await runDrop(plan);
+      }
+      return;
+    }
+    // A dropped hyperlink carries the URL in uri-list; take its first non-comment line.
+    const uri = dt.getData("text/uri-list");
+    const line = uri ? uri.split("\n").find((s) => s.trim() && !s.startsWith("#")) : "";
+    const text = (line || dt.getData("text/plain")).trim();
+    if (!text) return;
+    const plan = await planText(text);
+    if (plan) await runDrop(plan);
+  }
+
+  async function runDrop(plan: DropPlan): Promise<void> {
+    if (plan.confirm) {
+      dropConfirm = {
+        kind: "confirm",
+        title: "Add Source",
+        message: plan.confirm,
+        confirmLabel: "Create",
+        onCommit: () => void createDroppedSource(plan),
+      };
+      return;
+    }
+    await createDroppedSource(plan);
+  }
+
+  async function createDroppedSource(plan: DropPlan): Promise<void> {
+    try {
+      const name = await createDropped(plan);
+      showToast("Added source: " + name, name);
+    } catch (e) {
+      const msg = (e as Error).message;
+      showToast("Could not add source: " + msg, msg);
+    }
   }
 
   onMount(() => {
@@ -364,6 +414,10 @@ import { EV } from "$lib/utils/eventNames";
 
 {#if goLiveModal.open}
   <GoLiveModal />
+{/if}
+
+{#if dropConfirm}
+  <CollectionDialog {...dropConfirm} onClose={() => (dropConfirm = null)} />
 {/if}
 
 <Toast />
