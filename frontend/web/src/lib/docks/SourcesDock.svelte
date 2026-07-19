@@ -12,6 +12,7 @@ import { EV } from "$lib/utils/eventNames";
   import { openFilters } from "$lib/dialogs/filterDialogOpener.svelte";
   import { transformMenu } from "$lib/menus/transformMenu";
   import { scaleFilterMenu } from "$lib/menus/scaleFilterMenu";
+  import { blendModeMenu, blendMethodMenu } from "$lib/menus/blendMenu";
   import { deinterlaceMenu } from "$lib/menus/deinterlaceMenu";
   import { colorMenu } from "$lib/menus/colorMenu";
   import type { DeinterlaceMode, DeinterlaceFieldOrder } from "$lib/api/bridge";
@@ -405,6 +406,12 @@ import { EV } from "$lib/utils/eventNames";
         { label: "Rename", action: () => beginRename(item) },
         scaleFilterMenu(item.scaleFilter, (filter) =>
           void obs.call("sceneItems.setScaleFilter", { scene: currentScene, id: item.id, filter }).catch(report),
+        ),
+        blendModeMenu(item.blendMode, (mode) =>
+          void obs.call("sceneItems.setBlendingMode", { scene: currentScene, id: item.id, mode }).catch(report),
+        ),
+        blendMethodMenu(item.blendMethod, (method) =>
+          void obs.call("sceneItems.setBlendingMethod", { scene: currentScene, id: item.id, method }).catch(report),
         ),
         ...(item.source
           ? [

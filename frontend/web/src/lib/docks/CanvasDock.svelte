@@ -19,6 +19,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   import { openFilters } from "$lib/dialogs/filterDialogOpener.svelte";
   import { transformMenu } from "$lib/menus/transformMenu";
   import { scaleFilterMenu } from "$lib/menus/scaleFilterMenu";
+  import { blendModeMenu, blendMethodMenu } from "$lib/menus/blendMenu";
   import { deinterlaceMenu } from "$lib/menus/deinterlaceMenu";
   import { colorMenu } from "$lib/menus/colorMenu";
   import type { DeinterlaceMode, DeinterlaceFieldOrder } from "$lib/api/bridge";
@@ -613,6 +614,16 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
             .call("sceneItems.setScaleFilter", { canvas: canvasUuid, scene: currentScene, id: item.id, filter })
             .catch(report),
         ),
+        blendModeMenu(item.blendMode, (mode) =>
+          void obs
+            .call("sceneItems.setBlendingMode", { canvas: canvasUuid, scene: currentScene, id: item.id, mode })
+            .catch(report),
+        ),
+        blendMethodMenu(item.blendMethod, (method) =>
+          void obs
+            .call("sceneItems.setBlendingMethod", { canvas: canvasUuid, scene: currentScene, id: item.id, method })
+            .catch(report),
+        ),
         ...(item.source
           ? [
               deinterlaceMenu(
@@ -680,12 +691,16 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     const call = (method: string, params: Record<string, unknown>) =>
       obs.call(method, { canvas: canvasUuid, scene: p.scene, id: p.id, ...params }).catch(report);
     const currentFilter = items.find((i) => i.id === p.id)?.scaleFilter ?? "disable";
+    const currentBlendMode = items.find((i) => i.id === p.id)?.blendMode ?? "normal";
+    const currentBlendMethod = items.find((i) => i.id === p.id)?.blendMethod ?? "default";
     const currentColor = items.find((i) => i.id === p.id)?.color ?? "";
     return [
       ...(p.id != null
         ? [transformMenu({ canvas: canvasUuid, scene: p.scene ?? undefined, id: p.id }, p.source ?? "(unnamed)")]
         : []),
       scaleFilterMenu(currentFilter, (filter) => void call("sceneItems.setScaleFilter", { filter })),
+      blendModeMenu(currentBlendMode, (mode) => void call("sceneItems.setBlendingMode", { mode })),
+      blendMethodMenu(currentBlendMethod, (method) => void call("sceneItems.setBlendingMethod", { method })),
       ...(p.source
         ? [
             deinterlaceMenu(

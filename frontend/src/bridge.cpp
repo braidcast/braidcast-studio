@@ -1847,6 +1847,71 @@ bool ScaleFilterFromToken(const std::string &token, obs_scale_type &type)
 	return false;
 }
 
+// Blend-mode token <-> obs_blending_type. Shared by sceneItems.list (enum->token)
+// and sceneItems.setBlendingMode (token->enum) so both speak one vocabulary.
+struct BlendModeEntry {
+	const char *token;
+	obs_blending_type type;
+};
+static const BlendModeEntry kBlendModes[] = {
+	{"normal", OBS_BLEND_NORMAL},     {"additive", OBS_BLEND_ADDITIVE}, {"subtract", OBS_BLEND_SUBTRACT},
+	{"screen", OBS_BLEND_SCREEN},     {"multiply", OBS_BLEND_MULTIPLY}, {"lighten", OBS_BLEND_LIGHTEN},
+	{"darken", OBS_BLEND_DARKEN},
+};
+
+const char *BlendModeToToken(obs_blending_type type)
+{
+	for (const auto &e : kBlendModes) {
+		if (e.type == type) {
+			return e.token;
+		}
+	}
+	return "normal";
+}
+
+bool BlendModeFromToken(const std::string &token, obs_blending_type &type)
+{
+	for (const auto &e : kBlendModes) {
+		if (token == e.token) {
+			type = e.type;
+			return true;
+		}
+	}
+	return false;
+}
+
+// Blend-method token <-> obs_blending_method. Shared by sceneItems.list (enum->token)
+// and sceneItems.setBlendingMethod (token->enum) so both speak one vocabulary.
+struct BlendMethodEntry {
+	const char *token;
+	obs_blending_method method;
+};
+static const BlendMethodEntry kBlendMethods[] = {
+	{"default", OBS_BLEND_METHOD_DEFAULT},
+	{"srgbOff", OBS_BLEND_METHOD_SRGB_OFF},
+};
+
+const char *BlendMethodToToken(obs_blending_method method)
+{
+	for (const auto &e : kBlendMethods) {
+		if (e.method == method) {
+			return e.token;
+		}
+	}
+	return "default";
+}
+
+bool BlendMethodFromToken(const std::string &token, obs_blending_method &method)
+{
+	for (const auto &e : kBlendMethods) {
+		if (token == e.token) {
+			method = e.method;
+			return true;
+		}
+	}
+	return false;
+}
+
 // --- undo recording (apply-target-state) ------------------------------------
 //
 // For mutations that change an existing scene item WITHOUT altering structure,
@@ -2106,6 +2171,44 @@ void ApplyScaleFilter(const std::string &data)
 	obs_scale_type type;
 	if (ScaleFilterFromToken(OptString(state, "filter"), type)) {
 		obs_sceneitem_set_scale_filter(item, type);
+		CommitSceneItemChange(state, sceneSource);
+	}
+	obs_source_release(sceneSource);
+}
+
+void ApplyBlendingMode(const std::string &data)
+{
+	json state = json::parse(data, nullptr, false);
+	if (state.is_discarded()) {
+		return;
+	}
+	obs_source_t *sceneSource = nullptr;
+	obs_sceneitem_t *item = nullptr;
+	if (!ResolveStateItem(state, sceneSource, item)) {
+		return;
+	}
+	obs_blending_type type;
+	if (BlendModeFromToken(OptString(state, "mode"), type)) {
+		obs_sceneitem_set_blending_mode(item, type);
+		CommitSceneItemChange(state, sceneSource);
+	}
+	obs_source_release(sceneSource);
+}
+
+void ApplyBlendingMethod(const std::string &data)
+{
+	json state = json::parse(data, nullptr, false);
+	if (state.is_discarded()) {
+		return;
+	}
+	obs_source_t *sceneSource = nullptr;
+	obs_sceneitem_t *item = nullptr;
+	if (!ResolveStateItem(state, sceneSource, item)) {
+		return;
+	}
+	obs_blending_method method;
+	if (BlendMethodFromToken(OptString(state, "method"), method)) {
+		obs_sceneitem_set_blending_method(item, method);
 		CommitSceneItemChange(state, sceneSource);
 	}
 	obs_source_release(sceneSource);
@@ -2538,6 +2641,9 @@ bool MethodSceneItemsList(const json &params, json &result, std::string &error)
 					    {"visible", obs_sceneitem_visible(item)},
 					    {"locked", obs_sceneitem_locked(item)},
 					    {"scaleFilter", ScaleFilterToToken(obs_sceneitem_get_scale_filter(item))},
+					    {"blendMode", BlendModeToToken(obs_sceneitem_get_blending_mode(item))},
+					    {"blendMethod",
+					     BlendMethodToToken(obs_sceneitem_get_blending_method(item))},
 					    {"interactive",
 					     src ? ((obs_source_get_output_flags(src) & OBS_SOURCE_INTERACTION) != 0)
 						 : false},
@@ -2762,6 +2868,80 @@ bool MethodSceneItemsSetScaleFilter(const json &params, json &result, std::strin
 	obs_source_release(sceneSource);
 	RecordUndo("Scale Filtering", ApplyScaleFilter, before, after);
 	result = json{{"id", id}, {"filter", filter}};
+	return true;
+}
+
+bool MethodSceneItemsSetBlendingMode(const json &params, json &result, std::string &error)
+{
+	int64_t id = 0;
+	if (!ItemIdFromParams(params, id, error)) {
+		return false;
+	}
+	const std::string mode = OptString(params, "mode");
+	obs_blending_type type;
+	if (!BlendModeFromToken(mode, type)) {
+		error = "'mode' must be one of normal|additive|subtract|screen|multiply|lighten|darken";
+		return false;
+	}
+	obs_source_t *sceneSource = ResolveTargetScene(params);
+	if (!sceneSource) {
+		error = "no scene";
+		return false;
+	}
+	obs_scene_t *scene = obs_scene_from_source(sceneSource);
+	obs_sceneitem_t *item = FindSceneItem(scene, id);
+	if (!item) {
+		obs_source_release(sceneSource);
+		error = "no scene item with id " + std::to_string(id);
+		return false;
+	}
+	obs_source_t *itemSrc = obs_sceneitem_get_source(item);
+	json before = StateBase(params, itemSrc);
+	before["mode"] = BlendModeToToken(obs_sceneitem_get_blending_mode(item));
+	json after = StateBase(params, itemSrc);
+	after["mode"] = mode;
+	obs_sceneitem_set_blending_mode(item, type);
+	CommitSceneItemChange(params, sceneSource);
+	obs_source_release(sceneSource);
+	RecordUndo("Blending Mode", ApplyBlendingMode, before, after);
+	result = json{{"id", id}, {"mode", mode}};
+	return true;
+}
+
+bool MethodSceneItemsSetBlendingMethod(const json &params, json &result, std::string &error)
+{
+	int64_t id = 0;
+	if (!ItemIdFromParams(params, id, error)) {
+		return false;
+	}
+	const std::string method = OptString(params, "method");
+	obs_blending_method blendMethod;
+	if (!BlendMethodFromToken(method, blendMethod)) {
+		error = "'method' must be one of default|srgbOff";
+		return false;
+	}
+	obs_source_t *sceneSource = ResolveTargetScene(params);
+	if (!sceneSource) {
+		error = "no scene";
+		return false;
+	}
+	obs_scene_t *scene = obs_scene_from_source(sceneSource);
+	obs_sceneitem_t *item = FindSceneItem(scene, id);
+	if (!item) {
+		obs_source_release(sceneSource);
+		error = "no scene item with id " + std::to_string(id);
+		return false;
+	}
+	obs_source_t *itemSrc = obs_sceneitem_get_source(item);
+	json before = StateBase(params, itemSrc);
+	before["method"] = BlendMethodToToken(obs_sceneitem_get_blending_method(item));
+	json after = StateBase(params, itemSrc);
+	after["method"] = method;
+	obs_sceneitem_set_blending_method(item, blendMethod);
+	CommitSceneItemChange(params, sceneSource);
+	obs_source_release(sceneSource);
+	RecordUndo("Blending Method", ApplyBlendingMethod, before, after);
+	result = json{{"id", id}, {"method", method}};
 	return true;
 }
 
@@ -9402,6 +9582,8 @@ void Init()
 		{"sceneItems.setTransform", MethodSceneItemsSetTransform},
 		{"sceneItems.transformAction", MethodSceneItemsTransformAction},
 		{"sceneItems.setScaleFilter", MethodSceneItemsSetScaleFilter},
+		{"sceneItems.setBlendingMode", MethodSceneItemsSetBlendingMode},
+		{"sceneItems.setBlendingMethod", MethodSceneItemsSetBlendingMethod},
 		{"sceneItems.setColor", MethodSceneItemsSetColor},
 		{"sceneItems.group", MethodSceneItemsGroup},
 		{"sceneItems.ungroup", MethodSceneItemsUngroup},

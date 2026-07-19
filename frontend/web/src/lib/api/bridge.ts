@@ -43,6 +43,8 @@ export interface SceneItem {
   visible: boolean;
   locked: boolean;
   scaleFilter: string;
+  blendMode: string;
+  blendMethod: string;
   interactive?: boolean;
   // Per-item color tag (hex like "#RRGGBB"; "" when unset).
   color: string;
@@ -1226,6 +1228,8 @@ export interface ObsMethods {
   "sceneItems.setVisible": { id: number; visible: boolean };
   "sceneItems.setLocked": { id: number; locked: boolean };
   "sceneItems.setScaleFilter": Record<string, never>;
+  "sceneItems.setBlendingMode": Record<string, never>;
+  "sceneItems.setBlendingMethod": Record<string, never>;
   // Set a per-item color tag ({ scene, id, canvas?, color }; color "" clears it).
   // Emits sceneItems.changed.
   "sceneItems.setColor": { ok: true };
