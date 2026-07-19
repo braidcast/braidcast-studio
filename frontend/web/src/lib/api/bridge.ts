@@ -1253,6 +1253,10 @@ export interface ObsMethods {
   "sources.rename": { id: number; source: string };
   "sources.listExisting": ExistingSource[];
   "sources.addExisting": { id: number; source: string };
+  // Existing-source picker thumbnail: renders the named source standalone at a
+  // capped size and returns it inlined as a PNG data URI. Rejects (caller falls
+  // back to a type icon) when the source has no video.
+  "sources.thumbnail": { dataUri: string };
   // Duplicate the source of a scene item in place (undo-recorded).
   "sources.duplicate": { id: number; source: string };
   // Open a native Interact window forwarding input to an interactive source.

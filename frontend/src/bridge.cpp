@@ -8030,17 +8030,20 @@ bool EncodePngFile(const wchar_t *wpath, const uint8_t *pixels, uint32_t w, uint
 	return true;
 }
 
-// Render `renderFn` into a w*h GS_RGBA texture and write it out as PNG. Runs the
-// whole capture synchronously inside one obs graphics block: on D3D11 the staging
-// map flushes and blocks until the copy completes, so the pixels are valid
-// immediately (the legacy tick-split only existed to avoid stalling the render
-// thread, irrelevant for a one-shot bridge call). Both gs objects are destroyed
-// and the graphics context left on every path; the stage surface is unmapped
-// before destroy. Output is native size with a 1:1 viewport (no letterbox).
-bool CaptureToPng(uint32_t w, uint32_t h, const std::function<void()> &renderFn, const std::string &outPath,
-		  std::string &errOut)
+// Render `renderFn` into an outW*outH GS_RGBA texture (ortho'd to srcW*srcH source
+// units, so outW/outH smaller than srcW/srcH downscales on the GPU instead of after
+// the fact) and return the packed RGBA pixels. Shared core for the on-disk PNG
+// screenshot path (CaptureToPng, src==out) and the in-memory thumbnail path
+// (CaptureToThumbnailDataUri, out capped below src) below. Runs synchronously
+// inside one obs graphics block: on D3D11 the staging map flushes and blocks until
+// the copy completes, so the pixels are valid immediately (the legacy tick-split
+// only existed to avoid stalling the render thread, irrelevant for a one-shot
+// bridge call). Both gs objects are destroyed and the graphics context left on
+// every path; the stage surface is unmapped before destroy.
+bool RenderToRgbaPixels(uint32_t srcW, uint32_t srcH, uint32_t outW, uint32_t outH,
+			 const std::function<void()> &renderFn, std::vector<uint8_t> &pixels, std::string &errOut)
 {
-	if (!w || !h) {
+	if (!srcW || !srcH || !outW || !outH) {
 		errOut = "source has no video";
 		return false;
 	}
@@ -8048,10 +8051,10 @@ bool CaptureToPng(uint32_t w, uint32_t h, const std::function<void()> &renderFn,
 	obs_enter_graphics();
 
 	gs_texrender_t *texrender = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
-	gs_stagesurf_t *stage = gs_stagesurface_create(w, h, GS_RGBA);
+	gs_stagesurf_t *stage = gs_stagesurface_create(outW, outH, GS_RGBA);
 
 	bool beginOk = false;
-	if (texrender && stage && gs_texrender_begin(texrender, w, h)) {
+	if (texrender && stage && gs_texrender_begin(texrender, outW, outH)) {
 		beginOk = true;
 
 		vec4 zero;
@@ -8060,8 +8063,8 @@ bool CaptureToPng(uint32_t w, uint32_t h, const std::function<void()> &renderFn,
 
 		gs_viewport_push();
 		gs_projection_push();
-		gs_ortho(0.0f, (float)w, 0.0f, (float)h, -100.0f, 100.0f);
-		gs_set_viewport(0, 0, (int)w, (int)h);
+		gs_ortho(0.0f, (float)srcW, 0.0f, (float)srcH, -100.0f, 100.0f);
+		gs_set_viewport(0, 0, (int)outW, (int)outH);
 
 		gs_blend_state_push();
 		gs_blend_function(GS_BLEND_ONE, GS_BLEND_ZERO);
@@ -8074,16 +8077,16 @@ bool CaptureToPng(uint32_t w, uint32_t h, const std::function<void()> &renderFn,
 		gs_texrender_end(texrender);
 	}
 
-	std::vector<uint8_t> pixels;
 	bool mapped = false;
 	if (beginOk) {
 		gs_stage_texture(stage, gs_texrender_get_texture(texrender));
 		uint8_t *data = nullptr;
 		uint32_t linesize = 0;
 		if (gs_stagesurface_map(stage, &data, &linesize)) {
-			pixels.resize((size_t)w * h * 4);
-			for (uint32_t y = 0; y < h; ++y) {
-				memcpy(pixels.data() + (size_t)y * w * 4, data + (size_t)y * linesize, (size_t)w * 4);
+			pixels.resize((size_t)outW * outH * 4);
+			for (uint32_t y = 0; y < outH; ++y) {
+				memcpy(pixels.data() + (size_t)y * outW * 4, data + (size_t)y * linesize,
+				       (size_t)outW * 4);
 			}
 			gs_stagesurface_unmap(stage);
 			mapped = true;
@@ -8098,6 +8101,18 @@ bool CaptureToPng(uint32_t w, uint32_t h, const std::function<void()> &renderFn,
 		errOut = "failed to render screenshot";
 		return false;
 	}
+	return true;
+}
+
+// Render `renderFn` into a w*h GS_RGBA texture and write it out as PNG. Output is
+// native size with a 1:1 viewport (no letterbox).
+bool CaptureToPng(uint32_t w, uint32_t h, const std::function<void()> &renderFn, const std::string &outPath,
+		  std::string &errOut)
+{
+	std::vector<uint8_t> pixels;
+	if (!RenderToRgbaPixels(w, h, w, h, renderFn, pixels, errOut)) {
+		return false;
+	}
 
 	wchar_t *wpath = nullptr;
 	os_utf8_to_wcs_ptr(outPath.c_str(), 0, &wpath);
@@ -8108,6 +8123,163 @@ bool CaptureToPng(uint32_t w, uint32_t h, const std::function<void()> &renderFn,
 	const bool ok = EncodePngFile(wpath, pixels.data(), w, h, errOut);
 	bfree(wpath);
 	return ok;
+}
+
+// Same as EncodePngFile but sinks into a growable in-memory IStream (SHCreateMemStream)
+// instead of a file, for callers that need the PNG bytes directly rather than a file
+// on disk (an inline data-URI thumbnail).
+bool EncodePngMemory(const uint8_t *pixels, uint32_t w, uint32_t h, std::vector<unsigned char> &out,
+		      std::string &errOut)
+{
+	using Microsoft::WRL::ComPtr;
+
+	const HRESULT coInit = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+	const bool needUninit = SUCCEEDED(coInit);
+
+	ComPtr<IStream> memStream;
+	memStream.Attach(SHCreateMemStream(nullptr, 0));
+	HRESULT hr = memStream ? S_OK : E_OUTOFMEMORY;
+	{
+		ComPtr<IWICImagingFactory> factory;
+		if (SUCCEEDED(hr)) {
+			hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+					      IID_PPV_ARGS(factory.GetAddressOf()));
+		}
+		ComPtr<IWICStream> wicStream;
+		if (SUCCEEDED(hr)) {
+			hr = factory->CreateStream(wicStream.GetAddressOf());
+		}
+		if (SUCCEEDED(hr)) {
+			hr = wicStream->InitializeFromIStream(memStream.Get());
+		}
+		ComPtr<IWICBitmapEncoder> encoder;
+		if (SUCCEEDED(hr)) {
+			hr = factory->CreateEncoder(GUID_ContainerFormatPng, nullptr, encoder.GetAddressOf());
+		}
+		if (SUCCEEDED(hr)) {
+			hr = encoder->Initialize(wicStream.Get(), WICBitmapEncoderNoCache);
+		}
+		ComPtr<IWICBitmapFrameEncode> frame;
+		ComPtr<IPropertyBag2> options;
+		if (SUCCEEDED(hr)) {
+			hr = encoder->CreateNewFrame(frame.GetAddressOf(), options.GetAddressOf());
+		}
+		if (SUCCEEDED(hr)) {
+			hr = frame->Initialize(options.Get());
+		}
+		if (SUCCEEDED(hr)) {
+			hr = frame->SetSize(w, h);
+		}
+		WICPixelFormatGUID format = GUID_WICPixelFormat32bppRGBA;
+		if (SUCCEEDED(hr)) {
+			hr = frame->SetPixelFormat(&format);
+		}
+		if (SUCCEEDED(hr)) {
+			// GS_RGBA is R,G,B,A byte order with opaque alpha; a WIC-negotiated substitute
+			// format is acceptable for opaque RGBA, so a format mismatch is not rejected.
+			hr = frame->WritePixels(h, w * 4, w * h * 4, const_cast<BYTE *>(pixels));
+		}
+		if (SUCCEEDED(hr)) {
+			hr = frame->Commit();
+		}
+		if (SUCCEEDED(hr)) {
+			hr = encoder->Commit();
+		}
+	}
+
+	if (SUCCEEDED(hr)) {
+		STATSTG stat{};
+		hr = memStream->Stat(&stat, STATFLAG_NONAME);
+		if (SUCCEEDED(hr)) {
+			const ULONG size = static_cast<ULONG>(stat.cbSize.QuadPart);
+			out.resize(size);
+			LARGE_INTEGER zero{};
+			hr = memStream->Seek(zero, STREAM_SEEK_SET, nullptr);
+		}
+		if (SUCCEEDED(hr)) {
+			ULONG read = 0;
+			hr = memStream->Read(out.data(), (ULONG)out.size(), &read);
+		}
+	}
+
+	if (needUninit) {
+		CoUninitialize();
+	}
+
+	if (FAILED(hr)) {
+		errOut = "failed to encode PNG";
+		return false;
+	}
+	return true;
+}
+
+// Render `renderFn` (a source's own, standalone render -- not a specific scene
+// item) at a capped thumbnail size and return it inlined as a PNG data URI. Used
+// by sources.thumbnail for the add-source picker's existing-source tiles: no disk
+// file (CEF's app:// origin can't load file:// paths anyway, see file.readDataUri,
+// and a per-tile timestamped screenshot would spam the user's screenshots folder
+// for what is purely a UI preview).
+bool CaptureToThumbnailDataUri(uint32_t srcW, uint32_t srcH, const std::function<void()> &renderFn,
+				std::string &dataUri, std::string &errOut)
+{
+	constexpr uint32_t kMaxDim = 160;
+	uint32_t outW = srcW;
+	uint32_t outH = srcH;
+	if (outW > kMaxDim || outH > kMaxDim) {
+		const double scale = std::min((double)kMaxDim / outW, (double)kMaxDim / outH);
+		outW = std::max<uint32_t>(1, (uint32_t)(outW * scale));
+		outH = std::max<uint32_t>(1, (uint32_t)(outH * scale));
+	}
+
+	std::vector<uint8_t> pixels;
+	if (!RenderToRgbaPixels(srcW, srcH, outW, outH, renderFn, pixels, errOut)) {
+		return false;
+	}
+	std::vector<unsigned char> png;
+	if (!EncodePngMemory(pixels.data(), outW, outH, png, errOut)) {
+		return false;
+	}
+	dataUri = "data:image/png;base64," + EncodeBase64(png);
+	return true;
+}
+
+// Existing-source picker thumbnail: params {name} -> {dataUri}. Renders the named
+// source standalone (not tied to any particular scene item, since the whole point
+// of sources.listExisting is offering sources not yet in the target scene) at a
+// capped size and inlines it as a PNG data URI. Sources with no video (audio-only,
+// zero-size, or a failed render) return an error; the caller falls back to a type
+// icon.
+bool MethodSourcesThumbnail(const json &params, json &result, std::string &error)
+{
+	std::string name;
+	if (!RequireStr(params, "sources.thumbnail", "name", name, error)) {
+		return false;
+	}
+	OBSSourceAutoRelease source = obs_get_source_by_name(name.c_str());
+	if (!source) {
+		error = "no source named '" + name + "'";
+		return false;
+	}
+	const uint32_t w = obs_source_get_width(source);
+	const uint32_t h = obs_source_get_height(source);
+	if (!w || !h) {
+		error = "source has no video";
+		return false;
+	}
+
+	obs_source_t *src = source;
+	auto renderFn = [src]() {
+		obs_source_inc_showing(src);
+		obs_source_video_render(src);
+		obs_source_dec_showing(src);
+	};
+
+	std::string dataUri;
+	if (!CaptureToThumbnailDataUri(w, h, renderFn, dataUri, error)) {
+		return false;
+	}
+	result = json{{"dataUri", dataUri}};
+	return true;
 }
 
 // Replace characters Windows forbids in file names (and control chars) with '_';
@@ -9593,6 +9765,7 @@ void Init()
 		{"sources.create", MethodSourcesCreate},
 		{"sources.listExisting", MethodSourcesListExisting},
 		{"sources.addExisting", MethodSourcesAddExisting},
+		{"sources.thumbnail", MethodSourcesThumbnail},
 		{"sources.duplicate", MethodSourcesDuplicate},
 		{"sources.rename", MethodSourcesRename},
 		{"sources.findMissing", MethodSourcesFindMissing},

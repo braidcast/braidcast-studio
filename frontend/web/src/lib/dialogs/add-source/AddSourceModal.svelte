@@ -38,6 +38,24 @@
   let name = $state("");
   let pickedExisting = $state<string>("");
 
+  // Existing-source tile thumbnails: resolved lazily (after the list renders) and
+  // cached per source name for the modal's lifetime so filtering/re-renders don't
+  // re-capture. `null` means "resolved, no image" (falls back to the type icon);
+  // absence means "not yet requested".
+  let thumbs = $state<Record<string, string | null>>({});
+  function loadThumb(sourceName: string) {
+    if (sourceName in thumbs) return;
+    thumbs[sourceName] = null; // claim it immediately so concurrent renders don't double-fetch
+    obs
+      .call("sources.thumbnail", { name: sourceName })
+      .then((r) => {
+        thumbs[sourceName] = r.dataUri;
+      })
+      .catch(() => {
+        // No video / capture failure: leave the type-icon fallback in place.
+      });
+  }
+
   async function load() {
     error = null;
     try {
@@ -84,6 +102,16 @@
 
   // Existing instances of the picked type (candidates not already in the scene).
   const existingOfType = $derived(selectedType ? existingSources.filter((s) => s.typeId === selectedType!.id) : []);
+
+  // Thumbnails render only once the "Use existing" tiles are actually visible, not
+  // on every type pick -- a source picked but never expanded to "existing" never
+  // triggers a capture.
+  $effect(() => {
+    if (mode !== "existing") return;
+    for (const src of existingOfType) {
+      loadThumb(src.name);
+    }
+  });
 
   // Suffix " N" until the name is free (matches OBS de-dup).
   function uniqueName(base: string): string {
@@ -181,11 +209,18 @@
         {#if mode === "existing"}
           <ul class="existing">
             {#each existingOfType as src (src.name)}
+              {@const thumb = thumbs[src.name]}
               <li>
-                <label class="exrow">
+                <label class="ex-tile" class:sel={pickedExisting === src.name}>
                   <input type="radio" value={src.name} bind:group={pickedExisting} />
-                  <span class="glyph"><Icon name={typeIcon(src.caps)} size={15} /></span>
-                  <span class="type-name">{src.name}</span>
+                  <span class="ex-thumb">
+                    {#if thumb}
+                      <img src={thumb} alt="" />
+                    {:else}
+                      <Icon name={typeIcon(src.caps)} size={20} />
+                    {/if}
+                  </span>
+                  <span class="ex-name" title={src.name}>{src.name}</span>
                 </label>
               </li>
             {/each}
@@ -361,29 +396,72 @@
   .existing {
     list-style: none;
     margin: 0 0 0 22px;
-    padding: 0;
+    padding: 8px;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(88px, 1fr));
+    gap: 8px;
     border: var(--border-weight) solid var(--color-border);
-    max-height: 220px;
+    max-height: 240px;
     overflow: auto;
   }
-  .existing li {
-    border-bottom: var(--border-weight) solid var(--color-border);
+  .ex-tile {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 5px;
+    padding: 6px;
+    cursor: pointer;
+    background: var(--color-base);
+    border: var(--border-weight) solid var(--color-border);
   }
-  .existing li:last-child {
-    border-bottom: 0;
+  .ex-tile:hover {
+    border-color: var(--color-accent);
   }
-  .exrow {
+  .ex-tile.sel {
+    border-color: var(--color-accent);
+    background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  }
+  .ex-tile:has(input:focus-visible) {
+    outline: var(--border-weight) solid var(--color-accent);
+    outline-offset: 1px;
+  }
+  .ex-tile input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+    pointer-events: none;
+  }
+  .ex-thumb {
+    width: 100%;
+    aspect-ratio: 16 / 9;
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 7px 9px;
-    cursor: pointer;
-    font-size: 12px;
-    color: var(--color-dim);
-  }
-  .exrow:hover {
+    justify-content: center;
     background: var(--color-surface);
-    color: var(--color-text);
+    color: var(--color-muted);
+    overflow: hidden;
+  }
+  .ex-tile.sel .ex-thumb {
+    color: var(--color-accent);
+  }
+  .ex-thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+  .ex-name {
+    width: 100%;
+    font-size: 11px;
+    color: var(--color-dim);
+    text-align: center;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .ex-tile.sel .ex-name {
+    color: var(--color-accent);
   }
   .name-step {
     display: flex;
