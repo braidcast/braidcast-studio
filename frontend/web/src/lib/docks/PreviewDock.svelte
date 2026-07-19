@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { obs } from "$lib/api/bridge";
+  import { obs, type SceneItem, type DeinterlaceMode, type DeinterlaceFieldOrder, type TransitionType } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
   import { canvasStore } from "$lib/stores/canvasStore.svelte";
   import { previewSuspended, suspendPreview } from "$lib/stores/previewGate.svelte";
@@ -10,13 +10,46 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   import { isPreviewDisabled, setPreviewDisabled, DEFAULT_PREVIEW_KEY } from "$lib/docking/previewDisabledStore.svelte";
   import ContextMenu, { type ContextMenuItem } from "$lib/menus/ContextMenu.svelte";
   import PropertiesModal from "$lib/properties/PropertiesModal.svelte";
+  import AddSourceModal from "$lib/dialogs/add-source/AddSourceModal.svelte";
+  import { clipboard } from "$lib/stores/clipboardStore.svelte";
   import { openFilters } from "$lib/dialogs/filterDialogOpener.svelte";
   import { transformMenu } from "$lib/menus/transformMenu";
+  import { scaleFilterMenu } from "$lib/menus/scaleFilterMenu";
+  import { blendModeMenu, blendMethodMenu } from "$lib/menus/blendMenu";
+  import { showTransitionMenu, hideTransitionMenu, transitionTypes } from "$lib/menus/transitionMenu";
+  import { deinterlaceMenu } from "$lib/menus/deinterlaceMenu";
+  import { colorMenu } from "$lib/menus/colorMenu";
 
   let {}: Record<string, unknown> = $props();
 
   let menu = $state<{ x: number; y: number; items: (ContextMenuItem | null)[] } | null>(null);
   let propsForSource = $state<string | null>(null);
+
+  // Add-source (opened from the empty-area menu). The Default surface is the global
+  // channel-0 path, so the modal always passes canvas={null}; `addScene` is the
+  // scene captured from the right-click that opened the menu.
+  let adding = $state(false);
+  let addScene = $state<string | null>(null);
+  function beginAddSource(scene: string | null) {
+    addScene = scene;
+    adding = true;
+  }
+  function onSourceCreated(created: { id: number; source: string }) {
+    adding = false;
+    openProps(created.source);
+  }
+
+  const warn = (method: string) => (e: unknown) => console.log(method + " failed: " + (e as Error).message);
+
+  // Deinterlacing is a source-level property (not in the event payload), fetched
+  // just-in-time when the menu opens. Falls back to disabled state on error.
+  async function fetchDeint(source: string): Promise<{ mode: DeinterlaceMode; fieldOrder: DeinterlaceFieldOrder }> {
+    try {
+      return await obs.call("sources.getDeinterlace", { source });
+    } catch {
+      return { mode: "disable", fieldOrder: "top" };
+    }
+  }
 
   // Output-gate the Default canvas preview, mirroring the additional canvases (which
   // the reconciler adds/removes on their own `enabled` flag). CanvasInfo.enabled for
@@ -63,41 +96,129 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   }
 
   // Source context menu for the right-clicked scene item. Default surface, so every
-  // call OMITS the canvas param (global channel-0 path).
-  function buildItems(p: {
-    scene: string | null;
-    id: number | null;
-    source: string | null;
-    visible: boolean;
-    locked: boolean;
-  }): (ContextMenuItem | null)[] {
+  // call OMITS the canvas param (global channel-0 path). `it` is the scene item as
+  // fetched just-in-time (the event payload lacks scale/blend/color/transitions);
+  // `deint` + `transitionTypeList` are likewise fetched before the menu is built.
+  function buildItems(
+    p: { scene: string | null; id: number | null; source: string | null; visible: boolean; locked: boolean },
+    it: SceneItem | null,
+    deint: { mode: DeinterlaceMode; fieldOrder: DeinterlaceFieldOrder },
+    transitionTypeList: TransitionType[],
+  ): (ContextMenuItem | null)[] {
+    // Inject the global-path target (scene + id) into every scene-item call.
     const call = (method: string, params: Record<string, unknown>) =>
-      obs.call(method, params).catch((e) => console.log(method + " failed: " + (e as Error).message));
+      obs.call(method, { scene: p.scene, id: p.id, ...params }).catch(warn(method));
+    const currentFilter = it?.scaleFilter ?? "disable";
+    const currentBlendMode = it?.blendMode ?? "normal";
+    const currentBlendMethod = it?.blendMethod ?? "default";
+    const currentColor = it?.color ?? "";
+    const currentShowTransition = it?.showTransition ?? null;
+    const currentHideTransition = it?.hideTransition ?? null;
     return [
+      { label: "Properties", action: () => p.source && openProps(p.source) },
+      { label: "Filters", disabled: !p.source, action: () => p.source && openFilters(p.source) },
+      ...(it?.interactive && p.source
+        ? [{ label: "Interact", action: () => void obs.call("sources.interact", { source: p.source }).catch(warn("sources.interact")) }]
+        : []),
+      ...(p.id != null ? [transformMenu({ scene: p.scene ?? undefined, id: p.id }, p.source ?? "(unnamed)")] : []),
+      scaleFilterMenu(currentFilter, (filter) => void call("sceneItems.setScaleFilter", { filter })),
+      blendModeMenu(currentBlendMode, (mode) => void call("sceneItems.setBlendingMode", { mode })),
+      blendMethodMenu(currentBlendMethod, (method) => void call("sceneItems.setBlendingMethod", { method })),
+      showTransitionMenu(
+        currentShowTransition,
+        transitionTypeList,
+        (type) =>
+          void call("sceneItems.setShowTransition", { transition: type, duration: currentShowTransition?.duration ?? 300 }),
+        (duration) => void call("sceneItems.setShowTransition", { transition: currentShowTransition?.type ?? null, duration }),
+      ),
+      hideTransitionMenu(
+        currentHideTransition,
+        transitionTypeList,
+        (type) =>
+          void call("sceneItems.setHideTransition", { transition: type, duration: currentHideTransition?.duration ?? 300 }),
+        (duration) => void call("sceneItems.setHideTransition", { transition: currentHideTransition?.type ?? null, duration }),
+      ),
+      ...(p.source
+        ? [
+            deinterlaceMenu(
+              deint.mode,
+              deint.fieldOrder,
+              (mode) => void obs.call("sources.setDeinterlace", { source: p.source, mode }).catch(warn("sources.setDeinterlace")),
+              (fieldOrder) =>
+                void obs.call("sources.setDeinterlace", { source: p.source, fieldOrder }).catch(warn("sources.setDeinterlace")),
+            ),
+          ]
+        : []),
+      colorMenu(currentColor, (color) => void call("sceneItems.setColor", { color })),
+      { label: "Screenshot", disabled: !p.source, action: () => void call("screenshot.takeSource", {}) },
+      null,
       {
-        label: "Properties",
+        label: "Copy",
+        disabled: !p.source,
         action: () => {
           if (p.source) {
-            openProps(p.source);
+            clipboard.source = { ref: p.source, name: p.source };
           }
         },
       },
-      { label: "Filters", disabled: !p.source, action: () => p.source && openFilters(p.source) },
-      ...(p.id != null ? [transformMenu({ scene: p.scene ?? undefined, id: p.id }, p.source ?? "(unnamed)")] : []),
+      {
+        label: "Paste",
+        disabled: !clipboard.source,
+        action: () => {
+          if (clipboard.source && p.scene) {
+            void obs.call("sources.addExisting", { scene: p.scene, name: clipboard.source.ref }).catch(warn("sources.addExisting"));
+          }
+        },
+      },
+      {
+        label: "Copy Transform",
+        action: () =>
+          void obs
+            .call("sceneItems.getTransform", { scene: p.scene, id: p.id })
+            .then((t) => (clipboard.transform = t))
+            .catch(warn("sceneItems.getTransform")),
+      },
+      {
+        label: "Paste Transform",
+        disabled: !clipboard.transform,
+        action: () => void call("sceneItems.setTransform", { transform: clipboard.transform }),
+      },
       null,
-      { label: p.visible ? "Hide" : "Show", action: () => void call("sceneItems.setVisible", { scene: p.scene, id: p.id, visible: !p.visible }) },
-      { label: p.locked ? "Unlock" : "Lock", action: () => void call("sceneItems.setLocked", { scene: p.scene, id: p.id, locked: !p.locked }) },
+      { label: "Group", action: () => void call("sceneItems.group", { ids: [p.id] }) },
+      { label: "Ungroup", action: () => void call("sceneItems.ungroup", {}) },
       null,
-      { label: "Move Up", action: () => void call("sceneItems.reorder", { scene: p.scene, id: p.id, direction: "up" }) },
-      { label: "Move Down", action: () => void call("sceneItems.reorder", { scene: p.scene, id: p.id, direction: "down" }) },
-      { label: "Move to Top", action: () => void call("sceneItems.reorder", { scene: p.scene, id: p.id, direction: "top" }) },
-      { label: "Move to Bottom", action: () => void call("sceneItems.reorder", { scene: p.scene, id: p.id, direction: "bottom" }) },
+      { label: p.visible ? "Hide" : "Show", action: () => void call("sceneItems.setVisible", { visible: !p.visible }) },
+      { label: p.locked ? "Unlock" : "Lock", action: () => void call("sceneItems.setLocked", { locked: !p.locked }) },
+      null,
+      { label: "Move Up", action: () => void call("sceneItems.reorder", { direction: "up" }) },
+      { label: "Move Down", action: () => void call("sceneItems.reorder", { direction: "down" }) },
+      { label: "Move to Top", action: () => void call("sceneItems.reorder", { direction: "top" }) },
+      { label: "Move to Bottom", action: () => void call("sceneItems.reorder", { direction: "bottom" }) },
       // Projector entries hidden pending the projector redesign (projectorMenu + its
       // bridge path are kept, just not surfaced here).
       null,
-      { label: "Remove", danger: true, action: () => void call("sceneItems.remove", { scene: p.scene, id: p.id }) },
+      { label: "Remove", danger: true, action: () => void call("sceneItems.remove", {}) },
       null,
       { label: "Disable Preview", action: disablePreview },
+    ];
+  }
+
+  // Empty-area menu (right-click with no source under the cursor). Add Source + Paste
+  // reuse the global add-source modal + clipboard paste. "New Group" is intentionally
+  // absent: there is no empty-group-create bridge method (sceneItems.group requires
+  // existing ids), so it can't be wired without inventing one.
+  function buildEmptyItems(scene: string | null): (ContextMenuItem | null)[] {
+    return [
+      { label: "Add Source", disabled: !scene, action: () => beginAddSource(scene) },
+      {
+        label: "Paste",
+        disabled: !clipboard.source,
+        action: () => {
+          if (clipboard.source && scene) {
+            void obs.call("sources.addExisting", { scene, name: clipboard.source.ref }).catch(warn("sources.addExisting"));
+          }
+        },
+      },
     ];
   }
 
@@ -134,14 +255,26 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     window.addEventListener("resize", reportRect);
     window.addEventListener("scroll", reportRect, true);
 
-    // Right-click in the overlay: filter to the Default surface in this window with
-    // a real hit, then map the device-px cursor to viewport coords via the rect.
+    // Right-click in the overlay: filter to the Default surface in this window, then
+    // map the device-px cursor to viewport coords via the rect. A hit (id != null)
+    // builds the source menu (item scale/blend/color/deint fetched just-in-time,
+    // since the payload omits them); empty area builds the add/paste menu.
     const offMenu = obs.on(EV.previewContextMenu, (p) => {
-      if (p.canvas != null || p.window !== WINDOW_ID || p.id == null || !previewEl) {
+      if (p.canvas != null || p.window !== WINDOW_ID || !previewEl) {
         return;
       }
       const { x, y } = mapOverlayCursor(previewEl, p);
-      menu = { x, y, items: buildItems(p) };
+      if (p.id == null) {
+        menu = { x, y, items: buildEmptyItems(p.scene) };
+        return;
+      }
+      void (async () => {
+        const list = await obs.call("sceneItems.list", { scene: p.scene }).catch(() => [] as SceneItem[]);
+        const it = list.find((i) => i.id === p.id) ?? null;
+        const deint = p.source ? await fetchDeint(p.source) : { mode: "disable" as const, fieldOrder: "top" as const };
+        const transitionTypeList = await transitionTypes().catch(() => []);
+        menu = { x, y, items: buildItems(p, it, deint, transitionTypeList) };
+      })();
     });
 
     return () => {
@@ -188,6 +321,13 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
       return suspendPreview();
     }
   });
+
+  // The add-source modal overlaps the native overlay too; suspend while it's open.
+  $effect(() => {
+    if (adding) {
+      return suspendPreview();
+    }
+  });
 </script>
 
 <section class="preview" class:gated={!defaultEnabled || isPreviewDisabled(DEFAULT_PREVIEW_KEY)} bind:this={previewEl}>
@@ -208,6 +348,10 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
 
 {#if menu}
   <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => (menu = null)} />
+{/if}
+
+{#if adding}
+  <AddSourceModal canvas={null} scene={addScene} onCreated={onSourceCreated} onClose={() => (adding = false)} />
 {/if}
 
 {#if propsForSource}

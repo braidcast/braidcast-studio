@@ -821,6 +821,17 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     ];
   }
 
+  // Empty-area menu (right-click with no source under the cursor). Add Source + Paste
+  // reuse this canvas's add-source modal + clipboard paste. "New Group" is intentionally
+  // absent: there is no empty-group-create bridge method (sceneItems.group requires
+  // existing ids), so it can't be wired without inventing one.
+  function buildEmptyItems(): (ContextMenuItem | null)[] {
+    return [
+      { label: "Add Source", disabled: !currentScene, action: () => (addingSource = true) },
+      { label: "Paste", disabled: !clipboard.source, action: () => void pasteSource() },
+    ];
+  }
+
   // ---- live state for this canvas (drives the stage LIVE chip), off the shared status store ----
   let liveState = $derived.by<MultistreamState | "off">(() => {
     const mine = multistreamStatusStore.forCanvas(canvasUuid);
@@ -947,10 +958,14 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     // Right-click in this canvas's overlay: filter to our uuid in this window with
     // a real hit, then map the device-px cursor to viewport coords via the rect.
     const offMenu = obs.on(EV.previewContextMenu, (p) => {
-      if (p.canvas !== canvasUuid || p.window !== WINDOW_ID || p.id == null || !previewEl) {
+      if (p.canvas !== canvasUuid || p.window !== WINDOW_ID || !previewEl) {
         return;
       }
       const { x, y } = mapOverlayCursor(previewEl, p);
+      if (p.id == null) {
+        menu = { x, y, items: buildEmptyItems(), suspendOverlay: true };
+        return;
+      }
       void (async () => {
         const deint = p.source
           ? await fetchDeint(p.source)
