@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <exception>
+#include <map>
 
 namespace Transitions {
 
@@ -26,6 +27,13 @@ constexpr const char *kStoreKey = "state";
 OBSSourceAutoRelease g_transition;
 std::string g_typeId;
 uint32_t g_durationMs = kDefaultDurationMs;
+
+// Per-type transition settings retained for the session, keyed by type id -> its
+// obs_data serialized to JSON. Lets a configured Stinger/Luma survive a
+// type round-trip (Stinger -> Fade -> Stinger); the active type's entry is also
+// mirrored to disk so it survives an app restart. Keyed by id so settings from
+// one transition type are never applied to a different kind.
+std::map<std::string, std::string> g_settingsByType;
 
 // Display name for a transition type id, falling back to the id itself.
 std::string DisplayName(const std::string &id)
@@ -56,9 +64,51 @@ void SizeToBaseCanvas(obs_source_t *transition)
 	}
 }
 
+// Copy the active transition's live settings into the session cache under its
+// type id. No-op when no transition exists. Call before dropping/replacing the
+// active source so an outgoing type's edits are retained for a later round-trip.
+void CaptureActiveSettings()
+{
+	if (!g_transition || g_typeId.empty()) {
+		return;
+	}
+	OBSDataAutoRelease settings = obs_source_get_settings(g_transition);
+	const char *sj = settings ? obs_data_get_json(settings) : nullptr;
+	g_settingsByType[g_typeId] = sj ? sj : "";
+}
+
+// Create a transition source of `id`, seeded with any settings retained for that
+// type this session (or restored from disk), sized to the base canvas. Returns
+// one create-ref (caller adopts/releases) or null on failure.
+obs_source_t *CreateTransitionSource(const std::string &id)
+{
+	OBSDataAutoRelease settings;
+	const auto it = g_settingsByType.find(id);
+	if (it != g_settingsByType.end() && !it->second.empty()) {
+		settings = obs_data_create_from_json(it->second.c_str()); // null on bad json -> type defaults
+	}
+	obs_source_t *transition = obs_source_create(id.c_str(), DisplayName(id).c_str(), settings, nullptr);
+	if (!transition) {
+		return nullptr;
+	}
+	SizeToBaseCanvas(transition);
+	return transition;
+}
+
 void Persist()
 {
-	const json state = json{{"id", g_typeId}, {"durationMs", g_durationMs}};
+	json state = json{{"id", g_typeId}, {"durationMs", g_durationMs}};
+	if (g_transition) {
+		OBSDataAutoRelease settings = obs_source_get_settings(g_transition);
+		const char *sj = settings ? obs_data_get_json(settings) : nullptr;
+		if (sj) {
+			try {
+				state["settings"] = json::parse(sj);
+			} catch (const std::exception &) {
+				// Leave settings out on the rare serialize/parse failure.
+			}
+		}
+	}
 	Bridge::WriteJsonString(kStoreFile, kStoreKey, state.dump());
 }
 
@@ -81,6 +131,10 @@ void LoadPersisted()
 		if (state.contains("durationMs") && state["durationMs"].is_number_integer()) {
 			g_durationMs = std::min(state["durationMs"].get<uint32_t>(), kMaxDurationMs);
 		}
+		// Absent settings key (old store) -> cache stays empty -> defaults, as before.
+		if (state.contains("settings") && state["settings"].is_object()) {
+			g_settingsByType[g_typeId] = state["settings"].dump();
+		}
 	} catch (const std::exception &) {
 		g_typeId = kDefaultId;
 		g_durationMs = kDefaultDurationMs;
@@ -96,14 +150,14 @@ void Init()
 		g_typeId = kDefaultId;
 	}
 
-	// obs_source_create yields one ref; g_transition adopts it. Channel 0 takes
-	// its own ref via obs_set_output_source, so we never release the create-ref.
-	obs_source_t *transition = obs_source_create(g_typeId.c_str(), DisplayName(g_typeId).c_str(), nullptr, nullptr);
+	// obs_source_create (inside CreateTransitionSource) yields one ref; g_transition
+	// adopts it. Channel 0 takes its own ref via obs_set_output_source, so we never
+	// release the create-ref. Seeded with the persisted settings for this type.
+	obs_source_t *transition = CreateTransitionSource(g_typeId);
 	if (!transition) {
 		HostLog("[transition] failed to create '" + g_typeId + "'");
 		return;
 	}
-	SizeToBaseCanvas(transition);
 
 	// Wrap whatever scene Load/CreateDefaultScene bound to channel 0, with no
 	// animation, then rebind the channel to the transition.
@@ -183,12 +237,14 @@ bool SetCurrentType(const std::string &id, std::string &error)
 		return false;
 	}
 
-	obs_source_t *transition = obs_source_create(id.c_str(), DisplayName(id).c_str(), nullptr, nullptr);
+	// Retain the outgoing type's live settings so a later swap back restores them,
+	// then create the new type seeded with its own retained/default settings.
+	CaptureActiveSettings();
+	obs_source_t *transition = CreateTransitionSource(id);
 	if (!transition) {
 		error = "failed to create transition '" + id + "'";
 		return false;
 	}
-	SizeToBaseCanvas(transition);
 
 	// Carry the live program scene across the swap with no animation.
 	OBSSourceAutoRelease current = GetProgramScene();
@@ -200,6 +256,23 @@ bool SetCurrentType(const std::string &id, std::string &error)
 	HostLog("[transition] type -> '" + g_typeId + "'");
 	Persist();
 	return true;
+}
+
+obs_source_t *GetActiveTransition()
+{
+	// Hand out a counted ref off the same internal pointer Current/SetCurrentType
+	// operate on; the caller releases it (obs_source_get_ref is null-safe on a
+	// source being destroyed). Mirrors GetProgramScene's ref discipline.
+	return g_transition ? obs_source_get_ref(g_transition) : nullptr;
+}
+
+void SaveActiveSettings()
+{
+	// Flush the active transition's live settings into the session cache (for a
+	// type round-trip) and to disk (for a restart). Called after a properties
+	// edit on the "transition" kind lands via obs_source_update.
+	CaptureActiveSettings();
+	Persist();
 }
 
 void SetDuration(uint32_t durationMs)

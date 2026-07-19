@@ -4245,6 +4245,25 @@ const PropertyKind kPropertyKinds[] = {
 		[](void *obj) { obs_source_release(static_cast<obs_source_t *>(obj)); },
 	},
 	{
+		// The single active program transition (scene/transitions.cpp) is an
+		// obs_source_t, so reuse the source property/update ops. `ref` is ignored --
+		// there is exactly one instance -- and resolve hands out an addref'd source
+		// the release lambda balances; null (no active transition) surfaces a clean
+		// error via ResolvePropertyTarget's not-found path.
+		"transition",
+		[](const std::string &) -> void * { return Transitions::GetActiveTransition(); },
+		[](void *obj) -> obs_properties_t * { return obs_source_properties(static_cast<obs_source_t *>(obj)); },
+		[](void *obj) -> obs_data_t * { return obs_source_get_settings(static_cast<obs_source_t *>(obj)); },
+		[](void *obj, obs_data_t *settings) {
+			obs_source_update(static_cast<obs_source_t *>(obj), settings);
+			// Persist the edit (session cache + disk) so it survives a type round-trip
+			// and a restart. properties.defaults also routes through this lambda, so a
+			// Restore Defaults on the transition persists the cleared settings too.
+			Transitions::SaveActiveSettings();
+		},
+		[](void *obj) { obs_source_release(static_cast<obs_source_t *>(obj)); },
+	},
+	{
 		// A filter is an obs_source_t (type FILTER) in the global uuid registry, so
 		// resolve it by uuid and reuse the source property/update ops.
 		"filter",
@@ -4702,8 +4721,8 @@ bool ResolvePropertyTarget(const json &params, const PropertyKind *&kind, void *
 {
 	const std::string kindName = OptString(params, "kind");
 	const std::string ref = OptString(params, "ref");
-	if (kindName.empty() || ref.empty()) {
-		error = "properties requires non-empty 'kind' and 'ref'";
+	if (kindName.empty()) {
+		error = "properties requires a non-empty 'kind'";
 		return false;
 	}
 	kind = FindPropertyKind(kindName);
@@ -4711,6 +4730,8 @@ bool ResolvePropertyTarget(const json &params, const PropertyKind *&kind, void *
 		error = "unsupported properties kind: " + kindName;
 		return false;
 	}
+	// An empty `ref` is legal for single-instance kinds (transition); name/uuid
+	// kinds resolve it to null below and get the clean not-found error.
 	obj = kind->resolve(ref);
 	if (!obj) {
 		error = "no " + kindName + " named '" + ref + "'";

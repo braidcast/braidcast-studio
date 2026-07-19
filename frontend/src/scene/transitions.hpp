@@ -47,6 +47,17 @@ std::vector<std::pair<std::string, std::string>> TypeList();
 // The active transition's id, display name, and configured duration (ms).
 void Current(std::string &id, std::string &name, uint32_t &durationMs);
 
+// The active transition source itself, addref'd (caller releases) or null when
+// none exists. Exposes the transition's configurable settings (Stinger path,
+// Fade-to-Color color, Luma-Wipe image) to the properties bridge; the wrapped
+// program scene is unaffected. Single instance -- there is no ref to select.
+obs_source_t *GetActiveTransition();
+
+// Persist the active transition's current settings (session cache + disk store)
+// so a configured Stinger/Fade-to-Color/Luma-Wipe survives a type round-trip and
+// an app restart. Call after a properties edit lands on the active transition.
+void SaveActiveSettings();
+
 // Swap the active transition to `id`, preserving the wrapped scene, and persist.
 // No-op success when `id` is already active. Returns false and fills `error`
 // when `id` is not a registered transition type.

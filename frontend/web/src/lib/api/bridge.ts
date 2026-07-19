@@ -102,7 +102,7 @@ export interface ExistingSource {
 
 /** Editable-object kind a property set belongs to. "filter" addresses a filter
  * by its uuid (the ref); the others address their object by name/id. */
-export type PropertyKind = "source" | "encoder" | "service" | "output" | "filter";
+export type PropertyKind = "source" | "encoder" | "service" | "output" | "filter" | "transition";
 
 /** One item in a list (combo/radio) property. */
 export interface PropertyListItem {

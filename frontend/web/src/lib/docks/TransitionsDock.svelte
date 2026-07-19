@@ -1,6 +1,7 @@
 <script lang="ts">
   import { obs, type TransitionType, type TransitionState } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
+  import PropertiesModal from "$lib/properties/PropertiesModal.svelte";
 
   // The active scene transition: a type dropdown + a duration (ms) field, wired
   // to transitionTypes.list / transitions.getCurrent / setCurrent / setDuration
@@ -12,11 +13,30 @@ import { EV } from "$lib/utils/eventNames";
   let types = $state<TransitionType[]>([]);
   let current = $state<TransitionState | null>(null);
   let error = $state<string | null>(null);
+  // Whether the active transition exposes any configurable properties. Fade/Cut
+  // have none, so the Properties affordance is gated off for them; Stinger,
+  // Fade-to-Color and Luma-Wipe report props and enable it.
+  let hasProps = $state(false);
+  let showProps = $state(false);
+
+  // Re-evaluate hasProps for whatever transition is now active. Called after the
+  // native state settles (initial load, transitions.changed, a committed type
+  // switch) so it reads the current transition's real property set, not the
+  // pre-swap one.
+  async function checkProps() {
+    try {
+      const res = await obs.call("properties.get", { kind: "transition", ref: "" });
+      hasProps = res.props.length > 0;
+    } catch {
+      hasProps = false;
+    }
+  }
 
   async function refresh() {
     try {
       current = await obs.call("transitions.getCurrent");
       error = null;
+      void checkProps();
     } catch (e) {
       error = (e as Error).message;
     }
@@ -29,6 +49,7 @@ import { EV } from "$lib/utils/eventNames";
         types = t;
         current = c;
         error = null;
+        void checkProps();
       } catch (e) {
         error = (e as Error).message;
       }
@@ -50,6 +71,7 @@ import { EV } from "$lib/utils/eventNames";
       current.id = res.id;
       current.name = res.name;
       error = null;
+      void checkProps();
     } catch (err) {
       error = (err as Error).message;
       void refresh(); // revert to the authoritative value
@@ -109,9 +131,27 @@ import { EV } from "$lib/utils/eventNames";
           onkeydown={onDurationKey}
         />
       </label>
+
+      <button
+        class="control btn"
+        disabled={!hasProps}
+        title={hasProps ? "Edit transition properties" : "This transition has no properties"}
+        onclick={() => (showProps = true)}
+      >
+        Properties…
+      </button>
     </div>
   {/if}
 </div>
+
+{#if showProps && current}
+  <PropertiesModal
+    kind="transition"
+    ref=""
+    title={"Properties — " + current.name}
+    onClose={() => (showProps = false)}
+  />
+{/if}
 
 <style>
   .form {
@@ -143,5 +183,16 @@ import { EV } from "$lib/utils/eventNames";
   .control:focus {
     outline: none;
     border-color: var(--color-accent);
+  }
+  .btn {
+    cursor: pointer;
+    text-align: center;
+  }
+  .btn:hover:not(:disabled) {
+    border-color: var(--color-accent);
+  }
+  .btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 </style>
