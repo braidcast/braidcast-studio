@@ -43,6 +43,10 @@ import { EV } from "$lib/utils/eventNames";
   let error = $state<string | null>(null);
   let menu = $state<{ x: number; y: number; items: (ContextMenuItem | null)[] } | null>(null);
   let propsForSource = $state<string | null>(null);
+  // Inline rename: keyed by source uuid (mixer rows have no scene-item id). The
+  // reload on audio.changed carries the new name back into `sources`.
+  let renamingUuid = $state<string | null>(null);
+  let renameTo = $state("");
   // Monitoring type per source uuid. Not in audio.list, so read just-in-time from the
   // same place AdvAudioDialog reads it (audio.getAdvanced) and refreshed on each load.
   let monitoring = $state<Record<string, AudioMonitoringType>>({});
@@ -183,12 +187,48 @@ import { EV } from "$lib/utils/eventNames";
     }
   }
 
+  function focusOnMount(node: HTMLInputElement) {
+    node.focus();
+    node.select();
+  }
+
+  function beginRename(src: AudioSource) {
+    renamingUuid = src.uuid;
+    renameTo = src.name;
+  }
+
+  // Rename the source by uuid (mixer rows carry no scene-item id). renameByName
+  // applies the same clash rule as sources.rename and emits audio.changed, which
+  // reloads the list with the new name.
+  async function commitRename() {
+    const uuid = renamingUuid;
+    const name = renameTo.trim();
+    renamingUuid = null;
+    if (!uuid || !name) {
+      return;
+    }
+    try {
+      await obs.call("sources.renameByName", { uuid, name });
+    } catch (e) {
+      error = (e as Error).message;
+    }
+  }
+
+  function onRenameKey(e: KeyboardEvent) {
+    if (e.key === "Enter") {
+      void commitRename();
+    } else if (e.key === "Escape") {
+      renamingUuid = null;
+    }
+  }
+
   function openMenu(e: MouseEvent, src: AudioSource) {
     e.preventDefault();
     menu = {
       x: e.clientX,
       y: e.clientY,
       items: [
+        { label: "Rename", action: () => beginRename(src) },
         { label: "Properties", action: () => (propsForSource = src.name) },
         { label: "Filters", action: () => openFilters(src.name, "audio") },
         { label: "Advanced Audio Properties", action: () => openAdvAudio(src.name, src.name) },
@@ -223,7 +263,11 @@ import { EV } from "$lib/utils/eventNames";
         {@const mon = monitoring[src.uuid] ?? "none"}
         <li class="row" class:muted={src.muted} oncontextmenu={(e) => openMenu(e, src)}>
           <div class="top">
-            <span class="name" title={src.name}>{src.name}</span>
+            {#if renamingUuid === src.uuid}
+              <input class="inline" bind:value={renameTo} onkeydown={onRenameKey} onblur={commitRename} use:focusOnMount />
+            {:else}
+              <span class="name" title={src.name}>{src.name}</span>
+            {/if}
             <span class="db">{fmtDb(src.volumeDb)} dB</span>
           </div>
           <div class="meter" aria-hidden="true">
@@ -340,6 +384,17 @@ import { EV } from "$lib/utils/eventNames";
   .row.muted .name {
     color: var(--color-muted);
     text-decoration: line-through;
+  }
+  /* Inline rename field, matching the Sources/Scenes dock rename affordance. */
+  .inline {
+    flex: 1;
+    min-width: 0;
+    background: var(--color-base);
+    border: var(--border-weight) solid var(--color-accent);
+    color: var(--color-text);
+    font-family: var(--font-ui);
+    font-size: 11px;
+    padding: 3px 5px;
   }
   .db {
     flex-shrink: 0;

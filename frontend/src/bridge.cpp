@@ -3847,6 +3847,72 @@ bool MethodSourcesDuplicate(const json &params, json &result, std::string &error
 	return true;
 }
 
+// Shared uuid-preferred / name-fallback source resolver (defined near the audio
+// handlers). Reused here so name-addressed duplicate/rename resolve identically.
+obs_source_t *ResolveAudioSource(const json &params);
+
+// Duplicate a source addressed by uuid/name and add the copy to the TARGET scene
+// (powers cross-scene "Paste (Duplicate)"). params: {uuid?|source?, scene, canvas?,
+// name?}. Combines sources.duplicate's uniquified copy with sources.addExisting's
+// add-to-target-scene + undo. The copy lands at the scene's default transform; the
+// caller applies any carried transform/appearance afterward. Returns {id, source}.
+bool MethodSourcesDuplicateInto(const json &params, json &result, std::string &error)
+{
+	OBSSourceAutoRelease src = ResolveAudioSource(params); // addref'd or null; uuid|name
+	if (!src) {
+		error = "sources.duplicateInto: no source for the given 'uuid'/'source'";
+		return false;
+	}
+	obs_source_t *sceneSource = ResolveTargetScene(params); // addref'd
+	if (!sceneSource) {
+		error = "no scene to add the duplicate to";
+		return false;
+	}
+	obs_scene_t *scene = obs_scene_from_source(sceneSource);
+
+	// New name: explicit `name` if given, else "<src> copy"; either way uniquified.
+	std::string base = OptString(params, "name");
+	if (base.empty()) {
+		const char *srcName = obs_source_get_name(src);
+		base = std::string(srcName ? srcName : "Source") + " copy";
+	}
+	const std::string uniqueName = UniqueSourceName(base);
+
+	OBSSourceAutoRelease dup = obs_source_duplicate(src, uniqueName.c_str(), false); // create-ref
+	if (!dup) {
+		obs_source_release(sceneSource);
+		error = "obs_source_duplicate failed";
+		return false;
+	}
+
+	obs_sceneitem_t *newItem = obs_scene_add(scene, dup); // scene takes its own ref
+	const int64_t newId = newItem ? obs_sceneitem_get_id(newItem) : 0;
+
+	// Capture undo state while the scene + item are still held (identical to
+	// sources.duplicate / sources.addExisting): undo removes by source uuid, redo
+	// re-adds from the snapshot. `dup`'s create-ref is dropped at scope exit; the
+	// scene holds its own ref via obs_scene_add.
+	json before, after;
+	if (newItem) {
+		before = StateBase(params, dup);
+		after = CaptureItemSnapshot(params, sceneSource, newItem);
+	}
+
+	EmitSceneItemsChanged(sceneSource, ResolveCanvasTarget(params).uuid);
+
+	if (!newItem) {
+		obs_source_release(sceneSource);
+		error = "obs_scene_add failed";
+		return false;
+	}
+	PersistSourceState(sceneSource);
+	obs_source_release(sceneSource);
+	ObsBootstrap::Undo().AddAction("Add " + uniqueName, kRemoveItemBySource, kAddItemFromSnapshot, before.dump(),
+				       after.dump());
+	result = json{{"id", newId}, {"source", uniqueName}};
+	return true;
+}
+
 // Group existing scene items into a new group source (powers "Group"). params:
 // {scene?, canvas?, ids:[int...], name?}. Resolves each id to an item, skipping
 // any that don't resolve or are themselves groups (libobs forbids nesting), and
@@ -3902,6 +3968,46 @@ bool MethodSceneItemsGroup(const json &params, json &result, std::string &error)
 	if (!group) {
 		obs_source_release(sceneSource);
 		error = "obs_scene_insert_group failed";
+		return false;
+	}
+	const int64_t groupId = obs_sceneitem_get_id(group);
+	obs_source_t *groupSrc = obs_sceneitem_get_source(group); // borrowed
+	const char *groupUuid = groupSrc ? obs_source_get_uuid(groupSrc) : nullptr;
+	const std::string uuid = groupUuid ? groupUuid : "";
+
+	CommitSceneItemChange(params, sceneSource);
+	obs_source_release(sceneSource);
+	result = json{{"id", groupId}, {"source", uuid}};
+	return true;
+}
+
+// Create a new EMPTY group in the target scene (powers empty-area "New Group").
+// params: {scene?, canvas?, name?}. Unlike sceneItems.group (which wraps existing
+// ids and rejects an empty list), this adds a fresh empty group via
+// obs_scene_add_group. Returns {id, source} = the new group item's id + the group
+// source's uuid. NOT wired into undo, for the same reason as sceneItems.group.
+bool MethodSceneItemsCreateGroup(const json &params, json &result, std::string &error)
+{
+	obs_source_t *sceneSource = ResolveTargetScene(params); // addref'd
+	if (!sceneSource) {
+		error = "no scene";
+		return false;
+	}
+	obs_scene_t *scene = obs_scene_from_source(sceneSource);
+
+	std::string base = OptString(params, "name");
+	if (base.empty()) {
+		base = "Group";
+	}
+	const std::string groupName = UniqueSourceName(base);
+
+	// The returned group item is owned by the scene (borrowed, like obs_scene_add) --
+	// do NOT release it. obs_scene_add_group delegates to obs_scene_insert_group with
+	// no members, so the ref semantics match sceneItems.group exactly.
+	obs_sceneitem_t *group = obs_scene_add_group(scene, groupName.c_str());
+	if (!group) {
+		obs_source_release(sceneSource);
+		error = "obs_scene_add_group failed";
 		return false;
 	}
 	const int64_t groupId = obs_sceneitem_get_id(group);
@@ -4006,6 +4112,42 @@ bool MethodSourcesRename(const json &params, json &result, std::string &error)
 	obs_source_release(sceneSource);
 	RecordUndo("Rename", ApplyRename, before, after);
 	result = json{{"id", id}, {"source", name}};
+	return true;
+}
+
+// Rename a source addressed by uuid/name rather than a scene-item id (powers the
+// audio mixer's Rename, whose rows are sources without a scene-item locator, and
+// whose global audio devices are not scene items at all). params: {uuid?|source?,
+// name}. Resolves uuid-first via the shared resolver and applies the SAME
+// different-source clash rule as sources.rename. Emits audio.changed so the mixer
+// picks up the new name. Not scene-scoped, so it uses neither the scene-item undo
+// (ApplyRename resolves by scene item) nor EmitSceneItemsChanged. Returns {source}.
+bool MethodSourcesRenameByName(const json &params, json &result, std::string &error)
+{
+	std::string name;
+	if (!RequireStr(params, "sources.renameByName", "name", name, error)) {
+		return false;
+	}
+	OBSSourceAutoRelease src = ResolveAudioSource(params); // addref'd or null; uuid|name
+	if (!src) {
+		error = "sources.renameByName: no source for the given 'uuid'/'source'";
+		return false;
+	}
+	const char *curName = obs_source_get_name(src);
+	if (curName && name == curName) {
+		result = json{{"source", name}};
+		return true;
+	}
+	// Reject a clash with a DIFFERENT existing source (same source is fine above) --
+	// identical rule to sources.rename.
+	OBSSourceAutoRelease clash = obs_get_source_by_name(name.c_str()); // addref'd or null
+	if (clash && clash.Get() != src.Get()) {
+		error = "a source named '" + name + "' already exists";
+		return false;
+	}
+	obs_source_set_name(src, name.c_str());
+	EmitEvent(EventNames::kAudioChanged, json::object());
+	result = json{{"source", name}};
 	return true;
 }
 
@@ -9904,6 +10046,7 @@ void Init()
 		{"sceneItems.setBlendingMethod", MethodSceneItemsSetBlendingMethod},
 		{"sceneItems.setColor", MethodSceneItemsSetColor},
 		{"sceneItems.group", MethodSceneItemsGroup},
+		{"sceneItems.createGroup", MethodSceneItemsCreateGroup},
 		{"sceneItems.ungroup", MethodSceneItemsUngroup},
 		{"screenshot.takeProgram", MethodScreenshotTakeProgram},
 		{"screenshot.takeSource", MethodScreenshotTakeSource},
@@ -9913,7 +10056,9 @@ void Init()
 		{"sources.addExisting", MethodSourcesAddExisting},
 		{"sources.thumbnail", MethodSourcesThumbnail},
 		{"sources.duplicate", MethodSourcesDuplicate},
+		{"sources.duplicateInto", MethodSourcesDuplicateInto},
 		{"sources.rename", MethodSourcesRename},
+		{"sources.renameByName", MethodSourcesRenameByName},
 		{"sources.findMissing", MethodSourcesFindMissing},
 		{"sources.relinkMissing", MethodSourcesRelinkMissing},
 		{"sources.getDeinterlace", MethodSourcesGetDeinterlace},

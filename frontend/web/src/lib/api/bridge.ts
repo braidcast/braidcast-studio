@@ -1254,6 +1254,8 @@ export interface ObsMethods {
   "sceneItems.reorder": { id: number; direction: ReorderDirection };
   // Group selected items into a new group / dissolve a group (neither is undoable yet).
   "sceneItems.group": { id: number; source: string };
+  // Create a new empty group in the target scene ({ scene?, canvas?, name? }).
+  "sceneItems.createGroup": { id: number; source: string };
   "sceneItems.ungroup": { ungrouped: boolean };
   // Numeric transform read/edit (Edit Transform dialog). getTransform loads the
   // full geometry; setTransform applies a partial (send only changed fields) and
@@ -1268,6 +1270,10 @@ export interface ObsMethods {
   "sources.create": { id: number; source: string };
   // Rename a scene item's underlying source (canvas/scene optional, default current).
   "sources.rename": { id: number; source: string };
+  // Rename a source addressed by uuid/name, not a scene-item id ({ uuid?|source?,
+  // name }) — for the audio mixer, whose rows have no scene-item locator. Echoes
+  // the new name; emits audio.changed.
+  "sources.renameByName": { source: string };
   "sources.listExisting": ExistingSource[];
   "sources.addExisting": { id: number; source: string };
   // Existing-source picker thumbnail: renders the named source standalone at a
@@ -1276,6 +1282,9 @@ export interface ObsMethods {
   "sources.thumbnail": { dataUri: string };
   // Duplicate the source of a scene item in place (undo-recorded).
   "sources.duplicate": { id: number; source: string };
+  // Duplicate a source (by uuid/name) into a TARGET scene ({ uuid?|source?, scene,
+  // canvas?, name? }) — for cross-scene paste-duplicate (undo-recorded).
+  "sources.duplicateInto": { id: number; source: string };
   // Open a native Interact window forwarding input to an interactive source.
   "sources.interact": { ok: boolean; interactId: number };
   // Missing media repair. findMissing lists sources whose backing file is gone;

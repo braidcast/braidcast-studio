@@ -107,12 +107,11 @@ export async function pasteReference(target: SceneTarget): Promise<void> {
   await applyItemState({ ...target, id: res.id }, src.state);
 }
 
-// Paste (Duplicate): duplicate the copied item's SOURCE (an independent copy) via
-// the backend's item-id path (sources.duplicate copies the source + transform but
-// NOT the scene-item appearance fields), then apply the carried state. The copy
-// lands in the copied item's own scene/canvas — that is the current scene in the
-// ordinary copy-then-paste-here flow. Falls back to a reference paste when the copy
-// carries no locator (a bare/legacy clipboard entry).
+// Paste (Duplicate): duplicate the copied item's SOURCE (an independent copy) into
+// the PASTE TARGET's scene/canvas via the name-based sources.duplicateInto (copies
+// the source but NOT the scene-item appearance fields), then apply the carried state
+// onto the new item so it matches the original. Falls back to a reference paste when
+// the copy carries no locator (a bare/legacy clipboard entry).
 export async function pasteDuplicate(target: SceneTarget): Promise<void> {
   const src = clipboard.source;
   if (!src || !target.scene) {
@@ -122,10 +121,10 @@ export async function pasteDuplicate(target: SceneTarget): Promise<void> {
     await pasteReference(target);
     return;
   }
-  // sources.duplicate is item-id based, so the copy lands in the copied item's own
-  // scene/canvas (its current scene in the ordinary copy-then-paste-here flow); a
-  // cross-scene paste-duplicate landing there is a known limitation pending a
-  // name-based duplicate-into-scene bridge method (separate pending-bridge pass).
-  const dup = await obs.call("sources.duplicate", { ...src.origin });
-  await applyItemState({ canvas: src.origin.canvas, scene: src.origin.scene, id: dup.id }, src.state);
+  const dup = await obs.call("sources.duplicateInto", {
+    source: src.ref,
+    scene: target.scene,
+    canvas: target.canvas,
+  });
+  await applyItemState({ ...target, id: dup.id }, src.state);
 }

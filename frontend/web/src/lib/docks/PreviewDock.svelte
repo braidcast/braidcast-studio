@@ -206,12 +206,16 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   }
 
   // Empty-area menu (right-click with no source under the cursor). Add Source + Paste
-  // reuse the global add-source modal + clipboard paste. "New Group" is intentionally
-  // absent: there is no empty-group-create bridge method (sceneItems.group requires
-  // existing ids), so it can't be wired without inventing one.
+  // reuse the global add-source modal + clipboard paste; New Group creates an empty
+  // group via sceneItems.createGroup (global channel-0 path, canvas omitted).
   function buildEmptyItems(scene: string | null): (ContextMenuItem | null)[] {
     return [
       { label: "Add Source", disabled: !scene, action: () => beginAddSource(scene) },
+      {
+        label: "New Group",
+        disabled: !scene,
+        action: () => void obs.call("sceneItems.createGroup", { scene }).catch(warn("sceneItems.createGroup")),
+      },
       {
         label: "Paste",
         disabled: !clipboard.source,
