@@ -12,6 +12,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   import PropertiesModal from "$lib/properties/PropertiesModal.svelte";
   import AddSourceModal from "$lib/dialogs/add-source/AddSourceModal.svelte";
   import { clipboard } from "$lib/stores/clipboardStore.svelte";
+  import { copyItem, pasteReference, pasteDuplicate } from "$lib/stores/clipboardItemState";
   import { openFilters } from "$lib/dialogs/filterDialogOpener.svelte";
   import { transformMenu } from "$lib/menus/transformMenu";
   import { scaleFilterMenu } from "$lib/menus/scaleFilterMenu";
@@ -156,19 +157,20 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
         label: "Copy",
         disabled: !p.source,
         action: () => {
-          if (p.source) {
-            clipboard.source = { ref: p.source, name: p.source };
+          if (it && p.id != null) {
+            void copyItem({ scene: p.scene, id: p.id }, it);
           }
         },
       },
       {
         label: "Paste",
         disabled: !clipboard.source,
-        action: () => {
-          if (clipboard.source && p.scene) {
-            void obs.call("sources.addExisting", { scene: p.scene, name: clipboard.source.ref }).catch(warn("sources.addExisting"));
-          }
-        },
+        action: () => void pasteReference({ scene: p.scene }).catch(warn("paste")),
+      },
+      {
+        label: "Paste (Duplicate)",
+        disabled: !clipboard.source,
+        action: () => void pasteDuplicate({ scene: p.scene }).catch(warn("paste")),
       },
       {
         label: "Copy Transform",
@@ -213,11 +215,12 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
       {
         label: "Paste",
         disabled: !clipboard.source,
-        action: () => {
-          if (clipboard.source && scene) {
-            void obs.call("sources.addExisting", { scene, name: clipboard.source.ref }).catch(warn("sources.addExisting"));
-          }
-        },
+        action: () => void pasteReference({ scene }).catch(warn("paste")),
+      },
+      {
+        label: "Paste (Duplicate)",
+        disabled: !clipboard.source,
+        action: () => void pasteDuplicate({ scene }).catch(warn("paste")),
       },
     ];
   }

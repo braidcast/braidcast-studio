@@ -39,6 +39,7 @@
   import { obs, type TransformAction, type ReorderDirection } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
   import { clipboard } from "$lib/stores/clipboardStore.svelte";
+  import { copyItem, pasteReference } from "$lib/stores/clipboardItemState";
   import { sourceSelection } from "$lib/stores/sourceSelectionStore.svelte";
   import Toast from "$lib/ui/Toast.svelte";
   import { showToast } from "$lib/stores/toastStore.svelte";
@@ -191,20 +192,19 @@ import { EV } from "$lib/utils/eventNames";
       e.preventDefault();
       undoStore.redo();
     } else if (key === "c" && !e.shiftKey) {
-      // Copy the globally-selected source as a reference (name) for later paste.
+      // Copy the globally-selected source, carrying its full item state (§1.7).
       const it = sourceSelection.item;
       if (it?.source) {
         e.preventDefault();
-        clipboard.source = { ref: it.source, name: it.source };
+        void copyItem({ scene: sourceSelection.scene, id: it.id }, it);
       }
     } else if (key === "v" && !e.shiftKey) {
-      // Paste a reference of the copied source into the global current scene.
+      // Paste a reference of the copied source into the global current scene, then
+      // re-apply the carried item state (transform/blend/color/visibility/scale).
       if (clipboard.source && sourceSelection.scene) {
         e.preventDefault();
-        void callOrToast(
-          "sources.addExisting",
-          { scene: sourceSelection.scene, name: clipboard.source.ref },
-          "Paste failed",
+        void pasteReference({ scene: sourceSelection.scene }).catch((err) =>
+          showToast("Paste failed: " + (err as Error).message, "paste"),
         );
       }
     } else if (key === "c" && e.shiftKey) {

@@ -16,6 +16,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   import { isPreviewDisabled, setPreviewDisabled } from "$lib/docking/previewDisabledStore.svelte";
   import ContextMenu, { type ContextMenuItem } from "$lib/menus/ContextMenu.svelte";
   import { clipboard } from "$lib/stores/clipboardStore.svelte";
+  import { copyItem, pasteReference, pasteDuplicate } from "$lib/stores/clipboardItemState";
   import { openFilters } from "$lib/dialogs/filterDialogOpener.svelte";
   import { transformMenu } from "$lib/menus/transformMenu";
   import { scaleFilterMenu } from "$lib/menus/scaleFilterMenu";
@@ -525,16 +526,18 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   // lands in this canvas's current scene. Filter copy/paste keys off the source
   // name and so shares the same clipboard slots as the global SourcesDock.
   function copySource(item: SceneItem) {
-    if (item.source) {
-      clipboard.source = { ref: item.source, name: item.source };
-    }
+    void copyItem({ canvas: canvasUuid, scene: currentScene, id: item.id }, item);
   }
   async function pasteSource() {
-    if (!clipboard.source || !currentScene) {
-      return;
-    }
     try {
-      await obs.call("sources.addExisting", { canvas: canvasUuid, scene: currentScene, name: clipboard.source.ref });
+      await pasteReference({ canvas: canvasUuid, scene: currentScene });
+    } catch (e) {
+      report(e);
+    }
+  }
+  async function pasteDuplicateSource() {
+    try {
+      await pasteDuplicate({ canvas: canvasUuid, scene: currentScene });
     } catch (e) {
       report(e);
     }
@@ -724,6 +727,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
         null,
         { label: "Copy", disabled: !item.source, action: () => copySource(item) },
         { label: "Paste", disabled: !clipboard.source, action: () => void pasteSource() },
+        { label: "Paste (Duplicate)", disabled: !clipboard.source, action: () => void pasteDuplicateSource() },
         { label: "Duplicate", action: () => void duplicateItem(item) },
         null,
         { label: "Copy Filters", disabled: !item.source, action: () => void copyFilters(item) },
@@ -829,6 +833,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     return [
       { label: "Add Source", disabled: !currentScene, action: () => (addingSource = true) },
       { label: "Paste", disabled: !clipboard.source, action: () => void pasteSource() },
+      { label: "Paste (Duplicate)", disabled: !clipboard.source, action: () => void pasteDuplicateSource() },
     ];
   }
 
@@ -1151,7 +1156,9 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
                 use:focusOnMount
               />
             {:else}
-              <button class="es-label" onclick={() => selectItem(item)}>{item.source ?? "(unnamed)"}</button>
+              <button class="es-label" onclick={() => selectItem(item)} ondblclick={() => openProperties(item)}
+                >{item.source ?? "(unnamed)"}</button
+              >
             {/if}
             <button
               class="es-lock"

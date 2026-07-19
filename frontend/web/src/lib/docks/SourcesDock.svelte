@@ -8,6 +8,7 @@ import { EV } from "$lib/utils/eventNames";
   import { suspendPreview } from "$lib/stores/previewGate.svelte";
   import ContextMenu, { type ContextMenuItem } from "$lib/menus/ContextMenu.svelte";
   import { clipboard } from "$lib/stores/clipboardStore.svelte";
+  import { copyItem, pasteReference, pasteDuplicate } from "$lib/stores/clipboardItemState";
   import { sourceSelection } from "$lib/stores/sourceSelectionStore.svelte";
   import { openFilters } from "$lib/dialogs/filterDialogOpener.svelte";
   import { transformMenu } from "$lib/menus/transformMenu";
@@ -298,17 +299,20 @@ import { EV } from "$lib/utils/eventNames";
   // ---- clipboard actions (copy/paste/duplicate/filters/transform/group) ------
   // All target the global channel-0 path (no canvas); paste lands in currentScene.
   function copySource(item: SceneItem) {
-    if (item.source) {
-      clipboard.source = { ref: item.source, name: item.source };
-    }
+    void copyItem({ scene: currentScene, id: item.id }, item);
   }
 
   async function pasteSource() {
-    if (!clipboard.source || !currentScene) {
-      return;
-    }
     try {
-      await obs.call("sources.addExisting", { scene: currentScene, name: clipboard.source.ref });
+      await pasteReference({ scene: currentScene });
+    } catch (e) {
+      report(e);
+    }
+  }
+
+  async function pasteDuplicateSource() {
+    try {
+      await pasteDuplicate({ scene: currentScene });
     } catch (e) {
       report(e);
     }
@@ -481,6 +485,7 @@ import { EV } from "$lib/utils/eventNames";
         null,
         { label: "Copy", disabled: !item.source, action: () => copySource(item) },
         { label: "Paste", disabled: !clipboard.source, action: () => void pasteSource() },
+        { label: "Paste (Duplicate)", disabled: !clipboard.source, action: () => void pasteDuplicateSource() },
         { label: "Duplicate", action: () => void duplicateItem(item) },
         null,
         { label: "Copy Filters", disabled: !item.source, action: () => void copyFilters(item) },
