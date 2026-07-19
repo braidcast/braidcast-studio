@@ -41,6 +41,12 @@ import { EV } from "$lib/utils/eventNames";
   let sources = $state<AudioSource[]>([]);
   let loaded = $state(false);
   let error = $state<string | null>(null);
+  // Hidden rows (audio.setHidden) drop out of the list by default; the show-hidden
+  // toggle reveals them (dimmed) so they can be unhidden individually. audio.list
+  // already sorts pinned sources first, so the render order needs no client sort.
+  let showHidden = $state(false);
+  const hiddenCount = $derived(sources.filter((s) => s.hidden).length);
+  const visibleSources = $derived(showHidden ? sources : sources.filter((s) => !s.hidden));
   let menu = $state<{ x: number; y: number; items: (ContextMenuItem | null)[] } | null>(null);
   let propsForSource = $state<string | null>(null);
   // Inline rename: keyed by source uuid (mixer rows have no scene-item id). The
@@ -134,6 +140,40 @@ import { EV } from "$lib/utils/eventNames";
     try {
       const res = await obs.call("audio.setMuted", { uuid: src.uuid, muted: desired });
       src.muted = res.muted;
+    } catch (e) {
+      error = (e as Error).message;
+    }
+  }
+
+  // Mixer-state toggles. Each backend method emits audio.changed, so load() reloads
+  // the list (with the pinned-first order) -- no optimistic mutation needed.
+  async function setHidden(src: AudioSource, hidden: boolean) {
+    try {
+      await obs.call("audio.setHidden", { uuid: src.uuid, hidden });
+    } catch (e) {
+      error = (e as Error).message;
+    }
+  }
+
+  async function unhideAll() {
+    try {
+      await obs.call("audio.unhideAll");
+    } catch (e) {
+      error = (e as Error).message;
+    }
+  }
+
+  async function toggleVolumeLocked(src: AudioSource) {
+    try {
+      await obs.call("audio.setVolumeLocked", { uuid: src.uuid, locked: !src.volumeLocked });
+    } catch (e) {
+      error = (e as Error).message;
+    }
+  }
+
+  async function togglePinned(src: AudioSource) {
+    try {
+      await obs.call("audio.setPinned", { uuid: src.uuid, pinned: !src.pinned });
     } catch (e) {
       error = (e as Error).message;
     }
@@ -233,6 +273,10 @@ import { EV } from "$lib/utils/eventNames";
         { label: "Filters", action: () => openFilters(src.name, "audio") },
         { label: "Advanced Audio Properties", action: () => openAdvAudio(src.name, src.name) },
         null,
+        { label: "Hide", action: () => void setHidden(src, true) },
+        { label: "Lock Volume", checked: src.volumeLocked, action: () => void toggleVolumeLocked(src) },
+        { label: src.pinned ? "Unpin" : "Pin to top", action: () => void togglePinned(src) },
+        null,
         { label: "Copy Filters", action: () => void copyFilters(src) },
         { label: "Paste Filters", disabled: !clipboard.filters, action: () => void pasteFilters(src) },
       ],
@@ -252,17 +296,38 @@ import { EV } from "$lib/utils/eventNames";
     <p class="dock-msg err">{error}</p>
   {/if}
 
+  {#if hiddenCount > 0}
+    <div class="toolbar">
+      <button class="text-btn" title="Unhide all hidden sources" onclick={() => void unhideAll()}>
+        Unhide All ({hiddenCount})
+      </button>
+      <button
+        class="tool-btn"
+        class:active={showHidden}
+        title={showHidden ? "Hide hidden sources" : "Show hidden sources"}
+        aria-label={showHidden ? "Hide hidden sources" : "Show hidden sources"}
+        aria-pressed={showHidden}
+        onclick={() => (showHidden = !showHidden)}
+      >
+        <Icon name={showHidden ? "eye" : "eye-off"} size={13} />
+      </button>
+    </div>
+  {/if}
+
   {#if !loaded}
     <p class="dock-msg">Loading…</p>
   {:else if sources.length === 0}
     <p class="dock-msg">No active audio sources</p>
   {:else}
     <ul class="list">
-      {#each sources as src (src.uuid)}
+      {#each visibleSources as src (src.uuid)}
         {@const m = meters[src.uuid]}
         {@const mon = monitoring[src.uuid] ?? "none"}
-        <li class="row" class:muted={src.muted} oncontextmenu={(e) => openMenu(e, src)}>
+        <li class="row" class:muted={src.muted} class:hidden={src.hidden} oncontextmenu={(e) => openMenu(e, src)}>
           <div class="top">
+            {#if src.pinned}
+              <span class="pin" title="Pinned to top" aria-hidden="true"><Icon name="star-filled" size={11} /></span>
+            {/if}
             {#if renamingUuid === src.uuid}
               <input class="inline" bind:value={renameTo} onkeydown={onRenameKey} onblur={commitRename} use:focusOnMount />
             {:else}
@@ -311,6 +376,16 @@ import { EV } from "$lib/utils/eventNames";
                 />
               </svg>
             </button>
+            <button
+              class="tool-btn lock"
+              class:on={src.volumeLocked}
+              title={src.volumeLocked ? "Unlock Volume" : "Lock Volume"}
+              aria-label={src.volumeLocked ? "Unlock Volume" : "Lock Volume"}
+              aria-pressed={src.volumeLocked}
+              onclick={() => void toggleVolumeLocked(src)}
+            >
+              <Icon name={src.volumeLocked ? "lock" : "lock-open"} size={13} />
+            </button>
             <button class="tool-btn" title="Filters" aria-label="Filters" onclick={() => openFilters(src.name, "audio")}>
               <Icon name="sliders" size={13} />
             </button>
@@ -329,6 +404,7 @@ import { EV } from "$lib/utils/eventNames";
               max="1"
               step="0.01"
               value={src.deflection}
+              disabled={src.volumeLocked}
               aria-label="{src.name} volume"
               oninput={(e) => onFaderInput(src, e)}
             />
@@ -455,6 +531,44 @@ import { EV } from "$lib/utils/eventNames";
   }
   .mon.both {
     color: var(--color-live);
+  }
+  /* Volume-lock toggle: accent tint when locked (the fader is disabled alongside). */
+  .lock.on {
+    color: var(--color-accent);
+  }
+  /* Hide/Unhide header: text action + show-hidden eye toggle. */
+  .toolbar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px 0;
+  }
+  .text-btn {
+    flex: 1;
+    min-width: 0;
+    text-align: left;
+    background: none;
+    border: 0;
+    padding: 0;
+    cursor: pointer;
+    font-family: var(--font-ui);
+    font-size: 11px;
+    letter-spacing: var(--letter-spacing);
+    text-transform: var(--label-case);
+    color: var(--color-muted);
+  }
+  .text-btn:hover {
+    color: var(--color-accent);
+  }
+  /* Pinned marker before the source name. */
+  .pin {
+    flex-shrink: 0;
+    display: inline-flex;
+    color: var(--color-accent);
+  }
+  /* Hidden rows only render with the show-hidden toggle on; dim them so they read as hidden. */
+  .row.hidden {
+    opacity: 0.5;
   }
   .fader {
     flex: 1;

@@ -6559,17 +6559,118 @@ bool MethodStatsGet(const json & /*params*/, json &result, std::string & /*error
 // per-source setters can share the one uuid|name resolver.
 obs_source_t *ResolveAudioSource(const json &params);
 
+// --- per-source mixer flags (hide / lock-volume / pin) -----------------------
+// Three booleans stored in each audio source's private settings (persist with the
+// scene collection via PersistSourceState), surfaced on every audio.list row and
+// mutated by audio.set{Hidden,VolumeLocked,Pinned}/audio.unhideAll. Reuses
+// ResolveAudioSource + the private-settings idiom; each mutation emits audio.changed.
+namespace {
+constexpr const char *kMixerHiddenKey = "mixer_hidden";
+constexpr const char *kVolumeLockedKey = "volume_locked";
+constexpr const char *kMixerPinnedKey = "mixer_pinned";
+} // namespace
+
+// Read one mixer flag from a source's private settings (false when absent/null).
+bool GetSourceMixerFlag(obs_source_t *s, const char *key)
+{
+	OBSDataAutoRelease priv = obs_source_get_private_settings(s);
+	return priv ? obs_data_get_bool(priv, key) : false;
+}
+
+// Shared setter for the three mixer flags: validate the boolean field, resolve the
+// source (uuid|name), write the private-settings key, persist, echo, emit changed.
+// setHidden/setVolumeLocked/setPinned differ only by (key, field), so they share this.
+bool SetSourceMixerFlag(const json &params, const char *method, const char *key, const char *field, json &result,
+			std::string &error)
+{
+	if (!params.is_object() || !params.contains(field) || !params[field].is_boolean()) {
+		error = std::string(method) + " requires a boolean '" + field + "'";
+		return false;
+	}
+	OBSSourceAutoRelease s = ResolveAudioSource(params);
+	if (!s) {
+		error = std::string(method) + ": no source for the given 'uuid'/'source'";
+		return false;
+	}
+	const bool value = params[field].get<bool>();
+	{
+		OBSDataAutoRelease priv = obs_source_get_private_settings(s);
+		obs_data_set_bool(priv, key, value);
+	}
+	PersistSourceState(s);
+	result = json{{"uuid", obs_source_get_uuid(s)}, {field, value}};
+	EmitEvent(EventNames::kAudioChanged, json::object());
+	return true;
+}
+
+bool MethodAudioSetHidden(const json &params, json &result, std::string &error)
+{
+	return SetSourceMixerFlag(params, "audio.setHidden", kMixerHiddenKey, "hidden", result, error);
+}
+
+bool MethodAudioSetVolumeLocked(const json &params, json &result, std::string &error)
+{
+	return SetSourceMixerFlag(params, "audio.setVolumeLocked", kVolumeLockedKey, "locked", result, error);
+}
+
+bool MethodAudioSetPinned(const json &params, json &result, std::string &error)
+{
+	return SetSourceMixerFlag(params, "audio.setPinned", kMixerPinnedKey, "pinned", result, error);
+}
+
+// Clear mixer_hidden on every active audio source (the "Unhide All" action). Persists
+// per cleared source; one audio.changed afterward refreshes the mixer.
+bool MethodAudioUnhideAll(const json & /*params*/, json &result, std::string & /*error*/)
+{
+	int cleared = 0;
+	for (const AudioMonitor::SourceInfo &s : ObsBootstrap::AudioMonitor().List()) {
+		OBSSourceAutoRelease src = obs_get_source_by_uuid(s.uuid.c_str()); // addref'd
+		if (!src) {
+			continue;
+		}
+		OBSDataAutoRelease priv = obs_source_get_private_settings(src);
+		if (priv && obs_data_get_bool(priv, kMixerHiddenKey)) {
+			obs_data_set_bool(priv, kMixerHiddenKey, false);
+			PersistSourceState(src);
+			cleared++;
+		}
+	}
+	result = json{{"cleared", cleared}};
+	EmitEvent(EventNames::kAudioChanged, json::object());
+	return true;
+}
+
 bool MethodAudioList(const json & /*params*/, json &result, std::string & /*error*/)
 {
-	json arr = json::array();
+	std::vector<json> rows;
 	for (const AudioMonitor::SourceInfo &s : ObsBootstrap::AudioMonitor().List()) {
-		arr.push_back(json{
+		// The mixer flags live in the source's private settings, not on the
+		// AudioMonitor entry -- read them from the resolved source per row.
+		bool hidden = false;
+		bool volumeLocked = false;
+		bool pinned = false;
+		if (OBSSourceAutoRelease src = obs_get_source_by_uuid(s.uuid.c_str())) {
+			hidden = GetSourceMixerFlag(src, kMixerHiddenKey);
+			volumeLocked = GetSourceMixerFlag(src, kVolumeLockedKey);
+			pinned = GetSourceMixerFlag(src, kMixerPinnedKey);
+		}
+		rows.push_back(json{
 			{"uuid", s.uuid},
 			{"name", s.name},
 			{"deflection", s.deflection},
 			{"volumeDb", s.volumeDb},
 			{"muted", s.muted},
+			{"hidden", hidden},
+			{"volumeLocked", volumeLocked},
+			{"pinned", pinned},
 		});
+	}
+	// Pinned sources sort first; stable_partition keeps each group's existing relative
+	// order (a pinned-FLAG sort, not arbitrary drag-ordering).
+	std::stable_partition(rows.begin(), rows.end(), [](const json &r) { return r.value("pinned", false); });
+	json arr = json::array();
+	for (json &r : rows) {
+		arr.push_back(std::move(r));
 	}
 	result = json{{"sources", std::move(arr)}};
 	return true;
@@ -6584,6 +6685,23 @@ bool MethodAudioSetDeflection(const json &params, json &result, std::string &err
 	if (!params.is_object() || !params.contains("deflection") || !params["deflection"].is_number()) {
 		error = "audio.setDeflection requires a number 'deflection'";
 		return false;
+	}
+	// A volume-locked source refuses fader moves (audio.setVolumeLocked): no-op with a
+	// clean success echoing the current position so an optimistic UI drag reverts.
+	if (OBSSourceAutoRelease locked = obs_get_source_by_uuid(uuid.c_str())) {
+		if (GetSourceMixerFlag(locked, kVolumeLockedKey)) {
+			float curDef = 0.0f;
+			float curDb = 0.0f;
+			for (const AudioMonitor::SourceInfo &si : ObsBootstrap::AudioMonitor().List()) {
+				if (si.uuid == uuid) {
+					curDef = si.deflection;
+					curDb = si.volumeDb;
+					break;
+				}
+			}
+			result = json{{"uuid", uuid}, {"deflection", curDef}, {"volumeDb", curDb}, {"locked", true}};
+			return true;
+		}
 	}
 	const float deflection = params["deflection"].get<float>();
 	float appliedDef = 0.0f;
@@ -10126,6 +10244,10 @@ void Init()
 		{"audio.list", MethodAudioList},
 		{"audio.setDeflection", MethodAudioSetDeflection},
 		{"audio.setMuted", MethodAudioSetMuted},
+		{"audio.setHidden", MethodAudioSetHidden},
+		{"audio.unhideAll", MethodAudioUnhideAll},
+		{"audio.setVolumeLocked", MethodAudioSetVolumeLocked},
+		{"audio.setPinned", MethodAudioSetPinned},
 		{"audio.getAdvanced", MethodAudioGetAdvanced},
 		{"audio.setAdvanced", MethodAudioSetAdvanced},
 		{"audio.listMonitorDevices", MethodAudioListMonitorDevices},

@@ -692,6 +692,12 @@ export interface AudioSource {
   /** Current volume in dB. */
   volumeDb: number;
   muted: boolean;
+  /** Hidden from the mixer (audio.setHidden); rows filter these out by default. */
+  hidden: boolean;
+  /** Fader locked (audio.setVolumeLocked); setDeflection no-ops while true. */
+  volumeLocked: boolean;
+  /** Pinned to the top of the mixer (audio.setPinned); audio.list sorts pinned first. */
+  pinned: boolean;
 }
 
 /** One source's coalesced levels (dB) in an audio.levels push. */
@@ -1434,8 +1440,15 @@ export interface ObsMethods {
   // sources; set* return the applied value. Levels arrive via the audio.levels
   // push (throttled to ~30 Hz), not a method.
   "audio.list": { sources: AudioSource[] };
-  "audio.setDeflection": { uuid: string; deflection: number; volumeDb: number };
+  "audio.setDeflection": { uuid: string; deflection: number; volumeDb: number; locked?: boolean };
   "audio.setMuted": { uuid: string; muted: boolean };
+  // Per-source mixer state. setHidden/setPinned toggle the row's hidden/pinned flag;
+  // unhideAll clears hidden on every source (returns the count cleared); setVolumeLocked
+  // locks the fader so audio.setDeflection no-ops. All emit audio.changed.
+  "audio.setHidden": { uuid: string; hidden: boolean };
+  "audio.unhideAll": { cleared: number };
+  "audio.setVolumeLocked": { uuid: string; locked: boolean };
+  "audio.setPinned": { uuid: string; pinned: boolean };
   // Global audio device pickers (Desktop Audio / Mic channels). setGlobalDevice
   // applies LIVE: the backend creates/updates/removes the source, rebuilds the
   // mixer, and emits audio.changed. deviceId null/"" disables the channel.
