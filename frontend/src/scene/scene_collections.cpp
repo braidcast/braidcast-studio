@@ -3,6 +3,7 @@
 
 #include "bridge.hpp"
 #include "log.hpp"
+#include "multistream/Hotkeys.hpp"
 #include "multistream/MultistreamEngine.hpp"
 #include "multistream/OutputBindingStore.hpp"
 #include "multistream/SceneLinkStore.hpp"
@@ -477,6 +478,10 @@ bool SceneCollections::Switch(const std::string &id, std::string &error)
 	// (outputBinding.changed) and refreshes the Multistream dock (multistream.changed).
 	Bridge::EmitEvent(EventNames::kCollectionsChanged, nlohmann::json::object());
 	Bridge::EmitEvent(EventNames::kScenesChanged, nlohmann::json{{"canvas", nullptr}});
+	// The global scene set was fully swapped: reconcile the per-scene switch hotkeys to
+	// this collection's scenes (this path emits scenes.changed raw, not via the bridge's
+	// EmitScenesChanged that reconciles for runtime scene edits).
+	Hotkeys::SyncSceneHotkeys();
 	Bridge::EmitEvent(EventNames::kTransitionsChanged, nlohmann::json::object());
 	Bridge::EmitEvent(EventNames::kOutputBindingChanged, nlohmann::json::object());
 	Bridge::EmitEvent(EventNames::kSceneLinkChanged, nlohmann::json::object());

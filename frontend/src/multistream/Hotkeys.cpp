@@ -12,6 +12,7 @@
 #include <util/dstr.hpp>
 #include <util/platform.h>
 
+#include <memory>
 #include <unordered_map>
 #include <vector>
 
@@ -318,7 +319,118 @@ void OnStopStreaming(void * /*data*/, obs_hotkey_id /*id*/, obs_hotkey_t * /*hot
 	});
 }
 
+// --- per-scene "switch to scene" hotkeys ------------------------------------
+
+// One rebindable frontend hotkey per GLOBAL (Default-canvas) scene. Stock OBS names
+// these "OBSBasic.SelectScene"; we suffix the scene source's uuid so each hotkey's
+// persisted NAME (the store's Save/Load key) is unique AND stable across a rename.
+struct SceneHotkey {
+	std::string uuid;
+	obs_hotkey_id id = OBS_INVALID_HOTKEY_ID;
+};
+
+// uuid -> owned registration. unique_ptr keeps each SceneHotkey node-stable so the
+// void* handed to libobs stays valid until we unregister + erase. UI-thread-only,
+// like every other member of this store.
+std::unordered_map<std::string, std::unique_ptr<SceneHotkey>> g_sceneHotkeys;
+
+// Reconcile runs only between RegisterFrontendHotkeys and UnregisterFrontendHotkeys,
+// so a stray scenes.changed during bootstrap-before-register or teardown is a no-op.
+bool g_sceneHotkeysActive = false;
+
+std::string SelectSceneDescription(const std::string &sceneName)
+{
+	return "Switch to scene: " + sceneName;
+}
+
+// Fired on key-down from libobs's hotkey thread. Switch the program scene through the
+// SAME seam scenes.setCurrent uses (Bridge::SwitchDefaultProgramScene ->
+// Transitions::SetProgramScene + ApplyCanvasSceneLinks), never a raw channel-0 bind,
+// so linked additional-canvas scenes stay in sync. The engine/bridge state is
+// UI-thread-owned, so hop there via PostToUi (the marshal OnStart/StopStreaming use);
+// the MultistreamAlive() guard drops a task CefShutdown drains after teardown.
+void OnSelectScene(void *data, obs_hotkey_id /*id*/, obs_hotkey_t * /*hotkey*/, bool pressed)
+{
+	if (!pressed) {
+		return;
+	}
+	// Read the uuid on the hotkey thread: obs_hotkey_unregister runs under the same
+	// hotkey mutex that serializes this trigger loop, so the SceneHotkey cannot be
+	// freed while this callback is in flight.
+	const std::string uuid = static_cast<SceneHotkey *>(data)->uuid;
+	AsyncTask::PostToUi([uuid] {
+		if (!ObsBootstrap::MultistreamAlive()) {
+			return;
+		}
+		Bridge::SwitchDefaultProgramScene(uuid);
+	});
+}
+
 } // namespace
+
+void SyncSceneHotkeys()
+{
+	if (!g_sceneHotkeysActive) {
+		return;
+	}
+
+	// Authoritative live set. obs_enum_scenes yields ONLY main/Default-canvas scenes
+	// (additional-canvas scenes live in their own namespace and switch via
+	// CanvasRuntime, not output 0), so these program-switch hotkeys stay scoped to
+	// global scenes.
+	struct Ctx {
+		std::unordered_map<std::string, std::string> live; // uuid -> current name
+	} ctx;
+	obs_enum_scenes(
+		[](void *param, obs_source_t *source) -> bool {
+			auto *c = static_cast<Ctx *>(param);
+			const char *u = obs_source_get_uuid(source);
+			if (u) {
+				const char *n = obs_source_get_name(source);
+				c->live.emplace(u, n ? n : "");
+			}
+			return true;
+		},
+		&ctx);
+
+	// Drop hotkeys whose scene is gone (removal cleanup). Unregister the live hotkey
+	// only -- the persisted binding stays dormant in hotkeys.json so an inactive scene
+	// collection's per-scene bindings survive a collection swap and restore on return.
+	for (auto it = g_sceneHotkeys.begin(); it != g_sceneHotkeys.end();) {
+		if (ctx.live.find(it->first) == ctx.live.end()) {
+			obs_hotkey_unregister(it->second->id);
+			it = g_sceneHotkeys.erase(it);
+		} else {
+			++it;
+		}
+	}
+
+	// Register new scenes; keep existing hotkeys' descriptions tracking the current
+	// name so a rename shows through in Settings->Hotkeys without touching the binding.
+	bool added = false;
+	for (const auto &[uuid, name] : ctx.live) {
+		auto it = g_sceneHotkeys.find(uuid);
+		if (it == g_sceneHotkeys.end()) {
+			auto entry = std::make_unique<SceneHotkey>();
+			entry->uuid = uuid;
+			const std::string hotkeyName = "OBSBasic.SelectScene." + uuid;
+			entry->id = obs_hotkey_register_frontend(hotkeyName.c_str(),
+								 SelectSceneDescription(name).c_str(), OnSelectScene,
+								 entry.get());
+			g_sceneHotkeys.emplace(uuid, std::move(entry));
+			added = true;
+		} else {
+			obs_hotkey_set_description(it->second->id, SelectSceneDescription(name).c_str());
+		}
+	}
+
+	// New registrations start unbound (stock OBS default); re-apply any persisted
+	// binding for them (and, on a collection swap, the activated collection's saved
+	// scene bindings). Idempotent for hotkeys already at their saved binding.
+	if (added) {
+		Load();
+	}
+}
 
 void RegisterFrontendHotkeys()
 {
@@ -331,9 +443,16 @@ void RegisterFrontendHotkeys()
 								 OnStopStreaming, nullptr);
 	}
 
-	// Apply saved bindings now that every hotkey id (frontend + source/etc.) exists.
+	// Register a switch hotkey for every existing global scene before Load, so their
+	// ids exist for the by-name binding restore below.
+	g_sceneHotkeysActive = true;
+	SyncSceneHotkeys();
+
+	// Apply saved bindings now that every hotkey id (frontend + per-scene + source/etc.)
+	// exists.
 	Load();
-	HostLog("[hotkeys] frontend hotkeys registered (Start/Stop Streaming); bindings loaded from " +
+	HostLog("[hotkeys] frontend hotkeys registered (Start/Stop Streaming + " +
+		std::to_string(g_sceneHotkeys.size()) + " scene switch); bindings loaded from " +
 		MultistreamBasicPath("hotkeys.json"));
 }
 
@@ -347,6 +466,12 @@ void UnregisterFrontendHotkeys()
 		obs_hotkey_unregister(g_stopStreamingId);
 		g_stopStreamingId = OBS_INVALID_HOTKEY_ID;
 	}
+
+	g_sceneHotkeysActive = false;
+	for (auto &kv : g_sceneHotkeys) {
+		obs_hotkey_unregister(kv.second->id);
+	}
+	g_sceneHotkeys.clear();
 }
 
 bool Save()

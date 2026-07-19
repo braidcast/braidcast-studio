@@ -118,6 +118,15 @@ void EmitAudioLevels();
 // changes. Safe to call off the UI thread (EmitEvent marshals to TID_UI).
 void EmitAudioChanged();
 
+// Switch the DEFAULT (global channel-0) program scene to the scene with source
+// uuid `sceneUuid`, running the SAME seam scenes.setCurrent uses: the program
+// transition (Transitions::SetProgramScene) + ApplyCanvasSceneLinks (so linked
+// additional-canvas scenes follow) + scenes.changed + collection save. Returns
+// false if the uuid no longer resolves to a scene. UI thread only. Shared by
+// scenes.setCurrent and the per-scene switch hotkeys so neither drives a raw
+// channel-0 bind that would skip the canvas scene links.
+bool SwitchDefaultProgramScene(const std::string &sceneUuid);
+
 // Write/read a single string value under `key` to/from a MultistreamBasicPath
 // JSON file (atomic, with a .bak). Shared by the per-feature key/value stores
 // (audio_devices.json / theme.json / layout.json / transitions.json).

@@ -26,6 +26,17 @@ void RegisterFrontendHotkeys();
 // up (before obs_shutdown), on the UI thread.
 void UnregisterFrontendHotkeys();
 
+// Reconcile the per-scene "switch to scene" hotkeys (stock OBS's OBSBasic.SelectScene)
+// against the current GLOBAL/Default-canvas scene set: register one rebindable
+// frontend hotkey for each new scene, unregister ones whose scene is gone, and keep
+// each hotkey's description tracking its scene's current name. Keyed by scene source
+// uuid so a rename never disturbs the binding. When it registers a new hotkey it
+// re-applies persisted bindings from hotkeys.json (Load). Idempotent + a no-op when
+// the scene set is unchanged (a pure program switch). UI thread only; a no-op before
+// RegisterFrontendHotkeys / after UnregisterFrontendHotkeys. Call it from every point
+// that mutates the global scene set (bridge scenes.changed, scene-collection switch).
+void SyncSceneHotkeys();
+
 // Persist EVERY hotkey's current bindings to hotkeys.json, keyed by hotkey NAME
 // (stable across runs; ids are per-session). Atomic save with a .bak. Returns false
 // on write failure (already logged).

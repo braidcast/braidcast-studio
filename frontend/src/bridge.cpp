@@ -1082,6 +1082,11 @@ bool MethodPreviewSelect(const json &params, json &result, std::string &error)
 void EmitScenesChanged(const std::string &canvasUuid)
 {
 	EmitEvent(EventNames::kScenesChanged, json{{"canvas", canvasUuid.empty() ? json(nullptr) : json(canvasUuid)}});
+	if (canvasUuid.empty()) {
+		// The global scene set may have changed (create/remove/duplicate/rename):
+		// reconcile the per-scene switch hotkeys. Idempotent + no-op on a pure switch.
+		Hotkeys::SyncSceneHotkeys();
+	}
 }
 
 bool MethodScenesList(const json &params, json &result, std::string &error)
@@ -1403,23 +1408,14 @@ bool MethodScenesSetCurrent(const json &params, json &result, std::string &error
 		return true;
 	}
 
-	obs_source_t *source = obs_get_source_by_name(name.c_str()); // addref'd
-	if (!source || !obs_scene_from_source(source)) {
-		if (source) {
-			obs_source_release(source);
-		}
+	const std::string uuid = MainSceneUuidFromName(name);
+	if (uuid.empty()) {
 		error = "no scene named '" + name + "'";
 		return false;
 	}
-	Transitions::SetProgramScene(source, true); // animate through the program transition
-	const char *switchedUuid = obs_source_get_uuid(source);
-	const std::string switchedUuidStr = switchedUuid ? switchedUuid : std::string();
-	obs_source_release(source);
-
-	ObsBootstrap::ApplyCanvasSceneLinks(switchedUuidStr);
-
-	EmitScenesChanged(std::string());
-	SceneCollection::Save();
+	// Route through the shared seam so the per-scene switch hotkeys and this method
+	// both run Transitions::SetProgramScene + ApplyCanvasSceneLinks identically.
+	SwitchDefaultProgramScene(uuid);
 	result = json{{"name", name}};
 	return true;
 }
@@ -8068,6 +8064,19 @@ bool MethodBrowserDocksSet(const json &params, json &result, std::string &error)
 }
 
 } // namespace
+
+bool SwitchDefaultProgramScene(const std::string &sceneUuid)
+{
+	OBSSourceAutoRelease source = obs_get_source_by_uuid(sceneUuid.c_str()); // addref'd
+	if (!source || !obs_scene_from_source(source)) {
+		return false;
+	}
+	Transitions::SetProgramScene(source, true); // animate through the program transition
+	ObsBootstrap::ApplyCanvasSceneLinks(sceneUuid);
+	EmitScenesChanged(std::string());
+	SceneCollection::Save();
+	return true;
+}
 
 bool WriteJsonString(const char *file, const char *key, const std::string &value)
 {
