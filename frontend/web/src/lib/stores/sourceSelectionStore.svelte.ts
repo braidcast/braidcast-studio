@@ -1,3 +1,4 @@
+import { untrack } from "svelte";
 import type { SceneItem } from "$lib/api/bridge";
 
 // The source-list selection model for ONE source list (a scene's scene items).
@@ -86,18 +87,25 @@ export class SourceSelection {
   // (a rename/visibility toggle produces fresh SceneItems), drop any selected item that
   // vanished, and clear the whole set on a scene change (per-scene selection).
   reconcile(scene: string | null, list: SceneItem[]): void {
-    if (scene !== this.scene) {
-      this.scene = scene;
-      this.clear();
-      return;
-    }
-    const next = this._items
-      .map((sel) => list.find((i) => i.id === sel.id))
-      .filter((i): i is SceneItem => i != null);
-    this._items = next;
-    if (this._anchorId != null && !next.some((i) => i.id === this._anchorId)) {
-      this._anchorId = next.at(-1)?.id ?? null;
-    }
+    // The docks call this from a $effect. It reads this._items/_anchorId AND writes
+    // them, so tracking those reads would make the effect depend on state it just wrote
+    // and re-fire without end (effect_update_depth_exceeded). untrack the body: the
+    // effect then tracks only the scene/list it was called with, while the writes still
+    // notify the selection's own readers.
+    untrack(() => {
+      if (scene !== this.scene) {
+        this.scene = scene;
+        this.clear();
+        return;
+      }
+      const next = this._items
+        .map((sel) => list.find((i) => i.id === sel.id))
+        .filter((i): i is SceneItem => i != null);
+      this._items = next;
+      if (this._anchorId != null && !next.some((i) => i.id === this._anchorId)) {
+        this._anchorId = next.at(-1)?.id ?? null;
+      }
+    });
   }
 }
 
