@@ -6,6 +6,7 @@
   import { obs, type FilterInfo, type FilterType, type ReorderDirection } from "$lib/api/bridge";
   import PropertyForm from "$lib/properties/PropertyForm.svelte";
   import { filterDialogOpener, type FilterKind } from "$lib/dialogs/filterDialogOpener.svelte";
+  import { clipboard } from "$lib/stores/clipboardStore.svelte";
 
   interface Props {
     source: string;
@@ -58,6 +59,16 @@
   const audioTypes = $derived(
     kind === "audio" ? types.filter((t) => t.audio) : types.filter((t) => t.audio && !t.video),
   );
+
+  // Group the chain into video (effect) vs audio (async) filters — the same split the
+  // add-picker uses. FilterInfo carries no async/effect flag, so bucket each row by
+  // mapping its type `id` through the fetched `types`: a type reporting video capability
+  // is an effect filter (video wins, matching the picker), everything else is async/audio.
+  // Each entry keeps its full-chain index so reorder/up-down stay chain-accurate.
+  const videoTypeIds = $derived(new Set(types.filter((t) => t.video).map((t) => t.id)));
+  const indexedFilters = $derived(filters.map((f, idx) => ({ f, idx })));
+  const effectFilters = $derived(indexedFilters.filter((e) => videoTypeIds.has(e.f.id)));
+  const asyncFilters = $derived(indexedFilters.filter((e) => !videoTypeIds.has(e.f.id)));
 
   async function loadFilters(keepSelection = true) {
     error = null;
@@ -115,6 +126,89 @@
   async function reorder(f: FilterInfo, direction: ReorderDirection) {
     try {
       await obs.call("filters.reorder", { source, name: f.name, direction });
+      await loadFilters();
+    } catch (e) {
+      report(e);
+    }
+  }
+
+  // HTML5 drag-reorder of the chain, mirroring SourcesDock's row DnD. filters has no
+  // move-to-index bridge call, so express the drop as the equivalent run of up/down
+  // filters.reorder steps — the same method the up/down buttons already use.
+  let dragUuid = $state<string | null>(null);
+  let dragOverIdx = $state<number | null>(null);
+
+  function onDragStart(e: DragEvent, f: FilterInfo) {
+    if (renamingUuid === f.uuid) {
+      return;
+    }
+    dragUuid = f.uuid;
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", f.uuid); // Firefox requires data
+    }
+  }
+
+  function onDragOver(e: DragEvent, idx: number) {
+    if (dragUuid === null) {
+      return;
+    }
+    e.preventDefault(); // mark this a valid drop target
+    if (e.dataTransfer) {
+      e.dataTransfer.dropEffect = "move";
+    }
+    dragOverIdx = idx;
+  }
+
+  function onDrop(e: DragEvent, idx: number) {
+    e.preventDefault();
+    const id = dragUuid;
+    dragUuid = null;
+    dragOverIdx = null;
+    if (id === null) {
+      return;
+    }
+    const from = filters.findIndex((f) => f.uuid === id);
+    if (from < 0 || from === idx) {
+      return;
+    }
+    void reorderTo(filters[from].name, from, idx);
+  }
+
+  function onDragEnd() {
+    dragUuid = null;
+    dragOverIdx = null;
+  }
+
+  // Step the named filter one chain slot at a time toward `to`, reusing filters.reorder.
+  async function reorderTo(name: string, from: number, to: number) {
+    const direction: ReorderDirection = to > from ? "down" : "up";
+    try {
+      for (let i = 0; i < Math.abs(to - from); i++) {
+        await obs.call("filters.reorder", { source, name, direction });
+      }
+      await loadFilters();
+    } catch (e) {
+      report(e);
+    }
+  }
+
+  // Copy/paste the whole chain via the shared clipboard — the same bridge the source
+  // context menus use. Copy captures THIS source's chain; paste appends it here.
+  async function copyChain() {
+    try {
+      clipboard.filters = (await obs.call("filters.copyChain", { source })).filters;
+    } catch (e) {
+      report(e);
+    }
+  }
+
+  async function pasteChain() {
+    if (!clipboard.filters) {
+      return;
+    }
+    try {
+      await obs.call("filters.pasteChain", { source, filters: clipboard.filters });
       await loadFilters();
     } catch (e) {
       report(e);
@@ -202,59 +296,90 @@
   <div class="wrap">
     <!-- left: filter list + add control -->
     <div class="left">
+      {#snippet filterRow(f: FilterInfo, idx: number)}
+        <li
+          class="dock-row"
+          class:sel={f.uuid === selectedUuid}
+          class:dimmed={!f.enabled}
+          class:dropTarget={dragOverIdx === idx && dragUuid !== null && dragUuid !== f.uuid}
+          draggable={renamingUuid !== f.uuid}
+          ondragstart={(e) => onDragStart(e, f)}
+          ondragover={(e) => onDragOver(e, idx)}
+          ondrop={(e) => onDrop(e, idx)}
+          ondragend={onDragEnd}
+        >
+          <span class="enable-tog" title={f.enabled ? "Disable" : "Enable"}>
+            <ToggleSwitch size="sm" checked={f.enabled} onchange={() => void setEnabled(f)} />
+          </span>
+          {#if renamingUuid === f.uuid}
+            <input
+              class="inline"
+              bind:value={renameTo}
+              onkeydown={onRenameKey}
+              onblur={commitRename}
+              use:focusOnMount
+            />
+          {:else}
+            <button class="dock-label" onclick={() => selectFilter(f)} ondblclick={() => beginRename(f)}>
+              {f.name}
+            </button>
+          {/if}
+          <span class="dock-actions">
+            <button
+              class="dock-icon"
+              title="Move up"
+              aria-label="Move up"
+              disabled={idx === 0}
+              onclick={() => void reorder(f, "up")}
+            >
+              <Icon name="up" size={12} />
+            </button>
+            <button
+              class="dock-icon"
+              title="Move down"
+              aria-label="Move down"
+              disabled={idx === filters.length - 1}
+              onclick={() => void reorder(f, "down")}
+            >
+              <Icon name="down" size={12} />
+            </button>
+            <button class="dock-icon danger" title="Remove" aria-label="Remove" onclick={() => void remove(f)}>
+              <Icon name="trash" size={12} />
+            </button>
+          </span>
+        </li>
+      {/snippet}
+
       {#if !loaded}
         <p class="dim">Loading…</p>
       {:else if filters.length === 0}
         <p class="dim">No filters on this source. Add one to get started.</p>
       {:else}
         <ul class="dock-list">
-          {#each filters as f, idx (f.uuid)}
-            <li class="dock-row" class:sel={f.uuid === selectedUuid} class:dimmed={!f.enabled}>
-              <span class="enable-tog" title={f.enabled ? "Disable" : "Enable"}>
-                <ToggleSwitch size="sm" checked={f.enabled} onchange={() => void setEnabled(f)} />
-              </span>
-              {#if renamingUuid === f.uuid}
-                <input
-                  class="inline"
-                  bind:value={renameTo}
-                  onkeydown={onRenameKey}
-                  onblur={commitRename}
-                  use:focusOnMount
-                />
-              {:else}
-                <button class="dock-label" onclick={() => selectFilter(f)} ondblclick={() => beginRename(f)}>
-                  {f.name}
-                </button>
-              {/if}
-              <span class="dock-actions">
-                <button
-                  class="dock-icon"
-                  title="Move up"
-                  aria-label="Move up"
-                  disabled={idx === 0}
-                  onclick={() => void reorder(f, "up")}
-                >
-                  <Icon name="up" size={12} />
-                </button>
-                <button
-                  class="dock-icon"
-                  title="Move down"
-                  aria-label="Move down"
-                  disabled={idx === filters.length - 1}
-                  onclick={() => void reorder(f, "down")}
-                >
-                  <Icon name="down" size={12} />
-                </button>
-                <button class="dock-icon danger" title="Remove" aria-label="Remove" onclick={() => void remove(f)}>
-                  <Icon name="trash" size={12} />
-                </button>
-              </span>
-            </li>
-          {/each}
+          {#if effectFilters.length > 0}
+            <li class="group-head">Video</li>
+            {#each effectFilters as e (e.f.uuid)}
+              {@render filterRow(e.f, e.idx)}
+            {/each}
+          {/if}
+          {#if asyncFilters.length > 0}
+            <li class="group-head">Audio</li>
+            {#each asyncFilters as e (e.f.uuid)}
+              {@render filterRow(e.f, e.idx)}
+            {/each}
+          {/if}
         </ul>
       {/if}
 
       <div class="add">
+        <div class="chain-actions">
+          <button class="chain-btn" disabled={filters.length === 0} onclick={() => void copyChain()}>
+            Copy Chain
+          </button>
+          <button class="chain-btn" disabled={!clipboard.filters} onclick={() => void pasteChain()}>
+            Paste Chain
+          </button>
+        </div>
         {#if picking}
           <select bind:value={pickType} onchange={addFilter} onkeydown={onPickKey} use:focusOnMount>
             <option value="" disabled selected>Select a filter…</option>
@@ -325,6 +450,47 @@
     flex: 0 0 auto;
     display: inline-flex;
     align-items: center;
+  }
+
+  /* Drag-reorder drop indicator. Outline avoids layout shift, matching SourcesDock. */
+  .dock-row.dropTarget {
+    outline: var(--border-weight) solid var(--color-accent);
+    outline-offset: -1px;
+  }
+
+  /* Section header splitting the chain into Video (effect) / Audio (async) groups. */
+  .group-head {
+    padding: 4px 8px;
+    font-family: var(--font-ui);
+    font-size: 10px;
+    color: var(--color-muted);
+    letter-spacing: var(--letter-spacing);
+    text-transform: var(--label-case);
+    border-bottom: var(--border-weight) solid var(--color-border);
+  }
+
+  .chain-actions {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 8px;
+  }
+  .chain-btn {
+    flex: 1;
+    padding: 5px 8px;
+    font-family: var(--font-ui);
+    font-size: 11px;
+    background: transparent;
+    color: var(--color-text);
+    letter-spacing: var(--letter-spacing);
+    text-transform: var(--label-case);
+  }
+  .chain-btn:hover:not(:disabled) {
+    border-color: var(--color-accent);
+    color: var(--color-accent);
+  }
+  .chain-btn:disabled {
+    opacity: 0.45;
+    cursor: default;
   }
 
   .add {
