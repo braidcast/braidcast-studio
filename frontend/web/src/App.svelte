@@ -153,14 +153,15 @@ import { EV } from "$lib/utils/eventNames";
     // through. Scene-ITEM removal only — a bare Delete nuking a whole scene needs focus
     // context we don't have here and is an accidental-nuke hazard, so scene-Del is out of scope.
     if (e.key === "Delete" && !e.ctrlKey && !e.altKey && !isEditable(e.target) && !previewSuspended()) {
-      const it = sourceSelection.item;
-      if (it) {
+      // Batch remove: one existing single-item remove per selected id (each independently
+      // undoable). Snapshot the ids — the removals shrink the set mid-loop. A single
+      // selection removes exactly one, unchanged from before.
+      const ids = [...sourceSelection.ids];
+      if (ids.length > 0) {
         e.preventDefault();
-        void callOrToast(
-          "sceneItems.remove",
-          { scene: sourceSelection.scene ?? undefined, id: it.id },
-          "Remove failed",
-        );
+        for (const id of ids) {
+          void callOrToast("sceneItems.remove", { scene: sourceSelection.scene ?? undefined, id }, "Remove failed");
+        }
       }
       return;
     }

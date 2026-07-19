@@ -17,6 +17,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   import ContextMenu, { type ContextMenuItem } from "$lib/menus/ContextMenu.svelte";
   import { clipboard } from "$lib/stores/clipboardStore.svelte";
   import { copyItem, pasteReference, pasteDuplicate } from "$lib/stores/clipboardItemState";
+  import { SourceSelection } from "$lib/stores/sourceSelectionStore.svelte";
   import { openFilters } from "$lib/dialogs/filterDialogOpener.svelte";
   import { transformMenu } from "$lib/menus/transformMenu";
   import { scaleFilterMenu } from "$lib/menus/scaleFilterMenu";
@@ -339,12 +340,15 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
 
   // ---- sources (current scene of this canvas) --------------------------------
   let items = $state<SceneItem[]>([]);
-  let selectedId = $state<number | null>(null);
+  // Per-canvas source selection with its own instance — the global sourceSelection
+  // singleton is Default-canvas only. Holds the multi-select set for this canvas's
+  // scene; `.item` stays the primary (anchor) row the toolbar acts on.
+  const selection = new SourceSelection();
 
-  // The Sources toolbar acts on the selected row (the OBS list convention); these
+  // The Sources toolbar acts on the primary row (the OBS list convention); these
   // derive the target + its index so delete/move can disable when there is none.
-  let selectedItem = $derived(items.find((i) => i.id === selectedId) ?? null);
-  let selectedIdx = $derived(selectedId === null ? -1 : items.findIndex((i) => i.id === selectedId));
+  let selectedItem = $derived(selection.item);
+  let selectedIdx = $derived(selectedItem ? items.findIndex((i) => i.id === selectedItem.id) : -1);
 
   // ---- source name filter (behind the toolbar reveal) ------------------------
   let sourceFilter = $state("");
@@ -370,16 +374,22 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
         return;
       }
       items = list;
-      if (selectedId !== null && !items.some((i) => i.id === selectedId)) {
-        selectedId = null;
-      }
     } catch (e) {
       report(e);
     }
   }
-  function selectItem(item: SceneItem) {
-    selectedId = item.id;
-    void obs.call("preview.select", { canvas: canvasUuid, window: WINDOW_ID, scene: currentScene, id: item.id }).catch(() => {});
+  // Plain click selects just this row; Ctrl/Cmd toggles it in/out of the set; Shift
+  // extends from the anchor over the visible (filtered) order. Only a plain click drives
+  // the native preview selection — a modifier click is a list-set edit.
+  function selectItem(e: MouseEvent, item: SceneItem) {
+    if (e.shiftKey) {
+      selection.range(item, filteredItems);
+    } else if (e.ctrlKey || e.metaKey) {
+      selection.toggle(item);
+    } else {
+      selection.selectOne(item);
+      void obs.call("preview.select", { canvas: canvasUuid, window: WINDOW_ID, scene: currentScene, id: item.id }).catch(() => {});
+    }
   }
   async function toggleVisible(item: SceneItem) {
     try {
@@ -477,14 +487,33 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     }
   }
 
+  // Batch remove: loop the existing single-item bridge remove once per selected id (no
+  // new bridge method; each removal stays independently undoable). Falls back to the
+  // primary row when nothing is in the set. Snapshot the ids — the removals fire reload
+  // events that shrink the set mid-loop.
+  async function removeSelected() {
+    const ids = selection.size > 0 ? [...selection.ids] : selectedItem ? [selectedItem.id] : [];
+    for (const id of ids) {
+      try {
+        await obs.call("sceneItems.remove", { canvas: canvasUuid, scene: currentScene, id });
+      } catch (e) {
+        report(e);
+      }
+    }
+  }
+
   // ---- add source / properties (scoped to this canvas's current scene) -------
   let addingSource = $state(false);
   let propsForSource = $state<string | null>(null);
   function onSourceCreated(created: { id: number; source: string }) {
     addingSource = false;
-    selectedId = created.id;
     propsForSource = created.source;
-    void loadItems();
+    void loadItems().then(() => {
+      const it = items.find((i) => i.id === created.id);
+      if (it) {
+        selection.selectOne(it);
+      }
+    });
   }
   function openProperties(item: SceneItem) {
     if (item.source) {
@@ -627,6 +656,9 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     const idx = items.findIndex((i) => i.id === item.id);
     const deint = item.source ? await fetchDeint(item.source) : { mode: "disable" as const, fieldOrder: "top" as const };
     const transitionTypeList = await transitionTypes().catch(() => []);
+    // Right-clicking a row that is part of a 2+ selection acts on the whole set; a
+    // right-click on a single (or unselected) row stays single.
+    const inMulti = selection.has(item.id) && selection.size >= 2;
     menu = {
       x,
       y,
@@ -747,7 +779,11 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
         { label: "Move to Bottom", disabled: idx === items.length - 1, action: () => void reorder(item, "bottom") },
         // Projector entries hidden pending the projector redesign.
         null,
-        { label: "Remove", danger: true, action: () => void remove(item) },
+        {
+          label: inMulti ? `Remove ${selection.size} Items` : "Remove",
+          danger: true,
+          action: () => void (inMulti ? removeSelected() : remove(item)),
+        },
       ],
     };
   }
@@ -854,7 +890,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   ]);
   let sourcesLeft = $derived<ToolAction[]>([
     { icon: "plus", title: "Add source", disabled: !currentScene, onClick: () => (addingSource = true) },
-    { icon: "trash", title: "Delete source", disabled: !selectedItem, onClick: () => selectedItem && void remove(selectedItem) },
+    { icon: "trash", title: "Delete source", disabled: !selectedItem, onClick: () => void removeSelected() },
     {
       icon: "gear",
       title: "Properties",
@@ -956,7 +992,10 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     });
     const offSel = obs.on(EV.sceneItemSelected, (p) => {
       if (p.canvas === canvasUuid && (!p.scene || p.scene === currentScene)) {
-        selectedId = p.id;
+        const it = items.find((i) => i.id === p.id);
+        if (it) {
+          selection.selectOne(it);
+        }
       }
     });
 
@@ -1002,6 +1041,11 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   $effect(() => {
     void currentScene;
     void loadItems();
+  });
+
+  // Keep the per-canvas selection fresh against the latest list; clears on scene change.
+  $effect(() => {
+    selection.reconcile(currentScene, items);
   });
 
   // Hide our overlay while a modal suspends previews; re-assert on clear.
@@ -1129,7 +1173,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
         {#each filteredItems as item, idx (item.id)}
           <li
             class="es-row src"
-            class:on={item.id === selectedId}
+            class:on={selection.has(item.id)}
             class:hidden-src={!item.visible}
             class:dropTarget={dragOverIdx === idx && dragId !== null && dragId !== item.id}
             style:box-shadow={item.color ? `inset 3px 0 0 ${item.color}` : null}
@@ -1156,7 +1200,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
                 use:focusOnMount
               />
             {:else}
-              <button class="es-label" onclick={() => selectItem(item)} ondblclick={() => openProperties(item)}
+              <button class="es-label" onclick={(e) => selectItem(e, item)} ondblclick={() => openProperties(item)}
                 >{item.source ?? "(unnamed)"}</button
               >
             {/if}

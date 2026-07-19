@@ -41,7 +41,6 @@ import { EV } from "$lib/utils/eventNames";
   );
   let loaded = $state(false);
   let error = $state<string | null>(null);
-  let selectedItemId = $state<number | null>(null);
   let propsForSource = $state<string | null>(null);
   let adding = $state(false);
   let renamingId = $state<number | null>(null);
@@ -50,12 +49,12 @@ import { EV } from "$lib/utils/eventNames";
 
   // The bottom toolbar acts on the selected row (OBS list convention). Reorder is
   // indexed against the full, unfiltered `items` so up/down disable at the ends.
-  const selectedItem = $derived(items.find((i) => i.id === selectedItemId) ?? null);
-  const selectedIdx = $derived(selectedItemId === null ? -1 : items.findIndex((i) => i.id === selectedItemId));
+  const selectedItem = $derived(sourceSelection.item);
+  const selectedIdx = $derived(selectedItem ? items.findIndex((i) => i.id === selectedItem.id) : -1);
 
   const leftActions = $derived<ToolAction[]>([
     { icon: "plus", title: "Add source", disabled: !currentScene, onClick: () => (adding = true) },
-    { icon: "trash", title: "Remove source", disabled: !selectedItem, onClick: () => selectedItem && void remove(selectedItem) },
+    { icon: "trash", title: "Remove source", disabled: !selectedItem, onClick: () => void removeSelected() },
     {
       icon: "gear",
       title: "Properties",
@@ -93,9 +92,18 @@ import { EV } from "$lib/utils/eventNames";
     }
   }
 
-  function selectItem(item: SceneItem) {
-    selectedItemId = item.id;
-    void obs.call("preview.select", { scene: currentScene, id: item.id }).catch(() => {});
+  // Plain click selects just this row; Ctrl/Cmd toggles it in/out of the set; Shift
+  // extends from the anchor over the visible (filtered) order. Only a plain click drives
+  // the native preview selection — a modifier click is a list-set edit, not a preview pick.
+  function selectItem(e: MouseEvent, item: SceneItem) {
+    if (e.shiftKey) {
+      sourceSelection.range(item, filteredItems);
+    } else if (e.ctrlKey || e.metaKey) {
+      sourceSelection.toggle(item);
+    } else {
+      sourceSelection.selectOne(item);
+      void obs.call("preview.select", { scene: currentScene, id: item.id }).catch(() => {});
+    }
   }
 
   // The properties modal overlaps the preview; suspend the native overlay while open.
@@ -110,7 +118,10 @@ import { EV } from "$lib/utils/eventNames";
     return obs.on(EV.sceneItemSelected, (p) => {
       // Global channel-0 path: only the Default surface (canvas=null) drives this.
       if (p.canvas == null && (!p.scene || p.scene === currentScene)) {
-        selectedItemId = p.id;
+        const it = items.find((i) => i.id === p.id);
+        if (it) {
+          sourceSelection.selectOne(it);
+        }
       }
     });
   });
@@ -132,9 +143,6 @@ import { EV } from "$lib/utils/eventNames";
         return;
       }
       items = list;
-      if (selectedItemId !== null && !items.some((i) => i.id === selectedItemId)) {
-        selectedItemId = null;
-      }
     } catch (e) {
       report(e);
     } finally {
@@ -148,19 +156,20 @@ import { EV } from "$lib/utils/eventNames";
     void load();
   });
 
-  // Publish the global selection so the app-level Ctrl+C/Ctrl+V can act on it.
+  // Publish/refresh the global selection so the app-level Delete / Ctrl+C / Ctrl+V act
+  // on it. reconcile refreshes the held items against the latest list and clears the set
+  // on a scene change (per-scene selection).
   $effect(() => {
-    sourceSelection.scene = currentScene;
-    sourceSelection.item = items.find((i) => i.id === selectedItemId) ?? null;
+    sourceSelection.reconcile(currentScene, items);
   });
 
-  // Drop our published selection on teardown so the app-level Ctrl+C/Ctrl+V doesn't
-  // act on a stale scene/item after this dock unmounts — but only if the store still
-  // points at what we published (another surface may have taken over).
+  // Drop our published selection on teardown so the app-level shortcuts don't act on a
+  // stale scene/item after this dock unmounts — but only if the store still points at
+  // what we published (another surface may have taken over).
   onDestroy(() => {
     if (sourceSelection.scene === currentScene) {
       sourceSelection.scene = null;
-      sourceSelection.item = null;
+      sourceSelection.clear();
     }
   });
 
@@ -175,9 +184,13 @@ import { EV } from "$lib/utils/eventNames";
 
   function onSourceCreated(created: { id: number; source: string }) {
     adding = false;
-    selectedItemId = created.id;
     propsForSource = created.source;
-    void load();
+    void load().then(() => {
+      const it = items.find((i) => i.id === created.id);
+      if (it) {
+        sourceSelection.selectOne(it);
+      }
+    });
   }
 
   async function toggleVisible(item: SceneItem) {
@@ -266,6 +279,21 @@ import { EV } from "$lib/utils/eventNames";
       await obs.call("sceneItems.remove", { scene: currentScene, id: item.id });
     } catch (e) {
       report(e);
+    }
+  }
+
+  // Batch remove: loop the existing single-item bridge remove once per selected id (no
+  // new bridge method; each removal stays independently undoable). Falls back to the
+  // primary row when nothing is in the set. Snapshot the ids first — the removals fire
+  // reload events that shrink the set mid-loop.
+  async function removeSelected() {
+    const ids = sourceSelection.size > 0 ? [...sourceSelection.ids] : selectedItem ? [selectedItem.id] : [];
+    for (const id of ids) {
+      try {
+        await obs.call("sceneItems.remove", { scene: currentScene, id });
+      } catch (e) {
+        report(e);
+      }
     }
   }
 
@@ -399,6 +427,9 @@ import { EV } from "$lib/utils/eventNames";
     const y = e.clientY;
     const deint = item.source ? await fetchDeint(item.source) : { mode: "disable" as const, fieldOrder: "top" as const };
     const transitionTypeList = await transitionTypes().catch(() => []);
+    // Right-clicking a row that is part of a 2+ selection acts on the whole set; a
+    // right-click on a single (or unselected) row stays single.
+    const inMulti = sourceSelection.has(item.id) && sourceSelection.size >= 2;
     menu = {
       x,
       y,
@@ -510,7 +541,11 @@ import { EV } from "$lib/utils/eventNames";
         // Projector entries hidden pending the projector redesign (projectorMenu +
         // its bridge path are kept, just not surfaced here).
         null,
-        { label: "Remove", danger: true, action: () => void remove(item) },
+        {
+          label: inMulti ? `Remove ${sourceSelection.size} Items` : "Remove",
+          danger: true,
+          action: () => void (inMulti ? removeSelected() : remove(item)),
+        },
       ],
     };
   }
@@ -533,7 +568,7 @@ import { EV } from "$lib/utils/eventNames";
       {#each filteredItems as item, idx (item.id)}
         <li
           class="dock-row"
-          class:sel={item.id === selectedItemId}
+          class:sel={sourceSelection.has(item.id)}
           class:dimmed={!item.visible}
           class:dropTarget={dragOverIdx === idx && dragId !== null && dragId !== item.id}
           style:box-shadow={item.color ? `inset 3px 0 0 ${item.color}` : null}
@@ -560,7 +595,7 @@ import { EV } from "$lib/utils/eventNames";
           {#if renamingId === item.id}
             <input class="inline" bind:value={renameTo} onkeydown={onRenameKey} onblur={commitRename} use:focusOnMount />
           {:else}
-            <button class="dock-label" onclick={() => selectItem(item)} ondblclick={() => openProperties(item)}>
+            <button class="dock-label" onclick={(e) => selectItem(e, item)} ondblclick={() => openProperties(item)}>
               {item.source ?? "(unnamed)"}
             </button>
           {/if}
