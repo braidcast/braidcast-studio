@@ -332,6 +332,14 @@ import { EV } from "$lib/utils/eventNames";
               </select>
             </label>
           </div>
+          <label class="span2">
+            <input
+              type="checkbox"
+              checked={xf.cropToBounds}
+              onchange={(e) => void commit({ cropToBounds: e.currentTarget.checked })}
+            />
+            Crop to bounds
+          </label>
         {/if}
       </div>
     </div>
