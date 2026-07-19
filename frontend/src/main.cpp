@@ -334,8 +334,12 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 		return 0;
 	case WM_CLOSE:
 		// Snapshot the placement while the HWND is still valid so the next launch
-		// reopens on the last monitor / maximized state.
-		SaveHostPlacement(hwnd);
+		// reopens on the last monitor / maximized state. Skipped under the headless
+		// smoke path, which never restored placement (it opens at the default rect),
+		// so saving here would overwrite the user's real window.json with that default.
+		if (!getenv("FE_SMOKE_QUIT_SECONDS")) {
+			SaveHostPlacement(hwnd);
+		}
 		// Remove the tray icon while the host HWND is still valid (NIM_DELETE keys
 		// off it); otherwise a ghost icon lingers in the notification area.
 		if (g_tray) {
