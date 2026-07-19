@@ -43,6 +43,7 @@ inline on each row (**✅ Fixed `<commit>`** / 🔧 in progress / 🔴 queued /
 | §11.3 transform hotkeys | Major | ✅ Fixed `15f761b33` |
 | §1.4 blending mode/method submenus | Major | ✅ Fixed `ba36733c9` |
 | §2.2 scene filters (Filters/Copy/Paste) | Major | ✅ Fixed `088941459` |
+| §11.2 arrow-key nudge | Major | ✅ Fixed `71ed2b357` |
 
 Blockers cleared (3 fixed, §4.2 deferred). Now working Major gaps in severity order.
 
@@ -195,7 +196,7 @@ Ctrl+C/V, Ctrl+Shift+S. Settings → Hotkeys exists for *libobs* hotkeys.
 | # | Gap | Qt binding | Current | Severity | Fix lives in |
 | --- | --- | --- | --- | --- | --- |
 | 11.1 | **Delete does not remove the selected item/scene** | `Del` on `actionRemoveSource`/`actionRemoveScene` (with confirm; batch-aware) | **Missing** | Major | `App.svelte` keydown + `sourceSelection` → `sceneItems.remove` |
-| 11.2 | **Arrow-key nudge missing** | Arrows = 1 px, Shift+Arrows = 10 px on the preview (`OBSBasic::Nudge`) | **Missing** — no ArrowKey handling anywhere transform-related | Major | `App.svelte` or native preview keyboard path → `sceneItems.setTransform` |
+| 11.2 | **Arrow-key nudge missing** | Arrows = 1 px, Shift+Arrows = 10 px on the preview (`OBSBasic::Nudge`) | ✅ **Fixed `71ed2b357`** — arrow block in `App.svelte onKeydown` (above the Ctrl gate); `nudge(dx,dy)` reuses `sceneItems.get/setTransform` (partial `{pos}` write), `ARROW_DELTAS` data map, gated on selection + `!isEditable` + `!previewSuspended()` (modal guard). 1px canvas-px, Shift=10px, y-down confirmed | Major | `App.svelte` |
 | 11.3 | **Transform hotkey set missing** | Ctrl+E edit, Ctrl+R reset, Ctrl+F fit, Ctrl+S stretch, Ctrl+D center, Ctrl+Shift+C/V copy/paste transform | ✅ **Fixed `15f761b33`** — all 7 wired into the existing `App.svelte onKeydown` chain (reset/fit/stretch/center via one `quickTransform` helper → `sceneItems.transformAction`; edit via `openTransform`; copy/paste via existing `clipboard.transform` + `sceneItems.get/setTransform`). Source Ctrl+C/V gained a `!e.shiftKey` guard so the Shift transform variants don't collide | Major | `App.svelte` |
 | 11.4 | Order hotkeys missing | Ctrl+Up/Down (move), Ctrl+Home/End (top/bottom) | **Missing** | Minor-UX | `App.svelte` → `sceneItems.reorder` |
 | 11.5 | F2 inline rename missing | `renameSource`/`renameScene` on F2 | **Missing** — rename only via context menu / dblclick (scenes) | Minor-UX | `App.svelte` + the docks' `beginRename` |
