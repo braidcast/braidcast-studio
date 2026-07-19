@@ -47,6 +47,28 @@ import { EV } from "$lib/utils/eventNames";
   let showHidden = $state(false);
   const hiddenCount = $derived(sources.filter((s) => s.hidden).length);
   const visibleSources = $derived(showHidden ? sources : sources.filter((s) => !s.hidden));
+  // Mixer strip arrangement: horizontal (stacked rows) or vertical (side-by-side
+  // columns), matching OBS's audio-mixer layout toggle. A frontend-only view pref
+  // with no backend field, so it persists in localStorage like goLivePref (default
+  // horizontal). Vertical re-flows the strips and stands each meter + fader on end
+  // via CSS (.list.vertical / .row.vertical) -- a real layout change, not an icon swap.
+  const LAYOUT_KEY = "obs.audioMixerVertical";
+  function loadVertical(): boolean {
+    try {
+      return localStorage.getItem(LAYOUT_KEY) === "1";
+    } catch {
+      return false;
+    }
+  }
+  let vertical = $state(loadVertical());
+  function toggleLayout() {
+    vertical = !vertical;
+    try {
+      localStorage.setItem(LAYOUT_KEY, vertical ? "1" : "0");
+    } catch {
+      // Non-fatal: the toggle still works for this session.
+    }
+  }
   let menu = $state<{ x: number; y: number; items: (ContextMenuItem | null)[] } | null>(null);
   let propsForSource = $state<string | null>(null);
   // Inline rename: keyed by source uuid (mixer rows have no scene-item id). The
@@ -296,8 +318,8 @@ import { EV } from "$lib/utils/eventNames";
     <p class="dock-msg err">{error}</p>
   {/if}
 
-  {#if hiddenCount > 0}
-    <div class="toolbar">
+  <div class="toolbar">
+    {#if hiddenCount > 0}
       <button class="text-btn" title="Unhide all hidden sources" onclick={() => void unhideAll()}>
         Unhide All ({hiddenCount})
       </button>
@@ -311,19 +333,35 @@ import { EV } from "$lib/utils/eventNames";
       >
         <Icon name={showHidden ? "eye" : "eye-off"} size={13} />
       </button>
-    </div>
-  {/if}
+    {/if}
+    <button
+      class="tool-btn layout"
+      class:active={vertical}
+      title={vertical ? "Switch to horizontal layout" : "Switch to vertical layout"}
+      aria-label={vertical ? "Switch to horizontal layout" : "Switch to vertical layout"}
+      aria-pressed={vertical}
+      onclick={toggleLayout}
+    >
+      <Icon name={vertical ? "grid" : "list"} size={13} />
+    </button>
+  </div>
 
   {#if !loaded}
     <p class="dock-msg">Loading…</p>
   {:else if sources.length === 0}
     <p class="dock-msg">No active audio sources</p>
   {:else}
-    <ul class="list">
+    <ul class="list" class:vertical>
       {#each visibleSources as src (src.uuid)}
         {@const m = meters[src.uuid]}
         {@const mon = monitoring[src.uuid] ?? "none"}
-        <li class="row" class:muted={src.muted} class:hidden={src.hidden} oncontextmenu={(e) => openMenu(e, src)}>
+        <li
+          class="row"
+          class:vertical
+          class:muted={src.muted}
+          class:hidden={src.hidden}
+          oncontextmenu={(e) => openMenu(e, src)}
+        >
           <div class="top">
             {#if src.pinned}
               <span class="pin" title="Pinned to top" aria-hidden="true"><Icon name="star-filled" size={11} /></span>
@@ -335,10 +373,10 @@ import { EV } from "$lib/utils/eventNames";
             {/if}
             <span class="db">{fmtDb(src.volumeDb)} dB</span>
           </div>
-          <div class="meter" aria-hidden="true">
-            <div class="unlit" style:width="{m ? 100 - m.mag : 100}%"></div>
+          <div class="meter" style:--lit={m ? m.mag : 0} style:--peak={m ? m.peak : 0} aria-hidden="true">
+            <div class="unlit"></div>
             {#if m && m.peak > 0}
-              <div class="peak" style:left="{m.peak}%"></div>
+              <div class="peak"></div>
             {/if}
           </div>
           <div class="controls">
@@ -499,17 +537,22 @@ import { EV } from "$lib/utils/eventNames";
     -webkit-mask-image: repeating-linear-gradient(90deg, #000 0 4px, transparent 4px 5px);
     mask-image: repeating-linear-gradient(90deg, #000 0 4px, transparent 4px 5px);
   }
+  /* Meter fill is driven by two inherited custom props set on .meter: --lit (0..100,
+     the reached fraction) and --peak (0..100, the hold position). Both orientations
+     read the same props so there is one source of truth for the level geometry. */
   .unlit {
     position: absolute;
     top: 0;
     right: 0;
     bottom: 0;
+    width: calc((100 - var(--lit, 0)) * 1%);
     background: var(--color-base);
   }
   .peak {
     position: absolute;
     top: 0;
     bottom: 0;
+    left: calc(var(--peak, 0) * 1%);
     width: 2px;
     background: var(--color-text);
   }
@@ -578,5 +621,87 @@ import { EV } from "$lib/utils/eventNames";
   /* Audio mixer messages use a roomier pad than the shared 8px 7px default. */
   .dock-msg {
     padding: 10px 9px;
+  }
+
+  /* Layout toggle always hugs the trailing edge of the toolbar (whether or not the
+     Unhide-All/show-hidden controls are present). */
+  .toolbar .layout {
+    margin-left: auto;
+  }
+
+  /* Vertical layout (OBS "Vertical Layout"): strips flow left-to-right and wrap into
+     columns instead of stacking, and each strip stands its meter + fader on end. */
+  .list.vertical {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .row.vertical {
+    width: 96px;
+    padding: 8px 6px;
+    gap: 8px;
+    border: var(--border-weight) solid var(--color-border);
+  }
+  .row.vertical .top {
+    justify-content: center;
+    gap: 6px;
+  }
+  .row.vertical .name {
+    min-width: 0;
+  }
+  /* Meter stands vertically: gradient runs bottom(green)->top(red), the unlit cover
+     masks from the top, and the peak hold becomes a horizontal tick. */
+  .row.vertical .meter {
+    width: 8px;
+    height: 120px;
+    align-self: center;
+    background-image: linear-gradient(
+      0deg,
+      var(--meter-green) 0%,
+      var(--meter-green) 58%,
+      var(--meter-yellow) 78%,
+      var(--meter-red) 100%
+    );
+  }
+  .row.vertical .unlit {
+    top: 0;
+    right: 0;
+    left: 0;
+    bottom: auto;
+    width: 100%;
+    height: calc((100 - var(--lit, 0)) * 1%);
+  }
+  .row.vertical .peak {
+    top: auto;
+    right: 0;
+    left: 0;
+    bottom: calc(var(--peak, 0) * 1%);
+    width: 100%;
+    height: 2px;
+  }
+  :global(:root[data-meter-style="segmented"]) .row.vertical .meter {
+    -webkit-mask-image: repeating-linear-gradient(0deg, #000 0 4px, transparent 4px 5px);
+    mask-image: repeating-linear-gradient(0deg, #000 0 4px, transparent 4px 5px);
+  }
+  /* Controls become a 2-col grid; the fader stands on end spanning the top row, with
+     the button cluster flowing beneath it. */
+  .row.vertical .controls {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    align-items: center;
+    justify-items: center;
+    gap: 6px 4px;
+  }
+  .row.vertical .fader {
+    order: -1;
+    grid-column: 1 / -1;
+    justify-self: center;
+    width: 24px;
+    height: 120px;
+    writing-mode: vertical-lr;
+    direction: rtl;
+    appearance: slider-vertical;
+    -webkit-appearance: slider-vertical;
   }
 </style>
