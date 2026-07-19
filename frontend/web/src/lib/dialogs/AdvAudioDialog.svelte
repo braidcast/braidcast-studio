@@ -1,11 +1,13 @@
 <script lang="ts">
   import Modal from "$lib/ui/Modal.svelte";
-  import { obs, type AdvancedAudio, type AudioMonitoringType } from "$lib/api/bridge";
-import { EV } from "$lib/utils/eventNames";
+  import { obs, type AdvancedAudio, type AudioSource, type AudioMonitoringType } from "$lib/api/bridge";
+  import { EV } from "$lib/utils/eventNames";
 
   interface Props {
-    source: string;
-    label: string;
+    // Optional row the opener targeted (name or uuid) — highlighted on open. The
+    // dialog is the multi-source table, so it renders every source regardless.
+    source?: string;
+    label?: string;
     onClose: () => void;
   }
   let { source, label, onClose }: Props = $props();
@@ -13,9 +15,23 @@ import { EV } from "$lib/utils/eventNames";
   // The native preview overlay is suspended by the opener (openAdvAudio) for this
   // dialog's whole lifetime, so it never occludes the modal.
 
-  let aa = $state<AdvancedAudio | null>(null);
+  // One table row: the mixer source (for name/uuid/hidden) plus its advanced audio.
+  type Row = { src: AudioSource; aa: AdvancedAudio };
+
+  let rows = $state<Row[]>([]);
   let loaded = $state(false);
   let error = $state<string | null>(null);
+
+  // Header toggles. `usePct` flips the whole Volume column dB<->percentage; `activeOnly`
+  // hides suppressed sources (see below). Both default to OBS's Advanced Audio defaults.
+  let usePct = $state(false);
+  let activeOnly = $state(true);
+
+  // audio.list already returns only currently-active audio sources (AudioMonitor
+  // filters on obs_source_audio_active), and AudioSource carries no `active` flag, so
+  // the closest suppression signal is `hidden` (mixer_hidden): "Active only" hides
+  // hidden rows, unchecking reveals them.
+  const visible = $derived(activeOnly ? rows.filter((r) => !r.src.hidden) : rows);
 
   const MONITORING: { label: string; value: AudioMonitoringType }[] = [
     { label: "Monitor Off", value: "none" },
@@ -27,9 +43,29 @@ import { EV } from "$lib/utils/eventNames";
     error = (e as Error).message;
   }
 
+  // dB<->linear-multiplier: OBS treats the multiplier as the percent (mul 1.0 = 100%).
+  const dbToMul = (db: number) => Math.pow(10, db / 20);
+  const mulToDb = (mul: number) => 20 * Math.log10(mul);
+  // Percentage view of the underlying volume. null (muted to -inf) reads as 0%.
+  const dbToPct = (db: number | null) => (db === null ? 0 : dbToMul(db) * 100);
+  // Back to the same underlying value the dB path writes; 0% (or less) collapses to -inf.
+  const pctToDb = (pct: number): number | null => (pct <= 0 ? null : mulToDb(pct / 100));
+
   async function load() {
     try {
-      aa = await obs.call("audio.getAdvanced", { source });
+      const list = (await obs.call("audio.list")).sources;
+      // Hydrate each source's advanced audio in parallel (same pattern as the mixer's
+      // loadMonitoring). A source that can't report falls back so its row still renders.
+      const hydrated = await Promise.all(
+        list.map(async (src): Promise<Row> => {
+          try {
+            return { src, aa: await obs.call("audio.getAdvanced", { uuid: src.uuid }) };
+          } catch {
+            return { src, aa: { volumeDb: 0, forceMono: false, balance: 0.5, syncOffsetMs: 0, tracks: [], monitoringType: "none" } };
+          }
+        }),
+      );
+      rows = hydrated;
       error = null;
     } catch (e) {
       report(e);
@@ -38,28 +74,19 @@ import { EV } from "$lib/utils/eventNames";
     }
   }
 
-  // (Re)load when the source changes (the dialog is remounted per open, but the
-  // source can also change in place if a different row is opened while mounted).
+  // Reload on the source set changing and on external advanced-audio edits (the mixer
+  // or another dialog can mutate the same source).
   $effect(() => {
-    void source;
-    loaded = false;
     void load();
-  });
-
-  // Reload on external edits (the source may be edited elsewhere, e.g. the mixer).
-  $effect(() => {
     return obs.on(EV.audioChanged, () => void load());
   });
 
-  // Apply a partial: optimistic local merge, then reconcile from the authoritative
-  // returned state. On failure, re-load to discard the optimism.
-  async function commit(patch: Partial<AdvancedAudio>) {
-    if (!aa) {
-      return;
-    }
-    aa = { ...aa, ...patch };
+  // Apply a partial to one row: optimistic local merge, then reconcile from the
+  // authoritative returned state. On failure, re-load to discard the optimism.
+  async function commit(row: Row, patch: Partial<AdvancedAudio>) {
+    row.aa = { ...row.aa, ...patch };
     try {
-      aa = await obs.call("audio.setAdvanced", { source, ...patch });
+      row.aa = await obs.call("audio.setAdvanced", { uuid: row.src.uuid, ...patch });
       error = null;
     } catch (e) {
       report(e);
@@ -67,8 +94,8 @@ import { EV } from "$lib/utils/eventNames";
     }
   }
 
-  // Numeric input parsing. Empty / non-finite falls back so a half-typed field
-  // never commits NaN. `int` rounds to an integer.
+  // Numeric input parsing. Empty / non-finite falls back so a half-typed field never
+  // commits NaN. `int` rounds to an integer.
   function num(value: string, fallback: number, opts: { int?: boolean } = {}): number {
     let n = Number(value);
     if (!Number.isFinite(n)) {
@@ -86,13 +113,26 @@ import { EV } from "$lib/utils/eventNames";
     }
   }
 
-  function toggleTrack(i: number, on: boolean) {
-    if (!aa) {
-      return;
+  function setVolume(row: Row, value: string) {
+    if (usePct) {
+      void commit(row, { volumeDb: pctToDb(num(value, dbToPct(row.aa.volumeDb))) });
+    } else {
+      void commit(row, { volumeDb: num(value, row.aa.volumeDb ?? 0) });
     }
-    const tracks = aa.tracks.slice();
+  }
+
+  // Value shown in the Volume cell for the current unit. % rounds to 1 decimal.
+  function volumeValue(aa: AdvancedAudio): string {
+    if (usePct) {
+      return String(Math.round(dbToPct(aa.volumeDb) * 10) / 10);
+    }
+    return aa.volumeDb === null ? "" : String(aa.volumeDb);
+  }
+
+  function toggleTrack(row: Row, i: number, on: boolean) {
+    const tracks = row.aa.tracks.slice();
     tracks[i] = on;
-    void commit({ tracks });
+    void commit(row, { tracks });
   }
 
   // Balance 0..1 -> readout. 0.5 = center; below = left, above = right.
@@ -103,99 +143,111 @@ import { EV } from "$lib/utils/eventNames";
     const pct = Math.round(Math.abs(b - 0.5) * 200);
     return (b < 0.5 ? "L " : "R ") + pct;
   }
+
+  function isFocused(row: Row): boolean {
+    return source != null && (row.src.uuid === source || row.src.name === source);
+  }
+
+  const title = $derived(label ? `Advanced Audio Properties — ${label}` : "Advanced Audio Properties");
 </script>
 
-<Modal title="Advanced Audio Properties — {label}" {onClose} width={560}>
+<Modal {title} {onClose} width={920}>
   {#if error}<p class="error">{error}</p>{/if}
+
+  <div class="tools">
+    <label class="chk">
+      <input type="checkbox" bind:checked={activeOnly} />
+      <span>Active only</span>
+    </label>
+    <label class="chk">
+      <input type="checkbox" bind:checked={usePct} />
+      <span>%</span>
+    </label>
+  </div>
 
   {#if !loaded}
     <p class="dim">Loading…</p>
-  {:else if !aa}
-    <p class="dim">No audio properties available.</p>
+  {:else if visible.length === 0}
+    <p class="dim">No {activeOnly ? "active " : ""}audio sources.</p>
   {:else}
-    <div class="grid">
-      <div class="group">
-        <div class="group-head">Volume</div>
-        <label>
-          <span>dB</span>
-          <input
-            type="number"
-            step="0.1"
-            placeholder="-∞"
-            value={aa.volumeDb ?? ""}
-            onkeydown={onEnter}
-            onchange={(e) => void commit({ volumeDb: num(e.currentTarget.value, aa!.volumeDb ?? 0) })}
-          />
-        </label>
-      </div>
-
-      <div class="group">
-        <div class="group-head">Downmix</div>
-        <label>
-          <span>Mono</span>
-          <input
-            type="checkbox"
-            checked={aa.forceMono}
-            onchange={(e) => void commit({ forceMono: e.currentTarget.checked })}
-          />
-        </label>
-      </div>
-
-      <div class="group span2">
-        <div class="group-head">Balance</div>
-        <label>
-          <span>L / R</span>
-          <input
-            type="range"
-            min="0"
-            max="1"
-            step="0.01"
-            value={aa.balance}
-            onchange={(e) => void commit({ balance: num(e.currentTarget.value, aa!.balance) })}
-          />
-          <em class="px">{balanceLabel(aa.balance)}</em>
-        </label>
-      </div>
-
-      <div class="group">
-        <div class="group-head">Sync Offset</div>
-        <label>
-          <span>ms</span>
-          <input
-            type="number"
-            value={aa.syncOffsetMs}
-            onkeydown={onEnter}
-            onchange={(e) => void commit({ syncOffsetMs: num(e.currentTarget.value, aa!.syncOffsetMs, { int: true }) })}
-          />
-        </label>
-      </div>
-
-      <div class="group">
-        <div class="group-head">Audio Monitoring</div>
-        <label>
-          <span>Mode</span>
-          <select
-            value={aa.monitoringType}
-            onchange={(e) => void commit({ monitoringType: e.currentTarget.value as AudioMonitoringType })}
-          >
-            {#each MONITORING as m (m.value)}
-              <option value={m.value}>{m.label}</option>
-            {/each}
-          </select>
-        </label>
-      </div>
-
-      <div class="group span2">
-        <div class="group-head">Tracks</div>
-        <div class="tracks">
-          {#each aa.tracks as on, i (i)}
-            <label class="track">
-              <input type="checkbox" checked={on} onchange={(e) => toggleTrack(i, e.currentTarget.checked)} />
-              <span>{i + 1}</span>
-            </label>
+    <div class="scroll">
+      <table class="grid">
+        <thead>
+          <tr>
+            <th class="name-col">Name</th>
+            <th>Volume ({usePct ? "%" : "dB"})</th>
+            <th>Mono</th>
+            <th class="bal-col">Balance</th>
+            <th>Sync (ms)</th>
+            <th>Monitoring</th>
+            <th>Tracks</th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each visible as row (row.src.uuid)}
+            <tr class:focus={isFocused(row)}>
+              <td class="name-col" title={row.src.name}>{row.src.name}</td>
+              <td>
+                <input
+                  type="number"
+                  step="0.1"
+                  min={usePct ? "0" : undefined}
+                  placeholder={usePct ? "0" : "-∞"}
+                  value={volumeValue(row.aa)}
+                  onkeydown={onEnter}
+                  onchange={(e) => setVolume(row, e.currentTarget.value)}
+                />
+              </td>
+              <td class="ctr">
+                <input
+                  type="checkbox"
+                  checked={row.aa.forceMono}
+                  onchange={(e) => void commit(row, { forceMono: e.currentTarget.checked })}
+                />
+              </td>
+              <td class="bal-col">
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  value={row.aa.balance}
+                  onchange={(e) => void commit(row, { balance: num(e.currentTarget.value, row.aa.balance) })}
+                />
+                <em class="px">{balanceLabel(row.aa.balance)}</em>
+              </td>
+              <td>
+                <input
+                  type="number"
+                  value={row.aa.syncOffsetMs}
+                  onkeydown={onEnter}
+                  onchange={(e) => void commit(row, { syncOffsetMs: num(e.currentTarget.value, row.aa.syncOffsetMs, { int: true }) })}
+                />
+              </td>
+              <td>
+                <select
+                  value={row.aa.monitoringType}
+                  onchange={(e) => void commit(row, { monitoringType: e.currentTarget.value as AudioMonitoringType })}
+                >
+                  {#each MONITORING as m (m.value)}
+                    <option value={m.value}>{m.label}</option>
+                  {/each}
+                </select>
+              </td>
+              <td>
+                <div class="tracks">
+                  {#each row.aa.tracks as on, i (i)}
+                    <label class="track">
+                      <input type="checkbox" checked={on} onchange={(e) => toggleTrack(row, i, e.currentTarget.checked)} />
+                      <span>{i + 1}</span>
+                    </label>
+                  {/each}
+                </div>
+              </td>
+            </tr>
           {/each}
-        </div>
-      </div>
+        </tbody>
+      </table>
     </div>
   {/if}
 
@@ -205,69 +257,87 @@ import { EV } from "$lib/utils/eventNames";
 </Modal>
 
 <style>
-  .grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 10px;
-  }
-  .group {
-    border: var(--border-weight) solid var(--color-border);
-    background: var(--color-base);
-    padding: 8px;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-  .group.span2 {
-    grid-column: 1 / -1;
-  }
-  .group-head {
-    font-size: 9px;
-    letter-spacing: var(--letter-spacing);
-    text-transform: uppercase;
-    color: var(--color-accent);
-  }
-
-  label {
+  .tools {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 16px;
+    margin-bottom: 12px;
+  }
+  .chk {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     font-size: 11px;
     color: var(--color-text);
   }
-  label > span {
-    flex: 0 0 64px;
+  .chk > span {
     color: var(--color-muted);
     letter-spacing: var(--letter-spacing);
     text-transform: var(--label-case);
   }
 
+  .scroll {
+    overflow-x: auto;
+  }
+  .grid {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11px;
+    color: var(--color-text);
+  }
+  th,
+  td {
+    padding: 6px 8px;
+    text-align: left;
+    vertical-align: middle;
+    border-bottom: var(--border-weight) solid var(--color-border);
+    white-space: nowrap;
+  }
+  th {
+    font-size: 9px;
+    letter-spacing: var(--letter-spacing);
+    text-transform: uppercase;
+    color: var(--color-accent);
+    border-bottom-color: var(--color-border);
+  }
+  .name-col {
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .bal-col {
+    min-width: 120px;
+  }
+  td.ctr {
+    text-align: center;
+  }
+  tr.focus td {
+    background: var(--color-base);
+  }
+
   .px {
-    flex: 0 0 auto;
     font-style: normal;
     font-size: 10px;
     color: var(--color-muted);
     font-variant-numeric: tabular-nums;
+    margin-left: 6px;
   }
 
   .tracks {
     display: flex;
-    flex-wrap: wrap;
-    gap: 12px;
+    gap: 10px;
   }
   .track {
-    flex: 0 0 auto;
-    gap: 4px;
-  }
-  .track > span {
-    flex: 0 0 auto;
-    color: var(--color-text);
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    color: var(--color-muted);
   }
 
   input[type="number"],
   select {
-    flex: 1;
-    min-width: 0;
+    width: 100%;
+    min-width: 72px;
     background: var(--color-surface);
     border: var(--border-weight) solid var(--color-border);
     color: var(--color-text);
@@ -275,15 +345,18 @@ import { EV } from "$lib/utils/eventNames";
     font-size: 11px;
     padding: 4px 6px;
   }
+  select {
+    min-width: 150px;
+  }
   input[type="number"]:focus,
   select:focus {
     outline: none;
     border-color: var(--color-accent);
   }
   input[type="range"] {
-    flex: 1;
-    min-width: 0;
+    width: 88px;
     accent-color: var(--color-accent);
+    vertical-align: middle;
   }
   input[type="checkbox"] {
     accent-color: var(--color-accent);
