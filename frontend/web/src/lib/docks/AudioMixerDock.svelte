@@ -1,8 +1,11 @@
 <script lang="ts">
-  import { obs, type AudioSource } from "$lib/api/bridge";
+  import { obs, type AudioSource, type AudioMonitoringType } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
   import { openFilters } from "$lib/dialogs/filterDialogOpener.svelte";
   import { openAdvAudio } from "$lib/dialogs/advAudioOpener.svelte";
+  import ContextMenu, { type ContextMenuItem } from "$lib/menus/ContextMenu.svelte";
+  import { clipboard } from "$lib/stores/clipboardStore.svelte";
+  import PropertiesModal from "$lib/properties/PropertiesModal.svelte";
   import Icon from "$lib/ui/Icon.svelte";
 
   // Per-source faders + live dB meters. Levels arrive on the audio.levels push
@@ -15,6 +18,15 @@ import { EV } from "$lib/utils/eventNames";
 
   const DB_FLOOR = -60;
   const DB_CEIL = 0;
+
+  // Monitoring quick-toggle cycles Off -> Monitor Only -> Monitor and Output, using
+  // the same field/enum AdvAudioDialog writes via audio.setAdvanced.
+  const MONITOR_CYCLE: AudioMonitoringType[] = ["none", "monitorOnly", "monitorAndOutput"];
+  const MONITOR_LABEL: Record<AudioMonitoringType, string> = {
+    none: "Monitoring: Off",
+    monitorOnly: "Monitoring: Monitor Only",
+    monitorAndOutput: "Monitoring: Monitor and Output",
+  };
 
   function dbToPercent(db: number): number {
     if (!Number.isFinite(db) || db <= DB_FLOOR) {
@@ -29,6 +41,11 @@ import { EV } from "$lib/utils/eventNames";
   let sources = $state<AudioSource[]>([]);
   let loaded = $state(false);
   let error = $state<string | null>(null);
+  let menu = $state<{ x: number; y: number; items: (ContextMenuItem | null)[] } | null>(null);
+  let propsForSource = $state<string | null>(null);
+  // Monitoring type per source uuid. Not in audio.list, so read just-in-time from the
+  // same place AdvAudioDialog reads it (audio.getAdvanced) and refreshed on each load.
+  let monitoring = $state<Record<string, AudioMonitoringType>>({});
 
   const latest = new Map<string, { magnitude: number; peak: number }>();
   let meters = $state<Record<string, { mag: number; peak: number }>>({});
@@ -53,6 +70,7 @@ import { EV } from "$lib/utils/eventNames";
     try {
       const res = await obs.call("audio.list");
       sources = res.sources;
+      void loadMonitoring();
       const live = new Set(sources.map((s) => s.uuid));
       for (const uuid of latest.keys()) {
         if (!live.has(uuid)) {
@@ -117,6 +135,70 @@ import { EV } from "$lib/utils/eventNames";
     }
   }
 
+  // Pull each source's monitoring type in parallel; a source that can't report one
+  // (rejected getAdvanced) falls back to Off so the button still renders.
+  async function loadMonitoring() {
+    const entries = await Promise.all(
+      sources.map(async (s): Promise<[string, AudioMonitoringType]> => {
+        try {
+          return [s.uuid, (await obs.call("audio.getAdvanced", { uuid: s.uuid })).monitoringType];
+        } catch {
+          return [s.uuid, "none"];
+        }
+      }),
+    );
+    monitoring = Object.fromEntries(entries);
+  }
+
+  async function cycleMonitor(src: AudioSource) {
+    const cur = monitoring[src.uuid] ?? "none";
+    const next = MONITOR_CYCLE[(MONITOR_CYCLE.indexOf(cur) + 1) % MONITOR_CYCLE.length];
+    monitoring = { ...monitoring, [src.uuid]: next }; // optimistic
+    try {
+      const aa = await obs.call("audio.setAdvanced", { uuid: src.uuid, monitoringType: next });
+      monitoring = { ...monitoring, [src.uuid]: aa.monitoringType };
+    } catch (e) {
+      error = (e as Error).message;
+    }
+  }
+
+  // Filters address the source by name (filters.* resolve via obs_get_source_by_name),
+  // reusing the shared clipboard.filters chain, same as the Sources/Canvas docks.
+  async function copyFilters(src: AudioSource) {
+    try {
+      clipboard.filters = (await obs.call("filters.copyChain", { source: src.name })).filters;
+    } catch (e) {
+      error = (e as Error).message;
+    }
+  }
+
+  async function pasteFilters(src: AudioSource) {
+    if (!clipboard.filters) {
+      return;
+    }
+    try {
+      await obs.call("filters.pasteChain", { source: src.name, filters: clipboard.filters });
+    } catch (e) {
+      error = (e as Error).message;
+    }
+  }
+
+  function openMenu(e: MouseEvent, src: AudioSource) {
+    e.preventDefault();
+    menu = {
+      x: e.clientX,
+      y: e.clientY,
+      items: [
+        { label: "Properties", action: () => (propsForSource = src.name) },
+        { label: "Filters", action: () => openFilters(src.name, "audio") },
+        { label: "Advanced Audio Properties", action: () => openAdvAudio(src.name, src.name) },
+        null,
+        { label: "Copy Filters", action: () => void copyFilters(src) },
+        { label: "Paste Filters", disabled: !clipboard.filters, action: () => void pasteFilters(src) },
+      ],
+    };
+  }
+
   function fmtDb(db: number): string {
     if (!Number.isFinite(db) || db <= DB_FLOOR) {
       return "-∞";
@@ -138,7 +220,8 @@ import { EV } from "$lib/utils/eventNames";
     <ul class="list">
       {#each sources as src (src.uuid)}
         {@const m = meters[src.uuid]}
-        <li class="row" class:muted={src.muted}>
+        {@const mon = monitoring[src.uuid] ?? "none"}
+        <li class="row" class:muted={src.muted} oncontextmenu={(e) => openMenu(e, src)}>
           <div class="top">
             <span class="name" title={src.name}>{src.name}</span>
             <span class="db">{fmtDb(src.volumeDb)} dB</span>
@@ -159,6 +242,30 @@ import { EV } from "$lib/utils/eventNames";
               onclick={() => void toggleMuted(src)}
             >
               <Icon name={src.muted ? "mute" : "volume"} size={13} />
+            </button>
+            <button
+              class="tool-btn mon"
+              class:on={mon !== "none"}
+              class:both={mon === "monitorAndOutput"}
+              title={MONITOR_LABEL[mon]}
+              aria-label={MONITOR_LABEL[mon]}
+              onclick={() => void cycleMonitor(src)}
+            >
+              <svg
+                width="13"
+                height="13"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.7"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M3 18v-6a9 9 0 0 1 18 0v6" />
+                <path
+                  d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"
+                />
+              </svg>
             </button>
             <button class="tool-btn" title="Filters" aria-label="Filters" onclick={() => openFilters(src.name, "audio")}>
               <Icon name="sliders" size={13} />
@@ -187,6 +294,19 @@ import { EV } from "$lib/utils/eventNames";
     </ul>
   {/if}
 </div>
+
+{#if menu}
+  <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => (menu = null)} />
+{/if}
+
+{#if propsForSource}
+  <PropertiesModal
+    kind="source"
+    ref={propsForSource}
+    title={"Properties — " + propsForSource}
+    onClose={() => (propsForSource = null)}
+  />
+{/if}
 
 <style>
   .list {
@@ -268,6 +388,17 @@ import { EV } from "$lib/utils/eventNames";
     gap: 8px;
   }
   .mute.on {
+    color: var(--color-live);
+  }
+  /* Monitoring quick-toggle: dim when Off, accent for Monitor Only, live tint when
+     also routed to output. Order matters -- .both must win over .on. */
+  .mon {
+    color: var(--color-muted);
+  }
+  .mon.on {
+    color: var(--color-accent);
+  }
+  .mon.both {
     color: var(--color-live);
   }
   .fader {
