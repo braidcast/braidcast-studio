@@ -41,6 +41,7 @@ import { EV } from "$lib/utils/eventNames";
   import Toast from "$lib/ui/Toast.svelte";
   import { showToast } from "$lib/stores/toastStore.svelte";
   import { callOrToast } from "$lib/utils/callToast";
+  import { previewSuspended } from "$lib/stores/previewGate.svelte";
 
   // Apply the saved (or default Industrial) theme before first paint settles.
   void themeStore.hydrate();
@@ -85,11 +86,53 @@ import { EV } from "$lib/utils/eventNames";
     );
   }
 
+  // Arrow-key nudge (mirrors stock OBS: 1px, 10px with Shift). Reads the item's
+  // current position and writes back a position-only patch through the same
+  // get/setTransform pair quickTransform/copy-paste-transform use above — position
+  // is in canvas pixels, y growing downward, matching the preview and the Edit
+  // Transform dialog.
+  async function nudge(dx: number, dy: number): Promise<void> {
+    const it = sourceSelection.item;
+    if (!it) {
+      return;
+    }
+    const params = { scene: sourceSelection.scene ?? undefined, id: it.id };
+    const xf = await callOrToast("sceneItems.getTransform", params, "Nudge failed");
+    if (!xf) {
+      return;
+    }
+    void callOrToast(
+      "sceneItems.setTransform",
+      { ...params, transform: { pos: { x: xf.pos.x + dx, y: xf.pos.y + dy } } },
+      "Nudge failed",
+    );
+  }
+
+  const ARROW_DELTAS: Record<string, [number, number]> = {
+    ArrowLeft: [-1, 0],
+    ArrowRight: [1, 0],
+    ArrowUp: [0, -1],
+    ArrowDown: [0, 1],
+  };
+
   function onKeydown(e: KeyboardEvent): void {
     // Fullscreen toggles regardless of focus (not gated on editable target).
     if (e.key === "F11") {
       e.preventDefault();
       void obs.call("window.toggleFullscreen").catch(() => {});
+      return;
+    }
+    // Arrow-key nudge of the globally-selected scene item on the preview. Leaves
+    // Ctrl/Alt+Arrow, editable targets, and modal-open (arrows belong to the
+    // dialog) alone; no-ops (without preventDefault) when nothing is selected so
+    // e.g. list navigation still gets the arrow.
+    const arrowDelta = ARROW_DELTAS[e.key];
+    if (arrowDelta && !e.ctrlKey && !e.altKey && !isEditable(e.target) && !previewSuspended()) {
+      if (sourceSelection.item) {
+        e.preventDefault();
+        const step = e.shiftKey ? 10 : 1;
+        void nudge(arrowDelta[0] * step, arrowDelta[1] * step);
+      }
       return;
     }
     // Windows modifier; ignore Alt-combos and editable targets.
