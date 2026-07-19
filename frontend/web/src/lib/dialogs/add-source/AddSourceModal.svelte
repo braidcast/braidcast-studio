@@ -36,7 +36,11 @@
   // In the detail step: "existing" references an existing source; "new" creates one.
   let mode = $state<"existing" | "new">("new");
   let name = $state("");
-  let pickedExisting = $state<string>("");
+  // Multi-select of existing-source tiles (§3.4); anchor is the pivot for Shift-range.
+  let selectedExisting = $state<Set<string>>(new Set());
+  let anchorExisting = $state<string | null>(null);
+  // §3.3: initial visibility of the added scene item(s) -- mirrors Qt's sourceVisible.
+  let addVisible = $state(true);
 
   // Existing-source tile thumbnails: resolved lazily (after the list renders) and
   // cached per source name for the modal's lifetime so filtering/re-renders don't
@@ -125,11 +129,19 @@
   function pickType(t: SourceType) {
     selectedType = t;
     error = null;
-    // Spec: default to Create-new even when existing instances exist; preselect the
-    // first existing so switching the radio to "Use existing" already has a choice.
-    mode = "new";
-    const firstExisting = existingSources.find((s) => s.typeId === t.id);
-    pickedExisting = firstExisting ? firstExisting.name : "";
+    // §3.1 reuse-by-default: when instances of this type already exist, prime "Use
+    // existing" with the first one selected; otherwise fall through to create-new.
+    // Re-runs on every type pick (existingOfType tracks the freshly-set type).
+    const first = existingOfType[0];
+    if (first) {
+      mode = "existing";
+      selectedExisting = new Set([first.name]);
+      anchorExisting = first.name;
+    } else {
+      mode = "new";
+      selectedExisting = new Set();
+      anchorExisting = null;
+    }
     name = uniqueName(t.name);
   }
   function backToPicker() {
@@ -141,18 +153,37 @@
   const nameTaken = $derived(trimmed.length > 0 && existingNames.has(trimmed.toLowerCase()));
   const nameValid = $derived(trimmed.length > 0 && !nameTaken);
 
-  // Add a reference to an already-created source into this canvas's current scene.
-  async function addExisting(sourceName: string) {
-    if (creating) return;
-    creating = true;
-    error = null;
-    try {
-      const created = await obs.call("sources.addExisting", { canvas, scene, name: sourceName });
-      onCreated(created);
-    } catch (e) {
-      error = (e as Error).message;
-      creating = false;
+  // Tile selection follows the file-manager model: plain click selects one
+  // (exclusive), Ctrl/Cmd-click toggles, Shift-click extends a range from the anchor.
+  // We drive `checked` from the set, so suppress the checkbox's own toggle.
+  function selectTile(e: MouseEvent, sourceName: string) {
+    e.preventDefault();
+    const next = new Set(selectedExisting);
+    if (e.shiftKey && anchorExisting) {
+      const names = existingOfType.map((s) => s.name);
+      const a = names.indexOf(anchorExisting);
+      const b = names.indexOf(sourceName);
+      if (a !== -1 && b !== -1) {
+        const [lo, hi] = a < b ? [a, b] : [b, a];
+        for (let i = lo; i <= hi; i++) next.add(names[i]);
+      }
+    } else if (e.ctrlKey || e.metaKey) {
+      if (next.has(sourceName)) next.delete(sourceName);
+      else next.add(sourceName);
+      anchorExisting = sourceName;
+    } else {
+      next.clear();
+      next.add(sourceName);
+      anchorExisting = sourceName;
     }
+    selectedExisting = next;
+  }
+
+  // §3.3: when "Add Visible" is off, hide the just-added item. Its id comes back from
+  // the add call, so no scene re-read is needed.
+  async function applyVisibility(id: number) {
+    if (addVisible) return;
+    await obs.call("sceneItems.setVisible", { canvas, scene, id, visible: false });
   }
   async function create() {
     if (!selectedType || !nameValid || creating) return;
@@ -160,6 +191,7 @@
     error = null;
     try {
       const created = await obs.call("sources.create", { type: selectedType.id, name: trimmed, canvas, scene });
+      await applyVisibility(created.id);
       pushRecent(selectedType.id);
       onCreated(created);
     } catch (e) {
@@ -167,12 +199,29 @@
       creating = false;
     }
   }
-  function confirmDetail() {
-    if (mode === "existing") {
-      if (pickedExisting) void addExisting(pickedExisting);
-    } else {
-      void create();
+  // Add every selected existing source (§3.4), each honoring Add-Visible. onCreated
+  // unmounts the modal, so fire it once after the whole batch with the last item.
+  async function addSelectedExisting() {
+    if (creating || selectedExisting.size === 0) return;
+    creating = true;
+    error = null;
+    try {
+      let last: { id: number; source: string } | null = null;
+      for (const src of existingOfType) {
+        if (!selectedExisting.has(src.name)) continue;
+        const created = await obs.call("sources.addExisting", { canvas, scene, name: src.name });
+        await applyVisibility(created.id);
+        last = created;
+      }
+      if (last) onCreated(last);
+    } catch (e) {
+      error = (e as Error).message;
+      creating = false;
     }
+  }
+  function confirmDetail() {
+    if (mode === "existing") void addSelectedExisting();
+    else void create();
   }
 
   // Source-type icon by capability (video+audio media, video-only, audio-only, other).
@@ -187,11 +236,11 @@
   function onKeydown(e: KeyboardEvent) {
     if (e.key === "Enter" && selectedType) {
       if (mode === "new" && nameValid) void create();
-      else if (mode === "existing" && pickedExisting) void addExisting(pickedExisting);
+      else if (mode === "existing" && selectedExisting.size > 0) void addSelectedExisting();
     }
   }
 
-  const detailValid = $derived(mode === "existing" ? pickedExisting.length > 0 : nameValid);
+  const detailValid = $derived(mode === "existing" ? selectedExisting.size > 0 : nameValid);
 </script>
 
 <svelte:window onkeydown={onKeydown} />
@@ -211,8 +260,12 @@
             {#each existingOfType as src (src.name)}
               {@const thumb = thumbs[src.name]}
               <li>
-                <label class="ex-tile" class:sel={pickedExisting === src.name}>
-                  <input type="radio" value={src.name} bind:group={pickedExisting} />
+                <label class="ex-tile" class:sel={selectedExisting.has(src.name)}>
+                  <input
+                    type="checkbox"
+                    checked={selectedExisting.has(src.name)}
+                    onclick={(e) => selectTile(e, src.name)}
+                  />
                   <span class="ex-thumb">
                     {#if thumb}
                       <img src={thumb} alt="" />
@@ -237,8 +290,15 @@
         </div>
       {/if}
       <div class="actions">
+        <label class="add-visible"><input type="checkbox" bind:checked={addVisible} /> Add Visible</label>
         <button class="accent" disabled={!detailValid || creating} onclick={confirmDetail}>
-          {creating ? "Adding…" : mode === "existing" ? "Add" : "Create"}
+          {creating
+            ? "Adding…"
+            : mode === "existing"
+              ? selectedExisting.size > 1
+                ? `Add ${selectedExisting.size} Existing`
+                : "Add Existing"
+              : "Create"}
         </button>
       </div>
     </div>
@@ -479,9 +539,18 @@
   }
   .actions {
     display: flex;
-    justify-content: flex-end;
+    align-items: center;
+    justify-content: space-between;
     gap: 8px;
     margin-top: 6px;
+  }
+  .add-visible {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--color-text);
+    cursor: pointer;
   }
   .dim {
     color: var(--color-muted);
