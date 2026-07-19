@@ -2611,6 +2611,20 @@ const UndoManager::Cb kRedoDuplicateSceneToCanvas = [](const std::string &d) {
 	}
 };
 
+// {type, duration} for a per-item show/hide transition, or null when unset.
+// Shared by sceneItems.list and sceneItems.setShowTransition/setHideTransition.
+json SceneItemTransitionJson(obs_sceneitem_t *item, bool show)
+{
+	obs_source_t *transition = obs_sceneitem_get_transition(item, show); // borrowed
+	if (!transition) {
+		return nullptr;
+	}
+	return json{
+		{"type", obs_source_get_unversioned_id(transition)},
+		{"duration", obs_sceneitem_get_transition_duration(item, show)},
+	};
+}
+
 bool MethodSceneItemsList(const json &params, json &result, std::string &error)
 {
 	obs_source_t *sceneSource = ResolveTargetScene(params); // addref'd
@@ -2648,6 +2662,8 @@ bool MethodSceneItemsList(const json &params, json &result, std::string &error)
 					     src ? ((obs_source_get_output_flags(src) & OBS_SOURCE_INTERACTION) != 0)
 						 : false},
 					    {"color", color ? color : ""},
+					    {"showTransition", SceneItemTransitionJson(item, true)},
+					    {"hideTransition", SceneItemTransitionJson(item, false)},
 				    });
 			return true;
 		},
@@ -2943,6 +2959,104 @@ bool MethodSceneItemsSetBlendingMethod(const json &params, json &result, std::st
 	RecordUndo("Blending Method", ApplyBlendingMethod, before, after);
 	result = json{{"id", id}, {"method", method}};
 	return true;
+}
+
+// Shared implementation for sceneItems.setShowTransition / setHideTransition.
+// params: {scene, id, canvas?, transition: <registered type id, or null/"" to
+// clear>, duration: <ms>}. `show` selects which of the item's two independent
+// transitions (show vs. hide) is set.
+//
+// Ownership: obs_sceneitem_set_transition() takes its own ref on the transition
+// source (obs_source_get_ref internally) and releases whatever was previously
+// set, so the create-ref from obs_source_create_private() must be released
+// right after handing it to set_transition -- mirrors the exact pattern
+// obs_sceneitem_transition_load() uses when restoring a saved item transition
+// (libobs/obs-scene.c). Passing NULL clears the item's transition and releases
+// the old one; no separate release call is needed for the clear path.
+//
+// Persistence: per-item transitions are serialized by libobs itself (scene_save
+// _item/scene_load_item -> obs_sceneitem_transition_save/load), so no extra
+// wiring is needed here beyond the same CommitSceneItemChange() every sibling
+// sceneItems.set* method already calls to persist + notify.
+bool SetSceneItemTransition(const json &params, json &result, std::string &error, bool show)
+{
+	int64_t id = 0;
+	if (!ItemIdFromParams(params, id, error)) {
+		return false;
+	}
+
+	std::string typeId;
+	bool clear = true;
+	if (auto it = params.find("transition"); it != params.end() && it->is_string()) {
+		typeId = it->get<std::string>();
+		clear = typeId.empty();
+	}
+
+	uint32_t duration = 0;
+	if (auto it = params.find("duration"); it != params.end() && it->is_number_integer()) {
+		duration = static_cast<uint32_t>(std::max<int64_t>(0, it->get<int64_t>()));
+	}
+
+	// Reuse the transitions dock's own type list -- no second enumeration.
+	std::string typeName = typeId;
+	if (!clear) {
+		bool known = false;
+		for (const auto &[tid, name] : Transitions::TypeList()) {
+			if (tid == typeId) {
+				known = true;
+				typeName = name;
+				break;
+			}
+		}
+		if (!known) {
+			error = "unknown transition type '" + typeId + "'";
+			return false;
+		}
+	}
+
+	obs_source_t *sceneSource = ResolveTargetScene(params);
+	if (!sceneSource) {
+		error = "no scene";
+		return false;
+	}
+	obs_scene_t *scene = obs_scene_from_source(sceneSource);
+	obs_sceneitem_t *item = FindSceneItem(scene, id);
+	if (!item) {
+		obs_source_release(sceneSource);
+		error = "no scene item with id " + std::to_string(id);
+		return false;
+	}
+
+	if (clear) {
+		obs_sceneitem_set_transition(item, show, nullptr);
+	} else {
+		obs_source_t *transition =
+			obs_source_create_private(typeId.c_str(), typeName.c_str(), nullptr); // create-ref
+		if (!transition) {
+			obs_source_release(sceneSource);
+			error = "failed to create transition '" + typeId + "'";
+			return false;
+		}
+		obs_sceneitem_set_transition(item, show, transition); // set_transition takes its own ref
+		obs_source_release(transition);                       // drop the create-ref
+	}
+	obs_sceneitem_set_transition_duration(item, show, duration);
+
+	CommitSceneItemChange(params, sceneSource);
+	obs_source_release(sceneSource);
+
+	result = json{{"id", id}, {"transition", clear ? json(nullptr) : json(typeId)}, {"duration", duration}};
+	return true;
+}
+
+bool MethodSceneItemsSetShowTransition(const json &params, json &result, std::string &error)
+{
+	return SetSceneItemTransition(params, result, error, true);
+}
+
+bool MethodSceneItemsSetHideTransition(const json &params, json &result, std::string &error)
+{
+	return SetSceneItemTransition(params, result, error, false);
 }
 
 // Set a row color tag on a scene item. The color is a hex string ("#RRGGBB" /
@@ -9754,6 +9868,8 @@ void Init()
 		{"sceneItems.setTransform", MethodSceneItemsSetTransform},
 		{"sceneItems.transformAction", MethodSceneItemsTransformAction},
 		{"sceneItems.setScaleFilter", MethodSceneItemsSetScaleFilter},
+		{"sceneItems.setShowTransition", MethodSceneItemsSetShowTransition},
+		{"sceneItems.setHideTransition", MethodSceneItemsSetHideTransition},
 		{"sceneItems.setBlendingMode", MethodSceneItemsSetBlendingMode},
 		{"sceneItems.setBlendingMethod", MethodSceneItemsSetBlendingMethod},
 		{"sceneItems.setColor", MethodSceneItemsSetColor},

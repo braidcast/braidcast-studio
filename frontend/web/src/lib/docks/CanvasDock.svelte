@@ -20,9 +20,10 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   import { transformMenu } from "$lib/menus/transformMenu";
   import { scaleFilterMenu } from "$lib/menus/scaleFilterMenu";
   import { blendModeMenu, blendMethodMenu } from "$lib/menus/blendMenu";
+  import { showTransitionMenu, hideTransitionMenu, transitionTypes } from "$lib/menus/transitionMenu";
   import { deinterlaceMenu } from "$lib/menus/deinterlaceMenu";
   import { colorMenu } from "$lib/menus/colorMenu";
-  import type { DeinterlaceMode, DeinterlaceFieldOrder } from "$lib/api/bridge";
+  import type { DeinterlaceMode, DeinterlaceFieldOrder, TransitionType } from "$lib/api/bridge";
   import { defaultCanvas } from "$lib/docks/defaultCanvasStore.svelte";
   import { canvasStore } from "$lib/stores/canvasStore.svelte";
   import { callOrToast } from "$lib/utils/callToast";
@@ -622,6 +623,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     const y = e.clientY;
     const idx = items.findIndex((i) => i.id === item.id);
     const deint = item.source ? await fetchDeint(item.source) : { mode: "disable" as const, fieldOrder: "top" as const };
+    const transitionTypeList = await transitionTypes().catch(() => []);
     menu = {
       x,
       y,
@@ -646,6 +648,54 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
           void obs
             .call("sceneItems.setBlendingMethod", { canvas: canvasUuid, scene: currentScene, id: item.id, method })
             .catch(report),
+        ),
+        showTransitionMenu(
+          item.showTransition,
+          transitionTypeList,
+          (type) =>
+            void obs
+              .call("sceneItems.setShowTransition", {
+                canvas: canvasUuid,
+                scene: currentScene,
+                id: item.id,
+                transition: type,
+                duration: item.showTransition?.duration ?? 300,
+              })
+              .catch(report),
+          (duration) =>
+            void obs
+              .call("sceneItems.setShowTransition", {
+                canvas: canvasUuid,
+                scene: currentScene,
+                id: item.id,
+                transition: item.showTransition?.type ?? null,
+                duration,
+              })
+              .catch(report),
+        ),
+        hideTransitionMenu(
+          item.hideTransition,
+          transitionTypeList,
+          (type) =>
+            void obs
+              .call("sceneItems.setHideTransition", {
+                canvas: canvasUuid,
+                scene: currentScene,
+                id: item.id,
+                transition: type,
+                duration: item.hideTransition?.duration ?? 300,
+              })
+              .catch(report),
+          (duration) =>
+            void obs
+              .call("sceneItems.setHideTransition", {
+                canvas: canvasUuid,
+                scene: currentScene,
+                id: item.id,
+                transition: item.hideTransition?.type ?? null,
+                duration,
+              })
+              .catch(report),
         ),
         ...(item.source
           ? [
@@ -710,6 +760,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
       locked: boolean;
     },
     deint: { mode: DeinterlaceMode; fieldOrder: DeinterlaceFieldOrder },
+    transitionTypeList: TransitionType[],
   ): (ContextMenuItem | null)[] {
     const call = (method: string, params: Record<string, unknown>) =>
       obs.call(method, { canvas: canvasUuid, scene: p.scene, id: p.id, ...params }).catch(report);
@@ -717,6 +768,8 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     const currentBlendMode = items.find((i) => i.id === p.id)?.blendMode ?? "normal";
     const currentBlendMethod = items.find((i) => i.id === p.id)?.blendMethod ?? "default";
     const currentColor = items.find((i) => i.id === p.id)?.color ?? "";
+    const currentShowTransition = items.find((i) => i.id === p.id)?.showTransition ?? null;
+    const currentHideTransition = items.find((i) => i.id === p.id)?.hideTransition ?? null;
     return [
       ...(p.id != null
         ? [transformMenu({ canvas: canvasUuid, scene: p.scene ?? undefined, id: p.id }, p.source ?? "(unnamed)")]
@@ -724,6 +777,22 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
       scaleFilterMenu(currentFilter, (filter) => void call("sceneItems.setScaleFilter", { filter })),
       blendModeMenu(currentBlendMode, (mode) => void call("sceneItems.setBlendingMode", { mode })),
       blendMethodMenu(currentBlendMethod, (method) => void call("sceneItems.setBlendingMethod", { method })),
+      showTransitionMenu(
+        currentShowTransition,
+        transitionTypeList,
+        (type) =>
+          void call("sceneItems.setShowTransition", { transition: type, duration: currentShowTransition?.duration ?? 300 }),
+        (duration) =>
+          void call("sceneItems.setShowTransition", { transition: currentShowTransition?.type ?? null, duration }),
+      ),
+      hideTransitionMenu(
+        currentHideTransition,
+        transitionTypeList,
+        (type) =>
+          void call("sceneItems.setHideTransition", { transition: type, duration: currentHideTransition?.duration ?? 300 }),
+        (duration) =>
+          void call("sceneItems.setHideTransition", { transition: currentHideTransition?.type ?? null, duration }),
+      ),
       ...(p.source
         ? [
             deinterlaceMenu(
@@ -886,7 +955,8 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
         const deint = p.source
           ? await fetchDeint(p.source)
           : { mode: "disable" as const, fieldOrder: "top" as const };
-        menu = { x, y, items: buildPreviewItems(p, deint), suspendOverlay: true };
+        const transitionTypeList = await transitionTypes().catch(() => []);
+        menu = { x, y, items: buildPreviewItems(p, deint, transitionTypeList), suspendOverlay: true };
       })();
     });
 

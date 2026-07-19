@@ -36,6 +36,14 @@ export interface SceneInfo {
   current: boolean;
 }
 
+/** A scene item's show/hide transition (type + duration), as reported by
+ * sceneItems.list and set via sceneItems.setShowTransition/setHideTransition.
+ * `type` is a registered transition-type id (see transitionTypes.list). */
+export interface ItemTransition {
+  type: string;
+  duration: number;
+}
+
 /** A scene item (source within a scene) as reported by sceneItems.list. */
 export interface SceneItem {
   id: number;
@@ -48,6 +56,10 @@ export interface SceneItem {
   interactive?: boolean;
   // Per-item color tag (hex like "#RRGGBB"; "" when unset).
   color: string;
+  // Per-item show/hide transitions (type + duration), or null when unset
+  // (libobs falls back to a hard cut / the default 300ms when unset).
+  showTransition: ItemTransition | null;
+  hideTransition: ItemTransition | null;
 }
 
 export type ReorderDirection = "up" | "down" | "top" | "bottom";
@@ -1230,6 +1242,11 @@ export interface ObsMethods {
   "sceneItems.setScaleFilter": Record<string, never>;
   "sceneItems.setBlendingMode": Record<string, never>;
   "sceneItems.setBlendingMethod": Record<string, never>;
+  // Set a scene item's show/hide transition ({ scene, id, canvas?, transition:
+  // <registered type id> | null, duration: <ms> }; null/"" clears it). Emits
+  // sceneItems.changed.
+  "sceneItems.setShowTransition": Record<string, never>;
+  "sceneItems.setHideTransition": Record<string, never>;
   // Set a per-item color tag ({ scene, id, canvas?, color }; color "" clears it).
   // Emits sceneItems.changed.
   "sceneItems.setColor": { ok: true };

@@ -13,6 +13,7 @@ import { EV } from "$lib/utils/eventNames";
   import { transformMenu } from "$lib/menus/transformMenu";
   import { scaleFilterMenu } from "$lib/menus/scaleFilterMenu";
   import { blendModeMenu, blendMethodMenu } from "$lib/menus/blendMenu";
+  import { showTransitionMenu, hideTransitionMenu, transitionTypes } from "$lib/menus/transitionMenu";
   import { deinterlaceMenu } from "$lib/menus/deinterlaceMenu";
   import { colorMenu } from "$lib/menus/colorMenu";
   import type { DeinterlaceMode, DeinterlaceFieldOrder } from "$lib/api/bridge";
@@ -393,6 +394,7 @@ import { EV } from "$lib/utils/eventNames";
     const x = e.clientX;
     const y = e.clientY;
     const deint = item.source ? await fetchDeint(item.source) : { mode: "disable" as const, fieldOrder: "top" as const };
+    const transitionTypeList = await transitionTypes().catch(() => []);
     menu = {
       x,
       y,
@@ -412,6 +414,50 @@ import { EV } from "$lib/utils/eventNames";
         ),
         blendMethodMenu(item.blendMethod, (method) =>
           void obs.call("sceneItems.setBlendingMethod", { scene: currentScene, id: item.id, method }).catch(report),
+        ),
+        showTransitionMenu(
+          item.showTransition,
+          transitionTypeList,
+          (type) =>
+            void obs
+              .call("sceneItems.setShowTransition", {
+                scene: currentScene,
+                id: item.id,
+                transition: type,
+                duration: item.showTransition?.duration ?? 300,
+              })
+              .catch(report),
+          (duration) =>
+            void obs
+              .call("sceneItems.setShowTransition", {
+                scene: currentScene,
+                id: item.id,
+                transition: item.showTransition?.type ?? null,
+                duration,
+              })
+              .catch(report),
+        ),
+        hideTransitionMenu(
+          item.hideTransition,
+          transitionTypeList,
+          (type) =>
+            void obs
+              .call("sceneItems.setHideTransition", {
+                scene: currentScene,
+                id: item.id,
+                transition: type,
+                duration: item.hideTransition?.duration ?? 300,
+              })
+              .catch(report),
+          (duration) =>
+            void obs
+              .call("sceneItems.setHideTransition", {
+                scene: currentScene,
+                id: item.id,
+                transition: item.hideTransition?.type ?? null,
+                duration,
+              })
+              .catch(report),
         ),
         ...(item.source
           ? [
