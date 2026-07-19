@@ -226,6 +226,16 @@
     }
   }
 
+  async function duplicate(f: FilterInfo) {
+    try {
+      const created = await obs.call("filters.duplicate", { source, name: f.name });
+      await loadFilters();
+      selectedUuid = created.uuid;
+    } catch (e) {
+      report(e);
+    }
+  }
+
   function beginPick() {
     picking = true;
     pickType = "";
@@ -342,6 +352,9 @@
               onclick={() => void reorder(f, "down")}
             >
               <Icon name="down" size={12} />
+            </button>
+            <button class="dock-icon" title="Duplicate" aria-label="Duplicate" onclick={() => void duplicate(f)}>
+              <Icon name="copy" size={12} />
             </button>
             <button class="dock-icon danger" title="Remove" aria-label="Remove" onclick={() => void remove(f)}>
               <Icon name="trash" size={12} />

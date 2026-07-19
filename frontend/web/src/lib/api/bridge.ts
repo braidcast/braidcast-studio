@@ -1350,7 +1350,7 @@ export interface ObsMethods {
   "encoderTypes.list": EncoderType[];
   // Source filters. filterTypes.list enumerates creatable filter types (optionally
   // narrowed by kind); filters.list returns one source's chain in draw order. add/
-  // remove/setEnabled/reorder/rename mutate the chain; the selected filter's
+  // remove/setEnabled/reorder/rename/duplicate mutate the chain; the selected filter's
   // obs_properties are edited via PropertyForm kind="filter" (ref = its uuid).
   "filterTypes.list": FilterType[];
   "filters.list": FilterInfo[];
@@ -1359,6 +1359,7 @@ export interface ObsMethods {
   "filters.setEnabled": { name: string; enabled: boolean };
   "filters.reorder": { name: string; direction: ReorderDirection };
   "filters.rename": { name: string };
+  "filters.duplicate": { name: string; uuid: string };
   // Copy/paste a whole filter chain between sources (paste is not yet undoable).
   "filters.copyChain": { filters: CopiedFilter[] };
   "filters.pasteChain": { pasted: number };

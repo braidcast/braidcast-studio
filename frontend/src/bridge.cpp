@@ -5285,6 +5285,44 @@ std::string UniqueFilterName(obs_source_t *parent, const std::string &base)
 	}
 }
 
+// Duplicate a single filter in place. params: {source, name}. Copies the named
+// filter's id + settings under a clash-free name (UniqueFilterName, matching
+// filters.add) and appends it to the same source. obs_source_duplicate copies
+// settings but not the enabled flag, so carry that over explicitly. Returns
+// {name, uuid}.
+bool MethodFiltersDuplicate(const json &params, json &result, std::string &error)
+{
+	obs_source_t *parent = ResolveFilterParent(params, error);
+	if (!parent) {
+		return false;
+	}
+	const std::string name = OptString(params, "name");
+	OBSSourceAutoRelease existing = obs_source_get_filter_by_name(parent, name.c_str());
+	if (!existing) {
+		obs_source_release(parent);
+		error = "no filter named '" + name + "' on this source";
+		return false;
+	}
+
+	const std::string dupName = UniqueFilterName(parent, name);
+	obs_source_t *dup = obs_source_duplicate(existing, dupName.c_str(), false);
+	if (!dup) {
+		obs_source_release(parent);
+		error = "failed to duplicate filter '" + name + "'";
+		return false;
+	}
+	obs_source_set_enabled(dup, obs_source_enabled(existing));
+	obs_source_filter_add(parent, dup);
+	const char *uuid = obs_source_get_uuid(dup);
+	std::string uuidStr = uuid ? std::string(uuid) : std::string();
+	obs_source_release(dup); // parent now holds the reference
+	obs_source_release(parent);
+
+	SceneCollection::Save();
+	result = json{{"name", dupName}, {"uuid", uuidStr}};
+	return true;
+}
+
 // Serialize a source's entire filter chain to a json array, each element
 // {id, name, settings, enabled}, in obs enumeration order (bottom-to-top).
 // Read-only; no mutation, no undo. params: {source}. Returns {filters: [...]}.
@@ -10202,6 +10240,7 @@ void Init()
 		{"filters.setEnabled", MethodFiltersSetEnabled},
 		{"filters.reorder", MethodFiltersReorder},
 		{"filters.rename", MethodFiltersRename},
+		{"filters.duplicate", MethodFiltersDuplicate},
 		{"filters.copyChain", MethodFiltersCopyChain},
 		{"filters.pasteChain", MethodFiltersPasteChain},
 		{"settings.getVideo", MethodSettingsGetVideo},
