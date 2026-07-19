@@ -34,7 +34,7 @@
   import { undoStore } from "$lib/stores/undoStore.svelte";
   import { channelsStore } from "$lib/stores/channelsStore.svelte";
   import { diagnosticsStore } from "$lib/stores/diagnosticsStore.svelte";
-  import { obs, type TransformAction } from "$lib/api/bridge";
+  import { obs, type TransformAction, type ReorderDirection } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
   import { clipboard } from "$lib/stores/clipboardStore.svelte";
   import { sourceSelection } from "$lib/stores/sourceSelectionStore.svelte";
@@ -115,6 +115,15 @@ import { EV } from "$lib/utils/eventNames";
     ArrowDown: [0, 1],
   };
 
+  // Ctrl+Arrow / Ctrl+Home / Ctrl+End reorder the selected item; "up" moves toward the
+  // topmost row (index 0), matching the SourcesDock up/down buttons and the top-first list.
+  const ORDER_DIRECTIONS: Record<string, ReorderDirection> = {
+    ArrowUp: "up",
+    ArrowDown: "down",
+    Home: "top",
+    End: "bottom",
+  };
+
   function onKeydown(e: KeyboardEvent): void {
     // Fullscreen toggles regardless of focus (not gated on editable target).
     if (e.key === "F11") {
@@ -135,8 +144,41 @@ import { EV } from "$lib/utils/eventNames";
       }
       return;
     }
+    // Delete removes the globally-selected scene item via the same bridge path the
+    // SourcesDock "Remove" toolbar/context-menu uses (server-side undoable). Gated like the
+    // nudge above; no-op (no preventDefault) when nothing is selected so the key falls
+    // through. Scene-ITEM removal only — a bare Delete nuking a whole scene needs focus
+    // context we don't have here and is an accidental-nuke hazard, so scene-Del is out of scope.
+    if (e.key === "Delete" && !e.ctrlKey && !e.altKey && !isEditable(e.target) && !previewSuspended()) {
+      const it = sourceSelection.item;
+      if (it) {
+        e.preventDefault();
+        void callOrToast(
+          "sceneItems.remove",
+          { scene: sourceSelection.scene ?? undefined, id: it.id },
+          "Remove failed",
+        );
+      }
+      return;
+    }
     // Windows modifier; ignore Alt-combos and editable targets.
     if (!e.ctrlKey || e.altKey || isEditable(e.target)) {
+      return;
+    }
+    // Ctrl+Arrow / Ctrl+Home / Ctrl+End reorder the selected item, reusing the same
+    // direction-based sceneItems.reorder the SourcesDock buttons call; the backend clamps
+    // at the ends. No-op (no preventDefault) when nothing is selected.
+    const orderDir = ORDER_DIRECTIONS[e.key];
+    if (orderDir) {
+      const it = sourceSelection.item;
+      if (it) {
+        e.preventDefault();
+        void callOrToast(
+          "sceneItems.reorder",
+          { scene: sourceSelection.scene ?? undefined, id: it.id, direction: orderDir },
+          "Reorder failed",
+        );
+      }
       return;
     }
     const key = e.key.toLowerCase();
