@@ -42,6 +42,7 @@ inline on each row (**✅ Fixed `<commit>`** / 🔧 in progress / 🔴 queued /
 | §2.1 scene reorder (buttons/menu/drag) | Major | ✅ Fixed `a7d15bb7d` |
 | §11.3 transform hotkeys | Major | ✅ Fixed `15f761b33` |
 | §1.4 blending mode/method submenus | Major | ✅ Fixed `ba36733c9` |
+| §2.2 scene filters (Filters/Copy/Paste) | Major | ✅ Fixed `088941459` |
 
 Blockers cleared (3 fixed, §4.2 deferred). Now working Major gaps in severity order.
 
@@ -84,7 +85,7 @@ Qt baseline: `frontend_old/components/SceneTree.{hpp,cpp}`,
 | # | Gap | Qt did | Current | Severity | Fix lives in |
 | --- | --- | --- | --- | --- | --- |
 | 2.1 | **No scene reorder at all** | `SceneTree` InternalMove drag (incl. grid-mode math) + toolbar Move Up/Down + Order submenu | ✅ **Fixed `a7d15bb7d`** — ScenesDock Move Up/Down buttons + Order submenu (Up/Down/Top/Bottom) + drag-to-reorder (list & grid). `scenes.reorder` gained a `to` index; native `ReorderScene` gained top/bottom + `MoveSceneToIndex`. **Default canvas only** — additional-canvas scene reorder (`CanvasDock` scene list) still refused by the bridge; separate native gap | Major | `ScenesDock.svelte`, `scene_persistence.{hpp,cpp}`, `bridge.cpp` |
-| 2.2 | **No Filters on a scene** (incl. copy/paste scene filters) | Scenes menu: Filters, Copy Filters, Paste Filters (`on_scenes_customContextMenuRequested`) | **Missing** — scene context menu is Rename/Duplicate/Duplicate-to-canvas/Remove only (`ScenesDock.svelte:168-176`). `filters.*` bridge methods resolve by source name — scenes are sources, so this is likely UI-only | Major | `ScenesDock.svelte` context menu → existing `filters.*` / `filters.copyChain`/`pasteChain` |
+| 2.2 | **No Filters on a scene** (incl. copy/paste scene filters) | Scenes menu: Filters, Copy Filters, Paste Filters (`on_scenes_customContextMenuRequested`) | ✅ **Fixed `088941459`** — Filters / Copy Filters / Paste Filters added to the scene context menu in both `ScenesDock` + `CanvasDock`; UI-only (confirmed `ResolveFilterParent` uses `obs_get_source_by_name`, so a scene resolves like any source). Reused `openFilters` + `filters.copyChain`/`pasteChain` + shared `clipboard.filters` → source↔scene filter-chain copy/paste now interoperable | Major | `ScenesDock.svelte`, `CanvasDock.svelte` |
 | 2.3 | Screenshot Scene missing | "Screenshot Scene" in scene menu | **Missing** — only per-source + program screenshots exist | Minor-UX | scene menu → `screenshot.takeSource` (scene is a source) |
 | 2.4 | Show-in-Multiview toggle missing | Per-scene checkable "Show in Multiview" (private setting `show_in_multiview`) | **Missing** (multiview shipped as backlog Item 10, but no per-scene inclusion toggle) | Minor-UX | scene menu + multiview render filter |
 
