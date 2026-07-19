@@ -245,7 +245,25 @@
 
 <svelte:window onkeydown={onKeydown} />
 
-<Modal title={selectedType ? `Add — ${selectedType.name}` : "Add Source"} {onClose} width={620}>
+{#snippet footerActions()}
+  <label class="add-visible"><input type="checkbox" bind:checked={addVisible} /> Add Visible</label>
+  <button class="accent" disabled={!detailValid || creating} onclick={confirmDetail}>
+    {creating
+      ? "Adding…"
+      : mode === "existing"
+        ? selectedExisting.size > 1
+          ? `Add ${selectedExisting.size} Existing`
+          : "Add Existing"
+        : "Create"}
+  </button>
+{/snippet}
+
+<Modal
+  title={selectedType ? `Add — ${selectedType.name}` : "Add Source"}
+  {onClose}
+  width={620}
+  footer={selectedType ? footerActions : undefined}
+>
   {#if error}<p class="error">{error}</p>{/if}
 
   {#if !loaded}
@@ -289,18 +307,6 @@
           {#if nameTaken}<p class="warn">A source named “{trimmed}” already exists.</p>{/if}
         </div>
       {/if}
-      <div class="actions">
-        <label class="add-visible"><input type="checkbox" bind:checked={addVisible} /> Add Visible</label>
-        <button class="accent" disabled={!detailValid || creating} onclick={confirmDetail}>
-          {creating
-            ? "Adding…"
-            : mode === "existing"
-              ? selectedExisting.size > 1
-                ? `Add ${selectedExisting.size} Existing`
-                : "Add Existing"
-              : "Create"}
-        </button>
-      </div>
     </div>
   {:else}
     <div class="picker">
@@ -537,17 +543,11 @@
   .name-step input {
     width: 100%;
   }
-  .actions {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    margin-top: 6px;
-  }
   .add-visible {
     display: inline-flex;
     align-items: center;
     gap: 6px;
+    margin-right: auto;
     font-size: 12px;
     color: var(--color-text);
     cursor: pointer;

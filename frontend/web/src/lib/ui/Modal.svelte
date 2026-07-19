@@ -299,6 +299,7 @@
     border-top: var(--border-weight) solid var(--color-border);
   }
   .modal-foot :global(.accent),
+  .modal-foot :global(.ghost),
   .modal-foot :global(.btn:not(.ghost)) {
     align-self: stretch;
     height: auto;
@@ -307,8 +308,8 @@
     border: 0;
     border-left: var(--border-weight) solid var(--color-border);
   }
-  /* Secondary/cancel action: a de-emphasized ghost that keeps its natural height
-     (never stretched) so the primary block stays the dominant edge-to-edge cell.
+  /* Secondary/cancel action: a de-emphasized ghost that fills the bar height like the
+     primary block, but reads quieter (mono, dimmed) so the accent cell stays dominant.
      Centralized here so every modal footer's Cancel reads like the GO LIVE one. */
   .modal-foot :global(.ghost) {
     font-family: var(--font-mono);

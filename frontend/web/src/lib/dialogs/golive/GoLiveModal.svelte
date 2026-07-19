@@ -1273,16 +1273,4 @@ import { EV } from "$lib/utils/eventNames";
     font-size: 11px;
     color: var(--color-muted);
   }
-  .ghost {
-    font-family: var(--font-mono);
-    font-size: 11px;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-    color: var(--color-dim);
-    background: var(--color-surface);
-  }
-  .ghost:hover {
-    color: var(--color-text);
-    border-color: var(--color-border);
-  }
 </style>

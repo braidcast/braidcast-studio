@@ -146,7 +146,7 @@
             onmouseenter={() => (active = i)}
             onclick={() => choose(p)}
           >
-            <span class="ps-av"><Avatar url={avatarFor(p)} name={profileName(p)} size={30} /></span>
+            <span class="ps-av"><Avatar url={avatarFor(p)} name={profileName(p)} size={26} /></span>
             <span class="ps-text">
               <span class="ps-name">{profileName(p)}</span>
               <span class="ps-sub">
@@ -185,12 +185,12 @@
     top: calc(100% + 4px);
     left: 0;
     right: 0;
-    max-height: 320px;
+    max-height: 232px;
     overflow-y: auto;
     display: flex;
     flex-direction: column;
-    gap: 6px;
-    padding: 7px;
+    gap: 5px;
+    padding: 6px;
     background: var(--color-surface);
     border: var(--border-weight) solid var(--color-border);
   }
@@ -204,10 +204,10 @@
   .ps-opt {
     display: flex;
     align-items: center;
-    gap: 11px;
+    gap: 9px;
     width: 100%;
     text-align: left;
-    padding: 11px 12px;
+    padding: 8px 10px;
     background: var(--color-base);
     border: var(--border-weight) solid var(--color-border);
     border-left: 3px solid transparent;
@@ -227,7 +227,7 @@
   .ps-text {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 3px;
     min-width: 0;
   }
   .ps-name {
