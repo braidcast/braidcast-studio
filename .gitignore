@@ -46,9 +46,6 @@
 !/docs/sphinx/_build/.gitignore
 !/docs/sphinx/Makefile
 
-# Exclude brainstorming / design-spec artifacts (not part of the fork)
-/docs/superpowers/
-
 # Exclude modified Flatpak files
 build-aux/flatpak-github-action-modified-*
 

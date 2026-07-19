@@ -625,7 +625,7 @@ input[type="color"] {
 
 /* ============================================================
    Canvases page — "command-deck" configuration UI.
-   Structure/tokens mirror docs/superpowers/design-redesign/
+   Structure/tokens mirror notes/superpowers/design-redesign/
    canvases-redesign-mock.html (Layout A). Global (unscoped) so the
    page, editor, and the five tabs share one field/segment/preset
    system instead of repeating it per component. Tints are color-mixed

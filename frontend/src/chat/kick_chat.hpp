@@ -15,7 +15,7 @@
 // Read path is REVERSE-ENGINEERED from the Kick web client (Pusher app key /
 // cluster, the kick.com/api/v2 chatroom-id lookup, the `[emote:id:name]` markup);
 // the send path is the official documented endpoint. See
-// docs/superpowers/specs/2026-06-30-phase9-research.md §1 -- every unofficial fact
+// notes/superpowers/specs/2026-06-30-phase9-research.md §1 -- every unofficial fact
 // is flagged at its use site.
 namespace OAuth {
 class KickProvider;

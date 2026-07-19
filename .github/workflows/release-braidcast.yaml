@@ -6,7 +6,7 @@ run-name: ${{ github.ref_name }} Braidcast release 🚀
 # deliberately excludes `v*` tags so the build is not run twice.
 #
 # Signing: the sign-windows job submits the packaged zip/installer to
-# SignPath (see docs/signing.md) and the release is attached with the
+# SignPath (see notes/signing.md) and the release is attached with the
 # signed payload. Until SIGNPATH_API_TOKEN is configured, sign-windows
 # no-ops and the release ships unsigned (today's behavior) rather than
 # failing the tag push.
@@ -41,7 +41,7 @@ jobs:
           if [[ -n "${SIGNPATH_API_TOKEN}" ]]; then
             echo 'configured=true' >> "$GITHUB_OUTPUT"
           else
-            echo '::notice::SIGNPATH_API_TOKEN is not set; this release will ship unsigned. See docs/signing.md.'
+            echo '::notice::SIGNPATH_API_TOKEN is not set; this release will ship unsigned. See notes/signing.md.'
             echo 'configured=false' >> "$GITHUB_OUTPUT"
           fi
         env:
@@ -163,7 +163,7 @@ jobs:
           # agnostic to the git-describe version embedded by CPack. Prefer the
           # SignPath-signed payload (sign-windows job) when it exists; fall
           # back to the raw build output when SIGNPATH_API_TOKEN isn't
-          # configured yet (see docs/signing.md), so releases still ship.
+          # configured yet (see notes/signing.md), so releases still ship.
           version="${{ steps.version.outputs.version }}"
 
           signed_dir="artifacts/braidcast-windows-x64-signed"
@@ -172,7 +172,7 @@ jobs:
             echo '::notice::Attaching SignPath-signed Windows artifacts'
           else
             search_dir="artifacts"
-            echo '::warning::SIGNPATH_API_TOKEN not configured; attaching UNSIGNED Windows artifacts (see docs/signing.md)'
+            echo '::warning::SIGNPATH_API_TOKEN not configured; attaching UNSIGNED Windows artifacts (see notes/signing.md)'
           fi
 
           zip="$(find "${search_dir}" -type f -name 'braidcast-*-windows-x64.zip' | head -1)"

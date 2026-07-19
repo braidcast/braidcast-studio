@@ -16,7 +16,7 @@
 //                                    timestamps (see main.cpp CefSettings.log_file).
 //                                    gpudiag is a non-category component of the
 //                                    two-var debug scheme (ObsBootstrap resolves it;
-//                                    see docs/dev-env-vars.md).
+//                                    see notes/dev-env-vars.md).
 //   BRAIDCAST_GPUDIAG_INTERVAL_MS=n  override the 5000ms sample interval (min 250).
 //   BRAIDCAST_DISABLE_BROWSER_SOURCES=1
 //                                    A/B kill switch: neutralize every obs-browser
