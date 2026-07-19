@@ -8796,24 +8796,31 @@ bool MethodScreenshotTakeProgram(const json &params, json &result, std::string &
 // held across the capture (it owns the item + source) and released on every path.
 bool MethodScreenshotTakeSource(const json &params, json &result, std::string &error)
 {
-	int64_t id = 0;
-	if (!ItemIdFromParams(params, id, error)) {
-		return false;
-	}
 	obs_source_t *sceneSource = ResolveTargetScene(params); // addref'd
 	if (!sceneSource) {
 		error = "no scene";
 		return false;
 	}
-	obs_scene_t *scene = obs_scene_from_source(sceneSource);
-	obs_sceneitem_t *item = FindSceneItem(scene, id);
-	if (!item) {
-		obs_source_release(sceneSource);
-		error = "no scene item with id " + std::to_string(id);
-		return false;
-	}
 
-	obs_source_t *src = obs_sceneitem_get_source(item); // borrowed; kept alive by sceneSource
+	// `id` is optional: with a scene-item id, screenshot that item's source; without
+	// one, screenshot the scene source itself ("Screenshot Scene" -- a scene renders
+	// as a source). The Default path resolves the scene by name; an additional canvas
+	// returns its current scene.
+	obs_source_t *src = sceneSource; // borrowed default: the scene itself
+	if (params.contains("id") && !params["id"].is_null()) {
+		int64_t id = 0;
+		if (!ItemIdFromParams(params, id, error)) {
+			obs_source_release(sceneSource);
+			return false;
+		}
+		obs_sceneitem_t *item = FindSceneItem(obs_scene_from_source(sceneSource), id);
+		if (!item) {
+			obs_source_release(sceneSource);
+			error = "no scene item with id " + std::to_string(id);
+			return false;
+		}
+		src = obs_sceneitem_get_source(item); // borrowed; kept alive by sceneSource
+	}
 	const uint32_t w = obs_source_get_width(src);
 	const uint32_t h = obs_source_get_height(src);
 	if (!w || !h) {

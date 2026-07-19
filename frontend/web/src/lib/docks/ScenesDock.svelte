@@ -296,6 +296,12 @@ import { EV } from "$lib/utils/eventNames";
         { label: "Duplicate", action: () => duplicate(name) },
         { label: "Duplicate to canvas", children: duplicateChildren },
         { label: "Order", children: orderChildren },
+        // A scene is a source, so its screenshot reuses screenshot.takeSource (the
+        // per-source path), targeting the scene by name instead of a scene-item id.
+        {
+          label: "Screenshot Scene",
+          action: () => void obs.call("screenshot.takeSource", { scene: name }).catch(report),
+        },
         null,
         { label: "Copy Filters", action: () => void copySceneFilters(name) },
         { label: "Paste Filters", disabled: !clipboard.filters, action: () => void pasteSceneFilters(name) },

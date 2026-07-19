@@ -329,6 +329,12 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
         { label: "Filters", action: () => openFilters(name) },
         { label: "Link to", children: linkChildren },
         { label: "Duplicate to canvas", children: duplicateChildren },
+        // A scene is a source, so its screenshot reuses screenshot.takeSource (the
+        // per-source path), targeting the scene by name instead of a scene-item id.
+        {
+          label: "Screenshot Scene",
+          action: () => void obs.call("screenshot.takeSource", { canvas: canvasUuid, scene: name }).catch(report),
+        },
         null,
         { label: "Copy Filters", action: () => void copySceneFilters(name) },
         { label: "Paste Filters", disabled: !clipboard.filters, action: () => void pasteSceneFilters(name) },
