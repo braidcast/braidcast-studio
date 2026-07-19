@@ -21,6 +21,7 @@ import { EV } from "$lib/utils/eventNames";
   import { STATE_COLOR } from "$lib/theme/stateColors";
   import { fmtDuration, fmtBitrate } from "$lib/utils/format";
   import { statsStore } from "$lib/stores/statsStore.svelte";
+  import { grade, DROP_GRADE, CONG_GRADE } from "$lib/utils/statsMeter";
   import { oauthStore } from "$lib/stores/oauthStore.svelte";
   import { pageStore, setPage } from "$lib/stores/pageStore.svelte";
   import { suspendPreview } from "$lib/stores/previewGate.svelte";
@@ -133,7 +134,10 @@ import { EV } from "$lib/utils/eventNames";
 
   // Perf summary for the bottom bar, derived from the polled stats snapshot. NET is
   // the summed output bitrate; em-dash when stats are absent or no outputs exist.
-  let perfRow = $derived.by<{ k: string; v: string }[]>(() => {
+  // CONG (peak congestion) + DROP (summed dropped frames · worst drop %) surface the
+  // network-health reads the Stats dock shows, but only while streaming; they reuse
+  // the dock's grade()/threshold mapping so the colors match.
+  let perfRow = $derived.by<{ k: string; v: string; c?: string }[]>(() => {
     if (!stats) {
       return [
         { k: "CPU", v: "—" },
@@ -144,15 +148,35 @@ import { EV } from "$lib/utils/eventNames";
       ];
     }
     const g = stats.general;
-    const totalKbps = stats.outputs.reduce((sum, o) => sum + o.bitrateKbps, 0);
+    let totalKbps = 0;
+    let droppedFrames = 0;
+    let worstDropPct = 0;
+    let maxCongestionPct = 0;
+    for (const o of stats.outputs) {
+      totalKbps += o.bitrateKbps;
+      droppedFrames += o.droppedFrames;
+      if (o.dropPct > worstDropPct) worstDropPct = o.dropPct;
+      if (o.congestionPct > maxCongestionPct) maxCongestionPct = o.congestionPct;
+    }
     const net = stats.outputs.length === 0 ? "—" : fmtBitrate(totalKbps);
-    return [
+    const row: { k: string; v: string; c?: string }[] = [
       { k: "CPU", v: g.cpu.toFixed(1) + "%" },
       { k: "FPS", v: String(Math.round(g.fps)) },
       { k: "RENDER", v: g.renderLagPct.toFixed(1) + "%" },
       { k: "ENCODE", v: g.encodeSkipPct.toFixed(1) + "%" },
       { k: "NET", v: net },
     ];
+    if (anyRunning) {
+      row.push(
+        { k: "CONG", v: maxCongestionPct.toFixed(1) + "%", c: grade(maxCongestionPct, CONG_GRADE[0], CONG_GRADE[1]) },
+        {
+          k: "DROP",
+          v: `${droppedFrames} (${worstDropPct.toFixed(1)}%)`,
+          c: grade(worstDropPct, DROP_GRADE[0], DROP_GRADE[1]),
+        },
+      );
+    }
+    return row;
   });
 
   onDestroy(() => {
@@ -801,7 +825,7 @@ import { EV } from "$lib/utils/eventNames";
       </button>
       <div class="perf" title="Performance">
         {#each perfRow as e (e.k)}
-          <span class="cell"><span class="k">{e.k}</span><span class="v">{e.v}</span></span>
+          <span class="cell"><span class="k">{e.k}</span><span class="v" style:color={e.c}>{e.v}</span></span>
         {/each}
       </div>
       <button

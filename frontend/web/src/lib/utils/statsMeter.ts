@@ -30,6 +30,13 @@ export function grade(v: number, warn: number, crit: number): string {
   return v >= crit ? METER_RED : v >= warn ? METER_YELLOW : METER_GREEN;
 }
 
+// Severity thresholds (warn, crit) fed to grade()/elevated() for the network-health
+// reads, shared by the Stats dock and the Studio go-live bar. Drop mirrors the
+// engine's %-health metrics (render lag / encode skip); congestion is a
+// slower-moving network-pressure gauge, so its band sits higher before it reads red.
+export const DROP_GRADE: [number, number] = [1, 5];
+export const CONG_GRADE: [number, number] = [30, 60];
+
 // Append to a fixed-length ring buffer, dropping the oldest past `max`.
 export function pushRing(arr: number[], v: number, max: number): void {
   arr.push(v);

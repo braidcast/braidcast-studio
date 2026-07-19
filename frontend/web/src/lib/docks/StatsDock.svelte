@@ -8,6 +8,8 @@
   import {
     METER_TEXT,
     METER_GREEN,
+    DROP_GRADE,
+    CONG_GRADE,
     fmtNum,
     fmtMem,
     elevated,
@@ -107,13 +109,6 @@
   const SH = 24;
 
   const outputs = $derived(stats?.outputs ?? []);
-
-  // Severity thresholds (warn, crit) fed to statsMeter grade() for the drop-frame
-  // and congestion reads. Drop mirrors the engine's %-health metrics (render lag /
-  // encode skip); congestion is a slower-moving network-pressure gauge, so its band
-  // sits higher before it reads red.
-  const DROP_GRADE: [number, number] = [1, 5];
-  const CONG_GRADE: [number, number] = [30, 60];
 
   // Cumulative read across every output, so trouble is visible before drilling into
   // rows: live/total, error count, summed dropped frames + worst drop%, summed
