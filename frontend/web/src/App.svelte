@@ -41,6 +41,7 @@ import { EV } from "$lib/utils/eventNames";
   import { clipboard } from "$lib/stores/clipboardStore.svelte";
   import { copyItem, pasteReference } from "$lib/stores/clipboardItemState";
   import { sourceSelection } from "$lib/stores/sourceSelectionStore.svelte";
+  import { renameSignal } from "$lib/stores/renameSignalStore.svelte";
   import Toast from "$lib/ui/Toast.svelte";
   import { showToast } from "$lib/stores/toastStore.svelte";
   import { callOrToast } from "$lib/utils/callToast";
@@ -162,6 +163,21 @@ import { EV } from "$lib/utils/eventNames";
         for (const id of ids) {
           void callOrToast("sceneItems.remove", { scene: sourceSelection.scene ?? undefined, id }, "Remove failed");
         }
+      }
+      return;
+    }
+    // F2 starts inline rename of the current selection, reusing the docks' existing
+    // beginRename via renameSignal (no rename editor/bridge here). A selected source item
+    // wins; otherwise the active scene. Gated like the nudge/Delete siblings; no-op (no
+    // preventDefault) when nothing is selected so the key falls through.
+    if (e.key === "F2" && !e.ctrlKey && !e.altKey && !isEditable(e.target) && !previewSuspended()) {
+      const it = sourceSelection.item;
+      if (it) {
+        e.preventDefault();
+        renameSignal.request({ kind: "source", id: it.id });
+      } else if (sourceSelection.scene) {
+        e.preventDefault();
+        renameSignal.request({ kind: "scene", name: sourceSelection.scene });
       }
       return;
     }

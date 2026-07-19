@@ -10,6 +10,7 @@ import { EV } from "$lib/utils/eventNames";
   import ListToolbar, { type ToolAction } from "$lib/docking/ListToolbar.svelte";
   import FilterReveal from "$lib/docking/FilterReveal.svelte";
   import { clipboard } from "$lib/stores/clipboardStore.svelte";
+  import { renameSignal } from "$lib/stores/renameSignalStore.svelte";
   import { openFilters } from "$lib/dialogs/filterDialogOpener.svelte";
 
   // The mount adapter strips internal __* keys; this dock declares no props.
@@ -130,6 +131,21 @@ import { EV } from "$lib/utils/eventNames";
     renamingFrom = name;
     renameTo = name;
   }
+
+  // App-level F2 (scene target): open the signalled scene's existing inline editor once per
+  // seq, guarding against re-fires from unrelated scene-list mutations.
+  let handledRenameSeq = -1;
+  $effect(() => {
+    const p = renameSignal.pending;
+    const target = p?.target;
+    if (!p || p.seq === handledRenameSeq || target?.kind !== "scene") {
+      return;
+    }
+    handledRenameSeq = p.seq;
+    if (defaultCanvas.scenes.some((s) => s.name === target.name)) {
+      beginRename(target.name);
+    }
+  });
 
   async function commitRename() {
     const from = renamingFrom;

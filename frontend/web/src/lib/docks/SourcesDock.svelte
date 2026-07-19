@@ -10,6 +10,7 @@ import { EV } from "$lib/utils/eventNames";
   import { clipboard } from "$lib/stores/clipboardStore.svelte";
   import { copyItem, pasteReference, pasteDuplicate } from "$lib/stores/clipboardItemState";
   import { sourceSelection } from "$lib/stores/sourceSelectionStore.svelte";
+  import { renameSignal } from "$lib/stores/renameSignalStore.svelte";
   import { openFilters } from "$lib/dialogs/filterDialogOpener.svelte";
   import { transformMenu } from "$lib/menus/transformMenu";
   import { scaleFilterMenu } from "$lib/menus/scaleFilterMenu";
@@ -301,6 +302,22 @@ import { EV } from "$lib/utils/eventNames";
     renamingId = item.id;
     renameTo = item.source ?? "";
   }
+
+  // App-level F2 (source target): find the signalled row in our list and open its existing
+  // inline editor. Guard by seq so unrelated `items` mutations don't re-trigger a rename.
+  let handledRenameSeq = -1;
+  $effect(() => {
+    const p = renameSignal.pending;
+    const target = p?.target;
+    if (!p || p.seq === handledRenameSeq || target?.kind !== "source") {
+      return;
+    }
+    handledRenameSeq = p.seq;
+    const item = items.find((i) => i.id === target.id);
+    if (item) {
+      beginRename(item);
+    }
+  });
 
   async function commitRename() {
     const id = renamingId;
