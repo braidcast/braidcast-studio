@@ -7,6 +7,7 @@
 
 #include "projector_window.hpp"
 
+#include "native_theme.hpp"
 #include "multistream/CanvasRuntime.hpp"
 #include "multistream/CanvasStore.hpp"
 #include "obs_bootstrap.hpp"
@@ -603,6 +604,7 @@ bool ProjectorWindow::Create(HINSTANCE instance, const RECT &monitorRect)
 			return false;
 		}
 		SetWindowLongPtrW(hwnd_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
+		NativeTheme::ApplyDark(hwnd_);
 		ShowWindow(hwnd_, SW_SHOW);
 		UpdateWindow(hwnd_);
 	}

@@ -7,6 +7,7 @@
 #include "bridge.hpp"
 #include "client.hpp"
 #include "log.hpp"
+#include "native_theme.hpp"
 #include "preview_window.hpp"
 #include "window_chrome.hpp"
 
@@ -90,6 +91,8 @@ int WindowManager::Detach(const std::string &dockId)
 	}
 	// Same frameless command-deck chrome as the main shell, with a smaller size floor.
 	WindowChrome::Init(hwnd, WindowChrome::kDetachedWindow);
+	// Force the residual native border/system menu dark, matching the host shell.
+	NativeTheme::ApplyDark(hwnd);
 	ShowWindow(hwnd, SW_SHOW);
 	UpdateWindow(hwnd);
 

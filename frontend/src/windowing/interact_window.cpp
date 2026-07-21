@@ -5,6 +5,7 @@
 #include "bridge.hpp"
 
 #include "interact_window.hpp"
+#include "native_theme.hpp"
 #include "projector_window.hpp" // EnumerateMonitors() for initial centering
 
 #include <obs.h>
@@ -541,6 +542,7 @@ bool InteractWindow::Create(HINSTANCE instance)
 		return false;
 	}
 	SetWindowLongPtrW(hwnd_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
+	NativeTheme::ApplyDark(hwnd_);
 	ShowWindow(hwnd_, SW_SHOW);
 	UpdateWindow(hwnd_);
 

@@ -27,6 +27,7 @@
 #include "multistream/StorePaths.hpp"
 #include "obs_bootstrap.hpp"
 #include "perf_repro_selftest.hpp"
+#include "windowing/native_theme.hpp"
 #include "windowing/preview_window.hpp"
 #include "windowing/projector_window.hpp"
 #include "scene/scene_persistence.hpp"
@@ -678,6 +679,8 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 	// Remove the stock caption + enable the frameless chrome before the window is
 	// shown, so no framed frame flashes on first paint.
 	WindowChrome::Init(host, WindowChrome::kMainWindow);
+	// Force the residual Win11 border + system menu dark so no light frame flashes.
+	NativeTheme::ApplyDark(host);
 	// Restore the last-session placement before the first show (the window has no
 	// WS_VISIBLE yet, so SetWindowPlacement's maximized state survives to SW_SHOW).
 	// Skipped under the headless smoke path so those runs stay deterministic.
