@@ -54,6 +54,7 @@
 #include "settings/AdvancedSettings.hpp"
 #include "settings/GeneralSettings.hpp"
 #include "util/paths.hpp"
+#include "windowing/native_theme.hpp"
 #include "windowing/preview_window.hpp"
 #include "windowing/projector_window.hpp"
 #include "scene/scene_collections.hpp"
@@ -3073,6 +3074,18 @@ void ObsBootstrap::RunHotkeysSelfTest()
 	run("hotkeys.clear", json{{"id", startId}}, ok);
 	HostLog(std::string("[selftest] hotkeys.clear restore -> ") + (ok ? "ok" : "FAIL") +
 		(startHadBindings ? " (NOTE: hotkey had a prior binding; cleared)" : ""));
+}
+
+void ObsBootstrap::RunNativeThemeSelfTest()
+{
+	// The only owned window up at smoke time is the host, so a >= 1 count proves its
+	// residual chrome was darkened at startup. Pixels can't be checked headlessly.
+	const int applied = NativeTheme::AppliedCount();
+	if (applied < 1) {
+		HostLog("[selftest] native-theme FAIL: host chrome not darkened (AppliedCount=0)");
+		return;
+	}
+	HostLog("[selftest] native-theme OK: AppliedCount=" + std::to_string(applied));
 }
 
 void ObsBootstrap::RunStatsSelfTest()

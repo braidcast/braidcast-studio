@@ -334,6 +334,11 @@ void RunEventSelfTest();
 // in-memory only (never persisted), so it leaves overlays.json untouched. Gated by the
 // caller to the smoke path.
 void RunOverlaySelfTest();
+// Headless proof that the host's residual native chrome was darkened at startup:
+// assert NativeTheme::AppliedCount() >= 1 (the host is the only owned window up at
+// smoke time). There is no headless pixel check, so this only confirms ApplyDark
+// ran on the host. Touches no config. Gated by the caller to the smoke path.
+void RunNativeThemeSelfTest();
 // `drainCefTasks` is main.cpp's bounded CefDoMessageLoopWork pump (the frontend
 // owns CEF, so it is injected rather than called directly); see the header
 // comment for why Stop must pump between its source-removal sweep and
