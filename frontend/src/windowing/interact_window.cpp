@@ -7,6 +7,7 @@
 #include "interact_window.hpp"
 #include "native_theme.hpp"
 #include "projector_window.hpp" // EnumerateMonitors() for initial centering
+#include "window_dpi.hpp"
 
 #include <obs.h>
 
@@ -470,6 +471,9 @@ LRESULT CALLBACK InteractWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
 		} else {
 			DestroyWindow(hwnd);
 		}
+		return 0;
+	case WM_DPICHANGED:
+		WindowDpi::HandleDpiChanged(hwnd, wparam, lparam);
 		return 0;
 	default:
 		break;

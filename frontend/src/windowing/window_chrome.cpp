@@ -1,5 +1,7 @@
 #include "window_chrome.hpp"
 
+#include "window_dpi.hpp"
+
 #include <commctrl.h>
 #include <dwmapi.h>
 #include <shellapi.h>
@@ -233,6 +235,13 @@ bool HandleMessage(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam, LRESULT &r
 		result = 0;
 		return true;
 	}
+	case WM_DPICHANGED:
+		// Per-Monitor-V2: adopt the OS-suggested rect; the resulting WM_SIZE re-runs
+		// LayoutBrowser + the preview child layout at the new scale. Shared by the host
+		// and the detached window, which both route through HandleMessage.
+		WindowDpi::HandleDpiChanged(hwnd, wparam, lparam);
+		result = 0;
+		return true;
 	default:
 		return false;
 	}

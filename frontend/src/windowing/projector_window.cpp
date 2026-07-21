@@ -8,6 +8,7 @@
 #include "projector_window.hpp"
 
 #include "native_theme.hpp"
+#include "window_dpi.hpp"
 #include "multistream/CanvasRuntime.hpp"
 #include "multistream/CanvasStore.hpp"
 #include "obs_bootstrap.hpp"
@@ -946,6 +947,11 @@ LRESULT CALLBACK ProjectorWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpa
 		}
 		return 0;
 	}
+	case WM_DPICHANGED:
+		// Correct rescale for the windowed projector; a harmless resize for the
+		// fullscreen popup, which already covers its monitor.
+		WindowDpi::HandleDpiChanged(hwnd, wparam, lparam);
+		return 0;
 	default:
 		break;
 	}
