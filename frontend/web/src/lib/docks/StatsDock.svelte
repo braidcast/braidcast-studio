@@ -20,16 +20,23 @@
   } from "$lib/utils/statsMeter";
   import { statsStore } from "$lib/stores/statsStore.svelte";
   import { multistreamStatusStore } from "$lib/stores/multistreamStatusStore.svelte";
+  import { pageStore } from "$lib/stores/pageStore.svelte";
   import type { GeneralStats, OutputStat } from "$lib/api/bridge";
 
   // Host supplies tab chrome + strips __* keys; this body declares no props.
   let {}: Record<string, unknown> = $props();
 
-  // Shared 1 Hz poll (also feeds the Studio bottom bar + Monitor page).
+  // Shared 1 Hz poll (also feeds the Studio bottom bar + Monitor page). This dock
+  // lives inside StudioPage's dockview, which never unmounts (it just hides), so
+  // subscribing unconditionally would poll app-wide; gate on the Studio page the
+  // same way StudioPage itself gates its own statsStore.subscribe().
   const stats = $derived(statsStore.stats);
   const error = $derived(statsStore.error);
   const loaded = $derived(statsStore.stats !== null || statsStore.error !== null);
-  $effect(() => statsStore.subscribe());
+  $effect(() => {
+    if (pageStore.page !== "studio") return;
+    return statsStore.subscribe();
+  });
 
   // --- client-side rolling history --------------------------------------------
   // The store holds only the latest snapshot; keep a short local ring per metric so
@@ -132,7 +139,11 @@
   // Per-stream error detail lives in the shared status store (statusByBinding carries
   // {state, lastError}); subscribe ref-counted (same pattern as statsStore above) and
   // read it when an errored row is opened. Never refetch here — one source of truth.
-  $effect(() => multistreamStatusStore.subscribe());
+  // Same Studio-page gate as the statsStore subscription above.
+  $effect(() => {
+    if (pageStore.page !== "studio") return;
+    return multistreamStatusStore.subscribe();
+  });
 
   let errorRow = $state<OutputStat | null>(null);
   const errorDetail = $derived(
