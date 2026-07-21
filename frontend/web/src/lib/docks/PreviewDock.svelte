@@ -235,6 +235,21 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   // their own uuid, keeping this surface distinct).
   let previewEl = $state<HTMLElement | undefined>();
 
+  // Coalesce rect recomputes to one per frame (mirrors CanvasDock's scheduleRect):
+  // a burst of dockLayout bumps within the same frame must not stack up rAF
+  // callbacks, each re-measuring against a rect that's already stale by the time
+  // it runs.
+  let rectRaf = 0;
+  function scheduleRect() {
+    if (rectRaf) {
+      return;
+    }
+    rectRaf = requestAnimationFrame(() => {
+      rectRaf = 0;
+      reportRect();
+    });
+  }
+
   function reportRect() {
     if (!previewEl) {
       return;
@@ -286,6 +301,9 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
 
     return () => {
       ro.disconnect();
+      if (rectRaf) {
+        cancelAnimationFrame(rectRaf);
+      }
       window.removeEventListener("resize", reportRect);
       window.removeEventListener("scroll", reportRect, true);
       offMenu();
@@ -318,7 +336,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   // after Dockview has settled the new positions.
   $effect(() => {
     dockLayout.v;
-    requestAnimationFrame(reportRect);
+    scheduleRect();
   });
 
   // The context menu opens at the cursor inside the preview; the native overlay
