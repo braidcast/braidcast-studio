@@ -242,6 +242,10 @@ import { EV } from "$lib/utils/eventNames";
 
   // Drive each per-canvas dock header dot off that canvas's own live state, so the
   // dot tracks the output state instead of the reconciler's static placeholder.
+  // Tracks the last color applied per canvas so an unchanged dot skips
+  // updateParameters instead of calling it every effect run (outputs re-derives on
+  // every 1 Hz stats/status tick, most of which don't flip any canvas's state).
+  const lastDotColor = new Map<string, string>();
   $effect(() => {
     if (!api) return;
     for (const c of canvases) {
@@ -251,7 +255,10 @@ import { EV } from "$lib/utils/eventNames";
       const panel = api.getPanel(c.isDefault ? "preview" : "canvas:" + c.uuid);
       if (!panel) continue;
       const state = multistreamStatusStore.deriveOutputsState(outputs.filter((o) => o.canvasUuid === c.uuid));
-      panel.api.updateParameters({ __dot: STATE_COLOR[state] });
+      const color = STATE_COLOR[state];
+      if (lastDotColor.get(c.uuid) === color) continue;
+      lastDotColor.set(c.uuid, color);
+      panel.api.updateParameters({ __dot: color });
     }
   });
 
