@@ -687,6 +687,14 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 	if (!getenv("FE_SMOKE_QUIT_SECONDS")) {
 		RestoreHostPlacement(host);
 	}
+	// #3489 guard: when the restored placement lands on a non-primary monitor whose
+	// DPI differs from the primary, Chromium can lay the browser out once at the
+	// primary DPI and again after the OS settles the real DPI (double-scale). Force a
+	// frame-changed pass now that the host sits on its target monitor so the first
+	// visible layout is already at the correct scale; any late WM_DPICHANGED is then
+	// corrected by WindowDpi::HandleDpiChanged.
+	SetWindowPos(host, nullptr, 0, 0, 0, 0,
+		     SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
 	ShowWindow(host, SW_SHOW);
 	UpdateWindow(host);
 
