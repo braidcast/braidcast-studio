@@ -20,10 +20,11 @@
 namespace NativeTheme {
 namespace {
 
-// The command-deck chrome background, mirrored from the web chrome token (there is
-// no shared native/web color source, so this is a manual mirror -- see Task 2).
-// COLORREF is 0x00BBGGRR.
-constexpr COLORREF kChromeBg = RGB(0x0E, 0x0E, 0x10); // TASK-2 replaces with web value
+// Mirrors the web chrome token `--color-rail` (frontend/web/src/app.css), the
+// TitleBar strip's background that the native caption/border sits against. There is
+// no shared native/web color source, so keep this in sync by hand if that token
+// changes. COLORREF is 0x00BBGGRR.
+constexpr COLORREF kChromeBg = RGB(0x0E, 0x0E, 0x11); // = #0e0e11 (--color-rail)
 
 int g_appliedCount = 0;
 
