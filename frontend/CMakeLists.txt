@@ -87,6 +87,9 @@ target_sources(
     src/windowing/window_manager.cpp
     # Frameless custom-titlebar chrome (WM_NCCALCSIZE/NCHITTEST + CEF drag regions).
     src/windowing/window_chrome.cpp
+    # Dark residual-chrome (DWM caption/border) + WM_DPICHANGED handling.
+    src/windowing/native_theme.cpp
+    src/windowing/native_theme.hpp
     src/windowing/window_manager.hpp
     src/windowing/projector_window.cpp
     src/windowing/projector_window.hpp
