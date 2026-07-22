@@ -196,6 +196,16 @@ jobs:
           echo "asset=${zip_out}" >> "$GITHUB_OUTPUT"
           echo "installer=${installer_out}" >> "$GITHUB_OUTPUT"
 
+          msix="$(find artifacts -type f -name 'braidcast-*-windows-x64.msix' | head -1)"
+          if [[ -z "${msix}" ]]; then
+            echo "::error::No braidcast-*-windows-x64.msix found in artifacts"
+            find artifacts -type f
+            exit 1
+          fi
+          msix_out="Braidcast-${version}-Windows-x64.msix"
+          mv -v "${msix}" "${msix_out}"
+          echo "msix=${msix_out}" >> "$GITHUB_OUTPUT"
+
       - name: Create Draft Release 🛫
         uses: softprops/action-gh-release@c062e08bd532815e2082a85e87e3ef29c3e6d191 # v2.4.1
         with:
@@ -206,3 +216,4 @@ jobs:
           files: |
             ${{ steps.stage.outputs.asset }}
             ${{ steps.stage.outputs.installer }}
+            ${{ steps.stage.outputs.msix }}

@@ -434,6 +434,39 @@ jobs:
             ${{ github.workspace }}/build_${{ matrix.architecture }}/braidcast-*-windows-${{ matrix.architecture }}.zip
             ${{ github.workspace }}/build_${{ matrix.architecture }}/braidcast-*-windows-${{ matrix.architecture }}.exe
 
+      - name: Package MSIX 📦
+        if: fromJSON(needs.check-event.outputs.package)
+        shell: pwsh
+        # Build the Microsoft Store package on the Windows runner (makeappx needs
+        # the Windows SDK, which release-braidcast's ubuntu jobs lack). Packs the
+        # CPack zip's Runtime tree; unsigned, since the Store re-signs on submission.
+        # Identity comes from repo variables when configured, dev default otherwise,
+        # mirroring the SIGNPATH opt-in pattern so this never fails a build.
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $arch = '${{ matrix.architecture }}'
+          $config = '${{ needs.check-event.outputs.config }}'
+          $buildDir = Join-Path '${{ github.workspace }}' "build_${arch}"
+          $runtime = Join-Path $buildDir "rundir/${config}"
+          $out = Join-Path $buildDir "braidcast-windows-${arch}.msix"
+
+          $params = @{ RuntimeDir = $runtime; OutFile = $out }
+          if ( '${{ vars.MSIX_IDENTITY_NAME }}' ) {
+            $params.IdentityName = '${{ vars.MSIX_IDENTITY_NAME }}'
+            $params.Publisher = '${{ vars.MSIX_PUBLISHER }}'
+            $params.PublisherDisplayName = '${{ vars.MSIX_PUBLISHER_DISPLAY_NAME }}'
+          } else {
+            Write-Host '::notice::MSIX_IDENTITY_NAME not set; building MSIX with dev Identity. See notes/signing.md.'
+          }
+          .github/scripts/Package-Msix.ps1 @params
+
+      - name: Upload MSIX Artifact 📡
+        if: fromJSON(needs.check-event.outputs.package)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: braidcast-windows-${{ matrix.architecture }}-msix-${{ needs.check-event.outputs.commitHash }}
+          path: ${{ github.workspace }}/build_${{ matrix.architecture }}/braidcast-windows-${{ matrix.architecture }}.msix
+
       - name: Boot-Smoke Package 🔬
         shell: pwsh
         # Prove the CPack zip actually launches with its UI, not merely that it
