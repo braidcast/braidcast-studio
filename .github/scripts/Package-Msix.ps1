@@ -130,7 +130,16 @@ function Package {
     New-Item -ItemType Directory -Force -Path $layout | Out-Null
 
     Write-Host "Staging Runtime tree -> $layout"
-    Copy-Item -Path (Join-Path $RuntimeDir '*') -Destination $layout -Recurse -Force
+    # Copy the payload only. Skip the dev rundir's `config` junction (a reparse
+    # point to the real %APPDATA%\braidcast): following it would pack the user's
+    # live config -- including stream keys -- into the package, and config must
+    # resolve to the MSIX-virtualized %APPDATA% at runtime, never ship inside.
+    Get-ChildItem -Path $RuntimeDir -Force |
+        Where-Object {
+            $_.Name -ne 'config' -and
+            -not ( $_.Attributes.HasFlag([System.IO.FileAttributes]::ReparsePoint) )
+        } |
+        ForEach-Object { Copy-Item -Path $_.FullName -Destination $layout -Recurse -Force }
 
     # The portable marker must NOT be in the package, or config resolves to the
     # exe dir instead of the MSIX-virtualized %APPDATA%.
