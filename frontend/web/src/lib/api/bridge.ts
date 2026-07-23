@@ -1501,6 +1501,9 @@ export interface ObsMethods {
   // Stats snapshot (general perf + per-output live stats). Polled by the Stats
   // dock on a ~1s interval; there is no push, so the dock owns the cadence.
   "stats.get": Stats;
+  // Rebase the "since reset" counters (render lag, encode skip, per-output drop) to
+  // now, like OBS's Stats Reset. Instantaneous readings (cpu/fps/bitrate) are unaffected.
+  "stats.reset": { ok: boolean };
   // Native projectors (standalone windows rendering a target on a monitor, P3).
   // listMonitors enumerates the displays a fullscreen projector can target. open
   // spawns a projector (fullscreen needs `monitor`); the window closes itself (Esc /

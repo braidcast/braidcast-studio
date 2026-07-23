@@ -3117,6 +3117,12 @@ void ObsBootstrap::RunStatsSelfTest()
 	HostLog("[selftest] stats.get -> fps=" + std::to_string(fps) + " cpu=" + std::to_string(cpu) +
 		" outputs=" + std::to_string(outputsSize) + " (enabled bindings=" + std::to_string(enabled) + ", " +
 		((hasFps && hasCpu && outputsArray && outputsSize == enabled) ? "OK" : "MISMATCH") + ")");
+
+	json resetResult;
+	std::string resetError;
+	const bool resetOk = Bridge::Dispatch("stats.reset", json(nullptr), resetResult, resetError) &&
+			     resetResult.is_object() && resetResult.value("ok", false);
+	HostLog(std::string("[selftest] stats.reset -> ") + (resetOk ? "OK" : ("FAILED: " + resetError)));
 }
 
 void ObsBootstrap::RunMcpSelfTest()

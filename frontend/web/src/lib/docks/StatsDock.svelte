@@ -21,7 +21,7 @@
   import { statsStore } from "$lib/stores/statsStore.svelte";
   import { multistreamStatusStore } from "$lib/stores/multistreamStatusStore.svelte";
   import { pageStore } from "$lib/stores/pageStore.svelte";
-  import type { GeneralStats, OutputStat } from "$lib/api/bridge";
+  import { obs, type GeneralStats, type OutputStat } from "$lib/api/bridge";
 
   // Host supplies tab chrome + strips __* keys; this body declares no props.
   let {}: Record<string, unknown> = $props();
@@ -153,6 +153,18 @@
       : "",
   );
 
+  // Rebase the cumulative counters (render lag, encode skip, per-output drop) on the
+  // host, like OBS's Stats Reset. Best-effort; also clear the local sparkline rings so
+  // the trails restart immediately rather than lingering until they roll off.
+  async function resetStats(): Promise<void> {
+    try {
+      await obs.call("stats.reset");
+    } catch {
+      // ignore: the next poll simply keeps the previous baseline
+    }
+    hist = { cpu: [], mem: [], fps: [], frame: [], render: [], encode: [] };
+  }
+
   function openError(o: OutputStat): void {
     errorRow = o;
   }
@@ -175,7 +187,12 @@
     <section class="block">
       <div class="sec-head">
         <span class="sec-label">Engine</span>
-        <span class="sec-meta">1 Hz</span>
+        <div class="sec-actions">
+          <span class="sec-meta">1 Hz</span>
+          <button type="button" class="reset-btn" onclick={resetStats} title="Reset cumulative counters">
+            Reset
+          </button>
+        </div>
       </div>
       <div class="metrics">
         {#each metrics as m (m.k)}
@@ -340,6 +357,31 @@
     letter-spacing: 0.08em;
     color: var(--color-dim);
     font-variant-numeric: tabular-nums;
+  }
+  .sec-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .reset-btn {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--color-muted);
+    background: var(--color-base);
+    border: var(--border-weight) solid var(--color-border);
+    border-radius: var(--radius-sm, 3px);
+    padding: 2px 7px;
+    cursor: pointer;
+  }
+  .reset-btn:hover {
+    color: var(--color-text);
+    border-color: var(--color-accent);
+  }
+  .reset-btn:focus-visible {
+    outline: var(--border-weight) solid var(--color-accent);
+    outline-offset: 1px;
   }
 
   /* Hairline grid: 1px gap over a border-colored bg paints separators between

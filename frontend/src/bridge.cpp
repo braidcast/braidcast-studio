@@ -6509,6 +6509,31 @@ struct BitrateSample {
 os_cpu_usage_info_t *g_cpuInfo = nullptr;
 std::unordered_map<std::string, BitrateSample> g_bitrateCache;
 
+// "Since reset" baselines, mirroring OBS's Stats "Reset" button. stats.reset
+// snapshots the current cumulative frame counters here; stats.get reports
+// value-minus-baseline so render-lag / encode-skip / per-output drop rates rebase
+// from that moment instead of accumulating for the whole session. Per-output
+// baselines are keyed by binding uuid. All cleared on Shutdown.
+struct StatsBaseline {
+	uint32_t renderLagged = 0;
+	uint32_t renderTotal = 0;
+	uint32_t encodeSkipped = 0;
+	uint32_t encodeTotal = 0;
+};
+StatsBaseline g_statsBaseline;
+std::unordered_map<std::string, std::pair<int, int>> g_outputStatsBaseline; // uuid -> {dropped, total}
+
+// value - baseline, self-healing: if the counter dropped below its baseline the
+// pipeline reset underneath (e.g. obs_reset_video, or an output restart), so drop the
+// baseline to 0 and report the raw value. Mutates `baseline` in place on that heal.
+template<typename T> T RebaseCounter(T value, T &baseline)
+{
+	if (value < baseline) {
+		baseline = 0;
+	}
+	return static_cast<T>(value - baseline);
+}
+
 bool MethodStatsGet(const json & /*params*/, json &result, std::string & /*error*/)
 {
 	if (!g_cpuInfo) {
@@ -6527,15 +6552,15 @@ bool MethodStatsGet(const json & /*params*/, json &result, std::string & /*error
 	const double fps = obs_get_active_fps();
 	const double avgFrameMs = static_cast<double>(obs_get_average_frame_time_ns()) / 1.0e6;
 
-	const uint32_t renderLagged = obs_get_lagged_frames();
-	const uint32_t renderTotal = obs_get_total_frames();
+	const uint32_t renderLagged = RebaseCounter(obs_get_lagged_frames(), g_statsBaseline.renderLagged);
+	const uint32_t renderTotal = RebaseCounter(obs_get_total_frames(), g_statsBaseline.renderTotal);
 	const double renderLagPct = renderTotal > 0 ? (static_cast<double>(renderLagged) / renderTotal) * 100.0 : 0.0;
 
 	uint32_t encodeSkipped = 0;
 	uint32_t encodeTotal = 0;
 	if (video_t *video = obs_get_video()) {
-		encodeSkipped = video_output_get_skipped_frames(video);
-		encodeTotal = video_output_get_total_frames(video);
+		encodeSkipped = RebaseCounter(video_output_get_skipped_frames(video), g_statsBaseline.encodeSkipped);
+		encodeTotal = RebaseCounter(video_output_get_total_frames(video), g_statsBaseline.encodeTotal);
 	}
 	const double encodeSkipPct = encodeTotal > 0 ? (static_cast<double>(encodeSkipped) / encodeTotal) * 100.0 : 0.0;
 
@@ -6556,6 +6581,9 @@ bool MethodStatsGet(const json & /*params*/, json &result, std::string & /*error
 	const uint64_t nowNs = os_gettime_ns();
 	json outputs = json::array();
 	std::unordered_map<std::string, BitrateSample> nextCache;
+	// Rebuilt to only the bindings present this tick (same prune-forward pattern as the
+	// bitrate cache), carrying each binding's rebased-and-self-healed drop/total baseline.
+	std::unordered_map<std::string, std::pair<int, int>> nextDropBaseline;
 	for (const MultistreamEngine::OutputStats &s : ObsBootstrap::Multistream().StatsSnapshot()) {
 		// bitrate = delta-bytes / delta-seconds * 8 / 1000 (kbps). First sample
 		// (no prior) or a counter reset -> 0. Re-key nextCache so stale bindings
@@ -6571,8 +6599,19 @@ bool MethodStatsGet(const json & /*params*/, json &result, std::string & /*error
 		}
 		nextCache[s.bindingUuid] = BitrateSample{s.totalBytes, nowNs};
 
+		// Rebase dropped/total against the reset baseline (0 if never reset for this
+		// binding), self-healing on an output restart that zeroed the raw counters.
+		std::pair<int, int> base = {0, 0};
+		auto bit = g_outputStatsBaseline.find(s.bindingUuid);
+		if (bit != g_outputStatsBaseline.end()) {
+			base = bit->second;
+		}
+		const int droppedFrames = RebaseCounter(s.droppedFrames, base.first);
+		const int totalFrames = RebaseCounter(s.totalFrames, base.second);
+		nextDropBaseline[s.bindingUuid] = base;
+
 		const double dropPct =
-			s.totalFrames > 0 ? (static_cast<double>(s.droppedFrames) / s.totalFrames) * 100.0 : 0.0;
+			totalFrames > 0 ? (static_cast<double>(droppedFrames) / totalFrames) * 100.0 : 0.0;
 
 		outputs.push_back(json{
 			{"bindingUuid", s.bindingUuid},
@@ -6580,16 +6619,36 @@ bool MethodStatsGet(const json & /*params*/, json &result, std::string & /*error
 			{"canvasName", s.canvasName},
 			{"state", MultistreamEngine::StateName(s.state)},
 			{"bitrateKbps", bitrateKbps},
-			{"droppedFrames", s.droppedFrames},
-			{"totalFrames", s.totalFrames},
+			{"droppedFrames", droppedFrames},
+			{"totalFrames", totalFrames},
 			{"dropPct", dropPct},
 			{"congestionPct", s.congestion * 100.0},
 			{"durationMs", s.uptimeMs},
 		});
 	}
 	bitrateCache.swap(nextCache);
+	g_outputStatsBaseline.swap(nextDropBaseline);
 
 	result = json{{"general", std::move(general)}, {"outputs", std::move(outputs)}};
+	return true;
+}
+
+// Rebase the "since reset" stats baselines to the current cumulative counters, so the
+// render-lag / encode-skip / per-output drop rates restart from zero. Mirrors OBS's
+// Stats "Reset" button. Instantaneous readings (cpu/mem/fps/bitrate) are unaffected.
+bool MethodStatsReset(const json & /*params*/, json &result, std::string & /*error*/)
+{
+	g_statsBaseline.renderLagged = obs_get_lagged_frames();
+	g_statsBaseline.renderTotal = obs_get_total_frames();
+	if (video_t *video = obs_get_video()) {
+		g_statsBaseline.encodeSkipped = video_output_get_skipped_frames(video);
+		g_statsBaseline.encodeTotal = video_output_get_total_frames(video);
+	}
+	g_outputStatsBaseline.clear();
+	for (const MultistreamEngine::OutputStats &s : ObsBootstrap::Multistream().StatsSnapshot()) {
+		g_outputStatsBaseline[s.bindingUuid] = {s.droppedFrames, s.totalFrames};
+	}
+	result = json{{"ok", true}};
 	return true;
 }
 
@@ -10298,6 +10357,7 @@ void Init()
 		{"undo.redo", MethodUndoRedo},
 		{"undo.state", MethodUndoState},
 		{"stats.get", MethodStatsGet},
+		{"stats.reset", MethodStatsReset},
 		{"audio.list", MethodAudioList},
 		{"audio.setDeflection", MethodAudioSetDeflection},
 		{"audio.setMuted", MethodAudioSetMuted},
@@ -10481,6 +10541,8 @@ void Shutdown()
 		g_cpuInfo = nullptr;
 	}
 	g_bitrateCache.clear();
+	g_outputStatsBaseline.clear();
+	g_statsBaseline = StatsBaseline{};
 }
 
 void AddBrowser(CefRefPtr<CefBrowser> browser)
