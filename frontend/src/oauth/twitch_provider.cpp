@@ -99,6 +99,7 @@ TwitchProvider::TwitchProvider()
 		  BRAIDCAST_BROKER_URL, // brokerBaseUrl
 		  "twitch",             // platform
 		  TWITCH_SCOPE_VERSION, // scopeVer
+		  true,                 // revokePreferAccessToken -- Twitch's revoke only documents access tokens
 	  })
 {
 }

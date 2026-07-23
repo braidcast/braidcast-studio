@@ -50,6 +50,7 @@ KickProvider::KickProvider()
 		  BRAIDCAST_BROKER_URL, // brokerBaseUrl
 		  "kick",               // platform
 		  KICK_SCOPE_VERSION,   // scopeVer
+		  false,                // revokePreferAccessToken -- Kick's token_hint_type=refresh_token kills the whole grant
 	  })
 {
 }

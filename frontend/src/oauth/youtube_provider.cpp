@@ -114,6 +114,7 @@ YouTubeProvider::YouTubeProvider()
 		  BRAIDCAST_BROKER_URL,  // brokerBaseUrl
 		  "youtube",             // platform
 		  YOUTUBE_SCOPE_VERSION, // scopeVer
+		  true,                  // revokePreferAccessToken -- Google's docs confirm this also revokes the paired refresh token
 	  })
 {
 }

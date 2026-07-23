@@ -16,6 +16,7 @@
 #include "util/json_util.hpp"
 #include "../bridge.hpp"
 #include "../log.hpp"
+#include "../util/async_task.hpp"
 #include "account_store.hpp"
 #include "loopback_listener.hpp"
 
@@ -362,6 +363,53 @@ void BrokerStrategy::ForgetAccount(const std::string &accountId)
 	// the map slot until that copy drops; erasing the slot only forgets the key.
 	const std::lock_guard<std::mutex> guard(flightMapMutex_);
 	flightLocks_.erase(accountId);
+}
+
+void BrokerStrategy::Revoke(const OAuthAccount &acct)
+{
+	// Pick the token to submit per config_.revokePreferAccessToken (see the Config
+	// comment), falling back to whichever token IS present when the preferred one
+	// isn't. Nothing to do if the account carries neither.
+	struct Candidate {
+		std::string token;
+		const char *hint;
+	};
+	const Candidate accessTok{acct.access, "access_token"};
+	const Candidate refreshTok{acct.refresh, "refresh_token"};
+	const Candidate &primary = config_.revokePreferAccessToken ? accessTok : refreshTok;
+	const Candidate &fallback = config_.revokePreferAccessToken ? refreshTok : accessTok;
+	const Candidate &chosen = !primary.token.empty() ? primary : fallback;
+	if (chosen.token.empty()) {
+		return;
+	}
+
+	const std::string brokerBaseUrl = config_.brokerBaseUrl;
+	const std::string platform = config_.platform;
+	const std::string token = chosen.token;
+	const std::string hint = chosen.hint;
+
+	// Fire-and-forget on a detached worker: the caller (TeardownAccount) has
+	// already removed the account locally and must not wait on or fail from this.
+	AsyncTask::RunAsync([brokerBaseUrl, platform, token, hint] {
+		std::string body;
+		AppendForm(body, "token", token);
+		AppendForm(body, "token_type_hint", hint);
+
+		Http::HttpReq req;
+		req.method = "POST";
+		req.url = brokerBaseUrl + "/v1/" + platform + "/revoke";
+		req.contentType = "application/x-www-form-urlencoded";
+		req.body = body;
+
+		const Http::HttpResponse resp = Http::HttpRequest(req);
+		// Best-effort: log the outcome (never the token) and stop -- nothing acts on
+		// the result, the local disconnect already completed regardless.
+		if (resp.status == 0) {
+			HostLog("[oauth] revoke failed for " + platform + " (network: " + resp.error + ")");
+		} else {
+			HostLog("[oauth] revoke completed for " + platform + " (HTTP " + std::to_string(resp.status) + ")");
+		}
+	});
 }
 
 } // namespace OAuth

@@ -166,6 +166,15 @@ public:
 	// nothing behind. Default no-op; strategies with per-account state override.
 	virtual void ForgetAccount(const std::string &accountId) { (void)accountId; }
 
+	// Best-effort revocation of `acct`'s grant at the provider, called once from
+	// TeardownAccount right after the account is dropped from the local store.
+	// Runs off the calling thread and must never block it or report failure back
+	// -- a disconnect has already succeeded locally by the time this is called and
+	// stays succeeded regardless of what happens here (offline, provider error, or
+	// an already-dead token are all fine outcomes). Default no-op; strategies
+	// backed by a revocable provider (BrokerStrategy) override.
+	virtual void Revoke(const OAuthAccount &acct) { (void)acct; }
+
 	// The scope version this strategy currently requests. Tokens stored with a
 	// lower scopeVer were issued under an older permission set and must reconnect.
 	virtual int scopeVer() const { return 0; }

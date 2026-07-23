@@ -9229,11 +9229,20 @@ bool MethodOAuthConnect(const json &params, json &result, std::string &error)
 // delete (MethodStreamProfileRemove), and the boot orphan reconcile. UI thread only.
 void TeardownAccount(const std::string &accountId)
 {
+	// Captured before Remove() so the provider's grant can still be revoked below --
+	// the store entry (and its tokens) is gone once Remove() returns.
+	const std::optional<OAuth::OAuthAccount> acctForRevoke = OAuth::Accounts().Get(accountId);
 	OAuth::Accounts().Remove(accountId);
 	// Prune the provider's per-account refresh flight lock along with the account so a
 	// disconnected account leaves no mutex behind (accountId is "<providerId>:<userId>").
 	if (OAuth::StreamProvider *prov = OAuth::Registry().Get(accountId.substr(0, accountId.find(':')))) {
 		prov->auth()->ForgetAccount(accountId);
+		// Best-effort: revoke the grant at the provider so disconnect actually kills
+		// it there too (YouTube Developer Policies require this), not just locally.
+		// Never blocks or can fail this teardown -- see AuthStrategy::Revoke.
+		if (acctForRevoke) {
+			prov->auth()->Revoke(*acctForRevoke);
+		}
 	}
 	Events::Hub().StopAccount(accountId);
 	// Chat is live-only, so re-resolve it only while streaming: a mid-stream disconnect

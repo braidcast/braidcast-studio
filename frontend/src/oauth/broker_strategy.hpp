@@ -25,6 +25,14 @@ public:
 		std::string brokerBaseUrl; // e.g. "https://auth.braidcast.com" (no trailing slash)
 		std::string platform;      // "twitch" | "kick" | "youtube"
 		int scopeVer = 0;          // stamped into issued accounts
+		// Which token Revoke() submits first, per what the platform's revoke endpoint
+		// actually documents (see providers.ts / broker_strategy.cpp Revoke): true
+		// prefers the access token (Twitch: the only one it supports; YouTube: the
+		// direction its docs confirm also revokes the paired refresh token), false
+		// prefers the refresh token (Kick: revokes the whole grant per its
+		// token_hint_type support). Falls back to whichever token IS present when the
+		// preferred one is empty.
+		bool revokePreferAccessToken = true;
 	};
 
 	explicit BrokerStrategy(Config config);
@@ -33,6 +41,7 @@ public:
 	bool refresh(OAuthAccount &acct, std::string &err) override;
 	bool ensureFresh(OAuthAccount &acct, std::string &err, bool force = false) override;
 	void ForgetAccount(const std::string &accountId) override;
+	void Revoke(const OAuthAccount &acct) override;
 	int scopeVer() const override { return config_.scopeVer; }
 
 private:
