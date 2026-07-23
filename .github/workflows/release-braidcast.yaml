@@ -196,9 +196,9 @@ jobs:
           echo "asset=${zip_out}" >> "$GITHUB_OUTPUT"
           echo "installer=${installer_out}" >> "$GITHUB_OUTPUT"
 
-          msix="$(find artifacts -type f -name 'braidcast-*-windows-x64.msix' | head -1)"
+          msix="$(find artifacts -type f -name 'braidcast-*windows-x64.msix' | head -1)"
           if [[ -z "${msix}" ]]; then
-            echo "::error::No braidcast-*-windows-x64.msix found in artifacts"
+            echo "::error::No braidcast-*windows-x64.msix found in artifacts"
             find artifacts -type f
             exit 1
           fi
