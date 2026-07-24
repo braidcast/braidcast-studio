@@ -29,6 +29,7 @@
 #include "util/async_task.hpp"
 #include "audio/AudioMonitor.hpp"
 #include "bridge.hpp"
+#include "build_info.hpp"
 #include "settings/DiagnosticsSettings.hpp"
 #include "frontend_callbacks.hpp"
 #include "log.hpp"
@@ -745,6 +746,11 @@ bool ObsBootstrap::Start()
 	// Chain a per-session file writer onto the stderr/HostLog handler installed
 	// above so every blog() line is also persisted under .../braidcast/logs.
 	SessionLog::Init();
+
+	// Stamp the exact build first, unconditionally: every session log then names the tree
+	// it ran (git describe), so "was this the fixed binary?" is a one-line check, not
+	// timestamp forensics.
+	HostLog(std::string("[lifecycle] braidcast build ") + Braidcast::BuildDescribe());
 
 	// Resolve + apply the two-var debug scheme before anything else logs: master
 	// BRAIDCAST_DEBUG gates, BRAIDCAST_DEBUG_COMPONENTS selects. Off by default ->

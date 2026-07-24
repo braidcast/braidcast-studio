@@ -59,6 +59,8 @@ target_sources(
     # switch) for the CEF GPU-process crash that gpu_safe_mode's boot sentinel misses.
     src/diag/gpu_diag.cpp
     src/diag/gpu_diag.hpp
+    src/build_info.cpp
+    src/build_info.hpp
     src/scheme.cpp
     src/scheme.hpp
     src/bridge.cpp
@@ -362,6 +364,27 @@ endif()
 set(_generated_dir "${CMAKE_CURRENT_BINARY_DIR}/generated")
 configure_file(cmake/ui-config.h.in "${_generated_dir}/ui-config.h")
 target_include_directories(${_target} PRIVATE "${_generated_dir}")
+
+# Build-provenance stamp: generate build_info.gen.h from `git describe` so build_info.cpp
+# can report the exact tree this binary was built from. Generate once at configure (so the
+# header exists for the first compile) and re-run on every build via a custom target the
+# exe depends on -- the script writes only when the value changes, so no needless relink.
+set(_build_info_header "${_generated_dir}/build_info.gen.h")
+execute_process(
+  COMMAND
+    "${CMAKE_COMMAND}" -DOUT=${_build_info_header} -DSRC=${CMAKE_SOURCE_DIR} -P
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen-build-info.cmake"
+)
+add_custom_target(
+  braidcast-build-info
+  COMMAND
+    "${CMAKE_COMMAND}" -DOUT=${_build_info_header} -DSRC=${CMAKE_SOURCE_DIR} -P
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen-build-info.cmake"
+  BYPRODUCTS "${_build_info_header}"
+  COMMENT "Stamping build provenance (git describe)"
+  VERBATIM
+)
+add_dependencies(${_target} braidcast-build-info)
 
 # The bridge envelope uses nlohmann/json, a header-only lib shipped in the
 # obs-deps prefix include dir (the legacy frontend gets it transitively via Qt;
