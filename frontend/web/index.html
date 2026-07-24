@@ -3,8 +3,18 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>Braidcast</title>
+    <!-- Dark base (matches --color-base) so the first HTML paint is dark, before the
+         JS-loaded app.css applies -- no white flash between HTML parse and app mount. -->
+    <style>
+      html,
+      body {
+        margin: 0;
+        background: #0a0a0b;
+      }
+    </style>
   </head>
   <body>
     <div id="app"></div>

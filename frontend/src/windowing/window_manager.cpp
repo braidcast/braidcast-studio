@@ -102,6 +102,7 @@ int WindowManager::Detach(const std::string &dockId)
 	const std::string url = bundleBaseUrl_ + "?window=" + std::to_string(windowId) + "&dock=" + dockId;
 
 	CefBrowserSettings browser_settings;
+	browser_settings.background_color = kAppBackgroundColor;
 	CefWindowInfo window_info;
 	RECT client_rc;
 	GetClientRect(hwnd, &client_rc);

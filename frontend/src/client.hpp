@@ -13,6 +13,12 @@
 #include "include/cef_request_handler.h"
 #include "include/wrapper/cef_message_router.h"
 
+// The app's dark base background (#0a0a0b, mirrors --color-base in app.css). Set as every
+// CEF browser's background_color so a newly created surface is dark from the first frame
+// instead of flashing the CEF default white before the Svelte UI paints. Keep in sync with
+// --color-base if the base theme changes.
+constexpr cef_color_t kAppBackgroundColor = 0xFF0A0A0Bu;
+
 class ObsQueryHandler;
 
 // Browser-level callbacks for the UI browser. Tracks live browsers and quits the

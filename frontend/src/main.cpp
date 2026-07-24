@@ -787,6 +787,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 	CefRefPtr<Client> client(new Client());
 	Client::SetShared(client);
 	CefBrowserSettings browser_settings;
+	browser_settings.background_color = kAppBackgroundColor;
 	CefWindowInfo window_info;
 	RECT host_rc;
 	GetClientRect(host, &host_rc);
