@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <functional>
 #include <string>
 #include <string_view>
@@ -25,11 +26,11 @@ namespace {
 
 const char *kLiveChatMessagesUrl = "https://www.googleapis.com/youtube/v3/liveChat/messages";
 
-// liveChatMessages.streamList: the push-based read (default). Google documents gRPC as
-// streamList's primary interface; this is the HTTP/JSON-transcoded REST surface (verified
-// live 2026-07-24). It returns 200 chunked, the body an incremental JSON array of normal
-// liveChatMessageListResponse objects arriving as messages are posted. If it 404/400s the
-// transcode is unavailable and we fall back to the classic .list poll below.
+// liveChatMessages.streamList: the push-based read (opt-in via BRAIDCAST_YOUTUBE_STREAMLIST
+// while validated live). Google documents gRPC as streamList's primary interface; this is
+// the HTTP/JSON-transcoded REST surface. It returns 200 chunked, the body an incremental
+// JSON array of normal liveChatMessageListResponse objects arriving as messages are posted.
+// If it 404/400s the transcode is unavailable and we fall back to the classic .list poll.
 const char *kLiveChatStreamUrl = "https://www.googleapis.com/youtube/v3/liveChat/messages/stream";
 
 // liveChatMessages.list omits pollingIntervalMillis on rare responses; fall back
@@ -62,6 +63,18 @@ using JsonUtil::Obj;
 using JsonUtil::ParseJson;
 using JsonUtil::Str;
 using TimeUtil::Rfc3339ToEpochMs;
+
+// Opt-in env flag: true only when the named var is set to a recognized truthy value.
+// Used to gate the still-under-validation streamList read path off by default.
+bool EnvFlag(const char *name)
+{
+	const char *v = getenv(name);
+	if (!v) {
+		return false;
+	}
+	const std::string s(v);
+	return s == "1" || s == "true" || s == "TRUE" || s == "yes" || s == "on";
+}
 
 // Incremental extractor of complete top-level JSON objects from a byte stream, so a
 // streamList response can be parsed one liveChatMessageListResponse at a time as its
@@ -337,7 +350,7 @@ bool RunStreamList(ChatSession &s, std::string &err)
 
 	while (!s.canceled()) {
 		std::string url = std::string(kLiveChatStreamUrl) + "?liveChatId=" +
-				  Http::UrlEncode(s.liveChatId) + "&part=snippet,authorDetails&maxResults=" +
+				  Http::UrlEncode(s.liveChatId) + "&part=id,snippet,authorDetails&maxResults=" +
 				  kStreamMaxResults;
 		if (!pageToken.empty()) {
 			url += "&pageToken=" + Http::UrlEncode(pageToken);
@@ -349,6 +362,8 @@ bool RunStreamList(ChatSession &s, std::string &err)
 
 		JsonObjectStream objects;
 		long serverPollMs = 0; // server pollingIntervalMillis advised on this connection
+		int frameCount = 0;    // complete response objects parsed on this connection
+		long bytesIn = 0;      // decoded stream bytes fed to the parser on this connection
 
 		// Parse + process each complete response object the moment its bytes finish
 		// arriving, so a live push shows up with ~1s latency instead of waiting for the
@@ -357,19 +372,27 @@ bool RunStreamList(ChatSession &s, std::string &err)
 			if (s.canceled()) {
 				return false;
 			}
+			bytesIn += static_cast<long>(chunk.size());
 			std::vector<std::string> ready;
 			objects.Push(chunk, ready);
 			for (const std::string &objText : ready) {
 				const json resp = ParseJson(objText);
 				if (!resp.is_object()) {
+					DBG(LogCat::Chat, "youtube streamList: skipped unparseable frame (%ld bytes)",
+					    static_cast<long>(objText.size()));
 					continue;
 				}
+				++frameCount;
 				AnnounceOnce(s);
+				const json &items = Obj(resp, "items");
+				const int n = items.is_array() ? static_cast<int>(items.size()) : 0;
 				if (firstConnect) {
 					firstConnect = false;
+					DBG(LogCat::Chat,
+					    "youtube streamList: connect frame items=%d (suppressed as backlog)", n);
 				} else {
-					ProcessChatItems(s.ctx, Obj(resp, "items"), s.liveChatId,
-							 s.thirdPartyEmotes, s.canceled);
+					DBG(LogCat::Chat, "youtube streamList: frame items=%d -> emitting", n);
+					ProcessChatItems(s.ctx, items, s.liveChatId, s.thirdPartyEmotes, s.canceled);
 				}
 				const std::string next = Str(resp, "nextPageToken");
 				if (!next.empty()) {
@@ -389,6 +412,10 @@ bool RunStreamList(ChatSession &s, std::string &err)
 		std::string errorBody;
 		std::string reqErr;
 		const long status = s.owner.SendAuthedStreaming(s.acct, req, onChunk, errorBody, reqErr);
+
+		DBG(LogCat::Chat,
+		    "youtube streamList: connection ended status=%ld frames=%d bytes=%ld pollAdvised=%ldms",
+		    status, frameCount, bytesIn, serverPollMs);
 
 		if (s.canceled()) {
 			break;
@@ -438,6 +465,8 @@ bool RunStreamList(ChatSession &s, std::string &err)
 		// pollingIntervalMillis if the server sent one.
 		s.backoff.reset();
 		const long waitMs = std::max<long>(kStreamReconnectFloorMs, serverPollMs);
+		DBG(LogCat::Chat, "youtube streamList: batch closed, resuming in %ldms (token=%s)", waitMs,
+		    pageToken.empty() ? "none" : "set");
 		if (CancelableSleep(std::chrono::milliseconds(waitMs), s.canceled)) {
 			break;
 		}
@@ -530,10 +559,14 @@ void RunListPoll(ChatSession &s, std::string &err)
 
 		// First response is backlog: keep only the cursor, emit nothing, so the user sees
 		// messages from connect onward rather than a wall of history.
+		const json &items = Obj(j, "items");
+		const int n = items.is_array() ? static_cast<int>(items.size()) : 0;
 		if (firstPoll) {
 			firstPoll = false;
+			DBG(LogCat::Chat, "youtube list: first poll items=%d (suppressed as backlog)", n);
 		} else {
-			ProcessChatItems(s.ctx, Obj(j, "items"), s.liveChatId, s.thirdPartyEmotes, s.canceled);
+			DBG(LogCat::Chat, "youtube list: poll items=%d -> emitting", n);
+			ProcessChatItems(s.ctx, items, s.liveChatId, s.thirdPartyEmotes, s.canceled);
 		}
 
 		if (CancelableSleep(std::chrono::milliseconds(pollMs), s.canceled)) {
@@ -593,13 +626,19 @@ bool YouTubeChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, con
 	Backoff backoff(std::chrono::milliseconds(2000), std::chrono::milliseconds(30000));
 	ChatSession session{owner_, ctx, acct, liveChatId, thirdPartyEmotes, canceled, emitState, backoff};
 
-	// streamList is the default push-based read (~1s latency, far lower quota); the classic
-	// .list poll is the documented fallback used only if the (undocumented) REST transcode
-	// endpoint returns 404/400 for this broadcast.
-	DBG(LogCat::Chat, "youtube: opening live chat %s via streamList", liveChatId.c_str());
-	const bool fallback = RunStreamList(session, err);
-	if (fallback && !canceled()) {
-		DBG(LogCat::Chat, "youtube: live chat %s via liveChatMessages.list polling", liveChatId.c_str());
+	// The proven read path is the classic liveChatMessages.list poll. The push-based
+	// streamList (lower quota, ~1s latency) is still under live validation -- on a real
+	// 2026-07-24 stream it connected and announced the chat but delivered no messages past
+	// the connect frame -- so it is OPT-IN via BRAIDCAST_YOUTUBE_STREAMLIST=1 until proven.
+	// The per-frame diagnostic logging in RunStreamList/RunListPoll pins the gap when set.
+	const bool tryStreamList = EnvFlag("BRAIDCAST_YOUTUBE_STREAMLIST");
+	bool fallback = false;
+	if (tryStreamList) {
+		DBG(LogCat::Chat, "youtube: opening live chat %s via streamList (opt-in)", liveChatId.c_str());
+		fallback = RunStreamList(session, err);
+	}
+	if (!tryStreamList || (fallback && !canceled())) {
+		DBG(LogCat::Chat, "youtube: opening live chat %s via liveChatMessages.list", liveChatId.c_str());
 		backoff.reset();
 		RunListPoll(session, err);
 	}
