@@ -51,12 +51,20 @@
   // renders inline. Re-runs on each new path; a stale async resolve is discarded via
   // the path guard so a fast re-pick can't show the wrong image, and a read failure
   // falls back to the filename via imgError.
+  // YouTube's thumbnails.set hard-rejects uploads over 2 MB, and the backend then skips an
+  // oversized thumbnail silently at go-live. Validate at pick/drop time so the file is
+  // refused up front instead. Mirrors kMaxThumbnailBytes in youtube_provider.cpp.
+  const MAX_THUMBNAIL_BYTES = 2 * 1024 * 1024;
+  let tooLarge = $state(false);
+  let tooLargeMb = $state(0);
+
   let imgError = $state(false);
   let dataUri = $state("");
   $effect(() => {
     const path = str;
     imgError = false;
     dataUri = "";
+    tooLarge = false;
     if (!path) {
       return;
     }
@@ -65,6 +73,12 @@
       .then((r) => {
         if (str === path) {
           dataUri = r.dataUri;
+          // Flag an already-saved oversized thumbnail (e.g. remembered from a prior
+          // session) so it is not silently dropped at go-live.
+          if (typeof r.size === "number" && r.size > MAX_THUMBNAIL_BYTES) {
+            tooLarge = true;
+            tooLargeMb = r.size / (1024 * 1024);
+          }
         }
       })
       .catch(() => {
@@ -77,9 +91,17 @@
   async function pickImage(): Promise<void> {
     try {
       const r = await obs.call("dialog.openFile", { mode: "open", filter: "Image Files (*.png *.jpg *.jpeg *.bmp)" });
-      if (r.path) {
-        onChange(r.path);
+      if (!r.path) {
+        return;
       }
+      if (typeof r.size === "number" && r.size > MAX_THUMBNAIL_BYTES) {
+        // Refuse up front: never store a path go-live will only skip.
+        tooLarge = true;
+        tooLargeMb = r.size / (1024 * 1024);
+        return;
+      }
+      tooLarge = false;
+      onChange(r.path);
     } catch {
       // Cancelled or unavailable: leave the field as-is.
     }
@@ -98,9 +120,16 @@
     // is absent (sandboxed / plain browser), drag-drop is a no-op and click-to-pick
     // remains the path; we can't synthesize a local path from a sandboxed File.
     const f = e.dataTransfer?.files?.[0] as (File & { path?: string }) | undefined;
-    if (f?.path) {
-      onChange(f.path);
+    if (!f?.path) {
+      return;
     }
+    if (f.size > MAX_THUMBNAIL_BYTES) {
+      tooLarge = true;
+      tooLargeMb = f.size / (1024 * 1024);
+      return;
+    }
+    tooLarge = false;
+    onChange(f.path);
   }
 </script>
 
@@ -140,6 +169,11 @@
       <span>drop / pick</span>
       <small>PNG/JPG, ≤2 MB</small>
     </button>
+  {/if}
+  {#if tooLarge}
+    <div class="thumb-err" role="alert">
+      Too large — {tooLargeMb.toFixed(1)} MB exceeds YouTube's 2 MB limit. Pick an image under 2 MB.
+    </div>
   {/if}
 {:else if field.type === "enum"}
   <select class="inp" class:narrow value={str} onchange={(e) => onChange(e.currentTarget.value)}>
@@ -312,5 +346,12 @@
     color: var(--color-muted);
     margin-top: 3px;
     word-break: break-all;
+  }
+  .thumb-err {
+    font-size: 10px;
+    color: var(--color-danger, #e5484d);
+    margin-top: 4px;
+    max-width: 220px;
+    line-height: 1.35;
   }
 </style>

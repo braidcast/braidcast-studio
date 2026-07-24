@@ -1311,14 +1311,14 @@ export interface ObsMethods {
   // Native OS file dialog (path / editable_list Browse). `mode` picks an open,
   // save, or directory chooser; `filter` is an OBS-style filter string. Returns
   // { path: null } when the user cancels.
-  "dialog.openFile": { path: string | null };
+  "dialog.openFile": { path: string | null; size?: number };
   // Reveal a path in the system file manager (file highlighted in its folder;
   // directory opened directly).
   "shell.revealPath": { ok: boolean };
   // Read a local file ({path}) and return it as a base64 data: URI. CEF's app://
   // origin refuses to load file:// resources, so a local-image preview must be
   // inlined. Caps at 10 MB and rejects missing/unreadable files (throws to JS).
-  "file.readDataUri": { dataUri: string };
+  "file.readDataUri": { dataUri: string; size: number };
   // Core video/audio settings (4.3.5). set* return the applied (post-reset) values.
   "settings.getVideo": VideoSettings;
   "settings.setVideo": VideoSettings;

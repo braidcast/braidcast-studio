@@ -4725,6 +4725,15 @@ bool MethodDialogOpenFile(const json &params, json &result, std::string &error)
 		return false;
 	}
 	result = json{{"path", cancelled ? json(nullptr) : json(chosen)}};
+	// Include the byte size of a chosen file so callers can validate against a limit
+	// (e.g. the Go Live thumbnail picker refusing >2 MB) before storing the path.
+	if (!cancelled && !isDirectory) {
+		std::error_code ec;
+		const uintmax_t sz = std::filesystem::file_size(std::filesystem::u8path(chosen), ec);
+		if (!ec) {
+			result["size"] = static_cast<std::uint64_t>(sz);
+		}
+	}
 	return true;
 }
 
@@ -4851,7 +4860,8 @@ bool MethodFileReadDataUri(const json &params, json &result, std::string &error)
 	auto it = kMimeByExt.find(ext);
 	const std::string mime = it != kMimeByExt.end() ? it->second : "application/octet-stream";
 
-	result = json{{"dataUri", "data:" + mime + ";base64," + EncodeBase64(bytes)}};
+	result = json{{"dataUri", "data:" + mime + ";base64," + EncodeBase64(bytes)},
+		      {"size", static_cast<std::uint64_t>(size)}};
 	return true;
 }
 
