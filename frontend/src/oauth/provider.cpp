@@ -80,4 +80,48 @@ bool StreamProvider::SendAuthed(OAuthAccount &acct, Http::HttpReq req, Http::Htt
 	return true;
 }
 
+long StreamProvider::SendAuthedStreaming(OAuthAccount &acct, Http::HttpReq req,
+					 const std::function<bool(std::string_view chunk)> &onChunk,
+					 std::string &errorBody, std::string &err)
+{
+	// Proactive refresh inside the skew window (best-effort, mirroring SendAuthed): if it
+	// fails the token may still be valid, so proceed and rely on the 401 path below.
+	std::string freshErr;
+	auth()->ensureFresh(acct, freshErr);
+
+	Http::HttpReq attempt = req;
+	stampAuth(attempt, acct);
+	errorBody.clear();
+	long status = Http::HttpRequestStreaming(attempt, onChunk, errorBody, err);
+	if (status == 0) {
+		err = displayName() + " request failed: " + err;
+		return 0;
+	}
+	if (status != 401) {
+		return status;
+	}
+
+	// Reactive 401: force one refresh + retry with the new bearer. A non-2xx body is not
+	// streamed to onChunk (HttpRequestStreaming captured it into errorBody instead), so the
+	// caller has emitted nothing yet and the retry starts clean. Route through
+	// ensureFresh(force) for the same store-coherent single-flight path SendAuthed uses.
+	std::string refreshErr;
+	if (!auth()->ensureFresh(acct, refreshErr, /*force=*/true)) {
+		err = "re-authentication required";
+		return 401;
+	}
+	Http::HttpReq retry = req;
+	stampAuth(retry, acct);
+	errorBody.clear();
+	status = Http::HttpRequestStreaming(retry, onChunk, errorBody, err);
+	if (status == 0) {
+		err = displayName() + " request failed: " + err;
+		return 0;
+	}
+	if (status == 401) {
+		err = "re-authentication required";
+	}
+	return status;
+}
+
 } // namespace OAuth

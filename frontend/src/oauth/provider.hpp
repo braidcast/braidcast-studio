@@ -5,6 +5,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <string_view>
 
 #include <nlohmann/json.hpp>
 
@@ -231,6 +232,19 @@ public:
 	// proactive-refresh + reactive-401 policy is uniform; only the header stamp is
 	// per-platform (see stampAuth).
 	bool SendAuthed(OAuthAccount &acct, Http::HttpReq req, Http::HttpResponse &resp, std::string &err);
+
+	// Streaming sibling of SendAuthed for a long-lived server-push response (YouTube
+	// liveChatMessages.streamList): same proactive-refresh + reactive-401 policy, but the
+	// 2xx body is delivered to `onChunk` as it arrives (returning false aborts the stream)
+	// rather than buffered. A non-2xx body is captured into `errorBody` for the caller to
+	// interpret (quota/rate-limit reason), and since nothing was streamed on a 401 the
+	// forced refresh + retry is clean. Returns the HTTP status: 0 on a transport failure
+	// (with `err` set), 401 on an unrecoverable re-auth ("re-authentication required"),
+	// otherwise the status with the body already streamed or captured. `req` is by value
+	// so the auth header is re-stamped cleanly on the retry (the bearer changes).
+	long SendAuthedStreaming(OAuthAccount &acct, Http::HttpReq req,
+				 const std::function<bool(std::string_view chunk)> &onChunk, std::string &errorBody,
+				 std::string &err);
 
 	// Fetch the channel's current stream metadata (title/category/...) into `out`
 	// for prefill. `acct` is non-const so a reactive token refresh (proactive skew

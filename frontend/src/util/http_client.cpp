@@ -1,6 +1,7 @@
 #include "http_client.hpp"
 
 #include <mutex>
+#include <string_view>
 
 #include <curl/curl.h>
 
@@ -36,21 +37,50 @@ size_t WriteToString(char *ptr, size_t size, size_t nmemb, void *userdata)
 	return total;
 }
 
-} // namespace
+// Per-transfer state threaded into the streaming write callback: the easy handle (so
+// the callback can read the response status once headers are in), the caller's chunk
+// sink, and the error-body accumulator used for a non-2xx response.
+struct StreamState {
+	CURL *curl = nullptr;
+	const std::function<bool(std::string_view)> *onChunk = nullptr;
+	std::string *errorBody = nullptr;
+	bool aborted = false; // onChunk requested cancellation
+};
 
-HttpResponse HttpRequest(const HttpReq &req)
+size_t WriteStreaming(char *ptr, size_t size, size_t nmemb, void *userdata)
 {
-	EnsureGlobalInit();
+	const size_t total = size * nmemb;
+	auto *st = static_cast<StreamState *>(userdata);
 
-	HttpResponse resp;
+	// The status line + headers are parsed before the first write callback fires, so
+	// CURLINFO_RESPONSE_CODE is populated here.
+	long status = 0;
+	curl_easy_getinfo(st->curl, CURLINFO_RESPONSE_CODE, &status);
 
-	CURL *curl = curl_easy_init();
-	if (!curl) {
-		resp.error = "curl_easy_init failed";
-		return resp;
+	if (status < 200 || status >= 300) {
+		// Non-2xx: capture the body (capped) for the caller to inspect instead of
+		// streaming it. Keep draining so curl reads the whole error response cleanly.
+		if (st->errorBody->size() + total <= static_cast<size_t>(kMaxResponseBytes)) {
+			st->errorBody->append(ptr, total);
+		}
+		return total;
 	}
 
-	struct curl_slist *headerList = nullptr;
+	if (!(*st->onChunk)(std::string_view(ptr, total))) {
+		// Caller-driven cancel: short return -> curl aborts with CURLE_WRITE_ERROR,
+		// which the caller treats as a clean stop (see the `aborted` flag).
+		st->aborted = true;
+		return 0;
+	}
+	return total;
+}
+
+// Shared easy-handle setup for both the buffered and streaming paths: URL, verb,
+// request headers, and the transport-safety options. The write callback and the
+// timeout policy differ between the two and are set by each caller. `headerList` is
+// filled with the allocated slist the caller must free after curl_easy_perform.
+void ApplyCommonOptions(CURL *curl, const HttpReq &req, struct curl_slist *&headerList)
+{
 	for (const std::string &header : req.headers) {
 		headerList = curl_slist_append(headerList, header.c_str());
 	}
@@ -75,13 +105,6 @@ HttpResponse HttpRequest(const HttpReq &req)
 		curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headerList);
 	}
 
-	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteToString);
-	curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp.body);
-	curl_easy_setopt(curl, CURLOPT_MAXFILESIZE_LARGE, kMaxResponseBytes);
-
-	const long timeout = req.timeoutSec > 0 ? req.timeoutSec : 30;
-	curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout);
-
 	// Do NOT follow redirects: OAuth flows must observe the 3xx Location header
 	// themselves rather than transparently chasing it.
 	curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
@@ -89,6 +112,31 @@ HttpResponse HttpRequest(const HttpReq &req)
 	// path uses SIGALRM, which is unsafe in a multithreaded process.
 	curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
 	curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
+}
+
+} // namespace
+
+HttpResponse HttpRequest(const HttpReq &req)
+{
+	EnsureGlobalInit();
+
+	HttpResponse resp;
+
+	CURL *curl = curl_easy_init();
+	if (!curl) {
+		resp.error = "curl_easy_init failed";
+		return resp;
+	}
+
+	struct curl_slist *headerList = nullptr;
+	ApplyCommonOptions(curl, req, headerList);
+
+	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteToString);
+	curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp.body);
+	curl_easy_setopt(curl, CURLOPT_MAXFILESIZE_LARGE, kMaxResponseBytes);
+
+	const long timeout = req.timeoutSec > 0 ? req.timeoutSec : 30;
+	curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout);
 
 	const CURLcode code = curl_easy_perform(curl);
 	if (code == CURLE_OK) {
@@ -102,6 +150,55 @@ HttpResponse HttpRequest(const HttpReq &req)
 	}
 	curl_easy_cleanup(curl);
 	return resp;
+}
+
+long HttpRequestStreaming(const HttpReq &req, const std::function<bool(std::string_view chunk)> &onChunk,
+			  std::string &errorBody, std::string &error)
+{
+	EnsureGlobalInit();
+
+	CURL *curl = curl_easy_init();
+	if (!curl) {
+		error = "curl_easy_init failed";
+		return 0;
+	}
+
+	struct curl_slist *headerList = nullptr;
+	ApplyCommonOptions(curl, req, headerList);
+
+	StreamState st;
+	st.curl = curl;
+	st.onChunk = &onChunk;
+	st.errorBody = &errorBody;
+
+	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteStreaming);
+	curl_easy_setopt(curl, CURLOPT_WRITEDATA, &st);
+
+	// Connect timeout only -- the transfer is a long-lived push stream and must NOT be
+	// killed by a whole-request timeout. A connected-but-dead stream (no bytes for a long
+	// stretch) is caught by the low-speed watchdog instead.
+	const long connectTimeout = req.timeoutSec > 0 ? req.timeoutSec : 30;
+	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, connectTimeout);
+	curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
+	curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 90L);
+
+	const CURLcode code = curl_easy_perform(curl);
+
+	long status = 0;
+	curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+
+	// A caller-driven cancel returns 0 from the write callback, surfacing as
+	// CURLE_WRITE_ERROR. That is a clean stop, not a transport failure: leave `error`
+	// empty and report whatever status was reached.
+	if (code != CURLE_OK && !(code == CURLE_WRITE_ERROR && st.aborted)) {
+		error = curl_easy_strerror(code);
+	}
+
+	if (headerList) {
+		curl_slist_free_all(headerList);
+	}
+	curl_easy_cleanup(curl);
+	return status;
 }
 
 std::string UrlEncode(const std::string &value)
