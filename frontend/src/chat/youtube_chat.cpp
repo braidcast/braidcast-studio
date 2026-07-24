@@ -25,6 +25,17 @@ const char *kLiveChatMessagesUrl = "https://www.googleapis.com/youtube/v3/liveCh
 constexpr long kDefaultPollMs = 5000;
 constexpr long kMinPollMs = 1500;
 
+// error.errors[0].reason values YouTube returns on a 403 when the app has burned
+// its API quota or is being briefly rate-limited -- transient, not terminal: quota
+// resets and rate-limit bursts subside, so these are worth a backoff retry rather
+// than ending the chat session.
+constexpr const char *kRetryableYouTubeChatErrorReasons[] = {
+	"quotaExceeded",
+	"rateLimitExceeded",
+	"userRateLimitExceeded",
+	"dailyLimitExceeded",
+};
+
 using JsonUtil::Bool;
 using JsonUtil::NumLoose;
 using JsonUtil::Obj;
@@ -240,9 +251,36 @@ bool YouTubeChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, con
 			return false;
 		}
 
-		// 403 (chat disabled/ended/quota) or 404 (broadcast gone) end the session
-		// cleanly -- the chat no longer exists, so there is nothing to retry.
-		if (resp.status == 403 || resp.status == 404) {
+		// 429, or a 403 whose YouTube error reason is quota/rate-limit related, is a
+		// transient condition -- treat it like the generic non-2xx branch below: a
+		// visible reason, a backoff, and a retry, not a silent terminal stop. Any
+		// other 403 (chat genuinely disabled/ended/forbidden) and every 404 (broadcast
+		// gone) end the session cleanly since the chat no longer exists.
+		if (resp.status == 403 || resp.status == 429) {
+			std::string reason;
+			if (resp.status == 403) {
+				const json errJson = ParseJson(resp.body);
+				const json &errors = Obj(Obj(errJson, "error"), "errors");
+				if (errors.is_array() && !errors.empty()) {
+					reason = Str(errors[0], "reason");
+				}
+			}
+			const bool retryable =
+				resp.status == 429 ||
+				std::any_of(std::begin(kRetryableYouTubeChatErrorReasons),
+					    std::end(kRetryableYouTubeChatErrorReasons),
+					    [&](const char *r) { return reason == r; });
+			if (retryable) {
+				emitState(false, "YouTube chat rate-limited, retrying");
+				if (CancelableSleep(backoff.next(), canceled)) {
+					break;
+				}
+				continue;
+			}
+			emitState(false, reason.empty() ? "" : "YouTube chat error: " + reason);
+			break;
+		}
+		if (resp.status == 404) {
 			emitState(false, "");
 			break;
 		}
