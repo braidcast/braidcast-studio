@@ -5,6 +5,7 @@
 #include <ctime>
 #include <fstream>
 #include <iterator>
+#include <utility>
 
 #include "../chat/youtube_chat.hpp"
 #include "util/http_client.hpp"
@@ -46,9 +47,91 @@ const char *kYouTubeScope = "https://www.googleapis.com/auth/youtube.force-ssl";
 // an idle connected account does not burn API quota every poll cycle.
 constexpr std::chrono::seconds kBroadcastProbeThrottle{15};
 
+// error.errors[0].reason values on a 403/429 when the app is briefly rate-limited:
+// transient within seconds, worth a backoff retry.
+constexpr const char *kRateLimitReasons[] = {
+	"rateLimitExceeded",
+	"userRateLimitExceeded",
+};
+
+// error.errors[0].reason values on a 403 when the project's DAILY quota is spent:
+// lasts until the next midnight-Pacific reset, so any earlier retry is wasted traffic.
+constexpr const char *kQuotaExhaustedReasons[] = {
+	"quotaExceeded",
+	"dailyLimitExceeded",
+};
+
+// Slack past the computed midnight before requests resume, so a wake on a
+// slightly-fast local clock cannot re-observe quotaExceeded and re-arm the gate
+// for a full extra day.
+constexpr int64_t kQuotaResetSlackSec = 300;
+
 using JsonUtil::Bool;
+using JsonUtil::Obj;
 using JsonUtil::ParseJson;
 using JsonUtil::Str;
+
+template<size_t N> bool ReasonIn(const std::string &reason, const char *const (&list)[N])
+{
+	return std::any_of(std::begin(list), std::end(list), [&](const char *r) { return reason == r; });
+}
+
+// Days since 1970-01-01 for a civil date (Howard Hinnant's days-from-civil).
+int64_t DaysFromCivil(int y, int m, int d)
+{
+	y -= m <= 2;
+	const int era = (y >= 0 ? y : y - 399) / 400;
+	const unsigned yoe = static_cast<unsigned>(y - era * 400);
+	const unsigned mp = static_cast<unsigned>(m + (m > 2 ? -3 : 9));
+	const unsigned doy = (153u * mp + 2) / 5 + static_cast<unsigned>(d) - 1;
+	const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+	return static_cast<int64_t>(era) * 146097 + static_cast<int64_t>(doe) - 719468;
+}
+
+// The civil year containing epoch day `z` (the year component of civil-from-days).
+int YearFromDays(int64_t z)
+{
+	z += 719468;
+	const int64_t era = (z >= 0 ? z : z - 146096) / 146097;
+	const unsigned doe = static_cast<unsigned>(z - era * 146097);
+	const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+	const int y = static_cast<int>(yoe) + static_cast<int>(era) * 400;
+	const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+	const unsigned mp = (5 * doy + 2) / 153;
+	const unsigned m = mp < 10 ? mp + 3 : mp - 9;
+	return y + (m <= 2);
+}
+
+// Epoch seconds of the Nth Sunday of `month` in `year`, at `utcHour`:00 UTC.
+int64_t NthSundayUtc(int year, int month, int nth, int utcHour)
+{
+	const int64_t first = DaysFromCivil(year, month, 1);
+	const int dow = static_cast<int>((first + 4) % 7); // 1970-01-01 was a Thursday; 0 = Sunday
+	const int64_t day = first + (7 - dow) % 7 + 7 * (nth - 1);
+	return day * 86400 + utcHour * 3600;
+}
+
+// Pacific Time's UTC offset at `utcEpoch`, honoring US DST (starts the second
+// Sunday of March at 02:00 standard = 10:00 UTC, ends the first Sunday of November
+// at 02:00 daylight = 09:00 UTC): UTC-7 inside the window, UTC-8 outside.
+int64_t PacificOffsetSec(int64_t utcEpoch)
+{
+	const int year = YearFromDays(utcEpoch / 86400);
+	const int64_t dstStart = NthSundayUtc(year, 3, 2, 10);
+	const int64_t dstEnd = NthSundayUtc(year, 11, 1, 9);
+	return (utcEpoch >= dstStart && utcEpoch < dstEnd) ? -7 * 3600 : -8 * 3600;
+}
+
+// Epoch seconds of the next midnight Pacific after `nowUtc` -- the instant the
+// YouTube Data API's daily quota resets.
+int64_t NextPacificMidnightUtc(int64_t nowUtc)
+{
+	const int64_t offsetNow = PacificOffsetSec(nowUtc);
+	const int64_t nextLocalMidnight = ((nowUtc + offsetNow) / 86400 + 1) * 86400;
+	// Convert back with the offset in force AT the reset, so a DST flip between now
+	// and midnight cannot shift the instant by an hour.
+	return nextLocalMidnight - PacificOffsetSec(nextLocalMidnight - offsetNow);
+}
 
 // The first element of `j["items"]`, or a null json when absent/empty.
 json FirstItem(const json &j)
@@ -108,6 +191,112 @@ std::string SniffImageMime(const std::string &bytes)
 }
 
 } // namespace
+
+std::string YouTubeErrorReason(const std::string &body)
+{
+	const json errJson = ParseJson(body);
+	const json &errors = Obj(Obj(errJson, "error"), "errors");
+	if (errors.is_array() && !errors.empty()) {
+		return Str(errors[0], "reason");
+	}
+	return std::string();
+}
+
+YouTubeErrorClass ClassifyYouTubeError(long status, const std::string &reason)
+{
+	if (ReasonIn(reason, kQuotaExhaustedReasons)) {
+		return YouTubeErrorClass::QuotaExhausted;
+	}
+	if (status == 429 || ReasonIn(reason, kRateLimitReasons)) {
+		return YouTubeErrorClass::RateLimited;
+	}
+	return YouTubeErrorClass::Other;
+}
+
+void YouTubeProvider::NoteQuotaExhausted(const std::string &reason)
+{
+	const int64_t now = static_cast<int64_t>(std::time(nullptr));
+	int64_t current = quotaResetEpoch_.load(std::memory_order_acquire);
+	if (current > now) {
+		return; // this episode is already recorded (and logged)
+	}
+	const int64_t reset = NextPacificMidnightUtc(now) + kQuotaResetSlackSec;
+	if (!quotaResetEpoch_.compare_exchange_strong(current, reset, std::memory_order_acq_rel)) {
+		return; // another worker recorded this episode first
+	}
+	HostLog("[oauth] YouTube API daily quota exhausted (" + reason + "); suspending YouTube requests until " +
+		QuotaResetLocalTime() + " local (midnight Pacific)");
+}
+
+bool YouTubeProvider::QuotaExhausted(std::chrono::milliseconds *retryIn) const
+{
+	const int64_t reset = quotaResetEpoch_.load(std::memory_order_acquire);
+	const int64_t now = static_cast<int64_t>(std::time(nullptr));
+	if (reset <= now) {
+		return false;
+	}
+	if (retryIn) {
+		*retryIn = std::chrono::milliseconds((reset - now) * 1000);
+	}
+	return true;
+}
+
+std::string YouTubeProvider::QuotaResetLocalTime() const
+{
+	const int64_t reset = quotaResetEpoch_.load(std::memory_order_acquire);
+	if (reset == 0) {
+		return std::string();
+	}
+	const std::time_t t = static_cast<std::time_t>(reset);
+	std::tm tm{};
+	localtime_s(&tm, &t);
+	char buf[8];
+	std::strftime(buf, sizeof buf, "%H:%M", &tm);
+	return std::string(buf);
+}
+
+std::string YouTubeProvider::QuotaMessage() const
+{
+	return "YouTube API quota exhausted; retries resume after " + QuotaResetLocalTime();
+}
+
+void YouTubeProvider::NoteIfQuotaError(long status, const std::string &body)
+{
+	if (status != 403) {
+		return;
+	}
+	const std::string reason = YouTubeErrorReason(body);
+	if (ClassifyYouTubeError(status, reason) == YouTubeErrorClass::QuotaExhausted) {
+		NoteQuotaExhausted(reason);
+	}
+}
+
+bool YouTubeProvider::SendAuthed(OAuthAccount &acct, Http::HttpReq req, Http::HttpResponse &resp, std::string &err)
+{
+	if (QuotaExhausted()) {
+		err = QuotaMessage();
+		return false;
+	}
+	if (!StreamProvider::SendAuthed(acct, std::move(req), resp, err)) {
+		return false;
+	}
+	NoteIfQuotaError(resp.status, resp.body);
+	return true;
+}
+
+long YouTubeProvider::SendAuthedStreaming(OAuthAccount &acct, Http::HttpReq req,
+					  const std::function<bool(std::string_view chunk)> &onChunk,
+					  std::string &errorBody, std::string &err)
+{
+	if (QuotaExhausted()) {
+		errorBody.clear();
+		err = QuotaMessage();
+		return 0;
+	}
+	const long status = StreamProvider::SendAuthedStreaming(acct, std::move(req), onChunk, errorBody, err);
+	NoteIfQuotaError(status, errorBody);
+	return status;
+}
 
 YouTubeProvider::YouTubeProvider()
 	: auth_(BrokerStrategy::Config{

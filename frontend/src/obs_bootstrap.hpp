@@ -106,6 +106,13 @@ MultistreamEngine &Multistream();
 // CefShutdown, after the engine was reset.
 bool MultistreamAlive();
 
+// Whether any output is currently live, mirrored out of MultistreamEngine::AnyLive
+// at each live transition into a flag with static storage duration: false before
+// Start() constructs the engine and after Stop() resets it. The seam the always-on
+// account/event pollers use, because their detached workers are documented to
+// outlive Stop() and so must not dereference the engine itself.
+bool AnyOutputLive();
+
 // The live obs_canvas_t mixes for the additional (non-Default) canvases, owned by
 // the bootstrap (built in Start after the model loads, torn down in Stop before
 // the stores clear). Exposed so the canvas CRUD bridge methods can keep the mixes

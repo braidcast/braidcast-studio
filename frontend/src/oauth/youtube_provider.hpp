@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -37,6 +38,17 @@ namespace OAuth {
 // Bumped whenever the requested scope set changes, forcing installs holding
 // tokens issued under an older scope set to re-auth (see OAuthAccount::scopeVer).
 constexpr int YOUTUBE_SCOPE_VERSION = 1;
+
+// error.errors[0].reason from a YouTube Data API error body ("" when absent /
+// unparseable). The ONE reason extractor every YouTube 403 interpreter shares.
+std::string YouTubeErrorReason(const std::string &body);
+
+// The two transient YouTube 403/429 classes, split because they demand opposite
+// handling: a rate limit subsides within seconds (backoff and retry), while an
+// exhausted daily quota lasts until the next midnight Pacific reset (stand down --
+// retrying sooner is guaranteed-useless traffic). Everything else is Other.
+enum class YouTubeErrorClass { Other, RateLimited, QuotaExhausted };
+YouTubeErrorClass ClassifyYouTubeError(long status, const std::string &reason);
 
 class YouTubeProvider : public StreamProvider {
 public:
@@ -97,6 +109,32 @@ public:
 	void SetLiveChatActive(bool active) { liveChatActive_.store(active, std::memory_order_release); }
 	bool LiveChatActive() const { return liveChatActive_.load(std::memory_order_acquire); }
 
+	// Record a quota-exhausted verdict from any YouTube Data API response: computes
+	// the next midnight-Pacific reset instant and closes the shared gate until then,
+	// HostLog'ing once per episode. Later reports while the gate is closed are no-ops.
+	// Armed by the SendAuthed/SendAuthedStreaming wrappers below, so one 403 from any
+	// consumer teaches the whole app to stand down.
+	void NoteQuotaExhausted(const std::string &reason);
+
+	// True while the daily quota is exhausted; clears itself once the reset instant
+	// passes (no manual reset, no restart). Fills `retryIn` with the remaining wait
+	// when exhausted, so loops can sleep out the outage instead of spinning.
+	bool QuotaExhausted(std::chrono::milliseconds *retryIn = nullptr) const;
+
+	// The recorded reset instant as local wall-clock "HH:MM" for user-facing
+	// messages ("" before any exhaustion was ever recorded).
+	std::string QuotaResetLocalTime() const;
+
+	// The quota gate's choke point: every YouTube consumer (chat, events, viewer +
+	// audience pollers, broadcast probe, metadata) sends through these two, so while
+	// exhausted the request is refused without spending quota, and a quota-class 403
+	// on any response arms the gate for all of them. Twitch/Kick keep the base
+	// implementations untouched.
+	bool SendAuthed(OAuthAccount &acct, Http::HttpReq req, Http::HttpResponse &resp, std::string &err) override;
+	long SendAuthedStreaming(OAuthAccount &acct, Http::HttpReq req,
+				 const std::function<bool(std::string_view chunk)> &onChunk, std::string &errorBody,
+				 std::string &err) override;
+
 private:
 	// YouTubeChat reaches back through this provider for SendAuthed (token coherence)
 	// and chatChannelRef (the active liveChatId), so it needs access to both.
@@ -141,6 +179,19 @@ private:
 	// multi-account YouTube is ever enabled, one account going live would suppress REST
 	// Super Chats for all YouTube accounts (revisit as a per-account flag then).
 	std::atomic<bool> liveChatActive_{false};
+
+	// Arm the quota gate when a completed response carries a quota-class 403.
+	// Shared tail of the SendAuthed/SendAuthedStreaming wrappers.
+	void NoteIfQuotaError(long status, const std::string &body);
+
+	// The refusal message both wrappers hand back while the gate is closed.
+	std::string QuotaMessage() const;
+
+	// Epoch seconds when the exhausted daily quota resets (0 = never exhausted).
+	// Per-provider-singleton on purpose: the quota is spent per API project, not per
+	// account, so one exhausted account means every YouTube account is dark. Atomic:
+	// armed and read from many worker threads (chat, events, pollers).
+	std::atomic<int64_t> quotaResetEpoch_{0};
 };
 
 } // namespace OAuth

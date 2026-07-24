@@ -13,6 +13,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cmath>
 #include <cstdarg>
@@ -430,6 +431,11 @@ UndoManager g_undo;
 // them by reference) and reset in Stop before they clear.
 std::unique_ptr<MultistreamEngine> g_multistream;
 
+// Live-ness mirrored out of the engine at every live transition. Static storage
+// duration on purpose: the detached account/event poller workers read it and are
+// documented to outlive Stop(), so they must not touch g_multistream itself.
+std::atomic<bool> g_anyOutputLive{false};
+
 // Live obs_canvas_t mixes for the additional (non-Default) canvases, so the
 // engine can encode them. Built from g_canvases after the model loads (before the
 // engine, which resolves canvas video through it) and torn down in Stop after the
@@ -696,6 +702,11 @@ MultistreamEngine &ObsBootstrap::Multistream()
 bool ObsBootstrap::MultistreamAlive()
 {
 	return g_multistream != nullptr;
+}
+
+bool ObsBootstrap::AnyOutputLive()
+{
+	return g_anyOutputLive.load(std::memory_order_acquire);
 }
 
 ::AudioMonitor &ObsBootstrap::AudioMonitor()
@@ -1022,6 +1033,11 @@ bool ObsBootstrap::Start()
 	// override re-applies its fixed class. SyncProcessPriorityToLiveState marshals the
 	// g_advanced read onto the UI thread since this fires off the libobs signal thread.
 	g_multistream->onLiveStateChanged = [] {
+		// Publish live-ness to the process-lifetime flag the detached account/event
+		// pollers read: they may outlive the engine, so they must never dereference it.
+		// Safe to call AnyLive() here -- UpdateSleepInhibit, the only firing site, calls
+		// it itself before this, so liveMutex is provably not held.
+		g_anyOutputLive.store(g_multistream->AnyLive(), std::memory_order_release);
 		SyncProcessPriorityToLiveState();
 	};
 
@@ -3461,6 +3477,8 @@ void ObsBootstrap::Stop(void (*drainCefTasks)())
 		g_multistream->onLiveStateChanged = nullptr;
 		g_multistream->StopAll();
 		g_multistream.reset();
+		// The publish seam is gone; nothing is live once the engine is down.
+		g_anyOutputLive.store(false, std::memory_order_release);
 	}
 
 	// Stop + release the virtual-camera output while libobs is still up, before the

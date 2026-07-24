@@ -46,17 +46,6 @@ constexpr long kStreamReconnectFloorMs = 250;
 // streamList accepts 200..2000 (default 500); larger batches mean fewer reconnects.
 constexpr const char *kStreamMaxResults = "500";
 
-// error.errors[0].reason values YouTube returns on a 403 when the app has burned
-// its API quota or is being briefly rate-limited -- transient, not terminal: quota
-// resets and rate-limit bursts subside, so these are worth a backoff retry rather
-// than ending the chat session.
-constexpr const char *kRetryableYouTubeChatErrorReasons[] = {
-	"quotaExceeded",
-	"rateLimitExceeded",
-	"userRateLimitExceeded",
-	"dailyLimitExceeded",
-};
-
 using JsonUtil::Bool;
 using JsonUtil::NumLoose;
 using JsonUtil::Obj;
@@ -290,27 +279,6 @@ void ProcessChatItems(const ChatContext &ctx, const json &items, const std::stri
 	}
 }
 
-// error.errors[0].reason from a YouTube error body ("" when absent/unparseable).
-std::string YouTubeChatErrorReason(const std::string &body)
-{
-	const json errJson = ParseJson(body);
-	const json &errors = Obj(Obj(errJson, "error"), "errors");
-	if (errors.is_array() && !errors.empty()) {
-		return Str(errors[0], "reason");
-	}
-	return std::string();
-}
-
-// Whether a 403/429 is transient (worth a backoff retry rather than a terminal stop): a
-// 429 always is; a 403 only when its reason is one of the known quota/rate-limit reasons.
-// Single-sources the reason list + classification for both the streamList and .list paths.
-bool IsRetryableYouTubeChatError(long status, const std::string &reason)
-{
-	return status == 429 || std::any_of(std::begin(kRetryableYouTubeChatErrorReasons),
-					    std::end(kRetryableYouTubeChatErrorReasons),
-					    [&](const char *r) { return reason == r; });
-}
-
 // The shared per-connection context both read loops run on. References into connect()'s
 // frame (the loops never outlive it); `announced` is threaded across a stream->list
 // fallback so the connected state is emitted exactly once.
@@ -337,6 +305,23 @@ void AnnounceOnce(ChatSession &s)
 	}
 }
 
+// While the shared daily-quota gate is closed, surface the outage on the chat state
+// and sleep (cancelable) until the reset instant, so neither read loop spends a
+// request against a spent quota. Clears `announced` so recovery re-emits the
+// connected state once polling resumes. Returns true when the wait was canceled.
+bool WaitOutQuotaExhaustion(ChatSession &s)
+{
+	std::chrono::milliseconds wait{};
+	if (!s.owner.QuotaExhausted(&wait)) {
+		return false;
+	}
+	DBG(LogCat::Chat, "youtube: quota exhausted, chat paused %lldms until the reset",
+	    static_cast<long long>(wait.count()));
+	s.emitState(false, "YouTube API quota exhausted - chat resumes after " + s.owner.QuotaResetLocalTime());
+	s.announced = false;
+	return CancelableSleep(wait, s.canceled);
+}
+
 // Drive the push-based streamList read loop. Returns true to request the .list fallback
 // (the transcode endpoint is unavailable: HTTP 404/400); false when the session ended for
 // any other reason (cancel, terminal error, or an unrecoverable re-auth with `err` set).
@@ -349,6 +334,9 @@ bool RunStreamList(ChatSession &s, std::string &err)
 	bool firstConnect = true;
 
 	while (!s.canceled()) {
+		if (WaitOutQuotaExhaustion(s)) {
+			break;
+		}
 		std::string url = std::string(kLiveChatStreamUrl) + "?liveChatId=" +
 				  Http::UrlEncode(s.liveChatId) + "&part=id,snippet,authorDetails&maxResults=" +
 				  kStreamMaxResults;
@@ -422,6 +410,7 @@ bool RunStreamList(ChatSession &s, std::string &err)
 		}
 		if (status == 0) {
 			// Transport failure: transient blip, back off and reconnect.
+			DBG(LogCat::Chat, "youtube streamList: transport failure (%s), backing off", reqErr.c_str());
 			s.emitState(false, reqErr);
 			if (CancelableSleep(s.backoff.next(), s.canceled)) {
 				break;
@@ -435,23 +424,39 @@ bool RunStreamList(ChatSession &s, std::string &err)
 		}
 		if (status == 401) {
 			// Unrecoverable after a forced refresh: re-auth needed. Terminal.
+			DBG(LogCat::Chat, "youtube streamList: terminal HTTP 401 (%s), ending session",
+			    reqErr.c_str());
 			err = reqErr;
 			s.emitState(false, reqErr);
 			return false;
 		}
 		if (status == 403 || status == 429) {
-			const std::string reason = status == 403 ? YouTubeChatErrorReason(errorBody) : std::string();
-			if (IsRetryableYouTubeChatError(status, reason)) {
+			const std::string reason = status == 403 ? OAuth::YouTubeErrorReason(errorBody)
+								 : std::string();
+			const OAuth::YouTubeErrorClass cls = OAuth::ClassifyYouTubeError(status, reason);
+			if (cls == OAuth::YouTubeErrorClass::QuotaExhausted) {
+				// SendAuthedStreaming already armed the shared gate; the loop-top wait
+				// reports the outage and sleeps until the reset.
+				DBG(LogCat::Chat, "youtube streamList: HTTP %ld (%s) -> quota exhausted", status,
+				    reason.c_str());
+				continue;
+			}
+			if (cls == OAuth::YouTubeErrorClass::RateLimited) {
+				DBG(LogCat::Chat, "youtube streamList: HTTP %ld (%s) rate-limited, backing off",
+				    status, reason.c_str());
 				s.emitState(false, "YouTube chat rate-limited, retrying");
 				if (CancelableSleep(s.backoff.next(), s.canceled)) {
 					break;
 				}
 				continue;
 			}
+			DBG(LogCat::Chat, "youtube streamList: terminal HTTP %ld (%s), ending session", status,
+			    reason.c_str());
 			s.emitState(false, reason.empty() ? "" : "YouTube chat error: " + reason);
 			break;
 		}
 		if (status < 200 || status >= 300) {
+			DBG(LogCat::Chat, "youtube streamList: HTTP %ld, backing off", status);
 			s.emitState(false, "HTTP " + std::to_string(status));
 			if (CancelableSleep(s.backoff.next(), s.canceled)) {
 				break;
@@ -472,6 +477,7 @@ bool RunStreamList(ChatSession &s, std::string &err)
 		}
 	}
 
+	DBG(LogCat::Chat, "youtube streamList: read loop exited (canceled=%d)", s.canceled() ? 1 : 0);
 	return false;
 }
 
@@ -484,6 +490,9 @@ void RunListPoll(ChatSession &s, std::string &err)
 	bool firstPoll = true;
 
 	while (!s.canceled()) {
+		if (WaitOutQuotaExhaustion(s)) {
+			break;
+		}
 		std::string url = std::string(kLiveChatMessagesUrl) + "?liveChatId=" +
 				  Http::UrlEncode(s.liveChatId) + "&part=snippet,authorDetails";
 		if (!pageToken.empty()) {
@@ -501,38 +510,57 @@ void RunListPoll(ChatSession &s, std::string &err)
 			// unrecoverable 401. The former is a transient blip worth a backoff
 			// retry; the latter is fatal -- re-auth is needed.
 			if (resp.status == 0) {
+				DBG(LogCat::Chat, "youtube list: transport failure (%s), backing off",
+				    reqErr.c_str());
 				s.emitState(false, reqErr);
 				if (CancelableSleep(s.backoff.next(), s.canceled)) {
 					break;
 				}
 				continue;
 			}
+			DBG(LogCat::Chat, "youtube list: terminal HTTP %ld (%s), ending session", resp.status,
+			    reqErr.c_str());
 			err = reqErr;
 			s.emitState(false, reqErr);
 			return;
 		}
 
-		// 429, or a 403 whose YouTube error reason is quota/rate-limit related, is a
-		// transient condition: a visible reason, a backoff, and a retry. Any other 403
-		// (chat disabled/ended/forbidden) and every 404 (broadcast gone) end the session.
+		// A 429, or a 403 whose reason is rate-limit class, is transient: a visible
+		// reason, a backoff, and a retry. A quota-exhausted 403 stands down until the
+		// midnight-Pacific reset via the shared gate. Any other 403 (chat disabled/
+		// ended/forbidden) and every 404 (broadcast gone) end the session.
 		if (resp.status == 403 || resp.status == 429) {
 			const std::string reason =
-				resp.status == 403 ? YouTubeChatErrorReason(resp.body) : std::string();
-			if (IsRetryableYouTubeChatError(resp.status, reason)) {
+				resp.status == 403 ? OAuth::YouTubeErrorReason(resp.body) : std::string();
+			const OAuth::YouTubeErrorClass cls = OAuth::ClassifyYouTubeError(resp.status, reason);
+			if (cls == OAuth::YouTubeErrorClass::QuotaExhausted) {
+				// SendAuthed already armed the shared gate; the loop-top wait reports
+				// the outage and sleeps until the reset.
+				DBG(LogCat::Chat, "youtube list: HTTP %ld (%s) -> quota exhausted", resp.status,
+				    reason.c_str());
+				continue;
+			}
+			if (cls == OAuth::YouTubeErrorClass::RateLimited) {
+				DBG(LogCat::Chat, "youtube list: HTTP %ld (%s) rate-limited, backing off",
+				    resp.status, reason.c_str());
 				s.emitState(false, "YouTube chat rate-limited, retrying");
 				if (CancelableSleep(s.backoff.next(), s.canceled)) {
 					break;
 				}
 				continue;
 			}
+			DBG(LogCat::Chat, "youtube list: terminal HTTP %ld (%s), ending session", resp.status,
+			    reason.c_str());
 			s.emitState(false, reason.empty() ? "" : "YouTube chat error: " + reason);
 			break;
 		}
 		if (resp.status == 404) {
+			DBG(LogCat::Chat, "youtube list: HTTP 404 (broadcast gone), ending session");
 			s.emitState(false, "");
 			break;
 		}
 		if (resp.status < 200 || resp.status >= 300) {
+			DBG(LogCat::Chat, "youtube list: HTTP %ld, backing off", resp.status);
 			s.emitState(false, "HTTP " + std::to_string(resp.status));
 			if (CancelableSleep(s.backoff.next(), s.canceled)) {
 				break;
@@ -573,6 +601,8 @@ void RunListPoll(ChatSession &s, std::string &err)
 			break;
 		}
 	}
+
+	DBG(LogCat::Chat, "youtube list: poll loop exited (canceled=%d)", s.canceled() ? 1 : 0);
 }
 
 } // namespace

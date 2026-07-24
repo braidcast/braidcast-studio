@@ -157,9 +157,10 @@ void EventHub::StartAccount(const std::string &accountId, const OAuth::OAuthAcco
 
 		// 2) Real-time source + optional poll cadence. connect() blocks until canceled
 		//    or the connection drops; when the transport advertises a poll interval,
-		//    tick poll() on that cadence between connect returns. Both honor the cancel
-		//    token (CancelableSleep) so StopAccount/Shutdown unwind promptly.
-		const int pollMs = transport->pollIntervalMs();
+		//    tick poll() on that cadence between connect returns (re-read per tick so a
+		//    live-aware transport can stretch it while nothing is streaming). Both honor
+		//    the cancel token (CancelableSleep) so StopAccount/Shutdown unwind promptly.
+		const bool polls = transport->pollIntervalMs() > 0;
 		// Connecting bookend: a real-time transport reports Connected itself once its
 		// socket handshakes; the reconnect below re-marks Reconnecting on a drop.
 		if (ctx.reportHealth) {
@@ -202,7 +203,7 @@ void EventHub::StartAccount(const std::string &accountId, const OAuth::OAuthAcco
 				ctx.reportHealth(Transports::TransportHealth::State::Reconnecting, err);
 			}
 
-			if (pollMs > 0) {
+			if (polls) {
 				try {
 					transport->poll(ctx, acctCopy);
 				} catch (const std::exception &e) {
@@ -210,7 +211,8 @@ void EventHub::StartAccount(const std::string &accountId, const OAuth::OAuthAcco
 				} catch (...) {
 					HostLog("[events] poll '" + providerId + "' crashed: unknown error");
 				}
-				if (Chat::CancelableSleep(std::chrono::milliseconds(pollMs), canceled)) {
+				if (Chat::CancelableSleep(std::chrono::milliseconds(transport->pollIntervalMs()),
+							  canceled)) {
 					break;
 				}
 			} else if (Chat::CancelableSleep(kReconnectDelay, canceled)) {

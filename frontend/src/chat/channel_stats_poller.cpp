@@ -12,16 +12,21 @@
 #include "../log.hpp"
 #include "../oauth/provider.hpp"
 #include "../oauth/account_store.hpp"
+#include "../obs_bootstrap.hpp"
 
 namespace Chat {
 
 namespace {
 
-// Always-on cadence: a slow base plus a small deterministic jitter so many
-// installs don't align their audience reads into a synchronized burst against the
-// platforms. The jitter is derived from a rolling tick counter (not RNG / clock)
-// so it is reproducible and adds no nondeterminism to teardown timing.
-constexpr std::chrono::milliseconds kBaseInterval(90000);
+// Always-on cadence: a slow live-aware base plus a small deterministic jitter so
+// many installs don't align their audience reads into a synchronized burst against
+// the platforms. The jitter is derived from a rolling tick counter (not RNG /
+// clock) so it is reproducible and adds no nondeterminism to teardown timing.
+// Idle installs stretch the base -- this poller runs boot-to-exit per account, so
+// the idle cadence is what keeps it from draining daily API quotas (YouTube's in
+// particular) for a panel nobody is watching.
+constexpr std::chrono::milliseconds kLiveInterval(90000);
+constexpr std::chrono::milliseconds kIdleInterval(900000);
 
 } // namespace
 
@@ -37,10 +42,10 @@ const char *ChannelStatsPoller::EventName() const
 
 std::chrono::milliseconds ChannelStatsPoller::Interval(unsigned long long tick) const
 {
-	// Deterministic per-tick jitter (0..15000 ms) folded onto the base interval;
+	// Deterministic per-tick jitter (0..15000 ms) folded onto the live-aware base;
 	// derived from the rolling tick counter, not RNG / wall-clock.
 	std::chrono::milliseconds jitter((tick * 7919) % 15000);
-	return kBaseInterval + jitter;
+	return (ObsBootstrap::AnyOutputLive() ? kLiveInterval : kIdleInterval) + jitter;
 }
 
 void ChannelStatsPoller::PollAccount(OAuth::OAuthAccount &acct, OAuth::StreamProvider *provider, json &perAccount)

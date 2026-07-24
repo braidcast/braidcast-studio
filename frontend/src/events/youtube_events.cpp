@@ -9,6 +9,7 @@
 #include "util/json_util.hpp"
 #include "../log.hpp"
 #include "../oauth/youtube_provider.hpp"
+#include "../obs_bootstrap.hpp"
 #include "util/time_util.hpp"
 
 namespace Events {
@@ -31,6 +32,10 @@ constexpr int kMaxResults = 15;
 // Whole-request timeout for each Data API GET.
 constexpr int kTimeoutSec = 10;
 
+// Live-aware poll cadences (see pollIntervalMs in the header).
+constexpr int kLivePollIntervalMs = 90000;
+constexpr int kIdlePollIntervalMs = 900000;
+
 using JsonUtil::Bool;
 using JsonUtil::NumLoose;
 using JsonUtil::Obj;
@@ -46,6 +51,14 @@ void YouTubeEvents::collect(const EventContext &ctx, OAuth::OAuthAccount &acct,
 	const auto canceled = [&] {
 		return stopped_.load() || (ctx.canceled && ctx.canceled());
 	};
+
+	// The shared daily-quota gate: while exhausted, skip the whole pass without
+	// spending a request or logging per tick (the exhaustion itself was HostLog'd
+	// once by the provider when first detected).
+	if (provider_->QuotaExhausted()) {
+		DBG(LogCat::Events, "youtube: quota exhausted, skipping REST poll");
+		return;
+	}
 
 	// Small helper: one authed GET, tolerant of a 401 (SendAuthed refreshes) and
 	// graceful on any other non-2xx (missing enablement / disabled feature / quota) --
@@ -66,10 +79,13 @@ void YouTubeEvents::collect(const EventContext &ctx, OAuth::OAuthAccount &acct,
 			return false;
 		}
 		if (resp.status < 200 || resp.status >= 300) {
-			// 403 = Super Chat not enabled / channel not eligible; other non-2xx = quota
-			// or transient. Non-fatal either way: log and skip this source this pass.
+			// 403 = Super Chat not enabled / channel not eligible / quota (the reason
+			// disambiguates; a quota-class 403 also armed the provider's shared gate in
+			// SendAuthed, so the next pass skips instead of re-hammering). Non-fatal
+			// either way: log and skip this source this pass.
+			const std::string reason = OAuth::YouTubeErrorReason(resp.body);
 			HostLog(std::string("[events] youtube: ") + what + " skipped (HTTP " +
-				std::to_string(resp.status) + ")");
+				std::to_string(resp.status) + (reason.empty() ? "" : ", " + reason) + ")");
 			return false;
 		}
 		out = json::parse(resp.body, nullptr, false);
@@ -197,6 +213,11 @@ void YouTubeEvents::poll(const EventContext &ctx, OAuth::OAuthAccount &acct)
 {
 	// Emit straight into the store (dedupe makes re-fetching the same items harmless).
 	collect(ctx, acct, [&ctx](NormalizedEvent &&ev) { ctx.emit(ev); });
+}
+
+int YouTubeEvents::pollIntervalMs()
+{
+	return ObsBootstrap::AnyOutputLive() ? kLivePollIntervalMs : kIdlePollIntervalMs;
 }
 
 } // namespace Events

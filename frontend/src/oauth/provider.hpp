@@ -228,10 +228,11 @@ public:
 	// `req` is taken by value so the headers are re-applied cleanly on the retry (the
 	// bearer changes after a refresh). false + `err` only on a transport failure or an
 	// unrecoverable 401 ("re-authentication required"); an HTTP error otherwise returns
-	// true with the status/body left for the caller to interpret. Non-virtual: the
-	// proactive-refresh + reactive-401 policy is uniform; only the header stamp is
-	// per-platform (see stampAuth).
-	bool SendAuthed(OAuthAccount &acct, Http::HttpReq req, Http::HttpResponse &resp, std::string &err);
+	// true with the status/body left for the caller to interpret. The proactive-refresh +
+	// reactive-401 policy stays uniform in this base implementation; virtual so a provider
+	// can wrap the send path itself (YouTube gates both paths behind its shared
+	// daily-quota state -- see YouTubeProvider).
+	virtual bool SendAuthed(OAuthAccount &acct, Http::HttpReq req, Http::HttpResponse &resp, std::string &err);
 
 	// Streaming sibling of SendAuthed for a long-lived server-push response (YouTube
 	// liveChatMessages.streamList): same proactive-refresh + reactive-401 policy, but the
@@ -242,9 +243,10 @@ public:
 	// (with `err` set), 401 on an unrecoverable re-auth ("re-authentication required"),
 	// otherwise the status with the body already streamed or captured. `req` is by value
 	// so the auth header is re-stamped cleanly on the retry (the bearer changes).
-	long SendAuthedStreaming(OAuthAccount &acct, Http::HttpReq req,
-				 const std::function<bool(std::string_view chunk)> &onChunk, std::string &errorBody,
-				 std::string &err);
+	// Virtual for the same provider-wrap seam as SendAuthed.
+	virtual long SendAuthedStreaming(OAuthAccount &acct, Http::HttpReq req,
+					 const std::function<bool(std::string_view chunk)> &onChunk,
+					 std::string &errorBody, std::string &err);
 
 	// Fetch the channel's current stream metadata (title/category/...) into `out`
 	// for prefill. `acct` is non-const so a reactive token refresh (proactive skew

@@ -15,8 +15,8 @@
 // provides pre-live history:
 //   - connect() no-ops (the real-time source is the chat sink);
 //   - backfill() seeds recent Super Chats + subscribers once on connect;
-//   - poll() re-fetches them on a ~90s cadence (the store dedupes, so overlap with
-//     backfill and with the live chat forward is harmless).
+//   - poll() re-fetches them on a live-aware cadence (the store dedupes, so overlap
+//     with backfill and with the live chat forward is harmless).
 // Constructed per account by YouTubeProvider::makeEvents and owned by the EventHub;
 // reuses the provider's SendAuthed for the same proactive-refresh + reactive-401
 // path the metadata/chat calls use.
@@ -41,7 +41,10 @@ public:
 	// Periodic REST tick: the same two queries, emitted via ctx.emit (store dedupes).
 	void poll(const EventContext &ctx, OAuth::OAuthAccount &acct) override;
 
-	int pollIntervalMs() override { return 90000; }
+	// Live-aware cadence, re-read by the hub each tick: ~90s while any output is
+	// live (Super Chats arrive mid-stream), ~15min while idle so the boot-to-exit
+	// polling doesn't drain the YouTube daily quota for an idle panel.
+	int pollIntervalMs() override;
 
 	void disconnect() override { stopped_.store(true); }
 
