@@ -3,10 +3,15 @@
 
 #include <algorithm>
 #include <chrono>
+#include <functional>
+#include <string>
+#include <string_view>
 #include <unordered_map>
+#include <vector>
 
 #include "../events/event_hub.hpp"   // Events::Hub().Ingest for monetization/membership events
 #include "../events/event_model.hpp" // Events::NormalizedEvent
+#include "../log.hpp"                 // DBG / LogCat -- gated path-active logging
 #include "util/http_client.hpp"
 #include "util/json_util.hpp"
 #include "../oauth/youtube_provider.hpp"
@@ -20,10 +25,25 @@ namespace {
 
 const char *kLiveChatMessagesUrl = "https://www.googleapis.com/youtube/v3/liveChat/messages";
 
+// liveChatMessages.streamList: the push-based read (default). Google documents gRPC as
+// streamList's primary interface; this is the HTTP/JSON-transcoded REST surface (verified
+// live 2026-07-24). It returns 200 chunked, the body an incremental JSON array of normal
+// liveChatMessageListResponse objects arriving as messages are posted. If it 404/400s the
+// transcode is unavailable and we fall back to the classic .list poll below.
+const char *kLiveChatStreamUrl = "https://www.googleapis.com/youtube/v3/liveChat/messages/stream";
+
 // liveChatMessages.list omits pollingIntervalMillis on rare responses; fall back
 // to a conservative interval and never poll faster than this floor (quota guard).
 constexpr long kDefaultPollMs = 5000;
 constexpr long kMinPollMs = 1500;
+
+// After the streamList server cleanly closes a batch, resume from the last nextPageToken
+// promptly -- this is a reconnect on a push stream, not a quota-metered poll, so it floors
+// far below kMinPollMs (raised only if the server advises a larger pollingIntervalMillis).
+constexpr long kStreamReconnectFloorMs = 250;
+
+// streamList accepts 200..2000 (default 500); larger batches mean fewer reconnects.
+constexpr const char *kStreamMaxResults = "500";
 
 // error.errors[0].reason values YouTube returns on a 403 when the app has burned
 // its API quota or is being briefly rate-limited -- transient, not terminal: quota
@@ -42,6 +62,63 @@ using JsonUtil::Obj;
 using JsonUtil::ParseJson;
 using JsonUtil::Str;
 using TimeUtil::Rfc3339ToEpochMs;
+
+// Incremental extractor of complete top-level JSON objects from a byte stream, so a
+// streamList response can be parsed one liveChatMessageListResponse at a time as its
+// bytes arrive. Framing-agnostic: it scans for balanced top-level `{...}` objects and
+// ignores array brackets / commas / whitespace between them, so it works whether the
+// transcode emits a JSON array (`[{..},{..}]`) or newline-delimited objects. String- and
+// escape-aware so a brace inside a message string never miscounts depth. Ported from the
+// streamlist-probe reference (class JsonObjectStream).
+class JsonObjectStream {
+public:
+	// Feed a chunk; append any newly-completed top-level objects (raw JSON text) to `out`.
+	void Push(std::string_view chunk, std::vector<std::string> &out)
+	{
+		for (const char c : chunk) {
+			buf_.push_back(c);
+			const size_t idx = buf_.size() - 1;
+			if (inStr_) {
+				if (escaped_) {
+					escaped_ = false;
+				} else if (c == '\\') {
+					escaped_ = true;
+				} else if (c == '"') {
+					inStr_ = false;
+				}
+				continue;
+			}
+			if (c == '"') {
+				inStr_ = true;
+				continue;
+			}
+			if (c == '{') {
+				if (depth_ == 0) {
+					objStart_ = static_cast<long long>(idx);
+				}
+				++depth_;
+			} else if (c == '}') {
+				if (depth_ > 0) {
+					--depth_;
+				}
+				if (depth_ == 0 && objStart_ >= 0) {
+					out.emplace_back(buf_, static_cast<size_t>(objStart_),
+							 idx - static_cast<size_t>(objStart_) + 1);
+					// Reset so the buffer never grows unbounded across objects.
+					buf_.clear();
+					objStart_ = -1;
+				}
+			}
+		}
+	}
+
+private:
+	std::string buf_;
+	int depth_ = 0;
+	bool inStr_ = false;
+	bool escaped_ = false;
+	long long objStart_ = -1;
+};
 
 // authorDetails.{isChatOwner,isChatModerator,isChatSponsor} -> normalized badge
 // kinds. YouTube ships no badge image URLs on live-chat items, so url is omitted.
@@ -169,6 +246,302 @@ bool BuildEventFromChat(const json &item, Events::NormalizedEvent &ev)
 	return false; // textMessageEvent / unhandled -> chat only
 }
 
+// Process one liveChatMessageListResponse's items[]: emit each chat line and, in addition,
+// forward monetization/membership types into the events feed. Shared by the streamList and
+// the .list fallback so the emit semantics (chat-line-then-event, cancel-polled) can't
+// drift between the two read paths.
+void ProcessChatItems(const ChatContext &ctx, const json &items, const std::string &liveChatId,
+		      const std::unordered_map<std::string, std::string> &thirdPartyEmotes,
+		      const std::function<bool()> &canceled)
+{
+	if (!items.is_array()) {
+		return;
+	}
+	for (const json &item : items) {
+		if (canceled()) {
+			break;
+		}
+		// Chat first: a plain message emits a chat line; a Super Chat / membership item
+		// still emits its chat line (it carries text).
+		const json msg = NormalizeItem(item, liveChatId, thirdPartyEmotes);
+		if (msg.is_object()) {
+			ctx.emit(msg);
+		}
+		// Then, IN ADDITION, forward monetization/membership types into the events feed.
+		// YouTube has no real-time event socket, so this live-chat sink is the only push
+		// source for Super Chats/memberships. The store dedupes against backfill/poll.
+		Events::NormalizedEvent ev;
+		if (BuildEventFromChat(item, ev)) {
+			Events::Hub().Ingest(ev);
+		}
+	}
+}
+
+// error.errors[0].reason from a YouTube error body ("" when absent/unparseable).
+std::string YouTubeChatErrorReason(const std::string &body)
+{
+	const json errJson = ParseJson(body);
+	const json &errors = Obj(Obj(errJson, "error"), "errors");
+	if (errors.is_array() && !errors.empty()) {
+		return Str(errors[0], "reason");
+	}
+	return std::string();
+}
+
+// Whether a 403/429 is transient (worth a backoff retry rather than a terminal stop): a
+// 429 always is; a 403 only when its reason is one of the known quota/rate-limit reasons.
+// Single-sources the reason list + classification for both the streamList and .list paths.
+bool IsRetryableYouTubeChatError(long status, const std::string &reason)
+{
+	return status == 429 || std::any_of(std::begin(kRetryableYouTubeChatErrorReasons),
+					    std::end(kRetryableYouTubeChatErrorReasons),
+					    [&](const char *r) { return reason == r; });
+}
+
+// The shared per-connection context both read loops run on. References into connect()'s
+// frame (the loops never outlive it); `announced` is threaded across a stream->list
+// fallback so the connected state is emitted exactly once.
+struct ChatSession {
+	OAuth::YouTubeProvider &owner;
+	const ChatContext &ctx;
+	OAuth::OAuthAccount &acct;
+	std::string liveChatId;
+	const std::unordered_map<std::string, std::string> &thirdPartyEmotes;
+	std::function<bool()> canceled;
+	std::function<void(bool, const std::string &)> emitState;
+	Backoff &backoff;
+	bool announced = false;
+};
+
+// Confirm the chat once: emit the connected state and flag the live-chat forward as the
+// authoritative Super Chat source (so the REST event transport backs off). Idempotent.
+void AnnounceOnce(ChatSession &s)
+{
+	if (!s.announced) {
+		s.emitState(true, "");
+		s.announced = true;
+		s.owner.SetLiveChatActive(true);
+	}
+}
+
+// Drive the push-based streamList read loop. Returns true to request the .list fallback
+// (the transcode endpoint is unavailable: HTTP 404/400); false when the session ended for
+// any other reason (cancel, terminal error, or an unrecoverable re-auth with `err` set).
+bool RunStreamList(ChatSession &s, std::string &err)
+{
+	std::string pageToken;
+	// The first response object on a COLD connect is backlog; suppress it so the user sees
+	// messages from connect onward. This is set false after that first object and never
+	// again, so reconnects (which resume from a nextPageToken) emit normally.
+	bool firstConnect = true;
+
+	while (!s.canceled()) {
+		std::string url = std::string(kLiveChatStreamUrl) + "?liveChatId=" +
+				  Http::UrlEncode(s.liveChatId) + "&part=snippet,authorDetails&maxResults=" +
+				  kStreamMaxResults;
+		if (!pageToken.empty()) {
+			url += "&pageToken=" + Http::UrlEncode(pageToken);
+		}
+
+		Http::HttpReq req;
+		req.method = "GET";
+		req.url = url;
+
+		JsonObjectStream objects;
+		long serverPollMs = 0; // server pollingIntervalMillis advised on this connection
+
+		// Parse + process each complete response object the moment its bytes finish
+		// arriving, so a live push shows up with ~1s latency instead of waiting for the
+		// batch to end. Runs on this worker thread inside curl's write callback.
+		auto onChunk = [&](std::string_view chunk) -> bool {
+			if (s.canceled()) {
+				return false;
+			}
+			std::vector<std::string> ready;
+			objects.Push(chunk, ready);
+			for (const std::string &objText : ready) {
+				const json resp = ParseJson(objText);
+				if (!resp.is_object()) {
+					continue;
+				}
+				AnnounceOnce(s);
+				if (firstConnect) {
+					firstConnect = false;
+				} else {
+					ProcessChatItems(s.ctx, Obj(resp, "items"), s.liveChatId,
+							 s.thirdPartyEmotes, s.canceled);
+				}
+				const std::string next = Str(resp, "nextPageToken");
+				if (!next.empty()) {
+					pageToken = next;
+				}
+				auto it = resp.find("pollingIntervalMillis");
+				if (it != resp.end() && it->is_number()) {
+					serverPollMs = it->get<long>();
+				}
+				if (s.canceled()) {
+					return false;
+				}
+			}
+			return true;
+		};
+
+		std::string errorBody;
+		std::string reqErr;
+		const long status = s.owner.SendAuthedStreaming(s.acct, req, onChunk, errorBody, reqErr);
+
+		if (s.canceled()) {
+			break;
+		}
+		if (status == 0) {
+			// Transport failure: transient blip, back off and reconnect.
+			s.emitState(false, reqErr);
+			if (CancelableSleep(s.backoff.next(), s.canceled)) {
+				break;
+			}
+			continue;
+		}
+		if (status == 404 || status == 400) {
+			DBG(LogCat::Chat, "youtube: streamList unavailable (HTTP %ld), falling back to list",
+			    status);
+			return true;
+		}
+		if (status == 401) {
+			// Unrecoverable after a forced refresh: re-auth needed. Terminal.
+			err = reqErr;
+			s.emitState(false, reqErr);
+			return false;
+		}
+		if (status == 403 || status == 429) {
+			const std::string reason = status == 403 ? YouTubeChatErrorReason(errorBody) : std::string();
+			if (IsRetryableYouTubeChatError(status, reason)) {
+				s.emitState(false, "YouTube chat rate-limited, retrying");
+				if (CancelableSleep(s.backoff.next(), s.canceled)) {
+					break;
+				}
+				continue;
+			}
+			s.emitState(false, reason.empty() ? "" : "YouTube chat error: " + reason);
+			break;
+		}
+		if (status < 200 || status >= 300) {
+			s.emitState(false, "HTTP " + std::to_string(status));
+			if (CancelableSleep(s.backoff.next(), s.canceled)) {
+				break;
+			}
+			continue;
+		}
+
+		// 2xx: the server pushed its batch then closed the connection (cleanly, or a
+		// mid-batch drop -- reqErr may be set, but every object that arrived was already
+		// processed). Resume promptly from the last nextPageToken; honor a larger advisory
+		// pollingIntervalMillis if the server sent one.
+		s.backoff.reset();
+		const long waitMs = std::max<long>(kStreamReconnectFloorMs, serverPollMs);
+		if (CancelableSleep(std::chrono::milliseconds(waitMs), s.canceled)) {
+			break;
+		}
+	}
+
+	return false;
+}
+
+// Drive the classic liveChatMessages.list poll loop: the documented fallback used when the
+// streamList transcode endpoint is unavailable. Honors the server-dictated
+// pollingIntervalMillis + nextPageToken cursor and the same quota-error classification.
+void RunListPoll(ChatSession &s, std::string &err)
+{
+	std::string pageToken;
+	bool firstPoll = true;
+
+	while (!s.canceled()) {
+		std::string url = std::string(kLiveChatMessagesUrl) + "?liveChatId=" +
+				  Http::UrlEncode(s.liveChatId) + "&part=snippet,authorDetails";
+		if (!pageToken.empty()) {
+			url += "&pageToken=" + Http::UrlEncode(pageToken);
+		}
+
+		Http::HttpReq req;
+		req.method = "GET";
+		req.url = url;
+
+		Http::HttpResponse resp;
+		std::string reqErr;
+		if (!s.owner.SendAuthed(s.acct, req, resp, reqErr)) {
+			// SendAuthed fails only on a transport error (status 0) or an
+			// unrecoverable 401. The former is a transient blip worth a backoff
+			// retry; the latter is fatal -- re-auth is needed.
+			if (resp.status == 0) {
+				s.emitState(false, reqErr);
+				if (CancelableSleep(s.backoff.next(), s.canceled)) {
+					break;
+				}
+				continue;
+			}
+			err = reqErr;
+			s.emitState(false, reqErr);
+			return;
+		}
+
+		// 429, or a 403 whose YouTube error reason is quota/rate-limit related, is a
+		// transient condition: a visible reason, a backoff, and a retry. Any other 403
+		// (chat disabled/ended/forbidden) and every 404 (broadcast gone) end the session.
+		if (resp.status == 403 || resp.status == 429) {
+			const std::string reason =
+				resp.status == 403 ? YouTubeChatErrorReason(resp.body) : std::string();
+			if (IsRetryableYouTubeChatError(resp.status, reason)) {
+				s.emitState(false, "YouTube chat rate-limited, retrying");
+				if (CancelableSleep(s.backoff.next(), s.canceled)) {
+					break;
+				}
+				continue;
+			}
+			s.emitState(false, reason.empty() ? "" : "YouTube chat error: " + reason);
+			break;
+		}
+		if (resp.status == 404) {
+			s.emitState(false, "");
+			break;
+		}
+		if (resp.status < 200 || resp.status >= 300) {
+			s.emitState(false, "HTTP " + std::to_string(resp.status));
+			if (CancelableSleep(s.backoff.next(), s.canceled)) {
+				break;
+			}
+			continue;
+		}
+
+		s.backoff.reset();
+		const json j = ParseJson(resp.body);
+		pageToken = Str(j, "nextPageToken");
+
+		long pollMs = kDefaultPollMs;
+		if (j.is_object()) {
+			auto it = j.find("pollingIntervalMillis");
+			if (it != j.end() && it->is_number()) {
+				pollMs = it->get<long>();
+			}
+		}
+		if (pollMs < kMinPollMs) {
+			pollMs = kMinPollMs;
+		}
+
+		AnnounceOnce(s);
+
+		// First response is backlog: keep only the cursor, emit nothing, so the user sees
+		// messages from connect onward rather than a wall of history.
+		if (firstPoll) {
+			firstPoll = false;
+		} else {
+			ProcessChatItems(s.ctx, Obj(j, "items"), s.liveChatId, s.thirdPartyEmotes, s.canceled);
+		}
+
+		if (CancelableSleep(std::chrono::milliseconds(pollMs), s.canceled)) {
+			break;
+		}
+	}
+}
+
 } // namespace
 
 bool YouTubeChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, const std::string &channelRef,
@@ -217,138 +590,28 @@ bool YouTubeChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, con
 	const std::unordered_map<std::string, std::string> thirdPartyEmotes =
 		FetchThirdPartyEmotes(EmotePlatform::YouTube, "", acct.userId, canceled);
 
-	std::string pageToken;
-	bool firstPoll = true;
-	bool announced = false;
 	Backoff backoff(std::chrono::milliseconds(2000), std::chrono::milliseconds(30000));
+	ChatSession session{owner_, ctx, acct, liveChatId, thirdPartyEmotes, canceled, emitState, backoff};
 
-	while (!canceled()) {
-		std::string url = std::string(kLiveChatMessagesUrl) + "?liveChatId=" + Http::UrlEncode(liveChatId) +
-				  "&part=snippet,authorDetails";
-		if (!pageToken.empty()) {
-			url += "&pageToken=" + Http::UrlEncode(pageToken);
-		}
-
-		Http::HttpReq req;
-		req.method = "GET";
-		req.url = url;
-
-		Http::HttpResponse resp;
-		std::string reqErr;
-		if (!owner_.SendAuthed(acct, req, resp, reqErr)) {
-			// SendAuthed fails only on a transport error (status 0) or an
-			// unrecoverable 401 after a forced refresh. The latter is fatal --
-			// re-auth is needed; the former is a transient blip worth a backoff retry.
-			if (resp.status == 0) {
-				emitState(false, reqErr);
-				if (CancelableSleep(backoff.next(), canceled)) {
-					break;
-				}
-				continue;
-			}
-			err = reqErr;
-			emitState(false, reqErr);
-			return false;
-		}
-
-		// 429, or a 403 whose YouTube error reason is quota/rate-limit related, is a
-		// transient condition -- treat it like the generic non-2xx branch below: a
-		// visible reason, a backoff, and a retry, not a silent terminal stop. Any
-		// other 403 (chat genuinely disabled/ended/forbidden) and every 404 (broadcast
-		// gone) end the session cleanly since the chat no longer exists.
-		if (resp.status == 403 || resp.status == 429) {
-			std::string reason;
-			if (resp.status == 403) {
-				const json errJson = ParseJson(resp.body);
-				const json &errors = Obj(Obj(errJson, "error"), "errors");
-				if (errors.is_array() && !errors.empty()) {
-					reason = Str(errors[0], "reason");
-				}
-			}
-			const bool retryable =
-				resp.status == 429 ||
-				std::any_of(std::begin(kRetryableYouTubeChatErrorReasons),
-					    std::end(kRetryableYouTubeChatErrorReasons),
-					    [&](const char *r) { return reason == r; });
-			if (retryable) {
-				emitState(false, "YouTube chat rate-limited, retrying");
-				if (CancelableSleep(backoff.next(), canceled)) {
-					break;
-				}
-				continue;
-			}
-			emitState(false, reason.empty() ? "" : "YouTube chat error: " + reason);
-			break;
-		}
-		if (resp.status == 404) {
-			emitState(false, "");
-			break;
-		}
-		if (resp.status < 200 || resp.status >= 300) {
-			emitState(false, "HTTP " + std::to_string(resp.status));
-			if (CancelableSleep(backoff.next(), canceled)) {
-				break;
-			}
-			continue;
-		}
-
+	// streamList is the default push-based read (~1s latency, far lower quota); the classic
+	// .list poll is the documented fallback used only if the (undocumented) REST transcode
+	// endpoint returns 404/400 for this broadcast.
+	DBG(LogCat::Chat, "youtube: opening live chat %s via streamList", liveChatId.c_str());
+	const bool fallback = RunStreamList(session, err);
+	if (fallback && !canceled()) {
+		DBG(LogCat::Chat, "youtube: live chat %s via liveChatMessages.list polling", liveChatId.c_str());
 		backoff.reset();
-		const json j = ParseJson(resp.body);
-		pageToken = Str(j, "nextPageToken");
-
-		long pollMs = kDefaultPollMs;
-		if (j.is_object()) {
-			auto it = j.find("pollingIntervalMillis");
-			if (it != j.end() && it->is_number()) {
-				pollMs = it->get<long>();
-			}
-		}
-		if (pollMs < kMinPollMs) {
-			pollMs = kMinPollMs;
-		}
-
-		if (!announced) {
-			emitState(true, "");
-			announced = true;
-			// The live chat is confirmed polling this broadcast: from here the chat forward
-			// is the authoritative Super Chat source, so the REST transport backs off.
-			owner_.SetLiveChatActive(true);
-		}
-
-		// First response is backlog: keep only the cursor, emit nothing, so the user
-		// sees messages from connect onward rather than a wall of history.
-		if (firstPoll) {
-			firstPoll = false;
-		} else if (j.is_object() && j.contains("items") && j["items"].is_array()) {
-			for (const json &item : j["items"]) {
-				if (canceled()) {
-					break;
-				}
-				// Chat first, exactly as before: a plain message emits a chat line; a
-				// Super Chat / membership item still emits its chat line (it carries text).
-				const json msg = NormalizeItem(item, liveChatId, thirdPartyEmotes);
-				if (msg.is_object()) {
-					ctx.emit(msg);
-				}
-				// Then, IN ADDITION, forward monetization/membership types into the events
-				// feed. YouTube has no real-time event socket, so this live-chat sink is the
-				// only push source for Super Chats/memberships (the REST transport covers
-				// pre-live history). The store dedupes against backfill/poll.
-				Events::NormalizedEvent ev;
-				if (BuildEventFromChat(item, ev)) {
-					Events::Hub().Ingest(ev);
-				}
-			}
-		}
-
-		if (CancelableSleep(std::chrono::milliseconds(pollMs), canceled)) {
-			break;
-		}
+		RunListPoll(session, err);
 	}
 
-	emitState(false, "");
-	// Match Twitch/Kick: connect() returns false on a clean cancel/end (err stays
-	// empty, so the hub logs nothing). Contract parity across transports.
+	// Only bookend with a clean (false, "") when no fatal re-auth error was raised: a fatal
+	// 401 already emitted (false, reqErr) inside the loop and set `err`, and the hub logs
+	// that -- emitting an empty state after would clobber the reason. A clean cancel / a
+	// terminal chat-ended break leaves `err` empty and gets the bookend, matching the
+	// Twitch/Kick contract (connect() returns false; empty err = the hub logs nothing).
+	if (err.empty()) {
+		emitState(false, "");
+	}
 	return false;
 }
 
