@@ -13,6 +13,7 @@
 #include "../events/event_hub.hpp"   // Events::Hub().Ingest for monetization/membership events
 #include "../events/event_model.hpp" // Events::NormalizedEvent
 #include "../log.hpp"                 // DBG / LogCat -- gated path-active logging
+#include "util/env_config.hpp"
 #include "util/http_client.hpp"
 #include "util/json_util.hpp"
 #include "../oauth/youtube_provider.hpp"
@@ -52,18 +53,6 @@ using JsonUtil::Obj;
 using JsonUtil::ParseJson;
 using JsonUtil::Str;
 using TimeUtil::Rfc3339ToEpochMs;
-
-// Opt-in env flag: true only when the named var is set to a recognized truthy value.
-// Used to gate the still-under-validation streamList read path off by default.
-bool EnvFlag(const char *name)
-{
-	const char *v = getenv(name);
-	if (!v) {
-		return false;
-	}
-	const std::string s(v);
-	return s == "1" || s == "true" || s == "TRUE" || s == "yes" || s == "on";
-}
 
 // Incremental extractor of complete top-level JSON objects from a byte stream, so a
 // streamList response can be parsed one liveChatMessageListResponse at a time as its
@@ -661,7 +650,7 @@ bool YouTubeChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, con
 	// 2026-07-24 stream it connected and announced the chat but delivered no messages past
 	// the connect frame -- so it is OPT-IN via BRAIDCAST_YOUTUBE_STREAMLIST=1 until proven.
 	// The per-frame diagnostic logging in RunStreamList/RunListPoll pins the gap when set.
-	const bool tryStreamList = EnvFlag("BRAIDCAST_YOUTUBE_STREAMLIST");
+	const bool tryStreamList = Env::Flag("BRAIDCAST_YOUTUBE_STREAMLIST");
 	bool fallback = false;
 	if (tryStreamList) {
 		DBG(LogCat::Chat, "youtube: opening live chat %s via streamList (opt-in)", liveChatId.c_str());

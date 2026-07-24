@@ -4,7 +4,6 @@
 
 #include <algorithm>
 #include <chrono>
-#include <cstdlib>
 #include <fstream>
 #include <string>
 
@@ -13,6 +12,7 @@
 #include "bridge.hpp"
 #include "log.hpp"
 #include "multistream/StorePaths.hpp"
+#include "util/env_config.hpp"
 #include "util/session_log.hpp"
 
 namespace {
@@ -71,27 +71,6 @@ constexpr double kDefaultMaxLagPct = 2.0;
 // being throttled.
 constexpr ULONG kOptOutBits = PROCESS_POWER_THROTTLING_EXECUTION_SPEED |
 			      PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
-
-int EnvInt(const char *name, int fallback)
-{
-	const char *v = getenv(name);
-	if (!v || !*v) {
-		return fallback;
-	}
-	const int n = atoi(v);
-	return n > 0 ? n : fallback;
-}
-
-double EnvDouble(const char *name, double fallback)
-{
-	const char *v = getenv(name);
-	if (!v || !*v) {
-		return fallback;
-	}
-	char *end = nullptr;
-	const double d = strtod(v, &end);
-	return (end && end != v) ? d : fallback;
-}
 
 // <config base>/selftest/<file>, resolved through the shared BraidcastConfigPath
 // seam (StorePaths.hpp) so the self-test's scratch files follow portable mode
@@ -221,8 +200,9 @@ void ObsBootstrap::ArmPerfReproSelfTest(HWND host)
 	g_state.phase = Phase::BootSettle;
 	g_state.host = host;
 	g_state.phaseStart = std::chrono::steady_clock::now();
-	g_state.durationSec = EnvInt("BRAIDCAST_SELFTEST_DURATION", kDefaultDurationSec);
-	g_state.maxLagPct = EnvDouble("BRAIDCAST_SELFTEST_MAXLAG", kDefaultMaxLagPct);
+	const long durationRaw = Env::Number("BRAIDCAST_SELFTEST_DURATION", kDefaultDurationSec);
+	g_state.durationSec = durationRaw > 0 ? int(durationRaw) : kDefaultDurationSec;
+	g_state.maxLagPct = Env::Double("BRAIDCAST_SELFTEST_MAXLAG", kDefaultMaxLagPct);
 	HostLog("[selftest-stream] armed: duration=" + std::to_string(g_state.durationSec) +
 		"s maxLagPct=" + std::to_string(g_state.maxLagPct));
 }

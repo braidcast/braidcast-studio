@@ -66,6 +66,8 @@ target_sources(
     src/bridge.cpp
     src/bridge.hpp
     src/event_names.hpp
+    src/util/env_config.cpp
+    src/util/env_config.hpp
     src/util/http_client.cpp
     src/util/http_client.hpp
     src/util/json_util.hpp

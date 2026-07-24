@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "util/async_task.hpp"
+#include "util/env_config.hpp"
 #include "audio/AudioMonitor.hpp"
 #include "bridge.hpp"
 #include "build_info.hpp"
@@ -94,53 +95,6 @@ std::string BaseNameNoExt(const std::string &filename)
 	return dot == std::string::npos ? filename : filename.substr(0, dot);
 }
 
-// Read `key`'s value from a KEY=VALUE .env file (CRLF- and whitespace-tolerant).
-// Yields the raw value string; nullopt when the file is missing or has no such
-// key, so the caller falls through to the next source.
-std::optional<std::string> DebugFromEnvFile(const char *path, const char *key)
-{
-	std::ifstream f(path);
-	if (!f) {
-		return std::nullopt;
-	}
-	const auto trim = [](std::string s) {
-		const size_t b = s.find_first_not_of(" \t\r");
-		if (b == std::string::npos) {
-			return std::string();
-		}
-		return s.substr(b, s.find_last_not_of(" \t\r") - b + 1);
-	};
-	std::string line;
-	while (std::getline(f, line)) {
-		const size_t eq = line.find('=');
-		if (eq == std::string::npos) {
-			continue;
-		}
-		if (trim(line.substr(0, eq)) != key) {
-			continue;
-		}
-		return trim(line.substr(eq + 1));
-	}
-	return std::nullopt;
-}
-
-// Resolve one debug key's raw value: the process env var wins, else the same key
-// in the gitignored repo-root .env (dev builds only; the path is baked at
-// configure time and absent in CI/shipped builds), else nullopt. Edit .env and
-// relaunch to flip debug logging without a rebuild or env var.
-std::optional<std::string> ResolveDebugRaw(const char *key)
-{
-	if (const char *env = getenv(key)) {
-		return std::string(env);
-	}
-#ifdef BRAIDCAST_ENV_FILE
-	if (const std::optional<std::string> v = DebugFromEnvFile(BRAIDCAST_ENV_FILE, key)) {
-		return v;
-	}
-#endif
-	return std::nullopt;
-}
-
 // The pure-boolean master grammar: 1/true/on/yes (case-insensitive) are on;
 // everything else -- 0/false/off/no/empty -- is off.
 bool ParseBool(const std::string &raw)
@@ -167,7 +121,7 @@ bool g_gpuDiagRequested = false;
 Log::DebugComponents ResolveDebugConfig()
 {
 	bool master;
-	if (const std::optional<std::string> raw = ResolveDebugRaw("BRAIDCAST_DEBUG")) {
+	if (const std::optional<std::string> raw = Env::Raw("BRAIDCAST_DEBUG")) {
 		master = ParseBool(*raw);
 	} else {
 		DiagnosticsSettings ds;
@@ -178,7 +132,7 @@ Log::DebugComponents ResolveDebugConfig()
 		return Log::DebugComponents{};
 	}
 
-	const std::optional<std::string> comps = ResolveDebugRaw("BRAIDCAST_DEBUG_COMPONENTS");
+	const std::optional<std::string> comps = Env::Raw("BRAIDCAST_DEBUG_COMPONENTS");
 	const bool compsEmpty = !comps || comps->find_first_not_of(" \t\r\n") == std::string::npos;
 	if (compsEmpty) {
 		return Log::DebugComponents{Log::kDefaultCats, false};

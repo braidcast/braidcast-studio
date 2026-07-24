@@ -17,6 +17,7 @@
 #include <util/platform.h>
 
 #include "../multistream/StorePaths.hpp"
+#include "env_config.hpp"
 
 namespace SessionLog {
 
@@ -218,7 +219,7 @@ void InstallCrashHandler()
 		// iterates a directory inside a crashed process.
 		RotateOldLogs(std::filesystem::u8path(g_crashDir));
 	}
-	g_crashQuiet = getenv("FE_SMOKE_QUIT_SECONDS") != nullptr || getenv("BRAIDCAST_SELFTEST_STREAM") != nullptr;
+	g_crashQuiet = Env::IsSet("FE_SMOKE_QUIT_SECONDS") || Env::IsSet("BRAIDCAST_SELFTEST_STREAM");
 	base_set_crash_handler(CrashSinkHandler, nullptr);
 }
 

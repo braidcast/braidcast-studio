@@ -32,6 +32,7 @@
 #include "windowing/projector_window.hpp"
 #include "scene/scene_persistence.hpp"
 #include "scheme.hpp"
+#include "util/env_config.hpp"
 #include "util/paths.hpp"
 #include "util/session_log.hpp"
 #include "windowing/tray.hpp"
@@ -103,9 +104,9 @@ bool g_obsStarted = false;
 // CEF regardless of origin, so window.obs still works off the dev server.
 const char *StartupUrl()
 {
-	const char *dev = getenv("FE_DEV_URL");
-	if (dev && *dev) {
-		return dev;
+	static const std::string dev = Env::Value("FE_DEV_URL");
+	if (!dev.empty()) {
+		return dev.c_str();
 	}
 	return "app://app/index.html";
 }
@@ -298,7 +299,7 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 			HostLog("[obs] active fps=" + std::to_string(obs_get_active_fps()));
 			// In the headless smoke path, prove the 4.3.2 properties bridge
 			// round-trips before self-quit.
-			if (getenv("FE_SMOKE_QUIT_SECONDS")) {
+			if (Env::IsSet("FE_SMOKE_QUIT_SECONDS")) {
 				ObsBootstrap::RunPropertiesSelfTest();
 				ObsBootstrap::RunPreviewEditSelfTest();
 				ObsBootstrap::RunSettingsSelfTest();
@@ -339,7 +340,7 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 		// reopens on the last monitor / maximized state. Skipped under the headless
 		// smoke path, which never restored placement (it opens at the default rect),
 		// so saving here would overwrite the user's real window.json with that default.
-		if (!getenv("FE_SMOKE_QUIT_SECONDS")) {
+		if (!Env::IsSet("FE_SMOKE_QUIT_SECONDS")) {
 			SaveHostPlacement(hwnd);
 		}
 		// Remove the tray icon while the host HWND is still valid (NIM_DELETE keys
@@ -691,7 +692,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 	// Restore the last-session placement before the first show (the window has no
 	// WS_VISIBLE yet, so SetWindowPlacement's maximized state survives to SW_SHOW).
 	// Skipped under the headless smoke path so those runs stay deterministic.
-	if (!getenv("FE_SMOKE_QUIT_SECONDS")) {
+	if (!Env::IsSet("FE_SMOKE_QUIT_SECONDS")) {
 		RestoreHostPlacement(host);
 	}
 	// #3489 guard: when the restored placement lands on a non-primary monitor whose
@@ -755,12 +756,10 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 
 	// Env-gated headless smoke path: self-terminate after N seconds so log
 	// capture is automatable. Inert without FE_SMOKE_QUIT_SECONDS.
-	if (const char *secs = getenv("FE_SMOKE_QUIT_SECONDS")) {
-		const int n = atoi(secs);
-		if (n > 0) {
-			HostLog("[host] smoke-quit armed: " + std::to_string(n) + "s");
-			SetTimer(host, kSmokeQuitTimerId, UINT(n) * 1000, nullptr);
-		}
+	const long smokeQuitSecs = Env::Number("FE_SMOKE_QUIT_SECONDS", 0);
+	if (smokeQuitSecs > 0) {
+		HostLog("[host] smoke-quit armed: " + std::to_string(smokeQuitSecs) + "s");
+		SetTimer(host, kSmokeQuitTimerId, UINT(smokeQuitSecs) * 1000, nullptr);
 	}
 
 	// Env-gated automated perf-repro self-test: the regression gate for the
@@ -771,13 +770,11 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 	// quits with a PASS/FAIL exit code. Inert without
 	// BRAIDCAST_SELFTEST_STREAM=perf-repro.
 	bool perfReproArmed = false;
-	if (const char *mode = getenv("BRAIDCAST_SELFTEST_STREAM")) {
-		if (std::string(mode) == "perf-repro") {
-			HostLog("[host] perf-repro selftest armed");
-			ObsBootstrap::ArmPerfReproSelfTest(host);
-			SetTimer(host, kPerfReproTimerId, 500, nullptr);
-			perfReproArmed = true;
-		}
+	if (Env::Value("BRAIDCAST_SELFTEST_STREAM") == "perf-repro") {
+		HostLog("[host] perf-repro selftest armed");
+		ObsBootstrap::ArmPerfReproSelfTest(host);
+		SetTimer(host, kPerfReproTimerId, 500, nullptr);
+		perfReproArmed = true;
 	}
 
 	// ONE Client for the whole process, published via Client::SetShared so future

@@ -7,7 +7,6 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
-#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -15,6 +14,7 @@
 
 #include "../log.hpp"
 #include "../obs_bootstrap.hpp"
+#include "../util/env_config.hpp"
 
 namespace {
 
@@ -25,14 +25,6 @@ constexpr char kBrowserSourceId[] = "browser_source";
 constexpr uint64_t kBytesPerMiB = 1024ull * 1024ull;
 constexpr int kDefaultIntervalMs = 5000;
 constexpr int kMinIntervalMs = 250;
-
-// Env is "true" when present, non-empty, and not the literal "0". Keeps the same
-// permissive =1 / =on convention the rest of the shell's env flags use.
-bool EnvEnabled(const char *name)
-{
-	const char *v = getenv(name);
-	return v != nullptr && *v != '\0' && strcmp(v, "0") != 0;
-}
 
 // --- kill switch ---------------------------------------------------------------
 
@@ -199,7 +191,7 @@ void SamplerLoop(int intervalMs)
 
 bool GpuDiag::BrowserSourcesDisabled()
 {
-	static const bool disabled = EnvEnabled("BRAIDCAST_DISABLE_BROWSER_SOURCES");
+	static const bool disabled = Env::Flag("BRAIDCAST_DISABLE_BROWSER_SOURCES");
 	return disabled;
 }
 
@@ -221,11 +213,9 @@ void GpuDiag::Start()
 		return;
 	}
 	int intervalMs = kDefaultIntervalMs;
-	if (const char *spec = getenv("BRAIDCAST_GPUDIAG_INTERVAL_MS")) {
-		const int parsed = atoi(spec);
-		if (parsed >= kMinIntervalMs) {
-			intervalMs = parsed;
-		}
+	const long parsed = Env::Number("BRAIDCAST_GPUDIAG_INTERVAL_MS", intervalMs);
+	if (parsed >= kMinIntervalMs) {
+		intervalMs = int(parsed);
 	}
 	g_running.store(true);
 	g_sampler = std::thread(SamplerLoop, intervalMs);
