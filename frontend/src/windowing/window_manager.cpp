@@ -23,11 +23,14 @@ ATOM RegisterDetachedClass(HINSTANCE instance)
 	}
 	WNDCLASSEXW wc = {0};
 	wc.cbSize = sizeof(wc);
-	wc.style = CS_HREDRAW | CS_VREDRAW;
+	// Detached windows host child render surfaces just like the main host window, so the
+	// same anti-flash class setup applies: no background brush to erase white, no
+	// full-window CS_HREDRAW/VREDRAW invalidation (see CreateHostWindow in main.cpp).
+	wc.style = 0;
 	wc.lpfnWndProc = WindowManager::WndProc;
 	wc.hInstance = instance;
 	wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-	wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+	wc.hbrBackground = nullptr;
 	wc.lpszClassName = kDetachedClassName;
 	ApplyAppIcon(wc, instance);
 	atom = RegisterClassExW(&wc);
@@ -81,7 +84,7 @@ int WindowManager::Detach(const std::string &dockId)
 	const int windowId = nextId_++;
 
 	RECT rc = {0, 0, 960, 540};
-	const DWORD style = WS_OVERLAPPEDWINDOW;
+	const DWORD style = WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN;
 	AdjustWindowRect(&rc, style, FALSE);
 	HWND hwnd = CreateWindowExW(0, kDetachedClassName, L"Braidcast — Detached", style, CW_USEDEFAULT, CW_USEDEFAULT,
 				    rc.right - rc.left, rc.bottom - rc.top, nullptr, nullptr, instance_, nullptr);

@@ -370,17 +370,23 @@ HWND CreateHostWindow(HINSTANCE instance)
 {
 	WNDCLASSEXW wc = {0};
 	wc.cbSize = sizeof(wc);
-	wc.style = CS_HREDRAW | CS_VREDRAW;
+	// The whole client area is covered by child/DComp render surfaces (CEF UI + the native
+	// preview child) and is never GDI-painted, so a background brush + CS_HREDRAW/VREDRAW
+	// only ever flash: whenever DWM briefly recomposes (e.g. the preview swapchain being
+	// rebuilt on a modal open) the unpainted host surface is exposed. A null brush leaves it
+	// untouched instead of erasing it white, and WS_CLIPCHILDREN keeps the parent from
+	// painting over the children at all.
+	wc.style = 0;
 	wc.lpfnWndProc = HostWndProc;
 	wc.hInstance = instance;
 	wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-	wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+	wc.hbrBackground = nullptr;
 	wc.lpszClassName = kHostClassName;
 	ApplyAppIcon(wc, instance);
 	RegisterClassExW(&wc);
 
 	RECT rc = {0, 0, kHostWidth, kHostHeight};
-	const DWORD style = WS_OVERLAPPEDWINDOW;
+	const DWORD style = WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN;
 	AdjustWindowRect(&rc, style, FALSE);
 
 	return CreateWindowExW(0, kHostClassName, L"Braidcast", style, CW_USEDEFAULT, CW_USEDEFAULT, rc.right - rc.left,
