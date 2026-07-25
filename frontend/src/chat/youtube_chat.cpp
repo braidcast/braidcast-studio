@@ -27,11 +27,12 @@ namespace {
 
 const char *kLiveChatMessagesUrl = "https://www.googleapis.com/youtube/v3/liveChat/messages";
 
-// liveChatMessages.streamList: the push-based read (opt-in via BRAIDCAST_YOUTUBE_STREAMLIST
-// while validated live). Google documents gRPC as streamList's primary interface; this is
-// the HTTP/JSON-transcoded REST surface. It returns 200 chunked, the body an incremental
-// JSON array of normal liveChatMessageListResponse objects arriving as messages are posted.
-// If it 404/400s the transcode is unavailable and we fall back to the classic .list poll.
+// liveChatMessages.streamList: the push-based read, and the default. Google documents both
+// gRPC and HTTP/REST for it; this is the HTTP/JSON-transcoded REST surface, which returns
+// 200 chunked, the body an incremental JSON array of normal liveChatMessageListResponse
+// objects arriving as messages are posted. Billing is per connection rather than per poll,
+// which is why it is the default. If it 404/400s the transcode is unavailable and we fall
+// back to the classic .list poll.
 const char *kLiveChatStreamUrl = "https://www.googleapis.com/youtube/v3/liveChat/messages/stream";
 
 // liveChatMessages.list omits pollingIntervalMillis on rare responses; fall back
@@ -46,6 +47,13 @@ constexpr long kStreamReconnectFloorMs = 250;
 
 // streamList accepts 200..2000 (default 500); larger batches mean fewer reconnects.
 constexpr const char *kStreamMaxResults = "500";
+
+// Consecutive delivering-nothing streamList connections tolerated before handing chat to
+// the .list poll for the rest of the session. A connection that opens and then goes silent
+// is ended by the streaming client's 90s low-speed watchdog, so each strike costs that long
+// -- two bounds the chat outage at ~3 minutes while still absorbing a single blip (a proxy
+// closing one connection early) rather than surrendering the quota win to it.
+constexpr int kStreamDeadStrikes = 2;
 
 using JsonUtil::Bool;
 using JsonUtil::NumLoose;
@@ -312,8 +320,9 @@ bool WaitOutQuotaExhaustion(ChatSession &s)
 }
 
 // Drive the push-based streamList read loop. Returns true to request the .list fallback
-// (the transcode endpoint is unavailable: HTTP 404/400); false when the session ended for
-// any other reason (cancel, terminal error, or an unrecoverable re-auth with `err` set).
+// (the transcode endpoint is unavailable: HTTP 404/400, or the stream connects but never
+// delivers -- see kStreamDeadStrikes); false when the session ended for any other reason
+// (cancel, terminal error, or an unrecoverable re-auth with `err` set).
 bool RunStreamList(ChatSession &s, std::string &err)
 {
 	std::string pageToken;
@@ -321,6 +330,15 @@ bool RunStreamList(ChatSession &s, std::string &err)
 	// messages from connect onward. This is set false after that first object and never
 	// again, so reconnects (which resume from a nextPageToken) emit normally.
 	bool firstConnect = true;
+	// Consecutive 2xx connections that parsed no response object at all. A healthy stream
+	// yields at least one object per connection even on a silent chat -- the server closes
+	// each batch and the reconnect returns a fresh response (possibly zero items) plus a
+	// nextPageToken -- so a run of empty connections means this transport is not delivering
+	// on this machine, which is exactly how it failed on the 2026-07-24 broadcast. Reset by
+	// any connection that parses a frame. Counts 2xx responses only: a status 0 is a
+	// connect/TLS failure with no response at all, which the backoff-and-retry path already
+	// owns and which says nothing about whether the endpoint delivers once reached.
+	int deadStreak = 0;
 
 	while (!s.canceled()) {
 		if (WaitOutQuotaExhaustion(s)) {
@@ -458,6 +476,16 @@ bool RunStreamList(ChatSession &s, std::string &err)
 		// processed). Resume promptly from the last nextPageToken; honor a larger advisory
 		// pollingIntervalMillis if the server sent one.
 		s.backoff.reset();
+
+		// A 2xx that yielded nothing parseable is the silent-failure shape: hand chat to
+		// .list rather than reconnecting into the same void for the rest of the broadcast.
+		deadStreak = frameCount > 0 ? 0 : deadStreak + 1;
+		if (deadStreak >= kStreamDeadStrikes) {
+			HostLog("[chat] youtube: streamList connected but delivered nothing across " +
+				std::to_string(deadStreak) + " connections; falling back to liveChatMessages.list");
+			return true;
+		}
+
 		const long waitMs = std::max<long>(kStreamReconnectFloorMs, serverPollMs);
 		DBG(LogCat::Chat, "youtube streamList: batch closed, resuming in %ldms (token=%s)", waitMs,
 		    pageToken.empty() ? "none" : "set");
@@ -645,15 +673,16 @@ bool YouTubeChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, con
 	Backoff backoff(std::chrono::milliseconds(2000), std::chrono::milliseconds(30000));
 	ChatSession session{owner_, ctx, acct, liveChatId, thirdPartyEmotes, canceled, emitState, backoff};
 
-	// The proven read path is the classic liveChatMessages.list poll. The push-based
-	// streamList (lower quota, ~1s latency) is still under live validation -- on a real
-	// 2026-07-24 stream it connected and announced the chat but delivered no messages past
-	// the connect frame -- so it is OPT-IN via BRAIDCAST_YOUTUBE_STREAMLIST=1 until proven.
-	// The per-frame diagnostic logging in RunStreamList/RunListPoll pins the gap when set.
-	const bool tryStreamList = Env::Flag("BRAIDCAST_YOUTUBE_STREAMLIST");
+	// streamList is the default read: .list bills a quota unit per poll, which burned the
+	// whole 10,000-unit daily project budget 13 minutes into the 2026-07-24 broadcast, and
+	// Google documents the push method as the way to stay under quota. .list remains the
+	// fallback -- taken when the transcode endpoint is unavailable or when streamList
+	// connects without delivering (kStreamDeadStrikes) -- so a streamList outage costs
+	// quota rather than costing chat. BRAIDCAST_YOUTUBE_STREAMLIST=false forces .list.
+	const bool tryStreamList = Env::Flag("BRAIDCAST_YOUTUBE_STREAMLIST", true);
 	bool fallback = false;
 	if (tryStreamList) {
-		DBG(LogCat::Chat, "youtube: opening live chat %s via streamList (opt-in)", liveChatId.c_str());
+		DBG(LogCat::Chat, "youtube: opening live chat %s via streamList", liveChatId.c_str());
 		fallback = RunStreamList(session, err);
 	}
 	if (!tryStreamList || (fallback && !canceled())) {

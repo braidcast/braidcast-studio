@@ -8,11 +8,11 @@
 #include "chat_transport.hpp"
 
 // The YouTube live-chat transport (Phase 9.0). YouTube exposes live chat over the
-// YouTube Data API v3: liveChatMessages.list (read -- the default poll loop, honoring
-// the server-dictated pollingIntervalMillis + nextPageToken cursor) with the
-// push-based liveChatMessages.streamList (~1s latency, far lower quota) available as
-// an opt-in read path via BRAIDCAST_YOUTUBE_STREAMLIST while it is validated live, and
-// liveChatMessages.insert (send). The read target is the active
+// YouTube Data API v3: the push-based liveChatMessages.streamList (~1s latency, billed
+// per connection) is the default read, with liveChatMessages.list (polling, billed per
+// call, honoring the server-dictated pollingIntervalMillis + nextPageToken cursor) kept
+// as the fallback for when the stream endpoint is unavailable or connects without
+// delivering, plus liveChatMessages.insert (send). The read target is the active
 // broadcast's `liveChatId`, which exists only while a broadcast is live -- the
 // YouTubeProvider resolves it from the broadcast it created in applyMetadata (Phase
 // 8d) and hands it in as the `channelRef`. All token coherence (proactive refresh +
@@ -28,9 +28,9 @@ class YouTubeChat : public ChatTransport {
 public:
 	explicit YouTubeChat(OAuth::YouTubeProvider &owner) : owner_(owner) {}
 
-	// Read loop: liveChatMessages.list polling by default (streamList when opted in via
-	// BRAIDCAST_YOUTUBE_STREAMLIST, falling back to .list if the stream endpoint is
-	// unavailable), emitting only messages that arrive AFTER the cold connect (the first
+	// Read loop: streamList by default, falling back to .list polling when the stream
+	// endpoint is unavailable or delivers nothing (BRAIDCAST_YOUTUBE_STREAMLIST=false
+	// forces .list), emitting only messages that arrive AFTER the cold connect (the first
 	// response's backlog is dropped and only its cursor kept; subsequent reads resume from
 	// the cursor and emit). Re-checks cancellation frequently via the poll/chunk callback
 	// + CancelableSleep so a Stop() returns within ~0.5s. `channelRef` is the liveChatId;
