@@ -51,7 +51,7 @@ std::chrono::milliseconds ChannelStatsPoller::Interval(unsigned long long tick) 
 	return kBaseInterval + jitter;
 }
 
-void ChannelStatsPoller::PollAccount(OAuth::OAuthAccount &acct, OAuth::StreamProvider *provider, json &perAccount)
+void ChannelStatsPoller::PollAccount(OAuth::OAuthAccount &acct, OAuth::StreamProvider *provider, PollCycle &cycle)
 {
 	OAuth::AudienceResult out;
 	std::string err;
@@ -95,7 +95,7 @@ void ChannelStatsPoller::PollAccount(OAuth::OAuthAccount &acct, OAuth::StreamPro
 
 		// Include a fresh read every tick (even unchanged) so a freshly-loaded UI / a
 		// new CEF browser always receives current values.
-		perAccount[OAuth::AccountId(acct)] = json{
+		cycle.perAccount[OAuth::AccountId(acct)] = json{
 			{"audienceCount", out.count},
 			{"audienceKind", OAuth::AudienceKindName(out.kind)},
 			{"audienceHidden", out.hidden},
@@ -106,7 +106,7 @@ void ChannelStatsPoller::PollAccount(OAuth::OAuthAccount &acct, OAuth::StreamPro
 		// persisted last-known value exists -> emit the CACHED record so the panel
 		// shows "last-known + as-of" off-stream instead of "—". No persist and no
 		// store write: nothing changed.
-		perAccount[OAuth::AccountId(acct)] = json{
+		cycle.perAccount[OAuth::AccountId(acct)] = json{
 			{"audienceCount", acct.audienceCount},
 			{"audienceKind", OAuth::AudienceKindName(acct.audienceKind)},
 			{"audienceHidden", acct.audienceHidden},
@@ -115,12 +115,12 @@ void ChannelStatsPoller::PollAccount(OAuth::OAuthAccount &acct, OAuth::StreamPro
 	}
 }
 
-std::optional<json> ChannelStatsPoller::BuildPayload(json &&perAccount)
+std::optional<json> ChannelStatsPoller::BuildPayload(PollCycle &&cycle)
 {
-	if (perAccount.empty()) {
+	if (cycle.perAccount.empty()) {
 		return std::nullopt;
 	}
-	return json{{"perAccount", std::move(perAccount)}};
+	return json{{"perAccount", std::move(cycle.perAccount)}};
 }
 
 ChannelStatsPoller &Channels()

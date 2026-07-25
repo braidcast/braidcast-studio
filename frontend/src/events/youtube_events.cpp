@@ -101,7 +101,10 @@ void YouTubeEvents::collect(const EventContext &ctx, OAuth::OAuthAccount &acct,
 	//    paths disjoint. Residual edge (acceptable): connecting mid-broadcast won't
 	//    REST-backfill that stream's Super Chats from before connect -- the live forward
 	//    only catches ones from connect-time onward.
-	if (!provider_->LiveChatActive()) {
+	//    Scoped to THIS account: superChatEvents.list is a channel-wide read, so only that
+	//    channel's own live chats can stand in for it. A second YouTube account going live
+	//    used to suppress this account's backfill too.
+	if (!provider_->LiveChatActive(OAuth::AccountId(acct))) {
 		json j;
 		const std::string url =
 			std::string(kSuperChatEventsUrl) + "?part=snippet&maxResults=" + std::to_string(kMaxResults);

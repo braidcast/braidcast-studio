@@ -1060,9 +1060,17 @@ export type ChatFragment =
 
 /** One normalized chat message (the `chat.message` event). `id` is the platform
  * message id (dedupe/list key); `ts` is epoch ms; `channelId` is the platform
- * channel it arrived on. */
+ * channel it arrived on.
+ *
+ * `accountId` ("providerId:userId") names which connected account received it --
+ * `platform` alone cannot distinguish two accounts on the same platform.
+ * `profileUuid` is present only on a platform that runs one chat per broadcast
+ * (YouTube creates a broadcast per stream profile, so two orientations on one channel
+ * are two separate chats); it is absent for one-chat-per-channel platforms. */
 export interface ChatMessage {
   platform: ChatPlatform;
+  accountId: string;
+  profileUuid?: string;
   channelId: string;
   id: string;
   ts: number;
@@ -1070,23 +1078,46 @@ export interface ChatMessage {
   fragments: ChatFragment[];
 }
 
-/** Per-platform chat connection state. The `chat.state` METHOD returns the full
+/** Per-transport chat connection state. The `chat.state` METHOD returns the full
  * array (one row per active transport); the `chat.state` EVENT carries a SINGLE
- * platform's row (merge it into the local set by `platform`). An empty method
- * result means nothing is connected (not live). */
+ * transport's row. An empty method result means nothing is connected (not live).
+ *
+ * Merge by (`accountId`, `profileUuid`), not by `platform`: one platform can have
+ * several live transports (two accounts, or two broadcasts on one account), and
+ * merging those on `platform` alone collapses them into one row. See ChatMessage for
+ * when `profileUuid` is present. */
 export interface ChatState {
   platform: ChatPlatform;
+  accountId: string;
+  profileUuid?: string;
   connected: boolean;
   error?: string;
 }
 
+/** One live destination's concurrent viewers: an account streaming under one stream
+ * profile. `key` is the host's stable identifier for the pair ("accountId@profileUuid",
+ * or just the accountId when the platform has a single channel per account) and is
+ * safe to use as a list key. `profileUuid` is "" for such account-wide rows. */
+export interface ViewerDestination {
+  key: string;
+  accountId: string;
+  profileUuid: string;
+  count: number;
+}
+
 /** Aggregate viewer count (the `viewers.changed` event). `perAccount` maps an
- * accountId ("providerId:userId") to its current concurrent viewers; `total` is the
- * sum across accounts. A per-platform breakdown is derived by summing the entries
- * whose accountId prefix matches a providerId (two accounts on one platform add up). */
+ * accountId ("providerId:userId") to that account's current concurrent viewers, summed
+ * over every broadcast it has live; `total` is the sum across accounts. A per-platform
+ * breakdown is derived by summing the entries whose accountId prefix matches a
+ * providerId (two accounts on one platform add up).
+ *
+ * `perDestination` is the same figures broken out per broadcast, for a consumer that
+ * wants to label each one. It is additive detail -- `total` and `perAccount` remain
+ * authoritative and need no knowledge of destinations. */
 export interface ViewerCounts {
   perAccount: Record<string, number>;
   total: number;
+  perDestination?: ViewerDestination[];
 }
 
 // `channels.stats` event: audience totals per account. audienceCount === -1 means
@@ -1118,10 +1149,16 @@ export type EventType =
  * method and `events.backfill` event carry arrays of these, newest-first).
  * Optional fields are omitted by the host when empty/zero: `amount` is cheer
  * bits / superchat minor units / raid viewers; `actorColor` falls back to a
- * platform color when absent; `message` is rendered as plain text, never HTML. */
+ * platform color when absent; `message` is rendered as plain text, never HTML.
+ *
+ * `accountId` names the account the event belongs to (absent only for a host-synthesized
+ * event). `profileUuid` appears only when the source knew which broadcast it arrived on
+ * -- YouTube's live-chat sink does; channel-wide REST reads cannot. */
 export interface NormalizedEvent {
   id: string;
   platform: ChatPlatform;
+  accountId?: string;
+  profileUuid?: string;
   type: EventType;
   ts: number;
   actorName: string;

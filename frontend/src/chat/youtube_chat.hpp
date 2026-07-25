@@ -38,7 +38,11 @@ public:
 	bool connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, const std::string &channelRef,
 		     std::string &err) override;
 
-	// liveChatMessages.insert a textMessageEvent into the active broadcast's chat.
+	// liveChatMessages.insert a textMessageEvent into THIS transport's broadcast chat --
+	// the liveChatId connect() is reading, not whichever broadcast the account most
+	// recently created. An account streaming two orientations has one transport per
+	// broadcast, so re-resolving the target off the provider would post every reply into
+	// whichever of them went live last.
 	bool send(OAuth::OAuthAccount &acct, const std::string &text, std::string &err) override;
 
 	// liveChatMessages.list returns EVERY message in the chat -- including ones
@@ -54,6 +58,11 @@ private:
 	OAuth::YouTubeProvider &owner_;
 	std::mutex runMutex_;           // serializes connect() across overlapping Start/Stop
 	std::atomic<bool> stop_{false}; // set by disconnect(); secondary to ctx.canceled()
+
+	// The liveChatId connect() is currently reading, published for send() (which runs on a
+	// different worker). Empty while not connected.
+	mutable std::mutex targetMutex_;
+	std::string liveChatId_;
 };
 
 } // namespace Chat

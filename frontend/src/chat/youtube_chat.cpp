@@ -272,6 +272,11 @@ void ProcessChatItems(const ChatContext &ctx, const json &items, const std::stri
 		// source for Super Chats/memberships. The store dedupes against backfill/poll.
 		Events::NormalizedEvent ev;
 		if (BuildEventFromChat(item, ev)) {
+			// Attributed to the destination whose chat carried it -- this is the one event
+			// source that knows which broadcast a purchase arrived on (the REST transport
+			// reads channel-wide and can only name the account).
+			ev.accountId = ctx.dest.accountId;
+			ev.profileUuid = ctx.dest.profileUuid;
 			Events::Hub().Ingest(ev);
 		}
 	}
@@ -288,18 +293,20 @@ struct ChatSession {
 	const std::unordered_map<std::string, std::string> &thirdPartyEmotes;
 	std::function<bool()> canceled;
 	std::function<void(bool, const std::string &)> emitState;
+	std::function<void()> holdLiveChat;
 	Backoff &backoff;
 	bool announced = false;
 };
 
-// Confirm the chat once: emit the connected state and flag the live-chat forward as the
-// authoritative Super Chat source (so the REST event transport backs off). Idempotent.
+// Confirm the chat once: emit the connected state and mark the live-chat forward as an
+// authoritative Super Chat source for this account (so the REST event transport backs off
+// while any of the account's chats are being read). Idempotent.
 void AnnounceOnce(ChatSession &s)
 {
 	if (!s.announced) {
 		s.emitState(true, "");
 		s.announced = true;
-		s.owner.SetLiveChatActive(true);
+		s.holdLiveChat();
 	}
 }
 
@@ -635,15 +642,8 @@ bool YouTubeChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, con
 			  std::string &err)
 {
 	// Serialize against an overlapping re-Start: the hub does not join old workers, so a
-	// prior connect() might still be unwinding. Held for the whole call (declared before
-	// ActiveGuard, so released only after it destructs) -- this guarantees the old
-	// generation's ActiveGuard has cleared LiveChatActive before the new generation sets
-	// it, so the announced-once flag set/clear on the shared provider can't invert.
+	// prior connect() on THIS transport might still be unwinding.
 	std::lock_guard<std::mutex> run(runMutex_);
-
-	// Defensive: clear the live-chat-active flag up front so it can never survive on a
-	// fragile invariant (e.g. a prior run that exited before the RAII guard armed).
-	owner_.SetLiveChatActive(false);
 
 	// No active broadcast -> nothing to poll. Clean no-op (empty err = the hub logs
 	// nothing); chat.state stays connected=false for this platform via the hub.
@@ -652,17 +652,47 @@ bool YouTubeChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, con
 		return false;
 	}
 	const std::string liveChatId = channelRef;
+	{
+		const std::lock_guard<std::mutex> guard(targetMutex_);
+		liveChatId_ = liveChatId;
+	}
 	stop_.store(false, std::memory_order_release);
 
-	// Guarantee the provider's live-chat-active flag is cleared on EVERY exit from this
+	// Release this loop's hold on the account's live-chat refcount on EVERY exit from this
 	// function -- the normal post-loop return, a reconnect give-up, and the unrecoverable
-	// 401 that returns from inside the loop -- so the REST event transport resumes
-	// supplying Super Chat history the moment this loop stops. It is set true below only
-	// once a poll succeeds; the guard's clear is idempotent, so an early exit is safe.
-	struct ActiveGuard {
+	// 401 that returns from inside the loop -- so the REST event transport resumes supplying
+	// Super Chat history once the account's LAST chat loop stops. Acquired below only once a
+	// poll succeeds, and `held` keeps the pair balanced whether or not that happened.
+	struct LiveChatHold {
 		OAuth::YouTubeProvider &p;
-		~ActiveGuard() { p.SetLiveChatActive(false); }
-	} activeGuard{owner_};
+		std::string accountId;
+		bool held = false;
+
+		void acquire()
+		{
+			if (!held) {
+				p.AddLiveChatRef(accountId);
+				held = true;
+			}
+		}
+		~LiveChatHold()
+		{
+			if (held) {
+				p.ReleaseLiveChatRef(accountId);
+			}
+		}
+	} liveChatHold{owner_, ctx.dest.accountId};
+
+	// Stop advertising a send target once this loop is done, so a send racing teardown
+	// fails cleanly instead of posting into a broadcast nobody is reading.
+	struct TargetGuard {
+		YouTubeChat &self;
+		~TargetGuard()
+		{
+			const std::lock_guard<std::mutex> guard(self.targetMutex_);
+			self.liveChatId_.clear();
+		}
+	} targetGuard{*this};
 
 	auto canceled = [&] {
 		return stop_.load(std::memory_order_acquire) || (ctx.canceled && ctx.canceled());
@@ -677,8 +707,13 @@ bool YouTubeChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, con
 	const std::unordered_map<std::string, std::string> thirdPartyEmotes =
 		FetchThirdPartyEmotes(EmotePlatform::YouTube, "", acct.userId, canceled);
 
+	auto holdLiveChat = [&liveChatHold] {
+		liveChatHold.acquire();
+	};
+
 	Backoff backoff(std::chrono::milliseconds(2000), std::chrono::milliseconds(30000));
-	ChatSession session{owner_, ctx, acct, liveChatId, thirdPartyEmotes, canceled, emitState, backoff};
+	ChatSession session{owner_,    ctx,       acct,         liveChatId, thirdPartyEmotes,
+			    canceled,  emitState, holdLiveChat, backoff};
 
 	// streamList is the default read: .list bills a quota unit per poll, which burned the
 	// whole 10,000-unit daily project budget 13 minutes into the 2026-07-24 broadcast, and
@@ -711,9 +746,14 @@ bool YouTubeChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, con
 
 bool YouTubeChat::send(OAuth::OAuthAccount &acct, const std::string &text, std::string &err)
 {
-	// Resolve the active liveChatId off the provider (set by applyMetadata). chat
-	// send is only meaningful while a broadcast is live.
-	const std::string liveChatId = owner_.chatChannelRef(acct);
+	// This transport's own read target, not a fresh provider lookup: the provider holds one
+	// broadcast per destination, and re-resolving here would post into whichever of the
+	// account's broadcasts applied last rather than the one this chat pane is showing.
+	std::string liveChatId;
+	{
+		const std::lock_guard<std::mutex> guard(targetMutex_);
+		liveChatId = liveChatId_;
+	}
 	if (liveChatId.empty()) {
 		err = "no active YouTube broadcast";
 		return false;

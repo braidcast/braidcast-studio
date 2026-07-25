@@ -12,9 +12,11 @@
 
 #include <nlohmann/json.hpp>
 
-// The ChatHub (Phase 9.0): owns the set of live per-account chat transports between
+#include "../oauth/provider.hpp" // OAuth::DestinationId
+
+// The ChatHub (Phase 9.0): owns the set of live per-destination chat transports between
 // go-live and stop. On Start it enumerates connected, scope-current accounts targeted
-// by an ENABLED output binding, builds a fresh transport per account via
+// by an ENABLED output binding, builds a fresh transport per destination via
 // provider->makeChat(acct), and runs every non-null transport on its own detached
 // worker (AsyncTask::RunAsync), fanning normalized
 // messages and state to JS via the alive-guarded PostToUi + EmitEvent path. Each
@@ -49,26 +51,46 @@ public:
 	// Route `text` to each active transport whose providerId is in `platforms`
 	// (empty = all connected). Each send runs on its own worker so a slow REST send
 	// never blocks the caller; a failure emits a chat.state error for that platform.
+	// Platform-wide: on a platform with one broadcast per destination this posts to
+	// EVERY live destination of that platform.
 	void SendToPlatforms(const std::vector<std::string> &platforms, const std::string &text);
 
-	// Per-active-transport status: [{ platform, connected, error }].
+	// Route `text` to ONE destination's transport, so a caller that knows which broadcast
+	// it is replying to reaches exactly that chat instead of every chat on the platform.
+	// An account-wide destination (empty profileUuid) matches that account's single
+	// transport on a per-channel platform. Same worker/echo/error path as
+	// SendToPlatforms -- both are thin wrappers over one implementation.
+	void SendToDestination(const OAuth::DestinationId &dest, const std::string &text);
+
+	// Per-active-transport status: [{ platform, accountId, profileUuid, connected, error }].
 	json State();
 
 private:
 	struct Active {
 		std::string providerId;
+		OAuth::DestinationId dest;
 		std::shared_ptr<ChatTransport> transport; // hub-owned, shared with the worker
-		// The account's transport emit path (the same closure handed to the worker as
-		// ctx.emit: stop-guard -> fallback-id synthesis -> overlay fan-out -> alive-
-		// guarded UI post). Stored so SendToPlatforms can route the local echo of an
-		// outbound message through the identical path a real incoming message takes.
+		// The destination's transport emit path (the same closure handed to the worker as
+		// ctx.emit: stop-guard -> identity stamp -> fallback-id synthesis -> overlay
+		// fan-out -> alive-guarded UI post). Stored so a send can route the local echo of
+		// an outbound message through the identical path a real incoming message takes.
 		std::function<void(const json &payload)> emit;
 		bool connected = false;
 		std::string error;
 	};
 
+	// The ONE send implementation both public send entry points use: snapshot the
+	// transports `match` selects, then run each send on its own worker.
+	void SendMatching(const std::function<bool(const Active &)> &match, const std::string &text);
+
 	std::mutex mutex_;
-	std::map<std::string, Active> active_;    // keyed by accountId
+	// Keyed by DESTINATION, not accountId. For a platform whose chat is per-account
+	// (Twitch/Kick) every profile collapses onto one account-wide destination, so the map
+	// holds exactly one entry per account exactly as before; for YouTube each live
+	// broadcast gets its own entry and therefore its own transport. See
+	// StreamProvider::broadcastPerDestination for the rule and EnabledChatDestinations for
+	// where it is applied.
+	std::map<OAuth::DestinationId, Active> active_;
 	std::shared_ptr<std::atomic<bool>> stop_; // current generation's cancel flag
 
 	// Monotonic sequence for synthesizing unique fallback message ids when a

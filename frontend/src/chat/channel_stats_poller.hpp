@@ -21,8 +21,8 @@ protected:
 	const char *LogTag() const override;
 	const char *EventName() const override;
 	std::chrono::milliseconds Interval(unsigned long long tick) const override;
-	void PollAccount(OAuth::OAuthAccount &acct, OAuth::StreamProvider *provider, json &perAccount) override;
-	std::optional<json> BuildPayload(json &&perAccount) override;
+	void PollAccount(OAuth::OAuthAccount &acct, OAuth::StreamProvider *provider, PollCycle &cycle) override;
+	std::optional<json> BuildPayload(PollCycle &&cycle) override;
 };
 
 ChannelStatsPoller &Channels();

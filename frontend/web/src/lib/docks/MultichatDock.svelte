@@ -133,8 +133,10 @@ import { EV } from "$lib/utils/eventNames";
     }
   }
 
-  // The host emits each message once (chat workers are keyed by account, so two
-  // profiles on one channel share a worker). Guard the render path anyway: drop a
+  // The host emits each message once. Chat workers are keyed by destination: one per
+  // account on a platform with a single chat per channel, one per live broadcast on a
+  // platform that makes a broadcast per stream profile -- so two profiles on one channel
+  // are two separate chats whose ids never coincide. Guard the render path anyway: drop a
   // repeated platform-native id so a transport reconnect that replays recent
   // history can't double a line. Bounded ring; ids are optional per platform.
   const seenIds = new Set<string>();

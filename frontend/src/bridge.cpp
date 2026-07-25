@@ -294,9 +294,10 @@ bool MethodStreamingStart(const json & /*params*/, json &result, std::string & /
 
 bool MethodStreamingStop(const json & /*params*/, json &result, std::string & /*error*/)
 {
-	// Chat and the viewer poller are live-only, so tear them down on stop. Reset each
-	// provider's active-broadcast target so the next go-live re-resolves YouTube's
-	// liveChatId fresh (clearActiveBroadcast is a no-op except on YouTube).
+	// Chat and the viewer poller are live-only, so tear them down on stop. Reset every
+	// active-broadcast target the account holds -- one per destination, so an account
+	// streaming several broadcasts drops all of them -- so the next go-live re-resolves
+	// YouTube's liveChatIds fresh (clearActiveBroadcast is a no-op except on YouTube).
 	Chat::Viewers().Stop();
 	Chat::Hub().Stop();
 	for (const auto &entry : OAuth::Accounts().All()) {
@@ -9773,12 +9774,15 @@ bool MethodStreamMetaSave(const json &params, json &result, std::string &error)
 // ---- chat (Phase 9.0) ------------------------------------------------------
 //
 // The multichat send/state surface, routed through the ChatHub (Chat::Hub()).
-// The hub owns the live per-platform transports started on go-live; tokens never
-// leave C++. Events the hub + the T6 viewer poller push to JS:
+// The hub owns the live per-destination transports started on go-live; tokens never
+// leave C++. Every payload carries the destination that produced it (accountId, plus
+// profileUuid on a platform with one broadcast per stream profile), because `platform`
+// alone cannot tell two accounts -- or two of one account's broadcasts -- apart.
+// Events the hub + the T6 viewer poller push to JS:
 //   - "chat.message"    one normalized message (see chat_transport.hpp)
-//   - "chat.state"      per-platform { platform, connected, error? }
-//   - "viewers.changed" { perAccount: {accountId:n}, total }  (emitted directly
-//                        by the T6 ViewerPoller via Bridge::EmitEvent)
+//   - "chat.state"      per-transport { platform, accountId, profileUuid?, connected, error? }
+//   - "viewers.changed" { perAccount: {accountId:n}, total, perDestination: [...] }
+//                        (emitted directly by the T6 ViewerPoller via Bridge::EmitEvent)
 // All three flow through the existing alive-guarded EmitEvent path -- no new emit
 // plumbing is needed; the chat.* helpers live in the hub (RouteEmit).
 

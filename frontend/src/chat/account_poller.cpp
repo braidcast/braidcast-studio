@@ -55,7 +55,9 @@ void AccountPoller::RunPollLoop(const std::shared_ptr<std::atomic<bool>> &stop)
 
 	unsigned long long tick = 0;
 	while (!canceled()) {
-		json perAccount = json::object();
+		// Fresh per cycle and local to this worker: see PollCycle for why it must not live
+		// on the poller.
+		PollCycle cycle;
 
 		// Re-read accounts each cycle so a connect/disconnect between ticks is picked
 		// up. The provider read's SendAuthed/ensureFresh is store-coherent, so polling
@@ -69,14 +71,14 @@ void AccountPoller::RunPollLoop(const std::shared_ptr<std::atomic<bool>> &stop)
 			if (!OAuth::IsAccountConnected(acct)) {
 				continue;
 			}
-			PollAccount(acct, provider, perAccount);
+			PollAccount(acct, provider, cycle);
 		}
 
 		if (canceled()) {
 			break;
 		}
 
-		if (std::optional<json> payload = BuildPayload(std::move(perAccount))) {
+		if (std::optional<json> payload = BuildPayload(std::move(cycle))) {
 			const char *event = EventName();
 			AsyncTask::PostToUi(
 				[event, payload = std::move(*payload)] { Bridge::EmitEvent(event, payload); });

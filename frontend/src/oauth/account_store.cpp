@@ -36,7 +36,7 @@ json AccountToJson(const OAuthAccount &a)
 		{"audienceKind", AudienceKindName(a.audienceKind)},
 		{"audienceHidden", a.audienceHidden},
 		{"audienceUpdatedNs", a.audienceUpdatedNs},
-		{"reusableStreamId", a.reusableStreamId},
+		{"reusableStreamIds", a.reusableStreamIds},
 	};
 }
 
@@ -60,7 +60,21 @@ OAuthAccount AccountFromJson(const json &j)
 	a.audienceKind = AudienceKindFromName(j.value("audienceKind", std::string()));
 	a.audienceHidden = j.value("audienceHidden", false);
 	a.audienceUpdatedNs = j.value("audienceUpdatedNs", static_cast<int64_t>(0));
-	a.reusableStreamId = j.value("reusableStreamId", std::string());
+	// A record written before ingest streams became per-destination carries a single bare
+	// "reusableStreamId". It cannot be attributed to a stream profile, and guessing an owner
+	// would hand one destination a stream another is already bound to, so it is DISCARDED:
+	// the next go-live inserts a fresh stream per destination. Reading only the new key does
+	// that -- an unknown key in the stored object is ignored, so the old file still loads.
+	if (const auto ids = j.find("reusableStreamIds"); ids != j.end() && ids->is_object()) {
+		// Per-entry type check rather than a whole-map get<>: one hand-edited non-string
+		// value would otherwise throw out of a load that is meant to degrade to "empty",
+		// never to fail.
+		for (const auto &entry : ids->items()) {
+			if (entry.value().is_string()) {
+				a.reusableStreamIds[entry.key()] = entry.value().get<std::string>();
+			}
+		}
+	}
 	return a;
 }
 
@@ -265,20 +279,27 @@ bool AccountStore::SetRefreshDead(const std::string &accountId, bool dead)
 	return true;
 }
 
-void AccountStore::UpdateReusableStreamId(const std::string &accountId, const std::string &streamId)
+void AccountStore::UpdateReusableStreamId(const std::string &accountId, const std::string &profileUuid,
+					  const std::string &streamId)
 {
 	// Field-scoped for the same reason as UpdateAudience: the go-live worker reaches
 	// here holding an account copy read before several blocking HTTP calls, so writing
 	// the whole record back could clobber a token a concurrent refresh rotated in the
-	// meantime. Touch only the stream id on the CURRENT stored record, and never
+	// meantime. Touch only THIS DESTINATION's entry on the CURRENT stored record -- two
+	// profiles going live at once must not drop each other's stream -- and never
 	// re-insert a removed account.
 	const std::lock_guard<std::mutex> guard(mutex_);
 	EnsureLoadedLocked();
 	auto it = accounts_.find(accountId);
-	if (it == accounts_.end() || it->second.reusableStreamId == streamId) {
+	if (it == accounts_.end()) {
 		return;
 	}
-	it->second.reusableStreamId = streamId;
+	std::map<std::string, std::string> &ids = it->second.reusableStreamIds;
+	const auto existing = ids.find(profileUuid);
+	if (existing != ids.end() && existing->second == streamId) {
+		return;
+	}
+	ids[profileUuid] = streamId;
 	SaveLocked();
 }
 

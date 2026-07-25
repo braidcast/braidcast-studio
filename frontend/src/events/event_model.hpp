@@ -20,6 +20,15 @@ struct NormalizedEvent {
 	std::string platform; // "twitch" | "youtube" | "kick"
 	std::string type;     // follow|sub|resub|subgift|cheer|raid|superchat|supersticker|member
 	int64_t ts = 0;       // ms since epoch (event time if the API gives one, else receipt)
+	// WHICH destination produced this. `accountId` is stamped for every event by the hub's
+	// per-account emit path, so `platform` is no longer the only identity two accounts on
+	// one platform share. `profileUuid` is set only by a source that genuinely knows which
+	// broadcast the event arrived on (YouTube's live-chat sink); it stays empty for the REST
+	// transports, whose reads are channel-wide and cannot be attributed to one broadcast.
+	// NOT part of the dedupe key -- the same purchase seen by two surfaces must still
+	// collapse (see YouTubeMoneyEventId).
+	std::string accountId;
+	std::string profileUuid;
 	std::string actorName;
 	std::string actorColor; // "" if unknown
 	// Optional, per-type (omitted from JSON when empty-string / zero):
@@ -38,6 +47,12 @@ struct NormalizedEvent {
 		json j = json{
 			{"id", id}, {"platform", platform}, {"type", type}, {"ts", ts}, {"actorName", actorName},
 		};
+		if (!accountId.empty()) {
+			j["accountId"] = accountId;
+		}
+		if (!profileUuid.empty()) {
+			j["profileUuid"] = profileUuid;
+		}
 		if (!actorColor.empty()) {
 			j["actorColor"] = actorColor;
 		}

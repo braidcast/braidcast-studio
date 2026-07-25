@@ -5,6 +5,7 @@
 #include <ctime>
 #include <fstream>
 #include <iterator>
+#include <set>
 #include <utility>
 
 #include "../chat/youtube_chat.hpp"
@@ -46,8 +47,9 @@ const std::streamoff kMaxThumbnailBytes = 2 * 1024 * 1024;
 // videoCategories.list -- no narrower per-call scope is needed.
 const char *kYouTubeScope = "https://www.googleapis.com/auth/youtube.force-ssl";
 
-// Throttles EnsureActiveBroadcast's liveBroadcasts.list cache-miss probe, per account, so
-// an idle connected account does not burn API quota every poll cycle.
+// Throttles the liveBroadcasts.list cache-miss probe, per ACCOUNT: one probe attributes
+// every destination of that account, so several destinations missing the cache together
+// still cost one call, and an off-air account cannot burn API quota every poll cycle.
 constexpr std::chrono::seconds kBroadcastProbeThrottle{15};
 
 // error.errors[0].reason values on a 403/429 when the app is briefly rate-limited:
@@ -323,7 +325,7 @@ YouTubeProvider::~YouTubeProvider() = default;
 
 std::unique_ptr<Chat::ChatTransport> YouTubeProvider::makeChat(const OAuthAccount &acct)
 {
-	(void)acct; // YouTubeChat reads chatChannelRef(acct) for the account's liveChatId
+	(void)acct; // the hub resolves the destination's liveChatId and passes it into connect()
 	return std::make_unique<Chat::YouTubeChat>(*this);
 }
 
@@ -333,17 +335,46 @@ std::unique_ptr<Events::EventTransport> YouTubeProvider::makeEvents(const OAuthA
 	return std::make_unique<Events::YouTubeEvents>(this);
 }
 
-std::string YouTubeProvider::chatChannelRef(const OAuthAccount &acct)
+std::string YouTubeProvider::chatChannelRef(const OAuthAccount &acct, const std::string &profileUuid)
 {
 	const std::lock_guard<std::mutex> guard(broadcastMutex_);
-	auto it = broadcasts_.find(AccountId(acct));
+	auto it = broadcasts_.find(DestinationId{AccountId(acct), profileUuid});
 	return it != broadcasts_.end() ? it->second.liveChatId : std::string();
 }
 
 void YouTubeProvider::clearActiveBroadcast(const std::string &accountId)
 {
 	const std::lock_guard<std::mutex> guard(broadcastMutex_);
-	broadcasts_.erase(accountId);
+	// Every destination of this account, not one entry: the account may hold several
+	// concurrent broadcasts and a stop ends all of them.
+	for (auto it = broadcasts_.begin(); it != broadcasts_.end();) {
+		it = it->first.accountId == accountId ? broadcasts_.erase(it) : std::next(it);
+	}
+}
+
+void YouTubeProvider::AddLiveChatRef(const std::string &accountId)
+{
+	const std::lock_guard<std::mutex> guard(liveChatMutex_);
+	++liveChatRefs_[accountId];
+}
+
+void YouTubeProvider::ReleaseLiveChatRef(const std::string &accountId)
+{
+	const std::lock_guard<std::mutex> guard(liveChatMutex_);
+	auto it = liveChatRefs_.find(accountId);
+	if (it == liveChatRefs_.end()) {
+		return;
+	}
+	if (--it->second <= 0) {
+		liveChatRefs_.erase(it);
+	}
+}
+
+bool YouTubeProvider::LiveChatActive(const std::string &accountId) const
+{
+	const std::lock_guard<std::mutex> guard(liveChatMutex_);
+	auto it = liveChatRefs_.find(accountId);
+	return it != liveChatRefs_.end() && it->second > 0;
 }
 
 json YouTubeProvider::capabilityJson() const
@@ -702,7 +733,7 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 	// pre-live, or rebind ingest and break a running stream when edited mid-stream.
 	if (!goingLive) {
 		BroadcastState active;
-		if (EnsureActiveBroadcast(acct, active, err)) {
+		if (EnsureActiveBroadcast(acct, profileUuid, active, err)) {
 			// Mid-stream edit: update the live broadcast in place. No insert, no bind, no
 			// ingest rebind, no broadcasts_ mutation -- only its editable metadata. YouTube
 			// requires snippet.title AND snippet.scheduledStartTime together on a
@@ -838,9 +869,16 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 		return !streamId.empty() && !streamName.empty() && !ingestionAddress.empty();
 	};
 
+	// THIS DESTINATION's remembered stream, never the account's: a liveStream carries one
+	// video feed and binds to one broadcast at a time, so two profiles on one channel must
+	// hold two separate ingest endpoints or they would share an RTMP key and the second
+	// go-live's bind would detach the first broadcast.
 	std::string rememberedStreamId;
 	if (const std::optional<OAuthAccount> stored = Accounts().Get(AccountId(acct))) {
-		rememberedStreamId = stored->reusableStreamId;
+		const auto it = stored->reusableStreamIds.find(profileUuid);
+		if (it != stored->reusableStreamIds.end()) {
+			rememberedStreamId = it->second;
+		}
 	}
 	if (!rememberedStreamId.empty()) {
 		// Reuse only a stream the API just confirmed exists and is not errored. ANY
@@ -896,8 +934,9 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 		}
 		// Remember the stream the moment it exists: even if a later go-live step
 		// fails, the resource is already on the channel, and the next go-live should
-		// find it via the 1-unit verify instead of paying for another insert.
-		Accounts().UpdateReusableStreamId(AccountId(acct), streamId);
+		// find it via the 1-unit verify instead of paying for another insert. Recorded
+		// against this destination, so a sibling profile keeps its own stream.
+		Accounts().UpdateReusableStreamId(AccountId(acct), profileUuid, streamId);
 	}
 
 	// 3. liveBroadcasts.bind -- attach the stream to the broadcast. CRITICAL.
@@ -910,14 +949,16 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 		return false;
 	}
 
-	// The new broadcast now exists and is bound. Only here do we invalidate this
-	// account's prior broadcast chat + viewer-count target -- if any earlier step had
+	// The new broadcast now exists and is bound. Only here do we invalidate THIS
+	// DESTINATION's prior broadcast chat + viewer-count target -- if any earlier step had
 	// failed, the previously-live broadcast stays intact rather than being torn down for
-	// one that never came up. The new ids are committed once this apply fully succeeds
-	// (below).
+	// one that never came up. Scoped to this destination so a second profile going live on
+	// the same account leaves the first profile's live broadcast alone. The new ids are
+	// committed once this apply fully succeeds (below).
+	const DestinationId dest{AccountId(acct), profileUuid};
 	{
 		const std::lock_guard<std::mutex> guard(broadcastMutex_);
-		BroadcastState &bs = broadcasts_[AccountId(acct)];
+		BroadcastState &bs = broadcasts_[dest];
 		bs.liveChatId.clear();
 		bs.broadcastId.clear();
 	}
@@ -940,26 +981,20 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 	// read its concurrentViewers), both started right after by streaming.start.
 	{
 		const std::lock_guard<std::mutex> guard(broadcastMutex_);
-		BroadcastState &bs = broadcasts_[AccountId(acct)];
+		BroadcastState &bs = broadcasts_[dest];
 		bs.liveChatId = liveChatId;
 		bs.broadcastId = broadcastId;
 	}
 	return true;
 }
 
-bool YouTubeProvider::EnsureActiveBroadcast(OAuthAccount &acct, BroadcastState &out, std::string &err)
+bool YouTubeProvider::ProbeActiveBroadcasts(OAuthAccount &acct, std::string &err)
 {
 	err.clear();
 	const std::string accountId = AccountId(acct);
 
 	{
 		const std::lock_guard<std::mutex> guard(broadcastMutex_);
-		auto it = broadcasts_.find(accountId);
-		if (it != broadcasts_.end() && !it->second.broadcastId.empty()) {
-			out = it->second;
-			return true;
-		}
-
 		const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
 		auto probeIt = lastBroadcastProbe_.find(accountId);
 		if (probeIt != lastBroadcastProbe_.end() && now - probeIt->second < kBroadcastProbeThrottle) {
@@ -968,12 +1003,25 @@ bool YouTubeProvider::EnsureActiveBroadcast(OAuthAccount &acct, BroadcastState &
 		lastBroadcastProbe_[accountId] = now;
 	}
 
-	// Lock released across the network call -- SendAuthed blocks on I/O (plus a possible
-	// token refresh), and holding broadcastMutex_ here would stall chatChannelRef/
-	// clearActiveBroadcast on other threads for the duration.
+	// Which stream backs which destination. Read before taking broadcastMutex_ (the account
+	// store has its own lock, and nesting the two would invite a lock-order inversion) and
+	// read from the store rather than the caller's copy so a stream inserted by a concurrent
+	// go-live is visible. Without any remembered stream there is nothing to match against.
+	std::map<std::string /*streamId*/, std::string /*profileUuid*/> profileByStream;
+	if (const std::optional<OAuthAccount> stored = Accounts().Get(accountId)) {
+		for (const auto &entry : stored->reusableStreamIds) {
+			if (!entry.second.empty()) {
+				profileByStream[entry.second] = entry.first;
+			}
+		}
+	}
+
+	// contentDetails carries boundStreamId, and liveBroadcasts.list bills the same 1 unit
+	// whichever parts are requested -- so the attribution below is free.
 	Http::HttpReq req;
 	req.method = "GET";
-	req.url = std::string(kLiveBroadcastsUrl) + "?part=id,snippet&broadcastStatus=active&mine=true";
+	req.url = std::string(kLiveBroadcastsUrl) +
+		  "?part=id,snippet,contentDetails&broadcastStatus=active&mine=true&maxResults=50";
 
 	Http::HttpResponse resp;
 	if (!SendAuthed(acct, req, resp, err)) {
@@ -984,45 +1032,113 @@ bool YouTubeProvider::EnsureActiveBroadcast(OAuthAccount &acct, BroadcastState &
 		return false;
 	}
 
-	const json item = FirstItem(ParseJson(resp.body));
-	if (!item.is_object()) {
-		// No active broadcast -> not live; the poller omits YouTube this cycle.
-		err.clear();
-		return false;
+	const json parsed = ParseJson(resp.body);
+	if (!parsed.is_object() || !parsed.contains("items") || !parsed["items"].is_array()) {
+		return false; // no active broadcast -> nothing live for this account
 	}
 
-	BroadcastState bs;
-	bs.broadcastId = Str(item, "id");
-	if (item.contains("snippet") && item["snippet"].is_object()) {
-		// Recovering liveChatId here (not just broadcastId) means the next chatChannelRef
-		// read picks it up for free -- no separate network call or signature change needed.
-		bs.liveChatId = Str(item["snippet"], "liveChatId");
+	// Attribute each active broadcast to the destination whose remembered ingest stream it
+	// is bound to. This is EXACT, not a guess: a stream belongs to exactly one destination
+	// and a broadcast is bound to exactly one stream, so the mapping is unambiguous even
+	// with several orientations live -- and it survives a restart because the stream ids are
+	// persisted. A broadcast bound to a stream we do not recognize (created outside this
+	// app, or one whose id was discarded on upgrade) is left alone rather than misattributed.
+	std::map<DestinationId, BroadcastState> learned;
+	size_t unattributed = 0;
+	for (const json &item : parsed["items"]) {
+		if (!item.is_object()) {
+			continue;
+		}
+		BroadcastState bs;
+		bs.broadcastId = Str(item, "id");
+		if (bs.broadcastId.empty()) {
+			continue;
+		}
+		if (item.contains("snippet") && item["snippet"].is_object()) {
+			// Recovering liveChatId here (not just broadcastId) means the next
+			// chatChannelRef read picks it up for free -- no separate network call.
+			bs.liveChatId = Str(item["snippet"], "liveChatId");
+		}
+		std::string boundStreamId;
+		if (item.contains("contentDetails") && item["contentDetails"].is_object()) {
+			boundStreamId = Str(item["contentDetails"], "boundStreamId");
+		}
+		const auto owner = profileByStream.find(boundStreamId);
+		if (boundStreamId.empty() || owner == profileByStream.end()) {
+			++unattributed;
+			continue;
+		}
+		learned[DestinationId{accountId, owner->second}] = bs;
 	}
-	if (bs.broadcastId.empty()) {
-		err.clear();
+
+	if (unattributed > 0) {
+		HostLog("[oauth] YouTube skipped " + std::to_string(unattributed) +
+			" active broadcast(s) for " + accountId + " bound to an unrecognized ingest stream");
+	}
+	if (learned.empty()) {
 		return false;
 	}
 
 	{
 		const std::lock_guard<std::mutex> guard(broadcastMutex_);
-		broadcasts_[accountId] = bs;
+		for (const auto &entry : learned) {
+			// Fill GAPS ONLY, never overwrite. applyMetadata is authoritative -- it knows
+			// exactly which broadcast it created for which destination -- whereas this is
+			// an HTTP snapshot that can already be stale by the time the lock is taken: a
+			// go-live may have committed while the probe was in flight, and YouTube can
+			// still list a just-ended broadcast against the same ingest stream. Replacing a
+			// populated entry would swap a live liveChatId for a dying broadcast's, and the
+			// cache-hit path would never re-probe to notice.
+			BroadcastState &slot = broadcasts_[entry.first];
+			if (slot.broadcastId.empty()) {
+				slot = entry.second;
+			}
+		}
 	}
-	out = bs;
 	return true;
 }
 
-bool YouTubeProvider::viewerCount(OAuthAccount &acct, int &out, std::string &err)
+bool YouTubeProvider::EnsureActiveBroadcast(OAuthAccount &acct, const std::string &profileUuid, BroadcastState &out,
+					   std::string &err)
 {
-	out = 0;
+	err.clear();
+	const DestinationId dest{AccountId(acct), profileUuid};
 
-	BroadcastState broadcast;
-	if (!EnsureActiveBroadcast(acct, broadcast, err)) {
+	// Cache first; the probe is only for a miss (a restart mid-stream, or a broadcast
+	// started outside this session). broadcastMutex_ is never held across the probe's HTTP
+	// call -- it would stall chatChannelRef/clearActiveBroadcast on other threads.
+	{
+		const std::lock_guard<std::mutex> guard(broadcastMutex_);
+		auto it = broadcasts_.find(dest);
+		if (it != broadcasts_.end() && !it->second.broadcastId.empty()) {
+			out = it->second;
+			return true;
+		}
+	}
+
+	if (!ProbeActiveBroadcasts(acct, err)) {
 		return false;
 	}
 
+	const std::lock_guard<std::mutex> guard(broadcastMutex_);
+	auto it = broadcasts_.find(dest);
+	if (it == broadcasts_.end() || it->second.broadcastId.empty()) {
+		return false; // the account is live, but not on this destination
+	}
+	out = it->second;
+	return true;
+}
+
+// Read one broadcast's concurrent viewers (videos.list liveStreamingDetails). The single
+// per-broadcast read, so the parse and the error contract exist once.
+bool YouTubeProvider::ReadBroadcastViewers(OAuthAccount &acct, const std::string &broadcastId, int &out,
+					   std::string &err)
+{
+	out = 0;
+
 	Http::HttpReq req;
 	req.method = "GET";
-	req.url = std::string(kVideosUrl) + "?part=liveStreamingDetails&id=" + Http::UrlEncode(broadcast.broadcastId);
+	req.url = std::string(kVideosUrl) + "?part=liveStreamingDetails&id=" + Http::UrlEncode(broadcastId);
 
 	Http::HttpResponse resp;
 	if (!SendAuthed(acct, req, resp, err)) {
@@ -1047,6 +1163,70 @@ bool YouTubeProvider::viewerCount(OAuthAccount &acct, int &out, std::string &err
 		}
 	}
 	return true;
+}
+
+bool YouTubeProvider::viewerCounts(OAuthAccount &acct, std::map<DestinationId, int> &out, std::string &err)
+{
+	const std::string accountId = AccountId(acct);
+
+	// Snapshot this account's live destinations under the lock, then release it: the reads
+	// below block on HTTP and broadcastMutex_ must never be held across a network call (it
+	// also guards chatChannelRef and the go-live commit).
+	auto snapshotTargets = [&] {
+		std::map<DestinationId, std::string> targets; // destination -> broadcastId
+		const std::lock_guard<std::mutex> guard(broadcastMutex_);
+		for (const auto &entry : broadcasts_) {
+			if (entry.first.accountId == accountId && !entry.second.broadcastId.empty()) {
+				targets[entry.first] = entry.second.broadcastId;
+			}
+		}
+		return targets;
+	};
+
+	std::map<DestinationId, std::string> targets = snapshotTargets();
+
+	// Nothing cached (a restart mid-stream, or a go-live this session never applied): ONE
+	// probe repopulates every destination of this account at once, each attributed exactly
+	// by the ingest stream its broadcast is bound to. One unit regardless of how many
+	// orientations come back, and it is throttled, so an off-air account cannot spin on it.
+	if (targets.empty()) {
+		if (!ProbeActiveBroadcasts(acct, err)) {
+			return false;
+		}
+		targets = snapshotTargets();
+		if (targets.empty()) {
+			return false;
+		}
+	}
+
+	// One row per DISTINCT broadcast. Belt-and-braces against two destinations naming one
+	// broadcast (only reachable if two profiles somehow remembered the same ingest stream):
+	// reporting it twice would double-bill quota on the read AND double-count those viewers
+	// in the caller's sum, so the second destination is skipped rather than mirrored.
+	std::set<std::string> readBroadcasts;
+	bool any = false;
+	for (const auto &target : targets) {
+		if (!readBroadcasts.insert(target.second).second) {
+			continue; // this broadcast is already represented by an earlier destination
+		}
+		int count = 0;
+		std::string readErr;
+		if (!ReadBroadcastViewers(acct, target.second, count, readErr)) {
+			// One broadcast failing (or the quota gate refusing) must not discard the
+			// siblings that did read -- keep the first error for the caller's log and carry
+			// on, so a partial total still beats no total at all.
+			if (err.empty()) {
+				err = readErr;
+			}
+			continue;
+		}
+		out[target.first] = count < 0 ? 0 : count;
+		any = true;
+	}
+	// `err` is deliberately LEFT SET on a partial read: returning true says "these rows are
+	// usable", and the caller reports a non-empty err alongside them so a silently-dropped
+	// broadcast is still visible in the log. It is cleared only when nothing failed.
+	return any;
 }
 
 bool YouTubeProvider::audienceCount(OAuthAccount &acct, AudienceResult &out, std::string &err)

@@ -51,9 +51,20 @@ using json = nlohmann::json;
 // Connection-state payload (event "chat.state"):
 //   { "event": "chat.state", "platform": <providerId>,
 //     "connected": <bool>, "error": <string?> }
+//
+// A transport never sets "accountId"/"profileUuid" itself: the hub stamps the
+// destination identity onto every frame at its single fan-out point (see ChatHub::Start),
+// so the wire shape cannot drift per platform.
 struct ChatContext {
 	std::function<void(const json &payload)> emit;
 	std::function<bool()> canceled;
+
+	// Which destination this transport is reading. Needed by a transport that forwards
+	// into another subsystem on its own (YouTube's live chat is the only push source for
+	// Super Chats and ingests them straight into the EventHub), so the forwarded record can
+	// name the account and broadcast it came from. `profileUuid` is empty for a per-channel
+	// platform's account-wide destination.
+	OAuth::DestinationId dest;
 
 	// Report this transport's connection-health transition to the shared aggregator
 	// (R14/G1). Always populated by the hub with the transport id bound in; transports

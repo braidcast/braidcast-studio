@@ -71,10 +71,17 @@ public:
 	bool applyMetadata(OAuthAccount &acct, const std::string &profileUuid, const json &fields, bool goingLive,
 			   std::string &err) override;
 
-	// Report the active broadcast's concurrent viewer count (Phase 9.0). Returns
-	// false (not live) when no broadcast is currently live; otherwise reads
-	// videos.list liveStreamingDetails.concurrentViewers (absent -> 0).
-	bool viewerCount(OAuthAccount &acct, int &out, std::string &err) override;
+	// YouTube creates one broadcast per stream profile, each with its own liveChatId and
+	// its own concurrentViewers, so all per-broadcast state keys off the destination.
+	bool broadcastPerDestination() const override { return true; }
+
+	// One concurrent-viewer row per live broadcast of `acct` (videos.list
+	// liveStreamingDetails.concurrentViewers; absent -> 0). Reading N broadcasts costs N
+	// videos.list units, which is the price of not under-reporting; the read set is the
+	// account's cached broadcasts deduped by broadcastId, so it never exceeds the number of
+	// distinct live broadcasts. The per-channel viewerCount hook is deliberately NOT
+	// overridden -- YouTube has no single per-account viewer figure to report.
+	bool viewerCounts(OAuthAccount &acct, std::map<DestinationId, int> &out, std::string &err) override;
 
 	// Report the channel's subscriber total (channels.list statistics). Reuses the
 	// identity `channels` scope -- no new grant. hiddenSubscriberCount -> hidden=true
@@ -89,26 +96,32 @@ public:
 	// by the EventHub on the account-connect lifecycle (real-time events arrive via chat).
 	std::unique_ptr<Events::EventTransport> makeEvents(const OAuthAccount &acct) override;
 
-	// YouTube chat keys off the per-broadcast liveChatId (resolved in applyMetadata),
-	// not the account login -- so override the default channel-ref resolution. Empty
-	// when no broadcast is currently live for `acct`, which the hub/transport treat as
-	// no chat.
-	std::string chatChannelRef(const OAuthAccount &acct) override;
+	// YouTube chat keys off the per-broadcast liveChatId (resolved in applyMetadata for
+	// `profileUuid`), not the account login -- so override the default channel-ref
+	// resolution. Empty when no broadcast is currently live for that destination, which
+	// the hub/transport treat as no chat.
+	std::string chatChannelRef(const OAuthAccount &acct, const std::string &profileUuid) override;
 
-	// Zero the account's cached liveChatId/broadcastId (mutex-guarded) so a stream stop
-	// drops that account's active-broadcast chat + viewer-count target. Called per
-	// connected account from streaming.stop.
+	// Zero EVERY cached liveChatId/broadcastId belonging to `accountId` (mutex-guarded) so
+	// a stream stop drops all of that account's active-broadcast chat + viewer-count
+	// targets. Called per connected account from streaming.stop.
 	void clearActiveBroadcast(const std::string &accountId) override;
 
-	// True while YouTubeChat is actively polling a live broadcast's chat. During that
-	// window the chat forward is the authoritative, real-time source of Super Chats, so
-	// the REST event transport skips its superChatEvents.list query to avoid emitting a
-	// second copy under a different id (the liveChatMessage id and superChatEvent id do
-	// not match, so id-dedupe cannot collapse the pair). Set by YouTubeChat around its
-	// poll loop; read by YouTubeEvents::collect. Atomic: written and read from different
-	// worker threads with no other invariant to guard.
-	void SetLiveChatActive(bool active) { liveChatActive_.store(active, std::memory_order_release); }
-	bool LiveChatActive() const { return liveChatActive_.load(std::memory_order_acquire); }
+	// Balanced per-poll-loop hold on "this account's live chat is being read". While at
+	// least one hold is active the chat forward is the authoritative, real-time source of
+	// Super Chats, so the REST event transport skips its superChatEvents.list query to
+	// avoid emitting a second copy under a different id (the liveChatMessage id and
+	// superChatEvent id do not match, so id-dedupe cannot collapse the pair).
+	//
+	// A REFCOUNT per account, not a flag: one account can have several concurrent
+	// broadcasts (orientations), each read by its own poll loop, and a flag would let the
+	// first loop to exit re-enable REST backfill while the others are still forwarding.
+	// Per account rather than per destination because superChatEvents.list is a
+	// CHANNEL-wide read -- there is nothing finer for it to be suppressed against.
+	// Acquire/release must be balanced; YouTubeChat owns exactly one hold per connect().
+	void AddLiveChatRef(const std::string &accountId);
+	void ReleaseLiveChatRef(const std::string &accountId);
+	bool LiveChatActive(const std::string &accountId) const;
 
 	// Record a quota-exhausted verdict from any YouTube Data API response: computes
 	// the next midnight-Pacific reset instant and closes the shared gate until then,
@@ -146,28 +159,50 @@ private:
 
 	BrokerStrategy auth_;
 
-	// The active broadcast's liveChatId + broadcast/video id, PER ACCOUNT. Set on a
+	// The active broadcast's liveChatId + broadcast/video id, PER DESTINATION. Set on a
 	// successful applyMetadata (the only place a broadcast is created) and read by the
 	// chat transport (liveChatId) and the viewer poller (broadcastId). Guarded by
 	// broadcastMutex_ because applyMetadata runs on a worker thread while chatChannelRef
-	// and viewerCount are read from other threads. A per-accountId map so two YouTube
-	// accounts never bleed broadcast state across each other; an account is absent when
+	// and viewerCounts are read from other threads.
+	//
+	// Keyed by (accountId, profileUuid), not accountId: YouTube creates a fresh broadcast
+	// per stream profile, so an account streaming two orientations holds two live
+	// broadcasts at once, with different liveChatIds and separate viewer figures. Keying
+	// by account alone made the second go-live's apply overwrite the first's ids, which
+	// silently dropped one orientation's chat and its viewers. A destination is absent when
 	// no broadcast is live for it.
 	struct BroadcastState {
 		std::string liveChatId;
 		std::string broadcastId;
 	};
 	std::mutex broadcastMutex_;
-	std::map<std::string /*accountId*/, BroadcastState> broadcasts_;
+	std::map<DestinationId, BroadcastState> broadcasts_;
 
 	// Cache-miss recovery for `broadcasts_` (e.g. after a Studio restart mid-stream, or a
-	// stream started outside this session): probes liveBroadcasts.list for the account's
-	// currently-active broadcast and repopulates the cache, including liveChatId so
-	// chatChannelRef recovers chat for free on the next read. Throttled by
-	// lastBroadcastProbe_ (same mutex) so an idle connected account does not burn quota
-	// every poll cycle.
-	bool EnsureActiveBroadcast(OAuthAccount &acct, BroadcastState &out, std::string &err);
+	// broadcast started outside this session): ONE account-wide liveBroadcasts.list that
+	// repopulates EVERY destination of the account at once, including liveChatId.
+	//
+	// Attribution is exact, not a guess. Each destination owns its own reusable ingest
+	// stream (OAuthAccount::reusableStreamIds, persisted), a broadcast is bound to exactly
+	// one stream, and the probe reads contentDetails.boundStreamId -- so a returned
+	// broadcast maps to one destination unambiguously even with several orientations live.
+	// A broadcast bound to a stream this app does not remember is skipped rather than
+	// misattributed to whichever destination happened to ask.
+	//
+	// Costs 1 unit per call regardless of how many broadcasts come back (parts are free),
+	// and is throttled per ACCOUNT by lastBroadcastProbe_ so several destinations missing
+	// the cache together still trigger a single probe.
+	bool ProbeActiveBroadcasts(OAuthAccount &acct, std::string &err);
 	std::map<std::string /*accountId*/, std::chrono::steady_clock::time_point> lastBroadcastProbe_;
+
+	// One destination's live broadcast: the cache, else one shared probe. False when that
+	// destination is not live (even if a sibling destination is).
+	bool EnsureActiveBroadcast(OAuthAccount &acct, const std::string &profileUuid, BroadcastState &out,
+				   std::string &err);
+
+	// videos.list liveStreamingDetails.concurrentViewers for ONE broadcast: the single
+	// per-broadcast read.
+	bool ReadBroadcastViewers(OAuthAccount &acct, const std::string &broadcastId, int &out, std::string &err);
 
 	// The assignable videoCategories list, fetched once per process and reused
 	// (it is static content). Guarded because searchCategories runs on worker
@@ -175,11 +210,11 @@ private:
 	std::mutex categoriesMutex_;
 	std::vector<std::pair<std::string, std::string>> categories_; // {id, name}
 
-	// See SetLiveChatActive: true only while the live-chat poll loop is running. This is
-	// per-provider-singleton, which fits the current single-YouTube-account model; if
-	// multi-account YouTube is ever enabled, one account going live would suppress REST
-	// Super Chats for all YouTube accounts (revisit as a per-account flag then).
-	std::atomic<bool> liveChatActive_{false};
+	// See AddLiveChatRef: per-account count of running live-chat poll loops. Its own mutex
+	// rather than broadcastMutex_ -- the two protect unrelated state and the chat loops
+	// take this one on every announce while metadata applies hold the other.
+	mutable std::mutex liveChatMutex_;
+	std::map<std::string /*accountId*/, int> liveChatRefs_;
 
 	// Arm the quota gate when a completed response carries a quota-class 403.
 	// Shared tail of the SendAuthed/SendAuthedStreaming wrappers.

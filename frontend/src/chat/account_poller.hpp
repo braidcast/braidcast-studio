@@ -27,6 +27,21 @@ using json = nlohmann::json;
 // after Shutdown is dropped by the alive-guard rather than touching CEF. The worker
 // reads the account store + registry singletons and its own poller singleton, all
 // alive to process exit, so it is safe even if it outlives a Stop().
+// One cycle's accumulated output, owned by the poll worker's own stack frame and never by
+// the poller object. That ownership is load-bearing, not stylistic: Stop() only SIGNALS the
+// detached worker (it is never joined), so a stop-then-start while the old worker is still
+// blocked in a platform HTTP call leaves two generations running at once. An accumulator
+// living on the poller singleton would be an unsynchronized data race between them.
+struct PollCycle {
+	// <accountId> -> the subclass's per-account value (a number for viewers, an object for
+	// channel stats). The shape every existing consumer indexes by accountId.
+	json perAccount = json::object();
+
+	// Optional finer-grained rows a subclass appends across accounts, for detail that is
+	// not one-value-per-account (e.g. one row per live broadcast). Left empty when unused.
+	json rows = json::array();
+};
+
 class AccountPoller {
 public:
 	virtual ~AccountPoller() = default;
@@ -49,14 +64,14 @@ protected:
 	// can fold deterministic jitter into; ignore it for a fixed cadence.
 	virtual std::chrono::milliseconds Interval(unsigned long long tick) const = 0;
 
-	// Poll one connected account: fill perAccount[AccountId(acct)] and do any side
-	// effects (persist, cached fallback). `provider` is the registered StreamProvider
-	// for acct.providerId.
-	virtual void PollAccount(OAuth::OAuthAccount &acct, OAuth::StreamProvider *provider, json &perAccount) = 0;
+	// Poll one connected account: fill cycle.perAccount[AccountId(acct)] (appending to
+	// cycle.rows if the subclass reports finer detail) and do any side effects (persist,
+	// cached fallback). `provider` is the registered StreamProvider for acct.providerId.
+	virtual void PollAccount(OAuth::OAuthAccount &acct, OAuth::StreamProvider *provider, PollCycle &cycle) = 0;
 
-	// Assemble the emit payload from the accumulated perAccount map. Return
-	// std::nullopt to skip the emit for this cycle.
-	virtual std::optional<json> BuildPayload(json &&perAccount) = 0;
+	// Assemble the emit payload from this cycle's accumulation. Return std::nullopt to
+	// skip the emit for this cycle.
+	virtual std::optional<json> BuildPayload(PollCycle &&cycle) = 0;
 
 private:
 	void RunPollLoop(const std::shared_ptr<std::atomic<bool>> &stop);

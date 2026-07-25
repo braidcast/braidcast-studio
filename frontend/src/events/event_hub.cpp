@@ -83,7 +83,7 @@ void EventHub::StartAccount(const std::string &accountId, const OAuth::OAuthAcco
 	// hub (`this`) only via Ingest -- safe because the hub is a singleton living to
 	// process exit. All JS emits go through the alive-guarded Bridge::EmitEvent path,
 	// never raw CEF.
-	AsyncTask::RunAsync([this, providerId, acctCopy, transport, stop]() mutable {
+	AsyncTask::RunAsync([this, accountId, providerId, acctCopy, transport, stop]() mutable {
 		auto canceled = [stop] {
 			return stop->load(std::memory_order_acquire);
 		};
@@ -96,11 +96,20 @@ void EventHub::StartAccount(const std::string &accountId, const OAuth::OAuthAcco
 		ctx.markFatal = [&fatal] {
 			fatal = true;
 		};
-		ctx.emit = [this, stop](const NormalizedEvent &ev) {
+		ctx.emit = [this, accountId, stop](const NormalizedEvent &ev) {
 			if (stop->load(std::memory_order_acquire)) {
 				return; // generation stopped; drop late emits
 			}
-			Ingest(ev);
+			// Stamp the owning account here, the single point every transport's emit
+			// funnels through, rather than at each transport's construction sites: two
+			// accounts on one platform are otherwise indistinguishable downstream. A
+			// transport that already attributed the event (the YouTube chat sink names the
+			// exact broadcast) is left alone.
+			NormalizedEvent stamped = ev;
+			if (stamped.accountId.empty()) {
+				stamped.accountId = accountId;
+			}
+			Ingest(stamped);
 		};
 		// Route health transitions to the shared aggregator, keyed by platform. Dropped
 		// once the generation stops so a late report can't override the Disconnected that

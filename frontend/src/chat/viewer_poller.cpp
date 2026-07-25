@@ -2,6 +2,7 @@
 #include "../event_names.hpp"
 
 #include <chrono>
+#include <map>
 #include <string>
 #include <utility>
 
@@ -37,13 +38,17 @@ std::chrono::milliseconds ViewerPoller::Interval(unsigned long long) const
 	return kPollInterval;
 }
 
-void ViewerPoller::PollAccount(OAuth::OAuthAccount &acct, OAuth::StreamProvider *provider, json &perAccount)
+void ViewerPoller::PollAccount(OAuth::OAuthAccount &acct, OAuth::StreamProvider *provider, PollCycle &cycle)
 {
-	int count = 0;
+	std::map<OAuth::DestinationId, int> counts;
 	std::string err;
 	bool ok = false;
 	try {
-		ok = provider->viewerCount(acct, count, err);
+		// Per DESTINATION, not per account: an account with several concurrent broadcasts
+		// contributes each of them. For a platform with one channel per account the default
+		// implementation is still exactly one call reported under the account-wide
+		// destination, so nothing about Twitch/Kick's cost or shape changes.
+		ok = provider->viewerCounts(acct, counts, err);
 	} catch (const std::exception &e) {
 		ok = false;
 		err = std::string("viewer count crashed: ") + e.what();
@@ -60,22 +65,41 @@ void ViewerPoller::PollAccount(OAuth::OAuthAccount &acct, OAuth::StreamProvider 
 		}
 		return;
 	}
-	if (count < 0) {
-		count = 0;
+	// A partial read (some of the account's broadcasts read, others failed) still reports
+	// the rows that succeeded -- a partial total beats no total -- but must still surface
+	// why the rest are missing.
+	if (!err.empty()) {
+		HostLog("[viewers] '" + acct.providerId + "' partial: " + Err::Diagnostic(err));
 	}
 
-	// Aggregate per accountId (each connected account counted once; two accounts on
-	// one platform are distinct rows). The cycle total is summed in BuildPayload.
-	perAccount[OAuth::AccountId(acct)] = count;
+	long long accountTotal = 0;
+	for (const auto &entry : counts) {
+		const int count = entry.second < 0 ? 0 : entry.second;
+		accountTotal += count;
+		cycle.rows.push_back(json{{"key", OAuth::DestinationKey(entry.first)},
+					  {"accountId", entry.first.accountId},
+					  {"profileUuid", entry.first.profileUuid},
+					  {"count", count}});
+	}
+
+	// perAccount keeps its existing meaning and key (accountId -> that account's viewers),
+	// now the SUM over the account's live broadcasts rather than whichever single broadcast
+	// the cache happened to hold. Existing consumers index it by accountId unchanged.
+	cycle.perAccount[OAuth::AccountId(acct)] = accountTotal;
 }
 
-std::optional<json> ViewerPoller::BuildPayload(json &&perAccount)
+std::optional<json> ViewerPoller::BuildPayload(PollCycle &&cycle)
 {
 	long long total = 0;
-	for (const auto &entry : perAccount.items()) {
+	for (const auto &entry : cycle.perAccount.items()) {
 		total += entry.value().get<long long>();
 	}
-	return json{{"perAccount", std::move(perAccount)}, {"total", total}};
+	// `perDestination` is additive detail: the same numbers broken out per broadcast, for a
+	// consumer that wants to label each orientation. `total`/`perAccount` stay authoritative
+	// and unchanged in shape, so nothing reading them needs to know destinations exist.
+	return json{{"perAccount", std::move(cycle.perAccount)},
+		    {"total", total},
+		    {"perDestination", std::move(cycle.rows)}};
 }
 
 ViewerPoller &Viewers()

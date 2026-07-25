@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -106,12 +107,20 @@ struct OAuthAccount {
 	AudienceKind audienceKind = AudienceKind::Unknown;
 	bool audienceHidden = false;
 	int64_t audienceUpdatedNs = 0;
-	// The provider's reusable ingest stream id, for platforms that model the RTMP
+	// The provider's reusable ingest stream ids, for platforms that model the RTMP
 	// endpoint as a create-once resource (YouTube liveStreams; empty elsewhere).
 	// Remembered so each go-live re-verifies and re-binds the existing stream (1
-	// quota unit) instead of inserting a fresh one (50 units). Overwritten whenever
-	// the remembered stream no longer verifies server-side.
-	std::string reusableStreamId;
+	// quota unit) instead of inserting a fresh one (50 units). An entry is dropped
+	// whenever its remembered stream no longer verifies server-side.
+	//
+	// Keyed by profileUuid -- ONE STREAM PER DESTINATION, not per account. A stream
+	// carries a single video feed and binds to one broadcast at a time, so an account
+	// streaming two orientations needs two ingest endpoints: sharing one would hand both
+	// stream profiles the same RTMP key and let the second go-live's bind detach the
+	// first broadcast. The profileUuid alone is the key because the record is already
+	// scoped to one account -- this is the profile half of a DestinationId, not a second
+	// keying scheme. An empty key is the account-wide destination.
+	std::map<std::string /*profileUuid*/, std::string /*streamId*/> reusableStreamIds;
 };
 
 // The account's stable identity: providerId + ":" + userId. Pure function of the
@@ -122,6 +131,39 @@ struct OAuthAccount {
 inline std::string AccountId(const OAuthAccount &a)
 {
 	return a.providerId + ":" + a.userId;
+}
+
+// One live DESTINATION: an account streaming under one stream profile. The account
+// alone is not an identity on a platform that creates a broadcast per go-live --
+// YouTube gives each stream profile its own broadcast, with its own liveChatId and its
+// own concurrent-viewer figure, so two orientations on one channel are two distinct
+// destinations sharing one accountId. Per-broadcast state keys off this pair.
+//
+// An EMPTY profileUuid is the account-wide destination, used for platforms that edit
+// one persistent channel (Twitch/Kick: one chat, one viewer figure per account, so
+// every profile pointing at that account resolves to the same single destination) and
+// for a cache-recovery entry that could not be attributed to a specific profile.
+struct DestinationId {
+	std::string accountId;
+	std::string profileUuid;
+
+	bool operator<(const DestinationId &o) const
+	{
+		return accountId != o.accountId ? accountId < o.accountId : profileUuid < o.profileUuid;
+	}
+	bool operator==(const DestinationId &o) const
+	{
+		return accountId == o.accountId && profileUuid == o.profileUuid;
+	}
+};
+
+// The single flat rendering of a DestinationId, for JSON keys, list keys and log lines:
+// "<providerId>:<userId>@<profileUuid>", or just the accountId for the account-wide
+// destination. '@' is unambiguous here -- neither an accountId (providerId ':' userId)
+// nor a uuid contains one. The ONE formatter; never inline the concatenation.
+inline std::string DestinationKey(const DestinationId &d)
+{
+	return d.profileUuid.empty() ? d.accountId : d.accountId + "@" + d.profileUuid;
 }
 
 // The runtime context the framework hands an AuthStrategy for one interactive
@@ -301,17 +343,51 @@ public:
 	// for the same completeness reason).
 	virtual std::unique_ptr<Events::EventTransport> makeEvents(const OAuthAccount &acct);
 
+	// True when the platform creates a distinct live broadcast PER DESTINATION (one per
+	// stream profile) instead of editing one persistent channel. This single predicate
+	// decides every per-broadcast keying question -- how many chat transports the hub
+	// runs for an account, and how many viewer figures the poller asks for -- so the
+	// rule lives in one place rather than being re-decided per subsystem.
+	//
+	// false (Twitch/Kick): one channel, one chat, one viewer figure per account. Every
+	// profile bound to that account collapses onto the account-wide destination, so N
+	// profiles still cost exactly one transport and one poll, unchanged.
+	// true (YouTube): each profile's broadcast has its own liveChatId and its own
+	// concurrentViewers, so each needs its own transport and its own read.
+	virtual bool broadcastPerDestination() const { return false; }
+
 	// Report the platform's current concurrent viewer count for `acct` into `out`
 	// (Phase 9.0 aggregate viewer poller). `acct` is non-const so a reactive token
 	// refresh propagates back. Returns true with `out` set (0 when the channel is
 	// offline) on a usable read; false when unsupported or not currently live -- the
 	// poller then omits this platform from the aggregate. Default: unsupported.
+	//
+	// This is the per-CHANNEL primitive. The poller calls viewerCounts below instead, so
+	// a platform with one broadcast per destination can report each one separately.
 	virtual bool viewerCount(OAuthAccount &acct, int &out, std::string &err)
 	{
 		(void)acct;
 		(void)out;
 		(void)err;
 		return false;
+	}
+
+	// Report concurrent viewers for every live destination of `acct`, so an account with
+	// several concurrent broadcasts contributes all of them to the aggregate instead of
+	// silently dropping every one but the first. Returns true when at least one row was
+	// filled; false (leaving `out` untouched) when unsupported or not live.
+	//
+	// The default is the whole per-channel implementation: exactly ONE viewerCount call,
+	// reported under the account-wide destination. A platform with one channel per account
+	// therefore keeps its previous cost and shape without overriding anything.
+	virtual bool viewerCounts(OAuthAccount &acct, std::map<DestinationId, int> &out, std::string &err)
+	{
+		int count = 0;
+		if (!viewerCount(acct, count, err)) {
+			return false;
+		}
+		out[DestinationId{AccountId(acct), std::string()}] = count;
+		return true;
 	}
 
 	// Report the account's follower/subscriber TOTAL (distinct from concurrent
@@ -327,16 +403,24 @@ public:
 	}
 
 	// The platform-specific channel reference the hub passes into the chat transport's
-	// connect() for `acct`: the channel login/slug for Twitch IRC / Kick Pusher, the per-broadcast
-	// liveChatId for YouTube. Default = the account login; providers whose chat keys
-	// off something else override it, keeping the hub free of per-platform
+	// connect() for one destination: the channel login/slug for Twitch IRC / Kick Pusher,
+	// the per-broadcast liveChatId for YouTube. `profileUuid` names which of the account's
+	// broadcasts is being connected and is empty for the account-wide destination; a
+	// per-channel platform ignores it. Default = the account login; providers whose chat
+	// keys off something else override it, keeping the hub free of per-platform
 	// channel-resolution branches.
-	virtual std::string chatChannelRef(const OAuthAccount &acct) { return acct.login; }
+	virtual std::string chatChannelRef(const OAuthAccount &acct, const std::string &profileUuid)
+	{
+		(void)profileUuid;
+		return acct.login;
+	}
 
-	// Drop the active-broadcast chat/viewer target for ONE account on stream stop
-	// (Phase 9.0). Providers editing a persistent channel (Twitch/Kick) have nothing
-	// to clear; YouTube overrides to zero the account's cached liveChatId/broadcastId
-	// so a later go-live without a fresh applyMetadata can't poll a stale broadcast.
+	// Drop EVERY active-broadcast chat/viewer target belonging to one account on stream
+	// stop (Phase 9.0). Providers editing a persistent channel (Twitch/Kick) have nothing
+	// to clear; YouTube overrides to zero the account's cached liveChatId/broadcastId so a
+	// later go-live without a fresh applyMetadata can't poll a stale broadcast. Account-
+	// scoped rather than destination-scoped because a stop tears down all of the account's
+	// destinations at once, and the caller iterates the account store.
 	virtual void clearActiveBroadcast(const std::string &accountId) { (void)accountId; }
 
 protected:
