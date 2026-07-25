@@ -456,7 +456,7 @@ jobs:
             $params.Publisher = '${{ vars.MSIX_PUBLISHER }}'
             $params.PublisherDisplayName = '${{ vars.MSIX_PUBLISHER_DISPLAY_NAME }}'
           } else {
-            Write-Host '::notice::MSIX_IDENTITY_NAME not set; building MSIX with dev Identity. See notes/signing.md.'
+            Write-Host '::notice::MSIX_IDENTITY_NAME not set; building MSIX with dev Identity. See braidcast-notes/signing.md.'
           }
           .github/scripts/Package-Msix.ps1 @params
 
