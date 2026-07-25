@@ -36,6 +36,7 @@ json AccountToJson(const OAuthAccount &a)
 		{"audienceKind", AudienceKindName(a.audienceKind)},
 		{"audienceHidden", a.audienceHidden},
 		{"audienceUpdatedNs", a.audienceUpdatedNs},
+		{"reusableStreamId", a.reusableStreamId},
 	};
 }
 
@@ -59,6 +60,7 @@ OAuthAccount AccountFromJson(const json &j)
 	a.audienceKind = AudienceKindFromName(j.value("audienceKind", std::string()));
 	a.audienceHidden = j.value("audienceHidden", false);
 	a.audienceUpdatedNs = j.value("audienceUpdatedNs", static_cast<int64_t>(0));
+	a.reusableStreamId = j.value("reusableStreamId", std::string());
 	return a;
 }
 
@@ -261,6 +263,23 @@ bool AccountStore::SetRefreshDead(const std::string &accountId, bool dead)
 	it->second.refreshDead = dead;
 	SaveLocked();
 	return true;
+}
+
+void AccountStore::UpdateReusableStreamId(const std::string &accountId, const std::string &streamId)
+{
+	// Field-scoped for the same reason as UpdateAudience: the go-live worker reaches
+	// here holding an account copy read before several blocking HTTP calls, so writing
+	// the whole record back could clobber a token a concurrent refresh rotated in the
+	// meantime. Touch only the stream id on the CURRENT stored record, and never
+	// re-insert a removed account.
+	const std::lock_guard<std::mutex> guard(mutex_);
+	EnsureLoadedLocked();
+	auto it = accounts_.find(accountId);
+	if (it == accounts_.end() || it->second.reusableStreamId == streamId) {
+		return;
+	}
+	it->second.reusableStreamId = streamId;
+	SaveLocked();
 }
 
 void AccountStore::Remove(const std::string &accountId)

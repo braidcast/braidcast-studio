@@ -29,10 +29,11 @@ class YouTubeChat;
 // configured, plus access_type=offline + prompt=consent so a refresh token is
 // issued) and the YouTube Data API v3 live lifecycle the Go Live modal drives.
 // Unlike Twitch/Kick (which edit a persistent channel), YouTube creates a fresh
-// broadcast + stream on every Go Live (create-per-go-live), binds them, writes the
-// CDN ingest endpoint into the linked stream profile, then lets the encoder's
-// connect auto-transition the broadcast to live. Endpoints verified against the
-// YouTube Data API v3 reference (2026-06).
+// broadcast on every Go Live (create-per-go-live), binds it to the account's
+// reusable ingest stream (created once, remembered in the account store,
+// re-verified each go-live), writes the CDN ingest endpoint into the linked stream
+// profile, then lets the encoder's connect auto-transition the broadcast to live.
+// Endpoints verified against the YouTube Data API v3 reference (2026-06).
 namespace OAuth {
 
 // Bumped whenever the requested scope set changes, forcing installs holding

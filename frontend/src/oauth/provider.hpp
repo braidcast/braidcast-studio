@@ -106,6 +106,12 @@ struct OAuthAccount {
 	AudienceKind audienceKind = AudienceKind::Unknown;
 	bool audienceHidden = false;
 	int64_t audienceUpdatedNs = 0;
+	// The provider's reusable ingest stream id, for platforms that model the RTMP
+	// endpoint as a create-once resource (YouTube liveStreams; empty elsewhere).
+	// Remembered so each go-live re-verifies and re-binds the existing stream (1
+	// quota unit) instead of inserting a fresh one (50 units). Overwritten whenever
+	// the remembered stream no longer verifies server-side.
+	std::string reusableStreamId;
 };
 
 // The account's stable identity: providerId + ":" + userId. Pure function of the

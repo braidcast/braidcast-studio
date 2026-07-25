@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "../chat/youtube_chat.hpp"
+#include "account_store.hpp"
 #include "util/http_client.hpp"
 #include "../ingest_writeback.hpp"
 #include "util/json_util.hpp"
@@ -18,12 +19,13 @@ namespace OAuth {
 
 namespace {
 
-// YouTube Data API v3 endpoints. The live lifecycle creates a fresh broadcast +
-// stream per Go Live (create-per-go-live), binds them, then tags the resulting
-// video. Verified against the YouTube Data API v3 reference (2026-06).
-// Note: create-per-go-live can leave an orphaned broadcast/stream in the user's
-// account if a CRITICAL step fails after the insert -- inherent to the model, not
-// a leak (no live resource is held; the stale entities are just unused).
+// YouTube Data API v3 endpoints. The live lifecycle creates a fresh broadcast per
+// Go Live (create-per-go-live), binds it to the account's reusable ingest stream
+// (created once, remembered per account, re-verified each go-live), then tags the
+// resulting video. Verified against the YouTube Data API v3 reference (2026-06).
+// Note: create-per-go-live can leave an orphaned broadcast in the user's account
+// if a CRITICAL step fails after the insert -- inherent to the model, not a leak
+// (no live resource is held; the stale entity is just unused).
 const char *kChannelsUrl = "https://www.googleapis.com/youtube/v3/channels";
 const char *kVideoCategoriesUrl = "https://www.googleapis.com/youtube/v3/videoCategories";
 const char *kLiveBroadcastsUrl = "https://www.googleapis.com/youtube/v3/liveBroadcasts";
@@ -601,7 +603,9 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 	};
 
 	// Best-effort teardown of a broadcast we created but couldn't fully bring up, so a
-	// failed (re-)apply doesn't leave an orphan liveBroadcast on the channel. Errors here
+	// failed (re-)apply doesn't leave an orphan liveBroadcast on the channel. Deliberately
+	// deletes ONLY the broadcast, never the liveStream: the stream is the account's
+	// reusable ingest resource (see step 2) that every future go-live re-binds. Errors here
 	// are logged and swallowed -- they must not mask the original failure that triggered it.
 	auto deleteOrphanBroadcast = [&](const std::string &id) {
 		if (id.empty()) {
@@ -801,33 +805,92 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 		}
 	}
 
-	// 2. liveStreams.insert -> the RTMP ingest endpoint + stream key. CRITICAL.
-	json streamBody = json{
-		{"snippet", json{{"title", title}}},
-		{"cdn", json{{"frameRate", "variable"}, {"ingestionType", "rtmp"}, {"resolution", "variable"}}},
-		{"contentDetails", json{{"isReusable", false}}},
-	};
-	json sResp;
-	if (!sendJson("POST", std::string(kLiveStreamsUrl) + "?part=snippet,cdn,contentDetails", streamBody, sResp,
-		      stepErr)) {
-		err = "YouTube liveStreams.insert failed: " + stepErr;
-		deleteOrphanBroadcast(broadcastId);
-		return false;
-	}
-	const std::string streamId = Str(sResp, "id");
+	// 2. Resolve the RTMP ingest endpoint + stream key. CRITICAL. The liveStream is a
+	// reusable per-account resource: liveStreams.insert costs 50 quota units, so the
+	// remembered stream is re-verified (liveStreams.list, 1 unit) and re-bound each
+	// go-live, and a fresh one is inserted only when no remembered stream survives.
+	// The ingest address + key are always read from the live API response, never from
+	// a cache -- YouTube may rotate the key server-side between go-lives.
+	std::string streamId;
 	std::string ingestionAddress;
 	std::string streamName;
-	if (sResp.is_object() && sResp.contains("cdn") && sResp["cdn"].is_object()) {
-		const json &cdn = sResp["cdn"];
-		if (cdn.contains("ingestionInfo") && cdn["ingestionInfo"].is_object()) {
-			ingestionAddress = Str(cdn["ingestionInfo"], "ingestionAddress");
-			streamName = Str(cdn["ingestionInfo"], "streamName");
+
+	// Pulls id + cdn.ingestionInfo out of a liveStreams resource; false when any of
+	// the three fields the RTMP output needs is missing.
+	auto readIngestion = [&](const json &item) -> bool {
+		streamId = Str(item, "id");
+		ingestionAddress.clear();
+		streamName.clear();
+		if (item.is_object() && item.contains("cdn") && item["cdn"].is_object()) {
+			const json &cdn = item["cdn"];
+			if (cdn.contains("ingestionInfo") && cdn["ingestionInfo"].is_object()) {
+				ingestionAddress = Str(cdn["ingestionInfo"], "ingestionAddress");
+				streamName = Str(cdn["ingestionInfo"], "streamName");
+			}
+		}
+		return !streamId.empty() && !streamName.empty() && !ingestionAddress.empty();
+	};
+
+	std::string rememberedStreamId;
+	if (const std::optional<OAuthAccount> stored = Accounts().Get(AccountId(acct))) {
+		rememberedStreamId = stored->reusableStreamId;
+	}
+	if (!rememberedStreamId.empty()) {
+		// Reuse only a stream the API just confirmed exists and is not errored. ANY
+		// other outcome (deleted server-side, missing ingest info, transport failure)
+		// falls through to a fresh insert -- a stale cached id must never be the
+		// reason a go-live fails. The id filter alone is correct: liveStreams.list
+		// forbids combining id with mine, and the bearer already scopes the lookup
+		// to this account's own streams (a foreign/deleted id returns empty items).
+		Http::HttpReq verifyReq;
+		verifyReq.method = "GET";
+		verifyReq.url = std::string(kLiveStreamsUrl) +
+				"?part=id,cdn,status&id=" + Http::UrlEncode(rememberedStreamId);
+		Http::HttpResponse verifyResp;
+		std::string verifyErr;
+		if (SendAuthed(acct, verifyReq, verifyResp, verifyErr) && verifyResp.status >= 200 &&
+		    verifyResp.status < 300) {
+			const json item = FirstItem(ParseJson(verifyResp.body));
+			const bool errored = item.is_object() && item.contains("status") &&
+					     item["status"].is_object() &&
+					     Str(item["status"], "streamStatus") == "error";
+			if (!errored && readIngestion(item) && streamId == rememberedStreamId) {
+				HostLog("[oauth] YouTube reusing ingest stream " + streamId);
+			} else {
+				streamId.clear();
+			}
+		}
+		if (streamId.empty()) {
+			HostLog("[oauth] YouTube remembered ingest stream " + rememberedStreamId +
+				" not verified; creating a fresh one");
 		}
 	}
-	if (streamId.empty() || streamName.empty() || ingestionAddress.empty()) {
-		err = "YouTube liveStreams.insert returned no stream key";
-		deleteOrphanBroadcast(broadcastId);
-		return false;
+
+	if (streamId.empty()) {
+		// A fixed name, not the broadcast title: this resource outlives the broadcast
+		// that happened to create it and shows up in the channel's stream list, where
+		// one go-live's title would be a confusing label for every later one.
+		json streamBody = json{
+			{"snippet", json{{"title", "Braidcast ingest"}}},
+			{"cdn", json{{"frameRate", "variable"}, {"ingestionType", "rtmp"}, {"resolution", "variable"}}},
+			{"contentDetails", json{{"isReusable", true}}},
+		};
+		json sResp;
+		if (!sendJson("POST", std::string(kLiveStreamsUrl) + "?part=snippet,cdn,contentDetails", streamBody,
+			      sResp, stepErr)) {
+			err = "YouTube liveStreams.insert failed: " + stepErr;
+			deleteOrphanBroadcast(broadcastId);
+			return false;
+		}
+		if (!readIngestion(sResp)) {
+			err = "YouTube liveStreams.insert returned no stream key";
+			deleteOrphanBroadcast(broadcastId);
+			return false;
+		}
+		// Remember the stream the moment it exists: even if a later go-live step
+		// fails, the resource is already on the channel, and the next go-live should
+		// find it via the 1-unit verify instead of paying for another insert.
+		Accounts().UpdateReusableStreamId(AccountId(acct), streamId);
 	}
 
 	// 3. liveBroadcasts.bind -- attach the stream to the broadcast. CRITICAL.

@@ -36,6 +36,10 @@ public:
 	// the flag actually changed, so the caller can push oauth.status only on a real
 	// transition. Persists on change.
 	bool SetRefreshDead(const std::string &accountId, bool dead);
+	// Update only the remembered reusable ingest stream id of an existing account
+	// (worker-thread safe; never touches tokens). No-op if the account was removed.
+	// Persists on change.
+	void UpdateReusableStreamId(const std::string &accountId, const std::string &streamId);
 	void Remove(const std::string &accountId);
 	std::map<std::string, OAuthAccount> All();
 
