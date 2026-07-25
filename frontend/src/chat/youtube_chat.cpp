@@ -31,9 +31,15 @@ const char *kLiveChatMessagesUrl = "https://www.googleapis.com/youtube/v3/liveCh
 // liveChatMessages.streamList: the push-based read, and the default. Google documents both
 // gRPC and HTTP/REST for it; this is the HTTP/JSON-transcoded REST surface, which returns
 // 200 chunked, the body an incremental JSON array of normal liveChatMessageListResponse
-// objects arriving as messages are posted. Billing is per connection rather than per poll,
-// which is why it is the default. If it 404/400s the transcode is unavailable and we fall
-// back to the classic .list poll.
+// objects arriving as messages are posted. Billing is 5 units per CONNECTION rather than
+// per message, which is why it is the default. If it 404/400s the transcode is unavailable
+// and we fall back to the classic .list poll.
+//
+// The hold is short: measured against 1,660 live connections, the server terminates every
+// batch after about ten seconds regardless of traffic, pushing a final empty page that
+// carries the next nextPageToken. So this endpoint is a ~10s long-poll in practice, not a
+// broadcast-length stream, and the per-connection billing makes the reconnect cadence
+// below a direct quota knob.
 const char *kLiveChatStreamUrl = "https://www.googleapis.com/youtube/v3/liveChat/messages/stream";
 
 // liveChatMessages.list omits pollingIntervalMillis on rare responses; fall back
@@ -41,19 +47,30 @@ const char *kLiveChatStreamUrl = "https://www.googleapis.com/youtube/v3/liveChat
 constexpr long kDefaultPollMs = 5000;
 constexpr long kMinPollMs = 1500;
 
-// After the streamList server cleanly closes a batch, resume from the last nextPageToken
-// promptly -- this is a reconnect on a push stream, not a quota-metered poll, so it floors
-// far below kMinPollMs (raised only if the server advises a larger pollingIntervalMillis).
+// Dead time between one batch closing and the next connection opening. Every reconnect is
+// a separately billed 5-unit request, so this is a quota knob, not a free resume: with the
+// server's ~10s hold, one chat costs 5 units per (hold + this floor), and lowering it buys
+// chat coverage at a one-for-one quota cost. It never rises off the floor in practice --
+// streamList sends no pollingIntervalMillis, so the std::max below always picks this.
 constexpr long kStreamReconnectFloorMs = 250;
 
-// streamList accepts 200..2000 (default 500); larger batches mean fewer reconnects.
+// Below this, a 2xx cycle that delivered nothing is treated as an instant reject rather than
+// a batch boundary. The server's real batches run an order of magnitude longer, so a healthy
+// cycle never reaches this test.
+constexpr long kStreamMinCycleMs = 2000;
+
+// streamList accepts 200..2000 (default 500). Not a quota lever on this endpoint: the
+// server ends a batch on its own time deadline rather than on a full page, so a larger cap
+// does not reduce the connection count.
 constexpr const char *kStreamMaxResults = "500";
 
 // Consecutive delivering-nothing streamList connections tolerated before handing chat to
-// the .list poll for the rest of the session. A connection that opens and then goes silent
-// is ended by the streaming client's 90s low-speed watchdog, so each strike costs that long
-// -- two bounds the chat outage at ~3 minutes while still absorbing a single blip (a proxy
-// closing one connection early) rather than surrendering the quota win to it.
+// the .list poll for the rest of the session. This tests the TRANSPORT, not chat activity:
+// a healthy silent chat still yields one frame per connection, because the server ends
+// every batch with an empty page carrying the next nextPageToken. So a run of connections
+// that parse no frame at all means bytes are not arriving, and each strike costs only the
+// server's ~10s batch deadline (the 90s low-speed watchdog bounds the pathological case
+// where the response stalls after its headers).
 constexpr int kStreamDeadStrikes = 2;
 
 using JsonUtil::Bool;
@@ -295,7 +312,15 @@ struct ChatSession {
 	std::function<void(bool, const std::string &)> emitState;
 	std::function<void()> holdLiveChat;
 	Backoff &backoff;
+	// OAuth::DestinationKey(ctx.dest), rendered once. Every line these loops write lands in
+	// one log that all of an account's chats interleave into, so without this the per-frame
+	// and per-connection lines cannot be attributed to a broadcast. Held as a built string so
+	// a gated-off DBG still costs nothing.
+	std::string destTag;
 	bool announced = false;
+	// Set by EndSession once a loop has ended for good, so connect()'s clean bookend knows
+	// not to overwrite the reason. Never cleared: a session has one ending.
+	bool terminal = false;
 };
 
 // Confirm the chat once: emit the connected state and mark the live-chat forward as an
@@ -310,6 +335,40 @@ void AnnounceOnce(ChatSession &s)
 	}
 }
 
+// The ONE way either read loop ends for good. It owns every obligation of a terminal exit
+// together, so a branch cannot satisfy some and silently drop the rest:
+//   - the health surface gets Failed rather than Reconnecting (this loop is not coming back),
+//   - the reason reaches the chat pane,
+//   - `err` carries the reason to the hub's log,
+//   - `s.terminal` stops connect()'s clean bookend from overwriting it with an empty state.
+// A terminal row's reason IS its whole content, so an empty one is substituted rather than
+// shown -- the bug this replaces was a terminal path whose reason never reached the user.
+void EndSession(ChatSession &s, const std::string &reason, std::string &err)
+{
+	const std::string text = reason.empty() ? std::string("YouTube chat stopped") : reason;
+	s.terminal = true;
+	err = text;
+	EmitChatTerminal(s.ctx, "youtube", text);
+}
+
+// The user-facing reason for a terminal 403, shared by both read loops (chat disabled, chat
+// ended, forbidden). YouTube omits the reason on some 403s, so the status stands in.
+std::string TerminalHttpReason(long status, const std::string &reason)
+{
+	return "YouTube chat error: " + (reason.empty() ? "HTTP " + std::to_string(status) : reason);
+}
+
+// Shared terminal handling for a chat whose underlying livestream has gone offline, so the
+// reason and the exit contract cannot drift between the two read loops.
+void EndOnChatOffline(ChatSession &s, const std::string &offlineAt, const char *via, std::string &err)
+{
+	const std::string reason =
+		std::string("YouTube live chat ended") + (offlineAt.empty() ? std::string() : " at " + offlineAt);
+	DBG(LogCat::Chat, "youtube %s: dest=%s offlineAt=%s -> chat ended, stopping reads", via, s.destTag.c_str(),
+	    offlineAt.c_str());
+	EndSession(s, reason, err);
+}
+
 // While the shared daily-quota gate is closed, surface the outage on the chat state
 // and sleep (cancelable) until the reset instant, so neither read loop spends a
 // request against a spent quota. Clears `announced` so recovery re-emits the
@@ -320,7 +379,7 @@ bool WaitOutQuotaExhaustion(ChatSession &s)
 	if (!s.owner.QuotaExhausted(&wait)) {
 		return false;
 	}
-	DBG(LogCat::Chat, "youtube: quota exhausted, chat paused %lldms until the reset",
+	DBG(LogCat::Chat, "youtube: dest=%s quota exhausted, chat paused %lldms until the reset", s.destTag.c_str(),
 	    static_cast<long long>(wait.count()));
 	s.emitState(false, "YouTube API quota exhausted - chat resumes after " + s.owner.QuotaResetLocalTime());
 	s.announced = false;
@@ -339,14 +398,16 @@ bool RunStreamList(ChatSession &s, std::string &err)
 	// again, so reconnects (which resume from a nextPageToken) emit normally.
 	bool firstConnect = true;
 	// Consecutive 2xx connections that parsed no response object at all. A healthy stream
-	// yields at least one object per connection even on a silent chat -- the server closes
-	// each batch and the reconnect returns a fresh response (possibly zero items) plus a
-	// nextPageToken -- so a run of empty connections means this transport is not delivering
-	// on this machine, which is exactly how it failed on the 2026-07-24 broadcast. Reset by
+	// yields at least one object per connection even on a silent chat -- the server ends
+	// each batch with a response (possibly zero items) carrying a nextPageToken -- so a run
+	// of empty connections means this transport is not delivering on this machine. Reset by
 	// any connection that parses a frame. Counts 2xx responses only: a status 0 is a
 	// connect/TLS failure with no response at all, which the backoff-and-retry path already
 	// owns and which says nothing about whether the endpoint delivers once reached.
 	int deadStreak = 0;
+	// Consecutive cycles held off by the kStreamMinCycleMs guard below. Only its leading edge
+	// is host-logged, so a sustained reject loop stays visible without flooding the log.
+	int fastEmptyStreak = 0;
 
 	while (!s.canceled()) {
 		if (WaitOutQuotaExhaustion(s)) {
@@ -367,6 +428,8 @@ bool RunStreamList(ChatSession &s, std::string &err)
 		long serverPollMs = 0; // server pollingIntervalMillis advised on this connection
 		int frameCount = 0;    // complete response objects parsed on this connection
 		long bytesIn = 0;      // decoded stream bytes fed to the parser on this connection
+		long itemsIn = 0;      // live-chat items carried by those objects, backlog included
+		std::string offlineAt; // set once a frame reports the livestream offline
 
 		// Parse + process each complete response object the moment its bytes finish
 		// arriving, so a live push shows up with ~1s latency instead of waiting for the
@@ -381,20 +444,25 @@ bool RunStreamList(ChatSession &s, std::string &err)
 			for (const std::string &objText : ready) {
 				const json resp = ParseJson(objText);
 				if (!resp.is_object()) {
-					DBG(LogCat::Chat, "youtube streamList: skipped unparseable frame (%ld bytes)",
-					    static_cast<long>(objText.size()));
+					DBG(LogCat::Chat,
+					    "youtube streamList: dest=%s skipped unparseable frame (%ld bytes)",
+					    s.destTag.c_str(), static_cast<long>(objText.size()));
 					continue;
 				}
 				++frameCount;
 				AnnounceOnce(s);
 				const json &items = Obj(resp, "items");
 				const int n = items.is_array() ? static_cast<int>(items.size()) : 0;
+				itemsIn += n;
 				if (firstConnect) {
 					firstConnect = false;
 					DBG(LogCat::Chat,
-					    "youtube streamList: connect frame items=%d (suppressed as backlog)", n);
+					    "youtube streamList: dest=%s connect frame items=%d (suppressed "
+					    "as backlog)",
+					    s.destTag.c_str(), n);
 				} else {
-					DBG(LogCat::Chat, "youtube streamList: frame items=%d -> emitting", n);
+					DBG(LogCat::Chat, "youtube streamList: dest=%s frame items=%d -> emitting",
+					    s.destTag.c_str(), n);
 					ProcessChatItems(s.ctx, items, s.liveChatId, s.thirdPartyEmotes, s.canceled);
 				}
 				const std::string next = Str(resp, "nextPageToken");
@@ -405,6 +473,13 @@ bool RunStreamList(ChatSession &s, std::string &err)
 				if (it != resp.end() && it->is_number()) {
 					serverPollMs = it->get<long>();
 				}
+				// Stop reading as soon as the stream is reported offline: this frame's items
+				// were just emitted and nothing further can arrive on an ended chat, so hold
+				// the connection no longer. The loop below turns this into a terminal exit.
+				offlineAt = Str(resp, "offlineAt");
+				if (!offlineAt.empty()) {
+					return false;
+				}
 				if (s.canceled()) {
 					return false;
 				}
@@ -414,21 +489,39 @@ bool RunStreamList(ChatSession &s, std::string &err)
 
 		std::string errorBody;
 		std::string reqErr;
+		const auto cycleStart = std::chrono::steady_clock::now();
 		const long status = s.owner.SendAuthedStreaming(s.acct, req, onChunk, errorBody, reqErr);
 		// The quota preflight may hand back a {diagnostic, user message} envelope;
 		// unpack before this loop logs or emitState()s the string.
 		reqErr = Err::Diagnostic(reqErr);
 
+		// `reqErr` on a 2xx distinguishes a clean end-of-response from a post-headers abort
+		// (low-speed watchdog, TLS reset, HTTP/2 GOAWAY), which reach here as status 200 and
+		// are otherwise indistinguishable from a normal batch close. Logged because that
+		// difference decides whether the reconnect cadence below is server policy or a local
+		// middlebox truncating the stream.
 		DBG(LogCat::Chat,
-		    "youtube streamList: connection ended status=%ld frames=%d bytes=%ld pollAdvised=%ldms",
-		    status, frameCount, bytesIn, serverPollMs);
+		    "youtube streamList: dest=%s connection ended status=%ld frames=%d bytes=%ld pollAdvised=%ldms "
+		    "err=%s",
+		    s.destTag.c_str(), status, frameCount, bytesIn, serverPollMs,
+		    reqErr.empty() ? "none" : reqErr.c_str());
 
 		if (s.canceled()) {
 			break;
 		}
+		// Ahead of every other outcome, including the dead-strike counter and the
+		// minimum-cycle guard. An ended chat answers 200 with an empty items[] and would
+		// otherwise look to the guard like a fast empty cycle and sit in its backoff forever,
+		// or trip the dead strikes and hand over to .list -- which bills the same units
+		// against the same dead chat. The only correct response is to stop reading it.
+		if (!offlineAt.empty()) {
+			EndOnChatOffline(s, offlineAt, "streamList", err);
+			return false;
+		}
 		if (status == 0) {
 			// Transport failure: transient blip, back off and reconnect.
-			DBG(LogCat::Chat, "youtube streamList: transport failure (%s), backing off", reqErr.c_str());
+			DBG(LogCat::Chat, "youtube streamList: dest=%s transport failure (%s), backing off",
+			    s.destTag.c_str(), reqErr.c_str());
 			s.emitState(false, reqErr);
 			if (CancelableSleep(s.backoff.next(), s.canceled)) {
 				break;
@@ -436,16 +529,15 @@ bool RunStreamList(ChatSession &s, std::string &err)
 			continue;
 		}
 		if (status == 404 || status == 400) {
-			DBG(LogCat::Chat, "youtube: streamList unavailable (HTTP %ld), falling back to list",
-			    status);
+			DBG(LogCat::Chat, "youtube: dest=%s streamList unavailable (HTTP %ld), falling back to list",
+			    s.destTag.c_str(), status);
 			return true;
 		}
 		if (status == 401) {
 			// Unrecoverable after a forced refresh: re-auth needed. Terminal.
-			DBG(LogCat::Chat, "youtube streamList: terminal HTTP 401 (%s), ending session",
-			    reqErr.c_str());
-			err = reqErr;
-			s.emitState(false, reqErr);
+			DBG(LogCat::Chat, "youtube streamList: dest=%s terminal HTTP 401 (%s), ending session",
+			    s.destTag.c_str(), reqErr.c_str());
+			EndSession(s, reqErr, err);
 			return false;
 		}
 		if (status == 403 || status == 429) {
@@ -455,26 +547,27 @@ bool RunStreamList(ChatSession &s, std::string &err)
 			if (cls == OAuth::YouTubeErrorClass::QuotaExhausted) {
 				// SendAuthedStreaming already armed the shared gate; the loop-top wait
 				// reports the outage and sleeps until the reset.
-				DBG(LogCat::Chat, "youtube streamList: HTTP %ld (%s) -> quota exhausted", status,
-				    reason.c_str());
+				DBG(LogCat::Chat, "youtube streamList: dest=%s HTTP %ld (%s) -> quota exhausted",
+				    s.destTag.c_str(), status, reason.c_str());
 				continue;
 			}
 			if (cls == OAuth::YouTubeErrorClass::RateLimited) {
-				DBG(LogCat::Chat, "youtube streamList: HTTP %ld (%s) rate-limited, backing off",
-				    status, reason.c_str());
+				DBG(LogCat::Chat, "youtube streamList: dest=%s HTTP %ld (%s) rate-limited, backing off",
+				    s.destTag.c_str(), status, reason.c_str());
 				s.emitState(false, "YouTube chat rate-limited, retrying");
 				if (CancelableSleep(s.backoff.next(), s.canceled)) {
 					break;
 				}
 				continue;
 			}
-			DBG(LogCat::Chat, "youtube streamList: terminal HTTP %ld (%s), ending session", status,
-			    reason.c_str());
-			s.emitState(false, reason.empty() ? "" : "YouTube chat error: " + reason);
+			DBG(LogCat::Chat, "youtube streamList: dest=%s terminal HTTP %ld (%s), ending session",
+			    s.destTag.c_str(), status, reason.c_str());
+			EndSession(s, TerminalHttpReason(status, reason), err);
 			break;
 		}
 		if (status < 200 || status >= 300) {
-			DBG(LogCat::Chat, "youtube streamList: HTTP %ld, backing off", status);
+			DBG(LogCat::Chat, "youtube streamList: dest=%s HTTP %ld, backing off", s.destTag.c_str(),
+			    status);
 			s.emitState(false, "HTTP " + std::to_string(status));
 			if (CancelableSleep(s.backoff.next(), s.canceled)) {
 				break;
@@ -484,28 +577,65 @@ bool RunStreamList(ChatSession &s, std::string &err)
 
 		// 2xx: the server pushed its batch then closed the connection (cleanly, or a
 		// mid-batch drop -- reqErr may be set, but every object that arrived was already
-		// processed). Resume promptly from the last nextPageToken; honor a larger advisory
-		// pollingIntervalMillis if the server sent one.
-		s.backoff.reset();
+		// processed).
+		const long cycleMs = static_cast<long>(
+			std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() -
+									     cycleStart)
+				.count());
 
 		// A 2xx that yielded nothing parseable is the silent-failure shape: hand chat to
 		// .list rather than reconnecting into the same void for the rest of the broadcast.
 		deadStreak = frameCount > 0 ? 0 : deadStreak + 1;
 		if (deadStreak >= kStreamDeadStrikes) {
-			HostLog("[chat] youtube: streamList connected but delivered nothing across " +
+			HostLog("[chat] youtube: dest=" + s.destTag + " streamList connected but delivered nothing "
+									"across " +
 				std::to_string(deadStreak) + " connections; falling back to liveChatMessages.list");
 			return true;
 		}
 
+		// An instant 2xx that carried no content is a reject, not a batch boundary -- a stale
+		// pageToken or an edge refusing the transcode answers immediately and still ships one
+		// parseable terminal page, so the frame-counting deadStreak above cannot see it.
+		// Resuming such a cycle on kStreamReconnectFloorMs spins at four billed requests per
+		// second per chat, which spends the whole 10,000-unit day inside two minutes, so this
+		// takes the shared exponential backoff (capped at 30s by the Backoff the caller
+		// builds) and lets it grow while the condition holds. The test is ELAPSED TIME plus
+		// "carried nothing" -- deliberately neither of the two predicates already here, since
+		// a short batch that did carry messages is healthy and must not be throttled.
+		if (cycleMs < kStreamMinCycleMs && frameCount <= 1 && itemsIn == 0) {
+			const std::chrono::milliseconds wait = s.backoff.next();
+			if (++fastEmptyStreak == 1) {
+				HostLog("[chat] youtube: dest=" + s.destTag +
+					" streamList returned an empty batch in " + std::to_string(cycleMs) +
+					"ms; backing off " +
+					std::to_string(static_cast<long long>(wait.count())) +
+					"ms to protect the daily quota");
+			} else {
+				DBG(LogCat::Chat,
+				    "youtube streamList: dest=%s empty %ldms cycle #%d, backing off %lldms",
+				    s.destTag.c_str(), cycleMs, fastEmptyStreak,
+				    static_cast<long long>(wait.count()));
+			}
+			if (CancelableSleep(wait, s.canceled)) {
+				break;
+			}
+			continue;
+		}
+		fastEmptyStreak = 0;
+		s.backoff.reset();
+
+		// Resume from the last nextPageToken so the server does not rebuild historical state;
+		// honor a larger advisory pollingIntervalMillis if one arrived.
 		const long waitMs = std::max<long>(kStreamReconnectFloorMs, serverPollMs);
-		DBG(LogCat::Chat, "youtube streamList: batch closed, resuming in %ldms (token=%s)", waitMs,
-		    pageToken.empty() ? "none" : "set");
+		DBG(LogCat::Chat, "youtube streamList: dest=%s batch closed after %ldms, resuming in %ldms (token=%s)",
+		    s.destTag.c_str(), cycleMs, waitMs, pageToken.empty() ? "none" : "set");
 		if (CancelableSleep(std::chrono::milliseconds(waitMs), s.canceled)) {
 			break;
 		}
 	}
 
-	DBG(LogCat::Chat, "youtube streamList: read loop exited (canceled=%d)", s.canceled() ? 1 : 0);
+	DBG(LogCat::Chat, "youtube streamList: dest=%s read loop exited (canceled=%d)", s.destTag.c_str(),
+	    s.canceled() ? 1 : 0);
 	return false;
 }
 
@@ -541,18 +671,17 @@ void RunListPoll(ChatSession &s, std::string &err)
 			// unrecoverable 401. The former is a transient blip worth a backoff
 			// retry; the latter is fatal -- re-auth is needed.
 			if (resp.status == 0) {
-				DBG(LogCat::Chat, "youtube list: transport failure (%s), backing off",
-				    reqErr.c_str());
+				DBG(LogCat::Chat, "youtube list: dest=%s transport failure (%s), backing off",
+				    s.destTag.c_str(), reqErr.c_str());
 				s.emitState(false, reqErr);
 				if (CancelableSleep(s.backoff.next(), s.canceled)) {
 					break;
 				}
 				continue;
 			}
-			DBG(LogCat::Chat, "youtube list: terminal HTTP %ld (%s), ending session", resp.status,
-			    reqErr.c_str());
-			err = reqErr;
-			s.emitState(false, reqErr);
+			DBG(LogCat::Chat, "youtube list: dest=%s terminal HTTP %ld (%s), ending session",
+			    s.destTag.c_str(), resp.status, reqErr.c_str());
+			EndSession(s, reqErr, err);
 			return;
 		}
 
@@ -567,31 +696,33 @@ void RunListPoll(ChatSession &s, std::string &err)
 			if (cls == OAuth::YouTubeErrorClass::QuotaExhausted) {
 				// SendAuthed already armed the shared gate; the loop-top wait reports
 				// the outage and sleeps until the reset.
-				DBG(LogCat::Chat, "youtube list: HTTP %ld (%s) -> quota exhausted", resp.status,
-				    reason.c_str());
+				DBG(LogCat::Chat, "youtube list: dest=%s HTTP %ld (%s) -> quota exhausted",
+				    s.destTag.c_str(), resp.status, reason.c_str());
 				continue;
 			}
 			if (cls == OAuth::YouTubeErrorClass::RateLimited) {
-				DBG(LogCat::Chat, "youtube list: HTTP %ld (%s) rate-limited, backing off",
-				    resp.status, reason.c_str());
+				DBG(LogCat::Chat, "youtube list: dest=%s HTTP %ld (%s) rate-limited, backing off",
+				    s.destTag.c_str(), resp.status, reason.c_str());
 				s.emitState(false, "YouTube chat rate-limited, retrying");
 				if (CancelableSleep(s.backoff.next(), s.canceled)) {
 					break;
 				}
 				continue;
 			}
-			DBG(LogCat::Chat, "youtube list: terminal HTTP %ld (%s), ending session", resp.status,
-			    reason.c_str());
-			s.emitState(false, reason.empty() ? "" : "YouTube chat error: " + reason);
+			DBG(LogCat::Chat, "youtube list: dest=%s terminal HTTP %ld (%s), ending session",
+			    s.destTag.c_str(), resp.status, reason.c_str());
+			EndSession(s, TerminalHttpReason(resp.status, reason), err);
 			break;
 		}
 		if (resp.status == 404) {
-			DBG(LogCat::Chat, "youtube list: HTTP 404 (broadcast gone), ending session");
-			s.emitState(false, "");
+			DBG(LogCat::Chat, "youtube list: dest=%s HTTP 404 (broadcast gone), ending session",
+			    s.destTag.c_str());
+			EndSession(s, "YouTube broadcast is no longer available", err);
 			break;
 		}
 		if (resp.status < 200 || resp.status >= 300) {
-			DBG(LogCat::Chat, "youtube list: HTTP %ld, backing off", resp.status);
+			DBG(LogCat::Chat, "youtube list: dest=%s HTTP %ld, backing off", s.destTag.c_str(),
+			    resp.status);
 			s.emitState(false, "HTTP " + std::to_string(resp.status));
 			if (CancelableSleep(s.backoff.next(), s.canceled)) {
 				break;
@@ -622,10 +753,20 @@ void RunListPoll(ChatSession &s, std::string &err)
 		const int n = items.is_array() ? static_cast<int>(items.size()) : 0;
 		if (firstPoll) {
 			firstPoll = false;
-			DBG(LogCat::Chat, "youtube list: first poll items=%d (suppressed as backlog)", n);
+			DBG(LogCat::Chat, "youtube list: dest=%s first poll items=%d (suppressed as backlog)",
+			    s.destTag.c_str(), n);
 		} else {
-			DBG(LogCat::Chat, "youtube list: poll items=%d -> emitting", n);
+			DBG(LogCat::Chat, "youtube list: dest=%s poll items=%d -> emitting", s.destTag.c_str(), n);
 			ProcessChatItems(s.ctx, items, s.liveChatId, s.thirdPartyEmotes, s.canceled);
+		}
+
+		// Same exposure as the streamList loop: an ended chat keeps answering 200 forever, and
+		// none of the error branches above can see it. Checked after this poll's items are
+		// emitted so a final batch is not dropped.
+		const std::string offlineAt = Str(j, "offlineAt");
+		if (!offlineAt.empty()) {
+			EndOnChatOffline(s, offlineAt, "list", err);
+			return;
 		}
 
 		if (CancelableSleep(std::chrono::milliseconds(pollMs), s.canceled)) {
@@ -633,7 +774,8 @@ void RunListPoll(ChatSession &s, std::string &err)
 		}
 	}
 
-	DBG(LogCat::Chat, "youtube list: poll loop exited (canceled=%d)", s.canceled() ? 1 : 0);
+	DBG(LogCat::Chat, "youtube list: dest=%s poll loop exited (canceled=%d)", s.destTag.c_str(),
+	    s.canceled() ? 1 : 0);
 }
 
 } // namespace
@@ -645,10 +787,13 @@ bool YouTubeChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, con
 	// prior connect() on THIS transport might still be unwinding.
 	std::lock_guard<std::mutex> run(runMutex_);
 
-	// No active broadcast -> nothing to poll. Clean no-op (empty err = the hub logs
-	// nothing); chat.state stays connected=false for this platform via the hub.
+	// No active broadcast -> nothing to poll, and nothing here will start one: this transport
+	// gets one connect() per go-live. Terminal rather than silent, or the hub's Connecting
+	// bookend is the last thing written to this destination's health row and sits there for
+	// the rest of the stream. `err` stays empty so the hub still logs nothing.
 	if (channelRef.empty()) {
 		err.clear();
+		EmitChatTerminal(ctx, "youtube", "No active YouTube broadcast to read chat from");
 		return false;
 	}
 	const std::string liveChatId = channelRef;
@@ -658,30 +803,31 @@ bool YouTubeChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, con
 	}
 	stop_.store(false, std::memory_order_release);
 
-	// Release this loop's hold on the account's live-chat refcount on EVERY exit from this
-	// function -- the normal post-loop return, a reconnect give-up, and the unrecoverable
-	// 401 that returns from inside the loop -- so the REST event transport resumes supplying
-	// Super Chat history once the account's LAST chat loop stops. Acquired below only once a
-	// poll succeeds, and `held` keeps the pair balanced whether or not that happened.
+	// Release this loop's hold on THIS DESTINATION's live-chat refcount on EVERY exit from
+	// this function -- the normal post-loop return, a reconnect give-up, and the
+	// unrecoverable 401 that returns from inside the loop -- so the REST event transport
+	// resumes covering this broadcast's Super Chats the moment its chat stops being read.
+	// Acquired below only once a poll succeeds, and `held` keeps the pair balanced whether
+	// or not that happened.
 	struct LiveChatHold {
 		OAuth::YouTubeProvider &p;
-		std::string accountId;
+		OAuth::DestinationId dest;
 		bool held = false;
 
 		void acquire()
 		{
 			if (!held) {
-				p.AddLiveChatRef(accountId);
+				p.AddLiveChatRef(dest);
 				held = true;
 			}
 		}
 		~LiveChatHold()
 		{
 			if (held) {
-				p.ReleaseLiveChatRef(accountId);
+				p.ReleaseLiveChatRef(dest);
 			}
 		}
-	} liveChatHold{owner_, ctx.dest.accountId};
+	} liveChatHold{owner_, ctx.dest};
 
 	// Stop advertising a send target once this loop is done, so a send racing teardown
 	// fails cleanly instead of posting into a broadcast nobody is reading.
@@ -712,33 +858,41 @@ bool YouTubeChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, con
 	};
 
 	Backoff backoff(std::chrono::milliseconds(2000), std::chrono::milliseconds(30000));
-	ChatSession session{owner_,    ctx,       acct,         liveChatId, thirdPartyEmotes,
-			    canceled,  emitState, holdLiveChat, backoff};
+	ChatSession session{owner_,   ctx,       acct,         liveChatId, thirdPartyEmotes,
+			    canceled, emitState, holdLiveChat, backoff,    OAuth::DestinationKey(ctx.dest)};
 
-	// streamList is the default read: .list bills a quota unit per poll, which burned the
-	// whole 10,000-unit daily project budget 13 minutes into the 2026-07-24 broadcast, and
-	// Google documents the push method as the way to stay under quota. .list remains the
+	// streamList is the default read. Both endpoints bill 5 units per request, so the whole
+	// difference is cadence: streamList pays that once per ~10s server-held batch, while
+	// .list pays it once per kDefaultPollMs poll, which across a handful of destinations
+	// exhausts the 10,000-unit daily project budget inside an hour. .list remains the
 	// fallback -- taken when the transcode endpoint is unavailable or when streamList
 	// connects without delivering (kStreamDeadStrikes) -- so a streamList outage costs
 	// quota rather than costing chat. BRAIDCAST_YOUTUBE_STREAMLIST=false forces .list.
 	const bool tryStreamList = Env::Flag("BRAIDCAST_YOUTUBE_STREAMLIST", true);
 	bool fallback = false;
+	// Tail only: the full liveChatId is a broadcast-scoped identifier and this log is something
+	// users paste into issue reports. Enough to tie this session's dest tag to the hub's
+	// connect line without reproducing the id.
+	const std::string chatIdTail = liveChatId.size() > 8 ? liveChatId.substr(liveChatId.size() - 8) : liveChatId;
 	if (tryStreamList) {
-		DBG(LogCat::Chat, "youtube: opening live chat %s via streamList", liveChatId.c_str());
+		DBG(LogCat::Chat, "youtube: dest=%s chat=..%s opening via streamList", session.destTag.c_str(),
+		    chatIdTail.c_str());
 		fallback = RunStreamList(session, err);
 	}
 	if (!tryStreamList || (fallback && !canceled())) {
-		DBG(LogCat::Chat, "youtube: opening live chat %s via liveChatMessages.list", liveChatId.c_str());
+		DBG(LogCat::Chat, "youtube: dest=%s chat=..%s opening via liveChatMessages.list",
+		    session.destTag.c_str(), chatIdTail.c_str());
 		backoff.reset();
 		RunListPoll(session, err);
 	}
 
-	// Only bookend with a clean (false, "") when no fatal re-auth error was raised: a fatal
-	// 401 already emitted (false, reqErr) inside the loop and set `err`, and the hub logs
-	// that -- emitting an empty state after would clobber the reason. A clean cancel / a
-	// terminal chat-ended break leaves `err` empty and gets the bookend, matching the
-	// Twitch/Kick contract (connect() returns false; empty err = the hub logs nothing).
-	if (err.empty()) {
+	// The clean (false, "") bookend belongs only to an exit that reported nothing final -- a
+	// cancel, or a give-up after retries. A loop that ended for good already reported its
+	// terminal state and reason through EndSession, and an empty state after that would
+	// overwrite the one thing the user needs. The flag gates this rather than `err` so a
+	// future terminal branch cannot reintroduce the clobber by forgetting to set `err`;
+	// EndSession sets both together.
+	if (!session.terminal) {
 		emitState(false, "");
 	}
 	return false;

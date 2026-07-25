@@ -5,7 +5,6 @@
 #include "bridge.hpp"
 #include "log.hpp"
 #include "obs_bootstrap.hpp"
-#include "MultistreamEngine.hpp"
 #include "VirtualCamManager.hpp"
 #include "util/async_task.hpp"
 
@@ -284,28 +283,22 @@ obs_hotkey_id g_stopStreamingId = OBS_INVALID_HOTKEY_ID;
 obs_hotkey_id g_startVirtualCamId = OBS_INVALID_HOTKEY_ID;
 obs_hotkey_id g_stopVirtualCamId = OBS_INVALID_HOTKEY_ID;
 
-// Drive the engine start/stop through the SAME path the streaming.start/stop bridge
-// methods use, then mirror their streaming.changed push so the UI updates. Fired on
-// key-down only (pressed==true) from libobs's hotkey thread. The engine's binding
-// list and encoder cache are UI-thread-owned (no locks of their own; every bridge
-// method mutates them on the CEF UI thread), so hop there via AsyncTask::PostToUi --
-// the same marshal the engine's onOutputStopped wiring uses -- instead of driving
-// the engine from the hotkey thread. PostToUi drops the task once the bridge is
-// torn down; the MultistreamAlive() guard covers a task CefShutdown drains after
-// Stop() reset the engine (mirrors EmitMultistreamChanged).
+// Drive the whole-stream lifecycle through Bridge::StartStreamingAll / StopStreamingAll --
+// literally the same functions streaming.start/stop call, so these hotkeys cannot drift from
+// the bridge path again. They previously called MultistreamEngine::StartAllEnabled/StopAll
+// directly while claiming to share that path, which left a hotkey stop with the chat
+// transports and viewer poller still running against broadcasts that had ended.
+//
+// Fired on key-down only (pressed==true) from libobs's hotkey thread. The shared functions
+// marshal to the UI thread themselves (the engine's binding list and encoder cache are
+// UI-thread-owned) and carry the MultistreamAlive() guard plus the streaming.changed push,
+// so nothing is left for these handlers to add.
 void OnStartStreaming(void * /*data*/, obs_hotkey_id /*id*/, obs_hotkey_t * /*hotkey*/, bool pressed)
 {
 	if (!pressed) {
 		return;
 	}
-	AsyncTask::PostToUi([] {
-		if (!ObsBootstrap::MultistreamAlive()) {
-			return;
-		}
-		ObsBootstrap::Multistream().StartAllEnabled();
-		Bridge::EmitEvent(EventNames::kStreamingChanged,
-				  json{{"active", ObsBootstrap::Multistream().AnyLive()}});
-	});
+	Bridge::StartStreamingAll();
 }
 
 void OnStopStreaming(void * /*data*/, obs_hotkey_id /*id*/, obs_hotkey_t * /*hotkey*/, bool pressed)
@@ -313,13 +306,7 @@ void OnStopStreaming(void * /*data*/, obs_hotkey_id /*id*/, obs_hotkey_t * /*hot
 	if (!pressed) {
 		return;
 	}
-	AsyncTask::PostToUi([] {
-		if (!ObsBootstrap::MultistreamAlive()) {
-			return;
-		}
-		ObsBootstrap::Multistream().StopAll();
-		Bridge::EmitEvent(EventNames::kStreamingChanged, json{{"active", false}});
-	});
+	Bridge::StopStreamingAll();
 }
 
 // Drive the virtual camera through the SAME seam the virtualCam.start/stop bridge

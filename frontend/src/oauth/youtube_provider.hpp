@@ -106,22 +106,40 @@ public:
 	// a stream stop drops all of that account's active-broadcast chat + viewer-count
 	// targets. Called per connected account from streaming.stop.
 	void clearActiveBroadcast(const std::string &accountId) override;
+	void clearActiveBroadcastDestination(const DestinationId &dest) override;
 
-	// Balanced per-poll-loop hold on "this account's live chat is being read". While at
-	// least one hold is active the chat forward is the authoritative, real-time source of
-	// Super Chats, so the REST event transport skips its superChatEvents.list query to
-	// avoid emitting a second copy under a different id (the liveChatMessage id and
-	// superChatEvent id do not match, so id-dedupe cannot collapse the pair).
+	// Balanced hold on "this DESTINATION's live chat is being read", one per running chat
+	// poll loop. While a destination's chat is being forwarded, that forward is the
+	// authoritative real-time source of its Super Chats.
 	//
-	// A REFCOUNT per account, not a flag: one account can have several concurrent
-	// broadcasts (orientations), each read by its own poll loop, and a flag would let the
-	// first loop to exit re-enable REST backfill while the others are still forwarding.
-	// Per account rather than per destination because superChatEvents.list is a
-	// CHANNEL-wide read -- there is nothing finer for it to be suppressed against.
-	// Acquire/release must be balanced; YouTubeChat owns exactly one hold per connect().
-	void AddLiveChatRef(const std::string &accountId);
-	void ReleaseLiveChatRef(const std::string &accountId);
-	bool LiveChatActive(const std::string &accountId) const;
+	// A REFCOUNT, not a flag: the chat hub does not join a stopped loop, so an overlapping
+	// re-Start can briefly leave two loops on one destination, and a flag would let the
+	// first to exit clear a hold the other still owns. Acquire/release must be balanced;
+	// YouTubeChat owns exactly one hold per connect().
+	//
+	// Keyed per DESTINATION even though the read it gates is channel-wide: the gate is a
+	// COVERAGE question ("is every live broadcast's chat being read"), which an account-wide
+	// count cannot answer -- one orientation's loop made the count non-zero while a sibling
+	// orientation's Super Chats reached neither the forward nor the REST poll.
+	void AddLiveChatRef(const DestinationId &dest);
+	void ReleaseLiveChatRef(const DestinationId &dest);
+
+	// Should the REST event transport spend a superChatEvents.list request for `accountId`
+	// this pass? Two gates. The request is only 1 unit, so this is not about its unit price --
+	// ungated it ran on a fixed cycle for every connected account whether or not anything was
+	// streaming, which is spend that can never return a result:
+	//
+	//   1) No live broadcast for the account -> NO. A Super Chat exists only inside a live
+	//      chat, so a channel that is not broadcasting has nothing this read can return.
+	//   2) Live -> only when some live destination's chat is NOT being forwarded. With every
+	//      live destination covered the forward already delivers each Super Chat in real
+	//      time, and the REST copy carries a different resource id (superChatEvent vs
+	//      liveChatMessage), so running both double-emits. The moment one live destination
+	//      lacks a chat loop, its Super Chats reach NEITHER path -- so the read must run.
+	//
+	// Stays ONE account-wide request whatever the answer: superChatEvents.list is a
+	// channel-wide read, so a per-destination poll would multiply an identical result.
+	bool ShouldPollSuperChats(const std::string &accountId) const;
 
 	// Record a quota-exhausted verdict from any YouTube Data API response: computes
 	// the next midnight-Pacific reset instant and closes the shared gate until then,
@@ -175,7 +193,7 @@ private:
 		std::string liveChatId;
 		std::string broadcastId;
 	};
-	std::mutex broadcastMutex_;
+	mutable std::mutex broadcastMutex_;
 	std::map<DestinationId, BroadcastState> broadcasts_;
 
 	// Cache-miss recovery for `broadcasts_` (e.g. after a Studio restart mid-stream, or a
@@ -200,9 +218,12 @@ private:
 	bool EnsureActiveBroadcast(OAuthAccount &acct, const std::string &profileUuid, BroadcastState &out,
 				   std::string &err);
 
-	// videos.list liveStreamingDetails.concurrentViewers for ONE broadcast: the single
-	// per-broadcast read.
-	bool ReadBroadcastViewers(OAuthAccount &acct, const std::string &broadcastId, int &out, std::string &err);
+	// videos.list liveStreamingDetails.concurrentViewers for a BATCH of broadcasts: the single
+	// viewer read. `out` is keyed by video id and gains an entry ONLY for an id the response
+	// returned, so an omitted broadcast stays absent instead of reading as zero viewers.
+	// Appends to `out` rather than replacing it, so several chunks accumulate.
+	bool ReadBroadcastViewers(OAuthAccount &acct, const std::vector<std::string> &broadcastIds,
+				  std::map<std::string, int> &out, std::string &err);
 
 	// The assignable videoCategories list, fetched once per process and reused
 	// (it is static content). Guarded because searchCategories runs on worker
@@ -210,11 +231,13 @@ private:
 	std::mutex categoriesMutex_;
 	std::vector<std::pair<std::string, std::string>> categories_; // {id, name}
 
-	// See AddLiveChatRef: per-account count of running live-chat poll loops. Its own mutex
-	// rather than broadcastMutex_ -- the two protect unrelated state and the chat loops
-	// take this one on every announce while metadata applies hold the other.
+	// See AddLiveChatRef: per-destination count of running live-chat poll loops. Its own
+	// mutex rather than broadcastMutex_ -- the two protect unrelated state and the chat loops
+	// take this one on every announce while metadata applies hold the other. ShouldPollSuperChats
+	// reads both, snapshotting under one and releasing it before taking the other, so the two
+	// are never nested and no lock order exists to invert.
 	mutable std::mutex liveChatMutex_;
-	std::map<std::string /*accountId*/, int> liveChatRefs_;
+	std::map<DestinationId, int> liveChatRefs_;
 
 	// Arm the quota gate when a completed response carries a quota-class 403.
 	// Shared tail of the SendAuthed/SendAuthedStreaming wrappers.
@@ -227,7 +250,16 @@ private:
 	// Per-provider-singleton on purpose: the quota is spent per API project, not per
 	// account, so one exhausted account means every YouTube account is dark. Atomic:
 	// armed and read from many worker threads (chat, events, pollers).
-	std::atomic<int64_t> quotaResetEpoch_{0};
+	// Mutable because the lazy seed below runs from the const quota queries: restoring a
+	// persisted verdict is cache-filling, not a change of observable state.
+	mutable std::atomic<int64_t> quotaResetEpoch_{0};
+
+	// Seed quotaResetEpoch_ from the persisted per-account records, once, on first quota
+	// query. Lazy rather than in the constructor: the provider is built during registry
+	// setup, before the config path is necessarily resolvable, and this way the store read
+	// costs nothing until something actually asks about quota.
+	void EnsureQuotaStateLoaded() const;
+	mutable std::once_flag quotaLoadOnce_;
 };
 
 } // namespace OAuth

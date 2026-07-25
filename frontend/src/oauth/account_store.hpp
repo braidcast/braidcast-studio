@@ -42,6 +42,11 @@ public:
 	// stream. No-op if the account was removed. Persists on change.
 	void UpdateReusableStreamId(const std::string &accountId, const std::string &profileUuid,
 				    const std::string &streamId);
+	// Update only the provider's daily-quota reset instant on an existing account
+	// (worker-thread safe; never touches tokens). No-op if the account was removed or the
+	// value is unchanged. See OAuthAccount::quotaResetEpoch: the value is provider-wide, so
+	// the provider writes the same instant to each of its accounts. Persists on change.
+	void SetQuotaReset(const std::string &accountId, int64_t epochSeconds);
 	void Remove(const std::string &accountId);
 	std::map<std::string, OAuthAccount> All();
 

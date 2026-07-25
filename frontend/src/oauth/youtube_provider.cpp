@@ -71,6 +71,18 @@ constexpr const char *kQuotaExhaustedReasons[] = {
 // for a full extra day.
 constexpr int64_t kQuotaResetSlackSec = 300;
 
+// Furthest ahead of now a RESTORED reset instant can plausibly sit. A real one is the next
+// midnight Pacific computed at some moment in the past, so it is at most ~24h out; 26h
+// covers a DST shift plus the slack above. Anything beyond is corrupt or clock-skewed and is
+// discarded rather than honored -- see EnsureQuotaStateLoaded for why failing open is right.
+constexpr int64_t kQuotaResetHorizonSec = 26 * 60 * 60;
+
+// Ids per videos.list request. The endpoint takes a comma-separated id list capped at 50 (per
+// the Data API reference) and bills one unit per REQUEST regardless, so batching up to this
+// many broadcasts costs what a single one used to. At ~11 characters per id the longest URL
+// this can build is a few hundred bytes, far inside any practical limit.
+constexpr size_t kVideosListIdCap = 50;
+
 using JsonUtil::Bool;
 using JsonUtil::Obj;
 using JsonUtil::ParseJson;
@@ -218,8 +230,44 @@ YouTubeErrorClass ClassifyYouTubeError(long status, const std::string &reason)
 	return YouTubeErrorClass::Other;
 }
 
+void YouTubeProvider::EnsureQuotaStateLoaded() const
+{
+	std::call_once(quotaLoadOnce_, [this] {
+		// MAXIMUM across this provider's accounts, not the first found: the verdict is
+		// provider-wide and written to every account, so the newest surviving record is the
+		// authoritative one even if another was disconnected or written before a crash.
+		int64_t stored = 0;
+		for (const auto &entry : Accounts().All()) {
+			if (entry.second.providerId == id() && entry.second.quotaResetEpoch > stored) {
+				stored = entry.second.quotaResetEpoch;
+			}
+		}
+		if (stored <= 0) {
+			return;
+		}
+		// FAIL OPEN on anything that cannot be a real reset instant. A legitimate value was
+		// computed as "the next midnight Pacific" at some past moment, so it can never sit
+		// more than a day (plus slack) ahead of now; further out means a corrupt, hand-edited,
+		// or clock-skewed record, and honoring it would silence every YouTube feature for as
+		// long as it says. One wasted request is the cheaper error.
+		const int64_t now = static_cast<int64_t>(std::time(nullptr));
+		if (stored > now + kQuotaResetHorizonSec) {
+			HostLog("[oauth] YouTube stored quota reset is implausibly far ahead; ignoring it");
+			return;
+		}
+		if (stored <= now) {
+			return; // already elapsed: nothing to restore
+		}
+		quotaResetEpoch_.store(stored, std::memory_order_release);
+		HostLog("[oauth] YouTube API daily quota still exhausted from a previous session; "
+			"suspending YouTube requests until " +
+			QuotaResetLocalTime() + " local (midnight Pacific)");
+	});
+}
+
 void YouTubeProvider::NoteQuotaExhausted(const std::string &reason)
 {
+	EnsureQuotaStateLoaded();
 	const int64_t now = static_cast<int64_t>(std::time(nullptr));
 	int64_t current = quotaResetEpoch_.load(std::memory_order_acquire);
 	if (current > now) {
@@ -229,12 +277,22 @@ void YouTubeProvider::NoteQuotaExhausted(const std::string &reason)
 	if (!quotaResetEpoch_.compare_exchange_strong(current, reset, std::memory_order_acq_rel)) {
 		return; // another worker recorded this episode first
 	}
+	// Persist to EVERY account of this provider, so the next launch stands down without
+	// re-learning the verdict by spending a request that is guaranteed to fail. Field-scoped
+	// per account (SetQuotaReset) rather than a record write-back: this runs on whichever
+	// worker received the 403.
+	for (const auto &entry : Accounts().All()) {
+		if (entry.second.providerId == id()) {
+			Accounts().SetQuotaReset(entry.first, reset);
+		}
+	}
 	HostLog("[oauth] YouTube API daily quota exhausted (" + reason + "); suspending YouTube requests until " +
 		QuotaResetLocalTime() + " local (midnight Pacific)");
 }
 
 bool YouTubeProvider::QuotaExhausted(std::chrono::milliseconds *retryIn) const
 {
+	EnsureQuotaStateLoaded();
 	const int64_t reset = quotaResetEpoch_.load(std::memory_order_acquire);
 	const int64_t now = static_cast<int64_t>(std::time(nullptr));
 	if (reset <= now) {
@@ -352,16 +410,22 @@ void YouTubeProvider::clearActiveBroadcast(const std::string &accountId)
 	}
 }
 
-void YouTubeProvider::AddLiveChatRef(const std::string &accountId)
+void YouTubeProvider::clearActiveBroadcastDestination(const DestinationId &dest)
 {
-	const std::lock_guard<std::mutex> guard(liveChatMutex_);
-	++liveChatRefs_[accountId];
+	const std::lock_guard<std::mutex> guard(broadcastMutex_);
+	broadcasts_.erase(dest);
 }
 
-void YouTubeProvider::ReleaseLiveChatRef(const std::string &accountId)
+void YouTubeProvider::AddLiveChatRef(const DestinationId &dest)
 {
 	const std::lock_guard<std::mutex> guard(liveChatMutex_);
-	auto it = liveChatRefs_.find(accountId);
+	++liveChatRefs_[dest];
+}
+
+void YouTubeProvider::ReleaseLiveChatRef(const DestinationId &dest)
+{
+	const std::lock_guard<std::mutex> guard(liveChatMutex_);
+	auto it = liveChatRefs_.find(dest);
 	if (it == liveChatRefs_.end()) {
 		return;
 	}
@@ -370,11 +434,31 @@ void YouTubeProvider::ReleaseLiveChatRef(const std::string &accountId)
 	}
 }
 
-bool YouTubeProvider::LiveChatActive(const std::string &accountId) const
+bool YouTubeProvider::ShouldPollSuperChats(const std::string &accountId) const
 {
+	// Snapshot the account's live destinations, then release broadcastMutex_ before taking
+	// liveChatMutex_: the two are never held together, so no lock order exists to invert.
+	std::vector<DestinationId> liveDestinations;
+	{
+		const std::lock_guard<std::mutex> guard(broadcastMutex_);
+		for (const auto &entry : broadcasts_) {
+			if (entry.first.accountId == accountId && !entry.second.broadcastId.empty()) {
+				liveDestinations.push_back(entry.first);
+			}
+		}
+	}
+	if (liveDestinations.empty()) {
+		return false; // not broadcasting: nothing this read could return
+	}
+
 	const std::lock_guard<std::mutex> guard(liveChatMutex_);
-	auto it = liveChatRefs_.find(accountId);
-	return it != liveChatRefs_.end() && it->second > 0;
+	for (const DestinationId &dest : liveDestinations) {
+		auto it = liveChatRefs_.find(dest);
+		if (it == liveChatRefs_.end() || it->second <= 0) {
+			return true; // this broadcast's Super Chats have no other path in
+		}
+	}
+	return false;
 }
 
 json YouTubeProvider::capabilityJson() const
@@ -1129,16 +1213,35 @@ bool YouTubeProvider::EnsureActiveBroadcast(OAuthAccount &acct, const std::strin
 	return true;
 }
 
-// Read one broadcast's concurrent viewers (videos.list liveStreamingDetails). The single
-// per-broadcast read, so the parse and the error contract exist once.
-bool YouTubeProvider::ReadBroadcastViewers(OAuthAccount &acct, const std::string &broadcastId, int &out,
-					   std::string &err)
+// Read concurrent viewers for a BATCH of broadcasts (videos.list liveStreamingDetails).
+// videos.list accepts a comma-separated id list and bills per REQUEST, not per id, so an
+// account streaming several orientations costs one unit instead of one per broadcast --
+// videos.list was this project's second-largest quota consumer purely through repetition.
+//
+// `out` is keyed by video id and holds ONLY the ids the response actually returned. An id
+// YouTube omits (ended, deleted, not visible to this account) must stay ABSENT rather than
+// appear as 0: downstream, absent means "no figure" while 0 means "live with no viewers", and
+// collapsing the two would report a dead broadcast as a live one with an empty audience.
+// Attribution is by the item's own id, never by response order, which the API does not
+// promise to preserve.
+bool YouTubeProvider::ReadBroadcastViewers(OAuthAccount &acct, const std::vector<std::string> &broadcastIds,
+					   std::map<std::string, int> &out, std::string &err)
 {
-	out = 0;
+	if (broadcastIds.empty()) {
+		return true;
+	}
+
+	std::string ids;
+	for (const std::string &id : broadcastIds) {
+		if (!ids.empty()) {
+			ids += ",";
+		}
+		ids += id;
+	}
 
 	Http::HttpReq req;
 	req.method = "GET";
-	req.url = std::string(kVideosUrl) + "?part=liveStreamingDetails&id=" + Http::UrlEncode(broadcastId);
+	req.url = std::string(kVideosUrl) + "?part=liveStreamingDetails&id=" + Http::UrlEncode(ids);
 
 	Http::HttpResponse resp;
 	if (!SendAuthed(acct, req, resp, err)) {
@@ -1149,18 +1252,32 @@ bool YouTubeProvider::ReadBroadcastViewers(OAuthAccount &acct, const std::string
 		return false;
 	}
 
-	const json item = FirstItem(ParseJson(resp.body));
-	if (item.is_object() && item.contains("liveStreamingDetails") && item["liveStreamingDetails"].is_object()) {
-		// concurrentViewers is a STRING in the API ("absent" before/after the live
-		// window). Parse tolerantly; absent/garbage -> 0.
-		const std::string cv = Str(item["liveStreamingDetails"], "concurrentViewers");
-		if (!cv.empty()) {
-			try {
-				out = std::stoi(cv);
-			} catch (const std::exception &) {
-				out = 0;
+	const json parsed = ParseJson(resp.body);
+	if (!parsed.is_object() || !parsed.contains("items") || !parsed["items"].is_array()) {
+		return true; // no items -> every requested id stays absent
+	}
+	for (const json &item : parsed["items"]) {
+		if (!item.is_object()) {
+			continue;
+		}
+		const std::string videoId = Str(item, "id");
+		if (videoId.empty()) {
+			continue; // unattributable to a destination; dropping it keeps that one absent
+		}
+		int count = 0;
+		if (item.contains("liveStreamingDetails") && item["liveStreamingDetails"].is_object()) {
+			// concurrentViewers is a STRING in the API (absent before/after the live
+			// window). Parse tolerantly; absent/garbage -> 0.
+			const std::string cv = Str(item["liveStreamingDetails"], "concurrentViewers");
+			if (!cv.empty()) {
+				try {
+					count = std::stoi(cv);
+				} catch (const std::exception &) {
+					count = 0;
+				}
 			}
 		}
+		out[videoId] = count < 0 ? 0 : count;
 	}
 	return true;
 }
@@ -1199,28 +1316,47 @@ bool YouTubeProvider::viewerCounts(OAuthAccount &acct, std::map<DestinationId, i
 		}
 	}
 
-	// One row per DISTINCT broadcast. Belt-and-braces against two destinations naming one
-	// broadcast (only reachable if two profiles somehow remembered the same ingest stream):
-	// reporting it twice would double-bill quota on the read AND double-count those viewers
-	// in the caller's sum, so the second destination is skipped rather than mirrored.
-	std::set<std::string> readBroadcasts;
-	bool any = false;
+	// DISTINCT broadcast ids, in one batch. The dedupe is belt-and-braces against two
+	// destinations naming one broadcast (only reachable if two profiles somehow remembered the
+	// same ingest stream): reporting it twice would double-count those viewers in the caller's
+	// sum. The first destination claiming an id keeps it, matching the previous behavior.
+	std::vector<std::pair<DestinationId, std::string>> claims; // one entry per distinct broadcast
+	std::set<std::string> seen;
 	for (const auto &target : targets) {
-		if (!readBroadcasts.insert(target.second).second) {
+		if (!seen.insert(target.second).second) {
 			continue; // this broadcast is already represented by an earlier destination
 		}
-		int count = 0;
-		std::string readErr;
-		if (!ReadBroadcastViewers(acct, target.second, count, readErr)) {
-			// One broadcast failing (or the quota gate refusing) must not discard the
-			// siblings that did read -- keep the first error for the caller's log and carry
-			// on, so a partial total still beats no total at all.
-			if (err.empty()) {
-				err = readErr;
-			}
-			continue;
+		claims.emplace_back(target.first, target.second);
+	}
+
+	// Chunked because videos.list caps its id list (50 per request, per the API reference);
+	// with one broadcast per live orientation a real setup never reaches one chunk, but a
+	// caller cannot be made to care. A chunk that fails leaves ITS ids absent from `counts`
+	// and therefore its destinations absent from `out`, exactly as a single failed read did.
+	std::map<std::string, int> counts;
+	for (size_t offset = 0; offset < claims.size(); offset += kVideosListIdCap) {
+		const size_t end = std::min(offset + kVideosListIdCap, claims.size());
+		std::vector<std::string> chunk;
+		chunk.reserve(end - offset);
+		for (size_t i = offset; i < end; ++i) {
+			chunk.push_back(claims[i].second);
 		}
-		out[target.first] = count < 0 ? 0 : count;
+		std::string readErr;
+		if (!ReadBroadcastViewers(acct, chunk, counts, readErr) && err.empty()) {
+			// One chunk failing (or the quota gate refusing) must not discard the ids that
+			// did read -- keep the first error for the caller's log and carry on, so a
+			// partial total still beats no total at all.
+			err = readErr;
+		}
+	}
+
+	bool any = false;
+	for (const auto &claim : claims) {
+		const auto found = counts.find(claim.second);
+		if (found == counts.end()) {
+			continue; // not returned -> no figure for this destination; leave it absent
+		}
+		out[claim.first] = found->second;
 		any = true;
 	}
 	// `err` is deliberately LEFT SET on a partial read: returning true says "these rows are

@@ -6,8 +6,8 @@
 
 #include "settings/GeneralSettings.hpp"
 #include "app_icon.hpp"
+#include "bridge.hpp" // Bridge::StartStreamingAll / StopStreamingAll
 #include "log.hpp"
-#include "multistream/MultistreamEngine.hpp"
 #include "multistream/VirtualCamManager.hpp"
 #include "obs_bootstrap.hpp"
 
@@ -130,10 +130,10 @@ void TrayIcon::ShowMenu()
 		}
 		break;
 	case CmdStartAll:
-		ObsBootstrap::Multistream().StartAllEnabled();
+		Bridge::StartStreamingAll();
 		break;
 	case CmdStopAll:
-		ObsBootstrap::Multistream().StopAll();
+		Bridge::StopStreamingAll();
 		break;
 	case CmdVirtualCam:
 		if (vcamActive) {

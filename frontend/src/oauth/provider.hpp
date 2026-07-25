@@ -121,6 +121,19 @@ struct OAuthAccount {
 	// scoped to one account -- this is the profile half of a DestinationId, not a second
 	// keying scheme. An empty key is the account-wide destination.
 	std::map<std::string /*profileUuid*/, std::string /*streamId*/> reusableStreamIds;
+	// Absolute epoch seconds when this provider's exhausted daily API quota next resets
+	// (0 = no exhaustion recorded). Persisted so a relaunch does not have to re-learn the
+	// verdict by spending a request that is guaranteed to fail -- with the gate held only in
+	// memory, every launch burned one doomed request per account per source.
+	//
+	// The value is PROVIDER-WIDE, not per-account: quota is spent per API project, so one
+	// exhausted account means every account on that provider is dark. It is stored on each
+	// account record only because that is where per-provider state already lives; the
+	// provider writes the same instant to all of its accounts and takes the MAXIMUM back on
+	// load, so any single surviving record restores the verdict. Absolute rather than a
+	// duration, which is what makes it self-clearing: once the instant passes it simply
+	// reads as not-exhausted, with no reset step and no relaunch.
+	int64_t quotaResetEpoch = 0;
 };
 
 // The account's stable identity: providerId + ":" + userId. Pure function of the
@@ -164,6 +177,14 @@ struct DestinationId {
 inline std::string DestinationKey(const DestinationId &d)
 {
 	return d.profileUuid.empty() ? d.accountId : d.accountId + "@" + d.profileUuid;
+}
+
+// The account-wide destination for `accountId` (empty profileUuid). Named so an
+// account-scoped surface that has to hand a DestinationId to a destination-keyed API
+// states that intent, instead of spelling the empty profile half out per call site.
+inline DestinationId AccountDestination(const std::string &accountId)
+{
+	return DestinationId{accountId, std::string()};
 }
 
 // The runtime context the framework hands an AuthStrategy for one interactive
@@ -386,7 +407,7 @@ public:
 		if (!viewerCount(acct, count, err)) {
 			return false;
 		}
-		out[DestinationId{AccountId(acct), std::string()}] = count;
+		out[AccountDestination(AccountId(acct))] = count;
 		return true;
 	}
 
@@ -422,6 +443,18 @@ public:
 	// scoped rather than destination-scoped because a stop tears down all of the account's
 	// destinations at once, and the caller iterates the account store.
 	virtual void clearActiveBroadcast(const std::string &accountId) { (void)accountId; }
+
+	// Drop ONE destination's active-broadcast state, for when that destination's own output
+	// ends while the account's other destinations keep streaming. Distinct from the
+	// account-wide sibling above rather than folded into it: an empty profileUuid is already
+	// a real address (the account-wide destination), so it cannot double as a wildcard.
+	// Default no-op; YouTube overrides. Must be idempotent -- an output can report its end
+	// twice (a deliberate stop whose libobs stop signal also fires).
+	//
+	// Leaving a dead destination cached is not merely stale: the viewer poller bills one
+	// videos.list per cached broadcast every cycle, so an uncleared entry spends quota on a
+	// stream that has ended for as long as the session lasts.
+	virtual void clearActiveBroadcastDestination(const DestinationId &dest) { (void)dest; }
 
 protected:
 	// Stamp the per-request auth headers onto `r`, called by SendAuthed for each attempt.

@@ -176,6 +176,7 @@ MultistreamEngine::~MultistreamEngine()
 	 * null). The owner runs StopAll explicitly before destroying us anyway. */
 	onStatusChanged = nullptr;
 	onOutputStopped = nullptr;
+	onOutputEnded = nullptr;
 	onLiveStateChanged = nullptr;
 	StopAll();
 	os_inhibit_sleep_destroy(sleepInhibit);
@@ -537,6 +538,9 @@ void MultistreamEngine::StopOutput(const std::string &bindingUuid)
 	}
 	UpdateSleepInhibit();
 	NotifyChanged();
+	if (onOutputEnded) {
+		onOutputEnded(bindingUuid);
+	}
 }
 
 void MultistreamEngine::StartAllEnabled()
@@ -559,9 +563,11 @@ void MultistreamEngine::StopAll()
 	/* Collect raw handles under the lock, then stop outside it (obs_output_stop
 	 * may fire "stop" synchronously -> OnOutputStop -> re-lock -> deadlock). */
 	std::vector<obs_output_t *> toStop;
+	std::vector<std::string> ended;
 	{
 		std::lock_guard<std::mutex> lock(liveMutex);
 		for (auto &lo : live) {
+			ended.push_back(lo->bindingUuid);
 			if (lo->output) {
 				toStop.push_back(lo->output);
 			}
@@ -582,6 +588,14 @@ void MultistreamEngine::StopAll()
 	/* Encoders are released when the handler is destroyed or rebuilt; keep the
 	 * cache so a quick restart reuses them, but they hold no output refs now. */
 	NotifyChanged();
+	/* Report each ending here too: the tray "Stop all" and the stop hotkey call StopAll
+	 * directly rather than through streaming.stop, so this is their only chance to release
+	 * per-destination state. */
+	if (onOutputEnded) {
+		for (const std::string &bindingUuid : ended) {
+			onOutputEnded(bindingUuid);
+		}
+	}
 }
 
 bool MultistreamEngine::IsLive(const std::string &bindingUuid) const
@@ -810,11 +824,13 @@ void MultistreamEngine::OnOutputStop(void *data, calldata_t *cd)
 	int code = (int)calldata_int(cd, "code");
 	const char *lastError = calldata_string(cd, "last_error");
 	std::string canvasUuid;
+	std::string bindingUuid;
 	{
 		std::lock_guard<std::mutex> lock(self->liveMutex);
 		for (auto &lo : self->live) {
 			if (lo->output == out) {
 				canvasUuid = lo->canvasUuid;
+				bindingUuid = lo->bindingUuid;
 				/* A non-success code means the stream dropped or never
 				 * connected (e.g. a bad key); surface it as Error. */
 				if (code != OBS_OUTPUT_SUCCESS) {
@@ -850,6 +866,12 @@ void MultistreamEngine::OnOutputStop(void *data, calldata_t *cd)
 	 * UI thread (where every CanvasRuntime reconcile runs) and re-runs Reconcile. */
 	if (self->onOutputStopped && !canvasUuid.empty()) {
 		self->onOutputStopped(canvasUuid);
+	}
+	/* The unrequested-stop route into onOutputEnded: a dropped or platform-ended stream
+	 * never reaches StopOutput, and its per-destination state would otherwise stay cached
+	 * (and billed) for the rest of the session. */
+	if (self->onOutputEnded && !bindingUuid.empty()) {
+		self->onOutputEnded(bindingUuid);
 	}
 }
 

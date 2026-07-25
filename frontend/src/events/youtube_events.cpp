@@ -95,16 +95,14 @@ void YouTubeEvents::collect(const EventContext &ctx, OAuth::OAuthAccount &acct,
 
 	// 1) Super Chats (and Super Stickers, which superChatEvents also reports). Each item
 	//    carries its own event id + a snippet with the amount/currency/comment/supporter.
-	//    Only when NOT live: during a broadcast the chat forward supplies these in real
-	//    time under the liveChatMessage id, and the REST superChatEvent id differs, so
-	//    running both would emit each Super Chat twice. Splitting by live-state keeps the
-	//    paths disjoint. Residual edge (acceptable): connecting mid-broadcast won't
-	//    REST-backfill that stream's Super Chats from before connect -- the live forward
-	//    only catches ones from connect-time onward.
-	//    Scoped to THIS account: superChatEvents.list is a channel-wide read, so only that
-	//    channel's own live chats can stand in for it. A second YouTube account going live
-	//    used to suppress this account's backfill too.
-	if (!provider_->LiveChatActive(OAuth::AccountId(acct))) {
+	//    ShouldPollSuperChats owns the whole decision (see its contract): the account must be
+	//    broadcasting AND some live destination's chat must be unread before this request is
+	//    worth its quota unit -- ungated it polled channels that were not streaming, where the
+	//    read cannot return anything.
+	//    Residual edge (acceptable): connecting mid-broadcast won't REST-backfill that
+	//    stream's Super Chats from before connect -- the live forward only catches ones from
+	//    connect-time onward.
+	if (provider_->ShouldPollSuperChats(OAuth::AccountId(acct))) {
 		json j;
 		const std::string url =
 			std::string(kSuperChatEventsUrl) + "?part=snippet&maxResults=" + std::to_string(kMaxResults);

@@ -37,6 +37,7 @@
 #include "frontend_callbacks.hpp"
 #include "log.hpp"
 #include "chat/channel_stats_poller.hpp"
+#include "chat/chat_hub.hpp" // Chat::BindingDestination
 #include "events/event_hub.hpp"
 #include "events/event_store.hpp"
 #include "events/transport_health.hpp"
@@ -52,6 +53,7 @@
 #include "multistream/StreamMetaStore.hpp"
 #include "multistream/StreamProfileStore.hpp"
 #include "multistream/VirtualCamManager.hpp"
+#include "oauth/account_store.hpp"
 #include "oauth/registry.hpp"
 #include "overlay/overlay_server.hpp"
 #include "overlay/overlay_store.hpp"
@@ -979,6 +981,37 @@ bool ObsBootstrap::Start()
 		AsyncTask::PostToUi([canvasUuid] {
 			if (g_canvasRuntime) {
 				g_canvasRuntime->Reconcile(canvasUuid);
+			}
+		});
+	};
+
+	// Release the platform's per-destination live state as soon as THIS binding's output
+	// ends, instead of waiting for the account-wide clear that only streaming.stop performs:
+	// while a destination stays cached the viewer poller keeps spending one videos.list per
+	// cycle on a broadcast that has ended, for the rest of the session. Only the ended
+	// destination is cleared -- the account's sibling orientations are still live.
+	// Marshaled because an unrequested stop reports from the libobs output thread while the
+	// binding/profile stores are UI-thread-owned; the erase it performs is idempotent, which
+	// is what makes a doubled report (deliberate stop + its stop signal) harmless.
+	g_multistream->onOutputEnded = [](const std::string &bindingUuid) {
+		AsyncTask::PostToUi([bindingUuid] {
+			if (!MultistreamAlive()) {
+				return;
+			}
+			const OutputBinding *b = OutputBindings().Bindings().Find(bindingUuid);
+			if (!b) {
+				return; // already removed; its destination went with the binding
+			}
+			OAuth::DestinationId dest;
+			if (!Chat::BindingDestination(*b, dest)) {
+				return;
+			}
+			const std::optional<OAuth::OAuthAccount> acct = OAuth::Accounts().Get(dest.accountId);
+			if (!acct) {
+				return;
+			}
+			if (OAuth::StreamProvider *provider = OAuth::Registry().Get(acct->providerId)) {
+				provider->clearActiveBroadcastDestination(dest);
 			}
 		});
 	};
@@ -3431,6 +3464,9 @@ void ObsBootstrap::Stop(void (*drainCefTasks)())
 		// Same rationale: StopAll's async stop fires UpdateSleepInhibit -> onLiveStateChanged,
 		// which would post a priority re-pin that outlives this reset. Disconnect it here.
 		g_multistream->onLiveStateChanged = nullptr;
+		// Same again for the per-destination release: the stores it reads are cleared just
+		// below, and nothing needs its quota saved while the process is exiting.
+		g_multistream->onOutputEnded = nullptr;
 		g_multistream->StopAll();
 		g_multistream.reset();
 		// The publish seam is gone; nothing is live once the engine is down.

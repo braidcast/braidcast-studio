@@ -37,6 +37,7 @@ json AccountToJson(const OAuthAccount &a)
 		{"audienceHidden", a.audienceHidden},
 		{"audienceUpdatedNs", a.audienceUpdatedNs},
 		{"reusableStreamIds", a.reusableStreamIds},
+		{"quotaResetEpoch", a.quotaResetEpoch},
 	};
 }
 
@@ -60,6 +61,13 @@ OAuthAccount AccountFromJson(const json &j)
 	a.audienceKind = AudienceKindFromName(j.value("audienceKind", std::string()));
 	a.audienceHidden = j.value("audienceHidden", false);
 	a.audienceUpdatedNs = j.value("audienceUpdatedNs", static_cast<int64_t>(0));
+	// Tolerant like every other field: a hand-edited or mis-typed value must degrade to "no
+	// exhaustion recorded" rather than throw out of a load meant to degrade to empty. Failing
+	// open here is the cheap direction -- a wrong "fine" costs one request, a wrong
+	// "exhausted" would silence every YouTube feature for up to a day.
+	if (const auto q = j.find("quotaResetEpoch"); q != j.end() && q->is_number_integer()) {
+		a.quotaResetEpoch = q->get<int64_t>();
+	}
 	// A record written before ingest streams became per-destination carries a single bare
 	// "reusableStreamId". It cannot be attributed to a stream profile, and guessing an owner
 	// would hand one destination a stream another is already bound to, so it is DISCARDED:
@@ -300,6 +308,23 @@ void AccountStore::UpdateReusableStreamId(const std::string &accountId, const st
 		return;
 	}
 	ids[profileUuid] = streamId;
+	SaveLocked();
+}
+
+void AccountStore::SetQuotaReset(const std::string &accountId, int64_t epochSeconds)
+{
+	// Field-scoped for the same reason as UpdateAudience: this is reached from whichever
+	// worker thread happened to receive the quota-exhausted response, holding no record of
+	// its own, and a whole-record write-back could clobber a token a concurrent refresh
+	// rotated. Touch only the verdict on the CURRENT stored record, and never re-insert a
+	// removed account.
+	const std::lock_guard<std::mutex> guard(mutex_);
+	EnsureLoadedLocked();
+	auto it = accounts_.find(accountId);
+	if (it == accounts_.end() || it->second.quotaResetEpoch == epochSeconds) {
+		return;
+	}
+	it->second.quotaResetEpoch = epochSeconds;
 	SaveLocked();
 }
 

@@ -126,6 +126,18 @@ public:
 	 * while an output was still async-stopping drops its mix once the stop completes. */
 	std::function<void(const std::string &canvasUuid)> onOutputStopped;
 
+	/* Invoked with a binding's uuid once its output has ENDED, by every route an output
+	 * can end: a deliberate StopOutput, a StopAll, and an unrequested terminal stop off
+	 * the libobs stop signal. A consumer releasing per-destination state needs all three
+	 * -- a stream that drops on its own leaks exactly as much as one the user stops.
+	 *
+	 * Fires from the output thread in the unrequested case, so the target must marshal
+	 * before touching UI-thread state, and MUST be idempotent: a deliberate stop whose
+	 * stop signal also fires reports the same ending twice. Distinct from
+	 * onOutputStopped, which is the canvas-mix reconcile hook and fires on one route
+	 * only; widening that one would change how often CanvasRuntime reconciles. */
+	std::function<void(const std::string &bindingUuid)> onOutputEnded;
+
 	/* Invoked (possibly off the libobs thread, from the output start/stop signal
 	 * handlers) at every live-state transition -- the same seam UpdateSleepInhibit
 	 * fires on. The bootstrap uses it to re-pin the process priority to the live
