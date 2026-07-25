@@ -1,7 +1,6 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import { obs, type ViewerCounts, type ChatPlatform } from "$lib/api/bridge";
-import { EV } from "$lib/utils/eventNames";
+  import type { ChatPlatform } from "$lib/api/bridge";
   import PageHeader from "$lib/ui/PageHeader.svelte";
   import EmptyState from "$lib/ui/EmptyState.svelte";
   import { PLATFORM_COLORS, PLATFORM_LABELS, PLATFORM_ORDER } from "$lib/theme/platformColors";
@@ -19,6 +18,7 @@ import { EV } from "$lib/utils/eventNames";
     sparkArea,
   } from "$lib/utils/statsMeter";
   import { statsStore } from "$lib/stores/statsStore.svelte";
+  import { viewerCountStore } from "$lib/stores/viewerCountStore.svelte";
 
   // Live performance view. stats.get has no push; the shared 1 Hz store owns the
   // interval. This page subscribes while mounted (App renders it conditionally, so
@@ -110,34 +110,21 @@ import { EV } from "$lib/utils/eventNames";
   const SW = 100;
   const SH = 26;
 
-  // Aggregate viewer count (Phase 9.0), pushed via viewers.changed while live.
-  let viewers = $state<ViewerCounts | null>(null);
-  // viewers.changed only pushes while live and never sends a final zero, so clear
-  // on stream-stop; otherwise the TOTAL + per-platform cards (live-only) keep the
-  // last counts until navigation. Mirrors StudioPage's streaming.changed clear.
-  $effect(() => {
-    const offViewers = obs.on(EV.viewersChanged, (p) => (viewers = p));
-    const offStreaming = obs.on(EV.streamingChanged, (s) => {
-      if (!s.active) viewers = null;
-    });
-    return () => {
-      offViewers();
-      offStreaming();
-    };
-  });
+  // Aggregate viewer counts (Phase 9.0) from the shared store, which owns the single
+  // viewers.changed subscription and the stream-stop clear. Subscribed only while
+  // mounted (App renders this page conditionally), so leaving releases this consumer.
+  const viewerTotal = $derived(viewerCountStore.total);
+  $effect(() => viewerCountStore.subscribe());
 
-  // One per-platform card for each platform reporting a count (stable order). The host
-  // emits per accountId ("providerId:userId"); sum by providerId so two accounts on one
-  // platform add into a single card.
+  // One card per platform that reported, in PLATFORM_ORDER. The store owns the
+  // account -> platform sum; this adds only the presentation the store has no business
+  // knowing. A platform absent from the map reported nothing and gets no card, which is
+  // why the membership test is `has` and not a truthiness check on the figure.
   let viewerCards = $derived.by<{ p: ChatPlatform; label: string; color: string; v: number }[]>(() => {
-    const per: Partial<Record<ChatPlatform, number>> = {};
-    for (const [accountId, n] of Object.entries(viewers?.perAccount ?? {})) {
-      const providerId = accountId.split(":")[0] as ChatPlatform;
-      per[providerId] = (per[providerId] ?? 0) + n;
-    }
+    const per = viewerCountStore.perPlatform;
     return (PLATFORM_ORDER as readonly ChatPlatform[])
-      .filter((p) => per[p] !== undefined)
-      .map((p) => ({ p, label: PLATFORM_LABELS[p], color: PLATFORM_COLORS[p], v: per[p] ?? 0 }));
+      .filter((p) => per.has(p))
+      .map((p) => ({ p, label: PLATFORM_LABELS[p], color: PLATFORM_COLORS[p], v: per.get(p) ?? 0 }));
   });
 </script>
 
@@ -169,7 +156,7 @@ import { EV } from "$lib/utils/eventNames";
     <div class="vcards">
       <div class="metric">
         <span class="metric-k">TOTAL</span>
-        <span class="metric-v">{viewers ? viewers.total.toLocaleString() : "—"}</span>
+        <span class="metric-v">{viewerTotal !== null ? viewerTotal.toLocaleString() : "—"}</span>
         <span class="metric-u">concurrent · live only</span>
       </div>
       {#each viewerCards as c (c.p)}

@@ -5,7 +5,7 @@
   // only — the caller owns what happens onSelect (the bind action). The option-row
   // rendering (avatar / name / platform label + color) is defined ONCE here.
   import Avatar from "$lib/ui/Avatar.svelte";
-  import { PLATFORM_COLORS, PLATFORM_LABELS } from "$lib/theme/platformColors";
+  import { PLATFORM_COLORS, PLATFORM_LABELS, platformKey } from "$lib/theme/platformColors";
   import { oauthStore } from "$lib/stores/oauthStore.svelte";
   import type { StreamProfileInfo } from "$lib/api/bridge";
 
@@ -42,12 +42,12 @@
   }
   // Brand accent for the profile's platform; muted for custom/WHIP with no brand color.
   function platformColor(p: StreamProfileInfo): string {
-    return PLATFORM_COLORS[p.platform.trim().toLowerCase()] ?? "var(--color-muted)";
+    return PLATFORM_COLORS[platformKey(p.platform)] ?? "var(--color-muted)";
   }
   // The destination detail line: the full service string (e.g. "YouTube - RTMPS"),
   // falling back to the brand label or the raw platform.
   function platformLabel(p: StreamProfileInfo): string {
-    const key = p.platform.trim().toLowerCase();
+    const key = platformKey(p.platform);
     return p.serviceLabel?.trim() || PLATFORM_LABELS[key] || p.platform || "Unknown";
   }
 

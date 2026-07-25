@@ -60,7 +60,6 @@ void EventHub::StartAccount(const std::string &accountId, const OAuth::OAuthAcco
 			hadPrev = true;
 		}
 		Active a;
-		a.providerId = providerId;
 		a.transport = transport;
 		a.stop = stop;
 		active_[accountId] = std::move(a);
@@ -111,15 +110,18 @@ void EventHub::StartAccount(const std::string &accountId, const OAuth::OAuthAcco
 			}
 			Ingest(stamped);
 		};
-		// Route health transitions to the shared aggregator, keyed by platform. Dropped
-		// once the generation stops so a late report can't override the Disconnected that
-		// StopAccount/StopAll writes as the authoritative terminal.
-		ctx.reportHealth = [providerId, stop](Transports::TransportHealth::State st,
-						      const std::string &healthErr) {
+		// Route health transitions to the shared aggregator, keyed by this ACCOUNT's
+		// account-wide destination -- the hub runs one event transport per account, and a
+		// platform-wide id lets two accounts on one platform overwrite each other's state.
+		// Dropped once the generation stops so a late report can't override the Disconnected
+		// that StopAccount/StopAll writes as the authoritative terminal.
+		const std::string healthId = Transports::EventsTransportId(OAuth::AccountDestination(accountId));
+		ctx.reportHealth = [healthId, stop](Transports::TransportHealth::State st,
+						    const std::string &healthErr) {
 			if (stop->load(std::memory_order_acquire)) {
 				return;
 			}
-			Transports::Health().Report(Transports::EventsTransportId(providerId), st, healthErr);
+			Transports::Health().Report(healthId, st, healthErr);
 		};
 
 		// 1) One-shot REST backfill: dedupe each result into the store, then emit ONE
@@ -269,7 +271,7 @@ void EventHub::StopAccount(const std::string &accountId)
 	}
 	// Authoritative terminal for this account's health (its worker's late reports are
 	// now dropped by the set generation flag and cannot override this).
-	Transports::Health().Report(Transports::EventsTransportId(a.providerId),
+	Transports::Health().Report(Transports::EventsTransportId(OAuth::AccountDestination(accountId)),
 				    Transports::TransportHealth::State::Disconnected);
 }
 
@@ -288,7 +290,7 @@ void EventHub::StopAll()
 		if (entry.second.transport) {
 			entry.second.transport->disconnect();
 		}
-		Transports::Health().Report(Transports::EventsTransportId(entry.second.providerId),
+		Transports::Health().Report(Transports::EventsTransportId(OAuth::AccountDestination(entry.first)),
 					    Transports::TransportHealth::State::Disconnected);
 	}
 }

@@ -11,13 +11,20 @@
 import { EV } from "$lib/utils/eventNames";
   import { goLiveModal, closeGoLiveModal } from "$lib/dialogs/golive/goLiveModalOpener.svelte";
   import { openOAuthConnect, isOAuthConnecting } from "$lib/dialogs/oauthConnectOpener.svelte";
+  import { canvasStore } from "$lib/stores/canvasStore.svelte";
+  import {
+    destinationIdentityStore,
+    type DestinationIdentity,
+  } from "$lib/stores/destinationIdentityStore.svelte";
   import { outputBindingStore } from "$lib/stores/outputBindingStore.svelte";
   import { streamProfileStore } from "$lib/stores/streamProfileStore.svelte";
   import { oauthStore } from "$lib/stores/oauthStore.svelte";
   import { showToast } from "$lib/stores/toastStore.svelte";
   import Avatar from "$lib/ui/Avatar.svelte";
   import GoLiveFieldInput from "$lib/dialogs/golive/GoLiveFieldInput.svelte";
+  import Icon from "$lib/ui/Icon.svelte";
   import Modal from "$lib/ui/Modal.svelte";
+  import PlatformMark from "$lib/ui/PlatformMark.svelte";
   import Segmented from "$lib/ui/Segmented.svelte";
 
   const VIEW_OPTIONS = [
@@ -32,12 +39,13 @@ import { EV } from "$lib/utils/eventNames";
 
   // One stream feeding a channel: a distinct stream profile bound via an enabled
   // output binding. Several streams (e.g. a 16:9 + a 9:16 profile) can post to the
-  // same channel; `canvasName` carries which canvas armed this stream.
+  // same channel; `canvasName` is the canvas this stream is CONFIGURED on, armed or
+  // not — null only when that canvas doesn't exist.
   interface Stream {
     profileUuid: string;
     profile: StreamProfileInfo;
     label: string;
-    canvasName: string;
+    canvasName: string | null;
   }
 
   // One channel = one account identity (`accountId` = "providerId:userId"). Profiles
@@ -48,6 +56,11 @@ import { EV } from "$lib/utils/eventNames";
     provider: OAuthProvider | null;
     status: OAuthStatus | undefined;
     login: string;
+    // Channel identity (avatar + the one displayName fallback chain) from the shared
+    // destination join. Every profile on this card carries the same accountId, so one
+    // lookup answers for the whole card. `login` stays the OAuth login the toasts and
+    // the reconnect strip name the account by.
+    identity: DestinationIdentity | null;
     connected: boolean;
     // Token scopes are stale: the backend refuses streamMeta, so this channel is
     // connected:false — excluded from the push. It still goes live via key.
@@ -60,6 +73,12 @@ import { EV } from "$lib/utils/eventNames";
     // them so on/off is never a partial state.
     bindingUuids: string[];
     streams: Stream[];
+  }
+
+  // One wording for a stream count, so the header badge and the footer summary can't
+  // disagree about the same number.
+  function streamsLabel(n: number): string {
+    return `${n} stream${n === 1 ? "" : "s"}`;
   }
 
   // Provider/status/binding/profile lists come from the shared stores (one source of
@@ -306,6 +325,7 @@ import { EV } from "$lib/utils/eventNames";
           provider,
           status,
           login: status?.login || status?.displayName || profile.label,
+          identity: destinationIdentityStore.forProfile(profile.uuid),
           connected: !!(provider && status?.connected),
           needsReconnect: !!(provider && status?.needsReconnect && !status?.connected),
           armed: false,
@@ -319,7 +339,17 @@ import { EV } from "$lib/utils/eventNames";
         ch.armed = true;
       }
       if (!ch.streams.some((s) => s.profileUuid === b.profileUuid)) {
-        ch.streams.push({ profileUuid: b.profileUuid, profile, label: profile.label, canvasName: b.canvasName });
+        // canvasNameFor, not forProfile: this row states which canvas the binding is
+        // configured on, which a disarmed binding names just as well — resolving it
+        // through the enabled-only profile lookup would print "no canvas" over exactly
+        // the rows the user is reading to decide what to arm. Resolved live through
+        // canvasStore either way, never the binding's rename-stale canvasName.
+        ch.streams.push({
+          profileUuid: b.profileUuid,
+          profile,
+          label: profile.label,
+          canvasName: destinationIdentityStore.canvasNameFor(b.canvasUuid),
+        });
       }
     }
     return [...map.values()];
@@ -407,7 +437,7 @@ import { EV } from "$lib/utils/eventNames";
         ? `${armedProfileCount} destination${armedProfileCount === 1 ? "" : "s"} via stream key`
         : "No destinations armed.";
     }
-    const streams = `${channelStreamCount} stream${channelStreamCount === 1 ? "" : "s"}`;
+    const streams = streamsLabel(channelStreamCount);
     if (reconnectChannels.length > 0) {
       const ready = `${armedConnectedChannels.length} ready`;
       return `${ready} · ${streams} · ${reconnectChannels.length} need reconnect`;
@@ -523,14 +553,18 @@ import { EV } from "$lib/utils/eventNames";
   $effect(() => {
     let active = true;
     const offOauth = oauthStore.subscribe();
-    // Gate prefill on all four data sources being ready so connectedChannels is populated
-    // before the best-effort get runs (whenReady starts each store).
+    destinationIdentityStore.start();
+    // Gate prefill on every data source being ready so connectedChannels is populated
+    // before the best-effort get runs (whenReady starts each store). The canvas list is
+    // in the gate because the card's canvas labels now resolve through it rather than
+    // through each binding's own (rename-stale) snapshot.
     Promise.all([
       oauthStore.whenReady(),
       outputBindingStore.whenReady(),
       streamProfileStore.whenReady(),
+      canvasStore.whenReady(),
       obs.call("getStreamingState").catch(() => ({ active: false })),
-    ]).then(([, , , st]) => {
+    ]).then(([, , , , st]) => {
       if (!active) {
         return;
       }
@@ -789,10 +823,12 @@ import { EV } from "$lib/utils/eventNames";
                  already shown in full there), so it's suppressed once the strip is
                  showing; saving/saved have no strip and keep their chip. -->
             {@const showChip = !!stt && stt !== "idle" && !(stt === "error" && channelSaveError[c.accountId])}
+            {@const name = c.identity?.displayName ?? c.login}
             <div class="ch" class:off={!c.armed}>
-              <!-- The collapse button and the arm switch are SIBLINGS in a flex row —
-                   a switch nested inside the .chh button would be an interactive
-                   element inside another, and every click on it would also collapse. -->
+              <!-- Two rows. The arm switch cannot live inside the .chh collapse trigger
+                   (an interactive element inside another), and wrapping both rows in the
+                   trigger would make every click on the switch collapse the card too — so
+                   row 1 alone is the trigger and the switch is row 2's own control. -->
               <!-- nb also stays off while the failure strip shows: the strip draws no
                    top border of its own, so the header keeps the separating line. -->
               <div class="chhrow" class:nb={isCollapsed && !channelSaveError[c.accountId]}>
@@ -803,51 +839,50 @@ import { EV } from "$lib/utils/eventNames";
                   disabled={!c.armed}
                   onclick={() => toggleCollapsed(c.accountId)}
                 >
-                  <div class="chh-stack">
-                    <div class="chh-id">
-                      <Avatar url={c.status?.avatarUrl ?? ""} name={c.provider.displayName || c.login} size={20} />
-                      <span class="plat">{c.provider.displayName}</span>
-                      <span class="nm">{c.login}</span>
-                    </div>
-                    {#if c.streams.length > 1 || !c.armed || showChip}
-                      <div class="chh-badges">
-                        {#if c.streams.length > 1}
-                          <span class="streams">{c.streams.length} streams</span>
-                        {/if}
-                        {#if !c.armed}
-                          <span class="offchip">Off</span>
-                        {/if}
-                        {#if showChip}
-                          <span
-                            class="st"
-                            class:saving={stt === "saving"}
-                            class:ok={stt === "saved"}
-                            class:err={stt === "error"}
-                          >
-                            <span class="dot"></span>{SAVE_LABEL[stt]}
-                          </span>
-                        {/if}
-                      </div>
+                  <!-- Channel identity leads; the platform closes the row as a mark, not
+                       a word. Two cards on the same platform are told apart by name and
+                       avatar, and the name gets the row width the platform label ate. -->
+                  <Avatar url={c.identity?.channelAvatarUrl ?? ""} {name} size={26} />
+                  <span class="nm">{name}</span>
+                  <PlatformMark platform={c.provider.id} size={18} />
+                  <!-- Same box width as .sw.arm below, against the same right inset, so
+                       the two rows close on one alignment line. -->
+                  <span class="car">
+                    {#if c.armed}<Icon name={isCollapsed ? "caret-right" : "caret-down"} size={13} />{/if}
+                  </span>
+                </button>
+                <div class="chh-r2">
+                  <span class="badges">
+                    <span class="streams">{streamsLabel(c.streams.length)}</span>
+                    {#if !c.armed}
+                      <span class="offchip">Off</span>
                     {/if}
-                  </div>
-                  <!-- Control cluster: the caret centers against the full header height
-                       (identity + badges), reading as one unit with .sw.arm beside it. -->
-                  <span class="car">{c.armed ? (isCollapsed ? "▸" : "▾") : ""}</span>
-                </button>
-                <button
-                  type="button"
-                  class="sw arm"
-                  class:on={c.armed}
-                  role="switch"
-                  aria-checked={c.armed}
-                  disabled={submitting || !!armBusy[c.accountId]}
-                  title={c.armed
-                    ? "Armed — switch off to go live without this destination"
-                    : "Off — switch on to include this destination"}
-                  onclick={() => void toggleArmed(c)}
-                >
-                  <i></i>
-                </button>
+                    {#if showChip}
+                      <span
+                        class="st"
+                        class:saving={stt === "saving"}
+                        class:ok={stt === "saved"}
+                        class:err={stt === "error"}
+                      >
+                        <span class="dot"></span>{SAVE_LABEL[stt]}
+                      </span>
+                    {/if}
+                  </span>
+                  <button
+                    type="button"
+                    class="sw arm"
+                    class:on={c.armed}
+                    role="switch"
+                    aria-checked={c.armed}
+                    disabled={submitting || !!armBusy[c.accountId]}
+                    title={c.armed
+                      ? "Armed — switch off to go live without this destination"
+                      : "Off — switch on to include this destination"}
+                    onclick={() => void toggleArmed(c)}
+                  >
+                    <i></i>
+                  </button>
+                </div>
               </div>
 
               {#if channelSaveError[c.accountId]}
@@ -914,7 +949,7 @@ import { EV } from "$lib/utils/eventNames";
                           <div class="srh">
                             <span class="sico" class:on>{on ? "▾" : "▸"}</span>
                             <span class="sn">{s.label}</span>
-                            <span class="scanvas">{s.canvasName}</span>
+                            <span class="scanvas">{s.canvasName ?? "—"}</span>
                             <span class="sbadge">
                               {#if on}
                                 {@const n = streamOverrideCount(s.profileUuid, c.provider)}
@@ -1141,78 +1176,66 @@ import { EV } from "$lib/utils/eventNames";
     grid-column: 1 / -1;
     border-color: color-mix(in srgb, var(--color-warn) 45%, var(--color-border));
   }
-  /* Header row: the collapse button and the arm switch side by side. The row owns
-     the header background/border so both siblings share one visual bar. */
+  /* Header: identity + platform mark on row 1, badges + arm switch on row 2. The
+     wrapper owns the header background and the divider under it, so both rows read as
+     one bar and the card body/failure strip start on a single line. */
   .chhrow {
     display: flex;
-    align-items: center;
+    flex-direction: column;
     background: var(--color-surface-2);
     border-bottom: var(--border-weight) solid var(--color-border);
   }
   .chhrow.nb {
     border-bottom: 0;
   }
-  .chhrow .sw.arm {
-    margin: 0 11px 0 2px;
-  }
-  /* The collapse trigger is a row: an identity/badges stack that takes the available
-     width, and the caret as a control-cluster partner to .sw.arm beside it. */
+  /* Row 1, the collapse trigger: avatar + channel name take the width, the platform
+     mark and the caret close the row. No bottom padding — row 2 owns the gap. */
   .chh {
     display: flex;
     align-items: center;
     gap: 9px;
-    flex: 1 1 auto;
+    width: 100%;
     min-width: 0;
     height: auto;
-    padding: 9px var(--ch-pad-x);
+    padding: 9px var(--ch-pad-x) 0;
     background: transparent;
     border: 0;
     text-align: left;
     cursor: pointer;
   }
-  .chh-stack {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    flex: 1 1 auto;
-    min-width: 0;
-  }
-  /* Identity row: avatar + platform + login get the full column width to themselves
-     so the login (the most important identifier once several accounts are connected)
-     only ellipsises when genuinely long, instead of fighting badges for space. */
-  .chh-id {
+  /* Row 2: badges left, arm switch right, on the same inset as row 1 so the badges
+     start under the avatar and the switch ends under the caret. */
+  .chh-r2 {
     display: flex;
     align-items: center;
+    justify-content: space-between;
     gap: 9px;
-    min-width: 0;
+    padding: 6px var(--ch-pad-x) 8px;
   }
-  /* Badges/status row, indented to align under the platform label (skips the avatar
-     column) rather than under the header's left edge. Offset is the avatar width (20,
-     matching the Avatar size prop above) plus the .chh-id gap (9) — --ch-pad-x is
-     already applied once by the ancestor .chh padding, so it isn't repeated here. */
-  .chh-badges {
+  .badges {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 5px;
     flex-wrap: wrap;
-    padding-left: calc(20px + 9px);
+    min-width: 0;
   }
   .chh:disabled {
     cursor: default;
   }
   /* Disarmed: header content dims but the arm switch keeps full strength — it is the
      card's only live control while off, and dimming it would hide the way back on. */
-  .ch.off .chh {
+  .ch.off .chh,
+  .ch.off .badges {
     opacity: 0.55;
   }
   .offchip {
     font-family: var(--font-mono);
     font-size: 9px;
-    letter-spacing: 0.05em;
+    letter-spacing: 0.1em;
     text-transform: uppercase;
     color: var(--color-muted);
     border: var(--border-weight) solid var(--color-border);
-    padding: 3px 6px;
+    padding: 1px 5px;
     flex: 0 0 auto;
   }
 
@@ -1238,20 +1261,10 @@ import { EV } from "$lib/utils/eventNames";
     margin-top: 3px;
     color: var(--color-dim);
   }
-  .plat {
-    font-family: var(--font-mono);
-    font-size: 9px;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--color-muted);
-    align-self: baseline;
-    flex: 0 0 auto;
-  }
   .nm {
-    font-weight: 700;
-    font-size: 12px;
+    font-weight: 600;
+    font-size: 13px;
     color: var(--color-text);
-    align-self: baseline;
     flex: 1 1 auto;
     min-width: 0;
     overflow: hidden;
@@ -1260,10 +1273,14 @@ import { EV } from "$lib/utils/eventNames";
   }
   .streams {
     font-family: var(--font-mono);
-    font-size: 9.5px;
-    color: var(--color-accent);
-    border: var(--border-weight) solid color-mix(in srgb, var(--color-accent) 40%, var(--color-border));
-    padding: 3px 6px;
+    font-size: 9px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--color-dim);
+    border: var(--border-weight) solid var(--color-border);
+    background: var(--color-surface);
+    padding: 2px 6px;
+    white-space: nowrap;
     flex: 0 0 auto;
   }
   .st {
@@ -1294,10 +1311,13 @@ import { EV } from "$lib/utils/eventNames";
     background: currentColor;
     flex: 0 0 auto;
   }
+  /* A real chevron in a box the width of .sw.arm below: at caret-glyph size beside an
+     18px brand mark, a text ▾ read as a stray dot rather than an affordance. */
   .car {
-    align-self: center;
+    display: grid;
+    place-items: center;
+    width: 32px;
     color: var(--color-muted);
-    font-size: 11px;
     flex: 0 0 auto;
   }
   .chb {

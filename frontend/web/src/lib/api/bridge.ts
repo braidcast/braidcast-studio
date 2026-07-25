@@ -1094,6 +1094,30 @@ export interface ChatState {
   error?: string;
 }
 
+/** Params for `chat.send`. Two ways to address a send, and `accountId` wins:
+ *
+ * - With `accountId`, the text goes to EXACTLY ONE destination -- that account's
+ *   broadcast under `profileUuid` -- and `platforms` is ignored entirely. Pass back
+ *   the same `accountId` / `profileUuid` pair the ChatMessage or ChatState row you
+ *   are replying to carried, so an absent/empty/null `profileUuid` means the
+ *   account-wide destination (Twitch and Kick have one chat per account and carry
+ *   no profile). Use this for any reply: routing by platform reaches every live
+ *   chat on that platform, so a streamer running two YouTube broadcasts cannot
+ *   tell which one they answered.
+ * - Without `accountId`, the text is broadcast to every active transport whose
+ *   platform is in `platforms` (an empty or omitted array = every connected
+ *   platform). This is the "say it everywhere" path, not a reply path.
+ *
+ * The two halves are passed separately rather than as a joined destination key:
+ * the host constructs its DestinationId from them directly and never parses the
+ * key. `destinationKey()` (see api/destinationKeys.ts) stays a lookup/join id. */
+export interface ChatSendParams {
+  text: string;
+  platforms?: string[];
+  accountId?: string;
+  profileUuid?: string | null;
+}
+
 /** One live destination's concurrent viewers: an account streaming under one stream
  * profile. `key` is the host's stable identifier for the pair ("accountId@profileUuid",
  * or just the accountId when the platform has a single channel per account) and is
@@ -1375,7 +1399,7 @@ export interface ObsMethods {
   // commit before a later one fails, so `failed` lists every section that didn't
   // apply rather than an all-or-nothing result). No current caller -- the
   // Settings page's OK/Apply/Cancel footer this backed was dropped for the
-  // Phase 7 live-apply page model (see notes/roadmap.md); kept typed for the
+  // Phase 7 live-apply page model (see braidcast-notes/roadmap.md); kept typed for the
   // C++ round-trip self-test and any future revert UI.
   "settings.restore": { ok: boolean; failed?: { section: string; error: string }[] };
   // Canvases (native multistream encode targets, 4.4.1).
@@ -1598,10 +1622,14 @@ export interface ObsMethods {
   // selected items; nothing in the source OBS install is modified.
   "importer.scan": ImporterScan;
   "importer.import": ImporterImportResult;
-  // Multichat (creator engagement, Phase 9.0). send posts `text` to the given
-  // platforms (empty array = every connected platform) and returns {ok:true}
-  // immediately (the per-transport send runs on a worker; a failure surfaces as a
-  // chat.state error event). state returns the current per-platform connection
+  // Multichat (creator engagement, Phase 9.0). send takes ChatSendParams: with
+  // `accountId` it posts to EXACTLY ONE destination (`platforms` ignored); without it
+  // it posts to the given platforms (empty array = every connected platform). Either
+  // way it returns {ok:true} immediately -- the per-transport send runs on a worker and
+  // a send failure surfaces later as a chat.state error event. The one synchronous
+  // failure is a targeted send whose destination has no live transport: the call
+  // REJECTS rather than falling back to the platform or silently dropping, so a reply
+  // never lands in the wrong chat. state returns the current per-transport connection
   // status array (empty when nothing is connected / not live). Chat transports are
   // started by the host on go-live and stopped on stop -- there is no connect method.
   "chat.send": { ok: boolean };

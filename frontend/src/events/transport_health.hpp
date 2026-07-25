@@ -8,6 +8,8 @@
 #include <string>
 #include <vector>
 
+#include "../oauth/provider.hpp" // OAuth::DestinationId, OAuth::DestinationKey
+
 // The cross-cutting transport-health aggregator (Phase 9.x, R14/G1): one shared
 // observable surface for "is this transport connected / reconnecting / failed",
 // fed by the chat, events, and overlay transports and consumed by the bridge as a
@@ -36,7 +38,7 @@ public:
 
 	// One transport's current health row.
 	struct Entry {
-		std::string id; // stable transport id ("chat:twitch", "events:kick", "overlay")
+		std::string id; // stable transport id (see ChatTransportId / EventsTransportId below)
 		State state = State::Disconnected;
 		std::string lastError; // set for Reconnecting/Failed (the drop/failure reason)
 		int64_t updatedAtMs = 0;
@@ -72,13 +74,21 @@ TransportHealth &Health();
 
 // Stable transport-id conventions, so the id scheme lives in one place (a hub worker
 // binds the report, a hub Stop() reports the matching Disconnected -- both must agree).
-inline std::string ChatTransportId(const std::string &providerId)
+//
+// Keyed by DESTINATION, never by platform: chat runs one transport per live destination, so
+// an account streaming two orientations has two independent healths. Sharing a platform-wide
+// id makes them overwrite each other last-writer-wins, which lets a dead chat read as healthy
+// off a row actually holding its sibling's state. The tail is OAuth::DestinationKey rather
+// than a second format, so a health row matches the key every other destination-scoped
+// surface uses (viewers.changed perDestination[].key). An events transport runs per ACCOUNT,
+// so it reports under that account's account-wide destination -- key = the bare accountId.
+inline std::string ChatTransportId(const OAuth::DestinationId &dest)
 {
-	return "chat:" + providerId;
+	return "chat:" + OAuth::DestinationKey(dest);
 }
-inline std::string EventsTransportId(const std::string &providerId)
+inline std::string EventsTransportId(const OAuth::DestinationId &dest)
 {
-	return "events:" + providerId;
+	return "events:" + OAuth::DestinationKey(dest);
 }
 inline constexpr const char *kOverlayTransportId = "overlay";
 

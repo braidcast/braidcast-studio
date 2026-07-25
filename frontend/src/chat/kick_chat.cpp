@@ -72,6 +72,13 @@ void EmitState(const ChatContext &ctx, bool connected, const std::string &error)
 	EmitChatState(ctx, "kick", connected, error);
 }
 
+// For an exit this loop will never retry, so the health row says so instead of claiming a
+// reconnect that is not coming.
+void EmitTerminal(const ChatContext &ctx, const std::string &reason)
+{
+	EmitChatTerminal(ctx, "kick", reason);
+}
+
 // Decode one App\Events\ChatMessageEvent Pusher frame and emit a normalized
 // chat.message. Defensive throughout: a double-decode failure or any missing
 // required field drops the message rather than throwing (research flags the whole
@@ -161,6 +168,7 @@ bool KickChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, const 
 
 	if (!WsClient::WebSocketsSupported()) {
 		err = "libcurl lacks WebSocket support; Kick chat unavailable";
+		EmitTerminal(ctx, err);
 		return false; // fatal: logged by the hub
 	}
 

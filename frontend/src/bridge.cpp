@@ -278,37 +278,17 @@ bool MethodGetStreamingState(const json & /*params*/, json &result, std::string 
 // also pushes multistream.changed per-output via onStatusChanged).
 bool MethodStreamingStart(const json & /*params*/, json &result, std::string & /*error*/)
 {
-	ObsBootstrap::Multistream().StartAllEnabled();
-	const bool active = ObsBootstrap::Multistream().AnyLive();
-	result = json{{"active", active}};
-	EmitEvent(EventNames::kStreamingChanged, result);
-	// Chat and the viewer poller are live-only: start them here on go-live so every
-	// connected platform's chat transport connects together (YouTube's liveChatId exists
-	// only once the broadcast is live). Both Start()s are idempotent.
-	if (active) {
-		Chat::Hub().Start();
-		Chat::Viewers().Start();
-	}
+	StartStreamingAll();
+	// Accurate because PostToUi ran the sequence inline: this method is on the sync lane,
+	// so it is already on TID_UI.
+	result = json{{"active", ObsBootstrap::Multistream().AnyLive()}};
 	return true;
 }
 
 bool MethodStreamingStop(const json & /*params*/, json &result, std::string & /*error*/)
 {
-	// Chat and the viewer poller are live-only, so tear them down on stop. Reset every
-	// active-broadcast target the account holds -- one per destination, so an account
-	// streaming several broadcasts drops all of them -- so the next go-live re-resolves
-	// YouTube's liveChatIds fresh (clearActiveBroadcast is a no-op except on YouTube).
-	Chat::Viewers().Stop();
-	Chat::Hub().Stop();
-	for (const auto &entry : OAuth::Accounts().All()) {
-		OAuth::StreamProvider *provider = OAuth::Registry().Get(entry.second.providerId);
-		if (provider) {
-			provider->clearActiveBroadcast(entry.first); // entry.first == accountId
-		}
-	}
-	ObsBootstrap::Multistream().StopAll();
+	StopStreamingAll();
 	result = json{{"active", false}};
-	EmitEvent(EventNames::kStreamingChanged, result);
 	return true;
 }
 
@@ -8436,6 +8416,50 @@ bool MethodBrowserDocksSet(const json &params, json &result, std::string &error)
 
 } // namespace
 
+void StartStreamingAll()
+{
+	AsyncTask::PostToUi([] {
+		if (!ObsBootstrap::MultistreamAlive()) {
+			return;
+		}
+		ObsBootstrap::Multistream().StartAllEnabled();
+		const bool active = ObsBootstrap::Multistream().AnyLive();
+		EmitEvent(EventNames::kStreamingChanged, json{{"active", active}});
+		// Chat and the viewer poller are live-only: start them here on go-live so every
+		// connected platform's chat transport connects together (YouTube's liveChatId exists
+		// only once the broadcast is live). Both Start()s are idempotent.
+		if (active) {
+			Chat::Hub().Start();
+			Chat::Viewers().Start();
+		}
+	});
+}
+
+void StopStreamingAll()
+{
+	AsyncTask::PostToUi([] {
+		if (!ObsBootstrap::MultistreamAlive()) {
+			return;
+		}
+		// ORDER: the live-only readers stop FIRST, so no poll cycle can begin against
+		// state the next two steps are about to invalidate; then each account's
+		// active-broadcast targets are dropped, so a cycle already in flight has nothing
+		// left to re-read and the next go-live re-resolves YouTube's liveChatIds fresh
+		// (clearActiveBroadcast is a no-op except on YouTube); then the outputs stop. Every
+		// step is idempotent, which is what makes a second concurrent stop harmless.
+		Chat::Viewers().Stop();
+		Chat::Hub().Stop();
+		for (const auto &entry : OAuth::Accounts().All()) {
+			OAuth::StreamProvider *provider = OAuth::Registry().Get(entry.second.providerId);
+			if (provider) {
+				provider->clearActiveBroadcast(entry.first); // entry.first == accountId
+			}
+		}
+		ObsBootstrap::Multistream().StopAll();
+		EmitEvent(EventNames::kStreamingChanged, json{{"active", false}});
+	});
+}
+
 bool SwitchDefaultProgramScene(const std::string &sceneUuid)
 {
 	OBSSourceAutoRelease source = obs_get_source_by_uuid(sceneUuid.c_str()); // addref'd
@@ -9778,6 +9802,9 @@ bool MethodStreamMetaSave(const json &params, json &result, std::string &error)
 // leave C++. Every payload carries the destination that produced it (accountId, plus
 // profileUuid on a platform with one broadcast per stream profile), because `platform`
 // alone cannot tell two accounts -- or two of one account's broadcasts -- apart.
+// The same reason makes `accountId` (+ `profileUuid`) the ADDRESS chat.send routes on:
+// a reply keyed by platform reaches every live chat of that platform at once, so a
+// streamer running two YouTube broadcasts cannot tell which one they answered.
 // Events the hub + the T6 viewer poller push to JS:
 //   - "chat.message"    one normalized message (see chat_transport.hpp)
 //   - "chat.state"      per-transport { platform, accountId, profileUuid?, connected, error? }
@@ -9788,6 +9815,32 @@ bool MethodStreamMetaSave(const json &params, json &result, std::string &error)
 
 bool MethodChatSend(const json &params, json &result, std::string &error)
 {
+	std::string text;
+	if (!RequireStr(params, "chat.send", "text", text, error)) {
+		return false;
+	}
+	// A reply aimed at ONE destination: `platforms` is ignored outright rather than
+	// intersected, because a platform filter can only widen this back to every live chat
+	// of that platform -- the fan-out a targeted reply exists to avoid. The profile half
+	// is whatever the addressed frame carried (absent for a platform with one chat per
+	// account), so the identity round-trips without being re-derived here.
+	const std::string accountId = OptString(params, "accountId");
+	if (!accountId.empty()) {
+		const OAuth::DestinationId dest{accountId, OptString(params, "profileUuid")};
+		// A missed target FAILS the call. Whether that destination is live is known
+		// synchronously here (an exact lookup in the hub's destination-keyed map, before
+		// any worker exists), so it belongs in this method's own error channel rather than
+		// the later chat.state event that reports an actual transport-level send failure.
+		// Neither falling back to the platform nor answering ok:true would be honest: the
+		// reply would have gone to the wrong chat, or to none, with the composer cleared.
+		if (!Chat::Hub().SendToDestination(dest, text)) {
+			error = "no live chat for destination '" + OAuth::DestinationKey(dest) +
+				"' (it is not streaming, or its chat transport dropped)";
+			return false;
+		}
+		result = json{{"ok", true}};
+		return true;
+	}
 	std::vector<std::string> platforms;
 	if (params.is_object() && params.contains("platforms") && params["platforms"].is_array()) {
 		for (const auto &p : params["platforms"]) {
@@ -9795,10 +9848,6 @@ bool MethodChatSend(const json &params, json &result, std::string &error)
 				platforms.push_back(p.get<std::string>());
 			}
 		}
-	}
-	std::string text;
-	if (!RequireStr(params, "chat.send", "text", text, error)) {
-		return false;
 	}
 	// Empty platforms = send to every connected platform. Each transport's send runs
 	// on its own worker inside the hub; a failure emits a chat.state error.

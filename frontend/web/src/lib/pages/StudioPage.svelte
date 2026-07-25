@@ -18,6 +18,7 @@ import { bumpDockLayout } from "$lib/docking/dockLayoutSignal.svelte";
 import { EV } from "$lib/utils/eventNames";
   import { canvasStore } from "$lib/stores/canvasStore.svelte";
   import { multistreamStatusStore, isActiveState } from "$lib/stores/multistreamStatusStore.svelte";
+  import { viewerCountStore } from "$lib/stores/viewerCountStore.svelte";
   import { STATE_COLOR } from "$lib/theme/stateColors";
   import { fmtDuration, fmtBitrate } from "$lib/utils/format";
   import { statsStore } from "$lib/stores/statsStore.svelte";
@@ -28,6 +29,7 @@ import { EV } from "$lib/utils/eventNames";
   import { undoStore } from "$lib/stores/undoStore.svelte";
   import CollectionDialog, { type DialogSpec } from "$lib/dialogs/CollectionDialog.svelte";
   import ContextMenu, { type ContextMenuItem } from "$lib/menus/ContextMenu.svelte";
+  import Icon from "$lib/ui/Icon.svelte";
   import { openGoLiveModal } from "$lib/dialogs/golive/goLiveModalOpener.svelte";
   import { goLivePref } from "$lib/stores/goLivePrefStore.svelte";
   import { log } from "$lib/utils/log";
@@ -65,9 +67,12 @@ import { EV } from "$lib/utils/eventNames";
   let vcamCanvas = $state("");
   let vcamMenuPos = $state<{ x: number; y: number } | null>(null);
 
-  // Aggregate viewer count (Phase 9.0), fed by the host's viewers.changed push
-  // while live; null when offline so the chip stays hidden off-stream.
-  let viewerTotal = $state<number | null>(null);
+  // Aggregate viewer count (Phase 9.0) and how many destinations answered in that same
+  // cycle, both read off the shared viewer-count store (which owns the one
+  // viewers.changed subscription and the offline clear). Null means nobody answered, so
+  // the chip stays hidden off-stream and the denominator is omitted rather than faked.
+  let viewerTotal = $derived(viewerCountStore.total);
+  let viewerReporting = $derived(viewerCountStore.reporting);
 
   // CANVASES-bar "⋯" overflow: anchor position (viewport coords) when open, the
   // runtime monitor list for the per-monitor projector entries, and the dock-lock
@@ -292,13 +297,8 @@ import { EV } from "$lib/utils/eventNames";
         vcamCanvas = s.canvas;
       })
       .catch(() => {});
-    const offStreaming = obs.on(EV.streamingChanged, (p) => {
-      anyRunning = p.active;
-      // The viewer poller stops on stream-stop without a final zero push; clear the
-      // chip so a stale count never lingers after going offline.
-      if (!p.active) viewerTotal = null;
-    });
-    const offViewers = obs.on(EV.viewersChanged, (p) => (viewerTotal = p.total));
+    const offStreaming = obs.on(EV.streamingChanged, (p) => (anyRunning = p.active));
+    const offViewers = viewerCountStore.subscribe();
     const offVcam = obs.on(EV.virtualCamChanged, (s) => {
       vcamActive = s.active;
       vcamCanvas = s.canvas;
@@ -788,19 +788,24 @@ import { EV } from "$lib/utils/eventNames";
   <!-- BOTTOM BAR : GO LIVE (variant B — segmented, GO LIVE as right-edge block). -->
   <div class="golive-bar">
     <div class="bb-left">
-      <span class="focus-dot" style:background={focusDotColor}></span>
       {#if liveState === "live"}
-        <span class="livebadge"><span class="rec"></span>LIVE {fmtDuration(liveDurationMs, { fixed: true })}</span>
+        <span class="livebadge">
+          <span class="rec"></span>LIVE
+          <span class="t">{fmtDuration(liveDurationMs, { fixed: true })}</span>
+        </span>
       {:else}
-        <span class="bb-state">{liveLabel}</span>
+        <span class="bb-state"><span class="focus-dot" style:background={focusDotColor}></span>{liveLabel}</span>
       {/if}
       {#if anyRunning && viewerTotal !== null}
-        <span class="viewers" title="Aggregate viewers across connected platforms">
+        <span class="viewers" title="Total concurrent viewers / destinations currently reporting a count">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
             <path d="M1.5 12S5 6 12 6s10.5 6 10.5 6-3.5 6-10.5 6S1.5 12 1.5 12Z" />
             <circle cx="12" cy="12" r="2.6" />
           </svg>
-          {viewerTotal.toLocaleString()}
+          <span class="n">{viewerTotal.toLocaleString()}</span>
+          {#if viewerReporting !== null}
+            <span class="cap">/ {viewerReporting}</span>
+          {/if}
         </span>
       {/if}
     </div>
@@ -841,10 +846,8 @@ import { EV } from "$lib/utils/eventNames";
         onclick={() => openGoLiveModal("edit")}
         title="Edit stream information (title / category / tags) — works before and during the stream"
       >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
-          <path d="M15 4l5 5L8 21H3v-5L15 4Z" /><path d="M13 6l5 5" />
-        </svg>
-        Edit stream info
+        <Icon name="edit" />
+        Edit
       </button>
       <button
         class="golive"
@@ -1166,15 +1169,15 @@ import { EV } from "$lib/utils/eventNames";
     border-top: var(--border-weight) solid var(--color-border);
     background: var(--color-surface);
   }
-  /* Left cluster: focus dot + status label (+ live badge / viewers when live), right
-     hairline, on the shared structural-grid surface — mirrors the top bar's label
-     block so the dot never floats alone in an empty band. */
+  /* Left cluster: full-height cells on the shared structural-grid surface, divided by
+     the same hairline as the right-hand cells, so the whole 52px bar reads as one row
+     of cells instead of pills floating in a padded band. */
   .bb-left {
     display: flex;
-    align-items: center;
-    gap: 11px;
+    align-items: stretch;
+    gap: 0;
     min-width: 0;
-    padding: 0 14px;
+    padding: 0;
     background: var(--structural-grid), var(--color-surface);
     border-right: var(--border-weight) solid var(--color-border);
   }
@@ -1183,8 +1186,14 @@ import { EV } from "$lib/utils/eventNames";
     height: 9px;
     flex: 0 0 auto;
   }
-  /* Off-air status label (mono micro-label, same treatment as the top bar's). */
+  /* Off-air status cell: focus dot + mono micro-label (same treatment as the top bar's).
+     The dot lives here rather than beside the live badge, whose pulsing rec square is
+     already that state's dot. */
   .bb-state {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 0 11px;
     font-family: var(--font-mono);
     font-size: 9px;
     font-weight: 500;
@@ -1197,16 +1206,21 @@ import { EV } from "$lib/utils/eventNames";
     display: flex;
     align-items: center;
     gap: 7px;
-    height: 24px;
-    padding: 0 9px;
+    padding: 0 11px;
     font-family: var(--font-mono);
     font-size: 11px;
     font-weight: 500;
     letter-spacing: 0.06em;
     color: var(--color-live);
     white-space: nowrap;
-    border: var(--border-weight) solid color-mix(in srgb, var(--color-live) 55%, transparent);
     background: color-mix(in srgb, var(--color-live) 14%, transparent);
+  }
+  /* The two numbers the left cells exist to show: emphasized, and tabular so neither
+     jitters as it ticks. */
+  .livebadge .t,
+  .viewers .n {
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
   }
   .livebadge .rec {
     width: 7px;
@@ -1227,17 +1241,18 @@ import { EV } from "$lib/utils/eventNames";
   .viewers {
     display: flex;
     align-items: center;
-    gap: 6px;
-    height: 24px;
-    padding: 0 9px;
+    gap: 7px;
+    padding: 0 11px;
     font-family: var(--font-mono);
     font-size: 11px;
     color: var(--color-dim);
     white-space: nowrap;
-    border: var(--border-weight) solid var(--color-border);
-    background: var(--color-surface-2);
+    border-left: var(--border-weight) solid var(--color-border);
   }
   .viewers svg {
+    color: var(--color-muted);
+  }
+  .viewers .cap {
     color: var(--color-muted);
   }
   /* Spacer between the clusters: the shared structural-grid surface (not the darker

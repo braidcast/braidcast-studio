@@ -127,6 +127,22 @@ void EmitAudioChanged();
 // channel-0 bind that would skip the canvas scene links.
 bool SwitchDefaultProgramScene(const std::string &sceneUuid);
 
+// The WHOLE-STREAM lifecycle, shared by streaming.start/stop, the tray menu's Start
+// all / Stop all, and the start/stop hotkeys, so no entry point can drive a bare
+// MultistreamEngine::StartAllEnabled/StopAll again. The tray and the hotkeys used to do
+// exactly that, which meant a stop through either never stopped the live-only chat
+// transports or the viewer poller and never dropped the platforms' active-broadcast
+// state: the poller then kept spending one YouTube videos.list per cached broadcast
+// every cycle, against a stream that had ended, until the process exited.
+//
+// Both marshal onto the UI thread (AsyncTask::PostToUi runs INLINE when the caller is
+// already there, so a bridge method still completes its sequence before returning) and
+// are safe from the libobs hotkey thread and a win32 menu handler. Every step is
+// idempotent and they serialize on the one UI task queue, so a double hotkey press or a
+// tray stop racing a bridge stop is a no-op the second time through.
+void StartStreamingAll();
+void StopStreamingAll();
+
 // Write/read a single string value under `key` to/from a MultistreamBasicPath
 // JSON file (atomic, with a .bak). Shared by the per-feature key/value stores
 // (audio_devices.json / theme.json / layout.json / transitions.json).

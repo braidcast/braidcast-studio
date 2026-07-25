@@ -31,11 +31,29 @@
 // idempotent and Start calls it first, so a re-Start never leaves stale workers.
 // A function-local-static singleton (Chat::Hub()) so it outlives the detached
 // workers to process exit (the workers capture it raw, which is therefore safe).
+struct OutputBinding;
+
 namespace Chat {
 
 using json = nlohmann::json;
 
 class ChatTransport;
+
+// The live destination one output binding streams to, false when its stream profile has no
+// linked, still-known account. THE DESTINATION KEYING RULE lives here, in one place, so
+// every subsystem that has a binding and needs its destination agrees:
+//   - StreamProvider::broadcastPerDestination() == false (Twitch, Kick): the platform has
+//     exactly ONE chat and ONE viewer figure per account, so every profile pointing at that
+//     account normalizes to the account-wide destination (empty profileUuid). Two profiles on
+//     one Twitch channel therefore still yield ONE transport and ONE IRC connection; a second
+//     would double every message and every send.
+//   - broadcastPerDestination() == true (YouTube): each profile's broadcast has its own
+//     liveChatId and its own viewer count, so each profile is its own destination. Collapsing
+//     them is what left one orientation's chat permanently unread.
+// Says nothing about whether the binding is ENABLED or live -- callers decide that, because
+// the teardown path runs precisely when a binding has just been disabled or is about to be
+// removed.
+bool BindingDestination(const OutputBinding &b, OAuth::DestinationId &out);
 
 class ChatHub {
 public:
@@ -52,15 +70,21 @@ public:
 	// (empty = all connected). Each send runs on its own worker so a slow REST send
 	// never blocks the caller; a failure emits a chat.state error for that platform.
 	// Platform-wide: on a platform with one broadcast per destination this posts to
-	// EVERY live destination of that platform.
+	// EVERY live destination of that platform, which is why a REPLY must use
+	// SendToDestination below instead.
 	void SendToPlatforms(const std::vector<std::string> &platforms, const std::string &text);
 
 	// Route `text` to ONE destination's transport, so a caller that knows which broadcast
 	// it is replying to reaches exactly that chat instead of every chat on the platform.
 	// An account-wide destination (empty profileUuid) matches that account's single
 	// transport on a per-channel platform. Same worker/echo/error path as
-	// SendToPlatforms -- both are thin wrappers over one implementation.
-	void SendToDestination(const OAuth::DestinationId &dest, const std::string &text);
+	// SendToPlatforms -- both dispatch through one implementation.
+	//
+	// Returns false when no ACTIVE transport holds that exact destination, sending
+	// nothing: a targeted reply whose target is gone must surface as a failure, never
+	// fall back to the platform (that is the fan-out it exists to avoid) and never
+	// silently drop.
+	bool SendToDestination(const OAuth::DestinationId &dest, const std::string &text);
 
 	// Per-active-transport status: [{ platform, accountId, profileUuid, connected, error }].
 	json State();
@@ -79,9 +103,11 @@ private:
 		std::string error;
 	};
 
-	// The ONE send implementation both public send entry points use: snapshot the
-	// transports `match` selects, then run each send on its own worker.
-	void SendMatching(const std::function<bool(const Active &)> &match, const std::string &text);
+	// The ONE per-transport send body both public entry points reach: one worker per
+	// target (a slow REST send must never block the caller), the chat.state error emit
+	// on failure, and the local echo for a platform whose read path never reflects the
+	// sender's own line. Called with the mutex RELEASED, on a copy of the Active row.
+	void DispatchSend(const Active &target, const std::string &text);
 
 	std::mutex mutex_;
 	// Keyed by DESTINATION, not accountId. For a platform whose chat is per-account

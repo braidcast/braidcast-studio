@@ -21,6 +21,18 @@ export function fmtBitrate(kbps: number): string {
   return kbps >= 1000 ? (kbps / 1000).toFixed(1) + " Mb/s" : Math.round(kbps) + " kb/s";
 }
 
+// Compact count for chrome too tight for the full number ("999", "1.9k", "12k",
+// "3.4M"): one decimal below ten of a unit, whole above it, so the field never widens
+// past four glyphs as the figure ticks.
+export function fmtCompact(n: number): string {
+  if (n < 1000) {
+    return String(n);
+  }
+  const unit = n < 1_000_000 ? 1000 : 1_000_000;
+  const v = n / unit;
+  return (v < 10 ? v.toFixed(1) : String(Math.round(v))) + (unit === 1000 ? "k" : "M");
+}
+
 // Title-cased label for a lowercase live-state name ("live" -> "Live").
 export function titleState(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);

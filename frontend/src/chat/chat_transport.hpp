@@ -68,31 +68,49 @@ struct ChatContext {
 
 	// Report this transport's connection-health transition to the shared aggregator
 	// (R14/G1). Always populated by the hub with the transport id bound in; transports
-	// reach it through EmitChatState below, so a per-platform transport never names an
-	// id or the aggregator. Guard `if (ctx.reportHealth)` for safety.
+	// reach it through EmitChatState / EmitChatTerminal below, so a per-platform transport
+	// never names an id or the aggregator. Guard `if (ctx.reportHealth)` for safety.
 	std::function<void(Transports::TransportHealth::State state, const std::string &error)> reportHealth;
 };
 
 // Emit one connection-state frame with a FIXED key set (event/platform/connected/
 // error) every time, so the wire shape can't drift per platform or per call site
-// (the drift this replaces: some sites omitted `error`, others always sent it).
-// `error` defaults to "" for the connected/success case.
-inline void EmitChatState(const ChatContext &ctx, const char *platform, bool connected, const std::string &error = "")
+// (the drift this replaces: some sites omitted `error`, others always sent it). The
+// shared body of both reports below, so the frame and the health hop stay one seam
+// however a transport is reporting.
+inline void EmitChatFrame(const ChatContext &ctx, const char *platform, bool connected,
+			  Transports::TransportHealth::State health, const std::string &error)
 {
 	ctx.emit(json{{"event", EventNames::kChatState},
 		      {"platform", platform},
 		      {"connected", connected},
 		      {"error", error}});
-	// The one shared chat state seam every platform routes through, so it also feeds the
-	// transport-health surface here (one place, all platforms): a connected frame is
-	// Connected; a not-connected frame is the transport dropping and about to retry
-	// (Reconnecting). The Connecting bookend (pre-connect) and the terminal Disconnected
-	// (hub Stop) are reported by the hub, which owns that lifecycle.
 	if (ctx.reportHealth) {
-		ctx.reportHealth(connected ? Transports::TransportHealth::State::Connected
-					   : Transports::TransportHealth::State::Reconnecting,
-				 error);
+		ctx.reportHealth(health, error);
 	}
+}
+
+// A transport's ordinary state transition: connected, or dropped and about to retry
+// (Reconnecting). `error` defaults to "" for the connected/success case. The Connecting
+// bookend (pre-connect) and the Disconnected the hub writes on Stop() are the hub's, which
+// owns that lifecycle.
+inline void EmitChatState(const ChatContext &ctx, const char *platform, bool connected, const std::string &error = "")
+{
+	EmitChatFrame(ctx, platform, connected,
+		      connected ? Transports::TransportHealth::State::Connected
+				: Transports::TransportHealth::State::Reconnecting,
+		      error);
+}
+
+// A read loop that has stopped FOR GOOD -- chat ended, authorization revoked, broadcast
+// gone -- reports Failed, not Reconnecting: it is not retrying, and a row that claims it is
+// leaves the user watching a chat that will never come back. Deliberately NOT the
+// Disconnected the hub writes on Stop(): "this destination's chat died mid-session" and
+// "the session ended" are different facts and both have to survive in the data. `reason`
+// is the whole content of a terminal row, so never pass an empty one.
+inline void EmitChatTerminal(const ChatContext &ctx, const char *platform, const std::string &reason)
+{
+	EmitChatFrame(ctx, platform, false, Transports::TransportHealth::State::Failed, reason);
 }
 
 class ChatTransport {

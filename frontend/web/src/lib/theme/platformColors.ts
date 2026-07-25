@@ -22,6 +22,24 @@ export const PLATFORM_LABELS: Record<string, string> = {
 export const PLATFORM_ORDER = ["twitch", "youtube", "kick"] as const;
 
 /**
+ * Normalize any platform-ish string to the keys the maps above use. Callers hold the
+ * value under several shapes -- an OAuth `providerId` ("youtube"), a
+ * `StreamProfileInfo.platform` display prefix ("YouTube"), a raw service word ("RTMP")
+ * -- and each was lowercasing at the lookup site. Naming it keeps the keying
+ * convention in the module that owns the keys.
+ */
+export function platformKey(raw: string): string {
+  return raw.trim().toLowerCase();
+}
+
+/**
+ * The cutout inside a brand mark (YouTube's play triangle). Part of the brand mark
+ * rather than the theme palette, so it stays white in light mode -- `--color-text`
+ * would invert to near-black and the mark would stop reading as the logo.
+ */
+export const PLATFORM_MARK_KNOCKOUT = "#ffffff";
+
+/**
  * Accent color per normalized event type. follow=blue; sub/resub=purple;
  * subgift/member=gold; cheer=teal (bits); raid=orange; superchat/supersticker=
  * green (money).

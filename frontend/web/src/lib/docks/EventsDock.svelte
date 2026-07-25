@@ -1,24 +1,33 @@
 <script lang="ts">
-  import { obs, type NormalizedEvent, type ChatPlatform, type EventType } from "$lib/api/bridge";
-import { EV } from "$lib/utils/eventNames";
-  import {
-    PLATFORM_COLORS,
-    PLATFORM_LABELS,
-    EVENT_TYPE_COLORS,
-    EVENT_TYPE_LABELS,
-  } from "$lib/theme/platformColors";
+  import { obs, type NormalizedEvent, type EventType } from "$lib/api/bridge";
+  import { EV } from "$lib/utils/eventNames";
+  import { PLATFORM_COLORS, EVENT_TYPE_COLORS, EVENT_TYPE_LABELS } from "$lib/theme/platformColors";
   import { FeedVirtualizer, type FeedRow } from "$lib/utils/feedVirtualizer.svelte";
   import EmptyState from "$lib/ui/EmptyState.svelte";
   import Icon from "$lib/ui/Icon.svelte";
-  import PlatformChips from "$lib/ui/PlatformChips.svelte";
+  import Avatar from "$lib/ui/Avatar.svelte";
+  import PlatformMark from "$lib/ui/PlatformMark.svelte";
+  import DestinationChips from "$lib/ui/DestinationChips.svelte";
+  import {
+    ALL_DESTINATIONS,
+    attribute,
+    destinationsByAccount,
+    matchesSelection,
+    reconcileSelection,
+    selectionLabel,
+    unarmedHint as unarmedHintFor,
+    unarmedPlatforms as unarmedPlatformsOf,
+    type DestinationSelection,
+    type Fidelity,
+  } from "$lib/ui/destinationSelection";
   import { oauthStore } from "$lib/stores/oauthStore.svelte";
+  import { destinationIdentityStore } from "$lib/stores/destinationIdentityStore.svelte";
 
   // Host supplies tab chrome + strips __* keys; this body declares no props.
   let {}: Record<string, unknown> = $props();
 
-  // Platform dot/tag color + label (matches the Multichat dock).
+  // Platform dot/tag color (matches the Multichat dock).
   const PLATFORM_COLOR = PLATFORM_COLORS;
-  const PLATFORM_LABEL = PLATFORM_LABELS;
 
   // Human labels per event type -- the summary carries the phrasing; this is the
   // fallback the summary/aria fall back to for an unknown type.
@@ -71,47 +80,107 @@ import { EV } from "$lib/utils/eventNames";
     return fn ? fn(e) : (TYPE_LABEL[e.type] ?? e.type);
   }
 
-  // --- feed (ring-capped + virtualized) -------------------------------------
-  // Platform filter: "all" or one platform. Filtering feeds the virtualizer a
-  // derived subset -- heights stay keyed by the stable clientKey, so a filtered-out
-  // row keeps its measured height and re-appears at the right size when re-shown.
-  let filter = $state<"all" | ChatPlatform>("all");
+  // --- destination attribution ----------------------------------------------
+  // Which of the four live streams produced this event? "YouTube" stopped being an
+  // answer once two channels each ran two orientations, so every row names the
+  // channel and the canvas -- and, where the event genuinely cannot name a canvas,
+  // says so instead of picking one. The tiering is shared with Chat
+  // (ui/destinationSelection.ts, which documents which sources stamp what); the
+  // wording below is this dock's, because an event and a message read differently.
 
-  // Platform chips are gated on logged-in OAuth accounts, not the fixed platform list:
-  // 0 connected -> empty state, no chips; 1 -> just that platform (no "All", which is
-  // meaningless with one); >=2 -> "All" + each connected platform. Live via oauthStore.
+  const FIDELITY_HINT: Record<Fidelity, string> = {
+    exact: "Exact — the event named the broadcast it arrived on.",
+    single:
+      "Inferred — a channel-wide event, but this channel has exactly one armed destination, " +
+      "so there is no other stream it could belong to.",
+    wide:
+      "Channel-wide — this event fired against the channel, not one broadcast. " +
+      "Naming a canvas here would be a guess.",
+    pending: "This destination's canvas has not loaded yet, or was deleted.",
+    none: "No stream profile is configured for the account this event came from.",
+  };
+
+  // Only `single` needs a word of its own: the other tiers already read as state in
+  // the canvas cell, and an "exact" row's signal is the absence of a caveat.
+  const FIDELITY_NOTE: Record<Fidelity, string> = {
+    exact: "",
+    single: "single stream",
+    wide: "",
+    pending: "",
+    none: "",
+  };
+
+  $effect(() => {
+    destinationIdentityStore.start();
+  });
+
+  // Only account-backed profiles can ever produce an event: a key/RTMP/WHIP profile
+  // has no transport, so a chip for it could never match a row.
+  let destinations = $derived(destinationIdentityStore.all.filter((d) => d.accountId !== ""));
+  let destByUuid = $derived(new Map(destinations.map((d) => [d.profileUuid, d])));
+
+  // The store is profile-keyed; the channel-wide fan-out needs the reverse index, and
+  // it is an index over the store's own rows rather than a second identity join.
+  let destByAccount = $derived(destinationsByAccount(destinations));
+
+  // --- feed (ring-capped + virtualized) -------------------------------------
+  // Three filter levels, all reachable: everything, one platform (both YouTube
+  // channels at once, which is the view platform separation always gave), or one
+  // specific stream. Filtering feeds the virtualizer a derived subset -- heights stay
+  // keyed by the stable clientKey, so a filtered-out row keeps its measured height and
+  // re-appears at the right size when re-shown.
+  let filter = $state<DestinationSelection>(ALL_DESTINATIONS);
+
+  // Chips are gated on what can actually originate an event, not on the fixed platform
+  // list. A platform with a connected account but no stream profile still runs its
+  // transport, so it gets a disabled chip that says why it cannot be filtered rather
+  // than no chip at all.
   $effect(() => oauthStore.subscribe());
   let connectedPlatforms = $derived(oauthStore.connectedPlatforms);
-  let showAllChip = $derived(connectedPlatforms.length >= 2);
+  let unarmedPlatforms = $derived(unarmedPlatformsOf(connectedPlatforms, destinations));
+  // More than one place an event can come from: the point at which every row has to
+  // say which destination it belongs to.
+  let multiOrigin = $derived(destinations.length + unarmedPlatforms.length >= 2);
+
+  let activeDest = $derived(filter.kind === "destination" ? (destByUuid.get(filter.profileUuid) ?? null) : null);
+  let filterLabel = $derived(selectionLabel(filter, destByUuid, { separator: " · ", all: "" }));
+  // How many other streams of this channel also show its channel-wide events.
+  let sharedWith = $derived(activeDest ? (destByAccount.get(activeDest.accountId)?.length ?? 1) - 1 : 0);
+  let sharedNotice = $derived.by(() => {
+    const d = activeDest;
+    if (!d || sharedWith < 1) {
+      return "";
+    }
+    return `Channel-wide ${d.displayName} events appear here and under its ${sharedWith} other stream${
+      sharedWith === 1 ? "" : "s"
+    }.`;
+  });
+
+  function unarmedHint(platform: string): string {
+    return unarmedHintFor(platform, "its events cannot be filtered.");
+  }
 
   const feed = new FeedVirtualizer<NormalizedEvent>({ max: 500, estimate: 38, getDisplay: () => filtered });
   // Explicitly typed to break the feed <-> filtered inference cycle (getDisplay
   // closes over filtered, which reads feed.rows).
   let filtered: FeedRow<NormalizedEvent>[] = $derived(
-    filter === "all" ? feed.rows : feed.rows.filter((r) => r.item.platform === filter),
+    filter.kind === "all" ? feed.rows : feed.rows.filter((r) => matchesSelection(r.item, filter, destByUuid)),
   );
   const measureRow = feed.measureRow;
   const feedScroll = feed.scroll;
 
-  // Keep the active filter valid as accounts connect/disconnect: with exactly one
-  // platform, pin the filter to it (its chip is the only one, so it must read active);
-  // otherwise drop a filter whose platform is no longer connected back to "all".
+  // Keep the active filter valid as destinations come and go.
   $effect(() => {
-    if (connectedPlatforms.length === 1) {
-      if (filter !== connectedPlatforms[0]) {
-        filter = connectedPlatforms[0];
-        feed.restick();
-      }
-    } else if (filter !== "all" && !connectedPlatforms.includes(filter as ChatPlatform)) {
-      filter = "all";
-      feed.restick();
+    const next = reconcileSelection(filter, destinations, destByUuid, unarmedPlatforms.length);
+    if (next) {
+      setFilter(next);
     }
   });
 
   // Switching the filter changes the visible set; re-pin to the newest of the new
   // subset so the user always lands on the latest matching event.
-  function setFilter(f: "all" | ChatPlatform): void {
-    filter = f;
+  function setFilter(next: DestinationSelection): void {
+    filter = next;
     feed.restick();
   }
 
@@ -181,9 +250,19 @@ import { EV } from "$lib/utils/eventNames";
 {/snippet}
 
 <div class="events">
-  {#if connectedPlatforms.length > 0}
+  {#if destinations.length + unarmedPlatforms.length > 0}
     <div class="bar">
-      <PlatformChips platforms={connectedPlatforms} value={filter} showAll={showAllChip} onSelect={setFilter} />
+      <DestinationChips
+        {destinations}
+        value={filter}
+        onSelect={setFilter}
+        {unarmedPlatforms}
+        {unarmedHint}
+        titleOf={(d, canvas) => "Only events from " + d.displayName + (canvas ? " · " + canvas : "")}
+      />
+      {#if sharedNotice}
+        <p class="notice" title={FIDELITY_HINT.wide}>{sharedNotice}</p>
+      {/if}
     </div>
   {/if}
 
@@ -193,18 +272,16 @@ import { EV } from "$lib/utils/eventNames";
     {:else if feed.rows.length === 0}
       <EmptyState compact title="Follows, subs, gifts and cheers from your connected accounts appear here." />
     {:else if filtered.length === 0}
-      <EmptyState compact title={"No " + (filter === "all" ? "" : PLATFORM_LABEL[filter] + " ") + "events yet."} />
+      <EmptyState compact title={filterLabel ? "No events yet for " + filterLabel + "." : "No events yet."} />
     {:else}
       <div class="sizer" style:height={feed.layout.total + "px"}>
         {#each feed.visible as row (row.clientKey)}
           {@const e = row.item}
-          {@const platformColor = PLATFORM_COLOR[e.platform] ?? "var(--color-muted)"}
-          {@const actorColor = e.actorColor || platformColor}
+          {@const actorColor = e.actorColor || PLATFORM_COLOR[e.platform] || "var(--color-muted)"}
           {@const accent = TYPE_COLOR[e.type] ?? "var(--color-muted)"}
           <div class="row selectable" style:top={row.top + "px"} use:measureRow={row.clientKey}>
             <div class="line">
-              <span class="pdot" style:background={platformColor} title={PLATFORM_LABEL[e.platform] ?? e.platform}
-              ></span>
+              <span class="pmark"><PlatformMark platform={e.platform} size={12} /></span>
               <span class="icon" style:color={accent} title={TYPE_LABEL[e.type] ?? e.type}
                 >{@render typeIcon(e.type)}</span
               >
@@ -212,6 +289,17 @@ import { EV } from "$lib/utils/eventNames";
               <span class="sum">{summary(e)}</span>
             </div>
             {#if e.message}<span class="msg">{e.message}</span>{/if}
+            {#if multiOrigin}
+              {@const o = attribute(e, destByAccount)}
+              {@const note = FIDELITY_NOTE[o.fidelity]}
+              <div class="origin" title={FIDELITY_HINT[o.fidelity]}>
+                <Avatar url={o.avatarUrl} name={o.channel} size={14} />
+                <span class="ochannel">{o.channel}</span>
+                <span class="osep" aria-hidden="true">›</span>
+                <span class="ocanvas" class:state={!o.named}>{o.canvasLabel}</span>
+                {#if note}<span class="ofid">{note}</span>{/if}
+              </div>
+            {/if}
           </div>
         {/each}
       </div>
@@ -240,11 +328,17 @@ import { EV } from "$lib/utils/eventNames";
   .bar {
     flex: 0 0 auto;
     display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
+    flex-direction: column;
+    gap: 5px;
     padding: 6px 8px;
     border-bottom: var(--border-weight) solid var(--color-border);
     background: var(--color-surface-2);
+  }
+  .notice {
+    margin: 0;
+    font-size: 9.5px;
+    line-height: 1.4;
+    color: var(--color-dim);
   }
   .scroll {
     flex: 1;
@@ -273,11 +367,10 @@ import { EV } from "$lib/utils/eventNames";
     align-items: baseline;
     gap: 0 6px;
   }
-  .pdot {
+  .pmark {
     align-self: center;
-    width: 7px;
-    height: 7px;
     flex: 0 0 auto;
+    display: inline-flex;
   }
   .icon {
     align-self: center;
@@ -300,9 +393,58 @@ import { EV } from "$lib/utils/eventNames";
   .msg {
     display: block;
     margin-top: 1px;
-    padding-left: 26px;
+    padding-left: 31px;
     color: var(--color-text);
     overflow-wrap: anywhere;
+  }
+  /* Which destination this event belongs to: avatar carries the channel (two YouTube
+     channels share one red mark, so color cannot), the canvas carries the cut. */
+  .origin {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 1px 5px;
+    margin-top: 2px;
+    min-width: 0;
+    font-size: 10px;
+  }
+  .ochannel {
+    min-width: 0;
+    max-width: 18ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--color-dim);
+  }
+  .osep {
+    flex: 0 0 auto;
+    color: var(--color-muted);
+  }
+  .ocanvas {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--color-text);
+    font-weight: 500;
+  }
+  /* A state word, not a canvas name -- mono and unbolded so "channel-wide" never
+     reads as something the user named. */
+  .ocanvas.state {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: 0.06em;
+    font-weight: 400;
+    color: var(--color-dim);
+  }
+  .ofid {
+    flex: 0 0 auto;
+    padding: 0 3px;
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: 0.06em;
+    color: var(--color-dim);
+    border: var(--border-weight) solid var(--color-border);
   }
 
   .jump {

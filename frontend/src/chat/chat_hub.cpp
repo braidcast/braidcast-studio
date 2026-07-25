@@ -48,17 +48,8 @@ void RouteEmit(const std::string &event, const json &body)
 // these -- connecting every OAuth-connected account regardless of binding state wastes
 // transports and polls a channel's chat the user explicitly disabled.
 //
-// THE CHAT-TRANSPORT KEYING RULE, applied here in one place:
-//   - StreamProvider::broadcastPerDestination() == false (Twitch, Kick): the platform has
-//     exactly ONE chat per account, so every enabled profile pointing at that account
-//     normalizes to the account-wide destination (empty profileUuid) and collapses into a
-//     single set entry. Two profiles on one Twitch channel therefore still produce ONE
-//     transport and ONE IRC connection -- unchanged from before this was keyed by
-//     destination, and a second transport would double every message and every send.
-//   - broadcastPerDestination() == true (YouTube): each profile's broadcast has its own
-//     liveChatId, so each enabled profile is its own destination with its own transport.
-//     Collapsing them is what left one orientation's chat permanently unread.
-// An account whose provider is unknown is skipped -- it can have no transport anyway.
+// Enabled-ness is decided here; the binding -> destination mapping itself is
+// BindingDestination (below), shared with the per-binding teardown path.
 std::set<OAuth::DestinationId> EnabledChatDestinations()
 {
 	std::set<OAuth::DestinationId> destinations;
@@ -66,26 +57,34 @@ std::set<OAuth::DestinationId> EnabledChatDestinations()
 		if (!b.enabled) {
 			continue;
 		}
-		StreamProfile *profile = ObsBootstrap::StreamProfiles().Find(b.profileUuid);
-		if (!profile || profile->accountId.empty()) {
-			continue;
+		OAuth::DestinationId dest;
+		if (BindingDestination(b, dest)) {
+			destinations.insert(dest);
 		}
-		const std::optional<OAuth::OAuthAccount> acct = OAuth::Accounts().Get(profile->accountId);
-		if (!acct) {
-			continue;
-		}
-		const OAuth::StreamProvider *provider = OAuth::Registry().Get(acct->providerId);
-		if (!provider) {
-			continue;
-		}
-		const bool perDestination = provider->broadcastPerDestination();
-		destinations.insert(
-			OAuth::DestinationId{profile->accountId, perDestination ? b.profileUuid : std::string()});
 	}
 	return destinations;
 }
 
 } // namespace
+
+bool BindingDestination(const OutputBinding &b, OAuth::DestinationId &out)
+{
+	StreamProfile *profile = ObsBootstrap::StreamProfiles().Find(b.profileUuid);
+	if (!profile || profile->accountId.empty()) {
+		return false;
+	}
+	const std::optional<OAuth::OAuthAccount> acct = OAuth::Accounts().Get(profile->accountId);
+	if (!acct) {
+		return false;
+	}
+	const OAuth::StreamProvider *provider = OAuth::Registry().Get(acct->providerId);
+	if (!provider) {
+		return false; // no provider -> no transport and no per-broadcast state either way
+	}
+	out = OAuth::DestinationId{profile->accountId,
+				   provider->broadcastPerDestination() ? b.profileUuid : std::string()};
+	return true;
+}
 
 void ChatHub::Start()
 {
@@ -224,14 +223,24 @@ void ChatHub::Start()
 			};
 			ctx.emit = emitFn;
 			// Route this transport's health transitions to the shared aggregator, keyed by
-			// platform. Dropped once the generation stops so a late worker report can't
-			// override the Disconnected that Stop() writes as the authoritative terminal.
-			ctx.reportHealth = [providerId, stop](Transports::TransportHealth::State st,
-							      const std::string &healthErr) {
+			// destination -- two destinations of one account each own a row instead of
+			// overwriting a shared platform row. Dropped once the generation stops so a late
+			// worker report can't override the Disconnected that Stop() writes as the
+			// authoritative terminal.
+			//
+			// The latch records whether the transport reported a terminal of its own, so the
+			// backstop after connect() can fill one in without overwriting a reason the
+			// transport already gave.
+			auto reportedTerminal = std::make_shared<std::atomic<bool>>(false);
+			ctx.reportHealth = [dest, stop, reportedTerminal](Transports::TransportHealth::State st,
+									 const std::string &healthErr) {
 				if (stop->load(std::memory_order_acquire)) {
 					return;
 				}
-				Transports::Health().Report(Transports::ChatTransportId(providerId), st, healthErr);
+				if (st == Transports::TransportHealth::State::Failed) {
+					reportedTerminal->store(true, std::memory_order_release);
+				}
+				Transports::Health().Report(Transports::ChatTransportId(dest), st, healthErr);
 			};
 
 			std::string err;
@@ -250,6 +259,15 @@ void ChatHub::Start()
 			}
 			if (!ok && !ctx.canceled() && !err.empty()) {
 				HostLog("[chat] transport '" + providerId + "' ended: " + Err::Diagnostic(err));
+			}
+			// A chat transport gets exactly ONE connect() per go-live -- this hub never
+			// reconnects it -- so any return that is not a cancel means this destination's
+			// chat is over for the session. The transport normally reports that itself
+			// (EmitChatTerminal, carrying the reason it alone knows); this fills in a
+			// terminal for one that returned having reported nothing, so no row is left
+			// claiming it is reconnecting to a loop that has already exited.
+			if (!ctx.canceled() && !reportedTerminal->load(std::memory_order_acquire)) {
+				ctx.reportHealth(Transports::TransportHealth::State::Failed, Err::Diagnostic(err));
 			}
 		});
 		++started;
@@ -277,101 +295,109 @@ void ChatHub::Stop()
 		}
 		// Authoritative terminal for this transport's health: the generation flag is now
 		// set, so its worker's own late reports are dropped and cannot override this.
-		Transports::Health().Report(Transports::ChatTransportId(entry.second.providerId),
+		Transports::Health().Report(Transports::ChatTransportId(entry.first),
 					    Transports::TransportHealth::State::Disconnected);
 	}
 }
 
 void ChatHub::SendToPlatforms(const std::vector<std::string> &platforms, const std::string &text)
 {
-	SendMatching(
-		[&platforms](const Active &a) {
-			return platforms.empty() ||
-			       std::find(platforms.begin(), platforms.end(), a.providerId) != platforms.end();
-		},
-		text);
-}
-
-void ChatHub::SendToDestination(const OAuth::DestinationId &dest, const std::string &text)
-{
-	SendMatching([&dest](const Active &a) { return a.dest == dest; }, text);
-}
-
-void ChatHub::SendMatching(const std::function<bool(const Active &)> &match, const std::string &text)
-{
 	std::vector<Active> targets;
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
 		for (const auto &entry : active_) {
-			if (match(entry.second)) {
+			if (platforms.empty() || std::find(platforms.begin(), platforms.end(),
+							   entry.second.providerId) != platforms.end()) {
 				targets.push_back(entry.second);
 			}
 		}
 	}
-
-	for (auto &t : targets) {
-		const OAuth::DestinationId dest = t.dest;
-		const std::string providerId = t.providerId;
-		std::shared_ptr<ChatTransport> transport = t.transport;
-		std::function<void(const json &payload)> emit = t.emit;
-		const std::string msg = text;
-		// One worker per send so a slow REST send never blocks the caller. The worker
-		// captures the shared_ptr (not a raw ptr) so a concurrent Stop() can't free the
-		// transport mid-send.
-		AsyncTask::RunAsync([dest, providerId, transport, emit, msg]() {
-			// Load the account fresh from the store so ensureFresh stays the sole token
-			// writer (no pre-call snapshot writeback -- mirrors the streamMeta.* path).
-			std::optional<OAuth::OAuthAccount> stored = OAuth::Accounts().Get(dest.accountId);
-			if (!stored) {
-				return;
-			}
-			OAuth::OAuthAccount acct = *stored;
-			std::string err;
-			bool ok = false;
-			try {
-				ok = transport->send(acct, msg, err);
-			} catch (const std::exception &e) {
-				err = std::string("send failed: ") + e.what();
-			} catch (...) {
-				err = "send failed: unknown error";
-			}
-			if (!ok) {
-				// chat.state carries a human-readable line; unpack a quota envelope
-				// rather than pushing raw envelope JSON at the dock. Identity is
-				// stamped to match the frames that come through emitFn -- this one
-				// reports a send failure and so cannot route through the read path.
-				AsyncTask::PostToUi([dest, providerId, err = Err::Diagnostic(err)] {
-					json body = json{{"platform", providerId},
-							 {"accountId", dest.accountId},
-							 {"connected", true},
-							 {"error", err}};
-					if (!dest.profileUuid.empty()) {
-						body["profileUuid"] = dest.profileUuid;
-					}
-					Bridge::EmitEvent(EventNames::kChatState, body);
-				});
-				return;
-			}
-			if (!transport->reflectsOwnSend() && emit) {
-				// A platform whose read transport never reflects the sender's own
-				// message (Twitch IRC) would leave the streamer's send invisible in
-				// their own pane, so echo it locally through the account's regular
-				// emit path -- the identical pipeline a real incoming message takes
-				// (overlay fan-out, alive-guarded UI post). No "id" on purpose: the
-				// emit path's fallback-id synthesis mints a unique one from idSeq_,
-				// and a non-reflecting platform has no real id to dedupe against.
-				const std::string name = acct.displayName.empty() ? acct.login : acct.displayName;
-				emit(json{
-					{"event", EventNames::kChatMessage},
-					{"platform", providerId},
-					{"channelId", transport->channelId()},
-					{"ts", TimeUtil::NowMs()},
-					{"author", json{{"name", name}, {"color", ""}, {"badges", json::array()}}},
-					{"fragments", json::array({json{{"type", "text"}, {"text", msg}}})},
-				});
-			}
-		});
+	for (const Active &t : targets) {
+		DispatchSend(t, text);
 	}
+}
+
+bool ChatHub::SendToDestination(const OAuth::DestinationId &dest, const std::string &text)
+{
+	Active target;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		// active_ is keyed by destination, so this is an exact-match lookup rather than a
+		// predicate scan: a reply aimed at one YouTube broadcast cannot widen to the
+		// account's other live broadcast the way a providerId match does.
+		const auto it = active_.find(dest);
+		if (it == active_.end()) {
+			return false;
+		}
+		target = it->second; // copy out; the send dispatches with the lock released
+	}
+	DispatchSend(target, text);
+	return true;
+}
+
+void ChatHub::DispatchSend(const Active &target, const std::string &text)
+{
+	const OAuth::DestinationId dest = target.dest;
+	const std::string providerId = target.providerId;
+	std::shared_ptr<ChatTransport> transport = target.transport;
+	std::function<void(const json &payload)> emit = target.emit;
+	const std::string msg = text;
+	// One worker per send so a slow REST send never blocks the caller. The worker
+	// captures the shared_ptr (not a raw ptr) so a concurrent Stop() can't free the
+	// transport mid-send.
+	AsyncTask::RunAsync([dest, providerId, transport, emit, msg]() {
+		// Load the account fresh from the store so ensureFresh stays the sole token
+		// writer (no pre-call snapshot writeback -- mirrors the streamMeta.* path).
+		std::optional<OAuth::OAuthAccount> stored = OAuth::Accounts().Get(dest.accountId);
+		if (!stored) {
+			return;
+		}
+		OAuth::OAuthAccount acct = *stored;
+		std::string err;
+		bool ok = false;
+		try {
+			ok = transport->send(acct, msg, err);
+		} catch (const std::exception &e) {
+			err = std::string("send failed: ") + e.what();
+		} catch (...) {
+			err = "send failed: unknown error";
+		}
+		if (!ok) {
+			// chat.state carries a human-readable line; unpack a quota envelope
+			// rather than pushing raw envelope JSON at the dock. Identity is
+			// stamped to match the frames that come through emitFn -- this one
+			// reports a send failure and so cannot route through the read path.
+			AsyncTask::PostToUi([dest, providerId, err = Err::Diagnostic(err)] {
+				json body = json{{"platform", providerId},
+						 {"accountId", dest.accountId},
+						 {"connected", true},
+						 {"error", err}};
+				if (!dest.profileUuid.empty()) {
+					body["profileUuid"] = dest.profileUuid;
+				}
+				Bridge::EmitEvent(EventNames::kChatState, body);
+			});
+			return;
+		}
+		if (!transport->reflectsOwnSend() && emit) {
+			// A platform whose read transport never reflects the sender's own
+			// message (Twitch IRC) would leave the streamer's send invisible in
+			// their own pane, so echo it locally through the account's regular
+			// emit path -- the identical pipeline a real incoming message takes
+			// (overlay fan-out, alive-guarded UI post). No "id" on purpose: the
+			// emit path's fallback-id synthesis mints a unique one from idSeq_,
+			// and a non-reflecting platform has no real id to dedupe against.
+			const std::string name = acct.displayName.empty() ? acct.login : acct.displayName;
+			emit(json{
+				{"event", EventNames::kChatMessage},
+				{"platform", providerId},
+				{"channelId", transport->channelId()},
+				{"ts", TimeUtil::NowMs()},
+				{"author", json{{"name", name}, {"color", ""}, {"badges", json::array()}}},
+				{"fragments", json::array({json{{"type", "text"}, {"text", msg}}})},
+			});
+		}
+	});
 }
 
 json ChatHub::State()

@@ -1,127 +1,359 @@
 <script lang="ts">
-  import { obs, type ChatMessage, type ChatPlatform } from "$lib/api/bridge";
-import { EV } from "$lib/utils/eventNames";
-  import { PLATFORM_COLORS, PLATFORM_LABELS, PLATFORM_ORDER as ORDER } from "$lib/theme/platformColors";
-  import { TRANSPORT_STATE_COLOR } from "$lib/theme/stateColors";
-  import { FeedVirtualizer } from "$lib/utils/feedVirtualizer.svelte";
+  import { obs, type ChatMessage, type ChatSendParams, type TransportHealthState } from "$lib/api/bridge";
+  import { EV } from "$lib/utils/eventNames";
+  import { PLATFORM_COLORS, PLATFORM_LABELS, platformKey } from "$lib/theme/platformColors";
+  import { FeedVirtualizer, type FeedRow } from "$lib/utils/feedVirtualizer.svelte";
   import { callOrToast } from "$lib/utils/callToast";
+  import { chatTransportId, destinationKey } from "$lib/api/destinationKeys";
   import EmptyState from "$lib/ui/EmptyState.svelte";
   import Icon from "$lib/ui/Icon.svelte";
-  import PlatformChips from "$lib/ui/PlatformChips.svelte";
-  import { outputBindingStore } from "$lib/stores/outputBindingStore.svelte";
-  import { streamProfileStore } from "$lib/stores/streamProfileStore.svelte";
-  import { multistreamStatusStore } from "$lib/stores/multistreamStatusStore.svelte";
+  import Avatar from "$lib/ui/Avatar.svelte";
+  import PlatformMark from "$lib/ui/PlatformMark.svelte";
+  import DestinationChips, {
+    type DestinationChipStatus,
+    type DestinationChipTone,
+  } from "$lib/ui/DestinationChips.svelte";
+  import {
+    ALL_DESTINATIONS,
+    attribute,
+    destinationsByAccount,
+    matchesSelection,
+    reconcileSelection,
+    selectionLabel,
+    unarmedHint as unarmedHintFor,
+    unarmedPlatforms as unarmedPlatformsOf,
+    type Attribution,
+    type DestinationSelection,
+    type Fidelity,
+  } from "$lib/ui/destinationSelection";
   import { oauthStore } from "$lib/stores/oauthStore.svelte";
+  import { destinationIdentityStore, type DestinationIdentity } from "$lib/stores/destinationIdentityStore.svelte";
   import { transportHealthStore } from "$lib/stores/transportHealthStore.svelte";
 
   // Host supplies tab chrome + strips __* keys; this body declares no props.
   let {}: Record<string, unknown> = $props();
 
-  // Brand colors (spec): author-color fallback + platform dot/tag + dest chips.
   const PLATFORM_COLOR = PLATFORM_COLORS;
   const PLATFORM_LABEL = PLATFORM_LABELS;
-  // Stable chip order so the dest selector / connected chips never reshuffle.
-  const PLATFORM_ORDER: readonly ChatPlatform[] = ORDER;
 
   // Merged, ring-capped, virtualized scrollback. Rows carry a client-assigned key
   // (m.id could arrive empty/duplicated); 30px estimate for an unmeasured row.
-  const feed = new FeedVirtualizer<ChatMessage>({ max: 500, estimate: 30 });
+  // Filtering feeds it a derived subset rather than trimming the ring, so a row
+  // filtered out keeps its measured height and its place in the 500-row cap.
+  const feed = new FeedVirtualizer<ChatMessage>({ max: 500, estimate: 30, getDisplay: () => filtered });
   const measureRow = feed.measureRow;
   const feedScroll = feed.scroll;
 
-  // --- connection state + send destination ----------------------------------
-  // Chat transport health id, matching the native Transports::ChatTransportId
-  // convention ("chat:" + providerId) -- the format the store's rows are keyed by.
-  function chatTransportId(p: ChatPlatform): string {
-    return "chat:" + p;
-  }
-
-  // Hover detail for a chip in trouble: the drop/failure reason, empty otherwise.
-  function chipTitle(p: ChatPlatform): string | undefined {
-    const row = transportHealthStore.byId.get(chatTransportId(p));
-    if (row && (row.state === "failed" || row.state === "reconnecting") && row.lastError) {
-      return row.lastError;
-    }
-    return undefined;
-  }
-
-  // The multichat channel set = an ENABLED output binding (multistreamStatusStore only
-  // ever carries a row for an enabled binding) whose linked account is OAuth-connected
-  // (oauthStore.connectedStatusForAccount, backed by the shared IsAccountConnected
-  // gate) -- NOT "every connected account". A destination the user disabled must not
-  // show a tab or receive chat traffic. Reactive off the two shared stores, so toggling
-  // a destination live updates the set without a page reload.
   $effect(() => {
-    outputBindingStore.start();
-    streamProfileStore.start();
-    const offStatus = multistreamStatusStore.subscribe();
-    const offOauth = oauthStore.subscribe();
+    destinationIdentityStore.start();
     const offHealth = transportHealthStore.subscribe();
+    const offOauth = oauthStore.subscribe();
     return () => {
-      offStatus();
-      offOauth();
       offHealth();
+      offOauth();
     };
   });
 
-  let enabledChannels = $derived.by<Set<ChatPlatform>>(() => {
-    const set = new Set<ChatPlatform>();
-    for (const row of multistreamStatusStore.outputs) {
-      const binding = outputBindingStore.bindings.find((b) => b.uuid === row.bindingUuid);
-      const profile = binding ? streamProfileStore.byUuid(binding.profileUuid) : undefined;
-      if (!profile?.accountId) continue;
-      const status = oauthStore.connectedStatusForAccount(profile.accountId);
-      if (status) set.add(status.providerId as ChatPlatform);
+  // Only an account-backed profile can run a chat transport, so a key/RTMP/WHIP
+  // profile could never own a message or receive a reply.
+  let destinations = $derived(destinationIdentityStore.all.filter((d) => d.accountId !== ""));
+  let destByUuid = $derived(new Map(destinations.map((d) => [d.profileUuid, d])));
+
+  // Needed twice: to attribute a channel-wide message to the streams it could belong
+  // to, and to know whether one chat is shared.
+  let destByAccount = $derived(destinationsByAccount(destinations));
+
+  // A connected account with no destination still has nothing to read or reply to, so
+  // it gets a disabled chip that says why rather than no chip at all.
+  let unarmedPlatforms = $derived(unarmedPlatformsOf(oauthStore.connectedPlatforms, destinations));
+
+  function unarmedHint(platform: string): string {
+    return unarmedHintFor(platform, "it has no chat here.");
+  }
+
+  // --- transport resolution --------------------------------------------------
+  // Which transport carries this destination's chat, found by EXACT id and never by
+  // scanning the health array: Stop() leaves a terminal Disconnected row behind, so
+  // the array still lists destinations the user has unbound since. Platforms that run
+  // one chat per broadcast key on (account, profile); platforms with a single chat per
+  // channel key on the account alone, and the pair of lookups is what tells them
+  // apart without this dock holding a per-platform table of its own.
+
+  interface ChatTransport {
+    id: string;
+    /** Null when the chat is account-wide -- the send contract's "no profileUuid". */
+    profileUuid: string | null;
+  }
+
+  function transportOf(d: DestinationIdentity): ChatTransport | null {
+    const perBroadcast = chatTransportId(d.accountId, d.profileUuid);
+    if (transportHealthStore.byId.has(perBroadcast)) {
+      return { id: perBroadcast, profileUuid: d.profileUuid };
     }
-    return set;
-  });
+    const accountWide = chatTransportId(d.accountId);
+    if (transportHealthStore.byId.has(accountWide)) {
+      return { id: accountWide, profileUuid: null };
+    }
+    return null;
+  }
 
-  // Chips to render: every enabled channel whose transport has ever reported
-  // (i.e. not still "disconnected"/never-started) -- so a reconnecting or failed
-  // transport stays VISIBLE and distinguishable instead of silently vanishing like
-  // the old binary chat.state.connected check did (the G1 bug this replaces).
-  let visibleChannels = $derived(
-    PLATFORM_ORDER.filter(
-      (p) => enabledChannels.has(p) && transportHealthStore.stateOf(chatTransportId(p)) !== "disconnected",
-    ),
-  );
-  // Sendable = actually connected. Reconnecting/failed channels stay visible above
-  // but can't be picked as a send destination.
-  let connected = $derived(
-    visibleChannels.filter((p) => transportHealthStore.stateOf(chatTransportId(p)) === "connected"),
-  );
-  let anyConnected = $derived(connected.length > 0);
+  const TONE: Record<TransportHealthState, DestinationChipTone> = {
+    connected: "ok",
+    connecting: "warn",
+    reconnecting: "warn",
+    failed: "down",
+    disconnected: "down",
+  };
 
-  // "all" or a single connected platform. Defaults to "all" and STAYS there unless the
-  // user explicitly picks a platform -- a channel connecting (even the first one live)
-  // must never auto-narrow the view to just it, or a second channel going live moments
-  // later gets silently hidden. The effect only ever falls back to "all", when the
-  // current selection stops being valid (its channel disconnected or got disabled);
-  // it never advances dest to a specific platform on its own.
-  let dest = $state<"all" | ChatPlatform>("all");
-  let showAllChip = $derived(connected.length >= 2);
+  // The state in words, because the chip's dot is a color and a color cannot be the
+  // only carrier. DestinationChips appends this to both title and aria-label.
+  const STATE_NOTE: Record<TransportHealthState, string> = {
+    connected: "chat connected",
+    connecting: "chat connecting",
+    reconnecting: "chat reconnecting",
+    failed: "chat failed",
+    disconnected: "chat not connected",
+  };
+
+  const NO_TRANSPORT_NOTE = "no chat transport — nothing to read or reply to here";
+  const SHARED_CHAT_NOTE = "one chat for the whole channel, shared with its other streams";
+
+  /** True when this destination's chat is one channel-wide chat that its sibling
+   * destinations read and reply to as well. */
+  function sharesChat(d: DestinationIdentity, t: ChatTransport): boolean {
+    return t.profileUuid === null && (destByAccount.get(d.accountId)?.length ?? 1) >= 2;
+  }
+
+  // Absence of a row is UNKNOWN, not healthy: no tone (so no dot claims a state) and
+  // the chip goes unavailable, because there is neither scrollback to filter to nor a
+  // transport to reply through.
+  function statusOf(d: DestinationIdentity): DestinationChipStatus {
+    const t = transportOf(d);
+    if (!t) {
+      return { note: NO_TRANSPORT_NOTE, unavailable: true };
+    }
+    const row = transportHealthStore.byId.get(t.id);
+    const state = row?.state ?? "disconnected";
+    const parts = [STATE_NOTE[state]];
+    if (row?.lastError) {
+      parts.push(row.lastError);
+    }
+    if (sharesChat(d, t)) {
+      parts.push(SHARED_CHAT_NOTE);
+    }
+    return { tone: TONE[state], note: parts.join(" — ") };
+  }
+
+  // --- selection: the filter AND the send target -----------------------------
+  // One control for both. Today's split (the strip picked where to send while the feed
+  // showed everything) is how a reply lands in the wrong chat; bound together, "what am
+  // I reading" and "where does this go" cannot disagree.
+  let selection = $state<DestinationSelection>(ALL_DESTINATIONS);
+
+  function select(next: DestinationSelection): void {
+    selection = next;
+    // Switching scope changes the visible set; re-pin to the newest of the new subset.
+    feed.restick();
+  }
+
+  // Keep the selection valid as destinations come and go.
   $effect(() => {
-    if (dest !== "all" && !connected.includes(dest)) {
-      dest = "all";
+    const next = reconcileSelection(selection, destinations, destByUuid, unarmedPlatforms.length);
+    if (next) {
+      select(next);
     }
   });
 
-  // Presentation only: with exactly one eligible channel, highlight its chip even
-  // though `dest` itself stays "all" -- so a 2nd channel connecting later isn't
-  // fighting a `dest` state that got stuck on the first. Never fed back into `dest`.
-  let displayDest = $derived(connected.length === 1 ? connected[0] : dest);
+  // `destination` is the one selection kind that names a single chat, and the only one
+  // the composer addresses by accountId.
+  let target = $derived(selection.kind === "destination" ? (destByUuid.get(selection.profileUuid) ?? null) : null);
+  let targetTransport = $derived(target ? transportOf(target) : null);
+  let targetState = $derived(targetTransport ? transportHealthStore.stateOf(targetTransport.id) : null);
+
+  // Explicitly typed to break the feed <-> filtered inference cycle (getDisplay closes
+  // over filtered, which reads feed.rows).
+  let filtered: FeedRow<ChatMessage>[] = $derived(
+    selection.kind === "all" ? feed.rows : feed.rows.filter((r) => matchesSelection(r.item, selection, destByUuid)),
+  );
+
+  // --- per-message origin ----------------------------------------------------
+  // The tiering is shared with Events (ui/destinationSelection.ts, which documents
+  // which sources stamp what); the wording below is this dock's. `exact` is empty on
+  // purpose: originTitle already prints platform · channel · canvas, so an exact row's
+  // signal is the absence of a caveat.
+  const FIDELITY_HINT: Record<Fidelity, string> = {
+    exact: "",
+    single:
+      "Inferred — a channel-wide chat, but this channel has exactly one armed destination, " +
+      "so there is no other stream it could belong to.",
+    wide: "Channel-wide — this chat is the channel's, not one broadcast's. Naming a canvas here would be a guess.",
+    pending: "This destination's canvas has not loaded yet, or was deleted.",
+    none: "No stream profile is configured for the account this message came from.",
+  };
+
+  function originTitle(m: ChatMessage, o: Attribution): string {
+    const platform = PLATFORM_LABEL[platformKey(m.platform)] ?? m.platform;
+    const hint = FIDELITY_HINT[o.fidelity];
+    return [platform, o.channel, o.canvasLabel].join(" · ") + (hint ? " — " + hint : "");
+  }
+
+  // More than one place a message can come from: the point at which every row has to
+  // say which destination it belongs to.
+  let multiOrigin = $derived(destinations.length + unarmedPlatforms.length >= 2);
+
+  // --- badges ---------------------------------------------------------------
+  // "broadcaster" is a badge KIND string rendered generically, so a kind-to-mark map
+  // replaces the word without touching the badge pipeline. An unmapped kind keeps
+  // rendering as its label, so a new platform badge degrades to text instead of
+  // vanishing. Adding one is a single entry.
+  const BADGE_MARKS: Record<string, { label: string; d: string }> = {
+    broadcaster: { label: "Broadcaster", d: "M3 18h18v3H3zM3 6l4.5 4L12 3l4.5 7L21 6v9H3z" },
+  };
+
+  // --- header: which chat am I looking at ------------------------------------
+  let scopeLabel = $derived(
+    selectionLabel(selection, destByUuid, {
+      separator: " › ",
+      all: destinations.length >= 2 ? "All " + destinations.length + " chats" : "",
+    }),
+  );
+
+  // --- composer -------------------------------------------------------------
+  // Two ways to address a send, and which one is in force is stated, never inferred. A
+  // `destination` selection names one transport and is addressed by accountId. `all`
+  // and `platform` fan out through the host's `platforms` path -- announcing something
+  // to every chat is a normal multistream action, so they stay enabled. What was wrong
+  // before was a composer whose target silently disagreed with the feed it sat under;
+  // broadcasting is fine as long as every affordance says how many chats it will hit.
+
+  /** Destinations the current selection would fan out to; empty when it names one. */
+  let fanDestinations = $derived.by(() => {
+    const sel = selection;
+    if (sel.kind === "destination") {
+      return [];
+    }
+    if (sel.kind === "platform") {
+      return destinations.filter((d) => platformKey(d.platform) === sel.platform);
+    }
+    return destinations;
+  });
+
+  // Distinct CONNECTED transports, each resolved by exact id. Two profiles sharing one
+  // account-wide chat are ONE transport, and a destination whose transport has no
+  // health row is not connected -- counting destinations, or counting health rows,
+  // would promise a fan-out wider than the host will actually perform.
+  let fanTransports = $derived.by(() => {
+    const ids = new Set<string>();
+    for (const d of fanDestinations) {
+      const t = transportOf(d);
+      if (t && transportHealthStore.stateOf(t.id) === "connected") {
+        ids.add(t.id);
+      }
+    }
+    return ids;
+  });
+
+  /** "3 chats" / "1 YouTube chat" -- one phrase for the band, the button and the
+   * placeholder, so the three can never quote different counts. */
+  function chatsPhrase(n: number, platform: string): string {
+    const label = platform ? (PLATFORM_LABEL[platform] ?? platform) + " " : "";
+    return n + " " + label + (n === 1 ? "chat" : "chats");
+  }
+
+  const PICK_ONE = "Pick one stream —";
+
+  interface Composer {
+    /** The send addressing minus the text; null blocks the composer outright. */
+    address: Omit<ChatSendParams, "text"> | null;
+    tone: "calm" | "warn" | "fan";
+    lead: string;
+    to: string;
+    button: string;
+    buttonTitle: string;
+    placeholder: string;
+  }
+
+  function blocked(lead: string, to: string, placeholder: string): Composer {
+    return { address: null, tone: "warn", lead, to, button: "Send", buttonTitle: "", placeholder };
+  }
+
+  let composer = $derived.by<Composer>(() => {
+    const sel = selection;
+    if (destinations.length === 0) {
+      // Nothing to pick yet, so this is not a warning -- it is the offline state.
+      return {
+        address: null,
+        tone: "calm",
+        lead: "No chat while offline",
+        to: "",
+        button: "Send",
+        buttonTitle: "",
+        placeholder: "Go live to chat",
+      };
+    }
+    if (sel.kind === "destination") {
+      const d = target;
+      const t = targetTransport;
+      if (!d) {
+        return blocked(PICK_ONE, scopeLabel, "Select one stream below to reply…");
+      }
+      if (!t) {
+        // No transport row at all is UNKNOWN, not healthy: there is nothing to reply
+        // through, so this blocks rather than optimistically sending.
+        return blocked("No chat transport for", scopeLabel, "This chat is not connected");
+      }
+      if (targetState !== "connected") {
+        return blocked(STATE_NOTE[targetState ?? "disconnected"] + " —", scopeLabel, "This chat is not connected");
+      }
+      // accountId + profileUuid, never `platforms`: the host routes an accountId to
+      // exactly one transport, and a null profileUuid means that account's
+      // channel-wide chat. A reply must never reach a second channel.
+      return {
+        address: { accountId: d.accountId, profileUuid: t.profileUuid },
+        tone: "calm",
+        lead: sharesChat(d, t) ? "Replying to the whole channel" : "Replying to",
+        to: scopeLabel,
+        button: "Send",
+        buttonTitle: "",
+        placeholder: "Message " + scopeLabel + "…",
+      };
+    }
+    const platform = sel.kind === "platform" ? sel.platform : "";
+    if (fanTransports.size === 0) {
+      return platform
+        ? blocked("No connected chat on", scopeLabel, "No " + scopeLabel + " chat is connected")
+        : blocked("No chat is connected", "", "No chat is connected");
+    }
+    const phrase = chatsPhrase(fanTransports.size, platform);
+    return {
+      // No accountId: this is the host's fan-out path, where an omitted `platforms`
+      // means every connected platform -- exactly what `all` asks for.
+      address: platform ? { platforms: [platform] } : {},
+      tone: "fan",
+      lead: "Broadcasting to",
+      to: phrase,
+      button: "Send to " + phrase,
+      buttonTitle: "Post this message to " + phrase + " at once — every one whose chat is currently connected",
+      placeholder: "Announce to " + phrase + "…",
+    };
+  });
+
+  let canSend = $derived(composer.address !== null);
 
   let draft = $state("");
 
   function send(): void {
     const text = draft.trim();
-    if (!text || !anyConnected) return;
-    const platforms = dest === "all" ? [] : [dest];
+    const address = composer.address;
+    if (!text || !address) {
+      return;
+    }
+    const params: ChatSendParams = { text, ...address };
     // Clear optimistically; restore the message (if the box is still empty) when the
     // send is rejected so the user doesn't silently lose what they typed.
     draft = "";
     void (async () => {
-      const res = await callOrToast("chat.send", { platforms, text }, "Message not sent");
+      const res = await callOrToast("chat.send", params, "Message not sent");
       if (res === null && draft === "") draft = text;
     })();
   }
@@ -137,13 +369,14 @@ import { EV } from "$lib/utils/eventNames";
   // account on a platform with a single chat per channel, one per live broadcast on a
   // platform that makes a broadcast per stream profile -- so two profiles on one channel
   // are two separate chats whose ids never coincide. Guard the render path anyway: drop a
-  // repeated platform-native id so a transport reconnect that replays recent
-  // history can't double a line. Bounded ring; ids are optional per platform.
+  // repeated platform-native id so a transport reconnect that replays recent history
+  // can't double a line. Keyed by DESTINATION, not platform: two transports on one
+  // platform legitimately carry the same platform-native id space.
   const seenIds = new Set<string>();
   const seenOrder: string[] = [];
   function enqueueMessage(m: ChatMessage): void {
     if (m.id) {
-      const key = m.platform + ":" + m.id;
+      const key = destinationKey(m.accountId, m.profileUuid) + ":" + m.id;
       if (seenIds.has(key)) return;
       seenIds.add(key);
       seenOrder.push(key);
@@ -165,75 +398,114 @@ import { EV } from "$lib/utils/eventNames";
 </script>
 
 <div class="chat">
-  <div class="scroll" use:feedScroll>
-    {#if feed.rows.length === 0}
-      <EmptyState compact title={anyConnected ? "Waiting for chat…" : "Chat appears here while you are live."} />
-    {:else}
-      <div class="sizer" style:height={feed.layout.total + "px"}>
-        {#each feed.visible as row (row.clientKey)}
-          {@const m = row.item}
-          {@const authorColor = m.author.color || PLATFORM_COLOR[m.platform]}
-          <div class="row selectable" style:top={row.top + "px"} use:measureRow={row.clientKey}>
-            <span class="pdot" style:background={PLATFORM_COLOR[m.platform]} title={PLATFORM_LABEL[m.platform]}
-            ></span>
-            {#each m.author.badges as b (b.kind + (b.url ?? ""))}
-              {#if b.url}
-                <img class="badge" src={b.url} alt={b.kind} title={b.kind} loading="lazy" draggable="false" />
-              {:else}
-                <span class="badgelbl" title={b.kind}>{b.kind}</span>
+  {#if scopeLabel}
+    <div class="scopebar" title={"Reading " + scopeLabel}>{scopeLabel}</div>
+  {/if}
+
+  <div class="feed">
+    <div class="scroll" use:feedScroll>
+      {#if feed.rows.length === 0}
+        <EmptyState
+          compact
+          title={destinations.length > 0 ? "Waiting for chat…" : "Chat appears here while you are live."}
+        />
+      {:else if filtered.length === 0}
+        <EmptyState compact title={scopeLabel ? "No messages yet for " + scopeLabel + "." : "No messages yet."} />
+      {:else}
+        <div class="sizer" style:height={feed.layout.total + "px"}>
+          {#each feed.visible as row (row.clientKey)}
+            {@const m = row.item}
+            {@const authorColor = m.author.color || PLATFORM_COLOR[m.platform]}
+            <div
+              class="row selectable"
+              style:top={row.top + "px"}
+              style:border-left-color={PLATFORM_COLOR[m.platform] || "var(--color-muted)"}
+              use:measureRow={row.clientKey}
+            >
+              {#if multiOrigin}
+                {@const o = attribute(m, destByAccount)}
+                <!-- The avatar is what tells two channels of one platform apart: they
+                     share one brand mark and one stripe color, so neither can. -->
+                <span class="origin" title={originTitle(m, o)}>
+                  <PlatformMark platform={m.platform} size={11} />
+                  <Avatar url={o.avatarUrl} name={o.channel} size={15} />
+                  {#if !o.named || o.siblings >= 2}
+                    <span class="ocanvas" class:state={!o.named}>{o.canvasLabel}</span>
+                  {/if}
+                </span>
               {/if}
-            {/each}
-            <span class="author" style:color={authorColor}>{m.author.name}</span>
-            <span class="sep">:</span>
-            <span class="text">
-              {#each m.fragments as frag, i (i)}
-                {#if frag.type === "text"}{frag.text}{:else}<img
-                    class="emote"
-                    src={frag.url}
-                    alt={frag.code}
-                    title={frag.code}
-                    loading="lazy"
-                    draggable="false"
-                  />{/if}
+              {#each m.author.badges as b (b.kind + (b.url ?? ""))}
+                {@const mark = BADGE_MARKS[b.kind]}
+                {#if b.url}
+                  <img class="badge" src={b.url} alt={b.kind} title={b.kind} loading="lazy" draggable="false" />
+                {:else if mark}
+                  <svg class="badgemark" width="11" height="11" viewBox="0 0 24 24" role="img" aria-label={mark.label}>
+                    <path fill="var(--color-accent)" d={mark.d} />
+                  </svg>
+                {:else}
+                  <span class="badgelbl" title={b.kind}>{b.kind}</span>
+                {/if}
               {/each}
-            </span>
-          </div>
-        {/each}
-      </div>
+              <span class="author" style:color={authorColor}>{m.author.name}</span>
+              <span class="sep">:</span>
+              <span class="text">
+                {#each m.fragments as frag, i (i)}
+                  {#if frag.type === "text"}{frag.text}{:else}<img
+                      class="emote"
+                      src={frag.url}
+                      alt={frag.code}
+                      title={frag.code}
+                      loading="lazy"
+                      draggable="false"
+                    />{/if}
+                {/each}
+              </span>
+            </div>
+          {/each}
+        </div>
+      {/if}
+    </div>
+
+    {#if !feed.autoStick && filtered.length > 0}
+      <button class="jump" onclick={feed.jumpToLatest}><Icon name="jump-down" size={11} /> Jump to latest</button>
     {/if}
   </div>
 
-  {#if !feed.autoStick && feed.rows.length > 0}
-    <button class="jump" onclick={feed.jumpToLatest}><Icon name="jump-down" size={11} /> Jump to latest</button>
+  {#if destinations.length + unarmedPlatforms.length > 0}
+    <div class="dests">
+      <DestinationChips
+        {destinations}
+        value={selection}
+        onSelect={select}
+        {unarmedPlatforms}
+        {unarmedHint}
+        {statusOf}
+        titleOf={(d, canvas) => "Read and reply in " + d.displayName + (canvas ? " · " + canvas : "")}
+      />
+    </div>
   {/if}
 
   <div class="composer">
-    <div class="dests">
-      <PlatformChips
-        platforms={visibleChannels}
-        value={displayDest}
-        showAll={showAllChip}
-        onSelect={(v) => (dest = v)}
-        dotColorOf={(p) => TRANSPORT_STATE_COLOR[transportHealthStore.stateOf(chatTransportId(p))]}
-        titleOf={chipTitle}
-        disabledOf={(p) => transportHealthStore.stateOf(chatTransportId(p)) !== "connected"}
-      />
-    </div>
+    <p class="replyto" class:warn={composer.tone === "warn"} class:fan={composer.tone === "fan"}>
+      <span>{composer.lead}</span>
+      {#if composer.to}<span class="to">{composer.to}</span>{/if}
+    </p>
     <div class="inputrow">
       <textarea
         class="input"
         rows="1"
         bind:value={draft}
         onkeydown={onKeydown}
-        disabled={!anyConnected}
-        placeholder={anyConnected
-          ? "Message " + (displayDest === "all" ? "all platforms" : PLATFORM_LABEL[displayDest as ChatPlatform]) + "…"
-          : visibleChannels.length > 0
-            ? "No connected accounts"
-            : "Go live to chat"}
+        disabled={!canSend}
+        placeholder={composer.placeholder}
         aria-label="Chat message"
       ></textarea>
-      <button class="sendbtn" disabled={!anyConnected || draft.trim() === ""} onclick={send}>Send</button>
+      <button
+        class="sendbtn"
+        disabled={!canSend || draft.trim() === ""}
+        title={composer.buttonTitle || undefined}
+        onclick={send}>{composer.button}</button
+      >
     </div>
   </div>
 </div>
@@ -246,7 +518,30 @@ import { EV } from "$lib/utils/eventNames";
     background: var(--color-surface);
     font-family: var(--font-ui);
     min-height: 0;
+  }
+  /* Which chat is on screen, restated in words: a highlighted chip is state you stop
+     seeing after an hour. */
+  .scopebar {
+    flex: 0 0 auto;
+    padding: 5px 10px;
+    border-bottom: var(--border-weight) solid var(--color-border);
+    background: var(--color-surface-2);
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    letter-spacing: 0.1em;
+    text-transform: var(--label-case);
+    color: var(--color-dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  /* Own containing block for the jump chip, so a wrapping chip strip can't push it
+     off the feed the way a fixed offset did. */
+  .feed {
+    flex: 1;
+    min-height: 0;
     position: relative;
+    display: flex;
   }
   .scroll {
     flex: 1;
@@ -268,23 +563,48 @@ import { EV } from "$lib/utils/eventNames";
     flex-wrap: wrap;
     align-items: baseline;
     gap: 0 5px;
-    padding: 3px 10px;
+    padding: 3px 10px 3px 7px;
+    border-left: 3px solid transparent;
     font-size: 12px;
     line-height: 1.5;
     color: var(--color-text);
     word-break: break-word;
   }
-  .pdot {
+  .origin {
     align-self: center;
-    width: 7px;
-    height: 7px;
     flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    min-width: 0;
+  }
+  .ocanvas {
+    min-width: 0;
+    max-width: 10ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 10px;
+    color: var(--color-dim);
+  }
+  /* A state word, not a canvas name -- mono and dimmer so "channel-wide" never reads
+     as something the user named. */
+  .ocanvas.state {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: 0.06em;
+    color: var(--color-muted);
   }
   .badge {
     height: 14px;
     width: auto;
     align-self: center;
     flex: 0 0 auto;
+  }
+  .badgemark {
+    align-self: center;
+    flex: 0 0 auto;
+    display: block;
   }
   .badgelbl {
     align-self: center;
@@ -320,7 +640,7 @@ import { EV } from "$lib/utils/eventNames";
     position: absolute;
     left: 50%;
     transform: translateX(-50%);
-    bottom: 78px;
+    bottom: 8px;
     z-index: 2;
     display: flex;
     align-items: center;
@@ -334,16 +654,49 @@ import { EV } from "$lib/utils/eventNames";
     cursor: pointer;
   }
 
+  /* The selector sits on the base surface, between the feed it filters and the
+     composer it aims -- one strip physically touching both things it controls. */
+  .dests {
+    flex: 0 0 auto;
+    padding: 6px 8px;
+    border-top: var(--border-weight) solid var(--color-border);
+    background: var(--color-base);
+  }
   .composer {
     flex: 0 0 auto;
     border-top: var(--border-weight) solid var(--color-border);
     background: var(--color-surface-2);
   }
-  .dests {
+  .replyto {
     display: flex;
     flex-wrap: wrap;
-    gap: 4px;
-    padding: 6px 8px 0;
+    align-items: baseline;
+    gap: 0 5px;
+    margin: 0;
+    padding: 5px 8px;
+    border-bottom: var(--border-weight) solid var(--color-border-2);
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    letter-spacing: 0.09em;
+    text-transform: var(--label-case);
+    color: var(--color-muted);
+  }
+  .replyto .to {
+    color: var(--color-accent);
+    overflow-wrap: anywhere;
+  }
+  .replyto.warn {
+    background: color-mix(in srgb, var(--color-warn) 9%, transparent);
+  }
+  .replyto.warn .to {
+    color: var(--color-warn);
+  }
+  /* Broadcasting is not a warning, so it does not borrow the warn color -- but it is
+     also not the calm one-reply default, so it gets its own tint and edge. The words
+     carry the state; this only makes the band impossible to skim past. */
+  .replyto.fan {
+    background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+    box-shadow: inset 3px 0 0 var(--color-accent);
   }
   .inputrow {
     display: flex;
@@ -353,7 +706,9 @@ import { EV } from "$lib/utils/eventNames";
   }
   .input {
     flex: 1;
-    min-width: 0;
+    /* Floor, not 0: the fan-out send label is long enough to crush the box on a narrow
+       dock, and the button shrinks first. */
+    min-width: 5.5em;
     resize: none;
     padding: 6px 8px;
     font-family: var(--font-ui);
@@ -372,7 +727,11 @@ import { EV } from "$lib/utils/eventNames";
     cursor: not-allowed;
   }
   .sendbtn {
-    flex: 0 0 auto;
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
     padding: 0 14px;
     font-size: 11px;
     font-weight: 600;

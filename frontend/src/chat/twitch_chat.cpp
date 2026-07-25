@@ -31,6 +31,10 @@ const char *kTwitchIrcUrl = "wss://irc-ws.chat.twitch.tv:443";
 const char *kEmoteUrlPrefix = "https://static-cdn.jtvnw.net/emoticons/v2/";
 const char *kEmoteUrlSuffix = "/default/dark/1.0";
 
+// The one reason for an auth failure the reactive force-refresh could not clear. Used for
+// both the reported state and the hub's log line, so the two cannot disagree.
+const char *kReauthNeeded = "Twitch chat: re-authentication required";
+
 std::string ToLower(std::string s)
 {
 	std::transform(s.begin(), s.end(), s.begin(),
@@ -519,16 +523,18 @@ bool TwitchChat::connect(const Chat::ChatContext &ctx, OAuthAccount &acct, const
 		if (authFailed) {
 			// Reactive token issue. Twitch refresh tokens don't rotate, so one
 			// force-refresh + reconnect (re-PASS) suffices; never loop on it.
-			if (reauthAttempts >= 1 || !auth_) {
-				Chat::EmitChatState(ctx, "twitch", false, "re-authentication required");
-				err = "Twitch chat: re-authentication required";
-				break;
+			bool refreshed = false;
+			if (reauthAttempts < 1 && auth_) {
+				++reauthAttempts;
+				std::string refreshErr;
+				refreshed = auth_->ensureFresh(acct, refreshErr, /*force=*/true);
 			}
-			++reauthAttempts;
-			std::string refreshErr;
-			if (!auth_->ensureFresh(acct, refreshErr, /*force=*/true)) {
-				Chat::EmitChatState(ctx, "twitch", false, "re-authentication required");
-				err = "Twitch chat: re-authentication required";
+			if (!refreshed) {
+				// Out of retry budget, or the forced refresh itself failed: this loop
+				// stops here, so it reports a terminal state rather than a
+				// Reconnecting it will never act on.
+				Chat::EmitChatTerminal(ctx, "twitch", kReauthNeeded);
+				err = kReauthNeeded;
 				break;
 			}
 			continue; // reconnect immediately with the refreshed token
