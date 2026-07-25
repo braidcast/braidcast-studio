@@ -10,7 +10,12 @@
   import Icon from "$lib/ui/Icon.svelte";
   import ProfileSelect from "$lib/ui/ProfileSelect.svelte";
   import { STATE_COLOR_EXT } from "$lib/theme/stateColors";
-  import { bindingDisplayName, isBindingDangling, isBindingUnset } from "$lib/stores/outputBindingStore.svelte";
+  import {
+    outputBindingStore,
+    bindingDisplayName,
+    isBindingDangling,
+    isBindingUnset,
+  } from "$lib/stores/outputBindingStore.svelte";
   import { bindingRowState, bindingRowDetail } from "$lib/stores/multistreamStatusStore.svelte";
   import { titleState } from "$lib/utils/format";
 
@@ -49,7 +54,7 @@
     if (rows.length === 0) return;
     const target = !canvasEnabled;
     try {
-      await Promise.all(rows.map((b) => obs.call("outputBinding.setEnabled", { uuid: b.uuid, enabled: target })));
+      await outputBindingStore.setEnabled(rows.map((b) => b.uuid), target);
       onChanged();
     } catch (e) {
       error = (e as Error).message;
@@ -57,7 +62,7 @@
   }
   async function toggleRow(b: OutputBindingInfo, enabled: boolean): Promise<void> {
     try {
-      await obs.call("outputBinding.setEnabled", { uuid: b.uuid, enabled });
+      await outputBindingStore.setEnabled([b.uuid], enabled);
       onChanged();
     } catch (e) {
       error = (e as Error).message;

@@ -51,6 +51,13 @@ import { EV } from "$lib/utils/eventNames";
     // Token scopes are stale: the backend refuses streamMeta, so this channel is
     // connected:false — excluded from the push. It still goes live via key.
     needsReconnect: boolean;
+    // Any of this channel's bindings enabled. Independent of the save chip: a channel
+    // can be failed AND armed; disarmed just means none of its bindings will start.
+    armed: boolean;
+    // Every binding uuid feeding this channel (a profile enabled on several canvases,
+    // and/or several profiles on one account) — the arm toggle fans out over all of
+    // them so on/off is never a partial state.
+    bindingUuids: string[];
     streams: Stream[];
   }
 
@@ -84,6 +91,31 @@ import { EV } from "$lib/utils/eventNames";
   let collapsed = $state<Record<string, boolean>>({});
   function toggleCollapsed(id: string): void {
     collapsed[id] = !collapsed[id];
+  }
+
+  // Arm/disarm a channel = the same persistent outputBinding.setEnabled the
+  // destinations panel does (via the shared store fan-out), never a session-only
+  // skip. No optimistic local state: setEnabled awaits a store refresh, so the flip
+  // flows back through `bindings` -> `channels`. Re-arming re-runs prefill because a
+  // channel disarmed at open was skipped by it; prefill's guards keep the late seed
+  // from clobbering anything already edited.
+  let armBusy = $state<Record<string, boolean>>({});
+  async function toggleArmed(c: Channel): Promise<void> {
+    if (armBusy[c.accountId]) {
+      return;
+    }
+    armBusy[c.accountId] = true;
+    const arming = !c.armed;
+    try {
+      await outputBindingStore.setEnabled(c.bindingUuids, arming);
+      if (arming) {
+        void prefill();
+      }
+    } catch (e) {
+      showToast("Couldn't update " + (c.provider?.displayName ?? c.login), (e as Error).message);
+    } finally {
+      armBusy[c.accountId] = false;
+    }
   }
 
   // Reconnect a stale-scope channel via the shared OAuth connect dialog (the same flow
@@ -236,14 +268,17 @@ import { EV } from "$lib/utils/eventNames";
     return providers.find((pv) => pv.id.toLowerCase() === plat || pv.displayName.toLowerCase() === plat) ?? null;
   }
 
-  // Channels: enabled bindings -> their profile, grouped by accountId (the channel
-  // identity). Profiles with no accountId (key/RTMP/WHIP) carry no channel metadata
-  // and are dropped — they stream via key but are out of scope for this dialog. A
-  // profile enabled on several canvases is deduped to one stream per profileUuid.
+  // Channels: ALL bindings (enabled or not) -> their profile, grouped by accountId
+  // (the channel identity). Disabled bindings are kept — carried as `armed:false` —
+  // so a switched-off destination still renders here and can be re-armed, or a
+  // failing one disarmed, without leaving the modal. Profiles with no accountId
+  // (key/RTMP/WHIP) carry no channel metadata and are dropped — they stream via key
+  // but are out of scope for this dialog. A profile enabled on several canvases is
+  // deduped to one stream per profileUuid.
   const channels = $derived.by<Channel[]>(() => {
     const map = new Map<string, Channel>();
     for (const b of bindings) {
-      if (!b.enabled || !b.profileUuid) {
+      if (!b.profileUuid) {
         continue;
       }
       const profile = profiles.find((p) => p.uuid === b.profileUuid);
@@ -263,9 +298,15 @@ import { EV } from "$lib/utils/eventNames";
           login: status?.login || status?.displayName || profile.label,
           connected: !!(provider && status?.connected),
           needsReconnect: !!(provider && status?.needsReconnect && !status?.connected),
+          armed: false,
+          bindingUuids: [],
           streams: [],
         };
         map.set(accountId, ch);
+      }
+      ch.bindingUuids.push(b.uuid);
+      if (b.enabled) {
+        ch.armed = true;
       }
       if (!ch.streams.some((s) => s.profileUuid === b.profileUuid)) {
         ch.streams.push({ profileUuid: b.profileUuid, profile, label: profile.label, canvasName: b.canvasName });
@@ -277,6 +318,12 @@ import { EV } from "$lib/utils/eventNames";
   // needsReconnect channel is connected:false, so it is excluded here and still goes
   // live via its streams' keys.
   const connectedChannels = $derived(channels.filter((c) => c.connected));
+  // Only ARMED connected channels take part in metadata traffic (prefill, push, save
+  // chips, remember); a disarmed one renders as an inert card whose sole live control
+  // is the arm switch. Counts (footer, reconnect strips) follow the armed subsets so
+  // a switched-off destination is never reported as going live.
+  const armedConnectedChannels = $derived(connectedChannels.filter((c) => c.armed));
+  const armedChannels = $derived(channels.filter((c) => c.armed));
 
   // Modal width grows with the number of editable channel columns so a wide window
   // shows them side by side instead of one narrow stacked column, capped well short
@@ -317,7 +364,7 @@ import { EV } from "$lib/utils/eventNames";
   const sharedFields = $derived.by<OAuthProviderField[]>(() => {
     const seen = new Set<string>();
     const out: OAuthProviderField[] = [];
-    for (const c of connectedChannels) {
+    for (const c of armedConnectedChannels) {
       if (!c.provider) {
         continue;
       }
@@ -336,24 +383,26 @@ import { EV } from "$lib/utils/eventNames";
   );
 
   // Channels that go live via key but can't push metadata until relinked, plus the total
-  // stream count across every channel — both drive the footer summary and reconnect strips.
-  const reconnectChannels = $derived(channels.filter((c) => c.needsReconnect));
-  const channelStreamCount = $derived(channels.reduce((n, c) => n + c.streams.length, 0));
+  // stream count across every armed channel — both drive the footer summary and reconnect
+  // strips. Disarmed channels are excluded throughout: they won't start, so counting them
+  // as "ready"/"streams" (or nagging to reconnect one) would misreport the go-live set.
+  const reconnectChannels = $derived(armedChannels.filter((c) => c.needsReconnect));
+  const channelStreamCount = $derived(armedChannels.reduce((n, c) => n + c.streams.length, 0));
   // Footer summary (mock: "3 channels · 5 streams · all ready"). When any channel needs a
   // relink, count ready vs. need-reconnect instead so the strips are accounted for. Falls
   // back to a key-only line when no account-linked channels are armed.
   const footerNote = $derived.by<string>(() => {
-    if (channels.length === 0) {
+    if (armedChannels.length === 0) {
       return armedProfileCount > 0
         ? `${armedProfileCount} destination${armedProfileCount === 1 ? "" : "s"} via stream key`
         : "No destinations armed.";
     }
     const streams = `${channelStreamCount} stream${channelStreamCount === 1 ? "" : "s"}`;
     if (reconnectChannels.length > 0) {
-      const ready = `${connectedChannels.length} ready`;
+      const ready = `${armedConnectedChannels.length} ready`;
       return `${ready} · ${streams} · ${reconnectChannels.length} need reconnect`;
     }
-    const chans = `${channels.length} channel${channels.length === 1 ? "" : "s"}`;
+    const chans = `${armedChannels.length} channel${armedChannels.length === 1 ? "" : "s"}`;
     return `${chans} · ${streams} · all ready`;
   });
 
@@ -390,7 +439,7 @@ import { EV } from "$lib/utils/eventNames";
   // before this resolves is never clobbered.
   async function prefill(): Promise<void> {
     await Promise.all(
-      connectedChannels.map(async (c) => {
+      armedConnectedChannels.map(async (c) => {
         const profileUuids = c.streams.map((s) => s.profileUuid);
         const [savedR, liveR] = await Promise.allSettled([
           obs.call("streamMeta.getSaved", { accountId: c.accountId, profileUuids }),
@@ -499,16 +548,21 @@ import { EV } from "$lib/utils/eventNames";
       return;
     }
     submitting = true;
-    // Header chips go "saving" for every connected channel while the pushes are in flight.
+    // Header chips go "saving" for every armed channel while the pushes are in flight.
+    // Building fresh from the armed set also clears any stale chip on a channel the
+    // user has since disarmed.
     channelSaveState = Object.fromEntries(
-      connectedChannels.map((c) => [c.accountId, "saving"] as [string, SaveState]),
+      armedConnectedChannels.map((c) => [c.accountId, "saving"] as [string, SaveState]),
     );
-    // One job per stream: each stream's effective fields merge the channel default
-    // with that stream's own overrides. YouTube needs the per-profile call; Twitch/
-    // Kick applying the same channel twice (no divergence) is idempotent. The stream
-    // layer applies ONLY when its override toggle is on, so an orphaned overrides bag
-    // (toggle off) can never diverge a live broadcast — the toggle is the sole authority.
-    const jobs = connectedChannels.flatMap((c) =>
+    // One job per stream, ARMED channels only — a disarmed channel produces no
+    // streamMeta.set (its bindings are disabled, so streaming.start won't start it
+    // either) and therefore can never land in failedByChannel and block the go-live.
+    // Each stream's effective fields merge the channel default with that stream's own
+    // overrides. YouTube needs the per-profile call; Twitch/Kick applying the same
+    // channel twice (no divergence) is idempotent. The stream layer applies ONLY when
+    // its override toggle is on, so an orphaned overrides bag (toggle off) can never
+    // diverge a live broadcast — the toggle is the sole authority.
+    const jobs = armedConnectedChannels.flatMap((c) =>
       c.streams.map((s) => ({
         channel: c,
         stream: s,
@@ -543,39 +597,55 @@ import { EV } from "$lib/utils/eventNames";
       }
     }
     channelSaveState = Object.fromEntries(
-      connectedChannels.map(
+      armedConnectedChannels.map(
         (c) => [c.accountId, failedByChannel.has(c.accountId) ? "error" : "saved"] as [string, SaveState],
       ),
     );
     const goingLive = goLiveModal.mode === "golive";
-    // Stream info is a precondition, not a courtesy: if any channel's metadata push
-    // failed, going live would stream with stale/wrong title+category. Block the start
-    // on ANY failure (all OAuth providers) and keep the modal open so the user can retry
-    // or fix the offending channel. Update-info mode has no start to block, so it only
+    // Stream info is a precondition, not a courtesy: if any armed channel's metadata
+    // push failed, going live would stream with stale/wrong title+category. Block the
+    // start on ANY failure (all OAuth providers) and keep the modal open — the remedy
+    // is the user's call, so the going-live toast names it (disarm the destination
+    // above), never auto-skips it. Update-info mode has no start to block, so it only
     // reports the failure.
     if (failedByChannel.size > 0) {
-      const lead = goingLive ? "Not going live — couldn't update " : "Couldn't update ";
-      if (failedByChannel.size === 1) {
-        const only = [...failedByChannel.values()][0];
-        showToast(lead + only.name + " stream info", only.reason?.message ?? "metadata push failed");
-      } else {
-        const names = [...failedByChannel.values()].map((v) => v.name).join(", ");
-        showToast(lead + failedByChannel.size + " destinations", names);
-      }
+      const fails = [...failedByChannel.values()];
       if (goingLive) {
+        if (fails.length === 1) {
+          showToast(
+            "Not going live — couldn't update " + fails[0].name,
+            (fails[0].reason?.message ?? "metadata push failed") +
+              " — switch this destination off above to go live without it.",
+          );
+        } else {
+          showToast(
+            "Not going live — couldn't update " + fails.length + " destinations",
+            fails.map((v) => v.name).join(", ") + " — switch them off above to go live without them.",
+          );
+        }
         submitting = false;
         return;
       }
+      if (fails.length === 1) {
+        showToast(
+          "Couldn't update " + fails[0].name + " stream info",
+          fails[0].reason?.message ?? "metadata push failed",
+        );
+      } else {
+        showToast("Couldn't update " + fails.length + " destinations", fails.map((v) => v.name).join(", "));
+      }
     }
     // Remember these details for next time — best-effort, fired without awaiting so a
-    // slow or failing save never blocks going live. One save per channel with its raw
-    // layers: the channel bag plus the channel's COMPLETE stream set. Streams with an
-    // enabled, non-empty override carry their bag; every other stream carries {} so the
-    // store clears any override toggled off this session (otherwise it would resurrect
-    // and re-apply on the next go-live).
+    // slow or failing save never blocks going live. Armed channels only: a disarmed
+    // channel's fields were locked this session, so its bags hold only the prefill
+    // echo — persisting that would overwrite remembered values the user never touched.
+    // One save per channel with its raw layers: the channel bag plus the channel's
+    // COMPLETE stream set. Streams with an enabled, non-empty override carry their
+    // bag; every other stream carries {} so the store clears any override toggled off
+    // this session (otherwise it would resurrect and re-apply on the next go-live).
     if (remember) {
       void Promise.allSettled(
-        connectedChannels.map((c) => {
+        armedConnectedChannels.map((c) => {
           const streams: Record<string, Record<string, unknown>> = {};
           for (const s of c.streams) {
             const ov = streamOverrides[s.profileUuid] ?? {};
@@ -675,7 +745,7 @@ import { EV } from "$lib/utils/eventNames";
         <div class="shared">
           <p class="eh">
             Shared defaults
-            {#if connectedChannels.length > 1}<span class="eh-note">— across all {connectedChannels.length} channels</span>{/if}
+            {#if armedConnectedChannels.length > 1}<span class="eh-note">— across all {armedConnectedChannels.length} channels</span>{/if}
           </p>
           {#each sharedFields as f (f.key)}
             {@render fieldRow(f, sharedValues[f.key], (v) => setSharedField(f.key, v), {})}
@@ -683,7 +753,10 @@ import { EV } from "$lib/utils/eventNames";
         </div>
       {/if}
 
-      {#if armedProfileCount === 0}
+      <!-- Keyed on channels.length too: disarming every channel from inside this
+           modal zeroes armedProfileCount, and the cards must stay visible so the
+           user can re-arm — only a truly empty destination set shows the note. -->
+      {#if armedProfileCount === 0 && channels.length === 0}
         <p class="note">No armed destinations. Enable a destination on a canvas to push stream information.</p>
       {:else}
         <!-- Per-channel cards: side-by-side columns on wide windows, one stacked
@@ -693,29 +766,54 @@ import { EV } from "$lib/utils/eventNames";
         <div class="chgrid">
         {#each channels as c (c.accountId)}
           {#if c.connected && c.provider}
-            {@const isCollapsed = !!collapsed[c.accountId]}
+            <!-- Disarmed forces collapsed: the body never renders while off, so its
+                 fields can't be edited (and won't be pushed). collapsed[] still holds
+                 the user's own preference for when the channel is re-armed. -->
+            {@const isCollapsed = !c.armed || !!collapsed[c.accountId]}
             {@const stt = channelSaveState[c.accountId]}
-            <div class="ch">
-              <button
-                type="button"
-                class="chh"
-                class:nb={isCollapsed}
-                aria-expanded={!isCollapsed}
-                onclick={() => toggleCollapsed(c.accountId)}
-              >
-                <Avatar url={c.status?.avatarUrl ?? ""} name={c.provider.displayName || c.login} size={20} />
-                <span class="plat">{c.provider.displayName}</span>
-                <span class="nm">{c.login}</span>
-                {#if c.streams.length > 1}
-                  <span class="streams">{c.streams.length} streams</span>
-                {/if}
-                {#if stt && stt !== "idle"}
-                  <span class="st" class:saving={stt === "saving"} class:ok={stt === "saved"} class:err={stt === "error"}>
-                    <span class="dot"></span>{SAVE_LABEL[stt]}
-                  </span>
-                {/if}
-                <span class="car">{isCollapsed ? "▸" : "▾"}</span>
-              </button>
+            <div class="ch" class:off={!c.armed}>
+              <!-- The collapse button and the arm switch are SIBLINGS in a flex row —
+                   a switch nested inside the .chh button would be an interactive
+                   element inside another, and every click on it would also collapse. -->
+              <div class="chhrow" class:nb={isCollapsed}>
+                <button
+                  type="button"
+                  class="chh"
+                  aria-expanded={!isCollapsed}
+                  disabled={!c.armed}
+                  onclick={() => toggleCollapsed(c.accountId)}
+                >
+                  <Avatar url={c.status?.avatarUrl ?? ""} name={c.provider.displayName || c.login} size={20} />
+                  <span class="plat">{c.provider.displayName}</span>
+                  <span class="nm">{c.login}</span>
+                  {#if c.streams.length > 1}
+                    <span class="streams">{c.streams.length} streams</span>
+                  {/if}
+                  {#if !c.armed}
+                    <span class="offchip">Off</span>
+                  {/if}
+                  {#if stt && stt !== "idle"}
+                    <span class="st" class:saving={stt === "saving"} class:ok={stt === "saved"} class:err={stt === "error"}>
+                      <span class="dot"></span>{SAVE_LABEL[stt]}
+                    </span>
+                  {/if}
+                  <span class="car">{c.armed ? (isCollapsed ? "▸" : "▾") : ""}</span>
+                </button>
+                <button
+                  type="button"
+                  class="sw arm"
+                  class:on={c.armed}
+                  role="switch"
+                  aria-checked={c.armed}
+                  disabled={submitting || !!armBusy[c.accountId]}
+                  title={c.armed
+                    ? "Armed — switch off to go live without this destination"
+                    : "Off — switch on to include this destination"}
+                  onclick={() => void toggleArmed(c)}
+                >
+                  <i></i>
+                </button>
+              </div>
 
               {#if !isCollapsed}
                 <div class="chb">
@@ -806,10 +904,12 @@ import { EV } from "$lib/utils/eventNames";
                 </div>
               {/if}
             </div>
-          {:else if c.needsReconnect}
+          {:else if c.needsReconnect && c.armed}
             <!-- Stale-scope channel: still goes live via key, but can't push metadata
                  until relinked. Kept visible as a warn strip with a Reconnect action
-                 (the shared OAuth connect flow), never silently dropped. -->
+                 (the shared OAuth connect flow), never silently dropped. Armed only —
+                 a disarmed one won't start, so there is nothing to warn about (and
+                 disabled bindings never surfaced a strip before either). -->
             <div class="ch warn">
               <div class="warnstrip">
                 <Avatar url={c.status?.avatarUrl ?? ""} name={c.provider?.displayName || c.login} size={20} />
@@ -991,24 +1091,50 @@ import { EV } from "$lib/utils/eventNames";
     grid-column: 1 / -1;
     border-color: color-mix(in srgb, var(--color-warn) 45%, var(--color-border));
   }
+  /* Header row: the collapse button and the arm switch side by side. The row owns
+     the header background/border so both siblings share one visual bar. */
+  .chhrow {
+    display: flex;
+    align-items: center;
+    background: var(--color-surface-2);
+    border-bottom: var(--border-weight) solid var(--color-border);
+  }
+  .chhrow.nb {
+    border-bottom: 0;
+  }
+  .chhrow .sw.arm {
+    margin: 0 11px 0 2px;
+  }
   .chh {
     display: flex;
     align-items: center;
     gap: 9px;
-    width: 100%;
+    flex: 1 1 auto;
+    min-width: 0;
     height: auto;
     padding: 9px 11px;
-    background: var(--color-surface-2);
+    background: transparent;
     border: 0;
-    border-bottom: var(--border-weight) solid var(--color-border);
     text-align: left;
     cursor: pointer;
   }
-  .chh:hover {
-    border-color: var(--color-border);
+  .chh:disabled {
+    cursor: default;
   }
-  .chh.nb {
-    border-bottom: 0;
+  /* Disarmed: header content dims but the arm switch keeps full strength — it is the
+     card's only live control while off, and dimming it would hide the way back on. */
+  .ch.off .chh {
+    opacity: 0.55;
+  }
+  .offchip {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--color-muted);
+    border: var(--border-weight) solid var(--color-border);
+    padding: 3px 6px;
+    flex: 0 0 auto;
   }
   .plat {
     font-family: var(--font-mono);

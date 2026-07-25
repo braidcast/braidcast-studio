@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { obs, type OutputBindingInfo, type MultistreamState } from "$lib/api/bridge";
+  import type { OutputBindingInfo, MultistreamState } from "$lib/api/bridge";
   import { setPage } from "$lib/stores/pageStore.svelte";
   import { canvasStore } from "$lib/stores/canvasStore.svelte";
   import {
@@ -51,7 +51,7 @@
     if (rows.length === 0) return;
     const target = !rows.some((b) => b.enabled);
     try {
-      await Promise.all(rows.map((b) => obs.call("outputBinding.setEnabled", { uuid: b.uuid, enabled: target })));
+      await outputBindingStore.setEnabled(rows.map((b) => b.uuid), target);
       void multistreamStatusStore.refresh();
     } catch (e) {
       error = (e as Error).message;
@@ -59,7 +59,7 @@
   }
   async function toggleRow(b: OutputBindingInfo, enabled: boolean): Promise<void> {
     try {
-      await obs.call("outputBinding.setEnabled", { uuid: b.uuid, enabled });
+      await outputBindingStore.setEnabled([b.uuid], enabled);
       void multistreamStatusStore.refresh();
     } catch (e) {
       error = (e as Error).message;

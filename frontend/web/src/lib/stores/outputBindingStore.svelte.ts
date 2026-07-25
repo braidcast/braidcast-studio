@@ -77,6 +77,15 @@ class OutputBindingStore {
   forCanvas(canvasUuid: string): OutputBindingInfo[] {
     return this.bindings.filter((b) => b.canvasUuid === canvasUuid);
   }
+
+  // The one enable/disable fan-out (Canvases tab, Multistream dock, Go Live modal all
+  // flip the same host state). Awaits a refresh so `bindings` reflects the change when
+  // this resolves — callers react off store state, never optimistic copies. Rejections
+  // propagate so each site keeps its own error UI.
+  async setEnabled(uuids: string[], enabled: boolean): Promise<void> {
+    await Promise.all(uuids.map((uuid) => obs.call("outputBinding.setEnabled", { uuid, enabled })));
+    await this.refresh();
+  }
 }
 
 export const outputBindingStore = new OutputBindingStore();
