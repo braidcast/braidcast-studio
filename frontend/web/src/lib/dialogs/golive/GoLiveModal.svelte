@@ -803,32 +803,36 @@ import { EV } from "$lib/utils/eventNames";
                   disabled={!c.armed}
                   onclick={() => toggleCollapsed(c.accountId)}
                 >
-                  <div class="chh-id">
-                    <Avatar url={c.status?.avatarUrl ?? ""} name={c.provider.displayName || c.login} size={20} />
-                    <span class="plat">{c.provider.displayName}</span>
-                    <span class="nm">{c.login}</span>
-                    <span class="car">{c.armed ? (isCollapsed ? "▸" : "▾") : ""}</span>
-                  </div>
-                  {#if c.streams.length > 1 || !c.armed || showChip}
-                    <div class="chh-badges">
-                      {#if c.streams.length > 1}
-                        <span class="streams">{c.streams.length} streams</span>
-                      {/if}
-                      {#if !c.armed}
-                        <span class="offchip">Off</span>
-                      {/if}
-                      {#if showChip}
-                        <span
-                          class="st"
-                          class:saving={stt === "saving"}
-                          class:ok={stt === "saved"}
-                          class:err={stt === "error"}
-                        >
-                          <span class="dot"></span>{SAVE_LABEL[stt]}
-                        </span>
-                      {/if}
+                  <div class="chh-stack">
+                    <div class="chh-id">
+                      <Avatar url={c.status?.avatarUrl ?? ""} name={c.provider.displayName || c.login} size={20} />
+                      <span class="plat">{c.provider.displayName}</span>
+                      <span class="nm">{c.login}</span>
                     </div>
-                  {/if}
+                    {#if c.streams.length > 1 || !c.armed || showChip}
+                      <div class="chh-badges">
+                        {#if c.streams.length > 1}
+                          <span class="streams">{c.streams.length} streams</span>
+                        {/if}
+                        {#if !c.armed}
+                          <span class="offchip">Off</span>
+                        {/if}
+                        {#if showChip}
+                          <span
+                            class="st"
+                            class:saving={stt === "saving"}
+                            class:ok={stt === "saved"}
+                            class:err={stt === "error"}
+                          >
+                            <span class="dot"></span>{SAVE_LABEL[stt]}
+                          </span>
+                        {/if}
+                      </div>
+                    {/if}
+                  </div>
+                  <!-- Control cluster: the caret centers against the full header height
+                       (identity + badges), reading as one unit with .sw.arm beside it. -->
+                  <span class="car">{c.armed ? (isCollapsed ? "▸" : "▾") : ""}</span>
                 </button>
                 <button
                   type="button"
@@ -1124,8 +1128,11 @@ import { EV } from "$lib/utils/eventNames";
 
   /* Channel card: a grid item in .chgrid (spacing comes from the grid gap, not a
      margin). A needsReconnect warn strip has no per-channel fields to lay out
-     side-by-side, so it spans every column as one full-width banner. */
+     side-by-side, so it spans every column as one full-width banner.
+     --ch-pad-x is the one shared horizontal inset for every section (header,
+     error strip, body) so they can't drift out of alignment with each other. */
   .ch {
+    --ch-pad-x: 11px;
     border: var(--border-weight) solid var(--color-border);
     background: var(--color-surface);
     min-width: 0;
@@ -1148,19 +1155,27 @@ import { EV } from "$lib/utils/eventNames";
   .chhrow .sw.arm {
     margin: 0 11px 0 2px;
   }
+  /* The collapse trigger is a row: an identity/badges stack that takes the available
+     width, and the caret as a control-cluster partner to .sw.arm beside it. */
   .chh {
     display: flex;
-    flex-direction: column;
-    align-items: stretch;
-    gap: 4px;
+    align-items: center;
+    gap: 9px;
     flex: 1 1 auto;
     min-width: 0;
     height: auto;
-    padding: 9px 11px;
+    padding: 9px var(--ch-pad-x);
     background: transparent;
     border: 0;
     text-align: left;
     cursor: pointer;
+  }
+  .chh-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1 1 auto;
+    min-width: 0;
   }
   /* Identity row: avatar + platform + login get the full column width to themselves
      so the login (the most important identifier once several accounts are connected)
@@ -1172,13 +1187,15 @@ import { EV } from "$lib/utils/eventNames";
     min-width: 0;
   }
   /* Badges/status row, indented to align under the platform label (skips the avatar
-     column) rather than under the header's left edge. */
+     column) rather than under the header's left edge. Offset is the avatar width (20,
+     matching the Avatar size prop above) plus the .chh-id gap (9) — --ch-pad-x is
+     already applied once by the ancestor .chh padding, so it isn't repeated here. */
   .chh-badges {
     display: flex;
     align-items: center;
     gap: 6px;
     flex-wrap: wrap;
-    padding-left: 29px;
+    padding-left: calc(20px + 9px);
   }
   .chh:disabled {
     cursor: default;
@@ -1204,7 +1221,7 @@ import { EV } from "$lib/utils/eventNames";
      suppressed. overflow-wrap because provider reasons are raw API strings of
      arbitrary length. */
   .cherr {
-    padding: 8px 11px;
+    padding: 8px var(--ch-pad-x);
     background: color-mix(in srgb, var(--color-warn) 7%, var(--color-surface));
     font-size: 10.5px;
     line-height: 1.45;
@@ -1227,12 +1244,14 @@ import { EV } from "$lib/utils/eventNames";
     letter-spacing: 0.06em;
     text-transform: uppercase;
     color: var(--color-muted);
+    align-self: baseline;
     flex: 0 0 auto;
   }
   .nm {
     font-weight: 700;
     font-size: 12px;
     color: var(--color-text);
+    align-self: baseline;
     flex: 1 1 auto;
     min-width: 0;
     overflow: hidden;
@@ -1276,13 +1295,13 @@ import { EV } from "$lib/utils/eventNames";
     flex: 0 0 auto;
   }
   .car {
-    margin-left: auto;
+    align-self: center;
     color: var(--color-muted);
     font-size: 11px;
     flex: 0 0 auto;
   }
   .chb {
-    padding: 11px;
+    padding: var(--ch-pad-x);
   }
   .dedupe {
     font-size: 10px;
