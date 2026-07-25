@@ -785,6 +785,10 @@ import { EV } from "$lib/utils/eventNames";
                  the user's own preference for when the channel is re-armed. -->
             {@const isCollapsed = !c.armed || !!collapsed[c.accountId]}
             {@const stt = channelSaveState[c.accountId]}
+            <!-- The error chip restates the .cherr strip below verbatim (same failure,
+                 already shown in full there), so it's suppressed once the strip is
+                 showing; saving/saved have no strip and keep their chip. -->
+            {@const showChip = !!stt && stt !== "idle" && !(stt === "error" && channelSaveError[c.accountId])}
             <div class="ch" class:off={!c.armed}>
               <!-- The collapse button and the arm switch are SIBLINGS in a flex row —
                    a switch nested inside the .chh button would be an interactive
@@ -799,21 +803,32 @@ import { EV } from "$lib/utils/eventNames";
                   disabled={!c.armed}
                   onclick={() => toggleCollapsed(c.accountId)}
                 >
-                  <Avatar url={c.status?.avatarUrl ?? ""} name={c.provider.displayName || c.login} size={20} />
-                  <span class="plat">{c.provider.displayName}</span>
-                  <span class="nm">{c.login}</span>
-                  {#if c.streams.length > 1}
-                    <span class="streams">{c.streams.length} streams</span>
+                  <div class="chh-id">
+                    <Avatar url={c.status?.avatarUrl ?? ""} name={c.provider.displayName || c.login} size={20} />
+                    <span class="plat">{c.provider.displayName}</span>
+                    <span class="nm">{c.login}</span>
+                    <span class="car">{c.armed ? (isCollapsed ? "▸" : "▾") : ""}</span>
+                  </div>
+                  {#if c.streams.length > 1 || !c.armed || showChip}
+                    <div class="chh-badges">
+                      {#if c.streams.length > 1}
+                        <span class="streams">{c.streams.length} streams</span>
+                      {/if}
+                      {#if !c.armed}
+                        <span class="offchip">Off</span>
+                      {/if}
+                      {#if showChip}
+                        <span
+                          class="st"
+                          class:saving={stt === "saving"}
+                          class:ok={stt === "saved"}
+                          class:err={stt === "error"}
+                        >
+                          <span class="dot"></span>{SAVE_LABEL[stt]}
+                        </span>
+                      {/if}
+                    </div>
                   {/if}
-                  {#if !c.armed}
-                    <span class="offchip">Off</span>
-                  {/if}
-                  {#if stt && stt !== "idle"}
-                    <span class="st" class:saving={stt === "saving"} class:ok={stt === "saved"} class:err={stt === "error"}>
-                      <span class="dot"></span>{SAVE_LABEL[stt]}
-                    </span>
-                  {/if}
-                  <span class="car">{c.armed ? (isCollapsed ? "▸" : "▾") : ""}</span>
                 </button>
                 <button
                   type="button"
@@ -1135,8 +1150,9 @@ import { EV } from "$lib/utils/eventNames";
   }
   .chh {
     display: flex;
-    align-items: center;
-    gap: 9px;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
     flex: 1 1 auto;
     min-width: 0;
     height: auto;
@@ -1145,6 +1161,24 @@ import { EV } from "$lib/utils/eventNames";
     border: 0;
     text-align: left;
     cursor: pointer;
+  }
+  /* Identity row: avatar + platform + login get the full column width to themselves
+     so the login (the most important identifier once several accounts are connected)
+     only ellipsises when genuinely long, instead of fighting badges for space. */
+  .chh-id {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    min-width: 0;
+  }
+  /* Badges/status row, indented to align under the platform label (skips the avatar
+     column) rather than under the header's left edge. */
+  .chh-badges {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    padding-left: 29px;
   }
   .chh:disabled {
     cursor: default;
@@ -1166,8 +1200,9 @@ import { EV } from "$lib/utils/eventNames";
   }
 
   /* Per-channel failure strip: the persistent reason (+ remedy when a go-live was
-     blocked). Same warn accent as the .st.err chip; overflow-wrap because provider
-     reasons are raw API strings of arbitrary length. */
+     blocked) — the sole error surface in the header once the redundant Failed chip is
+     suppressed. overflow-wrap because provider reasons are raw API strings of
+     arbitrary length. */
   .cherr {
     padding: 8px 11px;
     background: color-mix(in srgb, var(--color-warn) 7%, var(--color-surface));
@@ -1198,6 +1233,7 @@ import { EV } from "$lib/utils/eventNames";
     font-weight: 700;
     font-size: 12px;
     color: var(--color-text);
+    flex: 1 1 auto;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -1215,7 +1251,6 @@ import { EV } from "$lib/utils/eventNames";
     display: flex;
     align-items: center;
     gap: 5px;
-    margin-left: 4px;
     font-family: var(--font-mono);
     font-size: 10px;
     letter-spacing: 0.04em;
@@ -1229,6 +1264,8 @@ import { EV } from "$lib/utils/eventNames";
   .st.ok {
     color: var(--color-ok);
   }
+  /* Reachable only if a failure ever lands without a reason string to put in the
+     strip below; the chip is suppressed whenever that strip carries the detail. */
   .st.err {
     color: var(--color-warn);
   }
