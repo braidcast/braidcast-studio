@@ -81,6 +81,10 @@ import { EV } from "$lib/utils/eventNames";
   // allSettled results back to each channel ("saved" unless any of its streams failed).
   type SaveState = "idle" | "saving" | "saved" | "error";
   let channelSaveState = $state<Record<string, SaveState>>({});
+  // Last push failure per accountId, rendered as a persistent strip in the channel
+  // card. The toast can't carry it: showToast's second arg is hover-title only and
+  // the visible line is a 4s nowrap one-liner, so reason + remedy must live here.
+  let channelSaveError = $state<Record<string, string>>({});
   const SAVE_LABEL: Record<SaveState, string> = {
     idle: "",
     saving: "Saving…",
@@ -108,6 +112,11 @@ import { EV } from "$lib/utils/eventNames";
     const arming = !c.armed;
     try {
       await outputBindingStore.setEnabled(c.bindingUuids, arming);
+      // Either direction changes the go-live set, so the last attempt's outcome no
+      // longer describes this channel — a stale chip/reason would sit beside a
+      // switch the user just acted on.
+      delete channelSaveState[c.accountId];
+      delete channelSaveError[c.accountId];
       if (arming) {
         void prefill();
       }
@@ -554,6 +563,8 @@ import { EV } from "$lib/utils/eventNames";
     channelSaveState = Object.fromEntries(
       armedConnectedChannels.map((c) => [c.accountId, "saving"] as [string, SaveState]),
     );
+    // A retry must not show last round's reason beside a fresh "Saving…" chip.
+    channelSaveError = {};
     // One job per stream, ARMED channels only — a disarmed channel produces no
     // streamMeta.set (its bindings are disabled, so streaming.start won't start it
     // either) and therefore can never land in failedByChannel and block the go-live.
@@ -602,37 +613,31 @@ import { EV } from "$lib/utils/eventNames";
       ),
     );
     const goingLive = goLiveModal.mode === "golive";
+    // The card strip is the authoritative failure surface — persistent, wraps, and
+    // sits next to the arm switch that is the remedy. The toast below is only the
+    // attention-getter: its visible line truncates and dies in 4s, and its second
+    // arg surfaces solely as a hover title.
+    channelSaveError = Object.fromEntries(
+      [...failedByChannel].map(([id, f]) => [id, f.reason?.message ?? "metadata push failed"]),
+    );
     // Stream info is a precondition, not a courtesy: if any armed channel's metadata
     // push failed, going live would stream with stale/wrong title+category. Block the
     // start on ANY failure (all OAuth providers) and keep the modal open — the remedy
-    // is the user's call, so the going-live toast names it (disarm the destination
-    // above), never auto-skips it. Update-info mode has no start to block, so it only
-    // reports the failure.
+    // (disarm the destination) is the user's call, named in the card strip, never
+    // auto-taken. Update-info mode has no start to block, so it only reports.
     if (failedByChannel.size > 0) {
       const fails = [...failedByChannel.values()];
+      const names = fails.map((v) => v.name).join(", ");
+      const reason = fails[0].reason?.message ?? "metadata push failed";
+      const lead = goingLive ? "Not going live — couldn't update " : "Couldn't update ";
+      if (fails.length === 1) {
+        showToast(lead + fails[0].name + (goingLive ? "" : " stream info"), reason);
+      } else {
+        showToast(lead + fails.length + " destinations", names);
+      }
       if (goingLive) {
-        if (fails.length === 1) {
-          showToast(
-            "Not going live — couldn't update " + fails[0].name,
-            (fails[0].reason?.message ?? "metadata push failed") +
-              " — switch this destination off above to go live without it.",
-          );
-        } else {
-          showToast(
-            "Not going live — couldn't update " + fails.length + " destinations",
-            fails.map((v) => v.name).join(", ") + " — switch them off above to go live without them.",
-          );
-        }
         submitting = false;
         return;
-      }
-      if (fails.length === 1) {
-        showToast(
-          "Couldn't update " + fails[0].name + " stream info",
-          fails[0].reason?.message ?? "metadata push failed",
-        );
-      } else {
-        showToast("Couldn't update " + fails.length + " destinations", fails.map((v) => v.name).join(", "));
       }
     }
     // Remember these details for next time — best-effort, fired without awaiting so a
@@ -775,7 +780,9 @@ import { EV } from "$lib/utils/eventNames";
               <!-- The collapse button and the arm switch are SIBLINGS in a flex row —
                    a switch nested inside the .chh button would be an interactive
                    element inside another, and every click on it would also collapse. -->
-              <div class="chhrow" class:nb={isCollapsed}>
+              <!-- nb also stays off while the failure strip shows: the strip draws no
+                   top border of its own, so the header keeps the separating line. -->
+              <div class="chhrow" class:nb={isCollapsed && !channelSaveError[c.accountId]}>
                 <button
                   type="button"
                   class="chh"
@@ -814,6 +821,18 @@ import { EV } from "$lib/utils/eventNames";
                   <i></i>
                 </button>
               </div>
+
+              {#if channelSaveError[c.accountId]}
+                <!-- Outside the collapse body on purpose: a collapsed card — including
+                     a disarmed, force-collapsed one — must still explain the failure;
+                     the toast is transient and truncates. -->
+                <div class="cherr">
+                  <span class="cherr-reason">{channelSaveError[c.accountId]}</span>
+                  {#if goLiveModal.mode === "golive"}
+                    <span class="cherr-fix">Switch this destination off to go live without it.</span>
+                  {/if}
+                </div>
+              {/if}
 
               {#if !isCollapsed}
                 <div class="chb">
@@ -1135,6 +1154,28 @@ import { EV } from "$lib/utils/eventNames";
     border: var(--border-weight) solid var(--color-border);
     padding: 3px 6px;
     flex: 0 0 auto;
+  }
+
+  /* Per-channel failure strip: the persistent reason (+ remedy when a go-live was
+     blocked). Same warn accent as the .st.err chip; overflow-wrap because provider
+     reasons are raw API strings of arbitrary length. */
+  .cherr {
+    padding: 8px 11px;
+    background: color-mix(in srgb, var(--color-warn) 7%, var(--color-surface));
+    font-size: 10.5px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+  }
+  .cherr:not(:last-child) {
+    border-bottom: var(--border-weight) solid var(--color-border);
+  }
+  .cherr-reason {
+    color: var(--color-warn);
+  }
+  .cherr-fix {
+    display: block;
+    margin-top: 3px;
+    color: var(--color-dim);
   }
   .plat {
     font-family: var(--font-mono);
