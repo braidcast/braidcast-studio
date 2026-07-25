@@ -71,6 +71,8 @@ target_sources(
     src/util/http_client.cpp
     src/util/http_client.hpp
     src/util/json_util.hpp
+    src/util/op_error.cpp
+    src/util/op_error.hpp
     src/util/time_util.hpp
     src/util/async_task.cpp
     src/util/async_task.hpp

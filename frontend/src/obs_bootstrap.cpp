@@ -29,6 +29,7 @@
 
 #include "util/async_task.hpp"
 #include "util/env_config.hpp"
+#include "util/op_error.hpp"
 #include "audio/AudioMonitor.hpp"
 #include "bridge.hpp"
 #include "build_info.hpp"
@@ -1094,7 +1095,7 @@ void ObsBootstrap::RunPropertiesSelfTest()
 		json result;
 		std::string error;
 		if (!Bridge::Dispatch(method, params, result, error)) {
-			HostLog("[selftest] " + method + " FAILED: " + error);
+			HostLog("[selftest] " + method + " FAILED: " + Err::Diagnostic(error));
 			return json(nullptr);
 		}
 		return result;
@@ -1290,7 +1291,7 @@ void ObsBootstrap::RunSettingsSelfTest()
 		std::string error;
 		ok = Bridge::Dispatch(method, params, result, error);
 		if (!ok) {
-			HostLog("[selftest] " + method + " FAILED: " + error);
+			HostLog("[selftest] " + method + " FAILED: " + Err::Diagnostic(error));
 			return json(nullptr);
 		}
 		return result;
@@ -1373,7 +1374,7 @@ void ObsBootstrap::RunCanvasBridgeSelfTest()
 		std::string error;
 		ok = Bridge::Dispatch(method, params, result, error);
 		if (!ok) {
-			HostLog("[selftest] " + method + " FAILED: " + error);
+			HostLog("[selftest] " + method + " FAILED: " + Err::Diagnostic(error));
 			return json(nullptr);
 		}
 		return result;
@@ -1511,7 +1512,7 @@ void ObsBootstrap::RunStreamProfileBridgeSelfTest()
 		std::string error;
 		ok = Bridge::Dispatch(method, params, result, error);
 		if (!ok) {
-			HostLog("[selftest] " + method + " FAILED: " + error);
+			HostLog("[selftest] " + method + " FAILED: " + Err::Diagnostic(error));
 			return json(nullptr);
 		}
 		return result;
@@ -1576,7 +1577,7 @@ void ObsBootstrap::RunStreamProfileBridgeSelfTest()
 			     {"settings", json{{"server", "rtmp://other.example/app"}, {"key", "selftest-key-1"}}}},
 			dupResult, dupError);
 		HostLog(std::string("[selftest] duplicate-key create -> ") +
-			(dupOk ? "ACCEPTED (BUG: should reject)" : "REJECTED (\"" + dupError + "\")"));
+			(dupOk ? "ACCEPTED (BUG: should reject)" : "REJECTED (\"" + Err::Diagnostic(dupError) + "\")"));
 	}
 
 	json updated = run(
@@ -1628,7 +1629,7 @@ void ObsBootstrap::RunOutputBindingBridgeSelfTest()
 		std::string error;
 		ok = Bridge::Dispatch(method, params, result, error);
 		if (!ok) {
-			HostLog("[selftest] " + method + " FAILED: " + error);
+			HostLog("[selftest] " + method + " FAILED: " + Err::Diagnostic(error));
 			return json(nullptr);
 		}
 		return result;
@@ -1698,7 +1699,7 @@ void ObsBootstrap::RunOutputBindingBridgeSelfTest()
 		std::string dupError;
 		const bool dupOk = Bridge::Dispatch("outputBinding.create", createParams, dupResult, dupError);
 		HostLog(std::string("[selftest] duplicate-pair create -> ") +
-			(dupOk ? "ACCEPTED (BUG: should reject)" : "REJECTED (\"" + dupError + "\")"));
+			(dupOk ? "ACCEPTED (BUG: should reject)" : "REJECTED (\"" + Err::Diagnostic(dupError) + "\")"));
 	}
 
 	// setEnabled(true) -> AnyEnabledForCanvas must flip on for this canvas.
@@ -1946,7 +1947,7 @@ void ObsBootstrap::RunCanvasSceneSelfTest()
 		std::string error;
 		ok = Bridge::Dispatch(method, params, result, error);
 		if (!ok) {
-			HostLog("[selftest] " + method + " FAILED: " + error);
+			HostLog("[selftest] " + method + " FAILED: " + Err::Diagnostic(error));
 			return json(nullptr);
 		}
 		return result;
@@ -2066,7 +2067,7 @@ void ObsBootstrap::RunSceneDuplicateSelfTest()
 		std::string error;
 		ok = Bridge::Dispatch(method, params, result, error);
 		if (!ok) {
-			HostLog("[selftest] " + method + " FAILED: " + error);
+			HostLog("[selftest] " + method + " FAILED: " + Err::Diagnostic(error));
 			return json(nullptr);
 		}
 		return result;
@@ -2261,7 +2262,7 @@ void ObsBootstrap::RunTransformPivotSelfTest()
 		std::string error;
 		ok = Bridge::Dispatch(method, params, result, error);
 		if (!ok) {
-			HostLog("[selftest] " + method + " FAILED: " + error);
+			HostLog("[selftest] " + method + " FAILED: " + Err::Diagnostic(error));
 			return json(nullptr);
 		}
 		return result;
@@ -2456,7 +2457,7 @@ void ObsBootstrap::RunRotationBoundsSelfTest()
 		std::string error;
 		ok = Bridge::Dispatch(method, params, result, error);
 		if (!ok) {
-			HostLog("[selftest] " + method + " FAILED: " + error);
+			HostLog("[selftest] " + method + " FAILED: " + Err::Diagnostic(error));
 			return json(nullptr);
 		}
 		return result;
@@ -2678,7 +2679,7 @@ void ObsBootstrap::RunPreviewSurfaceIsolationSelfTest()
 		std::string error;
 		ok = Bridge::Dispatch(method, params, result, error);
 		if (!ok) {
-			HostLog("[selftest] " + method + " FAILED: " + error);
+			HostLog("[selftest] " + method + " FAILED: " + Err::Diagnostic(error));
 			return json(nullptr);
 		}
 		return result;
@@ -2883,7 +2884,7 @@ void ObsBootstrap::RunAudioMixerSelfTest()
 		std::string error;
 		ok = Bridge::Dispatch(method, params, result, error);
 		if (!ok) {
-			HostLog("[selftest] " + method + " FAILED: " + error);
+			HostLog("[selftest] " + method + " FAILED: " + Err::Diagnostic(error));
 			return json(nullptr);
 		}
 		return result;
@@ -2982,7 +2983,7 @@ void ObsBootstrap::RunHotkeysSelfTest()
 		std::string error;
 		ok = Bridge::Dispatch(method, params, result, error);
 		if (!ok) {
-			HostLog("[selftest] " + method + " FAILED: " + error);
+			HostLog("[selftest] " + method + " FAILED: " + Err::Diagnostic(error));
 			return json(nullptr);
 		}
 		return result;
@@ -3071,7 +3072,7 @@ void ObsBootstrap::RunStatsSelfTest()
 	json result;
 	std::string error;
 	if (!Bridge::Dispatch("stats.get", json(nullptr), result, error)) {
-		HostLog("[selftest] stats.get FAILED: " + error);
+		HostLog("[selftest] stats.get FAILED: " + Err::Diagnostic(error));
 		return;
 	}
 
@@ -3098,7 +3099,8 @@ void ObsBootstrap::RunStatsSelfTest()
 	std::string resetError;
 	const bool resetOk = Bridge::Dispatch("stats.reset", json(nullptr), resetResult, resetError) &&
 			     resetResult.is_object() && resetResult.value("ok", false);
-	HostLog(std::string("[selftest] stats.reset -> ") + (resetOk ? "OK" : ("FAILED: " + resetError)));
+	HostLog(std::string("[selftest] stats.reset -> ") +
+		(resetOk ? "OK" : ("FAILED: " + Err::Diagnostic(resetError))));
 }
 
 void ObsBootstrap::RunMcpSelfTest()

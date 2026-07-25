@@ -22,6 +22,7 @@
 #include "bridge.hpp"
 #include "log.hpp"
 #include "multistream/StorePaths.hpp"
+#include "util/op_error.hpp"
 
 namespace {
 
@@ -549,7 +550,11 @@ bool McpServer::RunBridge(const std::string &method, const json &params, json &r
 	// On the UI thread already (the in-process self-test): call directly. Posting
 	// and blocking here would deadlock -- the task can only run on this thread.
 	if (CefCurrentlyOn(TID_UI)) {
-		return Bridge::Dispatch(method, params, result, error);
+		const bool ok = Bridge::Dispatch(method, params, result, error);
+		// MCP surfaces the error over the protocol: unpack any {diagnostic, user
+		// message} envelope so the agent reads the chain, never raw envelope JSON.
+		error = Err::Diagnostic(error);
+		return ok;
 	}
 
 	struct DispatchResult {
@@ -584,7 +589,7 @@ bool McpServer::RunBridge(const std::string &method, const json &params, json &r
 	}
 	DispatchResult dr = fut.get();
 	result = std::move(dr.result);
-	error = std::move(dr.error);
+	error = Err::Diagnostic(dr.error);
 	return dr.ok;
 }
 

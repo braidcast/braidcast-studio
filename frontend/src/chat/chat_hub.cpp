@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "util/async_task.hpp"
+#include "util/op_error.hpp"
 #include "util/time_util.hpp"
 #include "../bridge.hpp"
 #include "../log.hpp"
@@ -214,7 +215,7 @@ void ChatHub::Start()
 				err = "chat transport crashed: unknown error";
 			}
 			if (!ok && !ctx.canceled() && !err.empty()) {
-				HostLog("[chat] transport '" + providerId + "' ended: " + err);
+				HostLog("[chat] transport '" + providerId + "' ended: " + Err::Diagnostic(err));
 			}
 		});
 		++started;
@@ -288,7 +289,9 @@ void ChatHub::SendToPlatforms(const std::vector<std::string> &platforms, const s
 				err = "send failed: unknown error";
 			}
 			if (!ok) {
-				AsyncTask::PostToUi([providerId, err] {
+				// chat.state carries a human-readable line; unpack a quota envelope
+				// rather than pushing raw envelope JSON at the dock.
+				AsyncTask::PostToUi([providerId, err = Err::Diagnostic(err)] {
 					Bridge::EmitEvent(EventNames::kChatState, json{{"platform", providerId},
 										       {"connected", true},
 										       {"error", err}});

@@ -12,6 +12,7 @@
 #include "../log.hpp"
 #include "../oauth/provider.hpp"
 #include "../oauth/account_store.hpp"
+#include "util/op_error.hpp"
 
 namespace Chat {
 
@@ -69,7 +70,7 @@ void ChannelStatsPoller::PollAccount(OAuth::OAuthAccount &acct, OAuth::StreamPro
 		// cached-fallback below so the panel keeps its last-known value rather than
 		// blanking on a transient failure. The slow cadence already paces retries, so
 		// never abort the cycle.
-		HostLog("[channels] '" + acct.providerId + "' skipped: " + err);
+		HostLog("[channels] '" + acct.providerId + "' skipped: " + Err::Diagnostic(err));
 	}
 
 	if (ok && out.available) {

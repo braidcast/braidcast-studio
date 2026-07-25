@@ -1,6 +1,7 @@
 <script lang="ts">
   import {
     obs,
+    type BridgeError,
     type OAuthProvider,
     type OAuthProviderField,
     type OAuthStatus,
@@ -594,11 +595,13 @@ import { EV } from "$lib/utils/eventNames";
     // aggregate toast (showToast replaces, so per-destination toasts would clobber
     // each other) names the channel(s) in human terms, not raw API strings.
     const failed = results
-      .map((r, i) => (r.status === "rejected" ? { job: jobs[i], reason: r.reason as Error } : null))
-      .filter((x): x is { job: (typeof jobs)[number]; reason: Error } => x !== null);
+      .map((r, i) =>
+        r.status === "rejected" ? { job: jobs[i], reason: r.reason as BridgeError } : null,
+      )
+      .filter((x): x is { job: (typeof jobs)[number]; reason: BridgeError } => x !== null);
     // Collapse failures to distinct CHANNELS: two failing streams on one channel are one
     // destination, so the count, the singular/plural branch, and the header chip all agree.
-    const failedByChannel = new Map<string, { name: string; reason: Error }>();
+    const failedByChannel = new Map<string, { name: string; reason: BridgeError }>();
     for (const f of failed) {
       if (!failedByChannel.has(f.job.channel.accountId)) {
         failedByChannel.set(f.job.channel.accountId, {
@@ -617,8 +620,14 @@ import { EV } from "$lib/utils/eventNames";
     // sits next to the arm switch that is the remedy. The toast below is only the
     // attention-getter: its visible line truncates and dies in 4s, and its second
     // arg surfaces solely as a hover title.
+    // Prefer the decoded user message (the streamer-readable sentence, no method/
+    // step prefixes) in the card; the diagnostic chain stays on message for the
+    // toast's hover title.
     channelSaveError = Object.fromEntries(
-      [...failedByChannel].map(([id, f]) => [id, f.reason?.message ?? "metadata push failed"]),
+      [...failedByChannel].map(([id, f]) => [
+        id,
+        f.reason?.userMessage ?? f.reason?.message ?? "metadata push failed",
+      ]),
     );
     // Stream info is a precondition, not a courtesy: if any armed channel's metadata
     // push failed, going live would stream with stale/wrong title+category. Block the

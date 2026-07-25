@@ -12,6 +12,7 @@
 #include "util/http_client.hpp"
 #include "../ingest_writeback.hpp"
 #include "util/json_util.hpp"
+#include "util/op_error.hpp"
 #include "../log.hpp"
 #include "ui-config.h"
 
@@ -276,7 +277,11 @@ void YouTubeProvider::NoteIfQuotaError(long status, const std::string &body)
 bool YouTubeProvider::SendAuthed(OAuthAccount &acct, Http::HttpReq req, Http::HttpResponse &resp, std::string &err)
 {
 	if (QuotaExhausted()) {
-		err = QuotaMessage();
+		// The one YouTube refusal with a streamer-ready sentence: pack it as the
+		// user message too, so the UI can show it bare while every wrapper up the
+		// stack keeps prefixing the diagnostic for the logs.
+		const std::string msg = QuotaMessage();
+		err = Err::User(msg, msg);
 		return false;
 	}
 	if (!StreamProvider::SendAuthed(acct, std::move(req), resp, err)) {
@@ -292,7 +297,8 @@ long YouTubeProvider::SendAuthedStreaming(OAuthAccount &acct, Http::HttpReq req,
 {
 	if (QuotaExhausted()) {
 		errorBody.clear();
-		err = QuotaMessage();
+		const std::string msg = QuotaMessage();
+		err = Err::User(msg, msg);
 		return 0;
 	}
 	const long status = StreamProvider::SendAuthedStreaming(acct, std::move(req), onChunk, errorBody, err);
@@ -617,7 +623,8 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 		Http::HttpResponse resp;
 		std::string delErr;
 		if (!SendAuthed(acct, req, resp, delErr)) {
-			HostLog("[oauth] YouTube orphan liveBroadcasts.delete failed (ignored): " + delErr);
+			HostLog("[oauth] YouTube orphan liveBroadcasts.delete failed (ignored): " +
+				Err::Diagnostic(delErr));
 		} else if (resp.status < 200 || resp.status >= 300) {
 			HostLog("[oauth] YouTube orphan liveBroadcasts.delete failed (ignored): HTTP " +
 				std::to_string(resp.status) + ": " + resp.body);
@@ -646,7 +653,7 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 			json vResp;
 			std::string vErr;
 			if (!sendJson("PUT", std::string(kVideosUrl) + "?part=snippet", videoBody, vResp, vErr)) {
-				HostLog("[oauth] YouTube videos.update failed (continuing): " + vErr);
+				HostLog("[oauth] YouTube videos.update failed (continuing): " + Err::Diagnostic(vErr));
 			}
 		}
 
@@ -677,7 +684,7 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 					std::string thumbErr;
 					if (!SendAuthed(acct, req, resp, thumbErr)) {
 						HostLog("[oauth] YouTube thumbnails.set failed (continuing): " +
-							thumbErr);
+							Err::Diagnostic(thumbErr));
 					} else if (resp.status < 200 || resp.status >= 300) {
 						HostLog("[oauth] YouTube thumbnails.set failed (continuing): HTTP " +
 							std::to_string(resp.status) + ": " + resp.body);
@@ -735,7 +742,7 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 			std::string updErr;
 			if (!sendJson("PUT", std::string(kLiveBroadcastsUrl) + "?part=snippet,status", updBody, updResp,
 				      updErr)) {
-				err = "YouTube liveBroadcasts.update failed: " + updErr;
+				err = Err::Wrap("YouTube liveBroadcasts.update failed: ", updErr);
 				return false;
 			}
 
@@ -772,7 +779,7 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 	std::string stepErr;
 	if (!sendJson("POST", std::string(kLiveBroadcastsUrl) + "?part=snippet,status,contentDetails", broadcastBody,
 		      bResp, stepErr)) {
-		err = "YouTube liveBroadcasts.insert failed: " + stepErr;
+		err = Err::Wrap("YouTube liveBroadcasts.insert failed: ", stepErr);
 		return false;
 	}
 	const std::string broadcastId = Str(bResp, "id");
@@ -878,7 +885,7 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 		json sResp;
 		if (!sendJson("POST", std::string(kLiveStreamsUrl) + "?part=snippet,cdn,contentDetails", streamBody,
 			      sResp, stepErr)) {
-			err = "YouTube liveStreams.insert failed: " + stepErr;
+			err = Err::Wrap("YouTube liveStreams.insert failed: ", stepErr);
 			deleteOrphanBroadcast(broadcastId);
 			return false;
 		}
@@ -898,7 +905,7 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 				    "&streamId=" + Http::UrlEncode(streamId) + "&part=id,contentDetails";
 	json bindResp;
 	if (!sendJson("POST", bindUrl, json::object(), bindResp, stepErr)) {
-		err = "YouTube liveBroadcasts.bind failed: " + stepErr;
+		err = Err::Wrap("YouTube liveBroadcasts.bind failed: ", stepErr);
 		deleteOrphanBroadcast(broadcastId);
 		return false;
 	}

@@ -1728,6 +1728,10 @@ type _EventNamesInSync = AssertTrue<[keyof ObsEvents] extends [BridgeEvent] ? tr
 
 export interface BridgeError extends Error {
   code?: number;
+  // Streamer-facing reason decoded from the host's error envelope (op_error.hpp);
+  // absent when the failure carries only a diagnostic. `message` always holds the
+  // full diagnostic chain, so existing consumers are unaffected.
+  userMessage?: string;
 }
 
 export type Unsubscribe = () => void;
@@ -1772,8 +1776,30 @@ function call<T = unknown>(method: string, params?: unknown): Promise<T> {
         }
       },
       onFailure(code: number, message: string) {
-        const err: BridgeError = new Error(message || "bridge error " + code);
+        // The host may pack {diagnostic, user message} into a JSON envelope (see
+        // frontend/src/util/op_error.hpp). The decode REQUIRES the __err
+        // discriminator, so a plain error that merely starts with "{" is never
+        // misparsed and keeps today's behavior byte-identically.
+        let diagnostic = message;
+        let userMessage: string | undefined;
+        if (message && message.startsWith("{")) {
+          try {
+            const env = JSON.parse(message) as { __err?: unknown; d?: unknown; u?: unknown };
+            if (env && env.__err === 1 && typeof env.d === "string") {
+              diagnostic = env.d;
+              if (typeof env.u === "string" && env.u !== "") {
+                userMessage = env.u;
+              }
+            }
+          } catch {
+            // Not JSON at all: the whole string is the diagnostic.
+          }
+        }
+        const err: BridgeError = new Error(diagnostic || "bridge error " + code);
         err.code = code;
+        if (userMessage !== undefined) {
+          err.userMessage = userMessage;
+        }
         reject(err);
       },
     });

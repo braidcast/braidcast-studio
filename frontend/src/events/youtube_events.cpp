@@ -7,6 +7,7 @@
 
 #include "util/http_client.hpp"
 #include "util/json_util.hpp"
+#include "util/op_error.hpp"
 #include "../log.hpp"
 #include "../oauth/youtube_provider.hpp"
 #include "../obs_bootstrap.hpp"
@@ -75,7 +76,7 @@ void YouTubeEvents::collect(const EventContext &ctx, OAuth::OAuthAccount &acct,
 		Http::HttpResponse resp;
 		std::string err;
 		if (!provider_->SendAuthed(acct, req, resp, err)) {
-			HostLog(std::string("[events] youtube: ") + what + " request failed: " + err);
+			HostLog(std::string("[events] youtube: ") + what + " request failed: " + Err::Diagnostic(err));
 			return false;
 		}
 		if (resp.status < 200 || resp.status >= 300) {

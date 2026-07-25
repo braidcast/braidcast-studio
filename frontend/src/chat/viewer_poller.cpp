@@ -9,6 +9,7 @@
 
 #include "../log.hpp"
 #include "../oauth/provider.hpp"
+#include "util/op_error.hpp"
 
 namespace Chat {
 
@@ -55,7 +56,7 @@ void ViewerPoller::PollAccount(OAuth::OAuthAccount &acct, OAuth::StreamProvider 
 		// only a real error so a slow back-off isn't needed (the 20s cadence already
 		// paces retries); never abort the cycle.
 		if (!err.empty()) {
-			HostLog("[viewers] '" + acct.providerId + "' skipped: " + err);
+			HostLog("[viewers] '" + acct.providerId + "' skipped: " + Err::Diagnostic(err));
 		}
 		return;
 	}

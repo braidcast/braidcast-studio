@@ -47,6 +47,7 @@
 #include "mcp/McpServer.hpp"
 #include "windowing/interact_window.hpp"
 #include "util/json_util.hpp"
+#include "util/op_error.hpp"
 #include "obs_bootstrap.hpp"
 #include "obs_importer.hpp"
 #include "settings/AdvancedSettings.hpp"
@@ -10229,8 +10230,12 @@ void RunAsyncMethod(std::string method, const json &params, CefRefPtr<CefMessage
 					callback->Success(result.dump());
 					HostLog("[bridge] " + method + " -> ok (async)");
 				} else {
-					callback->Failure(404, method + ": " + error);
-					HostLog("[bridge] " + method + " -> FAIL (async: " + error + ")");
+					// The method tag is log context: wrap it onto the DIAGNOSTIC so a
+					// user-message envelope survives intact to the bridge.ts decode. The
+					// log line already names the method, so it logs the unwrapped chain.
+					callback->Failure(404, Err::Wrap(method + ": ", error));
+					HostLog("[bridge] " + method + " -> FAIL (async: " + Err::Diagnostic(error) +
+						")");
 				}
 			} catch (const std::exception &e) {
 				const std::string msg = "unhandled exception in " + method + ": " + e.what();
@@ -10799,8 +10804,10 @@ bool ObsQueryHandler::OnQuery(CefRefPtr<CefBrowser> /*browser*/, CefRefPtr<CefFr
 			callback->Success(result.dump());
 			HostLog("[bridge] " + method + " -> ok");
 		} else {
+			// No method prefix here (deliberate sync/async asymmetry); the envelope,
+			// if any, passes through Failure intact while the log gets the diagnostic.
 			callback->Failure(404, error);
-			HostLog("[bridge] " + method + " -> FAIL (" + error + ")");
+			HostLog("[bridge] " + method + " -> FAIL (" + Err::Diagnostic(error) + ")");
 		}
 	} catch (const std::exception &e) {
 		const std::string msg = "unhandled exception in " + method + ": " + e.what();

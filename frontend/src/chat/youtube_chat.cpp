@@ -16,6 +16,7 @@
 #include "util/env_config.hpp"
 #include "util/http_client.hpp"
 #include "util/json_util.hpp"
+#include "util/op_error.hpp"
 #include "../oauth/youtube_provider.hpp"
 #include "util/time_util.hpp"
 #include "third_party_emotes.hpp"
@@ -407,6 +408,9 @@ bool RunStreamList(ChatSession &s, std::string &err)
 		std::string errorBody;
 		std::string reqErr;
 		const long status = s.owner.SendAuthedStreaming(s.acct, req, onChunk, errorBody, reqErr);
+		// The quota preflight may hand back a {diagnostic, user message} envelope;
+		// unpack before this loop logs or emitState()s the string.
+		reqErr = Err::Diagnostic(reqErr);
 
 		DBG(LogCat::Chat,
 		    "youtube streamList: connection ended status=%ld frames=%d bytes=%ld pollAdvised=%ldms",
@@ -523,6 +527,9 @@ void RunListPoll(ChatSession &s, std::string &err)
 		Http::HttpResponse resp;
 		std::string reqErr;
 		if (!s.owner.SendAuthed(s.acct, req, resp, reqErr)) {
+			// Quota-preflight refusals arrive as a {diagnostic, user message}
+			// envelope; unpack before logging or emitState()ing the string.
+			reqErr = Err::Diagnostic(reqErr);
 			// SendAuthed fails only on a transport error (status 0) or an
 			// unrecoverable 401. The former is a transient blip worth a backoff
 			// retry; the latter is fatal -- re-auth is needed.
