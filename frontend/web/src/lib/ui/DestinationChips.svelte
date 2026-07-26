@@ -70,6 +70,9 @@
   }: Props = $props();
 
   const NOT_ARMED = "not armed";
+  // The Multistream dock labels these same rows DISABLED. Reusing its word rather than
+  // coining a second one keeps one state from reading as two different problems.
+  const DISABLED = "disabled";
 
   interface Group {
     platform: string;
@@ -124,7 +127,13 @@
     if ((siblingCount.get(d.accountId) ?? 1) < 2) {
       return "";
     }
-    return d.canvasUuid === null ? NOT_ARMED : (d.canvasName ?? ABSENT_LABEL);
+    if (d.canvasUuid !== null) {
+      return d.canvasName ?? ABSENT_LABEL;
+    }
+    // "not armed" is only true with nothing configured. A destination bound to a canvas
+    // whose binding is switched off is a different state, and calling it unarmed sends the
+    // user off to create a binding they already have.
+    return d.boundButDisabled ? DISABLED : NOT_ARMED;
   }
 
   // `status` is spelled `| undefined` rather than `status?`: Svelte's built-in TS

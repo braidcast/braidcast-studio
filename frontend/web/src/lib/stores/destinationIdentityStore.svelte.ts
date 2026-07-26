@@ -56,6 +56,13 @@ export interface DestinationIdentity {
   /** The enabled binding, for joining multistreamStatusStore.statusByBinding without
    * re-deriving that store's state reduction here. */
   bindingUuid: string | null;
+  /** True when the profile has at least one binding CONFIGURED but none of them enabled:
+   * it is wired to a canvas and merely switched off. Only meaningful while `canvasUuid` is
+   * null, which cannot distinguish the two on its own. They are worth telling apart
+   * because they ask for opposite actions -- enable the binding that exists, versus go
+   * create one -- and because a destination bound to two canvases reading "not armed"
+   * contradicts what the Multistream dock shows for the same rows. */
+  boundButDisabled: boolean;
 }
 
 class DestinationIdentityStore {
@@ -75,6 +82,19 @@ class DestinationIdentityStore {
       }
     }
     return m;
+  });
+
+  // Profiles with any binding at all, enabled or not. Deliberately NOT folded into
+  // #enabledBindingByProfile: that map's whole contract is that it only ever sees enabled
+  // bindings, and widening it would make every reader of it suspect.
+  #boundProfiles = $derived.by<Set<string>>(() => {
+    const s = new Set<string>();
+    for (const b of outputBindingStore.bindings) {
+      if (b.profileUuid) {
+        s.add(b.profileUuid);
+      }
+    }
+    return s;
   });
 
   #channelByAccount = $derived.by<Map<string, ChannelRow>>(
@@ -165,6 +185,7 @@ class DestinationIdentityStore {
       canvasUuid: binding?.canvasUuid ?? null,
       canvasName: canvas?.name ?? null,
       bindingUuid: binding?.uuid ?? null,
+      boundButDisabled: !binding && this.#boundProfiles.has(p.uuid),
     };
   }
 }
