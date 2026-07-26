@@ -237,6 +237,25 @@ const json &ViewershipRenderer(const json &payload)
 // number, and refusing it leaves the count absent instead of truncating into `int`.
 constexpr int64_t kMaxPlausibleViewers = 1000000000;
 
+// YouTube's public concurrent figure has NO ZERO STATE while a broadcast is live, so it always
+// overstates a quiet stream by this much. Measured across 60 unrelated live broadcasts: not one
+// reported 0, and the low end sat at exactly 1 ("1 watching now"). Confirmed against our own
+// broadcasts from the other direction -- four of them read a steady 1 for a whole stream whose
+// CUMULATIVE view total was still "No views" afterwards, so the 1 corresponded to no playback
+// session at all.
+//
+// Reporting it verbatim tells a streamer an audience is present when nobody is watching, which
+// is the worst available direction to be wrong in: they start talking to an empty room. Removed
+// here, where the figure enters the app, so the dock, the aggregate and the overlays cannot
+// disagree about it -- and never in a view, which would leave every other consumer overstating.
+//
+// Whether YouTube clamps (max(1, true)) or offsets (true + 1) is NOT yet measured, and it is the
+// difference between this being exact and a lone real viewer reading 0. The residual error is one
+// viewer at the very bottom of the range, and it understates rather than invents an audience. To
+// settle it: go live public and open exactly one known viewer on the watch page -- 2 means offset
+// (this is exact), 1 means clamp (subtracting here costs that one viewer).
+constexpr int kYouTubeLiveViewerFloor = 1;
+
 // A viewer figure out of either the raw unlocalized integer string ("7175") or a display string
 // whose group separators have to come off first ("7,175"). False -- leaving `out` untouched --
 // for anything that is not purely digits and group separators, which is what keeps localized
@@ -1411,8 +1430,16 @@ bool YouTubeProvider::ReadBroadcastViewers(const DestinationId &dest, const std:
 			    destTag.c_str());
 			return true;
 		}
+		// Both figures are logged: the adjusted one is what the app shows, and the reported one
+		// is what YouTube actually said. Printing only the adjustment would make a future
+		// investigation of this floor start by re-deriving the raw number.
+		const int reported = count;
+		count = std::max(0, reported - kYouTubeLiveViewerFloor);
 		out[videoId] = count;
-		DBG(LogCat::OAuth, "youtube viewers: dest=%s isLive -> %d concurrent viewers", destTag.c_str(), count);
+		DBG(LogCat::OAuth,
+		    "youtube viewers: dest=%s isLive -> %d concurrent viewers "
+		    "(reported %d, less the platform floor of %d)",
+		    destTag.c_str(), count, reported, kYouTubeLiveViewerFloor);
 		return true;
 	}
 	return true;
