@@ -1,0 +1,24 @@
+name: Format
+run-name: ${{ github.ref_name }} format check 🔍
+# Formatting is checked on the integration branch, not only on master. push.yaml gates its
+# format job to master, and dev is not in its branch list at all, so every push to dev went
+# unchecked and drift only surfaced once a batch of it reached master -- ten files at once,
+# in a run whose failure looked like a broken checker rather than accumulated debt.
+#
+# A separate workflow rather than adding dev to push.yaml: build-project there carries no
+# branch gate, so widening that branch list would start a full Windows build on every push
+# to dev. This calls the same reusable check, and nothing else.
+on:
+  push:
+    paths-ignore:
+      - '**.md'
+    branches:
+      - dev
+permissions:
+  contents: read
+jobs:
+  check-format:
+    name: Format 🔍
+    uses: ./.github/workflows/check-format.yaml
+    permissions:
+      contents: read
