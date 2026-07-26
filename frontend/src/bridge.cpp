@@ -1771,7 +1771,7 @@ bool MethodScenesReorder(const json &params, json &result, std::string &error)
 	}
 	const char *uuid = obs_source_get_uuid(scene);
 	const bool ok = uuid && (hasTo ? SceneCollection::MoveSceneToIndex(uuid, to)
-					: SceneCollection::ReorderScene(uuid, direction));
+				       : SceneCollection::ReorderScene(uuid, direction));
 	if (!ok) {
 		error = "scene reordering failed";
 		return false;
@@ -1834,8 +1834,8 @@ struct BlendModeEntry {
 	obs_blending_type type;
 };
 static const BlendModeEntry kBlendModes[] = {
-	{"normal", OBS_BLEND_NORMAL},     {"additive", OBS_BLEND_ADDITIVE}, {"subtract", OBS_BLEND_SUBTRACT},
-	{"screen", OBS_BLEND_SCREEN},     {"multiply", OBS_BLEND_MULTIPLY}, {"lighten", OBS_BLEND_LIGHTEN},
+	{"normal", OBS_BLEND_NORMAL}, {"additive", OBS_BLEND_ADDITIVE}, {"subtract", OBS_BLEND_SUBTRACT},
+	{"screen", OBS_BLEND_SCREEN}, {"multiply", OBS_BLEND_MULTIPLY}, {"lighten", OBS_BLEND_LIGHTEN},
 	{"darken", OBS_BLEND_DARKEN},
 };
 
@@ -2628,23 +2628,23 @@ bool MethodSceneItemsList(const json &params, json &result, std::string &error)
 			OBSDataAutoRelease priv = obs_sceneitem_get_private_settings(item);
 			const char *color = priv ? obs_data_get_string(priv, "color") : "";
 			// Prepend to invert bottom-first enumeration into top-first.
-			arr->insert(arr->begin(),
-				    json{
-					    {"id", obs_sceneitem_get_id(item)},
-					    {"source", srcName ? json(srcName) : json(nullptr)},
-					    {"visible", obs_sceneitem_visible(item)},
-					    {"locked", obs_sceneitem_locked(item)},
-					    {"scaleFilter", ScaleFilterToToken(obs_sceneitem_get_scale_filter(item))},
-					    {"blendMode", BlendModeToToken(obs_sceneitem_get_blending_mode(item))},
-					    {"blendMethod",
-					     BlendMethodToToken(obs_sceneitem_get_blending_method(item))},
-					    {"interactive",
-					     src ? ((obs_source_get_output_flags(src) & OBS_SOURCE_INTERACTION) != 0)
-						 : false},
-					    {"color", color ? color : ""},
-					    {"showTransition", SceneItemTransitionJson(item, true)},
-					    {"hideTransition", SceneItemTransitionJson(item, false)},
-				    });
+			arr->insert(
+				arr->begin(),
+				json{
+					{"id", obs_sceneitem_get_id(item)},
+					{"source", srcName ? json(srcName) : json(nullptr)},
+					{"visible", obs_sceneitem_visible(item)},
+					{"locked", obs_sceneitem_locked(item)},
+					{"scaleFilter", ScaleFilterToToken(obs_sceneitem_get_scale_filter(item))},
+					{"blendMode", BlendModeToToken(obs_sceneitem_get_blending_mode(item))},
+					{"blendMethod", BlendMethodToToken(obs_sceneitem_get_blending_method(item))},
+					{"interactive",
+					 src ? ((obs_source_get_output_flags(src) & OBS_SOURCE_INTERACTION) != 0)
+					     : false},
+					{"color", color ? color : ""},
+					{"showTransition", SceneItemTransitionJson(item, true)},
+					{"hideTransition", SceneItemTransitionJson(item, false)},
+				});
 			return true;
 		},
 		&items);
@@ -6602,8 +6602,8 @@ bool MethodStatsGet(const json & /*params*/, json &result, std::string & /*error
 		const int totalFrames = RebaseCounter(s.totalFrames, base.second);
 		nextDropBaseline[s.bindingUuid] = base;
 
-		const double dropPct =
-			totalFrames > 0 ? (static_cast<double>(droppedFrames) / totalFrames) * 100.0 : 0.0;
+		const double dropPct = totalFrames > 0 ? (static_cast<double>(droppedFrames) / totalFrames) * 100.0
+						       : 0.0;
 
 		outputs.push_back(json{
 			{"bindingUuid", s.bindingUuid},
@@ -8580,7 +8580,7 @@ bool EncodePngFile(const wchar_t *wpath, const uint8_t *pixels, uint32_t w, uint
 // bridge call). Both gs objects are destroyed and the graphics context left on
 // every path; the stage surface is unmapped before destroy.
 bool RenderToRgbaPixels(uint32_t srcW, uint32_t srcH, uint32_t outW, uint32_t outH,
-			 const std::function<void()> &renderFn, std::vector<uint8_t> &pixels, std::string &errOut)
+			const std::function<void()> &renderFn, std::vector<uint8_t> &pixels, std::string &errOut)
 {
 	if (!srcW || !srcH || !outW || !outH) {
 		errOut = "source has no video";
@@ -8668,7 +8668,7 @@ bool CaptureToPng(uint32_t w, uint32_t h, const std::function<void()> &renderFn,
 // instead of a file, for callers that need the PNG bytes directly rather than a file
 // on disk (an inline data-URI thumbnail).
 bool EncodePngMemory(const uint8_t *pixels, uint32_t w, uint32_t h, std::vector<unsigned char> &out,
-		      std::string &errOut)
+		     std::string &errOut)
 {
 	using Microsoft::WRL::ComPtr;
 
@@ -8759,7 +8759,7 @@ bool EncodePngMemory(const uint8_t *pixels, uint32_t w, uint32_t h, std::vector<
 // and a per-tile timestamped screenshot would spam the user's screenshots folder
 // for what is purely a UI preview).
 bool CaptureToThumbnailDataUri(uint32_t srcW, uint32_t srcH, const std::function<void()> &renderFn,
-				std::string &dataUri, std::string &errOut)
+			       std::string &dataUri, std::string &errOut)
 {
 	constexpr uint32_t kMaxDim = 160;
 	uint32_t outW = srcW;

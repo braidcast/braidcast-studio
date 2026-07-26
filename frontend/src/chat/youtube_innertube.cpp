@@ -280,14 +280,14 @@ struct ParsedAmount {
 // currency rather than a wrong event -- deliberately not defaulted to USD, which would
 // mislabel every unmapped currency as dollars.
 const std::pair<const char *, const char *> kCurrencySymbols[] = {
-	{"CA$", "CAD"},  {"MX$", "MXN"},  {"NZ$", "NZD"}, {"HK$", "HKD"}, {"NT$", "TWD"}, {"CN¥", "CNY"},
-	{"RMB¥", "CNY"}, {"US$", "USD"},  {"GB£", "GBP"}, {"JP¥", "JPY"}, {"COL$", "COP"}, {"Mex$", "MXN"},
-	{"AU$", "AUD"},  {"AR$", "ARS"},  {"CL$", "CLP"}, {"RD$", "DOP"}, {"TT$", "TTD"},  {"A$", "AUD"},
-	{"R$", "BRL"},   {"S$", "SGD"},   {"C$", "CAD"},  {"N$", "NAD"},  {"kr.", "DKK"},  {"Kč", "CZK"},
-	{"zł", "PLN"},   {"Ft", "HUF"},   {"Rp", "IDR"},  {"RM", "MYR"},  {"Rs", "INR"},   {"Ksh", "KES"},
-	{"₹", "INR"},    {"₩", "KRW"},    {"₱", "PHP"},   {"₪", "ILS"},   {"₫", "VND"},    {"₺", "TRY"},
-	{"₦", "NGN"},    {"₡", "CRC"},    {"₲", "PYG"},   {"₴", "UAH"},   {"€", "EUR"},    {"£", "GBP"},
-	{"¥", "JPY"},    {"kr", "SEK"},   {"$", "USD"},
+	{"CA$", "CAD"},  {"MX$", "MXN"}, {"NZ$", "NZD"}, {"HK$", "HKD"}, {"NT$", "TWD"},  {"CN¥", "CNY"},
+	{"RMB¥", "CNY"}, {"US$", "USD"}, {"GB£", "GBP"}, {"JP¥", "JPY"}, {"COL$", "COP"}, {"Mex$", "MXN"},
+	{"AU$", "AUD"},  {"AR$", "ARS"}, {"CL$", "CLP"}, {"RD$", "DOP"}, {"TT$", "TTD"},  {"A$", "AUD"},
+	{"R$", "BRL"},   {"S$", "SGD"},  {"C$", "CAD"},  {"N$", "NAD"},  {"kr.", "DKK"},  {"Kč", "CZK"},
+	{"zł", "PLN"},   {"Ft", "HUF"},  {"Rp", "IDR"},  {"RM", "MYR"},  {"Rs", "INR"},   {"Ksh", "KES"},
+	{"₹", "INR"},    {"₩", "KRW"},   {"₱", "PHP"},   {"₪", "ILS"},   {"₫", "VND"},    {"₺", "TRY"},
+	{"₦", "NGN"},    {"₡", "CRC"},   {"₲", "PYG"},   {"₴", "UAH"},   {"€", "EUR"},    {"£", "GBP"},
+	{"¥", "JPY"},    {"kr", "SEK"},  {"$", "USD"},
 };
 
 bool IsAsciiDigit(char c)
@@ -451,8 +451,7 @@ void FillMoneyEvent(const char *type, const json &renderer, const ItemCommon &co
 	ev.type = type;
 	ev.id = (common.authorChannelId.empty() || !amount.ok)
 			? (std::string("youtube:") + type + ":" + common.id)
-			: Events::YouTubeMoneyEventId(type, common.authorChannelId, amount.micros,
-						      common.tsMs / 1000);
+			: Events::YouTubeMoneyEventId(type, common.authorChannelId, amount.micros, common.tsMs / 1000);
 	ev.amount = amount.micros / 10000; // micros -> minor units, as the official read stores
 	ev.currency = amount.currency;
 }
@@ -623,8 +622,7 @@ void OnAddChatItem(Loop &lp, const char *, const json &action)
 		if (!fragments.empty()) {
 			fragments = ApplyThirdPartyEmotes(fragments, *lp.emotes);
 			lp.cb.emitMessage(BuildChatMessage("youtube", lp.cfg.channelId, common.id, common.tsMs,
-							   common.authorName, std::string(), common.badges,
-							   fragments));
+							   common.authorName, std::string(), common.badges, fragments));
 			++lp.emitted;
 		}
 		// Then, IN ADDITION, forward monetization/membership items into the events feed.
@@ -645,8 +643,8 @@ void OnAddChatItem(Loop &lp, const char *, const json &action)
 // from "an action name we have never seen".
 void OnNothingToRender(Loop &lp, const char *name, const json &)
 {
-	DBG(LogCat::Chat, "youtube innertube: dest=%s %s has no wire frame to render, skipped",
-	    lp.cfg.destTag.c_str(), name);
+	DBG(LogCat::Chat, "youtube innertube: dest=%s %s has no wire frame to render, skipped", lp.cfg.destTag.c_str(),
+	    name);
 }
 
 using ActionFn = void (*)(Loop &, const char *name, const json &action);
@@ -734,9 +732,9 @@ std::string Bootstrap(const Config &cfg, const Callbacks &cb, bool &canceled)
 		    resp.status, resp.error.empty() ? "no transport error" : resp.error.c_str());
 		return std::string();
 	}
-	const json &liveChatRenderer = Obj(Obj(Obj(Obj(resp.body, "contents"), "twoColumnWatchNextResults"),
-					      "conversationBar"),
-					   "liveChatRenderer");
+	const json &liveChatRenderer =
+		Obj(Obj(Obj(Obj(resp.body, "contents"), "twoColumnWatchNextResults"), "conversationBar"),
+		    "liveChatRenderer");
 	const json &continuations = Obj(liveChatRenderer, "continuations");
 	if (!continuations.is_array() || continuations.empty()) {
 		DBG(LogCat::Chat, "youtube innertube: dest=%s bootstrap carried no liveChatRenderer continuation",
@@ -960,8 +958,9 @@ bool Run(const Config &cfg, const Callbacks &cb)
 		if (next.reload) {
 			// A reload continuation restarts the feed from history rather than resuming.
 			lp.suppress = true;
-			DBG(LogCat::Chat, "youtube innertube: dest=%s took a reload continuation, suppressing its "
-					  "replayed batch",
+			DBG(LogCat::Chat,
+			    "youtube innertube: dest=%s took a reload continuation, suppressing its "
+			    "replayed batch",
 			    cfg.destTag.c_str());
 		}
 

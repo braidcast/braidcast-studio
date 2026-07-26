@@ -195,7 +195,8 @@ void ChatHub::Start()
 					// malformed chat payload -> skip the overlay fan-out
 				}
 			}
-			AsyncTask::PostToUi([event = std::move(event), body = std::move(body)] { RouteEmit(event, body); });
+			AsyncTask::PostToUi(
+				[event = std::move(event), body = std::move(body)] { RouteEmit(event, body); });
 		};
 
 		{
@@ -233,7 +234,7 @@ void ChatHub::Start()
 			// transport already gave.
 			auto reportedTerminal = std::make_shared<std::atomic<bool>>(false);
 			ctx.reportHealth = [dest, stop, reportedTerminal](Transports::TransportHealth::State st,
-									 const std::string &healthErr) {
+									  const std::string &healthErr) {
 				if (stop->load(std::memory_order_acquire)) {
 					return;
 				}
@@ -306,8 +307,8 @@ void ChatHub::SendToPlatforms(const std::vector<std::string> &platforms, const s
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
 		for (const auto &entry : active_) {
-			if (platforms.empty() || std::find(platforms.begin(), platforms.end(),
-							   entry.second.providerId) != platforms.end()) {
+			if (platforms.empty() ||
+			    std::find(platforms.begin(), platforms.end(), entry.second.providerId) != platforms.end()) {
 				targets.push_back(entry.second);
 			}
 		}

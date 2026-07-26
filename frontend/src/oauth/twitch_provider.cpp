@@ -22,13 +22,9 @@ const char *kHelixBase = "https://api.twitch.tv/helix/";
 // channel:read:subscriptions, and bits:read back the Phase 9.2b EventSub feed
 // (follower backfill + follow/sub/resub/gift + cheer notifications; channel.raid
 // needs no scope). Verified against dev.twitch.tv (2026-07).
-const std::array<const char *, 7> kTwitchScopes = {"channel:read:stream_key",
-						   "channel:manage:broadcast",
-						   "chat:read",
-						   "chat:edit",
-						   "moderator:read:followers",
-						   "channel:read:subscriptions",
-						   "bits:read"};
+const std::array<const char *, 7> kTwitchScopes = {
+	"channel:read:stream_key",  "channel:manage:broadcast",   "chat:read", "chat:edit",
+	"moderator:read:followers", "channel:read:subscriptions", "bits:read"};
 
 // Twitch's settable content-classification label ids (the PATCH-writable set;
 // "MatureGame" is auto-derived from the game rating and is NOT settable here).

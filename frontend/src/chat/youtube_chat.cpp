@@ -11,7 +11,7 @@
 
 #include "../events/event_hub.hpp"   // Events::Hub().Ingest for monetization/membership events
 #include "../events/event_model.hpp" // Events::NormalizedEvent
-#include "../log.hpp"                 // DBG / LogCat -- gated path-active logging
+#include "../log.hpp"                // DBG / LogCat -- gated path-active logging
 #include "util/env_config.hpp"
 #include "util/http_client.hpp"
 #include "util/json_util.hpp"
@@ -19,7 +19,7 @@
 #include "../oauth/youtube_provider.hpp"
 #include "util/time_util.hpp"
 #include "third_party_emotes.hpp"
-#include "ws_client.hpp"        // CancelableSleep / Backoff
+#include "ws_client.hpp"         // CancelableSleep / Backoff
 #include "youtube_innertube.hpp" // the zero-quota primary read
 
 namespace Chat {
@@ -457,9 +457,8 @@ bool RunStreamList(ChatSession &s, std::string &err)
 		if (WaitOutQuotaExhaustion(s)) {
 			break;
 		}
-		std::string url = std::string(kLiveChatStreamUrl) + "?liveChatId=" +
-				  Http::UrlEncode(s.liveChatId) + "&part=id,snippet,authorDetails&maxResults=" +
-				  kStreamMaxResults;
+		std::string url = std::string(kLiveChatStreamUrl) + "?liveChatId=" + Http::UrlEncode(s.liveChatId) +
+				  "&part=id,snippet,authorDetails&maxResults=" + kStreamMaxResults;
 		if (!pageToken.empty()) {
 			url += "&pageToken=" + Http::UrlEncode(pageToken);
 		}
@@ -585,8 +584,7 @@ bool RunStreamList(ChatSession &s, std::string &err)
 			return false;
 		}
 		if (status == 403 || status == 429) {
-			const std::string reason = status == 403 ? OAuth::YouTubeErrorReason(errorBody)
-								 : std::string();
+			const std::string reason = status == 403 ? OAuth::YouTubeErrorReason(errorBody) : std::string();
 			const OAuth::YouTubeErrorClass cls = OAuth::ClassifyYouTubeError(status, reason);
 			if (cls == OAuth::YouTubeErrorClass::QuotaExhausted) {
 				// SendAuthedStreaming already armed the shared gate; the loop-top wait
@@ -622,17 +620,17 @@ bool RunStreamList(ChatSession &s, std::string &err)
 		// 2xx: the server pushed its batch then closed the connection (cleanly, or a
 		// mid-batch drop -- reqErr may be set, but every object that arrived was already
 		// processed).
-		const long cycleMs = static_cast<long>(
-			std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() -
-									     cycleStart)
-				.count());
+		const long cycleMs = static_cast<long>(std::chrono::duration_cast<std::chrono::milliseconds>(
+							       std::chrono::steady_clock::now() - cycleStart)
+							       .count());
 
 		// A 2xx that yielded nothing parseable is the silent-failure shape: hand chat to
 		// .list rather than reconnecting into the same void for the rest of the broadcast.
 		deadStreak = frameCount > 0 ? 0 : deadStreak + 1;
 		if (deadStreak >= kStreamDeadStrikes) {
-			HostLog("[chat] youtube: dest=" + s.destTag + " streamList connected but delivered nothing "
-									"across " +
+			HostLog("[chat] youtube: dest=" + s.destTag +
+				" streamList connected but delivered nothing "
+				"across " +
 				std::to_string(deadStreak) + " connections; falling back to liveChatMessages.list");
 			return true;
 		}
@@ -651,14 +649,12 @@ bool RunStreamList(ChatSession &s, std::string &err)
 			if (++fastEmptyStreak == 1) {
 				HostLog("[chat] youtube: dest=" + s.destTag +
 					" streamList returned an empty batch in " + std::to_string(cycleMs) +
-					"ms; backing off " +
-					std::to_string(static_cast<long long>(wait.count())) +
+					"ms; backing off " + std::to_string(static_cast<long long>(wait.count())) +
 					"ms to protect the daily quota");
 			} else {
 				DBG(LogCat::Chat,
 				    "youtube streamList: dest=%s empty %ldms cycle #%d, backing off %lldms",
-				    s.destTag.c_str(), cycleMs, fastEmptyStreak,
-				    static_cast<long long>(wait.count()));
+				    s.destTag.c_str(), cycleMs, fastEmptyStreak, static_cast<long long>(wait.count()));
 			}
 			if (CancelableSleep(wait, s.canceled)) {
 				break;
@@ -695,8 +691,8 @@ void RunListPoll(ChatSession &s, std::string &err)
 		if (WaitOutQuotaExhaustion(s)) {
 			break;
 		}
-		std::string url = std::string(kLiveChatMessagesUrl) + "?liveChatId=" +
-				  Http::UrlEncode(s.liveChatId) + "&part=snippet,authorDetails";
+		std::string url = std::string(kLiveChatMessagesUrl) + "?liveChatId=" + Http::UrlEncode(s.liveChatId) +
+				  "&part=snippet,authorDetails";
 		if (!pageToken.empty()) {
 			url += "&pageToken=" + Http::UrlEncode(pageToken);
 		}
@@ -734,8 +730,8 @@ void RunListPoll(ChatSession &s, std::string &err)
 		// midnight-Pacific reset via the shared gate. Any other 403 (chat disabled/
 		// ended/forbidden) and every 404 (broadcast gone) end the session.
 		if (resp.status == 403 || resp.status == 429) {
-			const std::string reason =
-				resp.status == 403 ? OAuth::YouTubeErrorReason(resp.body) : std::string();
+			const std::string reason = resp.status == 403 ? OAuth::YouTubeErrorReason(resp.body)
+								      : std::string();
 			const OAuth::YouTubeErrorClass cls = OAuth::ClassifyYouTubeError(resp.status, reason);
 			if (cls == OAuth::YouTubeErrorClass::QuotaExhausted) {
 				// SendAuthed already armed the shared gate; the loop-top wait reports
@@ -941,8 +937,16 @@ bool YouTubeChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, con
 	};
 
 	Backoff backoff(std::chrono::milliseconds(2000), std::chrono::milliseconds(30000));
-	ChatSession session{owner_,           ctx,       acct,         liveChatId, videoId,
-			    thirdPartyEmotes, canceled,  emitState,    holdLiveChat, backoff,
+	ChatSession session{owner_,
+			    ctx,
+			    acct,
+			    liveChatId,
+			    videoId,
+			    thirdPartyEmotes,
+			    canceled,
+			    emitState,
+			    holdLiveChat,
+			    backoff,
 			    OAuth::DestinationKey(ctx.dest)};
 
 	// Tail only: the full liveChatId is a broadcast-scoped identifier and this log is something

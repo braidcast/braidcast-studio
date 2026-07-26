@@ -451,7 +451,7 @@ YouTubeProvider::YouTubeProvider()
 		  BRAIDCAST_BROKER_URL,  // brokerBaseUrl
 		  "youtube",             // platform
 		  YOUTUBE_SCOPE_VERSION, // scopeVer
-		  true,                  // revokePreferAccessToken -- Google's docs confirm this also revokes the paired refresh token
+		  true, // revokePreferAccessToken -- Google's docs confirm this also revokes the paired refresh token
 	  })
 {
 }
@@ -1065,8 +1065,8 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 		// to this account's own streams (a foreign/deleted id returns empty items).
 		Http::HttpReq verifyReq;
 		verifyReq.method = "GET";
-		verifyReq.url = std::string(kLiveStreamsUrl) +
-				"?part=id,cdn,status&id=" + Http::UrlEncode(rememberedStreamId);
+		verifyReq.url =
+			std::string(kLiveStreamsUrl) + "?part=id,cdn,status&id=" + Http::UrlEncode(rememberedStreamId);
 		Http::HttpResponse verifyResp;
 		std::string verifyErr;
 		if (SendAuthed(acct, verifyReq, verifyResp, verifyErr) && verifyResp.status >= 200 &&
@@ -1257,8 +1257,8 @@ bool YouTubeProvider::ProbeActiveBroadcasts(OAuthAccount &acct, std::string &err
 	}
 
 	if (unattributed > 0) {
-		HostLog("[oauth] YouTube skipped " + std::to_string(unattributed) +
-			" active broadcast(s) for " + accountId + " bound to an unrecognized ingest stream");
+		HostLog("[oauth] YouTube skipped " + std::to_string(unattributed) + " active broadcast(s) for " +
+			accountId + " bound to an unrecognized ingest stream");
 	}
 	if (learned.empty()) {
 		return false;
@@ -1284,7 +1284,7 @@ bool YouTubeProvider::ProbeActiveBroadcasts(OAuthAccount &acct, std::string &err
 }
 
 bool YouTubeProvider::EnsureActiveBroadcast(OAuthAccount &acct, const std::string &profileUuid, BroadcastState &out,
-					   std::string &err)
+					    std::string &err)
 {
 	err.clear();
 	const DestinationId dest{AccountId(acct), profileUuid};
@@ -1402,8 +1402,7 @@ bool YouTubeProvider::ReadBroadcastViewers(const DestinationId &dest, const std:
 				continuation.clear();
 				continue;
 			}
-			DBG(LogCat::OAuth,
-			    "youtube viewers: dest=%s no viewership action -> leaving the count ABSENT",
+			DBG(LogCat::OAuth, "youtube viewers: dest=%s no viewership action -> leaving the count ABSENT",
 			    destTag.c_str());
 			SetViewerContinuation(dest, nextToken);
 			return true;

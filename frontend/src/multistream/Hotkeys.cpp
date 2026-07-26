@@ -439,9 +439,8 @@ void SyncSceneHotkeys()
 			auto entry = std::make_unique<SceneHotkey>();
 			entry->uuid = uuid;
 			const std::string hotkeyName = "OBSBasic.SelectScene." + uuid;
-			entry->id = obs_hotkey_register_frontend(hotkeyName.c_str(),
-								 SelectSceneDescription(name).c_str(), OnSelectScene,
-								 entry.get());
+			entry->id = obs_hotkey_register_frontend(
+				hotkeyName.c_str(), SelectSceneDescription(name).c_str(), OnSelectScene, entry.get());
 			g_sceneHotkeys.emplace(uuid, std::move(entry));
 			added = true;
 		} else {

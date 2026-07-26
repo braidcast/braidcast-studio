@@ -407,7 +407,8 @@ void BrokerStrategy::Revoke(const OAuthAccount &acct)
 		if (resp.status == 0) {
 			HostLog("[oauth] revoke failed for " + platform + " (network: " + resp.error + ")");
 		} else {
-			HostLog("[oauth] revoke completed for " + platform + " (HTTP " + std::to_string(resp.status) + ")");
+			HostLog("[oauth] revoke completed for " + platform + " (HTTP " + std::to_string(resp.status) +
+				")");
 		}
 	});
 }

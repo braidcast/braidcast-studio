@@ -23,8 +23,8 @@ const char *kKickApiBase = "https://api.kick.com";
 // streamkey:read backs the go-live stream-key autofill (channels.stream.key).
 // The Pusher chat/event WS is public (unauthenticated), so it needs no scope.
 // Verified against docs.kick.com (2026-07).
-const std::array<const char *, 5> kKickScopes = {"channel:read", "channel:write", "streamkey:read",
-						 "user:read",    "chat:write"};
+const std::array<const char *, 5> kKickScopes = {"channel:read", "channel:write", "streamkey:read", "user:read",
+						 "chat:write"};
 
 using JsonUtil::NumLoose;
 using JsonUtil::ParseJson;
@@ -50,7 +50,7 @@ KickProvider::KickProvider()
 		  BRAIDCAST_BROKER_URL, // brokerBaseUrl
 		  "kick",               // platform
 		  KICK_SCOPE_VERSION,   // scopeVer
-		  false,                // revokePreferAccessToken -- Kick's token_hint_type=refresh_token kills the whole grant
+		  false, // revokePreferAccessToken -- Kick's token_hint_type=refresh_token kills the whole grant
 	  })
 {
 }

@@ -59,10 +59,9 @@ const std::string &ClientVersion()
 // region, so a server-side locale guess cannot re-localize a field a caller parses.
 json ClientContext()
 {
-	return json{{"client", json{{"clientName", kClientName},
-				    {"clientVersion", ClientVersion()},
-				    {"hl", "en"},
-				    {"gl", "US"}}}};
+	return json{
+		{"client",
+		 json{{"clientName", kClientName}, {"clientVersion", ClientVersion()}, {"hl", "en"}, {"gl", "US"}}}};
 }
 
 } // namespace
@@ -126,7 +125,9 @@ Result Post(const char *url, const json &fields, const std::function<bool()> &ca
 
 	// An absent predicate means "no cancellation to honor", normalized once here so no call
 	// site on a thread without a cancel flag has to hand in an always-false lambda of its own.
-	static const std::function<bool()> kNeverCanceled = [] { return false; };
+	static const std::function<bool()> kNeverCanceled = [] {
+		return false;
+	};
 	const std::function<bool()> &cancel = canceled ? canceled : kNeverCanceled;
 
 	if (!SharedRateLimiter().Acquire(cancel)) {
