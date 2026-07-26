@@ -415,25 +415,6 @@ input[type="color"] {
   font-family: var(--font-ui);
   overflow: auto;
 }
-.dock-toolbar {
-  display: flex;
-  justify-content: flex-end;
-  padding: 4px 6px;
-  border-bottom: var(--border-weight) solid var(--color-border);
-}
-.dock-add {
-  height: auto;
-  padding: 2px 8px;
-  font-size: 13px;
-  line-height: 1;
-  background: transparent;
-  border: var(--border-weight) solid var(--color-border);
-  color: var(--color-muted);
-}
-.dock-add:hover:not(:disabled) {
-  color: var(--color-accent);
-  border-color: var(--color-accent);
-}
 .dock-list {
   list-style: none;
   margin: 0;

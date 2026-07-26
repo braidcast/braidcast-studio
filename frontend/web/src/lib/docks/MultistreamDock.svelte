@@ -1,6 +1,5 @@
 <script lang="ts">
   import type { OutputBindingInfo, MultistreamState } from "$lib/api/bridge";
-  import { setPage } from "$lib/stores/pageStore.svelte";
   import { canvasStore } from "$lib/stores/canvasStore.svelte";
   import {
     outputBindingStore,
@@ -14,7 +13,6 @@
   import { STATE_COLOR_EXT } from "$lib/theme/stateColors";
   import { fmtCompact } from "$lib/utils/format";
   import ToggleSwitch from "$lib/ui/ToggleSwitch.svelte";
-  import Icon from "$lib/ui/Icon.svelte";
   import PlatformMark from "$lib/ui/PlatformMark.svelte";
 
   // Host supplies tab chrome + strips __* keys; this body declares no props.
@@ -111,12 +109,6 @@
 </script>
 
 <div class="dock-body">
-  <div class="dock-toolbar">
-    <button class="dock-add" title="Manage in Canvases" aria-label="Manage in Canvases" onclick={() => setPage("canvases")}>
-      <Icon name="plus" size={12} />
-    </button>
-  </div>
-
   {#if error}
     <p class="dock-msg err">{error}</p>
   {/if}
@@ -183,11 +175,6 @@
 </div>
 
 <style>
-  .dock-add {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
   .groups {
     padding: 6px;
     display: flex;
