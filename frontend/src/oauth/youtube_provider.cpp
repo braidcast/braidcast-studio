@@ -10,6 +10,7 @@
 
 #include "../chat/youtube_chat.hpp"
 #include "account_store.hpp"
+#include "util/env_config.hpp"
 #include "util/http_client.hpp"
 #include "../ingest_writeback.hpp"
 #include "util/innertube_client.hpp"
@@ -1455,13 +1456,22 @@ bool YouTubeProvider::viewerCounts(OAuthAccount &acct, std::map<DestinationId, i
 	// batch form, and since it bills no quota the per-id shape costs nothing but a round trip.
 	// An id that fails leaves ITS entry absent from `counts` and therefore its destination
 	// absent from `out`, exactly as a failed batch read did.
+	// BRAIDCAST_YOUTUBE_VIEWERS=false stops YouTube's viewer read without touching any other
+	// platform's, so a live broadcast can be observed with and without this traffic. It exists
+	// because a quiet broadcast reported a floor of exactly 1 rather than 0, and the only way to
+	// tell an inflating read apart from a genuine viewer is to remove the read and look again.
+	// Leaving `counts` empty keeps every destination absent from `out`, which is already how this
+	// path spells "no figure" -- so the UI shows nothing rather than a fabricated zero.
 	std::map<std::string, int> counts;
-	for (const auto &claim : claims) {
-		std::string readErr;
-		if (!ReadBroadcastViewers(claim.first, claim.second, counts, readErr) && err.empty()) {
-			// One id failing must not discard the ids that did read -- keep the first error
-			// for the caller's log and carry on, so a partial total still beats no total.
-			err = readErr;
+	if (Env::Flag("BRAIDCAST_YOUTUBE_VIEWERS", true)) {
+		for (const auto &claim : claims) {
+			std::string readErr;
+			if (!ReadBroadcastViewers(claim.first, claim.second, counts, readErr) && err.empty()) {
+				// One id failing must not discard the ids that did read -- keep the first
+				// error for the caller's log and carry on, so a partial total still beats
+				// no total.
+				err = readErr;
+			}
 		}
 	}
 
