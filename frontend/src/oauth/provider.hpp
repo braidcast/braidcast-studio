@@ -260,7 +260,6 @@ public:
 
 	virtual std::string id() const = 0;
 	virtual std::string displayName() const = 0;
-	virtual std::string brandColor() const = 0;
 
 	// The scope version the provider currently requests (mirrors the auth
 	// strategy's scopeVer). Default 0; providers bump it when their scope set
@@ -272,8 +271,9 @@ public:
 	// status path reports it as needing reconnect and metadata calls refuse it.
 	bool isTokenScopeCurrent(const OAuthAccount &acct) const { return acct.scopeVer >= scopeVer(); }
 
-	// The capability descriptor: { id, displayName, brandColor, auth{...},
-	// fields[...] } the Svelte modal renders fields from.
+	// The capability descriptor: { id, displayName, auth{...}, fields[...] } the
+	// Svelte modal renders fields from. Brand color is the web's (platformColors.ts),
+	// so it is not carried here.
 	virtual json capabilityJson() const = 0;
 
 	// The provider's auth strategy (owned by the provider; never null for a

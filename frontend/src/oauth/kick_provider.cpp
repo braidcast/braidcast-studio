@@ -97,7 +97,6 @@ json KickProvider::capabilityJson() const
 	return json{
 		{"id", id()},
 		{"displayName", displayName()},
-		{"brandColor", brandColor()},
 		{"auth", json{{"strategy", "broker"}, {"scopes", scopes}, {"needsSecret", false}}},
 		{"fields", fields},
 	};

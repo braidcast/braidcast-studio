@@ -530,7 +530,6 @@ export interface OAuthProviderField {
 export interface OAuthProvider {
   id: string;
   displayName: string;
-  brandColor: string;
   auth: { strategy: string; scopes: string[]; needsSecret: boolean };
   fields: OAuthProviderField[];
 }

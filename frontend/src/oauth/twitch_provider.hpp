@@ -35,7 +35,6 @@ public:
 
 	std::string id() const override { return "twitch"; }
 	std::string displayName() const override { return "Twitch"; }
-	std::string brandColor() const override { return "#a970ff"; }
 	int scopeVer() const override { return TWITCH_SCOPE_VERSION; }
 
 	json capabilityJson() const override;

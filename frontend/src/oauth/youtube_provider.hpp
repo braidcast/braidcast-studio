@@ -58,7 +58,6 @@ public:
 
 	std::string id() const override { return "youtube"; }
 	std::string displayName() const override { return "YouTube"; }
-	std::string brandColor() const override { return "#ff4e45"; }
 	int scopeVer() const override { return YOUTUBE_SCOPE_VERSION; }
 
 	json capabilityJson() const override;

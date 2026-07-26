@@ -33,7 +33,6 @@ public:
 
 	std::string id() const override { return "kick"; }
 	std::string displayName() const override { return "Kick"; }
-	std::string brandColor() const override { return "#53fc18"; }
 	int scopeVer() const override { return KICK_SCOPE_VERSION; }
 
 	json capabilityJson() const override;
