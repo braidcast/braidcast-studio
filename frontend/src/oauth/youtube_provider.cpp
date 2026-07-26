@@ -1175,10 +1175,19 @@ bool YouTubeProvider::ProbeActiveBroadcasts(OAuthAccount &acct, std::string &err
 
 	// contentDetails carries boundStreamId, and liveBroadcasts.list bills the same 1 unit
 	// whichever parts are requested -- so the attribution below is free.
+	//
+	// `broadcastStatus` WITHOUT `mine`: liveBroadcasts.list takes exactly one filter and
+	// rejects the pair with "Incompatible parameters specified in the request: mine,
+	// broadcastStatus" (HTTP 400), which silently left every destination without a resolved
+	// broadcast. Do not re-add `mine=true`. Filtering by status is the better half to keep:
+	// `mine` alone would return completed and upcoming broadcasts too, so an account with
+	// more than maxResults of history could push its live one off the page. Should the status
+	// filter ever return broadcasts this account does not own, the boundStreamId attribution
+	// below still only accepts one bound to a stream this account remembers.
 	Http::HttpReq req;
 	req.method = "GET";
 	req.url = std::string(kLiveBroadcastsUrl) +
-		  "?part=id,snippet,contentDetails&broadcastStatus=active&mine=true&maxResults=50";
+		  "?part=id,snippet,contentDetails&broadcastStatus=active&maxResults=50";
 
 	Http::HttpResponse resp;
 	if (!SendAuthed(acct, req, resp, err)) {
@@ -1336,8 +1345,12 @@ bool YouTubeProvider::ReadBroadcastViewers(const DestinationId &dest, const std:
 	std::string continuation = ViewerContinuation(dest);
 	for (int attempt = 1; attempt <= 2; ++attempt) {
 		const bool resumed = !continuation.empty();
+		// Which request shape went out, not how big the answer was: this prints before the
+		// POST, so any size here is a guess. The [net] line that follows carries the real
+		// byte count -- and a stated expectation that disagrees with it reads as a
+		// measurement and sends you looking in the wrong place.
 		DBG(LogCat::OAuth, "youtube viewers: dest=%s continuation cache %s", destTag.c_str(),
-		    resumed ? "hit (resuming, ~5KB)" : "miss (full videoId read, ~118KB)");
+		    resumed ? "hit (resuming)" : "miss (full videoId read)");
 
 		const json fields = resumed ? json{{"continuation", continuation}} : json{{"videoId", videoId}};
 		const InnerTube::Result resp = InnerTube::Post(kUpdatedMetadataUrl, fields);
