@@ -3,6 +3,7 @@
 package main
 
 import (
+	"archive/zip"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -18,10 +19,25 @@ import (
 var Default = Build
 
 // VS-bundled toolchain. Machine-specific to the user's BuildTools install, but
-// capturing them here is the whole point: it avoids depending on PATH state.
+// capturing it here is the whole point: it avoids depending on PATH state.
 const (
-	cmakeExe       = `C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe`
-	clangFormatExe = `C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\Llvm\x64\bin\clang-format.exe`
+	cmakeExe = `C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe`
+)
+
+// clang-format is pinned to the exact version CI installs, and is NOT taken from the
+// Visual Studio toolchain alongside cmakeExe above. VS bundles 19.1.5 while CI resolves
+// obsproject/tools/clang-format@19 to 19.1.1, and patch releases of clang-format disagree
+// about output -- so the bundled binary reformats files in ways CI then rejects, producing
+// a local verdict that cannot be acted on. That mismatch is how ten files reached master
+// unformatted while a local `mage format` reported success.
+const (
+	clangFormatVersion = "19.1.1"
+	// PyPI file URLs are immutable, so the URL and the hash pin together. On a version
+	// bump take both from https://pypi.org/pypi/clang-format/<version>/json, the
+	// win_amd64 entry under "urls".
+	clangFormatURL     = "https://files.pythonhosted.org/packages/89/6e/ce69b88264d8e00712262401e2d72957f20bb609c523cd7bdfc3b96fc83a/clang_format-19.1.1-py2.py3-none-win_amd64.whl"
+	clangFormatSHA256  = "631aa55a56f96f12d9c6060fb6d09f397f32705c7a4331e1944a107f6c99f139"
+	clangFormatInWheel = "clang_format/data/bin/clang-format.exe"
 )
 
 const (
@@ -104,48 +120,21 @@ var formatSkipDirs = []string{buildDir, "deps", depsDir}
 // Format runs clang-format in place over the C/C++ files changed vs HEAD
 // (staged, unstaged, and untracked), using the repo's .clang-format style.
 func Format() error {
-	seen := make(map[string]bool)
-	var candidates []string
-	addAll := func(lines []string) {
-		for _, l := range lines {
-			l = strings.TrimSpace(l)
-			if l == "" || seen[l] {
-				continue
-			}
-			seen[l] = true
-			candidates = append(candidates, l)
-		}
-	}
-
-	for _, args := range [][]string{
+	files, err := cppFilesFrom([][]string{
 		{"diff", "--name-only", "HEAD"},
 		{"diff", "--name-only", "--cached"},
 		{"ls-files", "--others", "--exclude-standard"},
-	} {
-		out, err := shCapture("git", args...)
-		if err != nil {
-			return err
-		}
-		addAll(strings.Split(out, "\n"))
+	})
+	if err != nil {
+		return err
 	}
-
-	var files []string
-	for _, f := range candidates {
-		if !cppExts[strings.ToLower(filepath.Ext(f))] {
-			continue
-		}
-		if inSkippedDir(f) {
-			continue
-		}
-		if info, err := os.Stat(f); err != nil || info.IsDir() {
-			continue
-		}
-		files = append(files, f)
-	}
-
 	if len(files) == 0 {
 		fmt.Println("no changed C/C++ files")
 		return nil
+	}
+	exe, err := ensureClangFormat()
+	if err != nil {
+		return err
 	}
 
 	fmt.Printf("formatting %d file(s):\n", len(files))
@@ -153,7 +142,133 @@ func Format() error {
 		fmt.Printf("  %s\n", f)
 	}
 
-	return sh(clangFormatExe, append([]string{"-i", "--style=file"}, files...)...)
+	return sh(exe, append([]string{"-i", "--style=file"}, files...)...)
+}
+
+// FormatCheck reports whether anything on this branch would fail CI's format job,
+// changing nothing on disk.
+//
+// It compares against master rather than HEAD, which is the one thing Format cannot do:
+// the drift that actually breaks CI lives in files that are already committed, so a
+// changed-vs-HEAD view sees a clean tree and says nothing is wrong. This mirrors what the
+// format job examines once work reaches master, which is the moment the whole accumulated
+// batch is checked at once.
+func FormatCheck() error {
+	files, err := cppFilesFrom([][]string{{"diff", "--name-only", "master...HEAD"}})
+	if err != nil {
+		return err
+	}
+	if len(files) == 0 {
+		fmt.Println("no C/C++ files differ from master")
+		return nil
+	}
+	exe, err := ensureClangFormat()
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("checking %d file(s) against clang-format %s\n", len(files), clangFormatVersion)
+	return sh(exe, append([]string{"--dry-run", "-Werror", "--style=file"}, files...)...)
+}
+
+// cppFilesFrom collects the C/C++ files named by each git invocation, deduplicated across
+// them, skipping vendored trees and anything that is no longer a file on disk (a deletion
+// still shows up in `git diff --name-only`).
+func cppFilesFrom(gitArgs [][]string) ([]string, error) {
+	seen := make(map[string]bool)
+	var files []string
+	for _, args := range gitArgs {
+		out, err := shCapture("git", args...)
+		if err != nil {
+			return nil, err
+		}
+		for _, l := range strings.Split(out, "\n") {
+			l = strings.TrimSpace(l)
+			if l == "" || seen[l] {
+				continue
+			}
+			seen[l] = true
+			if !cppExts[strings.ToLower(filepath.Ext(l))] {
+				continue
+			}
+			if inSkippedDir(l) {
+				continue
+			}
+			if info, err := os.Stat(l); err != nil || info.IsDir() {
+				continue
+			}
+			files = append(files, l)
+		}
+	}
+	return files, nil
+}
+
+// ensureClangFormat unpacks the pinned clang-format into .deps/ and returns its path,
+// downloading it only on the first call. Same shape as ensureDep below, and --ssl-no-revoke
+// is needed here for the same reason: the local TLS proxy breaks OCSP revocation lookups.
+// The certificate chain is still verified, and the sha256 is what authenticates the payload.
+func ensureClangFormat() (string, error) {
+	dir := filepath.Join(depsDir, "clang-format-"+clangFormatVersion)
+	exe := filepath.Join(dir, "clang-format.exe")
+	if _, err := os.Stat(exe); err == nil {
+		return exe, nil
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	wheel := filepath.Join(dir, "clang-format.whl")
+	fmt.Printf("download  clang-format %s\n", clangFormatVersion)
+	if err := sh("curl.exe", "-L", "--ssl-no-revoke", "-o", wheel, clangFormatURL); err != nil {
+		return "", err
+	}
+
+	got, err := sha256File(wheel)
+	if err != nil {
+		return "", err
+	}
+	if !strings.EqualFold(got, clangFormatSHA256) {
+		os.Remove(wheel)
+		return "", fmt.Errorf("sha256 mismatch for clang-format %s: got %s, want %s",
+			clangFormatVersion, got, clangFormatSHA256)
+	}
+	if err := extractFromZip(wheel, clangFormatInWheel, exe); err != nil {
+		return "", err
+	}
+	os.Remove(wheel)
+	fmt.Printf("verified  clang-format %s\n", clangFormatVersion)
+	return exe, nil
+}
+
+// extractFromZip writes one named member of a zip archive to dest. A wheel is a zip, so
+// this is the whole of what unpacking one needs.
+func extractFromZip(archivePath, member, dest string) error {
+	zr, err := zip.OpenReader(archivePath)
+	if err != nil {
+		return err
+	}
+	defer zr.Close()
+
+	for _, f := range zr.File {
+		if f.Name != member {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return err
+		}
+		defer rc.Close()
+		out, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o755)
+		if err != nil {
+			return err
+		}
+		defer out.Close()
+		_, err = io.Copy(out, rc)
+		return err
+	}
+	return fmt.Errorf("%s not found in %s", member, archivePath)
 }
 
 func inSkippedDir(p string) bool {
