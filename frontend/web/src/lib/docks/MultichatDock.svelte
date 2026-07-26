@@ -394,9 +394,14 @@
                      share one brand mark and one stripe color, so neither can. -->
                 <span class="origin" title={originTitle(m, o)}>
                   <PlatformMark platform={m.platform} size={11} />
-                  <Avatar url={o.avatarUrl} name={o.channel} size={15} />
-                  {#if !o.named || o.siblings >= 2}
-                    <span class="ocanvas" class:state={!o.named}>{o.canvasLabel}</span>
+                  <!-- An unattributable row knows its platform and nothing else. Both the
+                       avatar and the canvas label would resolve to ABSENT_LABEL, which
+                       prints an absence as if it were content; the mark above is real. -->
+                  {#if o.fidelity !== "none"}
+                    <Avatar url={o.avatarUrl} name={o.channel} size={15} />
+                    {#if !o.named || o.siblings >= 2}
+                      <span class="ocanvas" class:state={!o.named}>{o.canvasLabel}</span>
+                    {/if}
                   {/if}
                 </span>
               {/if}

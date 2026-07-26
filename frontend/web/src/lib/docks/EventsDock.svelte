@@ -292,13 +292,18 @@
             {#if multiOrigin}
               {@const o = attribute(e, destByAccount)}
               {@const note = FIDELITY_NOTE[o.fidelity]}
-              <div class="origin" title={FIDELITY_HINT[o.fidelity]}>
-                <Avatar url={o.avatarUrl} name={o.channel} size={14} />
-                <span class="ochannel">{o.channel}</span>
-                <span class="osep" aria-hidden="true">›</span>
-                <span class="ocanvas" class:state={!o.named}>{o.canvasLabel}</span>
-                {#if note}<span class="ofid">{note}</span>{/if}
-              </div>
+              <!-- "none" means nothing is known about the origin at all: ABSENT_LABEL is
+                   documented as an absence it must not guess at, so the row renders
+                   nothing rather than a pair of dashes standing in for content. -->
+              {#if o.fidelity !== "none"}
+                <div class="origin" title={FIDELITY_HINT[o.fidelity]}>
+                  <Avatar url={o.avatarUrl} name={o.channel} size={14} />
+                  <span class="ochannel">{o.channel}</span>
+                  <span class="osep" aria-hidden="true">›</span>
+                  <span class="ocanvas" class:state={!o.named}>{o.canvasLabel}</span>
+                  {#if note}<span class="ofid">{note}</span>{/if}
+                </div>
+              {/if}
             {/if}
           </div>
         {/each}
