@@ -3,6 +3,7 @@
 #include <nlohmann/json.hpp>
 
 #include "util/http_client.hpp"
+#include "util/innertube_client.hpp" // BrowserUserAgent -- the app's ONE CEF-derived browser UA
 
 namespace Chat {
 
@@ -56,7 +57,7 @@ bool ResolveKickChannelIds(const std::string &slug, std::string &chatroomIdOut, 
 	req.url = "https://kick.com/api/v2/channels/" + Http::UrlEncode(slug);
 	req.timeoutSec = kChannelLookupTimeoutSec;
 	req.headers.push_back("Accept: application/json");
-	req.headers.push_back(std::string("User-Agent: ") + kKickBrowserUserAgent);
+	req.headers.push_back(std::string("User-Agent: ") + InnerTube::BrowserUserAgent());
 
 	const Http::HttpResponse resp = Http::HttpRequest(req);
 	if (resp.status == 0) {

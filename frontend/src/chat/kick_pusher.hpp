@@ -23,12 +23,11 @@ inline constexpr const char *kKickPusherAppKey = "32cbd69e4b950bf97679";
 inline constexpr const char *kKickPusherHost = "ws-us2.pusher.com"; // "us2" cluster
 inline constexpr const char *kKickPusherClientVersion = "8.4.0-rc2";
 
-// A browser-like User-Agent for the unofficial kick.com/api/v2 lookup -- the
-// research flags that bot-detection TLS/UA fingerprinting may block non-browser
-// clients on that internal endpoint.
-inline constexpr const char *kKickBrowserUserAgent =
-	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
-	"Chrome/126.0.0.0 Safari/537.36";
+// The unofficial kick.com/api/v2 lookup declares the app's canonical browser
+// User-Agent (InnerTube::BrowserUserAgent) -- the research flags that bot-detection
+// TLS/UA fingerprinting may block non-browser clients on that internal endpoint, and a
+// UA hardcoded here decayed into claiming a Chrome nobody runs while the embedded CEF
+// moved on.
 
 // The Pusher app WebSocket URL built from the shared app key/host/version.
 std::string KickPusherUrl();
