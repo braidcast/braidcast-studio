@@ -99,6 +99,14 @@
 
   let withAll = $derived(showAll ?? destinations.length + unarmedPlatforms.length >= 2);
 
+  // Row 2 (platform scope chips) repeats what Row 1's All chip already says once there
+  // is only one platform in play -- it adds no information, so it is suppressed rather
+  // than rendered redundantly.
+  let withPlatforms = $derived(groups.length + unarmedPlatforms.length >= 2);
+
+  // Row 3 (individual streams) has nothing to show once there are no destinations.
+  let withStreams = $derived(groups.length > 0);
+
   // accountId -> how many destinations share it, for the disambiguation rule below.
   let siblingCount = $derived.by(() => {
     const m = new Map<string, number>();
@@ -144,23 +152,30 @@
 
 <div class="chips">
   {#if withAll}
-    <button
-      class="chip scope"
-      class:on={value.kind === "all"}
-      aria-pressed={value.kind === "all"}
-      aria-label={"All " + destinations.length + " destinations"}
-      onclick={() => onSelect(ALL_DESTINATIONS)}
-    >
-      All{destinations.length >= 2 ? " " + destinations.length : ""}
-    </button>
+    <div class="row" role="group" aria-label="All destinations">
+      <button
+        class="chip scope"
+        class:on={value.kind === "all"}
+        aria-pressed={value.kind === "all"}
+        aria-label={"All " + destinations.length + " destinations"}
+        onclick={() => onSelect(ALL_DESTINATIONS)}
+      >
+        All{destinations.length >= 2 ? " " + destinations.length : ""}
+      </button>
+    </div>
   {/if}
 
-  {#each groups as g (g.platform)}
-    <!-- Members share one border line so the group reads as one unit rather than as
-         three unrelated chips; the platform chip only appears when selecting it is
-         distinguishable from selecting its single member. -->
-    <div class="group" role="group" aria-label={g.label + " destinations"}>
-      {#if g.members.length >= 2}
+  {#if withAll && withPlatforms}
+    <div class="row-divider" aria-hidden="true"></div>
+  {/if}
+
+  {#if withPlatforms}
+    <!-- Every platform with at least one destination gets a scope chip here, even one
+         with a single destination: a chip that only shows up once a platform has 2+
+         members would make this row's very existence unpredictable. A dedicated row
+         makes the redundancy with its one member legible instead of confusing. -->
+    <div class="row" role="group" aria-label="Platforms">
+      {#each groups as g (g.platform)}
         {@const selected = value.kind === "platform" && value.platform === g.platform}
         <button
           class="chip scope"
@@ -174,55 +189,71 @@
           <PlatformMark platform={g.platform} size={12} />
           {g.label}
         </button>
-      {/if}
-      {#each g.members as d (d.profileUuid)}
-        {@const canvas = canvasTag(d)}
-        {@const status = statusOf?.(d)}
-        {@const selected = value.kind === "destination" && value.profileUuid === d.profileUuid}
-        <button
-          class="chip"
-          class:on={selected}
-          disabled={status?.unavailable ?? false}
-          aria-pressed={selected}
-          aria-label={accessibleName(d, canvas, status)}
-          title={hoverText(d, canvas, status)}
-          style:--chip={g.color}
-          onclick={() => onSelect({ kind: "destination", profileUuid: d.profileUuid })}
-        >
-          <!-- The mark hoists to the group's scope chip once a platform has two
-               destinations; keeping it on every member would spend the width the
-               channel name needs and repeat what the group already says. -->
-          {#if g.members.length < 2}
-            <PlatformMark platform={d.platform} size={12} />
-          {/if}
-          <span class="cname">{d.displayName}</span>
-          {#if canvas}<span class="ccanvas">{canvas}</span>{/if}
-          {#if status?.tone}<span class="sdot" style:background={TONE_COLOR[status.tone]}></span>{/if}
+      {/each}
+      {#each unarmedPlatforms as p (p)}
+        {@const hint = (unarmedHint ?? fallbackUnarmedHint)(p)}
+        <button class="chip" disabled title={hint} aria-label={hint}>
+          <PlatformMark platform={p} size={12} />
+          <span class="cname">{PLATFORM_LABELS[platformKey(p)] ?? p}</span>
         </button>
       {/each}
     </div>
-  {/each}
+  {/if}
 
-  {#each unarmedPlatforms as p (p)}
-    {@const hint = (unarmedHint ?? fallbackUnarmedHint)(p)}
-    <button class="chip" disabled title={hint} aria-label={hint}>
-      <PlatformMark platform={p} size={12} />
-      <span class="cname">{PLATFORM_LABELS[platformKey(p)] ?? p}</span>
-    </button>
-  {/each}
+  {#if (withAll || withPlatforms) && withStreams}
+    <div class="row-divider" aria-hidden="true"></div>
+  {/if}
+
+  {#if withStreams}
+    <div class="row" role="group" aria-label="Streams">
+      {#each groups as g (g.platform)}
+        {#each g.members as d (d.profileUuid)}
+          {@const canvas = canvasTag(d)}
+          {@const status = statusOf?.(d)}
+          {@const selected = value.kind === "destination" && value.profileUuid === d.profileUuid}
+          <button
+            class="chip"
+            class:on={selected}
+            disabled={status?.unavailable ?? false}
+            aria-pressed={selected}
+            aria-label={accessibleName(d, canvas, status)}
+            title={hoverText(d, canvas, status)}
+            style:--chip={g.color}
+            onclick={() => onSelect({ kind: "destination", profileUuid: d.profileUuid })}
+          >
+            <!-- Always on, never hoisted to a group chip: this row is flat across
+                 platforms now, so the mark is the only thing telling apart two
+                 same-named channels on different platforms (e.g. two "AnimeCruizer"s,
+                 one on Twitch, one on Kick). -->
+            <PlatformMark platform={d.platform} size={12} />
+            <span class="cname">{d.displayName}</span>
+            {#if canvas}<span class="ccanvas">{canvas}</span>{/if}
+            {#if status?.tone}<span class="sdot" style:background={TONE_COLOR[status.tone]}></span>{/if}
+          </button>
+        {/each}
+      {/each}
+    </div>
+  {/if}
 </div>
 
 <style>
   .chips {
     display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+  .row {
+    display: flex;
     flex-wrap: wrap;
     gap: 4px 6px;
     min-width: 0;
   }
-  .group {
-    display: flex;
-    flex-wrap: wrap;
-    min-width: 0;
+  /* Full-width hairline between adjacent non-empty rows -- same border idiom as the
+     chips themselves, just on the shared edge instead of all four sides. */
+  .row-divider {
+    flex: none;
+    border-top: var(--border-weight) solid var(--color-border);
   }
   /* Hairline box, brand color applied through --chip on select. */
   .chip {
@@ -238,11 +269,6 @@
     background: transparent;
     border: var(--border-weight) solid var(--color-border);
     cursor: pointer;
-  }
-  /* Overlap the shared edge instead of dropping a border, so a selected chip's own
-     brand-colored box still paints all four sides. */
-  .group .chip + .chip {
-    margin-left: calc(-1 * var(--border-weight));
   }
   .chip.on {
     position: relative;
