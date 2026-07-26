@@ -3,7 +3,8 @@
   import Icon from "$lib/ui/Icon.svelte";
   import EmptyState from "$lib/ui/EmptyState.svelte";
   import Modal from "$lib/ui/Modal.svelte";
-  import { STATE_COLOR } from "$lib/theme/stateColors";
+  import { STATE_COLOR, TRANSPORT_STATE_COLOR } from "$lib/theme/stateColors";
+  import { CHAT_STATE_NOTE, chatTransportFor } from "$lib/ui/chatHealth";
   import { fmtBitrate, fmtDuration, titleState } from "$lib/utils/format";
   import {
     METER_TEXT,
@@ -20,6 +21,8 @@
   } from "$lib/utils/statsMeter";
   import { statsStore } from "$lib/stores/statsStore.svelte";
   import { multistreamStatusStore } from "$lib/stores/multistreamStatusStore.svelte";
+  import { destinationIdentityStore, type DestinationIdentity } from "$lib/stores/destinationIdentityStore.svelte";
+  import { transportHealthStore } from "$lib/stores/transportHealthStore.svelte";
   import { pageStore } from "$lib/stores/pageStore.svelte";
   import { obs, type GeneralStats, type OutputStat } from "$lib/api/bridge";
 
@@ -140,9 +143,18 @@
   // {state, lastError}); subscribe ref-counted (same pattern as statsStore above) and
   // read it when an errored row is opened. Never refetch here — one source of truth.
   // Same Studio-page gate as the statsStore subscription above.
+  // Chat health rides along on the same gate: an output's chat transport is part of
+  // "is this destination actually working", so the row reports it next to its bitrate
+  // rather than making the user cross-check the Chat dock.
   $effect(() => {
     if (pageStore.page !== "studio") return;
-    return multistreamStatusStore.subscribe();
+    destinationIdentityStore.start();
+    const offStatus = multistreamStatusStore.subscribe();
+    const offHealth = transportHealthStore.subscribe();
+    return () => {
+      offStatus();
+      offHealth();
+    };
   });
 
   let errorRow = $state<OutputStat | null>(null);
@@ -152,6 +164,56 @@
           "Stream error (no detail reported)"
       : "",
   );
+
+  // --- per-output chat health -------------------------------------------------
+  // A stats row names an output binding; a chat transport is keyed by destination, so
+  // the binding has to be resolved back to one. destinationIdentityStore already holds
+  // that join (it carries the enabled binding), so nothing is re-derived here.
+  const identityByBinding = $derived.by<Map<string, DestinationIdentity>>(() => {
+    const m = new Map<string, DestinationIdentity>();
+    for (const d of destinationIdentityStore.all) {
+      if (d.bindingUuid !== null) {
+        m.set(d.bindingUuid, d);
+      }
+    }
+    return m;
+  });
+
+  // The 1 Hz stats poll doubles as the clock, so the elapsed advances with the rest of
+  // the row instead of this dock owning a timer of its own.
+  const nowMs = $derived(stats ? Date.now() : 0);
+
+  interface ChatHealth {
+    note: string;
+    color: string;
+    /** Elapsed in the current state; null when there is no transition to measure from
+     * (a connected chat's age is not a health signal, and 0 is the never-transitioned
+     * default rather than a timestamp). */
+    sinceMs: number | null;
+    title: string;
+  }
+
+  // Null when this output has no chat at all -- a key/RTMP profile, or an account that
+  // never opened one. The row then prints nothing: "chat unknown" would claim a
+  // measurement, and a dash would read as a chat that is down.
+  function chatHealthFor(o: OutputStat): ChatHealth | null {
+    const d = identityByBinding.get(o.bindingUuid);
+    if (!d) {
+      return null;
+    }
+    const t = chatTransportFor(d);
+    if (!t) {
+      return null;
+    }
+    const note = CHAT_STATE_NOTE[t.row.state];
+    const settled = t.row.state === "connected" || t.row.updatedAt <= 0;
+    return {
+      note,
+      color: TRANSPORT_STATE_COLOR[t.row.state],
+      sinceMs: settled ? null : Math.max(0, nowMs - t.row.updatedAt),
+      title: t.row.lastError ? note + " — " + t.row.lastError : note,
+    };
+  }
 
   // Rebase the cumulative counters (render lag, encode skip, per-output drop) on the
   // host, like OBS's Stats Reset. Best-effort; also clear the local sparkline rings so
@@ -269,6 +331,7 @@
           {#each outputs as o (o.bindingUuid)}
             {@const color = STATE_COLOR[o.state]}
             {@const isErr = o.state === "error"}
+            {@const chat = chatHealthFor(o)}
             <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
             <li
               class="row"
@@ -298,6 +361,11 @@
                     cong {o.congestionPct.toFixed(1)}%
                   </span>
                   <span class="stat">{fmtDuration(o.durationMs)}</span>
+                  {#if chat}
+                    <span class="stat" style:color={chat.color} title={chat.title}>
+                      {chat.note}{chat.sinceMs === null ? "" : " " + fmtDuration(chat.sinceMs)}
+                    </span>
+                  {/if}
                   {#if isErr}
                     <div class="err-cover">
                       <Icon name="warn" size={12} />

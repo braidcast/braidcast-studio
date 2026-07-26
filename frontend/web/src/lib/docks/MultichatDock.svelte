@@ -4,7 +4,8 @@
   import { PLATFORM_COLORS, PLATFORM_LABELS, platformKey } from "$lib/theme/platformColors";
   import { FeedVirtualizer, type FeedRow } from "$lib/utils/feedVirtualizer.svelte";
   import { callOrToast } from "$lib/utils/callToast";
-  import { chatTransportId, destinationKey } from "$lib/api/destinationKeys";
+  import { destinationKey } from "$lib/api/destinationKeys";
+  import { CHAT_STATE_NOTE, chatTransportFor, type ChatTransport } from "$lib/ui/chatHealth";
   import EmptyState from "$lib/ui/EmptyState.svelte";
   import Icon from "$lib/ui/Icon.svelte";
   import Avatar from "$lib/ui/Avatar.svelte";
@@ -72,30 +73,8 @@
   }
 
   // --- transport resolution --------------------------------------------------
-  // Which transport carries this destination's chat, found by EXACT id and never by
-  // scanning the health array: Stop() leaves a terminal Disconnected row behind, so
-  // the array still lists destinations the user has unbound since. Platforms that run
-  // one chat per broadcast key on (account, profile); platforms with a single chat per
-  // channel key on the account alone, and the pair of lookups is what tells them
-  // apart without this dock holding a per-platform table of its own.
-
-  interface ChatTransport {
-    id: string;
-    /** Null when the chat is account-wide -- the send contract's "no profileUuid". */
-    profileUuid: string | null;
-  }
-
-  function transportOf(d: DestinationIdentity): ChatTransport | null {
-    const perBroadcast = chatTransportId(d.accountId, d.profileUuid);
-    if (transportHealthStore.byId.has(perBroadcast)) {
-      return { id: perBroadcast, profileUuid: d.profileUuid };
-    }
-    const accountWide = chatTransportId(d.accountId);
-    if (transportHealthStore.byId.has(accountWide)) {
-      return { id: accountWide, profileUuid: null };
-    }
-    return null;
-  }
+  // Resolution and wording both live in ui/chatHealth.ts, shared with the Stats dock's
+  // per-output chat line so the two surfaces cannot describe one transport differently.
 
   const TONE: Record<TransportHealthState, DestinationChipTone> = {
     connected: "ok",
@@ -103,16 +82,6 @@
     reconnecting: "warn",
     failed: "down",
     disconnected: "down",
-  };
-
-  // The state in words, because the chip's dot is a color and a color cannot be the
-  // only carrier. DestinationChips appends this to both title and aria-label.
-  const STATE_NOTE: Record<TransportHealthState, string> = {
-    connected: "chat connected",
-    connecting: "chat connecting",
-    reconnecting: "chat reconnecting",
-    failed: "chat failed",
-    disconnected: "chat not connected",
   };
 
   const NO_TRANSPORT_NOTE = "no chat transport — nothing to read or reply to here";
@@ -128,20 +97,18 @@
   // the chip goes unavailable, because there is neither scrollback to filter to nor a
   // transport to reply through.
   function statusOf(d: DestinationIdentity): DestinationChipStatus {
-    const t = transportOf(d);
+    const t = chatTransportFor(d);
     if (!t) {
       return { note: NO_TRANSPORT_NOTE, unavailable: true };
     }
-    const row = transportHealthStore.byId.get(t.id);
-    const state = row?.state ?? "disconnected";
-    const parts = [STATE_NOTE[state]];
-    if (row?.lastError) {
-      parts.push(row.lastError);
+    const parts = [CHAT_STATE_NOTE[t.row.state]];
+    if (t.row.lastError) {
+      parts.push(t.row.lastError);
     }
     if (sharesChat(d, t)) {
       parts.push(SHARED_CHAT_NOTE);
     }
-    return { tone: TONE[state], note: parts.join(" — ") };
+    return { tone: TONE[t.row.state], note: parts.join(" — ") };
   }
 
   // --- selection: the filter AND the send target -----------------------------
@@ -167,8 +134,7 @@
   // `destination` is the one selection kind that names a single chat, and the only one
   // the composer addresses by accountId.
   let target = $derived(selection.kind === "destination" ? (destByUuid.get(selection.profileUuid) ?? null) : null);
-  let targetTransport = $derived(target ? transportOf(target) : null);
-  let targetState = $derived(targetTransport ? transportHealthStore.stateOf(targetTransport.id) : null);
+  let targetTransport = $derived(target ? chatTransportFor(target) : null);
 
   // Explicitly typed to break the feed <-> filtered inference cycle (getDisplay closes
   // over filtered, which reads feed.rows).
@@ -245,8 +211,8 @@
   let fanTransports = $derived.by(() => {
     const ids = new Set<string>();
     for (const d of fanDestinations) {
-      const t = transportOf(d);
-      if (t && transportHealthStore.stateOf(t.id) === "connected") {
+      const t = chatTransportFor(d);
+      if (t && t.row.state === "connected") {
         ids.add(t.id);
       }
     }
@@ -302,8 +268,8 @@
         // through, so this blocks rather than optimistically sending.
         return blocked("No chat transport for", scopeLabel, "This chat is not connected");
       }
-      if (targetState !== "connected") {
-        return blocked(STATE_NOTE[targetState ?? "disconnected"] + " —", scopeLabel, "This chat is not connected");
+      if (t.row.state !== "connected") {
+        return blocked(CHAT_STATE_NOTE[t.row.state] + " —", scopeLabel, "This chat is not connected");
       }
       // accountId + profileUuid, never `platforms`: the host routes an accountId to
       // exactly one transport, and a null profileUuid means that account's
