@@ -76,6 +76,13 @@ constexpr size_t kSeenCap = 512;
 // merely misses lines, which is the worst available failure.
 constexpr size_t kLiveChatFilterIndex = 1;
 
+// A usable continuation is a long opaque cursor: measured, the live-chat header's view-selector
+// tokens are 312 chars and the poll cursors 180-382. The watch-next renderer exposes a
+// same-shaped selector whose tokens are 32 chars and encode only the filter choice; get_live_chat
+// answers those with HTTP 400. Length is the only thing that separates a real cursor from that
+// decoy, so every token read out of a view selector is checked against this floor.
+constexpr size_t kMinContinuationChars = 64;
+
 // Bounded FIFO id memory. Dedupe is by item id so a filter switch or a reload continuation
 // cannot double-post, and eviction is oldest-first so the set cannot grow with uptime.
 class SeenIds {
@@ -682,9 +689,11 @@ void ProcessActions(Loop &lp, const json &actions)
 	}
 }
 
-// The "Live chat" continuation from a view-selector node, "" when the sub-menu is absent or
-// too short. The selector appears on the watch-next liveChatRenderer AND on the live-chat
-// continuation's own header, so callers try both.
+// The unfiltered "Live chat" continuation from a view-selector node, "" when the sub-menu is
+// absent, too short, or carries only a decoy token. ONLY a get_live_chat response's own header
+// yields a usable token here. The watch-next liveChatRenderer carries a selector that looks
+// identical but holds 32-char filter-choice tokens, so this must never be used to bootstrap --
+// see Bootstrap, which reads continuations[0] instead.
 std::string LiveChatFilterFrom(const json &node)
 {
 	const json &items = Obj(Obj(Obj(Obj(node, "header"), "liveChatHeaderRenderer"), "viewSelector"),
@@ -693,14 +702,23 @@ std::string LiveChatFilterFrom(const json &node)
 	if (!subMenu.is_array() || subMenu.size() <= kLiveChatFilterIndex) {
 		return std::string();
 	}
-	return Str(Obj(Obj(subMenu[kLiveChatFilterIndex], "continuation"), "reloadContinuationData"), "continuation");
+	const std::string token =
+		Str(Obj(Obj(subMenu[kLiveChatFilterIndex], "continuation"), "reloadContinuationData"), "continuation");
+	if (token.size() < kMinContinuationChars) {
+		return std::string();
+	}
+	return token;
 }
 
 // Resolve the first continuation token for `videoId`, via youtubei/v1/next -- NEVER by
 // scraping the watch page: a cookieless watch page no longer carries liveChatRenderer at
-// all, and HTML parsing is where every recorded breakage in this ecosystem happened. The
-// unfiltered "Live chat" token is preferred when the response already offers it, which saves
-// both a round trip and a second backlog batch. "" when the video has no live chat.
+// all, and HTML parsing is where every recorded breakage in this ecosystem happened. This
+// always takes continuations[0], which lands on the filtered "Top chat" view; the read loop
+// then switches to the unfiltered view using the selector on the chat response's OWN header.
+// Taking the watch-next selector here to save that round trip does not work -- its tokens are
+// 32-char filter-choice decoys and get_live_chat rejects every one with HTTP 400, which cost
+// three strikes and silently handed all chat back to the metered official read.
+// "" when the video has no live chat.
 //
 // `canceled` is an out-param rather than a return value because "" already means "no live
 // chat here", and the caller must not spend its bootstrap attempts on a canceled read.
@@ -719,13 +737,6 @@ std::string Bootstrap(const Config &cfg, const Callbacks &cb, bool &canceled)
 	const json &liveChatRenderer = Obj(Obj(Obj(Obj(resp.body, "contents"), "twoColumnWatchNextResults"),
 					      "conversationBar"),
 					   "liveChatRenderer");
-	const std::string live = LiveChatFilterFrom(liveChatRenderer);
-	if (!live.empty()) {
-		DBG(LogCat::Chat,
-		    "youtube innertube: dest=%s bootstrap resolved the \"Live chat\" continuation (%zu bytes)",
-		    cfg.destTag.c_str(), live.size());
-		return live;
-	}
 	const json &continuations = Obj(liveChatRenderer, "continuations");
 	if (!continuations.is_array() || continuations.empty()) {
 		DBG(LogCat::Chat, "youtube innertube: dest=%s bootstrap carried no liveChatRenderer continuation",
