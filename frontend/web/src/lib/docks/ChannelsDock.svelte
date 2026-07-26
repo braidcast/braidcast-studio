@@ -8,6 +8,7 @@
   import { openOAuthConnect, isOAuthConnecting } from "$lib/dialogs/oauthConnectOpener.svelte";
   import { PLATFORM_COLORS, PLATFORM_LABELS } from "$lib/theme/platformColors";
   import Avatar from "$lib/ui/Avatar.svelte";
+  import PlatformMark from "$lib/ui/PlatformMark.svelte";
   import type { StreamProfileInfo } from "$lib/api/bridge";
 
   // Host supplies tab chrome + strips __* keys; this body declares no props.
@@ -73,7 +74,7 @@
           <Avatar url={r.avatarUrl} name={r.displayName || r.login} size={36} />
           <div class="ident">
             <div class="name">
-              <span class="dot" style:background={color}></span>
+              <span class="mark"><PlatformMark platform={r.providerId} size={12} /></span>
               <span class="nm">{r.displayName || r.login}</span>
             </div>
             {#if r.needsReconnect}
@@ -159,9 +160,8 @@
     gap: 6px;
     min-width: 0;
   }
-  .dot {
-    width: 7px;
-    height: 7px;
+  .mark {
+    display: inline-flex;
     flex-shrink: 0;
   }
   .nm {

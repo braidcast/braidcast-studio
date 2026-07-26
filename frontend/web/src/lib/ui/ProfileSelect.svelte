@@ -5,7 +5,8 @@
   // only — the caller owns what happens onSelect (the bind action). The option-row
   // rendering (avatar / name / platform label + color) is defined ONCE here.
   import Avatar from "$lib/ui/Avatar.svelte";
-  import { PLATFORM_COLORS, PLATFORM_LABELS, platformKey } from "$lib/theme/platformColors";
+  import PlatformMark from "$lib/ui/PlatformMark.svelte";
+  import { PLATFORM_LABELS, platformKey } from "$lib/theme/platformColors";
   import { oauthStore } from "$lib/stores/oauthStore.svelte";
   import type { StreamProfileInfo } from "$lib/api/bridge";
 
@@ -39,10 +40,6 @@
   // empty label still names itself.
   function profileName(p: StreamProfileInfo): string {
     return p.label?.trim() || p.platform?.trim() || "Untitled profile";
-  }
-  // Brand accent for the profile's platform; muted for custom/WHIP with no brand color.
-  function platformColor(p: StreamProfileInfo): string {
-    return PLATFORM_COLORS[platformKey(p.platform)] ?? "var(--color-muted)";
   }
   // The destination detail line: the full service string (e.g. "YouTube - RTMPS"),
   // falling back to the brand label or the raw platform.
@@ -150,7 +147,7 @@
             <span class="ps-text">
               <span class="ps-name">{profileName(p)}</span>
               <span class="ps-sub">
-                <span class="ps-dot" style:background={platformColor(p)}></span>
+                <span class="ps-mark"><PlatformMark platform={p.platform} size={11} /></span>
                 <span class="ps-plat">{platformLabel(p)}</span>
               </span>
             </span>
@@ -246,9 +243,8 @@
     gap: 6px;
     min-width: 0;
   }
-  .ps-dot {
-    width: 7px;
-    height: 7px;
+  .ps-mark {
+    display: inline-flex;
     flex: 0 0 auto;
   }
   .ps-plat {
