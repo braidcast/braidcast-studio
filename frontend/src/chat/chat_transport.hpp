@@ -73,6 +73,27 @@ struct ChatContext {
 	std::function<void(Transports::TransportHealth::State state, const std::string &error)> reportHealth;
 };
 
+// Assemble one normalized chat.message frame from already-normalized parts. The ONE
+// assembler for the shape documented above, so a platform reading the same chat over TWO
+// different APIs (YouTube's official liveChatMessages surface and its InnerTube surface,
+// whose payload schemas share nothing) cannot let the wire shape drift between them. The
+// caller owns the per-schema decoding -- fragments, badges, author, timestamps -- and this
+// owns only the frame.
+inline json BuildChatMessage(const char *platform, const std::string &channelId, const std::string &id, int64_t ts,
+			     const std::string &authorName, const std::string &authorColor, const json &badges,
+			     const json &fragments)
+{
+	return json{
+		{"event", EventNames::kChatMessage},
+		{"platform", platform},
+		{"channelId", channelId},
+		{"id", id},
+		{"ts", ts},
+		{"author", json{{"name", authorName}, {"color", authorColor}, {"badges", badges}}},
+		{"fragments", fragments},
+	};
+}
+
 // Emit one connection-state frame with a FIXED key set (event/platform/connected/
 // error) every time, so the wire shape can't drift per platform or per call site
 // (the drift this replaces: some sites omitted `error`, others always sent it). The

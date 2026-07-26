@@ -1,5 +1,4 @@
 #include "youtube_chat.hpp"
-#include "../event_names.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -20,7 +19,8 @@
 #include "../oauth/youtube_provider.hpp"
 #include "util/time_util.hpp"
 #include "third_party_emotes.hpp"
-#include "ws_client.hpp" // CancelableSleep / Backoff
+#include "ws_client.hpp"        // CancelableSleep / Backoff
+#include "youtube_innertube.hpp" // the zero-quota primary read
 
 namespace Chat {
 
@@ -181,15 +181,12 @@ json NormalizeItem(const json &item, const std::string &liveChatId,
 	fragments.push_back(json{{"type", "text"}, {"text", text}});
 	fragments = ApplyThirdPartyEmotes(fragments, thirdPartyEmotes);
 
-	return json{
-		{"event", EventNames::kChatMessage},
-		{"platform", "youtube"},
-		{"channelId", liveChatId},
-		{"id", Str(item, "id")},
-		{"ts", Rfc3339ToEpochMs(Str(snippet, "publishedAt"))},
-		{"author", json{{"name", Str(author, "displayName")}, {"color", ""}, {"badges", BadgesFor(author)}}},
-		{"fragments", fragments},
-	};
+	// The frame itself comes from the shared assembler, which the InnerTube read also uses --
+	// the two schemas share no field, so that seam is the only thing keeping the wire shape
+	// identical whichever of them is reading this chat.
+	return BuildChatMessage("youtube", liveChatId, Str(item, "id"),
+				static_cast<int64_t>(Rfc3339ToEpochMs(Str(snippet, "publishedAt"))),
+				Str(author, "displayName"), std::string(), BadgesFor(author), fragments);
 }
 
 // Recognize the monetization/membership live-chat item types and fill `ev` with the
@@ -263,6 +260,17 @@ bool BuildEventFromChat(const json &item, Events::NormalizedEvent &ev)
 	return false; // textMessageEvent / unhandled -> chat only
 }
 
+// Forward one chat-derived event into the events feed, attributed to the destination whose
+// chat carried it -- this is the one event source that knows which BROADCAST a purchase
+// arrived on (the REST transport reads channel-wide and can only name the account). Shared by
+// every read path so the attribution cannot drift between them.
+void IngestChatEvent(const ChatContext &ctx, Events::NormalizedEvent &ev)
+{
+	ev.accountId = ctx.dest.accountId;
+	ev.profileUuid = ctx.dest.profileUuid;
+	Events::Hub().Ingest(ev);
+}
+
 // Process one liveChatMessageListResponse's items[]: emit each chat line and, in addition,
 // forward monetization/membership types into the events feed. Shared by the streamList and
 // the .list fallback so the emit semantics (chat-line-then-event, cancel-polled) can't
@@ -289,12 +297,7 @@ void ProcessChatItems(const ChatContext &ctx, const json &items, const std::stri
 		// source for Super Chats/memberships. The store dedupes against backfill/poll.
 		Events::NormalizedEvent ev;
 		if (BuildEventFromChat(item, ev)) {
-			// Attributed to the destination whose chat carried it -- this is the one event
-			// source that knows which broadcast a purchase arrived on (the REST transport
-			// reads channel-wide and can only name the account).
-			ev.accountId = ctx.dest.accountId;
-			ev.profileUuid = ctx.dest.profileUuid;
-			Events::Hub().Ingest(ev);
+			IngestChatEvent(ctx, ev);
 		}
 	}
 }
@@ -307,6 +310,9 @@ struct ChatSession {
 	const ChatContext &ctx;
 	OAuth::OAuthAccount &acct;
 	std::string liveChatId;
+	// The same broadcast's video id, for the InnerTube read. Empty when the provider could
+	// not resolve one, which simply skips that read path.
+	std::string videoId;
 	const std::unordered_map<std::string, std::string> &thirdPartyEmotes;
 	std::function<bool()> canceled;
 	std::function<void(bool, const std::string &)> emitState;
@@ -367,6 +373,44 @@ void EndOnChatOffline(ChatSession &s, const std::string &offlineAt, const char *
 	DBG(LogCat::Chat, "youtube %s: dest=%s offlineAt=%s -> chat ended, stopping reads", via, s.destTag.c_str(),
 	    offlineAt.c_str());
 	EndSession(s, reason, err);
+}
+
+// Read this destination's chat over InnerTube -- the PRIMARY read, because it costs zero
+// quota. Purely glue: the protocol lives in youtube_innertube, and the callbacks below route
+// its output through the SAME session obligations the Data API loops use (AnnounceOnce for the
+// connected state plus the live-chat refcount hold, EndSession for a terminal exit,
+// IngestChatEvent for the attribution), so the two read paths cannot diverge on any of them.
+// Returns true to request the official read; false when the session ended or was canceled.
+bool RunInnerTube(ChatSession &s, std::string &err)
+{
+	YouTubeInnerTube::Config cfg;
+	cfg.videoId = s.videoId;
+	cfg.channelId = s.liveChatId;
+	cfg.thirdPartyEmotes = &s.thirdPartyEmotes;
+	cfg.destTag = s.destTag;
+
+	YouTubeInnerTube::Callbacks cb;
+	cb.canceled = s.canceled;
+	cb.emitMessage = [&s](const json &message) {
+		s.ctx.emit(message);
+	};
+	cb.emitEvent = [&s](Events::NormalizedEvent &ev) {
+		IngestChatEvent(s.ctx, ev);
+	};
+	// Reusing AnnounceOnce is what keeps this destination's live-chat refcount held for an
+	// InnerTube read exactly as it is for a Data API read. Without that hold
+	// ShouldPollSuperChats concludes the broadcast's chat is uncovered and superChatEvents.list
+	// resumes spending -- reintroducing the very cost this read path exists to remove.
+	cb.announce = [&s] {
+		AnnounceOnce(s);
+	};
+	cb.terminal = [&s, &err](const std::string &reason) {
+		EndSession(s, reason, err);
+	};
+	cb.state = [&s](bool connected, const std::string &stateErr) {
+		s.emitState(connected, stateErr);
+	};
+	return YouTubeInnerTube::Run(cfg, cb);
 }
 
 // While the shared daily-quota gate is closed, surface the outage on the chat state
@@ -778,6 +822,38 @@ void RunListPoll(ChatSession &s, std::string &err)
 	    s.canceled() ? 1 : 0);
 }
 
+// The terminal fallback: .list has nothing to hand over to, so it always reports "done".
+bool RunListPollFinal(ChatSession &s, std::string &err)
+{
+	RunListPoll(s, err);
+	return false;
+}
+
+// The read paths in priority order. Each may hand over to the NEXT one when its endpoint is
+// unavailable or stops delivering; the last one never hands over, so chat always lands
+// somewhere. Adding or reordering a read is a row here rather than a new branch in connect().
+//
+// InnerTube is FIRST because it costs ZERO quota. Both Data API reads bill against ONE Cloud
+// project's 10,000-unit daily budget shared by every install, which a single user streaming
+// continuously to a few destinations exhausts many times over -- so they belong behind a read
+// that does not, kept as the fallback for what InnerTube cannot do (it is not authoritative on
+// why a chat ended, and it cannot see member-only chat).
+//
+// `env` forces its path to be skipped, for diagnosing one read against another:
+// BRAIDCAST_YOUTUBE_INNERTUBE=false drops to the Data API entirely, and
+// BRAIDCAST_YOUTUBE_STREAMLIST=false additionally forces the .list poll.
+struct ReadPath {
+	const char *env;
+	const char *label;
+	bool (*run)(ChatSession &, std::string &);
+};
+
+const ReadPath kReadPaths[] = {
+	{"BRAIDCAST_YOUTUBE_INNERTUBE", "InnerTube live_chat", RunInnerTube},
+	{"BRAIDCAST_YOUTUBE_STREAMLIST", "liveChatMessages.streamList", RunStreamList},
+	{nullptr, "liveChatMessages.list", RunListPollFinal},
+};
+
 } // namespace
 
 bool YouTubeChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, const std::string &channelRef,
@@ -802,6 +878,13 @@ bool YouTubeChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, con
 		liveChatId_ = liveChatId;
 	}
 	stop_.store(false, std::memory_order_release);
+
+	// The video id the InnerTube read polls, resolved through the SAME provider seam that
+	// produced this liveChatId (a broadcast's id IS its video id), including that seam's
+	// cache-miss recovery. So the two reads can never end up on different broadcasts, and on
+	// the normal cache-hit path -- which this is, since a liveChatId already resolved -- it
+	// costs no request at all.
+	const std::string videoId = owner_.chatVideoRef(acct, ctx.dest.profileUuid);
 
 	// Release this loop's hold on THIS DESTINATION's live-chat refcount on EVERY exit from
 	// this function -- the normal post-loop return, a reconnect give-up, and the
@@ -858,32 +941,35 @@ bool YouTubeChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, con
 	};
 
 	Backoff backoff(std::chrono::milliseconds(2000), std::chrono::milliseconds(30000));
-	ChatSession session{owner_,   ctx,       acct,         liveChatId, thirdPartyEmotes,
-			    canceled, emitState, holdLiveChat, backoff,    OAuth::DestinationKey(ctx.dest)};
+	ChatSession session{owner_,           ctx,       acct,         liveChatId, videoId,
+			    thirdPartyEmotes, canceled,  emitState,    holdLiveChat, backoff,
+			    OAuth::DestinationKey(ctx.dest)};
 
-	// streamList is the default read. Both endpoints bill 5 units per request, so the whole
-	// difference is cadence: streamList pays that once per ~10s server-held batch, while
-	// .list pays it once per kDefaultPollMs poll, which across a handful of destinations
-	// exhausts the 10,000-unit daily project budget inside an hour. .list remains the
-	// fallback -- taken when the transcode endpoint is unavailable or when streamList
-	// connects without delivering (kStreamDeadStrikes) -- so a streamList outage costs
-	// quota rather than costing chat. BRAIDCAST_YOUTUBE_STREAMLIST=false forces .list.
-	const bool tryStreamList = Env::Flag("BRAIDCAST_YOUTUBE_STREAMLIST", true);
-	bool fallback = false;
 	// Tail only: the full liveChatId is a broadcast-scoped identifier and this log is something
 	// users paste into issue reports. Enough to tie this session's dest tag to the hub's
 	// connect line without reproducing the id.
 	const std::string chatIdTail = liveChatId.size() > 8 ? liveChatId.substr(liveChatId.size() - 8) : liveChatId;
-	if (tryStreamList) {
-		DBG(LogCat::Chat, "youtube: dest=%s chat=..%s opening via streamList", session.destTag.c_str(),
-		    chatIdTail.c_str());
-		fallback = RunStreamList(session, err);
-	}
-	if (!tryStreamList || (fallback && !canceled())) {
-		DBG(LogCat::Chat, "youtube: dest=%s chat=..%s opening via liveChatMessages.list",
-		    session.destTag.c_str(), chatIdTail.c_str());
+
+	// Walk the ladder: run the first enabled read, and follow it to the next one only while a
+	// read asks to hand over. Every path shares ONE session, so the connected state, the
+	// live-chat refcount hold and a terminal reason survive a handover exactly once (both
+	// AnnounceOnce and the hold's acquire are idempotent) -- one logical reader per
+	// destination at a time, never two.
+	for (const ReadPath &path : kReadPaths) {
+		if (path.env && !Env::Flag(path.env, true)) {
+			DBG(LogCat::Chat, "youtube: dest=%s %s disabled by %s", session.destTag.c_str(), path.label,
+			    path.env);
+			continue;
+		}
+		if (canceled()) {
+			break;
+		}
+		DBG(LogCat::Chat, "youtube: dest=%s chat=..%s opening via %s", session.destTag.c_str(),
+		    chatIdTail.c_str(), path.label);
 		backoff.reset();
-		RunListPoll(session, err);
+		if (!path.run(session, err)) {
+			break;
+		}
 	}
 
 	// The clean (false, "") bookend belongs only to an exit that reported nothing final -- a

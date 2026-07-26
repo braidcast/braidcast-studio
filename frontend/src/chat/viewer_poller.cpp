@@ -16,9 +16,10 @@ namespace Chat {
 
 namespace {
 
-// Modest poll cadence: frequent enough to feel live, light on platform quota
-// (YouTube videos.list + Twitch/Kick Get Streams each cost little, but the YouTube
-// chat poll already consumes quota concurrently).
+// Modest poll cadence: frequent enough to feel live, light on every platform's budget. Not
+// tightened now that YouTube's read costs no quota -- the logged-out watch page polls its own
+// viewer figure every 5s, so 20s stays 4x more conservative than an ordinary browser tab, and
+// that traffic shape is the constraint here rather than a unit price.
 constexpr std::chrono::milliseconds kPollInterval(20000);
 
 } // namespace

@@ -7,17 +7,28 @@
 
 #include "chat_transport.hpp"
 
-// The YouTube live-chat transport (Phase 9.0). YouTube exposes live chat over the
-// YouTube Data API v3: the push-based liveChatMessages.streamList (~1s latency, billed
-// per connection) is the default read, with liveChatMessages.list (polling, billed per
-// call, honoring the server-dictated pollingIntervalMillis + nextPageToken cursor) kept
-// as the fallback for when the stream endpoint is unavailable or connects without
-// delivering, plus liveChatMessages.insert (send). The read target is the active
-// broadcast's `liveChatId`, which exists only while a broadcast is live -- the
-// YouTubeProvider resolves it from the broadcast it created in applyMetadata (Phase
-// 8d) and hands it in as the `channelRef`. All token coherence (proactive refresh +
-// reactive-401 force-refresh-and-retry) is delegated to YouTubeProvider::SendAuthed
-// / SendAuthedStreaming, so this transport carries no auth logic of its own.
+// The YouTube live-chat transport (Phase 9.0). It reads one broadcast's chat over a LADDER of
+// endpoints, each handing over to the next when its own becomes unusable:
+//
+//   1. InnerTube live_chat/get_live_chat (see youtube_innertube) -- the primary read, because
+//      it costs ZERO quota. The Data API reads below bill against ONE Cloud project's
+//      10,000-unit daily budget shared by every install, which a single user streaming
+//      continuously to a few destinations exhausts many times over.
+//   2. liveChatMessages.streamList -- push-based, billed per connection.
+//   3. liveChatMessages.list -- polling, billed per call, honoring the server-dictated
+//      pollingIntervalMillis + nextPageToken cursor. The terminal fallback.
+//
+// The Data API pair stays behind InnerTube rather than being retired: they are authoritative
+// on WHY a chat ended, and they are the only surface that can read member-only chat.
+// liveChatMessages.insert remains the send path regardless of which read is active.
+//
+// The read target is the active broadcast's `liveChatId`, which exists only while a broadcast
+// is live -- the YouTubeProvider resolves it from the broadcast it created in applyMetadata
+// (Phase 8d) and hands it in as the `channelRef`; the InnerTube read additionally needs that
+// same broadcast's video id, taken from the provider's chatVideoRef. All token coherence
+// (proactive refresh + reactive-401 force-refresh-and-retry) for the Data API reads is
+// delegated to YouTubeProvider::SendAuthed / SendAuthedStreaming, so this transport carries no
+// auth logic of its own -- and the InnerTube read deliberately carries no credential at all.
 namespace OAuth {
 class YouTubeProvider;
 }
@@ -28,13 +39,15 @@ class YouTubeChat : public ChatTransport {
 public:
 	explicit YouTubeChat(OAuth::YouTubeProvider &owner) : owner_(owner) {}
 
-	// Read loop: streamList by default, falling back to .list polling when the stream
-	// endpoint is unavailable or delivers nothing (BRAIDCAST_YOUTUBE_STREAMLIST=false
-	// forces .list), emitting only messages that arrive AFTER the cold connect (the first
-	// response's backlog is dropped and only its cursor kept; subsequent reads resume from
-	// the cursor and emit). Re-checks cancellation frequently via the poll/chunk callback
-	// + CancelableSleep so a Stop() returns within ~0.5s. `channelRef` is the liveChatId;
-	// empty (no active broadcast) is a clean no-op that returns false with an empty `err`.
+	// Read loop: walks the endpoint ladder above, first enabled path first
+	// (BRAIDCAST_YOUTUBE_INNERTUBE=false drops to the Data API,
+	// BRAIDCAST_YOUTUBE_STREAMLIST=false additionally forces .list). Every path emits only
+	// messages that arrive AFTER the cold connect -- the first response's backlog is dropped
+	// and only its cursor kept -- and every path shares ONE session, so the connected state
+	// and this destination's live-chat refcount hold survive a handover exactly once.
+	// Re-checks cancellation frequently via the poll/chunk callback + CancelableSleep so a
+	// Stop() returns within ~0.5s. `channelRef` is the liveChatId; empty (no active
+	// broadcast) is a clean no-op that returns false with an empty `err`.
 	bool connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, const std::string &channelRef,
 		     std::string &err) override;
 
@@ -45,9 +58,9 @@ public:
 	// whichever of them went live last.
 	bool send(OAuth::OAuthAccount &acct, const std::string &text, std::string &err) override;
 
-	// liveChatMessages.list returns EVERY message in the chat -- including ones
-	// this account inserted via send() -- so the poll loop already emits the
-	// sender's own messages (on the next poll). A local echo would double them.
+	// Every read path returns EVERY message in the chat -- including ones this
+	// account inserted via send() -- so the read loop already emits the sender's
+	// own messages (on the next poll). A local echo would double them.
 	bool reflectsOwnSend() const override { return true; }
 
 	// Flip the stop flag so the poll loop returns promptly (the worker that owns the

@@ -74,12 +74,14 @@ public:
 	// its own concurrentViewers, so all per-broadcast state keys off the destination.
 	bool broadcastPerDestination() const override { return true; }
 
-	// One concurrent-viewer row per live broadcast of `acct` (videos.list
-	// liveStreamingDetails.concurrentViewers; absent -> 0). Reading N broadcasts costs N
-	// videos.list units, which is the price of not under-reporting; the read set is the
-	// account's cached broadcasts deduped by broadcastId, so it never exceeds the number of
-	// distinct live broadcasts. The per-channel viewerCount hook is deliberately NOT
-	// overridden -- YouTube has no single per-account viewer figure to report.
+	// One concurrent-viewer row per live broadcast of `acct`, read from InnerTube's
+	// updated_metadata (the endpoint the logged-out watch page itself polls) and therefore at
+	// ZERO Data API quota -- the videos.list poll this replaced spent ~8,640 units per user per
+	// day out of one project-wide 10,000-unit budget, the largest remaining line. The read set
+	// is the account's cached broadcasts deduped by broadcastId, so it never exceeds the number
+	// of distinct live broadcasts. A destination whose figure could not be established stays
+	// ABSENT from `out` rather than reading as zero. The per-channel viewerCount hook is
+	// deliberately NOT overridden -- YouTube has no single per-account viewer figure to report.
 	bool viewerCounts(OAuthAccount &acct, std::map<DestinationId, int> &out, std::string &err) override;
 
 	// Report the channel's subscriber total (channels.list statistics). Reuses the
@@ -100,6 +102,15 @@ public:
 	// resolution. Empty when no broadcast is currently live for that destination, which
 	// the hub/transport treat as no chat.
 	std::string chatChannelRef(const OAuthAccount &acct, const std::string &profileUuid) override;
+
+	// The active broadcast's VIDEO id for `profileUuid` -- the same broadcast chatChannelRef
+	// resolves the liveChatId of, so the InnerTube live-chat read and the Data API read can
+	// never end up on different broadcasts. Goes through EnsureActiveBroadcast rather than
+	// reading the cache directly, so it inherits the cache-miss recovery (a Studio restart
+	// mid-stream) instead of duplicating the lookup; a hit costs no request. "" when this
+	// destination is not live. Not part of StreamProvider: only YouTube has a per-broadcast
+	// video id to hand a chat transport.
+	std::string chatVideoRef(OAuthAccount &acct, const std::string &profileUuid);
 
 	// Zero EVERY cached liveChatId/broadcastId belonging to `accountId` (mutex-guarded) so
 	// a stream stop drops all of that account's active-broadcast chat + viewer-count
@@ -191,6 +202,15 @@ private:
 	struct BroadcastState {
 		std::string liveChatId;
 		std::string broadcastId;
+
+		// The InnerTube updated_metadata continuation for this broadcast's viewer read. Cached
+		// because the two request forms are not equally priced in BANDWIDTH: the videoId form
+		// answers in ~118KB, the continuation form in ~5.5KB for the same figure. At the 20s
+		// viewer cadence across four destinations that is ~85MB/hour against ~4MB/hour of the
+		// streamer's upload budget -- 2GB over a 24h broadcast -- so resuming is a requirement
+		// of the read, not a tuning knob. Lives here because its lifetime is exactly this
+		// broadcast's: a stream stop erases the entry and the token with it.
+		std::string viewerContinuation;
 	};
 	mutable std::mutex broadcastMutex_;
 	std::map<DestinationId, BroadcastState> broadcasts_;
@@ -217,12 +237,21 @@ private:
 	bool EnsureActiveBroadcast(OAuthAccount &acct, const std::string &profileUuid, BroadcastState &out,
 				   std::string &err);
 
-	// videos.list liveStreamingDetails.concurrentViewers for a BATCH of broadcasts: the single
-	// viewer read. `out` is keyed by video id and gains an entry ONLY for an id the response
-	// returned, so an omitted broadcast stays absent instead of reading as zero viewers.
-	// Appends to `out` rather than replacing it, so several chunks accumulate.
-	bool ReadBroadcastViewers(OAuthAccount &acct, const std::vector<std::string> &broadcastIds,
+	// ONE broadcast's concurrent viewers, over InnerTube's updated_metadata. `out` is keyed by
+	// video id and gains an entry ONLY when the response actually carried a videoViewCountRenderer
+	// marked isLive with a parseable count -- an ended/bogus/unreadable id stays absent instead of
+	// reading as zero viewers. Appends to `out` rather than replacing it, so several broadcasts
+	// accumulate. Takes no OAuthAccount BY DESIGN: this read is anonymous (see
+	// util/innertube_client) and there is no credential for it to reach for.
+	bool ReadBroadcastViewers(const DestinationId &dest, const std::string &videoId,
 				  std::map<std::string, int> &out, std::string &err);
+
+	// The cached updated_metadata continuation for `dest` ("" when there is none), and its
+	// writer. Both take broadcastMutex_ briefly and it is never held across the request. The
+	// writer only ever UPDATES an existing entry, so a destination that went off air while a
+	// read was in flight is not resurrected by its own late answer.
+	std::string ViewerContinuation(const DestinationId &dest) const;
+	void SetViewerContinuation(const DestinationId &dest, const std::string &token);
 
 	// The assignable videoCategories list, fetched once per process and reused
 	// (it is static content). Guarded because searchCategories runs on worker

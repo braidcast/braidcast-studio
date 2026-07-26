@@ -12,6 +12,7 @@
 #include "account_store.hpp"
 #include "util/http_client.hpp"
 #include "../ingest_writeback.hpp"
+#include "util/innertube_client.hpp"
 #include "util/json_util.hpp"
 #include "util/op_error.hpp"
 #include "../log.hpp"
@@ -77,11 +78,11 @@ constexpr int64_t kQuotaResetSlackSec = 300;
 // discarded rather than honored -- see EnsureQuotaStateLoaded for why failing open is right.
 constexpr int64_t kQuotaResetHorizonSec = 26 * 60 * 60;
 
-// Ids per videos.list request. The endpoint takes a comma-separated id list capped at 50 (per
-// the Data API reference) and bills one unit per REQUEST regardless, so batching up to this
-// many broadcasts costs what a single one used to. At ~11 characters per id the longest URL
-// this can build is a few hundred bytes, far inside any practical limit.
-constexpr size_t kVideosListIdCap = 50;
+// The InnerTube endpoint the logged-out watch page reads its live viewer figure from. NOT a
+// Data API URL and NOT sent through SendAuthed: anonymous, zero-quota, and built by
+// util/innertube_client, which owns the compliance rule for it. prettyPrint=false because the
+// response is machine-read and the indentation is pure upload cost.
+const char *kUpdatedMetadataUrl = "https://www.youtube.com/youtubei/v1/updated_metadata?prettyPrint=false";
 
 using JsonUtil::Bool;
 using JsonUtil::Obj;
@@ -205,6 +206,65 @@ std::string SniffImageMime(const std::string &bytes)
 		return "image/bmp";
 	}
 	return "image/png";
+}
+
+// The videoViewCountRenderer out of an updated_metadata payload, or a null json when the
+// response carried no viewership update at all.
+//
+// Found by SCANNING actions[] for updateViewershipAction, never by index. Index 0 is where it
+// was observed, but actions[] is a list of whatever changed on the watch page this tick, so its
+// composition is not something to depend on -- and indexing blindly would read some other
+// action's fields as a viewer count.
+const json &ViewershipRenderer(const json &payload)
+{
+	static const json kNull = json(nullptr);
+	const json &actions = Obj(payload, "actions");
+	if (!actions.is_array()) {
+		return kNull;
+	}
+	for (const json &action : actions) {
+		const json &viewCount = Obj(Obj(action, "updateViewershipAction"), "viewCount");
+		const json &renderer = Obj(viewCount, "videoViewCountRenderer");
+		if (renderer.is_object()) {
+			return renderer;
+		}
+	}
+	return kNull;
+}
+
+// Beyond any plausible concurrent audience; a value past this is a misread field rather than a
+// number, and refusing it leaves the count absent instead of truncating into `int`.
+constexpr int64_t kMaxPlausibleViewers = 1000000000;
+
+// A viewer figure out of either the raw unlocalized integer string ("7175") or a display string
+// whose group separators have to come off first ("7,175"). False -- leaving `out` untouched --
+// for anything that is not purely digits and group separators, which is what keeps localized
+// prose ("7,175 watching now", "7,1 mil") from ever being mistaken for a number: the count then
+// stays ABSENT, which is a correct answer, where a partial parse would be a wrong one.
+bool ParseViewerCount(const std::string &text, int &out)
+{
+	int64_t value = 0;
+	bool digits = false;
+	for (const char c : text) {
+		if (c >= '0' && c <= '9') {
+			value = value * 10 + (c - '0');
+			digits = true;
+			if (value > kMaxPlausibleViewers) {
+				return false;
+			}
+			continue;
+		}
+		// Group separators only. Anything else -- a letter, a currency mark, a multi-byte
+		// space -- means this string is not a bare number, so refuse the whole thing.
+		if (c != ',' && c != '.' && c != ' ') {
+			return false;
+		}
+	}
+	if (!digits) {
+		return false;
+	}
+	out = static_cast<int>(value);
+	return true;
 }
 
 } // namespace
@@ -398,6 +458,19 @@ std::string YouTubeProvider::chatChannelRef(const OAuthAccount &acct, const std:
 	const std::lock_guard<std::mutex> guard(broadcastMutex_);
 	auto it = broadcasts_.find(DestinationId{AccountId(acct), profileUuid});
 	return it != broadcasts_.end() ? it->second.liveChatId : std::string();
+}
+
+std::string YouTubeProvider::chatVideoRef(OAuthAccount &acct, const std::string &profileUuid)
+{
+	BroadcastState state;
+	std::string err;
+	if (EnsureActiveBroadcast(acct, profileUuid, state, err)) {
+		return state.broadcastId;
+	}
+	DBG(LogCat::Chat, "youtube: dest=%s has no resolvable broadcast video id (%s)",
+	    DestinationKey(DestinationId{AccountId(acct), profileUuid}).c_str(),
+	    err.empty() ? "not live on this destination" : err.c_str());
+	return std::string();
 }
 
 void YouTubeProvider::clearActiveBroadcast(const std::string &accountId)
@@ -1212,71 +1285,121 @@ bool YouTubeProvider::EnsureActiveBroadcast(OAuthAccount &acct, const std::strin
 	return true;
 }
 
-// Read concurrent viewers for a BATCH of broadcasts (videos.list liveStreamingDetails).
-// videos.list accepts a comma-separated id list and bills per REQUEST, not per id, so an
-// account streaming several orientations costs one unit instead of one per broadcast --
-// videos.list was this project's second-largest quota consumer purely through repetition.
+std::string YouTubeProvider::ViewerContinuation(const DestinationId &dest) const
+{
+	const std::lock_guard<std::mutex> guard(broadcastMutex_);
+	auto it = broadcasts_.find(dest);
+	return it == broadcasts_.end() ? std::string() : it->second.viewerContinuation;
+}
+
+void YouTubeProvider::SetViewerContinuation(const DestinationId &dest, const std::string &token)
+{
+	const std::lock_guard<std::mutex> guard(broadcastMutex_);
+	auto it = broadcasts_.find(dest);
+	if (it == broadcasts_.end()) {
+		return; // the destination went off air while this read was in flight
+	}
+	it->second.viewerContinuation = token;
+}
+
+// Read ONE broadcast's concurrent viewers from InnerTube's updated_metadata -- the endpoint the
+// logged-out watch page itself polls, at zero Data API quota. One POST per id: unlike
+// videos.list this endpoint has no batch form, and with one broadcast per live orientation
+// there is nothing worth batching anyway.
 //
-// `out` is keyed by video id and holds ONLY the ids the response actually returned. An id
-// YouTube omits (ended, deleted, not visible to this account) must stay ABSENT rather than
-// appear as 0: downstream, absent means "no figure" while 0 means "live with no viewers", and
-// collapsing the two would report a dead broadcast as a live one with an empty audience.
-// Attribution is by the item's own id, never by response order, which the API does not
-// promise to preserve.
-bool YouTubeProvider::ReadBroadcastViewers(OAuthAccount &acct, const std::vector<std::string> &broadcastIds,
+// THE isLive GUARD IS THE WHOLE CORRECTNESS OF THIS READ. videoViewCountRenderer carries
+// isLive:true only while its figure is CONCURRENT viewers; without that flag the very same
+// originalViewCount field is the video's CUMULATIVE view total (measured at 1.79 billion on a
+// VOD) -- a plausible-looking number nothing downstream would reject, which makes reading it
+// unguarded the worst available failure. On an ENDED stream originalViewCount was "0" while the
+// display text still held the real total, so the field is trustworthy ONLY under isLive:true.
+// yt-dlp branches on exactly this flag (youtube/_video.py). No isLive -> the id stays ABSENT.
+//
+// `out` gains an entry ONLY for a live renderer whose count actually parsed. Absent means "no
+// figure" and 0 means "live with no viewers"; collapsing the two would report a dead broadcast
+// as a live one with an empty audience, so no path here ever writes a fallback 0.
+//
+// An InnerTube failure is NOT a Data API quota failure: nothing here goes through SendAuthed, so
+// it cannot arm the quota gate, and the gate being closed cannot refuse it. The two surfaces are
+// now independent and must stay so.
+bool YouTubeProvider::ReadBroadcastViewers(const DestinationId &dest, const std::string &videoId,
 					   std::map<std::string, int> &out, std::string &err)
 {
-	if (broadcastIds.empty()) {
+	if (videoId.empty()) {
 		return true;
 	}
+	const std::string destTag = DestinationKey(dest);
 
-	std::string ids;
-	for (const std::string &id : broadcastIds) {
-		if (!ids.empty()) {
-			ids += ",";
+	// Two attempts at most: a resumed read that comes back with nothing to update re-reads once
+	// from the video id, which re-issues a token. Anything past that leaves the id absent.
+	std::string continuation = ViewerContinuation(dest);
+	for (int attempt = 1; attempt <= 2; ++attempt) {
+		const bool resumed = !continuation.empty();
+		DBG(LogCat::OAuth, "youtube viewers: dest=%s continuation cache %s", destTag.c_str(),
+		    resumed ? "hit (resuming, ~5KB)" : "miss (full videoId read, ~118KB)");
+
+		const json fields = resumed ? json{{"continuation", continuation}} : json{{"videoId", videoId}};
+		const InnerTube::Result resp = InnerTube::Post(kUpdatedMetadataUrl, fields);
+		if (resp.canceled) {
+			return true; // nothing was sent; this destination simply has no figure this pass
 		}
-		ids += id;
-	}
-
-	Http::HttpReq req;
-	req.method = "GET";
-	req.url = std::string(kVideosUrl) + "?part=liveStreamingDetails&id=" + Http::UrlEncode(ids);
-
-	Http::HttpResponse resp;
-	if (!SendAuthed(acct, req, resp, err)) {
-		return false;
-	}
-	if (resp.status < 200 || resp.status >= 300) {
-		err = "YouTube videos request failed (HTTP " + std::to_string(resp.status) + "): " + resp.body;
-		return false;
-	}
-
-	const json parsed = ParseJson(resp.body);
-	if (!parsed.is_object() || !parsed.contains("items") || !parsed["items"].is_array()) {
-		return true; // no items -> every requested id stays absent
-	}
-	for (const json &item : parsed["items"]) {
-		if (!item.is_object()) {
-			continue;
+		if (!resp.ok()) {
+			err = "YouTube viewer read failed (HTTP " + std::to_string(resp.status) + ")" +
+			      (resp.error.empty() ? std::string() : ": " + resp.error);
+			return false;
 		}
-		const std::string videoId = Str(item, "id");
-		if (videoId.empty()) {
-			continue; // unattributable to a destination; dropping it keeps that one absent
-		}
-		int count = 0;
-		if (item.contains("liveStreamingDetails") && item["liveStreamingDetails"].is_object()) {
-			// concurrentViewers is a STRING in the API (absent before/after the live
-			// window). Parse tolerantly; absent/garbage -> 0.
-			const std::string cv = Str(item["liveStreamingDetails"], "concurrentViewers");
-			if (!cv.empty()) {
-				try {
-					count = std::stoi(cv);
-				} catch (const std::exception &) {
-					count = 0;
-				}
+
+		// The token for the next poll, whatever this payload turns out to carry. On a live
+		// broadcast timeoutMs is 5000 -- read but not obeyed: the poll cadence belongs to
+		// ViewerPoller (20s, already 4x more conservative than the watch page's own 5s).
+		const std::string nextToken =
+			Str(Obj(Obj(resp.body, "continuation"), "timedContinuationData"), "continuation");
+
+		const json &renderer = ViewershipRenderer(resp.body);
+		if (!renderer.is_object()) {
+			// A bogus id answers 200 carrying only responseContext, and a stale continuation
+			// answers 200 with nothing to update -- indistinguishable here, so a RESUMED read
+			// spends one retry on the videoId form before giving up on the id.
+			if (resumed) {
+				DBG(LogCat::OAuth,
+				    "youtube viewers: dest=%s resumed read carried no viewership action, "
+				    "re-reading from the video id",
+				    destTag.c_str());
+				SetViewerContinuation(dest, std::string());
+				continuation.clear();
+				continue;
 			}
+			DBG(LogCat::OAuth,
+			    "youtube viewers: dest=%s no viewership action -> leaving the count ABSENT",
+			    destTag.c_str());
+			SetViewerContinuation(dest, nextToken);
+			return true;
 		}
-		out[videoId] = count < 0 ? 0 : count;
+		SetViewerContinuation(dest, nextToken);
+
+		if (!Bool(renderer, "isLive")) {
+			DBG(LogCat::OAuth,
+			    "youtube viewers: dest=%s renderer is not isLive -> the figure is cumulative views, "
+			    "leaving the count ABSENT",
+			    destTag.c_str());
+			return true;
+		}
+
+		// originalViewCount is the raw unlocalized integer ("7175"); unlabeledViewCountValue is
+		// the same number as display text ("7,175"). viewCount.simpleText is NEVER read -- it is
+		// localized prose ("7,175 watching now") and parsing it is how a locale change silently
+		// becomes a wrong number.
+		int count = 0;
+		if (!ParseViewerCount(Str(renderer, "originalViewCount"), count) &&
+		    !ParseViewerCount(Str(Obj(renderer, "unlabeledViewCountValue"), "simpleText"), count)) {
+			DBG(LogCat::OAuth,
+			    "youtube viewers: dest=%s isLive renderer carried no parseable count -> leaving it ABSENT",
+			    destTag.c_str());
+			return true;
+		}
+		out[videoId] = count;
+		DBG(LogCat::OAuth, "youtube viewers: dest=%s isLive -> %d concurrent viewers", destTag.c_str(), count);
+		return true;
 	}
 	return true;
 }
@@ -1315,10 +1438,10 @@ bool YouTubeProvider::viewerCounts(OAuthAccount &acct, std::map<DestinationId, i
 		}
 	}
 
-	// DISTINCT broadcast ids, in one batch. The dedupe is belt-and-braces against two
-	// destinations naming one broadcast (only reachable if two profiles somehow remembered the
-	// same ingest stream): reporting it twice would double-count those viewers in the caller's
-	// sum. The first destination claiming an id keeps it, matching the previous behavior.
+	// DISTINCT broadcast ids. The dedupe is belt-and-braces against two destinations naming one
+	// broadcast (only reachable if two profiles somehow remembered the same ingest stream):
+	// reporting it twice would double-count those viewers in the caller's sum. The first
+	// destination claiming an id keeps it, matching the previous behavior.
 	std::vector<std::pair<DestinationId, std::string>> claims; // one entry per distinct broadcast
 	std::set<std::string> seen;
 	for (const auto &target : targets) {
@@ -1328,23 +1451,16 @@ bool YouTubeProvider::viewerCounts(OAuthAccount &acct, std::map<DestinationId, i
 		claims.emplace_back(target.first, target.second);
 	}
 
-	// Chunked because videos.list caps its id list (50 per request, per the API reference);
-	// with one broadcast per live orientation a real setup never reaches one chunk, but a
-	// caller cannot be made to care. A chunk that fails leaves ITS ids absent from `counts`
-	// and therefore its destinations absent from `out`, exactly as a single failed read did.
+	// One request per broadcast: InnerTube's updated_metadata reads a single video and has no
+	// batch form, and since it bills no quota the per-id shape costs nothing but a round trip.
+	// An id that fails leaves ITS entry absent from `counts` and therefore its destination
+	// absent from `out`, exactly as a failed batch read did.
 	std::map<std::string, int> counts;
-	for (size_t offset = 0; offset < claims.size(); offset += kVideosListIdCap) {
-		const size_t end = std::min(offset + kVideosListIdCap, claims.size());
-		std::vector<std::string> chunk;
-		chunk.reserve(end - offset);
-		for (size_t i = offset; i < end; ++i) {
-			chunk.push_back(claims[i].second);
-		}
+	for (const auto &claim : claims) {
 		std::string readErr;
-		if (!ReadBroadcastViewers(acct, chunk, counts, readErr) && err.empty()) {
-			// One chunk failing (or the quota gate refusing) must not discard the ids that
-			// did read -- keep the first error for the caller's log and carry on, so a
-			// partial total still beats no total at all.
+		if (!ReadBroadcastViewers(claim.first, claim.second, counts, readErr) && err.empty()) {
+			// One id failing must not discard the ids that did read -- keep the first error
+			// for the caller's log and carry on, so a partial total still beats no total.
 			err = readErr;
 		}
 	}

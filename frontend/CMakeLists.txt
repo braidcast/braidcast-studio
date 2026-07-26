@@ -70,6 +70,10 @@ target_sources(
     src/util/env_config.hpp
     src/util/http_client.cpp
     src/util/http_client.hpp
+    # The ONE anonymous InnerTube (youtubei/v1) client, shared by the YouTube live-chat
+    # read and the YouTube concurrent-viewer read. No credential ever reaches it.
+    src/util/innertube_client.cpp
+    src/util/innertube_client.hpp
     src/util/json_util.hpp
     src/util/op_error.cpp
     src/util/op_error.hpp
@@ -168,6 +172,11 @@ target_sources(
     # + .insert send), owned by the YouTube provider; HTTP only, no obs.h.
     src/chat/youtube_chat.cpp
     src/chat/youtube_chat.hpp
+    # YouTube InnerTube live-chat read (youtubei/v1/live_chat/get_live_chat): the zero-quota
+    # PRIMARY read the transport above drives, with the Data API loops as its fallback.
+    # Anonymous HTTP only -- no credential ever reaches this endpoint. No obs.h.
+    src/chat/youtube_innertube.cpp
+    src/chat/youtube_innertube.hpp
     # Phase 9.0 Task 5: Kick chat transport (Pusher WebSocket read + REST send),
     # owned by KickProvider; HTTP + WS only, no obs.h.
     src/chat/kick_chat.cpp
