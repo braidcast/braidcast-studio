@@ -30,25 +30,24 @@ export interface ControlProps {
   lookup: (name: string) => unknown;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type AnyControl = Component<ControlProps, any, any>;
+type Control = Component<ControlProps>;
 
-export const controlRegistry: Record<string, AnyControl> = {
-  bool: BoolControl as AnyControl,
-  int: NumberControl as AnyControl,
-  float: NumberControl as AnyControl,
-  text: TextControl as AnyControl,
-  path: PathControl as AnyControl,
-  list: ListControl as AnyControl,
-  color: ColorControl as AnyControl,
-  color_alpha: ColorControl as AnyControl,
-  button: ButtonControl as AnyControl,
-  group: GroupControl as AnyControl,
-  font: FontControl as AnyControl,
-  editable_list: EditableListControl as AnyControl,
-  frame_rate: FrameRateControl as AnyControl,
+export const controlRegistry: Record<string, Control> = {
+  bool: BoolControl,
+  int: NumberControl,
+  float: NumberControl,
+  text: TextControl,
+  path: PathControl,
+  list: ListControl,
+  color: ColorControl,
+  color_alpha: ColorControl,
+  button: ButtonControl,
+  group: GroupControl,
+  font: FontControl,
+  editable_list: EditableListControl,
+  frame_rate: FrameRateControl,
 };
 
-export function controlFor(type: string): AnyControl {
-  return controlRegistry[type] ?? (UnsupportedControl as AnyControl);
+export function controlFor(type: string): Control {
+  return controlRegistry[type] ?? UnsupportedControl;
 }

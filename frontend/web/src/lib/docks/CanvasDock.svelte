@@ -7,6 +7,7 @@
     type ReorderDirection,
     type MultistreamState,
     type SceneLinkInfo,
+    type PreviewHitTarget,
   } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
   import { selectOnMount } from "$lib/utils/focusActions";
@@ -794,13 +795,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   // No Properties (matches the row menu, which omits it for additional-canvas
   // private sources). Every call carries this canvas's uuid + scene + item id.
   function buildPreviewItems(
-    p: {
-      scene: string | null;
-      id: number | null;
-      source: string | null;
-      visible: boolean;
-      locked: boolean;
-    },
+    p: PreviewHitTarget,
     deint: { mode: DeinterlaceMode; fieldOrder: DeinterlaceFieldOrder },
     transitionTypeList: TransitionType[],
   ): ContextMenuItems {

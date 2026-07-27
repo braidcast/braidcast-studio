@@ -11,9 +11,7 @@
   // default doesn't collapse to a misleading 0 (e.g. "0 s").
   const num = $derived(Number(value ?? p.value ?? 0));
   const step = $derived(p.step || 1);
-  const slider = $derived(
-    (p.type === "int" ? (p as IntProperty).int_type : (p as FloatProperty).float_type) === "slider",
-  );
+  const slider = $derived((p.type === "int" ? p.int_type : p.float_type) === "slider");
 
   function clamp(v: number): number {
     if (typeof p.min === "number" && v < p.min) v = p.min;

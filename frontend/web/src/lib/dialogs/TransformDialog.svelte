@@ -56,8 +56,8 @@ import { EV } from "$lib/utils/eventNames";
   }
 
   // The push event/method params address the item with the same {canvas?,scene?,id}.
-  function targetParams(): Record<string, unknown> {
-    const p: Record<string, unknown> = { id: target.id };
+  function targetParams(): TransformTarget {
+    const p: TransformTarget = { id: target.id };
     if (target.canvas != null) {
       p.canvas = target.canvas;
     }

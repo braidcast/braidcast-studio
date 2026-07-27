@@ -18,8 +18,8 @@ const ACTIONS: { label: string; action: TransformAction }[] = [
   { label: "Flip Vertical", action: "flipV" },
 ];
 
-function params(t: TransformTarget): Record<string, unknown> {
-  const p: Record<string, unknown> = { id: t.id };
+function params(t: TransformTarget): TransformTarget {
+  const p: TransformTarget = { id: t.id };
   if (t.canvas != null) {
     p.canvas = t.canvas;
   }

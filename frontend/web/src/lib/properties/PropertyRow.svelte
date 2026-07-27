@@ -7,9 +7,7 @@
   const Control = $derived(controlFor(prop.type));
 
   // Info text renders its own full-width note.
-  const isInfo = $derived(
-    prop.type === "text" && (prop as { text_type?: string }).text_type === "info",
-  );
+  const isInfo = $derived(prop.type === "text" && prop.text_type === "info");
   // Group/button/info own their full-width chrome (legend, note, button label).
   const isFull = $derived(prop.type === "group" || prop.type === "button" || isInfo);
   // Booleans render as a left-aligned toggle + label (never pushed to the far

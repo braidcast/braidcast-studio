@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { obs, type SceneItem, type DeinterlaceMode, type DeinterlaceFieldOrder, type TransitionType } from "$lib/api/bridge";
+  import { obs, type SceneItem, type DeinterlaceMode, type DeinterlaceFieldOrder, type TransitionType, type PreviewHitTarget } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
   import { canvasStore } from "$lib/stores/canvasStore.svelte";
   import { previewSuspended, suspendPreview } from "$lib/stores/previewGate.svelte";
@@ -101,7 +101,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   // fetched just-in-time (the event payload lacks scale/blend/color/transitions);
   // `deint` + `transitionTypeList` are likewise fetched before the menu is built.
   function buildItems(
-    p: { scene: string | null; id: number | null; source: string | null; visible: boolean; locked: boolean },
+    p: PreviewHitTarget,
     it: SceneItem | null,
     deint: { mode: DeinterlaceMode; fieldOrder: DeinterlaceFieldOrder },
     transitionTypeList: TransitionType[],

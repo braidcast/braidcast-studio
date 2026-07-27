@@ -52,15 +52,23 @@ export interface ItemTransition {
   duration: number;
 }
 
+/** Scale-filter / blending vocabularies shared by the sceneItems.list fields and
+ * the matching sceneItems.setScaleFilter `filter`, setBlendingMode `mode` and
+ * setBlendingMethod `method` params — the host maps each token to its libobs enum
+ * and back through one table per vocabulary, so these are the whole set. */
+export type ScaleFilter = "disable" | "point" | "bilinear" | "bicubic" | "lanczos" | "area";
+export type BlendMode = "normal" | "additive" | "subtract" | "screen" | "multiply" | "lighten" | "darken";
+export type BlendMethod = "default" | "srgbOff";
+
 /** A scene item (source within a scene) as reported by sceneItems.list. */
 export interface SceneItem {
   id: number;
   source: string | null;
   visible: boolean;
   locked: boolean;
-  scaleFilter: string;
-  blendMode: string;
-  blendMethod: string;
+  scaleFilter: ScaleFilter;
+  blendMode: BlendMode;
+  blendMethod: BlendMethod;
   interactive?: boolean;
   // Per-item color tag (hex like "#RRGGBB"; "" when unset).
   color: string;
@@ -211,8 +219,8 @@ export interface EditableListItem {
 export interface EditableListProperty extends PropertyBase {
   type: "editable_list";
   editable_list_type: "strings" | "files" | "files_and_urls";
-  filter?: string;
-  default_path?: string;
+  filter: string | null;
+  default_path: string | null;
   value: EditableListItem[];
 }
 /** A frame rate as a rational (numerator/denominator); null = unset. */
@@ -581,20 +589,25 @@ export interface BrowserAuthProgress {
 export type OAuthConnectProgress = DeviceCodeProgress | BrowserAuthProgress;
 
 /** A profile's stream metadata (Go Live "Stream Information") as returned by
- * streamMeta.get. `category` is a nested {id,name} (id "" when unset); `language`
- * is the broadcaster language code. */
+ * streamMeta.get. Every field is per-provider: Twitch reports title/category/
+ * language, Kick reports title/category/tags, and YouTube (create-per-go-live)
+ * reports an empty object because there is no current broadcast to read. Treat a
+ * missing field as "no live value", not as an empty one. `category` is a nested
+ * {id,name} (id "" when unset); `language` is the broadcaster language code. */
 export interface StreamMeta {
-  title: string;
-  category: { id: string; name: string };
-  language: string;
+  title?: string;
+  category?: { id: string; name: string };
+  language?: string;
+  tags?: string[];
 }
 
 /** One category/game match (streamMeta.searchCategories). `boxArt` is the box-art
- * image URL (may contain {width}/{height} placeholders). */
+ * image URL (may contain {width}/{height} placeholders); YouTube's category list
+ * carries no artwork, so it is absent there. */
 export interface StreamCategory {
   id: string;
   name: string;
-  boxArt: string;
+  boxArt?: string;
 }
 
 // --- output bindings (profile x canvas routing edges, 4.4.3) -----------------
@@ -1784,6 +1797,16 @@ export interface ObsEvents {
   // store updates `debug` from the payload without a re-fetch.
   "debug.changed": { debug: boolean };
 }
+
+/** The scene item a preview right-click landed on, as much of it as the event
+ * carries: the hit payload has no scale/blend/color/transition detail, so a menu
+ * builder re-fetches those from sceneItems.list. Derived from the event rather
+ * than respelled, so a change to the payload reaches every dock that hosts a
+ * preview surface. */
+export type PreviewHitTarget = Pick<
+  ObsEvents["preview.contextMenu"],
+  "scene" | "id" | "source" | "visible" | "locked"
+>;
 
 // Every payload-typed event key must be a known EV constant (eventNames.ts); this
 // fails to compile if an ObsEvents key is renamed or typed for a non-existent event.

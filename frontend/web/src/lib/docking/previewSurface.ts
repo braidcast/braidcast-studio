@@ -10,7 +10,12 @@
 import { obs } from "$lib/api/bridge";
 import { WINDOW_ID } from "$lib/utils/windowContext";
 
-function target(canvasUuid?: string): Record<string, unknown> {
+interface PreviewTarget {
+  window: number;
+  canvas?: string;
+}
+
+function target(canvasUuid?: string): PreviewTarget {
   return canvasUuid ? { canvas: canvasUuid, window: WINDOW_ID } : { window: WINDOW_ID };
 }
 
