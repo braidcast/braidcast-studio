@@ -4,7 +4,7 @@ import { EV } from "$lib/utils/eventNames";
   import { openMissingFiles } from "$lib/dialogs/missingFilesOpener.svelte";
   import { openLogViewer } from "$lib/dialogs/logViewerOpener.svelte";
   import { openImporter } from "$lib/dialogs/importerOpener.svelte";
-  import { goLivePref, setAskStreamInfo } from "$lib/stores/goLivePrefStore.svelte";
+  import { goLivePref, setGoLivePref } from "$lib/stores/goLivePrefStore.svelte";
   import ToggleSwitch from "$lib/ui/ToggleSwitch.svelte";
 
   // General app settings, live-applied (the page model has no Apply boundary):
@@ -148,7 +148,7 @@ import { EV } from "$lib/utils/eventNames";
   <section class="group">
     <h4>Streaming</h4>
     <label class="check">
-      <ToggleSwitch size="sm" checked={goLivePref.askStreamInfo} onchange={(v) => setAskStreamInfo(v)} />
+      <ToggleSwitch size="sm" checked={goLivePref.askStreamInfo} onchange={(v) => setGoLivePref("askStreamInfo", v)} />
       Ask for stream info on Go Live
     </label>
     <p class="dim note">Open the Stream Information panel when going live. When off, Go Live starts instantly with the last-saved metadata.</p>

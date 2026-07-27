@@ -49,6 +49,10 @@ import { EV } from "$lib/utils/eventNames";
   // Live per-output status comes from the shared store (fetch + multistream.changed +
   // outputBinding.changed re-poll owned there); this page reads the reactive list.
   let outputs = $derived(multistreamStatusStore.outputs);
+  // The status read hasn't landed — still in flight, or the poll failed. Absence is
+  // its own state: an empty `outputs` from a failed read is indistinguishable from a
+  // genuinely idle rig, and rendering it as "Offline" would be a fabricated read.
+  let statusUnread = $derived(!multistreamStatusStore.loaded || multistreamStatusStore.error !== null);
   // Shared 1 Hz stats poll (also feeds the Stats dock + Monitor page).
   let stats = $derived(statsStore.stats);
   let focusedCanvasUuid = $state<string | null>(null);
@@ -57,8 +61,12 @@ import { EV } from "$lib/utils/eventNames";
 
   // Go-live confirmation prompts (settings.getGeneral), kept in sync via
   // settings.generalChanged. When set, toggleLive routes through a confirm dialog.
-  let warnGoLive = $state(false);
-  let warnStop = $state(false);
+  // `null` is "not read", a third state distinct from on and off: treating an unread
+  // flag as off would silently skip a confirmation the user deliberately enabled.
+  // `generalReadError` carries the last failure so the refusal can say what broke.
+  let warnGoLive = $state<boolean | null>(null);
+  let warnStop = $state<boolean | null>(null);
+  let generalReadError = $state<string | null>(null);
 
   // Virtual camera: live state + target canvas (uuid; "" = Default / global
   // program video), kept in sync via virtualCam.changed. The right-click picker
@@ -113,13 +121,15 @@ import { EV } from "$lib/utils/eventNames";
   // Off-air status label for the bottom bar's left block (the live badge replaces it
   // once streaming). Keeps that block substantial instead of a lone floating dot.
   let liveLabel = $derived(
-    liveState === "connecting"
-      ? "Connecting"
-      : liveState === "reconnecting"
-        ? "Reconnecting"
-        : liveState === "error"
-          ? "Stream Error"
-          : "Offline",
+    statusUnread
+      ? "—"
+      : liveState === "connecting"
+        ? "Connecting"
+        : liveState === "reconnecting"
+          ? "Reconnecting"
+          : liveState === "error"
+            ? "Stream Error"
+            : "Offline",
   );
 
   let focusedCanvas = $derived(canvases.find((c) => c.uuid === activeCanvasUuid) ?? null);
@@ -258,6 +268,21 @@ import { EV } from "$lib/utils/eventNames";
     }
   });
 
+  // Reads the go-live confirmation prompts. A failure leaves both flags unread rather
+  // than at a default, so the toggle blocks instead of guessing; the refusal dialog
+  // calls this again to retry.
+  async function loadGoLiveWarnings(): Promise<void> {
+    try {
+      const g = await obs.call("settings.getGeneral");
+      warnGoLive = g.warnBeforeGoLive;
+      warnStop = g.warnBeforeStop;
+      generalReadError = null;
+    } catch (e) {
+      generalReadError = (e as Error).message;
+      log.warn(Cat.bridge, "settings.getGeneral failed; go-live blocked until it reads:", generalReadError);
+    }
+  }
+
   // Chip + bottom-bar data, refreshed off the same engine pushes the docks use.
   onMount(() => {
     undoStore.start();
@@ -270,15 +295,7 @@ import { EV } from "$lib/utils/eventNames";
     void multistreamStatusStore.refresh().then(() => {
       anyRunning = multistreamStatusStore.outputs.some((o) => isActiveState(o.state));
     });
-    obs
-      .call("settings.getGeneral")
-      .then((g) => {
-        warnGoLive = g.warnBeforeGoLive;
-        warnStop = g.warnBeforeStop;
-      })
-      // A failed read leaves both warn flags at their `false` initial value, which
-      // silently skips the go-live/stop confirmation the user may have asked for.
-      .catch((e) => log.warn(Cat.bridge, "settings.getGeneral failed; go-live warnings stay off:", (e as Error).message));
+    void loadGoLiveWarnings();
     obs
       .call("display.listMonitors")
       .then((res) => (monitors = res?.monitors ?? []))
@@ -301,6 +318,7 @@ import { EV } from "$lib/utils/eventNames";
     const offGeneral = obs.on(EV.settingsGeneralChanged, (g) => {
       warnGoLive = g.warnBeforeGoLive;
       warnStop = g.warnBeforeStop;
+      generalReadError = null;
     });
     return () => {
       offStatus();
@@ -606,6 +624,30 @@ import { EV } from "$lib/utils/eventNames";
     }
   }
 
+  // Every read the go-live decision rests on, collapsed to one refusal reason phrased
+  // for the user (null = all read, proceed). Blocking beats guessing here: a fabricated
+  // "idle" starts a second stream over a running one, and a fabricated "don't ask"
+  // ends a live broadcast on a stray click.
+  let goLiveBlock = $derived.by<string | null>(() => {
+    if (!multistreamStatusStore.loaded) {
+      return "Destination status hasn't loaded yet.";
+    }
+    if (multistreamStatusStore.error) {
+      return "Couldn't read destination status: " + multistreamStatusStore.error;
+    }
+    if (warnGoLive === null || warnStop === null) {
+      return generalReadError
+        ? "Couldn't read stream settings: " + generalReadError
+        : "Stream settings haven't loaded yet.";
+    }
+    return null;
+  });
+
+  function retryGoLiveReads(): void {
+    void loadGoLiveWarnings();
+    void multistreamStatusStore.refresh();
+  }
+
   // Going live routes through the Stream Information modal (trigger option A) when
   // the "Ask for stream info on Go Live" pref is on; the modal pushes metadata then
   // calls streaming.start itself. With the pref off, fall back to the optional
@@ -616,7 +658,21 @@ import { EV } from "$lib/utils/eventNames";
       askStreamInfo: goLivePref.askStreamInfo,
       warnGoLive,
       warnStop,
+      block: goLiveBlock,
     });
+    if (goLiveBlock) {
+      dialog = {
+        kind: "confirm",
+        title: "Stream state unavailable",
+        message:
+          goLiveBlock +
+          " Acting on a guessed state could start a second stream or leave a live one running, so the button waits" +
+          " until the read succeeds.",
+        confirmLabel: "Retry",
+        onCommit: () => retryGoLiveReads(),
+      };
+      return;
+    }
     if (anyRunning && warnStop) {
       dialog = {
         kind: "confirm",
@@ -837,20 +893,33 @@ import { EV } from "$lib/utils/eventNames";
       </div>
       <button
         class="txtbtn editinfo"
-        disabled={outputs.length === 0}
+        disabled={statusUnread || outputs.length === 0}
         onclick={() => openGoLiveModal("edit")}
-        title="Edit stream information (title / category / tags) — works before and during the stream"
+        title={statusUnread
+          ? "Destination status is unavailable — retry from the Go Live button"
+          : outputs.length === 0
+            ? "No destinations bound — bind one on the Canvases page"
+            : "Edit stream information (title / category / tags) — works before and during the stream"}
       >
         <Icon name="edit" />
         Edit
       </button>
       <button
         class="golive"
-        class:running={anyRunning}
-        disabled={busy || (!anyRunning && outputs.length === 0)}
+        class:running={!goLiveBlock && anyRunning}
+        class:blocked={!!goLiveBlock}
+        disabled={busy || (!goLiveBlock && !anyRunning && outputs.length === 0)}
+        title={goLiveBlock
+          ? goLiveBlock + " Click for details."
+          : !anyRunning && outputs.length === 0
+            ? "No destinations bound — bind one on the Canvases page"
+            : ""}
         onclick={() => void toggleLive()}
       >
-        {#if anyRunning}
+        {#if goLiveBlock}
+          <Icon name="warn" size={13} />
+          UNAVAILABLE
+        {:else if anyRunning}
           <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" /></svg>
           END STREAM
         {:else}
@@ -1343,6 +1412,13 @@ import { EV } from "$lib/utils/eventNames";
   .golive.running {
     background: var(--color-live);
     color: #fff;
+  }
+  /* Blocked reads: the button stays clickable (the click explains and offers a retry)
+     but drops the accent fill so it can't read as a primed Go Live. */
+  .golive.blocked {
+    background: var(--color-surface-2);
+    color: var(--color-warn);
+    border-left-color: var(--color-warn);
   }
   .golive:disabled {
     opacity: 0.5;

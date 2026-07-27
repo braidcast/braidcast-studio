@@ -93,7 +93,14 @@ class MultistreamStatusStore {
     this.#subs++;
     if (this.#subs === 1) {
       void this.refresh();
-      const offMulti = obs.on(EV.multistreamChanged, (p) => (this.outputs = p.outputs));
+      // An authoritative push is a successful read: it supersedes a failed poll, and
+      // leaving `error` set would pin consumers that refuse while it is non-null (the
+      // Studio go-live bar) in a permanently blocked state.
+      const offMulti = obs.on(EV.multistreamChanged, (p) => {
+        this.outputs = p.outputs;
+        this.error = null;
+        this.loaded = true;
+      });
       // A binding enable/disable changes which outputs are live but doesn't push a
       // multistream.changed, so re-poll on it too.
       const offBindings = obs.on(EV.outputBindingChanged, () => void this.refresh());

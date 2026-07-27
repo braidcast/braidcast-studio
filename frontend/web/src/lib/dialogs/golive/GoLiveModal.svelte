@@ -15,6 +15,7 @@ import { EV } from "$lib/utils/eventNames";
     destinationIdentityStore,
     type DestinationIdentity,
   } from "$lib/stores/destinationIdentityStore.svelte";
+  import { goLivePref, setGoLivePref } from "$lib/stores/goLivePrefStore.svelte";
   import { outputBindingStore } from "$lib/stores/outputBindingStore.svelte";
   import { streamProfileStore } from "$lib/stores/streamProfileStore.svelte";
   import { oauthStore, isStaleToken } from "$lib/stores/oauthStore.svelte";
@@ -80,6 +81,12 @@ import { EV } from "$lib/utils/eventNames";
     return `${n} stream${n === 1 ? "" : "s"}`;
   }
 
+  // Likewise for a destination count, shared by the footer summary and the
+  // hide-disabled bar.
+  function destinationsLabel(n: number): string {
+    return `${n} destination${n === 1 ? "" : "s"}`;
+  }
+
   // Provider/status/binding/profile lists come from the shared stores (one source of
   // truth); `loaded` gates the modal until they + the live flag have settled.
   let providers = $derived(oauthStore.providers);
@@ -87,7 +94,12 @@ import { EV } from "$lib/utils/eventNames";
   let bindings = $derived(outputBindingStore.bindings);
   let profiles = $derived(streamProfileStore.profiles);
   let loaded = $state(false);
-  let isLive = $state(false);
+  // Three states, not two: true, false, and `null` = the streaming state could not be
+  // read. Collapsing null into false offers "Go Live now" to someone already live, so
+  // the unread state blocks the primary action and renders as "—" instead.
+  let isLive = $state<boolean | null>(null);
+  let liveReadError = $state<string | null>(null);
+  let liveRetrying = $state(false);
   let submitting = $state(false);
   let view = $state<"simple" | "advanced">("simple");
   // Persist this dialog's values to the remembered store on confirm so the next
@@ -364,6 +376,22 @@ import { EV } from "$lib/utils/eventNames";
   const armedConnectedChannels = $derived(connectedChannels.filter((c) => c.armed));
   const armedChannels = $derived(channels.filter((c) => c.armed));
 
+  // "Hide disabled" filters out the cards for channels whose output bindings are ALL
+  // disabled. `armed` is not a separate state: it is set above purely from
+  // `b.enabled`, the same per-binding flag the Multistream dock's row switch and this
+  // card's arm switch both write through outputBindingStore.setEnabled. Restricted to
+  // `connected` because that is the only branch rendering a card — a disarmed
+  // reconnect strip is already suppressed and an unresolved channel renders nothing.
+  // PRESENTATION ONLY: every armed-* set derives from `channels`, and each is already
+  // a subset of `armed`, so this filter cannot change what is pushed or streamed.
+  function isHiddenWhenDisabled(c: Channel): boolean {
+    return !c.armed && c.connected;
+  }
+  const hiddenChannelCount = $derived(channels.filter(isHiddenWhenDisabled).length);
+  const visibleChannels = $derived(
+    goLivePref.hideDisabled ? channels.filter((c) => !isHiddenWhenDisabled(c)) : channels,
+  );
+
   // Modal width grows with the number of editable channel columns so a wide window
   // shows them side by side instead of one narrow stacked column, capped well short
   // of an ultrawide edge-to-edge span. COL_W mirrors the .chgrid minmax below so the
@@ -375,7 +403,9 @@ import { EV } from "$lib/utils/eventNames";
   const GRID_GAP = 12;
   const BODY_PAD = 28; // Modal .modal-body left+right padding
   const modalWidth = $derived.by<number>(() => {
-    const cols = Math.max(connectedChannels.length, 1);
+    // Counts the columns actually rendered, so hiding disabled channels also gives
+    // back the width they reserved.
+    const cols = Math.max(visibleChannels.filter((c) => c.connected).length, 1);
     const w = COL_W[view] * cols + GRID_GAP * (cols - 1) + BODY_PAD;
     return Math.min(Math.max(w, MIN_MODAL_W[view]), MAX_MODAL_W);
   });
@@ -417,8 +447,17 @@ import { EV } from "$lib/utils/eventNames";
     return out;
   });
 
+  // Edit mode names the action after the stream's state; with that state unread the
+  // label stays neutral rather than asserting one. Pushing metadata is valid either
+  // way, so only the go-live primary is actually blocked (see the footer gate).
   const primaryLabel = $derived(
-    goLiveModal.mode === "golive" ? "Go Live now" : isLive ? "Update info" : "Save info",
+    goLiveModal.mode === "golive"
+      ? "Go Live now"
+      : isLive === null
+        ? "Apply info"
+        : isLive
+          ? "Update info"
+          : "Save info",
   );
 
   // Channels that go live via key but can't push metadata until relinked, plus the total
@@ -433,7 +472,7 @@ import { EV } from "$lib/utils/eventNames";
   const footerNote = $derived.by<string>(() => {
     if (armedChannels.length === 0) {
       return armedProfileCount > 0
-        ? `${armedProfileCount} destination${armedProfileCount === 1 ? "" : "s"} via stream key`
+        ? `${destinationsLabel(armedProfileCount)} via stream key`
         : "No destinations armed.";
     }
     const streams = streamsLabel(channelStreamCount);
@@ -549,6 +588,29 @@ import { EV } from "$lib/utils/eventNames";
     );
   }
 
+  // The one streaming-state reader, shared by the open gate and the retry affordance.
+  // A rejection resolves to `active: null` (unread) carrying the reason, never to a
+  // fabricated idle answer.
+  async function readLiveState(): Promise<{ active: boolean | null; error: string | null }> {
+    try {
+      const st = await obs.call("getStreamingState");
+      return { active: st.active, error: null };
+    } catch (e) {
+      return { active: null, error: (e as Error).message };
+    }
+  }
+
+  async function retryLiveState(): Promise<void> {
+    if (liveRetrying) {
+      return;
+    }
+    liveRetrying = true;
+    const st = await readLiveState();
+    isLive = st.active;
+    liveReadError = st.error;
+    liveRetrying = false;
+  }
+
   $effect(() => {
     let active = true;
     const offOauth = oauthStore.subscribe();
@@ -563,22 +625,25 @@ import { EV } from "$lib/utils/eventNames";
       streamProfileStore.whenReady(),
       canvasStore.whenReady(),
       // The gate must settle for the modal to render at all, so a failed read still
-      // has to produce a value — but "not live" is indistinguishable from a real
-      // idle answer and picks the wrong primary action, so say so.
-      obs.call("getStreamingState").catch((e) => {
-        const msg = (e as Error).message;
-        showToast("Couldn't read stream state: " + msg, msg);
-        return { active: false };
-      }),
+      // has to produce a result — but it resolves to "unread", never to "not live":
+      // that guess picks the wrong primary action for the whole modal.
+      readLiveState(),
     ]).then(([, , , , st]) => {
       if (!active) {
         return;
       }
-      isLive = !!st.active;
+      isLive = st.active;
+      liveReadError = st.error;
       loaded = true;
+      if (st.error) {
+        showToast("Couldn't read stream state: " + st.error, st.error);
+      }
       void prefill();
     });
-    const off = obs.on(EV.streamingChanged, (p) => (isLive = p.active));
+    const off = obs.on(EV.streamingChanged, (p) => {
+      isLive = p.active;
+      liveReadError = null;
+    });
     // External metadata edit (MCP / another window / a prior apply): re-run the
     // best-effort prefill so still-empty fields pick up the fresh values. Prefill's
     // touched/non-empty guards keep it from clobbering anything the user has edited.
@@ -785,7 +850,11 @@ import { EV } from "$lib/utils/eventNames";
   maxHeight="88vh"
 >
   {#snippet headExtra()}
-    {#if isLive}<span class="live-dot" title="Live"></span>{/if}
+    {#if isLive === null}
+      <span class="live-unknown" title={liveReadError ?? "Stream state unavailable"}>—</span>
+    {:else if isLive}
+      <span class="live-dot" title="Live"></span>
+    {/if}
     <Segmented options={VIEW_OPTIONS} value={view} onChange={(v) => (view = v as "simple" | "advanced")} />
   {/snippet}
 
@@ -793,6 +862,23 @@ import { EV } from "$lib/utils/eventNames";
     {#if !loaded}
       <p class="note">Loading destinations…</p>
     {:else}
+      {#if isLive === null}
+        <!-- Unread streaming state. In golive mode the primary action is held rather
+             than offering a start that could double up on a stream already running;
+             in edit mode only the live indicator is unknown, so the push stays open. -->
+        <div class="statewarn">
+          <span class="msg">
+            Stream state unavailable{liveReadError ? " — " + liveReadError : ""}.
+            {goLiveModal.mode === "golive"
+              ? "Going live could start a second stream over one already running, so Go Live is held until this reads."
+              : "Stream information still applies; only the live indicator is unknown."}
+          </span>
+          <button type="button" class="rbtn" disabled={liveRetrying} onclick={() => void retryLiveState()}>
+            {liveRetrying ? "Retrying…" : "Retry"}
+          </button>
+        </div>
+      {/if}
+
       <!-- Shared defaults: the union of connected providers' shareable fields (mock
            `.shared`), one row each, present in both modes whenever anything is shareable. -->
       {#if sharedFields.length}
@@ -813,12 +899,42 @@ import { EV } from "$lib/utils/eventNames";
       {#if armedProfileCount === 0 && channels.length === 0}
         <p class="note">No armed destinations. Enable a destination on a canvas to push stream information.</p>
       {:else}
+        <!-- Hide-disabled bar. Shown whenever any destination is switched off, in both
+             positions of the toggle, so the default (hiding) can never look like the
+             modal lost a destination — the count states what is missing and the switch
+             is the way back to it. Revealed cards stay fully interactive: their arm
+             switch re-enables the binding in place, after which the card is armed and
+             no longer filtered. -->
+        {#if hiddenChannelCount > 0}
+          <div class="viewbar">
+            <button
+              type="button"
+              class="sw"
+              class:on={goLivePref.hideDisabled}
+              role="switch"
+              aria-checked={goLivePref.hideDisabled}
+              title={goLivePref.hideDisabled
+                ? "Show disabled destinations"
+                : "Hide disabled destinations"}
+              onclick={() => setGoLivePref("hideDisabled", !goLivePref.hideDisabled)}
+            >
+              <i></i>
+            </button>
+            <span class="vbl">Hide disabled</span>
+            <span class="vbc">
+              {destinationsLabel(hiddenChannelCount)} disabled{goLivePref.hideDisabled
+                ? " and hidden — switch this off to show and re-enable them"
+                : " shown below"}
+            </span>
+          </div>
+        {/if}
+
         <!-- Per-channel cards: side-by-side columns on wide windows, one stacked
              column on narrow ones. auto-fit + minmax means no explicit breakpoint is
              needed — a track collapses to one column once it can't fit the minmax
              floor. Reconnect strips (below) span every column as a full-width banner. -->
         <div class="chgrid">
-        {#each channels as c (c.accountId)}
+        {#each visibleChannels as c (c.accountId)}
           {#if c.connected && c.provider}
             <!-- Disarmed forces collapsed: the body never renders while off, so its
                  fields can't be edited (and won't be pushed). collapsed[] still holds
@@ -1036,7 +1152,14 @@ import { EV } from "$lib/utils/eventNames";
   {#snippet footer()}
     <span class="foot-note">{footerNote}</span>
     <button class="ghost" onclick={closeGoLiveModal}>Cancel</button>
-    <button class="accent" disabled={submitting || !loaded || armedProfileCount === 0} onclick={() => void confirm()}>
+    <button
+      class="accent"
+      disabled={submitting ||
+        !loaded ||
+        armedProfileCount === 0 ||
+        (goLiveModal.mode === "golive" && isLive === null)}
+      onclick={() => void confirm()}
+    >
       {submitting ? "Working…" : primaryLabel}
     </button>
   {/snippet}
@@ -1049,10 +1172,35 @@ import { EV } from "$lib/utils/eventNames";
     height: 7px;
     background: var(--color-live);
   }
+  /* Unread streaming state, rendered as the project's absent-value em-dash rather
+     than as an off indicator. */
+  .live-unknown {
+    flex: 0 0 auto;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--color-warn);
+  }
   .note {
     font-size: 11px;
     color: var(--color-muted);
     margin: 0;
+  }
+  /* Unread-state banner: same treatment as the per-channel reconnect strip, spanning
+     the modal body above the channel grid. */
+  .statewarn {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 11px;
+    margin-bottom: 12px;
+    border: var(--border-weight) solid color-mix(in srgb, var(--color-warn) 45%, var(--color-border));
+    background: color-mix(in srgb, var(--color-warn) 7%, var(--color-surface));
+  }
+  .statewarn .msg {
+    font-size: 11px;
+    line-height: 1.45;
+    color: var(--color-warn);
+    overflow-wrap: anywhere;
   }
   /* Body wrapper: no padding of its own (Modal's .modal-body owns the scroll + pad).
      Field inputs are capped to a readable width wherever they render -- the shared
@@ -1064,6 +1212,25 @@ import { EV } from "$lib/utils/eventNames";
   .field :global(input.inp),
   .field :global(select.inp) {
     max-width: 460px;
+  }
+
+  /* Hide-disabled bar: the switch + label idiom the savebar already uses, in a
+     compact row above the channel grid. */
+  .viewbar {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+  }
+  .vbl {
+    font-size: 11px;
+    color: var(--color-dim);
+  }
+  .vbc {
+    font-size: 10px;
+    color: var(--color-muted);
+    min-width: 0;
   }
 
   /* Channel grid: side-by-side columns on wide windows, one stacked column on
@@ -1497,9 +1664,13 @@ import { EV } from "$lib/utils/eventNames";
     text-transform: uppercase;
     flex: 0 0 auto;
   }
-  .rbtn:hover {
+  .rbtn:hover:not(:disabled) {
     background: color-mix(in srgb, var(--color-warn) 14%, transparent);
     border-color: var(--color-warn);
+  }
+  .rbtn:disabled {
+    opacity: 0.5;
+    cursor: default;
   }
 
   /* Save-for-next-time strip: sticks to the bottom of the scroll body and bleeds to
