@@ -13,7 +13,19 @@
     swatch?: string;
     // A submenu item: hovering opens a flyout of these children. `action` is
     // ignored when `children` is present.
-    children?: (ContextMenuItem | null)[];
+    children?: ContextMenuItems;
+  }
+
+  /** A menu's contents, dividers included. */
+  export type ContextMenuItems = (ContextMenuItem | null)[];
+
+  /** An open menu: what to render and the viewport point to render it at. Every
+   * surface that opens one holds exactly this, so `menu` can be spread straight
+   * into the component. */
+  export interface ContextMenuState {
+    x: number;
+    y: number;
+    items: ContextMenuItems;
   }
 </script>
 
@@ -31,7 +43,7 @@
     y,
     items,
     onClose,
-  }: { x: number; y: number; items: (ContextMenuItem | null)[]; onClose: () => void } = $props();
+  }: ContextMenuState & { onClose: () => void } = $props();
 
   // Reserve the leading tick gutter only when the menu has at least one checkable
   // item, so plain flat menus render with their original left padding unchanged.

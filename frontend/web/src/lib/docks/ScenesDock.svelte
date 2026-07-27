@@ -7,7 +7,7 @@ import { EV } from "$lib/utils/eventNames";
   import { canvasStore } from "$lib/stores/canvasStore.svelte";
   import { callOrToast } from "$lib/utils/callToast";
   import { showToast } from "$lib/stores/toastStore.svelte";
-  import ContextMenu, { type ContextMenuItem } from "$lib/menus/ContextMenu.svelte";
+  import ContextMenu, { type ContextMenuState } from "$lib/menus/ContextMenu.svelte";
   import ListToolbar, { type ToolAction } from "$lib/docking/ListToolbar.svelte";
   import FilterReveal from "$lib/docking/FilterReveal.svelte";
   import { clipboard } from "$lib/stores/clipboardStore.svelte";
@@ -91,7 +91,7 @@ import { EV } from "$lib/utils/eventNames";
   let renamingFrom = $state<string | null>(null);
   let renameTo = $state("");
   let actionError = $state<string | null>(null);
-  let menu = $state<{ x: number; y: number; items: (ContextMenuItem | null)[] } | null>(null);
+  let menu = $state<ContextMenuState | null>(null);
 
   function report(e: unknown) {
     actionError = (e as Error).message;

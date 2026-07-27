@@ -5,7 +5,7 @@
   // upload via FileReader base64 -> overlays.uploadAsset, storing the returned served
   // path as the field value). Fields are treated immutably: every mutation builds the
   // next array and hands it to onChange, which the page debounces into overlays.update.
-  import { obs, type OverlayField } from "$lib/api/bridge";
+  import { obs, type LabeledOption, type OverlayField } from "$lib/api/bridge";
   import Icon from "$lib/ui/Icon.svelte";
 
   let {
@@ -113,7 +113,7 @@
     const opts = fields[i].options ?? [];
     setField(i, { options: [...opts, { value: "opt" + (opts.length + 1), label: "Option" }] });
   }
-  function setOption(i: number, oi: number, patch: Partial<{ value: string; label: string }>): void {
+  function setOption(i: number, oi: number, patch: Partial<LabeledOption>): void {
     const opts = (fields[i].options ?? []).map((o, k) => (k === oi ? { ...o, ...patch } : o));
     setField(i, { options: opts });
   }

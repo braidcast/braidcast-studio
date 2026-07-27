@@ -15,7 +15,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   import { WINDOW_ID } from "$lib/utils/windowContext";
   import { syncPreviewRect, hidePreview as hidePreviewSurface, destroyPreview, mapOverlayCursor } from "$lib/docking/previewSurface";
   import { isPreviewDisabled, setPreviewDisabled } from "$lib/docking/previewDisabledStore.svelte";
-  import ContextMenu, { type ContextMenuItem } from "$lib/menus/ContextMenu.svelte";
+  import ContextMenu, { type ContextMenuItems, type ContextMenuState } from "$lib/menus/ContextMenu.svelte";
   import { clipboard } from "$lib/stores/clipboardStore.svelte";
   import { copyItem, pasteReference, pasteDuplicate } from "$lib/stores/clipboardItemState";
   import { SourceSelection } from "$lib/stores/sourceSelectionStore.svelte";
@@ -61,7 +61,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   // all use it). `suspendOverlay` is set only by the preview menu: it opens over
   // the native overlay and must blank it; row menus open in the list area and must
   // not (blanking would flash the preview off for no reason).
-  let menu = $state<{ x: number; y: number; items: (ContextMenuItem | null)[]; suspendOverlay?: boolean } | null>(null);
+  let menu = $state<(ContextMenuState & { suspendOverlay?: boolean }) | null>(null);
 
   // ---- inline preview region (native overlay scoped to this canvas) -----------
   let previewEl = $state<HTMLElement | undefined>();
@@ -803,7 +803,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     },
     deint: { mode: DeinterlaceMode; fieldOrder: DeinterlaceFieldOrder },
     transitionTypeList: TransitionType[],
-  ): (ContextMenuItem | null)[] {
+  ): ContextMenuItems {
     const call = (method: string, params: Record<string, unknown>) =>
       obs.call(method, { canvas: canvasUuid, scene: p.scene, id: p.id, ...params }).catch(report);
     const currentFilter = items.find((i) => i.id === p.id)?.scaleFilter ?? "disable";
@@ -866,7 +866,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   // Empty-area menu (right-click with no source under the cursor). Add Source + Paste
   // reuse this canvas's add-source modal + clipboard paste; New Group creates an empty
   // group via sceneItems.createGroup in this canvas's current scene.
-  function buildEmptyItems(): (ContextMenuItem | null)[] {
+  function buildEmptyItems(): ContextMenuItems {
     return [
       { label: "Add Source", disabled: !currentScene, action: () => (addingSource = true) },
       {

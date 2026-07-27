@@ -4,7 +4,7 @@ import { EV } from "$lib/utils/eventNames";
   import { selectOnMount } from "$lib/utils/focusActions";
   import { openFilters } from "$lib/dialogs/filterDialogOpener.svelte";
   import { openAdvAudio } from "$lib/dialogs/advAudioOpener.svelte";
-  import ContextMenu, { type ContextMenuItem } from "$lib/menus/ContextMenu.svelte";
+  import ContextMenu, { type ContextMenuState } from "$lib/menus/ContextMenu.svelte";
   import { clipboard } from "$lib/stores/clipboardStore.svelte";
   import PropertiesModal from "$lib/properties/PropertiesModal.svelte";
   import Icon from "$lib/ui/Icon.svelte";
@@ -70,7 +70,7 @@ import { EV } from "$lib/utils/eventNames";
       // Non-fatal: the toggle still works for this session.
     }
   }
-  let menu = $state<{ x: number; y: number; items: (ContextMenuItem | null)[] } | null>(null);
+  let menu = $state<ContextMenuState | null>(null);
   let propsForSource = $state<string | null>(null);
   // Inline rename: keyed by source uuid (mixer rows have no scene-item id). The
   // reload on audio.changed carries the new name back into `sources`.

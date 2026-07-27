@@ -1,15 +1,8 @@
 <script lang="ts">
-  import type { PropertyDescriptor } from "$lib/api/bridge";
-  import { controlFor } from "$lib/properties/controls";
+  import { controlFor, type ControlProps } from "$lib/properties/controls";
 
-  interface Props {
-    prop: PropertyDescriptor;
-    value: unknown;
-    onChange: (name: string, value: unknown) => void;
-    onButton: (name: string) => void;
-    lookup: (name: string) => unknown;
-  }
-  let { prop, value, onChange, onButton, lookup }: Props = $props();
+  // The row forwards the control contract through unchanged, so it takes exactly it.
+  let { prop, value, onChange, onButton, lookup }: ControlProps = $props();
 
   const Control = $derived(controlFor(prop.type));
 

@@ -8,7 +8,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   import { WINDOW_ID } from "$lib/utils/windowContext";
   import { syncPreviewRect, hidePreview, destroyPreview, mapOverlayCursor } from "$lib/docking/previewSurface";
   import { isPreviewDisabled, setPreviewDisabled, DEFAULT_PREVIEW_KEY } from "$lib/docking/previewDisabledStore.svelte";
-  import ContextMenu, { type ContextMenuItem } from "$lib/menus/ContextMenu.svelte";
+  import ContextMenu, { type ContextMenuItems, type ContextMenuState } from "$lib/menus/ContextMenu.svelte";
   import PropertiesModal from "$lib/properties/PropertiesModal.svelte";
   import AddSourceModal from "$lib/dialogs/add-source/AddSourceModal.svelte";
   import { clipboard } from "$lib/stores/clipboardStore.svelte";
@@ -23,7 +23,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
 
   let {}: Record<string, unknown> = $props();
 
-  let menu = $state<{ x: number; y: number; items: (ContextMenuItem | null)[] } | null>(null);
+  let menu = $state<ContextMenuState | null>(null);
   let propsForSource = $state<string | null>(null);
 
   // Add-source (opened from the empty-area menu). The Default surface is the global
@@ -105,7 +105,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     it: SceneItem | null,
     deint: { mode: DeinterlaceMode; fieldOrder: DeinterlaceFieldOrder },
     transitionTypeList: TransitionType[],
-  ): (ContextMenuItem | null)[] {
+  ): ContextMenuItems {
     // Inject the global-path target (scene + id) into every scene-item call.
     const call = (method: string, params: Record<string, unknown>) =>
       obs.call(method, { scene: p.scene, id: p.id, ...params }).catch(warn(method));
@@ -208,7 +208,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   // Empty-area menu (right-click with no source under the cursor). Add Source + Paste
   // reuse the global add-source modal + clipboard paste; New Group creates an empty
   // group via sceneItems.createGroup (global channel-0 path, canvas omitted).
-  function buildEmptyItems(scene: string | null): (ContextMenuItem | null)[] {
+  function buildEmptyItems(scene: string | null): ContextMenuItems {
     return [
       { label: "Add Source", disabled: !scene, action: () => beginAddSource(scene) },
       {

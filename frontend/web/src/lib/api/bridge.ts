@@ -30,6 +30,14 @@ declare global {
 
 // --- typed surface (loose for now; tightened as the API grows) ---------------
 
+/** One selectable choice: `value` is what gets submitted, `label` what is shown
+ * verbatim. Shared by every descriptor that carries choices (OAuthProviderField
+ * enum/labelset options, OverlayField dropdown options). */
+export interface LabeledOption {
+  value: string;
+  label: string;
+}
+
 /** A scene as reported by scenes.list. */
 export interface SceneInfo {
   name: string;
@@ -390,14 +398,7 @@ export interface CanvasCreateParams {
   audioEncoder?: string;
   videoUseDefault?: boolean;
   audioUseDefault?: boolean;
-  color?: {
-    format?: string;
-    space?: string;
-    range?: string;
-    sdrWhiteLevel?: number;
-    hdrNominalPeakLevel?: number;
-    useDefault?: boolean;
-  };
+  color?: Partial<CanvasColor>;
 }
 
 /** Fields accepted by canvas.update (all but uuid optional; name always allowed). */
@@ -416,14 +417,7 @@ export interface CanvasUpdateParams {
   audioEncoder?: string;
   videoUseDefault?: boolean;
   audioUseDefault?: boolean;
-  color?: {
-    format?: string;
-    space?: string;
-    range?: string;
-    sdrWhiteLevel?: number;
-    hdrNominalPeakLevel?: number;
-    useDefault?: boolean;
-  };
+  color?: Partial<CanvasColor>;
 }
 
 /** Fields accepted by canvas.reorder / streamProfile.reorder: the full ordered list of uuids. */
@@ -515,8 +509,8 @@ export interface OAuthProviderField {
   type: string;
   tier?: string;
   shareable?: boolean;
-  /** enum/labelset choices as {value,label}; `value` is submitted, `label` is shown verbatim. */
-  options?: { value: string; label: string }[];
+  /** enum/labelset choices. */
+  options?: LabeledOption[];
   /** Soft max length (text/tags) carried for hint/validation; advisory only. */
   max?: number;
   /** Provider-supplied default. Prefill seeds it only where saved + live left the
@@ -1146,9 +1140,12 @@ export interface ViewerCounts {
 // `channels.stats` event: audience totals per account. audienceCount === -1 means
 // unknown/hidden; audienceKind labels it ("followers" | "subscribers"); viewers is
 // merged in from viewers.changed by the store, not carried here.
+/** What an account's audience total counts; "" when the platform reports neither. */
+export type AudienceKind = "followers" | "subscribers" | "";
+
 export interface ChannelStatEntry {
   audienceCount: number;
-  audienceKind: "followers" | "subscribers" | "";
+  audienceKind: AudienceKind;
   audienceHidden: boolean;
   audienceUpdatedNs: number;
 }
@@ -1214,7 +1211,7 @@ export interface OverlayField {
   label: string;
   default: unknown;
   value: unknown;
-  options?: { value: string; label: string }[];
+  options?: LabeledOption[];
   min?: number;
   max?: number;
   step?: number;

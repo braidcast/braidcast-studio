@@ -7,7 +7,7 @@ import { EV } from "$lib/utils/eventNames";
   import AddSourceModal from "$lib/dialogs/add-source/AddSourceModal.svelte";
   import PropertiesModal from "$lib/properties/PropertiesModal.svelte";
   import { suspendPreview } from "$lib/stores/previewGate.svelte";
-  import ContextMenu, { type ContextMenuItem } from "$lib/menus/ContextMenu.svelte";
+  import ContextMenu, { type ContextMenuState } from "$lib/menus/ContextMenu.svelte";
   import { clipboard } from "$lib/stores/clipboardStore.svelte";
   import { copyItem, pasteReference, pasteDuplicate } from "$lib/stores/clipboardItemState";
   import { sourceSelection } from "$lib/stores/sourceSelectionStore.svelte";
@@ -47,7 +47,7 @@ import { EV } from "$lib/utils/eventNames";
   let adding = $state(false);
   let renamingId = $state<number | null>(null);
   let renameTo = $state("");
-  let menu = $state<{ x: number; y: number; items: (ContextMenuItem | null)[] } | null>(null);
+  let menu = $state<ContextMenuState | null>(null);
 
   // The bottom toolbar acts on the selected row (OBS list convention). Reorder is
   // indexed against the full, unfiltered `items` so up/down disable at the ends.

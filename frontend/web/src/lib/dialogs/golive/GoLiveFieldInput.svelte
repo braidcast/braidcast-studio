@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { obs, type OAuthProviderField } from "$lib/api/bridge";
+  import { obs, type LabeledOption, type OAuthProviderField } from "$lib/api/bridge";
   import GoLiveTagsInput from "$lib/dialogs/golive/GoLiveTagsInput.svelte";
   import GoLiveCategoryInput from "$lib/dialogs/golive/GoLiveCategoryInput.svelte";
 
@@ -29,12 +29,10 @@
   const bool = $derived(value === true);
   const showGhost = $derived(ghostText !== "" && str === "");
 
-  // Option contract: enum/labelset `options` are {value,label} objects (value submitted,
-  // label shown verbatim). Coerce a bare string to {value, label} so a mixed/legacy
-  // provider never renders "[object Object]".
-  type Opt = { value: string; label: string };
-  function normOpt(o: unknown): Opt {
-    return typeof o === "string" ? { value: o, label: o } : (o as Opt);
+  // Coerce a bare string to a LabeledOption so a mixed/legacy provider never renders
+  // "[object Object]".
+  function normOpt(o: unknown): LabeledOption {
+    return typeof o === "string" ? { value: o, label: o } : (o as LabeledOption);
   }
   const opts = $derived((field.options ?? []).map(normOpt));
 

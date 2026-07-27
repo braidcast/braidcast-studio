@@ -28,7 +28,7 @@ import { EV } from "$lib/utils/eventNames";
   import { suspendPreview } from "$lib/stores/previewGate.svelte";
   import { undoStore } from "$lib/stores/undoStore.svelte";
   import CollectionDialog, { type DialogSpec } from "$lib/dialogs/CollectionDialog.svelte";
-  import ContextMenu, { type ContextMenuItem } from "$lib/menus/ContextMenu.svelte";
+  import ContextMenu, { type ContextMenuItem, type ContextMenuItems } from "$lib/menus/ContextMenu.svelte";
   import Icon from "$lib/ui/Icon.svelte";
   import { openGoLiveModal } from "$lib/dialogs/golive/goLiveModalOpener.svelte";
   import { goLivePref } from "$lib/stores/goLivePrefStore.svelte";
@@ -530,7 +530,7 @@ import { EV } from "$lib/utils/eventNames";
   // paths + monitor enumeration are kept so they can be re-surfaced then); Reset
   // Layout and the dock-lock toggle remain (a leading ✓ marks Lock Docks on, since
   // ContextMenu items have no native checked state).
-  let overflowItems = $derived<(ContextMenuItem | null)[]>([
+  let overflowItems = $derived<ContextMenuItems>([
     { label: "Reset Layout", action: resetLayout },
     { label: (docksLocked ? "✓ " : "") + "Lock Docks", action: toggleLock },
   ]);

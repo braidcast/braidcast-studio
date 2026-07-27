@@ -1,7 +1,7 @@
 import { untrack } from "svelte";
 import { obs } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
-import type { ChannelStats, ChannelStatEntry, ViewerCounts } from "$lib/api/bridge";
+import type { AudienceKind, ChannelStats, ChannelStatEntry, ViewerCounts } from "$lib/api/bridge";
 import { oauthStore } from "$lib/stores/oauthStore.svelte";
 
 // Return a copy of `map` with only the keys in `valid`, or null when nothing was
@@ -35,7 +35,7 @@ export interface ChannelRow {
   connected: boolean;
   needsReconnect: boolean;
   audienceCount: number; // -1 unknown/hidden
-  audienceKind: "followers" | "subscribers" | "";
+  audienceKind: AudienceKind;
   audienceHidden: boolean;
   audienceUpdatedNs: number;
   viewers: number; // -1 when not live/unknown
