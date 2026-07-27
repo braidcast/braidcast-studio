@@ -16,8 +16,9 @@
 #include <nlohmann/json.hpp>
 
 #include "../log.hpp"
-#include "util/paths.hpp"    // RundirRoot
-#include "overlay_store.hpp" // Overlay::Store(), Widget, WidgetUrl
+#include "util/http_status.hpp" // Http::ReasonFor
+#include "util/web_bundle.hpp"  // WebBundle::Root, WebBundle::ContentTypeForPath
+#include "overlay_store.hpp"    // Overlay::Store(), Widget, WidgetUrl
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -39,64 +40,6 @@ constexpr DWORD kHeaderRecvTimeoutMs = 10000;  // I1: backstop so a silent clien
 constexpr DWORD kResponseSendTimeoutMs = 3000; // bounded plain-HTTP send so a stuck reader can't park a thread
 constexpr size_t kMaxSseConnections = 64;      // ceiling on concurrent live SSE streams; excess rejected 503
 
-struct ReasonPhrase {
-	int status;
-	const char *phrase;
-};
-
-// Data-driven reason map (not a switch) so adding a status is a one-line edit.
-constexpr std::array<ReasonPhrase, 7> kReasons = {{
-	{200, "OK"},
-	{403, "Forbidden"},
-	{404, "Not Found"},
-	{405, "Method Not Allowed"},
-	{413, "Payload Too Large"},
-	{500, "Internal Server Error"},
-	{503, "Service Unavailable"},
-}};
-
-const char *ReasonFor(int status)
-{
-	for (const auto &r : kReasons) {
-		if (r.status == status) {
-			return r.phrase;
-		}
-	}
-	return "OK";
-}
-
-// Absolute path to the offline bundle root (copy of scheme.cpp::BundleRoot).
-std::string BundleRoot()
-{
-	return RundirRoot() + "/data/braidcast/web";
-}
-
-// Map a file extension to a MIME type (copy of scheme.cpp::ContentTypeForPath).
-std::string ContentTypeForPath(const std::string &path)
-{
-	static const std::vector<std::pair<std::string, std::string>> kTypes = {
-		{".html", "text/html"},        {".htm", "text/html"},        {".js", "text/javascript"},
-		{".mjs", "text/javascript"},   {".css", "text/css"},         {".json", "application/json"},
-		{".svg", "image/svg+xml"},     {".png", "image/png"},        {".jpg", "image/jpeg"},
-		{".jpeg", "image/jpeg"},       {".gif", "image/gif"},        {".ico", "image/x-icon"},
-		{".woff", "font/woff"},        {".woff2", "font/woff2"},     {".ttf", "font/ttf"},
-		{".wasm", "application/wasm"}, {".map", "application/json"}, {".txt", "text/plain"},
-		{".mp3", "audio/mpeg"},        {".ogg", "audio/ogg"},        {".wav", "audio/wav"},
-		{".webp", "image/webp"},
-	};
-	size_t dot = path.find_last_of('.');
-	if (dot != std::string::npos) {
-		std::string ext = path.substr(dot);
-		std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return char(::tolower(c)); });
-		for (const auto &[suffix, type] : kTypes) {
-			if (ext == suffix) {
-				return type;
-			}
-		}
-	}
-	return "application/octet-stream";
-}
-
 // Read one file under an absolute root, rejecting ".." (copy of scheme.cpp guard).
 bool ReadFileGuarded(const std::string &root, const std::string &rel, std::string &out, std::string &ctype)
 {
@@ -114,7 +57,7 @@ bool ReadFileGuarded(const std::string &root, const std::string &rel, std::strin
 		return false;
 	}
 	out.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
-	ctype = ContentTypeForPath(rel);
+	ctype = WebBundle::ContentTypeForPath(rel);
 	return true;
 }
 
@@ -162,7 +105,7 @@ bool SendAll(SOCKET sock, const char *data, size_t len)
 // Write a complete HTTP/1.1 response with Connection: close (mirrors mcp WriteResponse).
 void WriteResponse(SOCKET sock, int status, const std::string &ctype, const std::string &body)
 {
-	std::string head = "HTTP/1.1 " + std::to_string(status) + " " + ReasonFor(status) + "\r\n";
+	std::string head = "HTTP/1.1 " + std::to_string(status) + " " + Http::ReasonFor(status) + "\r\n";
 	head += "Content-Type: " + ctype + "\r\n";
 	head += "Content-Length: " + std::to_string(body.size()) + "\r\n";
 	head += "Connection: close\r\n";
@@ -616,7 +559,7 @@ void OverlayServer::ServeRuntime(uintptr_t clientSocket, const std::string &, co
 	}
 	std::string body;
 	std::string ctype;
-	if (!ReadFileGuarded(BundleRoot() + "/overlay", "runtime.js", body, ctype)) {
+	if (!ReadFileGuarded(WebBundle::Root() + "/overlay", "runtime.js", body, ctype)) {
 		WriteResponse(sock, 404, "text/plain", "runtime not found");
 		CloseClient(clientSocket);
 		return;

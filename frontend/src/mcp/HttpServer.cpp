@@ -4,12 +4,12 @@
 #include <ws2tcpip.h>
 
 #include <algorithm>
-#include <array>
 #include <cctype>
 #include <cstdint>
 #include <string>
 
 #include "log.hpp"
+#include "util/http_status.hpp"
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -26,36 +26,6 @@ constexpr size_t kMaxBodyBytes = 1 * 1024 * 1024; // 1 MB body
 // socket directly for an immediate unblock; this is the standalone backstop for the
 // case where the server keeps running (mirrors overlay_server's kHeaderRecvTimeoutMs).
 constexpr DWORD kHeaderRecvTimeoutMs = 10000;
-
-struct ReasonPhrase {
-	int status;
-	const char *phrase;
-};
-
-// Data-driven reason map (not a switch) so adding a status is a one-line edit.
-constexpr std::array<ReasonPhrase, 11> kReasons = {{
-	{200, "OK"},
-	{202, "Accepted"},
-	{400, "Bad Request"},
-	{401, "Unauthorized"},
-	{404, "Not Found"},
-	{405, "Method Not Allowed"},
-	{413, "Payload Too Large"},
-	{431, "Request Header Fields Too Large"},
-	{500, "Internal Server Error"},
-	{504, "Gateway Timeout"},
-	{200, "OK"}, // sentinel/duplicate to keep the array size stable on edits
-}};
-
-const char *ReasonFor(int status)
-{
-	for (const auto &r : kReasons) {
-		if (r.status == status) {
-			return r.phrase;
-		}
-	}
-	return "OK";
-}
 
 std::string ToLower(std::string s)
 {
@@ -80,7 +50,7 @@ std::string Trim(const std::string &s)
 // send; partial-write failures just close the socket below.
 void WriteResponse(SOCKET sock, const HttpResponse &resp)
 {
-	std::string head = "HTTP/1.1 " + std::to_string(resp.status) + " " + ReasonFor(resp.status) + "\r\n";
+	std::string head = "HTTP/1.1 " + std::to_string(resp.status) + " " + Http::ReasonFor(resp.status) + "\r\n";
 	head += "Content-Type: " + resp.contentType + "\r\n";
 	head += "Content-Length: " + std::to_string(resp.body.size()) + "\r\n";
 	head += "Connection: close\r\n";

@@ -2,7 +2,6 @@
 
 #include <windows.h>
 
-#include <algorithm>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -12,40 +11,9 @@
 #include "include/cef_scheme.h"
 #include "include/wrapper/cef_helpers.h"
 
-#include "util/paths.hpp"
+#include "util/web_bundle.hpp"
 
 namespace {
-
-// Absolute path to the offline bundle root, under the shared rundir data dir.
-std::string BundleRoot()
-{
-	return RundirRoot() + "/data/braidcast/web";
-}
-
-// Map a file extension to a MIME type. Anything unknown serves as octet-stream.
-std::string ContentTypeForPath(const std::string &path)
-{
-	static const std::vector<std::pair<std::string, std::string>> kTypes = {
-		{".html", "text/html"},        {".htm", "text/html"},        {".js", "text/javascript"},
-		{".mjs", "text/javascript"},   {".css", "text/css"},         {".json", "application/json"},
-		{".svg", "image/svg+xml"},     {".png", "image/png"},        {".jpg", "image/jpeg"},
-		{".jpeg", "image/jpeg"},       {".gif", "image/gif"},        {".ico", "image/x-icon"},
-		{".woff", "font/woff"},        {".woff2", "font/woff2"},     {".ttf", "font/ttf"},
-		{".wasm", "application/wasm"}, {".map", "application/json"}, {".txt", "text/plain"},
-	};
-
-	size_t dot = path.find_last_of('.');
-	if (dot != std::string::npos) {
-		std::string ext = path.substr(dot);
-		std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return char(::tolower(c)); });
-		for (const auto &[suffix, type] : kTypes) {
-			if (ext == suffix) {
-				return type;
-			}
-		}
-	}
-	return "application/octet-stream";
-}
 
 // Resolve app://app/<path> to an absolute file path under the bundle root, then
 // read it. Rejects any path that escapes the bundle (..). Returns false (-> 404)
@@ -66,7 +34,7 @@ bool ReadBundleFile(const std::string &url_path, std::vector<char> &out, std::st
 		return false;
 	}
 
-	std::string full = BundleRoot() + "\\" + rel;
+	std::string full = WebBundle::Root() + "\\" + rel;
 	for (char &c : full) {
 		if (c == '/') {
 			c = '\\';
@@ -89,7 +57,7 @@ bool ReadBundleFile(const std::string &url_path, std::vector<char> &out, std::st
 		out.resize(size_t(file.gcount()));
 	}
 
-	content_type = ContentTypeForPath(rel);
+	content_type = WebBundle::ContentTypeForPath(rel);
 	return true;
 }
 

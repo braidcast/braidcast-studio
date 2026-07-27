@@ -70,6 +70,8 @@ target_sources(
     src/util/env_config.hpp
     src/util/http_client.cpp
     src/util/http_client.hpp
+    src/util/http_status.hpp
+    src/util/web_bundle.hpp
     # The ONE anonymous InnerTube (youtubei/v1) client, shared by the YouTube live-chat
     # read and the YouTube concurrent-viewer read. No credential ever reaches it.
     src/util/innertube_client.cpp
