@@ -9,7 +9,9 @@
 // The ViewerPoller (Phase 9.0): a single background worker that, while live, polls each
 // connected, scope-current account's platform viewer count on a modest interval and emits
 // the `viewers.changed` bridge event as
-// { perAccount: {<accountId>: n}, total, perDestination: [...] }.
+// { perAccount: {<accountId>: n}, total, perDestination: [...] }. That one payload object
+// also goes to the overlay server's SSE clients as the named `viewers` event, so an overlay
+// widget and the dock can never show different numbers.
 //
 // The per-platform call sits behind StreamProvider::viewerCounts so the poller has no
 // per-platform branching: a platform with one channel per account reports a single

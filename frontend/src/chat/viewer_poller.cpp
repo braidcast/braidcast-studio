@@ -10,6 +10,8 @@
 
 #include "../log.hpp"
 #include "../oauth/provider.hpp"
+#include "../overlay/overlay_server.hpp" // OverlayServer::BroadcastViewers
+#include "../overlay/overlay_store.hpp"  // Overlay::Server()
 #include "util/op_error.hpp"
 
 namespace Chat {
@@ -98,9 +100,23 @@ std::optional<json> ViewerPoller::BuildPayload(PollCycle &&cycle)
 	// `perDestination` is additive detail: the same numbers broken out per broadcast, for a
 	// consumer that wants to label each orientation. `total`/`perAccount` stay authoritative
 	// and unchanged in shape, so nothing reading them needs to know destinations exist.
-	return json{{"perAccount", std::move(cycle.perAccount)},
-		    {"total", total},
-		    {"perDestination", std::move(cycle.rows)}};
+	json payload = json{{"perAccount", std::move(cycle.perAccount)},
+			    {"total", total},
+			    {"perDestination", std::move(cycle.rows)}};
+
+	// Overlay widgets read the SAME payload object the bridge emit carries, so a widget's
+	// figure can never disagree with the dock's. Fanned out HERE on the poll worker rather
+	// than after the UI hop (mirrors the chat hub): BroadcastViewers does blocking socket
+	// sends bounded by the overlay server's send timeout, and every browser source renders
+	// on the frontend's TID_UI, so one stalled overlay reader would freeze them all. dump()
+	// can throw on a malformed payload (invalid UTF-8 in a platform-supplied id): skip the
+	// fan-out and still forward to the (guarded) bridge.
+	try {
+		Overlay::Server().BroadcastViewers(payload);
+	} catch (...) {
+		// malformed viewer payload -> skip the overlay fan-out
+	}
+	return payload;
 }
 
 ViewerPoller &Viewers()

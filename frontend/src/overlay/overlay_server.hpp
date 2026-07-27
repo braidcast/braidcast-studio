@@ -53,6 +53,11 @@ public:
 	// (distinct from the default `message` event alert boxes consume). The chat-box
 	// widget subscribes to it; alert boxes ignore it.
 	void BroadcastChat(const nlohmann::json &chatMsg);
+	// Push the poller's concurrent-viewer payload to EVERY open widget socket as a named
+	// `viewers` SSE event, forwarded verbatim (nulls and absent rows included -- a
+	// destination that never answered is not a zero). Viewer-count widgets subscribe to
+	// it; every other widget ignores it.
+	void BroadcastViewers(const nlohmann::json &viewers);
 
 private:
 	void AcceptLoop();
@@ -61,8 +66,8 @@ private:
 	void ServeWidget(uintptr_t sock, const std::string &path, const std::string &token);
 	// Send a prebuilt SSE frame to every open widget socket, or (with onlyWidgetId set)
 	// to one widget's sockets only. The single snapshot-under-lock / send-unlocked
-	// implementation shared by Broadcast/BroadcastChat/BroadcastTo, so sseMutex_ is
-	// never held across the bounded-blocking sends.
+	// implementation shared by Broadcast/BroadcastChat/BroadcastViewers/BroadcastTo,
+	// so sseMutex_ is never held across the bounded-blocking sends.
 	void BroadcastFrame(const std::string &frame, const std::string *onlyWidgetId = nullptr);
 	void RunSse(uintptr_t sock, const std::string &widgetId); // owns the socket for its lifetime
 	void CloseClient(uintptr_t sock); // the OWNING thread's sole close point: erase from clientSockets_ + close

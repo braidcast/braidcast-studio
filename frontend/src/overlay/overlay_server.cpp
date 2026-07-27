@@ -227,6 +227,16 @@ void OverlayServer::BroadcastChat(const nlohmann::json &chatMsg)
 	BroadcastFrame("event: chat\ndata: " + chatMsg.dump() + "\n\n");
 }
 
+// Named `viewers` event for the same reason `chat` is named: an unnamed frame lands on every
+// widget's default `message` handler, which is the alert stream. Body is the poller's
+// `viewers.changed` payload dumped as-is -- no reshaping, so a null or a missing
+// perDestination row still means "did not answer" rather than zero. Called on the poll
+// worker, never TID_UI.
+void OverlayServer::BroadcastViewers(const nlohmann::json &viewers)
+{
+	BroadcastFrame("event: viewers\ndata: " + viewers.dump() + "\n\n");
+}
+
 void OverlayServer::BroadcastTo(const std::string &widgetId, const Events::NormalizedEvent &ev)
 {
 	BroadcastFrame("data: " + ev.ToJson().dump() + "\n\n", &widgetId);
