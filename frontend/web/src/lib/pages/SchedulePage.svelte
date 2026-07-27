@@ -4,6 +4,7 @@
   import PageHeader from "$lib/ui/PageHeader.svelte";
   import Modal from "$lib/ui/Modal.svelte";
   import Icon from "$lib/ui/Icon.svelte";
+  import { pad2 } from "$lib/utils/format";
 
   // SHELL ONLY (redesign Decision A): this page is a UI preview of the planned
   // scheduling feature. There is NO backend -- nothing is persisted (no
@@ -33,8 +34,7 @@
   ];
   const WEEKDAYS = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
 
-  const pad = (n: number): string => String(n).padStart(2, "0");
-  const iso = (y: number, m: number, d: number): string => `${y}-${pad(m + 1)}-${pad(d)}`;
+  const iso = (y: number, m: number, d: number): string => `${y}-${pad2(m + 1)}-${pad2(d)}`;
 
   // Real "now" -- the Svelte app may use Date freely (the mock avoided it only for
   // its static sandbox). Captured once at mount; good enough for a planning view.

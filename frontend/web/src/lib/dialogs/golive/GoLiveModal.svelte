@@ -18,7 +18,7 @@ import { EV } from "$lib/utils/eventNames";
   } from "$lib/stores/destinationIdentityStore.svelte";
   import { outputBindingStore } from "$lib/stores/outputBindingStore.svelte";
   import { streamProfileStore } from "$lib/stores/streamProfileStore.svelte";
-  import { oauthStore } from "$lib/stores/oauthStore.svelte";
+  import { oauthStore, isStaleToken } from "$lib/stores/oauthStore.svelte";
   import { showToast } from "$lib/stores/toastStore.svelte";
   import Avatar from "$lib/ui/Avatar.svelte";
   import GoLiveFieldInput from "$lib/dialogs/golive/GoLiveFieldInput.svelte";
@@ -327,7 +327,7 @@ import { EV } from "$lib/utils/eventNames";
           login: status?.login || status?.displayName || profile.label,
           identity: destinationIdentityStore.forProfile(profile.uuid),
           connected: !!(provider && status?.connected),
-          needsReconnect: !!(provider && status?.needsReconnect && !status?.connected),
+          needsReconnect: !!provider && isStaleToken(status),
           armed: false,
           bindingUuids: [],
           streams: [],

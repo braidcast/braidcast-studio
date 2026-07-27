@@ -9,6 +9,7 @@
     type SceneLinkInfo,
   } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
+  import { selectOnMount } from "$lib/utils/focusActions";
   import { previewSuspended, suspendPreview } from "$lib/stores/previewGate.svelte";
 import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   import { WINDOW_ID } from "$lib/utils/windowContext";
@@ -54,11 +55,6 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   let error = $state<string | null>(null);
   function report(e: unknown) {
     error = (e as Error).message;
-  }
-
-  function focusOnMount(node: HTMLInputElement) {
-    node.focus();
-    node.select();
   }
 
   // One context menu for the whole dock (scene rows, source rows, and the preview
@@ -1132,7 +1128,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
                 bind:value={renameSceneTo}
                 onkeydown={onRenameSceneKey}
                 onblur={commitRenameScene}
-                use:focusOnMount
+                use:selectOnMount
               />
             {:else}
               <button
@@ -1160,7 +1156,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
               bind:value={newSceneName}
               onkeydown={onAddSceneKey}
               onblur={commitAddScene}
-              use:focusOnMount
+              use:selectOnMount
             />
           </li>
         {/if}
@@ -1208,7 +1204,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
                 bind:value={renameTo}
                 onkeydown={onRenameSourceKey}
                 onblur={commitRenameSource}
-                use:focusOnMount
+                use:selectOnMount
               />
             {:else}
               <button class="es-label" onclick={(e) => selectItem(e, item)} ondblclick={() => openProperties(item)}

@@ -68,12 +68,12 @@
 
   // The strongest live state across a canvas's enabled bindings (drives the list dot).
   function canvasState(uuid: string): MultistreamState | "off" {
-    return multistreamStatusStore.deriveCanvasState(bindings.filter((b) => b.canvasUuid === uuid));
+    return multistreamStatusStore.deriveCanvasState(outputBindingStore.forCanvas(uuid));
   }
 
   // Destinations bound to a canvas (drives the "· N dest" meta on each list row).
   function destCount(uuid: string): number {
-    return bindings.filter((b) => b.canvasUuid === uuid).length;
+    return outputBindingStore.forCanvas(uuid).length;
   }
 
   // Selection: default to the Default canvas (or first) once loaded, and re-pick if the

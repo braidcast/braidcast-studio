@@ -12,6 +12,13 @@ import { PLATFORM_ORDER } from "$lib/theme/platformColors";
 // `providers` is fetched once for completeness (a build without a platform client id
 // returns an empty list); the connected-platform ordering itself comes from the fixed
 // PLATFORM_ORDER so it never reshuffles.
+/** A token issued under an older scope set: the row reports connected:false WITH
+ * needsReconnect:true. Distinct from "never linked" (no row at all), which is why
+ * every surface offering a relink prompt has to ask both halves, not just one. */
+export function isStaleToken(s: OAuthStatus | undefined | null): boolean {
+  return !!s && s.needsReconnect && !s.connected;
+}
+
 class OAuthStore {
   statuses = $state<OAuthStatus[]>([]);
   providers = $state<OAuthProvider[]>([]);
@@ -61,6 +68,15 @@ class OAuthStore {
       return null;
     }
     return this.statuses.find((s) => s.accountId === accountId && s.connected) ?? null;
+  }
+
+  /** The stale-scope row an account id resolves to (empty id -> null), the sibling of
+   * connectedStatusForAccount for the relink prompt. */
+  needsReconnectStatusForAccount(accountId: string): OAuthStatus | null {
+    if (!accountId) {
+      return null;
+    }
+    return this.statuses.find((s) => s.accountId === accountId && isStaleToken(s)) ?? null;
   }
 
   /** Ref-counted subscription; returns an unsubscribe. Fetch + subscribe on the first

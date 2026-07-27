@@ -22,7 +22,7 @@ import { EV } from "$lib/utils/eventNames";
   import { STATE_COLOR } from "$lib/theme/stateColors";
   import { fmtDuration, fmtBitrate } from "$lib/utils/format";
   import { statsStore } from "$lib/stores/statsStore.svelte";
-  import { grade, DROP_GRADE, CONG_GRADE } from "$lib/utils/statsMeter";
+  import { grade, DROP_GRADE, CONG_GRADE, summarizeOutputs } from "$lib/utils/statsMeter";
   import { oauthStore } from "$lib/stores/oauthStore.svelte";
   import { pageStore, setPage } from "$lib/stores/pageStore.svelte";
   import { suspendPreview } from "$lib/stores/previewGate.svelte";
@@ -153,17 +153,8 @@ import { EV } from "$lib/utils/eventNames";
       ];
     }
     const g = stats.general;
-    let totalKbps = 0;
-    let droppedFrames = 0;
-    let worstDropPct = 0;
-    let maxCongestionPct = 0;
-    for (const o of stats.outputs) {
-      totalKbps += o.bitrateKbps;
-      droppedFrames += o.droppedFrames;
-      if (o.dropPct > worstDropPct) worstDropPct = o.dropPct;
-      if (o.congestionPct > maxCongestionPct) maxCongestionPct = o.congestionPct;
-    }
-    const net = stats.outputs.length === 0 ? "—" : fmtBitrate(totalKbps);
+    const { droppedFrames, worstDropPct, maxCongestionPct, bitrateKbps } = summarizeOutputs(stats.outputs);
+    const net = stats.outputs.length === 0 ? "—" : fmtBitrate(bitrateKbps);
     const row: { k: string; v: string; c?: string }[] = [
       { k: "CPU", v: g.cpu.toFixed(1) + "%" },
       { k: "FPS", v: String(Math.round(g.fps)) },
@@ -259,7 +250,7 @@ import { EV } from "$lib/utils/eventNames";
       // dot mapping (updateParameters merges, so only __dot is touched).
       const panel = api.getPanel(c.isDefault ? "preview" : "canvas:" + c.uuid);
       if (!panel) continue;
-      const state = multistreamStatusStore.deriveOutputsState(outputs.filter((o) => o.canvasUuid === c.uuid));
+      const state = multistreamStatusStore.deriveOutputsState(multistreamStatusStore.forCanvas(c.uuid));
       const color = STATE_COLOR[state];
       if (lastDotColor.get(c.uuid) === color) continue;
       lastDotColor.set(c.uuid, color);

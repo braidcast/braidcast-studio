@@ -1,6 +1,7 @@
 <script lang="ts">
   import { obs, type AudioSource, type AudioMonitoringType } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
+  import { selectOnMount } from "$lib/utils/focusActions";
   import { openFilters } from "$lib/dialogs/filterDialogOpener.svelte";
   import { openAdvAudio } from "$lib/dialogs/advAudioOpener.svelte";
   import ContextMenu, { type ContextMenuItem } from "$lib/menus/ContextMenu.svelte";
@@ -249,11 +250,6 @@ import { EV } from "$lib/utils/eventNames";
     }
   }
 
-  function focusOnMount(node: HTMLInputElement) {
-    node.focus();
-    node.select();
-  }
-
   function beginRename(src: AudioSource) {
     renamingUuid = src.uuid;
     renameTo = src.name;
@@ -367,7 +363,7 @@ import { EV } from "$lib/utils/eventNames";
               <span class="pin" title="Pinned to top" aria-hidden="true"><Icon name="star-filled" size={11} /></span>
             {/if}
             {#if renamingUuid === src.uuid}
-              <input class="inline" bind:value={renameTo} onkeydown={onRenameKey} onblur={commitRename} use:focusOnMount />
+              <input class="inline" bind:value={renameTo} onkeydown={onRenameKey} onblur={commitRename} use:selectOnMount />
             {:else}
               <span class="name" title={src.name}>{src.name}</span>
             {/if}

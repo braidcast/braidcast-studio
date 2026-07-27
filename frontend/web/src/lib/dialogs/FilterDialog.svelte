@@ -7,6 +7,7 @@
   import PropertyForm from "$lib/properties/PropertyForm.svelte";
   import { filterDialogOpener, type FilterKind } from "$lib/dialogs/filterDialogOpener.svelte";
   import { clipboard } from "$lib/stores/clipboardStore.svelte";
+  import { selectOnMount } from "$lib/utils/focusActions";
 
   interface Props {
     source: string;
@@ -42,13 +43,6 @@
 
   function report(e: unknown) {
     error = (e as Error).message;
-  }
-
-  function focusOnMount(node: HTMLInputElement | HTMLSelectElement) {
-    node.focus();
-    if (node instanceof HTMLInputElement) {
-      node.select();
-    }
   }
 
   // Split into the two <optgroup>s the picker renders. A filter type can be both
@@ -327,7 +321,7 @@
               bind:value={renameTo}
               onkeydown={onRenameKey}
               onblur={commitRename}
-              use:focusOnMount
+              use:selectOnMount
             />
           {:else}
             <button class="dock-label" onclick={() => selectFilter(f)} ondblclick={() => beginRename(f)}>
@@ -394,7 +388,7 @@
           </button>
         </div>
         {#if picking}
-          <select bind:value={pickType} onchange={addFilter} onkeydown={onPickKey} use:focusOnMount>
+          <select bind:value={pickType} onchange={addFilter} onkeydown={onPickKey} use:selectOnMount>
             <option value="" disabled selected>Select a filter…</option>
             {#if videoTypes.length > 0}
               <optgroup label="Video">

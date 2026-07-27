@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { obs, type SceneInfo, type ReorderDirection } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
+  import { selectOnMount } from "$lib/utils/focusActions";
   import { defaultCanvas } from "$lib/docks/defaultCanvasStore.svelte";
   import { canvasStore } from "$lib/stores/canvasStore.svelte";
   import { callOrToast } from "$lib/utils/callToast";
@@ -91,11 +92,6 @@ import { EV } from "$lib/utils/eventNames";
   let renameTo = $state("");
   let actionError = $state<string | null>(null);
   let menu = $state<{ x: number; y: number; items: (ContextMenuItem | null)[] } | null>(null);
-
-  function focusOnMount(node: HTMLInputElement) {
-    node.focus();
-    node.select();
-  }
 
   function report(e: unknown) {
     actionError = (e as Error).message;
@@ -349,7 +345,7 @@ import { EV } from "$lib/utils/eventNames";
      rename behave identically in list and grid. -->
 {#snippet sceneCell(scene: SceneInfo)}
   {#if renamingFrom === scene.name}
-    <input class="inline" bind:value={renameTo} onkeydown={onRenameKey} onblur={commitRename} use:focusOnMount />
+    <input class="inline" bind:value={renameTo} onkeydown={onRenameKey} onblur={commitRename} use:selectOnMount />
   {:else}
     <button class="dock-label" ondblclick={() => beginRename(scene.name)} onclick={() => setCurrent(scene.name)}>
       {scene.name}
@@ -390,7 +386,7 @@ import { EV } from "$lib/utils/eventNames";
             bind:value={newName}
             onkeydown={onAddKey}
             onblur={commitAdd}
-            use:focusOnMount
+            use:selectOnMount
           />
         </div>
       {/if}
@@ -425,7 +421,7 @@ import { EV } from "$lib/utils/eventNames";
             bind:value={newName}
             onkeydown={onAddKey}
             onblur={commitAdd}
-            use:focusOnMount
+            use:selectOnMount
           />
         </li>
       {/if}

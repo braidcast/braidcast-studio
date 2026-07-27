@@ -4,6 +4,7 @@
   import type { AccentName, ThemeMode, ThemeTokens } from "$lib/theme/tokens";
   import Segmented, { type SegmentedOption } from "$lib/ui/Segmented.svelte";
   import Icon from "$lib/ui/Icon.svelte";
+  import { selectOnMount } from "$lib/utils/focusActions";
 
   // Variant C — Control-Panel Grid. A dense telemetry strip on top (accent /
   // mode / density / element-style toggles), then three working columns:
@@ -108,10 +109,6 @@
   let saving = $state(false);
   let saveName = $state("");
 
-  function focusOnMount(node: HTMLInputElement) {
-    node.focus();
-    node.select();
-  }
   function beginSave() {
     saving = true;
     saveName = "";
@@ -332,7 +329,7 @@
                 bind:value={saveName}
                 onkeydown={onSaveKey}
                 onblur={commitSave}
-                use:focusOnMount
+                use:selectOnMount
               />
             {:else}
               <button class="preset save" onclick={beginSave}>

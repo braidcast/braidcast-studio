@@ -3,6 +3,8 @@
 // sparkline geometry. The two surfaces differ only in sparkline viewBox size and
 // history length, so the geometry takes its dimensions as arguments.
 
+import type { OutputStat } from "$lib/api/bridge";
+
 export const METER_TEXT = "var(--color-text)";
 export const METER_GREEN = "var(--meter-green)";
 export const METER_YELLOW = "var(--meter-yellow)";
@@ -36,6 +38,52 @@ export function grade(v: number, warn: number, crit: number): string {
 // slower-moving network-pressure gauge, so its band sits higher before it reads red.
 export const DROP_GRADE: [number, number] = [1, 5];
 export const CONG_GRADE: [number, number] = [30, 60];
+
+// Host-load bands for the general-metric reads, shared by the Stats dock and the
+// Monitor page so a retune moves both surfaces together.
+export const CPU_GRADE: [number, number] = [60, 85];
+export const FRAME_GRADE: [number, number] = [20, 40];
+
+// Cumulative read across every output: counts by state, summed dropped frames and
+// outgoing bitrate, worst drop % and peak congestion. Consumers take the subset they
+// render (the Stats dock summary strip uses all of it, the Studio perf row a slice).
+export interface OutputSummary {
+  total: number;
+  live: number;
+  errors: number;
+  droppedFrames: number;
+  worstDropPct: number;
+  bitrateKbps: number;
+  maxCongestionPct: number;
+}
+
+export function summarizeOutputs(outputs: readonly OutputStat[]): OutputSummary {
+  const s: OutputSummary = {
+    total: outputs.length,
+    live: 0,
+    errors: 0,
+    droppedFrames: 0,
+    worstDropPct: 0,
+    bitrateKbps: 0,
+    maxCongestionPct: 0,
+  };
+  for (const o of outputs) {
+    if (o.state === "live") {
+      s.live++;
+    } else if (o.state === "error") {
+      s.errors++;
+    }
+    s.droppedFrames += o.droppedFrames;
+    s.bitrateKbps += o.bitrateKbps;
+    if (o.dropPct > s.worstDropPct) {
+      s.worstDropPct = o.dropPct;
+    }
+    if (o.congestionPct > s.maxCongestionPct) {
+      s.maxCongestionPct = o.congestionPct;
+    }
+  }
+  return s;
+}
 
 // Append to a fixed-length ring buffer, dropping the oldest past `max`.
 export function pushRing(arr: number[], v: number, max: number): void {

@@ -163,10 +163,7 @@
   // A token whose scopes are stale: reports connected:false but needsReconnect:true.
   // Distinct from "never linked" (no accountId / no row) so the UI can prompt a relink.
   function needsReconnectFor(p: StreamProfileInfo): OAuthStatus | null {
-    if (!p.accountId) {
-      return null;
-    }
-    return statuses.find((s) => s.accountId === p.accountId && s.needsReconnect && !s.connected) ?? null;
+    return oauthStore.needsReconnectStatusForAccount(p.accountId);
   }
 
   // The provider + connection state for the profile in the open edit form.

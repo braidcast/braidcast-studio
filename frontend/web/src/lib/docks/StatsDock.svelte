@@ -11,6 +11,8 @@
     METER_GREEN,
     DROP_GRADE,
     CONG_GRADE,
+    CPU_GRADE,
+    FRAME_GRADE,
     fmtNum,
     fmtMem,
     elevated,
@@ -18,6 +20,7 @@
     pushRing,
     sparkPoints,
     sparkArea,
+    summarizeOutputs,
   } from "$lib/utils/statsMeter";
   import { statsStore } from "$lib/stores/statsStore.svelte";
   import { multistreamStatusStore } from "$lib/stores/multistreamStatusStore.svelte";
@@ -90,16 +93,29 @@
     const g: GeneralStats = stats.general;
     const mem = fmtMem(g.memoryMB);
     return [
-      { k: "CPU", v: g.cpu.toFixed(1), u: "%", color: elevated(g.cpu, 60, 85), series: hist.cpu, domain: [0, 100] },
+      {
+        k: "CPU",
+        v: g.cpu.toFixed(1),
+        u: "%",
+        color: elevated(g.cpu, CPU_GRADE[0], CPU_GRADE[1]),
+        series: hist.cpu,
+        domain: [0, 100],
+      },
       { k: "MEM", v: mem.v, u: mem.gb ? "GB" : "MB", color: METER_TEXT, series: hist.mem },
       { k: "FPS", v: fmtNum(g.fps, 2), u: "fps", color: METER_GREEN, series: hist.fps },
-      { k: "FRAME", v: g.avgFrameMs.toFixed(1), u: "ms", color: elevated(g.avgFrameMs, 20, 40), series: hist.frame },
+      {
+        k: "FRAME",
+        v: g.avgFrameMs.toFixed(1),
+        u: "ms",
+        color: elevated(g.avgFrameMs, FRAME_GRADE[0], FRAME_GRADE[1]),
+        series: hist.frame,
+      },
       {
         k: "RENDER LAG",
         v: g.renderLagPct.toFixed(1),
         u: "%",
         sub: `${g.renderLagged}/${g.renderTotal}`,
-        color: grade(g.renderLagPct, 1, 5),
+        color: grade(g.renderLagPct, DROP_GRADE[0], DROP_GRADE[1]),
         series: hist.render,
       },
       {
@@ -107,7 +123,7 @@
         v: g.encodeSkipPct.toFixed(1),
         u: "%",
         sub: `${g.encodeSkipped}/${g.encodeTotal}`,
-        color: grade(g.encodeSkipPct, 1, 5),
+        color: grade(g.encodeSkipPct, DROP_GRADE[0], DROP_GRADE[1]),
         series: hist.encode,
       },
     ];
@@ -123,21 +139,7 @@
   // Cumulative read across every output, so trouble is visible before drilling into
   // rows: live/total, error count, summed dropped frames + worst drop%, summed
   // outgoing bitrate, and peak congestion.
-  const summary = $derived.by(() => {
-    const live = outputs.filter((o) => o.state === "live").length;
-    const errors = outputs.filter((o) => o.state === "error").length;
-    let droppedFrames = 0;
-    let worstDropPct = 0;
-    let bitrateKbps = 0;
-    let maxCongestionPct = 0;
-    for (const o of outputs) {
-      droppedFrames += o.droppedFrames;
-      bitrateKbps += o.bitrateKbps;
-      if (o.dropPct > worstDropPct) worstDropPct = o.dropPct;
-      if (o.congestionPct > maxCongestionPct) maxCongestionPct = o.congestionPct;
-    }
-    return { total: outputs.length, live, errors, droppedFrames, worstDropPct, bitrateKbps, maxCongestionPct };
-  });
+  const summary = $derived(summarizeOutputs(outputs));
 
   // Per-stream error detail lives in the shared status store (statusByBinding carries
   // {state, lastError}); subscribe ref-counted (same pattern as statsStore above) and

@@ -1,6 +1,6 @@
 // Shared formatters that were re-declared across the stats/live surfaces.
 
-const pad = (n: number): string => String(n).padStart(2, "0");
+export const pad2 = (n: number): string => String(n).padStart(2, "0");
 
 // Elapsed time from milliseconds.
 //   default  -> compact "h:mm:ss" (hours group dropped when zero): Stats / Monitor
@@ -11,9 +11,9 @@ export function fmtDuration(ms: number, opts?: { fixed?: boolean }): string {
   const m = Math.floor((total % 3600) / 60);
   const s = total % 60;
   if (opts?.fixed) {
-    return pad(h) + ":" + pad(m) + ":" + pad(s);
+    return pad2(h) + ":" + pad2(m) + ":" + pad2(s);
   }
-  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+  return h > 0 ? `${h}:${pad2(m)}:${pad2(s)}` : `${m}:${pad2(s)}`;
 }
 
 // Bitrate: Mb/s at or above 1000 kbps, else kb/s.

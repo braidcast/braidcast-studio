@@ -2,6 +2,7 @@
   import { onMount, onDestroy } from "svelte";
   import { obs, type SceneItem, type ReorderDirection } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
+  import { selectOnMount } from "$lib/utils/focusActions";
   import { defaultCanvas } from "$lib/docks/defaultCanvasStore.svelte";
   import AddSourceModal from "$lib/dialogs/add-source/AddSourceModal.svelte";
   import PropertiesModal from "$lib/properties/PropertiesModal.svelte";
@@ -80,11 +81,6 @@ import { EV } from "$lib/utils/eventNames";
 
   function report(e: unknown) {
     error = (e as Error).message;
-  }
-
-  function focusOnMount(node: HTMLInputElement) {
-    node.focus();
-    node.select();
   }
 
   function openProperties(item: SceneItem) {
@@ -610,7 +606,7 @@ import { EV } from "$lib/utils/eventNames";
             onclick={() => void toggleLocked(item)}><Icon name={item.locked ? "lock" : "lock-open"} size={12} /></button
           >
           {#if renamingId === item.id}
-            <input class="inline" bind:value={renameTo} onkeydown={onRenameKey} onblur={commitRename} use:focusOnMount />
+            <input class="inline" bind:value={renameTo} onkeydown={onRenameKey} onblur={commitRename} use:selectOnMount />
           {:else}
             <button class="dock-label" onclick={(e) => selectItem(e, item)} ondblclick={() => openProperties(item)}>
               {item.source ?? "(unnamed)"}

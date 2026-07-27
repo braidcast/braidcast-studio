@@ -24,7 +24,6 @@
   // Canvas + binding lists + live status all come from the shared stores (one source
   // of truth for each leg of the model).
   let canvases = $derived(canvasStore.canvases);
-  let bindings = $derived(outputBindingStore.bindings);
   let error = $state<string | null>(null);
   let loaded = $derived(multistreamStatusStore.loaded);
 
@@ -76,7 +75,7 @@
   // Canvases with >=1 binding, in canvas.list order (each carries its own rows).
   const groups = $derived(
     canvases
-      .map((c) => ({ canvas: c, rows: bindings.filter((b) => b.canvasUuid === c.uuid) }))
+      .map((c) => ({ canvas: c, rows: outputBindingStore.forCanvas(c.uuid) }))
       .filter((g) => g.rows.length > 0),
   );
   const hasAny = $derived(groups.length > 0);

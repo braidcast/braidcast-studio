@@ -1,5 +1,6 @@
 <script lang="ts">
   import Icon from "$lib/ui/Icon.svelte";
+  import { focusOnMount } from "$lib/utils/focusActions";
 
   // Space-saving filter: a search-icon button that toggles a one-line input inline
   // in a list toolbar. Stays open while it holds text so a live filter is never
@@ -12,10 +13,6 @@
 
   let open = $state(false);
   const shown = $derived(open || value.trim().length > 0);
-
-  function focusOnMount(node: HTMLInputElement) {
-    node.focus();
-  }
 
   function toggle() {
     open = !open;

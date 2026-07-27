@@ -24,6 +24,7 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import Modal from "$lib/ui/Modal.svelte";
+  import { selectOnMount } from "$lib/utils/focusActions";
 
   let {
     kind,
@@ -41,11 +42,6 @@
   let value = $state(untrack(() => initial));
 
   const valid = $derived(kind !== "prompt" || value.trim().length > 0);
-
-  function focusOnMount(node: HTMLInputElement) {
-    node.focus();
-    node.select();
-  }
 
   function commit() {
     if (!valid) {
@@ -68,7 +64,7 @@
 
 <Modal {title} {onClose} width={360}>
   {#if kind === "prompt"}
-    <input class="field" bind:value aria-label={title} use:focusOnMount spellcheck="false" />
+    <input class="field" bind:value aria-label={title} use:selectOnMount spellcheck="false" />
   {:else if message}
     <p class="msg">{message}</p>
   {/if}

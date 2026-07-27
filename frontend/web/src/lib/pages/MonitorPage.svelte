@@ -5,10 +5,13 @@
   import EmptyState from "$lib/ui/EmptyState.svelte";
   import { PLATFORM_COLORS, PLATFORM_LABELS, PLATFORM_ORDER } from "$lib/theme/platformColors";
   import { STATE_COLOR } from "$lib/theme/stateColors";
-  import { fmtDuration, titleState } from "$lib/utils/format";
+  import { fmtBitrate, fmtDuration, titleState } from "$lib/utils/format";
   import {
     METER_TEXT,
     METER_GREEN,
+    DROP_GRADE,
+    CPU_GRADE,
+    FRAME_GRADE,
     fmtNum,
     fmtMem,
     elevated,
@@ -79,7 +82,14 @@
     const g = stats.general;
     const mem = fmtMem(g.memoryMB);
     return [
-      { k: "CPU", v: g.cpu.toFixed(1), u: "% utilization", c: elevated(g.cpu, 60, 85), series: hist.cpu, domain: [0, 100] },
+      {
+        k: "CPU",
+        v: g.cpu.toFixed(1),
+        u: "% utilization",
+        c: elevated(g.cpu, CPU_GRADE[0], CPU_GRADE[1]),
+        series: hist.cpu,
+        domain: [0, 100],
+      },
       {
         k: "MEMORY",
         v: mem.v,
@@ -88,19 +98,25 @@
         series: hist.mem,
       },
       { k: "FPS", v: fmtNum(g.fps, 2), u: "target", c: METER_GREEN, series: hist.fps },
-      { k: "FRAME TIME", v: g.avgFrameMs.toFixed(1), u: "ms average", c: elevated(g.avgFrameMs, 20, 40), series: hist.frame },
+      {
+        k: "FRAME TIME",
+        v: g.avgFrameMs.toFixed(1),
+        u: "ms average",
+        c: elevated(g.avgFrameMs, FRAME_GRADE[0], FRAME_GRADE[1]),
+        series: hist.frame,
+      },
       {
         k: "RENDER LAG",
         v: g.renderLagPct.toFixed(1),
         u: `% skipped · ${g.renderLagged}/${g.renderTotal}`,
-        c: grade(g.renderLagPct, 1, 5),
+        c: grade(g.renderLagPct, DROP_GRADE[0], DROP_GRADE[1]),
         series: hist.render,
       },
       {
         k: "ENCODE LAG",
         v: g.encodeSkipPct.toFixed(1),
         u: `% skipped · ${g.encodeSkipped}/${g.encodeTotal}`,
-        c: grade(g.encodeSkipPct, 1, 5),
+        c: grade(g.encodeSkipPct, DROP_GRADE[0], DROP_GRADE[1]),
         series: hist.encode,
       },
     ];
@@ -192,7 +208,7 @@
               <span class="out-name">{o.profileLabel} &nbsp;→&nbsp; {o.canvasName}</span>
             </span>
             <span style:color={STATE_COLOR[o.state]}>{titleState(o.state)}</span>
-            <span>{live ? (o.bitrateKbps / 1000).toFixed(1) + " Mb/s" : "—"}</span>
+            <span>{live ? fmtBitrate(o.bitrateKbps) : "—"}</span>
             <span>{live ? String(o.droppedFrames) : "—"}</span>
             <span>{live ? o.congestionPct.toFixed(1) + "%" : "—"}</span>
             <span>{live ? fmtDuration(o.durationMs) : "—"}</span>
