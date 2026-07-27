@@ -135,6 +135,9 @@ CanvasDefinition CanvasDefinition::FromData(obs_data_t *data)
 		def.fpsNum = 60;
 		def.fpsDen = 1;
 	}
+	if (def.fpsDen == 0) {
+		def.fpsDen = 1; // a numerator with no denominator reads as whole frames per second
+	}
 	const char *scaleType = obs_data_get_string(data, "scale_type");
 	if (scaleType && *scaleType) {
 		def.scaleType = scaleType; // absent -> keep struct default ("bicubic")
