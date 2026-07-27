@@ -209,9 +209,7 @@ void SceneCollections::Save() const
 	obs_data_set_string(root, "active", activeId_.c_str());
 
 	const std::string path = IndexPath();
-	if (!SaveJsonAtomic(root, path)) {
-		HostLog("[scene] failed to save scene-collection index to " + path);
-	}
+	ReportSaveResult(SaveJsonAtomic(root, path), path);
 }
 
 bool SceneCollections::RebuildFromScenes()

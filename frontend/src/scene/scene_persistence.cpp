@@ -218,9 +218,7 @@ void Save(const std::string &path)
 	}
 	obs_data_set_array(root, "scene_order", sceneOrder);
 
-	if (!SaveJsonAtomic(root, path)) {
-		HostLog("[scene] failed to save collection to " + path);
-	}
+	ReportSaveResult(SaveJsonAtomic(root, path), path);
 }
 
 bool Load()
