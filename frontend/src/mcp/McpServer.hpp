@@ -92,7 +92,6 @@ public:
 	// Returns it. Thread-safe (swaps the in-memory token under the config mutex).
 	std::string RegenerateToken();
 
-	std::string LastHttpError() const { return httpServer_.LastError(); }
 	bool IsListening() const { return httpServer_.IsListening(); }
 
 	// True once Stop() has been requested. Read by the posted UI task so it bails

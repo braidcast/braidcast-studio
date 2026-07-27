@@ -70,11 +70,4 @@ std::string Diagnostic(const std::string &err)
 	return Decode(err, d, u) ? d : err;
 }
 
-std::string UserMessage(const std::string &err)
-{
-	std::string d;
-	std::string u;
-	return Decode(err, d, u) ? u : std::string();
-}
-
 } // namespace Err

@@ -38,8 +38,6 @@ public:
 	// the scene collection -- keep both in lockstep if the range ever changes.
 	static constexpr int kFirstChannel = 1;
 	static constexpr int kLastChannel = 6;
-	// Whether `channel` is a global audio channel (and thus excluded from scene save).
-	static bool IsGlobalChannel(int channel) { return channel >= kFirstChannel && channel <= kLastChannel; }
 
 	// Name of the temporary source the audio-mixer self-test (smoke path) binds to a
 	// global channel. An interrupted self-test run can persist it into audio_devices.json,

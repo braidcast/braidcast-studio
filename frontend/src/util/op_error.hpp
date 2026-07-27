@@ -10,7 +10,7 @@
 // carry both in that one slot: User() packs {diagnostic, user message} into a
 // JSON envelope keyed by an explicit discriminator, Wrap() prefixes context onto
 // the DIAGNOSTIC only (intermediate layers keep adding log context without
-// destroying the user message), Diagnostic()/UserMessage() unpack at the sinks.
+// destroying the user message), Diagnostic() unpacks at the sinks.
 // A plain string passes through every helper unchanged, so the many bridge
 // methods that never call User() behave exactly as before.
 namespace Err {
@@ -28,9 +28,6 @@ std::string Wrap(const std::string &prefix, const std::string &err);
 // The full diagnostic chain, for logs and protocol surfaces. Plain string in ->
 // the same string out.
 std::string Diagnostic(const std::string &err);
-
-// The user-facing message, or "" when the error never carried one.
-std::string UserMessage(const std::string &err);
 
 } // namespace Err
 
