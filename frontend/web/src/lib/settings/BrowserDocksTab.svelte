@@ -16,7 +16,18 @@
   let editTitle = $state("");
   let editUrl = $state("");
 
-  let canAdd = $derived(newUrl.trim().length > 0);
+  let retrying = $state(false);
+
+  let canAdd = $derived(newUrl.trim().length > 0 && !browserDockStore.loadFailed);
+
+  async function retryLoad(): Promise<void> {
+    retrying = true;
+    try {
+      await browserDockStore.retryLoad();
+    } finally {
+      retrying = false;
+    }
+  }
 
   async function add(): Promise<void> {
     if (!canAdd) return;
@@ -47,6 +58,17 @@
     await browserDockStore.remove(id);
   }
 </script>
+
+{#if browserDockStore.loadFailed}
+  <div class="banner">
+    <span>
+      Couldn't read your saved browser docks. Editing is paused so saving now can't erase them — retry to resume.
+    </span>
+    <button class="btn" disabled={retrying} onclick={() => void retryLoad()}>
+      {retrying ? "Retrying…" : "Retry"}
+    </button>
+  </div>
+{/if}
 
 <section class="group">
   <h4>Add a Browser Dock</h4>
@@ -118,6 +140,22 @@
     text-transform: uppercase;
     letter-spacing: 0.06em;
     color: var(--color-dim);
+  }
+  .banner {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 12px 0 0;
+    padding: 8px 10px;
+    background: color-mix(in srgb, var(--color-live) 14%, transparent);
+    border: var(--border-weight) solid var(--color-live);
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--color-text);
+  }
+  .banner span {
+    flex: 1;
+    min-width: 0;
   }
   .hint {
     font-size: 12px;
