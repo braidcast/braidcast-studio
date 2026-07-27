@@ -175,7 +175,7 @@ bool KickChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, const 
 	const std::string pusherUrl = KickPusherUrl();
 
 	const auto canceled = [&] {
-		return stop_.load(std::memory_order_acquire) || ctx.canceled();
+		return stop_.load(std::memory_order_acquire) || (ctx.canceled && ctx.canceled());
 	};
 
 	std::string chatroomId; // resolved once, cached for the session
