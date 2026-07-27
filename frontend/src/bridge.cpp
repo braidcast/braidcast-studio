@@ -8408,7 +8408,8 @@ bool MethodBrowserDocksSet(const json &params, json &result, std::string &error)
 	}
 	obs_data_set_array(root, "docks", arr);
 
-	if (!SaveJsonAtomic(root, MultistreamBasicPath("browser_docks.json"))) {
+	const std::string docksPath = MultistreamBasicPath("browser_docks.json");
+	if (!ReportSaveResult(SaveJsonAtomic(root, docksPath), docksPath)) {
 		error = "failed to write browser_docks.json";
 		return false;
 	}
@@ -8483,7 +8484,7 @@ bool WriteJsonString(const char *file, const char *key, const std::string &value
 	}
 	OBSDataAutoRelease root = obs_data_create();
 	obs_data_set_string(root, key, value.c_str());
-	return SaveJsonAtomic(root, path);
+	return ReportSaveResult(SaveJsonAtomic(root, path), path);
 }
 
 std::string ReadJsonString(const char *file, const char *key)

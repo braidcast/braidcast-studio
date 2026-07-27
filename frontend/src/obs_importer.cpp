@@ -472,7 +472,8 @@ bool WriteForkSceneFile(const std::string &relFile, obs_data_array_t *filtered, 
 	obs_data_set_array(root, "sources", filtered);
 	obs_data_set_string(root, "current_scene", currentScene.c_str());
 
-	return SaveJsonAtomic(root, MultistreamBasicPath(relFile.c_str()));
+	const std::string path = MultistreamBasicPath(relFile.c_str());
+	return ReportSaveResult(SaveJsonAtomic(root, path), path);
 }
 
 // A fork collection name unique against the current registry: the requested name,
