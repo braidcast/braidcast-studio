@@ -418,10 +418,7 @@ bool TwitchChat::connect(const Chat::ChatContext &ctx, OAuthAccount &acct, const
 			sendLine("JOIN #" + channel + "\r\n");
 		if (!handshakeOk) {
 			ready_.store(false);
-			{
-				std::lock_guard<std::mutex> lock(wsMutex_);
-				ws_.close();
-			}
+			Chat::LockedClose(wsMutex_, ws_);
 			if (canceled()) {
 				break;
 			}
@@ -438,12 +435,7 @@ bool TwitchChat::connect(const Chat::ChatContext &ctx, OAuthAccount &acct, const
 			std::string frame;
 			bool isText = false;
 			std::string rerr;
-			bool ok;
-			{
-				std::lock_guard<std::mutex> lock(wsMutex_);
-				ok = ws_.recv(frame, isText, rerr);
-			}
-			if (!ok) {
+			if (!Chat::LockedRecv(wsMutex_, ws_, frame, isText, rerr)) {
 				err = rerr;
 				break; // peer closed / transport error -> reconnect
 			}
@@ -512,10 +504,7 @@ bool TwitchChat::connect(const Chat::ChatContext &ctx, OAuthAccount &acct, const
 		}
 
 		ready_.store(false);
-		{
-			std::lock_guard<std::mutex> lock(wsMutex_);
-			ws_.close();
-		}
+		Chat::LockedClose(wsMutex_, ws_);
 		if (canceled()) {
 			break;
 		}
@@ -548,10 +537,7 @@ bool TwitchChat::connect(const Chat::ChatContext &ctx, OAuthAccount &acct, const
 	}
 
 	ready_.store(false);
-	{
-		std::lock_guard<std::mutex> lock(wsMutex_);
-		ws_.close();
-	}
+	Chat::LockedClose(wsMutex_, ws_);
 	if (canceled()) {
 		err.clear(); // clean cancel: hub suppresses the log
 	}

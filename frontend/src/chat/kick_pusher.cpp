@@ -41,6 +41,16 @@ std::string KickPusherUrl()
 	       "?protocol=7&client=js&version=" + kKickPusherClientVersion + "&flash=false";
 }
 
+std::string PusherSubscribeFrame(const std::string &channel)
+{
+	return json{{"event", "pusher:subscribe"}, {"data", json{{"auth", ""}, {"channel", channel}}}}.dump();
+}
+
+std::string PusherChatroomChannel(const std::string &chatroomId)
+{
+	return "chatrooms." + chatroomId + ".v2";
+}
+
 bool ResolveKickChannelIds(const std::string &slug, std::string &chatroomIdOut, std::string &channelIdOut,
 			   std::string &err)
 {

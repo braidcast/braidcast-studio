@@ -32,6 +32,26 @@ inline constexpr const char *kKickPusherClientVersion = "8.4.0-rc2";
 // The Pusher app WebSocket URL built from the shared app key/host/version.
 std::string KickPusherUrl();
 
+// Pusher's own protocol frames (as opposed to Kick's `App\Events\...` application
+// events, which are per-transport). Both Kick transports run the identical handshake,
+// so the names they dispatch on live here with the key/cluster they arrive over.
+inline constexpr const char *kPusherConnectionEstablished = "pusher:connection_established";
+inline constexpr const char *kPusherSubscriptionSucceeded = "pusher_internal:subscription_succeeded";
+inline constexpr const char *kPusherPing = "pusher:ping";
+inline constexpr const char *kPusherError = "pusher:error";
+
+// The app-level pong answering kPusherPing -- distinct from the WS-level PONG WsClient
+// sends itself, which does not satisfy Pusher's application ping.
+inline constexpr const char *kPusherPongFrame = "{\"event\":\"pusher:pong\",\"data\":{}}";
+
+// A `pusher:subscribe` frame for `channel`. Every Kick channel either transport reads is
+// public, so the auth field is always the empty string.
+std::string PusherSubscribeFrame(const std::string &channel);
+
+// The Pusher channel carrying a chatroom's messages AND its sub/gift/host events, so the
+// chat and events transports cannot spell the same channel two ways.
+std::string PusherChatroomChannel(const std::string &chatroomId);
+
 // Resolve a channel slug to BOTH its Pusher chatroom id (carries chat + sub/gift/
 // host events on `chatrooms.<id>.v2`) AND its numeric channel id (carries follower
 // events on `channel.<id>`), via the UNOFFICIAL GET

@@ -3,6 +3,7 @@
 
 #include <chrono>
 #include <functional>
+#include <mutex>
 #include <random>
 #include <string>
 
@@ -72,6 +73,23 @@ private:
 	std::string accum_;      // reassembly buffer for a chunked (large) frame
 	bool accumText_ = false; // whether the in-progress frame is text
 };
+
+// A transport that shares one WsClient between its read loop and a disconnect()/send()
+// on another thread guards every access with its own mutex (curl easy handles are not
+// safe for concurrent use). These hold that lock for exactly the one call and no longer,
+// so the blocking-but-bounded recv poll cannot be widened into a section that also does
+// work: a read loop's cancel check and a concurrent close must not queue behind it.
+inline bool LockedRecv(std::mutex &mutex, WsClient &ws, std::string &outFrame, bool &isText, std::string &err)
+{
+	std::lock_guard<std::mutex> lock(mutex);
+	return ws.recv(outFrame, isText, err);
+}
+
+inline void LockedClose(std::mutex &mutex, WsClient &ws)
+{
+	std::lock_guard<std::mutex> lock(mutex);
+	ws.close();
+}
 
 // Exponential backoff with a cap, for transports reconnecting after a drop.
 class Backoff {

@@ -239,22 +239,16 @@ bool KickChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, const 
 			}
 			const std::string event = outer.value("event", std::string());
 
-			if (event == "pusher:connection_established") {
-				// Public channel -> empty auth (research §Subscribe frame).
-				ws.sendText(json{{"event", "pusher:subscribe"},
-						 {"data",
-						  json{{"auth", ""}, {"channel", "chatrooms." + chatroomId + ".v2"}}}}
-						    .dump());
-			} else if (event == "pusher_internal:subscription_succeeded") {
+			if (event == kPusherConnectionEstablished) {
+				ws.sendText(PusherSubscribeFrame(PusherChatroomChannel(chatroomId)));
+			} else if (event == kPusherSubscriptionSucceeded) {
 				backoff.reset();
 				EmitState(ctx, true, "");
-			} else if (event == "pusher:ping") {
-				// App-level Pusher ping (distinct from the WS-level ping WsClient
-				// auto-PONGs); reply with an app-level pong.
-				ws.sendText("{\"event\":\"pusher:pong\",\"data\":{}}");
+			} else if (event == kPusherPing) {
+				ws.sendText(kPusherPongFrame);
 			} else if (event == "App\\Events\\ChatMessageEvent") {
 				HandleChatMessage(outer, ctx, chatroomId, thirdPartyEmotes);
-			} else if (event == "pusher:error") {
+			} else if (event == kPusherError) {
 				HostLog("[chat] kick pusher error: " + frame);
 			}
 			// All other events (subscriptions, reactions, gifts, ...) are ignored.

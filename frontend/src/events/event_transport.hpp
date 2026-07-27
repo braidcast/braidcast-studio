@@ -47,6 +47,29 @@ struct EventContext {
 	std::function<void(Transports::TransportHealth::State state, const std::string &error)> reportHealth;
 };
 
+// Report one health transition through the optional hook, the sibling of chat's
+// EmitChatFrame: every caller guards the same way, and a missed guard is a null
+// std::function call rather than a dropped row.
+inline void ReportHealth(const EventContext &ctx, Transports::TransportHealth::State state,
+			 const std::string &error = "")
+{
+	if (ctx.reportHealth) {
+		ctx.reportHealth(state, error);
+	}
+}
+
+// Fail with a PERMANENT error: set `err` and arm the hub's fatal latch so its reconnect
+// loop stops instead of spinning on a failure that no retry can clear. Returns false so a
+// transport's connect()/backfill() can `return FailPermanent(...)` directly.
+inline bool FailPermanent(const EventContext &ctx, std::string &err, std::string message)
+{
+	err = std::move(message);
+	if (ctx.markFatal) {
+		ctx.markFatal();
+	}
+	return false;
+}
+
 class EventTransport {
 public:
 	virtual ~EventTransport() = default;

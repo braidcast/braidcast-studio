@@ -38,6 +38,10 @@ using JsonUtil::Obj;
 using JsonUtil::Str;
 using TimeUtil::NowMs;
 
+// Dispatched on twice -- once to feed the live follower total into channels.stats, once to
+// normalize the follow itself -- and the two must not drift apart.
+constexpr const char *kFollowersUpdated = "App\\Events\\FollowersUpdated";
+
 // Pusher wraps each event's payload in a `data` field that is itself a JSON-ENCODED
 // STRING (double-encoded); decode it again. Some client libraries observe `data`
 // already as an object, so accept that too. Returns a null json on any failure.
@@ -132,7 +136,7 @@ bool Normalize(const std::string &event, const json &outer, NormalizedEvent &ev)
 		return true;
 	}
 
-	if (event == "App\\Events\\FollowersUpdated") {
+	if (event == kFollowersUpdated) {
 		// LIMITATION: this event is primarily a followers-COUNT broadcast and fires for
 		// unfollows too; the per-follower name is usually absent. Emit a follow ONLY when
 		// Kick actually gives us a name AND followed==true, so a nameless "someone
@@ -214,20 +218,14 @@ bool KickEvents::connect(const EventContext &ctx, OAuth::OAuthAccount &acct, std
 	};
 
 	if (!Chat::WsClient::WebSocketsSupported()) {
-		err = "libcurl lacks WebSocket support; Kick events unavailable";
-		if (ctx.markFatal) {
-			ctx.markFatal(); // build-level: retrying can never help
-		}
-		return false;
+		// Build-level: retrying can never help.
+		return FailPermanent(ctx, err, "libcurl lacks WebSocket support; Kick events unavailable");
 	}
 
 	const std::string slug = acct.login; // the Kick channel slug (= account login)
 	if (slug.empty()) {
-		err = "Kick events: channel slug unavailable; reconnect the account";
-		if (ctx.markFatal) {
-			ctx.markFatal(); // hard misconfiguration; retrying can never help
-		}
-		return false;
+		// Hard misconfiguration; retrying can never help.
+		return FailPermanent(ctx, err, "Kick events: channel slug unavailable; reconnect the account");
 	}
 	const std::string url = Chat::KickPusherUrl();
 
@@ -266,12 +264,7 @@ bool KickEvents::connect(const EventContext &ctx, OAuth::OAuthAccount &acct, std
 			std::string frame;
 			bool isText = false;
 			std::string recvErr;
-			bool ok;
-			{
-				std::lock_guard<std::mutex> lock(wsMutex_);
-				ok = ws_.recv(frame, isText, recvErr);
-			}
-			if (!ok) {
+			if (!Chat::LockedRecv(wsMutex_, ws_, frame, isText, recvErr)) {
 				dropErr = recvErr;
 				break;
 			}
@@ -285,13 +278,12 @@ bool KickEvents::connect(const EventContext &ctx, OAuth::OAuthAccount &acct, std
 			}
 			const std::string event = outer.value("event", std::string());
 
-			if (event == "pusher:connection_established") {
+			if (event == Chat::kPusherConnectionEstablished) {
 				// Subscribe to the chatroom channel (sub/gift/host) and both channel
-				// formats (followers). All are public -> empty auth. channel. and
-				// channel_ are alternate spellings KickLib binds both of; a duplicate
-				// delivery dedupes by event id.
+				// formats (followers). channel. and channel_ are alternate spellings
+				// KickLib binds both of; a duplicate delivery dedupes by event id.
 				const std::array<std::string, 3> channels = {
-					"chatrooms." + chatroomId + ".v2",
+					Chat::PusherChatroomChannel(chatroomId),
 					channelId.empty() ? std::string() : "channel." + channelId,
 					channelId.empty() ? std::string() : "channel_" + channelId,
 				};
@@ -300,24 +292,18 @@ bool KickEvents::connect(const EventContext &ctx, OAuth::OAuthAccount &acct, std
 					if (ch.empty()) {
 						continue;
 					}
-					ws_.sendText(json{{"event", "pusher:subscribe"},
-							  {"data", json{{"auth", ""}, {"channel", ch}}}}
-							     .dump());
+					ws_.sendText(Chat::PusherSubscribeFrame(ch));
 				}
-			} else if (event == "pusher_internal:subscription_succeeded") {
+			} else if (event == Chat::kPusherSubscriptionSucceeded) {
 				backoff.reset(); // a successful subscribe proves a healthy connection
-				if (ctx.reportHealth) {
-					ctx.reportHealth(Transports::TransportHealth::State::Connected, "");
-				}
-			} else if (event == "pusher:ping") {
-				// App-level Pusher ping (distinct from the WS-level ping WsClient
-				// auto-PONGs); reply with an app-level pong.
+				ReportHealth(ctx, Transports::TransportHealth::State::Connected);
+			} else if (event == Chat::kPusherPing) {
 				std::lock_guard<std::mutex> lock(wsMutex_);
-				ws_.sendText("{\"event\":\"pusher:pong\",\"data\":{}}");
-			} else if (event == "pusher:error") {
+				ws_.sendText(Chat::kPusherPongFrame);
+			} else if (event == Chat::kPusherError) {
 				HostLog("[events] kick pusher error: " + frame);
 			} else {
-				if (event == "App\\Events\\FollowersUpdated") {
+				if (event == kFollowersUpdated) {
 					// Feed the live follower total into channels.stats regardless of
 					// whether this ping also names a follower (Normalize drops nameless
 					// ones). Both channel.<id> and channel_<id> deliver it -> a duplicate
@@ -332,10 +318,7 @@ bool KickEvents::connect(const EventContext &ctx, OAuth::OAuthAccount &acct, std
 			}
 		}
 
-		{
-			std::lock_guard<std::mutex> lock(wsMutex_);
-			ws_.close();
-		}
+		Chat::LockedClose(wsMutex_, ws_);
 		if (canceled()) {
 			break;
 		}
@@ -345,10 +328,7 @@ bool KickEvents::connect(const EventContext &ctx, OAuth::OAuthAccount &acct, std
 		}
 	}
 
-	{
-		std::lock_guard<std::mutex> lock(wsMutex_);
-		ws_.close();
-	}
+	Chat::LockedClose(wsMutex_, ws_);
 	if (canceled()) {
 		err.clear(); // clean cancel: the hub suppresses the log
 	}

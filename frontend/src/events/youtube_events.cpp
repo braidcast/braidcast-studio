@@ -196,9 +196,7 @@ bool YouTubeEvents::connect(const EventContext &ctx, OAuth::OAuthAccount &acct, 
 	// No socket to establish, but the REST transport is armed and polling: report it
 	// Connected so the health surface reflects an active account rather than a
 	// perpetual "connecting".
-	if (ctx.reportHealth) {
-		ctx.reportHealth(Transports::TransportHealth::State::Connected, "");
-	}
+	ReportHealth(ctx, Transports::TransportHealth::State::Connected);
 	return true;
 }
 

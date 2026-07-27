@@ -258,11 +258,7 @@ bool TwitchEvents::connect(const EventContext &ctx, OAuth::OAuthAccount &acct, s
 		// The account-connect lifecycle only starts accounts that ran fetchIdentity, so
 		// this is a hard misconfiguration rather than a transient -- mark it permanent so
 		// the hub stops retrying instead of subscribing with an empty condition.
-		err = "Twitch events: broadcaster user id unavailable; reconnect the account";
-		if (ctx.markFatal) {
-			ctx.markFatal();
-		}
-		return false;
+		return FailPermanent(ctx, err, "Twitch events: broadcaster user id unavailable; reconnect the account");
 	}
 
 	Chat::Backoff backoff;
@@ -304,12 +300,7 @@ bool TwitchEvents::connect(const EventContext &ctx, OAuth::OAuthAccount &acct, s
 			std::string frame;
 			bool isText = false;
 			std::string rerr;
-			bool ok;
-			{
-				std::lock_guard<std::mutex> lock(wsMutex_);
-				ok = ws_.recv(frame, isText, rerr);
-			}
-			if (!ok) {
+			if (!Chat::LockedRecv(wsMutex_, ws_, frame, isText, rerr)) {
 				err = rerr;
 				break;
 			}
@@ -333,10 +324,7 @@ bool TwitchEvents::connect(const EventContext &ctx, OAuth::OAuthAccount &acct, s
 		}
 
 		if (!welcomed) {
-			{
-				std::lock_guard<std::mutex> lock(wsMutex_);
-				ws_.close();
-			}
+			Chat::LockedClose(wsMutex_, ws_);
 			if (canceled()) {
 				break;
 			}
@@ -346,9 +334,7 @@ bool TwitchEvents::connect(const EventContext &ctx, OAuth::OAuthAccount &acct, s
 			continue;
 		}
 		backoff.reset(); // a welcome proves a healthy connection
-		if (ctx.reportHealth) {
-			ctx.reportHealth(Transports::TransportHealth::State::Connected, "");
-		}
+		ReportHealth(ctx, Transports::TransportHealth::State::Connected);
 
 		// A session_reconnect socket resumes the SAME subscriptions, so only a fresh
 		// connection creates them.
@@ -365,12 +351,7 @@ bool TwitchEvents::connect(const EventContext &ctx, OAuth::OAuthAccount &acct, s
 			std::string frame;
 			bool isText = false;
 			std::string rerr;
-			bool ok;
-			{
-				std::lock_guard<std::mutex> lock(wsMutex_);
-				ok = ws_.recv(frame, isText, rerr);
-			}
-			if (!ok) {
+			if (!Chat::LockedRecv(wsMutex_, ws_, frame, isText, rerr)) {
 				err = rerr;
 				break; // peer closed / transport error -> reconnect
 			}
@@ -415,10 +396,7 @@ bool TwitchEvents::connect(const EventContext &ctx, OAuth::OAuthAccount &acct, s
 			}
 		}
 
-		{
-			std::lock_guard<std::mutex> lock(wsMutex_);
-			ws_.close();
-		}
+		Chat::LockedClose(wsMutex_, ws_);
 		if (canceled()) {
 			break;
 		}
@@ -430,10 +408,7 @@ bool TwitchEvents::connect(const EventContext &ctx, OAuth::OAuthAccount &acct, s
 		}
 	}
 
-	{
-		std::lock_guard<std::mutex> lock(wsMutex_);
-		ws_.close();
-	}
+	Chat::LockedClose(wsMutex_, ws_);
 	if (canceled()) {
 		err.clear(); // clean cancel: hub suppresses the log
 	}

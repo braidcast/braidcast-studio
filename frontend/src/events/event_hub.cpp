@@ -174,9 +174,7 @@ void EventHub::StartAccount(const std::string &accountId, const OAuth::OAuthAcco
 		const bool polls = transport->pollIntervalMs() > 0;
 		// Connecting bookend: a real-time transport reports Connected itself once its
 		// socket handshakes; the reconnect below re-marks Reconnecting on a drop.
-		if (ctx.reportHealth) {
-			ctx.reportHealth(Transports::TransportHealth::State::Connecting, "");
-		}
+		ReportHealth(ctx, Transports::TransportHealth::State::Connecting);
 		while (!canceled()) {
 			fatal = false;
 			std::string err;
@@ -202,16 +200,14 @@ void EventHub::StartAccount(const std::string &accountId, const OAuth::OAuthAcco
 				// would just spin the loop. Stop until the next explicit Start re-arms it.
 				HostLog("[events] transport '" + providerId +
 					"' permanently failed; not retrying until reconnect");
-				if (ctx.reportHealth) {
-					ctx.reportHealth(Transports::TransportHealth::State::Failed, err);
-				}
+				ReportHealth(ctx, Transports::TransportHealth::State::Failed, err);
 				break;
 			}
 			// A non-fatal drop (socket closed / network blip): the loop backs off and
 			// reconnects below. A clean return (ok) is a poll-only transport idling
 			// between ticks -- leave its Connected state untouched.
-			if (!ok && ctx.reportHealth) {
-				ctx.reportHealth(Transports::TransportHealth::State::Reconnecting, err);
+			if (!ok) {
+				ReportHealth(ctx, Transports::TransportHealth::State::Reconnecting, err);
 			}
 
 			if (polls) {
