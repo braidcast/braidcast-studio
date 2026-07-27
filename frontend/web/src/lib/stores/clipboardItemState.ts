@@ -1,13 +1,5 @@
-import { obs, type SceneItem } from "$lib/api/bridge";
+import { obs, type SceneItem, type TransformTarget } from "$lib/api/bridge";
 import { clipboard, type CopiedItemState } from "$lib/stores/clipboardStore.svelte";
-
-// Addresses one scene item across the global (canvas omitted) and additional-canvas
-// (canvas set) paths — the shape every sceneItems.* setter already accepts.
-export interface ItemTarget {
-  canvas?: string;
-  scene?: string | null;
-  id: number;
-}
 
 // A paste destination: the current scene (+ canvas for an additional-canvas dock).
 export interface SceneTarget {
@@ -19,7 +11,7 @@ export interface SceneTarget {
 // appearance fields ride along on the row from sceneItems.list) plus its locator
 // into the clipboard. Every copy entry point funnels through here so the reference
 // AND the carried state stay consistent across the keyboard and all dock menus.
-export async function copyItem(target: ItemTarget, item: SceneItem): Promise<void> {
+export async function copyItem(target: TransformTarget, item: SceneItem): Promise<void> {
   if (!item.source) {
     return;
   }
@@ -51,7 +43,7 @@ export async function copyItem(target: ItemTarget, item: SceneItem): Promise<voi
 // Apply a captured state onto a freshly added/duplicated item. Each setter is
 // guarded so a field absent from the capture is skipped, never written as
 // undefined. THE single apply path both paste routes (reference + duplicate) share.
-export async function applyItemState(target: ItemTarget, state: CopiedItemState | undefined): Promise<void> {
+export async function applyItemState(target: TransformTarget, state: CopiedItemState | undefined): Promise<void> {
   if (!state) {
     return;
   }

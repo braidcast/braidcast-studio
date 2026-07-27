@@ -728,10 +728,14 @@ export interface GlobalAudioSlot {
 
 /** Addresses one scene item: omit `canvas` (or pass the Default uuid) for the
  * global channel-0 path; pass an additional canvas's uuid + that canvas's scene
- * for a per-canvas item. Mirrors the shape used by sceneItems.setVisible/setLocked. */
+ * for a per-canvas item. Mirrors the shape used by sceneItems.setVisible/setLocked.
+ *
+ * `scene` accepts null as well as omission because the preview hit payload and the
+ * dock scene stores carry "no scene" as null; the host reads it through
+ * JsonUtil::Str, which folds null, absent, and "" into the same empty name. */
 export interface TransformTarget {
   canvas?: string;
-  scene?: string;
+  scene?: string | null;
   id: number;
 }
 

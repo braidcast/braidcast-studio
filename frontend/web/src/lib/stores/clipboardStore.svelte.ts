@@ -1,4 +1,4 @@
-import type { CopiedFilter, ItemTransition, Transform } from "$lib/api/bridge";
+import type { CopiedFilter, ItemTransition, Transform, TransformTarget } from "$lib/api/bridge";
 
 // The full visual state copied alongside a source reference (§1.7 parity) so a
 // paste reproduces the original item's look, not just a bare reference. Matches the
@@ -23,7 +23,7 @@ export interface CopiedItemState {
 export interface CopiedSource {
   ref: string;
   name: string;
-  origin?: { canvas?: string; scene?: string | null; id: number };
+  origin?: TransformTarget;
   state?: CopiedItemState;
 }
 
