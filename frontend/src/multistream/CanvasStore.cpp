@@ -12,32 +12,23 @@ std::string CanvasStore::FilePath()
 
 nlohmann::json CanvasStore::ToJson() const
 {
-	OBSDataAutoRelease root = obs_data_create();
 	OBSDataArrayAutoRelease arr = obs_data_array_create();
 	for (const CanvasDefinition &def : definitions) {
 		OBSDataAutoRelease item = def.ToData();
 		obs_data_array_push_back(arr, item);
 	}
-	obs_data_set_array(root, "canvases", arr);
-
-	const char *js = obs_data_get_json(root);
-	return js ? nlohmann::json::parse(js) : nlohmann::json::object();
+	return StoreJsonFromArray("canvases", arr);
 }
 
 void CanvasStore::FromJson(const nlohmann::json &j)
 {
 	definitions.clear();
 
-	if (j.is_object()) {
-		OBSDataAutoRelease root = obs_data_create_from_json(j.dump().c_str());
-		if (root) {
-			OBSDataArrayAutoRelease arr = obs_data_get_array(root, "canvases");
-			const size_t count = arr ? obs_data_array_count(arr) : 0;
-			for (size_t i = 0; i < count; i++) {
-				OBSDataAutoRelease item = obs_data_array_item(arr, i);
-				definitions.push_back(CanvasDefinition::FromData(item));
-			}
-		}
+	OBSDataArrayAutoRelease arr = StoreArrayFromJson(j, "canvases");
+	const size_t count = arr ? obs_data_array_count(arr) : 0;
+	for (size_t i = 0; i < count; i++) {
+		OBSDataAutoRelease item = obs_data_array_item(arr, i);
+		definitions.push_back(CanvasDefinition::FromData(item));
 	}
 
 	EnsureDefault();
@@ -45,16 +36,12 @@ void CanvasStore::FromJson(const nlohmann::json &j)
 
 void CanvasStore::Load()
 {
-	OBSDataAutoRelease root = obs_data_create_from_json_file_safe(FilePath().c_str(), "bak");
-	const char *js = root ? obs_data_get_json(root) : nullptr;
-	FromJson(js ? nlohmann::json::parse(js) : nlohmann::json::object());
+	FromJson(LoadStoreJson(FilePath()));
 }
 
 bool CanvasStore::Save() const
 {
-	OBSDataAutoRelease root = obs_data_create_from_json(ToJson().dump().c_str());
-	const std::string path = FilePath();
-	return ReportSaveResult(SaveJsonAtomic(root, path), path);
+	return SaveStoreJson(ToJson(), FilePath());
 }
 
 void CanvasStore::EnsureDefault()

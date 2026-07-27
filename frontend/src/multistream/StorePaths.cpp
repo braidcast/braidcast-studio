@@ -1,7 +1,10 @@
 #include "StorePaths.hpp"
 
 #include <obs.h>
+#include <obs.hpp>
 #include <util/platform.h>
+
+#include <nlohmann/json.hpp>
 
 #include <filesystem>
 
@@ -28,6 +31,12 @@ std::string ResolveConfigBase()
 		return std::string();
 	}
 	return std::string(buf);
+}
+
+nlohmann::json JsonFromData(obs_data_t *data)
+{
+	const char *js = data ? obs_data_get_json(data) : nullptr;
+	return js ? nlohmann::json::parse(js) : nlohmann::json::object();
 }
 
 } // namespace
@@ -75,4 +84,32 @@ bool ReportSaveResult(bool saved, const std::string &path)
 		HostLog("[storage] failed to save " + path);
 	}
 	return saved;
+}
+
+nlohmann::json LoadStoreJson(const std::string &absPath)
+{
+	OBSDataAutoRelease root = obs_data_create_from_json_file_safe(absPath.c_str(), "bak");
+	return JsonFromData(root);
+}
+
+bool SaveStoreJson(const nlohmann::json &root, const std::string &absPath)
+{
+	OBSDataAutoRelease data = obs_data_create_from_json(root.dump().c_str());
+	return ReportSaveResult(SaveJsonAtomic(data, absPath), absPath);
+}
+
+nlohmann::json StoreJsonFromArray(const char *key, obs_data_array_t *arr)
+{
+	OBSDataAutoRelease root = obs_data_create();
+	obs_data_set_array(root, key, arr);
+	return JsonFromData(root);
+}
+
+obs_data_array_t *StoreArrayFromJson(const nlohmann::json &root, const char *key)
+{
+	if (!root.is_object()) {
+		return nullptr;
+	}
+	OBSDataAutoRelease data = obs_data_create_from_json(root.dump().c_str());
+	return data ? obs_data_get_array(data, key) : nullptr;
 }

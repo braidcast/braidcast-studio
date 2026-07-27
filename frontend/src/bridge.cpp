@@ -905,6 +905,22 @@ static bool RequireStr(const json &params, const char *method, const char *key, 
 	return false;
 }
 
+// Read a required boolean param; on a non-object params, a missing key or a
+// non-boolean value set the bridge's uniform "<method> requires a boolean
+// '<key>'" error and return false so the caller returns straight through.
+static bool RequireBool(const json &params, const char *method, const char *key, bool &out, std::string &error)
+{
+	if (params.is_object()) {
+		auto it = params.find(key);
+		if (it != params.end() && it->is_boolean()) {
+			out = it->get<bool>();
+			return true;
+		}
+	}
+	error = std::string(method) + " requires a boolean '" + key + "'";
+	return false;
+}
+
 // Guard that params is a JSON object, setting the uniform "<method> expects an
 // object" error otherwise.
 static bool RequireObject(const json &params, const char *method, std::string &error)
@@ -5640,16 +5656,6 @@ bool ReadCanvasColor(const json &params, const CanvasColorDef &current, CanvasCo
 	return true;
 }
 
-// Read an optional boolean; absent/null/non-bool -> keeps `current`.
-bool ReadOptBool(const json &params, const char *key, bool current)
-{
-	auto it = params.find(key);
-	if (it == params.end() || !it->is_boolean()) {
-		return current;
-	}
-	return it->get<bool>();
-}
-
 bool MethodCanvasCreate(const json &params, json &result, std::string &error)
 {
 	if (!RequireObject(params, "canvas.create", error)) {
@@ -5688,9 +5694,9 @@ bool MethodCanvasCreate(const json &params, json &result, std::string &error)
 	// Per-section inheritance from the Default canvas (resolution/fps + each encoder);
 	// applied via ToVideoInfo / the engine's EnsureCanvasEncoders. color.useDefault is
 	// parsed inside ReadCanvasColor above.
-	def.useDefaultResolution = ReadOptBool(params, "useDefaultResolution", false);
-	def.video.useDefault = ReadOptBool(params, "videoUseDefault", false);
-	def.audio.useDefault = ReadOptBool(params, "audioUseDefault", false);
+	def.useDefaultResolution = JsonUtil::Bool(params, "useDefaultResolution", false);
+	def.video.useDefault = JsonUtil::Bool(params, "videoUseDefault", false);
+	def.audio.useDefault = JsonUtil::Bool(params, "audioUseDefault", false);
 
 	CanvasStore &store = ObsBootstrap::Canvases();
 	const CanvasDefinition &added = store.Add(std::move(def));
@@ -5744,9 +5750,9 @@ bool MethodCanvasUpdate(const json &params, json &result, std::string &error)
 	}
 	req.videoEncoderId = OptString(params, "videoEncoder");
 	req.audioEncoderId = OptString(params, "audioEncoder");
-	req.useDefaultResolution = ReadOptBool(params, "useDefaultResolution", def->useDefaultResolution);
-	req.videoUseDefault = ReadOptBool(params, "videoUseDefault", def->video.useDefault);
-	req.audioUseDefault = ReadOptBool(params, "audioUseDefault", def->audio.useDefault);
+	req.useDefaultResolution = JsonUtil::Bool(params, "useDefaultResolution", def->useDefaultResolution);
+	req.videoUseDefault = JsonUtil::Bool(params, "videoUseDefault", def->video.useDefault);
+	req.audioUseDefault = JsonUtil::Bool(params, "audioUseDefault", def->audio.useDefault);
 
 	CanvasUpdateResult r = ObsBootstrap::CanvasService().Update(req);
 	if (!r.ok) {
@@ -6353,8 +6359,8 @@ bool MethodOutputBindingSetEnabled(const json &params, json &result, std::string
 	if (!RequireStr(params, "outputBinding.setEnabled", "uuid", uuid, error)) {
 		return false;
 	}
-	if (!params.is_object() || !params.contains("enabled") || !params["enabled"].is_boolean()) {
-		error = "outputBinding.setEnabled requires a boolean 'enabled'";
+	bool enabled = false;
+	if (!RequireBool(params, "outputBinding.setEnabled", "enabled", enabled, error)) {
 		return false;
 	}
 	OutputBindings &bindings = ObsBootstrap::OutputBindings().Bindings();
@@ -6363,8 +6369,6 @@ bool MethodOutputBindingSetEnabled(const json &params, json &result, std::string
 		error = "no output binding with uuid '" + uuid + "'";
 		return false;
 	}
-
-	const bool enabled = params["enabled"].get<bool>();
 
 	// Enabling must obey the single-live-stream rule: refuse if this profile is already
 	// enabled on another canvas (one RTMP key = one live stream). Mirrors the engine's
@@ -6674,8 +6678,8 @@ bool GetSourceMixerFlag(obs_source_t *s, const char *key)
 bool SetSourceMixerFlag(const json &params, const char *method, const char *key, const char *field, json &result,
 			std::string &error)
 {
-	if (!params.is_object() || !params.contains(field) || !params[field].is_boolean()) {
-		error = std::string(method) + " requires a boolean '" + field + "'";
+	bool value = false;
+	if (!RequireBool(params, method, field, value, error)) {
 		return false;
 	}
 	OBSSourceAutoRelease s = ResolveAudioSource(params);
@@ -6683,7 +6687,6 @@ bool SetSourceMixerFlag(const json &params, const char *method, const char *key,
 		error = std::string(method) + ": no source for the given 'uuid'/'source'";
 		return false;
 	}
-	const bool value = params[field].get<bool>();
 	{
 		OBSDataAutoRelease priv = obs_source_get_private_settings(s);
 		obs_data_set_bool(priv, key, value);
@@ -6810,8 +6813,8 @@ bool MethodAudioSetDeflection(const json &params, json &result, std::string &err
 
 bool MethodAudioSetMuted(const json &params, json &result, std::string &error)
 {
-	if (!params.is_object() || !params.contains("muted") || !params["muted"].is_boolean()) {
-		error = "audio.setMuted requires a boolean 'muted'";
+	bool muted = false;
+	if (!RequireBool(params, "audio.setMuted", "muted", muted, error)) {
 		return false;
 	}
 	// Resolve by uuid or name (via the shared resolver) so name-addressing works
@@ -6821,7 +6824,6 @@ bool MethodAudioSetMuted(const json &params, json &result, std::string &error)
 		error = "audio.setMuted: no source for the given 'uuid'/'source'";
 		return false;
 	}
-	const bool muted = params["muted"].get<bool>();
 	obs_source_set_muted(source, muted);
 	PersistSourceState(source);
 	result = json{{"uuid", obs_source_get_uuid(source)}, {"muted", muted}};

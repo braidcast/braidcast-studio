@@ -57,21 +57,9 @@ const std::array<LangOption, 24> kLanguages = {{
 	{"sv", "Swedish"},    {"th", "Thai"},    {"uk", "Ukrainian"}, {"vi", "Vietnamese"},
 }};
 
+using JsonUtil::First;
 using JsonUtil::ParseJson;
 using JsonUtil::Str;
-
-// The first element of `j["data"]`, or a null json when absent/empty.
-json FirstDataRow(const json &j)
-{
-	if (!j.is_object()) {
-		return json(nullptr);
-	}
-	auto it = j.find("data");
-	if (it == j.end() || !it->is_array() || it->empty()) {
-		return json(nullptr);
-	}
-	return (*it)[0];
-}
 
 // Validate one Twitch tag: lowercase alphanumeric, no spaces, 1..25 chars.
 bool TagValid(const std::string &tag)
@@ -197,12 +185,11 @@ bool TwitchProvider::fetchIdentity(OAuthAccount &acct, std::string &err)
 		err = "Twitch requires two-factor auth on your account to manage the channel";
 		return false;
 	}
-	if (resp.status < 200 || resp.status >= 300) {
-		err = "Twitch users request failed (HTTP " + std::to_string(resp.status) + "): " + resp.body;
+	if (!Http::Require2xx(resp, "Twitch users request", err)) {
 		return false;
 	}
 
-	const json row = FirstDataRow(ParseJson(resp.body));
+	const json row = First(ParseJson(resp.body), "data");
 	if (!row.is_object()) {
 		err = "Twitch users response missing data";
 		return false;
@@ -235,12 +222,11 @@ bool TwitchProvider::getMetadata(OAuthAccount &acct, json &out, std::string &err
 	if (!SendAuthed(acct, req, resp, err)) {
 		return false;
 	}
-	if (resp.status < 200 || resp.status >= 300) {
-		err = "Twitch channels request failed (HTTP " + std::to_string(resp.status) + "): " + resp.body;
+	if (!Http::Require2xx(resp, "Twitch channels request", err)) {
 		return false;
 	}
 
-	const json row = FirstDataRow(ParseJson(resp.body));
+	const json row = First(ParseJson(resp.body), "data");
 	if (!row.is_object()) {
 		err = "Twitch channels response missing data";
 		return false;
@@ -263,8 +249,7 @@ bool TwitchProvider::searchCategories(OAuthAccount &acct, const std::string &que
 	if (!SendAuthed(acct, req, resp, err)) {
 		return false;
 	}
-	if (resp.status < 200 || resp.status >= 300) {
-		err = "Twitch category search failed (HTTP " + std::to_string(resp.status) + "): " + resp.body;
+	if (!Http::Require2xx(resp, "Twitch category search", err)) {
 		return false;
 	}
 
@@ -407,8 +392,7 @@ bool TwitchProvider::applyMetadata(OAuthAccount &acct, const std::string &profil
 		return false;
 	}
 	// Success is 204 No Content; accept any 2xx and do not parse a body.
-	if (resp.status < 200 || resp.status >= 300) {
-		err = "Twitch channel update failed (HTTP " + std::to_string(resp.status) + "): " + resp.body;
+	if (!Http::Require2xx(resp, "Twitch channel update", err)) {
 		return false;
 	}
 	return true;
@@ -429,12 +413,11 @@ bool TwitchProvider::fetchStreamKey(OAuthAccount &acct, std::string &key, std::s
 	if (!SendAuthed(acct, req, resp, err)) {
 		return false;
 	}
-	if (resp.status < 200 || resp.status >= 300) {
-		err = "Twitch stream-key request failed (HTTP " + std::to_string(resp.status) + "): " + resp.body;
+	if (!Http::Require2xx(resp, "Twitch stream-key request", err)) {
 		return false;
 	}
 
-	const json row = FirstDataRow(ParseJson(resp.body));
+	const json row = First(ParseJson(resp.body), "data");
 	key = Str(row, "stream_key");
 	if (key.empty()) {
 		err = "Twitch stream-key response missing key";
@@ -458,13 +441,12 @@ bool TwitchProvider::viewerCount(OAuthAccount &acct, int &out, std::string &err)
 	if (!SendAuthed(acct, req, resp, err)) {
 		return false;
 	}
-	if (resp.status < 200 || resp.status >= 300) {
-		err = "Twitch streams request failed (HTTP " + std::to_string(resp.status) + "): " + resp.body;
+	if (!Http::Require2xx(resp, "Twitch streams request", err)) {
 		return false;
 	}
 
 	// No data row -> the channel is offline, which is a usable read of 0 viewers.
-	const json row = FirstDataRow(ParseJson(resp.body));
+	const json row = First(ParseJson(resp.body), "data");
 	if (row.is_object()) {
 		auto it = row.find("viewer_count");
 		if (it != row.end() && it->is_number()) {
@@ -490,8 +472,7 @@ bool TwitchProvider::audienceCount(OAuthAccount &acct, AudienceResult &out, std:
 	if (!SendAuthed(acct, req, resp, err)) {
 		return false;
 	}
-	if (resp.status < 200 || resp.status >= 300) {
-		err = "Twitch followers request failed (HTTP " + std::to_string(resp.status) + "): " + resp.body;
+	if (!Http::Require2xx(resp, "Twitch followers request", err)) {
 		return false;
 	}
 

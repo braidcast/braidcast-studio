@@ -12,32 +12,23 @@ std::string StreamProfileStore::FilePath()
 
 nlohmann::json StreamProfileStore::ToJson() const
 {
-	OBSDataAutoRelease root = obs_data_create();
 	OBSDataArrayAutoRelease arr = obs_data_array_create();
 	for (const StreamProfile &p : profiles) {
 		OBSDataAutoRelease item = p.ToData();
 		obs_data_array_push_back(arr, item);
 	}
-	obs_data_set_array(root, "profiles", arr);
-
-	const char *js = obs_data_get_json(root);
-	return js ? nlohmann::json::parse(js) : nlohmann::json::object();
+	return StoreJsonFromArray("profiles", arr);
 }
 
 void StreamProfileStore::FromJson(const nlohmann::json &j)
 {
 	profiles.clear();
 
-	if (j.is_object()) {
-		OBSDataAutoRelease root = obs_data_create_from_json(j.dump().c_str());
-		if (root) {
-			OBSDataArrayAutoRelease arr = obs_data_get_array(root, "profiles");
-			const size_t count = arr ? obs_data_array_count(arr) : 0;
-			for (size_t i = 0; i < count; i++) {
-				OBSDataAutoRelease item = obs_data_array_item(arr, i);
-				profiles.push_back(StreamProfile::FromData(item));
-			}
-		}
+	OBSDataArrayAutoRelease arr = StoreArrayFromJson(j, "profiles");
+	const size_t count = arr ? obs_data_array_count(arr) : 0;
+	for (size_t i = 0; i < count; i++) {
+		OBSDataAutoRelease item = obs_data_array_item(arr, i);
+		profiles.push_back(StreamProfile::FromData(item));
 	}
 
 	// Guarantee exactly one primary if any profiles exist.
@@ -57,16 +48,12 @@ void StreamProfileStore::FromJson(const nlohmann::json &j)
 
 void StreamProfileStore::Load()
 {
-	OBSDataAutoRelease root = obs_data_create_from_json_file_safe(FilePath().c_str(), "bak");
-	const char *js = root ? obs_data_get_json(root) : nullptr;
-	FromJson(js ? nlohmann::json::parse(js) : nlohmann::json::object());
+	FromJson(LoadStoreJson(FilePath()));
 }
 
 bool StreamProfileStore::Save() const
 {
-	OBSDataAutoRelease root = obs_data_create_from_json(ToJson().dump().c_str());
-	const std::string path = FilePath();
-	return ReportSaveResult(SaveJsonAtomic(root, path), path);
+	return SaveStoreJson(ToJson(), FilePath());
 }
 
 StreamProfile *StreamProfileStore::Primary()

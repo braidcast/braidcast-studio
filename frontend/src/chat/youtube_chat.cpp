@@ -1019,8 +1019,7 @@ bool YouTubeChat::send(OAuth::OAuthAccount &acct, const std::string &text, std::
 	if (!owner_.SendAuthed(acct, req, resp, err)) {
 		return false;
 	}
-	if (resp.status < 200 || resp.status >= 300) {
-		err = "YouTube chat send failed (HTTP " + std::to_string(resp.status) + "): " + resp.body;
+	if (!Http::Require2xx(resp, "YouTube chat send", err)) {
 		return false;
 	}
 	return true;

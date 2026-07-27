@@ -15,25 +15,14 @@ std::string OutputBindingStore::FilePath()
 
 nlohmann::json OutputBindingStore::ToJson() const
 {
-	OBSDataAutoRelease root = obs_data_create();
 	OBSDataArrayAutoRelease arr = bindings.ToDataArray();
-	obs_data_set_array(root, "output_bindings", arr);
-
-	const char *js = obs_data_get_json(root);
-	return js ? nlohmann::json::parse(js) : nlohmann::json::object();
+	return StoreJsonFromArray("output_bindings", arr);
 }
 
 void OutputBindingStore::FromJson(const nlohmann::json &j)
 {
-	bindings = OutputBindings{};
-
-	if (j.is_object()) {
-		OBSDataAutoRelease root = obs_data_create_from_json(j.dump().c_str());
-		if (root) {
-			OBSDataArrayAutoRelease arr = obs_data_get_array(root, "output_bindings");
-			bindings = OutputBindings::FromDataArray(arr);
-		}
-	}
+	OBSDataArrayAutoRelease arr = StoreArrayFromJson(j, "output_bindings");
+	bindings = OutputBindings::FromDataArray(arr);
 }
 
 void OutputBindingStore::Load()
@@ -43,9 +32,7 @@ void OutputBindingStore::Load()
 
 void OutputBindingStore::Load(const std::string &path)
 {
-	OBSDataAutoRelease root = obs_data_create_from_json_file_safe(path.c_str(), "bak");
-	const char *js = root ? obs_data_get_json(root) : nullptr;
-	FromJson(js ? nlohmann::json::parse(js) : nlohmann::json::object());
+	FromJson(LoadStoreJson(path));
 }
 
 bool OutputBindingStore::Save() const
@@ -55,6 +42,5 @@ bool OutputBindingStore::Save() const
 
 bool OutputBindingStore::Save(const std::string &path) const
 {
-	OBSDataAutoRelease root = obs_data_create_from_json(ToJson().dump().c_str());
-	return ReportSaveResult(SaveJsonAtomic(root, path), path);
+	return SaveStoreJson(ToJson(), path);
 }

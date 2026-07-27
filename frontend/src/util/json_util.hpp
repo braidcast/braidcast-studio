@@ -77,6 +77,22 @@ inline int64_t NumLoose(const json &j, const char *key, int64_t fallback = 0)
 	return fallback;
 }
 
+// Read the first element of the array field at `key`: missing key, non-array, or
+// empty array -> a null json. Platform list endpoints all answer with a
+// single-element array for a by-id lookup, so this is how a caller reaches the one
+// row it asked for without trusting the shape.
+inline json First(const json &j, const char *key)
+{
+	if (!j.is_object()) {
+		return json(nullptr);
+	}
+	auto it = j.find(key);
+	if (it == j.end() || !it->is_array() || it->empty()) {
+		return json(nullptr);
+	}
+	return (*it)[0];
+}
+
 // Return a reference to `j[key]` when `j` is an object holding it, else a shared
 // null json -- lets nested-field accessors chain (Obj(Obj(msg,"payload"),"session"))
 // without intermediate copies or per-hop null checks.

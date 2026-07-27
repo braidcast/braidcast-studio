@@ -2,6 +2,8 @@
 
 #include <util/platform.h>
 
+#include <nlohmann/json_fwd.hpp>
+
 #include <string>
 #include <utility>
 #include <vector>
@@ -40,6 +42,8 @@ inline std::string MultistreamBasicPath(const char *file)
 
 struct obs_data;
 typedef struct obs_data obs_data_t;
+struct obs_data_array;
+typedef struct obs_data_array obs_data_array_t;
 
 // Atomically persist `root` to the absolute `absPath`: create the parent
 // directory, then obs_data_save_json_pretty_safe (write "<absPath>.tmp", rename
@@ -53,6 +57,25 @@ bool SaveJsonAtomic(obs_data_t *root, const std::string &absPath);
 // place every store routes its save result through, so the failure log reads
 // identically wherever a session's edits are dropped.
 bool ReportSaveResult(bool saved, const std::string &path);
+
+// Read the state file at `absPath` (obs_data_create_from_json_file_safe, so a
+// truncated write falls back to the ".bak" copy) and hand back its contents as
+// JSON. An empty object when the file is missing, unreadable, or holds nothing --
+// so a caller's FromJson always sees a well-formed envelope.
+nlohmann::json LoadStoreJson(const std::string &absPath);
+
+// Persist `root` to `absPath` through SaveJsonAtomic and ReportSaveResult: the
+// whole save envelope a store's Save() is, minus the model-to-JSON step.
+bool SaveStoreJson(const nlohmann::json &root, const std::string &absPath);
+
+// Wrap `arr` as the sole `key` member of a JSON object -- the envelope shape every
+// array-backed store file on disk holds. Does not take ownership of `arr`.
+nlohmann::json StoreJsonFromArray(const char *key, obs_data_array_t *arr);
+
+// The `key` array of a store envelope, or null when `root` is not an object or
+// holds no such array (both of which a store treats as "nothing persisted").
+// Caller owns the returned reference.
+[[nodiscard]] obs_data_array_t *StoreArrayFromJson(const nlohmann::json &root, const char *key);
 
 // Reorder `items` (move-only elements exposing a `.uuid`) to match `order`: for
 // each uuid, move the first not-yet-moved match into place; unknown ids are

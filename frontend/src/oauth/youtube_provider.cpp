@@ -86,6 +86,7 @@ constexpr int64_t kQuotaResetHorizonSec = 26 * 60 * 60;
 const char *kUpdatedMetadataUrl = "https://www.youtube.com/youtubei/v1/updated_metadata?prettyPrint=false";
 
 using JsonUtil::Bool;
+using JsonUtil::First;
 using JsonUtil::Obj;
 using JsonUtil::ParseJson;
 using JsonUtil::Str;
@@ -150,19 +151,6 @@ int64_t NextPacificMidnightUtc(int64_t nowUtc)
 	// Convert back with the offset in force AT the reset, so a DST flip between now
 	// and midnight cannot shift the instant by an hour.
 	return nextLocalMidnight - PacificOffsetSec(nextLocalMidnight - offsetNow);
-}
-
-// The first element of `j["items"]`, or a null json when absent/empty.
-json FirstItem(const json &j)
-{
-	if (!j.is_object()) {
-		return json(nullptr);
-	}
-	auto it = j.find("items");
-	if (it == j.end() || !it->is_array() || it->empty()) {
-		return json(nullptr);
-	}
-	return (*it)[0];
 }
 
 // Case-insensitive substring test (an empty needle always matches).
@@ -644,12 +632,11 @@ bool YouTubeProvider::fetchIdentity(OAuthAccount &acct, std::string &err)
 	if (!SendAuthed(acct, req, resp, err)) {
 		return false;
 	}
-	if (resp.status < 200 || resp.status >= 300) {
-		err = "YouTube channels request failed (HTTP " + std::to_string(resp.status) + "): " + resp.body;
+	if (!Http::Require2xx(resp, "YouTube channels request", err)) {
 		return false;
 	}
 
-	const json item = FirstItem(ParseJson(resp.body));
+	const json item = First(ParseJson(resp.body), "items");
 	if (!item.is_object()) {
 		err = "YouTube has no channel for this account";
 		return false;
@@ -705,8 +692,7 @@ bool YouTubeProvider::searchCategories(OAuthAccount &acct, const std::string &qu
 		if (!SendAuthed(acct, req, resp, err)) {
 			return false;
 		}
-		if (resp.status < 200 || resp.status >= 300) {
-			err = "YouTube category list failed (HTTP " + std::to_string(resp.status) + "): " + resp.body;
+		if (!Http::Require2xx(resp, "YouTube category list", err)) {
 			return false;
 		}
 
@@ -923,12 +909,10 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 			if (!SendAuthed(acct, getReq, getResp, err)) {
 				return false;
 			}
-			if (getResp.status < 200 || getResp.status >= 300) {
-				err = "YouTube liveBroadcasts.list failed (HTTP " + std::to_string(getResp.status) +
-				      "): " + getResp.body;
+			if (!Http::Require2xx(getResp, "YouTube liveBroadcasts.list", err)) {
 				return false;
 			}
-			const json existing = FirstItem(ParseJson(getResp.body));
+			const json existing = First(ParseJson(getResp.body), "items");
 			std::string scheduledStart;
 			if (existing.is_object() && existing.contains("snippet") && existing["snippet"].is_object()) {
 				scheduledStart = Str(existing["snippet"], "scheduledStartTime");
@@ -1009,7 +993,7 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 		Http::HttpResponse chatResp;
 		std::string chatErr;
 		if (SendAuthed(acct, chatReq, chatResp, chatErr) && chatResp.status >= 200 && chatResp.status < 300) {
-			const json item = FirstItem(ParseJson(chatResp.body));
+			const json item = First(ParseJson(chatResp.body), "items");
 			if (item.is_object() && item.contains("snippet") && item["snippet"].is_object()) {
 				liveChatId = Str(item["snippet"], "liveChatId");
 			}
@@ -1071,7 +1055,7 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 		std::string verifyErr;
 		if (SendAuthed(acct, verifyReq, verifyResp, verifyErr) && verifyResp.status >= 200 &&
 		    verifyResp.status < 300) {
-			const json item = FirstItem(ParseJson(verifyResp.body));
+			const json item = First(ParseJson(verifyResp.body), "items");
 			const bool errored = item.is_object() && item.contains("status") &&
 					     item["status"].is_object() &&
 					     Str(item["status"], "streamStatus") == "error";
@@ -1212,8 +1196,7 @@ bool YouTubeProvider::ProbeActiveBroadcasts(OAuthAccount &acct, std::string &err
 	if (!SendAuthed(acct, req, resp, err)) {
 		return false;
 	}
-	if (resp.status < 200 || resp.status >= 300) {
-		err = "YouTube liveBroadcasts request failed (HTTP " + std::to_string(resp.status) + "): " + resp.body;
+	if (!Http::Require2xx(resp, "YouTube liveBroadcasts request", err)) {
 		return false;
 	}
 
@@ -1539,12 +1522,11 @@ bool YouTubeProvider::audienceCount(OAuthAccount &acct, AudienceResult &out, std
 	if (!SendAuthed(acct, req, resp, err)) {
 		return false;
 	}
-	if (resp.status < 200 || resp.status >= 300) {
-		err = "YouTube channels request failed (HTTP " + std::to_string(resp.status) + "): " + resp.body;
+	if (!Http::Require2xx(resp, "YouTube channels request", err)) {
 		return false;
 	}
 
-	const json item = FirstItem(ParseJson(resp.body));
+	const json item = First(ParseJson(resp.body), "items");
 	if (!item.is_object() || !item.contains("statistics") || !item["statistics"].is_object()) {
 		err = "YouTube channels response missing statistics";
 		return false;

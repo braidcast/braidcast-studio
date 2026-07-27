@@ -26,14 +26,18 @@ json ParseObjectBlob(obs_data_t *root, const char *key)
 	return parsed.is_object() ? parsed : json::object();
 }
 
+std::string FilePath()
+{
+	return MultistreamBasicPath("stream_meta.json");
+}
+
 } // namespace
 
 void StreamMetaStore::Load()
 {
 	// Read the two stringified-JSON blobs ("channels" / "streams") from
 	// stream_meta.json (key/value envelope like audio_devices.json's "state").
-	OBSDataAutoRelease root =
-		obs_data_create_from_json_file_safe(MultistreamBasicPath("stream_meta.json").c_str(), "bak");
+	OBSDataAutoRelease root = obs_data_create_from_json_file_safe(FilePath().c_str(), "bak");
 	channels_ = ParseObjectBlob(root, "channels");
 	streams_ = ParseObjectBlob(root, "streams");
 }
@@ -70,6 +74,6 @@ bool StreamMetaStore::Save() const
 	OBSDataAutoRelease root = obs_data_create();
 	obs_data_set_string(root, "channels", channels_.dump().c_str());
 	obs_data_set_string(root, "streams", streams_.dump().c_str());
-	const std::string path = MultistreamBasicPath("stream_meta.json");
+	const std::string path = FilePath();
 	return ReportSaveResult(SaveJsonAtomic(root, path), path);
 }

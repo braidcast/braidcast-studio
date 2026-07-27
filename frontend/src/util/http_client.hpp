@@ -57,6 +57,16 @@ long HttpRequestStreaming(const HttpReq &req, const std::function<bool(std::stri
 // query parameters (RFC 3986 unreserved set kept literal).
 std::string UrlEncode(const std::string &value);
 
+// Reject a non-2xx response with the caller's label folded into `err`; a 2xx passes through.
+inline bool Require2xx(const HttpResponse &resp, const char *label, std::string &err)
+{
+	if (resp.status < 200 || resp.status >= 300) {
+		err = std::string(label) + " failed (HTTP " + std::to_string(resp.status) + "): " + resp.body;
+		return false;
+	}
+	return true;
+}
+
 } // namespace Http
 
 #endif // OBS_MULTISTREAM_FRONTEND_HTTP_CLIENT_HPP_

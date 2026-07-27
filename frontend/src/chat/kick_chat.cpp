@@ -319,8 +319,7 @@ bool KickChat::send(OAuth::OAuthAccount &acct, const std::string &text, std::str
 	if (!provider_.SendAuthed(acct, req, resp, err)) {
 		return false;
 	}
-	if (resp.status < 200 || resp.status >= 300) {
-		err = "Kick chat send failed (HTTP " + std::to_string(resp.status) + "): " + resp.body;
+	if (!Http::Require2xx(resp, "Kick chat send", err)) {
 		return false;
 	}
 	return true;

@@ -26,21 +26,37 @@ const char *kKickApiBase = "https://api.kick.com";
 const std::array<const char *, 5> kKickScopes = {"channel:read", "channel:write", "streamkey:read", "user:read",
 						 "chat:write"};
 
+using JsonUtil::First;
 using JsonUtil::NumLoose;
 using JsonUtil::ParseJson;
 using JsonUtil::Str;
 
-// The first element of `j["data"]`, or a null json when absent/empty.
-json FirstDataRow(const json &j)
+// The channels row for the account's own channel, which every own-channel read
+// (metadata, viewer count, stream key) reaches for the same way -- identity first,
+// since the lookup keys on the user_id. `row` is left a null json when the response
+// carried no data; a caller that cannot work without it says so itself, because
+// "offline" is a usable read for some of them and a failure for others.
+bool FetchOwnChannelRow(KickProvider &provider, OAuthAccount &acct, json &row, std::string &err)
 {
-	if (!j.is_object()) {
-		return json(nullptr);
+	if (!provider.ensureIdentity(acct, err)) {
+		return false;
 	}
-	auto it = j.find("data");
-	if (it == j.end() || !it->is_array() || it->empty()) {
-		return json(nullptr);
+
+	Http::HttpReq req;
+	req.method = "GET";
+	req.url =
+		std::string(kKickApiBase) + "/public/v1/channels?broadcaster_user_id[]=" + Http::UrlEncode(acct.userId);
+
+	Http::HttpResponse resp;
+	if (!provider.SendAuthed(acct, req, resp, err)) {
+		return false;
 	}
-	return (*it)[0];
+	if (!Http::Require2xx(resp, "Kick channels request", err)) {
+		return false;
+	}
+
+	row = First(ParseJson(resp.body), "data");
+	return true;
 }
 
 } // namespace
@@ -113,12 +129,11 @@ bool KickProvider::fetchIdentity(OAuthAccount &acct, std::string &err)
 	if (!SendAuthed(acct, req, resp, err)) {
 		return false;
 	}
-	if (resp.status < 200 || resp.status >= 300) {
-		err = "Kick users request failed (HTTP " + std::to_string(resp.status) + "): " + resp.body;
+	if (!Http::Require2xx(resp, "Kick users request", err)) {
 		return false;
 	}
 
-	const json row = FirstDataRow(ParseJson(resp.body));
+	const json row = First(ParseJson(resp.body), "data");
 	if (!row.is_object()) {
 		err = "Kick users response missing data";
 		return false;
@@ -137,26 +152,10 @@ bool KickProvider::fetchIdentity(OAuthAccount &acct, std::string &err)
 
 bool KickProvider::getMetadata(OAuthAccount &acct, json &out, std::string &err)
 {
-	// The channels lookup keys on the user_id, so ensure identity is resolved first.
-	if (!ensureIdentity(acct, err)) {
+	json row;
+	if (!FetchOwnChannelRow(*this, acct, row, err)) {
 		return false;
 	}
-
-	Http::HttpReq req;
-	req.method = "GET";
-	req.url =
-		std::string(kKickApiBase) + "/public/v1/channels?broadcaster_user_id[]=" + Http::UrlEncode(acct.userId);
-
-	Http::HttpResponse resp;
-	if (!SendAuthed(acct, req, resp, err)) {
-		return false;
-	}
-	if (resp.status < 200 || resp.status >= 300) {
-		err = "Kick channels request failed (HTTP " + std::to_string(resp.status) + "): " + resp.body;
-		return false;
-	}
-
-	const json row = FirstDataRow(ParseJson(resp.body));
 	if (!row.is_object()) {
 		err = "Kick channels response missing data";
 		return false;
@@ -208,8 +207,7 @@ bool KickProvider::searchCategories(OAuthAccount &acct, const std::string &query
 	if (!SendAuthed(acct, req, resp, err)) {
 		return false;
 	}
-	if (resp.status < 200 || resp.status >= 300) {
-		err = "Kick category search failed (HTTP " + std::to_string(resp.status) + "): " + resp.body;
+	if (!Http::Require2xx(resp, "Kick category search", err)) {
 		return false;
 	}
 
@@ -298,8 +296,7 @@ bool KickProvider::applyMetadata(OAuthAccount &acct, const std::string &profileU
 		return false;
 	}
 	// Success is 204 No Content; accept any 2xx and do not parse a body.
-	if (resp.status < 200 || resp.status >= 300) {
-		err = "Kick channel update failed (HTTP " + std::to_string(resp.status) + "): " + resp.body;
+	if (!Http::Require2xx(resp, "Kick channel update", err)) {
 		return false;
 	}
 	return true;
@@ -309,28 +306,13 @@ bool KickProvider::viewerCount(OAuthAccount &acct, int &out, std::string &err)
 {
 	out = 0;
 
-	// The channels lookup keys on the user_id, so ensure identity is resolved first.
-	if (!ensureIdentity(acct, err)) {
-		return false;
-	}
-
-	Http::HttpReq req;
-	req.method = "GET";
-	req.url =
-		std::string(kKickApiBase) + "/public/v1/channels?broadcaster_user_id[]=" + Http::UrlEncode(acct.userId);
-
-	Http::HttpResponse resp;
-	if (!SendAuthed(acct, req, resp, err)) {
-		return false;
-	}
-	if (resp.status < 200 || resp.status >= 300) {
-		err = "Kick channels request failed (HTTP " + std::to_string(resp.status) + "): " + resp.body;
+	json row;
+	if (!FetchOwnChannelRow(*this, acct, row, err)) {
 		return false;
 	}
 
 	// stream.viewer_count carries the live count; when the channel is offline the
 	// stream object is absent -> a usable read of 0 viewers.
-	const json row = FirstDataRow(ParseJson(resp.body));
 	if (row.is_object() && row.contains("stream") && row["stream"].is_object()) {
 		out = static_cast<int>(NumLoose(row["stream"], "viewer_count"));
 	}
@@ -341,29 +323,14 @@ bool KickProvider::fetchStreamKey(OAuthAccount &acct, std::string &key, std::str
 {
 	key.clear();
 
-	// The channels lookup keys on the user_id, so ensure identity is resolved first.
-	if (!ensureIdentity(acct, err)) {
-		return false;
-	}
-
-	Http::HttpReq req;
-	req.method = "GET";
-	req.url =
-		std::string(kKickApiBase) + "/public/v1/channels?broadcaster_user_id[]=" + Http::UrlEncode(acct.userId);
-
-	Http::HttpResponse resp;
-	if (!SendAuthed(acct, req, resp, err)) {
-		return false;
-	}
-	if (resp.status < 200 || resp.status >= 300) {
-		err = "Kick channels request failed (HTTP " + std::to_string(resp.status) + "): " + resp.body;
+	json row;
+	if (!FetchOwnChannelRow(*this, acct, row, err)) {
 		return false;
 	}
 
 	// The key rides in stream.key, gated by the streamkey:read scope. A token issued
 	// before that scope was added (scopeVer < 3) reconnects rather than reaching here,
 	// so a missing key here means the API withheld it, not a stale grant.
-	const json row = FirstDataRow(ParseJson(resp.body));
 	if (row.is_object() && row.contains("stream") && row["stream"].is_object()) {
 		key = Str(row["stream"], "key");
 	}

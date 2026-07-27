@@ -9,25 +9,14 @@
 
 nlohmann::json SceneLinkStore::ToJson() const
 {
-	OBSDataAutoRelease root = obs_data_create();
 	OBSDataArrayAutoRelease arr = links.ToDataArray();
-	obs_data_set_array(root, "canvas_scene_links", arr);
-
-	const char *js = obs_data_get_json(root);
-	return js ? nlohmann::json::parse(js) : nlohmann::json::object();
+	return StoreJsonFromArray("canvas_scene_links", arr);
 }
 
 void SceneLinkStore::FromJson(const nlohmann::json &j)
 {
-	links = CanvasSceneLink{};
-
-	if (j.is_object()) {
-		OBSDataAutoRelease root = obs_data_create_from_json(j.dump().c_str());
-		if (root) {
-			OBSDataArrayAutoRelease arr = obs_data_get_array(root, "canvas_scene_links");
-			links = CanvasSceneLink::FromDataArray(arr);
-		}
-	}
+	OBSDataArrayAutoRelease arr = StoreArrayFromJson(j, "canvas_scene_links");
+	links = CanvasSceneLink::FromDataArray(arr);
 }
 
 void SceneLinkStore::Load()
@@ -37,9 +26,7 @@ void SceneLinkStore::Load()
 
 void SceneLinkStore::Load(const std::string &path)
 {
-	OBSDataAutoRelease root = obs_data_create_from_json_file_safe(path.c_str(), "bak");
-	const char *js = root ? obs_data_get_json(root) : nullptr;
-	FromJson(js ? nlohmann::json::parse(js) : nlohmann::json::object());
+	FromJson(LoadStoreJson(path));
 }
 
 bool SceneLinkStore::Save() const
@@ -49,6 +36,5 @@ bool SceneLinkStore::Save() const
 
 bool SceneLinkStore::Save(const std::string &path) const
 {
-	OBSDataAutoRelease root = obs_data_create_from_json(ToJson().dump().c_str());
-	return ReportSaveResult(SaveJsonAtomic(root, path), path);
+	return SaveStoreJson(ToJson(), path);
 }
