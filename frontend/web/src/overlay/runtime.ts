@@ -3,42 +3,16 @@
 // host-injected window.__OVERLAY__ = {id, token, port, fields} and streams
 // NormalizedEvents over SSE. Compiled to dist/overlay/runtime.js by bun build.
 
+// ChatHub fans ONE payload object to both the overlay server and the bridge, so the
+// wire shape here is the bridge's shape. Type-only, so it erases at build time and the
+// runtime still bundles standalone (no bridge module pulled in).
+import type { ChatMessage, NormalizedEvent } from "$lib/api/bridge";
+
 interface OverlayBootstrap {
   id: string;
   token: string;
   port: number;
   fields: Record<string, unknown>;
-}
-
-// Mirrors bridge.ts NormalizedEvent (kept local so the runtime bundles standalone).
-interface NormalizedEvent {
-  id: string;
-  platform: "twitch" | "youtube" | "kick";
-  type: string;
-  ts: number;
-  actorName: string;
-  actorColor?: string;
-  amount?: number;
-  currency?: string;
-  tier?: string;
-  months?: number;
-  count?: number;
-  message?: string;
-}
-
-// Live multichat message, delivered on the SAME EventSource as a NAMED "chat" SSE
-// event (so it never hits onmessage and leaves alert-box widgets untouched). Mirrors
-// bridge.ts ChatMessage; kept local so the runtime bundles standalone.
-interface ChatMessage {
-  platform: "twitch" | "youtube" | "kick";
-  id: string;
-  ts: number;
-  author: {
-    name: string;
-    color?: string;
-    badges?: { kind: string; url?: string }[];
-  };
-  fragments: { type: string; text?: string; code?: string; url?: string }[];
 }
 
 type LoadCtx = { fields: Record<string, unknown> };
