@@ -1,0 +1,82 @@
+:root {
+  --ov-font: "Inter", system-ui, sans-serif;
+  --ov-size: 24px;
+  --ov-text: #ffffff;
+  --ov-bg: rgba(0, 0, 0, 0);
+  --ov-align: left;
+  --ov-cross: center;
+  --ov-dir: row;
+  --ov-gap: 14px;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: transparent;
+  overflow: hidden;
+  font-family: var(--ov-font);
+}
+
+.viewers {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: 0;
+  padding: 12px 18px;
+  background: var(--ov-bg);
+  color: var(--ov-text);
+  font-size: var(--ov-size);
+  line-height: 1.25;
+  font-weight: 600;
+  /* text-align positions the inline-flex stack, so the one align field works in both
+     orientations without a second alignment axis to keep in sync. */
+  text-align: var(--ov-align);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+}
+
+.stack,
+.chips {
+  display: inline-flex;
+  flex-direction: var(--ov-dir);
+  align-items: var(--ov-cross);
+  gap: var(--ov-gap);
+}
+
+/* An empty half must leave layout entirely, or the flex gap prints a phantom indent
+   ahead of the first chip. */
+.total[hidden],
+.chips[hidden] {
+  display: none;
+}
+
+.total {
+  white-space: nowrap;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.36em;
+  white-space: nowrap;
+}
+/* A platform that reported nothing this cycle, dimmed so it never reads as a figure. */
+.chip.idle {
+  opacity: 0.55;
+}
+
+.dot {
+  flex: 0 0 auto;
+  width: 0.5em;
+  height: 0.5em;
+  border-radius: 50%;
+}
+
+.plat {
+  font-size: 0.7em;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.85;
+}
+
+.count {
+  font-variant-numeric: tabular-nums;
+}
