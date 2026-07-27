@@ -9650,19 +9650,12 @@ bool MethodStreamMetaSearchCategories(const json &params, json &result, std::str
 
 	// Use any connected account for this provider (search needs a usable user token;
 	// a behind-scope or partial no-refresh account must not be used). Shared gate.
-	bool found = false;
-	OAuth::OAuthAccount acct;
-	for (const auto &entry : OAuth::Accounts().All()) {
-		if (entry.second.providerId == providerId && OAuth::IsAccountConnected(entry.second)) {
-			acct = entry.second;
-			found = true;
-			break;
-		}
-	}
-	if (!found) {
+	std::optional<OAuth::OAuthAccount> connected = OAuth::FirstConnectedAccount(providerId);
+	if (!connected) {
 		error = "connect an account first";
 		return false;
 	}
+	OAuth::OAuthAccount &acct = *connected;
 
 	json out;
 	std::string err;

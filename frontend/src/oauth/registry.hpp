@@ -3,6 +3,7 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -61,6 +62,10 @@ bool AccountNeedsReconnect(const OAuthAccount &acct);
 
 // Is at least one account for `providerId` connected? (e.g. IsProviderConnected("twitch").)
 bool IsProviderConnected(const std::string &providerId);
+
+// The first connected account for `providerId`, for callers that need the credential
+// itself rather than the yes/no IsProviderConnected answers. Empty when none qualifies.
+std::optional<OAuthAccount> FirstConnectedAccount(const std::string &providerId);
 
 // Distinct provider ids with >=1 connected account (e.g. {"twitch","kick"}).
 std::vector<std::string> ConnectedProviders();

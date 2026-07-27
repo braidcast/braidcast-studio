@@ -66,14 +66,19 @@ bool AccountNeedsReconnect(const OAuthAccount &acct)
 	return provider && !acct.refresh.empty() && (!provider->isTokenScopeCurrent(acct) || acct.refreshDead);
 }
 
-bool IsProviderConnected(const std::string &providerId)
+std::optional<OAuthAccount> FirstConnectedAccount(const std::string &providerId)
 {
 	for (const auto &entry : Accounts().All()) {
 		if (entry.second.providerId == providerId && IsAccountConnected(entry.second)) {
-			return true;
+			return entry.second;
 		}
 	}
-	return false;
+	return std::nullopt;
+}
+
+bool IsProviderConnected(const std::string &providerId)
+{
+	return FirstConnectedAccount(providerId).has_value();
 }
 
 std::vector<std::string> ConnectedProviders()
