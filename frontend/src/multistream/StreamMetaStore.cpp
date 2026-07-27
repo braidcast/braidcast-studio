@@ -2,6 +2,8 @@
 
 #include "StorePaths.hpp"
 
+#include "../log.hpp"
+
 #include <obs.h>
 #include <obs.hpp>
 
@@ -20,7 +22,9 @@ json ParseObjectBlob(obs_data_t *root, const char *key)
 	json parsed;
 	try {
 		parsed = json::parse(v);
-	} catch (...) {
+	} catch (const std::exception &e) {
+		HostLog(std::string("[storage] stream_meta.json '") + key + "' blob unparseable (" + e.what() +
+			"); the remembered defaults it held are gone");
 		return json::object();
 	}
 	return parsed.is_object() ? parsed : json::object();

@@ -107,8 +107,10 @@ bool GlobalAudioChannels::Persist() const
 			try {
 				obj[std::to_string(slot.channel)] = json::parse(savedJson);
 				stored = true;
-			} catch (...) {
-				stored = false;
+			} catch (const std::exception &e) {
+				HostLog("[audio] global audio: ch" + std::to_string(slot.channel) +
+					" source blob did not round-trip (" + e.what() +
+					"); persisting device_id only -- its filters and mixer state are dropped");
 			}
 		}
 		if (!stored) {
@@ -144,10 +146,17 @@ void GlobalAudioChannels::SeedOrRestore()
 
 	auto firstRunSeed = [this]() {
 		std::string err;
-		ApplyDevice(1, "default", err);
-		ApplyDevice(3, "default", err);
+		const bool desktop = ApplyDevice(1, "default", err);
+		if (!desktop) {
+			HostLog("[audio] global audio: first-run seed ch1 (Desktop Audio) failed: " + err);
+		}
+		const bool mic = ApplyDevice(3, "default", err);
+		if (!mic) {
+			HostLog("[audio] global audio: first-run seed ch3 (Mic/Aux) failed: " + err);
+		}
 		Persist();
-		HostLog("[audio] global audio: first-run seed (Desktop Audio + Mic/Aux -> default)");
+		HostLog(std::string("[audio] global audio: first-run seed -> Desktop Audio ") +
+			(desktop ? "ok" : "FAILED") + ", Mic/Aux " + (mic ? "ok" : "FAILED"));
 	};
 
 	if (state.empty()) {

@@ -1,5 +1,6 @@
 #include "event_store.hpp"
 
+#include "../log.hpp"
 #include "../multistream/StorePaths.hpp"
 
 #include <obs.hpp>
@@ -128,8 +129,12 @@ void EventStore::Load()
 	json parsed;
 	try {
 		parsed = json::parse(js);
-	} catch (...) {
-		return; // a corrupt file starts the store empty rather than aborting boot
+	} catch (const std::exception &e) {
+		// A corrupt file starts the store empty rather than aborting boot, but the lost
+		// history must not read as "no events yet".
+		HostLog(std::string("[events] events.json unparseable (") + e.what() +
+			"); starting with no stored history");
+		return;
 	}
 	if (!parsed.is_object() || !parsed.contains("events") || !parsed["events"].is_array()) {
 		return;

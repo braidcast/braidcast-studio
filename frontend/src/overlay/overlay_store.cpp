@@ -178,7 +178,9 @@ Widget OverlayStore::Create(const std::string &name, const std::string &type)
 					w.fields.push_back(field);
 				}
 			}
-		} catch (...) {
+		} catch (const std::exception &e) {
+			HostLog("[overlay] Create: fields.json for type '" + type + "' is unparseable (" + e.what() +
+				"); seeding the widget with no fields");
 			w.fields = json::array();
 		}
 	}
@@ -345,8 +347,12 @@ void OverlayStore::Load()
 	json parsed;
 	try {
 		parsed = json::parse(js);
-	} catch (...) {
-		return; // a corrupt file starts the store empty rather than aborting boot
+	} catch (const std::exception &e) {
+		// A corrupt file starts the store empty rather than aborting boot, but the lost
+		// widgets must not read as "none configured".
+		HostLog(std::string("[overlay] overlays.json unparseable (") + e.what() +
+			"); starting with no widgets");
+		return;
 	}
 	if (!parsed.is_object()) {
 		return;

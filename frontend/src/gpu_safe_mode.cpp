@@ -6,6 +6,7 @@
 #include <fstream>
 #include <system_error>
 
+#include "log.hpp"
 #include "multistream/StorePaths.hpp"
 
 namespace {
@@ -41,7 +42,11 @@ void WriteEmptyFile(const std::string &absPath)
 	if (absPath.empty()) {
 		return;
 	}
-	std::ofstream(std::filesystem::u8path(absPath), std::ios::binary | std::ios::trunc);
+	std::ofstream file(std::filesystem::u8path(absPath), std::ios::binary | std::ios::trunc);
+	if (!file) {
+		HostLog("[gpu] could not write " + absPath +
+			"; the GPU crash probe cannot carry its verdict to the next boot");
+	}
 }
 
 void RemoveFile(const std::string &absPath)

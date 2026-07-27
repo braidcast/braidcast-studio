@@ -285,8 +285,9 @@ bool SceneCollections::RebuildFromScenes()
 	const std::string idx = IndexPath();
 	std::error_code renameEc;
 	std::filesystem::rename(std::filesystem::u8path(idx), std::filesystem::u8path(idx + ".corrupt"), renameEc);
+	std::error_code bakRenameEc;
 	std::filesystem::rename(std::filesystem::u8path(idx + ".bak"), std::filesystem::u8path(idx + ".bak.corrupt"),
-				renameEc);
+				bakRenameEc);
 
 	collections_.clear();
 	for (const Found &f : found) {
@@ -303,8 +304,10 @@ bool SceneCollections::RebuildFromScenes()
 	Save();
 
 	HostLog("[scene] scene_collections.json unreadable; rebuilt index from " + std::to_string(collections_.size()) +
-		" scene file(s) on disk (names reset to filenames; verify the active collection). Corrupt index kept at " +
-		idx + ".corrupt");
+		" scene file(s) on disk (names reset to filenames; verify the active collection). " +
+		(renameEc ? "The corrupt index could NOT be preserved (" + renameEc.message() +
+				    "); the rebuilt one has overwritten it"
+			  : "Corrupt index kept at " + idx + ".corrupt"));
 	return true;
 }
 

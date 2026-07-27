@@ -185,6 +185,12 @@ void Init()
 	if (g_file.is_open()) {
 		g_path = full.u8string();
 		RotateOldLogs(logsDir);
+	} else {
+		// Emitted before the chain below is installed, so it reaches the existing
+		// handler: without it the absent session log looks like a path that was never
+		// resolved.
+		blog(LOG_WARNING, "SessionLog: could not open '%s'; this session has no log file on disk",
+		     full.u8string().c_str());
 	}
 
 	// Capture the existing handler (e.g. the stderr/HostLog one) and chain to it.

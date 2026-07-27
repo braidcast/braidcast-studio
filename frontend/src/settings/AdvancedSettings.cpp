@@ -58,8 +58,9 @@ namespace {
 
 // Map a concrete priority token to a Win32 priority class and apply it. Only ever
 // sees the manual tokens (normal/aboveNormal/high) -- ApplyEffectivePriority resolves
-// "auto" to one of these first. Unknown tokens are ignored.
-void ApplyPriorityClass(const std::string &token)
+// "auto" to one of these first. False when the token names no class or the OS refused
+// the change, so the caller never claims a priority it does not have.
+bool ApplyPriorityClass(const std::string &token)
 {
 #ifdef _WIN32
 	static const struct {
@@ -72,12 +73,13 @@ void ApplyPriorityClass(const std::string &token)
 	};
 	for (const auto &c : kClasses) {
 		if (token == c.token) {
-			SetPriorityClass(GetCurrentProcess(), c.cls);
-			return;
+			return SetPriorityClass(GetCurrentProcess(), c.cls) != FALSE;
 		}
 	}
+	return false;
 #else
 	(void)token;
+	return false;
 #endif
 }
 
@@ -87,9 +89,9 @@ void ApplyEffectivePriority(const std::string &token, bool live)
 {
 	const bool isAuto = token == "auto";
 	const std::string effective = isAuto ? (live ? "high" : "aboveNormal") : token;
-	ApplyPriorityClass(effective);
-	HostLog("[obs] process priority applied: token=" + token + " effective=" + effective +
-		(isAuto ? (live ? " (auto/live)" : " (auto/idle)") : " (manual override)"));
+	const bool applied = ApplyPriorityClass(effective);
+	HostLog(std::string("[obs] process priority ") + (applied ? "applied" : "NOT applied") + ": token=" + token +
+		" effective=" + effective + (isAuto ? (live ? " (auto/live)" : " (auto/idle)") : " (manual override)"));
 }
 
 void DisableAudioDucking(bool disable)
