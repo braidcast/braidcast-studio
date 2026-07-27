@@ -2,7 +2,7 @@
 #define OBS_MULTISTREAM_FRONTEND_EVENT_NAMES_HPP_
 
 // Bridge PUSH-EVENT names (C++ -> JS via Bridge::EmitEvent).
-// Mirror of web/src/lib/eventNames.ts -- values MUST match exactly.
+// Mirror of web/src/lib/utils/eventNames.ts -- values MUST match exactly.
 
 namespace EventNames {
 inline constexpr const char *kStreamProfileChanged = "streamProfile.changed";
