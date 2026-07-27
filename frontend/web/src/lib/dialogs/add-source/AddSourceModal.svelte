@@ -4,7 +4,7 @@
   import EmptyState from "$lib/ui/EmptyState.svelte";
   import { obs, type SourceType, type ExistingSource } from "$lib/api/bridge";
   import { recentSources, pushRecent } from "$lib/dialogs/add-source/addSourceRecent.svelte";
-  import { bucketTypes, categoryOf, CATEGORY_LABEL, type Category } from "$lib/dialogs/add-source/addSourceCategories";
+  import { bucketTypes, CATEGORY_LABEL, type Category } from "$lib/dialogs/add-source/addSourceCategories";
 
   interface Props {
     /** Focused canvas uuid; the source is added into this canvas's current scene. */

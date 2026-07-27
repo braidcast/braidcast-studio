@@ -4,7 +4,6 @@
     type CanvasInfo,
     type EncoderType,
     type OutputBindingInfo,
-    type StreamProfileInfo,
     type MultistreamState,
   } from "$lib/api/bridge";
   import { canvasStore } from "$lib/stores/canvasStore.svelte";

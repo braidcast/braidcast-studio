@@ -22,8 +22,3 @@ export function showToast(message: string, title: string): void {
   clearTimeout(timer);
   timer = setTimeout(() => (toast.current = null), DISMISS_MS);
 }
-
-export function dismissToast(): void {
-  clearTimeout(timer);
-  toast.current = null;
-}

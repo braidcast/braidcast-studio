@@ -14,7 +14,7 @@ import { bumpDockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   import { startBrowserDockReconciler, reconcileBrowserDocks } from "$lib/docking/browserDockReconciler";
   import { setDetachHandler } from "$lib/docking/detachRegistry";
   import { browserDockStore } from "$lib/stores/browserDockStore.svelte";
-  import { obs, type CanvasInfo, type Monitor, type MultistreamState } from "$lib/api/bridge";
+  import { obs, type CanvasInfo, type Monitor } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
   import { canvasStore } from "$lib/stores/canvasStore.svelte";
   import { multistreamStatusStore, isActiveState } from "$lib/stores/multistreamStatusStore.svelte";

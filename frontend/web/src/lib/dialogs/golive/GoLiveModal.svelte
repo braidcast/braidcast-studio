@@ -5,7 +5,6 @@
     type OAuthProvider,
     type OAuthProviderField,
     type OAuthStatus,
-    type OutputBindingInfo,
     type StreamProfileInfo,
   } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
