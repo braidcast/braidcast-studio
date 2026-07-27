@@ -562,7 +562,14 @@ import { EV } from "$lib/utils/eventNames";
       outputBindingStore.whenReady(),
       streamProfileStore.whenReady(),
       canvasStore.whenReady(),
-      obs.call("getStreamingState").catch(() => ({ active: false })),
+      // The gate must settle for the modal to render at all, so a failed read still
+      // has to produce a value — but "not live" is indistinguishable from a real
+      // idle answer and picks the wrong primary action, so say so.
+      obs.call("getStreamingState").catch((e) => {
+        const msg = (e as Error).message;
+        showToast("Couldn't read stream state: " + msg, msg);
+        return { active: false };
+      }),
     ]).then(([, , , , st]) => {
       if (!active) {
         return;

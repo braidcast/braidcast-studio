@@ -1,5 +1,7 @@
 import { obs, type OAuthStatus, type OAuthProvider, type ChatPlatform } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
+import { log } from "$lib/utils/log";
+import { Cat } from "$lib/utils/logCategories";
 import { PLATFORM_ORDER } from "$lib/theme/platformColors";
 
 // Shared reactive OAuth-account store. `oauth.status` has a push event (fired on any
@@ -29,10 +31,19 @@ class OAuthStore {
    * connect/disconnect that also emits oauth.status, refreshing subscribers) use this
    * to sequence their own UI. */
   async refresh(): Promise<void> {
-    await Promise.allSettled([
+    // allSettled so one half failing still lets the other land. A rejection leaves
+    // the previous snapshot in place, which on the first load is an empty one --
+    // indistinguishable from "no accounts connected", and every gate downstream
+    // reads it as authoritative. Say so rather than let it pass for an answer.
+    const settled = await Promise.allSettled([
       obs.call("oauth.status").then((s) => (this.statuses = s)),
       obs.call("oauth.providers").then((p) => (this.providers = p)),
     ]);
+    for (const [i, r] of settled.entries()) {
+      if (r.status === "rejected") {
+        log.warn(Cat.oauth, (i === 0 ? "oauth.status" : "oauth.providers") + " failed:", (r.reason as Error).message);
+      }
+    }
   }
 
   /** Resolves after a FRESH status+providers load settles, for one-shot consumers

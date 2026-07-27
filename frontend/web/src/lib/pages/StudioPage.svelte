@@ -276,7 +276,9 @@ import { EV } from "$lib/utils/eventNames";
         warnGoLive = g.warnBeforeGoLive;
         warnStop = g.warnBeforeStop;
       })
-      .catch(() => {});
+      // A failed read leaves both warn flags at their `false` initial value, which
+      // silently skips the go-live/stop confirmation the user may have asked for.
+      .catch((e) => log.warn(Cat.bridge, "settings.getGeneral failed; go-live warnings stay off:", (e as Error).message));
     obs
       .call("display.listMonitors")
       .then((res) => (monitors = res?.monitors ?? []))
@@ -287,7 +289,9 @@ import { EV } from "$lib/utils/eventNames";
         vcamActive = s.active;
         vcamCanvas = s.canvas;
       })
-      .catch(() => {});
+      // Leaves vcamActive false, which renders an already-running virtual camera as
+      // stopped until the next virtualCam.changed push corrects it.
+      .catch((e) => log.warn(Cat.bridge, "virtualCam.status failed:", (e as Error).message));
     const offStreaming = obs.on(EV.streamingChanged, (p) => (anyRunning = p.active));
     const offViewers = viewerCountStore.subscribe();
     const offVcam = obs.on(EV.virtualCamChanged, (s) => {

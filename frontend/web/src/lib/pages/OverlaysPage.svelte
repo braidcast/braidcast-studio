@@ -261,7 +261,9 @@ import { EV } from "$lib/utils/eventNames";
         portChanged = !!s?.portChanged;
         serverDown = s ? !s.listening : false;
       })
-      .catch(() => {});
+      // Both banners default to hidden, so a failed read would otherwise claim a
+      // healthy server on the exact page whose job is to report it.
+      .catch((e) => (error = (e as Error).message));
     return obs.on(EV.overlaysChanged, onOverlaysChanged);
   });
 

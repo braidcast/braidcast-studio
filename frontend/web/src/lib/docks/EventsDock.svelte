@@ -1,6 +1,7 @@
 <script lang="ts">
   import { obs, type NormalizedEvent, type EventType } from "$lib/api/bridge";
   import { EV } from "$lib/utils/eventNames";
+  import { callOrToast } from "$lib/utils/callToast";
   import { PLATFORM_COLORS, EVENT_TYPE_COLORS, EVENT_TYPE_LABELS } from "$lib/theme/platformColors";
   import { FeedVirtualizer, type FeedRow } from "$lib/utils/feedVirtualizer.svelte";
   import EmptyState from "$lib/ui/EmptyState.svelte";
@@ -187,7 +188,8 @@
   function clear(): void {
     // The host clears its store then emits an empty events.backfill; setFeed([])
     // below is a local echo so the feed empties immediately even if the push lags.
-    obs.call("events.clear").catch(() => {});
+    // The echo makes a rejected clear look like it worked, so surface the failure.
+    void callOrToast("events.clear", undefined, "Clear events failed");
     feed.setFeed([], true);
   }
 

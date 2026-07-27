@@ -56,17 +56,21 @@
       const list = (await obs.call("audio.list")).sources;
       // Hydrate each source's advanced audio in parallel (same pattern as the mixer's
       // loadMonitoring). A source that can't report falls back so its row still renders.
+      const unread: string[] = [];
       const hydrated = await Promise.all(
         list.map(async (src): Promise<Row> => {
           try {
             return { src, aa: await obs.call("audio.getAdvanced", { uuid: src.uuid }) };
           } catch {
+            // The placeholder row reads as real settings (0 dB = unity gain, centered,
+            // no monitoring), so name the sources whose values are actually unknown.
+            unread.push(src.name);
             return { src, aa: { volumeDb: 0, forceMono: false, balance: 0.5, syncOffsetMs: 0, tracks: [], monitoringType: "none" } };
           }
         }),
       );
       rows = hydrated;
-      error = null;
+      error = unread.length ? "Couldn't read advanced audio for: " + unread.join(", ") : null;
     } catch (e) {
       report(e);
     } finally {

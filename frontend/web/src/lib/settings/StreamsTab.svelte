@@ -179,8 +179,12 @@
   async function loadExisting(providerId: string) {
     try {
       existing = await oauthAccounts(providerId);
-    } catch {
+    } catch (e) {
+      // An empty list is how "this provider has no connected accounts yet" renders,
+      // so a failed read would otherwise push the user into a fresh grant for an
+      // account they have already linked.
       existing = [];
+      formError = (e as Error).message;
     }
   }
 

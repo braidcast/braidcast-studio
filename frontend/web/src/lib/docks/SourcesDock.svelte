@@ -425,11 +425,14 @@ import { EV } from "$lib/utils/eventNames";
   }
 
   // Deinterlacing lives on the source (not the scene item), so it isn't in the row
-  // data; fetch it just-in-time when the menu opens. Falls back to disabled state.
+  // data; fetch it just-in-time when the menu opens. A failed read still yields a
+  // menu, but the checked entry is then a guess rather than the source's real
+  // state — report it so the discrepancy isn't silent.
   async function fetchDeint(source: string): Promise<{ mode: DeinterlaceMode; fieldOrder: DeinterlaceFieldOrder }> {
     try {
       return await obs.call("sources.getDeinterlace", { source });
-    } catch {
+    } catch (e) {
+      report(e);
       return { mode: "disable", fieldOrder: "top" };
     }
   }

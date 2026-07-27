@@ -7,6 +7,7 @@
 
 import { obs } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
+import { callOrToast } from "$lib/utils/callToast";
 import type { UndoState } from "$lib/api/bridge";
 
 class UndoStore {
@@ -44,13 +45,13 @@ class UndoStore {
 
   undo(): void {
     if (this.canUndo) {
-      void obs.call("undo.undo").catch(() => {});
+      void callOrToast("undo.undo", undefined, "Undo failed");
     }
   }
 
   redo(): void {
     if (this.canRedo) {
-      void obs.call("undo.redo").catch(() => {});
+      void callOrToast("undo.redo", undefined, "Redo failed");
     }
   }
 }

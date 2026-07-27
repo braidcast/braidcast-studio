@@ -43,11 +43,14 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   const warn = (method: string) => (e: unknown) => console.log(method + " failed: " + (e as Error).message);
 
   // Deinterlacing is a source-level property (not in the event payload), fetched
-  // just-in-time when the menu opens. Falls back to disabled state on error.
+  // just-in-time when the menu opens. A failed read still yields a menu, but the
+  // checked entry is then a guess rather than the source's real state — report it
+  // so the discrepancy isn't silent.
   async function fetchDeint(source: string): Promise<{ mode: DeinterlaceMode; fieldOrder: DeinterlaceFieldOrder }> {
     try {
       return await obs.call("sources.getDeinterlace", { source });
-    } catch {
+    } catch (e) {
+      warn("sources.getDeinterlace")(e);
       return { mode: "disable", fieldOrder: "top" };
     }
   }

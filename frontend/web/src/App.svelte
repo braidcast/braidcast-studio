@@ -255,7 +255,7 @@ import { EV } from "$lib/utils/eventNames";
       // Ctrl+Shift+S: screenshot the program (Default canvas). OBS leaves its
       // screenshot hotkey unbound by default, so this is our own clear default.
       e.preventDefault();
-      void obs.call("screenshot.takeProgram").catch(() => {});
+      void callOrToast("screenshot.takeProgram", undefined, "Screenshot failed");
     } else if (key === "s" && !e.shiftKey) {
       quickTransform(e, "stretchToScreen", "Stretch to screen failed");
     } else if (key === "e") {

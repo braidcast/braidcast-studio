@@ -643,11 +643,14 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   }
 
   // Deinterlacing is a source-level property (no canvas), fetched just-in-time when
-  // the menu opens. Falls back to disabled state on error.
+  // the menu opens. A failed read still yields a menu, but the checked entry is then
+  // a guess rather than the source's real state — report it so the discrepancy isn't
+  // silent.
   async function fetchDeint(source: string): Promise<{ mode: DeinterlaceMode; fieldOrder: DeinterlaceFieldOrder }> {
     try {
       return await obs.call("sources.getDeinterlace", { source });
-    } catch {
+    } catch (e) {
+      report(e);
       return { mode: "disable", fieldOrder: "top" };
     }
   }

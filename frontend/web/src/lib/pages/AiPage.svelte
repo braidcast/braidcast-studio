@@ -1,6 +1,7 @@
 <script lang="ts">
   import { obs, type McpConfig, type McpSetConfigParams } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
+  import { callOrToast } from "$lib/utils/callToast";
   import PageHeader from "$lib/ui/PageHeader.svelte";
 
   // MCP control page. Logic mirrors McpTab.svelte (load + mcp.changed subscription,
@@ -43,13 +44,13 @@ import { EV } from "$lib/utils/eventNames";
     }
     busy = true;
     cfg = { ...cfg, ...patch };
-    try {
-      cfg = await obs.call("mcp.setConfig", patch);
-    } catch {
+    const next = await callOrToast("mcp.setConfig", patch, "MCP settings");
+    if (next) {
+      cfg = next;
+    } else {
       load();
-    } finally {
-      busy = false;
     }
+    busy = false;
   }
 
   async function regenerate(): Promise<void> {
@@ -64,15 +65,14 @@ import { EV } from "$lib/utils/eventNames";
       return;
     }
     busy = true;
-    try {
-      const res = await obs.call("mcp.regenerateToken");
+    const res = await callOrToast("mcp.regenerateToken", undefined, "Regenerate token");
+    if (res) {
       cfg = { ...cfg, token: res.token };
       showToken = true;
-    } catch {
+    } else {
       load();
-    } finally {
-      busy = false;
     }
+    busy = false;
   }
 
   async function copy(which: "endpoint" | "token", value: string): Promise<void> {
