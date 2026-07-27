@@ -15,6 +15,9 @@ class DefaultCanvasStore {
   error = $state<string | null>(null);
 
   #started = false;
+  // Per-refresh token: drop a stale resolution so concurrent refreshes can't let a
+  // slow earlier call overwrite a newer one (last-issued wins, not last-resolved).
+  #seq = 0;
 
   // Idempotent: the first core dock to mount starts it; later mounts are no-ops.
   start(): void {
@@ -32,12 +35,19 @@ class DefaultCanvasStore {
   }
 
   async refresh(): Promise<void> {
+    const seq = ++this.#seq;
     try {
       const list = await obs.call("scenes.list");
+      if (seq !== this.#seq) {
+        return;
+      }
       this.scenes = list;
       this.current = list.find((s) => s.current)?.name ?? null;
       this.error = null;
     } catch (e) {
+      if (seq !== this.#seq) {
+        return;
+      }
       this.error = (e as Error).message;
     } finally {
       this.loaded = true;
