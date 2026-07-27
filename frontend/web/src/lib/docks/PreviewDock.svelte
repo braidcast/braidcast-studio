@@ -121,7 +121,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
       ...(it?.interactive && p.source
         ? [{ label: "Interact", action: () => void obs.call("sources.interact", { source: p.source }).catch(warn("sources.interact")) }]
         : []),
-      ...(p.id != null ? [transformMenu({ scene: p.scene ?? undefined, id: p.id }, p.source ?? "(unnamed)")] : []),
+      ...(p.id != null ? [transformMenu({ scene: p.scene, id: p.id }, p.source ?? "(unnamed)")] : []),
       scaleFilterMenu(currentFilter, (filter) => void call("sceneItems.setScaleFilter", { filter })),
       blendModeMenu(currentBlendMode, (mode) => void call("sceneItems.setBlendingMode", { mode })),
       blendMethodMenu(currentBlendMethod, (method) => void call("sceneItems.setBlendingMethod", { method })),

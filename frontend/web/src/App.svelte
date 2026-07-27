@@ -264,7 +264,7 @@ import { EV } from "$lib/utils/eventNames";
       const it = sourceSelection.item;
       if (it) {
         e.preventDefault();
-        openTransform({ scene: sourceSelection.scene ?? undefined, id: it.id }, it.source ?? "(unnamed)");
+        openTransform({ scene: sourceSelection.scene, id: it.id }, it.source ?? "(unnamed)");
       }
     } else if (key === "r") {
       quickTransform(e, "reset", "Reset transform failed");

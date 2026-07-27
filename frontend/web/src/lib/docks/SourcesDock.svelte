@@ -452,7 +452,7 @@ import { EV } from "$lib/utils/eventNames";
         ...(item.interactive && item.source
           ? [{ label: "Interact", action: () => void obs.call("sources.interact", { source: item.source }).catch(report) }]
           : []),
-        transformMenu({ scene: currentScene ?? undefined, id: item.id }, item.source ?? "(unnamed)"),
+        transformMenu({ scene: currentScene, id: item.id }, item.source ?? "(unnamed)"),
         { label: "Rename", action: () => beginRename(item) },
         scaleFilterMenu(item.scaleFilter, (filter) =>
           void obs.call("sceneItems.setScaleFilter", { scene: currentScene, id: item.id, filter }).catch(report),

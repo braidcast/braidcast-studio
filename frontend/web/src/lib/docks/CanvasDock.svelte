@@ -669,7 +669,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
         ...(item.interactive && item.source
           ? [{ label: "Interact", action: () => void obs.call("sources.interact", { source: item.source }).catch(report) }]
           : []),
-        transformMenu({ canvas: canvasUuid, scene: currentScene ?? undefined, id: item.id }, item.source ?? "(unnamed)"),
+        transformMenu({ canvas: canvasUuid, scene: currentScene, id: item.id }, item.source ?? "(unnamed)"),
         { label: "Rename", action: () => beginRenameSource(item) },
         scaleFilterMenu(item.scaleFilter, (filter) =>
           void obs
@@ -814,7 +814,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     const currentHideTransition = items.find((i) => i.id === p.id)?.hideTransition ?? null;
     return [
       ...(p.id != null
-        ? [transformMenu({ canvas: canvasUuid, scene: p.scene ?? undefined, id: p.id }, p.source ?? "(unnamed)")]
+        ? [transformMenu({ canvas: canvasUuid, scene: p.scene, id: p.id }, p.source ?? "(unnamed)")]
         : []),
       scaleFilterMenu(currentFilter, (filter) => void call("sceneItems.setScaleFilter", { filter })),
       blendModeMenu(currentBlendMode, (mode) => void call("sceneItems.setBlendingMode", { mode })),
