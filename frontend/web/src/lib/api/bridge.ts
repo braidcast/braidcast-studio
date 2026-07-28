@@ -1055,9 +1055,18 @@ export interface ChatBadge {
 }
 
 /** A chat author, normalized across platforms. `color` is the author's chosen
- * name color (hex "#RRGGBB"; "" when unset -> fall back to a platform color). */
+ * name color (hex "#RRGGBB"; "" when unset -> fall back to a platform color).
+ *
+ * `id` is the sender's stable per-user id on `platform` (Twitch's `user-id` tag,
+ * YouTube's author channel id, Kick's sender id) -- the key to tally a chatter on,
+ * since `name` is a display name the user can change mid-stream and two people on
+ * one platform may hold names differing only in case. Absent when the platform did
+ * not supply one (the host OMITS the key rather than sending ""), so a consumer must
+ * fall back to the name for those and must never treat a missing id as a shared
+ * empty-string identity. Do not log it: it identifies a real viewer. */
 export interface ChatAuthor {
   name: string;
+  id?: string;
   color: string;
   badges: ChatBadge[];
 }

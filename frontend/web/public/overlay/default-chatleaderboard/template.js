@@ -130,15 +130,24 @@ function windowMs() {
   return Number.isFinite(n) && n > 0 ? n * 60000 : 0;
 }
 
-// A chatter is the platform plus the author's name. ChatAuthor carries no per-user id --
-// only name, color and badges -- so the display name is the most stable identifier
-// available; the account id on the message names OUR receiving account, not the sender, so
-// it must stay out of the key or one chatter writing to two of our channels would count as
-// two people. The name is not case-folded: Twitch sends one canonical casing per user so
-// folding buys nothing there, while on YouTube and Kick two different people may hold
-// names that differ only in case and folding would merge them.
-function keyFor(platform, name) {
-  return platform + "\n" + name;
+// A chatter is the platform plus the sender's stable per-user id, and only the display name
+// when the platform sent no id. The id is what makes the tally right: a display name changes
+// mid-stream (one person would split into two rows) and two people on one platform may hold
+// the same name (two people would merge into one row). The account id on the message names
+// OUR receiving account, not the sender, so it stays out of the key either way -- one chatter
+// writing to two of our channels is one person.
+//
+// The middle segment is the namespace tag, and it is what keeps the two schemes apart: an
+// id-keyed chatter always reads "i" there and a name-keyed one always reads "n", so no id and
+// no name -- whatever either contains, newlines included -- can ever produce the same key
+// string. A missing id therefore falls back to the name rather than keying everyone who lacks
+// one on a shared "".
+//
+// The name is not case-folded: Twitch sends one canonical casing per user so folding buys
+// nothing there, while on YouTube and Kick two different people may hold names that differ
+// only in case and folding would merge them.
+function keyFor(platform, id, name) {
+  return id ? platform + "\ni\n" + id : platform + "\nn\n" + name;
 }
 
 function note(m) {
@@ -151,15 +160,19 @@ function note(m) {
   if (!name) {
     return;
   }
+  const id = typeof m.author.id === "string" ? m.author.id.trim() : "";
   const platform = typeof m.platform === "string" ? m.platform.trim().toLowerCase() : "";
   const ts = typeof m.ts === "number" && Number.isFinite(m.ts) ? m.ts : Date.now();
 
-  const key = keyFor(platform, name);
+  const key = keyFor(platform, id, name);
   let c = chatters.get(key);
   if (c === undefined) {
     c = { platform: platform, name: name, count: 0, seq: seq++, stamps: [] };
     chatters.set(key, c);
   }
+  // An id-keyed row survives a rename, so the board shows the name they go by now rather
+  // than whichever one they happened to arrive under.
+  c.name = name;
   c.count += 1;
   c.stamps.push(ts);
   if (c.stamps.length > MAX_STAMPS) {

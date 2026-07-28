@@ -186,7 +186,8 @@ json NormalizeItem(const json &item, const std::string &liveChatId,
 	// identical whichever of them is reading this chat.
 	return BuildChatMessage("youtube", liveChatId, Str(item, "id"),
 				static_cast<int64_t>(Rfc3339ToEpochMs(Str(snippet, "publishedAt"))),
-				Str(author, "displayName"), std::string(), BadgesFor(author), fragments);
+				Str(author, "displayName"), Str(author, "channelId"), std::string(), BadgesFor(author),
+				fragments);
 }
 
 // Recognize the monetization/membership live-chat item types and fill `ev` with the

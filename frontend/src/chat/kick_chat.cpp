@@ -67,6 +67,23 @@ json ParseFragments(const std::string &content)
 	return frags;
 }
 
+// Read an id that Kick serializes as either a JSON string or a JSON integer (message ids are
+// uuids, sender ids are numbers) into its string form. Missing / any other type -> "".
+std::string IdField(const json &j, const char *key)
+{
+	auto it = j.find(key);
+	if (it == j.end()) {
+		return std::string();
+	}
+	if (it->is_string()) {
+		return it->get<std::string>();
+	}
+	if (it->is_number_integer()) {
+		return std::to_string(it->get<long long>());
+	}
+	return std::string();
+}
+
 void EmitState(const ChatContext &ctx, bool connected, const std::string &error)
 {
 	EmitChatState(ctx, "kick", connected, error);
@@ -98,6 +115,7 @@ void HandleChatMessage(const json &outer, const ChatContext &ctx, const std::str
 	}
 
 	std::string name;
+	std::string senderId;
 	std::string color;
 	json badges = json::array();
 	auto senderIt = inner.find("sender");
@@ -107,6 +125,7 @@ void HandleChatMessage(const json &outer, const ChatContext &ctx, const std::str
 		if (name.empty()) {
 			name = sender.value("slug", std::string());
 		}
+		senderId = IdField(sender, "id");
 		auto idIt = sender.find("identity");
 		if (idIt != sender.end() && idIt->is_object()) {
 			color = idIt->value("color", std::string());
@@ -131,15 +150,7 @@ void HandleChatMessage(const json &outer, const ChatContext &ctx, const std::str
 		return; // no resolvable author -> skip
 	}
 
-	std::string msgId;
-	auto msgIdIt = inner.find("id");
-	if (msgIdIt != inner.end()) {
-		if (msgIdIt->is_string()) {
-			msgId = msgIdIt->get<std::string>();
-		} else if (msgIdIt->is_number_integer()) {
-			msgId = std::to_string(msgIdIt->get<long long>());
-		}
-	}
+	const std::string msgId = IdField(inner, "id");
 
 	const std::string content = inner.value("content", std::string());
 
@@ -151,7 +162,7 @@ void HandleChatMessage(const json &outer, const ChatContext &ctx, const std::str
 		// Receipt time, not the payload's created_at (ISO-8601 parsing skipped); the
 		// two differ only by network latency.
 		{"ts", NowMs()},
-		{"author", json{{"name", name}, {"color", color}, {"badges", badges}}},
+		{"author", BuildChatAuthor(name, senderId, color, badges)},
 		// Native [emote:...] fragments win: ApplyThirdPartyEmotes only rewrites the
 		// plain-text runs ParseFragments emits, leaving Kick emote fragments verbatim.
 		{"fragments", ApplyThirdPartyEmotes(ParseFragments(content), thirdPartyEmotes)},

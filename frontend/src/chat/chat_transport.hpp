@@ -43,6 +43,7 @@ using json = nlohmann::json;
 //     "id":        <string>,               // platform message id
 //     "ts":        <number>,               // epoch milliseconds
 //     "author": { "name":   <string>,
+//                 "id":     <string?>,     // stable platform user id; OMITTED when unknown
 //                 "color":  <string>,      // "#RRGGBB" ("" if unset)
 //                 "badges": [ { "kind": <string>, "url": <string?> } ] },
 //     "fragments": [ { "type": "text",  "text": <string> }
@@ -73,6 +74,24 @@ struct ChatContext {
 	std::function<void(Transports::TransportHealth::State state, const std::string &error)> reportHealth;
 };
 
+// Assemble the author object of the shape documented above. The ONE place the author keys
+// are named, so the transports that assemble their own frame (Twitch, Kick) and the ones
+// that go through BuildChatMessage cannot drift apart on it.
+//
+// `id` is the platform's stable per-user id, which a consumer keys a per-chatter tally on
+// so a mid-stream display-name change stays one person and two people sharing a name stay
+// two. An UNKNOWN id OMITS the key rather than writing "": an empty id is a value two
+// different chatters would share, which is the misattribution the id exists to remove.
+inline json BuildChatAuthor(const std::string &name, const std::string &id, const std::string &color,
+			    const json &badges)
+{
+	json author = json{{"name", name}, {"color", color}, {"badges", badges}};
+	if (!id.empty()) {
+		author["id"] = id;
+	}
+	return author;
+}
+
 // Assemble one normalized chat.message frame from already-normalized parts. The ONE
 // assembler for the shape documented above, so a platform reading the same chat over TWO
 // different APIs (YouTube's official liveChatMessages surface and its InnerTube surface,
@@ -80,8 +99,8 @@ struct ChatContext {
 // caller owns the per-schema decoding -- fragments, badges, author, timestamps -- and this
 // owns only the frame.
 inline json BuildChatMessage(const char *platform, const std::string &channelId, const std::string &id, int64_t ts,
-			     const std::string &authorName, const std::string &authorColor, const json &badges,
-			     const json &fragments)
+			     const std::string &authorName, const std::string &authorId, const std::string &authorColor,
+			     const json &badges, const json &fragments)
 {
 	return json{
 		{"event", EventNames::kChatMessage},
@@ -89,7 +108,7 @@ inline json BuildChatMessage(const char *platform, const std::string &channelId,
 		{"channelId", channelId},
 		{"id", id},
 		{"ts", ts},
-		{"author", json{{"name", authorName}, {"color", authorColor}, {"badges", badges}}},
+		{"author", BuildChatAuthor(authorName, authorId, authorColor, badges)},
 		{"fragments", fragments},
 	};
 }

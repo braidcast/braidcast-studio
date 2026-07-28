@@ -394,7 +394,7 @@ void ChatHub::DispatchSend(const Active &target, const std::string &text)
 				{"platform", providerId},
 				{"channelId", transport->channelId()},
 				{"ts", TimeUtil::NowMs()},
-				{"author", json{{"name", name}, {"color", ""}, {"badges", json::array()}}},
+				{"author", Chat::BuildChatAuthor(name, acct.userId, "", json::array())},
 				{"fragments", json::array({json{{"type", "text"}, {"text", msg}}})},
 			});
 		}

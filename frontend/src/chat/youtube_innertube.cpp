@@ -622,7 +622,8 @@ void OnAddChatItem(Loop &lp, const char *, const json &action)
 		if (!fragments.empty()) {
 			fragments = ApplyThirdPartyEmotes(fragments, *lp.emotes);
 			lp.cb.emitMessage(BuildChatMessage("youtube", lp.cfg.channelId, common.id, common.tsMs,
-							   common.authorName, std::string(), common.badges, fragments));
+							   common.authorName, common.authorChannelId, std::string(),
+							   common.badges, fragments));
 			++lp.emitted;
 		}
 		// Then, IN ADDITION, forward monetization/membership items into the events feed.
