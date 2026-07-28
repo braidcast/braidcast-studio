@@ -1,0 +1,85 @@
+:root {
+  --ov-font: "Inter", system-ui, sans-serif;
+  --ov-size: 24px;
+  --ov-text: #ffffff;
+  --ov-bg: rgba(0, 0, 0, 0);
+  --ov-align: left;
+  --ov-cross: center;
+  --ov-dir: row;
+  --ov-gap: 14px;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: transparent;
+  overflow: hidden;
+  font-family: var(--ov-font);
+}
+
+.followers {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: 0;
+  padding: 12px 18px;
+  background: var(--ov-bg);
+  color: var(--ov-text);
+  font-size: var(--ov-size);
+  line-height: 1.25;
+  font-weight: 600;
+  /* text-align positions the inline-flex stack, so the one align field works in both
+     orientations without a second alignment axis to keep in sync. */
+  text-align: var(--ov-align);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+}
+
+.chips {
+  display: inline-flex;
+  flex-direction: var(--ov-dir);
+  align-items: var(--ov-cross);
+  gap: var(--ov-gap);
+}
+
+/* An empty row must leave layout entirely, or the container's padding prints a bar of
+   background over the scene with nothing in it. */
+.chips[hidden] {
+  display: none;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.36em;
+  white-space: nowrap;
+}
+/* A platform with no figure this cycle -- withheld or not reporting -- dimmed so the
+   placeholder never reads as a number. */
+.chip.muted {
+  opacity: 0.55;
+}
+
+.dot {
+  flex: 0 0 auto;
+  width: 0.5em;
+  height: 0.5em;
+  border-radius: 50%;
+}
+
+.count {
+  font-variant-numeric: tabular-nums;
+}
+
+.plat {
+  font-size: 0.7em;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.85;
+}
+
+/* Set apart from the figure it qualifies: it counts channels, not audience, and the two
+   numbers sit side by side. */
+.partial {
+  font-size: 0.62em;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
+}

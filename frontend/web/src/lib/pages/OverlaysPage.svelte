@@ -43,6 +43,7 @@ import { EV } from "$lib/utils/eventNames";
     { type: "goalbar", label: "Goal Bar", name: "New Goal Bar" },
     { type: "labels", label: "Label", name: "New Label" },
     { type: "viewercount", label: "Viewer Count", name: "New Viewer Count" },
+    { type: "followercount", label: "Follower Count", name: "New Follower Count" },
   ];
 
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
