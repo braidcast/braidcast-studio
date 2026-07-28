@@ -237,6 +237,16 @@ void OverlayServer::BroadcastViewers(const nlohmann::json &viewers)
 	BroadcastFrame("event: viewers\ndata: " + viewers.dump() + "\n\n");
 }
 
+// Named `channels` event for the same reason `viewers` is named: an unnamed frame lands on
+// every widget's default `message` handler, which is the alert stream. Body is the poller's
+// `channels.stats` payload dumped as-is -- an account missing from perAccount was never read,
+// a hidden or -1 entry is a withheld number, and neither is a zero. Called on the poll worker,
+// never TID_UI.
+void OverlayServer::BroadcastChannelStats(const nlohmann::json &stats)
+{
+	BroadcastFrame("event: channels\ndata: " + stats.dump() + "\n\n");
+}
+
 void OverlayServer::BroadcastTo(const std::string &widgetId, const Events::NormalizedEvent &ev)
 {
 	BroadcastFrame("data: " + ev.ToJson().dump() + "\n\n", &widgetId);

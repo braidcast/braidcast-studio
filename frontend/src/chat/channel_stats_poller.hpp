@@ -12,6 +12,9 @@
 // StreamProvider::audienceCount, persists a changed total onto the account record,
 // and emits `channels.stats`. Providers with no REST total (Kick) return
 // available=false and are skipped (their number arrives live via kick_events).
+// That one payload object also goes to the overlay server's SSE clients as the
+// named `channels` event, so an overlay widget and the panel can never show
+// different totals.
 // Emits go through the alive-guarded PostToUi + Bridge::EmitEvent path. See
 // AccountPoller for the shared idempotent-Start / detached-worker contract.
 namespace Chat {

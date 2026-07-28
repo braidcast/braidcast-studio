@@ -58,6 +58,11 @@ public:
 	// destination that never answered is not a zero). Viewer-count widgets subscribe to
 	// it; every other widget ignores it.
 	void BroadcastViewers(const nlohmann::json &viewers);
+	// Push the poller's audience-total payload (followers/subscribers per account) to EVERY
+	// open widget socket as a named `channels` SSE event, forwarded verbatim: an absent
+	// account was never read, `audienceHidden` means the platform is withholding the number,
+	// and a count of -1 means unknown -- none of which is a zero.
+	void BroadcastChannelStats(const nlohmann::json &stats);
 
 private:
 	void AcceptLoop();
@@ -66,8 +71,9 @@ private:
 	void ServeWidget(uintptr_t sock, const std::string &path, const std::string &token);
 	// Send a prebuilt SSE frame to every open widget socket, or (with onlyWidgetId set)
 	// to one widget's sockets only. The single snapshot-under-lock / send-unlocked
-	// implementation shared by Broadcast/BroadcastChat/BroadcastViewers/BroadcastTo,
-	// so sseMutex_ is never held across the bounded-blocking sends.
+	// implementation shared by Broadcast/BroadcastChat/BroadcastViewers/
+	// BroadcastChannelStats/BroadcastTo, so sseMutex_ is never held across the
+	// bounded-blocking sends.
 	void BroadcastFrame(const std::string &frame, const std::string *onlyWidgetId = nullptr);
 	void RunSse(uintptr_t sock, const std::string &widgetId); // owns the socket for its lifetime
 	void CloseClient(uintptr_t sock); // the OWNING thread's sole close point: erase from clientSockets_ + close
