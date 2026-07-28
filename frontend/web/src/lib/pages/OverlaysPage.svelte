@@ -44,6 +44,9 @@ import { EV } from "$lib/utils/eventNames";
     { type: "labels", label: "Label", name: "New Label" },
     { type: "viewercount", label: "Viewer Count", name: "New Viewer Count" },
     { type: "followercount", label: "Follower Count", name: "New Follower Count" },
+    { type: "uptime", label: "Stream Uptime", name: "New Stream Uptime" },
+    { type: "wheretowatch", label: "Where to Watch", name: "New Where to Watch" },
+    { type: "chatleaderboard", label: "Chat Leaderboard", name: "New Chat Leaderboard" },
   ];
 
   let saveTimer: ReturnType<typeof setTimeout> | undefined;

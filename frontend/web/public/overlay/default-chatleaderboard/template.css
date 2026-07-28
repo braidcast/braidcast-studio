@@ -1,0 +1,88 @@
+:root {
+  --ov-font: "Inter", system-ui, sans-serif;
+  --ov-size: 22px;
+  --ov-text: #ffffff;
+  --ov-bg: rgba(0, 0, 0, 0);
+  --ov-align: left;
+  --ov-cross: flex-start;
+  --ov-dir: column;
+  --ov-gap: 6px;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: transparent;
+  overflow: hidden;
+  font-family: var(--ov-font);
+}
+
+.leaderboard {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: 0;
+  padding: 12px 18px;
+  background: var(--ov-bg);
+  color: var(--ov-text);
+  font-size: var(--ov-size);
+  line-height: 1.3;
+  font-weight: 600;
+  /* text-align positions the inline-flex stack, so the one align field works in both
+     orientations without a second alignment axis to keep in sync. */
+  text-align: var(--ov-align);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+}
+
+.rows {
+  display: inline-flex;
+  flex-direction: var(--ov-dir);
+  align-items: var(--ov-cross);
+  gap: var(--ov-gap);
+}
+
+/* An empty board must leave layout entirely, or the container's padding draws a bar of
+   background over the scene with nothing in it. */
+.rows[hidden] {
+  display: none;
+}
+
+.row {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.36em;
+  white-space: nowrap;
+}
+
+/* Fixed width so the names line up in a column however wide the rank runs. */
+.rank {
+  flex: 0 0 auto;
+  min-width: 1.6em;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
+}
+
+.dot {
+  flex: 0 0 auto;
+  align-self: center;
+  width: 0.5em;
+  height: 0.5em;
+  border-radius: 50%;
+}
+
+/* A display name is arbitrary length, so it truncates rather than pushing the count off
+   the canvas. */
+.name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 12em;
+}
+
+.count {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+}
+
+/* The stand-in for an empty board, dimmed so it never reads as a chatter. */
+.empty {
+  opacity: 0.55;
+}

@@ -29,6 +29,16 @@ OBSOverlay.onViewers((v) => {
   snapshot = v;
   render();
 });
+// The poller stops with the broadcast and never sends a closing cycle, so the last counts
+// would otherwise stay on the canvas for the rest of the scene. Clearing back to null is
+// the same "nothing has reported" state the widget starts in and already draws as nothing;
+// a fabricated zero would put a false figure in front of an audience instead.
+OBSOverlay.onStream((s) => {
+  if (s && s.active !== true) {
+    snapshot = null;
+    render();
+  }
+});
 
 function applyFields(f) {
   fields = f;
