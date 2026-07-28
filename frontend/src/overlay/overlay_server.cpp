@@ -244,7 +244,12 @@ void OverlayServer::BroadcastViewers(const nlohmann::json &viewers)
 // never TID_UI.
 void OverlayServer::BroadcastChannelStats(const nlohmann::json &stats)
 {
-	BroadcastFrame("event: channels\ndata: " + stats.dump() + "\n\n");
+	const std::string frame = "event: channels\ndata: " + stats.dump() + "\n\n";
+	{
+		std::lock_guard<std::mutex> lock(sseMutex_);
+		lastChannelStatsFrame_ = frame;
+	}
+	BroadcastFrame(frame);
 }
 
 void OverlayServer::BroadcastTo(const std::string &widgetId, const Events::NormalizedEvent &ev)
@@ -687,6 +692,25 @@ void OverlayServer::RunSse(uintptr_t clientSocket, const std::string &widgetId)
 	if (headOk) {
 		// Initial comment so EventSource fires onopen promptly.
 		send(sock, ": connected\n\n", 13, 0);
+		// Audience totals poll on a ~15 minute cadence, so a browser source that loads or
+		// reloads mid-interval would otherwise render nothing for that long. Replay the
+		// last one, copied under the lock and sent outside it. Sent BEFORE registering:
+		// a broadcast landing in the gap is merely late, whereas replaying after
+		// registration could deliver this stale frame on top of a fresher one.
+		//
+		// Only this channel replays. Chat messages are moments, not state, and viewers
+		// stop being true the instant a broadcast ends -- a replayed count would assert
+		// an audience that is no longer watching. Audience totals are the one signal the
+		// poller already treats as cached state, re-emitting an unchanged value every
+		// tick precisely so a freshly loaded client is current.
+		std::string replay;
+		{
+			std::lock_guard<std::mutex> lock(sseMutex_);
+			replay = lastChannelStatsFrame_;
+		}
+		if (!replay.empty()) {
+			send(sock, replay.c_str(), (int)replay.size(), 0);
+		}
 	}
 	{
 		std::lock_guard<std::mutex> lock(sseMutex_);

@@ -106,6 +106,11 @@ private:
 	int broadcastDepth_ = 0;
 	std::set<uintptr_t> deferredCloseSse_;
 
+	// Last `channels` frame, replayed to a newly connected SSE client so a widget does not
+	// wait out the poller's ~15 minute cadence. Guarded by sseMutex_ but never sent while
+	// holding it. No equivalent exists for chat or viewers by design -- see RunSse.
+	std::string lastChannelStatsFrame_;
+
 	// Every accepted client fd (SSE and plain), so Stop() can shutdown() them all to
 	// unblock parked recv/send loops without closing (the owning thread closes). The
 	// fd is inserted synchronously in AcceptLoop (before its thread spawns) so a Stop()
