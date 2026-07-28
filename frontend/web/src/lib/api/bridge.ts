@@ -524,6 +524,11 @@ export interface OAuthProviderField {
   /** Provider-supplied default. Prefill seeds it only where saved + live left the
    * field empty, so a remembered value always wins over it. */
   default?: unknown;
+  /** The field has no valid empty state — the provider will substitute something for
+   * an absent value, so an unset control would show one thing and send another. An
+   * `enum` marked this way offers no empty option and resolves an absent/unrecognized
+   * value to `default` (else its first option). Not set = empty is a real state. */
+  required?: boolean;
 }
 
 /** A streaming platform that supports account connection (oauth.providers). The

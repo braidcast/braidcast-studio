@@ -292,6 +292,15 @@ import { EV } from "$lib/utils/eventNames";
     return !isEmptyVal(f.type, channelValues[id]?.[f.key]);
   }
 
+  // Whether an empty value in this control means "inherit the layer below" rather than
+  // "unset": the per-stream layer always falls back to the channel, and a shareable
+  // field's channel layer falls back to the shared block. A `required` field keeps its
+  // empty option at those sites — resolving it there would manufacture an override the
+  // user never made, and pin a stream to a value diverging from its channel.
+  function inheritsBelow(f: OAuthProviderField, layer: "channel" | "stream"): boolean {
+    return layer === "stream" || f.shareable === true;
+  }
+
   // Resolve a profile's provider: prefer the linked account's providerId, else match
   // the display platform against a provider id/displayName (mirrors StreamsTab).
   function resolveProvider(p: StreamProfileInfo, status: OAuthStatus | undefined): OAuthProvider | null {
@@ -817,6 +826,7 @@ import { EV } from "$lib/utils/eventNames";
     narrow?: boolean;
     hint?: string;
     tag?: string;
+    inheritable?: boolean;
   },
 )}
   {#if f.type === "bool"}
@@ -837,6 +847,7 @@ import { EV } from "$lib/utils/eventNames";
         ghostText={opts.ghostText ?? ""}
         accent={opts.accent ?? false}
         narrow={opts.narrow ?? false}
+        inheritable={opts.inheritable ?? false}
       />
       {#if opts.hint}<div class="hint" class:acc={opts.accent}>{opts.hint}</div>{/if}
     </div>
@@ -1035,6 +1046,7 @@ import { EV } from "$lib/utils/eventNames";
                     {@render fieldRow(f, getVal(c.accountId, f.key), (v) => setField(c.accountId, f.key, v), {
                       providerId: c.provider.id,
                       ghostText: sharedGhostText(f),
+                      inheritable: inheritsBelow(f, "channel"),
                       accent: filled,
                       tag: filled ? "— overrides shared" : "↳ using shared",
                       hint: filled ? "Overrides the shared " + f.label.toLowerCase() + " for this channel." : undefined,
@@ -1057,6 +1069,7 @@ import { EV } from "$lib/utils/eventNames";
                           {@render fieldRow(f, getVal(c.accountId, f.key), (v) => setField(c.accountId, f.key, v), {
                             providerId: c.provider.id,
                             narrow: f.type === "enum",
+                            inheritable: inheritsBelow(f, "channel"),
                           })}
                         {/each}
                       </div>
@@ -1096,6 +1109,7 @@ import { EV } from "$lib/utils/eventNames";
                                 {@render fieldRow(f, getStreamVal(s.profileUuid, f.key), (v) => setStreamField(s.profileUuid, f.key, v), {
                                   providerId: c.provider.id,
                                   narrow: f.type === "enum",
+                                  inheritable: inheritsBelow(f, "stream"),
                                 })}
                               {/each}
                               <p class="inhnote">Empty fields inherit this channel's defaults.</p>

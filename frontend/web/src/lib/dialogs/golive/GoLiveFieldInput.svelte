@@ -20,8 +20,20 @@
     accent?: boolean;
     /** Constrain width (used by advanced enums). */
     narrow?: boolean;
+    /** This control edits an inherit layer: empty here means "take the layer below",
+     * so a `required` field keeps its empty option instead of being resolved. */
+    inheritable?: boolean;
   }
-  let { field, value, onChange, providerId = "", ghostText = "", accent = false, narrow = false }: Props = $props();
+  let {
+    field,
+    value,
+    onChange,
+    providerId = "",
+    ghostText = "",
+    accent = false,
+    narrow = false,
+    inheritable = false,
+  }: Props = $props();
 
   const str = $derived(typeof value === "string" ? value : "");
   const arr = $derived(Array.isArray(value) ? (value as string[]) : []);
@@ -35,6 +47,28 @@
     return typeof o === "string" ? { value: o, label: o } : (o as LabeledOption);
   }
   const opts = $derived((field.options ?? []).map(normOpt));
+
+  // A `required` enum has no empty option, so its rendered selection must always be a
+  // real option: a <select> whose value matches nothing lands on the FIRST option while
+  // the model stays empty, which for privacy would read "Public" and send "private".
+  // Resolve to the descriptor default, else the first option, and push that up through
+  // onChange so the model the confirm pushes equals what is on screen. An inherit layer
+  // is exempt — empty there means "use the layer below", not "unset".
+  const requiredEnum = $derived(field.type === "enum" && field.required === true && !inheritable);
+  const enumValue = $derived.by(() => {
+    if (!requiredEnum || opts.some((o) => o.value === str)) {
+      return str;
+    }
+    const dflt = typeof field.default === "string" ? field.default : "";
+    return opts.some((o) => o.value === dflt) ? dflt : (opts[0]?.value ?? "");
+  });
+  $effect(() => {
+    // Never push "" — a descriptor with no options has nothing valid to resolve to, and
+    // writing the empty value back would just restate the unset state as a choice.
+    if (requiredEnum && enumValue !== "" && enumValue !== str) {
+      onChange(enumValue);
+    }
+  });
 
   function basename(p: string): string {
     return p.split(/[\\/]/).pop() || p;
@@ -174,8 +208,10 @@
     </div>
   {/if}
 {:else if field.type === "enum"}
-  <select class="inp" class:narrow value={str} onchange={(e) => onChange(e.currentTarget.value)}>
-    <option value="">—</option>
+  <select class="inp" class:narrow value={enumValue} onchange={(e) => onChange(e.currentTarget.value)}>
+    {#if !requiredEnum}
+      <option value="">—</option>
+    {/if}
     {#each opts as opt (opt.value)}
       <option value={opt.value}>{opt.label}</option>
     {/each}

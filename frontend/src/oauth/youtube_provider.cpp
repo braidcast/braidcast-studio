@@ -576,13 +576,15 @@ json YouTubeProvider::capabilityJson() const
 			      {"tier", "simple"},
 			      {"shareable", true}});
 	// Privacy defaults to "private": broadcasting publicly must be an explicit
-	// choice, never the result of leaving the field untouched. The modal's prefill
-	// seeds this default only when no remembered value exists for the account.
+	// choice, never the result of leaving the field untouched. `required` says the
+	// field has no valid empty state, so the UI offers no unset option and shows the
+	// value applyMetadata below would actually send.
 	fields.push_back(json{{"key", "privacy"},
 			      {"label", "Privacy"},
 			      {"type", "enum"},
 			      {"tier", "simple"},
 			      {"shareable", false},
+			      {"required", true},
 			      {"default", "private"},
 			      {"options", json::array({json{{"value", "public"}, {"label", "Public"}},
 						       json{{"value", "unlisted"}, {"label", "Unlisted"}},
@@ -592,6 +594,8 @@ json YouTubeProvider::capabilityJson() const
 			      {"type", "enum"},
 			      {"tier", "advanced"},
 			      {"shareable", false},
+			      {"required", true},
+			      {"default", "normal"},
 			      {"options", json::array({json{{"value", "normal"}, {"label", "Normal"}},
 						       json{{"value", "low"}, {"label", "Low latency"}},
 						       json{{"value", "ultraLow"}, {"label", "Ultra-low latency"}}})}});
