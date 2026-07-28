@@ -63,6 +63,14 @@ public:
 	// account was never read, `audienceHidden` means the platform is withholding the number,
 	// and a count of -1 means unknown -- none of which is a zero.
 	void BroadcastChannelStats(const nlohmann::json &stats);
+	// Push broadcast state -- whether anything is live, the wall-clock epoch ms it went
+	// live, and the destinations it is going out to -- to EVERY open widget socket as a
+	// named `stream` SSE event. Replayed on connect (see replayFrames_), so a browser
+	// source added mid-broadcast learns the state at once instead of at the next
+	// transition. It is also the only closing signal an overlay gets: the viewer poller
+	// stops with the stream without pushing a final zero, so a viewer widget clears off
+	// `active` going false rather than inventing a 0 of its own.
+	void BroadcastStreamState(const nlohmann::json &state);
 
 private:
 	void AcceptLoop();
@@ -72,9 +80,13 @@ private:
 	// Send a prebuilt SSE frame to every open widget socket, or (with onlyWidgetId set)
 	// to one widget's sockets only. The single snapshot-under-lock / send-unlocked
 	// implementation shared by Broadcast/BroadcastChat/BroadcastViewers/
-	// BroadcastChannelStats/BroadcastTo, so sseMutex_ is never held across the
-	// bounded-blocking sends.
+	// BroadcastChannelStats/BroadcastStreamState/BroadcastTo, so sseMutex_ is never
+	// held across the bounded-blocking sends.
 	void BroadcastFrame(const std::string &frame, const std::string *onlyWidgetId = nullptr);
+	// BroadcastFrame for a channel whose latest frame is also KEPT for replay on
+	// connect, keyed by eventName. The one place a replayable frame is built and
+	// stored, so a second such channel cannot drift from the first.
+	void BroadcastStateFrame(const char *eventName, const nlohmann::json &body);
 	void RunSse(uintptr_t sock, const std::string &widgetId); // owns the socket for its lifetime
 	void CloseClient(uintptr_t sock); // the OWNING thread's sole close point: erase from clientSockets_ + close
 	void ReapFinishedThreads();       // join+erase threads whose done flag is set
@@ -106,10 +118,12 @@ private:
 	int broadcastDepth_ = 0;
 	std::set<uintptr_t> deferredCloseSse_;
 
-	// Last `channels` frame, replayed to a newly connected SSE client so a widget does not
-	// wait out the poller's ~15 minute cadence. Guarded by sseMutex_ but never sent while
-	// holding it. No equivalent exists for chat or viewers by design -- see RunSse.
-	std::string lastChannelStatsFrame_;
+	// eventName -> that channel's last frame, replayed to a newly connected SSE client so
+	// a widget does not wait out the interval to the next one. Guarded by sseMutex_ but
+	// never sent while holding it. Only channels carrying STATE belong here: `channels`
+	// (a ~15 minute poll cadence) and `stream` (changes only at a transition, which may
+	// be hours away). Chat and viewers are deliberately absent -- see RunSse.
+	std::map<std::string, std::string> replayFrames_;
 
 	// Every accepted client fd (SSE and plain), so Stop() can shutdown() them all to
 	// unblock parked recv/send loops without closing (the owning thread closes). The

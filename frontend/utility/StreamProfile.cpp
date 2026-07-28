@@ -1,5 +1,8 @@
 #include "StreamProfile.hpp"
 
+#include <algorithm>
+#include <cctype>
+
 std::string StreamProfile::PlatformName() const
 {
 	if (serviceId == "whip_custom") {
@@ -26,6 +29,18 @@ std::string StreamProfile::DisplayName() const
 		return platform;
 	}
 	return platform + " - " + label;
+}
+
+std::string StreamProfile::PlatformKey() const
+{
+	const size_t colon = accountId.find(':');
+	if (colon != std::string::npos && colon > 0) {
+		return accountId.substr(0, colon);
+	}
+	std::string key = PlatformName();
+	std::transform(key.begin(), key.end(), key.begin(),
+		       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+	return key;
 }
 
 std::string StreamProfile::Key() const

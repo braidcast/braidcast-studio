@@ -23,6 +23,12 @@ struct StreamProfile {
 	[[nodiscard]] std::string PlatformName() const;
 	/* "{platform} - {label}", or just platform when label is empty. */
 	[[nodiscard]] std::string DisplayName() const;
+	/* Lowercase platform key in the web's platformColors vocabulary
+	 * ("youtube"/"twitch"/"kick"). A linked account's providerId IS that key, so it
+	 * wins; without one the PlatformName is lowercased, which yields "custom"/"whip"
+	 * for those service ids and the service word for a stream-key profile. Never
+	 * empty. */
+	[[nodiscard]] std::string PlatformKey() const;
 	/* The stream credential: "bearer_token" for WHIP, otherwise "key". Empty
 	 * when settings is null or the credential is unset. */
 	[[nodiscard]] std::string Key() const;

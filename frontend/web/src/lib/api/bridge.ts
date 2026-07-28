@@ -1170,6 +1170,41 @@ export interface ChannelStats {
   perAccount: Record<string, ChannelStatEntry>;
 }
 
+/** One destination the current broadcast is going out to. Only outputs in an ACTIVE state
+ * are listed (connecting / live / reconnecting); an idle or errored binding is absent
+ * rather than present as "not live". */
+export interface StreamDestination {
+  bindingUuid: string;
+  /** platformColors.ts key ("youtube" | "twitch" | "kick"); a profile with no linked
+   * account yields whatever its service word normalizes to ("rtmp", "whip", "custom"),
+   * which has no brand mark and renders as the neutral one. */
+  platform: string;
+  /** The profile's raw label -- NOT the host's DisplayName(), which prefixes the platform
+   * and would double up with a mark. `null` when the profile carries no label at all, so
+   * a consumer prints the platform alone rather than an empty line. */
+  name: string | null;
+  canvasName: string;
+  /** MultistreamEngine::StateName, narrowed to the active ones by the filter above. */
+  state: "connecting" | "live" | "reconnecting";
+  /** Epoch ms this destination's output signaled start, or `null` while it is still
+   * connecting -- a start time it does not have yet, never 0. */
+  startedAt: number | null;
+}
+
+/** Broadcast state: the `streaming.changed` event, and the overlay server's named `stream`
+ * SSE channel, which carry the identical object. */
+export interface StreamState {
+  /** Whether ANY output is active. Independent of `destinations` being non-empty: an
+   * output live under a binding disabled mid-broadcast counts here yet enumerates
+   * nowhere, and "live to nothing we can name" is not "not live". */
+  active: boolean;
+  /** Wall-clock epoch ms the FIRST destination went live -- the uptime anchor, computed
+   * for `Date.now() - startedAt`. `null` until an output actually signals start (at
+   * go-live everything is still connecting), never 0: a zero epoch renders as decades. */
+  startedAt: number | null;
+  destinations: StreamDestination[];
+}
+
 /** The kind of platform event surfaced in the cross-platform events feed. */
 export type EventType =
   | "follow"
@@ -1680,7 +1715,7 @@ export interface ObsMethods {
 
 /** Known server->client push events and their payload shapes. */
 export interface ObsEvents {
-  "streaming.changed": { active: boolean };
+  "streaming.changed": StreamState;
   // `canvas` is the addressed canvas uuid, or null for the global channel-0 path;
   // a per-canvas panel filters to its own canvas before reacting (4.4.5b).
   "scenes.changed": { canvas: string | null };

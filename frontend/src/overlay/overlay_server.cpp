@@ -237,6 +237,19 @@ void OverlayServer::BroadcastViewers(const nlohmann::json &viewers)
 	BroadcastFrame("event: viewers\ndata: " + viewers.dump() + "\n\n");
 }
 
+// Build a named frame, keep it as this channel's replay copy, then send it. The keep is a
+// plain map write under sseMutex_; the send is BroadcastFrame's own snapshot-under-lock /
+// send-unlocked path, so the lock is still never held across a blocking send.
+void OverlayServer::BroadcastStateFrame(const char *eventName, const nlohmann::json &body)
+{
+	const std::string frame = "event: " + std::string(eventName) + "\ndata: " + body.dump() + "\n\n";
+	{
+		std::lock_guard<std::mutex> lock(sseMutex_);
+		replayFrames_[eventName] = frame;
+	}
+	BroadcastFrame(frame);
+}
+
 // Named `channels` event for the same reason `viewers` is named: an unnamed frame lands on
 // every widget's default `message` handler, which is the alert stream. Body is the poller's
 // `channels.stats` payload dumped as-is -- an account missing from perAccount was never read,
@@ -244,12 +257,18 @@ void OverlayServer::BroadcastViewers(const nlohmann::json &viewers)
 // never TID_UI.
 void OverlayServer::BroadcastChannelStats(const nlohmann::json &stats)
 {
-	const std::string frame = "event: channels\ndata: " + stats.dump() + "\n\n";
-	{
-		std::lock_guard<std::mutex> lock(sseMutex_);
-		lastChannelStatsFrame_ = frame;
-	}
-	BroadcastFrame(frame);
+	BroadcastStateFrame("channels", stats);
+}
+
+// Named `stream` event, for the same reason the three above are named. Body is the bridge's
+// `streaming.changed` payload dumped as-is -- a null startedAt means no output has reported a
+// start yet, never a zero epoch, and an empty `destinations` under active is a broadcast going
+// out nowhere rather than a broadcast that ended. Called on TID_UI (the transition seam that
+// owns the store reads); the frame is a few hundred bytes and fires only at a transition, not
+// on a poll cadence.
+void OverlayServer::BroadcastStreamState(const nlohmann::json &state)
+{
+	BroadcastStateFrame("stream", state);
 }
 
 void OverlayServer::BroadcastTo(const std::string &widgetId, const Events::NormalizedEvent &ev)
@@ -692,24 +711,27 @@ void OverlayServer::RunSse(uintptr_t clientSocket, const std::string &widgetId)
 	if (headOk) {
 		// Initial comment so EventSource fires onopen promptly.
 		send(sock, ": connected\n\n", 13, 0);
-		// Audience totals poll on a ~15 minute cadence, so a browser source that loads or
-		// reloads mid-interval would otherwise render nothing for that long. Replay the
-		// last one, copied under the lock and sent outside it. Sent BEFORE registering:
-		// a broadcast landing in the gap is merely late, whereas replaying after
-		// registration could deliver this stale frame on top of a fresher one.
+		// The state channels' last frames, copied under the lock and sent outside it.
+		// Sent BEFORE registering: a broadcast landing in the gap is merely late,
+		// whereas replaying after registration could deliver a stale frame on top of a
+		// fresher one.
 		//
-		// Only this channel replays. Chat messages are moments, not state, and viewers
-		// stop being true the instant a broadcast ends -- a replayed count would assert
-		// an audience that is no longer watching. Audience totals are the one signal the
-		// poller already treats as cached state, re-emitting an unchanged value every
-		// tick precisely so a freshly loaded client is current.
-		std::string replay;
+		// Only channels carrying state replay. Audience totals poll on a ~15 minute
+		// cadence and stream state changes only at a transition, so a browser source
+		// that loads in between would render nothing until the next one -- an uptime
+		// widget would sit blank for the rest of a broadcast. Chat messages are moments
+		// rather than state, and a viewer count stops being true the instant a broadcast
+		// ends, so replaying one would assert an audience that is no longer watching.
+		std::vector<std::string> replay;
 		{
 			std::lock_guard<std::mutex> lock(sseMutex_);
-			replay = lastChannelStatsFrame_;
+			replay.reserve(replayFrames_.size());
+			for (const auto &[eventName, frame] : replayFrames_) {
+				replay.push_back(frame);
+			}
 		}
-		if (!replay.empty()) {
-			send(sock, replay.c_str(), (int)replay.size(), 0);
+		for (const std::string &frame : replay) {
+			send(sock, frame.c_str(), (int)frame.size(), 0);
 		}
 	}
 	{

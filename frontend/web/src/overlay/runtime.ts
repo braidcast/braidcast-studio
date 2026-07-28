@@ -6,7 +6,14 @@
 // ChatHub fans ONE payload object to both the overlay server and the bridge, so the
 // wire shape here is the bridge's shape. Type-only, so it erases at build time and the
 // runtime still bundles standalone (no bridge module pulled in).
-import type { AudienceKind, ChannelStats, ChatMessage, NormalizedEvent, ViewerCounts } from "$lib/api/bridge";
+import type {
+  AudienceKind,
+  ChannelStats,
+  ChatMessage,
+  NormalizedEvent,
+  StreamState,
+  ViewerCounts,
+} from "$lib/api/bridge";
 
 interface OverlayBootstrap {
   id: string;
@@ -59,6 +66,9 @@ type EventHandler = (e: NormalizedEvent) => void;
 type ChatHandler = (m: ChatMessage) => void;
 type ViewersHandler = (v: ViewerSnapshot) => void;
 type ChannelStatsHandler = (s: ChannelStatsSnapshot) => void;
+// No Snapshot type alongside this one: the host already sends per-destination rows carrying
+// the platform key, so there is no per-account split for a widget to re-derive.
+type StreamHandler = (s: StreamState) => void;
 
 const boot: OverlayBootstrap = (window as unknown as { __OVERLAY__: OverlayBootstrap }).__OVERLAY__ ?? {
   id: "",
@@ -72,6 +82,7 @@ const eventHandlers: EventHandler[] = [];
 const chatHandlers: ChatHandler[] = [];
 const viewersHandlers: ViewersHandler[] = [];
 const channelStatsHandlers: ChannelStatsHandler[] = [];
+const streamHandlers: StreamHandler[] = [];
 
 const OBSOverlay = {
   fields: boot.fields,
@@ -89,6 +100,9 @@ const OBSOverlay = {
   },
   onChannelStats(fn: ChannelStatsHandler) {
     channelStatsHandlers.push(fn);
+  },
+  onStream(fn: StreamHandler) {
+    streamHandlers.push(fn);
   },
   playSound(url: string, volume = 1) {
     if (!url) return;
@@ -193,6 +207,17 @@ function fireChannelStats(stats: ChannelStats) {
   window.dispatchEvent(new CustomEvent("obs:channelstats", { detail: s }));
 }
 
+function fireStream(state: StreamState) {
+  for (const fn of streamHandlers) {
+    try {
+      fn(state);
+    } catch (err) {
+      console.log("OBSOverlay onStream threw: " + (err as Error).message);
+    }
+  }
+  window.dispatchEvent(new CustomEvent("obs:stream", { detail: state }));
+}
+
 // EventSource auto-reconnects on drop; the host keepalive keeps it warm.
 const src = new EventSource("/w/" + boot.id + "/events?t=" + boot.token);
 src.onmessage = (msg) => {
@@ -227,6 +252,18 @@ src.addEventListener("viewers", (msg) => {
 src.addEventListener("channels", (msg) => {
   try {
     fireChannelStats(JSON.parse((msg as MessageEvent).data) as ChannelStats);
+  } catch {
+    /* ignore a malformed frame */
+  }
+});
+// Broadcast state rides its own named event, pushed at every live transition and replayed
+// on connect, so a source added mid-broadcast learns `startedAt` at once rather than at the
+// next change. It is also the closing signal the viewer channel lacks: the poller stops with
+// the stream without a final zero, so a viewer widget clears on `active` going false instead
+// of leaving the last counts up for the rest of the scene.
+src.addEventListener("stream", (msg) => {
+  try {
+    fireStream(JSON.parse((msg as MessageEvent).data) as StreamState);
   } catch {
     /* ignore a malformed frame */
   }

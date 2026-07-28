@@ -47,6 +47,12 @@ public:
 		std::string bindingUuid;
 		std::string canvasUuid;
 		std::string profileLabel; // {platform} - {label}
+		/* The profile's raw user label, WITHOUT the platform prefix profileLabel
+		 * carries, and its lowercase platform key. A consumer that draws its own
+		 * platform mark needs the two apart; empty label stays empty rather than
+		 * falling back to the platform, so "unnamed" is distinguishable. */
+		std::string profileName;
+		std::string platformKey;
 		std::string canvasName;
 		State state = State::Idle;
 		uint64_t totalBytes = 0;
@@ -99,6 +105,20 @@ public:
 	 * freed while an encoder still pulls from it. */
 	bool CanvasHasActiveOutput(const std::string &canvasUuid) const;
 	bool AnyLive() const;
+	/* A binding "occupies" its canvas/profile only while its output is actively
+	 * connecting, streaming, or reconnecting. Reconnecting counts: libobs keeps the
+	 * output active across the retry window (obs_output_active stays true, the
+	 * encoders stay attached), so the canvas mix must not be reset and the profile
+	 * stays reserved. An Error (failed start, dropped past retries) or Idle entry is
+	 * a dead output: it must NOT count as live (else IsCanvasLive stays true for a
+	 * dead stream, blocking canvas edits) yet it lingers in `live` so its lastError
+	 * still surfaces, until a retry reaps it or StopOutput/StopAll clears it. Public
+	 * so a consumer filtering a Statuses()/StatsSnapshot() row to "currently going
+	 * out" tests the same predicate AnyLive does instead of enumerating states. */
+	static bool IsActiveState(State state)
+	{
+		return state == State::Connecting || state == State::Live || state == State::Reconnecting;
+	}
 	/* True if some OTHER currently-live output uses this profile. */
 	bool ProfileLiveElsewhere(const std::string &bindingUuid, const std::string &profileUuid) const;
 
@@ -170,9 +190,12 @@ private:
 	};
 
 	/* Display strings shared by Statuses()/StatsSnapshot() for one binding: the
-	 * profile's "{platform} - {label}" and the canvas's name. */
+	 * profile's "{platform} - {label}", its raw label and platform key taken apart,
+	 * and the canvas's name. */
 	struct BindingMeta {
 		std::string profileLabel;
+		std::string profileName;
+		std::string platformKey;
 		std::string canvasName;
 	};
 	BindingMeta ResolveBindingMeta(const OutputBinding &b) const;
@@ -183,18 +206,6 @@ private:
 	/* video_t for a canvas: delegates to the injected resolver (obs_get_video()
 	 * for the Default, the additional canvas's mix otherwise, NULL if none). */
 	video_t *VideoForCanvas(const std::string &canvasUuid);
-	/* A binding "occupies" its canvas/profile only while its output is actively
-	 * connecting, streaming, or reconnecting. Reconnecting counts: libobs keeps the
-	 * output active across the retry window (obs_output_active stays true, the
-	 * encoders stay attached), so the canvas mix must not be reset and the profile
-	 * stays reserved. An Error (failed start, dropped past retries) or Idle entry is
-	 * a dead output: it must NOT count as live (else IsCanvasLive stays true for a
-	 * dead stream, blocking canvas edits) yet it lingers in `live` so its lastError
-	 * still surfaces, until a retry reaps it or StopOutput/StopAll clears it. */
-	static bool IsActiveState(State state)
-	{
-		return state == State::Connecting || state == State::Live || state == State::Reconnecting;
-	}
 
 	/* FindLive/TakeLive assume the caller already holds liveMutex. TakeLive moves
 	 * the entry out of `live` and returns it so the caller destroys it AFTER

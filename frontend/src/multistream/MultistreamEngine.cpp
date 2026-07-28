@@ -718,6 +718,8 @@ MultistreamEngine::BindingMeta MultistreamEngine::ResolveBindingMeta(const Outpu
 	if (!b.profileUuid.empty()) {
 		if (StreamProfile *p = profiles.Find(b.profileUuid)) {
 			meta.profileLabel = p->DisplayName();
+			meta.profileName = p->label;
+			meta.platformKey = p->PlatformKey();
 		}
 	}
 	const CanvasDefinition &def = canvases.Default();
@@ -768,6 +770,8 @@ std::vector<MultistreamEngine::OutputStats> MultistreamEngine::StatsSnapshot() c
 		st.canvasUuid = b.canvasUuid;
 		BindingMeta meta = ResolveBindingMeta(b);
 		st.profileLabel = std::move(meta.profileLabel);
+		st.profileName = std::move(meta.profileName);
+		st.platformKey = std::move(meta.platformKey);
 		st.canvasName = std::move(meta.canvasName);
 		for (const auto &lo : live) {
 			if (lo->bindingUuid != b.uuid) {

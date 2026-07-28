@@ -48,6 +48,7 @@
 #include "windowing/interact_window.hpp"
 #include "util/json_util.hpp"
 #include "util/op_error.hpp"
+#include "util/time_util.hpp"
 #include "obs_bootstrap.hpp"
 #include "obs_importer.hpp"
 #include "settings/AdvancedSettings.hpp"
@@ -168,6 +169,87 @@ json BuildStatusArray()
 		});
 	}
 	return arr;
+}
+
+// Build the broadcast-state projection: whether anything is going out, when it started,
+// and where to. ONE object, fanned to both consumers by EmitStreamingChanged -- the
+// `streaming.changed` bridge event and the overlay server's named `stream` SSE channel --
+// so an uptime rendered on stream can never disagree with the app's.
+//
+// `startedAt` is WALL-CLOCK epoch milliseconds, derived HERE from the engine's uptime.
+// The engine measures uptime off os_gettime_ns, which is monotonic-since-boot: it names
+// no instant outside this process, and the consumer is an uptime widget in a separate CEF
+// process that can only compute now - startedAt. Sending the monotonic reading would be
+// the same trap channel_stats_poller documents for audienceUpdatedNs. This is the one site
+// holding both clocks at once, so it is the only place the conversion is safe; converting
+// here leaves nothing on the wire that could be diffed against the wrong clock.
+//
+// It is null -- never 0, never "now" -- until an output actually signals start. uptimeMs
+// is 0 for a Connecting output, and a zero epoch renders as an uptime of decades.
+json BuildStreamState()
+{
+	MultistreamEngine &engine = ObsBootstrap::Multistream();
+	const int64_t nowMs = TimeUtil::NowMs();
+	json destinations = json::array();
+	std::optional<int64_t> startedAt;
+	for (const MultistreamEngine::OutputStats &s : engine.StatsSnapshot()) {
+		if (!MultistreamEngine::IsActiveState(s.state)) {
+			continue; // idle or dead: not somewhere this broadcast is going out
+		}
+		std::optional<int64_t> destStartedAt;
+		if (s.uptimeMs > 0) {
+			destStartedAt = nowMs - static_cast<int64_t>(s.uptimeMs);
+			if (!startedAt || *destStartedAt < *startedAt) {
+				startedAt = destStartedAt; // the broadcast began when its FIRST output did
+			}
+		}
+		destinations.push_back(json{
+			{"bindingUuid", s.bindingUuid},
+			{"platform", s.platformKey},
+			// The raw label, not DisplayName(): a widget draws its own platform mark
+			// and would otherwise print the platform twice. Null when the profile
+			// carries no label, so a widget prints the platform alone rather than a
+			// blank line.
+			{"name", s.profileName.empty() ? json(nullptr) : json(s.profileName)},
+			{"canvasName", s.canvasName},
+			{"state", MultistreamEngine::StateName(s.state)},
+			{"startedAt", destStartedAt ? json(*destStartedAt) : json(nullptr)},
+		});
+	}
+	// AnyLive() rather than a non-empty `destinations`, so the two stay independent
+	// answers: an output live under a binding that was disabled mid-broadcast counts as
+	// live but enumerates nowhere, and "live to nothing we can name" must not read as
+	// "not live".
+	return json{
+		{"active", engine.AnyLive()},
+		{"startedAt", startedAt ? json(*startedAt) : json(nullptr)},
+		{"destinations", std::move(destinations)},
+	};
+}
+
+// Sends on TID_UI, unlike the poller and event fan-outs, because the projection has to read
+// UI-thread-owned stores and dispatching the send would let two transitions land out of order
+// -- a stale `active: true` arriving after a stop would leave a widget claiming a broadcast
+// that has ended. The cost is bounded rather than open-ended: a client that cannot take the
+// frame stalls one send (kSseSendTimeoutMs) and is then dropped from the registry, so it
+// cannot charge that again.
+//
+// dump() can throw on a malformed payload (invalid UTF-8 in a user-entered profile label);
+// the overlay fan-out is then skipped rather than taking the bridge emit down with it.
+void FanStreamStateToOverlay(const json &state)
+{
+	try {
+		Overlay::Server().BroadcastStreamState(state);
+	} catch (...) {
+		// malformed stream-state payload -> skip the overlay fan-out
+	}
+}
+
+void EmitStreamingChanged()
+{
+	const json state = BuildStreamState();
+	FanStreamStateToOverlay(state);
+	EmitEvent(EventNames::kStreamingChanged, state);
 }
 
 // Build the transport health JSON array (one object per reporting transport) from
@@ -8427,7 +8509,7 @@ void StartStreamingAll()
 		}
 		ObsBootstrap::Multistream().StartAllEnabled();
 		const bool active = ObsBootstrap::Multistream().AnyLive();
-		EmitEvent(EventNames::kStreamingChanged, json{{"active", active}});
+		EmitStreamingChanged();
 		// Chat and the viewer poller are live-only: start them here on go-live so every
 		// connected platform's chat transport connects together (YouTube's liveChatId exists
 		// only once the broadcast is live). Both Start()s are idempotent.
@@ -8459,7 +8541,7 @@ void StopStreamingAll()
 			}
 		}
 		ObsBootstrap::Multistream().StopAll();
-		EmitEvent(EventNames::kStreamingChanged, json{{"active", false}});
+		EmitStreamingChanged();
 	});
 }
 
@@ -10720,6 +10802,14 @@ void EmitMultistreamChanged()
 		return;
 	}
 	EmitEvent(EventNames::kMultistreamChanged, json{{"outputs", BuildStatusArray()}});
+	// A per-output transition is also what makes a start time knowable: at go-live every
+	// output is still Connecting, so the streaming.changed fan-out carries a null
+	// startedAt and only this seam can follow up with the real one. It is likewise the
+	// only seam a stream that drops on its own reaches. Overlay only -- firing
+	// streaming.changed per output would change what the GO LIVE button treats as the
+	// authoritative global toggle. Same builder either way, so the overlay can only ever
+	// be fresher than the app, never in disagreement with it.
+	FanStreamStateToOverlay(BuildStreamState());
 }
 
 void EmitTransportsHealthChanged()
