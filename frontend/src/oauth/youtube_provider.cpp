@@ -4,8 +4,10 @@
 #include <cctype>
 #include <ctime>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <set>
+#include <string_view>
 #include <utility>
 
 #include "../chat/youtube_chat.hpp"
@@ -67,6 +69,15 @@ constexpr const char *kQuotaExhaustedReasons[] = {
 	"quotaExceeded",
 	"dailyLimitExceeded",
 };
+
+// Units of the shared 10,000/day pool this install will spend on YouTube's CHARGED chat reads
+// (the liveChatMessages surfaces) before it stops reading chat for the day. It is a floor under
+// a path measured at ~1,730 units per chat-hour PER DESTINATION -- unbounded, four destinations
+// spend the whole pool, for every install, inside 87 minutes. 2,000 is a fifth of the pool: enough
+// that a private broadcast still gets chat, small enough that one session cannot take the day from
+// everyone else. BRAIDCAST_YOUTUBE_CHAT_BUDGET overrides it for diagnosis; 0 refuses the charged
+// path outright.
+constexpr int kChatUnitBudgetDefault = 2000;
 
 // Slack past the computed midnight before requests resume, so a wake on a
 // slightly-fast local clock cannot re-observe quotaExceeded and re-arm the gate
@@ -151,6 +162,39 @@ int64_t NextPacificMidnightUtc(int64_t nowUtc)
 	// Convert back with the offset in force AT the reset, so a DST flip between now
 	// and midnight cannot shift the instant by an hour.
 	return nextLocalMidnight - PacificOffsetSec(nextLocalMidnight - offsetNow);
+}
+
+// Read ONCE: this is a start-up knob, and the budget is consulted on every billed chat request
+// (several a minute per destination), where Env::Number's fallback to the repo-root .env would
+// be a file open per request.
+int ChatUnitBudget()
+{
+	static const int budget =
+		static_cast<int>(Env::Number("BRAIDCAST_YOUTUBE_CHAT_BUDGET", kChatUnitBudgetDefault));
+	return budget;
+}
+
+// An epoch instant as local wall-clock "HH:MM" ("" for the never-set 0). Shared by the quota
+// gate's message and the chat budget's, so the two cannot render the same reset differently.
+std::string LocalHhMm(int64_t epoch)
+{
+	if (epoch == 0) {
+		return std::string();
+	}
+	const std::time_t t = static_cast<std::time_t>(epoch);
+	std::tm tm{};
+	localtime_s(&tm, &t);
+	char buf[8];
+	std::strftime(buf, sizeof buf, "%H:%M", &tm);
+	return std::string(buf);
+}
+
+// A short content digest for change detection -- not a security primitive. The byte length is
+// folded in so two payloads of different sizes cannot collide on the hash alone, which is what
+// makes it safe to keep INSTEAD of the bytes it summarizes (the thumbnail's).
+std::string ContentDigest(std::string_view bytes)
+{
+	return std::to_string(bytes.size()) + ":" + std::to_string(std::hash<std::string_view>{}(bytes));
 }
 
 // Case-insensitive substring test (an empty needle always matches).
@@ -374,16 +418,64 @@ bool YouTubeProvider::QuotaExhausted(std::chrono::milliseconds *retryIn) const
 
 std::string YouTubeProvider::QuotaResetLocalTime() const
 {
-	const int64_t reset = quotaResetEpoch_.load(std::memory_order_acquire);
-	if (reset == 0) {
-		return std::string();
+	return LocalHhMm(quotaResetEpoch_.load(std::memory_order_acquire));
+}
+
+bool YouTubeProvider::ChargeChatUnits(int units)
+{
+	const int budget = ChatUnitBudget();
+	std::string exhaustedAt; // host-logged after the lock, never while holding it
+
+	bool ok = false;
+	{
+		const std::lock_guard<std::mutex> guard(chatBudgetMutex_);
+		const int64_t now = static_cast<int64_t>(std::time(nullptr));
+		if (now >= chatDayEnd_) {
+			// First charge ever, or the first past midnight Pacific: start the day fresh.
+			// The same boundary the Data API's own daily quota resets on, so a budget that
+			// ran out and a quota that ran out come back together rather than an hour apart.
+			chatDayEnd_ = NextPacificMidnightUtc(now);
+			chatUnitsSpent_ = 0;
+			chatBudgetLogged_ = false;
+		}
+		ok = units <= 0 || chatUnitsSpent_ + units <= budget;
+		if (ok) {
+			chatUnitsSpent_ += units;
+		} else if (!chatBudgetLogged_) {
+			chatBudgetLogged_ = true;
+			exhaustedAt = LocalHhMm(chatDayEnd_);
+		}
 	}
-	const std::time_t t = static_cast<std::time_t>(reset);
-	std::tm tm{};
-	localtime_s(&tm, &t);
-	char buf[8];
-	std::strftime(buf, sizeof buf, "%H:%M", &tm);
-	return std::string(buf);
+
+	if (!exhaustedAt.empty()) {
+		HostLog("[oauth] YouTube charged-chat budget spent (" + std::to_string(budget) +
+			" units); YouTube chat stops until " + exhaustedAt +
+			" local. Broadcasting public lets chat use the free reader instead.");
+	}
+	return ok;
+}
+
+bool YouTubeProvider::ChatBudgetExhausted() const
+{
+	const int budget = ChatUnitBudget();
+	const std::lock_guard<std::mutex> guard(chatBudgetMutex_);
+	const int64_t now = static_cast<int64_t>(std::time(nullptr));
+	if (now >= chatDayEnd_) {
+		return false; // a new day has begun; the next charge will roll it
+	}
+	return chatUnitsSpent_ >= budget;
+}
+
+std::string YouTubeProvider::ChatBudgetMessage() const
+{
+	std::string resumesAt;
+	{
+		const std::lock_guard<std::mutex> guard(chatBudgetMutex_);
+		resumesAt = LocalHhMm(chatDayEnd_);
+	}
+	return "YouTube chat stopped: this install's daily budget for YouTube's quota-billed chat API is spent" +
+	       (resumesAt.empty() ? std::string() : " (chat resumes after " + resumesAt + ")") +
+	       ". A public broadcast reads chat for free; private and unlisted ones cannot.";
 }
 
 std::string YouTubeProvider::QuotaMessage() const
@@ -515,19 +607,28 @@ void YouTubeProvider::ReleaseLiveChatRef(const DestinationId &dest)
 	}
 }
 
+std::vector<DestinationId> YouTubeProvider::LiveDestinations(const std::string &accountId) const
+{
+	std::vector<DestinationId> live;
+	const std::lock_guard<std::mutex> guard(broadcastMutex_);
+	for (const auto &entry : broadcasts_) {
+		if (entry.first.accountId == accountId && !entry.second.broadcastId.empty()) {
+			live.push_back(entry.first);
+		}
+	}
+	return live;
+}
+
+bool YouTubeProvider::IsAccountBroadcasting(const std::string &accountId) const
+{
+	return !LiveDestinations(accountId).empty();
+}
+
 bool YouTubeProvider::ShouldPollSuperChats(const std::string &accountId) const
 {
 	// Snapshot the account's live destinations, then release broadcastMutex_ before taking
 	// liveChatMutex_: the two are never held together, so no lock order exists to invert.
-	std::vector<DestinationId> liveDestinations;
-	{
-		const std::lock_guard<std::mutex> guard(broadcastMutex_);
-		for (const auto &entry : broadcasts_) {
-			if (entry.first.accountId == accountId && !entry.second.broadcastId.empty()) {
-				liveDestinations.push_back(entry.first);
-			}
-		}
-	}
+	const std::vector<DestinationId> liveDestinations = LiveDestinations(accountId);
 	if (liveDestinations.empty()) {
 		return false; // not broadcasting: nothing this read could return
 	}
@@ -579,16 +680,28 @@ json YouTubeProvider::capabilityJson() const
 	// choice, never the result of leaving the field untouched. `required` says the
 	// field has no valid empty state, so the UI offers no unset option and shows the
 	// value applyMetadata below would actually send.
-	fields.push_back(json{{"key", "privacy"},
-			      {"label", "Privacy"},
-			      {"type", "enum"},
-			      {"tier", "simple"},
-			      {"shareable", false},
-			      {"required", true},
-			      {"default", "private"},
-			      {"options", json::array({json{{"value", "public"}, {"label", "Public"}},
-						       json{{"value", "unlisted"}, {"label", "Unlisted"}},
-						       json{{"value", "private"}, {"label", "Private"}}})}});
+	// optionNotes: the consequence of the CURRENTLY SELECTED value, shown under the control.
+	// YouTube's free (anonymous) chat reader cannot see a broadcast it is not allowed to
+	// watch, so private and unlisted put this destination's chat on the quota-billed API,
+	// which runs on a bounded daily budget and stops when that is spent. Said here, at the
+	// point of choice, rather than discovered when chat goes quiet mid-broadcast.
+	fields.push_back(
+		json{{"key", "privacy"},
+		     {"label", "Privacy"},
+		     {"type", "enum"},
+		     {"tier", "simple"},
+		     {"shareable", false},
+		     {"required", true},
+		     {"default", "private"},
+		     {"options", json::array({json{{"value", "public"}, {"label", "Public"}},
+					      json{{"value", "unlisted"}, {"label", "Unlisted"}},
+					      json{{"value", "private"}, {"label", "Private"}}})},
+		     {"optionNotes", json{{"unlisted", "Live chat runs on YouTube's quota-billed API for unlisted "
+						       "broadcasts and stops once the daily budget is spent. Public "
+						       "broadcasts read chat for free."},
+					  {"private", "Live chat runs on YouTube's quota-billed API for private "
+						      "broadcasts and stops once the daily budget is spent. Public "
+						      "broadcasts read chat for free."}}}});
 	fields.push_back(json{{"key", "latency"},
 			      {"label", "Latency"},
 			      {"type", "enum"},
@@ -744,6 +857,7 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 		err = "stream metadata fields must be an object";
 		return false;
 	}
+	const DestinationId dest{AccountId(acct), profileUuid};
 
 	// Read every field up front (tolerant defaults; YouTube rejects empties on the
 	// required fields, so substitute safe values rather than send "").
@@ -828,11 +942,25 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 		}
 	};
 
+	// The ONE test for "this exact payload is already on that video id". `skipUnchanged` is
+	// the mid-stream path's flag alone: a go-live creates a BRAND NEW broadcast, hence a new
+	// video id that owns none of this yet, so nothing there is ever redundant.
+	//
+	// Recording happens on SUCCESS only, so a failed send always re-sends next time -- the
+	// safe direction. Deliberately blind to server-side drift: a change made in YouTube
+	// Studio's own UI is not seen here, so Apply will not re-assert over it until the value
+	// in the modal changes. That is the accepted cost of not re-uploading a 2 MB thumbnail
+	// every time the user fixes a typo.
+	auto alreadyApplied = [&](const std::string &videoId, AppliedKind kind, const std::string &digest,
+				  bool skipUnchanged) {
+		return skipUnchanged && !digest.empty() && AppliedDigest(dest, videoId, kind) == digest;
+	};
+
 	// Steps 4 + 5 (video category/tags, then thumbnail) apply identically whether the
 	// broadcast was just created for go-live or is already live for a mid-stream edit, so
 	// both paths call this instead of duplicating the blocks. Both are NON-CRITICAL:
 	// failures are logged and skipped, never surfaced as an apply failure.
-	auto applyVideoTagsAndThumbnail = [&](const std::string &videoId) {
+	auto applyVideoTagsAndThumbnail = [&](const std::string &videoId, bool skipUnchanged) {
 		// 4. videos.update -- category + tags live on the video, not the broadcast.
 		// part=snippet REPLACES the whole snippet, so title + categoryId must be
 		// re-sent or the call 400s / wipes them. Only worth a call when a category was
@@ -847,10 +975,20 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 				{"tags", tags},
 			};
 			json videoBody = json{{"id", videoId}, {"snippet", videoSnippet}};
-			json vResp;
-			std::string vErr;
-			if (!sendJson("PUT", std::string(kVideosUrl) + "?part=snippet", videoBody, vResp, vErr)) {
-				HostLog("[oauth] YouTube videos.update failed (continuing): " + Err::Diagnostic(vErr));
+			const std::string digest = ContentDigest(videoSnippet.dump());
+			if (alreadyApplied(videoId, AppliedKind::Snippet, digest, skipUnchanged)) {
+				DBG(LogCat::OAuth, "youtube: dest=%s videos.update skipped (unchanged, 50 units saved)",
+				    DestinationKey(dest).c_str());
+			} else {
+				json vResp;
+				std::string vErr;
+				if (!sendJson("PUT", std::string(kVideosUrl) + "?part=snippet", videoBody, vResp,
+					      vErr)) {
+					HostLog("[oauth] YouTube videos.update failed (continuing): " +
+						Err::Diagnostic(vErr));
+				} else {
+					RecordApplied(dest, videoId, AppliedKind::Snippet, digest);
+				}
 			}
 		}
 
@@ -868,8 +1006,16 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 				file.seekg(0, std::ios::beg);
 				const std::string bytes((std::istreambuf_iterator<char>(file)),
 							std::istreambuf_iterator<char>());
+				// The digest is taken from the BYTES, not the path: re-picking the same
+				// image from a different folder is not a change, and editing a file in
+				// place under an unchanged path is. Only the digest is kept.
+				const std::string digest = ContentDigest(bytes);
 				if (bytes.empty()) {
 					HostLog("[oauth] YouTube thumbnail skipped: empty file " + thumbnailPath);
+				} else if (alreadyApplied(videoId, AppliedKind::Thumbnail, digest, skipUnchanged)) {
+					DBG(LogCat::OAuth,
+					    "youtube: dest=%s thumbnails.set skipped (identical image, 50 units saved)",
+					    DestinationKey(dest).c_str());
 				} else {
 					Http::HttpReq req;
 					req.method = "POST";
@@ -885,6 +1031,8 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 					} else if (resp.status < 200 || resp.status >= 300) {
 						HostLog("[oauth] YouTube thumbnails.set failed (continuing): HTTP " +
 							std::to_string(resp.status) + ": " + resp.body);
+					} else {
+						RecordApplied(dest, videoId, AppliedKind::Thumbnail, digest);
 					}
 				}
 			}
@@ -933,15 +1081,26 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 					       {"scheduledStartTime", scheduledStart}};
 			json updStatus = json{{"privacyStatus", privacy}, {"selfDeclaredMadeForKids", madeForKids}};
 			json updBody = json{{"id", active.broadcastId}, {"snippet", updSnippet}, {"status", updStatus}};
-			json updResp;
-			std::string updErr;
-			if (!sendJson("PUT", std::string(kLiveBroadcastsUrl) + "?part=snippet,status", updBody, updResp,
-				      updErr)) {
-				err = Err::Wrap("YouTube liveBroadcasts.update failed: ", updErr);
-				return false;
+			// The same 50-unit re-send the video/thumbnail steps below avoid, and for the
+			// same reason: the read above already told us the broadcast's current
+			// scheduledStartTime, so an unchanged payload is a write of what is already there.
+			const std::string updDigest = ContentDigest(updBody.dump());
+			if (alreadyApplied(active.broadcastId, AppliedKind::Broadcast, updDigest, true)) {
+				DBG(LogCat::OAuth,
+				    "youtube: dest=%s liveBroadcasts.update skipped (unchanged, 50 units saved)",
+				    DestinationKey(dest).c_str());
+			} else {
+				json updResp;
+				std::string updErr;
+				if (!sendJson("PUT", std::string(kLiveBroadcastsUrl) + "?part=snippet,status", updBody,
+					      updResp, updErr)) {
+					err = Err::Wrap("YouTube liveBroadcasts.update failed: ", updErr);
+					return false;
+				}
+				RecordApplied(dest, active.broadcastId, AppliedKind::Broadcast, updDigest);
 			}
 
-			applyVideoTagsAndThumbnail(active.broadcastId);
+			applyVideoTagsAndThumbnail(active.broadcastId, true);
 			return true;
 		}
 		// EnsureActiveBroadcast returned false: a non-empty err is a genuine API/network
@@ -953,6 +1112,18 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 			return false;
 		}
 		return true;
+	}
+
+	// Anonymous InnerTube -- the zero-quota chat reader -- cannot see a private or unlisted
+	// broadcast, so this selection decides whether this destination's chat is free or is
+	// billed at ~1,730 units/hour against the pool every install shares. Said here, at the
+	// moment the choice takes effect, because it is the log line that explains a chat that
+	// later stops on its budget. The privacy DEFAULT is deliberately not changed to buy the
+	// saving: broadcasting publicly stays an explicit choice.
+	if (privacy != "public") {
+		HostLog("[oauth] YouTube dest=" + DestinationKey(dest) + " is going live " + privacy +
+			"; YouTube's free chat reader cannot see it, so chat will run on the quota-billed API "
+			"until this install's daily chat budget is spent");
 	}
 
 	// 1. liveBroadcasts.insert -- the broadcast id doubles as the videoId. CRITICAL.
@@ -1118,18 +1289,19 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 	// failed, the previously-live broadcast stays intact rather than being torn down for
 	// one that never came up. Scoped to this destination so a second profile going live on
 	// the same account leaves the first profile's live broadcast alone. The new ids are
-	// committed once this apply fully succeeds (below).
-	const DestinationId dest{AccountId(acct), profileUuid};
+	// committed once this apply fully succeeds (below). Reset WHOLE rather than field by
+	// field: every per-broadcast cache in here (the viewer continuation, the re-apply
+	// digests) belongs to the broadcast being replaced, and a field-by-field clear is how one
+	// of them survives into the next broadcast the day another is added.
 	{
 		const std::lock_guard<std::mutex> guard(broadcastMutex_);
-		BroadcastState &bs = broadcasts_[dest];
-		bs.liveChatId.clear();
-		bs.broadcastId.clear();
+		broadcasts_[dest] = BroadcastState{};
 	}
 
 	// 4 + 5. Video category/tags, then thumbnail (both NON-CRITICAL). Shared with the
-	// mid-stream edit path.
-	applyVideoTagsAndThumbnail(broadcastId);
+	// mid-stream edit path, but never skipping: this video id was created seconds ago and
+	// carries none of it yet.
+	applyVideoTagsAndThumbnail(broadcastId, false);
 
 	// 6. Ingest writeback -- put the CDN endpoint + key into the linked profile so
 	// the modal's streaming.start streams to YouTube. Blocks on the UI-thread write
@@ -1299,6 +1471,43 @@ bool YouTubeProvider::EnsureActiveBroadcast(OAuthAccount &acct, const std::strin
 	}
 	out = it->second;
 	return true;
+}
+
+std::string YouTubeProvider::AppliedDigest(const DestinationId &dest, const std::string &videoId,
+					   AppliedKind kind) const
+{
+	if (videoId.empty()) {
+		return std::string();
+	}
+	const std::lock_guard<std::mutex> guard(broadcastMutex_);
+	auto it = broadcasts_.find(dest);
+	if (it == broadcasts_.end() || it->second.appliedVideoId != videoId) {
+		return std::string(); // nothing remembered for THIS video -> the caller must send
+	}
+	return it->second.Digest(kind);
+}
+
+void YouTubeProvider::RecordApplied(const DestinationId &dest, const std::string &videoId, AppliedKind kind,
+				    const std::string &digest)
+{
+	if (videoId.empty()) {
+		return;
+	}
+	const std::lock_guard<std::mutex> guard(broadcastMutex_);
+	auto it = broadcasts_.find(dest);
+	if (it == broadcasts_.end()) {
+		return; // the destination went off air while this apply was in flight
+	}
+	BroadcastState &bs = it->second;
+	if (bs.appliedVideoId != videoId) {
+		// A different broadcast owns the slot: drop its record wholesale rather than leave
+		// one resource's digest standing next to another's.
+		bs.appliedVideoId = videoId;
+		bs.appliedBroadcast.clear();
+		bs.appliedSnippet.clear();
+		bs.appliedThumbnail.clear();
+	}
+	bs.Digest(kind) = digest;
 }
 
 std::string YouTubeProvider::ViewerContinuation(const DestinationId &dest) const

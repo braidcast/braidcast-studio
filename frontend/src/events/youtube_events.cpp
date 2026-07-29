@@ -47,7 +47,7 @@ using TimeUtil::Rfc3339ToEpochMs;
 } // namespace
 
 void YouTubeEvents::collect(const EventContext &ctx, OAuth::OAuthAccount &acct,
-			    const std::function<void(NormalizedEvent &&)> &sink)
+			    const std::function<void(NormalizedEvent &&)> &sink, bool seeding)
 {
 	const auto canceled = [&] {
 		return stopped_.load() || (ctx.canceled && ctx.canceled());
@@ -154,7 +154,19 @@ void YouTubeEvents::collect(const EventContext &ctx, OAuth::OAuthAccount &acct,
 
 	// 2) Recent subscribers. A YouTube "subscribe" is a free follow, not a paid
 	//    membership -> type "follow" (memberships arrive as newSponsor via the live chat).
-	{
+	//
+	//    Gated like the Super Chat read above, but on the FIRST of its two conditions only.
+	//    ShouldPollSuperChats' second condition ("some live chat is uncovered") does not
+	//    transfer: a subscribe never appears in live chat, so a fully covered chat still
+	//    leaves it with no other path in -- gating on chat coverage would drop subscriber
+	//    alerts on every normally-running broadcast. What does transfer is IsAccountBroadcasting:
+	//    ungated this ran boot-to-exit at 40 units/hour per account while live and 4/hour
+	//    idle, the largest ongoing charged consumer, for a number nothing is waiting on off air.
+	//
+	//    `seeding` keeps the one-shot connect-time backfill unconditional, so the pre-live
+	//    history the dock shows on connect still costs its single unit and is not lost to
+	//    the gate.
+	if (seeding || provider_->IsAccountBroadcasting(OAuth::AccountId(acct))) {
 		json j;
 		const std::string url =
 			std::string(kSubscriptionsUrl) +
@@ -205,14 +217,14 @@ bool YouTubeEvents::backfill(const EventContext &ctx, OAuth::OAuthAccount &acct,
 {
 	(void)err; // best-effort: collect() logs + skips per-source failures, never aborts
 	stopped_.store(false);
-	collect(ctx, acct, [&out](NormalizedEvent &&ev) { out.push_back(std::move(ev)); });
+	collect(ctx, acct, [&out](NormalizedEvent &&ev) { out.push_back(std::move(ev)); }, true);
 	return true;
 }
 
 void YouTubeEvents::poll(const EventContext &ctx, OAuth::OAuthAccount &acct)
 {
 	// Emit straight into the store (dedupe makes re-fetching the same items harmless).
-	collect(ctx, acct, [&ctx](NormalizedEvent &&ev) { ctx.emit(ev); });
+	collect(ctx, acct, [&ctx](NormalizedEvent &&ev) { ctx.emit(ev); }, false);
 }
 
 int YouTubeEvents::pollIntervalMs()

@@ -288,6 +288,13 @@ import { EV } from "$lib/utils/eventNames";
     return p.fields.filter((f) => f.tier === "advanced");
   }
 
+  // The provider's note for the value this control currently holds, rendered as the row's
+  // hint. Provider-declared data rather than a per-platform branch here, so a second
+  // platform with a costly option is a capability entry and nothing in this file.
+  function optionNote(f: OAuthProviderField, value: unknown): string | undefined {
+    return typeof value === "string" ? f.optionNotes?.[value] : undefined;
+  }
+
   function isOverridden(id: string, f: OAuthProviderField): boolean {
     return !isEmptyVal(f.type, channelValues[id]?.[f.key]);
   }
@@ -1057,6 +1064,7 @@ import { EV } from "$lib/utils/eventNames";
                   {#each simpleNonShareable(c.provider) as f (f.key)}
                     {@render fieldRow(f, getVal(c.accountId, f.key), (v) => setField(c.accountId, f.key, v), {
                       providerId: c.provider.id,
+                      hint: optionNote(f, getVal(c.accountId, f.key)),
                     })}
                   {/each}
 
@@ -1070,6 +1078,7 @@ import { EV } from "$lib/utils/eventNames";
                             providerId: c.provider.id,
                             narrow: f.type === "enum",
                             inheritable: inheritsBelow(f, "channel"),
+                            hint: optionNote(f, getVal(c.accountId, f.key)),
                           })}
                         {/each}
                       </div>
@@ -1110,6 +1119,7 @@ import { EV } from "$lib/utils/eventNames";
                                   providerId: c.provider.id,
                                   narrow: f.type === "enum",
                                   inheritable: inheritsBelow(f, "stream"),
+                                  hint: optionNote(f, getStreamVal(s.profileUuid, f.key)),
                                 })}
                               {/each}
                               <p class="inhnote">Empty fields inherit this channel's defaults.</p>

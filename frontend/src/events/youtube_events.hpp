@@ -53,8 +53,13 @@ private:
 	// normalized event to `sink`. Cancel-aware between requests; non-2xx (past a handled
 	// 401 refresh) is logged and skipped, never fatal. Used with an `out`-appending sink
 	// for backfill and a ctx.emit sink for poll.
+	//
+	// `seeding` marks the ONE-SHOT connect-time backfill, which reads recent subscribers
+	// whether or not the account is live -- that single unit is what gives the dock its
+	// pre-live history. A recurring poll sets it false and is gated on the account
+	// broadcasting, because off air the read is a standing charge for nothing.
 	void collect(const EventContext &ctx, OAuth::OAuthAccount &acct,
-		     const std::function<void(NormalizedEvent &&)> &sink);
+		     const std::function<void(NormalizedEvent &&)> &sink, bool seeding);
 
 	OAuth::YouTubeProvider *provider_; // owner; used for the authed Data API GETs (SendAuthed)
 	std::atomic<bool> stopped_{false}; // set by disconnect(); secondary to ctx.canceled()

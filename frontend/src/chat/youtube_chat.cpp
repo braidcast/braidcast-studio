@@ -73,6 +73,19 @@ constexpr const char *kStreamMaxResults = "500";
 // where the response stalls after its headers).
 constexpr int kStreamDeadStrikes = 2;
 
+// What ONE request on either charged chat surface costs. liveChatMessages.streamList bills per
+// CONNECTION and liveChatMessages.list per POLL, both 5 units, so a single constant covers
+// both and the budget below counts real requests rather than an estimate.
+constexpr int kChatUnitCost = 5;
+
+// Shown beside the connected state while chat is being read on a charged surface, because the
+// user has to be able to see that this chat is spending -- and why it stops if it later does.
+// The cause is almost always the broadcast's privacy: YouTube's free reader is anonymous and
+// cannot see a private or unlisted stream, which is the shipped default.
+constexpr const char *kChargedReadNote =
+	"reading chat on YouTube's quota-billed API (its free reader cannot see this broadcast) - "
+	"chat stops when the daily budget runs out";
+
 using JsonUtil::Bool;
 using JsonUtil::NumLoose;
 using JsonUtil::Obj;
@@ -324,6 +337,10 @@ struct ChatSession {
 	// and per-connection lines cannot be attributed to a broadcast. Held as a built string so
 	// a gated-off DBG still costs nothing.
 	std::string destTag;
+	// An advisory carried alongside the CONNECTED state (empty for the free read). The chat
+	// dock renders it next to the state, which is how "chat works, but it is spending quota"
+	// becomes visible without pretending the transport is unhealthy.
+	std::string note;
 	bool announced = false;
 	// Set by EndSession once a loop has ended for good, so connect()'s clean bookend knows
 	// not to overwrite the reason. Never cleared: a session has one ending.
@@ -336,7 +353,7 @@ struct ChatSession {
 void AnnounceOnce(ChatSession &s)
 {
 	if (!s.announced) {
-		s.emitState(true, "");
+		s.emitState(true, s.note);
 		s.announced = true;
 		s.holdLiveChat();
 	}
@@ -374,6 +391,49 @@ void EndOnChatOffline(ChatSession &s, const std::string &offlineAt, const char *
 	DBG(LogCat::Chat, "youtube %s: dest=%s offlineAt=%s -> chat ended, stopping reads", via, s.destTag.c_str(),
 	    offlineAt.c_str());
 	EndSession(s, reason, err);
+}
+
+// --- the floor under the charged read ----------------------------------------------------
+//
+// InnerTube reads chat for free but cannot see a private or unlisted broadcast, and `private`
+// is the shipped privacy default -- so a user who accepts it puts EVERY destination on the
+// charged surface on their first go-live. Measured at ~1,730 units/chat-hour per destination,
+// four destinations spend the entire 10,000-unit pool that every install shares in about 87
+// minutes. Nothing used to measure that or refuse to enter it. These two do both, and they
+// share the provider's one budget so the sum across destinations is what is bounded, not each
+// destination separately.
+
+// May this session move onto a charged read at all? False -> the session has ENDED with the
+// reason on the chat pane. Also arms the advisory the connected state carries, so a chat that
+// is spending says so before it stops rather than only afterwards.
+bool EnterBilledRead(ChatSession &s, std::string &err)
+{
+	if (s.owner.ChatBudgetExhausted()) {
+		EndSession(s, s.owner.ChatBudgetMessage(), err);
+		return false;
+	}
+	if (s.note.empty()) {
+		s.note = kChargedReadNote;
+		// Re-confirm so the advisory reaches a pane that was already told "connected" by a
+		// free read that has since handed over. AnnounceOnce's other obligation (the
+		// live-chat refcount hold) is idempotent, so replaying it costs nothing.
+		s.announced = false;
+		HostLog("[chat] youtube: dest=" + s.destTag +
+			" is reading chat on YouTube's quota-billed API; it will stop when this install's "
+			"daily chat budget is spent. Broadcasting public lets chat use the free reader.");
+	}
+	return true;
+}
+
+// Reserve one charged request. False -> the budget ran out mid-session and the session has
+// ENDED with the reason on the chat pane; the caller must not send.
+bool ChargeChatRequest(ChatSession &s, std::string &err)
+{
+	if (s.owner.ChargeChatUnits(kChatUnitCost)) {
+		return true;
+	}
+	EndSession(s, s.owner.ChatBudgetMessage(), err);
+	return false;
 }
 
 // Read this destination's chat over InnerTube -- the PRIMARY read, because it costs zero
@@ -457,6 +517,12 @@ bool RunStreamList(ChatSession &s, std::string &err)
 	while (!s.canceled()) {
 		if (WaitOutQuotaExhaustion(s)) {
 			break;
+		}
+		// Before the URL is even built: the budget is what decides whether this connection
+		// happens, and a refusal ends the session rather than falling through to .list,
+		// which bills the same units against the same broadcast.
+		if (!ChargeChatRequest(s, err)) {
+			return false;
 		}
 		std::string url = std::string(kLiveChatStreamUrl) + "?liveChatId=" + Http::UrlEncode(s.liveChatId) +
 				  "&part=id,snippet,authorDetails&maxResults=" + kStreamMaxResults;
@@ -692,6 +758,9 @@ void RunListPoll(ChatSession &s, std::string &err)
 		if (WaitOutQuotaExhaustion(s)) {
 			break;
 		}
+		if (!ChargeChatRequest(s, err)) {
+			return;
+		}
 		std::string url = std::string(kLiveChatMessagesUrl) + "?liveChatId=" + Http::UrlEncode(s.liveChatId) +
 				  "&part=snippet,authorDetails";
 		if (!pageToken.empty()) {
@@ -843,12 +912,16 @@ struct ReadPath {
 	const char *env;
 	const char *label;
 	bool (*run)(ChatSession &, std::string &);
+	// Bills Data API quota per request. A billed path is entered only while the daily chat
+	// budget has room, and every request it makes is charged against it. A column rather
+	// than a name test so adding a read declares its own cost.
+	bool billed;
 };
 
 const ReadPath kReadPaths[] = {
-	{"BRAIDCAST_YOUTUBE_INNERTUBE", "InnerTube live_chat", RunInnerTube},
-	{"BRAIDCAST_YOUTUBE_STREAMLIST", "liveChatMessages.streamList", RunStreamList},
-	{nullptr, "liveChatMessages.list", RunListPollFinal},
+	{"BRAIDCAST_YOUTUBE_INNERTUBE", "InnerTube live_chat", RunInnerTube, false},
+	{"BRAIDCAST_YOUTUBE_STREAMLIST", "liveChatMessages.streamList", RunStreamList, true},
+	{nullptr, "liveChatMessages.list", RunListPollFinal, true},
 };
 
 } // namespace
@@ -967,6 +1040,9 @@ bool YouTubeChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, con
 			continue;
 		}
 		if (canceled()) {
+			break;
+		}
+		if (path.billed && !EnterBilledRead(session, err)) {
 			break;
 		}
 		DBG(LogCat::Chat, "youtube: dest=%s chat=..%s opening via %s", session.destTag.c_str(),

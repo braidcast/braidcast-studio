@@ -151,6 +151,39 @@ public:
 	// channel-wide read, so a per-destination poll would multiply an identical result.
 	bool ShouldPollSuperChats(const std::string &accountId) const;
 
+	// Is any destination of `accountId` currently broadcasting? Gate 1 of
+	// ShouldPollSuperChats on its own, so a reader that needs only that half asks the same
+	// question of the same state rather than re-deriving it from broadcasts_.
+	//
+	// It is the WHOLE gate for subscriptions.list?myRecentSubscribers: a YouTube subscribe
+	// never appears in live chat, so ShouldPollSuperChats' second half ("some live chat is
+	// uncovered") does not apply -- a covered chat still leaves a subscribe with no other
+	// path in. What does apply is that the read is worth its unit only while the channel is
+	// on air; off air it is a recurring charge against a shared daily quota for a number
+	// nothing is waiting on.
+	bool IsAccountBroadcasting(const std::string &accountId) const;
+
+	// --- the daily budget for YouTube's CHARGED chat reads -----------------------------
+	//
+	// InnerTube reads live chat at zero quota, but it cannot see a private or unlisted
+	// broadcast -- and `private` is the shipped privacy default. Such a broadcast falls
+	// through to liveChatMessages.streamList, measured at ~1,730 units per chat-hour PER
+	// DESTINATION: four destinations exhaust the 10,000-unit pool EVERY install shares in
+	// about 87 minutes. These three put a floor under that.
+	//
+	// Reserve `units` before making a billed chat request. False once the day's budget is
+	// spent, and the caller must then STOP reading and say why -- never read on, never fail
+	// silently. Resets at the same midnight-Pacific boundary as the quota itself.
+	bool ChargeChatUnits(int units);
+
+	// True once the budget is spent, without reserving anything: the test a reader makes
+	// before ENTERING the billed path at all.
+	bool ChatBudgetExhausted() const;
+
+	// The one user-facing sentence for a chat stopped by the budget. Shared by every refusal
+	// site so the chat pane and the log cannot word it differently.
+	std::string ChatBudgetMessage() const;
+
 	// Record a quota-exhausted verdict from any YouTube Data API response: computes
 	// the next midnight-Pacific reset instant and closes the shared gate until then,
 	// HostLog'ing once per episode. Later reports while the gate is closed are no-ops.
@@ -187,6 +220,11 @@ private:
 
 	BrokerStrategy auth_;
 
+	// Which of a broadcast's three separately-editable resources a mid-stream re-apply
+	// digest describes. One parameterized accessor over the three rather than three
+	// accessors, so a fourth editable resource is a row here and nothing else.
+	enum class AppliedKind { Broadcast, Snippet, Thumbnail };
+
 	// The active broadcast's liveChatId + broadcast/video id, PER DESTINATION. Set on a
 	// successful applyMetadata (the only place a broadcast is created) and read by the
 	// chat transport (liveChatId) and the viewer poller (broadcastId). Guarded by
@@ -211,6 +249,39 @@ private:
 		// of the read, not a tuning knob. Lives here because its lifetime is exactly this
 		// broadcast's: a stream stop erases the entry and the token with it.
 		std::string viewerContinuation;
+
+		// What the mid-stream "Edit stream info" push last SUCCESSFULLY applied to the video
+		// behind this broadcast, so pressing Apply again with nothing changed costs nothing.
+		// Without it each press re-sent videos.update (50 units) and re-uploaded the whole
+		// thumbnail (50) to every destination, so fixing a typo twice cost more than the
+		// go-live did.
+		//
+		// `appliedVideoId` is what makes the two digests safe: a digest is honored only for
+		// the video id it was recorded against, so it can never be matched against the NEW
+		// broadcast a later go-live creates (which owns no thumbnail of its own and must
+		// upload one). The digests summarize the exact request bodies; the thumbnail's is a
+		// digest of its bytes, which are never retained.
+		std::string appliedVideoId;
+		std::string appliedBroadcast;
+		std::string appliedSnippet;
+		std::string appliedThumbnail;
+
+		std::string &Digest(AppliedKind kind)
+		{
+			switch (kind) {
+			case AppliedKind::Broadcast:
+				return appliedBroadcast;
+			case AppliedKind::Snippet:
+				return appliedSnippet;
+			case AppliedKind::Thumbnail:
+			default:
+				return appliedThumbnail;
+			}
+		}
+		const std::string &Digest(AppliedKind kind) const
+		{
+			return const_cast<BroadcastState *>(this)->Digest(kind);
+		}
 	};
 	mutable std::mutex broadcastMutex_;
 	std::map<DestinationId, BroadcastState> broadcasts_;
@@ -236,6 +307,28 @@ private:
 	// destination is not live (even if a sibling destination is).
 	bool EnsureActiveBroadcast(OAuthAccount &acct, const std::string &profileUuid, BroadcastState &out,
 				   std::string &err);
+
+	// The digest of what `kind` last successfully carried to `videoId` for `dest`, and its
+	// writer. "" whenever nothing is remembered OR the remembered record belongs to a
+	// different video id -- so a caller comparing against "" always re-sends, which is the
+	// safe direction. The writer only ever updates an EXISTING destination entry, so a
+	// destination that went off air mid-apply is not resurrected by its own late record.
+	std::string AppliedDigest(const DestinationId &dest, const std::string &videoId, AppliedKind kind) const;
+	void RecordApplied(const DestinationId &dest, const std::string &videoId, AppliedKind kind,
+			   const std::string &digest);
+
+	// The account's currently-live destinations. The one read of broadcasts_ behind both
+	// IsAccountBroadcasting and ShouldPollSuperChats, so the two cannot disagree about what
+	// "live" means. Takes broadcastMutex_ and releases it before returning.
+	std::vector<DestinationId> LiveDestinations(const std::string &accountId) const;
+
+	// See ChargeChatUnits. The counter and the day it belongs to move together, so one
+	// mutex rather than two atomics that could be read across a midnight roll. `chatDayEnd_`
+	// is 0 until the first charge; a charge past it zeroes the counter and starts a new day.
+	mutable std::mutex chatBudgetMutex_;
+	int64_t chatDayEnd_ = 0;
+	int chatUnitsSpent_ = 0;
+	bool chatBudgetLogged_ = false;
 
 	// ONE broadcast's concurrent viewers, over InnerTube's updated_metadata. `out` is keyed by
 	// video id and gains an entry ONLY when the response actually carried a videoViewCountRenderer

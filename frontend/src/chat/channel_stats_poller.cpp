@@ -10,6 +10,7 @@
 #include <util/platform.h> // os_gettime_ns
 
 #include "../log.hpp"
+#include "../obs_bootstrap.hpp" // ObsBootstrap::AnyOutputLive -- the live/idle read cadence
 #include "../oauth/provider.hpp"
 #include "../oauth/account_store.hpp"
 #include "../overlay/overlay_server.hpp" // OverlayServer::BroadcastChannelStats
@@ -33,6 +34,24 @@ namespace {
 // stale rather than as wrong.
 constexpr std::chrono::milliseconds kBaseInterval(900000);
 
+// How stale a total may get before a tick is allowed to BUY a fresh one. The cycle above is
+// unchanged -- every tick still emits, so a dock that just opened and a browser source that
+// just connected both get the last-known value with its as-of stamp immediately -- and these
+// decide only which ticks pay a platform request for a new one.
+//
+// The split exists because this poller runs boot-to-exit and YouTube's read costs a unit
+// against a 10,000/day budget shared by every install: 4 units/hour/account, forever, whether
+// or not anything is on air. While live the old cadence stands (an overlay follower counter in
+// a live scene is a real consumer and should tick). Idle it drops to a twelfth of that: a
+// subscriber total moves by a handful over a whole day, the panel labels its value with an
+// as-of stamp, and going live re-reads on the very next tick because the shorter live gap is
+// then already satisfied.
+//
+// Slightly under the tick so the jitter folded into it can never push an elapsed live cycle
+// just short of the gap and silently halve the live cadence.
+constexpr std::chrono::milliseconds kLiveReadGap(870000);
+constexpr std::chrono::milliseconds kIdleReadGap(7200000);
+
 } // namespace
 
 const char *ChannelStatsPoller::LogTag() const
@@ -53,26 +72,44 @@ std::chrono::milliseconds ChannelStatsPoller::Interval(unsigned long long tick) 
 	return kBaseInterval + jitter;
 }
 
+bool ChannelStatsPoller::ShouldRead(const std::string &accountId)
+{
+	const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+	const std::chrono::milliseconds gap = ObsBootstrap::AnyOutputLive() ? kLiveReadGap : kIdleReadGap;
+
+	const std::lock_guard<std::mutex> guard(readMutex_);
+	auto it = lastRead_.find(accountId);
+	if (it != lastRead_.end() && now - it->second < gap) {
+		return false;
+	}
+	// Stamped on the ATTEMPT, not on success: a failing read must be paced like a
+	// succeeding one, or a platform outage turns into a request every cycle.
+	lastRead_[accountId] = now;
+	return true;
+}
+
 void ChannelStatsPoller::PollAccount(OAuth::OAuthAccount &acct, OAuth::StreamProvider *provider, PollCycle &cycle)
 {
 	OAuth::AudienceResult out;
 	std::string err;
 	bool ok = false;
-	try {
-		ok = provider->audienceCount(acct, out, err);
-	} catch (const std::exception &e) {
-		ok = false;
-		err = std::string("audience count crashed: ") + e.what();
-	} catch (...) {
-		ok = false;
-		err = "audience count crashed: unknown error";
-	}
-	if (!ok && !err.empty()) {
-		// A real error (not merely unsupported) -> log, but still fall through to the
-		// cached-fallback below so the panel keeps its last-known value rather than
-		// blanking on a transient failure. The slow cadence already paces retries, so
-		// never abort the cycle.
-		HostLog("[channels] '" + acct.providerId + "' skipped: " + Err::Diagnostic(err));
+	if (ShouldRead(OAuth::AccountId(acct))) {
+		try {
+			ok = provider->audienceCount(acct, out, err);
+		} catch (const std::exception &e) {
+			ok = false;
+			err = std::string("audience count crashed: ") + e.what();
+		} catch (...) {
+			ok = false;
+			err = "audience count crashed: unknown error";
+		}
+		if (!ok && !err.empty()) {
+			// A real error (not merely unsupported) -> log, but still fall through to the
+			// cached-fallback below so the panel keeps its last-known value rather than
+			// blanking on a transient failure. The slow cadence already paces retries, so
+			// never abort the cycle.
+			HostLog("[channels] '" + acct.providerId + "' skipped: " + Err::Diagnostic(err));
+		}
 	}
 
 	if (ok && out.available) {
