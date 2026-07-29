@@ -30,8 +30,15 @@ std::string GraphUrl(const std::string &path)
 // pages_read_engagement + pages_manage_posts + publish_video back creating and ending a
 // live video on a Page. No user-level publishing scope is requested: this integration is
 // Pages-only and never posts as the person.
-const std::array<const char *, 4> kFacebookScopes = {"pages_show_list", "pages_read_engagement", "pages_manage_posts",
-						     "publish_video"};
+//
+// business_management is not optional despite nothing here calling a business endpoint.
+// Meta added it as a requirement of the /me/accounts edge itself in v17: a Page that is
+// business-owned or on the New Pages Experience -- which is every Page that can be
+// switched into like a profile, so in practice most of them -- is omitted from the list
+// without it. The failure is silent, a 200 with an empty array, so the account connects
+// and simply has nowhere to stream.
+const std::array<const char *, 5> kFacebookScopes = {"pages_show_list", "pages_read_engagement", "pages_manage_posts",
+						     "publish_video", "business_management"};
 
 // A Page has no per-post friend circles, so "who can see this" reduces to whether the
 // broadcast is published to the Page at all -- which Meta expresses through the

@@ -31,7 +31,9 @@ namespace OAuth {
 
 // Bumped whenever the requested scope set changes, so installs holding tokens issued
 // under an older scope set are forced to re-auth (see OAuthAccount::scopeVer).
-constexpr int FACEBOOK_SCOPE_VERSION = 1;
+// v2 adds business_management, without which /me/accounts omits business-owned and New
+// Pages Experience Pages -- a token issued under v1 cannot see a Page at all.
+constexpr int FACEBOOK_SCOPE_VERSION = 2;
 
 class FacebookProvider : public StreamProvider {
 public:
