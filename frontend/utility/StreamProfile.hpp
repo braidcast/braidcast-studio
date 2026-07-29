@@ -29,8 +29,11 @@ struct StreamProfile {
 	 * for those service ids and the service word for a stream-key profile. Never
 	 * empty. */
 	[[nodiscard]] std::string PlatformKey() const;
-	/* The stream credential: "bearer_token" for WHIP, otherwise "key". Empty
-	 * when settings is null or the credential is unset. */
+	/* Which settings entry holds the stream credential for this profile's service:
+	 * "bearer_token" for WHIP, "key" otherwise. Named so a caller that has to clear
+	 * or move the credential addresses the same entry Key() reads. */
+	[[nodiscard]] const char *KeyField() const;
+	/* The stream credential itself. Empty when settings is null or it is unset. */
 	[[nodiscard]] std::string Key() const;
 
 	[[nodiscard]] OBSDataAutoRelease ToData() const;

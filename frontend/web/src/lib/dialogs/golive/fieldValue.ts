@@ -11,6 +11,14 @@ export function normOpt(o: unknown): LabeledOption {
   return typeof o === "string" ? { value: o, label: o } : (o as LabeledOption);
 }
 
+// Does this field address WHERE one stream posts, rather than describe what it says?
+// Such a field belongs to the individual stream: two streams on one account deliberately
+// targeting two Facebook Pages is the case it exists for, so its value is edited, pushed
+// and remembered per stream and has no channel layer to fall back to.
+export function isPerDestination(field: OAuthProviderField): boolean {
+  return field.perDestination === true;
+}
+
 // A `required` enum has no valid empty state. `inheritable` exempts an inherit layer,
 // where empty means "take the layer below" rather than "unset".
 export function isRequiredEnum(field: OAuthProviderField, inheritable: boolean): boolean {

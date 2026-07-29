@@ -50,6 +50,11 @@ const std::array<PrivacyOption, 2> kPrivacyOptions = {{
 // Facebook rejects a live video whose title exceeds 254 characters.
 constexpr int kMaxTitleLength = 254;
 
+// The descriptor field that addresses one Page. The picker's key, the key
+// enumerateTargets hands back so a caller can pre-set it, and the key ResolvePage reads
+// off the pushed bag -- one name, so a rename cannot desync the three.
+constexpr const char *kPageFieldKey = "page";
+
 using Http::AppendForm;
 using JsonUtil::Obj;
 using JsonUtil::ParseJson;
@@ -147,11 +152,15 @@ json FacebookProvider::capabilityJson() const
 	// the Pages are a list to pick from rather than something the user has to guess the
 	// name of; the options come from the account, which a static descriptor enum cannot
 	// express.
-	fields.push_back(json{{"key", "page"},
+	// perDestination: the Page is WHERE a stream posts, not what it says, so it belongs
+	// to the individual stream rather than to the account they share. Every other field
+	// here describes one broadcast's content and stays account-level.
+	fields.push_back(json{{"key", kPageFieldKey},
 			      {"label", "Page"},
 			      {"type", "category"},
 			      {"tier", "simple"},
 			      {"shareable", false},
+			      {"perDestination", true},
 			      {"browsable", true},
 			      {"placeholder", "Choose a Page\xE2\x80\xA6"}});
 	fields.push_back(json{{"key", "title"},
@@ -289,7 +298,23 @@ bool FacebookProvider::getMetadata(OAuthAccount &acct, json &out, std::string &e
 		return false;
 	}
 	if (list.pages.size() == 1) {
-		out["page"] = json{{"id", list.pages[0].id}, {"name", list.pages[0].name}};
+		out[kPageFieldKey] = json{{"id", list.pages[0].id}, {"name", list.pages[0].name}};
+	}
+	return true;
+}
+
+bool FacebookProvider::enumerateTargets(OAuthAccount &acct, TargetList &out, std::string &err)
+{
+	out = TargetList{};
+
+	PageList list;
+	if (!FetchPages(acct, list, err)) {
+		return false;
+	}
+	out.fieldKey = kPageFieldKey;
+	out.targets.reserve(list.pages.size());
+	for (const PageRef &page : list.pages) {
+		out.targets.push_back(StreamTarget{page.id, page.name});
 	}
 	return true;
 }
@@ -315,7 +340,7 @@ bool FacebookProvider::searchCategories(OAuthAccount &acct, const std::string &q
 
 bool FacebookProvider::ResolvePage(OAuthAccount &acct, const json &fields, PageRef &out, std::string &err)
 {
-	const std::string chosenId = Str(Obj(fields, "page"), "id");
+	const std::string chosenId = Str(Obj(fields, kPageFieldKey), "id");
 
 	PageList list;
 	if (!FetchPages(acct, list, err)) {

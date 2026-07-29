@@ -59,6 +59,7 @@
 #include "util/properties_serializer.hpp"
 #include "scene/scene_collections.hpp"
 #include "scene/scene_persistence.hpp"
+#include "target_destinations.hpp"
 #include "util/session_log.hpp"
 #include "scene/transitions.hpp"
 #include "windowing/window_manager.hpp"
@@ -9321,6 +9322,13 @@ try {
 	});
 
 	EmitOAuthStatus();
+
+	// One consent can grant several places to stream to (Meta hands over every Page the
+	// person administers, each with its own RTMPS endpoint). Give each one its own stream
+	// profile so profile -> output stays 1:1. Additive and idempotent, so this runs on a
+	// reconnect exactly as it does on a first connect; a provider without targets, or with
+	// one, does nothing here.
+	MaterializeTargetDestinations(accountId, profileUuid);
 
 	// Phase 9.2a: start the account's live-events transport now that it is connected
 	// (the events feed is account-lifecycle, not go-live). No-op until a provider

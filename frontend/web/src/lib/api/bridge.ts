@@ -525,6 +525,12 @@ export interface OAuthProviderField {
    * catalog to search, so run the lookup on focus with an empty query. Providers whose
    * lookup rejects an empty query (Twitch/Kick category search) leave it unset. */
   browsable?: boolean;
+  /** The field addresses WHERE a stream posts rather than describing what it says
+   * (Facebook's Page: one account administers several, each with its own RTMPS
+   * endpoint). Such a value belongs to the individual stream, never to the account the
+   * streams share, so it is edited, pushed and remembered per stream and never
+   * inherits from a layer below. Not set = an ordinary channel-level field. */
+  perDestination?: boolean;
   /** Soft max length (text/tags) carried for hint/validation; advisory only. */
   max?: number;
   /** Provider-supplied default. Prefill seeds it only where saved + live left the

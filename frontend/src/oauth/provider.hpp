@@ -7,6 +7,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -186,6 +187,22 @@ inline DestinationId AccountDestination(const std::string &accountId)
 {
 	return DestinationId{accountId, std::string()};
 }
+
+// One distinct place an account can stream to: a Facebook Page today, and whatever the
+// equivalent turns out to be on the next platform that has one. `id` is the value the
+// addressing field carries; `name` is what the user reads.
+struct StreamTarget {
+	std::string id;
+	std::string name;
+};
+
+// Everything one account's target discovery yields: the targets themselves plus the
+// descriptor field key that addresses one, so a caller can pre-set that field without
+// knowing what the platform calls it.
+struct TargetList {
+	std::string fieldKey;
+	std::vector<StreamTarget> targets;
+};
 
 // The runtime context the framework hands an AuthStrategy for one interactive
 // grant. `emitProgress` reports a phase payload to JS (wired to the
@@ -388,6 +405,32 @@ public:
 	// true (YouTube): each profile's broadcast has its own liveChatId and its own
 	// concurrentViewers, so each needs its own transport and its own read.
 	virtual bool broadcastPerDestination() const { return false; }
+
+	// Enumerate the distinct targets `acct` can stream to: places that each get their
+	// own broadcast and their own ingest endpoint, so each is a separate destination
+	// rather than another view of one channel. Meta grants a person's Pages in a single
+	// consent and hands every Page its own RTMPS URL, which is the case this exists for.
+	//
+	// Distinct from broadcastPerDestination(), which asks whether a platform creates a
+	// broadcast per stream profile. YouTube answers yes to that and still has ONE
+	// channel: its per-profile broadcasts all carry the same title and land on the same
+	// page. This asks how many places the account can post to at all.
+	//
+	// The default reports none, which reads as "this account IS the single destination".
+	// A single target reads the same way to callers -- there is nothing to choose, so
+	// nothing is materialized -- which keeps the one-Page account on exactly the path it
+	// has today.
+	//
+	// false + `err` on a failed lookup. That is deliberately distinct from an empty
+	// list: a network failure must never be read as "this account can stream nowhere",
+	// which would strand destinations the user does hold.
+	virtual bool enumerateTargets(OAuthAccount &acct, TargetList &out, std::string &err)
+	{
+		(void)acct;
+		(void)err;
+		out = TargetList{};
+		return true;
+	}
 
 	// Report the platform's current concurrent viewer count for `acct` into `out`
 	// (Phase 9.0 aggregate viewer poller). `acct` is non-const so a reactive token

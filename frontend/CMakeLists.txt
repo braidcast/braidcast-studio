@@ -251,6 +251,11 @@ target_sources(
     # stream profile on TID_UI; includes obs.h -> in the /wd4201 set below).
     src/ingest_writeback.cpp
     src/ingest_writeback.hpp
+    # Per-target destination discovery: gives every place an account can stream to
+    # (Facebook's Pages) its own stream profile, so profile -> output stays 1:1.
+    # Touches the profile/binding/meta stores on TID_UI -> in the /wd4201 set below.
+    src/target_destinations.cpp
+    src/target_destinations.hpp
     # Automated live perf-repro self-test (regression gate for the Main-composite
     # compositor-starvation incident). BRAIDCAST_SELFTEST_STREAM=perf-repro-gated,
     # driven by its own WM_TIMER (see main.cpp); includes obs.hpp -> /wd4201 set.
@@ -473,6 +478,7 @@ set_source_files_properties(
   src/windowing/tray.cpp
   src/scene/transitions.cpp
   src/ingest_writeback.cpp
+  src/target_destinations.cpp
   src/perf_repro_selftest.cpp
   api-impl/frontend_callbacks.cpp
   utility/CanvasDefinition.cpp

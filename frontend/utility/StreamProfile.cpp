@@ -43,12 +43,17 @@ std::string StreamProfile::PlatformKey() const
 	return key;
 }
 
+const char *StreamProfile::KeyField() const
+{
+	return serviceId == "whip_custom" ? "bearer_token" : "key";
+}
+
 std::string StreamProfile::Key() const
 {
 	if (!settings) {
 		return "";
 	}
-	const char *key = obs_data_get_string(settings, serviceId == "whip_custom" ? "bearer_token" : "key");
+	const char *key = obs_data_get_string(settings, KeyField());
 	return key ? key : "";
 }
 

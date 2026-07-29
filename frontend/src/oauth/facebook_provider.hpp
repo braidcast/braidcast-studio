@@ -62,6 +62,12 @@ public:
 	// destination -- two profiles on one Page are two independent broadcasts.
 	bool broadcastPerDestination() const override { return true; }
 
+	// One target per streamable Page: a Page has its own RTMPS endpoint, so two Pages
+	// are two destinations, never two views of one. Reuses FetchPages, so the usable/
+	// listed distinction it draws applies here unchanged -- a Page this app holds no
+	// token for is not a place this account can stream to.
+	bool enumerateTargets(OAuthAccount &acct, TargetList &out, std::string &err) override;
+
 	// End every live video this account still holds (stream stop), then one destination's
 	// (that output ended while others continue). Both pop the entry under the mutex and
 	// hand the end request to a worker: the callers run on the UI thread and must not

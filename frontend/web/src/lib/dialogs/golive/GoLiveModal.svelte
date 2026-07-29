@@ -9,7 +9,7 @@
   } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
   import { goLiveModal, closeGoLiveModal } from "$lib/dialogs/golive/goLiveModalOpener.svelte";
-  import { resolveRequiredEnum } from "$lib/dialogs/golive/fieldValue";
+  import { isPerDestination, resolveRequiredEnum } from "$lib/dialogs/golive/fieldValue";
   import { openOAuthConnect, isOAuthConnecting } from "$lib/dialogs/oauthConnectOpener.svelte";
   import { canvasStore } from "$lib/stores/canvasStore.svelte";
   import {
@@ -216,17 +216,41 @@ import { EV } from "$lib/utils/eventNames";
   function getStreamVal(uuid: string, key: string): unknown {
     return streamOverrides[uuid]?.[key];
   }
-  function toggleStreamOverride(uuid: string): void {
+  // The descriptor keys that ADDRESS a destination rather than describe it. One lookup
+  // per provider, shared by everything that has to tell a stream's address apart from a
+  // metadata divergence — the two live in the same per-stream bag but are governed by
+  // different rules.
+  function targetKeys(p: OAuthProvider | null): Set<string> {
+    return new Set((p?.fields ?? []).filter(isPerDestination).map((f) => f.key));
+  }
+  // What a stream keeps when it is NOT overriding its channel: its address only.
+  function addressOnly(p: OAuthProvider | null, bag: Record<string, unknown>): Record<string, unknown> {
+    const keys = targetKeys(p);
+    return Object.fromEntries(Object.entries(bag).filter(([k]) => keys.has(k)));
+  }
+  // Does this bag hold anything the override switch actually governs?
+  function hasOverrides(p: OAuthProvider | null, bag: Record<string, unknown>): boolean {
+    const keys = targetKeys(p);
+    return Object.keys(bag).some((k) => !keys.has(k));
+  }
+  function toggleStreamOverride(uuid: string, p: OAuthProvider | null): void {
     const on = !streamOverrideOn[uuid];
     streamOverrideOn[uuid] = on;
     if (!on) {
-      delete streamOverrides[uuid];
-      streamOverrides = { ...streamOverrides };
+      // The switch governs metadata divergence, not addressing: dropping the whole bag
+      // would leave the stream with no destination to post to.
+      const kept = addressOnly(p, streamOverrides[uuid] ?? {});
+      if (Object.keys(kept).length) {
+        streamOverrides = { ...streamOverrides, [uuid]: kept };
+      } else {
+        delete streamOverrides[uuid];
+        streamOverrides = { ...streamOverrides };
+      }
     }
   }
   function streamOverrideCount(uuid: string, p: OAuthProvider): number {
     const ov = streamOverrides[uuid] ?? {};
-    return p.fields.filter((f) => !isEmptyVal(f.type, ov[f.key])).length;
+    return channelFields(p).filter((f) => !isEmptyVal(f.type, ov[f.key])).length;
   }
 
   // "Empty" per descriptor type — the inheritance/omission predicate. A bool that
@@ -279,14 +303,24 @@ import { EV } from "$lib/utils/eventNames";
   // Field grouping (data lists, not branches): simple shareable render as overrides
   // (ghost/amber), simple non-shareable render normally, advanced go under the
   // dashed "<Platform>-only" divider.
+  //
+  // Per-destination fields are excluded from all three at the one point below: they say
+  // where a stream posts, so rendering them at the channel layer would offer a single
+  // control for a value each stream sets differently. They render per stream instead.
+  function channelFields(p: OAuthProvider): OAuthProviderField[] {
+    return p.fields.filter((f) => !isPerDestination(f));
+  }
+  function targetFields(p: OAuthProvider): OAuthProviderField[] {
+    return p.fields.filter(isPerDestination);
+  }
   function simpleShareable(p: OAuthProvider): OAuthProviderField[] {
-    return p.fields.filter((f) => f.tier !== "advanced" && f.shareable);
+    return channelFields(p).filter((f) => f.tier !== "advanced" && f.shareable);
   }
   function simpleNonShareable(p: OAuthProvider): OAuthProviderField[] {
-    return p.fields.filter((f) => f.tier !== "advanced" && !f.shareable);
+    return channelFields(p).filter((f) => f.tier !== "advanced" && !f.shareable);
   }
   function advancedFields(p: OAuthProvider): OAuthProviderField[] {
-    return p.fields.filter((f) => f.tier === "advanced");
+    return channelFields(p).filter((f) => f.tier === "advanced");
   }
 
   // The provider's note for the value this control is SHOWING, rendered as the row's
@@ -309,6 +343,11 @@ import { EV } from "$lib/utils/eventNames";
   // empty option at those sites — resolving it there would manufacture an override the
   // user never made, and pin a stream to a value diverging from its channel.
   function inheritsBelow(f: OAuthProviderField, layer: "channel" | "stream"): boolean {
+    // A per-destination field has no layer below it: it addresses this one stream, so an
+    // empty control means unaddressed, not "take the channel's".
+    if (isPerDestination(f)) {
+      return false;
+    }
     return layer === "stream" || f.shareable === true;
   }
 
@@ -512,17 +551,28 @@ import { EV } from "$lib/utils/eventNames";
   // override wins over the channel default, which wins over the shared value
   // (shared only supplies shareable keys). Empty fields are never emitted at any
   // layer, so a provider that treats "present" as "set" can't blank a channel by
-  // inheriting nothing. `stream` omitted (or its map empty) => channel default.
+  // inheriting nothing. `stream` omitted => the channel's own defaults, nothing else.
+  //
+  // Which of a stream's own values take part is one rule, held here: the override switch
+  // governs the metadata a stream may diverge on, but a per-destination value is this
+  // stream's ADDRESS, not a divergence — it applies switch or no switch, or two streams
+  // meant for two Pages would both push the channel's one.
+  function streamValue(f: OAuthProviderField, stream: Stream | undefined): unknown {
+    if (!stream || (!streamOverrideOn[stream.profileUuid] && !isPerDestination(f))) {
+      return undefined;
+    }
+    return streamOverrides[stream.profileUuid]?.[f.key];
+  }
   function effectiveFields(c: Channel, stream: Stream | undefined): Record<string, unknown> {
     const out: Record<string, unknown> = {};
     if (!c.provider) {
       return out;
     }
     const cv = channelValues[c.accountId] ?? {};
-    const sv = stream ? (streamOverrides[stream.profileUuid] ?? {}) : {};
     for (const f of c.provider.fields) {
-      if (!isEmptyVal(f.type, sv[f.key])) {
-        out[f.key] = sv[f.key];
+      const sv = streamValue(f, stream);
+      if (!isEmptyVal(f.type, sv)) {
+        out[f.key] = sv;
       } else if (!isEmptyVal(f.type, cv[f.key])) {
         out[f.key] = cv[f.key];
       } else if (f.shareable && !isEmptyVal(f.type, sharedValues[f.key])) {
@@ -582,19 +632,40 @@ import { EV } from "$lib/utils/eventNames";
             merged[f.key] = f.default;
           }
         }
+        // Restore remembered per-stream values first, so the routing below only fills
+        // what a stream has nothing of. Skip a stream the user has already touched. The
+        // override SWITCH follows the bag's content, not its mere presence: a bag holding
+        // only this stream's address is not a divergence from the channel, and flipping
+        // the switch for it would report overrides the user never made.
+        for (const [uuid, bag] of Object.entries(saved.streams)) {
+          if (bag && Object.keys(bag).length && !streamOverrideOn[uuid] && !streamOverrides[uuid]) {
+            streamOverrides[uuid] = { ...bag };
+            streamOverrideOn[uuid] = hasOverrides(c.provider, bag);
+          }
+        }
+
         // Route each merged key by tier so shareable values land in the SHARED layer
         // (first channel wins), not as a spurious per-channel override: a channel only
         // takes an override when it genuinely diverges from the shared value. Without
         // this, two channels live-reporting the same title would each read as
-        // "overrides shared". Non-shareable keys stand alone in channelValues. Every
-        // write is guarded so a user edit before this resolves is never clobbered.
+        // "overrides shared". Non-shareable keys stand alone in channelValues, EXCEPT a
+        // per-destination key, which addresses a stream and so seeds the streams that
+        // have no address yet — the one-Page account, whose Page the provider reports
+        // here, is exactly that case. Every write is guarded so a user edit before this
+        // resolves is never clobbered.
         for (const [key, val] of Object.entries(merged)) {
           const f = c.provider?.fields.find((fd) => fd.key === key);
           const type = f?.type ?? "text";
           if (isEmptyVal(type, val)) {
             continue;
           }
-          if (f?.shareable) {
+          if (f && isPerDestination(f)) {
+            for (const s of c.streams) {
+              if (isEmptyVal(type, getStreamVal(s.profileUuid, key))) {
+                setStreamField(s.profileUuid, key, val);
+              }
+            }
+          } else if (f?.shareable) {
             if (touchedShared.has(key)) {
               continue;
             }
@@ -605,15 +676,6 @@ import { EV } from "$lib/utils/eventNames";
             }
           } else if (isEmptyVal(type, getVal(c.accountId, key))) {
             setField(c.accountId, key, val);
-          }
-        }
-
-        // Restore remembered per-stream overrides and expand them in Advanced. Skip a
-        // stream the user has already toggled or edited.
-        for (const [uuid, bag] of Object.entries(saved.streams)) {
-          if (bag && Object.keys(bag).length && !streamOverrideOn[uuid] && !streamOverrides[uuid]) {
-            streamOverrides[uuid] = { ...bag };
-            streamOverrideOn[uuid] = true;
           }
         }
       }),
@@ -707,16 +769,12 @@ import { EV } from "$lib/utils/eventNames";
     // streamMeta.set (its bindings are disabled, so streaming.start won't start it
     // either) and therefore can never land in failedByChannel and block the go-live.
     // Each stream's effective fields merge the channel default with that stream's own
-    // overrides. YouTube needs the per-profile call; Twitch/Kick applying the same
-    // channel twice (no divergence) is idempotent. The stream layer applies ONLY when
-    // its override toggle is on, so an orphaned overrides bag (toggle off) can never
-    // diverge a live broadcast — the toggle is the sole authority.
+    // values. YouTube needs the per-profile call; Twitch/Kick applying the same channel
+    // twice (no divergence) is idempotent. Which of a stream's values apply is decided
+    // in one place (streamValue): the override toggle is the sole authority over
+    // metadata divergence, while a per-destination address always applies.
     const jobs = armedConnectedChannels.flatMap((c) =>
-      c.streams.map((s) => ({
-        channel: c,
-        stream: s,
-        fields: effectiveFields(c, streamOverrideOn[s.profileUuid] ? s : undefined),
-      })),
+      c.streams.map((s) => ({ channel: c, stream: s, fields: effectiveFields(c, s) })),
     );
     const results = await Promise.allSettled(
       jobs.map((j) =>
@@ -791,17 +849,18 @@ import { EV } from "$lib/utils/eventNames";
     // channel's fields were locked this session, so its bags hold only the prefill
     // echo — persisting that would overwrite remembered values the user never touched.
     // One save per channel with its raw layers: the channel bag plus the channel's
-    // COMPLETE stream set. Streams with an enabled, non-empty override carry their
-    // bag; every other stream carries {} so the store clears any override toggled off
-    // this session (otherwise it would resurrect and re-apply on the next go-live).
+    // COMPLETE stream set. A stream with its override switch on carries its whole bag;
+    // one with the switch off carries only its per-destination address, so the store
+    // clears the divergences toggled off this session (they would otherwise resurrect
+    // and re-apply on the next go-live) WITHOUT unaddressing the stream. An empty result
+    // clears the entry outright, which is what a channel with no addressing wants.
     if (remember) {
       void Promise.allSettled(
         armedConnectedChannels.map((c) => {
           const streams: Record<string, Record<string, unknown>> = {};
           for (const s of c.streams) {
             const ov = streamOverrides[s.profileUuid] ?? {};
-            streams[s.profileUuid] =
-              streamOverrideOn[s.profileUuid] && Object.keys(ov).length ? ov : {};
+            streams[s.profileUuid] = streamOverrideOn[s.profileUuid] ? ov : addressOnly(c.provider, ov);
           }
           return obs.call("streamMeta.save", {
             accountId: c.accountId,
@@ -1056,11 +1115,46 @@ import { EV } from "$lib/utils/eventNames";
               {/if}
 
               {#if !isCollapsed}
+                {@const targets = targetFields(c.provider)}
                 <div class="chb">
                   {#if c.streams.length > 1}
+                    <!-- Two different truths, told apart by the descriptor rather than by
+                         platform: an account that is one channel really does publish every
+                         stream to the same place, while an account holding several targets
+                         (Facebook Pages) has each stream landing somewhere else on purpose. -->
                     <div class="dedupe">
-                      All <b>{c.streams.length} streams</b> post to this one channel — its title, category and thumbnail
-                      are set once here.
+                      {#if targets.length}
+                        Each of these <b>{c.streams.length} streams</b> posts to its own
+                        {targets.map((f) => f.label.toLowerCase()).join(" / ")} — chosen per stream below. Everything
+                        else on this card applies to all of them.
+                      {:else}
+                        All <b>{c.streams.length} streams</b> post to this one channel — its title, category and
+                        thumbnail are set once here.
+                      {/if}
+                    </div>
+                  {/if}
+
+                  {#if targets.length}
+                    <!-- Where each stream posts. Shown in Simple as well as Advanced: this
+                         is the destination itself, not an optional divergence from the
+                         channel, so burying it would leave a stream addressed by a value
+                         the user never saw. -->
+                    <div class="targets">
+                      {#each c.streams as s (s.profileUuid)}
+                        <div class="trow">
+                          <div class="trh">
+                            <span class="tn">{s.label}</span>
+                            <span class="tc">{s.canvasName ?? "—"}</span>
+                          </div>
+                          {#each targets as f (f.key)}
+                            {@render fieldRow(f, getStreamVal(s.profileUuid, f.key), (v) => setStreamField(s.profileUuid, f.key, v), {
+                              providerId: c.provider.id,
+                              accountId: c.accountId,
+                              hint: noteFor(f, getStreamVal(s.profileUuid, f.key), "stream"),
+                            })}
+                          {/each}
+                        </div>
+                      {/each}
                     </div>
                   {/if}
 
@@ -1127,7 +1221,7 @@ import { EV } from "$lib/utils/eventNames";
                                 class="sw"
                                 class:on
                                 title={on ? "Overriding channel defaults" : "Override channel defaults"}
-                                onclick={() => toggleStreamOverride(s.profileUuid)}
+                                onclick={() => toggleStreamOverride(s.profileUuid, c.provider)}
                               >
                                 <i></i>
                               </button>
@@ -1135,7 +1229,7 @@ import { EV } from "$lib/utils/eventNames";
                           </div>
                           {#if on}
                             <div class="srb">
-                              {#each c.provider.fields as f (f.key)}
+                              {#each channelFields(c.provider) as f (f.key)}
                                 {@render fieldRow(f, getStreamVal(s.profileUuid, f.key), (v) => setStreamField(s.profileUuid, f.key, v), {
                                   providerId: c.provider.id,
                                   accountId: c.accountId,
@@ -1554,6 +1648,42 @@ import { EV } from "$lib/utils/eventNames";
   .dedupe b {
     color: var(--color-dim);
     font-weight: 600;
+  }
+
+  /* Per-stream destination pickers: one block per stream, named by its profile and
+     canvas so two rows carrying the same control are told apart. */
+  .targets {
+    margin: 0 0 11px;
+  }
+  .trow {
+    padding: 8px 9px;
+    background: var(--color-base);
+    border: var(--border-weight) solid var(--color-border);
+  }
+  .trow + .trow {
+    margin-top: 6px;
+  }
+  .trh {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin-bottom: 6px;
+    min-width: 0;
+  }
+  .tn {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--color-text);
+    flex: 0 0 auto;
+  }
+  .tc {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    color: var(--color-muted);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   /* Advanced: platform-only fields under a dashed divider. */
