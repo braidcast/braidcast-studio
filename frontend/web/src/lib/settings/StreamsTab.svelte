@@ -334,6 +334,22 @@
     }
   });
 
+  // A connected account already names the destination -- the Page for Facebook, the
+  // channel everywhere else -- so an unnamed profile has exactly one right label and no
+  // reason to make the user retype it. Deliberately fills only a blank: a label the user
+  // chose is theirs, and relinking an account must never rewrite it. Written as an effect
+  // rather than hung off the link handlers because both the reuse picker and the OAuth
+  // return path arrive here, and a second copy of this rule is a second place to drift.
+  $effect(() => {
+    if (!formOpen || fLabel.trim()) {
+      return;
+    }
+    const name = connectedStatus?.displayName.trim();
+    if (name) {
+      fLabel = name;
+    }
+  });
+
   function connect() {
     if (!editingUuid || !editingProvider) {
       return;
