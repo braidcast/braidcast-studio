@@ -9298,11 +9298,12 @@ try {
 		EmitOAuthConnectError(profileUuid, providerId, "identity fetch failed; try connecting again");
 		return;
 	}
-	// A record with no refresh token is unusable -- IsAccountConnected treats it as not
-	// connected, yet other paths would still act on its access token until it expires.
-	// Refuse to persist it and surface a connect error so the UI can retry.
-	if (acct.refresh.empty()) {
-		EmitOAuthConnectError(profileUuid, providerId, "no refresh token returned; try connecting again");
+	// A record without the credential its provider's auth model establishes is unusable
+	// -- IsAccountConnected treats it as not connected, yet other paths would still act
+	// on whatever token it does hold until that expires. Refuse to persist it and
+	// surface a connect error so the UI can retry.
+	if (!OAuth::AccountHasCredential(acct)) {
+		EmitOAuthConnectError(profileUuid, providerId, "no usable credential returned; try connecting again");
 		return;
 	}
 	const std::string accountId = OAuth::AccountId(acct);
@@ -9689,10 +9690,10 @@ bool MethodStreamMetaGet(const json &params, json &result, std::string &error)
 	// gating on scopeVer would force needless reconnects on tokens that can already
 	// read it. A genuinely missing/insufficient scope surfaces as an HTTP 403 that
 	// getMetadata already returns. Newly-added event scopes stay gated on their own
-	// paths (chat/event hubs, viewer poller). A refresh-less record is still refused:
-	// it is a broken/partial connect that must not drive a read on an access token
-	// that can't be renewed.
-	if (stored->refresh.empty()) {
+	// paths (chat/event hubs, viewer poller). A credential-less record is still refused:
+	// it is a broken/partial connect that must not drive a read on a token the provider
+	// never finished establishing.
+	if (!OAuth::AccountHasCredential(*stored)) {
 		error = "account not connected; reconnect";
 		return false;
 	}
@@ -9730,9 +9731,18 @@ bool MethodStreamMetaSearchCategories(const json &params, json &result, std::str
 		return false;
 	}
 
-	// Use any connected account for this provider (search needs a usable user token;
-	// a behind-scope or partial no-refresh account must not be used). Shared gate.
-	std::optional<OAuth::OAuthAccount> connected = OAuth::FirstConnectedAccount(providerId);
+	// Prefer the account the caller names: a platform whose lookup is account-scoped
+	// (Facebook's Pages) returns a DIFFERENT list per account, so answering from whichever
+	// account happens to be first would offer a second connected user's Pages. Falls back
+	// to any connected account for the platform-wide catalogs (Twitch/Kick/YouTube
+	// categories are identical whoever asks) and for callers that name none. Either way
+	// the account must pass the shared connected gate -- a behind-scope or credential-less
+	// record must not drive the read.
+	const std::string accountId = OptString(params, "accountId");
+	std::optional<OAuth::OAuthAccount> connected = OAuth::Accounts().Get(accountId);
+	if (!connected || connected->providerId != providerId || !OAuth::IsAccountConnected(*connected)) {
+		connected = OAuth::FirstConnectedAccount(providerId);
+	}
 	if (!connected) {
 		error = "connect an account first";
 		return false;
@@ -9783,9 +9793,9 @@ bool MethodStreamMetaSet(const json &params, json &result, std::string &error)
 	// token issued before the bump is fully authorized to edit channel info, so gating
 	// on scopeVer would block it needlessly. A genuinely missing scope surfaces as an
 	// HTTP 403 that applyMetadata already returns. Newly-added event scopes stay gated
-	// on their own paths (chat/event hubs, viewer poller). A refresh-less record is
+	// on their own paths (chat/event hubs, viewer poller). A credential-less record is
 	// still refused: a broken/partial connect must not drive a write.
-	if (stored->refresh.empty()) {
+	if (!OAuth::AccountHasCredential(*stored)) {
 		error = "account not connected; reconnect";
 		return false;
 	}

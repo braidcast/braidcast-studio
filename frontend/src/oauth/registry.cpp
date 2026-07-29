@@ -7,6 +7,7 @@
 #include "../log.hpp"
 #include "provider_creds.hpp"
 #include "account_store.hpp"
+#include "facebook_provider.hpp"
 #include "kick_provider.hpp"
 #include "twitch_provider.hpp"
 #include "youtube_provider.hpp"
@@ -44,15 +45,24 @@ ProviderRegistry &Registry()
 	return registry;
 }
 
+bool AccountHasCredential(const OAuthAccount &acct)
+{
+	StreamProvider *provider = Registry().Get(acct.providerId);
+	if (!provider || !provider->auth()) {
+		return false;
+	}
+	return provider->auth()->usesRefreshToken() ? !acct.refresh.empty() : !acct.access.empty();
+}
+
 bool IsAccountConnected(const OAuthAccount &acct)
 {
 	StreamProvider *provider = Registry().Get(acct.providerId);
 	// An unregistered provider (e.g. Twitch without baked creds) can't be used, so
-	// it isn't connected. Scope must be current, a refresh token must exist ("valid
-	// credential = refresh token present"), and that token must not have been rejected
-	// as dead -- a revoked token is still a non-empty string, so presence alone read
-	// green right up until the account died mid-stream.
-	return provider && provider->isTokenScopeCurrent(acct) && !acct.refresh.empty() && !acct.refreshDead;
+	// it isn't connected. Scope must be current, the provider's credential must be
+	// present, and it must not have been rejected as dead -- a revoked refresh token is
+	// still a non-empty string, so presence alone read green right up until the account
+	// died mid-stream.
+	return provider && provider->isTokenScopeCurrent(acct) && AccountHasCredential(acct) && !acct.refreshDead;
 }
 
 bool AccountNeedsReconnect(const OAuthAccount &acct)
@@ -61,9 +71,9 @@ bool AccountNeedsReconnect(const OAuthAccount &acct)
 	// Has a credential the user established, but it can no longer be used as-is:
 	// either the token predates the current scope set, or the broker rejected its
 	// refresh with invalid_grant. Both recover only through a fresh interactive grant,
-	// so both surface on the one relink signal. Distinct from a partial no-refresh
+	// so both surface on the one relink signal. Distinct from a partial credential-less
 	// record (which is just ignored).
-	return provider && !acct.refresh.empty() && (!provider->isTokenScopeCurrent(acct) || acct.refreshDead);
+	return provider && AccountHasCredential(acct) && (!provider->isTokenScopeCurrent(acct) || acct.refreshDead);
 }
 
 std::optional<OAuthAccount> FirstConnectedAccount(const std::string &providerId)
@@ -98,10 +108,11 @@ void BootProviders()
 	if (TwitchConfigured()) {
 		Registry().Register(std::make_unique<TwitchProvider>());
 	}
-	// Kick and YouTube carry no baked credentials -- their OAuth runs entirely through
-	// the broker -- so they always register.
+	// Kick, YouTube and Facebook carry no baked credentials -- their OAuth runs entirely
+	// through the broker -- so they always register.
 	Registry().Register(std::make_unique<KickProvider>());
 	Registry().Register(std::make_unique<YouTubeProvider>());
+	Registry().Register(std::make_unique<FacebookProvider>());
 	HostLog("[oauth] provider registry booted: " + std::to_string(Registry().All().size()) + " provider(s)");
 }
 

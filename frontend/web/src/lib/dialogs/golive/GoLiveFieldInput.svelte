@@ -14,6 +14,9 @@
     onChange: (v: unknown) => void;
     /** Required for `category` typeahead; ignored by other types. */
     providerId?: string;
+    /** The channel being edited, for an account-scoped `category` lookup (Facebook's
+     * Pages); ignored by other types. */
+    accountId?: string;
     /** Inherit cue: when set and the value is empty, show "↳ <ghost>" / ghost line. */
     ghostText?: string;
     /** Override styling (amber border / accent chips) when the field is filled. */
@@ -29,6 +32,7 @@
     value,
     onChange,
     providerId = "",
+    accountId = "",
     ghostText = "",
     accent = false,
     narrow = false,
@@ -168,7 +172,14 @@
 {#if field.type === "tags"}
   <GoLiveTagsInput values={arr} {ghostText} {accent} onChange={(v) => onChange(v)} />
 {:else if field.type === "category"}
-  <GoLiveCategoryInput {providerId} value={cat} onChange={(v) => onChange(v)} />
+  <GoLiveCategoryInput
+    {providerId}
+    {accountId}
+    value={cat}
+    placeholder={field.placeholder ?? ""}
+    browsable={field.browsable === true}
+    onChange={(v) => onChange(v)}
+  />
 {:else if field.type === "textarea"}
   <textarea
     class="inp"

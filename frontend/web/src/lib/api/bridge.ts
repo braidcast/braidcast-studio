@@ -519,6 +519,12 @@ export interface OAuthProviderField {
   shareable?: boolean;
   /** enum/labelset choices. */
   options?: LabeledOption[];
+  /** Placeholder for the field's text control ("Search category…" when unset). */
+  placeholder?: string;
+  /** `category` lookups only: the choices are a short list to pick from rather than a
+   * catalog to search, so run the lookup on focus with an empty query. Providers whose
+   * lookup rejects an empty query (Twitch/Kick category search) leave it unset. */
+  browsable?: boolean;
   /** Soft max length (text/tags) carried for hint/validation; advisory only. */
   max?: number;
   /** Provider-supplied default. Prefill seeds it only where saved + live left the
@@ -1523,8 +1529,10 @@ export interface ObsMethods {
   "oauth.status": OAuthStatus[];
   // Stream metadata (Go Live "Stream Information": title / category / language).
   // get ({accountId}) loads the account's current metadata ({title, category:{id,name},
-  // language}); searchCategories resolves a query to game/category matches ({id, name,
-  // boxArt}); set ({accountId, profileUuid, fields, goingLive?}) persists and returns
+  // language}); searchCategories ({providerId, query, accountId?}) resolves a query to
+  // lookup matches ({id, name, boxArt}) — pass accountId whenever the caller has one,
+  // since a provider whose lookup is account-scoped (Facebook's Pages) answers
+  // differently per account; set ({accountId, profileUuid, fields, goingLive?}) persists and returns
   // {ok:true}, emitting streamMeta.changed. accountId keys the token/provider; profileUuid
   // is only forwarded into the write's UI-thread-marshalled ingest writeback. goingLive
   // (default false) is true only when the push immediately precedes streaming.start, so a

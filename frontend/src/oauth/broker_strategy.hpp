@@ -33,6 +33,18 @@ public:
 		// token_hint_type support). Falls back to whichever token IS present when the
 		// preferred one is empty.
 		bool revokePreferAccessToken = true;
+		// False for a platform whose grant carries no refresh token (Meta). See
+		// AuthStrategy::usesRefreshToken for what that changes; the flag lives here
+		// because the platform slug and this fact are the same piece of knowledge.
+		bool usesRefreshToken = true;
+		// Some platforms answer the authorization-code grant with a SHORT-lived token and
+		// require a second, non-standard exchange for the long-lived one. Empty (the
+		// default) means the code grant's token is final -- Twitch, Kick and YouTube.
+		// Meta: grant_type=fb_exchange_token carrying the short-lived token in a form
+		// field of the same name. Both strings come from the platform, so the exchange is
+		// a data row rather than a branch.
+		std::string longLivedGrantType;
+		std::string longLivedTokenField;
 	};
 
 	explicit BrokerStrategy(Config config);
@@ -43,8 +55,15 @@ public:
 	void ForgetAccount(const std::string &accountId) override;
 	void Revoke(const OAuthAccount &acct) override;
 	int scopeVer() const override { return config_.scopeVer; }
+	bool usesRefreshToken() const override { return config_.usesRefreshToken; }
 
 private:
+	// Trade the freshly-granted short-lived access token for the platform's long-lived
+	// one, per config_.longLivedGrantType. Runs once, inside authorize(), and replaces
+	// acct.access + acct.expireTime in place. No-op callers never reach it: authorize
+	// only calls this when a grant type is configured.
+	bool ExchangeLongLived(OAuthAccount &acct, std::string &err);
+
 	// The refresh POST + response parse, reporting via `kind` WHY a rejection failed.
 	// Both refresh() (the AuthStrategy contract entry point) and ensureFresh() funnel
 	// through here, so the wire format is parsed and classified in exactly one place;

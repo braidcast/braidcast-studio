@@ -248,6 +248,18 @@ public:
 	// The scope version this strategy currently requests. Tokens stored with a
 	// lower scopeVer were issued under an older permission set and must reconnect.
 	virtual int scopeVer() const { return 0; }
+
+	// Does this strategy's grant carry a refresh token? True for the OAuth 2.0 shape
+	// every provider here uses: a short-lived access token plus the long-lived refresh
+	// token that renews it, which is therefore the credential "is this account usable"
+	// asks about (see AccountHasCredential in registry.hpp).
+	//
+	// False for a platform that issues ONE long-lived token and no refresh token at all
+	// (Meta: a Page access token does not expire). There the access token is the whole
+	// credential, there is nothing to renew, and every refresh path is a no-op rather
+	// than a failure -- so the answer has to come from the strategy rather than from a
+	// per-provider branch at each of the call sites that ask.
+	virtual bool usesRefreshToken() const { return true; }
 };
 
 // One streaming platform. `capabilityJson()` is the descriptor the modal renders

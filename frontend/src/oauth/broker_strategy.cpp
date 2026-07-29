@@ -26,18 +26,28 @@ using json = nlohmann::json;
 
 namespace {
 
+using Http::AppendForm;
 using JsonUtil::NumLoose;
 using JsonUtil::ParseJson;
 using JsonUtil::Str;
 
-void AppendForm(std::string &body, const char *key, const std::string &value)
+// Apply the fields every broker /token response shares -- access token, absolute
+// expiry, and a rotated refresh token when one came back -- to `acct`. False when the
+// body carries no access token, which each caller reports in its own words (the code
+// grant, the long-lived exchange and the refresh classify a rejection differently).
+bool ApplyTokenFields(const json &j, OAuthAccount &acct)
 {
-	if (!body.empty()) {
-		body += "&";
+	const std::string access = Str(j, "access_token");
+	if (access.empty()) {
+		return false;
 	}
-	body += key;
-	body += "=";
-	body += Http::UrlEncode(value);
+	acct.access = access;
+	acct.expireTime = static_cast<int64_t>(time(nullptr)) + NumLoose(j, "expires_in", 0);
+	const std::string rotated = Str(j, "refresh_token");
+	if (!rotated.empty()) {
+		acct.refresh = rotated;
+	}
+	return true;
 }
 
 void AppendQuery(std::string &url, const char *key, const std::string &value)
@@ -197,8 +207,7 @@ bool BrokerStrategy::authorize(const AuthContext &ctx, OAuthAccount &acct, std::
 		return false;
 	}
 
-	const std::string access = Str(j, "access_token");
-	if (access.empty()) {
+	if (!ApplyTokenFields(j, acct)) {
 		std::string code2 = Str(j, "error");
 		if (code2.empty()) {
 			code2 = Str(j, "message");
@@ -206,14 +215,45 @@ bool BrokerStrategy::authorize(const AuthContext &ctx, OAuthAccount &acct, std::
 		err = code2.empty() ? ("token exchange rejected (HTTP " + std::to_string(resp.status) + ")") : code2;
 		return false;
 	}
-
-	acct.access = access;
-	const std::string rotated = Str(j, "refresh_token");
-	if (!rotated.empty()) {
-		acct.refresh = rotated;
+	// The code grant's token can be the short-lived half of a two-step issuance; trade it
+	// for the long-lived one before the account is ever stored, so nothing downstream has
+	// to know which platforms do that.
+	if (!config_.longLivedGrantType.empty() && !ExchangeLongLived(acct, err)) {
+		return false;
 	}
-	acct.expireTime = static_cast<int64_t>(time(nullptr)) + NumLoose(j, "expires_in", 0);
 	acct.scopeVer = config_.scopeVer;
+	return true;
+}
+
+bool BrokerStrategy::ExchangeLongLived(OAuthAccount &acct, std::string &err)
+{
+	std::string body;
+	AppendForm(body, "grant_type", config_.longLivedGrantType);
+	AppendForm(body, config_.longLivedTokenField.c_str(), acct.access);
+
+	Http::HttpReq req;
+	req.method = "POST";
+	req.url = config_.brokerBaseUrl + "/v1/" + config_.platform + "/token";
+	req.contentType = "application/x-www-form-urlencoded";
+	req.body = body;
+
+	const Http::HttpResponse resp = Http::HttpRequest(req);
+	DBG(LogCat::OAuth, "broker long-lived exchange (platform %s, http=%d)", config_.platform.c_str(), resp.status);
+	if (resp.status == 0) {
+		err = "long-lived token exchange failed: " + resp.error;
+		return false;
+	}
+
+	const json j = ParseJson(resp.body);
+	if (!ApplyTokenFields(j, acct)) {
+		std::string code = Str(j, "error");
+		if (code.empty()) {
+			code = Str(j, "message");
+		}
+		err = code.empty() ? ("long-lived token exchange rejected (HTTP " + std::to_string(resp.status) + ")")
+				   : code;
+		return false;
+	}
 	return true;
 }
 
@@ -255,8 +295,7 @@ bool BrokerStrategy::RefreshOnce(OAuthAccount &acct, std::string &err, RefreshFa
 		return false;
 	}
 
-	const std::string access = Str(j, "access_token");
-	if (access.empty()) {
+	if (!ApplyTokenFields(j, acct)) {
 		// Classify on the RFC 6749 `error` code alone. `message` is a human-readable
 		// string some brokers send instead, fine for the error text but never a verdict
 		// on the credential -- feeding it to the classifier would let arbitrary prose
@@ -270,12 +309,6 @@ bool BrokerStrategy::RefreshOnce(OAuthAccount &acct, std::string &err, RefreshFa
 		return false;
 	}
 
-	acct.access = access;
-	acct.expireTime = static_cast<int64_t>(time(nullptr)) + NumLoose(j, "expires_in", 0);
-	const std::string rotated = Str(j, "refresh_token");
-	if (!rotated.empty()) {
-		acct.refresh = rotated;
-	}
 	// A refresh that succeeds proves the credential is alive, so it retires any earlier
 	// dead verdict (e.g. the token was revoked, then the user relinked out of band).
 	acct.refreshDead = false;
@@ -284,6 +317,19 @@ bool BrokerStrategy::RefreshOnce(OAuthAccount &acct, std::string &err, RefreshFa
 
 bool BrokerStrategy::ensureFresh(OAuthAccount &acct, std::string &err, bool force)
 {
+	if (!config_.usesRefreshToken) {
+		// This grant has nothing to renew: the platform issues one long-lived token and
+		// no refresh token, so the access token IS the credential. The proactive call
+		// every SendAuthed makes is therefore already satisfied. A FORCED call is the
+		// reactive-401 path, which means the platform just rejected that token -- only a
+		// fresh interactive grant recovers it, so refuse rather than let the caller spend
+		// a retry on a request that will fail identically.
+		if (force) {
+			err = "no refresh token";
+			return false;
+		}
+		return true;
+	}
 	if (acct.refresh.empty()) {
 		err = "no refresh token";
 		return false;

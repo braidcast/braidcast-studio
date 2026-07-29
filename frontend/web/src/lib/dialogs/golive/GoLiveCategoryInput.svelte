@@ -7,10 +7,22 @@
   // keystroke and shows matches in a dropdown; selecting one reports {id,name}.
   interface Props {
     providerId: string;
+    /** The channel this control edits. Forwarded because a provider whose lookup is
+     * account-scoped (Facebook's Pages) returns a different list per account, so omitting
+     * it would answer from whichever account of the platform happens to be first. */
+    accountId?: string;
     value: { id: string; name: string } | null;
     onChange: (v: { id: string; name: string } | null) => void;
+    /** Prompt shown in the empty field; the catalog wording when unset. */
+    placeholder?: string;
+    /** The provider's choices are a short list, not a catalog: look them up on focus with
+     * an empty query so they can be browsed. Off by default — a catalog search rejects an
+     * empty query, and asking for one would spend a request that can only fail. */
+    browsable?: boolean;
   }
-  let { providerId, value, onChange }: Props = $props();
+  let { providerId, accountId = "", value, onChange, placeholder = "", browsable = false }: Props = $props();
+
+  const prompt = $derived(placeholder.trim() || "Search category…");
 
   let query = $state("");
   let results = $state<StreamCategory[]>([]);
@@ -30,7 +42,7 @@
       clearTimeout(timer);
     }
     const q = query.trim();
-    if (q === "") {
+    if (q === "" && !browsable) {
       results = [];
       open = false;
       return;
@@ -42,7 +54,7 @@
     const mine = ++seq;
     loading = true;
     try {
-      const res = await obs.call("streamMeta.searchCategories", { providerId, query: q });
+      const res = await obs.call("streamMeta.searchCategories", { providerId, accountId, query: q });
       if (mine !== seq) {
         return; // a newer keystroke superseded this request
       }
@@ -95,11 +107,15 @@
   <input
     class="inp"
     type="text"
-    placeholder="Search category…"
+    placeholder={prompt}
     bind:value={query}
     oninput={schedule}
     onfocus={() => {
-      if (results.length) open = true;
+      if (results.length) {
+        open = true;
+      } else if (browsable) {
+        schedule();
+      }
     }}
   />
   {#if open && results.length}

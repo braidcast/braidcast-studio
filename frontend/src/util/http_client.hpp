@@ -57,6 +57,20 @@ long HttpRequestStreaming(const HttpReq &req, const std::function<bool(std::stri
 // query parameters (RFC 3986 unreserved set kept literal).
 std::string UrlEncode(const std::string &value);
 
+// Append one `key=value` pair to an application/x-www-form-urlencoded body,
+// inserting the `&` separator only when `body` already holds a pair. The single
+// form-body builder for every caller that posts one (the OAuth broker's token /
+// revoke calls, the Graph API's live-video calls).
+inline void AppendForm(std::string &body, const char *key, const std::string &value)
+{
+	if (!body.empty()) {
+		body += "&";
+	}
+	body += key;
+	body += "=";
+	body += UrlEncode(value);
+}
+
 // Reject a non-2xx response with the caller's label folded into `err`; a 2xx passes through.
 inline bool Require2xx(const HttpResponse &resp, const char *label, std::string &err)
 {

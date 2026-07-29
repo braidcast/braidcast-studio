@@ -9,6 +9,7 @@ export const PLATFORM_COLORS: Record<string, string> = {
   twitch: "#a970ff",
   youtube: "#ff4e45",
   kick: "#53fc18",
+  facebook: "#0866ff",
 };
 
 /** Display label per chat platform. */
@@ -16,9 +17,13 @@ export const PLATFORM_LABELS: Record<string, string> = {
   twitch: "Twitch",
   youtube: "YouTube",
   kick: "Kick",
+  facebook: "Facebook Live",
 };
 
-/** Stable platform order so chip rows / filters never reshuffle. */
+/** Stable platform order so chip rows / filters never reshuffle. Chat/event surfaces
+ * only — a platform belongs here once it has a chat transport, so Facebook is absent:
+ * listing it would have the multichat dock report a connected platform as "not armed"
+ * for a feed that does not exist yet. */
 export const PLATFORM_ORDER = ["twitch", "youtube", "kick"] as const;
 
 /**

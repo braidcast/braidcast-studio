@@ -121,6 +121,7 @@ target_sources(
     src/scene/transitions.hpp
     src/util/session_log.cpp
     src/util/session_log.hpp
+    src/util/string_util.hpp
     src/log.cpp
     src/log.hpp
     # Build-time platform OAuth credential injection (Phase 8a). obf.c is the
@@ -151,6 +152,8 @@ target_sources(
     src/oauth/kick_provider.hpp
     src/oauth/youtube_provider.cpp
     src/oauth/youtube_provider.hpp
+    src/oauth/facebook_provider.cpp
+    src/oauth/facebook_provider.hpp
     # Phase 9.0 chat transport foundation: a reusable libcurl-WebSocket client, the
     # ChatTransport interface, and the ChatHub that runs live transports between
     # go-live and stop. Per-platform transports (Twitch/YouTube/Kick) land in later

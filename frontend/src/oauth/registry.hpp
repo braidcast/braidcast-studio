@@ -50,6 +50,16 @@ void BootProviders();
 // can't drift per call site (the drift was exactly the "shows a platform I never
 // signed into" bug).
 
+// Does `acct` carry the credential its provider's auth model actually establishes?
+// For the usual OAuth 2.0 shape that is the refresh token ("valid credential = refresh
+// token present"): the access token expires on its own and only the refresh token can
+// renew it, so a record holding an access token alone is a partial/aborted connect. A
+// provider whose strategy issues NO refresh token (AuthStrategy::usesRefreshToken) keeps
+// its whole credential in the access token, so the same question reads that instead.
+// The one predicate for it -- the connect gates below and the bridge's persist/read/write
+// refusals all ask through here rather than each testing a token field itself.
+bool AccountHasCredential(const OAuthAccount &acct);
+
 // Is this specific account currently usable for authenticated calls?
 bool IsAccountConnected(const OAuthAccount &acct);
 

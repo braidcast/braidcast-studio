@@ -828,6 +828,7 @@ import { EV } from "$lib/utils/eventNames";
   onChange: (v: unknown) => void,
   opts: {
     providerId?: string;
+    accountId?: string;
     ghostText?: string;
     accent?: boolean;
     narrow?: boolean;
@@ -851,6 +852,7 @@ import { EV } from "$lib/utils/eventNames";
         {value}
         {onChange}
         providerId={opts.providerId ?? ""}
+        accountId={opts.accountId ?? ""}
         ghostText={opts.ghostText ?? ""}
         accent={opts.accent ?? false}
         narrow={opts.narrow ?? false}
@@ -1052,6 +1054,7 @@ import { EV } from "$lib/utils/eventNames";
                     {@const filled = isOverridden(c.accountId, f)}
                     {@render fieldRow(f, getVal(c.accountId, f.key), (v) => setField(c.accountId, f.key, v), {
                       providerId: c.provider.id,
+                      accountId: c.accountId,
                       ghostText: sharedGhostText(f),
                       inheritable: inheritsBelow(f, "channel"),
                       accent: filled,
@@ -1064,6 +1067,7 @@ import { EV } from "$lib/utils/eventNames";
                   {#each simpleNonShareable(c.provider) as f (f.key)}
                     {@render fieldRow(f, getVal(c.accountId, f.key), (v) => setField(c.accountId, f.key, v), {
                       providerId: c.provider.id,
+                      accountId: c.accountId,
                       hint: optionNote(f, getVal(c.accountId, f.key)),
                     })}
                   {/each}
@@ -1076,6 +1080,7 @@ import { EV } from "$lib/utils/eventNames";
                         {#each advancedFields(c.provider) as f (f.key)}
                           {@render fieldRow(f, getVal(c.accountId, f.key), (v) => setField(c.accountId, f.key, v), {
                             providerId: c.provider.id,
+                            accountId: c.accountId,
                             narrow: f.type === "enum",
                             inheritable: inheritsBelow(f, "channel"),
                             hint: optionNote(f, getVal(c.accountId, f.key)),
@@ -1117,6 +1122,7 @@ import { EV } from "$lib/utils/eventNames";
                               {#each c.provider.fields as f (f.key)}
                                 {@render fieldRow(f, getStreamVal(s.profileUuid, f.key), (v) => setStreamField(s.profileUuid, f.key, v), {
                                   providerId: c.provider.id,
+                                  accountId: c.accountId,
                                   narrow: f.type === "enum",
                                   inheritable: inheritsBelow(f, "stream"),
                                   hint: optionNote(f, getStreamVal(s.profileUuid, f.key)),

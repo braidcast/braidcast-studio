@@ -18,6 +18,7 @@
 #include "util/innertube_client.hpp"
 #include "util/json_util.hpp"
 #include "util/op_error.hpp"
+#include "util/string_util.hpp"
 #include "../log.hpp"
 #include "ui-config.h"
 
@@ -197,17 +198,7 @@ std::string ContentDigest(std::string_view bytes)
 	return std::to_string(bytes.size()) + ":" + std::to_string(std::hash<std::string_view>{}(bytes));
 }
 
-// Case-insensitive substring test (an empty needle always matches).
-bool ContainsCI(const std::string &haystack, const std::string &needle)
-{
-	if (needle.empty()) {
-		return true;
-	}
-	const auto it = std::search(haystack.begin(), haystack.end(), needle.begin(), needle.end(), [](char a, char b) {
-		return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b));
-	});
-	return it != haystack.end();
-}
+using StringUtil::ContainsCI;
 
 // Current UTC time as an RFC3339 instant (the scheduledStartTime YouTube wants).
 std::string NowIso8601Utc()
