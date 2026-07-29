@@ -194,6 +194,11 @@ inline DestinationId AccountDestination(const std::string &accountId)
 struct StreamTarget {
 	std::string id;
 	std::string name;
+	// The target's own picture, empty when the platform has none for it. Carried here
+	// so a destination can show what it streams TO rather than who owns it -- an
+	// account is a person, and a person's photo over a Page's name names the wrong
+	// thing. Optional by nature: no caller may require it.
+	std::string avatarUrl;
 };
 
 // Everything one account's target discovery yields: the targets themselves plus the
@@ -417,9 +422,9 @@ public:
 	// page. This asks how many places the account can post to at all.
 	//
 	// The default reports none, which reads as "this account IS the single destination".
-	// A single target reads the same way to callers -- there is nothing to choose, so
-	// nothing is materialized -- which keeps the one-Page account on exactly the path it
-	// has today.
+	// A single target does NOT read that way: it is claimed like any other, so the one
+	// destination it yields names and pictures itself after the target rather than after
+	// the account holder.
 	//
 	// false + `err` on a failed lookup. That is deliberately distinct from an empty
 	// list: a network failure must never be read as "this account can stream nowhere",
@@ -431,6 +436,13 @@ public:
 		out = TargetList{};
 		return true;
 	}
+
+	// The descriptor field that addresses a target, without discovering any. Separated
+	// from enumerateTargets because reading which target a destination already claims is
+	// a local lookup, and routing it through a platform call would put the network on
+	// every render of every row. Empty means this provider has no targets, matching the
+	// default enumerateTargets above; a provider that overrides one must override both.
+	virtual std::string targetFieldKey() const { return std::string(); }
 
 	// Report the platform's current concurrent viewer count for `acct` into `out`
 	// (Phase 9.0 aggregate viewer poller). `acct` is non-const so a reactive token

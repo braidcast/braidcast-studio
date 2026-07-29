@@ -54,7 +54,11 @@ void ClaimTarget(const std::string &profileUuid, const std::string &fieldKey, co
 	if (!bag.is_object()) {
 		bag = json::object();
 	}
-	bag[fieldKey] = json{{"id", target.id}, {"name", target.name}};
+	// name and avatar ride along with the id because they are what the destination shows
+	// itself as, and re-reading them would mean a platform call on every render of every
+	// row. They are a cache of the target's identity at claim time; a Page renamed later
+	// refreshes on the next reconcile, which runs at connect and at boot.
+	bag[fieldKey] = json{{"id", target.id}, {"name", target.name}, {"avatarUrl", target.avatarUrl}};
 	meta.PutStreamOverride(profileUuid, bag);
 }
 
@@ -300,9 +304,13 @@ void MaterializeTargetDestinations(const std::string &accountId, const std::stri
 		HostLog("[oauth] target discovery failed for " + accountId + ": " + err);
 		return;
 	}
-	// One target is the same shape as none for this: there is nothing to choose between,
-	// so the account stays the single destination it already was.
-	if (targets.fieldKey.empty() || targets.targets.size() < 2) {
+	// A single target still runs the reconcile, and that is the point rather than an
+	// oversight. It creates no second profile -- the loop only ever adds one for a target
+	// nothing claims -- but it does claim that one target on the origin profile, which is
+	// what gives the destination its own name and picture. Skipping it here was why a
+	// one-Page account had to be papered over by renaming the account itself, and why
+	// that paper tore the moment a second Page appeared. Claim at one, claim at five.
+	if (targets.fieldKey.empty() || targets.targets.empty()) {
 		return;
 	}
 

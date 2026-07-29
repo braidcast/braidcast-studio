@@ -70,6 +70,10 @@ public:
 	// token for is not a place this account can stream to.
 	bool enumerateTargets(OAuthAccount &acct, TargetList &out, std::string &err) override;
 
+	// The Page field, without a platform call -- what a destination reads to learn which
+	// Page it already claims.
+	std::string targetFieldKey() const override;
+
 	// End every live video this account still holds (stream stop), then one destination's
 	// (that output ended while others continue). Both pop the entry under the mutex and
 	// hand the end request to a worker: the callers run on the UI thread and must not

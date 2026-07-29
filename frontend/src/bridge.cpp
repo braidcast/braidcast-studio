@@ -5993,12 +5993,58 @@ std::string StreamProfileServiceLabel(const StreamProfile &p)
 	return (svc && *svc) ? std::string(svc) : p.PlatformName();
 }
 
+// The target this profile claims, as its own identity rather than its account's. Read
+// from the remembered per-stream bag, which is where target_destinations.cpp records a
+// claim and where the Go Live modal edits it -- one home for the fact, no second copy.
+//
+// A local read on purpose: this runs for every profile in every list response, so it
+// resolves the field key through targetFieldKey() and never through the platform.
+// Everything is absent-tolerant. A profile with no account, a provider with no targets,
+// or a claim written before avatars were carried all yield empty strings, and the caller
+// falls back to the account. Empty is a real answer here, never an error.
+json ClaimedTargetJson(const StreamProfile &p)
+{
+	json out = json{{"targetName", ""}, {"targetAvatarUrl", ""}};
+	if (p.accountId.empty()) {
+		return out;
+	}
+	const std::optional<OAuth::OAuthAccount> acct = OAuth::Accounts().Get(p.accountId);
+	if (!acct) {
+		return out;
+	}
+	OAuth::StreamProvider *provider = OAuth::Registry().Get(acct->providerId);
+	if (!provider) {
+		return out;
+	}
+	const std::string fieldKey = provider->targetFieldKey();
+	if (fieldKey.empty()) {
+		return out;
+	}
+	const json bag = ObsBootstrap::StreamMeta().StreamOverride(p.uuid);
+	if (!bag.is_object()) {
+		return out;
+	}
+	const auto field = bag.find(fieldKey);
+	if (field == bag.end() || !field->is_object()) {
+		return out;
+	}
+	const auto name = field->find("name");
+	if (name != field->end() && name->is_string()) {
+		out["targetName"] = name->get<std::string>();
+	}
+	const auto avatar = field->find("avatarUrl");
+	if (avatar != field->end() && avatar->is_string()) {
+		out["targetAvatarUrl"] = avatar->get<std::string>();
+	}
+	return out;
+}
+
 // Map one StreamProfile to the bridge's profile shape. `platform` is the display
 // prefix (e.g. "YouTube"); `service` is the raw service id (rtmp_common etc.);
 // `serviceLabel` is the full selected service (e.g. "YouTube - RTMPS").
 json StreamProfileToJson(const StreamProfile &p)
 {
-	return json{
+	json out = json{
 		{"uuid", p.uuid},
 		{"label", p.label},
 		{"isPrimary", p.isPrimary},
@@ -6007,6 +6053,8 @@ json StreamProfileToJson(const StreamProfile &p)
 		{"serviceLabel", StreamProfileServiceLabel(p)},
 		{"accountId", p.accountId},
 	};
+	out.update(ClaimedTargetJson(p));
+	return out;
 }
 
 // Ported duplicate guard (legacy OBSBasicSettings::CheckStreamProfileConflicts):

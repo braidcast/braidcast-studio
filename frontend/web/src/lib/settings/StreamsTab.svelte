@@ -350,6 +350,18 @@
     }
   });
 
+  // Every destination this account owns, as the account's own profiles: one Facebook
+  // Page each. Read off the profile list rather than re-enumerating the platform, so it
+  // costs nothing to render and can never disagree with what the user can actually
+  // stream to -- a Page with no profile is not yet a destination. Empty for a provider
+  // whose account IS the destination (Twitch, Kick, YouTube), which is what collapses
+  // this back to the single row those platforms want.
+  const accountDestinations = $derived(
+    editingProfile?.accountId
+      ? profiles.filter((p) => p.accountId === editingProfile?.accountId && p.targetName.trim())
+      : [],
+  );
+
   function connect() {
     if (!editingUuid || !editingProvider) {
       return;
@@ -766,6 +778,19 @@
                       </span>
                       <button class="lnk" onclick={() => void disconnect()}>Disconnect</button>
                     </div>
+                    {#if accountDestinations.length}
+                      <ul class="targets">
+                        {#each accountDestinations as d (d.uuid)}
+                          <li class:current={d.uuid === editingUuid}>
+                            <Avatar url={d.targetAvatarUrl} name={d.targetName} size={18} />
+                            <span class="name">{d.targetName}</span>
+                            {#if d.uuid === editingUuid}
+                              <span class="here">this profile</span>
+                            {/if}
+                          </li>
+                        {/each}
+                      </ul>
+                    {/if}
                   {:else if needsReconnectStatus}
                     <div class="conn warn">
                       <span class="dot warn"><Icon name="warn" size={13} /></span>
@@ -1199,6 +1224,43 @@
     display: inline-flex;
     align-items: center;
     flex: 0 0 auto;
+    color: var(--color-ok);
+  }
+  /* Reads as one block with .conn above it: same left inset, no top border of its own,
+     so the destinations hang off the account rather than sitting beside it. */
+  .targets {
+    margin: 0;
+    padding: 6px 13px 9px;
+    list-style: none;
+    border: var(--border-weight) solid color-mix(in srgb, var(--color-ok) 45%, transparent);
+    border-top: 0;
+    background: color-mix(in srgb, var(--color-ok) 4%, transparent);
+  }
+  .targets li {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 0 4px 14px;
+    /* The stem that makes it a child row rather than a list item. */
+    border-left: var(--border-weight) solid color-mix(in srgb, var(--color-text) 22%, transparent);
+    margin-left: 6px;
+    color: var(--color-text-dim);
+  }
+  .targets li.current {
+    color: var(--color-text);
+  }
+  .targets .name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .targets .here {
+    margin-left: auto;
+    flex: 0 0 auto;
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
     color: var(--color-ok);
   }
   .conn.warn {

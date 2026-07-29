@@ -36,9 +36,12 @@ export interface DestinationIdentity {
   platform: string;
   /** Linked OAuth account ("providerId:userId"); "" for key/RTMP/WHIP profiles. */
   accountId: string;
-  /** Channel display name from the linked account; "" when there is no account, or
-   * before oauth.status has loaded. Read `displayName` to print something. */
+  /** What this destination is: its claimed target when it has one (the Facebook Page),
+   * else the linked account's display name. "" when there is no account, or before
+   * oauth.status has loaded. Read `displayName` to print something. */
   channelName: string;
+  /** Picture for the same thing `channelName` names -- the target's, else the
+   * account's. Never the account's when a target picture exists. */
   channelAvatarUrl: string;
   /** The account holds a live token. False for needs-reconnect and for no account. */
   channelConnected: boolean;
@@ -169,7 +172,13 @@ class DestinationIdentityStore {
     // snapshot: a rename pushes canvas.changed, which outputBindingStore does not
     // listen for, so that snapshot can go stale while the canvas list cannot.
     const canvas = binding ? canvasStore.byUuid(binding.canvasUuid) : undefined;
-    const channelName = channel?.displayName.trim() ?? "";
+    // The claimed target outranks the account, and must: several profiles can share one
+    // account, so the account's name and picture are identical across all of them and
+    // name the person rather than where the stream lands. Only the target tells two
+    // Facebook Pages apart. Providers whose account IS the destination send no target,
+    // so they fall through to the account exactly as before.
+    const targetName = p.targetName.trim();
+    const channelName = targetName || (channel?.displayName.trim() ?? "");
     const profileLabel = p.label.trim();
     return {
       profileUuid: p.uuid,
@@ -179,7 +188,7 @@ class DestinationIdentityStore {
       platform: channel?.providerId ?? platformKey(p.platform),
       accountId: p.accountId,
       channelName,
-      channelAvatarUrl: channel?.avatarUrl ?? "",
+      channelAvatarUrl: p.targetAvatarUrl.trim() || (channel?.avatarUrl ?? ""),
       channelConnected: channel?.connected ?? false,
       displayName: channelName || profileLabel || "Untitled destination",
       canvasUuid: binding?.canvasUuid ?? null,

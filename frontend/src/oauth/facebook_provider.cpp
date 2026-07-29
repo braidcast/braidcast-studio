@@ -228,28 +228,14 @@ bool FacebookProvider::fetchIdentity(OAuthAccount &acct, std::string &err)
 	acct.displayName = acct.login;
 	acct.avatarUrl = Str(Obj(Obj(j, "picture"), "data"), "url");
 
-	// Every other provider's account is the channel it broadcasts to, so the row names
-	// the destination. Facebook is the one where the account is a person and the
-	// destination is a Page, and a row carrying the profile name misdescribes where the
-	// stream lands. One reachable Page leaves nothing ambiguous, so name it; with
-	// several there is no single right answer and the profile stays. `login` keeps the
-	// profile either way, since that is the identity the user revokes.
-	//
-	// The avatar moves with the name or the row half-lies: a Page name over a personal
-	// profile picture reads as the wrong destination even when the text is right, and the
-	// picture is the part a user recognizes first. A Page with no picture keeps the
-	// profile's rather than blanking the row.
-	//
-	// Deliberately not fatal. Identity already succeeded, so a Pages lookup that fails
-	// costs a nicer label, not the connection.
-	PageList list;
-	std::string pagesErr;
-	if (FetchPages(acct, list, pagesErr) && list.pages.size() == 1) {
-		acct.displayName = list.pages[0].name;
-		if (!list.pages[0].avatarUrl.empty()) {
-			acct.avatarUrl = list.pages[0].avatarUrl;
-		}
-	}
+	// The account stays the person, deliberately, even though a destination is a Page.
+	// Naming it after the Page held only while exactly one was reachable: at two Pages
+	// the rule went silent and every destination sharing this account fell back to the
+	// person's name and photo at once -- identical rows for different Pages, which is
+	// the exact confusion the rename existed to prevent. A destination now carries its
+	// own target identity (see StreamTarget::avatarUrl and the claimed-target bag in
+	// target_destinations.cpp), so it is right at one Page and at five, and this layer
+	// no longer has to guess which Page an account "is".
 	return true;
 }
 
@@ -329,6 +315,11 @@ bool FacebookProvider::getMetadata(OAuthAccount &acct, json &out, std::string &e
 	return true;
 }
 
+std::string FacebookProvider::targetFieldKey() const
+{
+	return kPageFieldKey;
+}
+
 bool FacebookProvider::enumerateTargets(OAuthAccount &acct, TargetList &out, std::string &err)
 {
 	out = TargetList{};
@@ -337,10 +328,10 @@ bool FacebookProvider::enumerateTargets(OAuthAccount &acct, TargetList &out, std
 	if (!FetchPages(acct, list, err)) {
 		return false;
 	}
-	out.fieldKey = kPageFieldKey;
+	out.fieldKey = targetFieldKey();
 	out.targets.reserve(list.pages.size());
 	for (const PageRef &page : list.pages) {
-		out.targets.push_back(StreamTarget{page.id, page.name});
+		out.targets.push_back(StreamTarget{page.id, page.name, page.avatarUrl});
 	}
 	return true;
 }

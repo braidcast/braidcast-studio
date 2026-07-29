@@ -483,6 +483,14 @@ export interface StreamProfileInfo {
   /** Linked OAuth account ("providerId:userId"); empty for key/RTMP/WHIP modes.
    * The reuse link: several profiles may carry the same accountId. */
   accountId: string;
+  /** The target this destination claims -- a Facebook Page today. Empty when the
+   * provider has no targets (Twitch/Kick/YouTube: the account IS the destination) or
+   * when nothing has been claimed yet. Prefer it over the account's name: several
+   * profiles share one account, and only this distinguishes them. */
+  targetName: string;
+  /** The target's own picture, empty when the platform has none or the claim predates
+   * avatars being carried. Falls back to the account avatar, never to a blank. */
+  targetAvatarUrl: string;
 }
 
 /** Fields accepted by streamProfile.create. */
