@@ -12,6 +12,7 @@
 #include <util/dstr.h>
 
 #include "util/async_task.hpp"
+#include "util/env_config.hpp"
 #include "bridge.hpp"
 #include "log.hpp"
 #include "multistream/CanvasRuntime.hpp"
@@ -250,6 +251,29 @@ void Reconcile(const std::string &accountId, const std::string &originProfileUui
 		std::to_string(adopted) + " adopted, " + std::to_string(created) + " destination(s) created");
 }
 
+// The profile the boot pass reconciles from. Store order is streams.json order, so the
+// account's first profile is the one its connect ran from -- every sibling this reconcile
+// creates is appended after it, and neither a rename nor a re-route moves it. So the boot
+// pass copies its model from the same profile the connect path passed, and picks the same
+// one on every launch. Empty when no profile is linked to the account any more: there is
+// then no service shape or canvas routing to copy, and inventing one is not this pass's
+// call.
+std::string BootOriginProfile(const std::string &accountId)
+{
+	for (const StreamProfile &p : ObsBootstrap::StreamProfiles().Profiles()) {
+		if (p.accountId == accountId) {
+			return p.uuid;
+		}
+	}
+	return std::string();
+}
+
+// One account's boot reconcile, snapshotted on the UI thread for the worker to replay.
+struct BootReconcile {
+	std::string accountId;
+	std::string originProfileUuid;
+};
+
 } // namespace
 
 void MaterializeTargetDestinations(const std::string &accountId, const std::string &originProfileUuid)
@@ -284,4 +308,42 @@ void MaterializeTargetDestinations(const std::string &accountId, const std::stri
 
 	AsyncTask::PostToUi(
 		[accountId, originProfileUuid, targets] { Reconcile(accountId, originProfileUuid, targets); });
+}
+
+void MaterializeTargetDestinationsAtBoot()
+{
+	// A smoke/self-test run drives the app against the user's REAL config directory (the
+	// dev rundir's config is a junction to it), so a pass that creates stream profiles
+	// must not run there -- it would rewrite the user's streams.json on every such launch.
+	if (Env::IsSelfTestRun()) {
+		return;
+	}
+
+	std::vector<BootReconcile> pending;
+	for (const auto &entry : OAuth::Accounts().All()) {
+		// The shared connection gate, which also excludes an account the broker has
+		// rejected as dead: spending a boot request on a credential that cannot answer
+		// only costs the launch a timeout.
+		if (!OAuth::IsAccountConnected(entry.second)) {
+			continue;
+		}
+		const std::string origin = BootOriginProfile(entry.first);
+		if (origin.empty()) {
+			continue;
+		}
+		pending.push_back(BootReconcile{entry.first, origin});
+	}
+	if (pending.empty()) {
+		return;
+	}
+
+	// enumerateTargets is a blocking platform read, so the accounts are walked off the UI
+	// thread and boot returns without waiting. Routed through RunAsync rather than a raw
+	// detached thread so teardown's drain counts this worker before the stores its
+	// PostToUi reaches through are freed.
+	AsyncTask::RunAsync([pending = std::move(pending)] {
+		for (const BootReconcile &r : pending) {
+			MaterializeTargetDestinations(r.accountId, r.originProfileUuid);
+		}
+	});
 }

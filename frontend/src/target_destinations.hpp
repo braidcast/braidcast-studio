@@ -19,4 +19,16 @@
 // provider that does not implement enumerateTargets.
 void MaterializeTargetDestinations(const std::string &accountId, const std::string &originProfileUuid);
 
+// The same reconcile for every account already connected at launch. A target granted
+// after the account was connected -- a Page added to the person's Facebook account since
+// -- is otherwise invisible until they disconnect and reconnect, the connect flow being
+// the only thing that runs the reconcile. Enumeration blocks on the platform, so the pass
+// is handed to a worker and boot never waits on it.
+//
+// Call once from bootstrap on the UI thread, after the profile and account stores load
+// and the provider registry is populated. Inert under a smoke/self-test run: those drive
+// the app unattended against the user's real config directory, and this pass writes
+// stream profiles.
+void MaterializeTargetDestinationsAtBoot();
+
 #endif // OBS_MULTISTREAM_FRONTEND_TARGET_DESTINATIONS_HPP_

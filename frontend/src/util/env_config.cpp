@@ -93,6 +93,11 @@ bool IsSet(const char *key)
 	return Raw(key).has_value();
 }
 
+bool IsSelfTestRun()
+{
+	return IsSet("FE_SMOKE_QUIT_SECONDS") || IsSet("BRAIDCAST_SELFTEST_STREAM");
+}
+
 std::string Value(const char *key, const std::string &fallback)
 {
 	const std::optional<std::string> raw = Raw(key);

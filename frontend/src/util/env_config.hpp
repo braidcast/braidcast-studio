@@ -37,6 +37,12 @@ double Double(const char *key, double fallback);
 // every dev launch, so keep that file clean.
 bool IsSet(const char *key);
 
+// True during a headless smoke run (FE_SMOKE_QUIT_SECONDS) or a targeted self-test
+// (BRAIDCAST_SELFTEST_STREAM). Both drive the app unattended against the user's real
+// config directory, so anything that would block on a human, or persist state the user
+// did not ask for, asks here first.
+bool IsSelfTestRun();
+
 // String value, or fallback when absent.
 std::string Value(const char *key, const std::string &fallback = {});
 

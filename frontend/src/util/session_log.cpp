@@ -225,7 +225,7 @@ void InstallCrashHandler()
 		// iterates a directory inside a crashed process.
 		RotateOldLogs(std::filesystem::u8path(g_crashDir));
 	}
-	g_crashQuiet = Env::IsSet("FE_SMOKE_QUIT_SECONDS") || Env::IsSet("BRAIDCAST_SELFTEST_STREAM");
+	g_crashQuiet = Env::IsSelfTestRun();
 	base_set_crash_handler(CrashSinkHandler, nullptr);
 }
 

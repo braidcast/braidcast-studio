@@ -67,6 +67,7 @@
 #include "util/session_log.hpp"
 #include "scene/scene_persistence.hpp"
 #include "scene/transitions.hpp"
+#include "target_destinations.hpp"
 #include "UndoManager.hpp"
 
 namespace {
@@ -904,6 +905,13 @@ bool ObsBootstrap::Start()
 	// unable to go live with no visible error. Runs once here, now that the profile +
 	// account stores and provider registry are all ready.
 	Bridge::SelfHealStreamCredentials();
+
+	// A target granted after its account was connected (a Page added to the person's
+	// Facebook account since) has no destination until something re-runs the reconcile,
+	// and only the connect flow does -- so the user had to disconnect and reconnect to
+	// see it. Run it once here for the accounts already connected; the pass itself hands
+	// the blocking enumeration to a worker, so this call does not delay boot.
+	MaterializeTargetDestinationsAtBoot();
 
 	// Channel identity: the audience-total poller is always-on (account-lifecycle,
 	// not go-live-gated), so follower/subscriber totals refresh before/after
