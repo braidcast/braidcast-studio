@@ -9,6 +9,7 @@
   } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
   import { goLiveModal, closeGoLiveModal } from "$lib/dialogs/golive/goLiveModalOpener.svelte";
+  import { resolveRequiredEnum } from "$lib/dialogs/golive/fieldValue";
   import { openOAuthConnect, isOAuthConnecting } from "$lib/dialogs/oauthConnectOpener.svelte";
   import { canvasStore } from "$lib/stores/canvasStore.svelte";
   import {
@@ -288,11 +289,14 @@ import { EV } from "$lib/utils/eventNames";
     return p.fields.filter((f) => f.tier === "advanced");
   }
 
-  // The provider's note for the value this control currently holds, rendered as the row's
-  // hint. Provider-declared data rather than a per-platform branch here, so a second
-  // platform with a costly option is a capability entry and nothing in this file.
-  function optionNote(f: OAuthProviderField, value: unknown): string | undefined {
-    return typeof value === "string" ? f.optionNotes?.[value] : undefined;
+  // The provider's note for the value this control is SHOWING, rendered as the row's
+  // hint — so it runs the same required-enum resolution the widget renders, or a field
+  // still on its descriptor default would show a selection with no note under it.
+  // Provider-declared data rather than a per-platform branch here, so a second platform
+  // with a costly option is a capability entry and nothing in this file.
+  function noteFor(f: OAuthProviderField, value: unknown, layer: "channel" | "stream"): string | undefined {
+    const shown = resolveRequiredEnum(f, value, inheritsBelow(f, layer));
+    return f.optionNotes?.[shown];
   }
 
   function isOverridden(id: string, f: OAuthProviderField): boolean {
@@ -446,10 +450,14 @@ import { EV } from "$lib/utils/eventNames";
   // providers, deduped by key (first provider's label/type wins). Drives the shared
   // block so a provider marking a new field shareable gets a shared source with no
   // edits here.
+  //
+  // Every CONNECTED channel, not just the armed ones: a shared value belongs to no
+  // destination, so switching them all off must not take the block — and the title and
+  // description typed into it — off the screen with them.
   const sharedFields = $derived.by<OAuthProviderField[]>(() => {
     const seen = new Set<string>();
     const out: OAuthProviderField[] = [];
-    for (const c of armedConnectedChannels) {
+    for (const c of connectedChannels) {
       if (!c.provider) {
         continue;
       }
@@ -519,6 +527,14 @@ import { EV } from "$lib/utils/eventNames";
         out[f.key] = cv[f.key];
       } else if (f.shareable && !isEmptyVal(f.type, sharedValues[f.key])) {
         out[f.key] = sharedValues[f.key];
+      } else {
+        // Nothing held at any layer. A `required` field has no valid empty state, so
+        // emit the value its control is showing — the descriptor default — rather than
+        // omit the key and let the provider substitute something else.
+        const shown = resolveRequiredEnum(f, "");
+        if (shown !== "") {
+          out[f.key] = shown;
+        }
       }
     }
     return out;
@@ -1068,7 +1084,7 @@ import { EV } from "$lib/utils/eventNames";
                     {@render fieldRow(f, getVal(c.accountId, f.key), (v) => setField(c.accountId, f.key, v), {
                       providerId: c.provider.id,
                       accountId: c.accountId,
-                      hint: optionNote(f, getVal(c.accountId, f.key)),
+                      hint: noteFor(f, getVal(c.accountId, f.key), "channel"),
                     })}
                   {/each}
 
@@ -1083,7 +1099,7 @@ import { EV } from "$lib/utils/eventNames";
                             accountId: c.accountId,
                             narrow: f.type === "enum",
                             inheritable: inheritsBelow(f, "channel"),
-                            hint: optionNote(f, getVal(c.accountId, f.key)),
+                            hint: noteFor(f, getVal(c.accountId, f.key), "channel"),
                           })}
                         {/each}
                       </div>
@@ -1125,7 +1141,7 @@ import { EV } from "$lib/utils/eventNames";
                                   accountId: c.accountId,
                                   narrow: f.type === "enum",
                                   inheritable: inheritsBelow(f, "stream"),
-                                  hint: optionNote(f, getStreamVal(s.profileUuid, f.key)),
+                                  hint: noteFor(f, getStreamVal(s.profileUuid, f.key), "stream"),
                                 })}
                               {/each}
                               <p class="inhnote">Empty fields inherit this channel's defaults.</p>

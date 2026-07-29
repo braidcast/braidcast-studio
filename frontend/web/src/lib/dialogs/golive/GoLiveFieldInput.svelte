@@ -1,7 +1,8 @@
 <script lang="ts">
-  import { obs, type LabeledOption, type OAuthProviderField } from "$lib/api/bridge";
+  import { obs, type OAuthProviderField } from "$lib/api/bridge";
   import GoLiveTagsInput from "$lib/dialogs/golive/GoLiveTagsInput.svelte";
   import GoLiveCategoryInput from "$lib/dialogs/golive/GoLiveCategoryInput.svelte";
+  import { isRequiredEnum, normOpt, resolveRequiredEnum } from "$lib/dialogs/golive/fieldValue";
 
   // The single descriptor-driven field widget. Dispatch is by `field.type` only —
   // text / textarea / tags / category / image / enum / bool / labelset — so the
@@ -45,34 +46,13 @@
   const bool = $derived(value === true);
   const showGhost = $derived(ghostText !== "" && str === "");
 
-  // Coerce a bare string to a LabeledOption so a mixed/legacy provider never renders
-  // "[object Object]".
-  function normOpt(o: unknown): LabeledOption {
-    return typeof o === "string" ? { value: o, label: o } : (o as LabeledOption);
-  }
   const opts = $derived((field.options ?? []).map(normOpt));
 
-  // A `required` enum has no empty option, so its rendered selection must always be a
-  // real option: a <select> whose value matches nothing lands on the FIRST option while
-  // the model stays empty, which for privacy would read "Public" and send "private".
-  // Resolve to the descriptor default, else the first option, and push that up through
-  // onChange so the model the confirm pushes equals what is on screen. An inherit layer
-  // is exempt — empty there means "use the layer below", not "unset".
-  const requiredEnum = $derived(field.type === "enum" && field.required === true && !inheritable);
-  const enumValue = $derived.by(() => {
-    if (!requiredEnum || opts.some((o) => o.value === str)) {
-      return str;
-    }
-    const dflt = typeof field.default === "string" ? field.default : "";
-    return opts.some((o) => o.value === dflt) ? dflt : (opts[0]?.value ?? "");
-  });
-  $effect(() => {
-    // Never push "" — a descriptor with no options has nothing valid to resolve to, and
-    // writing the empty value back would just restate the unset state as a choice.
-    if (requiredEnum && enumValue !== "" && enumValue !== str) {
-      onChange(enumValue);
-    }
-  });
+  // A `required` enum renders the value it stands for rather than the raw model value,
+  // and offers no empty option. The resolution is shared with the modal, which pushes
+  // the same value, so the control can't show one choice while the host gets another.
+  const requiredEnum = $derived(isRequiredEnum(field, inheritable));
+  const enumValue = $derived(resolveRequiredEnum(field, value, inheritable));
 
   function basename(p: string): string {
     return p.split(/[\\/]/).pop() || p;
@@ -324,9 +304,14 @@
     color: var(--color-text);
     cursor: pointer;
   }
+  /* Takes the row's width like every other control, capped so a multi-column dialog
+     doesn't turn the drop target into a banner. 16:9 is the frame the thumbnail is
+     shown in on every platform that accepts one, so the box previews at its real crop. */
   .thumb {
-    width: 150px;
-    height: 84px;
+    width: 100%;
+    max-width: 320px;
+    aspect-ratio: 16 / 9;
+    box-sizing: border-box;
     border: var(--border-weight) dashed var(--color-border);
     color: var(--color-muted);
     font-size: 10px;
@@ -390,13 +375,14 @@
     font-size: 9px;
     color: var(--color-muted);
     margin-top: 3px;
+    max-width: 320px;
     word-break: break-all;
   }
   .thumb-err {
     font-size: 10px;
     color: var(--color-danger, #e5484d);
     margin-top: 4px;
-    max-width: 220px;
+    max-width: 320px;
     line-height: 1.35;
   }
 </style>
