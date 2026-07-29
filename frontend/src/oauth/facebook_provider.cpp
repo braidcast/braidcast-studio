@@ -221,17 +221,18 @@ bool FacebookProvider::fetchIdentity(OAuthAccount &acct, std::string &err)
 	//
 	// Deliberately not fatal. Identity already succeeded, so a Pages lookup that fails
 	// costs a nicer label, not the connection.
-	std::vector<PageRef> pages;
+	PageList list;
 	std::string pagesErr;
-	if (FetchPages(acct, pages, pagesErr) && pages.size() == 1) {
-		acct.displayName = pages[0].name;
+	if (FetchPages(acct, list, pagesErr) && list.pages.size() == 1) {
+		acct.displayName = list.pages[0].name;
 	}
 	return true;
 }
 
-bool FacebookProvider::FetchPages(OAuthAccount &acct, std::vector<PageRef> &out, std::string &err)
+bool FacebookProvider::FetchPages(OAuthAccount &acct, PageList &out, std::string &err)
 {
-	out.clear();
+	out.pages.clear();
+	out.returned = 0;
 
 	Http::HttpReq req;
 	req.method = "GET";
@@ -253,6 +254,7 @@ bool FacebookProvider::FetchPages(OAuthAccount &acct, std::vector<PageRef> &out,
 		err = "Facebook Pages response missing data";
 		return false;
 	}
+	out.returned = data.size();
 	for (const json &row : data) {
 		PageRef page{Str(row, "id"), Str(row, "name"), Str(row, "access_token")};
 		// A Page whose token did not come back cannot be streamed to, and one with no id
@@ -263,7 +265,14 @@ bool FacebookProvider::FetchPages(OAuthAccount &acct, std::vector<PageRef> &out,
 		if (page.name.empty()) {
 			page.name = page.id;
 		}
-		out.push_back(std::move(page));
+		out.pages.push_back(std::move(page));
+	}
+	// The dropped rows are otherwise invisible: every caller sees only the usable list, so
+	// a grant that covers listing but not streaming would read as "no Pages" with nothing
+	// on the record to say otherwise.
+	if (out.pages.size() != out.returned) {
+		HostLog("[oauth] Facebook /me/accounts listed " + std::to_string(out.returned) + " Page(s), " +
+			std::to_string(out.pages.size()) + " usable; the rest returned no access token");
 	}
 	return true;
 }
@@ -275,27 +284,27 @@ bool FacebookProvider::getMetadata(OAuthAccount &acct, json &out, std::string &e
 	// description to prefill. The Page is the exception -- it is a standing choice, and
 	// with exactly one Page there is nothing to choose, so seed it and let the user go
 	// live without touching the field.
-	std::vector<PageRef> pages;
-	if (!FetchPages(acct, pages, err)) {
+	PageList list;
+	if (!FetchPages(acct, list, err)) {
 		return false;
 	}
-	if (pages.size() == 1) {
-		out["page"] = json{{"id", pages[0].id}, {"name", pages[0].name}};
+	if (list.pages.size() == 1) {
+		out["page"] = json{{"id", list.pages[0].id}, {"name", list.pages[0].name}};
 	}
 	return true;
 }
 
 bool FacebookProvider::searchCategories(OAuthAccount &acct, const std::string &query, json &out, std::string &err)
 {
-	std::vector<PageRef> pages;
-	if (!FetchPages(acct, pages, err)) {
+	PageList list;
+	if (!FetchPages(acct, list, err)) {
 		return false;
 	}
 
 	// Read live rather than cached: a Page created or handed over between go-lives has to
 	// show up, and the list is one small request.
 	out = json::array();
-	for (const PageRef &page : pages) {
+	for (const PageRef &page : list.pages) {
 		if (!ContainsCI(page.name, query)) {
 			continue;
 		}
@@ -308,23 +317,29 @@ bool FacebookProvider::ResolvePage(OAuthAccount &acct, const json &fields, PageR
 {
 	const std::string chosenId = Str(Obj(fields, "page"), "id");
 
-	std::vector<PageRef> pages;
-	if (!FetchPages(acct, pages, err)) {
+	PageList list;
+	if (!FetchPages(acct, list, err)) {
 		return false;
 	}
-	if (pages.empty()) {
-		err = "this Facebook account administers no Pages; Braidcast streams to Pages only";
+	if (list.pages.empty()) {
+		// An empty usable list has two causes with two different remedies, and asserting
+		// the first at a user who plainly does administer a Page sends them looking for a
+		// problem that is not there.
+		err = list.returned > 0
+			      ? "Facebook listed this account's Pages but returned an access token for none of "
+				"them; reconnect Facebook and grant access to the Page you stream to"
+			      : "this Facebook account administers no Pages; Braidcast streams to Pages only";
 		return false;
 	}
 	if (chosenId.empty()) {
-		if (pages.size() > 1) {
+		if (list.pages.size() > 1) {
 			err = "choose which Facebook Page to stream to";
 			return false;
 		}
-		out = pages.front();
+		out = list.pages.front();
 		return true;
 	}
-	for (const PageRef &page : pages) {
+	for (const PageRef &page : list.pages) {
 		if (page.id == chosenId) {
 			out = page;
 			return true;

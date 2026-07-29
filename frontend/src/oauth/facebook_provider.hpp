@@ -1,6 +1,7 @@
 #ifndef OBS_MULTISTREAM_FRONTEND_OAUTH_FACEBOOK_PROVIDER_HPP_
 #define OBS_MULTISTREAM_FRONTEND_OAUTH_FACEBOOK_PROVIDER_HPP_
 
+#include <cstddef>
 #include <map>
 #include <mutex>
 #include <string>
@@ -85,10 +86,19 @@ private:
 		std::string pageToken;
 	};
 
+	// One /me/accounts read. `pages` holds only the Pages that can actually be streamed
+	// to -- an id AND an access token -- while `returned` counts every row Meta sent, so
+	// "this account administers no Pages" stays distinguishable from "Meta listed Pages
+	// but handed this app a token for none of them". The two need different remedies.
+	struct PageList {
+		std::vector<PageRef> pages;
+		size_t returned = 0;
+	};
+
 	// GET /me/accounts -- every Page the account administers, with its access token.
 	// The single Page reader: the picker's option list, the single-Page prefill and the
 	// go-live resolution all come through here rather than each spelling out the request.
-	bool FetchPages(OAuthAccount &acct, std::vector<PageRef> &out, std::string &err);
+	bool FetchPages(OAuthAccount &acct, PageList &out, std::string &err);
 
 	// The Page this apply targets: the one the `page` field names, or -- when the field is
 	// empty and the account administers exactly one Page -- that Page. Anything else is a
