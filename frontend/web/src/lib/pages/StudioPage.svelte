@@ -2,7 +2,8 @@
   import { onDestroy, onMount } from "svelte";
   import type { DockviewApi } from "dockview-core";
   import DockHost from "$lib/docking/DockHost.svelte";
-  import { DOCKS, panelOptions, SIDE_DOCK_WIDTH } from "$lib/docking/dockRegistry";
+  import { DOCKS, panelOptions } from "$lib/docking/dockRegistry";
+  import { dockColumnWidth, installDockSizing, whenMeasured } from "$lib/docking/dockSizing";
   import { layoutStore } from "$lib/docking/layoutStore.svelte";
 import { bumpDockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   import {
@@ -369,16 +370,11 @@ import { EV } from "$lib/utils/eventNames";
   // Approximate the mock's 1.7:1 previews-to-docks height split by sizing the
   // top (preview) group; the bottom row's groups share the remaining height. The
   // top-level vertical division persists when the reconciler later adds canvas
-  // docks into the previews row. Skipped (default even split) if the host has not
-  // been measured yet at build time; retried next frame in that case.
+  // docks into the previews row.
   function sizeStudioRows(dv: DockviewApi): void {
-    const apply = (): void => {
-      const total = dv.height;
-      if (total <= 0) return;
-      dv.getPanel("preview")?.api.setSize({ height: Math.round((total * 1.7) / 2.7) });
-    };
-    apply();
-    if (dv.height <= 0) requestAnimationFrame(apply);
+    whenMeasured(dv, () => {
+      dv.getPanel("preview")?.api.setSize({ height: Math.round((dv.height * 1.7) / 2.7) });
+    });
   }
 
   // One log line per dock added, so a headless smoke run can confirm the full
@@ -416,31 +412,12 @@ import { EV } from "$lib/utils/eventNames";
     // Register the tear-out handler once; the custom tab resolves it at click time
     // (see detachRegistry) so detach survives a layout restore.
     setDetachHandler(detachDock);
-    // Dockview equalizes every sibling column on a drag-drop (its splitview falls
-    // back to Sizing.Distribute for the drop path, which has no size hook), so a
-    // reposition silently resets the user's manually-narrowed docks. A drop is a
-    // move, not a resize: snapshot every group's width before the drop and re-assert
-    // it after, so only the group that actually moved changes size (a brand-new
-    // group from a split isn't in the snapshot and keeps the leftover space).
-    let widthsBeforeDrop: Map<string, number> | undefined;
-    dropDisposers.push(
-      dv.onWillDrop(() => {
-        widthsBeforeDrop = new Map(dv.groups.map((g) => [g.id, g.api.width]));
-      }),
-    );
-    dropDisposers.push(
-      dv.onDidDrop(() => {
-        const snap = widthsBeforeDrop;
-        widthsBeforeDrop = undefined;
-        if (!snap || snap.size < 2) return;
-        for (const g of dv.groups) {
-          const w = snap.get(g.id);
-          if (w !== undefined && Math.abs(g.api.width - w) > 1) {
-            g.api.setSize({ width: w });
-          }
-        }
-      }),
-    );
+    // Column widths are owned from here on: Dockview re-splits a splitview evenly
+    // whenever a group is added or removed, so every drop would otherwise resize
+    // docks the user had sized by hand and hand a brand-new edge column half the
+    // window. Installed before the restore so the first settled layout (restored
+    // or default) is adopted as the baseline rather than corrected.
+    dropDisposers.push(installDockSizing(dv));
     dropDisposers.push(
       dv.onDidLayoutChange(() => {
         refreshVisible();
@@ -478,7 +455,7 @@ import { EV } from "$lib/utils/eventNames";
       } else if (p.dock.startsWith("browserdock:")) {
         reconcileBrowserDocks(api);
       } else if (DOCKS.some((d) => d.id === p.dock)) {
-        api.addPanel(panelOptions(p.dock, { initialWidth: SIDE_DOCK_WIDTH }));
+        api.addPanel(panelOptions(p.dock, { initialWidth: dockColumnWidth(api.width) }));
       }
       refreshVisible();
     });
@@ -493,7 +470,7 @@ import { EV } from "$lib/utils/eventNames";
       // Refuse to open an OAuth-gated dock (Events/Multichat) with no connected
       // account -- it would only show its own empty state.
       if (!dockOpenable(id)) return;
-      api.addPanel(panelOptions(id, { initialWidth: SIDE_DOCK_WIDTH }));
+      api.addPanel(panelOptions(id, { initialWidth: dockColumnWidth(api.width) }));
     }
     refreshVisible();
   }

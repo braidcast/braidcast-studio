@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
   import { untrack } from "svelte";
+  import { clamp } from "$lib/utils/clamp";
 
   // Horizontal master-detail split with a draggable vertical divider. The left pane
   // owns a controlled width (persisted per storageKey); the right pane keeps the
@@ -19,10 +20,6 @@
   let { left, right, min = 180, max = 420, default: def = 260, storageKey }: Props = $props();
 
   const STEP = 16;
-
-  function clamp(v: number, lo: number, hi: number): number {
-    return Math.min(Math.max(v, lo), Math.max(lo, hi));
-  }
 
   function restore(): number {
     try {

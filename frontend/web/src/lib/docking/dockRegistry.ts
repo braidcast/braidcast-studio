@@ -21,15 +21,12 @@ export interface DockDef {
   component: Component<Record<string, unknown>>;
   params: Record<string, unknown>;
   accent?: boolean;
+  // Narrowest width (px) this dock's content still renders at. Rides out as the
+  // panel's `minimumWidth`, which Dockview clamps every split, distribute and
+  // sash drag against, so no layout operation can crush the dock below it.
+  // Absent = no floor beyond Dockview's own 100px group minimum.
+  minWidth?: number;
 }
-
-// Default width (px) for a dock added programmatically into a horizontal row
-// (restore chip, redock, canvas/browser reconciler). Passing an explicit size
-// makes Dockview's splitview take THIS width from its neighbors instead of
-// falling back to Sizing.Distribute, which equalizes every sibling column and
-// wipes a user's manually-narrowed dock. Also the single knob for "a bit
-// narrower by default" — tune here, not per call site.
-export const SIDE_DOCK_WIDTH = 320;
 
 export const DOCKS: DockDef[] = [
   // Default canvas preview. The tab carries a status dot + a `GLOBAL S/S` badge
@@ -50,16 +47,23 @@ export const DOCKS: DockDef[] = [
   // Merged read+send chat across every connected platform (Phase 9.0). Like
   // Multistream/Transitions it is NOT in the default layout -- it opens from the
   // CANVASES-bar restore chip -- but stays registered so it is addable/restorable.
-  { id: "multichat", title: "Multichat", component: MultichatDock, params: {}, accent: true },
+  {
+    id: "multichat",
+    title: "Multichat",
+    component: MultichatDock,
+    params: {},
+    accent: true,
+    minWidth: 280,
+  },
   // Live cross-platform events feed (follows/subs/gifts/cheers/raids/superchats,
   // Phase 9.2). Like Multichat it is NOT in the default layout -- it opens from the
   // CANVASES-bar restore chip -- but stays registered so it is addable/restorable.
-  { id: "events", title: "Events", component: EventsDock, params: {}, accent: true },
+  { id: "events", title: "Events", component: EventsDock, params: {}, accent: true, minWidth: 280 },
   // Per-account identity + audience (Channel-identity feature). Like Events/Multichat
   // it is meaningless without a logged-in account, so it is NOT in the default layout
   // and is OAuth-gated -- it opens from the CANVASES-bar restore chip once an account
   // is connected, but stays registered so it is addable/restorable.
-  { id: "channels", title: "Channels", component: ChannelsDock, params: {} },
+  { id: "channels", title: "Channels", component: ChannelsDock, params: {}, minWidth: 280 },
   { id: "stats", title: "Stats", component: StatsDock, params: {} },
 ];
 
@@ -85,6 +89,9 @@ export function panelOptions(id: string, extra: Partial<AddPanelOptions> = {}): 
     component: def.id,
     title: def.title,
     params: { ...def.params, __accent: def.accent ?? false },
+    // Serialized with the layout, so the floor survives a restore without being
+    // re-applied; Dockview reads it off whichever panel in a group is active.
+    minimumWidth: def.minWidth,
     ...extra,
   };
 }

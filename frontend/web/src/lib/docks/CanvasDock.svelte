@@ -11,6 +11,7 @@
   } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
   import { selectOnMount } from "$lib/utils/focusActions";
+  import { clamp } from "$lib/utils/clamp";
   import { previewSuspended, suspendPreview } from "$lib/stores/previewGate.svelte";
 import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   import { WINDOW_ID } from "$lib/utils/windowContext";
@@ -931,9 +932,6 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   let embedEl = $state<HTMLElement | undefined>();
   let scenesColEl = $state<HTMLElement | undefined>();
 
-  function clamp(v: number, lo: number, hi: number): number {
-    return Math.min(Math.max(v, lo), Math.max(lo, hi));
-  }
   function onEmbedDrag(dy: number) {
     const cur = embedH ?? embedEl?.getBoundingClientRect().height ?? 154;
     const dockH = dockBodyEl?.clientHeight ?? 600;
