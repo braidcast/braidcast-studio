@@ -211,6 +211,21 @@ bool FacebookProvider::fetchIdentity(OAuthAccount &acct, std::string &err)
 	acct.login = Str(j, "name");
 	acct.displayName = acct.login;
 	acct.avatarUrl = Str(Obj(Obj(j, "picture"), "data"), "url");
+
+	// Every other provider's account is the channel it broadcasts to, so the row names
+	// the destination. Facebook is the one where the account is a person and the
+	// destination is a Page, and a row carrying the profile name misdescribes where the
+	// stream lands. One reachable Page leaves nothing ambiguous, so name it; with
+	// several there is no single right answer and the profile stays. `login` keeps the
+	// profile either way, since that is the identity the user revokes.
+	//
+	// Deliberately not fatal. Identity already succeeded, so a Pages lookup that fails
+	// costs a nicer label, not the connection.
+	std::vector<PageRef> pages;
+	std::string pagesErr;
+	if (FetchPages(acct, pages, pagesErr) && pages.size() == 1) {
+		acct.displayName = pages[0].name;
+	}
 	return true;
 }
 
