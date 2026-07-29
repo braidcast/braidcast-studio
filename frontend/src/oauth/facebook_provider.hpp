@@ -84,6 +84,9 @@ private:
 		std::string id;
 		std::string name;
 		std::string token;
+		// Empty when Meta returns no picture for the Page. Optional by nature, so no
+		// caller may treat it as required: the account keeps the profile avatar then.
+		std::string avatarUrl;
 	};
 
 	// One destination's live video. The Page token is carried alongside because ending

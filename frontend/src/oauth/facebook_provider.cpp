@@ -235,12 +235,20 @@ bool FacebookProvider::fetchIdentity(OAuthAccount &acct, std::string &err)
 	// several there is no single right answer and the profile stays. `login` keeps the
 	// profile either way, since that is the identity the user revokes.
 	//
+	// The avatar moves with the name or the row half-lies: a Page name over a personal
+	// profile picture reads as the wrong destination even when the text is right, and the
+	// picture is the part a user recognizes first. A Page with no picture keeps the
+	// profile's rather than blanking the row.
+	//
 	// Deliberately not fatal. Identity already succeeded, so a Pages lookup that fails
 	// costs a nicer label, not the connection.
 	PageList list;
 	std::string pagesErr;
 	if (FetchPages(acct, list, pagesErr) && list.pages.size() == 1) {
 		acct.displayName = list.pages[0].name;
+		if (!list.pages[0].avatarUrl.empty()) {
+			acct.avatarUrl = list.pages[0].avatarUrl;
+		}
 	}
 	return true;
 }
@@ -254,7 +262,7 @@ bool FacebookProvider::FetchPages(OAuthAccount &acct, PageList &out, std::string
 	req.method = "GET";
 	// 100 is Meta's per-page maximum for this edge and far beyond what a streamer
 	// administers, so a single request answers without paging.
-	req.url = GraphUrl("me/accounts?fields=id,name,access_token&limit=100");
+	req.url = GraphUrl("me/accounts?fields=id,name,access_token,picture.type(large)&limit=100");
 
 	Http::HttpResponse resp;
 	if (!SendAuthed(acct, req, resp, err)) {
@@ -272,7 +280,8 @@ bool FacebookProvider::FetchPages(OAuthAccount &acct, PageList &out, std::string
 	}
 	out.returned = data.size();
 	for (const json &row : data) {
-		PageRef page{Str(row, "id"), Str(row, "name"), Str(row, "access_token")};
+		PageRef page{Str(row, "id"), Str(row, "name"), Str(row, "access_token"),
+			     Str(Obj(Obj(row, "picture"), "data"), "url")};
 		// A Page whose token did not come back cannot be streamed to, and one with no id
 		// cannot be addressed -- skip rather than offer a choice that would fail later.
 		if (page.id.empty() || page.token.empty()) {
