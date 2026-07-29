@@ -276,6 +276,16 @@ bool FacebookProvider::FetchPages(OAuthAccount &acct, PageList &out, std::string
 		}
 		out.pages.push_back(std::move(page));
 	}
+	// An empty list is the quietest failure this provider has: the connect succeeds, tokens
+	// issue, and every downstream read simply finds nothing, so the account looks connected
+	// while being unable to stream anywhere. Say so on the record, with the cause, because
+	// nothing else in the flow reports it.
+	if (out.returned == 0) {
+		HostLog("[oauth] Facebook /me/accounts returned no Pages -- the grant covers none, so this "
+			"account cannot stream. Check that the Meta app has a Login for Business "
+			"configuration and that a Page was selected during consent.");
+		return true;
+	}
 	// The dropped rows are otherwise invisible: every caller sees only the usable list, so
 	// a grant that covers listing but not streaming would read as "no Pages" with nothing
 	// on the record to say otherwise.
