@@ -34,9 +34,16 @@
 
   const rows = $derived(bindings.filter((b) => b.canvasUuid === canvasUuid));
 
-  // Profiles already bound to this canvas — omitted from the picker so a
-  // destination can't be double-bound.
-  const boundProfileUuids = $derived(rows.map((b) => b.profileUuid).filter(Boolean));
+  // Profiles already bound to ANY canvas in this collection, omitted from the picker.
+  //
+  // Scoped to `bindings` and not to `rows`: reading only this canvas's rows let a
+  // destination already bound elsewhere be offered here, and accepting the offer built
+  // an edge that can never carry a stream. The engine permits exactly one ENABLED
+  // binding per profile because one stream key is one live stream, so the second edge
+  // is unreachable while the first is armed -- the picker was inviting the user to
+  // create it anyway. Re-routing is outputBinding.update with a new canvasUuid, so
+  // refusing the second edge costs nothing that the user could otherwise do.
+  const boundProfileUuids = $derived(bindings.map((b) => b.profileUuid).filter(Boolean));
 
   // Per-canvas enabled = any binding enabled; the master toggle sets them all.
   const canvasEnabled = $derived(rows.some((b) => b.enabled));
