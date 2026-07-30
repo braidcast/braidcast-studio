@@ -483,6 +483,8 @@ export interface StreamProfileInfo {
   /** Linked OAuth account ("providerId:userId"); empty for key/RTMP/WHIP modes.
    * The reuse link: several profiles may carry the same accountId. */
   accountId: string;
+  /** Id of the claimed target, "" when unclaimed. What the picker marks as current. */
+  targetId: string;
   /** The target this destination claims -- a Facebook Page today. Empty when the
    * provider has no targets (Twitch/Kick/YouTube: the account IS the destination) or
    * when nothing has been claimed yet. Prefer it over the account's name: several
@@ -1538,6 +1540,14 @@ export interface ObsMethods {
   // aborts the backend flow so the profile is not linked after the modal is gone.
   "oauth.cancelConnect": { ok: true };
   "oauth.accounts": OAuthAccountRow[];
+  // Every target one account can stream to (Facebook's Pages). A blocking platform read,
+  // so it runs on demand rather than being held and kept fresh. Includes targets other
+  // destinations already claim -- the picker has to show a taken one as taken.
+  "oauth.targets": { fieldKey: string; targets: StreamTargetRow[] };
+  // Point one destination at one target. Refused when another destination of the same
+  // account already claims it: two profiles on one Page would create two live videos
+  // there and contend for a single ingest.
+  "oauth.setTarget": { ok: true };
   "oauth.linkAccount": { ok: true };
   "oauth.disconnect": { ok: true } | { needsConfirm: true; profiles: { uuid: string; name: string }[] };
   "oauth.status": OAuthStatus[];
@@ -2019,6 +2029,27 @@ export const oauthAccounts = (providerId: string): Promise<OAuthAccountRow[]> =>
 /** Link an already-connected account to another profile (no fresh grant). */
 export const oauthLinkAccount = (profileUuid: string, accountId: string): Promise<{ ok: true }> =>
   obs.call("oauth.linkAccount", { profileUuid, accountId });
+
+/** One place an account can stream to. `avatarUrl` is "" where the platform has none. */
+export interface StreamTargetRow {
+  id: string;
+  name: string;
+  avatarUrl: string;
+}
+
+/** The targets an account can stream to; empty for a provider that has none. */
+export const oauthTargets = (accountId: string): Promise<{ fieldKey: string; targets: StreamTargetRow[] }> =>
+  obs.call("oauth.targets", { accountId });
+
+/** Point a destination at a target. Name and avatar are cached with the claim so the row
+ * renders without a platform call, and come from oauthTargets rather than being re-read. */
+export const oauthSetTarget = (profileUuid: string, target: StreamTargetRow): Promise<{ ok: true }> =>
+  obs.call("oauth.setTarget", {
+    profileUuid,
+    targetId: target.id,
+    name: target.name,
+    avatarUrl: target.avatarUrl,
+  });
 
 /** Disconnect an account. Resolves to {needsConfirm, profiles} when >1 profile
  * references it (unless `force`); retry with force:true to unlink them all. */

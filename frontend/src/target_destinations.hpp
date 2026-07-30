@@ -3,6 +3,8 @@
 
 #include <string>
 
+#include <nlohmann/json.hpp>
+
 // Give every target an account can stream to (StreamProvider::enumerateTargets --
 // Facebook's Pages) its own stream profile, so profile -> output stays 1:1 and each
 // target keeps its own ingest endpoint. Called from the connect flow once the account
@@ -30,5 +32,28 @@ void MaterializeTargetDestinations(const std::string &accountId, const std::stri
 // the app unattended against the user's real config directory, and this pass writes
 // stream profiles.
 void MaterializeTargetDestinationsAtBoot();
+
+// The target one destination claims, as `{"id","name","avatarUrl"}` with empty strings
+// for whatever is absent -- an unclaimed profile, an account with no provider, a provider
+// with no targets. Absence is a real answer here, never an error.
+//
+// Exported so the bridge reports a destination's identity without a second reader of the
+// same bag: this module owns the claim, writes it in the reconcile, and is where the field
+// key is resolved. A local read, safe to call per row.
+//
+// UI thread only, like every StreamMetaStore access.
+nlohmann::json ClaimedTargetOf(const std::string &profileUuid);
+
+// Point one destination at `targetId`, refusing a target another destination of the same
+// account already claims -- two profiles on one Page would create two live videos there
+// and fight over one ingest. `name` and `avatarUrl` are cached alongside so the row can
+// render without a platform call.
+//
+// False + `err` on: unknown profile, no linked account, a provider with no targets, or a
+// target already taken. Saves and emits streamProfile.changed on success.
+//
+// UI thread only.
+bool ClaimTargetForProfile(const std::string &profileUuid, const std::string &targetId, const std::string &name,
+			   const std::string &avatarUrl, std::string &err);
 
 #endif // OBS_MULTISTREAM_FRONTEND_TARGET_DESTINATIONS_HPP_

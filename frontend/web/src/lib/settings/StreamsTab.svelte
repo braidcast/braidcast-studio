@@ -4,6 +4,9 @@
     oauthAccounts,
     oauthLinkAccount,
     oauthDisconnect,
+    oauthTargets,
+    oauthSetTarget,
+    type StreamTargetRow,
     type StreamProfileInfo,
     type ServiceType,
     type StreamProfileCreateParams,
@@ -350,17 +353,67 @@
     }
   });
 
-  // Every destination this account owns, as the account's own profiles: one Facebook
-  // Page each. Read off the profile list rather than re-enumerating the platform, so it
-  // costs nothing to render and can never disagree with what the user can actually
-  // stream to -- a Page with no profile is not yet a destination. Empty for a provider
-  // whose account IS the destination (Twitch, Kick, YouTube), which is what collapses
-  // this back to the single row those platforms want.
-  const accountDestinations = $derived(
-    editingProfile?.accountId
-      ? profiles.filter((p) => p.accountId === editingProfile?.accountId && p.targetName.trim())
-      : [],
-  );
+  // The account's targets -- its Facebook Pages. Loaded on demand because enumerating
+  // them is a blocking platform read: it runs when an edit form with a connected account
+  // is open, and not before. A provider whose account IS the destination (Twitch, Kick,
+  // YouTube) returns none without any request, which is what hides the picker there.
+  let targets = $state<StreamTargetRow[]>([]);
+  let targetsFor = $state("");
+  let targetError = $state<string | null>(null);
+
+  async function loadTargets(accountId: string): Promise<void> {
+    targetsFor = accountId;
+    targets = [];
+    targetError = null;
+    try {
+      const r = await oauthTargets(accountId);
+      // A slower earlier request must not land on a form that has since moved to another
+      // account -- it would offer one account's Pages while naming another's.
+      if (targetsFor === accountId) {
+        targets = r.targets;
+      }
+    } catch (e) {
+      if (targetsFor === accountId) {
+        targetError = (e as Error).message;
+      }
+    }
+  }
+
+  $effect(() => {
+    const acct = connectedStatus?.accountId ?? "";
+    if (acct && acct !== targetsFor) {
+      void loadTargets(acct);
+    } else if (!acct && targetsFor) {
+      targetsFor = "";
+      targets = [];
+    }
+  });
+
+  // targetId -> the sibling destination holding it. A target belongs to one destination,
+  // so a taken one is shown as taken rather than hidden: hiding it would read as "that
+  // Page is gone" when the truth is "another destination already streams there".
+  const claimedBySibling = $derived.by(() => {
+    const m = new Map<string, StreamProfileInfo>();
+    for (const p of profiles) {
+      if (p.accountId && p.accountId === editingProfile?.accountId && p.targetId && p.uuid !== editingUuid) {
+        m.set(p.targetId, p);
+      }
+    }
+    return m;
+  });
+
+  async function chooseTarget(t: StreamTargetRow): Promise<void> {
+    if (!editingUuid) {
+      return;
+    }
+    targetError = null;
+    try {
+      await oauthSetTarget(editingUuid, t);
+      await loadProfiles();
+    } catch (e) {
+      targetError = (e as Error).message;
+    }
+  }
 
   function connect() {
     if (!editingUuid || !editingProvider) {
@@ -778,19 +831,26 @@
                       </span>
                       <button class="lnk" onclick={() => void disconnect()}>Disconnect</button>
                     </div>
-                    {#if accountDestinations.length}
+                    {#if targets.length}
                       <ul class="targets">
-                        {#each accountDestinations as d (d.uuid)}
-                          <li class:current={d.uuid === editingUuid}>
-                            <Avatar url={d.targetAvatarUrl} name={d.targetName} size={18} />
-                            <span class="name">{d.targetName}</span>
-                            {#if d.uuid === editingUuid}
+                        {#each targets as t (t.id)}
+                          {@const sibling = claimedBySibling.get(t.id)}
+                          {@const current = editingProfile?.targetId === t.id}
+                          <li class:current>
+                            <Avatar url={t.avatarUrl} name={t.name} size={18} />
+                            <span class="name">{t.name}</span>
+                            {#if current}
                               <span class="here">this profile</span>
+                            {:else if sibling}
+                              <span class="taken">{sibling.label || "another destination"}</span>
+                            {:else}
+                              <button class="lnk" onclick={() => void chooseTarget(t)}>Use this</button>
                             {/if}
                           </li>
                         {/each}
                       </ul>
                     {/if}
+                    {#if targetError}<p class="err">{targetError}</p>{/if}
                   {:else if needsReconnectStatus}
                     <div class="conn warn">
                       <span class="dot warn"><Icon name="warn" size={13} /></span>
@@ -1262,6 +1322,17 @@
     letter-spacing: 0.04em;
     text-transform: uppercase;
     color: var(--color-ok);
+  }
+  /* Names the destination that holds it, so "unavailable" carries its own reason. */
+  .targets .taken {
+    margin-left: auto;
+    flex: 0 0 auto;
+    font-size: 11px;
+    color: var(--color-muted);
+  }
+  .targets .lnk {
+    margin-left: auto;
+    flex: 0 0 auto;
   }
   .conn.warn {
     border-color: var(--color-accent);

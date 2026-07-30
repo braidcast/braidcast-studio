@@ -5993,58 +5993,18 @@ std::string StreamProfileServiceLabel(const StreamProfile &p)
 	return (svc && *svc) ? std::string(svc) : p.PlatformName();
 }
 
-// The target this profile claims, as its own identity rather than its account's. Read
-// from the remembered per-stream bag, which is where target_destinations.cpp records a
-// claim and where the Go Live modal edits it -- one home for the fact, no second copy.
-//
-// A local read on purpose: this runs for every profile in every list response, so it
-// resolves the field key through targetFieldKey() and never through the platform.
-// Everything is absent-tolerant. A profile with no account, a provider with no targets,
-// or a claim written before avatars were carried all yield empty strings, and the caller
-// falls back to the account. Empty is a real answer here, never an error.
-json ClaimedTargetJson(const StreamProfile &p)
-{
-	json out = json{{"targetName", ""}, {"targetAvatarUrl", ""}};
-	if (p.accountId.empty()) {
-		return out;
-	}
-	const std::optional<OAuth::OAuthAccount> acct = OAuth::Accounts().Get(p.accountId);
-	if (!acct) {
-		return out;
-	}
-	OAuth::StreamProvider *provider = OAuth::Registry().Get(acct->providerId);
-	if (!provider) {
-		return out;
-	}
-	const std::string fieldKey = provider->targetFieldKey();
-	if (fieldKey.empty()) {
-		return out;
-	}
-	const json bag = ObsBootstrap::StreamMeta().StreamOverride(p.uuid);
-	if (!bag.is_object()) {
-		return out;
-	}
-	const auto field = bag.find(fieldKey);
-	if (field == bag.end() || !field->is_object()) {
-		return out;
-	}
-	const auto name = field->find("name");
-	if (name != field->end() && name->is_string()) {
-		out["targetName"] = name->get<std::string>();
-	}
-	const auto avatar = field->find("avatarUrl");
-	if (avatar != field->end() && avatar->is_string()) {
-		out["targetAvatarUrl"] = avatar->get<std::string>();
-	}
-	return out;
-}
-
 // Map one StreamProfile to the bridge's profile shape. `platform` is the display
 // prefix (e.g. "YouTube"); `service` is the raw service id (rtmp_common etc.);
 // `serviceLabel` is the full selected service (e.g. "YouTube - RTMPS").
+//
+// The target fields come from target_destinations, which owns the claim -- it writes it in
+// the reconcile and resolves the field key -- rather than from a second reader of the same
+// bag here. Empty strings for an unclaimed profile or a provider with no targets; the
+// caller falls back to the account, so absence is a real answer and never an error.
 json StreamProfileToJson(const StreamProfile &p)
 {
-	json out = json{
+	const json claim = ClaimedTargetOf(p.uuid);
+	return json{
 		{"uuid", p.uuid},
 		{"label", p.label},
 		{"isPrimary", p.isPrimary},
@@ -6052,9 +6012,10 @@ json StreamProfileToJson(const StreamProfile &p)
 		{"platform", p.PlatformName()},
 		{"serviceLabel", StreamProfileServiceLabel(p)},
 		{"accountId", p.accountId},
+		{"targetId", claim.value("id", std::string())},
+		{"targetName", claim.value("name", std::string())},
+		{"targetAvatarUrl", claim.value("avatarUrl", std::string())},
 	};
-	out.update(ClaimedTargetJson(p));
-	return out;
 }
 
 // Ported duplicate guard (legacy OBSBasicSettings::CheckStreamProfileConflicts):
@@ -9666,6 +9627,68 @@ bool MethodOAuthAccounts(const json &params, json &result, std::string &error)
 	return true;
 }
 
+// Every target one account can stream to -- Facebook's Pages. The async lane: this is a
+// blocking platform read, and it is why the profile editor asks for the list on demand
+// rather than the app holding one it would have to keep fresh.
+//
+// Reports the whole list, including targets other destinations already claim, because the
+// picker has to show a taken target as taken. Refusing the claim is
+// ClaimTargetForProfile's job, not this read's.
+bool MethodOAuthTargets(const json &params, json &result, std::string &error)
+{
+	std::string accountId;
+	if (!RequireStr(params, "oauth.targets", "accountId", accountId, error)) {
+		return false;
+	}
+	std::optional<OAuth::OAuthAccount> stored = OAuth::Accounts().Get(accountId);
+	if (!stored) {
+		error = "not connected";
+		return false;
+	}
+	OAuth::StreamProvider *provider = OAuth::Registry().Get(stored->providerId);
+	if (!provider) {
+		error = "unknown provider: " + stored->providerId;
+		return false;
+	}
+
+	OAuth::OAuthAccount acct = *stored;
+	OAuth::TargetList list;
+	std::string err;
+	if (!provider->enumerateTargets(acct, list, err)) {
+		error = err;
+		return false;
+	}
+	json targets = json::array();
+	for (const OAuth::StreamTarget &t : list.targets) {
+		targets.push_back(json{{"id", t.id}, {"name", t.name}, {"avatarUrl", t.avatarUrl}});
+	}
+	result = json{{"fieldKey", list.fieldKey}, {"targets", std::move(targets)}};
+	return true;
+}
+
+// Point one destination at one target. Synchronous on purpose: the claim lives in the
+// UI-thread-owned StreamMetaStore, so the write must not run on the async lane the list
+// above uses. The uniqueness rule and both change emits live in ClaimTargetForProfile.
+bool MethodOAuthSetTarget(const json &params, json &result, std::string &error)
+{
+	std::string profileUuid;
+	if (!RequireStr(params, "oauth.setTarget", "profileUuid", profileUuid, error)) {
+		return false;
+	}
+	const std::string targetId = OptString(params, "targetId");
+	// Name and avatar are cached with the claim so a row renders without a platform call.
+	// They arrive from oauth.targets above rather than being re-read here, which would put
+	// the network back on this path for no gain.
+	std::string err;
+	if (!ClaimTargetForProfile(profileUuid, targetId, OptString(params, "name"), OptString(params, "avatarUrl"),
+				   err)) {
+		error = err;
+		return false;
+	}
+	result = json{{"ok", true}};
+	return true;
+}
+
 // Link a profile to an already-connected account (connect-once reuse -- no grant). The
 // account must exist in the store; this is the sole difference from the connect flow's
 // implicit link (which runs after a fresh grant).
@@ -10621,6 +10644,7 @@ void Init()
 		{"oauth.cancelConnect", MethodOAuthCancelConnect},
 		{"oauth.disconnect", MethodOAuthDisconnect},
 		{"oauth.accounts", MethodOAuthAccounts},
+		{"oauth.setTarget", MethodOAuthSetTarget},
 		{"oauth.linkAccount", MethodOAuthLinkAccount},
 		{"oauth.status", MethodOAuthStatus},
 		{"chat.state", MethodChatState},
@@ -10644,6 +10668,10 @@ void Init()
 	// callback later (same JS contract). Each body is the existing MethodFn, driven
 	// off-thread by RunAsyncMethod.
 	g_asyncMethods = {
+		{"oauth.targets",
+		 [](const json &p, CefRefPtr<CefMessageRouterBrowserSide::Callback> cb) {
+			 RunAsyncMethod("oauth.targets", p, cb, MethodOAuthTargets);
+		 }},
 		{"streamMeta.get",
 		 [](const json &p, CefRefPtr<CefMessageRouterBrowserSide::Callback> cb) {
 			 RunAsyncMethod("streamMeta.get", p, cb, MethodStreamMetaGet);

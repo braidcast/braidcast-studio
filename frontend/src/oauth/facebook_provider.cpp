@@ -66,7 +66,6 @@ using Http::AppendForm;
 using JsonUtil::Obj;
 using JsonUtil::ParseJson;
 using JsonUtil::Str;
-using StringUtil::ContainsCI;
 
 const char *StatusForPrivacy(const std::string &value)
 {
@@ -125,6 +124,12 @@ void AppendMetadataFields(std::string &body, const json &fields)
 	if (!description.empty()) {
 		AppendForm(body, "description", description);
 	}
+	// content_tags takes a list even though the picker offers one choice, so a single
+	// interest goes over as a one-element JSON array rather than a bare id.
+	const std::string category = Str(Obj(fields, "category"), "id");
+	if (!category.empty()) {
+		AppendForm(body, "content_tags", json::array({category}).dump());
+	}
 }
 
 } // namespace
@@ -155,21 +160,15 @@ json FacebookProvider::capabilityJson() const
 	}
 
 	json fields = json::array();
-	// The Page picker. `browsable` makes the lookup run on focus with an empty query, so
-	// the Pages are a list to pick from rather than something the user has to guess the
-	// name of; the options come from the account, which a static descriptor enum cannot
-	// express.
-	// perDestination: the Page is WHERE a stream posts, not what it says, so it belongs
-	// to the individual stream rather than to the account they share. Every other field
-	// here describes one broadcast's content and stays account-level.
-	fields.push_back(json{{"key", kPageFieldKey},
-			      {"label", "Page"},
-			      {"type", "category"},
-			      {"tier", "simple"},
-			      {"shareable", false},
-			      {"perDestination", true},
-			      {"browsable", true},
-			      {"placeholder", "Choose a Page\xE2\x80\xA6"}});
+	// No Page field. The Page is WHICH DESTINATION this is, not what one broadcast says,
+	// and every destination now claims exactly one -- so offering it per broadcast let a
+	// user repoint a destination from the Go Live dialog, and let two destinations of one
+	// account land on the same Page. It is chosen once, on the destination, and enforced
+	// unique there (oauth.setTarget -> ClaimTargetForProfile).
+	//
+	// The claim still reaches applyMetadata: it lives in the remembered per-stream bag,
+	// which the dialog restores wholesale and submits, so ResolvePage reads it without the
+	// dialog having to render it.
 	fields.push_back(json{{"key", "title"},
 			      {"label", "Title"},
 			      {"type", "text"},
@@ -193,9 +192,21 @@ json FacebookProvider::capabilityJson() const
 			      {"default", kPrivacyOptions[0].value},
 			      {"options", privacyOptions}});
 
-	// No category field: Facebook Gaming was sunset and nothing replaced its game
-	// catalog. content_tags are generic interest ids, not a browsable taxonomy, so
-	// offering a picker over them would be a catalog that does not exist.
+	// content_tags, offered as the category. Meta has no category or game field for a live
+	// video -- Facebook Gaming was sunset -- but content_tags is a real, searchable
+	// vocabulary: /search?type=adinterest is its lookup, the same shape every other
+	// provider's category picker already uses. Presenting it as "Category" describes what
+	// it does for the user (says what the broadcast is about) without inventing a taxonomy.
+	//
+	// shareable: what a broadcast is about is the same on every destination of the account,
+	// unlike the Page, which was the one per-destination thing here.
+	fields.push_back(json{{"key", "category"},
+			      {"label", "Category"},
+			      {"type", "category"},
+			      {"tier", "simple"},
+			      {"shareable", true},
+			      {"browsable", false},
+			      {"placeholder", "Search interests\xE2\x80\xA6"}});
 	return json{
 		{"id", id()},
 		{"displayName", displayName()},
@@ -300,18 +311,15 @@ bool FacebookProvider::FetchPages(OAuthAccount &acct, PageList &out, std::string
 
 bool FacebookProvider::getMetadata(OAuthAccount &acct, json &out, std::string &err)
 {
+	(void)acct;
+	(void)err;
+	// Nothing to report, and deliberately no platform call. Create-per-go-live means there
+	// is no live broadcast to read a title or description off, and the Page is no longer
+	// seeded here: the reconcile claims it on the destination, so seeding it again would
+	// put an unowned copy of the claim into the dialog's channel-wide bag -- the descriptor
+	// no longer declares that key, so it would route there rather than to the stream.
+	// Dropping it also takes a Pages request off every Go Live prefill.
 	out = json::object();
-	// Create-per-go-live: a fresh live video is made each time, so there is no title or
-	// description to prefill. The Page is the exception -- it is a standing choice, and
-	// with exactly one Page there is nothing to choose, so seed it and let the user go
-	// live without touching the field.
-	PageList list;
-	if (!FetchPages(acct, list, err)) {
-		return false;
-	}
-	if (list.pages.size() == 1) {
-		out[kPageFieldKey] = json{{"id", list.pages[0].id}, {"name", list.pages[0].name}};
-	}
 	return true;
 }
 
@@ -338,19 +346,41 @@ bool FacebookProvider::enumerateTargets(OAuthAccount &acct, TargetList &out, std
 
 bool FacebookProvider::searchCategories(OAuthAccount &acct, const std::string &query, json &out, std::string &err)
 {
-	PageList list;
-	if (!FetchPages(acct, list, err)) {
+	out = json::array();
+	// No catalog to browse: adinterest is a search, and an empty query returns nothing
+	// useful, so an unprompted open shows the placeholder rather than a fabricated list.
+	// This is why the descriptor field is not `browsable`.
+	if (query.empty()) {
+		return true;
+	}
+
+	Http::HttpReq req;
+	req.method = "GET";
+	req.url = GraphUrl("search?type=adinterest&limit=25&q=" + Http::UrlEncode(query));
+
+	Http::HttpResponse resp;
+	if (!SendAuthed(acct, req, resp, err)) {
+		return false;
+	}
+	if (!Http::Require2xx(resp, "Facebook interest search", err)) {
 		return false;
 	}
 
-	// Read live rather than cached: a Page created or handed over between go-lives has to
-	// show up, and the list is one small request.
-	out = json::array();
-	for (const PageRef &page : list.pages) {
-		if (!ContainsCI(page.name, query)) {
+	const json j = ParseJson(resp.body);
+	const json &data = Obj(j, "data");
+	if (!data.is_array()) {
+		err = "Facebook interest search response missing data";
+		return false;
+	}
+	for (const json &row : data) {
+		const std::string id = Str(row, "id");
+		const std::string name = Str(row, "name");
+		// A row missing either half cannot be offered: the id is what content_tags
+		// carries and the name is the only thing the user can recognize it by.
+		if (id.empty() || name.empty()) {
 			continue;
 		}
-		out.push_back(json{{"id", page.id}, {"name", page.name}});
+		out.push_back(json{{"id", id}, {"name", name}});
 	}
 	return true;
 }

@@ -62,6 +62,26 @@ void ClaimTarget(const std::string &profileUuid, const std::string &fieldKey, co
 	meta.PutStreamOverride(profileUuid, bag);
 }
 
+// The field key addressing a target for whichever provider this destination's account
+// belongs to; empty when there is no account, no provider, or the provider has no targets.
+// One resolver so the claim's reader and its writers cannot disagree about where it lives.
+std::string FieldKeyForProfile(const std::string &profileUuid, std::string *accountIdOut)
+{
+	const StreamProfile *p = ObsBootstrap::StreamProfiles().Find(profileUuid);
+	if (!p || p->accountId.empty()) {
+		return std::string();
+	}
+	if (accountIdOut) {
+		*accountIdOut = p->accountId;
+	}
+	const std::optional<OAuth::OAuthAccount> acct = OAuth::Accounts().Get(p->accountId);
+	if (!acct) {
+		return std::string();
+	}
+	OAuth::StreamProvider *provider = OAuth::Registry().Get(acct->providerId);
+	return provider ? provider->targetFieldKey() : std::string();
+}
+
 // A label no existing profile's DisplayName already takes, suffixing " 2", " 3", ... --
 // the generative side of the duplicate-name rule the create/update methods enforce, so
 // two Pages sharing a name cannot produce two identically-named destinations.
@@ -354,4 +374,67 @@ void MaterializeTargetDestinationsAtBoot()
 			MaterializeTargetDestinations(r.accountId, r.originProfileUuid);
 		}
 	});
+}
+
+json ClaimedTargetOf(const std::string &profileUuid)
+{
+	json out = json{{"id", ""}, {"name", ""}, {"avatarUrl", ""}};
+	const std::string fieldKey = FieldKeyForProfile(profileUuid, nullptr);
+	if (fieldKey.empty()) {
+		return out;
+	}
+	const json bag = ObsBootstrap::StreamMeta().StreamOverride(profileUuid);
+	if (!bag.is_object()) {
+		return out;
+	}
+	const auto field = bag.find(fieldKey);
+	if (field == bag.end() || !field->is_object()) {
+		return out;
+	}
+	for (const char *key : {"id", "name", "avatarUrl"}) {
+		const auto value = field->find(key);
+		if (value != field->end() && value->is_string()) {
+			out[key] = value->get<std::string>();
+		}
+	}
+	return out;
+}
+
+bool ClaimTargetForProfile(const std::string &profileUuid, const std::string &targetId, const std::string &name,
+			   const std::string &avatarUrl, std::string &err)
+{
+	std::string accountId;
+	const std::string fieldKey = FieldKeyForProfile(profileUuid, &accountId);
+	if (fieldKey.empty()) {
+		err = "this destination has no connected account with targets to choose from";
+		return false;
+	}
+	if (targetId.empty()) {
+		err = "choose a target";
+		return false;
+	}
+
+	// A target belongs to exactly one destination. Two profiles claiming one Page would
+	// each create a live video on it and contend for a single ingest endpoint, so the
+	// second claim is refused here rather than left to collide at go-live -- where it
+	// would surface as an opaque platform error mid-broadcast.
+	for (const StreamProfile &other : ObsBootstrap::StreamProfiles().Profiles()) {
+		if (other.uuid == profileUuid || other.accountId != accountId) {
+			continue;
+		}
+		const json claim = ClaimedTargetOf(other.uuid);
+		if (claim.value("id", std::string()) == targetId) {
+			err = "\"" + name + "\" already belongs to the destination \"" + other.DisplayName() +
+			      "\" -- change that one first";
+			return false;
+		}
+	}
+
+	ClaimTarget(profileUuid, fieldKey, OAuth::StreamTarget{targetId, name, avatarUrl});
+	ObsBootstrap::StreamMeta().Save();
+	// Both: the claim lives in the stream-meta bag, and it is also what a profile row
+	// renders as its name and picture.
+	Bridge::EmitEvent(EventNames::kStreamMetaChanged, json{{"profileUuid", profileUuid}});
+	Bridge::EmitEvent(EventNames::kStreamProfileChanged, json::object());
+	return true;
 }
