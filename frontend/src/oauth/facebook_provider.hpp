@@ -74,6 +74,18 @@ public:
 	// Page it already claims.
 	std::string targetFieldKey() const override;
 
+	// Concurrent viewers for every live video this account currently holds, one row per
+	// destination. The multi-destination hook rather than the per-channel one because a
+	// Facebook broadcast IS per destination (see broadcastPerDestination above): two profiles
+	// on two Pages are two live videos with two separate audiences, and a single figure
+	// reported under the account would drop every one but the first while mis-attributing that
+	// one to a destination nothing streams to.
+	//
+	// A live video that answers without a concurrent-viewer figure is left OUT of `out` rather
+	// than written as zero. The poller reads absent and zero differently, and only absent is
+	// honest about a destination that did not answer.
+	bool viewerCounts(OAuthAccount &acct, std::map<DestinationId, int> &out, std::string &err) override;
+
 	// End every live video this account still holds (stream stop), then one destination's
 	// (that output ended while others continue). Both pop the entry under the mutex and
 	// hand the end request to a worker: the callers run on the UI thread and must not

@@ -1,6 +1,8 @@
 #include "facebook_provider.hpp"
 
 #include <array>
+#include <atomic>
+#include <cstdint>
 #include <utility>
 
 #include "util/async_task.hpp"
@@ -62,10 +64,67 @@ constexpr int kMaxTitleLength = 254;
 // off the pushed bag -- one name, so a rename cannot desync the three.
 constexpr const char *kPageFieldKey = "page";
 
+// The live-video node's concurrent-viewer field. Named once because the request asks for it
+// explicitly and the response is read by the same name -- the two cannot desync, the way
+// kPageFieldKey ties the picker's key to the key ResolvePage reads.
+//
+// Sourced from Meta's own generated Business SDK (facebook_business/adobjects/livevideo.py,
+// LiveVideo.Field.live_views), not from the node reference: that page has answered 404 since
+// early 2025. The SDK is codegen'd from the API's schema, so it is the closest thing to a
+// primary source still reachable, but it carries no prose -- which is why a response missing
+// this field is reported rather than assumed to mean zero.
+constexpr const char *kLiveViewsField = "live_views";
+
+// The statuses that mean a live video is no longer taking viewers. Written as a STOP list
+// rather than an "is it live" allowlist on purpose: with the node reference gone, the exact
+// spelling Meta returns for the LIVE state is unconfirmed, and an allowlist that guessed it
+// wrong would silently suppress every real count. An unrecognized status therefore still
+// reports, while these -- which only follow or cancel a broadcast -- do not.
+//
+// UNPUBLISHED is deliberately absent: it is the "Unpublished (Page admins only)" privacy
+// choice this provider offers, which is a live broadcast with viewers, not an ended one.
+const std::array<const char *, 5> kEndedLiveStatuses = {"VOD", "LIVE_STOPPED", "PROCESSING", "SCHEDULED_CANCELED",
+							"SCHEDULED_EXPIRED"};
+
+// A missing concurrent-viewer field is worth one loud line and no more: the poller re-reads
+// every destination every 20 seconds, so warning per occurrence would fill the log for as long
+// as the stream runs. Once per process, because a renamed field is a property of the API and
+// not of any one destination.
+std::atomic<bool> g_liveViewsMissingLogged{false};
+
 using Http::AppendForm;
+using JsonUtil::NumLoose;
 using JsonUtil::Obj;
 using JsonUtil::ParseJson;
 using JsonUtil::Str;
+
+bool IsEndedLiveStatus(const std::string &status)
+{
+	for (const char *ended : kEndedLiveStatuses) {
+		if (status == ended) {
+			return true;
+		}
+	}
+	return false;
+}
+
+// A live video that answered without a usable viewer figure. Loud once on the host log so a
+// renamed field surfaces without debug logging turned on, gated debug afterwards.
+void ReportMissingLiveViews(const std::string &destTag, const std::string &videoId, const std::string &status)
+{
+	const std::string detail = "dest=" + destTag + " live video " + videoId + " (status " +
+				   (status.empty() ? std::string("unreported") : status) + ")";
+	if (!g_liveViewsMissingLogged.exchange(true)) {
+		HostLog(std::string("[oauth] Facebook live-video read carried no `") + kLiveViewsField + "` for " +
+			detail +
+			"; this destination stays ABSENT from the viewer aggregate rather than counted as "
+			"zero. If it persists on a broadcast that plainly has viewers, Meta has renamed the "
+			"concurrent-viewer field.");
+		return;
+	}
+	DBG(LogCat::OAuth, "facebook viewers: %s carried no %s -> leaving the count ABSENT", detail.c_str(),
+	    kLiveViewsField);
+}
 
 const char *StatusForPrivacy(const std::string &value)
 {
@@ -538,6 +597,87 @@ bool FacebookProvider::applyMetadata(OAuthAccount &acct, const std::string &prof
 	EndLiveVideos(std::move(superseded));
 	HostLog("[oauth] Facebook live video created for dest=" + DestinationKey(dest) + " on Page " + page.name);
 	return true;
+}
+
+bool FacebookProvider::viewerCounts(OAuthAccount &acct, std::map<DestinationId, int> &out, std::string &err)
+{
+	const std::string accountId = AccountId(acct);
+
+	// Snapshot this account's live videos under the lock, then release it: every read below
+	// blocks on Graph, and liveVideoMutex_ also guards the go-live commit and both stop hooks,
+	// which run on the UI thread and must not wait on the network. The Page token is copied
+	// out with the id because the request is Page-scoped -- the stored account holds the user
+	// token, which cannot read a Page's live video.
+	std::map<DestinationId, LiveVideo> targets;
+	{
+		const std::lock_guard<std::mutex> guard(liveVideoMutex_);
+		for (const auto &entry : liveVideos_) {
+			if (entry.first.accountId == accountId && !entry.second.id.empty()) {
+				targets[entry.first] = entry.second;
+			}
+		}
+	}
+	// Nothing held means this account is not broadcasting through this app: a destination that
+	// never went live, or one whose stop already popped its entry. False omits the account from
+	// the aggregate, which is what the poller does with an unsupported or off-air platform.
+	// Deliberately NOT re-discovered from /{page-id}/live_videos on an empty map: that would
+	// spend a /me/accounts read plus one edge read per Page on every cycle of every idle
+	// account, to recover only from a restart taken mid-broadcast.
+	if (targets.empty()) {
+		return false;
+	}
+
+	bool any = false;
+	for (const auto &target : targets) {
+		const std::string destTag = DestinationKey(target.first);
+
+		Http::HttpReq req;
+		req.method = "GET";
+		// Both fields asked for EXPLICITLY. The node's default field set is the id and
+		// little else, so an unqualified read answers 200 with nothing to count.
+		req.url = GraphUrl(target.second.id) + "?fields=" + kLiveViewsField + ",status";
+
+		OAuthAccount pageAcct = PageAccount(id(), target.second.pageToken);
+		Http::HttpResponse resp;
+		std::string readErr;
+		// One destination failing must not discard the ones that read: keep the first error
+		// for the caller's log and carry on, so a partial total still beats no total.
+		if (!SendAuthed(pageAcct, req, resp, readErr) ||
+		    !Http::Require2xx(resp, "Facebook live-video viewers request", readErr)) {
+			if (err.empty()) {
+				err = readErr;
+			}
+			continue;
+		}
+
+		const json j = ParseJson(resp.body);
+		const std::string status = Str(j, "status");
+		// The stop hooks pop an entry the moment an output ends, so this covers only what
+		// they cannot see: a broadcast ended on Meta's side -- cut off, or ended from the
+		// Page -- while the local output keeps running. Its last figure would otherwise be
+		// re-reported every cycle as though the audience were still there.
+		if (IsEndedLiveStatus(status)) {
+			DBG(LogCat::OAuth, "facebook viewers: dest=%s live video %s is %s -> leaving the count ABSENT",
+			    destTag.c_str(), target.second.id.c_str(), status.c_str());
+			continue;
+		}
+
+		// -1 as the sentinel separates "missing, null, or not a number" from a genuine 0
+		// without a second lookup: a concurrent-viewer count is never negative.
+		const int64_t views = NumLoose(j, kLiveViewsField, -1);
+		if (views < 0) {
+			ReportMissingLiveViews(destTag, target.second.id, status);
+			continue;
+		}
+		out[target.first] = static_cast<int>(views);
+		any = true;
+		DBG(LogCat::OAuth, "facebook viewers: dest=%s live video %s -> %d concurrent viewers", destTag.c_str(),
+		    target.second.id.c_str(), static_cast<int>(views));
+	}
+	// `err` is deliberately LEFT SET on a partial read: returning true says "these rows are
+	// usable", and the caller reports a non-empty err alongside them so a dropped destination
+	// is still visible in the log.
+	return any;
 }
 
 void FacebookProvider::clearActiveBroadcast(const std::string &accountId)
