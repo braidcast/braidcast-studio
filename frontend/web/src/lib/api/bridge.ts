@@ -1225,8 +1225,24 @@ export interface ChannelStatEntry {
   audienceHidden: boolean;
   audienceUpdatedNs: number;
 }
+
+/** One destination's audience total: an account under one stream profile. `key` is the
+ * host's stable identifier for the pair ("accountId@profileUuid", or just the accountId
+ * when the account IS its single destination) and is safe to use as a list key.
+ * `profileUuid` is "" for such account-wide rows. Same shape and same keying as
+ * ViewerDestination, so a consumer joins the two by `key`. */
+export interface ChannelStatDestination extends ChannelStatEntry {
+  key: string;
+  accountId: string;
+  profileUuid: string;
+}
+
 export interface ChannelStats {
   perAccount: Record<string, ChannelStatEntry>;
+  /** The same totals broken out per destination, for a consumer that labels each place an
+   * account streams to (a Facebook Page each). Additive detail -- `perAccount` remains
+   * authoritative, carrying the account's rollup, and needs no knowledge of destinations. */
+  perDestination?: ChannelStatDestination[];
 }
 
 /** One destination the current broadcast is going out to. Only outputs in an ACTIVE state

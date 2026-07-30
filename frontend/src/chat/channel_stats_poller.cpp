@@ -2,6 +2,7 @@
 #include "../event_names.hpp"
 
 #include <chrono>
+#include <map>
 #include <string>
 #include <utility>
 
@@ -90,12 +91,18 @@ bool ChannelStatsPoller::ShouldRead(const std::string &accountId)
 
 void ChannelStatsPoller::PollAccount(OAuth::OAuthAccount &acct, OAuth::StreamProvider *provider, PollCycle &cycle)
 {
-	OAuth::AudienceResult out;
+	const std::string accountId = OAuth::AccountId(acct);
+	std::map<OAuth::DestinationId, OAuth::AudienceResult> reads;
 	std::string err;
 	bool ok = false;
-	if (ShouldRead(OAuth::AccountId(acct))) {
+	if (ShouldRead(accountId)) {
 		try {
-			ok = provider->audienceCount(acct, out, err);
+			// Per DESTINATION, not per account: an account that streams to several places
+			// (a Facebook Page each) contributes every one of them. For a platform whose
+			// account IS its single destination the default implementation is still exactly
+			// one audienceCount call reported under the account-wide destination, so nothing
+			// about Twitch/Kick/YouTube's cost or shape changes.
+			ok = provider->audienceCounts(acct, reads, err);
 		} catch (const std::exception &e) {
 			ok = false;
 			err = std::string("audience count crashed: ") + e.what();
@@ -110,16 +117,45 @@ void ChannelStatsPoller::PollAccount(OAuth::OAuthAccount &acct, OAuth::StreamPro
 			// never abort the cycle.
 			HostLog("[channels] '" + acct.providerId + "' skipped: " + Err::Diagnostic(err));
 		}
+		// A partial read (some destinations answered, others failed) still reports the rows
+		// that succeeded, and must still surface why the rest are missing.
+		if (ok && !err.empty()) {
+			HostLog("[channels] '" + acct.providerId + "' partial: " + Err::Diagnostic(err));
+		}
 	}
 
-	if (ok && out.available) {
+	// The account-level rollup: summed over the destinations that reported a real figure.
+	// Summing within one account of one platform is the same reasoning the overlay's
+	// AudienceGroup already applies within a provider -- the kind is fixed, so the total
+	// names something. (Across providers it would not, which is why no grand total exists
+	// anywhere.) A withheld figure contributes nothing and leaves the total at -1 when it is
+	// the only destination, which is byte-for-byte what the singular hook persisted before:
+	// YouTube's hidden subscriber count is exactly that case.
+	int64_t total = -1;
+	OAuth::AudienceKind kind = OAuth::AudienceKind::Unknown;
+	bool hidden = false;
+	bool any = false;
+	for (const auto &entry : reads) {
+		if (!entry.second.available) {
+			continue;
+		}
+		any = true;
+		hidden = hidden || entry.second.hidden;
+		if (kind == OAuth::AudienceKind::Unknown) {
+			kind = entry.second.kind;
+		}
+		if (entry.second.count >= 0) {
+			total = (total < 0 ? 0 : total) + entry.second.count;
+		}
+	}
+
+	if (any) {
 		// Persist only on a real change so a steady total doesn't churn the DPAPI blob
 		// every 90s.
-		if (out.count != acct.audienceCount || out.kind != acct.audienceKind ||
-		    out.hidden != acct.audienceHidden) {
-			acct.audienceCount = out.count;
-			acct.audienceKind = out.kind;
-			acct.audienceHidden = out.hidden;
+		if (total != acct.audienceCount || kind != acct.audienceKind || hidden != acct.audienceHidden) {
+			acct.audienceCount = total;
+			acct.audienceKind = kind;
+			acct.audienceHidden = hidden;
 			// Monotonic since boot, not wall-clock: this is an opaque change-marker
 			// only. It is persisted, so it must NOT be diffed against a fresh
 			// os_gettime_ns() across a restart (e.g. an "updated N ago" label) --
@@ -128,24 +164,42 @@ void ChannelStatsPoller::PollAccount(OAuth::OAuthAccount &acct, OAuth::StreamPro
 			// Field-scoped persist: never round-trips access/refresh, so a concurrent
 			// token refresh on this account isn't clobbered by our stale copy (and a
 			// mid-poll removal isn't resurrected).
-			OAuth::Accounts().UpdateAudience(OAuth::AccountId(acct), out.count, out.kind, out.hidden,
-							 acct.audienceUpdatedNs);
+			OAuth::Accounts().UpdateAudience(accountId, total, kind, hidden, acct.audienceUpdatedNs);
 		}
 
 		// Include a fresh read every tick (even unchanged) so a freshly-loaded UI / a
 		// new CEF browser always receives current values.
-		cycle.perAccount[OAuth::AccountId(acct)] = json{
-			{"audienceCount", out.count},
-			{"audienceKind", OAuth::AudienceKindName(out.kind)},
-			{"audienceHidden", out.hidden},
+		cycle.perAccount[accountId] = json{
+			{"audienceCount", total},
+			{"audienceKind", OAuth::AudienceKindName(kind)},
+			{"audienceHidden", hidden},
 			{"audienceUpdatedNs", acct.audienceUpdatedNs},
 		};
+
+		// The same figures broken out per destination, so a consumer can label each Page
+		// rather than read one total for all of them. Additive detail: perAccount above stays
+		// authoritative and unchanged in shape. They share the account's stamp because they
+		// were all read in this one cycle.
+		for (const auto &entry : reads) {
+			if (!entry.second.available) {
+				continue;
+			}
+			cycle.rows.push_back(json{
+				{"key", OAuth::DestinationKey(entry.first)},
+				{"accountId", entry.first.accountId},
+				{"profileUuid", entry.first.profileUuid},
+				{"audienceCount", entry.second.count},
+				{"audienceKind", OAuth::AudienceKindName(entry.second.kind)},
+				{"audienceHidden", entry.second.hidden},
+				{"audienceUpdatedNs", acct.audienceUpdatedNs},
+			});
+		}
 	} else if (acct.audienceCount >= 0) {
 		// No live read this tick (Kick has no REST total, or the read failed), but a
 		// persisted last-known value exists -> emit the CACHED record so the panel
 		// shows "last-known + as-of" off-stream instead of "—". No persist and no
 		// store write: nothing changed.
-		cycle.perAccount[OAuth::AccountId(acct)] = json{
+		cycle.perAccount[accountId] = json{
 			{"audienceCount", acct.audienceCount},
 			{"audienceKind", OAuth::AudienceKindName(acct.audienceKind)},
 			{"audienceHidden", acct.audienceHidden},
@@ -159,7 +213,7 @@ std::optional<json> ChannelStatsPoller::BuildPayload(PollCycle &&cycle)
 	if (cycle.perAccount.empty()) {
 		return std::nullopt;
 	}
-	json payload = json{{"perAccount", std::move(cycle.perAccount)}};
+	json payload = json{{"perAccount", std::move(cycle.perAccount)}, {"perDestination", std::move(cycle.rows)}};
 
 	// Overlay widgets read the SAME payload object the bridge emit carries, so a widget's
 	// total can never disagree with the panel's. Fanned out HERE on the poll worker rather

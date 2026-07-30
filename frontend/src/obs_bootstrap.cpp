@@ -913,6 +913,12 @@ bool ObsBootstrap::Start()
 	// the blocking enumeration to a worker, so this call does not delay boot.
 	MaterializeTargetDestinationsAtBoot();
 
+	// Which target each destination claims, mirrored down to the providers before the
+	// audience poller starts reading them. Synchronous and network-free, unlike the
+	// reconcile above -- a provider must not have to wait on a platform enumeration, or on
+	// the user re-opening Go Live, to learn where an already-claimed destination points.
+	PublishAllTargetClaims();
+
 	// Channel identity: the audience-total poller is always-on (account-lifecycle,
 	// not go-live-gated), so follower/subscriber totals refresh before/after
 	// streaming. Stopped in Bridge::Shutdown alongside the other always-on workers.

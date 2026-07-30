@@ -486,12 +486,51 @@ public:
 	// viewers). `acct` is non-const so a reactive token refresh propagates back.
 	// Returns true with `out.available` set on a usable read; false / available=false
 	// when unsupported or not currently obtainable. Default: unsupported.
+	//
+	// This is the per-CHANNEL primitive. The poller calls audienceCounts below instead, so
+	// a platform whose account streams to several places can report each one separately.
 	virtual bool audienceCount(OAuthAccount &acct, AudienceResult &out, std::string &err)
 	{
 		(void)acct;
 		(void)out;
 		(void)err;
 		return false;
+	}
+
+	// Report the audience total for every destination of `acct`, so an account streaming to
+	// several places contributes all of them instead of collapsing onto one figure that
+	// names whichever it happened to read first. Returns true when at least one row was
+	// filled; false (leaving `out` untouched) when unsupported or not obtainable.
+	//
+	// The default is the whole per-channel implementation: exactly ONE audienceCount call,
+	// reported under the account-wide destination. A platform whose account IS its single
+	// destination therefore keeps its previous cost and shape without overriding anything.
+	// A row whose `available` is false is a read that did not answer, not a zero -- the
+	// caller must skip it rather than count it.
+	virtual bool audienceCounts(OAuthAccount &acct, std::map<DestinationId, AudienceResult> &out, std::string &err)
+	{
+		AudienceResult one;
+		if (!audienceCount(acct, one, err)) {
+			return false;
+		}
+		out[AccountDestination(AccountId(acct))] = one;
+		return true;
+	}
+
+	// Hand the provider the targets `accountId`'s destinations currently claim, as
+	// profileUuid -> targetId, REPLACING everything it holds for that account. Called from
+	// the UI thread whenever a claim is written, cleared, or a destination is removed, and
+	// once at boot for every account -- a provider whose reads run on a poll worker cannot
+	// reach the claim itself, since the store that owns it is UI-thread-only and unguarded.
+	//
+	// Wholesale rather than incremental deliberately: a per-claim note has to be paired with
+	// a per-claim drop at every removal path, and a missed drop leaves a destination that no
+	// longer exists in every poll cycle. Replacing the account's set makes the drop
+	// structural. Default no-op; a provider with no targets never receives one.
+	virtual void noteTargetClaims(const std::string &accountId, std::map<std::string, std::string> claims)
+	{
+		(void)accountId;
+		(void)claims;
 	}
 
 	// The platform-specific channel reference the hub passes into the chat transport's

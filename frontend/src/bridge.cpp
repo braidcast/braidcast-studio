@@ -6191,6 +6191,11 @@ bool MethodStreamProfileRemove(const json &params, json &result, std::string &er
 	// so a deleted profile can't strand an account that keeps surfacing in chat/events.
 	if (!store.ReferencesAccount(linkedAccount) && OAuth::Accounts().Get(linkedAccount)) {
 		TeardownAccount(linkedAccount);
+	} else {
+		// The account survives this delete, so its remaining claims are what the audience
+		// poller may still read -- republish them, or the deleted destination keeps being
+		// polled for the rest of the session. Inert for a provider with no targets.
+		PublishTargetClaims(linkedAccount);
 	}
 
 	result = json{{"removed", uuid}};
@@ -9447,6 +9452,9 @@ void TeardownAccount(const std::string &accountId)
 	// disconnected account leaves no mutex behind (accountId is "<providerId>:<userId>").
 	if (OAuth::StreamProvider *prov = OAuth::Registry().Get(accountId.substr(0, accountId.find(':')))) {
 		prov->auth()->ForgetAccount(accountId);
+		// And its mirrored target claims, for the same reason: the record is gone, so
+		// nothing else can tell the provider these destinations no longer exist.
+		prov->noteTargetClaims(accountId, {});
 		// Best-effort: revoke the grant at the provider so disconnect actually kills
 		// it there too (YouTube Developer Policies require this), not just locally.
 		// Never blocks or can fail this teardown -- see AuthStrategy::Revoke.
@@ -9970,6 +9978,9 @@ bool MethodStreamMetaSave(const json &params, json &result, std::string &error)
 		}
 	}
 	const bool saved = store.Save();
+	// A save can clear the bag a destination's target claim lives in, so the claims the
+	// audience poller may read have to be re-derived from what is left.
+	PublishTargetClaims(accountId);
 	result = json{{"ok", true}};
 	return PersistOrFail(saved, error);
 }

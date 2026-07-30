@@ -56,4 +56,25 @@ nlohmann::json ClaimedTargetOf(const std::string &profileUuid);
 bool ClaimTargetForProfile(const std::string &profileUuid, const std::string &targetId, const std::string &name,
 			   const std::string &avatarUrl, std::string &err);
 
+// Hand one account's provider the set of targets its destinations claim, replacing whatever
+// the provider held for that account (StreamProvider::noteTargetClaims). The claim lives in a
+// store only the UI thread may touch, so a provider whose reads run on a poll worker -- the
+// audience poller's Facebook Page totals -- cannot resolve a destination without this.
+//
+// Call after ANY change to what a destination claims: a claim written or cleared, a
+// destination deleted. The set is replaced wholesale, so a removal needs no counterpart here.
+// Reads only; safe under a smoke/self-test run, unlike the reconcile above.
+//
+// UI thread only.
+void PublishTargetClaims(const std::string &accountId);
+
+// The same for every connected account, once at boot. Not folded into
+// MaterializeTargetDestinationsAtBoot: that pass only ever writes claims for targets NOTHING
+// yet claims, so a profile that claimed its Page in an earlier session goes through it
+// untouched -- and it is skipped entirely when the account is offline or its enumeration
+// fails. Relying on it would leave the mirror cold across a relaunch.
+//
+// UI thread only. Must run before the audience poller starts.
+void PublishAllTargetClaims();
+
 #endif // OBS_MULTISTREAM_FRONTEND_TARGET_DESTINATIONS_HPP_

@@ -1,9 +1,11 @@
 <script lang="ts">
-  // One card per connected account: identity (avatar + name + platform dot), the
+  // One card per connected DESTINATION: identity (avatar + name + platform dot), the
   // link state (CONNECTED / RECONNECT chip), the audience total with its per-platform
-  // label, and live viewers when the account is streaming. Reads the merged
-  // channelsStore.rows — never the three underlying feeds directly.
+  // label, and live viewers when it is streaming. Reads the merged channelsStore.rows —
+  // never the three underlying feeds directly. An account that streams to several places
+  // (a Facebook Page each) contributes one card per Page, each named after the Page.
   import { channelsStore } from "$lib/stores/channelsStore.svelte";
+  import { destinationIdentityStore } from "$lib/stores/destinationIdentityStore.svelte";
   import { streamProfileStore } from "$lib/stores/streamProfileStore.svelte";
   import { openOAuthConnect, isOAuthConnecting } from "$lib/dialogs/oauthConnectOpener.svelte";
   import { PLATFORM_COLORS, PLATFORM_LABELS } from "$lib/theme/platformColors";
@@ -19,6 +21,9 @@
   // the two; several profiles may share an accountId, so the first match is enough.
   // Ensure the shared profile list is loaded (idempotent) so the lookup can resolve.
   streamProfileStore.start();
+  // What a destination calls itself (its claimed target, else the account) comes from the
+  // one store that owns that fallback chain, so this dock cannot invent a second one.
+  destinationIdentityStore.start();
 
   function profileForAccount(accountId: string): StreamProfileInfo | undefined {
     return streamProfileStore.profiles.find((p) => p.accountId === accountId);
@@ -46,6 +51,15 @@
 
   // Reuse the app-wide OAuth connect modal against the account's bound profile. No
   // bound profile => nothing to relink through, so the chip is disabled (never fires).
+  //
+  // Deliberately the ACCOUNT's profile and not the row's own, even though a destination row
+  // knows one: reconnecting re-grants the account, which every one of its destinations
+  // shares, and the profile is only what the connect runs FROM — the origin its target
+  // reconcile copies a new destination's service shape and canvas routing from. The boot
+  // reconcile picks the account's first profile for exactly that reason, so routing every
+  // row here to the same one keeps the two passes agreeing. It also makes the two Facebook
+  // cards of one account provably the same operation: `isOAuthConnecting` keys off that one
+  // profileUuid, so the moment either chip is clicked both disable.
   function reconnect(r: (typeof channelsStore.rows)[number]): void {
     const p = profileForAccount(r.accountId);
     if (!p) {
@@ -67,15 +81,17 @@
     <p class="dock-msg">No channels connected.</p>
   {:else}
     <ul class="list">
-      {#each channelsStore.rows as r (r.accountId)}
+      {#each channelsStore.rows as r (r.key)}
         {@const color = PLATFORM_COLORS[r.providerId] ?? "var(--color-muted)"}
         {@const hasProfile = profileForAccount(r.accountId) !== undefined}
+        {@const ident = r.profileUuid ? destinationIdentityStore.forProfile(r.profileUuid) : null}
+        {@const name = ident?.channelName || r.displayName || r.login}
         <li class="card" class:stale={r.needsReconnect} style:--dot={color}>
-          <Avatar url={r.avatarUrl} name={r.displayName || r.login} size={36} />
+          <Avatar url={ident?.channelAvatarUrl || r.avatarUrl} {name} size={36} />
           <div class="ident">
             <div class="name">
               <span class="mark"><PlatformMark platform={r.providerId} size={12} /></span>
-              <span class="nm">{r.displayName || r.login}</span>
+              <span class="nm">{name}</span>
             </div>
             {#if r.needsReconnect}
               <button

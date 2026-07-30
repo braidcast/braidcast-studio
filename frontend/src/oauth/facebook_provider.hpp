@@ -86,6 +86,21 @@ public:
 	// honest about a destination that did not answer.
 	bool viewerCounts(OAuthAccount &acct, std::map<DestinationId, int> &out, std::string &err) override;
 
+	// The follower total of every Page this account's destinations claim, one row per
+	// destination. The multi-destination hook rather than the per-channel one for the same
+	// reason viewerCounts is: a Page is a destination, and two Pages have two separate
+	// audiences that no single account-level figure can name.
+	//
+	// Off-air as much as on: the figure is read from the Page node itself, so it needs no
+	// live video -- which is what makes it the poller's always-on read rather than a
+	// streaming-only one.
+	bool audienceCounts(OAuthAccount &acct, std::map<DestinationId, AudienceResult> &out,
+			    std::string &err) override;
+
+	// Mirror the account's Page claims into pageClaims_ below, so the poll worker can
+	// address a destination without reaching for the UI-thread-only store that owns them.
+	void noteTargetClaims(const std::string &accountId, std::map<std::string, std::string> claims) override;
+
 	// End every live video this account still holds (stream stop), then one destination's
 	// (that output ended while others continue). Both pop the entry under the mutex and
 	// hand the end request to a worker: the callers run on the UI thread and must not
@@ -152,6 +167,22 @@ private:
 	// destination. Not implemented in this pass.
 	mutable std::mutex liveVideoMutex_;
 	std::map<DestinationId, LiveVideo> liveVideos_;
+
+	// Which Page each destination streams to, mirrored from the claim the stream-meta bag
+	// owns. That bag REMAINS AUTHORITATIVE: this map is written from it and never read back
+	// as the claim -- nothing but the audience poll may consult it, and nothing may resolve
+	// a go-live from it. It exists only because the bag's store is UI-thread-only and
+	// unguarded while the poll runs on a worker.
+	//
+	// Its own mutex rather than liveVideoMutex_, which is held across the go-live commit and
+	// both stop hooks: a poll must not be able to wait behind a broadcast ending.
+	//
+	// noteTargetClaims replaces an account's whole set, so a claim cleared or a destination
+	// deleted drops out here too. applyMetadata additionally records what a go-live resolved,
+	// which covers the single-Page account whose bag never carried an explicit claim; a later
+	// claim publish for that account drops it again, the bag having no claim to mirror.
+	mutable std::mutex claimMutex_;
+	std::map<DestinationId, std::string /*pageId*/> pageClaims_;
 };
 
 } // namespace OAuth

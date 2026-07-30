@@ -12,7 +12,9 @@
 // Always-on audience-total poller (Channel identity feature). Unlike ViewerPoller
 // it is NOT gated on streaming: Start() at bootstrap, Stop() at Bridge::Shutdown.
 // Each tick (~15 min, jittered) it reads every connected, scope-current account's
-// StreamProvider::audienceCount, persists a changed total onto the account record,
+// StreamProvider::audienceCounts -- one row per destination, so an account holding
+// several Facebook Pages reports each Page rather than one figure for all of them --
+// persists the account-level rollup onto the account record,
 // and emits `channels.stats` -- though a tick only BUYS a fresh read on the live/idle
 // cadence in the .cpp; otherwise it re-emits the last-known value with its as-of
 // stamp, which costs nothing. Providers with no REST total (Kick) return

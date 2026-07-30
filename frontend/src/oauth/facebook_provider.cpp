@@ -86,11 +86,25 @@ constexpr const char *kLiveViewsField = "live_views";
 const std::array<const char *, 5> kEndedLiveStatuses = {"VOD", "LIVE_STOPPED", "PROCESSING", "SCHEDULED_CANCELED",
 							"SCHEDULED_EXPIRED"};
 
+// The Page node's follower total. Named once for the same reason as kLiveViewsField: the
+// request asks for it explicitly and the response is read by the same name.
+//
+// followers_count, NOT fan_count. fan_count counts Page LIKES, which is a different and now
+// largely vestigial number -- on a New Page Experience Page Meta simply returns the follower
+// figure for it, so reading fan_count would be right by accident there and wrong on every
+// classic Page, where a person can like without following and follow without liking.
+constexpr const char *kFollowersField = "followers_count";
+
 // A missing concurrent-viewer field is worth one loud line and no more: the poller re-reads
 // every destination every 20 seconds, so warning per occurrence would fill the log for as long
 // as the stream runs. Once per process, because a renamed field is a property of the API and
 // not of any one destination.
 std::atomic<bool> g_liveViewsMissingLogged{false};
+
+// The same discipline for the Page follower read, on its own flag: the two fields live on
+// different nodes and can be withheld for different reasons, so one silencing the other would
+// hide whichever surfaced second.
+std::atomic<bool> g_followersMissingLogged{false};
 
 using Http::AppendForm;
 using JsonUtil::NumLoose;
@@ -124,6 +138,21 @@ void ReportMissingLiveViews(const std::string &destTag, const std::string &video
 	}
 	DBG(LogCat::OAuth, "facebook viewers: %s carried no %s -> leaving the count ABSENT", detail.c_str(),
 	    kLiveViewsField);
+}
+
+// A Page that answered without a follower figure. Same once-loud-then-gated shape as the
+// viewer report above.
+void ReportMissingFollowers(const std::string &destTag, const std::string &pageId)
+{
+	const std::string detail = "dest=" + destTag + " Page " + pageId;
+	if (!g_followersMissingLogged.exchange(true)) {
+		HostLog(std::string("[oauth] Facebook Page read carried no `") + kFollowersField + "` for " + detail +
+			"; this destination stays ABSENT from the Channels panel rather than shown as zero. "
+			"Check that the grant still covers pages_read_engagement for this Page.");
+		return;
+	}
+	DBG(LogCat::OAuth, "facebook followers: %s carried no %s -> leaving the total ABSENT", detail.c_str(),
+	    kFollowersField);
 }
 
 const char *StatusForPrivacy(const std::string &value)
@@ -538,6 +567,14 @@ bool FacebookProvider::applyMetadata(OAuthAccount &acct, const std::string &prof
 	if (!ResolvePage(acct, fields, page, err)) {
 		return false;
 	}
+	// Which Page this destination streams to, now resolved. Recorded for the audience poll,
+	// whose worker cannot read the store that owns the claim. Covers the one case a claim
+	// publish cannot: an account administering a single Page, whose bag names no Page because
+	// ResolvePage picked the only one.
+	{
+		const std::lock_guard<std::mutex> guard(claimMutex_);
+		pageClaims_[dest] = page.id;
+	}
 
 	std::string body;
 	AppendMetadataFields(body, fields);
@@ -673,6 +710,120 @@ bool FacebookProvider::viewerCounts(OAuthAccount &acct, std::map<DestinationId, 
 		any = true;
 		DBG(LogCat::OAuth, "facebook viewers: dest=%s live video %s -> %d concurrent viewers", destTag.c_str(),
 		    target.second.id.c_str(), static_cast<int>(views));
+	}
+	// `err` is deliberately LEFT SET on a partial read: returning true says "these rows are
+	// usable", and the caller reports a non-empty err alongside them so a dropped destination
+	// is still visible in the log.
+	return any;
+}
+
+void FacebookProvider::noteTargetClaims(const std::string &accountId, std::map<std::string, std::string> claims)
+{
+	const std::lock_guard<std::mutex> guard(claimMutex_);
+	// Drop this account's whole set first, so a claim that has been cleared -- or whose
+	// destination was deleted -- cannot survive as an entry the poll keeps reading.
+	for (auto it = pageClaims_.begin(); it != pageClaims_.end();) {
+		if (it->first.accountId == accountId) {
+			it = pageClaims_.erase(it);
+		} else {
+			++it;
+		}
+	}
+	for (auto &claim : claims) {
+		if (claim.second.empty()) {
+			continue;
+		}
+		pageClaims_[DestinationId{accountId, claim.first}] = std::move(claim.second);
+	}
+}
+
+bool FacebookProvider::audienceCounts(OAuthAccount &acct, std::map<DestinationId, AudienceResult> &out,
+				      std::string &err)
+{
+	const std::string accountId = AccountId(acct);
+
+	// Snapshot under the lock and release it before anything blocks on Graph, exactly as
+	// viewerCounts does with liveVideos_: the writers run on the UI thread and must not wait
+	// on the network.
+	std::map<DestinationId, std::string> targets;
+	{
+		const std::lock_guard<std::mutex> guard(claimMutex_);
+		for (const auto &entry : pageClaims_) {
+			if (entry.first.accountId == accountId) {
+				targets[entry.first] = entry.second;
+			}
+		}
+	}
+	// No claim mirrored means this account has no destination pointing at a Page yet. False
+	// omits it, which is what the poller does with an unsupported platform -- and leaves the
+	// account's last-known total on the panel rather than blanking it.
+	if (targets.empty()) {
+		return false;
+	}
+
+	// One /me/accounts read covers every Page, so the tokens are resolved ONCE per cycle
+	// rather than per destination. A failure here is total: without tokens no Page can be
+	// read, so there is no partial result to salvage.
+	PageList list;
+	if (!FetchPages(acct, list, err)) {
+		return false;
+	}
+
+	bool any = false;
+	for (const auto &target : targets) {
+		const std::string destTag = DestinationKey(target.first);
+
+		const PageRef *page = nullptr;
+		for (const PageRef &candidate : list.pages) {
+			if (candidate.id == target.second) {
+				page = &candidate;
+				break;
+			}
+		}
+		// A claimed Page the account no longer administers, or one this app holds no token
+		// for. The destination stays standing (target_destinations never deletes one), so
+		// this is expected rather than an error -- it simply has no readable total.
+		if (!page) {
+			DBG(LogCat::OAuth, "facebook followers: dest=%s Page %s is not administered -> ABSENT",
+			    destTag.c_str(), target.second.c_str());
+			continue;
+		}
+
+		Http::HttpReq req;
+		req.method = "GET";
+		// Asked for EXPLICITLY: the Page node's default field set does not include it, so an
+		// unqualified read answers 200 with nothing to count.
+		req.url = GraphUrl(page->id) + "?fields=" + kFollowersField;
+
+		OAuthAccount pageAcct = PageAccount(id(), page->token);
+		Http::HttpResponse resp;
+		std::string readErr;
+		// One destination failing must not discard the ones that read: keep the first error
+		// for the caller's log and carry on, so a partial answer still beats no answer.
+		if (!SendAuthed(pageAcct, req, resp, readErr) ||
+		    !Http::Require2xx(resp, "Facebook Page followers request", readErr)) {
+			if (err.empty()) {
+				err = readErr;
+			}
+			continue;
+		}
+
+		// -1 as the sentinel separates "missing, null, or not a number" from a genuine 0
+		// without a second lookup: a follower total is never negative. PRESENCE decides --
+		// a Page that did not report the field is absent from the panel, never a zero.
+		const int64_t followers = NumLoose(ParseJson(resp.body), kFollowersField, -1);
+		if (followers < 0) {
+			ReportMissingFollowers(destTag, page->id);
+			continue;
+		}
+
+		AudienceResult &row = out[target.first];
+		row.count = followers;
+		row.kind = AudienceKind::Followers;
+		row.available = true;
+		any = true;
+		DBG(LogCat::OAuth, "facebook followers: dest=%s Page %s -> %lld followers", destTag.c_str(),
+		    page->id.c_str(), static_cast<long long>(followers));
 	}
 	// `err` is deliberately LEFT SET on a partial read: returning true says "these rows are
 	// usable", and the caller reports a non-empty err alongside them so a dropped destination

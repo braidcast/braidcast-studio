@@ -2,6 +2,7 @@
 
 #include "event_names.hpp"
 
+#include <map>
 #include <optional>
 #include <string>
 #include <utility>
@@ -257,6 +258,9 @@ void Reconcile(const std::string &accountId, const std::string &originProfileUui
 		created++;
 	}
 
+	// Whatever this pass settled on, the account's claims are now final for this reconcile.
+	PublishTargetClaims(accountId);
+
 	if (adopted == 0 && created == 0) {
 		return;
 	}
@@ -376,6 +380,44 @@ void MaterializeTargetDestinationsAtBoot()
 	});
 }
 
+void PublishTargetClaims(const std::string &accountId)
+{
+	if (accountId.empty()) {
+		return;
+	}
+	const std::optional<OAuth::OAuthAccount> acct = OAuth::Accounts().Get(accountId);
+	if (!acct) {
+		return;
+	}
+	OAuth::StreamProvider *provider = OAuth::Registry().Get(acct->providerId);
+	if (!provider) {
+		return;
+	}
+	const std::string fieldKey = provider->targetFieldKey();
+	if (fieldKey.empty()) {
+		return;
+	}
+
+	std::map<std::string, std::string> claims;
+	for (const StreamProfile &p : ObsBootstrap::StreamProfiles().Profiles()) {
+		if (p.accountId != accountId) {
+			continue;
+		}
+		const std::string target = ClaimedTarget(p.uuid, fieldKey);
+		if (!target.empty()) {
+			claims[p.uuid] = target;
+		}
+	}
+	provider->noteTargetClaims(accountId, std::move(claims));
+}
+
+void PublishAllTargetClaims()
+{
+	for (const auto &entry : OAuth::Accounts().All()) {
+		PublishTargetClaims(entry.first);
+	}
+}
+
 json ClaimedTargetOf(const std::string &profileUuid)
 {
 	json out = json{{"id", ""}, {"name", ""}, {"avatarUrl", ""}};
@@ -432,6 +474,7 @@ bool ClaimTargetForProfile(const std::string &profileUuid, const std::string &ta
 
 	ClaimTarget(profileUuid, fieldKey, OAuth::StreamTarget{targetId, name, avatarUrl});
 	ObsBootstrap::StreamMeta().Save();
+	PublishTargetClaims(accountId);
 	// Both: the claim lives in the stream-meta bag, and it is also what a profile row
 	// renders as its name and picture.
 	Bridge::EmitEvent(EventNames::kStreamMetaChanged, json{{"profileUuid", profileUuid}});
