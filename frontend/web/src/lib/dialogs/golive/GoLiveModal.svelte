@@ -5,6 +5,7 @@
     type OAuthProvider,
     type OAuthProviderField,
     type OAuthStatus,
+    type StreamMeta,
     type StreamProfileInfo,
   } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
@@ -244,10 +245,30 @@ import { EV } from "$lib/utils/eventNames";
     const keys = targetKeys(p);
     return Object.fromEntries(Object.entries(bag).filter(([k]) => keys.has(k)));
   }
-  // Does this bag hold anything the override switch actually governs?
+  // Is this bag key holding a value? The descriptor type behind the key decides, since
+  // "empty" differs by shape. A key the descriptor does NOT declare has no type to test
+  // against — a provider's addressing claim is remembered in this bag without being a field
+  // — so anything non-nullish under such a key counts as held: guessing a type would read
+  // that claim as empty and let the next save drop it.
+  function bagKeyHeld(p: OAuthProvider | null, key: string, v: unknown): boolean {
+    const f = p?.fields.find((fd) => fd.key === key);
+    return f ? !isEmptyVal(f.type, v) : v != null;
+  }
+  // The keys in this bag that genuinely diverge from the channel: everything HELD that is not
+  // this stream's address. A key present but holding nothing is not a divergence, by the same
+  // argument that an address is not one.
+  //
+  // The override switch and the override badge both read this, so the two cannot disagree —
+  // they are answering one question, and a switch reading "on" beside "0 overrides" is a
+  // contradiction the user can see.
+  function overrideKeys(p: OAuthProvider | null, bag: Record<string, unknown>): string[] {
+    const address = targetKeys(p);
+    return Object.entries(bag)
+      .filter(([k, v]) => !address.has(k) && bagKeyHeld(p, k, v))
+      .map(([k]) => k);
+  }
   function hasOverrides(p: OAuthProvider | null, bag: Record<string, unknown>): boolean {
-    const keys = targetKeys(p);
-    return Object.keys(bag).some((k) => !keys.has(k));
+    return overrideKeys(p, bag).length > 0;
   }
   function toggleStreamOverride(uuid: string, p: OAuthProvider | null): void {
     const on = !streamOverrideOn[uuid];
@@ -265,8 +286,7 @@ import { EV } from "$lib/utils/eventNames";
     }
   }
   function streamOverrideCount(uuid: string, p: OAuthProvider): number {
-    const ov = streamOverrides[uuid] ?? {};
-    return channelFields(p).filter((f) => !isEmptyVal(f.type, ov[f.key])).length;
+    return overrideKeys(p, streamOverrides[uuid] ?? {}).length;
   }
 
   // Type-aware value equality, used to tell a genuine per-channel divergence from a
@@ -689,6 +709,21 @@ import { EV } from "$lib/utils/eventNames";
     return out;
   }
 
+  // Every key streamMeta.get reports, each with the descriptor type its value carries.
+  // StreamMeta is a closed struct, so the live read is consumed by walking this list rather
+  // than by one hand-written lift per key — three such lifts silently left Kick's live tags
+  // on the floor, and a fourth would have been the same omission waiting to happen. A key
+  // added to the struct and not to this list fails the `keyof StreamMeta` check.
+  //
+  // The type is what makes each lift correct: emptiness is per type, so a provider reporting
+  // an unset category as a blank id is skipped by the same rule that skips a blank title.
+  const LIVE_META_FIELDS: { key: keyof StreamMeta; type: string }[] = [
+    { key: "title", type: "text" },
+    { key: "category", type: "category" },
+    { key: "language", type: "enum" },
+    { key: "tags", type: "tags" },
+  ];
+
   // Best-effort prefill (fired, not awaited, so a slow get never blocks the open).
   // Per channel it pulls BOTH the remembered store (streamMeta.getSaved) and the live
   // provider metadata (streamMeta.get) and merges them: saved defaults are the base,
@@ -710,17 +745,15 @@ import { EV } from "$lib/utils/eventNames";
         const saved = { channel: savedRaw?.channel ?? {}, streams: savedRaw?.streams ?? {} };
         const live = liveR.status === "fulfilled" ? liveR.value : undefined;
 
-        // Channel bag: saved base, live over. Seed a key only when the current value
-        // is empty (user hasn't touched it), matching the old title guard.
+        // Channel bag: saved base, live over — a provider reporting a value now outranks the
+        // one remembered from last time, and an empty live read leaves the remembered one
+        // standing rather than blanking it.
         const merged: Record<string, unknown> = { ...saved.channel };
-        if (live?.title) {
-          merged.title = live.title;
-        }
-        if (live?.category?.id) {
-          merged.category = { id: live.category.id, name: live.category.name };
-        }
-        if (live?.language) {
-          merged.language = live.language;
+        for (const { key, type } of LIVE_META_FIELDS) {
+          const v = live?.[key];
+          if (!isEmptyVal(type, v)) {
+            merged[key] = v;
+          }
         }
         // Descriptor-supplied defaults are the floor under saved + live: they fill
         // only keys both left empty, so a field like YouTube's privacy always

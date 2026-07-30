@@ -27,8 +27,14 @@ export function isEmptyVal(type: string, v: unknown): boolean {
     case "tags":
     case "labelset":
       return !Array.isArray(v) || v.length === 0;
-    case "category":
-      return v == null;
+    // A provider that always reports a category has no null to report an unset one with, so
+    // it sends a blank id instead (Kick's id is a wire integer). A blank id is that unset
+    // state: counting it as held would block the layer below, suppress the inherit cue, and
+    // push an id naming no category.
+    case "category": {
+      const id = (v as { id?: unknown } | null | undefined)?.id;
+      return typeof id !== "string" || id.trim() === "";
+    }
     case "bool":
       return v === undefined || v === null;
     default:
