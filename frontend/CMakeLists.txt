@@ -154,6 +154,9 @@ target_sources(
     src/oauth/youtube_provider.hpp
     src/oauth/facebook_provider.cpp
     src/oauth/facebook_provider.hpp
+    # The Graph API access seam (pinned version + URL builder + the Page-scoped scratch
+    # account), shared by the provider above and its live-comments chat transport.
+    src/oauth/facebook_graph.hpp
     # Phase 9.0 chat transport foundation: a reusable libcurl-WebSocket client, the
     # ChatTransport interface, and the ChatHub that runs live transports between
     # go-live and stop. Per-platform transports (Twitch/YouTube/Kick) land in later
@@ -182,6 +185,17 @@ target_sources(
     # Anonymous HTTP only -- no credential ever reaches this endpoint. No obs.h.
     src/chat/youtube_innertube.cpp
     src/chat/youtube_innertube.hpp
+    # Facebook live-comments transport: a server-sent-event read of
+    # streaming-graph.facebook.com/{live-video-id}/live_comments with the Page token, plus
+    # a /comments gap-fill on every reconnect (the stream carries no resume). Owned by
+    # FacebookProvider; HTTP only, no obs.h.
+    src/chat/facebook_chat.cpp
+    src/chat/facebook_chat.hpp
+    # The text/event-stream frame parser the transport above is fed from, and the bounded
+    # id memory it shares with the InnerTube read.
+    src/chat/sse_stream.cpp
+    src/chat/sse_stream.hpp
+    src/chat/seen_ids.hpp
     # Phase 9.0 Task 5: Kick chat transport (Pusher WebSocket read + REST send),
     # owned by KickProvider; HTTP + WS only, no obs.h.
     src/chat/kick_chat.cpp

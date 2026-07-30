@@ -7,6 +7,8 @@
 
 #include "util/async_task.hpp"
 #include "util/http_client.hpp"
+#include "../chat/facebook_chat.hpp"
+#include "facebook_graph.hpp"
 #include "../ingest_writeback.hpp"
 #include "util/json_util.hpp"
 #include "util/string_util.hpp"
@@ -16,17 +18,6 @@
 namespace OAuth {
 
 namespace {
-
-// Pinned deliberately. Meta keeps a Graph version working for about two years after its
-// successor ships and then removes it, so an unpinned "latest" would silently change
-// request and response shapes under an already-shipped build. Moving forward is an
-// edit here plus a re-test, never something that happens on its own.
-constexpr const char *kGraphVersion = "v25.0";
-
-std::string GraphUrl(const std::string &path)
-{
-	return std::string("https://graph.facebook.com/") + kGraphVersion + "/" + path;
-}
 
 // pages_show_list lists the account's Pages and yields their access tokens;
 // pages_read_engagement + pages_manage_posts + publish_video back creating and ending a
@@ -166,20 +157,6 @@ const char *StatusForPrivacy(const std::string &value)
 	// means a stale remembered bag rather than a real choice: publish, matching the
 	// default the modal shows.
 	return kPrivacyOptions[0].status;
-}
-
-// A scratch account carrying ONE Page's access token, so a Page-scoped call rides the
-// shared SendAuthed transport instead of hand-rolling its own auth header. A Page token
-// is a different credential from the user token the stored record holds, and a copy
-// rather than a mutation keeps that record intact. Nothing here can be written back:
-// this strategy issues no refresh token, so ensureFresh returns before it would touch
-// the account store.
-OAuthAccount PageAccount(const std::string &providerId, const std::string &pageToken)
-{
-	OAuthAccount page;
-	page.providerId = providerId;
-	page.access = pageToken;
-	return page;
 }
 
 // Split "rtmps://live-api-s.facebook.com:443/rtmp/<key>" into the server the RTMP output
@@ -829,6 +806,24 @@ bool FacebookProvider::audienceCounts(OAuthAccount &acct, std::map<DestinationId
 	// usable", and the caller reports a non-empty err alongside them so a dropped destination
 	// is still visible in the log.
 	return any;
+}
+
+std::unique_ptr<Chat::ChatTransport> FacebookProvider::makeChat(const OAuthAccount &acct)
+{
+	(void)acct; // the hub resolves the destination's live video, and the transport its Page token
+	return std::make_unique<Chat::FacebookChat>(*this);
+}
+
+std::string FacebookProvider::chatChannelRef(const OAuthAccount &acct, const std::string &profileUuid)
+{
+	LiveVideo live;
+	return ActiveLiveVideo(DestinationId{AccountId(acct), profileUuid}, live) ? live.id : std::string();
+}
+
+std::string FacebookProvider::chatPageToken(const OAuthAccount &acct, const std::string &profileUuid) const
+{
+	LiveVideo live;
+	return ActiveLiveVideo(DestinationId{AccountId(acct), profileUuid}, live) ? live.pageToken : std::string();
 }
 
 void FacebookProvider::clearActiveBroadcast(const std::string &accountId)

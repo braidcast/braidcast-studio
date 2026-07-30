@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -101,6 +102,21 @@ public:
 	// address a destination without reaching for the UI-thread-only store that owns them.
 	void noteTargetClaims(const std::string &accountId, std::map<std::string, std::string> claims) override;
 
+	// This destination's live-comments transport. Both halves of its target come from the
+	// two seams below rather than from the account, since a Page's comments are keyed by
+	// the broadcast this provider created, not by the person who administers it.
+	std::unique_ptr<Chat::ChatTransport> makeChat(const OAuthAccount &acct) override;
+
+	// The live-video id the hub hands the chat transport as its channelRef; empty when
+	// this destination is not broadcasting.
+	std::string chatChannelRef(const OAuthAccount &acct, const std::string &profileUuid) override;
+
+	// The Page access token that reads that live video's comments; empty on the same
+	// terms. A SECOND narrow seam rather than a wider channelRef: channelRef is one
+	// platform-specific string the hub logs and passes around, and packing a credential
+	// into it would put a Page token on that path.
+	std::string chatPageToken(const OAuthAccount &acct, const std::string &profileUuid) const;
+
 	// End every live video this account still holds (stream stop), then one destination's
 	// (that output ended while others continue). Both pop the entry under the mutex and
 	// hand the end request to a worker: the callers run on the UI thread and must not
@@ -161,10 +177,9 @@ private:
 	// created) and read/popped by the stop hooks. Guarded because applyMetadata runs on a
 	// worker thread while the stop hooks run on the UI thread.
 	//
-	// This is also where a comments/chat transport would attach: Facebook's live comments
-	// arrive over a long-lived read of /{live-video-id}/comments, which belongs on
-	// StreamProvider::SendAuthedStreaming with the Page token, keyed by exactly this
-	// destination. Not implemented in this pass.
+	// This is also what the chat transport reads through chatChannelRef / chatPageToken:
+	// the live comments of one broadcast are addressed by its live-video id and read with
+	// the Page token that created it, both of which are held here and nowhere else.
 	mutable std::mutex liveVideoMutex_;
 	std::map<DestinationId, LiveVideo> liveVideos_;
 

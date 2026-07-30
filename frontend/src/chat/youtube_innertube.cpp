@@ -2,14 +2,13 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <deque>
 #include <random>
 #include <string>
-#include <unordered_set>
 #include <utility>
 
 #include "../log.hpp"
 #include "chat_transport.hpp" // BuildChatMessage -- the shared normalized-frame assembler
+#include "seen_ids.hpp"       // the bounded id memory shared with the Facebook read
 #include "third_party_emotes.hpp"
 #include "util/innertube_client.hpp"
 #include "util/json_util.hpp"
@@ -67,10 +66,6 @@ constexpr int kDeadStrikes = 3;
 // 24h broadcast on the quota-billed read for its whole duration.
 constexpr int kBootstrapAttempts = 3;
 
-// Bounded id memory: a filter switch or a reload continuation re-delivers recent items, and
-// a day-long broadcast must not accumulate every id it ever saw.
-constexpr size_t kSeenCap = 512;
-
 // Index 1 of the view selector is "Live chat". Index 0 is "Top chat", which is
 // SERVER-FILTERED and silently drops messages -- reading it looks like a working chat that
 // merely misses lines, which is the worst available failure.
@@ -82,32 +77,6 @@ constexpr size_t kLiveChatFilterIndex = 1;
 // answers those with HTTP 400. Length is the only thing that separates a real cursor from that
 // decoy, so every token read out of a view selector is checked against this floor.
 constexpr size_t kMinContinuationChars = 64;
-
-// Bounded FIFO id memory. Dedupe is by item id so a filter switch or a reload continuation
-// cannot double-post, and eviction is oldest-first so the set cannot grow with uptime.
-class SeenIds {
-public:
-	// True when `id` is new (and is now remembered); false when it was already seen.
-	bool add(const std::string &id)
-	{
-		if (id.empty()) {
-			return true; // nothing to key on -- pass it through rather than dropping it
-		}
-		if (!ids_.insert(id).second) {
-			return false;
-		}
-		order_.push_back(id);
-		if (order_.size() > kSeenCap) {
-			ids_.erase(order_.front());
-			order_.pop_front();
-		}
-		return true;
-	}
-
-private:
-	std::unordered_set<std::string> ids_;
-	std::deque<std::string> order_;
-};
 
 // The largest thumbnail URL from a `{ "thumbnails": [ { "url": ... } ] }` node ("" when
 // absent). InnerTube orders thumbnails smallest-first. Some renderers hand back
