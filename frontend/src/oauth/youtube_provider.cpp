@@ -644,29 +644,34 @@ json YouTubeProvider::capabilityJson() const
 			      {"label", "Title"},
 			      {"type", "text"},
 			      {"tier", "simple"},
-			      {"shareable", true},
+			      {"scope", "all"},
 			      {"max", 100}});
+	// A videoCategoryId is YouTube's own enumeration; no other platform can resolve one.
 	fields.push_back(json{{"key", "category"},
 			      {"label", "Category"},
 			      {"type", "category"},
 			      {"tier", "simple"},
-			      {"shareable", false}});
+			      {"scope", "provider"}});
+	// YouTube accepts arbitrary tag strings where Twitch enforces a character rule, so a
+	// value crossing to Twitch would be one Twitch rejects.
 	fields.push_back(json{{"key", "tags"},
 			      {"label", "Tags"},
 			      {"type", "tags"},
 			      {"tier", "simple"},
-			      {"shareable", true},
+			      {"scope", "provider"},
 			      {"max", 500}});
+	// Only YouTube takes a thumbnail, and its 2 MB/aspect rules are its own -- so one image
+	// serves every YouTube channel the user runs and is picked once for all of them.
 	fields.push_back(json{{"key", "thumbnail"},
 			      {"label", "Thumbnail"},
 			      {"type", "image"},
 			      {"tier", "simple"},
-			      {"shareable", false}});
+			      {"scope", "provider"}});
 	fields.push_back(json{{"key", "description"},
 			      {"label", "Description"},
 			      {"type", "textarea"},
 			      {"tier", "simple"},
-			      {"shareable", true}});
+			      {"scope", "all"}});
 	// Privacy defaults to "private": broadcasting publicly must be an explicit
 	// choice, never the result of leaving the field untouched. `required` says the
 	// field has no valid empty state, so the UI offers no unset option and shows the
@@ -681,7 +686,7 @@ json YouTubeProvider::capabilityJson() const
 		     {"label", "Privacy"},
 		     {"type", "enum"},
 		     {"tier", "simple"},
-		     {"shareable", false},
+		     {"scope", "provider"},
 		     {"required", true},
 		     {"default", "private"},
 		     {"options", json::array({json{{"value", "public"}, {"label", "Public"}},
@@ -697,30 +702,30 @@ json YouTubeProvider::capabilityJson() const
 			      {"label", "Latency"},
 			      {"type", "enum"},
 			      {"tier", "advanced"},
-			      {"shareable", false},
+			      {"scope", "channel"},
 			      {"required", true},
 			      {"default", "normal"},
 			      {"options", json::array({json{{"value", "normal"}, {"label", "Normal"}},
 						       json{{"value", "low"}, {"label", "Low latency"}},
 						       json{{"value", "ultraLow"}, {"label", "Ultra-low latency"}}})}});
 	fields.push_back(
-		json{{"key", "dvr"}, {"label", "DVR"}, {"type", "bool"}, {"tier", "advanced"}, {"shareable", false}});
+		json{{"key", "dvr"}, {"label", "DVR"}, {"type", "bool"}, {"tier", "advanced"}, {"scope", "channel"}});
 	fields.push_back(json{{"key", "madeForKids"},
 			      {"label", "Made for kids"},
 			      {"type", "bool"},
 			      {"tier", "advanced"},
-			      {"shareable", false}});
+			      {"scope", "channel"}});
 	fields.push_back(json{{"key", "autoStop"},
 			      {"label", "Auto-stop when stream ends"},
 			      {"type", "bool"},
 			      {"tier", "advanced"},
-			      {"shareable", false},
+			      {"scope", "channel"},
 			      {"default", true}});
 	fields.push_back(json{{"key", "projection"},
 			      {"label", "360\xC2\xB0"},
 			      {"type", "bool"},
 			      {"tier", "advanced"},
-			      {"shareable", false}});
+			      {"scope", "channel"}});
 
 	return json{
 		{"id", id()},

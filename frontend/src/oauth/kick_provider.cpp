@@ -97,17 +97,20 @@ json KickProvider::capabilityJson() const
 	// cap (the API enforces its own), so `max` is omitted.
 	json fields = json::array();
 	fields.push_back(
-		json{{"key", "title"}, {"label", "Title"}, {"type", "text"}, {"tier", "simple"}, {"shareable", true}});
+		json{{"key", "title"}, {"label", "Title"}, {"type", "text"}, {"tier", "simple"}, {"scope", "all"}});
+	// Kick's category ids are its own; nothing outside Kick can resolve one.
 	fields.push_back(json{{"key", "category"},
 			      {"label", "Category"},
 			      {"type", "category"},
 			      {"tier", "simple"},
-			      {"shareable", false}});
+			      {"scope", "provider"}});
+	// Kick takes arbitrary tag strings, but Twitch does not: a value reaching across
+	// providers would be governed by the strictest of them, so it stays on this side.
 	fields.push_back(json{{"key", "tags"},
 			      {"label", "Tags"},
 			      {"type", "tags"},
 			      {"tier", "simple"},
-			      {"shareable", true},
+			      {"scope", "provider"},
 			      {"max", 10}});
 
 	return json{

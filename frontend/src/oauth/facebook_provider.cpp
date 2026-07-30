@@ -173,13 +173,13 @@ json FacebookProvider::capabilityJson() const
 			      {"label", "Title"},
 			      {"type", "text"},
 			      {"tier", "simple"},
-			      {"shareable", true},
+			      {"scope", "all"},
 			      {"max", kMaxTitleLength}});
 	fields.push_back(json{{"key", "description"},
 			      {"label", "Description"},
 			      {"type", "textarea"},
 			      {"tier", "simple"},
-			      {"shareable", true}});
+			      {"scope", "all"}});
 	// Required: Facebook rejects an empty status, and the value decides whether the
 	// broadcast is visible to the Page's audience at all -- so the control must show the
 	// value that will actually be sent rather than an unset dash.
@@ -187,7 +187,7 @@ json FacebookProvider::capabilityJson() const
 			      {"label", "Privacy"},
 			      {"type", "enum"},
 			      {"tier", "simple"},
-			      {"shareable", false},
+			      {"scope", "channel"},
 			      {"required", true},
 			      {"default", kPrivacyOptions[0].value},
 			      {"options", privacyOptions}});
@@ -198,13 +198,14 @@ json FacebookProvider::capabilityJson() const
 	// provider's category picker already uses. Presenting it as "Category" describes what
 	// it does for the user (says what the broadcast is about) without inventing a taxonomy.
 	//
-	// shareable: what a broadcast is about is the same on every destination of the account,
-	// unlike the Page, which was the one per-destination thing here.
+	// What a broadcast is about is the same on every channel of this account, but an
+	// adinterest id is Meta's own -- no other platform's category picker can resolve one --
+	// so the value it holds is shared no further than Facebook.
 	fields.push_back(json{{"key", "category"},
 			      {"label", "Category"},
 			      {"type", "category"},
 			      {"tier", "simple"},
-			      {"shareable", true},
+			      {"scope", "provider"},
 			      {"browsable", false},
 			      {"placeholder", "Search interests\xE2\x80\xA6"}});
 	return json{

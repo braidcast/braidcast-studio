@@ -19,6 +19,67 @@ export function isPerDestination(field: OAuthProviderField): boolean {
   return field.perDestination === true;
 }
 
+// "Empty" per descriptor type — the inheritance/omission predicate, and the same test that
+// decides whether a control shows its inherit ghost. A bool that has been set (even to
+// false) counts as present; everything else is empty when blank/missing.
+export function isEmptyVal(type: string, v: unknown): boolean {
+  switch (type) {
+    case "tags":
+    case "labelset":
+      return !Array.isArray(v) || v.length === 0;
+    case "category":
+      return v == null;
+    case "bool":
+      return v === undefined || v === null;
+    default:
+      return typeof v !== "string" || v.trim() === "";
+  }
+}
+
+// How far one field's value may legitimately travel. Reach is a property of the field's
+// VALUE SPACE, not of the dialog: a category id means something different on every
+// platform, and a tag Twitch's applyMetadata hard-rejects (lowercase alphanumeric, no
+// spaces) is a perfectly ordinary tag on Kick and YouTube — so a value held once for
+// every provider is a value at least one provider will refuse.
+export type FieldScope = "all" | "provider" | "channel";
+
+// The cross-provider layer.
+export const ALL_LAYER = "all";
+
+// Prefixed so no provider id can collide with the cross-provider key. Not exported: a
+// caller that needs a bucket is given one by inheritLayers, never builds it.
+function providerLayer(providerId: string): string {
+  return `provider:${providerId}`;
+}
+
+// A descriptor that names no scope keeps its value to the channel: of the three, that is
+// the only reading that cannot push a value to a provider whose rules forbid it.
+export function fieldScope(field: OAuthProviderField): FieldScope {
+  return field.scope === "all" || field.scope === "provider" ? field.scope : "channel";
+}
+
+// The layers under a field's channel control, nearest first — the buckets a channel
+// holding nothing of its own inherits from, in the order to consult them. A
+// provider-scoped field deliberately does NOT fall through to the cross-provider layer:
+// reaching it is the very thing its scope rules out.
+//
+// One ordering, held here, because a control that ghosts one layer while the push reads
+// another shows the user a value the provider never receives.
+export function inheritLayers(field: OAuthProviderField, providerId: string): string[] {
+  // A per-destination field addresses this one stream, so it has no layer below it at all.
+  if (isPerDestination(field)) {
+    return [];
+  }
+  switch (fieldScope(field)) {
+    case "all":
+      return [ALL_LAYER];
+    case "provider":
+      return [providerLayer(providerId)];
+    default:
+      return [];
+  }
+}
+
 // A `required` enum has no valid empty state. `inheritable` exempts an inherit layer,
 // where empty means "take the layer below" rather than "unset".
 export function isRequiredEnum(field: OAuthProviderField, inheritable: boolean): boolean {

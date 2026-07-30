@@ -13,14 +13,27 @@
     accountId?: string;
     value: { id: string; name: string } | null;
     onChange: (v: { id: string; name: string } | null) => void;
-    /** Prompt shown in the empty field; the catalog wording when unset. */
+    /** Prompt shown in the empty field; the catalog wording when unset. Carries the caller's
+     * inherit cue when there is one, so the field names the value that will be sent rather
+     * than inviting a search for one it already has. */
     placeholder?: string;
+    /** The prompt is an inherit cue, not an invitation: render it as the muted italic ghost
+     * the other controls use for the same state. */
+    ghost?: boolean;
     /** The provider's choices are a short list, not a catalog: look them up on focus with
      * an empty query so they can be browsed. Off by default — a catalog search rejects an
      * empty query, and asking for one would spend a request that can only fail. */
     browsable?: boolean;
   }
-  let { providerId, accountId = "", value, onChange, placeholder = "", browsable = false }: Props = $props();
+  let {
+    providerId,
+    accountId = "",
+    value,
+    onChange,
+    placeholder = "",
+    ghost = false,
+    browsable = false,
+  }: Props = $props();
 
   const prompt = $derived(placeholder.trim() || "Search category…");
 
@@ -106,6 +119,7 @@
 <div class="cat" bind:this={rootEl}>
   <input
     class="inp"
+    class:ghost
     type="text"
     placeholder={prompt}
     bind:value={query}
@@ -147,6 +161,10 @@
   .inp:focus {
     outline: none;
     border-color: var(--color-accent);
+  }
+  .inp.ghost::placeholder {
+    color: var(--color-muted);
+    font-style: italic;
   }
   .menu {
     list-style: none;

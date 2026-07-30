@@ -2,7 +2,7 @@
   import { obs, type OAuthProviderField } from "$lib/api/bridge";
   import GoLiveTagsInput from "$lib/dialogs/golive/GoLiveTagsInput.svelte";
   import GoLiveCategoryInput from "$lib/dialogs/golive/GoLiveCategoryInput.svelte";
-  import { isRequiredEnum, normOpt, resolveRequiredEnum } from "$lib/dialogs/golive/fieldValue";
+  import { isEmptyVal, isRequiredEnum, normOpt, resolveRequiredEnum } from "$lib/dialogs/golive/fieldValue";
 
   // The single descriptor-driven field widget. Dispatch is by `field.type` only —
   // text / textarea / tags / category / image / enum / bool / labelset — so the
@@ -18,7 +18,10 @@
     /** The channel being edited, for an account-scoped `category` lookup (Facebook's
      * Pages); ignored by other types. */
     accountId?: string;
-    /** Inherit cue: when set and the value is empty, show "↳ <ghost>" / ghost line. */
+    /** Inherit cue: when set and the value is empty, the control shows "↳ <ghost>" in place
+     * of its own empty state — a placeholder, a ghost line, or the empty option's text
+     * depending on the control's shape. The value it names is what the host will receive,
+     * so a control that dropped the cue would report no value while one is pushed. */
     ghostText?: string;
     /** Override styling (amber border / accent chips) when the field is filled. */
     accent?: boolean;
@@ -44,7 +47,12 @@
   const arr = $derived(Array.isArray(value) ? (value as string[]) : []);
   const cat = $derived(value && typeof value === "object" ? (value as { id: string; name: string }) : null);
   const bool = $derived(value === true);
-  const showGhost = $derived(ghostText !== "" && str === "");
+  // One gate for every control's inherit cue, over the shared emptiness rule — "empty"
+  // differs by value shape (a category is an object, tags an array, the rest strings), and
+  // a per-control test would have each type disagreeing about when it is inheriting.
+  const showGhost = $derived(ghostText !== "" && isEmptyVal(field.type, value));
+  // The cue itself, in one place so no control invents its own wording.
+  const ghostLabel = $derived("↳ " + ghostText);
 
   const opts = $derived((field.options ?? []).map(normOpt));
 
@@ -156,7 +164,8 @@
     {providerId}
     {accountId}
     value={cat}
-    placeholder={field.placeholder ?? ""}
+    placeholder={showGhost ? ghostLabel : (field.placeholder ?? "")}
+    ghost={showGhost}
     browsable={field.browsable === true}
     onChange={(v) => onChange(v)}
   />
@@ -167,7 +176,7 @@
     class:ovr={accent}
     class:narrow
     rows="2"
-    placeholder={ghostText ? "↳ " + ghostText : ""}
+    placeholder={showGhost ? ghostLabel : ""}
     value={str}
     oninput={(e) => onChange(e.currentTarget.value)}
   ></textarea>
@@ -185,12 +194,20 @@
   {:else}
     <button
       class="thumb"
+      class:ghost={showGhost}
       ondragover={(e) => e.preventDefault()}
       ondrop={onDrop}
       onclick={() => void pickImage()}
     >
-      <span>drop / pick</span>
-      <small>PNG/JPG, ≤2 MB</small>
+      {#if showGhost}
+        <!-- Basename only, as the filled box shows for its own file: the ghost is the same
+             image named the same way, so the two states read as one control. -->
+        <span class="ghostline">↳ {basename(ghostText)}</span>
+        <small>drop / pick to override</small>
+      {:else}
+        <span>drop / pick</span>
+        <small>PNG/JPG, ≤2 MB</small>
+      {/if}
     </button>
   {/if}
   {#if tooLarge}
@@ -199,9 +216,18 @@
     </div>
   {/if}
 {:else if field.type === "enum"}
-  <select class="inp" class:narrow value={enumValue} onchange={(e) => onChange(e.currentTarget.value)}>
+  <select
+    class="inp"
+    class:ghost={showGhost}
+    class:narrow
+    value={enumValue}
+    onchange={(e) => onChange(e.currentTarget.value)}
+  >
     {#if !requiredEnum}
-      <option value="">—</option>
+      <!-- Still submits empty, so the inherit semantics and resolveRequiredEnum are
+           untouched — but it NAMES the inherited option instead of reading as no value,
+           which for a required enum is the one thing the host is guaranteed to receive. -->
+      <option value="">{showGhost ? ghostLabel : "—"}</option>
     {/if}
     {#each opts as opt (opt.value)}
       <option value={opt.value}>{opt.label}</option>
@@ -259,6 +285,12 @@
     border-color: var(--color-accent);
   }
   .inp.ghost::placeholder {
+    color: var(--color-muted);
+    font-style: italic;
+  }
+  /* A select has no placeholder to style, so the same muted italic lands on the option
+     standing in for the inherited value. */
+  select.inp.ghost {
     color: var(--color-muted);
     font-style: italic;
   }
@@ -330,6 +362,13 @@
   .thumb small {
     font-size: 9px;
     color: var(--color-muted);
+  }
+  .thumb.ghost {
+    border-style: dotted;
+  }
+  .ghostline {
+    color: var(--color-muted);
+    font-style: italic;
   }
   button.thumb:hover {
     border-color: var(--color-accent);

@@ -9,7 +9,14 @@
   } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
   import { goLiveModal, closeGoLiveModal } from "$lib/dialogs/golive/goLiveModalOpener.svelte";
-  import { isPerDestination, resolveRequiredEnum } from "$lib/dialogs/golive/fieldValue";
+  import {
+    ALL_LAYER,
+    inheritLayers,
+    isEmptyVal,
+    isPerDestination,
+    normOpt,
+    resolveRequiredEnum,
+  } from "$lib/dialogs/golive/fieldValue";
   import { openOAuthConnect, isOAuthConnecting } from "$lib/dialogs/oauthConnectOpener.svelte";
   import { canvasStore } from "$lib/stores/canvasStore.svelte";
   import {
@@ -179,13 +186,15 @@ import { EV } from "$lib/utils/eventNames";
     return !!first && isOAuthConnecting(first.profileUuid);
   }
 
-  // Three inheritance layers, resolved shared -> channel -> stream by
-  // effectiveFields (later wins, empties omitted). `sharedValues` holds only
-  // shareable keys (mock "Shared defaults" block), driven by `sharedFields`, so
-  // any shareable field — not just title/tags — gets a shared source.
-  let sharedValues = $state<Record<string, unknown>>({});
-  // Per-channel defaults, keyed by accountId then field key. An empty shareable
-  // field inherits the shared value; a non-shareable field stands alone. Applied
+  // Inheritance layers, resolved inherit-layer -> channel -> stream by effectiveFields
+  // (later wins, empties omitted). `layerValues` holds every layer BELOW the channel,
+  // keyed the way fieldValue names them: one cross-provider bucket (`ALL_LAYER`, the mock
+  // "Shared defaults" block) plus one bucket per provider id. Keyed buckets rather than a
+  // second state object beside a global one, so which bucket a field reads is decided by
+  // the descriptor's scope in one helper instead of by which variable a call site picked.
+  let layerValues = $state<Record<string, Record<string, unknown>>>({});
+  // Per-channel defaults, keyed by accountId then field key. An empty field with a layer
+  // below inherits that layer's value; one without stands alone. Applied
   // to every stream in the channel unless the stream overrides it.
   let channelValues = $state<Record<string, Record<string, unknown>>>({});
   // Per-stream overrides, keyed by profileUuid. A filled key diverges that single
@@ -196,13 +205,20 @@ import { EV } from "$lib/utils/eventNames";
   // Toggling off clears that stream's overrides so it cleanly inherits again.
   let streamOverrideOn = $state<Record<string, boolean>>({});
 
-  // Shared-block keys the user has edited by hand. Prefill must never seed or diverge
-  // a key the user owns, otherwise a shared edit made while the (fired-not-awaited)
+  // Inherit-layer keys the user has edited by hand, as bucket + key — per bucket, since
+  // the same field key lives in as many buckets as there are providers. Prefill must never
+  // seed or diverge a key the user owns, otherwise an edit made while the (fired-not-awaited)
   // get/getSaved are in flight would be silently overridden by a stale live value.
-  const touchedShared = new Set<string>();
-  function setSharedField(key: string, val: unknown): void {
-    touchedShared.add(key);
-    sharedValues = { ...sharedValues, [key]: val };
+  const touchedLayers = new Set<string>();
+  function touchedKey(bucket: string, key: string): string {
+    return bucket + "::" + key;
+  }
+  function writeLayer(bucket: string, key: string, val: unknown): void {
+    layerValues[bucket] = { ...(layerValues[bucket] ?? {}), [key]: val };
+  }
+  function setLayerField(bucket: string, key: string, val: unknown): void {
+    touchedLayers.add(touchedKey(bucket, key));
+    writeLayer(bucket, key, val);
   }
   function setField(id: string, key: string, val: unknown): void {
     channelValues[id] = { ...(channelValues[id] ?? {}), [key]: val };
@@ -253,23 +269,6 @@ import { EV } from "$lib/utils/eventNames";
     return channelFields(p).filter((f) => !isEmptyVal(f.type, ov[f.key])).length;
   }
 
-  // "Empty" per descriptor type — the inheritance/omission predicate. A bool that
-  // has been set (even to false) counts as present; everything else is empty when
-  // blank/missing.
-  function isEmptyVal(type: string, v: unknown): boolean {
-    switch (type) {
-      case "tags":
-      case "labelset":
-        return !Array.isArray(v) || v.length === 0;
-      case "category":
-        return v == null;
-      case "bool":
-        return v === undefined || v === null;
-      default:
-        return typeof v !== "string" || v.trim() === "";
-    }
-  }
-
   // Type-aware value equality, used to tell a genuine per-channel divergence from a
   // value that merely echoes the shared default. Plain === is wrong for category (two
   // equal {id,name} objects are distinct references) and tags (array identity), which
@@ -288,21 +287,89 @@ import { EV } from "$lib/utils/eventNames";
     return a === b;
   }
 
-  // Human-readable shared value for a field's inherit ghost (any shareable key).
-  function sharedGhostText(f: OAuthProviderField): string {
-    const v = sharedValues[f.key];
+  // The nearest layer this field's channel control inherits from, or undefined when it has
+  // none. One lookup, so the ghost, the grouping, the empty-means-inherit rule and the
+  // push all name the same bucket.
+  function inheritBucket(f: OAuthProviderField, providerId: string): string | undefined {
+    return inheritLayers(f, providerId)[0];
+  }
+  // The value a channel holding nothing of its own inherits: the first layer that holds
+  // one, walked in the helper's order.
+  function inheritedValue(f: OAuthProviderField, providerId: string): unknown {
+    for (const bucket of inheritLayers(f, providerId)) {
+      const v = layerValues[bucket]?.[f.key];
+      if (!isEmptyVal(f.type, v)) {
+        return v;
+      }
+    }
+    return undefined;
+  }
+  // What a control at `layer` is EFFECTIVELY showing: its own value, else what it falls back
+  // to, in the same order effectiveFields pushes — a stream falls back to its channel first,
+  // then to the field's scope layers. Anything reading the value on screen (the provider's
+  // note for the current choice) resolves through here, so a row that displays an inherited
+  // value describes that value rather than the empty state standing in for it.
+  function shownValue(
+    f: OAuthProviderField,
+    value: unknown,
+    layer: "channel" | "stream",
+    accountId: string,
+    providerId: string,
+  ): unknown {
+    if (!isEmptyVal(f.type, value)) {
+      return value;
+    }
+    if (!inheritsBelow(f, layer, providerId)) {
+      return undefined;
+    }
+    if (layer === "stream" && !isEmptyVal(f.type, channelValues[accountId]?.[f.key])) {
+      return channelValues[accountId]?.[f.key];
+    }
+    const inherited = inheritedValue(f, providerId);
+    // Same last resort the ghost names and effectiveFields pushes, so a row displaying a
+    // descriptor default still carries that value's note — for YouTube's privacy the note
+    // IS the point of the field, and it would otherwise appear only once a layer fills.
+    return isEmptyVal(f.type, inherited) ? resolveRequiredEnum(f, "") : inherited;
+  }
+
+  // What the layer under a channel control is called wherever the UI names it. A provider
+  // layer is named after the platform: calling it "shared" would claim a reach the value
+  // deliberately does not have.
+  function inheritLabel(f: OAuthProviderField, p: OAuthProvider): string {
+    return inheritBucket(f, p.id) === ALL_LAYER ? "shared" : p.displayName + " default";
+  }
+
+  // Human-readable inherited value for a field's inherit ghost. An enum is named by its
+  // option LABEL, not the raw value the descriptor carries: the ghost stands where the
+  // chosen option's text would be, so showing "public" beside options reading "Public"
+  // would read as a different value than the one that will be sent.
+  //
+  // With no layer holding anything the cue names what effectiveFields emits from there —
+  // resolved through the same call it makes, so the cue appears exactly when a value is
+  // pushed and stays absent when the key is omitted. Without it a required field reads as
+  // unset on a just-opened modal while its descriptor default goes out on Go Live.
+  function inheritedGhostText(f: OAuthProviderField, providerId: string): string {
+    const v = inheritedValue(f, providerId);
     if (f.type === "tags" || f.type === "labelset") {
       return Array.isArray(v) ? v.join(", ") : "";
     }
     if (f.type === "category") {
       return v && typeof v === "object" ? ((v as { name?: string }).name ?? "") : "";
     }
-    return typeof v === "string" ? v : "";
+    const held = isEmptyVal(f.type, v) ? resolveRequiredEnum(f, "") : v;
+    if (f.type === "enum") {
+      const opt = (f.options ?? []).map(normOpt).find((o) => o.value === held);
+      return opt?.label ?? (typeof held === "string" ? held : "");
+    }
+    return typeof held === "string" ? held : "";
   }
 
-  // Field grouping (data lists, not branches): simple shareable render as overrides
-  // (ghost/amber), simple non-shareable render normally, advanced go under the
-  // dashed "<Platform>-only" divider.
+  // Field grouping (data lists, not branches): simple fields WITH a layer below render as
+  // overrides of it (ghost/amber), simple fields without one render normally, advanced go
+  // under the dashed "<Platform>-only" divider. Which group a field lands in follows the
+  // helper's layer list, so a descriptor changing a field's scope regroups it with no edits
+  // here — and a provider-scoped field renders exactly as a cross-provider one does, only
+  // inheriting from a different bucket.
   //
   // Per-destination fields are excluded from all three at the one point below: they say
   // where a stream posts, so rendering them at the channel layer would offer a single
@@ -313,11 +380,11 @@ import { EV } from "$lib/utils/eventNames";
   function targetFields(p: OAuthProvider): OAuthProviderField[] {
     return p.fields.filter(isPerDestination);
   }
-  function simpleShareable(p: OAuthProvider): OAuthProviderField[] {
-    return channelFields(p).filter((f) => f.tier !== "advanced" && f.shareable);
+  function simpleInherited(p: OAuthProvider): OAuthProviderField[] {
+    return channelFields(p).filter((f) => f.tier !== "advanced" && inheritBucket(f, p.id) !== undefined);
   }
-  function simpleNonShareable(p: OAuthProvider): OAuthProviderField[] {
-    return channelFields(p).filter((f) => f.tier !== "advanced" && !f.shareable);
+  function simpleStandalone(p: OAuthProvider): OAuthProviderField[] {
+    return channelFields(p).filter((f) => f.tier !== "advanced" && inheritBucket(f, p.id) === undefined);
   }
   function advancedFields(p: OAuthProvider): OAuthProviderField[] {
     return channelFields(p).filter((f) => f.tier === "advanced");
@@ -328,9 +395,38 @@ import { EV } from "$lib/utils/eventNames";
   // still on its descriptor default would show a selection with no note under it.
   // Provider-declared data rather than a per-platform branch here, so a second platform
   // with a costly option is a capability entry and nothing in this file.
-  function noteFor(f: OAuthProviderField, value: unknown, layer: "channel" | "stream"): string | undefined {
-    const shown = resolveRequiredEnum(f, value, inheritsBelow(f, layer));
+  function noteFor(
+    f: OAuthProviderField,
+    value: unknown,
+    layer: "channel" | "stream",
+    accountId: string,
+    providerId: string,
+  ): string | undefined {
+    const held = shownValue(f, value, layer, accountId, providerId);
+    const shown = resolveRequiredEnum(f, held, inheritsBelow(f, layer, providerId));
     return f.optionNotes?.[shown];
+  }
+
+  // The row's hint line. An override explanation and the provider's note for the value on
+  // screen are both true at once, so they compose rather than one silently displacing the
+  // other — which is how the quota warning went missing when a field gained a layer below.
+  function hintFor(
+    f: OAuthProviderField,
+    value: unknown,
+    layer: "channel" | "stream",
+    accountId: string,
+    providerId: string,
+    overrideOf: string | null,
+  ): string | undefined {
+    const parts: string[] = [];
+    if (overrideOf) {
+      parts.push("Overrides the " + overrideOf + " " + f.label.toLowerCase() + " for this channel.");
+    }
+    const note = noteFor(f, value, layer, accountId, providerId);
+    if (note) {
+      parts.push(note);
+    }
+    return parts.length ? parts.join(" ") : undefined;
   }
 
   function isOverridden(id: string, f: OAuthProviderField): boolean {
@@ -338,17 +434,17 @@ import { EV } from "$lib/utils/eventNames";
   }
 
   // Whether an empty value in this control means "inherit the layer below" rather than
-  // "unset": the per-stream layer always falls back to the channel, and a shareable
-  // field's channel layer falls back to the shared block. A `required` field keeps its
-  // empty option at those sites — resolving it there would manufacture an override the
-  // user never made, and pin a stream to a value diverging from its channel.
-  function inheritsBelow(f: OAuthProviderField, layer: "channel" | "stream"): boolean {
-    // A per-destination field has no layer below it: it addresses this one stream, so an
-    // empty control means unaddressed, not "take the channel's".
+  // "unset": the per-stream layer always falls back to the channel, and a channel layer
+  // falls back to whichever bucket the field's scope names (none for a per-destination
+  // field, which addresses this one stream — an empty control there means unaddressed).
+  // A `required` field keeps its empty option at those sites — resolving it there would
+  // manufacture an override the user never made, and pin a stream to a value diverging
+  // from its channel.
+  function inheritsBelow(f: OAuthProviderField, layer: "channel" | "stream", providerId: string): boolean {
     if (isPerDestination(f)) {
       return false;
     }
-    return layer === "stream" || f.shareable === true;
+    return layer === "stream" || inheritBucket(f, providerId) !== undefined;
   }
 
   // Resolve a profile's provider: prefer the linked account's providerId, else match
@@ -485,10 +581,12 @@ import { EV } from "$lib/utils/eventNames";
     return seen.size;
   });
 
-  // Shared-defaults descriptor: the UNION of every shareable field across connected
-  // providers, deduped by key (first provider's label/type wins). Drives the shared
-  // block so a provider marking a new field shareable gets a shared source with no
-  // edits here.
+  // Shared-defaults descriptor: the UNION of every field whose nearest layer is the
+  // CROSS-PROVIDER bucket, across connected providers, deduped by key (first provider's
+  // label/type wins). Drives the shared block so a provider widening a field's scope to
+  // "all" gets a shared source with no edits here. A provider-scoped field is absent by
+  // construction — its bucket belongs to one platform, so a block spanning every connected
+  // channel is the wrong place to edit it.
   //
   // Every CONNECTED channel, not just the armed ones: a shared value belongs to no
   // destination, so switching them all off must not take the block — and the title and
@@ -501,7 +599,7 @@ import { EV } from "$lib/utils/eventNames";
         continue;
       }
       for (const f of c.provider.fields) {
-        if (f.shareable && !seen.has(f.key)) {
+        if (inheritBucket(f, c.provider.id) === ALL_LAYER && !seen.has(f.key)) {
           seen.add(f.key);
           out.push(f);
         }
@@ -547,9 +645,9 @@ import { EV } from "$lib/utils/eventNames";
     return `${chans} · ${streams} · all ready`;
   });
 
-  // Resolve effective values through the three layers and push them: a stream
-  // override wins over the channel default, which wins over the shared value
-  // (shared only supplies shareable keys). Empty fields are never emitted at any
+  // Resolve effective values through the layers and push them: a stream override wins over
+  // the channel default, which wins over the nearest inherit layer the field's scope names
+  // (a field scoped to the channel has none). Empty fields are never emitted at any
   // layer, so a provider that treats "present" as "set" can't blank a channel by
   // inheriting nothing. `stream` omitted => the channel's own defaults, nothing else.
   //
@@ -571,12 +669,13 @@ import { EV } from "$lib/utils/eventNames";
     const cv = channelValues[c.accountId] ?? {};
     for (const f of c.provider.fields) {
       const sv = streamValue(f, stream);
+      const inherited = inheritedValue(f, c.provider.id);
       if (!isEmptyVal(f.type, sv)) {
         out[f.key] = sv;
       } else if (!isEmptyVal(f.type, cv[f.key])) {
         out[f.key] = cv[f.key];
-      } else if (f.shareable && !isEmptyVal(f.type, sharedValues[f.key])) {
-        out[f.key] = sharedValues[f.key];
+      } else if (!isEmptyVal(f.type, inherited)) {
+        out[f.key] = inherited;
       } else {
         // Nothing held at any layer. A `required` field has no valid empty state, so
         // emit the value its control is showing — the descriptor default — rather than
@@ -644,34 +743,37 @@ import { EV } from "$lib/utils/eventNames";
           }
         }
 
-        // Route each merged key by tier so shareable values land in the SHARED layer
-        // (first channel wins), not as a spurious per-channel override: a channel only
-        // takes an override when it genuinely diverges from the shared value. Without
-        // this, two channels live-reporting the same title would each read as
-        // "overrides shared". Non-shareable keys stand alone in channelValues, EXCEPT a
-        // per-destination key, which addresses a stream and so seeds the streams that
-        // have no address yet — the one-Page account, whose Page the provider reports
-        // here, is exactly that case. Every write is guarded so a user edit before this
-        // resolves is never clobbered.
+        // Route each merged key to the layer its scope names, so an inheritable value lands
+        // in that INHERIT LAYER (first channel wins), not as a spurious per-channel
+        // override: a channel only takes an override when it genuinely diverges from the
+        // layer. Without this, two channels live-reporting the same title would each read as
+        // "overrides shared". This is also what makes a provider-scoped value reach a second
+        // channel of the same platform — a thumbnail or category entered once on one YouTube
+        // channel is remembered, restored here, and inherited by the other. A channel-scoped
+        // key stands alone in channelValues, EXCEPT a per-destination key, which addresses a
+        // stream and so seeds the streams that have no address yet. Every write is guarded so
+        // a user edit before this resolves is never clobbered.
         for (const [key, val] of Object.entries(merged)) {
           const f = c.provider?.fields.find((fd) => fd.key === key);
           const type = f?.type ?? "text";
           if (isEmptyVal(type, val)) {
             continue;
           }
+          const bucket = f && c.provider ? inheritBucket(f, c.provider.id) : undefined;
           if (f && isPerDestination(f)) {
             for (const s of c.streams) {
               if (isEmptyVal(type, getStreamVal(s.profileUuid, key))) {
                 setStreamField(s.profileUuid, key, val);
               }
             }
-          } else if (f?.shareable) {
-            if (touchedShared.has(key)) {
+          } else if (bucket) {
+            if (touchedLayers.has(touchedKey(bucket, key))) {
               continue;
             }
-            if (isEmptyVal(type, sharedValues[key])) {
-              sharedValues = { ...sharedValues, [key]: val };
-            } else if (!valuesEqual(type, sharedValues[key], val) && isEmptyVal(type, getVal(c.accountId, key))) {
+            const held = layerValues[bucket]?.[key];
+            if (isEmptyVal(type, held)) {
+              writeLayer(bucket, key, val);
+            } else if (!valuesEqual(type, held, val) && isEmptyVal(type, getVal(c.accountId, key))) {
               setField(c.accountId, key, val);
             }
           } else if (isEmptyVal(type, getVal(c.accountId, key))) {
@@ -864,10 +966,11 @@ import { EV } from "$lib/utils/eventNames";
           }
           return obs.call("streamMeta.save", {
             accountId: c.accountId,
-            // Persist the EFFECTIVE channel-level defaults (shared shareable keys
-            // merged with channel values, empties dropped) so shared-block values —
-            // which live in sharedValues, not channelValues — are actually saved.
-            // Prefill routes them back into the shared layer (first-wins + dedup).
+            // Persist the EFFECTIVE channel-level defaults (every inherit layer merged
+            // with channel values, empties dropped) so inherited values — which live in
+            // layerValues, not channelValues — are actually saved. Prefill re-derives the
+            // layers from them on read (first-wins + dedup), so neither the persisted
+            // shape nor the store needs to know layers exist.
             channel: effectiveFields(c, undefined),
             streams,
           });
@@ -974,8 +1077,8 @@ import { EV } from "$lib/utils/eventNames";
         </div>
       {/if}
 
-      <!-- Shared defaults: the union of connected providers' shareable fields (mock
-           `.shared`), one row each, present in both modes whenever anything is shareable. -->
+      <!-- Shared defaults: the union of connected providers' cross-provider-scoped fields
+           (mock `.shared`), one row each, present in both modes whenever anything is. -->
       {#if sharedFields.length}
         <div class="shared">
           <p class="eh">
@@ -983,7 +1086,7 @@ import { EV } from "$lib/utils/eventNames";
             {#if armedConnectedChannels.length > 1}<span class="eh-note">— across all {armedConnectedChannels.length} channels</span>{/if}
           </p>
           {#each sharedFields as f (f.key)}
-            {@render fieldRow(f, sharedValues[f.key], (v) => setSharedField(f.key, v), {})}
+            {@render fieldRow(f, layerValues[ALL_LAYER]?.[f.key], (v) => setLayerField(ALL_LAYER, f.key, v), {})}
           {/each}
         </div>
       {/if}
@@ -1150,7 +1253,13 @@ import { EV } from "$lib/utils/eventNames";
                             {@render fieldRow(f, getStreamVal(s.profileUuid, f.key), (v) => setStreamField(s.profileUuid, f.key, v), {
                               providerId: c.provider.id,
                               accountId: c.accountId,
-                              hint: noteFor(f, getStreamVal(s.profileUuid, f.key), "stream"),
+                              hint: noteFor(
+                                f,
+                                getStreamVal(s.profileUuid, f.key),
+                                "stream",
+                                c.accountId,
+                                c.provider.id,
+                              ),
                             })}
                           {/each}
                         </div>
@@ -1158,27 +1267,37 @@ import { EV } from "$lib/utils/eventNames";
                     </div>
                   {/if}
 
-                  <!-- Shareable fields as per-channel overrides (ghost cue when inheriting
-                       the shared value, amber when the channel diverges). -->
-                  {#each simpleShareable(c.provider) as f (f.key)}
+                  <!-- Fields with a layer below, as per-channel overrides of it (ghost cue
+                       when inheriting, amber when the channel diverges). The tag names the
+                       layer, so a value shared only among this platform's channels never
+                       reads as one shared with every platform. -->
+                  {#each simpleInherited(c.provider) as f (f.key)}
                     {@const filled = isOverridden(c.accountId, f)}
+                    {@const layer = inheritLabel(f, c.provider)}
                     {@render fieldRow(f, getVal(c.accountId, f.key), (v) => setField(c.accountId, f.key, v), {
                       providerId: c.provider.id,
                       accountId: c.accountId,
-                      ghostText: sharedGhostText(f),
-                      inheritable: inheritsBelow(f, "channel"),
+                      ghostText: inheritedGhostText(f, c.provider.id),
+                      inheritable: inheritsBelow(f, "channel", c.provider.id),
                       accent: filled,
-                      tag: filled ? "— overrides shared" : "↳ using shared",
-                      hint: filled ? "Overrides the shared " + f.label.toLowerCase() + " for this channel." : undefined,
+                      tag: filled ? "— overrides " + layer : "↳ using " + layer,
+                      hint: hintFor(
+                        f,
+                        getVal(c.accountId, f.key),
+                        "channel",
+                        c.accountId,
+                        c.provider.id,
+                        filled ? layer : null,
+                      ),
                     })}
                   {/each}
 
-                  <!-- Non-shareable fields (category / thumbnail / privacy / …), one per row. -->
-                  {#each simpleNonShareable(c.provider) as f (f.key)}
+                  <!-- Channel-scoped fields (privacy / language / …), one per row. -->
+                  {#each simpleStandalone(c.provider) as f (f.key)}
                     {@render fieldRow(f, getVal(c.accountId, f.key), (v) => setField(c.accountId, f.key, v), {
                       providerId: c.provider.id,
                       accountId: c.accountId,
-                      hint: noteFor(f, getVal(c.accountId, f.key), "channel"),
+                      hint: noteFor(f, getVal(c.accountId, f.key), "channel", c.accountId, c.provider.id),
                     })}
                   {/each}
 
@@ -1192,8 +1311,8 @@ import { EV } from "$lib/utils/eventNames";
                             providerId: c.provider.id,
                             accountId: c.accountId,
                             narrow: f.type === "enum",
-                            inheritable: inheritsBelow(f, "channel"),
-                            hint: noteFor(f, getVal(c.accountId, f.key), "channel"),
+                            inheritable: inheritsBelow(f, "channel", c.provider.id),
+                            hint: noteFor(f, getVal(c.accountId, f.key), "channel", c.accountId, c.provider.id),
                           })}
                         {/each}
                       </div>
@@ -1234,8 +1353,14 @@ import { EV } from "$lib/utils/eventNames";
                                   providerId: c.provider.id,
                                   accountId: c.accountId,
                                   narrow: f.type === "enum",
-                                  inheritable: inheritsBelow(f, "stream"),
-                                  hint: noteFor(f, getStreamVal(s.profileUuid, f.key), "stream"),
+                                  inheritable: inheritsBelow(f, "stream", c.provider.id),
+                                  hint: noteFor(
+                                    f,
+                                    getStreamVal(s.profileUuid, f.key),
+                                    "stream",
+                                    c.accountId,
+                                    c.provider.id,
+                                  ),
                                 })}
                               {/each}
                               <p class="inhnote">Empty fields inherit this channel's defaults.</p>

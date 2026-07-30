@@ -125,37 +125,43 @@ json TwitchProvider::capabilityJson() const
 			      {"label", "Title"},
 			      {"type", "text"},
 			      {"tier", "simple"},
-			      {"shareable", true},
+			      {"scope", "all"},
 			      {"max", 140}});
+	// Category ids are Helix game ids, meaningless to any other platform, so the value is
+	// shared among the user's Twitch channels and no further.
 	fields.push_back(json{{"key", "category"},
 			      {"label", "Category"},
 			      {"type", "category"},
 			      {"tier", "simple"},
-			      {"shareable", false}});
+			      {"scope", "provider"}});
+	// Scoped to Twitch for the same reason applyMetadata rejects a bad tag outright: only
+	// here is a tag required to be lowercase alphanumeric with no spaces. Kick and YouTube
+	// take arbitrary strings, so one value spanning all three would be a value Twitch
+	// refuses -- and its refusal fails the whole push, not just the tag.
 	fields.push_back(json{{"key", "tags"},
 			      {"label", "Tags"},
 			      {"type", "tags"},
 			      {"tier", "simple"},
-			      {"shareable", true},
+			      {"scope", "provider"},
 			      {"max", 10},
 			      {"constraint", "lowercase-alnum ≤25"}});
 	fields.push_back(json{{"key", "language"},
 			      {"label", "Language"},
 			      {"type", "enum"},
 			      {"tier", "advanced"},
-			      {"shareable", false},
+			      {"scope", "channel"},
 			      {"options", langOptions}});
 	fields.push_back(json{{"key", "contentLabels"},
 			      {"label", "Content Classification"},
 			      {"type", "labelset"},
 			      {"tier", "advanced"},
-			      {"shareable", false},
+			      {"scope", "channel"},
 			      {"options", labelOptions}});
 	fields.push_back(json{{"key", "brandedContent"},
 			      {"label", "Branded Content"},
 			      {"type", "bool"},
 			      {"tier", "advanced"},
-			      {"shareable", false}});
+			      {"scope", "channel"}});
 
 	return json{
 		{"id", id()},

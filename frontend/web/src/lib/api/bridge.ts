@@ -518,7 +518,7 @@ export interface ServiceType {
 
 // --- platform OAuth (Connect Account dual path, Phase 8) ---------------------
 
-/** One field a provider exposes in its capability descriptor. `tier`/`shareable`
+/** One field a provider exposes in its capability descriptor. `tier`/`scope`
  * drive how the 8b stream-info modal groups/persists the field; 8a only reads the
  * provider id/displayName, so the rest is carried loosely. */
 export interface OAuthProviderField {
@@ -526,7 +526,18 @@ export interface OAuthProviderField {
   label: string;
   type: string;
   tier?: string;
-  shareable?: boolean;
+  /** How far one value for this field may travel — the reach of its VALUE SPACE, which
+   * is the provider's to declare:
+   * - `"all"` — one value across every provider. For a field whose values are free text
+   *   any platform accepts (a title, a description).
+   * - `"provider"` — one value shared by every channel of THIS provider, never crossing
+   *   into another's. For a field whose valid values are the provider's own: a category
+   *   id namespace, or a tag vocabulary one platform validates and the next does not.
+   * - `"channel"` — no layer below the channel; each channel holds its own.
+   *
+   * Absent = `"channel"`, the only default that cannot leak a value to a provider whose
+   * rules forbid it. Orthogonal to `perDestination` below, which is about ADDRESSING. */
+  scope?: "all" | "provider" | "channel";
   /** enum/labelset choices. */
   options?: LabeledOption[];
   /** Placeholder for the field's text control ("Search category…" when unset). */
