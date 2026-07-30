@@ -442,6 +442,10 @@ public:
 	// a local lookup, and routing it through a platform call would put the network on
 	// every render of every row. Empty means this provider has no targets, matching the
 	// default enumerateTargets above; a provider that overrides one must override both.
+	//
+	// Surfaced on the capability descriptor (oauth.providers stamps it), so the dialog can
+	// answer "which key addresses a destination" from the payload it already holds instead
+	// of reaching for oauth.targets, whose job is discovery over the network.
 	virtual std::string targetFieldKey() const { return std::string(); }
 
 	// Report the platform's current concurrent viewer count for `acct` into `out`

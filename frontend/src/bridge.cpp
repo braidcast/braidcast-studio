@@ -9386,7 +9386,19 @@ bool MethodOAuthProviders(const json & /*params*/, json &result, std::string & /
 	json arr = json::array();
 	for (OAuth::StreamProvider *provider : OAuth::Registry().All()) {
 		try {
-			arr.push_back(provider->capabilityJson());
+			json cap = provider->capabilityJson();
+			// Stamped here rather than written into each descriptor: the key is the
+			// provider's own answer either way, and one seam cannot drift the way four
+			// pasted copies do. It is carried beside `fields` because a provider can
+			// address a destination WITHOUT declaring a field for it -- Facebook's Page
+			// is claimed on the destination, so nothing renders it, yet the value still
+			// rides in each stream's remembered bag and the dialog has to tell it apart
+			// from a metadata divergence before it saves one.
+			const std::string targetKey = provider->targetFieldKey();
+			if (!targetKey.empty()) {
+				cap["targetFieldKey"] = targetKey;
+			}
+			arr.push_back(std::move(cap));
 		} catch (const std::exception &e) {
 			HostLog(std::string("[oauth] capabilityJson failed: ") + e.what());
 		}

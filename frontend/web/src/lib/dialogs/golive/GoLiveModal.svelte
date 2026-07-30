@@ -233,12 +233,24 @@ import { EV } from "$lib/utils/eventNames";
   function getStreamVal(uuid: string, key: string): unknown {
     return streamOverrides[uuid]?.[key];
   }
-  // The descriptor keys that ADDRESS a destination rather than describe it. One lookup
-  // per provider, shared by everything that has to tell a stream's address apart from a
-  // metadata divergence — the two live in the same per-stream bag but are governed by
-  // different rules.
+  // The keys that ADDRESS a destination rather than describe it. One lookup per provider,
+  // shared by everything that has to tell a stream's address apart from a metadata
+  // divergence — the two live in the same per-stream bag but are governed by different
+  // rules.
+  //
+  // TWO sources, deliberately, because they answer different questions. `perDestination`
+  // says a field RENDERS per stream (in Simple as well as Advanced) and so has to be a
+  // declared field. `targetFieldKey` names the address key whether or not a field exists
+  // for it — Facebook's Page is chosen on the destination and rendered nowhere here, yet it
+  // rides in the same bag, and reading only the flag left this set empty for the one
+  // provider that has an address. Collapsing either into the other silently unaddresses a
+  // stream: a rendered address that is not the key, or a key with nothing to render.
   function targetKeys(p: OAuthProvider | null): Set<string> {
-    return new Set((p?.fields ?? []).filter(isPerDestination).map((f) => f.key));
+    const keys = new Set((p?.fields ?? []).filter(isPerDestination).map((f) => f.key));
+    if (p?.targetFieldKey) {
+      keys.add(p.targetFieldKey);
+    }
+    return keys;
   }
   // What a stream keeps when it is NOT overriding its channel: its address only.
   function addressOnly(p: OAuthProvider | null, bag: Record<string, unknown>): Record<string, unknown> {
@@ -703,6 +715,20 @@ import { EV } from "$lib/utils/eventNames";
         const shown = resolveRequiredEnum(f, "");
         if (shown !== "") {
           out[f.key] = shown;
+        }
+      }
+    }
+    // An address key with no descriptor field is unreachable by the loop above, which walks
+    // fields. Facebook's Page is exactly that: claimed on the destination, rendered nowhere
+    // here, yet the provider resolves which destination to post to from this key alone and
+    // refuses the push outright when an account administers more than one. It belongs to the
+    // stream, so it is emitted only for one — the channel's own bag addresses nothing.
+    if (stream) {
+      const declared = new Set(c.provider.fields.map((f) => f.key));
+      for (const key of targetKeys(c.provider)) {
+        const v = streamOverrides[stream.profileUuid]?.[key];
+        if (!declared.has(key) && bagKeyHeld(c.provider, key, v)) {
+          out[key] = v;
         }
       }
     }

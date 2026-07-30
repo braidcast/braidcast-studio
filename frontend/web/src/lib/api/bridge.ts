@@ -577,6 +577,13 @@ export interface OAuthProvider {
   displayName: string;
   auth: { strategy: string; scopes: string[]; needsSecret: boolean };
   fields: OAuthProviderField[];
+  /** The key under which a stream's bag carries WHICH destination it posts to, when this
+   * provider addresses one at all (absent otherwise). Separate from a `perDestination`
+   * field because a provider can address a destination without rendering a control for it:
+   * Facebook's Page is claimed on the destination itself, so no field exists, yet the key
+   * still rides in every stream's remembered bag. Anything deciding what a stream keeps
+   * when it is NOT diverging from its channel must treat this key as the address. */
+  targetFieldKey?: string;
 }
 
 /** Connection state of one connected account (oauth.status). Rows are keyed by
