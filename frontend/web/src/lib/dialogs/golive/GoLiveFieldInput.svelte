@@ -18,11 +18,20 @@
     /** The channel being edited, for an account-scoped `category` lookup (Facebook's
      * Pages); ignored by other types. */
     accountId?: string;
-    /** Inherit cue: when set and the value is empty, the control shows "↳ <ghost>" in place
-     * of its own empty state — a placeholder, a ghost line, or the empty option's text
-     * depending on the control's shape. The value it names is what the host will receive,
-     * so a control that dropped the cue would report no value while one is pushed. */
+    /** Inherit cue: the human-readable inherited value, shown when this control holds
+     * nothing of its own. The value it names is what the host will receive, so a control
+     * that dropped the cue would report no value while one is pushed. Controls that CAN
+     * show it as an ordinary value do (a select lands on the matching option, a category
+     * and an image render as a set one would); the free-text controls show it as a
+     * placeholder, which is the only way to keep an inheriting field from reading as
+     * edited. The row's own "↳ using …" tag is what marks the state in every case. */
     ghostText?: string;
+    /** The RAW inherited value behind `ghostText`, for controls that display it by landing
+     * on their own option for it rather than by printing the text. Resolved by the caller
+     * through the same call that pushes it, so the option shown and the value sent are the
+     * same one — a control reverse-mapping the cue's wording would diverge the moment two
+     * options shared a label. */
+    ghostValue?: unknown;
     /** Override styling (amber border / accent chips) when the field is filled. */
     accent?: boolean;
     /** Constrain width (used by advanced enums). */
@@ -38,6 +47,7 @@
     providerId = "",
     accountId = "",
     ghostText = "",
+    ghostValue = undefined,
     accent = false,
     narrow = false,
     inheritable = false,
@@ -61,6 +71,21 @@
   // the same value, so the control can't show one choice while the host gets another.
   const requiredEnum = $derived(isRequiredEnum(field, inheritable));
   const enumValue = $derived(resolveRequiredEnum(field, value, inheritable));
+  // While inheriting, the select LANDS ON the inherited value's own option instead of
+  // carrying a second entry that names it — two entries reading "Public" are one choice as
+  // far as the user can tell. The model stays empty, so the field is still inheriting and
+  // the push is unchanged; only what the closed control reads changes. Falls back to the
+  // empty option when the inherited value names no option here, since a <select> whose
+  // value matches nothing lands on the FIRST one and would show a choice nobody made.
+  const enumDisplay = $derived(
+    showGhost && typeof ghostValue === "string" && opts.some((o) => o.value === ghostValue)
+      ? ghostValue
+      : enumValue,
+  );
+  // The image on screen: this field's own, else the one it inherits. An inherited thumbnail
+  // is the thumbnail that will be uploaded, so it is previewed and size-checked exactly as
+  // a set one is rather than named in a dashed placeholder box.
+  const imgPath = $derived(str || (showGhost ? ghostText : ""));
 
   function basename(p: string): string {
     return p.split(/[\\/]/).pop() || p;
@@ -85,7 +110,7 @@
   let imgError = $state(false);
   let dataUri = $state("");
   $effect(() => {
-    const path = str;
+    const path = imgPath;
     imgError = false;
     dataUri = "";
     tooLarge = false;
@@ -95,7 +120,7 @@
     obs
       .call("file.readDataUri", { path })
       .then((r) => {
-        if (str === path) {
+        if (imgPath === path) {
           dataUri = r.dataUri;
           // Flag an already-saved oversized thumbnail (e.g. remembered from a prior
           // session) so it is not silently dropped at go-live.
@@ -106,7 +131,7 @@
         }
       })
       .catch(() => {
-        if (str === path) {
+        if (imgPath === path) {
           imgError = true;
         }
       });
@@ -158,14 +183,14 @@
 </script>
 
 {#if field.type === "tags"}
-  <GoLiveTagsInput values={arr} {ghostText} {accent} onChange={(v) => onChange(v)} />
+  <GoLiveTagsInput values={arr} ghostLabel={showGhost ? ghostLabel : ""} {accent} onChange={(v) => onChange(v)} />
 {:else if field.type === "category"}
   <GoLiveCategoryInput
     {providerId}
     {accountId}
     value={cat}
-    placeholder={showGhost ? ghostLabel : (field.placeholder ?? "")}
-    ghost={showGhost}
+    placeholder={field.placeholder ?? ""}
+    inheritedName={showGhost ? ghostText : ""}
     browsable={field.browsable === true}
     onChange={(v) => onChange(v)}
   />
@@ -191,23 +216,29 @@
       <button class="thumb-x" title="Remove" aria-label="Remove image" onclick={clearImage}>×</button>
     </div>
     <div class="thumb-meta">{basename(str)}</div>
-  {:else}
+  {:else if showGhost}
+    <!-- Presented as a set image, because it is the one that will be sent. The box itself
+         takes the click: there is no × on an inherited image (this layer has nothing to
+         clear), so picking IS the override. -->
     <button
-      class="thumb"
-      class:ghost={showGhost}
+      class="thumb has pick"
+      aria-label="Override inherited image"
+      title="Pick to override"
       ondragover={(e) => e.preventDefault()}
       ondrop={onDrop}
       onclick={() => void pickImage()}
     >
-      {#if showGhost}
-        <!-- Basename only, as the filled box shows for its own file: the ghost is the same
-             image named the same way, so the two states read as one control. -->
-        <span class="ghostline">↳ {basename(ghostText)}</span>
-        <small>drop / pick to override</small>
+      {#if imgError || !dataUri}
+        <span class="fname">{basename(imgPath)}</span>
       {:else}
-        <span>drop / pick</span>
-        <small>PNG/JPG, ≤2 MB</small>
+        <img class="preview" src={dataUri} alt={basename(imgPath)} onerror={() => (imgError = true)} />
       {/if}
+    </button>
+    <div class="thumb-meta">{basename(imgPath)}</div>
+  {:else}
+    <button class="thumb" ondragover={(e) => e.preventDefault()} ondrop={onDrop} onclick={() => void pickImage()}>
+      <span>drop / pick</span>
+      <small>PNG/JPG, ≤2 MB</small>
     </button>
   {/if}
   {#if tooLarge}
@@ -216,18 +247,12 @@
     </div>
   {/if}
 {:else if field.type === "enum"}
-  <select
-    class="inp"
-    class:ghost={showGhost}
-    class:narrow
-    value={enumValue}
-    onchange={(e) => onChange(e.currentTarget.value)}
-  >
+  <select class="inp" class:narrow value={enumDisplay} onchange={(e) => onChange(e.currentTarget.value)}>
     {#if !requiredEnum}
-      <!-- Still submits empty, so the inherit semantics and resolveRequiredEnum are
-           untouched — but it NAMES the inherited option instead of reading as no value,
-           which for a required enum is the one thing the host is guaranteed to receive. -->
-      <option value="">{showGhost ? ghostLabel : "—"}</option>
+      <!-- The way back to inheriting once this layer has diverged. It never stands in for
+           the inherited value — the control lands on that value's own option instead — so
+           it stays unnamed rather than reading as a duplicate of the option beside it. -->
+      <option value="">—</option>
     {/if}
     {#each opts as opt (opt.value)}
       <option value={opt.value}>{opt.label}</option>
@@ -257,7 +282,7 @@
     class:ovr={accent}
     class:narrow
     type="text"
-    placeholder={ghostText ? "↳ " + ghostText : ""}
+    placeholder={showGhost ? ghostLabel : ""}
     value={str}
     oninput={(e) => onChange(e.currentTarget.value)}
   />
@@ -285,12 +310,6 @@
     border-color: var(--color-accent);
   }
   .inp.ghost::placeholder {
-    color: var(--color-muted);
-    font-style: italic;
-  }
-  /* A select has no placeholder to style, so the same muted italic lands on the option
-     standing in for the inherited value. */
-  select.inp.ghost {
     color: var(--color-muted);
     font-style: italic;
   }
@@ -363,13 +382,6 @@
     font-size: 9px;
     color: var(--color-muted);
   }
-  .thumb.ghost {
-    border-style: dotted;
-  }
-  .ghostline {
-    color: var(--color-muted);
-    font-style: italic;
-  }
   button.thumb:hover {
     border-color: var(--color-accent);
     color: var(--color-accent);
@@ -379,6 +391,9 @@
     border-style: solid;
     padding: 0;
     cursor: default;
+  }
+  .thumb.has.pick {
+    cursor: pointer;
   }
   .preview {
     width: 100%;

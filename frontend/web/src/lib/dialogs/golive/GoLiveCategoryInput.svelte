@@ -13,13 +13,13 @@
     accountId?: string;
     value: { id: string; name: string } | null;
     onChange: (v: { id: string; name: string } | null) => void;
-    /** Prompt shown in the empty field; the catalog wording when unset. Carries the caller's
-     * inherit cue when there is one, so the field names the value that will be sent rather
-     * than inviting a search for one it already has. */
+    /** Prompt shown in the empty field; the catalog wording when unset. */
     placeholder?: string;
-    /** The prompt is an inherit cue, not an invitation: render it as the muted italic ghost
-     * the other controls use for the same state. */
-    ghost?: boolean;
+    /** The category this control inherits when it holds none of its own. Shown as ordinary
+     * text, not as a muted prompt: it is the category that will be sent, so it reads the
+     * way a chosen one does and the row's "↳ using …" tag carries the distinction. Typing
+     * over it searches as usual; leaving it alone keeps the field inheriting. */
+    inheritedName?: string;
     /** The provider's choices are a short list, not a catalog: look them up on focus with
      * an empty query so they can be browsed. Off by default — a catalog search rejects an
      * empty query, and asking for one would spend a request that can only fail. */
@@ -31,7 +31,7 @@
     value,
     onChange,
     placeholder = "",
-    ghost = false,
+    inheritedName = "",
     browsable = false,
   }: Props = $props();
 
@@ -45,9 +45,11 @@
   let timer: ReturnType<typeof setTimeout> | null = null;
   let seq = 0;
 
-  // Keep the visible text in sync if the value is set externally (e.g. prefill).
+  // Keep the visible text in sync if the value is set externally (e.g. prefill), and show
+  // the inherited category the same way when this layer holds none — the field is still
+  // inheriting (nothing is written back), it just reads as what it will send.
   $effect(() => {
-    query = value?.name ?? "";
+    query = value?.name ?? inheritedName;
   });
 
   function schedule(): void {
@@ -119,7 +121,6 @@
 <div class="cat" bind:this={rootEl}>
   <input
     class="inp"
-    class:ghost
     type="text"
     placeholder={prompt}
     bind:value={query}
@@ -161,10 +162,6 @@
   .inp:focus {
     outline: none;
     border-color: var(--color-accent);
-  }
-  .inp.ghost::placeholder {
-    color: var(--color-muted);
-    font-style: italic;
   }
   .menu {
     list-style: none;

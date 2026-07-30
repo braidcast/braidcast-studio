@@ -336,6 +336,15 @@ import { EV } from "$lib/utils/eventNames";
     }
     return undefined;
   }
+  // What a control holding nothing of its own effectively stands on: the nearest layer that
+  // holds a value, else what effectiveFields emits from there — for a required field, its
+  // descriptor default, which goes out on Go Live whether or not any layer was ever filled.
+  // Held once because three sites render it (the cue's wording, the option a select lands
+  // on, the row's note) and a second copy is one of them naming a value never sent.
+  function inheritedShownValue(f: OAuthProviderField, providerId: string): unknown {
+    const v = inheritedValue(f, providerId);
+    return isEmptyVal(f.type, v) ? resolveRequiredEnum(f, "") : v;
+  }
   // What a control at `layer` is EFFECTIVELY showing: its own value, else what it falls back
   // to, in the same order effectiveFields pushes — a stream falls back to its channel first,
   // then to the field's scope layers. Anything reading the value on screen (the provider's
@@ -357,11 +366,10 @@ import { EV } from "$lib/utils/eventNames";
     if (layer === "stream" && !isEmptyVal(f.type, channelValues[accountId]?.[f.key])) {
       return channelValues[accountId]?.[f.key];
     }
-    const inherited = inheritedValue(f, providerId);
-    // Same last resort the ghost names and effectiveFields pushes, so a row displaying a
-    // descriptor default still carries that value's note — for YouTube's privacy the note
-    // IS the point of the field, and it would otherwise appear only once a layer fills.
-    return isEmptyVal(f.type, inherited) ? resolveRequiredEnum(f, "") : inherited;
+    // Resolved through the shared helper so a row displaying a descriptor default still
+    // carries that value's note — for YouTube's privacy the note IS the point of the field,
+    // and it would otherwise appear only once a layer fills.
+    return inheritedShownValue(f, providerId);
   }
 
   // What the layer under a channel control is called wherever the UI names it. A provider
@@ -371,24 +379,23 @@ import { EV } from "$lib/utils/eventNames";
     return inheritBucket(f, p.id) === ALL_LAYER ? "shared" : p.displayName + " default";
   }
 
-  // Human-readable inherited value for a field's inherit ghost. An enum is named by its
-  // option LABEL, not the raw value the descriptor carries: the ghost stands where the
-  // chosen option's text would be, so showing "public" beside options reading "Public"
-  // would read as a different value than the one that will be sent.
+  // Human-readable inherited value: the text for the controls that print the cue, and the
+  // "is anything inherited here?" signal for those that show it as an ordinary value
+  // instead. An enum is named by its option LABEL rather than the raw descriptor value, so
+  // wherever it does surface it reads as the option the user would pick, not as "public".
   //
-  // With no layer holding anything the cue names what effectiveFields emits from there —
-  // resolved through the same call it makes, so the cue appears exactly when a value is
-  // pushed and stays absent when the key is omitted. Without it a required field reads as
-  // unset on a just-opened modal while its descriptor default goes out on Go Live.
+  // Empty exactly when nothing is inherited — resolved through the same call effectiveFields
+  // makes, so the cue appears exactly when a value is pushed and stays absent when the key
+  // is omitted. Without it a required field reads as unset on a just-opened modal while its
+  // descriptor default goes out on Go Live.
   function inheritedGhostText(f: OAuthProviderField, providerId: string): string {
-    const v = inheritedValue(f, providerId);
+    const held = inheritedShownValue(f, providerId);
     if (f.type === "tags" || f.type === "labelset") {
-      return Array.isArray(v) ? v.join(", ") : "";
+      return Array.isArray(held) ? held.join(", ") : "";
     }
     if (f.type === "category") {
-      return v && typeof v === "object" ? ((v as { name?: string }).name ?? "") : "";
+      return held && typeof held === "object" ? ((held as { name?: string }).name ?? "") : "";
     }
-    const held = isEmptyVal(f.type, v) ? resolveRequiredEnum(f, "") : v;
     if (f.type === "enum") {
       const opt = (f.options ?? []).map(normOpt).find((o) => o.value === held);
       return opt?.label ?? (typeof held === "string" ? held : "");
@@ -1067,6 +1074,7 @@ import { EV } from "$lib/utils/eventNames";
     providerId?: string;
     accountId?: string;
     ghostText?: string;
+    ghostValue?: unknown;
     accent?: boolean;
     narrow?: boolean;
     hint?: string;
@@ -1091,6 +1099,7 @@ import { EV } from "$lib/utils/eventNames";
         providerId={opts.providerId ?? ""}
         accountId={opts.accountId ?? ""}
         ghostText={opts.ghostText ?? ""}
+        ghostValue={opts.ghostValue}
         accent={opts.accent ?? false}
         narrow={opts.narrow ?? false}
         inheritable={opts.inheritable ?? false}
@@ -1326,10 +1335,12 @@ import { EV } from "$lib/utils/eventNames";
                     </div>
                   {/if}
 
-                  <!-- Fields with a layer below, as per-channel overrides of it (ghost cue
-                       when inheriting, amber when the channel diverges). The tag names the
-                       layer, so a value shared only among this platform's channels never
-                       reads as one shared with every platform. -->
+                  <!-- Fields with a layer below, as per-channel overrides of it. While
+                       inheriting, the control shows the inherited value the way a chosen one
+                       looks and the tag alone says it is inherited; amber marks a channel
+                       that diverges. The tag names the layer, so a value shared only among
+                       this platform's channels never reads as one shared with every
+                       platform. -->
                   {#each simpleInherited(c.provider) as f (f.key)}
                     {@const filled = isOverridden(c.accountId, f)}
                     {@const layer = inheritLabel(f, c.provider)}
@@ -1337,6 +1348,7 @@ import { EV } from "$lib/utils/eventNames";
                       providerId: c.provider.id,
                       accountId: c.accountId,
                       ghostText: inheritedGhostText(f, c.provider.id),
+                      ghostValue: inheritedShownValue(f, c.provider.id),
                       inheritable: inheritsBelow(f, "channel", c.provider.id),
                       accent: filled,
                       tag: filled ? "— overrides " + layer : "↳ using " + layer,

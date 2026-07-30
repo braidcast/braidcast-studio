@@ -1,15 +1,16 @@
 <script lang="ts">
   // Chip-style tag editor (mock `.tags` / `.tag`). Holds its own "adding" draft so
   // each instance (shared block + every per-destination override) is independent.
-  // When empty and `ghostText` is set, shows the inherited value as italic ghost
-  // text (`↳ …`) with a "+ add" affordance to start overriding.
+  // When empty and `ghostLabel` is set, shows the inherited value as italic ghost
+  // text with a "+ add" affordance to start overriding. The label arrives already
+  // composed so the inherit cue is worded in exactly one place.
   interface Props {
     values: string[];
     onChange: (next: string[]) => void;
-    ghostText?: string;
+    ghostLabel?: string;
     accent?: boolean;
   }
-  let { values, onChange, ghostText, accent = false }: Props = $props();
+  let { values, onChange, ghostLabel, accent = false }: Props = $props();
 
   let adding = $state(false);
   let draft = $state("");
@@ -44,9 +45,9 @@
   }
 </script>
 
-{#if values.length === 0 && ghostText && !adding}
+{#if values.length === 0 && ghostLabel && !adding}
   <div class="ghost-line">
-    <span class="ghost">↳ {ghostText}</span>
+    <span class="ghost">{ghostLabel}</span>
     <button type="button" class="tag add" onclick={startAdd}>+ add</button>
   </div>
 {:else}
