@@ -362,6 +362,9 @@
     width: 100%;
     max-width: 320px;
     aspect-ratio: 16 / 9;
+    /* The empty picker is a <button> too, so it cannot rely on the ratio above for its
+       height either. A floor keeps it a drop target rather than a strip. */
+    min-height: 84px;
     box-sizing: border-box;
     border: var(--border-weight) dashed var(--color-border);
     color: var(--color-muted);
@@ -386,8 +389,15 @@
     border-color: var(--color-accent);
     color: var(--color-accent);
   }
+  /* An inherited image renders in a <button> (picking IS the override) where a chosen one
+     renders in a <div>, and only the button collapsed: the frame's own `aspect-ratio` does
+     not survive on a button, and as a flex container it then shrank the image to the
+     collapsed height. Both are taken out of the sizing path here -- the image alone carries
+     the ratio, and the box takes its height from the image whatever element wraps it. */
   .thumb.has {
     position: relative;
+    display: block;
+    aspect-ratio: auto;
     border-style: solid;
     padding: 0;
     cursor: default;
