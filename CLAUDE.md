@@ -77,6 +77,43 @@ Build output goes to `build_x64/` / `build_arm64/` / `build_macos/` / `build_ubu
 
 The Svelte web bundle builds as part of the frontend target: CMake runs `bun install && bun run build` from `frontend/web/` (an always-run, incremental `frontend-web` custom target) and copies `frontend/web/dist` into the rundir's data directory, served from there via the `app://` scheme handler.
 
+## Day-to-day driver: `mage` (Windows)
+
+`magefile.go` wraps the flows above and is the normal way to work. It pins the CMake binary
+from the VS BuildTools install rather than trusting `PATH`. Bare `mage` == `mage build`.
+
+| Command | What it does |
+| --- | --- |
+| `mage build` | Incremental build of the `braidcast-frontend` target only. **The everyday command.** |
+| `mage buildAll` | Full build of every target. |
+| `mage configure` | `mage tag` + `mage deps`, then `cmake --preset windows-x64`. |
+| `mage tag` | Forces the `32.1.0` git tag — without a tag `git describe` yields a bare hash and the CMake version parse fails. Idempotent. |
+| `mage run` | Launches the rundir exe with `--portable` (mandatory; keeps OBS off `%APPDATA%\obs-studio`). |
+| `mage format` | `clang-format` in place over C/C++ changed vs HEAD (staged, unstaged, untracked). |
+| `mage formatCheck` | The local stand-in for CI's format job — compares against **master**, which `mage format` cannot do. |
+| `mage deps` | Prefetches the dependency zips into `.deps/` (Norton 360 MITMs TLS and breaks OCSP, so CMake's own `file(DOWNLOAD)` is unreliable here). |
+
+**A web-only change is invisible to the app until `mage build` runs.** `bun run build` from
+`frontend/web/` refreshes `frontend/web/dist`, but the app serves the *rundir copy* via the
+`app://` handler, and only the frontend CMake target stages it there. Editing a `.svelte`
+file, running `bun run build`, and relaunching will show the OLD UI — with no error to
+explain why. Verify by comparing the hashed asset names in `frontend/web/dist/assets/`
+against `build_x64/rundir/RelWithDebInfo/` when a change appears not to have applied.
+
+**Use `mage format` / `mage formatCheck` rather than invoking `clang-format` yourself.** The
+version must be exactly 19.1.1; the magefile downloads that wheel from PyPI into `.deps/`
+against a pinned SHA256. VS BuildTools bundles 19.1.5, and the patch releases disagree about
+output — a local pass against the wrong binary is a verdict CI will contradict. Per the
+magefile's own note, that mismatch is how ten files once reached master unformatted.
+
+**Local format gate:** `.githooks/pre-commit` checks staged C/C++ (pinned binary) and CMake
+(`gersemi`, if installed) files. Hooks are not versioned into `.git`, so opt in per clone:
+`git config core.hooksPath .githooks`. A missing formatter warns rather than blocks, since
+`.deps/` is gitignored and a fresh clone has none until `mage deps` runs.
+
+**`error C1056: cannot update the time date stamp field` on `build_info.obj`** is a transient
+file lock, not a code fault — antivirus touching the object mid-write. Re-run the build.
+
 ## Formatting (enforced by CI — `check-format.yaml`)
 
 The project pins exact formatter versions. CI rejects PRs that don't match. Column limit is **120 chars**.
