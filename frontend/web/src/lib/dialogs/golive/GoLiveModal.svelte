@@ -374,9 +374,11 @@ import { EV } from "$lib/utils/eventNames";
 
   // What the layer under a channel control is called wherever the UI names it. A provider
   // layer is named after the platform: calling it "shared" would claim a reach the value
-  // deliberately does not have.
+  // deliberately does not have. It is named as the user's OWN default, because the bare
+  // platform name reads as the platform's default instead — on privacy that misreading
+  // looks like nothing is set while a real value is queued to go out.
   function inheritLabel(f: OAuthProviderField, p: OAuthProvider): string {
-    return inheritBucket(f, p.id) === ALL_LAYER ? "shared" : p.displayName + " default";
+    return inheritBucket(f, p.id) === ALL_LAYER ? "shared" : "your " + p.displayName + " default";
   }
 
   // Human-readable inherited value: the text for the controls that print the cue, and the
