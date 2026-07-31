@@ -1,8 +1,8 @@
 #include "harness.hpp"
 #include "testseam.hpp"
 
-#include "scene_collections.hpp"
-#include "scene_persistence.hpp"
+#include "scene/scene_collections.hpp"
+#include "scene/scene_persistence.hpp"
 
 #include "multistream/CanvasRuntime.hpp"
 #include "multistream/CanvasStore.hpp"

@@ -14,7 +14,7 @@ extern "C" {
 #include <cmocka.h>
 }
 
-#include "scene_persistence.hpp"
+#include "scene/scene_persistence.hpp"
 
 #include "multistream/StorePaths.hpp"
 

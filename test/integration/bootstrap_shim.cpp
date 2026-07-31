@@ -18,8 +18,8 @@
 #include "testseam.hpp"
 
 #include "obs_bootstrap.hpp"
-#include "scene_collections.hpp"
-#include "transitions.hpp"
+#include "scene/scene_collections.hpp"
+#include "scene/transitions.hpp"
 
 #include "multistream/CanvasRuntime.hpp"
 #include "multistream/CanvasStore.hpp"
