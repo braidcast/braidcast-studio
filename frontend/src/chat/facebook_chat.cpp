@@ -382,8 +382,11 @@ bool FacebookChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, co
 		// recovers, and a row that claims it is reconnecting leaves the user waiting on a
 		// chat that will never come back.
 		if (status == 400 || status == 401 || status == 403 || status == 404) {
-			DBG(LogCat::Chat, "facebook: dest=%s terminal HTTP %ld, ending session",
-			    session.destTag.c_str(), status);
+			// The body is logged, not just the parsed message: Meta answers some
+			// rejections with an envelope GraphErrorReason finds no `message` in, and
+			// the status alone cannot tell a bad credential from a bad edge.
+			DBG(LogCat::Chat, "facebook: dest=%s terminal HTTP %ld, ending session (body=%s)",
+			    session.destTag.c_str(), status, Http::BodyForLog(errorBody).c_str());
 			EndSession(session, "Facebook comments stopped: " + GraphErrorReason(errorBody, status), err);
 			break;
 		}

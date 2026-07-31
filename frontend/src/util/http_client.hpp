@@ -81,6 +81,27 @@ inline bool Require2xx(const HttpResponse &resp, const char *label, std::string 
 	return true;
 }
 
+// A response body rendered as one log line. `(empty)` is deliberate rather than a blank:
+// "the server explained nothing" and "we never recorded it" are different diagnoses, and a
+// terminal error that prints neither leaves the next reader unable to tell them apart.
+// Control characters are flattened so a multi-line payload cannot break the line it sits on.
+inline std::string BodyForLog(const std::string &body, size_t max = 400)
+{
+	if (body.empty()) {
+		return "(empty)";
+	}
+	std::string out = body.substr(0, max);
+	for (char &c : out) {
+		if (static_cast<unsigned char>(c) < 0x20) {
+			c = ' ';
+		}
+	}
+	if (body.size() > max) {
+		out += "...(truncated)";
+	}
+	return out;
+}
+
 } // namespace Http
 
 #endif // OBS_MULTISTREAM_FRONTEND_HTTP_CLIENT_HPP_

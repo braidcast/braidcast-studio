@@ -669,8 +669,11 @@ bool RunStreamList(ChatSession &s, std::string &err)
 				}
 				continue;
 			}
-			DBG(LogCat::Chat, "youtube streamList: dest=%s terminal HTTP %ld (%s), ending session",
-			    s.destTag.c_str(), status, reason.c_str());
+			// `reason` is parsed only for 403, so any other terminal status would
+			// otherwise end the session naming neither a cause nor the payload.
+			DBG(LogCat::Chat,
+			    "youtube streamList: dest=%s terminal HTTP %ld (%s), ending session (body=%s)",
+			    s.destTag.c_str(), status, reason.c_str(), Http::BodyForLog(errorBody).c_str());
 			EndSession(s, TerminalHttpReason(status, reason), err);
 			break;
 		}
