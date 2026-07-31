@@ -120,6 +120,10 @@ void ObsBootstrap::RunOverlaySelfTest()
 						       {"value", "#9147ff"}}});
 	Overlay::Store().InjectForTest(w);
 
+	// A private server on an ephemeral port, NOT Overlay::Server(). That matters beyond
+	// isolation: this runs after bootstrap has already started the real one, and the
+	// teardown below calls Stop() -- pointed at the singleton it would take the live
+	// overlay server down for the rest of the session.
 	Overlay::OverlayServer server;
 	int port = 0;
 	const bool ok = server.StartForTest(0, &port);

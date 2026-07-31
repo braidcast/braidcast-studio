@@ -43,6 +43,32 @@ std::string NewToken()
 	return s;
 }
 
+// A widget's own directory (the parent of AssetsDir): the single place the
+// overlays/<id> layout is spelled out.
+std::string WidgetDir(const std::string &id)
+{
+	return MultistreamBasicPath(("overlays/" + id).c_str());
+}
+
+// Drop a widget's whole directory, errors swallowed (a leftover dir is not worth
+// failing a delete over). Call with mutex_ RELEASED -- see the note in AddAsset.
+void RemoveWidgetDir(const std::string &id)
+{
+	std::error_code ec;
+	std::filesystem::remove_all(std::filesystem::u8path(WidgetDir(id)), ec);
+}
+
+// The widget with this id, or null. Caller holds mutex_.
+Widget *FindWidget(std::vector<Widget> &widgets, const std::string &id)
+{
+	for (Widget &w : widgets) {
+		if (w.id == id) {
+			return &w;
+		}
+	}
+	return nullptr;
+}
+
 // Read a whole file (binary) into `out`; false if it can't be opened.
 bool ReadWholeFile(const std::string &path, std::string &out)
 {
@@ -120,7 +146,7 @@ std::string OverlayStore::FilePath()
 
 std::string OverlayStore::AssetsDir(const std::string &id)
 {
-	return MultistreamBasicPath(("overlays/" + id + "/assets").c_str());
+	return WidgetDir(id) + "/assets";
 }
 
 std::vector<Widget> OverlayStore::List() const
@@ -244,38 +270,47 @@ std::optional<Widget> OverlayStore::Duplicate(const std::string &id)
 
 bool OverlayStore::Delete(const std::string &id)
 {
-	std::lock_guard<std::mutex> lock(mutex_);
-	const size_t before = widgets_.size();
-	widgets_.erase(std::remove_if(widgets_.begin(), widgets_.end(), [&](const Widget &w) { return w.id == id; }),
-		       widgets_.end());
-	if (widgets_.size() == before) {
-		return false;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		const size_t before = widgets_.size();
+		widgets_.erase(std::remove_if(widgets_.begin(), widgets_.end(),
+					      [&](const Widget &w) { return w.id == id; }),
+			       widgets_.end());
+		if (widgets_.size() == before) {
+			return false;
+		}
+		Save();
 	}
-	// Remove the widget's whole overlays/<id> dir (the parent of AssetsDir).
-	std::error_code ec;
-	std::filesystem::remove_all(std::filesystem::u8path(MultistreamBasicPath(("overlays/" + id).c_str())), ec);
-	Save();
+	// Outside mutex_: remove_all walks a directory tree, and the video thread now takes
+	// this lock on every overlay source's update, so a held lock here is dropped frames.
+	// The path derives from the id alone, so nothing under the lock is needed. Dropping
+	// the directory AFTER the registry is persisted also fails safe -- a crash in
+	// between orphans a directory nothing references, rather than leaving a widget whose
+	// assets are already gone.
+	RemoveWidgetDir(id);
 	return true;
 }
 
 std::string OverlayStore::AddAsset(const std::string &id, const std::string &key, const std::string &kind,
 				   const std::vector<unsigned char> &bytes)
 {
-	std::lock_guard<std::mutex> lock(mutex_);
-	Widget *target = nullptr;
-	for (Widget &w : widgets_) {
-		if (w.id == id) {
-			target = &w;
-			break;
-		}
-	}
-	if (!target) {
-		return std::string();
-	}
 	const std::string safeKey = SanitizeAssetKey(key);
 	if (safeKey.empty()) {
 		return std::string();
 	}
+	{
+		// Existence check only; the blob below is written with mutex_ RELEASED. At the
+		// 8 MB cap the write plus the WRITE_THROUGH move is tens of milliseconds, and
+		// the video thread now takes this lock on every overlay source's update -- a
+		// hold that long is several missed composites, not jitter. Same discipline
+		// OverlayServer applies to sseMutex_ (snapshot under lock, do the blocking part
+		// unlocked; see overlay_server.hpp).
+		std::lock_guard<std::mutex> lock(mutex_);
+		if (!FindWidget(widgets_, id)) {
+			return std::string();
+		}
+	}
+
 	const std::string dir = AssetsDir(id);
 	if (os_mkdirs(dir.c_str()) == MKDIR_ERROR) {
 		return std::string();
@@ -309,17 +344,32 @@ std::string OverlayStore::AddAsset(const std::string &id, const std::string &key
 		std::filesystem::remove(tmpPath, ec);
 		return std::string();
 	}
-	bool exists = false;
-	for (const json &a : target->assets) {
-		if (a.is_object() && a.value("file", std::string()) == safeKey) {
-			exists = true;
-			break;
+	bool stillPresent = false;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		Widget *target = FindWidget(widgets_, id);
+		if (target) {
+			stillPresent = true;
+			bool exists = false;
+			for (const json &a : target->assets) {
+				if (a.is_object() && a.value("file", std::string()) == safeKey) {
+					exists = true;
+					break;
+				}
+			}
+			if (!exists) {
+				target->assets.push_back(json{{"key", key}, {"kind", kind}, {"file", safeKey}});
+			}
+			Save();
 		}
 	}
-	if (!exists) {
-		target->assets.push_back(json{{"key", key}, {"kind", kind}, {"file", safeKey}});
+	if (!stillPresent) {
+		// Deleted while the blob was being written: that Delete already dropped the
+		// directory, which the write above then recreated. Clear it again rather than
+		// leave a directory no widget references.
+		RemoveWidgetDir(id);
+		return std::string();
 	}
-	Save();
 	return "assets/" + safeKey;
 }
 

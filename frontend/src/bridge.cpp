@@ -43,6 +43,7 @@
 #include "ingest_writeback.hpp"
 #include "log.hpp"
 #include "overlay/overlay_server.hpp"
+#include "overlay/overlay_sources.hpp"
 #include "overlay/overlay_store.hpp"
 #include "mcp/McpServer.hpp"
 #include "windowing/interact_window.hpp"
@@ -10202,6 +10203,9 @@ bool MethodOverlaysDelete(const json &p, json &result, std::string &error)
 		error = "no such overlay: " + id;
 		return false;
 	}
+	// Any source still bound to the deleted id re-resolves to nothing and goes blank,
+	// rather than keeping the removed widget's last page on screen.
+	Overlay::RefreshSources();
 	EmitEvent(EventNames::kOverlaysChanged, json::object());
 	result = json{{"removed", id}};
 	return true;
@@ -10367,8 +10371,9 @@ bool MethodOverlaysUploadAsset(const json &p, json &result, std::string &error)
 }
 
 // overlays.addToScene {id, canvas?, scene?} -> {id:<sceneItemId>, source:<name>}.
-// Mirrors MethodSourcesCreate exactly, differing only in creating a browser_source
-// pre-seeded with the widget URL + the target canvas's base resolution.
+// Mirrors MethodSourcesCreate exactly, differing only in creating a braidcast_overlay
+// bound to the widget id + sized to the target canvas's base resolution. The source
+// type resolves the id to a live URL itself, here and on every later load.
 bool MethodOverlaysAddToScene(const json &params, json &result, std::string &error)
 {
 	const std::string id = OptString(params, "id");
@@ -10377,7 +10382,6 @@ bool MethodOverlaysAddToScene(const json &params, json &result, std::string &err
 		error = "no such overlay: " + id;
 		return false;
 	}
-	const std::string url = Overlay::WidgetUrl(*w, Overlay::Store().Port());
 
 	std::string name = OptString(params, "name");
 	if (name.empty()) {
@@ -10402,14 +10406,15 @@ bool MethodOverlaysAddToScene(const json &params, json &result, std::string &err
 	ResolveBaseSize(params, baseW, baseH);
 
 	obs_data_t *settings = obs_data_create();
-	obs_data_set_string(settings, "url", url.c_str());
+	obs_data_set_string(settings, Overlay::kOverlayIdKey, id.c_str());
 	obs_data_set_int(settings, "width", baseW);
 	obs_data_set_int(settings, "height", baseH);
-	obs_source_t *source = obs_source_create("browser_source", name.c_str(), settings, nullptr); // create-ref
+	obs_source_t *source =
+		obs_source_create(Overlay::kOverlaySourceId, name.c_str(), settings, nullptr); // create-ref
 	obs_data_release(settings);
 	if (!source) {
 		obs_source_release(sceneSource);
-		error = "obs_source_create failed for browser_source";
+		error = std::string("obs_source_create failed for ") + Overlay::kOverlaySourceId;
 		return false;
 	}
 

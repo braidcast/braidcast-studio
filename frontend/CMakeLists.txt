@@ -258,6 +258,11 @@ target_sources(
     src/overlay/overlay_server.hpp
     src/overlay/overlay_store.cpp
     src/overlay/overlay_store.hpp
+    # The libobs global procs obs-browser's braidcast_overlay source type resolves its
+    # URL through, plus the re-resolve sweep the server's bind fires (includes obs.h ->
+    # in the /wd4201 set below).
+    src/overlay/overlay_sources.cpp
+    src/overlay/overlay_sources.hpp
     # Overlay self-test: real loopback CLIENT sockets, so winsock-only (no obs.h) and
     # kept out of obs_bootstrap.cpp to dodge the winsock2/windows.h include-order clash.
     src/overlay/overlay_selftest.cpp
@@ -502,6 +507,7 @@ set_source_files_properties(
   utility/StreamProfile.cpp
   src/events/event_store.cpp
   src/overlay/overlay_store.cpp
+  src/overlay/overlay_sources.cpp
   src/multistream/CanvasStore.cpp
   src/multistream/StreamProfileStore.cpp
   src/multistream/OutputBindingStore.cpp

@@ -14,13 +14,15 @@
 
 #include "../log.hpp"
 #include "../obs_bootstrap.hpp"
+#include "../overlay/overlay_sources.hpp"
 #include "../util/env_config.hpp"
 
 namespace {
 
-// The obs-browser OSR source id (plugins/obs-browser registers "browser_source").
-// Match the unversioned id so a versioned "browser_source_v2" would still count.
-constexpr char kBrowserSourceId[] = "browser_source";
+// Every CEF-backed OSR source id plugins/obs-browser registers. Both cost the same
+// GPU raster/compositing, so both are tallied and both are neutralized. Matched
+// against the unversioned id so a versioned "browser_source_v2" would still count.
+constexpr const char *kBrowserSourceIds[] = {"browser_source", Overlay::kOverlaySourceId};
 
 constexpr uint64_t kBytesPerMiB = 1024ull * 1024ull;
 constexpr int kDefaultIntervalMs = 5000;
@@ -39,6 +41,10 @@ void NeutralizeBrowserSource(obs_source_t *source)
 	obs_data_set_bool(settings, "is_local_file", false);
 	obs_data_set_string(settings, "local_file", "");
 	obs_data_set_string(settings, "url", "about:blank");
+	// An overlay source recomputes its url from this id, so a blank url alone would be
+	// overwritten on the next update. Clearing it is as destructive to the setting as
+	// overwriting url is for a browser source, which this opt-in diagnostic already does.
+	obs_data_set_string(settings, Overlay::kOverlayIdKey, "");
 	obs_data_set_int(settings, "width", 16);
 	obs_data_set_int(settings, "height", 16);
 	obs_data_set_bool(settings, "fps_custom", false);
@@ -56,7 +62,15 @@ const char *SafeName(obs_source_t *source)
 bool IsBrowserSource(obs_source_t *source)
 {
 	const char *id = obs_source_get_unversioned_id(source);
-	return id != nullptr && strcmp(id, kBrowserSourceId) == 0;
+	if (id == nullptr) {
+		return false;
+	}
+	for (const char *known : kBrowserSourceIds) {
+		if (strcmp(id, known) == 0) {
+			return true;
+		}
+	}
+	return false;
 }
 
 // obs_enum_sources sweep: neutralize browser sources that already exist when the

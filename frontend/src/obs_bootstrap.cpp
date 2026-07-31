@@ -56,6 +56,7 @@
 #include "oauth/account_store.hpp"
 #include "oauth/registry.hpp"
 #include "overlay/overlay_server.hpp"
+#include "overlay/overlay_sources.hpp"
 #include "overlay/overlay_store.hpp"
 #include "settings/AdvancedSettings.hpp"
 #include "settings/GeneralSettings.hpp"
@@ -801,6 +802,28 @@ bool ObsBootstrap::Start()
 	HostLog("[obs] advanced settings loaded; process priority=" + g_advanced.processPriority +
 		"; audio ducking disabled=" + std::string(g_advanced.disableAudioDucking ? "true" : "false"));
 
+	// obs-browser's braidcast_overlay source type resolves its URL through these, and
+	// a source can be created the moment the module registers the type, so they must
+	// be on the handler before the load below.
+	Overlay::RegisterProcs();
+
+	// Phase 9.3: bring up the overlay-widget loopback server (127.0.0.1); stopped in
+	// Bridge::Shutdown before CEF teardown (alongside the chat/events transports). The
+	// bind result feeds the transport-health surface (Connected when listening, Failed
+	// when no port in range binds).
+	//
+	// This must precede anything that can create an overlay source -- the scene
+	// collection below is the first -- because a source that resolves no URL loads a
+	// blank page and then has to be handed the real one, and each of those swaps
+	// destroys and respawns a CEF browser during boot. Start() only reads the store's
+	// persisted port, so it has no ordering debt to the model, scenes or providers
+	// (which push into the server, and none of which it reads).
+	const bool overlayUp = Overlay::Server().Start();
+	Transports::Health().Report(Transports::kOverlayTransportId,
+				    overlayUp ? Transports::TransportHealth::State::Connected
+					      : Transports::TransportHealth::State::Failed,
+				    overlayUp ? "" : Overlay::Server().LastError());
+
 	LoadCuratedModules();
 
 	obs_post_load_modules();
@@ -923,17 +946,6 @@ bool ObsBootstrap::Start()
 	// not go-live-gated), so follower/subscriber totals refresh before/after
 	// streaming. Stopped in Bridge::Shutdown alongside the other always-on workers.
 	Chat::Channels().Start();
-
-	// Phase 9.3: bring up the overlay-widget loopback server (127.0.0.1). Started
-	// after the model + providers so a widget URL is immediately servable; stopped in
-	// Bridge::Shutdown before CEF teardown (alongside the chat/events transports).
-	// The bind result feeds the transport-health surface (Connected when listening,
-	// Failed when no port in range binds).
-	const bool overlayUp = Overlay::Server().Start();
-	Transports::Health().Report(Transports::kOverlayTransportId,
-				    overlayUp ? Transports::TransportHealth::State::Connected
-					      : Transports::TransportHealth::State::Failed,
-				    overlayUp ? "" : Overlay::Server().LastError());
 
 	// Boot reconcile: the global video pipeline was initialized to a fixed default
 	// above (before modules could load), but the persisted Default canvas def is the

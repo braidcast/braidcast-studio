@@ -1,16 +1,17 @@
 import type { SourceType } from "$lib/api/bridge";
 
-export type Category = "capture" | "media" | "audio" | "web" | "other";
+export type Category = "capture" | "media" | "audio" | "overlays" | "web" | "other";
 
 /** Fixed display order of the functional categories (Recently Used is prepended
  * by the modal, not here). */
-export const CATEGORY_ORDER: Category[] = ["capture", "media", "audio", "web", "other"];
+export const CATEGORY_ORDER: Category[] = ["capture", "media", "audio", "overlays", "web", "other"];
 
 export const CATEGORY_LABEL: Record<Category | "recent", string> = {
   recent: "Recently Used",
   capture: "Capture",
   media: "Media",
   audio: "Audio",
+  overlays: "Overlays",
   web: "Web",
   other: "Other",
 };
@@ -42,6 +43,9 @@ const TYPE_CATEGORY: Record<string, Category> = {
   coreaudio_output_capture: "audio",
   pulse_input_capture: "audio",
   pulse_output_capture: "audio",
+  // Overlays. Registered by the obs-browser fork (plugins/obs-browser,
+  // RegisterBraidcastOverlaySource) and mirrored in C++ as Overlay::kOverlaySourceId.
+  braidcast_overlay: "overlays",
   // Web
   browser_source: "web",
 };
