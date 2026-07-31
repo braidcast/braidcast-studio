@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -61,6 +62,15 @@ constexpr int64_t kBacklogGraceMs = 60000;
 // Below this, a 2xx connection that delivered nothing is a reject rather than a stream
 // that ran and ended, and reconnecting on the floor would spin.
 constexpr long kMinCycleMs = 2000;
+
+// How long a run of 400s is retried before the session ends. A 400 from the push host answers
+// the state of the broadcast rather than the validity of the credential or the id, which is
+// why it is retried at all where its 401/403/404 neighbors are not: this transport's connect()
+// runs while the RTMP connection Facebook needs before it will serve comments is still being
+// established, so the early reads are asking too soon. The budget is generous enough to cover
+// a slow go-live and still bounded, since a read that is genuinely malformed would otherwise
+// reopen for the whole broadcast.
+constexpr std::chrono::seconds kBadRequestBudget{90};
 
 // Dead time between a healthy connection closing and the next opening. Meta bills nothing
 // per request here, so this is only a guard against a server that closes immediately in a
@@ -132,6 +142,41 @@ std::string GraphErrorReason(const std::string &body, long status)
 	const json parsed = ParseJson(body);
 	const std::string message = Str(Obj(parsed, "error"), "message");
 	return message.empty() ? ("HTTP " + std::to_string(status)) : message;
+}
+
+// Whether the broadcast has already ended, read once on graph.facebook.com -- the surface
+// that answers a Page-scoped read with JSON, whereas a rejected read on the streaming host
+// comes back as an HTML error page carrying no state to act on. `status` names the state when
+// the answer is true.
+//
+// Deliberately one-directional: only a status IsEndedLiveStatus positively recognizes stops
+// the read. An unrecognized spelling, an absent field, a broadcast that has not started, and a
+// failed request all return false and let the read loop proceed, for the reason that list
+// documents -- the spelling of the running state is unconfirmed, so anything else read as
+// "not live" would suppress a working chat.
+bool BroadcastEnded(CommentSession &s, std::string &status)
+{
+	Http::HttpReq req;
+	req.method = "GET";
+	// GraphUrl contributes no query of its own, so this node read owns the separator. The
+	// field is asked for explicitly: the node's default field set does not include it.
+	req.url = OAuth::GraphUrl(s.liveVideoId) + "?fields=status";
+
+	OAuth::OAuthAccount pageAcct = OAuth::PageAccount(s.owner.id(), s.pageToken);
+	Http::HttpResponse resp;
+	std::string reqErr;
+	if (!s.owner.SendAuthed(pageAcct, req, resp, reqErr) ||
+	    !Http::Require2xx(resp, "Facebook live-video status", reqErr)) {
+		DBG(LogCat::Chat, "facebook: dest=%s live-video status read failed (%s), reading comments anyway",
+		    s.destTag.c_str(), Err::Diagnostic(reqErr).c_str());
+		return false;
+	}
+
+	const json parsed = ParseJson(resp.body);
+	status = Str(parsed, "status");
+	DBG(LogCat::Chat, "facebook: dest=%s broadcast status=%s", s.destTag.c_str(),
+	    status.empty() ? "unreported" : status.c_str());
+	return OAuth::IsEndedLiveStatus(status);
 }
 
 // One live_comments frame or /comments row -> the normalized chat frame, or a null json
@@ -336,13 +381,26 @@ bool FacebookChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, co
 	DBG(LogCat::Chat, "facebook: dest=%s video=..%s opening the live-comment stream", session.destTag.c_str(),
 	    videoTail.c_str());
 
+	// A broadcast that already ended has no comments to push, and reading it would spend the
+	// whole 400 budget below discovering that. Only a positively recognized ended status stops
+	// the read here; everything else, this check included having failed, goes on to read.
+	std::string endedStatus;
+	const bool ended = BroadcastEnded(session, endedStatus);
+	if (ended) {
+		EndSession(session, "Facebook comments unavailable: the broadcast is " + endedStatus, err);
+	}
+
 	bool firstConnect = true;
 	// Consecutive 2xx connections that closed at once having delivered nothing. Only the
 	// leading edge is host-logged, so a sustained reject loop stays visible without
 	// flooding the log.
 	int emptyStreak = 0;
+	// When the current run of 400s stops being worth retrying. Unset until one arrives, and
+	// cleared by a connection that carried comments, so a state lapse late in a long broadcast
+	// gets the same allowance as one at go-live rather than inheriting a spent budget.
+	std::optional<std::chrono::steady_clock::time_point> badRequestDeadline;
 
-	while (!canceled()) {
+	while (!ended && !canceled()) {
 		// Skipped on the FIRST connection, which is what keeps a broadcast's existing
 		// comment history out of the pane at go-live.
 		if (!firstConnect) {
@@ -378,10 +436,34 @@ bool FacebookChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, co
 			}
 			continue;
 		}
+		// The one rejection on this host worth retrying, on the budget above. The body is
+		// logged because Meta answers it with a generic HTML page rather than an error
+		// envelope, so GraphErrorReason finds no message to quote and the status alone is
+		// all the reason a terminal row would carry.
+		if (status == 400) {
+			const auto now = std::chrono::steady_clock::now();
+			if (!badRequestDeadline) {
+				badRequestDeadline = now + kBadRequestBudget;
+			}
+			const long long leftMs = static_cast<long long>(
+				std::chrono::duration_cast<std::chrono::milliseconds>(*badRequestDeadline - now)
+					.count());
+			DBG(LogCat::Chat, "facebook: dest=%s HTTP 400, %lldms of retry budget left (body=%s)",
+			    session.destTag.c_str(), leftMs, Http::BodyForLog(errorBody).c_str());
+			if (now < *badRequestDeadline) {
+				emitState(false, GraphErrorReason(errorBody, status));
+				if (CancelableSleep(backoff.next(), canceled)) {
+					break;
+				}
+				continue;
+			}
+			EndSession(session, "Facebook comments stopped: " + GraphErrorReason(errorBody, status), err);
+			break;
+		}
 		// The credential, the permission, or the broadcast itself is gone. Nothing a retry
 		// recovers, and a row that claims it is reconnecting leaves the user waiting on a
 		// chat that will never come back.
-		if (status == 400 || status == 401 || status == 403 || status == 404) {
+		if (status == 401 || status == 403 || status == 404) {
 			// The body is logged, not just the parsed message: Meta answers some
 			// rejections with an envelope GraphErrorReason finds no `message` in, and
 			// the status alone cannot tell a bad credential from a bad edge.
@@ -420,6 +502,7 @@ bool FacebookChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, co
 			continue;
 		}
 		emptyStreak = 0;
+		badRequestDeadline.reset();
 		backoff.reset();
 		if (CancelableSleep(std::chrono::milliseconds(kReconnectFloorMs), canceled)) {
 			break;

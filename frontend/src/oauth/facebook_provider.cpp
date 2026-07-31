@@ -66,17 +66,6 @@ constexpr const char *kPageFieldKey = "page";
 // this field is reported rather than assumed to mean zero.
 constexpr const char *kLiveViewsField = "live_views";
 
-// The statuses that mean a live video is no longer taking viewers. Written as a STOP list
-// rather than an "is it live" allowlist on purpose: with the node reference gone, the exact
-// spelling Meta returns for the LIVE state is unconfirmed, and an allowlist that guessed it
-// wrong would silently suppress every real count. An unrecognized status therefore still
-// reports, while these -- which only follow or cancel a broadcast -- do not.
-//
-// UNPUBLISHED is deliberately absent: it is the "Unpublished (Page admins only)" privacy
-// choice this provider offers, which is a live broadcast with viewers, not an ended one.
-const std::array<const char *, 5> kEndedLiveStatuses = {"VOD", "LIVE_STOPPED", "PROCESSING", "SCHEDULED_CANCELED",
-							"SCHEDULED_EXPIRED"};
-
 // The Page node's follower total. Named once for the same reason as kLiveViewsField: the
 // request asks for it explicitly and the response is read by the same name.
 //
@@ -102,16 +91,6 @@ using JsonUtil::NumLoose;
 using JsonUtil::Obj;
 using JsonUtil::ParseJson;
 using JsonUtil::Str;
-
-bool IsEndedLiveStatus(const std::string &status)
-{
-	for (const char *ended : kEndedLiveStatuses) {
-		if (status == ended) {
-			return true;
-		}
-	}
-	return false;
-}
 
 // A live video that answered without a usable viewer figure. Loud once on the host log so a
 // renamed field surfaces without debug logging turned on, gated debug afterwards.
