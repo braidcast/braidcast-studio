@@ -226,10 +226,10 @@
       {:else}
         <img class="preview" src={dataUri} alt={basename(imgPath)} onerror={() => (imgError = true)} />
       {/if}
-      <!-- The affordance is an overlay rather than the frame itself: a <button> wrapping the
-           image sizes it differently than the <div> the chosen-image case uses, which
-           collapsed the inherited preview to a strip. Absolutely positioned, so it covers
-           the frame for the click and the drop without participating in layout. -->
+      <!-- An overlay rather than the frame itself, so the frame stays the same element the
+           chosen-image case above uses: a <button> around the image does not size it the
+           same way. Absolutely positioned, so it takes the click and the drop for the whole
+           frame without participating in layout. -->
       <button
         class="pick-over"
         aria-label="Override inherited image"
@@ -367,8 +367,8 @@
     width: 100%;
     max-width: 320px;
     aspect-ratio: 16 / 9;
-    /* The empty picker is a <button> too, so it cannot rely on the ratio above for its
-       height either. A floor keeps it a drop target rather than a strip. */
+    /* A floor, because the ratio above is not on its own enough to keep the empty picker
+       a usable drop target rather than a strip. */
     min-height: 84px;
     box-sizing: border-box;
     border: var(--border-weight) dashed var(--color-border);
@@ -394,11 +394,9 @@
     border-color: var(--color-accent);
     color: var(--color-accent);
   }
-  /* An inherited image renders in a <button> (picking IS the override) where a chosen one
-     renders in a <div>, and only the button collapsed: the frame's own `aspect-ratio` does
-     not survive on a button, and as a flex container it then shrank the image to the
-     collapsed height. Both are taken out of the sizing path here -- the image alone carries
-     the ratio, and the box takes its height from the image whatever element wraps it. */
+  /* Once there is an image, the image carries the ratio and the frame takes its height from
+     the image. Taking the frame out of the sizing path is what makes the inherited and the
+     chosen preview render identically instead of one of them collapsing. */
   .thumb.has {
     position: relative;
     display: block;
@@ -415,9 +413,8 @@
     background: transparent;
     cursor: pointer;
   }
-  /* The ratio rides the image rather than the box: a percentage height resolves against
-     the button's anonymous content box, which leaves it indefinite and collapses the
-     frame to a strip. Sizing the replaced element directly holds whatever the wrapper is. */
+  /* Sizing the replaced element directly, rather than letting it fill the frame, is what
+     holds the 16:9 crop whatever element wraps it. */
   .preview {
     width: 100%;
     height: auto;
