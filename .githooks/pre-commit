@@ -1,0 +1,85 @@
+#!/bin/sh
+# Format gate for staged sources, mirroring what check-format.yaml asks of a push.
+#
+# Checks only STAGED files, for the same reason CI checks only changed ones: the tree
+# carries pre-existing drift in files nobody is touching, and failing a commit over an
+# unrelated file trains people to pass --no-verify.
+#
+# A missing formatter WARNS rather than blocks. clang-format lives in .deps, which is
+# gitignored and populated by the build setup, so a fresh clone legitimately does not
+# have it yet; refusing every commit until someone runs the dependency script would be
+# a worse failure than the drift this catches.
+#
+# Enable per clone (hooks are not themselves versioned into .git):
+#     git config core.hooksPath .githooks
+
+set -u
+
+repo_root=$(git rev-parse --show-toplevel)
+cd "$repo_root" || exit 0
+
+staged() {
+	git diff --cached --name-only --diff-filter=ACM -- "$@"
+}
+
+# Prefer the pinned binary the build pulls down, so a system clang-format of a different
+# major version cannot disagree with CI about the same file.
+find_clang_format() {
+	for candidate in \
+		"$repo_root"/.deps/clang-format-19*/clang-format.exe \
+		"$repo_root"/.deps/clang-format-19*/clang-format; do
+		[ -x "$candidate" ] && printf '%s' "$candidate" && return 0
+	done
+	command -v clang-format-19 2>/dev/null && return 0
+	command -v clang-format 2>/dev/null && return 0
+	return 1
+}
+
+failed=""
+warned=""
+
+cpp_files=$(staged '*.c' '*.h' '*.cpp' '*.hpp' '*.m' '*.mm')
+if [ -n "$cpp_files" ]; then
+	if clang_format=$(find_clang_format); then
+		for file in $cpp_files; do
+			# Each file is checked on its own so the nearest .clang-format wins --
+			# the obs-browser submodule ships its own config and disagrees with the
+			# root one on brace insertion.
+			[ -f "$file" ] || continue
+			"$clang_format" --dry-run -Werror "$file" >/dev/null 2>&1 ||
+				failed="$failed  $file\n"
+		done
+	else
+		warned="$warned  clang-format not found (.deps not populated?) -- C/C++ unchecked\n"
+	fi
+fi
+
+cmake_files=$(staged '*.cmake' '*CMakeLists.txt')
+if [ -n "$cmake_files" ]; then
+	if command -v gersemi >/dev/null 2>&1; then
+		for file in $cmake_files; do
+			[ -f "$file" ] || continue
+			gersemi --check "$file" >/dev/null 2>&1 ||
+				failed="$failed  $file\n"
+		done
+	else
+		warned="$warned  gersemi not found -- CMake unchecked (pipx install gersemi==0.25)\n"
+	fi
+fi
+
+if [ -n "$warned" ]; then
+	printf 'pre-commit: skipped some checks\n' >&2
+	printf "$warned" >&2
+fi
+
+if [ -n "$failed" ]; then
+	printf '\npre-commit: these staged files are not formatted:\n' >&2
+	printf "$failed" >&2
+	printf '\nFix, then re-stage:\n' >&2
+	printf '  ./build-aux/run-clang-format --fix <files>\n' >&2
+	printf '  gersemi --in-place <files>\n' >&2
+	printf '\nOr bypass once with: git commit --no-verify\n\n' >&2
+	exit 1
+fi
+
+exit 0

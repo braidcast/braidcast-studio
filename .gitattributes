@@ -1,5 +1,9 @@
 * text=auto
 
+# Git runs these through sh, which treats a CR as part of the interpreter path and
+# fails the whole hook. text=auto would hand them CRLF on any Windows checkout.
+.githooks/** text eol=lf
+
 *.sln             text eol=crlf
 *.vcproj          text eol=crlf
 *.vcxproj         text eol=crlf
