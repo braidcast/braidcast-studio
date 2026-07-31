@@ -395,9 +395,13 @@
   .thumb.has.pick {
     cursor: pointer;
   }
+  /* The ratio rides the image rather than the box: a percentage height resolves against
+     the button's anonymous content box, which leaves it indefinite and collapses the
+     frame to a strip. Sizing the replaced element directly holds whatever the wrapper is. */
   .preview {
     width: 100%;
-    height: 100%;
+    height: auto;
+    aspect-ratio: 16 / 9;
     object-fit: cover;
     display: block;
   }
