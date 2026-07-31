@@ -220,8 +220,8 @@ void AudioMonitor::CoalesceLevel(const std::string &uuid, float magnitudeDb, flo
 }
 
 void AudioMonitor::OnVolmeterUpdated(void *param, const float magnitude[MAX_AUDIO_CHANNELS],
-				    const float peak[MAX_AUDIO_CHANNELS],
-				    const float /*input_peak*/[MAX_AUDIO_CHANNELS])
+				     const float peak[MAX_AUDIO_CHANNELS],
+				     const float /*input_peak*/[MAX_AUDIO_CHANNELS])
 {
 	auto *ctx = static_cast<CallbackCtx *>(param);
 	if (!ctx || !ctx->monitor) {
