@@ -220,20 +220,25 @@
     <!-- Presented as a set image, because it is the one that will be sent. The box itself
          takes the click: there is no × on an inherited image (this layer has nothing to
          clear), so picking IS the override. -->
-    <button
-      class="thumb has pick"
-      aria-label="Override inherited image"
-      title="Pick to override"
-      ondragover={(e) => e.preventDefault()}
-      ondrop={onDrop}
-      onclick={() => void pickImage()}
-    >
+    <div class="thumb has">
       {#if imgError || !dataUri}
         <span class="fname">{basename(imgPath)}</span>
       {:else}
         <img class="preview" src={dataUri} alt={basename(imgPath)} onerror={() => (imgError = true)} />
       {/if}
-    </button>
+      <!-- The affordance is an overlay rather than the frame itself: a <button> wrapping the
+           image sizes it differently than the <div> the chosen-image case uses, which
+           collapsed the inherited preview to a strip. Absolutely positioned, so it covers
+           the frame for the click and the drop without participating in layout. -->
+      <button
+        class="pick-over"
+        aria-label="Override inherited image"
+        title="Pick to override"
+        ondragover={(e) => e.preventDefault()}
+        ondrop={onDrop}
+        onclick={() => void pickImage()}
+      ></button>
+    </div>
     <div class="thumb-meta">{basename(imgPath)}</div>
   {:else}
     <button class="thumb" ondragover={(e) => e.preventDefault()} ondrop={onDrop} onclick={() => void pickImage()}>
@@ -402,7 +407,12 @@
     padding: 0;
     cursor: default;
   }
-  .thumb.has.pick {
+  .pick-over {
+    position: absolute;
+    inset: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
     cursor: pointer;
   }
   /* The ratio rides the image rather than the box: a percentage height resolves against
