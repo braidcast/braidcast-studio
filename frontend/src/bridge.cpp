@@ -6607,15 +6607,23 @@ std::unordered_map<std::string, BitrateSample> g_bitrateCache;
 // snapshots the current cumulative frame counters here; each sample reports
 // value-minus-baseline so render-lag / encode-skip / per-output drop rates rebase
 // from that moment instead of accumulating for the whole session. Per-output
-// baselines are keyed by binding uuid, per-mix encode baselines by canvas uuid
-// ("" for the main mix). All cleared on Shutdown.
+// baselines are keyed by binding uuid. All cleared on Shutdown.
 struct StatsBaseline {
 	uint32_t renderLagged = 0;
 	uint32_t renderTotal = 0;
 };
 StatsBaseline g_statsBaseline;
-std::unordered_map<std::string, std::pair<int, int>> g_outputStatsBaseline;      // uuid -> {dropped, total}
-std::unordered_map<std::string, std::pair<uint32_t, uint32_t>> g_encodeBaseline; // canvas -> {skipped, total}
+std::unordered_map<std::string, std::pair<int, int>> g_outputStatsBaseline; // uuid -> {dropped, total}
+
+// Per-video-mix encode counters, keyed by canvas uuid ("" for the main mix). `mix` is
+// the video_t the baseline was taken against, so a canvas whose mix is rebuilt starts
+// from zero instead of inheriting the old mix's baseline.
+struct EncodeMixState {
+	video_t *mix = nullptr;
+	uint32_t baseSkipped = 0;
+	uint32_t baseTotal = 0;
+};
+std::unordered_map<std::string, EncodeMixState> g_encodeMixes;
 
 // The newest sample, taken by the host-side sampler (SampleStatsTick) and echoed by
 // stats.get. UI-thread only.
@@ -6632,54 +6640,61 @@ template<typename T> T RebaseCounter(T value, T &baseline)
 	return static_cast<T>(value - baseline);
 }
 
-// Every video mix an encoder is currently pulling from: the main mix plus each canvas
-// mix carrying an active output. Multistream encoders bind to their canvas's mix
-// (EnsureCanvasEncoders -> obs_encoder_set_video), so the main mix alone reports zero
-// skipped/total frames for every canvas output. Keyed by canvas uuid ("" for the main
-// mix) and deduped by video_t*, since the Default canvas resolves to the main mix.
-std::vector<std::pair<std::string, video_t *>> EncodeMixes(const std::vector<MultistreamEngine::OutputStats> &rows)
+// Every canvas that can own a video mix, keyed the way g_encodeMixes is: "" for the
+// main mix, then each additional canvas. The Default canvas is skipped because its uuid
+// resolves to obs_get_video() -- the main mix, already covered by "".
+std::vector<std::string> EncodeMixKeys()
 {
-	std::vector<std::pair<std::string, video_t *>> mixes;
-	auto add = [&mixes](const std::string &key, video_t *video) {
-		if (!video) {
-			return;
-		}
-		for (const std::pair<std::string, video_t *> &m : mixes) {
-			if (m.second == video) {
-				return;
-			}
-		}
-		mixes.emplace_back(key, video);
-	};
-	add(std::string(), obs_get_video());
-	for (const MultistreamEngine::OutputStats &s : rows) {
-		if (MultistreamEngine::IsActiveState(s.state)) {
-			add(s.canvasUuid, ObsBootstrap::Multistream().VideoForCanvas(s.canvasUuid));
+	std::vector<std::string> keys{std::string()};
+	const CanvasStore &canvases = ObsBootstrap::Canvases();
+	for (const CanvasDefinition &def : canvases.Definitions()) {
+		if (!canvases.IsDefaultUuid(def.uuid)) {
+			keys.push_back(def.uuid);
 		}
 	}
-	return mixes;
+	return keys;
 }
 
-// Summed {skipped, total} encode frames across `mixes`, each rebased against its own
-// "since reset" baseline. The baseline map is rebuilt to exactly the mixes present
-// (the same prune-forward shape as the bitrate cache): a canvas mix that goes away and
-// comes back is a fresh video_t whose counters restart at zero.
-std::pair<uint32_t, uint32_t> ReadEncodeFrames(const std::vector<std::pair<std::string, video_t *>> &mixes)
+// The video mix behind one g_encodeMixes key, or null when that canvas has none.
+video_t *ResolveEncodeMix(const std::string &key)
+{
+	return key.empty() ? obs_get_video() : ObsBootstrap::Multistream().VideoForCanvas(key);
+}
+
+// Summed {skipped, total} encode frames across every video mix that currently exists:
+// the main mix plus each additional canvas's. Multistream encoders bind to their
+// canvas's mix (EnsureCanvasEncoders -> obs_encoder_set_video), so the main mix alone
+// reports zero skipped/total frames for every canvas output.
+//
+// Membership follows whether the MIX exists, not whether an output is running: a canvas
+// whose output stops keeps its mix (CanvasRuntime::IsActive holds it up for a preview or
+// a still-enabled binding), so dropping it on stop would shrink the summed cumulative
+// total and discard the baseline that keeps its next go-live from re-counting the whole
+// session. An entry is therefore dropped only once its mix resolves to null, and its
+// baseline restarts at zero whenever the resolved video_t is not the one the baseline
+// was taken against. RebaseCounter's self-heal covers the remaining case where a mix is
+// replaced without the pointer changing.
+std::pair<uint32_t, uint32_t> ReadEncodeFrames()
 {
 	uint32_t skipped = 0;
 	uint32_t total = 0;
-	std::unordered_map<std::string, std::pair<uint32_t, uint32_t>> nextBaseline;
-	for (const std::pair<std::string, video_t *> &m : mixes) {
-		std::pair<uint32_t, uint32_t> base = {0, 0};
-		auto it = g_encodeBaseline.find(m.first);
-		if (it != g_encodeBaseline.end()) {
-			base = it->second;
+	std::unordered_map<std::string, EncodeMixState> next;
+	for (const std::string &key : EncodeMixKeys()) {
+		video_t *mix = ResolveEncodeMix(key);
+		if (!mix) {
+			continue;
 		}
-		skipped += RebaseCounter(video_output_get_skipped_frames(m.second), base.first);
-		total += RebaseCounter(video_output_get_total_frames(m.second), base.second);
-		nextBaseline[m.first] = base;
+		EncodeMixState state;
+		state.mix = mix;
+		auto it = g_encodeMixes.find(key);
+		if (it != g_encodeMixes.end() && it->second.mix == mix) {
+			state = it->second;
+		}
+		skipped += RebaseCounter(video_output_get_skipped_frames(mix), state.baseSkipped);
+		total += RebaseCounter(video_output_get_total_frames(mix), state.baseTotal);
+		next[key] = state;
 	}
-	g_encodeBaseline.swap(nextBaseline);
+	g_encodeMixes.swap(next);
 	return {skipped, total};
 }
 
@@ -6710,7 +6725,7 @@ json BuildStatsSnapshot()
 	const double renderLagPct = renderTotal > 0 ? (static_cast<double>(renderLagged) / renderTotal) * 100.0 : 0.0;
 
 	const std::vector<MultistreamEngine::OutputStats> rows = ObsBootstrap::Multistream().StatsSnapshot();
-	const std::pair<uint32_t, uint32_t> encode = ReadEncodeFrames(EncodeMixes(rows));
+	const std::pair<uint32_t, uint32_t> encode = ReadEncodeFrames();
 	const uint32_t encodeSkipped = encode.first;
 	const uint32_t encodeTotal = encode.second;
 	const double encodeSkipPct = encodeTotal > 0 ? (static_cast<double>(encodeSkipped) / encodeTotal) * 100.0 : 0.0;
@@ -6823,12 +6838,17 @@ bool MethodStatsReset(const json & /*params*/, json &result, std::string & /*err
 {
 	g_statsBaseline.renderLagged = obs_get_lagged_frames();
 	g_statsBaseline.renderTotal = obs_get_total_frames();
-	const std::vector<MultistreamEngine::OutputStats> rows = ObsBootstrap::Multistream().StatsSnapshot();
-	g_encodeBaseline.clear();
-	for (const std::pair<std::string, video_t *> &m : EncodeMixes(rows)) {
-		g_encodeBaseline[m.first] = {video_output_get_skipped_frames(m.second),
-					     video_output_get_total_frames(m.second)};
+	// Baseline EVERY existing mix, not only the ones currently encoding: a canvas that is
+	// idle at reset time would otherwise carry its whole pre-reset count into its next
+	// go-live.
+	g_encodeMixes.clear();
+	for (const std::string &key : EncodeMixKeys()) {
+		if (video_t *mix = ResolveEncodeMix(key)) {
+			g_encodeMixes[key] = EncodeMixState{mix, video_output_get_skipped_frames(mix),
+							    video_output_get_total_frames(mix)};
+		}
 	}
+	const std::vector<MultistreamEngine::OutputStats> rows = ObsBootstrap::Multistream().StatsSnapshot();
 	g_outputStatsBaseline.clear();
 	for (const MultistreamEngine::OutputStats &s : rows) {
 		g_outputStatsBaseline[s.bindingUuid] = {s.droppedFrames, s.totalFrames};
@@ -10946,7 +10966,7 @@ void Shutdown()
 	// g_bridgeShutdown, set above, is what stops the stats sampler rescheduling.
 	g_bitrateCache.clear();
 	g_outputStatsBaseline.clear();
-	g_encodeBaseline.clear();
+	g_encodeMixes.clear();
 	g_statsBaseline = StatsBaseline{};
 	g_lastStats = json();
 }

@@ -652,9 +652,10 @@ size_t ObsBootstrap::PruneOutputBindingsForProfile(const std::string &profileUui
 MultistreamEngine &ObsBootstrap::Multistream()
 {
 	// Valid only between Start() (constructs g_multistream after the stores load)
-	// and Stop() (resets it). Every caller is a bridge method driven by JS, which
-	// can only run once the CEF page has loaded -- well after construction -- so
-	// the pointer is non-null on every reachable path.
+	// and Stop() (resets it). Callers reach it either as a bridge method driven by JS,
+	// or as a task posted to the CEF UI thread (the bridge's stats sampler). Neither
+	// can run before CefRunMessageLoop, which main.cpp enters only after Start()
+	// returns, so the pointer is non-null on every reachable path.
 	return *g_multistream;
 }
 
