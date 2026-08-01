@@ -14,27 +14,22 @@
   // The selection vocabulary itself lives in destinationSelection.ts: this component
   // renders a selection, it does not define what one means.
 
-  export type DestinationChipTone = "ok" | "warn" | "down";
+  import type { TransportHealthState } from "$lib/api/bridge";
 
   /** Optional per-destination transport state. `note` is mandatory in practice
-   * whenever `tone` or `unavailable` is set: the tone is a dot, and a dot alone
-   * cannot be the only carrier of the state. */
+   * whenever `state` or `unavailable` is set: the state is an edge color, and a color
+   * alone cannot be the only carrier of it. */
   export interface DestinationChipStatus {
-    tone?: DestinationChipTone;
+    state?: TransportHealthState;
     note?: string;
     unavailable?: boolean;
   }
-
-  const TONE_COLOR: Record<DestinationChipTone, string> = {
-    ok: "var(--color-ok)",
-    warn: "var(--color-warn)",
-    down: "var(--color-live)",
-  };
 </script>
 
 <script lang="ts">
   import type { DestinationIdentity } from "$lib/stores/destinationIdentityStore.svelte";
   import { PLATFORM_COLORS, PLATFORM_LABELS, platformKey } from "$lib/theme/platformColors";
+  import { TRANSPORT_STATE_COLOR } from "$lib/theme/stateColors";
   import PlatformMark from "$lib/ui/PlatformMark.svelte";
   import { ABSENT_LABEL, ALL_DESTINATIONS, type DestinationSelection } from "$lib/ui/destinationSelection";
 
@@ -219,15 +214,18 @@
         {#each g.members as d (d.profileUuid)}
           {@const canvas = canvasTag(d)}
           {@const status = statusOf?.(d)}
+          {@const tone = status?.state ? TRANSPORT_STATE_COLOR[status.state] : ""}
           {@const selected = value.kind === "destination" && value.profileUuid === d.profileUuid}
           <button
             class="chip"
             class:on={selected}
+            class:toned={tone !== ""}
             disabled={status?.unavailable ?? false}
             aria-pressed={selected}
             aria-label={accessibleName(d, canvas, status)}
             title={hoverText(d, canvas, status)}
             style:--chip={g.color}
+            style:--tone={tone}
             onclick={() => onSelect({ kind: "destination", profileUuid: d.profileUuid })}
           >
             <!-- Always on, never hoisted to a group chip: this row is flat across
@@ -237,7 +235,6 @@
             <PlatformMark platform={d.platform} size={12} />
             <span class="cname">{d.displayName}</span>
             {#if canvas}<span class="ccanvas">{canvas}</span>{/if}
-            {#if status?.tone}<span class="sdot" style:background={TONE_COLOR[status.tone]}></span>{/if}
           </button>
         {/each}
       {/each}
@@ -332,9 +329,13 @@
   .chip:disabled .ccanvas {
     color: var(--color-muted);
   }
-  .sdot {
-    flex: 0 0 auto;
-    width: 5px;
-    height: 5px;
+  /* Transport state rides the chip's leading edge rather than a mark of its own: the
+     other three sides are already spoken for (brand color = selected, dashed =
+     unselectable), and at this size a second indicator crowds the name it describes.
+     Placed last so the edge survives both. Padding gives back the extra pixel, so a
+     chip with a state lines up with one that has none. */
+  .chip.toned {
+    border-left: 2px solid var(--tone);
+    padding-left: 7px;
   }
 </style>

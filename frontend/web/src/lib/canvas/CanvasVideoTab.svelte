@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { CanvasForm } from "$lib/canvas/canvasForm";
-  import { FPS_PRESETS } from "$lib/canvas/canvasForm";
+  import { FPS_PRESETS, groupLocked } from "$lib/canvas/canvasForm";
   import UseDefaultStrip from "$lib/canvas/UseDefaultStrip.svelte";
   import Icon from "$lib/ui/Icon.svelte";
 
@@ -67,7 +67,7 @@
   // svelte-ignore state_referenced_locally
   let orient = $state<Orient>(orientFor(form.width, form.height));
 
-  const locked = $derived(isLive || form.useDefaultRes);
+  const locked = $derived(groupLocked(form.useDefaultRes, isDefault, isLive));
 
   function pickOrient(o: Orient): void {
     orient = o;

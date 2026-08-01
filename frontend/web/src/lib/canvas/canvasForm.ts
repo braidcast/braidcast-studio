@@ -26,6 +26,13 @@ export interface CanvasForm {
   colorUseDefault: boolean;
 }
 
+/** Whether one settings group's controls are locked: while the canvas is live, or
+ * while that group follows the Default canvas (which has nothing to follow). The
+ * controls stay rendered and keep their values — only editing is refused. */
+export function groupLocked(useDefault: boolean, isDefault: boolean, isLive: boolean): boolean {
+  return isLive || (useDefault && !isDefault);
+}
+
 export function seedForm(c: CanvasInfo): CanvasForm {
   return {
     name: c.name,

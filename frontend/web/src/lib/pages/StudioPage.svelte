@@ -226,7 +226,7 @@ import { EV } from "$lib/utils/eventNames";
     return statsStore.subscribe();
   });
 
-  // Shared OAuth-account store: gates the Events/Multichat restore chips (and their
+  // Shared OAuth-account store: gates the Events/Multichat reopen buttons (and their
   // toggle) so an empty, meaningless panel can't be opened with zero logged-in
   // accounts. Studio-only, mirroring the stats subscription above.
   $effect(() => {
@@ -235,12 +235,12 @@ import { EV } from "$lib/utils/eventNames";
   });
 
   // Docks whose content is meaningless without a logged-in platform account. Their
-  // restore chip is hidden and toggleDock refuses to open them while none is connected;
+  // reopen button is hidden and toggleDock refuses to open them while none is connected;
   // an already-open one falls back to its own empty state (handled in the dock body).
   const OAUTH_GATED_DOCKS = new Set(["events", "multichat", "channels"]);
   // Same enabled predicate PreviewDock uses to output-gate the Default canvas surface
   // (CanvasInfo.enabled is AnyEnabledForCanvas(default) server-side); reused here so the
-  // "preview" restore chip hides exactly when a non-default canvas's chip would.
+  // "preview" reopen button hides exactly when a non-default canvas's chip would.
   let defaultCanvasEnabled = $derived(canvases.find((c) => c.isDefault)?.enabled ?? true);
   function dockOpenable(id: string): boolean {
     if (id === "preview" && !defaultCanvasEnabled) return false;
@@ -351,7 +351,7 @@ import { EV } from "$lib/utils/eventNames";
   // The previews row is sized ~1.7x the bottom row (mock `flex:1.7` vs `flex:1`).
   // Multistream/Transitions are intentionally NOT in the default set (Multistream
   // -> Stream page; Transitions has no studio home in the mock); they stay
-  // registered in DOCKS so the CANVASES-bar restore chips can still reopen them.
+  // registered in DOCKS so the CANVASES-bar reopen buttons can still reopen them.
   // The classic Controls dock was removed entirely -- the GO-LIVE bar (live) and
   // the nav-rail Settings page replace it.
   function buildDefaultLayout(dv: DockviewApi): void {
@@ -762,14 +762,16 @@ import { EV } from "$lib/utils/eventNames";
     <div class="spacer"></div>
 
     {#if DOCKS.some((d) => visibleDocks[d.id] === false && dockOpenable(d.id))}
-      <div class="restore">
+      <div class="restore" role="group" aria-label="Reopen docks">
         {#each DOCKS as d (d.id)}
           {#if visibleDocks[d.id] === false && dockOpenable(d.id)}
-            <button class="restorechip" onclick={() => toggleDock(d.id)}>
-              <svg class="plus" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M12 5v14M5 12h14" />
-              </svg>
-              {d.title}
+            <button
+              class="iconbtn"
+              title={"Open " + d.title}
+              aria-label={"Open " + d.title}
+              onclick={() => toggleDock(d.id)}
+            >
+              <Icon name={d.icon} size={15} />
             </button>
           {/if}
         {/each}
@@ -1102,38 +1104,17 @@ import { EV } from "$lib/utils/eventNames";
     flex: 1;
     min-width: 8px;
   }
-  /* Restore-docks segment: bordered chips on --color-base, left hairline divider. */
+  /* Restore-docks segment: one icon block per closed dock, left hairline divider.
+     Same .iconbtn block as the utility segment beside it, so the bar's whole right
+     edge is one row of equal targets rather than two competing button shapes. */
   .restore {
     flex: 0 0 auto;
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 4px;
     height: 100%;
     padding: 0 10px;
     border-left: var(--border-weight) solid var(--color-border);
-  }
-  .restorechip {
-    flex: 0 0 auto;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    height: 26px;
-    padding: 0 9px;
-    background: var(--color-base);
-    border: var(--border-weight) solid var(--color-border-2);
-    color: var(--color-muted);
-    font-size: 10.5px;
-    white-space: nowrap;
-    cursor: pointer;
-  }
-  .restorechip:hover {
-    border-color: var(--color-border);
-    color: var(--color-dim);
-    background: var(--color-surface);
-  }
-  .restorechip .plus {
-    flex: 0 0 auto;
-    color: var(--color-accent);
   }
   /* Utility segment: undo / redo / reset / more as bordered blocks, left divider. */
   .util {
@@ -1170,6 +1151,12 @@ import { EV } from "$lib/utils/eventNames";
   .iconbtn:disabled {
     color: #4a4a52;
     cursor: default;
+  }
+  /* These carry no label, so the ring is the only thing telling a keyboard user
+     which one they are about to press. */
+  .iconbtn:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 1px;
   }
   .txtbtn {
     flex: 0 0 auto;

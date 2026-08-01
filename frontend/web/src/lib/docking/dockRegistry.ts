@@ -1,5 +1,6 @@
 import type { Component } from "svelte";
 import type { AddPanelOptions } from "dockview-core";
+import type { IconName } from "$lib/ui/Icon.svelte";
 import PreviewDock from "$lib/docks/PreviewDock.svelte";
 import ScenesDock from "$lib/docks/ScenesDock.svelte";
 import SourcesDock from "$lib/docks/SourcesDock.svelte";
@@ -18,6 +19,9 @@ import StatsDock from "$lib/docks/StatsDock.svelte";
 export interface DockDef {
   id: string;
   title: string;
+  // Identifies the dock where there is no room for its title -- the studio bar's
+  // reopen buttons. The title still rides along as the button's accessible name.
+  icon: IconName;
   component: Component<Record<string, unknown>>;
   params: Record<string, unknown>;
   accent?: boolean;
@@ -36,20 +40,29 @@ export const DOCKS: DockDef[] = [
   {
     id: "preview",
     title: "Preview · Main",
+    icon: "video",
     component: PreviewDock,
     params: { __dot: "var(--color-muted)", __badge: "GLOBAL S/S" },
   },
-  { id: "scenes", title: "Scenes", component: ScenesDock, params: {} },
-  { id: "sources", title: "Sources", component: SourcesDock, params: {} },
-  { id: "mixer", title: "Audio Mixer", component: AudioMixerDock, params: {} },
-  { id: "transitions", title: "Transitions", component: TransitionsDock, params: {} },
-  { id: "multistream", title: "Multistream", component: MultistreamDock, params: {}, accent: true },
+  { id: "scenes", title: "Scenes", icon: "film", component: ScenesDock, params: {} },
+  { id: "sources", title: "Sources", icon: "list", component: SourcesDock, params: {} },
+  { id: "mixer", title: "Audio Mixer", icon: "audio-wave", component: AudioMixerDock, params: {} },
+  { id: "transitions", title: "Transitions", icon: "transition", component: TransitionsDock, params: {} },
+  {
+    id: "multistream",
+    title: "Multistream",
+    icon: "destinations",
+    component: MultistreamDock,
+    params: {},
+    accent: true,
+  },
   // Merged read+send chat across every connected platform (Phase 9.0). Like
   // Multistream/Transitions it is NOT in the default layout -- it opens from the
-  // CANVASES-bar restore chip -- but stays registered so it is addable/restorable.
+  // CANVASES-bar reopen button -- but stays registered so it is addable/restorable.
   {
     id: "multichat",
     title: "Multichat",
+    icon: "chat",
     component: MultichatDock,
     params: {},
     accent: true,
@@ -57,14 +70,14 @@ export const DOCKS: DockDef[] = [
   },
   // Live cross-platform events feed (follows/subs/gifts/cheers/raids/superchats,
   // Phase 9.2). Like Multichat it is NOT in the default layout -- it opens from the
-  // CANVASES-bar restore chip -- but stays registered so it is addable/restorable.
-  { id: "events", title: "Events", component: EventsDock, params: {}, accent: true, minWidth: 280 },
+  // CANVASES-bar reopen button -- but stays registered so it is addable/restorable.
+  { id: "events", title: "Events", icon: "bell", component: EventsDock, params: {}, accent: true, minWidth: 280 },
   // Per-account identity + audience (Channel-identity feature). Like Events/Multichat
   // it is meaningless without a logged-in account, so it is NOT in the default layout
-  // and is OAuth-gated -- it opens from the CANVASES-bar restore chip once an account
+  // and is OAuth-gated -- it opens from the CANVASES-bar reopen button once an account
   // is connected, but stays registered so it is addable/restorable.
-  { id: "channels", title: "Channels", component: ChannelsDock, params: {}, minWidth: 280 },
-  { id: "stats", title: "Stats", component: StatsDock, params: {} },
+  { id: "channels", title: "Channels", icon: "users", component: ChannelsDock, params: {}, minWidth: 280 },
+  { id: "stats", title: "Stats", icon: "chart", component: StatsDock, params: {} },
 ];
 
 export function dockById(id: string): DockDef | undefined {

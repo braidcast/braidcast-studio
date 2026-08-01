@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { CanvasForm } from "$lib/canvas/canvasForm";
+  import { groupLocked } from "$lib/canvas/canvasForm";
   import UseDefaultStrip from "$lib/canvas/UseDefaultStrip.svelte";
 
   interface Props {
@@ -32,7 +33,7 @@
     { label: "Full", value: "Full" },
   ];
 
-  const dis = $derived(form.colorUseDefault && !isDefault);
+  const locked = $derived(groupLocked(form.colorUseDefault, isDefault, isLive));
 </script>
 
 <div class="cv-body">
@@ -50,20 +51,20 @@
 
   <div class="cv-field">
     <div class="cv-field__l">Color Format</div>
-    <select class="cv-select" bind:value={form.colorFormat} disabled={dis || isLive} onchange={commit}>
+    <select class="cv-select" bind:value={form.colorFormat} disabled={locked} onchange={commit}>
       {#each colorFormats as f (f.value)}<option value={f.value}>{f.label}</option>{/each}
     </select>
     <div class="cv-field__h">8-bit NV12 for SDR; 10-bit P010 for HDR.</div>
   </div>
   <div class="cv-field">
     <div class="cv-field__l">Color Space</div>
-    <select class="cv-select" bind:value={form.colorSpace} disabled={dis || isLive} onchange={commit}>
+    <select class="cv-select" bind:value={form.colorSpace} disabled={locked} onchange={commit}>
       {#each colorSpaces as cs (cs.value)}<option value={cs.value}>{cs.label}</option>{/each}
     </select>
   </div>
   <div class="cv-field">
     <div class="cv-field__l">Color Range</div>
-    <div class="cv-seg" class:dis={dis || isLive} role="tablist" aria-label="Color range">
+    <div class="cv-seg" class:dis={locked} role="tablist" aria-label="Color range">
       {#each colorRanges as r (r.value)}
         <button
           type="button"
@@ -71,7 +72,7 @@
           class:on={form.colorRange === r.value}
           role="tab"
           aria-selected={form.colorRange === r.value}
-          disabled={dis || isLive}
+          disabled={locked}
           onclick={() => {
             form.colorRange = r.value;
             commit();
@@ -83,13 +84,13 @@
   </div>
   <div class="cv-field">
     <div class="cv-field__l">SDR White Level</div>
-    <div class="cv-num" class:dis={dis || isLive}>
+    <div class="cv-num" class:dis={locked}>
       <input
         type="number"
         min="80"
         max="480"
         bind:value={form.sdrWhiteLevel}
-        disabled={dis || isLive}
+        disabled={locked}
         aria-label="SDR white level"
         onchange={commit}
       />
@@ -98,13 +99,13 @@
   </div>
   <div class="cv-field">
     <div class="cv-field__l">HDR Nominal Peak Level</div>
-    <div class="cv-num" class:dis={dis || isLive}>
+    <div class="cv-num" class:dis={locked}>
       <input
         type="number"
         min="400"
         max="10000"
         bind:value={form.hdrNominalPeakLevel}
-        disabled={dis || isLive}
+        disabled={locked}
         aria-label="HDR nominal peak level"
         onchange={commit}
       />

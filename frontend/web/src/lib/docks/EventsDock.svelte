@@ -8,7 +8,8 @@
   import Icon from "$lib/ui/Icon.svelte";
   import Avatar from "$lib/ui/Avatar.svelte";
   import PlatformMark from "$lib/ui/PlatformMark.svelte";
-  import DestinationChips from "$lib/ui/DestinationChips.svelte";
+  import DestinationChips, { type DestinationChipStatus } from "$lib/ui/DestinationChips.svelte";
+  import { EVENTS_STATE_NOTE, eventsTransportFor } from "$lib/ui/destinationHealth";
   import {
     ALL_DESTINATIONS,
     attribute,
@@ -22,7 +23,8 @@
     type Fidelity,
   } from "$lib/ui/destinationSelection";
   import { oauthStore } from "$lib/stores/oauthStore.svelte";
-  import { destinationIdentityStore } from "$lib/stores/destinationIdentityStore.svelte";
+  import { destinationIdentityStore, type DestinationIdentity } from "$lib/stores/destinationIdentityStore.svelte";
+  import { transportHealthStore } from "$lib/stores/transportHealthStore.svelte";
 
   // Host supplies tab chrome + strips __* keys; this body declares no props.
   let {}: Record<string, unknown> = $props();
@@ -161,6 +163,28 @@
     return unarmedHintFor(platform, "its events cannot be filtered.");
   }
 
+  // --- transport health -------------------------------------------------------
+  // Resolution and wording live in ui/destinationHealth.ts, shared with the Chat dock
+  // so the two surfaces cannot describe one account's transports differently.
+  $effect(() => transportHealthStore.subscribe());
+
+  const NO_TRANSPORT_NOTE = "no event transport — nothing has been opened for this account";
+
+  // Absence of a row is UNKNOWN, not healthy: no state, so the chip's edge claims none.
+  // The chip stays selectable regardless -- here it is only a filter, and a filter over
+  // an empty set is still a legible answer.
+  function statusOf(d: DestinationIdentity): DestinationChipStatus {
+    const row = eventsTransportFor(d);
+    if (!row) {
+      return { note: NO_TRANSPORT_NOTE };
+    }
+    const parts = [EVENTS_STATE_NOTE[row.state]];
+    if (row.lastError) {
+      parts.push(row.lastError);
+    }
+    return { state: row.state, note: parts.join(" — ") };
+  }
+
   const feed = new FeedVirtualizer<NormalizedEvent>({ max: 500, estimate: 38, getDisplay: () => filtered });
   // Explicitly typed to break the feed <-> filtered inference cycle (getDisplay
   // closes over filtered, which reads feed.rows).
@@ -260,6 +284,7 @@
         onSelect={setFilter}
         {unarmedPlatforms}
         {unarmedHint}
+        {statusOf}
         titleOf={(d, canvas) => "Only events from " + d.displayName + (canvas ? " · " + canvas : "")}
       />
       {#if sharedNotice}

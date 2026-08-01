@@ -4,7 +4,7 @@
   import EmptyState from "$lib/ui/EmptyState.svelte";
   import Modal from "$lib/ui/Modal.svelte";
   import { STATE_COLOR, TRANSPORT_STATE_COLOR } from "$lib/theme/stateColors";
-  import { CHAT_STATE_NOTE, chatTransportFor } from "$lib/ui/chatHealth";
+  import { CHAT_STATE_NOTE, chatTransportFor } from "$lib/ui/destinationHealth";
   import { fmtBitrate, fmtDuration, titleState } from "$lib/utils/format";
   import {
     METER_TEXT,

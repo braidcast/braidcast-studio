@@ -56,7 +56,13 @@
     | "cpu"
     | "audio"
     | "advanced"
-    | "destinations";
+    | "destinations"
+    // dock identities (the studio bar's reopen buttons carry no label)
+    | "transition"
+    | "chat"
+    | "bell"
+    | "users"
+    | "chart";
 </script>
 
 <script lang="ts">
@@ -161,4 +167,14 @@
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="8" /><path d="M12 4a8 8 0 0 0 0 16" /><circle cx="9" cy="9" r="1.4" /><circle cx="15" cy="14" r="1.4" /></svg>
 {:else if name === "destinations"}
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="3" /><path d="M12 2v4M12 18v4M2 12h4M18 12h4M5 5l3 3M16 16l3 3M19 5l-3 3M8 16l-3 3" /></svg>
+{:else if name === "transition"}
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="2" y="6" width="7" height="12" /><rect x="15" y="6" width="7" height="12" /><path d="M9.8 12h4M12.6 10.2 14.4 12l-1.8 1.8" /></svg>
+{:else if name === "chat"}
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M3 4h18v13H9l-6 4z" /></svg>
+{:else if name === "bell"}
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M6 16v-5a6 6 0 0 1 12 0v5l2 3H4z" /><path d="M10 19a2 2 0 0 0 4 0" /></svg>
+{:else if name === "users"}
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="9" cy="8" r="3.5" /><path d="M2.5 20a6.5 6.5 0 0 1 13 0" /><path d="M16 5.4a3.5 3.5 0 0 1 0 5.2" /><path d="M17.6 14.4A6.5 6.5 0 0 1 21.5 20" /></svg>
+{:else if name === "chart"}
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3.5 3.5v17h17" /><path d="M8 17.5v-5M13 17.5v-9M18 17.5v-12" stroke-width="2.4" /></svg>
 {/if}

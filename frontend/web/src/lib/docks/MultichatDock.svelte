@@ -1,19 +1,16 @@
 <script lang="ts">
-  import { obs, type ChatMessage, type ChatSendParams, type TransportHealthState } from "$lib/api/bridge";
+  import { obs, type ChatMessage, type ChatSendParams } from "$lib/api/bridge";
   import { EV } from "$lib/utils/eventNames";
   import { PLATFORM_COLORS, PLATFORM_LABELS, platformKey } from "$lib/theme/platformColors";
   import { FeedVirtualizer, type FeedRow } from "$lib/utils/feedVirtualizer.svelte";
   import { callOrToast } from "$lib/utils/callToast";
   import { destinationKey } from "$lib/api/destinationKeys";
-  import { CHAT_STATE_NOTE, chatTransportFor, type ChatTransport } from "$lib/ui/chatHealth";
+  import { CHAT_STATE_NOTE, chatTransportFor, type ChatTransport } from "$lib/ui/destinationHealth";
   import EmptyState from "$lib/ui/EmptyState.svelte";
   import Icon from "$lib/ui/Icon.svelte";
   import Avatar from "$lib/ui/Avatar.svelte";
   import PlatformMark from "$lib/ui/PlatformMark.svelte";
-  import DestinationChips, {
-    type DestinationChipStatus,
-    type DestinationChipTone,
-  } from "$lib/ui/DestinationChips.svelte";
+  import DestinationChips, { type DestinationChipStatus } from "$lib/ui/DestinationChips.svelte";
   import {
     ALL_DESTINATIONS,
     attribute,
@@ -73,16 +70,8 @@
   }
 
   // --- transport resolution --------------------------------------------------
-  // Resolution and wording both live in ui/chatHealth.ts, shared with the Stats dock's
+  // Resolution and wording both live in ui/destinationHealth.ts, shared with the Stats dock's
   // per-output chat line so the two surfaces cannot describe one transport differently.
-
-  const TONE: Record<TransportHealthState, DestinationChipTone> = {
-    connected: "ok",
-    connecting: "warn",
-    reconnecting: "warn",
-    failed: "down",
-    disconnected: "down",
-  };
 
   const NO_TRANSPORT_NOTE = "no chat transport — nothing to read or reply to here";
   const SHARED_CHAT_NOTE = "one chat for the whole channel, shared with its other streams";
@@ -93,9 +82,9 @@
     return t.profileUuid === null && (destByAccount.get(d.accountId)?.length ?? 1) >= 2;
   }
 
-  // Absence of a row is UNKNOWN, not healthy: no tone (so no dot claims a state) and
-  // the chip goes unavailable, because there is neither scrollback to filter to nor a
-  // transport to reply through.
+  // Absence of a row is UNKNOWN, not healthy: no state (so the chip's edge claims
+  // none) and the chip goes unavailable, because there is neither scrollback to filter
+  // to nor a transport to reply through.
   function statusOf(d: DestinationIdentity): DestinationChipStatus {
     const t = chatTransportFor(d);
     if (!t) {
@@ -108,7 +97,7 @@
     if (sharesChat(d, t)) {
       parts.push(SHARED_CHAT_NOTE);
     }
-    return { tone: TONE[t.row.state], note: parts.join(" — ") };
+    return { state: t.row.state, note: parts.join(" — ") };
   }
 
   // --- selection: the filter AND the send target -----------------------------
