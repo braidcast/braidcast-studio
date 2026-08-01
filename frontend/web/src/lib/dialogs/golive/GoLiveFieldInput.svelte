@@ -2,6 +2,7 @@
   import { obs, type OAuthProviderField } from "$lib/api/bridge";
   import GoLiveTagsInput from "$lib/dialogs/golive/GoLiveTagsInput.svelte";
   import GoLiveCategoryInput from "$lib/dialogs/golive/GoLiveCategoryInput.svelte";
+  import Icon from "$lib/ui/Icon.svelte";
   import { isEmptyVal, isRequiredEnum, normOpt, resolveRequiredEnum } from "$lib/dialogs/golive/fieldValue";
 
   // The single descriptor-driven field widget. Dispatch is by `field.type` only —
@@ -213,14 +214,16 @@
       {:else}
         <img class="preview" src={dataUri} alt={basename(str)} onerror={() => (imgError = true)} />
       {/if}
-      <button class="thumb-x" title="Remove" aria-label="Remove image" onclick={clearImage}>×</button>
+      <button class="thumb-x" title="Reset to default" aria-label="Reset to default" onclick={clearImage}>×</button>
     </div>
     <div class="thumb-meta">{basename(str)}</div>
   {:else if showGhost}
     <!-- Presented as a set image, because it is the one that will be sent. The box itself
          takes the click: there is no × on an inherited image (this layer has nothing to
-         clear), so picking IS the override. -->
-    <div class="thumb has">
+         clear), so picking IS the override. The dashed frame plus reduced opacity is the
+         same "ghost" treatment .inp/.chip already use elsewhere for an inherited value, so
+         this state stays visually distinct from a chosen one even though both hold a preview. -->
+    <div class="thumb has ghost">
       {#if imgError || !dataUri}
         <span class="fname">{basename(imgPath)}</span>
       {:else}
@@ -229,7 +232,9 @@
       <!-- An overlay rather than the frame itself, so the frame stays the same element the
            chosen-image case above uses: a <button> around the image does not size it the
            same way. Absolutely positioned, so it takes the click and the drop for the whole
-           frame without participating in layout. -->
+           frame without participating in layout. The corner badge is always visible so the
+           override control isn't a fully invisible click target; hover/focus expand it into
+           a labelled scrim for the same reason a keyboard user needs the focus ring. -->
       <button
         class="pick-over"
         aria-label="Override inherited image"
@@ -237,7 +242,10 @@
         ondragover={(e) => e.preventDefault()}
         ondrop={onDrop}
         onclick={() => void pickImage()}
-      ></button>
+      >
+        <span class="pick-badge" aria-hidden="true"><Icon name="edit" size={11} /></span>
+        <span class="pick-label" aria-hidden="true">Click or drop to override</span>
+      </button>
     </div>
     <div class="thumb-meta">{basename(imgPath)}</div>
   {:else}
@@ -405,6 +413,18 @@
     padding: 0;
     cursor: default;
   }
+  /* Same dashed + dimmed treatment as .inp.ghost / a ghost chip elsewhere, applied to the
+     frame instead of a placeholder so an inherited preview no longer reads identically to a
+     chosen one. The dimming lands on the content rather than the frame because opacity on
+     the frame would also fade the override affordance inside it, and a child cannot escape
+     an ancestor's opacity. */
+  .thumb.has.ghost {
+    border-style: dashed;
+  }
+  .thumb.has.ghost .preview,
+  .thumb.has.ghost .fname {
+    opacity: 0.75;
+  }
   .pick-over {
     position: absolute;
     inset: 0;
@@ -412,6 +432,45 @@
     border: 0;
     background: transparent;
     cursor: pointer;
+  }
+  .pick-over:focus-visible {
+    outline: var(--border-weight) solid var(--color-accent);
+    outline-offset: -2px;
+  }
+  .pick-badge {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 18px;
+    height: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--color-base);
+    color: var(--color-muted);
+    border-left: var(--border-weight) solid var(--color-border);
+    border-bottom: var(--border-weight) solid var(--color-border);
+  }
+  .pick-over:hover .pick-badge,
+  .pick-over:focus-visible .pick-badge {
+    color: var(--color-accent);
+  }
+  .pick-label {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 4px 8px;
+    font-size: 10px;
+    color: #fff;
+    background: rgba(0, 0, 0, 0.55);
+    opacity: 0;
+  }
+  .pick-over:hover .pick-label,
+  .pick-over:focus-visible .pick-label {
+    opacity: 1;
   }
   /* Sizing the replaced element directly, rather than letting it fill the frame, is what
      holds the 16:9 crop whatever element wraps it. */
