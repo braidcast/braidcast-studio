@@ -1,11 +1,11 @@
 <script lang="ts">
-  // Overlays page (master-detail): a left list of overlay widgets + a right tabbed
-  // editor (Code / Fields / Preview). Widgets are loopback-SSE overlays served by the
-  // C++ Overlay::Server; the user copies a widget URL into an OBS Browser Source. Edits
-  // mutate a local $state copy and debounce into overlays.update (~500ms), then bump
-  // reloadKey so the preview iframe reloads with the freshly-assembled document. A Save
-  // button flushes immediately. Create/Duplicate/Delete + the host's overlays.changed
-  // push keep the list in sync.
+  // Overlays page (master-detail): a left list of overlay widgets + a right editor
+  // with a Simple (fields) / Advanced (html-css-js) mode toggle and a live preview.
+  // Widgets are loopback-SSE overlays served by the C++ Overlay::Server; the user copies
+  // a widget URL into an OBS Browser Source. Edits mutate a local $state copy and
+  // debounce into overlays.update (~500ms), then bump reloadKey so the preview iframe
+  // reloads with the freshly-assembled document. A Save button flushes immediately.
+  // Create/Duplicate/Delete + the host's overlays.changed push keep the list in sync.
   import { onMount, onDestroy } from "svelte";
   import { obs, type OverlayListItem, type OverlayWidget, type OverlayField } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
@@ -16,11 +16,28 @@ import { EV } from "$lib/utils/eventNames";
   import PageHeader from "$lib/ui/PageHeader.svelte";
   import EmptyState from "$lib/ui/EmptyState.svelte";
   import Icon from "$lib/ui/Icon.svelte";
+  import Segmented, { type SegmentedOption } from "$lib/ui/Segmented.svelte";
+
+  type PaneMode = "simple" | "advanced" | "preview";
+
+  const MODE_OPTIONS: SegmentedOption[] = [
+    { label: "Simple", value: "simple" },
+    { label: "Advanced", value: "advanced" },
+  ];
+  const PREVIEW_OPTION: SegmentedOption = { label: "Preview", value: "preview" };
+
+  // Below this the editor column can't hold a legible fields/code pane beside the
+  // preview (the rail and the widget list already take 310px), so the preview stops
+  // being a fixed column and becomes a selectable mode instead. Driving the layout
+  // from this one query rather than from CSS media rules keeps the pane state and the
+  // rendered columns from disagreeing at the boundary.
+  const WIDE_PREVIEW_QUERY = "(min-width: 1100px)";
 
   let items = $state<OverlayListItem[]>([]);
   let selectedId = $state<string | null>(null);
   let widget = $state<OverlayWidget | null>(null);
-  let tab = $state<"code" | "fields" | "preview">("code");
+  let pane = $state<PaneMode>("simple");
+  let wide = $state(false);
   let reloadKey = $state(0);
   let portChanged = $state(false);
   let serverDown = $state(false);
@@ -33,6 +50,26 @@ import { EV } from "$lib/utils/eventNames";
   // True while the local editor buffer has edits not yet flushed to the backend, so
   // an external overlays.changed refetch never clobbers in-flight typing.
   let dirty = $state(false);
+
+  const paneOptions = $derived(wide ? MODE_OPTIONS : [...MODE_OPTIONS, PREVIEW_OPTION]);
+
+  $effect(() => {
+    const mq = window.matchMedia(WIDE_PREVIEW_QUERY);
+    wide = mq.matches;
+    const sync = (e: MediaQueryListEvent): void => {
+      wide = e.matches;
+    };
+    mq.addEventListener("change", sync);
+    return () => mq.removeEventListener("change", sync);
+  });
+
+  // Widening past the breakpoint retires the Preview cell, so a selection made while
+  // narrow would otherwise leave the toggle pointing at an option that no longer exists.
+  $effect(() => {
+    if (wide && pane === "preview") {
+      pane = "simple";
+    }
+  });
 
   // The widget types a user can create. Adding one is a single row here, not a new
   // branch: label + backend type + the default name a fresh widget gets.
@@ -74,7 +111,7 @@ import { EV } from "$lib/utils/eventNames";
     // Flush any pending edit to the outgoing widget before switching.
     await flushSave();
     selectedId = id;
-    tab = "code";
+    pane = "simple";
     try {
       const w = await obs.call("overlays.get", { id });
       // A newer select() may have superseded this one while the fetch was in flight;
@@ -362,11 +399,7 @@ import { EV } from "$lib/utils/eventNames";
               aria-label="Overlay name"
               oninput={(e) => onName(e.currentTarget.value)}
             />
-            <div class="tabs">
-              <button class="tab" class:on={tab === "code"} onclick={() => (tab = "code")}>Code</button>
-              <button class="tab" class:on={tab === "fields"} onclick={() => (tab = "fields")}>Fields</button>
-              <button class="tab" class:on={tab === "preview"} onclick={() => (tab = "preview")}>Preview</button>
-            </div>
+            <Segmented options={paneOptions} value={pane} onChange={(v) => (pane = v as PaneMode)} />
             <span class="editor-spacer"></span>
             <span class="save-state">{saving ? "Saving…" : "Saved"}</span>
             <button class="accent" disabled={saving} onclick={() => void flushSave()}>Save</button>
@@ -374,28 +407,35 @@ import { EV } from "$lib/utils/eventNames";
             <button class="ghost danger" onclick={() => void confirmDelete()}>Delete</button>
           </div>
 
-          <div class="editor-body">
-            {#if tab === "code"}
-              <div class="code-grid">
-                <div class="code-cell">
-                  <span class="cell-kicker">HTML</span>
-                  <CodePane value={widget.html} lang="html" onChange={onHtml} />
-                </div>
-                <div class="code-cell">
-                  <span class="cell-kicker">CSS</span>
-                  <CodePane value={widget.css} lang="css" onChange={onCss} />
-                </div>
-                <div class="code-cell">
-                  <span class="cell-kicker">JS</span>
-                  <CodePane value={widget.js} lang="javascript" onChange={onJs} />
-                </div>
+          <div class="editor-body" class:split={wide}>
+            {#if wide || pane !== "preview"}
+              <div class="edit-pane">
+                {#if pane === "advanced"}
+                  <div class="code-grid">
+                    <div class="code-cell">
+                      <span class="cell-kicker">HTML</span>
+                      <CodePane value={widget.html} lang="html" onChange={onHtml} />
+                    </div>
+                    <div class="code-cell">
+                      <span class="cell-kicker">CSS</span>
+                      <CodePane value={widget.css} lang="css" onChange={onCss} />
+                    </div>
+                    <div class="code-cell">
+                      <span class="cell-kicker">JS</span>
+                      <CodePane value={widget.js} lang="javascript" onChange={onJs} />
+                    </div>
+                  </div>
+                {:else}
+                  <div class="scroll-pane">
+                    <FieldsDesigner fields={widget.fields} widgetId={widget.id} onChange={onFields} />
+                  </div>
+                {/if}
               </div>
-            {:else if tab === "fields"}
-              <div class="scroll-pane">
-                <FieldsDesigner fields={widget.fields} widgetId={widget.id} onChange={onFields} />
+            {/if}
+            {#if wide || pane === "preview"}
+              <div class="preview-pane">
+                <PreviewPane url={widget.url} widgetId={widget.id} {reloadKey} />
               </div>
-            {:else}
-              <PreviewPane url={widget.url} widgetId={widget.id} {reloadKey} />
             {/if}
           </div>
         </div>
@@ -608,32 +648,6 @@ import { EV } from "$lib/utils/eventNames";
     outline: none;
     border-color: var(--color-accent);
   }
-  .tabs {
-    display: flex;
-  }
-  .tab {
-    padding: 7px 14px;
-    background: var(--color-surface);
-    border: var(--border-weight) solid var(--color-border);
-    border-left-width: 0;
-    color: var(--color-dim);
-    cursor: pointer;
-    font-family: var(--font-mono);
-    font-size: 10px;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-  }
-  .tab:first-child {
-    border-left-width: var(--border-weight);
-  }
-  .tab:hover {
-    color: var(--color-text);
-  }
-  .tab.on {
-    background: color-mix(in srgb, var(--color-accent) 16%, transparent);
-    color: var(--color-accent);
-    border-color: var(--color-accent);
-  }
   .editor-spacer {
     flex: 1;
   }
@@ -675,9 +689,25 @@ import { EV } from "$lib/utils/eventNames";
     flex: 1;
     min-height: 0;
     display: flex;
+    gap: 12px;
+  }
+  .edit-pane,
+  .preview-pane {
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+  }
+  .editor-body.split .preview-pane {
+    flex: 0 0 clamp(300px, 34%, 520px);
+  }
+  .preview-pane > :global(.preview) {
+    flex: 1;
+    min-width: 0;
   }
   .code-grid {
     flex: 1;
+    min-width: 0;
     min-height: 0;
     display: grid;
     grid-template-columns: 1fr 1fr;
