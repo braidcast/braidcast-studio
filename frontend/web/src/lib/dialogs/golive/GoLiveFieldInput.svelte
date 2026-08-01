@@ -58,10 +58,16 @@
   const arr = $derived(Array.isArray(value) ? (value as string[]) : []);
   const cat = $derived(value && typeof value === "object" ? (value as { id: string; name: string }) : null);
   const bool = $derived(value === true);
+  // Whether the layer below holds a value at all, independent of whether this layer holds
+  // one of its own. showGhost narrows this further to "…and nothing of my own", so it reads
+  // false the moment a value is set here — a control that needs "is there something
+  // underneath to fall back to" (regardless of this layer's own state) reuses hasGhost, not
+  // showGhost, for that question.
+  const hasGhost = $derived(ghostText !== "");
   // One gate for every control's inherit cue, over the shared emptiness rule — "empty"
   // differs by value shape (a category is an object, tags an array, the rest strings), and
   // a per-control test would have each type disagreeing about when it is inheriting.
-  const showGhost = $derived(ghostText !== "" && isEmptyVal(field.type, value));
+  const showGhost = $derived(hasGhost && isEmptyVal(field.type, value));
   // The cue itself, in one place so no control invents its own wording.
   const ghostLabel = $derived("↳ " + ghostText);
 
@@ -214,7 +220,12 @@
       {:else}
         <img class="preview" src={dataUri} alt={basename(str)} onerror={() => (imgError = true)} />
       {/if}
-      <button class="thumb-x" title="Reset to default" aria-label="Reset to default" onclick={clearImage}>×</button>
+      <button
+        class="thumb-x"
+        title={hasGhost ? "Reset to default" : "Remove"}
+        aria-label={hasGhost ? "Reset to default" : "Remove"}
+        onclick={clearImage}
+      >×</button>
     </div>
     <div class="thumb-meta">{basename(str)}</div>
   {:else if showGhost}
