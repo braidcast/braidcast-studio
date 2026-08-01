@@ -41,6 +41,7 @@
     <UseDefaultStrip
       checked={form.colorUseDefault}
       label="Use Default color settings"
+      inheritNote="Color format, space and range come from the Default canvas."
       disabled={isLive}
       onchange={(v) => {
         form.colorUseDefault = v;

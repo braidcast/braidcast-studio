@@ -16,7 +16,6 @@
   }
   let { form, canvasUuid, videoEncoders, isLive, isDefault, commit, commitNow }: Props = $props();
 
-  const inherits = $derived(form.videoUseDefault && !isDefault);
   const locked = $derived(groupLocked(form.videoUseDefault, isDefault, isLive));
 
   async function onEncoder(e: Event): Promise<void> {
@@ -30,6 +29,7 @@
     <UseDefaultStrip
       checked={form.videoUseDefault}
       label="Use Default video encoder"
+      inheritNote="The video encoder comes from the Default canvas."
       disabled={isLive}
       onchange={(v) => {
         form.videoUseDefault = v;
@@ -49,9 +49,6 @@
           <option value={e.id}>{e.name}</option>
         {/each}
       </select>
-      {#if inherits}
-        <div class="cv-field__h">This canvas inherits the Default canvas's video encoder.</div>
-      {/if}
     </div>
     {#if form.videoEnc}
       <div class="cv-subhead">Encoder Properties</div>

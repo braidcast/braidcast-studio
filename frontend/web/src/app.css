@@ -1130,6 +1130,15 @@ input[type="color"] {
   font-size: 10.5px;
   color: var(--color-muted);
 }
+/* Only present while the group is actually inheriting, so it carries the accent edge the
+   other transient state markers use rather than sitting at muted weight like the static
+   description above it. */
+.cv-inheritstrip__n {
+  font-size: 10.5px;
+  color: var(--color-dim);
+  border-left: var(--border-weight) solid var(--color-accent);
+  padding-left: 6px;
+}
 
 /* --- encoder-properties subhead --- */
 .cv-subhead {

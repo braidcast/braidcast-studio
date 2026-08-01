@@ -16,7 +16,6 @@
   }
   let { form, canvasUuid, audioEncoders, isLive, isDefault, commit, commitNow }: Props = $props();
 
-  const inherits = $derived(form.audioUseDefault && !isDefault);
   const locked = $derived(groupLocked(form.audioUseDefault, isDefault, isLive));
 
   async function onEncoder(e: Event): Promise<void> {
@@ -30,6 +29,7 @@
     <UseDefaultStrip
       checked={form.audioUseDefault}
       label="Use Default audio encoder"
+      inheritNote="The audio encoder comes from the Default canvas."
       disabled={isLive}
       onchange={(v) => {
         form.audioUseDefault = v;
@@ -46,9 +46,6 @@
           <option value={e.id}>{e.name}</option>
         {/each}
       </select>
-      {#if inherits}
-        <div class="cv-field__h">This canvas inherits the Default canvas's audio encoder.</div>
-      {/if}
     </div>
     {#if form.audioEnc}
       <div class="cv-subhead">Encoder Properties</div>

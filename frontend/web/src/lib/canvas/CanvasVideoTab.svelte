@@ -115,6 +115,7 @@
     <UseDefaultStrip
       checked={form.useDefaultRes}
       label="Use Default resolution & frame rate"
+      inheritNote="Resolution and frame rate come from the Default canvas."
       disabled={isLive}
       onchange={(v) => {
         form.useDefaultRes = v;
