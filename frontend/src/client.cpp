@@ -3,6 +3,10 @@
 #include "include/cef_app.h"
 #include "include/wrapper/cef_helpers.h"
 
+#include <chrono>
+#include <string>
+#include <unordered_map>
+
 #include "bridge.hpp"
 #include "gpu_safe_mode.hpp"
 #include "log.hpp"
@@ -14,6 +18,21 @@ namespace {
 // The single process-wide Client (main window + every detached window's browser
 // share it). Only touched on the CEF UI thread.
 CefRefPtr<Client> g_shared_client;
+
+// Render-process crash bookkeeping per browser id, so the reload in
+// OnRenderProcessTerminated is bounded. A deterministic crash would otherwise
+// reload -> crash -> reload at full speed, spawning a render process per cycle.
+// Steady (not wall) clock: a forward system-clock jump larger than the window would
+// otherwise refill the retry budget mid-loop and defeat the bound.
+struct RendererCrash {
+	int count = 0;
+	std::chrono::steady_clock::time_point last{};
+};
+std::unordered_map<int, RendererCrash> g_rendererCrashes;
+constexpr int kMaxRendererReloads = 3;
+// A browser that survived this long since its last crash counts as recovered, so an
+// unrelated crash later in the session still gets the full retry budget.
+constexpr std::chrono::seconds kRendererCrashWindow{60};
 } // namespace
 
 CefRefPtr<Client> Client::Shared()
@@ -70,6 +89,7 @@ void Client::OnBeforeClose(CefRefPtr<CefBrowser> browser)
 
 	// Unregister this browser so a late event push can't touch a dying browser.
 	Bridge::RemoveBrowser(browser);
+	g_rendererCrashes.erase(browser->GetIdentifier());
 
 	for (BrowserList::iterator it = browser_list_.begin(); it != browser_list_.end(); ++it) {
 		if ((*it)->IsSame(browser)) {
@@ -197,9 +217,26 @@ void Client::OnRenderProcessTerminated(CefRefPtr<CefBrowser> browser, Terminatio
 
 	// Without a reload the window keeps its last painted frame but is inert: no JS,
 	// no timers, no bridge subscriptions, and nothing on screen says so. A detached
-	// dock in that state reads as live data that simply stopped changing.
-	HostLog("[cef] render process terminated (status=" + std::to_string(static_cast<int>(status)) +
-		") -- reloading browser");
+	// dock in that state reads as live data that simply stopped changing. The retry is
+	// rate-bounded, not lifetime-capped: at most kMaxRendererReloads reloads per
+	// kRendererCrashWindow, so a crash that reproduces immediately settles as one dead
+	// window, while one that only recurs after the window keeps recovering at that rate.
+	RendererCrash &crash = g_rendererCrashes[browser->GetIdentifier()];
+	const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+	if (crash.last != std::chrono::steady_clock::time_point{} && now - crash.last > kRendererCrashWindow) {
+		crash.count = 0;
+	}
+	crash.last = now;
+	crash.count++;
+
+	const std::string detail =
+		"[cef] render process terminated (status=" + std::to_string(static_cast<int>(status)) + ", attempt " +
+		std::to_string(crash.count) + "/" + std::to_string(kMaxRendererReloads) + ")";
+	if (crash.count > kMaxRendererReloads) {
+		HostLog(detail + " -- giving up, leaving the window inert");
+		return;
+	}
+	HostLog(detail + " -- reloading browser");
 	browser->Reload();
 }
 
