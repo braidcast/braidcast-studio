@@ -6,6 +6,7 @@
   // path as the field value). Fields are treated immutably: every mutation builds the
   // next array and hands it to onChange, which the page debounces into overlays.update.
   import { obs, type LabeledOption, type OverlayField } from "$lib/api/bridge";
+  import CssColorInput from "$lib/ui/CssColorInput.svelte";
   import Icon from "$lib/ui/Icon.svelte";
 
   let {
@@ -308,11 +309,10 @@
                   <span class="track"><span class="thumb"></span></span>
                 </label>
               {:else if f.type === "color"}
-                <input
-                  class="in color"
-                  type="color"
+                <CssColorInput
                   value={asText(f.value) || "#ffffff"}
-                  oninput={(e) => setField(i, { value: e.currentTarget.value })}
+                  ariaLabel={f.label || f.key}
+                  onChange={(v) => setField(i, { value: v })}
                 />
               {:else if f.type === "number"}
                 <input
@@ -461,12 +461,6 @@
   }
   .dup-hint {
     color: var(--color-live);
-  }
-  .in.color {
-    padding: 2px;
-    height: 30px;
-    width: 46px;
-    cursor: pointer;
   }
   select.in {
     cursor: pointer;
