@@ -929,10 +929,15 @@ export interface OutputStat {
   durationMs: number;
 }
 
-/** Snapshot returned by stats.get (polled by the Stats dock). */
+/** One sample taken by the host's stats sampler: pushed on stats.changed, and
+ * echoed by stats.get. */
 export interface Stats {
   general: GeneralStats;
   outputs: OutputStat[];
+  /** Host wall clock (epoch ms) at which this sample was taken. Compared against
+   * Date.now() to tell a live reading from a frozen one — without it, a panel that
+   * stopped receiving pushes renders its last sample as if it were current. */
+  sampledAtMs: number;
 }
 
 // --- MCP server (embedded AI-control HTTP endpoint, Phase 5) -----------------
@@ -1696,8 +1701,9 @@ export interface ObsMethods {
   // the saved path and emit screenshot.saved.
   "screenshot.takeProgram": { ok: boolean; path: string };
   "screenshot.takeSource": { ok: boolean; path: string };
-  // Stats snapshot (general perf + per-output live stats). Polled by the Stats
-  // dock on a ~1s interval; there is no push, so the dock owns the cadence.
+  // The host sampler's newest stats sample (general perf + per-output live stats).
+  // The cadence belongs to the host, which pushes stats.changed at 1 Hz; this is the
+  // seed read a consumer does on subscribe, not a poll.
   "stats.get": Stats;
   // Rebase the "since reset" counters (render lag, encode skip, per-output drop) to
   // now, like OBS's Stats Reset. Instantaneous readings (cpu/fps/bitrate) are unaffected.
@@ -1864,6 +1870,9 @@ export interface ObsEvents {
   // The virtual camera started/stopped or its target canvas changed (fires on
   // start, stop, AND setConfig); the UI re-syncs its toggle + target label.
   "virtualCam.changed": VirtualCamStatus;
+  // One 1 Hz stats sample from the host's single sampler, pushed to EVERY browser so
+  // each window (main and detached) renders the same numbers off the same host truth.
+  "stats.changed": Stats;
   // Coalesced per-source audio levels, pushed at most ~30 Hz off the volmeter
   // callbacks. The UI maps dB -> meter width and applies peak hold.
   "audio.levels": { levels: AudioLevel[] };

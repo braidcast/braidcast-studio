@@ -1,16 +1,36 @@
-import { obs, type Stats } from "$lib/api/bridge";
+// Shared host-pushed stats. The host samples once per second and pushes
+// `stats.changed` to EVERY browser, so the main window and each detached dock
+// window render the same host truth. Each window used to poll `stats.get` on its own
+// renderer timer, which meant a detached window's poll could die on its own (a
+// throttled or dead renderer) and leave that panel showing a frozen snapshot with no
+// cue -- pre-broadcast zeros are indistinguishable from a dead stream. Ref-counted
+// the same way multistreamStatusStore is: the first subscriber seeds + wires the
+// event, the last unsubscribe tears down and leaves the final snapshot in place.
 
-// Shared 1 Hz stats poller. `stats.get` has no push, so each consumer used to own
-// its own interval — two ran concurrently on the Studio page (bottom bar + Stats
-// dock). This ref-counts subscribers and runs a SINGLE interval while >=1 is
-// active; the last unsubscribe stops it and leaves the final snapshot in place.
-// Per-consumer page gating is preserved by where each subscribes (e.g. StudioPage
-// only subscribes while on the studio page).
+import { obs, type Stats } from "$lib/api/bridge";
+import { EV } from "$lib/utils/eventNames";
+
+// A sample older than this is no longer a reading. Three host ticks, so an ordinarily
+// late tick can't flap the flag.
+const STALE_AFTER_MS = 3000;
+
 class StatsStore {
   stats = $state<Stats | null>(null);
   error = $state<string | null>(null);
   #subs = 0;
+  #off: (() => void) | null = null;
   #timer: ReturnType<typeof setInterval> | undefined;
+  // Advanced by the watchdog below, not by the samples: staleness is a function of
+  // elapsed time, and the case it detects is precisely "no new sample arrived".
+  #nowMs = $state(Date.now());
+
+  /** Age of the newest sample in ms; 0 before the first one arrives. */
+  ageMs = $derived(this.stats === null ? 0 : Math.max(0, this.#nowMs - this.stats.sampledAtMs));
+
+  /** True when the newest sample is too old to be a live reading -- the push stream
+   * or the host sampler stopped. A consumer MUST surface this: the numbers stay on
+   * screen either way, and unlabeled frozen values read as live ones. */
+  stale = $derived(this.stats !== null && this.ageMs > STALE_AFTER_MS);
 
   #load(): void {
     obs
@@ -18,21 +38,31 @@ class StatsStore {
       .then((s) => {
         this.stats = s;
         this.error = null;
+        this.#nowMs = Date.now();
       })
       .catch((e) => (this.error = (e as Error).message));
   }
 
-  /** Ref-counted subscription; returns an unsubscribe. Start the poll on the first
-   * subscriber, stop it on the last. */
+  /** Ref-counted subscription; returns an unsubscribe. The first subscriber seeds the
+   * snapshot and wires the push, the last one drops both. */
   subscribe(): () => void {
     this.#subs++;
     if (this.#subs === 1) {
       this.#load();
-      this.#timer = setInterval(() => this.#load(), 1000);
+      // A push is an authoritative read: it supersedes a failed seed, and leaving
+      // `error` set would keep the panel showing a failure over live numbers.
+      this.#off = obs.on(EV.statsChanged, (s) => {
+        this.stats = s;
+        this.error = null;
+        this.#nowMs = Date.now();
+      });
+      this.#timer = setInterval(() => (this.#nowMs = Date.now()), 1000);
     }
     return () => {
       this.#subs--;
-      if (this.#subs === 0 && this.#timer) {
+      if (this.#subs === 0) {
+        this.#off?.();
+        this.#off = null;
         clearInterval(this.#timer);
         this.#timer = undefined;
       }

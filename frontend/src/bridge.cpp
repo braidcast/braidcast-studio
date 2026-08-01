@@ -6585,10 +6585,10 @@ bool MethodUndoState(const json & /*params*/, json &result, std::string & /*erro
 	return true;
 }
 
-// --- stats snapshot (general perf + per-output streaming, polled ~1x/s) ------
+// --- stats snapshot (general perf + per-output streaming, sampled 1x/s) ------
 
-// Per-binding bitrate cache. stats.get is polled ~1x/s; bitrate is the delta of
-// the output's cumulative bytes since the previous poll, so we keep the prior
+// Per-binding bitrate cache. The sampler runs 1x/s; bitrate is the delta of the
+// output's cumulative bytes since the previous sample, so we keep the prior
 // sample per binding keyed by uuid. First sample, a missing binding, or a counter
 // reset (bytes < prev, e.g. a reconnect) yields 0 kbps for that tick.
 struct BitrateSample {
@@ -6604,18 +6604,22 @@ os_cpu_usage_info_t *g_cpuInfo = nullptr;
 std::unordered_map<std::string, BitrateSample> g_bitrateCache;
 
 // "Since reset" baselines, mirroring OBS's Stats "Reset" button. stats.reset
-// snapshots the current cumulative frame counters here; stats.get reports
+// snapshots the current cumulative frame counters here; each sample reports
 // value-minus-baseline so render-lag / encode-skip / per-output drop rates rebase
 // from that moment instead of accumulating for the whole session. Per-output
-// baselines are keyed by binding uuid. All cleared on Shutdown.
+// baselines are keyed by binding uuid, per-mix encode baselines by canvas uuid
+// ("" for the main mix). All cleared on Shutdown.
 struct StatsBaseline {
 	uint32_t renderLagged = 0;
 	uint32_t renderTotal = 0;
-	uint32_t encodeSkipped = 0;
-	uint32_t encodeTotal = 0;
 };
 StatsBaseline g_statsBaseline;
-std::unordered_map<std::string, std::pair<int, int>> g_outputStatsBaseline; // uuid -> {dropped, total}
+std::unordered_map<std::string, std::pair<int, int>> g_outputStatsBaseline;      // uuid -> {dropped, total}
+std::unordered_map<std::string, std::pair<uint32_t, uint32_t>> g_encodeBaseline; // canvas -> {skipped, total}
+
+// The newest sample, taken by the host-side sampler (SampleStatsTick) and echoed by
+// stats.get. UI-thread only.
+json g_lastStats;
 
 // value - baseline, self-healing: if the counter dropped below its baseline the
 // pipeline reset underneath (e.g. obs_reset_video, or an output restart), so drop the
@@ -6628,7 +6632,62 @@ template<typename T> T RebaseCounter(T value, T &baseline)
 	return static_cast<T>(value - baseline);
 }
 
-bool MethodStatsGet(const json & /*params*/, json &result, std::string & /*error*/)
+// Every video mix an encoder is currently pulling from: the main mix plus each canvas
+// mix carrying an active output. Multistream encoders bind to their canvas's mix
+// (EnsureCanvasEncoders -> obs_encoder_set_video), so the main mix alone reports zero
+// skipped/total frames for every canvas output. Keyed by canvas uuid ("" for the main
+// mix) and deduped by video_t*, since the Default canvas resolves to the main mix.
+std::vector<std::pair<std::string, video_t *>> EncodeMixes(const std::vector<MultistreamEngine::OutputStats> &rows)
+{
+	std::vector<std::pair<std::string, video_t *>> mixes;
+	auto add = [&mixes](const std::string &key, video_t *video) {
+		if (!video) {
+			return;
+		}
+		for (const std::pair<std::string, video_t *> &m : mixes) {
+			if (m.second == video) {
+				return;
+			}
+		}
+		mixes.emplace_back(key, video);
+	};
+	add(std::string(), obs_get_video());
+	for (const MultistreamEngine::OutputStats &s : rows) {
+		if (MultistreamEngine::IsActiveState(s.state)) {
+			add(s.canvasUuid, ObsBootstrap::Multistream().VideoForCanvas(s.canvasUuid));
+		}
+	}
+	return mixes;
+}
+
+// Summed {skipped, total} encode frames across `mixes`, each rebased against its own
+// "since reset" baseline. The baseline map is rebuilt to exactly the mixes present
+// (the same prune-forward shape as the bitrate cache): a canvas mix that goes away and
+// comes back is a fresh video_t whose counters restart at zero.
+std::pair<uint32_t, uint32_t> ReadEncodeFrames(const std::vector<std::pair<std::string, video_t *>> &mixes)
+{
+	uint32_t skipped = 0;
+	uint32_t total = 0;
+	std::unordered_map<std::string, std::pair<uint32_t, uint32_t>> nextBaseline;
+	for (const std::pair<std::string, video_t *> &m : mixes) {
+		std::pair<uint32_t, uint32_t> base = {0, 0};
+		auto it = g_encodeBaseline.find(m.first);
+		if (it != g_encodeBaseline.end()) {
+			base = it->second;
+		}
+		skipped += RebaseCounter(video_output_get_skipped_frames(m.second), base.first);
+		total += RebaseCounter(video_output_get_total_frames(m.second), base.second);
+		nextBaseline[m.first] = base;
+	}
+	g_encodeBaseline.swap(nextBaseline);
+	return {skipped, total};
+}
+
+// Take one sample: general performance + the per-output streaming rows. The host-side
+// sampler is the ONLY caller, so the CPU/bitrate deltas and the rebased counters are
+// never split between concurrent readers -- stats.get and the MCP server both echo
+// this sample rather than taking one of their own.
+json BuildStatsSnapshot()
 {
 	if (!g_cpuInfo) {
 		g_cpuInfo = os_cpu_usage_info_start();
@@ -6637,7 +6696,7 @@ bool MethodStatsGet(const json & /*params*/, json &result, std::string & /*error
 
 	// --- general performance ---
 	// The first query after start can return NaN until two samples exist; clamp
-	// it to 0 so the payload stays clean (real CPU populates on the next poll).
+	// it to 0 so the payload stays clean (real CPU populates on the next sample).
 	double cpu = g_cpuInfo ? os_cpu_usage_info_query(g_cpuInfo) : 0.0;
 	if (!(cpu == cpu)) {
 		cpu = 0.0;
@@ -6650,12 +6709,10 @@ bool MethodStatsGet(const json & /*params*/, json &result, std::string & /*error
 	const uint32_t renderTotal = RebaseCounter(obs_get_total_frames(), g_statsBaseline.renderTotal);
 	const double renderLagPct = renderTotal > 0 ? (static_cast<double>(renderLagged) / renderTotal) * 100.0 : 0.0;
 
-	uint32_t encodeSkipped = 0;
-	uint32_t encodeTotal = 0;
-	if (video_t *video = obs_get_video()) {
-		encodeSkipped = RebaseCounter(video_output_get_skipped_frames(video), g_statsBaseline.encodeSkipped);
-		encodeTotal = RebaseCounter(video_output_get_total_frames(video), g_statsBaseline.encodeTotal);
-	}
+	const std::vector<MultistreamEngine::OutputStats> rows = ObsBootstrap::Multistream().StatsSnapshot();
+	const std::pair<uint32_t, uint32_t> encode = ReadEncodeFrames(EncodeMixes(rows));
+	const uint32_t encodeSkipped = encode.first;
+	const uint32_t encodeTotal = encode.second;
 	const double encodeSkipPct = encodeTotal > 0 ? (static_cast<double>(encodeSkipped) / encodeTotal) * 100.0 : 0.0;
 
 	json general = json{
@@ -6678,7 +6735,7 @@ bool MethodStatsGet(const json & /*params*/, json &result, std::string & /*error
 	// Rebuilt to only the bindings present this tick (same prune-forward pattern as the
 	// bitrate cache), carrying each binding's rebased-and-self-healed drop/total baseline.
 	std::unordered_map<std::string, std::pair<int, int>> nextDropBaseline;
-	for (const MultistreamEngine::OutputStats &s : ObsBootstrap::Multistream().StatsSnapshot()) {
+	for (const MultistreamEngine::OutputStats &s : rows) {
 		// bitrate = delta-bytes / delta-seconds * 8 / 1000 (kbps). First sample
 		// (no prior) or a counter reset -> 0. Re-key nextCache so stale bindings
 		// no longer present are dropped automatically.
@@ -6723,7 +6780,39 @@ bool MethodStatsGet(const json & /*params*/, json &result, std::string & /*error
 	bitrateCache.swap(nextCache);
 	g_outputStatsBaseline.swap(nextDropBaseline);
 
-	result = json{{"general", std::move(general)}, {"outputs", std::move(outputs)}};
+	// sampledAtMs lets a consumer tell a live reading from a frozen one: a panel whose
+	// push stream died would otherwise render its last snapshot as if it were current,
+	// and pre-broadcast zeros are indistinguishable from a dead stream.
+	return json{{"general", std::move(general)},
+		    {"outputs", std::move(outputs)},
+		    {"sampledAtMs", TimeUtil::NowMs()}};
+}
+
+// The single host-side sampler: one 1 Hz tick for the whole app, pushed to EVERY
+// browser. Each window used to poll stats.get on its own renderer timer, so a detached
+// dock whose timer stopped kept rendering its last snapshot with no cue -- and
+// concurrent pollers split the CPU/bitrate deltas between them, understating both.
+constexpr int64_t kStatsSampleIntervalMs = 1000;
+
+void SampleStatsTick()
+{
+	CEF_REQUIRE_UI_THREAD();
+	if (g_bridgeShutdown.load(std::memory_order_acquire)) {
+		return;
+	}
+	g_lastStats = BuildStatsSnapshot();
+	EmitEvent(EventNames::kStatsChanged, g_lastStats);
+	CefPostDelayedTask(TID_UI, base::BindOnce(&SampleStatsTick), kStatsSampleIntervalMs);
+}
+
+// Echo the sampler's newest sample. Sampling inline covers only the window before the
+// first tick has run (a self-test dispatching stats.get during bootstrap).
+bool MethodStatsGet(const json & /*params*/, json &result, std::string & /*error*/)
+{
+	if (g_lastStats.is_null()) {
+		g_lastStats = BuildStatsSnapshot();
+	}
+	result = g_lastStats;
 	return true;
 }
 
@@ -6734,12 +6823,14 @@ bool MethodStatsReset(const json & /*params*/, json &result, std::string & /*err
 {
 	g_statsBaseline.renderLagged = obs_get_lagged_frames();
 	g_statsBaseline.renderTotal = obs_get_total_frames();
-	if (video_t *video = obs_get_video()) {
-		g_statsBaseline.encodeSkipped = video_output_get_skipped_frames(video);
-		g_statsBaseline.encodeTotal = video_output_get_total_frames(video);
+	const std::vector<MultistreamEngine::OutputStats> rows = ObsBootstrap::Multistream().StatsSnapshot();
+	g_encodeBaseline.clear();
+	for (const std::pair<std::string, video_t *> &m : EncodeMixes(rows)) {
+		g_encodeBaseline[m.first] = {video_output_get_skipped_frames(m.second),
+					     video_output_get_total_frames(m.second)};
 	}
 	g_outputStatsBaseline.clear();
-	for (const MultistreamEngine::OutputStats &s : ObsBootstrap::Multistream().StatsSnapshot()) {
+	for (const MultistreamEngine::OutputStats &s : rows) {
 		g_outputStatsBaseline[s.bindingUuid] = {s.droppedFrames, s.totalFrames};
 	}
 	result = json{{"ok", true}};
@@ -10782,6 +10873,10 @@ void Init()
 	// aggregator is a permanent singleton, so this is set once and cleared in Shutdown.
 	Transports::Health().onChanged = EmitTransportsHealthChanged;
 
+	// Arm the host-side stats sampler. Posted rather than called inline so the first
+	// sample lands on the CEF UI thread once the message loop is running.
+	CefPostDelayedTask(TID_UI, base::BindOnce(&SampleStatsTick), 0);
+
 	HostLog("[bridge] init: " + std::to_string(g_methods.size()) + " methods, " +
 		std::to_string(g_asyncMethods.size()) + " async methods");
 }
@@ -10848,9 +10943,12 @@ void Shutdown()
 		os_cpu_usage_info_destroy(g_cpuInfo);
 		g_cpuInfo = nullptr;
 	}
+	// g_bridgeShutdown, set above, is what stops the stats sampler rescheduling.
 	g_bitrateCache.clear();
 	g_outputStatsBaseline.clear();
+	g_encodeBaseline.clear();
 	g_statsBaseline = StatsBaseline{};
+	g_lastStats = json();
 }
 
 void AddBrowser(CefRefPtr<CefBrowser> browser)

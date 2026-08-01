@@ -141,10 +141,11 @@ bool ProcessPowerThrottleOptOutActive(std::string &reason, bool &apiFailed)
 	return false;
 }
 
-// One measurement sample via "stats.get" -- the SAME synchronous bridge method
-// (bridge.cpp:MethodStatsGet) the Stats dock polls, so renderLagPct/encodeSkipPct
-// are computed by the real stats source (obs_get_lagged_frames() /
-// obs_get_total_frames() / video_output_get_skipped_frames), not re-derived here.
+// One measurement sample via "stats.get" -- the SAME bridge method (bridge.cpp:
+// MethodStatsGet) the Stats dock reads, so renderLagPct/encodeSkipPct come from the
+// real stats source (obs_get_lagged_frames() / obs_get_total_frames() /
+// video_output_get_skipped_frames), not re-derived here. It echoes the host sampler's
+// newest sample, so reading faster than the sampler's 1 Hz just repeats a value.
 void SampleStats(State &st)
 {
 	Bridge::json result;

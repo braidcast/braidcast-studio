@@ -32,13 +32,19 @@
   // Host supplies tab chrome + strips __* keys; this body declares no props.
   let {}: Record<string, unknown> = $props();
 
-  // Shared 1 Hz poll (also feeds the Studio bottom bar + Monitor page). This dock
-  // lives inside StudioPage's dockview, which never unmounts (it just hides), so
-  // subscribing unconditionally would poll app-wide; gate on the Studio page the
-  // same way StudioPage itself gates its own statsStore.subscribe().
+  // Shared host-pushed 1 Hz stats (also feeds the Studio bottom bar + Monitor page).
+  // This dock lives inside StudioPage's dockview, which never unmounts (it just
+  // hides), so subscribing unconditionally would hold the subscription app-wide; gate
+  // on the Studio page the same way StudioPage gates its own statsStore.subscribe().
   const stats = $derived(statsStore.stats);
   const error = $derived(statsStore.error);
   const loaded = $derived(statsStore.stats !== null || statsStore.error !== null);
+  // This dock can run in a detached window with its own browser context; if that
+  // context stops receiving pushes, every number below is frozen. Say so rather than
+  // letting a stale snapshot pass for a live reading -- that is the whole defect this
+  // panel had while the owner was live at 70 Mb/s and it read IDLE / 0 kb/s / 0:00.
+  const stale = $derived(statsStore.stale);
+  const staleSec = $derived(Math.round(statsStore.ageMs / 1000));
   $effect(() => {
     if (pageStore.page !== "studio") return;
     return statsStore.subscribe();
@@ -240,9 +246,15 @@
   }
 </script>
 
-<div class="dock-body">
+<div class="dock-body" class:stale>
   {#if error}
     <p class="dock-msg err">{error}</p>
+  {/if}
+
+  {#if stale}
+    <p class="dock-msg stale-note">
+      Frozen — no update for {staleSec}s. These numbers are not current.
+    </p>
   {/if}
 
   {#if !loaded}
@@ -252,7 +264,7 @@
       <div class="sec-head">
         <span class="sec-label">Engine</span>
         <div class="sec-actions">
-          <span class="sec-meta">1 Hz</span>
+          <span class="sec-meta" class:stale-meta={stale}>{stale ? `STALE ${staleSec}s` : "1 Hz"}</span>
           <button type="button" class="reset-btn" onclick={resetStats} title="Reset cumulative counters">
             Reset
           </button>
@@ -397,6 +409,23 @@
   .dock-body {
     display: flex;
     flex-direction: column;
+  }
+
+  /* Frozen readings stay on screen (they are the last known truth) but are visibly
+     demoted, so they can't be mistaken for live ones. The notice itself is not
+     dimmed. */
+  .dock-body.stale .block {
+    opacity: 0.45;
+    filter: grayscale(0.6);
+  }
+  .dock-msg.stale-note {
+    color: var(--color-warn);
+    text-transform: none;
+    border-left: 2px solid var(--color-warn);
+    background: color-mix(in srgb, var(--color-warn) 12%, transparent);
+  }
+  .sec-meta.stale-meta {
+    color: var(--color-warn);
   }
 
   .block {

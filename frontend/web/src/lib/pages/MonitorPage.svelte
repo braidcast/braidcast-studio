@@ -23,9 +23,9 @@
   import { statsStore } from "$lib/stores/statsStore.svelte";
   import { viewerCountStore } from "$lib/stores/viewerCountStore.svelte";
 
-  // Live performance view. stats.get has no push; the shared 1 Hz store owns the
-  // interval. This page subscribes while mounted (App renders it conditionally, so
-  // leaving the page unsubscribes and, if no other consumer remains, stops the poll).
+  // Live performance view. The host pushes a sample at 1 Hz; the shared store holds
+  // the newest one. This page subscribes while mounted (App renders it conditionally,
+  // so leaving the page drops the subscription).
   const stats = $derived(statsStore.stats);
   $effect(() => statsStore.subscribe());
 

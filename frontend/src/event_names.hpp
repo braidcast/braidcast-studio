@@ -44,6 +44,7 @@ inline constexpr const char *kChatMessage = "chat.message";
 inline constexpr const char *kChannelsStats = "channels.stats";
 inline constexpr const char *kViewersChanged = "viewers.changed";
 inline constexpr const char *kAudioLevels = "audio.levels";
+inline constexpr const char *kStatsChanged = "stats.changed";
 inline constexpr const char *kDebugChanged = "debug.changed";
 } // namespace EventNames
 

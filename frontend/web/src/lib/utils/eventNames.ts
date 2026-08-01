@@ -40,6 +40,7 @@ export const EV = {
   channelsStats: "channels.stats",
   viewersChanged: "viewers.changed",
   audioLevels: "audio.levels",
+  statsChanged: "stats.changed",
   debugChanged: "debug.changed",
 } as const;
 

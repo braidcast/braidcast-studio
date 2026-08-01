@@ -127,6 +127,13 @@ public:
 	 * mix, which obs_canvas_reset_video frees, so reusing it would be a UAF. */
 	void InvalidateCanvasEncoders(const std::string &canvasUuid);
 
+	/* video_t for a canvas: delegates to the injected resolver (obs_get_video()
+	 * for the Default, the additional canvas's mix otherwise, NULL if none).
+	 * Public so a consumer reading per-mix counters (the stats sampler's encode
+	 * skipped/total sum) resolves a canvas's mix through the same seam the
+	 * encoders bind through, instead of re-deriving the Default->global mapping. */
+	video_t *VideoForCanvas(const std::string &canvasUuid);
+
 	std::vector<OutputStatus> Statuses() const;
 
 	/* Numeric per-binding performance snapshot for the Stats dock. Mirrors how
@@ -203,9 +210,6 @@ private:
 	/* Get-or-create the shared encoder pair for a canvas, bound to that
 	 * canvas's video mix + the global audio. Returns nullptr on failure. */
 	CanvasEncoders *EnsureCanvasEncoders(const std::string &canvasUuid);
-	/* video_t for a canvas: delegates to the injected resolver (obs_get_video()
-	 * for the Default, the additional canvas's mix otherwise, NULL if none). */
-	video_t *VideoForCanvas(const std::string &canvasUuid);
 
 	/* FindLive/TakeLive assume the caller already holds liveMutex. TakeLive moves
 	 * the entry out of `live` and returns it so the caller destroys it AFTER

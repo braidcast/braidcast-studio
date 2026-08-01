@@ -186,7 +186,7 @@ bool Client::OnBeforeBrowse(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> f
 	return false;
 }
 
-void Client::OnRenderProcessTerminated(CefRefPtr<CefBrowser> browser, TerminationStatus /*status*/, int /*error_code*/,
+void Client::OnRenderProcessTerminated(CefRefPtr<CefBrowser> browser, TerminationStatus status, int /*error_code*/,
 				       const CefString & /*error_string*/)
 {
 	CEF_REQUIRE_UI_THREAD();
@@ -194,6 +194,13 @@ void Client::OnRenderProcessTerminated(CefRefPtr<CefBrowser> browser, Terminatio
 	if (message_router_) {
 		message_router_->OnRenderProcessTerminated(browser);
 	}
+
+	// Without a reload the window keeps its last painted frame but is inert: no JS,
+	// no timers, no bridge subscriptions, and nothing on screen says so. A detached
+	// dock in that state reads as live data that simply stopped changing.
+	HostLog("[cef] render process terminated (status=" + std::to_string(static_cast<int>(status)) +
+		") -- reloading browser");
+	browser->Reload();
 }
 
 void Client::OnBeforeContextMenu(CefRefPtr<CefBrowser> /*browser*/, CefRefPtr<CefFrame> /*frame*/,

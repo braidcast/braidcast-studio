@@ -33,6 +33,9 @@ void App::OnBeforeCommandLineProcessing(const CefString &process_type, CefRefPtr
 	// a re-raster.
 	command_line->AppendSwitch("disable-renderer-backgrounding");
 	command_line->AppendSwitch("disable-backgrounding-occluded-windows");
+	// Backgrounded renderers also get their timers clamped to ~1/minute, which stalls
+	// any interval-driven UI in a detached dock window the user isn't looking at.
+	command_line->AppendSwitch("disable-background-timer-throttling");
 	command_line->AppendSwitchWithValue("disable-features", "CalculateNativeWinOcclusion");
 
 	// --disable-gpu stops the CEF GPU-subprocess crash loop (EXCEPTION_BREAKPOINT on

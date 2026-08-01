@@ -54,7 +54,7 @@ import { EV } from "$lib/utils/eventNames";
   // its own state: an empty `outputs` from a failed read is indistinguishable from a
   // genuinely idle rig, and rendering it as "Offline" would be a fabricated read.
   let statusUnread = $derived(!multistreamStatusStore.loaded || multistreamStatusStore.error !== null);
-  // Shared 1 Hz stats poll (also feeds the Stats dock + Monitor page).
+  // Shared host-pushed 1 Hz stats (also feeds the Stats dock + Monitor page).
   let stats = $derived(statsStore.stats);
   let focusedCanvasUuid = $state<string | null>(null);
   let busy = $state(false);
@@ -217,10 +217,10 @@ import { EV } from "$lib/utils/eventNames";
     }
   });
 
-  // Gate the shared 1 Hz stats poll on the Studio page. StudioPage never unmounts
-  // (it just hides), so subscribing unconditionally would poll app-wide; this
-  // subscribes only while Studio is shown and unsubscribes on leave / destroy. The
-  // ref-counted store runs a single interval no matter how many consumers subscribe.
+  // Gate the shared 1 Hz stats subscription on the Studio page. StudioPage never
+  // unmounts (it just hides), so subscribing unconditionally would hold it app-wide;
+  // this subscribes only while Studio is shown and unsubscribes on leave / destroy.
+  // The ref-counted store wires the push once no matter how many consumers subscribe.
   $effect(() => {
     if (pageStore.page !== "studio") return;
     return statsStore.subscribe();
