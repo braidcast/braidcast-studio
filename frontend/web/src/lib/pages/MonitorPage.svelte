@@ -3,6 +3,7 @@
   import type { ChatPlatform } from "$lib/api/bridge";
   import PageHeader from "$lib/ui/PageHeader.svelte";
   import EmptyState from "$lib/ui/EmptyState.svelte";
+  import StaleNotice from "$lib/ui/StaleNotice.svelte";
   import { PLATFORM_COLORS, PLATFORM_LABELS, PLATFORM_ORDER } from "$lib/theme/platformColors";
   import { STATE_COLOR } from "$lib/theme/stateColors";
   import { fmtBitrate, fmtDuration, titleState } from "$lib/utils/format";
@@ -27,6 +28,11 @@
   // the newest one. This page subscribes while mounted (App renders it conditionally,
   // so leaving the page drops the subscription).
   const stats = $derived(statsStore.stats);
+  // Same contract as the Stats dock: a sample that stopped arriving must not be read
+  // as a live one. This page is the largest rendering of these numbers, so it carries
+  // the notice too.
+  const stale = $derived(statsStore.stale);
+  const staleSec = $derived(Math.round(statsStore.ageMs / 1000));
   $effect(() => statsStore.subscribe());
 
   // Short client-side ring per metric so each card can draw a sparkline. Observes the
@@ -145,10 +151,11 @@
 </script>
 
 <div class="page">
-  <PageHeader title="Monitor" sub="live performance · polled 1×/s" />
+  <PageHeader title="Monitor" sub="live performance · 1×/s from the host" />
 
   <div class="body">
-    <div class="cards">
+    <StaleNotice {stale} ageSec={staleSec} subject="statistics" />
+    <div class="cards" class:frozen={stale}>
       {#each cards as c (c.k)}
         {@const pts = sparkPoints(c.series, c.domain, SW, SH)}
         <div class="metric" style:--sev={c.c}>
@@ -242,6 +249,12 @@
     gap: 1px;
     background: var(--color-border);
     border: 1px solid var(--color-border);
+  }
+  /* Frozen readings stay on screen (they are the last known truth) but are visibly
+     demoted, so they can't be mistaken for live ones. */
+  .cards.frozen {
+    opacity: 0.45;
+    filter: grayscale(0.6);
   }
   /* Viewer cards: same hairline grid as .cards but auto-fit so the TOTAL + only
      the reporting platforms show without forcing six columns. */

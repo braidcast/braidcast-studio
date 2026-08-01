@@ -2,6 +2,7 @@
   import { untrack } from "svelte";
   import Icon from "$lib/ui/Icon.svelte";
   import EmptyState from "$lib/ui/EmptyState.svelte";
+  import StaleNotice from "$lib/ui/StaleNotice.svelte";
   import Modal from "$lib/ui/Modal.svelte";
   import { STATE_COLOR, TRANSPORT_STATE_COLOR } from "$lib/theme/stateColors";
   import { CHAT_STATE_NOTE, chatTransportFor } from "$lib/ui/destinationHealth";
@@ -41,8 +42,7 @@
   const loaded = $derived(statsStore.stats !== null || statsStore.error !== null);
   // This dock can run in a detached window with its own browser context; if that
   // context stops receiving pushes, every number below is frozen. Say so rather than
-  // letting a stale snapshot pass for a live reading -- that is the whole defect this
-  // panel had while the owner was live at 70 Mb/s and it read IDLE / 0 kb/s / 0:00.
+  // letting a stale snapshot pass for a live reading.
   const stale = $derived(statsStore.stale);
   const staleSec = $derived(Math.round(statsStore.ageMs / 1000));
   $effect(() => {
@@ -251,11 +251,7 @@
     <p class="dock-msg err">{error}</p>
   {/if}
 
-  {#if stale}
-    <p class="dock-msg stale-note">
-      Frozen — no update for {staleSec}s. These numbers are not current.
-    </p>
-  {/if}
+  <StaleNotice {stale} ageSec={staleSec} subject="statistics" />
 
   {#if !loaded}
     <p class="dock-msg">Loading…</p>
@@ -417,12 +413,6 @@
   .dock-body.stale .block {
     opacity: 0.45;
     filter: grayscale(0.6);
-  }
-  .dock-msg.stale-note {
-    color: var(--color-warn);
-    text-transform: none;
-    border-left: 2px solid var(--color-warn);
-    background: color-mix(in srgb, var(--color-warn) 12%, transparent);
   }
   .sec-meta.stale-meta {
     color: var(--color-warn);

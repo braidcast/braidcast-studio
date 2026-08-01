@@ -31,6 +31,7 @@ import { EV } from "$lib/utils/eventNames";
   import CollectionDialog, { type DialogSpec } from "$lib/dialogs/CollectionDialog.svelte";
   import ContextMenu, { type ContextMenuItem, type ContextMenuItems } from "$lib/menus/ContextMenu.svelte";
   import Icon from "$lib/ui/Icon.svelte";
+  import StaleNotice from "$lib/ui/StaleNotice.svelte";
   import { openGoLiveModal } from "$lib/dialogs/golive/goLiveModalOpener.svelte";
   import { goLivePref } from "$lib/stores/goLivePrefStore.svelte";
   import { log } from "$lib/utils/log";
@@ -56,6 +57,10 @@ import { EV } from "$lib/utils/eventNames";
   let statusUnread = $derived(!multistreamStatusStore.loaded || multistreamStatusStore.error !== null);
   // Shared host-pushed 1 Hz stats (also feeds the Stats dock + Monitor page).
   let stats = $derived(statsStore.stats);
+  // A frozen snapshot must not pass for a live reading in the bottom bar either: this
+  // bar is where a dead push stream shows as 0 kb/s / 0:00 beside a LIVE badge.
+  let statsStale = $derived(statsStore.stale);
+  let statsAgeSec = $derived(Math.round(statsStore.ageMs / 1000));
   let focusedCanvasUuid = $state<string | null>(null);
   let busy = $state(false);
   let dialog = $state<DialogSpec | null>(null);
@@ -821,7 +826,15 @@ import { EV } from "$lib/utils/eventNames";
       {#if liveState === "live"}
         <span class="livebadge">
           <span class="rec"></span>LIVE
-          <span class="t">{fmtDuration(liveDurationMs, { fixed: true })}</span>
+          <!-- The elapsed comes from the stats sample, so it stops advancing when the
+               samples stop; the badge's own live state does not. -->
+          <span
+            class="t"
+            class:frozen={statsStale}
+            title={statsStale ? `Elapsed frozen — no stats update for ${statsAgeSec}s` : undefined}
+          >
+            {fmtDuration(liveDurationMs, { fixed: true })}
+          </span>
         </span>
       {:else}
         <span class="bb-state"><span class="focus-dot" style:background={focusDotColor}></span>{liveLabel}</span>
@@ -865,7 +878,19 @@ import { EV } from "$lib/utils/eventNames";
         </svg>
         VCAM
       </button>
-      <div class="perf" title="Performance">
+      <StaleNotice stale={statsStale} ageSec={statsAgeSec} subject="statistics" banner={false} />
+      <div
+        class="perf"
+        class:frozen={statsStale}
+        title={statsStale ? `Frozen — no stats update for ${statsAgeSec}s; these numbers are not current` : "Performance"}
+      >
+        <!-- Visual marker only; StaleNotice above owns the one announcement, so neither
+             the ticking age nor the per-second readings are ever spoken. -->
+        {#if statsStale}
+          <span class="cell frozen-cell" aria-hidden="true">
+            <span class="k">FROZEN</span><span class="v">{statsAgeSec}s</span>
+          </span>
+        {/if}
         {#each perfRow as e (e.k)}
           <span class="cell"><span class="k">{e.k}</span><span class="v" style:color={e.c}>{e.v}</span></span>
         {/each}
@@ -1250,6 +1275,10 @@ import { EV } from "$lib/utils/eventNames";
     font-size: 13px;
     font-variant-numeric: tabular-nums;
   }
+  .livebadge .t.frozen {
+    opacity: 0.45;
+    text-decoration: line-through;
+  }
   .livebadge .rec {
     width: 7px;
     height: 7px;
@@ -1346,6 +1375,15 @@ import { EV } from "$lib/utils/eventNames";
   }
   .perf .v {
     color: var(--color-dim);
+  }
+  /* Frozen readings stay legible (they are the last known truth) but are demoted, with
+     the marker cell carrying the reason at full contrast. */
+  .perf.frozen .cell:not(.frozen-cell) {
+    opacity: 0.45;
+  }
+  .perf .frozen-cell .k,
+  .perf .frozen-cell .v {
+    color: var(--color-warn);
   }
   /* GO LIVE: full-height right-edge accent block; red END STREAM when live. The
      global `button { height: var(--control-height) }` would otherwise pin it to 30px
