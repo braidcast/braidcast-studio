@@ -14,6 +14,15 @@ let lifetimeMs = 0;
 
 OBSOverlay.onLoad((ctx) => applyFields(ctx.fields || {}));
 OBSOverlay.onChat((m) => appendMessage(m));
+// Messages have no expiry by default (messageLifetimeSec 0), so without this the last
+// broadcast's chat would still be sitting on screen when the next one goes live. Clearing
+// the column back to empty is the same state the widget starts in before any message has
+// arrived.
+OBSOverlay.onStream((s) => {
+  if (s && s.active !== true) {
+    root.textContent = "";
+  }
+});
 
 function applyFields(f) {
   fields = f;

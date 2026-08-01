@@ -10173,12 +10173,20 @@ bool MethodOverlaysCreate(const json &p, json &result, std::string & /*error*/)
 bool MethodOverlaysUpdate(const json &p, json &result, std::string &error)
 {
 	const std::string id = OptString(p, "id");
-	if (!Overlay::Store().Update(id, p)) {
+	int rev = 0;
+	if (!Overlay::Store().Update(id, p, &rev)) {
 		error = "no such overlay: " + id;
 		return false;
 	}
+	// The edited markup and script are assembled into the SERVED document, so a source
+	// already on a scene keeps rendering the copy it loaded until it re-resolves its URL
+	// -- which the bumped revision makes differ.
+	Overlay::RefreshSources();
 	EmitEvent(EventNames::kOverlaysChanged, json::object());
-	result = json{{"ok", true}};
+	// The revision goes back to the editor so its local copy matches the stored one; the
+	// overlays.changed echo below would otherwise read as an external edit and reload the
+	// preview a second time.
+	result = json{{"ok", true}, {"rev", rev}};
 	return true;
 }
 
@@ -10208,6 +10216,36 @@ bool MethodOverlaysDelete(const json &p, json &result, std::string &error)
 	Overlay::RefreshSources();
 	EmitEvent(EventNames::kOverlaysChanged, json::object());
 	result = json{{"removed", id}};
+	return true;
+}
+
+// overlays.usage {id} -> {sources:<n>}: how many live overlay sources are bound to this
+// widget. The delete confirmation reads it first, so a widget that scenes still use is
+// removed deliberately rather than found out about later -- the sources it leaves behind
+// render a blank page, which is indistinguishable from a widget that draws nothing yet.
+bool MethodOverlaysUsage(const json &p, json &result, std::string & /*error*/)
+{
+	result = json{{"sources", Overlay::CountSourcesUsing(OptString(p, "id"))}};
+	return true;
+}
+
+// overlays.removeAsset {id,file} -> {ok:true}. `file` is the served basename as it appears
+// in the widget's assets[]; the store sanitizes it with the same guard uploads go through
+// before it reaches the filesystem.
+bool MethodOverlaysRemoveAsset(const json &p, json &result, std::string &error)
+{
+	const std::string id = OptString(p, "id");
+	const std::string file = OptString(p, "file");
+	if (id.empty() || file.empty()) {
+		error = "overlays.removeAsset requires id and file";
+		return false;
+	}
+	if (!Overlay::Store().RemoveAsset(id, file)) {
+		error = "no such asset: " + file;
+		return false;
+	}
+	EmitEvent(EventNames::kOverlaysChanged, json::object());
+	result = json{{"ok", true}};
 	return true;
 }
 
@@ -10686,6 +10724,8 @@ void Init()
 		{"overlays.update", MethodOverlaysUpdate},
 		{"overlays.duplicate", MethodOverlaysDuplicate},
 		{"overlays.delete", MethodOverlaysDelete},
+		{"overlays.usage", MethodOverlaysUsage},
+		{"overlays.removeAsset", MethodOverlaysRemoveAsset},
 		{"overlays.url", MethodOverlaysUrl},
 		{"overlays.serverInfo", MethodOverlaysServerInfo},
 		{"overlays.addToScene", MethodOverlaysAddToScene},

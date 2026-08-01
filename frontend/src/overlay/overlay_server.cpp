@@ -16,9 +16,10 @@
 #include <nlohmann/json.hpp>
 
 #include "../log.hpp"
-#include "util/http_status.hpp" // Http::ReasonFor
-#include "util/web_bundle.hpp"  // WebBundle::Root, WebBundle::ContentTypeForPath
-#include "overlay_store.hpp"    // Overlay::Store(), Widget, WidgetUrl
+#include "util/http_status.hpp"    // Http::ReasonFor
+#include "util/web_bundle.hpp"     // WebBundle::Root, WebBundle::ContentTypeForPath
+#include "../events/event_hub.hpp" // Events::Store() -- the persisted event history
+#include "overlay_store.hpp"       // Overlay::Store(), Widget, WidgetUrl
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -39,6 +40,7 @@ constexpr DWORD kSseSendTimeoutMs = 3000;      // I3: bound on one SSE send so a
 constexpr DWORD kHeaderRecvTimeoutMs = 10000;  // I1: backstop so a silent client can't park a thread
 constexpr DWORD kResponseSendTimeoutMs = 3000; // bounded plain-HTTP send so a stuck reader can't park a thread
 constexpr size_t kMaxSseConnections = 64;      // ceiling on concurrent live SSE streams; excess rejected 503
+constexpr size_t kMaxBackfillEvents = 200;     // ceiling on the connect-time event replay
 
 // Read one file under an absolute root, rejecting ".." (copy of scheme.cpp guard).
 bool ReadFileGuarded(const std::string &root, const std::string &rel, std::string &out, std::string &ctype)
@@ -148,6 +150,38 @@ std::string AssembleDocument(const Widget &w, int port)
 	doc += "<script src=\"/runtime.js?t=" + w.token + "\"></script>\n";
 	doc += "<script>\n" + w.js + "\n</script>\n</body></html>";
 	return doc;
+}
+
+// The current broadcast's events, oldest-first, as one `backfill` frame. A widget that
+// accumulates a running total from the event stream (a goal bar) otherwise restarts from
+// its configured seed every time its source is recreated -- a reload, a scene-collection
+// switch -- and the donations it had already counted leave the bar.
+//
+// Bounded twice, because this is the FIRST thing written to a socket that has not proven
+// it can read yet: by the broadcast's own start, since a previous stream's events are not
+// this stream's progress, and by kMaxBackfillEvents, so a long broadcast cannot hand a
+// connecting client an unbounded write.
+//
+// An empty array is a real answer -- "this broadcast has produced nothing yet" -- and is
+// still sent, so a consumer can tell it apart from getting no backfill at all.
+std::string BuildBackfillFrame(int64_t sinceMs)
+{
+	const std::vector<Events::NormalizedEvent> history = Events::Store().List(); // newest-first
+	std::vector<const Events::NormalizedEvent *> picked;
+	for (const Events::NormalizedEvent &ev : history) {
+		if (ev.ts < sinceMs) {
+			continue;
+		}
+		if (picked.size() >= kMaxBackfillEvents) {
+			break;
+		}
+		picked.push_back(&ev);
+	}
+	json arr = json::array();
+	for (auto it = picked.rbegin(); it != picked.rend(); ++it) {
+		arr.push_back((*it)->ToJson());
+	}
+	return "event: backfill\ndata: " + json{{"events", std::move(arr)}}.dump() + "\n\n";
 }
 
 } // namespace
@@ -268,6 +302,20 @@ void OverlayServer::BroadcastChannelStats(const nlohmann::json &stats)
 // on a poll cadence.
 void OverlayServer::BroadcastStreamState(const nlohmann::json &state)
 {
+	// This frame is the only place the broadcast's start time is known, so it is also
+	// where the backfill window is set. A null startedAt under an active broadcast leaves
+	// it at 0: no output has reported a start, so there is no window to replay over.
+	int64_t startedAt = 0;
+	if (state.is_object() && state.value("active", false)) {
+		const auto it = state.find("startedAt");
+		if (it != state.end() && it->is_number_integer()) {
+			startedAt = it->get<int64_t>();
+		}
+	}
+	{
+		std::lock_guard<std::mutex> lock(sseMutex_);
+		streamStartedAtMs_ = startedAt;
+	}
 	BroadcastStateFrame("stream", state);
 }
 
@@ -716,19 +764,33 @@ void OverlayServer::RunSse(uintptr_t clientSocket, const std::string &widgetId)
 		// whereas replaying after registration could deliver a stale frame on top of a
 		// fresher one.
 		//
-		// Only channels carrying state replay. Audience totals poll on a ~15 minute
-		// cadence and stream state changes only at a transition, so a browser source
-		// that loads in between would render nothing until the next one -- an uptime
-		// widget would sit blank for the rest of a broadcast. Chat messages are moments
-		// rather than state, and a viewer count stops being true the instant a broadcast
-		// ends, so replaying one would assert an audience that is no longer watching.
+		// Only a channel whose frames carry STATE replays, and it replays only its
+		// latest. Audience totals poll on a ~15 minute cadence and stream state changes
+		// only at a transition, so a browser source that loads in between would render
+		// nothing until the next one -- an uptime widget would sit blank for the rest of
+		// a broadcast. A viewer count is the counter-example: it stops being true the
+		// instant a broadcast ends, so replaying one would assert an audience that is no
+		// longer watching.
+		//
+		// Chat and events are moments rather than state, so neither replays as itself.
+		// Events are still summarizable, though -- a running total over the current
+		// broadcast is state even when the individual events are not -- so they reach a
+		// connecting client as the separate, bounded `backfill` frame instead, which no
+		// consumer of the moment-by-moment stream sees.
 		std::vector<std::string> replay;
+		int64_t since = 0;
 		{
 			std::lock_guard<std::mutex> lock(sseMutex_);
-			replay.reserve(replayFrames_.size());
+			replay.reserve(replayFrames_.size() + 1);
 			for (const auto &[eventName, frame] : replayFrames_) {
 				replay.push_back(frame);
 			}
+			since = streamStartedAtMs_;
+		}
+		// Built outside sseMutex_: it reads the event store, whose own lock must never be
+		// taken under this one.
+		if (since > 0) {
+			replay.push_back(BuildBackfillFrame(since));
 		}
 		for (const std::string &frame : replay) {
 			send(sock, frame.c_str(), (int)frame.size(), 0);

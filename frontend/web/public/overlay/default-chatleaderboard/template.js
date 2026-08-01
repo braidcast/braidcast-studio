@@ -66,6 +66,16 @@ let windowTimer = null;
 
 OBSOverlay.onLoad((ctx) => applyFields(ctx.fields || {}));
 OBSOverlay.onChat((m) => note(m));
+// A rolling window ages chatters out on its own, but the tally itself has nothing that
+// expires with time, so it would otherwise carry the previous broadcast's standings into
+// the next one. Clearing back to an empty table is the same "nobody has reported yet"
+// state the widget starts in and already draws as nothing.
+OBSOverlay.onStream((s) => {
+  if (s && s.active !== true) {
+    chatters.clear();
+    render();
+  }
+});
 
 function applyFields(f) {
   fields = f;

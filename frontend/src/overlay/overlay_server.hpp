@@ -27,9 +27,10 @@ public:
 	OverlayServer(const OverlayServer &) = delete;
 	OverlayServer &operator=(const OverlayServer &) = delete;
 
-	// Bind 127.0.0.1: try the store's persisted port, else scan 43000..43019 for a
-	// free one; persist the bound port via Store().SetPort. Spawns the accept thread.
-	// Idempotent. Returns false (logged) if no port in range binds.
+	// Bind 127.0.0.1: try the store's persisted port, else scan five scattered bands of
+	// 50 (43000/47000/51000/55000/59000) for a free one; persist the bound port via
+	// Store().SetPort. Spawns the accept thread. Idempotent. Returns false (logged) if
+	// no port in any band binds.
 	bool Start();
 
 	// Test entry point: bind an explicit port (0 => OS-ephemeral) WITHOUT touching
@@ -124,6 +125,12 @@ private:
 	// (a ~15 minute poll cadence) and `stream` (changes only at a transition, which may
 	// be hours away). Chat and viewers are deliberately absent -- see RunSse.
 	std::map<std::string, std::string> replayFrames_;
+
+	// When the current broadcast went live, in wall-clock epoch ms, or 0 when nothing is
+	// live or no output has reported a start yet. Taken from the `stream` state frame,
+	// which is the only place that time is known. It bounds the `backfill` frame RunSse
+	// builds on connect: without it there is no window, so no backfill is sent.
+	int64_t streamStartedAtMs_ = 0;
 
 	// Every accepted client fd (SSE and plain), so Stop() can shutdown() them all to
 	// unblock parked recv/send loops without closing (the owning thread closes). The

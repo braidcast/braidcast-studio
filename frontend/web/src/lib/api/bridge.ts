@@ -1362,6 +1362,10 @@ export interface OverlayWidget {
   fields: OverlayField[];
   assets: OverlayAsset[];
   url: string;
+  /** Document revision, bumped by every accepted overlays.update. The host appends it to
+   * the URL it resolves for a live overlay source, which is what makes an edit reach a
+   * copy already rendering in a scene. */
+  rev: number;
 }
 
 /** Compact list row (overlays.list). */
@@ -1773,21 +1777,27 @@ export interface ObsMethods {
   // arrive via the events.new / events.backfill push events.
   "events.list": NormalizedEvent[];
   "events.clear": { ok: boolean };
-  // Overlay widgets (loopback SSE overlays, Phase 9.3). list/get/create/duplicate/
-  // delete/url/test/serverInfo/addToScene are sync; uploadAsset is async. create/
-  // update/duplicate/delete emit overlays.changed. test broadcasts a synthetic event
-  // to one widget's open SSE streams (never persisted). addToScene creates a Browser
-  // Source at the widget URL in the current scene.
+  // Overlay widgets (loopback SSE overlays, Phase 9.3). Everything but uploadAsset and
+  // test is sync. create/update/duplicate/delete/removeAsset emit overlays.changed.
+  // update returns the widget's new revision so the editor's local copy stays level with
+  // the stored one, and re-resolves every live overlay source so the edit reaches a copy
+  // already on a scene. duplicate copies the source widget's asset files, so a duplicated
+  // alert keeps its sound and image. usage counts the live sources bound to a widget, for
+  // the delete confirmation. test broadcasts a synthetic event to one widget's open SSE
+  // streams (never persisted). addToScene creates a Browser Source at the widget URL in
+  // the current scene.
   "overlays.list": OverlayListItem[];
   "overlays.get": OverlayWidget;
   "overlays.create": OverlayWidget;
-  "overlays.update": { ok: boolean };
+  "overlays.update": { ok: boolean; rev: number };
   "overlays.duplicate": OverlayWidget;
   "overlays.delete": { removed: string };
+  "overlays.usage": { sources: number };
   "overlays.url": { url: string };
   "overlays.test": { ok: boolean };
   "overlays.serverInfo": OverlayServerInfo;
   "overlays.uploadAsset": { path: string };
+  "overlays.removeAsset": { ok: boolean };
   "overlays.addToScene": { id: number; source: string };
   // Gated DEBUG logging (Phase 11 Part 1). get seeds the diagnostics store with the
   // live gate + the current session-log path (SessionLog::CurrentPath); setDebug

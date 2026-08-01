@@ -58,6 +58,25 @@ void RemoveWidgetDir(const std::string &id)
 	std::filesystem::remove_all(std::filesystem::u8path(WidgetDir(id)), ec);
 }
 
+// Clone one widget's assets directory onto another's. Call with mutex_ RELEASED -- the
+// tree walk is the same blocking I/O RemoveWidgetDir and AddAsset keep off the lock. A
+// source that has never had an upload has no directory, which is nothing to copy rather
+// than a failure.
+bool CopyAssetsDir(const std::string &fromId, const std::string &toId)
+{
+	const std::filesystem::path from = std::filesystem::u8path(OverlayStore::AssetsDir(fromId));
+	std::error_code ec;
+	if (!std::filesystem::exists(from, ec)) {
+		return true;
+	}
+	const std::string to = OverlayStore::AssetsDir(toId);
+	if (os_mkdirs(to.c_str()) == MKDIR_ERROR) {
+		return false;
+	}
+	std::filesystem::copy(from, std::filesystem::u8path(to), std::filesystem::copy_options::recursive, ec);
+	return !ec;
+}
+
 // The widget with this id, or null. Caller holds mutex_.
 Widget *FindWidget(std::vector<Widget> &widgets, const std::string &id)
 {
@@ -107,7 +126,7 @@ json Widget::ToJson() const
 {
 	return json{
 		{"id", id},   {"token", token}, {"name", name},     {"type", type},     {"html", html},
-		{"css", css}, {"js", js},       {"fields", fields}, {"assets", assets},
+		{"css", css}, {"js", js},       {"fields", fields}, {"assets", assets}, {"rev", rev},
 	};
 }
 
@@ -131,6 +150,7 @@ Widget Widget::FromJson(const json &j)
 	w.js = j.value("js", std::string());
 	w.fields = j.contains("fields") && j["fields"].is_array() ? j["fields"] : json::array();
 	w.assets = j.contains("assets") && j["assets"].is_array() ? j["assets"] : json::array();
+	w.rev = j.value("rev", 0);
 	return w;
 }
 
@@ -220,7 +240,7 @@ Widget OverlayStore::Create(const std::string &name, const std::string &type)
 	return w;
 }
 
-bool OverlayStore::Update(const std::string &id, const json &patch)
+bool OverlayStore::Update(const std::string &id, const json &patch, int *newRev)
 {
 	std::lock_guard<std::mutex> lock(mutex_);
 	for (Widget &w : widgets_) {
@@ -242,6 +262,10 @@ bool OverlayStore::Update(const std::string &id, const json &patch)
 		if (patch.contains("fields") && patch["fields"].is_array()) {
 			w.fields = patch["fields"];
 		}
+		++w.rev;
+		if (newRev != nullptr) {
+			*newRev = w.rev;
+		}
 		Save();
 		return true;
 	}
@@ -250,22 +274,47 @@ bool OverlayStore::Update(const std::string &id, const json &patch)
 
 std::optional<Widget> OverlayStore::Duplicate(const std::string &id)
 {
-	std::lock_guard<std::mutex> lock(mutex_);
-	for (const Widget &w : widgets_) {
-		if (w.id != id) {
-			continue;
+	Widget copy;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		const Widget *source = FindWidget(widgets_, id);
+		if (source == nullptr) {
+			return std::nullopt;
 		}
-		Widget copy = w;
+		copy = *source;
 		copy.id = NewUuid();
 		copy.token = NewToken();
-		copy.name = w.name + " copy";
-		// v1: asset FILES are not copied; the duplicate references no assets until re-uploaded.
-		copy.assets = json::array();
-		widgets_.push_back(copy);
-		Save();
-		return copy;
+		copy.name = source->name + " copy";
 	}
-	return std::nullopt;
+	// Outside mutex_, on the same discipline AddAsset documents: this walks a directory
+	// tree, and the video thread takes this lock on every overlay source's update.
+	//
+	// The copy keeps assets[], so every field holding an "assets/<file>" path resolves
+	// under the new id. A failed copy fails the whole duplicate rather than registering a
+	// widget whose alert sound and image 404 -- that failure mode is silent on stream,
+	// which is the worst place to discover it.
+	if (!CopyAssetsDir(id, copy.id)) {
+		RemoveWidgetDir(copy.id);
+		HostLog("[overlay] Duplicate: could not copy the assets of " + id + "; no duplicate created");
+		return std::nullopt;
+	}
+	bool sourceGone = false;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		if (FindWidget(widgets_, id) != nullptr) {
+			widgets_.push_back(copy);
+			Save();
+		} else {
+			sourceGone = true;
+		}
+	}
+	if (sourceGone) {
+		// Deleted while the tree was being copied. Registering the copy now would put the
+		// content that delete just removed straight back.
+		RemoveWidgetDir(copy.id);
+		return std::nullopt;
+	}
+	return copy;
 }
 
 bool OverlayStore::Delete(const std::string &id)
@@ -371,6 +420,43 @@ std::string OverlayStore::AddAsset(const std::string &id, const std::string &key
 		return std::string();
 	}
 	return "assets/" + safeKey;
+}
+
+bool OverlayStore::RemoveAsset(const std::string &id, const std::string &file)
+{
+	// The same guard AddAsset writes through, so the two agree on what a stored file can
+	// be named and a crafted `file` cannot reach outside the assets directory.
+	const std::string safeFile = SanitizeAssetKey(file);
+	if (safeFile.empty()) {
+		return false;
+	}
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		Widget *target = FindWidget(widgets_, id);
+		if (target == nullptr) {
+			return false;
+		}
+		json kept = json::array();
+		bool found = false;
+		for (const json &a : target->assets) {
+			if (a.is_object() && a.value("file", std::string()) == safeFile) {
+				found = true;
+				continue;
+			}
+			kept.push_back(a);
+		}
+		if (!found) {
+			return false;
+		}
+		target->assets = std::move(kept);
+		Save();
+	}
+	// Outside mutex_, and only once the registry no longer names the file -- the ordering
+	// Delete uses. A crash in between orphans a file nothing points at, rather than
+	// leaving a record whose file is already gone.
+	std::error_code ec;
+	std::filesystem::remove(std::filesystem::u8path(AssetsDir(id) + "/" + safeFile), ec);
+	return true;
 }
 
 void OverlayStore::InjectForTest(const Widget &w)

@@ -62,7 +62,12 @@ void ProcUrl(void * /*data*/, calldata_t *cd)
 	if (!w) {
 		return;
 	}
-	calldata_set_string(cd, "url", WidgetUrl(*w, Store().Port()).c_str());
+	// The revision rides the query string because a browser source reloads on a changed
+	// URL and on nothing else: a widget's html/css/js are assembled into the served
+	// document rather than stored in the source, so an edit leaves every observable
+	// setting identical. It stays out of WidgetUrl -- the URL a user copies by hand into
+	// a plain Browser Source would otherwise pin a revision that goes stale.
+	calldata_set_string(cd, "url", (WidgetUrl(*w, Store().Port()) + "&r=" + std::to_string(w->rev)).c_str());
 }
 
 bool RefreshOne(void * /*param*/, obs_source_t *source)
@@ -70,6 +75,29 @@ bool RefreshOne(void * /*param*/, obs_source_t *source)
 	const char *id = obs_source_get_unversioned_id(source);
 	if (id != nullptr && strcmp(id, kOverlaySourceId) == 0) {
 		obs_source_update(source, nullptr);
+	}
+	return true;
+}
+
+struct UsageScan {
+	const std::string *overlayId;
+	int count;
+};
+
+bool CountOne(void *param, obs_source_t *source)
+{
+	const char *id = obs_source_get_unversioned_id(source);
+	if (id == nullptr || strcmp(id, kOverlaySourceId) != 0) {
+		return true;
+	}
+	UsageScan *scan = static_cast<UsageScan *>(param);
+	obs_data_t *settings = obs_source_get_settings(source);
+	if (settings != nullptr) {
+		const char *bound = obs_data_get_string(settings, kOverlayIdKey);
+		if (bound != nullptr && *scan->overlayId == bound) {
+			++scan->count;
+		}
+		obs_data_release(settings);
 	}
 	return true;
 }
@@ -91,6 +119,13 @@ void RegisterProcs()
 void RefreshSources()
 {
 	obs_enum_sources(&RefreshOne, nullptr);
+}
+
+int CountSourcesUsing(const std::string &overlayId)
+{
+	UsageScan scan{&overlayId, 0};
+	obs_enum_sources(&CountOne, &scan);
+	return scan.count;
 }
 
 } // namespace Overlay

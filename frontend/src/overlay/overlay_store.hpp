@@ -25,6 +25,13 @@ struct Widget {
 	std::string js;
 	json fields = json::array();
 	json assets = json::array();
+	// Bumped by every accepted Update. A widget's html/css/js live in the SERVED
+	// DOCUMENT, not in an overlay source's settings, so an edit changes nothing a
+	// browser source can observe; the revision is what makes the resolved URL differ,
+	// which is the one input a browser source acts on. Persisted, so a source that
+	// resolved r=7 before a restart is not handed r=0 afterwards and left showing the
+	// page it already has.
+	int rev = 0;
 
 	json ToJson() const;             // full definition
 	json ToListJson(int port) const; // {id,name,type,token,url} for overlays.list
@@ -46,12 +53,18 @@ public:
 	void SetPort(int port);                                 // persist a newly-bound port
 
 	Widget Create(const std::string &name, const std::string &type); // seed from default template
-	bool Update(const std::string &id, const json &patch);           // {name?,html?,css?,js?,fields?}
-	std::optional<Widget> Duplicate(const std::string &id);          // new id+token
-	bool Delete(const std::string &id);                              // removes widget + overlays/<id> dir
+	// {name?,html?,css?,js?,fields?}. Bumps the widget's revision and reports the new
+	// value through *newRev, so a caller can hand it back to the editor rather than
+	// re-reading the widget just to learn it.
+	bool Update(const std::string &id, const json &patch, int *newRev = nullptr);
+	std::optional<Widget> Duplicate(const std::string &id); // new id+token, assets copied
+	bool Delete(const std::string &id);                     // removes widget + overlays/<id> dir
 	// Store a decoded asset file; returns its served relative path "assets/<file>" (or "" on failure).
 	std::string AddAsset(const std::string &id, const std::string &key, const std::string &kind,
 			     const std::vector<unsigned char> &bytes);
+	// Drop one stored asset: its record and its file. `file` is the served basename as it
+	// appears in the widget's assets[]; it is sanitized before it reaches the filesystem.
+	bool RemoveAsset(const std::string &id, const std::string &file);
 
 	static std::string FilePath();                       // MultistreamBasicPath("overlays.json")
 	static std::string AssetsDir(const std::string &id); // .../basic/overlays/<id>/assets

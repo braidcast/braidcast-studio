@@ -7,11 +7,14 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
+#include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "../log.hpp"
 #include "../obs_bootstrap.hpp"
@@ -97,6 +100,51 @@ int StatusOf(const std::string &resp)
 	}
 }
 
+// Does `acc` hold a complete SSE frame named `eventName` whose data line contains
+// `marker`? Matching the pair rather than either half keeps one channel's body from
+// crediting another channel's name -- which is exactly the drift this covers.
+bool NamedFrameArrived(const std::string &acc, const std::string &eventName, const std::string &marker)
+{
+	const std::string head = "event: " + eventName + "\ndata: ";
+	size_t pos = acc.find(head);
+	while (pos != std::string::npos) {
+		const size_t start = pos + head.size();
+		const size_t end = acc.find('\n', start);
+		if (end == std::string::npos) {
+			return false; // the frame is still arriving
+		}
+		if (acc.substr(start, end - start).find(marker) != std::string::npos) {
+			return true;
+		}
+		pos = acc.find(head, end);
+	}
+	return false;
+}
+
+// Read into `acc` -- re-running `push` each round when one is given -- until `arrived`
+// accepts what has accumulated, or the attempt budget runs out. The re-push covers the
+// registration race: RunSse adds a socket to the broadcast registry only once its
+// handshake is on the wire, so a first push can land before this client is a target. The
+// caller's short per-recv timeout is what makes a budget of attempts a bounded wait.
+bool PumpUntil(SOCKET s, std::string &acc, const std::function<void()> &push,
+	       const std::function<bool(const std::string &)> &arrived)
+{
+	char buf[4096];
+	for (int attempt = 0; attempt < 40; ++attempt) {
+		if (push) {
+			push();
+		}
+		if (arrived(acc)) {
+			return true;
+		}
+		const int n = recv(s, buf, sizeof(buf), 0);
+		if (n > 0) {
+			acc.append(buf, (size_t)n);
+		}
+	}
+	return arrived(acc);
+}
+
 } // namespace
 
 void ObsBootstrap::RunOverlaySelfTest()
@@ -149,14 +197,28 @@ void ObsBootstrap::RunOverlaySelfTest()
 	}
 	HostLog(std::string("[selftest] overlay document -> ") + (docOk ? "OK" : "MISMATCH"));
 
-	// 2) Open an SSE client, 3) broadcast a synthetic event, assert the data: frame.
+	// 2) Open an SSE client, 3) broadcast a synthetic event, assert the data: frame, then
+	// 4) push one frame through every named channel and assert each arrives under its own
+	// event name.
+	//
+	// `liveSinceMs` is the start the stream frame below claims, which is also the window
+	// the backfill replay in step 6 is bounded to. Taken as now, so the event store holds
+	// nothing inside it and the replay stays independent of the user's real history.
+	const int64_t liveSinceMs = static_cast<int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+								 std::chrono::system_clock::now().time_since_epoch())
+								 .count());
 	bool sseHeaderOk = false;
 	bool deliveryOk = false;
+	bool channelsOk = false;
+	bool noWindowOk = false;
 	SOCKET sse = DialLoopback(port);
 	if (sse != INVALID_SOCKET) {
 		WriteAll(sse, "GET /w/selftest-widget/events?t=selftesttoken HTTP/1.1\r\nHost: x\r\n\r\n");
 		std::string acc = RecvHeaders(sse);
 		sseHeaderOk = StatusOf(acc) == 200 && acc.find("text/event-stream") != std::string::npos;
+		// Nothing has gone live on this private server yet, so there is no window to
+		// replay events over and no backfill frame may be built.
+		noWindowOk = acc.find("event: backfill") == std::string::npos;
 
 		// Per-attempt short recv timeout so a not-yet-registered socket just retries
 		// (RunSse registers the socket right after sending headers -- avoid that race).
@@ -170,23 +232,106 @@ void ObsBootstrap::RunOverlaySelfTest()
 		ev.ts = 1000;
 		ev.actorName = "selftest-ovl";
 
-		char buf[1024];
-		for (int attempt = 0; attempt < 40 && !deliveryOk; ++attempt) {
-			server.BroadcastTo("selftest-widget", ev);
-			const int n = recv(sse, buf, sizeof(buf), 0);
-			if (n > 0) {
-				acc.append(buf, (size_t)n);
-			}
-			if (acc.find("data:") != std::string::npos && acc.find("selftest-ovl-1") != std::string::npos) {
-				deliveryOk = true;
-			}
+		deliveryOk = PumpUntil(
+			sse, acc, [&] { server.BroadcastTo("selftest-widget", ev); },
+			[](const std::string &a) {
+				return a.find("data:") != std::string::npos &&
+				       a.find("selftest-ovl-1") != std::string::npos;
+			});
+
+		// One row per named channel, so adding a channel is a row here rather than
+		// another copy of the pump above -- which is how the four drifted out of coverage
+		// in the first place. `marker` is a value unique to that channel's body.
+		struct Channel {
+			const char *name;
+			std::string marker;
+			std::function<void()> push;
+		};
+		const std::vector<Channel> kChannels = {
+			{"chat", "selftest-chat-1",
+			 [&] {
+				 Overlay::json msg = Overlay::json::object();
+				 msg["id"] = "selftest-chat-1";
+				 msg["platform"] = "twitch";
+				 msg["author"] = "selftest-ovl";
+				 msg["text"] = "hello";
+				 server.BroadcastChat(msg);
+			 }},
+			{"viewers", "selftest:viewers",
+			 [&] {
+				 Overlay::json counts = Overlay::json::object();
+				 counts["perAccount"] = Overlay::json::object();
+				 counts["perAccount"]["selftest:viewers"] = 1;
+				 server.BroadcastViewers(counts);
+			 }},
+			{"channels", "selftest:channels",
+			 [&] {
+				 Overlay::json entry = Overlay::json::object();
+				 entry["audienceCount"] = 3;
+				 entry["audienceKind"] = "followers";
+				 Overlay::json stats = Overlay::json::object();
+				 stats["perAccount"] = Overlay::json::object();
+				 stats["perAccount"]["selftest:channels"] = entry;
+				 server.BroadcastChannelStats(stats);
+			 }},
+			{"stream", std::to_string(liveSinceMs),
+			 [&] {
+				 Overlay::json state = Overlay::json::object();
+				 state["active"] = true;
+				 state["startedAt"] = liveSinceMs;
+				 state["destinations"] = Overlay::json::array();
+				 server.BroadcastStreamState(state);
+			 }},
+		};
+		channelsOk = true;
+		for (const Channel &c : kChannels) {
+			const bool got = PumpUntil(sse, acc, c.push, [&](const std::string &a) {
+				return NamedFrameArrived(a, c.name, c.marker);
+			});
+			HostLog(std::string("[selftest] overlay channel ") + c.name + " -> " +
+				(got ? "OK" : "MISMATCH"));
+			channelsOk = channelsOk && got;
 		}
 		closesocket(sse);
 	}
 	HostLog(std::string("[selftest] overlay SSE header -> ") + (sseHeaderOk ? "OK" : "MISMATCH"));
 	HostLog(std::string("[selftest] overlay SSE delivery -> ") + (deliveryOk ? "OK" : "MISMATCH"));
+	HostLog(std::string("[selftest] overlay named channels -> ") + (channelsOk ? "OK" : "MISMATCH"));
 
-	// 4) Wrong token -> 403.
+	// 5) Replay on connect: a stream opened AFTER the pushes above gets each state
+	// channel's last frame plus the bounded event backfill, and nothing from the channels
+	// that carry moments rather than state.
+	bool replayOk = false;
+	bool replayScopeOk = false;
+	{
+		SOCKET fresh = DialLoopback(port);
+		if (fresh != INVALID_SOCKET) {
+			WriteAll(fresh, "GET /w/selftest-widget/events?t=selftesttoken HTTP/1.1\r\nHost: x\r\n\r\n");
+			std::string acc = RecvHeaders(fresh);
+			const DWORD rtoMs = 100;
+			setsockopt(fresh, SOL_SOCKET, SO_RCVTIMEO, (const char *)&rtoMs, sizeof(rtoMs));
+			const bool gotChannels = PumpUntil(fresh, acc, nullptr, [](const std::string &a) {
+				return NamedFrameArrived(a, "channels", "selftest:channels");
+			});
+			const bool gotStream = PumpUntil(fresh, acc, nullptr, [&](const std::string &a) {
+				return NamedFrameArrived(a, "stream", std::to_string(liveSinceMs));
+			});
+			const bool gotBackfill = PumpUntil(fresh, acc, nullptr, [](const std::string &a) {
+				return NamedFrameArrived(a, "backfill", "\"events\":");
+			});
+			replayOk = gotChannels && gotStream && gotBackfill;
+			// A replayed chat message would put a moment back on screen as if it had just
+			// happened, and a replayed viewer count would assert an audience that may no
+			// longer be watching.
+			replayScopeOk = acc.find("event: chat") == std::string::npos &&
+					acc.find("event: viewers") == std::string::npos;
+			closesocket(fresh);
+		}
+	}
+	HostLog(std::string("[selftest] overlay replay on connect -> ") + (replayOk ? "OK" : "MISMATCH"));
+	HostLog(std::string("[selftest] overlay replay scope -> ") + (noWindowOk && replayScopeOk ? "OK" : "MISMATCH"));
+
+	// 6) Wrong token -> 403.
 	bool authOk = false;
 	{
 		SOCKET c = DialLoopback(port);
@@ -267,8 +412,8 @@ void ObsBootstrap::RunOverlaySelfTest()
 	Overlay::Store().RemoveForTest("selftest-widget");
 	HostLog("[selftest] overlay cleanup -> server stopped");
 
-	if (docOk && sseHeaderOk && deliveryOk && authOk) {
-		HostLog("[selftest] overlay -> document/SSE/auth OK");
+	if (docOk && sseHeaderOk && deliveryOk && channelsOk && replayOk && noWindowOk && replayScopeOk && authOk) {
+		HostLog("[selftest] overlay -> document/SSE/channels/replay/auth OK");
 	} else {
 		HostLog("[selftest] overlay -> FAILED (see step lines above)");
 	}

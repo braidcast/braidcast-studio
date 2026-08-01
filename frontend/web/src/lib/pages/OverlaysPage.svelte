@@ -108,7 +108,7 @@ import { EV } from "$lib/utils/eventNames";
     const w = widget;
     saving = true;
     try {
-      await obs.call("overlays.update", {
+      const saved = await obs.call("overlays.update", {
         id: w.id,
         name: w.name,
         html: w.html,
@@ -116,6 +116,9 @@ import { EV } from "$lib/utils/eventNames";
         js: w.js,
         fields: w.fields,
       });
+      // Level the local copy with the stored revision, so the overlays.changed echo this
+      // save triggers compares equal and doesn't reload the preview a second time.
+      w.rev = saved.rev;
       dirty = false;
       reloadKey++;
       // Keep the list row's name label in sync without a full re-fetch.
@@ -151,15 +154,25 @@ import { EV } from "$lib/utils/eventNames";
     }
   }
 
-  function confirmDelete(): void {
+  // Sources bound to a deleted widget go blank rather than disappear, so the count has to
+  // be said out loud here — the alternative is finding out on stream. A failed count
+  // falls back to the plain warning instead of blocking the delete.
+  async function confirmDelete(): Promise<void> {
     const target = widget;
     if (!target) {
       return;
     }
+    let inUse = 0;
+    try {
+      inUse = (await obs.call("overlays.usage", { id: target.id })).sources;
+    } catch {
+      inUse = 0;
+    }
+    const used = inUse > 0 ? ` It is used in ${inUse} source${inUse === 1 ? "" : "s"}, which will go blank.` : "";
     dialog = {
       kind: "confirm",
       title: "Delete Overlay",
-      message: `Delete "${target.name}"? This removes the widget and its uploaded assets.`,
+      message: `Delete "${target.name}"?${used} This removes the widget and its uploaded assets.`,
       confirmLabel: "Delete",
       onCommit: () => void remove(target.id),
     };
@@ -358,7 +371,7 @@ import { EV } from "$lib/utils/eventNames";
             <span class="save-state">{saving ? "Saving…" : "Saved"}</span>
             <button class="accent" disabled={saving} onclick={() => void flushSave()}>Save</button>
             <button class="ghost" onclick={duplicate}>Duplicate</button>
-            <button class="ghost danger" onclick={confirmDelete}>Delete</button>
+            <button class="ghost danger" onclick={() => void confirmDelete()}>Delete</button>
           </div>
 
           <div class="editor-body">

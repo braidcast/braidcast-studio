@@ -1,6 +1,8 @@
 #ifndef OBS_MULTISTREAM_FRONTEND_OVERLAY_OVERLAY_SOURCES_HPP_
 #define OBS_MULTISTREAM_FRONTEND_OVERLAY_OVERLAY_SOURCES_HPP_
 
+#include <string>
+
 namespace Overlay {
 
 // The obs source type obs-browser registers for stream overlays, and the obs_data
@@ -33,6 +35,13 @@ void RegisterProcs();
 // If Start() is ever moved back below module load, a post-bind sweep has to come back
 // with it. UI thread only.
 void RefreshSources();
+
+// How many live braidcast_overlay sources are bound to `overlayId`. The delete
+// confirmation quotes it, so removing a widget scenes are still using is something the
+// user decides rather than discovers: a source whose overlay is gone renders a blank
+// page, which looks the same as a widget that draws nothing yet. Counts what
+// obs_enum_sources enumerates -- the same set RefreshOne sweeps. UI thread only.
+int CountSourcesUsing(const std::string &overlayId);
 
 } // namespace Overlay
 
