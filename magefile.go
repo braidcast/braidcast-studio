@@ -115,7 +115,7 @@ var cppExts = map[string]bool{
 	".m": true, ".mm": true,
 }
 
-var formatSkipDirs = []string{buildDir, "deps", depsDir}
+var formatSkipDirs = []string{buildDir, "deps", depsDir, "frontend/deps"}
 
 // Format runs clang-format in place over the C/C++ files changed vs HEAD
 // (staged, unstaged, and untracked), using the repo's .clang-format style.
