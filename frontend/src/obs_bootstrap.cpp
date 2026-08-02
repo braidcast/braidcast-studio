@@ -37,7 +37,7 @@
 #include "frontend_callbacks.hpp"
 #include "log.hpp"
 #include "chat/channel_stats_poller.hpp"
-#include "chat/chat_hub.hpp" // Chat::BindingDestination
+#include "chat/chat_hub.hpp" // Chat::BindingDestination, Chat::Hub
 #include "events/event_hub.hpp"
 #include "events/event_store.hpp"
 #include "events/transport_health.hpp"
@@ -1040,6 +1040,13 @@ bool ObsBootstrap::Start()
 			if (OAuth::StreamProvider *provider = OAuth::Registry().Get(acct->providerId)) {
 				provider->clearActiveBroadcastDestination(dest);
 			}
+			// This destination's chat ends with its output. Left running it would keep
+			// reading (and, on YouTube, keep spending quota on) a chat the user is no
+			// longer streaming to, and would eventually die on its own and report Failed
+			// -- painting a red transport edge on the Multichat/Events chips for a
+			// destination that was switched off deliberately. Per-destination rather than
+			// a hub re-Start so the account's sibling orientations keep their transports.
+			Chat::Hub().StopDestination(dest);
 		});
 	};
 

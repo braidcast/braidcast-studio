@@ -122,13 +122,21 @@ void ChatHub::Start()
 		const std::string providerId = acct.providerId;
 		const std::string channelRef = provider->chatChannelRef(acct, dest.profileUuid);
 
+		// Cancel is TWO flags: the generation's (Stop / re-Start) and this destination's
+		// (StopDestination). Every guard below tests both, so one destination can be torn
+		// down without ending the go-live for its siblings.
+		auto destStop = std::make_shared<std::atomic<bool>>(false);
+		auto canceled = [stop, destStop] {
+			return stop->load(std::memory_order_acquire) || destStop->load(std::memory_order_acquire);
+		};
+
 		// The destination's one emit path toward JS, built here (not inside the worker) so
 		// a send can route a local echo of an outbound message through the IDENTICAL
 		// pipeline a real incoming message takes (stop-guard, event split, identity stamp,
 		// state cache, fallback-id synthesis, overlay fan-out, alive-guarded UI post).
-		std::function<void(const json &payload)> emitFn = [this, dest, stop](const json &payload) {
-			if (stop->load(std::memory_order_acquire)) {
-				return; // generation stopped; drop late emits
+		std::function<void(const json &payload)> emitFn = [this, dest, canceled](const json &payload) {
+			if (canceled()) {
+				return; // generation or destination stopped; drop late emits
 			}
 			// The payload carries a top-level "event" naming the bridge event; split
 			// it from the forwarded body here so the hub stays free of per-platform /
@@ -206,6 +214,7 @@ void ChatHub::Start()
 			a.dest = dest;
 			a.transport = transport;
 			a.emit = emitFn;
+			a.stop = destStop;
 			active_[dest] = std::move(a);
 		}
 
@@ -216,26 +225,24 @@ void ChatHub::Start()
 		// (`this`) only for mutex-guarded status writeback -- safe because the hub is a
 		// singleton living to process exit. All JS emits go through Bridge::EmitEvent
 		// (alive-guarded), never raw CEF.
-		AsyncTask::RunAsync([this, dest, providerId, channelRef, acct, transport, stop, emitFn]() mutable {
+		AsyncTask::RunAsync([this, dest, providerId, channelRef, acct, transport, canceled, emitFn]() mutable {
 			ChatContext ctx;
 			ctx.dest = dest;
-			ctx.canceled = [stop] {
-				return stop->load(std::memory_order_acquire);
-			};
+			ctx.canceled = canceled;
 			ctx.emit = emitFn;
 			// Route this transport's health transitions to the shared aggregator, keyed by
 			// destination -- two destinations of one account each own a row instead of
-			// overwriting a shared platform row. Dropped once the generation stops so a late
-			// worker report can't override the Disconnected that Stop() writes as the
-			// authoritative terminal.
+			// overwriting a shared platform row. Dropped once the generation OR this
+			// destination stops, so a late worker report can't override the Disconnected
+			// that Stop() / StopDestination() writes as the authoritative terminal.
 			//
 			// The latch records whether the transport reported a terminal of its own, so the
 			// backstop after connect() can fill one in without overwriting a reason the
 			// transport already gave.
 			auto reportedTerminal = std::make_shared<std::atomic<bool>>(false);
-			ctx.reportHealth = [dest, stop, reportedTerminal](Transports::TransportHealth::State st,
-									  const std::string &healthErr) {
-				if (stop->load(std::memory_order_acquire)) {
+			ctx.reportHealth = [dest, canceled, reportedTerminal](Transports::TransportHealth::State st,
+									      const std::string &healthErr) {
+				if (canceled()) {
 					return;
 				}
 				if (st == Transports::TransportHealth::State::Failed) {
@@ -299,6 +306,30 @@ void ChatHub::Stop()
 		Transports::Health().Report(Transports::ChatTransportId(entry.first),
 					    Transports::TransportHealth::State::Disconnected);
 	}
+}
+
+void ChatHub::StopDestination(const OAuth::DestinationId &dest)
+{
+	Active a;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		auto it = active_.find(dest);
+		if (it == active_.end()) {
+			return; // not running (never armed, or already stopped)
+		}
+		a = it->second;
+		active_.erase(it);
+	}
+	// Set BEFORE the disconnect so the unwinding worker's own terminal report is dropped
+	// and cannot overwrite the Disconnected below.
+	if (a.stop) {
+		a.stop->store(true, std::memory_order_release);
+	}
+	if (a.transport) {
+		a.transport->disconnect();
+	}
+	Transports::Health().Report(Transports::ChatTransportId(dest),
+				    Transports::TransportHealth::State::Disconnected);
 }
 
 void ChatHub::SendToPlatforms(const std::vector<std::string> &platforms, const std::string &text)

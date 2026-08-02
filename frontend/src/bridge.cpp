@@ -6497,6 +6497,15 @@ bool MethodOutputBindingSetEnabled(const json &params, json &result, std::string
 		ObsBootstrap::Multistream().StopOutput(uuid);
 	}
 
+	// Chat is resolved from the ENABLED destinations, so arming one mid-stream has to
+	// re-resolve or the destination streams with no chat for the rest of the session.
+	// Mirrors the mid-stream account-disconnect path; the disable direction does NOT come
+	// through here, because the output ending is what ends its chat (onOutputEnded ->
+	// Chat::Hub().StopDestination), which spares every sibling transport a reconnect.
+	if (enabled && ObsBootstrap::Multistream().AnyLive()) {
+		Chat::Hub().Start();
+	}
+
 	// Enabling builds the canvas mix (before any StartOutput); disabling the last
 	// enabled destination lets it go inert (StopOutput above already stopped it).
 	ObsBootstrap::CanvasRuntime().ReconcileAll();

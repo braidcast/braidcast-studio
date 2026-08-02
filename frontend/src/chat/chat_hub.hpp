@@ -66,6 +66,17 @@ public:
 	// from Bridge::Shutdown.
 	void Stop();
 
+	// Stop + disconnect ONE destination's transport, leaving the generation and every
+	// sibling transport running. Idempotent. Mirrors EventHub::StopAccount.
+	//
+	// Needed because a destination can stop streaming without the go-live ending: when a
+	// binding's output ends, its chat must end too. Re-Starting the hub would do that, but
+	// it drops and reconnects every OTHER chat as collateral, and a chat reconnect is not
+	// free (YouTube spends quota re-resolving the broadcast). The transport reports the
+	// authoritative Disconnected here rather than being left to die on its own and report
+	// Failed -- a destination the user switched off is not an error.
+	void StopDestination(const OAuth::DestinationId &dest);
+
 	// Route `text` to each active transport whose providerId is in `platforms`
 	// (empty = all connected). Each send runs on its own worker so a slow REST send
 	// never blocks the caller; a failure emits a chat.state error for that platform.
@@ -99,6 +110,11 @@ private:
 		// fan-out -> alive-guarded UI post). Stored so a send can route the local echo of
 		// an outbound message through the identical path a real incoming message takes.
 		std::function<void(const json &payload)> emit;
+		// This transport's own cancel flag, ORed with the generation flag by every guard
+		// the worker consults. Without it StopDestination could only drop the hub's ref:
+		// the worker would keep emitting, and its dying report would overwrite the
+		// Disconnected that the stop just wrote.
+		std::shared_ptr<std::atomic<bool>> stop;
 		bool connected = false;
 		std::string error;
 	};
