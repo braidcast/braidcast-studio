@@ -121,34 +121,32 @@ void WriteResponse(SOCKET sock, int status, const std::string &ctype, const std:
 // <body>, then window.__OVERLAY__, the runtime, then the user JS.
 std::string AssembleDocument(const Widget &w, int port)
 {
-	json fieldData = json::object();
-	for (const json &f : w.fields) {
-		if (!f.contains("key")) {
-			continue;
-		}
-		json value = f.value("value", json(nullptr));
+	// Schema defaults with the widget's own settings over them, or the fork's own field
+	// values -- either way already reduced to {key: value}.
+	json fieldData = w.FieldValues();
+	for (auto &[key, value] : fieldData.items()) {
+		(void)key;
 		// An uploaded asset field stores the portable, token-less "assets/<file>" as its
 		// persisted value. Rewrite ONLY the injected copy to the absolute tokenized URL the
 		// server actually serves (/w/<id>/assets/<file>?t=<token>); a bare "assets/<file>"
 		// would resolve against /w/ (no <base>) and 404, and lacks the required token. Match
-		// the prefix so it works regardless of the field's declared type. w.fields (the
-		// persisted value) is left untouched so it survives token/port changes.
+		// the prefix so it works regardless of the field's declared type. The persisted
+		// value is left untouched so it survives token/port changes.
 		if (value.is_string()) {
 			const std::string s = value.get<std::string>();
 			if (s.rfind("assets/", 0) == 0) {
 				value = "/w/" + w.id + "/" + s + "?t=" + w.token;
 			}
 		}
-		fieldData[f["key"].get<std::string>()] = std::move(value);
 	}
 	const json overlay = json{{"id", w.id}, {"token", w.token}, {"port", port}, {"fields", fieldData}};
 	std::string doc = "<!doctype html><html><head><meta charset=\"utf-8\">\n<style>\n";
-	doc += w.css;
+	doc += w.Css();
 	doc += "\n</style></head><body>\n";
-	doc += w.html;
+	doc += w.Html();
 	doc += "\n<script>window.__OVERLAY__=" + overlay.dump() + ";</script>\n";
 	doc += "<script src=\"/runtime.js?t=" + w.token + "\"></script>\n";
-	doc += "<script>\n" + w.js + "\n</script>\n</body></html>";
+	doc += "<script>\n" + w.Js() + "\n</script>\n</body></html>";
 	return doc;
 }
 

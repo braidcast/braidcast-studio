@@ -36,6 +36,12 @@ import { EV } from "$lib/utils/eventNames";
   let items = $state<OverlayListItem[]>([]);
   let selectedId = $state<string | null>(null);
   let widget = $state<OverlayWidget | null>(null);
+  // The selected widget's type schema. A stock widget stores only the values it
+  // overrode, so this is what says which settings exist at all.
+  let schema = $state<OverlayField[]>([]);
+  // Schemas are per type and read from files the build stages, so they cannot change
+  // while the app runs -- fetch each one once.
+  const schemaCache = new Map<string, OverlayField[]>();
   let pane = $state<PaneMode>("simple");
   let wide = $state(false);
   let reloadKey = $state(0);
@@ -52,6 +58,13 @@ import { EV } from "$lib/utils/eventNames";
   let dirty = $state(false);
 
   const paneOptions = $derived(wide ? MODE_OPTIONS : [...MODE_OPTIONS, PREVIEW_OPTION]);
+
+  // The settings form is the type's schema with this widget's overrides laid over it, so
+  // the fields a stock widget shows always come from the template rather than from
+  // anything the widget stored.
+  const settingsFields = $derived<OverlayField[]>(
+    schema.map((f) => ({ ...f, value: widget?.settings[f.key] ?? f.default })),
+  );
 
   $effect(() => {
     const mq = window.matchMedia(WIDE_PREVIEW_QUERY);
@@ -122,9 +135,28 @@ import { EV } from "$lib/utils/eventNames";
       widget = w;
       dirty = false;
       reloadKey++;
+      await loadSchema(w.type);
     } catch (e) {
       error = (e as Error).message;
       widget = null;
+    }
+  }
+
+  async function loadSchema(type: string): Promise<void> {
+    const cached = schemaCache.get(type);
+    if (cached) {
+      schema = cached;
+      return;
+    }
+    try {
+      const r = await obs.call("overlays.schema", { type });
+      schemaCache.set(type, r.schema);
+      schema = r.schema;
+    } catch (e) {
+      // A type with no readable schema still edits fine through custom code, so this
+      // costs the settings form rather than the whole widget.
+      error = (e as Error).message;
+      schema = [];
     }
   }
 
@@ -145,13 +177,14 @@ import { EV } from "$lib/utils/eventNames";
     const w = widget;
     saving = true;
     try {
+      // custom is sent only when the widget is forked. Sending null here would read as
+      // "revert to stock" and silently discard a fork; reverting goes through
+      // overlays.setCustom, which is the one place that decision is made.
       const saved = await obs.call("overlays.update", {
         id: w.id,
         name: w.name,
-        html: w.html,
-        css: w.css,
-        js: w.js,
-        fields: w.fields,
+        settings: w.settings,
+        ...(w.custom ? { custom: w.custom } : {}),
       });
       // Level the local copy with the stored revision, so the overlays.changed echo this
       // save triggers compares equal and doesn't reload the preview a second time.
@@ -251,28 +284,79 @@ import { EV } from "$lib/utils/eventNames";
   }
 
   // --- editor field bindings (mutate local widget, then debounce the update) ---
+  // The code panes only exist while the widget is forked, so each guards on custom
+  // rather than assuming it: a stock widget has no copy of the template to edit.
   function onHtml(v: string): void {
-    if (widget) {
-      widget.html = v;
+    if (widget?.custom) {
+      widget.custom.html = v;
       scheduleSave();
     }
   }
   function onCss(v: string): void {
-    if (widget) {
-      widget.css = v;
+    if (widget?.custom) {
+      widget.custom.css = v;
       scheduleSave();
     }
   }
   function onJs(v: string): void {
-    if (widget) {
-      widget.js = v;
+    if (widget?.custom) {
+      widget.custom.js = v;
       scheduleSave();
     }
   }
   function onFields(f: OverlayField[]): void {
-    if (widget) {
-      widget.fields = f;
+    if (widget?.custom) {
+      widget.custom.fields = f;
       scheduleSave();
+    }
+  }
+  // A stock widget stores overrides only, so a value equal to the schema default is
+  // OMITTED rather than written. Keeping it would pin the setting, and the widget would
+  // stop following a template that later changes that default.
+  function onSettingsFields(next: OverlayField[]): void {
+    if (!widget) {
+      return;
+    }
+    const settings: Record<string, unknown> = {};
+    for (const f of next) {
+      const def = schema.find((s) => s.key === f.key);
+      if (!def || JSON.stringify(f.value) !== JSON.stringify(def.default)) {
+        settings[f.key] = f.value;
+      }
+    }
+    widget.settings = settings;
+    scheduleSave();
+  }
+
+  async function confirmRevertToStock(): Promise<void> {
+    dialog = {
+      kind: "confirm",
+      title: "Discard Custom Code",
+      message: `"${widget?.name ?? ""}" goes back to the stock template for its type. The HTML, CSS, JS and custom fields you added are deleted and cannot be recovered.`,
+      confirmLabel: "Discard",
+      onCommit: () => void setCustom(false),
+    };
+  }
+
+  // Forking and reverting both happen host-side so the template snapshot is atomic; the
+  // reply carries the new widget, since custom has changed shape.
+  async function setCustom(enabled: boolean): Promise<void> {
+    if (!widget) {
+      return;
+    }
+    await flushSave();
+    const id = widget.id;
+    try {
+      await obs.call("overlays.setCustom", { id, enabled });
+      const w = await obs.call("overlays.get", { id });
+      if (selectedId === id) {
+        widget = w;
+        dirty = false;
+        pane = enabled ? "advanced" : "simple";
+        reloadKey++;
+      }
+    } catch (e) {
+      error = (e as Error).message;
     }
   }
   function onName(v: string): void {
@@ -411,23 +495,71 @@ import { EV } from "$lib/utils/eventNames";
             {#if wide || pane !== "preview"}
               <div class="edit-pane">
                 {#if pane === "advanced"}
-                  <div class="code-grid">
-                    <div class="code-cell">
-                      <span class="cell-kicker">HTML</span>
-                      <CodePane value={widget.html} lang="html" onChange={onHtml} />
+                  {#if widget.custom}
+                    <div class="code-grid">
+                      <div class="code-cell">
+                        <span class="cell-kicker">HTML</span>
+                        <CodePane value={widget.custom.html} lang="html" onChange={onHtml} />
+                      </div>
+                      <div class="code-cell">
+                        <span class="cell-kicker">CSS</span>
+                        <CodePane value={widget.custom.css} lang="css" onChange={onCss} />
+                      </div>
+                      <div class="code-cell">
+                        <span class="cell-kicker">JS</span>
+                        <CodePane value={widget.custom.js} lang="javascript" onChange={onJs} />
+                      </div>
+                      <div class="code-cell">
+                        <span class="cell-kicker">Custom fields</span>
+                        <div class="scroll-pane">
+                          <FieldsDesigner
+                            fields={widget.custom.fields}
+                            widgetId={widget.id}
+                            onChange={onFields}
+                          />
+                        </div>
+                      </div>
                     </div>
-                    <div class="code-cell">
-                      <span class="cell-kicker">CSS</span>
-                      <CodePane value={widget.css} lang="css" onChange={onCss} />
+                  {:else}
+                    <div class="scroll-pane">
+                      <div class="fork-note">
+                        <p>
+                          This is a stock {widget.type}. It renders from the template the app ships, so
+                          it picks up improvements to that template automatically.
+                        </p>
+                        <p>
+                          Enabling custom code copies that template into this widget and hands it over
+                          to you. From then on this widget stops tracking the app's version.
+                        </p>
+                        <button class="accent" onclick={() => void setCustom(true)}>
+                          Enable custom code
+                        </button>
+                      </div>
                     </div>
-                    <div class="code-cell">
-                      <span class="cell-kicker">JS</span>
-                      <CodePane value={widget.js} lang="javascript" onChange={onJs} />
-                    </div>
-                  </div>
+                  {/if}
                 {:else}
                   <div class="scroll-pane">
-                    <FieldsDesigner fields={widget.fields} widgetId={widget.id} onChange={onFields} />
+                    {#if widget.custom}
+                      <div class="fork-note">
+                        <p>This widget uses custom code, so its settings are the fields you defined.</p>
+                        <button class="ghost danger" onclick={() => void confirmRevertToStock()}>
+                          Discard custom code
+                        </button>
+                      </div>
+                      <FieldsDesigner
+                        fields={widget.custom.fields}
+                        widgetId={widget.id}
+                        designable={false}
+                        onChange={onFields}
+                      />
+                    {:else}
+                      <FieldsDesigner
+                        fields={settingsFields}
+                        widgetId={widget.id}
+                        designable={false}
+                        onChange={onSettingsFields}
+                      />
+                    {/if}
                   </div>
                 {/if}
               </div>
@@ -474,6 +606,23 @@ import { EV } from "$lib/utils/eventNames";
     flex: 1;
     min-height: 0;
     display: flex;
+  }
+  .fork-note {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 14px 16px;
+    margin-bottom: 18px;
+    border: var(--border-weight) solid var(--color-border);
+    border-radius: 6px;
+    background: var(--color-surface);
+  }
+  .fork-note p {
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--color-text-dim);
   }
   .subnav {
     flex: 0 0 240px;

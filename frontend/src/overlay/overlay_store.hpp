@@ -12,18 +12,37 @@ namespace Overlay {
 
 using json = nlohmann::json;
 
-// One overlay widget. fields[] / assets[] are stored as verbatim json objects so a
-// new field type is a data change, never a C++ branch. field: {key,type,label,default,value,
-// ...type-specific(options|min|max|step)}. asset: {key,kind,file}.
+// The on-disk definition of a widget type: the markup that renders it and the schema
+// of the settings it understands. Owned by the app, shared by every stock widget of
+// that type, which is what lets a template fix reach widgets that already exist.
+// schema entries are {key,type,label,default,...type-specific(options|min|max|step)} --
+// verbatim json, so a new field type is a data change and never a C++ branch.
+struct TypeTemplate {
+	std::string html;
+	std::string css;
+	std::string js;
+	json schema = json::array();
+	bool ok = false; // false when the type has no template on disk
+};
+
+// Loads and caches the template for a type. The cache lives to process exit: the files
+// are staged into the rundir by the build, so they cannot change under a running app.
+const TypeTemplate &TypeTemplateFor(const std::string &type);
+
+// One overlay widget. assets[] is stored as verbatim json objects. asset: {key,kind,file}.
 struct Widget {
 	std::string id;    // uuid (os_generate_uuid)
 	std::string token; // 32 hex chars (BCryptGenRandom)
 	std::string name;
 	std::string type; // "alertbox" (v1)
-	std::string html;
-	std::string css;
-	std::string js;
-	json fields = json::array();
+	// Only the values the user actually changed, keyed by schema field key. A key that
+	// is absent tracks the type template's default -- which is the whole point: a
+	// template that gains a field has it appear on every existing stock widget.
+	json settings = json::object();
+	// null while the widget is stock, so the type's template renders it. Becomes
+	// {html,css,js,fields} the moment the user opts into custom code, after which this
+	// widget is forked and app template changes no longer reach it.
+	json custom = nullptr;
 	json assets = json::array();
 	// Bumped by every accepted Update. A widget's html/css/js live in the SERVED
 	// DOCUMENT, not in an overlay source's settings, so an edit changes nothing a
@@ -33,8 +52,22 @@ struct Widget {
 	// page it already has.
 	int rev = 0;
 
+	bool IsCustom() const { return custom.is_object(); }
+
+	// The markup this widget actually serves: its own copy once forked, the type's
+	// template while stock.
+	std::string Html() const;
+	std::string Css() const;
+	std::string Js() const;
+
+	// {key: value} for the served page: the type's schema defaults with this widget's
+	// settings laid over them, or the fork's own field values once custom.
+	json FieldValues() const;
+
 	json ToJson() const;             // full definition
 	json ToListJson(int port) const; // {id,name,type,token,url} for overlays.list
+	// Accepts both the current shape and the pre-fork records that carried their own
+	// html/css/js/fields; see the migration note on the definition.
 	static Widget FromJson(const json &j);
 };
 
@@ -57,6 +90,11 @@ public:
 	// value through *newRev, so a caller can hand it back to the editor rather than
 	// re-reading the widget just to learn it.
 	bool Update(const std::string &id, const json &patch, int *newRev = nullptr);
+	// Fork a stock widget onto its own copy of the type's template, or drop a fork and
+	// return it to stock. Snapshotting here rather than in the editor keeps the copy
+	// atomic and means the UI never has to hold a template just to hand it back.
+	// Reverting discards the fork's code; the caller is expected to have confirmed.
+	bool SetCustom(const std::string &id, bool enabled, int *newRev = nullptr);
 	std::optional<Widget> Duplicate(const std::string &id); // new id+token, assets copied
 	bool Delete(const std::string &id);                     // removes widget + overlays/<id> dir
 	// Store a decoded asset file; returns its served relative path "assets/<file>" (or "" on failure).

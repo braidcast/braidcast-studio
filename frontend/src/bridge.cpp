@@ -10267,6 +10267,39 @@ bool MethodOverlaysGet(const json &p, json &result, std::string &error)
 	return true;
 }
 
+// The settings a widget type understands. Keyed by type, not by widget: a stock widget
+// carries only the values it overrode, so the editor needs the type to know what fields
+// exist at all.
+bool MethodOverlaysSchema(const json &p, json &result, std::string &error)
+{
+	const std::string type = OptString(p, "type");
+	if (type.empty()) {
+		error = "overlays.schema requires type";
+		return false;
+	}
+	const Overlay::TypeTemplate &t = Overlay::TypeTemplateFor(type);
+	result = json{{"type", type}, {"ok", t.ok}, {"schema", t.schema}};
+	return true;
+}
+
+bool MethodOverlaysSetCustom(const json &p, json &result, std::string &error)
+{
+	const std::string id = OptString(p, "id");
+	if (id.empty() || !p.contains("enabled") || !p["enabled"].is_boolean()) {
+		error = "overlays.setCustom requires id and enabled";
+		return false;
+	}
+	int rev = 0;
+	if (!Overlay::Store().SetCustom(id, p["enabled"].get<bool>(), &rev)) {
+		error = "no such overlay: " + id;
+		return false;
+	}
+	Overlay::RefreshSources();
+	EmitEvent(EventNames::kOverlaysChanged, json::object());
+	result = json{{"ok", true}, {"rev", rev}};
+	return true;
+}
+
 bool MethodOverlaysCreate(const json &p, json &result, std::string & /*error*/)
 {
 	const std::string name = OptString(p, "name");
@@ -10832,6 +10865,8 @@ void Init()
 		{"overlays.list", MethodOverlaysList},
 		{"overlays.get", MethodOverlaysGet},
 		{"overlays.create", MethodOverlaysCreate},
+		{"overlays.schema", MethodOverlaysSchema},
+		{"overlays.setCustom", MethodOverlaysSetCustom},
 		{"overlays.update", MethodOverlaysUpdate},
 		{"overlays.duplicate", MethodOverlaysDuplicate},
 		{"overlays.delete", MethodOverlaysDelete},

@@ -16,6 +16,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <map>
 
 #pragma comment(lib, "bcrypt.lib")
 
@@ -122,11 +123,90 @@ std::string SanitizeAssetKey(const std::string &key)
 
 } // namespace
 
+const TypeTemplate &TypeTemplateFor(const std::string &type)
+{
+	static std::mutex cacheMutex;
+	// Never erased, and std::map keeps references valid across later inserts, so the
+	// reference handed out here stays good after the lock is dropped.
+	static std::map<std::string, TypeTemplate> cache;
+
+	std::lock_guard<std::mutex> lock(cacheMutex);
+	const auto it = cache.find(type);
+	if (it != cache.end()) {
+		return it->second;
+	}
+
+	TypeTemplate t;
+	const std::string dir = RundirRoot() + "/data/braidcast/web/overlay/default-" + type + "/";
+	t.ok = ReadWholeFile(dir + "template.html", t.html);
+	ReadWholeFile(dir + "template.css", t.css);
+	ReadWholeFile(dir + "template.js", t.js);
+	std::string schemaJson;
+	if (ReadWholeFile(dir + "fields.json", schemaJson)) {
+		try {
+			json parsed = json::parse(schemaJson);
+			if (parsed.is_array()) {
+				t.schema = std::move(parsed);
+			}
+		} catch (const std::exception &e) {
+			HostLog("[overlay] fields.json for type '" + type + "' is unparseable (" + e.what() +
+				"); the type will offer no settings");
+		}
+	}
+	if (!t.ok) {
+		HostLog("[overlay] no template for type '" + type + "' at " + dir);
+	}
+	return cache.emplace(type, std::move(t)).first->second;
+}
+
+std::string Widget::Html() const
+{
+	return IsCustom() ? custom.value("html", std::string()) : TypeTemplateFor(type).html;
+}
+
+std::string Widget::Css() const
+{
+	return IsCustom() ? custom.value("css", std::string()) : TypeTemplateFor(type).css;
+}
+
+std::string Widget::Js() const
+{
+	return IsCustom() ? custom.value("js", std::string()) : TypeTemplateFor(type).js;
+}
+
+json Widget::FieldValues() const
+{
+	json out = json::object();
+	// A fork carries its own field list, so its values come from there. `default` is the
+	// fallback for a field the user declared but never gave a value.
+	if (IsCustom()) {
+		const json fields = custom.value("fields", json::array());
+		for (const json &f : fields) {
+			if (!f.is_object() || !f.contains("key") || !f["key"].is_string()) {
+				continue;
+			}
+			out[f["key"].get<std::string>()] = f.contains("value") ? f["value"]
+									       : f.value("default", json(nullptr));
+		}
+		return out;
+	}
+	// Stock: the schema decides which keys exist at all, so a setting left over from an
+	// older template simply stops being served rather than leaking into the page.
+	for (const json &f : TypeTemplateFor(type).schema) {
+		if (!f.is_object() || !f.contains("key") || !f["key"].is_string()) {
+			continue;
+		}
+		const std::string key = f["key"].get<std::string>();
+		out[key] = settings.contains(key) ? settings[key] : f.value("default", json(nullptr));
+	}
+	return out;
+}
+
 json Widget::ToJson() const
 {
 	return json{
-		{"id", id},   {"token", token}, {"name", name},     {"type", type},     {"html", html},
-		{"css", css}, {"js", js},       {"fields", fields}, {"assets", assets}, {"rev", rev},
+		{"id", id},   {"token", token},       {"name", name},     {"type", type},
+		{"rev", rev}, {"settings", settings}, {"custom", custom}, {"assets", assets},
 	};
 }
 
@@ -145,12 +225,52 @@ Widget Widget::FromJson(const json &j)
 	w.token = j.value("token", std::string());
 	w.name = j.value("name", std::string());
 	w.type = j.value("type", std::string());
-	w.html = j.value("html", std::string());
-	w.css = j.value("css", std::string());
-	w.js = j.value("js", std::string());
-	w.fields = j.contains("fields") && j["fields"].is_array() ? j["fields"] : json::array();
 	w.assets = j.contains("assets") && j["assets"].is_array() ? j["assets"] : json::array();
 	w.rev = j.value("rev", 0);
+
+	if (j.contains("settings") || j.contains("custom")) {
+		w.settings = j.contains("settings") && j["settings"].is_object() ? j["settings"] : json::object();
+		w.custom = j.contains("custom") && j["custom"].is_object() ? j["custom"] : json(nullptr);
+		return w;
+	}
+
+	// Records written before widgets referenced their type's template each carried a
+	// full copy of it. Whether the user ever edited that copy is not recorded, so the
+	// only honest signal is the copy itself: identical to what this build ships means
+	// untouched. A widget created against an OLDER template and never edited will not
+	// match and is migrated as a fork -- wrong, but wrong in the safe direction, since
+	// it keeps rendering exactly as it does today at the cost of no longer tracking the
+	// template.
+	const std::string html = j.value("html", std::string());
+	const std::string css = j.value("css", std::string());
+	const std::string js = j.value("js", std::string());
+	const json fields = j.contains("fields") && j["fields"].is_array() ? j["fields"] : json::array();
+	const TypeTemplate &t = TypeTemplateFor(w.type);
+
+	if (!t.ok || html != t.html || css != t.css || js != t.js) {
+		w.custom = json{{"html", html}, {"css", css}, {"js", js}, {"fields", fields}};
+		return w;
+	}
+
+	// Untouched code: keep it stock, and lift across only the values that differ from
+	// the schema default. Carrying the identical ones over would pin them, defeating
+	// the point of storing overrides rather than a copy.
+	for (const json &f : fields) {
+		if (!f.is_object() || !f.contains("key") || !f["key"].is_string() || !f.contains("value")) {
+			continue;
+		}
+		const std::string key = f["key"].get<std::string>();
+		json fallback = json(nullptr);
+		for (const json &s : t.schema) {
+			if (s.is_object() && s.value("key", std::string()) == key) {
+				fallback = s.value("default", json(nullptr));
+				break;
+			}
+		}
+		if (f["value"] != fallback) {
+			w.settings[key] = f["value"];
+		}
+	}
 	return w;
 }
 
@@ -207,31 +327,12 @@ Widget OverlayStore::Create(const std::string &name, const std::string &type)
 	w.name = name;
 	w.type = type;
 
-	// Seed html/css/js/fields from the on-disk default template for this type.
-	const std::string dir = RundirRoot() + "/data/braidcast/web/overlay/default-" + type + "/";
-	const bool haveHtml = ReadWholeFile(dir + "template.html", w.html);
-	ReadWholeFile(dir + "template.css", w.css);
-	ReadWholeFile(dir + "template.js", w.js);
-	std::string fieldsJson;
-	if (ReadWholeFile(dir + "fields.json", fieldsJson)) {
-		try {
-			json parsed = json::parse(fieldsJson);
-			if (parsed.is_array()) {
-				for (json field : parsed) {
-					if (field.is_object() && !field.contains("value")) {
-						field["value"] = field.value("default", json(nullptr));
-					}
-					w.fields.push_back(field);
-				}
-			}
-		} catch (const std::exception &e) {
-			HostLog("[overlay] Create: fields.json for type '" + type + "' is unparseable (" + e.what() +
-				"); seeding the widget with no fields");
-			w.fields = json::array();
-		}
-	}
-	if (!haveHtml && w.fields.empty()) {
-		HostLog("[overlay] Create: no template for type '" + type + "' at " + dir + " -- seeding empty widget");
+	// Nothing is copied: a new widget is stock, so it renders from its type's template
+	// and every setting sits at that template's default until the user changes one.
+	// Touch the template here anyway, so a missing one is reported at the moment the
+	// user creates the widget rather than when a browser source first serves a blank.
+	if (!TypeTemplateFor(type).ok) {
+		HostLog("[overlay] Create: type '" + type + "' has no template; the widget will serve an empty page");
 	}
 
 	std::lock_guard<std::mutex> lock(mutex_);
@@ -250,17 +351,64 @@ bool OverlayStore::Update(const std::string &id, const json &patch, int *newRev)
 		if (patch.contains("name") && patch["name"].is_string()) {
 			w.name = patch["name"].get<std::string>();
 		}
-		if (patch.contains("html") && patch["html"].is_string()) {
-			w.html = patch["html"].get<std::string>();
+		// Replaced wholesale rather than merged. A setting back at its template default
+		// is expressed by being ABSENT, so that it resumes tracking the default; merging
+		// would make the removal unrepresentable and pin the value forever. The editor
+		// holds the whole object, so it has nothing to gain from a partial patch.
+		if (patch.contains("settings") && patch["settings"].is_object()) {
+			w.settings = patch["settings"];
 		}
-		if (patch.contains("css") && patch["css"].is_string()) {
-			w.css = patch["css"].get<std::string>();
+		// Forking (object) and reverting to stock (null) are the same patch key, so the
+		// editor's Custom Code toggle is one call in both directions. Anything else --
+		// including a partial object -- is ignored rather than half-applied.
+		if (patch.contains("custom")) {
+			if (patch["custom"].is_null()) {
+				w.custom = json(nullptr);
+			} else if (patch["custom"].is_object()) {
+				// Merge so an edit to one editor pane does not blank the other two.
+				if (!w.IsCustom()) {
+					w.custom = json::object();
+				}
+				for (const auto &[key, value] : patch["custom"].items()) {
+					w.custom[key] = value;
+				}
+			}
 		}
-		if (patch.contains("js") && patch["js"].is_string()) {
-			w.js = patch["js"].get<std::string>();
+		++w.rev;
+		if (newRev != nullptr) {
+			*newRev = w.rev;
 		}
-		if (patch.contains("fields") && patch["fields"].is_array()) {
-			w.fields = patch["fields"];
+		Save();
+		return true;
+	}
+	return false;
+}
+
+bool OverlayStore::SetCustom(const std::string &id, bool enabled, int *newRev)
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	for (Widget &w : widgets_) {
+		if (w.id != id) {
+			continue;
+		}
+		if (!enabled) {
+			w.custom = json(nullptr);
+		} else if (!w.IsCustom()) {
+			const TypeTemplate &t = TypeTemplateFor(w.type);
+			// The fork's field list is the type's schema with this widget's current
+			// values baked in, so the editor opens on exactly what the user was already
+			// looking at rather than on the type's defaults.
+			json fields = json::array();
+			for (json f : t.schema) {
+				if (!f.is_object() || !f.contains("key") || !f["key"].is_string()) {
+					continue;
+				}
+				const std::string key = f["key"].get<std::string>();
+				f["value"] = w.settings.contains(key) ? w.settings[key]
+								      : f.value("default", json(nullptr));
+				fields.push_back(std::move(f));
+			}
+			w.custom = json{{"html", t.html}, {"css", t.css}, {"js", t.js}, {"fields", std::move(fields)}};
 		}
 		++w.rev;
 		if (newRev != nullptr) {

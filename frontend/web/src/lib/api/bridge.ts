@@ -1355,16 +1355,27 @@ export interface OverlayAsset {
   file: string;
 }
 
+/** A widget's own copy of its type's template, present only once the user has opted into
+ * custom code. From then on the app's template no longer reaches this widget. */
+export interface OverlayCustom {
+  html: string;
+  css: string;
+  js: string;
+  fields: OverlayField[];
+}
+
 /** Full widget definition (overlays.get / overlays.create). */
 export interface OverlayWidget {
   id: string;
   token: string;
   name: string;
   type: string;
-  html: string;
-  css: string;
-  js: string;
-  fields: OverlayField[];
+  /** Only the values the user changed, keyed by schema field key. A key that is absent
+   * tracks the type template's default, so a template that gains a field has it show up
+   * on every existing stock widget. */
+  settings: Record<string, unknown>;
+  /** null while the widget is stock and rendered by its type's template. */
+  custom: OverlayCustom | null;
   assets: OverlayAsset[];
   url: string;
   /** Document revision, bumped by every accepted overlays.update. The host appends it to
@@ -1795,6 +1806,12 @@ export interface ObsMethods {
   "overlays.list": OverlayListItem[];
   "overlays.get": OverlayWidget;
   "overlays.create": OverlayWidget;
+  // schema is keyed by widget TYPE, not by widget: a stock widget stores only the values
+  // it overrode, so the editor needs the type to know which fields exist. setCustom forks
+  // a widget onto its own copy of that template, or reverts it to stock -- the snapshot
+  // happens host-side so it stays atomic and the UI never holds a template.
+  "overlays.schema": { type: string; ok: boolean; schema: OverlayField[] };
+  "overlays.setCustom": { ok: boolean; rev: number };
   "overlays.update": { ok: boolean; rev: number };
   "overlays.duplicate": OverlayWidget;
   "overlays.delete": { removed: string };

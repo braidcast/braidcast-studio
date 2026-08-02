@@ -9,11 +9,21 @@
   import CssColorInput from "$lib/ui/CssColorInput.svelte";
   import Icon from "$lib/ui/Icon.svelte";
 
+  // designable=false hides the Designer half and keeps the Values half. A stock widget's
+  // fields come from its type's schema, which the shipped template reads by key: renaming
+  // or deleting one there would not change the template, it would just quietly stop the
+  // widget working. Only a fork, whose markup the user owns, may edit its own structure.
   let {
     fields,
     widgetId,
     onChange,
-  }: { fields: OverlayField[]; widgetId: string; onChange: (f: OverlayField[]) => void } = $props();
+    designable = true,
+  }: {
+    fields: OverlayField[];
+    widgetId: string;
+    onChange: (f: OverlayField[]) => void;
+    designable?: boolean;
+  } = $props();
 
   const TYPES: OverlayField["type"][] = [
     "text",
@@ -165,7 +175,8 @@
 <div class="fields">
   {#if uploadError}<p class="err">{uploadError}</p>{/if}
 
-  <section class="section">
+  {#if designable}
+    <section class="section">
     <div class="sec-bar">
       <h3 class="sec-head">Designer</h3>
       <span class="sec-spacer"></span>
@@ -289,11 +300,12 @@
         </div>
       {/each}
     </div>
-  </section>
+    </section>
+  {/if}
 
   {#if fields.length > 0}
     <section class="section">
-      <h3 class="sec-head">Values</h3>
+      <h3 class="sec-head">{designable ? "Values" : "Settings"}</h3>
       <div class="rows">
         {#each fields as f, i (i)}
           <div class="value-row">

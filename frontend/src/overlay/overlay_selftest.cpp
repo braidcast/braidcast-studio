@@ -158,14 +158,17 @@ void ObsBootstrap::RunOverlaySelfTest()
 	w.token = "selftesttoken";
 	w.name = "selftest";
 	w.type = "alertbox";
-	w.html = "<div id=\"a\"></div>";
-	w.css = "#a{color:#fff}";
-	w.js = "OBSOverlay.onEvent(function(e){});";
-	w.fields = Overlay::json::array({Overlay::json{{"key", "accent"},
-						       {"type", "color"},
-						       {"label", "Accent"},
-						       {"default", "#9147ff"},
-						       {"value", "#9147ff"}}});
+	// Forked rather than stock: the assertions below match against this exact markup, so
+	// the widget has to carry it rather than inherit whatever the alertbox template
+	// currently ships.
+	w.custom = Overlay::json{{"html", "<div id=\"a\"></div>"},
+				 {"css", "#a{color:#fff}"},
+				 {"js", "OBSOverlay.onEvent(function(e){});"},
+				 {"fields", Overlay::json::array({Overlay::json{{"key", "accent"},
+										{"type", "color"},
+										{"label", "Accent"},
+										{"default", "#9147ff"},
+										{"value", "#9147ff"}}})}};
 	Overlay::Store().InjectForTest(w);
 
 	// A private server on an ephemeral port, NOT Overlay::Server(). That matters beyond
@@ -375,9 +378,12 @@ void ObsBootstrap::RunOverlaySelfTest()
 	const std::string createdId = created.id;
 	const std::string createdUrl = Overlay::WidgetUrl(created, Overlay::Store().Port());
 	const bool createOk = !created.id.empty() && !created.token.empty() && !createdUrl.empty();
-	const bool seededOk = !created.fields.empty() && !created.html.empty();
+	// A new widget copies nothing, so what makes it usable is that it is stock and its
+	// type resolves to a template with a settings schema.
+	const Overlay::TypeTemplate &createdTemplate = Overlay::TypeTemplateFor(created.type);
+	const bool seededOk = !created.IsCustom() && createdTemplate.ok && !createdTemplate.schema.empty();
 	HostLog(std::string("[selftest] overlays create -> ") + (createOk ? "OK" : "MISMATCH") +
-		(seededOk ? " (template seeded)" : " (template missing -- empty seed)"));
+		(seededOk ? " (stock, type template resolves)" : " (type template missing or schema-less)"));
 
 	bool listOk = false;
 	for (const Overlay::Widget &cand : Overlay::Store().List()) {
