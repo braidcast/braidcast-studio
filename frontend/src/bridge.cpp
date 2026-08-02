@@ -1641,13 +1641,24 @@ ResolvedDestCanvas ResolveDestCanvas(const std::string &destCanvasUuid)
 	return r;
 }
 
-// Find a free "<name> N" (N starting at 2) in the DESTINATION canvas's own
-// namespace, mirroring MethodScenesDuplicate's auto-suffix but scoped per-canvas.
+// A free name in the DESTINATION canvas's own namespace: the base name when nothing
+// there holds it, else "<name> N" from 2.
+//
+// The base name is tried first because canvases do not share a namespace. Each carries
+// its own source list -- obs_canvas_get_source_by_name searches canvas->sources, and
+// obs_canvas_move_scene removes the scene from the list it was in before inserting it
+// into the destination's -- so a name is only taken if it is taken THERE. Suffixing
+// unconditionally renamed a scene for a collision that had not happened, which is both
+// wrong and hard to undo once several canvases have drifted apart.
+//
+// This is why the loop cannot start at 2 the way MethodScenesDuplicate's does: that one
+// only ever copies within one canvas, where the source scene's own name is always the
+// collision, so its first candidate is genuinely taken.
 std::string FreeSceneNameOnCanvas(const std::string &baseName, const std::string &destCanvasUuid, bool destIsAdditional,
 				  obs_canvas_t *destCanvas)
 {
-	for (int n = 2;; ++n) {
-		std::string candidate = baseName + " " + std::to_string(n);
+	for (int n = 1;; ++n) {
+		std::string candidate = n == 1 ? baseName : baseName + " " + std::to_string(n);
 		OBSSourceAutoRelease taken = destIsAdditional
 						     ? obs_canvas_get_source_by_name(destCanvas, candidate.c_str())
 						     : obs_get_source_by_name(candidate.c_str());
