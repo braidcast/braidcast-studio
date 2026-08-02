@@ -6,7 +6,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is the **OBS Studio** codebase (a fork tracking `obsproject/obs-studio`). OBS Studio captures, composites, encodes, records, and streams video. It is C/C++ (core + plugins), built with CMake, Licensed GPLv2+. The desktop app frontend is a **CEF-hosted Svelte 5 web UI** — not Qt (see "Frontend" below); the original Qt Widgets frontend was fully removed from the tree, not just retired.
 
-The fork is rebranded **Braidcast**; its repo/folder is **braidcast-studio** (GitHub `braidcast/braidcast-studio`). The old folder name "obs-multistream" referred to OBS's built-in **Multitrack Video** (GoLive) feature — Braidcast's own native multistreaming is canvas-based instead (see "Fork-specific architecture"). This is a **public fork, not submitted upstream**.
+The fork is rebranded **Braidcast**; its repo/folder is **braidcast-studio** (GitHub `braidcast/braidcast-studio`). The old folder name "obs-multistream" referred to OBS's built-in **Multitrack Video** (GoLive) feature — Braidcast's own native multistreaming is canvas-based instead (see "Fork-specific architecture").
+
+### This fork will never be submitted upstream
+
+Braidcast is a **separate product** that happens to share OBS's ancestry, not a staging area for patches headed to `obsproject/obs-studio`. Two independent reasons, either of which is sufficient:
+
+- **Product intent.** It is its own thing and is not going upstream, now or later.
+- **Upstream's authorship policy.** OBS does not accept mechanical or AI-generated submissions, and much of this tree is AI-assisted. That route is closed regardless of intent.
+
+Treat "would upstream accept this?" as a **non-question**. It is not a tiebreaker, not a constraint, and not a reason to prefer one design over another. Concretely, this settles things that would otherwise look like open questions:
+
+- **Divergence from upstream is free.** Deleting the Qt frontend, restructuring `frontend/`, changing libobs public surfaces — none of it incurs a rebase-onto-upstream debt worth pricing in. Judge such changes on their own merits.
+- **Licensing has one fewer constraint.** The tree is GPLv2-**or-later**, and the "or later" is genuinely available: nothing here has to stay GPLv2-compatible for upstream's sake. Whether a given dependency is acceptable depends on what *this* binary ships, not on what upstream would tolerate.
+- **Commit and code conventions are followed because they are good**, and because consistency inside this tree is worth having — not because a maintainer will review them.
 
 ## Architecture
 
@@ -135,4 +148,4 @@ The CEF/Svelte frontend's primary verification path is a **headless smoke run**:
 - **Commit titles use a module prefix**, not Conventional Commits: `libobs:`, `obs-ffmpeg:`, `frontend:`, `plugins:`, `cmake:`, `CI:`. Follow **50/72** (title ≤ 50 chars, body wrapped at 72). The body must explain *why*. American English throughout.
 - Each commit should be a self-contained "unit of change" that leaves the project buildable.
 - Preserve original authorship when finishing someone's work (`Co-authored-by:` / cherry-pick).
-- **AI policy:** treat any AI-assisted change as a draft requiring full human review before it's considered final — the same discipline upstream OBS applies to AI-generated submissions. This fork's own `CONTRIBUTING.md` is currently silent on AI authorship specifically (it no longer carries upstream's human-written-only language verbatim), but since this is a public, non-upstreamed fork today, treat the conservative human-review-first posture as the working policy regardless; if code from here is ever submitted upstream, upstream's own stricter policy governs there.
+- **AI policy:** treat any AI-assisted change as a draft requiring full human review before it's considered final. This fork's own `CONTRIBUTING.md` is silent on AI authorship (it no longer carries upstream's human-written-only language verbatim), so the human-review-first posture is a working policy chosen here, not one inherited. The reason is local and practical — nobody downstream reviews this, so the review has to happen here — and **not** deference to upstream's rules, which do not apply (see "This fork will never be submitted upstream").
