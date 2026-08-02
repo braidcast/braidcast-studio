@@ -22,6 +22,16 @@ export function fmtMem(mb: number): { v: string; gb: boolean } {
   return mb >= 1024 ? { v: (mb / 1024).toFixed(1), gb: true } : { v: String(Math.round(mb)), gb: false };
 }
 
+// "skipped/total" for the encode-lag reads. The host reports the WORST-coping mix
+// rather than a sum, so on a multi-canvas setup the pair has to say which mix it is --
+// otherwise it reads as a whole-machine total sitting next to the global render-lag
+// count, and a healthy two-canvas stream looks like its encoder lags twice as badly as
+// its renderer. Named here so the Stats dock and the Monitor page cannot word it
+// differently.
+export function fmtEncodeFrames(skipped: number, total: number, mixes: number): string {
+  return `${skipped}/${total}` + (mixes > 1 ? ` · worst of ${mixes}` : "");
+}
+
 // Baseline neutral, warns as the value climbs (CPU load, frame time).
 export function elevated(v: number, warn: number, crit: number): string {
   return v >= crit ? METER_RED : v >= warn ? METER_YELLOW : METER_TEXT;

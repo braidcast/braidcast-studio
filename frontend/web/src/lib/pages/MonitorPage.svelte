@@ -15,6 +15,7 @@
     FRAME_GRADE,
     fmtNum,
     fmtMem,
+    fmtEncodeFrames,
     elevated,
     grade,
     pushRing,
@@ -121,7 +122,7 @@
       {
         k: "ENCODE LAG",
         v: g.encodeSkipPct.toFixed(1),
-        u: `% skipped · ${g.encodeSkipped}/${g.encodeTotal}`,
+        u: `% skipped · ${fmtEncodeFrames(g.encodeSkipped, g.encodeTotal, g.encodeMixes)}`,
         c: grade(g.encodeSkipPct, DROP_GRADE[0], DROP_GRADE[1]),
         series: hist.encode,
       },

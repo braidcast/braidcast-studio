@@ -909,9 +909,14 @@ export interface GeneralStats {
   renderLagged: number;
   renderTotal: number;
   renderLagPct: number;
+  /** The WORST-coping encode mix's counts, not a sum across mixes -- a missed composite
+   * makes every mix record a skip, so summing turned one event into N and read as though
+   * encoding lagged N times worse than rendering. See `encodeMixes`. */
   encodeSkipped: number;
   encodeTotal: number;
   encodeSkipPct: number;
+  /** How many encode mixes (canvases) the three fields above were chosen from. */
+  encodeMixes: number;
 }
 
 /** Per-output live stats row reported in stats.get's `outputs`. `state` is the

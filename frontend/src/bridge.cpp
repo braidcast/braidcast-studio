@@ -6694,10 +6694,30 @@ video_t *ResolveEncodeMix(const std::string &key)
 // baseline restarts at zero whenever the resolved video_t is not the one the baseline
 // was taken against. RebaseCounter's self-heal covers the remaining case where a mix is
 // replaced without the pointer changing.
-std::pair<uint32_t, uint32_t> ReadEncodeFrames()
-{
+// One mix's frame counts, plus how many mixes were sampled to produce them.
+struct EncodeFrames {
 	uint32_t skipped = 0;
 	uint32_t total = 0;
+	int mixes = 0;
+};
+
+// The frame counts of the mix coping WORST, never a sum across mixes.
+//
+// Summing was actively misleading next to renderLagged, which is one global
+// obs_get_lagged_frames() for the whole compositor: a missed composite makes every mix
+// record a skip, so N canvases turned one event into N and the encode figure read ~Nx
+// the render figure with nothing wrong. 334 skips across two mixes never happened --
+// 167ish did, twice.
+//
+// Worst by RATIO rather than by count, because the question the number answers is "is an
+// encoder failing to keep up". A 4K mix three hours in will always hold the larger raw
+// count, which would hide a freshly-started mix that is genuinely drowning. A mix only
+// seconds old can briefly show a wild ratio off a tiny sample; that self-corrects on the
+// next tick, and over-reporting for one second beats hiding a real overload.
+EncodeFrames ReadEncodeFrames()
+{
+	EncodeFrames out;
+	double worstRatio = -1.0;
 	std::unordered_map<std::string, EncodeMixState> next;
 	for (const std::string &key : EncodeMixKeys()) {
 		video_t *mix = ResolveEncodeMix(key);
@@ -6710,12 +6730,19 @@ std::pair<uint32_t, uint32_t> ReadEncodeFrames()
 		if (it != g_encodeMixes.end() && it->second.mix == mix) {
 			state = it->second;
 		}
-		skipped += RebaseCounter(video_output_get_skipped_frames(mix), state.baseSkipped);
-		total += RebaseCounter(video_output_get_total_frames(mix), state.baseTotal);
+		const uint32_t skipped = RebaseCounter(video_output_get_skipped_frames(mix), state.baseSkipped);
+		const uint32_t total = RebaseCounter(video_output_get_total_frames(mix), state.baseTotal);
 		next[key] = state;
+		++out.mixes;
+		const double ratio = total > 0 ? static_cast<double>(skipped) / total : 0.0;
+		if (ratio > worstRatio) {
+			worstRatio = ratio;
+			out.skipped = skipped;
+			out.total = total;
+		}
 	}
 	g_encodeMixes.swap(next);
-	return {skipped, total};
+	return out;
 }
 
 // Take one sample: general performance + the per-output streaming rows. The host-side
@@ -6745,9 +6772,9 @@ json BuildStatsSnapshot()
 	const double renderLagPct = renderTotal > 0 ? (static_cast<double>(renderLagged) / renderTotal) * 100.0 : 0.0;
 
 	const std::vector<MultistreamEngine::OutputStats> rows = ObsBootstrap::Multistream().StatsSnapshot();
-	const std::pair<uint32_t, uint32_t> encode = ReadEncodeFrames();
-	const uint32_t encodeSkipped = encode.first;
-	const uint32_t encodeTotal = encode.second;
+	const EncodeFrames encode = ReadEncodeFrames();
+	const uint32_t encodeSkipped = encode.skipped;
+	const uint32_t encodeTotal = encode.total;
 	const double encodeSkipPct = encodeTotal > 0 ? (static_cast<double>(encodeSkipped) / encodeTotal) * 100.0 : 0.0;
 
 	json general = json{
@@ -6761,6 +6788,9 @@ json BuildStatsSnapshot()
 		{"encodeSkipped", static_cast<int>(encodeSkipped)},
 		{"encodeTotal", static_cast<int>(encodeTotal)},
 		{"encodeSkipPct", encodeSkipPct},
+		// How many mixes the figures above were chosen from, so the UI can say which
+		// number it is showing instead of leaving it to read as a whole-machine total.
+		{"encodeMixes", encode.mixes},
 	};
 
 	// --- per-output streaming ---
