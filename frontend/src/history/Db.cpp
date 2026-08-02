@@ -1,22 +1,22 @@
 #include "Db.hpp"
 
 #include <sqlite3.h>
-#include <sqlite_orm/sqlite_orm.h>
 
 namespace History {
 namespace {
 
-// A placeholder schema, minimal on purpose: it exists so the ORM is instantiated
-// by a translation unit the build actually compiles, which is what keeps its
-// compile requirements honest as the target's flags move.
-struct SchemaMeta {
-	int version = 0;
-};
-
-auto MakeStorage(const std::string &path)
+// Steps a query for its first column of its first row. Reports only whether the
+// statement could be prepared, so the const Version() and the error-recording
+// ScalarInt() can share one implementation without sharing error handling.
+bool StepScalar(sqlite3 *handle, const char *sql, int64_t &value)
 {
-	using namespace sqlite_orm;
-	return make_storage(path, make_table("schema_meta", make_column("version", &SchemaMeta::version)));
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(handle, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+		return false;
+	}
+	value = sqlite3_step(stmt) == SQLITE_ROW ? sqlite3_column_int64(stmt, 0) : 0;
+	sqlite3_finalize(stmt);
+	return true;
 }
 
 } // namespace
@@ -38,6 +38,20 @@ bool Db::Open(const std::string &path)
 	}
 	path_ = path;
 	lastError_.clear();
+
+	// `foreign_keys = ON` repeats what SQLITE_DEFAULT_FOREIGN_KEYS=1 already
+	// gives the amalgamation. The duplication is deliberate: losing that build
+	// definition would stop every ON DELETE CASCADE from firing, and the symptom
+	// is orphan rows accumulating silently rather than anything failing.
+	if (!Exec("PRAGMA journal_mode = WAL") || !Exec("PRAGMA foreign_keys = ON") ||
+	    !Exec("PRAGMA busy_timeout = 3000")) {
+		Close();
+		return false;
+	}
+	if (!Migrate()) {
+		Close();
+		return false;
+	}
 	return true;
 }
 
@@ -52,16 +66,67 @@ void Db::Close()
 
 int Db::Version() const
 {
-	if (!handle_) {
+	int64_t version = 0;
+	if (!handle_ || !StepScalar(handle_, "PRAGMA user_version", version)) {
 		return 0;
+	}
+	return static_cast<int>(version);
+}
+
+bool Db::RequireOpen()
+{
+	if (handle_) {
+		return true;
+	}
+	lastError_ = "database is not open";
+	return false;
+}
+
+bool Db::Exec(const char *sql)
+{
+	if (!RequireOpen()) {
+		return false;
+	}
+	char *err = nullptr;
+	if (sqlite3_exec(handle_, sql, nullptr, nullptr, &err) != SQLITE_OK) {
+		lastError_ = err ? err : sqlite3_errmsg(handle_);
+		sqlite3_free(err);
+		return false;
+	}
+	return true;
+}
+
+int64_t Db::ScalarInt(const char *sql)
+{
+	if (!RequireOpen()) {
+		return 0;
+	}
+	int64_t value = 0;
+	if (!StepScalar(handle_, sql, value)) {
+		lastError_ = sqlite3_errmsg(handle_);
+		return 0;
+	}
+	return value;
+}
+
+std::string Db::JournalMode()
+{
+	if (!RequireOpen()) {
+		return {};
 	}
 	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(handle_, "PRAGMA user_version", -1, &stmt, nullptr) != SQLITE_OK) {
-		return 0;
+	if (sqlite3_prepare_v2(handle_, "PRAGMA journal_mode", -1, &stmt, nullptr) != SQLITE_OK) {
+		lastError_ = sqlite3_errmsg(handle_);
+		return {};
 	}
-	const int version = sqlite3_step(stmt) == SQLITE_ROW ? sqlite3_column_int(stmt, 0) : 0;
+	std::string mode;
+	if (sqlite3_step(stmt) == SQLITE_ROW) {
+		if (const unsigned char *text = sqlite3_column_text(stmt, 0)) {
+			mode = reinterpret_cast<const char *>(text);
+		}
+	}
 	sqlite3_finalize(stmt);
-	return version;
+	return mode;
 }
 
 } // namespace History

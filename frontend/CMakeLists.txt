@@ -334,6 +334,8 @@ target_sources(
     # braidcast-sqlite target in deps/, not from this list.
     src/history/Db.cpp
     src/history/Db.hpp
+    src/history/Migrations.cpp
+    src/history/Schema.hpp
 )
 
 # Windows resource: embed the app icon + version/product metadata so the exe and
