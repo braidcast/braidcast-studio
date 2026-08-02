@@ -1171,7 +1171,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     <Splitter orientation="row" onDrag={onScenesDrag} />
 
     <div class="col sources-col">
-      <div class="embed-head">Sources{#if currentScene}<span class="embed-head-name"> · {currentScene}</span>{/if}</div>
+      <div class="embed-head">Sources{#if currentScene}<span class="embed-head-name dot-sep">{currentScene}</span>{/if}</div>
       <ul class="list">
         {#each filteredItems as item, idx (item.id)}
           <li
@@ -1415,6 +1415,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   /* The scene name is user data, so it keeps whatever case the user typed. */
   .embed-head-name {
     text-transform: none;
+    letter-spacing: normal;
   }
   .list {
     list-style: none;

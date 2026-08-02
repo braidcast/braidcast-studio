@@ -500,6 +500,14 @@ input[type="color"] {
   text-transform: none;
 }
 
+/* A leading "·" separator for a trailing detail span. The dot carries its own
+   margins rather than sitting in the markup as " · ", because Svelte trims
+   whitespace at an element's edges and would eat the leading space. */
+.dot-sep::before {
+  content: "·";
+  margin: 0 0.5em;
+}
+
 /* Shared list-dock chrome (ListToolbar / FilterReveal / Icon toggles / Splitter).
    The Scenes & Sources docks -- both the global pair and the per-canvas composite --
    share one bottom toolbar + reveal-filter pattern; centralizing the primitives here
