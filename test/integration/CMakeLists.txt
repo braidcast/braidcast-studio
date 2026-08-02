@@ -68,3 +68,63 @@ add_test(
   COMMAND ${_target}
   WORKING_DIRECTORY "${OBS_OUTPUT_DIR}/$<CONFIG>/${OBS_EXECUTABLE_DESTINATION}"
 )
+
+# test_history: the future home for the sqlite-backed stream-history suite
+# (History::Db, then SessionStore/SessionRecorder). braidcast-sqlite is declared
+# under ENABLE_FRONTEND, and this directory is added under the independent
+# ENABLE_INTEGRATION_TESTS, so a frontend-less configure would otherwise
+# reference a target that does not exist.
+if(NOT TARGET OBS::sqlite)
+  add_subdirectory("${CMAKE_SOURCE_DIR}/frontend/deps" "${CMAKE_BINARY_DIR}/frontend-deps")
+endif()
+
+set(_history_sources "${_fe}/src/history/Db.cpp" "${_fe}/src/history/Migrations.cpp")
+
+set(_target test_history)
+
+# Db.cpp has no libobs or scene/canvas dependency, and its tests only need
+# Harness::TempDir() -- a header-only helper chosen specifically so this target
+# does not have to compile harness.cpp (see the doc comment on TempDir() in
+# harness.hpp for why that would drag in the persistence sources and
+# bootstrap_shim.cpp). A later task that needs the full harness (a booted libobs
+# world) should add those sources then.
+add_executable(${_target} test_history.cpp harness.hpp ${_history_sources})
+
+target_include_directories(${_target} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${_fe}/src" "${_fe}/utility")
+
+# Third-party headers as SYSTEM so the project's global /W4 /WX does not flag
+# them. frontend/deps carries sqlite_orm/sqlite_orm.h (header-only, no target);
+# sqlite3.h itself arrives through OBS::sqlite's own SYSTEM PUBLIC include dir.
+target_include_directories(
+  ${_target}
+  SYSTEM
+  PRIVATE ${CMOCKA_INCLUDE_DIR} "${CMAKE_SOURCE_DIR}/frontend/deps"
+)
+
+# Link the OBS:: alias, never the raw braidcast-sqlite target: braidcast-sqlite
+# carries the compile definitions deciding real SQLite semantics (e.g.
+# SQLITE_DEFAULT_FOREIGN_KEYS, which gates whether ON DELETE CASCADE fires at
+# all), so this target must link the object that was actually compiled with them
+# rather than repeat them here and risk drifting from what the product ships.
+target_link_libraries(${_target} PRIVATE OBS::libobs OBS::sqlite cmocka::cmocka)
+
+# obs.h uses nameless struct/union (C4201), fatal under the project's global
+# /W4 /WX. harness.hpp includes obs.h, so suppress it target-wide.
+if(MSVC)
+  target_compile_options(${_target} PRIVATE /wd4201)
+endif()
+
+# Mirrors test_persistence's output location for consistency, and gets this
+# target ready for the tests this suite will grow into: once one of them calls
+# Harness::BootObs (a booted libobs world), it needs libobs-d3d11.dll +
+# data/libobs at runtime, which only resolve from the rundir bin dir.
+set_target_properties(
+  ${_target}
+  PROPERTIES FOLDER tests RUNTIME_OUTPUT_DIRECTORY "${OBS_OUTPUT_DIR}/$<CONFIG>/${OBS_EXECUTABLE_DESTINATION}"
+)
+
+add_test(
+  NAME ${_target}
+  COMMAND ${_target}
+  WORKING_DIRECTORY "${OBS_OUTPUT_DIR}/$<CONFIG>/${OBS_EXECUTABLE_DESTINATION}"
+)

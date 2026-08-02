@@ -3,7 +3,10 @@
 
 #include <obs.h>
 
+#include <atomic>
+#include <chrono>
 #include <cstdint>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -19,6 +22,29 @@
 // context-free; the production Save/Load path that pulls the main canvas +
 // CanvasRuntime mixes is not, which is why the harness stands up video.
 namespace Harness {
+
+// A fresh, unique scratch directory for a test's own files (e.g. a database
+// path) -- never the user's real config directory. Not removed after use, same
+// as the rest of this harness's temp output: a failed test's files stay there to
+// be inspected, and clearing %TEMP% is the developer's call.
+//
+// Defined inline, not in harness.cpp: harness.cpp is compiled directly into
+// each test executable (not through a static library), so every external
+// symbol any function in it references -- including BootObs/CreateMainScene's
+// CanvasRuntime/CanvasStore/SceneCollections calls -- must resolve at link time
+// regardless of whether a given test actually calls that function. A suite
+// that only needs filesystem isolation would otherwise be forced to also link
+// the persistence sources and bootstrap_shim.cpp just to satisfy the linker.
+inline std::string TempDir()
+{
+	static std::atomic<uint64_t> counter{0};
+	const auto tick = std::chrono::steady_clock::now().time_since_epoch().count();
+	const std::filesystem::path dir =
+		std::filesystem::temp_directory_path() /
+		("braidcast_it_" + std::to_string(tick) + "_" + std::to_string(counter.fetch_add(1)));
+	std::filesystem::create_directories(dir);
+	return dir.u8string();
+}
 
 // --- lifecycle (cmocka group setup/teardown) --------------------------------
 
