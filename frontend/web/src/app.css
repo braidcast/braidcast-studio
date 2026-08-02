@@ -622,53 +622,6 @@ input[type="color"] {
    off the accent/live tokens so they track the active theme.
    ============================================================ */
 
-/* --- breadcrumb strip (page context) --- */
-.cv-crumb {
-  flex: 0 0 auto;
-  height: 34px;
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 0 16px;
-  background: var(--color-surface);
-  border-bottom: var(--border-weight) solid var(--color-border);
-}
-.cv-crumb__ic {
-  flex: 0 0 auto;
-  color: var(--color-accent);
-  display: inline-flex;
-}
-.cv-crumb__t {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: var(--color-dim);
-}
-.cv-crumb__sep {
-  color: var(--color-muted);
-}
-.cv-crumb__sub {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--color-muted);
-}
-.cv-crumb__spacer {
-  flex: 1;
-}
-.cv-crumb__note {
-  font-family: var(--font-mono);
-  font-size: 9px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--color-muted);
-  border: var(--border-weight) solid var(--color-border-2);
-  padding: 3px 8px;
-  white-space: nowrap;
-}
-
 /* --- master canvas list --- */
 .cv-clist {
   flex: 1 1 auto;

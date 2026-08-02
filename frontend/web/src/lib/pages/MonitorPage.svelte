@@ -1,7 +1,7 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import type { ChatPlatform } from "$lib/api/bridge";
-  import PageHeader from "$lib/ui/PageHeader.svelte";
+  import PageShell from "$lib/ui/PageShell.svelte";
   import EmptyState from "$lib/ui/EmptyState.svelte";
   import StaleNotice from "$lib/ui/StaleNotice.svelte";
   import { PLATFORM_COLORS, PLATFORM_LABELS, PLATFORM_ORDER } from "$lib/theme/platformColors";
@@ -151,8 +151,7 @@
   });
 </script>
 
-<div class="page">
-  <PageHeader title="Monitor" sub="live performance · 1×/s from the host" />
+<PageShell title="Monitor" sub="Live performance · 1×/s from the host">
 
   <div class="body">
     <StaleNotice {stale} ageSec={staleSec} subject="statistics" />
@@ -225,16 +224,9 @@
       {/if}
     </div>
   </div>
-</div>
+</PageShell>
 
 <style>
-  .page {
-    height: 100%;
-    display: flex;
-    flex-direction: column;
-    background: var(--color-base);
-    color: var(--color-text);
-  }
   .body {
     flex: 1;
     min-height: 0;

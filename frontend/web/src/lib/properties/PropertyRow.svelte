@@ -11,7 +11,9 @@
   // Group/button/info own their full-width chrome (legend, note, button label).
   const isFull = $derived(prop.type === "group" || prop.type === "button" || isInfo);
   // Booleans render as a left-aligned toggle + label (never pushed to the far
-  // edge), matching the stacked left-alignment of every other field.
+  // edge), matching the stacked left-alignment of every other field. The hint sits
+  // BELOW that line, in the same .cv-field__h every other field puts it in -- inline
+  // beside the label it ran past the panel edge and got clipped.
   const isRow = $derived(prop.type === "bool");
 
   const label = $derived(prop.label ?? prop.name);
@@ -27,11 +29,9 @@
     <div class="cv-field cv-field--bool">
       <label class="cv-boolrow">
         <Control {prop} {value} {onChange} {onButton} {lookup} />
-        <span class="cv-field__l">
-          {label}
-          {#if hint}<span class="cv-field__sub">{hint}</span>{/if}
-        </span>
+        <span class="cv-field__l">{label}</span>
       </label>
+      {#if hint}<div class="cv-field__h">{hint}</div>{/if}
     </div>
   {:else}
     <div class="cv-field">

@@ -7,6 +7,7 @@
     type MultistreamState,
   } from "$lib/api/bridge";
   import { canvasStore } from "$lib/stores/canvasStore.svelte";
+  import PageShell from "$lib/ui/PageShell.svelte";
   import { outputBindingStore, bindingDisplayName } from "$lib/stores/outputBindingStore.svelte";
   import { streamProfileStore } from "$lib/stores/streamProfileStore.svelte";
   import { multistreamStatusStore, isActiveState } from "$lib/stores/multistreamStatusStore.svelte";
@@ -166,15 +167,7 @@
   }
 </script>
 
-<div class="page">
-  <div class="cv-crumb">
-    <span class="cv-crumb__ic"><Icon name="canvas" size={15} /></span>
-    <span class="cv-crumb__t">Canvases</span>
-    <span class="cv-crumb__sep">/</span>
-    <span class="cv-crumb__sub">Configuration</span>
-    <span class="cv-crumb__spacer"></span>
-    <span class="cv-crumb__note">Each canvas = one independent encode target</span>
-  </div>
+<PageShell title="Canvases" sub="Each canvas = one independent encode target">
   {#if error}<p class="err">{error}</p>{/if}
   {#if !loaded}
     <p class="dim">Loading canvases…</p>
@@ -183,7 +176,7 @@
       <SplitPane storageKey="braidcast.split.canvases" default={236} left={leftList} right={detailPane} />
     </div>
   {/if}
-</div>
+</PageShell>
 
 {#snippet leftList()}
   <aside class="cv-clist">
@@ -261,14 +254,6 @@
 {/if}
 
 <style>
-  .page {
-    height: 100%;
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-    background: var(--color-base);
-    color: var(--color-text);
-  }
   .split {
     flex: 1;
     min-height: 0;
