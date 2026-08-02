@@ -4383,6 +4383,60 @@ bool ParseEncoderRef(const std::string &ref, std::string &uuid, bool &isVideo)
 	return true;
 }
 
+// Install an encoder type's defaults onto an EXISTING settings object, exactly as libobs
+// does when it builds the real encoder (init_encoder -> info.get_defaults(context.settings),
+// obs-encoder.c). Everything the user never touched is absent from the blob persisted in
+// canvases.json, so without this the properties UI read those keys off a bare object and got
+// 0 / "" -- while the encoder that actually runs had its defaults applied at create time and
+// used the real value. That is the whole reason a canvas could display bitrate 0 while
+// encoding at 10000, and multipass/tuning/rate-control could show blank while being set.
+//
+// Installed as DEFAULTS rather than copied in as values, so a field the user never edited
+// still serializes as absent and keeps tracking the encoder's default if that default ever
+// changes -- writing them in as values would freeze today's defaults into every canvas.
+void ApplyEncoderTypeDefaults(const std::string &encoderId, obs_data_t *settings)
+{
+	if (!settings || encoderId.empty()) {
+		return;
+	}
+	OBSDataAutoRelease typeDefaults = obs_encoder_defaults(encoderId.c_str());
+	if (!typeDefaults) {
+		return; // unknown encoder id (plugin missing); leave the blob untouched
+	}
+	// obs_encoder_defaults returns them as DEFAULTS; re-read as plain values to iterate.
+	OBSDataAutoRelease values = obs_data_get_defaults(typeDefaults);
+	for (obs_data_item_t *item = obs_data_first(values); item; obs_data_item_next(&item)) {
+		const char *name = obs_data_item_get_name(item);
+		switch (obs_data_item_gettype(item)) {
+		case OBS_DATA_STRING:
+			obs_data_set_default_string(settings, name, obs_data_item_get_string(item));
+			break;
+		case OBS_DATA_NUMBER:
+			if (obs_data_item_numtype(item) == OBS_DATA_NUM_DOUBLE) {
+				obs_data_set_default_double(settings, name, obs_data_item_get_double(item));
+			} else {
+				obs_data_set_default_int(settings, name, obs_data_item_get_int(item));
+			}
+			break;
+		case OBS_DATA_BOOLEAN:
+			obs_data_set_default_bool(settings, name, obs_data_item_get_bool(item));
+			break;
+		case OBS_DATA_OBJECT: {
+			OBSDataAutoRelease obj = obs_data_item_get_obj(item);
+			obs_data_set_default_obj(settings, name, obj);
+			break;
+		}
+		case OBS_DATA_ARRAY: {
+			OBSDataArrayAutoRelease arr = obs_data_item_get_array(item);
+			obs_data_set_default_array(settings, name, arr);
+			break;
+		}
+		default:
+			break;
+		}
+	}
+}
+
 void *ResolveEncoderRef(const std::string &ref)
 {
 	std::string uuid;
@@ -4406,6 +4460,11 @@ void *ResolveEncoderRef(const std::string &ref)
 			enc.settings = obs_data_create();
 		}
 	}
+	// Unconditionally, not just on first creation: a blob rehydrated from canvases.json
+	// carries only the keys the user changed, and the branch above never runs for it.
+	// Idempotent, and the object identity is preserved because the model and the ref ctx
+	// below both hold this exact obs_data.
+	ApplyEncoderTypeDefaults(enc.id, enc.settings.Get());
 
 	auto *ctx = new EncoderRefCtx();
 	ctx->canvasUuid = uuid;
