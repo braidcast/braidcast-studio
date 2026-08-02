@@ -40,6 +40,10 @@ add_subdirectory("${CEF_LIBCEF_DLL_WRAPPER_PATH}" libcef_dll_wrapper)
 # Logical target for libcef.lib (the import library) per the CEF macro contract.
 add_logical_target("libcef_lib" "${CEF_LIB_DEBUG}" "${CEF_LIB_RELEASE}")
 
+# Vendored third-party sources built as their own targets, so the integration
+# tests link the same objects with the same definitions this executable does.
+add_subdirectory(deps)
+
 set(_target braidcast-frontend)
 
 add_executable(${_target} WIN32)
@@ -326,6 +330,10 @@ target_sources(
     src/mcp/HttpServer.hpp
     src/mcp/McpServer.cpp
     src/mcp/McpServer.hpp
+    # Stream history. The SQLite amalgamation itself comes from the
+    # braidcast-sqlite target in deps/, not from this list.
+    src/history/Db.cpp
+    src/history/Db.hpp
 )
 
 # Windows resource: embed the app icon + version/product metadata so the exe and
@@ -437,6 +445,12 @@ foreach(_prefix IN LISTS CMAKE_PREFIX_PATH)
   endif()
 endforeach()
 
+# SYSTEM keeps CEF's /W4 /WX off headers we did not write, which sqlite_orm needs:
+# it does not compile clean under /W4. The directory is "deps" rather than
+# "deps/sqlite_orm" so the include reads <sqlite_orm/sqlite_orm.h>, matching
+# upstream's own convention. sqlite3.h arrives separately, from braidcast-sqlite.
+target_include_directories(${_target} SYSTEM PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/deps")
+
 # libcurl backs the bridge HTTP client (Phase 8a OAuth + platform-API calls).
 find_package(CURL REQUIRED)
 
@@ -450,6 +464,7 @@ target_link_libraries(
     OBS::libobs
     OBS::frontend-api
     CURL::libcurl
+    OBS::sqlite
     # IFileDialog (shobjidl) lives in ole32/shell32; SHCreateItemFromParsingName in shlwapi.
     ole32
     shell32
