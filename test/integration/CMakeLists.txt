@@ -95,11 +95,7 @@ target_include_directories(${_target} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${_
 # Third-party headers as SYSTEM so the project's global /W4 /WX does not flag
 # them. frontend/deps carries sqlite_orm/sqlite_orm.h (header-only, no target);
 # sqlite3.h itself arrives through OBS::sqlite's own SYSTEM PUBLIC include dir.
-target_include_directories(
-  ${_target}
-  SYSTEM
-  PRIVATE ${CMOCKA_INCLUDE_DIR} "${CMAKE_SOURCE_DIR}/frontend/deps"
-)
+target_include_directories(${_target} SYSTEM PRIVATE ${CMOCKA_INCLUDE_DIR} "${CMAKE_SOURCE_DIR}/frontend/deps")
 
 # Link the OBS:: alias, never the raw braidcast-sqlite target: braidcast-sqlite
 # carries the compile definitions deciding real SQLite semantics (e.g.
