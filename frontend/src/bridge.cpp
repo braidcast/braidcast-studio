@@ -1173,20 +1173,27 @@ void EmitScenesChanged(const std::string &canvasUuid)
 	}
 }
 
-bool MethodScenesList(const json &params, json &result, std::string &error)
+// Every scene on a canvas, in the order the UI lists them, flagging the current
+// one. The two scene namespaces are the reason this exists as a helper: an
+// additional canvas owns its scenes privately, while the Default canvas's scenes
+// are the global source registry. scenes.list and canvas.duplicate both walk a
+// canvas's scenes and must agree on what that means.
+struct CanvasSceneRow {
+	std::string name;
+	bool current = false;
+};
+
+std::vector<CanvasSceneRow> ScenesOnCanvas(const std::string &canvasUuid)
 {
-	const CanvasTarget target = ResolveCanvasTarget(params);
-	if (target.isAdditional) {
-		// List the additional canvas's own scenes (isolated from the global
-		// registry), flagging the one bound to its channel 0 as current.
-		json scenes = json::array();
-		for (const CanvasRuntime::SceneInfo &s : ObsBootstrap::CanvasRuntime().Scenes(target.uuid)) {
-			scenes.push_back(json{{"name", s.name}, {"current", s.current}});
+	std::vector<CanvasSceneRow> rows;
+	if (!ObsBootstrap::Canvases().IsDefaultUuid(canvasUuid)) {
+		// The additional canvas's own scenes (isolated from the global registry),
+		// flagging the one bound to its channel 0 as current.
+		for (const CanvasRuntime::SceneInfo &s : ObsBootstrap::CanvasRuntime().Scenes(canvasUuid)) {
+			rows.push_back({s.name, s.current});
 		}
-		result = std::move(scenes);
-		return true;
+		return rows;
 	}
-	(void)error;
 	// List in the persisted user order (SceneCollection::SceneOrder) rather than
 	// obs_enum_scenes' creation order -- libobs has no scene-ordering primitive of
 	// its own; SceneOrder() is the only record of the user's chosen order.
@@ -1196,13 +1203,23 @@ bool MethodScenesList(const json &params, json &result, std::string &error)
 	const char *currentName = current ? obs_source_get_name(current) : nullptr;
 	const std::string currentStr = currentName ? currentName : std::string();
 
-	json scenes = json::array();
 	for (const std::string &uuid : SceneCollection::SceneOrder()) {
 		OBSSourceAutoRelease scene = obs_get_source_by_uuid(uuid.c_str()); // addref'd
 		const char *name = scene ? obs_source_get_name(scene) : nullptr;
 		if (name) {
-			scenes.push_back(json{{"name", name}, {"current", !currentStr.empty() && currentStr == name}});
+			rows.push_back({name, !currentStr.empty() && currentStr == name});
 		}
+	}
+	return rows;
+}
+
+bool MethodScenesList(const json &params, json &result, std::string &error)
+{
+	(void)error;
+	const CanvasTarget target = ResolveCanvasTarget(params);
+	json scenes = json::array();
+	for (const CanvasSceneRow &s : ScenesOnCanvas(target.uuid)) {
+		scenes.push_back(json{{"name", s.name}, {"current", s.current}});
 	}
 	result = std::move(scenes);
 	return true;
@@ -1761,17 +1778,66 @@ bool DuplicateSceneToCanvasCore(const std::string &sceneName, const std::string 
 	OBSDataAutoRelease sceneData = obs_save_source(dupSource);
 	const char *sceneJsonStr = sceneData ? obs_data_get_json(sceneData) : nullptr;
 
+	const char *srcSceneUuidC = obs_source_get_uuid(srcScene);
+
 	outNewSceneUuid = dupUuidC ? dupUuidC : std::string();
 	outNewName = newName;
 	outUndoState = json{
 		{"newSceneUuid", outNewSceneUuid},
 		{"sceneData", sceneJsonStr ? sceneJsonStr : ""},
 		{"destCanvas", destCanvasUuid},
+		// Where the copy came from, so redo can re-derive the scene link undo
+		// pruned. Without it a redo restored the scene but not its link, leaving a
+		// canvas scene that never activates -- the exact state linking exists to
+		// prevent.
+		{"srcCanvas", srcCanvasUuid},
+		{"srcScene", srcSceneUuidC ? srcSceneUuidC : ""},
 		{"sources", sourcesJson},
 	};
 
 	obs_scene_release(dup); // the registry holds it now, matching MethodScenesDuplicate's own release
 	return true;
+}
+
+// Give a freshly duplicated canvas scene the scene-link its source implies, so a
+// copy activates with the same main scene the original did. Does NOT save -- the
+// caller owns that, since duplicating a whole canvas writes once for many scenes.
+//
+// The two source namespaces mean two different rules, which is why they live
+// together rather than at each call site:
+//
+//   - A MAIN scene is itself a link key, so copying one onto a canvas means the
+//     new scene follows the scene it was copied from. This is the common path:
+//     "duplicate this scene onto that canvas" almost always means "and show it
+//     when this scene is live", and leaving it unlinked produced a canvas scene
+//     that silently never activated.
+//   - A CANVAS scene is a link TARGET, so there is nothing to key on; instead
+//     every main scene that pointed at the source now also points at the copy.
+//
+// Both are no-ops when the destination is the Default canvas: main scenes are
+// never link targets. A same-canvas duplicate is likewise skipped, so copying a
+// scene beside itself cannot steal the original's link.
+void LinkDuplicatedScene(const std::string &srcCanvasUuid, const std::string &srcSceneUuid,
+			 const std::string &destCanvasUuid, const std::string &newSceneUuid)
+{
+	const CanvasStore &canvases = ObsBootstrap::Canvases();
+	if (canvases.IsDefaultUuid(destCanvasUuid) || srcSceneUuid.empty() || newSceneUuid.empty()) {
+		return;
+	}
+	CanvasSceneLink &links = ObsBootstrap::SceneLinks().Links();
+	if (canvases.IsDefaultUuid(srcCanvasUuid)) {
+		links.Set(srcSceneUuid, destCanvasUuid, newSceneUuid);
+		return;
+	}
+	if (srcCanvasUuid == destCanvasUuid) {
+		return;
+	}
+	for (const auto &[mainUuid, perCanvas] : links.map) {
+		auto it = perCanvas.find(srcCanvasUuid);
+		if (it != perCanvas.end() && it->second == srcSceneUuid) {
+			links.Set(mainUuid, destCanvasUuid, newSceneUuid);
+		}
+	}
 }
 
 // Defined near the other Cb adapters (kAddItemFromSnapshot/kRemoveItemBySource);
@@ -1806,27 +1872,16 @@ bool MethodScenesDuplicateToCanvas(const json &params, json &result, std::string
 	EmitScenesChanged(emitCanvas);
 	SceneCollection::Save();
 
-	// Copy any scene-link mapping: every main scene currently linked to the SOURCE
-	// scene (on srcCanvasUuid) gets an additional/updated link pointing at the new
-	// duplicate on destCanvasUuid. Only meaningful when both the source and the
-	// destination are real additional canvases (main scenes are never link
-	// targets) and the destination differs from the source -- a same-canvas
-	// duplicate must leave the original scene's link untouched.
-	if (!srcCanvasUuid.empty() && srcCanvasUuid != ObsBootstrap::Canvases().Default().uuid &&
-	    !destCanvasUuid.empty() && destCanvasUuid != ObsBootstrap::Canvases().Default().uuid &&
-	    destCanvasUuid != srcCanvasUuid) {
+	// Give the copy the link its source implies (see LinkDuplicatedScene for the
+	// two rules). Resolving the source scene's uuid AFTER the duplicate is safe:
+	// the copy took a free name, so the original still answers to `name`.
+	if (!ObsBootstrap::Canvases().IsDefaultUuid(destCanvasUuid)) {
 		OBSSourceAutoRelease srcSceneForLink = ResolveNamedSceneOnCanvas(name, srcCanvasUuid);
 		const char *srcSceneUuidC = srcSceneForLink ? obs_source_get_uuid(srcSceneForLink) : nullptr;
-		if (srcSceneUuidC) {
-			const std::string srcSceneUuid = srcSceneUuidC;
-			for (const auto &[mainUuid, perCanvas] : ObsBootstrap::SceneLinks().Links().map) {
-				auto it = perCanvas.find(srcCanvasUuid);
-				if (it != perCanvas.end() && it->second == srcSceneUuid) {
-					ObsBootstrap::SceneLinks().Links().Set(mainUuid, destCanvasUuid, newSceneUuid);
-				}
-			}
-		}
+		LinkDuplicatedScene(srcCanvasUuid, srcSceneUuidC ? srcSceneUuidC : std::string(), destCanvasUuid,
+				    newSceneUuid);
 		ObsBootstrap::SceneLinks().Save();
+		EmitEvent(EventNames::kSceneLinkChanged, json::object());
 	}
 
 	ObsBootstrap::Undo().AddAction("Duplicate '" + name + "' to canvas", kUndoDuplicateSceneToCanvas,
@@ -2614,6 +2669,7 @@ void RemoveDuplicatedCanvasScene(const json &state)
 	}
 
 	ObsBootstrap::PruneSceneLinksForCanvasScene(destCanvasUuid, newSceneUuid); // no-op if none was set
+	EmitEvent(EventNames::kSceneLinkChanged, json::object());
 	EmitScenesChanged(destCanvasUuid.empty() || destCanvasUuid == ObsBootstrap::Canvases().Default().uuid
 				  ? std::string()
 				  : destCanvasUuid);
@@ -2681,6 +2737,14 @@ void RestoreDuplicatedCanvasScene(const json &state)
 	ResolvedDestCanvas dest = ResolveDestCanvas(destCanvasUuid);
 	if (dest.canvas) {
 		obs_canvas_move_scene(obs_scene_from_source(restoredScene), dest.canvas);
+	}
+
+	// Re-derive the link undo pruned, from the source captured at duplicate time.
+	if (!ObsBootstrap::Canvases().IsDefaultUuid(destCanvasUuid)) {
+		LinkDuplicatedScene(OptString(state, "srcCanvas"), OptString(state, "srcScene"), destCanvasUuid,
+				    OptString(state, "newSceneUuid"));
+		ObsBootstrap::SceneLinks().Save();
+		EmitEvent(EventNames::kSceneLinkChanged, json::object());
 	}
 
 	EmitScenesChanged(destCanvasUuid.empty() || destCanvasUuid == ObsBootstrap::Canvases().Default().uuid
@@ -5864,6 +5928,121 @@ bool MethodCanvasCreate(const json &params, json &result, std::string &error)
 
 	EmitEvent(EventNames::kCanvasChanged, json::object());
 	result = json{{"uuid", uuid}};
+	return PersistOrFail(saved, error);
+}
+
+// A canvas name not yet taken: "<base> copy", then "<base> copy 2", ... Mirrors
+// FreeSceneNameOnCanvas's shape; canvas names are not unique-constrained by
+// libobs, but two identically named canvases are indistinguishable in every
+// picker the UI has.
+std::string FreeCanvasName(const std::string &base)
+{
+	const CanvasStore &store = ObsBootstrap::Canvases();
+	for (int n = 1;; ++n) {
+		const std::string candidate = base + " copy" + (n == 1 ? "" : " " + std::to_string(n));
+		const bool taken = std::any_of(store.Definitions().begin(), store.Definitions().end(),
+					       [&candidate](const CanvasDefinition &d) { return d.name == candidate; });
+		if (!taken) {
+			return candidate;
+		}
+	}
+}
+
+// canvas.duplicate {uuid}: a second encode target configured like an existing one.
+//
+// Copies the whole definition (resolution, fps, scaling, color, both encoder
+// blobs and every inheritance flag) and then deep-copies each of the source's
+// scenes onto it, carrying their scene links across so the copy activates in step
+// with the original. Duplicating the Default canvas is allowed and means "a second
+// encode of the whole show": its scenes are the global ones, so each copy links to
+// the main scene it came from.
+//
+// Output bindings are deliberately NOT copied. The engine permits one enabled
+// binding per stream profile because one stream key is one live stream, and the
+// destination picker already hides a profile bound to any canvas -- a copied
+// binding would be an edge that can never carry a stream.
+bool MethodCanvasDuplicate(const json &params, json &result, std::string &error)
+{
+	std::string uuid;
+	if (!RequireStr(params, "canvas.duplicate", "uuid", uuid, error)) {
+		return false;
+	}
+	CanvasStore &store = ObsBootstrap::Canvases();
+	const CanvasDefinition *src = store.Find(uuid);
+	if (!src) {
+		error = "no canvas with uuid '" + uuid + "'";
+		return false;
+	}
+
+	// The source's own uuid, read before Add() invalidates every pointer into the
+	// store (documented on CanvasStore::Find).
+	const std::string srcUuid = src->uuid;
+
+	CanvasDefinition def;
+	def.name = FreeCanvasName(src->name);
+	def.isDefault = false; // a copy of the Default is an ordinary additional canvas
+	def.width = src->width;
+	def.height = src->height;
+	def.outputWidth = src->outputWidth;
+	def.outputHeight = src->outputHeight;
+	def.fpsNum = src->fpsNum;
+	def.fpsDen = src->fpsDen;
+	def.scaleType = src->scaleType;
+	def.useDefaultResolution = src->useDefaultResolution;
+	def.color = src->color;
+	def.video.id = src->video.id;
+	def.video.useDefault = src->video.useDefault;
+	def.audio.id = src->audio.id;
+	def.audio.useDefault = src->audio.useDefault;
+	// Deep-copy the settings blobs: sharing the obs_data would make editing the
+	// copy's encoder silently edit the original's.
+	def.video.settings = obs_data_create();
+	obs_data_apply(def.video.settings, src->video.settings);
+	def.audio.settings = obs_data_create();
+	obs_data_apply(def.audio.settings, src->audio.settings);
+
+	const CanvasDefinition &added = store.Add(std::move(def));
+	// Copied out before anything else can Add/Remove: the reference is documented
+	// as invalidated by either (CanvasStore::Find).
+	const std::string newUuid = added.uuid;
+	const std::string newName = added.name;
+	const bool saved = store.Save();
+
+	ObsBootstrap::CanvasRuntime().EnsureCanvas(added);
+
+	// Copy the scenes. Each duplicate takes its source's name verbatim (the new
+	// canvas owns a private namespace, so nothing collides) and carries its link.
+	std::string currentSceneName;
+	for (const CanvasSceneRow &s : ScenesOnCanvas(srcUuid)) {
+		std::string dupSceneUuid, dupSceneName;
+		json undoState;
+		std::string dupError;
+		if (!DuplicateSceneToCanvasCore(s.name, srcUuid, newUuid, dupSceneUuid, dupSceneName, undoState,
+						dupError)) {
+			HostLog("[bridge] canvas.duplicate: skipped scene '" + s.name + "': " + dupError);
+			continue;
+		}
+		OBSSourceAutoRelease srcScene = ResolveNamedSceneOnCanvas(s.name, srcUuid);
+		const char *srcSceneUuidC = srcScene ? obs_source_get_uuid(srcScene) : nullptr;
+		LinkDuplicatedScene(srcUuid, srcSceneUuidC ? srcSceneUuidC : std::string(), newUuid, dupSceneUuid);
+		if (s.current) {
+			currentSceneName = dupSceneName;
+		}
+	}
+	ObsBootstrap::SceneLinks().Save();
+
+	// Match the source's active scene, then seed a placeholder if the source had no
+	// scenes at all (EnsureScenes is idempotent and skips a canvas that now has some).
+	if (!currentSceneName.empty()) {
+		ObsBootstrap::CanvasRuntime().SetCurrentScene(newUuid, currentSceneName);
+	}
+	ObsBootstrap::CanvasRuntime().EnsureScenes();
+
+	SceneCollection::Save();
+	EmitScenesChanged(newUuid);
+	EmitEvent(EventNames::kSceneLinkChanged, json::object());
+	EmitEvent(EventNames::kCanvasChanged, json::object());
+	result = json{{"uuid", newUuid}, {"name", newName}};
 	return PersistOrFail(saved, error);
 }
 
@@ -10846,6 +11025,7 @@ void Init()
 		{"settings.restore", MethodSettingsRestore},
 		{"canvas.list", MethodCanvasList},
 		{"canvas.create", MethodCanvasCreate},
+		{"canvas.duplicate", MethodCanvasDuplicate},
 		{"canvas.update", MethodCanvasUpdate},
 		{"canvas.remove", MethodCanvasRemove},
 		{"canvas.reorder", MethodCanvasReorder},
