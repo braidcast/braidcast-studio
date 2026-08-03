@@ -4447,27 +4447,26 @@ bool ParseEncoderRef(const std::string &ref, std::string &uuid, bool &isVideo)
 	return true;
 }
 
-// Install an encoder type's defaults onto an EXISTING settings object, exactly as libobs
-// does when it builds the real encoder (init_encoder -> info.get_defaults(context.settings),
-// obs-encoder.c). Everything the user never touched is absent from the blob persisted in
-// canvases.json, so without this the properties UI read those keys off a bare object and got
-// 0 / "" -- while the encoder that actually runs had its defaults applied at create time and
-// used the real value. That is the whole reason a canvas could display bitrate 0 while
-// encoding at 10000, and multipass/tuning/rate-control could show blank while being set.
+// Install a type's defaults onto an EXISTING settings object.
+//
+// A settings blob persisted to disk holds only the keys the user actually changed, so a
+// rehydrated one is mostly empty. libobs papers over that for encoders at create time
+// (init_encoder -> info.get_defaults(context.settings), obs-encoder.c), but a properties
+// view built straight over the stored blob does not get that, and read 0 / "" for
+// everything untouched -- which is how a canvas could display bitrate 0 while encoding at
+// 10000, with multipass and rate control blank while being set.
 //
 // Installed as DEFAULTS rather than copied in as values, so a field the user never edited
-// still serializes as absent and keeps tracking the encoder's default if that default ever
-// changes -- writing them in as values would freeze today's defaults into every canvas.
-void ApplyEncoderTypeDefaults(const std::string &encoderId, obs_data_t *settings)
+// still serializes as absent and keeps tracking the type's default if that default ever
+// changes -- writing them in as values would freeze today's defaults into every stored blob.
+//
+// `typeDefaults` comes from obs_encoder_defaults / obs_service_defaults; both hand back an
+// object carrying the values as DEFAULTS, hence the obs_data_get_defaults re-read below.
+void ApplyTypeDefaults(obs_data_t *typeDefaults, obs_data_t *settings)
 {
-	if (!settings || encoderId.empty()) {
+	if (!settings || !typeDefaults) {
 		return;
 	}
-	OBSDataAutoRelease typeDefaults = obs_encoder_defaults(encoderId.c_str());
-	if (!typeDefaults) {
-		return; // unknown encoder id (plugin missing); leave the blob untouched
-	}
-	// obs_encoder_defaults returns them as DEFAULTS; re-read as plain values to iterate.
 	OBSDataAutoRelease values = obs_data_get_defaults(typeDefaults);
 	for (obs_data_item_t *item = obs_data_first(values); item; obs_data_item_next(&item)) {
 		const char *name = obs_data_item_get_name(item);
@@ -4528,7 +4527,8 @@ void *ResolveEncoderRef(const std::string &ref)
 	// carries only the keys the user changed, and the branch above never runs for it.
 	// Idempotent, and the object identity is preserved because the model and the ref ctx
 	// below both hold this exact obs_data.
-	ApplyEncoderTypeDefaults(enc.id, enc.settings.Get());
+	OBSDataAutoRelease encDefaults = obs_encoder_defaults(enc.id.c_str());
+	ApplyTypeDefaults(encDefaults, enc.settings.Get());
 
 	auto *ctx = new EncoderRefCtx();
 	ctx->canvasUuid = uuid;
@@ -4561,14 +4561,21 @@ void *ResolveServiceRef(const std::string &ref)
 	if (!p) {
 		return nullptr;
 	}
-	// Ensure the settings obs_data exists so props bind + updates persist; seed
-	// from the service type's defaults the first time.
+	// Ensure the settings obs_data exists so props bind + updates persist.
 	if (!p->settings) {
-		p->settings = obs_service_defaults(p->serviceId.c_str());
-		if (!p->settings) {
-			p->settings = obs_data_create();
-		}
+		p->settings = obs_data_create();
 	}
+	// Same shape as the encoder path above, for the same reason: a profile rehydrated
+	// from streams.json carries only the keys the user changed, so seeding defaults only
+	// on first creation made a profile read differently before and after a restart.
+	//
+	// Currently a no-op in practice -- no service registered in this build implements
+	// get_defaults, so obs_service_defaults hands back an empty object. It is here so a
+	// service that later declares defaults cannot silently reintroduce the divergence,
+	// and because MultistreamEngine builds the live obs_service from this exact obs_data
+	// (MultistreamEngine.cpp), which is precisely how the encoder version went unnoticed.
+	OBSDataAutoRelease svcDefaults = obs_service_defaults(p->serviceId.c_str());
+	ApplyTypeDefaults(svcDefaults, p->settings.Get());
 
 	// A live obs_service is required for obs_service_properties (and so its
 	// modified-callbacks see the stored values). Create one private instance bound
