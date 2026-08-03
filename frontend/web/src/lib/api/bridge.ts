@@ -117,8 +117,11 @@ export interface ExistingSource {
 // --- generic obs_properties descriptors (4.3.2) -----------------------------
 
 /** Editable-object kind a property set belongs to. "filter" addresses a filter
- * by its uuid (the ref); the others address their object by name/id. */
-export type PropertyKind = "source" | "encoder" | "service" | "output" | "filter" | "transition";
+ * by its uuid (the ref); "settings" addresses an app-settings section by name
+ * ("advanced") rather than a libobs object, so those tabs render from the same
+ * descriptors instead of hand-written inputs; the others address their object by
+ * name/id. */
+export type PropertyKind = "source" | "encoder" | "service" | "output" | "filter" | "transition" | "settings";
 
 /** One item in a list (combo/radio) property. */
 export interface PropertyListItem {

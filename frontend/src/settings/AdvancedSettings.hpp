@@ -38,19 +38,42 @@ struct AdvancedSettings {
 	bool Save() const;
 };
 
+// How a field presents itself in the Settings UI. Carried on the field descriptor
+// rather than in the Svelte tab so a field is declared exactly once: the tab used
+// to restate every label, range and backend default by hand, and had already
+// drifted (it seeded streamDelaySec 0 / streamDelayPreserve false against the 20 /
+// true above). `order` sorts the rendered form; `group` becomes a section heading,
+// emitted in first-appearance order. `enabledWhen` names a bool field in this same
+// struct that must be true for this one to be editable -- the delay-seconds box
+// following the delay toggle. An empty `label` keeps a field off the form entirely
+// while still persisting and round-tripping.
+struct SettingsFieldUi {
+	const char *label;
+	const char *hint;        // "" = none
+	const char *group;       // section heading; "" = ungrouped
+	const char *enabledWhen; // "" = always editable; else a bool field's json key
+	int order;
+};
+
 // Field descriptors: the SINGLE source for the wire (camelCase) <-> file
-// (snake_case) <-> struct-member mapping. Both the persistence layer
-// (AdvancedSettings::Load/Save) and the bridge (settings.getAdvanced/setAdvanced)
-// iterate these, so the two layers cannot drift.
+// (snake_case) <-> struct-member mapping, plus the UI presentation above. The
+// persistence layer (AdvancedSettings::Load/Save), the bridge
+// (settings.getAdvanced/setAdvanced) and the properties form all iterate these, so
+// none of the three can drift.
 struct AdvancedBoolField {
 	const char *json;
 	const char *file;
 	bool AdvancedSettings::*member;
+	SettingsFieldUi ui;
 };
 struct AdvancedStringField {
 	const char *json;
 	const char *file;
 	std::string AdvancedSettings::*member;
+	SettingsFieldUi ui;
+	// Fixed choices rendered as a dropdown, as "value\0Label" pairs terminated by a
+	// null entry; an empty first value means a free-text box instead.
+	const char *const (*options)[2];
 };
 struct AdvancedUIntField {
 	const char *json;
@@ -58,26 +81,82 @@ struct AdvancedUIntField {
 	uint32_t AdvancedSettings::*member;
 	uint32_t min;
 	uint32_t max;
+	SettingsFieldUi ui;
+};
+
+inline constexpr const char *const kProcessPriorityOptions[][2] = {
+	{"auto", "Auto - High while live, Above Normal idle"},
+	{"normal", "Normal"},
+	{"aboveNormal", "Above Normal"},
+	{"high", "High"},
+	{nullptr, nullptr},
 };
 
 inline constexpr AdvancedBoolField kAdvancedBoolFields[] = {
-	{"streamDelayEnabled", "stream_delay_enabled", &AdvancedSettings::streamDelayEnabled},
-	{"streamDelayPreserve", "stream_delay_preserve", &AdvancedSettings::streamDelayPreserve},
-	{"reconnectEnabled", "reconnect_enabled", &AdvancedSettings::reconnectEnabled},
-	{"newSocketLoop", "new_socket_loop", &AdvancedSettings::newSocketLoop},
-	{"lowLatencyMode", "low_latency_mode", &AdvancedSettings::lowLatencyMode},
-	{"dynamicBitrate", "dynamic_bitrate", &AdvancedSettings::dynamicBitrate},
-	{"browserHwAccel", "browser_hw_accel", &AdvancedSettings::browserHwAccel},
-	{"disableAudioDucking", "disable_audio_ducking", &AdvancedSettings::disableAudioDucking},
+	{"streamDelayEnabled",
+	 "stream_delay_enabled",
+	 &AdvancedSettings::streamDelayEnabled,
+	 {"Enable stream delay", "", "Stream Delay", "", 20}},
+	{"streamDelayPreserve",
+	 "stream_delay_preserve",
+	 &AdvancedSettings::streamDelayPreserve,
+	 {"Preserve delay on disconnect/reconnect", "", "Stream Delay", "streamDelayEnabled", 22}},
+	{"reconnectEnabled",
+	 "reconnect_enabled",
+	 &AdvancedSettings::reconnectEnabled,
+	 {"Automatically reconnect", "", "Reconnect", "", 30}},
+	{"newSocketLoop",
+	 "new_socket_loop",
+	 &AdvancedSettings::newSocketLoop,
+	 {"Enable new networking code", "", "Network", "", 41}},
+	{"lowLatencyMode",
+	 "low_latency_mode",
+	 &AdvancedSettings::lowLatencyMode,
+	 {"Low-latency mode", "", "Network", "", 42}},
+	{"dynamicBitrate",
+	 "dynamic_bitrate",
+	 &AdvancedSettings::dynamicBitrate,
+	 {"Dynamically change bitrate when dropping frames", "", "Network", "", 43}},
+	{"browserHwAccel",
+	 "browser_hw_accel",
+	 &AdvancedSettings::browserHwAccel,
+	 {"Enable browser source hardware acceleration", "Takes effect after restart.", "Browser", "", 50}},
+	{"disableAudioDucking",
+	 "disable_audio_ducking",
+	 &AdvancedSettings::disableAudioDucking,
+	 {"Disable Windows audio ducking", "", "Process", "", 11}},
 };
 inline constexpr AdvancedStringField kAdvancedStringFields[] = {
-	{"processPriority", "process_priority", &AdvancedSettings::processPriority},
-	{"bindIP", "bind_ip", &AdvancedSettings::bindIP},
+	{"processPriority",
+	 "process_priority",
+	 &AdvancedSettings::processPriority,
+	 {"Process priority", "Applies immediately and on next launch.", "Process", "", 10},
+	 kProcessPriorityOptions},
+	{"bindIP",
+	 "bind_ip",
+	 &AdvancedSettings::bindIP,
+	 {"Bind to IP", "\"default\" binds nothing; otherwise a literal local IP.", "Network", "", 40},
+	 nullptr},
 };
 inline constexpr AdvancedUIntField kAdvancedUIntFields[] = {
-	{"streamDelaySec", "stream_delay_sec", &AdvancedSettings::streamDelaySec, 0, 7200},
-	{"reconnectRetryDelaySec", "reconnect_retry_delay_sec", &AdvancedSettings::reconnectRetryDelaySec, 0, 3600},
-	{"reconnectMaxRetries", "reconnect_max_retries", &AdvancedSettings::reconnectMaxRetries, 0, 10000},
+	{"streamDelaySec",
+	 "stream_delay_sec",
+	 &AdvancedSettings::streamDelaySec,
+	 0,
+	 7200,
+	 {"Delay (seconds)", "", "Stream Delay", "streamDelayEnabled", 21}},
+	{"reconnectRetryDelaySec",
+	 "reconnect_retry_delay_sec",
+	 &AdvancedSettings::reconnectRetryDelaySec,
+	 0,
+	 3600,
+	 {"Retry delay (seconds)", "", "Reconnect", "reconnectEnabled", 31}},
+	{"reconnectMaxRetries",
+	 "reconnect_max_retries",
+	 &AdvancedSettings::reconnectMaxRetries,
+	 0,
+	 10000,
+	 {"Maximum retries", "", "Reconnect", "reconnectEnabled", 32}},
 };
 
 // Accepted process-priority tokens (validated by the bridge). "auto" resolves to a

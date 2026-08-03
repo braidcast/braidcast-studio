@@ -5,6 +5,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -790,11 +791,12 @@ bool MethodSettingsGetAdvanced(const json & /*params*/, json &result, std::strin
 	return true;
 }
 
-bool MethodSettingsSetAdvanced(const json &params, json &result, std::string &error)
+// Apply a partial Advanced patch (camelCase keys, unknown keys ignored), persist,
+// run the wired side effects and announce. Shared by settings.setAdvanced and the
+// "settings" property kind below, so the properties form cannot bypass the
+// validation or the live-apply that the bridge method performs.
+bool ApplyAdvancedPatch(const json &params, json &result, std::string &error)
 {
-	if (!RequireObject(params, "setAdvanced", error)) {
-		return false;
-	}
 	// Validate the one enum field up front so a bad token rejects the whole call
 	// before any field is mutated.
 	auto pp = params.find("processPriority");
@@ -858,6 +860,14 @@ bool MethodSettingsSetAdvanced(const json &params, json &result, std::string &er
 	result = AdvancedToJson(a);
 	EmitEvent(EventNames::kSettingsAdvancedChanged, result);
 	return PersistOrFail(saved, error);
+}
+
+bool MethodSettingsSetAdvanced(const json &params, json &result, std::string &error)
+{
+	if (!RequireObject(params, "setAdvanced", error)) {
+		return false;
+	}
+	return ApplyAdvancedPatch(params, result, error);
 }
 
 bool MethodSettingsGetAudio(const json & /*params*/, json &result, std::string &error)
@@ -4598,6 +4608,210 @@ void *ResolveServiceRef(const std::string &ref)
 	return ctx;
 }
 
+// --- the "settings" property kind ------------------------------------------
+//
+// An app-settings section is not a libobs object, but it is the same problem the
+// properties pipeline already solves: describe fields once, render them generically.
+// Expressing it as a PropertyKind means the Settings tabs reuse the descriptor
+// serializer, PropertyForm, PropertyRow and the whole control registry rather than
+// hand-writing an input per field -- which is how the Advanced tab came to restate
+// backend defaults and get two of them wrong.
+//
+// The description lives on the field tables in AdvancedSettings.hpp beside the
+// wire/file/member mapping, so a field is declared exactly once for persistence,
+// the bridge and the form.
+struct SettingsRefCtx {
+	std::string section;
+};
+
+// A field flattened out of its typed table so the three can be emitted in `order`
+// rather than table order.
+struct SettingsFormEntry {
+	const SettingsFieldUi *ui;
+	std::function<void(obs_properties_t *)> add;
+};
+
+// Is a bool field currently true? Backs SettingsFieldUi::enabledWhen; an unknown key
+// leaves the dependent field editable rather than silently locking it.
+bool AdvancedBoolValue(const AdvancedSettings &a, const char *jsonKey)
+{
+	for (const AdvancedBoolField &f : kAdvancedBoolFields) {
+		if (std::strcmp(f.json, jsonKey) == 0) {
+			return a.*f.member;
+		}
+	}
+	return true;
+}
+
+obs_properties_t *BuildAdvancedProperties()
+{
+	const AdvancedSettings &a = ObsBootstrap::Advanced();
+	std::vector<SettingsFormEntry> entries;
+
+	auto applyUi = [&a](obs_property_t *p, const SettingsFieldUi &ui) {
+		if (ui.hint && *ui.hint) {
+			obs_property_set_long_description(p, ui.hint);
+		}
+		if (ui.enabledWhen && *ui.enabledWhen) {
+			obs_property_set_enabled(p, AdvancedBoolValue(a, ui.enabledWhen));
+		}
+	};
+
+	for (const AdvancedBoolField &f : kAdvancedBoolFields) {
+		if (!*f.ui.label) {
+			continue;
+		}
+		entries.push_back({&f.ui, [&f, applyUi](obs_properties_t *p) {
+					   applyUi(obs_properties_add_bool(p, f.json, f.ui.label), f.ui);
+				   }});
+	}
+	for (const AdvancedStringField &f : kAdvancedStringFields) {
+		if (!*f.ui.label) {
+			continue;
+		}
+		entries.push_back(
+			{&f.ui, [&f, applyUi](obs_properties_t *p) {
+				 obs_property_t *prop;
+				 if (f.options) {
+					 prop = obs_properties_add_list(p, f.json, f.ui.label, OBS_COMBO_TYPE_LIST,
+									OBS_COMBO_FORMAT_STRING);
+					 for (size_t i = 0; f.options[i][0]; ++i) {
+						 obs_property_list_add_string(prop, f.options[i][1], f.options[i][0]);
+					 }
+				 } else {
+					 prop = obs_properties_add_text(p, f.json, f.ui.label, OBS_TEXT_DEFAULT);
+				 }
+				 applyUi(prop, f.ui);
+			 }});
+	}
+	for (const AdvancedUIntField &f : kAdvancedUIntFields) {
+		if (!*f.ui.label) {
+			continue;
+		}
+		entries.push_back(
+			{&f.ui, [&f, applyUi](obs_properties_t *p) {
+				 applyUi(obs_properties_add_int(p, f.json, f.ui.label, (int)f.min, (int)f.max, 1),
+					 f.ui);
+			 }});
+	}
+
+	std::stable_sort(entries.begin(), entries.end(), [](const SettingsFormEntry &l, const SettingsFormEntry &r) {
+		return l.ui->order < r.ui->order;
+	});
+
+	// Groups are emitted in first-appearance order, which `order` already fixes.
+	obs_properties_t *root = obs_properties_create();
+	std::vector<std::pair<std::string, obs_properties_t *>> groups;
+	for (const SettingsFormEntry &e : entries) {
+		const std::string group = e.ui->group ? e.ui->group : "";
+		if (group.empty()) {
+			e.add(root);
+			continue;
+		}
+		auto it = std::find_if(groups.begin(), groups.end(),
+				       [&group](const auto &g) { return g.first == group; });
+		if (it == groups.end()) {
+			groups.push_back({group, obs_properties_create()});
+			it = groups.end() - 1;
+		}
+		e.add(it->second);
+	}
+	for (auto &[name, content] : groups) {
+		// add_group takes ownership of `content`.
+		obs_properties_add_group(root, name.c_str(), name.c_str(), OBS_GROUP_NORMAL, content);
+	}
+	return root;
+}
+
+// The section's live values, keyed by the same json keys the properties carry, with
+// the struct's own initializers installed as obs_data defaults beside them. The
+// defaults are what makes properties.defaults ("Restore Defaults") mean anything
+// here: it clears the user values off this object and re-applies it, and
+// obs_data_clear leaves defaults standing, so what comes back through apply is the
+// struct's initializers rather than an empty patch.
+obs_data_t *AdvancedToObsData()
+{
+	const AdvancedSettings &a = ObsBootstrap::Advanced();
+	const AdvancedSettings fresh;
+	obs_data_t *d = obs_data_create();
+	for (const AdvancedBoolField &f : kAdvancedBoolFields) {
+		obs_data_set_default_bool(d, f.json, fresh.*f.member);
+		obs_data_set_bool(d, f.json, a.*f.member);
+	}
+	for (const AdvancedStringField &f : kAdvancedStringFields) {
+		obs_data_set_default_string(d, f.json, (fresh.*f.member).c_str());
+		obs_data_set_string(d, f.json, (a.*f.member).c_str());
+	}
+	for (const AdvancedUIntField &f : kAdvancedUIntFields) {
+		obs_data_set_default_int(d, f.json, (long long)(fresh.*f.member));
+		obs_data_set_int(d, f.json, (long long)(a.*f.member));
+	}
+	return d;
+}
+
+// Sections the "settings" kind serves. One row per section, so wiring General the
+// same way is an entry here plus its own build/get/apply trio.
+struct SettingsSection {
+	const char *name;
+	obs_properties_t *(*build)();
+	obs_data_t *(*get)();
+	void (*apply)(obs_data_t *settings);
+};
+
+void ApplyAdvancedFromObsData(obs_data_t *settings)
+{
+	// A key the object says nothing about is left alone: properties.set pushes only
+	// the fields the user touched, and settings the form never rendered must survive
+	// that. A key carrying only a default is still a statement -- that is
+	// properties.defaults arriving after obs_data_clear -- so it goes in the patch,
+	// where obs_data_get_* resolves it to the default.
+	auto stated = [settings](const char *key) {
+		return obs_data_has_user_value(settings, key) || obs_data_has_default_value(settings, key);
+	};
+
+	// obs_data carries no type discrimination the patch builder can rely on, so
+	// read each key back through its own field table -- the same tables that
+	// produced the properties, so a key can never be read as the wrong type.
+	json patch = json::object();
+	for (const AdvancedBoolField &f : kAdvancedBoolFields) {
+		if (stated(f.json)) {
+			patch[f.json] = obs_data_get_bool(settings, f.json);
+		}
+	}
+	for (const AdvancedStringField &f : kAdvancedStringFields) {
+		if (stated(f.json)) {
+			patch[f.json] = obs_data_get_string(settings, f.json);
+		}
+	}
+	for (const AdvancedUIntField &f : kAdvancedUIntFields) {
+		if (stated(f.json)) {
+			patch[f.json] = obs_data_get_int(settings, f.json);
+		}
+	}
+	if (patch.empty()) {
+		return;
+	}
+	json out;
+	std::string error;
+	if (!ApplyAdvancedPatch(patch, out, error)) {
+		HostLog("[bridge] settings properties apply failed: " + error);
+	}
+}
+
+const SettingsSection kSettingsSections[] = {
+	{"advanced", BuildAdvancedProperties, AdvancedToObsData, ApplyAdvancedFromObsData},
+};
+
+const SettingsSection *FindSettingsSection(const std::string &name)
+{
+	for (const SettingsSection &s : kSettingsSections) {
+		if (name == s.name) {
+			return &s;
+		}
+	}
+	return nullptr;
+}
+
 const PropertyKind kPropertyKinds[] = {
 	{
 		"source",
@@ -4683,6 +4897,31 @@ const PropertyKind kPropertyKinds[] = {
 			EmitEvent(EventNames::kStreamProfileChanged, json::object());
 		},
 		[](void *obj) { delete static_cast<ServiceRefCtx *>(obj); },
+	},
+	{
+		// `ref` is the section name ("advanced"). No libobs object is involved:
+		// properties are built from the section's field tables and settings are the
+		// section's live struct values, so there is nothing to addref.
+		"settings",
+		[](const std::string &ref) -> void * {
+			const SettingsSection *s = FindSettingsSection(ref);
+			return s ? new SettingsRefCtx{ref} : nullptr;
+		},
+		[](void *obj) -> obs_properties_t * {
+			const SettingsSection *s = FindSettingsSection(static_cast<SettingsRefCtx *>(obj)->section);
+			return s ? s->build() : nullptr;
+		},
+		[](void *obj) -> obs_data_t * {
+			const SettingsSection *s = FindSettingsSection(static_cast<SettingsRefCtx *>(obj)->section);
+			return s ? s->get() : nullptr;
+		},
+		[](void *obj, obs_data_t *settings) {
+			const SettingsSection *s = FindSettingsSection(static_cast<SettingsRefCtx *>(obj)->section);
+			if (s) {
+				s->apply(settings);
+			}
+		},
+		[](void *obj) { delete static_cast<SettingsRefCtx *>(obj); },
 	},
 };
 
