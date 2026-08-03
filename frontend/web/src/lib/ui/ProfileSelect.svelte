@@ -2,12 +2,13 @@
   // Autocomplete destination picker: lists stream profiles the way the Streams
   // list does (avatar + name + platform/destination), so the user can tell one
   // destination apart from another instead of reading a bare label. Selection UI
-  // only — the caller owns what happens onSelect (the bind action). The option-row
-  // rendering (avatar / name / platform label + color) is defined ONCE here.
+  // only — the caller owns what happens onSelect (the bind action). What a profile
+  // is called and pictured lives in $lib/utils/profileDisplay, shared with every
+  // other surface that lists destinations.
   import Avatar from "$lib/ui/Avatar.svelte";
   import PlatformMark from "$lib/ui/PlatformMark.svelte";
-  import { PLATFORM_LABELS, platformKey } from "$lib/theme/platformColors";
   import { oauthStore } from "$lib/stores/oauthStore.svelte";
+  import { profileName, platformLabel, profileAvatarUrl } from "$lib/utils/profileDisplay";
   import type { StreamProfileInfo } from "$lib/api/bridge";
 
   interface Props {
@@ -23,30 +24,12 @@
   // the Streams list does (ref-counted; free when another consumer already subscribes).
   $effect(() => oauthStore.subscribe());
 
-  // The real channel avatar for a profile's linked account, or "" to fall back to the
-  // monogram. Same account-id resolution as the Streams rows (one accessor, no drift).
-  function avatarFor(p: StreamProfileInfo): string {
-    return oauthStore.connectedStatusForAccount(p.accountId)?.avatarUrl ?? "";
-  }
-
   let query = $state("");
   let open = $state(false);
   let active = $state(0);
   let rootEl = $state<HTMLDivElement | null>(null);
 
   const hidden = $derived(new Set(hideUuids));
-
-  // Robust display name: label -> platform -> a literal, so a fresh profile with an
-  // empty label still names itself.
-  function profileName(p: StreamProfileInfo): string {
-    return p.label?.trim() || p.platform?.trim() || "Untitled profile";
-  }
-  // The destination detail line: the full service string (e.g. "YouTube - RTMPS"),
-  // falling back to the brand label or the raw platform.
-  function platformLabel(p: StreamProfileInfo): string {
-    const key = platformKey(p.platform);
-    return p.serviceLabel?.trim() || PLATFORM_LABELS[key] || p.platform || "Unknown";
-  }
 
   const filtered = $derived.by(() => {
     const q = query.trim().toLowerCase();
@@ -143,7 +126,7 @@
             onmouseenter={() => (active = i)}
             onclick={() => choose(p)}
           >
-            <span class="ps-av"><Avatar url={avatarFor(p)} name={profileName(p)} size={26} /></span>
+            <span class="ps-av"><Avatar url={profileAvatarUrl(p)} name={profileName(p)} size={26} /></span>
             <span class="ps-text">
               <span class="ps-name">{profileName(p)}</span>
               <span class="ps-sub">

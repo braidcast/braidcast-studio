@@ -28,6 +28,7 @@
   import Avatar from "$lib/ui/Avatar.svelte";
   import SplitPane from "$lib/ui/SplitPane.svelte";
   import { createReorder } from "$lib/utils/listReorder.svelte";
+  import { profileName, profileAvatarUrl } from "$lib/utils/profileDisplay";
 
   let profiles = $derived(streamProfileStore.profiles);
 
@@ -137,14 +138,6 @@
     }
   });
 
-  // Robust display name: a fresh profile can have an empty label AND empty platform
-  // (platform is derived from the service and may lag), which collapsed the list row
-  // to a blank line. Fall back label -> platform -> a literal so a row always names
-  // itself.
-  function displayName(p: StreamProfileInfo): string {
-    return p.label?.trim() || p.platform?.trim() || "Untitled profile";
-  }
-
   // Which OAuth provider (if any) applies to a profile. Data lookup, not branches:
   // match the profile's display platform against a provider's id or displayName so
   // Kick/YouTube slot in by registering a provider, no code change here.
@@ -220,7 +213,7 @@
   // saved display name; the add form has no target yet.
   const formTitle = $derived(
     editingUuid
-      ? fLabel.trim() || (editingProfile ? displayName(editingProfile) : "Stream Profile")
+      ? fLabel.trim() || (editingProfile ? profileName(editingProfile) : "Stream Profile")
       : "New Stream Profile",
   );
 
@@ -617,7 +610,7 @@
     dialog = {
       kind: "confirm",
       title: "Remove Profile",
-      message: `Remove profile "${displayName(p)}"? Its stream key will be forgotten.`,
+      message: `Remove profile "${profileName(p)}"? Its stream key will be forgotten.`,
       confirmLabel: "Remove",
       onCommit: () => void remove(p),
     };
@@ -683,12 +676,12 @@
             }}
           >
             <span class="nav-av">
-              <Avatar url={linked?.avatarUrl} name={acctName || displayName(p)} size={36} />
+              <Avatar url={profileAvatarUrl(p)} name={acctName || profileName(p)} size={36} />
             </span>
             <span class="nav-text">
               <span class="nav-name">
                 {#if p.isPrimary}<span class="star" title="Primary"><Icon name="star-filled" size={11} /></span>{/if}
-                <span class="nav-label">{displayName(p)}</span>
+                <span class="nav-label">{profileName(p)}</span>
               </span>
               <span class="nav-sub">
                 {#if acctName}
