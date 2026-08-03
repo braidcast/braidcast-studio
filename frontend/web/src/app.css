@@ -833,7 +833,9 @@ input[type="color"] {
   color: var(--color-accent);
   font-weight: 500;
 }
-.cfhead__del {
+/* Square icon button in the canvas header. .cfhead__del adds only the danger
+   hover on top, so a second action inherits the box without copying it. */
+.cfhead__act {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
@@ -846,13 +848,17 @@ input[type="color"] {
   color: var(--color-muted);
   cursor: pointer;
 }
+.cfhead__act:hover:not(:disabled) {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+}
+.cfhead__act:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
 .cfhead__del:hover:not(:disabled) {
   color: var(--color-live);
   border-color: var(--color-live);
-}
-.cfhead__del:disabled {
-  opacity: 0.4;
-  cursor: default;
 }
 .cfhead__note {
   margin-top: 11px;

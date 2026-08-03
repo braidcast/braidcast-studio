@@ -143,6 +143,12 @@
       },
     };
   }
+  // Duplicate: the backend copies the definition, its scenes and their links, and
+  // names the copy. Select it on arrival via the same wantUuid handoff addCanvas uses.
+  async function duplicateCanvas(c: CanvasInfo): Promise<void> {
+    const r = await callOrToast("canvas.duplicate", { uuid: c.uuid }, "Duplicate canvas failed");
+    if (r) wantUuid = r.uuid;
+  }
   function confirmDeleteCanvas(c: CanvasInfo): void {
     dialog = {
       kind: "confirm",
@@ -240,6 +246,7 @@
           {profiles}
           {statusByBinding}
           isLive={selectedLive}
+          onDuplicate={() => void duplicateCanvas(selected)}
           onDelete={() => confirmDeleteCanvas(selected)}
           onBindingsChanged={() => void outputBindingStore.refresh()}
           onRemoveBinding={confirmRemoveBinding}

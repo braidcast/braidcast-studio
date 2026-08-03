@@ -1542,6 +1542,9 @@ export interface ObsMethods {
   // Canvases (native multistream encode targets, 4.4.1).
   "canvas.list": CanvasInfo[];
   "canvas.create": { uuid: string };
+  // Copies the definition and deep-copies the source's scenes (with their links);
+  // output bindings are not copied. Echoes the name it settled on.
+  "canvas.duplicate": { uuid: string; name: string };
   "canvas.update": CanvasInfo;
   "canvas.remove": { removed: string };
   // Persisted drag order (echoes applied uuids).
