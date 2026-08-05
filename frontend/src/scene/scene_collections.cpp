@@ -455,6 +455,9 @@ bool SceneCollections::Switch(const std::string &id, std::string &error)
 	// crash; the preview-gating + Multistream dock simply see zero bindings. Done
 	// after activeId_ flipped above so ActiveBindingsPath() resolves the target.
 	ObsBootstrap::OutputBindings().Load(ActiveBindingsPath());
+	// Canvases are global but bindings are per-collection, so a canvas deleted while
+	// this collection was inactive left rows here that nothing pruned at the time.
+	ObsBootstrap::ReconcileOutputBindings();
 	ObsBootstrap::SceneLinks().Load(ActiveSceneLinksPath());
 
 	// The undo stack is per-collection: the outgoing collection's action history

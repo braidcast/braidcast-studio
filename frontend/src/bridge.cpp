@@ -6399,6 +6399,13 @@ bool MethodCanvasRemove(const json &params, json &result, std::string &error)
 	store.Remove(uuid);
 	const bool saved = store.Save();
 	ObsBootstrap::PruneSceneLinksForCanvas(uuid);
+	// Bindings route TO this canvas, so they die with it -- and they have to be
+	// pruned here rather than left to rot, because a binding whose canvas is gone
+	// is unreachable from the UI while still holding its stream profile hostage:
+	// the picker on every other canvas hides a profile that is bound anywhere.
+	if (ObsBootstrap::PruneOutputBindingsForCanvas(uuid) > 0) {
+		EmitEvent(EventNames::kOutputBindingChanged, json::object());
+	}
 	EmitEvent(EventNames::kCanvasChanged, json::object());
 	result = json{{"removed", uuid}};
 	return PersistOrFail(saved, error);

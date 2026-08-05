@@ -485,6 +485,9 @@ void LoadMultistreamModel()
 	g_streamProfiles.Load();
 	g_streamMeta.Load();
 	g_outputBindings.Load();
+	// Canvases loaded above, so a binding pointing at one that is gone is provably
+	// an orphan rather than a load-ordering artifact.
+	ObsBootstrap::ReconcileOutputBindings();
 	g_sceneLinks.Load();
 
 	const CanvasDefinition &def = g_canvases.Default();
@@ -645,6 +648,47 @@ size_t ObsBootstrap::PruneOutputBindingsForProfile(const std::string &profileUui
 	const size_t removed = before - bindings.size();
 	if (removed > 0) {
 		OutputBindings().Save();
+	}
+	return removed;
+}
+
+size_t ObsBootstrap::PruneOutputBindingsForCanvas(const std::string &canvasUuid)
+{
+	auto &bindings = OutputBindings().Bindings().bindings;
+	const size_t before = bindings.size();
+	bindings.erase(std::remove_if(bindings.begin(), bindings.end(),
+				      [&canvasUuid](const OutputBinding &b) { return b.canvasUuid == canvasUuid; }),
+		       bindings.end());
+	const size_t removed = before - bindings.size();
+	if (removed > 0) {
+		OutputBindings().Save();
+	}
+	return removed;
+}
+
+size_t ObsBootstrap::ReconcileOutputBindings()
+{
+	const auto &defs = Canvases().Definitions();
+	if (defs.empty()) {
+		return 0;
+	}
+	auto &bindings = OutputBindings().Bindings().bindings;
+	const size_t before = bindings.size();
+	bindings.erase(std::remove_if(bindings.begin(), bindings.end(),
+				      [&defs](const OutputBinding &b) {
+					      return std::none_of(defs.begin(), defs.end(),
+								  [&b](const CanvasDefinition &d) {
+									  return d.uuid == b.canvasUuid;
+								  });
+				      }),
+		       bindings.end());
+	const size_t removed = before - bindings.size();
+	if (removed > 0) {
+		OutputBindings().Save();
+		// Loud: this deletes something the user configured. Silence here is what let
+		// the orphans accumulate unnoticed in the first place.
+		HostLog("[obs] multistream: dropped " + std::to_string(removed) +
+			" output binding(s) routing to a canvas that no longer exists");
 	}
 	return removed;
 }
