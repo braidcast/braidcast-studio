@@ -352,6 +352,13 @@ void RunHotkeysSelfTest();
 // this only verifies shape + that the general stats populate. Gated by the caller
 // to the smoke path.
 void RunStatsSelfTest();
+// Headless proof that the history bridge surface answers and reports whether the
+// database opened. Read-only: it dispatches sessions.list and inspects the shape,
+// writing nothing. The rest of the battery snapshots and restores because a smoke
+// run writes the user's real config directory through the rundir junction; this
+// one avoids that rather than solving it, so do not extend it into a write test
+// without adding the snapshot first. Gated by the caller to the smoke path.
+void RunCalendarSelfTest();
 // Headless proof for the embedded MCP server: spin up a test McpServer (in-process
 // HandleRequest, no real socket), then drive initialize / tools/list / a
 // tools/call obs_call(scenes.list) and assert the round-trips, plus a go-live

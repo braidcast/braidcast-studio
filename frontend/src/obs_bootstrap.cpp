@@ -3403,6 +3403,24 @@ void ObsBootstrap::RunNativeThemeSelfTest()
 	HostLog("[selftest] native-theme OK: AppliedCount=" + std::to_string(applied));
 }
 
+void ObsBootstrap::RunCalendarSelfTest()
+{
+	using Bridge::json;
+
+	json result;
+	std::string error;
+	if (!Bridge::Dispatch("sessions.list", json(nullptr), result, error)) {
+		HostLog("[selftest] calendar FAILED: " + Err::Diagnostic(error));
+		return;
+	}
+	if (!result.is_array()) {
+		HostLog("[selftest] calendar MISMATCH: sessions.list did not return an array");
+		return;
+	}
+	HostLog("[selftest] calendar OK: " + std::to_string(result.size()) + " session(s), db " +
+		(g_sessions.IsAttached() ? "attached" : "unavailable"));
+}
+
 void ObsBootstrap::RunStatsSelfTest()
 {
 	using Bridge::json;
