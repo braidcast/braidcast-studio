@@ -7140,6 +7140,10 @@ std::unordered_map<std::string, EncodeMixState> g_encodeMixes;
 // stats.get. UI-thread only.
 json g_lastStats;
 
+// The one in-process consumer of the tick, set through SetStatsTickObserver. UI-thread
+// only, like the sample it receives.
+std::function<void(const json &)> g_statsTickObserver;
+
 // value - baseline, self-healing: if the counter dropped below its baseline the
 // pipeline reset underneath (e.g. obs_reset_video, or an output restart), so drop the
 // baseline to 0 and report the raw value. Mutates `baseline` in place on that heal.
@@ -7358,6 +7362,11 @@ void SampleStatsTick()
 	}
 	g_lastStats = BuildStatsSnapshot();
 	EmitEvent(EventNames::kStatsChanged, g_lastStats);
+	// After the JS push, deliberately: the Stats dock's update must not wait on a
+	// database write.
+	if (g_statsTickObserver) {
+		g_statsTickObserver(g_lastStats);
+	}
 	CefPostDelayedTask(TID_UI, base::BindOnce(&SampleStatsTick), kStatsSampleIntervalMs);
 }
 

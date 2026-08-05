@@ -1,6 +1,7 @@
 #ifndef OBS_MULTISTREAM_FRONTEND_BRIDGE_HPP_
 #define OBS_MULTISTREAM_FRONTEND_BRIDGE_HPP_
 
+#include <functional>
 #include <string>
 
 #include <nlohmann/json.hpp>
@@ -60,6 +61,14 @@ bool DispatchAsync(const std::string &method, const json &params,
 // Fan a server-push event to JS. Thread-safe: posts to TID_UI if not already
 // there. payload is any JSON value (object/array/scalar/null).
 void EmitEvent(const std::string &name, const json &payload);
+
+// Register an in-process consumer of the 1 Hz stats tick. Called on the CEF UI
+// thread with the same snapshot pushed to JS, so a consumer never takes a
+// sample of its own -- the encode counters are rebased against shared mutable
+// baselines and a second sampler would split the deltas.
+//
+// One slot, set at startup and cleared at shutdown. Pass nullptr to clear.
+void SetStatsTickObserver(std::function<void(const json &)> observer);
 
 // Boot-time reclaim: remove every stored OAuth account that no stream profile
 // references (an orphan stranded when its owning profile was deleted before the delete
