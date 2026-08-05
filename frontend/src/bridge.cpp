@@ -7418,6 +7418,13 @@ json SessionToJson(const History::Session &s, const std::vector<History::Session
 		    {"title", s.title},
 		    {"canvasUuids", std::move(canvasUuids)},
 		    {"thumbPath", s.thumbPath.value_or("")},
+		    // The stored path stays relative so a portable install can move, but
+		    // the UI cannot resolve it -- it has no idea where the thumbnail
+		    // directory is. Resolved per read rather than stored, so the move
+		    // keeps working. Empty stays empty; the UI shows its own fallback.
+		    {"thumbFile", s.thumbPath.has_value() && !s.thumbPath->empty()
+					  ? History::ThumbnailDir() + "/" + *s.thumbPath
+					  : std::string()},
 		    {"destinations", std::move(dests)}};
 }
 

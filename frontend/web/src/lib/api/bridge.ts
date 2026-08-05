@@ -939,6 +939,9 @@ export interface SessionInfo {
   canvasUuids: string[];
   /** Empty when no frame was chosen. Relative to the thumbnail directory. */
   thumbPath: string;
+  /** The same file resolved to an absolute path, for file.readDataUri. Resolved
+   * per read rather than stored, so a portable install can still move. */
+  thumbFile: string;
   destinations: SessionDestinationInfo[];
 }
 

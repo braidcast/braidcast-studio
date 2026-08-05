@@ -4,7 +4,19 @@
   import PageShell from "$lib/ui/PageShell.svelte";
   import Modal from "$lib/ui/Modal.svelte";
   import Icon from "$lib/ui/Icon.svelte";
+  import EmptyState from "$lib/ui/EmptyState.svelte";
+  import Segmented, { type SegmentedOption } from "$lib/ui/Segmented.svelte";
+  import HistoryList from "$lib/pages/history/HistoryList.svelte";
   import { pad2 } from "$lib/utils/format";
+
+  // The calendar stays visible in both views; only the right-hand pane swaps.
+  // Segmented is the same control GoLiveModal and OverlaysPage use, rather than a
+  // fourth hand-rolled tab strip.
+  const VIEW_OPTIONS: SegmentedOption[] = [
+    { label: "Upcoming", value: "upcoming" },
+    { label: "History", value: "history" },
+  ];
+  let view = $state<"upcoming" | "history">("upcoming");
 
   // SHELL ONLY (redesign Decision A): this page is a UI preview of the planned
   // scheduling feature. There is NO backend -- nothing is persisted (no
@@ -277,10 +289,26 @@
     </div>
 
     <aside class="side">
-      <div class="side-head"><span>Upcoming</span></div>
+      <div class="side-head">
+        <Segmented
+          options={VIEW_OPTIONS}
+          value={view}
+          onChange={(v) => (view = v as "upcoming" | "history")}
+        />
+      </div>
       <div class="side-list">
-        {#if upcoming.length === 0}
-          <div class="side-empty">No upcoming streams. Click a day or "+ New Stream".</div>
+        {#if view === "history"}
+          <HistoryList />
+        {:else if upcoming.length === 0}
+          <EmptyState
+            compact
+            title="No upcoming streams"
+            sub={'Click a day or "+ New Stream".'}
+          >
+            {#snippet icon()}
+              <Icon name="plus" size={22} />
+            {/snippet}
+          </EmptyState>
         {:else}
           {#each upcoming as u (u.id)}
             <button
@@ -577,13 +605,6 @@
     overflow: auto;
     flex: 1;
     min-height: 0;
-  }
-  .side-empty {
-    padding: 16px;
-    font-family: var(--font-mono);
-    font-size: 10px;
-    line-height: 1.6;
-    color: var(--color-muted);
   }
   .up-row {
     width: 100%;
