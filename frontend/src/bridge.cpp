@@ -5,6 +5,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -790,11 +791,12 @@ bool MethodSettingsGetAdvanced(const json & /*params*/, json &result, std::strin
 	return true;
 }
 
-bool MethodSettingsSetAdvanced(const json &params, json &result, std::string &error)
+// Apply a partial Advanced patch (camelCase keys, unknown keys ignored), persist,
+// run the wired side effects and announce. Shared by settings.setAdvanced and the
+// "settings" property kind below, so the properties form cannot bypass the
+// validation or the live-apply that the bridge method performs.
+bool ApplyAdvancedPatch(const json &params, json &result, std::string &error)
 {
-	if (!RequireObject(params, "setAdvanced", error)) {
-		return false;
-	}
 	// Validate the one enum field up front so a bad token rejects the whole call
 	// before any field is mutated.
 	auto pp = params.find("processPriority");
@@ -858,6 +860,14 @@ bool MethodSettingsSetAdvanced(const json &params, json &result, std::string &er
 	result = AdvancedToJson(a);
 	EmitEvent(EventNames::kSettingsAdvancedChanged, result);
 	return PersistOrFail(saved, error);
+}
+
+bool MethodSettingsSetAdvanced(const json &params, json &result, std::string &error)
+{
+	if (!RequireObject(params, "setAdvanced", error)) {
+		return false;
+	}
+	return ApplyAdvancedPatch(params, result, error);
 }
 
 bool MethodSettingsGetAudio(const json & /*params*/, json &result, std::string &error)
@@ -1173,20 +1183,27 @@ void EmitScenesChanged(const std::string &canvasUuid)
 	}
 }
 
-bool MethodScenesList(const json &params, json &result, std::string &error)
+// Every scene on a canvas, in the order the UI lists them, flagging the current
+// one. The two scene namespaces are the reason this exists as a helper: an
+// additional canvas owns its scenes privately, while the Default canvas's scenes
+// are the global source registry. scenes.list and canvas.duplicate both walk a
+// canvas's scenes and must agree on what that means.
+struct CanvasSceneRow {
+	std::string name;
+	bool current = false;
+};
+
+std::vector<CanvasSceneRow> ScenesOnCanvas(const std::string &canvasUuid)
 {
-	const CanvasTarget target = ResolveCanvasTarget(params);
-	if (target.isAdditional) {
-		// List the additional canvas's own scenes (isolated from the global
-		// registry), flagging the one bound to its channel 0 as current.
-		json scenes = json::array();
-		for (const CanvasRuntime::SceneInfo &s : ObsBootstrap::CanvasRuntime().Scenes(target.uuid)) {
-			scenes.push_back(json{{"name", s.name}, {"current", s.current}});
+	std::vector<CanvasSceneRow> rows;
+	if (!ObsBootstrap::Canvases().IsDefaultUuid(canvasUuid)) {
+		// The additional canvas's own scenes (isolated from the global registry),
+		// flagging the one bound to its channel 0 as current.
+		for (const CanvasRuntime::SceneInfo &s : ObsBootstrap::CanvasRuntime().Scenes(canvasUuid)) {
+			rows.push_back({s.name, s.current});
 		}
-		result = std::move(scenes);
-		return true;
+		return rows;
 	}
-	(void)error;
 	// List in the persisted user order (SceneCollection::SceneOrder) rather than
 	// obs_enum_scenes' creation order -- libobs has no scene-ordering primitive of
 	// its own; SceneOrder() is the only record of the user's chosen order.
@@ -1196,13 +1213,23 @@ bool MethodScenesList(const json &params, json &result, std::string &error)
 	const char *currentName = current ? obs_source_get_name(current) : nullptr;
 	const std::string currentStr = currentName ? currentName : std::string();
 
-	json scenes = json::array();
 	for (const std::string &uuid : SceneCollection::SceneOrder()) {
 		OBSSourceAutoRelease scene = obs_get_source_by_uuid(uuid.c_str()); // addref'd
 		const char *name = scene ? obs_source_get_name(scene) : nullptr;
 		if (name) {
-			scenes.push_back(json{{"name", name}, {"current", !currentStr.empty() && currentStr == name}});
+			rows.push_back({name, !currentStr.empty() && currentStr == name});
 		}
+	}
+	return rows;
+}
+
+bool MethodScenesList(const json &params, json &result, std::string &error)
+{
+	(void)error;
+	const CanvasTarget target = ResolveCanvasTarget(params);
+	json scenes = json::array();
+	for (const CanvasSceneRow &s : ScenesOnCanvas(target.uuid)) {
+		scenes.push_back(json{{"name", s.name}, {"current", s.current}});
 	}
 	result = std::move(scenes);
 	return true;
@@ -1641,13 +1668,24 @@ ResolvedDestCanvas ResolveDestCanvas(const std::string &destCanvasUuid)
 	return r;
 }
 
-// Find a free "<name> N" (N starting at 2) in the DESTINATION canvas's own
-// namespace, mirroring MethodScenesDuplicate's auto-suffix but scoped per-canvas.
+// A free name in the DESTINATION canvas's own namespace: the base name when nothing
+// there holds it, else "<name> N" from 2.
+//
+// The base name is tried first because canvases do not share a namespace. Each carries
+// its own source list -- obs_canvas_get_source_by_name searches canvas->sources, and
+// obs_canvas_move_scene removes the scene from the list it was in before inserting it
+// into the destination's -- so a name is only taken if it is taken THERE. Suffixing
+// unconditionally renamed a scene for a collision that had not happened, which is both
+// wrong and hard to undo once several canvases have drifted apart.
+//
+// This is why the loop cannot start at 2 the way MethodScenesDuplicate's does: that one
+// only ever copies within one canvas, where the source scene's own name is always the
+// collision, so its first candidate is genuinely taken.
 std::string FreeSceneNameOnCanvas(const std::string &baseName, const std::string &destCanvasUuid, bool destIsAdditional,
 				  obs_canvas_t *destCanvas)
 {
-	for (int n = 2;; ++n) {
-		std::string candidate = baseName + " " + std::to_string(n);
+	for (int n = 1;; ++n) {
+		std::string candidate = n == 1 ? baseName : baseName + " " + std::to_string(n);
 		OBSSourceAutoRelease taken = destIsAdditional
 						     ? obs_canvas_get_source_by_name(destCanvas, candidate.c_str())
 						     : obs_get_source_by_name(candidate.c_str());
@@ -1750,17 +1788,66 @@ bool DuplicateSceneToCanvasCore(const std::string &sceneName, const std::string 
 	OBSDataAutoRelease sceneData = obs_save_source(dupSource);
 	const char *sceneJsonStr = sceneData ? obs_data_get_json(sceneData) : nullptr;
 
+	const char *srcSceneUuidC = obs_source_get_uuid(srcScene);
+
 	outNewSceneUuid = dupUuidC ? dupUuidC : std::string();
 	outNewName = newName;
 	outUndoState = json{
 		{"newSceneUuid", outNewSceneUuid},
 		{"sceneData", sceneJsonStr ? sceneJsonStr : ""},
 		{"destCanvas", destCanvasUuid},
+		// Where the copy came from, so redo can re-derive the scene link undo
+		// pruned. Without it a redo restored the scene but not its link, leaving a
+		// canvas scene that never activates -- the exact state linking exists to
+		// prevent.
+		{"srcCanvas", srcCanvasUuid},
+		{"srcScene", srcSceneUuidC ? srcSceneUuidC : ""},
 		{"sources", sourcesJson},
 	};
 
 	obs_scene_release(dup); // the registry holds it now, matching MethodScenesDuplicate's own release
 	return true;
+}
+
+// Give a freshly duplicated canvas scene the scene-link its source implies, so a
+// copy activates with the same main scene the original did. Does NOT save -- the
+// caller owns that, since duplicating a whole canvas writes once for many scenes.
+//
+// The two source namespaces mean two different rules, which is why they live
+// together rather than at each call site:
+//
+//   - A MAIN scene is itself a link key, so copying one onto a canvas means the
+//     new scene follows the scene it was copied from. This is the common path:
+//     "duplicate this scene onto that canvas" almost always means "and show it
+//     when this scene is live", and leaving it unlinked produced a canvas scene
+//     that silently never activated.
+//   - A CANVAS scene is a link TARGET, so there is nothing to key on; instead
+//     every main scene that pointed at the source now also points at the copy.
+//
+// Both are no-ops when the destination is the Default canvas: main scenes are
+// never link targets. A same-canvas duplicate is likewise skipped, so copying a
+// scene beside itself cannot steal the original's link.
+void LinkDuplicatedScene(const std::string &srcCanvasUuid, const std::string &srcSceneUuid,
+			 const std::string &destCanvasUuid, const std::string &newSceneUuid)
+{
+	const CanvasStore &canvases = ObsBootstrap::Canvases();
+	if (canvases.IsDefaultUuid(destCanvasUuid) || srcSceneUuid.empty() || newSceneUuid.empty()) {
+		return;
+	}
+	CanvasSceneLink &links = ObsBootstrap::SceneLinks().Links();
+	if (canvases.IsDefaultUuid(srcCanvasUuid)) {
+		links.Set(srcSceneUuid, destCanvasUuid, newSceneUuid);
+		return;
+	}
+	if (srcCanvasUuid == destCanvasUuid) {
+		return;
+	}
+	for (const auto &[mainUuid, perCanvas] : links.map) {
+		auto it = perCanvas.find(srcCanvasUuid);
+		if (it != perCanvas.end() && it->second == srcSceneUuid) {
+			links.Set(mainUuid, destCanvasUuid, newSceneUuid);
+		}
+	}
 }
 
 // Defined near the other Cb adapters (kAddItemFromSnapshot/kRemoveItemBySource);
@@ -1795,27 +1882,16 @@ bool MethodScenesDuplicateToCanvas(const json &params, json &result, std::string
 	EmitScenesChanged(emitCanvas);
 	SceneCollection::Save();
 
-	// Copy any scene-link mapping: every main scene currently linked to the SOURCE
-	// scene (on srcCanvasUuid) gets an additional/updated link pointing at the new
-	// duplicate on destCanvasUuid. Only meaningful when both the source and the
-	// destination are real additional canvases (main scenes are never link
-	// targets) and the destination differs from the source -- a same-canvas
-	// duplicate must leave the original scene's link untouched.
-	if (!srcCanvasUuid.empty() && srcCanvasUuid != ObsBootstrap::Canvases().Default().uuid &&
-	    !destCanvasUuid.empty() && destCanvasUuid != ObsBootstrap::Canvases().Default().uuid &&
-	    destCanvasUuid != srcCanvasUuid) {
+	// Give the copy the link its source implies (see LinkDuplicatedScene for the
+	// two rules). Resolving the source scene's uuid AFTER the duplicate is safe:
+	// the copy took a free name, so the original still answers to `name`.
+	if (!ObsBootstrap::Canvases().IsDefaultUuid(destCanvasUuid)) {
 		OBSSourceAutoRelease srcSceneForLink = ResolveNamedSceneOnCanvas(name, srcCanvasUuid);
 		const char *srcSceneUuidC = srcSceneForLink ? obs_source_get_uuid(srcSceneForLink) : nullptr;
-		if (srcSceneUuidC) {
-			const std::string srcSceneUuid = srcSceneUuidC;
-			for (const auto &[mainUuid, perCanvas] : ObsBootstrap::SceneLinks().Links().map) {
-				auto it = perCanvas.find(srcCanvasUuid);
-				if (it != perCanvas.end() && it->second == srcSceneUuid) {
-					ObsBootstrap::SceneLinks().Links().Set(mainUuid, destCanvasUuid, newSceneUuid);
-				}
-			}
-		}
+		LinkDuplicatedScene(srcCanvasUuid, srcSceneUuidC ? srcSceneUuidC : std::string(), destCanvasUuid,
+				    newSceneUuid);
 		ObsBootstrap::SceneLinks().Save();
+		EmitEvent(EventNames::kSceneLinkChanged, json::object());
 	}
 
 	ObsBootstrap::Undo().AddAction("Duplicate '" + name + "' to canvas", kUndoDuplicateSceneToCanvas,
@@ -2603,6 +2679,7 @@ void RemoveDuplicatedCanvasScene(const json &state)
 	}
 
 	ObsBootstrap::PruneSceneLinksForCanvasScene(destCanvasUuid, newSceneUuid); // no-op if none was set
+	EmitEvent(EventNames::kSceneLinkChanged, json::object());
 	EmitScenesChanged(destCanvasUuid.empty() || destCanvasUuid == ObsBootstrap::Canvases().Default().uuid
 				  ? std::string()
 				  : destCanvasUuid);
@@ -2670,6 +2747,14 @@ void RestoreDuplicatedCanvasScene(const json &state)
 	ResolvedDestCanvas dest = ResolveDestCanvas(destCanvasUuid);
 	if (dest.canvas) {
 		obs_canvas_move_scene(obs_scene_from_source(restoredScene), dest.canvas);
+	}
+
+	// Re-derive the link undo pruned, from the source captured at duplicate time.
+	if (!ObsBootstrap::Canvases().IsDefaultUuid(destCanvasUuid)) {
+		LinkDuplicatedScene(OptString(state, "srcCanvas"), OptString(state, "srcScene"), destCanvasUuid,
+				    OptString(state, "newSceneUuid"));
+		ObsBootstrap::SceneLinks().Save();
+		EmitEvent(EventNames::kSceneLinkChanged, json::object());
 	}
 
 	EmitScenesChanged(destCanvasUuid.empty() || destCanvasUuid == ObsBootstrap::Canvases().Default().uuid
@@ -4372,6 +4457,59 @@ bool ParseEncoderRef(const std::string &ref, std::string &uuid, bool &isVideo)
 	return true;
 }
 
+// Install a type's defaults onto an EXISTING settings object.
+//
+// A settings blob persisted to disk holds only the keys the user actually changed, so a
+// rehydrated one is mostly empty. libobs papers over that for encoders at create time
+// (init_encoder -> info.get_defaults(context.settings), obs-encoder.c), but a properties
+// view built straight over the stored blob does not get that, and read 0 / "" for
+// everything untouched -- which is how a canvas could display bitrate 0 while encoding at
+// 10000, with multipass and rate control blank while being set.
+//
+// Installed as DEFAULTS rather than copied in as values, so a field the user never edited
+// still serializes as absent and keeps tracking the type's default if that default ever
+// changes -- writing them in as values would freeze today's defaults into every stored blob.
+//
+// `typeDefaults` comes from obs_encoder_defaults / obs_service_defaults; both hand back an
+// object carrying the values as DEFAULTS, hence the obs_data_get_defaults re-read below.
+void ApplyTypeDefaults(obs_data_t *typeDefaults, obs_data_t *settings)
+{
+	if (!settings || !typeDefaults) {
+		return;
+	}
+	OBSDataAutoRelease values = obs_data_get_defaults(typeDefaults);
+	for (obs_data_item_t *item = obs_data_first(values); item; obs_data_item_next(&item)) {
+		const char *name = obs_data_item_get_name(item);
+		switch (obs_data_item_gettype(item)) {
+		case OBS_DATA_STRING:
+			obs_data_set_default_string(settings, name, obs_data_item_get_string(item));
+			break;
+		case OBS_DATA_NUMBER:
+			if (obs_data_item_numtype(item) == OBS_DATA_NUM_DOUBLE) {
+				obs_data_set_default_double(settings, name, obs_data_item_get_double(item));
+			} else {
+				obs_data_set_default_int(settings, name, obs_data_item_get_int(item));
+			}
+			break;
+		case OBS_DATA_BOOLEAN:
+			obs_data_set_default_bool(settings, name, obs_data_item_get_bool(item));
+			break;
+		case OBS_DATA_OBJECT: {
+			OBSDataAutoRelease obj = obs_data_item_get_obj(item);
+			obs_data_set_default_obj(settings, name, obj);
+			break;
+		}
+		case OBS_DATA_ARRAY: {
+			OBSDataArrayAutoRelease arr = obs_data_item_get_array(item);
+			obs_data_set_default_array(settings, name, arr);
+			break;
+		}
+		default:
+			break;
+		}
+	}
+}
+
 void *ResolveEncoderRef(const std::string &ref)
 {
 	std::string uuid;
@@ -4395,6 +4533,12 @@ void *ResolveEncoderRef(const std::string &ref)
 			enc.settings = obs_data_create();
 		}
 	}
+	// Unconditionally, not just on first creation: a blob rehydrated from canvases.json
+	// carries only the keys the user changed, and the branch above never runs for it.
+	// Idempotent, and the object identity is preserved because the model and the ref ctx
+	// below both hold this exact obs_data.
+	OBSDataAutoRelease encDefaults = obs_encoder_defaults(enc.id.c_str());
+	ApplyTypeDefaults(encDefaults, enc.settings.Get());
 
 	auto *ctx = new EncoderRefCtx();
 	ctx->canvasUuid = uuid;
@@ -4427,14 +4571,21 @@ void *ResolveServiceRef(const std::string &ref)
 	if (!p) {
 		return nullptr;
 	}
-	// Ensure the settings obs_data exists so props bind + updates persist; seed
-	// from the service type's defaults the first time.
+	// Ensure the settings obs_data exists so props bind + updates persist.
 	if (!p->settings) {
-		p->settings = obs_service_defaults(p->serviceId.c_str());
-		if (!p->settings) {
-			p->settings = obs_data_create();
-		}
+		p->settings = obs_data_create();
 	}
+	// Same shape as the encoder path above, for the same reason: a profile rehydrated
+	// from streams.json carries only the keys the user changed, so seeding defaults only
+	// on first creation made a profile read differently before and after a restart.
+	//
+	// Currently a no-op in practice -- no service registered in this build implements
+	// get_defaults, so obs_service_defaults hands back an empty object. It is here so a
+	// service that later declares defaults cannot silently reintroduce the divergence,
+	// and because MultistreamEngine builds the live obs_service from this exact obs_data
+	// (MultistreamEngine.cpp), which is precisely how the encoder version went unnoticed.
+	OBSDataAutoRelease svcDefaults = obs_service_defaults(p->serviceId.c_str());
+	ApplyTypeDefaults(svcDefaults, p->settings.Get());
 
 	// A live obs_service is required for obs_service_properties (and so its
 	// modified-callbacks see the stored values). Create one private instance bound
@@ -4455,6 +4606,210 @@ void *ResolveServiceRef(const std::string &ref)
 	obs_data_addref(p->settings.Get());
 	ctx->settings = p->settings.Get();
 	return ctx;
+}
+
+// --- the "settings" property kind ------------------------------------------
+//
+// An app-settings section is not a libobs object, but it is the same problem the
+// properties pipeline already solves: describe fields once, render them generically.
+// Expressing it as a PropertyKind means the Settings tabs reuse the descriptor
+// serializer, PropertyForm, PropertyRow and the whole control registry rather than
+// hand-writing an input per field -- which is how the Advanced tab came to restate
+// backend defaults and get two of them wrong.
+//
+// The description lives on the field tables in AdvancedSettings.hpp beside the
+// wire/file/member mapping, so a field is declared exactly once for persistence,
+// the bridge and the form.
+struct SettingsRefCtx {
+	std::string section;
+};
+
+// A field flattened out of its typed table so the three can be emitted in `order`
+// rather than table order.
+struct SettingsFormEntry {
+	const SettingsFieldUi *ui;
+	std::function<void(obs_properties_t *)> add;
+};
+
+// Is a bool field currently true? Backs SettingsFieldUi::enabledWhen; an unknown key
+// leaves the dependent field editable rather than silently locking it.
+bool AdvancedBoolValue(const AdvancedSettings &a, const char *jsonKey)
+{
+	for (const AdvancedBoolField &f : kAdvancedBoolFields) {
+		if (std::strcmp(f.json, jsonKey) == 0) {
+			return a.*f.member;
+		}
+	}
+	return true;
+}
+
+obs_properties_t *BuildAdvancedProperties()
+{
+	const AdvancedSettings &a = ObsBootstrap::Advanced();
+	std::vector<SettingsFormEntry> entries;
+
+	auto applyUi = [&a](obs_property_t *p, const SettingsFieldUi &ui) {
+		if (ui.hint && *ui.hint) {
+			obs_property_set_long_description(p, ui.hint);
+		}
+		if (ui.enabledWhen && *ui.enabledWhen) {
+			obs_property_set_enabled(p, AdvancedBoolValue(a, ui.enabledWhen));
+		}
+	};
+
+	for (const AdvancedBoolField &f : kAdvancedBoolFields) {
+		if (!*f.ui.label) {
+			continue;
+		}
+		entries.push_back({&f.ui, [&f, applyUi](obs_properties_t *p) {
+					   applyUi(obs_properties_add_bool(p, f.json, f.ui.label), f.ui);
+				   }});
+	}
+	for (const AdvancedStringField &f : kAdvancedStringFields) {
+		if (!*f.ui.label) {
+			continue;
+		}
+		entries.push_back(
+			{&f.ui, [&f, applyUi](obs_properties_t *p) {
+				 obs_property_t *prop;
+				 if (f.options) {
+					 prop = obs_properties_add_list(p, f.json, f.ui.label, OBS_COMBO_TYPE_LIST,
+									OBS_COMBO_FORMAT_STRING);
+					 for (size_t i = 0; f.options[i][0]; ++i) {
+						 obs_property_list_add_string(prop, f.options[i][1], f.options[i][0]);
+					 }
+				 } else {
+					 prop = obs_properties_add_text(p, f.json, f.ui.label, OBS_TEXT_DEFAULT);
+				 }
+				 applyUi(prop, f.ui);
+			 }});
+	}
+	for (const AdvancedUIntField &f : kAdvancedUIntFields) {
+		if (!*f.ui.label) {
+			continue;
+		}
+		entries.push_back(
+			{&f.ui, [&f, applyUi](obs_properties_t *p) {
+				 applyUi(obs_properties_add_int(p, f.json, f.ui.label, (int)f.min, (int)f.max, 1),
+					 f.ui);
+			 }});
+	}
+
+	std::stable_sort(entries.begin(), entries.end(), [](const SettingsFormEntry &l, const SettingsFormEntry &r) {
+		return l.ui->order < r.ui->order;
+	});
+
+	// Groups are emitted in first-appearance order, which `order` already fixes.
+	obs_properties_t *root = obs_properties_create();
+	std::vector<std::pair<std::string, obs_properties_t *>> groups;
+	for (const SettingsFormEntry &e : entries) {
+		const std::string group = e.ui->group ? e.ui->group : "";
+		if (group.empty()) {
+			e.add(root);
+			continue;
+		}
+		auto it = std::find_if(groups.begin(), groups.end(),
+				       [&group](const auto &g) { return g.first == group; });
+		if (it == groups.end()) {
+			groups.push_back({group, obs_properties_create()});
+			it = groups.end() - 1;
+		}
+		e.add(it->second);
+	}
+	for (auto &[name, content] : groups) {
+		// add_group takes ownership of `content`.
+		obs_properties_add_group(root, name.c_str(), name.c_str(), OBS_GROUP_NORMAL, content);
+	}
+	return root;
+}
+
+// The section's live values, keyed by the same json keys the properties carry, with
+// the struct's own initializers installed as obs_data defaults beside them. The
+// defaults are what makes properties.defaults ("Restore Defaults") mean anything
+// here: it clears the user values off this object and re-applies it, and
+// obs_data_clear leaves defaults standing, so what comes back through apply is the
+// struct's initializers rather than an empty patch.
+obs_data_t *AdvancedToObsData()
+{
+	const AdvancedSettings &a = ObsBootstrap::Advanced();
+	const AdvancedSettings fresh;
+	obs_data_t *d = obs_data_create();
+	for (const AdvancedBoolField &f : kAdvancedBoolFields) {
+		obs_data_set_default_bool(d, f.json, fresh.*f.member);
+		obs_data_set_bool(d, f.json, a.*f.member);
+	}
+	for (const AdvancedStringField &f : kAdvancedStringFields) {
+		obs_data_set_default_string(d, f.json, (fresh.*f.member).c_str());
+		obs_data_set_string(d, f.json, (a.*f.member).c_str());
+	}
+	for (const AdvancedUIntField &f : kAdvancedUIntFields) {
+		obs_data_set_default_int(d, f.json, (long long)(fresh.*f.member));
+		obs_data_set_int(d, f.json, (long long)(a.*f.member));
+	}
+	return d;
+}
+
+// Sections the "settings" kind serves. One row per section, so wiring General the
+// same way is an entry here plus its own build/get/apply trio.
+struct SettingsSection {
+	const char *name;
+	obs_properties_t *(*build)();
+	obs_data_t *(*get)();
+	void (*apply)(obs_data_t *settings);
+};
+
+void ApplyAdvancedFromObsData(obs_data_t *settings)
+{
+	// A key the object says nothing about is left alone: properties.set pushes only
+	// the fields the user touched, and settings the form never rendered must survive
+	// that. A key carrying only a default is still a statement -- that is
+	// properties.defaults arriving after obs_data_clear -- so it goes in the patch,
+	// where obs_data_get_* resolves it to the default.
+	auto stated = [settings](const char *key) {
+		return obs_data_has_user_value(settings, key) || obs_data_has_default_value(settings, key);
+	};
+
+	// obs_data carries no type discrimination the patch builder can rely on, so
+	// read each key back through its own field table -- the same tables that
+	// produced the properties, so a key can never be read as the wrong type.
+	json patch = json::object();
+	for (const AdvancedBoolField &f : kAdvancedBoolFields) {
+		if (stated(f.json)) {
+			patch[f.json] = obs_data_get_bool(settings, f.json);
+		}
+	}
+	for (const AdvancedStringField &f : kAdvancedStringFields) {
+		if (stated(f.json)) {
+			patch[f.json] = obs_data_get_string(settings, f.json);
+		}
+	}
+	for (const AdvancedUIntField &f : kAdvancedUIntFields) {
+		if (stated(f.json)) {
+			patch[f.json] = obs_data_get_int(settings, f.json);
+		}
+	}
+	if (patch.empty()) {
+		return;
+	}
+	json out;
+	std::string error;
+	if (!ApplyAdvancedPatch(patch, out, error)) {
+		HostLog("[bridge] settings properties apply failed: " + error);
+	}
+}
+
+const SettingsSection kSettingsSections[] = {
+	{"advanced", BuildAdvancedProperties, AdvancedToObsData, ApplyAdvancedFromObsData},
+};
+
+const SettingsSection *FindSettingsSection(const std::string &name)
+{
+	for (const SettingsSection &s : kSettingsSections) {
+		if (name == s.name) {
+			return &s;
+		}
+	}
+	return nullptr;
 }
 
 const PropertyKind kPropertyKinds[] = {
@@ -4542,6 +4897,31 @@ const PropertyKind kPropertyKinds[] = {
 			EmitEvent(EventNames::kStreamProfileChanged, json::object());
 		},
 		[](void *obj) { delete static_cast<ServiceRefCtx *>(obj); },
+	},
+	{
+		// `ref` is the section name ("advanced"). No libobs object is involved:
+		// properties are built from the section's field tables and settings are the
+		// section's live struct values, so there is nothing to addref.
+		"settings",
+		[](const std::string &ref) -> void * {
+			const SettingsSection *s = FindSettingsSection(ref);
+			return s ? new SettingsRefCtx{ref} : nullptr;
+		},
+		[](void *obj) -> obs_properties_t * {
+			const SettingsSection *s = FindSettingsSection(static_cast<SettingsRefCtx *>(obj)->section);
+			return s ? s->build() : nullptr;
+		},
+		[](void *obj) -> obs_data_t * {
+			const SettingsSection *s = FindSettingsSection(static_cast<SettingsRefCtx *>(obj)->section);
+			return s ? s->get() : nullptr;
+		},
+		[](void *obj, obs_data_t *settings) {
+			const SettingsSection *s = FindSettingsSection(static_cast<SettingsRefCtx *>(obj)->section);
+			if (s) {
+				s->apply(settings);
+			}
+		},
+		[](void *obj) { delete static_cast<SettingsRefCtx *>(obj); },
 	},
 };
 
@@ -5797,6 +6177,121 @@ bool MethodCanvasCreate(const json &params, json &result, std::string &error)
 	return PersistOrFail(saved, error);
 }
 
+// A canvas name not yet taken: "<base> copy", then "<base> copy 2", ... Mirrors
+// FreeSceneNameOnCanvas's shape; canvas names are not unique-constrained by
+// libobs, but two identically named canvases are indistinguishable in every
+// picker the UI has.
+std::string FreeCanvasName(const std::string &base)
+{
+	const CanvasStore &store = ObsBootstrap::Canvases();
+	for (int n = 1;; ++n) {
+		const std::string candidate = base + " copy" + (n == 1 ? "" : " " + std::to_string(n));
+		const bool taken = std::any_of(store.Definitions().begin(), store.Definitions().end(),
+					       [&candidate](const CanvasDefinition &d) { return d.name == candidate; });
+		if (!taken) {
+			return candidate;
+		}
+	}
+}
+
+// canvas.duplicate {uuid}: a second encode target configured like an existing one.
+//
+// Copies the whole definition (resolution, fps, scaling, color, both encoder
+// blobs and every inheritance flag) and then deep-copies each of the source's
+// scenes onto it, carrying their scene links across so the copy activates in step
+// with the original. Duplicating the Default canvas is allowed and means "a second
+// encode of the whole show": its scenes are the global ones, so each copy links to
+// the main scene it came from.
+//
+// Output bindings are deliberately NOT copied. The engine permits one enabled
+// binding per stream profile because one stream key is one live stream, and the
+// destination picker already hides a profile bound to any canvas -- a copied
+// binding would be an edge that can never carry a stream.
+bool MethodCanvasDuplicate(const json &params, json &result, std::string &error)
+{
+	std::string uuid;
+	if (!RequireStr(params, "canvas.duplicate", "uuid", uuid, error)) {
+		return false;
+	}
+	CanvasStore &store = ObsBootstrap::Canvases();
+	const CanvasDefinition *src = store.Find(uuid);
+	if (!src) {
+		error = "no canvas with uuid '" + uuid + "'";
+		return false;
+	}
+
+	// The source's own uuid, read before Add() invalidates every pointer into the
+	// store (documented on CanvasStore::Find).
+	const std::string srcUuid = src->uuid;
+
+	CanvasDefinition def;
+	def.name = FreeCanvasName(src->name);
+	def.isDefault = false; // a copy of the Default is an ordinary additional canvas
+	def.width = src->width;
+	def.height = src->height;
+	def.outputWidth = src->outputWidth;
+	def.outputHeight = src->outputHeight;
+	def.fpsNum = src->fpsNum;
+	def.fpsDen = src->fpsDen;
+	def.scaleType = src->scaleType;
+	def.useDefaultResolution = src->useDefaultResolution;
+	def.color = src->color;
+	def.video.id = src->video.id;
+	def.video.useDefault = src->video.useDefault;
+	def.audio.id = src->audio.id;
+	def.audio.useDefault = src->audio.useDefault;
+	// Deep-copy the settings blobs: sharing the obs_data would make editing the
+	// copy's encoder silently edit the original's.
+	def.video.settings = obs_data_create();
+	obs_data_apply(def.video.settings, src->video.settings);
+	def.audio.settings = obs_data_create();
+	obs_data_apply(def.audio.settings, src->audio.settings);
+
+	const CanvasDefinition &added = store.Add(std::move(def));
+	// Copied out before anything else can Add/Remove: the reference is documented
+	// as invalidated by either (CanvasStore::Find).
+	const std::string newUuid = added.uuid;
+	const std::string newName = added.name;
+	const bool saved = store.Save();
+
+	ObsBootstrap::CanvasRuntime().EnsureCanvas(added);
+
+	// Copy the scenes. Each duplicate takes its source's name verbatim (the new
+	// canvas owns a private namespace, so nothing collides) and carries its link.
+	std::string currentSceneName;
+	for (const CanvasSceneRow &s : ScenesOnCanvas(srcUuid)) {
+		std::string dupSceneUuid, dupSceneName;
+		json undoState;
+		std::string dupError;
+		if (!DuplicateSceneToCanvasCore(s.name, srcUuid, newUuid, dupSceneUuid, dupSceneName, undoState,
+						dupError)) {
+			HostLog("[bridge] canvas.duplicate: skipped scene '" + s.name + "': " + dupError);
+			continue;
+		}
+		OBSSourceAutoRelease srcScene = ResolveNamedSceneOnCanvas(s.name, srcUuid);
+		const char *srcSceneUuidC = srcScene ? obs_source_get_uuid(srcScene) : nullptr;
+		LinkDuplicatedScene(srcUuid, srcSceneUuidC ? srcSceneUuidC : std::string(), newUuid, dupSceneUuid);
+		if (s.current) {
+			currentSceneName = dupSceneName;
+		}
+	}
+	ObsBootstrap::SceneLinks().Save();
+
+	// Match the source's active scene, then seed a placeholder if the source had no
+	// scenes at all (EnsureScenes is idempotent and skips a canvas that now has some).
+	if (!currentSceneName.empty()) {
+		ObsBootstrap::CanvasRuntime().SetCurrentScene(newUuid, currentSceneName);
+	}
+	ObsBootstrap::CanvasRuntime().EnsureScenes();
+
+	SceneCollection::Save();
+	EmitScenesChanged(newUuid);
+	EmitEvent(EventNames::kSceneLinkChanged, json::object());
+	EmitEvent(EventNames::kCanvasChanged, json::object());
+	result = json{{"uuid", newUuid}, {"name", newName}};
+	return PersistOrFail(saved, error);
+}
+
 bool MethodCanvasUpdate(const json &params, json &result, std::string &error)
 {
 	if (!RequireObject(params, "canvas.update", error)) {
@@ -5904,6 +6399,13 @@ bool MethodCanvasRemove(const json &params, json &result, std::string &error)
 	store.Remove(uuid);
 	const bool saved = store.Save();
 	ObsBootstrap::PruneSceneLinksForCanvas(uuid);
+	// Bindings route TO this canvas, so they die with it -- and they have to be
+	// pruned here rather than left to rot, because a binding whose canvas is gone
+	// is unreachable from the UI while still holding its stream profile hostage:
+	// the picker on every other canvas hides a profile that is bound anywhere.
+	if (ObsBootstrap::PruneOutputBindingsForCanvas(uuid) > 0) {
+		EmitEvent(EventNames::kOutputBindingChanged, json::object());
+	}
 	EmitEvent(EventNames::kCanvasChanged, json::object());
 	result = json{{"removed", uuid}};
 	return PersistOrFail(saved, error);
@@ -6486,6 +6988,15 @@ bool MethodOutputBindingSetEnabled(const json &params, json &result, std::string
 		ObsBootstrap::Multistream().StopOutput(uuid);
 	}
 
+	// Chat is resolved from the ENABLED destinations, so arming one mid-stream has to
+	// re-resolve or the destination streams with no chat for the rest of the session.
+	// Mirrors the mid-stream account-disconnect path; the disable direction does NOT come
+	// through here, because the output ending is what ends its chat (onOutputEnded ->
+	// Chat::Hub().StopDestination), which spares every sibling transport a reconnect.
+	if (enabled && ObsBootstrap::Multistream().AnyLive()) {
+		Chat::Hub().Start();
+	}
+
 	// Enabling builds the canvas mix (before any StartOutput); disabling the last
 	// enabled destination lets it go inert (StopOutput above already stopped it).
 	ObsBootstrap::CanvasRuntime().ReconcileAll();
@@ -6674,10 +7185,30 @@ video_t *ResolveEncodeMix(const std::string &key)
 // baseline restarts at zero whenever the resolved video_t is not the one the baseline
 // was taken against. RebaseCounter's self-heal covers the remaining case where a mix is
 // replaced without the pointer changing.
-std::pair<uint32_t, uint32_t> ReadEncodeFrames()
-{
+// One mix's frame counts, plus how many mixes were sampled to produce them.
+struct EncodeFrames {
 	uint32_t skipped = 0;
 	uint32_t total = 0;
+	int mixes = 0;
+};
+
+// The frame counts of the mix coping WORST, never a sum across mixes.
+//
+// Summing was actively misleading next to renderLagged, which is one global
+// obs_get_lagged_frames() for the whole compositor: a missed composite makes every mix
+// record a skip, so N canvases turned one event into N and the encode figure read ~Nx
+// the render figure with nothing wrong. 334 skips across two mixes never happened --
+// 167ish did, twice.
+//
+// Worst by RATIO rather than by count, because the question the number answers is "is an
+// encoder failing to keep up". A 4K mix three hours in will always hold the larger raw
+// count, which would hide a freshly-started mix that is genuinely drowning. A mix only
+// seconds old can briefly show a wild ratio off a tiny sample; that self-corrects on the
+// next tick, and over-reporting for one second beats hiding a real overload.
+EncodeFrames ReadEncodeFrames()
+{
+	EncodeFrames out;
+	double worstRatio = -1.0;
 	std::unordered_map<std::string, EncodeMixState> next;
 	for (const std::string &key : EncodeMixKeys()) {
 		video_t *mix = ResolveEncodeMix(key);
@@ -6690,12 +7221,19 @@ std::pair<uint32_t, uint32_t> ReadEncodeFrames()
 		if (it != g_encodeMixes.end() && it->second.mix == mix) {
 			state = it->second;
 		}
-		skipped += RebaseCounter(video_output_get_skipped_frames(mix), state.baseSkipped);
-		total += RebaseCounter(video_output_get_total_frames(mix), state.baseTotal);
+		const uint32_t skipped = RebaseCounter(video_output_get_skipped_frames(mix), state.baseSkipped);
+		const uint32_t total = RebaseCounter(video_output_get_total_frames(mix), state.baseTotal);
 		next[key] = state;
+		++out.mixes;
+		const double ratio = total > 0 ? static_cast<double>(skipped) / total : 0.0;
+		if (ratio > worstRatio) {
+			worstRatio = ratio;
+			out.skipped = skipped;
+			out.total = total;
+		}
 	}
 	g_encodeMixes.swap(next);
-	return {skipped, total};
+	return out;
 }
 
 // Take one sample: general performance + the per-output streaming rows. The host-side
@@ -6725,9 +7263,9 @@ json BuildStatsSnapshot()
 	const double renderLagPct = renderTotal > 0 ? (static_cast<double>(renderLagged) / renderTotal) * 100.0 : 0.0;
 
 	const std::vector<MultistreamEngine::OutputStats> rows = ObsBootstrap::Multistream().StatsSnapshot();
-	const std::pair<uint32_t, uint32_t> encode = ReadEncodeFrames();
-	const uint32_t encodeSkipped = encode.first;
-	const uint32_t encodeTotal = encode.second;
+	const EncodeFrames encode = ReadEncodeFrames();
+	const uint32_t encodeSkipped = encode.skipped;
+	const uint32_t encodeTotal = encode.total;
 	const double encodeSkipPct = encodeTotal > 0 ? (static_cast<double>(encodeSkipped) / encodeTotal) * 100.0 : 0.0;
 
 	json general = json{
@@ -6741,6 +7279,9 @@ json BuildStatsSnapshot()
 		{"encodeSkipped", static_cast<int>(encodeSkipped)},
 		{"encodeTotal", static_cast<int>(encodeTotal)},
 		{"encodeSkipPct", encodeSkipPct},
+		// How many mixes the figures above were chosen from, so the UI can say which
+		// number it is showing instead of leaving it to read as a whole-machine total.
+		{"encodeMixes", encode.mixes},
 	};
 
 	// --- per-output streaming ---
@@ -10737,6 +11278,7 @@ void Init()
 		{"settings.restore", MethodSettingsRestore},
 		{"canvas.list", MethodCanvasList},
 		{"canvas.create", MethodCanvasCreate},
+		{"canvas.duplicate", MethodCanvasDuplicate},
 		{"canvas.update", MethodCanvasUpdate},
 		{"canvas.remove", MethodCanvasRemove},
 		{"canvas.reorder", MethodCanvasReorder},

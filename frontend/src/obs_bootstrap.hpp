@@ -94,6 +94,24 @@ void PruneSceneLinksForCanvasScene(const std::string &canvasUuid, const std::str
 // live on disk and keep the ProfileLabelFor "(deleted)" fallback until loaded.
 size_t PruneOutputBindingsForProfile(const std::string &profileUuid);
 
+// The same, for a deleted canvas: remove every binding routing TO it. Call from
+// the canvas removal path. A binding whose canvas is gone is not merely untidy --
+// it is invisible and it blocks. The destinations tab renders rows filtered to the
+// canvas being viewed, so an orphan renders nowhere, while the bind picker hides
+// every profile bound to ANY canvas, so the orphan also keeps its profile out of
+// the picker on every other canvas. The destination cannot be seen, re-routed or
+// removed from the UI at all.
+size_t PruneOutputBindingsForCanvas(const std::string &canvasUuid);
+
+// Drop bindings in the ACTIVE collection whose canvas no longer exists, then
+// persist. Call after loading the collection's bindings: canvases are global and
+// bindings are per-collection, so a canvas deleted while another collection was
+// active leaves that collection's rows dangling with nothing to prune them.
+// No-ops when the canvas store is empty, which means it failed to load rather than
+// that every canvas is gone -- pruning against an empty store would delete every
+// binding the user has. Returns the number pruned.
+size_t ReconcileOutputBindings();
+
 // The encode-once / fan-out streaming engine, owned by the bootstrap
 // (constructed in Start after the stores load, torn down in Stop before they
 // clear). Exposed so the bridge can drive streaming + report live status over

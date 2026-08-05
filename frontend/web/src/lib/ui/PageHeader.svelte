@@ -32,10 +32,13 @@
     border-bottom: var(--border-weight) solid var(--color-border);
     background: var(--color-surface);
   }
+  /* Title over description, not beside it: the subs are sentences, and inline they
+     shoved the title off-center and truncated themselves on a narrow window. */
   .titles {
     display: flex;
-    align-items: baseline;
-    gap: 12px;
+    flex-direction: column;
+    justify-content: center;
+    gap: 3px;
     min-width: 0;
   }
   .title {

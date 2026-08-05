@@ -1,7 +1,7 @@
 <script lang="ts">
   import { canvasStore } from "$lib/stores/canvasStore.svelte";
   import { streamProfileStore } from "$lib/stores/streamProfileStore.svelte";
-  import PageHeader from "$lib/ui/PageHeader.svelte";
+  import PageShell from "$lib/ui/PageShell.svelte";
   import Modal from "$lib/ui/Modal.svelte";
   import Icon from "$lib/ui/Icon.svelte";
   import { pad2 } from "$lib/utils/format";
@@ -228,24 +228,22 @@
   }
 </script>
 
-<div class="page">
-  <PageHeader title="Schedule" sub="upcoming stream planning">
-    {#snippet actions()}
-      <span class="shell-note" title="UI preview: scheduled streams are not saved to disk and do not auto-go-live yet.">
-        preview · not saved
-      </span>
-      <div class="month-nav">
-        <button class="nav-btn" title="Previous month" aria-label="Previous month" onclick={prevMonth}>
-          <Icon name="caret-left" size={14} />
-        </button>
-        <span class="cal-label">{calLabel} · {monthCount} planned</span>
-        <button class="nav-btn" title="Next month" aria-label="Next month" onclick={nextMonth}>
-          <Icon name="caret-right" size={14} />
-        </button>
-      </div>
-      <button class="new-btn" onclick={() => openModal(todayStr)}><Icon name="plus" size={13} /> New Stream</button>
-    {/snippet}
-  </PageHeader>
+<PageShell title="Schedule" sub="Upcoming stream planning">
+  {#snippet actions()}
+    <span class="shell-note" title="UI preview: scheduled streams are not saved to disk and do not auto-go-live yet.">
+      preview · not saved
+    </span>
+    <div class="month-nav">
+      <button class="nav-btn" title="Previous month" aria-label="Previous month" onclick={prevMonth}>
+        <Icon name="caret-left" size={14} />
+      </button>
+      <span class="cal-label">{calLabel} · {monthCount} planned</span>
+      <button class="nav-btn" title="Next month" aria-label="Next month" onclick={nextMonth}>
+        <Icon name="caret-right" size={14} />
+      </button>
+    </div>
+    <button class="new-btn" onclick={() => openModal(todayStr)}><Icon name="plus" size={13} /> New Stream</button>
+  {/snippet}
 
   <div class="body">
     <div class="cal-wrap">
@@ -315,7 +313,7 @@
       </div>
     </aside>
   </div>
-</div>
+</PageShell>
 
 {#if modalOpen}
   <Modal title="Schedule a Stream" onClose={closeModal} width={520}>
@@ -383,14 +381,6 @@
 {/if}
 
 <style>
-  .page {
-    height: 100%;
-    display: flex;
-    flex-direction: column;
-    background: var(--color-base);
-    color: var(--color-text);
-  }
-
   /* ---- header ---- */
   .month-nav {
     display: flex;

@@ -117,8 +117,11 @@ export interface ExistingSource {
 // --- generic obs_properties descriptors (4.3.2) -----------------------------
 
 /** Editable-object kind a property set belongs to. "filter" addresses a filter
- * by its uuid (the ref); the others address their object by name/id. */
-export type PropertyKind = "source" | "encoder" | "service" | "output" | "filter" | "transition";
+ * by its uuid (the ref); "settings" addresses an app-settings section by name
+ * ("advanced") rather than a libobs object, so those tabs render from the same
+ * descriptors instead of hand-written inputs; the others address their object by
+ * name/id. */
+export type PropertyKind = "source" | "encoder" | "service" | "output" | "filter" | "transition" | "settings";
 
 /** One item in a list (combo/radio) property. */
 export interface PropertyListItem {
@@ -909,9 +912,14 @@ export interface GeneralStats {
   renderLagged: number;
   renderTotal: number;
   renderLagPct: number;
+  /** The WORST-coping encode mix's counts, not a sum across mixes -- a missed composite
+   * makes every mix record a skip, so summing turned one event into N and read as though
+   * encoding lagged N times worse than rendering. See `encodeMixes`. */
   encodeSkipped: number;
   encodeTotal: number;
   encodeSkipPct: number;
+  /** How many encode mixes (canvases) the three fields above were chosen from. */
+  encodeMixes: number;
 }
 
 /** Per-output live stats row reported in stats.get's `outputs`. `state` is the
@@ -1537,6 +1545,9 @@ export interface ObsMethods {
   // Canvases (native multistream encode targets, 4.4.1).
   "canvas.list": CanvasInfo[];
   "canvas.create": { uuid: string };
+  // Copies the definition and deep-copies the source's scenes (with their links);
+  // output bindings are not copied. Echoes the name it settled on.
+  "canvas.duplicate": { uuid: string; name: string };
   "canvas.update": CanvasInfo;
   "canvas.remove": { removed: string };
   // Persisted drag order (echoes applied uuids).

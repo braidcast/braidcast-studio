@@ -6,7 +6,7 @@
   import AppearanceTab from "$lib/settings/AppearanceTab.svelte";
   import AdvancedTab from "$lib/settings/AdvancedTab.svelte";
   import DiagnosticsTab from "$lib/settings/DiagnosticsTab.svelte";
-  import PageHeader from "$lib/ui/PageHeader.svelte";
+  import PageShell from "$lib/ui/PageShell.svelte";
   import { settingsNav, setSettingsTab, type SettingsTab } from "$lib/dialogs/settingsOpener.svelte";
 
   // Full Settings page: header + a 196px left sub-nav + a content pane that renders
@@ -25,8 +25,7 @@
   ];
 </script>
 
-<div class="page">
-  <PageHeader title="Settings" sub="application preferences" />
+<PageShell title="Settings" sub="Application preferences">
 
   <div class="body">
     <nav class="subnav" aria-label="Settings categories">
@@ -58,17 +57,9 @@
       {/if}
     </div>
   </div>
-</div>
+</PageShell>
 
 <style>
-  .page {
-    height: 100%;
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-    background: var(--color-base);
-    color: var(--color-text);
-  }
   .body {
     flex: 1;
     min-height: 0;

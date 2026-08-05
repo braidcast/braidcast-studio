@@ -1,25 +1,16 @@
 <script lang="ts">
   import StreamsTab from "$lib/settings/StreamsTab.svelte";
-  import PageHeader from "$lib/ui/PageHeader.svelte";
+  import PageShell from "$lib/ui/PageShell.svelte";
 </script>
 
-<div class="page">
-  <PageHeader title="Streams" sub="reusable destination credentials" />
+<PageShell title="Streams" sub="Reusable destination credentials">
 
   <div class="body">
     <StreamsTab />
   </div>
-</div>
+</PageShell>
 
 <style>
-  .page {
-    height: 100%;
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-    background: var(--color-base);
-    color: var(--color-text);
-  }
   .body {
     flex: 1;
     min-height: 0;

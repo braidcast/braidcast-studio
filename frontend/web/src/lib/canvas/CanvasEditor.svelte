@@ -24,6 +24,7 @@
     profiles: StreamProfileInfo[];
     statusByBinding: Map<string, MultistreamStatus>;
     isLive: boolean;
+    onDuplicate: () => void;
     onDelete: () => void;
     onBindingsChanged: () => void;
     onRemoveBinding: (b: OutputBindingInfo) => void;
@@ -36,6 +37,7 @@
     profiles,
     statusByBinding,
     isLive,
+    onDuplicate,
     onDelete,
     onBindingsChanged,
     onRemoveBinding,
@@ -109,9 +111,14 @@
       <div class="cfhead__meta">
         <b>{form.width}×{form.height}</b> · {fmtFps(form.fpsNum, form.fpsDen)}fps · {encName(videoEncoders, form.videoEnc)}
       </div>
+      <!-- Duplicating reads the canvas rather than mutating it, so unlike delete it
+           is offered for the Default canvas and stays available while live. -->
+      <button class="cfhead__act" title="Duplicate this canvas" aria-label="Duplicate this canvas" onclick={onDuplicate}>
+        <Icon name="copy" size={14} />
+      </button>
       {#if !isDefault}
         <button
-          class="cfhead__del"
+          class="cfhead__act cfhead__del"
           disabled={isLive}
           title={isLive ? "Stop the stream first" : "Delete this canvas"}
           aria-label="Delete this canvas"

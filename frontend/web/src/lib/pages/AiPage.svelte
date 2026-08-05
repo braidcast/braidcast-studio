@@ -2,7 +2,7 @@
   import { obs, type McpConfig, type McpSetConfigParams } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
   import { callOrToast } from "$lib/utils/callToast";
-  import PageHeader from "$lib/ui/PageHeader.svelte";
+  import PageShell from "$lib/ui/PageShell.svelte";
 
   // MCP control page. Logic mirrors McpTab.svelte (load + mcp.changed subscription,
   // optimistic apply, copy-to-clipboard, token mask, regenerate confirm) laid out to
@@ -94,22 +94,20 @@ import { EV } from "$lib/utils/eventNames";
   const maskedToken = $derived(cfg ? (showToken ? cfg.token : "•".repeat(Math.min(cfg.token.length, 32))) : "");
 </script>
 
-<div class="page">
-  <PageHeader title="AI Control" sub="drive the production over MCP">
-    {#snippet actions()}
-      {#if cfg}
-        <button
-          class="server-toggle"
-          class:on={cfg.enabled}
-          disabled={busy}
-          onclick={() => void apply({ enabled: !cfg!.enabled })}
-        >
-          <span class="srv-dot" style:background={cfg.enabled ? "var(--meter-green)" : "var(--color-muted)"}></span>
-          {cfg.enabled ? "Server Enabled" : "Server Disabled"}
-        </button>
-      {/if}
-    {/snippet}
-  </PageHeader>
+<PageShell title="AI Control" sub="Drive the production over MCP">
+  {#snippet actions()}
+    {#if cfg}
+      <button
+        class="server-toggle"
+        class:on={cfg.enabled}
+        disabled={busy}
+        onclick={() => void apply({ enabled: !cfg!.enabled })}
+      >
+        <span class="srv-dot" style:background={cfg.enabled ? "var(--meter-green)" : "var(--color-muted)"}></span>
+        {cfg.enabled ? "Server Enabled" : "Server Disabled"}
+      </button>
+    {/if}
+  {/snippet}
 
   <div class="body">
     {#if !loaded}
@@ -212,16 +210,9 @@ import { EV } from "$lib/utils/eventNames";
       </div>
     {/if}
   </div>
-</div>
+</PageShell>
 
 <style>
-  .page {
-    height: 100%;
-    display: flex;
-    flex-direction: column;
-    background: var(--color-base);
-    color: var(--color-text);
-  }
   .server-toggle {
     display: flex;
     align-items: center;

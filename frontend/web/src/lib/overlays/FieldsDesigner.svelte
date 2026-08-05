@@ -181,7 +181,7 @@
         <div class="design-row">
           <div class="drow-top">
             <div class="col">
-              <span class="mini">Key{#if dupKeys.has(f.key)}<span class="dup-hint"> · duplicate</span>{/if}</span>
+              <span class="mini">Key{#if dupKeys.has(f.key)}<span class="dup-hint dot-sep">duplicate</span>{/if}</span>
               <input
                 class="in"
                 class:dup={dupKeys.has(f.key)}

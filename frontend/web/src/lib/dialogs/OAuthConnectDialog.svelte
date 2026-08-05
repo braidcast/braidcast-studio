@@ -154,7 +154,7 @@ import { EV } from "$lib/utils/eventNames";
       <span class="muted"> (opened in your browser)</span>
     </p>
     <p class="waiting">
-      Waiting for authorization…{#if remaining > 0}<span class="muted"> · code expires in {fmt(remaining)}</span>{/if}
+      Waiting for authorization…{#if remaining > 0}<span class="muted dot-sep">code expires in {fmt(remaining)}</span>{/if}
     </p>
   {:else}
     <p class="dim">Starting connection…</p>

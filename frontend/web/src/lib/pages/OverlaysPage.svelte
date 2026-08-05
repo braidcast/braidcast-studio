@@ -13,7 +13,7 @@ import { EV } from "$lib/utils/eventNames";
   import FieldsDesigner from "$lib/overlays/FieldsDesigner.svelte";
   import PreviewPane from "$lib/overlays/PreviewPane.svelte";
   import CollectionDialog, { type DialogSpec } from "$lib/dialogs/CollectionDialog.svelte";
-  import PageHeader from "$lib/ui/PageHeader.svelte";
+  import PageShell from "$lib/ui/PageShell.svelte";
   import EmptyState from "$lib/ui/EmptyState.svelte";
   import Icon from "$lib/ui/Icon.svelte";
   import Segmented, { type SegmentedOption } from "$lib/ui/Segmented.svelte";
@@ -328,8 +328,7 @@ import { EV } from "$lib/utils/eventNames";
   });
 </script>
 
-<div class="page">
-  <PageHeader title="Overlays" sub="loopback widgets · copy a URL into a browser source" />
+<PageShell title="Overlays" sub="Loopback widgets · copy a URL into a browser source">
 
   {#if serverDown}
     <div class="banner down">Overlay server isn't running — widget URLs won't load in a Browser Source.</div>
@@ -442,21 +441,13 @@ import { EV } from "$lib/utils/eventNames";
       {/if}
     </div>
   </div>
-</div>
+</PageShell>
 
 {#if dialog}
   <CollectionDialog {...dialog} onClose={() => (dialog = null)} />
 {/if}
 
 <style>
-  .page {
-    height: 100%;
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-    background: var(--color-base);
-    color: var(--color-text);
-  }
   .banner {
     flex: 0 0 auto;
     padding: 8px 24px;
