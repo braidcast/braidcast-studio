@@ -1939,6 +1939,11 @@ export interface ObsEvents {
   // A session opened, closed, or was deleted. Carries no payload: the list is
   // re-read, so a push that raced a delete cannot describe a row that is gone.
   "sessions.changed": Record<string, never>;
+  // Go Live was refused before any output started: one or more destinations could not
+  // be brought to a streamable state (on a create-per-go-live platform, a broadcast
+  // created + bound + its ingest written back). Nothing is live when this arrives --
+  // starting the encoders anyway would push at a channel with no broadcast behind it.
+  "streaming.startFailed": { failures: { destination: string; reason: string }[] };
   // Coalesced per-source audio levels, pushed at most ~30 Hz off the volmeter
   // callbacks. The UI maps dB -> meter width and applies peak hold.
   "audio.levels": { levels: AudioLevel[] };

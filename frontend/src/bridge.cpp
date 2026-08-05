@@ -9339,24 +9339,174 @@ bool MethodBrowserDocksSet(const json &params, json &result, std::string &error)
 	return true;
 }
 
+// One destination that must be broadcast-ready before any encoder starts.
+struct BroadcastPreludeJob {
+	std::string accountId;
+	std::string profileUuid;
+	std::string label; // streamer-facing destination name, for the failure message
+	json fields;       // remembered metadata, read only if this job has to CREATE
+};
+
+// Only one go-live prelude may be in flight: it is network work, and a double-tap on the
+// hotkey would otherwise run two and create two broadcasts for one destination. Touched
+// only from PostToUi bodies, so the UI thread owns both of these and neither needs an atomic.
+bool g_goLivePreludeInFlight = false;
+
+// Bumped by every go-live and every stop. The prelude captures it and starts the encoders
+// only if it still matches, so a stop pressed while the prelude is in flight cannot be
+// overtaken seconds later by the go-live it was meant to cancel.
+uint64_t g_goLiveGeneration = 0;
+
+// Every enabled binding whose destination creates a broadcast per go-live, deduped by
+// (account, profile) so two canvases bound to one profile prepare it once.
+//
+// Reads the stores, so UI thread only. `fields` comes from StreamMetaStore because that is
+// all a go-live driven from the hotkey or the tray has; the Go Live modal's own values
+// reach the provider through its streamMeta.set, and a destination it already prepared
+// short-circuits inside ensureBroadcastReady whatever is passed here.
+std::vector<BroadcastPreludeJob> CollectBroadcastPrelude()
+{
+	std::vector<BroadcastPreludeJob> jobs;
+	std::unordered_set<std::string> seen;
+	StreamMetaStore &meta = ObsBootstrap::StreamMeta();
+	for (const OutputBinding &binding : ObsBootstrap::OutputBindings().Bindings().bindings) {
+		if (!binding.enabled || binding.profileUuid.empty()) {
+			continue;
+		}
+		const StreamProfile *profile = ObsBootstrap::StreamProfiles().Find(binding.profileUuid);
+		if (!profile || profile->accountId.empty()) {
+			continue; // a stream-key / custom-RTMP / WHIP destination owns no broadcast
+		}
+		const std::optional<OAuth::OAuthAccount> stored = OAuth::Accounts().Get(profile->accountId);
+		if (!stored || !OAuth::AccountHasCredential(*stored)) {
+			continue; // nothing can be created for a disconnected account; its own
+				  // output surfaces the reconnect, and blocking every other
+				  // destination on it would be a worse failure
+		}
+		OAuth::StreamProvider *provider = OAuth::Registry().Get(stored->providerId);
+		if (!provider || !provider->broadcastPerDestination()) {
+			continue; // persistent-channel platform: always ready
+		}
+		if (!seen.insert(profile->accountId + "\n" + binding.profileUuid).second) {
+			continue;
+		}
+		json fields = meta.ChannelDefaults(profile->accountId);
+		if (!fields.is_object()) {
+			fields = json::object();
+		}
+		// Per-stream values win over the channel defaults, key by key -- the same
+		// precedence the modal's effectiveFields applies.
+		const json overrides = meta.StreamOverride(binding.profileUuid);
+		if (overrides.is_object()) {
+			for (auto it = overrides.begin(); it != overrides.end(); ++it) {
+				fields[it.key()] = it.value();
+			}
+		}
+		jobs.push_back(BroadcastPreludeJob{profile->accountId, binding.profileUuid, profile->DisplayName(),
+						   std::move(fields)});
+	}
+	return jobs;
+}
+
+// Start every enabled output and the live-only readers. The tail of go-live, shared by the
+// path that has nothing to prepare and the one that waits for the broadcast prelude.
+void StartEnabledOutputsNow()
+{
+	if (!ObsBootstrap::MultistreamAlive()) {
+		return;
+	}
+	ObsBootstrap::Multistream().StartAllEnabled();
+	const bool active = ObsBootstrap::Multistream().AnyLive();
+	EmitStreamingChanged();
+	// Chat and the viewer poller are live-only: start them here on go-live so every
+	// connected platform's chat transport connects together (YouTube's liveChatId exists
+	// only once the broadcast is live). Both Start()s are idempotent.
+	if (active) {
+		Chat::Hub().Start();
+		Chat::Viewers().Start();
+	}
+}
+
 } // namespace
 
+// Go live: bring every destination to a streamable state, THEN start the encoders.
+//
+// The prelude is not optional and does not belong to any one caller. It used to run only
+// inside the Stream Information modal, so a go-live from the hotkey, the tray, or the
+// Studio button with "Ask for stream info on Go Live" turned off started outputs against a
+// YouTube channel that had no broadcast: the encoder attached to whatever stale "upcoming"
+// entry was bound to the persistent key and the stream never went live, with every local
+// health indicator green. Every entry point funnels through here, so here is where the
+// invariant holds.
 void StartStreamingAll()
 {
 	AsyncTask::PostToUi([] {
-		if (!ObsBootstrap::MultistreamAlive()) {
+		if (!ObsBootstrap::MultistreamAlive() || g_goLivePreludeInFlight) {
 			return;
 		}
-		ObsBootstrap::Multistream().StartAllEnabled();
-		const bool active = ObsBootstrap::Multistream().AnyLive();
-		EmitStreamingChanged();
-		// Chat and the viewer poller are live-only: start them here on go-live so every
-		// connected platform's chat transport connects together (YouTube's liveChatId exists
-		// only once the broadcast is live). Both Start()s are idempotent.
-		if (active) {
-			Chat::Hub().Start();
-			Chat::Viewers().Start();
+		std::vector<BroadcastPreludeJob> jobs = CollectBroadcastPrelude();
+		if (jobs.empty()) {
+			StartEnabledOutputsNow(); // nothing to create: unchanged, synchronous go-live
+			return;
 		}
+		g_goLivePreludeInFlight = true;
+		const uint64_t generation = ++g_goLiveGeneration;
+		AsyncTask::RunAsync([jobs = std::move(jobs), generation] {
+			json failures = json::array();
+			for (const BroadcastPreludeJob &job : jobs) {
+				// Re-read the account rather than capturing it: a token rotated by a
+				// peer between collection and here must not be clobbered by a stale copy.
+				const std::optional<OAuth::OAuthAccount> stored = OAuth::Accounts().Get(job.accountId);
+				OAuth::StreamProvider *provider = stored ? OAuth::Registry().Get(stored->providerId)
+									 : nullptr;
+				if (!stored || !provider) {
+					failures.push_back(json{{"destination", job.label},
+								{"reason", "the account is no longer connected"}});
+					continue;
+				}
+				OAuth::OAuthAccount acct = *stored;
+				std::string err;
+				bool ok = false;
+				try {
+					ok = provider->ensureBroadcastReady(acct, job.profileUuid, job.fields, err);
+				} catch (const std::exception &e) {
+					err = e.what();
+				}
+				if (!ok) {
+					failures.push_back(json{
+						{"destination", job.label},
+						{"reason", err.empty() ? "could not prepare the broadcast" : err}});
+				}
+			}
+			AsyncTask::PostToUi([failures = std::move(failures), generation] {
+				g_goLivePreludeInFlight = false;
+				if (generation != g_goLiveGeneration) {
+					// Stopped while this was in flight. Drop any broadcast the prelude
+					// managed to create out of the provider caches -- StopStreamingAll
+					// already cleared them, and repopulating them here would leave the
+					// next go-live binding to a broadcast nothing is streaming to.
+					for (const auto &entry : OAuth::Accounts().All()) {
+						if (OAuth::StreamProvider *p =
+							    OAuth::Registry().Get(entry.second.providerId)) {
+							p->clearActiveBroadcast(entry.first);
+						}
+					}
+					HostLog("[stream] go-live prelude cancelled by a stop; not starting");
+					return;
+				}
+				if (!failures.empty()) {
+					// Nothing starts, including destinations that were prepared fine.
+					// Same policy the modal has always applied to a failed metadata
+					// push: going live half-configured streams at a channel whose
+					// broadcast never came up, which is worse than not going live.
+					HostLog("[stream] go-live refused: " + std::to_string(failures.size()) +
+						" destination(s) could not be prepared: " + failures.dump());
+					EmitEvent(EventNames::kStreamingStartFailed, json{{"failures", failures}});
+					return;
+				}
+				StartEnabledOutputsNow();
+			});
+		});
 	});
 }
 
@@ -9372,6 +9522,10 @@ void StopStreamingAll()
 		// left to re-read and the next go-live re-resolves YouTube's liveChatIds fresh
 		// (clearActiveBroadcast is a no-op except on YouTube); then the outputs stop. Every
 		// step is idempotent, which is what makes a second concurrent stop harmless.
+		//
+		// The generation is bumped FIRST so a go-live prelude still in flight sees that a
+		// stop happened and declines to start the encoders when it lands.
+		++g_goLiveGeneration;
 		Chat::Viewers().Stop();
 		Chat::Hub().Stop();
 		for (const auto &entry : OAuth::Accounts().All()) {

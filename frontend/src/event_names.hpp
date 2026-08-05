@@ -47,6 +47,7 @@ inline constexpr const char *kAudioLevels = "audio.levels";
 inline constexpr const char *kStatsChanged = "stats.changed";
 inline constexpr const char *kDebugChanged = "debug.changed";
 inline constexpr const char *kSessionsChanged = "sessions.changed";
+inline constexpr const char *kStreamingStartFailed = "streaming.startFailed";
 } // namespace EventNames
 
 #endif // OBS_MULTISTREAM_FRONTEND_EVENT_NAMES_HPP_

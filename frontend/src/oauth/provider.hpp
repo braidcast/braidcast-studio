@@ -411,6 +411,35 @@ public:
 	// concurrentViewers, so each needs its own transport and its own read.
 	virtual bool broadcastPerDestination() const { return false; }
 
+	// Does this destination ALREADY have a broadcast that an encoder can push to? Only
+	// asked of a create-per-go-live platform; the default answers no because a
+	// persistent-channel account is always ready and never creates anything.
+	//
+	// This is what makes ensureBroadcastReady idempotent, so it must be cheap and must
+	// not create: implementations answer from their own per-destination cache first and
+	// only fall back to a (throttled) probe.
+	virtual bool hasActiveBroadcast(OAuthAccount &acct, const std::string &profileUuid)
+	{
+		(void)acct;
+		(void)profileUuid;
+		return false;
+	}
+
+	// Bring `profileUuid` to a state where the encoder can push: on a create-per-go-live
+	// platform, a broadcast created, bound to a verified ingest, and its endpoint written
+	// back into the stream profile. Idempotent -- a destination that already has one is a
+	// no-op costing no request.
+	//
+	// This is a PRECONDITION OF STREAMING, not a metadata push. The two used to be one
+	// call (applyMetadata with goingLive), which meant a mandatory lifecycle step was
+	// reachable only through the optional Stream Information modal: with that modal turned
+	// off, outputs started against a channel with no broadcast, YouTube left the encoder
+	// attached to a stale "upcoming" entry, and the stream never went live. Every go-live
+	// entry point calls this; `fields` supplies the metadata a broadcast this call has to
+	// CREATE needs (remembered values when no modal ran) and is unused otherwise.
+	virtual bool ensureBroadcastReady(OAuthAccount &acct, const std::string &profileUuid, const json &fields,
+					  std::string &err);
+
 	// Enumerate the distinct targets `acct` can stream to: places that each get their
 	// own broadcast and their own ingest endpoint, so each is a separate destination
 	// rather than another view of one channel. Meta grants a person's Pages in a single

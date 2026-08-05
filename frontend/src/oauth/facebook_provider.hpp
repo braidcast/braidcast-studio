@@ -65,6 +65,10 @@ public:
 	// destination -- two profiles on one Page are two independent broadcasts.
 	bool broadcastPerDestination() const override { return true; }
 
+	// Answered from liveVideos_, so a destination the Go Live modal just prepared
+	// short-circuits the base ensureBroadcastReady without a Graph request.
+	bool hasActiveBroadcast(OAuthAccount &acct, const std::string &profileUuid) override;
+
 	// One target per streamable Page: a Page has its own RTMPS endpoint, so two Pages
 	// are two destinations, never two views of one. Reuses FetchPages, so the usable/
 	// listed distinction it draws applies here unchanged -- a Page this app holds no

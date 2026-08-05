@@ -1311,6 +1311,16 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 	return true;
 }
 
+bool YouTubeProvider::hasActiveBroadcast(OAuthAccount &acct, const std::string &profileUuid)
+{
+	BroadcastState active;
+	// The probe error is deliberately swallowed: "could not tell" has to read as "not
+	// ready", so the caller creates a broadcast rather than starting an output against
+	// nothing. A genuine API failure then surfaces from the create, with its own message.
+	std::string probeErr;
+	return EnsureActiveBroadcast(acct, profileUuid, active, probeErr);
+}
+
 bool YouTubeProvider::ProbeActiveBroadcasts(OAuthAccount &acct, std::string &err)
 {
 	err.clear();

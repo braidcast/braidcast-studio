@@ -20,6 +20,7 @@ import { EV } from "$lib/utils/eventNames";
   import { canvasStore } from "$lib/stores/canvasStore.svelte";
   import { multistreamStatusStore, isActiveState } from "$lib/stores/multistreamStatusStore.svelte";
   import { viewerCountStore } from "$lib/stores/viewerCountStore.svelte";
+  import { showToast } from "$lib/stores/toastStore.svelte";
   import { STATE_COLOR } from "$lib/theme/stateColors";
   import { fmtDuration, fmtBitrate } from "$lib/utils/format";
   import { statsStore } from "$lib/stores/statsStore.svelte";
@@ -326,12 +327,25 @@ import { EV } from "$lib/utils/eventNames";
       warnStop = g.warnBeforeStop;
       generalReadError = null;
     });
+    // Go Live was refused before anything started. Subscribed HERE, not in the Stream
+    // Information modal: the refusal has to reach the streamer whichever way they went
+    // live, and the hotkey and tray paths never open that modal.
+    const offStartFailed = obs.on(EV.streamingStartFailed, (p) => {
+      const names = p.failures.map((f) => f.destination).join(", ");
+      showToast(
+        p.failures.length === 1
+          ? "Not going live — couldn't prepare " + p.failures[0].destination
+          : "Not going live — couldn't prepare " + p.failures.length + " destinations",
+        p.failures[0]?.reason ?? names,
+      );
+    });
     return () => {
       offStatus();
       offStreaming();
       offViewers();
       offVcam();
       offGeneral();
+      offStartFailed();
     };
   });
 

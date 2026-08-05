@@ -23,6 +23,27 @@ std::unique_ptr<Events::EventTransport> StreamProvider::makeEvents(const OAuthAc
 	return nullptr;
 }
 
+// The go-live precondition, implemented once for every platform: only a
+// create-per-go-live provider has anything to do, and only when this destination is not
+// already broadcasting. Both questions are provider hooks, so adding a platform means
+// answering them rather than touching the go-live path.
+//
+// Delegating the create to applyMetadata(goingLive) keeps ONE implementation of the
+// insert/bind/ingest-writeback sequence -- the branch this reaches is the same one the
+// Stream Information modal has always driven, so a destination the modal already
+// prepared short-circuits on hasActiveBroadcast and this costs nothing.
+bool StreamProvider::ensureBroadcastReady(OAuthAccount &acct, const std::string &profileUuid, const json &fields,
+					  std::string &err)
+{
+	if (!broadcastPerDestination()) {
+		return true;
+	}
+	if (hasActiveBroadcast(acct, profileUuid)) {
+		return true;
+	}
+	return applyMetadata(acct, profileUuid, fields.is_object() ? fields : json::object(), true, err);
+}
+
 bool StreamProvider::ensureIdentity(OAuthAccount &acct, std::string &err)
 {
 	if (!acct.userId.empty()) {

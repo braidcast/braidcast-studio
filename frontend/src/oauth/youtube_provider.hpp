@@ -74,6 +74,11 @@ public:
 	// its own concurrentViewers, so all per-broadcast state keys off the destination.
 	bool broadcastPerDestination() const override { return true; }
 
+	// Answered from broadcasts_ first, so a destination the Go Live modal just prepared
+	// short-circuits the base ensureBroadcastReady at zero quota; a cache miss (Studio
+	// restarted mid-stream) falls through to the throttled liveBroadcasts.list probe.
+	bool hasActiveBroadcast(OAuthAccount &acct, const std::string &profileUuid) override;
+
 	// One concurrent-viewer row per live broadcast of `acct`, read from InnerTube's
 	// updated_metadata (the endpoint the logged-out watch page itself polls) and therefore at
 	// ZERO Data API quota -- the videos.list poll this replaced spent ~8,640 units per user per

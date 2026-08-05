@@ -43,6 +43,7 @@ export const EV = {
   statsChanged: "stats.changed",
   debugChanged: "debug.changed",
   sessionsChanged: "sessions.changed",
+  streamingStartFailed: "streaming.startFailed",
 } as const;
 
 export type BridgeEvent = (typeof EV)[keyof typeof EV];

@@ -477,6 +477,12 @@ bool FacebookProvider::ActiveLiveVideo(const DestinationId &dest, LiveVideo &out
 	return true;
 }
 
+bool FacebookProvider::hasActiveBroadcast(OAuthAccount &acct, const std::string &profileUuid)
+{
+	LiveVideo live;
+	return ActiveLiveVideo(DestinationId{AccountId(acct), profileUuid}, live);
+}
+
 bool FacebookProvider::applyMetadata(OAuthAccount &acct, const std::string &profileUuid, const json &fields,
 				     bool goingLive, std::string &err)
 {
