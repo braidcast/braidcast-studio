@@ -11,11 +11,4 @@
 // was found and updated.
 bool WriteIngestToProfile(const std::string &profileUuid, const std::string &server, const std::string &key);
 
-// The ingest protocol the profile's service targets ("HLS", "RTMPS", "RTMP", ...), as
-// rtmp-services records it in the profile settings; empty when the profile carries none.
-// A provider that CREATES an ingest resource server-side has to declare the same protocol
-// the output will actually push, so this is read at go-live rather than assumed. Marshals
-// to TID_UI and blocks, exactly like the writeback above.
-std::string ReadProfileIngestProtocol(const std::string &profileUuid);
-
 #endif // OBS_MULTISTREAM_FRONTEND_INGEST_WRITEBACK_HPP_

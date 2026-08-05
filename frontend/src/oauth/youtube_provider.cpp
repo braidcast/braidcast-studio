@@ -1140,11 +1140,6 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 		err = "YouTube liveBroadcasts.insert returned no broadcast id";
 		return false;
 	}
-	// The broadcast id IS the video id, so this one line turns "YouTube says it is not
-	// live" from an unfalsifiable report into a URL anyone can open. Without it a go-live
-	// leaves no trace of WHICH broadcast the encoder was supposed to start.
-	HostLog("[oauth] YouTube dest=" + DestinationKey(dest) + " created broadcast " + broadcastId +
-		" (https://youtu.be/" + broadcastId + ")");
 
 	// The broadcast's liveChatId is what the chat transport polls. The insert
 	// response usually carries it in snippet; if not, fetch it via liveBroadcasts.list
@@ -1180,28 +1175,14 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 	std::string ingestionAddress;
 	std::string streamName;
 
-	std::string ingestionType;
-
-	// The protocol the OUTPUT will actually push, which is the profile's -- not a constant.
-	// A liveStream is typed: YouTube routes rtmp:// ingest and the http_upload_hls endpoint
-	// to different resources, so a stream declared `rtmp` simply never receives an HLS
-	// upload. The broadcast bound to it then stays "ready" forever with enableAutoStart set
-	// and nothing to trigger it, while the encoder reports a healthy send -- the HLS muxer
-	// runs with ignore_io_errors, so nothing surfaces locally either.
-	const std::string profileProtocol = ReadProfileIngestProtocol(profileUuid);
-	const bool wantsHls = profileProtocol == "HLS"; // rtmp-services' own spelling, from services.json
-	const char *const requiredIngestionType = wantsHls ? "hls" : "rtmp";
-
-	// Pulls id + cdn.ingestionType + cdn.ingestionInfo out of a liveStreams resource; false
-	// when any of the fields the output needs is missing.
+	// Pulls id + cdn.ingestionInfo out of a liveStreams resource; false when any of
+	// the three fields the RTMP output needs is missing.
 	auto readIngestion = [&](const json &item) -> bool {
 		streamId = Str(item, "id");
 		ingestionAddress.clear();
 		streamName.clear();
-		ingestionType.clear();
 		if (item.is_object() && item.contains("cdn") && item["cdn"].is_object()) {
 			const json &cdn = item["cdn"];
-			ingestionType = Str(cdn, "ingestionType");
 			if (cdn.contains("ingestionInfo") && cdn["ingestionInfo"].is_object()) {
 				ingestionAddress = Str(cdn["ingestionInfo"], "ingestionAddress");
 				streamName = Str(cdn["ingestionInfo"], "streamName");
@@ -1241,25 +1222,12 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 					     item["status"].is_object() &&
 					     Str(item["status"], "streamStatus") == "error";
 			if (!errored && readIngestion(item) && streamId == rememberedStreamId) {
-				// The remembered stream is only reusable while it still speaks the
-				// protocol this destination pushes. A profile switched between the
-				// RTMP and HLS YouTube services keeps its stream id, and reusing it
-				// across that switch is silent: bind succeeds, the upload goes to an
-				// endpoint the stream does not serve, and the broadcast never starts.
-				if (ingestionType != requiredIngestionType) {
-					HostLog("[oauth] YouTube ingest stream " + streamId + " is " + ingestionType +
-						" but this destination pushes " + requiredIngestionType +
-						"; creating a fresh one");
-					streamId.clear();
-				} else {
-					HostLog("[oauth] YouTube reusing ingest stream " + streamId + " (" +
-						ingestionType + ")");
-				}
+				HostLog("[oauth] YouTube reusing ingest stream " + streamId);
 			} else {
 				streamId.clear();
 			}
 		}
-		if (streamId.empty() && ingestionType.empty()) {
+		if (streamId.empty()) {
 			HostLog("[oauth] YouTube remembered ingest stream " + rememberedStreamId +
 				" not verified; creating a fresh one");
 		}
@@ -1271,9 +1239,7 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 		// one go-live's title would be a confusing label for every later one.
 		json streamBody = json{
 			{"snippet", json{{"title", "Braidcast ingest"}}},
-			{"cdn", json{{"frameRate", "variable"},
-				     {"ingestionType", requiredIngestionType},
-				     {"resolution", "variable"}}},
+			{"cdn", json{{"frameRate", "variable"}, {"ingestionType", "rtmp"}, {"resolution", "variable"}}},
 			{"contentDetails", json{{"isReusable", true}}},
 		};
 		json sResp;
@@ -1327,16 +1293,14 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 	// 6. Ingest writeback -- put the CDN endpoint + key into the linked profile so
 	// the modal's streaming.start streams to YouTube. Blocks on the UI-thread write
 	// so the key is present before the caller triggers go-live. CRITICAL.
-	// The address is logged with every value masked, because for HLS it carries the stream
-	// key as a query parameter and this file must not put a key in the log. The SHAPE is the
-	// part worth having: the output does not push to this address as returned -- rtmp_common
-	// rebuilds it from the service's own template -- so an address whose host or path differs
-	// from what services.json expects would be silently discarded, and nothing else in the
-	// log would show it.
-	HostLog("[oauth] YouTube dest=" + DestinationKey(dest) + " bound broadcast " + broadcastId + " to " +
-		ingestionType + " ingest stream " + streamId + " (profile protocol " +
-		(profileProtocol.empty() ? "unset" : profileProtocol) + ", API ingest address " +
-		ingestionAddress.substr(0, ingestionAddress.find('?')) + ")");
+	// Only the part before the query: for HLS the address carries the stream key as a query
+	// parameter, and no key belongs in a log file. The SHAPE is the part worth having --
+	// the output does not push to this address as returned, rtmp_common rebuilds the URL
+	// from the service's own template, so an address differing in host or path would be
+	// discarded with nothing anywhere to show it.
+	HostLog("[oauth] YouTube dest=" + DestinationKey(dest) + " bound broadcast " + broadcastId +
+		" to ingest stream " + streamId + ", API ingest address " +
+		ingestionAddress.substr(0, ingestionAddress.find('?')));
 	if (!WriteIngestToProfile(profileUuid, ingestionAddress, streamName)) {
 		err = "failed to write the YouTube ingest endpoint into the stream profile";
 		deleteOrphanBroadcast(broadcastId);
