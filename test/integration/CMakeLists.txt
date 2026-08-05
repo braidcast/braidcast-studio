@@ -78,7 +78,12 @@ if(NOT TARGET OBS::sqlite)
   add_subdirectory("${CMAKE_SOURCE_DIR}/frontend/deps" "${CMAKE_BINARY_DIR}/frontend-deps")
 endif()
 
-set(_history_sources "${_fe}/src/history/Db.cpp" "${_fe}/src/history/Migrations.cpp")
+set(
+  _history_sources
+  "${_fe}/src/history/Db.cpp"
+  "${_fe}/src/history/Migrations.cpp"
+  "${_fe}/src/history/SessionStore.cpp"
+)
 
 set(_target test_history)
 

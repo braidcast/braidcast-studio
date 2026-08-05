@@ -2,6 +2,7 @@
 
 #include "history/Db.hpp"
 #include "history/Schema.hpp"
+#include "history/SessionStore.hpp"
 
 #include <string>
 
@@ -155,6 +156,104 @@ static void test_orm_schema_matches_migrated_schema(void **state)
 	}
 }
 
+static void test_recovery_marks_unended_session_crashed(void **state)
+{
+	(void)state;
+	const std::string path = TempDbPath("recovery.db");
+	History::Db db;
+	assert_true(db.Open(path));
+	assert_true(db.Exec("INSERT INTO sessions (id, created_at, updated_at, started_at, title, canvas_uuids) "
+			    "VALUES ('s1', 1, 1, 1000, 'died', '[]')"));
+	assert_true(db.Exec("INSERT INTO session_health (session_id, t, bitrate_kbps, dropped_frames, "
+			    "congestion_pct, encode_skipped, cpu_pct) VALUES ('s1', 5000, 6000, 0, 0.0, 0, 10.0)"));
+	assert_true(db.Exec("INSERT INTO session_health (session_id, t, bitrate_kbps, dropped_frames, "
+			    "congestion_pct, encode_skipped, cpu_pct) VALUES ('s1', 9000, 6000, 0, 0.0, 0, 10.0)"));
+
+	History::SessionStore store;
+	assert_true(store.Attach(path));
+	assert_int_equal(store.RecoverCrashed(), 1);
+
+	const auto sessions = store.List(10, 0);
+	assert_int_equal((int)sessions.size(), 1);
+	assert_string_equal(sessions[0].endReason.value().c_str(), "crashed");
+	// The end time is the last health sample, not "now" -- a crash at 21:40 that
+	// is recovered on Tuesday must not claim it ran until Tuesday.
+	assert_true(sessions[0].endedAt.has_value());
+	assert_int_equal((int)*sessions[0].endedAt, 9000);
+}
+
+static void test_recovery_without_health_falls_back_to_start(void **state)
+{
+	(void)state;
+	const std::string path = TempDbPath("recovery_nohealth.db");
+	History::Db db;
+	assert_true(db.Open(path));
+	assert_true(db.Exec("INSERT INTO sessions (id, created_at, updated_at, started_at, title, canvas_uuids) "
+			    "VALUES ('s1', 1, 1, 1000, 'died fast', '[]')"));
+
+	History::SessionStore store;
+	assert_true(store.Attach(path));
+	assert_int_equal(store.RecoverCrashed(), 1);
+	const auto sessions = store.List(10, 0);
+	assert_true(sessions[0].endedAt.has_value());
+	assert_int_equal((int)*sessions[0].endedAt, 1000);
+}
+
+static void test_recovery_leaves_clean_sessions_alone(void **state)
+{
+	(void)state;
+	const std::string path = TempDbPath("recovery_clean.db");
+	History::Db db;
+	assert_true(db.Open(path));
+	assert_true(db.Exec("INSERT INTO sessions (id, created_at, updated_at, started_at, ended_at, end_reason, "
+			    "title, canvas_uuids) VALUES ('s1', 1, 1, 1000, 4000, 'ended', 'fine', '[]')"));
+
+	History::SessionStore store;
+	assert_true(store.Attach(path));
+	assert_int_equal(store.RecoverCrashed(), 0);
+	assert_string_equal(store.List(10, 0)[0].endReason.value().c_str(), "ended");
+}
+
+static void test_list_is_newest_first_and_paged(void **state)
+{
+	(void)state;
+	const std::string path = TempDbPath("list_paged.db");
+	History::Db db;
+	assert_true(db.Open(path));
+	for (int i = 1; i <= 5; i++) {
+		char sql[256];
+		snprintf(sql, sizeof sql,
+			 "INSERT INTO sessions (id, created_at, updated_at, started_at, ended_at, end_reason, "
+			 "title, canvas_uuids) VALUES ('s%d', 1, 1, %d, %d, 'ended', 't%d', '[]')",
+			 i, i * 1000, i * 1000 + 500, i);
+		assert_true(db.Exec(sql));
+	}
+	History::SessionStore store;
+	assert_true(store.Attach(path));
+	const auto page = store.List(2, 1);
+	assert_int_equal((int)page.size(), 2);
+	assert_string_equal(page[0].id.c_str(), "s4");
+	assert_string_equal(page[1].id.c_str(), "s3");
+}
+
+static void test_remove_takes_children_with_it(void **state)
+{
+	(void)state;
+	const std::string path = TempDbPath("remove.db");
+	History::Db db;
+	assert_true(db.Open(path));
+	assert_true(db.Exec("INSERT INTO sessions (id, created_at, updated_at, started_at, title, canvas_uuids) "
+			    "VALUES ('s1', 1, 1, 1000, 'doomed', '[]')"));
+	assert_true(db.Exec("INSERT INTO session_health (session_id, t, bitrate_kbps, dropped_frames, "
+			    "congestion_pct, encode_skipped, cpu_pct) VALUES ('s1', 2000, 1, 0, 0.0, 0, 0.0)"));
+
+	History::SessionStore store;
+	assert_true(store.Attach(path));
+	assert_true(store.Remove("s1"));
+	assert_int_equal((int)store.List(10, 0).size(), 0);
+	assert_int_equal((int)db.ScalarInt("SELECT COUNT(*) FROM session_health"), 0);
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -165,6 +264,11 @@ int main(void)
 		cmocka_unit_test(test_updated_at_trigger_fires),
 		cmocka_unit_test(test_delete_cascades_to_children),
 		cmocka_unit_test(test_orm_schema_matches_migrated_schema),
+		cmocka_unit_test(test_recovery_marks_unended_session_crashed),
+		cmocka_unit_test(test_recovery_without_health_falls_back_to_start),
+		cmocka_unit_test(test_recovery_leaves_clean_sessions_alone),
+		cmocka_unit_test(test_list_is_newest_first_and_paged),
+		cmocka_unit_test(test_remove_takes_children_with_it),
 	};
 	return cmocka_run_group_tests(tests, nullptr, nullptr);
 }

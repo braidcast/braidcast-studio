@@ -336,6 +336,8 @@ target_sources(
     src/history/Db.hpp
     src/history/Migrations.cpp
     src/history/Schema.hpp
+    src/history/SessionStore.cpp
+    src/history/SessionStore.hpp
 )
 
 # Windows resource: embed the app icon + version/product metadata so the exe and
