@@ -412,7 +412,33 @@ bool MultistreamEngine::StartOutput(const std::string &bindingUuid, std::string 
 	//
 	// Read from the OUTPUT, not from a table here: each output plugin declares what it
 	// accepts, so a new protocol or a codec added to an existing one needs no change.
+	//
+	// The output's list is necessary but NOT sufficient: it describes what the PROTOCOL can
+	// carry, and rtmp_output carries "h264;hevc;av1" for every RTMP destination alike --
+	// so it cannot distinguish Twitch and Kick, which take h264 only, from YouTube over the
+	// same protocol, which takes all three. The service knows, because services.json states
+	// it per platform. So both gates run, service first, and a platform that declares
+	// nothing falls through to the protocol check rather than being blocked outright.
 	if (const char *codec = obs_encoder_get_codec(ce->video)) {
+		if (const char **serviceCodecs = obs_service_get_supported_video_codecs(lo->service)) {
+			bool accepted = false;
+			std::string accepts;
+			for (const char **c = serviceCodecs; *c; ++c) {
+				if (!accepts.empty()) {
+					accepts += ", ";
+				}
+				accepts += *c;
+				if (strcmp(*c, codec) == 0) {
+					accepted = true;
+				}
+			}
+			if (!accepts.empty() && !accepted) {
+				return fail(std::string("this canvas encodes ") + codec + ", which " +
+					    p->PlatformName() + " cannot decode (it takes " + accepts +
+					    ") -- change the canvas encoder");
+			}
+		}
+
 		const char *supported = obs_get_output_supported_video_codecs(type);
 		if (supported && *supported && !StringUtil::ListContains(supported, codec, ';')) {
 			return fail(std::string("this canvas encodes ") + codec + ", which " + p->PlatformName() +
