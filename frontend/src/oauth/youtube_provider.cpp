@@ -1174,15 +1174,33 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 	std::string streamId;
 	std::string ingestionAddress;
 	std::string streamName;
+	std::string ingestionType;
+
+	// A liveStream's cdn.ingestionType is fixed when the resource is created and cannot be
+	// changed afterwards, so it is part of the resource's IDENTITY rather than one of its
+	// settings: a stream created for one protocol is not a stream this profile can use once
+	// the profile targets the other. YouTube validates the incoming feed against this field,
+	// not against the port the bytes arrived on -- an AV1 feed pushed over RTMPS to a
+	// broadcast bound to an hls-typed stream was refused with "The video is encoded with an
+	// unsupported codec ... (H.264)", because under HLS rules that is true.
+	//
+	// "HLS" is the only protocol that maps anywhere but rtmp; RTMP and RTMPS share one
+	// ingestion type, and an unknown/absent protocol falls back to rtmp because that is what
+	// every YouTube destination that is not explicitly HLS uses.
+	const std::string profileProtocol = ReadProfileIngestProtocol(profileUuid);
+	const std::string requiredIngestionType = StringUtil::EqualsCI(profileProtocol, "HLS") ? "hls" : "rtmp";
 
 	// Pulls id + cdn.ingestionInfo out of a liveStreams resource; false when any of
-	// the three fields the RTMP output needs is missing.
+	// the three fields the RTMP output needs is missing. ingestionType comes from the same
+	// response -- the verify query below already asks for `cdn`, so having it costs nothing.
 	auto readIngestion = [&](const json &item) -> bool {
 		streamId = Str(item, "id");
 		ingestionAddress.clear();
 		streamName.clear();
+		ingestionType.clear();
 		if (item.is_object() && item.contains("cdn") && item["cdn"].is_object()) {
 			const json &cdn = item["cdn"];
+			ingestionType = Str(cdn, "ingestionType");
 			if (cdn.contains("ingestionInfo") && cdn["ingestionInfo"].is_object()) {
 				ingestionAddress = Str(cdn["ingestionInfo"], "ingestionAddress");
 				streamName = Str(cdn["ingestionInfo"], "streamName");
@@ -1196,6 +1214,9 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 	// hold two separate ingest endpoints or they would share an RTMP key and the second
 	// go-live's bind would detach the first broadcast.
 	std::string rememberedStreamId;
+	// Why the remembered stream was dropped, when it was dropped for a reason more specific
+	// than "the API would not confirm it". Empty means the generic case.
+	std::string discardReason;
 	if (const std::optional<OAuthAccount> stored = Accounts().Get(AccountId(acct))) {
 		const auto it = stored->reusableStreamIds.find(profileUuid);
 		if (it != stored->reusableStreamIds.end()) {
@@ -1222,14 +1243,30 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 					     item["status"].is_object() &&
 					     Str(item["status"], "streamStatus") == "error";
 			if (!errored && readIngestion(item) && streamId == rememberedStreamId) {
-				HostLog("[oauth] YouTube reusing ingest stream " + streamId);
+				// The type check belongs in the reuse predicate rather than in a
+				// repair path of its own: a wrong-typed stream is simply not a
+				// cache hit, so it falls through to the insert below that already
+				// handles "no remembered stream survived". Nothing has to detect
+				// or migrate the stale resource.
+				if (!ingestionType.empty() && ingestionType != requiredIngestionType) {
+					discardReason = "is " + ingestionType + " but this profile now needs " +
+							requiredIngestionType + " (protocol " +
+							(profileProtocol.empty() ? "unknown" : profileProtocol) + ")";
+					streamId.clear();
+				} else {
+					HostLog("[oauth] YouTube reusing ingest stream " + streamId);
+				}
 			} else {
 				streamId.clear();
 			}
 		}
 		if (streamId.empty()) {
-			HostLog("[oauth] YouTube remembered ingest stream " + rememberedStreamId +
-				" not verified; creating a fresh one");
+			// Two different discards reach here and they are not the same event: a stream
+			// that could not be verified at all, and one verified fine but built for the
+			// other protocol. Saying "not verified" for the second would send the next
+			// reader looking for a network fault that never happened.
+			HostLog("[oauth] YouTube remembered ingest stream " + rememberedStreamId + " " +
+				(discardReason.empty() ? "not verified" : discardReason) + "; creating a fresh one");
 		}
 	}
 
@@ -1239,7 +1276,12 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 		// one go-live's title would be a confusing label for every later one.
 		json streamBody = json{
 			{"snippet", json{{"title", "Braidcast ingest"}}},
-			{"cdn", json{{"frameRate", "variable"}, {"ingestionType", "rtmp"}, {"resolution", "variable"}}},
+			// From the profile's protocol, not a constant: a hardcoded "rtmp" here is how
+			// an HLS profile ended up bound to an rtmp-typed stream and vice versa, and
+			// the type cannot be changed after creation.
+			{"cdn", json{{"frameRate", "variable"},
+				     {"ingestionType", requiredIngestionType},
+				     {"resolution", "variable"}}},
 			{"contentDetails", json{{"isReusable", true}}},
 		};
 		json sResp;
@@ -1259,6 +1301,27 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 		// find it via the 1-unit verify instead of paying for another insert. Recorded
 		// against this destination, so a sibling profile keeps its own stream.
 		Accounts().UpdateReusableStreamId(AccountId(acct), profileUuid, streamId);
+	}
+
+	// One assertion covering BOTH paths above -- the reused stream and the freshly inserted
+	// one -- placed here because this is the last point where the stream is still just a
+	// resource and no broadcast is bound to it yet.
+	//
+	// This compares two values YouTube itself declared, not the shape of a URL, so it is safe
+	// to refuse on: if it ever trips, pushing anyway is guaranteed to produce a broadcast that
+	// ingests and never goes live, which is the single most expensive failure this integration
+	// has (the encoder reports success, the upload is accepted, and the only symptom is on the
+	// dashboard). A refused go-live with the reason named costs a retry; the silent version
+	// cost an afternoon.
+	if (!ingestionType.empty() && ingestionType != requiredIngestionType) {
+		err = "YouTube ingest stream " + streamId + " accepts " + ingestionType +
+		      " but this destination streams " +
+		      (profileProtocol.empty() ? "an unknown protocol" : profileProtocol) + ", which needs " +
+		      requiredIngestionType +
+		      ". YouTube would judge the feed by the wrong protocol's rules and hold the "
+		      "broadcast at 'waiting for ingest'";
+		deleteOrphanBroadcast(broadcastId);
+		return false;
 	}
 
 	// 3. liveBroadcasts.bind -- attach the stream to the broadcast. CRITICAL.

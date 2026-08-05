@@ -24,6 +24,16 @@ inline bool ContainsCI(const std::string &haystack, const std::string &needle)
 	return it != haystack.end();
 }
 
+// Case-insensitive whole-string equality. The protocol words a stream profile carries
+// ("RTMPS", "HLS") are compared against fixed spellings, and neither side owns the casing.
+inline bool EqualsCI(const std::string &a, const std::string &b)
+{
+	return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) {
+		       return std::tolower(static_cast<unsigned char>(x)) ==
+			      std::tolower(static_cast<unsigned char>(y));
+	       });
+}
+
 // Whether `list` -- a delimited string, the shape libobs uses for its codec and protocol
 // lists ("h264;hevc") -- carries `item` as a whole entry. A plain substring test would
 // accept "h264" against a list holding only "h264_fallback", so the boundaries matter.

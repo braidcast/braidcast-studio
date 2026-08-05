@@ -48,3 +48,31 @@ bool WriteIngestToProfile(const std::string &profileUuid, const std::string &ser
 	}
 	return fut.get();
 }
+
+std::string ReadProfileIngestProtocol(const std::string &profileUuid)
+{
+	if (profileUuid.empty()) {
+		return {};
+	}
+
+	// Same shared-promise discipline as the write above: the promise outlives both sides
+	// via the shared_ptr, so a task dropped during teardown times out rather than setting
+	// a value on a destroyed object.
+	auto done = std::make_shared<std::promise<std::string>>();
+	std::future<std::string> fut = done->get_future();
+
+	AsyncTask::PostToUi([done, profileUuid] {
+		const StreamProfile *p = ObsBootstrap::StreamProfiles().Find(profileUuid);
+		if (!p || !p->settings) {
+			done->set_value({});
+			return;
+		}
+		const char *protocol = obs_data_get_string(p->settings, "protocol");
+		done->set_value(protocol ? std::string(protocol) : std::string());
+	});
+
+	if (fut.wait_for(std::chrono::seconds(10)) != std::future_status::ready) {
+		return {}; // teardown dropped the task
+	}
+	return fut.get();
+}

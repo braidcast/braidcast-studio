@@ -11,4 +11,14 @@
 // was found and updated.
 bool WriteIngestToProfile(const std::string &profileUuid, const std::string &server, const std::string &key);
 
+// The ingest protocol the stream profile `profileUuid` currently targets ("RTMPS", "RTMP",
+// "HLS", ...), or "" when the profile is gone or names none. Marshals to TID_UI and BLOCKS
+// for the same reason the write above does -- the profile store is UI-thread-owned, and a
+// provider asking this question runs on a worker.
+//
+// Exists because a platform resource can be protocol-SPECIFIC: YouTube's liveStream carries
+// a cdn.ingestionType fixed at creation, so a provider has to know which one this profile
+// needs before it decides whether a remembered stream is still usable.
+std::string ReadProfileIngestProtocol(const std::string &profileUuid);
+
 #endif // OBS_MULTISTREAM_FRONTEND_INGEST_WRITEBACK_HPP_
