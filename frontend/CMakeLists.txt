@@ -340,6 +340,8 @@ target_sources(
     src/history/SessionRecorder.hpp
     src/history/SessionStore.cpp
     src/history/SessionStore.hpp
+    src/history/Thumbnails.cpp
+    src/history/Thumbnails.hpp
 )
 
 # Windows resource: embed the app icon + version/product metadata so the exe and
@@ -542,6 +544,7 @@ set_source_files_properties(
   src/multistream/VirtualCamManager.cpp
   src/multistream/StorePaths.cpp
   src/mcp/McpServer.cpp
+  src/history/Thumbnails.cpp
   PROPERTIES COMPILE_OPTIONS "/wd4201"
 )
 

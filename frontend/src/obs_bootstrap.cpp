@@ -44,6 +44,7 @@
 #include "history/Db.hpp"
 #include "history/SessionRecorder.hpp"
 #include "history/SessionStore.hpp"
+#include "history/Thumbnails.hpp"
 #include "multistream/CanvasRuntime.hpp"
 #include "multistream/CanvasService.hpp"
 #include "multistream/CanvasStore.hpp"
@@ -436,6 +437,7 @@ StreamMetaStore g_streamMeta;
 History::Db g_historyDb;
 History::SessionStore g_sessions;
 History::SessionRecorder g_recorder;
+History::ThumbnailSampler g_thumbs;
 
 // The embedded MCP server. Constructed at the end of Start() (after the audio
 // monitor is up) and torn down at the very top of Stop() (before Bridge::Shutdown,
@@ -1108,6 +1110,7 @@ bool ObsBootstrap::Start()
 			return;
 		}
 		g_recorder.OnSample(SampleFromSnapshot(snapshot));
+		g_thumbs.OnTick(TimeUtil::NowMs() - g_recorder.StartedAtMs(), g_recorder.CurrentId());
 	});
 
 	LoadMultistreamModel();
@@ -1318,8 +1321,13 @@ bool ObsBootstrap::Start()
 				start.canvasUuids = LiveCanvasUuids(*g_multistream);
 				start.title = BuildSessionTitle(start.destinations);
 				g_recorder.Begin(start);
+				g_thumbs.Reset();
 				Bridge::EmitEvent(EventNames::kSessionsChanged, Bridge::json::object());
 			} else if (!live && g_recorder.IsRecording()) {
+				// Before End: SetThumbnail only writes while the session is
+				// open, so the other order drops the thumbnail on every
+				// stream without erroring.
+				g_thumbs.Finalize(g_recorder);
 				g_recorder.End(TimeUtil::NowMs(), SessionEndReason(*g_multistream));
 				Bridge::EmitEvent(EventNames::kSessionsChanged, Bridge::json::object());
 			}

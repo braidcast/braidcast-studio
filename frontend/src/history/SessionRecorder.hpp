@@ -65,6 +65,9 @@ public:
 
 	bool IsRecording() const { return !currentId_.empty(); }
 	const std::string &CurrentId() const { return currentId_; }
+	// When the running session opened, so a consumer can express its own cadence
+	// as elapsed-since-go-live without tracking the start itself.
+	int64_t StartedAtMs() const { return startedAtMs_; }
 	const std::string &LastError() const { return lastError_; }
 
 	// Open a session row with ended_at null plus one destination row each.
@@ -90,6 +93,7 @@ public:
 private:
 	std::unique_ptr<Storage> storage_;
 	std::string currentId_;
+	int64_t startedAtMs_ = 0;
 	std::unordered_map<std::string, std::string> bindings_; // bindingUuid -> destination row id
 	// The last sample actually written, which is what the next delta is taken
 	// against -- not the last sample seen, since the ticks in between were

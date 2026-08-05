@@ -94,6 +94,7 @@ std::string SessionRecorder::Begin(const SessionStart &start)
 		}
 
 		currentId_ = s.id;
+		startedAtMs_ = start.startedAtMs;
 		havePersisted_ = false;
 		lastError_.clear();
 		return currentId_;
