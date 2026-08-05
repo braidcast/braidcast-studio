@@ -41,6 +41,9 @@
 #include "events/event_hub.hpp"
 #include "events/event_store.hpp"
 #include "events/transport_health.hpp"
+#include "history/Db.hpp"
+#include "history/SessionRecorder.hpp"
+#include "history/SessionStore.hpp"
 #include "multistream/CanvasRuntime.hpp"
 #include "multistream/CanvasService.hpp"
 #include "multistream/CanvasStore.hpp"
@@ -51,8 +54,10 @@
 #include "multistream/OutputBindingStore.hpp"
 #include "multistream/SceneLinkStore.hpp"
 #include "multistream/StreamMetaStore.hpp"
+#include "multistream/StorePaths.hpp"
 #include "multistream/StreamProfileStore.hpp"
 #include "multistream/VirtualCamManager.hpp"
+#include "util/time_util.hpp"
 #include "oauth/account_store.hpp"
 #include "oauth/registry.hpp"
 #include "overlay/overlay_server.hpp"
@@ -425,6 +430,13 @@ GlobalAudioChannels g_globalAudio;
 // with no teardown state of its own.
 StreamMetaStore g_streamMeta;
 
+// The stream-history database and its two users. Db migrates at Start(); a failure
+// degrades history to unavailable rather than aborting startup, because streaming
+// must never depend on the archive. All three are UI-thread-only.
+History::Db g_historyDb;
+History::SessionStore g_sessions;
+History::SessionRecorder g_recorder;
+
 // The embedded MCP server. Constructed at the end of Start() (after the audio
 // monitor is up) and torn down at the very top of Stop() (before Bridge::Shutdown,
 // so its accept thread is joined while the bridge + libobs are still alive).
@@ -476,6 +488,135 @@ void DisconnectAudioSourceSignals()
 
 // Load (or seed) the model from the shared config dir and log its shape. Must run
 // after modules load so EnsureDefaultEncoders sees registered encoders.
+// The destinations a session opens with: every binding currently going out, with
+// the metadata the platform actually accepted rather than what the profile says.
+// Bridge::TakeSentMetadata consumes its entry, so this runs exactly once per
+// session -- a second call would find the bag already emptied.
+std::vector<History::DestinationRecord> LiveDestinations(const MultistreamEngine &engine)
+{
+	std::vector<History::DestinationRecord> out;
+	for (const MultistreamEngine::OutputStatus &st : engine.Statuses()) {
+		if (!MultistreamEngine::IsActiveState(st.state)) {
+			continue;
+		}
+		// OutputStatus carries no profile uuid -- only a display label -- so the
+		// binding is what maps a live output back to its credential.
+		const OutputBinding *b = g_outputBindings.Bindings().Find(st.bindingUuid);
+		if (!b) {
+			continue;
+		}
+		History::DestinationRecord d;
+		d.bindingUuid = st.bindingUuid;
+		d.profileId = b->profileUuid;
+		if (const StreamProfile *p = g_streamProfiles.Find(b->profileUuid)) {
+			d.platform = p->PlatformKey();
+			d.accountLabel = p->label;
+		}
+		const Bridge::json meta = Bridge::TakeSentMetadata(b->profileUuid);
+		if (meta.is_object()) {
+			if (meta.contains("title") && meta["title"].is_string()) {
+				d.title = meta["title"].get<std::string>();
+			}
+			if (meta.contains("category") && meta["category"].is_string()) {
+				d.category = meta["category"].get<std::string>();
+			}
+			if (meta.contains("tags") && meta["tags"].is_array()) {
+				for (const auto &tag : meta["tags"]) {
+					if (tag.is_string()) {
+						d.tags.push_back(tag.get<std::string>());
+					}
+				}
+			}
+		}
+		out.push_back(std::move(d));
+	}
+	return out;
+}
+
+std::vector<std::string> LiveCanvasUuids(const MultistreamEngine &engine)
+{
+	std::vector<std::string> out;
+	for (const MultistreamEngine::OutputStatus &st : engine.Statuses()) {
+		if (!MultistreamEngine::IsActiveState(st.state)) {
+			continue;
+		}
+		if (std::find(out.begin(), out.end(), st.canvasUuid) == out.end()) {
+			out.push_back(st.canvasUuid);
+		}
+	}
+	return out;
+}
+
+// What the history list calls this broadcast. The title a platform accepted is
+// the most specific thing anyone typed for it; with none sent (a stream-key
+// destination with no linked account) the active scene collection is the only
+// name the session has.
+std::string BuildSessionTitle(const std::vector<History::DestinationRecord> &destinations)
+{
+	for (const History::DestinationRecord &d : destinations) {
+		if (!d.title.empty()) {
+			return d.title;
+		}
+	}
+	const SceneCollectionRecord *active = g_sceneCollections.Active();
+	return active ? active->name : std::string();
+}
+
+// "failed" only when every destination ended in error -- one dead destination out
+// of four is a partial outage the per-destination rows already record, not a
+// failed broadcast.
+std::string SessionEndReason(const MultistreamEngine &engine)
+{
+	bool sawAny = false;
+	for (const MultistreamEngine::OutputStatus &st : engine.Statuses()) {
+		sawAny = true;
+		if (st.state != MultistreamEngine::State::Error) {
+			return "ended";
+		}
+	}
+	return sawAny ? "failed" : "ended";
+}
+
+// Map the stats snapshot onto a health sample. The field names come from
+// BuildStatsSnapshot; bitrate and drops sum across destinations while congestion
+// takes the worst, since one congested destination is the problem worth seeing.
+History::HealthSample SampleFromSnapshot(const Bridge::json &snapshot)
+{
+	History::HealthSample s;
+	if (!snapshot.is_object()) {
+		return s;
+	}
+	if (snapshot.contains("sampledAtMs") && snapshot["sampledAtMs"].is_number()) {
+		s.tMs = snapshot["sampledAtMs"].get<int64_t>();
+	}
+	if (snapshot.contains("general") && snapshot["general"].is_object()) {
+		const Bridge::json &g = snapshot["general"];
+		if (g.contains("cpu") && g["cpu"].is_number()) {
+			s.cpuPct = g["cpu"].get<double>();
+		}
+		if (g.contains("encodeSkipped") && g["encodeSkipped"].is_number()) {
+			s.cumulativeEncodeSkipped = g["encodeSkipped"].get<int64_t>();
+		}
+	}
+	if (snapshot.contains("outputs") && snapshot["outputs"].is_array()) {
+		for (const Bridge::json &o : snapshot["outputs"]) {
+			if (!o.is_object()) {
+				continue;
+			}
+			if (o.contains("bitrateKbps") && o["bitrateKbps"].is_number()) {
+				s.bitrateKbps += static_cast<int64_t>(o["bitrateKbps"].get<double>());
+			}
+			if (o.contains("droppedFrames") && o["droppedFrames"].is_number()) {
+				s.cumulativeDroppedFrames += o["droppedFrames"].get<int64_t>();
+			}
+			if (o.contains("congestionPct") && o["congestionPct"].is_number()) {
+				s.congestionPct = std::max(s.congestionPct, o["congestionPct"].get<double>());
+			}
+		}
+	}
+	return s;
+}
+
 void LoadMultistreamModel()
 {
 	g_canvases.Load();
@@ -552,6 +693,16 @@ VirtualCamManager &ObsBootstrap::VirtualCam()
 ::StreamMetaStore &ObsBootstrap::StreamMeta()
 {
 	return g_streamMeta;
+}
+
+History::SessionStore &ObsBootstrap::Sessions()
+{
+	return g_sessions;
+}
+
+History::SessionRecorder &ObsBootstrap::Recorder()
+{
+	return g_recorder;
 }
 
 GeneralSettings &ObsBootstrap::General()
@@ -927,6 +1078,38 @@ bool ObsBootstrap::Start()
 	// falling back to the main canvas (libobs obs_load_source_type). Bindings load
 	// from the active collection's path, so this must run after the registry +
 	// bindings migration above.
+	// History opens with the other stores, and recovery runs before anything can
+	// read: a session that never ended must already say so by the time the UI asks.
+	// A failure here is logged and the app continues -- history degrades to
+	// unavailable, streaming does not.
+	const std::string historyPath = MultistreamBasicPath("history.db");
+	// MultistreamBasicPath only joins strings. SaveJsonAtomic is what creates the
+	// directory for the JSON stores, and nothing on this path goes through it, so a
+	// first run with no basic/ yet would fail to open.
+	os_mkdirs(std::filesystem::path(historyPath).parent_path().u8string().c_str());
+	if (!g_historyDb.Open(historyPath)) {
+		HostLog("[history] database unavailable: " + g_historyDb.LastError());
+	} else if (!g_sessions.Attach(historyPath) || !g_recorder.Attach(historyPath)) {
+		HostLog("[history] store unavailable: " + g_sessions.LastError());
+	} else {
+		const int recovered = g_sessions.RecoverCrashed();
+		if (recovered > 0) {
+			HostLog("[history] recovered " + std::to_string(recovered) +
+				" session(s) that ended without a clean stop");
+		}
+	}
+
+	// Feed the recorder off the one host-side sampler rather than sampling again:
+	// the encode counters are rebased against shared mutable baselines, so a second
+	// reader would split the deltas with the Stats dock. Registered unconditionally
+	// -- with no database the recorder never records and this no-ops.
+	Bridge::SetStatsTickObserver([](const Bridge::json &snapshot) {
+		if (!g_recorder.IsRecording()) {
+			return;
+		}
+		g_recorder.OnSample(SampleFromSnapshot(snapshot));
+	});
+
 	LoadMultistreamModel();
 	g_canvasRuntime = std::make_unique<::CanvasRuntime>(g_canvases);
 	// Reuse OutputBindings::AnyEnabledForCanvas as the "has enabled destination"
@@ -1091,6 +1274,17 @@ bool ObsBootstrap::Start()
 			// destination that was switched off deliberately. Per-destination rather than
 			// a hub re-Start so the account's sibling orientations keep their transports.
 			Chat::Hub().StopDestination(dest);
+
+			// How this destination finished, onto its session row. Idempotent
+			// by contract: a deliberate stop whose stop signal also fires
+			// reports the same ending twice.
+			for (const MultistreamEngine::OutputStatus &st : g_multistream->Statuses()) {
+				if (st.bindingUuid == bindingUuid) {
+					g_recorder.OnDestinationEnded(
+						bindingUuid, MultistreamEngine::StateName(st.state), st.lastError);
+					break;
+				}
+			}
 		});
 	};
 
@@ -1105,6 +1299,31 @@ bool ObsBootstrap::Start()
 		// it itself before this, so liveMutex is provably not held.
 		g_anyOutputLive.store(g_multistream->AnyLive(), std::memory_order_release);
 		SyncProcessPriorityToLiveState();
+
+		// Session edges ride the same transition. There is no "broadcast began"
+		// callback -- this is the edge. Marshaled because this fires from the
+		// libobs signal thread while the history database is UI-thread-only, and
+		// the live state is re-read there rather than captured: several
+		// transitions can coalesce behind one posted task, so the guard has to
+		// test what is true when it runs.
+		AsyncTask::PostToUi([] {
+			if (!MultistreamAlive()) {
+				return;
+			}
+			const bool live = g_multistream->AnyLive();
+			if (live && !g_recorder.IsRecording()) {
+				History::SessionStart start;
+				start.startedAtMs = TimeUtil::NowMs();
+				start.destinations = LiveDestinations(*g_multistream);
+				start.canvasUuids = LiveCanvasUuids(*g_multistream);
+				start.title = BuildSessionTitle(start.destinations);
+				g_recorder.Begin(start);
+				Bridge::EmitEvent(EventNames::kSessionsChanged, Bridge::json::object());
+			} else if (!live && g_recorder.IsRecording()) {
+				g_recorder.End(TimeUtil::NowMs(), SessionEndReason(*g_multistream));
+				Bridge::EmitEvent(EventNames::kSessionsChanged, Bridge::json::object());
+			}
+		});
 	};
 
 	// Build the canvas update/reconciliation service over the shared model, runtime,
@@ -3550,6 +3769,20 @@ void ObsBootstrap::Stop(void (*drainCefTasks)())
 		// The publish seam is gone; nothing is live once the engine is down.
 		g_anyOutputLive.store(false, std::memory_order_release);
 	}
+
+	// History last among the seams above, once nothing can fire into it: the
+	// callbacks are disconnected and the sampler's observer is dropped here.
+	Bridge::SetStatsTickObserver(nullptr);
+	if (g_recorder.IsRecording()) {
+		// A clean shutdown mid-broadcast is still a clean end. Leaving the row
+		// open would have the next launch report a crash that never happened,
+		// which is worse than useless -- it is a false alarm in exactly the
+		// signal the feature exists to provide.
+		g_recorder.End(TimeUtil::NowMs(), "ended");
+	}
+	g_recorder.Detach();
+	g_sessions.Detach();
+	g_historyDb.Close();
 
 	// Stop + release the virtual-camera output while libobs is still up, before the
 	// canvas mixes it feeds are destroyed below. Shutdown() disconnects its signals

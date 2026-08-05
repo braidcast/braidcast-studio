@@ -38,6 +38,11 @@ class StreamMetaStore;
 struct GeneralSettings;
 struct AdvancedSettings;
 
+namespace History {
+class SessionStore;
+class SessionRecorder;
+} // namespace History
+
 namespace ObsBootstrap {
 bool Start();
 
@@ -68,6 +73,14 @@ StreamProfileStore &StreamProfiles();
 // to output_bindings.json). Owned by the bootstrap; exposed so the bridge can
 // serve output-binding CRUD over it. Valid between Start() and Stop().
 OutputBindingStore &OutputBindings();
+
+// The stream-history database's read path. Valid between Start() and Stop().
+// Returns an unattached store when the database could not be opened -- callers
+// must tolerate empty results rather than assuming history exists.
+History::SessionStore &Sessions();
+
+// The broadcast-time writer. Valid between Start() and Stop().
+History::SessionRecorder &Recorder();
 
 // The per-scene-collection scene-link model (main-scene -> per-canvas scene
 // activation map, persisted to scenes/<slug>.scene_links.json). Owned by the
