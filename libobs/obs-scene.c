@@ -418,7 +418,11 @@ static inline void item_canvas_scale(struct vec2 *dst, const obs_sceneitem_t *it
 
 	float x, y;
 	get_scene_dimensions(item, &x, &y);
-	float scale_factor = y / item->scale_ref.y;
+	/* A canvas with no mix reports 0x0, so an item added while its canvas is inert
+	 * records a zero reference. Rescaling against it yields infinity and the item
+	 * silently stops drawing forever; treat the recorded scale as already absolute
+	 * until update_item_transform can adopt a real canvas size. */
+	float scale_factor = item->scale_ref.y > 0.0f ? y / item->scale_ref.y : 1.0f;
 	vec2_mulf(dst, &item->scale, scale_factor);
 }
 
@@ -432,7 +436,9 @@ static inline void item_relative_scale(struct vec2 *dst, const struct vec2 *v, c
 
 	float x, y;
 	get_scene_dimensions(item, &x, &y);
-	float scale_factor = item->scale_ref.y / y;
+	/* Mirrors item_canvas_scale's guard, and additionally covers a live canvas that
+	 * currently has no mix (y == 0), which would divide the other way. */
+	float scale_factor = (y > 0.0f && item->scale_ref.y > 0.0f) ? item->scale_ref.y / y : 1.0f;
 	vec2_mulf(dst, v, scale_factor);
 }
 
@@ -634,6 +640,18 @@ static void update_item_transform(struct obs_scene_item *item, bool update_tex)
 
 	vec2_zero(&base_origin);
 	vec2_zero(&origin);
+
+	/* Adopt a real canvas size the first time one exists. An item added while its
+	 * canvas had no mix recorded a zero reference, and that zero also persists to
+	 * disk, so this is what lets such an item -- and a collection already saved with
+	 * one -- start drawing again instead of staying invisible for good. */
+	if (!item->absolute_coordinates && item->scale_ref.y <= 0.0f) {
+		float ref_x, ref_y;
+		get_scene_dimensions(item, &ref_x, &ref_y);
+		if (ref_y > 0.0f) {
+			vec2_set(&item->scale_ref, ref_x, ref_y);
+		}
+	}
 
 	if (!item->absolute_coordinates) {
 		item_canvas_scale(&scale, item);
@@ -1848,6 +1866,12 @@ static inline void duplicate_item_data(struct obs_scene_item *dst, struct obs_sc
 	dst->pos = src->pos;
 	dst->rot = src->rot;
 	dst->scale = src->scale;
+	/* scale_ref is half of the relative scale, not an independent field: scale is
+	 * expressed against the canvas size recorded here, so copying one without the
+	 * other silently reinterprets it. obs_scene_add_internal seeds dst's ref from
+	 * whichever canvas the copy is born on, which is 0x0 whenever that canvas has
+	 * no mix -- and the item then never draws again. */
+	dst->scale_ref = src->scale_ref;
 	dst->align = src->align;
 	dst->last_width = src->last_width;
 	dst->last_height = src->last_height;
