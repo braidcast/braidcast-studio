@@ -2,6 +2,7 @@
 
 #include "history/Db.hpp"
 #include "history/Schema.hpp"
+#include "history/SessionRecorder.hpp"
 #include "history/SessionStore.hpp"
 
 #include <string>
@@ -254,6 +255,133 @@ static void test_remove_takes_children_with_it(void **state)
 	assert_int_equal((int)db.ScalarInt("SELECT COUNT(*) FROM session_health"), 0);
 }
 
+// The recorder takes its clock and its samples as inputs so the whole write
+// path is testable without a broadcast, a CEF message loop, or a real second
+// passing.
+static void test_recorder_opens_and_closes_a_session(void **state)
+{
+	(void)state;
+	const std::string path = TempDbPath("recorder_basic.db");
+	History::Db db;
+	assert_true(db.Open(path));
+
+	History::SessionRecorder rec;
+	assert_true(rec.Attach(path));
+
+	History::SessionStart start;
+	start.title = "Tuesday";
+	start.canvasUuids = {"cv-1"};
+	start.startedAtMs = 1'000'000;
+	History::DestinationRecord dest;
+	dest.bindingUuid = "b1";
+	dest.profileId = "p1";
+	dest.platform = "youtube";
+	dest.accountLabel = "Main";
+	dest.title = "Sent title";
+	start.destinations.push_back(dest);
+
+	const std::string id = rec.Begin(start);
+	assert_false(id.empty());
+	assert_true(rec.IsRecording());
+
+	History::SessionStore store;
+	assert_true(store.Attach(path));
+	// While running, ended_at is null. That is not a placeholder -- it is the
+	// crash marker, and it must be true on disk during the broadcast.
+	assert_false(store.Get(id)->endedAt.has_value());
+
+	rec.End(1'003'600, "ended");
+	assert_false(rec.IsRecording());
+
+	const auto after = store.Get(id);
+	assert_true(after->endedAt.has_value());
+	assert_int_equal((int)*after->endedAt, 1'003'600);
+	assert_string_equal(after->endReason.value().c_str(), "ended");
+	assert_string_equal(store.DestinationsFor(id)[0].title.c_str(), "Sent title");
+}
+
+static void test_recorder_downsamples_to_ten_seconds(void **state)
+{
+	(void)state;
+	const std::string path = TempDbPath("recorder_downsample.db");
+	History::Db db;
+	assert_true(db.Open(path));
+	History::SessionRecorder rec;
+	assert_true(rec.Attach(path));
+
+	History::SessionStart start;
+	start.startedAtMs = 0;
+	const std::string id = rec.Begin(start);
+
+	// 25 one-second ticks. At a 10s interval that is samples at t=0, 10s, 20s.
+	for (int i = 0; i < 25; i++) {
+		History::HealthSample s;
+		s.tMs = (int64_t)i * 1000;
+		s.bitrateKbps = 6000;
+		s.cumulativeDroppedFrames = i;
+		s.cumulativeEncodeSkipped = 0;
+		s.congestionPct = 0.0;
+		s.cpuPct = 12.0;
+		rec.OnSample(s);
+	}
+	rec.End(25'000, "ended");
+
+	History::SessionStore store;
+	assert_true(store.Attach(path));
+	const auto health = store.HealthFor(id);
+	assert_int_equal((int)health.size(), 3);
+	assert_int_equal((int)health[0].t, 0);
+	assert_int_equal((int)health[1].t, 10'000);
+	assert_int_equal((int)health[2].t, 20'000);
+	// Stored as the delta over the interval, not the cumulative total: ten
+	// ticks of one dropped frame each is ten, not the running sum.
+	assert_int_equal((int)health[1].droppedFrames, 10);
+}
+
+static void test_recorder_survives_a_counter_reset(void **state)
+{
+	(void)state;
+	const std::string path = TempDbPath("recorder_reset.db");
+	History::Db db;
+	assert_true(db.Open(path));
+	History::SessionRecorder rec;
+	assert_true(rec.Attach(path));
+	History::SessionStart start;
+	start.startedAtMs = 0;
+	const std::string id = rec.Begin(start);
+
+	History::HealthSample a;
+	a.tMs = 0;
+	a.cumulativeDroppedFrames = 100;
+	rec.OnSample(a);
+	// The user hit stats.reset: the counter goes backwards. A naive
+	// subtraction would store a negative delta.
+	History::HealthSample b;
+	b.tMs = 10'000;
+	b.cumulativeDroppedFrames = 3;
+	rec.OnSample(b);
+	rec.End(20'000, "ended");
+
+	History::SessionStore store;
+	assert_true(store.Attach(path));
+	const auto health = store.HealthFor(id);
+	assert_int_equal((int)health.back().droppedFrames, 3);
+}
+
+static void test_recorder_ignores_samples_when_not_recording(void **state)
+{
+	(void)state;
+	const std::string path = TempDbPath("recorder_idle.db");
+	History::Db db;
+	assert_true(db.Open(path));
+	History::SessionRecorder rec;
+	assert_true(rec.Attach(path));
+	History::HealthSample s;
+	s.tMs = 1000;
+	rec.OnSample(s); // no Begin() -- must be a no-op, not a crash
+	assert_int_equal((int)db.ScalarInt("SELECT COUNT(*) FROM session_health"), 0);
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -269,6 +397,10 @@ int main(void)
 		cmocka_unit_test(test_recovery_leaves_clean_sessions_alone),
 		cmocka_unit_test(test_list_is_newest_first_and_paged),
 		cmocka_unit_test(test_remove_takes_children_with_it),
+		cmocka_unit_test(test_recorder_opens_and_closes_a_session),
+		cmocka_unit_test(test_recorder_downsamples_to_ten_seconds),
+		cmocka_unit_test(test_recorder_survives_a_counter_reset),
+		cmocka_unit_test(test_recorder_ignores_samples_when_not_recording),
 	};
 	return cmocka_run_group_tests(tests, nullptr, nullptr);
 }

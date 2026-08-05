@@ -9,6 +9,17 @@ find_package(CMocka CONFIG REQUIRED)
 
 set(_fe "${CMAKE_SOURCE_DIR}/frontend")
 
+# nlohmann/json is header-only and ships in the obs-deps prefix without a target,
+# so every consumer has to find the prefix itself. Mirrors the frontend's
+# resolution. SYSTEM so the project's global /W4 /WX does not flag its headers.
+function(_add_nlohmann_include _target)
+  foreach(_prefix IN LISTS CMAKE_PREFIX_PATH)
+    if(EXISTS "${_prefix}/include/nlohmann/json.hpp")
+      target_include_directories(${_target} SYSTEM PRIVATE "${_prefix}/include")
+    endif()
+  endforeach()
+endfunction()
+
 # The persistence layer under test, compiled directly into the test binary so the
 # REAL SceneCollection::Save/Load + the REAL multistream stores run. These TUs
 # reference no Bridge/CEF/ObsBootstrap symbols; bootstrap_shim.cpp supplies the
@@ -39,13 +50,8 @@ target_include_directories(${_target} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${_
 # Third-party headers as SYSTEM so the project's global /W4 /WX does not flag them.
 target_include_directories(${_target} SYSTEM PRIVATE ${CMOCKA_INCLUDE_DIR})
 
-# nlohmann/json (header-only) backs CanvasStore.hpp's ToJson/FromJson; it ships in
-# the obs-deps prefix include dir. Mirror the frontend's resolution.
-foreach(_prefix IN LISTS CMAKE_PREFIX_PATH)
-  if(EXISTS "${_prefix}/include/nlohmann/json.hpp")
-    target_include_directories(${_target} SYSTEM PRIVATE "${_prefix}/include")
-  endif()
-endforeach()
+# nlohmann/json backs CanvasStore.hpp's ToJson/FromJson.
+_add_nlohmann_include(${_target})
 
 target_link_libraries(${_target} PRIVATE OBS::libobs cmocka::cmocka)
 
@@ -82,6 +88,7 @@ set(
   _history_sources
   "${_fe}/src/history/Db.cpp"
   "${_fe}/src/history/Migrations.cpp"
+  "${_fe}/src/history/SessionRecorder.cpp"
   "${_fe}/src/history/SessionStore.cpp"
 )
 
@@ -101,6 +108,9 @@ target_include_directories(${_target} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${_
 # them. frontend/deps carries sqlite_orm/sqlite_orm.h (header-only, no target);
 # sqlite3.h itself arrives through OBS::sqlite's own SYSTEM PUBLIC include dir.
 target_include_directories(${_target} SYSTEM PRIVATE ${CMOCKA_INCLUDE_DIR} "${CMAKE_SOURCE_DIR}/frontend/deps")
+
+# SessionRecorder.cpp serializes canvas uuid / tag lists through nlohmann/json.
+_add_nlohmann_include(${_target})
 
 # Link the OBS:: alias, never the raw braidcast-sqlite target: braidcast-sqlite
 # carries the compile definitions deciding real SQLite semantics (e.g.
