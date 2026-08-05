@@ -46,6 +46,7 @@ export class DockTab implements ITabRenderer {
   private _params: Record<string, unknown> = {};
   private _panelId = "";
   private _onClose: (() => void) | undefined;
+  private _titleSub: { dispose(): void } | undefined;
 
   constructor() {
     this._element = document.createElement("div");
@@ -109,6 +110,15 @@ export class DockTab implements ITabRenderer {
 
     this._panelId = params.api.id;
     this._onClose = () => params.api.close();
+
+    // `params.title` is read once, at construction. Renaming a canvas reaches the panel via
+    // api.setTitle (canvasReconciler), which updates dockview's own model and fires this
+    // event -- but nothing here was listening, so the header kept the name it was built
+    // with until the panel was closed and rebuilt. update() cannot stand in: it carries
+    // panel PARAMS, and the title is not one of them.
+    this._titleSub = params.api.onDidTitleChange((e) => {
+      this._title.textContent = e.title;
+    });
   }
 
   update(event: PanelUpdateEvent): void {
@@ -142,6 +152,8 @@ export class DockTab implements ITabRenderer {
   };
 
   dispose(): void {
+    this._titleSub?.dispose();
+    this._titleSub = undefined;
     for (const [btn, onClick] of [
       [this._detachBtn, this.handleDetach],
       [this._closeBtn, this.handleClose],
