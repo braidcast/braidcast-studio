@@ -3,11 +3,14 @@
   import EmptyState from "$lib/ui/EmptyState.svelte";
   import Icon from "$lib/ui/Icon.svelte";
   import HistoryCard from "./HistoryCard.svelte";
+  import SessionDetail from "./SessionDetail.svelte";
 
   sessionsStore.start();
 
-  function onOpen(_id: string): void {
-    // The detail view lands in the next task; the card is already the affordance.
+  let openId = $state<string | null>(null);
+
+  function onOpen(id: string): void {
+    openId = id;
   }
 </script>
 
@@ -32,6 +35,10 @@
     {/each}
   {/if}
 </div>
+
+{#if openId}
+  <SessionDetail id={openId} onClose={() => (openId = null)} />
+{/if}
 
 <style>
   .list {
