@@ -1327,11 +1327,16 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 	// 6. Ingest writeback -- put the CDN endpoint + key into the linked profile so
 	// the modal's streaming.start streams to YouTube. Blocks on the UI-thread write
 	// so the key is present before the caller triggers go-live. CRITICAL.
-	// Type, never the address: for HLS the ingestion address carries the stream key as a
-	// query parameter, and this file must not put a key in the log.
+	// The address is logged with every value masked, because for HLS it carries the stream
+	// key as a query parameter and this file must not put a key in the log. The SHAPE is the
+	// part worth having: the output does not push to this address as returned -- rtmp_common
+	// rebuilds it from the service's own template -- so an address whose host or path differs
+	// from what services.json expects would be silently discarded, and nothing else in the
+	// log would show it.
 	HostLog("[oauth] YouTube dest=" + DestinationKey(dest) + " bound broadcast " + broadcastId + " to " +
 		ingestionType + " ingest stream " + streamId + " (profile protocol " +
-		(profileProtocol.empty() ? "unset" : profileProtocol) + ")");
+		(profileProtocol.empty() ? "unset" : profileProtocol) + ", API ingest address " +
+		ingestionAddress.substr(0, ingestionAddress.find('?')) + ")");
 	if (!WriteIngestToProfile(profileUuid, ingestionAddress, streamName)) {
 		err = "failed to write the YouTube ingest endpoint into the stream profile";
 		deleteOrphanBroadcast(broadcastId);
