@@ -1706,6 +1706,25 @@ std::string FreeSceneNameOnCanvas(const std::string &baseName, const std::string
 	}
 }
 
+// A name libobs will insert into `canvas`'s own source list verbatim: `baseName`,
+// else "<name> N" from 2.
+//
+// Narrower than FreeSceneNameOnCanvas, which decides what a scene should be CALLED
+// and so consults the global namespace for the Default canvas. This one answers only
+// "will obs_context_data_insert_name rename it on the way in", and that dedupe always
+// runs against canvas->sources: a scene requires a canvas, so obs_source_init_finalize
+// routes every one of them into that list rather than the global one.
+std::string FreeNameInCanvasSources(const std::string &baseName, obs_canvas_t *canvas)
+{
+	for (int n = 1;; ++n) {
+		std::string candidate = n == 1 ? baseName : baseName + " " + std::to_string(n);
+		OBSSourceAutoRelease taken = obs_canvas_get_source_by_name(canvas, candidate.c_str());
+		if (!taken) {
+			return candidate;
+		}
+	}
+}
+
 // The shared duplicate-to-canvas core: deep-copies `sceneName` (on `srcCanvasUuid`,
 // "" = Default) onto `destCanvasUuid` ("" = Default) via OBS_SCENE_DUP_COPY (scene
 // filters + every item's source + that source's own filters, all fresh copies) then
@@ -1757,12 +1776,28 @@ bool DuplicateSceneToCanvasCore(const std::string &sceneName, const std::string 
 		},
 		&origItemUuids);
 
-	obs_scene_t *dup = obs_scene_duplicate(srcSceneObj, newName.c_str(), OBS_SCENE_DUP_COPY); // new ref
+	// obs_scene_duplicate mints the copy on the SOURCE scene's canvas -- create_id
+	// takes scene->source->canvas -- and only the obs_canvas_move_scene below puts it
+	// on the destination. libobs renames rather than refuses on a duplicate-name
+	// insert, so creating it under `newName` (free on the destination, but held by the
+	// original on the source) had it suffixed at birth and the move then carried the
+	// suffix across. Mint it under a name free on the SOURCE canvas and rename once it
+	// lives on the destination: obs_context_data_setname_ht dedupes against the
+	// destination's own list, where FreeSceneNameOnCanvas established `newName` is free.
+	// The rename must precede the obs_save_source below, or undo/redo restores the
+	// transient name.
+	OBSCanvasAutoRelease srcCanvas = obs_source_get_canvas(srcScene);
+	const std::string createName = srcCanvas ? FreeNameInCanvasSources(newName, srcCanvas) : newName;
+
+	obs_scene_t *dup = obs_scene_duplicate(srcSceneObj, createName.c_str(), OBS_SCENE_DUP_COPY); // new ref
 	if (!dup) {
 		error = "obs_scene_duplicate failed";
 		return false;
 	}
 	obs_canvas_move_scene(dup, dest.canvas);
+	if (createName != newName) {
+		obs_source_set_name(obs_scene_get_source(dup), newName.c_str());
+	}
 
 	// Serialize every genuinely duplicated child source (uuid + full data) BEFORE
 	// releasing `dup`, so undo/redo can restore them exactly, mirroring
