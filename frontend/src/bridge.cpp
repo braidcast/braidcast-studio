@@ -49,6 +49,9 @@
 #include "mcp/McpServer.hpp"
 #include "windowing/interact_window.hpp"
 #include "util/json_util.hpp"
+#include "history/SessionRecorder.hpp"
+#include "history/SessionStore.hpp"
+#include "history/Thumbnails.hpp"
 #include "util/op_error.hpp"
 #include "util/time_util.hpp"
 #include "obs_bootstrap.hpp"
@@ -7377,6 +7380,117 @@ void SampleStatsTick()
 	CefPostDelayedTask(TID_UI, base::BindOnce(&SampleStatsTick), kStatsSampleIntervalMs);
 }
 
+// One session row, shaped for the UI. Written once because the list and the detail
+// view are the same object with health attached -- a second copy is how the two
+// drift. The JSON-array columns are re-parsed rather than passed through as
+// strings, so the web side never has to know they were stored that way.
+json SessionToJson(const History::Session &s, const std::vector<History::SessionDestination> &destinations)
+{
+	json canvasUuids = json::array();
+	const json parsed = JsonUtil::ParseJson(s.canvasUuids);
+	if (parsed.is_array()) {
+		canvasUuids = parsed;
+	}
+
+	json dests = json::array();
+	for (const History::SessionDestination &d : destinations) {
+		json tags = json::array();
+		const json parsedTags = JsonUtil::ParseJson(d.tags);
+		if (parsedTags.is_array()) {
+			tags = parsedTags;
+		}
+		dests.push_back(json{{"profileId", d.profileId},
+				     {"platform", d.platform},
+				     {"accountLabel", d.accountLabel},
+				     {"title", d.title},
+				     {"category", d.category},
+				     {"tags", std::move(tags)},
+				     {"finalState", d.finalState},
+				     {"error", d.error}});
+	}
+
+	// endedAt stays null while running: it IS the crash marker, so collapsing it to
+	// 0 here would make a live session read as one that ended at the epoch.
+	return json{{"id", s.id},
+		    {"startedAt", s.startedAt},
+		    {"endedAt", s.endedAt.has_value() ? json(*s.endedAt) : json(nullptr)},
+		    {"endReason", s.endReason.value_or("")},
+		    {"title", s.title},
+		    {"canvasUuids", std::move(canvasUuids)},
+		    {"thumbPath", s.thumbPath.value_or("")},
+		    {"destinations", std::move(dests)}};
+}
+
+// An unattached store yields an empty array rather than an error: history is
+// visibly unavailable and the app keeps streaming, which is the degraded mode the
+// feature is specified to have.
+bool MethodSessionsList(const json &params, json &result, std::string & /*error*/)
+{
+	const int limit = static_cast<int>(JsonUtil::NumLoose(params, "limit", 50));
+	const int offset = static_cast<int>(JsonUtil::NumLoose(params, "offset", 0));
+	History::SessionStore &store = ObsBootstrap::Sessions();
+	json rows = json::array();
+	for (const History::Session &s : store.List(limit, offset)) {
+		rows.push_back(SessionToJson(s, store.DestinationsFor(s.id)));
+	}
+	result = std::move(rows);
+	return true;
+}
+
+bool MethodSessionsGet(const json &params, json &result, std::string &error)
+{
+	std::string id;
+	if (!RequireStr(params, "sessions.get", "id", id, error)) {
+		return false;
+	}
+	History::SessionStore &store = ObsBootstrap::Sessions();
+	const auto session = store.Get(id);
+	if (!session) {
+		error = "no session with id '" + id + "'";
+		return false;
+	}
+	result = SessionToJson(*session, store.DestinationsFor(id));
+	json health = json::array();
+	for (const History::SessionHealth &h : store.HealthFor(id)) {
+		health.push_back(json{{"t", h.t},
+				      {"bitrateKbps", h.bitrateKbps},
+				      {"droppedFrames", h.droppedFrames},
+				      {"congestionPct", h.congestionPct},
+				      {"encodeSkipped", h.encodeSkipped},
+				      {"cpuPct", h.cpuPct}});
+	}
+	result["health"] = std::move(health);
+	return true;
+}
+
+bool MethodSessionsDelete(const json &params, json &result, std::string &error)
+{
+	std::string id;
+	if (!RequireStr(params, "sessions.delete", "id", id, error)) {
+		return false;
+	}
+	if (ObsBootstrap::Recorder().CurrentId() == id) {
+		error = "that session is still recording";
+		return false;
+	}
+	History::SessionStore &store = ObsBootstrap::Sessions();
+	// Read the thumbnail before the row goes: the foreign-key cascade takes the
+	// child rows, but SQLite knows nothing about a file on disk.
+	const auto session = store.Get(id);
+	const std::string thumb = session ? session->thumbPath.value_or("") : std::string();
+	if (!store.Remove(id)) {
+		error = "failed to delete the session: " + store.LastError();
+		return false;
+	}
+	if (!thumb.empty()) {
+		std::error_code ec;
+		std::filesystem::remove(std::filesystem::u8path(History::ThumbnailDir() + "/" + thumb), ec);
+	}
+	EmitEvent(EventNames::kSessionsChanged, json::object());
+	result = json{{"removed", id}};
+	return true;
+}
+
 // Echo the sampler's newest sample. Sampling inline covers only the window before the
 // first tick has run (a self-test dispatching stats.get during bootstrap).
 bool MethodStatsGet(const json & /*params*/, json &result, std::string & /*error*/)
@@ -11333,6 +11447,9 @@ void Init()
 		{"undo.state", MethodUndoState},
 		{"stats.get", MethodStatsGet},
 		{"stats.reset", MethodStatsReset},
+		{"sessions.list", MethodSessionsList},
+		{"sessions.get", MethodSessionsGet},
+		{"sessions.delete", MethodSessionsDelete},
 		{"audio.list", MethodAudioList},
 		{"audio.setDeflection", MethodAudioSetDeflection},
 		{"audio.setMuted", MethodAudioSetMuted},

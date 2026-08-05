@@ -903,6 +903,50 @@ export interface Hotkey {
 
 // --- stats (perf monitoring, general + per-output) --------------------------
 
+/** One destination of a past broadcast, with the metadata that was actually sent
+ * to the platform rather than what the profile says today. */
+export interface SessionDestinationInfo {
+  profileId: string;
+  platform: string;
+  accountLabel: string;
+  title: string;
+  category: string;
+  tags: string[];
+  finalState: string;
+  error: string;
+}
+
+/** One persisted health sample. Frame counts are the delta over the interval, not
+ * a running total. */
+export interface SessionHealthPoint {
+  t: number;
+  bitrateKbps: number;
+  droppedFrames: number;
+  congestionPct: number;
+  encodeSkipped: number;
+  cpuPct: number;
+}
+
+/** One past (or running) broadcast. */
+export interface SessionInfo {
+  id: string;
+  startedAt: number;
+  /** Null while running. A finished session always has one; see endReason. */
+  endedAt: number | null;
+  /** "ended" | "crashed" | "failed" */
+  endReason: string;
+  title: string;
+  canvasUuids: string[];
+  /** Empty when no frame was chosen. Relative to the thumbnail directory. */
+  thumbPath: string;
+  destinations: SessionDestinationInfo[];
+}
+
+/** A session plus its health track, as returned by sessions.get. */
+export interface SessionDetail extends SessionInfo {
+  health: SessionHealthPoint[];
+}
+
 /** General app/engine stats as reported in stats.get's `general`. */
 export interface GeneralStats {
   cpu: number;
@@ -1719,6 +1763,11 @@ export interface ObsMethods {
   // Rebase the "since reset" counters (render lag, encode skip, per-output drop) to
   // now, like OBS's Stats Reset. Instantaneous readings (cpu/fps/bitrate) are unaffected.
   "stats.reset": { ok: boolean };
+  // Stream history, newest first. Returns an empty array when the history database
+  // could not be opened -- history is visibly unavailable, streaming is unaffected.
+  "sessions.list": SessionInfo[];
+  "sessions.get": SessionDetail;
+  "sessions.delete": { removed: string };
   // Native projectors (standalone windows rendering a target on a monitor, P3).
   // listMonitors enumerates the displays a fullscreen projector can target. open
   // spawns a projector (fullscreen needs `monitor`); the window closes itself (Esc /
@@ -1884,6 +1933,9 @@ export interface ObsEvents {
   // One 1 Hz stats sample from the host's single sampler, pushed to EVERY browser so
   // each window (main and detached) renders the same numbers off the same host truth.
   "stats.changed": Stats;
+  // A session opened, closed, or was deleted. Carries no payload: the list is
+  // re-read, so a push that raced a delete cannot describe a row that is gone.
+  "sessions.changed": Record<string, never>;
   // Coalesced per-source audio levels, pushed at most ~30 Hz off the volmeter
   // callbacks. The UI maps dB -> meter width and applies peak hold.
   "audio.levels": { levels: AudioLevel[] };
