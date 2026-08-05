@@ -59,6 +59,19 @@ inline int64_t Rfc3339ToEpochMs(const std::string &iso)
 	return NowMs();
 }
 
+// Current UTC time as an RFC3339 instant ("2024-01-02T03:04:05Z"), the shape
+// YouTube's scheduledStartTime wants and the one Phase 3's scheduled start times
+// will need.
+inline std::string NowIso8601Utc()
+{
+	const std::time_t now = std::time(nullptr);
+	std::tm tm{};
+	gmtime_s(&tm, &now);
+	char buf[32];
+	std::strftime(buf, sizeof buf, "%Y-%m-%dT%H:%M:%SZ", &tm);
+	return std::string(buf);
+}
+
 } // namespace TimeUtil
 
 #endif // OBS_MULTISTREAM_FRONTEND_TIME_UTIL_HPP_

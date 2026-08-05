@@ -19,6 +19,7 @@
 #include "util/json_util.hpp"
 #include "util/op_error.hpp"
 #include "util/string_util.hpp"
+#include "util/time_util.hpp"
 #include "../log.hpp"
 #include "ui-config.h"
 
@@ -199,17 +200,6 @@ std::string ContentDigest(std::string_view bytes)
 }
 
 using StringUtil::ContainsCI;
-
-// Current UTC time as an RFC3339 instant (the scheduledStartTime YouTube wants).
-std::string NowIso8601Utc()
-{
-	const std::time_t now = std::time(nullptr);
-	std::tm tm{};
-	gmtime_s(&tm, &now);
-	char buf[32];
-	std::strftime(buf, sizeof buf, "%Y-%m-%dT%H:%M:%SZ", &tm);
-	return std::string(buf);
-}
 
 // Sniff an image MIME from the leading magic bytes (thumbnails.set wants the
 // real Content-Type on the raw upload). Defaults to image/png when unrecognized.
@@ -1066,7 +1056,7 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 				scheduledStart = Str(existing["snippet"], "scheduledStartTime");
 			}
 			if (scheduledStart.empty()) {
-				scheduledStart = NowIso8601Utc();
+				scheduledStart = TimeUtil::NowIso8601Utc();
 			}
 
 			// contentDetails (latency/dvr/autoStart) is intentionally omitted: those are
@@ -1123,7 +1113,8 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 	}
 
 	// 1. liveBroadcasts.insert -- the broadcast id doubles as the videoId. CRITICAL.
-	json snippet = json{{"title", title}, {"description", description}, {"scheduledStartTime", NowIso8601Utc()}};
+	json snippet =
+		json{{"title", title}, {"description", description}, {"scheduledStartTime", TimeUtil::NowIso8601Utc()}};
 	json status = json{{"privacyStatus", privacy}, {"selfDeclaredMadeForKids", madeForKids}};
 	json contentDetails = json{
 		{"latencyPreference", latency},
