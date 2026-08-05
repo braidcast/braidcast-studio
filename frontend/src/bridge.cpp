@@ -155,6 +155,13 @@ std::atomic<uint64_t> g_oauthGen{0};
 std::mutex g_browser_mutex;
 std::vector<CefRefPtr<CefBrowser>> g_browsers;
 
+// Metadata a platform has accepted, keyed by stream profile uuid, waiting for a
+// session to open and consume it. Written from the async method lane (streamMeta.set
+// runs off-thread through RunAsyncMethod) and read on the UI thread when a broadcast
+// begins, so it needs its own lock rather than a thread assertion.
+std::mutex g_sentMetadataMutex;
+std::unordered_map<std::string, json> g_sentMetadata;
+
 // Build the multistream status JSON array (one object per enabled binding) from
 // the engine's current Statuses(). The state enum is carried as its lowercase
 // name (StateName); the Svelte side maps it to a status-dot color.
@@ -10582,6 +10589,11 @@ bool MethodStreamMetaSet(const json &params, json &result, std::string &error)
 		error = err;
 		return false;
 	}
+	// The go-live prelude is the only push where the values are known to have been
+	// sent for this broadcast; a standalone "Edit stream info" is not a session.
+	if (goingLive) {
+		RecordSentMetadata(profileUuid, fields);
+	}
 	EmitEvent(EventNames::kStreamMetaChanged, json{{"profileUuid", profileUuid}});
 	result = json{{"ok", true}};
 	return true;
@@ -11580,6 +11592,30 @@ bool DispatchAsync(const std::string &method, const json &params,
 	DBG(LogCat::Bridge, "dispatch %s (async)", method.c_str());
 	it->second(params, callback);
 	return true;
+}
+
+void SetStatsTickObserver(std::function<void(const json &)> observer)
+{
+	CEF_REQUIRE_UI_THREAD();
+	g_statsTickObserver = std::move(observer);
+}
+
+void RecordSentMetadata(const std::string &profileUuid, const json &fields)
+{
+	std::lock_guard<std::mutex> lock(g_sentMetadataMutex);
+	g_sentMetadata[profileUuid] = fields;
+}
+
+json TakeSentMetadata(const std::string &profileUuid)
+{
+	std::lock_guard<std::mutex> lock(g_sentMetadataMutex);
+	const auto it = g_sentMetadata.find(profileUuid);
+	if (it == g_sentMetadata.end()) {
+		return json::object();
+	}
+	json out = std::move(it->second);
+	g_sentMetadata.erase(it);
+	return out;
 }
 
 void EmitEvent(const std::string &name, const json &payload)

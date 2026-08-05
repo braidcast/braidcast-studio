@@ -62,6 +62,16 @@ bool DispatchAsync(const std::string &method, const json &params,
 // there. payload is any JSON value (object/array/scalar/null).
 void EmitEvent(const std::string &name, const json &payload);
 
+// Record metadata at the moment it is accepted by a platform, keyed by stream
+// profile uuid. The go-live prelude is the only caller that matters; a session
+// opened moments later reads back what was actually sent, which is not the same
+// as what the profile says by the time anyone looks at the history.
+//
+// Thread-safe: the recording side runs on the async method lane, the taking side
+// on the UI thread. Taking clears the entry.
+void RecordSentMetadata(const std::string &profileUuid, const json &fields);
+json TakeSentMetadata(const std::string &profileUuid);
+
 // Register an in-process consumer of the 1 Hz stats tick. Called on the CEF UI
 // thread with the same snapshot pushed to JS, so a consumer never takes a
 // sample of its own -- the encode counters are rebased against shared mutable
