@@ -24,6 +24,28 @@ inline bool ContainsCI(const std::string &haystack, const std::string &needle)
 	return it != haystack.end();
 }
 
+// Whether `list` -- a delimited string, the shape libobs uses for its codec and protocol
+// lists ("h264;hevc") -- carries `item` as a whole entry. A plain substring test would
+// accept "h264" against a list holding only "h264_fallback", so the boundaries matter.
+inline bool ListContains(const std::string &list, const std::string &item, char delimiter)
+{
+	if (item.empty()) {
+		return false;
+	}
+	for (size_t start = 0; start <= list.size();) {
+		const size_t end = list.find(delimiter, start);
+		const size_t stop = end == std::string::npos ? list.size() : end;
+		if (list.compare(start, stop - start, item) == 0) {
+			return true;
+		}
+		if (end == std::string::npos) {
+			break;
+		}
+		start = end + 1;
+	}
+	return false;
+}
+
 } // namespace StringUtil
 
 #endif // OBS_MULTISTREAM_FRONTEND_STRING_UTIL_HPP_

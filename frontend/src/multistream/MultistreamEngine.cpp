@@ -1,6 +1,7 @@
 #include "MultistreamEngine.hpp"
 
 #include "settings/AdvancedSettings.hpp"
+#include "util/string_util.hpp"
 #include "log.hpp"
 #include "obs_bootstrap.hpp"
 
@@ -398,6 +399,26 @@ bool MultistreamEngine::StartOutput(const std::string &bindingUuid, std::string 
 	const char *type = GetStreamOutputType(lo->service);
 	if (!type) {
 		type = "rtmp_output";
+	}
+
+	// The canvas's codec has to be one this destination's output can carry. Nothing
+	// downstream enforces it: libobs publishes each output's codec list but never checks it
+	// (obs-output.c only exposes the accessors), and stock OBS did the check in the Qt
+	// frontend this fork deleted. So an AV1 canvas bound to ffmpeg_hls_muxer ("h264;hevc")
+	// started, connected, and uploaded happily -- YouTube received segments it could not
+	// decode, held the broadcast at "waiting for ingest" indefinitely, and the HLS muxer's
+	// ignore_io_errors meant nothing surfaced locally either. Hours to diagnose from the
+	// outside; the codec list makes it knowable before the first frame.
+	//
+	// Read from the OUTPUT, not from a table here: each output plugin declares what it
+	// accepts, so a new protocol or a codec added to an existing one needs no change.
+	if (const char *codec = obs_encoder_get_codec(ce->video)) {
+		const char *supported = obs_get_output_supported_video_codecs(type);
+		if (supported && *supported && !StringUtil::ListContains(supported, codec, ';')) {
+			return fail(std::string("this canvas encodes ") + codec + ", which " + p->PlatformName() +
+				    " cannot accept over this protocol (it takes " + supported +
+				    ") -- change the canvas encoder, or the destination's protocol");
+		}
 	}
 
 	// Reconcile the ingest server against the service the profile now targets. Two cases:
