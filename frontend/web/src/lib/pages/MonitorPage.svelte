@@ -68,6 +68,9 @@
     k: string;
     v: string;
     u: string;
+    // Frame counts behind the percentage. Its own line because the card clips overflow
+    // and the encode read carries a "worst of N" qualifier the unit slot cannot hold.
+    sub?: string;
     c: string;
     series: number[];
     domain?: [number, number];
@@ -115,14 +118,16 @@
       {
         k: "RENDER LAG",
         v: g.renderLagPct.toFixed(1),
-        u: `% skipped · ${g.renderLagged}/${g.renderTotal}`,
+        u: "% skipped",
+        sub: `${g.renderLagged}/${g.renderTotal}`,
         c: grade(g.renderLagPct, DROP_GRADE[0], DROP_GRADE[1]),
         series: hist.render,
       },
       {
         k: "ENCODE LAG",
         v: g.encodeSkipPct.toFixed(1),
-        u: `% skipped · ${fmtEncodeFrames(g.encodeSkipped, g.encodeTotal, g.encodeMixes)}`,
+        u: "% skipped",
+        sub: fmtEncodeFrames(g.encodeSkipped, g.encodeTotal, g.encodeMixes),
         c: grade(g.encodeSkipPct, DROP_GRADE[0], DROP_GRADE[1]),
         series: hist.encode,
       },
@@ -162,6 +167,9 @@
           <span class="metric-k">{c.k}</span>
           <span class="metric-v" style:color={c.c}>{c.v}</span>
           <span class="metric-u">{c.u}</span>
+          {#if c.sub}
+            <span class="metric-sub">{c.sub}</span>
+          {/if}
           <svg class="spark" viewBox="0 0 {SW} {SH}" preserveAspectRatio="none" aria-hidden="true">
             {#if pts}
               <polygon class="spark-fill" points={sparkArea(pts, SW, SH)} style:fill={c.c} />
@@ -298,11 +306,20 @@
     color: var(--color-dim);
     font-variant-numeric: tabular-nums;
   }
+  .metric-sub {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--color-muted);
+    font-variant-numeric: tabular-nums;
+  }
+  /* Bottom-pinned so the cards that carry a sub line keep their sparklines on the
+     same baseline as the cards that do not. */
   .spark {
     display: block;
     width: 100%;
     height: 24px;
-    margin-top: 2px;
+    margin-top: auto;
+    padding-top: 2px;
     overflow: visible;
   }
   .spark-line {
