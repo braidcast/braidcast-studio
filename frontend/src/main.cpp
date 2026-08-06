@@ -814,7 +814,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 
 	// Stand up the detached-window manager. Detached child browsers reuse the shared
 	// Client (Client::Shared) so they join the same browser_list_ + emit registry.
-	g_windows = std::make_unique<WindowManager>(hInstance, "app://app/index.html");
+	g_windows = std::make_unique<WindowManager>(hInstance, StartupUrl());
 	WindowManager::SetInstance(g_windows.get());
 
 	CefRunMessageLoop();
