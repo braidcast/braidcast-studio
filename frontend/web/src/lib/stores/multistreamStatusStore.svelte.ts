@@ -9,6 +9,7 @@
 // is the one source of truth, and deriveCanvasState() is the one reduction.
 
 import { obs } from "$lib/api/bridge";
+import { RefCountedSubscription } from "$lib/stores/refCountedSubscription";
 import { EV } from "$lib/utils/eventNames";
 import type { MultistreamStatus, MultistreamState, OutputBindingInfo } from "$lib/api/bridge";
 
@@ -72,8 +73,6 @@ class MultistreamStatusStore {
   loaded = $state(false);
   error = $state<string | null>(null);
 
-  #subs = 0;
-  #off: (() => void) | null = null;
   // Per-refresh token: a burst of change events launches concurrent refreshes; drop
   // any resolution that isn't the latest issued so a slow earlier call can't win.
   #seq = 0;
@@ -87,35 +86,29 @@ class MultistreamStatusStore {
     return m;
   });
 
+  #feed = new RefCountedSubscription(() => {
+    void this.refresh();
+    // An authoritative push is a successful read: it supersedes a failed poll, and
+    // leaving `error` set would pin consumers that refuse while it is non-null (the
+    // Studio go-live bar) in a permanently blocked state.
+    const offMulti = obs.on(EV.multistreamChanged, (p) => {
+      this.outputs = p.outputs;
+      this.error = null;
+      this.loaded = true;
+    });
+    // A binding enable/disable changes which outputs are live but doesn't push a
+    // multistream.changed, so re-poll on it too.
+    const offBindings = obs.on(EV.outputBindingChanged, () => void this.refresh());
+    return () => {
+      offMulti();
+      offBindings();
+    };
+  });
+
   // Ref-counted: first subscriber fetches + wires events, last unsubscribe tears
   // down. Returns an unsubscribe. Mirrors statsStore/oauthStore lifecycle.
   subscribe(): () => void {
-    this.#subs++;
-    if (this.#subs === 1) {
-      void this.refresh();
-      // An authoritative push is a successful read: it supersedes a failed poll, and
-      // leaving `error` set would pin consumers that refuse while it is non-null (the
-      // Studio go-live bar) in a permanently blocked state.
-      const offMulti = obs.on(EV.multistreamChanged, (p) => {
-        this.outputs = p.outputs;
-        this.error = null;
-        this.loaded = true;
-      });
-      // A binding enable/disable changes which outputs are live but doesn't push a
-      // multistream.changed, so re-poll on it too.
-      const offBindings = obs.on(EV.outputBindingChanged, () => void this.refresh());
-      this.#off = () => {
-        offMulti();
-        offBindings();
-      };
-    }
-    return () => {
-      this.#subs--;
-      if (this.#subs === 0) {
-        this.#off?.();
-        this.#off = null;
-      }
-    };
+    return this.#feed.subscribe();
   }
 
   async refresh(): Promise<void> {

@@ -18,6 +18,7 @@
 
 import { obs } from "$lib/api/bridge";
 import { destinationKey } from "$lib/api/destinationKeys";
+import { RefCountedSubscription } from "$lib/stores/refCountedSubscription";
 import { EV } from "$lib/utils/eventNames";
 import type { ViewerCounts } from "$lib/api/bridge";
 
@@ -27,9 +28,6 @@ class ViewerCountStore {
   // a destination reporting a real 0 viewers and a destination that never answered are
   // different facts, and every consumer renders them differently.
   #counts = $state<ViewerCounts | null>(null);
-
-  #subs = 0;
-  #off: (() => void) | null = null;
 
   // Destination key -> that destination's reported figure, taken from each row's own
   // `key` so the host's naming is never re-derived here. A destination the host could
@@ -72,41 +70,30 @@ class ViewerCountStore {
    * is keyed by bindingUuid, and the ratio of two different key spaces is a lie. */
   readonly reporting = $derived(this.#counts?.perDestination?.length ?? null);
 
+  #feed = new RefCountedSubscription(() => {
+    const offViewers = obs.on(EV.viewersChanged, (p) => (this.#counts = p));
+    // The poller stops with the stream and never pushes a final zero, so without this
+    // an offline stream would keep displaying its last counts indefinitely.
+    const offStreaming = obs.on(EV.streamingChanged, (p) => {
+      if (!p.active) {
+        this.#counts = null;
+      }
+    });
+    return () => {
+      offViewers();
+      offStreaming();
+      // Unsubscribed means unfed: the retained payload can only rot, and the next
+      // subscriber must show nothing until a real push arrives.
+      this.#counts = null;
+    };
+  });
+
   // Ref-counted: first subscriber wires the events, last release tears down. Two
   // consumers mount and unmount independently (the dock also runs alone in a detached
   // window, where the Studio page does not exist), so neither may end the other's feed.
   // Returns an unsubscribe that is safe to call more than once.
   subscribe(): () => void {
-    this.#subs++;
-    if (this.#subs === 1) {
-      const offViewers = obs.on(EV.viewersChanged, (p) => (this.#counts = p));
-      // The poller stops with the stream and never pushes a final zero, so without this
-      // an offline stream would keep displaying its last counts indefinitely.
-      const offStreaming = obs.on(EV.streamingChanged, (p) => {
-        if (!p.active) {
-          this.#counts = null;
-        }
-      });
-      this.#off = () => {
-        offViewers();
-        offStreaming();
-      };
-    }
-    let released = false;
-    return () => {
-      if (released) {
-        return;
-      }
-      released = true;
-      this.#subs--;
-      if (this.#subs === 0) {
-        this.#off?.();
-        this.#off = null;
-        // Unsubscribed means unfed: the retained payload can only rot, and the next
-        // subscriber must show nothing until a real push arrives.
-        this.#counts = null;
-      }
-    };
+    return this.#feed.subscribe();
   }
 
   /**

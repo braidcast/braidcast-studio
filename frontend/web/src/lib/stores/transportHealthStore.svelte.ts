@@ -7,6 +7,7 @@
 // decision left to the consumer.
 
 import { obs } from "$lib/api/bridge";
+import { RefCountedSubscription } from "$lib/stores/refCountedSubscription";
 import { EV } from "$lib/utils/eventNames";
 import type { TransportHealth, TransportHealthState } from "$lib/api/bridge";
 
@@ -21,8 +22,6 @@ class TransportHealthStore {
   loaded = $state(false);
   error = $state<string | null>(null);
 
-  #subs = 0;
-  #off: (() => void) | null = null;
   // Per-refresh token: a burst of change events launches concurrent refreshes; drop
   // any resolution that isn't the latest issued so a slow earlier call can't win.
   #seq = 0;
@@ -36,22 +35,15 @@ class TransportHealthStore {
     return m;
   });
 
+  #feed = new RefCountedSubscription(() => {
+    void this.refresh();
+    return obs.on(EV.transportsHealthChanged, (p) => (this.transports = p.transports));
+  });
+
   // Ref-counted: first subscriber fetches + wires the event, last unsubscribe tears
   // down. Returns an unsubscribe. Mirrors multistreamStatusStore's lifecycle.
   subscribe(): () => void {
-    this.#subs++;
-    if (this.#subs === 1) {
-      void this.refresh();
-      const off = obs.on(EV.transportsHealthChanged, (p) => (this.transports = p.transports));
-      this.#off = () => off();
-    }
-    return () => {
-      this.#subs--;
-      if (this.#subs === 0) {
-        this.#off?.();
-        this.#off = null;
-      }
-    };
+    return this.#feed.subscribe();
   }
 
   async refresh(): Promise<void> {

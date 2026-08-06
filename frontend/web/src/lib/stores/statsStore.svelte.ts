@@ -8,6 +8,7 @@
 // event, the last unsubscribe tears down and leaves the final snapshot in place.
 
 import { obs, type Stats } from "$lib/api/bridge";
+import { RefCountedSubscription } from "$lib/stores/refCountedSubscription";
 import { EV } from "$lib/utils/eventNames";
 
 // A sample older than this is no longer a reading. Three host ticks, so an ordinarily
@@ -17,9 +18,6 @@ const STALE_AFTER_MS = 3000;
 class StatsStore {
   stats = $state<Stats | null>(null);
   error = $state<string | null>(null);
-  #subs = 0;
-  #off: (() => void) | null = null;
-  #timer: ReturnType<typeof setInterval> | undefined;
   // Advanced by the watchdog below, not by the samples: staleness is a function of
   // elapsed time, and the case it detects is precisely "no new sample arrived".
   #nowMs = $state(Date.now());
@@ -43,30 +41,26 @@ class StatsStore {
       .catch((e) => (this.error = (e as Error).message));
   }
 
+  #feed = new RefCountedSubscription(() => {
+    this.#load();
+    // A push is an authoritative read: it supersedes a failed seed, and leaving
+    // `error` set would keep the panel showing a failure over live numbers.
+    const off = obs.on(EV.statsChanged, (s) => {
+      this.stats = s;
+      this.error = null;
+      this.#nowMs = Date.now();
+    });
+    const timer = setInterval(() => (this.#nowMs = Date.now()), 1000);
+    return () => {
+      off();
+      clearInterval(timer);
+    };
+  });
+
   /** Ref-counted subscription; returns an unsubscribe. The first subscriber seeds the
    * snapshot and wires the push, the last one drops both. */
   subscribe(): () => void {
-    this.#subs++;
-    if (this.#subs === 1) {
-      this.#load();
-      // A push is an authoritative read: it supersedes a failed seed, and leaving
-      // `error` set would keep the panel showing a failure over live numbers.
-      this.#off = obs.on(EV.statsChanged, (s) => {
-        this.stats = s;
-        this.error = null;
-        this.#nowMs = Date.now();
-      });
-      this.#timer = setInterval(() => (this.#nowMs = Date.now()), 1000);
-    }
-    return () => {
-      this.#subs--;
-      if (this.#subs === 0) {
-        this.#off?.();
-        this.#off = null;
-        clearInterval(this.#timer);
-        this.#timer = undefined;
-      }
-    };
+    return this.#feed.subscribe();
   }
 }
 

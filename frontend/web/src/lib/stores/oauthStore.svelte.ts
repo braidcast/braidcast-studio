@@ -1,4 +1,5 @@
 import { obs, type OAuthStatus, type OAuthProvider, type ChatPlatform } from "$lib/api/bridge";
+import { RefCountedSubscription } from "$lib/stores/refCountedSubscription";
 import { EV } from "$lib/utils/eventNames";
 import { log } from "$lib/utils/log";
 import { Cat } from "$lib/utils/logCategories";
@@ -24,8 +25,6 @@ export function isStaleToken(s: OAuthStatus | undefined | null): boolean {
 class OAuthStore {
   statuses = $state<OAuthStatus[]>([]);
   providers = $state<OAuthProvider[]>([]);
-  #subs = 0;
-  #off: (() => void) | undefined;
 
   /** Re-fetch status + providers now. Callers awaiting a post-mutation refresh (a
    * connect/disconnect that also emits oauth.status, refreshing subscribers) use this
@@ -90,21 +89,15 @@ class OAuthStore {
     return this.statuses.find((s) => s.accountId === accountId && isStaleToken(s)) ?? null;
   }
 
+  #feed = new RefCountedSubscription(() => {
+    void this.refresh();
+    return obs.on(EV.oauthStatus, (s) => (this.statuses = s));
+  });
+
   /** Ref-counted subscription; returns an unsubscribe. Fetch + subscribe on the first
    * subscriber, tear down on the last. */
   subscribe(): () => void {
-    this.#subs++;
-    if (this.#subs === 1) {
-      void this.refresh();
-      this.#off = obs.on(EV.oauthStatus, (s) => (this.statuses = s));
-    }
-    return () => {
-      this.#subs--;
-      if (this.#subs === 0) {
-        this.#off?.();
-        this.#off = undefined;
-      }
-    };
+    return this.#feed.subscribe();
   }
 }
 
