@@ -42,24 +42,6 @@ using TimeUtil::NowMs;
 // normalize the follow itself -- and the two must not drift apart.
 constexpr const char *kFollowersUpdated = "App\\Events\\FollowersUpdated";
 
-// Pusher wraps each event's payload in a `data` field that is itself a JSON-ENCODED
-// STRING (double-encoded); decode it again. Some client libraries observe `data`
-// already as an object, so accept that too. Returns a null json on any failure.
-json InnerData(const json &outer)
-{
-	auto it = outer.find("data");
-	if (it == outer.end()) {
-		return json(nullptr);
-	}
-	if (it->is_string()) {
-		return json::parse(it->get<std::string>(), nullptr, false);
-	}
-	if (it->is_object()) {
-		return *it;
-	}
-	return json(nullptr);
-}
-
 // Normalize one reverse-engineered Kick Pusher event into `ev`. Returns false for an
 // unknown/ignored event (including chat messages, bans, pins, reactions, and the
 // count-only follower ping) or one missing its required actor. Best-effort: names +
@@ -73,7 +55,7 @@ json InnerData(const json &outer)
 //   App\Events\FollowersUpdated         channel.<channelId>        {username, followed, followersCount, created_at}
 bool Normalize(const std::string &event, const json &outer, NormalizedEvent &ev)
 {
-	const json d = InnerData(outer);
+	const json d = Chat::PusherInnerData(outer);
 	if (!d.is_object()) {
 		return false;
 	}
@@ -169,7 +151,7 @@ bool Normalize(const std::string &event, const json &outer, NormalizedEvent &ev)
 // Best-effort: a missing / mistyped count does nothing (no update, no emit).
 void EmitKickFollowerCount(const json &outer, const OAuth::OAuthAccount &acct)
 {
-	const json d = InnerData(outer);
+	const json d = Chat::PusherInnerData(outer);
 	if (!d.is_object()) {
 		return;
 	}

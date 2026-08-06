@@ -41,6 +41,21 @@ std::string KickPusherUrl()
 	       "?protocol=7&client=js&version=" + kKickPusherClientVersion + "&flash=false";
 }
 
+json PusherInnerData(const json &outer)
+{
+	auto it = outer.find("data");
+	if (it == outer.end()) {
+		return json(nullptr);
+	}
+	if (it->is_string()) {
+		return json::parse(it->get<std::string>(), nullptr, false);
+	}
+	if (it->is_object()) {
+		return *it;
+	}
+	return json(nullptr);
+}
+
 std::string PusherSubscribeFrame(const std::string &channel)
 {
 	return json{{"event", "pusher:subscribe"}, {"data", json{{"auth", ""}, {"channel", channel}}}}.dump();

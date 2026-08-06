@@ -3,6 +3,8 @@
 
 #include <string>
 
+#include <nlohmann/json.hpp>
+
 // Shared Kick/Pusher connection config + channel-id lookup, factored out of
 // kick_chat.cpp so the chat transport (chatroom messages) and the events transport
 // (subscriptions/gifts/host/followers) reference ONE copy of the app key/cluster
@@ -43,6 +45,14 @@ inline constexpr const char *kPusherError = "pusher:error";
 // The app-level pong answering kPusherPing -- distinct from the WS-level PONG WsClient
 // sends itself, which does not satisfy Pusher's application ping.
 inline constexpr const char *kPusherPongFrame = "{\"event\":\"pusher:pong\",\"data\":{}}";
+
+// The payload inside one Pusher frame. Pusher wraps it in a `data` field that is
+// itself a JSON-ENCODED STRING (double-encoded), and some client libraries deliver
+// that field already decoded as an object, so both shapes are accepted -- a transport
+// that handled only one of them would drop every frame the day Kick switched. Returns
+// a null json on any failure; the caller decides whether a dropped frame is worth
+// logging.
+nlohmann::json PusherInnerData(const nlohmann::json &outer);
 
 // A `pusher:subscribe` frame for `channel`. Every Kick channel either transport reads is
 // public, so the auth field is always the empty string.

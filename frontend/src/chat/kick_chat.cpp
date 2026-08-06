@@ -103,14 +103,9 @@ void EmitTerminal(const ChatContext &ctx, const std::string &reason)
 void HandleChatMessage(const json &outer, const ChatContext &ctx, const std::string &chatroomId,
 		       const std::unordered_map<std::string, std::string> &thirdPartyEmotes)
 {
-	// Pusher's `data` is itself a JSON-ENCODED STRING (double-encoded); decode again.
-	auto dataIt = outer.find("data");
-	if (dataIt == outer.end() || !dataIt->is_string()) {
-		return;
-	}
-	const json inner = json::parse(dataIt->get<std::string>(), nullptr, false);
+	const json inner = PusherInnerData(outer);
 	if (!inner.is_object()) {
-		HostLog("[chat] kick: dropped message (data double-decode failed)");
+		HostLog("[chat] kick: dropped message (unusable data field)");
 		return;
 	}
 
