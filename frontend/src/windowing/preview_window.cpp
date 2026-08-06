@@ -1750,8 +1750,9 @@ PreviewSurface *PreviewManager::SurfaceFor(int windowId, const std::string &canv
 			return nullptr;
 		}
 	} else {
-		// Default surface renders obs_render_main_texture; ref the main composite so
-		// the gate keeps it alive while this preview is open (balanced in teardown).
+		// A no-op for the Default uuid, which has no Entry to count: the main mix
+		// composites unconditionally, so nothing here gates it. Called anyway to keep
+		// both arms symmetric with the RemovePreview in teardown, which no-ops alike.
 		ObsBootstrap::CanvasRuntime().AddPreview(canvasUuid);
 	}
 
