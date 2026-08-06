@@ -84,11 +84,13 @@ inline bool ListContains(const std::string &list, const std::string &item, char 
 // know it collides, so probing it would be a wasted lookup.
 enum class BareName { Try, Skip };
 
-// The one auto-suffix loop behind every "that name is already taken" resolution --
-// scenes, sources, filters, canvases, destination labels. Hands back the first of
+// The auto-suffix loop behind the "that name is already taken" resolutions that number
+// plainly -- scenes, sources, filters, canvases, destination labels. Hands back the first of
 // `base`, "base 2", "base 3", ... that `taken` reports free. What differs per caller
 // is only what "taken" means and which namespace it consults, so that stays a
-// callable; the numbering, which the user sees, does not.
+// callable; the numbering, which the user sees, does not. Scene collections are the one
+// holdout: their "(Imported N)" candidate shape is a different sequence, so obs_importer
+// keeps its own loop.
 template<typename TakenFn> std::string UniqueName(const std::string &base, BareName bare, const TakenFn &taken)
 {
 	if (bare == BareName::Try && !taken(base)) {

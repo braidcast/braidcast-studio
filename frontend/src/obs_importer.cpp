@@ -309,6 +309,8 @@ bool ProfileConflicts(const StreamProfile &candidate, std::string &clashName)
 
 // ---- scene collection reading + dependency closure -------------------------
 
+// Deliberately not StringUtil::EndsWith: this test is case-insensitive, and `n > 5` rejects a
+// file named exactly ".json". Merging the two would change which files an import walks.
 bool HasJsonExt(const char *name)
 {
 	const size_t n = strlen(name);
