@@ -45,6 +45,7 @@ import { EV } from "$lib/utils/eventNames";
   import Toast from "$lib/ui/Toast.svelte";
   import { showToast } from "$lib/stores/toastStore.svelte";
   import { callOrToast } from "$lib/utils/callToast";
+  import { isEditable } from "$lib/utils/editableTarget";
   import { previewSuspended } from "$lib/stores/previewGate.svelte";
 
   // Apply the saved (or default Industrial) theme before first paint settles.
@@ -61,16 +62,6 @@ import { EV } from "$lib/utils/eventNames";
   ];
   const viewClip = $derived(polygon([...offsetRight(railSeam(seamStore.ym), SEAM.G), ...notchTail]));
   const linerClip = $derived(polygon([...offsetRight(railSeam(seamStore.ym), SEAM.G - SEAM.LINE), ...notchTail]));
-
-  // Skip the global undo/redo shortcut when the focus is in a text-editing field so
-  // native per-field undo (and rename/search typing) keeps working.
-  function isEditable(t: EventTarget | null): boolean {
-    if (!(t instanceof HTMLElement)) {
-      return false;
-    }
-    const tag = t.tagName;
-    return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || t.isContentEditable;
-  }
 
   // Quick transform verbs (reset/fit/stretch/center) all shape the same bridge call
   // against the globally-selected scene item — mirrors the calls transformMenu.ts's

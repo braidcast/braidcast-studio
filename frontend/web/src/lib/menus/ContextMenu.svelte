@@ -36,6 +36,7 @@
   // doesn't dismiss it), Escape, resize, and scroll.
   import Self from "$lib/menus/ContextMenu.svelte";
   import Icon from "$lib/ui/Icon.svelte";
+  import { isEditable } from "$lib/utils/editableTarget";
   import { pushEsc, popEsc, isTopEsc } from "$lib/utils/escStack";
 
   let {
@@ -43,7 +44,33 @@
     y,
     items,
     onClose,
-  }: ContextMenuState & { onClose: () => void } = $props();
+    onBack,
+    focusToken = 0,
+    returnFocus,
+  }: ContextMenuState & {
+    onClose: () => void;
+    /** Passed to a flyout by the level that owns it: ArrowLeft hands focus back to the
+     * parent row. Absent on a root menu, where there is nothing to go back to. */
+    onBack?: () => void;
+    /** Bumped by the parent on a KEYBOARD open, so the flyout takes focus; reset to 0
+     * on a hover open, which must leave the mouse user's focus where it is. */
+    focusToken?: number;
+    /** The root's opener, handed down so every level restores focus to the same
+     * element rather than to the parent row, which closes along with it. */
+    returnFocus?: HTMLElement | null;
+  } = $props();
+
+  // What holds focus as this menu opens is the context a keyboard user has to land back
+  // on when it closes. Read at init, before the menu itself can move focus; the body is
+  // not a place to return anyone to.
+  const opener = document.activeElement;
+  const openerFocus = opener instanceof HTMLElement && opener !== document.body ? opener : null;
+  const focusReturn = $derived(returnFocus ?? openerFocus);
+
+  // Whether this level ever pulled focus to itself. A mouse click on a row leaves that
+  // row focused too, so the focused element alone cannot tell the two apart, and only
+  // the keyboard user is owed a focus hand-back.
+  let tookFocus = false;
 
   // Reserve the leading tick gutter only when the menu has at least one checkable
   // item, so plain flat menus render with their original left padding unchanged.
@@ -51,12 +78,130 @@
 
   let openSub = $state<number | null>(null);
   let subPos = $state<{ x: number; y: number }>({ x: 0, y: 0 });
+  let subFocusToken = $state(0);
+  // The row arrow keys are currently on, null until focus has landed in this level.
+  let focusIndex = $state<number | null>(null);
 
-  function openSubmenu(i: number, el: HTMLElement) {
+  // Rows a keyboard can land on: separators (null items) and disabled rows are skipped.
+  const navIndices = $derived(items.flatMap((it, i) => (it && !it.disabled ? [i] : [])));
+
+  // Every key an open menu claims for itself, whether or not it has somewhere to move.
+  const ARROW_KEYS = new Set(["ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight"]);
+
+  // Roving focus: exactly one row is tabbable -- the one focus is on, else the first
+  // navigable row, which also re-anchors the tab stop if the items change underneath.
+  const tabRow = $derived.by(() => {
+    if (focusIndex !== null && navIndices.includes(focusIndex)) {
+      return focusIndex;
+    }
+    return navIndices.length > 0 ? navIndices[0] : -1;
+  });
+
+  // Rows are looked up by index at keypress time rather than collected into a ref
+  // array: the each block is keyed by index, so a shorter items array would leave a
+  // detached element behind in one.
+  function rowEl(i: number): HTMLElement | null {
+    return menuEl?.querySelector<HTMLElement>(`[data-row="${i}"]`) ?? null;
+  }
+
+  function focusRow(i: number): void {
+    tookFocus = true;
+    focusIndex = i;
+    // Moving along this level abandons the flyout the previous row had open, the same
+    // way hovering a sibling row does.
+    openSub = null;
+    rowEl(i)?.focus();
+  }
+
+  function step(from: number, delta: number): void {
+    if (navIndices.length === 0) {
+      return;
+    }
+    const at = navIndices.indexOf(from);
+    if (at === -1) {
+      // Focus can sit on a row arrow keys never choose -- a disabled row accepts a
+      // click -- so carry on in the pressed direction from where it actually is.
+      const onward = delta > 0 ? navIndices.find((n) => n > from) : navIndices.filter((n) => n < from).at(-1);
+      focusRow(onward ?? (delta > 0 ? navIndices[0] : navIndices[navIndices.length - 1]));
+      return;
+    }
+    focusRow(navIndices[(at + delta + navIndices.length) % navIndices.length]);
+  }
+
+  function openSubmenu(i: number, el: HTMLElement, fromKeyboard = false) {
     const r = el.getBoundingClientRect();
     subPos = { x: r.right - 2, y: r.top };
     openSub = i;
+    // Only a keyboard open changes the token, so a flyout re-opened by hover after a
+    // keyboard open carries no focus request and cannot pull focus off the pointer.
+    subFocusToken = fromKeyboard ? subFocusToken + 1 : 0;
   }
+
+  function openSubmenuFromKey(i: number): void {
+    const el = rowEl(i);
+    if (!el) {
+      return;
+    }
+    focusIndex = i;
+    openSubmenu(i, el, true);
+  }
+
+  function onRowKey(e: KeyboardEvent, i: number): void {
+    const item = items[i];
+    if (!item) {
+      return;
+    }
+    switch (e.key) {
+      case "ArrowDown":
+        step(i, 1);
+        break;
+      case "ArrowUp":
+        step(i, -1);
+        break;
+      case "ArrowRight":
+        if (item.children && !item.disabled) {
+          openSubmenuFromKey(i);
+        }
+        break;
+      case "ArrowLeft":
+        onBack?.();
+        break;
+      case "Enter":
+      case " ":
+        // A flyout parent is a div with no native activation of its own. A plain row is
+        // a button, so its click handler stays the single activation path -- handling
+        // the key here too would run the action twice.
+        if (!item.children) {
+          return;
+        }
+        if (!item.disabled) {
+          openSubmenuFromKey(i);
+        }
+        break;
+      default:
+        return;
+    }
+    // An arrow that reached the app-wide handler on `window` would nudge the selected
+    // scene item as well, and the enter-the-menu handler below must not act on a key a
+    // row has already answered.
+    e.preventDefault();
+    e.stopPropagation();
+  }
+
+  // A flyout opened from the keyboard takes focus. The menu is visibility:hidden until
+  // the placement effect below lands and a hidden element cannot be focused, so the
+  // focus waits for the frame that placement paints in.
+  $effect(() => {
+    if (focusToken === 0) {
+      return;
+    }
+    const id = requestAnimationFrame(() => {
+      if (navIndices.length > 0) {
+        focusRow(navIndices[0]);
+      }
+    });
+    return () => cancelAnimationFrame(id);
+  });
 
   // A fresh menu (new items array from the caller) starts with no flyout open.
   $effect(() => {
@@ -108,8 +253,34 @@
     const token = pushEsc();
     const close = () => onClose();
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && isTopEsc(token)) {
+      if (!isTopEsc(token)) {
+        return;
+      }
+      if (e.key === "Escape") {
         onClose();
+        return;
+      }
+      // Opening the menu does not move focus (a right-click must not take it off what
+      // was clicked), so the first Down/Up press is what moves focus onto a row. A key
+      // pressed on a row is answered there and stopped before it reaches this.
+      if (!ARROW_KEYS.has(e.key) || navIndices.length === 0) {
+        return;
+      }
+      // A caret in a text field keeps its arrows -- the same carve-out the app-wide
+      // handler makes, and a menu can open over a focused field (the native preview
+      // raises one without touching DOM focus). A row that has focus answers its own.
+      if (isEditable(e.target) || menuEl?.contains(document.activeElement)) {
+        return;
+      }
+      e.preventDefault();
+      // The app-wide handler on `window` sits past `document` in the bubble path, so
+      // stopping here is what keeps arrows aimed at an open menu from also nudging the
+      // selected scene item. Left/Right have nowhere to go until focus is on a row, yet
+      // they are still the menu's keys to answer. Same-stage listeners -- the other
+      // levels of a nested menu -- are unaffected.
+      e.stopPropagation();
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        focusRow(e.key === "ArrowDown" ? navIndices[0] : navIndices[navIndices.length - 1]);
       }
     };
     // Defer the document click so the opening right-click doesn't close it.
@@ -124,6 +295,12 @@
       document.removeEventListener("keydown", onKey);
       window.removeEventListener("resize", close);
       document.removeEventListener("scroll", close, true);
+      // Hand focus back only if this level still holds it: anything that has taken
+      // focus by now -- a dialog the chosen action opened, whatever an outside click
+      // hit -- owns it, and a trigger removed while the menu was open is gone.
+      if (tookFocus && menuEl?.contains(document.activeElement) && focusReturn?.isConnected) {
+        focusReturn.focus();
+      }
     };
   });
 </script>
@@ -144,9 +321,13 @@
         class="item submenu"
         class:disabled={item.disabled}
         role="menuitem"
-        tabindex="-1"
+        data-row={i}
+        tabindex={i === tabRow ? 0 : -1}
         aria-haspopup="true"
+        aria-expanded={openSub === i}
+        aria-disabled={item.disabled ? "true" : undefined}
         onmouseenter={(e) => openSubmenu(i, e.currentTarget as HTMLElement)}
+        onkeydown={(e) => onRowKey(e, i)}
       >
         {#if hasCheckable}
           <span class="tick"></span>
@@ -161,7 +342,11 @@
         class:danger={item.danger}
         role={"checked" in item ? "menuitemcheckbox" : "menuitem"}
         aria-checked={"checked" in item ? (item.checked ? "true" : "false") : undefined}
+        data-row={i}
+        tabindex={i === tabRow ? 0 : -1}
+        aria-disabled={item.disabled ? "true" : undefined}
         onmouseenter={() => (openSub = null)}
+        onkeydown={(e) => onRowKey(e, i)}
         onclick={(e) => {
           e.stopPropagation();
           run(item);
@@ -180,7 +365,20 @@
 </div>
 
 {#if openSub !== null && items[openSub] && items[openSub]!.children}
-  <Self x={subPos.x} y={subPos.y} items={items[openSub]!.children!} onClose={onClose} />
+  <Self
+    x={subPos.x}
+    y={subPos.y}
+    items={items[openSub]!.children!}
+    onClose={onClose}
+    focusToken={subFocusToken}
+    returnFocus={focusReturn}
+    onBack={() => {
+      const parentRow = openSub;
+      if (parentRow !== null) {
+        focusRow(parentRow);
+      }
+    }}
+  />
 {/if}
 
 <style>
@@ -249,6 +447,11 @@
   .item:hover {
     background: var(--color-base);
     border: 0;
+  }
+  .item:focus-visible {
+    background: var(--color-base);
+    outline: var(--border-weight) solid var(--color-accent);
+    outline-offset: -1px;
   }
   .item.danger {
     color: var(--color-live);
