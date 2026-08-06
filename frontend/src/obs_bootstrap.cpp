@@ -579,6 +579,18 @@ std::string SessionEndReason(const MultistreamEngine &engine)
 	return sawAny ? "failed" : "ended";
 }
 
+// Close the open session row, thumbnail included. Finalize has to run BEFORE End:
+// SetThumbnail only writes while the session is open, so the other order drops the
+// thumbnail on every stream without erroring. Every path that ends a broadcast --
+// the live-state edge and a clean shutdown mid-broadcast -- goes through here so
+// that ordering exists once. Callers own the IsRecording() check and whatever their
+// own path emits afterward.
+void EndSessionWithThumbnail(const std::string &reason)
+{
+	g_thumbs.Finalize(g_recorder);
+	g_recorder.End(TimeUtil::NowMs(), reason);
+}
+
 // Map the stats snapshot onto a health sample. The field names come from
 // BuildStatsSnapshot; bitrate and drops sum across destinations while congestion
 // takes the worst, since one congested destination is the problem worth seeing.
@@ -1324,11 +1336,7 @@ bool ObsBootstrap::Start()
 				g_thumbs.Reset();
 				Bridge::EmitEvent(EventNames::kSessionsChanged, Bridge::json::object());
 			} else if (!live && g_recorder.IsRecording()) {
-				// Before End: SetThumbnail only writes while the session is
-				// open, so the other order drops the thumbnail on every
-				// stream without erroring.
-				g_thumbs.Finalize(g_recorder);
-				g_recorder.End(TimeUtil::NowMs(), SessionEndReason(*g_multistream));
+				EndSessionWithThumbnail(SessionEndReason(*g_multistream));
 				Bridge::EmitEvent(EventNames::kSessionsChanged, Bridge::json::object());
 			}
 		});
@@ -3804,7 +3812,7 @@ void ObsBootstrap::Stop(void (*drainCefTasks)())
 		// open would have the next launch report a crash that never happened,
 		// which is worse than useless -- it is a false alarm in exactly the
 		// signal the feature exists to provide.
-		g_recorder.End(TimeUtil::NowMs(), "ended");
+		EndSessionWithThumbnail("ended");
 	}
 	g_recorder.Detach();
 	g_sessions.Detach();
