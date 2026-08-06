@@ -538,22 +538,10 @@ bool ApplyVideo(const VideoInfo &v, std::string &error)
 		Transitions::OnVideoReset();
 	}
 
-	obs_video_info applied = {};
-	obs_get_video_info(&applied);
-
-	CanvasStore &canvases = ObsBootstrap::Canvases();
-	if (CanvasDefinition *def = canvases.Find(canvases.Default().uuid)) {
-		def->width = applied.base_width;
-		def->height = applied.base_height;
-		def->outputWidth = applied.output_width;
-		def->outputHeight = applied.output_height;
-		def->fpsNum = applied.fps_num;
-		def->fpsDen = applied.fps_den;
-		canvases.Save();
-		// The cached encoder pair is bound to the old mix; drop it so a later
-		// restart rebuilds against the new resolution (mirrors MethodCanvasUpdate).
-		ObsBootstrap::Multistream().InvalidateCanvasEncoders(def->uuid);
-	}
+	Bridge::MirrorGlobalVideoToDefaultCanvas();
+	// The cached encoder pair is bound to the old mix; drop it so a later
+	// restart rebuilds against the new resolution (mirrors MethodCanvasUpdate).
+	ObsBootstrap::Multistream().InvalidateCanvasEncoders(ObsBootstrap::Canvases().Default().uuid);
 	return true;
 }
 

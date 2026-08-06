@@ -17,7 +17,7 @@ using json = nlohmann::json;
 // ...type-specific(options|min|max|step)}. asset: {key,kind,file}.
 struct Widget {
 	std::string id;    // uuid (os_generate_uuid)
-	std::string token; // 32 hex chars (BCryptGenRandom)
+	std::string token; // 32 hex chars; empty only when the RNG failed, and the server then serves nothing
 	std::string name;
 	std::string type; // "alertbox" (v1)
 	std::string html;
@@ -52,7 +52,10 @@ public:
 	int Port() const;                                       // persisted chosen port (default 43000)
 	void SetPort(int port);                                 // persist a newly-bound port
 
-	Widget Create(const std::string &name, const std::string &type); // seed from default template
+	// Seed a new widget from the default template for `type`. Nullopt when its access
+	// token cannot be minted: a widget without one is unreachable through the server,
+	// so registering it would only produce an overlay that 403s with no way to tell why.
+	std::optional<Widget> Create(const std::string &name, const std::string &type);
 	// {name?,html?,css?,js?,fields?}. Bumps the widget's revision and reports the new
 	// value through *newRev, so a caller can hand it back to the editor rather than
 	// re-reading the widget just to learn it.
@@ -76,7 +79,7 @@ public:
 
 private:
 	void Load();
-	void Save() const; // caller holds mutex_
+	void Save() const; // caller holds mutex_, or is Load() during construction
 
 	mutable std::mutex mutex_;
 	std::vector<Widget> widgets_;

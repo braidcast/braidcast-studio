@@ -88,9 +88,13 @@ public:
 	// (it may join the accept thread); thread-safe wrt the running HTTP thread.
 	ConfigView ApplyConfigPatch(const ConfigPatch &patch);
 
-	// Generate + persist a new token; the new token applies to subsequent requests.
-	// Returns it. Thread-safe (swaps the in-memory token under the config mutex).
-	std::string RegenerateToken();
+	// Generate + persist a new token into `newToken`; it applies to subsequent
+	// requests. Brings the listener up if it should be running but isn't, which is how
+	// a server that had no token at startup recovers. False when the OS RNG fails:
+	// nothing is written and the previous token stays live, since a working secret is
+	// better than none and the caller is told the rotation did not happen. UI-thread
+	// only (the revive path may join the accept thread), like ApplyConfigPatch.
+	bool RegenerateToken(std::string &newToken);
 
 	bool IsListening() const { return httpServer_.IsListening(); }
 

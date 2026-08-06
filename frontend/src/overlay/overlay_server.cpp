@@ -679,7 +679,9 @@ void OverlayServer::ServeWidget(uintptr_t clientSocket, const std::string &path,
 		CloseClient(clientSocket);
 		return;
 	}
-	if (token != w->token) {
+	// A widget with no token is not a widget anyone may read: an absent ?t= arrives here
+	// as the empty string and would otherwise compare equal to it.
+	if (token.empty() || token != w->token) {
 		WriteResponse(sock, 403, "text/plain", "forbidden");
 		CloseClient(clientSocket);
 		return;

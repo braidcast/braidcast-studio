@@ -14,6 +14,7 @@
 
 #include "util/http_client.hpp"
 #include "util/json_util.hpp"
+#include "util/random_util.hpp"
 #include "../bridge.hpp"
 #include "../log.hpp"
 #include "../util/async_task.hpp"
@@ -87,11 +88,6 @@ std::string Base64Url(const unsigned char *data, size_t len)
 	return out;
 }
 
-bool RandomBytes(unsigned char *buf, size_t len)
-{
-	return BCRYPT_SUCCESS(BCryptGenRandom(nullptr, buf, static_cast<ULONG>(len), BCRYPT_USE_SYSTEM_PREFERRED_RNG));
-}
-
 bool Sha256(const std::string &in, unsigned char out[32])
 {
 	BCRYPT_ALG_HANDLE alg = nullptr;
@@ -114,8 +110,8 @@ bool BrokerStrategy::authorize(const AuthContext &ctx, OAuthAccount &acct, std::
 	// PKCE verifier + S256 challenge, and a CSRF nonce (echoed back through the broker).
 	std::array<unsigned char, 48> verifierBytes{};
 	std::array<unsigned char, 32> nonceBytes{};
-	if (!RandomBytes(verifierBytes.data(), verifierBytes.size()) ||
-	    !RandomBytes(nonceBytes.data(), nonceBytes.size())) {
+	if (!RandomUtil::Bytes(verifierBytes.data(), verifierBytes.size()) ||
+	    !RandomUtil::Bytes(nonceBytes.data(), nonceBytes.size())) {
 		err = "failed to generate OAuth entropy";
 		return false;
 	}

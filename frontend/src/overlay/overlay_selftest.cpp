@@ -371,7 +371,7 @@ void ObsBootstrap::RunOverlaySelfTest()
 	const std::optional<std::string> ovOrig = snapshot(ovPath);
 	const std::optional<std::string> ovOrigBak = snapshot(ovBak);
 
-	const Overlay::Widget created = Overlay::Store().Create("selftest-ovl", "alertbox");
+	const Overlay::Widget created = Overlay::Store().Create("selftest-ovl", "alertbox").value_or(Overlay::Widget{});
 	const std::string createdId = created.id;
 	const std::string createdUrl = Overlay::WidgetUrl(created, Overlay::Store().Port());
 	const bool createOk = !created.id.empty() && !created.token.empty() && !createdUrl.empty();

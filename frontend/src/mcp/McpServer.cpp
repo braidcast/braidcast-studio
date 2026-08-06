@@ -1,5 +1,3 @@
-#define _CRT_RAND_S
-
 #include "mcp/McpServer.hpp"
 
 #include <obs.h>
@@ -8,7 +6,6 @@
 
 #include <array>
 #include <chrono>
-#include <cstdlib> // rand_s
 #include <future>
 #include <memory>
 #include <set>
@@ -23,6 +20,7 @@
 #include "log.hpp"
 #include "multistream/StorePaths.hpp"
 #include "util/op_error.hpp"
+#include "util/random_util.hpp"
 
 namespace {
 
@@ -318,17 +316,16 @@ bool TokensEqual(const std::string &a, const std::string &b)
 	return diff == 0;
 }
 
+constexpr size_t kTokenBytes = 16;
+
+// Hex-encoded. Empty when the OS RNG fails, and every path that consumes a token
+// treats empty as "unusable" -- no fallback, because a token an attacker can
+// reproduce is worse than a server that will not authenticate anyone.
 std::string GenerateToken()
 {
-	static const char *kHex = "0123456789abcdef";
-	std::string token;
-	token.reserve(32);
-	for (int i = 0; i < 32; ++i) {
-		unsigned int r = 0;
-		if (rand_s(&r) != 0) {
-			r = (unsigned int)i * 2654435761u; // fallback; should never hit
-		}
-		token.push_back(kHex[r & 0xF]);
+	std::string token = RandomUtil::HexToken(kTokenBytes);
+	if (token.empty()) {
+		HostLog("[mcp] token generation failed (no system entropy); the server will not serve requests");
 	}
 	return token;
 }
@@ -426,6 +423,12 @@ void McpServer::Start()
 		HostLog("[mcp] server disabled (mcp.json enabled=false); not listening");
 		return;
 	}
+	// With no token every request would 401 anyway, so a listening socket buys nothing
+	// and only widens the surface.
+	if (config_.token.empty()) {
+		HostLog("[mcp] no token available; not listening");
+		return;
+	}
 	const bool ok =
 		httpServer_.Start(config_.port, [this](const Mcp::HttpRequest &req) { return HandleRequest(req); });
 	if (ok) {
@@ -483,13 +486,19 @@ void McpServer::RestartListener()
 
 	bool enabled = false;
 	int port = 0;
+	bool haveToken = false;
 	{
 		std::lock_guard<std::mutex> lock(configMutex_);
 		enabled = config_.enabled;
 		port = config_.port;
+		haveToken = !config_.token.empty();
 	}
 	if (!enabled) {
 		HostLog("[mcp] server disabled; listener stopped");
+		return;
+	}
+	if (!haveToken) {
+		HostLog("[mcp] no token available; listener stopped");
 		return;
 	}
 	shutdown_.store(false);
@@ -537,12 +546,28 @@ McpServer::ConfigView McpServer::ApplyConfigPatch(const ConfigPatch &patch)
 	return GetConfigView();
 }
 
-std::string McpServer::RegenerateToken()
+bool McpServer::RegenerateToken(std::string &newToken)
 {
-	std::lock_guard<std::mutex> lock(configMutex_);
-	config_.token = GenerateToken();
-	Save();
-	return config_.token;
+	bool revive = false;
+	{
+		std::lock_guard<std::mutex> lock(configMutex_);
+		std::string minted = GenerateToken();
+		if (minted.empty()) {
+			return false;
+		}
+		config_.token = std::move(minted);
+		Save();
+		newToken = config_.token;
+		// A startup with no token leaves Start() refusing to listen; minting one is the
+		// only event that can lift that, and nothing else would fire afterward.
+		revive = config_.enabled && !httpServer_.IsListening();
+	}
+	// Outside the lock: RestartListener joins the accept thread, which takes configMutex_
+	// in HandleRequest (same reason ApplyConfigPatch defers its restart past the scope).
+	if (revive) {
+		RestartListener();
+	}
+	return true;
 }
 
 bool McpServer::RunBridge(const std::string &method, const json &params, json &result, std::string &error) const

@@ -83,6 +83,9 @@ target_sources(
     src/util/json_util.hpp
     src/util/op_error.cpp
     src/util/op_error.hpp
+    # The one cryptographic RNG: MCP token, overlay widget tokens, OAuth PKCE entropy.
+    src/util/random_util.cpp
+    src/util/random_util.hpp
     src/util/time_util.hpp
     src/util/async_task.cpp
     src/util/async_task.hpp

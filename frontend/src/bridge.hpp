@@ -123,6 +123,15 @@ void EmitOAuthStatus();
 // failed reset (the config is rolled back first). Runs on the UI thread.
 bool ApplyDefaultCanvasVideo(const CanvasDefinition &desired, std::string &error);
 
+// The reverse direction: copy the live global video config (base size, output size,
+// fps) onto the Default canvas def. The Default def is what the pipeline is rebuilt
+// from on the next launch and what canvas.list reports, so a global reset that skips
+// this leaves canvases.json describing a pipeline that no longer exists. Returns true
+// when a field actually changed, in which case the def was saved; the caller owns
+// whatever its own path needs next (an event emit, an encoder-cache drop). Runs on
+// the UI thread.
+bool MirrorGlobalVideoToDefaultCanvas();
+
 // Push the current multistream output statuses as the "multistream.changed"
 // event. Wired as the engine's onStatusChanged; safe to call off the UI thread
 // (EmitEvent marshals to TID_UI).

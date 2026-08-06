@@ -689,20 +689,11 @@ bool MethodSettingsSetVideo(const json &params, json &result, std::string &error
 	obs_video_info applied = {};
 	obs_get_video_info(&applied);
 
-	// Mirror the applied global video onto the Default canvas def so canvas.list
-	// (and the Settings UI, which now edits the Default canvas) always reflects the
-	// real pipeline even when setVideo is called directly.
-	CanvasStore &canvases = ObsBootstrap::Canvases();
-	if (CanvasDefinition *def = canvases.Find(canvases.Default().uuid)) {
-		if (def->width != applied.base_width || def->height != applied.base_height ||
-		    def->fpsNum != applied.fps_num || def->fpsDen != applied.fps_den) {
-			def->width = applied.base_width;
-			def->height = applied.base_height;
-			def->fpsNum = applied.fps_num;
-			def->fpsDen = applied.fps_den;
-			canvases.Save();
-			EmitEvent(EventNames::kCanvasChanged, json::object());
-		}
+	// The Settings UI edits the Default canvas, so a direct settings.setVideo has to
+	// carry the same change onto its def; otherwise canvases.json keeps the old size and
+	// the next launch rebuilds the pipeline from it.
+	if (MirrorGlobalVideoToDefaultCanvas()) {
+		EmitEvent(EventNames::kCanvasChanged, json::object());
 	}
 
 	result = VideoInfoToJson(applied);
@@ -8831,7 +8822,11 @@ bool MethodMcpRegenerateToken(const json &, json &result, std::string &error)
 		error = "mcp server not available";
 		return false;
 	}
-	const std::string token = server->RegenerateToken();
+	std::string token;
+	if (!server->RegenerateToken(token)) {
+		error = "could not generate a new token (no system entropy); the existing token is unchanged";
+		return false;
+	}
 	result = json{{"token", token}};
 	EmitEvent(EventNames::kMcpChanged, json::object());
 	return true;
@@ -11139,16 +11134,20 @@ bool MethodOverlaysGet(const json &p, json &result, std::string &error)
 	return true;
 }
 
-bool MethodOverlaysCreate(const json &p, json &result, std::string & /*error*/)
+bool MethodOverlaysCreate(const json &p, json &result, std::string &error)
 {
 	const std::string name = OptString(p, "name");
 	std::string type = OptString(p, "type");
 	if (type.empty()) {
 		type = "alertbox";
 	}
-	Overlay::Widget w = Overlay::Store().Create(name.empty() ? "New Overlay" : name, type);
-	result = w.ToJson();
-	result["url"] = Overlay::WidgetUrl(w, Overlay::Store().Port());
+	std::optional<Overlay::Widget> w = Overlay::Store().Create(name.empty() ? "New Overlay" : name, type);
+	if (!w) {
+		error = "could not create the overlay; see the log";
+		return false;
+	}
+	result = w->ToJson();
+	result["url"] = Overlay::WidgetUrl(*w, Overlay::Store().Port());
 	EmitEvent(EventNames::kOverlaysChanged, json::object());
 	return true;
 }
@@ -11178,7 +11177,8 @@ bool MethodOverlaysDuplicate(const json &p, json &result, std::string &error)
 	const std::string id = OptString(p, "id");
 	std::optional<Overlay::Widget> w = Overlay::Store().Duplicate(id);
 	if (!w) {
-		error = "no such overlay: " + id;
+		// Missing source, a failed asset copy, or a failed token mint; the store logs which.
+		error = "could not duplicate overlay: " + id + "; see the log";
 		return false;
 	}
 	result = w->ToJson();
@@ -11962,6 +11962,31 @@ bool ApplyDefaultCanvasVideo(const CanvasDefinition &desired, std::string &error
 	return ApplyGlobalVideo(desired.width, desired.height, desired.outputWidth, desired.outputHeight,
 				desired.fpsNum, desired.fpsDen, st, error, &tovi.output_format, &tovi.colorspace,
 				&tovi.range);
+}
+
+bool MirrorGlobalVideoToDefaultCanvas()
+{
+	obs_video_info ovi = {};
+	if (!obs_get_video_info(&ovi)) {
+		return false;
+	}
+	CanvasStore &canvases = ObsBootstrap::Canvases();
+	CanvasDefinition *def = canvases.Find(canvases.Default().uuid);
+	if (!def) {
+		return false;
+	}
+	if (def->width == ovi.base_width && def->height == ovi.base_height && def->outputWidth == ovi.output_width &&
+	    def->outputHeight == ovi.output_height && def->fpsNum == ovi.fps_num && def->fpsDen == ovi.fps_den) {
+		return false;
+	}
+	def->width = ovi.base_width;
+	def->height = ovi.base_height;
+	def->outputWidth = ovi.output_width;
+	def->outputHeight = ovi.output_height;
+	def->fpsNum = ovi.fps_num;
+	def->fpsDen = ovi.fps_den;
+	canvases.Save();
+	return true;
 }
 
 void EmitMultistreamChanged()

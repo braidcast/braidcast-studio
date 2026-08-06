@@ -3,44 +3,29 @@
 #include "../log.hpp"
 #include "../multistream/StorePaths.hpp"
 #include "util/paths.hpp"
+#include "util/random_util.hpp"
 
 #include <obs.hpp>
 #include <util/platform.h>
 #include <util/util.hpp>
-
-#include <windows.h>
-
-#include <bcrypt.h>
 
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 
-#pragma comment(lib, "bcrypt.lib")
-
 namespace Overlay {
 
 namespace {
+
+// Widget-token length; the server compares the whole string, so this is the only
+// place it is decided.
+constexpr size_t kTokenBytes = 16;
 
 std::string NewUuid()
 {
 	BPtr<char> id = os_generate_uuid();
 	return id ? std::string(id) : std::string();
-}
-
-std::string NewToken()
-{
-	unsigned char b[16];
-	BCryptGenRandom(nullptr, b, sizeof(b), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
-	static const char *hex = "0123456789abcdef";
-	std::string s;
-	s.reserve(32);
-	for (unsigned char c : b) {
-		s.push_back(hex[c >> 4]);
-		s.push_back(hex[c & 15]);
-	}
-	return s;
 }
 
 // A widget's own directory (the parent of AssetsDir): the single place the
@@ -199,11 +184,15 @@ void OverlayStore::SetPort(int port)
 	Save();
 }
 
-Widget OverlayStore::Create(const std::string &name, const std::string &type)
+std::optional<Widget> OverlayStore::Create(const std::string &name, const std::string &type)
 {
 	Widget w;
+	w.token = RandomUtil::HexToken(kTokenBytes);
+	if (w.token.empty()) {
+		HostLog("[overlay] Create: no system entropy for an access token; no widget created");
+		return std::nullopt;
+	}
 	w.id = NewUuid();
-	w.token = NewToken();
 	w.name = name;
 	w.type = type;
 
@@ -279,11 +268,16 @@ std::optional<Widget> OverlayStore::Duplicate(const std::string &id)
 		std::lock_guard<std::mutex> lock(mutex_);
 		const Widget *source = FindWidget(widgets_, id);
 		if (source == nullptr) {
+			HostLog("[overlay] Duplicate: no such overlay " + id);
 			return std::nullopt;
 		}
 		copy = *source;
+		copy.token = RandomUtil::HexToken(kTokenBytes);
+		if (copy.token.empty()) {
+			HostLog("[overlay] Duplicate: no system entropy for an access token; no duplicate created");
+			return std::nullopt;
+		}
 		copy.id = NewUuid();
-		copy.token = NewToken();
 		copy.name = source->name + " copy";
 	}
 	// Outside mutex_, on the same discipline AddAsset documents: this walks a directory
@@ -312,6 +306,7 @@ std::optional<Widget> OverlayStore::Duplicate(const std::string &id)
 		// Deleted while the tree was being copied. Registering the copy now would put the
 		// content that delete just removed straight back.
 		RemoveWidgetDir(copy.id);
+		HostLog("[overlay] duplicate of " + id + " aborted; the source was deleted mid-copy");
 		return std::nullopt;
 	}
 	return copy;
@@ -498,6 +493,26 @@ void OverlayStore::Load()
 		for (const json &item : parsed["widgets"]) {
 			widgets_.push_back(Widget::FromJson(item));
 		}
+	}
+
+	// The server refuses a request whose token is empty, so a stored widget without one
+	// is unreachable forever unless it is re-minted here. Its URL changes, which is why
+	// the log names the widget.
+	bool reminted = false;
+	for (Widget &w : widgets_) {
+		if (!w.token.empty()) {
+			continue;
+		}
+		w.token = RandomUtil::HexToken(kTokenBytes);
+		if (w.token.empty()) {
+			HostLog("[overlay] widget " + w.id + " has no access token and none could be minted");
+			continue;
+		}
+		reminted = true;
+		HostLog("[overlay] widget " + w.id + " had no access token; minted one -- its URL changed");
+	}
+	if (reminted) {
+		Save();
 	}
 }
 
