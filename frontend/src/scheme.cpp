@@ -2,7 +2,6 @@
 
 #include <windows.h>
 
-#include <fstream>
 #include <string>
 #include <vector>
 
@@ -11,6 +10,7 @@
 #include "include/cef_scheme.h"
 #include "include/wrapper/cef_helpers.h"
 
+#include "util/file_util.hpp"
 #include "util/web_bundle.hpp"
 
 namespace {
@@ -41,20 +41,8 @@ bool ReadBundleFile(const std::string &url_path, std::vector<char> &out, std::st
 		}
 	}
 
-	std::ifstream file(full, std::ios::binary);
-	if (!file) {
+	if (!FileUtil::ReadBinaryFile(full, out)) {
 		return false;
-	}
-
-	file.seekg(0, std::ios::end);
-	std::streamoff size = file.tellg();
-	file.seekg(0, std::ios::beg);
-	out.resize(size > 0 ? size_t(size) : 0);
-	if (size > 0) {
-		file.read(out.data(), size);
-		// A short read would otherwise advertise the full length and serve a
-		// garbage tail; trim to what was actually read.
-		out.resize(size_t(file.gcount()));
 	}
 
 	content_type = WebBundle::ContentTypeForPath(rel);

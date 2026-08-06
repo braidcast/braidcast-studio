@@ -2,17 +2,17 @@
 
 #include "../log.hpp"
 #include "../multistream/StorePaths.hpp"
+#include "util/file_util.hpp"
 #include "util/paths.hpp"
 #include "util/random_util.hpp"
+#include "uuid_util.hpp"
 
 #include <obs.hpp>
 #include <util/platform.h>
-#include <util/util.hpp>
 
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
-#include <iterator>
 
 namespace Overlay {
 
@@ -21,12 +21,6 @@ namespace {
 // Widget-token length; the server compares the whole string, so this is the only
 // place it is decided.
 constexpr size_t kTokenBytes = 16;
-
-std::string NewUuid()
-{
-	BPtr<char> id = os_generate_uuid();
-	return id ? std::string(id) : std::string();
-}
 
 // A widget's own directory (the parent of AssetsDir): the single place the
 // overlays/<id> layout is spelled out.
@@ -71,17 +65,6 @@ Widget *FindWidget(std::vector<Widget> &widgets, const std::string &id)
 		}
 	}
 	return nullptr;
-}
-
-// Read a whole file (binary) into `out`; false if it can't be opened.
-bool ReadWholeFile(const std::string &path, std::string &out)
-{
-	std::ifstream f(std::filesystem::u8path(path), std::ios::binary);
-	if (!f) {
-		return false;
-	}
-	out.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
-	return true;
 }
 
 // Reduce a caller-supplied asset key to a safe filename: keep only [A-Za-z0-9._-]
@@ -192,17 +175,17 @@ std::optional<Widget> OverlayStore::Create(const std::string &name, const std::s
 		HostLog("[overlay] Create: no system entropy for an access token; no widget created");
 		return std::nullopt;
 	}
-	w.id = NewUuid();
+	w.id = UuidUtil::New();
 	w.name = name;
 	w.type = type;
 
 	// Seed html/css/js/fields from the on-disk default template for this type.
 	const std::string dir = RundirRoot() + "/data/braidcast/web/overlay/default-" + type + "/";
-	const bool haveHtml = ReadWholeFile(dir + "template.html", w.html);
-	ReadWholeFile(dir + "template.css", w.css);
-	ReadWholeFile(dir + "template.js", w.js);
+	const bool haveHtml = FileUtil::ReadUtf8File(dir + "template.html", w.html);
+	FileUtil::ReadUtf8File(dir + "template.css", w.css);
+	FileUtil::ReadUtf8File(dir + "template.js", w.js);
 	std::string fieldsJson;
-	if (ReadWholeFile(dir + "fields.json", fieldsJson)) {
+	if (FileUtil::ReadUtf8File(dir + "fields.json", fieldsJson)) {
 		try {
 			json parsed = json::parse(fieldsJson);
 			if (parsed.is_array()) {
@@ -277,7 +260,7 @@ std::optional<Widget> OverlayStore::Duplicate(const std::string &id)
 			HostLog("[overlay] Duplicate: no system entropy for an access token; no duplicate created");
 			return std::nullopt;
 		}
-		copy.id = NewUuid();
+		copy.id = UuidUtil::New();
 		copy.name = source->name + " copy";
 	}
 	// Outside mutex_, on the same discipline AddAsset documents: this walks a directory

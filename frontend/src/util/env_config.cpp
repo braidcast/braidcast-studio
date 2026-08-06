@@ -1,9 +1,9 @@
 #include "env_config.hpp"
 
-#include <algorithm>
-#include <cctype>
 #include <cstdlib>
 #include <fstream>
+
+#include "string_util.hpp"
 
 namespace Env {
 
@@ -60,9 +60,7 @@ bool Flag(const char *key, bool fallback)
 	if (!raw) {
 		return fallback;
 	}
-	std::string v = *raw;
-	std::transform(v.begin(), v.end(), v.begin(),
-		       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+	const std::string v = StringUtil::ToLower(*raw);
 	return !(v.empty() || v == "0" || v == "false" || v == "no" || v == "off");
 }
 

@@ -1,9 +1,10 @@
 #include "log.hpp"
 
 #include <atomic>
-#include <cctype>
 #include <cstdarg>
 #include <cstdio>
+
+#include "util/string_util.hpp"
 
 // Forward-declared rather than pulling in <obs.h>: this lean logging TU would
 // otherwise drag in the graphics headers, whose nameless-union warnings are
@@ -22,11 +23,7 @@ std::string LowerTrim(const std::string &s)
 	if (b == std::string::npos) {
 		return std::string();
 	}
-	std::string out = s.substr(b, s.find_last_not_of(" \t\r\n") - b + 1);
-	for (char &c : out) {
-		c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-	}
-	return out;
+	return StringUtil::ToLower(s.substr(b, s.find_last_not_of(" \t\r\n") - b + 1));
 }
 } // namespace
 

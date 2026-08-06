@@ -11,12 +11,13 @@
 #include "obs_bootstrap.hpp"
 #include "scene_persistence.hpp"
 #include "transitions.hpp"
+#include "util/string_util.hpp"
 #include "UndoManager.hpp"
+#include "uuid_util.hpp"
 
 #include <obs.h>
 #include <obs.hpp>
 #include <util/platform.h>
-#include <util/util.hpp>
 
 #include <nlohmann/json.hpp>
 
@@ -25,12 +26,6 @@
 #include <filesystem>
 
 namespace {
-
-std::string NewUuid()
-{
-	BPtr<char> id = os_generate_uuid();
-	return std::string(id.Get());
-}
 
 // Lowercase, collapse non-alphanumeric runs to single hyphens, trim leading/
 // trailing hyphens. Empty result falls back to "collection".
@@ -63,26 +58,16 @@ std::string Slugify(const std::string &name)
 // migration is needed when bindings became per-collection.
 std::string BindingsRelFor(const std::string &sceneRel)
 {
-	const std::string suffix = ".json";
-	std::string base = sceneRel;
-	if (base.size() >= suffix.size() && base.compare(base.size() - suffix.size(), suffix.size(), suffix) == 0) {
-		base.erase(base.size() - suffix.size());
-	}
-	return base + ".output_bindings.json";
+	return StringUtil::StripSuffix(sceneRel, ".json") + ".output_bindings.json";
 }
 
 // The scene-links file is a sibling of the scene file: strip a trailing ".json"
 // and append ".scene_links.json" (scenes/<slug>.json ->
 // scenes/<slug>.scene_links.json). Derived from sceneFile so no index migration
-// is needed -- mirrors BindingsRelFor exactly.
+// is needed.
 std::string SceneLinksRelFor(const std::string &sceneRel)
 {
-	const std::string suffix = ".json";
-	std::string base = sceneRel;
-	if (base.size() >= suffix.size() && base.compare(base.size() - suffix.size(), suffix.size(), suffix) == 0) {
-		base.erase(base.size() - suffix.size());
-	}
-	return base + ".scene_links.json";
+	return StringUtil::StripSuffix(sceneRel, ".json") + ".scene_links.json";
 }
 
 } // namespace
@@ -292,7 +277,7 @@ bool SceneCollections::RebuildFromScenes()
 	collections_.clear();
 	for (const Found &f : found) {
 		SceneCollectionRecord rec;
-		rec.id = NewUuid();
+		rec.id = UuidUtil::New();
 		rec.name = f.name;
 		rec.sceneFile = f.sceneFile;
 		collections_.push_back(std::move(rec));
@@ -314,7 +299,7 @@ bool SceneCollections::RebuildFromScenes()
 const SceneCollectionRecord &SceneCollections::SeedExisting(const std::string &name, const std::string &existingRelFile)
 {
 	SceneCollectionRecord rec;
-	rec.id = NewUuid();
+	rec.id = UuidUtil::New();
 	rec.name = name;
 	rec.sceneFile = existingRelFile;
 	collections_.push_back(std::move(rec));
@@ -326,7 +311,7 @@ const SceneCollectionRecord &SceneCollections::SeedExisting(const std::string &n
 const SceneCollectionRecord &SceneCollections::Create(const std::string &name)
 {
 	SceneCollectionRecord rec;
-	rec.id = NewUuid();
+	rec.id = UuidUtil::New();
 	rec.name = name;
 	rec.sceneFile = UniqueSceneFileForName(name);
 	collections_.push_back(std::move(rec));

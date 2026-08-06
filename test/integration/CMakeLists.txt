@@ -31,6 +31,8 @@ set(
   "${_fe}/src/multistream/CanvasStore.cpp"
   "${_fe}/src/multistream/StorePaths.cpp"
   "${_fe}/utility/CanvasDefinition.cpp"
+  # CanvasStore::Add mints a uuid through it.
+  "${_fe}/utility/uuid_util.cpp"
 )
 
 set(_target test_persistence)
@@ -90,6 +92,8 @@ set(
   "${_fe}/src/history/Migrations.cpp"
   "${_fe}/src/history/SessionRecorder.cpp"
   "${_fe}/src/history/SessionStore.cpp"
+  # SessionRecorder::Begin mints session/destination uuids through it.
+  "${_fe}/utility/uuid_util.cpp"
 )
 
 set(_target test_history)

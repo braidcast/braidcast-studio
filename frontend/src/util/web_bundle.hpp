@@ -1,13 +1,12 @@
 #ifndef OBS_MULTISTREAM_FRONTEND_WEB_BUNDLE_HPP_
 #define OBS_MULTISTREAM_FRONTEND_WEB_BUNDLE_HPP_
 
-#include <algorithm>
-#include <cctype>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "paths.hpp"
+#include "string_util.hpp"
 
 // The offline web bundle: where it lives on disk and how its files are typed. Both
 // surfaces that serve it read from here -- the app:// scheme handler (scheme.cpp) and
@@ -39,8 +38,7 @@ inline std::string ContentTypeForPath(const std::string &path)
 
 	size_t dot = path.find_last_of('.');
 	if (dot != std::string::npos) {
-		std::string ext = path.substr(dot);
-		std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return char(::tolower(c)); });
+		const std::string ext = StringUtil::ToLower(path.substr(dot));
 		for (const auto &[suffix, type] : kTypes) {
 			if (ext == suffix) {
 				return type;

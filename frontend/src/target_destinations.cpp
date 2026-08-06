@@ -14,6 +14,7 @@
 
 #include "util/async_task.hpp"
 #include "util/env_config.hpp"
+#include "util/string_util.hpp"
 #include "bridge.hpp"
 #include "log.hpp"
 #include "multistream/CanvasRuntime.hpp"
@@ -94,20 +95,16 @@ std::string UniqueLabel(const StreamProfile &candidate, const std::string &base)
 		probe.settings = obs_data_create();
 		obs_data_apply(probe.settings, candidate.settings);
 	}
-	for (int n = 1;; n++) {
-		probe.label = n == 1 ? base : base + " " + std::to_string(n);
+	return StringUtil::UniqueName(base, StringUtil::BareName::Try, [&probe](const std::string &label) {
+		probe.label = label;
 		const std::string display = probe.DisplayName();
-		bool taken = false;
 		for (const StreamProfile &other : ObsBootstrap::StreamProfiles().Profiles()) {
 			if (astrcmpi(display.c_str(), other.DisplayName().c_str()) == 0) {
-				taken = true;
-				break;
+				return true;
 			}
 		}
-		if (!taken) {
-			return probe.label;
-		}
-	}
+		return false;
+	});
 }
 
 // One canvas routing edge of the origin profile, snapshotted before anything is added

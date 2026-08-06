@@ -2,8 +2,7 @@
 
 #include "StorePaths.hpp"
 
-#include <util/platform.h>
-#include <util/util.hpp>
+#include "uuid_util.hpp"
 
 std::string CanvasStore::FilePath()
 {
@@ -57,10 +56,7 @@ void CanvasStore::EnsureDefault()
 	CanvasDefinition def;
 	def.isDefault = true;
 	def.name = "Main";
-	def.uuid = []() {
-		BPtr<char> id = os_generate_uuid();
-		return std::string(id.Get());
-	}();
+	def.uuid = UuidUtil::New();
 	definitions.insert(definitions.begin(), std::move(def));
 }
 
@@ -131,8 +127,7 @@ CanvasDefinition *CanvasStore::Find(const std::string &uuid)
 CanvasDefinition &CanvasStore::Add(CanvasDefinition def)
 {
 	if (def.uuid.empty()) {
-		BPtr<char> id = os_generate_uuid();
-		def.uuid = id.Get();
+		def.uuid = UuidUtil::New();
 	}
 	definitions.push_back(std::move(def));
 	return definitions.back();

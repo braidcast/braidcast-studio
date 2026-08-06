@@ -2,7 +2,6 @@
 #include "../event_names.hpp"
 
 #include <algorithm>
-#include <cctype>
 #include <cstdint>
 #include <cstdlib>
 #include <map>
@@ -12,6 +11,7 @@
 #include <nlohmann/json.hpp>
 
 #include "util/http_client.hpp"
+#include "util/string_util.hpp"
 #include "../log.hpp"
 #include "../oauth/provider.hpp"
 #include "oauth/provider_creds.hpp"
@@ -35,12 +35,7 @@ const char *kEmoteUrlSuffix = "/default/dark/1.0";
 // both the reported state and the hub's log line, so the two cannot disagree.
 const char *kReauthNeeded = "Twitch chat: re-authentication required";
 
-std::string ToLower(std::string s)
-{
-	std::transform(s.begin(), s.end(), s.begin(),
-		       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-	return s;
-}
+using StringUtil::ToLower;
 
 // Strip CR/LF so a sent message cannot inject extra IRC commands.
 std::string SanitizeOutbound(const std::string &text)

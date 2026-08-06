@@ -1,7 +1,6 @@
 #include "StreamProfile.hpp"
 
-#include <algorithm>
-#include <cctype>
+#include "util/string_util.hpp"
 
 std::string StreamProfile::PlatformName() const
 {
@@ -37,10 +36,7 @@ std::string StreamProfile::PlatformKey() const
 	if (colon != std::string::npos && colon > 0) {
 		return accountId.substr(0, colon);
 	}
-	std::string key = PlatformName();
-	std::transform(key.begin(), key.end(), key.begin(),
-		       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-	return key;
+	return StringUtil::ToLower(PlatformName());
 }
 
 const char *StreamProfile::KeyField() const

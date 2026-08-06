@@ -2,7 +2,6 @@
 
 #include <filesystem>
 #include <fstream>
-#include <iterator>
 #include <system_error>
 #include <vector>
 
@@ -14,6 +13,7 @@
 
 #include "../log.hpp"
 #include "../multistream/StorePaths.hpp"
+#include "util/file_util.hpp"
 
 namespace OAuth {
 
@@ -139,11 +139,10 @@ void AccountStore::EnsureLoadedLocked()
 		return;
 	}
 
-	std::ifstream f(std::filesystem::u8path(path), std::ios::binary);
-	if (!f) {
+	std::vector<unsigned char> wrapped;
+	if (!FileUtil::ReadBinaryFile(std::filesystem::u8path(path), wrapped)) {
 		return; // first run: no file yet
 	}
-	const std::vector<unsigned char> wrapped((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
 	if (wrapped.empty()) {
 		return;
 	}

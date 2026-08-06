@@ -1,13 +1,11 @@
 #include "OutputBinding.hpp"
 
-#include <util/platform.h>
-#include <util/util.hpp>
+#include "uuid_util.hpp"
 
 OutputBinding &OutputBindings::Add(const std::string &canvasUuid)
 {
 	OutputBinding b;
-	BPtr<char> id = os_generate_uuid();
-	b.uuid = id.Get();
+	b.uuid = UuidUtil::New();
 	b.canvasUuid = canvasUuid;
 	bindings.push_back(std::move(b));
 	return bindings.back();

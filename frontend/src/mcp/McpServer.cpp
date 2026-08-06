@@ -21,6 +21,7 @@
 #include "multistream/StorePaths.hpp"
 #include "util/op_error.hpp"
 #include "util/random_util.hpp"
+#include "util/string_util.hpp"
 
 namespace {
 
@@ -82,12 +83,6 @@ const std::array<ReadRule, 7> &ReadRules()
 	return kRules;
 }
 
-bool EndsWith(const std::string &s, const char *suffix)
-{
-	const std::string suf = suffix;
-	return s.size() >= suf.size() && s.compare(s.size() - suf.size(), suf.size(), suf) == 0;
-}
-
 Capability Classify(const std::string &method)
 {
 	if (GoLiveMethods().count(method)) {
@@ -96,7 +91,7 @@ Capability Classify(const std::string &method)
 	for (const auto &rule : ReadRules()) {
 		switch (rule.kind) {
 		case RuleKind::Suffix:
-			if (EndsWith(method, rule.needle)) {
+			if (StringUtil::EndsWith(method, rule.needle)) {
 				return Capability::Read;
 			}
 			break;
@@ -588,6 +583,11 @@ bool McpServer::RunBridge(const std::string &method, const json &params, json &r
 		std::string error;
 	};
 
+	// Deliberately not AsyncTask::CallOnUiWithTimeout: that posts through PostToUi,
+	// whose alive-guard silently DROPS the task after bridge teardown, so a request
+	// arriving then would burn the full timeout instead of the prompt "server shutting
+	// down" the task below answers with.
+	//
 	// shared_ptr so the promise outlives both sides regardless of timeout/teardown.
 	auto prom = std::make_shared<std::promise<DispatchResult>>();
 	std::future<DispatchResult> fut = prom->get_future();

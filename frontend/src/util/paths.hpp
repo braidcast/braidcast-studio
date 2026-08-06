@@ -4,6 +4,8 @@
 
 #include <string>
 
+#include "text_encoding.hpp"
+
 // Absolute UTF-8 path to the OBS rundir root (the parent of bin/ and data/),
 // derived from the exe path so nothing is hardcoded to a build tree. The exe
 // lives in <rundir>/bin/64bit, so strip the exe name, then 64bit, then bin.
@@ -22,13 +24,7 @@ inline std::string RundirRoot()
 		dir.resize(slash);
 	}
 
-	if (dir.empty()) {
-		return std::string();
-	}
-	const int len = WideCharToMultiByte(CP_UTF8, 0, dir.c_str(), -1, nullptr, 0, nullptr, nullptr);
-	std::string utf8(len > 0 ? len - 1 : 0, '\0');
-	WideCharToMultiByte(CP_UTF8, 0, dir.c_str(), -1, utf8.data(), len, nullptr, nullptr);
-	return utf8;
+	return Encoding::WideToUtf8(dir.c_str());
 }
 
 // Absolute wide path to the directory that holds the running executable

@@ -21,7 +21,6 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
-#include <iterator>
 #include <optional>
 #include <set>
 #include <string>
@@ -29,7 +28,9 @@
 
 #include "util/async_task.hpp"
 #include "util/env_config.hpp"
+#include "util/file_util.hpp"
 #include "util/op_error.hpp"
+#include "util/string_util.hpp"
 #include "audio/AudioMonitor.hpp"
 #include "bridge.hpp"
 #include "build_info.hpp"
@@ -94,12 +95,6 @@ const std::set<std::string> kNonModuleDlls = {
 	"chrome_elf", "libcef", "libegl", "libglesv2", "obs-browser-page",
 };
 
-std::string LowerCopy(std::string s)
-{
-	std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return char(tolower(c)); });
-	return s;
-}
-
 std::string BaseNameNoExt(const std::string &filename)
 {
 	const size_t dot = filename.find_last_of('.');
@@ -113,9 +108,10 @@ bool ParseBool(const std::string &raw)
 	std::string v;
 	for (const char c : raw) {
 		if (!std::isspace(static_cast<unsigned char>(c))) {
-			v += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+			v += c;
 		}
 	}
+	v = StringUtil::ToLower(v);
 	return v == "1" || v == "true" || v == "on" || v == "yes";
 }
 
@@ -202,7 +198,7 @@ void LoadCuratedModules()
 	do {
 		const std::string file = fd.cFileName;
 		const std::string name = BaseNameNoExt(file);
-		const std::string lname = LowerCopy(name);
+		const std::string lname = StringUtil::ToLower(name);
 
 		if (kDenylist.count(lname)) {
 			skippedDeny.push_back(name);
@@ -3653,14 +3649,6 @@ void ObsBootstrap::RunEventSelfTest()
 	// Snapshot the user's real events.json (+ its .bak) so the synthetic ingests below
 	// can exercise the persist / dedupe / round-trip path without clobbering real
 	// history; restored verbatim at the end (mirrors the model self-test discipline).
-	auto snapshot = [](const std::string &p) -> std::optional<std::string> {
-		std::ifstream in(std::filesystem::u8path(p), std::ios::binary);
-		if (!in) {
-			return std::nullopt;
-		}
-		return std::optional<std::string>(std::in_place, std::istreambuf_iterator<char>(in),
-						  std::istreambuf_iterator<char>());
-	};
 	auto restore = [](const std::string &p, const std::optional<std::string> &data) {
 		if (data) {
 			std::ofstream out(std::filesystem::u8path(p), std::ios::binary | std::ios::trunc);
@@ -3673,8 +3661,8 @@ void ObsBootstrap::RunEventSelfTest()
 
 	const std::string path = Events::EventStore::FilePath();
 	const std::string bakPath = path + ".bak";
-	const std::optional<std::string> origMain = snapshot(path);
-	const std::optional<std::string> origBak = snapshot(bakPath);
+	const std::optional<std::string> origMain = FileUtil::ReadUtf8File(path);
+	const std::optional<std::string> origBak = FileUtil::ReadUtf8File(bakPath);
 
 	// Start from a known-empty store so the counts below are deterministic regardless
 	// of any pre-existing history.

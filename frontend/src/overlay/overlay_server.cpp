@@ -8,14 +8,13 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
-#include <fstream>
-#include <iterator>
 #include <utility>
 #include <vector>
 
 #include <nlohmann/json.hpp>
 
 #include "../log.hpp"
+#include "util/file_util.hpp"      // FileUtil::ReadBinaryFile
 #include "util/http_status.hpp"    // Http::ReasonFor
 #include "util/web_bundle.hpp"     // WebBundle::Root, WebBundle::ContentTypeForPath
 #include "../events/event_hub.hpp" // Events::Store() -- the persisted event history
@@ -54,11 +53,9 @@ bool ReadFileGuarded(const std::string &root, const std::string &rel, std::strin
 			c = '\\';
 		}
 	}
-	std::ifstream f(full, std::ios::binary);
-	if (!f) {
+	if (!FileUtil::ReadBinaryFile(full, out)) {
 		return false;
 	}
-	out.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
 	ctype = WebBundle::ContentTypeForPath(rel);
 	return true;
 }
@@ -580,7 +577,7 @@ void OverlayServer::HandleConnection(uintptr_t clientSocket)
 			break;
 		}
 		if (buffer.size() > kMaxHeaderBytes) {
-			WriteResponse(sock, 413, "text/plain", "header too large");
+			WriteResponse(sock, 431, "text/plain", "header too large");
 			CloseClient(clientSocket);
 			return;
 		}
@@ -593,7 +590,7 @@ void OverlayServer::HandleConnection(uintptr_t clientSocket)
 	const size_t sp1 = requestLine.find(' ');
 	const size_t sp2 = sp1 == std::string::npos ? std::string::npos : requestLine.find(' ', sp1 + 1);
 	if (sp1 == std::string::npos || sp2 == std::string::npos) {
-		WriteResponse(sock, 405, "text/plain", "malformed request");
+		WriteResponse(sock, 400, "text/plain", "malformed request");
 		CloseClient(clientSocket);
 		return;
 	}

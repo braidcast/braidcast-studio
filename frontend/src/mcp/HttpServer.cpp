@@ -3,13 +3,12 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
-#include <algorithm>
-#include <cctype>
 #include <cstdint>
 #include <string>
 
 #include "log.hpp"
 #include "util/http_status.hpp"
+#include "util/string_util.hpp"
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -27,12 +26,14 @@ constexpr size_t kMaxBodyBytes = 1 * 1024 * 1024; // 1 MB body
 // case where the server keeps running (mirrors overlay_server's kHeaderRecvTimeoutMs).
 constexpr DWORD kHeaderRecvTimeoutMs = 10000;
 
-std::string ToLower(std::string s)
-{
-	std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return char(tolower(c)); });
-	return s;
-}
+using StringUtil::ToLower;
 
+// Not interchangeable with log.cpp's LowerTrim despite the similar job: the leading
+// set here is {space, tab} while the trailing set also drops CR and LF, so folding
+// the two onto one shared helper would change one of them. The trailing CR/LF half
+// is all but unreachable from this caller -- the header block is already split on
+// CRLF below -- and what the callers actually rely on is the OWS trim either side
+// of the colon.
 std::string Trim(const std::string &s)
 {
 	size_t b = 0;

@@ -8,6 +8,7 @@
 #include "native_theme.hpp"
 #include "projector_window.hpp" // EnumerateMonitors() for initial centering
 #include "window_dpi.hpp"
+#include "util/text_encoding.hpp"
 
 #include <obs.h>
 
@@ -32,20 +33,7 @@ constexpr UINT WM_INTERACT_RENAME = WM_APP + 1;
 
 InteractManager *g_instance = nullptr;
 
-// Convert a UTF-8 string to a wide string for Win32 *W APIs (window titles).
-std::wstring Utf8ToWide(const std::string &utf8)
-{
-	if (utf8.empty()) {
-		return std::wstring();
-	}
-	const int len = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), int(utf8.size()), nullptr, 0);
-	if (len <= 0) {
-		return std::wstring();
-	}
-	std::wstring out(size_t(len), L'\0');
-	MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), int(utf8.size()), out.data(), len);
-	return out;
-}
+using Encoding::Utf8ToWide;
 
 LRESULT CALLBACK InteractWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
 

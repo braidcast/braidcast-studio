@@ -11,13 +11,13 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
-#include <iterator>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include "../log.hpp"
 #include "../obs_bootstrap.hpp"
+#include "util/file_util.hpp"
 #include "overlay_server.hpp"
 #include "overlay_store.hpp"
 
@@ -348,14 +348,6 @@ void ObsBootstrap::RunOverlaySelfTest()
 	// Snapshot the user's real overlays.json (+ .bak) so the create/delete below
 	// exercise the persist / reload path without clobbering real widgets; restored
 	// byte-identical at the end (mirrors RunEventSelfTest's discipline).
-	auto snapshot = [](const std::string &pth) -> std::optional<std::string> {
-		std::ifstream in(std::filesystem::u8path(pth), std::ios::binary);
-		if (!in) {
-			return std::nullopt;
-		}
-		return std::optional<std::string>(std::in_place, std::istreambuf_iterator<char>(in),
-						  std::istreambuf_iterator<char>());
-	};
 	auto restore = [](const std::string &pth, const std::optional<std::string> &data) {
 		if (data) {
 			std::ofstream out(std::filesystem::u8path(pth), std::ios::binary | std::ios::trunc);
@@ -368,8 +360,8 @@ void ObsBootstrap::RunOverlaySelfTest()
 
 	const std::string ovPath = Overlay::OverlayStore::FilePath();
 	const std::string ovBak = ovPath + ".bak";
-	const std::optional<std::string> ovOrig = snapshot(ovPath);
-	const std::optional<std::string> ovOrigBak = snapshot(ovBak);
+	const std::optional<std::string> ovOrig = FileUtil::ReadUtf8File(ovPath);
+	const std::optional<std::string> ovOrigBak = FileUtil::ReadUtf8File(ovBak);
 
 	const Overlay::Widget created = Overlay::Store().Create("selftest-ovl", "alertbox").value_or(Overlay::Widget{});
 	const std::string createdId = created.id;

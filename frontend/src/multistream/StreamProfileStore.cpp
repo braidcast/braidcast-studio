@@ -2,8 +2,7 @@
 
 #include "StorePaths.hpp"
 
-#include <util/platform.h>
-#include <util/util.hpp>
+#include "uuid_util.hpp"
 
 std::string StreamProfileStore::FilePath()
 {
@@ -92,8 +91,7 @@ bool StreamProfileStore::ReferencesAccount(const std::string &accountId) const
 StreamProfile &StreamProfileStore::Add(StreamProfile p)
 {
 	if (p.uuid.empty()) {
-		BPtr<char> id = os_generate_uuid();
-		p.uuid = id.Get();
+		p.uuid = UuidUtil::New();
 	}
 	if (profiles.empty()) {
 		p.isPrimary = true; // first profile is always primary

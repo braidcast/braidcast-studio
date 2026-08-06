@@ -14,6 +14,7 @@
 #include "obs_bootstrap.hpp"
 #include "settings/GeneralSettings.hpp"
 #include "scene/transitions.hpp"
+#include "util/text_encoding.hpp"
 
 #include <obs.h>
 
@@ -85,35 +86,8 @@ constexpr uint32_t kMvLabelBackground = 0xCC000000; // translucent black label p
 
 ProjectorManager *g_instance = nullptr;
 
-// Convert a UTF-8 string to a wide string for Win32 *W APIs (window titles).
-std::wstring Utf8ToWide(const std::string &utf8)
-{
-	if (utf8.empty()) {
-		return std::wstring();
-	}
-	const int len = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), int(utf8.size()), nullptr, 0);
-	if (len <= 0) {
-		return std::wstring();
-	}
-	std::wstring out(size_t(len), L'\0');
-	MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), int(utf8.size()), out.data(), len);
-	return out;
-}
-
-// Convert a wide string (e.g. MONITORINFOEXW.szDevice) to UTF-8 for the bridge.
-std::string WideToUtf8(const wchar_t *wide)
-{
-	if (!wide || !wide[0]) {
-		return std::string();
-	}
-	const int len = WideCharToMultiByte(CP_UTF8, 0, wide, -1, nullptr, 0, nullptr, nullptr);
-	if (len <= 1) {
-		return std::string();
-	}
-	std::string out(size_t(len - 1), '\0'); // len includes the NUL
-	WideCharToMultiByte(CP_UTF8, 0, wide, -1, out.data(), len, nullptr, nullptr);
-	return out;
-}
+using Encoding::Utf8ToWide;
+using Encoding::WideToUtf8;
 
 BOOL CALLBACK MonitorEnumProc(HMONITOR monitor, HDC, LPRECT, LPARAM param)
 {

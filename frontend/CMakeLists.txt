@@ -72,6 +72,7 @@ target_sources(
     src/event_names.hpp
     src/util/env_config.cpp
     src/util/env_config.hpp
+    src/util/file_util.hpp
     src/util/http_client.cpp
     src/util/http_client.hpp
     src/util/http_status.hpp
@@ -86,6 +87,7 @@ target_sources(
     # The one cryptographic RNG: MCP token, overlay widget tokens, OAuth PKCE entropy.
     src/util/random_util.cpp
     src/util/random_util.hpp
+    src/util/text_encoding.hpp
     src/util/time_util.hpp
     src/util/async_task.cpp
     src/util/async_task.hpp
@@ -301,6 +303,11 @@ target_sources(
     # undo_stack. Out of the /wd4201 set -- it includes no obs.h.
     utility/UndoManager.cpp
     utility/UndoManager.hpp
+    # The one identity-value generator (os_generate_uuid), kept apart from
+    # random_util so secrets and names never share a source. Down here rather
+    # than in src/util/ because the model files above mint their own ids.
+    utility/uuid_util.cpp
+    utility/uuid_util.hpp
     src/multistream/CanvasStore.cpp
     src/multistream/CanvasStore.hpp
     src/multistream/StreamProfileStore.cpp

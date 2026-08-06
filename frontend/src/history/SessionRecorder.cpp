@@ -2,25 +2,14 @@
 
 #include <nlohmann/json.hpp>
 
-#include <util/platform.h>
-#include <util/util.hpp>
-
 #include "../util/time_util.hpp"
+#include "uuid_util.hpp"
 
 namespace History {
 
 using namespace sqlite_orm;
 
 namespace {
-
-std::string NewUuid()
-{
-	// The same kind of key the rest of this codebase uses for durable things
-	// (canvas uuid, binding uuid): stable, non-reassignable, and referenced by
-	// thumbnail files on disk.
-	BPtr<char> id = os_generate_uuid();
-	return id ? std::string(id) : std::string();
-}
 
 std::string ToJsonArray(const std::vector<std::string> &values)
 {
@@ -66,7 +55,7 @@ std::string SessionRecorder::Begin(const SessionStart &start)
 	}
 	try {
 		Session s;
-		s.id = NewUuid();
+		s.id = UuidUtil::New();
 		s.createdAt = TimeUtil::NowMs();
 		s.updatedAt = s.createdAt;
 		s.startedAt = start.startedAtMs;
@@ -79,7 +68,7 @@ std::string SessionRecorder::Begin(const SessionStart &start)
 
 		for (const DestinationRecord &d : start.destinations) {
 			SessionDestination row;
-			row.id = NewUuid();
+			row.id = UuidUtil::New();
 			row.createdAt = s.createdAt;
 			row.updatedAt = s.createdAt;
 			row.sessionId = s.id;

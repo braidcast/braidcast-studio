@@ -52,7 +52,10 @@
 #include "history/SessionRecorder.hpp"
 #include "history/SessionStore.hpp"
 #include "history/Thumbnails.hpp"
+#include "util/file_util.hpp"
 #include "util/op_error.hpp"
+#include "util/string_util.hpp"
+#include "util/text_encoding.hpp"
 #include "util/time_util.hpp"
 #include "obs_bootstrap.hpp"
 #include "obs_importer.hpp"
@@ -164,6 +167,9 @@ std::vector<CefRefPtr<CefBrowser>> g_browsers;
 // begins, so it needs its own lock rather than a thread assertion.
 std::mutex g_sentMetadataMutex;
 std::unordered_map<std::string, json> g_sentMetadata;
+
+using StringUtil::BareName;
+using StringUtil::UniqueName;
 
 // Build the multistream status JSON array (one object per enabled binding) from
 // the engine's current Statuses(). The state enum is carried as its lowercase
@@ -1605,18 +1611,11 @@ bool MethodScenesDuplicate(const json &params, json &result, std::string &error)
 	}
 	obs_scene_t *scene = obs_scene_from_source(srcScene);
 
-	// Find a free "<name> N" (N starting at 2).
-	std::string newName;
-	for (int n = 2;; ++n) {
-		std::string candidate = name + " " + std::to_string(n);
-		obs_source_t *taken = obs_get_source_by_name(candidate.c_str());
-		if (taken) {
-			obs_source_release(taken);
-			continue;
-		}
-		newName = std::move(candidate);
-		break;
-	}
+	// Duplicating within one namespace, so `name` itself is always the collision.
+	const std::string newName = UniqueName(name, BareName::Skip, [](const std::string &candidate) {
+		OBSSourceAutoRelease taken = obs_get_source_by_name(candidate.c_str());
+		return taken != nullptr;
+	});
 
 	obs_scene_t *dup = obs_scene_duplicate(scene, newName.c_str(), OBS_SCENE_DUP_REFS); // new ref
 	obs_source_release(srcScene);
@@ -1679,22 +1678,18 @@ ResolvedDestCanvas ResolveDestCanvas(const std::string &destCanvasUuid)
 // unconditionally renamed a scene for a collision that had not happened, which is both
 // wrong and hard to undo once several canvases have drifted apart.
 //
-// This is why the loop cannot start at 2 the way MethodScenesDuplicate's does: that one
+// This is why the bare name is tried here and skipped by MethodScenesDuplicate: that one
 // only ever copies within one canvas, where the source scene's own name is always the
-// collision, so its first candidate is genuinely taken.
+// collision.
 std::string FreeSceneNameOnCanvas(const std::string &baseName, const std::string &destCanvasUuid, bool destIsAdditional,
 				  obs_canvas_t *destCanvas)
 {
-	for (int n = 1;; ++n) {
-		std::string candidate = n == 1 ? baseName : baseName + " " + std::to_string(n);
+	return UniqueName(baseName, BareName::Try, [&](const std::string &candidate) {
 		OBSSourceAutoRelease taken = destIsAdditional
 						     ? obs_canvas_get_source_by_name(destCanvas, candidate.c_str())
 						     : obs_get_source_by_name(candidate.c_str());
-		if (taken) {
-			continue;
-		}
-		return candidate;
-	}
+		return taken != nullptr;
+	});
 }
 
 // A name libobs will insert into `canvas`'s own source list verbatim: `baseName`,
@@ -1707,13 +1702,10 @@ std::string FreeSceneNameOnCanvas(const std::string &baseName, const std::string
 // routes every one of them into that list rather than the global one.
 std::string FreeNameInCanvasSources(const std::string &baseName, obs_canvas_t *canvas)
 {
-	for (int n = 1;; ++n) {
-		std::string candidate = n == 1 ? baseName : baseName + " " + std::to_string(n);
+	return UniqueName(baseName, BareName::Try, [canvas](const std::string &candidate) {
 		OBSSourceAutoRelease taken = obs_canvas_get_source_by_name(canvas, candidate.c_str());
-		if (!taken) {
-			return candidate;
-		}
-	}
+		return taken != nullptr;
+	});
 }
 
 // The shared duplicate-to-canvas core: deep-copies `sceneName` (on `srcCanvasUuid`,
@@ -3956,22 +3948,15 @@ bool MethodSourcesAddExisting(const json &params, json &result, std::string &err
 	return true;
 }
 
-// Compute a source name not already taken globally: `base`, then "base 2",
-// "base 3", ... Mirrors the dup-name handling in MethodSourcesCreate's collision
-// check (any source of any kind collides) but resolves rather than rejects.
+// A source name free in the global namespace. Collides against any source of any
+// kind, the same rule MethodSourcesCreate's collision check applies, but resolves
+// rather than rejects.
 std::string UniqueSourceName(const std::string &base)
 {
-	OBSSourceAutoRelease taken = obs_get_source_by_name(base.c_str());
-	if (!taken) {
-		return base;
-	}
-	for (int n = 2;; ++n) {
-		std::string candidate = base + " " + std::to_string(n);
-		OBSSourceAutoRelease t = obs_get_source_by_name(candidate.c_str());
-		if (!t) {
-			return candidate;
-		}
-	}
+	return UniqueName(base, BareName::Try, [](const std::string &candidate) {
+		OBSSourceAutoRelease taken = obs_get_source_by_name(candidate.c_str());
+		return taken != nullptr;
+	});
 }
 
 // Duplicate the source of a scene item and add the copy to the SAME scene (powers
@@ -5035,33 +5020,8 @@ bool BuildPropertiesResult(const PropertyKind *kind, void *obj, json &result, st
 
 // --- native file dialog -------------------------------------------------------
 
-// UTF-8 -> UTF-16. Empty string maps to empty wstring.
-std::wstring Utf8ToWide(const std::string &s)
-{
-	if (s.empty()) {
-		return std::wstring();
-	}
-	const int len = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), nullptr, 0);
-	std::wstring out(len > 0 ? len : 0, L'\0');
-	if (len > 0) {
-		MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), out.data(), len);
-	}
-	return out;
-}
-
-// UTF-16 -> UTF-8. Empty input maps to empty string.
-std::string WideToUtf8(const wchar_t *s)
-{
-	if (!s || !*s) {
-		return std::string();
-	}
-	const int len = WideCharToMultiByte(CP_UTF8, 0, s, -1, nullptr, 0, nullptr, nullptr);
-	std::string out(len > 0 ? len - 1 : 0, '\0');
-	if (len > 0) {
-		WideCharToMultiByte(CP_UTF8, 0, s, -1, out.data(), len, nullptr, nullptr);
-	}
-	return out;
-}
+using Encoding::Utf8ToWide;
+using Encoding::WideToUtf8;
 
 // One parsed filter spec; owns its strings so the COMDLG_FILTERSPEC views stay
 // valid for the dialog's lifetime.
@@ -5334,14 +5294,9 @@ bool MethodFileReadDataUri(const json &params, json &result, std::string &error)
 		return false;
 	}
 
-	std::ifstream file(fsPath, std::ios::in | std::ios::binary);
-	if (!file) {
+	std::vector<unsigned char> bytes;
+	if (!FileUtil::ReadBinaryFile(fsPath, bytes)) {
 		error = "cannot open file: " + path;
-		return false;
-	}
-	std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-	if (file.bad()) {
-		error = "failed to read file: " + path;
 		return false;
 	}
 
@@ -5622,16 +5577,10 @@ bool MethodFiltersAdd(const json &params, json &result, std::string &error)
 		}
 		// Auto-suffix the default name ("Color Correction", "Color Correction 2", ...)
 		// until a free name is found, matching native OBS behavior.
-		const std::string base = name;
-		for (int n = 2;; ++n) {
-			std::string candidate = base + " " + std::to_string(n);
+		name = UniqueName(name, BareName::Skip, [parent](const std::string &candidate) {
 			OBSSourceAutoRelease taken = obs_source_get_filter_by_name(parent, candidate.c_str());
-			if (taken) {
-				continue;
-			}
-			name = std::move(candidate);
-			break;
-		}
+			return taken != nullptr;
+		});
 	}
 
 	obs_source_t *f = obs_source_create(type.c_str(), name.c_str(), nullptr, nullptr);
@@ -5778,21 +5727,13 @@ bool MethodFiltersRename(const json &params, json &result, std::string &error)
 	return true;
 }
 
-// Compute a filter name not already used on `parent`: `base`, then "base 2",
-// "base 3", ... Mirrors the auto-suffix loop in MethodFiltersAdd.
+// A filter name not already used on `parent`.
 std::string UniqueFilterName(obs_source_t *parent, const std::string &base)
 {
-	OBSSourceAutoRelease existing = obs_source_get_filter_by_name(parent, base.c_str());
-	if (!existing) {
-		return base;
-	}
-	for (int n = 2;; ++n) {
-		std::string candidate = base + " " + std::to_string(n);
+	return UniqueName(base, BareName::Try, [parent](const std::string &candidate) {
 		OBSSourceAutoRelease taken = obs_source_get_filter_by_name(parent, candidate.c_str());
-		if (!taken) {
-			return candidate;
-		}
-	}
+		return taken != nullptr;
+	});
 }
 
 // Duplicate a single filter in place. params: {source, name}. Copies the named
@@ -6213,21 +6154,16 @@ bool MethodCanvasCreate(const json &params, json &result, std::string &error)
 	return PersistOrFail(saved, error);
 }
 
-// A canvas name not yet taken: "<base> copy", then "<base> copy 2", ... Mirrors
-// FreeSceneNameOnCanvas's shape; canvas names are not unique-constrained by
-// libobs, but two identically named canvases are indistinguishable in every
-// picker the UI has.
+// A canvas name not yet taken: "<base> copy", then "<base> copy 2", ... Canvas
+// names are not unique-constrained by libobs, but two identically named canvases
+// are indistinguishable in every picker the UI has.
 std::string FreeCanvasName(const std::string &base)
 {
 	const CanvasStore &store = ObsBootstrap::Canvases();
-	for (int n = 1;; ++n) {
-		const std::string candidate = base + " copy" + (n == 1 ? "" : " " + std::to_string(n));
-		const bool taken = std::any_of(store.Definitions().begin(), store.Definitions().end(),
-					       [&candidate](const CanvasDefinition &d) { return d.name == candidate; });
-		if (!taken) {
-			return candidate;
-		}
-	}
+	return UniqueName(base + " copy", BareName::Try, [&store](const std::string &candidate) {
+		return std::any_of(store.Definitions().begin(), store.Definitions().end(),
+				   [&candidate](const CanvasDefinition &d) { return d.name == candidate; });
+	});
 }
 
 // canvas.duplicate {uuid}: a second encode target configured like an existing one.
