@@ -613,6 +613,13 @@ input[type="color"] {
   background: var(--color-accent);
 }
 
+/* The row being carried by the shared pointer drag-to-reorder controller
+   (utils/listReorder.svelte.ts, whose `dragIndex` names this state "lifting"). Every
+   reorderable list marks it the same way, so it lives here rather than once per list. */
+.lifting {
+  opacity: 0.4;
+}
+
 /* ============================================================
    Canvases page — "command-deck" configuration UI.
    Structure/tokens mirror braidcast-notes/superpowers/design-redesign/

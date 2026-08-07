@@ -11,6 +11,7 @@
 import { EV } from "$lib/utils/eventNames";
   import CodePane from "$lib/overlays/CodePane.svelte";
   import FieldsDesigner from "$lib/overlays/FieldsDesigner.svelte";
+  import { fieldsForWire, withFieldIds } from "$lib/overlays/fieldTypes";
   import PreviewPane from "$lib/overlays/PreviewPane.svelte";
   import CollectionDialog, { type DialogSpec } from "$lib/dialogs/CollectionDialog.svelte";
   import PageShell from "$lib/ui/PageShell.svelte";
@@ -119,6 +120,7 @@ import { EV } from "$lib/utils/eventNames";
       if (selectedId !== id) {
         return;
       }
+      w.fields = withFieldIds(w.fields);
       widget = w;
       dirty = false;
       reloadKey++;
@@ -137,6 +139,15 @@ import { EV } from "$lib/utils/eventNames";
     saveTimer = setTimeout(() => void flushSave(), 500);
   }
 
+  // The editor tags each field with a client-side id so a row survives a reorder (see
+  // fieldTypes.ts). Those ids are not part of the document, so the widget is projected
+  // back to its wire form both on the way out and on either side of the "did the server
+  // copy actually change?" test below — comparing a tagged local copy against an
+  // untagged fetched one would report every echo as an external edit.
+  function wireJson(w: OverlayWidget): string {
+    return JSON.stringify({ ...w, fields: fieldsForWire(w.fields) });
+  }
+
   async function flushSave(): Promise<void> {
     clearTimeout(saveTimer);
     if (!widget) {
@@ -151,7 +162,7 @@ import { EV } from "$lib/utils/eventNames";
         html: w.html,
         css: w.css,
         js: w.js,
-        fields: w.fields,
+        fields: fieldsForWire(w.fields),
       });
       // Level the local copy with the stored revision, so the overlays.changed echo this
       // save triggers compares equal and doesn't reload the preview a second time.
@@ -299,7 +310,9 @@ import { EV } from "$lib/utils/eventNames";
       if (selectedId !== id || dirty) {
         return;
       }
-      if (JSON.stringify(w) !== JSON.stringify(widget)) {
+      const local = widget;
+      if (!local || wireJson(w) !== wireJson(local)) {
+        w.fields = withFieldIds(w.fields);
         widget = w;
         reloadKey++;
       }

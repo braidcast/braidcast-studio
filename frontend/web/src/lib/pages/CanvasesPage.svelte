@@ -284,7 +284,4 @@
     margin: 0 6px;
     background: var(--color-accent);
   }
-  .cv-ci.lifting {
-    opacity: 0.4;
-  }
 </style>

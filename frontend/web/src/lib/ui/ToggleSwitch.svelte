@@ -1,17 +1,26 @@
 <script lang="ts">
   // Hard-edged 0-radius switch (replaces per-dock checkbox/toggle one-offs).
   // A native <button role="switch"> so Space/Enter toggle for free; `checked` is
-  // bindable and `onchange` fires with the new value. Without a `label`, pass an
-  // accessible name via the surrounding row (or reuse `label` — it doubles as
-  // aria-label).
+  // bindable and `onchange` fires with the new value. `label` renders beside the track
+  // and doubles as the accessible name; where the naming text already sits in the
+  // surrounding row, pass `ariaLabel` instead so the switch is named without repeating
+  // that text.
   interface Props {
     checked: boolean;
     onchange?: (checked: boolean) => void;
     disabled?: boolean;
     size?: "sm" | "md";
     label?: string;
+    ariaLabel?: string;
   }
-  let { checked = $bindable(false), onchange, disabled = false, size = "md", label }: Props = $props();
+  let {
+    checked = $bindable(false),
+    onchange,
+    disabled = false,
+    size = "md",
+    label,
+    ariaLabel,
+  }: Props = $props();
 
   function toggle() {
     checked = !checked;
@@ -24,7 +33,7 @@
   class:on={checked}
   role="switch"
   aria-checked={checked}
-  aria-label={label}
+  aria-label={ariaLabel ?? label}
   {disabled}
   onclick={toggle}
 >

@@ -967,9 +967,6 @@
     margin: 0 8px;
     background: var(--color-accent);
   }
-  .nav-item.lifting {
-    opacity: 0.4;
-  }
   .master-head {
     flex: 0 0 auto;
     display: flex;
