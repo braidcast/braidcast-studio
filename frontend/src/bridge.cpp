@@ -2836,6 +2836,12 @@ bool MethodSceneItemsList(const json &params, json &result, std::string &error)
 			auto *arr = static_cast<json *>(param);
 			obs_source_t *src = obs_sceneitem_get_source(item);
 			const char *srcName = src ? obs_source_get_name(src) : nullptr;
+			// The member's source type ("browser_source", "group", "scene", ...).
+			// Without it a consumer has to cross-reference sources.listExisting to
+			// learn what kind of source a member is, and that method deliberately
+			// omits the target scene's own members -- so a source present in every
+			// scene has no type anywhere.
+			const char *typeId = src ? obs_source_get_id(src) : nullptr;
 			// Row color tag lives in the item's private settings under "color"
 			// (hex string, "" when unset). See sceneItems.setColor.
 			OBSDataAutoRelease priv = obs_sceneitem_get_private_settings(item);
@@ -2846,6 +2852,7 @@ bool MethodSceneItemsList(const json &params, json &result, std::string &error)
 				json{
 					{"id", obs_sceneitem_get_id(item)},
 					{"source", srcName ? json(srcName) : json(nullptr)},
+					{"typeId", typeId ? json(typeId) : json("")},
 					{"visible", obs_sceneitem_visible(item)},
 					{"locked", obs_sceneitem_locked(item)},
 					{"scaleFilter", ScaleFilterToToken(obs_sceneitem_get_scale_filter(item))},

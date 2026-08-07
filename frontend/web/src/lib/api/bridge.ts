@@ -64,6 +64,11 @@ export type BlendMethod = "default" | "srgbOff";
 export interface SceneItem {
   id: number;
   source: string | null;
+  /** The member's source type id ("browser_source", "group", "scene", …); "" when
+   * the item has no source. Same vocabulary as ExistingSource.typeId, but reported
+   * per member so a consumer does not have to cross-reference sources.listExisting
+   * (which omits the target scene's own members). */
+  typeId: string;
   visible: boolean;
   locked: boolean;
   scaleFilter: ScaleFilter;

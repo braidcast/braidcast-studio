@@ -4,6 +4,7 @@
   import PageShell from "$lib/ui/PageShell.svelte";
   import EmptyState from "$lib/ui/EmptyState.svelte";
   import StaleNotice from "$lib/ui/StaleNotice.svelte";
+  import InsightsPanel from "$lib/monitor/InsightsPanel.svelte";
   import { PLATFORM_COLORS, PLATFORM_LABELS, PLATFORM_ORDER } from "$lib/theme/platformColors";
   import { STATE_COLOR } from "$lib/theme/stateColors";
   import { fmtBitrate, fmtDuration, titleState } from "$lib/utils/format";
@@ -231,6 +232,10 @@
         {/each}
       {/if}
     </div>
+
+    <h2 class="section-title">CONFIG INSIGHTS</h2>
+
+    <InsightsPanel />
   </div>
 </PageShell>
 
