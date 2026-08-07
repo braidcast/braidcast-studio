@@ -2420,6 +2420,15 @@ void obs_set_render_debug(bool enabled)
 		return;
 	}
 
+	/* Baseline the rollup's lagged-frame delta before the graphics thread can
+	 * emit one, so the first line reports its own window and not the entire
+	 * session's lag accumulated while debugging was off. Only on the off->on
+	 * edge: the field is then written solely while the flag is false, which is
+	 * the one state in which the graphics thread provably cannot touch it. */
+	if (enabled && !os_atomic_load_bool(&obs->video.render_debug)) {
+		obs->video.debug_last_lagged_frames = obs->video.lagged_frames;
+	}
+
 	os_atomic_set_bool(&obs->video.render_debug, enabled);
 	source_profiler_enable(enabled);
 	source_profiler_gpu_enable(enabled);

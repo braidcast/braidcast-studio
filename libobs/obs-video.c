@@ -938,8 +938,12 @@ static void debug_resolve_composite_gpu(uint8_t write_slot)
 
 		uint64_t ticks = 0;
 		if (ready && !disjoint && freq && gs_timer_get_data(timer, &ticks)) {
-			mix->debug_composite_gpu_accum += util_mul_div64(ticks, 1000000000ULL, freq);
+			const uint64_t gpu_ns = util_mul_div64(ticks, 1000000000ULL, freq);
+			mix->debug_composite_gpu_accum += gpu_ns;
 			mix->debug_composite_gpu_count++;
+			if (gpu_ns > mix->debug_composite_gpu_max) {
+				mix->debug_composite_gpu_max = gpu_ns;
+			}
 		}
 
 		gs_timer_destroy(timer);
@@ -985,8 +989,12 @@ static inline void output_frame(struct obs_core_video_mix *video, bool debug, ui
 
 	if (debug) {
 		gs_timer_end(debug_timer);
-		video->debug_composite_cpu_accum += os_gettime_ns() - debug_cpu_start;
+		const uint64_t debug_cpu_ns = os_gettime_ns() - debug_cpu_start;
+		video->debug_composite_cpu_accum += debug_cpu_ns;
 		video->debug_composite_cpu_count++;
+		if (debug_cpu_ns > video->debug_composite_cpu_max) {
+			video->debug_composite_cpu_max = debug_cpu_ns;
+		}
 		if (video->debug_composite_timers[debug_slot]) {
 			gs_timer_destroy(video->debug_composite_timers[debug_slot]);
 		}
@@ -1237,11 +1245,17 @@ static bool debug_emit_source_stats_cb(void *param, obs_source_t *source)
 }
 
 /* Once-per-second rollup of composite timing collected while render_debug is on.
- * Emits one line per mix (canvas), then per-source render aggregates. */
+ * Emits one line per mix (canvas), then per-source render aggregates. The lagged
+ * delta is process-wide rather than per-mix, so it repeats on every mix line to
+ * keep each line self-contained. */
 static void debug_emit_composite_stats(void)
 {
 	const double fps = obs->video.video_fps;
 	const double budget_ns = fps > 0.0 ? 1.0e9 / fps : 0.0;
+
+	const uint32_t lagged_total = obs->video.lagged_frames;
+	const uint32_t lagged_delta = lagged_total - obs->video.debug_last_lagged_frames;
+	obs->video.debug_last_lagged_frames = lagged_total;
 
 	pthread_mutex_lock(&obs->video.mixes_mutex);
 	for (size_t i = 0, num = obs->video.mixes.num; i < num; i++) {
@@ -1256,17 +1270,25 @@ static void debug_emit_composite_stats(void)
 		const uint64_t gpu_avg = mix->debug_composite_gpu_count
 						 ? mix->debug_composite_gpu_accum / mix->debug_composite_gpu_count
 						 : 0;
+		const uint64_t cpu_max = mix->debug_composite_cpu_max;
+		const uint64_t gpu_max = mix->debug_composite_gpu_max;
 		const double cpu_pct = budget_ns > 0.0 ? (double)cpu_avg / budget_ns * 100.0 : 0.0;
 		const double gpu_pct = budget_ns > 0.0 ? (double)gpu_avg / budget_ns * 100.0 : 0.0;
+		const double cpu_max_pct = budget_ns > 0.0 ? (double)cpu_max / budget_ns * 100.0 : 0.0;
+		const double gpu_max_pct = budget_ns > 0.0 ? (double)gpu_max / budget_ns * 100.0 : 0.0;
 
 		blog(LOG_INFO,
 		     "[render-debug] mix '%s': composite CPU %.1f" NBSP "us (%.1f%% frame), GPU %.1f" NBSP
-		     "us (%.1f%% frame)",
+		     "us (%.1f%% frame), max CPU %.1f" NBSP "us (%.1f%% frame), max GPU %.1f" NBSP
+		     "us (%.1f%% frame), lagged +%u" NBSP "frames",
 		     mix->debug_label ? mix->debug_label : "?", (double)cpu_avg / 1000.0, cpu_pct,
-		     (double)gpu_avg / 1000.0, gpu_pct);
+		     (double)gpu_avg / 1000.0, gpu_pct, (double)cpu_max / 1000.0, cpu_max_pct, (double)gpu_max / 1000.0,
+		     gpu_max_pct, lagged_delta);
 
 		mix->debug_composite_cpu_accum = 0;
 		mix->debug_composite_gpu_accum = 0;
+		mix->debug_composite_cpu_max = 0;
+		mix->debug_composite_gpu_max = 0;
 		mix->debug_composite_cpu_count = 0;
 		mix->debug_composite_gpu_count = 0;
 	}

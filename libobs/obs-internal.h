@@ -389,6 +389,8 @@ struct obs_core_video_mix {
 	gs_timer_t *debug_composite_timers[NUM_TEXTURES];
 	uint64_t debug_composite_cpu_accum;
 	uint64_t debug_composite_gpu_accum;
+	uint64_t debug_composite_cpu_max;
+	uint64_t debug_composite_gpu_max;
 	uint32_t debug_composite_cpu_count;
 	uint32_t debug_composite_gpu_count;
 };
@@ -423,10 +425,13 @@ struct obs_core_video {
 
 	/* Per-mix composite timing diagnostics (see obs_set_render_debug).
 	 * debug_composite_ranges give GPU frequency/disjoint state per texture
-	 * slot; debug_composite_range_idx advances once per rendered frame. */
+	 * slot; debug_composite_range_idx advances once per rendered frame.
+	 * debug_last_lagged_frames is the lagged_frames value the previous
+	 * rollup reported against, giving each rollup a per-window delta. */
 	volatile bool render_debug;
 	gs_timer_range_t *debug_composite_ranges[NUM_TEXTURES];
 	uint8_t debug_composite_range_idx;
+	uint32_t debug_last_lagged_frames;
 
 	gs_texture_t *transparent_texture;
 
