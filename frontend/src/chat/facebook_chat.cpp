@@ -105,6 +105,10 @@ struct CommentSession {
 	// A comment created before this is pre-existing history, recorded but not shown.
 	int64_t backlogCutoffMs = 0;
 	bool announced = false;
+	// Consecutive failed read attempts, counted only for the degraded-report grace below and
+	// reset by NoteHealthy. Deliberately NOT a retry budget -- the backoff owns pacing, the
+	// HTTP 400 deadline owns that one status's budget, and EndSession owns giving up.
+	int failedAttempts = 0;
 	// Set by EndSession once the session has ended for good, so connect()'s clean bookend
 	// knows not to overwrite the reason. Never cleared: a session has one ending.
 	bool terminal = false;
@@ -113,8 +117,21 @@ struct CommentSession {
 // Confirm the chat once, on the first frame that parses rather than on the response
 // headers: a socket that opens and then says nothing is the failure shape this transport
 // most has to stay honest about. Idempotent.
+// Evidence the connection is alive, which resets the degraded-grace streak. Kept separate from
+// AnnounceOnce because on this transport the two are not the same event: AnnounceOnce fires only
+// on a parsed comment frame, so a broadcast nobody is commenting on would never reset. Resetting
+// only on a comment would let an old blip and a new one sum to the threshold and report a
+// degradation on the new one's first attempt. Called from three places for that reason -- a
+// comment, an SSE keepalive, and a completed cycle that carried no error -- because Meta deleted
+// its SSE reference docs (see the note above) and no keepalive cadence can be relied on here.
+void NoteHealthy(CommentSession &s)
+{
+	s.failedAttempts = 0;
+}
+
 void AnnounceOnce(CommentSession &s)
 {
+	NoteHealthy(s);
 	if (!s.announced) {
 		s.emitState(true, "");
 		s.announced = true;
@@ -126,8 +143,19 @@ void AnnounceOnce(CommentSession &s)
 // degraded report that leaves it set turns every later confirmation into a no-op. The loop
 // then reconnects and delivers comments normally while the health row still claims
 // "Reconnecting" for the rest of the broadcast, and nothing ever contradicts it.
+//
+// A single failed attempt is not surfaced at all: this loop reconnects continuously, so one
+// dropped SSE connection normally recovers on the next cycle, and a row that flips to
+// Reconnecting for those few seconds reports a fault where no comment was lost.
+constexpr int kDegradedGraceAttempts = 2;
+
 void ReportDegraded(CommentSession &s, const std::string &why)
 {
+	if (++s.failedAttempts < kDegradedGraceAttempts) {
+		DBG(LogCat::Chat, "facebook: dest=%s failed attempt %d of %d, holding the row before reporting (%s)",
+		    s.destTag.c_str(), s.failedAttempts, kDegradedGraceAttempts, why.c_str());
+		return;
+	}
 	s.emitState(false, why);
 	s.announced = false;
 }
@@ -311,6 +339,9 @@ long RunLiveComments(CommentSession &s, int &delivered, std::string &errorBody, 
 			return false;
 		}
 		if (sse.TakeKeepalive()) {
+			// A keepalive confirms the transport, not the chat, so it resets the grace streak
+			// without announcing.
+			NoteHealthy(s);
 			DBG(LogCat::Chat, "facebook: dest=%s live-comment keepalive", s.destTag.c_str());
 		}
 		for (const SseEvent &ev : events) {
@@ -507,6 +538,7 @@ bool FacebookChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, co
 				    session.destTag.c_str(), cycleMs, emptyStreak,
 				    static_cast<long long>(wait.count()));
 			}
+			ReportDegraded(session, "Facebook closed the comment stream without sending anything");
 			if (CancelableSleep(wait, canceled)) {
 				break;
 			}
@@ -515,6 +547,21 @@ bool FacebookChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, co
 		emptyStreak = 0;
 		badRequestDeadline.reset();
 		backoff.reset();
+		// Both of the loop's failure shapes above answer non-2xx, so they are reported where they
+		// are handled. This tail is the only place the third shape can be told apart: a connection
+		// that blackholes after its headers is aborted by the low-speed watchdog, and the status
+		// reached BEFORE it stalled is still 200, so it arrives here looking like a long healthy
+		// cycle. `reqErr` is the discriminator -- a quiet broadcast's connection carries no comment
+		// and no error, a stalled one carries an error. Without this the row can claim Connected
+		// through a chat that only ever stalls, because nothing else on this path ever reports.
+		if (delivered == 0 && !reqErr.empty()) {
+			DBG(LogCat::Chat,
+			    "facebook: dest=%s 2xx carried nothing and ended with '%s', treating as failed",
+			    session.destTag.c_str(), reqErr.c_str());
+			ReportDegraded(session, reqErr);
+		} else {
+			NoteHealthy(session);
+		}
 		if (CancelableSleep(std::chrono::milliseconds(kReconnectFloorMs), canceled)) {
 			break;
 		}

@@ -343,6 +343,10 @@ struct ChatSession {
 	// becomes visible without pretending the transport is unhealthy.
 	std::string note;
 	bool announced = false;
+	// Consecutive failed read attempts, counted only for the degraded-report grace below and
+	// reset by AnnounceOnce. Deliberately NOT a retry budget -- nothing here gives up on a
+	// count; the backoff owns pacing and EndSession owns giving up.
+	int failedAttempts = 0;
 	// Set by EndSession once a loop has ended for good, so connect()'s clean bookend knows
 	// not to overwrite the reason. Never cleared: a session has one ending.
 	bool terminal = false;
@@ -353,6 +357,10 @@ struct ChatSession {
 // while any of the account's chats are being read). Idempotent.
 void AnnounceOnce(ChatSession &s)
 {
+	// Every successful read reaches here -- streamList per parsed frame, the .list poll per
+	// cycle, InnerTube per successful poll -- so this is where the degraded-grace streak
+	// resets, ahead of the latch check that makes the rest of this a no-op.
+	s.failedAttempts = 0;
 	if (!s.announced) {
 		s.emitState(true, s.note);
 		s.announced = true;
@@ -373,8 +381,28 @@ void AnnounceOnce(ChatSession &s)
 // is what let six of the seven sites drift into exactly that bug. Re-arming is safe --
 // AnnounceOnce's other obligation, the live-chat refcount hold, is idempotent
 // (LiveChatHold::acquire guards on `held`), so replaying it costs nothing.
-void ReportDegraded(ChatSession &s, const std::string &why)
+//
+// A single failed attempt is not worth surfacing at all. Both readers poll continuously, so
+// one timeout or one 503 normally recovers on the very next request, and a row that flips to
+// Reconnecting for those few seconds reports a fault where nothing was lost. Wait for a second
+// consecutive failure instead. The cost is exactly one extra attempt, but the wall-clock cost of
+// that attempt is whatever the backoff had already grown to -- up to its 30s cap -- so this trades
+// a false Reconnecting on a blip for a later true one on a real outage.
+constexpr int kDegradedGraceAttempts = 2;
+
+// Whether a degraded report waits out that grace. Transient is every poll-level failure --
+// timeout, 5xx, rate-limit -- which is the usual case. Sustained is an outage already known to
+// last, the daily quota stand-down, which has to reach the row at once or the row claims
+// Connected through a pause measured in hours.
+enum class Degradation { Transient, Sustained };
+
+void ReportDegraded(ChatSession &s, const std::string &why, Degradation kind = Degradation::Transient)
 {
+	if (kind == Degradation::Transient && ++s.failedAttempts < kDegradedGraceAttempts) {
+		DBG(LogCat::Chat, "youtube: dest=%s failed attempt %d of %d, holding the row before reporting (%s)",
+		    s.destTag.c_str(), s.failedAttempts, kDegradedGraceAttempts, why.c_str());
+		return;
+	}
 	s.emitState(false, why);
 	s.announced = false;
 }
@@ -516,7 +544,8 @@ bool WaitOutQuotaExhaustion(ChatSession &s)
 	}
 	DBG(LogCat::Chat, "youtube: dest=%s quota exhausted, chat paused %lldms until the reset", s.destTag.c_str(),
 	    static_cast<long long>(wait.count()));
-	ReportDegraded(s, "YouTube API quota exhausted - chat resumes after " + s.owner.QuotaResetLocalTime());
+	ReportDegraded(s, "YouTube API quota exhausted - chat resumes after " + s.owner.QuotaResetLocalTime(),
+		       Degradation::Sustained);
 	return CancelableSleep(wait, s.canceled);
 }
 
