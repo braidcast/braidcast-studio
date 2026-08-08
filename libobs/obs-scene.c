@@ -377,6 +377,15 @@ static inline void pos_from_absolute(struct vec2 *dst, const struct vec2 *v, con
 {
 	float x, y;
 	get_scene_dimensions(item, &x, &y);
+	/* A canvas with no mix reports 0x0, so converting against it divides by zero and stores a
+	 * non-finite relative value the item never recovers from -- and unlike the scale path below,
+	 * nothing downstream isfinite()-checks this one. With no reference frame there is nothing to
+	 * convert, so leave the relative value alone: every caller passes a dst already holding one
+	 * (the item's own field, or the value it is round-tripping through absolute space), and
+	 * update_item_transform recomputes once the canvas has real dimensions. */
+	if (y <= 0.0f) {
+		return;
+	}
 	/* Scaled so that height (y) is [-1, 1]. */
 	dst->x = (2 * v->x - x) / y;
 	dst->y = 2 * v->y / y - 1.0f;
@@ -400,6 +409,10 @@ static inline void size_from_absolute(struct vec2 *dst, const struct vec2 *v, co
 {
 	float x, y;
 	get_scene_dimensions(item, &x, &y);
+	/* Mirrors pos_from_absolute's guard, for the same reason. */
+	if (y <= 0.0f) {
+		return;
+	}
 	/* The height of the canvas is from [-1, 1], so 2.0f * aspect is the
 	 * full width (depending on aspect ratio). */
 	dst->x = (2 * v->x) / y;
