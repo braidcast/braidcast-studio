@@ -27,8 +27,6 @@ struct AdvancedSettings {
 	std::string bindIP = "default"; // "default" (don't bind) or a literal IP
 	bool newSocketLoop = false;
 	bool lowLatencyMode = false;
-	// --- dynamic bitrate (per output) ---
-	bool dynamicBitrate = false;
 	// --- browser source HW accel (store-only; obs-browser reads its own config) ---
 	bool browserHwAccel = true;
 
@@ -113,10 +111,6 @@ inline constexpr AdvancedBoolField kAdvancedBoolFields[] = {
 	 "low_latency_mode",
 	 &AdvancedSettings::lowLatencyMode,
 	 {"Low-latency mode", "", "Network", "", 42}},
-	{"dynamicBitrate",
-	 "dynamic_bitrate",
-	 &AdvancedSettings::dynamicBitrate,
-	 {"Dynamically change bitrate when dropping frames", "", "Network", "", 43}},
 	{"browserHwAccel",
 	 "browser_hw_accel",
 	 &AdvancedSettings::browserHwAccel,

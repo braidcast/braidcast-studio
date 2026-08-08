@@ -23,6 +23,7 @@
 #define debug(format, ...) do_log(LOG_DEBUG, format, ##__VA_ARGS__)
 
 #define OPT_DYN_BITRATE "dyn_bitrate"
+#define OPT_DYN_BITRATE_FLOOR_PCT "dyn_bitrate_floor_pct"
 #define OPT_DYN_BITRATE_INTERPOLATION_TABLE_DATA "interpolation_table_data"
 #define OPT_DROP_THRESHOLD "drop_threshold_ms"
 #define OPT_PFRAME_DROP_THRESHOLD "pframe_drop_threshold_ms"
@@ -116,6 +117,7 @@ struct rtmp_stream {
 	long dbr_prev_bitrate;
 	long dbr_cur_bitrate;
 	long dbr_inc_bitrate;
+	long dbr_floor_bitrate;
 	bool dbr_enabled;
 	DARRAY(struct dbr_interpolation_point) dbr_interpolation_table;
 

@@ -53,6 +53,11 @@ struct CanvasUpdateRequest {
 
 	std::string videoEncoderId; // empty -> keep current
 	std::string audioEncoderId; // empty -> keep current
+
+	// Adaptive bitrate. Not structural: it reaches the rtmp output's settings, never
+	// the canvas mix, so it is editable while live and applies on the next output start.
+	bool dynamicBitrate = false;
+	uint32_t dynamicBitrateFloorPct = 60;
 };
 
 struct CanvasUpdateResult {

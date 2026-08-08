@@ -24,6 +24,8 @@ export interface CanvasForm {
   sdrWhiteLevel: number;
   hdrNominalPeakLevel: number;
   colorUseDefault: boolean;
+  dynamicBitrate: boolean;
+  dynamicBitrateFloorPct: number;
 }
 
 /** Whether one settings group's controls are locked: while the canvas is live, or
@@ -53,6 +55,8 @@ export function seedForm(c: CanvasInfo): CanvasForm {
     sdrWhiteLevel: c.color.sdrWhiteLevel,
     hdrNominalPeakLevel: c.color.hdrNominalPeakLevel,
     colorUseDefault: c.color.useDefault,
+    dynamicBitrate: c.dynamicBitrate,
+    dynamicBitrateFloorPct: c.dynamicBitrateFloorPct,
   };
 }
 
@@ -82,5 +86,7 @@ export function toUpdateParams(uuid: string, f: CanvasForm): CanvasUpdateParams 
       hdrNominalPeakLevel: f.hdrNominalPeakLevel,
       useDefault: f.colorUseDefault,
     },
+    dynamicBitrate: f.dynamicBitrate,
+    dynamicBitrateFloorPct: f.dynamicBitrateFloorPct,
   };
 }

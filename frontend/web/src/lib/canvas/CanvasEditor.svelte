@@ -157,6 +157,7 @@
         {form}
         canvasUuid={canvas.uuid}
         {videoEncoders}
+        videoBitrate={canvas.videoBitrate}
         {isLive}
         {isDefault}
         {commit}

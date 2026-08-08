@@ -5918,6 +5918,17 @@ json CanvasToJson(const CanvasDefinition &def)
 		{"audioEncoder", def.audio.id},
 		{"videoUseDefault", def.video.useDefault},
 		{"audioUseDefault", def.audio.useDefault},
+		// Adaptive bitrate for this canvas's outputs. The floor is a percentage of this
+		// canvas's own video bitrate, so it stays meaningful whatever that bitrate is.
+		{"dynamicBitrate", def.dynamicBitrate},
+		{"dynamicBitrateFloorPct", def.dynamicBitrateFloorPct},
+		// Lets the UI render the floor percentage as a kbps figure. Read from this
+		// canvas's own encoder blob only: 0 when the slot inherits the Default's encoder
+		// (whose bitrate lives on another definition) or carries no bitrate key, and the
+		// UI then omits the computed figure rather than showing a wrong one.
+		{"videoBitrate", (!def.video.InheritsDefault() && def.video.settings)
+					 ? (uint32_t)obs_data_get_int(def.video.settings, "bitrate")
+					 : 0},
 		// Per-canvas color: format/space/range tokens map 1:1 onto libobs video
 		// format/colorspace/range (applied via CanvasDefinition::ToVideoInfo). The
 		// sdr/hdr nit levels are persisted but not yet applied to the pipeline.
@@ -6104,6 +6115,16 @@ bool ReadCanvasColor(const json &params, const CanvasColorDef &current, CanvasCo
 	return true;
 }
 
+// Adaptive-bitrate floor as a percentage of the canvas's own video bitrate: 0
+// disables the floor (the stock collapse-to-50-kbps descent in rtmp-stream.c), 100
+// pins the bitrate at target. Out-of-range input keeps `current` rather than being
+// silently reinterpreted. Shared by canvas.create and canvas.update.
+uint32_t ReadDynBitrateFloorPct(const json &params, uint32_t current)
+{
+	const int64_t pct = JsonUtil::NumLoose(params, "dynamicBitrateFloorPct", (int64_t)current);
+	return (pct >= 0 && pct <= 100) ? (uint32_t)pct : current;
+}
+
 bool MethodCanvasCreate(const json &params, json &result, std::string &error)
 {
 	if (!RequireObject(params, "canvas.create", error)) {
@@ -6129,6 +6150,8 @@ bool MethodCanvasCreate(const json &params, json &result, std::string &error)
 	    !ReadCanvasColor(params, def.color, def.color, error)) {
 		return false;
 	}
+	def.dynamicBitrate = JsonUtil::Bool(params, "dynamicBitrate", def.dynamicBitrate);
+	def.dynamicBitrateFloorPct = ReadDynBitrateFloorPct(params, def.dynamicBitrateFloorPct);
 
 	// Encoder ids: explicit or the same defaults the legacy / EnsureDefaultEncoders
 	// use. Seed their settings blobs from the encoder type defaults.
@@ -6219,6 +6242,8 @@ bool MethodCanvasDuplicate(const json &params, json &result, std::string &error)
 	def.video.useDefault = src->video.useDefault;
 	def.audio.id = src->audio.id;
 	def.audio.useDefault = src->audio.useDefault;
+	def.dynamicBitrate = src->dynamicBitrate;
+	def.dynamicBitrateFloorPct = src->dynamicBitrateFloorPct;
 	// Deep-copy the settings blobs: sharing the obs_data would make editing the
 	// copy's encoder silently edit the original's.
 	def.video.settings = obs_data_create();
@@ -6311,6 +6336,8 @@ bool MethodCanvasUpdate(const json &params, json &result, std::string &error)
 	req.useDefaultResolution = JsonUtil::Bool(params, "useDefaultResolution", def->useDefaultResolution);
 	req.videoUseDefault = JsonUtil::Bool(params, "videoUseDefault", def->video.useDefault);
 	req.audioUseDefault = JsonUtil::Bool(params, "audioUseDefault", def->audio.useDefault);
+	req.dynamicBitrate = JsonUtil::Bool(params, "dynamicBitrate", def->dynamicBitrate);
+	req.dynamicBitrateFloorPct = ReadDynBitrateFloorPct(params, def->dynamicBitrateFloorPct);
 
 	CanvasUpdateResult r = ObsBootstrap::CanvasService().Update(req);
 	if (!r.ok) {

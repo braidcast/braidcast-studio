@@ -100,6 +100,9 @@ OBSDataAutoRelease CanvasDefinition::ToData() const
 	obs_data_set_obj(d, "video_encoder", EncoderToData(video));
 	obs_data_set_obj(d, "audio_encoder", EncoderToData(audio));
 
+	obs_data_set_bool(d, "dynamic_bitrate", dynamicBitrate);
+	obs_data_set_int(d, "dynamic_bitrate_floor_pct", dynamicBitrateFloorPct);
+
 	OBSDataAutoRelease c = obs_data_create();
 	obs_data_set_string(c, "format", color.format.c_str());
 	obs_data_set_string(c, "space", color.space.c_str());
@@ -146,6 +149,13 @@ CanvasDefinition CanvasDefinition::FromData(obs_data_t *data)
 
 	def.video = EncoderFromData(data, "video_encoder");
 	def.audio = EncoderFromData(data, "audio_encoder");
+
+	def.dynamicBitrate = obs_data_get_bool(data, "dynamic_bitrate");
+	/* An absent key must keep the struct default rather than read as 0 ("no floor"),
+	 * which is the stock collapse-to-50-kbps behavior this setting exists to prevent. */
+	if (obs_data_has_user_value(data, "dynamic_bitrate_floor_pct")) {
+		def.dynamicBitrateFloorPct = (uint32_t)obs_data_get_int(data, "dynamic_bitrate_floor_pct");
+	}
 
 	OBSDataAutoRelease c = obs_data_get_obj(data, "color");
 	if (c) {

@@ -522,7 +522,20 @@ bool MultistreamEngine::StartOutput(const std::string &bindingUuid, std::string 
 	}
 	obs_data_set_bool(osettings, "new_socket_loop_enabled", adv.newSocketLoop);
 	obs_data_set_bool(osettings, "low_latency_mode_enabled", adv.lowLatencyMode);
-	obs_data_set_bool(osettings, "dyn_bitrate", adv.dynamicBitrate);
+
+	// Adaptive bitrate is per-canvas, not global: the floor is a percentage of the
+	// canvas's own video bitrate, so the enable and the floor have to travel together
+	// from the same CanvasDefinition. Default canvas is not in Find()'s map.
+	const CanvasDefinition &defCanvas = canvases.Default();
+	const CanvasDefinition *canvasDef = &defCanvas;
+	if (lo->canvasUuid != defCanvas.uuid) {
+		canvasDef = canvases.Find(lo->canvasUuid); // Default is not in Find()'s map
+	}
+	const bool dynEnabled = canvasDef && canvasDef->dynamicBitrate;
+	obs_data_set_bool(osettings, "dyn_bitrate", dynEnabled);
+	if (dynEnabled) {
+		obs_data_set_int(osettings, "dyn_bitrate_floor_pct", canvasDef->dynamicBitrateFloorPct);
+	}
 	obs_output_update(lo->output, osettings);
 
 	obs_output_set_video_encoder(lo->output, ce->video);

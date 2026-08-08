@@ -1489,6 +1489,18 @@ static bool init_connect(struct rtmp_stream *stream)
 	stream->dbr_inc_timeout = 0;
 	stream->dbr_enabled = dbr_capable && obs_data_get_bool(settings, OPT_DYN_BITRATE);
 
+	/* The descent in dbr_bitrate_lowered() follows the measured send throughput and
+	 * bottoms out at 50 kbps -- low enough to be indistinguishable from a dead
+	 * stream, and reached by a single stalled second. Expressing the floor as a
+	 * percentage of the configured target keeps one transient from costing the
+	 * DBR_INC_TIMER-paced minutes it takes to climb back. 0 = no floor (stock
+	 * behavior). */
+	long floor_pct = (long)obs_data_get_int(settings, OPT_DYN_BITRATE_FLOOR_PCT);
+	if (floor_pct > 100) {
+		floor_pct = 100;
+	}
+	stream->dbr_floor_bitrate = (floor_pct > 0) ? stream->dbr_orig_bitrate * floor_pct / 100 : 0;
+
 	if (obs_output_get_delay(stream->output) != 0) {
 		info("Dynamic bitrate disabled. Stream delay and dynamic bitrate are incompatible.");
 		stream->dbr_enabled = false;
@@ -1508,7 +1520,12 @@ static bool init_connect(struct rtmp_stream *stream)
 	}
 
 	if (stream->dbr_enabled) {
-		info("Dynamic bitrate enabled.  Dropped frames begone!");
+		if (stream->dbr_floor_bitrate) {
+			info("Dynamic bitrate enabled, floor %ld kbps (%ld%% of %ld)", stream->dbr_floor_bitrate,
+			     floor_pct, stream->dbr_orig_bitrate);
+		} else {
+			info("Dynamic bitrate enabled.  Dropped frames begone!");
+		}
 	}
 
 	if (drop_p < (drop_b + 200)) {
@@ -1728,6 +1745,10 @@ static bool dbr_bitrate_lowered(struct rtmp_stream *stream)
 
 	} else {
 		return false;
+	}
+
+	if (stream->dbr_floor_bitrate && new_bitrate < stream->dbr_floor_bitrate) {
+		new_bitrate = stream->dbr_floor_bitrate;
 	}
 
 	if (new_bitrate == stream->dbr_cur_bitrate) {

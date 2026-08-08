@@ -47,6 +47,13 @@ struct CanvasDefinition {
 	CanvasEncoderDef audio; // Phase 1: single audio track (mixer 0)
 	CanvasColorDef color;
 
+	/* Adaptive-bitrate policy for the outputs bound to this canvas. The floor is a
+	 * percentage of this canvas's own configured video bitrate rather than an absolute
+	 * rate: a single absolute number cannot serve canvases whose targets differ by
+	 * more than 2x (a 12000 kbps floor exceeds an 8000 kbps vertical target outright). */
+	bool dynamicBitrate = false;
+	uint32_t dynamicBitrateFloorPct = 60;
+
 	/* Serialize to a single obs_data object (one array element in canvases.json). */
 	[[nodiscard]] OBSDataAutoRelease ToData() const;
 	/* Build from one obs_data object; missing keys fall back to struct defaults. */

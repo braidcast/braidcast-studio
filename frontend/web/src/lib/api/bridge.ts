@@ -342,7 +342,6 @@ export interface AdvancedSettings {
   bindIP: string;
   newSocketLoop: boolean;
   lowLatencyMode: boolean;
-  dynamicBitrate: boolean;
   browserHwAccel: boolean;
 }
 
@@ -394,6 +393,14 @@ export interface CanvasInfo {
   videoUseDefault: boolean;
   audioUseDefault: boolean;
   color: CanvasColor;
+  /** Reduce this canvas's bitrate on congestion instead of dropping frames. */
+  dynamicBitrate: boolean;
+  /** Lower bound for `dynamicBitrate`, as a percentage of this canvas's configured
+   * video bitrate. 0 = no floor (collapses toward 50 kbps); 100 = never reduce. */
+  dynamicBitrateFloorPct: number;
+  /** This canvas's configured video bitrate in kbps, so the UI can render the floor
+   * percentage as a real figure. 0 when unknown (inherited encoder / no bitrate key). */
+  videoBitrate: number;
   /** True when >=1 enabled output binds this canvas; the canvas panel is shown
    * only when enabled (Default included -- its panel hides when disabled). */
   enabled: boolean;
@@ -415,6 +422,8 @@ export interface CanvasCreateParams {
   videoUseDefault?: boolean;
   audioUseDefault?: boolean;
   color?: Partial<CanvasColor>;
+  dynamicBitrate?: boolean;
+  dynamicBitrateFloorPct?: number;
 }
 
 /** Fields accepted by canvas.update (all but uuid optional; name always allowed). */
@@ -434,6 +443,8 @@ export interface CanvasUpdateParams {
   videoUseDefault?: boolean;
   audioUseDefault?: boolean;
   color?: Partial<CanvasColor>;
+  dynamicBitrate?: boolean;
+  dynamicBitrateFloorPct?: number;
 }
 
 /** Fields accepted by canvas.reorder / streamProfile.reorder: the full ordered list of uuids. */

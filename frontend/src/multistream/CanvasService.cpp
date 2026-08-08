@@ -144,6 +144,11 @@ CanvasUpdateResult CanvasService::Update(const CanvasUpdateRequest &req)
 	def->useDefaultResolution = newUseDefRes;
 	def->video.useDefault = newVideoUseDefault;
 	def->audio.useDefault = newAudioUseDefault;
+	// Deliberately outside the structural gate above: these travel to the rtmp output's
+	// settings (MultistreamEngine) and never touch the mix or the encoders, so a live
+	// canvas can be edited. The change lands when the output next starts.
+	def->dynamicBitrate = req.dynamicBitrate;
+	def->dynamicBitrateFloorPct = req.dynamicBitrateFloorPct;
 	// Switching an encoder id replaces its stored settings with that type's
 	// defaults (the prior blob belongs to a different encoder schema).
 	if (vencChanged) {
