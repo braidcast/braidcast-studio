@@ -121,6 +121,17 @@ void AnnounceOnce(CommentSession &s)
 	}
 }
 
+// AnnounceOnce's counterpart, and the ONLY way to report a transient degradation. Clearing
+// `announced` is what re-arms recovery: AnnounceOnce is a no-op while the latch is set, so a
+// degraded report that leaves it set turns every later confirmation into a no-op. The loop
+// then reconnects and delivers comments normally while the health row still claims
+// "Reconnecting" for the rest of the broadcast, and nothing ever contradicts it.
+void ReportDegraded(CommentSession &s, const std::string &why)
+{
+	s.emitState(false, why);
+	s.announced = false;
+}
+
 // The ONE way the read loop ends for good. It owns every obligation of a terminal exit
 // together, so a branch cannot satisfy some and silently drop the rest: the health surface
 // gets Failed rather than Reconnecting, the reason reaches the chat pane, `err` carries it
@@ -430,7 +441,7 @@ bool FacebookChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, co
 		if (status == 0) {
 			DBG(LogCat::Chat, "facebook: dest=%s transport failure (%s), backing off",
 			    session.destTag.c_str(), reqErr.c_str());
-			emitState(false, reqErr);
+			ReportDegraded(session, reqErr);
 			if (CancelableSleep(backoff.next(), canceled)) {
 				break;
 			}
@@ -451,7 +462,7 @@ bool FacebookChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, co
 			DBG(LogCat::Chat, "facebook: dest=%s HTTP 400, %lldms of retry budget left (body=%s)",
 			    session.destTag.c_str(), leftMs, Http::BodyForLog(errorBody).c_str());
 			if (now < *badRequestDeadline) {
-				emitState(false, GraphErrorReason(errorBody, status));
+				ReportDegraded(session, GraphErrorReason(errorBody, status));
 				if (CancelableSleep(backoff.next(), canceled)) {
 					break;
 				}
@@ -474,7 +485,7 @@ bool FacebookChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, co
 		}
 		if (status < 200 || status >= 300) {
 			DBG(LogCat::Chat, "facebook: dest=%s HTTP %ld, backing off", session.destTag.c_str(), status);
-			emitState(false, "HTTP " + std::to_string(status));
+			ReportDegraded(session, "HTTP " + std::to_string(status));
 			if (CancelableSleep(backoff.next(), canceled)) {
 				break;
 			}

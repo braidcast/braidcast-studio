@@ -865,6 +865,10 @@ bool Run(const Config &cfg, const Callbacks &cb)
 			}
 			DBG(LogCat::Chat, "youtube innertube: dest=%s unusable response (HTTP %ld), strike %d/%d",
 			    cfg.destTag.c_str(), resp.status, deadStreak, kDeadStrikes);
+			// Not the status alone: this branch is reached by a 2xx whose live-chat object is
+			// missing as well as by a non-2xx, and "HTTP 200" on a health row reads as nonsense.
+			// The status is in the log line above for diagnosis.
+			cb.state(false, "YouTube chat response unusable, retrying");
 			if (CancelableSleep(backoff.next(), cb.canceled)) {
 				break;
 			}

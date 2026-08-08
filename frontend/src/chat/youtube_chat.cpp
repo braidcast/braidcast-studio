@@ -318,7 +318,8 @@ void ProcessChatItems(const ChatContext &ctx, const json &items, const std::stri
 
 // The shared per-connection context both read loops run on. References into connect()'s
 // frame (the loops never outlive it); `announced` is threaded across a stream->list
-// fallback so the connected state is emitted exactly once.
+// fallback so the connected state is emitted once per connected stretch rather than per
+// parsed frame -- see AnnounceOnce and ReportDegraded, which are the only two writers.
 struct ChatSession {
 	OAuth::YouTubeProvider &owner;
 	const ChatContext &ctx;
@@ -357,6 +358,25 @@ void AnnounceOnce(ChatSession &s)
 		s.announced = true;
 		s.holdLiveChat();
 	}
+}
+
+// AnnounceOnce's counterpart, and the ONLY way to report a transient degradation. Clearing
+// `announced` is not optional bookkeeping -- it is what re-arms recovery. The latch exists so
+// the connected state is not re-sent on every parsed frame (ctx.emit puts a chat.state frame
+// on the wire unconditionally, and streamList parses one about every second); the consequence
+// is that a degraded report which leaves the latch set turns AnnounceOnce into a permanent
+// no-op. The loop then recovers and keeps polling while the row still claims "Reconnecting"
+// for the rest of the broadcast, and because an idle chat emits no log line, nothing ever
+// contradicts it.
+//
+// Every backoff path routes through here for that reason: open-coding emitState(false, ...)
+// is what let six of the seven sites drift into exactly that bug. Re-arming is safe --
+// AnnounceOnce's other obligation, the live-chat refcount hold, is idempotent
+// (LiveChatHold::acquire guards on `held`), so replaying it costs nothing.
+void ReportDegraded(ChatSession &s, const std::string &why)
+{
+	s.emitState(false, why);
+	s.announced = false;
 }
 
 // The ONE way either read loop ends for good. It owns every obligation of a terminal exit
@@ -468,16 +488,26 @@ bool RunInnerTube(ChatSession &s, std::string &err)
 	cb.terminal = [&s, &err](const std::string &reason) {
 		EndSession(s, reason, err);
 	};
+	// Degraded reports go through ReportDegraded rather than emitState so the announce latch
+	// re-arms: the InnerTube loop has no connected-state call of its own, it only calls
+	// cb.announce on a successful poll, and AnnounceOnce is a no-op while the latch is set.
+	// The connected arm goes through AnnounceOnce rather than emitState directly so it cannot
+	// satisfy half of the announce contract: no InnerTube path calls state(true) today, and if
+	// one is added it must take the live-chat refcount hold like every other connected report,
+	// or ShouldPollSuperChats resumes billing against a chat this read already covers.
 	cb.state = [&s](bool connected, const std::string &stateErr) {
-		s.emitState(connected, stateErr);
+		if (connected) {
+			AnnounceOnce(s);
+			return;
+		}
+		ReportDegraded(s, stateErr);
 	};
 	return YouTubeInnerTube::Run(cfg, cb);
 }
 
 // While the shared daily-quota gate is closed, surface the outage on the chat state
 // and sleep (cancelable) until the reset instant, so neither read loop spends a
-// request against a spent quota. Clears `announced` so recovery re-emits the
-// connected state once polling resumes. Returns true when the wait was canceled.
+// request against a spent quota. Returns true when the wait was canceled.
 bool WaitOutQuotaExhaustion(ChatSession &s)
 {
 	std::chrono::milliseconds wait{};
@@ -486,8 +516,7 @@ bool WaitOutQuotaExhaustion(ChatSession &s)
 	}
 	DBG(LogCat::Chat, "youtube: dest=%s quota exhausted, chat paused %lldms until the reset", s.destTag.c_str(),
 	    static_cast<long long>(wait.count()));
-	s.emitState(false, "YouTube API quota exhausted - chat resumes after " + s.owner.QuotaResetLocalTime());
-	s.announced = false;
+	ReportDegraded(s, "YouTube API quota exhausted - chat resumes after " + s.owner.QuotaResetLocalTime());
 	return CancelableSleep(wait, s.canceled);
 }
 
@@ -632,7 +661,7 @@ bool RunStreamList(ChatSession &s, std::string &err)
 			// Transport failure: transient blip, back off and reconnect.
 			DBG(LogCat::Chat, "youtube streamList: dest=%s transport failure (%s), backing off",
 			    s.destTag.c_str(), reqErr.c_str());
-			s.emitState(false, reqErr);
+			ReportDegraded(s, reqErr);
 			if (CancelableSleep(s.backoff.next(), s.canceled)) {
 				break;
 			}
@@ -663,7 +692,7 @@ bool RunStreamList(ChatSession &s, std::string &err)
 			if (cls == OAuth::YouTubeErrorClass::RateLimited) {
 				DBG(LogCat::Chat, "youtube streamList: dest=%s HTTP %ld (%s) rate-limited, backing off",
 				    s.destTag.c_str(), status, reason.c_str());
-				s.emitState(false, "YouTube chat rate-limited, retrying");
+				ReportDegraded(s, "YouTube chat rate-limited, retrying");
 				if (CancelableSleep(s.backoff.next(), s.canceled)) {
 					break;
 				}
@@ -680,7 +709,7 @@ bool RunStreamList(ChatSession &s, std::string &err)
 		if (status < 200 || status >= 300) {
 			DBG(LogCat::Chat, "youtube streamList: dest=%s HTTP %ld, backing off", s.destTag.c_str(),
 			    status);
-			s.emitState(false, "HTTP " + std::to_string(status));
+			ReportDegraded(s, "HTTP " + std::to_string(status));
 			if (CancelableSleep(s.backoff.next(), s.canceled)) {
 				break;
 			}
@@ -786,7 +815,7 @@ void RunListPoll(ChatSession &s, std::string &err)
 			if (resp.status == 0) {
 				DBG(LogCat::Chat, "youtube list: dest=%s transport failure (%s), backing off",
 				    s.destTag.c_str(), reqErr.c_str());
-				s.emitState(false, reqErr);
+				ReportDegraded(s, reqErr);
 				if (CancelableSleep(s.backoff.next(), s.canceled)) {
 					break;
 				}
@@ -816,7 +845,7 @@ void RunListPoll(ChatSession &s, std::string &err)
 			if (cls == OAuth::YouTubeErrorClass::RateLimited) {
 				DBG(LogCat::Chat, "youtube list: dest=%s HTTP %ld (%s) rate-limited, backing off",
 				    s.destTag.c_str(), resp.status, reason.c_str());
-				s.emitState(false, "YouTube chat rate-limited, retrying");
+				ReportDegraded(s, "YouTube chat rate-limited, retrying");
 				if (CancelableSleep(s.backoff.next(), s.canceled)) {
 					break;
 				}
@@ -836,7 +865,7 @@ void RunListPoll(ChatSession &s, std::string &err)
 		if (resp.status < 200 || resp.status >= 300) {
 			DBG(LogCat::Chat, "youtube list: dest=%s HTTP %ld, backing off", s.destTag.c_str(),
 			    resp.status);
-			s.emitState(false, "HTTP " + std::to_string(resp.status));
+			ReportDegraded(s, "HTTP " + std::to_string(resp.status));
 			if (CancelableSleep(s.backoff.next(), s.canceled)) {
 				break;
 			}
