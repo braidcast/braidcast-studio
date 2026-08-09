@@ -49,6 +49,39 @@ struct SessionDestination {
 	std::string error;
 };
 
+// A planned broadcast. `announce` and `autoStart` are 0/1 rather than bool so the
+// struct keeps matching the DDL column for column, which is the property the
+// comment above asks of this file; the bridge is where they become JSON booleans.
+struct ScheduleEntry {
+	std::string id;
+	int64_t createdAt = 0;
+	int64_t updatedAt = 0;
+	int64_t startsAt = 0;
+	std::string title;
+	int64_t durationMin = 60;
+	int64_t announce = 0;
+	int64_t autoStart = 0;
+	// Both reserved: recurrence is out of scope for v1, remote_ref is written
+	// only once announcing exists. Neither is read by anything in this phase.
+	std::optional<std::string> recurrence;
+	std::optional<std::string> remoteRef;
+	// planned | armed | live | done | missed | canceled, enforced by a CHECK in
+	// the migration rather than here.
+	std::string state = "planned";
+};
+
+struct ScheduleDestination {
+	std::string id;
+	int64_t createdAt = 0;
+	int64_t updatedAt = 0;
+	std::string scheduleId;
+	std::string profileId;
+	std::string title;
+	std::string category;
+	// JSON array of tag strings.
+	std::string tags = "[]";
+};
+
 struct SessionHealth {
 	// Assigned by SQLite on insert; 0 stands for "not stored yet".
 	int64_t id = 0;
@@ -94,7 +127,26 @@ inline auto MakeStorage(const std::string &path)
 			   make_column("dropped_frames", &SessionHealth::droppedFrames, default_value(int64_t{0})),
 			   make_column("congestion_pct", &SessionHealth::congestionPct, default_value(0.0)),
 			   make_column("encode_skipped", &SessionHealth::encodeSkipped, default_value(int64_t{0})),
-			   make_column("cpu_pct", &SessionHealth::cpuPct, default_value(0.0))));
+			   make_column("cpu_pct", &SessionHealth::cpuPct, default_value(0.0))),
+		make_table("schedule", make_column("id", &ScheduleEntry::id, primary_key()),
+			   make_column("created_at", &ScheduleEntry::createdAt),
+			   make_column("updated_at", &ScheduleEntry::updatedAt),
+			   make_column("starts_at", &ScheduleEntry::startsAt),
+			   make_column("title", &ScheduleEntry::title, default_value(std::string{})),
+			   make_column("duration_min", &ScheduleEntry::durationMin, default_value(int64_t{60})),
+			   make_column("announce", &ScheduleEntry::announce, default_value(int64_t{0})),
+			   make_column("auto_start", &ScheduleEntry::autoStart, default_value(int64_t{0})),
+			   make_column("recurrence", &ScheduleEntry::recurrence),
+			   make_column("remote_ref", &ScheduleEntry::remoteRef),
+			   make_column("state", &ScheduleEntry::state, default_value(std::string{"planned"}))),
+		make_table("schedule_destinations", make_column("id", &ScheduleDestination::id, primary_key()),
+			   make_column("created_at", &ScheduleDestination::createdAt),
+			   make_column("updated_at", &ScheduleDestination::updatedAt),
+			   make_column("schedule_id", &ScheduleDestination::scheduleId),
+			   make_column("profile_id", &ScheduleDestination::profileId, default_value(std::string{})),
+			   make_column("title", &ScheduleDestination::title, default_value(std::string{})),
+			   make_column("category", &ScheduleDestination::category, default_value(std::string{})),
+			   make_column("tags", &ScheduleDestination::tags, default_value(std::string{"[]"}))));
 }
 
 // sqlite_orm's storage type is a deduced tuple of every table declaration and

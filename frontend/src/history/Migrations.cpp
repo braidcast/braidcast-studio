@@ -26,8 +26,9 @@ namespace {
 // UPDATE against the table they fire on; SQLite leaves recursive triggers off
 // unless asked, so that write does not re-enter them.
 //
-// Scheduling (`schedule`, `schedule_destinations`) belongs to a later phase and
-// is absent rather than stubbed out here.
+// Scheduling (`schedule`, `schedule_destinations`) arrives in v2 below; v1 is
+// left exactly as it shipped so an existing install migrates rather than being
+// rebuilt.
 constexpr const char *kMigration1 = R"SQL(
 CREATE TABLE sessions (
     id            TEXT PRIMARY KEY NOT NULL,
@@ -85,6 +86,67 @@ BEGIN
 END;
 )SQL";
 
+// Schema v2 -- planned broadcasts.
+//
+// `announce` and `remote_ref` are written by nothing in this phase. They are
+// here so announcing a scheduled broadcast to a platform is an additive change
+// to the write paths rather than a migration against rows users already have.
+// `recurrence` is reserved on the same reasoning and stays NULL.
+//
+// `state` carries a CHECK rather than being validated in the store. That is the
+// same argument the updated_at triggers above are built on: a constraint that
+// lives in the versioned migration cannot be bypassed by a write path that
+// forgets to call a helper, and `state` is the column the runner drives from
+// several places.
+//
+// `sessions.schedule_id` gets its index here rather than in v1 because nothing
+// read it until now. Both readers are new: clearing the link when a planned
+// entry is deleted, and joining a session back to the entry that planned it to
+// show actual runtime against the plan.
+constexpr const char *kMigration2 = R"SQL(
+CREATE TABLE schedule (
+    id           TEXT PRIMARY KEY NOT NULL,
+    created_at   INTEGER NOT NULL,
+    updated_at   INTEGER NOT NULL,
+    starts_at    INTEGER NOT NULL,
+    title        TEXT    NOT NULL DEFAULT '',
+    duration_min INTEGER NOT NULL DEFAULT 60,
+    announce     INTEGER NOT NULL DEFAULT 0,
+    auto_start   INTEGER NOT NULL DEFAULT 0,
+    recurrence   TEXT,
+    remote_ref   TEXT,
+    state        TEXT    NOT NULL DEFAULT 'planned'
+        CHECK (state IN ('planned','armed','live','done','missed','canceled'))
+);
+
+CREATE INDEX idx_schedule_starts_at ON schedule (starts_at);
+
+CREATE INDEX idx_sessions_schedule ON sessions (schedule_id);
+
+CREATE TABLE schedule_destinations (
+    id          TEXT PRIMARY KEY NOT NULL,
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL,
+    schedule_id TEXT NOT NULL REFERENCES schedule (id) ON DELETE CASCADE,
+    profile_id  TEXT NOT NULL DEFAULT '',
+    title       TEXT NOT NULL DEFAULT '',
+    category    TEXT NOT NULL DEFAULT '',
+    tags        TEXT NOT NULL DEFAULT '[]'
+);
+
+CREATE INDEX idx_schedule_destinations_schedule ON schedule_destinations (schedule_id);
+
+CREATE TRIGGER trg_schedule_updated_at AFTER UPDATE ON schedule
+BEGIN
+    UPDATE schedule SET updated_at = CAST(unixepoch('now','subsec') * 1000 AS INTEGER) WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER trg_schedule_destinations_updated_at AFTER UPDATE ON schedule_destinations
+BEGIN
+    UPDATE schedule_destinations SET updated_at = CAST(unixepoch('now','subsec') * 1000 AS INTEGER) WHERE id = NEW.id;
+END;
+)SQL";
+
 struct Migration {
 	int version;
 	const char *sql;
@@ -93,6 +155,7 @@ struct Migration {
 // Appending a migration is one entry here plus a bump of kCurrentSchemaVersion.
 constexpr Migration kMigrations[] = {
 	{1, kMigration1},
+	{2, kMigration2},
 };
 
 // Forgetting the bump is silent otherwise: existing installs skip the new

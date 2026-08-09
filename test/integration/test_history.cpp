@@ -81,6 +81,73 @@ static void test_migration_is_idempotent(void **state)
 	}
 }
 
+// Winds a current database back to v1 by removing exactly what v2 added, rather
+// than by pasting v1's DDL into this file. A copied fixture is a second
+// description of the schema that nothing keeps honest -- it would keep passing
+// against a v1 that had drifted out from under it.
+static bool WindBackToV1(History::Db &db)
+{
+	return db.Exec("DROP TRIGGER trg_schedule_destinations_updated_at;"
+		       "DROP TRIGGER trg_schedule_updated_at;"
+		       "DROP TABLE schedule_destinations;"
+		       "DROP TABLE schedule;"
+		       "DROP INDEX idx_sessions_schedule;"
+		       "PRAGMA user_version = 1");
+}
+
+// The upgrade an existing install actually performs. What matters is not that
+// the new tables appear -- a fresh database proves that -- but that the rows
+// already there survive it.
+static void test_v1_upgrades_to_v2_preserving_rows(void **state)
+{
+	(void)state;
+	const std::string path = TempDbPath("upgrade_v1_v2.db");
+	{
+		History::Db db;
+		assert_true(db.Open(path));
+		assert_true(SeedSession(db));
+		assert_true(SeedDestination(db));
+		assert_true(WindBackToV1(db));
+		assert_int_equal(db.Version(), 1);
+		db.Close();
+	}
+	History::Db db;
+	assert_true(db.Open(path));
+	assert_int_equal(db.Version(), History::kCurrentSchemaVersion);
+	assert_int_equal((int)db.ScalarInt("SELECT COUNT(*) FROM sessions"), 1);
+	assert_int_equal((int)db.ScalarInt("SELECT COUNT(*) FROM session_destinations"), 1);
+	assert_int_equal((int)db.ScalarInt("SELECT COUNT(*) FROM schedule"), 0);
+	db.Close();
+}
+
+// The runner drives `state` from several places, so it is constrained in the
+// migration rather than in whichever write path happens to be calling.
+static void test_schedule_state_is_constrained(void **state)
+{
+	(void)state;
+	History::Db db;
+	assert_true(db.Open(TempDbPath("schedule_state.db")));
+	assert_true(db.Exec("INSERT INTO schedule (id, created_at, updated_at, starts_at, state) "
+			    "VALUES ('e1', 1, 1, 1000, 'planned')"));
+	assert_false(db.Exec("INSERT INTO schedule (id, created_at, updated_at, starts_at, state) "
+			     "VALUES ('e2', 1, 1, 1000, 'nonsense')"));
+	assert_int_equal((int)db.ScalarInt("SELECT COUNT(*) FROM schedule"), 1);
+	db.Close();
+}
+
+static void test_schedule_delete_cascades_to_destinations(void **state)
+{
+	(void)state;
+	History::Db db;
+	assert_true(db.Open(TempDbPath("schedule_cascade.db")));
+	assert_true(db.Exec("INSERT INTO schedule (id, created_at, updated_at, starts_at) VALUES ('e1', 1, 1, 1000)"));
+	assert_true(db.Exec("INSERT INTO schedule_destinations (id, created_at, updated_at, schedule_id, profile_id) "
+			    "VALUES ('sd1', 1, 1, 'e1', 'p1')"));
+	assert_true(db.Exec("DELETE FROM schedule WHERE id = 'e1'"));
+	assert_int_equal((int)db.ScalarInt("SELECT COUNT(*) FROM schedule_destinations"), 0);
+	db.Close();
+}
+
 // A database written by a newer build has to be refused rather than opened and
 // written through a schema this binary does not know. Reachable in practice: the
 // portable rundir's config directory is a junction to the installed build's, so
@@ -388,6 +455,9 @@ int main(void)
 		cmocka_unit_test(test_open_creates_database),
 		cmocka_unit_test(test_open_sets_wal_and_version),
 		cmocka_unit_test(test_migration_is_idempotent),
+		cmocka_unit_test(test_v1_upgrades_to_v2_preserving_rows),
+		cmocka_unit_test(test_schedule_state_is_constrained),
+		cmocka_unit_test(test_schedule_delete_cascades_to_destinations),
 		cmocka_unit_test(test_newer_database_is_refused),
 		cmocka_unit_test(test_updated_at_trigger_fires),
 		cmocka_unit_test(test_delete_cascades_to_children),
