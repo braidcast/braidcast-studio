@@ -43,6 +43,7 @@ export const EV = {
   statsChanged: "stats.changed",
   debugChanged: "debug.changed",
   sessionsChanged: "sessions.changed",
+  scheduleChanged: "schedule.changed",
   streamingStartFailed: "streaming.startFailed",
 } as const;
 

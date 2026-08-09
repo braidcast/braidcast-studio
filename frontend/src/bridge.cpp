@@ -9,6 +9,7 @@
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <functional>
 #include <iterator>
 #include <mutex>
@@ -51,6 +52,7 @@
 #include "windowing/interact_window.hpp"
 #include "util/json_util.hpp"
 #include "history/SessionRecorder.hpp"
+#include "history/ScheduleStore.hpp"
 #include "history/SessionStore.hpp"
 #include "history/Thumbnails.hpp"
 #include "util/file_util.hpp"
@@ -7495,6 +7497,168 @@ bool MethodSessionsDelete(const json &params, json &result, std::string &error)
 	return true;
 }
 
+// One planned entry, shaped for the UI. Same reasoning as SessionToJson: the list
+// and the editor read the same object, and a second shaping is how the two drift.
+// `announce` and `autoStart` are stored 0/1 to match the DDL and surface as real
+// booleans, so the web side never learns they were integers.
+json ScheduleToJson(const History::ScheduleEntry &e, const std::vector<History::ScheduleDestination> &destinations)
+{
+	json dests = json::array();
+	for (const History::ScheduleDestination &d : destinations) {
+		json tags = json::array();
+		const json parsedTags = JsonUtil::ParseJson(d.tags);
+		if (parsedTags.is_array()) {
+			tags = parsedTags;
+		}
+		dests.push_back(json{{"profileId", d.profileId},
+				     {"title", d.title},
+				     {"category", d.category},
+				     {"tags", std::move(tags)}});
+	}
+	return json{{"id", e.id},
+		    {"startsAt", e.startsAt},
+		    {"title", e.title},
+		    {"durationMin", e.durationMin},
+		    {"announce", e.announce != 0},
+		    {"autoStart", e.autoStart != 0},
+		    {"state", e.state},
+		    {"destinations", std::move(dests)}};
+}
+
+// Reads the destination list off a create/update payload. Absent means none --
+// an entry with no destinations is legal to store, and the runner is what refuses
+// to arm it.
+std::vector<History::ScheduleDestination> ScheduleDestinationsFromJson(const json &params)
+{
+	std::vector<History::ScheduleDestination> out;
+	const auto it = params.find("destinations");
+	if (it == params.end() || !it->is_array()) {
+		return out;
+	}
+	for (const json &d : *it) {
+		History::ScheduleDestination row;
+		row.profileId = JsonUtil::Str(d, "profileId");
+		row.title = JsonUtil::Str(d, "title");
+		row.category = JsonUtil::Str(d, "category");
+		const auto tags = d.find("tags");
+		row.tags = (tags != d.end() && tags->is_array()) ? tags->dump() : "[]";
+		out.push_back(std::move(row));
+	}
+	return out;
+}
+
+// Applies the editable fields of a create/update payload onto a row. State is not
+// among them: it is the runner's, and letting the UI post it would let a stale
+// editor resurrect an entry the clock has already settled.
+void ApplyScheduleFields(const json &params, History::ScheduleEntry &e)
+{
+	e.startsAt = JsonUtil::NumLoose(params, "startsAt", e.startsAt);
+	e.title = JsonUtil::Str(params, "title");
+	e.durationMin = JsonUtil::NumLoose(params, "durationMin", e.durationMin);
+	e.announce = JsonUtil::Bool(params, "announce", e.announce != 0) ? 1 : 0;
+	e.autoStart = JsonUtil::Bool(params, "autoStart", e.autoStart != 0) ? 1 : 0;
+}
+
+// An unattached store yields an empty array rather than an error, on the same
+// terms as sessions.list: scheduling is visibly unavailable and the app keeps
+// streaming.
+bool MethodScheduleList(const json &params, json &result, std::string & /*error*/)
+{
+	const int64_t from = JsonUtil::NumLoose(params, "from", 0);
+	// A missing `to` means "everything from here on" rather than an empty range,
+	// so a caller that only wants upcoming entries need not invent an end date.
+	const int64_t to = JsonUtil::NumLoose(params, "to", std::numeric_limits<int64_t>::max());
+	json rows = json::array();
+	for (const History::ScheduleEntryWithDestinations &row : ObsBootstrap::Schedule().ListRange(from, to)) {
+		rows.push_back(ScheduleToJson(row.entry, row.destinations));
+	}
+	result = std::move(rows);
+	return true;
+}
+
+bool MethodScheduleGet(const json &params, json &result, std::string &error)
+{
+	std::string id;
+	if (!RequireStr(params, "schedule.get", "id", id, error)) {
+		return false;
+	}
+	History::ScheduleStore &store = ObsBootstrap::Schedule();
+	const auto entry = store.Get(id);
+	if (!entry) {
+		error = "no scheduled entry with id '" + id + "'";
+		return false;
+	}
+	result = ScheduleToJson(*entry, store.DestinationsFor(id));
+	return true;
+}
+
+bool MethodScheduleCreate(const json &params, json &result, std::string &error)
+{
+	History::ScheduleStore &store = ObsBootstrap::Schedule();
+	if (!store.IsAttached()) {
+		error = "scheduling is unavailable: the history database did not open";
+		return false;
+	}
+	History::ScheduleEntry entry;
+	ApplyScheduleFields(params, entry);
+	if (entry.startsAt <= 0) {
+		error = "startsAt is required";
+		return false;
+	}
+	if (!store.Create(entry, ScheduleDestinationsFromJson(params))) {
+		error = "failed to create the entry: " + store.LastError();
+		return false;
+	}
+	EmitEvent(EventNames::kScheduleChanged, json::object());
+	result = ScheduleToJson(entry, store.DestinationsFor(entry.id));
+	return true;
+}
+
+bool MethodScheduleUpdate(const json &params, json &result, std::string &error)
+{
+	std::string id;
+	if (!RequireStr(params, "schedule.update", "id", id, error)) {
+		return false;
+	}
+	History::ScheduleStore &store = ObsBootstrap::Schedule();
+	const auto existing = store.Get(id);
+	if (!existing) {
+		error = "no scheduled entry with id '" + id + "'";
+		return false;
+	}
+	// Editing a settled entry would silently un-miss it on the calendar. The
+	// refusal is here rather than in the store so the UI gets the reason.
+	if (existing->state != History::ScheduleState::kPlanned && existing->state != History::ScheduleState::kArmed) {
+		error = "that entry is already " + existing->state + " and can no longer be edited";
+		return false;
+	}
+	History::ScheduleEntry entry = *existing;
+	ApplyScheduleFields(params, entry);
+	if (!store.Update(entry, ScheduleDestinationsFromJson(params))) {
+		error = "failed to update the entry: " + store.LastError();
+		return false;
+	}
+	EmitEvent(EventNames::kScheduleChanged, json::object());
+	result = ScheduleToJson(entry, store.DestinationsFor(id));
+	return true;
+}
+
+bool MethodScheduleDelete(const json &params, json &result, std::string &error)
+{
+	std::string id;
+	if (!RequireStr(params, "schedule.delete", "id", id, error)) {
+		return false;
+	}
+	History::ScheduleStore &store = ObsBootstrap::Schedule();
+	if (!store.Remove(id)) {
+		error = "failed to delete the entry: " + store.LastError();
+		return false;
+	}
+	EmitEvent(EventNames::kScheduleChanged, json::object());
+	result = json{{"removed", id}};
+	return true;
+}
+
 // Echo the sampler's newest sample. Sampling inline covers only the window before the
 // first tick has run (a self-test dispatching stats.get during bootstrap).
 bool MethodStatsGet(const json & /*params*/, json &result, std::string & /*error*/)
@@ -11850,6 +12014,11 @@ void Init()
 		{"sessions.list", MethodSessionsList},
 		{"sessions.get", MethodSessionsGet},
 		{"sessions.delete", MethodSessionsDelete},
+		{"schedule.list", MethodScheduleList},
+		{"schedule.get", MethodScheduleGet},
+		{"schedule.create", MethodScheduleCreate},
+		{"schedule.update", MethodScheduleUpdate},
+		{"schedule.delete", MethodScheduleDelete},
 		{"audio.list", MethodAudioList},
 		{"audio.setDeflection", MethodAudioSetDeflection},
 		{"audio.setMuted", MethodAudioSetMuted},

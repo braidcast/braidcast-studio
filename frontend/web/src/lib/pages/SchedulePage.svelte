@@ -1,6 +1,7 @@
 <script lang="ts">
-  import { canvasStore } from "$lib/stores/canvasStore.svelte";
   import { streamProfileStore } from "$lib/stores/streamProfileStore.svelte";
+  import { scheduleStore } from "$lib/stores/scheduleStore.svelte";
+  import type { ScheduleState } from "$lib/api/bridge";
   import PageShell from "$lib/ui/PageShell.svelte";
   import Modal from "$lib/ui/Modal.svelte";
   import Icon from "$lib/ui/Icon.svelte";
@@ -18,22 +19,24 @@
   ];
   let view = $state<"upcoming" | "history">("upcoming");
 
-  // SHELL ONLY (redesign Decision A): this page is a UI preview of the planned
-  // scheduling feature. There is NO backend -- nothing is persisted (no
-  // schedule.json, no bridge writes) and nothing auto-goes-live at the scheduled
-  // time. The `schedule` array below lives purely in component memory: entries
-  // added via the modal show on the calendar/Upcoming list but are lost on reload.
-  // The calendar/Upcoming/modal layout mirrors the design mock; real canvas and
-  // stream-profile lists populate the modal chips (read-only) so they reflect the
-  // user's actual setup, falling back to placeholder labels when none exist.
+  // Entries persist through schedule.* into the history database. What does NOT
+  // exist yet is the runner: nothing arms an entry, counts down, or goes live at
+  // its time, so `state` only ever moves when the app sweeps missed entries at
+  // startup. A planned entry is a durable note, not yet an instruction.
 
+  // The calendar's view of one entry. Kept flat and pre-split into date/time
+  // strings because every derivation below groups by day, and re-deriving the
+  // local date from an epoch inside each of them is where off-by-one-day bugs
+  // come from.
   interface SchedEntry {
-    id: number;
-    date: string; // "YYYY-MM-DD"
-    time: string; // "19:00"
+    id: string;
+    date: string; // "YYYY-MM-DD", local
+    time: string; // "19:00", local
     title: string;
-    dur: string; // free text, e.g. "4h"
+    dur: string; // "4h" / "90m"
     tags: string[]; // destination labels
+    state: ScheduleState;
+    editable: boolean;
   }
 
   const MONTH_NAMES = [
@@ -57,42 +60,89 @@
   let viewYear = $state(now.getFullYear());
   let viewMonth = $state(now.getMonth()); // 0-based
 
-  // Seed a couple of example entries in the current month so the calendar isn't
-  // empty on first paint. In-memory only -- replaced/extended via the modal.
-  function seedExamples(): SchedEntry[] {
-    const y = now.getFullYear();
-    const m = now.getMonth();
-    const dim = new Date(y, m + 1, 0).getDate();
-    const d = now.getDate();
-    const clamp = (n: number): number => Math.min(Math.max(n, 1), dim);
-    return [
-      { id: 1, date: iso(y, m, clamp(d + 2)), time: "19:00", title: "Friday Night Ranked", dur: "4h", tags: ["Twitch", "YouTube"] },
-      { id: 2, date: iso(y, m, clamp(d + 9)), time: "20:00", title: "Patch Notes Breakdown", dur: "2h", tags: ["YouTube"] },
-      { id: 3, date: iso(y, m, clamp(d + 16)), time: "12:00", title: "Sunday Co-op", dur: "3h", tags: ["Twitch"] },
-    ];
+  // Duration is stored as minutes and shown the way a streamer says it. Round
+  // hours read as hours; anything else keeps its minutes rather than being
+  // rounded into a lie about a 90-minute slot.
+  function formatDuration(min: number): string {
+    if (min <= 0) {
+      return "—";
+    }
+    if (min % 60 === 0) {
+      return `${min / 60}h`;
+    }
+    return min < 60 ? `${min}m` : `${Math.floor(min / 60)}h ${min % 60}m`;
   }
 
-  let schedule = $state<SchedEntry[]>(seedExamples());
-  let nextId = $state(4);
+  // Accepts "4h", "90m", "1h30", "2" (bare number = hours, since that is what
+  // people mean when they type it into a stream planner).
+  function parseDuration(text: string): number {
+    const s = text.trim().toLowerCase();
+    if (s === "") {
+      return 60;
+    }
+    const h = /(\d+(?:\.\d+)?)\s*h/.exec(s);
+    const m = /(\d+)\s*m/.exec(s);
+    if (h || m) {
+      return Math.max(1, Math.round((h ? parseFloat(h[1]) * 60 : 0) + (m ? parseInt(m[1], 10) : 0)));
+    }
+    const bare = parseFloat(s);
+    return Number.isFinite(bare) ? Math.max(1, Math.round(bare * 60)) : 60;
+  }
 
-  // --- real canvas + stream-profile lists for the modal chips (read-only) -------
-  // Sourced from the shared stores (one source of truth); read-only here.
-  canvasStore.start();
+  // Local, not UTC: a calendar shows the user's own days. Deriving these from the
+  // epoch once here keeps every grouping below on the same footing.
+  function localDate(ms: number): string {
+    const d = new Date(ms);
+    return iso(d.getFullYear(), d.getMonth(), d.getDate());
+  }
+  function localTime(ms: number): string {
+    const d = new Date(ms);
+    return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  }
+  function epochFrom(date: string, time: string): number {
+    const [y, m, d] = date.split("-").map(Number);
+    const [hh, mm] = time.split(":").map(Number);
+    return new Date(y, m - 1, d, hh || 0, mm || 0, 0, 0).getTime();
+  }
+
+  scheduleStore.start();
+
+  // Only planned and armed entries can still be edited; the bridge refuses the
+  // rest, so the calendar must not offer it either.
+  const EDITABLE_STATES: ScheduleState[] = ["planned", "armed"];
+
+  let schedule = $derived.by<SchedEntry[]>(() =>
+    scheduleStore.entries.map((e) => ({
+      id: e.id,
+      date: localDate(e.startsAt),
+      time: localTime(e.startsAt),
+      title: e.title || "Untitled Stream",
+      dur: formatDuration(e.durationMin),
+      tags: e.destinations.map((d) => profileLabel(d.profileId)),
+      state: e.state,
+      editable: EDITABLE_STATES.includes(e.state),
+    })),
+  );
+
+  // --- real stream-profile list for the modal chips -----------------------------
+  // Sourced from the shared store (one source of truth); read-only here. Canvases
+  // are deliberately not selected on an entry: a destination is a stream profile,
+  // and which canvases go live for it is already decided by that profile's output
+  // bindings. Asking twice would let the two answers disagree.
   streamProfileStore.start();
-  let canvases = $derived(canvasStore.canvases);
   let profiles = $derived(streamProfileStore.profiles);
 
-  // Chip option lists: real data when present, else placeholder labels from the
-  // mock so the modal is never empty.
-  const FALLBACK_CANVASES = ["Landscape", "Vertical"];
-  const FALLBACK_DESTS = ["Twitch", "YouTube", "Kick", "TikTok", "Instagram"];
+  // Destinations are chosen by profile id and shown by label, so two profiles
+  // sharing a label cannot collapse into one selection. No fallback list: with no
+  // profiles connected the modal shows an empty state, because offering
+  // destinations that do not exist is how you schedule a broadcast to nowhere.
+  let destOptions = $derived(profiles.map((p) => ({ id: p.uuid, label: p.label })));
 
-  let canvasOptions = $derived<string[]>(
-    canvases.length > 0 ? canvases.map((c) => c.name) : FALLBACK_CANVASES,
-  );
-  let destOptions = $derived<string[]>(
-    profiles.length > 0 ? profiles.map((p) => p.label) : FALLBACK_DESTS,
-  );
+  function profileLabel(id: string): string {
+    // Falls back to the stored id so a destination whose profile was deleted
+    // stays visible on past entries instead of silently vanishing from them.
+    return profiles.find((p) => p.uuid === id)?.label ?? id;
+  }
 
   // --- calendar derivation ------------------------------------------------------
   const calLabel = $derived(`${MONTH_NAMES[viewMonth]} ${viewYear}`);
@@ -183,23 +233,44 @@
   let mTime = $state("19:00");
   let mDur = $state("4h");
   let mNotes = $state("");
-  let mCanvases = $state<Set<string>>(new Set());
+  // Profile ids, not labels: two profiles may share a label, and a selection keyed
+  // by label would silently merge them.
   let mDests = $state<Set<string>>(new Set());
+  // Empty when creating; set when editing an existing entry.
+  let mEditingId = $state<string | null>(null);
+  let mSaving = $state(false);
+  let mError = $state<string | null>(null);
 
   function openModal(date: string): void {
+    mEditingId = null;
     mTitle = "Untitled Stream";
     mDate = date;
     mTime = "19:00";
     mDur = "4h";
     mNotes = "";
-    // Default-select the first canvas + any primary destination (or the first).
-    mCanvases = new Set(canvasOptions.slice(0, 1));
-    if (profiles.length > 0) {
-      const primary = profiles.filter((p) => p.isPrimary).map((p) => p.label);
-      mDests = new Set(primary.length > 0 ? primary : destOptions.slice(0, 1));
-    } else {
-      mDests = new Set(destOptions.slice(0, 1));
+    mError = null;
+    // Default-select any primary destination, else the first.
+    const primary = profiles.filter((p) => p.isPrimary).map((p) => p.uuid);
+    mDests = new Set(primary.length > 0 ? primary : destOptions.slice(0, 1).map((d) => d.id));
+    modalOpen = true;
+  }
+
+  function openEntry(entry: SchedEntry): void {
+    if (!entry.editable) {
+      return;
     }
+    const stored = scheduleStore.entries.find((e) => e.id === entry.id);
+    if (!stored) {
+      return;
+    }
+    mEditingId = stored.id;
+    mTitle = stored.title;
+    mDate = localDate(stored.startsAt);
+    mTime = localTime(stored.startsAt);
+    mDur = formatDuration(stored.durationMin);
+    mNotes = "";
+    mError = null;
+    mDests = new Set(stored.destinations.map((d) => d.profileId));
     modalOpen = true;
   }
   function closeModal(): void {
@@ -215,36 +286,72 @@
     return next;
   }
 
-  // Push the drafted entry into the in-memory schedule (no persistence). The new
-  // entry immediately shows on the calendar/Upcoming, then is lost on reload.
-  function scheduleStream(): void {
-    schedule = [
-      ...schedule,
-      {
-        id: nextId,
-        date: mDate,
-        time: mTime,
-        title: mTitle.trim() || "Untitled Stream",
-        dur: mDur.trim() || "—",
-        tags: [...mDests],
-      },
-    ];
-    nextId += 1;
-    // Jump the calendar to the new entry's month so it's visible.
-    const [ny, nm] = mDate.split("-").map(Number);
-    if (!Number.isNaN(ny) && !Number.isNaN(nm)) {
-      viewYear = ny;
-      viewMonth = nm - 1;
+  // Writes through the bridge. The modal stays open on failure with the reason on
+  // it: closing would discard what the user typed and leave them guessing why the
+  // entry never appeared.
+  async function scheduleStream(): Promise<void> {
+    if (mSaving) {
+      return;
     }
-    modalOpen = false;
+    mSaving = true;
+    mError = null;
+    const input = {
+      startsAt: epochFrom(mDate, mTime),
+      title: mTitle.trim() || "Untitled Stream",
+      durationMin: parseDuration(mDur),
+      announce: false,
+      autoStart: false,
+      destinations: [...mDests].map((profileId) => ({
+        profileId,
+        title: mTitle.trim() || "Untitled Stream",
+        category: "",
+        tags: [] as string[],
+      })),
+    };
+    try {
+      if (mEditingId) {
+        await scheduleStore.update(mEditingId, input);
+      } else {
+        await scheduleStore.create(input);
+      }
+      await scheduleStore.refresh();
+      // Jump the calendar to the entry's month so it is visible.
+      const [ny, nm] = mDate.split("-").map(Number);
+      if (!Number.isNaN(ny) && !Number.isNaN(nm)) {
+        viewYear = ny;
+        viewMonth = nm - 1;
+      }
+      modalOpen = false;
+    } catch (e) {
+      mError = (e as Error).message;
+    } finally {
+      mSaving = false;
+    }
+  }
+
+  async function deleteEntry(): Promise<void> {
+    if (!mEditingId || mSaving) {
+      return;
+    }
+    mSaving = true;
+    mError = null;
+    try {
+      await scheduleStore.remove(mEditingId);
+      await scheduleStore.refresh();
+      modalOpen = false;
+    } catch (e) {
+      mError = (e as Error).message;
+    } finally {
+      mSaving = false;
+    }
   }
 </script>
 
 <PageShell title="Schedule" sub="Upcoming stream planning">
   {#snippet actions()}
-    <span class="shell-note" title="UI preview: scheduled streams are not saved to disk and do not auto-go-live yet.">
-      preview · not saved
-    </span>
+    {#if scheduleStore.error}
+      <span class="shell-note" title={scheduleStore.error}>scheduling unavailable</span>
+    {/if}
     <div class="month-nav">
       <button class="nav-btn" title="Previous month" aria-label="Previous month" onclick={prevMonth}>
         <Icon name="caret-left" size={14} />
@@ -317,7 +424,7 @@
                 const [uy, um] = u.date.split("-").map(Number);
                 viewYear = uy;
                 viewMonth = um - 1;
-                openModal(u.date);
+                openEntry(u);
               }}
             >
               <div class="up-date">
@@ -326,7 +433,9 @@
               </div>
               <div class="up-body">
                 <div class="up-title">{u.title}</div>
-                <div class="up-meta">{u.time} · {u.dur}</div>
+                <div class="up-meta">
+                  {u.time} · {u.dur}{#if u.state !== "planned"} · {u.state}{/if}
+                </div>
                 {#if u.tags.length > 0}
                   <div class="up-tags">
                     {#each u.tags as t (t)}
@@ -365,30 +474,24 @@
         </div>
       </div>
       <div class="field">
-        <div class="f-label">CANVASES</div>
-        <div class="chips">
-          {#each canvasOptions as name (name)}
-            <button
-              type="button"
-              class="chip"
-              class:on={mCanvases.has(name)}
-              onclick={() => (mCanvases = toggle(mCanvases, name))}
-            >{name}</button>
-          {/each}
-        </div>
-      </div>
-      <div class="field">
         <div class="f-label">DESTINATIONS</div>
-        <div class="chips">
-          {#each destOptions as name (name)}
-            <button
-              type="button"
-              class="chip"
-              class:on={mDests.has(name)}
-              onclick={() => (mDests = toggle(mDests, name))}
-            >{name}</button>
-          {/each}
-        </div>
+        {#if destOptions.length === 0}
+          <p class="modal-note">
+            No stream destinations are set up yet. Add one on the Destinations page and it
+            will appear here.
+          </p>
+        {:else}
+          <div class="chips">
+            {#each destOptions as d (d.id)}
+              <button
+                type="button"
+                class="chip"
+                class:on={mDests.has(d.id)}
+                onclick={() => (mDests = toggle(mDests, d.id))}
+              >{d.label}</button>
+            {/each}
+          </div>
+        {/if}
       </div>
       <div class="field">
         <div class="f-label">NOTES</div>
@@ -396,14 +499,22 @@
           placeholder="Go-live checklist, talking points, sponsor reads…"></textarea>
       </div>
       <p class="modal-note">
-        Preview only — this schedule is kept in memory for layout review. It is not
-        saved and will not start the stream automatically.
+        Saved to your stream history. Braidcast will not go live on its own yet — the
+        countdown and auto-start are still to come.
       </p>
+      {#if mError}
+        <p class="modal-error">{mError}</p>
+      {/if}
     </div>
 
     {#snippet footer()}
-      <button class="ghost" onclick={closeModal}>Cancel</button>
-      <button class="accent" onclick={scheduleStream}>Schedule Stream</button>
+      {#if mEditingId}
+        <button class="ghost danger" onclick={deleteEntry} disabled={mSaving}>Delete</button>
+      {/if}
+      <button class="ghost" onclick={closeModal} disabled={mSaving}>Cancel</button>
+      <button class="accent" onclick={scheduleStream} disabled={mSaving}>
+        {mSaving ? "Saving…" : mEditingId ? "Save Changes" : "Schedule Stream"}
+      </button>
     {/snippet}
   </Modal>
 {/if}
@@ -740,5 +851,17 @@
     font-size: 10px;
     line-height: 1.6;
     color: var(--color-muted);
+  }
+
+  .modal-error {
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    line-height: 1.6;
+    color: var(--color-error);
+  }
+
+  .ghost.danger {
+    color: var(--color-error);
   }
 </style>

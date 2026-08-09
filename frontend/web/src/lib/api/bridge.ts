@@ -966,6 +966,44 @@ export interface SessionDetail extends SessionInfo {
   health: SessionHealthPoint[];
 }
 
+/** One destination a planned entry will go out to, with the metadata to apply at
+ * go-live. Distinct from SessionDestinationInfo, which records what was actually
+ * sent: this is the intent, that is the record. */
+export interface ScheduleDestinationInfo {
+  profileId: string;
+  title: string;
+  category: string;
+  tags: string[];
+}
+
+/** How far a planned entry has got. `planned` and `armed` are the only editable
+ * states; the rest are settled and the bridge refuses writes to them. */
+export type ScheduleState = "planned" | "armed" | "live" | "done" | "missed" | "canceled";
+
+/** A planned broadcast, as returned by schedule.list and schedule.get. */
+export interface ScheduleEntryInfo {
+  id: string;
+  /** Epoch milliseconds. */
+  startsAt: number;
+  title: string;
+  durationMin: number;
+  announce: boolean;
+  autoStart: boolean;
+  state: ScheduleState;
+  destinations: ScheduleDestinationInfo[];
+}
+
+/** Create/update payload. `id` is absent on create and required on update; state
+ * is deliberately not writable -- it belongs to the runner. */
+export interface ScheduleEntryInput {
+  startsAt: number;
+  title: string;
+  durationMin: number;
+  announce: boolean;
+  autoStart: boolean;
+  destinations: ScheduleDestinationInfo[];
+}
+
 /** General app/engine stats as reported in stats.get's `general`. */
 export interface GeneralStats {
   cpu: number;
@@ -1812,6 +1850,14 @@ export interface ObsMethods {
   "sessions.list": SessionInfo[];
   "sessions.get": SessionDetail;
   "sessions.delete": { removed: string };
+  // Planned broadcasts. `list` takes a half-open [from, to) in epoch milliseconds;
+  // omitting `to` means everything from `from` onward. Empty array when the
+  // database could not be opened, on the same terms as sessions.list.
+  "schedule.list": ScheduleEntryInfo[];
+  "schedule.get": ScheduleEntryInfo;
+  "schedule.create": ScheduleEntryInfo;
+  "schedule.update": ScheduleEntryInfo;
+  "schedule.delete": { removed: string };
   // Native projectors (standalone windows rendering a target on a monitor, P3).
   // listMonitors enumerates the displays a fullscreen projector can target. open
   // spawns a projector (fullscreen needs `monitor`); the window closes itself (Esc /
@@ -1999,6 +2045,7 @@ export interface ObsEvents {
   // A session opened, closed, or was deleted. Carries no payload: the list is
   // re-read, so a push that raced a delete cannot describe a row that is gone.
   "sessions.changed": Record<string, never>;
+  "schedule.changed": Record<string, never>;
   // Go Live was refused before any output started: one or more destinations could not
   // be brought to a streamable state (on a create-per-go-live platform, a broadcast
   // created + bound + its ingest written back). Nothing is live when this arrives --

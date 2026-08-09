@@ -47,6 +47,7 @@ inline constexpr const char *kAudioLevels = "audio.levels";
 inline constexpr const char *kStatsChanged = "stats.changed";
 inline constexpr const char *kDebugChanged = "debug.changed";
 inline constexpr const char *kSessionsChanged = "sessions.changed";
+inline constexpr const char *kScheduleChanged = "schedule.changed";
 inline constexpr const char *kStreamingStartFailed = "streaming.startFailed";
 } // namespace EventNames
 

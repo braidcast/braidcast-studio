@@ -41,6 +41,7 @@ struct AdvancedSettings;
 namespace History {
 class SessionStore;
 class SessionRecorder;
+class ScheduleStore;
 } // namespace History
 
 namespace ObsBootstrap {
@@ -81,6 +82,11 @@ History::SessionStore &Sessions();
 
 // The broadcast-time writer. Valid between Start() and Stop().
 History::SessionRecorder &Recorder();
+
+// Planned broadcasts, over the same database as Sessions(). Unattached when the
+// database could not be opened, on the same terms: scheduling degrades to
+// unavailable rather than taking startup down with it.
+History::ScheduleStore &Schedule();
 
 // The per-scene-collection scene-link model (main-scene -> per-canvas scene
 // activation map, persisted to scenes/<slug>.scene_links.json). Owned by the

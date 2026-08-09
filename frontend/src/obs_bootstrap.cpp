@@ -44,6 +44,7 @@
 #include "events/transport_health.hpp"
 #include "history/Db.hpp"
 #include "history/SessionRecorder.hpp"
+#include "history/ScheduleStore.hpp"
 #include "history/SessionStore.hpp"
 #include "history/Thumbnails.hpp"
 #include "multistream/CanvasRuntime.hpp"
@@ -432,6 +433,7 @@ StreamMetaStore g_streamMeta;
 // must never depend on the archive. All three are UI-thread-only.
 History::Db g_historyDb;
 History::SessionStore g_sessions;
+History::ScheduleStore g_schedule;
 History::SessionRecorder g_recorder;
 History::ThumbnailSampler g_thumbs;
 
@@ -708,6 +710,11 @@ VirtualCamManager &ObsBootstrap::VirtualCam()
 History::SessionStore &ObsBootstrap::Sessions()
 {
 	return g_sessions;
+}
+
+History::ScheduleStore &ObsBootstrap::Schedule()
+{
+	return g_schedule;
 }
 
 History::SessionRecorder &ObsBootstrap::Recorder()
@@ -1099,13 +1106,22 @@ bool ObsBootstrap::Start()
 	os_mkdirs(std::filesystem::path(historyPath).parent_path().u8string().c_str());
 	if (!g_historyDb.Open(historyPath)) {
 		HostLog("[history] database unavailable: " + g_historyDb.LastError());
-	} else if (!g_sessions.Attach(historyPath) || !g_recorder.Attach(historyPath)) {
+	} else if (!g_sessions.Attach(historyPath) || !g_recorder.Attach(historyPath) ||
+		   !g_schedule.Attach(historyPath)) {
 		HostLog("[history] store unavailable: " + g_sessions.LastError());
 	} else {
 		const int recovered = g_sessions.RecoverCrashed();
 		if (recovered > 0) {
 			HostLog("[history] recovered " + std::to_string(recovered) +
 				" session(s) that ended without a clean stop");
+		}
+		// Entries whose time passed while the app was closed. Without this the
+		// calendar reopens still showing them as upcoming, which is a claim
+		// about the present that stopped being true days ago.
+		const int missed = g_schedule.SweepMissed(TimeUtil::NowMs());
+		if (missed > 0) {
+			HostLog("[schedule] marked " + std::to_string(missed) +
+				" entr(ies) missed while the app was closed");
 		}
 	}
 
@@ -3804,6 +3820,7 @@ void ObsBootstrap::Stop(void (*drainCefTasks)())
 	}
 	g_recorder.Detach();
 	g_sessions.Detach();
+	g_schedule.Detach();
 	g_historyDb.Close();
 
 	// Stop + release the virtual-camera output while libobs is still up, before the
