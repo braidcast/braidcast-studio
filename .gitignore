@@ -38,6 +38,7 @@
 !magefile.go
 !README.rst
 !SECURITY.md
+!THIRD-PARTY-NOTICES.md
 
 # Exclude lock files
 *.lock.json
