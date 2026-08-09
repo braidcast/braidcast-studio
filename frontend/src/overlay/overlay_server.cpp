@@ -149,6 +149,19 @@ std::string AssembleDocument(const Widget &w, int port)
 	return doc;
 }
 
+// One SSE frame on the wire: unnamed (the default `message` channel every alert box
+// consumes) and named. The only two places that framing is spelled out, so a sender added
+// later cannot hand-roll a third variant that drifts from them.
+std::string DataFrame(const json &body)
+{
+	return "data: " + body.dump() + "\n\n";
+}
+
+std::string NamedFrame(const char *eventName, const json &body)
+{
+	return "event: " + std::string(eventName) + "\ndata: " + body.dump() + "\n\n";
+}
+
 // The current broadcast's events, oldest-first, as one `backfill` frame. A widget that
 // accumulates a running total from the event stream (a goal bar) otherwise restarts from
 // its configured seed every time its source is recreated -- a reload, a scene-collection
@@ -178,7 +191,7 @@ std::string BuildBackfillFrame(int64_t sinceMs)
 	for (auto it = picked.rbegin(); it != picked.rend(); ++it) {
 		arr.push_back((*it)->ToJson());
 	}
-	return "event: backfill\ndata: " + json{{"events", std::move(arr)}}.dump() + "\n\n";
+	return NamedFrame("backfill", json{{"events", std::move(arr)}});
 }
 
 } // namespace
@@ -194,7 +207,11 @@ std::string BuildBackfillFrame(int64_t sinceMs)
 // connection and have this thread later close the wrong socket (the fd-reuse hazard).
 // broadcastDepth_ (incremented while unlocked) makes RunSse defer its own closesocket()
 // so an in-flight send here can never land on a recycled fd.
-void OverlayServer::BroadcastFrame(const std::string &frame, const std::string *onlyWidgetId)
+//
+// Returns how many sockets took the frame. A targeted send that answers 0 is the only way
+// a caller can tell "nothing is subscribed to that widget" apart from a delivery, since
+// filtering by widget id leaves no other trace.
+size_t OverlayServer::BroadcastFrame(const std::string &frame, const std::string *onlyWidgetId)
 {
 	std::vector<std::pair<std::string, uintptr_t>> targets;
 	{
@@ -243,11 +260,14 @@ void OverlayServer::BroadcastFrame(const std::string &frame, const std::string *
 	for (uintptr_t s : toClose) {
 		CloseClient(s);
 	}
+	// The sends that failed are counted out: a socket the frame could not be written to
+	// did not receive it, and it is on its way out of the registry.
+	return targets.size() - dead.size();
 }
 
 void OverlayServer::Broadcast(const Events::NormalizedEvent &ev)
 {
-	BroadcastFrame("data: " + ev.ToJson().dump() + "\n\n");
+	BroadcastFrame(DataFrame(ev.ToJson()));
 }
 
 // Named `chat` event so widgets can select it independently of the default `message`
@@ -255,7 +275,7 @@ void OverlayServer::Broadcast(const Events::NormalizedEvent &ev)
 // stripped by the chat hub's emit). Called on the chat transport worker, never TID_UI.
 void OverlayServer::BroadcastChat(const nlohmann::json &chatMsg)
 {
-	BroadcastFrame("event: chat\ndata: " + chatMsg.dump() + "\n\n");
+	BroadcastFrame(NamedFrame("chat", chatMsg));
 }
 
 // Named `viewers` event for the same reason `chat` is named: an unnamed frame lands on every
@@ -265,7 +285,7 @@ void OverlayServer::BroadcastChat(const nlohmann::json &chatMsg)
 // worker, never TID_UI.
 void OverlayServer::BroadcastViewers(const nlohmann::json &viewers)
 {
-	BroadcastFrame("event: viewers\ndata: " + viewers.dump() + "\n\n");
+	BroadcastFrame(NamedFrame("viewers", viewers));
 }
 
 // Build a named frame, keep it as this channel's replay copy, then send it. The keep is a
@@ -273,7 +293,7 @@ void OverlayServer::BroadcastViewers(const nlohmann::json &viewers)
 // send-unlocked path, so the lock is still never held across a blocking send.
 void OverlayServer::BroadcastStateFrame(const char *eventName, const nlohmann::json &body)
 {
-	const std::string frame = "event: " + std::string(eventName) + "\ndata: " + body.dump() + "\n\n";
+	const std::string frame = NamedFrame(eventName, body);
 	{
 		std::lock_guard<std::mutex> lock(sseMutex_);
 		replayFrames_[eventName] = frame;
@@ -316,9 +336,17 @@ void OverlayServer::BroadcastStreamState(const nlohmann::json &state)
 	BroadcastStateFrame("stream", state);
 }
 
-void OverlayServer::BroadcastTo(const std::string &widgetId, const Events::NormalizedEvent &ev)
+size_t OverlayServer::BroadcastTo(const std::string &widgetId, const Events::NormalizedEvent &ev)
 {
-	BroadcastFrame("data: " + ev.ToJson().dump() + "\n\n", &widgetId);
+	return BroadcastFrame(DataFrame(ev.ToJson()), &widgetId);
+}
+
+// Deliberately NOT BroadcastStateFrame: that keeps the frame for replay and, for `stream`,
+// also moves the backfill window. A preview fired from the editor would then be the state
+// a real browser source picks up when it connects mid-broadcast.
+size_t OverlayServer::SendTestFrame(const std::string &widgetId, const char *eventName, const nlohmann::json &body)
+{
+	return BroadcastFrame(NamedFrame(eventName, body), &widgetId);
 }
 
 // ---- Lifecycle --------------------------------------------------------------

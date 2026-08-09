@@ -60,6 +60,13 @@ public:
 	// value through *newRev, so a caller can hand it back to the editor rather than
 	// re-reading the widget just to learn it.
 	bool Update(const std::string &id, const json &patch, int *newRev = nullptr);
+	// Re-seed html/css/js/fields from the on-disk default template for this widget's type,
+	// bumping the revision exactly as Update does; id/token/name/type/assets are kept.
+	// False -- and the widget untouched -- when there is no such widget, or when the type's
+	// template is missing OR unreadable in part (a corrupt fields.json counts): a recovery
+	// that blanks the work it was meant to recover is worse than refusing, and a partial
+	// one is worse still because it reports success.
+	bool ResetToDefaults(const std::string &id, int *newRev = nullptr);
 	std::optional<Widget> Duplicate(const std::string &id); // new id+token, assets copied
 	bool Delete(const std::string &id);                     // removes widget + overlays/<id> dir
 	// Store a decoded asset file; returns its served relative path "assets/<file>" (or "" on failure).

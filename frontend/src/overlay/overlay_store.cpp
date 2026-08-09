@@ -67,6 +67,69 @@ Widget *FindWidget(std::vector<Widget> &widgets, const std::string &id)
 	return nullptr;
 }
 
+// Where a type's shipped default template lives: the single place that layout is spelled
+// out, so the seed read and the log line that quotes the path cannot name different dirs.
+std::string TemplateDir(const std::string &type)
+{
+	return RundirRoot() + "/data/braidcast/web/overlay/default-" + type + "/";
+}
+
+// What a type's on-disk default template yielded. Absent and Corrupt are kept apart
+// because they are not the same risk: an absent template is a type nobody shipped one
+// for, while a corrupt fields.json is a template that EXISTS and reads as an empty field
+// list -- which, applied to an already-configured widget, silently deletes every field
+// definition and leaves no UI path to get one back.
+enum class SeedResult {
+	Ok,      // markup and/or a field list were read
+	Absent,  // nothing usable there: an unknown or legacy type
+	Corrupt, // fields.json is present but yields no field list
+};
+
+// Overwrite w.html/css/js/fields from the on-disk default template for `type`. Every
+// target is cleared first: ReadUtf8File leaves its out param untouched when the file is
+// absent, so an uncleared re-seed would keep the caller's old markup INSTEAD of the new
+// one it was asked to install.
+//
+// `who` names the caller in the log. Takes no lock: it touches only `w` and the
+// filesystem, so it runs either side of mutex_ (Create runs it before taking the lock, on
+// the same discipline as AddAsset).
+SeedResult SeedFromTemplate(const char *who, const std::string &type, Widget &w)
+{
+	const std::string dir = TemplateDir(type);
+	w.html.clear();
+	w.css.clear();
+	w.js.clear();
+	w.fields = json::array();
+	const bool haveHtml = FileUtil::ReadUtf8File(dir + "template.html", w.html);
+	FileUtil::ReadUtf8File(dir + "template.css", w.css);
+	FileUtil::ReadUtf8File(dir + "template.js", w.js);
+	std::string fieldsJson;
+	if (FileUtil::ReadUtf8File(dir + "fields.json", fieldsJson)) {
+		json parsed;
+		try {
+			parsed = json::parse(fieldsJson);
+		} catch (const std::exception &e) {
+			HostLog(std::string("[overlay] ") + who + ": fields.json for type '" + type +
+				"' is unparseable (" + e.what() + ")");
+			return SeedResult::Corrupt;
+		}
+		// A file that parses but is not an array carries no field list either, and it
+		// reaches a caller as the same empty result an unparseable one would.
+		if (!parsed.is_array()) {
+			HostLog(std::string("[overlay] ") + who + ": fields.json for type '" + type +
+				"' is not an array");
+			return SeedResult::Corrupt;
+		}
+		for (json field : parsed) {
+			if (field.is_object() && !field.contains("value")) {
+				field["value"] = field.value("default", json(nullptr));
+			}
+			w.fields.push_back(field);
+		}
+	}
+	return (haveHtml || !w.fields.empty()) ? SeedResult::Ok : SeedResult::Absent;
+}
+
 // Reduce a caller-supplied asset key to a safe filename: keep only [A-Za-z0-9._-]
 // (this already drops both path separators), then remove every ".." so a sanitized
 // name can never traverse out of the assets dir. Empty result => caller must bail.
@@ -179,31 +242,13 @@ std::optional<Widget> OverlayStore::Create(const std::string &name, const std::s
 	w.name = name;
 	w.type = type;
 
-	// Seed html/css/js/fields from the on-disk default template for this type.
-	const std::string dir = RundirRoot() + "/data/braidcast/web/overlay/default-" + type + "/";
-	const bool haveHtml = FileUtil::ReadUtf8File(dir + "template.html", w.html);
-	FileUtil::ReadUtf8File(dir + "template.css", w.css);
-	FileUtil::ReadUtf8File(dir + "template.js", w.js);
-	std::string fieldsJson;
-	if (FileUtil::ReadUtf8File(dir + "fields.json", fieldsJson)) {
-		try {
-			json parsed = json::parse(fieldsJson);
-			if (parsed.is_array()) {
-				for (json field : parsed) {
-					if (field.is_object() && !field.contains("value")) {
-						field["value"] = field.value("default", json(nullptr));
-					}
-					w.fields.push_back(field);
-				}
-			}
-		} catch (const std::exception &e) {
-			HostLog("[overlay] Create: fields.json for type '" + type + "' is unparseable (" + e.what() +
-				"); seeding the widget with no fields");
-			w.fields = json::array();
-		}
-	}
-	if (!haveHtml && w.fields.empty()) {
-		HostLog("[overlay] Create: no template for type '" + type + "' at " + dir + " -- seeding empty widget");
+	// Both failure shapes are tolerated here and refused only by ResetToDefaults: a new
+	// widget seeded empty is a starting point the user can still build on, while an empty
+	// RE-seed destroys the work the reset existed to recover. A corrupt fields.json is
+	// already logged by the helper, so only the absent case adds a line.
+	if (SeedFromTemplate("Create", type, w) == SeedResult::Absent) {
+		HostLog("[overlay] Create: no template for type '" + type + "' at " + TemplateDir(type) +
+			" -- seeding empty widget");
 	}
 
 	std::lock_guard<std::mutex> lock(mutex_);
@@ -242,6 +287,48 @@ bool OverlayStore::Update(const std::string &id, const json &patch, int *newRev)
 		return true;
 	}
 	return false;
+}
+
+bool OverlayStore::ResetToDefaults(const std::string &id, int *newRev)
+{
+	std::string type;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		const Widget *w = FindWidget(widgets_, id);
+		if (w == nullptr) {
+			return false;
+		}
+		type = w->type;
+	}
+
+	// Read outside mutex_ (the discipline AddAsset documents), and read in FULL before
+	// touching the widget: anything short of a complete template -- an unknown or legacy
+	// type, a rundir missing its templates, a fields.json truncated by a bad install --
+	// must leave the user's work alone rather than half-restore it. Corrupt is the case
+	// worth refusing hardest: it would return markup while deleting every field
+	// definition, and the editor's values-only panel offers no way to add one back.
+	Widget seed;
+	if (SeedFromTemplate("ResetToDefaults", type, seed) != SeedResult::Ok) {
+		HostLog("[overlay] ResetToDefaults: no usable template for type '" + type + "' at " +
+			TemplateDir(type) + "; leaving " + id + " untouched");
+		return false;
+	}
+
+	std::lock_guard<std::mutex> lock(mutex_);
+	Widget *w = FindWidget(widgets_, id);
+	if (w == nullptr) {
+		return false; // deleted while the template was being read
+	}
+	w->html = std::move(seed.html);
+	w->css = std::move(seed.css);
+	w->js = std::move(seed.js);
+	w->fields = std::move(seed.fields);
+	++w->rev;
+	if (newRev != nullptr) {
+		*newRev = w->rev;
+	}
+	Save();
+	return true;
 }
 
 std::optional<Widget> OverlayStore::Duplicate(const std::string &id)

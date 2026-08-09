@@ -36,6 +36,7 @@
 #include "util/async_task.hpp"
 #include "audio/AudioMonitor.hpp"
 #include "chat/chat_hub.hpp"
+#include "chat/chat_transport.hpp"
 #include "chat/channel_stats_poller.hpp"
 #include "chat/viewer_poller.hpp"
 #include "chat/ws_client.hpp"
@@ -11142,6 +11143,29 @@ bool MethodOverlaysUpdate(const json &p, json &result, std::string &error)
 	return true;
 }
 
+// overlays.resetDefaults {id} -> {ok:true, rev:<int>}: re-seed html/css/js/fields from the
+// type's shipped template, the only way back from a widget edited into something that no
+// longer renders. Fails without touching the widget when that template is missing or only
+// partly readable, so an unknown type -- or a rundir whose fields.json a bad install
+// truncated -- survives the attempt intact. Sync lane, like overlays.update: the
+// RefreshSources sweep below is UI-thread-only, and the four template reads are the same
+// ones overlays.create already does here.
+bool MethodOverlaysResetDefaults(const json &p, json &result, std::string &error)
+{
+	const std::string id = OptString(p, "id");
+	int rev = 0;
+	if (!Overlay::Store().ResetToDefaults(id, &rev)) {
+		error = "could not reset overlay: " + id + "; see the log";
+		return false;
+	}
+	Overlay::RefreshSources();
+	EmitEvent(EventNames::kOverlaysChanged, json::object());
+	// Same reason overlays.update reports it: the editor's local copy matches the stored
+	// one, so the overlays.changed echo does not read as an external edit.
+	result = json{{"ok", true}, {"rev", rev}};
+	return true;
+}
+
 bool MethodOverlaysDuplicate(const json &p, json &result, std::string &error)
 {
 	const std::string id = OptString(p, "id");
@@ -11228,33 +11252,155 @@ bool MethodOverlaysServerInfo(const json & /*params*/, json &result, std::string
 	return true;
 }
 
-// overlays.test {id,type,overrides?}: fire a synthetic event straight to one widget's
-// SSE sockets (never the store, so test alerts don't persist or dedupe against real
-// events). Per-type defaults are a data table so a new type is a data change. Runs on
-// the async lane: BroadcastTo does blocking socket sends (bounded by the overlay
-// server's send timeout), which must never run on TID_UI -- every browser source on
-// stream renders there.
+// ---- overlays.test: the named-channel bodies --------------------------------
+
+// The platform and the person a test frame claims to come from when the caller names
+// neither; shared by the default alert channel and the named ones so a preview reads the
+// same whichever button fired it.
+constexpr const char *kTestPlatform = "twitch";
+constexpr const char *kTestActorName = "Test User";
+
+// Shaped like a real OAuth::AccountId, "<providerId>:<userId>": the overlay runtime splits
+// an account key on the colon to group counts per platform, so a key without one groups
+// under nothing and the widget draws no chip.
+static std::string TestAccountId(const std::string &platform)
+{
+	return platform + ":test";
+}
+
+// A present, non-empty string override, else the default. An empty string reads as absent
+// here: it names no platform, author or message a preview could show.
+static std::string TestStr(const json &overrides, const char *key, const char *fallback)
+{
+	const std::string v = JsonUtil::Str(overrides, key);
+	return v.empty() ? std::string(fallback) : v;
+}
+
+// Assembled by Chat::BuildChatMessage -- the assembler every real transport goes through --
+// so a preview carries the exact shape the chat-box and leaderboard templates read
+// (author.name/color/badges[], fragments[]). A flatter hand-rolled object renders nothing.
+//
+// The author id is left empty, which OMITS the key: no platform user stands behind a test
+// message, and "" is an id two different chatters would share. Consumers fall back to the
+// name. The color is likewise "" so the chat box uses its own per-platform default rather
+// than a hue picked here.
+static json BuildTestChat(const json &overrides, uint64_t seq)
+{
+	const std::string platform = TestStr(overrides, "platform", kTestPlatform);
+	const json fragments = json::array({
+		json{{"type", "text"}, {"text", TestStr(overrides, "text", "Hello from Braidcast!")}},
+	});
+	json msg = Chat::BuildChatMessage(platform.c_str(), "test-channel", "test-chat-" + std::to_string(seq),
+					  TimeUtil::NowMs(), TestStr(overrides, "author", kTestActorName),
+					  std::string(), std::string(), json::array(), fragments);
+	// The wire body is what the hub FORWARDS, not what a transport emits: it splits the
+	// "event" key off and stamps the destination identity on in its place.
+	msg.erase("event");
+	msg["accountId"] = TestAccountId(platform);
+	return msg;
+}
+
+static json BuildTestViewers(const json &overrides, uint64_t /*seq*/)
+{
+	return json{{"perAccount", json{{TestAccountId(kTestPlatform), JsonUtil::NumLoose(overrides, "count", 42)}}}};
+}
+
+static json BuildTestChannels(const json &overrides, uint64_t /*seq*/)
+{
+	return json{{"perAccount", json{{TestAccountId(kTestPlatform),
+					 json{{"audienceCount", JsonUtil::NumLoose(overrides, "count", 1234)},
+					      {"audienceKind", "followers"}}}}}};
+}
+
+static json BuildTestStream(const json &overrides, uint64_t /*seq*/)
+{
+	const bool active = JsonUtil::Bool(overrides, "active", true);
+	// Null, never 0, when nothing is live -- BuildStreamState's rule: a zero epoch renders
+	// as an uptime of decades.
+	json startedAt = active ? json(TimeUtil::NowMs()) : json(nullptr);
+	if (overrides.contains("startedAt") && overrides["startedAt"].is_number()) {
+		startedAt = overrides["startedAt"].get<int64_t>();
+	}
+	json destinations = json::array();
+	if (active) {
+		destinations.push_back(json{
+			{"bindingUuid", "test-binding"},
+			{"platform", kTestPlatform},
+			{"name", "Test Channel"},
+			{"canvasName", "Default"},
+			{"state", "live"},
+			{"startedAt", startedAt},
+		});
+	}
+	return json{{"active", active}, {"startedAt", std::move(startedAt)}, {"destinations", std::move(destinations)}};
+}
+
+// One row per NAMED SSE channel overlays.test can drive: the event name the frame goes out
+// under and the builder for its body. Adding a channel is a row. `seq` is the caller's
+// per-call counter, so a burst of test frames cannot dedupe against itself.
+struct OverlayTestChannel {
+	const char *eventName;
+	json (*build)(const json &overrides, uint64_t seq);
+};
+static const std::unordered_map<std::string, OverlayTestChannel> kOverlayTestChannels = {
+	{"chat", {"chat", BuildTestChat}},
+	{"viewers", {"viewers", BuildTestViewers}},
+	{"channels", {"channels", BuildTestChannels}},
+	{"stream", {"stream", BuildTestStream}},
+};
+
+// overlays.test {id,channel?,type?,overrides?} -> {ok:true, delivered:<n>}: fire a
+// synthetic frame straight to one widget's SSE sockets (never the store and never the
+// replay cache, so test frames don't persist, don't dedupe against real events, and can't
+// become the state a real browser source picks up on connect). `channel` absent or "event"
+// is the default alert stream and needs `type`; the four named channels are a data table
+// so a new one is a data change.
+//
+// `delivered` counts the sockets that took the frame. A widget open in the editor has its
+// preview iframe subscribed, so 0 means nothing at all is listening -- which is otherwise
+// indistinguishable from a delivery, since targeting one widget leaves no other trace.
+//
+// Runs on the async lane: the sends block (bounded by the overlay server's send timeout),
+// which must never run on TID_UI -- every browser source on stream renders there.
 bool MethodOverlaysTest(const json &p, json &result, std::string &error)
 {
 	const std::string id = OptString(p, "id");
+	const std::string channel = OptString(p, "channel");
+	const json overrides = (p.is_object() && p.contains("overrides") && p["overrides"].is_object())
+				       ? p["overrides"]
+				       : json::object();
+	static std::atomic<uint64_t> counter{0};
+
+	if (!channel.empty() && channel != "event") {
+		const auto ch = kOverlayTestChannels.find(channel);
+		if (ch == kOverlayTestChannels.end()) {
+			error = "overlays.test: unknown channel '" + channel + "'";
+			return false;
+		}
+		if (id.empty()) {
+			error = "overlays.test requires id";
+			return false;
+		}
+		const json body = ch->second.build(overrides, ++counter);
+		const size_t delivered = Overlay::Server().SendTestFrame(id, ch->second.eventName, body);
+		result = json{{"ok", true}, {"delivered", delivered}};
+		return true;
+	}
+
 	const std::string type = OptString(p, "type");
 	if (id.empty() || type.empty()) {
 		error = "overlays.test requires id and type";
 		return false;
 	}
-	const json overrides = (p.is_object() && p.contains("overrides") && p["overrides"].is_object())
-				       ? p["overrides"]
-				       : json::object();
 
 	Events::NormalizedEvent ev;
-	static std::atomic<uint64_t> counter{0};
 	ev.id = "test-" + std::to_string(++counter);
-	ev.platform = "twitch";
+	ev.platform = kTestPlatform;
 	ev.type = type;
 	ev.ts = static_cast<int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
 					     std::chrono::system_clock::now().time_since_epoch())
 					     .count());
-	ev.actorName = "Test User";
+	ev.actorName = kTestActorName;
 
 	static const std::unordered_map<std::string, std::function<void(Events::NormalizedEvent &)>> kDefaults = {
 		{"cheer",
@@ -11327,8 +11473,8 @@ bool MethodOverlaysTest(const json &p, json &result, std::string &error)
 		ev.message = overrides["message"].get<std::string>();
 	}
 
-	Overlay::Server().BroadcastTo(id, ev);
-	result = json{{"ok", true}};
+	const size_t delivered = Overlay::Server().BroadcastTo(id, ev);
+	result = json{{"ok", true}, {"delivered", delivered}};
 	return true;
 }
 
@@ -11679,6 +11825,7 @@ void Init()
 		{"overlays.get", MethodOverlaysGet},
 		{"overlays.create", MethodOverlaysCreate},
 		{"overlays.update", MethodOverlaysUpdate},
+		{"overlays.resetDefaults", MethodOverlaysResetDefaults},
 		{"overlays.duplicate", MethodOverlaysDuplicate},
 		{"overlays.delete", MethodOverlaysDelete},
 		{"overlays.usage", MethodOverlaysUsage},

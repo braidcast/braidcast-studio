@@ -49,7 +49,9 @@ public:
 	// Push a NormalizedEvent to EVERY open widget socket (the EventHub::Ingest sink).
 	void Broadcast(const Events::NormalizedEvent &ev);
 	// Push to ONE widget's sockets (overlays.test -- never goes through the store).
-	void BroadcastTo(const std::string &widgetId, const Events::NormalizedEvent &ev);
+	// Returns how many took it, so a test can report that nothing was listening rather
+	// than claim a delivery it cannot see.
+	size_t BroadcastTo(const std::string &widgetId, const Events::NormalizedEvent &ev);
 	// Push a chat message to EVERY open widget socket as a named `chat` SSE event
 	// (distinct from the default `message` event alert boxes consume). The chat-box
 	// widget subscribes to it; alert boxes ignore it.
@@ -72,6 +74,11 @@ public:
 	// stops with the stream without pushing a final zero, so a viewer widget clears off
 	// `active` going false rather than inventing a 0 of its own.
 	void BroadcastStreamState(const nlohmann::json &state);
+	// Send a named-channel frame to ONE widget, bypassing the replay cache and the backfill
+	// window: a preview test must never become the state a real browser source replays on
+	// connect. Mirrors BroadcastTo's "never the store" rule for the default channel, and
+	// reports the same delivery count.
+	size_t SendTestFrame(const std::string &widgetId, const char *eventName, const nlohmann::json &body);
 
 private:
 	void AcceptLoop();
@@ -81,9 +88,9 @@ private:
 	// Send a prebuilt SSE frame to every open widget socket, or (with onlyWidgetId set)
 	// to one widget's sockets only. The single snapshot-under-lock / send-unlocked
 	// implementation shared by Broadcast/BroadcastChat/BroadcastViewers/
-	// BroadcastChannelStats/BroadcastStreamState/BroadcastTo, so sseMutex_ is never
-	// held across the bounded-blocking sends.
-	void BroadcastFrame(const std::string &frame, const std::string *onlyWidgetId = nullptr);
+	// BroadcastChannelStats/BroadcastStreamState/BroadcastTo/SendTestFrame, so sseMutex_ is
+	// never held across the bounded-blocking sends. Returns how many sockets took the frame.
+	size_t BroadcastFrame(const std::string &frame, const std::string *onlyWidgetId = nullptr);
 	// BroadcastFrame for a channel whose latest frame is also KEPT for replay on
 	// connect, keyed by eventName. The one place a replayable frame is built and
 	// stored, so a second such channel cannot drift from the first.
