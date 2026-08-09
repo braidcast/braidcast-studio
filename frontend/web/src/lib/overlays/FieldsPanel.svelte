@@ -1,44 +1,58 @@
 <script lang="ts">
-  // The Simple pane: ONE list, one row per field — the field's label and its live value
-  // control, nothing else. The field list is fixed by the widget's type, because the keys
-  // are a contract with the shipped template.js: it reads f.fontSize, f.maxMessages and
-  // the rest by name and silently falls back to its own default for anything missing, so
-  // a renamed or deleted key breaks the widget with no error to explain it. Values are
-  // editable here; the schema is not editable anywhere.
+  // The Simple pane: ONE list, one row per schema field — the field's label, its live value
+  // control, and a way back to the default. The field list is fixed by the widget's schema,
+  // because the keys are a contract with the template that reads them: it looks up
+  // f.fontSize, f.maxMessages and the rest by name and silently falls back to its own
+  // default for anything missing, so a renamed or deleted key breaks the widget with no
+  // error to explain it. Values are editable here; the schema is not editable anywhere.
+  //
+  // Structure AND defaults come from `schema`; values from `settings`, which holds
+  // OVERRIDES ONLY. A row whose key is absent from settings shows the default its schema
+  // field declares and keeps following it as it changes across builds; that distinction is
+  // what the marker and the per-row reset make visible.
   //
   // Which control a row renders is read from FIELD_TYPES, so a new field type is one entry
-  // in fieldTypes.ts. Fields stay immutable: each edit builds the next array and hands it
-  // to onChange, which the page debounces into overlays.update. Rows are addressed by
-  // their id, never by index, so an upload that lands after the page swapped the widget
-  // (an external edit, a reset) cannot write its path onto whatever field took the slot.
+  // in fieldTypes.ts. Settings stay immutable: each edit builds the next map through
+  // withOverride and hands it to onChange, which the page debounces into overlays.update.
   import { obs, type OverlayField } from "$lib/api/bridge";
-  import { FIELD_TYPES, withFieldIds } from "$lib/overlays/fieldTypes";
+  import { FIELD_TYPES, withOverride } from "$lib/overlays/fieldTypes";
   import CssColorInput from "$lib/ui/CssColorInput.svelte";
+  import Icon from "$lib/ui/Icon.svelte";
   import ToggleSwitch from "$lib/ui/ToggleSwitch.svelte";
 
   let {
-    fields,
+    schema,
+    settings,
     widgetId,
     onChange,
-  }: { fields: OverlayField[]; widgetId: string; onChange: (f: OverlayField[]) => void } = $props();
+  }: {
+    schema: OverlayField[];
+    settings: Record<string, unknown>;
+    widgetId: string;
+    onChange: (next: Record<string, unknown>) => void;
+  } = $props();
 
-  // The page hydrates ids before the list ever reaches here, so this is a pass-through
-  // that returns the very same array; it stands as the guarantee that every row below
-  // has an id, not as a second source of them.
-  const rows = $derived(withFieldIds(fields));
-
-  let uploadingId = $state<string | null>(null);
+  let uploadingKey = $state<string | null>(null);
   let uploadError = $state<string | null>(null);
 
-  function indexOf(id: string): number {
-    return rows.findIndex((f) => f.id === id);
+  function isOverridden(f: OverlayField): boolean {
+    return Object.hasOwn(settings, f.key);
   }
 
-  function setField(id: string, patch: Partial<OverlayField>): void {
-    onChange(rows.map((f) => (f.id === id ? { ...f, ...patch } : f)));
+  // The override when there is one, otherwise the default its schema field declares —
+  // the same rule the host applies when it assembles the page, read off the same payload.
+  // Not the host's own merge OUTPUT: that resolves an overridden key to the override, so
+  // using it as the fallback would keep showing the value a moment after it was cleared,
+  // and a control moved back to its default would visibly snap away from it.
+  function valueOf(f: OverlayField): unknown {
+    return isOverridden(f) ? settings[f.key] : f.default;
   }
 
-  // --- value coercion helpers (field.value is unknown; inputs need concrete types) ---
+  function setValue(f: OverlayField, v: unknown): void {
+    onChange(withOverride(settings, f, v));
+  }
+
+  // --- value coercion helpers (a setting is unknown; inputs need concrete types) ---
   function asText(v: unknown): string {
     return v == null ? "" : String(v);
   }
@@ -50,15 +64,15 @@
     return v === true || v === "true";
   }
 
-  async function upload(id: string, file: File, kind: "image" | "sound"): Promise<void> {
-    // Pinned alongside the row id, because the encode below is a real wait on a large file
+  async function upload(f: OverlayField, file: File, kind: "image" | "sound"): Promise<void> {
+    // Pinned alongside the key, because the encode below is a real wait on a large file
     // and the page can select another overlay inside it. Reading the prop afterwards would
     // upload against whichever widget is open by then, and the host both writes the blob
     // into that widget's assets dir and lists it in its assets — a stray file on a widget
     // the user never touched, while the field that wanted it stays empty.
     const target = widgetId;
     uploadError = null;
-    uploadingId = id;
+    uploadingKey = f.key;
     try {
       const base64 = await new Promise<string>((res, rej) => {
         const r = new FileReader();
@@ -67,26 +81,26 @@
         r.readAsDataURL(file);
       });
       const { path } = await obs.call("overlays.uploadAsset", { id: target, key: file.name, kind, base64 });
-      // The row this upload belongs to may be gone: the page replaces the whole widget
-      // when it is reset or edited elsewhere, and that re-mints every id.
-      if (indexOf(id) >= 0) {
-        setField(id, { value: path });
+      // The panel may be looking at another widget by now; writing the path would set it
+      // on that widget's settings instead.
+      if (widgetId === target) {
+        setValue(f, path);
       }
     } catch (e) {
       uploadError = (e as Error).message;
     } finally {
       // A second upload may already own the indicator.
-      if (uploadingId === id) {
-        uploadingId = null;
+      if (uploadingKey === f.key) {
+        uploadingKey = null;
       }
     }
   }
 
-  function onFile(id: string, e: Event, kind: "image" | "sound"): void {
+  function onFile(f: OverlayField, e: Event, kind: "image" | "sound"): void {
     const input = e.currentTarget as HTMLInputElement;
     const file = input.files?.[0];
     if (file) {
-      void upload(id, file, kind);
+      void upload(f, file, kind);
     }
   }
 </script>
@@ -94,37 +108,40 @@
 <div class="fields">
   {#if uploadError}<p class="err">{uploadError}</p>{/if}
 
-  {#if rows.length === 0}
+  {#if schema.length === 0}
     <p class="empty">This widget's template exposes no settings.</p>
   {/if}
 
-  <!-- `type` arrives from a passthrough JSON document the user can hand-edit, so the
+  <!-- Keyed by widget + position rather than by field key: a hand-edited document can
+       carry the same key twice, which a key-keyed block reads as a collision and throws
+       on, and folding the widget id in tears the rows down when the selection changes so
+       no uncontrolled file input carries its filename across.
+
+       `type` arrives from a passthrough JSON document the user can hand-edit, so the
        Record's key type does not bind it at runtime; an unrecognized type reads as text
        rather than taking the whole panel down with it. -->
   <ul class="flist">
-    {#each rows as f (f.id)}
+    {#each schema as f, i (widgetId + ":" + i)}
       {@const spec = FIELD_TYPES[f.type] ?? FIELD_TYPES.text}
       {@const name = f.label || f.key}
       {@const placeholder = spec.control === "text" ? (spec.placeholder ?? "") : ""}
-      <li class="frow">
+      {@const set = isOverridden(f)}
+      {@const value = valueOf(f)}
+      <li class="frow" class:frow--set={set}>
         <span class="cv-ci__name fname" title={f.key}>{name}</span>
 
         <div class="fval">
           {#if spec.control === "switch"}
-            <ToggleSwitch checked={asBool(f.value)} ariaLabel={name} onchange={(v) => setField(f.id, { value: v })} />
+            <ToggleSwitch checked={asBool(value)} ariaLabel={name} onchange={(v) => setValue(f, v)} />
           {:else if spec.control === "color"}
-            <CssColorInput
-              value={asText(f.value) || "#ffffff"}
-              ariaLabel={name}
-              onChange={(v) => setField(f.id, { value: v })}
-            />
+            <CssColorInput value={asText(value) || "#ffffff"} ariaLabel={name} onChange={(v) => setValue(f, v)} />
           {:else if spec.control === "number"}
             <div class="cv-num">
               <input
                 type="number"
-                value={asNumber(f.value)}
+                value={asNumber(value)}
                 aria-label={name}
-                oninput={(e) => setField(f.id, { value: Number(e.currentTarget.value) })}
+                oninput={(e) => setValue(f, Number(e.currentTarget.value))}
               />
             </div>
           {:else if spec.control === "slider"}
@@ -134,18 +151,18 @@
                 min={f.min ?? 0}
                 max={f.max ?? 100}
                 step={f.step ?? 1}
-                value={asNumber(f.value)}
+                value={asNumber(value)}
                 aria-label={name}
-                oninput={(e) => setField(f.id, { value: Number(e.currentTarget.value) })}
+                oninput={(e) => setValue(f, Number(e.currentTarget.value))}
               />
-              <span class="fslider__n">{asNumber(f.value)}</span>
+              <span class="fslider__n">{asNumber(value)}</span>
             </div>
           {:else if spec.control === "select"}
             <select
               class="cv-select"
-              value={asText(f.value)}
+              value={asText(value)}
               aria-label={name}
-              onchange={(e) => setField(f.id, { value: e.currentTarget.value })}
+              onchange={(e) => setValue(f, e.currentTarget.value)}
             >
               <!-- Keyed by index: the options are fixed by the template, and two of them
                    may legitimately carry the same value. -->
@@ -159,12 +176,12 @@
                 type="file"
                 accept={spec.accept}
                 aria-label={name}
-                onchange={(e) => onFile(f.id, e, spec.uploadKind)}
+                onchange={(e) => onFile(f, e, spec.uploadKind)}
               />
-              {#if uploadingId === f.id}
+              {#if uploadingKey === f.key}
                 <span class="fnote">Uploading…</span>
-              {:else if asText(f.value)}
-                <span class="fnote ok" title={asText(f.value)}>{asText(f.value)}</span>
+              {:else if asText(value)}
+                <span class="fnote ok" title={asText(value)}>{asText(value)}</span>
               {/if}
             </div>
           {:else}
@@ -172,10 +189,25 @@
               class="ftext"
               type="text"
               {placeholder}
-              value={asText(f.value)}
+              value={asText(value)}
               aria-label={name}
-              oninput={(e) => setField(f.id, { value: e.currentTarget.value })}
+              oninput={(e) => setValue(f, e.currentTarget.value)}
             />
+          {/if}
+        </div>
+
+        <!-- The slot is always laid out, so a row does not shift as it gains or loses its
+             override. Writing the default back is what clears the key (see withOverride). -->
+        <div class="freset">
+          {#if set}
+            <button
+              class="tool-btn"
+              aria-label="Reset {name} to default"
+              title="Changed from the default — reset it"
+              onclick={() => setValue(f, f.default)}
+            >
+              <Icon name="x" size={12} />
+            </button>
           {/if}
         </div>
       </li>
@@ -218,7 +250,13 @@
     gap: 10px;
     padding: 8px 10px;
     border: var(--border-weight) solid var(--color-border);
+    /* Carried at the marker's own width even when it is off, so switching a row between
+       default and overridden recolors the edge instead of moving the row. */
+    border-left: 2px solid var(--color-border);
     background: var(--color-surface);
+  }
+  .frow--set {
+    border-left-color: var(--color-accent);
   }
   .fname {
     flex: 0 0 180px;
@@ -232,6 +270,11 @@
     min-width: 0;
     display: flex;
     align-items: center;
+  }
+  .freset {
+    flex: 0 0 25px;
+    display: flex;
+    justify-content: flex-end;
   }
   .ftext {
     width: 100%;

@@ -1,10 +1,11 @@
-// The Fields system's type table and row identity — the two things the overlay field
-// panel dispatches on.
+// The Fields system's type table, and the one rule for turning an edited value into a
+// stored override.
 //
-// A widget's fields are fixed by its type; the panel edits their values only. ONE entry
-// per field type therefore carries just what a value control needs: which control to
-// render, and the control's own type-specific extras. Adding a type is a row in
-// FIELD_TYPES, not a new branch in FieldsPanel.
+// A widget's fields are fixed by its schema; the panel edits their values only, and the
+// values live in the widget's `settings` map rather than on the field. ONE entry per field
+// type therefore carries just what a value control needs: which control to render, and the
+// control's own type-specific extras. Adding a type is a row in FIELD_TYPES, not a new
+// branch in FieldsPanel.
 
 import type { OverlayField } from "$lib/api/bridge";
 
@@ -33,48 +34,33 @@ export const FIELD_TYPES: Record<FieldType, FieldTypeSpec> = {
   font: { control: "text", placeholder: "CSS font-family" },
 };
 
-// --- row identity ----------------------------------------------------------------
-// `key` cannot identify a row: a legacy or hand-edited document may carry the same key
-// twice, which a keyed block reads as a collision. Rows therefore carry a client-side
-// `id`, minted here and never persisted: OverlaysPage hydrates on the way in from
-// overlays.get and projects it back out in fieldsForWire() before overlays.update, so the
-// stored document is byte-identical to one written without ids.
+// --- overrides ---------------------------------------------------------------------
+// `settings` holds overrides ONLY. A key that is absent resolves to the schema's default,
+// and stays tied to it: change the default in a later build and every widget that never
+// overrode the key follows. Storing a copy of the default instead would silently opt the
+// widget out of that, which is the whole reason the split exists — so the write path below
+// is the single place that decides, and no call site may set a key directly.
 
-/** An OverlayField with its editor-session identity attached. */
-export interface EditorField extends OverlayField {
-  id: string;
+/** Whether a value is indistinguishable from the schema default, and therefore not worth
+ * storing. Strict equality is enough: every control writes a primitive of the same shape
+ * as the default it came from (numbers from the number/slider inputs, booleans from the
+ * switch, strings everywhere else). */
+function isDefaultValue(field: OverlayField, value: unknown): boolean {
+  return value === field.default;
 }
 
-let seq = 0;
-
-function newFieldId(): string {
-  seq += 1;
-  return `fld${seq}`;
-}
-
-function hasId(f: OverlayField): f is EditorField {
-  return typeof (f as Partial<EditorField>).id === "string" && (f as EditorField).id !== "";
-}
-
-/** Identity-preserving: an already-hydrated array comes back as itself, so hydrating on
- * every render costs nothing and never re-mints an id out from under a row. */
-export function withFieldIds(fields: OverlayField[]): EditorField[] {
-  return fields.every(hasId) ? fields : fields.map((f) => (hasId(f) ? f : { ...f, id: newFieldId() }));
-}
-
-/** The wire form of the field list. Written as an explicit projection of the persisted
- * properties rather than as a `delete id`, so a client-only property added later cannot
- * reach overlays.update by being forgotten here. */
-export function fieldsForWire(fields: OverlayField[]): OverlayField[] {
-  return fields.map((f) => ({
-    key: f.key,
-    type: f.type,
-    label: f.label,
-    default: f.default,
-    value: f.value,
-    options: f.options,
-    min: f.min,
-    max: f.max,
-    step: f.step,
-  }));
+/** The next override set after editing one field. Writing the default back REMOVES the
+ * key, which is also how a "reset to default" is expressed — pass `field.default`. */
+export function withOverride(
+  settings: Record<string, unknown>,
+  field: OverlayField,
+  value: unknown,
+): Record<string, unknown> {
+  const next = { ...settings };
+  if (isDefaultValue(field, value)) {
+    delete next[field.key];
+  } else {
+    next[field.key] = value;
+  }
+  return next;
 }

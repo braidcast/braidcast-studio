@@ -14,8 +14,21 @@
   let {
     value,
     lang,
+    label,
+    readonly = false,
     onChange,
-  }: { value: string; lang: "html" | "css" | "javascript"; onChange: (v: string) => void } = $props();
+  }: {
+    value: string;
+    lang: "html" | "css" | "javascript";
+    /** Accessible name for the editable region; the visible kicker is a sibling. */
+    label: string;
+    /** Refuses edits from the keyboard while leaving the text focusable, selectable and
+     * scrollable — an uneditable pane still has to be readable without a mouse. Fixed at
+     * mount: the two call sites live in mutually exclusive branches, so flipping it always
+     * arrives as a fresh instance. */
+    readonly?: boolean;
+    onChange: (v: string) => void;
+  } = $props();
 
   let host: HTMLDivElement;
   let view: EditorView | undefined;
@@ -35,6 +48,12 @@
           basicSetup,
           langExt(),
           oneDark,
+          EditorState.readOnly.of(readonly),
+          // The content div stays contenteditable either way — readOnly refuses the input
+          // rather than removing the affordance — so the state has to be said in ARIA too.
+          EditorView.contentAttributes.of(
+            readonly ? { "aria-label": label, "aria-readonly": "true" } : { "aria-label": label },
+          ),
           EditorView.updateListener.of((u) => {
             if (u.docChanged && !seeding) {
               onChange(u.state.doc.toString());

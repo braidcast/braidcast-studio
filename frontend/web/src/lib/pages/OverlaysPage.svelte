@@ -1,18 +1,24 @@
 <script lang="ts">
   // Overlays page (master-detail): a left list of overlay widgets + a right editor
-  // with a Simple (fields) / Advanced (html-css-js) mode toggle and a live preview.
+  // with a Simple (settings) / Advanced (html-css-js) mode toggle and a live preview.
   // Widgets are loopback-SSE overlays served by the C++ Overlay::Server; the user copies
   // a widget URL into an OBS Browser Source. Edits mutate a local $state copy and
   // debounce into overlays.update (~500ms), then bump reloadKey so the preview iframe
   // reloads with the freshly-assembled document. A Save button flushes immediately.
   // Create/Duplicate/Reset/Delete + the host's overlays.changed push keep the list in sync.
+  //
+  // A widget is STOCK (custom == null) or FORKED. A stock widget is served from the
+  // shipped default-<type>/ template, so template fixes reach it; its Advanced pane is a
+  // read-only view of that template plus the one control that forks it. A forked widget
+  // serves its own code and stops tracking the template, which is why forking is an
+  // explicit gesture rather than a side effect of typing in Advanced. Reset is the way
+  // back: it discards the custom code and keeps the settings.
   import { onMount, onDestroy } from "svelte";
-  import { obs, type OverlayListItem, type OverlayWidget, type OverlayField } from "$lib/api/bridge";
+  import { obs, type OverlayListItem, type OverlayUpdateParams, type OverlayWidget } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
-  import CodePane from "$lib/overlays/CodePane.svelte";
+  import CodeGrid, { type CodePart } from "$lib/overlays/CodeGrid.svelte";
   import FieldsPanel from "$lib/overlays/FieldsPanel.svelte";
-  import { fieldsForWire, withFieldIds } from "$lib/overlays/fieldTypes";
-  import { WIDGET_TYPES } from "$lib/overlays/widgetTypes";
+  import { labelFor, WIDGET_TYPES } from "$lib/overlays/widgetTypes";
   import PreviewPane from "$lib/overlays/PreviewPane.svelte";
   import CollectionDialog, { type DialogSpec } from "$lib/dialogs/CollectionDialog.svelte";
   import PageShell from "$lib/ui/PageShell.svelte";
@@ -27,6 +33,10 @@ import { EV } from "$lib/utils/eventNames";
     { label: "Advanced", value: "advanced" },
   ];
   const PREVIEW_OPTION: SegmentedOption = { label: "Preview", value: "preview" };
+  // One label for the two buttons that start a reset, the confirm dialog's affirmative, and
+  // the two sentences that quote it. Reworded in one place, because prose naming a button
+  // that no longer says that is prose telling the user to look for something absent.
+  const RESET_LABEL = "Reset code";
 
   // Below this the editor column can't hold a legible fields/code pane beside the
   // preview (the rail and the widget list already take 310px), so the preview stops
@@ -52,13 +62,30 @@ import { EV } from "$lib/utils/eventNames";
   // True while the local editor buffer has edits not yet flushed to the backend, so
   // an external overlays.changed refetch never clobbers in-flight typing.
   let dirty = $state(false);
-  // True while overlays.resetDefaults is in flight. The buffer is still the PRE-reset
-  // document for that whole window, so no save may leave the page: select() flushes
-  // unconditionally on the way out, which makes switching overlays mid-reset the way a
-  // PATCH of the discarded document lands after the reseed and quietly undoes it.
+  // True while overlays.resetDefaults is in flight. It is the re-entrancy guard for the
+  // reset and the disabled state of the controls that start one: the confirm dialog's
+  // button is never disabled and Enter commits from anywhere, and the host answers the
+  // second reset AlreadyStock — a red banner reporting failure for an operation that
+  // succeeded, with the first call's completion dropping the flag out from under the
+  // second. It does NOT gate saving: a save raised inside the window queues behind the
+  // mutation (runQueued) rather than standing down.
   let resetting = $state(false);
+  // The same for overlays.fork, plus the "Customizing…" label on the button that started
+  // it. Saving is likewise queued rather than refused, so an edit typed inside the window
+  // still reaches the host.
+  let forking = $state(false);
 
   const paneOptions = $derived(wide ? MODE_OPTIONS : [...MODE_OPTIONS, PREVIEW_OPTION]);
+  const forked = $derived(!!widget?.custom);
+
+  // A stock widget's code is on disk, not on the widget, so the read is keyed by TYPE.
+  // Going through `stockType` rather than reading the widget directly is what keeps the
+  // request stable: an overlays.changed refetch hands back a new widget object with the
+  // same type, and asking again would tear down three CodeMirror instances under someone
+  // reading them. Deriveds are pull-based, so nothing is fetched until the stock Advanced
+  // pane actually renders, and the host answers from a per-process cache after the first.
+  const stockType = $derived(widget && !widget.custom ? widget.type : null);
+  const stockTemplate = $derived(stockType ? obs.call("overlays.template", { type: stockType }) : null);
 
   $effect(() => {
     const mq = window.matchMedia(WIDE_PREVIEW_QUERY);
@@ -80,6 +107,41 @@ import { EV } from "$lib/utils/eventNames";
 
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   let copiedTimer: ReturnType<typeof setTimeout> | undefined;
+  // onDestroy has to be the last writer. Clearing saveTimer no longer covers that on its
+  // own: a flush whose timer already fired can be waiting its turn behind a fork or reset,
+  // and there is no timer left to cancel by the time the page goes.
+  let destroyed = false;
+  // Bumped by every edit. A save captures it when it starts writing and clears `dirty` only
+  // if it still matches, so a keystroke that arrives while overlays.update is in flight —
+  // which it will, since the host writes overlays.json synchronously inside that call —
+  // keeps the flag and therefore keeps its trailing debounce. Clearing unconditionally is
+  // what would report "Saved" for a value never sent and then let the next overlays.changed
+  // echo revert it on screen.
+  let saveGen = 0;
+
+  // Every host mutation of the open document — the debounced PATCH, the fork, the reset,
+  // the delete — runs through here, one at a time. Serializing them is what lets a save
+  // raised inside a fork or reset window still reach the host instead of standing down: it
+  // waits its turn and then builds its payload from whatever the mutation left behind,
+  // rather than describing the document as it was before. They also apply their returned
+  // `rev` in the order the host accepted them, so the local copy cannot be left behind the
+  // stored one and read as an external edit on the next overlays.changed echo.
+  //
+  // Calling it from INSIDE a queued body deadlocks the chain for the rest of the session:
+  // the inner call waits on a tail that cannot settle until the outer body it is running in
+  // returns. Nothing does that today — fork and reset call flushSave BEFORE taking the
+  // queue, never within it — and any new mutation has to keep it that way.
+  let mutations: Promise<unknown> = Promise.resolve();
+  function runQueued<T>(run: () => Promise<T>): Promise<T> {
+    const next = mutations.then(run, run);
+    // The tail is settled either way: a rejected one would hand its rejection to every
+    // mutation queued after it.
+    mutations = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
+  }
 
   function refresh(): void {
     obs
@@ -100,18 +162,31 @@ import { EV } from "$lib/utils/eventNames";
     if (id === selectedId) {
       return;
     }
-    // Flush any pending edit to the outgoing widget before switching.
+    // Flush any pending edit to the outgoing widget before switching. This also orders the
+    // switch behind a fork or reset already holding the queue, so a mutation still sees the
+    // selection it was started on.
     await flushSave();
     selectedId = id;
     pane = "simple";
     try {
+      const gen = saveGen;
       const w = await obs.call("overlays.get", { id });
       // A newer select() may have superseded this one while the fetch was in flight;
       // don't overwrite the current selection with a stale widget.
       if (selectedId !== id) {
         return;
       }
-      w.fields = withFieldIds(w.fields);
+      // Something was typed into the OUTGOING widget while this fetch was in flight. It is
+      // still unsaved and still addressable — the buffer is swapped below, not above — so it
+      // gets the same flush the entry above gives rather than being dropped on the swap.
+      // Keeping `dirty` set instead would only make the flag describe a widget that is about
+      // to be replaced, which saves nothing and then suppresses every external refetch.
+      if (saveGen !== gen) {
+        await flushSave();
+        if (selectedId !== id) {
+          return;
+        }
+      }
       widget = w;
       dirty = false;
       reloadKey++;
@@ -122,55 +197,108 @@ import { EV } from "$lib/utils/eventNames";
   }
 
   function scheduleSave(): void {
-    if (!widget) {
+    const w = widget;
+    if (!w) {
       return;
     }
     dirty = true;
+    saveGen++;
+    // The banner is cleared on the gesture, never from inside the queued save: a save that
+    // ran after a failed fork would otherwise wipe that fork's error one microtask after it
+    // was set, before it was ever painted.
+    error = null;
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => void flushSave(), 500);
+    // Armed against an id rather than against whatever is open when it fires: a reset
+    // replaces the widget object and a selection change replaces the widget outright, both
+    // well inside 500ms.
+    saveTimer = setTimeout(() => void flushSave(w.id), 500);
   }
 
-  // The editor tags each field with a client-side id, since a key can legitimately repeat
-  // in a legacy document (see fieldTypes.ts). Those ids are not part of the document, so
-  // the widget is projected back to its wire form both on the way out and on either side
-  // of the "did the server copy actually change?" test below — comparing a tagged local
-  // copy against an untagged fetched one would report every echo as an external edit.
-  function wireJson(w: OverlayWidget): string {
-    return JSON.stringify({ ...w, fields: fieldsForWire(w.fields) });
+  // The Save button's gesture. Separate from flushSave so the banner clear lands here, at
+  // the click, rather than on the debounce or in the queued body.
+  function saveNow(): void {
+    error = null;
+    void flushSave();
   }
 
-  async function flushSave(): Promise<void> {
+  // The "did the server copy actually change?" test. Written as an explicit projection of
+  // the persisted document rather than a stringify of the whole widget, because that fixes
+  // the key order of the comparison itself. What it leaves out is left out on two different
+  // grounds. `url` and `schema` are not persisted at all — `schema` is `custom.fields`
+  // verbatim once forked and a process-constant while stock, so it could only restate what
+  // is compared here anyway. `id`, `token` and `type` ARE persisted, but none of them can
+  // change under a selection: a document answering to a different one is a different
+  // widget, not an edit to this one. A persisted field that can change belongs in here.
+  //
+  // The sort is the part that has to be right. The host emits `settings` from a sorted map
+  // while the local copy appends new keys last, so an unsorted compare would read our own
+  // save echo as an external edit and reload the preview a second time on every save.
+  function docJson(w: OverlayWidget): string {
+    const settings = Object.entries(w.settings).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return JSON.stringify({ name: w.name, rev: w.rev, settings, custom: w.custom, assets: w.assets });
+  }
+
+  // Writes the open document. `id` names the widget the unsaved edits belong to; the
+  // payload is read from the live buffer and only while that is still the same widget, so
+  // one overlay's pending edits can never be applied to another — there is no path through
+  // here that reads the id from one object and the values from a second. Queued rather than
+  // refused while a fork or reset holds the document, which is what keeps select()'s
+  // flush-on-the-way-out a guarantee instead of a no-op inside those windows.
+  async function flushSave(id = widget?.id): Promise<void> {
     clearTimeout(saveTimer);
-    if (!widget || resetting) {
+    if (id === undefined) {
       return;
     }
-    const w = widget;
-    saving = true;
-    try {
-      const saved = await obs.call("overlays.update", {
-        id: w.id,
-        name: w.name,
-        html: w.html,
-        css: w.css,
-        js: w.js,
-        fields: fieldsForWire(w.fields),
-      });
-      // Level the local copy with the stored revision, so the overlays.changed echo this
-      // save triggers compares equal and doesn't reload the preview a second time.
-      w.rev = saved.rev;
-      dirty = false;
-      reloadKey++;
-      // Keep the list row's name label in sync without a full re-fetch.
-      items = items.map((it) => (it.id === w.id ? { ...it, name: w.name } : it));
-    } catch (e) {
-      error = (e as Error).message;
-    } finally {
-      saving = false;
-    }
+    await runQueued(async () => {
+      const w = widget;
+      // Nothing unsaved, the page is gone, or the selection moved on while this waited its
+      // turn. `dirty` is the whole test for "is there anything to write": every edit path
+      // sets it and only a landed save or a fresh fetch clears it, so without it a plain
+      // selection change would PATCH, bump `rev` host-side, and reload a preview for a
+      // write nobody asked for.
+      if (destroyed || !w || w.id !== id || !dirty) {
+        return;
+      }
+      // Captured here rather than at arm time: the payload below is read from the live
+      // buffer at this moment, so everything typed up to now is covered by this write and
+      // only what arrives during the call itself has to survive it.
+      const gen = saveGen;
+      saving = true;
+      try {
+        // `settings` replaces the stored override set wholesale, so the whole map goes every
+        // time. The code goes only for a forked widget: a stock one has none of its own, and
+        // the host rejects an update that tries to give it some.
+        const patch: OverlayUpdateParams = { id: w.id, name: w.name, settings: { ...w.settings } };
+        if (w.custom) {
+          patch.html = w.custom.html;
+          patch.css = w.custom.css;
+          patch.js = w.custom.js;
+        }
+        const saved = await obs.call("overlays.update", patch);
+        // Level the local copy with the stored revision, so the overlays.changed echo this
+        // save triggers compares equal and doesn't reload the preview a second time.
+        w.rev = saved.rev;
+        // Only what this call actually carried is saved. An edit that arrived while it was
+        // in flight keeps the flag, so the debounce it armed still has something to write —
+        // and it is cleared after the await, never before, or a rejected save would drop the
+        // flag along with the work.
+        if (saveGen === gen) {
+          dirty = false;
+        }
+        reloadKey++;
+        // Keep the list row's name label in sync without a full re-fetch.
+        items = items.map((it) => (it.id === w.id ? { ...it, name: w.name } : it));
+      } catch (e) {
+        error = (e as Error).message;
+      } finally {
+        saving = false;
+      }
+    });
   }
 
   async function create(type: string, name: string): Promise<void> {
     typeMenuOpen = false;
+    error = null;
     try {
       const w = await obs.call("overlays.create", { name, type });
       refresh();
@@ -184,12 +312,52 @@ import { EV } from "$lib/utils/eventNames";
     if (!selectedId) {
       return;
     }
+    error = null;
     try {
       const w = await obs.call("overlays.duplicate", { id: selectedId });
       refresh();
       await select(w.id);
     } catch (e) {
       error = (e as Error).message;
+    }
+  }
+
+  // Takes the widget off the shipped template and onto a copy of it. The response carries
+  // the new `custom` outright, so this applies it in place instead of refetching: the whole
+  // point of forking is that nothing the user configured changes, and swapping the widget
+  // object would put every setting typed in the last half-second at the mercy of the race.
+  async function forkCode(): Promise<void> {
+    const w = widget;
+    if (!w || w.custom || forking) {
+      return;
+    }
+    // Raised before the first await, so a second click on a button the flush has not yet
+    // disabled cannot start a second fork.
+    forking = true;
+    error = null;
+    try {
+      // Pending settings land first. The fork is a separate host mutation, and a debounced
+      // PATCH firing after it would be describing the widget as it was before.
+      await flushSave();
+      // Identity, not id: an overlays.changed refetch can replace the object under the same
+      // id, and writing `custom` onto the copy we no longer render would silently do nothing.
+      if (widget !== w) {
+        return;
+      }
+      const res = await runQueued(() => obs.call("overlays.fork", { id: w.id }));
+      if (widget !== w) {
+        return;
+      }
+      w.custom = res.custom;
+      // A forked widget's schema IS its own field list; the fork seeded it from the type's,
+      // so the form does not change shape here, only where its structure comes from.
+      w.schema = res.custom.fields;
+      w.rev = res.rev;
+      reloadKey++;
+    } catch (e) {
+      error = (e as Error).message;
+    } finally {
+      forking = false;
     }
   }
 
@@ -200,21 +368,23 @@ import { EV } from "$lib/utils/eventNames";
     }
     dialog = {
       kind: "confirm",
-      title: "Reset Overlay",
+      title: "Reset Overlay Code",
       message:
-        `Reset "${target.name}" to its template defaults? Its custom HTML, CSS and JS and every field ` +
-        `value are replaced and cannot be recovered. The name and uploaded assets are kept.`,
-      confirmLabel: "Reset",
+        `Discard the custom HTML, CSS and JS on "${target.name}" and go back to the built-in ` +
+        `${labelFor(target.type)} template? The custom code cannot be recovered. Your settings, the name ` +
+        `and uploaded assets are all kept, and the overlay starts receiving template improvements again.`,
+      confirmLabel: RESET_LABEL,
       onCommit: () => void resetDefaults(target.id),
     };
   }
 
-  // Re-seeds html/css/js/fields from the on-disk template. Two things have to be kept off
-  // the wire for the duration, both of which would put the discarded edits straight back:
-  // the pending debounced PATCH (dropped here) and any save the user reaches in the
-  // meantime (refused by flushSave while `resetting`). The refetch is explicit rather than
-  // left to the overlays.changed echo, so the editor shows the reseeded document however
-  // the echo races.
+  // Clears `custom`, returning the widget to the on-disk template. `settings` survives, so
+  // the pending debounced PATCH is flushed rather than dropped: those are values the reset
+  // is documented to keep, and the code it also carries is about to be discarded anyway.
+  // The refetch is explicit rather than left to the overlays.changed echo, so the editor
+  // shows the returned document however the echo races. Both host calls hold the mutation
+  // queue for the whole round trip, so a save raised inside the window is written against
+  // the widget the reset left behind — stock, with no code on it for the host to refuse.
   //
   // `dirty` is global while this is per-widget, so it is only touched once the selection is
   // confirmed still ours: the user can switch overlays and start typing inside either
@@ -223,18 +393,41 @@ import { EV } from "$lib/utils/eventNames";
   // leave the flag alone as well — flushSave clears it only on a save that landed, same
   // rule.
   async function resetDefaults(id: string): Promise<void> {
-    clearTimeout(saveTimer);
+    // The dialog's confirm button stays enabled and Enter commits from anywhere, so a
+    // second commit is one keypress away. The host answers it AlreadyStock, which would
+    // paint a red banner reporting failure for an operation that had just succeeded.
+    if (resetting) {
+      return;
+    }
     resetting = true;
+    error = null;
     try {
-      await obs.call("overlays.resetDefaults", { id });
-      const w = await obs.call("overlays.get", { id });
-      if (selectedId !== id) {
-        return;
-      }
-      dirty = false;
-      w.fields = withFieldIds(w.fields);
-      widget = w;
-      reloadKey++;
+      await flushSave();
+      // The reset itself is unconditional. The user asked for it on a widget the confirm
+      // dialog named, so a selection that moved inside the flush must not turn a destructive
+      // action into a silent no-op; only the local-state application below is conditional.
+      await runQueued(async () => {
+        await obs.call("overlays.resetDefaults", { id });
+        const w = await obs.call("overlays.get", { id });
+        if (selectedId !== id) {
+          return;
+        }
+        // Values typed inside the round trip are not the reset's to discard — the confirm
+        // dialog promises it keeps the settings AND the name, and it keeps both by
+        // definition — so an unflushed buffer wins over the refetched copy for each of them.
+        // Taking the server's `name` here is what let the following flush write the old name
+        // back over a rename typed inside the window. Everything else, `custom` above all, is
+        // what the reset just changed and has to come from the server.
+        const unsaved = dirty && widget ? { name: widget.name, settings: { ...widget.settings } } : null;
+        if (unsaved) {
+          w.name = unsaved.name;
+          w.settings = unsaved.settings;
+        } else {
+          dirty = false;
+        }
+        widget = w;
+        reloadKey++;
+      });
     } catch (e) {
       error = (e as Error).message;
     } finally {
@@ -268,10 +461,13 @@ import { EV } from "$lib/utils/eventNames";
 
   async function remove(id: string): Promise<void> {
     // Cancel any pending debounced save so we don't PATCH a just-deleted id
-    // (which would surface a spurious "no such overlay" error banner).
+    // (which would surface a spurious "no such overlay" error banner). Queued for the
+    // second half of the same reason: a save whose timer already fired is waiting its turn
+    // and no longer has a timer to cancel, so the delete has to line up behind it.
     clearTimeout(saveTimer);
+    error = null;
     try {
-      await obs.call("overlays.delete", { id });
+      await runQueued(() => obs.call("overlays.delete", { id }));
       if (selectedId === id) {
         selectedId = null;
         widget = null;
@@ -294,6 +490,7 @@ import { EV } from "$lib/utils/eventNames";
   }
 
   async function addToScene(item: OverlayListItem): Promise<void> {
+    error = null;
     try {
       await obs.call("overlays.addToScene", { id: item.id });
     } catch (e) {
@@ -302,27 +499,17 @@ import { EV } from "$lib/utils/eventNames";
   }
 
   // --- editor field bindings (mutate local widget, then debounce the update) ---
-  function onHtml(v: string): void {
-    if (widget) {
-      widget.html = v;
+  // Only a forked widget has code to write to; the stock pane that shows the template is
+  // read-only and never reaches here.
+  function onCode(part: CodePart, v: string): void {
+    if (widget?.custom) {
+      widget.custom[part] = v;
       scheduleSave();
     }
   }
-  function onCss(v: string): void {
+  function onSettings(next: Record<string, unknown>): void {
     if (widget) {
-      widget.css = v;
-      scheduleSave();
-    }
-  }
-  function onJs(v: string): void {
-    if (widget) {
-      widget.js = v;
-      scheduleSave();
-    }
-  }
-  function onFields(f: OverlayField[]): void {
-    if (widget) {
-      widget.fields = f;
+      widget.settings = next;
       scheduleSave();
     }
   }
@@ -351,8 +538,7 @@ import { EV } from "$lib/utils/eventNames";
         return;
       }
       const local = widget;
-      if (!local || wireJson(w) !== wireJson(local)) {
-        w.fields = withFieldIds(w.fields);
+      if (!local || docJson(w) !== docJson(local)) {
         widget = w;
         reloadKey++;
       }
@@ -376,6 +562,7 @@ import { EV } from "$lib/utils/eventNames";
   });
 
   onDestroy(() => {
+    destroyed = true;
     clearTimeout(saveTimer);
     clearTimeout(copiedTimer);
   });
@@ -452,11 +639,21 @@ import { EV } from "$lib/utils/eventNames";
               oninput={(e) => onName(e.currentTarget.value)}
             />
             <Segmented options={paneOptions} value={pane} onChange={(v) => (pane = v as PaneMode)} />
+            {#if forked}
+              <!-- Visible from every pane, because it is the reason this widget stopped
+                   picking up template fixes and the Advanced pane is not always open. -->
+              <span class="cv-badge cv-badge--default">Custom code</span>
+            {/if}
             <span class="editor-spacer"></span>
             <span class="save-state">{saving ? "Saving…" : "Saved"}</span>
-            <button class="accent" disabled={saving || resetting} onclick={() => void flushSave()}>Save</button>
+            <!-- Not held off during a fork or reset: this button's whole job is to save, and
+                 the queue is what makes a save safe inside those windows. -->
+            <button class="accent" disabled={saving} onclick={saveNow}>Save</button>
             <button class="ghost" onclick={duplicate}>Duplicate</button>
-            <button class="ghost" disabled={resetting} onclick={confirmReset}>Reset</button>
+            <!-- A stock widget has no custom code to discard, so Reset would be a no-op. -->
+            {#if forked}
+              <button class="ghost" disabled={resetting} onclick={confirmReset}>{RESET_LABEL}</button>
+            {/if}
             <button class="ghost danger" onclick={() => void confirmDelete()}>Delete</button>
           </div>
 
@@ -464,23 +661,55 @@ import { EV } from "$lib/utils/eventNames";
             {#if wide || pane !== "preview"}
               <div class="edit-pane">
                 {#if pane === "advanced"}
-                  <div class="code-grid">
-                    <div class="code-cell">
-                      <span class="cell-kicker">HTML</span>
-                      <CodePane value={widget.html} lang="html" onChange={onHtml} />
-                    </div>
-                    <div class="code-cell">
-                      <span class="cell-kicker">CSS</span>
-                      <CodePane value={widget.css} lang="css" onChange={onCss} />
-                    </div>
-                    <div class="code-cell">
-                      <span class="cell-kicker">JS</span>
-                      <CodePane value={widget.js} lang="javascript" onChange={onJs} />
-                    </div>
+                  <!-- The two arms are mutually exclusive on purpose: CodePane fixes its
+                       read-only state at mount, so forking has to arrive as a fresh grid. -->
+                  <div class="code-stack">
+                    {#if widget.custom}
+                      <div class="code-note">
+                        <p>
+                          <b>This overlay runs your own code.</b> It no longer picks up improvements to the built-in
+                          {labelFor(widget.type)} template. "{RESET_LABEL}" discards your code and puts it back on the
+                          built-in template, keeping your settings.
+                        </p>
+                        <button class="ghost" disabled={resetting} onclick={confirmReset}>{RESET_LABEL}</button>
+                      </div>
+                      <CodeGrid
+                        html={widget.custom.html}
+                        css={widget.custom.css}
+                        js={widget.custom.js}
+                        onChange={onCode}
+                      />
+                    {:else}
+                      <div class="code-note">
+                        <p>
+                          <b>This overlay uses the built-in {labelFor(widget.type)} template</b>, shown below, and picks
+                          up improvements to it automatically. Customizing takes a private copy you can edit — from then
+                          on this overlay stops receiving those improvements. Your settings are kept, and "{RESET_LABEL}"
+                          puts it back on the built-in template.
+                        </p>
+                        <button class="accent" disabled={forking} onclick={() => void forkCode()}>
+                          {forking ? "Customizing…" : "Customize code"}
+                        </button>
+                      </div>
+                      {#if stockTemplate}
+                        {#await stockTemplate}
+                          <p class="tpl-state">Reading the built-in template…</p>
+                        {:then template}
+                          <CodeGrid html={template.html} css={template.css} js={template.js} readonly />
+                        {:catch e}
+                          <p class="tpl-state tpl-state--err">The built-in template can't be shown ({e.message}).</p>
+                        {/await}
+                      {/if}
+                    {/if}
                   </div>
                 {:else}
                   <div class="scroll-pane">
-                    <FieldsPanel fields={widget.fields} widgetId={widget.id} onChange={onFields} />
+                    <FieldsPanel
+                      schema={widget.schema}
+                      settings={widget.settings}
+                      widgetId={widget.id}
+                      onChange={onSettings}
+                    />
                   </div>
                 {/if}
               </div>
@@ -752,36 +981,53 @@ import { EV } from "$lib/utils/eventNames";
     flex: 1;
     min-width: 0;
   }
-  .code-grid {
+  .code-stack {
     flex: 1;
     min-width: 0;
     min-height: 0;
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    grid-template-rows: 1fr 1fr;
-    gap: 12px;
-  }
-  /* HTML spans the full top row; CSS + JS share the bottom row. */
-  .code-cell:first-child {
-    grid-column: 1 / -1;
-  }
-  .code-cell {
     display: flex;
     flex-direction: column;
-    gap: 6px;
-    min-height: 0;
-    min-width: 0;
+    gap: 12px;
   }
-  .cell-kicker {
+  /* The stock/forked notice: prose on the left, the one action it offers on the right. */
+  .code-note {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 10px 12px;
+    border: var(--border-weight) solid var(--color-border);
+    border-left: 2px solid var(--color-accent);
+    background: var(--color-surface);
+  }
+  .code-note p {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+    font-size: 11.5px;
+    line-height: 1.5;
+    color: var(--color-dim);
+  }
+  .code-note b {
+    font-weight: 600;
+    color: var(--color-text);
+  }
+  .code-note button {
+    flex: 0 0 auto;
+  }
+  .tpl-state {
+    flex: 1;
+    margin: 0;
     font-family: var(--font-mono);
-    font-size: 9px;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
+    font-size: 11px;
     color: var(--color-muted);
   }
-  .code-cell :global(.code-host) {
-    flex: 1;
-    min-height: 0;
+  /* A modifier rather than the pane's .err class: that one is the banner at the top of the
+     page and sets its own font-size and margin at the same specificity as .tpl-state, so
+     sharing it made source order decide the size and left a margin on top of the stack's
+     own gap. This line is a template-state line that happens to be an error. */
+  .tpl-state--err {
+    color: var(--color-live);
   }
   .scroll-pane {
     flex: 1;

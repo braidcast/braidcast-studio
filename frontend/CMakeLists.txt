@@ -267,6 +267,11 @@ target_sources(
     src/overlay/overlay_server.hpp
     src/overlay/overlay_store.cpp
     src/overlay/overlay_store.hpp
+    # The shipped per-type templates (default-<type>/template.* + fields.json), read off
+    # the rundir once and cached: the schema a stock widget's form is built from and the
+    # code its document is assembled from. Filesystem + json only, no obs.h.
+    src/overlay/overlay_template.cpp
+    src/overlay/overlay_template.hpp
     # The libobs global procs obs-browser's braidcast_overlay source type resolves its
     # URL through, plus the re-resolve sweep the server's bind fires (includes obs.h ->
     # in the /wd4201 set below).

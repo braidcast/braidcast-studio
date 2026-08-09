@@ -1396,9 +1396,11 @@ export interface NormalizedEvent {
 
 // --- overlay widgets (loopback SSE overlays, Phase 9.3) ----------------------
 
-/** One field in a widget's Fields system. `type` drives the values-panel editor;
- * `options` (dropdown), `min`/`max`/`step` (slider) are type-specific. `value` feeds
- * fieldData; for image/sound uploads it is the served "assets/<file>" path. */
+/** One field of a widget's SCHEMA — the shape of a setting, never its value. `type` picks
+ * the value control; `options` (dropdown) and `min`/`max`/`step` (slider) are
+ * type-specific. `default` is what the served page receives for a key the widget carries
+ * no override for, so a field added to a type's schema later shows up on every existing
+ * stock widget at its default. */
 export interface OverlayField {
   key: string;
   type:
@@ -1413,7 +1415,6 @@ export interface OverlayField {
     | "font";
   label: string;
   default: unknown;
-  value: unknown;
   options?: LabeledOption[];
   min?: number;
   max?: number;
@@ -1426,22 +1427,42 @@ export interface OverlayAsset {
   file: string;
 }
 
-/** Full widget definition (overlays.get / overlays.create). */
-export interface OverlayWidget {
-  id: string;
-  token: string;
-  name: string;
-  type: string;
+/** A forked widget's own code, plus the field list that is then its schema. Null on a
+ * stock widget, which is served straight from the shipped default-<type>/ template and so
+ * keeps receiving improvements to it. */
+export interface OverlayCustom {
   html: string;
   css: string;
   js: string;
   fields: OverlayField[];
+}
+
+/** The stored widget document plus its URL — what overlays.create and overlays.duplicate
+ * hand back. Neither resolves the editor views below; a caller that needs them fetches the
+ * widget with overlays.get. */
+export interface OverlayWidgetDoc {
+  id: string;
+  token: string;
+  name: string;
+  type: string;
+  /** OVERRIDES ONLY. A key absent here resolves to the schema's default — which is what
+   * keeps a stock widget tracking later changes to that default. */
+  settings: Record<string, unknown>;
+  custom: OverlayCustom | null;
   assets: OverlayAsset[];
   url: string;
   /** Document revision, bumped by every accepted overlays.update. The host appends it to
    * the URL it resolves for a live overlay source, which is what makes an edit reach a
    * copy already rendering in a scene. */
   rev: number;
+}
+
+/** overlays.get: the document, plus the schema the host resolves so the editor can render
+ * a settings form without the widget carrying a schema of its own. */
+export interface OverlayWidget extends OverlayWidgetDoc {
+  /** The schema in force — the type's for a stock widget, `custom.fields` for a forked
+   * one. Not persisted. */
+  schema: OverlayField[];
 }
 
 /** Compact list row (overlays.list). */
@@ -1460,10 +1481,14 @@ export interface OverlayServerInfo {
   portChanged: boolean;
 }
 
-/** Partial patch for overlays.update. */
+/** Partial patch for overlays.update. `settings` REPLACES the stored override set
+ * wholesale, so a caller sends the whole set or omits it. `html`/`css`/`js`/`fields`
+ * describe a forked widget's own code; the host rejects them on a stock widget, whose
+ * document is the on-disk template. */
 export interface OverlayUpdateParams {
   id: string;
   name?: string;
+  settings?: Record<string, unknown>;
   html?: string;
   css?: string;
   js?: string;
@@ -1869,8 +1894,17 @@ export interface ObsMethods {
   // the stored one, and re-resolves every live overlay source so the edit reaches a copy
   // already on a scene. duplicate copies the source widget's asset files, so a duplicated
   // alert keeps its sound and image. usage counts the live sources bound to a widget, for
-  // the delete confirmation. resetDefaults re-seeds html/css/js/fields from the widget's
-  // on-disk template, keeping id/token/name/type/assets, and returns the new revision.
+  // the delete confirmation.
+  // schema and template read a widget TYPE's field list and its shipped html/css/js
+  // without a widget to hang them on — the second is how the editor shows a stock widget's
+  // code, which lives on disk rather than on the widget. template still answers when only
+  // the type's fields.json is unreadable, since blanking the code over that helps nobody;
+  // it fails only when the template is absent outright. fork snapshots
+  // the type's on-disk template into the widget's own `custom` (seeding custom.fields from
+  // that schema) and hands it straight back, so the caller needs no refetch; from then on
+  // the widget serves its own code and no longer tracks the shipped template.
+  // resetDefaults is the way back: it clears `custom` and KEEPS `settings`, so it discards
+  // the custom code and nothing else.
   // test pushes a synthetic frame to one widget's open SSE streams (never persisted):
   // {id, channel?, type?, overrides?}, where channel picks the stream — omitted or "event"
   // is the alert path and needs `type`; "chat", "viewers", "channels" and "stream" take
@@ -1879,10 +1913,13 @@ export interface ObsMethods {
   // creates a Browser Source at the widget URL in the current scene.
   "overlays.list": OverlayListItem[];
   "overlays.get": OverlayWidget;
-  "overlays.create": OverlayWidget;
+  "overlays.schema": { fields: OverlayField[] };
+  "overlays.template": { html: string; css: string; js: string };
+  "overlays.create": OverlayWidgetDoc;
   "overlays.update": { ok: boolean; rev: number };
+  "overlays.fork": { ok: boolean; rev: number; custom: OverlayCustom };
   "overlays.resetDefaults": { ok: boolean; rev: number };
-  "overlays.duplicate": OverlayWidget;
+  "overlays.duplicate": OverlayWidgetDoc;
   "overlays.delete": { removed: string };
   "overlays.usage": { sources: number };
   "overlays.url": { url: string };

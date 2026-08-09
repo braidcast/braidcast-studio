@@ -153,19 +153,26 @@ void ObsBootstrap::RunOverlaySelfTest()
 	WSAStartup(MAKEWORD(2, 2), &wsa);
 
 	// In-memory only: InjectForTest never persists, so overlays.json is untouched.
+	//
+	// Forked rather than stock, so the served document is decided entirely by this widget
+	// and the assertions below do not depend on which templates the rundir happens to
+	// hold. `accent` carries an override and `bg` does not, which is what makes the
+	// document check below cover both halves of the merge.
 	Overlay::Widget w;
 	w.id = "selftest-widget";
 	w.token = "selftesttoken";
 	w.name = "selftest";
 	w.type = "alertbox";
-	w.html = "<div id=\"a\"></div>";
-	w.css = "#a{color:#fff}";
-	w.js = "OBSOverlay.onEvent(function(e){});";
-	w.fields = Overlay::json::array({Overlay::json{{"key", "accent"},
-						       {"type", "color"},
-						       {"label", "Accent"},
-						       {"default", "#9147ff"},
-						       {"value", "#9147ff"}}});
+	Overlay::CustomCode code;
+	code.html = "<div id=\"a\"></div>";
+	code.css = "#a{color:#fff}";
+	code.js = "OBSOverlay.onEvent(function(e){});";
+	code.fields = Overlay::json::array({
+		Overlay::json{{"key", "accent"}, {"type", "color"}, {"label", "Accent"}, {"default", "#9147ff"}},
+		Overlay::json{{"key", "bg"}, {"type", "color"}, {"label", "Background"}, {"default", "#101014"}},
+	});
+	w.custom = code;
+	w.settings = Overlay::json{{"accent", "#00ff00"}};
 	Overlay::Store().InjectForTest(w);
 
 	// A private server on an ephemeral port, NOT Overlay::Server(). That matters beyond
@@ -183,7 +190,11 @@ void ObsBootstrap::RunOverlaySelfTest()
 		return;
 	}
 
-	// 1) GET the assembled document.
+	// 1) GET the assembled document. Three things are asserted, because they come from
+	// three different resolutions and a regression in one does not disturb the others:
+	// the fork's own markup is served rather than the type's shipped template; a key the
+	// widget overrides arrives at the override; and a key it does not arrives at the
+	// schema's default rather than missing.
 	bool docOk = false;
 	{
 		SOCKET c = DialLoopback(port);
@@ -191,7 +202,12 @@ void ObsBootstrap::RunOverlaySelfTest()
 			WriteAll(c, "GET /w/selftest-widget?t=selftesttoken HTTP/1.1\r\nHost: x\r\n\r\n");
 			const std::string resp = RecvUntilClose(c);
 			docOk = StatusOf(resp) == 200 && resp.find("window.__OVERLAY__") != std::string::npos &&
-				resp.find("src=\"/runtime.js") != std::string::npos;
+				resp.find("src=\"/runtime.js") != std::string::npos &&
+				resp.find("<div id=\"a\"></div>") != std::string::npos &&
+				resp.find("#a{color:#fff}") != std::string::npos &&
+				resp.find("OBSOverlay.onEvent(function(e){});") != std::string::npos &&
+				resp.find("\"accent\":\"#00ff00\"") != std::string::npos &&
+				resp.find("\"bg\":\"#101014\"") != std::string::npos;
 			closesocket(c);
 		}
 	}
@@ -367,9 +383,14 @@ void ObsBootstrap::RunOverlaySelfTest()
 	const std::string createdId = created.id;
 	const std::string createdUrl = Overlay::WidgetUrl(created, Overlay::Store().Port());
 	const bool createOk = !created.id.empty() && !created.token.empty() && !createdUrl.empty();
-	const bool seededOk = !created.fields.empty() && !created.html.empty();
-	HostLog(std::string("[selftest] overlays create -> ") + (createOk ? "OK" : "MISMATCH") +
-		(seededOk ? " (template seeded)" : " (template missing -- empty seed)"));
+	// A new widget owns no code: it resolves both its schema and its markup through the
+	// type's shipped template, which is what makes a later template fix reach it. Gated
+	// rather than merely reported -- a rundir whose templates did not stage is a broken
+	// build, and this is the only assertion that covers resolving through a type.
+	const Overlay::ResolvedWidget createdView = Overlay::Resolve(created);
+	const bool stockOk = !created.IsForked() && !createdView.schema.empty() && !createdView.html.empty();
+	HostLog(std::string("[selftest] overlays create -> ") + (createOk && stockOk ? "OK" : "MISMATCH") +
+		(stockOk ? " (stock, template resolves)" : " (its type's template did not resolve)"));
 
 	bool listOk = false;
 	for (const Overlay::Widget &cand : Overlay::Store().List()) {
@@ -404,8 +425,9 @@ void ObsBootstrap::RunOverlaySelfTest()
 	Overlay::Store().RemoveForTest("selftest-widget");
 	HostLog("[selftest] overlay cleanup -> server stopped");
 
-	if (docOk && sseHeaderOk && deliveryOk && channelsOk && replayOk && noWindowOk && replayScopeOk && authOk) {
-		HostLog("[selftest] overlay -> document/SSE/channels/replay/auth OK");
+	if (docOk && sseHeaderOk && deliveryOk && channelsOk && replayOk && noWindowOk && replayScopeOk && authOk &&
+	    stockOk) {
+		HostLog("[selftest] overlay -> document/SSE/channels/replay/auth/stock OK");
 	} else {
 		HostLog("[selftest] overlay -> FAILED (see step lines above)");
 	}

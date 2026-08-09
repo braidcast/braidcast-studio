@@ -4,26 +4,24 @@
     "type": "dropdown",
     "label": "Format",
     "default": "auto",
-    "value": "auto",
     "options": [
       { "value": "auto", "label": "Auto (hide hours until 1:00:00)" },
       { "value": "hms", "label": "Hours:Minutes:Seconds" },
       { "value": "compact", "label": "Compact (1h 04m)" }
     ]
   },
-  { "key": "prefix", "type": "text", "label": "Prefix", "default": "", "value": "" },
-  { "key": "showWhenOffline", "type": "checkbox", "label": "Show When Offline", "default": false, "value": false },
-  { "key": "offlineText", "type": "text", "label": "Offline Text", "default": "—", "value": "—" },
-  { "key": "fontFamily", "type": "font", "label": "Font", "default": "Inter, system-ui, sans-serif", "value": "Inter, system-ui, sans-serif" },
-  { "key": "fontSize", "type": "slider", "label": "Font Size (px)", "min": 12, "max": 96, "step": 1, "default": 24, "value": 24 },
-  { "key": "textColor", "type": "color", "label": "Text Color", "default": "#ffffff", "value": "#ffffff" },
-  { "key": "backgroundColor", "type": "color", "label": "Background Color", "default": "rgba(0,0,0,0)", "value": "rgba(0,0,0,0)" },
+  { "key": "prefix", "type": "text", "label": "Prefix", "default": "" },
+  { "key": "showWhenOffline", "type": "checkbox", "label": "Show When Offline", "default": false },
+  { "key": "offlineText", "type": "text", "label": "Offline Text", "default": "—" },
+  { "key": "fontFamily", "type": "font", "label": "Font", "default": "Inter, system-ui, sans-serif" },
+  { "key": "fontSize", "type": "slider", "label": "Font Size (px)", "min": 12, "max": 96, "step": 1, "default": 24 },
+  { "key": "textColor", "type": "color", "label": "Text Color", "default": "#ffffff" },
+  { "key": "backgroundColor", "type": "color", "label": "Background Color", "default": "rgba(0,0,0,0)" },
   {
     "key": "align",
     "type": "dropdown",
     "label": "Align",
     "default": "left",
-    "value": "left",
     "options": [
       { "value": "left", "label": "Left" },
       { "value": "center", "label": "Center" },

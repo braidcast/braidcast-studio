@@ -1,45 +1,42 @@
 [
-  { "key": "title", "type": "text", "label": "Title", "default": "Also streaming on", "value": "Also streaming on" },
-  { "key": "showTitle", "type": "checkbox", "label": "Show Title", "default": true, "value": true },
+  { "key": "title", "type": "text", "label": "Title", "default": "Also streaming on" },
+  { "key": "showTitle", "type": "checkbox", "label": "Show Title", "default": true },
   {
     "key": "nameSource",
     "type": "dropdown",
     "label": "Name Source",
     "default": "channel",
-    "value": "channel",
     "options": [
       { "value": "channel", "label": "Channel Name" },
       { "value": "platform", "label": "Platform Name" }
     ]
   },
-  { "key": "showIcons", "type": "checkbox", "label": "Show Platform Dots", "default": true, "value": true },
-  { "key": "colorTwitch", "type": "color", "label": "Twitch Color", "default": "#a970ff", "value": "#a970ff" },
-  { "key": "colorYouTube", "type": "color", "label": "YouTube Color", "default": "#ff4e45", "value": "#ff4e45" },
-  { "key": "colorKick", "type": "color", "label": "Kick Color", "default": "#53fc18", "value": "#53fc18" },
-  { "key": "colorOther", "type": "color", "label": "Other Platform Color", "default": "#9aa0a6", "value": "#9aa0a6" },
+  { "key": "showIcons", "type": "checkbox", "label": "Show Platform Dots", "default": true },
+  { "key": "colorTwitch", "type": "color", "label": "Twitch Color", "default": "#a970ff" },
+  { "key": "colorYouTube", "type": "color", "label": "YouTube Color", "default": "#ff4e45" },
+  { "key": "colorKick", "type": "color", "label": "Kick Color", "default": "#53fc18" },
+  { "key": "colorOther", "type": "color", "label": "Other Platform Color", "default": "#9aa0a6" },
   {
     "key": "orientation",
     "type": "dropdown",
     "label": "Orientation",
     "default": "column",
-    "value": "column",
     "options": [
       { "value": "column", "label": "Column" },
       { "value": "row", "label": "Row" }
     ]
   },
-  { "key": "gap", "type": "slider", "label": "Gap (px)", "min": 0, "max": 64, "step": 1, "default": 10, "value": 10 },
-  { "key": "hideWhenOffline", "type": "checkbox", "label": "Hide When Offline", "default": true, "value": true },
-  { "key": "fontFamily", "type": "font", "label": "Font", "default": "Inter, system-ui, sans-serif", "value": "Inter, system-ui, sans-serif" },
-  { "key": "fontSize", "type": "slider", "label": "Font Size (px)", "min": 12, "max": 72, "step": 1, "default": 24, "value": 24 },
-  { "key": "textColor", "type": "color", "label": "Text Color", "default": "#ffffff", "value": "#ffffff" },
-  { "key": "backgroundColor", "type": "color", "label": "Background Color", "default": "rgba(0,0,0,0)", "value": "rgba(0,0,0,0)" },
+  { "key": "gap", "type": "slider", "label": "Gap (px)", "min": 0, "max": 64, "step": 1, "default": 10 },
+  { "key": "hideWhenOffline", "type": "checkbox", "label": "Hide When Offline", "default": true },
+  { "key": "fontFamily", "type": "font", "label": "Font", "default": "Inter, system-ui, sans-serif" },
+  { "key": "fontSize", "type": "slider", "label": "Font Size (px)", "min": 12, "max": 72, "step": 1, "default": 24 },
+  { "key": "textColor", "type": "color", "label": "Text Color", "default": "#ffffff" },
+  { "key": "backgroundColor", "type": "color", "label": "Background Color", "default": "rgba(0,0,0,0)" },
   {
     "key": "align",
     "type": "dropdown",
     "label": "Align",
     "default": "left",
-    "value": "left",
     "options": [
       { "value": "left", "label": "Left" },
       { "value": "center", "label": "Center" },

@@ -48,3 +48,9 @@ const BY_TYPE = new Map(WIDGET_TYPES.map((w) => [w.type, w]));
 export function testsFor(type: string): TestCapability[] {
   return BY_TYPE.get(type)?.tests ?? [];
 }
+
+/** A widget type's display label, for prose about the built-in template. Falls back to the
+ * raw type for one this build doesn't ship, which still reads correctly in a sentence. */
+export function labelFor(type: string): string {
+  return BY_TYPE.get(type)?.label ?? type;
+}

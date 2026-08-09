@@ -1,22 +1,21 @@
 [
-  { "key": "fontFamily", "type": "font", "label": "Font", "default": "Inter, system-ui, sans-serif", "value": "Inter, system-ui, sans-serif" },
-  { "key": "fontSize", "type": "slider", "label": "Font Size (px)", "min": 10, "max": 48, "step": 1, "default": 20, "value": 20 },
-  { "key": "textColor", "type": "color", "label": "Text Color", "default": "#ffffff", "value": "#ffffff" },
-  { "key": "backgroundColor", "type": "color", "label": "Background Color", "default": "rgba(0,0,0,0)", "value": "rgba(0,0,0,0)" },
-  { "key": "scrollSpeed", "type": "slider", "label": "Scroll Speed (px/sec)", "min": 10, "max": 240, "step": 5, "default": 60, "value": 60 },
+  { "key": "fontFamily", "type": "font", "label": "Font", "default": "Inter, system-ui, sans-serif" },
+  { "key": "fontSize", "type": "slider", "label": "Font Size (px)", "min": 10, "max": 48, "step": 1, "default": 20 },
+  { "key": "textColor", "type": "color", "label": "Text Color", "default": "#ffffff" },
+  { "key": "backgroundColor", "type": "color", "label": "Background Color", "default": "rgba(0,0,0,0)" },
+  { "key": "scrollSpeed", "type": "slider", "label": "Scroll Speed (px/sec)", "min": 10, "max": 240, "step": 5, "default": 60 },
   {
     "key": "direction",
     "type": "dropdown",
     "label": "Scroll Direction",
     "default": "left",
-    "value": "left",
     "options": [
       { "value": "left", "label": "Left" },
       { "value": "right", "label": "Right" }
     ]
   },
-  { "key": "separator", "type": "text", "label": "Separator", "default": "  •  ", "value": "  •  " },
-  { "key": "showPlatform", "type": "checkbox", "label": "Show Platform Tag", "default": true, "value": true },
-  { "key": "maxItems", "type": "number", "label": "Max Items", "min": 1, "max": 200, "step": 1, "default": 30, "value": 30 },
-  { "key": "idleText", "type": "text", "label": "Idle Text", "default": "", "value": "" }
+  { "key": "separator", "type": "text", "label": "Separator", "default": "  •  " },
+  { "key": "showPlatform", "type": "checkbox", "label": "Show Platform Tag", "default": true },
+  { "key": "maxItems", "type": "number", "label": "Max Items", "min": 1, "max": 200, "step": 1, "default": 30 },
+  { "key": "idleText", "type": "text", "label": "Idle Text", "default": "" }
 ]

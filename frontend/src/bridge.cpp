@@ -11092,6 +11092,14 @@ bool MethodOverlaysList(const json & /*params*/, json &result, std::string & /*e
 	return true;
 }
 
+// overlays.get {id} -> the widget plus `schema`, the field list its settings form is built
+// from: the type's fields.json while stock, custom.fields once forked. The widget itself
+// carries no schema, so without this the editor could not render a form for a stock one.
+//
+// It does NOT return the merged value set. The editor needs the override and the default
+// as separate facts -- clearing an override has to fall back to the default, and a merged
+// view resolves an overridden key to the override, which is the wrong answer for exactly
+// that case. `settings` and each schema entry's `default` are both here already.
 bool MethodOverlaysGet(const json &p, json &result, std::string &error)
 {
 	const std::string id = OptString(p, "id");
@@ -11102,6 +11110,56 @@ bool MethodOverlaysGet(const json &p, json &result, std::string &error)
 	}
 	result = w->ToJson();
 	result["url"] = Overlay::WidgetUrl(*w, Overlay::Store().Port());
+	result["schema"] = Overlay::Resolve(*w).schema;
+	return true;
+}
+
+// overlays.schema {type} -> {fields:[...]}: the shipped field schema for a widget TYPE, so
+// the editor can build a stock widget's form without that widget holding a copy of the
+// schema. Sync lane: TemplateFor caches a complete read, so after the first ask per type
+// this is a map lookup, and the first is the same read overlays.create already does here.
+bool MethodOverlaysSchema(const json &p, json &result, std::string &error)
+{
+	const std::string type = OptString(p, "type");
+	if (type.empty()) {
+		error = "overlays.schema requires type";
+		return false;
+	}
+	const Overlay::TypeTemplate shipped = Overlay::TemplateFor(type);
+	if (shipped.status != Overlay::TemplateStatus::Ok) {
+		error = "no shipped template for overlay type: " + type;
+		return false;
+	}
+	result = json{{"fields", shipped.schema}};
+	return true;
+}
+
+// overlays.template {type} -> {html,css,js}: the shipped code for a widget TYPE, so a
+// stock widget's advanced pane can show what it is currently serving -- and what forking
+// would hand the user -- before they commit to it. Type-keyed for the same reason
+// overlays.schema is: the code belongs to the type, and a stock widget by definition has
+// none of its own. Kept out of overlays.get so several KB of markup are not shipped on
+// every fetch, including for forked widgets that will never display it. Reads through the
+// same cached TemplateFor every other template consumer uses -- a second reader of these
+// three files is a second thing to keep in step with where they live.
+//
+// Corrupt is the one failure it tolerates: all three code files read, and blanking the
+// pane over a fields.json fault the user cannot act on helps nobody. A partial read is
+// refused with the rest, because showing an empty stylesheet as "what you are serving"
+// invites the user to fork it.
+bool MethodOverlaysTemplate(const json &p, json &result, std::string &error)
+{
+	const std::string type = OptString(p, "type");
+	if (type.empty()) {
+		error = "overlays.template requires type";
+		return false;
+	}
+	const Overlay::TypeTemplate shipped = Overlay::TemplateFor(type);
+	if (shipped.status != Overlay::TemplateStatus::Ok && shipped.status != Overlay::TemplateStatus::Corrupt) {
+		error = "the template files for overlay type '" + type + "' did not all read";
+		return false;
+	}
+	result = json{{"html", shipped.html}, {"css", shipped.css}, {"js", shipped.js}};
 	return true;
 }
 
@@ -11123,47 +11181,77 @@ bool MethodOverlaysCreate(const json &p, json &result, std::string &error)
 	return true;
 }
 
+// The tail every overlay mutation shares: phrase a refusal one way, then reload the bound
+// sources and tell the editor. `verb` names the attempt in the error ("could not fork
+// overlay <id>: ..."), and `extra` carries the one key that is not common to all three.
+//
+// Each caller must complete its store call into locals BEFORE calling this: passing the
+// result and the out-parameter as two arguments of one call leaves their evaluation order
+// unspecified, and `rev` would then be read before the store wrote it.
+bool FinishOverlayMutation(const char *verb, const std::string &id, Overlay::MutateResult r, int rev, json extra,
+			   json &result, std::string &error)
+{
+	if (r != Overlay::MutateResult::Ok) {
+		error = std::string("could not ") + verb + " overlay " + id + ": " + Overlay::DescribeMutateResult(r);
+		return false;
+	}
+	// The served document is assembled per request from the widget's settings and code, so
+	// a source already on a scene keeps rendering the copy it loaded until it re-resolves
+	// its URL -- which the bumped revision makes differ.
+	Overlay::RefreshSources();
+	EmitEvent(EventNames::kOverlaysChanged, json::object());
+	// The revision goes back to the editor so its local copy matches the stored one; the
+	// overlays.changed echo above would otherwise read as an external edit and reload the
+	// preview a second time.
+	result = std::move(extra);
+	result["ok"] = true;
+	result["rev"] = rev;
+	return true;
+}
+
+// overlays.update {id, name?, settings?, html?, css?, js?, fields?} -> {ok:true, rev}.
+// `settings` replaces the override set wholesale; the code keys are accepted only from a
+// forked widget, so saving a form can never detach a stock one from its shipped template.
 bool MethodOverlaysUpdate(const json &p, json &result, std::string &error)
 {
 	const std::string id = OptString(p, "id");
 	int rev = 0;
-	if (!Overlay::Store().Update(id, p, &rev)) {
-		error = "no such overlay: " + id;
-		return false;
-	}
-	// The edited markup and script are assembled into the SERVED document, so a source
-	// already on a scene keeps rendering the copy it loaded until it re-resolves its URL
-	// -- which the bumped revision makes differ.
-	Overlay::RefreshSources();
-	EmitEvent(EventNames::kOverlaysChanged, json::object());
-	// The revision goes back to the editor so its local copy matches the stored one; the
-	// overlays.changed echo below would otherwise read as an external edit and reload the
-	// preview a second time.
-	result = json{{"ok", true}, {"rev", rev}};
-	return true;
+	const Overlay::MutateResult r = Overlay::Store().Update(id, p, &rev);
+	return FinishOverlayMutation("update", id, r, rev, json::object(), result, error);
 }
 
-// overlays.resetDefaults {id} -> {ok:true, rev:<int>}: re-seed html/css/js/fields from the
-// type's shipped template, the only way back from a widget edited into something that no
-// longer renders. Fails without touching the widget when that template is missing or only
-// partly readable, so an unknown type -- or a rundir whose fields.json a bad install
-// truncated -- survives the attempt intact. Sync lane, like overlays.update: the
-// RefreshSources sweep below is UI-thread-only, and the four template reads are the same
-// ones overlays.create already does here.
+// overlays.fork {id} -> {ok:true, rev:<int>, custom:{html,css,js,fields}}: take a private
+// copy of the type's shipped template so the user can edit it. Deliberately its own
+// method rather than a side effect of overlays.update carrying markup: a forked widget
+// stops receiving template improvements for good, which is too large a consequence to
+// fall out of saving a form. Fails without touching the widget when it is already forked,
+// and when its type's template does not resolve -- one of the four files did not read, or
+// fields.json read but did not parse. Sync lane, like overlays.update: the RefreshSources
+// sweep is UI-thread-only.
+bool MethodOverlaysFork(const json &p, json &result, std::string &error)
+{
+	const std::string id = OptString(p, "id");
+	int rev = 0;
+	Overlay::CustomCode custom;
+	const Overlay::MutateResult r = Overlay::Store().Fork(id, &rev, &custom);
+	return FinishOverlayMutation("fork", id, r, rev, json{{"custom", custom.ToJson()}}, result, error);
+}
+
+// overlays.resetDefaults {id} -> {ok:true, rev:<int>}: return the widget to the shipped
+// template by dropping its custom code, the way back from a widget edited into something
+// that no longer renders -- and, from here on, the way back onto the stream of template
+// improvements. The configured values survive: they live in the widget's settings, which
+// this does not touch. Fails without touching the widget when it is already stock, and
+// when that type's template does not resolve -- an unknown type or a missing file (a read
+// that failed), or a fields.json a bad install truncated (a read that succeeded and a
+// parse that did not). Sync lane, like overlays.update: the RefreshSources sweep is
+// UI-thread-only.
 bool MethodOverlaysResetDefaults(const json &p, json &result, std::string &error)
 {
 	const std::string id = OptString(p, "id");
 	int rev = 0;
-	if (!Overlay::Store().ResetToDefaults(id, &rev)) {
-		error = "could not reset overlay: " + id + "; see the log";
-		return false;
-	}
-	Overlay::RefreshSources();
-	EmitEvent(EventNames::kOverlaysChanged, json::object());
-	// Same reason overlays.update reports it: the editor's local copy matches the stored
-	// one, so the overlays.changed echo does not read as an external edit.
-	result = json{{"ok", true}, {"rev", rev}};
-	return true;
+	const Overlay::MutateResult r = Overlay::Store().ReturnToStock(id, &rev);
+	return FinishOverlayMutation("reset", id, r, rev, json::object(), result, error);
 }
 
 bool MethodOverlaysDuplicate(const json &p, json &result, std::string &error)
@@ -11823,8 +11911,11 @@ void Init()
 		{"events.clear", MethodEventsClear},
 		{"overlays.list", MethodOverlaysList},
 		{"overlays.get", MethodOverlaysGet},
+		{"overlays.schema", MethodOverlaysSchema},
+		{"overlays.template", MethodOverlaysTemplate},
 		{"overlays.create", MethodOverlaysCreate},
 		{"overlays.update", MethodOverlaysUpdate},
+		{"overlays.fork", MethodOverlaysFork},
 		{"overlays.resetDefaults", MethodOverlaysResetDefaults},
 		{"overlays.duplicate", MethodOverlaysDuplicate},
 		{"overlays.delete", MethodOverlaysDelete},
