@@ -1,6 +1,7 @@
 #include "harness.hpp"
 
 #include "history/Db.hpp"
+#include "history/ScheduleStore.hpp"
 #include "history/Schema.hpp"
 #include "history/SessionRecorder.hpp"
 #include "history/SessionStore.hpp"
@@ -146,6 +147,163 @@ static void test_schedule_delete_cascades_to_destinations(void **state)
 	assert_true(db.Exec("DELETE FROM schedule WHERE id = 'e1'"));
 	assert_int_equal((int)db.ScalarInt("SELECT COUNT(*) FROM schedule_destinations"), 0);
 	db.Close();
+}
+
+// Opens a migrated database and attaches a store over it, the way bootstrap
+// does. Returned by value so each test gets its own file.
+static History::ScheduleEntry MakeEntry(int64_t startsAt, const char *title)
+{
+	History::ScheduleEntry e;
+	e.startsAt = startsAt;
+	e.title = title;
+	e.durationMin = 120;
+	return e;
+}
+
+static void test_schedule_create_round_trips(void **state)
+{
+	(void)state;
+	const std::string path = TempDbPath("schedule_create.db");
+	History::Db db;
+	assert_true(db.Open(path));
+	db.Close();
+
+	History::ScheduleStore store;
+	assert_true(store.Attach(path));
+
+	History::ScheduleEntry e = MakeEntry(5000, "Friday Night");
+	History::ScheduleDestination d;
+	d.profileId = "p1";
+	d.title = "as sent";
+	assert_true(store.Create(e, {d}));
+	assert_false(e.id.empty());
+
+	const auto got = store.Get(e.id);
+	assert_non_null(got.get());
+	assert_string_equal(got->title.c_str(), "Friday Night");
+	assert_string_equal(got->state.c_str(), History::ScheduleState::kPlanned);
+	assert_int_equal((int)store.DestinationsFor(e.id).size(), 1);
+}
+
+// Destinations are replaced wholesale, so the count after an update is the new
+// set's -- not the union with what was there before.
+static void test_schedule_update_replaces_destinations(void **state)
+{
+	(void)state;
+	const std::string path = TempDbPath("schedule_update.db");
+	History::Db db;
+	assert_true(db.Open(path));
+	db.Close();
+
+	History::ScheduleStore store;
+	assert_true(store.Attach(path));
+
+	History::ScheduleEntry e = MakeEntry(5000, "before");
+	History::ScheduleDestination a;
+	a.profileId = "p1";
+	History::ScheduleDestination b;
+	b.profileId = "p2";
+	assert_true(store.Create(e, {a, b}));
+	assert_int_equal((int)store.DestinationsFor(e.id).size(), 2);
+
+	e.title = "after";
+	History::ScheduleDestination only;
+	only.profileId = "p3";
+	assert_true(store.Update(e, {only}));
+
+	const auto got = store.Get(e.id);
+	assert_non_null(got.get());
+	assert_string_equal(got->title.c_str(), "after");
+	const auto dests = store.DestinationsFor(e.id);
+	assert_int_equal((int)dests.size(), 1);
+	assert_string_equal(dests[0].profileId.c_str(), "p3");
+}
+
+// Half-open [from, to): an entry exactly on `to` belongs to the next view, or
+// adjacent months both claim it.
+static void test_schedule_range_is_half_open_and_ordered(void **state)
+{
+	(void)state;
+	const std::string path = TempDbPath("schedule_range.db");
+	History::Db db;
+	assert_true(db.Open(path));
+	db.Close();
+
+	History::ScheduleStore store;
+	assert_true(store.Attach(path));
+
+	History::ScheduleEntry late = MakeEntry(3000, "late");
+	History::ScheduleEntry early = MakeEntry(1000, "early");
+	History::ScheduleEntry edge = MakeEntry(4000, "on the boundary");
+	assert_true(store.Create(late, {}));
+	assert_true(store.Create(early, {}));
+	assert_true(store.Create(edge, {}));
+
+	const auto rows = store.ListRange(1000, 4000);
+	assert_int_equal((int)rows.size(), 2);
+	assert_string_equal(rows[0].entry.title.c_str(), "early");
+	assert_string_equal(rows[1].entry.title.c_str(), "late");
+}
+
+// Deleting a plan must not delete the broadcast it planned. The session keeps
+// its row and loses only the link.
+static void test_schedule_remove_keeps_the_session_it_planned(void **state)
+{
+	(void)state;
+	const std::string path = TempDbPath("schedule_remove.db");
+	History::Db db;
+	assert_true(db.Open(path));
+	assert_true(SeedSession(db));
+
+	History::ScheduleStore store;
+	assert_true(store.Attach(path));
+	History::ScheduleEntry e = MakeEntry(5000, "planned");
+	History::ScheduleDestination d;
+	d.profileId = "p1";
+	assert_true(store.Create(e, {d}));
+	assert_true(db.Exec(("UPDATE sessions SET schedule_id = '" + e.id + "' WHERE id = 's1'").c_str()));
+
+	assert_true(store.Remove(e.id));
+	assert_int_equal((int)db.ScalarInt("SELECT COUNT(*) FROM schedule"), 0);
+	assert_int_equal((int)db.ScalarInt("SELECT COUNT(*) FROM schedule_destinations"), 0);
+	assert_int_equal((int)db.ScalarInt("SELECT COUNT(*) FROM sessions"), 1);
+	assert_int_equal((int)db.ScalarInt("SELECT COUNT(*) FROM sessions WHERE schedule_id IS NULL"), 1);
+	db.Close();
+}
+
+// Only planned and armed can be missed. A settled entry re-marked every tick
+// would rewrite its own history.
+static void test_schedule_sweep_marks_only_unsettled_entries(void **state)
+{
+	(void)state;
+	const std::string path = TempDbPath("schedule_sweep.db");
+	History::Db db;
+	assert_true(db.Open(path));
+	db.Close();
+
+	History::ScheduleStore store;
+	assert_true(store.Attach(path));
+
+	History::ScheduleEntry planned = MakeEntry(1000, "planned");
+	History::ScheduleEntry armed = MakeEntry(1000, "armed");
+	History::ScheduleEntry done = MakeEntry(1000, "done");
+	History::ScheduleEntry future = MakeEntry(9000, "future");
+	assert_true(store.Create(planned, {}));
+	assert_true(store.Create(armed, {}));
+	assert_true(store.Create(done, {}));
+	assert_true(store.Create(future, {}));
+	assert_true(store.SetState(armed.id, History::ScheduleState::kArmed));
+	assert_true(store.SetState(done.id, History::ScheduleState::kDone));
+
+	assert_int_equal(store.SweepMissed(5000), 2);
+
+	assert_string_equal(store.Get(planned.id)->state.c_str(), History::ScheduleState::kMissed);
+	assert_string_equal(store.Get(armed.id)->state.c_str(), History::ScheduleState::kMissed);
+	assert_string_equal(store.Get(done.id)->state.c_str(), History::ScheduleState::kDone);
+	assert_string_equal(store.Get(future.id)->state.c_str(), History::ScheduleState::kPlanned);
+
+	// Idempotent: a second sweep finds nothing left to settle.
+	assert_int_equal(store.SweepMissed(5000), 0);
 }
 
 // A database written by a newer build has to be refused rather than opened and
@@ -458,6 +616,11 @@ int main(void)
 		cmocka_unit_test(test_v1_upgrades_to_v2_preserving_rows),
 		cmocka_unit_test(test_schedule_state_is_constrained),
 		cmocka_unit_test(test_schedule_delete_cascades_to_destinations),
+		cmocka_unit_test(test_schedule_create_round_trips),
+		cmocka_unit_test(test_schedule_update_replaces_destinations),
+		cmocka_unit_test(test_schedule_range_is_half_open_and_ordered),
+		cmocka_unit_test(test_schedule_remove_keeps_the_session_it_planned),
+		cmocka_unit_test(test_schedule_sweep_marks_only_unsettled_entries),
 		cmocka_unit_test(test_newer_database_is_refused),
 		cmocka_unit_test(test_updated_at_trigger_fires),
 		cmocka_unit_test(test_delete_cascades_to_children),
