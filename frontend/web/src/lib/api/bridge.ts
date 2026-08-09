@@ -1863,23 +1863,30 @@ export interface ObsMethods {
   "events.list": NormalizedEvent[];
   "events.clear": { ok: boolean };
   // Overlay widgets (loopback SSE overlays, Phase 9.3). Everything but uploadAsset and
-  // test is sync. create/update/duplicate/delete/removeAsset emit overlays.changed.
+  // test is sync. create/update/resetDefaults/duplicate/delete/removeAsset emit
+  // overlays.changed.
   // update returns the widget's new revision so the editor's local copy stays level with
   // the stored one, and re-resolves every live overlay source so the edit reaches a copy
   // already on a scene. duplicate copies the source widget's asset files, so a duplicated
   // alert keeps its sound and image. usage counts the live sources bound to a widget, for
-  // the delete confirmation. test broadcasts a synthetic event to one widget's open SSE
-  // streams (never persisted). addToScene creates a Browser Source at the widget URL in
-  // the current scene.
+  // the delete confirmation. resetDefaults re-seeds html/css/js/fields from the widget's
+  // on-disk template, keeping id/token/name/type/assets, and returns the new revision.
+  // test pushes a synthetic frame to one widget's open SSE streams (never persisted):
+  // {id, channel?, type?, overrides?}, where channel picks the stream — omitted or "event"
+  // is the alert path and needs `type`; "chat", "viewers", "channels" and "stream" take
+  // their payload from `overrides`. Its `delivered` is how many sockets took the frame, so
+  // 0 means nothing was listening rather than that the widget drew nothing. addToScene
+  // creates a Browser Source at the widget URL in the current scene.
   "overlays.list": OverlayListItem[];
   "overlays.get": OverlayWidget;
   "overlays.create": OverlayWidget;
   "overlays.update": { ok: boolean; rev: number };
+  "overlays.resetDefaults": { ok: boolean; rev: number };
   "overlays.duplicate": OverlayWidget;
   "overlays.delete": { removed: string };
   "overlays.usage": { sources: number };
   "overlays.url": { url: string };
-  "overlays.test": { ok: boolean };
+  "overlays.test": { ok: boolean; delivered: number };
   "overlays.serverInfo": OverlayServerInfo;
   "overlays.uploadAsset": { path: string };
   "overlays.removeAsset": { ok: boolean };

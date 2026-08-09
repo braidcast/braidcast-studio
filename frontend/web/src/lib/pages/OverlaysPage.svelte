@@ -5,13 +5,14 @@
   // a widget URL into an OBS Browser Source. Edits mutate a local $state copy and
   // debounce into overlays.update (~500ms), then bump reloadKey so the preview iframe
   // reloads with the freshly-assembled document. A Save button flushes immediately.
-  // Create/Duplicate/Delete + the host's overlays.changed push keep the list in sync.
+  // Create/Duplicate/Reset/Delete + the host's overlays.changed push keep the list in sync.
   import { onMount, onDestroy } from "svelte";
   import { obs, type OverlayListItem, type OverlayWidget, type OverlayField } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
   import CodePane from "$lib/overlays/CodePane.svelte";
-  import FieldsDesigner from "$lib/overlays/FieldsDesigner.svelte";
+  import FieldsPanel from "$lib/overlays/FieldsPanel.svelte";
   import { fieldsForWire, withFieldIds } from "$lib/overlays/fieldTypes";
+  import { WIDGET_TYPES } from "$lib/overlays/widgetTypes";
   import PreviewPane from "$lib/overlays/PreviewPane.svelte";
   import CollectionDialog, { type DialogSpec } from "$lib/dialogs/CollectionDialog.svelte";
   import PageShell from "$lib/ui/PageShell.svelte";
@@ -51,6 +52,11 @@ import { EV } from "$lib/utils/eventNames";
   // True while the local editor buffer has edits not yet flushed to the backend, so
   // an external overlays.changed refetch never clobbers in-flight typing.
   let dirty = $state(false);
+  // True while overlays.resetDefaults is in flight. The buffer is still the PRE-reset
+  // document for that whole window, so no save may leave the page: select() flushes
+  // unconditionally on the way out, which makes switching overlays mid-reset the way a
+  // PATCH of the discarded document lands after the reseed and quietly undoes it.
+  let resetting = $state(false);
 
   const paneOptions = $derived(wide ? MODE_OPTIONS : [...MODE_OPTIONS, PREVIEW_OPTION]);
 
@@ -71,21 +77,6 @@ import { EV } from "$lib/utils/eventNames";
       pane = "simple";
     }
   });
-
-  // The widget types a user can create. Adding one is a single row here, not a new
-  // branch: label + backend type + the default name a fresh widget gets.
-  const WIDGET_TYPES: { type: string; label: string; name: string }[] = [
-    { type: "alertbox", label: "Alert Box", name: "New Alert Box" },
-    { type: "chatbox", label: "Chat Box", name: "New Chat Box" },
-    { type: "ticker", label: "Event Ticker", name: "New Event Ticker" },
-    { type: "goalbar", label: "Goal Bar", name: "New Goal Bar" },
-    { type: "labels", label: "Label", name: "New Label" },
-    { type: "viewercount", label: "Viewer Count", name: "New Viewer Count" },
-    { type: "followercount", label: "Follower Count", name: "New Follower Count" },
-    { type: "uptime", label: "Stream Uptime", name: "New Stream Uptime" },
-    { type: "wheretowatch", label: "Where to Watch", name: "New Where to Watch" },
-    { type: "chatleaderboard", label: "Chat Leaderboard", name: "New Chat Leaderboard" },
-  ];
 
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   let copiedTimer: ReturnType<typeof setTimeout> | undefined;
@@ -139,18 +130,18 @@ import { EV } from "$lib/utils/eventNames";
     saveTimer = setTimeout(() => void flushSave(), 500);
   }
 
-  // The editor tags each field with a client-side id so a row survives a reorder (see
-  // fieldTypes.ts). Those ids are not part of the document, so the widget is projected
-  // back to its wire form both on the way out and on either side of the "did the server
-  // copy actually change?" test below — comparing a tagged local copy against an
-  // untagged fetched one would report every echo as an external edit.
+  // The editor tags each field with a client-side id, since a key can legitimately repeat
+  // in a legacy document (see fieldTypes.ts). Those ids are not part of the document, so
+  // the widget is projected back to its wire form both on the way out and on either side
+  // of the "did the server copy actually change?" test below — comparing a tagged local
+  // copy against an untagged fetched one would report every echo as an external edit.
   function wireJson(w: OverlayWidget): string {
     return JSON.stringify({ ...w, fields: fieldsForWire(w.fields) });
   }
 
   async function flushSave(): Promise<void> {
     clearTimeout(saveTimer);
-    if (!widget) {
+    if (!widget || resetting) {
       return;
     }
     const w = widget;
@@ -199,6 +190,55 @@ import { EV } from "$lib/utils/eventNames";
       await select(w.id);
     } catch (e) {
       error = (e as Error).message;
+    }
+  }
+
+  function confirmReset(): void {
+    const target = widget;
+    if (!target) {
+      return;
+    }
+    dialog = {
+      kind: "confirm",
+      title: "Reset Overlay",
+      message:
+        `Reset "${target.name}" to its template defaults? Its custom HTML, CSS and JS and every field ` +
+        `value are replaced and cannot be recovered. The name and uploaded assets are kept.`,
+      confirmLabel: "Reset",
+      onCommit: () => void resetDefaults(target.id),
+    };
+  }
+
+  // Re-seeds html/css/js/fields from the on-disk template. Two things have to be kept off
+  // the wire for the duration, both of which would put the discarded edits straight back:
+  // the pending debounced PATCH (dropped here) and any save the user reaches in the
+  // meantime (refused by flushSave while `resetting`). The refetch is explicit rather than
+  // left to the overlays.changed echo, so the editor shows the reseeded document however
+  // the echo races.
+  //
+  // `dirty` is global while this is per-widget, so it is only touched once the selection is
+  // confirmed still ours: the user can switch overlays and start typing inside either
+  // await, and clearing the flag then would strand THAT widget's edits. The host also
+  // refuses a widget whose type has no template on disk, so failure is reachable and must
+  // leave the flag alone as well — flushSave clears it only on a save that landed, same
+  // rule.
+  async function resetDefaults(id: string): Promise<void> {
+    clearTimeout(saveTimer);
+    resetting = true;
+    try {
+      await obs.call("overlays.resetDefaults", { id });
+      const w = await obs.call("overlays.get", { id });
+      if (selectedId !== id) {
+        return;
+      }
+      dirty = false;
+      w.fields = withFieldIds(w.fields);
+      widget = w;
+      reloadKey++;
+    } catch (e) {
+      error = (e as Error).message;
+    } finally {
+      resetting = false;
     }
   }
 
@@ -414,8 +454,9 @@ import { EV } from "$lib/utils/eventNames";
             <Segmented options={paneOptions} value={pane} onChange={(v) => (pane = v as PaneMode)} />
             <span class="editor-spacer"></span>
             <span class="save-state">{saving ? "Saving…" : "Saved"}</span>
-            <button class="accent" disabled={saving} onclick={() => void flushSave()}>Save</button>
+            <button class="accent" disabled={saving || resetting} onclick={() => void flushSave()}>Save</button>
             <button class="ghost" onclick={duplicate}>Duplicate</button>
+            <button class="ghost" disabled={resetting} onclick={confirmReset}>Reset</button>
             <button class="ghost danger" onclick={() => void confirmDelete()}>Delete</button>
           </div>
 
@@ -439,14 +480,14 @@ import { EV } from "$lib/utils/eventNames";
                   </div>
                 {:else}
                   <div class="scroll-pane">
-                    <FieldsDesigner fields={widget.fields} widgetId={widget.id} onChange={onFields} />
+                    <FieldsPanel fields={widget.fields} widgetId={widget.id} onChange={onFields} />
                   </div>
                 {/if}
               </div>
             {/if}
             {#if wide || pane === "preview"}
               <div class="preview-pane">
-                <PreviewPane url={widget.url} widgetId={widget.id} {reloadKey} />
+                <PreviewPane url={widget.url} widgetId={widget.id} widgetType={widget.type} {reloadKey} />
               </div>
             {/if}
           </div>
@@ -681,7 +722,9 @@ import { EV } from "$lib/utils/eventNames";
     font-family: var(--font-ui);
     font-size: 12px;
   }
-  .ghost:hover {
+  /* The global button:disabled only dims; without the guard the hover would still
+     brighten a button that will not respond. */
+  .ghost:hover:not(:disabled) {
     color: var(--color-text);
   }
   .ghost.danger:hover {
