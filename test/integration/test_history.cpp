@@ -84,10 +84,12 @@ static void test_migration_is_idempotent(void **state)
 	}
 }
 
-// Winds a current database back to v1 by removing exactly what v2 added, rather
-// than by pasting v1's DDL into this file. A copied fixture is a second
-// description of the schema that nothing keeps honest -- it would keep passing
-// against a v1 that had drifted out from under it.
+// Winds a current database back a version by removing exactly what that version
+// added, rather than by pasting the older DDL into this file. A copied fixture is
+// a second description of the schema that nothing keeps honest -- it would keep
+// passing against an old version that had drifted out from under it. WindBackToV1
+// needs no help from WindBackToV2: v3's column lives on a table v2 created, and
+// dropping that table takes the column with it.
 static bool WindBackToV1(History::Db &db)
 {
 	return db.Exec("DROP TRIGGER trg_schedule_destinations_updated_at;"
@@ -98,13 +100,19 @@ static bool WindBackToV1(History::Db &db)
 		       "PRAGMA user_version = 1");
 }
 
-// The upgrade an existing install actually performs. What matters is not that
-// the new tables appear -- a fresh database proves that -- but that the rows
-// already there survive it.
-static void test_v1_upgrades_to_v2_preserving_rows(void **state)
+static bool WindBackToV2(History::Db &db)
+{
+	return db.Exec("ALTER TABLE schedule_destinations DROP COLUMN category_id;"
+		       "PRAGMA user_version = 2");
+}
+
+// The upgrade the oldest install actually performs, every version at once. What
+// matters is not that the new tables appear -- a fresh database proves that --
+// but that the rows already there survive it.
+static void test_v1_upgrades_to_current_preserving_rows(void **state)
 {
 	(void)state;
-	const std::string path = TempDbPath("upgrade_v1_v2.db");
+	const std::string path = TempDbPath("upgrade_from_v1.db");
 	{
 		History::Db db;
 		assert_true(db.Open(path));
@@ -120,6 +128,40 @@ static void test_v1_upgrades_to_v2_preserving_rows(void **state)
 	assert_int_equal((int)db.ScalarInt("SELECT COUNT(*) FROM sessions"), 1);
 	assert_int_equal((int)db.ScalarInt("SELECT COUNT(*) FROM session_destinations"), 1);
 	assert_int_equal((int)db.ScalarInt("SELECT COUNT(*) FROM schedule"), 0);
+	db.Close();
+}
+
+// v2 shipped before the category split, so an existing install arrives here with
+// entries already in it. What matters is that they survive the added column, not
+// that a fresh database has one.
+static void test_v2_upgrades_to_v3_preserving_rows(void **state)
+{
+	(void)state;
+	const std::string path = TempDbPath("upgrade_v2_v3.db");
+	{
+		History::Db db;
+		assert_true(db.Open(path));
+		assert_true(db.Exec("INSERT INTO schedule (id, created_at, updated_at, starts_at, title) "
+				    "VALUES ('e1', 1, 1, 1000, 'Friday')"));
+		assert_true(db.Exec("INSERT INTO schedule_destinations "
+				    "(id, created_at, updated_at, schedule_id, profile_id, category) "
+				    "VALUES ('sd1', 1, 1, 'e1', 'p1', 'Just Chatting')"));
+		assert_true(WindBackToV2(db));
+		assert_int_equal(db.Version(), 2);
+		// The column really is gone, or the upgrade below would prove nothing.
+		assert_false(db.Exec("SELECT category_id FROM schedule_destinations"));
+		db.Close();
+	}
+	History::Db db;
+	assert_true(db.Open(path));
+	assert_int_equal(db.Version(), History::kCurrentSchemaVersion);
+	assert_int_equal((int)db.ScalarInt("SELECT COUNT(*) FROM schedule"), 1);
+	assert_int_equal((int)db.ScalarInt("SELECT COUNT(*) FROM schedule_destinations"), 1);
+	// A v2 row's category was always a display name, so it stays one and the new
+	// column starts empty rather than guessing an id out of it.
+	assert_int_equal((int)db.ScalarInt("SELECT COUNT(*) FROM schedule_destinations "
+					   "WHERE category = 'Just Chatting' AND category_id = ''"),
+			 1);
 	db.Close();
 }
 
@@ -177,6 +219,8 @@ static void test_schedule_create_round_trips(void **state)
 	History::ScheduleDestination d;
 	d.profileId = "p1";
 	d.title = "as sent";
+	d.category = "Just Chatting";
+	d.categoryId = "509658";
 	assert_true(store.Create(e, {d}));
 	assert_false(e.id.empty());
 
@@ -184,7 +228,14 @@ static void test_schedule_create_round_trips(void **state)
 	assert_non_null(got.get());
 	assert_string_equal(got->title.c_str(), "Friday Night");
 	assert_string_equal(got->state.c_str(), History::ScheduleState::kPlanned);
-	assert_int_equal((int)store.DestinationsFor(e.id).size(), 1);
+
+	// Both halves of the category survive the round trip. The id is the one a
+	// go-live sends, so losing it would leave the arm applying a name no provider
+	// can act on.
+	const auto dests = store.DestinationsFor(e.id);
+	assert_int_equal((int)dests.size(), 1);
+	assert_string_equal(dests[0].category.c_str(), "Just Chatting");
+	assert_string_equal(dests[0].categoryId.c_str(), "509658");
 }
 
 // Destinations are replaced wholesale, so the count after an update is the new
@@ -1073,7 +1124,8 @@ int main(void)
 		cmocka_unit_test(test_open_creates_database),
 		cmocka_unit_test(test_open_sets_wal_and_version),
 		cmocka_unit_test(test_migration_is_idempotent),
-		cmocka_unit_test(test_v1_upgrades_to_v2_preserving_rows),
+		cmocka_unit_test(test_v1_upgrades_to_current_preserving_rows),
+		cmocka_unit_test(test_v2_upgrades_to_v3_preserving_rows),
 		cmocka_unit_test(test_schedule_state_is_constrained),
 		cmocka_unit_test(test_schedule_delete_cascades_to_destinations),
 		cmocka_unit_test(test_schedule_create_round_trips),

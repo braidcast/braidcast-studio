@@ -9,7 +9,7 @@ namespace History {
 
 // Bumped by exactly one whenever a migration is appended. The stored
 // `user_version` pragma is compared against this at open.
-inline constexpr int kCurrentSchemaVersion = 2;
+inline constexpr int kCurrentSchemaVersion = 3;
 
 // Owns the history database file: the connection, WAL mode, and the versioned
 // `user_version` migration ladder. Deliberately knows nothing about sessions --

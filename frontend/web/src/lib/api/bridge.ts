@@ -975,7 +975,10 @@ export interface SessionDetail extends SessionInfo {
 export interface ScheduleDestinationInfo {
   profileId: string;
   title: string;
+  /** Display name; `categoryId` is the opaque id providers key on. Both, because
+   * neither substitutes for the other -- GoLiveCategoryInput reports {id, name}. */
   category: string;
+  categoryId: string;
   tags: string[];
 }
 

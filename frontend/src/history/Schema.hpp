@@ -77,7 +77,11 @@ struct ScheduleDestination {
 	std::string scheduleId;
 	std::string profileId;
 	std::string title;
+	// The category as a person reads it, and the opaque id the platform keys on.
+	// Both, because neither substitutes for the other: providers set the category
+	// by id, and an id is not something a calendar can display.
 	std::string category;
+	std::string categoryId;
 	// JSON array of tag strings.
 	std::string tags = "[]";
 };
@@ -146,6 +150,7 @@ inline auto MakeStorage(const std::string &path)
 			   make_column("profile_id", &ScheduleDestination::profileId, default_value(std::string{})),
 			   make_column("title", &ScheduleDestination::title, default_value(std::string{})),
 			   make_column("category", &ScheduleDestination::category, default_value(std::string{})),
+			   make_column("category_id", &ScheduleDestination::categoryId, default_value(std::string{})),
 			   make_column("tags", &ScheduleDestination::tags, default_value(std::string{"[]"}))));
 }
 

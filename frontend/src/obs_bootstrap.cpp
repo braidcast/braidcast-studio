@@ -521,8 +521,12 @@ std::vector<History::DestinationRecord> LiveDestinations(const MultistreamEngine
 			if (meta.contains("title") && meta["title"].is_string()) {
 				d.title = meta["title"].get<std::string>();
 			}
-			if (meta.contains("category") && meta["category"].is_string()) {
-				d.category = meta["category"].get<std::string>();
+			// An object of {id, name}, which is the only shape a provider is
+			// ever handed one in. Read as a bare string this always came back
+			// empty, so every recorded session claimed no category at all. The
+			// history card wants the readable half.
+			if (meta.contains("category") && meta["category"].is_object()) {
+				d.category = JsonUtil::Str(meta["category"], "name");
 			}
 			if (meta.contains("tags") && meta["tags"].is_array()) {
 				for (const auto &tag : meta["tags"]) {
@@ -599,18 +603,20 @@ void SetBindingEnabled(const std::string &uuid, bool enabled)
 	}
 }
 
-// The entry's metadata in the shape the providers read (Twitch and YouTube both
-// take `category` as an object and read its id). Empty values are left out rather
-// than written through: a destination that carries no title must not blank the one
-// the user has remembered.
+// The entry's metadata in the shape the providers read. `category` is an object
+// there, and every provider that consumes one keys on its id (Twitch's game_id,
+// YouTube's categoryId) while the name is what a prefill shows -- so the two halves
+// go to the two places, never one standing in for the other. Empty values are left
+// out rather than written through: a destination that carries no title must not
+// blank the one the user has remembered.
 Bridge::json ScheduledMetadataFields(const History::ScheduleDestination &d)
 {
 	Bridge::json fields = Bridge::json::object();
 	if (!d.title.empty()) {
 		fields["title"] = d.title;
 	}
-	if (!d.category.empty()) {
-		fields["category"] = Bridge::json{{"id", d.category}, {"name", d.category}};
+	if (!d.category.empty() || !d.categoryId.empty()) {
+		fields["category"] = Bridge::json{{"id", d.categoryId}, {"name", d.category}};
 	}
 	const Bridge::json tags = JsonUtil::ParseJson(d.tags);
 	if (tags.is_array() && !tags.empty()) {

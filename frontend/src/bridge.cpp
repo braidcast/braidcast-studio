@@ -7486,6 +7486,7 @@ json ScheduleToJson(const History::ScheduleEntry &e, const std::vector<History::
 		dests.push_back(json{{"profileId", d.profileId},
 				     {"title", d.title},
 				     {"category", d.category},
+				     {"categoryId", d.categoryId},
 				     {"tags", std::move(tags)}});
 	}
 	// The runner's two per-occurrence facts, which live in memory rather than in a
@@ -7520,7 +7521,10 @@ std::vector<History::ScheduleDestination> ScheduleDestinationsFromJson(const jso
 		History::ScheduleDestination row;
 		row.profileId = JsonUtil::Str(d, "profileId");
 		row.title = JsonUtil::Str(d, "title");
+		// The picker reports {id, name} and providers key on the id, so the two
+		// travel together the whole way rather than being rejoined at go-live.
 		row.category = JsonUtil::Str(d, "category");
+		row.categoryId = JsonUtil::Str(d, "categoryId");
 		const auto tags = d.find("tags");
 		row.tags = (tags != d.end() && tags->is_array()) ? tags->dump() : "[]";
 		out.push_back(std::move(row));

@@ -147,6 +147,23 @@ BEGIN
 END;
 )SQL";
 
+// Schema v3 -- the platform's category id alongside its display name.
+//
+// v2 gave `schedule_destinations` one `category` column, which cannot carry what
+// a platform actually needs: every provider keys on an opaque id (Twitch's
+// game_id, YouTube's categoryId) while the id itself is meaningless to a reader.
+// The category picker has always reported both halves, so the entry stores both:
+// `category` stays the display name it already held, and `category_id` is what a
+// go-live sends. Splitting them here rather than reinterpreting `category` means
+// no existing row has to be guessed at -- a v2 row's name stays a name.
+//
+// v2 shipped, so this cannot be folded into it: a database already stamped 2
+// never re-runs that migration, and would end up one column short of what the
+// ORM declaration addresses.
+constexpr const char *kMigration3 = R"SQL(
+ALTER TABLE schedule_destinations ADD COLUMN category_id TEXT NOT NULL DEFAULT '';
+)SQL";
+
 struct Migration {
 	int version;
 	const char *sql;
@@ -156,6 +173,7 @@ struct Migration {
 constexpr Migration kMigrations[] = {
 	{1, kMigration1},
 	{2, kMigration2},
+	{3, kMigration3},
 };
 
 // Forgetting the bump is silent otherwise: existing installs skip the new
