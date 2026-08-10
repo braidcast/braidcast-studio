@@ -21,7 +21,14 @@ inline constexpr int64_t kCountdownLeadMs = 60 * 1000;
 // outputs report live through the engine's state edge seconds later -- so a zero
 // grace would call an entry missed on the same tick it was started. It doubles as
 // the window in which someone running late can still start an armed entry by hand.
+// The startup sweep applies the same grace, or launching thirty seconds late would
+// settle an entry a running app would still have started.
 inline constexpr int64_t kMissedGraceMs = 2 * 60 * 1000;
+
+// How long a settled occurrence's cancel flag and block reason are kept after its
+// start. Long enough that someone who stepped away still sees why it did not run,
+// bounded so a long session does not accumulate every occurrence it ever tracked.
+inline constexpr int64_t kOccurrenceRetentionMs = 60 * 60 * 1000;
 
 // The one unit that acts on its own initiative: it watches the clock and moves
 // planned entries through armed -> live -> done, or settles them as missed.
@@ -65,6 +72,20 @@ public:
 	// with something the UI can show. Unset means every destination is armable.
 	std::function<bool(const std::string &profileId, std::string &reason)> canArm;
 
+	// Load the entry into the go-live path at arm time: the destinations it names
+	// become the enabled routing, and the metadata it carries becomes what the
+	// go-live path will send. `revertEntry` puts back what was there when the
+	// occurrence ends without a broadcast to show for it, so a cancelled countdown
+	// does not leave the user's destination set quietly rewritten. Whoever supplies
+	// these owns the memory of the previous state; the runner only says when.
+	//
+	// One occurrence is applied at a time, and it stays applied for as long as the
+	// entry is armed or live. Detach() drops the knowledge without reverting -- the
+	// stores it would have to touch are already gone by then -- so an application
+	// outlives a shutdown that happens mid-window.
+	std::function<void(const std::vector<ScheduleDestination> &)> applyEntry;
+	std::function<void()> revertEntry;
+
 	// The go-live tail, wired to the one entry point every other start funnels
 	// through. Invoked at most once per occurrence.
 	std::function<void()> goLive;
@@ -87,6 +108,13 @@ public:
 	// Disarm this occurrence: it will neither re-arm nor auto-start, and the entry
 	// row stays intact. False fills `error` with the reason.
 	bool CancelCountdown(const std::string &id, std::string &error);
+
+	// Re-check one entry after it was edited. schedule.update can move an armed
+	// entry out of its own arm window, and the row has to come back to `planned`
+	// with it: left armed the chip reads armed until the new start, and a manual
+	// go-live in between would stamp this entry's id onto an unrelated session.
+	// Emits nothing -- the caller edited the entry and is already pushing.
+	void NoteEntryChanged(const std::string &id);
 
 	bool IsCountdownCanceled(const std::string &id) const;
 
@@ -117,17 +145,23 @@ private:
 	};
 
 	bool PruneStale(int64_t now);
+	bool DisarmIfOutOfWindow(const ScheduleEntry &entry, int64_t now);
 	bool ArmIfDue(ScheduleEntryWithDestinations &row, int64_t now);
+	bool RefreshArmability(const ScheduleEntryWithDestinations &row);
 	void OpenCountdownIfDue(const ScheduleEntryWithDestinations &row, int64_t now);
-	bool StartIfDue(const ScheduleEntryWithDestinations &row, int64_t now);
+	void StartIfDue(const ScheduleEntryWithDestinations &row, int64_t now);
 	bool Armable(const ScheduleEntryWithDestinations &row, std::string &reason) const;
 	bool SetBlockReason(const std::string &id, const std::string &reason);
+	void SettleApplied();
+	void RevertApplied();
 	void Log(const std::string &line) const;
 
 	ScheduleStore *store_ = nullptr;
 	std::unordered_map<std::string, Occurrence> occurrences_;
 	std::string armedId_;
 	std::string liveId_;
+	// The occurrence whose configuration is currently loaded into the go-live path.
+	std::string appliedId_;
 };
 
 } // namespace History

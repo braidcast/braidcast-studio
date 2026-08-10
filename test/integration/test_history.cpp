@@ -619,6 +619,9 @@ struct RunnerFixture {
 	int64_t clock = 0;
 	int goLiveCalls = 0;
 	int changedCalls = 0;
+	int applyCalls = 0;
+	int revertCalls = 0;
+	std::vector<std::string> appliedProfiles;
 	std::vector<std::string> logLines;
 };
 
@@ -636,6 +639,17 @@ static void OpenRunner(RunnerFixture &f, const char *name)
 	};
 	f.runner.onChanged = [&f] {
 		f.changedCalls++;
+	};
+	f.runner.applyEntry = [&f](const std::vector<History::ScheduleDestination> &destinations) {
+		f.applyCalls++;
+		f.appliedProfiles.clear();
+		for (const History::ScheduleDestination &d : destinations) {
+			f.appliedProfiles.push_back(d.profileId);
+		}
+	};
+	f.runner.revertEntry = [&f] {
+		f.revertCalls++;
+		f.appliedProfiles.clear();
 	};
 	f.runner.log = [&f](const std::string &line) {
 		f.logLines.push_back(line);
@@ -722,9 +736,13 @@ static void test_runner_cancel_disarms_only_this_occurrence(void **state)
 	f.clock = startsAt - 30'000;
 	f.runner.Tick();
 	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kArmed);
+	assert_int_equal(f.applyCalls, 1);
 
 	std::string error;
 	assert_true(f.runner.CancelCountdown(id, error));
+	// The routing the arm applied goes back immediately. A countdown the user
+	// stopped must not leave their destination set rewritten.
+	assert_int_equal(f.revertCalls, 1);
 
 	// Back to planned and flagged, which is how the UI tells a cancelled
 	// occurrence from one that was never armed -- both read `planned`.
@@ -918,6 +936,137 @@ static void test_runner_starts_once_a_destination_recovers(void **state)
 	assert_true(f.runner.BlockReason(id).empty());
 }
 
+// Design 5 step 2: arming loads the entry into the go-live path. Checking that it
+// could go live is not the same thing -- without this an auto-start broadcasts to
+// whatever happened to be enabled, under the previous stream's title.
+static void test_runner_keeps_the_entry_applied_until_the_broadcast_ends(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_applied_live.db");
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntry(f, startsAt, true);
+
+	f.clock = startsAt - 60'000;
+	f.runner.Tick();
+	assert_int_equal(f.applyCalls, 1);
+	assert_int_equal((int)f.appliedProfiles.size(), 1);
+	assert_string_equal(f.appliedProfiles[0].c_str(), "p1");
+
+	f.clock = startsAt;
+	f.runner.Tick();
+	f.runner.NoteWentLive();
+
+	// Well past the point an unstarted entry would have settled. A live one keeps
+	// its routing, or the broadcast would lose its destinations mid-stream.
+	f.clock = startsAt + History::kMissedGraceMs + 60'000;
+	f.runner.Tick();
+	assert_int_equal(f.revertCalls, 0);
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kLive);
+
+	f.runner.NoteStoppedStreaming();
+	assert_int_equal(f.revertCalls, 1);
+}
+
+static void test_runner_reverts_when_an_armed_entry_is_missed(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_applied_missed.db");
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntry(f, startsAt, false);
+
+	f.clock = startsAt - 60'000;
+	f.runner.Tick();
+	assert_int_equal(f.applyCalls, 1);
+
+	// Settled and put back on the same tick, not the next one.
+	f.clock = startsAt + History::kMissedGraceMs + 1000;
+	f.runner.Tick();
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kMissed);
+	assert_int_equal(f.revertCalls, 1);
+}
+
+// Moved a day out on the calendar. Left armed, the chip reads armed until the new
+// start and a manual go-live in between would be recorded against this entry.
+static void test_runner_disarms_an_entry_moved_out_of_its_window(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_rescheduled.db");
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntry(f, startsAt, false);
+
+	f.clock = startsAt - 60'000;
+	f.runner.Tick();
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kArmed);
+	assert_string_equal(f.runner.ActiveEntryId().c_str(), id.c_str());
+
+	History::ScheduleEntry moved = *f.store.Get(id);
+	moved.startsAt = startsAt + 24 * 60 * 60 * 1000;
+	History::ScheduleDestination d;
+	d.profileId = "p1";
+	assert_true(f.store.Update(moved, {d}));
+
+	f.runner.Tick();
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kPlanned);
+	assert_string_equal(f.runner.ActiveEntryId().c_str(), "");
+	assert_int_equal(f.revertCalls, 1);
+}
+
+// The bridge tells the runner as soon as the edit lands, so the disarm does not
+// wait for the next tick to reach a UI that is repainting right now.
+static void test_runner_disarms_on_an_edit_without_waiting_for_a_tick(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_edit_disarms.db");
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntry(f, startsAt, false);
+
+	f.clock = startsAt - 60'000;
+	f.runner.Tick();
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kArmed);
+
+	History::ScheduleEntry moved = *f.store.Get(id);
+	moved.startsAt = startsAt + 24 * 60 * 60 * 1000;
+	assert_true(f.store.Update(moved, {}));
+	f.runner.NoteEntryChanged(id);
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kPlanned);
+	assert_string_equal(f.runner.ActiveEntryId().c_str(), "");
+}
+
+// Armability is re-asked every tick while armed, not latched at the arm instant --
+// otherwise a disconnect at T-2min stays invisible until T-0 and a reconnect leaves
+// a refusal on the chip that stopped being true.
+static void test_runner_tracks_armability_through_the_window(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_reason_refresh.db");
+	bool connected = false;
+	f.runner.canArm = [&connected](const std::string &, std::string &reason) {
+		reason = "'Main' is not connected";
+		return connected;
+	};
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntry(f, startsAt, false);
+
+	f.clock = startsAt - History::kArmLeadMs;
+	f.runner.Tick();
+	assert_string_equal(f.runner.BlockReason(id).c_str(), "'Main' is not connected");
+
+	connected = true;
+	f.clock = startsAt - 180'000;
+	f.runner.Tick();
+	assert_true(f.runner.BlockReason(id).empty());
+
+	connected = false;
+	f.clock = startsAt - 120'000;
+	f.runner.Tick();
+	assert_string_equal(f.runner.BlockReason(id).c_str(), "'Main' is not connected");
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -955,6 +1104,11 @@ int main(void)
 		cmocka_unit_test(test_runner_refuses_auto_start_with_no_armable_destination),
 		cmocka_unit_test(test_runner_refuses_auto_start_with_no_destinations),
 		cmocka_unit_test(test_runner_starts_once_a_destination_recovers),
+		cmocka_unit_test(test_runner_keeps_the_entry_applied_until_the_broadcast_ends),
+		cmocka_unit_test(test_runner_reverts_when_an_armed_entry_is_missed),
+		cmocka_unit_test(test_runner_disarms_an_entry_moved_out_of_its_window),
+		cmocka_unit_test(test_runner_disarms_on_an_edit_without_waiting_for_a_tick),
+		cmocka_unit_test(test_runner_tracks_armability_through_the_window),
 	};
 	return cmocka_run_group_tests(tests, nullptr, nullptr);
 }

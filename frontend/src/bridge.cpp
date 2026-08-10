@@ -6974,49 +6974,11 @@ bool MethodOutputBindingSetEnabled(const json &params, json &result, std::string
 	if (!RequireBool(params, "outputBinding.setEnabled", "enabled", enabled, error)) {
 		return false;
 	}
-	OutputBindings &bindings = ObsBootstrap::OutputBindings().Bindings();
-	OutputBinding *b = bindings.Find(uuid);
-	if (!b) {
-		error = "no output binding with uuid '" + uuid + "'";
+	if (!SetOutputBindingEnabled(uuid, enabled, error)) {
 		return false;
 	}
-
-	// Enabling must obey the single-live-stream rule: refuse if this profile is already
-	// enabled on another canvas (one RTMP key = one live stream). Mirrors the engine's
-	// ProfileLiveElsewhere guard so config and the live layer agree.
-	if (enabled && !b->profileUuid.empty() && bindings.ProfileEnabledElsewhere(uuid, b->profileUuid)) {
-		error = "that stream profile is already enabled on another canvas";
-		return false;
-	}
-
-	b->enabled = enabled;
-	const bool saved = ObsBootstrap::OutputBindings().Save();
-
-	// A disabled binding must not stay live: the canvas stops rendering for it, so a
-	// still-running output would encode a frozen frame. StopOutput is a no-op if the
-	// binding isn't live; it manages its own locking (we hold none across it).
-	if (!enabled) {
-		ObsBootstrap::Multistream().StopOutput(uuid);
-	}
-
-	// Chat is resolved from the ENABLED destinations, so arming one mid-stream has to
-	// re-resolve or the destination streams with no chat for the rest of the session.
-	// Mirrors the mid-stream account-disconnect path; the disable direction does NOT come
-	// through here, because the output ending is what ends its chat (onOutputEnded ->
-	// Chat::Hub().StopDestination), which spares every sibling transport a reconnect.
-	if (enabled && ObsBootstrap::Multistream().AnyLive()) {
-		Chat::Hub().Start();
-	}
-
-	// Enabling builds the canvas mix (before any StartOutput); disabling the last
-	// enabled destination lets it go inert (StopOutput above already stopped it).
-	ObsBootstrap::CanvasRuntime().ReconcileAll();
-
-	// outputBinding.changed is also the hook 4.4.4/4.4.5 use to re-decide whether a
-	// canvas renders (AnyEnabledForCanvas may have flipped on this toggle).
-	EmitEvent(EventNames::kOutputBindingChanged, json::object());
 	result = json{{"uuid", uuid}, {"enabled", enabled}};
-	return PersistOrFail(saved, error);
+	return true;
 }
 
 bool MethodOutputBindingRemove(const json &params, json &result, std::string &error)
@@ -7657,6 +7619,10 @@ bool MethodScheduleUpdate(const json &params, json &result, std::string &error)
 		error = "failed to update the entry: " + store.LastError();
 		return false;
 	}
+	// Moving an armed entry out of its own arm window has to disarm it, or the chip
+	// reads armed until the new start and a manual go-live in between would be
+	// recorded against this entry.
+	ObsBootstrap::Scheduler().NoteEntryChanged(id);
 	EmitEvent(EventNames::kScheduleChanged, json::object());
 	result = ScheduleToJson(entry, store.DestinationsFor(id));
 	return true;
@@ -9701,6 +9667,52 @@ void StopStreamingAll()
 		ObsBootstrap::Multistream().StopAll();
 		EmitStreamingChanged();
 	});
+}
+
+bool SetOutputBindingEnabled(const std::string &bindingUuid, bool enabled, std::string &error)
+{
+	OutputBindings &bindings = ObsBootstrap::OutputBindings().Bindings();
+	OutputBinding *b = bindings.Find(bindingUuid);
+	if (!b) {
+		error = "no output binding with uuid '" + bindingUuid + "'";
+		return false;
+	}
+
+	// Enabling must obey the single-live-stream rule: refuse if this profile is already
+	// enabled on another canvas (one RTMP key = one live stream). Mirrors the engine's
+	// ProfileLiveElsewhere guard so config and the live layer agree.
+	if (enabled && !b->profileUuid.empty() && bindings.ProfileEnabledElsewhere(bindingUuid, b->profileUuid)) {
+		error = "that stream profile is already enabled on another canvas";
+		return false;
+	}
+
+	b->enabled = enabled;
+	const bool saved = ObsBootstrap::OutputBindings().Save();
+
+	// A disabled binding must not stay live: the canvas stops rendering for it, so a
+	// still-running output would encode a frozen frame. StopOutput is a no-op if the
+	// binding isn't live; it manages its own locking (we hold none across it).
+	if (!enabled) {
+		ObsBootstrap::Multistream().StopOutput(bindingUuid);
+	}
+
+	// Chat is resolved from the ENABLED destinations, so arming one mid-stream has to
+	// re-resolve or the destination streams with no chat for the rest of the session.
+	// Mirrors the mid-stream account-disconnect path; the disable direction does NOT come
+	// through here, because the output ending is what ends its chat (onOutputEnded ->
+	// Chat::Hub().StopDestination), which spares every sibling transport a reconnect.
+	if (enabled && ObsBootstrap::Multistream().AnyLive()) {
+		Chat::Hub().Start();
+	}
+
+	// Enabling builds the canvas mix (before any StartOutput); disabling the last
+	// enabled destination lets it go inert (StopOutput above already stopped it).
+	ObsBootstrap::CanvasRuntime().ReconcileAll();
+
+	// outputBinding.changed is also the hook 4.4.4/4.4.5 use to re-decide whether a
+	// canvas renders (AnyEnabledForCanvas may have flipped on this toggle).
+	EmitEvent(EventNames::kOutputBindingChanged, json::object());
+	return PersistOrFail(saved, error);
 }
 
 bool SwitchDefaultProgramScene(const std::string &sceneUuid)

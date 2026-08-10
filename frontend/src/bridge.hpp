@@ -183,6 +183,15 @@ bool SwitchDefaultProgramScene(const std::string &sceneUuid);
 void StartStreamingAll();
 void StopStreamingAll();
 
+// Flip one output binding's enabled flag and run everything that has to follow it:
+// the single-live-stream refusal, the persist, stopping an output that just lost its
+// binding, re-resolving chat for a destination armed mid-stream, the canvas-mix
+// reconcile, and the outputBinding.changed push. Shared by outputBinding.setEnabled
+// and the schedule runner's arm step, so a scheduled entry cannot route itself
+// through a bare `enabled = x` that skips half of that tail. Returns false + `error`
+// on a refusal or a failed persist. UI thread only.
+bool SetOutputBindingEnabled(const std::string &bindingUuid, bool enabled, std::string &error);
+
 // Write/read a single string value under `key` to/from a MultistreamBasicPath
 // JSON file (atomic, with a .bak). Shared by the per-feature key/value stores
 // (audio_devices.json / theme.json / layout.json / transitions.json).
