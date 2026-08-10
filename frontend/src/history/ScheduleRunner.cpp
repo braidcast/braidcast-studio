@@ -105,17 +105,13 @@ bool ScheduleRunner::PruneStale(int64_t now)
 	bool changed = false;
 	for (auto it = occurrences_.begin(); it != occurrences_.end();) {
 		const std::unique_ptr<ScheduleEntry> entry = store_->Get(it->first);
-		const bool keep = entry && entry->startsAt - now <= kArmLeadMs &&
-				  now - entry->startsAt <= kOccurrenceRetentionMs;
+		// An occurrence whose start is on its way up is kept whatever the row says.
+		// Dropping it here answers "is this start committed" with no, and every
+		// path that asks -- the settle, the disarm, cancelling, deleting -- would
+		// then put the routing back under outputs still coming up.
+		const bool keep = IsStartRequested(it->first) || (entry && entry->startsAt - now <= kArmLeadMs &&
+								  now - entry->startsAt <= kOccurrenceRetentionMs);
 		if (keep) {
-			// A requested start stands only while the entry could still be
-			// broadcasting. The occurrence outlives that by an hour so the chip
-			// can still explain itself, and a flag left set that long refuses
-			// cancels and deletes for an entry that is entirely over.
-			if (it->second.startRequested && entry->state != ScheduleState::kArmed &&
-			    entry->state != ScheduleState::kLive) {
-				it->second.startRequested = false;
-			}
 			++it;
 			continue;
 		}
@@ -161,10 +157,9 @@ bool ScheduleRunner::DisarmIfOutOfWindow(const ScheduleEntry &entry, int64_t now
 	if (entry.state != ScheduleState::kArmed || entry.startsAt - now <= kArmLeadMs) {
 		return false;
 	}
-	// A requested start is committed: the outputs may already be coming up, and
-	// disarming would put the routing back out from under them.
-	const auto it = occurrences_.find(entry.id);
-	if (it != occurrences_.end() && it->second.startRequested) {
+	// A start on its way up is committed: disarming would put the routing back out
+	// from under outputs that are still coming up.
+	if (IsStartRequested(entry.id)) {
 		return false;
 	}
 	if (!store_->SetState(entry.id, ScheduleState::kPlanned)) {
@@ -191,8 +186,7 @@ void ScheduleRunner::NoteEntryChanged(const std::string &id)
 	}
 	// Deleted. Nothing can be transitioned, but everything the runner was holding
 	// on its behalf has to go, or it would keep stamping a dead id onto sessions.
-	const auto it = occurrences_.find(id);
-	const bool committed = (it != occurrences_.end() && it->second.startRequested) || liveId_ == id;
+	const bool committed = IsStartRequested(id);
 	occurrences_.erase(id);
 	ForgetArmed(id);
 	if (startingId_ == id) {
@@ -246,16 +240,31 @@ bool ScheduleRunner::RefreshArmability(const ScheduleEntryWithDestinations &row)
 	if (row.entry.state != ScheduleState::kArmed) {
 		return false;
 	}
-	// Skipped once this occurrence has asked to start: from that moment the outputs
-	// coming up are its own, and reporting them as somebody else's broadcast would
-	// paint a refusal over the start it just made.
-	const auto it = occurrences_.find(row.entry.id);
-	const bool starting = it != occurrences_.end() && it->second.startRequested;
-	if (!starting && isStreaming && isStreaming()) {
+	if (RoutingHeldElsewhere(row.entry.id)) {
 		return SetBlockReason(row.entry.id, kAlreadyStreamingReason);
 	}
 	std::string reason;
 	return SetBlockReason(row.entry.id, Armable(row, reason) ? std::string() : reason);
+}
+
+// Whether something else already owns the routing. Two readings of one situation a
+// few seconds apart: a broadcast whose outputs have reported, and a start that has
+// asked but not reported yet. Only the first is visible to isStreaming, and a start
+// spends its whole prelude in the second -- which is precisely the window a second
+// entry would otherwise walk into and redirect.
+//
+// Answered once per tick, in the one place that computes block reasons, so
+// StartIfDue's existing gate does the refusing. Asking again there would set a
+// reason RefreshArmability had just cleared and push an event every second.
+bool ScheduleRunner::RoutingHeldElsewhere(const std::string &id) const
+{
+	if (IsStartRequested(id)) {
+		return false; // whatever is coming up is this entry's own
+	}
+	if (!appliedId_.empty() && appliedId_ != id && IsStartRequested(appliedId_)) {
+		return true;
+	}
+	return isStreaming && isStreaming();
 }
 
 // The countdown is a window, not a server-side counter: the client already has
@@ -282,6 +291,8 @@ bool ScheduleRunner::StartIfDue(const ScheduleEntryWithDestinations &row, int64_
 	if (entry.state != ScheduleState::kArmed || entry.autoStart == 0 || now < entry.startsAt) {
 		return false;
 	}
+	// The raw flag, not IsStartRequested: this asks whether the occurrence has ever
+	// asked to start, and one whose request was given up on must not ask again.
 	const auto it = occurrences_.find(entry.id);
 	if (it != occurrences_.end() && (it->second.canceled || it->second.startRequested)) {
 		return false;
@@ -304,7 +315,9 @@ bool ScheduleRunner::StartIfDue(const ScheduleEntryWithDestinations &row, int64_
 		}
 		appliedId_ = entry.id;
 	}
-	occurrences_[entry.id].startRequested = true;
+	Occurrence &occurrence = occurrences_[entry.id];
+	occurrence.startRequested = true;
+	occurrence.startRequestedAtMs = now;
 	startingId_ = entry.id;
 	Log("[schedule] auto-starting '" + entry.title + "' (" + entry.id + ")");
 	if (goLive) {
@@ -360,9 +373,17 @@ bool ScheduleRunner::SetBlockReason(const std::string &id, const std::string &re
 // The application belongs to one occurrence. It stays in place while that entry is
 // armed or live, and is put back the moment it is anything else -- cancelled,
 // disarmed, missed, or finished.
+//
+// The row settling is not the same thing as the start being over. kMissedGraceMs
+// settles the row after two minutes so the calendar stops calling the entry
+// upcoming; a prelude can still be working through platform round trips and RTMP
+// retries well past that, and reverting under it would send that broadcast to
+// whatever the user was pointing at before. So a start still on its way up holds
+// its configuration even though the row already reads `missed`, the same refusal
+// CancelCountdown and schedule.delete make.
 void ScheduleRunner::SettleApplied()
 {
-	if (appliedId_.empty()) {
+	if (appliedId_.empty() || IsStartRequested(appliedId_)) {
 		return;
 	}
 	const std::unique_ptr<ScheduleEntry> entry = store_->Get(appliedId_);
@@ -434,7 +455,13 @@ bool ScheduleRunner::IsCountdownCanceled(const std::string &id) const
 bool ScheduleRunner::IsStartRequested(const std::string &id) const
 {
 	const auto it = occurrences_.find(id);
-	return it != occurrences_.end() && it->second.startRequested;
+	if (it == occurrences_.end() || !it->second.startRequested) {
+		return false;
+	}
+	if (liveId_ == id) {
+		return true;
+	}
+	return nowMs && nowMs() - it->second.startRequestedAtMs < kStartInFlightMs;
 }
 
 std::string ScheduleRunner::BlockReason(const std::string &id) const

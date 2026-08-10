@@ -30,6 +30,22 @@ inline constexpr int64_t kMissedGraceMs = 2 * 60 * 1000;
 // bounded so a long session does not accumulate every occurrence it ever tracked.
 inline constexpr int64_t kOccurrenceRetentionMs = 60 * 60 * 1000;
 
+// How long a requested start is treated as still on its way up, measured from the
+// request rather than from the entry's start.
+//
+// It is deliberately far longer than kMissedGraceMs, which settles the ROW so the
+// calendar stops calling an entry upcoming. The routing has to outlive that: a
+// go-live prelude is several round trips to a platform (create the broadcast,
+// ensure the stream, bind, transition) before RTMP even connects, and a degraded
+// link retries on top of that. Putting the routing back underneath a start still
+// working through all of it sends that broadcast wherever the user was pointing
+// before -- the same outcome cancelling and deleting already refuse to cause.
+//
+// Nothing here observes the outputs; the engine's live edge is the only thing that
+// does, and it arrives as NoteWentLive. So this is a deadline for giving up on a
+// start that never reported anything, not a measurement of one.
+inline constexpr int64_t kStartInFlightMs = 10 * 60 * 1000;
+
 // The one unit that acts on its own initiative: it watches the clock and moves
 // planned entries through armed -> live -> done, or settles them as missed.
 //
@@ -132,9 +148,15 @@ public:
 
 	bool IsCountdownCanceled(const std::string &id) const;
 
-	// Whether this occurrence has already asked to go live. From that moment its
-	// start is committed: it cannot be cancelled and the entry cannot be deleted,
-	// because both would put the routing back under outputs that are coming up.
+	// Whether this occurrence's start is still on its way up. From the request until
+	// this stops answering true the start is committed: it cannot be cancelled, the
+	// entry cannot be deleted, and its configuration is not put back, because every
+	// one of those redirects a broadcast that is coming up.
+	//
+	// True for as long as the entry is live -- that broadcast owns the routing until
+	// it ends. Otherwise it expires after kStartInFlightMs, because nothing here can
+	// tell a slow prelude from a start that will never report at all, and holding
+	// the user's routing forever on a start that died is its own failure.
 	bool IsStartRequested(const std::string &id) const;
 
 	// Why this occurrence cannot go live, or empty when nothing is wrong. Surfaced
@@ -166,6 +188,9 @@ private:
 		bool canceled = false;
 		bool countdownOpen = false;
 		bool startRequested = false;
+		// When the start was asked for, which is what kStartInFlightMs runs from.
+		// Meaningless unless startRequested.
+		int64_t startRequestedAtMs = 0;
 		std::string blockReason;
 	};
 
@@ -173,6 +198,7 @@ private:
 	bool DisarmIfOutOfWindow(const ScheduleEntry &entry, int64_t now);
 	bool ArmIfDue(ScheduleEntryWithDestinations &row, int64_t now);
 	bool RefreshArmability(const ScheduleEntryWithDestinations &row);
+	bool RoutingHeldElsewhere(const std::string &id) const;
 	void OpenCountdownIfDue(const ScheduleEntryWithDestinations &row, int64_t now);
 	bool StartIfDue(const ScheduleEntryWithDestinations &row, int64_t now);
 	bool Armable(const ScheduleEntryWithDestinations &row, std::string &reason) const;

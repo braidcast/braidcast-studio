@@ -1047,10 +1047,14 @@ static void test_runner_applies_at_zero_not_at_arm(void **state)
 	assert_int_equal(f.revertCalls, 1);
 }
 
-// The request went out and the outputs never came up. The entry settles as missed
-// like any other, and the configuration it loaded goes back with it -- otherwise a
-// failed start leaves the user's destinations silently rewritten.
-static void test_runner_reverts_when_a_requested_start_never_comes_up(void **state)
+// The request went out and the outputs never came up. The row settling and the
+// start being over are two different things: the row settles on the missed grace so
+// the calendar stops calling the entry upcoming, while the configuration is held
+// until the start is given up on -- a prelude working through platform round trips
+// and RTMP retries past the grace must not have its routing pulled out from under
+// it. Once it is given up on, the configuration goes back, or a failed start would
+// leave the user's destinations silently rewritten.
+static void test_runner_holds_the_routing_until_a_start_is_given_up_on(void **state)
 {
 	(void)state;
 	RunnerFixture f;
@@ -1065,11 +1069,87 @@ static void test_runner_reverts_when_a_requested_start_never_comes_up(void **sta
 	assert_int_equal(f.applyCalls, 1);
 	assert_int_equal(f.goLiveCalls, 1);
 
-	// Settled and put back on the same tick, not the next one.
+	// The row settles here; the routing deliberately does not.
 	f.clock = startsAt + History::kMissedGraceMs + 1000;
 	f.runner.Tick();
 	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kMissed);
+	assert_int_equal(f.revertCalls, 0);
+	assert_true(f.runner.IsStartRequested(id));
+
+	// Still held most of the way to the deadline.
+	f.clock = startsAt + History::kStartInFlightMs - 1000;
+	f.runner.Tick();
+	assert_int_equal(f.revertCalls, 0);
+
+	f.clock = startsAt + History::kStartInFlightMs + 1000;
+	f.runner.Tick();
+	assert_false(f.runner.IsStartRequested(id));
 	assert_int_equal(f.revertCalls, 1);
+}
+
+// The same window closes the two refusals that key off it, so an entry nothing is
+// doing anything with stops refusing to be cancelled or deleted.
+static void test_runner_frees_a_given_up_start_for_deletion(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_settled_request.db");
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntry(f, startsAt, true);
+
+	f.clock = startsAt - 60'000;
+	f.runner.Tick();
+	f.clock = startsAt;
+	f.runner.Tick();
+	assert_true(f.runner.IsStartRequested(id));
+
+	f.clock = startsAt + History::kStartInFlightMs + 1000;
+	f.runner.Tick();
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kMissed);
+	assert_false(f.runner.IsStartRequested(id));
+
+	// A live entry keeps it for as long as it runs, whatever the deadline says:
+	// deleting one mid-broadcast is the case the refusal exists for.
+	const std::string other = SeedEntry(f, f.clock + 60'000, true);
+	f.runner.Tick();
+	f.clock += 60'000;
+	f.runner.Tick();
+	f.streaming = true;
+	f.runner.NoteWentLive();
+	assert_string_equal(f.store.Get(other)->state.c_str(), History::ScheduleState::kLive);
+	f.clock += History::kStartInFlightMs + 1000;
+	f.runner.Tick();
+	assert_true(f.runner.IsStartRequested(other));
+}
+
+// Two entries whose starts fall inside one prelude. The first one's request owns
+// the routing until it resolves, so the second is refused rather than taking it --
+// the outputs have not reported yet, so nothing reads as streaming.
+static void test_runner_refuses_a_start_while_another_is_on_its_way_up(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_overlapping_starts.db");
+	const int64_t startsAt = 10'000'000;
+	const std::string first = SeedEntry(f, startsAt, true);
+	const std::string second = SeedEntry(f, startsAt + 30'000, true);
+
+	f.clock = startsAt - 60'000;
+	f.runner.Tick();
+	f.clock = startsAt;
+	f.runner.Tick();
+	assert_int_equal(f.applyCalls, 1);
+	assert_int_equal(f.goLiveCalls, 1);
+
+	// Nothing is streaming -- the first start has not reported -- so only the
+	// in-flight request can refuse this one.
+	f.clock = startsAt + 30'000;
+	f.runner.Tick();
+	assert_int_equal(f.applyCalls, 1);
+	assert_int_equal(f.goLiveCalls, 1);
+	assert_int_equal(f.revertCalls, 0);
+	assert_string_equal(f.runner.BlockReason(second).c_str(), History::kAlreadyStreamingReason);
+	assert_string_equal(f.runner.ActiveEntryId().c_str(), first.c_str());
 }
 
 // Never take the routing away from a broadcast that is already running. The
@@ -1217,47 +1297,6 @@ static void test_runner_lets_go_of_a_deleted_entry_without_reverting(void **stat
 	// holds the entry, so it does not ask twice.
 	f.runner.NoteStoppedStreaming();
 	assert_int_equal(f.revertCalls, 0);
-}
-
-// A start that was requested and never came up. The entry settles as missed and
-// its configuration goes back, so the occurrence is entirely over -- but the flag
-// that refuses cancels and deletes outlives the occurrence by an hour, and would
-// keep refusing them for an entry nothing is doing anything with.
-static void test_runner_frees_a_settled_entry_from_its_start_request(void **state)
-{
-	(void)state;
-	RunnerFixture f;
-	OpenRunner(f, "runner_settled_request.db");
-	const int64_t startsAt = 10'000'000;
-	const std::string id = SeedEntry(f, startsAt, true);
-
-	f.clock = startsAt - 60'000;
-	f.runner.Tick();
-	f.clock = startsAt;
-	f.runner.Tick();
-	assert_true(f.runner.IsStartRequested(id));
-
-	f.clock = startsAt + History::kMissedGraceMs + 1000;
-	f.runner.Tick();
-	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kMissed);
-	assert_int_equal(f.revertCalls, 1);
-
-	f.clock = startsAt + History::kMissedGraceMs + 2000;
-	f.runner.Tick();
-	assert_false(f.runner.IsStartRequested(id));
-
-	// A live entry keeps it, though: deleting one mid-broadcast is the case the
-	// refusal exists for.
-	const std::string other = SeedEntry(f, f.clock + 60'000, true);
-	f.runner.Tick();
-	f.clock += 60'000;
-	f.runner.Tick();
-	f.streaming = true;
-	f.runner.NoteWentLive();
-	assert_string_equal(f.store.Get(other)->state.c_str(), History::ScheduleState::kLive);
-	f.clock += 1000;
-	f.runner.Tick();
-	assert_true(f.runner.IsStartRequested(other));
 }
 
 // Deleting one the runner armed but never started has nothing to hold on to: the
@@ -1813,12 +1852,13 @@ int main(void)
 		cmocka_unit_test(test_runner_refuses_auto_start_with_no_destinations),
 		cmocka_unit_test(test_runner_starts_once_a_destination_recovers),
 		cmocka_unit_test(test_runner_applies_at_zero_not_at_arm),
-		cmocka_unit_test(test_runner_reverts_when_a_requested_start_never_comes_up),
+		cmocka_unit_test(test_runner_holds_the_routing_until_a_start_is_given_up_on),
+		cmocka_unit_test(test_runner_refuses_a_start_while_another_is_on_its_way_up),
 		cmocka_unit_test(test_runner_refuses_to_start_while_something_is_streaming),
 		cmocka_unit_test(test_runner_refuses_a_start_the_apply_refused),
 		cmocka_unit_test(test_runner_refuses_cancel_once_the_start_is_requested),
 		cmocka_unit_test(test_runner_holds_the_routing_for_one_entry_at_a_time),
-		cmocka_unit_test(test_runner_frees_a_settled_entry_from_its_start_request),
+		cmocka_unit_test(test_runner_frees_a_given_up_start_for_deletion),
 		cmocka_unit_test(test_runner_lets_go_of_a_deleted_entry_without_reverting),
 		cmocka_unit_test(test_runner_lets_go_of_a_deleted_armed_entry),
 		cmocka_unit_test(test_runner_disarms_an_entry_moved_out_of_its_window),
