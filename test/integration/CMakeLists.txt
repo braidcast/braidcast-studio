@@ -92,6 +92,7 @@ set(
   "${_fe}/src/history/Migrations.cpp"
   "${_fe}/src/history/ScheduleRunner.cpp"
   "${_fe}/src/history/ScheduleStore.cpp"
+  "${_fe}/src/history/ScheduledSetup.cpp"
   "${_fe}/src/history/SessionRecorder.cpp"
   "${_fe}/src/history/SessionStore.cpp"
   # SessionRecorder::Begin and ScheduleStore::Create mint uuids through it.

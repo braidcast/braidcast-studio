@@ -47,6 +47,7 @@
 #include "history/SessionRecorder.hpp"
 #include "history/ScheduleRunner.hpp"
 #include "history/ScheduleStore.hpp"
+#include "history/ScheduledSetup.hpp"
 #include "history/SessionStore.hpp"
 #include "history/Thumbnails.hpp"
 #include "multistream/CanvasRuntime.hpp"
@@ -541,26 +542,25 @@ std::vector<History::DestinationRecord> LiveDestinations(const MultistreamEngine
 	return out;
 }
 
-// --- applying a scheduled entry to the go-live path -------------------------
+// --- loading a scheduled entry into the go-live path ------------------------
 //
-// Arming an entry loads it in rather than merely checking that it could go live:
-// the destinations it names become the enabled routing, and the metadata it
-// carries becomes the per-stream override bag CollectBroadcastPrelude merges over
-// the channel defaults and hands to the provider. What was there before is
-// remembered here, because the runner deliberately knows nothing about either
-// store, and put back when the occurrence ends without a broadcast -- a countdown
-// the user stopped must not leave their destination set quietly rewritten.
-struct ScheduledApplication {
-	bool active = false;
-	// The enabled binding uuids before this application, and the exact set it left
-	// behind. The restore is skipped when the two no longer match, since that means
-	// the routing was changed by hand in the meantime and the change was meant.
-	std::vector<std::string> enabledBefore;
-	std::vector<std::string> enabledAfter;
-	// profileUuid -> the override bag replaced; an empty object where there was none.
-	std::vector<std::pair<std::string, Bridge::json>> overridesBefore;
-};
-ScheduledApplication g_scheduledApplication;
+// Going live for a scheduled entry means the destinations it names become the
+// enabled routing, and the metadata it carries becomes the per-stream override bag
+// CollectBroadcastPrelude merges over the channel defaults and hands to the
+// provider. That is configuration the user owns, so it is theirs again the moment
+// the broadcast ends. The capture-and-restore itself lives in ScheduledSetup, which
+// knows nothing about libobs or either store and is tested on its own; what follows
+// is only the wiring into them.
+History::ScheduledSetup g_scheduledSetup;
+
+// Is a broadcast running right now. Read from the engine rather than the published
+// AnyOutputLive() flag: both the runner and the setup ask on the UI thread where
+// the engine is valid, and refusing a scheduled start on a stale reading is a
+// broadcast that does not happen.
+bool AnythingLive()
+{
+	return ObsBootstrap::MultistreamAlive() && ObsBootstrap::Multistream().AnyLive();
+}
 
 // The binding that routes `profileId`, or empty when nothing does. A profile can be
 // bound on several canvases but only one may be enabled (one RTMP key = one live
@@ -573,18 +573,6 @@ std::string BindingForProfile(const std::string &profileId)
 		}
 	}
 	return {};
-}
-
-std::vector<std::string> EnabledBindingUuids()
-{
-	std::vector<std::string> out;
-	for (const OutputBinding &b : g_outputBindings.Bindings().bindings) {
-		if (b.enabled) {
-			out.push_back(b.uuid);
-		}
-	}
-	std::sort(out.begin(), out.end());
-	return out;
 }
 
 // Skips a flip the binding has already made: the shared setter persists and emits
@@ -601,101 +589,6 @@ void SetBindingEnabled(const std::string &uuid, bool enabled)
 		HostLog("[schedule] could not " + std::string(enabled ? "enable" : "disable") +
 			" a scheduled destination: " + err);
 	}
-}
-
-// The entry's metadata in the shape the providers read. `category` is an object
-// there, and every provider that consumes one keys on its id (Twitch's game_id,
-// YouTube's categoryId) while the name is what a prefill shows -- so the two halves
-// go to the two places, never one standing in for the other. Empty values are left
-// out rather than written through: a destination that carries no title must not
-// blank the one the user has remembered.
-Bridge::json ScheduledMetadataFields(const History::ScheduleDestination &d)
-{
-	Bridge::json fields = Bridge::json::object();
-	if (!d.title.empty()) {
-		fields["title"] = d.title;
-	}
-	if (!d.category.empty() || !d.categoryId.empty()) {
-		fields["category"] = Bridge::json{{"id", d.categoryId}, {"name", d.category}};
-	}
-	const Bridge::json tags = JsonUtil::ParseJson(d.tags);
-	if (tags.is_array() && !tags.empty()) {
-		fields["tags"] = tags;
-	}
-	return fields;
-}
-
-void RevertScheduledEntry()
-{
-	if (!g_scheduledApplication.active) {
-		return;
-	}
-	const ScheduledApplication applied = std::move(g_scheduledApplication);
-	g_scheduledApplication = ScheduledApplication{};
-
-	if (EnabledBindingUuids() == applied.enabledAfter) {
-		for (const std::string &uuid : applied.enabledAfter) {
-			if (std::find(applied.enabledBefore.begin(), applied.enabledBefore.end(), uuid) ==
-			    applied.enabledBefore.end()) {
-				SetBindingEnabled(uuid, false);
-			}
-		}
-		for (const std::string &uuid : applied.enabledBefore) {
-			SetBindingEnabled(uuid, true);
-		}
-	}
-
-	for (const std::pair<std::string, Bridge::json> &before : applied.overridesBefore) {
-		if (before.second.is_object() && !before.second.empty()) {
-			g_streamMeta.PutStreamOverride(before.first, before.second);
-		} else {
-			g_streamMeta.RemoveStreamOverride(before.first);
-		}
-	}
-	if (!applied.overridesBefore.empty()) {
-		g_streamMeta.Save();
-	}
-}
-
-void ApplyScheduledEntry(const std::vector<History::ScheduleDestination> &destinations)
-{
-	RevertScheduledEntry(); // two applications must never stack
-
-	std::vector<std::string> wanted;
-	for (const History::ScheduleDestination &d : destinations) {
-		const std::string uuid = BindingForProfile(d.profileId);
-		if (!uuid.empty() && std::find(wanted.begin(), wanted.end(), uuid) == wanted.end()) {
-			wanted.push_back(uuid);
-		}
-	}
-	g_scheduledApplication.enabledBefore = EnabledBindingUuids();
-
-	// The enabled set becomes exactly what the entry names. Disabling runs first:
-	// enabling a profile bound on another canvas would be refused by the
-	// single-live-stream rule while the old binding still holds it.
-	for (const std::string &uuid : g_scheduledApplication.enabledBefore) {
-		if (std::find(wanted.begin(), wanted.end(), uuid) == wanted.end()) {
-			SetBindingEnabled(uuid, false);
-		}
-	}
-	for (const std::string &uuid : wanted) {
-		SetBindingEnabled(uuid, true);
-	}
-	g_scheduledApplication.enabledAfter = EnabledBindingUuids();
-
-	for (const History::ScheduleDestination &d : destinations) {
-		const Bridge::json fields = ScheduledMetadataFields(d);
-		if (fields.empty()) {
-			continue;
-		}
-		g_scheduledApplication.overridesBefore.push_back(
-			{d.profileId, g_streamMeta.StreamOverride(d.profileId)});
-		g_streamMeta.PutStreamOverride(d.profileId, fields);
-	}
-	if (!g_scheduledApplication.overridesBefore.empty()) {
-		g_streamMeta.Save();
-	}
-	g_scheduledApplication.active = true;
 }
 
 std::vector<std::string> LiveCanvasUuids(const MultistreamEngine &engine)
@@ -1285,6 +1178,14 @@ bool ObsBootstrap::Start()
 			HostLog("[history] recovered " + std::to_string(recovered) +
 				" session(s) that ended without a clean stop");
 		}
+		// `armed` and `live` are what a running process was doing, and this
+		// process has not started doing anything yet. Without this a stale
+		// armed row would go live the moment the app opens.
+		const int adopted = g_schedule.RecoverInterrupted();
+		if (adopted > 0) {
+			HostLog("[schedule] recovered " + std::to_string(adopted) +
+				" entr(ies) left mid-flight by the previous run");
+		}
 		// Entries whose time passed while the app was closed. Without this the
 		// calendar reopens still showing them as upcoming, which is a claim
 		// about the present that stopped being true days ago. The runner's own
@@ -1296,6 +1197,35 @@ bool ObsBootstrap::Start()
 				" entr(ies) missed while the app was closed");
 		}
 	}
+
+	g_scheduledSetup.log = [](const std::string &line) {
+		HostLog(line);
+	};
+	g_scheduledSetup.isStreaming = [] {
+		return AnythingLive();
+	};
+	g_scheduledSetup.routing.read = [] {
+		std::vector<History::RoutingBinding> out;
+		for (const OutputBinding &b : g_outputBindings.Bindings().bindings) {
+			out.push_back({b.uuid, b.profileUuid, b.enabled});
+		}
+		return out;
+	};
+	g_scheduledSetup.routing.write = [](const std::string &uuid, bool enabled) {
+		SetBindingEnabled(uuid, enabled);
+	};
+	g_scheduledSetup.metadata.read = [](const std::string &profileId) {
+		return g_streamMeta.StreamOverride(profileId);
+	};
+	g_scheduledSetup.metadata.write = [](const std::string &profileId, const Bridge::json &fields) {
+		g_streamMeta.PutStreamOverride(profileId, fields);
+	};
+	g_scheduledSetup.metadata.clear = [](const std::string &profileId) {
+		g_streamMeta.RemoveStreamOverride(profileId);
+	};
+	g_scheduledSetup.metadata.save = [] {
+		g_streamMeta.Save();
+	};
 
 	// The runner's outside world, injected so the state machine itself stays
 	// testable against a fake clock. Wired unconditionally: with no database the
@@ -1310,11 +1240,15 @@ bool ObsBootstrap::Start()
 	g_scheduleRunner.goLive = [] {
 		Bridge::StartStreamingAll();
 	};
-	g_scheduleRunner.applyEntry = [](const std::vector<History::ScheduleDestination> &destinations) {
-		ApplyScheduledEntry(destinations);
+	g_scheduleRunner.isStreaming = [] {
+		return AnythingLive();
+	};
+	g_scheduleRunner.applyEntry = [](const std::vector<History::ScheduleDestination> &destinations,
+					 std::string &reason) {
+		return g_scheduledSetup.Apply(destinations, reason);
 	};
 	g_scheduleRunner.revertEntry = [] {
-		RevertScheduledEntry();
+		g_scheduledSetup.Revert();
 	};
 	g_scheduleRunner.canArm = [](const std::string &profileId, std::string &reason) {
 		const StreamProfile *profile = g_streamProfiles.Find(profileId);
@@ -1322,9 +1256,8 @@ bool ObsBootstrap::Start()
 			reason = "its stream profile was deleted";
 			return false;
 		}
-		// Whether a binding EXISTS, not whether it is enabled: arming is what enables
-		// it, so asking about the enabled flag here would only be asking about what
-		// this runner just did.
+		// Whether a binding EXISTS, not whether it is enabled: going live is what
+		// enables it, so the flag says nothing about whether this entry can run.
 		if (BindingForProfile(profileId).empty()) {
 			reason = "'" + profile->DisplayName() + "' is not routed to any canvas";
 			return false;
@@ -1574,6 +1507,11 @@ bool ObsBootstrap::Start()
 			} else if (!live && g_recorder.IsRecording()) {
 				EndSessionWithThumbnail(SessionEndReason(*g_multistream));
 				g_scheduleRunner.NoteStoppedStreaming();
+				// Unconditional, not only for the entry the runner was
+				// tracking: nothing else is live now, so this is the one
+				// moment restoring the routing cannot interrupt anything.
+				// A no-op when nothing was applied.
+				g_scheduledSetup.Revert();
 				Bridge::EmitEvent(EventNames::kSessionsChanged, Bridge::json::object());
 			}
 		});

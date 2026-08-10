@@ -70,6 +70,19 @@ public:
 	// many were marked, so a caller can decide whether to tell the UI.
 	int SweepMissed(int64_t nowMs);
 
+	// Startup recovery, the schedule counterpart of SessionStore::RecoverCrashed.
+	// `armed` and `live` describe what a running process was doing, and no process
+	// is doing it now. Left alone, a row still `armed` from a previous run would
+	// auto-start the moment the app launches -- no countdown, and nobody
+	// necessarily there -- and a row left `live` would read live forever, since
+	// only the broadcast's own stop edge settles one and that edge is gone.
+	//
+	// Armed goes back to `planned`, so an entry whose start is still ahead arms
+	// again cleanly and one whose start has passed is settled by the sweep like any
+	// other. Live becomes `done`, because it did happen -- the session row is where
+	// the crash itself is recorded. Returns how many were recovered.
+	int RecoverInterrupted();
+
 private:
 	std::unique_ptr<Storage> storage_;
 	std::string lastError_;

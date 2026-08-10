@@ -230,4 +230,27 @@ int ScheduleStore::SweepMissed(int64_t nowMs)
 	}
 }
 
+int ScheduleStore::RecoverInterrupted()
+{
+	if (!storage_) {
+		return 0;
+	}
+	try {
+		const auto interrupted = storage_->get_all<ScheduleEntry>(
+			where(c(&ScheduleEntry::state) == std::string(ScheduleState::kArmed) or
+			      c(&ScheduleEntry::state) == std::string(ScheduleState::kLive)));
+		for (const ScheduleEntry &e : interrupted) {
+			const char *recovered = e.state == ScheduleState::kLive ? ScheduleState::kDone
+										: ScheduleState::kPlanned;
+			storage_->update_all(set(assign(&ScheduleEntry::state, std::string(recovered))),
+					     where(c(&ScheduleEntry::id) == e.id));
+		}
+		lastError_.clear();
+		return (int)interrupted.size();
+	} catch (const std::exception &e) {
+		lastError_ = e.what();
+		return 0;
+	}
+}
+
 } // namespace History

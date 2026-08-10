@@ -72,18 +72,29 @@ public:
 	// with something the UI can show. Unset means every destination is armable.
 	std::function<bool(const std::string &profileId, std::string &reason)> canArm;
 
-	// Load the entry into the go-live path at arm time: the destinations it names
-	// become the enabled routing, and the metadata it carries becomes what the
-	// go-live path will send. `revertEntry` puts back what was there when the
-	// occurrence ends without a broadcast to show for it, so a cancelled countdown
-	// does not leave the user's destination set quietly rewritten. Whoever supplies
-	// these owns the memory of the previous state; the runner only says when.
+	// Whether a broadcast is already running. An entry cannot take over the routing
+	// from one, so this is a refusal, surfaced through the same block reason the
+	// chip already shows -- and surfaced for the whole armed window, which is time
+	// enough to stop the other broadcast before the start is due.
+	std::function<bool()> isStreaming;
+
+	// Load the entry into the go-live path: the destinations it names become the
+	// enabled routing, and the metadata it carries becomes what the go-live path
+	// will send. False + `reason` refuses the start.
 	//
-	// One occurrence is applied at a time, and it stays applied for as long as the
-	// entry is armed or live. Detach() drops the knowledge without reverting -- the
-	// stores it would have to touch are already gone by then -- so an application
-	// outlives a shutdown that happens mid-window.
-	std::function<void(const std::vector<ScheduleDestination> &)> applyEntry;
+	// Called at T-0 immediately before `goLive`, NOT when the entry arms. Arming is
+	// a preparation and stays read-only; this rewrites configuration the user owns,
+	// so the window in which that is true is one go-live rather than five minutes.
+	// `revertEntry` puts it back once the broadcast ends or the occurrence settles
+	// without one. Whoever supplies these owns the memory of the previous state;
+	// the runner only says when.
+	//
+	// Detach() drops that bookkeeping without reverting: MultistreamEngine is
+	// already destroyed by the time teardown reaches the runner, and putting the
+	// routing back means flipping bindings through it. So a shutdown during a
+	// scheduled broadcast leaves its routing in place -- which is the routing that
+	// broadcast was using.
+	std::function<bool(const std::vector<ScheduleDestination> &, std::string &reason)> applyEntry;
 	std::function<void()> revertEntry;
 
 	// The go-live tail, wired to the one entry point every other start funnels
@@ -106,14 +117,17 @@ public:
 	void Tick();
 
 	// Disarm this occurrence: it will neither re-arm nor auto-start, and the entry
-	// row stays intact. False fills `error` with the reason.
+	// row stays intact. False fills `error` with the reason -- including once the
+	// start has already been requested, which this never takes back: a countdown
+	// cancel does not mean stop a broadcast.
 	bool CancelCountdown(const std::string &id, std::string &error);
 
-	// Re-check one entry after it was edited. schedule.update can move an armed
-	// entry out of its own arm window, and the row has to come back to `planned`
-	// with it: left armed the chip reads armed until the new start, and a manual
-	// go-live in between would stamp this entry's id onto an unrelated session.
-	// Emits nothing -- the caller edited the entry and is already pushing.
+	// Re-check one entry after it was edited or deleted. schedule.update can move an
+	// armed entry out of its own arm window, and the row has to come back to
+	// `planned` with it: left armed the chip reads armed until the new start, and a
+	// manual go-live in between would stamp this entry's id onto an unrelated
+	// session. A deleted entry the runner was holding is let go of here for the same
+	// reason. Emits nothing -- the caller changed the entry and is already pushing.
 	void NoteEntryChanged(const std::string &id);
 
 	bool IsCountdownCanceled(const std::string &id) const;
@@ -123,10 +137,16 @@ public:
 	// than as an entry that silently did not happen.
 	std::string BlockReason(const std::string &id) const;
 
-	// The entry a broadcast starting now belongs to -- the live one, else the
-	// armed one, else empty. What stamps schedule_id onto the session row, for a
-	// manual go-live during the armed window as much as for an auto-start.
-	const std::string &ActiveEntryId() const;
+	// The entry a broadcast starting now belongs to -- the live one, else the one
+	// that asked to start, else the armed one whose start comes soonest, else
+	// empty. What stamps schedule_id onto the session row, for a manual go-live
+	// during the armed window as much as for an auto-start.
+	//
+	// Re-read from the row rather than answered from the cached id: the missed
+	// sweep can settle an entry between the tick that armed it and the go-live
+	// edge, and a session pointing at an entry that reads `missed` is a
+	// disagreement nothing later resolves.
+	std::string ActiveEntryId();
 
 	// The broadcast edges, called from the one place that observes them. Going
 	// live is what moves an armed entry to `live`: the request alone does not,
@@ -149,16 +169,28 @@ private:
 	bool ArmIfDue(ScheduleEntryWithDestinations &row, int64_t now);
 	bool RefreshArmability(const ScheduleEntryWithDestinations &row);
 	void OpenCountdownIfDue(const ScheduleEntryWithDestinations &row, int64_t now);
-	void StartIfDue(const ScheduleEntryWithDestinations &row, int64_t now);
+	bool StartIfDue(const ScheduleEntryWithDestinations &row, int64_t now);
 	bool Armable(const ScheduleEntryWithDestinations &row, std::string &reason) const;
 	bool SetBlockReason(const std::string &id, const std::string &reason);
 	void SettleApplied();
 	void RevertApplied();
+	void ForgetArmed(const std::string &id);
+	// The armed entry whose start comes first, which is the one a broadcast started
+	// by hand belongs to. Reads the rows rather than assuming arm order: an entry
+	// created inside another's arm window arms later and starts sooner.
+	std::string ImminentArmedId();
 	void Log(const std::string &line) const;
 
 	ScheduleStore *store_ = nullptr;
 	std::unordered_map<std::string, Occurrence> occurrences_;
-	std::string armedId_;
+	// Every entry currently armed, not just the last one to arm. Windows overlap --
+	// a five-minute lead covers any entry starting within it -- and a single slot
+	// would hand the go-live edge to whichever armed most recently rather than to
+	// the one that is actually starting.
+	std::vector<std::string> armedIds_;
+	// The entry whose start this runner requested. It owns the go-live edge over any
+	// merely-armed one, since that broadcast is the one it asked for.
+	std::string startingId_;
 	std::string liveId_;
 	// The occurrence whose configuration is currently loaded into the go-live path.
 	std::string appliedId_;

@@ -359,6 +359,8 @@ target_sources(
     src/history/ScheduleRunner.hpp
     src/history/ScheduleStore.cpp
     src/history/ScheduleStore.hpp
+    src/history/ScheduledSetup.cpp
+    src/history/ScheduledSetup.hpp
     src/history/SessionRecorder.cpp
     src/history/SessionRecorder.hpp
     src/history/SessionStore.cpp

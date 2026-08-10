@@ -7643,6 +7643,9 @@ bool MethodScheduleDelete(const json &params, json &result, std::string &error)
 		error = "failed to delete the entry: " + store.LastError();
 		return false;
 	}
+	// Told after the row is gone, so the runner lets go of an entry it was holding
+	// rather than keeping on stamping a dead id onto the next broadcast.
+	ObsBootstrap::Scheduler().NoteEntryChanged(id);
 	EmitEvent(EventNames::kScheduleChanged, json::object());
 	result = json{{"removed", id}};
 	return true;

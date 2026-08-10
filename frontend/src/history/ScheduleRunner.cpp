@@ -1,14 +1,44 @@
 #include "ScheduleRunner.hpp"
 
+#include "ScheduledSetup.hpp"
+
 namespace History {
 
 void ScheduleRunner::Attach(ScheduleStore *store)
 {
 	store_ = store;
 	occurrences_.clear();
-	armedId_.clear();
+	armedIds_.clear();
+	startingId_.clear();
 	liveId_.clear();
 	appliedId_.clear();
+}
+
+void ScheduleRunner::ForgetArmed(const std::string &id)
+{
+	for (auto it = armedIds_.begin(); it != armedIds_.end(); ++it) {
+		if (*it == id) {
+			armedIds_.erase(it);
+			return;
+		}
+	}
+}
+
+std::string ScheduleRunner::ImminentArmedId()
+{
+	std::string best;
+	int64_t bestStart = 0;
+	for (const std::string &id : armedIds_) {
+		const std::unique_ptr<ScheduleEntry> row = store_->Get(id);
+		if (!row || row->state != ScheduleState::kArmed) {
+			continue;
+		}
+		if (best.empty() || row->startsAt < bestStart) {
+			best = id;
+			bestStart = row->startsAt;
+		}
+	}
+	return best;
 }
 
 void ScheduleRunner::Detach()
@@ -44,7 +74,9 @@ void ScheduleRunner::Tick()
 			changed = true;
 		}
 		OpenCountdownIfDue(row, now);
-		StartIfDue(row, now);
+		if (StartIfDue(row, now)) {
+			changed = true;
+		}
 	}
 
 	// Settled last, so an entry that reached T-0 on this tick had its chance to
@@ -66,8 +98,8 @@ void ScheduleRunner::Tick()
 
 // Drops the per-occurrence state of entries that are gone, have been moved far
 // enough into the future to be a different occurrence, or have been settled long
-// enough that the chip no longer needs the explanation. Also disarms the row this
-// runner armed if it was rescheduled out of reach of its own arm window.
+// enough that the chip no longer needs the explanation. Also disarms any row this
+// runner armed that was rescheduled out of reach of its own arm window.
 bool ScheduleRunner::PruneStale(int64_t now)
 {
 	bool changed = false;
@@ -83,15 +115,28 @@ bool ScheduleRunner::PruneStale(int64_t now)
 		it = occurrences_.erase(it);
 	}
 
-	// The armed row is tracked separately because an entry can be armed without ever
+	// Armed rows are tracked separately because an entry can be armed without ever
 	// accumulating occurrence state -- one that is not auto-start and has nothing
-	// wrong with it never touches the map.
-	if (!armedId_.empty()) {
-		const std::unique_ptr<ScheduleEntry> armed = store_->Get(armedId_);
-		if (!armed || armed->state != ScheduleState::kArmed) {
-			armedId_.clear();
-		} else if (DisarmIfOutOfWindow(*armed, now)) {
+	// wrong with it never touches the map -- and because an entry moved out of its
+	// own arm window is no longer in the range the tick reads.
+	const std::vector<std::string> armed = armedIds_;
+	armedIds_.clear();
+	for (const std::string &id : armed) {
+		const std::unique_ptr<ScheduleEntry> row = store_->Get(id);
+		if (!row || row->state != ScheduleState::kArmed) {
+			continue;
+		}
+		if (DisarmIfOutOfWindow(*row, now)) {
 			changed = true;
+			continue;
+		}
+		armedIds_.push_back(id);
+	}
+
+	if (!startingId_.empty()) {
+		const std::unique_ptr<ScheduleEntry> starting = store_->Get(startingId_);
+		if (!starting || starting->state != ScheduleState::kArmed) {
+			startingId_.clear();
 		}
 	}
 	if (!liveId_.empty()) {
@@ -108,14 +153,18 @@ bool ScheduleRunner::DisarmIfOutOfWindow(const ScheduleEntry &entry, int64_t now
 	if (entry.state != ScheduleState::kArmed || entry.startsAt - now <= kArmLeadMs) {
 		return false;
 	}
+	// A requested start is committed: the outputs may already be coming up, and
+	// disarming would put the routing back out from under them.
+	const auto it = occurrences_.find(entry.id);
+	if (it != occurrences_.end() && it->second.startRequested) {
+		return false;
+	}
 	if (!store_->SetState(entry.id, ScheduleState::kPlanned)) {
 		return false;
 	}
 	Log("[schedule] disarmed '" + entry.title + "' (" + entry.id + "): it was moved out of its arm window");
 	occurrences_.erase(entry.id);
-	if (armedId_ == entry.id) {
-		armedId_.clear();
-	}
+	ForgetArmed(entry.id);
 	if (appliedId_ == entry.id) {
 		RevertApplied();
 	}
@@ -130,6 +179,20 @@ void ScheduleRunner::NoteEntryChanged(const std::string &id)
 	const std::unique_ptr<ScheduleEntry> entry = store_->Get(id);
 	if (entry) {
 		DisarmIfOutOfWindow(*entry, nowMs());
+		return;
+	}
+	// Deleted. Nothing can be transitioned, but everything the runner was holding
+	// on its behalf has to go, or it would keep stamping a dead id onto sessions.
+	occurrences_.erase(id);
+	ForgetArmed(id);
+	if (startingId_ == id) {
+		startingId_.clear();
+	}
+	if (liveId_ == id) {
+		liveId_.clear();
+	}
+	if (appliedId_ == id) {
+		RevertApplied();
 	}
 }
 
@@ -147,16 +210,10 @@ bool ScheduleRunner::ArmIfDue(ScheduleEntryWithDestinations &row, int64_t now)
 		return false;
 	}
 	row.entry.state = ScheduleState::kArmed;
-
-	// Arming is not a check that the entry could go live -- it is loading it in.
-	// A previous occurrence's routing is put back first so two applications cannot
-	// stack and leave the second one unable to restore what was really there.
-	RevertApplied();
-	armedId_ = entry.id;
-	appliedId_ = entry.id;
-	if (applyEntry) {
-		applyEntry(row.destinations);
-	}
+	armedIds_.push_back(entry.id);
+	// Deliberately read-only. Arming surfaces the entry and starts asking whether it
+	// could go live; loading it into the routing waits for T-0, so configuration the
+	// user owns is only ever ours for the length of one go-live.
 	Log("[schedule] armed '" + entry.title + "' (" + entry.id + ")");
 	return true;
 }
@@ -168,6 +225,14 @@ bool ScheduleRunner::RefreshArmability(const ScheduleEntryWithDestinations &row)
 {
 	if (row.entry.state != ScheduleState::kArmed) {
 		return false;
+	}
+	// Skipped once this occurrence has asked to start: from that moment the outputs
+	// coming up are its own, and reporting them as somebody else's broadcast would
+	// paint a refusal over the start it just made.
+	const auto it = occurrences_.find(row.entry.id);
+	const bool starting = it != occurrences_.end() && it->second.startRequested;
+	if (!starting && isStreaming && isStreaming()) {
+		return SetBlockReason(row.entry.id, kAlreadyStreamingReason);
 	}
 	std::string reason;
 	return SetBlockReason(row.entry.id, Armable(row, reason) ? std::string() : reason);
@@ -191,30 +256,45 @@ void ScheduleRunner::OpenCountdownIfDue(const ScheduleEntryWithDestinations &row
 	Log("[schedule] countdown open for '" + entry.title + "' (" + entry.id + ")");
 }
 
-void ScheduleRunner::StartIfDue(const ScheduleEntryWithDestinations &row, int64_t now)
+bool ScheduleRunner::StartIfDue(const ScheduleEntryWithDestinations &row, int64_t now)
 {
 	const ScheduleEntry &entry = row.entry;
 	if (entry.state != ScheduleState::kArmed || entry.autoStart == 0 || now < entry.startsAt) {
-		return;
+		return false;
 	}
 	const auto it = occurrences_.find(entry.id);
 	if (it != occurrences_.end() && (it->second.canceled || it->second.startRequested)) {
-		return;
+		return false;
 	}
 	// Broadcasting to nowhere is worse than not broadcasting. RefreshArmability has
 	// already asked this tick and keeps asking through the grace window, so a
 	// destination that comes back fifteen seconds late still gets to go live.
 	if (!BlockReason(entry.id).empty()) {
-		return;
+		return false;
+	}
+	// The entry becomes the live configuration here and nowhere earlier. A refusal is
+	// left unlatched on purpose: the next tick recomputes it, so a blocker that
+	// clears inside the grace window still gets its start.
+	if (applyEntry) {
+		RevertApplied();
+		std::string reason;
+		if (!applyEntry(row.destinations, reason)) {
+			return SetBlockReason(entry.id,
+					      reason.empty() ? "could not load this entry's destinations" : reason);
+		}
+		appliedId_ = entry.id;
 	}
 	occurrences_[entry.id].startRequested = true;
+	startingId_ = entry.id;
 	Log("[schedule] auto-starting '" + entry.title + "' (" + entry.id + ")");
 	if (goLive) {
 		goLive();
 	}
 	// The state stays `armed` until the outputs actually come up. A request is not
 	// a broadcast, and an entry that reads `live` while nothing is streaming is the
-	// one claim this feature must never make.
+	// one claim this feature must never make. Nothing schedule.list reports has
+	// changed yet either, so this reports no change.
+	return false;
 }
 
 bool ScheduleRunner::Armable(const ScheduleEntryWithDestinations &row, std::string &reason) const
@@ -297,6 +377,16 @@ bool ScheduleRunner::CancelCountdown(const std::string &id, std::string &error)
 		error = "that entry is " + entry->state + ", not armed";
 		return false;
 	}
+	// Refused rather than obeyed once the start has been requested. Going live is
+	// asynchronous, so the outputs from that request are still on their way up;
+	// cancelling would put the routing back underneath them and the broadcast would
+	// go out to whatever was there before. Stopping a broadcast is not what a
+	// countdown cancel means, so this refuses instead.
+	const auto it = occurrences_.find(id);
+	if (it != occurrences_.end() && it->second.startRequested) {
+		error = "that entry is already going live";
+		return false;
+	}
 	if (!store_->SetState(id, ScheduleState::kPlanned)) {
 		error = "failed to disarm the entry: " + store_->LastError();
 		return false;
@@ -304,11 +394,8 @@ bool ScheduleRunner::CancelCountdown(const std::string &id, std::string &error)
 	Occurrence &occurrence = occurrences_[id];
 	occurrence.canceled = true;
 	occurrence.countdownOpen = false;
-	occurrence.startRequested = false;
 	occurrence.blockReason.clear();
-	if (armedId_ == id) {
-		armedId_.clear();
-	}
+	ForgetArmed(id);
 	if (appliedId_ == id) {
 		RevertApplied();
 	}
@@ -331,26 +418,53 @@ std::string ScheduleRunner::BlockReason(const std::string &id) const
 	return it == occurrences_.end() ? std::string() : it->second.blockReason;
 }
 
-const std::string &ScheduleRunner::ActiveEntryId() const
+std::string ScheduleRunner::ActiveEntryId()
 {
-	return liveId_.empty() ? armedId_ : liveId_;
+	if (!store_ || !store_->IsAttached()) {
+		return {};
+	}
+	// The live one, then the one that asked to start, then the soonest merely armed
+	// -- which is the entry a broadcast the user started by hand belongs to.
+	std::string id = liveId_;
+	if (id.empty()) {
+		id = startingId_.empty() ? ImminentArmedId() : startingId_;
+	}
+	if (id.empty()) {
+		return {};
+	}
+	// Re-read rather than trusted: the missed sweep can settle an entry between the
+	// tick that armed it and this go-live edge, and a session pointing at an entry
+	// that reads `missed` is a disagreement nothing later resolves.
+	const std::unique_ptr<ScheduleEntry> entry = store_->Get(id);
+	if (!entry || (entry->state != ScheduleState::kArmed && entry->state != ScheduleState::kLive)) {
+		return {};
+	}
+	return id;
 }
 
 void ScheduleRunner::NoteWentLive()
 {
-	if (!store_ || !store_->IsAttached() || armedId_.empty()) {
+	if (!store_ || !store_->IsAttached()) {
 		return;
 	}
-	const std::unique_ptr<ScheduleEntry> entry = store_->Get(armedId_);
+	// The entry that asked for this broadcast owns the edge; only when none did --
+	// the user pressed go live during an armed window -- does a merely-armed one
+	// claim it.
+	const std::string id = startingId_.empty() ? ImminentArmedId() : startingId_;
+	startingId_.clear();
+	if (id.empty()) {
+		return;
+	}
+	const std::unique_ptr<ScheduleEntry> entry = store_->Get(id);
 	if (!entry || entry->state != ScheduleState::kArmed) {
-		armedId_.clear();
+		ForgetArmed(id);
 		return;
 	}
-	if (!store_->SetState(armedId_, ScheduleState::kLive)) {
+	if (!store_->SetState(id, ScheduleState::kLive)) {
 		return;
 	}
-	liveId_ = armedId_;
-	armedId_.clear();
+	liveId_ = id;
+	ForgetArmed(id);
 	Log("[schedule] '" + entry->title + "' (" + liveId_ + ") is live");
 	if (onChanged) {
 		onChanged();

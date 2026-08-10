@@ -3,10 +3,12 @@
 #include "history/Db.hpp"
 #include "history/ScheduleRunner.hpp"
 #include "history/ScheduleStore.hpp"
+#include "history/ScheduledSetup.hpp"
 #include "history/Schema.hpp"
 #include "history/SessionRecorder.hpp"
 #include "history/SessionStore.hpp"
 
+#include <map>
 #include <string>
 #include <vector>
 
@@ -672,6 +674,11 @@ struct RunnerFixture {
 	int changedCalls = 0;
 	int applyCalls = 0;
 	int revertCalls = 0;
+	// What the injected apply answers, and what a broadcast the runner did not
+	// start looks like from the outside.
+	bool applyOk = true;
+	std::string applyReason = "the routing could not be loaded";
+	bool streaming = false;
 	std::vector<std::string> appliedProfiles;
 	std::vector<std::string> logLines;
 };
@@ -691,12 +698,20 @@ static void OpenRunner(RunnerFixture &f, const char *name)
 	f.runner.onChanged = [&f] {
 		f.changedCalls++;
 	};
-	f.runner.applyEntry = [&f](const std::vector<History::ScheduleDestination> &destinations) {
+	f.runner.isStreaming = [&f] {
+		return f.streaming;
+	};
+	f.runner.applyEntry = [&f](const std::vector<History::ScheduleDestination> &destinations, std::string &reason) {
+		if (!f.applyOk) {
+			reason = f.applyReason;
+			return false;
+		}
 		f.applyCalls++;
 		f.appliedProfiles.clear();
 		for (const History::ScheduleDestination &d : destinations) {
 			f.appliedProfiles.push_back(d.profileId);
 		}
+		return true;
 	};
 	f.runner.revertEntry = [&f] {
 		f.revertCalls++;
@@ -787,13 +802,13 @@ static void test_runner_cancel_disarms_only_this_occurrence(void **state)
 	f.clock = startsAt - 30'000;
 	f.runner.Tick();
 	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kArmed);
-	assert_int_equal(f.applyCalls, 1);
 
 	std::string error;
 	assert_true(f.runner.CancelCountdown(id, error));
-	// The routing the arm applied goes back immediately. A countdown the user
-	// stopped must not leave their destination set rewritten.
-	assert_int_equal(f.revertCalls, 1);
+	// Nothing to put back: arming never touched the routing, so a cancelled
+	// countdown leaves the user's configuration exactly as they left it.
+	assert_int_equal(f.applyCalls, 0);
+	assert_int_equal(f.revertCalls, 0);
 
 	// Back to planned and flagged, which is how the UI tells a cancelled
 	// occurrence from one that was never armed -- both read `planned`.
@@ -987,10 +1002,12 @@ static void test_runner_starts_once_a_destination_recovers(void **state)
 	assert_true(f.runner.BlockReason(id).empty());
 }
 
-// Design 5 step 2: arming loads the entry into the go-live path. Checking that it
-// could go live is not the same thing -- without this an auto-start broadcasts to
-// whatever happened to be enabled, under the previous stream's title.
-static void test_runner_keeps_the_entry_applied_until_the_broadcast_ends(void **state)
+// Design 5 step 2: the entry's destinations and metadata become the live
+// configuration, or an auto-start broadcasts to whatever happened to be enabled
+// under the previous stream's title. It happens at T-0 and not at the arm: this
+// rewrites configuration the user owns, so the window in which that is true is one
+// go-live rather than five minutes.
+static void test_runner_applies_at_zero_not_at_arm(void **state)
 {
 	(void)state;
 	RunnerFixture f;
@@ -998,14 +1015,24 @@ static void test_runner_keeps_the_entry_applied_until_the_broadcast_ends(void **
 	const int64_t startsAt = 10'000'000;
 	const std::string id = SeedEntry(f, startsAt, true);
 
-	f.clock = startsAt - 60'000;
+	f.clock = startsAt - History::kArmLeadMs;
 	f.runner.Tick();
-	assert_int_equal(f.applyCalls, 1);
-	assert_int_equal((int)f.appliedProfiles.size(), 1);
-	assert_string_equal(f.appliedProfiles[0].c_str(), "p1");
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kArmed);
+	assert_int_equal(f.applyCalls, 0);
+
+	// Still nothing through the countdown, a minute from the start.
+	f.clock = startsAt - History::kCountdownLeadMs;
+	f.runner.Tick();
+	assert_int_equal(f.applyCalls, 0);
 
 	f.clock = startsAt;
 	f.runner.Tick();
+	assert_int_equal(f.applyCalls, 1);
+	assert_int_equal(f.goLiveCalls, 1);
+	assert_int_equal((int)f.appliedProfiles.size(), 1);
+	assert_string_equal(f.appliedProfiles[0].c_str(), "p1");
+
+	f.streaming = true;
 	f.runner.NoteWentLive();
 
 	// Well past the point an unstarted entry would have settled. A live one keeps
@@ -1015,27 +1042,173 @@ static void test_runner_keeps_the_entry_applied_until_the_broadcast_ends(void **
 	assert_int_equal(f.revertCalls, 0);
 	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kLive);
 
+	f.streaming = false;
 	f.runner.NoteStoppedStreaming();
 	assert_int_equal(f.revertCalls, 1);
 }
 
-static void test_runner_reverts_when_an_armed_entry_is_missed(void **state)
+// The request went out and the outputs never came up. The entry settles as missed
+// like any other, and the configuration it loaded goes back with it -- otherwise a
+// failed start leaves the user's destinations silently rewritten.
+static void test_runner_reverts_when_a_requested_start_never_comes_up(void **state)
 {
 	(void)state;
 	RunnerFixture f;
 	OpenRunner(f, "runner_applied_missed.db");
 	const int64_t startsAt = 10'000'000;
-	const std::string id = SeedEntry(f, startsAt, false);
+	const std::string id = SeedEntry(f, startsAt, true);
 
 	f.clock = startsAt - 60'000;
 	f.runner.Tick();
+	f.clock = startsAt;
+	f.runner.Tick();
 	assert_int_equal(f.applyCalls, 1);
+	assert_int_equal(f.goLiveCalls, 1);
 
 	// Settled and put back on the same tick, not the next one.
 	f.clock = startsAt + History::kMissedGraceMs + 1000;
 	f.runner.Tick();
 	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kMissed);
 	assert_int_equal(f.revertCalls, 1);
+}
+
+// Never take the routing away from a broadcast that is already running. The
+// refusal shows on the chip for the whole armed window, which is time enough to
+// stop the other broadcast before the start is due.
+static void test_runner_refuses_to_start_while_something_is_streaming(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_already_live.db");
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntry(f, startsAt, true);
+	f.streaming = true;
+
+	f.clock = startsAt - History::kArmLeadMs;
+	f.runner.Tick();
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kArmed);
+	assert_string_equal(f.runner.BlockReason(id).c_str(), History::kAlreadyStreamingReason);
+
+	f.clock = startsAt;
+	f.runner.Tick();
+	assert_int_equal(f.goLiveCalls, 0);
+	assert_int_equal(f.applyCalls, 0);
+
+	// Stopped in time: the refusal clears and the entry still gets its start.
+	f.streaming = false;
+	f.clock = startsAt + 15'000;
+	f.runner.Tick();
+	assert_int_equal(f.goLiveCalls, 1);
+	assert_int_equal(f.applyCalls, 1);
+}
+
+// An apply that refuses is a refused start, not a start onto whatever was there.
+// The reason is not latched: the next tick asks again, so a blocker that clears
+// inside the grace window still gets its broadcast.
+static void test_runner_refuses_a_start_the_apply_refused(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_apply_refused.db");
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntry(f, startsAt, true);
+	f.applyOk = false;
+
+	f.clock = startsAt - 60'000;
+	f.runner.Tick();
+	f.clock = startsAt;
+	f.runner.Tick();
+	assert_int_equal(f.goLiveCalls, 0);
+	assert_string_equal(f.runner.BlockReason(id).c_str(), "the routing could not be loaded");
+
+	f.applyOk = true;
+	f.clock = startsAt + 15'000;
+	f.runner.Tick();
+	assert_int_equal(f.goLiveCalls, 1);
+	assert_true(f.runner.BlockReason(id).empty());
+}
+
+// Cancelling a countdown means "do not start", never "stop the broadcast". Once
+// the request is out the outputs are on their way up, and putting the routing back
+// underneath them would send that broadcast somewhere nobody asked for.
+static void test_runner_refuses_cancel_once_the_start_is_requested(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_cancel_after_start.db");
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntry(f, startsAt, true);
+
+	f.clock = startsAt - 60'000;
+	f.runner.Tick();
+	f.clock = startsAt;
+	f.runner.Tick();
+	assert_int_equal(f.goLiveCalls, 1);
+
+	std::string error;
+	assert_false(f.runner.CancelCountdown(id, error));
+	assert_false(error.empty());
+	assert_int_equal(f.revertCalls, 0);
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kArmed);
+	assert_false(f.runner.IsCountdownCanceled(id));
+}
+
+// Two entries whose windows overlap. Only one can hold the routing, and the first
+// to start holds it: the second is refused for as long as that broadcast runs
+// rather than taking it over halfway through.
+static void test_runner_holds_the_routing_for_one_entry_at_a_time(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_overlapping.db");
+	const int64_t startsAt = 10'000'000;
+	const std::string first = SeedEntry(f, startsAt, true);
+	const std::string second = SeedEntry(f, startsAt + 30'000, true);
+
+	f.clock = startsAt - 60'000;
+	f.runner.Tick();
+	assert_string_equal(f.store.Get(first)->state.c_str(), History::ScheduleState::kArmed);
+	assert_string_equal(f.store.Get(second)->state.c_str(), History::ScheduleState::kArmed);
+
+	f.clock = startsAt;
+	f.runner.Tick();
+	assert_int_equal(f.applyCalls, 1);
+	f.streaming = true;
+	f.runner.NoteWentLive();
+	assert_string_equal(f.store.Get(first)->state.c_str(), History::ScheduleState::kLive);
+
+	f.clock = startsAt + 30'000;
+	f.runner.Tick();
+	assert_int_equal(f.applyCalls, 1);
+	assert_int_equal(f.goLiveCalls, 1);
+	assert_int_equal(f.revertCalls, 0);
+	assert_string_equal(f.runner.BlockReason(second).c_str(), History::kAlreadyStreamingReason);
+	// The live entry keeps its own routing while the second is refused.
+	assert_string_equal(f.runner.ActiveEntryId().c_str(), first.c_str());
+}
+
+// Deleting an entry the runner is holding. Without this it keeps stamping a dead
+// id onto the next broadcast, and the routing it loaded is never put back.
+static void test_runner_lets_go_of_a_deleted_entry(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_deleted.db");
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntry(f, startsAt, true);
+
+	f.clock = startsAt - 60'000;
+	f.runner.Tick();
+	f.clock = startsAt;
+	f.runner.Tick();
+	assert_int_equal(f.applyCalls, 1);
+	assert_string_equal(f.runner.ActiveEntryId().c_str(), id.c_str());
+
+	assert_true(f.store.Remove(id));
+	f.runner.NoteEntryChanged(id);
+	assert_string_equal(f.runner.ActiveEntryId().c_str(), "");
+	assert_int_equal(f.revertCalls, 1);
+	assert_false(f.runner.IsCountdownCanceled(id));
 }
 
 // Moved a day out on the calendar. Left armed, the chip reads armed until the new
@@ -1062,7 +1235,8 @@ static void test_runner_disarms_an_entry_moved_out_of_its_window(void **state)
 	f.runner.Tick();
 	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kPlanned);
 	assert_string_equal(f.runner.ActiveEntryId().c_str(), "");
-	assert_int_equal(f.revertCalls, 1);
+	// Arming loaded nothing, so a disarm has nothing to put back.
+	assert_int_equal(f.revertCalls, 0);
 }
 
 // The bridge tells the runner as soon as the edit lands, so the disarm does not
@@ -1118,6 +1292,267 @@ static void test_runner_tracks_armability_through_the_window(void **state)
 	assert_string_equal(f.runner.BlockReason(id).c_str(), "'Main' is not connected");
 }
 
+// A ScheduledSetup over in-memory routing and metadata. The runner's own tests
+// count the injected calls, which proves the runner asked at the right moment and
+// nothing about what came back -- and a restore that silently puts back the wrong
+// thing leaves the user's destinations rewritten with nothing to show for it. So
+// these assert the state itself.
+struct SetupFixture {
+	std::vector<History::RoutingBinding> bindings;
+	std::map<std::string, nlohmann::json> overrides;
+	bool streaming = false;
+	int saves = 0;
+	History::ScheduledSetup setup;
+};
+
+static void OpenSetup(SetupFixture &f)
+{
+	f.setup.isStreaming = [&f] {
+		return f.streaming;
+	};
+	f.setup.routing.read = [&f] {
+		return f.bindings;
+	};
+	f.setup.routing.write = [&f](const std::string &uuid, bool enabled) {
+		for (History::RoutingBinding &b : f.bindings) {
+			if (b.uuid == uuid) {
+				b.enabled = enabled;
+			}
+		}
+	};
+	f.setup.metadata.read = [&f](const std::string &profileId) {
+		const auto it = f.overrides.find(profileId);
+		return it == f.overrides.end() ? nlohmann::json::object() : it->second;
+	};
+	f.setup.metadata.write = [&f](const std::string &profileId, const nlohmann::json &fields) {
+		f.overrides[profileId] = fields;
+	};
+	f.setup.metadata.clear = [&f](const std::string &profileId) {
+		f.overrides.erase(profileId);
+	};
+	f.setup.metadata.save = [&f] {
+		f.saves++;
+	};
+}
+
+static void SeedBindings(SetupFixture &f)
+{
+	f.bindings.push_back({"b1", "p1", false});
+	f.bindings.push_back({"b2", "p2", true});
+	f.bindings.push_back({"b3", "p3", true});
+}
+
+static bool EnabledIs(const SetupFixture &f, const char *uuid, bool enabled)
+{
+	for (const History::RoutingBinding &b : f.bindings) {
+		if (b.uuid == uuid) {
+			return b.enabled == enabled;
+		}
+	}
+	return false;
+}
+
+static History::ScheduleDestination Dest(const char *profileId, const char *title)
+{
+	History::ScheduleDestination d;
+	d.profileId = profileId;
+	d.title = title;
+	return d;
+}
+
+// The enabled set becomes exactly what the entry names, and the set the user had
+// comes back whole.
+static void test_setup_restores_exactly_what_it_changed(void **state)
+{
+	(void)state;
+	SetupFixture f;
+	OpenSetup(f);
+	SeedBindings(f);
+
+	std::string reason;
+	assert_true(f.setup.Apply({Dest("p1", "")}, reason));
+	assert_true(f.setup.IsApplied());
+	assert_true(EnabledIs(f, "b1", true));
+	assert_true(EnabledIs(f, "b2", false));
+	assert_true(EnabledIs(f, "b3", false));
+
+	f.setup.Revert();
+	assert_false(f.setup.IsApplied());
+	assert_true(EnabledIs(f, "b1", false));
+	assert_true(EnabledIs(f, "b2", true));
+	assert_true(EnabledIs(f, "b3", true));
+
+	// A second revert must not re-assert a stale snapshot over whatever is there now.
+	f.setup.Revert();
+	assert_true(EnabledIs(f, "b2", true));
+}
+
+// One binding changed by hand since the apply is the newer intent and is left
+// alone. It must not strand the rest of the restore, which is what comparing the
+// enabled set as a whole would do.
+static void test_setup_leaves_a_binding_changed_since_alone(void **state)
+{
+	(void)state;
+	SetupFixture f;
+	OpenSetup(f);
+	SeedBindings(f);
+
+	std::string reason;
+	assert_true(f.setup.Apply({Dest("p1", "")}, reason));
+	f.setup.routing.write("b3", true); // the user turned it back on
+
+	f.setup.Revert();
+	assert_true(EnabledIs(f, "b1", false));
+	assert_true(EnabledIs(f, "b2", true));
+	assert_true(EnabledIs(f, "b3", true));
+}
+
+// The entry states what it wants changed. A field it does not carry keeps whatever
+// the user had remembered, or an entry with only a title erases their category and
+// tags every time it runs.
+static void test_setup_merges_metadata_rather_than_replacing(void **state)
+{
+	(void)state;
+	SetupFixture f;
+	OpenSetup(f);
+	SeedBindings(f);
+	const nlohmann::json before = {{"title", "Old night"},
+				       {"category", {{"id", "509658"}, {"name", "Just Chatting"}}},
+				       {"tags", nlohmann::json::array({"english"})}};
+	f.overrides["p1"] = before;
+
+	std::string reason;
+	assert_true(f.setup.Apply({Dest("p1", "Friday Night")}, reason));
+	assert_string_equal(f.overrides["p1"]["title"].get<std::string>().c_str(), "Friday Night");
+	assert_string_equal(f.overrides["p1"]["category"]["id"].get<std::string>().c_str(), "509658");
+	assert_int_equal((int)f.overrides["p1"]["tags"].size(), 1);
+
+	f.setup.Revert();
+	assert_true(f.overrides["p1"] == before);
+}
+
+// Providers key on the category id; the name is what a prefill shows. Both halves
+// go through, neither standing in for the other.
+static void test_setup_sends_the_category_id_and_name(void **state)
+{
+	(void)state;
+	SetupFixture f;
+	OpenSetup(f);
+	SeedBindings(f);
+	History::ScheduleDestination d = Dest("p1", "");
+	d.category = "Chess";
+	d.categoryId = "743";
+	d.tags = R"(["chess","live"])";
+
+	std::string reason;
+	assert_true(f.setup.Apply({d}, reason));
+	assert_string_equal(f.overrides["p1"]["category"]["id"].get<std::string>().c_str(), "743");
+	assert_string_equal(f.overrides["p1"]["category"]["name"].get<std::string>().c_str(), "Chess");
+	assert_int_equal((int)f.overrides["p1"]["tags"].size(), 2);
+	// No title on the destination, so none is written -- a blank must not blank one.
+	assert_false(f.overrides["p1"].contains("title"));
+}
+
+// Two destinations naming the same profile. Captured once, or the second capture
+// records what the first just wrote and the user's own value never comes back.
+static void test_setup_captures_a_duplicate_profile_once(void **state)
+{
+	(void)state;
+	SetupFixture f;
+	OpenSetup(f);
+	SeedBindings(f);
+	const nlohmann::json before = {{"title", "What the user typed"}};
+	f.overrides["p1"] = before;
+
+	std::string reason;
+	assert_true(f.setup.Apply({Dest("p1", "First"), Dest("p1", "Second")}, reason));
+	f.setup.Revert();
+	assert_true(f.overrides["p1"] == before);
+}
+
+// An override the apply created, over a profile that had none, is removed rather
+// than left behind as an empty-ish bag the go-live path would keep merging.
+static void test_setup_removes_an_override_it_created(void **state)
+{
+	(void)state;
+	SetupFixture f;
+	OpenSetup(f);
+	SeedBindings(f);
+
+	std::string reason;
+	assert_true(f.setup.Apply({Dest("p1", "Friday Night")}, reason));
+	assert_int_equal((int)f.overrides.count("p1"), 1);
+
+	f.setup.Revert();
+	assert_int_equal((int)f.overrides.count("p1"), 0);
+}
+
+// The worst outcome this feature could have is stopping a running broadcast.
+// Flipping a binding off stops its output, so nothing here touches the routing
+// while anything is live -- in either direction.
+static void test_setup_never_touches_the_routing_while_live(void **state)
+{
+	(void)state;
+	SetupFixture f;
+	OpenSetup(f);
+	SeedBindings(f);
+	f.streaming = true;
+
+	std::string reason;
+	assert_false(f.setup.Apply({Dest("p1", "")}, reason));
+	assert_string_equal(reason.c_str(), History::kAlreadyStreamingReason);
+	assert_false(f.setup.IsApplied());
+	assert_true(EnabledIs(f, "b2", true));
+
+	// Applied while idle, then live: the restore waits for the stop edge and keeps
+	// its snapshot rather than dropping it.
+	f.streaming = false;
+	assert_true(f.setup.Apply({Dest("p1", "")}, reason));
+	f.streaming = true;
+	f.setup.Revert();
+	assert_true(f.setup.IsApplied());
+	assert_true(EnabledIs(f, "b1", true));
+	assert_true(EnabledIs(f, "b2", false));
+
+	f.streaming = false;
+	f.setup.Revert();
+	assert_false(f.setup.IsApplied());
+	assert_true(EnabledIs(f, "b1", false));
+	assert_true(EnabledIs(f, "b2", true));
+}
+
+// A crash or a kill inside the armed window leaves rows describing what a process
+// was doing. No process is doing it now: a row still `armed` would go live the
+// moment the app opens, and one left `live` would read live forever, since only a
+// broadcast's own stop edge settles it and that edge is gone.
+static void test_schedule_recovers_interrupted_rows(void **state)
+{
+	(void)state;
+	History::Db db;
+	History::ScheduleStore store;
+	const std::string path = TempDbPath("schedule_recover.db");
+	assert_true(db.Open(path));
+	assert_true(store.Attach(path));
+
+	History::ScheduleEntry armed = MakeEntry(10'000'000, "armed one");
+	assert_true(store.Create(armed, {}));
+	assert_true(store.SetState(armed.id, History::ScheduleState::kArmed));
+	History::ScheduleEntry live = MakeEntry(10'000'000, "live one");
+	assert_true(store.Create(live, {}));
+	assert_true(store.SetState(live.id, History::ScheduleState::kLive));
+	History::ScheduleEntry planned = MakeEntry(20'000'000, "planned one");
+	assert_true(store.Create(planned, {}));
+
+	assert_int_equal(store.RecoverInterrupted(), 2);
+	// Armed goes back to planned so the runner arms it again cleanly; live becomes
+	// done, because it did happen -- the session row is where the crash is recorded.
+	assert_string_equal(store.Get(armed.id)->state.c_str(), History::ScheduleState::kPlanned);
+	assert_string_equal(store.Get(live.id)->state.c_str(), History::ScheduleState::kDone);
+	assert_string_equal(store.Get(planned.id)->state.c_str(), History::ScheduleState::kPlanned);
+
+	assert_int_equal(store.RecoverInterrupted(), 0);
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -1156,11 +1591,24 @@ int main(void)
 		cmocka_unit_test(test_runner_refuses_auto_start_with_no_armable_destination),
 		cmocka_unit_test(test_runner_refuses_auto_start_with_no_destinations),
 		cmocka_unit_test(test_runner_starts_once_a_destination_recovers),
-		cmocka_unit_test(test_runner_keeps_the_entry_applied_until_the_broadcast_ends),
-		cmocka_unit_test(test_runner_reverts_when_an_armed_entry_is_missed),
+		cmocka_unit_test(test_runner_applies_at_zero_not_at_arm),
+		cmocka_unit_test(test_runner_reverts_when_a_requested_start_never_comes_up),
+		cmocka_unit_test(test_runner_refuses_to_start_while_something_is_streaming),
+		cmocka_unit_test(test_runner_refuses_a_start_the_apply_refused),
+		cmocka_unit_test(test_runner_refuses_cancel_once_the_start_is_requested),
+		cmocka_unit_test(test_runner_holds_the_routing_for_one_entry_at_a_time),
+		cmocka_unit_test(test_runner_lets_go_of_a_deleted_entry),
 		cmocka_unit_test(test_runner_disarms_an_entry_moved_out_of_its_window),
 		cmocka_unit_test(test_runner_disarms_on_an_edit_without_waiting_for_a_tick),
 		cmocka_unit_test(test_runner_tracks_armability_through_the_window),
+		cmocka_unit_test(test_setup_restores_exactly_what_it_changed),
+		cmocka_unit_test(test_setup_leaves_a_binding_changed_since_alone),
+		cmocka_unit_test(test_setup_merges_metadata_rather_than_replacing),
+		cmocka_unit_test(test_setup_sends_the_category_id_and_name),
+		cmocka_unit_test(test_setup_captures_a_duplicate_profile_once),
+		cmocka_unit_test(test_setup_removes_an_override_it_created),
+		cmocka_unit_test(test_setup_never_touches_the_routing_while_live),
+		cmocka_unit_test(test_schedule_recovers_interrupted_rows),
 	};
 	return cmocka_run_group_tests(tests, nullptr, nullptr);
 }
