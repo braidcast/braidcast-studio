@@ -7,6 +7,7 @@
   import {
     addDays,
     armPhase,
+    atMinute,
     destinationConflicts,
     linkedEntryIds,
     LIVE_STATES,
@@ -166,9 +167,11 @@
   // hour when that has already gone by, since a form pre-filled with a time that
   // has passed is a plan nothing can act on.
   function openDay(dayStart: number): void {
-    const hourMs = 60 * MS_MIN;
-    const evening = dayStart + DEFAULT_NEW_HOUR * hourMs;
-    const nextHour = Math.ceil(Date.now() / hourMs) * hourMs;
+    const evening = atMinute(dayStart, DEFAULT_NEW_HOUR * 60);
+    // Rounded on the local clock: dividing the epoch by an hour rounds to a UTC
+    // hour, which is not a whole hour anywhere on a half-hour offset.
+    const now = Date.now();
+    const nextHour = atMinute(startOfDay(now), (new Date(now).getHours() + 1) * 60);
     openCreate(Math.max(evening, nextHour), DEFAULT_NEW_MIN);
   }
 

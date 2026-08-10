@@ -215,6 +215,7 @@
             type="button"
             id={optionId(i)}
             role="option"
+            tabindex="-1"
             aria-selected={i === active}
             class:active={i === active}
             onmousedown={() => pick(c)}>{c.name}</button

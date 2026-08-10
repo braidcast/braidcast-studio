@@ -117,10 +117,10 @@
   }
 
   // The category control syncs its visible text off the identity of the value it is
-  // given, so a fresh {id,name} literal per render would reset the box every time
-  // anything else in this form changed -- clobbering a category being typed into it
-  // from a keystroke in the title field beside it. Held per profile so the reference
-  // only changes when the category itself does.
+  // given, so a fresh {id,name} literal per render would reset the box whenever the
+  // metadata it reads is reassigned -- clobbering a category being typed into it from
+  // a keystroke in the per-destination title beside it. Held per profile so the
+  // reference only changes when the category itself does.
   const catByProfile = new Map<string, { id: string; name: string }>();
   function categoryOf(profileId: string): { id: string; name: string } | null {
     const m = metaOf(profileId);

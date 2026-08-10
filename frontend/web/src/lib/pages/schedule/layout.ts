@@ -330,9 +330,15 @@ export function minutesInto(dayStart: number, ms: number): number {
  * because a create gesture genuinely belongs to the column it started in.
  */
 export function atMinute(dayStart: number, minutes: number): number {
-  const snapped = Math.round(minutes / SNAP_MIN) * SNAP_MIN;
+  return atExactMinute(dayStart, Math.round(minutes / SNAP_MIN) * SNAP_MIN);
+}
+
+/** `atMinute` without the snap. Minutes are counted onto the local calendar day
+ * rather than added to the epoch, which is what keeps a 23- or 25-hour day from
+ * shifting everything on it by an hour. */
+export function atExactMinute(dayStart: number, minutes: number): number {
   const d = new Date(dayStart);
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, snapped, 0, 0).getTime();
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, minutes, 0, 0).getTime();
 }
 
 /** Wall-clock minutes from midnight of the day `ms` itself falls in. */
@@ -344,12 +350,11 @@ export function minuteOfDay(ms: number): number {
  * change is expressed, so no caller re-derives it as an epoch offset and lands an
  * hour out across a DST boundary.
  *
- * Built like atMinute but WITHOUT its snap: moving an entry to another day is not
- * an edit of the time it starts at, and rounding here would quietly rewrite a
- * 14:07 stream to 14:00 on its way across the month grid. */
+ * Unsnapped: moving an entry to another day is not an edit of the time it starts
+ * at, and rounding here would quietly rewrite a 14:07 stream to 14:00 on its way
+ * across the month grid. */
 export function sameTimeOnDay(dayStart: number, ms: number): number {
-  const d = new Date(dayStart);
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, minuteOfDay(ms), 0, 0).getTime();
+  return atExactMinute(dayStart, minuteOfDay(ms));
 }
 
 // --- month grid ---------------------------------------------------------------

@@ -98,7 +98,11 @@
   // The image on screen: this field's own, else the one it inherits. An inherited thumbnail
   // is the thumbnail that will be uploaded, so it is previewed and size-checked exactly as
   // a set one is rather than named in a dashed placeholder box.
-  const imgPath = $derived(str || (showGhost ? ghostText : ""));
+  // Only an image field names a file. Every other type puts its typed text in `str`,
+  // and an ungated path here would hand each keystroke to file.readDataUri as a
+  // filesystem path -- a bridge round trip and a logged failure per character, with
+  // the text in the log line.
+  const imgPath = $derived(field.type === "image" ? str || (showGhost ? ghostText : "") : "");
 
   function basename(p: string): string {
     return p.split(/[\\/]/).pop() || p;
@@ -312,6 +316,7 @@
     class:ovr={accent}
     class:narrow
     type="text"
+    spellcheck="false"
     placeholder={showGhost ? ghostLabel : placeholder}
     value={str}
     oninput={(e) => onChange(e.currentTarget.value)}

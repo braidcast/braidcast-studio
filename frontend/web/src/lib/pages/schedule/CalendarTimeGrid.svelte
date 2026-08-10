@@ -282,7 +282,7 @@
   }
 
   function slotIsPast(dayStart: number, hour: number): boolean {
-    return dayStart + (hour + 1) * 60 * MS_MIN <= now;
+    return atMinute(dayStart, (hour + 1) * 60) <= now;
   }
 
   // Past slots are disabled, and a disabled button cannot hold the grid's single
@@ -334,7 +334,7 @@
         break;
       case "Enter":
       case " ": {
-        const start = days[col] + hour * 60 * MS_MIN;
+        const start = atMinute(days[col], hour * 60);
         if (!rejectIfPast(start)) {
           onCreate(start, DEFAULT_NEW_MIN);
         }
@@ -407,7 +407,7 @@
           <div class="col">
             <!-- The immutable past, shaded rather than merely un-draggable: the
                  boundary is the same line the now indicator draws. -->
-            {#if column.dayStart + MINUTES_PER_DAY * MS_MIN <= now}
+            {#if atMinute(column.dayStart, MINUTES_PER_DAY) <= now}
               <div class="pastfill" style="top:0;height:{24 * HOUR_PX}px"></div>
             {:else if sameDay(column.dayStart, now)}
               <div
