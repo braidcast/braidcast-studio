@@ -371,6 +371,12 @@ void RunStatsSelfTest();
 // one avoids that rather than solving it, so do not extend it into a write test
 // without adding the snapshot first. Gated by the caller to the smoke path.
 void RunCalendarSelfTest();
+// Headless proof for scheduling: a schedule.create / list / delete round trip that
+// leaves the table exactly as it found it. The entry is dated a year out so the
+// runner never arms it -- arming rewrites real output bindings and metadata, which
+// a smoke run must not do, so that half is proven in test_history against an
+// injected clock instead. Gated by the caller to the smoke path.
+void RunScheduleSelfTest();
 // Headless proof for the embedded MCP server: spin up a test McpServer (in-process
 // HandleRequest, no real socket), then drive initialize / tools/list / a
 // tools/call obs_call(scenes.list) and assert the round-trips, plus a go-live

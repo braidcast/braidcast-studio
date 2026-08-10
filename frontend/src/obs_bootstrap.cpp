@@ -594,12 +594,19 @@ bool SetBindingEnabled(const std::string &uuid, bool enabled)
 		return true;
 	}
 	std::string err;
-	if (!Bridge::SetOutputBindingEnabled(uuid, enabled, err)) {
-		HostLog("[schedule] could not " + std::string(enabled ? "enable" : "disable") +
-			" a scheduled destination: " + err);
-	}
+	const bool ok = Bridge::SetOutputBindingEnabled(uuid, enabled, err);
 	const OutputBinding *after = g_outputBindings.Bindings().Find(uuid);
-	return after && after->enabled == enabled;
+	const bool landed = after && after->enabled == enabled;
+	if (!ok) {
+		// Distinguished in the log because the two read as opposite events: a
+		// refusal left the routing alone, while a save failure already changed it
+		// in the running app and only lost the record on disk.
+		const std::string verb = enabled ? "enable" : "disable";
+		HostLog(landed ? "[schedule] applied but did not save the " + verb +
+					 " of a scheduled destination: " + err
+			       : "[schedule] could not " + verb + " a scheduled destination: " + err);
+	}
+	return landed;
 }
 
 std::vector<std::string> LiveCanvasUuids(const MultistreamEngine &engine)
@@ -3613,6 +3620,66 @@ void ObsBootstrap::RunCalendarSelfTest()
 	}
 	HostLog("[selftest] calendar OK: " + std::to_string(result.size()) + " session(s), db " +
 		(g_sessions.IsAttached() ? "attached" : "unavailable"));
+}
+
+void ObsBootstrap::RunScheduleSelfTest()
+{
+	using Bridge::json;
+
+	json before;
+	std::string error;
+	if (!Bridge::Dispatch("schedule.list", json(nullptr), before, error)) {
+		HostLog("[selftest] schedule FAILED: " + Err::Diagnostic(error));
+		return;
+	}
+	if (!before.is_array()) {
+		HostLog("[selftest] schedule MISMATCH: schedule.list did not return an array");
+		return;
+	}
+	const size_t baseline = before.size();
+
+	// A year out, so the runner never arms it. Arming rewrites the user's real output
+	// bindings and per-destination metadata, which a smoke run must not do; the arm,
+	// cancel and revert state machine is covered by test_history against an injected
+	// clock, where there is no real configuration to damage.
+	json params = json::object();
+	params["startsAt"] = TimeUtil::NowMs() + 365LL * 24 * 60 * 60 * 1000;
+	params["title"] = "braidcast self-test";
+
+	json created;
+	if (!Bridge::Dispatch("schedule.create", params, created, error)) {
+		HostLog("[selftest] schedule.create FAILED: " + Err::Diagnostic(error));
+		return;
+	}
+	const std::string id = created.is_object() ? created.value("id", std::string()) : std::string();
+	if (id.empty()) {
+		HostLog("[selftest] schedule MISMATCH: schedule.create returned no id; a row may have leaked");
+		return;
+	}
+
+	json listed;
+	const bool grew = Bridge::Dispatch("schedule.list", json(nullptr), listed, error) && listed.is_array() &&
+			  listed.size() == baseline + 1;
+
+	// The row is in the user's real history.db, reached through the rundir config
+	// junction, so the delete runs whatever the assertions above found.
+	json deleteParams = json::object();
+	deleteParams["id"] = id;
+	json deleted;
+	std::string deleteError;
+	const bool removed = Bridge::Dispatch("schedule.delete", deleteParams, deleted, deleteError);
+
+	json after;
+	const bool restored = Bridge::Dispatch("schedule.list", json(nullptr), after, error) && after.is_array() &&
+			      after.size() == baseline;
+
+	HostLog(std::string("[selftest] schedule create/list/delete -> ") +
+		((grew && removed && restored) ? "OK" : "MISMATCH") + " (baseline=" + std::to_string(baseline) +
+		", grew=" + (grew ? "yes" : "no") + ", removed=" + (removed ? "yes" : "no") +
+		", restored=" + (restored ? "yes" : "no") + ")");
+	if (!removed) {
+		HostLog("[selftest] schedule LEAKED entry " + id + ": " + Err::Diagnostic(deleteError));
+	}
 }
 
 void ObsBootstrap::RunStatsSelfTest()
