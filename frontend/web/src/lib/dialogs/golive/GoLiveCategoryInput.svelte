@@ -1,3 +1,10 @@
+<script lang="ts" module>
+  // Each instance needs a listbox id of its own: the go-live modal and the schedule
+  // form both render one per destination, and a shared id would point every input's
+  // aria-controls at the first list on the page.
+  let nextWidgetId = 0;
+</script>
+
 <script lang="ts">
   import { onDestroy } from "svelte";
   import { obs, type StreamCategory } from "$lib/api/bridge";
@@ -45,6 +52,13 @@
   let timer: ReturnType<typeof setTimeout> | null = null;
   let seq = 0;
 
+  // Highlighted result, driven by the arrow keys. -1 = nothing highlighted, which is
+  // also what a fresh keystroke returns to.
+  let active = $state(-1);
+  const widgetId = `cat-${nextWidgetId++}`;
+  const listId = `${widgetId}-list`;
+  const optionId = (i: number): string => `${widgetId}-opt-${i}`;
+
   // Keep the visible text in sync if the value is set externally (e.g. prefill), and show
   // the inherited category the same way when this layer holds none — the field is still
   // inheriting (nothing is written back), it just reads as what it will send.
@@ -57,8 +71,15 @@
       clearTimeout(timer);
     }
     const q = query.trim();
+    // Emptying the box drops the selection. Without this the id survives the text
+    // that named it, so the field reads as holding nothing while a category is
+    // still pushed -- and an id is the only part a provider reads.
+    if (q === "" && value !== null) {
+      onChange(null);
+    }
     if (q === "" && !browsable) {
       results = [];
+      active = -1;
       open = false;
       return;
     }
@@ -74,10 +95,12 @@
         return; // a newer keystroke superseded this request
       }
       results = res;
+      active = res.length > 0 ? 0 : -1;
       open = true;
     } catch {
       if (mine === seq) {
         results = [];
+        active = -1;
         open = false;
       }
     } finally {
@@ -92,6 +115,37 @@
     query = c.name;
     open = false;
     results = [];
+    active = -1;
+  }
+
+  // The list was reachable by mouse only. Arrow keys move the highlight, Enter takes
+  // it and Escape abandons it, so a category can be chosen without a pointer.
+  function onInputKeydown(e: KeyboardEvent): void {
+    if (e.key === "ArrowDown" && !open && results.length > 0) {
+      open = true;
+      active = 0;
+      e.preventDefault();
+      return;
+    }
+    if (!open || results.length === 0) {
+      return;
+    }
+    if (e.key === "ArrowDown") {
+      active = (active + 1) % results.length;
+    } else if (e.key === "ArrowUp") {
+      active = (active - 1 + results.length) % results.length;
+    } else if (e.key === "Enter" && active >= 0) {
+      pick(results[active]);
+    } else if (e.key === "Escape") {
+      // Stops here rather than bubbling to the modal: the first Escape closes the
+      // list, and only a second one closes the dialog behind it.
+      open = false;
+      active = -1;
+      e.stopPropagation();
+    } else {
+      return;
+    }
+    e.preventDefault();
   }
 
   // Close on a click outside the widget rather than on input blur: an input-blur
@@ -122,9 +176,15 @@
   <input
     class="inp"
     type="text"
+    role="combobox"
+    aria-autocomplete="list"
+    aria-expanded={open && results.length > 0}
+    aria-controls={listId}
+    aria-activedescendant={open && active >= 0 ? optionId(active) : undefined}
     placeholder={prompt}
     bind:value={query}
     oninput={schedule}
+    onkeydown={onInputKeydown}
     onfocus={() => {
       if (results.length) {
         open = true;
@@ -134,10 +194,17 @@
     }}
   />
   {#if open && results.length}
-    <ul class="menu">
-      {#each results as c (c.id)}
+    <ul class="menu" id={listId} role="listbox">
+      {#each results as c, i (c.id)}
         <li>
-          <button type="button" onmousedown={() => pick(c)}>{c.name}</button>
+          <button
+            type="button"
+            id={optionId(i)}
+            role="option"
+            aria-selected={i === active}
+            class:active={i === active}
+            onmousedown={() => pick(c)}>{c.name}</button
+          >
         </li>
       {/each}
     </ul>
@@ -189,7 +256,8 @@
     padding: 6px 10px;
     cursor: pointer;
   }
-  .menu button:hover {
+  .menu button:hover,
+  .menu button.active {
     background: color-mix(in srgb, var(--color-accent) 16%, transparent);
     color: var(--color-accent);
   }

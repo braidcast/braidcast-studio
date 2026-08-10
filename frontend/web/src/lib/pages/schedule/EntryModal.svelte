@@ -1,7 +1,10 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import type { ScheduleEntryInfo } from "$lib/api/bridge";
-  import { destinationIdentityStore } from "$lib/stores/destinationIdentityStore.svelte";
+  import type { OAuthProviderField, ScheduleDestinationInfo, ScheduleEntryInfo } from "$lib/api/bridge";
+  import GoLiveCategoryInput from "$lib/dialogs/golive/GoLiveCategoryInput.svelte";
+  import GoLiveTagsInput from "$lib/dialogs/golive/GoLiveTagsInput.svelte";
+  import { destinationIdentityStore, type DestinationIdentity } from "$lib/stores/destinationIdentityStore.svelte";
+  import { oauthStore } from "$lib/stores/oauthStore.svelte";
   import { scheduleStore } from "$lib/stores/scheduleStore.svelte";
   import { PLATFORM_COLORS, platformKey } from "$lib/theme/platformColors";
   import EmptyState from "$lib/ui/EmptyState.svelte";
@@ -35,7 +38,20 @@
   }
   let { entry, initialStart, initialDurationMin, others, onClose, onSaved }: Props = $props();
 
+  // Idempotent, and the page already does it -- but this form now reads
+  // oauthStore.providers as well as the identity join, and providers arrive on the
+  // subscription this opens. Stating the dependency here keeps the metadata section
+  // from silently reading every destination as stream-key-only.
+  destinationIdentityStore.start();
+
   const DRAFT_ID = "__draft__";
+
+  /** What one destination will have applied to it at go-live. An untouched
+   * destination stays exactly this: the runner reads an all-empty bag as "nothing
+   * to apply", which is the correct behaviour and must not be defeated by a
+   * helpful default. Nothing here is ever seeded from the entry's own title. */
+  const EMPTY_META = { title: "", category: "", categoryId: "", tags: [] as string[] };
+  type DestMeta = typeof EMPTY_META;
 
   // Read once, untracked: the form is a draft of the entry, not a live view of it,
   // and the caller remounts this component per open. Without untrack the compiler
@@ -53,6 +69,12 @@
           .filter((d) => d.canvasUuid !== null)
           .slice(0, 1)
           .map((d) => d.profileUuid),
+    meta: new Map<string, DestMeta>(
+      (entry?.destinations ?? []).map((d) => [
+        d.profileId,
+        { title: d.title, category: d.category, categoryId: d.categoryId, tags: [...d.tags] },
+      ]),
+    ),
   }));
 
   let title = $state(initial.title);
@@ -61,12 +83,73 @@
   let duration = $state(formatDuration(initial.durationMin));
   let autoStart = $state(initial.autoStart);
   let dests = $state<Set<string>>(new Set(initial.dests));
+  // Survives a destination being deselected and reselected: losing what was typed
+  // to a mis-click is a worse answer than holding a bag nothing reads. Only the
+  // selected ids are written on save.
+  let meta = $state<Map<string, DestMeta>>(initial.meta);
+  let openMeta = $state<string | null>(null);
   let saving = $state(false);
   let error = $state<string | null>(null);
 
   const options = $derived(destinationIdentityStore.all);
+  const selected = $derived(options.filter((d) => dests.has(d.profileUuid)));
+
+  // The provider capability descriptor behind a destination, or null for a
+  // stream-key profile. It decides WHICH of the three columns a platform can even
+  // receive -- a control for a field the provider never declared would collect a
+  // value with nowhere to land.
+  function providerOf(d: DestinationIdentity) {
+    const key = platformKey(d.platform);
+    return oauthStore.providers.find((p) => platformKey(p.id) === key) ?? null;
+  }
+  function fieldOf(d: DestinationIdentity, key: string): OAuthProviderField | null {
+    return providerOf(d)?.fields.find((f) => f.key === key) ?? null;
+  }
+
+  function metaOf(profileId: string): DestMeta {
+    return meta.get(profileId) ?? EMPTY_META;
+  }
+  function patchMeta(profileId: string, patch: Partial<DestMeta>): void {
+    const next = new Map(meta);
+    next.set(profileId, { ...metaOf(profileId), ...patch });
+    meta = next;
+  }
+
+  function isEmptyMeta(m: DestMeta): boolean {
+    return m.title === "" && m.categoryId === "" && m.category === "" && m.tags.length === 0;
+  }
+
+  /** The collapsed row's one line. Says plainly when nothing will be applied, since
+   * that is a real and common state rather than an unfinished one. */
+  function metaSummary(m: DestMeta): string {
+    if (isEmptyMeta(m)) {
+      return "Nothing to apply";
+    }
+    return [m.title, m.category, m.tags.length > 0 ? `${m.tags.length} tags` : ""]
+      .filter((part) => part !== "")
+      .join(" · ");
+  }
   const startsAt = $derived(fromDateTimeInput(date, time));
   const durationMin = $derived(parseDuration(duration));
+
+  /** The selected destinations as the row shape the bridge takes. One builder for
+   * the conflict probe and the save, so what is checked is what is written. */
+  function draftDestinations(): ScheduleDestinationInfo[] {
+    return [...dests].map((profileId) => {
+      const m = metaOf(profileId);
+      return {
+        profileId,
+        title: m.title,
+        // Both, never one: providers key on the id (twitch_provider's game_id,
+        // youtube_provider's categoryId) and the name is only ever prefill and
+        // display. A name standing in for an id is an apply that silently does
+        // nothing.
+        category: m.category,
+        categoryId: m.categoryId,
+        tags: [...m.tags],
+      };
+    });
+  }
 
   // The conflict is checked against the draft as it is typed, not at go-live: one
   // stream profile is one RTMP key, so two overlapping entries sharing one can
@@ -82,12 +165,7 @@
       state: "planned",
       countdownCanceled: false,
       blockReason: "",
-      destinations: [...dests].map((profileId) => ({
-        profileId,
-        title: "",
-        category: "",
-        tags: [] as string[],
-      })),
+      destinations: draftDestinations(),
     };
     return destinationConflicts([...others, draft], Date.now()).get(DRAFT_ID) ?? null;
   });
@@ -104,6 +182,9 @@
     const next = new Set(dests);
     if (next.has(profileId)) {
       next.delete(profileId);
+      if (openMeta === profileId) {
+        openMeta = null;
+      }
     } else {
       next.add(profileId);
     }
@@ -118,19 +199,13 @@
     }
     saving = true;
     error = null;
-    const cleanTitle = title.trim() || "Untitled stream";
     const input = {
       startsAt,
-      title: cleanTitle,
+      title: title.trim() || "Untitled stream",
       durationMin,
       announce: false,
       autoStart,
-      destinations: [...dests].map((profileId) => ({
-        profileId,
-        title: cleanTitle,
-        category: "",
-        tags: [] as string[],
-      })),
+      destinations: draftDestinations(),
     };
     try {
       // No refresh: the host pushes schedule.changed on create and update, and
@@ -220,6 +295,100 @@
         </div>
       {/if}
     </div>
+
+    {#if selected.length > 0}
+      <div class="field">
+        <div class="f-label">PER-DESTINATION METADATA</div>
+        <div class="meta-list">
+          {#each selected as d (d.profileUuid)}
+            {@const m = metaOf(d.profileUuid)}
+            {@const expanded = openMeta === d.profileUuid}
+            {@const panelId = `meta-${d.profileUuid}`}
+            {@const provider = providerOf(d)}
+            {@const titleField = fieldOf(d, "title")}
+            {@const categoryField = fieldOf(d, "category")}
+            {@const tagsField = fieldOf(d, "tags")}
+            <div class="meta-row" class:expanded>
+              <button
+                class="meta-head"
+                type="button"
+                aria-expanded={expanded}
+                aria-controls={panelId}
+                onclick={() => (openMeta = expanded ? null : d.profileUuid)}
+              >
+                <PlatformMark platform={d.platform} size={13} />
+                <span class="meta-name">{d.displayName}</span>
+                <span class="meta-sum" class:none={isEmptyMeta(m)}>{metaSummary(m)}</span>
+                <span class="meta-caret" class:open={expanded}>
+                  <Icon name="caret-down" size={12} />
+                </span>
+              </button>
+
+              {#if expanded}
+                <div class="meta-body" id={panelId}>
+                  {#if !provider}
+                    <p class="note">
+                      A stream-key destination has no metadata API, so nothing is applied to it
+                      at go-live.
+                    </p>
+                  {:else}
+                    {#if titleField}
+                      <div class="sub">
+                        <div class="f-label">{titleField.label.toUpperCase()}</div>
+                        <input
+                          class="f-input"
+                          spellcheck="false"
+                          placeholder="Leave empty to change nothing"
+                          value={m.title}
+                          oninput={(e) =>
+                            patchMeta(d.profileUuid, { title: e.currentTarget.value })}
+                        />
+                      </div>
+                    {/if}
+                    {#if categoryField}
+                      <div class="sub">
+                        <div class="f-label">{categoryField.label.toUpperCase()}</div>
+                        <GoLiveCategoryInput
+                          providerId={provider.id}
+                          accountId={d.accountId}
+                          placeholder={categoryField.placeholder ?? ""}
+                          browsable={categoryField.browsable ?? false}
+                          value={m.categoryId ? { id: m.categoryId, name: m.category } : null}
+                          onChange={(v) =>
+                            patchMeta(d.profileUuid, {
+                              categoryId: v?.id ?? "",
+                              category: v?.name ?? "",
+                            })}
+                        />
+                      </div>
+                    {/if}
+                    {#if tagsField}
+                      <div class="sub">
+                        <div class="f-label">{tagsField.label.toUpperCase()}</div>
+                        <GoLiveTagsInput
+                          values={m.tags}
+                          onChange={(next) => patchMeta(d.profileUuid, { tags: next })}
+                        />
+                      </div>
+                    {/if}
+                    {#if !titleField && !categoryField && !tagsField}
+                      <p class="note">
+                        {provider.displayName} declares none of these fields, so there is nothing
+                        to set here.
+                      </p>
+                    {/if}
+                  {/if}
+                </div>
+              {/if}
+            </div>
+          {/each}
+        </div>
+        <p class="note">
+          Applied to each destination when the entry goes live. Anything left empty is left
+          alone — the channel keeps whatever it already says.
+        </p>
+      </div>
+    {/if}
 
     <div class="field">
       <div class="f-label">AUTO-START</div>
@@ -341,6 +510,81 @@
     font-size: 9px;
     letter-spacing: 0.08em;
     color: var(--color-muted);
+  }
+
+  /* Accordion rather than every destination expanded at once: three open panels of
+     three fields is taller than the modal, and the collapsed line already says
+     whether a destination has anything to apply. */
+  .meta-list {
+    display: flex;
+    flex-direction: column;
+    border: var(--border-weight) solid var(--color-border);
+  }
+  .meta-row {
+    border-bottom: var(--border-weight) solid var(--color-border);
+  }
+  .meta-row:last-child {
+    border-bottom: 0;
+  }
+  .meta-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    height: auto;
+    padding: 8px 10px;
+    background: transparent;
+    border: 0;
+    text-align: left;
+  }
+  .meta-head:hover {
+    background: color-mix(in srgb, var(--color-text) 4%, transparent);
+    border: 0;
+  }
+  .meta-head:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: -2px;
+  }
+  .meta-name {
+    flex: 0 0 auto;
+    max-width: 40%;
+    font-size: 12px;
+    color: var(--color-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .meta-sum {
+    flex: 1;
+    min-width: 0;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--color-dim);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .meta-sum.none {
+    color: var(--color-muted);
+  }
+  .meta-caret {
+    flex: 0 0 auto;
+    display: inline-flex;
+    color: var(--color-muted);
+    transition: transform 0.12s ease;
+  }
+  .meta-caret.open {
+    transform: rotate(180deg);
+  }
+  .meta-body {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 4px 10px 12px;
+    background: color-mix(in srgb, var(--color-base) 55%, transparent);
+  }
+  .sub .f-label {
+    margin-bottom: 5px;
   }
 
   .note {
