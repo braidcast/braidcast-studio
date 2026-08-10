@@ -367,8 +367,9 @@
                           value={m.title}
                           providerId={provider.id}
                           accountId={d.accountId}
+                          placeholder="Leave empty to change nothing"
                           onChange={(v) =>
-                            patchMeta(d.profileUuid, { title: (v as string) ?? "" })}
+                            patchMeta(d.profileUuid, { title: typeof v === "string" ? v : "" })}
                         />
                       </div>
                     {/if}

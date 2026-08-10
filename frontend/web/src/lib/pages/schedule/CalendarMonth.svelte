@@ -222,7 +222,13 @@
   </div>
 
   <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="grid" bind:this={gridEl} onpointermove={onPointerMove} onpointerup={onPointerUp} onpointercancel={onPointerCancel}>
+  <div
+    class="grid"
+    bind:this={gridEl}
+    onpointermove={onPointerMove}
+    onpointerup={onPointerUp}
+    onpointercancel={onPointerCancel}
+  >
     {#each cells as cell (cell.key)}
       {@const dayItems = byDay.get(cell.dayStart) ?? []}
       <div

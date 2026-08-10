@@ -35,6 +35,11 @@
     ghostValue?: unknown;
     /** Override styling (amber border / accent chips) when the field is filled. */
     accent?: boolean;
+    /** Prompt for the free-text controls when this call site has no inherit cue to show
+     * there. Only a caller outside the inherit layering has one to give: inside it the
+     * placeholder slot is what names the value that will be sent, and a second prompt
+     * competing for it would hide that. */
+    placeholder?: string;
     /** Constrain width (used by advanced enums). */
     narrow?: boolean;
     /** This control edits an inherit layer: empty here means "take the layer below",
@@ -49,6 +54,7 @@
     accountId = "",
     ghostText = "",
     ghostValue = undefined,
+    placeholder = "",
     accent = false,
     narrow = false,
     inheritable = false,
@@ -208,7 +214,7 @@
     class:ovr={accent}
     class:narrow
     rows="2"
-    placeholder={showGhost ? ghostLabel : ""}
+    placeholder={showGhost ? ghostLabel : placeholder}
     value={str}
     oninput={(e) => onChange(e.currentTarget.value)}
   ></textarea>
@@ -306,7 +312,7 @@
     class:ovr={accent}
     class:narrow
     type="text"
-    placeholder={showGhost ? ghostLabel : ""}
+    placeholder={showGhost ? ghostLabel : placeholder}
     value={str}
     oninput={(e) => onChange(e.currentTarget.value)}
   />
