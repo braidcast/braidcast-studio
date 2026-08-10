@@ -108,6 +108,14 @@ bool ScheduleRunner::PruneStale(int64_t now)
 		const bool keep = entry && entry->startsAt - now <= kArmLeadMs &&
 				  now - entry->startsAt <= kOccurrenceRetentionMs;
 		if (keep) {
+			// A requested start stands only while the entry could still be
+			// broadcasting. The occurrence outlives that by an hour so the chip
+			// can still explain itself, and a flag left set that long refuses
+			// cancels and deletes for an entry that is entirely over.
+			if (it->second.startRequested && entry->state != ScheduleState::kArmed &&
+			    entry->state != ScheduleState::kLive) {
+				it->second.startRequested = false;
+			}
 			++it;
 			continue;
 		}

@@ -577,9 +577,13 @@ std::string BindingForProfile(const std::string &profileId)
 
 // Skips a flip the binding has already made: the shared setter persists and emits
 // unconditionally, so re-asserting an unchanged set would rewrite the bindings file
-// once per binding for nothing. False only when the setter refused -- the
-// single-live-stream rule is the one that does -- so the caller can hold what it
-// could not put back.
+// once per binding for nothing.
+//
+// Answers whether the binding holds `enabled` afterwards, which is not the same as
+// what the setter returns: it refuses the single-live-stream case before touching
+// anything, but a failed save is reported after the flag, the output stop and the
+// reconcile have already happened. Reporting that as "nothing changed" would leave
+// a real change unrecorded and so unrestorable.
 bool SetBindingEnabled(const std::string &uuid, bool enabled)
 {
 	const OutputBinding *b = g_outputBindings.Bindings().Find(uuid);
@@ -590,12 +594,12 @@ bool SetBindingEnabled(const std::string &uuid, bool enabled)
 		return true;
 	}
 	std::string err;
-	if (Bridge::SetOutputBindingEnabled(uuid, enabled, err)) {
-		return true;
+	if (!Bridge::SetOutputBindingEnabled(uuid, enabled, err)) {
+		HostLog("[schedule] could not " + std::string(enabled ? "enable" : "disable") +
+			" a scheduled destination: " + err);
 	}
-	HostLog("[schedule] could not " + std::string(enabled ? "enable" : "disable") +
-		" a scheduled destination: " + err);
-	return false;
+	const OutputBinding *after = g_outputBindings.Bindings().Find(uuid);
+	return after && after->enabled == enabled;
 }
 
 std::vector<std::string> LiveCanvasUuids(const MultistreamEngine &engine)

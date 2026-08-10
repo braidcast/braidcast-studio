@@ -27,10 +27,12 @@ struct RoutingSeam {
 	// Called only for a binding whose flag actually differs, so the caller's own
 	// persist-and-notify tail runs once per real change and not at all otherwise.
 	//
-	// False when the write did not happen -- the single-live-stream rule refuses to
-	// enable a profile another binding already holds. A restore that cannot observe
-	// that refusal has no way to know it just lost the routing it was restoring, so
-	// the result is threaded rather than logged and dropped.
+	// False means the binding does not reliably hold `enabled` afterwards -- the
+	// single-live-stream rule refused it outright, or it landed but something past
+	// the mutation went wrong. It does NOT mean nothing changed, so `read` is what
+	// decides whether a change has to be recorded, never this result on its own. A
+	// change that happened and went unrecorded is one the restore cannot undo,
+	// which is how the user's routing goes missing for good.
 	std::function<bool(const std::string &uuid, bool enabled)> write;
 };
 
@@ -110,8 +112,14 @@ private:
 		bool existed = false;
 	};
 
-	// False when the seam refused. Nothing is recorded then, so a restore never
-	// tries to put back a change that did not happen.
+	// Ask the seam for `enabled` and answer whether the binding holds it
+	// afterwards. The one place that reconciles a write result against the state,
+	// so both the record-a-change and the restore-is-still-owed decisions read it
+	// the same way.
+	bool WriteLanded(const std::string &uuid, bool enabled);
+
+	// False when the binding does not hold `enabled` afterwards, and nothing is
+	// recorded then. A change that landed is recorded whatever the seam reported.
 	bool Flip(const std::string &uuid, bool enabled);
 
 	bool applied_ = false;

@@ -1219,6 +1219,47 @@ static void test_runner_lets_go_of_a_deleted_entry_without_reverting(void **stat
 	assert_int_equal(f.revertCalls, 0);
 }
 
+// A start that was requested and never came up. The entry settles as missed and
+// its configuration goes back, so the occurrence is entirely over -- but the flag
+// that refuses cancels and deletes outlives the occurrence by an hour, and would
+// keep refusing them for an entry nothing is doing anything with.
+static void test_runner_frees_a_settled_entry_from_its_start_request(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_settled_request.db");
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntry(f, startsAt, true);
+
+	f.clock = startsAt - 60'000;
+	f.runner.Tick();
+	f.clock = startsAt;
+	f.runner.Tick();
+	assert_true(f.runner.IsStartRequested(id));
+
+	f.clock = startsAt + History::kMissedGraceMs + 1000;
+	f.runner.Tick();
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kMissed);
+	assert_int_equal(f.revertCalls, 1);
+
+	f.clock = startsAt + History::kMissedGraceMs + 2000;
+	f.runner.Tick();
+	assert_false(f.runner.IsStartRequested(id));
+
+	// A live entry keeps it, though: deleting one mid-broadcast is the case the
+	// refusal exists for.
+	const std::string other = SeedEntry(f, f.clock + 60'000, true);
+	f.runner.Tick();
+	f.clock += 60'000;
+	f.runner.Tick();
+	f.streaming = true;
+	f.runner.NoteWentLive();
+	assert_string_equal(f.store.Get(other)->state.c_str(), History::ScheduleState::kLive);
+	f.clock += 1000;
+	f.runner.Tick();
+	assert_true(f.runner.IsStartRequested(other));
+}
+
 // Deleting one the runner armed but never started has nothing to hold on to: the
 // apply happens at T-0, so an armed entry loaded no routing to put back.
 static void test_runner_lets_go_of_a_deleted_armed_entry(void **state)
@@ -1334,6 +1375,10 @@ struct SetupFixture {
 	// Refuse to enable this one binding, standing in for any reason the real setter
 	// can say no beyond the single-live-stream rule the fake models on its own.
 	std::string refuseEnableOf;
+	// Flip this one binding and then report failure anyway, as the real setter does
+	// when the save fails after it has already assigned the flag, stopped the output
+	// and reconciled.
+	std::string persistFailOf;
 	int refusals = 0;
 	int saves = 0;
 	History::ScheduledSetup setup;
@@ -1374,7 +1419,7 @@ static void OpenSetup(SetupFixture &f)
 			}
 		}
 		target->enabled = enabled;
-		return true;
+		return uuid != f.persistFailOf;
 	};
 	f.setup.metadata.read = [&f](const std::string &profileId) {
 		const auto it = f.overrides.find(profileId);
@@ -1529,6 +1574,31 @@ static void test_setup_abandons_an_apply_the_routing_refused(void **state)
 	assert_true(EnabledIs(f, "b2", true));
 	assert_true(EnabledIs(f, "b3", true));
 	assert_int_equal((int)f.overrides.count("p1"), 0);
+}
+
+// A seam that changes the binding and only then reports failure -- the save going
+// wrong after the flag, the output stop and the reconcile have all happened. The
+// change is real, so it is recorded whatever the result said. Reading the result
+// as "nothing changed" would leave the user's destination switched off with
+// nothing anywhere that knows to switch it back on.
+static void test_setup_records_a_flip_the_seam_would_not_confirm(void **state)
+{
+	(void)state;
+	SetupFixture f;
+	OpenSetup(f);
+	SeedBindings(f);
+	f.persistFailOf = "b2"; // enabled, and not one the entry names
+
+	std::string reason;
+	assert_true(f.setup.Apply({Dest("p1", "")}, reason));
+	assert_true(EnabledIs(f, "b1", true));
+	assert_true(EnabledIs(f, "b2", false));
+
+	f.setup.Revert();
+	assert_false(f.setup.IsApplied());
+	assert_true(EnabledIs(f, "b1", false));
+	assert_true(EnabledIs(f, "b2", true));
+	assert_true(EnabledIs(f, "b3", true));
 }
 
 // A restore the routing refuses keeps its snapshot for the next call. Dropping it
@@ -1748,6 +1818,7 @@ int main(void)
 		cmocka_unit_test(test_runner_refuses_a_start_the_apply_refused),
 		cmocka_unit_test(test_runner_refuses_cancel_once_the_start_is_requested),
 		cmocka_unit_test(test_runner_holds_the_routing_for_one_entry_at_a_time),
+		cmocka_unit_test(test_runner_frees_a_settled_entry_from_its_start_request),
 		cmocka_unit_test(test_runner_lets_go_of_a_deleted_entry_without_reverting),
 		cmocka_unit_test(test_runner_lets_go_of_a_deleted_armed_entry),
 		cmocka_unit_test(test_runner_disarms_an_entry_moved_out_of_its_window),
@@ -1757,6 +1828,7 @@ int main(void)
 		cmocka_unit_test(test_setup_leaves_a_binding_changed_since_alone),
 		cmocka_unit_test(test_setup_restores_a_profile_bound_on_two_canvases),
 		cmocka_unit_test(test_setup_abandons_an_apply_the_routing_refused),
+		cmocka_unit_test(test_setup_records_a_flip_the_seam_would_not_confirm),
 		cmocka_unit_test(test_setup_retries_a_restore_the_routing_refused),
 		cmocka_unit_test(test_setup_keeps_a_remembered_category_id),
 		cmocka_unit_test(test_setup_merges_metadata_rather_than_replacing),

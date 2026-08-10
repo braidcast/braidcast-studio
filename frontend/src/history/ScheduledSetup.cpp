@@ -41,10 +41,36 @@ nlohmann::json ScheduledSetup::MetadataFields(const ScheduleDestination &destina
 	return fields;
 }
 
+bool ScheduledSetup::WriteLanded(const std::string &uuid, bool enabled)
+{
+	if (routing.write(uuid, enabled)) {
+		return true;
+	}
+	// A refusal is not proof that nothing changed: a seam can assign the flag, stop
+	// the output and reconcile, and only then discover it cannot persist. So the
+	// state is what answers, not the result -- treating a change that happened as
+	// one that did not is how it goes unrecorded, and an unrecorded change is one
+	// no restore can undo.
+	const std::vector<RoutingBinding> current = routing.read ? routing.read() : std::vector<RoutingBinding>();
+	const RoutingBinding *now = Find(current, uuid);
+	return now && now->enabled == enabled;
+}
+
 bool ScheduledSetup::Flip(const std::string &uuid, bool enabled)
 {
-	if (!routing.write(uuid, enabled)) {
+	if (!WriteLanded(uuid, enabled)) {
 		return false;
+	}
+	// One record per binding, keeping the `before` from the first time this
+	// application touched it: a restore the routing refused leaves its record
+	// behind, and a second record for the same uuid would leave the restore
+	// deciding between two answers. What has to come back is the value the user
+	// had, not the one an unfinished restore left.
+	for (TouchedBinding &touched : bindings_) {
+		if (touched.uuid == uuid) {
+			touched.after = enabled;
+			return true;
+		}
 	}
 	bindings_.push_back(TouchedBinding{uuid, !enabled, enabled});
 	return true;
@@ -187,7 +213,7 @@ void ScheduledSetup::Revert()
 				if (!now || now->enabled != touched.after) {
 					continue;
 				}
-				if (!routing.write(touched.uuid, touched.before)) {
+				if (!WriteLanded(touched.uuid, touched.before)) {
 					refused.push_back(touched);
 				}
 			}
