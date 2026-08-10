@@ -90,6 +90,7 @@ set(
   _history_sources
   "${_fe}/src/history/Db.cpp"
   "${_fe}/src/history/Migrations.cpp"
+  "${_fe}/src/history/ScheduleRunner.cpp"
   "${_fe}/src/history/ScheduleStore.cpp"
   "${_fe}/src/history/SessionRecorder.cpp"
   "${_fe}/src/history/SessionStore.cpp"

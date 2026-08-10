@@ -1,12 +1,14 @@
 #include "harness.hpp"
 
 #include "history/Db.hpp"
+#include "history/ScheduleRunner.hpp"
 #include "history/ScheduleStore.hpp"
 #include "history/Schema.hpp"
 #include "history/SessionRecorder.hpp"
 #include "history/SessionStore.hpp"
 
 #include <string>
+#include <vector>
 
 // cmocka requires these in this order before cmocka.h, and on MSVC cmocka.h
 // macroizes `inline`, which the C++ standard library rejects -- so every other
@@ -607,6 +609,315 @@ static void test_recorder_ignores_samples_when_not_recording(void **state)
 	assert_int_equal((int)db.ScalarInt("SELECT COUNT(*) FROM session_health"), 0);
 }
 
+// A runner over its own temp database with every outside effect captured, so the
+// state machine is driven entirely by moving `clock` -- no waiting, no broadcast,
+// and nothing of the user's touched.
+struct RunnerFixture {
+	History::Db db;
+	History::ScheduleStore store;
+	History::ScheduleRunner runner;
+	int64_t clock = 0;
+	int goLiveCalls = 0;
+	int changedCalls = 0;
+	std::vector<std::string> logLines;
+};
+
+static void OpenRunner(RunnerFixture &f, const char *name)
+{
+	const std::string path = TempDbPath(name);
+	assert_true(f.db.Open(path));
+	assert_true(f.store.Attach(path));
+	f.runner.Attach(&f.store);
+	f.runner.nowMs = [&f] {
+		return f.clock;
+	};
+	f.runner.goLive = [&f] {
+		f.goLiveCalls++;
+	};
+	f.runner.onChanged = [&f] {
+		f.changedCalls++;
+	};
+	f.runner.log = [&f](const std::string &line) {
+		f.logLines.push_back(line);
+	};
+}
+
+static std::string SeedEntry(RunnerFixture &f, int64_t startsAt, bool autoStart, bool withDestination = true)
+{
+	History::ScheduleEntry entry = MakeEntry(startsAt, "Friday Night");
+	entry.autoStart = autoStart ? 1 : 0;
+	std::vector<History::ScheduleDestination> destinations;
+	if (withDestination) {
+		History::ScheduleDestination d;
+		d.profileId = "p1";
+		destinations.push_back(d);
+	}
+	assert_true(f.store.Create(entry, destinations));
+	return entry.id;
+}
+
+static bool LoggedLike(const RunnerFixture &f, const char *fragment)
+{
+	for (const std::string &line : f.logLines) {
+		if (line.find(fragment) != std::string::npos) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static void test_runner_arms_at_the_five_minute_lead(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_arm.db");
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntry(f, startsAt, false);
+
+	f.clock = startsAt - History::kArmLeadMs - 1000;
+	f.runner.Tick();
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kPlanned);
+	// Nothing happened, so nothing was pushed. The event is per transition, not
+	// per tick -- a 1 Hz emit would repaint the calendar forever.
+	assert_int_equal(f.changedCalls, 0);
+
+	f.clock = startsAt - History::kArmLeadMs;
+	f.runner.Tick();
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kArmed);
+	assert_int_equal(f.changedCalls, 1);
+
+	// The entry an armed occurrence belongs to is what stamps schedule_id onto the
+	// session row, whether the broadcast is started by the runner or by hand.
+	assert_string_equal(f.runner.ActiveEntryId().c_str(), id.c_str());
+
+	f.runner.Tick();
+	assert_int_equal(f.changedCalls, 1);
+}
+
+static void test_runner_opens_the_countdown_at_sixty_seconds(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_countdown.db");
+	const int64_t startsAt = 10'000'000;
+	SeedEntry(f, startsAt, true);
+
+	f.clock = startsAt - History::kCountdownLeadMs - 1000;
+	f.runner.Tick();
+	assert_false(LoggedLike(f, "countdown open"));
+
+	f.clock = startsAt - History::kCountdownLeadMs;
+	f.runner.Tick();
+	assert_true(LoggedLike(f, "countdown open"));
+}
+
+static void test_runner_cancel_disarms_only_this_occurrence(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_cancel.db");
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntry(f, startsAt, true);
+
+	f.clock = startsAt - 30'000;
+	f.runner.Tick();
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kArmed);
+
+	std::string error;
+	assert_true(f.runner.CancelCountdown(id, error));
+
+	// Back to planned and flagged, which is how the UI tells a cancelled
+	// occurrence from one that was never armed -- both read `planned`.
+	const auto after = f.store.Get(id);
+	assert_string_equal(after->state.c_str(), History::ScheduleState::kPlanned);
+	assert_true(f.runner.IsCountdownCanceled(id));
+	// The row itself is untouched: cancelling an occurrence is not deleting a plan.
+	assert_string_equal(after->title.c_str(), "Friday Night");
+	assert_true(after->startsAt == startsAt);
+	assert_int_equal((int)f.store.DestinationsFor(id).size(), 1);
+
+	// It must neither re-arm nor auto-start for the rest of this occurrence.
+	f.clock = startsAt - 10'000;
+	f.runner.Tick();
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kPlanned);
+	f.clock = startsAt + 1000;
+	f.runner.Tick();
+	assert_int_equal(f.goLiveCalls, 0);
+
+	// It settles as missed like any other unstarted entry, and the flag outlives
+	// that so the chip can still say the start was cancelled, not merely skipped.
+	f.clock = startsAt + History::kMissedGraceMs + 1000;
+	f.runner.Tick();
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kMissed);
+	assert_true(f.runner.IsCountdownCanceled(id));
+}
+
+static void test_runner_cancel_refuses_an_entry_that_is_not_armed(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_cancel_refuse.db");
+	const std::string id = SeedEntry(f, 10'000'000, true);
+
+	std::string error;
+	assert_false(f.runner.CancelCountdown(id, error));
+	assert_false(error.empty());
+	assert_false(f.runner.IsCountdownCanceled(id));
+
+	assert_false(f.runner.CancelCountdown("no-such-entry", error));
+	assert_false(error.empty());
+}
+
+static void test_runner_never_starts_an_entry_with_auto_start_off(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_manual.db");
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntry(f, startsAt, false);
+
+	f.clock = startsAt - 60'000;
+	f.runner.Tick();
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kArmed);
+
+	// Past T-0 it waits for the user rather than going live on its own.
+	f.clock = startsAt + 1000;
+	f.runner.Tick();
+	assert_int_equal(f.goLiveCalls, 0);
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kArmed);
+
+	f.clock = startsAt + History::kMissedGraceMs + 1000;
+	f.runner.Tick();
+	assert_int_equal(f.goLiveCalls, 0);
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kMissed);
+}
+
+static void test_runner_auto_starts_once_at_zero(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_autostart.db");
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntry(f, startsAt, true);
+
+	f.clock = startsAt - 60'000;
+	f.runner.Tick();
+	assert_int_equal(f.goLiveCalls, 0);
+
+	f.clock = startsAt;
+	f.runner.Tick();
+	assert_int_equal(f.goLiveCalls, 1);
+	// Requesting a start is not a broadcast: the row moves to `live` only once the
+	// outputs report it, so a start that never comes up cannot read as one that did.
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kArmed);
+
+	f.clock = startsAt + 1000;
+	f.runner.Tick();
+	assert_int_equal(f.goLiveCalls, 1);
+
+	f.runner.NoteWentLive();
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kLive);
+
+	// A live entry is settled: the missed sweep must not rewrite it.
+	f.clock = startsAt + History::kMissedGraceMs + 1000;
+	f.runner.Tick();
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kLive);
+
+	f.runner.NoteStoppedStreaming();
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kDone);
+}
+
+static void test_runner_marks_a_passed_entry_missed(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_missed.db");
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntry(f, startsAt, false);
+
+	f.clock = startsAt + History::kMissedGraceMs + 1;
+	f.runner.Tick();
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kMissed);
+	assert_int_equal(f.changedCalls, 1);
+}
+
+// Design 6: broadcasting to nowhere is worse than not broadcasting. The refusal
+// has to say why, or the entry just stops happening for no stated reason.
+static void test_runner_refuses_auto_start_with_no_armable_destination(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_blocked.db");
+	f.runner.canArm = [](const std::string &, std::string &reason) {
+		reason = "'Main' is not connected";
+		return false;
+	};
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntry(f, startsAt, true);
+
+	// Surfaced at arm, five minutes before it matters, so there is time to fix it.
+	f.clock = startsAt - History::kArmLeadMs;
+	f.runner.Tick();
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kArmed);
+	assert_string_equal(f.runner.BlockReason(id).c_str(), "'Main' is not connected");
+
+	f.clock = startsAt;
+	f.runner.Tick();
+	assert_int_equal(f.goLiveCalls, 0);
+
+	// It settles as missed, but the reason survives so the chip can explain it
+	// rather than showing a start that silently did not happen.
+	f.clock = startsAt + History::kMissedGraceMs + 1000;
+	f.runner.Tick();
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kMissed);
+	assert_string_equal(f.runner.BlockReason(id).c_str(), "'Main' is not connected");
+}
+
+static void test_runner_refuses_auto_start_with_no_destinations(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_no_dests.db");
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntry(f, startsAt, true, false);
+
+	f.clock = startsAt - 60'000;
+	f.runner.Tick();
+	assert_false(f.runner.BlockReason(id).empty());
+
+	f.clock = startsAt;
+	f.runner.Tick();
+	assert_int_equal(f.goLiveCalls, 0);
+}
+
+// A destination that comes back inside the grace window still gets to go live --
+// the refusal is re-evaluated every tick rather than latched at T-0.
+static void test_runner_starts_once_a_destination_recovers(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_recovers.db");
+	bool connected = false;
+	f.runner.canArm = [&connected](const std::string &, std::string &reason) {
+		reason = "'Main' is not connected";
+		return connected;
+	};
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntry(f, startsAt, true);
+
+	f.clock = startsAt - 60'000;
+	f.runner.Tick();
+	f.clock = startsAt;
+	f.runner.Tick();
+	assert_int_equal(f.goLiveCalls, 0);
+
+	connected = true;
+	f.clock = startsAt + 15'000;
+	f.runner.Tick();
+	assert_int_equal(f.goLiveCalls, 1);
+	assert_true(f.runner.BlockReason(id).empty());
+}
+
 int main(void)
 {
 	const struct CMUnitTest tests[] = {
@@ -634,6 +945,16 @@ int main(void)
 		cmocka_unit_test(test_recorder_downsamples_to_ten_seconds),
 		cmocka_unit_test(test_recorder_survives_a_counter_reset),
 		cmocka_unit_test(test_recorder_ignores_samples_when_not_recording),
+		cmocka_unit_test(test_runner_arms_at_the_five_minute_lead),
+		cmocka_unit_test(test_runner_opens_the_countdown_at_sixty_seconds),
+		cmocka_unit_test(test_runner_cancel_disarms_only_this_occurrence),
+		cmocka_unit_test(test_runner_cancel_refuses_an_entry_that_is_not_armed),
+		cmocka_unit_test(test_runner_never_starts_an_entry_with_auto_start_off),
+		cmocka_unit_test(test_runner_auto_starts_once_at_zero),
+		cmocka_unit_test(test_runner_marks_a_passed_entry_missed),
+		cmocka_unit_test(test_runner_refuses_auto_start_with_no_armable_destination),
+		cmocka_unit_test(test_runner_refuses_auto_start_with_no_destinations),
+		cmocka_unit_test(test_runner_starts_once_a_destination_recovers),
 	};
 	return cmocka_run_group_tests(tests, nullptr, nullptr);
 }

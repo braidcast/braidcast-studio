@@ -951,6 +951,9 @@ export interface SessionInfo {
   endedAt: number | null;
   /** "ended" | "crashed" | "failed" */
   endReason: string;
+  /** The schedule entry this broadcast ran for; "" when nobody scheduled it. The
+   * calendar joins on it to draw actual extent against the planned block. */
+  scheduleId: string;
   title: string;
   canvasUuids: string[];
   /** Empty when no frame was chosen. Relative to the thumbnail directory. */
@@ -990,6 +993,15 @@ export interface ScheduleEntryInfo {
   announce: boolean;
   autoStart: boolean;
   state: ScheduleState;
+  /** This occurrence was disarmed by hand. The entry stays `planned` so a future
+   * occurrence can still arm, which is why a cancelled one needs its own flag --
+   * without it a cancel is indistinguishable from never having been armed.
+   * In-memory and per app run: it is a fact about this session, not the plan. */
+  countdownCanceled: boolean;
+  /** Why this occurrence cannot go live (no enabled destination, a deleted stream
+   * profile, a disconnected account), or "" when nothing is wrong. An auto-start
+   * that would broadcast to nowhere refuses and says this instead. */
+  blockReason: string;
   destinations: ScheduleDestinationInfo[];
 }
 
@@ -1858,6 +1870,9 @@ export interface ObsMethods {
   "schedule.create": ScheduleEntryInfo;
   "schedule.update": ScheduleEntryInfo;
   "schedule.delete": { removed: string };
+  // Disarm the current occurrence: it neither re-arms nor auto-starts, and the
+  // entry row is left intact. Fails with a reason unless the entry is armed.
+  "schedule.cancelCountdown": { canceled: string };
   // Native projectors (standalone windows rendering a target on a monitor, P3).
   // listMonitors enumerates the displays a fullscreen projector can target. open
   // spawns a projector (fullscreen needs `monitor`); the window closes itself (Esc /

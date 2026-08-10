@@ -44,6 +44,7 @@
 #include "events/transport_health.hpp"
 #include "history/Db.hpp"
 #include "history/SessionRecorder.hpp"
+#include "history/ScheduleRunner.hpp"
 #include "history/ScheduleStore.hpp"
 #include "history/SessionStore.hpp"
 #include "history/Thumbnails.hpp"
@@ -435,6 +436,7 @@ StreamMetaStore g_streamMeta;
 History::Db g_historyDb;
 History::SessionStore g_sessions;
 History::ScheduleStore g_schedule;
+History::ScheduleRunner g_scheduleRunner;
 History::SessionRecorder g_recorder;
 History::ThumbnailSampler g_thumbs;
 
@@ -716,6 +718,11 @@ History::SessionStore &ObsBootstrap::Sessions()
 History::ScheduleStore &ObsBootstrap::Schedule()
 {
 	return g_schedule;
+}
+
+History::ScheduleRunner &ObsBootstrap::Scheduler()
+{
+	return g_scheduleRunner;
 }
 
 History::SessionRecorder &ObsBootstrap::Recorder()
@@ -1126,11 +1133,51 @@ bool ObsBootstrap::Start()
 		}
 	}
 
+	// The runner's outside world, injected so the state machine itself stays
+	// testable against a fake clock. Wired unconditionally: with no database the
+	// store is unattached and every pass is a no-op.
+	g_scheduleRunner.Attach(&g_schedule);
+	g_scheduleRunner.log = [](const std::string &line) {
+		HostLog(line);
+	};
+	g_scheduleRunner.onChanged = [] {
+		Bridge::EmitEvent(EventNames::kScheduleChanged, Bridge::json::object());
+	};
+	g_scheduleRunner.goLive = [] {
+		Bridge::StartStreamingAll();
+	};
+	g_scheduleRunner.canArm = [](const std::string &profileId, std::string &reason) {
+		const StreamProfile *profile = g_streamProfiles.Find(profileId);
+		if (!profile) {
+			reason = "its stream profile was deleted";
+			return false;
+		}
+		// Excluding no binding turns the single-live-stream rule into "some enabled
+		// binding routes this profile", which is what the engine will actually start.
+		if (!g_outputBindings.Bindings().ProfileEnabledElsewhere(std::string(), profileId)) {
+			reason = "'" + profile->DisplayName() + "' has no enabled destination";
+			return false;
+		}
+		if (profile->accountId.empty()) {
+			return true; // a stream-key / custom-RTMP / WHIP destination owns no account
+		}
+		const std::optional<OAuth::OAuthAccount> account = OAuth::Accounts().Get(profile->accountId);
+		if (!account || !OAuth::IsAccountConnected(*account)) {
+			reason = "'" + profile->DisplayName() + "' is not connected";
+			return false;
+		}
+		return true;
+	};
+
 	// Feed the recorder off the one host-side sampler rather than sampling again:
 	// the encode counters are rebased against shared mutable baselines, so a second
 	// reader would split the deltas with the Stats dock. Registered unconditionally
 	// -- with no database the recorder never records and this no-ops.
 	Bridge::SetStatsTickObserver([](const Bridge::json &snapshot) {
+		// The schedule runner rides this one tick rather than owning a timer of its
+		// own, so it must sit above the recorder's guard -- entries arm and go live
+		// while nothing is being recorded, which is the whole point of it.
+		g_scheduleRunner.Tick();
 		if (!g_recorder.IsRecording()) {
 			return;
 		}
@@ -1345,11 +1392,17 @@ bool ObsBootstrap::Start()
 				start.destinations = LiveDestinations(*g_multistream);
 				start.canvasUuids = LiveCanvasUuids(*g_multistream);
 				start.title = BuildSessionTitle(start.destinations);
+				// Empty unless an entry is armed or live, so a broadcast the
+				// user started by hand during the armed window is linked to
+				// the plan it fulfilled just as an auto-start is.
+				start.scheduleId = g_scheduleRunner.ActiveEntryId();
 				g_recorder.Begin(start);
+				g_scheduleRunner.NoteWentLive();
 				g_thumbs.Reset();
 				Bridge::EmitEvent(EventNames::kSessionsChanged, Bridge::json::object());
 			} else if (!live && g_recorder.IsRecording()) {
 				EndSessionWithThumbnail(SessionEndReason(*g_multistream));
+				g_scheduleRunner.NoteStoppedStreaming();
 				Bridge::EmitEvent(EventNames::kSessionsChanged, Bridge::json::object());
 			}
 		});
@@ -3820,6 +3873,7 @@ void ObsBootstrap::Stop(void (*drainCefTasks)())
 		EndSessionWithThumbnail("ended");
 	}
 	g_recorder.Detach();
+	g_scheduleRunner.Detach();
 	g_sessions.Detach();
 	g_schedule.Detach();
 	g_historyDb.Close();

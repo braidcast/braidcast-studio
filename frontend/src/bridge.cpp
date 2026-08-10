@@ -52,6 +52,7 @@
 #include "windowing/interact_window.hpp"
 #include "util/json_util.hpp"
 #include "history/SessionRecorder.hpp"
+#include "history/ScheduleRunner.hpp"
 #include "history/ScheduleStore.hpp"
 #include "history/SessionStore.hpp"
 #include "history/Thumbnails.hpp"
@@ -7421,6 +7422,9 @@ json SessionToJson(const History::Session &s, const std::vector<History::Session
 		    {"startedAt", s.startedAt},
 		    {"endedAt", s.endedAt.has_value() ? json(*s.endedAt) : json(nullptr)},
 		    {"endReason", s.endReason.value_or("")},
+		    // Empty for an ad-hoc broadcast. The calendar draws a scheduled run at
+		    // its ACTUAL extent against the planned block, which needs the link.
+		    {"scheduleId", s.scheduleId.value_or("")},
 		    {"title", s.title},
 		    {"canvasUuids", std::move(canvasUuids)},
 		    {"thumbPath", s.thumbPath.value_or("")},
@@ -7522,6 +7526,12 @@ json ScheduleToJson(const History::ScheduleEntry &e, const std::vector<History::
 				     {"category", d.category},
 				     {"tags", std::move(tags)}});
 	}
+	// The runner's two per-occurrence facts, which live in memory rather than in a
+	// column: a cancelled occurrence reads `planned` like one that was never armed,
+	// and a refused auto-start has to say why rather than just stop happening.
+	// There is deliberately no countdown here -- the client has startsAt and counts
+	// the seconds itself, so the host never emits per-second.
+	History::ScheduleRunner &runner = ObsBootstrap::Scheduler();
 	return json{{"id", e.id},
 		    {"startsAt", e.startsAt},
 		    {"title", e.title},
@@ -7529,6 +7539,8 @@ json ScheduleToJson(const History::ScheduleEntry &e, const std::vector<History::
 		    {"announce", e.announce != 0},
 		    {"autoStart", e.autoStart != 0},
 		    {"state", e.state},
+		    {"countdownCanceled", runner.IsCountdownCanceled(e.id)},
+		    {"blockReason", runner.BlockReason(e.id)},
 		    {"destinations", std::move(dests)}};
 }
 
@@ -7663,6 +7675,21 @@ bool MethodScheduleDelete(const json &params, json &result, std::string &error)
 	}
 	EmitEvent(EventNames::kScheduleChanged, json::object());
 	result = json{{"removed", id}};
+	return true;
+}
+
+// Disarm the current occurrence without touching the entry. The runner owns the
+// refusal reasons and pushes schedule.changed itself, so this adds neither.
+bool MethodScheduleCancelCountdown(const json &params, json &result, std::string &error)
+{
+	std::string id;
+	if (!RequireStr(params, "schedule.cancelCountdown", "id", id, error)) {
+		return false;
+	}
+	if (!ObsBootstrap::Scheduler().CancelCountdown(id, error)) {
+		return false;
+	}
+	result = json{{"canceled", id}};
 	return true;
 }
 
@@ -12026,6 +12053,7 @@ void Init()
 		{"schedule.create", MethodScheduleCreate},
 		{"schedule.update", MethodScheduleUpdate},
 		{"schedule.delete", MethodScheduleDelete},
+		{"schedule.cancelCountdown", MethodScheduleCancelCountdown},
 		{"audio.list", MethodAudioList},
 		{"audio.setDeflection", MethodAudioSetDeflection},
 		{"audio.setMuted", MethodAudioSetMuted},

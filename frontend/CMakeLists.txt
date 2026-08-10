@@ -355,6 +355,8 @@ target_sources(
     src/history/Db.hpp
     src/history/Migrations.cpp
     src/history/Schema.hpp
+    src/history/ScheduleRunner.cpp
+    src/history/ScheduleRunner.hpp
     src/history/ScheduleStore.cpp
     src/history/ScheduleStore.hpp
     src/history/SessionRecorder.cpp
