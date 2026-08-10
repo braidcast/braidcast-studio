@@ -1,9 +1,10 @@
 <script lang="ts">
-  import { obs, type SessionInfo } from "$lib/api/bridge";
-  import { STATE_COLOR_EXT } from "$lib/theme/stateColors";
+  import { type SessionInfo } from "$lib/api/bridge";
+  import { SESSION_END_LABEL, SESSION_END_STATE, STATE_COLOR_EXT } from "$lib/theme/stateColors";
   import PlatformMark from "$lib/ui/PlatformMark.svelte";
   import Thumb from "$lib/ui/Thumb.svelte";
   import { fmtDuration } from "$lib/utils/format";
+  import { thumbDataUri } from "$lib/utils/thumbCache";
 
   interface Props {
     session: SessionInfo;
@@ -11,27 +12,9 @@
   }
   let { session, onOpen }: Props = $props();
 
-  // A crashed or failed session reuses the live-output-state palette rather than
-  // introducing a fourth reading of the left border edge, which already carries
-  // transport health, platform identity, and output state elsewhere.
-  const ENDED_STATE: Record<string, "error" | "off"> = {
-    crashed: "error",
-    failed: "error",
-    ended: "off",
-  };
-
-  // A written label beside the colour, so the state survives a colour-blind
-  // reader and a greyscale screenshot -- seeing that a stream crashed is the
-  // whole reason the crash is recorded.
-  const ENDED_LABEL: Record<string, string> = {
-    crashed: "Crashed",
-    failed: "Failed",
-    ended: "Ended",
-  };
-
   const running = $derived(session.endedAt === null);
-  const edge = $derived(running ? "live" : (ENDED_STATE[session.endReason] ?? "off"));
-  const label = $derived(running ? "Live" : (ENDED_LABEL[session.endReason] ?? "Ended"));
+  const edge = $derived(running ? "live" : (SESSION_END_STATE[session.endReason] ?? "off"));
+  const label = $derived(running ? "Live" : (SESSION_END_LABEL[session.endReason] ?? "Ended"));
   const duration = $derived(
     session.endedAt === null ? "" : fmtDuration(session.endedAt - session.startedAt),
   );
@@ -47,24 +30,12 @@
   let dataUri = $state("");
   $effect(() => {
     const file = session.thumbFile;
-    if (!file) {
-      dataUri = "";
-      return;
-    }
     let cancelled = false;
-    void obs
-      .call("file.readDataUri", { path: file })
-      .then((r) => {
-        if (!cancelled) {
-          dataUri = r.dataUri;
-        }
-      })
-      .catch(() => {
-        // A missing file is the fallback pattern, not an error worth surfacing.
-        if (!cancelled) {
-          dataUri = "";
-        }
-      });
+    void thumbDataUri(file).then((uri) => {
+      if (!cancelled) {
+        dataUri = uri;
+      }
+    });
     return () => {
       cancelled = true;
     };
