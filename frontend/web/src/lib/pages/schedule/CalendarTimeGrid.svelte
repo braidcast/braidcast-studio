@@ -3,6 +3,8 @@
   import {
     atMinute,
     daySegments,
+    HOUR_PX,
+    MIN_BLOCK_PX,
     minutesInto,
     MINUTES_PER_DAY,
     MS_MIN,
@@ -33,13 +35,13 @@
   let { days, items, now, conflictOf, phaseOf, onOpen, onCancel, onCreate, onCommit, onReject }: Props =
     $props();
 
-  const HOUR_PX = 44;
   const HOURS = Array.from({ length: 24 }, (_, h) => h);
   const DEFAULT_NEW_MIN = 60;
-  /** A block shorter than this cannot show its own title, so it is floored. */
-  const MIN_BLOCK_PX = 20;
   /** Below this the thumbnail crowds out the text it is meant to illustrate. */
   const THUMB_MIN_PX = 92;
+  /** How far the pointer must travel before a press counts as a drag. Without it a
+   * trackpad's own jitter turns every click on a chip into a reschedule. */
+  const DRAG_THRESHOLD_PX = 4;
 
   const DOW = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
@@ -48,8 +50,13 @@
     key: string;
     item: CalendarItem | null;
     /** Pointer minute minus the item's start minute, so a grabbed block keeps the
-     * point it was grabbed by instead of jumping its top edge to the cursor. */
+     * point it was grabbed by instead of jumping its top edge to the cursor.
+     * Negative for a block grabbed on the day it continues into, which is why the
+     * minute it produces must stay signed all the way through atMinute. */
     grabOffsetMin: number;
+    /** Where the press landed, for the threshold above. */
+    originX: number;
+    originY: number;
     startMs: number;
     endMs: number;
     moved: boolean;
@@ -91,8 +98,18 @@
     const rect = colsEl.getBoundingClientRect();
     const colWidth = rect.width / days.length;
     const idx = Math.min(Math.max(Math.floor((e.clientX - rect.left) / colWidth), 0), days.length - 1);
+    // Bounded to the column it resolved to. This is the one place a gesture is
+    // pinned to a day: a pointer dragged past the top or bottom edge is still
+    // pointing at THAT day. atMinute deliberately does not clamp, so an offset
+    // applied to this can still cross midnight when a move calls for it.
     const minutes = Math.min(Math.max(((e.clientY - rect.top) / HOUR_PX) * 60, 0), MINUTES_PER_DAY);
     return { dayIndex: idx, minutes };
+  }
+
+  function pastThreshold(e: PointerEvent, d: DragState): boolean {
+    const dx = e.clientX - d.originX;
+    const dy = e.clientY - d.originY;
+    return dx * dx + dy * dy >= DRAG_THRESHOLD_PX * DRAG_THRESHOLD_PX;
   }
 
   function snap(minutes: number): number {
@@ -124,6 +141,8 @@
       key: "",
       item: null,
       grabOffsetMin: 0,
+      originX: e.clientX,
+      originY: e.clientY,
       startMs: start,
       endMs: start + SNAP_MIN * MS_MIN,
       moved: false,
@@ -145,6 +164,8 @@
       key: item.key,
       item,
       grabOffsetMin: at.minutes - minutesInto(days[at.dayIndex], item.start),
+      originX: e.clientX,
+      originY: e.clientY,
       startMs: item.start,
       endMs: item.end,
       moved: false,
@@ -157,6 +178,11 @@
   function onPointerMove(e: PointerEvent): void {
     const d = drag;
     if (!d) {
+      return;
+    }
+    // Nothing moves until the press has travelled far enough to be a drag, so the
+    // block does not shift a pixel under a click either.
+    if (!d.moved && !pastThreshold(e, d)) {
       return;
     }
     const at = locate(e);
@@ -179,17 +205,21 @@
     }
   }
 
+  function releaseCapture(e: PointerEvent): void {
+    try {
+      colsEl?.releasePointerCapture(e.pointerId);
+    } catch {
+      // capture may already be gone; nothing here depends on it
+    }
+  }
+
   function onPointerUp(e: PointerEvent): void {
     const d = drag;
     drag = null;
     if (!d) {
       return;
     }
-    try {
-      colsEl?.releasePointerCapture(e.pointerId);
-    } catch {
-      // capture may already be gone; the drop still stands
-    }
+    releaseCapture(e);
     if (d.moved) {
       justDragged = true;
       setTimeout(() => (justDragged = false), 0);
@@ -199,18 +229,29 @@
       onCreate(d.startMs, d.moved ? durationMin : DEFAULT_NEW_MIN);
       return;
     }
-    if (!d.moved || !d.item) {
+    if (!d.item) {
+      return;
+    }
+    // Decided on the VALUES, not on whether the pointer twitched: a gesture that
+    // ends where it began is a click even if it wandered, and a write that changes
+    // nothing is still a write the runner reacts to.
+    const wasMin = Math.round((d.item.end - d.item.start) / MS_MIN);
+    if (d.startMs === d.item.start && durationMin === wasMin) {
       return;
     }
     if (d.startMs < now) {
       onReject("A stream cannot be moved into the past.");
       return;
     }
-    const wasMin = Math.round((d.item.end - d.item.start) / MS_MIN);
-    if (d.startMs === d.item.start && durationMin === wasMin) {
-      return;
-    }
     onCommit(d.item, d.startMs, durationMin);
+  }
+
+  // A cancelled gesture is an abandoned one -- the OS took the pointer away (a
+  // touch became a scroll, the window lost focus), which is not a drop and must
+  // not commit anything.
+  function onPointerCancel(e: PointerEvent): void {
+    drag = null;
+    releaseCapture(e);
   }
 
   // The dragged block renders at its dragged geometry, so the pointer is not

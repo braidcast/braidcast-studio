@@ -2,9 +2,11 @@
 // plain records: nothing here touches the DOM, reads a store, or calls the bridge,
 // so the packing and the destination-conflict rule can be exercised on their own.
 //
-// Everything is computed in LOCAL time via Date, never by adding 86_400_000: a
-// calendar shows the user's own days, and a DST boundary makes a day 23 or 25
-// hours long. Epoch arithmetic here would silently shift a whole column.
+// Day boundaries and clock positions are computed through the local Date
+// constructor, never by adding 86_400_000: a calendar shows the user's own days,
+// and a DST boundary makes a day 23 or 25 hours long, so epoch arithmetic puts an
+// afternoon entry an hour off its own row twice a year. Durations stay epoch
+// arithmetic -- four hours is four hours whatever the clock did meanwhile.
 
 import type { ScheduleEntryInfo, ScheduleState, SessionInfo } from "$lib/api/bridge";
 
@@ -22,10 +24,18 @@ export const SNAP_MIN = 15;
 export const ARM_LEAD_MS = 5 * 60_000;
 export const COUNTDOWN_LEAD_MS = 60_000;
 
+/** Height of one hour row in the Week/Day grid, and the floor a block is drawn at
+ * however short it is. Both live here rather than in the view because the packer
+ * has to agree with them: MIN_LAYOUT_MIN below is what they come to in minutes. */
+export const HOUR_PX = 44;
+export const MIN_BLOCK_PX = 20;
+
 /** Two blocks closer together than this are packed side by side even though their
- * times do not strictly overlap: below it the taller one's minimum height would
- * cover the shorter one and the grid would look like it lost an entry. */
-const MIN_LAYOUT_MIN = 20;
+ * times do not strictly overlap: below it the taller one's drawn minimum would
+ * cover the shorter one and the grid would look like it lost an entry. Derived
+ * from the pixel floor rather than guessed alongside it -- a hand-picked 20 next
+ * to a 20px floor left five pixels of overlap the packer believed was clear. */
+const MIN_LAYOUT_MIN = (MIN_BLOCK_PX / HOUR_PX) * 60;
 
 /** States the runner has not settled. Only these can still be edited, and only
  * these can conflict -- a missed or canceled entry will never occupy a profile. */
@@ -233,16 +243,18 @@ export type ArmPhase = "none" | "armed" | "countdown" | "canceled";
  * settling as missed so the chip can still say the start was cancelled.
  */
 export function armPhase(item: CalendarItem, nowMs: number): ArmPhase {
-  if (item.countdownCanceled) {
-    return "canceled";
+  if (item.state === "armed") {
+    return item.autoStart && nowMs >= item.start - COUNTDOWN_LEAD_MS && nowMs < item.start
+      ? "countdown"
+      : "armed";
   }
-  if (item.state !== "armed") {
-    return "none";
-  }
-  if (item.autoStart && nowMs >= item.start - COUNTDOWN_LEAD_MS && nowMs < item.start) {
-    return "countdown";
-  }
-  return "armed";
+  // The flag outlives the cancel, so it is only the operative fact while the entry
+  // is still waiting or never ran. Once it went live -- by hand, which cancelling
+  // the auto-start does not prevent -- or settled, what happened outranks what was
+  // called off, and a `live` entry badged "Auto-start canceled" is simply wrong.
+  return item.countdownCanceled && (item.state === "planned" || item.state === "missed")
+    ? "canceled"
+    : "none";
 }
 
 /** "T-04:32" / "T-00:47", counting down to `target`. Clamped at zero rather than
@@ -281,16 +293,58 @@ export function startOfWeek(ms: number): number {
   return addDays(d.getTime(), -((d.getDay() + 6) % 7));
 }
 
-/** Minutes from the start of the local day containing `dayStart`. Computed from
- * the real day length so a DST day maps onto the grid without a one-hour skew. */
-export function minutesInto(dayStart: number, ms: number): number {
-  return Math.round((ms - dayStart) / MS_MIN);
+/** Calendar day as a whole number, from the LOCAL date parts through Date.UTC —
+ * which has no DST — so two dates differ by exactly the number of days between
+ * them however long each of those days actually was. */
+function calendarDay(ms: number): number {
+  const d = new Date(ms);
+  return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 86_400_000;
 }
 
-/** `dayStart` plus `minutes`, snapped to SNAP_MIN. */
+/**
+ * Wall-clock minutes from midnight of `dayStart`'s day to `ms`, i.e. what row of
+ * that day's grid `ms` sits on. Derived from the local clock reading plus 1440 per
+ * whole calendar day between the two, NOT from the elapsed epoch difference: a
+ * spring-forward day is 23 hours long, so elapsed time would put a 15:00 entry on
+ * the 14:00 row, and a fall-back day would push 23:30 past the bottom of the grid.
+ *
+ * Signed and unbounded on purpose. An instant before `dayStart` returns a negative
+ * minute and one after it returns more than 1440, which is what lets a block that
+ * crosses midnight keep the point it was grabbed by.
+ */
+export function minutesInto(dayStart: number, ms: number): number {
+  const d = new Date(ms);
+  const clock = d.getHours() * 60 + d.getMinutes() + d.getSeconds() / 60;
+  return Math.round((calendarDay(ms) - calendarDay(dayStart)) * MINUTES_PER_DAY + clock);
+}
+
+/**
+ * The inverse: the instant at `minutes` wall-clock minutes into `dayStart`'s day,
+ * snapped to SNAP_MIN. Built through the local Date constructor, which normalizes
+ * out-of-range minutes into the neighbouring day and applies that day's real
+ * offset, so this survives both DST and a value outside [0, 1440].
+ *
+ * Deliberately NOT clamped to the day. Clamping here is what turned a one-pixel
+ * jiggle on a midnight-crossing block into a reschedule to 00:00. A caller that
+ * needs containment bounds its own input -- CalendarTimeGrid's hit test does,
+ * because a create gesture genuinely belongs to the column it started in.
+ */
 export function atMinute(dayStart: number, minutes: number): number {
   const snapped = Math.round(minutes / SNAP_MIN) * SNAP_MIN;
-  return dayStart + Math.min(Math.max(snapped, 0), MINUTES_PER_DAY) * MS_MIN;
+  const d = new Date(dayStart);
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, snapped, 0, 0).getTime();
+}
+
+/** Wall-clock minutes from midnight of the day `ms` itself falls in. */
+export function minuteOfDay(ms: number): number {
+  return minutesInto(startOfDay(ms), ms);
+}
+
+/** `ms` moved to `dayStart`'s day, keeping its clock reading. The one way a day
+ * change is expressed, so no caller re-derives it as an epoch offset and lands an
+ * hour out across a DST boundary. */
+export function sameTimeOnDay(dayStart: number, ms: number): number {
+  return atMinute(dayStart, minuteOfDay(ms));
 }
 
 // --- month grid ---------------------------------------------------------------
@@ -354,6 +408,9 @@ export interface DaySegment {
  * its start. Every member of a cluster reports the same `cols`, so a row of
  * side-by-side blocks lines up instead of each choosing its own width.
  */
+const clampToDay = (minutes: number): number =>
+  Math.min(Math.max(minutes, 0), MINUTES_PER_DAY);
+
 export function daySegments(items: readonly CalendarItem[], dayStart: number): DaySegment[] {
   const dayEnd = addDays(dayStart, 1);
   const clipped = items
@@ -361,8 +418,10 @@ export function daySegments(items: readonly CalendarItem[], dayStart: number): D
     .map((i) => ({
       key: i.key,
       item: i,
-      topMin: Math.max(0, minutesInto(dayStart, i.start)),
-      endMin: Math.min(MINUTES_PER_DAY, minutesInto(dayStart, i.end)),
+      // Clamped at BOTH ends, so the documented [0, MINUTES_PER_DAY] range holds
+      // by construction rather than by trusting the filter above it.
+      topMin: clampToDay(minutesInto(dayStart, i.start)),
+      endMin: clampToDay(minutesInto(dayStart, i.end)),
       col: 0,
       cols: 1,
       continuesBefore: i.start < dayStart,
@@ -416,12 +475,18 @@ export function formatDuration(min: number): string {
   return min < 60 ? `${min}m` : `${Math.floor(min / 60)}h ${min % 60}m`;
 }
 
-/** Accepts "4h", "90m", "1h30", "2" (a bare number is hours, since that is what
- * people mean when they type it into a stream planner). */
+/** Accepts "4h", "90m", "1h30", "1h 30m", "2" (a bare number is hours, since that
+ * is what people mean when they type it into a stream planner). */
 export function parseDuration(text: string): number {
   const s = text.trim().toLowerCase();
   if (s === "") {
     return 60;
+  }
+  // Hours followed by bare minutes, which the h/m pair below cannot see: "1h30"
+  // has no `m` for it to match, so it used to read as a flat hour.
+  const hm = /^(\d+(?:\.\d+)?)\s*h\s*(\d+)\s*m?$/.exec(s);
+  if (hm) {
+    return Math.max(1, Math.round(parseFloat(hm[1]) * 60 + parseInt(hm[2], 10)));
   }
   const h = /(\d+(?:\.\d+)?)\s*h/.exec(s);
   const m = /(\d+)\s*m/.exec(s);
@@ -446,11 +511,17 @@ export function toTimeInput(ms: number): string {
   return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 }
 
-/** The inverse of the two above. */
+/** The inverse of the two above, or NaN when either field is not a complete value.
+ * A cleared date input reports "", which read through Number() is 0 and builds a
+ * silent year-1900 entry rather than an obvious failure -- so the caller is given
+ * something it must check instead. */
 export function fromDateTimeInput(date: string, time: string): number {
-  const [y, m, d] = date.split("-").map(Number);
-  const [hh, mm] = time.split(":").map(Number);
-  return new Date(y, (m || 1) - 1, d || 1, hh || 0, mm || 0, 0, 0).getTime();
+  const d = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date.trim());
+  const t = /^(\d{1,2}):(\d{2})/.exec(time.trim());
+  if (!d || !t) {
+    return NaN;
+  }
+  return new Date(+d[1], +d[2] - 1, +d[3], +t[1], +t[2], 0, 0).getTime();
 }
 
 /** "19:00" for a block label. */
