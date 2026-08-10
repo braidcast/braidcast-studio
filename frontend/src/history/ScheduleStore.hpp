@@ -68,7 +68,13 @@ public:
 
 	// Entries whose start has passed while still planned or armed. Returns how
 	// many were marked, so a caller can decide whether to tell the UI.
-	int SweepMissed(int64_t nowMs);
+	//
+	// `except` is for entries whose start is still on its way up: the row has to
+	// stay `armed` for the broadcast to reach `live` and for the session to be
+	// stamped with it, and the grace this sweep runs on is far shorter than a
+	// prelude can legitimately take. Settling one of those would record a running
+	// broadcast as missed and orphan the session it produced.
+	int SweepMissed(int64_t nowMs, const std::vector<std::string> &except = {});
 
 	// Startup recovery, the schedule counterpart of SessionStore::RecoverCrashed.
 	// `armed` and `live` describe what a running process was doing, and no process

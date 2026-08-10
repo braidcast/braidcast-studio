@@ -7642,8 +7642,8 @@ bool MethodScheduleDelete(const json &params, json &result, std::string &error)
 	// that request are on their way up, and letting the entry go would put the
 	// routing back underneath them. Without this, deleting is a way around a
 	// cancellation the runner already said no to.
-	if (ObsBootstrap::Scheduler().IsStartRequested(id)) {
-		error = "that entry is already going live and cannot be deleted yet";
+	if (ObsBootstrap::Scheduler().IsStartInFlight(id)) {
+		error = "that entry's broadcast is under way and it cannot be deleted yet";
 		return false;
 	}
 	History::ScheduleStore &store = ObsBootstrap::Schedule();
@@ -9637,6 +9637,7 @@ void StartStreamingAll()
 						}
 					}
 					HostLog("[stream] go-live prelude cancelled by a stop; not starting");
+					ObsBootstrap::Scheduler().NoteStartFailed();
 					return;
 				}
 				if (!failures.empty()) {
@@ -9647,6 +9648,12 @@ void StartStreamingAll()
 					HostLog("[stream] go-live refused: " + std::to_string(failures.size()) +
 						" destination(s) could not be prepared: " + failures.dump());
 					EmitEvent(EventNames::kStreamingStartFailed, json{{"failures", failures}});
+					// Nothing went live, so no stop edge will ever fire. This is
+					// the only place the refusal is observed, and a scheduled
+					// start that is not told keeps the entry's destinations
+					// enabled -- a manual go-live in that window would stream to
+					// them instead of the user's own.
+					ObsBootstrap::Scheduler().NoteStartFailed();
 					return;
 				}
 				StartEnabledOutputsNow();

@@ -1,5 +1,7 @@
 #include "ScheduleStore.hpp"
 
+#include <algorithm>
+
 #include "util/time_util.hpp"
 #include "uuid_util.hpp"
 
@@ -205,29 +207,35 @@ bool ScheduleStore::Remove(const std::string &id)
 	}
 }
 
-int ScheduleStore::SweepMissed(int64_t nowMs)
+int ScheduleStore::SweepMissed(int64_t nowMs, const std::vector<std::string> &except)
 {
 	if (!storage_) {
 		return 0;
 	}
+	std::vector<ScheduleEntry> stale;
 	try {
 		// Only planned and armed can be missed. An entry that reached `live`
 		// happened, and one already `done`, `canceled` or `missed` is settled --
 		// re-marking those would rewrite history every tick.
-		const auto stale = storage_->get_all<ScheduleEntry>(
+		stale = storage_->get_all<ScheduleEntry>(
 			where(c(&ScheduleEntry::startsAt) < nowMs and
 			      (c(&ScheduleEntry::state) == std::string(ScheduleState::kPlanned) or
 			       c(&ScheduleEntry::state) == std::string(ScheduleState::kArmed))));
-		for (const ScheduleEntry &e : stale) {
-			storage_->update_all(set(assign(&ScheduleEntry::state, std::string(ScheduleState::kMissed))),
-					     where(c(&ScheduleEntry::id) == e.id));
-		}
 		lastError_.clear();
-		return (int)stale.size();
 	} catch (const std::exception &e) {
 		lastError_ = e.what();
 		return 0;
 	}
+	int swept = 0;
+	for (const ScheduleEntry &e : stale) {
+		if (std::find(except.begin(), except.end(), e.id) != except.end()) {
+			continue;
+		}
+		if (SetState(e.id, ScheduleState::kMissed)) {
+			swept++;
+		}
+	}
+	return swept;
 }
 
 int ScheduleStore::RecoverInterrupted()
@@ -235,22 +243,24 @@ int ScheduleStore::RecoverInterrupted()
 	if (!storage_) {
 		return 0;
 	}
+	std::vector<ScheduleEntry> interrupted;
 	try {
-		const auto interrupted = storage_->get_all<ScheduleEntry>(
+		interrupted = storage_->get_all<ScheduleEntry>(
 			where(c(&ScheduleEntry::state) == std::string(ScheduleState::kArmed) or
 			      c(&ScheduleEntry::state) == std::string(ScheduleState::kLive)));
-		for (const ScheduleEntry &e : interrupted) {
-			const char *recovered = e.state == ScheduleState::kLive ? ScheduleState::kDone
-										: ScheduleState::kPlanned;
-			storage_->update_all(set(assign(&ScheduleEntry::state, std::string(recovered))),
-					     where(c(&ScheduleEntry::id) == e.id));
-		}
 		lastError_.clear();
-		return (int)interrupted.size();
 	} catch (const std::exception &e) {
 		lastError_ = e.what();
 		return 0;
 	}
+	int recovered = 0;
+	for (const ScheduleEntry &e : interrupted) {
+		const char *to = e.state == ScheduleState::kLive ? ScheduleState::kDone : ScheduleState::kPlanned;
+		if (SetState(e.id, to)) {
+			recovered++;
+		}
+	}
+	return recovered;
 }
 
 } // namespace History

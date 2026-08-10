@@ -148,16 +148,20 @@ public:
 
 	bool IsCountdownCanceled(const std::string &id) const;
 
-	// Whether this occurrence's start is still on its way up. From the request until
-	// this stops answering true the start is committed: it cannot be cancelled, the
-	// entry cannot be deleted, and its configuration is not put back, because every
-	// one of those redirects a broadcast that is coming up.
+	// Whether this entry's broadcast is under way -- either already live, or a start
+	// asked for and not yet reported. While it answers true the entry is committed:
+	// it cannot be cancelled, it cannot be deleted, its configuration is not put
+	// back, the missed sweep leaves its row alone, and no other entry may take the
+	// routing. Every one of those would otherwise redirect or orphan a broadcast
+	// that is running or about to be.
 	//
-	// True for as long as the entry is live -- that broadcast owns the routing until
-	// it ends. Otherwise it expires after kStartInFlightMs, because nothing here can
-	// tell a slow prelude from a start that will never report at all, and holding
-	// the user's routing forever on a start that died is its own failure.
-	bool IsStartRequested(const std::string &id) const;
+	// True for as long as the entry is live however it was started -- a manual
+	// go-live during the armed window is still this entry's broadcast. A start that
+	// has not reported expires after kStartInFlightMs, because nothing here can tell
+	// a slow prelude from one that will never report at all, and holding the user's
+	// routing forever on a start that died is its own failure. NoteStartFailed ends
+	// it early on the one refusal the system does observe.
+	bool IsStartInFlight(const std::string &id) const;
 
 	// Why this occurrence cannot go live, or empty when nothing is wrong. Surfaced
 	// alongside the state so a refused auto-start reads as an explanation rather
@@ -181,6 +185,16 @@ public:
 	void NoteWentLive();
 	void NoteStoppedStreaming();
 
+	// The go-live was refused before anything started -- a destination that could
+	// not be prepared, or a stop that landed during the prelude. There is no stop
+	// edge for a broadcast that never began, so this is the only word the runner
+	// gets: it ends the in-flight start and puts the routing back rather than
+	// holding both for the full allowance a genuinely slow prelude is given.
+	//
+	// Takes no id on purpose. The runner knows which start it asked for, and the
+	// refusal happens far from anything that does.
+	void NoteStartFailed();
+
 private:
 	// Per-occurrence state that is deliberately not persisted: it describes this
 	// run of this app, and a restart is a fresh reading of the clock.
@@ -188,6 +202,11 @@ private:
 		bool canceled = false;
 		bool countdownOpen = false;
 		bool startRequested = false;
+		// The go-live came back refused. Deliberately separate from clearing
+		// startRequested: that flag means "this occurrence has asked", and
+		// clearing it would have the next tick ask again, and the one after
+		// that -- retrying a refused prepare against the platform at 1 Hz.
+		bool startFailed = false;
 		// When the start was asked for, which is what kStartInFlightMs runs from.
 		// Meaningless unless startRequested.
 		int64_t startRequestedAtMs = 0;
@@ -210,6 +229,9 @@ private:
 	// by hand belongs to. Reads the rows rather than assuming arm order: an entry
 	// created inside another's arm window arms later and starts sooner.
 	std::string ImminentArmedId();
+	// Every occurrence whose broadcast is under way, for the sweep to leave alone.
+	std::vector<std::string> InFlightIds() const;
+	void NoteStoreError(const char *what);
 	void Log(const std::string &line) const;
 
 	ScheduleStore *store_ = nullptr;
@@ -225,6 +247,9 @@ private:
 	std::string liveId_;
 	// The occurrence whose configuration is currently loaded into the go-live path.
 	std::string appliedId_;
+	// The last store failure reported, so a database that stays broken is said once
+	// rather than once a second.
+	std::string lastStoreError_;
 };
 
 } // namespace History

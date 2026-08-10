@@ -1069,22 +1069,134 @@ static void test_runner_holds_the_routing_until_a_start_is_given_up_on(void **st
 	assert_int_equal(f.applyCalls, 1);
 	assert_int_equal(f.goLiveCalls, 1);
 
-	// The row settles here; the routing deliberately does not.
+	// Past the missed grace, and neither the row nor the routing moves: the sweep
+	// skips a start that is on its way up, or the broadcast it is about to bring up
+	// would be filed as missed.
 	f.clock = startsAt + History::kMissedGraceMs + 1000;
 	f.runner.Tick();
-	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kMissed);
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kArmed);
 	assert_int_equal(f.revertCalls, 0);
-	assert_true(f.runner.IsStartRequested(id));
+	assert_true(f.runner.IsStartInFlight(id));
 
 	// Still held most of the way to the deadline.
 	f.clock = startsAt + History::kStartInFlightMs - 1000;
 	f.runner.Tick();
 	assert_int_equal(f.revertCalls, 0);
 
+	// Given up on: the exclusion lifts, so the same tick settles the row and puts
+	// the configuration back.
 	f.clock = startsAt + History::kStartInFlightMs + 1000;
 	f.runner.Tick();
-	assert_false(f.runner.IsStartRequested(id));
+	assert_false(f.runner.IsStartInFlight(id));
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kMissed);
 	assert_int_equal(f.revertCalls, 1);
+}
+
+// A prelude that runs past the missed grace and then succeeds. The row has to still
+// be `armed` when the outputs report, or NoteWentLive cannot move it to `live`,
+// NoteStoppedStreaming never reaches `done`, and ActiveEntryId stamps no
+// schedule_id -- a live broadcast filed as missed, with the session it produced
+// orphaned from the plan it fulfilled.
+static void test_runner_links_a_broadcast_that_came_up_after_the_grace(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_slow_prelude.db");
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntry(f, startsAt, true);
+
+	f.clock = startsAt - 60'000;
+	f.runner.Tick();
+	f.clock = startsAt;
+	f.runner.Tick();
+	assert_int_equal(f.goLiveCalls, 1);
+
+	f.clock = startsAt + History::kMissedGraceMs + 30'000;
+	f.runner.Tick();
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kArmed);
+	// What stamps schedule_id onto the session row.
+	assert_string_equal(f.runner.ActiveEntryId().c_str(), id.c_str());
+
+	f.streaming = true;
+	f.runner.NoteWentLive();
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kLive);
+	assert_string_equal(f.runner.ActiveEntryId().c_str(), id.c_str());
+
+	f.clock = startsAt + History::kMissedGraceMs + 60'000;
+	f.runner.Tick();
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kLive);
+
+	f.streaming = false;
+	f.runner.NoteStoppedStreaming();
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kDone);
+	assert_int_equal(f.revertCalls, 1);
+}
+
+// The go-live was refused outright -- a destination that could not be prepared. No
+// output comes up, so no stop edge will ever fire, and this refusal is the only
+// word the runner gets. Untold, the entry's destinations stay enabled and a manual
+// go-live in that window streams to them instead of the user's own.
+static void test_runner_puts_the_routing_back_when_the_go_live_is_refused(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_start_refused.db");
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntry(f, startsAt, true);
+	const std::string other = SeedEntry(f, startsAt + 60'000, true);
+
+	f.clock = startsAt - 60'000;
+	f.runner.Tick();
+	f.clock = startsAt;
+	f.runner.Tick();
+	assert_int_equal(f.applyCalls, 1);
+	assert_int_equal(f.goLiveCalls, 1);
+	assert_true(f.runner.IsStartInFlight(id));
+
+	f.runner.NoteStartFailed();
+	assert_int_equal(f.revertCalls, 1);
+	assert_false(f.runner.IsStartInFlight(id));
+
+	// Everything the commitment was blocking is released. The next entry gets its
+	// own start instead of being refused for ten minutes because of a broadcast that
+	// never happened.
+	f.clock = startsAt + 60'000;
+	f.runner.Tick();
+	assert_true(f.runner.BlockReason(other).empty());
+	assert_int_equal(f.goLiveCalls, 2);
+	assert_int_equal(f.applyCalls, 2);
+
+	// And the refused entry settles on the ordinary grace rather than being held
+	// armed for the whole in-flight allowance.
+	f.clock = startsAt + History::kMissedGraceMs + 1000;
+	f.runner.Tick();
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kMissed);
+}
+
+// An entry the user started by hand during its armed window. The runner never asked
+// for it, so nothing sets startRequested -- but the broadcast is still this entry's,
+// and deleting it mid-stream nulls the running session's schedule_id.
+static void test_runner_guards_a_manually_started_entry(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_manual_live.db");
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntry(f, startsAt, false);
+
+	f.clock = startsAt - 60'000;
+	f.runner.Tick();
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kArmed);
+	assert_false(f.runner.IsStartInFlight(id));
+
+	f.streaming = true;
+	f.runner.NoteWentLive();
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kLive);
+	assert_true(f.runner.IsStartInFlight(id));
+
+	f.streaming = false;
+	f.runner.NoteStoppedStreaming();
+	assert_false(f.runner.IsStartInFlight(id));
 }
 
 // The same window closes the two refusals that key off it, so an entry nothing is
@@ -1101,12 +1213,12 @@ static void test_runner_frees_a_given_up_start_for_deletion(void **state)
 	f.runner.Tick();
 	f.clock = startsAt;
 	f.runner.Tick();
-	assert_true(f.runner.IsStartRequested(id));
+	assert_true(f.runner.IsStartInFlight(id));
 
 	f.clock = startsAt + History::kStartInFlightMs + 1000;
 	f.runner.Tick();
 	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kMissed);
-	assert_false(f.runner.IsStartRequested(id));
+	assert_false(f.runner.IsStartInFlight(id));
 
 	// A live entry keeps it for as long as it runs, whatever the deadline says:
 	// deleting one mid-broadcast is the case the refusal exists for.
@@ -1119,7 +1231,7 @@ static void test_runner_frees_a_given_up_start_for_deletion(void **state)
 	assert_string_equal(f.store.Get(other)->state.c_str(), History::ScheduleState::kLive);
 	f.clock += History::kStartInFlightMs + 1000;
 	f.runner.Tick();
-	assert_true(f.runner.IsStartRequested(other));
+	assert_true(f.runner.IsStartInFlight(other));
 }
 
 // Two entries whose starts fall inside one prelude. The first one's request owns
@@ -1284,7 +1396,7 @@ static void test_runner_lets_go_of_a_deleted_entry_without_reverting(void **stat
 	f.clock = startsAt;
 	f.runner.Tick();
 	assert_int_equal(f.applyCalls, 1);
-	assert_true(f.runner.IsStartRequested(id));
+	assert_true(f.runner.IsStartInFlight(id));
 	assert_string_equal(f.runner.ActiveEntryId().c_str(), id.c_str());
 
 	assert_true(f.store.Remove(id));
@@ -1312,7 +1424,7 @@ static void test_runner_lets_go_of_a_deleted_armed_entry(void **state)
 	f.clock = startsAt - 60'000;
 	f.runner.Tick();
 	assert_string_equal(f.runner.ActiveEntryId().c_str(), id.c_str());
-	assert_false(f.runner.IsStartRequested(id));
+	assert_false(f.runner.IsStartInFlight(id));
 
 	assert_true(f.store.Remove(id));
 	f.runner.NoteEntryChanged(id);
@@ -1853,6 +1965,9 @@ int main(void)
 		cmocka_unit_test(test_runner_starts_once_a_destination_recovers),
 		cmocka_unit_test(test_runner_applies_at_zero_not_at_arm),
 		cmocka_unit_test(test_runner_holds_the_routing_until_a_start_is_given_up_on),
+		cmocka_unit_test(test_runner_links_a_broadcast_that_came_up_after_the_grace),
+		cmocka_unit_test(test_runner_puts_the_routing_back_when_the_go_live_is_refused),
+		cmocka_unit_test(test_runner_guards_a_manually_started_entry),
 		cmocka_unit_test(test_runner_refuses_a_start_while_another_is_on_its_way_up),
 		cmocka_unit_test(test_runner_refuses_to_start_while_something_is_streaming),
 		cmocka_unit_test(test_runner_refuses_a_start_the_apply_refused),
