@@ -120,6 +120,18 @@
     colsEl?.setPointerCapture(e.pointerId);
   }
 
+  /** Shared by the pointer and the keyboard create paths. A past start is reachable
+   * from either, because a slot is only disabled once the WHOLE hour has gone: the
+   * one the clock is currently inside stays live. Saying so beats a dead band that
+   * swallows the gesture without explanation. */
+  function rejectIfPast(start: number): boolean {
+    if (start < now) {
+      onReject("That time has already passed.");
+      return true;
+    }
+    return false;
+  }
+
   function beginCreate(e: PointerEvent, dayIndex: number): void {
     if (e.button !== 0) {
       return;
@@ -129,11 +141,7 @@
       return;
     }
     const start = atMinute(days[dayIndex], at.minutes);
-    if (start < now) {
-      // Reachable only in the slot the clock is currently inside: every earlier
-      // one is a disabled button. Saying so beats a dead band that swallows the
-      // gesture without explanation.
-      onReject("That time has already passed.");
+    if (rejectIfPast(start)) {
       return;
     }
     drag = {
@@ -325,9 +333,13 @@
         focusSlot(col, 23);
         break;
       case "Enter":
-      case " ":
-        onCreate(days[col] + hour * 60 * MS_MIN, DEFAULT_NEW_MIN);
+      case " ": {
+        const start = days[col] + hour * 60 * MS_MIN;
+        if (!rejectIfPast(start)) {
+          onCreate(start, DEFAULT_NEW_MIN);
+        }
         break;
+      }
       default:
         return;
     }
@@ -389,7 +401,7 @@
         bind:this={colsEl}
         onpointermove={onPointerMove}
         onpointerup={onPointerUp}
-        onpointercancel={onPointerUp}
+        onpointercancel={onPointerCancel}
       >
         {#each columns as column, ci (column.dayStart)}
           <div class="col">

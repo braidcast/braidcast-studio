@@ -3,6 +3,7 @@
   import {
     addDays,
     monthCells,
+    sameTimeOnDay,
     startOfDay,
     type ArmPhase,
     type CalendarItem,
@@ -135,9 +136,10 @@
     }
   }
 
-  function onPointerUp(e: PointerEvent): void {
-    const item = dragItem;
-    const day = dragDay;
+  /** Drop the gesture and hand the capture back, reporting what was being dragged so
+   * a drop can still act on it once the state is cleared. */
+  function endDrag(e: PointerEvent): { item: CalendarItem | null; day: number | null } {
+    const held = { item: dragItem, day: dragDay };
     dragKey = null;
     dragItem = null;
     dragDay = null;
@@ -146,16 +148,28 @@
     } catch {
       // capture may already be gone; the drop still stands
     }
+    return held;
+  }
+
+  function onPointerUp(e: PointerEvent): void {
+    const { item, day } = endDrag(e);
     if (!item || day === null || day === startOfDay(item.start)) {
       return;
     }
     justDragged = true;
     setTimeout(() => (justDragged = false), 0);
-    if (day + (item.start - startOfDay(item.start)) < now) {
+    if (sameTimeOnDay(day, item.start) < now) {
       onReject("A stream cannot be moved into the past.");
       return;
     }
     onMoveDay(item, day);
+  }
+
+  // A cancelled gesture is an abandoned one -- the OS took the pointer away (a touch
+  // became a scroll, the window lost focus), which is not a drop and must not move
+  // the entry to whichever day the pointer was last over.
+  function onPointerCancel(e: PointerEvent): void {
+    endDrag(e);
   }
 
   function cellLabel(cell: MonthCell): string {
@@ -208,7 +222,7 @@
   </div>
 
   <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="grid" bind:this={gridEl} onpointermove={onPointerMove} onpointerup={onPointerUp} onpointercancel={onPointerUp}>
+  <div class="grid" bind:this={gridEl} onpointermove={onPointerMove} onpointerup={onPointerUp} onpointercancel={onPointerCancel}>
     {#each cells as cell (cell.key)}
       {@const dayItems = byDay.get(cell.dayStart) ?? []}
       <div

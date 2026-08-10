@@ -12,6 +12,7 @@
     LIVE_STATES,
     MS_MIN,
     plannedItems,
+    sameTimeOnDay,
     sessionItems,
     startOfDay,
     startOfWeek,
@@ -232,8 +233,7 @@
 
   function moveToDay(item: CalendarItem, dayStart: number): void {
     // The month grid has no hours, so the time of day is carried over unchanged.
-    const timeOfDay = item.start - startOfDay(item.start);
-    void commit(item, dayStart + timeOfDay, Math.round((item.end - item.start) / MS_MIN));
+    void commit(item, sameTimeOnDay(dayStart, item.start), Math.round((item.end - item.start) / MS_MIN));
   }
 
   async function cancelCountdown(item: CalendarItem): Promise<void> {

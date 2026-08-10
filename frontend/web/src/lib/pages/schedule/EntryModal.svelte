@@ -2,6 +2,7 @@
   import { untrack } from "svelte";
   import type { OAuthProviderField, ScheduleDestinationInfo, ScheduleEntryInfo } from "$lib/api/bridge";
   import GoLiveCategoryInput from "$lib/dialogs/golive/GoLiveCategoryInput.svelte";
+  import GoLiveFieldInput from "$lib/dialogs/golive/GoLiveFieldInput.svelte";
   import GoLiveTagsInput from "$lib/dialogs/golive/GoLiveTagsInput.svelte";
   import { destinationIdentityStore, type DestinationIdentity } from "$lib/stores/destinationIdentityStore.svelte";
   import { oauthStore } from "$lib/stores/oauthStore.svelte";
@@ -115,6 +116,26 @@
     meta = next;
   }
 
+  // The category control syncs its visible text off the identity of the value it is
+  // given, so a fresh {id,name} literal per render would reset the box every time
+  // anything else in this form changed -- clobbering a category being typed into it
+  // from a keystroke in the title field beside it. Held per profile so the reference
+  // only changes when the category itself does.
+  const catByProfile = new Map<string, { id: string; name: string }>();
+  function categoryOf(profileId: string): { id: string; name: string } | null {
+    const m = metaOf(profileId);
+    if (m.categoryId === "") {
+      return null;
+    }
+    const held = catByProfile.get(profileId);
+    if (held && held.id === m.categoryId && held.name === m.category) {
+      return held;
+    }
+    const next = { id: m.categoryId, name: m.category };
+    catByProfile.set(profileId, next);
+    return next;
+  }
+
   function isEmptyMeta(m: DestMeta): boolean {
     return m.title === "" && m.categoryId === "" && m.category === "" && m.tags.length === 0;
   }
@@ -195,6 +216,12 @@
   // what the user typed and leave them guessing why the entry never appeared.
   async function save(): Promise<void> {
     if (saving) {
+      return;
+    }
+    // fromDateTimeInput reports NaN for a cleared date or time, and a NaN startsAt
+    // written through would be a silently undated entry.
+    if (Number.isNaN(startsAt)) {
+      error = "Enter a valid date and time.";
       return;
     }
     saving = true;
@@ -335,13 +362,13 @@
                     {#if titleField}
                       <div class="sub">
                         <div class="f-label">{titleField.label.toUpperCase()}</div>
-                        <input
-                          class="f-input"
-                          spellcheck="false"
-                          placeholder="Leave empty to change nothing"
+                        <GoLiveFieldInput
+                          field={titleField}
                           value={m.title}
-                          oninput={(e) =>
-                            patchMeta(d.profileUuid, { title: e.currentTarget.value })}
+                          providerId={provider.id}
+                          accountId={d.accountId}
+                          onChange={(v) =>
+                            patchMeta(d.profileUuid, { title: (v as string) ?? "" })}
                         />
                       </div>
                     {/if}
@@ -353,7 +380,7 @@
                           accountId={d.accountId}
                           placeholder={categoryField.placeholder ?? ""}
                           browsable={categoryField.browsable ?? false}
-                          value={m.categoryId ? { id: m.categoryId, name: m.category } : null}
+                          value={categoryOf(d.profileUuid)}
                           onChange={(v) =>
                             patchMeta(d.profileUuid, {
                               categoryId: v?.id ?? "",

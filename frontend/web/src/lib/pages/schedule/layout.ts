@@ -342,9 +342,14 @@ export function minuteOfDay(ms: number): number {
 
 /** `ms` moved to `dayStart`'s day, keeping its clock reading. The one way a day
  * change is expressed, so no caller re-derives it as an epoch offset and lands an
- * hour out across a DST boundary. */
+ * hour out across a DST boundary.
+ *
+ * Built like atMinute but WITHOUT its snap: moving an entry to another day is not
+ * an edit of the time it starts at, and rounding here would quietly rewrite a
+ * 14:07 stream to 14:00 on its way across the month grid. */
 export function sameTimeOnDay(dayStart: number, ms: number): number {
-  return atMinute(dayStart, minuteOfDay(ms));
+  const d = new Date(dayStart);
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, minuteOfDay(ms), 0, 0).getTime();
 }
 
 // --- month grid ---------------------------------------------------------------

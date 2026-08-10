@@ -33,7 +33,10 @@
       e.preventDefault();
       commit();
     } else if (e.key === "Escape") {
+      // Stops here rather than bubbling to the modal: the first Escape abandons the
+      // draft tag, and only a second one closes the dialog behind it.
       e.preventDefault();
+      e.stopPropagation();
       draft = "";
       adding = false;
     }

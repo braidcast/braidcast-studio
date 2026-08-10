@@ -71,11 +71,22 @@
       clearTimeout(timer);
     }
     const q = query.trim();
-    // Emptying the box drops the selection. Without this the id survives the text
-    // that named it, so the field reads as holding nothing while a category is
-    // still pushed -- and an id is the only part a provider reads.
-    if (q === "" && value !== null) {
-      onChange(null);
+    if (q === "") {
+      // Emptying the box drops the selection. Without this the id survives the text
+      // that named it, so the field reads as holding nothing while a category is
+      // still pushed -- and an id is the only part a provider reads.
+      if (value !== null) {
+        onChange(null);
+      } else if (inheritedName !== "") {
+        // Nothing of our own to drop, so neither `value` nor `inheritedName` changes
+        // and the sync effect never re-runs: the inherited category has to be put
+        // back by hand, or the box reads as empty while that category is still what
+        // will be sent. Dropping an override lands on the same text by that effect,
+        // so clearing the box means the same thing in both states. With nothing
+        // inherited there is nothing to put back, and the box is left exactly as
+        // typed.
+        query = inheritedName;
+      }
     }
     if (q === "" && !browsable) {
       results = [];
@@ -196,7 +207,10 @@
   {#if open && results.length}
     <ul class="menu" id={listId} role="listbox">
       {#each results as c, i (c.id)}
-        <li>
+        <!-- The <li> carries no semantics of its own: role="option" has to read as a
+             direct child of the listbox, and a generic listitem between the two breaks
+             that relationship for a screen reader. -->
+        <li role="presentation">
           <button
             type="button"
             id={optionId(i)}
