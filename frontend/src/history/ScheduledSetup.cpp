@@ -31,7 +31,7 @@ nlohmann::json ScheduledSetup::MetadataFields(const ScheduleDestination &destina
 	if (!destination.title.empty()) {
 		fields["title"] = destination.title;
 	}
-	if (!destination.category.empty() || !destination.categoryId.empty()) {
+	if (!destination.categoryId.empty()) {
 		fields["category"] = nlohmann::json{{"id", destination.categoryId}, {"name", destination.category}};
 	}
 	const nlohmann::json tags = JsonUtil::ParseJson(destination.tags);
@@ -41,10 +41,13 @@ nlohmann::json ScheduledSetup::MetadataFields(const ScheduleDestination &destina
 	return fields;
 }
 
-void ScheduledSetup::Flip(const std::string &uuid, bool enabled)
+bool ScheduledSetup::Flip(const std::string &uuid, bool enabled)
 {
+	if (!routing.write(uuid, enabled)) {
+		return false;
+	}
 	bindings_.push_back(TouchedBinding{uuid, !enabled, enabled});
-	routing.write(uuid, enabled);
+	return true;
 }
 
 bool ScheduledSetup::Apply(const std::vector<ScheduleDestination> &destinations, std::string &reason)
@@ -79,15 +82,23 @@ bool ScheduledSetup::Apply(const std::vector<ScheduleDestination> &destinations,
 		// The enabled set becomes exactly what the entry names. Disabling runs
 		// first: enabling a profile bound on another canvas would be refused by
 		// the single-live-stream rule while the old binding still holds it.
+		//
+		// A refusal abandons the whole application rather than going live on a
+		// half-applied routing, which would broadcast to destinations nobody
+		// scheduled -- the outcome the exact-set rule exists to prevent.
 		for (const RoutingBinding &b : before) {
-			if (b.enabled && !Contains(wanted, b.uuid)) {
-				Flip(b.uuid, false);
+			if (b.enabled && !Contains(wanted, b.uuid) && !Flip(b.uuid, false)) {
+				reason = "a destination could not be taken off the air for this entry";
+				Revert();
+				return false;
 			}
 		}
 		for (const std::string &uuid : wanted) {
 			const RoutingBinding *b = Find(before, uuid);
-			if (b && !b->enabled) {
-				Flip(uuid, true);
+			if (b && !b->enabled && !Flip(uuid, true)) {
+				reason = "a destination could not be put on the air for this entry";
+				Revert();
+				return false;
 			}
 		}
 	}
@@ -111,9 +122,22 @@ bool ScheduledSetup::Apply(const std::vector<ScheduleDestination> &destinations,
 		}
 		// Merged key by key rather than replaced: the entry states what it wants
 		// changed, and a field it does not carry keeps what the user remembered.
+		// An object field merges a level deeper for the same reason -- `category`
+		// carries an id and a name, and replacing the object would take a sibling
+		// key down with it.
 		nlohmann::json merged = existing;
 		for (auto it = fields.begin(); it != fields.end(); ++it) {
-			merged[it.key()] = it.value();
+			nlohmann::json &target = merged[it.key()];
+			if (!it.value().is_object() || !target.is_object()) {
+				target = it.value();
+				continue;
+			}
+			for (auto field = it.value().begin(); field != it.value().end(); ++field) {
+				if (field.value().is_string() && field.value().get<std::string>().empty()) {
+					continue;
+				}
+				target[field.key()] = field.value();
+			}
 		}
 		if (metadata.write) {
 			metadata.write(d.profileId, merged);
@@ -134,21 +158,38 @@ bool ScheduledSetup::Apply(const std::vector<ScheduleDestination> &destinations,
 
 void ScheduledSetup::Revert()
 {
-	if (!applied_) {
+	if (bindings_.empty() && overrides_.empty()) {
+		applied_ = false;
 		return;
 	}
 	if (isStreaming && isStreaming()) {
 		return;
 	}
 
+	// What the routing would not take. Held rather than dropped, so the next call
+	// -- the broadcast's stop edge, or the next entry's Apply -- tries again
+	// instead of leaving the user's destinations rewritten with no record of it.
+	std::vector<TouchedBinding> refused;
 	if (routing.read && routing.write) {
-		const std::vector<RoutingBinding> current = routing.read();
-		for (const TouchedBinding &touched : bindings_) {
-			const RoutingBinding *now = Find(current, touched.uuid);
-			// Per binding rather than over the set as a whole: an unrelated
-			// change elsewhere must not strand every other restore.
-			if (now && now->enabled == touched.after) {
-				routing.write(touched.uuid, touched.before);
+		// Disables before enables, mirroring Apply: putting a binding back on
+		// while the entry's binding still holds its profile is refused by the
+		// single-live-stream rule, and that refusal would end with both off.
+		for (const bool enabling : {false, true}) {
+			const std::vector<RoutingBinding> current = routing.read();
+			for (const TouchedBinding &touched : bindings_) {
+				if (touched.before != enabling) {
+					continue;
+				}
+				const RoutingBinding *now = Find(current, touched.uuid);
+				// Per binding rather than over the set as a whole: an
+				// unrelated change elsewhere must not strand every other
+				// restore.
+				if (!now || now->enabled != touched.after) {
+					continue;
+				}
+				if (!routing.write(touched.uuid, touched.before)) {
+					refused.push_back(touched);
+				}
 			}
 		}
 	}
@@ -170,12 +211,18 @@ void ScheduledSetup::Revert()
 		metadata.save();
 	}
 
-	if (log) {
-		log("[schedule] put back the routing and metadata the scheduled entry changed");
-	}
-	applied_ = false;
-	bindings_.clear();
 	overrides_.clear();
+	bindings_ = refused;
+	applied_ = !bindings_.empty();
+	if (!log) {
+		return;
+	}
+	if (bindings_.empty()) {
+		log("[schedule] put back the routing and metadata the scheduled entry changed");
+	} else {
+		log("[schedule] could not put back " + std::to_string(bindings_.size()) +
+		    " routing change(s); holding them to retry");
+	}
 }
 
 } // namespace History

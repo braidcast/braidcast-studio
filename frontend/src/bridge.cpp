@@ -7638,6 +7638,14 @@ bool MethodScheduleDelete(const json &params, json &result, std::string &error)
 	if (!RequireStr(params, "schedule.delete", "id", id, error)) {
 		return false;
 	}
+	// Refused for the same reason schedule.cancelCountdown refuses: the outputs from
+	// that request are on their way up, and letting the entry go would put the
+	// routing back underneath them. Without this, deleting is a way around a
+	// cancellation the runner already said no to.
+	if (ObsBootstrap::Scheduler().IsStartRequested(id)) {
+		error = "that entry is already going live and cannot be deleted yet";
+		return false;
+	}
 	History::ScheduleStore &store = ObsBootstrap::Schedule();
 	if (!store.Remove(id)) {
 		error = "failed to delete the entry: " + store.LastError();

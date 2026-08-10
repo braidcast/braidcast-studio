@@ -577,18 +577,25 @@ std::string BindingForProfile(const std::string &profileId)
 
 // Skips a flip the binding has already made: the shared setter persists and emits
 // unconditionally, so re-asserting an unchanged set would rewrite the bindings file
-// once per binding for nothing.
-void SetBindingEnabled(const std::string &uuid, bool enabled)
+// once per binding for nothing. False only when the setter refused -- the
+// single-live-stream rule is the one that does -- so the caller can hold what it
+// could not put back.
+bool SetBindingEnabled(const std::string &uuid, bool enabled)
 {
 	const OutputBinding *b = g_outputBindings.Bindings().Find(uuid);
-	if (!b || b->enabled == enabled) {
-		return;
+	if (!b) {
+		return false;
+	}
+	if (b->enabled == enabled) {
+		return true;
 	}
 	std::string err;
-	if (!Bridge::SetOutputBindingEnabled(uuid, enabled, err)) {
-		HostLog("[schedule] could not " + std::string(enabled ? "enable" : "disable") +
-			" a scheduled destination: " + err);
+	if (Bridge::SetOutputBindingEnabled(uuid, enabled, err)) {
+		return true;
 	}
+	HostLog("[schedule] could not " + std::string(enabled ? "enable" : "disable") +
+		" a scheduled destination: " + err);
+	return false;
 }
 
 std::vector<std::string> LiveCanvasUuids(const MultistreamEngine &engine)
@@ -1212,7 +1219,7 @@ bool ObsBootstrap::Start()
 		return out;
 	};
 	g_scheduledSetup.routing.write = [](const std::string &uuid, bool enabled) {
-		SetBindingEnabled(uuid, enabled);
+		return SetBindingEnabled(uuid, enabled);
 	};
 	g_scheduledSetup.metadata.read = [](const std::string &profileId) {
 		return g_streamMeta.StreamOverride(profileId);

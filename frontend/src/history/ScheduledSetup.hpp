@@ -26,7 +26,12 @@ struct RoutingSeam {
 	std::function<std::vector<RoutingBinding>()> read;
 	// Called only for a binding whose flag actually differs, so the caller's own
 	// persist-and-notify tail runs once per real change and not at all otherwise.
-	std::function<void(const std::string &uuid, bool enabled)> write;
+	//
+	// False when the write did not happen -- the single-live-stream rule refuses to
+	// enable a profile another binding already holds. A restore that cannot observe
+	// that refusal has no way to know it just lost the routing it was restoring, so
+	// the result is threaded rather than logged and dropped.
+	std::function<bool(const std::string &uuid, bool enabled)> write;
 };
 
 // The remembered per-destination metadata, as opaque field bags. Nothing here
@@ -64,6 +69,13 @@ public:
 	// altered since is left alone rather than overwritten, and one such change does
 	// not strand the rest of the restore.
 	//
+	// Disables run before enables, the mirror of Apply and for the same reason: a
+	// profile bound on two canvases can only be enabled on one, so re-enabling the
+	// user's binding while the entry's still holds the profile is refused and both
+	// end up off. A write that is refused anyway keeps its snapshot for a later
+	// call rather than being dropped -- losing the user's routing silently is the
+	// one outcome a restore must not have.
+	//
 	// A no-op while streaming, keeping the snapshot for a later call, because
 	// restoring the routing means flipping bindings and a binding flipped off stops
 	// its output. Whatever is live is live to these destinations. The broadcast's
@@ -77,6 +89,12 @@ public:
 	// shows -- so the two halves go to the two places. Empty values are left out,
 	// and Apply merges rather than replaces, so a value the entry does not carry
 	// keeps whatever the user had remembered.
+	//
+	// That is why an entry naming a category with no id carries no category at all:
+	// entries written before the id column existed have only the name, no provider
+	// reads the name, and sending the pair would replace a remembered id with an
+	// empty one -- going live under no category rather than the one the user last
+	// used.
 	static nlohmann::json MetadataFields(const ScheduleDestination &destination);
 
 private:
@@ -92,7 +110,9 @@ private:
 		bool existed = false;
 	};
 
-	void Flip(const std::string &uuid, bool enabled);
+	// False when the seam refused. Nothing is recorded then, so a restore never
+	// tries to put back a change that did not happen.
+	bool Flip(const std::string &uuid, bool enabled);
 
 	bool applied_ = false;
 	std::vector<TouchedBinding> bindings_;

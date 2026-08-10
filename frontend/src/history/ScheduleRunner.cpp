@@ -183,6 +183,8 @@ void ScheduleRunner::NoteEntryChanged(const std::string &id)
 	}
 	// Deleted. Nothing can be transitioned, but everything the runner was holding
 	// on its behalf has to go, or it would keep stamping a dead id onto sessions.
+	const auto it = occurrences_.find(id);
+	const bool committed = (it != occurrences_.end() && it->second.startRequested) || liveId_ == id;
 	occurrences_.erase(id);
 	ForgetArmed(id);
 	if (startingId_ == id) {
@@ -191,9 +193,19 @@ void ScheduleRunner::NoteEntryChanged(const std::string &id)
 	if (liveId_ == id) {
 		liveId_.clear();
 	}
-	if (appliedId_ == id) {
-		RevertApplied();
+	if (appliedId_ != id) {
+		return;
 	}
+	if (committed) {
+		// The row is gone; the broadcast it asked for is not. Putting the routing
+		// back now is exactly what CancelCountdown refuses to do -- the outputs
+		// are on their way up and would go out to whatever was there before. The
+		// runner lets go, and the broadcast's own stop edge restores it.
+		appliedId_.clear();
+		Log("[schedule] '" + id + "' was deleted while going live; its routing stays until the broadcast ends");
+		return;
+	}
+	RevertApplied();
 }
 
 bool ScheduleRunner::ArmIfDue(ScheduleEntryWithDestinations &row, int64_t now)
@@ -382,8 +394,7 @@ bool ScheduleRunner::CancelCountdown(const std::string &id, std::string &error)
 	// cancelling would put the routing back underneath them and the broadcast would
 	// go out to whatever was there before. Stopping a broadcast is not what a
 	// countdown cancel means, so this refuses instead.
-	const auto it = occurrences_.find(id);
-	if (it != occurrences_.end() && it->second.startRequested) {
+	if (IsStartRequested(id)) {
 		error = "that entry is already going live";
 		return false;
 	}
@@ -410,6 +421,12 @@ bool ScheduleRunner::IsCountdownCanceled(const std::string &id) const
 {
 	const auto it = occurrences_.find(id);
 	return it != occurrences_.end() && it->second.canceled;
+}
+
+bool ScheduleRunner::IsStartRequested(const std::string &id) const
+{
+	const auto it = occurrences_.find(id);
+	return it != occurrences_.end() && it->second.startRequested;
 }
 
 std::string ScheduleRunner::BlockReason(const std::string &id) const

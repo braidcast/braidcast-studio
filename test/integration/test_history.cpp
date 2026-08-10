@@ -1187,9 +1187,11 @@ static void test_runner_holds_the_routing_for_one_entry_at_a_time(void **state)
 	assert_string_equal(f.runner.ActiveEntryId().c_str(), first.c_str());
 }
 
-// Deleting an entry the runner is holding. Without this it keeps stamping a dead
-// id onto the next broadcast, and the routing it loaded is never put back.
-static void test_runner_lets_go_of_a_deleted_entry(void **state)
+// Deleting an entry the runner is holding. It stops stamping a dead id onto the
+// next broadcast, but it must not put the routing back: the start is already
+// requested and the outputs are coming up, which is exactly what CancelCountdown
+// refuses to undo. Deleting cannot be a way around that refusal.
+static void test_runner_lets_go_of_a_deleted_entry_without_reverting(void **state)
 {
 	(void)state;
 	RunnerFixture f;
@@ -1202,13 +1204,41 @@ static void test_runner_lets_go_of_a_deleted_entry(void **state)
 	f.clock = startsAt;
 	f.runner.Tick();
 	assert_int_equal(f.applyCalls, 1);
+	assert_true(f.runner.IsStartRequested(id));
 	assert_string_equal(f.runner.ActiveEntryId().c_str(), id.c_str());
 
 	assert_true(f.store.Remove(id));
 	f.runner.NoteEntryChanged(id);
 	assert_string_equal(f.runner.ActiveEntryId().c_str(), "");
-	assert_int_equal(f.revertCalls, 1);
+	assert_int_equal(f.revertCalls, 0);
 	assert_false(f.runner.IsCountdownCanceled(id));
+
+	// The broadcast's own stop edge is what puts it back, and the runner no longer
+	// holds the entry, so it does not ask twice.
+	f.runner.NoteStoppedStreaming();
+	assert_int_equal(f.revertCalls, 0);
+}
+
+// Deleting one the runner armed but never started has nothing to hold on to: the
+// apply happens at T-0, so an armed entry loaded no routing to put back.
+static void test_runner_lets_go_of_a_deleted_armed_entry(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_deleted_armed.db");
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntry(f, startsAt, true);
+
+	f.clock = startsAt - 60'000;
+	f.runner.Tick();
+	assert_string_equal(f.runner.ActiveEntryId().c_str(), id.c_str());
+	assert_false(f.runner.IsStartRequested(id));
+
+	assert_true(f.store.Remove(id));
+	f.runner.NoteEntryChanged(id);
+	assert_string_equal(f.runner.ActiveEntryId().c_str(), "");
+	assert_int_equal(f.applyCalls, 0);
+	assert_int_equal(f.revertCalls, 0);
 }
 
 // Moved a day out on the calendar. Left armed, the chip reads armed until the new
@@ -1301,6 +1331,10 @@ struct SetupFixture {
 	std::vector<History::RoutingBinding> bindings;
 	std::map<std::string, nlohmann::json> overrides;
 	bool streaming = false;
+	// Refuse to enable this one binding, standing in for any reason the real setter
+	// can say no beyond the single-live-stream rule the fake models on its own.
+	std::string refuseEnableOf;
+	int refusals = 0;
 	int saves = 0;
 	History::ScheduledSetup setup;
 };
@@ -1313,12 +1347,34 @@ static void OpenSetup(SetupFixture &f)
 	f.setup.routing.read = [&f] {
 		return f.bindings;
 	};
+	// Models the refusal the real setter makes at bridge.cpp: one stream profile is
+	// one RTMP key, so only one binding carrying it may be enabled. A fake that
+	// always says yes cannot exercise a restore that loses the routing it was
+	// restoring, which is the whole hazard the ordering here exists to avoid.
 	f.setup.routing.write = [&f](const std::string &uuid, bool enabled) {
+		History::RoutingBinding *target = nullptr;
 		for (History::RoutingBinding &b : f.bindings) {
 			if (b.uuid == uuid) {
-				b.enabled = enabled;
+				target = &b;
 			}
 		}
+		if (!target) {
+			return false;
+		}
+		if (enabled && uuid == f.refuseEnableOf) {
+			f.refusals++;
+			return false;
+		}
+		if (enabled) {
+			for (const History::RoutingBinding &b : f.bindings) {
+				if (b.uuid != uuid && b.enabled && b.profileId == target->profileId) {
+					f.refusals++;
+					return false;
+				}
+			}
+		}
+		target->enabled = enabled;
+		return true;
 	};
 	f.setup.metadata.read = [&f](const std::string &profileId) {
 		const auto it = f.overrides.find(profileId);
@@ -1426,6 +1482,101 @@ static void test_setup_merges_metadata_rather_than_replacing(void **state)
 	assert_string_equal(f.overrides["p1"]["title"].get<std::string>().c_str(), "Friday Night");
 	assert_string_equal(f.overrides["p1"]["category"]["id"].get<std::string>().c_str(), "509658");
 	assert_int_equal((int)f.overrides["p1"]["tags"].size(), 1);
+
+	f.setup.Revert();
+	assert_true(f.overrides["p1"] == before);
+}
+
+// One profile bound on two canvases, only one of which may be enabled. Apply takes
+// the other binding, so the restore has to disable it before re-enabling the user's
+// -- re-enabling first is refused and leaves both off, losing the routing entirely.
+static void test_setup_restores_a_profile_bound_on_two_canvases(void **state)
+{
+	(void)state;
+	SetupFixture f;
+	OpenSetup(f);
+	// Listed before the enabled one, so Apply's first-match pick lands on it.
+	f.bindings.push_back({"canvas2", "p1", false});
+	f.bindings.push_back({"canvas1", "p1", true});
+
+	std::string reason;
+	assert_true(f.setup.Apply({Dest("p1", "")}, reason));
+	assert_true(EnabledIs(f, "canvas1", false));
+	assert_true(EnabledIs(f, "canvas2", true));
+
+	f.setup.Revert();
+	assert_true(EnabledIs(f, "canvas1", true));
+	assert_true(EnabledIs(f, "canvas2", false));
+	assert_int_equal(f.refusals, 0);
+}
+
+// A routing that will not take is a refused start, not a half-applied one: going
+// live on part of an entry broadcasts to destinations nobody scheduled.
+static void test_setup_abandons_an_apply_the_routing_refused(void **state)
+{
+	(void)state;
+	SetupFixture f;
+	OpenSetup(f);
+	SeedBindings(f);
+	f.refuseEnableOf = "b1"; // the binding the entry names
+
+	std::string reason;
+	assert_false(f.setup.Apply({Dest("p1", "Friday Night")}, reason));
+	assert_false(reason.empty());
+	assert_false(f.setup.IsApplied());
+	// Everything it managed to change on the way is back where it was.
+	assert_true(EnabledIs(f, "b1", false));
+	assert_true(EnabledIs(f, "b2", true));
+	assert_true(EnabledIs(f, "b3", true));
+	assert_int_equal((int)f.overrides.count("p1"), 0);
+}
+
+// A restore the routing refuses keeps its snapshot for the next call. Dropping it
+// would leave the user's destinations rewritten with nothing left to put them back.
+static void test_setup_retries_a_restore_the_routing_refused(void **state)
+{
+	(void)state;
+	SetupFixture f;
+	OpenSetup(f);
+	SeedBindings(f);
+
+	std::string reason;
+	assert_true(f.setup.Apply({Dest("p1", "")}, reason));
+
+	f.refuseEnableOf = "b2";
+	f.setup.Revert();
+	assert_true(f.setup.IsApplied());
+	assert_true(f.refusals > 0);
+	// Everything it could put back is back; the one it could not is still owed.
+	assert_true(EnabledIs(f, "b1", false));
+	assert_true(EnabledIs(f, "b2", false));
+	assert_true(EnabledIs(f, "b3", true));
+
+	f.refuseEnableOf.clear();
+	f.setup.Revert();
+	assert_false(f.setup.IsApplied());
+	assert_true(EnabledIs(f, "b2", true));
+	assert_true(EnabledIs(f, "b3", true));
+}
+
+// Entries written before the category id column carry a name and no id. No
+// provider reads the name, so sending the pair would replace a remembered id with
+// an empty one and the broadcast would go live under no category at all.
+static void test_setup_keeps_a_remembered_category_id(void **state)
+{
+	(void)state;
+	SetupFixture f;
+	OpenSetup(f);
+	SeedBindings(f);
+	const nlohmann::json before = {{"category", {{"id", "509658"}, {"name", "Just Chatting"}}}};
+	f.overrides["p1"] = before;
+	History::ScheduleDestination d = Dest("p1", "Friday Night");
+	d.category = "Just Chatting";
+
+	std::string reason;
+	assert_true(f.setup.Apply({d}, reason));
+	assert_string_equal(f.overrides["p1"]["category"]["id"].get<std::string>().c_str(), "509658");
+	assert_string_equal(f.overrides["p1"]["title"].get<std::string>().c_str(), "Friday Night");
 
 	f.setup.Revert();
 	assert_true(f.overrides["p1"] == before);
@@ -1597,12 +1748,17 @@ int main(void)
 		cmocka_unit_test(test_runner_refuses_a_start_the_apply_refused),
 		cmocka_unit_test(test_runner_refuses_cancel_once_the_start_is_requested),
 		cmocka_unit_test(test_runner_holds_the_routing_for_one_entry_at_a_time),
-		cmocka_unit_test(test_runner_lets_go_of_a_deleted_entry),
+		cmocka_unit_test(test_runner_lets_go_of_a_deleted_entry_without_reverting),
+		cmocka_unit_test(test_runner_lets_go_of_a_deleted_armed_entry),
 		cmocka_unit_test(test_runner_disarms_an_entry_moved_out_of_its_window),
 		cmocka_unit_test(test_runner_disarms_on_an_edit_without_waiting_for_a_tick),
 		cmocka_unit_test(test_runner_tracks_armability_through_the_window),
 		cmocka_unit_test(test_setup_restores_exactly_what_it_changed),
 		cmocka_unit_test(test_setup_leaves_a_binding_changed_since_alone),
+		cmocka_unit_test(test_setup_restores_a_profile_bound_on_two_canvases),
+		cmocka_unit_test(test_setup_abandons_an_apply_the_routing_refused),
+		cmocka_unit_test(test_setup_retries_a_restore_the_routing_refused),
+		cmocka_unit_test(test_setup_keeps_a_remembered_category_id),
 		cmocka_unit_test(test_setup_merges_metadata_rather_than_replacing),
 		cmocka_unit_test(test_setup_sends_the_category_id_and_name),
 		cmocka_unit_test(test_setup_captures_a_duplicate_profile_once),

@@ -132,6 +132,11 @@ public:
 
 	bool IsCountdownCanceled(const std::string &id) const;
 
+	// Whether this occurrence has already asked to go live. From that moment its
+	// start is committed: it cannot be cancelled and the entry cannot be deleted,
+	// because both would put the routing back under outputs that are coming up.
+	bool IsStartRequested(const std::string &id) const;
+
 	// Why this occurrence cannot go live, or empty when nothing is wrong. Surfaced
 	// alongside the state so a refused auto-start reads as an explanation rather
 	// than as an entry that silently did not happen.
