@@ -133,12 +133,13 @@
       })),
     };
     try {
+      // No refresh: the host pushes schedule.changed on create and update, and
+      // the store already re-lists on it.
       if (entry) {
         await scheduleStore.update(entry.id, input);
       } else {
         await scheduleStore.create(input);
       }
-      await scheduleStore.refresh();
       onSaved(startsAt);
       onClose();
     } catch (e) {
@@ -156,7 +157,6 @@
     error = null;
     try {
       await scheduleStore.remove(entry.id);
-      await scheduleStore.refresh();
       onClose();
     } catch (e) {
       error = (e as Error).message;

@@ -107,6 +107,18 @@
       : "",
   );
 
+  // A refusal or a clash outranks the state as the thing the chip must say. Both
+  // are words, not just the warn glyph: the glyph alone is a second colour-only
+  // carrier, which is the failure the written-label rule exists to prevent.
+  const alert = $derived(item.blockReason ? "Blocked" : conflict ? "Conflict" : "");
+
+  // Always rendered in the compact form, never only for the states that happen to
+  // be interesting. `planned`, `done` and `canceled` all resolve to the same muted
+  // edge, so without the word they are one indistinguishable grey -- and with
+  // history merged into this grid, a month cell is now the only place a crashed
+  // session appears at all.
+  const compactBadge = $derived(alert || badge);
+
   const accessibleName = $derived(
     [
       item.title,
@@ -164,12 +176,9 @@
     {#if variant === "compact"}
       <span class="c-time">{timeLabel}</span>
       <span class="c-title">{item.title}</span>
-      {#if conflict || item.blockReason}
-        <span class="c-warn"><Icon name="warn" size={10} /></span>
-      {/if}
-      {#if phase === "countdown" || phase === "armed"}
-        <span class="c-badge">{badge}</span>
-      {/if}
+      <span class="c-badge" class:alerting={alert !== ""}
+        >{#if alert}<Icon name="warn" size={9} />{/if}{compactBadge}</span
+      >
     {:else}
       <span class="head">
         <span class="time">{rangeLabel}</span>
@@ -192,10 +201,10 @@
           <span class="over">+{formatDuration(overrun)} over</span>
         {/if}
       </span>
-      {#if item.blockReason}
-        <span class="warn"><Icon name="warn" size={11} /> {item.blockReason}</span>
-      {:else if conflict}
-        <span class="warn"><Icon name="warn" size={11} /> Conflict</span>
+      {#if alert}
+        <!-- Same precedence as the compact badge, with the room to say the whole
+             reason instead of the one word that stands for it. -->
+        <span class="warn"><Icon name="warn" size={11} /> {item.blockReason || alert}</span>
       {/if}
     {/if}
   </button>
@@ -303,17 +312,21 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  .c-warn {
-    flex: 0 0 auto;
-    display: inline-flex;
-    color: var(--color-live);
-  }
+  /* The state's word. It keeps its width against a long title -- the title
+     ellipsizes instead, since a truncated title is still a recognisable stream
+     while a truncated state is a different state. */
   .c-badge {
     flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
     font-family: var(--font-mono);
     font-size: 8px;
     letter-spacing: 0.06em;
-    color: var(--meter-yellow);
+    color: var(--edge);
+  }
+  .c-badge.alerting {
+    color: var(--color-live);
   }
 
   /* ---- block (week / day) ---- */

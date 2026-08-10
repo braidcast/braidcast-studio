@@ -59,6 +59,12 @@ class ScheduleStore {
   async remove(id: string): Promise<void> {
     await obs.call("schedule.delete", { id });
   }
+
+  /** Disarm this occurrence. The runner pushes schedule.changed itself, so there
+   * is nothing to refresh here -- the subscription above does it. */
+  async cancelCountdown(id: string): Promise<void> {
+    await obs.call("schedule.cancelCountdown", { id });
+  }
 }
 
 export const scheduleStore = new ScheduleStore();

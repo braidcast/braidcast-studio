@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { obs, type ScheduleEntryInfo } from "$lib/api/bridge";
+  import type { ScheduleEntryInfo } from "$lib/api/bridge";
   import SessionDetail from "$lib/pages/history/SessionDetail.svelte";
   import CalendarMonth from "$lib/pages/schedule/CalendarMonth.svelte";
   import CalendarTimeGrid from "$lib/pages/schedule/CalendarTimeGrid.svelte";
@@ -216,6 +216,9 @@
         autoStart: entry.autoStart,
         destinations: entry.destinations,
       });
+      // Awaited even though schedule.changed will refresh anyway: `pending` is
+      // cleared in the finally below, and clearing it before the new list has
+      // landed drops the block back to its old slot for a frame.
       await scheduleStore.refresh();
     } catch (e) {
       const msg = (e as Error).message;
@@ -238,8 +241,7 @@
       return;
     }
     try {
-      await obs.call("schedule.cancelCountdown", { id: item.entryId });
-      await scheduleStore.refresh();
+      await scheduleStore.cancelCountdown(item.entryId);
     } catch (e) {
       // Surfaced rather than swallowed: a cancel that silently failed leaves the
       // user believing an unattended broadcast was stopped when it was not.

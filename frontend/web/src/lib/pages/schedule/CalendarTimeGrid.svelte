@@ -113,6 +113,10 @@
     }
     const start = atMinute(days[dayIndex], at.minutes);
     if (start < now) {
+      // Reachable only in the slot the clock is currently inside: every earlier
+      // one is a disabled button. Saying so beats a dead band that swallows the
+      // gesture without explanation.
+      onReject("That time has already passed.");
       return;
     }
     drag = {
@@ -302,11 +306,17 @@
   }
 
   /** The planned block behind a session that ran against it -- the only way the
-   * grid can say "this was meant to be two hours and took three". */
-  function ghostStyle(item: CalendarItem, dayStart: number): string {
+   * grid can say "this was meant to be two hours and took three". It takes the
+   * same packed slot as its session, or it would span the whole column and sit
+   * behind blocks it has nothing to do with. */
+  function ghostStyle(item: CalendarItem, dayStart: number, col: number, cols: number): string {
     const top = Math.max(0, minutesInto(dayStart, item.plannedStart ?? 0));
     const end = Math.min(MINUTES_PER_DAY, minutesInto(dayStart, item.plannedEnd ?? 0));
-    return `top:${(top / 60) * HOUR_PX}px;height:${Math.max(((end - top) / 60) * HOUR_PX, 2)}px;`;
+    const width = 100 / cols;
+    return (
+      `top:${(top / 60) * HOUR_PX}px;height:${Math.max(((end - top) / 60) * HOUR_PX, 2)}px;` +
+      `left:${col * width}%;width:calc(${width}% - 3px);`
+    );
   }
 </script>
 
@@ -374,7 +384,11 @@
             <div class="events">
               {#each column.segments as seg (seg.key)}
                 {#if seg.item.plannedStart !== null && seg.item.plannedEnd !== null}
-                  <div class="ghost" style={ghostStyle(seg.item, column.dayStart)} aria-hidden="true">
+                  <div
+                    class="ghost"
+                    style={ghostStyle(seg.item, column.dayStart, seg.col, seg.cols)}
+                    aria-hidden="true"
+                  >
                     <span class="ghost-tag">planned</span>
                   </div>
                 {/if}
@@ -557,8 +571,6 @@
   }
   .ghost {
     position: absolute;
-    left: 0;
-    right: 3px;
     border: var(--border-weight) dashed var(--color-border);
     pointer-events: none;
   }
