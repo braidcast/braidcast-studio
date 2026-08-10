@@ -3,6 +3,7 @@
 
 #include "bridge.hpp"
 #include "log.hpp"
+#include "multistream/CanvasRuntime.hpp"
 #include "multistream/Hotkeys.hpp"
 #include "multistream/MultistreamEngine.hpp"
 #include "multistream/OutputBindingStore.hpp"
@@ -443,6 +444,11 @@ bool SceneCollections::Switch(const std::string &id, std::string &error)
 	// Canvases are global but bindings are per-collection, so a canvas deleted while
 	// this collection was inactive left rows here that nothing pruned at the time.
 	ObsBootstrap::ReconcileOutputBindings();
+	// The incoming collection's enabled destinations differ from the outgoing one's, so
+	// every canvas's active state has to be re-derived against the final binding set --
+	// including the Default canvas, whose scene tree would otherwise stay video-gated
+	// over a collection that streams from it.
+	ObsBootstrap::CanvasRuntime().ReconcileAll();
 	ObsBootstrap::SceneLinks().Load(ActiveSceneLinksPath());
 
 	// The undo stack is per-collection: the outgoing collection's action history

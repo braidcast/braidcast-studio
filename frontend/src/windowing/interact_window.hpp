@@ -85,6 +85,7 @@ private:
 	HWND hwnd_ = nullptr;
 	void *display_ = nullptr;  // obs_display_t* (opaque here)
 	unsigned buttonsDown_ = 0; // MK_* bits of currently pressed mouse buttons
+	bool showRefHeld_ = false; // holds a VideoGate showing hold on the source this window draws
 };
 
 // Owns the live interaction windows, each a top-level window. unique_ptr so every

@@ -2,6 +2,7 @@
 
 #include "bridge.hpp"
 #include "log.hpp"
+#include "main_channel.hpp"
 
 #include <obs.hpp>
 
@@ -163,7 +164,7 @@ void Init()
 	// animation, then rebind the channel to the transition.
 	OBSSourceAutoRelease current = obs_get_output_source(0);
 	obs_transition_set(transition, current); // null-safe
-	obs_set_output_source(0, transition);
+	MainChannel::Set(transition);
 
 	g_transition = transition; // adopt the create-ref
 	HostLog("[transition] init '" + g_typeId + "' duration=" + std::to_string(g_durationMs) + "ms");
@@ -175,7 +176,7 @@ void Shutdown()
 	if (!g_transition) {
 		return;
 	}
-	obs_set_output_source(0, nullptr);
+	MainChannel::Set(nullptr);
 	g_transition = nullptr; // release -> destroy
 	g_typeId.clear();
 	HostLog("[transition] shutdown");
@@ -205,7 +206,7 @@ void SetProgramScene(obs_source_t *scene, bool animate)
 		}
 		return;
 	}
-	obs_set_output_source(0, scene);
+	MainChannel::Set(scene);
 }
 
 std::vector<std::pair<std::string, std::string>> TypeList()
@@ -249,7 +250,7 @@ bool SetCurrentType(const std::string &id, std::string &error)
 	// Carry the live program scene across the swap with no animation.
 	OBSSourceAutoRelease current = GetProgramScene();
 	obs_transition_set(transition, current); // null-safe
-	obs_set_output_source(0, transition);
+	MainChannel::Set(transition);
 
 	g_transition = transition; // adopt the create-ref; releases the old transition
 	g_typeId = id;

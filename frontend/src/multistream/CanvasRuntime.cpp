@@ -2,9 +2,17 @@
 
 #include "CanvasStore.hpp"
 
+#include "VideoGate.hpp"
+
 #include <CanvasDefinition.hpp>
 
-CanvasRuntime::CanvasRuntime(CanvasStore &defs_) : defs(defs_) {}
+CanvasRuntime::CanvasRuntime(CanvasStore &defs_) : defs(defs_)
+{
+	// The gate reads both facts from here rather than re-deriving them, and the
+	// registration is revoked in ClearAll so it cannot outlive this object.
+	VideoGate::SetMainActivePredicate([this] { return DefaultIsActive(); });
+	VideoGate::SetCanvasRootEnumerator([this](const VideoGate::RootVisitor &visit) { EnumActiveRoots(visit); });
+}
 
 CanvasRuntime::~CanvasRuntime()
 {
@@ -126,12 +134,17 @@ CanvasRuntime::Entry *CanvasRuntime::FindEntry(const std::string &uuid)
 	return nullptr;
 }
 
-bool CanvasRuntime::IsActive(const Entry &e) const
+bool CanvasRuntime::HasConsumer(int previewCount, const std::string &uuid) const
 {
-	if (e.previewCount > 0) {
+	if (previewCount > 0) {
 		return true;
 	}
-	return enabledFn ? enabledFn(e.uuid) : false;
+	return enabledFn ? enabledFn(uuid) : false;
+}
+
+bool CanvasRuntime::IsActive(const Entry &e) const
+{
+	return HasConsumer(e.previewCount, e.uuid);
 }
 
 void CanvasRuntime::ReconcileEntry(Entry &e)
@@ -179,8 +192,37 @@ void CanvasRuntime::ReconcileEntry(Entry &e)
 	}
 }
 
+bool CanvasRuntime::DefaultIsActive() const
+{
+	// Bindings store the Default definition's own uuid (outputBinding.create rejects
+	// any canvasUuid that CanvasStore::Find misses, and the empty string never matches).
+	return HasConsumer(defaultPreviewCount, defs.Default().uuid);
+}
+
+void CanvasRuntime::ReconcileDefault()
+{
+	VideoGate::Reconcile();
+}
+
+void CanvasRuntime::EnumActiveRoots(const std::function<void(obs_source_t *)> &fn) const
+{
+	for (const Entry &e : canvases) {
+		if (!e.active) {
+			continue; // no mix, so nothing on this canvas composites
+		}
+		OBSSourceAutoRelease root = obs_canvas_get_channel(e.canvas, 0); // addref'd
+		if (root) {
+			fn(root);
+		}
+	}
+}
+
 void CanvasRuntime::Reconcile(const std::string &uuid)
 {
+	if (defs.IsDefaultUuid(uuid)) {
+		ReconcileDefault();
+		return;
+	}
 	if (Entry *e = FindEntry(uuid)) {
 		ReconcileEntry(*e);
 	}
@@ -191,13 +233,16 @@ void CanvasRuntime::ReconcileAll()
 	for (Entry &e : canvases) {
 		ReconcileEntry(e);
 	}
+	ReconcileDefault(); // the Default canvas has no Entry in `canvases`
 }
 
 void CanvasRuntime::AddPreview(const std::string &uuid)
 {
 	if (defs.IsDefaultUuid(uuid)) {
-		// The Default canvas has no Entry/mix; it composites through the main
-		// pipeline unconditionally, so a preview on it needs no activation here.
+		// The Default canvas has no Entry/mix; the count drives the video gate
+		// over Main's scene tree instead of a mix build.
+		defaultPreviewCount++;
+		ReconcileDefault();
 		return;
 	}
 	Entry *e = FindEntry(uuid);
@@ -211,6 +256,11 @@ void CanvasRuntime::AddPreview(const std::string &uuid)
 void CanvasRuntime::RemovePreview(const std::string &uuid)
 {
 	if (defs.IsDefaultUuid(uuid)) {
+		if (defaultPreviewCount <= 0) {
+			return;
+		}
+		defaultPreviewCount--;
+		ReconcileDefault();
 		return;
 	}
 	Entry *e = FindEntry(uuid);
@@ -484,6 +534,9 @@ void CanvasRuntime::DestroyCanvas(obs_canvas_t *canvas)
 
 void CanvasRuntime::ClearAll()
 {
+	// Ungate while the sources are still alive, and revoke the predicates the
+	// constructor registered before the object they close over goes away.
+	VideoGate::Shutdown();
 	while (!canvases.empty()) {
 		DestroyCanvas(canvases.back().canvas);
 		canvases.pop_back();

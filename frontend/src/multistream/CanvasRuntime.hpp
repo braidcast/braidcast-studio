@@ -53,10 +53,10 @@ public:
 
 	// Preview open/close refcount. AddPreview builds the mix if needed BEFORE the
 	// caller resolves the canvas for rendering; RemovePreview may let it go inert.
-	// For the Default canvas (empty/Default uuid, no runtime mix) this instead holds
-	// a libobs main-composite ref (obs_inc/dec_main_render_needed) per open consumer,
-	// so libobs keeps compositing the main mix while one is open. No-op for an unknown
-	// non-Default uuid. Balanced 1:1 by PreviewManager / ProjectorManager.
+	// For the Default canvas (empty/Default uuid, no runtime mix) this instead counts
+	// open consumers, so Main's scene tree is video-gated only while nothing consumes
+	// the main composite. No-op for an unknown non-Default uuid. Balanced
+	// 1:1 by PreviewManager / ProjectorManager.
 	void AddPreview(const std::string &uuid);
 	void RemovePreview(const std::string &uuid);
 
@@ -112,12 +112,28 @@ private:
 		int previewCount = 0; // open PreviewSurfaces targeting this canvas
 	};
 
-	bool IsActive(const Entry &e) const; // enabledFn(uuid) || previewCount>0
+	// The one "is this canvas consumed" predicate: an open preview, or an enabled
+	// output binding. Shared by the runtime canvases and the Default canvas, which
+	// differ only in where their preview count and uuid come from.
+	bool HasConsumer(int previewCount, const std::string &uuid) const;
+
+	bool IsActive(const Entry &e) const; // HasConsumer over the entry
 	void ReconcileEntry(Entry &e);       // build/drop mix to match IsActive
 	Entry *FindEntry(const std::string &uuid);
 
+	// The Default canvas has no Entry and no mix of its own, so its active state
+	// drives VideoGate instead of a mix build/drop.
+	bool DefaultIsActive() const;
+	void ReconcileDefault();
+
+	// Channel 0 of every canvas that currently has a mix, for VideoGate: those trees
+	// composite independently of Main. An inactive canvas has no mix and contributes
+	// nothing.
+	void EnumActiveRoots(const std::function<void(obs_source_t *)> &fn) const;
+
 	CanvasStore &defs;
 	std::vector<Entry> canvases;
+	int defaultPreviewCount = 0; // open consumers of the Default canvas's main composite
 	// Returns true iff the canvas uuid has >=1 enabled output binding. Injected by
 	// the bootstrap so CanvasRuntime need not depend on OutputBindingStore. Unset =>
 	// treated as false (no enabled destinations).

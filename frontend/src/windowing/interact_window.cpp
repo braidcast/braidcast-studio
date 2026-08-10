@@ -8,6 +8,7 @@
 #include "native_theme.hpp"
 #include "projector_window.hpp" // EnumerateMonitors() for initial centering
 #include "window_dpi.hpp"
+#include "multistream/VideoGate.hpp"
 #include "util/text_encoding.hpp"
 
 #include <obs.h>
@@ -559,6 +560,15 @@ bool InteractWindow::Create(HINSTANCE instance)
 	if (!display) {
 		return false;
 	}
+
+	// This window renders a main-tree source directly rather than through a canvas
+	// preview, so the video gate would see no consumer and stop the source capturing
+	// the moment Main goes idle -- a black, frozen, uninteractable window. Register as
+	// a consumer before the draw callback so the source is already capturing on the
+	// first frame; balanced in Destroy.
+	VideoGate::IncShowing(source_);
+	showRefHeld_ = true;
+
 	obs_display_add_draw_callback(display, RenderInteract, state_);
 
 	// Track the source's lifetime: auto-close on delete (else our hard ref leaves
@@ -590,6 +600,15 @@ void InteractWindow::Destroy()
 		display_ = nullptr;
 		HostLog("[interact] display destroyed id=" + std::to_string(interactId_));
 	}
+
+	// Drop the gate hold only after the draw callback is gone, so the source cannot
+	// be gated off while this display still samples it, and before the addref below
+	// so it is still alive to decrement against.
+	if (showRefHeld_) {
+		VideoGate::DecShowing(source_);
+		showRefHeld_ = false;
+	}
+
 	if (hwnd_) {
 		// Clear the back-pointer so a WM_DESTROY this triggers does not re-enter the
 		// manager's Close for an already-removed window.

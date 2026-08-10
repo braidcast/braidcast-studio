@@ -1,6 +1,7 @@
 #include "scene_persistence.hpp"
 
 #include "log.hpp"
+#include "main_channel.hpp"
 #include "obs_bootstrap.hpp"
 #include "scene_collections.hpp"
 #include "transitions.hpp"
@@ -301,7 +302,7 @@ bool Load(const std::string &path)
 		return false;
 	}
 
-	obs_set_output_source(0, scene);
+	MainChannel::Set(scene);
 	HostLog(std::string("[scene] loaded collection, current='") + obs_source_get_name(scene) + "'");
 	RestoreCanvasScenes(canvasCurrent);
 	return true;

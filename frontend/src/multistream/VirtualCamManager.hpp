@@ -2,6 +2,7 @@
 
 #include <obs.hpp>
 
+#include <atomic>
 #include <functional>
 #include <string>
 
@@ -21,8 +22,9 @@ public:
 	// global program video for the Default/unknown/inactive canvas). Idempotent:
 	// returns true if already active. On failure fills `err` and returns false.
 	bool Start(std::string &err);
-	// Stop the virtual camera if active. The actual stop is async; the "stop"
-	// signal fires onChanged when the output is fully down.
+	// Stop the virtual camera if active. The actual stop is async, and "stop" fires
+	// while libobs is still draining; "deactivate" is the first signal that means
+	// fully down, which is why the preview release keys off that one.
 	void Stop();
 	bool IsActive() const;
 
@@ -56,18 +58,35 @@ public:
 private:
 	static void OnStart(void *data, calldata_t *cd);
 	static void OnStop(void *data, calldata_t *cd);
+	static void OnDeactivate(void *data, calldata_t *cd);
 	void NotifyChanged();
 	// Drop the preview refcount held on heldCanvas_ (see Start), but only once the
 	// output is confirmed down -- its media still references the mix's video_t while
 	// active, so freeing the mix under a live output would be a UAF. A still-active
-	// (async-stopping) output defers the release to the next Stop()/Shutdown().
+	// (async-stopping) output defers; PostReleaseTargetPreview re-drives it from the
+	// output's own stop/deactivate signals once the drain completes.
 	void ReleaseTargetPreview();
+	// Marshal ReleaseTargetPreview onto the UI thread. The output signals fire on
+	// libobs threads, while CanvasRuntime (and the video gate behind it) is
+	// unsynchronized UI-thread-only state.
+	void PostReleaseTargetPreview();
 
 	OBSOutputAutoRelease vcam_; // owned: created lazily, released in Shutdown
 	std::string targetCanvas_;
 	// The runtime canvas we activated (via CanvasRuntime::AddPreview) to guarantee a
-	// mix while feeding the vcam; empty when none held. Balances 1:1 with AddPreview.
+	// mix while feeding the vcam. It is legitimately empty when the target is the
+	// Default canvas addressed by the empty uuid, so emptiness cannot stand in for
+	// "nothing held" -- previewRefHeld_ carries that instead.
 	std::string heldCanvas_;
+	bool previewRefHeld_ = false; // an AddPreview on heldCanvas_ is still outstanding
+	// Set from the "deactivate" signal, which libobs raises once the output has
+	// disconnected from its media -- the first moment the mix's video_t is provably
+	// unreferenced. obs_output_active alone cannot stand in for it: libobs clears
+	// that flag one store LATER, on the same thread, so a release marshaled off the
+	// stop signal can observe a still-active output and defer forever. Written on a
+	// libobs thread, read on the UI thread.
+	std::atomic<bool> mediaDrained_{false};
 	OBSSignal startSignal_;
 	OBSSignal stopSignal_;
+	OBSSignal deactivateSignal_;
 };

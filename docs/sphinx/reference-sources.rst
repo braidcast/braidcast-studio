@@ -1290,6 +1290,29 @@ General Source Functions
 
 ---------------------
 
+.. function:: void obs_source_set_video_gated(obs_source_t *source, bool gated)
+
+   Suppresses the source's showing state while leaving its "showing"
+   reference counter untouched.  A gated source reports as not showing
+   and gets its :c:member:`obs_source_info.hide` callback on the next
+   video tick, so sources that capture only while shown can release
+   their capture, but every code path bound to the reference counter
+   keeps seeing the count the holders actually took.
+
+   Audio is not affected.  Mixing is gated by the "active" reference
+   counter, so a gated source keeps producing audio.
+
+   :param gated: *true* to suppress showing, *false* to restore it
+
+---------------------
+
+.. function:: bool obs_source_video_gated(const obs_source_t *source)
+
+   :return: *true* if the source's showing state is currently
+            suppressed by :c:func:`obs_source_set_video_gated()`
+
+---------------------
+
 .. function:: void obs_source_set_flags(obs_source_t *source, uint32_t flags)
               uint32_t obs_source_get_flags(const obs_source_t *source)
 

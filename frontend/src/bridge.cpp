@@ -87,6 +87,7 @@
 #include "multistream/StorePaths.hpp"
 #include "multistream/StreamMetaStore.hpp"
 #include "multistream/StreamProfileStore.hpp"
+#include "multistream/VideoGate.hpp"
 #include "multistream/VirtualCamManager.hpp"
 #include "oauth/provider.hpp"
 #include "oauth/registry.hpp"
@@ -7371,6 +7372,12 @@ void SampleStatsTick()
 	}
 	g_lastStats = BuildStatsSnapshot();
 	EmitEvent(EventNames::kStatsChanged, g_lastStats);
+	// Piggyback the video-gate sweep on the one tick the app already runs, so scene-item
+	// add/remove/visibility changes are picked up without wiring libobs signals. Up to a
+	// second of gating latency is invisible -- gating only stops a capture nothing is
+	// looking at -- while restoring is instant, because every consumer change reconciles
+	// on its own path.
+	VideoGate::Reconcile();
 	// After the JS push, deliberately: the Stats dock's update must not wait on a
 	// database write.
 	if (g_statsTickObserver) {
@@ -10017,9 +10024,9 @@ bool MethodSourcesThumbnail(const json &params, json &result, std::string &error
 
 	obs_source_t *src = source;
 	auto renderFn = [src]() {
-		obs_source_inc_showing(src);
+		VideoGate::IncShowing(src);
 		obs_source_video_render(src);
-		obs_source_dec_showing(src);
+		VideoGate::DecShowing(src);
 	};
 
 	std::string dataUri;
@@ -10182,9 +10189,9 @@ bool MethodScreenshotTakeSource(const json &params, json &result, std::string &e
 	}
 
 	auto renderFn = [src]() {
-		obs_source_inc_showing(src);
+		VideoGate::IncShowing(src);
 		obs_source_video_render(src);
-		obs_source_dec_showing(src);
+		VideoGate::DecShowing(src);
 	};
 	const bool ok = CaptureToPng(w, h, renderFn, fullPath, error);
 	obs_source_release(sceneSource);

@@ -11,6 +11,7 @@
 #include "window_dpi.hpp"
 #include "multistream/CanvasRuntime.hpp"
 #include "multistream/CanvasStore.hpp"
+#include "multistream/VideoGate.hpp"
 #include "obs_bootstrap.hpp"
 #include "settings/GeneralSettings.hpp"
 #include "scene/transitions.hpp"
@@ -175,9 +176,9 @@ struct ProjectorWindow::State {
 	// READ on the render thread (RenderMultiview), so every access is guarded by
 	// mvMutex. The render thread touches ONLY this snapshot -- never the live scene
 	// list -- so a scene deleted between refreshes can never UAF (each entry is
-	// addref'd + inc_showing'd for the snapshot's lifetime).
+	// addref'd + IncShowing'd for the snapshot's lifetime).
 	std::mutex mvMutex;
-	std::vector<obs_source_t *> mvScenes; // addref'd + obs_source_inc_showing'd
+	std::vector<obs_source_t *> mvScenes; // addref'd + VideoGate::IncShowing'd
 	std::vector<obs_source_t *> mvLabels; // addref'd private text_gdiplus sources, parallel to mvScenes
 	std::vector<std::string> mvNames;     // cached scene names (snapshot-change detection)
 	int mvActiveIndex = -1;               // index into mvScenes of the active/program scene, or -1
@@ -620,8 +621,11 @@ bool ProjectorWindow::Create(HINSTANCE instance, const RECT &monitorRect)
 	// mix is already built the first frame; balanced in Destroy after the callback is
 	// removed. Program consumes the Default main composite (empty canvasUuid_); a
 	// Canvas/Multiview projector consumes its canvas's runtime mix (canvasUuid_ names
-	// it, and is empty for a Default multiview -> AddPreview no-ops). Scene/Source pin
-	// their target by source addref instead and need no mix ref.
+	// it, and is empty for a Default multiview -> there the ref keeps the main composite
+	// showing instead). Scene/Source pin their target by source addref instead and need
+	// no mix ref, but they render a main-tree source directly, so they register as a
+	// consumer with the video gate: without that hold an idle Main gates their target's
+	// capture off underneath them and the projector goes black.
 	switch (kind_) {
 	case ProjectorKind::Program:
 	case ProjectorKind::Canvas:
@@ -631,6 +635,8 @@ bool ProjectorWindow::Create(HINSTANCE instance, const RECT &monitorRect)
 		break;
 	case ProjectorKind::Scene:
 	case ProjectorKind::Source:
+		VideoGate::IncShowing(source_);
+		showRefHeld_ = true;
 		break;
 	}
 
@@ -682,14 +688,22 @@ void ProjectorWindow::Destroy()
 		mixRefHeld_ = false;
 	}
 
+	// Same ordering rule for a Scene/Source target's gate hold, and ahead of the
+	// addref released at the end of this function so the source is still alive to
+	// decrement against.
+	if (showRefHeld_) {
+		VideoGate::DecShowing(source_);
+		showRefHeld_ = false;
+	}
+
 	// Multiview snapshot: the render thread (the only other reader) is gone now that
 	// the display is destroyed, so release the addref'd scenes (balancing their
-	// inc_showing) + label sources. Lock for uniformity; it is uncontended here.
+	// IncShowing) + label sources. Lock for uniformity; it is uncontended here.
 	{
 		std::lock_guard<std::mutex> lock(state_->mvMutex);
 		for (obs_source_t *scene : state_->mvScenes) {
 			if (scene) {
-				obs_source_dec_showing(scene);
+				VideoGate::DecShowing(scene);
 				obs_source_release(scene);
 			}
 		}
@@ -787,7 +801,7 @@ void ProjectorWindow::RefreshMultiviewSnapshot()
 		rows = (n + cols - 1) / cols;
 	}
 
-	// Drop scenes beyond the cell cap (they are not shown, so never inc_showing'd).
+	// Drop scenes beyond the cell cap (they are not shown, so never IncShowing'd).
 	for (size_t i = size_t(n); i < scenes.size(); ++i) {
 		obs_source_release(scenes[i]);
 	}
@@ -808,7 +822,7 @@ void ProjectorWindow::RefreshMultiviewSnapshot()
 
 	// 4. Cheap path: scene SET + grid + drawNames unchanged -> only the active index
 	//    can have moved. Update it under the lock and drop the freshly-taken refs
-	//    (the existing snapshot stays; we never inc_showing'd these, so just release).
+	//    (the existing snapshot stays; we never IncShowing'd these, so just release).
 	{
 		std::lock_guard<std::mutex> lock(state_->mvMutex);
 		const bool unchanged = names == state_->mvNames && rows == state_->mvRows && cols == state_->mvCols &&
@@ -825,7 +839,7 @@ void ProjectorWindow::RefreshMultiviewSnapshot()
 	// 5. Full rebuild: activate the kept scenes (so non-program scenes still render)
 	//    and build a parallel label per scene -- all on the UI thread, off the lock.
 	for (obs_source_t *scene : scenes) {
-		obs_source_inc_showing(scene);
+		VideoGate::IncShowing(scene);
 	}
 	std::vector<obs_source_t *> labels;
 	labels.reserve(scenes.size());
@@ -851,10 +865,10 @@ void ProjectorWindow::RefreshMultiviewSnapshot()
 		state_->mvDrawNames = general.multiviewDrawNames;
 	}
 
-	// 7. Release the previous snapshot (balance its inc_showing + addref).
+	// 7. Release the previous snapshot (balance its IncShowing + addref).
 	for (obs_source_t *scene : oldScenes) {
 		if (scene) {
-			obs_source_dec_showing(scene);
+			VideoGate::DecShowing(scene);
 			obs_source_release(scene);
 		}
 	}

@@ -1226,6 +1226,18 @@ EXPORT bool obs_source_active(const obs_source_t *source);
  */
 EXPORT bool obs_source_showing(const obs_source_t *source);
 
+/**
+ * Suppresses the source's showing state while leaving its 'showing' reference
+ * counter untouched.  A gated source reports as not showing and receives its
+ * 'hide' callback on the next video tick, so video capture can stop, while
+ * every show_refs-bound loop and tree walk keeps its original bounds.  Audio is
+ * unaffected: mixing is gated by the 'active' reference counter, not this.
+ */
+EXPORT void obs_source_set_video_gated(obs_source_t *source, bool gated);
+
+/** Returns true if the source's showing state is currently gated */
+EXPORT bool obs_source_video_gated(const obs_source_t *source);
+
 /** Unused flag */
 #define OBS_SOURCE_FLAG_UNUSED_1 (1 << 0)
 /** Specifies to force audio to mono */

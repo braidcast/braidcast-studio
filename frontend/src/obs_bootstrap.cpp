@@ -74,6 +74,7 @@
 #include "windowing/projector_window.hpp"
 #include "scene/scene_collections.hpp"
 #include "util/session_log.hpp"
+#include "scene/main_channel.hpp"
 #include "scene/scene_persistence.hpp"
 #include "scene/transitions.hpp"
 #include "target_destinations.hpp"
@@ -344,7 +345,7 @@ obs_scene_t *BuildDefaultScene()
 	obs_scene_add(scene, source);
 	obs_source_release(source); // scene owns the create-ref now
 
-	obs_set_output_source(0, obs_scene_get_source(scene));
+	MainChannel::Set(obs_scene_get_source(scene));
 	HostLog("[obs] default scene bound to output channel 0");
 	return scene; // caller owns the create-ref
 }
@@ -1436,7 +1437,7 @@ void ObsBootstrap::TeardownScene()
 	}
 
 	// Unbind from the output channel first so nothing ticks/renders it.
-	obs_set_output_source(0, nullptr);
+	MainChannel::Set(nullptr);
 
 	obs_source_t *scene_source = obs_scene_get_source(g_scene);
 	obs_source_remove(scene_source);
@@ -3849,7 +3850,7 @@ void ObsBootstrap::Stop(void (*drainCefTasks)())
 	// leak count and tripping a double-destroy. Unbind channel 0, remove every
 	// remaining scene and source, then drain the destruction queue so the frees land
 	// here. No-op-safe when nothing is loaded (default-scene path already cleared).
-	obs_set_output_source(0, nullptr);
+	MainChannel::Set(nullptr);
 	auto removeCb = [](void *, obs_source_t *source) -> bool {
 		obs_source_remove(source);
 		return true;

@@ -1669,8 +1669,8 @@ namespace {
 
 // Destroy one managed surface and erase it, then balance its CanvasRuntime
 // preview ref. RemovePreview runs after Destroy() removed the draw callback
-// (teardown order): "" balances the Default main-composite ref, a uuid the
-// canvas mix ref. Returns the iterator following the erased element. Shared by
+// (teardown order): "" balances the Default consumer count, a uuid the canvas
+// mix ref. Returns the iterator following the erased element. Shared by
 // the single-surface, per-window, and per-canvas reap paths (NOT DestroyAll,
 // which deliberately skips RemovePreview at shutdown).
 std::vector<ManagedSurface>::iterator ReapSurface(std::vector<ManagedSurface> &surfaces,
@@ -1750,9 +1750,9 @@ PreviewSurface *PreviewManager::SurfaceFor(int windowId, const std::string &canv
 			return nullptr;
 		}
 	} else {
-		// A no-op for the Default uuid, which has no Entry to count: the main mix
-		// composites unconditionally, so nothing here gates it. Called anyway to keep
-		// both arms symmetric with the RemovePreview in teardown, which no-ops alike.
+		// The Default canvas has no Entry and no mix to build; the count this keeps
+		// is what holds the main composite ungated while the surface is open,
+		// balanced by the RemovePreview in teardown.
 		ObsBootstrap::CanvasRuntime().AddPreview(canvasUuid);
 	}
 

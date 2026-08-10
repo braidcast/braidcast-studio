@@ -1484,7 +1484,7 @@ void obs_source_video_tick(obs_source_t *source, float seconds)
 	}
 
 	/* call show/hide if the reference changed */
-	now_showing = !!source->show_refs;
+	now_showing = !!source->show_refs && !os_atomic_load_long(&source->video_gated);
 	if (now_showing != source->showing) {
 		if (now_showing) {
 			show_source(source);
@@ -5046,7 +5046,24 @@ bool obs_source_active(const obs_source_t *source)
 
 bool obs_source_showing(const obs_source_t *source)
 {
-	return obs_source_valid(source, "obs_source_showing") ? source->show_refs != 0 : false;
+	if (!obs_source_valid(source, "obs_source_showing")) {
+		return false;
+	}
+	return source->show_refs != 0 && !os_atomic_load_long(&source->video_gated);
+}
+
+void obs_source_set_video_gated(obs_source_t *source, bool gated)
+{
+	if (!obs_source_valid(source, "obs_source_set_video_gated")) {
+		return;
+	}
+	os_atomic_set_long(&source->video_gated, gated ? 1 : 0);
+}
+
+bool obs_source_video_gated(const obs_source_t *source)
+{
+	return obs_source_valid(source, "obs_source_video_gated") ? os_atomic_load_long(&source->video_gated) != 0
+								  : false;
 }
 
 static inline void signal_flags_updated(obs_source_t *source)

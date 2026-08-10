@@ -847,6 +847,10 @@ struct obs_source {
 	/* ensures activate/deactivate are only called once */
 	volatile long activate_refs;
 
+	/* suppresses the source's showing state without disturbing show_refs, so
+	 * every show_refs-bound loop and tree walk stays correct while gated */
+	volatile long video_gated;
+
 	/* source is in the process of being destroyed */
 	volatile long destroying;
 

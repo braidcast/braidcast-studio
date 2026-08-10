@@ -120,6 +120,8 @@ target_sources(
     src/windowing/interact_window.hpp
     src/audio/AudioMonitor.cpp
     src/audio/AudioMonitor.hpp
+    src/scene/main_channel.cpp
+    src/scene/main_channel.hpp
     src/scene/scene_collections.cpp
     src/scene/scene_collections.hpp
     src/scene/scene_persistence.cpp
@@ -335,6 +337,8 @@ target_sources(
     src/multistream/Hotkeys.hpp
     src/multistream/VirtualCamManager.cpp
     src/multistream/VirtualCamManager.hpp
+    src/multistream/VideoGate.cpp
+    src/multistream/VideoGate.hpp
     src/multistream/StorePaths.cpp
     src/multistream/StorePaths.hpp
     # Embedded MCP server (Stage 1): a localhost HTTP/1.1 endpoint speaking the MCP
@@ -532,6 +536,7 @@ set_source_files_properties(
   src/windowing/projector_window.cpp
   src/windowing/interact_window.cpp
   src/audio/AudioMonitor.cpp
+  src/scene/main_channel.cpp
   src/scene/scene_collections.cpp
   src/scene/scene_persistence.cpp
   src/windowing/tray.cpp
@@ -559,6 +564,7 @@ set_source_files_properties(
   src/multistream/StreamMetaStore.cpp
   src/multistream/Hotkeys.cpp
   src/multistream/VirtualCamManager.cpp
+  src/multistream/VideoGate.cpp
   src/multistream/StorePaths.cpp
   src/mcp/McpServer.cpp
   src/history/Thumbnails.cpp
