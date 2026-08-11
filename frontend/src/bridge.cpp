@@ -9626,6 +9626,12 @@ void StartEnabledOutputsNow()
 
 } // namespace
 
+bool GoLivePreludeInFlight()
+{
+	CEF_REQUIRE_UI_THREAD();
+	return g_goLivePreludeInFlight;
+}
+
 // Go live: bring every destination to a streamable state, THEN start the encoders.
 //
 // The prelude is not optional and does not belong to any one caller. It used to run only
@@ -9635,12 +9641,6 @@ void StartEnabledOutputsNow()
 // entry was bound to the persistent key and the stream never went live, with every local
 // health indicator green. Every entry point funnels through here, so here is where the
 // invariant holds.
-bool GoLivePreludeInFlight()
-{
-	CEF_REQUIRE_UI_THREAD();
-	return g_goLivePreludeInFlight;
-}
-
 void StartStreamingAll()
 {
 	AsyncTask::PostToUi([] {

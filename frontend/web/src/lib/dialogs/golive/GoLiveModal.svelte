@@ -1069,9 +1069,13 @@ import { EV } from "$lib/utils/eventNames";
       try {
         await obs.call("streaming.start");
       } catch (e) {
-        // Refused or dropped by the host, so the pushes above have no session coming
-        // either — including the case this catch exists for, a start issued while an
-        // earlier go-live's prelude is still running.
+        // Nothing this modal armed is going live, so the records go back. They go back
+        // even in the case this catch was written for — a start refused because an
+        // EARLIER go-live's prelude is still running — where that prelude may yet land
+        // and open a session of its own. Handing them over costs that session its title
+        // in the history card; keeping them costs a leak whenever the earlier prelude
+        // is refused instead, since it only takes back what it recorded itself, at most
+        // one profile per persistent channel. The cheaper loss wins.
         forgetPushedMetadata();
         showToast("Go Live failed", (e as Error).message);
         submitting = false;
