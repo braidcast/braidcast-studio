@@ -16,6 +16,7 @@
     clockLabel,
     countdownLabel,
     formatDuration,
+    GO_LIVE_STATES,
     overrunMin,
     type ArmPhase,
     type CalendarItem,
@@ -39,6 +40,10 @@
     showThumb?: boolean;
     onOpen: (item: CalendarItem) => void;
     onCancel: (item: CalendarItem) => void;
+    onGoLive: (item: CalendarItem) => void;
+    /** True while this item's schedule.startNow is in flight, so a second click
+     * on the same chip can't fire a second broadcast start. */
+    goingLive: boolean;
     /** Absent in views with no drag (or on an item nothing may move). */
     onDragStart?: (e: PointerEvent, item: CalendarItem, mode: "move" | "resize") => void;
     /** Week/Day only: the bottom edge resizes the planned duration. */
@@ -53,6 +58,8 @@
     showThumb = false,
     onOpen,
     onCancel,
+    onGoLive,
+    goingLive,
     onDragStart,
     resizable = false,
   }: Props = $props();
@@ -96,6 +103,11 @@
   // the whole armed window, not just the last minute -- the bridge refuses it in
   // any other state, which is the same condition these two phases stand for.
   const cancellable = $derived(phase === "armed" || phase === "countdown");
+
+  // Offered exactly where schedule.startNow would accept it -- the same states
+  // GO_LIVE_STATES encodes for the store, so a click here never comes back refused
+  // for a reason the chip could have foreseen.
+  const goLiveable = $derived(item.state !== null && GO_LIVE_STATES.includes(item.state));
 
   const platforms = $derived(
     item.profileIds.map((id) => destinationIdentityStore.forProfile(id)?.platform ?? "rtmp"),
@@ -209,16 +221,36 @@
     {/if}
   </button>
 
-  {#if cancellable}
-    <button
-      class="cancel"
-      type="button"
-      title="Cancel this occurrence's auto-start"
-      aria-label="Cancel auto-start for {item.title}"
-      onclick={() => onCancel(item)}
-    >
-      {#if variant === "compact"}<Icon name="x" size={9} />{:else}Cancel{/if}
-    </button>
+  {#if cancellable || goLiveable}
+    <div class="actions">
+      {#if goLiveable}
+        <button
+          class="golive"
+          type="button"
+          disabled={goingLive}
+          title="Go live now"
+          aria-label="Go live now with {item.title}"
+          onclick={() => onGoLive(item)}
+        >
+          {#if variant === "compact"}
+            <Icon name="play" size={9} />
+          {:else}
+            {goingLive ? "Going Live…" : "Go Live"}
+          {/if}
+        </button>
+      {/if}
+      {#if cancellable}
+        <button
+          class="cancel"
+          type="button"
+          title="Cancel this occurrence's auto-start"
+          aria-label="Cancel auto-start for {item.title}"
+          onclick={() => onCancel(item)}
+        >
+          {#if variant === "compact"}<Icon name="x" size={9} />{:else}Cancel{/if}
+        </button>
+      {/if}
+    </div>
   {/if}
 
   {#if resizable && item.editable && onDragStart}
@@ -408,19 +440,33 @@
     text-overflow: ellipsis;
   }
 
-  .cancel {
+  .actions {
     flex: 0 0 auto;
     align-self: flex-start;
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    margin: 2px;
+  }
+  .block .actions {
+    position: absolute;
+    right: 2px;
+    bottom: 2px;
+  }
+  .cancel,
+  .golive {
+    flex: 0 0 auto;
     display: inline-flex;
     align-items: center;
     height: auto;
-    margin: 2px;
     padding: 2px 6px;
     font-family: var(--font-mono);
     font-size: 9px;
     letter-spacing: 0.06em;
-    color: var(--color-live);
     background: transparent;
+  }
+  .cancel {
+    color: var(--color-live);
     border: var(--border-weight) solid color-mix(in srgb, var(--color-live) 55%, transparent);
   }
   .cancel:hover {
@@ -428,10 +474,14 @@
     background: var(--color-live);
     border-color: var(--color-live);
   }
-  .block .cancel {
-    position: absolute;
-    right: 2px;
-    bottom: 2px;
+  .golive {
+    color: var(--color-accent);
+    border: var(--border-weight) solid color-mix(in srgb, var(--color-accent) 55%, transparent);
+  }
+  .golive:hover:not(:disabled) {
+    color: var(--color-accent-ink);
+    background: var(--color-accent);
+    border-color: var(--color-accent);
   }
 
   .rz {

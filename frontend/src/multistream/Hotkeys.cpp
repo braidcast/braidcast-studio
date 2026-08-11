@@ -283,11 +283,12 @@ obs_hotkey_id g_stopStreamingId = OBS_INVALID_HOTKEY_ID;
 obs_hotkey_id g_startVirtualCamId = OBS_INVALID_HOTKEY_ID;
 obs_hotkey_id g_stopVirtualCamId = OBS_INVALID_HOTKEY_ID;
 
-// Drive the whole-stream lifecycle through Bridge::StartStreamingAll / StopStreamingAll --
-// literally the same functions streaming.start/stop call, so these hotkeys cannot drift from
-// the bridge path again. They previously called MultistreamEngine::StartAllEnabled/StopAll
-// directly while claiming to share that path, which left a hotkey stop with the chat
-// transports and viewer poller still running against broadcasts that had ended.
+// Drive the whole-stream lifecycle through Bridge::StartStreamingAllAdoptingSchedule /
+// StopStreamingAll -- literally the same functions streaming.start/stop call by default, so
+// these hotkeys cannot drift from the bridge path again. They previously called
+// MultistreamEngine::StartAllEnabled/StopAll directly while claiming to share that path, which
+// left a hotkey stop with the chat transports and viewer poller still running against
+// broadcasts that had ended.
 //
 // Fired on key-down only (pressed==true) from libobs's hotkey thread. The shared functions
 // marshal to the UI thread themselves (the engine's binding list and encoder cache are
@@ -298,7 +299,9 @@ void OnStartStreaming(void * /*data*/, obs_hotkey_id /*id*/, obs_hotkey_t * /*ho
 	if (!pressed) {
 		return;
 	}
-	Bridge::StartStreamingAll();
+	// Adopting: the hotkey has no way to ask the user whether a due schedule entry
+	// should take over, so it adopts by default -- see StartStreamingAllAdoptingSchedule.
+	Bridge::StartStreamingAllAdoptingSchedule();
 }
 
 void OnStopStreaming(void * /*data*/, obs_hotkey_id /*id*/, obs_hotkey_t * /*hotkey*/, bool pressed)

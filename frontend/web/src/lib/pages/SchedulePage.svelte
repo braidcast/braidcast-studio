@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { ScheduleEntryInfo } from "$lib/api/bridge";
+  import CollectionDialog, { type DialogSpec } from "$lib/dialogs/CollectionDialog.svelte";
   import SessionDetail from "$lib/pages/history/SessionDetail.svelte";
   import CalendarMonth from "$lib/pages/schedule/CalendarMonth.svelte";
   import CalendarTimeGrid from "$lib/pages/schedule/CalendarTimeGrid.svelte";
@@ -253,6 +254,45 @@
     }
   }
 
+  let dialog = $state<DialogSpec | null>(null);
+
+  // Row-scoped in-flight guard, keyed by entry id like `pending` above, so a
+  // double-click on the same chip cannot fire schedule.startNow twice.
+  let goingLive = $state<Set<string>>(new Set());
+  function goingLiveOf(item: CalendarItem): boolean {
+    return item.entryId !== null && goingLive.has(item.entryId);
+  }
+
+  async function goLive(item: CalendarItem): Promise<void> {
+    const id = item.entryId;
+    if (!id || goingLive.has(id)) {
+      return;
+    }
+    goingLive = new Set(goingLive).add(id);
+    try {
+      await scheduleStore.startNow(id);
+    } catch (e) {
+      // The host's message is already written for a streamer (already live,
+      // already finished, no destination can go live) -- passed through as-is
+      // rather than prefixed, the same way a drag rejection is.
+      reject((e as Error).message);
+    } finally {
+      const next = new Set(goingLive);
+      next.delete(id);
+      goingLive = next;
+    }
+  }
+
+  function confirmGoLive(item: CalendarItem): void {
+    dialog = {
+      kind: "confirm",
+      title: "Go Live",
+      message: `Go live now with "${item.title}"? This starts broadcasting immediately to its enabled destinations.`,
+      confirmLabel: "Go Live",
+      onCommit: () => void goLive(item),
+    };
+  }
+
   const storesLoaded = $derived(scheduleStore.loaded && sessionsStore.loaded);
   const nothingAtAll = $derived(storesLoaded && items.length === 0);
 </script>
@@ -291,6 +331,8 @@
         {phaseOf}
         onOpen={openItem}
         onCancel={cancelCountdown}
+        onGoLive={confirmGoLive}
+        {goingLiveOf}
         onCreate={openDay}
         onMoveDay={moveToDay}
         onShowDay={showDay}
@@ -305,6 +347,8 @@
         {phaseOf}
         onOpen={openItem}
         onCancel={cancelCountdown}
+        onGoLive={confirmGoLive}
+        {goingLiveOf}
         onCreate={openCreate}
         onCommit={commit}
         onReject={reject}
@@ -342,6 +386,10 @@
 
 {#if openSessionId}
   <SessionDetail id={openSessionId} onClose={() => (openSessionId = null)} />
+{/if}
+
+{#if dialog}
+  <CollectionDialog {...dialog} onClose={() => (dialog = null)} />
 {/if}
 
 <style>

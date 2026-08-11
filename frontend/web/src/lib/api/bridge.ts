@@ -1554,6 +1554,10 @@ export interface ObsMethods {
   getCurrentScene: string | null;
   listScenes: string[];
   getStreamingState: { active: boolean };
+  // start takes an optional {adoptSchedule} (default true): when a scheduled entry is
+  // armed right now, the host loads its destinations and metadata before starting. The
+  // Go Live modal passes false, since the user just chose that configuration on screen;
+  // the hotkey, the tray and an ask-disabled start have nowhere to ask and so adopt.
   "streaming.start": { active: boolean };
   "streaming.stop": { active: boolean };
   // Native preview surfaces. Pass an optional `canvas` uuid to address one
@@ -1876,6 +1880,10 @@ export interface ObsMethods {
   // Disarm the current occurrence: it neither re-arms nor auto-starts, and the
   // entry row is left intact. Fails with a reason unless the entry is armed.
   "schedule.cancelCountdown": { canceled: string };
+  // Start this occurrence immediately, bypassing its scheduled time. Rejects with
+  // a streamer-readable reason when it cannot start (already streaming, already
+  // live, already settled, or no destination can go live).
+  "schedule.startNow": { ok: true };
   // Native projectors (standalone windows rendering a target on a monitor, P3).
   // listMonitors enumerates the displays a fullscreen projector can target. open
   // spawns a projector (fullscreen needs `monitor`); the window closes itself (Esc /

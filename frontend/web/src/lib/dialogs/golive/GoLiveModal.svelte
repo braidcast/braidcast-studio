@@ -1067,7 +1067,11 @@ import { EV } from "$lib/utils/eventNames";
 
     if (goLiveModal.mode === "golive") {
       try {
-        await obs.call("streaming.start");
+        // What is on screen is what airs. A scheduled entry armed right now would
+        // otherwise be adopted by the host and replace the destinations the user just
+        // chose here; the paths that adopt are the ones with nowhere to ask (hotkey,
+        // tray, and Go Live with "ask for stream info" turned off).
+        await obs.call("streaming.start", { adoptSchedule: false });
       } catch (e) {
         // Nothing this modal armed is going live, so the records go back. They go back
         // even in the case this catch was written for — a start refused because an

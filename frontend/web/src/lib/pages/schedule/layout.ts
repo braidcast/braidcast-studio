@@ -41,6 +41,11 @@ const MIN_LAYOUT_MIN = (MIN_BLOCK_PX / HOUR_PX) * 60;
  * these can conflict -- a missed or canceled entry will never occupy a profile. */
 export const LIVE_STATES: readonly ScheduleState[] = ["planned", "armed", "live"];
 
+/** States schedule.startNow will accept. Live, done and canceled are refused by
+ * the runner regardless of the click, so offering the action there would be a
+ * button that always fails. */
+export const GO_LIVE_STATES: readonly ScheduleState[] = ["planned", "armed", "missed"];
+
 export type CalendarItemKind = "planned" | "session";
 
 /** One block on the timeline, whether it is something planned or something that

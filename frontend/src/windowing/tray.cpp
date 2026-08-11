@@ -6,7 +6,7 @@
 
 #include "settings/GeneralSettings.hpp"
 #include "app_icon.hpp"
-#include "bridge.hpp" // Bridge::StartStreamingAll / StopStreamingAll
+#include "bridge.hpp" // Bridge::StartStreamingAllAdoptingSchedule / StopStreamingAll
 #include "log.hpp"
 #include "multistream/VirtualCamManager.hpp"
 #include "obs_bootstrap.hpp"
@@ -130,7 +130,9 @@ void TrayIcon::ShowMenu()
 		}
 		break;
 	case CmdStartAll:
-		Bridge::StartStreamingAll();
+		// Adopting: the tray has no way to ask the user whether a due schedule entry
+		// should take over, so it adopts by default -- see StartStreamingAllAdoptingSchedule.
+		Bridge::StartStreamingAllAdoptingSchedule();
 		break;
 	case CmdStopAll:
 		Bridge::StopStreamingAll();

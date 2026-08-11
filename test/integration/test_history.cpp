@@ -766,9 +766,10 @@ static void test_runner_arms_at_the_five_minute_lead(void **state)
 	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kArmed);
 	assert_int_equal(f.changedCalls, 1);
 
-	// The entry an armed occurrence belongs to is what stamps schedule_id onto the
-	// session row, whether the broadcast is started by the runner or by hand.
-	assert_string_equal(f.runner.ActiveEntryId().c_str(), id.c_str());
+	// Merely armed is not yet claimed: nothing has asked to start this occurrence,
+	// so it is not what a broadcast starting right now would belong to. Only the
+	// auto-start, StartNow, or AdoptImminentArmed turn an armed entry into one.
+	assert_string_equal(f.runner.ActiveEntryId().c_str(), "");
 
 	f.runner.Tick();
 	assert_int_equal(f.changedCalls, 1);
@@ -1173,9 +1174,10 @@ static void test_runner_puts_the_routing_back_when_the_go_live_is_refused(void *
 	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kMissed);
 }
 
-// An entry the user started by hand during its armed window. The runner never asked
-// for it, so nothing sets startRequested -- but the broadcast is still this entry's,
-// and deleting it mid-stream nulls the running session's schedule_id.
+// An entry the user started by hand during its armed window. AdoptImminentArmed is
+// what makes it ask -- exactly what StartStreamingAllAdoptingSchedule calls before
+// the go-live it wraps -- so the broadcast is still this entry's, and deleting it
+// mid-stream nulls the running session's schedule_id.
 static void test_runner_guards_a_manually_started_entry(void **state)
 {
 	(void)state;
@@ -1189,6 +1191,7 @@ static void test_runner_guards_a_manually_started_entry(void **state)
 	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kArmed);
 	assert_false(f.runner.IsStartInFlight(id));
 
+	f.runner.AdoptImminentArmed();
 	f.streaming = true;
 	f.runner.NoteWentLive();
 	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kLive);
@@ -1423,18 +1426,21 @@ static void test_runner_lets_go_of_a_deleted_armed_entry(void **state)
 
 	f.clock = startsAt - 60'000;
 	f.runner.Tick();
-	assert_string_equal(f.runner.ActiveEntryId().c_str(), id.c_str());
 	assert_false(f.runner.IsStartInFlight(id));
 
 	assert_true(f.store.Remove(id));
 	f.runner.NoteEntryChanged(id);
 	assert_string_equal(f.runner.ActiveEntryId().c_str(), "");
+	// The runner let go: there is no longer an armed entry for a manual go-live to
+	// adopt. Asked through the adopt path rather than ActiveEntryId, which answers
+	// empty for a merely-armed entry either way and so could not tell the two apart.
+	f.runner.AdoptImminentArmed();
 	assert_int_equal(f.applyCalls, 0);
 	assert_int_equal(f.revertCalls, 0);
 }
 
 // Moved a day out on the calendar. Left armed, the chip reads armed until the new
-// start and a manual go-live in between would be recorded against this entry.
+// start and a manual go-live in between would adopt this entry's routing.
 static void test_runner_disarms_an_entry_moved_out_of_its_window(void **state)
 {
 	(void)state;
@@ -1446,7 +1452,6 @@ static void test_runner_disarms_an_entry_moved_out_of_its_window(void **state)
 	f.clock = startsAt - 60'000;
 	f.runner.Tick();
 	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kArmed);
-	assert_string_equal(f.runner.ActiveEntryId().c_str(), id.c_str());
 
 	History::ScheduleEntry moved = *f.store.Get(id);
 	moved.startsAt = startsAt + 24 * 60 * 60 * 1000;
@@ -1456,7 +1461,11 @@ static void test_runner_disarms_an_entry_moved_out_of_its_window(void **state)
 
 	f.runner.Tick();
 	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kPlanned);
-	assert_string_equal(f.runner.ActiveEntryId().c_str(), "");
+	// Disarmed for real: a manual go-live now finds nothing to adopt, which is the
+	// difference the old ActiveEntryId assertion used to catch before a merely-armed
+	// entry stopped being claimed on its own.
+	f.runner.AdoptImminentArmed();
+	assert_int_equal(f.applyCalls, 0);
 	// Arming loaded nothing, so a disarm has nothing to put back.
 	assert_int_equal(f.revertCalls, 0);
 }
@@ -1512,6 +1521,279 @@ static void test_runner_tracks_armability_through_the_window(void **state)
 	f.clock = startsAt - 120'000;
 	f.runner.Tick();
 	assert_string_equal(f.runner.BlockReason(id).c_str(), "'Main' is not connected");
+}
+
+// The explicit "start this now" path, on a planned entry nowhere near its arm
+// window. It has to arm the row itself -- RequestStart only loads routing, it never
+// changes state -- or NoteWentLive would find the row still `planned` and drop the
+// edge.
+static void test_runner_start_now_arms_and_starts_a_planned_entry(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_start_now_planned.db");
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntry(f, startsAt, false);
+
+	f.clock = startsAt - 60 * 60 * 1000;
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kPlanned);
+
+	std::string error;
+	assert_true(f.runner.StartNow(id, error));
+	assert_true(error.empty());
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kArmed);
+	assert_int_equal(f.applyCalls, 1);
+	assert_int_equal(f.goLiveCalls, 1);
+	assert_int_equal(f.changedCalls, 1);
+	assert_int_equal((int)f.appliedProfiles.size(), 1);
+	assert_string_equal(f.appliedProfiles[0].c_str(), "p1");
+
+	f.runner.NoteWentLive();
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kLive);
+}
+
+// A missed entry is still "has not run yet" as far as StartNow is concerned -- the
+// row settling on the missed grace only stops the calendar calling it upcoming.
+static void test_runner_start_now_starts_a_missed_entry(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_start_now_missed.db");
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntry(f, startsAt, false);
+
+	f.clock = startsAt + History::kMissedGraceMs + 1000;
+	f.runner.Tick();
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kMissed);
+
+	std::string error;
+	assert_true(f.runner.StartNow(id, error));
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kArmed);
+	assert_int_equal(f.applyCalls, 1);
+	assert_int_equal(f.goLiveCalls, 1);
+}
+
+// A countdown cancelled, then overridden by "go live now" -- a new intent, so the
+// old cancellation must not still block it, and StartNow's own flag reset is what
+// clears it rather than IsStartInFlight, which never saw a request go out.
+static void test_runner_start_now_after_cancel_countdown_succeeds(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_start_now_after_cancel.db");
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntry(f, startsAt, true);
+
+	f.clock = startsAt - 60'000;
+	f.runner.Tick();
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kArmed);
+
+	std::string error;
+	assert_true(f.runner.CancelCountdown(id, error));
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kPlanned);
+	assert_true(f.runner.IsCountdownCanceled(id));
+
+	assert_true(f.runner.StartNow(id, error));
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kArmed);
+	assert_int_equal(f.applyCalls, 1);
+	assert_int_equal(f.goLiveCalls, 1);
+	assert_false(f.runner.IsCountdownCanceled(id));
+}
+
+// Never take the routing away from a broadcast that is already running, the same
+// refusal the clock itself is held to.
+static void test_runner_start_now_refuses_while_streaming(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_start_now_streaming.db");
+	f.streaming = true;
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntry(f, startsAt, false);
+
+	f.clock = startsAt - 60 * 60 * 1000;
+	std::string error;
+	assert_false(f.runner.StartNow(id, error));
+	assert_string_equal(error.c_str(), History::kAlreadyStreamingReason);
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kPlanned);
+	assert_int_equal(f.applyCalls, 0);
+	assert_int_equal(f.goLiveCalls, 0);
+}
+
+// A start already on its way up is committed. StartNow must refuse it exactly as
+// CancelCountdown and schedule.delete do, not ask a second time on top of it.
+static void test_runner_start_now_refuses_when_already_in_flight(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_start_now_in_flight.db");
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntry(f, startsAt, true);
+
+	f.clock = startsAt - 60'000;
+	f.runner.Tick();
+	f.clock = startsAt;
+	f.runner.Tick();
+	assert_int_equal(f.goLiveCalls, 1);
+	assert_true(f.runner.IsStartInFlight(id));
+
+	std::string error;
+	assert_false(f.runner.StartNow(id, error));
+	assert_string_equal(error.c_str(), "that entry is already going live");
+	assert_int_equal(f.applyCalls, 1);
+	assert_int_equal(f.goLiveCalls, 1);
+}
+
+// An apply refusal is a refused start, not a start onto whatever was there --
+// StartNow reports it and stops rather than calling goLive over unloaded routing.
+// The row still arms: StartNow's own armability check already passed, and the
+// refusal is the platform's, not the schedule's.
+static void test_runner_start_now_propagates_an_apply_refusal(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_start_now_apply_refused.db");
+	f.applyOk = false;
+	f.applyReason = "the routing could not be loaded";
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntry(f, startsAt, false);
+
+	f.clock = startsAt - 60 * 60 * 1000;
+	std::string error;
+	assert_false(f.runner.StartNow(id, error));
+	assert_string_equal(error.c_str(), "the routing could not be loaded");
+	assert_int_equal(f.applyCalls, 0);
+	assert_int_equal(f.goLiveCalls, 0);
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kArmed);
+}
+
+// Guards the RequestStart extraction: a cancelled occurrence must still refuse the
+// clock's own auto-start, exactly as it did before StartIfDue's body moved into the
+// shared helper.
+static void test_runner_auto_start_still_refuses_a_cancelled_occurrence(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_auto_still_refuses_cancel.db");
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntry(f, startsAt, true);
+
+	f.clock = startsAt - 60'000;
+	f.runner.Tick();
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kArmed);
+
+	std::string error;
+	assert_true(f.runner.CancelCountdown(id, error));
+
+	f.clock = startsAt;
+	f.runner.Tick();
+	assert_int_equal(f.applyCalls, 0);
+	assert_int_equal(f.goLiveCalls, 0);
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kPlanned);
+}
+
+// AdoptImminentArmed is what a manual go-live calls on itself before reading output
+// bindings, so an entry sitting in its arm window is loaded rather than left for a
+// bare "looks imminent" guess to claim without ever having been applied. It uses
+// PrepareStart, not RequestStart -- goLive is the caller's own next step, not
+// something adoption invokes on itself.
+static void test_runner_adopt_imminent_armed_loads_it_for_the_golive(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_adopt_loads.db");
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntry(f, startsAt, false);
+
+	f.clock = startsAt - 60'000;
+	f.runner.Tick();
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kArmed);
+
+	f.runner.AdoptImminentArmed();
+	assert_int_equal(f.applyCalls, 1);
+	assert_int_equal((int)f.appliedProfiles.size(), 1);
+	assert_string_equal(f.appliedProfiles[0].c_str(), "p1");
+	// Adoption never calls goLive itself -- that is the caller's own next step, and
+	// calling it here would re-enter the manual go-live that is asking.
+	assert_int_equal(f.goLiveCalls, 0);
+
+	f.runner.NoteWentLive();
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kLive);
+}
+
+// A cancelled countdown must not be resurrected by an unrelated manual press. Once
+// cancelled the row is not armed, so ImminentArmedId finds nothing to adopt --
+// exactly the outcome the occurrence's own cancelled flag independently guards.
+static void test_runner_adopt_skips_a_cancelled_occurrence(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_adopt_cancelled.db");
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntry(f, startsAt, true);
+
+	f.clock = startsAt - 60'000;
+	f.runner.Tick();
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kArmed);
+
+	std::string error;
+	assert_true(f.runner.CancelCountdown(id, error));
+	assert_true(f.runner.IsCountdownCanceled(id));
+
+	f.runner.AdoptImminentArmed();
+	assert_int_equal(f.applyCalls, 0);
+
+	f.runner.NoteWentLive();
+	// Left alone entirely: still planned, not live, and still reads as cancelled.
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kPlanned);
+	assert_true(f.runner.IsCountdownCanceled(id));
+}
+
+// The auto-start and StartNow both set startingId_ before calling goLive, so a
+// go-live either of them triggered already belongs to an entry -- adoption must not
+// ask a second time on top of it.
+static void test_runner_adopt_is_a_noop_once_something_already_claimed_the_start(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_adopt_noop.db");
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntry(f, startsAt, true);
+
+	f.clock = startsAt - 60'000;
+	f.runner.Tick();
+	f.clock = startsAt;
+	f.runner.Tick();
+	assert_int_equal(f.applyCalls, 1);
+	assert_int_equal(f.goLiveCalls, 1);
+	assert_true(f.runner.IsStartInFlight(id));
+
+	f.runner.AdoptImminentArmed();
+	assert_int_equal(f.applyCalls, 1);
+}
+
+// An apply refusal during adoption must not claim the entry -- the caller's go-live
+// still runs (adoption swallows the refusal), but nothing here asked for this entry,
+// so the following NoteWentLive has no id to give the edge to.
+static void test_runner_adopt_apply_refusal_leaves_it_unclaimed(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_adopt_apply_refused.db");
+	f.applyOk = false;
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntry(f, startsAt, false);
+
+	f.clock = startsAt - 60'000;
+	f.runner.Tick();
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kArmed);
+
+	f.runner.AdoptImminentArmed();
+	assert_int_equal(f.applyCalls, 0);
+	assert_int_equal(f.goLiveCalls, 0);
+
+	f.runner.NoteWentLive();
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kArmed);
 }
 
 // A ScheduledSetup over in-memory routing and metadata. The runner's own tests
@@ -1979,6 +2261,17 @@ int main(void)
 		cmocka_unit_test(test_runner_disarms_an_entry_moved_out_of_its_window),
 		cmocka_unit_test(test_runner_disarms_on_an_edit_without_waiting_for_a_tick),
 		cmocka_unit_test(test_runner_tracks_armability_through_the_window),
+		cmocka_unit_test(test_runner_start_now_arms_and_starts_a_planned_entry),
+		cmocka_unit_test(test_runner_start_now_starts_a_missed_entry),
+		cmocka_unit_test(test_runner_start_now_after_cancel_countdown_succeeds),
+		cmocka_unit_test(test_runner_start_now_refuses_while_streaming),
+		cmocka_unit_test(test_runner_start_now_refuses_when_already_in_flight),
+		cmocka_unit_test(test_runner_start_now_propagates_an_apply_refusal),
+		cmocka_unit_test(test_runner_auto_start_still_refuses_a_cancelled_occurrence),
+		cmocka_unit_test(test_runner_adopt_imminent_armed_loads_it_for_the_golive),
+		cmocka_unit_test(test_runner_adopt_skips_a_cancelled_occurrence),
+		cmocka_unit_test(test_runner_adopt_is_a_noop_once_something_already_claimed_the_start),
+		cmocka_unit_test(test_runner_adopt_apply_refusal_leaves_it_unclaimed),
 		cmocka_unit_test(test_setup_restores_exactly_what_it_changed),
 		cmocka_unit_test(test_setup_leaves_a_binding_changed_since_alone),
 		cmocka_unit_test(test_setup_restores_a_profile_bound_on_two_canvases),

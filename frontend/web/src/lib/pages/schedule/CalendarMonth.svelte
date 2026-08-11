@@ -23,6 +23,8 @@
     phaseOf: (item: CalendarItem) => ArmPhase;
     onOpen: (item: CalendarItem) => void;
     onCancel: (item: CalendarItem) => void;
+    onGoLive: (item: CalendarItem) => void;
+    goingLiveOf: (item: CalendarItem) => boolean;
     onCreate: (dayStart: number) => void;
     onMoveDay: (item: CalendarItem, dayStart: number) => void;
     /** "+N more" hands the day to the Day view rather than growing the cell. */
@@ -38,6 +40,8 @@
     phaseOf,
     onOpen,
     onCancel,
+    onGoLive,
+    goingLiveOf,
     onCreate,
     onMoveDay,
     onShowDay,
@@ -265,6 +269,8 @@
               phase={phaseOf(item)}
               onOpen={openGuarded}
               {onCancel}
+              {onGoLive}
+              goingLive={goingLiveOf(item)}
               onDragStart={beginDrag}
             />
           {/each}

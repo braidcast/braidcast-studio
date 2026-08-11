@@ -65,6 +65,12 @@ class ScheduleStore {
   async cancelCountdown(id: string): Promise<void> {
     await obs.call("schedule.cancelCountdown", { id });
   }
+
+  /** Start this occurrence immediately. Same no-refresh reasoning as
+   * cancelCountdown: the runner's own schedule.changed carries the new state. */
+  async startNow(id: string): Promise<void> {
+    await obs.call("schedule.startNow", { id });
+  }
 }
 
 export const scheduleStore = new ScheduleStore();

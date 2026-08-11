@@ -326,10 +326,25 @@ bool ScheduleRunner::StartIfDue(const ScheduleEntryWithDestinations &row, int64_
 	if (it != occurrences_.end() && (it->second.canceled || it->second.startRequested)) {
 		return false;
 	}
+	std::string error;
+	if (!RequestStart(row, now, error)) {
+		return SetBlockReason(entry.id, error);
+	}
+	// The state stays `armed` until the outputs actually come up. A request is not
+	// a broadcast, and an entry that reads `live` while nothing is streaming is the
+	// one claim this feature must never make. Nothing schedule.list reports has
+	// changed yet either, so this reports no change.
+	return false;
+}
+
+bool ScheduleRunner::PrepareStart(const ScheduleEntryWithDestinations &row, int64_t now, std::string &error)
+{
+	const ScheduleEntry &entry = row.entry;
 	// Broadcasting to nowhere is worse than not broadcasting. RefreshArmability has
 	// already asked this tick and keeps asking through the grace window, so a
 	// destination that comes back fifteen seconds late still gets to go live.
-	if (!BlockReason(entry.id).empty()) {
+	error = BlockReason(entry.id);
+	if (!error.empty()) {
 		return false;
 	}
 	// The entry becomes the live configuration here and nowhere earlier. A refusal is
@@ -337,10 +352,11 @@ bool ScheduleRunner::StartIfDue(const ScheduleEntryWithDestinations &row, int64_
 	// clears inside the grace window still gets its start.
 	if (applyEntry) {
 		RevertApplied();
-		std::string reason;
-		if (!applyEntry(row.destinations, reason)) {
-			return SetBlockReason(entry.id,
-					      reason.empty() ? "could not load this entry's destinations" : reason);
+		if (!applyEntry(row.destinations, error)) {
+			if (error.empty()) {
+				error = "could not load this entry's destinations";
+			}
+			return false;
 		}
 		appliedId_ = entry.id;
 	}
@@ -348,15 +364,20 @@ bool ScheduleRunner::StartIfDue(const ScheduleEntryWithDestinations &row, int64_
 	occurrence.startRequested = true;
 	occurrence.startRequestedAtMs = now;
 	startingId_ = entry.id;
-	Log("[schedule] auto-starting '" + entry.title + "' (" + entry.id + ")");
+	return true;
+}
+
+bool ScheduleRunner::RequestStart(const ScheduleEntryWithDestinations &row, int64_t now, std::string &error,
+				  const char *verb)
+{
+	if (!PrepareStart(row, now, error)) {
+		return false;
+	}
+	Log("[schedule] " + std::string(verb) + " '" + row.entry.title + "' (" + row.entry.id + ")");
 	if (goLive) {
 		goLive();
 	}
-	// The state stays `armed` until the outputs actually come up. A request is not
-	// a broadcast, and an entry that reads `live` while nothing is streaming is the
-	// one claim this feature must never make. Nothing schedule.list reports has
-	// changed yet either, so this reports no change.
-	return false;
+	return true;
 }
 
 bool ScheduleRunner::Armable(const ScheduleEntryWithDestinations &row, std::string &reason) const
@@ -475,6 +496,72 @@ bool ScheduleRunner::CancelCountdown(const std::string &id, std::string &error)
 	return true;
 }
 
+bool ScheduleRunner::StartNow(const std::string &id, std::string &error)
+{
+	if (!store_ || !store_->IsAttached() || !nowMs) {
+		error = "scheduling is unavailable: the history database did not open";
+		return false;
+	}
+	const std::unique_ptr<ScheduleEntry> entry = store_->Get(id);
+	if (!entry) {
+		error = "no scheduled entry with id '" + id + "'";
+		return false;
+	}
+	if (IsStartInFlight(id)) {
+		error = "that entry is already going live";
+		return false;
+	}
+	if (entry->state == ScheduleState::kLive || entry->state == ScheduleState::kDone ||
+	    entry->state == ScheduleState::kCanceled) {
+		error = "that entry is " + entry->state + " and cannot be started";
+		return false;
+	}
+	ScheduleEntryWithDestinations row;
+	row.entry = *entry;
+	row.destinations = store_->DestinationsFor(id);
+	std::string reason;
+	if (!Armable(row, reason)) {
+		error = reason;
+		return false;
+	}
+	if (RoutingHeldElsewhere(id)) {
+		error = kAlreadyStreamingReason;
+		return false;
+	}
+	if (entry->state != ScheduleState::kArmed) {
+		if (!store_->SetState(id, ScheduleState::kArmed)) {
+			error = "failed to arm the entry: " + store_->LastError();
+			return false;
+		}
+		row.entry.state = ScheduleState::kArmed;
+		bool alreadyArmed = false;
+		for (const std::string &armedId : armedIds_) {
+			if (armedId == id) {
+				alreadyArmed = true;
+				break;
+			}
+		}
+		if (!alreadyArmed) {
+			armedIds_.push_back(id);
+		}
+	}
+	Occurrence &occurrence = occurrences_[id];
+	occurrence.canceled = false;
+	occurrence.startRequested = false;
+	occurrence.startFailed = false;
+	// Also cleared: RequestStart re-checks BlockReason(id) as its own gate, and a
+	// reason left over from a miss earlier in this occurrence's life would refuse a
+	// start that the Armable/RoutingHeldElsewhere checks above just cleared.
+	occurrence.blockReason.clear();
+	if (!RequestStart(row, nowMs(), error, "starting by request")) {
+		return false;
+	}
+	if (onChanged) {
+		onChanged();
+	}
+	return true;
+}
+
 bool ScheduleRunner::IsCountdownCanceled(const std::string &id) const
 {
 	const auto it = occurrences_.find(id);
@@ -543,11 +630,14 @@ std::string ScheduleRunner::ActiveEntryId()
 	if (!store_ || !store_->IsAttached()) {
 		return {};
 	}
-	// The live one, then the one that asked to start, then the soonest merely armed
-	// -- which is the entry a broadcast the user started by hand belongs to.
+	// The live one, else the one that asked to start. AdoptImminentArmed is what
+	// turns a manual go-live into one of those two -- loading the armed entry's
+	// routing and setting startingId_ before goLive runs -- so there is no third,
+	// merely-armed fallback here: an entry nothing asked to start is not this
+	// broadcast's, whatever the calendar says is coming up next.
 	std::string id = liveId_;
 	if (id.empty()) {
-		id = startingId_.empty() ? ImminentArmedId() : startingId_;
+		id = startingId_;
 	}
 	if (id.empty()) {
 		return {};
@@ -562,15 +652,55 @@ std::string ScheduleRunner::ActiveEntryId()
 	return id;
 }
 
+void ScheduleRunner::AdoptImminentArmed()
+{
+	// The auto-start and StartNow both set startingId_ before calling goLive, and a
+	// live broadcast already belongs to whoever is running it -- adoption only has
+	// something to do on a go-live nothing has claimed yet.
+	if (!startingId_.empty() || !liveId_.empty()) {
+		return;
+	}
+	if (!store_ || !store_->IsAttached() || !nowMs) {
+		return;
+	}
+	const std::string id = ImminentArmedId();
+	if (id.empty()) {
+		return;
+	}
+	// A cancelled countdown must not be resurrected by an unrelated manual press,
+	// and an occurrence that has already asked to start -- even one still failed --
+	// is not this go-live's to claim either.
+	const auto it = occurrences_.find(id);
+	if (it != occurrences_.end() && (it->second.canceled || it->second.startRequested)) {
+		return;
+	}
+	const std::unique_ptr<ScheduleEntry> entry = store_->Get(id);
+	if (!entry) {
+		return;
+	}
+	ScheduleEntryWithDestinations row;
+	row.entry = *entry;
+	row.destinations = store_->DestinationsFor(id);
+	std::string error;
+	// PrepareStart rather than RequestStart: this runs from inside the manual
+	// go-live itself, and RequestStart's goLive() call would re-enter it.
+	if (!PrepareStart(row, nowMs(), error)) {
+		Log("[schedule] could not adopt '" + entry->title + "' (" + id + ") into this manual start: " + error);
+		return;
+	}
+	Log("[schedule] adopted '" + entry->title + "' (" + id + ") into a manually started broadcast");
+}
+
 void ScheduleRunner::NoteWentLive()
 {
 	if (!store_ || !store_->IsAttached()) {
 		return;
 	}
-	// The entry that asked for this broadcast owns the edge; only when none did --
-	// the user pressed go live during an armed window -- does a merely-armed one
-	// claim it.
-	const std::string id = startingId_.empty() ? ImminentArmedId() : startingId_;
+	// The entry that asked for this broadcast owns the edge. AdoptImminentArmed is
+	// what makes a manual go-live during the armed window ask -- if nothing did,
+	// this broadcast is not this runner's to claim, however plausible the calendar
+	// makes it look.
+	const std::string id = startingId_;
 	startingId_.clear();
 	if (id.empty()) {
 		return;

@@ -138,6 +138,39 @@ public:
 	// cancel does not mean stop a broadcast.
 	bool CancelCountdown(const std::string &id, std::string &error);
 
+	// Skip the clock and go live on this entry right away, for someone who does not
+	// want to wait for its start time. False fills `error` with a UI-showable reason
+	// for anything that is not a fresh, unstarted occurrence: already live, done, or
+	// cancelled; already going live; not armable; or the routing held by something
+	// else. `kPlanned`, `kArmed` and `kMissed` are all accepted -- each one means
+	// "has not run yet" -- and the request runs through the same RequestStart the
+	// clock itself uses, so a manual start is refused, applied, and logged on the
+	// same terms an automatic one is.
+	//
+	// A row that is not already armed is armed here first: RequestStart only loads
+	// an entry's routing, it never changes state, and NoteWentLive requires the row
+	// to read `armed` before it can flip it to `live`. The occurrence's cancelled /
+	// startRequested / startFailed / blockReason state is cleared too, since this is
+	// a new intent overriding whatever the clock had decided about this occurrence --
+	// IsStartInFlight is what stops an actual double-start, not those flags.
+	bool StartNow(const std::string &id, std::string &error);
+
+	// Called at the top of a manual go-live, before anything reads output bindings,
+	// to make good on what IsStartInFlight and ActiveEntryId already promise: a
+	// manual go-live during the armed window is that entry's broadcast. Left to a
+	// bare "which entry looks imminent" guess, the row would flip to `live` and the
+	// session would carry its id without the entry's own destinations or metadata
+	// ever having been loaded -- the plan claiming to have run when it did not.
+	//
+	// A no-op once something has already claimed this go-live (the auto-start or
+	// StartNow both set startingId_ before calling goLive) or once one is already
+	// live, and a no-op for an occurrence that is cancelled or has already asked to
+	// start on its own -- an unrelated manual press must not resurrect either. A
+	// refusal to prepare the entry's routing is logged and swallowed rather than
+	// blocking the go-live: the user pressed the button and is entitled to stream,
+	// just not with this entry's claim attached.
+	void AdoptImminentArmed();
+
 	// Re-check one entry after it was edited or deleted. schedule.update can move an
 	// armed entry out of its own arm window, and the row has to come back to
 	// `planned` with it: left armed the chip reads armed until the new start, and a
@@ -156,11 +189,13 @@ public:
 	// that is running or about to be.
 	//
 	// True for as long as the entry is live however it was started -- a manual
-	// go-live during the armed window is still this entry's broadcast. A start that
-	// has not reported expires after kStartInFlightMs, because nothing here can tell
-	// a slow prelude from one that will never report at all, and holding the user's
-	// routing forever on a start that died is its own failure. NoteStartFailed ends
-	// it early on the one refusal the system does observe.
+	// go-live during the armed window is still this entry's broadcast, because
+	// AdoptImminentArmed loads that entry's routing and asks for it before goLive
+	// runs, not because being merely armed was ever taken as being started. A start
+	// that has not reported expires after kStartInFlightMs, because nothing here can
+	// tell a slow prelude from one that will never report at all, and holding the
+	// user's routing forever on a start that died is its own failure. NoteStartFailed
+	// ends it early on the one refusal the system does observe.
 	bool IsStartInFlight(const std::string &id) const;
 
 	// Why this occurrence cannot go live, or empty when nothing is wrong. Surfaced
@@ -169,9 +204,10 @@ public:
 	std::string BlockReason(const std::string &id) const;
 
 	// The entry a broadcast starting now belongs to -- the live one, else the one
-	// that asked to start, else the armed one whose start comes soonest, else
-	// empty. What stamps schedule_id onto the session row, for a manual go-live
-	// during the armed window as much as for an auto-start.
+	// that asked to start, else empty. What stamps schedule_id onto the session
+	// row, for a manual go-live adopted during the armed window as much as for an
+	// auto-start; an armed entry nothing asked to start is not this broadcast's,
+	// so there is no soonest-armed fallback here.
 	//
 	// Re-read from the row rather than answered from the cached id: the missed
 	// sweep can settle an entry between the tick that armed it and the go-live
@@ -220,6 +256,22 @@ private:
 	bool RoutingHeldElsewhere(const std::string &id) const;
 	void OpenCountdownIfDue(const ScheduleEntryWithDestinations &row, int64_t now);
 	bool StartIfDue(const ScheduleEntryWithDestinations &row, int64_t now);
+	// Everything a start does short of the go-live call itself: the block-reason
+	// refusal, loading the entry's destinations into the go-live path, and marking
+	// the occurrence as requested. Split out from RequestStart for AdoptImminentArmed,
+	// which runs from inside a manual go-live already under way -- calling goLive()
+	// from there would re-enter it. A refusal is reported through `error` rather than
+	// latched onto the occurrence: StartIfDue is the one caller that still latches,
+	// by calling SetBlockReason itself with what this returns, since a manual start
+	// or an adoption has nowhere to latch a reason that would otherwise stick around
+	// blocking a clock-driven retry it was never asked to make.
+	bool PrepareStart(const ScheduleEntryWithDestinations &row, int64_t now, std::string &error);
+	// PrepareStart, then the log line and the go-live call -- the body of a start
+	// that does end in goLive(), shared by the clock (StartIfDue) and the explicit
+	// StartNow. `verb` is only the log wording ("auto-starting" vs. a manual start's
+	// own), so the one line both callers emit still reads as what actually happened.
+	bool RequestStart(const ScheduleEntryWithDestinations &row, int64_t now, std::string &error,
+			  const char *verb = "auto-starting");
 	bool Armable(const ScheduleEntryWithDestinations &row, std::string &reason) const;
 	bool SetBlockReason(const std::string &id, const std::string &reason);
 	void SettleApplied();

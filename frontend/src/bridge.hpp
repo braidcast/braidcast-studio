@@ -199,6 +199,27 @@ bool SwitchDefaultProgramScene(const std::string &sceneUuid);
 void StartStreamingAll();
 void StopStreamingAll();
 
+// StartStreamingAll for a caller that has no way to ask the user whether a due
+// schedule entry should take over the broadcast: the go-live hotkey, the tray's
+// Start all, and a bridge go-live with "Ask for stream info" turned off. Loads the
+// imminent armed entry's destinations and metadata into the go-live path (see
+// ScheduleRunner::AdoptImminentArmed) before starting, so a go-live during that
+// entry's arm window claims it -- the plan the calendar shows is the one that
+// actually airs -- rather than starting outputs against whatever was configured
+// before and leaving the entry to settle as missed under a broadcast that was, in
+// fact, it. The Go Live modal does NOT go through here: what the user just
+// configured on screen is what airs, never overridden by a schedule behind it.
+//
+// Adoption itself has to run on the UI thread (ScheduleRunner is UI-thread-only,
+// like the engine state StartStreamingAll's own prelude reads), and this can be
+// called from the libobs hotkey thread or a win32 menu handler, so it is posted
+// rather than called directly. It runs before StartStreamingAll's own posted work:
+// both posts land on the same UI task queue in the order they were made, and
+// applyEntry (inside adoption) has to flip the output bindings that
+// CollectBroadcastPrelude (inside StartStreamingAll) reads before that prelude
+// collects them.
+void StartStreamingAllAdoptingSchedule();
+
 // True while a go-live prelude is running. StartStreamingAll silently drops a start
 // issued in that window (only one prelude may be in flight), which is right for the
 // hotkey and the tray but wrong for a caller that reports success back to the user --

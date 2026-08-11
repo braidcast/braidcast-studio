@@ -27,13 +27,27 @@
     phaseOf: (item: CalendarItem) => ArmPhase;
     onOpen: (item: CalendarItem) => void;
     onCancel: (item: CalendarItem) => void;
+    onGoLive: (item: CalendarItem) => void;
+    goingLiveOf: (item: CalendarItem) => boolean;
     onCreate: (startMs: number, durationMin: number) => void;
     onCommit: (item: CalendarItem, startMs: number, durationMin: number) => void;
     /** A gesture that would land in the past; the page says why. */
     onReject: (reason: string) => void;
   }
-  let { days, items, now, conflictOf, phaseOf, onOpen, onCancel, onCreate, onCommit, onReject }: Props =
-    $props();
+  let {
+    days,
+    items,
+    now,
+    conflictOf,
+    phaseOf,
+    onOpen,
+    onCancel,
+    onGoLive,
+    goingLiveOf,
+    onCreate,
+    onCommit,
+    onReject,
+  }: Props = $props();
 
   const HOURS = Array.from({ length: 24 }, (_, h) => h);
   const DEFAULT_NEW_MIN = 60;
@@ -455,6 +469,8 @@
                     showThumb={blockHeight(seg.topMin, seg.endMin) >= THUMB_MIN_PX}
                     onOpen={openGuarded}
                     {onCancel}
+                    {onGoLive}
+                    goingLive={goingLiveOf(seg.item)}
                     onDragStart={beginItemDrag}
                     resizable
                   />

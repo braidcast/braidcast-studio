@@ -395,7 +395,14 @@ bool MethodGetStreamingState(const json & /*params*/, json &result, std::string 
 // stop everything. `active` reports whether anything is live afterward; the
 // streaming.changed push proves the server->client event end-to-end (the engine
 // also pushes multistream.changed per-output via onStatusChanged).
-bool MethodStreamingStart(const json & /*params*/, json &result, std::string &error)
+//
+// `adoptSchedule` (optional, defaults true) picks StartStreamingAllAdoptingSchedule
+// over the bare StartStreamingAll: every existing and future caller that sends
+// nothing has expressed no per-stream intent, so a due schedule entry is free to
+// claim the go-live. The one caller with intent -- the Go Live modal, once it has
+// let the user see or override what a schedule would send -- opts out explicitly
+// with `adoptSchedule: false`.
+bool MethodStreamingStart(const json &params, json &result, std::string &error)
 {
 	// A start issued while a prelude is already running is dropped inside
 	// StartStreamingAll, and a caller with no way to tell reports a go-live that never
@@ -406,7 +413,11 @@ bool MethodStreamingStart(const json & /*params*/, json &result, std::string &er
 		error = "a go-live is already starting; wait for it to finish or stop it";
 		return false;
 	}
-	StartStreamingAll();
+	if (JsonUtil::Bool(params, "adoptSchedule", true)) {
+		StartStreamingAllAdoptingSchedule();
+	} else {
+		StartStreamingAll();
+	}
 	// Accurate because PostToUi ran the sequence inline: this method is on the sync lane,
 	// so it is already on TID_UI.
 	result = json{{"active", ObsBootstrap::Multistream().AnyLive()}};
@@ -7696,6 +7707,22 @@ bool MethodScheduleCancelCountdown(const json &params, json &result, std::string
 	return true;
 }
 
+// Go live on this entry right away rather than waiting for its start time. The
+// runner owns the refusal reasons and pushes schedule.changed itself when the row's
+// state actually moves, so this adds neither.
+bool MethodScheduleStartNow(const json &params, json &result, std::string &error)
+{
+	std::string id;
+	if (!RequireStr(params, "schedule.startNow", "id", id, error)) {
+		return false;
+	}
+	if (!ObsBootstrap::Scheduler().StartNow(id, error)) {
+		return false;
+	}
+	result = json{{"ok", true}};
+	return true;
+}
+
 // Echo the sampler's newest sample. Sampling inline covers only the window before the
 // first tick has run (a self-test dispatching stats.get during bootstrap).
 bool MethodStatsGet(const json & /*params*/, json &result, std::string & /*error*/)
@@ -9755,6 +9782,21 @@ void StartStreamingAll()
 			});
 		});
 	});
+}
+
+void StartStreamingAllAdoptingSchedule()
+{
+	// Adoption has to land on the UI thread before StartStreamingAll's own posted
+	// work runs -- applyEntry (inside AdoptImminentArmed) flips the output bindings
+	// CollectBroadcastPrelude reads, and adopting after that prelude has already
+	// collected them would apply the routing to nothing. Both callers of this
+	// function are off the UI thread (the libobs hotkey thread, a win32 menu
+	// handler), so this cannot call the scheduler directly -- ScheduleRunner is
+	// UI-thread-only -- and instead posts, same as StartStreamingAll itself does.
+	// The two posts land on the same UI task queue in the order they were made
+	// here, which is what keeps the ordering.
+	AsyncTask::PostToUi([] { ObsBootstrap::Scheduler().AdoptImminentArmed(); });
+	StartStreamingAll();
 }
 
 void StopStreamingAll()
@@ -12214,6 +12256,7 @@ void Init()
 		{"schedule.update", MethodScheduleUpdate},
 		{"schedule.delete", MethodScheduleDelete},
 		{"schedule.cancelCountdown", MethodScheduleCancelCountdown},
+		{"schedule.startNow", MethodScheduleStartNow},
 		{"audio.list", MethodAudioList},
 		{"audio.setDeflection", MethodAudioSetDeflection},
 		{"audio.setMuted", MethodAudioSetMuted},
