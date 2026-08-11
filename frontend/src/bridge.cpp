@@ -382,13 +382,9 @@ bool MethodGetStreamingState(const json & /*params*/, json &result, std::string 
 // stop everything. `active` reports whether anything is live afterward; the
 // streaming.changed push proves the server->client event end-to-end (the engine
 // also pushes multistream.changed per-output via onStatusChanged).
-bool MethodStreamingStart(const json &params, json &result, std::string & /*error*/)
+bool MethodStreamingStart(const json & /*params*/, json &result, std::string & /*error*/)
 {
-	// Set by the Stream Information modal, which has already pushed what the user typed.
-	// Every other entry point -- hotkey, tray, a scheduled start, ask-disabled -- leaves
-	// it absent, and the prelude pushes the remembered metadata on their behalf.
-	const bool metadataPushed = params.is_object() && params.value("metadataPushed", false);
-	StartStreamingAll(metadataPushed);
+	StartStreamingAll();
 	// Accurate because PostToUi ran the sequence inline: this method is on the sync lane,
 	// so it is already on TID_UI.
 	result = json{{"active", ObsBootstrap::Multistream().AnyLive()}};
@@ -9493,7 +9489,7 @@ struct BroadcastPreludeJob {
 	std::string accountId;
 	std::string profileUuid;
 	std::string label; // streamer-facing destination name, for the failure message
-	json fields;       // remembered metadata, read only if this job has to CREATE
+	json fields;       // remembered metadata: what a broadcast is created with, or pushed
 	// A persistent-channel destination has nothing to create and only needs its
 	// metadata pushed. That distinction decides both which provider call runs and
 	// whether a failure is fatal -- see the loop in StartStreamingAll.
@@ -9510,14 +9506,17 @@ bool g_goLivePreludeInFlight = false;
 // overtaken seconds later by the go-live it was meant to cancel.
 uint64_t g_goLiveGeneration = 0;
 
-// Every enabled binding whose destination creates a broadcast per go-live, deduped by
-// (account, profile) so two canvases bound to one profile prepare it once.
+// Every enabled binding with work to do before the encoders start: a broadcast to create
+// on a create-per-go-live platform, or metadata to push on a persistent channel. Deduped
+// by whatever actually receives the call -- (account, profile) for the first, account
+// alone for the second, since one channel cannot hold two titles.
 //
 // Reads the stores, so UI thread only. `fields` comes from StreamMetaStore because that is
-// all a go-live driven from the hotkey or the tray has; the Go Live modal's own values
-// reach the provider through its streamMeta.set, and a destination it already prepared
-// short-circuits inside ensureBroadcastReady whatever is passed here.
-std::vector<BroadcastPreludeJob> CollectBroadcastPrelude(bool metadataAlreadyPushed)
+// all a go-live driven from the hotkey, the tray or the scheduler has. The Go Live modal's
+// own values reach the provider through its streamMeta.set; a broadcast it already created
+// short-circuits inside ensureBroadcastReady, and a channel it already pushed to is
+// skipped above by HasSentMetadata, since nothing here would short-circuit it.
+std::vector<BroadcastPreludeJob> CollectBroadcastPrelude()
 {
 	std::vector<BroadcastPreludeJob> jobs;
 	std::unordered_set<std::string> seen;
@@ -9546,15 +9545,24 @@ std::vector<BroadcastPreludeJob> CollectBroadcastPrelude(bool metadataAlreadyPus
 		// whatever that channel last had. Same reasoning that moved the broadcast
 		// precondition out of the modal; this is the half that was left behind.
 		//
-		// Skipped only when the modal already pushed for THIS go-live: it sends what
-		// the user just typed, while this reads the remembered bag, which "save these
-		// details for next time" may deliberately not have been told to hold. Pushing
-		// again would put the old title back over the new one.
+		// Skipped where a platform has already accepted this destination's metadata,
+		// which is what g_sentMetadata records. Asked per destination rather than per
+		// go-live: the modal pushes only for the channels it armed, so a global answer
+		// would suppress the push for one it never touched, and would not protect a
+		// pre-live "Edit stream info" followed by a hotkey start. Re-pushing matters
+		// because this reads the remembered bag, which "save these details for next
+		// time" may deliberately keep older than what the user just typed.
 		const bool metadataOnly = !provider->broadcastPerDestination();
-		if (metadataOnly && metadataAlreadyPushed) {
+		if (metadataOnly && HasSentMetadata(binding.profileUuid)) {
 			continue;
 		}
-		if (!seen.insert(profile->accountId + "\n" + binding.profileUuid).second) {
+		// Keyed by what actually receives the call. A persistent channel is ONE place
+		// however many profiles point at it, so a second job would PATCH the same
+		// channel again and let iteration order decide which bag wins; a create-per-
+		// go-live platform genuinely owns a broadcast per profile. This is the keying
+		// rule broadcastPerDestination() already states for chat and viewer reads.
+		if (!seen.insert(metadataOnly ? profile->accountId : profile->accountId + "\n" + binding.profileUuid)
+			     .second) {
 			continue;
 		}
 		json fields = meta.ChannelDefaults(profile->accountId);
@@ -9605,13 +9613,13 @@ void StartEnabledOutputsNow()
 // entry was bound to the persistent key and the stream never went live, with every local
 // health indicator green. Every entry point funnels through here, so here is where the
 // invariant holds.
-void StartStreamingAll(bool metadataAlreadyPushed)
+void StartStreamingAll()
 {
-	AsyncTask::PostToUi([metadataAlreadyPushed] {
+	AsyncTask::PostToUi([] {
 		if (!ObsBootstrap::MultistreamAlive() || g_goLivePreludeInFlight) {
 			return;
 		}
-		std::vector<BroadcastPreludeJob> jobs = CollectBroadcastPrelude(metadataAlreadyPushed);
+		std::vector<BroadcastPreludeJob> jobs = CollectBroadcastPrelude();
 		if (jobs.empty()) {
 			StartEnabledOutputsNow(); // nothing to create: unchanged, synchronous go-live
 			return;
@@ -9643,6 +9651,15 @@ void StartStreamingAll(bool metadataAlreadyPushed)
 					err = e.what();
 				}
 				if (ok) {
+					if (job.metadataOnly) {
+						// What the session opening on the live edge reads to file
+						// what the channel was actually told. Recorded only here,
+						// where this call is known to have pushed these fields: the
+						// ensureBroadcastReady branch short-circuits on an existing
+						// broadcast, and claiming a push it did not make would put
+						// the remembered bag over the modal's own record.
+						RecordSentMetadata(job.profileUuid, job.fields);
+					}
 					continue;
 				}
 				if (job.metadataOnly) {
@@ -9650,8 +9667,10 @@ void StartStreamingAll(bool metadataAlreadyPushed)
 					// persistent channel is streamable whatever its title says, and
 					// Twitch rejects a whole patch over one malformed tag. Refusing
 					// here would cost an unattended scheduled broadcast its airing to
-					// save it a stale title, which is the worse of the two.
-					HostLog("[stream] " + job.label + " went live without its stream info: " +
+					// save it a stale title, which is the worse of the two. Worded
+					// as an attempt, not an outcome -- the go-live can still be
+					// refused or cancelled after this line.
+					HostLog("[stream] could not update the stream info for " + job.label + ": " +
 						(err.empty() ? "the metadata push failed" : err));
 					continue;
 				}
@@ -12399,6 +12418,12 @@ void RecordSentMetadata(const std::string &profileUuid, const json &fields)
 {
 	std::lock_guard<std::mutex> lock(g_sentMetadataMutex);
 	g_sentMetadata[profileUuid] = fields;
+}
+
+bool HasSentMetadata(const std::string &profileUuid)
+{
+	std::lock_guard<std::mutex> lock(g_sentMetadataMutex);
+	return g_sentMetadata.find(profileUuid) != g_sentMetadata.end();
 }
 
 json TakeSentMetadata(const std::string &profileUuid)

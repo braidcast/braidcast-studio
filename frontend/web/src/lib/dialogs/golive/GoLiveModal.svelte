@@ -1052,11 +1052,7 @@ import { EV } from "$lib/utils/eventNames";
 
     if (goLiveModal.mode === "golive") {
       try {
-        // The streamMeta.set calls above already sent what the user typed. Without this
-        // the prelude would push the remembered bag over the top for persistent-channel
-        // destinations, and "save these details for next time" may have deliberately
-        // kept that bag older than what was just entered.
-        await obs.call("streaming.start", { metadataPushed: true });
+        await obs.call("streaming.start");
       } catch (e) {
         showToast("Go Live failed", (e as Error).message);
         submitting = false;
