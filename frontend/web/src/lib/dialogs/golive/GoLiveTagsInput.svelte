@@ -15,10 +15,19 @@
   let adding = $state(false);
   let draft = $state("");
 
+  // Splits rather than taking the draft whole: a tag list is almost always pasted,
+  // and every source of one -- YouTube's own field, a keyword tool, an old
+  // description -- hands it over comma-separated.
   function commit(): void {
-    const t = draft.trim();
-    if (t && !values.includes(t)) {
-      onChange([...values, t]);
+    const next = [...values];
+    for (const raw of draft.split(/[,\n]/)) {
+      const t = raw.trim();
+      if (t && !next.includes(t)) {
+        next.push(t);
+      }
+    }
+    if (next.length !== values.length) {
+      onChange(next);
     }
     draft = "";
     adding = false;
