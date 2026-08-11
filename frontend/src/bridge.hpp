@@ -79,13 +79,24 @@ bool EncodePngMemory(const uint8_t *pixels, uint32_t w, uint32_t h, std::vector<
 // opened moments later reads back what was actually sent, which is not the same
 // as what the profile says by the time anyone looks at the history.
 //
-// Thread-safe: the recording side runs on the async method lane, the taking side
-// on the UI thread. Taking clears the entry.
+// A record belongs to one go-live attempt and nothing expires it, so an attempt that
+// ends without a session MUST drop what it recorded -- see ForgetSentMetadata.
+//
+// Thread-safe: written from both the async method lane (streamMeta.set) and the
+// prelude's worker, read and taken on the UI thread. Taking clears the entry.
 void RecordSentMetadata(const std::string &profileUuid, const json &fields);
 // Peek without consuming: the go-live prelude asks whether a platform has already
 // accepted this destination's metadata, and the session that will consume the entry
 // has not opened yet.
 bool HasSentMetadata(const std::string &profileUuid);
+// Drop records for an attempt that will not open a session -- the prelude cancelled or
+// refused, or the modal declining to start after a partial push. Nothing would consume
+// these, and left in place they make the prelude skip those destinations on every later
+// go-live, which is the exact push a scheduled start depends on.
+void ForgetSentMetadata(const std::vector<std::string> &profileUuids);
+// The stop edge's sweep: a session that opened consumed its own entries, so anything
+// still here belongs to a destination that never came up.
+void ClearSentMetadata();
 json TakeSentMetadata(const std::string &profileUuid);
 
 // Register an in-process consumer of the 1 Hz stats tick. Called on the CEF UI

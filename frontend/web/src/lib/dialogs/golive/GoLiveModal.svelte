@@ -1010,6 +1010,16 @@ import { EV } from "$lib/utils/eventNames";
         showToast(lead + fails.length + " destinations", names);
       }
       if (goingLive) {
+        // The pushes that DID land recorded themselves against a go-live that is now
+        // not happening. Nothing will consume those records, and until something does
+        // the host skips those destinations' metadata push on every later go-live —
+        // including a scheduled one, which has no modal to push or record for it.
+        const pushed = jobs
+          .filter((_, i) => results[i].status === "fulfilled")
+          .map((j) => j.stream.profileUuid);
+        if (pushed.length > 0) {
+          void obs.call("streamMeta.forgetSent", { profileUuids: pushed }).catch(() => {});
+        }
         submitting = false;
         return;
       }

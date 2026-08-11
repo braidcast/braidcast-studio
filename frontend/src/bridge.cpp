@@ -170,6 +170,14 @@ std::vector<CefRefPtr<CefBrowser>> g_browsers;
 // session to open and consume it. Written from the async method lane (streamMeta.set
 // runs off-thread through RunAsyncMethod) and read on the UI thread when a broadcast
 // begins, so it needs its own lock rather than a thread assertion.
+//
+// An entry belongs to ONE go-live attempt and is meant to live only until that
+// attempt's session opens. Every path that ends an attempt without one -- the prelude
+// cancelled by a stop or refused over a failure, the modal declining to start, a stop
+// -- drops what it left behind. An entry that outlives its attempt is not merely
+// stale: CollectBroadcastPrelude reads presence here as "already pushed" and would
+// skip the destination forever after, and the next session to open would file it as
+// its own. Nothing expires these, so a new terminal path has to say so here.
 std::mutex g_sentMetadataMutex;
 std::unordered_map<std::string, json> g_sentMetadata;
 
@@ -9628,6 +9636,9 @@ void StartStreamingAll()
 		const uint64_t generation = ++g_goLiveGeneration;
 		AsyncTask::RunAsync([jobs = std::move(jobs), generation] {
 			json failures = json::array();
+			// What this attempt recorded, so the two branches below that end without
+			// a session can take it back out again.
+			std::vector<std::string> recorded;
 			for (const BroadcastPreludeJob &job : jobs) {
 				// Re-read the account rather than capturing it: a token rotated by a
 				// peer between collection and here must not be clobbered by a stale copy.
@@ -9659,6 +9670,7 @@ void StartStreamingAll()
 						// broadcast, and claiming a push it did not make would put
 						// the remembered bag over the modal's own record.
 						RecordSentMetadata(job.profileUuid, job.fields);
+						recorded.push_back(job.profileUuid);
 					}
 					continue;
 				}
@@ -9678,7 +9690,8 @@ void StartStreamingAll()
 					json{{"destination", job.label},
 					     {"reason", err.empty() ? "could not prepare the broadcast" : err}});
 			}
-			AsyncTask::PostToUi([failures = std::move(failures), generation] {
+			AsyncTask::PostToUi([failures = std::move(failures), recorded = std::move(recorded),
+					     generation] {
 				g_goLivePreludeInFlight = false;
 				if (generation != g_goLiveGeneration) {
 					// Stopped while this was in flight. Drop any broadcast the prelude
@@ -9691,11 +9704,18 @@ void StartStreamingAll()
 							p->clearActiveBroadcast(entry.first);
 						}
 					}
+					// The stop already swept the map, but this attempt kept
+					// pushing after that and recorded whatever landed.
+					ForgetSentMetadata(recorded);
 					HostLog("[stream] go-live prelude cancelled by a stop; not starting");
 					ObsBootstrap::Scheduler().NoteStartFailed();
 					return;
 				}
 				if (!failures.empty()) {
+					// No session is coming, so the channels this attempt did push to
+					// have nothing left to consume their records -- and keeping them
+					// would skip those same channels on the next go-live.
+					ForgetSentMetadata(recorded);
 					// Nothing starts, including destinations that were prepared fine.
 					// Same policy the modal has always applied to a failed metadata
 					// push: going live half-configured streams at a channel whose
@@ -9733,6 +9753,11 @@ void StopStreamingAll()
 		// The generation is bumped FIRST so a go-live prelude still in flight sees that a
 		// stop happened and declines to start the encoders when it lands.
 		++g_goLiveGeneration;
+		// Whatever is still here belongs to an attempt that is over: a session that
+		// opened consumed its own entries at the live edge, and a destination that
+		// never came up leaves one nothing will ever take. Left in place it would
+		// suppress the next go-live's metadata push for that destination.
+		ClearSentMetadata();
 		Chat::Viewers().Stop();
 		Chat::Hub().Stop();
 		for (const auto &entry : OAuth::Accounts().All()) {
@@ -11162,6 +11187,26 @@ bool MethodStreamMetaSet(const json &params, json &result, std::string &error)
 	return true;
 }
 
+// The modal's own abort: it pushed for some destinations, another one failed, and it is
+// not going live after all. Those pushes are real, but no session is coming to consume
+// what they recorded, and a record left behind makes the next go-live skip that
+// destination -- including an unattended scheduled start, which has no modal to re-push
+// or re-record for it. The modal is the only thing that knows it stopped, so it says so.
+bool MethodStreamMetaForgetSent(const json &params, json &result, std::string & /*error*/)
+{
+	std::vector<std::string> uuids;
+	if (params.is_object() && params.contains("profileUuids") && params["profileUuids"].is_array()) {
+		for (const json &v : params["profileUuids"]) {
+			if (v.is_string()) {
+				uuids.push_back(v.get<std::string>());
+			}
+		}
+	}
+	ForgetSentMetadata(uuids);
+	result = json{{"ok", true}};
+	return true;
+}
+
 // getSaved/save read and write the remembered-metadata store (StreamMetaStore).
 // Unlike get/set/searchCategories these touch no provider and no network, so they
 // stay on the normal synchronous methods table -- a thin JSON<->store adapter that
@@ -12200,6 +12245,7 @@ void Init()
 		{"chat.state", MethodChatState},
 		{"streamMeta.getSaved", MethodStreamMetaGetSaved},
 		{"streamMeta.save", MethodStreamMetaSave},
+		{"streamMeta.forgetSent", MethodStreamMetaForgetSent},
 		{"events.list", MethodEventsList},
 		{"events.clear", MethodEventsClear},
 		{"overlays.list", MethodOverlaysList},
@@ -12424,6 +12470,20 @@ bool HasSentMetadata(const std::string &profileUuid)
 {
 	std::lock_guard<std::mutex> lock(g_sentMetadataMutex);
 	return g_sentMetadata.find(profileUuid) != g_sentMetadata.end();
+}
+
+void ForgetSentMetadata(const std::vector<std::string> &profileUuids)
+{
+	std::lock_guard<std::mutex> lock(g_sentMetadataMutex);
+	for (const std::string &uuid : profileUuids) {
+		g_sentMetadata.erase(uuid);
+	}
+}
+
+void ClearSentMetadata()
+{
+	std::lock_guard<std::mutex> lock(g_sentMetadataMutex);
+	g_sentMetadata.clear();
 }
 
 json TakeSentMetadata(const std::string &profileUuid)
