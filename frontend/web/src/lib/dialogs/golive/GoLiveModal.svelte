@@ -981,6 +981,20 @@ import { EV } from "$lib/utils/eventNames";
       ),
     );
     const goingLive = goLiveModal.mode === "golive";
+    // A push that landed recorded itself against a go-live, and the host holds that
+    // record until the session opens and consumes it. Every way out of this function
+    // that leaves no session coming has to hand those records back, or the host keeps
+    // reading them as "this channel was already told" and skips its metadata push on
+    // every later go-live — including a scheduled one, which has no modal to push or
+    // record for it. Both early returns below call this; a third would have to as well.
+    const forgetPushedMetadata = (): void => {
+      const pushed = jobs
+        .filter((_, i) => results[i].status === "fulfilled")
+        .map((j) => j.stream.profileUuid);
+      if (pushed.length > 0) {
+        void obs.call("streamMeta.forgetSent", { profileUuids: pushed }).catch(() => {});
+      }
+    };
     // The card strip is the authoritative failure surface — persistent, wraps, and
     // sits next to the arm switch that is the remedy. The toast below is only the
     // attention-getter: its visible line truncates and dies in 4s, and its second
@@ -1010,16 +1024,7 @@ import { EV } from "$lib/utils/eventNames";
         showToast(lead + fails.length + " destinations", names);
       }
       if (goingLive) {
-        // The pushes that DID land recorded themselves against a go-live that is now
-        // not happening. Nothing will consume those records, and until something does
-        // the host skips those destinations' metadata push on every later go-live —
-        // including a scheduled one, which has no modal to push or record for it.
-        const pushed = jobs
-          .filter((_, i) => results[i].status === "fulfilled")
-          .map((j) => j.stream.profileUuid);
-        if (pushed.length > 0) {
-          void obs.call("streamMeta.forgetSent", { profileUuids: pushed }).catch(() => {});
-        }
+        forgetPushedMetadata();
         submitting = false;
         return;
       }
@@ -1064,6 +1069,10 @@ import { EV } from "$lib/utils/eventNames";
       try {
         await obs.call("streaming.start");
       } catch (e) {
+        // Refused or dropped by the host, so the pushes above have no session coming
+        // either — including the case this catch exists for, a start issued while an
+        // earlier go-live's prelude is still running.
+        forgetPushedMetadata();
         showToast("Go Live failed", (e as Error).message);
         submitting = false;
         return;

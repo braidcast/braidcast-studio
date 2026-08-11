@@ -90,9 +90,10 @@ void RecordSentMetadata(const std::string &profileUuid, const json &fields);
 // has not opened yet.
 bool HasSentMetadata(const std::string &profileUuid);
 // Drop records for an attempt that will not open a session -- the prelude cancelled or
-// refused, or the modal declining to start after a partial push. Nothing would consume
-// these, and left in place they make the prelude skip those destinations on every later
-// go-live, which is the exact push a scheduled start depends on.
+// refused, or the modal abandoning the go-live after a partial push or a refused start.
+// Nothing would consume these, and left in place they make the prelude skip those
+// destinations on every later go-live, which is the exact push a scheduled start
+// depends on.
 void ForgetSentMetadata(const std::vector<std::string> &profileUuids);
 // The stop edge's sweep: a session that opened consumed its own entries, so anything
 // still here belongs to a destination that never came up.
@@ -197,6 +198,13 @@ bool SwitchDefaultProgramScene(const std::string &sceneUuid);
 // tray stop racing a bridge stop is a no-op the second time through.
 void StartStreamingAll();
 void StopStreamingAll();
+
+// True while a go-live prelude is running. StartStreamingAll silently drops a start
+// issued in that window (only one prelude may be in flight), which is right for the
+// hotkey and the tray but wrong for a caller that reports success back to the user --
+// see MethodStreamingStart. Ask before starting if you can surface a refusal. UI
+// thread only.
+bool GoLivePreludeInFlight();
 
 // Flip one output binding's enabled flag and run everything that has to follow it:
 // the single-live-stream refusal, the persist, stopping an output that just lost its

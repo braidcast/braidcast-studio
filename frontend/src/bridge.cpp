@@ -172,12 +172,17 @@ std::vector<CefRefPtr<CefBrowser>> g_browsers;
 // begins, so it needs its own lock rather than a thread assertion.
 //
 // An entry belongs to ONE go-live attempt and is meant to live only until that
-// attempt's session opens. Every path that ends an attempt without one -- the prelude
-// cancelled by a stop or refused over a failure, the modal declining to start, a stop
-// -- drops what it left behind. An entry that outlives its attempt is not merely
-// stale: CollectBroadcastPrelude reads presence here as "already pushed" and would
-// skip the destination forever after, and the next session to open would file it as
-// its own. Nothing expires these, so a new terminal path has to say so here.
+// attempt's session opens. Nothing expires one, so the rule is that every path ending
+// an attempt without a session drops what that attempt recorded. The paths that exist
+// today: the prelude's two landing branches (cancelled by a stop, refused over a
+// failure), the Go Live modal's aborts through streamMeta.forgetSent, and the stop
+// edge, which sweeps whatever a destination that never came up left behind.
+//
+// An entry that outlives its attempt is not merely stale: CollectBroadcastPrelude
+// reads presence here as "already pushed" and skips that destination on every later
+// go-live, and the next session to open files it as its own. A new exit that can
+// record without reaching one of the paths above is how that comes back -- the list is
+// a map of the current ones, not a guarantee that it stays complete.
 std::mutex g_sentMetadataMutex;
 std::unordered_map<std::string, json> g_sentMetadata;
 
@@ -390,8 +395,17 @@ bool MethodGetStreamingState(const json & /*params*/, json &result, std::string 
 // stop everything. `active` reports whether anything is live afterward; the
 // streaming.changed push proves the server->client event end-to-end (the engine
 // also pushes multistream.changed per-output via onStatusChanged).
-bool MethodStreamingStart(const json & /*params*/, json &result, std::string & /*error*/)
+bool MethodStreamingStart(const json & /*params*/, json &result, std::string &error)
 {
+	// A start issued while a prelude is already running is dropped inside
+	// StartStreamingAll, and a caller with no way to tell reports a go-live that never
+	// began: the Go Live modal closes on a stream that is not starting and leaves the
+	// metadata it just recorded waiting for a session no one will open. Refuse instead,
+	// so the caller's own failure path runs.
+	if (GoLivePreludeInFlight()) {
+		error = "a go-live is already starting; wait for it to finish or stop it";
+		return false;
+	}
 	StartStreamingAll();
 	// Accurate because PostToUi ran the sequence inline: this method is on the sync lane,
 	// so it is already on TID_UI.
@@ -9621,6 +9635,12 @@ void StartEnabledOutputsNow()
 // entry was bound to the persistent key and the stream never went live, with every local
 // health indicator green. Every entry point funnels through here, so here is where the
 // invariant holds.
+bool GoLivePreludeInFlight()
+{
+	CEF_REQUIRE_UI_THREAD();
+	return g_goLivePreludeInFlight;
+}
+
 void StartStreamingAll()
 {
 	AsyncTask::PostToUi([] {
@@ -11192,15 +11212,21 @@ bool MethodStreamMetaSet(const json &params, json &result, std::string &error)
 // what they recorded, and a record left behind makes the next go-live skip that
 // destination -- including an unattended scheduled start, which has no modal to re-push
 // or re-record for it. The modal is the only thing that knows it stopped, so it says so.
-bool MethodStreamMetaForgetSent(const json &params, json &result, std::string & /*error*/)
+bool MethodStreamMetaForgetSent(const json &params, json &result, std::string &error)
 {
+	// Validated rather than best-effort: this method's whole job is to undo state, so a
+	// caller that mis-shapes the payload must not be told the records are gone.
+	if (!params.is_object() || !params.contains("profileUuids") || !params["profileUuids"].is_array()) {
+		error = "streamMeta.forgetSent requires a 'profileUuids' array";
+		return false;
+	}
 	std::vector<std::string> uuids;
-	if (params.is_object() && params.contains("profileUuids") && params["profileUuids"].is_array()) {
-		for (const json &v : params["profileUuids"]) {
-			if (v.is_string()) {
-				uuids.push_back(v.get<std::string>());
-			}
+	for (const json &v : params["profileUuids"]) {
+		if (!v.is_string()) {
+			error = "streamMeta.forgetSent: every profileUuids entry must be a string";
+			return false;
 		}
+		uuids.push_back(v.get<std::string>());
 	}
 	ForgetSentMetadata(uuids);
 	result = json{{"ok", true}};
