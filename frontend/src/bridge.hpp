@@ -180,7 +180,10 @@ bool SwitchDefaultProgramScene(const std::string &sceneUuid);
 // are safe from the libobs hotkey thread and a win32 menu handler. Every step is
 // idempotent and they serialize on the one UI task queue, so a double hotkey press or a
 // tray stop racing a bridge stop is a no-op the second time through.
-void StartStreamingAll();
+// `metadataAlreadyPushed` suppresses the prelude's metadata push for persistent-channel
+// destinations only: the caller has already sent what the user typed, and the prelude
+// reads the remembered bag, which can be older on purpose.
+void StartStreamingAll(bool metadataAlreadyPushed = false);
 void StopStreamingAll();
 
 // Flip one output binding's enabled flag and run everything that has to follow it:

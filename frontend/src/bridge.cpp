@@ -382,9 +382,13 @@ bool MethodGetStreamingState(const json & /*params*/, json &result, std::string 
 // stop everything. `active` reports whether anything is live afterward; the
 // streaming.changed push proves the server->client event end-to-end (the engine
 // also pushes multistream.changed per-output via onStatusChanged).
-bool MethodStreamingStart(const json & /*params*/, json &result, std::string & /*error*/)
+bool MethodStreamingStart(const json &params, json &result, std::string & /*error*/)
 {
-	StartStreamingAll();
+	// Set by the Stream Information modal, which has already pushed what the user typed.
+	// Every other entry point -- hotkey, tray, a scheduled start, ask-disabled -- leaves
+	// it absent, and the prelude pushes the remembered metadata on their behalf.
+	const bool metadataPushed = params.is_object() && params.value("metadataPushed", false);
+	StartStreamingAll(metadataPushed);
 	// Accurate because PostToUi ran the sequence inline: this method is on the sync lane,
 	// so it is already on TID_UI.
 	result = json{{"active", ObsBootstrap::Multistream().AnyLive()}};
@@ -9490,6 +9494,10 @@ struct BroadcastPreludeJob {
 	std::string profileUuid;
 	std::string label; // streamer-facing destination name, for the failure message
 	json fields;       // remembered metadata, read only if this job has to CREATE
+	// A persistent-channel destination has nothing to create and only needs its
+	// metadata pushed. That distinction decides both which provider call runs and
+	// whether a failure is fatal -- see the loop in StartStreamingAll.
+	bool metadataOnly = false;
 };
 
 // Only one go-live prelude may be in flight: it is network work, and a double-tap on the
@@ -9509,7 +9517,7 @@ uint64_t g_goLiveGeneration = 0;
 // all a go-live driven from the hotkey or the tray has; the Go Live modal's own values
 // reach the provider through its streamMeta.set, and a destination it already prepared
 // short-circuits inside ensureBroadcastReady whatever is passed here.
-std::vector<BroadcastPreludeJob> CollectBroadcastPrelude()
+std::vector<BroadcastPreludeJob> CollectBroadcastPrelude(bool metadataAlreadyPushed)
 {
 	std::vector<BroadcastPreludeJob> jobs;
 	std::unordered_set<std::string> seen;
@@ -9529,8 +9537,22 @@ std::vector<BroadcastPreludeJob> CollectBroadcastPrelude()
 				  // destination on it would be a worse failure
 		}
 		OAuth::StreamProvider *provider = OAuth::Registry().Get(stored->providerId);
-		if (!provider || !provider->broadcastPerDestination()) {
-			continue; // persistent-channel platform: always ready
+		if (!provider) {
+			continue;
+		}
+		// A persistent-channel platform creates nothing, but its title and category
+		// still have to reach the channel, and the modal was the only thing pushing
+		// them -- so a scheduled, hotkey, or ask-disabled go-live went out carrying
+		// whatever that channel last had. Same reasoning that moved the broadcast
+		// precondition out of the modal; this is the half that was left behind.
+		//
+		// Skipped only when the modal already pushed for THIS go-live: it sends what
+		// the user just typed, while this reads the remembered bag, which "save these
+		// details for next time" may deliberately not have been told to hold. Pushing
+		// again would put the old title back over the new one.
+		const bool metadataOnly = !provider->broadcastPerDestination();
+		if (metadataOnly && metadataAlreadyPushed) {
+			continue;
 		}
 		if (!seen.insert(profile->accountId + "\n" + binding.profileUuid).second) {
 			continue;
@@ -9548,7 +9570,7 @@ std::vector<BroadcastPreludeJob> CollectBroadcastPrelude()
 			}
 		}
 		jobs.push_back(BroadcastPreludeJob{profile->accountId, binding.profileUuid, profile->DisplayName(),
-						   std::move(fields)});
+						   std::move(fields), metadataOnly});
 	}
 	return jobs;
 }
@@ -9583,13 +9605,13 @@ void StartEnabledOutputsNow()
 // entry was bound to the persistent key and the stream never went live, with every local
 // health indicator green. Every entry point funnels through here, so here is where the
 // invariant holds.
-void StartStreamingAll()
+void StartStreamingAll(bool metadataAlreadyPushed)
 {
-	AsyncTask::PostToUi([] {
+	AsyncTask::PostToUi([metadataAlreadyPushed] {
 		if (!ObsBootstrap::MultistreamAlive() || g_goLivePreludeInFlight) {
 			return;
 		}
-		std::vector<BroadcastPreludeJob> jobs = CollectBroadcastPrelude();
+		std::vector<BroadcastPreludeJob> jobs = CollectBroadcastPrelude(metadataAlreadyPushed);
 		if (jobs.empty()) {
 			StartEnabledOutputsNow(); // nothing to create: unchanged, synchronous go-live
 			return;
@@ -9613,15 +9635,29 @@ void StartStreamingAll()
 				std::string err;
 				bool ok = false;
 				try {
-					ok = provider->ensureBroadcastReady(acct, job.profileUuid, job.fields, err);
+					ok = job.metadataOnly ? provider->applyMetadata(acct, job.profileUuid,
+											job.fields, true, err)
+							      : provider->ensureBroadcastReady(acct, job.profileUuid,
+											       job.fields, err);
 				} catch (const std::exception &e) {
 					err = e.what();
 				}
-				if (!ok) {
-					failures.push_back(json{
-						{"destination", job.label},
-						{"reason", err.empty() ? "could not prepare the broadcast" : err}});
+				if (ok) {
+					continue;
 				}
+				if (job.metadataOnly) {
+					// Not fatal, unlike a broadcast that could not be created: a
+					// persistent channel is streamable whatever its title says, and
+					// Twitch rejects a whole patch over one malformed tag. Refusing
+					// here would cost an unattended scheduled broadcast its airing to
+					// save it a stale title, which is the worse of the two.
+					HostLog("[stream] " + job.label + " went live without its stream info: " +
+						(err.empty() ? "the metadata push failed" : err));
+					continue;
+				}
+				failures.push_back(
+					json{{"destination", job.label},
+					     {"reason", err.empty() ? "could not prepare the broadcast" : err}});
 			}
 			AsyncTask::PostToUi([failures = std::move(failures), generation] {
 				g_goLivePreludeInFlight = false;
