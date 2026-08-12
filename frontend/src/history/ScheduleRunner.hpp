@@ -225,9 +225,13 @@ public:
 
 	// Why this occurrence cannot send to `profileId`, or empty when that destination
 	// is fine. Answered from what the armability pass already worked out rather than
-	// by asking again, so serializing a month of entries costs no extra work -- which
-	// also means it is populated for the same occurrences the entry-level reason is,
-	// and empty for an entry that has never armed.
+	// by asking again, so serializing a month of entries costs no extra work.
+	//
+	// That makes it as current as the last pass that ran for this occurrence: every
+	// tick while the entry is armed, plus once for any entry StartNow was asked to
+	// start, which is why a never-armed `planned` row can carry reasons too. An entry
+	// nothing has evaluated yet reports empty for every destination -- indistinguishable
+	// here from one with nothing wrong, so it is not evidence that the entry is fine.
 	std::string DestinationBlockReason(const std::string &id, const std::string &profileId) const;
 
 	// The entry a broadcast starting now belongs to -- the live one, else the one

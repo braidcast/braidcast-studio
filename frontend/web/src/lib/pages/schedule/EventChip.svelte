@@ -158,6 +158,13 @@
   // session appears at all.
   const compactBadge = $derived(alert || badge);
 
+  // The same alert in full words, for the block form that has room for them. Derived from
+  // ONE precedence chain with `alert` rather than a second one of its own: two chains let
+  // a month cell read "Conflict" while the week block beside it named a blocked
+  // destination and never mentioned the clash. A conflict keeps its one word here -- the
+  // whole reason is long and already on the title and the accessible name.
+  const alertLine = $derived(item.blockReason || (conflict ? alert : blockedLabel));
+
   const accessibleName = $derived(
     [
       item.title,
@@ -244,9 +251,7 @@
       {#if alert}
         <!-- Same precedence as the compact badge, with the room to say the whole
              reason instead of the one word that stands for it. -->
-        <span class="warn"
-          ><Icon name="warn" size={11} /> {item.blockReason || blockedLabel || alert}</span
-        >
+        <span class="warn"><Icon name="warn" size={11} /> {alertLine}</span>
       {/if}
     {/if}
   </button>

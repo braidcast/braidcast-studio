@@ -15,6 +15,11 @@ namespace History {
 // refuses again at the moment it would otherwise touch the routing.
 inline constexpr const char *kAlreadyStreamingReason = "something is already streaming";
 
+// Why an entry that names nowhere to broadcast is refused. Spelled once: the runner
+// refuses it at the armability gate, and the setup refuses again at the moment it
+// would otherwise take the user's routing off the air on its behalf.
+inline constexpr const char *kNoDestinationsReason = "this entry has no destinations";
+
 // One routing edge, reduced to what applying an entry needs to decide.
 struct RoutingBinding {
 	std::string uuid;
@@ -68,7 +73,8 @@ public:
 	//
 	// Narrowing only: an entry may take destinations off the air, never put one on.
 	// A destination it names that is switched off stays switched off, and an entry
-	// that names nothing currently switched on is refused rather than applied onto an
+	// that resolves to no enabled binding at all -- because it names none, or because
+	// every one it names is switched off -- is refused rather than applied onto an
 	// empty enabled set. Switching a binding on whose canvas has no other enabled
 	// binding wakes that canvas and starts an encode the user deliberately turned off,
 	// which is not something a plan running unattended may decide to do.

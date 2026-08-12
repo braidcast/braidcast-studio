@@ -464,7 +464,7 @@ bool ScheduleRunner::SetDestinationRefusals(const std::string &id, std::vector<D
 bool ScheduleRunner::Armable(const ScheduleEntryWithDestinations &row, std::string &reason, bool *changed)
 {
 	if (row.destinations.empty()) {
-		reason = "this entry has no destinations";
+		reason = kNoDestinationsReason;
 		return false;
 	}
 	if (!canArm) {
@@ -479,8 +479,16 @@ bool ScheduleRunner::Armable(const ScheduleEntryWithDestinations &row, std::stri
 	// the answer it gave was about the entry, and the user was asking about their
 	// destinations.
 	std::vector<DestinationRefusal> refusals;
+	std::vector<std::string> asked;
 	size_t routable = 0;
 	for (const ScheduleDestination &destination : row.destinations) {
+		// One question per profile, the same dedupe the apply makes: an entry may
+		// name the same destination twice, and asking again would count it as two
+		// that can route and say its refusal twice over on the chip.
+		if (std::find(asked.begin(), asked.end(), destination.profileId) != asked.end()) {
+			continue;
+		}
+		asked.push_back(destination.profileId);
 		std::string why;
 		if (canArm(destination.profileId, why)) {
 			routable++;
@@ -585,6 +593,11 @@ bool ScheduleRunner::CancelCountdown(const std::string &id, std::string &error)
 	occurrence.canceled = true;
 	occurrence.countdownOpen = false;
 	occurrence.blockReason.clear();
+	// The per-destination half of the same clear. Nothing recomputes these once the
+	// row leaves `armed`, and a cancelled occurrence never re-arms, so a refusal left
+	// here would sit on the chip for the whole retention hour -- outliving the account
+	// reconnect that made it untrue.
+	occurrence.destinationRefusals.clear();
 	ForgetArmed(id);
 	if (appliedId_ == id) {
 		RevertApplied();

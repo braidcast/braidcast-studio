@@ -101,22 +101,33 @@
   // reads as a delete, and undoing a mis-click would then be impossible.
   const carried = new Set(initial.dests);
 
-  // Only destinations with an ENABLED output binding are offered. Scheduling a disabled
-  // one makes go-live enable it, and if its canvas had no other enabled binding that
-  // canvas wakes and starts a whole extra encode the user deliberately switched off --
-  // a scheduled entry must not be able to put a dormant canvas on the air. `canvasUuid`
-  // is non-null exactly when an enabled binding exists.
+  // Only destinations with an ENABLED output binding are offered. Go-live narrows the
+  // enabled set and never widens it (ScheduledSetup::Apply), so a destination named while
+  // switched off is simply left switched off -- picking one plans a broadcast that will
+  // not reach it, and canArm refuses it at go-live rather than routing it. `canvasUuid` is
+  // non-null exactly when an enabled binding exists.
   //
-  // The union with `carried` does not soften that rule: an entry that already names a
-  // destination disabled since has to keep showing it, or saving would silently drop a
-  // destination the user configured. Those rows are marked, and toggle both ways like any
-  // other -- the snapshot exists so switching one off stays undoable. Keeping one selected
-  // is not a way around the filter: canArm refuses it at go-live and says why.
+  // Two unions, neither of which softens that rule -- both exist so that what is offered
+  // can never be narrower than what a save writes:
+  //
+  //   `dests`   -- everything currently selected. `draftDestinations()` writes this set
+  //                raw, so a selected row must stay on screen even if its binding is
+  //                switched off from another window mid-edit; otherwise it would be saved
+  //                while invisible and impossible to deselect.
+  //   `carried` -- what the entry named when it was opened, kept past a deselection so
+  //                switching one off stays undoable, and so filtering alone cannot drop a
+  //                destination the user configured.
+  //
+  // Both kinds are marked, and toggle both ways like any other row.
   const options = $derived(
-    destinationIdentityStore.all.filter((d) => d.canvasUuid !== null || carried.has(d.profileUuid)),
+    destinationIdentityStore.all.filter(
+      (d) => d.canvasUuid !== null || dests.has(d.profileUuid) || carried.has(d.profileUuid),
+    ),
   );
+  // Everything in `dests` that still names a live profile -- by the union above this is
+  // the whole of what draftDestinations() writes, never a subset of it.
   const selected = $derived(options.filter((d) => dests.has(d.profileUuid)));
-  /** Offered only because the entry already names them. */
+  /** Offered in spite of the enabled filter: selected now, or named by the saved entry. */
   const unavailable = $derived(options.filter((d) => d.canvasUuid === null));
 
   // Per-destination refusals as the host last computed them. Read off the saved entry
@@ -382,9 +393,9 @@
         </div>
         {#if unavailable.length > 0}
           <p class="note">
-            Marked destinations have no enabled output binding. They are kept because this
-            entry already names them, and saving keeps them — but they cannot go live until
-            one is enabled on the Destinations page.
+            Marked destinations have no enabled output binding. They stay on the entry and
+            saving keeps them, but going live will not switch one on — they cannot be reached
+            until one is enabled on the Destinations page.
           </p>
         {/if}
         {#if blockedSelected.length > 0}

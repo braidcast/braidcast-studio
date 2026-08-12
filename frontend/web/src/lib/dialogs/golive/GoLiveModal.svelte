@@ -867,6 +867,17 @@ import { EV } from "$lib/utils/eventNames";
       );
       return;
     }
+    applyState = "applying";
+    // Two applications must never stack: the record describes ONE of them, so the
+    // previous one goes back before this one starts.
+    await revertSchedule();
+    // ONE snapshot, taken after that revert and shared by the wanted set and the disable
+    // pass below, mirroring the single `before` ScheduledSetup::Apply reads. Deriving
+    // the two from separate reads let a binding the revert had just put back read as one
+    // the user had switched off, and the entry then aired a set neither the user nor the
+    // entry named. Off the store rather than the `bindings` derived because what this
+    // has to see is the post-revert routing.
+    const before = outputBindingStore.bindings;
     // The ENABLED bindings the entry names, deduped: a profile can be bound on several
     // canvases and only one of them may be enabled, so the enabled one is the binding a
     // scheduled entry routes through. A profile with no enabled binding resolves to
@@ -874,26 +885,29 @@ import { EV } from "$lib/utils/eventNames";
     const wantedProfileIds = [...new Set(entry.destinations.map((d) => d.profileId).filter((id) => id !== ""))];
     const wantedUuids: string[] = [];
     for (const id of wantedProfileIds) {
-      const b = bindings.find((bd) => bd.profileUuid === id && bd.enabled);
+      const b = before.find((bd) => bd.profileUuid === id && bd.enabled);
       if (b) {
         wantedUuids.push(b.uuid);
       }
     }
-    // Narrowing to nothing is not narrowing. With no enabled binding left, the disable
-    // below would take everything off the air and report success, and the go-live would
-    // broadcast nowhere. Refused before anything is written, so there is nothing to put
-    // back and a previous application stays as the user left it.
-    if (wantedUuids.length === 0 && entry.destinations.length > 0) {
+    // Narrowing to nothing is not narrowing. Whatever the reason an entry resolves to no
+    // enabled binding -- it names destinations that are all switched off, or it names
+    // none at all -- the disable pass below would take everything off the air, report
+    // success, and leave the banner reading "Applied" over a go-live that broadcasts
+    // nowhere. The un-stack revert above has already run by here, so a previous
+    // application does not survive this refusal: deciding one entry against another's
+    // leftover routing is the misread this ordering exists to prevent.
+    if (wantedUuids.length === 0) {
       showToast(
-        "Can't use this schedule — none of its destinations are switched on",
+        entry.destinations.length === 0
+          ? "Can't use this schedule — it names no destinations"
+          : "Can't use this schedule — none of its destinations are switched on",
         "A scheduled entry narrows the destinations you already have on; it never switches one on for you.",
       );
+      await revertSchedule();
+      applyState = "idle";
       return;
     }
-    applyState = "applying";
-    // Two applications must never stack: the record describes ONE of them, so the
-    // previous one goes back before this one starts.
-    await revertSchedule();
     // Continued rather than replaced: what that revert could not put back is still
     // owed, and a fresh record would drop the user's original value on the floor.
     const setup: { disabled: string[]; overrides: TouchedOverride[] } = appliedSetup ?? {
@@ -907,7 +921,7 @@ import { EV } from "$lib/utils/eventNames";
       // extra encode -- a load the user deliberately turned off, at a time they may not
       // be watching. A destination the entry names but cannot reach is left switched
       // off, and whether the entry still goes live without it is the user's own setting.
-      const toDisable = bindings.filter((b) => b.enabled && !wantedUuids.includes(b.uuid)).map((b) => b.uuid);
+      const toDisable = before.filter((b) => b.enabled && !wantedUuids.includes(b.uuid)).map((b) => b.uuid);
       await disableBindings(toDisable, setup.disabled);
 
       // One pass per PROFILE, not per destination: two destinations naming the same

@@ -107,14 +107,16 @@ bool ScheduledSetup::Apply(const std::vector<ScheduleDestination> &destinations,
 			}
 		}
 
-		// Narrowing to nothing is not narrowing. With no enabled binding left the
-		// pass below would take everything off the air and report success, and the
-		// go-live would broadcast nowhere. The runner's armability gate refuses an
-		// entry in that state before it ever gets here, but an outcome this bad must
-		// not rest on a caller remembering to check.
-		if (wanted.empty() && !destinations.empty()) {
-			reason = "none of this entry's destinations are switched on";
-			Revert();
+		// Narrowing to nothing is not narrowing. With nothing left to keep on the air
+		// the pass below would switch every binding off and report success, and the
+		// go-live would broadcast nowhere. Asked of the resolved set rather than of the
+		// destination list, so it covers an entry that names none as well as one whose
+		// destinations are all switched off -- the runner's armability gate refuses
+		// both before this is reached, but an outcome this bad must not rest on a
+		// caller remembering to check.
+		if (wanted.empty()) {
+			reason = destinations.empty() ? kNoDestinationsReason
+						      : "none of this entry's destinations are switched on";
 			return false;
 		}
 

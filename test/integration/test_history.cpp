@@ -1642,6 +1642,65 @@ static void test_runner_asks_every_destination_not_just_the_first(void **state)
 	assert_string_equal(f.runner.DestinationBlockReason(id, "p3").c_str(), "'p3' is switched off");
 }
 
+// Cancelling clears the entry's own block reason; the per-destination half has to go
+// with it. Nothing recomputes these once the row leaves `armed`, and a cancelled
+// occurrence never re-arms, so one left behind sits on the chip for the whole
+// retention window -- outliving the reconnect that made it untrue.
+static void test_runner_cancel_clears_the_destination_refusals(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_cancel_refusals.db");
+	f.runner.canArm = [](const std::string &profileId, std::string &reason) {
+		if (profileId == "p1") {
+			return true;
+		}
+		reason = "'" + profileId + "' is not connected";
+		return false;
+	};
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntryWith(f, startsAt, true, {"p1", "p2"});
+
+	f.clock = startsAt - History::kArmLeadMs;
+	f.runner.Tick();
+	assert_string_equal(f.runner.DestinationBlockReason(id, "p2").c_str(), "'p2' is not connected");
+
+	std::string error;
+	assert_true(f.runner.CancelCountdown(id, error));
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kPlanned);
+	assert_string_equal(f.runner.DestinationBlockReason(id, "p2").c_str(), "");
+
+	// And no later tick brings it back, which is the whole reason the clear had to
+	// happen here: a cancelled occurrence never re-arms, so nothing recomputes it.
+	f.clock = startsAt - 60'000;
+	f.runner.Tick();
+	assert_string_equal(f.runner.DestinationBlockReason(id, "p2").c_str(), "");
+}
+
+// An entry may name the same destination twice. The apply already dedupes by profile;
+// the armability pass has to as well, or one disconnected account is asked about twice
+// and says its refusal twice over in the entry's reason.
+static void test_runner_asks_a_duplicated_destination_once(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_duplicate_dest.db");
+	int asked = 0;
+	f.runner.canArm = [&asked](const std::string &profileId, std::string &reason) {
+		asked++;
+		reason = "'" + profileId + "' is not connected";
+		return false;
+	};
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntryWith(f, startsAt, true, {"p1", "p1"});
+
+	f.clock = startsAt - History::kArmLeadMs;
+	f.runner.Tick();
+	assert_int_equal(asked, 1);
+	assert_string_equal(f.runner.BlockReason(id).c_str(), "'p1' is not connected");
+	assert_string_equal(f.runner.DestinationBlockReason(id, "p1").c_str(), "'p1' is not connected");
+}
+
 // The default: the entry goes live with the destinations that can route. What it
 // could not reach has to be recorded somewhere, or going live with one of three is
 // exactly as silent as the bug this replaced.
@@ -2412,36 +2471,56 @@ static void test_setup_narrows_the_enabled_set_and_restores_it(void **state)
 	assert_true(EnabledIs(f, "b2", true));
 }
 
-// The rule the whole feature turns on: a scheduled entry never switches a
-// destination on. Switching a binding on whose canvas has no other enabled binding
-// wakes that canvas and starts an encode the user deliberately turned off -- so an
-// entry naming a switched-off destination goes live without it rather than reaching
-// over and enabling it.
+// The rule the whole feature turns on: a scheduled entry never switches a destination
+// on. Switching a binding on whose canvas has no other enabled binding wakes that
+// canvas and starts an encode the user deliberately turned off -- so an entry naming a
+// switched-off destination goes live without it rather than reaching over and enabling
+// it.
+//
+// Both halves of that rule are load-bearing and both are exercised here, because
+// either one alone leaves the other free to widen the enabled set: the entry must
+// resolve a profile to the binding that is ON rather than to whichever comes first,
+// AND it must never flip one from off to on.
 static void test_setup_never_switches_a_destination_on(void **state)
 {
 	(void)state;
 	SetupFixture f;
 	OpenSetup(f);
 	SeedBindings(f); // b1 (p1) is off; b2 (p2) and b3 (p3) are on
+	// p4 is bound twice with the dormant one first, which is where a pick that ignored
+	// `enabled` would land -- taking the profile off the canvas it is actually on and
+	// putting it on one the user had switched off.
+	f.bindings.push_back({"b4a", "p4", false});
+	f.bindings.push_back({"b4b", "p4", true});
 
 	std::string reason;
-	assert_true(f.setup.Apply({Dest("p2", ""), Dest("p1", "")}, reason));
+	assert_true(f.setup.Apply({Dest("p2", ""), Dest("p1", ""), Dest("p4", "")}, reason));
 	assert_true(f.setup.IsApplied());
-	assert_true(EnabledIs(f, "b1", false)); // named by the entry, and still off
+	assert_true(EnabledIs(f, "b1", false));  // named by the entry, and still off
+	assert_true(EnabledIs(f, "b4a", false)); // named by the entry, and still off
+	assert_true(EnabledIs(f, "b4b", true));  // the binding p4 is actually on, kept
 	assert_true(EnabledIs(f, "b2", true));
 	assert_true(EnabledIs(f, "b3", false));
 
 	// Nothing was switched on, so the restore has only the one disable to undo.
 	f.setup.Revert();
 	assert_true(EnabledIs(f, "b1", false));
+	assert_true(EnabledIs(f, "b4a", false));
+	assert_true(EnabledIs(f, "b4b", true));
 	assert_true(EnabledIs(f, "b2", true));
 	assert_true(EnabledIs(f, "b3", true));
 }
 
-// An entry whose destinations are all switched off would narrow the enabled set to
+// An entry that resolves to no enabled binding would narrow the enabled set to
 // nothing: everything off the air, an apply reporting success, and a broadcast going
 // nowhere. The runner refuses such an entry before this is reached, but an outcome
 // this bad must not rest on a caller remembering to check.
+//
+// Two ways to resolve to nothing, and the guard has to catch both: naming only
+// destinations that are switched off, and naming none at all. The second reaches
+// Apply through a narrow door -- an entry armed while it still had destinations, all
+// of them removed before a manual go-live -- and the disable pass does not care which
+// door it came through.
 static void test_setup_refuses_an_entry_with_nothing_switched_on(void **state)
 {
 	(void)state;
@@ -2450,6 +2529,13 @@ static void test_setup_refuses_an_entry_with_nothing_switched_on(void **state)
 	SeedBindings(f);
 
 	std::string reason;
+	assert_false(f.setup.Apply({}, reason));
+	assert_false(reason.empty());
+	assert_false(f.setup.IsApplied());
+	assert_true(EnabledIs(f, "b2", true));
+	assert_true(EnabledIs(f, "b3", true));
+
+	reason.clear();
 	assert_false(f.setup.Apply({Dest("p1", "Friday Night")}, reason));
 	assert_false(reason.empty());
 	assert_false(f.setup.IsApplied());
@@ -2489,6 +2575,37 @@ static void test_setup_leaves_a_binding_changed_since_alone(void **state)
 	// The one the restore was still owed, reached only by carrying on past the
 	// binding it had to leave alone.
 	assert_true(EnabledIs(f, "b4", true));
+}
+
+// A binding deleted while the entry held it. The restore has nothing to put it back
+// onto, and must let go rather than keep owing a write for a uuid that will never
+// answer again -- which would leave the setup reading applied for the rest of the
+// session, retrying that write on every later revert.
+//
+// This is the one case the leave-alone guard decides on its own. For every other, an
+// apply records only disables, so a binding "changed since" can only have been set
+// back to what it was and re-asserting it would land on the same value.
+static void test_setup_lets_go_of_a_binding_that_disappeared(void **state)
+{
+	(void)state;
+	SetupFixture f;
+	OpenSetup(f);
+	SeedBindings(f);
+
+	std::string reason;
+	assert_true(f.setup.Apply({Dest("p2", "")}, reason));
+	assert_true(EnabledIs(f, "b3", false));
+
+	for (auto it = f.bindings.begin(); it != f.bindings.end(); ++it) {
+		if (it->uuid == "b3") {
+			f.bindings.erase(it);
+			break;
+		}
+	}
+
+	f.setup.Revert();
+	assert_false(f.setup.IsApplied());
+	assert_true(EnabledIs(f, "b2", true));
 }
 
 // The entry states what it wants changed. A field it does not carry keeps whatever
@@ -2534,7 +2651,9 @@ static void test_setup_takes_the_enabled_binding_of_a_profile_bound_twice(void *
 	assert_true(EnabledIs(f, "canvas2", false));
 	assert_int_equal(f.refusals, 0);
 
-	// Nothing was touched, so there is nothing to put back.
+	// The entry's own binding was already on and nothing else is bound here, so the
+	// apply flipped nothing -- and the restore must leave alone what it never recorded
+	// rather than re-asserting a snapshot of the whole set.
 	f.setup.Revert();
 	assert_true(EnabledIs(f, "canvas1", true));
 	assert_true(EnabledIs(f, "canvas2", false));
@@ -2860,6 +2979,8 @@ int main(void)
 		cmocka_unit_test(test_runner_disarms_on_an_edit_without_waiting_for_a_tick),
 		cmocka_unit_test(test_runner_tracks_armability_through_the_window),
 		cmocka_unit_test(test_runner_asks_every_destination_not_just_the_first),
+		cmocka_unit_test(test_runner_cancel_clears_the_destination_refusals),
+		cmocka_unit_test(test_runner_asks_a_duplicated_destination_once),
 		cmocka_unit_test(test_runner_starts_a_partial_entry_when_destinations_are_not_all_required),
 		cmocka_unit_test(test_runner_refuses_a_partial_entry_when_every_destination_is_required),
 		cmocka_unit_test(test_runner_blocks_an_entry_when_no_destination_can_route),
@@ -2890,6 +3011,7 @@ int main(void)
 		cmocka_unit_test(test_setup_abandons_an_apply_the_routing_refused),
 		cmocka_unit_test(test_setup_records_a_flip_the_seam_would_not_confirm),
 		cmocka_unit_test(test_setup_retries_a_restore_the_routing_refused),
+		cmocka_unit_test(test_setup_lets_go_of_a_binding_that_disappeared),
 		cmocka_unit_test(test_setup_keeps_a_remembered_category_id),
 		cmocka_unit_test(test_setup_keeps_a_remembered_category_name),
 		cmocka_unit_test(test_setup_merges_metadata_rather_than_replacing),
