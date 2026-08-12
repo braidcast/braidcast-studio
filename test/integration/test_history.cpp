@@ -1708,11 +1708,14 @@ static void test_runner_refuses_a_partial_entry_when_every_destination_is_requir
 	assert_int_equal(f.applyAttempts, 0);
 	assert_int_equal(f.goLiveCalls, 0);
 
-	// And by hand, which runs through the same armability gate.
+	// And by hand, which runs through the same armability gate. The refusals it works
+	// out are the ones already on record, so this must NOT push a repaint for them.
+	const int changedBefore = f.changedCalls;
 	std::string error;
 	assert_false(f.runner.StartNow(id, error));
 	assert_string_equal(error.c_str(), "'p2' is switched off");
 	assert_int_equal(f.applyAttempts, 0);
+	assert_int_equal(f.changedCalls, changedBefore);
 }
 
 // The lower half of the same rule: without the strict setting the entry is blocked
@@ -2035,6 +2038,11 @@ static void test_runner_start_now_refuses_when_no_destination_can_go_live(void *
 	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kPlanned);
 	assert_int_equal(f.applyAttempts, 0);
 	assert_int_equal(f.goLiveCalls, 0);
+	// The refusal this worked out is what the destination chips read, and it is
+	// recorded for a `planned` row the clock never refreshes -- so the push has to
+	// happen here or the reasons sit in memory until something unrelated repaints.
+	assert_int_equal(f.changedCalls, 1);
+	assert_string_equal(f.runner.DestinationBlockReason(id, "p1").c_str(), "'Main' is not connected");
 }
 
 // Guards the RequestStart extraction: a cancelled occurrence must still refuse the
@@ -2454,22 +2462,33 @@ static void test_setup_refuses_an_entry_with_nothing_switched_on(void **state)
 
 // One binding changed by hand since the apply is the newer intent and is left
 // alone. It must not strand the rest of the restore, which is what comparing the
-// enabled set as a whole would do.
+// enabled set as a whole -- or giving up on the first binding that moved -- would do.
+//
+// Two bindings have to come off for that to be provable, and the hand-changed one has
+// to be the FIRST of them: records are held in the order Apply flipped them, so a
+// restore that bailed on the changed-since binding would exit with the other already
+// put back and nothing to show for the bug.
 static void test_setup_leaves_a_binding_changed_since_alone(void **state)
 {
 	(void)state;
 	SetupFixture f;
 	OpenSetup(f);
 	SeedBindings(f);
+	f.bindings.push_back({"b4", "p4", true});
 
 	std::string reason;
 	assert_true(f.setup.Apply({Dest("p2", "")}, reason));
-	f.setup.routing.write("b3", true); // the user turned it back on
+	assert_true(EnabledIs(f, "b3", false)); // flipped first
+	assert_true(EnabledIs(f, "b4", false)); // and this one second
+	f.setup.routing.write("b3", true);      // the user turned it back on
 
 	f.setup.Revert();
 	assert_true(EnabledIs(f, "b1", false));
 	assert_true(EnabledIs(f, "b2", true));
 	assert_true(EnabledIs(f, "b3", true));
+	// The one the restore was still owed, reached only by carrying on past the
+	// binding it had to leave alone.
+	assert_true(EnabledIs(f, "b4", true));
 }
 
 // The entry states what it wants changed. A field it does not carry keeps whatever
@@ -2580,9 +2599,15 @@ static void test_setup_retries_a_restore_the_routing_refused(void **state)
 	SetupFixture f;
 	OpenSetup(f);
 	SeedBindings(f);
+	// A second binding for the apply to take off the air, so "everything it could put
+	// back is back" is about more than the one that was refused. Listed after b2, which
+	// is the one refused, so the restore has to carry on past that refusal to reach it.
+	f.bindings.push_back({"b4", "p4", true});
 
 	std::string reason;
 	assert_true(f.setup.Apply({Dest("p3", "")}, reason));
+	assert_true(EnabledIs(f, "b2", false));
+	assert_true(EnabledIs(f, "b4", false));
 
 	f.refuseEnableOf = "b2";
 	f.setup.Revert();
@@ -2592,12 +2617,14 @@ static void test_setup_retries_a_restore_the_routing_refused(void **state)
 	assert_true(EnabledIs(f, "b1", false));
 	assert_true(EnabledIs(f, "b2", false));
 	assert_true(EnabledIs(f, "b3", true));
+	assert_true(EnabledIs(f, "b4", true));
 
 	f.refuseEnableOf.clear();
 	f.setup.Revert();
 	assert_false(f.setup.IsApplied());
 	assert_true(EnabledIs(f, "b2", true));
 	assert_true(EnabledIs(f, "b3", true));
+	assert_true(EnabledIs(f, "b4", true));
 }
 
 // Entries written before the category id column carry a name and no id. No
@@ -2614,10 +2641,41 @@ static void test_setup_keeps_a_remembered_category_id(void **state)
 	History::ScheduleDestination d = Dest("p2", "Friday Night");
 	d.category = "Just Chatting";
 
+	// The guard at the source, pinned on its own. The merge also skips empty strings,
+	// so asserting only the outcome below leaves either of the two guards free to be
+	// removed without a test noticing -- and the second removal would then surface far
+	// from the change that caused it.
+	assert_false(History::ScheduledSetup::MetadataFields(d).contains("category"));
+
 	std::string reason;
 	assert_true(f.setup.Apply({d}, reason));
 	assert_string_equal(f.overrides["p2"]["category"]["id"].get<std::string>().c_str(), "509658");
 	assert_string_equal(f.overrides["p2"]["title"].get<std::string>().c_str(), "Friday Night");
+
+	f.setup.Revert();
+	assert_true(f.overrides["p2"] == before);
+}
+
+// The same rule through the other half of the pair. An entry carrying a category id
+// with no name -- a picker that reported only the id, or a name the provider never
+// filled in -- must not blank the name the user had remembered. The remembered bag is
+// deliberately older than what the entry carries, so an empty value in the entry is
+// not an instruction to clear what is there.
+static void test_setup_keeps_a_remembered_category_name(void **state)
+{
+	(void)state;
+	SetupFixture f;
+	OpenSetup(f);
+	SeedBindings(f);
+	const nlohmann::json before = {{"category", {{"id", "509658"}, {"name", "Just Chatting"}}}};
+	f.overrides["p2"] = before;
+	History::ScheduleDestination d = Dest("p2", "Friday Night");
+	d.categoryId = "743"; // the id the entry changes, carrying no name with it
+
+	std::string reason;
+	assert_true(f.setup.Apply({d}, reason));
+	assert_string_equal(f.overrides["p2"]["category"]["id"].get<std::string>().c_str(), "743");
+	assert_string_equal(f.overrides["p2"]["category"]["name"].get<std::string>().c_str(), "Just Chatting");
 
 	f.setup.Revert();
 	assert_true(f.overrides["p2"] == before);
@@ -2833,6 +2891,7 @@ int main(void)
 		cmocka_unit_test(test_setup_records_a_flip_the_seam_would_not_confirm),
 		cmocka_unit_test(test_setup_retries_a_restore_the_routing_refused),
 		cmocka_unit_test(test_setup_keeps_a_remembered_category_id),
+		cmocka_unit_test(test_setup_keeps_a_remembered_category_name),
 		cmocka_unit_test(test_setup_merges_metadata_rather_than_replacing),
 		cmocka_unit_test(test_setup_sends_the_category_id_and_name),
 		cmocka_unit_test(test_setup_captures_a_duplicate_profile_once),

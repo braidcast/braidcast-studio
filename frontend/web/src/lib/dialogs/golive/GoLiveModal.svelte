@@ -702,17 +702,13 @@ import { EV } from "$lib/utils/eventNames";
   // imminentEntry's own id rather than a bare boolean, so the banner reverts to
   // offering again if a different entry becomes the imminent one mid-session.
   let appliedEntryId = $state<string | null>(null);
-  // What ONE application changed, in the shape ScheduledSetup tracks it: the routing
-  // flips it made and the per-stream bags it wrote over. Held so the paths where the
-  // entry never airs -- a write that fails part way, a modal the user backs out of --
-  // put back exactly what they found. `before` is the value the user had, and that is
-  // the whole record a restore needs: it asks whether the binding already holds that
-  // value rather than comparing against what the apply wrote, so a binding someone
-  // else moved reads as nothing left to do.
-  interface TouchedBinding {
-    uuid: string;
-    before: boolean;
-  }
+  // What ONE application changed, in the shape ScheduledSetup tracks it: the bindings
+  // it took off the air and the per-stream bags it wrote over. Held so the paths where
+  // the entry never airs -- a write that fails part way, a modal the user backs out of
+  // -- put back exactly what they found. A binding needs no more than its uuid here:
+  // an application only ever narrows, so every record is a disable to undo, and the
+  // restore asks whether the binding is still switched off rather than comparing
+  // against what the apply wrote.
   interface TouchedOverride {
     profileId: string;
     bag: Record<string, unknown> | undefined;
@@ -722,7 +718,7 @@ import { EV } from "$lib/utils/eventNames";
     // (setStreamField, toggleStreamOverride, prefill) assigns a fresh object.
     after: Record<string, unknown> | undefined;
   }
-  let appliedSetup: { bindings: TouchedBinding[]; overrides: TouchedOverride[] } | null = null;
+  let appliedSetup: { disabled: string[]; overrides: TouchedOverride[] } | null = null;
 
   // The soonest entry the HOST has itself armed. Read off ScheduleEntryInfo.state
   // rather than re-deriving the arm window from startsAt: `armed` is the runner's
@@ -751,43 +747,45 @@ import { EV } from "$lib/utils/eventNames";
     return min <= 0 ? "starts any moment" : `starts in ${min} min`;
   }
 
-  // Flip a set of bindings and record what actually moved. What the store holds
-  // AFTERWARDS decides what is recorded, never the call's result: setEnabled writes
-  // the uuids in parallel and rejects as a batch, so a write that landed beside a
-  // refused one is a real change -- and a change that goes unrecorded is one no
-  // restore can undo.
-  async function flipBindings(uuids: string[], enabled: boolean, touched: TouchedBinding[]): Promise<void> {
+  // Is this binding currently switched off? The one reading shared by everything that
+  // records a disable and everything that decides a restore is still owed, so the two
+  // cannot drift into disagreeing about the same binding. A binding that has gone from
+  // the store answers false: there is nothing left to record and nothing to put back.
+  function bindingOff(uuid: string): boolean {
+    return outputBindingStore.bindings.find((b) => b.uuid === uuid)?.enabled === false;
+  }
+
+  // Take a set of bindings off the air and record which ones actually went, so a failed
+  // or abandoned application can put them back. What the store holds AFTERWARDS decides
+  // what is recorded, never the call's result: setEnabled writes the uuids in parallel
+  // and rejects as a batch, so a write that landed beside a refused one is a real
+  // change -- and a change that goes unrecorded is one no restore can undo.
+  async function disableBindings(uuids: string[], touched: string[]): Promise<void> {
     if (uuids.length === 0) {
       return;
     }
     try {
-      await outputBindingStore.setEnabled(uuids, enabled);
+      await outputBindingStore.setEnabled(uuids, false);
     } finally {
       // setEnabled skips its own refresh when a write rejects, so this is what makes
       // the store answer for the batch either way.
       await outputBindingStore.refresh();
       for (const uuid of uuids) {
-        // One record per binding, keeping the `before` from the first time this modal
-        // touched it: a restore the routing refused leaves its record behind for the
-        // next attempt, and a second record for the same binding would leave that
-        // attempt deciding between two answers. What has to come back is the value the
-        // user had, not the one an unfinished restore left.
-        if (
-          outputBindingStore.bindings.find((b) => b.uuid === uuid)?.enabled === enabled &&
-          !touched.some((t) => t.uuid === uuid)
-        ) {
-          touched.push({ uuid, before: !enabled });
+        // One record per binding: a restore the routing refused leaves its record
+        // behind for the next attempt, and a second record for the same binding would
+        // have that attempt put it back twice.
+        if (bindingOff(uuid) && !touched.includes(uuid)) {
+          touched.push(uuid);
         }
       }
     }
   }
 
-  // Put back everything one application changed, the shape ScheduledSetup::Revert
-  // uses. Disables run before enables, mirroring the apply for the same reason:
-  // re-enabling the user's binding while the entry's still holds the profile is
-  // refused by the single-live-stream rule, and that refusal would end with both off.
-  // Per binding rather than over the set as a whole -- one that no longer holds what
-  // the apply wrote was changed by someone else since, and that is the newer intent,
+  // Put back everything one application changed, the shape ScheduledSetup::Revert uses.
+  // One pass, in any order: an application only ever takes bindings off the air, so
+  // every record here is a disable to undo and switching one back on cannot collide
+  // with another. Per binding rather than over the set as a whole -- one that is no
+  // longer switched off was moved by someone else since, and that is the newer intent,
   // while an unrelated change elsewhere must not strand every other restore.
   async function revertSchedule(): Promise<void> {
     const setup = appliedSetup;
@@ -804,36 +802,21 @@ import { EV } from "$lib/utils/eventNames";
     // path keeps it on the same terms and simply takes it down with the component:
     // one behaviour here beats a special case whose only effect is to discard a
     // record nothing was going to read.
-    const refused: TouchedBinding[] = [];
-    for (const enabling of [false, true]) {
-      const owed = setup.bindings.filter(
-        (t) =>
-          t.before === enabling &&
-          outputBindingStore.bindings.find((b) => b.uuid === t.uuid)?.enabled === !enabling,
-      );
-      if (owed.length === 0) {
-        continue;
-      }
+    let refused: string[] = [];
+    const owed = setup.disabled.filter(bindingOff);
+    if (owed.length > 0) {
       try {
-        await outputBindingStore.setEnabled(
-          owed.map((t) => t.uuid),
-          enabling,
-        );
+        await outputBindingStore.setEnabled(owed, true);
       } catch (e) {
-        // Caught per pass, never around both: setEnabled writes in parallel and
-        // rejects on the first failure, so abandoning the enable pass over a refused
-        // disable would leave the routing half put back -- the outcome this record
-        // exists to prevent.
+        // The restore is still reconciled below rather than abandoned here: setEnabled
+        // writes in parallel and rejects on the first failure, so some of this batch
+        // can have gone back on already.
         showToast("Couldn't put your destinations back", (e as Error).message);
         await outputBindingStore.refresh();
       }
       // The state answers which restores are still owed, not the call's result, for
       // the same reason the apply records off it.
-      for (const t of owed) {
-        if (outputBindingStore.bindings.find((b) => b.uuid === t.uuid)?.enabled !== t.before) {
-          refused.push(t);
-        }
-      }
+      refused = owed.filter(bindingOff);
     }
     // Restored per record, skipping a bag that is no longer the one the application
     // left: the user edited it since, and that edit is the newer intent -- the same
@@ -853,13 +836,14 @@ import { EV } from "$lib/utils/eventNames";
         streamOverrideOn[t.profileId] = t.on;
       }
     }
-    appliedSetup = refused.length > 0 ? { bindings: refused, overrides: [] } : null;
+    appliedSetup = refused.length > 0 ? { disabled: refused, overrides: [] } : null;
   }
 
-  // Loads one entry's destinations and metadata, mirroring ScheduledSetup::Apply:
-  // the enabled routing becomes EXACTLY what the entry names (one binding per
-  // destination, the first bound canvas), and only the destinations it lists carry
-  // metadata. Two kinds of write, and only one of them is this modal's own: the
+  // Loads one entry's destinations and metadata, mirroring ScheduledSetup::Apply: the
+  // enabled routing NARROWS to what the entry names -- a destination it does not name
+  // comes off the air, one it names that is already off stays off -- and only the
+  // destinations it lists carry metadata. Two kinds of write, and only one is this
+  // modal's own: the
   // routing goes through outputBindingStore.setEnabled, which persists to the scene
   // collection's bindings the moment it lands, while the metadata lands in this
   // modal's bags and reaches disk only when confirm() runs with `remember` on. Both
@@ -883,33 +867,48 @@ import { EV } from "$lib/utils/eventNames";
       );
       return;
     }
+    // The ENABLED bindings the entry names, deduped: a profile can be bound on several
+    // canvases and only one of them may be enabled, so the enabled one is the binding a
+    // scheduled entry routes through. A profile with no enabled binding resolves to
+    // nothing, which is what leaves it switched off below rather than switched on.
+    const wantedProfileIds = [...new Set(entry.destinations.map((d) => d.profileId).filter((id) => id !== ""))];
+    const wantedUuids: string[] = [];
+    for (const id of wantedProfileIds) {
+      const b = bindings.find((bd) => bd.profileUuid === id && bd.enabled);
+      if (b) {
+        wantedUuids.push(b.uuid);
+      }
+    }
+    // Narrowing to nothing is not narrowing. With no enabled binding left, the disable
+    // below would take everything off the air and report success, and the go-live would
+    // broadcast nowhere. Refused before anything is written, so there is nothing to put
+    // back and a previous application stays as the user left it.
+    if (wantedUuids.length === 0 && entry.destinations.length > 0) {
+      showToast(
+        "Can't use this schedule — none of its destinations are switched on",
+        "A scheduled entry narrows the destinations you already have on; it never switches one on for you.",
+      );
+      return;
+    }
     applyState = "applying";
     // Two applications must never stack: the record describes ONE of them, so the
     // previous one goes back before this one starts.
     await revertSchedule();
     // Continued rather than replaced: what that revert could not put back is still
     // owed, and a fresh record would drop the user's original value on the floor.
-    const setup: { bindings: TouchedBinding[]; overrides: TouchedOverride[] } = appliedSetup ?? {
-      bindings: [],
+    const setup: { disabled: string[]; overrides: TouchedOverride[] } = appliedSetup ?? {
+      disabled: [],
       overrides: [],
     };
     appliedSetup = setup;
     try {
-      const wantedProfileIds = [...new Set(entry.destinations.map((d) => d.profileId).filter((id) => id !== ""))];
-      const wantedUuids: string[] = [];
-      for (const id of wantedProfileIds) {
-        const b = bindings.find((bd) => bd.profileUuid === id);
-        if (b) {
-          wantedUuids.push(b.uuid);
-        }
-      }
+      // An entry narrows the enabled set; it never widens it. Switching a binding on
+      // whose canvas has no other enabled binding wakes that canvas and starts a whole
+      // extra encode -- a load the user deliberately turned off, at a time they may not
+      // be watching. A destination the entry names but cannot reach is left switched
+      // off, and whether the entry still goes live without it is the user's own setting.
       const toDisable = bindings.filter((b) => b.enabled && !wantedUuids.includes(b.uuid)).map((b) => b.uuid);
-      const toEnable = wantedUuids.filter((uuid) => !bindings.find((b) => b.uuid === uuid)?.enabled);
-      // Disable before enable, mirroring the host: enabling a profile still held by
-      // another binding would be refused by the single-live-stream rule while the
-      // old one still holds it.
-      await flipBindings(toDisable, false, setup.bindings);
-      await flipBindings(toEnable, true, setup.bindings);
+      await disableBindings(toDisable, setup.disabled);
 
       // One pass per PROFILE, not per destination: two destinations naming the same
       // profile would otherwise have the second write over what the first applied,

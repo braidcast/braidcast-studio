@@ -620,7 +620,17 @@ bool ScheduleRunner::StartNow(const std::string &id, std::string &error)
 	row.entry = *entry;
 	row.destinations = store_->DestinationsFor(id);
 	std::string reason;
-	if (!Armable(row, reason)) {
+	bool refusalsMoved = false;
+	const bool armable = Armable(row, reason, &refusalsMoved);
+	// Pushed here rather than left to the clock. This is the only place the refusals
+	// are recomputed for a row that is not armed, and the armability pass skips such a
+	// row entirely -- and even for an armed one it would find the identical set and
+	// report no movement. Without this the destination reasons a refused manual start
+	// just worked out sit in memory until something unrelated repaints.
+	if (refusalsMoved && onChanged) {
+		onChanged();
+	}
+	if (!armable) {
 		error = reason;
 		return false;
 	}
