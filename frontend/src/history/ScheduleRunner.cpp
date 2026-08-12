@@ -1,5 +1,7 @@
 #include "ScheduleRunner.hpp"
 
+#include <algorithm>
+
 #include "ScheduledSetup.hpp"
 
 namespace History {
@@ -12,6 +14,18 @@ void ScheduleRunner::Attach(ScheduleStore *store)
 	startingId_.clear();
 	liveId_.clear();
 	appliedId_.clear();
+}
+
+bool ScheduleRunner::IsArmed(const std::string &id) const
+{
+	return std::find(armedIds_.begin(), armedIds_.end(), id) != armedIds_.end();
+}
+
+void ScheduleRunner::RememberArmed(const std::string &id)
+{
+	if (!IsArmed(id)) {
+		armedIds_.push_back(id);
+	}
 }
 
 void ScheduleRunner::ForgetArmed(const std::string &id)
@@ -157,7 +171,7 @@ bool ScheduleRunner::PruneStale(int64_t now)
 			changed = true;
 			continue;
 		}
-		armedIds_.push_back(id);
+		RememberArmed(id);
 	}
 
 	// Held for as long as the start is on its way up, the same predicate the
@@ -251,7 +265,7 @@ bool ScheduleRunner::ArmIfDue(ScheduleEntryWithDestinations &row, int64_t now)
 		return false;
 	}
 	row.entry.state = ScheduleState::kArmed;
-	armedIds_.push_back(entry.id);
+	RememberArmed(entry.id);
 	// Deliberately read-only. Arming surfaces the entry and starts asking whether it
 	// could go live; loading it into the routing waits for T-0, so configuration the
 	// user owns is only ever ours for the length of one go-live.
@@ -274,11 +288,13 @@ bool ScheduleRunner::RefreshArmability(const ScheduleEntryWithDestinations &row)
 	return SetBlockReason(row.entry.id, Armable(row, reason) ? std::string() : reason);
 }
 
-// Whether something else already owns the routing. Two readings of one situation a
-// few seconds apart: a broadcast whose outputs have reported, and a start that has
-// asked but not reported yet. Only the first is visible to isStreaming, and a start
-// spends its whole prelude in the second -- which is precisely the window a second
-// entry would otherwise walk into and redirect.
+// Whether something else already owns the routing. Two questions, not one: whether
+// THIS RUNNER has another occurrence's start on its way up, and whether anything at all
+// is streaming. The first is the only one appliedId_/IsStartInFlight can answer -- a
+// go-live started from the modal, a hotkey or the tray is invisible to it, since no
+// occurrence asked for it. That one is isStreaming's to catch, which is why isStreaming
+// has to answer true for a go-live that has not brought its outputs up yet as well as
+// for one that has.
 //
 // Answered once per tick, in the one place that computes block reasons, so
 // StartIfDue's existing gate does the refusing. Asking again there would set a
@@ -322,8 +338,7 @@ bool ScheduleRunner::StartIfDue(const ScheduleEntryWithDestinations &row, int64_
 	}
 	// The raw flag, not IsStartInFlight: this asks whether the occurrence has ever
 	// asked to start, and one whose request was given up on must not ask again.
-	const auto it = occurrences_.find(entry.id);
-	if (it != occurrences_.end() && (it->second.canceled || it->second.startRequested)) {
+	if (IsCountdownCanceled(entry.id) || HasRequestedStart(entry.id)) {
 		return false;
 	}
 	std::string error;
@@ -332,9 +347,10 @@ bool ScheduleRunner::StartIfDue(const ScheduleEntryWithDestinations &row, int64_
 	}
 	// The state stays `armed` until the outputs actually come up. A request is not
 	// a broadcast, and an entry that reads `live` while nothing is streaming is the
-	// one claim this feature must never make. Nothing schedule.list reports has
-	// changed yet either, so this reports no change.
-	return false;
+	// one claim this feature must never make. The request itself is reported though
+	// -- startRequested is what tells a client the entry is spoken for while it still
+	// reads `armed` -- and the gate above means this is reached once per occurrence.
+	return true;
 }
 
 bool ScheduleRunner::PrepareStart(const ScheduleEntryWithDestinations &row, int64_t now, std::string &error)
@@ -534,16 +550,7 @@ bool ScheduleRunner::StartNow(const std::string &id, std::string &error)
 			return false;
 		}
 		row.entry.state = ScheduleState::kArmed;
-		bool alreadyArmed = false;
-		for (const std::string &armedId : armedIds_) {
-			if (armedId == id) {
-				alreadyArmed = true;
-				break;
-			}
-		}
-		if (!alreadyArmed) {
-			armedIds_.push_back(id);
-		}
+		RememberArmed(id);
 	}
 	Occurrence &occurrence = occurrences_[id];
 	occurrence.canceled = false;
@@ -566,6 +573,12 @@ bool ScheduleRunner::IsCountdownCanceled(const std::string &id) const
 {
 	const auto it = occurrences_.find(id);
 	return it != occurrences_.end() && it->second.canceled;
+}
+
+bool ScheduleRunner::HasRequestedStart(const std::string &id) const
+{
+	const auto it = occurrences_.find(id);
+	return it != occurrences_.end() && it->second.startRequested;
 }
 
 bool ScheduleRunner::IsStartInFlight(const std::string &id) const
@@ -668,11 +681,11 @@ void ScheduleRunner::AdoptImminentArmed()
 	if (id.empty()) {
 		return;
 	}
-	// A cancelled countdown must not be resurrected by an unrelated manual press,
-	// and an occurrence that has already asked to start -- even one still failed --
-	// is not this go-live's to claim either.
-	const auto it = occurrences_.find(id);
-	if (it != occurrences_.end() && (it->second.canceled || it->second.startRequested)) {
+	// An occurrence that has already asked to start -- even one whose request was given
+	// up on -- is not this go-live's to claim. A cancelled one is refused a step
+	// earlier: cancelling puts the row back to `planned` and forgets the arm, so
+	// ImminentArmedId cannot return it in the first place.
+	if (HasRequestedStart(id)) {
 		return;
 	}
 	// The other two PrepareStart callers gate themselves before reaching it; this one

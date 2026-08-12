@@ -562,6 +562,23 @@ bool AnythingLive()
 	return ObsBootstrap::MultistreamAlive() && ObsBootstrap::Multistream().AnyLive();
 }
 
+// What both the runner and the setup mean by "is a broadcast running": the outputs
+// that have come up, plus a go-live prelude that has not brought any up yet.
+//
+// A prelude counts even though AnythingLive() is false throughout it -- it runs
+// strictly before the first encoder starts. It has already snapshotted the routing it
+// is creating broadcasts and pushing metadata against, and it starts whatever is
+// enabled at the moment it lands, seconds later. So an entry that re-routes underneath
+// one sends those prepared broadcasts nowhere and puts its own destinations on the air
+// with nothing created for them, while the start it made to go with the re-routing is
+// silently dropped -- only one prelude may be in flight.
+//
+// UI thread only, which is where the runner, the setup and the engine all are.
+bool StreamingOrGoingLive()
+{
+	return AnythingLive() || Bridge::GoLivePreludeInFlight();
+}
+
 // The binding that routes `profileId`, or empty when nothing does. A profile can be
 // bound on several canvases but only one may be enabled (one RTMP key = one live
 // stream), so a scheduled entry takes the first.
@@ -1219,8 +1236,10 @@ bool ObsBootstrap::Start()
 	g_scheduledSetup.log = [](const std::string &line) {
 		HostLog(line);
 	};
+	// Gates Apply and Revert, so a prelude counts: Apply is what rewrites the routing
+	// a prelude already snapshotted.
 	g_scheduledSetup.isStreaming = [] {
-		return AnythingLive();
+		return StreamingOrGoingLive();
 	};
 	g_scheduledSetup.routing.read = [] {
 		std::vector<History::RoutingBinding> out;
@@ -1258,8 +1277,11 @@ bool ObsBootstrap::Start()
 	g_scheduleRunner.goLive = [] {
 		Bridge::StartStreamingAll();
 	};
+	// Reached through RoutingHeldElsewhere, so a prelude counts here too: this is what
+	// makes StartIfDue and StartNow refuse rather than let StartStreamingAll swallow a
+	// start whose occurrence flag and routing have already been rewritten.
 	g_scheduleRunner.isStreaming = [] {
-		return AnythingLive();
+		return StreamingOrGoingLive();
 	};
 	g_scheduleRunner.applyEntry = [](const std::vector<History::ScheduleDestination> &destinations,
 					 std::string &reason) {

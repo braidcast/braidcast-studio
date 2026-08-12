@@ -173,10 +173,12 @@ std::vector<CefRefPtr<CefBrowser>> g_browsers;
 //
 // An entry belongs to ONE go-live attempt and is meant to live only until that
 // attempt's session opens. Nothing expires one, so the rule is that every path ending
-// an attempt without a session drops what that attempt recorded. The paths that exist
-// today: the prelude's two landing branches (cancelled by a stop, refused over a
-// failure), the Go Live modal's aborts through streamMeta.forgetSent, and the stop
-// edge, which sweeps whatever a destination that never came up left behind.
+// an attempt without a session drops everything THAT ATTEMPT recorded -- which is more
+// than what the prelude itself recorded, since the Go Live modal pushes first and its
+// records are exactly why CollectBroadcastPrelude skipped those destinations. The paths
+// that exist today: the prelude's two landing branches (cancelled by a stop, refused
+// over a failure), the Go Live modal's aborts through streamMeta.forgetSent, and the
+// stop edge, which sweeps whatever a destination that never came up left behind.
 //
 // An entry that outlives its attempt is not merely stale: CollectBroadcastPrelude
 // reads presence here as "already pushed" and skips that destination on every later
@@ -7542,6 +7544,7 @@ json ScheduleToJson(const History::ScheduleEntry &e, const std::vector<History::
 		    {"autoStart", e.autoStart != 0},
 		    {"state", e.state},
 		    {"countdownCanceled", runner.IsCountdownCanceled(e.id)},
+		    {"startRequested", runner.HasRequestedStart(e.id)},
 		    {"blockReason", runner.BlockReason(e.id)},
 		    {"destinations", std::move(dests)}};
 }
@@ -9581,7 +9584,13 @@ uint64_t g_goLiveGeneration = 0;
 // own values reach the provider through its streamMeta.set; a broadcast it already created
 // short-circuits inside ensureBroadcastReady, and a channel it already pushed to is
 // skipped above by HasSentMetadata, since nothing here would short-circuit it.
-std::vector<BroadcastPreludeJob> CollectBroadcastPrelude()
+//
+// `alreadyRecorded` collects the destinations skipped for that last reason. Their records
+// were made by this same go-live attempt -- the modal pushed for them moments ago -- so
+// they belong to it exactly as the ones this prelude is about to make do, and an attempt
+// that ends without a session has to drop both sets or those channels are skipped on
+// every later go-live.
+std::vector<BroadcastPreludeJob> CollectBroadcastPrelude(std::vector<std::string> &alreadyRecorded)
 {
 	std::vector<BroadcastPreludeJob> jobs;
 	std::unordered_set<std::string> seen;
@@ -9619,6 +9628,7 @@ std::vector<BroadcastPreludeJob> CollectBroadcastPrelude()
 		// time" may deliberately keep older than what the user just typed.
 		const bool metadataOnly = !provider->broadcastPerDestination();
 		if (metadataOnly && HasSentMetadata(binding.profileUuid)) {
+			alreadyRecorded.push_back(binding.profileUuid);
 			continue;
 		}
 		// Keyed by what actually receives the call. A persistent channel is ONE place
@@ -9667,6 +9677,122 @@ void StartEnabledOutputsNow()
 	}
 }
 
+// The whole of going live, already on the UI thread. Split out from StartStreamingAll so
+// StartStreamingAllAdoptingSchedule can run the schedule adoption and this in ONE posted
+// task -- see the threading note on that declaration for what interleaves otherwise.
+void StartStreamingAllOnUi()
+{
+	CEF_REQUIRE_UI_THREAD();
+	if (!ObsBootstrap::MultistreamAlive() || g_goLivePreludeInFlight) {
+		return;
+	}
+	std::vector<std::string> alreadyRecorded;
+	std::vector<BroadcastPreludeJob> jobs = CollectBroadcastPrelude(alreadyRecorded);
+	if (jobs.empty()) {
+		StartEnabledOutputsNow(); // nothing to create: unchanged, synchronous go-live
+		return;
+	}
+	g_goLivePreludeInFlight = true;
+	const uint64_t generation = ++g_goLiveGeneration;
+	AsyncTask::RunAsync([jobs = std::move(jobs), alreadyRecorded = std::move(alreadyRecorded), generation] {
+		json failures = json::array();
+		// Every profile whose remembered-metadata record belongs to this attempt, so the
+		// two branches below that end without a session can take all of them back out.
+		// It opens with what the Go Live modal had already pushed -- which is exactly
+		// why the collection skipped those destinations -- and grows with what this
+		// prelude pushes below.
+		std::vector<std::string> recorded = alreadyRecorded;
+		for (const BroadcastPreludeJob &job : jobs) {
+			// Re-read the account rather than capturing it: a token rotated by a
+			// peer between collection and here must not be clobbered by a stale copy.
+			const std::optional<OAuth::OAuthAccount> stored = OAuth::Accounts().Get(job.accountId);
+			OAuth::StreamProvider *provider = stored ? OAuth::Registry().Get(stored->providerId) : nullptr;
+			if (!stored || !provider) {
+				failures.push_back(json{{"destination", job.label},
+							{"reason", "the account is no longer connected"}});
+				continue;
+			}
+			OAuth::OAuthAccount acct = *stored;
+			std::string err;
+			bool ok = false;
+			try {
+				ok = job.metadataOnly
+					     ? provider->applyMetadata(acct, job.profileUuid, job.fields, true, err)
+					     : provider->ensureBroadcastReady(acct, job.profileUuid, job.fields, err);
+			} catch (const std::exception &e) {
+				err = e.what();
+			}
+			if (ok) {
+				if (job.metadataOnly) {
+					// What the session opening on the live edge reads to file what
+					// the channel was actually told. Recorded only here, where this
+					// call is known to have pushed these fields: the
+					// ensureBroadcastReady branch short-circuits on an existing
+					// broadcast, and claiming a push it did not make would put the
+					// remembered bag over the modal's own record.
+					RecordSentMetadata(job.profileUuid, job.fields);
+					recorded.push_back(job.profileUuid);
+				}
+				continue;
+			}
+			if (job.metadataOnly) {
+				// Not fatal, unlike a broadcast that could not be created: a
+				// persistent channel is streamable whatever its title says, and
+				// Twitch rejects a whole patch over one malformed tag. Refusing here
+				// would cost an unattended scheduled broadcast its airing to save it a
+				// stale title, which is the worse of the two. Worded as an attempt,
+				// not an outcome -- the go-live can still be refused or cancelled
+				// after this line.
+				HostLog("[stream] could not update the stream info for " + job.label + ": " +
+					(err.empty() ? "the metadata push failed" : err));
+				continue;
+			}
+			failures.push_back(json{{"destination", job.label},
+						{"reason", err.empty() ? "could not prepare the broadcast" : err}});
+		}
+		AsyncTask::PostToUi([failures = std::move(failures), recorded = std::move(recorded), generation] {
+			g_goLivePreludeInFlight = false;
+			if (generation != g_goLiveGeneration) {
+				// Stopped while this was in flight. Drop any broadcast the prelude
+				// managed to create out of the provider caches -- StopStreamingAll
+				// already cleared them, and repopulating them here would leave the next
+				// go-live binding to a broadcast nothing is streaming to.
+				for (const auto &entry : OAuth::Accounts().All()) {
+					if (OAuth::StreamProvider *p = OAuth::Registry().Get(entry.second.providerId)) {
+						p->clearActiveBroadcast(entry.first);
+					}
+				}
+				// The stop already swept the map, but this attempt kept pushing after
+				// that and recorded whatever landed.
+				ForgetSentMetadata(recorded);
+				HostLog("[stream] go-live prelude cancelled by a stop; not starting");
+				ObsBootstrap::Scheduler().NoteStartFailed();
+				return;
+			}
+			if (!failures.empty()) {
+				// No session is coming, so the channels this attempt pushed to have
+				// nothing left to consume their records -- and keeping them would skip
+				// those same channels on the next go-live.
+				ForgetSentMetadata(recorded);
+				// Nothing starts, including destinations that were prepared fine.
+				// Same policy the modal has always applied to a failed metadata
+				// push: going live half-configured streams at a channel whose
+				// broadcast never came up, which is worse than not going live.
+				HostLog("[stream] go-live refused: " + std::to_string(failures.size()) +
+					" destination(s) could not be prepared: " + failures.dump());
+				EmitEvent(EventNames::kStreamingStartFailed, json{{"failures", failures}});
+				// Nothing went live, so no stop edge will ever fire. This is the only
+				// place the refusal is observed, and a scheduled start that is not told
+				// keeps the entry's destinations enabled -- a manual go-live in that
+				// window would stream to them instead of the user's own.
+				ObsBootstrap::Scheduler().NoteStartFailed();
+				return;
+			}
+			StartEnabledOutputsNow();
+		});
+	});
+}
+
 } // namespace
 
 bool GoLivePreludeInFlight()
@@ -9686,143 +9812,20 @@ bool GoLivePreludeInFlight()
 // invariant holds.
 void StartStreamingAll()
 {
-	AsyncTask::PostToUi([] {
-		if (!ObsBootstrap::MultistreamAlive() || g_goLivePreludeInFlight) {
-			return;
-		}
-		std::vector<BroadcastPreludeJob> jobs = CollectBroadcastPrelude();
-		if (jobs.empty()) {
-			StartEnabledOutputsNow(); // nothing to create: unchanged, synchronous go-live
-			return;
-		}
-		g_goLivePreludeInFlight = true;
-		const uint64_t generation = ++g_goLiveGeneration;
-		AsyncTask::RunAsync([jobs = std::move(jobs), generation] {
-			json failures = json::array();
-			// What this attempt recorded, so the two branches below that end without
-			// a session can take it back out again.
-			std::vector<std::string> recorded;
-			for (const BroadcastPreludeJob &job : jobs) {
-				// Re-read the account rather than capturing it: a token rotated by a
-				// peer between collection and here must not be clobbered by a stale copy.
-				const std::optional<OAuth::OAuthAccount> stored = OAuth::Accounts().Get(job.accountId);
-				OAuth::StreamProvider *provider = stored ? OAuth::Registry().Get(stored->providerId)
-									 : nullptr;
-				if (!stored || !provider) {
-					failures.push_back(json{{"destination", job.label},
-								{"reason", "the account is no longer connected"}});
-					continue;
-				}
-				OAuth::OAuthAccount acct = *stored;
-				std::string err;
-				bool ok = false;
-				try {
-					ok = job.metadataOnly ? provider->applyMetadata(acct, job.profileUuid,
-											job.fields, true, err)
-							      : provider->ensureBroadcastReady(acct, job.profileUuid,
-											       job.fields, err);
-				} catch (const std::exception &e) {
-					err = e.what();
-				}
-				if (ok) {
-					if (job.metadataOnly) {
-						// What the session opening on the live edge reads to file
-						// what the channel was actually told. Recorded only here,
-						// where this call is known to have pushed these fields: the
-						// ensureBroadcastReady branch short-circuits on an existing
-						// broadcast, and claiming a push it did not make would put
-						// the remembered bag over the modal's own record.
-						RecordSentMetadata(job.profileUuid, job.fields);
-						recorded.push_back(job.profileUuid);
-					}
-					continue;
-				}
-				if (job.metadataOnly) {
-					// Not fatal, unlike a broadcast that could not be created: a
-					// persistent channel is streamable whatever its title says, and
-					// Twitch rejects a whole patch over one malformed tag. Refusing
-					// here would cost an unattended scheduled broadcast its airing to
-					// save it a stale title, which is the worse of the two. Worded
-					// as an attempt, not an outcome -- the go-live can still be
-					// refused or cancelled after this line.
-					HostLog("[stream] could not update the stream info for " + job.label + ": " +
-						(err.empty() ? "the metadata push failed" : err));
-					continue;
-				}
-				failures.push_back(
-					json{{"destination", job.label},
-					     {"reason", err.empty() ? "could not prepare the broadcast" : err}});
-			}
-			AsyncTask::PostToUi([failures = std::move(failures), recorded = std::move(recorded),
-					     generation] {
-				g_goLivePreludeInFlight = false;
-				if (generation != g_goLiveGeneration) {
-					// Stopped while this was in flight. Drop any broadcast the prelude
-					// managed to create out of the provider caches -- StopStreamingAll
-					// already cleared them, and repopulating them here would leave the
-					// next go-live binding to a broadcast nothing is streaming to.
-					for (const auto &entry : OAuth::Accounts().All()) {
-						if (OAuth::StreamProvider *p =
-							    OAuth::Registry().Get(entry.second.providerId)) {
-							p->clearActiveBroadcast(entry.first);
-						}
-					}
-					// The stop already swept the map, but this attempt kept
-					// pushing after that and recorded whatever landed.
-					ForgetSentMetadata(recorded);
-					HostLog("[stream] go-live prelude cancelled by a stop; not starting");
-					ObsBootstrap::Scheduler().NoteStartFailed();
-					return;
-				}
-				if (!failures.empty()) {
-					// No session is coming, so the channels this attempt did push to
-					// have nothing left to consume their records -- and keeping them
-					// would skip those same channels on the next go-live.
-					ForgetSentMetadata(recorded);
-					// Nothing starts, including destinations that were prepared fine.
-					// Same policy the modal has always applied to a failed metadata
-					// push: going live half-configured streams at a channel whose
-					// broadcast never came up, which is worse than not going live.
-					HostLog("[stream] go-live refused: " + std::to_string(failures.size()) +
-						" destination(s) could not be prepared: " + failures.dump());
-					EmitEvent(EventNames::kStreamingStartFailed, json{{"failures", failures}});
-					// Nothing went live, so no stop edge will ever fire. This is
-					// the only place the refusal is observed, and a scheduled
-					// start that is not told keeps the entry's destinations
-					// enabled -- a manual go-live in that window would stream to
-					// them instead of the user's own.
-					ObsBootstrap::Scheduler().NoteStartFailed();
-					return;
-				}
-				StartEnabledOutputsNow();
-			});
-		});
-	});
+	AsyncTask::PostToUi([] { StartStreamingAllOnUi(); });
 }
 
 void StartStreamingAllAdoptingSchedule()
 {
-	// Adoption has to land on the UI thread before StartStreamingAll's own posted work
-	// runs -- applyEntry (inside AdoptImminentArmed) flips the output bindings
-	// CollectBroadcastPrelude reads, and adopting after that prelude has already
-	// collected them would apply the routing to nothing. Posted rather than called
-	// directly because ScheduleRunner is UI-thread-only and one of the three callers
-	// (the go-live hotkey) runs on the libobs hotkey thread; the tray's menu handler
-	// and streaming.start are both already on TID_UI, where PostToUi runs inline. The
-	// ordering holds either way -- inline finishes before the next statement, and two
-	// posts from one thread land on the UI queue in the order they were made.
+	// Adoption and the start it belongs to are ONE task -- see the threading note on the
+	// declaration for what interleaves when they are two.
 	AsyncTask::PostToUi([] {
-		// A start made while a prelude is in flight is dropped by StartStreamingAll,
-		// so adopting would rewrite the routing for a go-live that never happens --
-		// and the prelude already running starts whatever is enabled when it lands,
-		// which would then be the entry's destinations, for which it created no
-		// broadcast and pushed no metadata.
 		if (GoLivePreludeInFlight()) {
 			return;
 		}
 		ObsBootstrap::Scheduler().AdoptImminentArmed();
+		StartStreamingAllOnUi();
 	});
-	StartStreamingAll();
 }
 
 void StopStreamingAll()

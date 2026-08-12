@@ -210,15 +210,15 @@ void StopStreamingAll();
 // fact, it. The Go Live modal does NOT go through here: what the user just
 // configured on screen is what airs, never overridden by a schedule behind it.
 //
-// Adoption itself has to run on the UI thread (ScheduleRunner is UI-thread-only,
-// like the engine state StartStreamingAll's own prelude reads), so it is posted
-// rather than called directly: of the three callers only the go-live hotkey is off
-// TID_UI, and the other two would not need the post at all. It runs before
-// StartStreamingAll's own posted work either way -- PostToUi runs inline for a
-// caller already on TID_UI, and two posts from one thread land on the UI queue in
-// the order they were made -- which matters because applyEntry (inside adoption)
-// flips the output bindings that CollectBroadcastPrelude (inside StartStreamingAll)
-// reads, and adopting after that collection would apply the routing to nothing.
+// Adoption and the start it belongs to run as ONE posted task on the UI thread, not
+// two. Posted at all because ScheduleRunner is UI-thread-only (like the engine state
+// the prelude reads) and the go-live hotkey runs on the libobs hotkey thread; posted
+// ONCE because applyEntry (inside adoption) flips the output bindings that
+// CollectBroadcastPrelude reads, so anything landing in between goes live against a
+// routing nothing prepared for it. As two enqueues an unrelated start could interleave:
+// it would collect the old bindings under the new routing, and its own start would then
+// be swallowed as a duplicate prelude, leaving this entry's destinations streaming with
+// no broadcast created and no metadata pushed.
 //
 // Adoption is skipped outright while a prelude is in flight: that start is dropped,
 // so rewriting the routing for it would only hand the running prelude a set of

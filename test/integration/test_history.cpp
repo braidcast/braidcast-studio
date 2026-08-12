@@ -1302,6 +1302,44 @@ static void test_runner_refuses_to_start_while_something_is_streaming(void **sta
 	assert_int_equal(f.applyCalls, 1);
 }
 
+// The same refusal, but the routing is taken AFTER the entry armed clean. That is the
+// only shape a go-live prelude can take -- one begins in the middle of an arm window
+// and runs for seconds -- and it is the ordering the refusal has to survive: nothing is
+// latched at arm time, so RefreshArmability running ahead of StartIfDue on the same
+// tick is what puts the reason there in time.
+//
+// applyAttempts rather than applyCalls: the damage this prevents is the apply itself,
+// which rewrites the routing a running go-live already snapshotted. "Never asked" and
+// "asked and was refused" are the same applyCalls and very different outcomes.
+static void test_runner_refuses_a_start_when_the_routing_is_taken_mid_window(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_taken_mid_window.db");
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntry(f, startsAt, true);
+
+	f.clock = startsAt - History::kArmLeadMs;
+	f.runner.Tick();
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kArmed);
+	assert_true(f.runner.BlockReason(id).empty());
+
+	f.streaming = true;
+	f.clock = startsAt;
+	f.runner.Tick();
+	assert_int_equal(f.applyAttempts, 0);
+	assert_int_equal(f.goLiveCalls, 0);
+	assert_string_equal(f.runner.BlockReason(id).c_str(), History::kAlreadyStreamingReason);
+
+	// The occurrence never asked, so nothing latched: it is still free to start once
+	// the routing is its own again inside the grace window.
+	f.streaming = false;
+	f.clock = startsAt + 15'000;
+	f.runner.Tick();
+	assert_int_equal(f.applyCalls, 1);
+	assert_int_equal(f.goLiveCalls, 1);
+}
+
 // An apply that refuses is a refused start, not a start onto whatever was there.
 // The reason is not latched: the next tick asks again, so a blocker that clears
 // inside the grace window still gets its broadcast.
@@ -1917,9 +1955,10 @@ static void test_runner_adopt_imminent_armed_loads_it_for_the_golive(void **stat
 	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kLive);
 }
 
-// A cancelled countdown must not be resurrected by an unrelated manual press. Once
-// cancelled the row is not armed, so ImminentArmedId finds nothing to adopt --
-// exactly the outcome the occurrence's own cancelled flag independently guards.
+// A cancelled countdown must not be resurrected by an unrelated manual press.
+// Cancelling puts the row back to `planned` and forgets the arm, so ImminentArmedId is
+// what has nothing to hand back -- AdoptImminentArmed carries no cancelled-occurrence
+// check of its own, and this is what pins the gate that does the refusing.
 static void test_runner_adopt_skips_a_cancelled_occurrence(void **state)
 {
 	(void)state;
@@ -2551,6 +2590,7 @@ int main(void)
 		cmocka_unit_test(test_runner_guards_a_manually_started_entry),
 		cmocka_unit_test(test_runner_refuses_a_start_while_another_is_on_its_way_up),
 		cmocka_unit_test(test_runner_refuses_to_start_while_something_is_streaming),
+		cmocka_unit_test(test_runner_refuses_a_start_when_the_routing_is_taken_mid_window),
 		cmocka_unit_test(test_runner_refuses_a_start_the_apply_refused),
 		cmocka_unit_test(test_runner_pushes_the_change_when_an_apply_refusal_blocks_a_start),
 		cmocka_unit_test(test_runner_refuses_cancel_once_the_start_is_requested),

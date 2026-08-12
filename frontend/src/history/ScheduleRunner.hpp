@@ -181,6 +181,14 @@ public:
 
 	bool IsCountdownCanceled(const std::string &id) const;
 
+	// Whether this occurrence has ever asked to go live, which is not the same as
+	// IsStartInFlight: the flag outlives the request, and an occurrence whose start was
+	// given up on must not be started or adopted a second time. Exposed because an
+	// entry stays `armed` from the moment the runner claims it until it reports live,
+	// so this is the only thing that separates "waiting to start" from "already
+	// starting" for a client deciding whether to still offer the entry.
+	bool HasRequestedStart(const std::string &id) const;
+
 	// Whether this entry's broadcast is under way -- either already live, or a start
 	// asked for and not yet reported. While it answers true the entry is committed:
 	// it cannot be cancelled, it cannot be deleted, its configuration is not put
@@ -276,6 +284,11 @@ private:
 	bool SetBlockReason(const std::string &id, const std::string &reason);
 	void SettleApplied();
 	void RevertApplied();
+	// armedIds_ membership, owned here rather than open-coded per call site: an entry
+	// may reach the list from the clock or from StartNow, and a duplicate would have
+	// ForgetArmed leave one copy behind.
+	bool IsArmed(const std::string &id) const;
+	void RememberArmed(const std::string &id);
 	void ForgetArmed(const std::string &id);
 	// The armed entry whose start comes first, which is the one a broadcast started
 	// by hand belongs to. Reads the rows rather than assuming arm order: an entry

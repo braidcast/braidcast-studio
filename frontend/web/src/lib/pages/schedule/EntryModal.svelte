@@ -185,6 +185,7 @@
       autoStart,
       state: "planned",
       countdownCanceled: false,
+      startRequested: false,
       blockReason: "",
       destinations: draftDestinations(),
     };

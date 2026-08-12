@@ -1001,6 +1001,10 @@ export interface ScheduleEntryInfo {
    * without it a cancel is indistinguishable from never having been armed.
    * In-memory and per app run: it is a fact about this session, not the plan. */
   countdownCanceled: boolean;
+  /** The runner has claimed this occurrence and asked it to go live. The entry stays
+   * `armed` until it reports live, so this is what separates "waiting to start" from
+   * "already starting" -- an offer to apply it by hand is stale once this is true. */
+  startRequested: boolean;
   /** Why this occurrence cannot go live (no enabled destination, a deleted stream
    * profile, a disconnected account), or "" when nothing is wrong. An auto-start
    * that would broadcast to nowhere refuses and says this instead. */
