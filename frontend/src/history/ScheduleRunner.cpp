@@ -571,9 +571,10 @@ bool ScheduleRunner::IsCountdownCanceled(const std::string &id) const
 bool ScheduleRunner::IsStartInFlight(const std::string &id) const
 {
 	// Checked before the occurrence, and deliberately not gated on startRequested:
-	// an entry the user started by hand during its armed window is live without
-	// this runner ever having asked for it, and deleting that entry mid-broadcast
-	// nulls the running session's schedule_id.
+	// a broadcast runs for as long as it runs, which outlasts the kStartInFlightMs
+	// allowance below -- that bounds a request nothing ever reported, not a stream
+	// that is up. Deleting a live entry mid-broadcast nulls the running session's
+	// schedule_id.
 	if (!id.empty() && liveId_ == id) {
 		return true;
 	}
@@ -672,6 +673,15 @@ void ScheduleRunner::AdoptImminentArmed()
 	// is not this go-live's to claim either.
 	const auto it = occurrences_.find(id);
 	if (it != occurrences_.end() && (it->second.canceled || it->second.startRequested)) {
+		return;
+	}
+	// The other two PrepareStart callers gate themselves before reaching it; this one
+	// has to do the same. PrepareStart opens with RevertApplied(), which drops
+	// appliedId_ whatever happens, while ScheduledSetup refuses its own Apply outright
+	// once something is streaming -- so a broadcast already running would cost an
+	// applied entry its bookkeeping and strand that entry's routing changes with
+	// nothing left that knows to put them back.
+	if (RoutingHeldElsewhere(id)) {
 		return;
 	}
 	const std::unique_ptr<ScheduleEntry> entry = store_->Get(id);

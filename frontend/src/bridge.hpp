@@ -211,13 +211,18 @@ void StopStreamingAll();
 // configured on screen is what airs, never overridden by a schedule behind it.
 //
 // Adoption itself has to run on the UI thread (ScheduleRunner is UI-thread-only,
-// like the engine state StartStreamingAll's own prelude reads), and this can be
-// called from the libobs hotkey thread or a win32 menu handler, so it is posted
-// rather than called directly. It runs before StartStreamingAll's own posted work:
-// both posts land on the same UI task queue in the order they were made, and
-// applyEntry (inside adoption) has to flip the output bindings that
-// CollectBroadcastPrelude (inside StartStreamingAll) reads before that prelude
-// collects them.
+// like the engine state StartStreamingAll's own prelude reads), so it is posted
+// rather than called directly: of the three callers only the go-live hotkey is off
+// TID_UI, and the other two would not need the post at all. It runs before
+// StartStreamingAll's own posted work either way -- PostToUi runs inline for a
+// caller already on TID_UI, and two posts from one thread land on the UI queue in
+// the order they were made -- which matters because applyEntry (inside adoption)
+// flips the output bindings that CollectBroadcastPrelude (inside StartStreamingAll)
+// reads, and adopting after that collection would apply the routing to nothing.
+//
+// Adoption is skipped outright while a prelude is in flight: that start is dropped,
+// so rewriting the routing for it would only hand the running prelude a set of
+// destinations it prepared nothing for.
 void StartStreamingAllAdoptingSchedule();
 
 // True while a go-live prelude is running. StartStreamingAll silently drops a start

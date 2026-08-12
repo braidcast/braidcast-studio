@@ -391,6 +391,12 @@ bool MethodGetStreamingState(const json & /*params*/, json &result, std::string 
 	return true;
 }
 
+// Said by every entry point that refuses a start rather than letting StartStreamingAll
+// swallow it. A swallowed start is not harmless to these callers: each has already
+// rewritten something -- metadata, routing, or an occurrence's "has asked" flag -- by
+// the time it would be dropped.
+constexpr const char *kGoLiveAlreadyStarting = "a go-live is already starting; wait for it to finish or stop it";
+
 // streaming.start/stop drive the fan-out engine: start every enabled binding /
 // stop everything. `active` reports whether anything is live afterward; the
 // streaming.changed push proves the server->client event end-to-end (the engine
@@ -410,7 +416,7 @@ bool MethodStreamingStart(const json &params, json &result, std::string &error)
 	// metadata it just recorded waiting for a session no one will open. Refuse instead,
 	// so the caller's own failure path runs.
 	if (GoLivePreludeInFlight()) {
-		error = "a go-live is already starting; wait for it to finish or stop it";
+		error = kGoLiveAlreadyStarting;
 		return false;
 	}
 	if (JsonUtil::Bool(params, "adoptSchedule", true)) {
@@ -7716,6 +7722,16 @@ bool MethodScheduleStartNow(const json &params, json &result, std::string &error
 	if (!RequireStr(params, "schedule.startNow", "id", id, error)) {
 		return false;
 	}
+	// Refused for the same reason streaming.start refuses: StartStreamingAll drops a
+	// start issued while a prelude is in flight, but StartNow gets there only after it
+	// has already rewritten the routing and marked the occurrence as having asked. The
+	// entry would then read as started with no broadcast behind it, and the prelude
+	// already running would come up on the entry's destinations instead of the ones it
+	// prepared.
+	if (GoLivePreludeInFlight()) {
+		error = kGoLiveAlreadyStarting;
+		return false;
+	}
 	if (!ObsBootstrap::Scheduler().StartNow(id, error)) {
 		return false;
 	}
@@ -9786,16 +9802,26 @@ void StartStreamingAll()
 
 void StartStreamingAllAdoptingSchedule()
 {
-	// Adoption has to land on the UI thread before StartStreamingAll's own posted
-	// work runs -- applyEntry (inside AdoptImminentArmed) flips the output bindings
+	// Adoption has to land on the UI thread before StartStreamingAll's own posted work
+	// runs -- applyEntry (inside AdoptImminentArmed) flips the output bindings
 	// CollectBroadcastPrelude reads, and adopting after that prelude has already
-	// collected them would apply the routing to nothing. Both callers of this
-	// function are off the UI thread (the libobs hotkey thread, a win32 menu
-	// handler), so this cannot call the scheduler directly -- ScheduleRunner is
-	// UI-thread-only -- and instead posts, same as StartStreamingAll itself does.
-	// The two posts land on the same UI task queue in the order they were made
-	// here, which is what keeps the ordering.
-	AsyncTask::PostToUi([] { ObsBootstrap::Scheduler().AdoptImminentArmed(); });
+	// collected them would apply the routing to nothing. Posted rather than called
+	// directly because ScheduleRunner is UI-thread-only and one of the three callers
+	// (the go-live hotkey) runs on the libobs hotkey thread; the tray's menu handler
+	// and streaming.start are both already on TID_UI, where PostToUi runs inline. The
+	// ordering holds either way -- inline finishes before the next statement, and two
+	// posts from one thread land on the UI queue in the order they were made.
+	AsyncTask::PostToUi([] {
+		// A start made while a prelude is in flight is dropped by StartStreamingAll,
+		// so adopting would rewrite the routing for a go-live that never happens --
+		// and the prelude already running starts whatever is enabled when it lands,
+		// which would then be the entry's destinations, for which it created no
+		// broadcast and pushed no metadata.
+		if (GoLivePreludeInFlight()) {
+			return;
+		}
+		ObsBootstrap::Scheduler().AdoptImminentArmed();
+	});
 	StartStreamingAll();
 }
 

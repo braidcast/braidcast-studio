@@ -5,6 +5,7 @@
     type OAuthProvider,
     type OAuthProviderField,
     type OAuthStatus,
+    type ScheduleEntryInfo,
     type StreamMeta,
     type StreamProfileInfo,
   } from "$lib/api/bridge";
@@ -19,6 +20,7 @@ import { EV } from "$lib/utils/eventNames";
     resolveRequiredEnum,
   } from "$lib/dialogs/golive/fieldValue";
   import { openOAuthConnect, isOAuthConnecting } from "$lib/dialogs/oauthConnectOpener.svelte";
+  import { MS_MIN } from "$lib/pages/schedule/layout";
   import { canvasStore } from "$lib/stores/canvasStore.svelte";
   import {
     destinationIdentityStore,
@@ -26,6 +28,7 @@ import { EV } from "$lib/utils/eventNames";
   } from "$lib/stores/destinationIdentityStore.svelte";
   import { goLivePref, setGoLivePref } from "$lib/stores/goLivePrefStore.svelte";
   import { outputBindingStore } from "$lib/stores/outputBindingStore.svelte";
+  import { scheduleStore } from "$lib/stores/scheduleStore.svelte";
   import { streamProfileStore } from "$lib/stores/streamProfileStore.svelte";
   import { oauthStore, isStaleToken } from "$lib/stores/oauthStore.svelte";
   import { showToast } from "$lib/stores/toastStore.svelte";
@@ -686,6 +689,112 @@ import { EV } from "$lib/utils/eventNames";
     return `${chans} · ${streams} · all ready`;
   });
 
+  // "Use this schedule" banner. What is on screen is what airs (see confirm()'s
+  // adoptSchedule: false) -- this only OFFERS the same load AdoptImminentArmed
+  // would otherwise perform silently on the hotkey/tray/no-ask paths, so a go-live
+  // opened during an entry's arm window is not stuck choosing between the two
+  // blind. Ticks on its own timer because `entries` only refreshes on
+  // schedule.changed, and the minutes-remaining text has to age between those.
+  let now = $state(Date.now());
+  type ApplyState = "idle" | "applying" | "error";
+  let applyState = $state<ApplyState>("idle");
+  // The entry a previous click already loaded into this modal. Compared against
+  // imminentEntry's own id rather than a bare boolean, so the banner reverts to
+  // offering again if a different entry becomes the imminent one mid-session.
+  let appliedEntryId = $state<string | null>(null);
+
+  // The soonest entry the HOST has itself armed. Read off ScheduleEntryInfo.state
+  // rather than re-deriving the arm window from startsAt: `armed` is the runner's
+  // own kArmLeadMs decision (ScheduleRunner.hpp), so this can never fall out of
+  // step with it, and it already excludes a countdown the user cancelled --
+  // cancelling puts the row back to `planned`.
+  const imminentEntry = $derived.by<ScheduleEntryInfo | null>(() => {
+    if (goLiveModal.mode !== "golive") {
+      return null;
+    }
+    const armed = scheduleStore.entries.filter((e) => e.state === "armed");
+    if (armed.length === 0) {
+      return null;
+    }
+    return armed.reduce((soonest, e) => (e.startsAt < soonest.startsAt ? e : soonest));
+  });
+  const scheduleApplied = $derived(appliedEntryId !== null && appliedEntryId === imminentEntry?.id);
+
+  function startsInLabel(startsAt: number, nowMs: number): string {
+    const min = Math.round((startsAt - nowMs) / MS_MIN);
+    return min <= 0 ? "starts any moment" : `starts in ${min} min`;
+  }
+
+  // Loads one entry's destinations and metadata into the modal's own state, the
+  // same shape ScheduledSetup::Apply gives the host: the enabled routing becomes
+  // EXACTLY what the entry names (one binding per destination, the first bound
+  // canvas), and only the destinations it lists carry metadata. Everything landed
+  // here is still just the modal's state -- Go Live still sends adoptSchedule:
+  // false, so this is an edit the user made, not the entry going live itself.
+  async function applySchedule(entry: ScheduleEntryInfo): Promise<void> {
+    if (applyState === "applying") {
+      return;
+    }
+    applyState = "applying";
+    try {
+      const wantedProfileIds = [...new Set(entry.destinations.map((d) => d.profileId).filter((id) => id !== ""))];
+      const wantedUuids: string[] = [];
+      for (const id of wantedProfileIds) {
+        const b = bindings.find((bd) => bd.profileUuid === id);
+        if (b) {
+          wantedUuids.push(b.uuid);
+        }
+      }
+      const toDisable = bindings.filter((b) => b.enabled && !wantedUuids.includes(b.uuid)).map((b) => b.uuid);
+      const toEnable = wantedUuids.filter((uuid) => !bindings.find((b) => b.uuid === uuid)?.enabled);
+      // Disable before enable, mirroring the host: enabling a profile still held by
+      // another binding would be refused by the single-live-stream rule while the
+      // old one still holds it.
+      if (toDisable.length) {
+        await outputBindingStore.setEnabled(toDisable, false);
+      }
+      if (toEnable.length) {
+        await outputBindingStore.setEnabled(toEnable, true);
+      }
+
+      for (const d of entry.destinations) {
+        if (!d.profileId) {
+          continue;
+        }
+        // Same emptiness rule as ScheduledSetup::MetadataFields: a field the entry
+        // left blank changes nothing rather than blanking out an existing value.
+        if (d.title !== "") {
+          setStreamField(d.profileId, "title", d.title);
+        }
+        if (d.categoryId !== "") {
+          setStreamField(d.profileId, "category", { id: d.categoryId, name: d.category });
+        }
+        if (d.tags.length > 0) {
+          setStreamField(d.profileId, "tags", [...d.tags]);
+        }
+        const bag = streamOverrides[d.profileId];
+        if (bag) {
+          const profile = profiles.find((p) => p.uuid === d.profileId);
+          const status = profile ? statuses.find((s) => s.accountId === profile.accountId) : undefined;
+          const provider = profile ? resolveProvider(profile, status) : null;
+          streamOverrideOn[d.profileId] = hasOverrides(provider, bag);
+        }
+      }
+
+      // Newly-armed channels have had no chance to prefill their channel-level
+      // defaults (arming here bypasses toggleArmed's own prefill call); this fills
+      // those in without disturbing what the entry itself just set, guarded the
+      // same way every other prefill call is.
+      void prefill();
+      appliedEntryId = entry.id;
+    } catch (e) {
+      applyState = "error";
+      showToast("Couldn't load the scheduled entry", (e as Error).message);
+      return;
+    }
+    applyState = "idle";
+  }
+
   // Resolve effective values through the layers and push them: a stream override wins over
   // the channel default, which wins over the nearest inherit layer the field's scope names
   // (a field scoped to the channel has none). Empty fields are never emitted at any
@@ -879,6 +988,15 @@ import { EV } from "$lib/utils/eventNames";
     let active = true;
     const offOauth = oauthStore.subscribe();
     destinationIdentityStore.start();
+    // Not in the whenReady gate below: a missing schedule read must not hold the
+    // whole modal open the way a missing live-state read does. The banner is an
+    // offer, not a precondition, so it simply appears once this settles.
+    scheduleStore.start();
+    // "starts in N min" ages between schedule.changed pushes (the runner only
+    // emits on state transitions, not per tick), so this modal ticks its own copy
+    // rather than pushing the imprecision onto the store. Coarse: the banner never
+    // needs better than whole minutes.
+    const tickId = setInterval(() => (now = Date.now()), 30_000);
     // Gate prefill on every data source being ready so connectedChannels is populated
     // before the best-effort get runs (whenReady starts each store). The canvas list is
     // in the gate because the card's canvas labels now resolve through it rather than
@@ -919,6 +1037,7 @@ import { EV } from "$lib/utils/eventNames";
       offOauth();
       off();
       offMeta();
+      clearInterval(tickId);
     };
   });
 
@@ -1171,6 +1290,32 @@ import { EV } from "$lib/utils/eventNames";
           <button type="button" class="rbtn" disabled={liveRetrying} onclick={() => void retryLiveState()}>
             {liveRetrying ? "Retrying…" : "Retry"}
           </button>
+        </div>
+      {/if}
+
+      {#if imminentEntry}
+        {@const entry = imminentEntry}
+        <!-- Offer, not a warning and not an auto-apply: Go Live still sends
+             adoptSchedule: false regardless of this. Same top-of-body shape as
+             .statewarn above, in the accent tone instead of warn since nothing is
+             wrong here. -->
+        <div class="schedbar">
+          <span class="msg">
+            <b>{entry.title}</b> {startsInLabel(entry.startsAt, now)} — use its destinations and stream info for
+            this go-live?
+          </span>
+          {#if scheduleApplied}
+            <span class="schedok"><Icon name="check" size={11} />Applied</span>
+          {:else}
+            <button
+              type="button"
+              class="schedbtn"
+              disabled={applyState === "applying"}
+              onclick={() => void applySchedule(entry)}
+            >
+              {applyState === "applying" ? "Loading…" : "Use this schedule"}
+            </button>
+          {/if}
         </div>
       {/if}
 
@@ -1566,6 +1711,60 @@ import { EV } from "$lib/utils/eventNames";
     line-height: 1.45;
     color: var(--color-warn);
     overflow-wrap: anywhere;
+  }
+  /* Scheduled-entry banner: same shape as .statewarn, accent-toned since this is an
+     offer rather than a problem. */
+  .schedbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 11px;
+    margin-bottom: 12px;
+    border: var(--border-weight) solid color-mix(in srgb, var(--color-accent) 45%, var(--color-border));
+    background: color-mix(in srgb, var(--color-accent) 7%, var(--color-surface));
+  }
+  .schedbar .msg {
+    font-size: 11px;
+    line-height: 1.45;
+    color: var(--color-text);
+    overflow-wrap: anywhere;
+  }
+  .schedbar .msg b {
+    color: var(--color-accent);
+    font-weight: 600;
+  }
+  .schedbtn {
+    height: 28px;
+    padding: 0 11px;
+    margin-left: auto;
+    border: var(--border-weight) solid var(--color-accent);
+    background: var(--color-surface);
+    color: var(--color-accent);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    flex: 0 0 auto;
+  }
+  .schedbtn:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  }
+  .schedbtn:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  /* Stands in for the button once applied, so the offer never reads as untaken. */
+  .schedok {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    margin-left: auto;
+    flex: 0 0 auto;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--color-accent);
   }
   /* Body wrapper: no padding of its own (Modal's .modal-body owns the scroll + pad).
      Field inputs are capped to a readable width wherever they render -- the shared

@@ -672,6 +672,10 @@ struct RunnerFixture {
 	int64_t clock = 0;
 	int goLiveCalls = 0;
 	int changedCalls = 0;
+	// Every call the runner made to the injected apply, and the subset of those that
+	// succeeded. A refused apply still counts as an attempt, so "the runner never even
+	// asked" stays provable against a fixture whose apply is refusing everything.
+	int applyAttempts = 0;
 	int applyCalls = 0;
 	int revertCalls = 0;
 	// What the injected apply answers, and what a broadcast the runner did not
@@ -702,6 +706,7 @@ static void OpenRunner(RunnerFixture &f, const char *name)
 		return f.streaming;
 	};
 	f.runner.applyEntry = [&f](const std::vector<History::ScheduleDestination> &destinations, std::string &reason) {
+		f.applyAttempts++;
 		if (!f.applyOk) {
 			reason = f.applyReason;
 			return false;
@@ -808,7 +813,7 @@ static void test_runner_cancel_disarms_only_this_occurrence(void **state)
 	assert_true(f.runner.CancelCountdown(id, error));
 	// Nothing to put back: arming never touched the routing, so a cancelled
 	// countdown leaves the user's configuration exactly as they left it.
-	assert_int_equal(f.applyCalls, 0);
+	assert_int_equal(f.applyAttempts, 0);
 	assert_int_equal(f.revertCalls, 0);
 
 	// Back to planned and flagged, which is how the UI tells a cancelled
@@ -1019,12 +1024,12 @@ static void test_runner_applies_at_zero_not_at_arm(void **state)
 	f.clock = startsAt - History::kArmLeadMs;
 	f.runner.Tick();
 	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kArmed);
-	assert_int_equal(f.applyCalls, 0);
+	assert_int_equal(f.applyAttempts, 0);
 
 	// Still nothing through the countdown, a minute from the start.
 	f.clock = startsAt - History::kCountdownLeadMs;
 	f.runner.Tick();
-	assert_int_equal(f.applyCalls, 0);
+	assert_int_equal(f.applyAttempts, 0);
 
 	f.clock = startsAt;
 	f.runner.Tick();
@@ -1287,7 +1292,7 @@ static void test_runner_refuses_to_start_while_something_is_streaming(void **sta
 	f.clock = startsAt;
 	f.runner.Tick();
 	assert_int_equal(f.goLiveCalls, 0);
-	assert_int_equal(f.applyCalls, 0);
+	assert_int_equal(f.applyAttempts, 0);
 
 	// Stopped in time: the refusal clears and the entry still gets its start.
 	f.streaming = false;
@@ -1314,6 +1319,9 @@ static void test_runner_refuses_a_start_the_apply_refused(void **state)
 	f.clock = startsAt;
 	f.runner.Tick();
 	assert_int_equal(f.goLiveCalls, 0);
+	// Refused by the apply itself rather than by a gate that never reached it.
+	assert_int_equal(f.applyAttempts, 1);
+	assert_int_equal(f.applyCalls, 0);
 	assert_string_equal(f.runner.BlockReason(id).c_str(), "the routing could not be loaded");
 
 	f.applyOk = true;
@@ -1321,6 +1329,35 @@ static void test_runner_refuses_a_start_the_apply_refused(void **state)
 	f.runner.Tick();
 	assert_int_equal(f.goLiveCalls, 1);
 	assert_true(f.runner.BlockReason(id).empty());
+}
+
+// The reason a refused apply leaves behind is something schedule.list reports, so the
+// tick that refuses has to say the tick changed something -- otherwise the chip shows
+// an entry whose start time passed and says nothing about why until something else
+// happens to push. Nothing else on this tick reports a change: the arm already
+// happened, the row does not move, and the armability pass finds nothing wrong with
+// the entry, so the push can only have come from the refusal itself.
+static void test_runner_pushes_the_change_when_an_apply_refusal_blocks_a_start(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_apply_refusal_pushes.db");
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntry(f, startsAt, true);
+	f.applyOk = false;
+
+	f.clock = startsAt - 60'000;
+	f.runner.Tick();
+	assert_int_equal(f.changedCalls, 1); // the arm
+	assert_true(f.runner.BlockReason(id).empty());
+
+	f.clock = startsAt;
+	f.runner.Tick();
+	assert_int_equal(f.applyAttempts, 1);
+	assert_int_equal(f.applyCalls, 0);
+	assert_string_equal(f.runner.BlockReason(id).c_str(), "the routing could not be loaded");
+	assert_int_equal(f.changedCalls, 2);
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kArmed);
 }
 
 // Cancelling a countdown means "do not start", never "stop the broadcast". Once
@@ -1435,7 +1472,7 @@ static void test_runner_lets_go_of_a_deleted_armed_entry(void **state)
 	// adopt. Asked through the adopt path rather than ActiveEntryId, which answers
 	// empty for a merely-armed entry either way and so could not tell the two apart.
 	f.runner.AdoptImminentArmed();
-	assert_int_equal(f.applyCalls, 0);
+	assert_int_equal(f.applyAttempts, 0);
 	assert_int_equal(f.revertCalls, 0);
 }
 
@@ -1465,7 +1502,7 @@ static void test_runner_disarms_an_entry_moved_out_of_its_window(void **state)
 	// difference the old ActiveEntryId assertion used to catch before a merely-armed
 	// entry stopped being claimed on its own.
 	f.runner.AdoptImminentArmed();
-	assert_int_equal(f.applyCalls, 0);
+	assert_int_equal(f.applyAttempts, 0);
 	// Arming loaded nothing, so a disarm has nothing to put back.
 	assert_int_equal(f.revertCalls, 0);
 }
@@ -1616,7 +1653,7 @@ static void test_runner_start_now_refuses_while_streaming(void **state)
 	assert_false(f.runner.StartNow(id, error));
 	assert_string_equal(error.c_str(), History::kAlreadyStreamingReason);
 	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kPlanned);
-	assert_int_equal(f.applyCalls, 0);
+	assert_int_equal(f.applyAttempts, 0);
 	assert_int_equal(f.goLiveCalls, 0);
 }
 
@@ -1662,14 +1699,169 @@ static void test_runner_start_now_propagates_an_apply_refusal(void **state)
 	std::string error;
 	assert_false(f.runner.StartNow(id, error));
 	assert_string_equal(error.c_str(), "the routing could not be loaded");
+	// It got as far as asking: the refusal reported is the apply's own, not a gate
+	// upstream of it that never reached the routing at all.
+	assert_int_equal(f.applyAttempts, 1);
 	assert_int_equal(f.applyCalls, 0);
 	assert_int_equal(f.goLiveCalls, 0);
 	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kArmed);
 }
 
+// A start that came back refused and was then started again by hand. The occurrence's
+// failed flag has to go with the rest of what the clock decided: left set, the new
+// request reads as not in flight, and everything the in-flight window holds off lets
+// go at once -- cancelling stops refusing it, the missed sweep settles the row under
+// it, and the settle puts the routing back while the prelude is still working.
+static void test_runner_start_now_clears_a_failed_start(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_start_now_after_failure.db");
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntry(f, startsAt, true);
+
+	f.clock = startsAt - 60'000;
+	f.runner.Tick();
+	f.clock = startsAt;
+	f.runner.Tick();
+	assert_int_equal(f.goLiveCalls, 1);
+
+	f.runner.NoteStartFailed();
+	assert_false(f.runner.IsStartInFlight(id));
+	assert_int_equal(f.revertCalls, 1);
+
+	std::string error;
+	assert_true(f.runner.StartNow(id, error));
+	assert_int_equal(f.applyCalls, 2);
+	assert_int_equal(f.goLiveCalls, 2);
+	assert_true(f.runner.IsStartInFlight(id));
+
+	// Committed again, so everything that keys off the in-flight window holds.
+	assert_false(f.runner.CancelCountdown(id, error));
+	f.clock = startsAt + History::kMissedGraceMs + 1000;
+	f.runner.Tick();
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kArmed);
+	assert_int_equal(f.revertCalls, 1);
+}
+
+// A settled row is not a start waiting to happen. Without the refusal StartNow would
+// arm a finished entry and go live on it again, filing a second broadcast as the same
+// occurrence -- and the in-flight refusal above it cannot stand in, since a broadcast
+// that has already ended is not in flight.
+static void test_runner_start_now_refuses_a_settled_entry(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_start_now_settled.db");
+	const int64_t startsAt = 10'000'000;
+	const std::string done = SeedEntry(f, startsAt, true);
+
+	f.clock = startsAt - 60'000;
+	f.runner.Tick();
+	f.clock = startsAt;
+	f.runner.Tick();
+	f.streaming = true;
+	f.runner.NoteWentLive();
+	f.streaming = false;
+	f.runner.NoteStoppedStreaming();
+	assert_string_equal(f.store.Get(done)->state.c_str(), History::ScheduleState::kDone);
+	// The broadcast is over, so the in-flight refusal above this one has nothing to
+	// say: what refuses is the settled row.
+	assert_false(f.runner.IsStartInFlight(done));
+
+	std::string error;
+	assert_false(f.runner.StartNow(done, error));
+	assert_string_equal(error.c_str(), "that entry is done and cannot be started");
+	assert_string_equal(f.store.Get(done)->state.c_str(), History::ScheduleState::kDone);
+	assert_int_equal(f.applyAttempts, 1);
+	assert_int_equal(f.goLiveCalls, 1);
+
+	// The same refusal for a row settled as cancelled rather than run.
+	const std::string canceled = SeedEntry(f, startsAt + 60'000, false);
+	assert_true(f.store.SetState(canceled, History::ScheduleState::kCanceled));
+	assert_false(f.runner.StartNow(canceled, error));
+	assert_string_equal(error.c_str(), "that entry is canceled and cannot be started");
+	assert_string_equal(f.store.Get(canceled)->state.c_str(), History::ScheduleState::kCanceled);
+	assert_int_equal(f.applyAttempts, 1);
+	assert_int_equal(f.goLiveCalls, 1);
+}
+
+// A row reading `live` that this runner is not holding -- one left behind by a process
+// that went away mid-broadcast and was read back from the database, or one from before
+// an attach cleared what the runner knew. The in-flight refusal keys off the live id
+// the runner holds, not off the row, so it has nothing to say about this one: without
+// the state check StartNow would arm a row that already reads live and start a second
+// broadcast against it.
+static void test_runner_start_now_refuses_a_live_entry(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_start_now_live_row.db");
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntry(f, startsAt, false);
+	assert_true(f.store.SetState(id, History::ScheduleState::kLive));
+
+	f.clock = startsAt - 60 * 60 * 1000;
+	assert_false(f.runner.IsStartInFlight(id));
+
+	std::string error;
+	assert_false(f.runner.StartNow(id, error));
+	assert_string_equal(error.c_str(), "that entry is live and cannot be started");
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kLive);
+	assert_int_equal(f.applyAttempts, 0);
+	assert_int_equal(f.goLiveCalls, 0);
+}
+
+// Broadcasting to nowhere is worse than not broadcasting, on the manual path as much
+// as on the clock's. Nothing else refuses this one: StartNow clears the occurrence's
+// own block reason on the way through, so its armability check is all that stands
+// between an entry with no destinations and a go-live.
+static void test_runner_start_now_refuses_an_entry_with_no_destinations(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_start_now_no_dests.db");
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntry(f, startsAt, false, false);
+
+	f.clock = startsAt - 60 * 60 * 1000;
+	std::string error;
+	assert_false(f.runner.StartNow(id, error));
+	assert_string_equal(error.c_str(), "this entry has no destinations");
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kPlanned);
+	assert_int_equal(f.applyAttempts, 0);
+	assert_int_equal(f.goLiveCalls, 0);
+}
+
+// The same refusal for destinations that exist but cannot carry an output right now,
+// which is the reading that changes minute to minute -- an account that disconnected
+// since the entry was planned.
+static void test_runner_start_now_refuses_when_no_destination_can_go_live(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_start_now_unarmable.db");
+	f.runner.canArm = [](const std::string &, std::string &reason) {
+		reason = "'Main' is not connected";
+		return false;
+	};
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntry(f, startsAt, false);
+
+	f.clock = startsAt - 60 * 60 * 1000;
+	std::string error;
+	assert_false(f.runner.StartNow(id, error));
+	assert_string_equal(error.c_str(), "'Main' is not connected");
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kPlanned);
+	assert_int_equal(f.applyAttempts, 0);
+	assert_int_equal(f.goLiveCalls, 0);
+}
+
 // Guards the RequestStart extraction: a cancelled occurrence must still refuse the
 // clock's own auto-start, exactly as it did before StartIfDue's body moved into the
-// shared helper.
+// shared helper. The row is put back to `armed` by hand because cancelling leaves it
+// `planned`, and StartIfDue's state gate would then refuse the start before the
+// cancelled-occurrence check this test exists for is ever reached.
 static void test_runner_auto_start_still_refuses_a_cancelled_occurrence(void **state)
 {
 	(void)state;
@@ -1684,12 +1876,16 @@ static void test_runner_auto_start_still_refuses_a_cancelled_occurrence(void **s
 
 	std::string error;
 	assert_true(f.runner.CancelCountdown(id, error));
+	assert_true(f.store.SetState(id, History::ScheduleState::kArmed));
 
 	f.clock = startsAt;
 	f.runner.Tick();
-	assert_int_equal(f.applyCalls, 0);
+	assert_int_equal(f.applyAttempts, 0);
 	assert_int_equal(f.goLiveCalls, 0);
-	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kPlanned);
+	// Still armed and still cancelled: what refused the start was the occurrence,
+	// not the row having been put back to planned.
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kArmed);
+	assert_true(f.runner.IsCountdownCanceled(id));
 }
 
 // AdoptImminentArmed is what a manual go-live calls on itself before reading output
@@ -1741,7 +1937,7 @@ static void test_runner_adopt_skips_a_cancelled_occurrence(void **state)
 	assert_true(f.runner.IsCountdownCanceled(id));
 
 	f.runner.AdoptImminentArmed();
-	assert_int_equal(f.applyCalls, 0);
+	assert_int_equal(f.applyAttempts, 0);
 
 	f.runner.NoteWentLive();
 	// Left alone entirely: still planned, not live, and still reads as cancelled.
@@ -1749,14 +1945,17 @@ static void test_runner_adopt_skips_a_cancelled_occurrence(void **state)
 	assert_true(f.runner.IsCountdownCanceled(id));
 }
 
-// The auto-start and StartNow both set startingId_ before calling goLive, so a
-// go-live either of them triggered already belongs to an entry -- adoption must not
-// ask a second time on top of it.
-static void test_runner_adopt_is_a_noop_once_something_already_claimed_the_start(void **state)
+// An occurrence that already asked to start is not an unrelated manual press's to
+// claim either, even once its request has been given up on: the routing that request
+// loaded has already been put back, and adopting would load it again underneath a
+// go-live that has nothing to do with this entry. A refused start is the state that
+// reaches this -- it ends the request while leaving the row armed and the occurrence
+// in the map, so nothing upstream of the check refuses first.
+static void test_runner_adopt_skips_an_occurrence_that_already_asked_to_start(void **state)
 {
 	(void)state;
 	RunnerFixture f;
-	OpenRunner(f, "runner_adopt_noop.db");
+	OpenRunner(f, "runner_adopt_requested.db");
 	const int64_t startsAt = 10'000'000;
 	const std::string id = SeedEntry(f, startsAt, true);
 
@@ -1764,12 +1963,82 @@ static void test_runner_adopt_is_a_noop_once_something_already_claimed_the_start
 	f.runner.Tick();
 	f.clock = startsAt;
 	f.runner.Tick();
+	assert_int_equal(f.applyAttempts, 1);
+	assert_int_equal(f.goLiveCalls, 1);
+
+	f.runner.NoteStartFailed();
+	assert_false(f.runner.IsStartInFlight(id));
+	assert_int_equal(f.revertCalls, 1);
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kArmed);
+
+	f.runner.AdoptImminentArmed();
+	assert_int_equal(f.applyAttempts, 1);
+	assert_string_equal(f.runner.ActiveEntryId().c_str(), "");
+	assert_false(f.runner.IsStartInFlight(id));
+}
+
+// The auto-start and StartNow both set startingId_ before calling goLive, so a
+// go-live either of them triggered already belongs to an entry -- adoption must not
+// ask a second time on top of it. The second entry is what leaves that claim as the
+// only thing standing: it is armed, unblocked, unclaimed and starts sooner, so it is
+// what adoption would take instead. The clock is moved past the in-flight allowance
+// without a tick so the first entry's own hold on the routing is not what refuses.
+static void test_runner_adopt_is_a_noop_once_something_already_claimed_the_start(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_adopt_noop.db");
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntry(f, startsAt, true);
+	const std::string earlier = SeedEntry(f, startsAt - 30'000, false);
+
+	f.clock = startsAt - 60'000;
+	f.runner.Tick();
+	assert_string_equal(f.store.Get(earlier)->state.c_str(), History::ScheduleState::kArmed);
+
+	f.clock = startsAt;
+	f.runner.Tick();
 	assert_int_equal(f.applyCalls, 1);
 	assert_int_equal(f.goLiveCalls, 1);
 	assert_true(f.runner.IsStartInFlight(id));
+	assert_true(f.runner.BlockReason(earlier).empty());
+
+	f.clock = startsAt + History::kStartInFlightMs + 1000;
+	assert_false(f.runner.IsStartInFlight(id));
 
 	f.runner.AdoptImminentArmed();
+	assert_int_equal(f.applyAttempts, 1);
+	// The broadcast still belongs to the entry that asked for it.
+	assert_string_equal(f.runner.ActiveEntryId().c_str(), id.c_str());
+}
+
+// A broadcast that is already live owns the routing, and an armed entry nothing asked
+// to start is not what a second manual press should load underneath it. Refused on two
+// independent grounds -- the claim a live entry already holds, and the routing being
+// held elsewhere -- so this pins the outcome rather than either one of them.
+static void test_runner_adopt_is_a_noop_while_a_broadcast_is_live(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_adopt_live.db");
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntry(f, startsAt, true);
+	const std::string earlier = SeedEntry(f, startsAt - 30'000, false);
+
+	f.clock = startsAt - 60'000;
+	f.runner.Tick();
+	f.clock = startsAt;
+	f.runner.Tick();
 	assert_int_equal(f.applyCalls, 1);
+	f.streaming = true;
+	f.runner.NoteWentLive();
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kLive);
+	assert_string_equal(f.store.Get(earlier)->state.c_str(), History::ScheduleState::kArmed);
+
+	f.runner.AdoptImminentArmed();
+	assert_int_equal(f.applyAttempts, 1);
+	assert_int_equal(f.revertCalls, 0);
+	assert_string_equal(f.runner.ActiveEntryId().c_str(), id.c_str());
 }
 
 // An apply refusal during adoption must not claim the entry -- the caller's go-live
@@ -1789,11 +2058,41 @@ static void test_runner_adopt_apply_refusal_leaves_it_unclaimed(void **state)
 	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kArmed);
 
 	f.runner.AdoptImminentArmed();
+	// It got as far as asking, and the entry is unclaimed because the apply refused
+	// -- not because adoption stopped short of the routing.
+	assert_int_equal(f.applyAttempts, 1);
 	assert_int_equal(f.applyCalls, 0);
-	assert_int_equal(f.goLiveCalls, 0);
+	assert_string_equal(f.runner.ActiveEntryId().c_str(), "");
+	assert_false(f.runner.IsStartInFlight(id));
+	assert_true(LoggedLike(f, "could not adopt"));
 
 	f.runner.NoteWentLive();
 	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kArmed);
+}
+
+// Adoption loads an entry's routing, and loading it under a broadcast already running
+// would redirect that broadcast -- while the apply that opens with a revert would drop
+// the applied entry's bookkeeping on the way. The entry armed while nothing was
+// streaming, so it carries no block reason: the routing check is what refuses, not a
+// reason left on the occurrence by an earlier tick.
+static void test_runner_adopt_skips_an_entry_while_the_routing_is_held_elsewhere(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_adopt_streaming.db");
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntry(f, startsAt, false);
+
+	f.clock = startsAt - 60'000;
+	f.runner.Tick();
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kArmed);
+	assert_true(f.runner.BlockReason(id).empty());
+
+	f.streaming = true;
+	f.runner.AdoptImminentArmed();
+	assert_int_equal(f.applyAttempts, 0);
+	assert_string_equal(f.runner.ActiveEntryId().c_str(), "");
+	assert_false(LoggedLike(f, "adopted"));
 }
 
 // A ScheduledSetup over in-memory routing and metadata. The runner's own tests
@@ -2253,6 +2552,7 @@ int main(void)
 		cmocka_unit_test(test_runner_refuses_a_start_while_another_is_on_its_way_up),
 		cmocka_unit_test(test_runner_refuses_to_start_while_something_is_streaming),
 		cmocka_unit_test(test_runner_refuses_a_start_the_apply_refused),
+		cmocka_unit_test(test_runner_pushes_the_change_when_an_apply_refusal_blocks_a_start),
 		cmocka_unit_test(test_runner_refuses_cancel_once_the_start_is_requested),
 		cmocka_unit_test(test_runner_holds_the_routing_for_one_entry_at_a_time),
 		cmocka_unit_test(test_runner_frees_a_given_up_start_for_deletion),
@@ -2267,11 +2567,19 @@ int main(void)
 		cmocka_unit_test(test_runner_start_now_refuses_while_streaming),
 		cmocka_unit_test(test_runner_start_now_refuses_when_already_in_flight),
 		cmocka_unit_test(test_runner_start_now_propagates_an_apply_refusal),
+		cmocka_unit_test(test_runner_start_now_clears_a_failed_start),
+		cmocka_unit_test(test_runner_start_now_refuses_a_settled_entry),
+		cmocka_unit_test(test_runner_start_now_refuses_a_live_entry),
+		cmocka_unit_test(test_runner_start_now_refuses_an_entry_with_no_destinations),
+		cmocka_unit_test(test_runner_start_now_refuses_when_no_destination_can_go_live),
 		cmocka_unit_test(test_runner_auto_start_still_refuses_a_cancelled_occurrence),
 		cmocka_unit_test(test_runner_adopt_imminent_armed_loads_it_for_the_golive),
 		cmocka_unit_test(test_runner_adopt_skips_a_cancelled_occurrence),
+		cmocka_unit_test(test_runner_adopt_skips_an_occurrence_that_already_asked_to_start),
 		cmocka_unit_test(test_runner_adopt_is_a_noop_once_something_already_claimed_the_start),
+		cmocka_unit_test(test_runner_adopt_is_a_noop_while_a_broadcast_is_live),
 		cmocka_unit_test(test_runner_adopt_apply_refusal_leaves_it_unclaimed),
+		cmocka_unit_test(test_runner_adopt_skips_an_entry_while_the_routing_is_held_elsewhere),
 		cmocka_unit_test(test_setup_restores_exactly_what_it_changed),
 		cmocka_unit_test(test_setup_leaves_a_binding_changed_since_alone),
 		cmocka_unit_test(test_setup_restores_a_profile_bound_on_two_canvases),

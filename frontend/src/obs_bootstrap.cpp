@@ -1514,9 +1514,11 @@ bool ObsBootstrap::Start()
 				start.destinations = LiveDestinations(*g_multistream);
 				start.canvasUuids = LiveCanvasUuids(*g_multistream);
 				start.title = BuildSessionTitle(start.destinations);
-				// Empty unless an entry is armed or live, so a broadcast the
-				// user started by hand during the armed window is linked to
-				// the plan it fulfilled just as an auto-start is.
+				// Empty unless something explicitly asked for this
+				// broadcast -- the auto-start, schedule.startNow, or a
+				// manual go-live that adopted the armed entry on its way
+				// through. A go-live that adopted nothing is an ordinary
+				// unscheduled session, not a claim on a plan it never ran.
 				start.scheduleId = g_scheduleRunner.ActiveEntryId();
 				g_recorder.Begin(start);
 				g_scheduleRunner.NoteWentLive();

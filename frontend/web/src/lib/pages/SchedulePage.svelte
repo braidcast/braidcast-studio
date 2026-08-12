@@ -287,7 +287,10 @@
     dialog = {
       kind: "confirm",
       title: "Go Live",
-      message: `Go live now with "${item.title}"? This starts broadcasting immediately to its enabled destinations.`,
+      // "switches your destinations to", not "to its enabled destinations": starting an
+      // entry is what enables them, and it disables anything currently armed that the
+      // entry does not name. Saying "enabled" reads as though nothing is about to change.
+      message: `Go live now with "${item.title}"? This switches your destinations to the ones this entry names and starts broadcasting immediately.`,
       confirmLabel: "Go Live",
       onCommit: () => void goLive(item),
     };
