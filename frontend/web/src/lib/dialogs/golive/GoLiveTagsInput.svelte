@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tick } from "svelte";
+  import { admitTags, tagRuleText, type TagLimits } from "$lib/dialogs/golive/fieldValue";
   import { focusOnMount } from "$lib/utils/focusActions";
 
   // Chip-style tag editor (mock `.tags` / `.tag`). Holds its own draft so each instance
@@ -12,16 +13,35 @@
     onChange: (next: string[]) => void;
     ghostLabel?: string;
     accent?: boolean;
+    /** The provider's tag limits, straight off its descriptor. Enforced here, at the
+     * moment a tag arrives, because the provider that enforces them refuses the WHOLE
+     * metadata push over one bad tag and that refusal blocks the go-live — so the first
+     * sign of a rule broken while typing must not be a stream that never started. An
+     * absent limit is not enforced, and a call site with no descriptor enforces none. */
+    limits?: TagLimits;
   }
-  let { values, onChange, ghostLabel, accent = false }: Props = $props();
+  let { values, onChange, ghostLabel, accent = false, limits = {} }: Props = $props();
 
   // One string for the button that leaves the ghost state and for the prompt on the box
   // it turns into, so both name the same action.
   const ADD_PROMPT = "+ add";
 
+  // How full the list has to get before a running count is worth the space. A "3/10"
+  // beside three chips is a number nobody is reading; the same readout at 7 is the
+  // warning that the eleventh tag is not going to fit.
+  const LIMIT_HINT_RATIO = 0.7;
+
   let adding = $state(false);
   let draft = $state("");
   let draftEl = $state<HTMLInputElement | null>(null);
+  let draftFocused = $state(false);
+
+  // Why the last tag offered was turned away, "" when none was. Every path that admits
+  // tags sets it, so the reason is stated once wherever the refusal happened.
+  let note = $state("");
+
+  const uid = $props.id();
+  const noteId = `${uid}-note`;
 
   // The tag under in-place edit, held by value rather than by index because the {#each}
   // below is keyed by the tag string: that identity survives the parent handing back a
@@ -29,6 +49,23 @@
   // tag can be -- parseTags drops empties.
   let editTag = $state("");
   let editDraft = $state("");
+
+  const countHint = $derived(
+    limits.maxTags !== undefined && values.length >= Math.ceil(limits.maxTags * LIMIT_HINT_RATIO)
+      ? `${values.length}/${limits.maxTags} tags`
+      : "",
+  );
+  const charsUsed = $derived(values.reduce((n, t) => n + t.length, 0));
+  const totalHint = $derived(
+    limits.maxTotalChars !== undefined && charsUsed >= Math.ceil(limits.maxTotalChars * LIMIT_HINT_RATIO)
+      ? `${charsUsed}/${limits.maxTotalChars} characters`
+      : "",
+  );
+  // The per-tag rule is taught while a box has focus rather than parked under the control:
+  // at rest it is a sentence nobody asked for, and at the moment of typing it is the thing
+  // that stops the refusal below from ever being needed.
+  const ruleHint = $derived(draftFocused || editTag !== "" ? tagRuleText(limits) : "");
+  const hint = $derived([countHint, totalHint, ruleHint].filter((s) => s !== "").join(" · "));
 
   // Splits rather than taking the text whole: a tag list is almost always pasted, and
   // every source of one -- YouTube's own field, a keyword tool, an old description --
@@ -51,16 +88,24 @@
   }
 
   function commit(): void {
-    const next = [...values];
-    for (const t of parseTags(draft)) {
-      if (!next.includes(t)) {
-        next.push(t);
-      }
+    const parts = parseTags(draft);
+    if (parts.length === 0) {
+      note = "";
+      draft = "";
+      adding = false;
+      return;
     }
-    draft = "";
-    adding = false;
-    if (next.length !== values.length) {
-      onChange(next);
+    const admitted = admitTags(values, parts, limits);
+    note = admitted.note;
+    // What was refused stays in the box it came from, where the caret already is and where
+    // it can be fixed -- a tag turned away silently is worse than the go-live it was going
+    // to cost. Assigned rather than appended: this box WAS the text being admitted.
+    draft = admitted.rejected.join(", ");
+    // Something left to fix keeps the box open, or the ghost branch below would fold it
+    // away and take the refused text with it.
+    adding = admitted.rejected.length > 0;
+    if (admitted.accepted.length > 0) {
+      onChange([...values, ...admitted.accepted]);
     }
   }
 
@@ -82,15 +127,32 @@
     if (at < 0) {
       return;
     }
-    const rest = values.filter((_, i) => i !== at);
-    // Editing a tag onto one that already exists collapses the two rather than adding a
-    // second copy, the same way a pasted list drops its own repeats. Here a duplicate is
-    // not merely untidy: it would give two {#each} blocks the same key.
-    const parts = parseTags(text).filter((t) => !rest.includes(t));
+    const parts = parseTags(text);
     if (parts.length === 1 && parts[0] === values[at]) {
       return;
     }
-    rest.splice(at, 0, ...parts);
+    note = "";
+    const rest = values.filter((_, i) => i !== at);
+    // Editing a tag onto one that already exists collapses the two rather than adding a
+    // second copy, the same way a pasted list drops its own repeats. Here a duplicate is
+    // not merely untidy: it would give two {#each} blocks the same key. admitTags absorbs
+    // it, which is also where the provider's limits are applied to an edit.
+    const admitted = admitTags(rest, parts, limits);
+    note = admitted.note;
+    if (admitted.rejected.length > 0) {
+      // Appended, not assigned: unlike commit() above, the draft box is a bystander here
+      // and may already hold text of its own.
+      draft = [draft, ...admitted.rejected].filter((s) => s !== "").join(", ");
+      adding = true;
+    }
+    if (admitted.accepted.length === 0 && admitted.rejected.length > 0) {
+      // Nothing admissible to put in its place, so the tag keeps what it had. The text that
+      // was meant to replace it is in the draft box, so the edit is not lost either.
+      // Gated on a refusal rather than on an empty result: an edit that empties the tag, or
+      // collapses it onto one already present, is meant to remove it and still does.
+      return;
+    }
+    rest.splice(at, 0, ...admitted.accepted);
     onChange(rest);
   }
 
@@ -105,10 +167,13 @@
   function startAdd(): void {
     adding = true;
     draft = "";
+    note = "";
     void focusDraft();
   }
 
   function remove(tag: string, e: MouseEvent): void {
+    // A refusal the removed tag was making room against no longer stands.
+    note = "";
     onChange(values.filter((v) => v !== tag));
     if (e.detail === 0) {
       // Keyboard activation, so the button holding focus is about to be destroyed:
@@ -143,6 +208,8 @@
       e.stopPropagation();
       draft = "";
       adding = false;
+      // The refusal named text that is being abandoned along with the box holding it.
+      note = "";
     } else if (e.key === "Backspace" && draft === "" && values.length > 0) {
       // Steps into the previous tag instead of deleting it. The caret lands at its end,
       // so holding Backspace keeps eating characters and an emptied edit drops the tag
@@ -181,6 +248,7 @@
             type="text"
             size="1"
             aria-label="Edit tag {t}"
+            aria-describedby={note || hint ? noteId : undefined}
             bind:value={editDraft}
             use:focusOnMount
             onkeydown={onEditKeydown}
@@ -213,14 +281,30 @@
         type="text"
         size="1"
         aria-label="Add tag"
+        aria-describedby={note || hint ? noteId : undefined}
         placeholder={ADD_PROMPT}
         bind:this={draftEl}
         bind:value={draft}
         onkeydown={onDraftKeydown}
-        onblur={commit}
+        onfocus={() => (draftFocused = true)}
+        onblur={() => {
+          draftFocused = false;
+          commit();
+        }}
       />
     </span>
   </div>
+{/if}
+
+<!-- One line for everything the limits have to say, so the rule, the running count and the
+     refusal never compete for the same space. A refusal outranks the rest: it is the only
+     one of them that is about text the user is holding right now. Both states say it in
+     words -- a count read as "9/10 tags" and a sentence naming the rule -- so neither
+     depends on the color it is printed in. -->
+{#if note}
+  <div class="tag-note refused" id={noteId} role="alert">{note}</div>
+{:else if hint}
+  <div class="tag-note" id={noteId}>{hint}</div>
 {/if}
 
 <style>
@@ -329,6 +413,15 @@
   }
   .grow input::placeholder {
     color: var(--color-muted);
+  }
+  .tag-note {
+    font-size: 10px;
+    color: var(--color-muted);
+    margin-top: 4px;
+    line-height: 1.35;
+  }
+  .tag-note.refused {
+    color: var(--color-live);
   }
   .grow input:focus,
   .grow.editing input {

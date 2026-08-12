@@ -48,6 +48,10 @@ const char *kDefaultTitle = "Live Stream";
 // thumbnails.set rejects uploads over 2 MB; skip oversized files client-side.
 const std::streamoff kMaxThumbnailBytes = 2 * 1024 * 1024;
 
+// snippet.tags takes arbitrary strings and caps neither how many there are nor how long
+// any one of them is -- the only limit is on the characters they add up to.
+constexpr int kMaxTagTotalChars = 500;
+
 // force-ssl is the single broad write scope covering channels.list,
 // liveBroadcasts/liveStreams insert+bind, videos.update, thumbnails.set, and
 // videoCategories.list -- no narrower per-call scope is needed.
@@ -649,7 +653,7 @@ json YouTubeProvider::capabilityJson() const
 			      {"type", "tags"},
 			      {"tier", "simple"},
 			      {"scope", "provider"},
-			      {"max", 500}});
+			      {"maxTotalChars", kMaxTagTotalChars}});
 	// Only YouTube takes a thumbnail, and its 2 MB/aspect rules are its own -- so one image
 	// serves every YouTube channel the user runs and is picked once for all of them.
 	fields.push_back(json{{"key", "thumbnail"},

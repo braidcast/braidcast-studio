@@ -483,6 +483,7 @@
                         <div class="f-label">{tagsField.label.toUpperCase()}</div>
                         <GoLiveTagsInput
                           values={m.tags}
+                          limits={tagsField}
                           onChange={(next) => patchMeta(d.profileUuid, { tags: next })}
                         />
                       </div>

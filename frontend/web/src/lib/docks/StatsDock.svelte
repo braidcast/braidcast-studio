@@ -461,7 +461,6 @@
     color: var(--color-muted);
     background: var(--color-base);
     border: var(--border-weight) solid var(--color-border);
-    border-radius: var(--radius-sm, 3px);
     padding: 2px 7px;
     cursor: pointer;
   }

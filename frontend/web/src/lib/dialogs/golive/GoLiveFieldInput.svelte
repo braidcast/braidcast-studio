@@ -200,7 +200,16 @@
 </script>
 
 {#if field.type === "tags"}
-  <GoLiveTagsInput values={arr} ghostLabel={showGhost ? ghostLabel : ""} {accent} onChange={(v) => onChange(v)} />
+  <!-- The descriptor itself carries the tag limits, so it IS the limits object: passing it
+       under the narrower prop type keeps the control reading exactly the four keys the
+       provider declares, with nothing in between to fall out of step with them. -->
+  <GoLiveTagsInput
+    values={arr}
+    ghostLabel={showGhost ? ghostLabel : ""}
+    limits={field}
+    {accent}
+    onChange={(v) => onChange(v)}
+  />
 {:else if field.type === "category"}
   <GoLiveCategoryInput
     {providerId}
@@ -536,7 +545,7 @@
   }
   .thumb-err {
     font-size: 10px;
-    color: var(--color-danger, #e5484d);
+    color: var(--color-live);
     margin-top: 4px;
     max-width: 320px;
     line-height: 1.35;

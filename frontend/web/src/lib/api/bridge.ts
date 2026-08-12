@@ -541,6 +541,11 @@ export interface ServiceType {
 
 // --- platform OAuth (Connect Account dual path, Phase 8) ---------------------
 
+/** A named character rule a provider may impose on a single tag. Named rather than sent
+ * as a pattern so the predicate and the sentence explaining it stay together on the web
+ * side; adding one is an entry in the rule table there plus this union member. */
+export type TagCharset = "lowercase-alnum";
+
 /** One field a provider exposes in its capability descriptor. `tier`/`scope`
  * drive how the 8b stream-info modal groups/persists the field; 8a only reads the
  * provider id/displayName, so the rest is carried loosely. */
@@ -575,8 +580,25 @@ export interface OAuthProviderField {
    * streams share, so it is edited, pushed and remembered per stream and never
    * inherits from a layer below. Not set = an ordinary channel-level field. */
   perDestination?: boolean;
-  /** Soft max length (text/tags) carried for hint/validation; advisory only. */
+  /** Soft max length (text) carried for hint/validation; advisory only. */
   max?: number;
+  // `tags` fields only. Each limit is named for exactly what it counts, because the same
+  // number means a different thing per provider: Twitch's 10 caps how many tags there
+  // are, YouTube's 500 caps the characters they add up to. An absent limit is a limit the
+  // provider does not state, and nothing is enforced for it — never a default guessed on
+  // its behalf. All advisory: the provider validates again on push, so a descriptor that
+  // has fallen behind still fails safe rather than silently letting a bad tag through.
+  /** How many tags the list may hold. */
+  maxTags?: number;
+  /** How many characters one tag may hold. */
+  maxTagChars?: number;
+  /** How many characters the whole list may hold, summed across its tags. */
+  maxTotalChars?: number;
+  /** Which characters one tag may contain, as a NAMED rule rather than a pattern: the
+   * sentence shown to the user belongs with the predicate that rejected them, and a bare
+   * regex carries no wording to show. `"lowercase-alnum"` is Twitch's — a-z and 0-9 only,
+   * so no capitals, spaces or punctuation. Absent = the provider takes arbitrary text. */
+  tagCharset?: TagCharset;
   /** Provider-supplied default. Prefill seeds it only where saved + live left the
    * field empty, so a remembered value always wins over it. */
   default?: unknown;

@@ -80,6 +80,17 @@ public:
 	// which is not something a plan running unattended may decide to do.
 	bool Apply(const std::vector<ScheduleDestination> &destinations, std::string &reason);
 
+	// The routing half of Apply for a caller that drives the destinations itself
+	// instead of running a scheduled entry: the same narrowing under the same
+	// guards, remembering nothing on the metadata side and writing none. Revert()
+	// puts back what it changed exactly as it does for Apply.
+	//
+	// It exists so that narrowing has one implementation. The go-live path had a
+	// second, hand-written copy of this rule in the UI and the copy drifted from
+	// this one repeatedly; this is the door that lets the copy be deleted rather
+	// than corrected again.
+	bool ApplyRouting(const std::vector<ScheduleDestination> &destinations, std::string &reason);
+
 	// Put back what Apply changed, per item: a binding or a bag someone else has
 	// altered since is left alone rather than overwritten, and one such change does
 	// not strand the rest of the restore.
@@ -96,6 +107,9 @@ public:
 	// stop edge is what completes it.
 	void Revert();
 
+	// Whether an application is outstanding and Revert() still owes something --
+	// not "the scheduled runner has an entry loaded". Every entry point sets it,
+	// so a caller that is not the runner answers true here too.
 	bool IsApplied() const { return applied_; }
 
 	// The entry's metadata in the shape providers read. `category` is an object
@@ -123,6 +137,12 @@ private:
 		nlohmann::json after;
 		bool existed = false;
 	};
+
+	// The narrowing itself, and the only implementation of it: both entry points
+	// above run this one body, so the rule cannot hold in one door and not the
+	// other. Records what it flips for Revert() and nothing else -- no `applied_`,
+	// no log line, so the entry point owns the outcome it reports.
+	bool NarrowRouting(const std::vector<ScheduleDestination> &destinations, std::string &reason);
 
 	// Ask the seam for `enabled` and answer whether the binding holds it
 	// afterwards. The one place that reconciles a write result against the state,

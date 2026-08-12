@@ -26,6 +26,10 @@ const char *kKickApiBase = "https://api.kick.com";
 const std::array<const char *, 5> kKickScopes = {"channel:read", "channel:write", "streamkey:read", "user:read",
 						 "chat:write"};
 
+// Kick's only tag limit is how many it takes; the strings themselves are arbitrary. Named
+// once so the descriptor advertising it and the applyMetadata check refusing on it agree.
+constexpr int kMaxTags = 10;
+
 using JsonUtil::First;
 using JsonUtil::NumLoose;
 using JsonUtil::ParseJson;
@@ -111,7 +115,7 @@ json KickProvider::capabilityJson() const
 			      {"type", "tags"},
 			      {"tier", "simple"},
 			      {"scope", "provider"},
-			      {"max", 10}});
+			      {"maxTags", kMaxTags}});
 
 	return json{
 		{"id", id()},
@@ -262,7 +266,7 @@ bool KickProvider::applyMetadata(OAuthAccount &acct, const std::string &profileU
 		}
 	}
 
-	// Tags: skip empty entries; cap the kept set at 10 (Kick's max).
+	// Tags: skip empty entries; cap the kept set at kMaxTags.
 	if (fields.contains("tags") && fields["tags"].is_array()) {
 		json tags = json::array();
 		for (const json &t : fields["tags"]) {
@@ -276,8 +280,8 @@ bool KickProvider::applyMetadata(OAuthAccount &acct, const std::string &profileU
 			}
 			tags.push_back(tag);
 		}
-		if (tags.size() > 10) {
-			err = "Kick allows at most 10 tags";
+		if (tags.size() > static_cast<size_t>(kMaxTags)) {
+			err = "Kick allows at most " + std::to_string(kMaxTags) + " tags";
 			return false;
 		}
 		body["custom_tags"] = std::move(tags);

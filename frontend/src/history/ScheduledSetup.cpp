@@ -76,14 +76,8 @@ bool ScheduledSetup::Flip(const std::string &uuid, bool enabled)
 	return true;
 }
 
-bool ScheduledSetup::Apply(const std::vector<ScheduleDestination> &destinations, std::string &reason)
+bool ScheduledSetup::NarrowRouting(const std::vector<ScheduleDestination> &destinations, std::string &reason)
 {
-	if (isStreaming && isStreaming()) {
-		reason = kAlreadyStreamingReason;
-		return false;
-	}
-	Revert(); // two applications must never stack
-
 	if (routing.read && routing.write) {
 		const std::vector<RoutingBinding> before = routing.read();
 
@@ -138,6 +132,39 @@ bool ScheduledSetup::Apply(const std::vector<ScheduleDestination> &destinations,
 				return false;
 			}
 		}
+	}
+	return true;
+}
+
+bool ScheduledSetup::ApplyRouting(const std::vector<ScheduleDestination> &destinations, std::string &reason)
+{
+	if (isStreaming && isStreaming()) {
+		reason = kAlreadyStreamingReason;
+		return false;
+	}
+	Revert(); // two applications must never stack
+
+	if (!NarrowRouting(destinations, reason)) {
+		return false;
+	}
+
+	applied_ = true;
+	if (log) {
+		log("[schedule] applied " + std::to_string(bindings_.size()) + " routing change(s)");
+	}
+	return true;
+}
+
+bool ScheduledSetup::Apply(const std::vector<ScheduleDestination> &destinations, std::string &reason)
+{
+	if (isStreaming && isStreaming()) {
+		reason = kAlreadyStreamingReason;
+		return false;
+	}
+	Revert(); // two applications must never stack
+
+	if (!NarrowRouting(destinations, reason)) {
+		return false;
 	}
 
 	// One capture per profile, not per destination: two destinations naming the

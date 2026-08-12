@@ -61,10 +61,16 @@ using JsonUtil::First;
 using JsonUtil::ParseJson;
 using JsonUtil::Str;
 
-// Validate one Twitch tag: lowercase alphanumeric, no spaces, 1..25 chars.
+// Twitch's tag rules, named once because three places state them: the descriptor that
+// advertises them to the UI, TagValid, and the applyMetadata check that refuses a bad
+// list outright. A UI hinting a limit the refusal does not use is worse than no hint.
+constexpr int kMaxTags = 10;
+constexpr int kMaxTagChars = 25;
+
+// Validate one Twitch tag: lowercase alphanumeric, no spaces, 1..kMaxTagChars chars.
 bool TagValid(const std::string &tag)
 {
-	if (tag.empty() || tag.size() > 25) {
+	if (tag.empty() || tag.size() > static_cast<size_t>(kMaxTagChars)) {
 		return false;
 	}
 	for (const char c : tag) {
@@ -143,8 +149,9 @@ json TwitchProvider::capabilityJson() const
 			      {"type", "tags"},
 			      {"tier", "simple"},
 			      {"scope", "provider"},
-			      {"max", 10},
-			      {"constraint", "lowercase-alnum ≤25"}});
+			      {"maxTags", kMaxTags},
+			      {"maxTagChars", kMaxTagChars},
+			      {"tagCharset", "lowercase-alnum"}});
 	fields.push_back(json{{"key", "language"},
 			      {"label", "Language"},
 			      {"type", "enum"},
@@ -316,7 +323,7 @@ bool TwitchProvider::applyMetadata(OAuthAccount &acct, const std::string &profil
 	}
 
 	// Tags: skip empty entries (a stray empty tag must not reject the whole patch);
-	// validate the rest and cap the kept set at 10.
+	// validate the rest and cap the kept set at kMaxTags.
 	if (fields.contains("tags") && fields["tags"].is_array()) {
 		const json &tagsIn = fields["tags"];
 		json tags = json::array();
@@ -330,14 +337,14 @@ bool TwitchProvider::applyMetadata(OAuthAccount &acct, const std::string &profil
 				continue;
 			}
 			if (!TagValid(tag)) {
-				err = "invalid tag '" + tag +
-				      "': tags must be lowercase alphanumeric, no spaces, 25 chars max";
+				err = "invalid tag '" + tag + "': tags must be lowercase alphanumeric, no spaces, " +
+				      std::to_string(kMaxTagChars) + " chars max";
 				return false;
 			}
 			tags.push_back(tag);
 		}
-		if (tags.size() > 10) {
-			err = "Twitch allows at most 10 tags";
+		if (tags.size() > static_cast<size_t>(kMaxTags)) {
+			err = "Twitch allows at most " + std::to_string(kMaxTags) + " tags";
 			return false;
 		}
 		body["tags"] = std::move(tags);

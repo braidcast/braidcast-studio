@@ -19,7 +19,7 @@
     color: var(--color-muted);
   }
   .badge {
-    font-family: var(--mono, ui-monospace, monospace);
+    font-family: var(--font-mono);
     background: var(--color-base);
     border: 1px solid var(--color-border);
     padding: 1px 6px;

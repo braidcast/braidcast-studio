@@ -41,7 +41,7 @@
     width: 100%;
   }
   .mono {
-    font-family: var(--mono, ui-monospace, monospace);
+    font-family: var(--font-mono);
   }
   textarea {
     resize: vertical;

@@ -2890,6 +2890,164 @@ static void test_setup_never_touches_the_routing_while_live(void **state)
 	assert_true(EnabledIs(f, "b3", true));
 }
 
+// ApplyRouting narrows exactly as Apply narrows and stops there. A caller reaching
+// the routing this way owns its own metadata, so the entry's title must not be
+// written over what the user has remembered, and nothing may be saved on its behalf.
+//
+// The destination carries a title the metadata pass would act on, so an ApplyRouting
+// that ran the whole of Apply -- or a split that left the metadata pass on the shared
+// side of the seam -- writes a bag here rather than none.
+static void test_setup_routing_only_leaves_metadata_alone(void **state)
+{
+	(void)state;
+	SetupFixture f;
+	OpenSetup(f);
+	SeedBindings(f);
+
+	std::string reason;
+	assert_true(f.setup.ApplyRouting({Dest("p2", "Friday Night")}, reason));
+	assert_true(f.setup.IsApplied());
+	assert_true(EnabledIs(f, "b1", false));
+	assert_true(EnabledIs(f, "b2", true));
+	assert_true(EnabledIs(f, "b3", false));
+	assert_true(f.overrides.empty());
+	assert_int_equal(f.saves, 0);
+
+	// Nothing was recorded on that side either, so the restore has only the routing
+	// to put back and still touches no metadata.
+	f.setup.Revert();
+	assert_false(f.setup.IsApplied());
+	assert_true(EnabledIs(f, "b2", true));
+	assert_true(EnabledIs(f, "b3", true));
+	assert_true(f.overrides.empty());
+	assert_int_equal(f.saves, 0);
+}
+
+// The streaming refusal belongs to the routing, not to Apply: a second door into the
+// narrowing that skipped it would take a running broadcast's destinations off the air.
+static void test_setup_routing_only_refuses_while_live(void **state)
+{
+	(void)state;
+	SetupFixture f;
+	OpenSetup(f);
+	SeedBindings(f);
+	f.streaming = true;
+
+	std::string reason;
+	assert_false(f.setup.ApplyRouting({Dest("p2", "")}, reason));
+	assert_string_equal(reason.c_str(), History::kAlreadyStreamingReason);
+	assert_false(f.setup.IsApplied());
+	assert_true(EnabledIs(f, "b2", true));
+	assert_true(EnabledIs(f, "b3", true));
+
+	// Applied while idle, then live: the restore waits for the stop edge and keeps
+	// its snapshot rather than dropping it.
+	f.streaming = false;
+	assert_true(f.setup.ApplyRouting({Dest("p2", "")}, reason));
+	f.streaming = true;
+	f.setup.Revert();
+	assert_true(f.setup.IsApplied());
+	assert_true(EnabledIs(f, "b2", true));
+	assert_true(EnabledIs(f, "b3", false));
+
+	f.streaming = false;
+	f.setup.Revert();
+	assert_false(f.setup.IsApplied());
+	assert_true(EnabledIs(f, "b2", true));
+	assert_true(EnabledIs(f, "b3", true));
+}
+
+// Narrowing to nothing is not narrowing whichever door asked for it. Both ways of
+// resolving to nothing are exercised, as they are for Apply: naming no destination
+// at all, and naming only destinations that are switched off.
+static void test_setup_routing_only_refuses_an_entry_with_nothing_switched_on(void **state)
+{
+	(void)state;
+	SetupFixture f;
+	OpenSetup(f);
+	SeedBindings(f);
+
+	std::string reason;
+	assert_false(f.setup.ApplyRouting({}, reason));
+	assert_string_equal(reason.c_str(), History::kNoDestinationsReason);
+	assert_false(f.setup.IsApplied());
+	assert_true(EnabledIs(f, "b2", true));
+	assert_true(EnabledIs(f, "b3", true));
+
+	reason.clear();
+	assert_false(f.setup.ApplyRouting({Dest("p1", "Friday Night")}, reason));
+	assert_false(reason.empty());
+	assert_false(f.setup.IsApplied());
+	// Nothing was taken off the air on the way to refusing.
+	assert_true(EnabledIs(f, "b1", false));
+	assert_true(EnabledIs(f, "b2", true));
+	assert_true(EnabledIs(f, "b3", true));
+}
+
+// Two applications must never stack, across the doors as well as within one. The
+// un-stack is what makes the snapshot describe the routing the user owns rather than
+// the one a previous application left, and without it a restore puts back the wrong
+// set for good.
+//
+// The second application names a destination the first had taken off the air, so it
+// is reachable only once the un-stack has put that destination back -- an ApplyRouting
+// that skipped it resolves to nothing and refuses outright.
+static void test_setup_routing_only_unstacks_a_previous_application(void **state)
+{
+	(void)state;
+	SetupFixture f;
+	OpenSetup(f);
+	SeedBindings(f);
+
+	std::string reason;
+	assert_true(f.setup.Apply({Dest("p2", "Friday Night")}, reason));
+	assert_true(EnabledIs(f, "b2", true));
+	assert_true(EnabledIs(f, "b3", false));
+	assert_int_equal((int)f.overrides.count("p2"), 1);
+
+	assert_true(f.setup.ApplyRouting({Dest("p3", "")}, reason));
+	assert_true(f.setup.IsApplied());
+	// b3 was off going in and nothing here switches a binding on, so it is on again
+	// only because the un-stack put it back before the narrowing read the routing.
+	assert_true(EnabledIs(f, "b2", false));
+	assert_true(EnabledIs(f, "b3", true));
+	// The first application's metadata went back with it.
+	assert_int_equal((int)f.overrides.count("p2"), 0);
+
+	f.setup.Revert();
+	assert_false(f.setup.IsApplied());
+	assert_true(EnabledIs(f, "b1", false));
+	assert_true(EnabledIs(f, "b2", true));
+	assert_true(EnabledIs(f, "b3", true));
+	assert_int_equal((int)f.overrides.count("p2"), 0);
+}
+
+// A routing that will not take is a refused start through this door too, not a
+// half-applied one: going live on part of what was asked broadcasts to destinations
+// nobody chose.
+static void test_setup_routing_only_abandons_an_apply_the_routing_refused(void **state)
+{
+	(void)state;
+	SetupFixture f;
+	OpenSetup(f);
+	SeedBindings(f);
+	// Listed last, so the disable of b3 lands before this one refuses -- an abandon
+	// that put nothing back would leave b3 off the air with nobody holding a record.
+	f.bindings.push_back({"b4", "p4", true});
+	f.refuseDisableOf = "b4";
+
+	std::string reason;
+	assert_false(f.setup.ApplyRouting({Dest("p2", "Friday Night")}, reason));
+	assert_false(reason.empty());
+	assert_false(f.setup.IsApplied());
+	// Everything it managed to change on the way is back where it was.
+	assert_true(EnabledIs(f, "b1", false));
+	assert_true(EnabledIs(f, "b2", true));
+	assert_true(EnabledIs(f, "b3", true));
+	assert_true(EnabledIs(f, "b4", true));
+	assert_true(f.overrides.empty());
+}
+
 // A crash or a kill inside the armed window leaves rows describing what a process
 // was doing. No process is doing it now: a row still `armed` would go live the
 // moment the app opens, and one left `live` would read live forever, since only a
@@ -3019,6 +3177,11 @@ int main(void)
 		cmocka_unit_test(test_setup_captures_a_duplicate_profile_once),
 		cmocka_unit_test(test_setup_removes_an_override_it_created),
 		cmocka_unit_test(test_setup_never_touches_the_routing_while_live),
+		cmocka_unit_test(test_setup_routing_only_leaves_metadata_alone),
+		cmocka_unit_test(test_setup_routing_only_refuses_while_live),
+		cmocka_unit_test(test_setup_routing_only_refuses_an_entry_with_nothing_switched_on),
+		cmocka_unit_test(test_setup_routing_only_unstacks_a_previous_application),
+		cmocka_unit_test(test_setup_routing_only_abandons_an_apply_the_routing_refused),
 		cmocka_unit_test(test_schedule_recovers_interrupted_rows),
 	};
 	return cmocka_run_group_tests(tests, nullptr, nullptr);
