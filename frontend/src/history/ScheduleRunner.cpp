@@ -350,7 +350,7 @@ bool ScheduleRunner::StartIfDue(const ScheduleEntryWithDestinations &row, int64_
 		return false;
 	}
 	std::string error;
-	if (!RequestStart(row, now, error)) {
+	if (!RequestStart(row, now, error, "auto-starting")) {
 		return SetBlockReason(entry.id, error);
 	}
 	// The state stays `armed` until the outputs actually come up. A request is not

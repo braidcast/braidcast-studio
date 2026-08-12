@@ -263,8 +263,8 @@
           class="golive"
           type="button"
           disabled={goingLive}
-          title="Go live now"
-          aria-label="Go live now with {item.title}"
+          title={goingLive ? "Going live…" : "Go live now"}
+          aria-label={goingLive ? `Going live with ${item.title}` : `Go live now with ${item.title}`}
           onclick={() => onGoLive(item)}
         >
           {#if variant === "compact"}
@@ -517,6 +517,12 @@
     color: var(--color-accent-ink);
     background: var(--color-accent);
     border-color: var(--color-accent);
+  }
+  /* The compact variant is an icon alone, so without this a start already under way
+     looks exactly like one waiting to be asked for. The label carries it too. */
+  .golive:disabled {
+    opacity: 0.5;
+    cursor: default;
   }
 
   .rz {

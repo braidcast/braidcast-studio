@@ -313,8 +313,9 @@ private:
 	// that does end in goLive(), shared by the clock (StartIfDue) and the explicit
 	// StartNow. `verb` is only the log wording ("auto-starting" vs. a manual start's
 	// own), so the one line both callers emit still reads as what actually happened.
-	bool RequestStart(const ScheduleEntryWithDestinations &row, int64_t now, std::string &error,
-			  const char *verb = "auto-starting");
+	// Passed by both rather than defaulted: with two callers a default puts one of
+	// their wordings here, away from the path it describes.
+	bool RequestStart(const ScheduleEntryWithDestinations &row, int64_t now, std::string &error, const char *verb);
 	// Asks canArm about EVERY destination, never stopping at the first that answers
 	// yes, and records the refusals for this occurrence before deciding. `reason`
 	// names every destination that cannot go live whenever any cannot -- including
