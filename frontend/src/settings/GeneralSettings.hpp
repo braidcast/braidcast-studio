@@ -20,6 +20,10 @@ struct GeneralSettings {
 	// --- warnings (consumed by the frontend Studio bar) ---
 	bool warnBeforeGoLive = false;
 	bool warnBeforeStop = false;
+	// --- scheduling (read by ScheduleRunner through an injected seam) ---
+	// Whether a scheduled entry refuses to start unless every destination it names can
+	// go live. Off keeps the entry going live with whatever subset can route.
+	bool scheduleRequireAllDestinations = false;
 	// --- persisted prefs consumed by later backlog items ---
 	bool startMinimized = false;                   // Item 11 (tray)
 	bool minimizeToTray = false;                   // Item 11
@@ -66,6 +70,8 @@ inline constexpr GeneralBoolField kGeneralBoolFields[] = {
 	{"snapToCenter", "snap_to_center", &GeneralSettings::snapToCenter},
 	{"warnBeforeGoLive", "warn_before_go_live", &GeneralSettings::warnBeforeGoLive},
 	{"warnBeforeStop", "warn_before_stop", &GeneralSettings::warnBeforeStop},
+	{"scheduleRequireAllDestinations", "schedule_require_all_destinations",
+	 &GeneralSettings::scheduleRequireAllDestinations},
 	{"startMinimized", "start_minimized", &GeneralSettings::startMinimized},
 	{"minimizeToTray", "minimize_to_tray", &GeneralSettings::minimizeToTray},
 	{"alwaysShowTray", "always_show_tray", &GeneralSettings::alwaysShowTray},

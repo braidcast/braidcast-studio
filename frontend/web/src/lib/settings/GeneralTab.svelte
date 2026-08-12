@@ -31,6 +31,7 @@ import { EV } from "$lib/utils/eventNames";
     snapToCenter: true,
     warnBeforeGoLive: false,
     warnBeforeStop: false,
+    scheduleRequireAllDestinations: false,
     startMinimized: false,
     minimizeToTray: false,
     alwaysShowTray: false,
@@ -168,6 +169,19 @@ import { EV } from "$lib/utils/eventNames";
       />
       Warn before stopping the stream
     </label>
+  </section>
+
+  <section class="group">
+    <h4>Schedule</h4>
+    <label class="check">
+      <ToggleSwitch
+        size="sm"
+        checked={s.scheduleRequireAllDestinations}
+        onchange={(v) => void apply({ scheduleRequireAllDestinations: v })}
+      />
+      Require every destination before starting
+    </label>
+    <p class="dim note">A scheduled stream will not start unless every destination it lists can go live. When off, it starts with whichever ones can and leaves the rest out.</p>
   </section>
 
   <section class="group">

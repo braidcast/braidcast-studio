@@ -4,7 +4,11 @@
   import GoLiveCategoryInput from "$lib/dialogs/golive/GoLiveCategoryInput.svelte";
   import GoLiveFieldInput from "$lib/dialogs/golive/GoLiveFieldInput.svelte";
   import GoLiveTagsInput from "$lib/dialogs/golive/GoLiveTagsInput.svelte";
-  import { destinationIdentityStore, type DestinationIdentity } from "$lib/stores/destinationIdentityStore.svelte";
+  import {
+    destinationIdentityStore,
+    unarmedLabel,
+    type DestinationIdentity,
+  } from "$lib/stores/destinationIdentityStore.svelte";
   import { oauthStore } from "$lib/stores/oauthStore.svelte";
   import { scheduleStore } from "$lib/stores/scheduleStore.svelte";
   import { PLATFORM_COLORS, platformKey } from "$lib/theme/platformColors";
@@ -92,8 +96,40 @@
   let saving = $state(false);
   let error = $state<string | null>(null);
 
-  const options = $derived(destinationIdentityStore.all);
+  // The destinations this entry named when it was opened. Held for the whole edit so a
+  // carried-over row stays in the list after it is switched off: vanishing on click
+  // reads as a delete, and undoing a mis-click would then be impossible.
+  const carried = new Set(initial.dests);
+
+  // Only destinations with an ENABLED output binding are offered. Scheduling a disabled
+  // one makes go-live enable it, and if its canvas had no other enabled binding that
+  // canvas wakes and starts a whole extra encode the user deliberately switched off --
+  // a scheduled entry must not be able to put a dormant canvas on the air. `canvasUuid`
+  // is non-null exactly when an enabled binding exists.
+  //
+  // The union with `carried` does not soften that rule: an entry that already names a
+  // destination disabled since has to keep showing it, or saving would silently drop a
+  // destination the user configured. Those rows are marked, and toggle both ways like any
+  // other -- the snapshot exists so switching one off stays undoable. Keeping one selected
+  // is not a way around the filter: canArm refuses it at go-live and says why.
+  const options = $derived(
+    destinationIdentityStore.all.filter((d) => d.canvasUuid !== null || carried.has(d.profileUuid)),
+  );
   const selected = $derived(options.filter((d) => dests.has(d.profileUuid)));
+  /** Offered only because the entry already names them. */
+  const unavailable = $derived(options.filter((d) => d.canvasUuid === null));
+
+  // Per-destination refusals as the host last computed them. Read off the saved entry
+  // and never the draft: whether a destination can route is the host's verdict, and one
+  // added since the last save has not been looked at yet.
+  const blockReasonByProfile = $derived(
+    new Map((entry?.destinations ?? []).map((d) => [d.profileId, d.blockReason])),
+  );
+  const blockedSelected = $derived(
+    selected
+      .map((d) => ({ d, reason: blockReasonByProfile.get(d.profileUuid) ?? "" }))
+      .filter((b) => b.reason !== ""),
+  );
 
   // The provider capability descriptor behind a destination, or null for a
   // stream-key profile. It decides WHICH of the three columns a platform can even
@@ -168,6 +204,9 @@
         category: m.category,
         categoryId: m.categoryId,
         tags: [...m.tags],
+        // Host-computed and ignored on write, so it goes out empty rather than echoing
+        // back a verdict that was reached before this edit.
+        blockReason: "",
       };
     });
   }
@@ -293,7 +332,7 @@
 
     <div class="field">
       <div class="f-label">DESTINATIONS</div>
-      {#if options.length === 0}
+      {#if destinationIdentityStore.all.length === 0}
         <EmptyState
           compact
           title="No destinations yet"
@@ -303,10 +342,23 @@
             <Icon name="destinations" size={22} />
           {/snippet}
         </EmptyState>
+      {:else if options.length === 0}
+        <!-- Reachable and not an error: with every binding switched off there is
+             nothing a schedule may name, and saying so beats an empty box. -->
+        <EmptyState
+          compact
+          title="No destination is enabled"
+          sub="Only a destination with an enabled output binding can be scheduled. Enable one on the Destinations page and it will appear here."
+        >
+          {#snippet icon()}
+            <Icon name="destinations" size={22} />
+          {/snippet}
+        </EmptyState>
       {:else}
         <div class="chips">
           {#each options as d (d.profileUuid)}
             {@const on = dests.has(d.profileUuid)}
+            {@const off = d.canvasUuid === null}
             <button
               type="button"
               class="chip"
@@ -317,10 +369,34 @@
             >
               <PlatformMark platform={d.platform} size={12} />
               <span class="cname">{d.displayName}</span>
-              {#if d.canvasName}<span class="ccanvas">{d.canvasName}</span>{/if}
+              <!-- The state word takes the canvas chip's slot, which is empty for
+                   exactly these rows -- and it is a word, so the tone is not the only
+                   thing carrying it. -->
+              {#if off}
+                <span class="ccanvas off">{unarmedLabel(d)}</span>
+              {:else if d.canvasName}
+                <span class="ccanvas">{d.canvasName}</span>
+              {/if}
             </button>
           {/each}
         </div>
+        {#if unavailable.length > 0}
+          <p class="note">
+            Marked destinations have no enabled output binding. They are kept because this
+            entry already names them, and saving keeps them — but they cannot go live until
+            one is enabled on the Destinations page.
+          </p>
+        {/if}
+        {#if blockedSelected.length > 0}
+          <div class="blocked">
+            <Icon name="warn" size={12} />
+            <div class="blist">
+              {#each blockedSelected as b (b.d.profileUuid)}
+                <span>{b.d.displayName} — {b.reason}</span>
+              {/each}
+            </div>
+          </div>
+        {/if}
       {/if}
     </div>
 
@@ -540,6 +616,9 @@
     letter-spacing: 0.08em;
     color: var(--color-muted);
   }
+  .ccanvas.off {
+    color: var(--color-live);
+  }
 
   /* Accordion rather than every destination expanded at once: three open panels of
      three fields is taller than the modal, and the collapsed line already says
@@ -623,7 +702,8 @@
     line-height: 1.6;
     color: var(--color-muted);
   }
-  .conflict {
+  .conflict,
+  .blocked {
     display: flex;
     align-items: flex-start;
     gap: 6px;
@@ -634,6 +714,15 @@
     line-height: 1.6;
     color: var(--color-live);
     border: var(--border-weight) solid color-mix(in srgb, var(--color-live) 45%, transparent);
+  }
+  .blocked {
+    margin-top: 8px;
+  }
+  .blist {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
   }
   .error {
     margin: 0;

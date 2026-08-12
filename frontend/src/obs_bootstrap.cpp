@@ -581,11 +581,13 @@ bool StreamingOrGoingLive()
 
 // The binding that routes `profileId`, or empty when nothing does. A profile can be
 // bound on several canvases but only one may be enabled (one RTMP key = one live
-// stream), so a scheduled entry takes the first.
-std::string BindingForProfile(const std::string &profileId)
+// stream), so a scheduled entry takes the first. `enabledOnly` narrows that to a
+// binding that is actually on the air, which is a different question from whether the
+// profile is routed anywhere at all.
+std::string BindingForProfile(const std::string &profileId, bool enabledOnly)
 {
 	for (const OutputBinding &b : g_outputBindings.Bindings().bindings) {
-		if (!profileId.empty() && b.profileUuid == profileId) {
+		if (!profileId.empty() && b.profileUuid == profileId && (!enabledOnly || b.enabled)) {
 			return b.uuid;
 		}
 	}
@@ -1296,10 +1298,18 @@ bool ObsBootstrap::Start()
 			reason = "its stream profile was deleted";
 			return false;
 		}
-		// Whether a binding EXISTS, not whether it is enabled: going live is what
-		// enables it, so the flag says nothing about whether this entry can run.
-		if (BindingForProfile(profileId).empty()) {
+		if (BindingForProfile(profileId, false).empty()) {
 			reason = "'" + profile->DisplayName() + "' is not routed to any canvas";
+			return false;
+		}
+		// The binding has to be ENABLED, not merely present, because a scheduled entry
+		// never switches one on. Enabling a binding whose canvas has no other enabled
+		// binding wakes that canvas and starts a whole extra encode -- so an entry
+		// naming a destination the user had switched off would put the user's machine
+		// under a load they had deliberately turned off, at a time they may not be
+		// watching.
+		if (BindingForProfile(profileId, true).empty()) {
+			reason = "'" + profile->DisplayName() + "' is switched off";
 			return false;
 		}
 		if (profile->accountId.empty()) {
@@ -1311,6 +1321,9 @@ bool ObsBootstrap::Start()
 			return false;
 		}
 		return true;
+	};
+	g_scheduleRunner.requireAllDestinations = [] {
+		return g_general.scheduleRequireAllDestinations;
 	};
 
 	// Feed the recorder off the one host-side sampler rather than sampling again:

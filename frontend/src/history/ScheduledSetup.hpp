@@ -65,16 +65,22 @@ public:
 	std::function<void(const std::string &)> log;
 
 	// False + `reason` when nothing was applied and the caller must not go live.
+	//
+	// Narrowing only: an entry may take destinations off the air, never put one on.
+	// A destination it names that is switched off stays switched off, and an entry
+	// that names nothing currently switched on is refused rather than applied onto an
+	// empty enabled set. Switching a binding on whose canvas has no other enabled
+	// binding wakes that canvas and starts an encode the user deliberately turned off,
+	// which is not something a plan running unattended may decide to do.
 	bool Apply(const std::vector<ScheduleDestination> &destinations, std::string &reason);
 
 	// Put back what Apply changed, per item: a binding or a bag someone else has
 	// altered since is left alone rather than overwritten, and one such change does
 	// not strand the rest of the restore.
 	//
-	// Disables run before enables, the mirror of Apply and for the same reason: a
-	// profile bound on two canvases can only be enabled on one, so re-enabling the
-	// user's binding while the entry's still holds the profile is refused and both
-	// end up off. A write that is refused anyway keeps its snapshot for a later
+	// Every routing record is a binding Apply took off the air, since an entry may
+	// only narrow the enabled set, so the restore is one unordered pass of switching
+	// those back on. A write that is refused anyway keeps its snapshot for a later
 	// call rather than being dropped -- losing the user's routing silently is the
 	// one outcome a restore must not have.
 	//

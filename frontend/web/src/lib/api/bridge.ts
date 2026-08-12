@@ -301,10 +301,10 @@ export interface MonitorDevice {
 /** How a source's audio is monitored, mapping the OBS_MONITORING_TYPE_* enum. */
 export type AudioMonitoringType = "none" | "monitorOnly" | "monitorAndOutput";
 
-/** General app settings (snapping, projectors, go-live warnings, system tray,
- * multiview, importer prompts). A flat object; setGeneral applies any present
- * subset and echoes the full post-apply state. `snapDistance` is clamped 0..100
- * server-side; `multiviewLayout` is one of the multiview layout ids. */
+/** General app settings (snapping, projectors, go-live warnings, scheduling,
+ * system tray, multiview, importer prompts). A flat object; setGeneral applies any
+ * present subset and echoes the full post-apply state. `snapDistance` is clamped
+ * 0..100 server-side; `multiviewLayout` is one of the multiview layout ids. */
 export interface GeneralSettings {
   projectorAlwaysOnTop: boolean;
   snapEnabled: boolean;
@@ -314,6 +314,10 @@ export interface GeneralSettings {
   snapToCenter: boolean;
   warnBeforeGoLive: boolean;
   warnBeforeStop: boolean;
+  /** A scheduled entry refuses to start unless EVERY destination it names can go
+   * live. Default false, which starts on whichever subset can route and leaves the
+   * rest out -- see ScheduleDestinationInfo.blockReason for what was left. */
+  scheduleRequireAllDestinations: boolean;
   startMinimized: boolean;
   minimizeToTray: boolean;
   alwaysShowTray: boolean;
@@ -980,6 +984,13 @@ export interface ScheduleDestinationInfo {
   category: string;
   categoryId: string;
   tags: string[];
+  /** Why THIS destination cannot go live (no enabled output binding, a deleted
+   * stream profile, a disconnected account), or "" when nothing is wrong. Host-
+   * computed and ignored on write. Distinct from ScheduleEntryInfo.blockReason,
+   * which refuses the entry as a whole: with `scheduleRequireAllDestinations` off
+   * the entry still airs on whatever can route, and this is the only account of
+   * what was left out. */
+  blockReason: string;
 }
 
 /** How far a planned entry has got. `planned` and `armed` are the only editable

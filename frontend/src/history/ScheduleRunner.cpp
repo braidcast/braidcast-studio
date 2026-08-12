@@ -152,7 +152,8 @@ bool ScheduleRunner::PruneStale(int64_t now)
 			++it;
 			continue;
 		}
-		changed = changed || it->second.canceled || !it->second.blockReason.empty();
+		changed = changed || it->second.canceled || !it->second.blockReason.empty() ||
+			  !it->second.destinationRefusals.empty();
 		it = occurrences_.erase(it);
 	}
 
@@ -281,11 +282,18 @@ bool ScheduleRunner::RefreshArmability(const ScheduleEntryWithDestinations &row)
 	if (row.entry.state != ScheduleState::kArmed) {
 		return false;
 	}
-	if (RoutingHeldElsewhere(row.entry.id)) {
-		return SetBlockReason(row.entry.id, kAlreadyStreamingReason);
-	}
+	// Asked even while the routing is held elsewhere, because this sweep is the only
+	// thing that keeps the per-destination reasons current -- skipping it there would
+	// freeze them at whatever the last unheld tick saw, and a chip that stopped being
+	// true is the failure the refresh exists to avoid. Only the entry-level answer is
+	// overridden below.
 	std::string reason;
-	return SetBlockReason(row.entry.id, Armable(row, reason) ? std::string() : reason);
+	bool changed = false;
+	const bool armable = Armable(row, reason, &changed);
+	if (RoutingHeldElsewhere(row.entry.id)) {
+		return SetBlockReason(row.entry.id, kAlreadyStreamingReason) || changed;
+	}
+	return SetBlockReason(row.entry.id, armable ? std::string() : reason) || changed;
 }
 
 // Whether something else already owns the routing. Two questions, not one: whether
@@ -376,6 +384,15 @@ bool ScheduleRunner::PrepareStart(const ScheduleEntryWithDestinations &row, int6
 		}
 		appliedId_ = entry.id;
 	}
+	// Without requireAllDestinations an entry is allowed to start without everything
+	// it names, and its own block reason is empty when it does -- so this line is the
+	// only record that the broadcast went out to fewer destinations than were planned.
+	// Reached once per occurrence, like the start it belongs to.
+	const std::vector<DestinationRefusal> *refusals = RefusalsFor(entry.id);
+	if (refusals && !refusals->empty()) {
+		Log("[schedule] '" + entry.title + "' (" + entry.id +
+		    ") is going live without: " + JoinRefusals(*refusals));
+	}
 	Occurrence &occurrence = occurrences_[entry.id];
 	occurrence.startRequested = true;
 	occurrence.startRequestedAtMs = now;
@@ -396,27 +413,94 @@ bool ScheduleRunner::RequestStart(const ScheduleEntryWithDestinations &row, int6
 	return true;
 }
 
-bool ScheduleRunner::Armable(const ScheduleEntryWithDestinations &row, std::string &reason) const
+std::string ScheduleRunner::JoinRefusals(const std::vector<DestinationRefusal> &refusals)
+{
+	std::string out;
+	for (const DestinationRefusal &refusal : refusals) {
+		out += out.empty() ? refusal.reason : "; " + refusal.reason;
+	}
+	return out;
+}
+
+const std::vector<ScheduleRunner::DestinationRefusal> *ScheduleRunner::RefusalsFor(const std::string &id) const
+{
+	const auto it = occurrences_.find(id);
+	return it == occurrences_.end() ? nullptr : &it->second.destinationRefusals;
+}
+
+std::string ScheduleRunner::DestinationBlockReason(const std::string &id, const std::string &profileId) const
+{
+	const std::vector<DestinationRefusal> *refusals = RefusalsFor(id);
+	if (!refusals) {
+		return {};
+	}
+	for (const DestinationRefusal &refusal : *refusals) {
+		if (refusal.profileId == profileId) {
+			return refusal.reason;
+		}
+	}
+	return {};
+}
+
+bool ScheduleRunner::SetDestinationRefusals(const std::string &id, std::vector<DestinationRefusal> refusals)
+{
+	const auto existing = occurrences_.find(id);
+	if (refusals.empty() && existing == occurrences_.end()) {
+		return false; // nothing tracked and nothing to say: do not start tracking
+	}
+	Occurrence &occurrence = existing == occurrences_.end() ? occurrences_[id] : existing->second;
+	const std::vector<DestinationRefusal> &before = occurrence.destinationRefusals;
+	bool same = before.size() == refusals.size();
+	for (size_t i = 0; same && i < refusals.size(); i++) {
+		same = before[i].profileId == refusals[i].profileId && before[i].reason == refusals[i].reason;
+	}
+	if (same) {
+		return false;
+	}
+	occurrence.destinationRefusals = std::move(refusals);
+	return true;
+}
+
+bool ScheduleRunner::Armable(const ScheduleEntryWithDestinations &row, std::string &reason, bool *changed)
 {
 	if (row.destinations.empty()) {
 		reason = "this entry has no destinations";
 		return false;
 	}
 	if (!canArm) {
+		const bool moved = SetDestinationRefusals(row.entry.id, {});
+		if (changed) {
+			*changed = moved;
+		}
 		return true;
 	}
-	std::string problems;
+	// Every destination, never stopping at the first that can route. An entry naming
+	// three that went live on one used to say nothing at all about the other two --
+	// the answer it gave was about the entry, and the user was asking about their
+	// destinations.
+	std::vector<DestinationRefusal> refusals;
+	size_t routable = 0;
 	for (const ScheduleDestination &destination : row.destinations) {
 		std::string why;
 		if (canArm(destination.profileId, why)) {
-			return true; // one destination is a broadcast
+			routable++;
+			continue;
 		}
-		if (!why.empty()) {
-			problems += problems.empty() ? why : "; " + why;
-		}
+		refusals.push_back({destination.profileId, why.empty() ? "it cannot go live" : why});
 	}
-	reason = problems.empty() ? "no destination can go live" : problems;
-	return false;
+	const bool moved = SetDestinationRefusals(row.entry.id, refusals);
+	if (changed) {
+		*changed = moved;
+	}
+	if (refusals.empty()) {
+		return true;
+	}
+	reason = JoinRefusals(refusals);
+	// The user's own call: strict refuses an entry that cannot reach everything it
+	// names, rather than putting a broadcast on the air that is missing destinations
+	// they planned for. Lenient keeps the older behavior and lets the subset go.
+	const bool requireAll = requireAllDestinations && requireAllDestinations();
+	return !requireAll && routable > 0;
 }
 
 bool ScheduleRunner::SetBlockReason(const std::string &id, const std::string &reason)

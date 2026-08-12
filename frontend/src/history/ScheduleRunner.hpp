@@ -88,6 +88,13 @@ public:
 	// with something the UI can show. Unset means every destination is armable.
 	std::function<bool(const std::string &profileId, std::string &reason)> canArm;
 
+	// Whether an entry may only start when EVERY destination it names can go live.
+	// Unset means no, which is the shipped default: the entry goes live with whatever
+	// subset can route, and the rest are named beside themselves instead. Injected
+	// like every other outside fact rather than read from the settings singleton, so
+	// the state machine keeps no opinion about where the answer comes from.
+	std::function<bool()> requireAllDestinations;
+
 	// Whether a broadcast is already running. An entry cannot take over the routing
 	// from one, so this is a refusal, surfaced through the same block reason the
 	// chip already shows -- and surfaced for the whole armed window, which is time
@@ -209,7 +216,19 @@ public:
 	// Why this occurrence cannot go live, or empty when nothing is wrong. Surfaced
 	// alongside the state so a refused auto-start reads as an explanation rather
 	// than as an entry that silently did not happen.
+	//
+	// What "the entry" means here follows requireAllDestinations: without it the entry
+	// is only blocked when nothing it names can route, so a partly-unroutable entry
+	// reads empty and the destinations answer for themselves; with it, one destination
+	// that cannot route blocks the entry.
 	std::string BlockReason(const std::string &id) const;
+
+	// Why this occurrence cannot send to `profileId`, or empty when that destination
+	// is fine. Answered from what the armability pass already worked out rather than
+	// by asking again, so serializing a month of entries costs no extra work -- which
+	// also means it is populated for the same occurrences the entry-level reason is,
+	// and empty for an entry that has never armed.
+	std::string DestinationBlockReason(const std::string &id, const std::string &profileId) const;
 
 	// The entry a broadcast starting now belongs to -- the live one, else the one
 	// that asked to start, else empty. What stamps schedule_id onto the session
@@ -240,6 +259,14 @@ public:
 	void NoteStartFailed();
 
 private:
+	// One destination that cannot go live, and why. Held in the entry's own
+	// destination order, so the joined reason and the per-destination answers read the
+	// same way twice running.
+	struct DestinationRefusal {
+		std::string profileId;
+		std::string reason;
+	};
+
 	// Per-occurrence state that is deliberately not persisted: it describes this
 	// run of this app, and a restart is a fresh reading of the clock.
 	struct Occurrence {
@@ -255,6 +282,10 @@ private:
 		// Meaningless unless startRequested.
 		int64_t startRequestedAtMs = 0;
 		std::string blockReason;
+		// Only the destinations that cannot go live; one that can is absent. The
+		// single canArm sweep behind both this and blockReason, so nothing asks a
+		// destination the same question twice in one tick.
+		std::vector<DestinationRefusal> destinationRefusals;
 	};
 
 	bool PruneStale(int64_t now);
@@ -280,7 +311,22 @@ private:
 	// own), so the one line both callers emit still reads as what actually happened.
 	bool RequestStart(const ScheduleEntryWithDestinations &row, int64_t now, std::string &error,
 			  const char *verb = "auto-starting");
-	bool Armable(const ScheduleEntryWithDestinations &row, std::string &reason) const;
+	// Asks canArm about EVERY destination, never stopping at the first that answers
+	// yes, and records the refusals for this occurrence before deciding. `reason`
+	// names every destination that cannot go live whenever any cannot -- including
+	// when the entry is armable without them -- so the caller chooses whether that is
+	// a refusal to show or a log line; `changed`, when given, says whether the
+	// recorded refusals moved, which is a repaint the entry-level reason can miss.
+	bool Armable(const ScheduleEntryWithDestinations &row, std::string &reason, bool *changed = nullptr);
+	// The refusals recorded for `id`, or nullptr when nothing is tracked for it.
+	const std::vector<DestinationRefusal> *RefusalsFor(const std::string &id) const;
+	// Replace them, answering whether they moved. A destination's reason can change
+	// while the entry's own stays empty, and the calendar only repaints on the event
+	// that answer pushes.
+	bool SetDestinationRefusals(const std::string &id, std::vector<DestinationRefusal> refusals);
+	// One formatter for a list of refusals, so the chip and the log cannot word the
+	// same failure two ways.
+	static std::string JoinRefusals(const std::vector<DestinationRefusal> &refusals);
 	bool SetBlockReason(const std::string &id, const std::string &reason);
 	void SettleApplied();
 	void RevertApplied();

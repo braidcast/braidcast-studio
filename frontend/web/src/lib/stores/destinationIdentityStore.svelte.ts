@@ -68,6 +68,19 @@ export interface DestinationIdentity {
   boundButDisabled: boolean;
 }
 
+/** What a destination with no enabled binding is called. Only meaningful while
+ * `canvasUuid` is null.
+ *
+ * Two words rather than one, for the reason `boundButDisabled` exists: a binding
+ * merely switched off asks the user to enable it, while no binding at all asks them
+ * to go create one, and a single label sends half of them to the wrong page.
+ * "disabled" is the Multistream dock's own word for these rows -- one state must not
+ * read as two different problems across the destination chips, the dock and the
+ * schedule editor, which is exactly what three hand-written copies produce. */
+export function unarmedLabel(d: DestinationIdentity): string {
+  return d.boundButDisabled ? "disabled" : "not armed";
+}
+
 class DestinationIdentityStore {
   #started = false;
 

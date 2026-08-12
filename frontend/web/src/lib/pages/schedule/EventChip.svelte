@@ -110,7 +110,26 @@
   const goLiveable = $derived(item.state !== null && GO_LIVE_STATES.includes(item.state));
 
   const platforms = $derived(
-    item.profileIds.map((id) => destinationIdentityStore.forProfile(id)?.platform ?? "rtmp"),
+    item.destinations.map((d) => destinationIdentityStore.forProfile(d.profileId)?.platform ?? "rtmp"),
+  );
+
+  // Destinations this entry names that the host has refused. Separate from
+  // item.blockReason, which refuses the entry as a whole: with "require every
+  // destination" off the entry still airs on whatever can route, so this is the only
+  // place the user learns the broadcast is about to go out a destination short.
+  const blockedDests = $derived(item.destinations.filter((d) => d.blockReason !== ""));
+  const blockedLabel = $derived(
+    blockedDests.length === 0
+      ? ""
+      : `${blockedDests.length} of ${item.destinations.length} destinations cannot go live`,
+  );
+  const blockedText = $derived(
+    blockedDests
+      .map(
+        (d) =>
+          `${destinationIdentityStore.forProfile(d.profileId)?.displayName ?? "A destination"} cannot go live: ${d.blockReason}`,
+      )
+      .join(" — "),
   );
 
   const conflictText = $derived(
@@ -122,7 +141,15 @@
   // A refusal or a clash outranks the state as the thing the chip must say. Both
   // are words, not just the warn glyph: the glyph alone is a second colour-only
   // carrier, which is the failure the written-label rule exists to prevent.
-  const alert = $derived(item.blockReason ? "Blocked" : conflict ? "Conflict" : "");
+  const alert = $derived(
+    item.blockReason
+      ? "Blocked"
+      : conflict
+        ? "Conflict"
+        : blockedDests.length > 0
+          ? `${blockedDests.length} blocked`
+          : "",
+  );
 
   // Always rendered in the compact form, never only for the states that happen to
   // be interesting. `planned`, `done` and `canceled` all resolve to the same muted
@@ -138,6 +165,7 @@
       badge,
       overrun > 0 ? `ran ${formatDuration(overrun)} over plan` : "",
       item.blockReason ? `Cannot go live: ${item.blockReason}` : "",
+      blockedText,
       conflictText,
     ]
       .filter((part) => part !== "")
@@ -203,7 +231,7 @@
       <span class="foot">
         {#if platforms.length > 0}
           <span class="marks">
-            {#each platforms as p, i (item.profileIds[i])}
+            {#each platforms as p, i (item.destinations[i].profileId)}
               <PlatformMark platform={p} size={11} />
             {/each}
           </span>
@@ -216,7 +244,9 @@
       {#if alert}
         <!-- Same precedence as the compact badge, with the room to say the whole
              reason instead of the one word that stands for it. -->
-        <span class="warn"><Icon name="warn" size={11} /> {item.blockReason || alert}</span>
+        <span class="warn"
+          ><Icon name="warn" size={11} /> {item.blockReason || blockedLabel || alert}</span
+        >
       {/if}
     {/if}
   </button>

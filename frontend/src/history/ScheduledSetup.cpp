@@ -87,16 +87,18 @@ bool ScheduledSetup::Apply(const std::vector<ScheduleDestination> &destinations,
 	if (routing.read && routing.write) {
 		const std::vector<RoutingBinding> before = routing.read();
 
-		// The bindings the entry names, deduped: a profile can be bound on
-		// several canvases and only one of them may be enabled, so the first is
-		// the one a scheduled entry routes through.
+		// The ENABLED bindings the entry names, deduped: a profile can be bound
+		// on several canvases and only one of them may be enabled, so the
+		// enabled one is the binding a scheduled entry routes through. A profile
+		// with no enabled binding resolves to nothing, which is what leaves it
+		// switched off below rather than being switched on for it.
 		std::vector<std::string> wanted;
 		for (const ScheduleDestination &d : destinations) {
 			if (d.profileId.empty()) {
 				continue;
 			}
 			for (const RoutingBinding &b : before) {
-				if (b.profileId == d.profileId) {
+				if (b.profileId == d.profileId && b.enabled) {
 					if (!Contains(wanted, b.uuid)) {
 						wanted.push_back(b.uuid);
 					}
@@ -105,24 +107,31 @@ bool ScheduledSetup::Apply(const std::vector<ScheduleDestination> &destinations,
 			}
 		}
 
-		// The enabled set becomes exactly what the entry names. Disabling runs
-		// first: enabling a profile bound on another canvas would be refused by
-		// the single-live-stream rule while the old binding still holds it.
+		// Narrowing to nothing is not narrowing. With no enabled binding left the
+		// pass below would take everything off the air and report success, and the
+		// go-live would broadcast nowhere. The runner's armability gate refuses an
+		// entry in that state before it ever gets here, but an outcome this bad must
+		// not rest on a caller remembering to check.
+		if (wanted.empty() && !destinations.empty()) {
+			reason = "none of this entry's destinations are switched on";
+			Revert();
+			return false;
+		}
+
+		// An entry narrows the enabled set; it never widens it. Switching a binding
+		// on whose canvas has no other enabled binding wakes that canvas and starts a
+		// whole extra encode -- an entry naming a destination the user had switched
+		// off would put their machine under a load they deliberately turned off, at a
+		// time they may not be watching. A destination the entry cannot reach is
+		// reported against that destination instead, and whether the entry still goes
+		// live without it is the user's own setting.
 		//
 		// A refusal abandons the whole application rather than going live on a
 		// half-applied routing, which would broadcast to destinations nobody
-		// scheduled -- the outcome the exact-set rule exists to prevent.
+		// scheduled.
 		for (const RoutingBinding &b : before) {
 			if (b.enabled && !Contains(wanted, b.uuid) && !Flip(b.uuid, false)) {
 				reason = "a destination could not be taken off the air for this entry";
-				Revert();
-				return false;
-			}
-		}
-		for (const std::string &uuid : wanted) {
-			const RoutingBinding *b = Find(before, uuid);
-			if (b && !b->enabled && !Flip(uuid, true)) {
-				reason = "a destination could not be put on the air for this entry";
 				Revert();
 				return false;
 			}
@@ -197,25 +206,21 @@ void ScheduledSetup::Revert()
 	// instead of leaving the user's destinations rewritten with no record of it.
 	std::vector<TouchedBinding> refused;
 	if (routing.read && routing.write) {
-		// Disables before enables, mirroring Apply: putting a binding back on
-		// while the entry's binding still holds its profile is refused by the
-		// single-live-stream rule, and that refusal would end with both off.
-		for (const bool enabling : {false, true}) {
-			const std::vector<RoutingBinding> current = routing.read();
-			for (const TouchedBinding &touched : bindings_) {
-				if (touched.before != enabling) {
-					continue;
-				}
-				const RoutingBinding *now = Find(current, touched.uuid);
-				// Per binding rather than over the set as a whole: an
-				// unrelated change elsewhere must not strand every other
-				// restore.
-				if (!now || now->enabled != touched.after) {
-					continue;
-				}
-				if (!WriteLanded(touched.uuid, touched.before)) {
-					refused.push_back(touched);
-				}
+		// One pass, in any order: Apply only ever takes bindings off the air, so
+		// every record here is a disable to undo and switching one back on cannot
+		// collide with another. Ordering mattered only while Apply could move a
+		// profile from one canvas to another, which left a binding holding that
+		// profile that had to come off before the user's own could go back on.
+		const std::vector<RoutingBinding> current = routing.read();
+		for (const TouchedBinding &touched : bindings_) {
+			const RoutingBinding *now = Find(current, touched.uuid);
+			// Per binding rather than over the set as a whole: an unrelated
+			// change elsewhere must not strand every other restore.
+			if (!now || now->enabled != touched.after) {
+				continue;
+			}
+			if (!WriteLanded(touched.uuid, touched.before)) {
+				refused.push_back(touched);
 			}
 		}
 	}

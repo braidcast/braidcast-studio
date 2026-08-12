@@ -683,6 +683,9 @@ struct RunnerFixture {
 	bool applyOk = true;
 	std::string applyReason = "the routing could not be loaded";
 	bool streaming = false;
+	// The user's "every destination or nothing" setting, injected like the rest of the
+	// runner's outside world.
+	bool requireAllDestinations = false;
 	std::vector<std::string> appliedProfiles;
 	std::vector<std::string> logLines;
 };
@@ -704,6 +707,9 @@ static void OpenRunner(RunnerFixture &f, const char *name)
 	};
 	f.runner.isStreaming = [&f] {
 		return f.streaming;
+	};
+	f.runner.requireAllDestinations = [&f] {
+		return f.requireAllDestinations;
 	};
 	f.runner.applyEntry = [&f](const std::vector<History::ScheduleDestination> &destinations, std::string &reason) {
 		f.applyAttempts++;
@@ -727,18 +733,25 @@ static void OpenRunner(RunnerFixture &f, const char *name)
 	};
 }
 
-static std::string SeedEntry(RunnerFixture &f, int64_t startsAt, bool autoStart, bool withDestination = true)
+static std::string SeedEntryWith(RunnerFixture &f, int64_t startsAt, bool autoStart,
+				 const std::vector<std::string> &profileIds)
 {
 	History::ScheduleEntry entry = MakeEntry(startsAt, "Friday Night");
 	entry.autoStart = autoStart ? 1 : 0;
 	std::vector<History::ScheduleDestination> destinations;
-	if (withDestination) {
+	for (const std::string &profileId : profileIds) {
 		History::ScheduleDestination d;
-		d.profileId = "p1";
+		d.profileId = profileId;
 		destinations.push_back(d);
 	}
 	assert_true(f.store.Create(entry, destinations));
 	return entry.id;
+}
+
+static std::string SeedEntry(RunnerFixture &f, int64_t startsAt, bool autoStart, bool withDestination = true)
+{
+	return SeedEntryWith(f, startsAt, autoStart,
+			     withDestination ? std::vector<std::string>{"p1"} : std::vector<std::string>{});
 }
 
 static bool LoggedLike(const RunnerFixture &f, const char *fragment)
@@ -1598,6 +1611,135 @@ static void test_runner_tracks_armability_through_the_window(void **state)
 	assert_string_equal(f.runner.BlockReason(id).c_str(), "'Main' is not connected");
 }
 
+// A canArm that says yes to the first destination and no to the rest. The armability
+// pass used to return on that first yes, so an entry naming three went live on one
+// and reported nothing about the other two.
+static void test_runner_asks_every_destination_not_just_the_first(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_every_destination.db");
+	std::vector<std::string> asked;
+	f.runner.canArm = [&asked](const std::string &profileId, std::string &reason) {
+		asked.push_back(profileId);
+		if (profileId == "p1") {
+			return true;
+		}
+		reason = "'" + profileId + "' is switched off";
+		return false;
+	};
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntryWith(f, startsAt, true, {"p1", "p2", "p3"});
+
+	f.clock = startsAt - History::kArmLeadMs;
+	f.runner.Tick();
+
+	// Three questions for three destinations, and exactly three: one sweep per tick
+	// answers both the entry and every destination, so nothing is asked twice.
+	assert_int_equal((int)asked.size(), 3);
+	assert_string_equal(f.runner.DestinationBlockReason(id, "p1").c_str(), "");
+	assert_string_equal(f.runner.DestinationBlockReason(id, "p2").c_str(), "'p2' is switched off");
+	assert_string_equal(f.runner.DestinationBlockReason(id, "p3").c_str(), "'p3' is switched off");
+}
+
+// The default: the entry goes live with the destinations that can route. What it
+// could not reach has to be recorded somewhere, or going live with one of three is
+// exactly as silent as the bug this replaced.
+static void test_runner_starts_a_partial_entry_when_destinations_are_not_all_required(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_partial_lenient.db");
+	f.requireAllDestinations = false;
+	f.runner.canArm = [](const std::string &profileId, std::string &reason) {
+		if (profileId == "p1") {
+			return true;
+		}
+		reason = "'" + profileId + "' is switched off";
+		return false;
+	};
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntryWith(f, startsAt, true, {"p1", "p2"});
+
+	f.clock = startsAt - History::kArmLeadMs;
+	f.runner.Tick();
+	// The entry as a whole can still run, so its own reason stays empty; the
+	// destination that cannot is named beside itself.
+	assert_string_equal(f.runner.BlockReason(id).c_str(), "");
+	assert_string_equal(f.runner.DestinationBlockReason(id, "p1").c_str(), "");
+	assert_string_equal(f.runner.DestinationBlockReason(id, "p2").c_str(), "'p2' is switched off");
+
+	f.clock = startsAt;
+	f.runner.Tick();
+	assert_int_equal(f.applyAttempts, 1);
+	assert_int_equal(f.applyCalls, 1);
+	assert_int_equal(f.goLiveCalls, 1);
+	assert_true(LoggedLike(f, "is going live without: 'p2' is switched off"));
+}
+
+// The same entry under the strict setting. One destination it cannot reach refuses
+// the whole start, and the runner must never even ask to load the routing -- an
+// applyCalls of zero cannot tell that apart from an apply that was refused.
+static void test_runner_refuses_a_partial_entry_when_every_destination_is_required(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_partial_strict.db");
+	f.requireAllDestinations = true;
+	f.runner.canArm = [](const std::string &profileId, std::string &reason) {
+		if (profileId == "p1") {
+			return true;
+		}
+		reason = "'" + profileId + "' is switched off";
+		return false;
+	};
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntryWith(f, startsAt, true, {"p1", "p2"});
+
+	f.clock = startsAt - History::kArmLeadMs;
+	f.runner.Tick();
+	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kArmed);
+	assert_string_equal(f.runner.BlockReason(id).c_str(), "'p2' is switched off");
+	assert_string_equal(f.runner.DestinationBlockReason(id, "p1").c_str(), "");
+	assert_string_equal(f.runner.DestinationBlockReason(id, "p2").c_str(), "'p2' is switched off");
+
+	f.clock = startsAt;
+	f.runner.Tick();
+	assert_int_equal(f.applyAttempts, 0);
+	assert_int_equal(f.goLiveCalls, 0);
+
+	// And by hand, which runs through the same armability gate.
+	std::string error;
+	assert_false(f.runner.StartNow(id, error));
+	assert_string_equal(error.c_str(), "'p2' is switched off");
+	assert_int_equal(f.applyAttempts, 0);
+}
+
+// The lower half of the same rule: without the strict setting the entry is blocked
+// only when nothing it names can route, and the reason names every one of them.
+static void test_runner_blocks_an_entry_when_no_destination_can_route(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_partial_none.db");
+	f.requireAllDestinations = false;
+	f.runner.canArm = [](const std::string &profileId, std::string &reason) {
+		reason = "'" + profileId + "' is switched off";
+		return false;
+	};
+	const int64_t startsAt = 10'000'000;
+	const std::string id = SeedEntryWith(f, startsAt, true, {"p1", "p2"});
+
+	f.clock = startsAt - History::kArmLeadMs;
+	f.runner.Tick();
+	assert_string_equal(f.runner.BlockReason(id).c_str(), "'p1' is switched off; 'p2' is switched off");
+
+	f.clock = startsAt;
+	f.runner.Tick();
+	assert_int_equal(f.applyAttempts, 0);
+	assert_int_equal(f.goLiveCalls, 0);
+}
+
 // The explicit "start this now" path, on a planned entry nowhere near its arm
 // window. It has to arm the row itself -- RequestStart only loads routing, it never
 // changes state -- or NoteWentLive would find the row still `planned` and drop the
@@ -2144,8 +2286,11 @@ struct SetupFixture {
 	std::map<std::string, nlohmann::json> overrides;
 	bool streaming = false;
 	// Refuse to enable this one binding, standing in for any reason the real setter
-	// can say no beyond the single-live-stream rule the fake models on its own.
+	// can say no beyond the single-live-stream rule the fake models on its own. Only
+	// a restore switches a binding back on, so this is the restore's refusal.
 	std::string refuseEnableOf;
+	// The same for a disable, which is the only flip an apply makes.
+	std::string refuseDisableOf;
 	// Flip this one binding and then report failure anyway, as the real setter does
 	// when the save fails after it has already assigned the flag, stopped the output
 	// and reconciled.
@@ -2177,7 +2322,7 @@ static void OpenSetup(SetupFixture &f)
 		if (!target) {
 			return false;
 		}
-		if (enabled && uuid == f.refuseEnableOf) {
+		if (uuid == (enabled ? f.refuseEnableOf : f.refuseDisableOf)) {
 			f.refusals++;
 			return false;
 		}
@@ -2232,9 +2377,9 @@ static History::ScheduleDestination Dest(const char *profileId, const char *titl
 	return d;
 }
 
-// The enabled set becomes exactly what the entry names, and the set the user had
-// comes back whole.
-static void test_setup_restores_exactly_what_it_changed(void **state)
+// The enabled set narrows to what the entry names, and the set the user had comes
+// back whole.
+static void test_setup_narrows_the_enabled_set_and_restores_it(void **state)
 {
 	(void)state;
 	SetupFixture f;
@@ -2242,10 +2387,10 @@ static void test_setup_restores_exactly_what_it_changed(void **state)
 	SeedBindings(f);
 
 	std::string reason;
-	assert_true(f.setup.Apply({Dest("p1", "")}, reason));
+	assert_true(f.setup.Apply({Dest("p2", "")}, reason));
 	assert_true(f.setup.IsApplied());
-	assert_true(EnabledIs(f, "b1", true));
-	assert_true(EnabledIs(f, "b2", false));
+	assert_true(EnabledIs(f, "b1", false));
+	assert_true(EnabledIs(f, "b2", true));
 	assert_true(EnabledIs(f, "b3", false));
 
 	f.setup.Revert();
@@ -2259,6 +2404,54 @@ static void test_setup_restores_exactly_what_it_changed(void **state)
 	assert_true(EnabledIs(f, "b2", true));
 }
 
+// The rule the whole feature turns on: a scheduled entry never switches a
+// destination on. Switching a binding on whose canvas has no other enabled binding
+// wakes that canvas and starts an encode the user deliberately turned off -- so an
+// entry naming a switched-off destination goes live without it rather than reaching
+// over and enabling it.
+static void test_setup_never_switches_a_destination_on(void **state)
+{
+	(void)state;
+	SetupFixture f;
+	OpenSetup(f);
+	SeedBindings(f); // b1 (p1) is off; b2 (p2) and b3 (p3) are on
+
+	std::string reason;
+	assert_true(f.setup.Apply({Dest("p2", ""), Dest("p1", "")}, reason));
+	assert_true(f.setup.IsApplied());
+	assert_true(EnabledIs(f, "b1", false)); // named by the entry, and still off
+	assert_true(EnabledIs(f, "b2", true));
+	assert_true(EnabledIs(f, "b3", false));
+
+	// Nothing was switched on, so the restore has only the one disable to undo.
+	f.setup.Revert();
+	assert_true(EnabledIs(f, "b1", false));
+	assert_true(EnabledIs(f, "b2", true));
+	assert_true(EnabledIs(f, "b3", true));
+}
+
+// An entry whose destinations are all switched off would narrow the enabled set to
+// nothing: everything off the air, an apply reporting success, and a broadcast going
+// nowhere. The runner refuses such an entry before this is reached, but an outcome
+// this bad must not rest on a caller remembering to check.
+static void test_setup_refuses_an_entry_with_nothing_switched_on(void **state)
+{
+	(void)state;
+	SetupFixture f;
+	OpenSetup(f);
+	SeedBindings(f);
+
+	std::string reason;
+	assert_false(f.setup.Apply({Dest("p1", "Friday Night")}, reason));
+	assert_false(reason.empty());
+	assert_false(f.setup.IsApplied());
+	// Nothing was taken off the air on the way to refusing.
+	assert_true(EnabledIs(f, "b1", false));
+	assert_true(EnabledIs(f, "b2", true));
+	assert_true(EnabledIs(f, "b3", true));
+	assert_int_equal((int)f.overrides.count("p1"), 0);
+}
+
 // One binding changed by hand since the apply is the newer intent and is left
 // alone. It must not strand the rest of the restore, which is what comparing the
 // enabled set as a whole would do.
@@ -2270,7 +2463,7 @@ static void test_setup_leaves_a_binding_changed_since_alone(void **state)
 	SeedBindings(f);
 
 	std::string reason;
-	assert_true(f.setup.Apply({Dest("p1", "")}, reason));
+	assert_true(f.setup.Apply({Dest("p2", "")}, reason));
 	f.setup.routing.write("b3", true); // the user turned it back on
 
 	f.setup.Revert();
@@ -2291,35 +2484,38 @@ static void test_setup_merges_metadata_rather_than_replacing(void **state)
 	const nlohmann::json before = {{"title", "Old night"},
 				       {"category", {{"id", "509658"}, {"name", "Just Chatting"}}},
 				       {"tags", nlohmann::json::array({"english"})}};
-	f.overrides["p1"] = before;
+	f.overrides["p2"] = before;
 
 	std::string reason;
-	assert_true(f.setup.Apply({Dest("p1", "Friday Night")}, reason));
-	assert_string_equal(f.overrides["p1"]["title"].get<std::string>().c_str(), "Friday Night");
-	assert_string_equal(f.overrides["p1"]["category"]["id"].get<std::string>().c_str(), "509658");
-	assert_int_equal((int)f.overrides["p1"]["tags"].size(), 1);
+	assert_true(f.setup.Apply({Dest("p2", "Friday Night")}, reason));
+	assert_string_equal(f.overrides["p2"]["title"].get<std::string>().c_str(), "Friday Night");
+	assert_string_equal(f.overrides["p2"]["category"]["id"].get<std::string>().c_str(), "509658");
+	assert_int_equal((int)f.overrides["p2"]["tags"].size(), 1);
 
 	f.setup.Revert();
-	assert_true(f.overrides["p1"] == before);
+	assert_true(f.overrides["p2"] == before);
 }
 
-// One profile bound on two canvases, only one of which may be enabled. Apply takes
-// the other binding, so the restore has to disable it before re-enabling the user's
-// -- re-enabling first is refused and leaves both off, losing the routing entirely.
-static void test_setup_restores_a_profile_bound_on_two_canvases(void **state)
+// One profile bound on two canvases, only one of which may be enabled. The entry
+// routes through the enabled one whatever the order of the list -- taking the first
+// match instead would move the profile onto a dormant canvas, waking it and starting
+// an encode, which is the one thing an entry may not do.
+static void test_setup_takes_the_enabled_binding_of_a_profile_bound_twice(void **state)
 {
 	(void)state;
 	SetupFixture f;
 	OpenSetup(f);
-	// Listed before the enabled one, so Apply's first-match pick lands on it.
+	// The dormant one listed first, which is where a first-match pick would land.
 	f.bindings.push_back({"canvas2", "p1", false});
 	f.bindings.push_back({"canvas1", "p1", true});
 
 	std::string reason;
 	assert_true(f.setup.Apply({Dest("p1", "")}, reason));
-	assert_true(EnabledIs(f, "canvas1", false));
-	assert_true(EnabledIs(f, "canvas2", true));
+	assert_true(EnabledIs(f, "canvas1", true));
+	assert_true(EnabledIs(f, "canvas2", false));
+	assert_int_equal(f.refusals, 0);
 
+	// Nothing was touched, so there is nothing to put back.
 	f.setup.Revert();
 	assert_true(EnabledIs(f, "canvas1", true));
 	assert_true(EnabledIs(f, "canvas2", false));
@@ -2334,17 +2530,21 @@ static void test_setup_abandons_an_apply_the_routing_refused(void **state)
 	SetupFixture f;
 	OpenSetup(f);
 	SeedBindings(f);
-	f.refuseEnableOf = "b1"; // the binding the entry names
+	// Listed last, so the disable of b3 lands before this one refuses -- an abandon
+	// that put nothing back would leave b3 off the air with nobody holding a record.
+	f.bindings.push_back({"b4", "p4", true});
+	f.refuseDisableOf = "b4";
 
 	std::string reason;
-	assert_false(f.setup.Apply({Dest("p1", "Friday Night")}, reason));
+	assert_false(f.setup.Apply({Dest("p2", "Friday Night")}, reason));
 	assert_false(reason.empty());
 	assert_false(f.setup.IsApplied());
 	// Everything it managed to change on the way is back where it was.
 	assert_true(EnabledIs(f, "b1", false));
 	assert_true(EnabledIs(f, "b2", true));
 	assert_true(EnabledIs(f, "b3", true));
-	assert_int_equal((int)f.overrides.count("p1"), 0);
+	assert_true(EnabledIs(f, "b4", true));
+	assert_int_equal((int)f.overrides.count("p2"), 0);
 }
 
 // A seam that changes the binding and only then reports failure -- the save going
@@ -2361,9 +2561,9 @@ static void test_setup_records_a_flip_the_seam_would_not_confirm(void **state)
 	f.persistFailOf = "b2"; // enabled, and not one the entry names
 
 	std::string reason;
-	assert_true(f.setup.Apply({Dest("p1", "")}, reason));
-	assert_true(EnabledIs(f, "b1", true));
+	assert_true(f.setup.Apply({Dest("p3", "")}, reason));
 	assert_true(EnabledIs(f, "b2", false));
+	assert_true(EnabledIs(f, "b3", true));
 
 	f.setup.Revert();
 	assert_false(f.setup.IsApplied());
@@ -2382,7 +2582,7 @@ static void test_setup_retries_a_restore_the_routing_refused(void **state)
 	SeedBindings(f);
 
 	std::string reason;
-	assert_true(f.setup.Apply({Dest("p1", "")}, reason));
+	assert_true(f.setup.Apply({Dest("p3", "")}, reason));
 
 	f.refuseEnableOf = "b2";
 	f.setup.Revert();
@@ -2410,17 +2610,17 @@ static void test_setup_keeps_a_remembered_category_id(void **state)
 	OpenSetup(f);
 	SeedBindings(f);
 	const nlohmann::json before = {{"category", {{"id", "509658"}, {"name", "Just Chatting"}}}};
-	f.overrides["p1"] = before;
-	History::ScheduleDestination d = Dest("p1", "Friday Night");
+	f.overrides["p2"] = before;
+	History::ScheduleDestination d = Dest("p2", "Friday Night");
 	d.category = "Just Chatting";
 
 	std::string reason;
 	assert_true(f.setup.Apply({d}, reason));
-	assert_string_equal(f.overrides["p1"]["category"]["id"].get<std::string>().c_str(), "509658");
-	assert_string_equal(f.overrides["p1"]["title"].get<std::string>().c_str(), "Friday Night");
+	assert_string_equal(f.overrides["p2"]["category"]["id"].get<std::string>().c_str(), "509658");
+	assert_string_equal(f.overrides["p2"]["title"].get<std::string>().c_str(), "Friday Night");
 
 	f.setup.Revert();
-	assert_true(f.overrides["p1"] == before);
+	assert_true(f.overrides["p2"] == before);
 }
 
 // Providers key on the category id; the name is what a prefill shows. Both halves
@@ -2431,18 +2631,18 @@ static void test_setup_sends_the_category_id_and_name(void **state)
 	SetupFixture f;
 	OpenSetup(f);
 	SeedBindings(f);
-	History::ScheduleDestination d = Dest("p1", "");
+	History::ScheduleDestination d = Dest("p2", "");
 	d.category = "Chess";
 	d.categoryId = "743";
 	d.tags = R"(["chess","live"])";
 
 	std::string reason;
 	assert_true(f.setup.Apply({d}, reason));
-	assert_string_equal(f.overrides["p1"]["category"]["id"].get<std::string>().c_str(), "743");
-	assert_string_equal(f.overrides["p1"]["category"]["name"].get<std::string>().c_str(), "Chess");
-	assert_int_equal((int)f.overrides["p1"]["tags"].size(), 2);
+	assert_string_equal(f.overrides["p2"]["category"]["id"].get<std::string>().c_str(), "743");
+	assert_string_equal(f.overrides["p2"]["category"]["name"].get<std::string>().c_str(), "Chess");
+	assert_int_equal((int)f.overrides["p2"]["tags"].size(), 2);
 	// No title on the destination, so none is written -- a blank must not blank one.
-	assert_false(f.overrides["p1"].contains("title"));
+	assert_false(f.overrides["p2"].contains("title"));
 }
 
 // Two destinations naming the same profile. Captured once, or the second capture
@@ -2454,12 +2654,12 @@ static void test_setup_captures_a_duplicate_profile_once(void **state)
 	OpenSetup(f);
 	SeedBindings(f);
 	const nlohmann::json before = {{"title", "What the user typed"}};
-	f.overrides["p1"] = before;
+	f.overrides["p2"] = before;
 
 	std::string reason;
-	assert_true(f.setup.Apply({Dest("p1", "First"), Dest("p1", "Second")}, reason));
+	assert_true(f.setup.Apply({Dest("p2", "First"), Dest("p2", "Second")}, reason));
 	f.setup.Revert();
-	assert_true(f.overrides["p1"] == before);
+	assert_true(f.overrides["p2"] == before);
 }
 
 // An override the apply created, over a profile that had none, is removed rather
@@ -2472,11 +2672,11 @@ static void test_setup_removes_an_override_it_created(void **state)
 	SeedBindings(f);
 
 	std::string reason;
-	assert_true(f.setup.Apply({Dest("p1", "Friday Night")}, reason));
-	assert_int_equal((int)f.overrides.count("p1"), 1);
+	assert_true(f.setup.Apply({Dest("p2", "Friday Night")}, reason));
+	assert_int_equal((int)f.overrides.count("p2"), 1);
 
 	f.setup.Revert();
-	assert_int_equal((int)f.overrides.count("p1"), 0);
+	assert_int_equal((int)f.overrides.count("p2"), 0);
 }
 
 // The worst outcome this feature could have is stopping a running broadcast.
@@ -2491,26 +2691,26 @@ static void test_setup_never_touches_the_routing_while_live(void **state)
 	f.streaming = true;
 
 	std::string reason;
-	assert_false(f.setup.Apply({Dest("p1", "")}, reason));
+	assert_false(f.setup.Apply({Dest("p2", "")}, reason));
 	assert_string_equal(reason.c_str(), History::kAlreadyStreamingReason);
 	assert_false(f.setup.IsApplied());
-	assert_true(EnabledIs(f, "b2", true));
+	assert_true(EnabledIs(f, "b3", true));
 
 	// Applied while idle, then live: the restore waits for the stop edge and keeps
 	// its snapshot rather than dropping it.
 	f.streaming = false;
-	assert_true(f.setup.Apply({Dest("p1", "")}, reason));
+	assert_true(f.setup.Apply({Dest("p2", "")}, reason));
 	f.streaming = true;
 	f.setup.Revert();
 	assert_true(f.setup.IsApplied());
-	assert_true(EnabledIs(f, "b1", true));
-	assert_true(EnabledIs(f, "b2", false));
+	assert_true(EnabledIs(f, "b2", true));
+	assert_true(EnabledIs(f, "b3", false));
 
 	f.streaming = false;
 	f.setup.Revert();
 	assert_false(f.setup.IsApplied());
-	assert_true(EnabledIs(f, "b1", false));
 	assert_true(EnabledIs(f, "b2", true));
+	assert_true(EnabledIs(f, "b3", true));
 }
 
 // A crash or a kill inside the armed window leaves rows describing what a process
@@ -2601,6 +2801,10 @@ int main(void)
 		cmocka_unit_test(test_runner_disarms_an_entry_moved_out_of_its_window),
 		cmocka_unit_test(test_runner_disarms_on_an_edit_without_waiting_for_a_tick),
 		cmocka_unit_test(test_runner_tracks_armability_through_the_window),
+		cmocka_unit_test(test_runner_asks_every_destination_not_just_the_first),
+		cmocka_unit_test(test_runner_starts_a_partial_entry_when_destinations_are_not_all_required),
+		cmocka_unit_test(test_runner_refuses_a_partial_entry_when_every_destination_is_required),
+		cmocka_unit_test(test_runner_blocks_an_entry_when_no_destination_can_route),
 		cmocka_unit_test(test_runner_start_now_arms_and_starts_a_planned_entry),
 		cmocka_unit_test(test_runner_start_now_starts_a_missed_entry),
 		cmocka_unit_test(test_runner_start_now_after_cancel_countdown_succeeds),
@@ -2620,9 +2824,11 @@ int main(void)
 		cmocka_unit_test(test_runner_adopt_is_a_noop_while_a_broadcast_is_live),
 		cmocka_unit_test(test_runner_adopt_apply_refusal_leaves_it_unclaimed),
 		cmocka_unit_test(test_runner_adopt_skips_an_entry_while_the_routing_is_held_elsewhere),
-		cmocka_unit_test(test_setup_restores_exactly_what_it_changed),
+		cmocka_unit_test(test_setup_narrows_the_enabled_set_and_restores_it),
+		cmocka_unit_test(test_setup_never_switches_a_destination_on),
+		cmocka_unit_test(test_setup_refuses_an_entry_with_nothing_switched_on),
 		cmocka_unit_test(test_setup_leaves_a_binding_changed_since_alone),
-		cmocka_unit_test(test_setup_restores_a_profile_bound_on_two_canvases),
+		cmocka_unit_test(test_setup_takes_the_enabled_binding_of_a_profile_bound_twice),
 		cmocka_unit_test(test_setup_abandons_an_apply_the_routing_refused),
 		cmocka_unit_test(test_setup_records_a_flip_the_seam_would_not_confirm),
 		cmocka_unit_test(test_setup_retries_a_restore_the_routing_refused),

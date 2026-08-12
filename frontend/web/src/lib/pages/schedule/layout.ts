@@ -77,7 +77,10 @@ export interface CalendarItem {
   /** Why this occurrence cannot go live, or "". Broadcasting to nowhere is worse
    * than not broadcasting, so the refusal is shown rather than merely obeyed. */
   blockReason: string;
-  profileIds: string[];
+  /** The destinations this item goes out to, each with its own refusal. Carried as
+   * pairs rather than as ids beside a parallel array of reasons: the two would be
+   * one reorder away from naming the wrong destination. */
+  destinations: { profileId: string; blockReason: string }[];
   /** Absolute thumbnail path for file.readDataUri; empty when none was chosen. */
   thumbFile: string;
   /** Movable and resizable. Nothing in the past ever is -- you cannot reschedule
@@ -121,7 +124,10 @@ export function plannedItems(
       autoStart: e.autoStart,
       countdownCanceled: e.countdownCanceled,
       blockReason: e.blockReason,
-      profileIds: e.destinations.map((d) => d.profileId),
+      destinations: e.destinations.map((d) => ({
+        profileId: d.profileId,
+        blockReason: d.blockReason,
+      })),
       thumbFile: "",
       editable: LIVE_STATES.includes(e.state) && e.startsAt > nowMs,
     });
@@ -154,7 +160,9 @@ export function sessionItems(
       autoStart: false,
       countdownCanceled: false,
       blockReason: "",
-      profileIds: s.destinations.map((d) => d.profileId),
+      // A session is a record of what already went out, so nothing about it can be
+      // refused -- the empty reason is the whole truth here, not a placeholder.
+      destinations: s.destinations.map((d) => ({ profileId: d.profileId, blockReason: "" })),
       thumbFile: s.thumbFile,
       editable: false,
     };

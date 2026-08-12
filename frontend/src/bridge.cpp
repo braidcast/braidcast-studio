@@ -7517,6 +7517,14 @@ bool MethodSessionsDelete(const json &params, json &result, std::string &error)
 // booleans, so the web side never learns they were integers.
 json ScheduleToJson(const History::ScheduleEntry &e, const std::vector<History::ScheduleDestination> &destinations)
 {
+	// The runner's per-occurrence facts, which live in memory rather than in a column:
+	// a cancelled occurrence reads `planned` like one that was never armed, a refused
+	// auto-start has to say why rather than just stop happening, and a destination the
+	// entry cannot reach says so beside itself -- an entry-level reason alone cannot
+	// point at which of three destinations is the problem. There is deliberately no
+	// countdown here -- the client has startsAt and counts the seconds itself, so the
+	// host never emits per-second.
+	History::ScheduleRunner &runner = ObsBootstrap::Scheduler();
 	json dests = json::array();
 	for (const History::ScheduleDestination &d : destinations) {
 		json tags = json::array();
@@ -7528,14 +7536,9 @@ json ScheduleToJson(const History::ScheduleEntry &e, const std::vector<History::
 				     {"title", d.title},
 				     {"category", d.category},
 				     {"categoryId", d.categoryId},
-				     {"tags", std::move(tags)}});
+				     {"tags", std::move(tags)},
+				     {"blockReason", runner.DestinationBlockReason(e.id, d.profileId)}});
 	}
-	// The runner's two per-occurrence facts, which live in memory rather than in a
-	// column: a cancelled occurrence reads `planned` like one that was never armed,
-	// and a refused auto-start has to say why rather than just stop happening.
-	// There is deliberately no countdown here -- the client has startsAt and counts
-	// the seconds itself, so the host never emits per-second.
-	History::ScheduleRunner &runner = ObsBootstrap::Scheduler();
 	return json{{"id", e.id},
 		    {"startsAt", e.startsAt},
 		    {"title", e.title},
