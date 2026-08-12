@@ -213,6 +213,12 @@ public:
 	// ends it early on the one refusal the system does observe.
 	bool IsStartInFlight(const std::string &id) const;
 
+	// Every occurrence whose broadcast is under way. The same question IsStartInFlight
+	// answers, asked without an id: for the missed sweep, which must leave those rows
+	// alone, and for a caller that has to know whether the scheduler is mid-start at all
+	// before touching the routing underneath it.
+	std::vector<std::string> InFlightIds() const;
+
 	// Why this occurrence cannot go live, or empty when nothing is wrong. Surfaced
 	// alongside the state so a refused auto-start reads as an explanation rather
 	// than as an entry that silently did not happen.
@@ -345,8 +351,6 @@ private:
 	// by hand belongs to. Reads the rows rather than assuming arm order: an entry
 	// created inside another's arm window arms later and starts sooner.
 	std::string ImminentArmedId();
-	// Every occurrence whose broadcast is under way, for the sweep to leave alone.
-	std::vector<std::string> InFlightIds() const;
 	void NoteStoreError(const char *what);
 	void Log(const std::string &line) const;
 

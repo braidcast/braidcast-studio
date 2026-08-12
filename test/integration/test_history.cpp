@@ -1831,6 +1831,53 @@ static void test_runner_start_now_arms_and_starts_a_planned_entry(void **state)
 	assert_string_equal(f.store.Get(id)->state.c_str(), History::ScheduleState::kLive);
 }
 
+// A second entry must not be startable inside the first's in-flight window. PrepareStart
+// opens by reverting whatever is applied and then applies its own entry's routing, so
+// without the refusal the broadcast the FIRST entry already asked for comes up against
+// the SECOND's destinations -- and nothing reports it, because the hijacked start still
+// believes it succeeded.
+//
+// RoutingHeldElsewhere is what refuses, on its appliedId_ != id && IsStartInFlight
+// clause -- which reads as one more streaming check among several and is the kind of line
+// a later edit drops as redundant. The per-id IsStartInFlight guard above it does not
+// stand in: that one answers for the entry being started, and that entry is not the one
+// in flight.
+//
+// Separate from the overlapping-starts test above, which drives the same clause through
+// Tick. This is the manual door, and the two do not stand in for each other: StartNow
+// arms the entry itself, so the refusal has to land ahead of that write -- hence the
+// closing assertion that the entry is still planned and not left armed by a start that
+// never happened.
+static void test_runner_start_now_refuses_while_another_start_is_in_flight(void **state)
+{
+	(void)state;
+	RunnerFixture f;
+	OpenRunner(f, "runner_start_now_other_in_flight.db");
+	const int64_t startsAt = 10'000'000;
+	const std::string first = SeedEntryWith(f, startsAt, false, {"pA"});
+	const std::string second = SeedEntryWith(f, startsAt + 60'000, false, {"pB"});
+
+	f.clock = startsAt - 60 * 60 * 1000;
+	std::string error;
+	assert_true(f.runner.StartNow(first, error));
+	assert_int_equal(f.applyCalls, 1);
+	assert_int_equal((int)f.appliedProfiles.size(), 1);
+	assert_string_equal(f.appliedProfiles[0].c_str(), "pA");
+	assert_true(f.runner.IsStartInFlight(first));
+
+	assert_false(f.runner.StartNow(second, error));
+	assert_string_equal(error.c_str(), History::kAlreadyStreamingReason);
+	// The refusal is half the point; what it protects is the other half. The first
+	// entry's routing is still the applied one, nothing was reverted on the way out, and
+	// no second go-live was asked for.
+	assert_int_equal(f.applyCalls, 1);
+	assert_int_equal(f.revertCalls, 0);
+	assert_int_equal(f.goLiveCalls, 1);
+	assert_int_equal((int)f.appliedProfiles.size(), 1);
+	assert_string_equal(f.appliedProfiles[0].c_str(), "pA");
+	assert_string_equal(f.store.Get(second)->state.c_str(), History::ScheduleState::kPlanned);
+}
+
 // A missed entry is still "has not run yet" as far as StartNow is concerned -- the
 // row settling on the missed grace only stops the calendar calling it upcoming.
 static void test_runner_start_now_starts_a_missed_entry(void **state)
@@ -3048,6 +3095,152 @@ static void test_setup_routing_only_abandons_an_apply_the_routing_refused(void *
 	assert_true(f.overrides.empty());
 }
 
+// The plan and the write are one walk. PlanMetadata is what a caller previews and
+// what Apply hands to the seam, so every case below asserts the two against each
+// other rather than against a hand-written expectation: an expectation copied into
+// the test would drift from the rule exactly as the copy on the web side did.
+//
+// Asserted per profile in both directions -- what the plan names is what the override
+// map holds, and what the map holds beyond that is only what was already there. A
+// one-directional check would miss a plan that silently dropped a destination.
+static void AssertPlanIsWhatApplyWrites(SetupFixture &f, const std::vector<History::ScheduleDestination> &destinations)
+{
+	const std::map<std::string, nlohmann::json> was = f.overrides;
+	const std::vector<History::ScheduledSetup::PlannedOverride> plan =
+		History::ScheduledSetup::PlanMetadata(destinations, f.setup.metadata.read);
+	// Planning is a query. Asking what an entry would do must not do it, or a banner
+	// previewing a broadcast has already rewritten the metadata it is previewing.
+	assert_true(f.overrides == was);
+	assert_int_equal(f.saves, 0);
+
+	std::string reason;
+	assert_true(f.setup.Apply(destinations, reason));
+
+	for (const History::ScheduledSetup::PlannedOverride &planned : plan) {
+		assert_int_equal((int)f.overrides.count(planned.profileId), 1);
+		assert_true(f.overrides[planned.profileId] == planned.after);
+		// The baseline the plan reports is the bag that was there, which is what the
+		// restore puts back and how it tells a bag it created from one it edited.
+		const auto had = was.find(planned.profileId);
+		const nlohmann::json before = had == was.end() ? nlohmann::json::object() : had->second;
+		assert_true(planned.before == before);
+		assert_true(planned.existed == !before.empty());
+	}
+	for (const auto &entry : f.overrides) {
+		bool planned = false;
+		for (const History::ScheduledSetup::PlannedOverride &p : plan) {
+			planned = planned || p.profileId == entry.first;
+		}
+		if (planned) {
+			continue;
+		}
+		const auto had = was.find(entry.first);
+		assert_true(had != was.end());
+		assert_true(had->second == entry.second);
+	}
+
+	// And the restore still puts back exactly what was there, over the plan's records.
+	f.setup.Revert();
+	assert_true(f.overrides == was);
+}
+
+// The deep merge: the entry changes the category id and carries no name, and the
+// remembered name has to survive alongside the title the entry does carry.
+static void test_setup_plan_is_what_apply_writes_for_a_deep_merge(void **state)
+{
+	(void)state;
+	SetupFixture f;
+	OpenSetup(f);
+	SeedBindings(f);
+	f.overrides["p2"] = {{"title", "Old night"},
+			     {"category", {{"id", "509658"}, {"name", "Just Chatting"}}},
+			     {"tags", nlohmann::json::array({"english"})}};
+	History::ScheduleDestination d = Dest("p2", "Friday Night");
+	d.categoryId = "743";
+
+	AssertPlanIsWhatApplyWrites(f, {d});
+}
+
+// The dedupe: one profile named twice plans once, and the second naming merges over
+// the user's bag rather than over what the first naming produced.
+static void test_setup_plan_is_what_apply_writes_for_a_duplicate_profile(void **state)
+{
+	(void)state;
+	SetupFixture f;
+	OpenSetup(f);
+	SeedBindings(f);
+	f.overrides["p2"] = {{"title", "What the user typed"}};
+	History::ScheduleDestination second = Dest("p2", "Second");
+	second.categoryId = "743";
+	second.category = "Chess";
+
+	AssertPlanIsWhatApplyWrites(f, {Dest("p2", "First"), second});
+}
+
+// The empty-value skips, both halves: a category with a name and no id carries no
+// category at all, and a title the destination does not carry blanks nothing.
+static void test_setup_plan_is_what_apply_writes_for_an_empty_category(void **state)
+{
+	(void)state;
+	SetupFixture f;
+	OpenSetup(f);
+	SeedBindings(f);
+	f.overrides["p2"] = {{"category", {{"id", "509658"}, {"name", "Just Chatting"}}}};
+	History::ScheduleDestination d = Dest("p2", "Friday Night");
+	d.category = "Just Chatting"; // a name with no id, as pre-id-column entries carry
+
+	// The title goes through and the category does not, so the remembered id survives
+	// a plan that is otherwise carrying a change for this profile.
+	const std::vector<History::ScheduledSetup::PlannedOverride> plan =
+		History::ScheduledSetup::PlanMetadata({d}, f.setup.metadata.read);
+	assert_int_equal((int)plan.size(), 1);
+	assert_string_equal(plan[0].after["category"]["id"].get<std::string>().c_str(), "509658");
+
+	AssertPlanIsWhatApplyWrites(f, {d});
+}
+
+// A destination stating nothing gets no plan entry and no write. A plan that named it
+// with an unchanged bag would have Apply rewrite a profile it never had reason to
+// touch, and Revert then owes a restore for a change that never happened.
+static void test_setup_plan_skips_a_destination_with_no_fields(void **state)
+{
+	(void)state;
+	SetupFixture f;
+	OpenSetup(f);
+	SeedBindings(f);
+	f.overrides["p2"] = {{"title", "What the user typed"}};
+
+	const std::vector<History::ScheduledSetup::PlannedOverride> plan = History::ScheduledSetup::PlanMetadata(
+		{Dest("p2", ""), Dest("p3", "Friday Night")}, f.setup.metadata.read);
+	assert_int_equal((int)plan.size(), 1);
+	assert_string_equal(plan[0].profileId.c_str(), "p3");
+
+	AssertPlanIsWhatApplyWrites(f, {Dest("p2", ""), Dest("p3", "Friday Night")});
+}
+
+// The planner merges over whatever the caller's own reader reports, not over some
+// store it reaches for itself. That is what lets a caller preview an entry against a
+// bag the user is still editing rather than against the one last saved.
+static void test_setup_plan_merges_over_the_bag_the_reader_reports(void **state)
+{
+	(void)state;
+	SetupFixture f;
+	OpenSetup(f);
+	f.overrides["p2"] = {{"category", {{"id", "509658"}, {"name", "Just Chatting"}}}};
+
+	History::ScheduleDestination d = Dest("p2", "Friday Night");
+	d.categoryId = "743";
+	const std::vector<History::ScheduledSetup::PlannedOverride> plan =
+		History::ScheduledSetup::PlanMetadata({d}, [](const std::string &) {
+			return nlohmann::json{{"category", {{"id", "1"}, {"name", "Unsaved edit"}}}};
+		});
+	assert_int_equal((int)plan.size(), 1);
+	assert_string_equal(plan[0].after["category"]["id"].get<std::string>().c_str(), "743");
+	assert_string_equal(plan[0].after["category"]["name"].get<std::string>().c_str(), "Unsaved edit");
+	// The store the fixture holds was neither read from nor written to.
+	assert_string_equal(f.overrides["p2"]["category"]["name"].get<std::string>().c_str(), "Just Chatting");
+}
+
 // A crash or a kill inside the armed window leaves rows describing what a process
 // was doing. No process is doing it now: a row still `armed` would go live the
 // moment the app opens, and one left `live` would read live forever, since only a
@@ -3143,6 +3336,7 @@ int main(void)
 		cmocka_unit_test(test_runner_refuses_a_partial_entry_when_every_destination_is_required),
 		cmocka_unit_test(test_runner_blocks_an_entry_when_no_destination_can_route),
 		cmocka_unit_test(test_runner_start_now_arms_and_starts_a_planned_entry),
+		cmocka_unit_test(test_runner_start_now_refuses_while_another_start_is_in_flight),
 		cmocka_unit_test(test_runner_start_now_starts_a_missed_entry),
 		cmocka_unit_test(test_runner_start_now_after_cancel_countdown_succeeds),
 		cmocka_unit_test(test_runner_start_now_refuses_while_streaming),
@@ -3182,6 +3376,11 @@ int main(void)
 		cmocka_unit_test(test_setup_routing_only_refuses_an_entry_with_nothing_switched_on),
 		cmocka_unit_test(test_setup_routing_only_unstacks_a_previous_application),
 		cmocka_unit_test(test_setup_routing_only_abandons_an_apply_the_routing_refused),
+		cmocka_unit_test(test_setup_plan_is_what_apply_writes_for_a_deep_merge),
+		cmocka_unit_test(test_setup_plan_is_what_apply_writes_for_a_duplicate_profile),
+		cmocka_unit_test(test_setup_plan_is_what_apply_writes_for_an_empty_category),
+		cmocka_unit_test(test_setup_plan_skips_a_destination_with_no_fields),
+		cmocka_unit_test(test_setup_plan_merges_over_the_bag_the_reader_reports),
 		cmocka_unit_test(test_schedule_recovers_interrupted_rows),
 	};
 	return cmocka_run_group_tests(tests, nullptr, nullptr);

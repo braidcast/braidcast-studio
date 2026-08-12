@@ -43,6 +43,7 @@ class SessionStore;
 class SessionRecorder;
 class ScheduleStore;
 class ScheduleRunner;
+class ScheduledSetup;
 } // namespace History
 
 namespace ObsBootstrap {
@@ -93,6 +94,21 @@ History::ScheduleStore &Schedule();
 // auto-starts, and settles the ones that passed. Valid between Start() and Stop();
 // inert while the store above is unattached.
 History::ScheduleRunner &Scheduler();
+
+// The capture-and-restore that loads a scheduled entry's routing and metadata into
+// the live configuration, and the only instance of it. Valid between Start() and
+// Stop().
+//
+// Exposed so a UI surface that stages an entry's routing itself drives THIS one
+// rather than owning a second. Two instances hold two `before` snapshots over the
+// same bindings: the second application reads what the first left as the user's own
+// value, and reverting them in either order puts back the wrong thing. Worse, an
+// instance owned by a modal dies with the modal, so a banner that stages a
+// broadcast and then closes leaves the destinations it switched off with nobody
+// holding a record to switch them back on. This one is reverted at the broadcast's
+// stop edge, so a staged application is owed a restore whatever becomes of the
+// surface that made it.
+History::ScheduledSetup &ScheduledSetup();
 
 // The per-scene-collection scene-link model (main-scene -> per-canvas scene
 // activation map, persisted to scenes/<slug>.scene_links.json). Owned by the

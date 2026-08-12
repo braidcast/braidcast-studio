@@ -702,23 +702,26 @@ import { EV } from "$lib/utils/eventNames";
   // imminentEntry's own id rather than a bare boolean, so the banner reverts to
   // offering again if a different entry becomes the imminent one mid-session.
   let appliedEntryId = $state<string | null>(null);
-  // What ONE application changed, in the shape ScheduledSetup tracks it: the bindings
-  // it took off the air and the per-stream bags it wrote over. Held so the paths where
-  // the entry never airs -- a write that fails part way, a modal the user backs out of
-  // -- put back exactly what they found. A binding needs no more than its uuid here:
-  // an application only ever narrows, so every record is a disable to undo, and the
-  // restore asks whether the binding is still switched off rather than comparing
-  // against what the apply wrote.
+  // The routing half of a staging is the HOST's to remember: schedule.stageRouting
+  // narrows through the one ScheduledSetup instance, which is also what the scheduler
+  // applies through and what the broadcast's stop edge reverts. All this modal keeps is
+  // whether a stage of its own is outstanding -- the records that make a restore
+  // possible live where they outlive this component.
+  let routingStaged = false;
+  // The metadata half stays modal-local, because these bags never leave the component
+  // until confirm() pushes them. Held so the paths where the entry never airs -- a
+  // staging that fails part way, a modal the user backs out of -- put back what they
+  // found.
   interface TouchedOverride {
     profileId: string;
     bag: Record<string, unknown> | undefined;
     on: boolean | undefined;
-    // The bag the application left behind, so the restore can tell it from one the
-    // user has edited since. Identity answers that: every write to these bags
-    // (setStreamField, toggleStreamOverride, prefill) assigns a fresh object.
+    // The bag the staging left behind, so the restore can tell it from one the user has
+    // edited since. Identity answers that: every write to these bags (setStreamField,
+    // toggleStreamOverride, prefill) assigns a fresh object.
     after: Record<string, unknown> | undefined;
   }
-  let appliedSetup: { disabled: string[]; overrides: TouchedOverride[] } | null = null;
+  let appliedSetup: { overrides: TouchedOverride[] } | null = null;
 
   // The soonest entry the HOST has itself armed. Read off ScheduleEntryInfo.state
   // rather than re-deriving the arm window from startsAt: `armed` is the runner's
@@ -747,81 +750,36 @@ import { EV } from "$lib/utils/eventNames";
     return min <= 0 ? "starts any moment" : `starts in ${min} min`;
   }
 
-  // Is this binding currently switched off? The one reading shared by everything that
-  // records a disable and everything that decides a restore is still owed, so the two
-  // cannot drift into disagreeing about the same binding. A binding that has gone from
-  // the store answers false: there is nothing left to record and nothing to put back.
-  function bindingOff(uuid: string): boolean {
-    return outputBindingStore.bindings.find((b) => b.uuid === uuid)?.enabled === false;
-  }
-
-  // Take a set of bindings off the air and record which ones actually went, so a failed
-  // or abandoned application can put them back. What the store holds AFTERWARDS decides
-  // what is recorded, never the call's result: setEnabled writes the uuids in parallel
-  // and rejects as a batch, so a write that landed beside a refused one is a real
-  // change -- and a change that goes unrecorded is one no restore can undo.
-  async function disableBindings(uuids: string[], touched: string[]): Promise<void> {
-    if (uuids.length === 0) {
-      return;
-    }
-    try {
-      await outputBindingStore.setEnabled(uuids, false);
-    } finally {
-      // setEnabled skips its own refresh when a write rejects, so this is what makes
-      // the store answer for the batch either way.
-      await outputBindingStore.refresh();
-      for (const uuid of uuids) {
-        // One record per binding: a restore the routing refused leaves its record
-        // behind for the next attempt, and a second record for the same binding would
-        // have that attempt put it back twice.
-        if (bindingOff(uuid) && !touched.includes(uuid)) {
-          touched.push(uuid);
-        }
-      }
-    }
-  }
-
-  // Put back everything one application changed, the shape ScheduledSetup::Revert uses.
-  // One pass, in any order: an application only ever takes bindings off the air, so
-  // every record here is a disable to undo and switching one back on cannot collide
-  // with another. Per binding rather than over the set as a whole -- one that is no
-  // longer switched off was moved by someone else since, and that is the newer intent,
-  // while an unrelated change elsewhere must not strand every other restore.
+  // Put back what one staging changed. The routing goes back through the host's single
+  // ScheduledSetup instance -- the same call the broadcast's stop edge makes -- so a
+  // binding the routing will not take keeps its record THERE rather than here, and
+  // `staged` coming back true means a restore is still owed. The metadata restore below
+  // is this modal's own, because those bags never left the component.
   async function revertSchedule(): Promise<void> {
     const setup = appliedSetup;
-    if (!setup) {
+    if (!setup && !routingStaged) {
       return;
     }
-    // Taken for the duration so a second cancel click cannot run the same restore
-    // twice, and put back at the bottom with whatever the routing refused.
+    // Taken for the duration so a second cancel click cannot run the same restore twice.
     appliedSetup = null;
     appliedEntryId = null;
-    // What the routing would not take. Held rather than dropped, so the next call --
-    // a further application, or the cancel that follows one -- tries again instead of
-    // leaving the user's destinations rewritten with no record of it. The closing
-    // path keeps it on the same terms and simply takes it down with the component:
-    // one behaviour here beats a special case whose only effect is to discard a
-    // record nothing was going to read.
-    let refused: string[] = [];
-    const owed = setup.disabled.filter(bindingOff);
-    if (owed.length > 0) {
-      try {
-        await outputBindingStore.setEnabled(owed, true);
-      } catch (e) {
-        // The restore is still reconciled below rather than abandoned here: setEnabled
-        // writes in parallel and rejects on the first failure, so some of this batch
-        // can have gone back on already.
-        showToast("Couldn't put your destinations back", (e as Error).message);
-        await outputBindingStore.refresh();
-      }
-      // The state answers which restores are still owed, not the call's result, for
-      // the same reason the apply records off it.
-      refused = owed.filter(bindingOff);
+    try {
+      const { staged } = await obs.call("schedule.unstageRouting", {});
+      routingStaged = staged;
+    } catch (e) {
+      // Two ways here, and the flag stays set for both. A transport failure leaves a
+      // stage that may still be applied, which this modal must keep offering to put
+      // back. A refusal means a scheduled start went in flight while the user sat in
+      // this form: the runner un-stacked our staging to apply its own, so ours is
+      // already gone -- but clearing the flag on that would be recording a restore this
+      // modal never performed, and if the start is abandoned before it airs the stage is
+      // owed again. Keeping it costs one refused retry; clearing it loses the routing.
+      showToast("Couldn't put your destinations back", (e as Error).message);
     }
-    // Restored per record, skipping a bag that is no longer the one the application
-    // left: the user edited it since, and that edit is the newer intent -- the same
-    // rule the binding pass above follows.
-    for (const t of setup.overrides) {
+    await outputBindingStore.refresh();
+    // Restored per record, skipping a bag that is no longer the one the staging left:
+    // the user edited it since, and that edit is the newer intent.
+    for (const t of setup?.overrides ?? []) {
       if (streamOverrides[t.profileId] !== t.after) {
         continue;
       }
@@ -836,142 +794,84 @@ import { EV } from "$lib/utils/eventNames";
         streamOverrideOn[t.profileId] = t.on;
       }
     }
-    appliedSetup = refused.length > 0 ? { disabled: refused, overrides: [] } : null;
   }
 
-  // Loads one entry's destinations and metadata, mirroring ScheduledSetup::Apply: the
-  // enabled routing NARROWS to what the entry names -- a destination it does not name
-  // comes off the air, one it names that is already off stays off -- and only the
-  // destinations it lists carry metadata. Two kinds of write, and only one is this
-  // modal's own: the
-  // routing goes through outputBindingStore.setEnabled, which persists to the scene
-  // collection's bindings the moment it lands, while the metadata lands in this
-  // modal's bags and reaches disk only when confirm() runs with `remember` on. Both
-  // are recorded, so a write that fails part way and a modal the user backs out of
-  // each put back what they found. The entry itself still does not go live -- Go
+  // Stages one entry's destinations and metadata for review: the enabled routing NARROWS
+  // to what the entry names -- a destination it does not name comes off the air, one it
+  // names that is already off stays off -- and only the destinations it lists carry
+  // metadata. Neither half is decided here. Both come back from one schedule.stageRouting
+  // call, off one read of the entry, so the banner stages exactly the plan the clock
+  // would apply for the same entry.
+  //
+  // The two halves are owned differently, which is what the records below track. The
+  // routing is live host state the moment it lands and is remembered by the host's own
+  // ScheduledSetup; the metadata lands in this modal's bags and reaches disk only when
+  // confirm() runs with `remember` on. The entry itself still does not go live -- Go
   // Live sends adoptSchedule: false.
   async function applySchedule(entry: ScheduleEntryInfo): Promise<void> {
     if (applyState === "applying") {
       return;
     }
-    // The same refusal ScheduledSetup::Apply opens with, and for a reason no revert
-    // can soften: flipping a binding off STOPS its output, and putting the flag back
-    // does not start one again. An application made mid-broadcast would take
-    // destinations off the air for the rest of the session.
+    // A friendlier early word, NOT the rule. ScheduledSetup::ApplyRouting refuses a
+    // staging while anything is streaming and THAT is what protects the broadcast:
+    // narrowing takes a binding off the air, which stops its output, and putting the
+    // flag back does not start one again. This only saves the round trip and says it in
+    // the modal's own words -- deleting the host's guard because this one exists would
+    // take the actual protection with it, since every other caller reaches ApplyRouting
+    // without passing here.
     if (isLive !== false) {
       showToast(
         isLive === null
-          ? "Can't load a scheduled entry — stream state unavailable"
-          : "Can't load a scheduled entry while something is streaming",
-        "Loading one rewrites the enabled destinations, which would take a live one off the air.",
+          ? "Can't use this schedule — stream state unavailable"
+          : "Can't use this schedule while something is streaming",
+        "Staging one narrows the enabled destinations, which would take a live one off the air.",
       );
       return;
     }
     applyState = "applying";
-    // Two applications must never stack: the record describes ONE of them, so the
-    // previous one goes back before this one starts.
+    // Two stagings must never stack: the previous one goes back before this one starts.
     await revertSchedule();
-    // ONE snapshot, taken after that revert and shared by the wanted set and the disable
-    // pass below, mirroring the single `before` ScheduledSetup::Apply reads. Deriving
-    // the two from separate reads let a binding the revert had just put back read as one
-    // the user had switched off, and the entry then aired a set neither the user nor the
-    // entry named. Off the store rather than the `bindings` derived because what this
-    // has to see is the post-revert routing.
-    const before = outputBindingStore.bindings;
-    // The ENABLED bindings the entry names, deduped: a profile can be bound on several
-    // canvases and only one of them may be enabled, so the enabled one is the binding a
-    // scheduled entry routes through. A profile with no enabled binding resolves to
-    // nothing, which is what leaves it switched off below rather than switched on.
-    const wantedProfileIds = [...new Set(entry.destinations.map((d) => d.profileId).filter((id) => id !== ""))];
-    const wantedUuids: string[] = [];
-    for (const id of wantedProfileIds) {
-      const b = before.find((bd) => bd.profileUuid === id && bd.enabled);
-      if (b) {
-        wantedUuids.push(b.uuid);
-      }
-    }
-    // Narrowing to nothing is not narrowing. Whatever the reason an entry resolves to no
-    // enabled binding -- it names destinations that are all switched off, or it names
-    // none at all -- the disable pass below would take everything off the air, report
-    // success, and leave the banner reading "Applied" over a go-live that broadcasts
-    // nowhere. The un-stack revert above has already run by here, so a previous
-    // application does not survive this refusal: deciding one entry against another's
-    // leftover routing is the misread this ordering exists to prevent.
-    if (wantedUuids.length === 0) {
-      showToast(
-        entry.destinations.length === 0
-          ? "Can't use this schedule — it names no destinations"
-          : "Can't use this schedule — none of its destinations are switched on",
-        "A scheduled entry narrows the destinations you already have on; it never switches one on for you.",
-      );
-      await revertSchedule();
-      applyState = "idle";
-      return;
-    }
-    // Continued rather than replaced: what that revert could not put back is still
-    // owed, and a fresh record would drop the user's original value on the floor.
-    const setup: { disabled: string[]; overrides: TouchedOverride[] } = appliedSetup ?? {
-      disabled: [],
-      overrides: [],
-    };
-    appliedSetup = setup;
     try {
-      // An entry narrows the enabled set; it never widens it. Switching a binding on
-      // whose canvas has no other enabled binding wakes that canvas and starts a whole
-      // extra encode -- a load the user deliberately turned off, at a time they may not
-      // be watching. A destination the entry names but cannot reach is left switched
-      // off, and whether the entry still goes live without it is the user's own setting.
-      const toDisable = before.filter((b) => b.enabled && !wantedUuids.includes(b.uuid)).map((b) => b.uuid);
-      await disableBindings(toDisable, setup.disabled);
+      // The bags on screen are the merge baseline, so the entry's fields land over what
+      // the user is looking at. `{}` rather than omitting a stream this modal holds
+      // nothing for: omitting it would merge over the host's remembered bag instead, and
+      // values held at the CHANNEL layer would come back down as per-stream divergences
+      // the user never made. Keyed off what the modal has rather than off the entry --
+      // the host ignores a profile the entry does not name.
+      const current: Record<string, Record<string, unknown>> = {};
+      for (const profileUuid of Object.keys(streamOverrides)) {
+        current[profileUuid] = streamOverrides[profileUuid] ?? {};
+      }
+      // The host narrows the routing and plans the metadata, through the one
+      // ScheduledSetup instance the scheduler applies through and the broadcast's stop
+      // edge reverts. Every rule that used to live here -- which binding an entry routes
+      // through, refusing one that would narrow to nothing, which fields a destination
+      // contributes, what a refusal puts back -- is that call's, so the banner and the
+      // clock cannot come to different answers about one entry.
+      const staged = await obs.call("schedule.stageRouting", { id: entry.id, current });
+      // Set the moment the stage lands and never before: it is the sole thing that lets
+      // this modal reach unstageRouting, and that call reverts a ScheduledSetup shared
+      // with the runner. Putting back a staging this modal did not make would undo the
+      // runner's own.
+      routingStaged = true;
+      const setup: { overrides: TouchedOverride[] } = { overrides: [] };
+      appliedSetup = setup;
+      await outputBindingStore.refresh();
 
-      // One pass per PROFILE, not per destination: two destinations naming the same
-      // profile would otherwise have the second write over what the first applied,
-      // and the user's own value would never come back.
-      const captured = new Set<string>();
-      for (const d of entry.destinations) {
-        if (!d.profileId || captured.has(d.profileId)) {
-          continue;
-        }
-        // Which fields the entry actually carries, by ScheduledSetup::MetadataFields'
-        // rule: one it left blank changes nothing rather than blanking out an existing
-        // value. An entry naming none skips the destination outright -- down to the
-        // override switch, which the scheduler leaves exactly as it found it.
-        const hasTitle = d.title !== "";
-        const hasCategory = d.categoryId !== "";
-        const hasTags = d.tags.length > 0;
-        if (!hasTitle && !hasCategory && !hasTags) {
-          continue;
-        }
-        captured.add(d.profileId);
-        const bag = streamOverrides[d.profileId];
-        const on = streamOverrideOn[d.profileId];
-        if (hasTitle) {
-          setStreamField(d.profileId, "title", d.title);
-        }
-        if (hasCategory) {
-          // Replaced when there is nothing to merge into, merged a key at a time when
-          // there is, exactly as Apply treats an object field: `category` carries an id
-          // and a name, and an entry written before the id column existed carries a name
-          // no provider reads. An empty half keeps the name the user already had rather
-          // than blanking it.
-          const held = streamOverrides[d.profileId]?.category;
-          const base = held && typeof held === "object" ? (held as Record<string, unknown>) : null;
-          const next: Record<string, unknown> = base
-            ? { ...base, id: d.categoryId }
-            : { id: d.categoryId, name: d.category };
-          if (base && d.category !== "") {
-            next.name = d.category;
-          }
-          setStreamField(d.profileId, "category", next);
-        }
-        if (hasTags) {
-          setStreamField(d.profileId, "tags", [...d.tags]);
-        }
-        const profile = profiles.find((p) => p.uuid === d.profileId);
+      // A profile ABSENT from the map is one the entry would not touch at all -- the
+      // skip-a-destination-that-states-nothing rule, the host's now. Such a stream keeps
+      // its bag and its override switch untouched.
+      for (const [profileId, bag] of Object.entries(staged.metadata)) {
+        const before = streamOverrides[profileId];
+        const on = streamOverrideOn[profileId];
+        // Copied rather than held by reference so the record below can tell this bag
+        // from one the user edits afterwards.
+        streamOverrides[profileId] = { ...bag };
+        const profile = profiles.find((p) => p.uuid === profileId);
         const status = profile ? statuses.find((s) => s.accountId === profile.accountId) : undefined;
         const provider = profile ? resolveProvider(profile, status) : null;
-        streamOverrideOn[d.profileId] = hasOverrides(provider, streamOverrides[d.profileId] ?? {});
-        setup.overrides.push({ profileId: d.profileId, bag, on, after: streamOverrides[d.profileId] });
+        streamOverrideOn[profileId] = hasOverrides(provider, streamOverrides[profileId] ?? {});
+        setup.overrides.push({ profileId, bag: before, on, after: streamOverrides[profileId] });
       }
 
       // Newly-armed channels have had no chance to prefill their channel-level
@@ -982,7 +882,9 @@ import { EV } from "$lib/utils/eventNames";
       appliedEntryId = entry.id;
     } catch (e) {
       applyState = "error";
-      showToast("Couldn't load the scheduled entry", (e as Error).message);
+      // The host's own words. These are the strings the scheduler refuses with, so the
+      // banner names a problem exactly as the schedule page does for the same entry.
+      showToast("Couldn't use this schedule", (e as Error).message);
       // Reverted after that toast rather than before it: showToast replaces, and a
       // revert that could not put the routing back is the more urgent of the two.
       await revertSchedule();
@@ -991,9 +893,9 @@ import { EV } from "$lib/utils/eventNames";
     applyState = "idle";
   }
 
-  // Every way out of this modal that is NOT the confirm below. An application the
-  // user backs out of is undone: the routing it wrote is persisted host state, and
-  // nothing else is left to put it back once this modal stops existing.
+  // Every way out of this modal that is NOT the confirm below. A staging the user backs
+  // out of is put back: it narrowed the host's live routing, and no broadcast is coming
+  // whose stop edge would do it instead.
   async function cancelGoLive(): Promise<void> {
     await revertSchedule();
     closeGoLiveModal();
@@ -1410,6 +1312,12 @@ import { EV } from "$lib/utils/eventNames";
       }
     }
     submitting = false;
+    // Deliberately NOT reverting a staged schedule here, and this is the one path that
+    // must not: the staged routing IS the routing the broadcast just started on, and the
+    // host's own ScheduledSetup is holding the snapshot that puts the user's back on the
+    // stop edge. Undoing it here would take destinations off the air mid-broadcast and
+    // leave the stop edge with nothing to restore. Every path that closes WITHOUT a
+    // broadcast goes through cancelGoLive instead, which does revert.
     closeGoLiveModal();
   }
 </script>

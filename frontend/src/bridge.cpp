@@ -54,6 +54,7 @@
 #include "history/SessionRecorder.hpp"
 #include "history/ScheduleRunner.hpp"
 #include "history/ScheduleStore.hpp"
+#include "history/ScheduledSetup.hpp"
 #include "history/SessionStore.hpp"
 #include "history/Thumbnails.hpp"
 #include "util/file_util.hpp"
@@ -7511,6 +7512,35 @@ bool MethodSessionsDelete(const json &params, json &result, std::string &error)
 	return true;
 }
 
+// One entry's destination list, shaped for the UI. Shared by the entry shaping below
+// and by schedule.stageRouting, which reports the destinations it routed through: two
+// shapings of the same list is how the calendar and the go-live banner would come to
+// disagree about what an entry names.
+//
+// `blockReason` is the runner's per-occurrence fact and lives in memory rather than in
+// a column -- a destination the entry cannot reach says so beside itself, since an
+// entry-level reason alone cannot point at which of three destinations is the problem.
+json ScheduleDestinationsToJson(const std::string &entryId,
+				const std::vector<History::ScheduleDestination> &destinations)
+{
+	History::ScheduleRunner &runner = ObsBootstrap::Scheduler();
+	json out = json::array();
+	for (const History::ScheduleDestination &d : destinations) {
+		json tags = json::array();
+		const json parsedTags = JsonUtil::ParseJson(d.tags);
+		if (parsedTags.is_array()) {
+			tags = parsedTags;
+		}
+		out.push_back(json{{"profileId", d.profileId},
+				   {"title", d.title},
+				   {"category", d.category},
+				   {"categoryId", d.categoryId},
+				   {"tags", std::move(tags)},
+				   {"blockReason", runner.DestinationBlockReason(entryId, d.profileId)}});
+	}
+	return out;
+}
+
 // One planned entry, shaped for the UI. Same reasoning as SessionToJson: the list
 // and the editor read the same object, and a second shaping is how the two drift.
 // `announce` and `autoStart` are stored 0/1 to match the DDL and surface as real
@@ -7518,27 +7548,12 @@ bool MethodSessionsDelete(const json &params, json &result, std::string &error)
 json ScheduleToJson(const History::ScheduleEntry &e, const std::vector<History::ScheduleDestination> &destinations)
 {
 	// The runner's per-occurrence facts, which live in memory rather than in a column:
-	// a cancelled occurrence reads `planned` like one that was never armed, a refused
-	// auto-start has to say why rather than just stop happening, and a destination the
-	// entry cannot reach says so beside itself -- an entry-level reason alone cannot
-	// point at which of three destinations is the problem. There is deliberately no
-	// countdown here -- the client has startsAt and counts the seconds itself, so the
-	// host never emits per-second.
+	// a cancelled occurrence reads `planned` like one that was never armed, and a
+	// refused auto-start has to say why rather than just stop happening. There is
+	// deliberately no countdown here -- the client has startsAt and counts the seconds
+	// itself, so the host never emits per-second.
 	History::ScheduleRunner &runner = ObsBootstrap::Scheduler();
-	json dests = json::array();
-	for (const History::ScheduleDestination &d : destinations) {
-		json tags = json::array();
-		const json parsedTags = JsonUtil::ParseJson(d.tags);
-		if (parsedTags.is_array()) {
-			tags = parsedTags;
-		}
-		dests.push_back(json{{"profileId", d.profileId},
-				     {"title", d.title},
-				     {"category", d.category},
-				     {"categoryId", d.categoryId},
-				     {"tags", std::move(tags)},
-				     {"blockReason", runner.DestinationBlockReason(e.id, d.profileId)}});
-	}
+	json dests = ScheduleDestinationsToJson(e.id, destinations);
 	return json{{"id", e.id},
 		    {"startsAt", e.startsAt},
 		    {"title", e.title},
@@ -7589,6 +7604,24 @@ void ApplyScheduleFields(const json &params, History::ScheduleEntry &e)
 	e.autoStart = JsonUtil::Bool(params, "autoStart", e.autoStart != 0) ? 1 : 0;
 }
 
+// Why a schedule method that needs the database refuses when it never opened, and why
+// one refuses an id the store does not know. Spelled once each: two methods say the
+// first and three say the second, and a caller telling "gone" from "unavailable" by the
+// text must not have to know which door it came through.
+constexpr const char *kSchedulingUnavailable = "scheduling is unavailable: the history database did not open";
+
+// Why anything that would move the routing is refused while the scheduler is mid-start.
+// Spelled once for the same reason: schedule.stageRouting and schedule.unstageRouting both
+// say it, and a caller telling this apart from a manual go-live already starting by the
+// text must not have to know which of the two answered.
+constexpr const char *kScheduledStartUnderWay =
+	"a scheduled stream is already starting; wait for it to finish or stop it";
+
+std::string NoSuchScheduleEntry(const std::string &id)
+{
+	return "no scheduled entry with id '" + id + "'";
+}
+
 // An unattached store yields an empty array rather than an error, on the same
 // terms as sessions.list: scheduling is visibly unavailable and the app keeps
 // streaming.
@@ -7615,7 +7648,7 @@ bool MethodScheduleGet(const json &params, json &result, std::string &error)
 	History::ScheduleStore &store = ObsBootstrap::Schedule();
 	const auto entry = store.Get(id);
 	if (!entry) {
-		error = "no scheduled entry with id '" + id + "'";
+		error = NoSuchScheduleEntry(id);
 		return false;
 	}
 	result = ScheduleToJson(*entry, store.DestinationsFor(id));
@@ -7626,7 +7659,7 @@ bool MethodScheduleCreate(const json &params, json &result, std::string &error)
 {
 	History::ScheduleStore &store = ObsBootstrap::Schedule();
 	if (!store.IsAttached()) {
-		error = "scheduling is unavailable: the history database did not open";
+		error = kSchedulingUnavailable;
 		return false;
 	}
 	History::ScheduleEntry entry;
@@ -7653,7 +7686,7 @@ bool MethodScheduleUpdate(const json &params, json &result, std::string &error)
 	History::ScheduleStore &store = ObsBootstrap::Schedule();
 	const auto existing = store.Get(id);
 	if (!existing) {
-		error = "no scheduled entry with id '" + id + "'";
+		error = NoSuchScheduleEntry(id);
 		return false;
 	}
 	// Editing a settled entry would silently un-miss it on the calendar. The
@@ -7742,6 +7775,135 @@ bool MethodScheduleStartNow(const json &params, json &result, std::string &error
 		return false;
 	}
 	result = json{{"ok", true}};
+	return true;
+}
+
+// The store, refused with a reason of its own when the database never opened. Asked
+// before "does that entry exist", or an unattached store reports every id as unknown
+// and the user is told they deleted something they did not.
+bool ScheduleEntryExists(const std::string &id, std::string &error)
+{
+	History::ScheduleStore &store = ObsBootstrap::Schedule();
+	if (!store.IsAttached()) {
+		error = kSchedulingUnavailable;
+		return false;
+	}
+	if (!store.Get(id)) {
+		error = NoSuchScheduleEntry(id);
+		return false;
+	}
+	return true;
+}
+
+// Narrow the enabled destinations to the ones this entry names, without going live,
+// and report what going live on it would leave in each destination's metadata. The
+// staged application is remembered, and schedule.unstageRouting or the broadcast's
+// stop edge puts the user's own routing back.
+//
+// It drives ObsBootstrap::ScheduledSetup() -- the host's single instance -- rather
+// than a copy of the narrowing rule in the UI, for the reasons on that accessor: a
+// second instance snapshots what the first left, and one owned by a modal dies with
+// the modal, stranding the destinations it switched off with no record anywhere that
+// they are owed a restore.
+//
+// Routing and metadata are answered together rather than by two calls for one reason:
+// they must describe the SAME entry. Two calls read the store twice, and an entry
+// edited in between routes through one destination list while its metadata is planned
+// from another -- which is the drift this whole seam exists to make impossible.
+bool MethodScheduleStageRouting(const json &params, json &result, std::string &error)
+{
+	std::string id;
+	if (!RequireStr(params, "schedule.stageRouting", "id", id, error)) {
+		return false;
+	}
+	if (!ScheduleEntryExists(id, error)) {
+		return false;
+	}
+	// The scheduler is mid-start. Refused outright, because ApplyRouting below opens by
+	// reverting whatever is applied (ScheduledSetup.cpp, "two applications must never
+	// stack") -- correct for the runner, which reverts and re-applies as one step, but
+	// here it would put back the routing a start already under way is going live on.
+	// Both outcomes are bad and only one of them is visible: a refused stage silently
+	// un-applies that entry, and a stage that SUCCEEDS hijacks the routing of a
+	// broadcast on its way up with nothing reporting it.
+	//
+	// Not covered by the prelude check below, which is why both are here: the prelude
+	// flag only goes up inside StartStreamingAll's posted lambda, so it is blind to the
+	// gap between PrepareStart applying the entry's routing and that lambda running --
+	// exactly the window this guard exists for.
+	if (!ObsBootstrap::Scheduler().InFlightIds().empty()) {
+		error = kScheduledStartUnderWay;
+		return false;
+	}
+	// Refused for the reason schedule.startNow refuses: a prelude in flight has
+	// already snapshotted the routing it is creating broadcasts against, and
+	// re-routing underneath it sends those broadcasts nowhere.
+	if (GoLivePreludeInFlight()) {
+		error = kGoLiveAlreadyStarting;
+		return false;
+	}
+	// The ONE read. Everything below -- the narrowing, the list reported back, and the
+	// metadata plan -- is answered from this vector and never from a second lookup.
+	const std::vector<History::ScheduleDestination> destinations = ObsBootstrap::Schedule().DestinationsFor(id);
+	std::string reason;
+	if (!ObsBootstrap::ScheduledSetup().ApplyRouting(destinations, reason)) {
+		error = reason;
+		return false;
+	}
+	// `current` optionally supplies the bag a caller is editing for a profile, so a
+	// form with unsaved changes plans against what the user is looking at; a profile it
+	// does not name falls back to what the host has remembered.
+	const auto supplied = params.find("current");
+	const json *current = (supplied != params.end() && supplied->is_object()) ? &*supplied : nullptr;
+	const std::function<json(const std::string &)> &remembered = ObsBootstrap::ScheduledSetup().metadata.read;
+	const std::function<json(const std::string &)> read = [&](const std::string &profileId) -> json {
+		if (current) {
+			const auto bag = current->find(profileId);
+			if (bag != current->end() && bag->is_object()) {
+				return *bag;
+			}
+		}
+		return remembered ? remembered(profileId) : json::object();
+	};
+	// Planned, not written: ApplyRouting touches the routing only, so this reports what
+	// going live would merge without merging it. A profile the entry states nothing for
+	// is absent, which is PlanMetadata's own skip rule and not an empty bag.
+	json metadata = json::object();
+	for (const History::ScheduledSetup::PlannedOverride &planned :
+	     History::ScheduledSetup::PlanMetadata(destinations, read)) {
+		metadata[planned.profileId] = planned.after;
+	}
+	result = json{{"staged", id},
+		      {"destinations", ScheduleDestinationsToJson(id, destinations)},
+		      {"metadata", std::move(metadata)}};
+	return true;
+}
+
+// Put back the routing a stage took off the air. `staged` answers whether a restore
+// is still owed afterwards: a binding the routing would not take keeps its record for
+// the next call rather than being dropped, so this is not always false.
+//
+// Refused while the scheduler is mid-start, for the reason schedule.stageRouting
+// refuses and against the same window. PrepareStart un-stacks whatever was applied
+// before applying the entry's own, so once a scheduled start is in flight this caller's
+// staging is already gone: there is nothing left for it to put back, and reverting
+// anyway would only take down the routing that start is going live on. A caller holding
+// a stage from before the start is exactly the case -- it cannot tell that its staging
+// was displaced, which is why this refuses rather than quietly succeeding.
+//
+// No streaming guard beyond that one. Revert already declines to flip anything while a
+// broadcast is up and holds its snapshot for the stop edge, which is the right answer
+// for an unstage mid-broadcast -- flipping a binding off would stop an output that is
+// live.
+bool MethodScheduleUnstageRouting(const json & /*params*/, json &result, std::string &error)
+{
+	if (!ObsBootstrap::Scheduler().InFlightIds().empty()) {
+		error = kScheduledStartUnderWay;
+		return false;
+	}
+	History::ScheduledSetup &setup = ObsBootstrap::ScheduledSetup();
+	setup.Revert();
+	result = json{{"staged", setup.IsApplied()}};
 	return true;
 }
 
@@ -12289,6 +12451,8 @@ void Init()
 		{"schedule.delete", MethodScheduleDelete},
 		{"schedule.cancelCountdown", MethodScheduleCancelCountdown},
 		{"schedule.startNow", MethodScheduleStartNow},
+		{"schedule.stageRouting", MethodScheduleStageRouting},
+		{"schedule.unstageRouting", MethodScheduleUnstageRouting},
 		{"audio.list", MethodAudioList},
 		{"audio.setDeflection", MethodAudioSetDeflection},
 		{"audio.setMuted", MethodAudioSetMuted},

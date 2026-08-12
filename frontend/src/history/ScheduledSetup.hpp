@@ -125,17 +125,37 @@ public:
 	// used.
 	static nlohmann::json MetadataFields(const ScheduleDestination &destination);
 
+	// One profile's metadata as an application leaves it: the bag that was there,
+	// and the bag the merge produces from it. Both, because Revert puts the first
+	// back and recognises the second to tell an untouched bag from one edited since.
+	struct PlannedOverride {
+		std::string profileId;
+		nlohmann::json before;
+		nlohmann::json after;
+		// Whether there was a bag to put back. A profile that had none has its
+		// override removed on restore rather than rewritten as an empty one.
+		bool existed = false;
+	};
+
+	// Per profile, the bag Apply writes: the entry's fields merged over whatever
+	// `read` reports, one entry per profile however many destinations name it, and
+	// no entry at all for a destination that carries no fields -- a destination
+	// stating nothing is not an instruction to blank what the user remembered.
+	//
+	// Static and side-effect-free, so a caller can ask what an entry would do to
+	// the remembered metadata without doing it. Apply runs this same walk rather
+	// than a second copy of the rules beside it: the merge, the dedupe and the
+	// skips are subtle enough that two copies drift, and a drifted preview tells
+	// the user their category survives a go-live that in fact clears it.
+	static std::vector<PlannedOverride>
+	PlanMetadata(const std::vector<ScheduleDestination> &destinations,
+		     const std::function<nlohmann::json(const std::string &)> &read);
+
 private:
 	struct TouchedBinding {
 		std::string uuid;
 		bool before = false;
 		bool after = false;
-	};
-	struct TouchedOverride {
-		std::string profileId;
-		nlohmann::json before;
-		nlohmann::json after;
-		bool existed = false;
 	};
 
 	// The narrowing itself, and the only implementation of it: both entry points
@@ -156,7 +176,7 @@ private:
 
 	bool applied_ = false;
 	std::vector<TouchedBinding> bindings_;
-	std::vector<TouchedOverride> overrides_;
+	std::vector<PlannedOverride> overrides_;
 };
 
 } // namespace History

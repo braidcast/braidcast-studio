@@ -817,6 +817,11 @@ History::ScheduleRunner &ObsBootstrap::Scheduler()
 	return g_scheduleRunner;
 }
 
+History::ScheduledSetup &ObsBootstrap::ScheduledSetup()
+{
+	return g_scheduledSetup;
+}
+
 History::SessionRecorder &ObsBootstrap::Recorder()
 {
 	return g_recorder;

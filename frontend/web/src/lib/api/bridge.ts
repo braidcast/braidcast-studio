@@ -1921,6 +1921,40 @@ export interface ObsMethods {
   // a streamer-readable reason when it cannot start (already streaming, already
   // live, already settled, or no destination can go live).
   "schedule.startNow": { ok: true };
+  // Narrow the enabled destinations to the ones this entry names, without going live,
+  // through the host's single ScheduledSetup instance -- the same one the scheduler
+  // applies through and the broadcast's stop edge reverts. Rejects with the scheduler's
+  // own reasons (already streaming, a go-live already starting, no destinations, none
+  // of them switched on, a destination that could not be taken off the air).
+  //
+  // All three answers come from ONE read of the entry, which is why routing and
+  // metadata are not separate calls: `destinations` is the list the host actually
+  // routed through, and `metadata` is what going live would leave in each of those
+  // destinations' remembered bags. Asking separately reads the store twice, and an
+  // entry edited in between routes through one list while its metadata is planned from
+  // another. A profile ABSENT from `metadata` is one the entry would not touch at all.
+  //
+  // `current` optionally supplies the bag the caller is editing per profile, so a form
+  // with unsaved changes plans against what the user is looking at; a profile it does
+  // not name falls back to what the host remembers. Naming a profile the entry does not
+  // is harmless -- it simply goes unused.
+  "schedule.stageRouting": {
+    staged: string;
+    destinations: ScheduleDestinationInfo[];
+    metadata: Record<string, Record<string, unknown>>;
+  };
+  // Put the staged routing back. `staged` answers whether a restore is still owed
+  // afterwards -- a binding the routing would not take keeps its record for the next
+  // call, and a stage held open across a live broadcast is released by the stop edge --
+  // so it is not always false.
+  //
+  // Rejects while a scheduled start is in flight, with the same reason stageRouting
+  // gives. That is the honest answer rather than a courtesy success: the runner un-stacks
+  // whatever was applied before applying the entry it is starting, so by then this
+  // caller's staging is already gone. Succeeding would not put anything of theirs back --
+  // it would revert someone else's, taking down the routing a broadcast on its way up is
+  // going live on.
+  "schedule.unstageRouting": { staged: boolean };
   // Native projectors (standalone windows rendering a target on a monitor, P3).
   // listMonitors enumerates the displays a fullscreen projector can target. open
   // spawns a projector (fullscreen needs `monitor`); the window closes itself (Esc /

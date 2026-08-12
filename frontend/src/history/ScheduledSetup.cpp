@@ -41,6 +41,52 @@ nlohmann::json ScheduledSetup::MetadataFields(const ScheduleDestination &destina
 	return fields;
 }
 
+std::vector<ScheduledSetup::PlannedOverride>
+ScheduledSetup::PlanMetadata(const std::vector<ScheduleDestination> &destinations,
+			     const std::function<nlohmann::json(const std::string &)> &read)
+{
+	std::vector<PlannedOverride> plan;
+	// One entry per profile, not per destination: two destinations naming the same
+	// profile would otherwise have the second merge over what the first produced,
+	// and the user's own value would never come back.
+	std::vector<std::string> captured;
+	for (const ScheduleDestination &d : destinations) {
+		if (d.profileId.empty() || Contains(captured, d.profileId)) {
+			continue;
+		}
+		const nlohmann::json fields = MetadataFields(d);
+		if (fields.empty()) {
+			continue;
+		}
+		captured.push_back(d.profileId);
+		nlohmann::json existing = read ? read(d.profileId) : nlohmann::json::object();
+		if (!existing.is_object()) {
+			existing = nlohmann::json::object();
+		}
+		// Merged key by key rather than replaced: the entry states what it wants
+		// changed, and a field it does not carry keeps what the user remembered.
+		// An object field merges a level deeper for the same reason -- `category`
+		// carries an id and a name, and replacing the object would take a sibling
+		// key down with it.
+		nlohmann::json merged = existing;
+		for (auto it = fields.begin(); it != fields.end(); ++it) {
+			nlohmann::json &target = merged[it.key()];
+			if (!it.value().is_object() || !target.is_object()) {
+				target = it.value();
+				continue;
+			}
+			for (auto field = it.value().begin(); field != it.value().end(); ++field) {
+				if (field.value().is_string() && field.value().get<std::string>().empty()) {
+					continue;
+				}
+				target[field.key()] = field.value();
+			}
+		}
+		plan.push_back(PlannedOverride{d.profileId, existing, merged, !existing.empty()});
+	}
+	return plan;
+}
+
 bool ScheduledSetup::WriteLanded(const std::string &uuid, bool enabled)
 {
 	if (routing.write(uuid, enabled)) {
@@ -167,46 +213,15 @@ bool ScheduledSetup::Apply(const std::vector<ScheduleDestination> &destinations,
 		return false;
 	}
 
-	// One capture per profile, not per destination: two destinations naming the
-	// same profile would otherwise have the second capture record what the first
-	// just wrote, and the user's own value would never come back.
-	std::vector<std::string> captured;
-	for (const ScheduleDestination &d : destinations) {
-		if (d.profileId.empty() || Contains(captured, d.profileId)) {
-			continue;
-		}
-		const nlohmann::json fields = MetadataFields(d);
-		if (fields.empty()) {
-			continue;
-		}
-		captured.push_back(d.profileId);
-		nlohmann::json existing = metadata.read ? metadata.read(d.profileId) : nlohmann::json::object();
-		if (!existing.is_object()) {
-			existing = nlohmann::json::object();
-		}
-		// Merged key by key rather than replaced: the entry states what it wants
-		// changed, and a field it does not carry keeps what the user remembered.
-		// An object field merges a level deeper for the same reason -- `category`
-		// carries an id and a name, and replacing the object would take a sibling
-		// key down with it.
-		nlohmann::json merged = existing;
-		for (auto it = fields.begin(); it != fields.end(); ++it) {
-			nlohmann::json &target = merged[it.key()];
-			if (!it.value().is_object() || !target.is_object()) {
-				target = it.value();
-				continue;
-			}
-			for (auto field = it.value().begin(); field != it.value().end(); ++field) {
-				if (field.value().is_string() && field.value().get<std::string>().empty()) {
-					continue;
-				}
-				target[field.key()] = field.value();
-			}
-		}
+	// Planned first, then written: the plan is the record Revert restores from, so
+	// what a caller can preview through PlanMetadata is by construction what goes
+	// out here. Assigned rather than appended because Revert above has already let
+	// go of whatever the previous application was holding.
+	overrides_ = PlanMetadata(destinations, metadata.read);
+	for (const PlannedOverride &planned : overrides_) {
 		if (metadata.write) {
-			metadata.write(d.profileId, merged);
+			metadata.write(planned.profileId, planned.after);
 		}
-		overrides_.push_back(TouchedOverride{d.profileId, existing, merged, !existing.empty()});
 	}
 	if (!overrides_.empty() && metadata.save) {
 		metadata.save();
@@ -255,7 +270,7 @@ void ScheduledSetup::Revert()
 	}
 
 	bool restoredAny = false;
-	for (const TouchedOverride &touched : overrides_) {
+	for (const PlannedOverride &touched : overrides_) {
 		const nlohmann::json now = metadata.read ? metadata.read(touched.profileId) : nlohmann::json();
 		if (now != touched.after) {
 			continue; // edited since; that edit is the newer intent
