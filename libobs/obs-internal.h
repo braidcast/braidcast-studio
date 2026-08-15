@@ -699,6 +699,11 @@ struct obs_graphics_context {
 	 * directly and the segment total alone cannot say whose handler it was.
 	 * hwnd is carried as an integer to keep this header platform-neutral. */
 	uint64_t msg_worst_ns;
+	/* Sum of every TranslateMessage/DispatchMessage in the pass. The pump
+	 * segment minus this is time inside PeekMessage, which is where Windows
+	 * delivers cross-thread SendMessage inline -- a wait no per-message
+	 * dispatch timer can see, and the sender blocks for all of it. */
+	uint64_t msg_dispatch_ns;
 	uintptr_t msg_worst_hwnd;
 	uint32_t msg_worst_id;
 	uint32_t msg_count;

@@ -1586,7 +1586,7 @@ static void debug_emit_frame_segments(const struct obs_graphics_context *context
 	struct debug_frame_segment segments[RENDER_DEBUG_SEGMENT_COUNT];
 	const size_t num = debug_fill_segments(context, segments);
 	char acquirer[160] = "";
-	char pump[160] = "";
+	char pump[224] = "";
 	char msg_name[16];
 	uint64_t accounted = 0;
 
@@ -1613,12 +1613,17 @@ static void debug_emit_frame_segments(const struct obs_graphics_context *context
 
 	/* Same rule as the acquirer above: name the handler only when the pump is
 	 * actually where the frame went, so ordinary traffic stays unannotated. */
-	if (context->seg_msg_ns >= debug_segment_warn_ns(context) && context->msg_worst_ns) {
+	if (context->seg_msg_ns >= debug_segment_warn_ns(context)) {
+		const uint64_t peek_ns = context->seg_msg_ns > context->msg_dispatch_ns
+						 ? context->seg_msg_ns - context->msg_dispatch_ns
+						 : 0;
 		snprintf(pump, sizeof(pump),
-			 ", pump dispatched %u" NBSP "msg, worst %s to hwnd 0x%llx at %.1f" NBSP "ms",
-			 context->msg_count,
+			 ", pump dispatched %u" NBSP "msg in %.1f" NBSP "ms (worst %s to hwnd 0x%llx at %.1f" NBSP
+			 "ms), %.1f" NBSP "ms inside PeekMessage",
+			 context->msg_count, obs_debug_ns_to_ms(context->msg_dispatch_ns),
 			 debug_window_message_name(context->msg_worst_id, msg_name, sizeof msg_name),
-			 (unsigned long long)context->msg_worst_hwnd, obs_debug_ns_to_ms(context->msg_worst_ns));
+			 (unsigned long long)context->msg_worst_hwnd, obs_debug_ns_to_ms(context->msg_worst_ns),
+			 obs_debug_ns_to_ms(peek_ns));
 	}
 
 	blog(LOG_INFO,
@@ -1731,6 +1736,7 @@ bool obs_graphics_thread_loop(struct obs_graphics_context *context)
 	profile_start(message_loop_name);
 	seg_start = os_gettime_ns();
 	context->msg_worst_ns = 0;
+	context->msg_dispatch_ns = 0;
 	context->msg_worst_hwnd = 0;
 	context->msg_worst_id = 0;
 	context->msg_count = 0;
@@ -1743,6 +1749,7 @@ bool obs_graphics_thread_loop(struct obs_graphics_context *context)
 		TranslateMessage(&msg);
 		DispatchMessage(&msg);
 		const uint64_t msg_ns = os_gettime_ns() - msg_start;
+		context->msg_dispatch_ns += msg_ns;
 		if (msg_ns > context->msg_worst_ns) {
 			context->msg_worst_ns = msg_ns;
 			context->msg_worst_hwnd = (uintptr_t)msg.hwnd;
@@ -1885,6 +1892,7 @@ void *obs_graphics_thread(void *param)
 	context.seg_collect_ns = 0;
 	context.seg_tail_ns = 0;
 	context.msg_worst_ns = 0;
+	context.msg_dispatch_ns = 0;
 	context.msg_worst_hwnd = 0;
 	context.msg_worst_id = 0;
 	context.msg_count = 0;
