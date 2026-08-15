@@ -173,6 +173,72 @@
     }),
   );
 
+  // --- empty-state copy -------------------------------------------------------
+  // Two situations, not one: "not live" (nothing to have a chat yet) and "live but
+  // quiet" (connected, nobody's said anything -- whether that's the whole feed or one
+  // scoped destination). Held per state entry, not re-rolled per render or on a timer:
+  // this dock sits in a broadcaster's peripheral vision, and a text change there reads
+  // as "a message arrived" even when nothing did.
+
+  const OFFLINE_MESSAGES = [
+    "Chat shows up once you're live.",
+    "Nothing to read yet — go live and it fills in.",
+    "This pane wakes up when the stream starts.",
+    "No broadcast, no chat.",
+    "Idle for now. Chat arrives with the stream.",
+    "Empty until you go live.",
+    "Standing by for a stream to attach to.",
+    "Quiet, because there's nothing on air yet.",
+  ];
+
+  const LIVE_EMPTY_MESSAGES = [
+    "Quiet in here so far.",
+    "No messages yet — this updates the moment one lands.",
+    "Nothing said yet. It'll show up here first.",
+    "Connected. Just waiting on the first line.",
+    "Still quiet. The connection's fine.",
+    "Nobody's typed anything yet.",
+    "Waiting on the first message.",
+    "Connected and listening. Nothing yet.",
+  ];
+
+  function pickOne<T>(pool: readonly T[]): T {
+    return pool[Math.floor(Math.random() * pool.length)];
+  }
+
+  type EmptyKind = "offline" | "live" | null;
+
+  // feed.rows empty with no destinations = not live; feed.rows empty with destinations,
+  // or a scoped `filtered` empty while the wider feed isn't, are both "live but quiet" --
+  // the scoped case just names which pane via `sub` rather than getting its own tone.
+  let emptyKind = $derived<EmptyKind>(
+    feed.rows.length === 0
+      ? destinations.length > 0
+        ? "live"
+        : "offline"
+      : filtered.length === 0
+        ? "live"
+        : null,
+  );
+
+  let offlineMessage = $state(OFFLINE_MESSAGES[0]);
+  let liveEmptyMessage = $state(LIVE_EMPTY_MESSAGES[0]);
+
+  // Reads only the derived `emptyKind`, whose value is stable across renders that don't
+  // actually change which of the three branches is showing (Svelte skips an effect
+  // rerun when a $derived it reads recomputes to an equal value) -- so this cannot
+  // re-roll on an unrelated reactive update, only on a genuine transition into a state.
+  let lastEmptyKind: EmptyKind = null;
+  $effect(() => {
+    const kind = emptyKind;
+    if (kind === "offline" && lastEmptyKind !== "offline") {
+      offlineMessage = pickOne(OFFLINE_MESSAGES);
+    } else if (kind === "live" && lastEmptyKind !== "live") {
+      liveEmptyMessage = pickOne(LIVE_EMPTY_MESSAGES);
+    }
+    lastEmptyKind = kind;
+  });
+
   // --- composer -------------------------------------------------------------
   // Two ways to address a send, and which one is in force is stated, never inferred. A
   // `destination` selection names one transport and is addressed by accountId. `all`
@@ -360,12 +426,9 @@
   <div class="feed">
     <div class="scroll" use:feedScroll>
       {#if feed.rows.length === 0}
-        <EmptyState
-          compact
-          title={destinations.length > 0 ? "Waiting for chat…" : "Chat appears here while you are live."}
-        />
+        <EmptyState compact title={destinations.length > 0 ? liveEmptyMessage : offlineMessage} />
       {:else if filtered.length === 0}
-        <EmptyState compact title={scopeLabel ? "No messages yet for " + scopeLabel + "." : "No messages yet."} />
+        <EmptyState compact title={liveEmptyMessage} sub={scopeLabel || undefined} />
       {:else}
         <div class="sizer" style:height={feed.layout.total + "px"}>
           {#each feed.visible as row (row.clientKey)}
