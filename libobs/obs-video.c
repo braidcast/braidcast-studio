@@ -825,6 +825,28 @@ void add_ready_encoder_group(obs_encoder_t *encoder)
 	pthread_mutex_unlock(&obs->video.encoder_group_mutex);
 }
 
+/* How long the pipeline gets to prove itself before lag counts regardless. */
+#define STARTUP_GRACE_NS 10000000000ULL
+
+/* Ends the startup grace once the pipeline holds its deadline for a full second
+ * of frames, or once the grace lapses. Reports what it withheld either way --
+ * a suppressed number that is never disclosed is indistinguishable from a bug. */
+static void video_startup_settle(struct obs_core_video *video, uint32_t lagged, uint64_t interval_ns)
+{
+	video->startup_ontime_streak = lagged ? 0 : video->startup_ontime_streak + 1;
+
+	const bool steady = interval_ns && video->startup_ontime_streak >= (1000000000ULL / interval_ns);
+	const bool lapsed = os_gettime_ns() >= video->startup_deadline_ns;
+	if (!steady && !lapsed) {
+		return;
+	}
+
+	video->startup_settled = true;
+	blog(LOG_INFO, "Video pipeline settled (%s); %" PRIu32 " frame(s) lost to startup are not counted as lag",
+	     steady ? "held the frame deadline for one second" : "startup grace elapsed",
+	     video->startup_skipped_frames);
+}
+
 static inline void video_sleep(struct obs_core_video *video, uint64_t *p_time, uint64_t interval_ns)
 {
 	struct obs_vframe_info vframe_info;
@@ -845,7 +867,18 @@ static inline void video_sleep(struct obs_core_video *video, uint64_t *p_time, u
 	}
 
 	video->total_frames += count;
-	video->lagged_frames += count - 1;
+
+	const uint32_t lagged = (uint32_t)(count - 1);
+	video->lagged_frames_raw += lagged;
+	if (video->startup_settled) {
+		video->lagged_frames += lagged;
+	} else {
+		if (!video->startup_deadline_ns) {
+			video->startup_deadline_ns = os_gettime_ns() + STARTUP_GRACE_NS;
+		}
+		video->startup_skipped_frames += lagged;
+		video_startup_settle(video, lagged, interval_ns);
+	}
 
 	vframe_info.timestamp = cur_time;
 	vframe_info.count = count;
@@ -1419,7 +1452,7 @@ static void debug_emit_composite_stats(void)
 	const bool gpu_measured = os_atomic_load_bool(&obs->video.render_gpu_debug);
 	const char *gpu_note = gpu_measured ? "" : ", GPU timing off";
 
-	const uint32_t lagged_total = obs->video.lagged_frames;
+	const uint32_t lagged_total = obs->video.lagged_frames_raw;
 	const uint32_t lagged_delta = lagged_total - obs->video.debug_last_lagged_frames;
 	obs->video.debug_last_lagged_frames = lagged_total;
 
@@ -1775,7 +1808,7 @@ bool obs_graphics_thread_loop(struct obs_graphics_context *context)
 
 	/* video_sleep is where lagged_frames moves, so a growth across the call
 	 * above indicts the frame whose segments were just measured. */
-	const uint32_t lagged_now = obs->video.lagged_frames;
+	const uint32_t lagged_now = obs->video.lagged_frames_raw;
 	if (os_atomic_load_bool(&obs->video.render_debug)) {
 		debug_check_frame(context, lagged_now - context->last_lagged_frames, span_ns, tail_start);
 	}
@@ -1855,7 +1888,7 @@ void *obs_graphics_thread(void *param)
 	context.msg_worst_hwnd = 0;
 	context.msg_worst_id = 0;
 	context.msg_count = 0;
-	context.last_lagged_frames = obs->video.lagged_frames;
+	context.last_lagged_frames = obs->video.lagged_frames_raw;
 	context.warn_window_start_ns = os_gettime_ns();
 	context.warn_in_window = 0;
 	context.warn_suppressed = 0;

@@ -451,6 +451,24 @@ struct obs_core_video {
 	pthread_t video_thread;
 	uint32_t total_frames;
 	uint32_t lagged_frames;
+	/* Frames the pipeline lost while still starting up are not lag: no output
+	 * exists yet to consume them, and the cost is one-time source init (WGC
+	 * capture session creation, GDI+ text rendering) landing in the first
+	 * ticks. Counting them leaves a permanently non-zero reading that says
+	 * nothing about steady-state performance -- which is worse than not
+	 * counting, because it reads as a problem that cannot be cleared. So
+	 * lagged_frames accumulates only once the graphics thread has held the
+	 * deadline for a full second, or the grace period lapses, whichever comes
+	 * first; a broken pipeline therefore still reports rather than hiding.
+	 *
+	 * lagged_frames_raw always accumulates. The render-debug diagnostics read
+	 * it, so they keep seeing the startup frames the reported stat skips --
+	 * scoping the statistic must not blind the instrumentation. */
+	uint32_t lagged_frames_raw;
+	uint32_t startup_ontime_streak;
+	uint32_t startup_skipped_frames;
+	uint64_t startup_deadline_ns;
+	bool startup_settled;
 	bool thread_initialized;
 
 	/* Per-mix composite timing diagnostics (see obs_set_render_debug).

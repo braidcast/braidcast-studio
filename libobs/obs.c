@@ -2428,7 +2428,7 @@ void obs_set_render_debug(bool enabled)
 	 * edge: the field is then written solely while the flag is false, which is
 	 * the one state in which the graphics thread provably cannot touch it. */
 	if (enabled && !os_atomic_load_bool(&obs->video.render_debug)) {
-		obs->video.debug_last_lagged_frames = obs->video.lagged_frames;
+		obs->video.debug_last_lagged_frames = obs->video.lagged_frames_raw;
 	}
 
 	os_atomic_set_bool(&obs->video.render_debug, enabled);
