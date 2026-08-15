@@ -1483,6 +1483,45 @@ static inline uint64_t debug_segment_warn_ns(const struct obs_graphics_context *
 	return (context->interval * RENDER_DEBUG_SEGMENT_WARN_PCT) / 100;
 }
 
+/* Only the messages worth recognizing on sight in a lag report -- the ones a
+ * display, power, DPI or compositor transition sends, plus the routine traffic
+ * frequent enough to be a plausible culprit. Anything else prints as hex, which
+ * is enough to look up and enough to tell two culprits apart. */
+static const struct {
+	uint32_t id;
+	const char *name;
+} debug_window_messages[] = {
+	{0x0002, "WM_DESTROY"},
+	{0x0005, "WM_SIZE"},
+	{0x000F, "WM_PAINT"},
+	{0x0014, "WM_ERASEBKGND"},
+	{0x0018, "WM_SHOWWINDOW"},
+	{0x001A, "WM_SETTINGCHANGE"},
+	{0x0020, "WM_SETCURSOR"},
+	{0x0046, "WM_WINDOWPOSCHANGING"},
+	{0x0047, "WM_WINDOWPOSCHANGED"},
+	{0x007E, "WM_DISPLAYCHANGE"},
+	{0x0084, "WM_NCHITTEST"},
+	{0x0113, "WM_TIMER"},
+	{0x0200, "WM_MOUSEMOVE"},
+	{0x0218, "WM_POWERBROADCAST"},
+	{0x0219, "WM_DEVICECHANGE"},
+	{0x02E0, "WM_DPICHANGED"},
+	{0x031E, "WM_DWMCOMPOSITIONCHANGED"},
+};
+
+static const char *debug_window_message_name(uint32_t id, char *buf, size_t size)
+{
+	for (size_t i = 0; i < sizeof(debug_window_messages) / sizeof(debug_window_messages[0]); i++) {
+		if (debug_window_messages[i].id == id) {
+			return debug_window_messages[i].name;
+		}
+	}
+
+	snprintf(buf, size, "0x%04X", id);
+	return buf;
+}
+
 static size_t debug_fill_segments(const struct obs_graphics_context *context,
 				  struct debug_frame_segment out[RENDER_DEBUG_SEGMENT_COUNT])
 {
@@ -1497,6 +1536,8 @@ static void debug_emit_frame_segments(const struct obs_graphics_context *context
 	struct debug_frame_segment segments[RENDER_DEBUG_SEGMENT_COUNT];
 	const size_t num = debug_fill_segments(context, segments);
 	char acquirer[160] = "";
+	char pump[160] = "";
+	char msg_name[16];
 	uint64_t accounted = 0;
 
 	for (size_t i = 0; i < num; i++) {
@@ -1520,12 +1561,22 @@ static void debug_emit_frame_segments(const struct obs_graphics_context *context
 			 who, age_ms);
 	}
 
+	/* Same rule as the acquirer above: name the handler only when the pump is
+	 * actually where the frame went, so ordinary traffic stays unannotated. */
+	if (context->seg_msg_ns >= debug_segment_warn_ns(context) && context->msg_worst_ns) {
+		snprintf(pump, sizeof(pump),
+			 ", pump dispatched %u" NBSP "msg, worst %s to hwnd 0x%llx at %.1f" NBSP "ms",
+			 context->msg_count,
+			 debug_window_message_name(context->msg_worst_id, msg_name, sizeof msg_name),
+			 (unsigned long long)context->msg_worst_hwnd, obs_debug_ns_to_ms(context->msg_worst_ns));
+	}
+
 	blog(LOG_INFO,
 	     "[render-debug] %s: total %.1f" NBSP
 	     "ms -- " RENDER_DEBUG_SEGMENTS(RENDER_DEBUG_SEGMENT_FMT) "residual %.1f" NBSP "ms; prev tail %.1f" NBSP
-								      "ms%s",
+								      "ms%s%s",
 	     head, obs_debug_ns_to_ms(span_ns) RENDER_DEBUG_SEGMENTS(RENDER_DEBUG_SEGMENT_ARG),
-	     obs_debug_ns_to_ms(residual), obs_debug_ns_to_ms(context->seg_tail_ns), acquirer);
+	     obs_debug_ns_to_ms(residual), obs_debug_ns_to_ms(context->seg_tail_ns), acquirer, pump);
 }
 
 /* Whether the early-warning line may emit now. Counts what it turns away so the
@@ -1629,15 +1680,32 @@ bool obs_graphics_thread_loop(struct obs_graphics_context *context)
 #ifdef _WIN32
 	profile_start(message_loop_name);
 	seg_start = os_gettime_ns();
+	context->msg_worst_ns = 0;
+	context->msg_worst_hwnd = 0;
+	context->msg_worst_id = 0;
+	context->msg_count = 0;
 	MSG msg;
+	/* Two extra clock reads per message. A frame that pumps a hundred of them
+	 * pays a few microseconds for the pair, which buys the identity of the one
+	 * handler that overran -- the segment total on its own never had it. */
 	while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
+		const uint64_t msg_start = os_gettime_ns();
 		TranslateMessage(&msg);
 		DispatchMessage(&msg);
+		const uint64_t msg_ns = os_gettime_ns() - msg_start;
+		if (msg_ns > context->msg_worst_ns) {
+			context->msg_worst_ns = msg_ns;
+			context->msg_worst_hwnd = (uintptr_t)msg.hwnd;
+			context->msg_worst_id = (uint32_t)msg.message;
+		}
+		context->msg_count++;
 	}
 	context->seg_msg_ns = os_gettime_ns() - seg_start;
 	profile_end(message_loop_name);
 #else
 	context->seg_msg_ns = 0;
+	context->msg_worst_ns = 0;
+	context->msg_count = 0;
 #endif
 
 	source_profiler_render_begin();
@@ -1759,6 +1827,10 @@ void *obs_graphics_thread(void *param)
 	context.seg_tasks_ns = 0;
 	context.seg_collect_ns = 0;
 	context.seg_tail_ns = 0;
+	context.msg_worst_ns = 0;
+	context.msg_worst_hwnd = 0;
+	context.msg_worst_id = 0;
+	context.msg_count = 0;
 	context.last_lagged_frames = obs->video.lagged_frames;
 	context.warn_window_start_ns = os_gettime_ns();
 	context.warn_in_window = 0;

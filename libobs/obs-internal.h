@@ -673,6 +673,16 @@ struct obs_graphics_context {
 	uint64_t seg_tasks_ns;
 	uint64_t seg_collect_ns;
 	uint64_t seg_tail_ns;
+
+	/* Attribution for seg_msg_ns: the pump dispatches every window message
+	 * the process receives inside the frame, so a slow handler costs a frame
+	 * directly and the segment total alone cannot say whose handler it was.
+	 * hwnd is carried as an integer to keep this header platform-neutral. */
+	uint64_t msg_worst_ns;
+	uintptr_t msg_worst_hwnd;
+	uint32_t msg_worst_id;
+	uint32_t msg_count;
+
 	uint32_t last_lagged_frames;
 
 	/* Rate limit for the early-warning line, which unlike the on-miss line
