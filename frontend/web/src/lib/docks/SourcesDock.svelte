@@ -14,6 +14,7 @@ import { EV } from "$lib/utils/eventNames";
   import { renameSignal } from "$lib/stores/renameSignalStore.svelte";
   import { openFilters } from "$lib/dialogs/filterDialogOpener.svelte";
   import { DockError } from "$lib/docking/dockError.svelte";
+  import { RequestGuard } from "$lib/utils/requestGuard";
   import { transformMenu } from "$lib/menus/transformMenu";
   import { scaleFilterMenu } from "$lib/menus/scaleFilterMenu";
   import { blendModeMenu, blendMethodMenu } from "$lib/menus/blendMenu";
@@ -124,18 +125,18 @@ import { EV } from "$lib/utils/eventNames";
 
   // Request-generation guard: a fast scene switch must not let a slow prior list
   // response overwrite the newer scene's sources.
-  let loadSeq = 0;
+  const loadGuard = new RequestGuard();
   async function load() {
     if (!currentScene) {
       items = [];
       loaded = true;
       return;
     }
-    const mine = ++loadSeq;
+    const current = loadGuard.claim();
     dockError.clear();
     try {
       const list = await obs.call("sceneItems.list", { scene: currentScene });
-      if (mine !== loadSeq) {
+      if (!current()) {
         return;
       }
       items = list;

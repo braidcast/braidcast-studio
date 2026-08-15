@@ -5,6 +5,7 @@ import { EV } from "$lib/utils/eventNames";
   import { openLogViewer } from "$lib/dialogs/logViewerOpener.svelte";
   import { openImporter } from "$lib/dialogs/importerOpener.svelte";
   import { goLivePref, setGoLivePref } from "$lib/stores/goLivePrefStore.svelte";
+  import { RequestGuard } from "$lib/utils/requestGuard";
   import ToggleSwitch from "$lib/ui/ToggleSwitch.svelte";
 
   // General app settings, live-applied (the page model has no Apply boundary):
@@ -22,7 +23,7 @@ import { EV } from "$lib/utils/eventNames";
     { label: "Scenes Only (24)", value: "scenesOnly24" },
   ];
 
-  let s = $state<GeneralSettings>({
+  const DEFAULTS: GeneralSettings = {
     projectorAlwaysOnTop: false,
     snapEnabled: true,
     snapDistance: 10,
@@ -40,17 +41,30 @@ import { EV } from "$lib/utils/eventNames";
     multiviewDrawSafeAreas: false,
     importerPrompts: true,
     scenesGridMode: false,
-  });
+  };
 
+  let s = $state<GeneralSettings>({ ...DEFAULTS });
   let loaded = $state(false);
   let error = $state<string | null>(null);
+  const guard = new RequestGuard();
+
+  // The state the engine last confirmed, which is what a rejected apply rolls back to.
+  // Not the value the control saw: with two applies in flight that one already carries
+  // the earlier patch, which may itself have been rejected.
+  let confirmed: GeneralSettings = { ...DEFAULTS };
+
+  function adopt(g: GeneralSettings): void {
+    s = g;
+    confirmed = { ...g };
+  }
 
   $effect(() => {
     let active = true;
+    const current = guard.claim();
     obs
       .call("settings.getGeneral")
       .then((g) => {
-        if (active) s = g;
+        if (active && current()) adopt(g);
       })
       .catch((e) => {
         if (active) error = (e as Error).message;
@@ -58,7 +72,12 @@ import { EV } from "$lib/utils/eventNames";
       .finally(() => {
         if (active) loaded = true;
       });
-    const off = obs.on(EV.settingsGeneralChanged, (g) => (s = g));
+    const off = obs.on(EV.settingsGeneralChanged, (g) => {
+      // The push is the engine's own account of what it holds, so it outranks every
+      // reply still in flight -- including a revert about to restore an older value.
+      guard.supersede();
+      adopt(g);
+    });
     return () => {
       active = false;
       off();
@@ -68,13 +87,14 @@ import { EV } from "$lib/utils/eventNames";
   // Optimistic local set, then reconcile from the echoed full state.
   async function apply(patch: Partial<GeneralSettings>): Promise<void> {
     error = null;
-    const previous = s;
+    const current = guard.claim();
     s = { ...s, ...patch };
     try {
-      s = await obs.call("settings.setGeneral", patch);
+      const g = await obs.call("settings.setGeneral", patch);
+      if (current()) adopt(g);
     } catch (e) {
-      s = previous;
       error = (e as Error).message;
+      if (current()) s = { ...confirmed };
     }
   }
 </script>

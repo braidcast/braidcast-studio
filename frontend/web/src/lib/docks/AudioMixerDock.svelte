@@ -7,6 +7,7 @@ import { EV } from "$lib/utils/eventNames";
   import ContextMenu, { type ContextMenuState } from "$lib/menus/ContextMenu.svelte";
   import { clipboard } from "$lib/stores/clipboardStore.svelte";
   import PropertiesModal from "$lib/properties/PropertiesModal.svelte";
+  import { RequestGuard } from "$lib/utils/requestGuard";
   import Icon from "$lib/ui/Icon.svelte";
 
   // Per-source faders + live dB meters. Levels arrive on the audio.levels push
@@ -80,6 +81,19 @@ import { EV } from "$lib/utils/eventNames";
   // same place AdvAudioDialog reads it (audio.getAdvanced) and refreshed on each load.
   let monitoring = $state<Record<string, AudioMonitoringType>>({});
 
+  // One guard per piece of mixer state, keyed by source uuid where the state is
+  // per-strip. A refresh reads the engine's own account of the mixer, so it outranks
+  // the writes it predates: it marks those when it is issued and discards them only
+  // once its own answer has landed, since a refresh that fails restores nothing and
+  // their reverts are then the last word left. A write issued after the mark keeps its
+  // claim; the refresh does overwrite its optimistic value in passing, and the strip
+  // shows the engine's older reading until that write's own answer settles it.
+  const listGuard = new RequestGuard();
+  const muteGuard = new RequestGuard();
+  const faderGuard = new RequestGuard();
+  const monitorListGuard = new RequestGuard();
+  const monitorGuard = new RequestGuard();
+
   const latest = new Map<string, { magnitude: number; peak: number }>();
   let meters = $state<Record<string, { mag: number; peak: number }>>({});
   let rafHandle = 0;
@@ -98,11 +112,41 @@ import { EV } from "$lib/utils/eventNames";
     });
   }
 
-  async function load() {
-    error = null;
+  // Carry the engine's list into the strips already on screen, keeping the object a
+  // surviving strip is represented by. A row handler captures its `src` from the
+  // rendered array, so replacing the array wholesale would orphan the target of any
+  // write issued after this read: that write would mutate an object nothing renders
+  // and this older list would stand as the final state. A source the refresh no longer
+  // reports is dropped, and one it has gained arrives as a new object.
+  function adopt(incoming: AudioSource[]): void {
+    const held = new Map(sources.map((s) => [s.uuid, s]));
+    sources = incoming.map((next) => {
+      const strip = held.get(next.uuid);
+      if (!strip) {
+        return next;
+      }
+      Object.assign(strip, next);
+      return strip;
+    });
+  }
+
+  // `keepError` marks a refresh that repairs a failed write: the banner already names
+  // that failure and it stays worth reporting even once the strip reads true again.
+  async function load(keepError = false) {
+    if (!keepError) {
+      error = null;
+    }
+    const current = listGuard.claim();
+    const supersedeMutes = muteGuard.mark();
+    const supersedeFaders = faderGuard.mark();
     try {
       const res = await obs.call("audio.list");
-      sources = res.sources;
+      if (!current()) {
+        return;
+      }
+      supersedeMutes();
+      supersedeFaders();
+      adopt(res.sources);
       void loadMonitoring();
       const live = new Set(sources.map((s) => s.uuid));
       for (const uuid of latest.keys()) {
@@ -143,13 +187,24 @@ import { EV } from "$lib/utils/eventNames";
   });
 
   async function setDeflection(src: AudioSource, value: number) {
+    const current = faderGuard.claim(src.uuid);
+    const previous = src.deflection;
     src.deflection = value; // optimistic (mutating the $state element is reactive)
     try {
       const res = await obs.call("audio.setDeflection", { uuid: src.uuid, deflection: value });
-      src.deflection = res.deflection;
-      src.volumeDb = res.volumeDb;
+      if (current()) {
+        src.deflection = res.deflection;
+        src.volumeDb = res.volumeDb;
+      }
     } catch (e) {
       error = (e as Error).message;
+      if (current()) {
+        // A drag issues a move per pointer step, so `previous` can be an earlier move's
+        // optimistic position; re-read for the position the engine actually holds.
+        // volumeDb is never asserted optimistically, so it already reads true.
+        src.deflection = previous;
+        void load(true);
+      }
     }
   }
 
@@ -158,15 +213,25 @@ import { EV } from "$lib/utils/eventNames";
   }
 
   async function toggleMuted(src: AudioSource) {
+    const current = muteGuard.claim(src.uuid);
     const previous = src.muted;
     const desired = !previous;
     src.muted = desired; // optimistic
     try {
       const res = await obs.call("audio.setMuted", { uuid: src.uuid, muted: desired });
-      src.muted = res.muted;
+      if (current()) {
+        src.muted = res.muted;
+      }
     } catch (e) {
-      src.muted = previous;
       error = (e as Error).message;
+      if (current()) {
+        // `previous` is the truth only while this was the sole toggle in flight; a second
+        // failing toggle saw the first one's optimistic value. Re-read so the strip cannot
+        // settle on a mute the engine never applied -- and only from the newest response,
+        // since a reload would discard a toggle still on its way.
+        src.muted = previous;
+        void load(true);
+      }
     }
   }
 
@@ -207,6 +272,8 @@ import { EV } from "$lib/utils/eventNames";
   // Pull each source's monitoring type in parallel; a source that can't report one
   // (rejected getAdvanced) falls back to Off so the button still renders.
   async function loadMonitoring() {
+    const current = monitorListGuard.claim();
+    const supersedeMonitors = monitorGuard.mark();
     const entries = await Promise.all(
       sources.map(async (s): Promise<[string, AudioMonitoringType]> => {
         try {
@@ -216,18 +283,32 @@ import { EV } from "$lib/utils/eventNames";
         }
       }),
     );
+    if (!current()) {
+      return;
+    }
+    supersedeMonitors();
     monitoring = Object.fromEntries(entries);
   }
 
   async function cycleMonitor(src: AudioSource) {
-    const cur = monitoring[src.uuid] ?? "none";
-    const next = MONITOR_CYCLE[(MONITOR_CYCLE.indexOf(cur) + 1) % MONITOR_CYCLE.length];
+    const previous = monitoring[src.uuid] ?? "none";
+    const next = MONITOR_CYCLE[(MONITOR_CYCLE.indexOf(previous) + 1) % MONITOR_CYCLE.length];
+    const current = monitorGuard.claim(src.uuid);
     monitoring = { ...monitoring, [src.uuid]: next }; // optimistic
     try {
       const aa = await obs.call("audio.setAdvanced", { uuid: src.uuid, monitoringType: next });
-      monitoring = { ...monitoring, [src.uuid]: aa.monitoringType };
+      if (current()) {
+        monitoring = { ...monitoring, [src.uuid]: aa.monitoringType };
+      }
     } catch (e) {
       error = (e as Error).message;
+      if (current()) {
+        // A second click reads the first one's optimistic value, so `previous` is only
+        // the truth while this was the sole cycle in flight; re-read for the routing the
+        // engine actually has rather than leave a monitor state it never applied.
+        monitoring = { ...monitoring, [src.uuid]: previous };
+        void loadMonitoring();
+      }
     }
   }
 
