@@ -1560,6 +1560,25 @@ static const struct {
 	{0x031E, "WM_DWMCOMPOSITIONCHANGED"},
 };
 
+#ifdef _WIN32
+/* Names the windows the graphics thread owns. A SendMessage from any other
+ * thread must target one of these, and that wait is serviced inside
+ * PeekMessage where no dispatch timer can see it -- so this list is the
+ * difference between a measured stall and an unattributable one. Emitted once,
+ * on the first slow pump, because the windows are created lazily and a probe at
+ * thread start would find an empty set. */
+static BOOL CALLBACK debug_log_thread_window(HWND hwnd, LPARAM param)
+{
+	UNUSED_PARAMETER(param);
+
+	char cls[64] = "";
+	GetClassNameA(hwnd, cls, (int)sizeof cls);
+	blog(LOG_INFO, "[render-debug] graphics thread owns hwnd 0x%llx class '%s'",
+	     (unsigned long long)(uintptr_t)hwnd, cls);
+	return TRUE;
+}
+#endif
+
 static const char *debug_window_message_name(uint32_t id, char *buf, size_t size)
 {
 	for (size_t i = 0; i < sizeof(debug_window_messages) / sizeof(debug_window_messages[0]); i++) {
@@ -1619,11 +1638,12 @@ static void debug_emit_frame_segments(const struct obs_graphics_context *context
 						 : 0;
 		snprintf(pump, sizeof(pump),
 			 ", pump dispatched %u" NBSP "msg in %.1f" NBSP "ms (worst %s to hwnd 0x%llx at %.1f" NBSP
-			 "ms), %.1f" NBSP "ms inside PeekMessage",
+			 "ms), %.1f" NBSP "ms across %u" NBSP "PeekMessage (worst single %.1f" NBSP "ms)",
 			 context->msg_count, obs_debug_ns_to_ms(context->msg_dispatch_ns),
 			 debug_window_message_name(context->msg_worst_id, msg_name, sizeof msg_name),
 			 (unsigned long long)context->msg_worst_hwnd, obs_debug_ns_to_ms(context->msg_worst_ns),
-			 obs_debug_ns_to_ms(peek_ns));
+			 obs_debug_ns_to_ms(peek_ns), context->msg_peek_calls,
+			 obs_debug_ns_to_ms(context->msg_peek_worst_ns));
 	}
 
 	blog(LOG_INFO,
@@ -1740,11 +1760,27 @@ bool obs_graphics_thread_loop(struct obs_graphics_context *context)
 	context->msg_worst_hwnd = 0;
 	context->msg_worst_id = 0;
 	context->msg_count = 0;
+	context->msg_peek_worst_ns = 0;
+	context->msg_peek_calls = 0;
 	MSG msg;
-	/* Two extra clock reads per message. A frame that pumps a hundred of them
-	 * pays a few microseconds for the pair, which buys the identity of the one
-	 * handler that overran -- the segment total on its own never had it. */
-	while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
+	/* A few clock reads per message and per peek. A frame that pumps a hundred
+	 * of them pays microseconds, which buys the identity of whichever half
+	 * overran -- and it is PeekMessage, not the handlers: every observed stall
+	 * reports dispatch at 0.0 ms. Sent messages from other threads are serviced
+	 * inside PeekMessage itself, so they are invisible to DispatchMessage
+	 * timing; timing the peeks is the only way to see them from here. */
+	for (;;) {
+		const uint64_t peek_start = os_gettime_ns();
+		const BOOL got = PeekMessage(&msg, NULL, 0, 0, PM_REMOVE);
+		const uint64_t peek_ns = os_gettime_ns() - peek_start;
+		context->msg_peek_calls++;
+		if (peek_ns > context->msg_peek_worst_ns) {
+			context->msg_peek_worst_ns = peek_ns;
+		}
+		if (!got) {
+			break;
+		}
+
 		const uint64_t msg_start = os_gettime_ns();
 		TranslateMessage(&msg);
 		DispatchMessage(&msg);
@@ -1758,6 +1794,10 @@ bool obs_graphics_thread_loop(struct obs_graphics_context *context)
 		context->msg_count++;
 	}
 	context->seg_msg_ns = os_gettime_ns() - seg_start;
+	if (!context->msg_windows_logged && context->seg_msg_ns >= debug_segment_warn_ns(context)) {
+		context->msg_windows_logged = true;
+		EnumThreadWindows(GetCurrentThreadId(), debug_log_thread_window, 0);
+	}
 	profile_end(message_loop_name);
 #else
 	context->seg_msg_ns = 0;
@@ -1893,6 +1933,9 @@ void *obs_graphics_thread(void *param)
 	context.seg_tail_ns = 0;
 	context.msg_worst_ns = 0;
 	context.msg_dispatch_ns = 0;
+	context.msg_peek_worst_ns = 0;
+	context.msg_peek_calls = 0;
+	context.msg_windows_logged = false;
 	context.msg_worst_hwnd = 0;
 	context.msg_worst_id = 0;
 	context.msg_count = 0;

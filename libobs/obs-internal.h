@@ -704,6 +704,12 @@ struct obs_graphics_context {
 	 * delivers cross-thread SendMessage inline -- a wait no per-message
 	 * dispatch timer can see, and the sender blocks for all of it. */
 	uint64_t msg_dispatch_ns;
+	/* Worst single PeekMessage call in the pass. A pump that lost 20 ms across
+	 * one call is a synchronous cross-thread SendMessage being serviced; the
+	 * same 20 ms spread over many calls would be queue churn instead. */
+	uint64_t msg_peek_worst_ns;
+	uint32_t msg_peek_calls;
+	bool msg_windows_logged;
 	uintptr_t msg_worst_hwnd;
 	uint32_t msg_worst_id;
 	uint32_t msg_count;
