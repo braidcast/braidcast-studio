@@ -78,13 +78,20 @@ constexpr int kStreamDeadStrikes = 2;
 // both and the budget below counts real requests rather than an estimate.
 constexpr int kChatUnitCost = 5;
 
-// Shown beside the connected state while chat is being read on a charged surface, because the
-// user has to be able to see that this chat is spending -- and why it stops if it later does.
-// The cause is almost always the broadcast's privacy: YouTube's free reader is anonymous and
-// cannot see a private or unlisted stream, which is the shipped default.
-constexpr const char *kChargedReadNote =
-	"reading chat on YouTube's quota-billed API (its free reader cannot see this broadcast) - "
-	"chat stops when the daily budget runs out";
+// Shown beside the connected state while chat is being read on a charged surface, so a chat
+// that may stop before the broadcast does says so up front rather than only afterwards. No
+// action is offered because there is none: the free reader handles unlisted and public alike,
+// so reaching this surface means the free read failed, was turned off, or this broadcast's
+// privacy could not be resolved, and the allowance is all that is left.
+constexpr const char *kChargedReadNote = "chat is on a limited daily allowance and may stop before your broadcast ends";
+
+// Ends the chat of a private broadcast, in place of billing it. Privacy is a property of the
+// WHOLE broadcast rather than a blip a retry clears, so the charged read would run at ~1,730
+// units/chat-hour against a shared pool for its entire duration -- a standing charge no
+// destination may take quietly. Ending says so, and says the one thing the user can act on.
+constexpr const char *kPrivateChatUnavailable =
+	"YouTube chat is not available on private broadcasts. Set this destination's privacy to "
+	"unlisted or public before your next stream to see chat here.";
 
 using JsonUtil::Bool;
 using JsonUtil::NumLoose;
@@ -328,6 +335,12 @@ struct ChatSession {
 	// The same broadcast's video id, for the InnerTube read. Empty when the provider could
 	// not resolve one, which simply skips that read path.
 	std::string videoId;
+	// The same broadcast's privacy, from the same resolution. Empty when the provider could
+	// not resolve one, which reads as "not proven private" -- an unknown privacy keeps today's
+	// fall-through to the charged read rather than silently disabling chat. A connect-time
+	// snapshot: it answers a known-private destination immediately, while the billed gate
+	// re-resolves before spending, since only the fresh value can have changed since.
+	std::string privacy;
 	const std::unordered_map<std::string, std::string> &thirdPartyEmotes;
 	std::function<bool()> canceled;
 	std::function<void(bool, const std::string &)> emitState;
@@ -443,19 +456,53 @@ void EndOnChatOffline(ChatSession &s, const std::string &offlineAt, const char *
 
 // --- the floor under the charged read ----------------------------------------------------
 //
-// InnerTube reads chat for free but cannot see a private or unlisted broadcast, and `private`
-// is the shipped privacy default -- so a user who accepts it puts EVERY destination on the
-// charged surface on their first go-live. Measured at ~1,730 units/chat-hour per destination,
-// four destinations spend the entire 10,000-unit pool that every install shares in about 87
-// minutes. Nothing used to measure that or refuse to enter it. These two do both, and they
-// share the provider's one budget so the sum across destinations is what is bounded, not each
-// destination separately.
+// InnerTube reads chat for free for anything a logged-out viewer may watch -- public AND
+// unlisted -- so the charged surface is reached only by a private broadcast, which it cannot
+// see at all, or by a free read that failed for some other reason. Measured at ~1,730
+// units/chat-hour per destination, four destinations spend the entire 10,000-unit pool that
+// every install shares in about 87 minutes. These two bound that: the private case is refused
+// outright (it is the whole broadcast's answer, not a transient failure, so paying for it
+// would be a standing charge), and what remains shares the provider's one budget so the sum
+// across destinations is what is bounded, not each destination separately.
+
+// The ONE test of "the free reader is blind to this broadcast and the charged one may not pay
+// for it", shared by the connect-time answer and the billed gate so a second copy of the
+// comparison cannot drift. True -> the session has ENDED with the reason on the chat pane.
+//
+// Refusing is not free, only far cheaper: a session that ends here never takes the live-chat
+// refcount hold, so the REST event transport keeps polling superChatEvents.list for this
+// destination at roughly 40 units/hour instead of the ~1,730 the charged read would cost. That
+// poll reads the whole channel rather than one broadcast, so a private broadcast's Super Chats
+// reach the events feed even with its chat ended here.
+bool RefuseIfPrivate(ChatSession &s, const std::string &privacy, std::string &err)
+{
+	if (privacy != OAuth::kPrivacyPrivate) {
+		return false;
+	}
+	EndSession(s, kPrivateChatUnavailable, err);
+	return true;
+}
 
 // May this session move onto a charged read at all? False -> the session has ENDED with the
 // reason on the chat pane. Also arms the advisory the connected state carries, so a chat that
 // is spending says so before it stops rather than only afterwards.
 bool EnterBilledRead(ChatSession &s, std::string &err)
 {
+	// Re-resolved rather than taken from the session, because this is the moment the answer
+	// starts costing money and the connect-time snapshot is the one input that can have gone
+	// stale: an edit that flips this broadcast to private mid-stream refreshes the provider's
+	// cache, but this transport gets one connect() per go-live and never re-reads it otherwise.
+	// A cache hit costs no request. An unresolvable lookup falls back to the snapshot instead of
+	// reading as unknown, so a transient miss cannot open the gate on a known-private broadcast.
+	const std::string fresh = s.owner.chatBroadcastRef(s.acct, s.ctx.dest.profileUuid).privacy;
+
+	// Before the budget, because this is the more specific answer: a private broadcast is not a
+	// chat that ran out of allowance, it is one this app will not read at all. An UNKNOWN
+	// privacy is deliberately not caught here -- it falls through to the charged read, since
+	// disabling chat on a guess is the worse error.
+	if (RefuseIfPrivate(s, fresh.empty() ? s.privacy : fresh, err)) {
+		return false;
+	}
 	if (s.owner.ChatBudgetExhausted()) {
 		EndSession(s, s.owner.ChatBudgetMessage(), err);
 		return false;
@@ -468,7 +515,9 @@ bool EnterBilledRead(ChatSession &s, std::string &err)
 		s.announced = false;
 		HostLog("[chat] youtube: dest=" + s.destTag +
 			" is reading chat on YouTube's quota-billed API; it will stop when this install's "
-			"daily chat budget is spent. Broadcasting public lets chat use the free reader.");
+			"daily chat budget is spent. The free reader handles unlisted and public alike, so "
+			"this destination's free read failed, was turned off, or its privacy could not be "
+			"resolved.");
 	}
 	return true;
 }
@@ -544,8 +593,10 @@ bool WaitOutQuotaExhaustion(ChatSession &s)
 	}
 	DBG(LogCat::Chat, "youtube: dest=%s quota exhausted, chat paused %lldms until the reset", s.destTag.c_str(),
 	    static_cast<long long>(wait.count()));
-	ReportDegraded(s, "YouTube API quota exhausted - chat resumes after " + s.owner.QuotaResetLocalTime(),
-		       Degradation::Sustained);
+	// The provider's own sentence for this outage, not a second wording of it: the same
+	// stand-down also refuses go-live and every other YouTube request, and two descriptions of
+	// one outage drifted apart once already.
+	ReportDegraded(s, s.owner.QuotaMessage(), Degradation::Sustained);
 	return CancelableSleep(wait, s.canceled);
 }
 
@@ -1010,12 +1061,13 @@ bool YouTubeChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, con
 	}
 	stop_.store(false, std::memory_order_release);
 
-	// The video id the InnerTube read polls, resolved through the SAME provider seam that
-	// produced this liveChatId (a broadcast's id IS its video id), including that seam's
-	// cache-miss recovery. So the two reads can never end up on different broadcasts, and on
-	// the normal cache-hit path -- which this is, since a liveChatId already resolved -- it
-	// costs no request at all.
-	const std::string videoId = owner_.chatVideoRef(acct, ctx.dest.profileUuid);
+	// The video id the InnerTube read polls plus that broadcast's privacy (which decides
+	// whether the charged read may be entered at all), resolved through the SAME provider seam
+	// that produced this liveChatId (a broadcast's id IS its video id), including that seam's
+	// cache-miss recovery. One resolution for both, so they can never end up describing
+	// different broadcasts, and on the normal cache-hit path -- which this is, since a
+	// liveChatId already resolved -- it costs no request at all.
+	const OAuth::ChatBroadcastRef broadcast = owner_.chatBroadcastRef(acct, ctx.dest.profileUuid);
 
 	// Release this loop's hold on THIS DESTINATION's live-chat refcount on EVERY exit from
 	// this function -- the normal post-loop return, a reconnect give-up, and the
@@ -1076,7 +1128,8 @@ bool YouTubeChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, con
 			    ctx,
 			    acct,
 			    liveChatId,
-			    videoId,
+			    broadcast.videoId,
+			    broadcast.privacy,
 			    thirdPartyEmotes,
 			    canceled,
 			    emitState,
@@ -1088,6 +1141,15 @@ bool YouTubeChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, con
 	// users paste into issue reports. Enough to tie this session's dest tag to the hub's
 	// connect line without reproducing the id.
 	const std::string chatIdTail = liveChatId.size() > 8 ? liveChatId.substr(liveChatId.size() - 8) : liveChatId;
+
+	// A destination already known private at connect time has no readable path at all -- the
+	// free read cannot see it and the billed gate below refuses it -- so answer now instead of
+	// after the free read has spent its bootstrap retries on a video it can never fetch. Latency
+	// only: the gate stays the authoritative test, since it re-resolves a privacy that may have
+	// changed after this point.
+	if (!canceled() && RefuseIfPrivate(session, session.privacy, err)) {
+		return false;
+	}
 
 	// Walk the ladder: run the first enabled read, and follow it to the next one only while a
 	// read asks to hand over. Every path shares ONE session, so the connected state, the

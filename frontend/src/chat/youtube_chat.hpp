@@ -25,7 +25,9 @@
 // The read target is the active broadcast's `liveChatId`, which exists only while a broadcast
 // is live -- the YouTubeProvider resolves it from the broadcast it created in applyMetadata
 // (Phase 8d) and hands it in as the `channelRef`; the InnerTube read additionally needs that
-// same broadcast's video id, taken from the provider's chatVideoRef. All token coherence
+// same broadcast's video id, taken from the provider's chatBroadcastRef -- which resolves that
+// broadcast's privacy in the same lookup, because a PRIVATE broadcast is invisible to the free
+// reader and is refused rather than read on the billed pair below. All token coherence
 // (proactive refresh + reactive-401 force-refresh-and-retry) for the Data API reads is
 // delegated to YouTubeProvider::SendAuthed / SendAuthedStreaming, so this transport carries no
 // auth logic of its own -- and the InnerTube read deliberately carries no credential at all.

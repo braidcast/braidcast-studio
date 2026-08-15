@@ -51,6 +51,27 @@ std::string YouTubeErrorReason(const std::string &body);
 enum class YouTubeErrorClass { Other, RateLimited, QuotaExhausted };
 YouTubeErrorClass ClassifyYouTubeError(long status, const std::string &reason);
 
+// The ONE privacyStatus a logged-out viewer may not watch, and therefore the only one the
+// free (anonymous) chat reader cannot see. Public and UNLISTED both read free -- measured
+// 2026-08-15: an unlisted broadcast's InnerTube payload carries the live chat renderer and the
+// viewer count exactly as a public one does. Named once and shared so the distinction cannot
+// drift back into a bare string comparison.
+constexpr const char *kPrivacyPrivate = "private";
+
+// The other two privacyStatus values YouTube accepts, named so the set a submitted value is
+// validated against reads as one list beside the default it falls back to.
+constexpr const char *kPrivacyPublic = "public";
+constexpr const char *kPrivacyUnlisted = "unlisted";
+
+// What a chat transport needs to know about the broadcast it is about to read: which video
+// to read, and whether the free reader is allowed to see it. Resolved together from ONE
+// broadcast lookup so the two answers can never describe different broadcasts. Either field
+// is "" when it could not be established.
+struct ChatBroadcastRef {
+	std::string videoId;
+	std::string privacy; // "public" / "unlisted" / "private"
+};
+
 class YouTubeProvider : public StreamProvider {
 public:
 	YouTubeProvider();
@@ -108,14 +129,14 @@ public:
 	// the hub/transport treat as no chat.
 	std::string chatChannelRef(const OAuthAccount &acct, const std::string &profileUuid) override;
 
-	// The active broadcast's VIDEO id for `profileUuid` -- the same broadcast chatChannelRef
-	// resolves the liveChatId of, so the InnerTube live-chat read and the Data API read can
-	// never end up on different broadcasts. Goes through EnsureActiveBroadcast rather than
-	// reading the cache directly, so it inherits the cache-miss recovery (a Studio restart
-	// mid-stream) instead of duplicating the lookup; a hit costs no request. "" when this
-	// destination is not live. Not part of StreamProvider: only YouTube has a per-broadcast
-	// video id to hand a chat transport.
-	std::string chatVideoRef(OAuthAccount &acct, const std::string &profileUuid);
+	// The active broadcast's VIDEO id and privacy for `profileUuid` -- the same broadcast
+	// chatChannelRef resolves the liveChatId of, so the InnerTube live-chat read and the Data
+	// API read can never end up on different broadcasts. Goes through EnsureActiveBroadcast
+	// rather than reading the cache directly, so it inherits the cache-miss recovery (a Studio
+	// restart mid-stream) instead of duplicating the lookup; a hit costs no request. Both
+	// fields are "" when this destination is not live. Not part of StreamProvider: only
+	// YouTube has a per-broadcast video id to hand a chat transport.
+	ChatBroadcastRef chatBroadcastRef(OAuthAccount &acct, const std::string &profileUuid);
 
 	// Zero EVERY cached liveChatId/broadcastId belonging to `accountId` (mutex-guarded) so
 	// a stream stop drops all of that account's active-broadcast chat + viewer-count
@@ -170,11 +191,14 @@ public:
 
 	// --- the daily budget for YouTube's CHARGED chat reads -----------------------------
 	//
-	// InnerTube reads live chat at zero quota, but it cannot see a private or unlisted
-	// broadcast -- and `private` is the shipped privacy default. Such a broadcast falls
-	// through to liveChatMessages.streamList, measured at ~1,730 units per chat-hour PER
-	// DESTINATION: four destinations exhaust the 10,000-unit pool EVERY install shares in
-	// about 87 minutes. These three put a floor under that.
+	// InnerTube reads live chat at zero quota for anything a logged-out viewer may watch,
+	// which is public AND unlisted (measured 2026-08-15: an unlisted broadcast's /next payload
+	// carries the liveChatRenderer). Only a PRIVATE broadcast is invisible to it, and that
+	// case is refused outright rather than billed. What still reaches the charged
+	// liveChatMessages.streamList is a free read that failed for some other reason, measured
+	// at ~1,730 units per chat-hour PER DESTINATION: four destinations exhaust the
+	// 10,000-unit pool EVERY install shares in about 87 minutes. These three put a floor
+	// under that.
 	//
 	// Reserve `units` before making a billed chat request. False once the day's budget is
 	// spent, and the caller must then STOP reading and say why -- never read on, never fail
@@ -188,6 +212,12 @@ public:
 	// The one user-facing sentence for a chat stopped by the budget. Shared by every refusal
 	// site so the chat pane and the log cannot word it differently.
 	std::string ChatBudgetMessage() const;
+
+	// The one user-facing sentence for the daily-quota stand-down, shared by every site that
+	// reports it: the SendAuthed/SendAuthedStreaming refusals (which surface it as a Go Live
+	// failure) and the chat loops' pause report. Public for the chat transport's sake -- it
+	// reports the same outage and used to word it differently.
+	std::string QuotaMessage() const;
 
 	// Record a quota-exhausted verdict from any YouTube Data API response: computes
 	// the next midnight-Pacific reset instant and closes the shared gate until then,
@@ -245,6 +275,14 @@ private:
 	struct BroadcastState {
 		std::string liveChatId;
 		std::string broadcastId;
+
+		// This broadcast's privacyStatus ("public" / "unlisted" / "private"), which decides
+		// whether the free chat reader is allowed to see it. Written from the value this app
+		// sent when it created or edited the broadcast, and learned from status.privacyStatus
+		// when the probe below recovers a broadcast this session did not create. "" means
+		// unknown -- a privacy changed in YouTube Studio after go-live is not observed here,
+		// so readers must treat "" and a stale value as "not proven private".
+		std::string privacy;
 
 		// The InnerTube updated_metadata continuation for this broadcast's viewer read. Cached
 		// because the two request forms are not equally priced in BANDWIDTH: the videoId form
@@ -368,9 +406,6 @@ private:
 	// Arm the quota gate when a completed response carries a quota-class 403.
 	// Shared tail of the SendAuthed/SendAuthedStreaming wrappers.
 	void NoteIfQuotaError(long status, const std::string &body);
-
-	// The refusal message both wrappers hand back while the gate is closed.
-	std::string QuotaMessage() const;
 
 	// Epoch seconds when the exhausted daily quota resets (0 = never exhausted).
 	// Per-provider-singleton on purpose: the quota is spent per API project, not per

@@ -608,9 +608,10 @@ export interface OAuthProviderField {
    * value to `default` (else its first option). Not set = empty is a real state. */
   required?: boolean;
   /** Option value → the consequence of having that value selected, rendered under the
-   * control. For choices whose cost is invisible until it bites (YouTube's privacy
-   * setting decides whether live chat is free or quota-billed), so the warning is at
-   * the point of choice rather than discovered mid-broadcast. */
+   * control. For choices whose consequence is invisible until it bites (a YouTube
+   * broadcast set to private has no live chat at all), so it is said at the point of
+   * choice rather than discovered mid-broadcast. Only values that HAVE a consequence
+   * carry an entry; the rest are absent. */
   optionNotes?: Record<string, string>;
 }
 

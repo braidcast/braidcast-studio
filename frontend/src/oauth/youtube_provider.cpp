@@ -435,7 +435,9 @@ bool YouTubeProvider::ChargeChatUnits(int units)
 	if (!exhaustedAt.empty()) {
 		HostLog("[oauth] YouTube charged-chat budget spent (" + std::to_string(budget) +
 			" units); YouTube chat stops until " + exhaustedAt +
-			" local. Broadcasting public lets chat use the free reader instead.");
+			" local. The free reader handles unlisted and public alike, so whatever spent this "
+			"budget had its free read fail, had it turned off, or had a privacy that could not "
+			"be resolved.");
 	}
 	return ok;
 }
@@ -458,14 +460,13 @@ std::string YouTubeProvider::ChatBudgetMessage() const
 		const std::lock_guard<std::mutex> guard(chatBudgetMutex_);
 		resumesAt = LocalHhMm(chatDayEnd_);
 	}
-	return "YouTube chat stopped: this install's daily budget for YouTube's quota-billed chat API is spent" +
-	       (resumesAt.empty() ? std::string() : " (chat resumes after " + resumesAt + ")") +
-	       ". A public broadcast reads chat for free; private and unlisted ones cannot.";
+	return "YouTube chat stopped: today's YouTube chat allowance is used up" +
+	       (resumesAt.empty() ? std::string() : ", so chat resumes after " + resumesAt) + ".";
 }
 
 std::string YouTubeProvider::QuotaMessage() const
 {
-	return "YouTube API quota exhausted; retries resume after " + QuotaResetLocalTime();
+	return "YouTube has paused this app's access until " + QuotaResetLocalTime();
 }
 
 void YouTubeProvider::NoteIfQuotaError(long status, const std::string &body)
@@ -545,17 +546,17 @@ std::string YouTubeProvider::chatChannelRef(const OAuthAccount &acct, const std:
 	return it != broadcasts_.end() ? it->second.liveChatId : std::string();
 }
 
-std::string YouTubeProvider::chatVideoRef(OAuthAccount &acct, const std::string &profileUuid)
+ChatBroadcastRef YouTubeProvider::chatBroadcastRef(OAuthAccount &acct, const std::string &profileUuid)
 {
 	BroadcastState state;
 	std::string err;
 	if (EnsureActiveBroadcast(acct, profileUuid, state, err)) {
-		return state.broadcastId;
+		return ChatBroadcastRef{state.broadcastId, state.privacy};
 	}
 	DBG(LogCat::Chat, "youtube: dest=%s has no resolvable broadcast video id (%s)",
 	    DestinationKey(DestinationId{AccountId(acct), profileUuid}).c_str(),
 	    err.empty() ? "not live on this destination" : err.c_str());
-	return std::string();
+	return ChatBroadcastRef{};
 }
 
 void YouTubeProvider::clearActiveBroadcast(const std::string &accountId)
@@ -671,10 +672,10 @@ json YouTubeProvider::capabilityJson() const
 	// field has no valid empty state, so the UI offers no unset option and shows the
 	// value applyMetadata below would actually send.
 	// optionNotes: the consequence of the CURRENTLY SELECTED value, shown under the control.
-	// YouTube's free (anonymous) chat reader cannot see a broadcast it is not allowed to
-	// watch, so private and unlisted put this destination's chat on the quota-billed API,
-	// which runs on a bounded daily budget and stops when that is spent. Said here, at the
-	// point of choice, rather than discovered when chat goes quiet mid-broadcast.
+	// Only `private` carries one: a logged-out viewer may watch an unlisted broadcast, so the
+	// free chat reader sees it exactly as it sees a public one, and only a private broadcast
+	// leaves this destination with no chat at all. Said here, at the point of choice, rather
+	// than discovered when chat never arrives mid-broadcast.
 	fields.push_back(
 		json{{"key", "privacy"},
 		     {"label", "Privacy"},
@@ -686,12 +687,9 @@ json YouTubeProvider::capabilityJson() const
 		     {"options", json::array({json{{"value", "public"}, {"label", "Public"}},
 					      json{{"value", "unlisted"}, {"label", "Unlisted"}},
 					      json{{"value", "private"}, {"label", "Private"}}})},
-		     {"optionNotes", json{{"unlisted", "Live chat runs on YouTube's quota-billed API for unlisted "
-						       "broadcasts and stops once the daily budget is spent. Public "
-						       "broadcasts read chat for free."},
-					  {"private", "Live chat runs on YouTube's quota-billed API for private "
-						      "broadcasts and stops once the daily budget is spent. Public "
-						      "broadcasts read chat for free."}}}});
+		     {"optionNotes",
+		      json{{"private",
+			    "Live chat is not available on private broadcasts. Unlisted and public both work."}}}});
 	fields.push_back(json{{"key", "latency"},
 			      {"label", "Latency"},
 			      {"type", "enum"},
@@ -857,11 +855,11 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 	}
 	const std::string description = Str(fields, "description");
 	std::string privacy = Str(fields, "privacy");
-	if (privacy != "public" && privacy != "unlisted" && privacy != "private") {
+	if (privacy != kPrivacyPublic && privacy != kPrivacyUnlisted && privacy != kPrivacyPrivate) {
 		// Last-resort guard only -- the real default is the capability field's
-		// remembered-else-"private" (seeded by the modal). An absent/invalid value
+		// remembered-else-private (seeded by the modal). An absent/invalid value
 		// must resolve to the safest visibility; it must never silently go public.
-		privacy = "private";
+		privacy = kPrivacyPrivate;
 	}
 	std::string latency = Str(fields, "latency");
 	if (latency != "normal" && latency != "low" && latency != "ultraLow") {
@@ -1090,6 +1088,19 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 				RecordApplied(dest, active.broadcastId, AppliedKind::Broadcast, updDigest);
 			}
 
+			// The cached privacy is only as good as the last value this app sent, so refresh
+			// it here too: this entry is what the chat transport re-reads before it enters a
+			// charged read, so a mid-stream switch to private reaches that gate through this
+			// write. Existing entry only, so a destination that went off air mid-edit is not
+			// resurrected by its own late record.
+			{
+				const std::lock_guard<std::mutex> guard(broadcastMutex_);
+				auto it = broadcasts_.find(dest);
+				if (it != broadcasts_.end()) {
+					it->second.privacy = privacy;
+				}
+			}
+
 			applyVideoTagsAndThumbnail(active.broadcastId, true);
 			return true;
 		}
@@ -1104,16 +1115,18 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 		return true;
 	}
 
-	// Anonymous InnerTube -- the zero-quota chat reader -- cannot see a private or unlisted
-	// broadcast, so this selection decides whether this destination's chat is free or is
-	// billed at ~1,730 units/hour against the pool every install shares. Said here, at the
-	// moment the choice takes effect, because it is the log line that explains a chat that
-	// later stops on its budget. The privacy DEFAULT is deliberately not changed to buy the
-	// saving: broadcasting publicly stays an explicit choice.
-	if (privacy != "public") {
-		HostLog("[oauth] YouTube dest=" + DestinationKey(dest) + " is going live " + privacy +
-			"; YouTube's free chat reader cannot see it, so chat will run on the quota-billed API "
-			"until this install's daily chat budget is spent");
+	// Anonymous InnerTube -- the zero-quota chat reader -- reads anything a logged-out viewer
+	// may watch, so unlisted costs nothing and only PRIVATE is invisible to it. A private
+	// broadcast therefore gets no chat at all: the only surface that could read it bills
+	// ~1,730 units/hour against the pool every install shares, for the broadcast's whole
+	// duration, and the chat transport refuses that outright. Said here, at the moment the
+	// choice takes effect, because it is the log line that explains a destination whose chat
+	// never arrives. The privacy DEFAULT is deliberately not changed to buy chat: broadcasting
+	// beyond private stays an explicit choice.
+	if (privacy == kPrivacyPrivate) {
+		HostLog("[oauth] YouTube dest=" + DestinationKey(dest) +
+			" is going live private; YouTube's free chat reader cannot see a private broadcast, so "
+			"this destination will have no chat. Unlisted reads chat free, exactly as public does");
 	}
 
 	// 1. liveBroadcasts.insert -- the broadcast id doubles as the videoId. CRITICAL.
@@ -1382,6 +1395,10 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 		BroadcastState &bs = broadcasts_[dest];
 		bs.liveChatId = liveChatId;
 		bs.broadcastId = broadcastId;
+		// The privacy this insert just sent, so the chat transport can tell a private
+		// broadcast (no free reader, and no charged one either) from one it may read for
+		// free -- without spending a request to ask what we ourselves chose.
+		bs.privacy = privacy;
 	}
 	return true;
 }
@@ -1424,8 +1441,10 @@ bool YouTubeProvider::ProbeActiveBroadcasts(OAuthAccount &acct, std::string &err
 		}
 	}
 
-	// contentDetails carries boundStreamId, and liveBroadcasts.list bills the same 1 unit
-	// whichever parts are requested -- so the attribution below is free.
+	// contentDetails carries boundStreamId and status carries privacyStatus, and
+	// liveBroadcasts.list bills the same 1 unit whichever parts are requested -- so the
+	// attribution below, and learning whether the free chat reader may see each broadcast,
+	// are both free.
 	//
 	// `broadcastStatus` WITHOUT `mine`: liveBroadcasts.list takes exactly one filter and
 	// rejects the pair with "Incompatible parameters specified in the request: mine,
@@ -1438,7 +1457,7 @@ bool YouTubeProvider::ProbeActiveBroadcasts(OAuthAccount &acct, std::string &err
 	Http::HttpReq req;
 	req.method = "GET";
 	req.url = std::string(kLiveBroadcastsUrl) +
-		  "?part=id,snippet,contentDetails&broadcastStatus=active&maxResults=50";
+		  "?part=id,snippet,status,contentDetails&broadcastStatus=active&maxResults=50";
 
 	Http::HttpResponse resp;
 	if (!SendAuthed(acct, req, resp, err)) {
@@ -1475,6 +1494,12 @@ bool YouTubeProvider::ProbeActiveBroadcasts(OAuthAccount &acct, std::string &err
 			// chatChannelRef read picks it up for free -- no separate network call.
 			bs.liveChatId = Str(item["snippet"], "liveChatId");
 		}
+		if (item.contains("status") && item["status"].is_object()) {
+			// The authoritative answer for a broadcast this session did not create (a
+			// Studio restart mid-stream), where there is no remembered choice to fall
+			// back on.
+			bs.privacy = Str(item["status"], "privacyStatus");
+		}
 		std::string boundStreamId;
 		if (item.contains("contentDetails") && item["contentDetails"].is_object()) {
 			boundStreamId = Str(item["contentDetails"], "boundStreamId");
@@ -1508,6 +1533,15 @@ bool YouTubeProvider::ProbeActiveBroadcasts(OAuthAccount &acct, std::string &err
 			BroadcastState &slot = broadcasts_[entry.first];
 			if (slot.broadcastId.empty()) {
 				slot = entry.second;
+			} else if (slot.broadcastId == entry.second.broadcastId && slot.privacy.empty() &&
+				   !entry.second.privacy.empty()) {
+				// Backfill rather than overwrite: an entry that holds a broadcast id but
+				// no privacy would read as unknown for the rest of the broadcast, and
+				// unknown is the value the charged chat read is allowed to proceed on.
+				// Matching ids first keeps the staleness above out of it -- a just-ended
+				// broadcast on the same ingest stream must not lend its privacy to the
+				// live one.
+				slot.privacy = entry.second.privacy;
 			}
 		}
 	}

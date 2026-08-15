@@ -453,7 +453,7 @@ import { EV } from "$lib/utils/eventNames";
 
   // The row's hint line. An override explanation and the provider's note for the value on
   // screen are both true at once, so they compose rather than one silently displacing the
-  // other — which is how the quota warning went missing when a field gained a layer below.
+  // other — which is how the privacy warning went missing when a field gained a layer below.
   function hintFor(
     f: OAuthProviderField,
     value: unknown,
