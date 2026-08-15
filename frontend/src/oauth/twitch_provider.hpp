@@ -45,6 +45,12 @@ public:
 
 	bool fetchIdentity(OAuthAccount &acct, std::string &err) override;
 	bool getMetadata(OAuthAccount &acct, json &out, std::string &err) override;
+	// The same /helix/channels row the prefill reads, widened to every field applyMetadata
+	// writes -- tags, content classification and branded content included, since a PATCH is
+	// accepted as 2xx with no body to parse and only this read can say what landed.
+	// `profileUuid` is ignored: one persistent channel per account.
+	bool readAppliedMetadata(OAuthAccount &acct, const std::string &profileUuid, AppliedBy by, AppliedState &out,
+				 std::string &err) override;
 	bool searchCategories(OAuthAccount &acct, const std::string &query, json &out, std::string &err) override;
 	bool applyMetadata(OAuthAccount &acct, const std::string &profileUuid, const json &fields, bool goingLive,
 			   std::string &err) override;

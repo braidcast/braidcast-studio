@@ -9746,9 +9746,9 @@ uint64_t g_goLiveGeneration = 0;
 //
 // Reads the stores, so UI thread only. `fields` comes from StreamMetaStore because that is
 // all a go-live driven from the hotkey, the tray or the scheduler has. The Go Live modal's
-// own values reach the provider through its streamMeta.set; a broadcast it already created
-// short-circuits inside ensureBroadcastReady, and a channel it already pushed to is
-// skipped above by HasSentMetadata, since nothing here would short-circuit it.
+// own values reach the provider through its streamMeta.set, which runs the same
+// prepareDestination this does -- so a destination it already armed is skipped below by
+// HasSentMetadata, applied and confirmed already.
 //
 // `alreadyRecorded` collects the destinations skipped for that last reason. Their records
 // were made by this same go-live attempt -- the modal pushed for them moments ago -- so
@@ -9769,15 +9769,15 @@ std::vector<BroadcastPreludeJob> CollectBroadcastPrelude(std::vector<std::string
 			continue; // a stream-key / custom-RTMP / WHIP destination owns no broadcast
 		}
 		const std::optional<OAuth::OAuthAccount> stored = OAuth::Accounts().Get(profile->accountId);
-		if (!stored || !OAuth::AccountHasCredential(*stored)) {
-			continue; // nothing can be created for a disconnected account; its own
-				  // output surfaces the reconnect, and blocking every other
-				  // destination on it would be a worse failure
-		}
-		OAuth::StreamProvider *provider = OAuth::Registry().Get(stored->providerId);
-		if (!provider) {
-			continue;
-		}
+		OAuth::StreamProvider *provider = stored ? OAuth::Registry().Get(stored->providerId) : nullptr;
+		// A destination whose account is gone, disconnected, or on an unknown provider is NOT
+		// skipped here. Skipping it left the binding enabled and StartAllEnabled started it
+		// anyway, against the endpoint and key the LAST go-live wrote into the profile -- an
+		// encoder pushing at a stale ingest with no broadcast bound to it, green on every
+		// local indicator and absent from the platform. It becomes a job whose only outcome
+		// is the failure the worker records, which is the same refusal a broadcast that could
+		// not be created gets.
+		const bool disconnected = !stored || !provider || !OAuth::AccountHasCredential(*stored);
 		// A persistent-channel platform creates nothing, but its title and category
 		// still have to reach the channel, and the modal was the only thing pushing
 		// them -- so a scheduled, hotkey, or ask-disabled go-live went out carrying
@@ -9788,14 +9788,20 @@ std::vector<BroadcastPreludeJob> CollectBroadcastPrelude(std::vector<std::string
 		// which is what g_sentMetadata records. Asked per destination rather than per
 		// go-live: the modal pushes only for the channels it armed, so a global answer
 		// would suppress the push for one it never touched, and would not protect a
-		// pre-live "Edit stream info" followed by a hotkey start. Re-pushing matters
-		// because this reads the remembered bag, which "save these details for next
-		// time" may deliberately keep older than what the user just typed.
-		const bool metadataOnly = !provider->broadcastPerDestination();
-		if (metadataOnly && HasSentMetadata(binding.profileUuid)) {
+		// pre-live "Edit stream info" followed by a hotkey start.
+		//
+		// The skip covers EVERY platform, not only the persistent-channel ones. What the
+		// prelude would push is the remembered bag, which "save these details for next time"
+		// may deliberately keep older than what the user just typed -- and prepareDestination
+		// now edits an existing broadcast in place instead of short-circuiting on it, so
+		// letting the job through would overwrite the values the modal applied seconds ago
+		// with the stale ones. The modal's own push already went through prepareDestination,
+		// so that destination is applied AND confirmed.
+		if (!disconnected && HasSentMetadata(binding.profileUuid)) {
 			alreadyRecorded.push_back(binding.profileUuid);
 			continue;
 		}
+		const bool metadataOnly = !disconnected && !provider->broadcastPerDestination();
 		// Keyed by what actually receives the call. A persistent channel is ONE place
 		// however many profiles point at it, so a second job would PATCH the same
 		// channel again and let iteration order decide which bag wins; a create-per-
@@ -9842,6 +9848,16 @@ void StartEnabledOutputsNow()
 	}
 }
 
+// The one shape of streaming.metadataMismatch: what did not fully apply, and which profiles'
+// entries the UI must drop. Both halves travel together because a push that is superseded and a
+// push that is abandoned reach the notice through the same event, and a second event name would
+// let one of them be handled and the other forgotten.
+void EmitMetadataMismatch(json destinations, json cleared)
+{
+	EmitEvent(EventNames::kStreamingMetadataMismatch,
+		  json{{"destinations", std::move(destinations)}, {"cleared", std::move(cleared)}});
+}
+
 // The whole of going live, already on the UI thread. Split out from StartStreamingAll so
 // StartStreamingAllAdoptingSchedule can run the schedule adoption and this in ONE posted
 // task -- see the threading note on that declaration for what interleaves otherwise.
@@ -9861,6 +9877,10 @@ void StartStreamingAllOnUi()
 	const uint64_t generation = ++g_goLiveGeneration;
 	AsyncTask::RunAsync([jobs = std::move(jobs), alreadyRecorded = std::move(alreadyRecorded), generation] {
 		json failures = json::array();
+		// What DID reach the platforms but not as asked. Never fatal, always reported: the
+		// user has to be able to see that a title or a tag list shipped differently, which a
+		// log line no one reads could never tell them.
+		json mismatches = json::array();
 		// Every profile whose remembered-metadata record belongs to this attempt, so the
 		// two branches below that end without a session can take all of them back out.
 		// It opens with what the Go Live modal had already pushed -- which is exactly
@@ -9872,50 +9892,71 @@ void StartStreamingAllOnUi()
 			// peer between collection and here must not be clobbered by a stale copy.
 			const std::optional<OAuth::OAuthAccount> stored = OAuth::Accounts().Get(job.accountId);
 			OAuth::StreamProvider *provider = stored ? OAuth::Registry().Get(stored->providerId) : nullptr;
-			if (!stored || !provider) {
-				failures.push_back(json{{"destination", job.label},
-							{"reason", "the account is no longer connected"}});
+			if (!stored || !provider || !OAuth::AccountHasCredential(*stored)) {
+				failures.push_back(
+					json{{"destination", job.label},
+					     {"reason", "the account is not connected; reconnect it, or turn "
+							"this destination off"}});
 				continue;
 			}
 			OAuth::OAuthAccount acct = *stored;
 			std::string err;
+			OAuth::DestinationReadback readback;
 			bool ok = false;
 			try {
-				ok = job.metadataOnly
-					     ? provider->applyMetadata(acct, job.profileUuid, job.fields, true, err)
-					     : provider->ensureBroadcastReady(acct, job.profileUuid, job.fields, err);
+				ok = provider->prepareDestination(acct, job.profileUuid, job.fields, readback, err);
 			} catch (const std::exception &e) {
 				err = e.what();
 			}
-			if (ok) {
+			if (!ok) {
 				if (job.metadataOnly) {
-					// What the session opening on the live edge reads to file what
-					// the channel was actually told. Recorded only here, where this
-					// call is known to have pushed these fields: the
-					// ensureBroadcastReady branch short-circuits on an existing
-					// broadcast, and claiming a push it did not make would put the
-					// remembered bag over the modal's own record.
-					RecordSentMetadata(job.profileUuid, job.fields);
-					recorded.push_back(job.profileUuid);
+					// Not fatal, unlike a broadcast that could not be created: a
+					// persistent channel is streamable whatever its title says, and
+					// Twitch rejects a whole patch over one malformed tag. Refusing here
+					// would cost an unattended scheduled broadcast its airing to save it a
+					// stale title, which is the worse of the two.
+					mismatches.push_back(
+						json{{"destination", job.label},
+						     {"profileUuid", job.profileUuid},
+						     {"reason", err.empty() ? "the metadata push failed" : err},
+						     {"fields", json::array()},
+						     {"unconfirmed", std::string()}});
+					continue;
 				}
+				failures.push_back(
+					json{{"destination", job.label},
+					     {"reason", err.empty() ? "could not prepare the broadcast" : err}});
 				continue;
 			}
 			if (job.metadataOnly) {
-				// Not fatal, unlike a broadcast that could not be created: a
-				// persistent channel is streamable whatever its title says, and
-				// Twitch rejects a whole patch over one malformed tag. Refusing here
-				// would cost an unattended scheduled broadcast its airing to save it a
-				// stale title, which is the worse of the two. Worded as an attempt,
-				// not an outcome -- the go-live can still be refused or cancelled
-				// after this line.
-				HostLog("[stream] could not update the stream info for " + job.label + ": " +
-					(err.empty() ? "the metadata push failed" : err));
+				// What the session opening on the live edge reads to file what the channel
+				// was actually told. Only the persistent-channel branch: a create-per-
+				// go-live platform's values belong to the broadcast this call just made,
+				// and claiming a channel-wide push it did not make would put the remembered
+				// bag over the modal's own record.
+				RecordSentMetadata(job.profileUuid, job.fields);
+				recorded.push_back(job.profileUuid);
+			}
+			// A visibility nobody confirmed is the one divergence worth losing an airing
+			// over: the broadcast would go out to an audience the user never chose, and no
+			// later correction takes that back. Everything else is reported and streams.
+			const std::vector<OAuth::MetadataDivergence> unsafe =
+				OAuth::SafetyDivergences(readback.divergences);
+			if (!unsafe.empty()) {
+				failures.push_back(
+					json{{"destination", job.label}, {"reason", OAuth::DivergenceSummary(unsafe)}});
 				continue;
 			}
-			failures.push_back(json{{"destination", job.label},
-						{"reason", err.empty() ? "could not prepare the broadcast" : err}});
+			if (!readback.divergences.empty() || !readback.unconfirmed.empty()) {
+				mismatches.push_back(json{{"destination", job.label},
+							  {"profileUuid", job.profileUuid},
+							  {"reason", std::string()},
+							  {"fields", OAuth::DivergencesJson(readback.divergences)},
+							  {"unconfirmed", readback.unconfirmed}});
+			}
 		}
-		AsyncTask::PostToUi([failures = std::move(failures), recorded = std::move(recorded), generation] {
+		AsyncTask::PostToUi([failures = std::move(failures), mismatches = std::move(mismatches),
+				     recorded = std::move(recorded), generation] {
 			g_goLivePreludeInFlight = false;
 			if (generation != g_goLiveGeneration) {
 				// Stopped while this was in flight. Drop any broadcast the prelude
@@ -9954,6 +9995,18 @@ void StartStreamingAllOnUi()
 				return;
 			}
 			StartEnabledOutputsNow();
+			// The stream IS going out, just not carrying everything it was asked to. Emitted
+			// rather than logged: the log file is not a place the streamer looks, and a title
+			// that shipped stale is only actionable while the broadcast is still running.
+			//
+			// AFTER the start, not before: StartEnabledOutputsNow emits streaming.changed, and
+			// the notice is cleared on the streaming edge that ends what it describes. Emitting
+			// first would put this event ahead of the edge that belongs to the same go-live.
+			if (!mismatches.empty()) {
+				HostLog("[stream] go-live proceeding with " + std::to_string(mismatches.size()) +
+					" destination(s) whose stream info did not fully apply: " + mismatches.dump());
+				EmitMetadataMismatch(mismatches, json::array());
+			}
 		});
 	});
 }
@@ -11420,9 +11473,17 @@ bool MethodStreamMetaSet(const json &params, json &result, std::string &error)
 
 	OAuth::OAuthAccount acct = *stored;
 	std::string err;
+	OAuth::DestinationReadback readback;
 	bool ok;
 	try {
-		ok = provider->applyMetadata(acct, profileUuid, fields, goingLive, err);
+		// A go-live push runs the SAME precondition the prelude runs, so the apply and the
+		// read-back that confirms it cannot depend on which surface started the stream. The
+		// dialog skips the prelude for a destination it armed (HasSentMetadata), so leaving
+		// this on a bare applyMetadata would have made the confirmation reachable only
+		// through code the UI is free not to run. A standalone edit is not a go-live and
+		// stays a plain push.
+		ok = goingLive ? provider->prepareDestination(acct, profileUuid, fields, readback, err)
+			       : provider->applyMetadata(acct, profileUuid, fields, false, err);
 	} catch (const std::exception &e) {
 		error = std::string("streamMeta.set failed: ") + e.what();
 		return false;
@@ -11432,6 +11493,22 @@ bool MethodStreamMetaSet(const json &params, json &result, std::string &error)
 	if (!ok) {
 		error = err;
 		return false;
+	}
+	// A visibility the platform does not actually hold fails the call, which is what the
+	// dialog already treats as fatal to the whole go-live. Refused here rather than reported
+	// so the refusal holds whatever the dialog decides to do with it.
+	const std::vector<OAuth::MetadataDivergence> unsafe = OAuth::SafetyDivergences(readback.divergences);
+	if (!unsafe.empty()) {
+		error = OAuth::DivergenceSummary(unsafe);
+		return false;
+	}
+	if (!readback.divergences.empty() || !readback.unconfirmed.empty()) {
+		EmitMetadataMismatch(json::array({json{{"destination", std::string()},
+						       {"profileUuid", profileUuid},
+						       {"reason", std::string()},
+						       {"fields", OAuth::DivergencesJson(readback.divergences)},
+						       {"unconfirmed", readback.unconfirmed}}}),
+				     json::array());
 	}
 	// The go-live prelude is the only push where the values are known to have been
 	// sent for this broadcast; a standalone "Edit stream info" is not a session.
@@ -11465,6 +11542,10 @@ bool MethodStreamMetaForgetSent(const json &params, json &result, std::string &e
 		uuids.push_back(v.get<std::string>());
 	}
 	ForgetSentMetadata(uuids);
+	// The pushes those uuids stand for are abandoned, so anything already reported about them
+	// describes a stream that is not happening. Told rather than left to expire: nothing else
+	// ever contradicts it, since no streaming edge follows an abort.
+	EmitMetadataMismatch(json::array(), params["profileUuids"]);
 	result = json{{"ok", true}};
 	return true;
 }

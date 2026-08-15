@@ -2149,6 +2149,27 @@ export interface ObsEvents {
   // created + bound + its ingest written back). Nothing is live when this arrives --
   // starting the encoders anyway would push at a channel with no broadcast behind it.
   "streaming.startFailed": { failures: { destination: string; reason: string }[] };
+  // Go Live IS proceeding, but one or more destinations do not carry everything they were
+  // asked to. Two distinct conditions, deliberately not merged: `fields` are values the
+  // platform was read back on and DISAGREED about, while `unconfirmed` is a destination whose
+  // state could not be read at all (quota spent, not live) -- "wrong" and "unknown" are not the
+  // same claim. `reason` is set instead of both when the push itself failed. A safety-field
+  // disagreement never arrives here; it refuses the go-live via streaming.startFailed.
+  // `destination` is empty on the Stream Information path, which cannot reach the profile
+  // store to resolve a label -- resolve it from `profileUuid` there.
+  "streaming.metadataMismatch": {
+    destinations: {
+      destination: string;
+      profileUuid: string;
+      reason: string;
+      unconfirmed: string;
+      fields: { field: string; label: string; requested: string; actual: string; safety: boolean; remedy: string }[];
+    }[];
+    // Profiles whose earlier entries no longer describe anything: the push they reported on was
+    // abandoned before going live. Dropped before `destinations` is folded in, so one event can
+    // both retract and report.
+    cleared: string[];
+  };
   // Coalesced per-source audio levels, pushed at most ~30 Hz off the volmeter
   // callbacks. The UI maps dB -> meter width and applies peak hold.
   "audio.levels": { levels: AudioLevel[] };

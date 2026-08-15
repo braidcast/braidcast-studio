@@ -209,6 +209,63 @@ struct TargetList {
 	std::vector<StreamTarget> targets;
 };
 
+// One field a platform did not end up holding as the go-live asked. `requested` is what this
+// destination was told to apply -- the user's own value, or the descriptor default the dialog
+// renders for a field the remembered bag never carried -- and `actual` is what the platform
+// reported back after the write. Both are rendered as text so one payload shape carries every
+// field type (enum, flag, category, tag list).
+struct MetadataDivergence {
+	std::string field;
+	std::string label;
+	std::string requested;
+	std::string actual;
+	// A visibility/audience field: the broadcast would be shown to people nobody confirmed,
+	// so the go-live is refused rather than merely reported. Which fields these are is the
+	// table in provider.cpp, not a decision made per call site.
+	bool safety = false;
+	// What the user can do about it, when the platform gives them somewhere to go. A refusal
+	// the app cannot itself resolve is otherwise a dead end. Filled from divergenceRemedy.
+	std::string remedy;
+};
+
+// Which of prepareDestination's two paths produced the state being read back: a broadcast this
+// call has just created, or one that already existed and was edited in place. A provider whose
+// platform needs time to settle a freshly-created broadcast cannot tell "not settled yet" from
+// "genuinely set to that" without knowing which path it is on.
+enum class AppliedBy { Create, Edit };
+
+// One destination's platform state as the provider found it.
+struct AppliedState {
+	// Descriptor-keyed values the platform stated. A field it did not state is ABSENT -- see
+	// the presence contract on readAppliedMetadata.
+	json fields = json::object();
+	// Why a field that would normally be here is missing this time, empty when none is. It
+	// surfaces as DestinationReadback::unconfirmed, so a gap is reported rather than passing
+	// for agreement.
+	std::string unconfirmed;
+};
+
+// What preparing one destination for go-live actually achieved, beyond "the calls returned".
+struct DestinationReadback {
+	std::vector<MetadataDivergence> divergences;
+	// Why the platform's own state could not be read back after the write, empty when it
+	// was. Deliberately NOT a failure: a read that did not answer is not evidence of a wrong
+	// value, and refusing on it would ground every go-live on a platform whose daily API
+	// quota is spent -- which on YouTube is a routine state, not an exceptional one.
+	std::string unconfirmed;
+};
+
+// The entries whose field is a safety field. The ONE place that split is applied, so the
+// prelude's refusal and any log line describing it can never disagree about which fields cost
+// a go-live.
+std::vector<MetadataDivergence> SafetyDivergences(const std::vector<MetadataDivergence> &divergences);
+
+// The one JSON rendering of a divergence list (the bridge event payload).
+json DivergencesJson(const std::vector<MetadataDivergence> &divergences);
+
+// The one streamer-facing sentence for a divergence list, for a refusal reason and the log.
+std::string DivergenceSummary(const std::vector<MetadataDivergence> &divergences);
+
 // The runtime context the framework hands an AuthStrategy for one interactive
 // grant. `emitProgress` reports a phase payload to JS (wired to the
 // `oauth.connectProgress` event on the UI thread); a top-level `openUrl` key in a
@@ -357,6 +414,45 @@ public:
 	// failure.
 	virtual bool getMetadata(OAuthAccount &acct, json &out, std::string &err) = 0;
 
+	// Read what the platform ACTUALLY holds for ONE destination right now, keyed by the same
+	// descriptor field keys applyMetadata writes. The missing half of the contract getMetadata
+	// only ever answered for prefill: without it nothing in the app has ever asked a platform
+	// what it has, so the dialog could assert a title and a visibility the platform had never
+	// been told about.
+	//
+	// PRESENCE IS THE CONTRACT. A field the platform did not report must be LEFT OUT of
+	// `out.fields`, never defaulted -- the diff compares only what the platform actually stated,
+	// and a manufactured empty tag list or a manufactured `false` reads as a divergence that
+	// never happened. On a safety field that would refuse a perfectly good go-live. Leaving a
+	// field out where one would normally be belongs with `out.unconfirmed`, so the gap is
+	// reported rather than passing for agreement.
+	//
+	// false + `err` when the destination could not be read at all (not live, no credential,
+	// quota spent). That is reported as unconfirmed, not as a failure -- see DestinationReadback.
+	// The base default says so for a provider that has no read: silent agreement would be a
+	// worse answer than an honest "not confirmed".
+	virtual bool readAppliedMetadata(OAuthAccount &acct, const std::string &profileUuid, AppliedBy by,
+					 AppliedState &out, std::string &err)
+	{
+		(void)acct;
+		(void)profileUuid;
+		(void)by;
+		out = AppliedState{};
+		err = displayName() + " cannot report what it applied";
+		return false;
+	}
+
+	// What the user can do about `field` when this provider could not bring it into line
+	// itself. A safety divergence refuses the go-live, and a refusal the app can neither
+	// resolve nor explain is a dead end -- the user is told the value is wrong with nowhere
+	// to go. Empty (the default) means the provider has no specific advice and the divergence
+	// is reported on its own.
+	virtual std::string divergenceRemedy(const std::string &field) const
+	{
+		(void)field;
+		return std::string();
+	}
+
 	// Resolve a category/game typeahead `query` into `out` (a list of matches).
 	// `acct` is non-const for the same refresh-propagation reason as getMetadata.
 	virtual bool searchCategories(OAuthAccount &acct, const std::string &query, json &out, std::string &err) = 0;
@@ -415,9 +511,9 @@ public:
 	// asked of a create-per-go-live platform; the default answers no because a
 	// persistent-channel account is always ready and never creates anything.
 	//
-	// This is what makes ensureBroadcastReady idempotent, so it must be cheap and must
-	// not create: implementations answer from their own per-destination cache first and
-	// only fall back to a (throttled) probe.
+	// This is what decides whether prepareDestination creates or edits, so it must be cheap
+	// and must not create: implementations answer from their own per-destination cache first
+	// and only fall back to a (throttled) probe.
 	virtual bool hasActiveBroadcast(OAuthAccount &acct, const std::string &profileUuid)
 	{
 		(void)acct;
@@ -425,20 +521,26 @@ public:
 		return false;
 	}
 
-	// Bring `profileUuid` to a state where the encoder can push: on a create-per-go-live
-	// platform, a broadcast created, bound to a verified ingest, and its endpoint written
-	// back into the stream profile. Idempotent -- a destination that already has one is a
-	// no-op costing no request.
+	// Bring `profileUuid` to a state where the encoder can push AND the platform holds the
+	// metadata this go-live is about to stream under: the broadcast created or found, `fields`
+	// applied to it, then read back and compared. Every go-live entry point calls this, and it
+	// is implemented once here so all four platforms inherit the same read-back correctness --
+	// each provider only answers "what have you actually got" (readAppliedMetadata).
 	//
-	// This is a PRECONDITION OF STREAMING, not a metadata push. The two used to be one
-	// call (applyMetadata with goingLive), which meant a mandatory lifecycle step was
-	// reachable only through the optional Stream Information modal: with that modal turned
-	// off, outputs started against a channel with no broadcast, YouTube left the encoder
-	// attached to a stale "upcoming" entry, and the stream never went live. Every go-live
-	// entry point calls this; `fields` supplies the metadata a broadcast this call has to
-	// CREATE needs (remembered values when no modal ran) and is unused otherwise.
-	virtual bool ensureBroadcastReady(OAuthAccount &acct, const std::string &profileUuid, const json &fields,
-					  std::string &err);
+	// This is a PRECONDITION OF STREAMING, not merely a metadata push. Two failures shaped its
+	// body. First, the lifecycle step was reachable only through the optional Stream Information
+	// modal: with that modal off, outputs started against a channel with no broadcast and the
+	// stream never went live. Second, an existing broadcast used to SKIP the apply entirely, so
+	// a relaunch mid-stream -- or a broadcast started in the platform's own studio on the same
+	// reusable ingest -- ran the encoders against that broadcast's title and visibility while the
+	// dialog showed the remembered ones. An existing broadcast is therefore edited in place, not
+	// skipped and not replaced.
+	//
+	// `readback` reports what the platform ended up holding: divergent fields, and whether the
+	// read answered at all. It is filled on success only; false + `err` means the destination
+	// could not be prepared, which is fatal to the whole go-live.
+	virtual bool prepareDestination(OAuthAccount &acct, const std::string &profileUuid, const json &fields,
+					DestinationReadback &readback, std::string &err);
 
 	// Enumerate the distinct targets `acct` can stream to: places that each get their
 	// own broadcast and their own ingest endpoint, so each is a separate destination

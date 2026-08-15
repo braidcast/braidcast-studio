@@ -57,7 +57,10 @@ const std::array<LangOption, 24> kLanguages = {{
 	{"sv", "Swedish"},    {"th", "Thai"},    {"uk", "Ukrainian"}, {"vi", "Vietnamese"},
 }};
 
+using JsonUtil::CopyString;
+using JsonUtil::CopyStringList;
 using JsonUtil::First;
+using JsonUtil::Obj;
 using JsonUtil::ParseJson;
 using JsonUtil::Str;
 
@@ -80,6 +83,58 @@ bool TagValid(const std::string &tag)
 		}
 	}
 	return true;
+}
+
+// The account's own /helix/channels row -- the ONE request both the prefill read and the go-live
+// read-back run. Named and shaped like Kick's sibling so the two persistent-channel platforms
+// answer "what does my channel currently say" the same way.
+bool FetchOwnChannelRow(TwitchProvider &provider, OAuthAccount &acct, json &row, std::string &err)
+{
+	if (!provider.ensureIdentity(acct, err)) {
+		return false;
+	}
+
+	Http::HttpReq req;
+	req.method = "GET";
+	req.url = std::string(kHelixBase) + "channels?broadcaster_id=" + Http::UrlEncode(acct.userId);
+
+	Http::HttpResponse resp;
+	if (!provider.SendAuthed(acct, req, resp, err)) {
+		return false;
+	}
+	if (!Http::Require2xx(resp, "Twitch channels request", err)) {
+		return false;
+	}
+
+	row = First(ParseJson(resp.body), "data");
+	if (!row.is_object()) {
+		err = "Twitch channels response missing data";
+		return false;
+	}
+	return true;
+}
+
+// Every descriptor field the channel row carries, under the descriptor's own keys. The single
+// parser: the prefill publishes a subset of this and the read-back compares all of it.
+json ChannelFields(const json &row)
+{
+	json out = json::object();
+	CopyString(row, "title", out, "title");
+	// The row states a category by carrying game_id: an UNSET game is an empty id, which is a real
+	// answer, whereas a row without the key stated nothing about the category at all.
+	json category = json::object();
+	if (CopyString(row, "game_id", category, "id")) {
+		category["name"] = Str(row, "game_name");
+		out["category"] = std::move(category);
+	}
+	CopyString(row, "broadcaster_language", out, "language");
+	CopyStringList(row, "tags", out, "tags");
+	CopyStringList(row, "content_classification_labels", out, "contentLabels");
+	const json &branded = Obj(row, "is_branded_content");
+	if (branded.is_boolean()) {
+		out["brandedContent"] = branded.get<bool>();
+	}
+	return out;
 }
 
 } // namespace
@@ -223,32 +278,35 @@ bool TwitchProvider::fetchIdentity(OAuthAccount &acct, std::string &err)
 
 bool TwitchProvider::getMetadata(OAuthAccount &acct, json &out, std::string &err)
 {
-	if (!ensureIdentity(acct, err)) {
+	AppliedState channel;
+	if (!readAppliedMetadata(acct, std::string(), AppliedBy::Edit, channel, err)) {
 		return false;
 	}
+	// The prefill publishes only the keys the dialog has always seeded from the channel. The
+	// wider read-back set exists to be COMPARED against what a go-live asked for, not to
+	// overwrite fields the user is editing.
+	//
+	// Read through the tolerant accessors because the two contracts are opposites: the read-back
+	// bag OMITS a field the channel did not state, while the modal renders every key it is given
+	// and so needs a full bag.
+	const json &category = Obj(channel.fields, "category");
+	out = json{{"title", Str(channel.fields, "title")},
+		   {"category", json{{"id", Str(category, "id")}, {"name", Str(category, "name")}}},
+		   {"language", Str(channel.fields, "language")}};
+	return true;
+}
 
-	Http::HttpReq req;
-	req.method = "GET";
-	req.url = std::string(kHelixBase) + "channels?broadcaster_id=" + Http::UrlEncode(acct.userId);
-
-	Http::HttpResponse resp;
-	if (!SendAuthed(acct, req, resp, err)) {
+bool TwitchProvider::readAppliedMetadata(OAuthAccount &acct, const std::string &profileUuid, AppliedBy by,
+					 AppliedState &out, std::string &err)
+{
+	(void)profileUuid; // one persistent channel per account, whichever profile points at it
+	(void)by;          // the channel is the same row whether this go-live edited it or not
+	json row;
+	if (!FetchOwnChannelRow(*this, acct, row, err)) {
 		return false;
 	}
-	if (!Http::Require2xx(resp, "Twitch channels request", err)) {
-		return false;
-	}
-
-	const json row = First(ParseJson(resp.body), "data");
-	if (!row.is_object()) {
-		err = "Twitch channels response missing data";
-		return false;
-	}
-	out = json{
-		{"title", Str(row, "title")},
-		{"category", json{{"id", Str(row, "game_id")}, {"name", Str(row, "game_name")}}},
-		{"language", Str(row, "broadcaster_language")},
-	};
+	out = AppliedState{};
+	out.fields = ChannelFields(row);
 	return true;
 }
 

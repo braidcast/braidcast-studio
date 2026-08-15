@@ -26,7 +26,7 @@
   let { stale, ageSec, subject = "numbers", banner = true }: Props = $props();
 </script>
 
-<span class="announce" role="status" aria-live="polite">{stale ? `Frozen: these ${subject} are not current.` : ""}</span>
+<span class="sr-only" role="status" aria-live="polite">{stale ? `Frozen: these ${subject} are not current.` : ""}</span>
 
 {#if stale && banner}
   <p class="stale-notice" aria-hidden="true">
@@ -35,19 +35,6 @@
 {/if}
 
 <style>
-  /* Present to assistive tech, absent from layout and from sight. */
-  .announce {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    margin: -1px;
-    padding: 0;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
-    border: 0;
-  }
-
   .stale-notice {
     margin: 0;
     padding: 8px 11px;

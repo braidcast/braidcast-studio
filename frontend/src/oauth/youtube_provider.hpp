@@ -91,12 +91,20 @@ public:
 	bool applyMetadata(OAuthAccount &acct, const std::string &profileUuid, const json &fields, bool goingLive,
 			   std::string &err) override;
 
+	// What this destination's live broadcast actually holds: title, description, privacy and
+	// the made-for-kids declaration, off one liveBroadcasts.list by id (1 unit). Category, tags
+	// and the thumbnail are deliberately NOT read -- they live on the video resource, and a
+	// second billed request per destination per go-live is not affordable on the platform whose
+	// daily quota is the binding constraint.
+	bool readAppliedMetadata(OAuthAccount &acct, const std::string &profileUuid, AppliedBy by, AppliedState &out,
+				 std::string &err) override;
+
 	// YouTube creates one broadcast per stream profile, each with its own liveChatId and
 	// its own concurrentViewers, so all per-broadcast state keys off the destination.
 	bool broadcastPerDestination() const override { return true; }
 
-	// Answered from broadcasts_ first, so a destination the Go Live modal just prepared
-	// short-circuits the base ensureBroadcastReady at zero quota; a cache miss (Studio
+	// Answered from broadcasts_ first, so the base prepareDestination decides create-vs-edit at
+	// zero quota for a destination the Go Live modal just prepared; a cache miss (Studio
 	// restarted mid-stream) falls through to the throttled liveBroadcasts.list probe.
 	bool hasActiveBroadcast(OAuthAccount &acct, const std::string &profileUuid) override;
 
@@ -350,6 +358,12 @@ private:
 	// destination is not live (even if a sibling destination is).
 	bool EnsureActiveBroadcast(OAuthAccount &acct, const std::string &profileUuid, BroadcastState &out,
 				   std::string &err);
+
+	// ONE broadcast by id (liveBroadcasts.list, 1 unit): its snippet and status. The mid-stream
+	// update needs the scheduledStartTime it has to echo back; the go-live read-back needs the
+	// title/description/privacy YouTube actually holds. One request shape and one parse for
+	// both, so the two cannot drift into asking for different parts.
+	bool ReadBroadcast(OAuthAccount &acct, const std::string &broadcastId, json &item, std::string &err);
 
 	// The digest of what `kind` last successfully carried to `videoId` for `dest`, and its
 	// writer. "" whenever nothing is remembered OR the remembered record belongs to a

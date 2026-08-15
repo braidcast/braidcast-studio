@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <exception>
 #include <string>
+#include <utility>
 
 #include <nlohmann/json.hpp>
 
@@ -104,6 +105,52 @@ inline const json &Obj(const json &j, const char *key)
 	}
 	auto it = j.find(key);
 	return it == j.end() ? kNull : *it;
+}
+
+// Copy the string at `src[key]` into `out[outKey]`, and ONLY when `src` actually carries a string
+// there -- an absent or wrong-typed field leaves `out` untouched rather than writing "". Returns
+// whether the copy happened, so a caller that owes an explanation for a field it could not read
+// can tell "the platform said nothing" from "the platform said nothing was set".
+//
+// The scalar sibling of CopyStringList, load-bearing for the same reason: an invented "" reads as
+// a value the platform stated and disagrees with every non-empty request, while a genuinely absent
+// key reads as "not reported". An empty string that IS present is copied through -- that is a real
+// answer ("nothing is set"), not the absence of one.
+inline bool CopyString(const json &src, const char *key, json &out, const char *outKey)
+{
+	if (!src.is_object()) {
+		return false;
+	}
+	auto it = src.find(key);
+	if (it == src.end() || !it->is_string()) {
+		return false;
+	}
+	out[outKey] = *it;
+	return true;
+}
+
+// Copy the array-of-strings at `src[key]` into `out[outKey]`, and ONLY when `src` actually
+// carries an array there -- an absent or wrong-typed field leaves `out` untouched rather than
+// writing an empty list.
+//
+// The distinction is load-bearing wherever a bag is later compared against what was asked for:
+// an invented empty list reads as "the platform holds none of these" and reports every requested
+// entry as dropped, while a genuinely absent key reads as "not reported", which is the truth.
+// Shared because every platform's own-channel read has the same list-shaped fields (tags,
+// classification labels) and the same need to keep absence absent.
+inline void CopyStringList(const json &src, const char *key, json &out, const char *outKey)
+{
+	const json &list = Obj(src, key);
+	if (!list.is_array()) {
+		return;
+	}
+	json kept = json::array();
+	for (const json &entry : list) {
+		if (entry.is_string()) {
+			kept.push_back(entry);
+		}
+	}
+	out[outKey] = std::move(kept);
 }
 
 } // namespace JsonUtil

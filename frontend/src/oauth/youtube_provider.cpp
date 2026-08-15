@@ -103,6 +103,7 @@ constexpr int64_t kQuotaResetHorizonSec = 26 * 60 * 60;
 const char *kUpdatedMetadataUrl = "https://www.youtube.com/youtubei/v1/updated_metadata?prettyPrint=false";
 
 using JsonUtil::Bool;
+using JsonUtil::CopyString;
 using JsonUtil::First;
 using JsonUtil::Obj;
 using JsonUtil::ParseJson;
@@ -702,11 +703,15 @@ json YouTubeProvider::capabilityJson() const
 						       json{{"value", "ultraLow"}, {"label", "Ultra-low latency"}}})}});
 	fields.push_back(
 		json{{"key", "dvr"}, {"label", "DVR"}, {"type", "bool"}, {"tier", "advanced"}, {"scope", "channel"}});
+	// The default is declared because applyMetadata always sends this flag, defaulting it to
+	// false: without the declaration the read-back has nothing to compare an unset bag against,
+	// and a safety field would go unchecked on exactly the destinations that never touched it.
 	fields.push_back(json{{"key", "madeForKids"},
 			      {"label", "Made for kids"},
 			      {"type", "bool"},
 			      {"tier", "advanced"},
-			      {"scope", "channel"}});
+			      {"scope", "channel"},
+			      {"default", false}});
 	fields.push_back(json{{"key", "autoStop"},
 			      {"label", "Auto-stop when stream ends"},
 			      {"type", "bool"},
@@ -1041,22 +1046,11 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 			// requires snippet.title AND snippet.scheduledStartTime together on a
 			// part=snippet update and rejects a fresh time for an already-started
 			// broadcast, so echo the existing scheduledStartTime read back here.
-			Http::HttpReq getReq;
-			getReq.method = "GET";
-			getReq.url = std::string(kLiveBroadcastsUrl) +
-				     "?part=snippet,status&id=" + Http::UrlEncode(active.broadcastId);
-			Http::HttpResponse getResp;
-			if (!SendAuthed(acct, getReq, getResp, err)) {
+			json existing;
+			if (!ReadBroadcast(acct, active.broadcastId, existing, err)) {
 				return false;
 			}
-			if (!Http::Require2xx(getResp, "YouTube liveBroadcasts.list", err)) {
-				return false;
-			}
-			const json existing = First(ParseJson(getResp.body), "items");
-			std::string scheduledStart;
-			if (existing.is_object() && existing.contains("snippet") && existing["snippet"].is_object()) {
-				scheduledStart = Str(existing["snippet"], "scheduledStartTime");
-			}
+			std::string scheduledStart = Str(Obj(existing, "snippet"), "scheduledStartTime");
 			if (scheduledStart.empty()) {
 				scheduledStart = TimeUtil::NowIso8601Utc();
 			}
@@ -1400,6 +1394,79 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 		// free -- without spending a request to ask what we ourselves chose.
 		bs.privacy = privacy;
 	}
+	return true;
+}
+
+bool YouTubeProvider::ReadBroadcast(OAuthAccount &acct, const std::string &broadcastId, json &item, std::string &err)
+{
+	item = json(nullptr);
+	if (broadcastId.empty()) {
+		err = "YouTube broadcast id is empty";
+		return false;
+	}
+
+	Http::HttpReq req;
+	req.method = "GET";
+	req.url = std::string(kLiveBroadcastsUrl) + "?part=snippet,status&id=" + Http::UrlEncode(broadcastId);
+
+	Http::HttpResponse resp;
+	if (!SendAuthed(acct, req, resp, err)) {
+		return false;
+	}
+	if (!Http::Require2xx(resp, "YouTube liveBroadcasts.list", err)) {
+		return false;
+	}
+
+	item = First(ParseJson(resp.body), "items");
+	if (!item.is_object()) {
+		err = "YouTube reported no broadcast " + broadcastId;
+		return false;
+	}
+	return true;
+}
+
+bool YouTubeProvider::readAppliedMetadata(OAuthAccount &acct, const std::string &profileUuid, AppliedBy by,
+					  AppliedState &out, std::string &err)
+{
+	(void)by; // a YouTube broadcast reports its own snippet and status the same way either way
+	out = AppliedState{};
+	BroadcastState active;
+	if (!EnsureActiveBroadcast(acct, profileUuid, active, err)) {
+		if (err.empty()) {
+			// EnsureActiveBroadcast leaves `err` empty for "nothing live here", which
+			// includes a throttled probe. Neither is a reason to claim agreement.
+			err = "YouTube reports no live broadcast for this destination";
+		}
+		return false;
+	}
+
+	json item;
+	if (!ReadBroadcast(acct, active.broadcastId, item, err)) {
+		return false;
+	}
+	const json &snippet = Obj(item, "snippet");
+	const json &status = Obj(item, "status");
+
+	CopyString(snippet, "title", out.fields, "title");
+	CopyString(snippet, "description", out.fields, "description");
+	// A response that carried no privacyStatus leaves the field out, so the diff has nothing to
+	// compare -- and says so, because privacy is a safety field: an invented empty visibility
+	// would disagree with whatever was asked for and refuse a go-live over a value YouTube never
+	// stated, while silence on it would read as agreement.
+	if (!CopyString(status, "privacyStatus", out.fields, "privacy")) {
+		out.unconfirmed = displayName() + " did not report the visibility of this broadcast";
+	}
+	// Presence-preserving: a status that did not state the flag must read as unknown rather
+	// than as off, or a destination that genuinely asked for made-for-kids would be refused
+	// over a field YouTube simply did not echo.
+	const json &kids = Obj(status, "selfDeclaredMadeForKids");
+	if (kids.is_boolean()) {
+		out.fields["madeForKids"] = kids.get<bool>();
+	}
+	// Category, tags and the thumbnail live on the VIDEO resource, not on the broadcast, so
+	// reading them would be a SECOND billed request per destination per go-live on the one
+	// platform where daily quota is the binding constraint. They are left out, and the diff
+	// compares only what is here.
 	return true;
 }
 

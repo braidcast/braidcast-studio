@@ -41,6 +41,12 @@ public:
 
 	bool fetchIdentity(OAuthAccount &acct, std::string &err) override;
 	bool getMetadata(OAuthAccount &acct, json &out, std::string &err) override;
+	// The same channels row the prefill reads, with a field the row never reported left ABSENT
+	// rather than defaulted -- a PATCH is accepted as 2xx with no body to parse, so this read
+	// is the only thing that can say what landed. `profileUuid` is ignored: one persistent
+	// channel per account.
+	bool readAppliedMetadata(OAuthAccount &acct, const std::string &profileUuid, AppliedBy by, AppliedState &out,
+				 std::string &err) override;
 	bool searchCategories(OAuthAccount &acct, const std::string &query, json &out, std::string &err) override;
 	bool applyMetadata(OAuthAccount &acct, const std::string &profileUuid, const json &fields, bool goingLive,
 			   std::string &err) override;

@@ -3,6 +3,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <cstring>
 #include <utility>
 
 #include "util/async_task.hpp"
@@ -54,6 +55,11 @@ constexpr int kMaxTitleLength = 254;
 // enumerateTargets hands back so a caller can pre-set it, and the key ResolvePage reads
 // off the pushed bag -- one name, so a rename cannot desync the three.
 constexpr const char *kPageFieldKey = "page";
+
+// The descriptor field carrying the visibility choice. Named for the same reason as
+// kPageFieldKey: the descriptor advertises it, the read-back reports under it, and the remedy
+// lookup keys off it -- three places that must not desync.
+constexpr const char *kPrivacyFieldKey = "privacy";
 
 // The live-video node's concurrent-viewer field. Named once because the request asks for it
 // explicitly and the response is read by the same name -- the two cannot desync, the way
@@ -136,6 +142,42 @@ const char *StatusForPrivacy(const std::string &value)
 	// means a stale remembered bag rather than a real choice: publish, matching the
 	// default the modal shows.
 	return kPrivacyOptions[0].status;
+}
+
+// The inverse of StatusForPrivacy over the SAME table: which offered choice the status Meta
+// reports back corresponds to. Empty when the status says nothing about visibility -- an ended
+// broadcast is not a privacy setting, and guessing one would refuse a go-live over a value that
+// was never a choice.
+//
+// Matched by SUBSTRING rather than by equality because the live-video node answers with a family
+// of spellings around one state ("UNPUBLISHED", "SCHEDULED_UNPUBLISHED"), and the node reference
+// that documented them has been gone since early 2025 -- the same reason kEndedLiveStatuses is
+// written as a stop list.
+//
+// The final fallback is the ONE place the read-back contract's "presence is the answer" rule is
+// broken on purpose: an unrecognized, not-ended status resolves to published rather than being
+// omitted, so it manufactures an `actual` no platform actually stated. It earns the exception
+// because this is the only safety field whose two error directions are not symmetric -- reading a
+// genuinely-unpublished broadcast as published costs a refused go-live the user can retry, while
+// omitting the field on a genuinely-published one lets a broadcast the user marked admins-only go
+// out to the Page's whole audience with nothing raised. Every other field omits.
+std::string PrivacyForStatus(const std::string &status)
+{
+	if (status.empty() || IsEndedLiveStatus(status)) {
+		return std::string();
+	}
+	// Longest match wins, so one row's status being a substring of another's cannot make the
+	// answer depend on the order rows happen to sit in the table.
+	const PrivacyOption *best = nullptr;
+	for (const PrivacyOption &o : kPrivacyOptions) {
+		if (status.find(o.status) == std::string::npos) {
+			continue;
+		}
+		if (!best || std::strlen(o.status) > std::strlen(best->status)) {
+			best = &o;
+		}
+	}
+	return best ? best->value : kPrivacyOptions[0].value;
 }
 
 // Split "rtmps://live-api-s.facebook.com:443/rtmp/<key>" into the server the RTMP output
@@ -227,7 +269,7 @@ json FacebookProvider::capabilityJson() const
 	// Required: Facebook rejects an empty status, and the value decides whether the
 	// broadcast is visible to the Page's audience at all -- so the control must show the
 	// value that will actually be sent rather than an unset dash.
-	fields.push_back(json{{"key", "privacy"},
+	fields.push_back(json{{"key", kPrivacyFieldKey},
 			      {"label", "Privacy"},
 			      {"type", "enum"},
 			      {"tier", "simple"},
@@ -481,6 +523,72 @@ bool FacebookProvider::hasActiveBroadcast(OAuthAccount &acct, const std::string 
 {
 	LiveVideo live;
 	return ActiveLiveVideo(DestinationId{AccountId(acct), profileUuid}, live);
+}
+
+std::string FacebookProvider::divergenceRemedy(const std::string &field) const
+{
+	if (field != kPrivacyFieldKey) {
+		return std::string();
+	}
+	// The create carries `status`; the edit of a live video this app already holds does not
+	// re-send it, so a privacy divergence on a running broadcast is one this app refuses over
+	// and cannot itself correct. Whether Meta accepts `status` on an existing live video is
+	// undocumented -- the live-video node reference has answered 404 since early 2025 and the
+	// Live Video API guides cover creation only -- so rather than push a parameter that may be
+	// silently ignored, hand the user the two routes that certainly work.
+	return "Braidcast cannot change the visibility of a Facebook broadcast that is already "
+	       "running: set it on the Page's own live post, or stop this destination and go live "
+	       "again to create a fresh broadcast with the visibility you chose";
+}
+
+bool FacebookProvider::readAppliedMetadata(OAuthAccount &acct, const std::string &profileUuid, AppliedBy by,
+					   AppliedState &out, std::string &err)
+{
+	out = AppliedState{};
+	LiveVideo active;
+	if (!ActiveLiveVideo(DestinationId{AccountId(acct), profileUuid}, active)) {
+		err = "no Facebook live video is held for this destination";
+		return false;
+	}
+
+	Http::HttpReq req;
+	req.method = "GET";
+	// Asked for EXPLICITLY, exactly as the viewer read is: the node's default field set is the
+	// id and little else, so an unqualified read answers 200 with nothing to compare.
+	req.url = GraphUrl(active.id) + "?fields=title,description,status";
+
+	OAuthAccount pageAcct = PageAccount(id(), active.pageToken);
+	Http::HttpResponse resp;
+	if (!SendAuthed(pageAcct, req, resp, err)) {
+		return false;
+	}
+	if (!Http::Require2xx(resp, "Facebook live-video read-back", err)) {
+		return false;
+	}
+
+	const json j = ParseJson(resp.body);
+	out.fields["title"] = Str(j, "title");
+	out.fields["description"] = Str(j, "description");
+	// A status that says nothing about visibility -- empty, or ended -- is left out, so the diff
+	// treats it as unknown. An unrecognized live status is the one exception, resolved toward
+	// published by PrivacyForStatus for the reason given there.
+	const std::string privacy = PrivacyForStatus(Str(j, "status"));
+	if (privacy.empty()) {
+		return true;
+	}
+	// A broadcast this call has just created is read microseconds later, before any frames have
+	// reached Meta. Whether a status read that early is already settled is not documented -- the
+	// node reference has answered 404 since early 2025 -- so this path does not rely on either
+	// answer: only the published status is trusted, since that is the state a refusal would be
+	// protecting against, and anything else is reported as unconfirmed rather than compared. The
+	// edit path reads a broadcast that has been running and compares normally, including in the
+	// direction this skips.
+	if (by == AppliedBy::Create && privacy != kPrivacyOptions[0].value) {
+		out.unconfirmed = displayName() + " did not confirm the visibility of the broadcast it just created";
+		return true;
+	}
+	out.fields[kPrivacyFieldKey] = privacy;
+	return true;
 }
 
 bool FacebookProvider::applyMetadata(OAuthAccount &acct, const std::string &profileUuid, const json &fields,

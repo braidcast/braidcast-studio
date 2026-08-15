@@ -53,6 +53,20 @@ public:
 
 	bool fetchIdentity(OAuthAccount &acct, std::string &err) override;
 	bool getMetadata(OAuthAccount &acct, json &out, std::string &err) override;
+	// What this destination's live video actually holds -- title, description, and the `status`
+	// that decides whether it is published to the Page at all, mapped back onto the descriptor's
+	// own privacy choices. Reads the same node the viewer poll does, so the request shape is one
+	// this provider already relies on. Category is not read back: content_tags comes back as a
+	// resolved object rather than the interest id that was sent, so a comparison would be
+	// between two different things.
+	bool readAppliedMetadata(OAuthAccount &acct, const std::string &profileUuid, AppliedBy by, AppliedState &out,
+				 std::string &err) override;
+	// Where a privacy divergence leaves the user. The create carries `status`; the edit of a
+	// live video already running does not re-send it, so this is a refusal the app cannot
+	// itself resolve -- and whether Meta accepts `status` on an existing live video is
+	// undocumented, so the answer is a route the user can take rather than a parameter that
+	// may be silently ignored.
+	std::string divergenceRemedy(const std::string &field) const override;
 	// The account's Pages, filtered by `query` -- this provider's `page` picker, not a
 	// game/category catalog. Facebook Gaming was sunset and no browsable category
 	// taxonomy replaced it, so `page` is the only lookup field in the descriptor and this
@@ -65,8 +79,8 @@ public:
 	// destination -- two profiles on one Page are two independent broadcasts.
 	bool broadcastPerDestination() const override { return true; }
 
-	// Answered from liveVideos_, so a destination the Go Live modal just prepared
-	// short-circuits the base ensureBroadcastReady without a Graph request.
+	// Answered from liveVideos_, so the base prepareDestination decides create-vs-edit without
+	// a Graph request for a destination the Go Live modal just prepared.
 	bool hasActiveBroadcast(OAuthAccount &acct, const std::string &profileUuid) override;
 
 	// One target per streamable Page: a Page has its own RTMPS endpoint, so two Pages

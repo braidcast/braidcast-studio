@@ -33,6 +33,8 @@ import { EV } from "$lib/utils/eventNames";
   import ContextMenu, { type ContextMenuItem, type ContextMenuItems } from "$lib/menus/ContextMenu.svelte";
   import Icon from "$lib/ui/Icon.svelte";
   import StaleNotice from "$lib/ui/StaleNotice.svelte";
+  import MetadataMismatchNotice, { type MismatchRow } from "$lib/ui/MetadataMismatchNotice.svelte";
+  import { streamProfileStore } from "$lib/stores/streamProfileStore.svelte";
   import { openGoLiveModal } from "$lib/dialogs/golive/goLiveModalOpener.svelte";
   import { goLivePref } from "$lib/stores/goLivePrefStore.svelte";
   import { log } from "$lib/utils/log";
@@ -56,6 +58,17 @@ import { EV } from "$lib/utils/eventNames";
   // its own state: an empty `outputs` from a failed read is indistinguishable from a
   // genuinely idle rig, and rendering it as "Offline" would be a fabricated read.
   let statusUnread = $derived(!multistreamStatusStore.loaded || multistreamStatusStore.error !== null);
+  // Destinations now streaming under something other than what was asked for, plus those whose
+  // platform state could not be read back. Held on the page rather than in a store: it describes
+  // one go-live attempt, and it is cleared by the stop edge that ends the broadcast it describes.
+  let metadataMismatches = $state<MismatchRow[]>([]);
+  // The notice unmounts on dismiss, taking the focused button with it. Focus goes to the control
+  // directly below rather than to nothing, which is where the browser would otherwise drop it.
+  let goLiveButton = $state<HTMLButtonElement | null>(null);
+  function dismissMismatches(): void {
+    metadataMismatches = [];
+    goLiveButton?.focus();
+  }
   // Shared host-pushed 1 Hz stats (also feeds the Stats dock + Monitor page).
   let stats = $derived(statsStore.stats);
   // A frozen snapshot must not pass for a live reading in the bottom bar either: this
@@ -316,7 +329,15 @@ import { EV } from "$lib/utils/eventNames";
       // Leaves vcamActive false, which renders an already-running virtual camera as
       // stopped until the next virtualCam.changed push corrects it.
       .catch((e) => log.warn(Cat.bridge, "virtualCam.status failed:", (e as Error).message));
-    const offStreaming = obs.on(EV.streamingChanged, (p) => (anyRunning = p.active));
+    const offStreaming = obs.on(EV.streamingChanged, (p) => {
+      anyRunning = p.active;
+      // Everything went down: whatever the last go-live shipped differently is now history, so
+      // the notice stops describing anything. Cleared on the STOP edge only -- the start edge
+      // belongs to the same attempt whose mismatches arrive just after it.
+      if (!p.active) {
+        metadataMismatches = [];
+      }
+    });
     const offViewers = viewerCountStore.subscribe();
     const offVcam = obs.on(EV.virtualCamChanged, (s) => {
       vcamActive = s.active;
@@ -331,6 +352,9 @@ import { EV } from "$lib/utils/eventNames";
     // Information modal: the refusal has to reach the streamer whichever way they went
     // live, and the hotkey and tray paths never open that modal.
     const offStartFailed = obs.on(EV.streamingStartFailed, (p) => {
+      // Nothing is going live, so anything reported about this attempt describes a stream that
+      // will not happen.
+      metadataMismatches = [];
       const names = p.failures.map((f) => f.destination).join(", ");
       showToast(
         p.failures.length === 1
@@ -339,6 +363,27 @@ import { EV } from "$lib/utils/eventNames";
         p.failures[0]?.reason ?? names,
       );
     });
+    // The sibling of the refusal above, and deliberately NOT a toast: this one says the stream
+    // is going out carrying something other than what was asked, which stays true for the whole
+    // broadcast and is only actionable while it runs. Subscribed HERE for the same reason the
+    // refusal is -- the hotkey, tray and scheduler paths open no modal, and the Stream
+    // Information dialog is closed by the time the go-live prelude answers.
+    //
+    // Rows are keyed by destination so a re-attempt replaces that destination's entry rather
+    // than stacking a second one; the modal path emits one event per destination, so arrivals
+    // accumulate across events within a single go-live.
+    const offMismatch = obs.on(EV.streamingMetadataMismatch, (p) => {
+      // The names come from the profile store, which the C++ side cannot reach off the UI
+      // thread; make sure it is running before a row asks it for one.
+      streamProfileStore.start();
+      const incoming = p.destinations;
+      metadataMismatches = [
+        ...metadataMismatches.filter(
+          (r) => !p.cleared.includes(r.profileUuid) && !incoming.some((i) => i.profileUuid === r.profileUuid),
+        ),
+        ...incoming,
+      ];
+    });
     return () => {
       offStatus();
       offStreaming();
@@ -346,6 +391,7 @@ import { EV } from "$lib/utils/eventNames";
       offVcam();
       offGeneral();
       offStartFailed();
+      offMismatch();
     };
   });
 
@@ -834,6 +880,12 @@ import { EV } from "$lib/utils/eventNames";
     <DockHost {onReady} />
   </div>
 
+  <!-- Sits between the docks and the GO LIVE bar: the strip the streamer is already looking at
+       when they go live, and the last thing above the button they would press to stop. -->
+  <!-- Always mounted: the component draws nothing without rows, and its live region has to exist
+       before it has something to announce. -->
+  <MetadataMismatchNotice rows={metadataMismatches} streaming={anyRunning} ondismiss={dismissMismatches} />
+
   <!-- BOTTOM BAR : GO LIVE (variant B — segmented, GO LIVE as right-edge block). -->
   <div class="golive-bar">
     <div class="bb-left">
@@ -923,6 +975,7 @@ import { EV } from "$lib/utils/eventNames";
         Edit
       </button>
       <button
+        bind:this={goLiveButton}
         class="golive"
         class:running={!goLiveBlock && anyRunning}
         class:blocked={!!goLiveBlock}

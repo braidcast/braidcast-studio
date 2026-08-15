@@ -30,8 +30,11 @@ const std::array<const char *, 5> kKickScopes = {"channel:read", "channel:write"
 // once so the descriptor advertising it and the applyMetadata check refusing on it agree.
 constexpr int kMaxTags = 10;
 
+using JsonUtil::CopyString;
+using JsonUtil::CopyStringList;
 using JsonUtil::First;
 using JsonUtil::NumLoose;
+using JsonUtil::Obj;
 using JsonUtil::ParseJson;
 using JsonUtil::Str;
 
@@ -61,6 +64,26 @@ bool FetchOwnChannelRow(KickProvider &provider, OAuthAccount &acct, json &row, s
 
 	row = First(ParseJson(resp.body), "data");
 	return true;
+}
+
+// Every descriptor field the channels row carries, under the descriptor's own keys. The single
+// parser: the prefill fills the gaps it needs on top of this, while the go-live read-back needs
+// a field the row never reported to stay ABSENT -- it has to tell "no tags" from "unknown", and
+// an invented empty list would report every requested tag as dropped.
+json ChannelFields(const json &row)
+{
+	json out = json::object();
+	CopyString(row, "stream_title", out, "title");
+	const json &category = Obj(row, "category");
+	if (category.is_object()) {
+		// Kick's category id is a wire integer, but the cross-provider contract models
+		// category id as a STRING (Twitch's game_id is a string), so stringify it here.
+		out["category"] =
+			json{{"id", std::to_string(NumLoose(category, "id"))}, {"name", Str(category, "name")}};
+	}
+	// Tags live under stream.custom_tags (array of strings).
+	CopyStringList(Obj(row, "stream"), "custom_tags", out, "tags");
+	return out;
 }
 
 } // namespace
@@ -159,6 +182,33 @@ bool KickProvider::fetchIdentity(OAuthAccount &acct, std::string &err)
 
 bool KickProvider::getMetadata(OAuthAccount &acct, json &out, std::string &err)
 {
+	AppliedState channel;
+	if (!readAppliedMetadata(acct, std::string(), AppliedBy::Edit, channel, err)) {
+		return false;
+	}
+	out = std::move(channel.fields);
+	// The prefill contract is a FULL bag -- the modal reads every key it renders. An unset
+	// category must arrive with an EMPTY id, not "0": the Go Live modal treats any truthy live
+	// category id as authoritative and would overwrite the user's saved selection on every
+	// open. applyMetadata's NumLoose("") is 0, so an empty id still round-trips as "don't push"
+	// without clearing the field.
+	if (!out.contains("category")) {
+		out["category"] = json{{"id", std::string()}, {"name", std::string()}};
+	}
+	if (!out.contains("tags")) {
+		out["tags"] = json::array();
+	}
+	if (!out.contains("title")) {
+		out["title"] = std::string();
+	}
+	return true;
+}
+
+bool KickProvider::readAppliedMetadata(OAuthAccount &acct, const std::string &profileUuid, AppliedBy by,
+				       AppliedState &out, std::string &err)
+{
+	(void)profileUuid; // one persistent channel per account, whichever profile points at it
+	(void)by;          // the channel is the same row whether this go-live edited it or not
 	json row;
 	if (!FetchOwnChannelRow(*this, acct, row, err)) {
 		return false;
@@ -167,40 +217,8 @@ bool KickProvider::getMetadata(OAuthAccount &acct, json &out, std::string &err)
 		err = "Kick channels response missing data";
 		return false;
 	}
-
-	// Kick's category id is a wire integer, but the cross-provider contract models
-	// category id as a STRING (Twitch's game_id is a string), so stringify it here.
-	// An unset category must use an EMPTY id, not "0": the Go Live modal treats any
-	// truthy live category id as authoritative and would overwrite the user's saved
-	// selection on every open. applyMetadata's NumLoose("") is 0, so an empty id
-	// still round-trips as "don't push" without clearing the field.
-	json category = json::object();
-	if (row.contains("category") && row["category"].is_object()) {
-		const json &cat = row["category"];
-		category = json{{"id", std::to_string(NumLoose(cat, "id"))}, {"name", Str(cat, "name")}};
-	} else {
-		category = json{{"id", std::string()}, {"name", std::string()}};
-	}
-
-	// Tags live under stream.custom_tags (array of strings).
-	json tags = json::array();
-	if (row.contains("stream") && row["stream"].is_object()) {
-		const json &stream = row["stream"];
-		auto it = stream.find("custom_tags");
-		if (it != stream.end() && it->is_array()) {
-			for (const json &t : *it) {
-				if (t.is_string()) {
-					tags.push_back(t.get<std::string>());
-				}
-			}
-		}
-	}
-
-	out = json{
-		{"title", Str(row, "stream_title")},
-		{"category", category},
-		{"tags", tags},
-	};
+	out = AppliedState{};
+	out.fields = ChannelFields(row);
 	return true;
 }
 
