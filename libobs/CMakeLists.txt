@@ -39,6 +39,8 @@ target_sources(
     obs-config.h
     obs-data.c
     obs-data.h
+    obs-debug-log.c
+    obs-debug-log.h
     obs-defs.h
     obs-display.c
     obs-encoder.c

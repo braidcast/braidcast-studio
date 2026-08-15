@@ -20,6 +20,7 @@
 
 #include "obs.h"
 #include "obs-internal.h"
+#include "obs-debug-log.h"
 #include "graphics/vec4.h"
 #include "media-io/format-conversion.h"
 #include "media-io/video-frame.h"
@@ -844,9 +845,10 @@ static void video_startup_settle(struct obs_core_video *video, uint32_t lagged, 
 	}
 
 	video->startup_settled = true;
-	blog(LOG_INFO, "Video pipeline settled (%s); %" PRIu32 " frame(s) lost to startup are not counted as lag",
-	     steady ? "held the frame deadline for one second" : "startup grace elapsed",
-	     video->startup_skipped_frames);
+	obs_debug_logf(LOG_INFO,
+		       "Video pipeline settled (%s); %" PRIu32 " frame(s) lost to startup are not counted as lag",
+		       steady ? "held the frame deadline for one second" : "startup grace elapsed",
+		       video->startup_skipped_frames);
 }
 
 static inline void video_sleep(struct obs_core_video *video, uint64_t *p_time, uint64_t interval_ns)
@@ -1175,9 +1177,9 @@ extern THREAD_LOCAL bool is_graphics_thread;
 #define RENDER_DEBUG_SEGMENT_WARN_PCT 50
 
 /* Ceiling on the early-warning line, which unlike the on-miss line can repeat
- * every frame. blog() on this thread is a synchronous flushed file write, so an
- * ungoverned warning delays the next frame enough to cause the miss it then
- * reports. Suppressed lines are counted and disclosed, never silently dropped. */
+ * every frame. Ungoverned it would emit tens of lines a second and bury the miss
+ * reports it sits next to, leaving a log nobody can read a lag event out of.
+ * Suppressed lines are counted and disclosed, never silently dropped. */
 #define RENDER_DEBUG_WARN_WINDOW_NS 1000000000ULL
 #define RENDER_DEBUG_WARN_MAX_PER_WINDOW 2
 
@@ -1270,8 +1272,8 @@ static uint64_t execute_graphics_tasks(void)
 
 		if (slow_task && os_atomic_load_bool(&video->render_debug)) {
 			const uint64_t log_start = os_gettime_ns();
-			blog(LOG_INFO, "[render-debug] graphics task %p took %.1f" NBSP "ms",
-			     (void *)(uintptr_t)slow_task, obs_debug_ns_to_ms(slow_ns));
+			obs_debug_logf(LOG_INFO, "[render-debug] graphics task %p took %.1f" NBSP "ms",
+				       (void *)(uintptr_t)slow_task, obs_debug_ns_to_ms(slow_ns));
 			log_ns += os_gettime_ns() - log_start;
 		}
 	}
@@ -1430,9 +1432,11 @@ static bool debug_emit_source_stats_cb(void *param, obs_source_t *source)
 			snprintf(gpu, sizeof(gpu), ", GPU %.1f" NBSP "us", (double)res.render_gpu_sum / 1000.0);
 		}
 
-		blog(LOG_INFO,
-		     "[render-debug]   source '%s': tick CPU %.1f" NBSP "us peak, render CPU %.1f" NBSP "us%s",
-		     obs_source_get_name(source), (double)res.tick_max / 1000.0, (double)res.render_sum / 1000.0, gpu);
+		obs_debug_logf(LOG_INFO,
+			       "[render-debug]   source '%s': tick CPU %.1f" NBSP "us peak, render CPU %.1f" NBSP
+			       "us%s",
+			       obs_source_get_name(source), (double)res.tick_max / 1000.0,
+			       (double)res.render_sum / 1000.0, gpu);
 	}
 	return true;
 }
@@ -1490,11 +1494,12 @@ static void debug_emit_composite_stats(void)
 		debug_format_gpu_field(gpu_max_field, sizeof(gpu_max_field), gpu_measured, "max GPU",
 				       mix->debug_composite_gpu_max, budget_ns);
 
-		blog(LOG_INFO,
-		     "[render-debug] mix '%s': composite CPU %.1f" NBSP "us (%.1f%% frame)%s, max CPU %.1f" NBSP
-		     "us (%.1f%% frame)%s, lagged +%u" NBSP "frames%s",
-		     mix->debug_label ? mix->debug_label : "?", (double)cpu_avg / 1000.0, cpu_pct, gpu_field,
-		     (double)cpu_max / 1000.0, cpu_max_pct, gpu_max_field, lagged_delta, gpu_note);
+		obs_debug_logf(LOG_INFO,
+			       "[render-debug] mix '%s': composite CPU %.1f" NBSP
+			       "us (%.1f%% frame)%s, max CPU %.1f" NBSP "us (%.1f%% frame)%s, lagged +%u" NBSP
+			       "frames%s",
+			       mix->debug_label ? mix->debug_label : "?", (double)cpu_avg / 1000.0, cpu_pct, gpu_field,
+			       (double)cpu_max / 1000.0, cpu_max_pct, gpu_max_field, lagged_delta, gpu_note);
 
 		mix->debug_composite_cpu_accum = 0;
 		mix->debug_composite_gpu_accum = 0;
@@ -1585,8 +1590,8 @@ static BOOL CALLBACK debug_log_thread_window(HWND hwnd, LPARAM param)
 
 	char cls[64] = "";
 	GetClassNameA(hwnd, cls, (int)sizeof cls);
-	blog(LOG_INFO, "[render-debug] graphics thread owns hwnd 0x%llx class '%s'",
-	     (unsigned long long)(uintptr_t)hwnd, cls);
+	obs_debug_logf(LOG_INFO, "[render-debug] graphics thread owns hwnd 0x%llx class '%s'",
+		       (unsigned long long)(uintptr_t)hwnd, cls);
 	return TRUE;
 }
 #endif
@@ -1658,12 +1663,12 @@ static void debug_emit_frame_segments(const struct obs_graphics_context *context
 			 obs_debug_ns_to_ms(context->msg_peek_worst_ns));
 	}
 
-	blog(LOG_INFO,
-	     "[render-debug] %s: total %.1f" NBSP
-	     "ms -- " RENDER_DEBUG_SEGMENTS(RENDER_DEBUG_SEGMENT_FMT) "residual %.1f" NBSP "ms; prev tail %.1f" NBSP
-								      "ms%s%s",
-	     head, obs_debug_ns_to_ms(span_ns) RENDER_DEBUG_SEGMENTS(RENDER_DEBUG_SEGMENT_ARG),
-	     obs_debug_ns_to_ms(residual), obs_debug_ns_to_ms(context->seg_tail_ns), acquirer, pump);
+	obs_debug_logf(LOG_INFO,
+		       "[render-debug] %s: total %.1f" NBSP
+		       "ms -- " RENDER_DEBUG_SEGMENTS(RENDER_DEBUG_SEGMENT_FMT) "residual %.1f" NBSP
+										"ms; prev tail %.1f" NBSP "ms%s%s",
+		       head, obs_debug_ns_to_ms(span_ns) RENDER_DEBUG_SEGMENTS(RENDER_DEBUG_SEGMENT_ARG),
+		       obs_debug_ns_to_ms(residual), obs_debug_ns_to_ms(context->seg_tail_ns), acquirer, pump);
 }
 
 /* Whether the early-warning line may emit now. Counts what it turns away so the
@@ -1688,8 +1693,9 @@ static bool debug_warn_allowed(struct obs_graphics_context *context, uint64_t no
  * already gone, otherwise a single overlong segment as an early warning. The
  * miss line is never rate limited -- those are rare and losing one costs more
  * than emitting it. The residual and the tail are excluded from the warning
- * trigger because both carry this diagnostic's own logging cost, so warning on
- * them would be self-sustaining; both are still printed on every line. */
+ * trigger because neither is a segment of the frame's work -- they carry this
+ * diagnostic's own bookkeeping, so triggering on them would report the observer
+ * rather than the frame; both are still printed on every line. */
 static void debug_check_frame(struct obs_graphics_context *context, uint32_t lost_frames, uint64_t span_ns,
 			      uint64_t now_ns)
 {

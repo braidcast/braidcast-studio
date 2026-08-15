@@ -828,7 +828,13 @@ EXPORT gs_texture_t *obs_get_main_texture(void);
 
 /** Enables/disables graphics-thread frame timing and its CPU-side per-source
  * accounting. Off by default and zero-cost when off; safe to call before obs is
- * initialized. */
+ * initialized.
+ *
+ * Not safe to call concurrently with itself. It starts and stops the thread that
+ * drains the diagnostic log ring, and that pair is not reentrant: two threads
+ * arming and disarming at once can hang on a join or leave two drains sharing
+ * one non-atomic read cursor. Serialize it -- one thread, or a lock of your
+ * own. Disarming also blocks while the ring drains (see obs_debug_log_stop). */
 EXPORT void obs_set_render_debug(bool enabled);
 
 /** Enables/disables the GPU timer queries behind the render diagnostics. Split

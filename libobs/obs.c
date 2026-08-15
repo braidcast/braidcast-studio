@@ -22,6 +22,7 @@
 
 #include "obs.h"
 #include "obs-internal.h"
+#include "obs-debug-log.h"
 #include "util/source-profiler.h"
 
 struct obs_core *obs = NULL;
@@ -760,6 +761,16 @@ static int obs_init_video(struct obs_video_info *ovi)
 		return OBS_VIDEO_FAIL;
 	}
 
+	/* obs_reset_video reaches here through stop_video, which stops the ring
+	 * unconditionally as its shutdown backstop. Without this the diagnostic
+	 * would survive a video reset with its flag still set but its ring down,
+	 * putting every emitter on the synchronous fallback for the rest of the
+	 * session -- the exact failure the ring exists to prevent. Idempotent, and a
+	 * no-op in the ordinary case where the flag is clear. */
+	if (os_atomic_load_bool(&obs->video.render_debug)) {
+		obs_debug_log_start();
+	}
+
 	int errorcode;
 #ifdef __APPLE__
 	pthread_attr_t attr;
@@ -796,6 +807,18 @@ static void stop_video(void)
 		pthread_join(video->video_thread, &thread_retval);
 		video->thread_initialized = false;
 	}
+
+	/* The backstop for the drain thread, and the only one that runs on the
+	 * teardown path: obs_set_render_debug stops the ring when the flag is
+	 * lowered, but nothing lowers it at shutdown, so a session that armed the
+	 * diagnostic and quit would otherwise reach obs_shutdown with the drain
+	 * still looping and outlive the log handler it writes into. Idempotent, so
+	 * it costs nothing when the flag was already cleared, and it belongs here
+	 * rather than in a frontend that has to remember to disarm.
+	 *
+	 * After the join, so the last diagnostic the graphics thread queued is
+	 * still drained and nothing can queue behind it. */
+	obs_debug_log_stop();
 }
 
 static void obs_free_render_textures(struct obs_core_video_mix *video)
@@ -2431,8 +2454,26 @@ void obs_set_render_debug(bool enabled)
 		obs->video.debug_last_lagged_frames = obs->video.lagged_frames_raw;
 	}
 
+	/* The drain thread's lifetime tracks the flag, so an install that never
+	 * arms this diagnostic never pays for a thread that wakes 50 times a second
+	 * to poll a ring nothing writes to. Raised before the flag and lowered after
+	 * it, so the ring is up across every window a gated emitter can run in.
+	 *
+	 * Two emitters in obs-video.c are not gated on this flag -- the pipeline
+	 * settle line and the graphics thread's window probe -- so they can reach
+	 * obs_debug_logf with the ring down. They take its blog() fallback by
+	 * design: that is what the fallback is for, and each fires once a session,
+	 * which is a far smaller price than the always-on thread. */
+	if (enabled) {
+		obs_debug_log_start();
+	}
+
 	os_atomic_set_bool(&obs->video.render_debug, enabled);
 	source_profiler_enable(enabled);
+
+	if (!enabled) {
+		obs_debug_log_stop();
+	}
 }
 
 void obs_set_render_gpu_debug(bool enabled)

@@ -49,9 +49,11 @@ void SetDebugMask(CatMask mask)
 {
 	g_debugMask.store(mask, std::memory_order_relaxed);
 	// Flip render-thread frame timing on ONLY when the render category is set.
-	// This is the single seam the boot seed, the live diagnostics.setDebug toggle,
-	// and a filtered env spec all funnel through; both calls no-op safely before obs
-	// startup. Gated on LogCat::Render (not the coarse any-category gate) so the
+	// This is the seam the live diagnostics.setDebug toggle and a filtered env spec
+	// funnel through. It is not the only caller: obs_bootstrap.cpp calls
+	// obs_set_render_debug directly after obs_startup, because the boot seed reaches
+	// here while obs is still NULL and both calls below no-op in that state. Gated
+	// on LogCat::Render (not the coarse any-category gate) so the
 	// binary debug toggle doesn't flood the log with per-frame [render-debug] lines;
 	// opt in with BRAIDCAST_DEBUG=1 BRAIDCAST_DEBUG_COMPONENTS=render (the master is
 	// mandatory; a falsy BRAIDCAST_DEBUG yields an empty set before components parse).
