@@ -10,6 +10,7 @@
 // otherwise drag in the graphics headers, whose nameless-union warnings are
 // -Werror in the frontend target. Links against libobs's C export.
 extern "C" void obs_set_render_debug(bool enabled);
+extern "C" void obs_set_render_gpu_debug(bool enabled);
 
 namespace {
 // The single process-wide DEBUG gate, one bit per LogCat. Default OFF (no bits):
@@ -47,13 +48,20 @@ CatMask DebugMask()
 void SetDebugMask(CatMask mask)
 {
 	g_debugMask.store(mask, std::memory_order_relaxed);
-	// Flip render-thread composite timing on ONLY when the render category is set.
+	// Flip render-thread frame timing on ONLY when the render category is set.
 	// This is the single seam the boot seed, the live diagnostics.setDebug toggle,
-	// and a filtered env spec all funnel through; obs_set_render_debug no-ops safely
-	// before obs startup. Gated on LogCat::Render (not the coarse any-category gate)
-	// so the binary debug toggle doesn't flood the log with per-frame [render-debug]
-	// lines; opt in with BRAIDCAST_DEBUG=render.
+	// and a filtered env spec all funnel through; both calls no-op safely before obs
+	// startup. Gated on LogCat::Render (not the coarse any-category gate) so the
+	// binary debug toggle doesn't flood the log with per-frame [render-debug] lines;
+	// opt in with BRAIDCAST_DEBUG=1 BRAIDCAST_DEBUG_COMPONENTS=render (the master is
+	// mandatory; a falsy BRAIDCAST_DEBUG yields an empty set before components parse).
 	obs_set_render_debug((mask & CatBit(LogCat::Render)) != 0);
+
+	// GPU timer queries are a separate opt-in on top: their per-frame readback runs
+	// on the graphics thread, so leaving them off is what makes a control run
+	// possible while the frame timing above is on. Must follow the call above --
+	// source_profiler_gpu_enable ANDs against the CPU-side enable it sets.
+	obs_set_render_gpu_debug((mask & CatBit(LogCat::RenderGpu)) != 0);
 }
 
 void SetDebug(bool enabled)

@@ -14,11 +14,18 @@
 // category is one line here.
 // keep in sync with frontend/web/src/lib/utils/logCategories.ts
 //
-// Render is a GATE-ONLY category: nothing emits a "[render]" line -- it exists
-// solely to toggle libobs's per-frame render-thread timing (obs_set_render_debug,
-// tagged "[render-debug]"), a firehose that would otherwise flood the log. It is
-// excluded from kDefaultCats, so the binary debug toggle never enables it; opt in
-// explicitly with BRAIDCAST_DEBUG=render.
+// Render and RenderGpu are GATE-ONLY categories: nothing emits a "[render]" or
+// "[rendergpu]" line. Render toggles libobs's per-frame render-thread timing
+// (obs_set_render_debug, tagged "[render-debug]"), a firehose that would
+// otherwise flood the log. RenderGpu separately toggles the GPU timer queries
+// behind those diagnostics (obs_set_render_gpu_debug) -- split out because the
+// per-frame query readback happens on the graphics thread and is itself a
+// suspect for the stalls the timing exists to find, so the timing has to be
+// observable without it. Both are excluded from kDefaultCats, so the binary
+// debug toggle never enables either; opt in explicitly with the two-var scheme,
+// BRAIDCAST_DEBUG=1 BRAIDCAST_DEBUG_COMPONENTS=render (optionally
+// ",rendergpu"). The master is mandatory: a falsy BRAIDCAST_DEBUG yields an
+// empty category set before components are parsed at all.
 #define BRAIDCAST_LOG_CATEGORIES(X) \
 	X(Lifecycle, "lifecycle")   \
 	X(Bridge, "bridge")         \
@@ -36,7 +43,8 @@
 	X(Mcp, "mcp")               \
 	X(Net, "net")               \
 	X(Cef, "cef")               \
-	X(Render, "render")
+	X(Render, "render")         \
+	X(RenderGpu, "rendergpu")
 
 enum class LogCat {
 #define BRAIDCAST_LOG_CAT_ENUM(sym, name) sym,
@@ -101,11 +109,13 @@ constexpr CatMask CatBit(LogCat cat)
 
 inline constexpr CatMask kNoCats = 0;
 inline constexpr CatMask kAllCats = (CatMask{1} << kLogCatCount) - 1;
-// Every category EXCEPT the render-thread firehose. The binary debug toggle
+// Every category EXCEPT the two render-thread gates. The binary debug toggle
 // (SetDebug / diagnostics.setDebug) and the "all"/"on"/"true" spec map to this, so
-// enabling debug never floods the per-frame [render-debug] timing -- opt into that
-// explicitly with BRAIDCAST_DEBUG=render.
-inline constexpr CatMask kDefaultCats = kAllCats & ~CatBit(LogCat::Render);
+// enabling debug never floods the per-frame [render-debug] timing nor arms GPU
+// timer queries -- opt into those explicitly with
+// BRAIDCAST_DEBUG=1 BRAIDCAST_DEBUG_COMPONENTS=render / rendergpu (the master
+// is mandatory; without it no component is parsed).
+inline constexpr CatMask kDefaultCats = kAllCats & ~CatBit(LogCat::Render) & ~CatBit(LogCat::RenderGpu);
 
 // Whether any category is on. The coarse gate: what diagnostics.get reports and
 // what the web logger mirrors, since the per-category filter is applied

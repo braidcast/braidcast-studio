@@ -5,6 +5,7 @@
 #include <obs-frontend-internal.hpp>
 #include <util/base.h>
 #include <util/platform.h>
+#include <util/profiler.h>
 
 #include <graphics/matrix4.h>
 #include <graphics/vec2.h>
@@ -123,6 +124,11 @@ bool ParseBool(const std::string &raw)
 // Whether the gpudiag sampler was requested via BRAIDCAST_DEBUG_COMPONENTS;
 // resolved once in Start() and read back by ObsBootstrap::GpuDiagRequested().
 bool g_gpuDiagRequested = false;
+
+// Whether Start() turned the OBS profiler on, so Stop() knows to dump and free
+// it. Decided once at boot: the profiler is process-global and taxes every
+// profiled thread, so the runtime render-debug toggle does not move it.
+bool g_profilerStarted = false;
 
 // Resolve the two-var debug scheme into the applied config. The master
 // BRAIDCAST_DEBUG (env -> .env -> persisted DiagnosticsSettings.debugLogging ->
@@ -1049,6 +1055,32 @@ bool ObsBootstrap::Start()
 	DBG(LogCat::Lifecycle, "bootstrap start (debug categories=0x%x gpudiag=%d)", (unsigned)Log::DebugMask(),
 	    dbg.gpuDiag ? 1 : 0);
 
+	// One derivation of the boot-time render-debug state, shared with the
+	// obs_set_render_debug call below so the two cannot drift apart at startup.
+	// Nothing between here and there touches the debug mask. The runtime
+	// diagnostics.setDebug toggle can still move the log gate afterwards without
+	// moving the profiler; see g_profilerStarted.
+	const bool renderDebug = Log::DebugEnabled(LogCat::Render);
+	const bool renderGpuDebug = Log::DebugEnabled(LogCat::RenderGpu);
+
+	// Arm the OBS profiler ahead of obs_startup so its own startup and module-load
+	// nodes are captured. Opt in with the render category
+	// (BRAIDCAST_DEBUG=1 BRAIDCAST_DEBUG_COMPONENTS=render), so an ordinary run
+	// pays nothing.
+	g_profilerStarted = renderDebug;
+	if (g_profilerStarted) {
+		profiler_start();
+		HostLog("[obs] profiler started");
+	}
+
+	// Nothing frees the profiler when Start() bails, deliberately. main.cpp reaches
+	// Teardown() with g_obsStarted false, so Stop() -- and with it obs_shutdown --
+	// never runs, and the graphics thread obs_reset_video created below is still
+	// calling profile_start/profile_end. profiler_free() ends by destroying a
+	// statically initialized root mutex that is never re-initialized, so freeing
+	// here would race that thread into a use-after-destroy. Leaking the roots as
+	// the process exits is strictly safer than the alternative.
+
 	if (!obs_startup("en-US", nullptr, nullptr)) {
 		HostLog("[obs] obs_startup failed");
 		return false;
@@ -1082,7 +1114,8 @@ bool ObsBootstrap::Start()
 
 	// Re-apply the seeded DEBUG gate now that obs exists: the boot seed above ran
 	// through Log::SetDebug before obs_startup, when obs_set_render_debug no-ops.
-	obs_set_render_debug(Log::DebugEnabled());
+	obs_set_render_debug(renderDebug);
+	obs_set_render_gpu_debug(renderGpuDebug);
 
 	obs_audio_info oai = {};
 	oai.samples_per_sec = 48000;
@@ -4164,7 +4197,27 @@ void ObsBootstrap::Stop(void (*drainCefTasks)())
 	g_sceneCollections.Clear();
 	g_undo.Clear();
 
+	// Dump the profiler tree while libobs is still up: a snapshot borrows the node
+	// name pointers rather than copying them, and the name store most of them live
+	// in is freed by obs_shutdown. Stop first so the tree stops growing under the
+	// snapshot.
+	if (g_profilerStarted) {
+		profiler_stop();
+		profiler_snapshot_t *snap = profile_snapshot_create();
+		profiler_print(snap);
+		profile_snapshot_free(snap);
+	}
+
 	obs_shutdown();
+
+	// After obs_shutdown: profiler_free destroys the profiler's root mutex, so it
+	// must not run while the graphics and audio threads (joined above) can still
+	// profile. Before the leak count, so the profiler's own allocations are not
+	// reported as outstanding.
+	if (g_profilerStarted) {
+		profiler_free();
+		g_profilerStarted = false;
+	}
 
 	// Self-gates on OBS_TRACK_ALLOCS=1; a no-op otherwise. Dumps symbolized
 	// stacks for every still-outstanding allocation before the count below.

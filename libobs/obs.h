@@ -826,9 +826,17 @@ EXPORT void obs_render_canvas_texture_src_color_only(obs_canvas_t *canvas);
  * is unavailable. */
 EXPORT gs_texture_t *obs_get_main_texture(void);
 
-/** Enables/disables per-mix and per-source composite render timing. Off by
- * default and zero-cost when off; safe to call before obs is initialized. */
+/** Enables/disables graphics-thread frame timing and its CPU-side per-source
+ * accounting. Off by default and zero-cost when off; safe to call before obs is
+ * initialized. */
 EXPORT void obs_set_render_debug(bool enabled);
+
+/** Enables/disables the GPU timer queries behind the render diagnostics. Split
+ * from obs_set_render_debug because the per-frame query readback is itself a
+ * plausible source of graphics-thread stalls, so the frame timing has to be
+ * observable without it. Has no effect unless obs_set_render_debug is also on,
+ * and must be called after it to take effect. */
+EXPORT void obs_set_render_gpu_debug(bool enabled);
 
 /** Saves a source to settings data */
 EXPORT obs_data_t *obs_save_source(obs_source_t *source);

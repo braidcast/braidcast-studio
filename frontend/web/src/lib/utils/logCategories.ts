@@ -24,6 +24,11 @@ export const Cat = {
   // Gate-only: toggles libobs's per-frame render-thread timing ([render-debug]) on
   // the host; excluded from the blanket debug toggle. No web log.dbg uses it.
   render: "render",
+  // Gate-only: toggles the GPU timer queries behind those diagnostics on the host.
+  // Separate from render because the per-frame query readback runs on the graphics
+  // thread and can itself cause the stalls that timing exists to find. Excluded
+  // from the blanket debug toggle. No web log.dbg uses it.
+  rendergpu: "rendergpu",
 } as const;
 
 export type LogCategory = (typeof Cat)[keyof typeof Cat];

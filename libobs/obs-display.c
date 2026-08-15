@@ -63,8 +63,10 @@ bool obs_display_init(struct obs_display *display, const struct gs_init_data *gr
 obs_display_t *obs_display_create(const struct gs_init_data *graphics_data, uint32_t background_color)
 {
 	struct obs_display *display = bzalloc(sizeof(struct obs_display));
+	const uint64_t start_ns = os_gettime_ns();
 
 	gs_enter_context(obs->video.graphics);
+	obs_note_graphics_acquire(OBS_GRAPHICS_ACQUIRER_DISPLAY_CREATE);
 
 	display->background_color = background_color;
 
@@ -76,12 +78,19 @@ obs_display_t *obs_display_create(const struct gs_init_data *graphics_data, uint
 		display->prev_next = &obs->data.first_display;
 		display->next = obs->data.first_display;
 		obs->data.first_display = display;
-		if (display->next)
+		if (display->next) {
 			display->next->prev_next = &display->next;
+		}
 		pthread_mutex_unlock(&obs->data.displays_mutex);
 	}
 
 	gs_leave_context();
+	obs_note_graphics_release();
+
+	if (display && os_atomic_load_bool(&obs->video.render_debug)) {
+		blog(LOG_INFO, "[render-debug] display created: %ux%u in %.1f" NBSP "ms", display->cx, display->cy,
+		     obs_debug_ns_to_ms(os_gettime_ns() - start_ns));
+	}
 
 	return display;
 }
@@ -101,11 +110,17 @@ void obs_display_free(obs_display_t *display)
 void obs_display_destroy(obs_display_t *display)
 {
 	if (display) {
+		if (os_atomic_load_bool(&obs->video.render_debug)) {
+			blog(LOG_INFO, "[render-debug] display destroyed: %ux%u", display->cx, display->cy);
+		}
+
 		pthread_mutex_lock(&obs->data.displays_mutex);
-		if (display->prev_next)
+		if (display->prev_next) {
 			*display->prev_next = display->next;
-		if (display->next)
+		}
+		if (display->next) {
 			display->next->prev_next = display->prev_next;
+		}
 		pthread_mutex_unlock(&obs->data.displays_mutex);
 
 		obs_enter_graphics();
@@ -118,21 +133,30 @@ void obs_display_destroy(obs_display_t *display)
 
 void obs_display_resize(obs_display_t *display, uint32_t cx, uint32_t cy)
 {
-	if (!display)
+	if (!display) {
 		return;
+	}
 
 	pthread_mutex_lock(&display->draw_info_mutex);
+
+	const uint32_t prev_cx = display->next_cx;
+	const uint32_t prev_cy = display->next_cy;
 
 	display->next_cx = cx;
 	display->next_cy = cy;
 
 	pthread_mutex_unlock(&display->draw_info_mutex);
+
+	if (os_atomic_load_bool(&obs->video.render_debug)) {
+		blog(LOG_INFO, "[render-debug] display resized: %ux%u -> %ux%u", prev_cx, prev_cy, cx, cy);
+	}
 }
 
 void obs_display_update_color_space(obs_display_t *display)
 {
-	if (!display)
+	if (!display) {
 		return;
+	}
 
 	pthread_mutex_lock(&display->draw_info_mutex);
 
@@ -144,8 +168,9 @@ void obs_display_update_color_space(obs_display_t *display)
 void obs_display_add_draw_callback(obs_display_t *display, void (*draw)(void *param, uint32_t cx, uint32_t cy),
 				   void *param)
 {
-	if (!display)
+	if (!display) {
 		return;
+	}
 
 	struct draw_callback data = {draw, param};
 
@@ -157,8 +182,9 @@ void obs_display_add_draw_callback(obs_display_t *display, void (*draw)(void *pa
 void obs_display_remove_draw_callback(obs_display_t *display, void (*draw)(void *param, uint32_t cx, uint32_t cy),
 				      void *param)
 {
-	if (!display)
+	if (!display) {
 		return;
+	}
 
 	struct draw_callback data = {draw, param};
 
@@ -197,18 +223,20 @@ static inline bool render_display_begin(struct obs_display *display, uint32_t cx
 #if defined(__APPLE__) && defined(__aarch64__)
 		vec4_from_rgba_srgb(&clear_color, display->background_color);
 #else
-		if (gs_get_color_space() == GS_CS_SRGB)
+		if (gs_get_color_space() == GS_CS_SRGB) {
 			vec4_from_rgba(&clear_color, display->background_color);
-		else
+		} else {
 			vec4_from_rgba_srgb(&clear_color, display->background_color);
+		}
 #endif
 		clear_color.w = 1.0f;
 
 		const bool use_clear_workaround = display->use_clear_workaround;
 
 		uint32_t clear_flags = GS_CLEAR_DEPTH | GS_CLEAR_STENCIL;
-		if (!use_clear_workaround)
+		if (!use_clear_workaround) {
 			clear_flags |= GS_CLEAR_COLOR;
+		}
 		gs_clear(clear_flags, &clear_color, 1.0f, 0);
 
 		gs_enable_depth_test(false);
@@ -221,8 +249,9 @@ static inline bool render_display_begin(struct obs_display *display, uint32_t cx
 		if (use_clear_workaround) {
 			gs_effect_t *const solid_effect = obs->video.solid_effect;
 			gs_effect_set_vec4(gs_effect_get_param_by_name(solid_effect, "color"), &clear_color);
-			while (gs_effect_loop(solid_effect, "Solid"))
+			while (gs_effect_loop(solid_effect, "Solid")) {
 				gs_draw_sprite(NULL, 0, cx, cy);
+			}
 		}
 	}
 
@@ -239,8 +268,9 @@ void render_display(struct obs_display *display)
 	uint32_t cx, cy;
 	bool update_color_space;
 
-	if (!display || !display->enabled)
+	if (!display || !display->enabled) {
 		return;
+	}
 
 	/* -------------------------------------------- */
 
@@ -280,8 +310,9 @@ void render_display(struct obs_display *display)
 
 void obs_display_set_enabled(obs_display_t *display, bool enable)
 {
-	if (display)
+	if (display) {
 		display->enabled = enable;
+	}
 }
 
 bool obs_display_enabled(obs_display_t *display)
@@ -291,8 +322,9 @@ bool obs_display_enabled(obs_display_t *display)
 
 void obs_display_set_background_color(obs_display_t *display, uint32_t color)
 {
-	if (display)
+	if (display) {
 		display->background_color = color;
+	}
 }
 
 void obs_display_size(obs_display_t *display, uint32_t *width, uint32_t *height)

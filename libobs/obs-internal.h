@@ -46,6 +46,9 @@
 #define HASH_FIND_UUID(head, uuid, out) HASH_FIND(hh_uuid, head, uuid, UUID_STR_LENGTH, out)
 #define HASH_ADD_UUID(head, uuid_field, add) HASH_ADD(hh_uuid, head, uuid_field[0], UUID_STR_LENGTH, add)
 
+/* U+00A0, so a value and its unit never wrap apart in a log line. */
+#define NBSP "\xC2\xA0"
+
 #define NUM_TEXTURES 2
 #define NUM_CHANNELS 3
 #define MICROSECOND_DEN 1000000
@@ -398,6 +401,33 @@ struct obs_core_video_mix {
 extern struct obs_core_video_mix *obs_create_video_mix(struct obs_video_info *ovi);
 extern void obs_free_video_mix(struct obs_core_video_mix *video);
 
+/* The graphics-context acquisition sites that are instrumented, NOT every such
+ * site: everything outside libobs arrives through obs_enter_graphics, and these
+ * are the libobs paths that take the context directly and can run during a
+ * steady-state session. Uninstrumented paths (the obs.c init/reset routines,
+ * source-profiler.c) report as OBS_GRAPHICS_ACQUIRER_NONE. */
+enum obs_graphics_acquirer {
+	OBS_GRAPHICS_ACQUIRER_NONE,
+	OBS_GRAPHICS_ACQUIRER_ENTER_GRAPHICS,
+	OBS_GRAPHICS_ACQUIRER_DISPLAY_CREATE,
+	OBS_GRAPHICS_ACQUIRER_SOURCE_TEARDOWN,
+	OBS_GRAPHICS_ACQUIRER_ASYNC_TEXTURE,
+};
+
+/* Call immediately AFTER gs_enter_context returns, never before it: recording
+ * intent rather than possession makes a thread that is still blocked overwrite
+ * the record of the thread actually holding the context, naming the victim
+ * instead of the culprit. Pair with obs_note_graphics_release after
+ * gs_leave_context. */
+extern void obs_note_graphics_acquire(enum obs_graphics_acquirer who);
+extern void obs_note_graphics_release(void);
+extern const char *obs_last_graphics_acquirer(uint32_t *age_ms, bool *held);
+
+static inline double obs_debug_ns_to_ms(uint64_t ns)
+{
+	return (double)ns / 1000000.0;
+}
+
 struct obs_core_video {
 	graphics_t *graphics;
 	gs_effect_t *default_effect;
@@ -429,9 +459,23 @@ struct obs_core_video {
 	 * debug_last_lagged_frames is the lagged_frames value the previous
 	 * rollup reported against, giving each rollup a per-window delta. */
 	volatile bool render_debug;
+	/* GPU timer queries, split from render_debug so the frame timing above
+	 * can run without the per-frame query readback it would otherwise pay
+	 * for (see obs_set_render_gpu_debug). Only read while render_debug. */
+	volatile bool render_gpu_debug;
 	gs_timer_range_t *debug_composite_ranges[NUM_TEXTURES];
 	uint8_t debug_composite_range_idx;
 	uint32_t debug_last_lagged_frames;
+
+	/* Last graphics-context acquisition from a thread other than the
+	 * graphics thread (see obs_note_graphics_acquire). debug_acquirer is an
+	 * enum obs_graphics_acquirer; debug_acquire_time_ms is a millisecond
+	 * clock truncated to 32 bits, differenced as unsigned so it stays
+	 * correct across a wrap, and holds the acquire time while
+	 * debug_acquirer_held is set and the release time once it clears. */
+	volatile long debug_acquirer;
+	volatile long debug_acquire_time_ms;
+	volatile bool debug_acquirer_held;
 
 	gs_texture_t *transparent_texture;
 
@@ -609,6 +653,31 @@ struct obs_graphics_context {
 	uint64_t fps_total_ns;
 	uint32_t fps_total_frames;
 	const char *video_thread_name;
+
+	/* Per-segment timing of the last graphics-thread iteration, plus the
+	 * lagged_frames value it started from, so the loop can tell whether the
+	 * frame it just measured is the one that overran. The eight seg_* fields
+	 * tile the iteration up to video_sleep; whatever they miss is reported
+	 * as a residual. seg_tail_ns is the PREVIOUS iteration's post-sleep work
+	 * (the rollup, stop_requested and this diagnostic's own logging), which
+	 * lands inside the current frame's deadline rather than the one that
+	 * produced it. */
+	uint64_t seg_active_ns;
+	uint64_t seg_enter_ns;
+	uint64_t seg_tick_ns;
+	uint64_t seg_msg_ns;
+	uint64_t seg_output_ns;
+	uint64_t seg_displays_ns;
+	uint64_t seg_tasks_ns;
+	uint64_t seg_collect_ns;
+	uint64_t seg_tail_ns;
+	uint32_t last_lagged_frames;
+
+	/* Rate limit for the early-warning line, which unlike the on-miss line
+	 * can otherwise fire every frame indefinitely. */
+	uint64_t warn_window_start_ns;
+	uint32_t warn_in_window;
+	uint32_t warn_suppressed;
 };
 
 extern void *obs_graphics_thread(void *param);

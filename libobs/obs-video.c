@@ -958,7 +958,7 @@ static const char *output_frame_render_video_name = "render_video";
 static const char *output_frame_download_frame_name = "download_frame";
 static const char *output_frame_gs_flush_name = "gs_flush";
 static const char *output_frame_output_video_data_name = "output_video_data";
-static inline void output_frame(struct obs_core_video_mix *video, bool debug, uint8_t debug_slot)
+static inline void output_frame(struct obs_core_video_mix *video, bool debug, bool gpu_debug, uint8_t debug_slot)
 {
 	const bool raw_active = video->raw_was_active;
 	const bool gpu_active = video->gpu_was_active;
@@ -977,6 +977,8 @@ static inline void output_frame(struct obs_core_video_mix *video, bool debug, ui
 	gs_timer_t *debug_timer = NULL;
 	if (debug) {
 		debug_cpu_start = os_gettime_ns();
+	}
+	if (gpu_debug) {
 		debug_timer = gs_timer_create();
 		gs_timer_begin(debug_timer);
 	}
@@ -987,14 +989,18 @@ static inline void output_frame(struct obs_core_video_mix *video, bool debug, ui
 	GS_DEBUG_MARKER_END();
 	profile_end(output_frame_render_video_name);
 
-	if (debug) {
+	if (gpu_debug) {
 		gs_timer_end(debug_timer);
+	}
+	if (debug) {
 		const uint64_t debug_cpu_ns = os_gettime_ns() - debug_cpu_start;
 		video->debug_composite_cpu_accum += debug_cpu_ns;
 		video->debug_composite_cpu_count++;
 		if (debug_cpu_ns > video->debug_composite_cpu_max) {
 			video->debug_composite_cpu_max = debug_cpu_ns;
 		}
+	}
+	if (gpu_debug) {
 		if (video->debug_composite_timers[debug_slot]) {
 			gs_timer_destroy(video->debug_composite_timers[debug_slot]);
 		}
@@ -1034,8 +1040,9 @@ static inline void output_frames(void)
 	pthread_mutex_lock(&obs->video.mixes_mutex);
 
 	const bool debug = os_atomic_load_bool(&obs->video.render_debug);
+	const bool gpu_debug = debug && os_atomic_load_bool(&obs->video.render_gpu_debug);
 	uint8_t debug_slot = 0;
-	if (debug) {
+	if (gpu_debug) {
 		obs->video.debug_composite_range_idx = (obs->video.debug_composite_range_idx + 1) % NUM_TEXTURES;
 		debug_slot = obs->video.debug_composite_range_idx;
 		debug_resolve_composite_gpu(debug_slot);
@@ -1045,7 +1052,7 @@ static inline void output_frames(void)
 	for (size_t i = 0, num = obs->video.mixes.num; i < num; i++) {
 		struct obs_core_video_mix *mix = obs->video.mixes.array[i];
 		if (mix->view) {
-			output_frame(mix, debug, debug_slot);
+			output_frame(mix, debug, gpu_debug, debug_slot);
 		} else {
 			obs->video.mixes.array[i] = NULL;
 			obs_free_video_mix(mix);
@@ -1055,14 +1062,12 @@ static inline void output_frames(void)
 		}
 	}
 
-	if (debug) {
+	if (gpu_debug) {
 		debug_composite_range_end(debug_slot);
 	}
 
 	pthread_mutex_unlock(&obs->video.mixes_mutex);
 }
-
-#define NBSP "\xC2\xA0"
 
 static void clear_base_frame_data(struct obs_core_video_mix *video)
 {
@@ -1085,21 +1090,118 @@ static void clear_gpu_frame_data(struct obs_core_video_mix *video)
 
 extern THREAD_LOCAL bool is_graphics_thread;
 
-static void execute_graphics_tasks(void)
+/* A single graphics task running this long is a candidate explanation for a
+ * missed frame, since it runs inline on the graphics thread. */
+#define RENDER_DEBUG_TASK_WARN_NS 2000000ULL
+
+/* Share of one frame's budget a single segment must eat to be reported as the
+ * precursor to a miss. Derived from the configured interval rather than fixed,
+ * so it does not fire every frame at a lower frame rate. */
+#define RENDER_DEBUG_SEGMENT_WARN_PCT 50
+
+/* Ceiling on the early-warning line, which unlike the on-miss line can repeat
+ * every frame. blog() on this thread is a synchronous flushed file write, so an
+ * ungoverned warning delays the next frame enough to cause the miss it then
+ * reports. Suppressed lines are counted and disclosed, never silently dropped. */
+#define RENDER_DEBUG_WARN_WINDOW_NS 1000000000ULL
+#define RENDER_DEBUG_WARN_MAX_PER_WINDOW 2
+
+/* Indexed by enum obs_graphics_acquirer; order must match. */
+static const char *const graphics_acquirer_names[] = {"nobody", "obs_enter_graphics", "obs_display_create",
+						      "source teardown", "async texture resize"};
+
+static inline uint32_t debug_now_ms(void)
+{
+	return (uint32_t)(os_gettime_ns() / 1000000ULL);
+}
+
+/* Best-effort record of who holds, or last held, the graphics context away from
+ * the graphics thread, so a stalled enter segment can name the obstruction.
+ * Written by arbitrary threads and read by the graphics thread with no
+ * synchronization across the fields, so a read can pair an acquirer with a
+ * mismatched time; that skew is acceptable for a diagnostic.
+ *
+ * The acquirer is stored as an index into graphics_acquirer_names rather than as
+ * a pointer, because there are no pointer-width atomics here and every value the
+ * index resolves to is a string literal that outlives the process. A stale or
+ * racing read therefore cannot hand the graphics thread a dangling pointer,
+ * which would be a far worse failure than the lag being investigated. */
+void obs_note_graphics_acquire(enum obs_graphics_acquirer who)
+{
+	if (!obs || is_graphics_thread) {
+		return;
+	}
+
+	os_atomic_set_long(&obs->video.debug_acquirer, (long)who);
+	os_atomic_set_long(&obs->video.debug_acquire_time_ms, (long)debug_now_ms());
+	os_atomic_set_bool(&obs->video.debug_acquirer_held, true);
+}
+
+void obs_note_graphics_release(void)
+{
+	/* gs_enter_context is recursive, and only the outermost leave actually
+	 * drops the lock -- which is exactly when gs_get_context goes NULL. */
+	if (!obs || is_graphics_thread || gs_get_context()) {
+		return;
+	}
+
+	os_atomic_set_long(&obs->video.debug_acquire_time_ms, (long)debug_now_ms());
+	os_atomic_set_bool(&obs->video.debug_acquirer_held, false);
+}
+
+const char *obs_last_graphics_acquirer(uint32_t *age_ms, bool *held)
+{
+	const long idx = os_atomic_load_long(&obs->video.debug_acquirer);
+	const uint32_t then_ms = (uint32_t)os_atomic_load_long(&obs->video.debug_acquire_time_ms);
+
+	*held = os_atomic_load_bool(&obs->video.debug_acquirer_held);
+	*age_ms = debug_now_ms() - then_ms;
+
+	if (idx < 0 || (size_t)idx >= sizeof(graphics_acquirer_names) / sizeof(graphics_acquirer_names[0])) {
+		return graphics_acquirer_names[OBS_GRAPHICS_ACQUIRER_NONE];
+	}
+
+	return graphics_acquirer_names[idx];
+}
+
+/* Returns the time spent logging slow tasks, so the caller can keep this
+ * diagnostic's own cost out of the tasks segment it reports. */
+static uint64_t execute_graphics_tasks(void)
 {
 	struct obs_core_video *video = &obs->video;
 	bool tasks_remaining = true;
+	uint64_t log_ns = 0;
 
 	while (tasks_remaining) {
+		obs_task_t slow_task = NULL;
+		uint64_t slow_ns = 0;
+
 		pthread_mutex_lock(&video->task_mutex);
 		if (video->tasks.size) {
 			struct obs_task_info info;
 			deque_pop_front(&video->tasks, &info, sizeof(info));
+
+			const uint64_t task_start = os_gettime_ns();
 			info.task(info.param);
+			const uint64_t task_ns = os_gettime_ns() - task_start;
+
+			if (task_ns >= RENDER_DEBUG_TASK_WARN_NS) {
+				slow_task = info.task;
+				slow_ns = task_ns;
+			}
 		}
 		tasks_remaining = !!video->tasks.size;
 		pthread_mutex_unlock(&video->task_mutex);
+
+		if (slow_task && os_atomic_load_bool(&video->render_debug)) {
+			const uint64_t log_start = os_gettime_ns();
+			blog(LOG_INFO, "[render-debug] graphics task %p took %.1f" NBSP "ms",
+			     (void *)(uintptr_t)slow_task, obs_debug_ns_to_ms(slow_ns));
+			log_ns += os_gettime_ns() - log_start;
+		}
 	}
+
+	return log_ns;
 }
 
 #ifdef _WIN32
@@ -1183,6 +1285,11 @@ static void uninit_winrt_state(struct winrt_state *winrt)
 static const char *tick_sources_name = "tick_sources";
 static const char *render_displays_name = "render_displays";
 static const char *output_frame_name = "output_frame";
+static const char *enter_context_name = "enter_context";
+static const char *graphics_tasks_name = "graphics_tasks";
+#ifdef _WIN32
+static const char *message_loop_name = "message_loop";
+#endif
 static inline void update_active_state(struct obs_core_video_mix *video)
 {
 	const bool raw_was_active = video->raw_was_active;
@@ -1238,8 +1345,13 @@ static bool debug_emit_source_stats_cb(void *param, obs_source_t *source)
 
 	struct profiler_result res;
 	if (source_profiler_fill_result(source, &res) && (res.render_sum || res.render_gpu_sum)) {
-		blog(LOG_INFO, "[render-debug]   source '%s': render CPU %.1f" NBSP "us, GPU %.1f" NBSP "us",
-		     obs_source_get_name(source), (double)res.render_sum / 1000.0, (double)res.render_gpu_sum / 1000.0);
+		char gpu[48] = "";
+		if (os_atomic_load_bool(&obs->video.render_gpu_debug)) {
+			snprintf(gpu, sizeof(gpu), ", GPU %.1f" NBSP "us", (double)res.render_gpu_sum / 1000.0);
+		}
+
+		blog(LOG_INFO, "[render-debug]   source '%s': render CPU %.1f" NBSP "us%s", obs_source_get_name(source),
+		     (double)res.render_sum / 1000.0, gpu);
 	}
 	return true;
 }
@@ -1248,10 +1360,27 @@ static bool debug_emit_source_stats_cb(void *param, obs_source_t *source)
  * Emits one line per mix (canvas), then per-source render aggregates. The lagged
  * delta is process-wide rather than per-mix, so it repeats on every mix line to
  * keep each line self-contained. */
+/* One optional GPU column. Left empty when GPU timing is off, so an unmeasured
+ * value can never be read as a measured zero -- the control run for this
+ * diagnostic is precisely the one with GPU timing off. */
+static void debug_format_gpu_field(char *buf, size_t size, bool measured, const char *label, uint64_t ns,
+				   double budget_ns)
+{
+	if (!measured) {
+		*buf = '\0';
+		return;
+	}
+
+	const double pct = budget_ns > 0.0 ? (double)ns / budget_ns * 100.0 : 0.0;
+	snprintf(buf, size, ", %s %.1f" NBSP "us (%.1f%% frame)", label, (double)ns / 1000.0, pct);
+}
+
 static void debug_emit_composite_stats(void)
 {
 	const double fps = obs->video.video_fps;
 	const double budget_ns = fps > 0.0 ? 1.0e9 / fps : 0.0;
+	const bool gpu_measured = os_atomic_load_bool(&obs->video.render_gpu_debug);
+	const char *gpu_note = gpu_measured ? "" : ", GPU timing off";
 
 	const uint32_t lagged_total = obs->video.lagged_frames;
 	const uint32_t lagged_delta = lagged_total - obs->video.debug_last_lagged_frames;
@@ -1271,19 +1400,20 @@ static void debug_emit_composite_stats(void)
 						 ? mix->debug_composite_gpu_accum / mix->debug_composite_gpu_count
 						 : 0;
 		const uint64_t cpu_max = mix->debug_composite_cpu_max;
-		const uint64_t gpu_max = mix->debug_composite_gpu_max;
 		const double cpu_pct = budget_ns > 0.0 ? (double)cpu_avg / budget_ns * 100.0 : 0.0;
-		const double gpu_pct = budget_ns > 0.0 ? (double)gpu_avg / budget_ns * 100.0 : 0.0;
 		const double cpu_max_pct = budget_ns > 0.0 ? (double)cpu_max / budget_ns * 100.0 : 0.0;
-		const double gpu_max_pct = budget_ns > 0.0 ? (double)gpu_max / budget_ns * 100.0 : 0.0;
+
+		char gpu_field[64];
+		char gpu_max_field[64];
+		debug_format_gpu_field(gpu_field, sizeof(gpu_field), gpu_measured, "GPU", gpu_avg, budget_ns);
+		debug_format_gpu_field(gpu_max_field, sizeof(gpu_max_field), gpu_measured, "max GPU",
+				       mix->debug_composite_gpu_max, budget_ns);
 
 		blog(LOG_INFO,
-		     "[render-debug] mix '%s': composite CPU %.1f" NBSP "us (%.1f%% frame), GPU %.1f" NBSP
-		     "us (%.1f%% frame), max CPU %.1f" NBSP "us (%.1f%% frame), max GPU %.1f" NBSP
-		     "us (%.1f%% frame), lagged +%u" NBSP "frames",
-		     mix->debug_label ? mix->debug_label : "?", (double)cpu_avg / 1000.0, cpu_pct,
-		     (double)gpu_avg / 1000.0, gpu_pct, (double)cpu_max / 1000.0, cpu_max_pct, (double)gpu_max / 1000.0,
-		     gpu_max_pct, lagged_delta);
+		     "[render-debug] mix '%s': composite CPU %.1f" NBSP "us (%.1f%% frame)%s, max CPU %.1f" NBSP
+		     "us (%.1f%% frame)%s, lagged +%u" NBSP "frames%s",
+		     mix->debug_label ? mix->debug_label : "?", (double)cpu_avg / 1000.0, cpu_pct, gpu_field,
+		     (double)cpu_max / 1000.0, cpu_max_pct, gpu_max_field, lagged_delta, gpu_note);
 
 		mix->debug_composite_cpu_accum = 0;
 		mix->debug_composite_gpu_accum = 0;
@@ -1297,52 +1427,245 @@ static void debug_emit_composite_stats(void)
 	obs_enum_all_sources(debug_emit_source_stats_cb, NULL);
 }
 
+/* The single enumeration of the frame's segments: the row list, the count, the
+ * format string and the argument list are all generated from it, so adding a
+ * segment to the loop is one line here and cannot leave the others behind. The
+ * eight tile the iteration from its start to video_sleep; the tail and the
+ * residual are deliberately not members (see debug_check_frame). */
+#define RENDER_DEBUG_SEGMENTS(X)       \
+	X("active", seg_active_ns)     \
+	X("enter", seg_enter_ns)       \
+	X("tick", seg_tick_ns)         \
+	X("msg", seg_msg_ns)           \
+	X("output", seg_output_ns)     \
+	X("displays", seg_displays_ns) \
+	X("tasks", seg_tasks_ns)       \
+	X("collect", seg_collect_ns)
+
+#define RENDER_DEBUG_SEGMENT_ROW(name, field) {name, context->field},
+#define RENDER_DEBUG_SEGMENT_TALLY(name, field) +1
+#define RENDER_DEBUG_SEGMENT_FMT(name, field) name " %.1f" NBSP "ms, "
+#define RENDER_DEBUG_SEGMENT_ARG(name, field) , obs_debug_ns_to_ms(context->field)
+
+#define RENDER_DEBUG_SEGMENT_COUNT (0 RENDER_DEBUG_SEGMENTS(RENDER_DEBUG_SEGMENT_TALLY))
+
+struct debug_frame_segment {
+	const char *name;
+	uint64_t ns;
+};
+
+static inline uint64_t debug_segment_warn_ns(const struct obs_graphics_context *context)
+{
+	return (context->interval * RENDER_DEBUG_SEGMENT_WARN_PCT) / 100;
+}
+
+static size_t debug_fill_segments(const struct obs_graphics_context *context,
+				  struct debug_frame_segment out[RENDER_DEBUG_SEGMENT_COUNT])
+{
+	const struct debug_frame_segment segments[] = {RENDER_DEBUG_SEGMENTS(RENDER_DEBUG_SEGMENT_ROW)};
+
+	memcpy(out, segments, sizeof(segments));
+	return sizeof(segments) / sizeof(segments[0]);
+}
+
+static void debug_emit_frame_segments(const struct obs_graphics_context *context, const char *head, uint64_t span_ns)
+{
+	struct debug_frame_segment segments[RENDER_DEBUG_SEGMENT_COUNT];
+	const size_t num = debug_fill_segments(context, segments);
+	char acquirer[160] = "";
+	uint64_t accounted = 0;
+
+	for (size_t i = 0; i < num; i++) {
+		accounted += segments[i].ns;
+	}
+
+	/* The parts are disjoint sub-intervals of the span, so this cannot go
+	 * negative; the clamp is only so a future edit that breaks that
+	 * invariant prints zero rather than an underflowed 18-exabyte residual. */
+	const uint64_t residual = span_ns > accounted ? span_ns - accounted : 0;
+
+	/* Only worth naming when the graphics thread actually waited on the
+	 * context; otherwise the record just describes ordinary traffic. */
+	if (context->seg_enter_ns >= debug_segment_warn_ns(context)) {
+		uint32_t age_ms = 0;
+		bool held = false;
+		const char *who = obs_last_graphics_acquirer(&age_ms, &held);
+		snprintf(acquirer, sizeof(acquirer),
+			 held ? ", graphics context held by %s, taken %u" NBSP "ms earlier"
+			      : ", graphics context last held by %s, released %u" NBSP "ms earlier",
+			 who, age_ms);
+	}
+
+	blog(LOG_INFO,
+	     "[render-debug] %s: total %.1f" NBSP
+	     "ms -- " RENDER_DEBUG_SEGMENTS(RENDER_DEBUG_SEGMENT_FMT) "residual %.1f" NBSP "ms; prev tail %.1f" NBSP
+								      "ms%s",
+	     head, obs_debug_ns_to_ms(span_ns) RENDER_DEBUG_SEGMENTS(RENDER_DEBUG_SEGMENT_ARG),
+	     obs_debug_ns_to_ms(residual), obs_debug_ns_to_ms(context->seg_tail_ns), acquirer);
+}
+
+/* Whether the early-warning line may emit now. Counts what it turns away so the
+ * next line that does get through can disclose the total. */
+static bool debug_warn_allowed(struct obs_graphics_context *context, uint64_t now_ns)
+{
+	if (now_ns - context->warn_window_start_ns >= RENDER_DEBUG_WARN_WINDOW_NS) {
+		context->warn_window_start_ns = now_ns;
+		context->warn_in_window = 0;
+	}
+
+	if (context->warn_in_window >= RENDER_DEBUG_WARN_MAX_PER_WINDOW) {
+		context->warn_suppressed++;
+		return false;
+	}
+
+	context->warn_in_window++;
+	return true;
+}
+
+/* Reports the frame that just ran: a miss when video_sleep found the deadline
+ * already gone, otherwise a single overlong segment as an early warning. The
+ * miss line is never rate limited -- those are rare and losing one costs more
+ * than emitting it. The residual and the tail are excluded from the warning
+ * trigger because both carry this diagnostic's own logging cost, so warning on
+ * them would be self-sustaining; both are still printed on every line. */
+static void debug_check_frame(struct obs_graphics_context *context, uint32_t lost_frames, uint64_t span_ns,
+			      uint64_t now_ns)
+{
+	char head[160];
+	char suppressed[48] = "";
+
+	/* Built before this frame's own rate-limit decision, so it reports the
+	 * backlog rather than including the line about to be printed. Both exits
+	 * below clear the counter, so a backlog cannot outlive the next line of
+	 * either kind. */
+	if (context->warn_suppressed) {
+		snprintf(suppressed, sizeof(suppressed), " (%u" NBSP "similar suppressed)", context->warn_suppressed);
+	}
+
+	if (lost_frames) {
+		snprintf(head, sizeof(head), "frame overran: lost %u" NBSP "frames%s", lost_frames, suppressed);
+		context->warn_suppressed = 0;
+		debug_emit_frame_segments(context, head, span_ns);
+		return;
+	}
+
+	struct debug_frame_segment segments[RENDER_DEBUG_SEGMENT_COUNT];
+	const size_t num = debug_fill_segments(context, segments);
+	const struct debug_frame_segment *worst = &segments[0];
+
+	for (size_t i = 1; i < num; i++) {
+		if (segments[i].ns > worst->ns) {
+			worst = &segments[i];
+		}
+	}
+
+	if (worst->ns < debug_segment_warn_ns(context) || !debug_warn_allowed(context, now_ns)) {
+		return;
+	}
+
+	snprintf(head, sizeof(head), "slow segment '%s' %.1f" NBSP "ms%s", worst->name, obs_debug_ns_to_ms(worst->ns),
+		 suppressed);
+	context->warn_suppressed = 0;
+
+	debug_emit_frame_segments(context, head, span_ns);
+}
+
 bool obs_graphics_thread_loop(struct obs_graphics_context *context)
 {
 	uint64_t frame_start = os_gettime_ns();
 	uint64_t frame_time_ns;
+	uint64_t seg_start;
 
+	/* The segment timers here and below are unconditional, unlike the logging
+	 * they feed. The clock reads cost on the order of 0.001% of a 16.67 ms
+	 * frame, and gating them would mean a lag event is only ever captured
+	 * when the debug flag happened to be armed before the frame that lost
+	 * it. */
+	seg_start = frame_start;
 	update_active_states();
+	context->seg_active_ns = os_gettime_ns() - seg_start;
 
 	profile_start(context->video_thread_name);
 	source_profiler_frame_begin();
 
+	profile_start(enter_context_name);
+	seg_start = os_gettime_ns();
 	gs_enter_context(obs->video.graphics);
 	gs_begin_frame();
 	gs_leave_context();
+	context->seg_enter_ns = os_gettime_ns() - seg_start;
+	profile_end(enter_context_name);
 
 	profile_start(tick_sources_name);
+	seg_start = os_gettime_ns();
 	context->last_time = tick_sources(obs->video.video_time, context->last_time);
+	context->seg_tick_ns = os_gettime_ns() - seg_start;
 	profile_end(tick_sources_name);
 
 #ifdef _WIN32
+	profile_start(message_loop_name);
+	seg_start = os_gettime_ns();
 	MSG msg;
 	while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
 		TranslateMessage(&msg);
 		DispatchMessage(&msg);
 	}
+	context->seg_msg_ns = os_gettime_ns() - seg_start;
+	profile_end(message_loop_name);
+#else
+	context->seg_msg_ns = 0;
 #endif
 
 	source_profiler_render_begin();
 	profile_start(output_frame_name);
+	seg_start = os_gettime_ns();
 	output_frames();
+	context->seg_output_ns = os_gettime_ns() - seg_start;
 	profile_end(output_frame_name);
 
 	profile_start(render_displays_name);
+	seg_start = os_gettime_ns();
 	render_displays();
+	context->seg_displays_ns = os_gettime_ns() - seg_start;
 	profile_end(render_displays_name);
 	source_profiler_render_end();
 
-	execute_graphics_tasks();
+	profile_start(graphics_tasks_name);
+	seg_start = os_gettime_ns();
+	const uint64_t task_log_ns = execute_graphics_tasks();
+	context->seg_tasks_ns = (os_gettime_ns() - seg_start) - task_log_ns;
+	profile_end(graphics_tasks_name);
 
 	frame_time_ns = os_gettime_ns() - frame_start;
 
+	/* source_profiler_frame_collect opens its own profiler node, and does a
+	 * GPU query readback under the graphics context, so it is timed here
+	 * rather than left outside the accounting as its position after
+	 * frame_time_ns would otherwise leave it. */
+	seg_start = os_gettime_ns();
 	source_profiler_frame_collect();
+	context->seg_collect_ns = os_gettime_ns() - seg_start;
+
 	profile_end(context->video_thread_name);
 
 	profile_reenable_thread();
 
+	/* The span the breakdown reconciles against: the whole iteration up to
+	 * the sleep. frame_time_ns stops short of the collect above and is left
+	 * that way because obs publishes it as video_avg_frame_time_ns. */
+	const uint64_t span_ns = os_gettime_ns() - frame_start;
+
 	video_sleep(&obs->video, &obs->video.video_time, context->interval);
+
+	const uint64_t tail_start = os_gettime_ns();
+
+	/* video_sleep is where lagged_frames moves, so a growth across the call
+	 * above indicts the frame whose segments were just measured. */
+	const uint32_t lagged_now = obs->video.lagged_frames;
+	if (os_atomic_load_bool(&obs->video.render_debug)) {
+		debug_check_frame(context, lagged_now - context->last_lagged_frames, span_ns, tail_start);
+	}
+	context->last_lagged_frames = lagged_now;
 
 	context->frame_time_total_ns += frame_time_ns;
 	context->fps_total_ns += (obs->video.video_time - context->last_time);
@@ -1362,7 +1685,15 @@ bool obs_graphics_thread_loop(struct obs_graphics_context *context)
 		context->fps_total_frames = 0;
 	}
 
-	return !stop_requested();
+	const bool keep_going = !stop_requested();
+
+	/* Everything after video_sleep -- the rollup, stop_requested and this
+	 * diagnostic's own logging -- runs inside the NEXT frame's deadline, so
+	 * it is carried forward and reported there rather than charged to
+	 * nothing. */
+	context->seg_tail_ns = os_gettime_ns() - tail_start;
+
+	return keep_going;
 }
 
 void *obs_graphics_thread(void *param)
@@ -1393,6 +1724,19 @@ void *obs_graphics_thread(void *param)
 	context.fps_total_frames = 0;
 	context.last_time = 0;
 	context.video_thread_name = video_thread_name;
+	context.seg_active_ns = 0;
+	context.seg_enter_ns = 0;
+	context.seg_tick_ns = 0;
+	context.seg_msg_ns = 0;
+	context.seg_output_ns = 0;
+	context.seg_displays_ns = 0;
+	context.seg_tasks_ns = 0;
+	context.seg_collect_ns = 0;
+	context.seg_tail_ns = 0;
+	context.last_lagged_frames = obs->video.lagged_frames;
+	context.warn_window_start_ns = os_gettime_ns();
+	context.warn_in_window = 0;
+	context.warn_suppressed = 0;
 
 #ifdef __APPLE__
 	while (obs_graphics_thread_loop_autorelease(&context))

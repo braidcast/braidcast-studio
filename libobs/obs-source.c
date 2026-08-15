@@ -848,6 +848,7 @@ static void obs_source_destroy_defer(struct obs_source *source)
 	}
 
 	gs_enter_context(obs->video.graphics);
+	obs_note_graphics_acquire(OBS_GRAPHICS_ACQUIRER_SOURCE_TEARDOWN);
 	if (source->async_texrender) {
 		gs_texrender_destroy(source->async_texrender);
 	}
@@ -865,6 +866,7 @@ static void obs_source_destroy_defer(struct obs_source *source)
 		gs_texrender_destroy(source->color_space_texrender);
 	}
 	gs_leave_context();
+	obs_note_graphics_release();
 
 	for (i = 0; i < MAX_AV_PLANES; i++) {
 		bfree(source->audio_data.data[i]);
@@ -2238,6 +2240,7 @@ bool set_async_texture_size(struct obs_source *source, const struct obs_source_f
 	source->async_trc = frame->trc;
 
 	gs_enter_context(obs->video.graphics);
+	obs_note_graphics_acquire(OBS_GRAPHICS_ACQUIRER_ASYNC_TEXTURE);
 
 	for (size_t c = 0; c < MAX_AV_PLANES; c++) {
 		gs_texture_destroy(source->async_textures[c]);
@@ -2271,6 +2274,7 @@ bool set_async_texture_size(struct obs_source *source, const struct obs_source_f
 	}
 
 	gs_leave_context();
+	obs_note_graphics_release();
 
 	return source->async_textures[0] != NULL;
 }

@@ -1957,6 +1957,7 @@ void obs_enter_graphics(void)
 {
 	if (obs->video.graphics) {
 		gs_enter_context(obs->video.graphics);
+		obs_note_graphics_acquire(OBS_GRAPHICS_ACQUIRER_ENTER_GRAPHICS);
 	}
 }
 
@@ -1964,6 +1965,7 @@ void obs_leave_graphics(void)
 {
 	if (obs->video.graphics) {
 		gs_leave_context();
+		obs_note_graphics_release();
 	}
 }
 
@@ -2431,6 +2433,15 @@ void obs_set_render_debug(bool enabled)
 
 	os_atomic_set_bool(&obs->video.render_debug, enabled);
 	source_profiler_enable(enabled);
+}
+
+void obs_set_render_gpu_debug(bool enabled)
+{
+	if (!obs) {
+		return;
+	}
+
+	os_atomic_set_bool(&obs->video.render_gpu_debug, enabled);
 	source_profiler_gpu_enable(enabled);
 }
 
