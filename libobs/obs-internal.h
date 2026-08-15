@@ -390,6 +390,12 @@ struct obs_core_video_mix {
 	 * results resolve one frame late (see output_frames). */
 	const char *debug_label;
 	gs_timer_t *debug_composite_timers[NUM_TEXTURES];
+	/* Time this mix spent inside gs_texture_acquire_sync waiting for the GPU
+	 * encoder to release a texture. The wait sits inside render_video, so it
+	 * lands in the composite window and would otherwise be reported as
+	 * drawing -- which is how a 17 ms 'composite' spike was once recorded.
+	 * Reset per frame, subtracted from the composite figure, reported apart. */
+	uint64_t debug_encwait_ns;
 	uint64_t debug_composite_cpu_accum;
 	uint64_t debug_composite_gpu_accum;
 	uint64_t debug_composite_cpu_max;
@@ -674,7 +680,7 @@ struct obs_graphics_context {
 
 	/* Per-segment timing of the last graphics-thread iteration, plus the
 	 * lagged_frames value it started from, so the loop can tell whether the
-	 * frame it just measured is the one that overran. The twelve seg_* fields
+	 * frame it just measured is the one that overran. The thirteen seg_* fields
 	 * tile the iteration up to video_sleep; whatever they miss is reported
 	 * as a residual. seg_tail_ns is the PREVIOUS iteration's post-sleep work
 	 * (the rollup, stop_requested and this diagnostic's own logging), which
@@ -689,6 +695,7 @@ struct obs_graphics_context {
 	uint64_t seg_output_ns;
 	uint64_t seg_flush_ns;
 	uint64_t seg_dload_ns;
+	uint64_t seg_encwait_ns;
 	uint64_t seg_displays_ns;
 	uint64_t seg_tasks_ns;
 	uint64_t seg_collect_ns;

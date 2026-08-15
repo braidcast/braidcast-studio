@@ -482,7 +482,9 @@ static inline bool queue_frame(struct obs_core_video_mix *video, bool raw_active
 
 	if (tf.released) {
 #ifdef _WIN32
+		const uint64_t acquire_start = os_gettime_ns();
 		gs_texture_acquire_sync(tf.tex, tf.lock_key, GS_WAIT_INFINITE);
+		video->debug_encwait_ns += os_gettime_ns() - acquire_start;
 #endif
 		tf.released = false;
 	}
@@ -995,9 +997,10 @@ static const char *output_frame_output_video_data_name = "output_video_data";
  * one is a place the graphics thread can block on the GPU rather than on its own
  * work, and none of them are covered by the per-mix composite figure. */
 struct output_frame_timing {
-	uint64_t ctx_ns;   /* gs_enter_context -- the global graphics mutex */
-	uint64_t flush_ns; /* gs_flush -- drains the command queue */
-	uint64_t dload_ns; /* download_frame + output_video_data -- staging map */
+	uint64_t ctx_ns;     /* gs_enter_context -- the global graphics mutex */
+	uint64_t flush_ns;   /* gs_flush -- drains the command queue */
+	uint64_t dload_ns;   /* download_frame + output_video_data -- staging map */
+	uint64_t encwait_ns; /* gs_texture_acquire_sync -- GPU encoder texture release */
 };
 
 static inline void output_frame(struct obs_core_video_mix *video, bool debug, bool gpu_debug, uint8_t debug_slot,
@@ -1035,6 +1038,7 @@ static inline void output_frame(struct obs_core_video_mix *video, bool debug, bo
 
 	profile_start(output_frame_render_video_name);
 	GS_DEBUG_MARKER_BEGIN(GS_DEBUG_COLOR_RENDER_VIDEO, output_frame_render_video_name);
+	video->debug_encwait_ns = 0;
 	render_video(video, raw_active, gpu_active, cur_texture);
 	GS_DEBUG_MARKER_END();
 	profile_end(output_frame_render_video_name);
@@ -1042,8 +1046,15 @@ static inline void output_frame(struct obs_core_video_mix *video, bool debug, bo
 	if (gpu_debug) {
 		gs_timer_end(debug_timer);
 	}
+	t->encwait_ns += video->debug_encwait_ns;
 	if (debug) {
-		const uint64_t debug_cpu_ns = os_gettime_ns() - debug_cpu_start;
+		const uint64_t raw_cpu_ns = os_gettime_ns() - debug_cpu_start;
+		/* Report drawing, not waiting. The encoder-texture wait happens inside
+		 * render_video, so without this the composite figure counts a stall on
+		 * the encoder as time spent compositing -- which is how a 17 ms
+		 * "composite" spike was once recorded against an idle scene. */
+		const uint64_t debug_cpu_ns =
+			raw_cpu_ns > video->debug_encwait_ns ? raw_cpu_ns - video->debug_encwait_ns : 0;
 		video->debug_composite_cpu_accum += debug_cpu_ns;
 		video->debug_composite_cpu_count++;
 		if (debug_cpu_ns > video->debug_composite_cpu_max) {
@@ -1500,7 +1511,7 @@ static void debug_emit_composite_stats(void)
 /* The single enumeration of the frame's segments: the row list, the count, the
  * format string and the argument list are all generated from it, so adding a
  * segment to the loop is one line here and cannot leave the others behind. The
- * twelve tile the iteration from its start to video_sleep; the tail and the
+ * thirteen tile the iteration from its start to video_sleep; the tail and the
  * residual are deliberately not members (see debug_check_frame). */
 #define RENDER_DEBUG_SEGMENTS(X)       \
 	X("active", seg_active_ns)     \
@@ -1512,6 +1523,7 @@ static void debug_emit_composite_stats(void)
 	X("output", seg_output_ns)     \
 	X("flush", seg_flush_ns)       \
 	X("dload", seg_dload_ns)       \
+	X("encwait", seg_encwait_ns)        \
 	X("displays", seg_displays_ns) \
 	X("tasks", seg_tasks_ns)       \
 	X("collect", seg_collect_ns)
@@ -1813,8 +1825,9 @@ bool obs_graphics_thread_loop(struct obs_graphics_context *context)
 	context->seg_outctx_ns = oft.ctx_ns;
 	context->seg_flush_ns = oft.flush_ns;
 	context->seg_dload_ns = oft.dload_ns;
-	context->seg_output_ns =
-		(os_gettime_ns() - seg_start) - context->seg_outlock_ns - oft.ctx_ns - oft.flush_ns - oft.dload_ns;
+	context->seg_encwait_ns = oft.encwait_ns;
+	context->seg_output_ns = (os_gettime_ns() - seg_start) - context->seg_outlock_ns - oft.ctx_ns - oft.flush_ns -
+				 oft.dload_ns - oft.encwait_ns;
 	profile_end(output_frame_name);
 
 	profile_start(render_displays_name);
@@ -1927,6 +1940,7 @@ void *obs_graphics_thread(void *param)
 	context.seg_output_ns = 0;
 	context.seg_flush_ns = 0;
 	context.seg_dload_ns = 0;
+	context.seg_encwait_ns = 0;
 	context.seg_displays_ns = 0;
 	context.seg_tasks_ns = 0;
 	context.seg_collect_ns = 0;
