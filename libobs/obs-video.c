@@ -1035,9 +1035,16 @@ static inline void output_frame(struct obs_core_video_mix *video, bool debug, bo
 	}
 }
 
-static inline void output_frames(void)
+/* Reports the mixes_mutex acquisition separately from the compositing it
+ * guards. The audio thread takes the same lock and holds it across a walk of
+ * every mix's active source tree (obs-audio.c), so a graphics frame can lose
+ * its whole budget here without a single microsecond of rendering being slow --
+ * a stall the two look identical from outside. */
+static inline void output_frames(uint64_t *lock_ns)
 {
+	const uint64_t lock_start = os_gettime_ns();
 	pthread_mutex_lock(&obs->video.mixes_mutex);
+	*lock_ns = os_gettime_ns() - lock_start;
 
 	const bool debug = os_atomic_load_bool(&obs->video.render_debug);
 	const bool gpu_debug = debug && os_atomic_load_bool(&obs->video.render_gpu_debug);
@@ -1430,13 +1437,14 @@ static void debug_emit_composite_stats(void)
 /* The single enumeration of the frame's segments: the row list, the count, the
  * format string and the argument list are all generated from it, so adding a
  * segment to the loop is one line here and cannot leave the others behind. The
- * eight tile the iteration from its start to video_sleep; the tail and the
+ * nine tile the iteration from its start to video_sleep; the tail and the
  * residual are deliberately not members (see debug_check_frame). */
 #define RENDER_DEBUG_SEGMENTS(X)       \
 	X("active", seg_active_ns)     \
 	X("enter", seg_enter_ns)       \
 	X("tick", seg_tick_ns)         \
 	X("msg", seg_msg_ns)           \
+	X("outlock", seg_outlock_ns)   \
 	X("output", seg_output_ns)     \
 	X("displays", seg_displays_ns) \
 	X("tasks", seg_tasks_ns)       \
@@ -1619,8 +1627,8 @@ bool obs_graphics_thread_loop(struct obs_graphics_context *context)
 	source_profiler_render_begin();
 	profile_start(output_frame_name);
 	seg_start = os_gettime_ns();
-	output_frames();
-	context->seg_output_ns = os_gettime_ns() - seg_start;
+	output_frames(&context->seg_outlock_ns);
+	context->seg_output_ns = (os_gettime_ns() - seg_start) - context->seg_outlock_ns;
 	profile_end(output_frame_name);
 
 	profile_start(render_displays_name);
@@ -1728,6 +1736,7 @@ void *obs_graphics_thread(void *param)
 	context.seg_enter_ns = 0;
 	context.seg_tick_ns = 0;
 	context.seg_msg_ns = 0;
+	context.seg_outlock_ns = 0;
 	context.seg_output_ns = 0;
 	context.seg_displays_ns = 0;
 	context.seg_tasks_ns = 0;

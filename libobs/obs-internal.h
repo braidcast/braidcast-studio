@@ -656,7 +656,7 @@ struct obs_graphics_context {
 
 	/* Per-segment timing of the last graphics-thread iteration, plus the
 	 * lagged_frames value it started from, so the loop can tell whether the
-	 * frame it just measured is the one that overran. The eight seg_* fields
+	 * frame it just measured is the one that overran. The nine seg_* fields
 	 * tile the iteration up to video_sleep; whatever they miss is reported
 	 * as a residual. seg_tail_ns is the PREVIOUS iteration's post-sleep work
 	 * (the rollup, stop_requested and this diagnostic's own logging), which
@@ -666,6 +666,7 @@ struct obs_graphics_context {
 	uint64_t seg_enter_ns;
 	uint64_t seg_tick_ns;
 	uint64_t seg_msg_ns;
+	uint64_t seg_outlock_ns;
 	uint64_t seg_output_ns;
 	uint64_t seg_displays_ns;
 	uint64_t seg_tasks_ns;
