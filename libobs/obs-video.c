@@ -958,7 +958,8 @@ static const char *output_frame_render_video_name = "render_video";
 static const char *output_frame_download_frame_name = "download_frame";
 static const char *output_frame_gs_flush_name = "gs_flush";
 static const char *output_frame_output_video_data_name = "output_video_data";
-static inline void output_frame(struct obs_core_video_mix *video, bool debug, bool gpu_debug, uint8_t debug_slot)
+static inline void output_frame(struct obs_core_video_mix *video, bool debug, bool gpu_debug, uint8_t debug_slot,
+				uint64_t *ctx_ns)
 {
 	const bool raw_active = video->raw_was_active;
 	const bool gpu_active = video->gpu_was_active;
@@ -971,7 +972,14 @@ static inline void output_frame(struct obs_core_video_mix *video, bool debug, bo
 	memset(&frame, 0, sizeof(struct video_data));
 
 	profile_start(output_frame_gs_context_name);
+	/* The loop releases the graphics context again right after gs_begin_frame,
+	 * so this is a cold re-acquisition of the global graphics mutex, contended
+	 * against every other thread that calls obs_enter_graphics -- and it sits
+	 * ahead of debug_cpu_start below, so the per-mix "composite CPU" figure
+	 * cannot see it. Timed separately for exactly that reason. */
+	const uint64_t ctx_start = os_gettime_ns();
 	gs_enter_context(obs->video.graphics);
+	*ctx_ns += os_gettime_ns() - ctx_start;
 
 	uint64_t debug_cpu_start = 0;
 	gs_timer_t *debug_timer = NULL;
@@ -1040,11 +1048,12 @@ static inline void output_frame(struct obs_core_video_mix *video, bool debug, bo
  * every mix's active source tree (obs-audio.c), so a graphics frame can lose
  * its whole budget here without a single microsecond of rendering being slow --
  * a stall the two look identical from outside. */
-static inline void output_frames(uint64_t *lock_ns)
+static inline void output_frames(uint64_t *lock_ns, uint64_t *ctx_ns)
 {
 	const uint64_t lock_start = os_gettime_ns();
 	pthread_mutex_lock(&obs->video.mixes_mutex);
 	*lock_ns = os_gettime_ns() - lock_start;
+	*ctx_ns = 0;
 
 	const bool debug = os_atomic_load_bool(&obs->video.render_debug);
 	const bool gpu_debug = debug && os_atomic_load_bool(&obs->video.render_gpu_debug);
@@ -1059,7 +1068,7 @@ static inline void output_frames(uint64_t *lock_ns)
 	for (size_t i = 0, num = obs->video.mixes.num; i < num; i++) {
 		struct obs_core_video_mix *mix = obs->video.mixes.array[i];
 		if (mix->view) {
-			output_frame(mix, debug, gpu_debug, debug_slot);
+			output_frame(mix, debug, gpu_debug, debug_slot, ctx_ns);
 		} else {
 			obs->video.mixes.array[i] = NULL;
 			obs_free_video_mix(mix);
@@ -1351,14 +1360,20 @@ static bool debug_emit_source_stats_cb(void *param, obs_source_t *source)
 	UNUSED_PARAMETER(param);
 
 	struct profiler_result res;
-	if (source_profiler_fill_result(source, &res) && (res.render_sum || res.render_gpu_sum)) {
+	/* tick_max earns its place in the gate: a source can be cheap to render and
+	 * still burn a whole frame in its tick callback, and gating on the render
+	 * fields alone hides exactly that source. tick is reported as the window max
+	 * rather than a sum because it is a spike we are after -- a one-off 130 ms
+	 * first tick averages away to nothing across a one-second rollup. */
+	if (source_profiler_fill_result(source, &res) && (res.render_sum || res.render_gpu_sum || res.tick_max)) {
 		char gpu[48] = "";
 		if (os_atomic_load_bool(&obs->video.render_gpu_debug)) {
 			snprintf(gpu, sizeof(gpu), ", GPU %.1f" NBSP "us", (double)res.render_gpu_sum / 1000.0);
 		}
 
-		blog(LOG_INFO, "[render-debug]   source '%s': render CPU %.1f" NBSP "us%s", obs_source_get_name(source),
-		     (double)res.render_sum / 1000.0, gpu);
+		blog(LOG_INFO,
+		     "[render-debug]   source '%s': tick CPU %.1f" NBSP "us peak, render CPU %.1f" NBSP "us%s",
+		     obs_source_get_name(source), (double)res.tick_max / 1000.0, (double)res.render_sum / 1000.0, gpu);
 	}
 	return true;
 }
@@ -1437,7 +1452,7 @@ static void debug_emit_composite_stats(void)
 /* The single enumeration of the frame's segments: the row list, the count, the
  * format string and the argument list are all generated from it, so adding a
  * segment to the loop is one line here and cannot leave the others behind. The
- * nine tile the iteration from its start to video_sleep; the tail and the
+ * ten tile the iteration from its start to video_sleep; the tail and the
  * residual are deliberately not members (see debug_check_frame). */
 #define RENDER_DEBUG_SEGMENTS(X)       \
 	X("active", seg_active_ns)     \
@@ -1445,6 +1460,7 @@ static void debug_emit_composite_stats(void)
 	X("tick", seg_tick_ns)         \
 	X("msg", seg_msg_ns)           \
 	X("outlock", seg_outlock_ns)   \
+	X("outctx", seg_outctx_ns)     \
 	X("output", seg_output_ns)     \
 	X("displays", seg_displays_ns) \
 	X("tasks", seg_tasks_ns)       \
@@ -1627,8 +1643,8 @@ bool obs_graphics_thread_loop(struct obs_graphics_context *context)
 	source_profiler_render_begin();
 	profile_start(output_frame_name);
 	seg_start = os_gettime_ns();
-	output_frames(&context->seg_outlock_ns);
-	context->seg_output_ns = (os_gettime_ns() - seg_start) - context->seg_outlock_ns;
+	output_frames(&context->seg_outlock_ns, &context->seg_outctx_ns);
+	context->seg_output_ns = (os_gettime_ns() - seg_start) - context->seg_outlock_ns - context->seg_outctx_ns;
 	profile_end(output_frame_name);
 
 	profile_start(render_displays_name);
@@ -1737,6 +1753,7 @@ void *obs_graphics_thread(void *param)
 	context.seg_tick_ns = 0;
 	context.seg_msg_ns = 0;
 	context.seg_outlock_ns = 0;
+	context.seg_outctx_ns = 0;
 	context.seg_output_ns = 0;
 	context.seg_displays_ns = 0;
 	context.seg_tasks_ns = 0;
