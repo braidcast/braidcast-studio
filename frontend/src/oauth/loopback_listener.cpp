@@ -138,6 +138,16 @@ bool LoopbackListener::Bind(std::string &err)
 		return false;
 	}
 
+	// Without this, another local process can re-bind the same port with SO_REUSEADDR
+	// and receive the browser's redirect instead of us -- which carries the
+	// authorization code in plaintext, since RFC 8252 loopback redirects are unencrypted
+	// by design. Must be set before bind(). Safe here because the port is ephemeral: the
+	// OS picks a free one, so there is no TIME_WAIT holder for exclusivity to collide
+	// with.
+	DWORD exclusive = 1;
+	setsockopt(impl_->listener4.s, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, reinterpret_cast<const char *>(&exclusive),
+		   sizeof exclusive);
+
 	sockaddr_in addr{};
 	addr.sin_family = AF_INET;
 	addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK); // 127.0.0.1 only
@@ -171,6 +181,10 @@ bool LoopbackListener::Bind(std::string &err)
 		DWORD v6only = 1;
 		setsockopt(impl_->listener6.s, IPPROTO_IPV6, IPV6_V6ONLY, reinterpret_cast<const char *>(&v6only),
 			   sizeof v6only);
+		// Same hijack exposure as the v4 listener above. IPV6_V6ONLY keeps this
+		// exclusive claim from colliding with the v4 socket already on this port.
+		setsockopt(impl_->listener6.s, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
+			   reinterpret_cast<const char *>(&exclusive), sizeof exclusive);
 		sockaddr_in6 addr6{};
 		addr6.sin6_family = AF_INET6;
 		addr6.sin6_addr = in6addr_loopback; // ::1 only
