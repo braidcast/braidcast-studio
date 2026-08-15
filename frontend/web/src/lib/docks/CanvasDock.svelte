@@ -17,6 +17,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   import { WINDOW_ID } from "$lib/utils/windowContext";
   import { syncPreviewRect, hidePreview as hidePreviewSurface, destroyPreview, mapOverlayCursor } from "$lib/docking/previewSurface";
   import { isPreviewDisabled, setPreviewDisabled } from "$lib/docking/previewDisabledStore.svelte";
+  import { DockError } from "$lib/docking/dockError.svelte";
   import ContextMenu, { type ContextMenuItems, type ContextMenuState } from "$lib/menus/ContextMenu.svelte";
   import { clipboard } from "$lib/stores/clipboardStore.svelte";
   import { copyItem, pasteReference, pasteDuplicate } from "$lib/stores/clipboardItemState";
@@ -54,10 +55,8 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   }
   let { canvasUuid, canvasName }: Props = $props();
 
-  let error = $state<string | null>(null);
-  function report(e: unknown) {
-    error = (e as Error).message;
-  }
+  const dockError = new DockError();
+  const report = dockError.report;
 
   // One context menu for the whole dock (scene rows, source rows, and the preview
   // all use it). `suspendOverlay` is set only by the preview menu: it opens over
@@ -145,7 +144,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
       const list = await obs.call("scenes.list", { canvas: canvasUuid });
       scenes = list;
       currentScene = list.find((s) => s.current)?.name ?? null;
-      error = null;
+      dockError.clear();
     } catch (e) {
       report(e);
     } finally {
@@ -1103,8 +1102,8 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     </div>
   </div>
 
-  {#if error}
-    <p class="dock-msg err">{error}</p>
+  {#if dockError.message}
+    <p class="dock-msg err" role="alert">{dockError.message}</p>
   {/if}
 
   <!-- Drag the divider to trade preview height for the mini-lists' height. -->

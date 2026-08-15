@@ -158,12 +158,14 @@ import { EV } from "$lib/utils/eventNames";
   }
 
   async function toggleMuted(src: AudioSource) {
-    const desired = !src.muted;
+    const previous = src.muted;
+    const desired = !previous;
     src.muted = desired; // optimistic
     try {
       const res = await obs.call("audio.setMuted", { uuid: src.uuid, muted: desired });
       src.muted = res.muted;
     } catch (e) {
+      src.muted = previous;
       error = (e as Error).message;
     }
   }
@@ -311,7 +313,7 @@ import { EV } from "$lib/utils/eventNames";
 
 <div class="dock-body">
   {#if error}
-    <p class="dock-msg err">{error}</p>
+    <p class="dock-msg err" role="alert">{error}</p>
   {/if}
 
   <div class="toolbar">

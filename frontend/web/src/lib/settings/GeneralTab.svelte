@@ -68,10 +68,12 @@ import { EV } from "$lib/utils/eventNames";
   // Optimistic local set, then reconcile from the echoed full state.
   async function apply(patch: Partial<GeneralSettings>): Promise<void> {
     error = null;
+    const previous = s;
     s = { ...s, ...patch };
     try {
       s = await obs.call("settings.setGeneral", patch);
     } catch (e) {
+      s = previous;
       error = (e as Error).message;
     }
   }
@@ -269,7 +271,7 @@ import { EV } from "$lib/utils/eventNames";
     <p class="dim note">Show the current session log for troubleshooting and bug reports.</p>
   </section>
 
-  {#if error}<p class="error">{error}</p>{/if}
+  {#if error}<p class="error" role="alert">{error}</p>{/if}
 {/if}
 
 <style>

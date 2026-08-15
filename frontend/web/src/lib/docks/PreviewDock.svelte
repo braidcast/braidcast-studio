@@ -8,6 +8,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   import { WINDOW_ID } from "$lib/utils/windowContext";
   import { syncPreviewRect, hidePreview, destroyPreview, mapOverlayCursor } from "$lib/docking/previewSurface";
   import { isPreviewDisabled, setPreviewDisabled, DEFAULT_PREVIEW_KEY } from "$lib/docking/previewDisabledStore.svelte";
+  import { DockError } from "$lib/docking/dockError.svelte";
   import ContextMenu, { type ContextMenuItems, type ContextMenuState } from "$lib/menus/ContextMenu.svelte";
   import PropertiesModal from "$lib/properties/PropertiesModal.svelte";
   import AddSourceModal from "$lib/dialogs/add-source/AddSourceModal.svelte";
@@ -40,7 +41,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     openProps(created.source);
   }
 
-  const warn = (method: string) => (e: unknown) => console.log(method + " failed: " + (e as Error).message);
+  const dockError = new DockError();
 
   // Deinterlacing is a source-level property (not in the event payload), fetched
   // just-in-time when the menu opens. A failed read still yields a menu, but the
@@ -50,7 +51,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     try {
       return await obs.call("sources.getDeinterlace", { source });
     } catch (e) {
-      warn("sources.getDeinterlace")(e);
+      dockError.report(e);
       return { mode: "disable", fieldOrder: "top" };
     }
   }
@@ -96,6 +97,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   // this frame instead of waiting for the next resize/layout event to trigger it.
   function enablePreview() {
     setPreviewDisabled(DEFAULT_PREVIEW_KEY, false);
+    dockError.clear();
     requestAnimationFrame(reportRect);
   }
 
@@ -111,7 +113,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   ): ContextMenuItems {
     // Inject the global-path target (scene + id) into every scene-item call.
     const call = (method: string, params: Record<string, unknown>) =>
-      obs.call(method, { scene: p.scene, id: p.id, ...params }).catch(warn(method));
+      obs.call(method, { scene: p.scene, id: p.id, ...params }).catch(dockError.report);
     const currentFilter = it?.scaleFilter ?? "disable";
     const currentBlendMode = it?.blendMode ?? "normal";
     const currentBlendMethod = it?.blendMethod ?? "default";
@@ -122,7 +124,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
       { label: "Properties", action: () => p.source && openProps(p.source) },
       { label: "Filters", disabled: !p.source, action: () => p.source && openFilters(p.source) },
       ...(it?.interactive && p.source
-        ? [{ label: "Interact", action: () => void obs.call("sources.interact", { source: p.source }).catch(warn("sources.interact")) }]
+        ? [{ label: "Interact", action: () => void obs.call("sources.interact", { source: p.source }).catch(dockError.report) }]
         : []),
       ...(p.id != null ? [transformMenu({ scene: p.scene, id: p.id }, p.source ?? "(unnamed)")] : []),
       scaleFilterMenu(currentFilter, (filter) => void call("sceneItems.setScaleFilter", { filter })),
@@ -147,9 +149,9 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
             deinterlaceMenu(
               deint.mode,
               deint.fieldOrder,
-              (mode) => void obs.call("sources.setDeinterlace", { source: p.source, mode }).catch(warn("sources.setDeinterlace")),
+              (mode) => void obs.call("sources.setDeinterlace", { source: p.source, mode }).catch(dockError.report),
               (fieldOrder) =>
-                void obs.call("sources.setDeinterlace", { source: p.source, fieldOrder }).catch(warn("sources.setDeinterlace")),
+                void obs.call("sources.setDeinterlace", { source: p.source, fieldOrder }).catch(dockError.report),
             ),
           ]
         : []),
@@ -168,12 +170,12 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
       {
         label: "Paste",
         disabled: !clipboard.source,
-        action: () => void pasteReference({ scene: p.scene }).catch(warn("paste")),
+        action: () => void pasteReference({ scene: p.scene }).catch(dockError.report),
       },
       {
         label: "Paste (Duplicate)",
         disabled: !clipboard.source,
-        action: () => void pasteDuplicate({ scene: p.scene }).catch(warn("paste")),
+        action: () => void pasteDuplicate({ scene: p.scene }).catch(dockError.report),
       },
       {
         label: "Copy Transform",
@@ -181,7 +183,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
           void obs
             .call("sceneItems.getTransform", { scene: p.scene, id: p.id })
             .then((t) => (clipboard.transform = t))
-            .catch(warn("sceneItems.getTransform")),
+            .catch(dockError.report),
       },
       {
         label: "Paste Transform",
@@ -217,17 +219,17 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
       {
         label: "New Group",
         disabled: !scene,
-        action: () => void obs.call("sceneItems.createGroup", { scene }).catch(warn("sceneItems.createGroup")),
+        action: () => void obs.call("sceneItems.createGroup", { scene }).catch(dockError.report),
       },
       {
         label: "Paste",
         disabled: !clipboard.source,
-        action: () => void pasteReference({ scene }).catch(warn("paste")),
+        action: () => void pasteReference({ scene }).catch(dockError.report),
       },
       {
         label: "Paste (Duplicate)",
         disabled: !clipboard.source,
-        action: () => void pasteDuplicate({ scene }).catch(warn("paste")),
+        action: () => void pasteDuplicate({ scene }).catch(dockError.report),
       },
     ];
   }
@@ -288,6 +290,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
       if (p.canvas != null || p.window !== WINDOW_ID || !previewEl) {
         return;
       }
+      dockError.clear();
       const { x, y } = mapOverlayCursor(previewEl, p);
       if (p.id == null) {
         menu = { x, y, items: buildEmptyItems(p.scene) };
@@ -358,21 +361,27 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   });
 </script>
 
-<section class="preview" class:gated={!defaultEnabled || isPreviewDisabled(DEFAULT_PREVIEW_KEY)} bind:this={previewEl}>
-  <span class="label">Default</span>
-  {#if isPreviewDisabled(DEFAULT_PREVIEW_KEY)}
-    <div class="placeholder">
-      <p class="ph-title">Preview disabled</p>
-      <p class="ph-sub">Rendering is stopped to save GPU.</p>
-      <button class="accent" onclick={enablePreview}>Re-enable Preview</button>
-    </div>
-  {:else if !defaultEnabled}
-    <div class="placeholder">
-      <p class="ph-title">Preview off</p>
-      <p class="ph-sub">No enabled destination — turn one on in Canvases.</p>
-    </div>
+<div class="dock-body">
+  {#if dockError.message}
+    <p class="dock-msg err" role="alert">{dockError.message}</p>
   {/if}
-</section>
+
+  <section class="preview" class:gated={!defaultEnabled || isPreviewDisabled(DEFAULT_PREVIEW_KEY)} bind:this={previewEl}>
+    <span class="label">Default</span>
+    {#if isPreviewDisabled(DEFAULT_PREVIEW_KEY)}
+      <div class="placeholder">
+        <p class="ph-title">Preview disabled</p>
+        <p class="ph-sub">Rendering is stopped to save GPU.</p>
+        <button class="accent" onclick={enablePreview}>Re-enable Preview</button>
+      </div>
+    {:else if !defaultEnabled}
+      <div class="placeholder">
+        <p class="ph-title">Preview off</p>
+        <p class="ph-sub">No enabled destination — turn one on in Canvases.</p>
+      </div>
+    {/if}
+  </section>
+</div>
 
 {#if menu}
   <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => (menu = null)} />
@@ -392,8 +401,14 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
 {/if}
 
 <style>
+  /* This dock hosts a native-overlay preview surface, same as CanvasDock; the body
+     itself must never scroll (the shared .dock-body default sets overflow:auto). */
+  .dock-body {
+    overflow: hidden;
+  }
   .preview {
-    height: 100%;
+    flex: 1;
+    min-height: 0;
     width: 100%;
     position: relative;
     /* Transparent: the native overlay HWND paints this region. */

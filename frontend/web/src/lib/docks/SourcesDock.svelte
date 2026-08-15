@@ -13,6 +13,7 @@ import { EV } from "$lib/utils/eventNames";
   import { sourceSelection } from "$lib/stores/sourceSelectionStore.svelte";
   import { renameSignal } from "$lib/stores/renameSignalStore.svelte";
   import { openFilters } from "$lib/dialogs/filterDialogOpener.svelte";
+  import { DockError } from "$lib/docking/dockError.svelte";
   import { transformMenu } from "$lib/menus/transformMenu";
   import { scaleFilterMenu } from "$lib/menus/scaleFilterMenu";
   import { blendModeMenu, blendMethodMenu } from "$lib/menus/blendMenu";
@@ -42,7 +43,7 @@ import { EV } from "$lib/utils/eventNames";
     filtering ? items.filter((i) => (i.source ?? "").toLowerCase().includes(filter.trim().toLowerCase())) : items,
   );
   let loaded = $state(false);
-  let error = $state<string | null>(null);
+  const dockError = new DockError();
   let propsForSource = $state<string | null>(null);
   let adding = $state(false);
   let renamingId = $state<number | null>(null);
@@ -79,9 +80,7 @@ import { EV } from "$lib/utils/eventNames";
     },
   ]);
 
-  function report(e: unknown) {
-    error = (e as Error).message;
-  }
+  const report = dockError.report;
 
   function openProperties(item: SceneItem) {
     if (item.source) {
@@ -133,7 +132,7 @@ import { EV } from "$lib/utils/eventNames";
       return;
     }
     const mine = ++loadSeq;
-    error = null;
+    dockError.clear();
     try {
       const list = await obs.call("sceneItems.list", { scene: currentScene });
       if (mine !== loadSeq) {
@@ -569,8 +568,8 @@ import { EV } from "$lib/utils/eventNames";
 
 <div class="dock-body">
   <div class="dock-fill">
-    {#if error}
-      <p class="dock-msg err">{error}</p>
+    {#if dockError.message}
+      <p class="dock-msg err" role="alert">{dockError.message}</p>
     {:else if !currentScene}
       <p class="dock-msg">No scene selected</p>
     {:else if !loaded}
