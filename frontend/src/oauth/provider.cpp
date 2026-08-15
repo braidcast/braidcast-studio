@@ -7,7 +7,9 @@
 #include "../events/event_transport.hpp"
 #include "util/http_client.hpp"
 #include "util/json_util.hpp"
+#include "util/op_error.hpp"
 #include "util/string_util.hpp"
+#include "../log.hpp"
 
 // The base StreamProvider's transport factories default to "no transport". They are
 // defined here rather than inline in the header because the return type is a
@@ -226,8 +228,8 @@ std::string DivergenceSummary(const std::vector<MetadataDivergence> &divergences
 	std::vector<std::string> parts;
 	parts.reserve(divergences.size());
 	for (const MetadataDivergence &entry : divergences) {
-		std::string part = entry.label + ": asked for \"" + entry.requested + "\", the platform has \"" +
-				   entry.actual + "\"";
+		std::string part = entry.label + ": asked for \"" + entry.requested +
+				   "\", the platform last reported \"" + entry.actual + "\"";
 		if (!entry.remedy.empty()) {
 			part += " -- " + entry.remedy;
 		}
@@ -248,11 +250,41 @@ std::unique_ptr<Events::EventTransport> StreamProvider::makeEvents(const OAuthAc
 	return nullptr;
 }
 
+bool StreamProvider::confirmDestination(OAuthAccount &acct, const std::string &profileUuid, const json &requested,
+					AppliedBy by, DestinationReadback &readback)
+{
+	AppliedState actual;
+	std::string readErr;
+	if (!readAppliedMetadata(acct, profileUuid, by, actual, readErr)) {
+		readback.unconfirmed = readErr.empty() ? displayName() + " did not report what it applied" : readErr;
+		return false;
+	}
+	std::vector<MetadataDivergence> fresh = DiffAppliedMetadata(capabilityJson(), requested, actual.fields);
+	for (MetadataDivergence &entry : fresh) {
+		entry.remedy = divergenceRemedy(entry.field);
+	}
+	// A field this read did not STATE has not been answered, only passed over: the diff compares
+	// what the platform stated and is silent about the rest, so an empty result means "nothing to
+	// compare" just as readily as "we agree". Anything an earlier rung caught on such a field is
+	// carried through that silence rather than dropped -- without this a read that simply omits
+	// the visibility reads as agreement, and a destination the ladder had already watched the
+	// platform get wrong would go live on it. Nothing is duplicated: a field the read did state
+	// is decided by `fresh` alone.
+	for (const MetadataDivergence &prior : readback.divergences) {
+		if (!actual.fields.is_object() || !actual.fields.contains(prior.field)) {
+			fresh.push_back(prior);
+		}
+	}
+	readback.unconfirmed = actual.unconfirmed;
+	readback.divergences = std::move(fresh);
+	return true;
+}
+
 // The go-live precondition, implemented once for every platform: apply, then ask the platform
-// what it ended up with and compare. Every per-platform part is a hook -- whether a broadcast
-// exists, how one is made, how the current state is read -- so adding a platform means answering
-// those rather than touching the go-live path, and no platform can be the one that forgets to
-// confirm.
+// what it ended up with, and where the two disagree, make the platform match. Every per-platform
+// part is a hook -- whether a broadcast exists, how one is made, how the current state is read,
+// what a corrective push looks like -- so adding a platform means answering those rather than
+// touching the go-live path, and no platform can be the one that forgets to confirm.
 bool StreamProvider::prepareDestination(OAuthAccount &acct, const std::string &profileUuid, const json &fields,
 					DestinationReadback &readback, std::string &err)
 {
@@ -269,18 +301,64 @@ bool StreamProvider::prepareDestination(OAuthAccount &acct, const std::string &p
 	if (!applyMetadata(acct, profileUuid, requested, creating, err)) {
 		return false;
 	}
+	// How a read may be INTERPRETED, which is a different question from who wrote the value. The
+	// two reads that observe the apply above are told the broadcast's origin, because a provider
+	// is free to withhold a value it cannot yet vouch for on a broadcast this call has only just
+	// made, and calling those reads an edit would compare a value the create path deliberately
+	// holds back. The read after the corrective push is told Edit unconditionally: by then this
+	// code has written that value at a broadcast that already existed, so the answer is about an
+	// edit whatever made the broadcast -- and leaving it at Create would make the push
+	// structurally incapable of being observed to have worked, since the same withholding that
+	// hid the value before would hide the corrected one too.
+	const AppliedBy by = creating ? AppliedBy::Create : AppliedBy::Edit;
 
-	AppliedState actual;
-	std::string readErr;
-	if (!readAppliedMetadata(acct, profileUuid, creating ? AppliedBy::Create : AppliedBy::Edit, actual, readErr)) {
-		readback.unconfirmed = readErr.empty() ? displayName() + " did not report what it applied" : readErr;
+	if (!confirmDestination(acct, profileUuid, requested, by, readback) || readback.divergences.empty()) {
 		return true;
 	}
-	readback.unconfirmed = actual.unconfirmed;
-	readback.divergences = DiffAppliedMetadata(capabilityJson(), requested, actual.fields);
-	for (MetadataDivergence &entry : readback.divergences) {
-		entry.remedy = divergenceRemedy(entry.field);
+
+	// The platform is not holding what it was asked for. Below is the whole of what this does
+	// about that: ONE re-read, then ONE corrective push confirmed by ONE more read, written out
+	// as three statements. The bound is the shape of the code rather than a limit checked inside
+	// a loop -- there is no counter to raise and no condition to widen, so "try harder" is not a
+	// one-line change here, which for calls billed per attempt against a shared daily quota is
+	// the point.
+	//
+	// Cheapest rung first, and for every diverged field whatever it costs to lose: a read taken
+	// immediately after a write can land before the platform has settled it, and on YouTube that
+	// read costs 1 unit where the write costs 50. Only an answered read that now agrees ends this
+	// here -- a read that failed has disproved nothing, and the divergence the first read did see
+	// still stands. Hence the && here against the || above: the first read failing means there is
+	// nothing yet to carry, while this one failing leaves a divergence that must still be answered.
+	if (confirmDestination(acct, profileUuid, requested, by, readback) && readback.divergences.empty()) {
+		return true;
 	}
+
+	// The corrective push is spent on SAFETY divergences alone. A cosmetic value the platform
+	// normalized rather than refused -- YouTube strips angle brackets out of a title -- comes back
+	// divergent on every single go-live, so re-sending it buys an unchanged notice at 50 units a
+	// time out of a daily pool every install shares. That write is worth its price only where the
+	// alternative is refusing to stream at all, which is exactly what a safety field is.
+	if (SafetyDivergences(readback.divergences).empty()) {
+		return true;
+	}
+
+	// Push the values at it again. This is the rung that makes the platform match the dialog,
+	// which is what editing stream info is for. It overwrites a value changed outside the app
+	// since -- in the platform's own studio, say -- and that is intended at go-live: the user has
+	// just read these values and pressed the button, so they are the stated intent for this
+	// broadcast.
+	//
+	// The push's own result is advisory. What the platform ends up holding is settled by the read
+	// after it, not by whether the call returned true, so a failed push still gets confirmed
+	// rather than assumed.
+	std::string reapplyErr;
+	const bool pushed = reapplyMetadata(acct, profileUuid, requested, reapplyErr);
+	// Logged either way. A provider can report success having sent nothing -- an edit path whose
+	// broadcast lookup misses returns true without a request -- so a refusal that follows would
+	// otherwise be indistinguishable from one where the platform rejected the value outright.
+	HostLog("[oauth] " + displayName() + " corrective stream-info push for destination " + profileUuid +
+		(pushed ? std::string(" returned success") : ": " + Err::Diagnostic(reapplyErr)));
+	confirmDestination(acct, profileUuid, requested, AppliedBy::Edit, readback);
 	return true;
 }
 

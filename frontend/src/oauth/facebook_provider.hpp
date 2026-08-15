@@ -61,11 +61,10 @@ public:
 	// between two different things.
 	bool readAppliedMetadata(OAuthAccount &acct, const std::string &profileUuid, AppliedBy by, AppliedState &out,
 				 std::string &err) override;
-	// Where a privacy divergence leaves the user. The create carries `status`; the edit of a
-	// live video already running does not re-send it, so this is a refusal the app cannot
-	// itself resolve -- and whether Meta accepts `status` on an existing live video is
-	// undocumented, so the answer is a route the user can take rather than a parameter that
-	// may be silently ignored.
+	// Where a privacy divergence leaves the user once the corrective push below has been tried and
+	// the visibility that was asked for has still not been seen on the Page. Whether Meta accepts
+	// `status` on an existing live video is undocumented -- the node reference has answered 404
+	// since early 2025 -- so this offers the two routes that do not depend on the answer.
 	std::string divergenceRemedy(const std::string &field) const override;
 	// The account's Pages, filtered by `query` -- this provider's `page` picker, not a
 	// game/category catalog. Facebook Gaming was sunset and no browsable category
@@ -74,6 +73,13 @@ public:
 	bool searchCategories(OAuthAccount &acct, const std::string &query, json &out, std::string &err) override;
 	bool applyMetadata(OAuthAccount &acct, const std::string &profileUuid, const json &fields, bool goingLive,
 			   std::string &err) override;
+
+	// The ordinary edit sends title and description but no `status`, so repeating it could never
+	// correct a visibility that read back wrong. This one carries `status` as well, keeping the
+	// contract that every field readAppliedMetadata can report is a field the corrective push
+	// carries -- see the note in the body for why it is sent as its own request.
+	bool reapplyMetadata(OAuthAccount &acct, const std::string &profileUuid, const json &fields,
+			     std::string &err) override;
 
 	// A live video is created per stream profile, so all per-broadcast state keys off the
 	// destination -- two profiles on one Page are two independent broadcasts.

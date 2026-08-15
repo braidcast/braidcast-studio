@@ -264,6 +264,11 @@ std::vector<MetadataDivergence> SafetyDivergences(const std::vector<MetadataDive
 json DivergencesJson(const std::vector<MetadataDivergence> &divergences);
 
 // The one streamer-facing sentence for a divergence list, for a refusal reason and the log.
+// Deliberately observational: it names the field, the value asked for, and the LAST value the
+// platform was seen to state -- which for a divergence carried past a read that went quiet on
+// that field is not necessarily the value the platform holds now. It claims nothing about how
+// many pushes went out or how the platform answered them, because neither is knowable on every
+// path that reaches a refusal.
 std::string DivergenceSummary(const std::vector<MetadataDivergence> &divergences);
 
 // The runtime context the framework hands an AuthStrategy for one interactive
@@ -469,6 +474,27 @@ public:
 	virtual bool applyMetadata(OAuthAccount &acct, const std::string &profileUuid, const json &fields,
 				   bool goingLive, std::string &err) = 0;
 
+	// The corrective push: send `fields` at a destination the platform has just been read as NOT
+	// holding them. Only prepareDestination calls it, and only after a re-read has confirmed the
+	// disagreement is real rather than a write that had not settled.
+	//
+	// The default is the in-place edit a standalone "Edit stream info" performs, which is what
+	// every persistent-channel platform needs and nothing more. goingLive is false so this can
+	// never create a second broadcast on a create-per-go-live platform -- it is correcting the
+	// one the apply above already made.
+	//
+	// A provider overrides it for exactly one reason: its ordinary edit would not actually carry
+	// the diverged value, either because it suppresses a repeat of a payload it believes it
+	// already delivered, or because it never sends that field at all. The contract the overrides
+	// keep is that EVERY field a provider's readAppliedMetadata can report is a field this push
+	// carries -- otherwise a divergence the platform reports is one no push can reach, and the
+	// second attempt is spent for nothing.
+	virtual bool reapplyMetadata(OAuthAccount &acct, const std::string &profileUuid, const json &fields,
+				     std::string &err)
+	{
+		return applyMetadata(acct, profileUuid, fields, /*goingLive=*/false, err);
+	}
+
 	// Optionally fetch the platform stream key for `acct` (Twitch exposes one via
 	// /helix/streams/key; most providers do not). Default: unsupported. On success
 	// fills `key`; false + `err` (or false with empty `key`) when unavailable.
@@ -535,6 +561,15 @@ public:
 	// reusable ingest -- ran the encoders against that broadcast's title and visibility while the
 	// dialog showed the remembered ones. An existing broadcast is therefore edited in place, not
 	// skipped and not replaced.
+	//
+	// A divergence is something to FIX, not something to report: the platform is made to match
+	// what the dialog shows, which is the whole point of being able to edit stream info. Refusing
+	// is the last rung, not the first -- it is reached only once the value has been re-read and a
+	// corrective push attempted, without the platform ever being seen to hold what was asked. The
+	// push itself can fail or be skipped, so reaching the refusal says the divergence was never
+	// cleared, not that the platform took the values twice. See the body for
+	// the ladder, for why the corrective push is spent on safety fields alone, and for why none of
+	// it can become a retry loop.
 	//
 	// `readback` reports what the platform ended up holding: divergent fields, and whether the
 	// read answered at all. It is filled on success only; false + `err` means the destination
@@ -698,6 +733,18 @@ public:
 	virtual void clearActiveBroadcastDestination(const DestinationId &dest) { (void)dest; }
 
 protected:
+	// One rung of prepareDestination's ladder: ask the platform what it holds for this
+	// destination now and compare it against what the destination asked for.
+	//
+	// A rung can only ever clear a divergence for a field the platform actually spoke about, in
+	// both of the ways a read can stay silent. A read that did not answer at all sets
+	// `unconfirmed`, returns false, and leaves `readback.divergences` untouched. A read that
+	// answered but said nothing about a field carries that field's earlier divergence forward.
+	// Neither silence is evidence that a wrong value has become right, and treating either as
+	// agreement is what would turn a refusal into a go-live.
+	bool confirmDestination(OAuthAccount &acct, const std::string &profileUuid, const json &requested, AppliedBy by,
+				DestinationReadback &readback);
+
 	// Stamp the per-request auth headers onto `r`, called by SendAuthed for each attempt.
 	// Base default: `Authorization: Bearer <access>`. Twitch overrides to prepend its
 	// `Client-Id` header; Kick/YouTube authenticate with the bearer alone and keep this.

@@ -218,6 +218,14 @@ void AppendMetadataFields(std::string &body, const json &fields)
 	}
 }
 
+// The ONE place the chosen visibility is put on the wire. Kept out of AppendMetadataFields
+// because the ordinary edit must not carry it: only the create and the corrective push do, and
+// those two must not drift apart about which form field says it or how a value is mapped.
+void AppendStatus(std::string &body, const json &fields)
+{
+	AppendForm(body, "status", StatusForPrivacy(Str(fields, kPrivacyFieldKey)));
+}
+
 } // namespace
 
 FacebookProvider::FacebookProvider()
@@ -530,15 +538,14 @@ std::string FacebookProvider::divergenceRemedy(const std::string &field) const
 	if (field != kPrivacyFieldKey) {
 		return std::string();
 	}
-	// The create carries `status`; the edit of a live video this app already holds does not
-	// re-send it, so a privacy divergence on a running broadcast is one this app refuses over
-	// and cannot itself correct. Whether Meta accepts `status` on an existing live video is
-	// undocumented -- the live-video node reference has answered 404 since early 2025 and the
-	// Live Video API guides cover creation only -- so rather than push a parameter that may be
-	// silently ignored, hand the user the two routes that certainly work.
-	return "Braidcast cannot change the visibility of a Facebook broadcast that is already "
-	       "running: set it on the Page's own live post, or stop this destination and go live "
-	       "again to create a fresh broadcast with the visibility you chose";
+	// Only ever rendered once reapplyMetadata has tried to send `status` at the live video and the
+	// visibility asked for has still not been seen on the Page, so it speaks for one this app has
+	// already tried to move. It claims no more than that: whether the Page rejected the change or
+	// simply never reported it back is not something the ladder can tell apart. The two routes
+	// below are what is left either way.
+	return "Braidcast asked Facebook to change this broadcast's visibility and could not confirm "
+	       "that it took: set it on the Page's own live post, or stop this destination and go "
+	       "live again to create a fresh broadcast with the visibility you chose";
 }
 
 bool FacebookProvider::readAppliedMetadata(OAuthAccount &acct, const std::string &profileUuid, AppliedBy by,
@@ -648,7 +655,7 @@ bool FacebookProvider::applyMetadata(OAuthAccount &acct, const std::string &prof
 
 	std::string body;
 	AppendMetadataFields(body, fields);
-	AppendForm(body, "status", StatusForPrivacy(Str(fields, "privacy")));
+	AppendStatus(body, fields);
 
 	Http::HttpReq req;
 	req.method = "POST";
@@ -704,6 +711,45 @@ bool FacebookProvider::applyMetadata(OAuthAccount &acct, const std::string &prof
 	EndLiveVideos(std::move(superseded));
 	HostLog("[oauth] Facebook live video created for dest=" + DestinationKey(dest) + " on Page " + page.name);
 	return true;
+}
+
+bool FacebookProvider::reapplyMetadata(OAuthAccount &acct, const std::string &profileUuid, const json &fields,
+				       std::string &err)
+{
+	std::string editErr;
+	const bool edited = StreamProvider::reapplyMetadata(acct, profileUuid, fields, editErr);
+
+	LiveVideo active;
+	if (!ActiveLiveVideo(DestinationId{AccountId(acct), profileUuid}, active)) {
+		err = editErr;
+		return edited;
+	}
+
+	// `status` goes in a request of its own rather than folded into the edit above. Meta's
+	// live-video node reference has answered 404 since early 2025 and the Live Video guides cover
+	// creation only, so what an already-created live video does with this parameter is not
+	// something the code can be written against -- which is what makes isolating it the point: a
+	// rejected parameter must cost only itself, where a combined body would take the title and
+	// description down with it. It is sent at all because the alternative is refusing the go-live
+	// over a visibility the app never once tried to correct; the read after it, told Edit so this
+	// provider states rather than withholds what it finds, is what decides whether it took.
+	std::string body;
+	AppendStatus(body, fields);
+
+	Http::HttpReq req;
+	req.method = "POST";
+	req.url = GraphUrl(active.id);
+	req.contentType = "application/x-www-form-urlencoded";
+	req.body = body;
+
+	OAuthAccount pageAcct = PageAccount(id(), active.pageToken);
+	Http::HttpResponse resp;
+	std::string statusErr;
+	const bool published = SendAuthed(pageAcct, req, resp, statusErr) &&
+			       Http::Require2xx(resp, "Facebook live-video visibility update", statusErr);
+
+	err = edited ? statusErr : editErr;
+	return edited && published;
 }
 
 bool FacebookProvider::viewerCounts(OAuthAccount &acct, std::map<DestinationId, int> &out, std::string &err)

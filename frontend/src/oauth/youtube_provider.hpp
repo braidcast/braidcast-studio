@@ -91,6 +91,13 @@ public:
 	bool applyMetadata(OAuthAccount &acct, const std::string &profileUuid, const json &fields, bool goingLive,
 			   std::string &err) override;
 
+	// The edit path skips a liveBroadcasts.update whose payload matches the one it last
+	// delivered, and a corrective push repeats exactly that payload. Drops the broadcast-resource
+	// memo first so an edited broadcast's second attempt reaches the wire; where no memo was
+	// recorded -- a broadcast this go-live created -- the clear costs nothing.
+	bool reapplyMetadata(OAuthAccount &acct, const std::string &profileUuid, const json &fields,
+			     std::string &err) override;
+
 	// What this destination's live broadcast actually holds: title, description, privacy and
 	// the made-for-kids declaration, off one liveBroadcasts.list by id (1 unit). Category, tags
 	// and the thumbnail are deliberately NOT read -- they live on the video resource, and a

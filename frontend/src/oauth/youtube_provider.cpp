@@ -1425,6 +1425,27 @@ bool YouTubeProvider::ReadBroadcast(OAuthAccount &acct, const std::string &broad
 	return true;
 }
 
+bool YouTubeProvider::reapplyMetadata(OAuthAccount &acct, const std::string &profileUuid, const json &fields,
+				      std::string &err)
+{
+	// Drop this destination's broadcast-resource memo so the push below is actually sent: the edit
+	// path skips a liveBroadcasts.update whose payload matches the memo, and a corrective push
+	// repeats that payload exactly. Where a memo exists it has just been contradicted by what the
+	// platform reported, so it is no longer describing the broadcast; where none exists -- a
+	// broadcast this go-live created, which records no update digest -- the clear costs nothing.
+	// Only the broadcast entry: neither the video snippet nor the thumbnail carries a field
+	// readAppliedMetadata reports, so invalidating those memos would put 100 units behind values
+	// no divergence can ever name.
+	{
+		const std::lock_guard<std::mutex> guard(broadcastMutex_);
+		auto it = broadcasts_.find(DestinationId{AccountId(acct), profileUuid});
+		if (it != broadcasts_.end()) {
+			it->second.appliedBroadcast.clear();
+		}
+	}
+	return StreamProvider::reapplyMetadata(acct, profileUuid, fields, err);
+}
+
 bool YouTubeProvider::readAppliedMetadata(OAuthAccount &acct, const std::string &profileUuid, AppliedBy by,
 					  AppliedState &out, std::string &err)
 {
