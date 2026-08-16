@@ -20,11 +20,7 @@ std::atomic<Log::CatMask> g_debugMask{Log::kNoCats};
 
 std::string LowerTrim(const std::string &s)
 {
-	const size_t b = s.find_first_not_of(" \t\r\n");
-	if (b == std::string::npos) {
-		return std::string();
-	}
-	return StringUtil::ToLower(s.substr(b, s.find_last_not_of(" \t\r\n") - b + 1));
+	return StringUtil::ToLower(StringUtil::Trim(s));
 }
 } // namespace
 

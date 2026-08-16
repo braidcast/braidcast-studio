@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdio>
 
 #include "../chat/chat_transport.hpp"
 #include "../events/event_transport.hpp"
@@ -25,9 +26,27 @@ using JsonUtil::Str;
 
 // How one field's two values are reduced to something comparable. Text and Flag compare what
 // they render; CategoryId compares the platform id behind a name the user reads; StringSet
-// compares membership, case-folded and order-free, because a platform is free to re-case and
-// re-order a tag list without having changed it.
+// compares membership, order-free, because a platform is free to re-order a tag list without
+// having changed it.
 enum class Compare { Text, Flag, CategoryId, StringSet };
+
+// What a value is reduced by before the two sides meet. Both sides go through the SAME reduction,
+// and only the compared value is reduced -- what the streamer reads stays verbatim, so a
+// divergence never reports a value neither side actually holds.
+//
+// Trim is where the permissive line is drawn, and it is drawn tight: leading and trailing
+// whitespace, plus CR. That is the class of difference the notice cannot render and the streamer
+// cannot act on -- two values that draw identically while disagreeing by a byte. Internal
+// whitespace and the casing of free text stay compared: a streamer could have meant either, and
+// this gate is worth having only while it still reports the differences that are real.
+//
+// Fold also case-folds. It covers the tag lists, whose entries a platform may hand back re-cased,
+// and `language` -- which renders as free text but holds a BCP-47 tag, defined case-insensitively
+// by RFC 5646, so two differing only in case name one language and nothing actionable hides behind
+// the fold. No other text row is folded.
+//
+// A Flag row never consults its column -- its compared value is generated from a bool, not read.
+enum class Normalize { Trim, Fold };
 
 // EVERY metadata field the go-live read-back compares, and what a mismatch costs. A key absent
 // from this table is never compared, so ADDING A FIELD IS ONE ROW HERE -- and setting the third
@@ -41,19 +60,47 @@ struct FieldRule {
 	const char *label;
 	bool safety;
 	Compare compare;
+	Normalize normalize;
 };
 
 const std::array<FieldRule, 9> kFieldRules = {{
-	{"privacy", "Privacy", true, Compare::Text},
-	{"madeForKids", "Made for kids", true, Compare::Flag},
-	{"title", "Title", false, Compare::Text},
-	{"description", "Description", false, Compare::Text},
-	{"category", "Category", false, Compare::CategoryId},
-	{"tags", "Tags", false, Compare::StringSet},
-	{"language", "Language", false, Compare::Text},
-	{"contentLabels", "Content classification", false, Compare::StringSet},
-	{"brandedContent", "Branded content", false, Compare::Flag},
+	{"privacy", "Privacy", true, Compare::Text, Normalize::Trim},
+	{"madeForKids", "Made for kids", true, Compare::Flag, Normalize::Trim},
+	{"title", "Title", false, Compare::Text, Normalize::Trim},
+	{"description", "Description", false, Compare::Text, Normalize::Trim},
+	{"category", "Category", false, Compare::CategoryId, Normalize::Trim},
+	{"tags", "Tags", false, Compare::StringSet, Normalize::Fold},
+	{"language", "Language", false, Compare::Text, Normalize::Fold},
+	{"contentLabels", "Content classification", false, Compare::StringSet, Normalize::Fold},
+	{"brandedContent", "Branded content", false, Compare::Flag, Normalize::Trim},
 }};
+
+// One value reduced by its rule's policy. The ONE place a comparable string is made, so both sides
+// of a field are reduced by the same rule -- with a single deliberate exception, below: a safety
+// row whose non-empty value would reduce to empty keeps its raw value, so a whitespace-only value
+// can end up compared raw against a reduced one. That asymmetry is the fail-CLOSED direction (it
+// can only preserve a divergence, never create agreement), and it is the reason to keep it here
+// rather than at a call site, where it would be one more thing to remember to apply.
+std::string Reduce(const FieldRule &rule, const std::string &raw)
+{
+	// EVERY CR, not only the one in a CRLF pair: "a\r\nb", "a\nb" and "a\rb" all reduce alike.
+	// Wider than line-ending agreement alone, and stated that way rather than narrowed, because
+	// no field in the table can carry a lone CR that a streamer could have meant.
+	std::string value = raw;
+	value.erase(std::remove(value.begin(), value.end(), '\r'), value.end());
+	value = StringUtil::Trim(value);
+	if (rule.normalize == Normalize::Fold) {
+		value = StringUtil::ToLower(std::move(value));
+	}
+	// A reduction may never move a SAFETY field from divergent to equal, and emptying one is the
+	// only way it can: a platform that STATES an empty visibility reduces to "" as well, so a
+	// value that vanished here would agree with it and pass a go-live that was refused before.
+	// Falling back to the raw value leaves the pair exactly as unequal as it already was.
+	if (rule.safety && value.empty() && !raw.empty()) {
+		return raw;
+	}
+	return value;
+}
 
 std::string JoinValues(const std::vector<std::string> &values, const char *separator)
 {
@@ -67,6 +114,27 @@ std::string JoinValues(const std::vector<std::string> &values, const char *separ
 	return out;
 }
 
+// Where two reduced values first part company, for the gated read-back log: a byte offset and the
+// two bytes there. Deliberately NOT the values themselves -- a description runs to thousands of
+// characters, and a metadata bag is not something to spill into a log file -- and this is what
+// actually answers the question a divergence between two visibly identical strings poses.
+std::string DifferenceTrace(const std::string &want, const std::string &actual)
+{
+	size_t at = 0;
+	while (at < want.size() && at < actual.size() && want[at] == actual[at]) {
+		++at;
+	}
+	const auto byteAt = [](const std::string &s, size_t i) {
+		if (i >= s.size()) {
+			return std::string("past end");
+		}
+		char hex[8];
+		std::snprintf(hex, sizeof(hex), "0x%02x", static_cast<unsigned>(static_cast<unsigned char>(s[i])));
+		return std::string(hex);
+	};
+	return "byte " + std::to_string(at) + " (want " + byteAt(want, at) + ", actual " + byteAt(actual, at) + ")";
+}
+
 // Render one field out of a metadata bag: `cmp` is what two bags are compared by, `text` is what
 // the streamer reads. Returns false when the bag makes no assertion about this field -- an
 // untouched field cannot disagree with anything.
@@ -75,7 +143,10 @@ bool ReadField(const json &bag, const FieldRule &rule, std::string &cmp, std::st
 	switch (rule.compare) {
 	case Compare::Text:
 		text = Str(bag, rule.key);
-		cmp = text;
+		cmp = Reduce(rule, text);
+		// Presence is decided on the RAW value, never on the reduced one: a value that
+		// survives the bag but not the reduction has still been asserted, and calling it
+		// absent would send the requested side to the descriptor default instead.
 		return !text.empty();
 	case Compare::Flag: {
 		const json &value = Obj(bag, rule.key);
@@ -88,10 +159,12 @@ bool ReadField(const json &bag, const FieldRule &rule, std::string &cmp, std::st
 	}
 	case Compare::CategoryId: {
 		const json &category = Obj(bag, rule.key);
-		cmp = Str(category, "id");
+		const std::string id = Str(category, "id");
 		const std::string name = Str(category, "name");
-		text = name.empty() ? cmp : name;
-		return !cmp.empty();
+		text = name.empty() ? id : name;
+		cmp = Reduce(rule, id);
+		// The raw id decides presence, matching the Text branch above.
+		return !id.empty();
 	}
 	case Compare::StringSet: {
 		const json &list = Obj(bag, rule.key);
@@ -99,19 +172,24 @@ bool ReadField(const json &bag, const FieldRule &rule, std::string &cmp, std::st
 			return false;
 		}
 		std::vector<std::string> values;
+		std::vector<std::string> reduced;
 		for (const json &entry : list) {
-			if (entry.is_string() && !entry.get<std::string>().empty()) {
-				values.push_back(entry.get<std::string>());
+			if (!entry.is_string() || entry.get<std::string>().empty()) {
+				continue;
+			}
+			values.push_back(entry.get<std::string>());
+			// An entry that reduces to nothing is dropped from the comparison, so
+			// ["gaming", " "] compares equal to ["gaming"]. It cannot be told from one
+			// side simply not carrying it, and neither side can act on the difference.
+			// The rendered list still shows every entry the bag held.
+			std::string one = Reduce(rule, values.back());
+			if (!one.empty()) {
+				reduced.push_back(std::move(one));
 			}
 		}
 		text = JoinValues(values, ", ");
-		std::vector<std::string> folded;
-		folded.reserve(values.size());
-		for (const std::string &value : values) {
-			folded.push_back(StringUtil::ToLower(value));
-		}
-		std::sort(folded.begin(), folded.end());
-		cmp = JoinValues(folded, "\n");
+		std::sort(reduced.begin(), reduced.end());
+		cmp = JoinValues(reduced, "\n");
 		// An EMPTY list is a real assertion ("no tags"), unlike an absent key -- which is
 		// why every provider must omit the key rather than report an empty array for a
 		// field it could not read.
@@ -171,8 +249,13 @@ bool ReadRequested(const json &capability, const json &fields, const FieldRule &
 }
 
 // The whole comparison, in one place, over the table above: every field the platform stated and
-// this destination asserted, where the two disagree.
-std::vector<MetadataDivergence> DiffAppliedMetadata(const json &capability, const json &requested, const json &actual)
+// this destination asserted, where the two disagree. `acct` and `profileUuid` name whose comparison
+// this is and are read by the gated log ALONE -- one go-live runs this per destination and up to
+// three times each, so an unattributed line cannot be read back against what produced it. They are
+// taken unformatted so the key is built inside the gate: a destination key is two concatenations,
+// and the default path must not pay for a line it is not going to write.
+std::vector<MetadataDivergence> DiffAppliedMetadata(const json &capability, const json &requested, const json &actual,
+						    const OAuthAccount &acct, const std::string &profileUuid)
 {
 	std::vector<MetadataDivergence> out;
 	for (const FieldRule &rule : kFieldRules) {
@@ -191,6 +274,15 @@ std::vector<MetadataDivergence> DiffAppliedMetadata(const json &capability, cons
 		if (wantCmp == actualCmp) {
 			continue;
 		}
+		// The lengths and the first differing byte. The two values a divergence renders can
+		// be indistinguishable on screen while disagreeing here, and reading the two
+		// descriptions back out of a log would not narrow that down; a byte offset does.
+		// The sizes and the offset all describe the two strings the comparison above
+		// actually saw, whatever this row's policy made of them.
+		DBG(LogCat::OAuth,
+		    "%s readback divergence on %s: %zu vs %zu bytes as compared (%zu vs %zu as shown), first at %s",
+		    DestinationKey(DestinationId{AccountId(acct), profileUuid}).c_str(), rule.key, wantCmp.size(),
+		    actualCmp.size(), wantText.size(), actualText.size(), DifferenceTrace(wantCmp, actualCmp).c_str());
 		out.push_back(MetadataDivergence{rule.key, rule.label, wantText, actualText, rule.safety});
 	}
 	return out;
@@ -259,7 +351,8 @@ bool StreamProvider::confirmDestination(OAuthAccount &acct, const std::string &p
 		readback.unconfirmed = readErr.empty() ? displayName() + " did not report what it applied" : readErr;
 		return false;
 	}
-	std::vector<MetadataDivergence> fresh = DiffAppliedMetadata(capabilityJson(), requested, actual.fields);
+	std::vector<MetadataDivergence> fresh =
+		DiffAppliedMetadata(capabilityJson(), requested, actual.fields, acct, profileUuid);
 	for (MetadataDivergence &entry : fresh) {
 		entry.remedy = divergenceRemedy(entry.field);
 	}

@@ -74,12 +74,18 @@ json ChannelFields(const json &row)
 {
 	json out = json::object();
 	CopyString(row, "stream_title", out, "title");
+	// The cross-provider contract models a category id as a STRING (Twitch's game_id is one) while
+	// Kick sends a wire integer, so a number is stringified and a string is taken exactly as it
+	// stands -- including an empty one, which states an unset category the same way Twitch's does.
+	// Anything else, a missing key included, states NOTHING: routing an absent key through a
+	// numeric read would assert category "0" for a row that named no category, and a request the
+	// user did make disagrees with that over something Kick never said.
 	const json &category = Obj(row, "category");
-	if (category.is_object()) {
-		// Kick's category id is a wire integer, but the cross-provider contract models
-		// category id as a STRING (Twitch's game_id is a string), so stringify it here.
-		out["category"] =
-			json{{"id", std::to_string(NumLoose(category, "id"))}, {"name", Str(category, "name")}};
+	const json &categoryId = Obj(category, "id");
+	if (categoryId.is_number() || categoryId.is_string()) {
+		out["category"] = json{{"id", categoryId.is_string() ? categoryId.get<std::string>()
+								     : std::to_string(categoryId.get<int64_t>())},
+				       {"name", Str(category, "name")}};
 	}
 	// Tags live under stream.custom_tags (array of strings).
 	CopyStringList(Obj(row, "stream"), "custom_tags", out, "tags");

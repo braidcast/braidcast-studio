@@ -93,6 +93,7 @@ std::atomic<bool> g_liveViewsMissingLogged{false};
 std::atomic<bool> g_followersMissingLogged{false};
 
 using Http::AppendForm;
+using JsonUtil::CopyString;
 using JsonUtil::NumLoose;
 using JsonUtil::Obj;
 using JsonUtil::ParseJson;
@@ -574,8 +575,12 @@ bool FacebookProvider::readAppliedMetadata(OAuthAccount &acct, const std::string
 	}
 
 	const json j = ParseJson(resp.body);
-	out.fields["title"] = Str(j, "title");
-	out.fields["description"] = Str(j, "description");
+	// Copied only where the response carried a string, so a field this read did not state stays
+	// ABSENT rather than being stated empty. Str()'s "" would assert that the broadcast holds no
+	// title, which the destination's own title disagrees with on every go-live, and the diff
+	// cannot tell that invented answer from one Meta actually gave.
+	CopyString(j, "title", out.fields, "title");
+	CopyString(j, "description", out.fields, "description");
 	// A status that says nothing about visibility -- empty, or ended -- is left out, so the diff
 	// treats it as unknown. An unrecognized live status is the one exception, resolved toward
 	// published by PrivacyForStatus for the reason given there.

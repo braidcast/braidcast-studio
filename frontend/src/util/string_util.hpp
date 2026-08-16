@@ -45,6 +45,23 @@ inline std::string ToLower(std::string s)
 	return s;
 }
 
+// `s` without leading or trailing whitespace, over the whole ASCII whitespace set. The
+// general-purpose one, for wherever "do these two strings say the same thing" is asked -- a
+// .env value, a log-filter token, a value a platform echoed back.
+//
+// Not the only trim in the tree, and deliberately not: mcp/HttpServer.cpp keeps its own,
+// whose leading and trailing sets differ FROM EACH OTHER on purpose for HTTP OWS parsing.
+// Folding that one onto this would change header parsing, so leave it where it is.
+inline std::string Trim(const std::string &s)
+{
+	static constexpr char kSpace[] = " \t\n\v\f\r";
+	const size_t begin = s.find_first_not_of(kSpace);
+	if (begin == std::string::npos) {
+		return std::string();
+	}
+	return s.substr(begin, s.find_last_not_of(kSpace) - begin + 1);
+}
+
 // Case-sensitive suffix test. An empty suffix matches anything, matching
 // std::string::compare over a zero-length range.
 inline bool EndsWith(const std::string &s, const std::string &suffix)

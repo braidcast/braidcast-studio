@@ -18,23 +18,16 @@ std::optional<std::string> FromEnvFile(const char *path, const char *key)
 	if (!f) {
 		return std::nullopt;
 	}
-	const auto trim = [](std::string s) {
-		const size_t b = s.find_first_not_of(" \t\r");
-		if (b == std::string::npos) {
-			return std::string();
-		}
-		return s.substr(b, s.find_last_not_of(" \t\r") - b + 1);
-	};
 	std::string line;
 	while (std::getline(f, line)) {
 		const size_t eq = line.find('=');
 		if (eq == std::string::npos) {
 			continue;
 		}
-		if (trim(line.substr(0, eq)) != key) {
+		if (StringUtil::Trim(line.substr(0, eq)) != key) {
 			continue;
 		}
-		return trim(line.substr(eq + 1));
+		return StringUtil::Trim(line.substr(eq + 1));
 	}
 	return std::nullopt;
 }
