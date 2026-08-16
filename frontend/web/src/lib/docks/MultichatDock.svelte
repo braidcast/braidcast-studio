@@ -4,6 +4,8 @@
   import { PLATFORM_COLORS, PLATFORM_LABELS, platformKey } from "$lib/theme/platformColors";
   import { FeedVirtualizer, type FeedRow } from "$lib/utils/feedVirtualizer.svelte";
   import { callOrToast } from "$lib/utils/callToast";
+  import { fmtChatTime, isRealTimestamp } from "$lib/utils/format";
+  import { nowTickStore } from "$lib/stores/nowTickStore.svelte";
   import { destinationKey } from "$lib/api/destinationKeys";
   import { CHAT_STATE_NOTE, chatTransportFor, type ChatTransport } from "$lib/ui/destinationHealth";
   import EmptyState from "$lib/ui/EmptyState.svelte";
@@ -416,9 +418,38 @@
       feed.dispose();
     };
   });
+
+  // The relative timestamps only need to tick while this pane is actually on screen.
+  // Dockview hides an inactive tab by setting the panel's content div to display:none
+  // rather than unmounting it, so this component keeps running behind a tab switch --
+  // an IntersectionObserver on the dock's own root catches exactly that (it reports
+  // not-intersecting for an element with no layout box) without this file needing to
+  // know anything about the docking library. The clock's own window-visibility gating
+  // lives in nowTickStore; this only decides whether THIS pane holds a ref on it.
+  let chatEl: HTMLDivElement | undefined = $state();
+  $effect(() => {
+    if (!chatEl) return;
+    let offTick: (() => void) | null = null;
+    const observer = new IntersectionObserver((entries) => {
+      // Chromium can batch several records for one target into a single callback when
+      // changes accumulate; the most recent one is the one that reflects current state.
+      const visible = entries[entries.length - 1]?.isIntersecting ?? false;
+      if (visible && !offTick) {
+        offTick = nowTickStore.subscribe();
+      } else if (!visible && offTick) {
+        offTick();
+        offTick = null;
+      }
+    });
+    observer.observe(chatEl);
+    return () => {
+      observer.disconnect();
+      offTick?.();
+    };
+  });
 </script>
 
-<div class="chat">
+<div class="chat" bind:this={chatEl}>
   {#if scopeLabel}
     <div class="scopebar" title={"Reading " + scopeLabel}>{scopeLabel}</div>
   {/if}
@@ -440,6 +471,12 @@
               style:border-left-color={PLATFORM_COLOR[m.platform] || "var(--color-muted)"}
               use:measureRow={row.clientKey}
             >
+              <!-- Fixed-width leading gutter: the value's own width changes ("now" ->
+                   "45m" -> "14:32") as nowTickStore ticks, but the box does not, so
+                   later rows never reflow out from under it. -->
+              <span class="time" title={isRealTimestamp(m.ts) ? new Date(m.ts).toLocaleString() : ""}
+                >{fmtChatTime(m.ts, nowTickStore.nowMs)}</span
+              >
               {#if multiOrigin}
                 {@const o = attribute(m, destByAccount)}
                 <!-- The avatar is what tells two channels of one platform apart: they
@@ -592,6 +629,18 @@
     line-height: 1.5;
     color: var(--color-text);
     word-break: break-word;
+  }
+  /* min-width in ch (the font's own digit width) rather than a px guess -- the three
+     shapes fmtChatTime returns ("now", "45m", "14:32") top out at 5 characters, so this
+     is exactly wide enough for the longest and never resizes as a row's value grows. */
+  .time {
+    flex: 0 0 auto;
+    align-self: baseline;
+    min-width: 5ch;
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 10px;
+    color: var(--color-muted);
   }
   .origin {
     align-self: center;
