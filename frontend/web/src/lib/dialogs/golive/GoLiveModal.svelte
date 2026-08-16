@@ -125,8 +125,8 @@ import { EV } from "$lib/utils/eventNames";
   type SaveState = "idle" | "saving" | "saved" | "error";
   let channelSaveState = $state<Record<string, SaveState>>({});
   // Last push failure per accountId, rendered as a persistent strip in the channel
-  // card. The toast can't carry it: showToast's second arg is hover-title only and
-  // the visible line is a 4s nowrap one-liner, so reason + remedy must live here.
+  // card. The toast is transient and replaced by the next one; the strip persists next
+  // to the arm switch that is the remedy, which is what reason + remedy need.
   let channelSaveError = $state<Record<string, string>>({});
   const SAVE_LABEL: Record<SaveState, string> = {
     idle: "",
@@ -1220,10 +1220,9 @@ import { EV } from "$lib/utils/eventNames";
         void obs.call("streamMeta.forgetSent", { profileUuids: pushed }).catch(() => {});
       }
     };
-    // The card strip is the authoritative failure surface — persistent, wraps, and
-    // sits next to the arm switch that is the remedy. The toast below is only the
-    // attention-getter: its visible line truncates and dies in 4s, and its second
-    // arg surfaces solely as a hover title.
+    // The card strip is the authoritative failure surface — persistent, and sitting
+    // next to the arm switch that is the remedy. The toast below is only the
+    // attention-getter: it auto-dismisses and the next toast replaces it.
     // Prefer the decoded user message (the streamer-readable sentence, no method/
     // step prefixes) in the card; the diagnostic chain stays on message for the
     // toast's hover title.
@@ -1243,10 +1242,13 @@ import { EV } from "$lib/utils/eventNames";
       const names = fails.map((v) => v.name).join(", ");
       const reason = fails[0].reason?.message ?? "metadata push failed";
       const lead = goingLive ? "Not going live — couldn't update " : "Couldn't update ";
+      // Assertive only when this refuses a go-live, matching the hotkey/tray refusal. The
+      // update-info path blocks nothing and can run mid-broadcast, where interrupting a screen
+      // reader to report a failed edit is out of proportion to what happened.
       if (fails.length === 1) {
-        showToast(lead + fails[0].name + (goingLive ? "" : " stream info"), reason);
+        showToast(lead + fails[0].name + (goingLive ? "" : " stream info"), reason, { assertive: goingLive });
       } else {
-        showToast(lead + fails.length + " destinations", names);
+        showToast(lead + fails.length + " destinations", names, { assertive: goingLive });
       }
       if (goingLive) {
         forgetPushedMetadata();
@@ -1306,7 +1308,7 @@ import { EV } from "$lib/utils/eventNames";
         // is refused instead, since it only takes back what it recorded itself, at most
         // one profile per persistent channel. The cheaper loss wins.
         forgetPushedMetadata();
-        showToast("Go Live failed", (e as Error).message);
+        showToast("Go Live failed", (e as Error).message, { assertive: true });
         submitting = false;
         return;
       }

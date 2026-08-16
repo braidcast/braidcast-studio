@@ -33,8 +33,11 @@ import { EV } from "$lib/utils/eventNames";
   import ContextMenu, { type ContextMenuItem, type ContextMenuItems } from "$lib/menus/ContextMenu.svelte";
   import Icon from "$lib/ui/Icon.svelte";
   import StaleNotice from "$lib/ui/StaleNotice.svelte";
-  import MetadataMismatchNotice, { type MismatchRow } from "$lib/ui/MetadataMismatchNotice.svelte";
-  import { streamProfileStore } from "$lib/stores/streamProfileStore.svelte";
+  import {
+    showMetadataMismatchToast,
+    hideMetadataMismatchToast,
+    type MismatchRow,
+  } from "$lib/utils/metadataMismatchToast";
   import { openGoLiveModal } from "$lib/dialogs/golive/goLiveModalOpener.svelte";
   import { goLivePref } from "$lib/stores/goLivePrefStore.svelte";
   import { log } from "$lib/utils/log";
@@ -61,13 +64,31 @@ import { EV } from "$lib/utils/eventNames";
   // Destinations now streaming under something other than what was asked for, plus those whose
   // platform state could not be read back. Held on the page rather than in a store: it describes
   // one go-live attempt, and it is cleared by the stop edge that ends the broadcast it describes.
+  // Rows accumulate across the per-destination events of a single attempt; each arrival re-pushes
+  // the toast with the whole set.
   let metadataMismatches = $state<MismatchRow[]>([]);
-  // The notice unmounts on dismiss, taking the focused button with it. Focus goes to the control
-  // directly below rather than to nothing, which is where the browser would otherwise drop it.
+  // The toast unmounts taking the focused button with it, so focus goes to the GO LIVE button
+  // rather than to nothing. Kept apart from forgetMismatches below: this one fires on every
+  // teardown that leaves no toast up and was holding focus, including ones the user did not ask
+  // for (expiry, retraction). A replacement keeps focus on the incoming toast instead, and only
+  // reaches this when that toast has nothing focusable.
   let goLiveButton = $state<HTMLButtonElement | null>(null);
-  function dismissMismatches(): void {
+  let goLiveBar = $state<HTMLDivElement | null>(null);
+  function focusGoLive(): void {
+    // GO LIVE is disabled with no destinations bound and while a toggle is in flight; a disabled
+    // button silently swallows focus() and drops it on <body>. The bar it sits in is the next
+    // sensible landing place -- same corner, and Tab continues from there.
+    if (goLiveButton && !goLiveButton.disabled) {
+      goLiveButton.focus();
+      return;
+    }
+    goLiveBar?.focus();
+  }
+  // Only a deliberate dismissal discards the rows. Expiry, retraction and replacement must not:
+  // arrivals accumulate across one go-live, and clearing on any of those would rebuild the next
+  // destination's notice from an empty base and silently drop the ones already reported.
+  function forgetMismatches(): void {
     metadataMismatches = [];
-    goLiveButton?.focus();
   }
   // Shared host-pushed 1 Hz stats (also feeds the Stats dock + Monitor page).
   let stats = $derived(statsStore.stats);
@@ -336,6 +357,7 @@ import { EV } from "$lib/utils/eventNames";
       // belongs to the same attempt whose mismatches arrive just after it.
       if (!p.active) {
         metadataMismatches = [];
+        hideMetadataMismatchToast();
       }
     });
     const offViewers = viewerCountStore.subscribe();
@@ -355,27 +377,27 @@ import { EV } from "$lib/utils/eventNames";
       // Nothing is going live, so anything reported about this attempt describes a stream that
       // will not happen.
       metadataMismatches = [];
+      hideMetadataMismatchToast();
       const names = p.failures.map((f) => f.destination).join(", ");
+      // Announced assertively: nothing started, the streamer is sitting at the button waiting
+      // for it to, and a polite queue would hold that until they had moved on.
       showToast(
         p.failures.length === 1
           ? "Not going live — couldn't prepare " + p.failures[0].destination
           : "Not going live — couldn't prepare " + p.failures.length + " destinations",
         p.failures[0]?.reason ?? names,
+        { assertive: true },
       );
     });
-    // The sibling of the refusal above, and deliberately NOT a toast: this one says the stream
-    // is going out carrying something other than what was asked, which stays true for the whole
-    // broadcast and is only actionable while it runs. Subscribed HERE for the same reason the
-    // refusal is -- the hotkey, tray and scheduler paths open no modal, and the Stream
-    // Information dialog is closed by the time the go-live prelude answers.
+    // The sibling of the refusal above: this one says the stream is going out carrying something
+    // other than what was asked. Subscribed HERE for the same reason the refusal is -- the
+    // hotkey, tray and scheduler paths open no modal, and the Stream Information dialog is
+    // closed by the time the go-live prelude answers.
     //
     // Rows are keyed by destination so a re-attempt replaces that destination's entry rather
     // than stacking a second one; the modal path emits one event per destination, so arrivals
     // accumulate across events within a single go-live.
     const offMismatch = obs.on(EV.streamingMetadataMismatch, (p) => {
-      // The names come from the profile store, which the C++ side cannot reach off the UI
-      // thread; make sure it is running before a row asks it for one.
-      streamProfileStore.start();
       const incoming = p.destinations;
       metadataMismatches = [
         ...metadataMismatches.filter(
@@ -383,6 +405,21 @@ import { EV } from "$lib/utils/eventNames";
         ),
         ...incoming,
       ];
+      // A pure retraction (streamMeta.forgetSent sends `cleared` with no destinations) only
+      // removes information. Withdraw the notice if nothing is left, but do not raise a fresh
+      // 9-second one for the rows that happen to survive -- nothing new was reported about them.
+      if (incoming.length === 0) {
+        if (metadataMismatches.length === 0) {
+          hideMetadataMismatchToast();
+        }
+        return;
+      }
+      // `anyRunning` is authoritative here: streaming.changed's start edge lands before these
+      // arrive, so a push answered before anything went live still reads as pre-live.
+      showMetadataMismatchToast(metadataMismatches, anyRunning, {
+        onUserDismiss: forgetMismatches,
+        onFocusReturn: focusGoLive,
+      });
     });
     return () => {
       offStatus();
@@ -880,14 +917,11 @@ import { EV } from "$lib/utils/eventNames";
     <DockHost {onReady} />
   </div>
 
-  <!-- Sits between the docks and the GO LIVE bar: the strip the streamer is already looking at
-       when they go live, and the last thing above the button they would press to stop. -->
-  <!-- Always mounted: the component draws nothing without rows, and its live region has to exist
-       before it has something to announce. -->
-  <MetadataMismatchNotice rows={metadataMismatches} streaming={anyRunning} ondismiss={dismissMismatches} />
-
   <!-- BOTTOM BAR : GO LIVE (variant B — segmented, GO LIVE as right-edge block). -->
-  <div class="golive-bar">
+  <!-- tabindex -1 so a dismissed toast has somewhere to hand focus back to when GO LIVE itself
+       is disabled; not in the Tab order. -->
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+  <div class="golive-bar" bind:this={goLiveBar} tabindex="-1">
     <div class="bb-left">
       {#if liveState === "live"}
         <span class="livebadge">

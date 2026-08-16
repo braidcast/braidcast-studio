@@ -38,6 +38,17 @@ export function titleState(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
+// Names a set in a sentence: "Twitch", "Twitch and Kick", "Twitch, Kick and 2 more". One shape
+// for every surface that lists destinations or fields, so they cannot drift apart on how many
+// they spell out before collapsing the rest into a count.
+export function joinNames(items: string[], limit = 3): string {
+  const parts = items.length > limit ? [...items.slice(0, limit), `${items.length - limit} more`] : items;
+  if (parts.length < 2) {
+    return parts[0] ?? "";
+  }
+  return parts.slice(0, -1).join(", ") + " and " + parts[parts.length - 1];
+}
+
 // Frame rate from a numerator/denominator pair: a fractional rate (den > 1) reads to
 // two decimals (59.94), an integer rate (or a missing/zero den) reads whole (60).
 export function fmtFps(num: number, den: number): string {

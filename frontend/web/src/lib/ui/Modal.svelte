@@ -102,7 +102,7 @@
   // only the topmost Escape owner acts.
   let escToken: symbol | undefined;
   $effect(() => {
-    escToken = pushEsc();
+    escToken = pushEsc("modal");
     return () => {
       if (escToken) popEsc(escToken);
       escToken = undefined;
