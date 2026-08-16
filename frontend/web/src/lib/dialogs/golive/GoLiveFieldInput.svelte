@@ -3,6 +3,9 @@
   import GoLiveTagsInput from "$lib/dialogs/golive/GoLiveTagsInput.svelte";
   import GoLiveCategoryInput from "$lib/dialogs/golive/GoLiveCategoryInput.svelte";
   import Icon from "$lib/ui/Icon.svelte";
+  // The id→display-name map the chat/event surfaces already key by providerId, rather
+  // than a second table: its labels are the providers' own displayName() strings.
+  import { PLATFORM_LABELS, platformKey } from "$lib/theme/platformColors";
   import { isEmptyVal, isRequiredEnum, normOpt, resolveRequiredEnum } from "$lib/dialogs/golive/fieldValue";
 
   // The single descriptor-driven field widget. Dispatch is by `field.type` only —
@@ -22,8 +25,8 @@
     /** Inherit cue: the human-readable inherited value, shown when this control holds
      * nothing of its own. The value it names is what the host will receive, so a control
      * that dropped the cue would report no value while one is pushed. Controls that CAN
-     * show it as an ordinary value do (a select lands on the matching option, a category
-     * and an image render as a set one would); the free-text controls show it as a
+     * show it as an ordinary value do (a select lands on the matching option; a category,
+     * an image and a tag list render as set ones would); the free-text controls show it as a
      * placeholder, which is the only way to keep an inheriting field from reading as
      * edited. The row's own "↳ using …" tag is what marks the state in every case. */
     ghostText?: string;
@@ -202,11 +205,15 @@
 {#if field.type === "tags"}
   <!-- The descriptor itself carries the tag limits, so it IS the limits object: passing it
        under the narrower prop type keeps the control reading exactly the four keys the
-       provider declares, with nothing in between to fall out of step with them. -->
+       provider declares, with nothing in between to fall out of step with them.
+       The inherited list is handed over as the ARRAY behind the cue rather than as the
+       joined text of it: a tag control renders each one as its own chip, and re-splitting
+       a sentence it was just given would be the second parse of one value. -->
   <GoLiveTagsInput
     values={arr}
-    ghostLabel={showGhost ? ghostLabel : ""}
+    ghostValues={showGhost && Array.isArray(ghostValue) ? (ghostValue as string[]) : []}
     limits={field}
+    platform={PLATFORM_LABELS[platformKey(providerId)] ?? ""}
     {accent}
     onChange={(v) => onChange(v)}
   />

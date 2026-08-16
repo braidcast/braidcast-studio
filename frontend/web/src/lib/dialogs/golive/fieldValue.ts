@@ -42,6 +42,24 @@ export function isEmptyVal(type: string, v: unknown): boolean {
   }
 }
 
+// Type-aware value equality, used to tell a genuine per-channel divergence from a value
+// that merely echoes the shared default. Plain === is wrong for category (two equal
+// {id,name} objects are distinct references) and tags (array identity), which would
+// reintroduce the spurious "overrides shared" chip.
+export function valuesEqual(type: string, a: unknown, b: unknown): boolean {
+  if (type === "category") {
+    const ai = a && typeof a === "object" ? (a as { id?: string }).id : undefined;
+    const bi = b && typeof b === "object" ? (b as { id?: string }).id : undefined;
+    return ai === bi;
+  }
+  if (type === "tags" || type === "labelset") {
+    const aa = Array.isArray(a) ? [...(a as unknown[])].sort() : [];
+    const bb = Array.isArray(b) ? [...(b as unknown[])].sort() : [];
+    return aa.length === bb.length && aa.every((v, i) => v === bb[i]);
+  }
+  return a === b;
+}
+
 // How far one field's value may legitimately travel. Reach is a property of the field's
 // VALUE SPACE, not of the dialog: a category id means something different on every
 // platform, and a tag Twitch's applyMetadata hard-rejects (lowercase alphanumeric, no
@@ -138,7 +156,18 @@ export interface TagAdmission {
 //
 // A duplicate of something already kept is absorbed silently rather than refused: it is
 // the existing collapse behavior, it consumes no slot, and it is not a limit anyone broke.
-export function admitTags(kept: string[], incoming: string[], limits: TagLimits): TagAdmission {
+//
+// `platform` is the display name of the one platform these limits belong to, and it is
+// named in the refusal because the rules differ per platform: a list Twitch caps at ten
+// lowercase words is a list YouTube takes whole. A sentence that says only "tags must be
+// lowercase" leaves the streamer to guess who is refusing. "" when the caller has no
+// descriptor and therefore no platform either.
+export function admitTags(
+  kept: string[],
+  incoming: string[],
+  limits: TagLimits,
+  platform = "",
+): TagAdmission {
   const charset = limits.tagCharset ? TAG_CHARSETS[limits.tagCharset] : undefined;
   const accepted: string[] = [];
   const rejected: string[] = [];
@@ -170,15 +199,18 @@ export function admitTags(kept: string[], incoming: string[], limits: TagLimits)
     used += tag.length;
   }
 
+  // Every reason is worded to read with or without the platform in front of it, so an
+  // unnamed platform costs a subject rather than a broken sentence.
+  const who = platform === "" ? "" : platform + " ";
   const reasons: string[] = [];
   if (brokeRule) {
-    reasons.push(`tags must be ${tagRuleText(limits)}`);
+    reasons.push(`${who}tags must be ${tagRuleText(limits)}`);
   }
   if (brokeCount) {
-    reasons.push(`only ${limits.maxTags} tags allowed`);
+    reasons.push(`${who}tags are capped at ${limits.maxTags}`);
   }
   if (brokeTotal) {
-    reasons.push(`tags may total ${limits.maxTotalChars} characters`);
+    reasons.push(`${who}tags may total ${limits.maxTotalChars} characters`);
   }
   // Quotes the single refused tag so the sentence names the text still sitting in the box;
   // a longer list would make the sentence unreadable, so that one counts instead.
