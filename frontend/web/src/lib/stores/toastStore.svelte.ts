@@ -3,6 +3,15 @@
 // shown (no stacking). `seq` lets the view re-key so a repeated message restarts its
 // enter animation. App owns the single Toast mount; any module calls showToast.
 
+/** One thing the toast offers to do about what it is reporting. An undo is the case it
+ *  exists for: an action that is cheap to take, unrecoverable once the toast is gone, and
+ *  not worth a confirmation dialog on the way in. Taking it dismisses the toast. */
+export interface ToastAction {
+  /** The word on the button, and what a speech-input user says to press it. */
+  label: string;
+  onAction: () => void;
+}
+
 export interface ToastOptions {
   /** Extra lines under the headline. Their presence switches the toast from one
    *  truncating line to a wrapping block. */
@@ -16,6 +25,11 @@ export interface ToastOptions {
   assertive?: boolean;
   /** Render a dismiss button. */
   dismissible?: boolean;
+  /** An action button ahead of the dismiss control. It lives exactly as long as the toast
+   *  does, so a pusher offering one is saying the window is short on purpose — give it a
+   *  longer `durationMs` and name it in `announce`, since a reader hears the announcement
+   *  rather than seeing the button. */
+  action?: ToastAction;
   durationMs?: number;
   /** Identifies the pusher so it can withdraw its own toast without swallowing a newer
    *  one someone else put up in the meantime. */
@@ -44,6 +58,7 @@ export interface ToastState {
   announce: string;
   assertive: boolean;
   dismissible: boolean;
+  action?: ToastAction;
   kind: string;
   onFocusReturn?: () => void;
   onUserDismiss?: () => void;
@@ -67,6 +82,7 @@ export function showToast(message: string, title: string, opts: ToastOptions = {
     announce: opts.announce ?? message,
     assertive: opts.assertive ?? false,
     dismissible: opts.dismissible ?? false,
+    action: opts.action,
     kind: opts.kind ?? "",
     onFocusReturn: opts.onFocusReturn,
     onUserDismiss: opts.onUserDismiss,

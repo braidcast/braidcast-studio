@@ -16,6 +16,7 @@
   import { onMount, onDestroy } from "svelte";
   import { obs, type OverlayListItem, type OverlayUpdateParams, type OverlayWidget } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
+  import { copyText } from "$lib/utils/clipboard";
   import CodeGrid, { type CodePart } from "$lib/overlays/CodeGrid.svelte";
   import FieldsPanel from "$lib/overlays/FieldsPanel.svelte";
   import { labelFor, WIDGET_TYPES } from "$lib/overlays/widgetTypes";
@@ -479,14 +480,14 @@ import { EV } from "$lib/utils/eventNames";
   }
 
   async function copyUrl(item: OverlayListItem): Promise<void> {
-    try {
-      await navigator.clipboard.writeText(item.url);
-      copiedId = item.id;
-      clearTimeout(copiedTimer);
-      copiedTimer = setTimeout(() => (copiedId = null), 1400);
-    } catch (e) {
-      error = "Copy failed: " + (e as Error).message;
+    const failure = await copyText(item.url);
+    if (failure !== null) {
+      error = "Copy failed: " + failure;
+      return;
     }
+    copiedId = item.id;
+    clearTimeout(copiedTimer);
+    copiedTimer = setTimeout(() => (copiedId = null), 1400);
   }
 
   async function addToScene(item: OverlayListItem): Promise<void> {

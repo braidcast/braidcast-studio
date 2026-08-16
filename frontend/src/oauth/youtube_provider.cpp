@@ -880,8 +880,14 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 		categoryId = Str(fields["category"], "id");
 	}
 
+	// Whether the key was there at all, kept apart from what it held: an empty list is the
+	// caller stating "no tags" and an absent key is the caller stating nothing, and only the
+	// first is an instruction to act on. The same distinction Twitch and Kick draw by
+	// assigning body["tags"] inside this branch.
 	json tags = json::array();
+	bool tagsStated = false;
 	if (fields.contains("tags") && fields["tags"].is_array()) {
+		tagsStated = true;
 		for (const json &t : fields["tags"]) {
 			if (t.is_string() && !t.get<std::string>().empty()) {
 				tags.push_back(t.get<std::string>());
@@ -957,9 +963,13 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 		// 4. videos.update -- category + tags live on the video, not the broadcast.
 		// part=snippet REPLACES the whole snippet, so title + categoryId must be
 		// re-sent or the call 400s / wipes them. Only worth a call when a category was
-		// chosen or tags exist; categoryId 24 (Entertainment) is a safe assignable
-		// default needed only when tags exist without a chosen category.
-		if (!categoryId.empty() || !tags.empty()) {
+		// chosen or tags were stated; categoryId 24 (Entertainment) is a safe assignable
+		// default needed only when tags are stated without a chosen category.
+		//
+		// Stated, not non-empty: clearing a video's tags is a stated empty list, and
+		// gating on what the list HOLDS would make that the one edit this step silently
+		// declines to perform -- the button says the tags are gone and they are not.
+		if (!categoryId.empty() || tagsStated) {
 			const std::string effectiveCategory = categoryId.empty() ? "24" : categoryId;
 			json videoSnippet = json{
 				{"title", title},

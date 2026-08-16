@@ -553,9 +553,16 @@
                     {#if tagsField}
                       <div class="sub">
                         <div class="f-label">{tagsField.label.toUpperCase()}</div>
+                        <!-- No onReset, because a scheduled row has no layer under it to
+                             fall back to and no unset state to return to: an empty list here
+                             means "leave the channel's own tags alone" (ScheduledSetup.cpp
+                             omits the key for it), not the clear the same empty list means in
+                             the Go Live dialog. So "Remove all" empties the row rather than
+                             instructing a clear, and Reset is not offered at all. -->
                         <GoLiveTagsInput
+                          field={tagsField}
+                          providerId={provider.id}
                           values={m.tags}
-                          limits={tagsField}
                           onChange={(next) => patchMeta(d.profileUuid, { tags: next })}
                         />
                       </div>

@@ -2,6 +2,7 @@
   import { tick } from "svelte";
   import Modal from "$lib/ui/Modal.svelte";
   import { obs } from "$lib/api/bridge";
+  import { copyText } from "$lib/utils/clipboard";
 
   interface Props {
     onClose: () => void;
@@ -41,13 +42,13 @@
   });
 
   async function copy() {
-    try {
-      await navigator.clipboard.writeText(contents);
-      copied = true;
-      setTimeout(() => (copied = false), 1500);
-    } catch (e) {
-      error = (e as Error).message;
+    const failure = await copyText(contents);
+    if (failure !== null) {
+      error = failure;
+      return;
     }
+    copied = true;
+    setTimeout(() => (copied = false), 1500);
   }
 
   async function openFolder() {

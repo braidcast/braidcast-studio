@@ -108,6 +108,16 @@
     hideToast();
     after?.();
   }
+
+  // Taking the action ends the toast: it reported something, the user answered it, and a
+  // notice still offering an undo that has already been taken would invite a second press.
+  // Not onUserDismiss -- that one means "I am done with this", which is the opposite of
+  // having acted on it, and the pusher uses it to discard exactly the state an undo needs.
+  function takeAction(): void {
+    const act = toast.current?.action?.onAction;
+    hideToast();
+    act?.();
+  }
 </script>
 
 <span class="sr-only" role="status">{polite}</span>
@@ -128,6 +138,9 @@
           <span class="line">{line}</span>
         {/each}
       </div>
+      {#if toast.current.action}
+        <button class="action" type="button" onclick={takeAction}>{toast.current.action.label}</button>
+      {/if}
       {#if toast.current.dismissible}
         <button class="close" type="button" aria-label="Dismiss notification" onclick={userDismiss}>
           <Icon name="x" size={13} />
@@ -189,6 +202,35 @@
 
   .line {
     color: var(--color-dim);
+  }
+
+  /* Reads as the one thing to press here: accent text against the toast's own muted detail,
+     floored at WCAG 2.5.8's 24px by padding rather than by type size, and never wrapped --
+     a two-line "Undo" beside a message that is already ellipsing is unreadable. Aligned to
+     the first line, since the body beside it can be several. */
+  .action {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    min-height: 24px;
+    margin: -3px 0;
+    padding: 0 6px;
+    background: none;
+    border: 0;
+    color: var(--color-accent);
+    font: inherit;
+    letter-spacing: inherit;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+
+  .action:hover {
+    background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  }
+
+  .action:focus-visible {
+    outline: var(--border-weight) solid var(--color-accent);
+    outline-offset: 1px;
   }
 
   .close {

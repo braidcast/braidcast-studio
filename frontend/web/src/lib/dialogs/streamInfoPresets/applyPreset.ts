@@ -2,6 +2,7 @@ import type { OAuthProvider, OAuthProviderField, StreamInfoPreset } from "$lib/a
 import {
   ALL_LAYER,
   inheritLayers,
+  isBlankVal,
   isEmptyVal,
   resolveRequiredEnum,
   valuesEqual,
@@ -43,9 +44,13 @@ export function uncarriableFields(provider: OAuthProvider): OAuthProviderField[]
 }
 
 /** What this preset actually states for `provider`: one entry per declared field the
- * preset holds a non-empty value for, skipping every field it says nothing about.
- * Silence is not an instruction to blank a field, so an omitted key produces no entry
- * and every caller leaves that field alone. */
+ * preset holds a value for, skipping every field it says nothing about. Silence is not an
+ * instruction to blank a field, so an omitted key produces no entry and every caller
+ * leaves that field alone.
+ *
+ * A stated empty tag list is not silence — isEmptyVal keeps the two apart for that type —
+ * so a sheet saved from a channel the user deliberately cleared re-applies the clear
+ * rather than quietly leaving the next channel's tags standing. */
 export function presetValuesFor(preset: StreamInfoPreset, provider: OAuthProvider): PresetFieldValue[] {
   const out: PresetFieldValue[] = [];
   for (const field of provider.fields) {
@@ -271,9 +276,10 @@ export function collectPreset(sources: PresetSource[]): CollectedPreset {
  * Read per field rather than by comparing whole sheets: resolveRequiredEnum(field, "") is
  * the same call effectiveFields makes for an all-empty field, so a held value equal to it
  * is provably one no layer held. It answers "" for everything that is not a required enum,
- * and collectPreset has already dropped every empty value, so any other held value is
- * something the user typed. That also covers the plainly-empty sheet: nothing held, nothing
- * to disagree with a default, no intent.
+ * and collectPreset has already dropped every unset value, so any other held value is one
+ * the user stated — including a stated empty tag list, which is an intent ("send none")
+ * rather than the absence of one. That also covers the plainly-empty sheet: nothing held,
+ * nothing to disagree with a default, no intent.
  *
  * This gates PERSISTENCE only. A sheet still carries its defaults, so applying one sets
  * them -- dropping them from the payload would make the preset fail to set a privacy it
@@ -354,6 +360,18 @@ export function schedulePatchFor(preset: StreamInfoPreset, provider: OAuthProvid
     const column = Object.hasOwn(SCHEDULE_COLUMNS, field.key) ? SCHEDULE_COLUMNS[field.key] : undefined;
     if (!column) {
       dropped.push(field.label);
+      continue;
+    }
+    // A stated empty list is an instruction this editor cannot carry. A scheduled row's
+    // empty tags mean "leave the channel's own alone" -- ScheduledSetup.cpp omits the key
+    // for them -- so there is no empty value here that means "send none". Writing one in
+    // would erase the tags the row already holds while meaning the opposite of that, so
+    // the row is left exactly as it was found. Every other type's empty value never
+    // reaches this loop, presetValuesFor having dropped it already.
+    //
+    // Below the lookup above, so a field this row has no column for is still reported as
+    // dropped rather than silently skipped for being empty.
+    if (isBlankVal(field.type, value)) {
       continue;
     }
     const applied = column(value);

@@ -15,6 +15,7 @@ import { EV } from "$lib/utils/eventNames";
   import {
     ALL_LAYER,
     inheritLayers,
+    isBlankVal,
     isEmptyVal,
     isPerDestination,
     normOpt,
@@ -45,6 +46,7 @@ import { EV } from "$lib/utils/eventNames";
   import { streamProfileStore } from "$lib/stores/streamProfileStore.svelte";
   import { oauthStore, isStaleToken } from "$lib/stores/oauthStore.svelte";
   import { showToast } from "$lib/stores/toastStore.svelte";
+  import { joinTags } from "$lib/ui/tagsInput";
   import Avatar from "$lib/ui/Avatar.svelte";
   import GoLiveFieldInput from "$lib/dialogs/golive/GoLiveFieldInput.svelte";
   import Icon from "$lib/ui/Icon.svelte";
@@ -391,7 +393,7 @@ import { EV } from "$lib/utils/eventNames";
   function inheritedGhostText(f: OAuthProviderField, providerId: string): string {
     const held = inheritedShownValue(f, providerId);
     if (f.type === "tags" || f.type === "labelset") {
-      return Array.isArray(held) ? held.join(", ") : "";
+      return Array.isArray(held) ? joinTags(held) : "";
     }
     if (f.type === "category") {
       return held && typeof held === "object" ? ((held as { name?: string }).name ?? "") : "";
@@ -470,6 +472,16 @@ import { EV } from "$lib/utils/eventNames";
 
   function isOverridden(id: string, f: OAuthProviderField): boolean {
     return !isEmptyVal(f.type, channelValues[id]?.[f.key]);
+  }
+
+  // Whether that channel value overrides ANYTHING. A value against a layer holding nothing
+  // is still this channel's own — the control keeps its accent — but it displaces nothing,
+  // and calling it an override of "your <Platform> default" names a default that does not
+  // exist. Reachable wherever a channel is filled before the layer under it ever is, and
+  // routinely for a cleared tag list, which the prefill routing deliberately never promotes
+  // into the bucket (see the price paragraph there).
+  function overridesLayer(id: string, f: OAuthProviderField, providerId: string): boolean {
+    return isOverridden(id, f) && !isEmptyVal(f.type, inheritedShownValue(f, providerId));
   }
 
   // Whether an empty value in this control means "inherit the layer below" rather than
@@ -1088,10 +1100,15 @@ import { EV } from "$lib/utils/eventNames";
         // Channel bag: saved base, live over — a provider reporting a value now outranks the
         // one remembered from last time, and an empty live read leaves the remembered one
         // standing rather than blanking it.
+        //
+        // isBlankVal, not isEmptyVal: a platform reporting an empty tag list is stating that
+        // its channel holds none, which the frontend reads as a set value everywhere the
+        // user is the author of it. Here the author is the platform, and taking its
+        // observation as an instruction would blank a remembered list on every open.
         const merged: Record<string, unknown> = { ...saved.channel };
         for (const { key, type } of LIVE_META_FIELDS) {
           const v = live?.[key];
-          if (!isEmptyVal(type, v)) {
+          if (!isBlankVal(type, v)) {
             merged[key] = v;
           }
         }
@@ -1139,10 +1156,24 @@ import { EV } from "$lib/utils/eventNames";
                 setStreamField(s.profileUuid, key, val);
               }
             }
-          } else if (bucket) {
-            if (touchedLayers.has(touchedKey(bucket, key))) {
-              continue;
-            }
+            // Hoisted above both bucket paths below: a layer the user has edited by hand is
+            // theirs, and prefill neither seeds it NOR routes around it by writing the same
+            // key one layer up, which would shadow what they just typed.
+          } else if (bucket && touchedLayers.has(touchedKey(bucket, key))) {
+            continue;
+            // An absence does not generalize. Seeding a bucket is "first channel wins", which
+            // is right for a title two channels really do share -- but a stated empty tag list
+            // says only that THIS channel is to send none, and promoting it would make one
+            // channel's clear the platform default and push it to a sibling whose own tags this
+            // app has never read (routinely so on YouTube, whose live metadata is empty). It
+            // stays with the channel that stated it, which pushes exactly the same clear.
+            //
+            // The price is paid by a clear made in the SHARED block: it is saved per channel,
+            // so it comes back as one value per channel rather than as the shared one it was,
+            // and every row then reads "— set for this channel" instead. Identical bytes go
+            // out and the rows say what they hold, which is the cheaper of the two wrongs
+            // against pushing a clear to a destination nobody aimed it at.
+          } else if (bucket && !isBlankVal(type, val)) {
             const held = layerValues[bucket]?.[key];
             if (isEmptyVal(type, held)) {
               writeLayer(bucket, key, val);
@@ -1762,11 +1793,13 @@ import { EV } from "$lib/utils/eventNames";
                   <!-- Fields with a layer below, as per-channel overrides of it. While
                        inheriting, the control shows the inherited value the way a chosen one
                        looks and the tag alone says it is inherited; amber marks a channel
-                       that diverges. The tag names the layer, so a value shared only among
-                       this platform's channels never reads as one shared with every
-                       platform. -->
+                       holding its own value. The tag names the layer, so a value shared only
+                       among this platform's channels never reads as one shared with every
+                       platform — and drops the claim of overriding it when that layer holds
+                       nothing, which is a divergence from no one. -->
                   {#each simpleInherited(c.provider) as f (f.key)}
                     {@const filled = isOverridden(c.accountId, f)}
+                    {@const over = overridesLayer(c.accountId, f, c.provider.id)}
                     {@const layer = inheritLabel(f, c.provider)}
                     {@render fieldRow(f, getVal(c.accountId, f.key), (v) => setField(c.accountId, f.key, v), {
                       providerId: c.provider.id,
@@ -1775,14 +1808,18 @@ import { EV } from "$lib/utils/eventNames";
                       ghostValue: inheritedShownValue(f, c.provider.id),
                       inheritable: inheritsBelow(f, "channel", c.provider.id),
                       accent: filled,
-                      tag: filled ? "— overrides " + layer : "↳ using " + layer,
+                      tag: over
+                        ? "— overrides " + layer
+                        : filled
+                          ? "— set for this channel"
+                          : "↳ using " + layer,
                       hint: hintFor(
                         f,
                         getVal(c.accountId, f.key),
                         "channel",
                         c.accountId,
                         c.provider.id,
-                        filled ? layer : null,
+                        over ? layer : null,
                       ),
                     })}
                   {/each}

@@ -2,6 +2,7 @@
   import { obs, type McpConfig, type McpSetConfigParams } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
   import { callOrToast } from "$lib/utils/callToast";
+  import { clipboardAvailable, copyText } from "$lib/utils/clipboard";
   import PageShell from "$lib/ui/PageShell.svelte";
 
   // MCP control page. Logic mirrors McpTab.svelte (load + mcp.changed subscription,
@@ -14,9 +15,6 @@ import { EV } from "$lib/utils/eventNames";
   let showToken = $state(false);
   let copied = $state<"" | "endpoint" | "token">("");
   let copyTimer: ReturnType<typeof setTimeout> | undefined;
-
-  const clipboardAvailable =
-    typeof navigator !== "undefined" && !!navigator.clipboard && typeof navigator.clipboard.writeText === "function";
 
   function load(): void {
     obs
@@ -76,19 +74,15 @@ import { EV } from "$lib/utils/eventNames";
   }
 
   async function copy(which: "endpoint" | "token", value: string): Promise<void> {
-    if (!clipboardAvailable) {
+    if ((await copyText(value)) !== null) {
+      // Copy is best-effort; ignore failures.
       return;
     }
-    try {
-      await navigator.clipboard.writeText(value);
-      copied = which;
-      if (copyTimer) {
-        clearTimeout(copyTimer);
-      }
-      copyTimer = setTimeout(() => (copied = ""), 1400);
-    } catch {
-      // Copy is best-effort; ignore failures.
+    copied = which;
+    if (copyTimer) {
+      clearTimeout(copyTimer);
     }
+    copyTimer = setTimeout(() => (copied = ""), 1400);
   }
 
   const maskedToken = $derived(cfg ? (showToken ? cfg.token : "•".repeat(Math.min(cfg.token.length, 32))) : "");
@@ -124,7 +118,7 @@ import { EV } from "$lib/utils/eventNames";
               <span class="field-label">Endpoint</span>
               <div class="inline">
                 <code class="code grow">{cfg.endpoint}</code>
-                {#if clipboardAvailable}
+                {#if clipboardAvailable()}
                   <button class="copy-btn" onclick={() => void copy("endpoint", cfg!.endpoint)}>
                     {copied === "endpoint" ? "Copied" : "Copy"}
                   </button>
@@ -139,7 +133,7 @@ import { EV } from "$lib/utils/eventNames";
                 <button class="copy-btn" onclick={() => (showToken = !showToken)}>
                   {showToken ? "Hide" : "Show"}
                 </button>
-                {#if clipboardAvailable}
+                {#if clipboardAvailable()}
                   <button class="copy-btn" onclick={() => void copy("token", cfg!.token)}>
                     {copied === "token" ? "Copied" : "Copy"}
                   </button>

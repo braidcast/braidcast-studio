@@ -3,9 +3,6 @@
   import GoLiveTagsInput from "$lib/dialogs/golive/GoLiveTagsInput.svelte";
   import GoLiveCategoryInput from "$lib/dialogs/golive/GoLiveCategoryInput.svelte";
   import Icon from "$lib/ui/Icon.svelte";
-  // The id→display-name map the chat/event surfaces already key by providerId, rather
-  // than a second table: its labels are the providers' own displayName() strings.
-  import { PLATFORM_LABELS, platformKey } from "$lib/theme/platformColors";
   import { isEmptyVal, isRequiredEnum, normOpt, resolveRequiredEnum } from "$lib/dialogs/golive/fieldValue";
 
   // The single descriptor-driven field widget. Dispatch is by `field.type` only —
@@ -203,19 +200,27 @@
 </script>
 
 {#if field.type === "tags"}
-  <!-- The descriptor itself carries the tag limits, so it IS the limits object: passing it
-       under the narrower prop type keeps the control reading exactly the four keys the
-       provider declares, with nothing in between to fall out of step with them.
+  <!-- The two empties are handed over apart: an array is this layer's own list however
+       short, and `undefined` is the layer stating nothing, which is the only one that lets
+       the inherited list apply. Collapsing them is what made clearing an inheriting
+       channel's tags a no-op — and `onReset` is the way back to the second one, offered
+       here because every layer this widget renders has an unset state.
        The inherited list is handed over as the ARRAY behind the cue rather than as the
        joined text of it: a tag control renders each one as its own chip, and re-splitting
-       a sentence it was just given would be the second parse of one value. -->
+       a sentence it was just given would be the second parse of one value. Ungated by
+       showGhost, because the control needs to know what it would fall back TO even while
+       this layer holds a list of its own — and because an inherited EMPTY list joins to ""
+       and so raises no cue at all, while being the one inherited value that acts: it sends
+       a clear. It reaches the control as the array it is, undefined standing for a layer
+       below that states nothing, so the control can tell those two apart. -->
   <GoLiveTagsInput
-    values={arr}
-    ghostValues={showGhost && Array.isArray(ghostValue) ? (ghostValue as string[]) : []}
-    limits={field}
-    platform={PLATFORM_LABELS[platformKey(providerId)] ?? ""}
+    {field}
+    {providerId}
+    values={Array.isArray(value) ? (value as string[]) : undefined}
+    inheritedValues={Array.isArray(ghostValue) ? (ghostValue as string[]) : undefined}
     {accent}
     onChange={(v) => onChange(v)}
+    onReset={() => onChange(undefined)}
   />
 {:else if field.type === "category"}
   <GoLiveCategoryInput
