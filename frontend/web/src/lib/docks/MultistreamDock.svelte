@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import type { OutputBindingInfo, MultistreamState } from "$lib/api/bridge";
   import { canvasStore } from "$lib/stores/canvasStore.svelte";
   import {
@@ -7,7 +8,11 @@
     isBindingDangling,
     isBindingUnset,
   } from "$lib/stores/outputBindingStore.svelte";
-  import { multistreamStatusStore, bindingRowState, bindingRowDetail } from "$lib/stores/multistreamStatusStore.svelte";
+  import {
+    multistreamStatusStore,
+    bindingRowState,
+    bindingRowDetail,
+  } from "$lib/stores/multistreamStatusStore.svelte";
   import { destinationIdentityStore } from "$lib/stores/destinationIdentityStore.svelte";
   import { viewerCountStore } from "$lib/stores/viewerCountStore.svelte";
   import { STATE_COLOR_EXT } from "$lib/theme/stateColors";
@@ -72,18 +77,106 @@
     return known === 0 ? null : { total, partial: known < enabled.length };
   }
 
-  // Canvases with >=1 binding, in canvas.list order (each carries its own rows).
-  const groups = $derived(
-    canvases
-      .map((c) => ({ canvas: c, rows: outputBindingStore.forCanvas(c.uuid) }))
-      .filter((g) => g.rows.length > 0),
-  );
-  const hasAny = $derived(groups.length > 0);
-
   // The strongest live state across a canvas's enabled bindings (drives the header dot).
   function canvasState(rows: OutputBindingInfo[]): MultistreamState | "off" {
     return multistreamStatusStore.deriveCanvasState(rows);
   }
+
+  // Per-uuid tier snapshot (0 = enabled, 1 = disabled), taken at a structural
+  // boundary -- mount, or the canvas/binding uuid SET changing -- never merely
+  // because `enabled` flipped. `groups` below sorts the LIVE store arrays by this
+  // snapshot: a toggle changes `enabled` without changing its tier, so the row's
+  // sort key -- and therefore its position -- doesn't move until the next
+  // boundary. Sorting live data rather than holding a separate order list leaves
+  // nothing to orphan or grow unboundedly.
+  //
+  // Re-homing a binding to another canvas changes no uuid, so it does not trigger
+  // a re-snapshot: bindingTier stays right, but canvasTier can hold a canvas at
+  // the enabled tier after it loses its last enabled binding. Ordering only, and
+  // it corrects on the next add/remove.
+  let canvasTier = $state<Map<string, 0 | 1>>(new Map());
+  let bindingTier = $state<Map<string, 0 | 1>>(new Map());
+
+  // Order-independent fingerprint of an id list, so the *same* uuid set in a
+  // different order doesn't read as a structural change. A store-side reorder
+  // therefore propagates immediately rather than waiting for a re-snapshot: the
+  // tiers stay correct across it, and the stable sort below preserves whatever
+  // new order the store hands back within each tier.
+  function idsKey(ids: string[]): string {
+    return ids.slice().sort().join(",");
+  }
+  let lastIdsKey = "";
+
+  // Rebuilds canvasTier/bindingTier from the current stores. Called only from
+  // inside the untrack() below, so every `.enabled` read here is a one-off
+  // snapshot, never a live dependency of the trigger effect.
+  function snapshotTiers(): void {
+    const bindings = outputBindingStore.bindings;
+    const nextBindingTier = new Map<string, 0 | 1>();
+    const canvasHasEnabled = new Set<string>();
+    for (const b of bindings) {
+      nextBindingTier.set(b.uuid, b.enabled ? 0 : 1);
+      if (b.enabled) {
+        canvasHasEnabled.add(b.canvasUuid);
+      }
+    }
+    bindingTier = nextBindingTier;
+
+    const nextCanvasTier = new Map<string, 0 | 1>();
+    for (const c of canvases) {
+      nextCanvasTier.set(c.uuid, canvasHasEnabled.has(c.uuid) ? 0 : 1);
+    }
+    canvasTier = nextCanvasTier;
+  }
+
+  // Structural-boundary trigger: reads only `.uuid` fields outside untrack(), so a
+  // binding's `.enabled` write -- the synchronous two-way-bound toggle, or the
+  // refresh() it triggers -- never becomes a dependency of this effect regardless
+  // of what snapshotTiers reads. outputBindingStore/canvasStore replace their
+  // arrays wholesale on every refresh (including a toggle's), so this still fires
+  // then; the idsKey comparison inside untrack() is what turns that into a no-op
+  // unless a canvas/binding actually entered or left the set.
+  $effect(() => {
+    const canvasIds = canvases.map((c) => c.uuid);
+    const bindingIds = outputBindingStore.bindings.map((b) => b.uuid);
+    untrack(() => {
+      const key = `${idsKey(canvasIds)}|${idsKey(bindingIds)}`;
+      if (key === lastIdsKey) {
+        return;
+      }
+      lastIdsKey = key;
+      snapshotTiers();
+    });
+  });
+
+  // Canvases with >=1 binding, sorted by the snapshot tiers above. Stable within
+  // each tier. `.get(uuid) ?? 0` defaults an id the snapshot hasn't caught up to
+  // yet (a canvas/binding created after the last boundary) into the enabled tier
+  // rather than dropping or misplacing it -- true today because
+  // OutputBinding::enabled defaults false server-side, so a brand-new binding is
+  // disabled and this default only ever matters for the split second before the
+  // next boundary catches up.
+  const groups = $derived.by(() => {
+    const rowsByCanvas = new Map<string, OutputBindingInfo[]>();
+    for (const b of outputBindingStore.bindings) {
+      const list = rowsByCanvas.get(b.canvasUuid);
+      if (list) {
+        list.push(b);
+      } else {
+        rowsByCanvas.set(b.canvasUuid, [b]);
+      }
+    }
+    return canvases
+      .filter((c) => (rowsByCanvas.get(c.uuid)?.length ?? 0) > 0)
+      .map((c) => ({
+        canvas: c,
+        rows: (rowsByCanvas.get(c.uuid) ?? [])
+          .slice()
+          .sort((a, b) => (bindingTier.get(a.uuid) ?? 0) - (bindingTier.get(b.uuid) ?? 0)),
+      }))
+      .sort((a, b) => (canvasTier.get(a.canvas.uuid) ?? 0) - (canvasTier.get(b.canvas.uuid) ?? 0));
+  });
+  const hasAny = $derived(groups.length > 0);
 
   async function toggleCanvas(rows: OutputBindingInfo[]): Promise<void> {
     if (rows.length === 0) return;
