@@ -6,6 +6,7 @@
     type OAuthProviderField,
     type OAuthStatus,
     type ScheduleEntryInfo,
+    type StreamInfoPreset,
     type StreamMeta,
     type StreamProfileInfo,
   } from "$lib/api/bridge";
@@ -18,7 +19,19 @@ import { EV } from "$lib/utils/eventNames";
     isPerDestination,
     normOpt,
     resolveRequiredEnum,
+    valuesEqual,
   } from "$lib/dialogs/golive/fieldValue";
+  import {
+    carriesIntent,
+    collectPreset,
+    presetClearSites,
+    presetLabel,
+    presetLayerWrites,
+    uncarriedFields,
+  } from "$lib/dialogs/streamInfoPresets/applyPreset";
+  import PresetPicker from "$lib/dialogs/streamInfoPresets/PresetPicker.svelte";
+  import { streamInfoPresetStore } from "$lib/stores/streamInfoPresetStore.svelte";
+  import { joinNames } from "$lib/utils/format";
   import { openOAuthConnect, isOAuthConnecting } from "$lib/dialogs/oauthConnectOpener.svelte";
   import { MS_MIN } from "$lib/pages/schedule/layout";
   import { canvasStore } from "$lib/stores/canvasStore.svelte";
@@ -302,24 +315,6 @@ import { EV } from "$lib/utils/eventNames";
   }
   function streamOverrideCount(uuid: string, p: OAuthProvider): number {
     return overrideKeys(p, streamOverrides[uuid] ?? {}).length;
-  }
-
-  // Type-aware value equality, used to tell a genuine per-channel divergence from a
-  // value that merely echoes the shared default. Plain === is wrong for category (two
-  // equal {id,name} objects are distinct references) and tags (array identity), which
-  // would reintroduce the spurious "overrides shared" chip.
-  function valuesEqual(type: string, a: unknown, b: unknown): boolean {
-    if (type === "category") {
-      const ai = a && typeof a === "object" ? (a as { id?: string }).id : undefined;
-      const bi = b && typeof b === "object" ? (b as { id?: string }).id : undefined;
-      return ai === bi;
-    }
-    if (type === "tags" || type === "labelset") {
-      const aa = Array.isArray(a) ? [...(a as unknown[])].sort() : [];
-      const bb = Array.isArray(b) ? [...(b as unknown[])].sort() : [];
-      return aa.length === bb.length && aa.every((v, i) => v === bb[i]);
-    }
-    return a === b;
   }
 
   // The nearest layer this field's channel control inherits from, or undefined when it has
@@ -901,6 +896,101 @@ import { EV } from "$lib/utils/eventNames";
     closeGoLiveModal();
   }
 
+  let presetPickerOpen = $state(false);
+  // The sheet last loaded, kept rather than the sentence about it: which fields could not
+  // be carried is a property of the channels currently armed, and that set moves while the
+  // modal is open. Deriving the sentence means arming or disarming a channel re-answers it
+  // instead of leaving a stale one on screen naming a platform no longer in the go-live.
+  let appliedPreset = $state<StreamInfoPreset | null>(null);
+
+  // One channel as the shared preset rules take it.
+  function presetTarget(c: Channel, provider: OAuthProvider) {
+    return { provider, accountId: c.accountId, profileUuids: c.streams.map((s) => s.profileUuid) };
+  }
+  // The armed channels a preset is APPLIED to -- the ones this go-live will push.
+  const presetTargets = $derived(
+    armedConnectedChannels.flatMap((c) => (c.provider ? [presetTarget(c, c.provider)] : [])),
+  );
+  // The wider scope the CLEAR reaches: every channel this modal renders, armed or not.
+  // Deliberately `channels` rather than the armed or connected subsets -- the hazard is a
+  // channelValues entry surviving a state change, and a channel can be disarmed, re-armed,
+  // or go stale-token and back while the modal is open. Predicting which states a channel
+  // will pass through is not something the clear should have to get right; a channel with
+  // no resolved provider declares no carriable field and so contributes nothing anyway.
+  const presetClearScope = $derived(channels.flatMap((c) => (c.provider ? [presetTarget(c, c.provider)] : [])));
+
+  // Every armed channel's resolved values, which is both what a preset would be collected
+  // from and what tells whether two channels disagree. Derived rather than computed at
+  // confirm so the disagreement can be reported while it can still be acted on -- confirm
+  // closes this modal, so a sentence produced there is never read.
+  const presetSources = $derived(
+    armedConnectedChannels.flatMap((c) =>
+      c.provider ? [{ provider: c.provider, resolved: effectiveFields(c, undefined) }] : [],
+    ),
+  );
+  const presetCollection = $derived(collectPreset(presetSources));
+
+  // What loading a sheet did and what remembering one cannot do. Both halves are derived,
+  // never latched: which fields a preset could not carry, and which ones the destinations
+  // disagree about, are properties of the channels currently armed, and that set moves
+  // while the modal is open.
+  const presetNote = $derived.by(() => {
+    const parts: string[] = [];
+    const preset = appliedPreset;
+    if (preset) {
+      parts.push(`Loaded "${presetLabel(preset)}".`);
+      // Named from the descriptors, never from a provider id: a field a preset cannot
+      // carry is one whose value belongs to a single channel or addresses a single
+      // destination, and which fields those are is the provider's own declaration.
+      const missed = uncarriedFields(presetTargets.map((t) => t.provider));
+      if (missed.length > 0) {
+        const names = missed.map((m) => `${m.label} (${m.providerName})`);
+        parts.push(
+          `Saved info can't carry ${joinNames(names)} — ${
+            missed.length === 1 ? "that stays" : "those stay"
+          } as already set on the destination.`,
+        );
+      }
+    }
+    // Only while Remember is on: with it off nothing is being saved, so a sentence about
+    // what the save leaves out would describe an action that is not happening.
+    if (remember && presetCollection.conflicts.length > 0) {
+      const labels = presetCollection.conflicts;
+      parts.push(
+        `Remember won't save ${joinNames(labels)} — your destinations hold different ${
+          labels.length === 1 ? "values for it" : "values for them"
+        }, and saved info keeps one per field. Everything else is saved.`,
+      );
+    }
+    return parts.join(" ");
+  });
+
+  // Load one saved sheet into the layers, per key and never wholesale. A key the preset
+  // states is written to the bucket its scope names AND cleared from the two layers that
+  // outrank it -- the inherit layer is the LOWEST priority in effectiveFields, so writing
+  // it under a channel value that is still there would look like the load did nothing. A
+  // key the preset is silent about is left alone at all three layers: silence is not an
+  // instruction to blank a field.
+  //
+  // streamOverrideOn is deliberately not touched. Clearing is key-scoped, so a stream that
+  // was overriding {title, privacy} ends up overriding {privacy} -- which is exactly "the
+  // sheet set the title everywhere" and leaves the deliberate privacy override standing.
+  function applyPreset(preset: StreamInfoPreset): void {
+    const writes = presetLayerWrites(preset, presetTargets);
+    for (const w of writes) {
+      setLayerField(w.bucket, w.key, w.value);
+    }
+    // Clearing reaches wider than the write: the buckets written above are global, so every
+    // channel that reads one has to stop outranking it, not just the armed ones.
+    for (const site of presetClearSites(writes, presetClearScope)) {
+      delete channelValues[site.accountId]?.[site.key];
+      for (const uuid of site.profileUuids) {
+        delete streamOverrides[uuid]?.[site.key];
+      }
+    }
+    appliedPreset = preset;
+  }
+
   // Resolve effective values through the layers and push them: a stream override wins over
   // the channel default, which wins over the nearest inherit layer the field's scope names
   // (a field scoped to the channel has none). Empty fields are never emitted at any
@@ -1171,6 +1261,14 @@ import { EV } from "$lib/utils/eventNames";
     const jobs = armedConnectedChannels.flatMap((c) =>
       c.streams.map((s) => ({ channel: c, stream: s, fields: effectiveFields(c, s) })),
     );
+    // Snapshotted here rather than read after the pushes below: this is a $derived over
+    // live modal state, and every successful streamMeta.set emits streamMeta.changed,
+    // whose prefill() re-derives the very channel values it reads. Reading it afterwards
+    // would save a sheet the note never described -- a conflict appearing (or vanishing)
+    // inside the await window. The click is the last moment the note was on screen, so
+    // the click is the state to keep.
+    const collected = presetCollection;
+    const collectedSources = presetSources;
     const results = await Promise.allSettled(
       jobs.map((j) =>
         obs.call("streamMeta.set", {
@@ -1267,6 +1365,28 @@ import { EV } from "$lib/utils/eventNames";
     // and re-apply on the next go-live) WITHOUT unaddressing the stream. An empty result
     // clears the entry outright, which is what a channel with no addressing wants.
     if (remember) {
+      // Two stores, and this toggle feeds BOTH. streamMeta.save keeps remembering each
+      // channel's own defaults for the next go-live exactly as it always has; the preset
+      // is additionally a named sheet the user re-applies by hand from the picker above.
+      // Neither replaces the other -- dropping the save would change what the next
+      // go-live prefills, dropping the preset would leave the picker with nothing to
+      // offer. The two do not always run together: the save runs for every armed channel,
+      // while the preset is skipped when this go-live states nothing of the user's own
+      // (see carriesIntent). Fired without awaiting for the same reason the save is: a
+      // slow write must never hold up going live.
+      // The collection as it stood at the click, which is what the note above reported on,
+      // so what the user was told would be left out is exactly what is left out. Any
+      // conflicting key is already absent from this sheet rather than resolved to one
+      // channel's value.
+      const sheet = collected.sheet;
+      // A sheet of nothing but descriptor defaults would upsert onto itself forever under
+      // one "Untitled" row, costing a slot out of a small budget for a preset that states
+      // nothing to re-apply.
+      if (carriesIntent(sheet, collectedSources)) {
+        void streamInfoPresetStore.remember(sheet).catch(() => {
+          console.warn("streamInfoPresets.remember: this go-live was not saved as a preset");
+        });
+      }
       void Promise.allSettled(
         armedConnectedChannels.map((c) => {
           const streams: Record<string, Record<string, unknown>> = {};
@@ -1431,6 +1551,22 @@ import { EV } from "$lib/utils/eventNames";
             </button>
           {/if}
         </div>
+      {/if}
+
+      {#if armedConnectedChannels.length > 0}
+        <!-- Saved stream info: the same offer shape as the schedule banner above, because
+             it is the same kind of thing -- values loaded in as a starting point, editable
+             afterwards, sent by nothing but the Go Live below. -->
+        <div class="schedbar">
+          <span class="msg">Reuse a saved stream info sheet — the title, description and tags you keep per game.</span>
+          <button type="button" class="schedbtn" onclick={() => (presetPickerOpen = true)}>
+            Saved info
+          </button>
+        </div>
+        <!-- Announced, not merely rendered: loading a sheet rewrites many fields at once
+             and this sentence is the only statement of what happened -- including what was
+             left out, which is the half a user cannot infer from the form. -->
+        <p class="note presetnote" role="status">{presetNote}</p>
       {/if}
 
       <!-- Shared defaults: the union of connected providers' cross-provider-scoped fields
@@ -1789,6 +1925,14 @@ import { EV } from "$lib/utils/eventNames";
   {/snippet}
 </Modal>
 
+{#if presetPickerOpen}
+  <PresetPicker
+    title="Saved Stream Info"
+    onPick={applyPreset}
+    onClose={() => (presetPickerOpen = false)}
+  />
+{/if}
+
 <style>
   .live-dot {
     flex: 0 0 auto;
@@ -1866,6 +2010,15 @@ import { EV } from "$lib/utils/eventNames";
   .schedbtn:disabled {
     opacity: 0.5;
     cursor: default;
+  }
+  /* Pulled up under the saved-info bar so it reads as that bar's outcome rather than as
+     a note about the block below it. Kept in the DOM while empty -- a live region has to
+     be present BEFORE its text changes to be announced -- so it collapses instead. */
+  .presetnote {
+    margin: -6px 0 12px;
+  }
+  .presetnote:empty {
+    display: none;
   }
   /* Stands in for the button once applied, so the offer never reads as untaken. */
   .schedok {

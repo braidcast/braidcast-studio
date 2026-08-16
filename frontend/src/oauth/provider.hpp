@@ -271,6 +271,15 @@ json DivergencesJson(const std::vector<MetadataDivergence> &divergences);
 // path that reaches a refusal.
 std::string DivergenceSummary(const std::vector<MetadataDivergence> &divergences);
 
+// A stable identity string for a metadata bag, for telling one saved preset from another.
+// Built from the SAME field table and the SAME reductions the go-live read-back compares by,
+// so two bags that could never report a divergence against each other yield one string: text
+// trimmed but case- and internal-whitespace-preserving, tags order-free and folded, a category
+// by its platform id, a flag as yes/no, and a field the bag makes no assertion about left out
+// entirely. A field outside that table (thumbnail, latency, dvr, ...) does not participate --
+// two bags differing only there are deliberately ONE preset.
+std::string MetadataIdentity(const json &bag);
+
 // The runtime context the framework hands an AuthStrategy for one interactive
 // grant. `emitProgress` reports a phase payload to JS (wired to the
 // `oauth.connectProgress` event on the UI thread); a top-level `openUrl` key in a

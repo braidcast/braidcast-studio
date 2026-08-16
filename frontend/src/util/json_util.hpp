@@ -107,6 +107,17 @@ inline const json &Obj(const json &j, const char *key)
 	return it == j.end() ? kNull : *it;
 }
 
+// The object at `j[key]`, or a shared empty object when the key is missing or holds something
+// that is not an object. The sibling of Obj for a caller that wants a BAG or nothing: Obj hands
+// back whatever is there, so a string or a number would be read field-by-field as all-absent
+// and the wrong shape would never be noticed.
+inline const json &ObjOrEmpty(const json &j, const char *key)
+{
+	static const json kEmpty = json::object();
+	const json &value = Obj(j, key);
+	return value.is_object() ? value : kEmpty;
+}
+
 // Copy the string at `src[key]` into `out[outKey]`, and ONLY when `src` actually carries a string
 // there -- an absent or wrong-typed field leaves `out` untouched rather than writing "". Returns
 // whether the copy happened, so a caller that owes an explanation for a field it could not read

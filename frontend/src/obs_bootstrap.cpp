@@ -60,6 +60,7 @@
 #include "multistream/MultistreamEngine.hpp"
 #include "multistream/OutputBindingStore.hpp"
 #include "multistream/SceneLinkStore.hpp"
+#include "multistream/StreamInfoPresetStore.hpp"
 #include "multistream/StreamMetaStore.hpp"
 #include "multistream/StorePaths.hpp"
 #include "multistream/StreamProfileStore.hpp"
@@ -438,6 +439,11 @@ GlobalAudioChannels g_globalAudio;
 // with no teardown state of its own.
 StreamMetaStore g_streamMeta;
 
+// The saved stream-info presets. Same shape as g_streamMeta: trivial ctor, Load()ed early
+// in Start(), a plain member with no teardown state of its own. Its own file so a corrupt
+// presets document cannot cost the user their remembered defaults.
+StreamInfoPresetStore g_streamInfoPresets;
+
 // The stream-history database and its two users. Db migrates at Start(); a failure
 // degrades history to unavailable rather than aborting startup, because streaming
 // must never depend on the archive. All three are UI-thread-only.
@@ -738,6 +744,7 @@ void LoadMultistreamModel()
 	}
 	g_streamProfiles.Load();
 	g_streamMeta.Load();
+	g_streamInfoPresets.Load();
 	g_outputBindings.Load();
 	// Canvases loaded above, so a binding pointing at one that is gone is provably
 	// an orphan rather than a load-ordering artifact.
@@ -806,6 +813,11 @@ VirtualCamManager &ObsBootstrap::VirtualCam()
 ::StreamMetaStore &ObsBootstrap::StreamMeta()
 {
 	return g_streamMeta;
+}
+
+::StreamInfoPresetStore &ObsBootstrap::StreamInfoPresets()
+{
+	return g_streamInfoPresets;
 }
 
 History::SessionStore &ObsBootstrap::Sessions()

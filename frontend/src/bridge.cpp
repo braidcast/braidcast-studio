@@ -87,6 +87,7 @@
 #include "multistream/OutputBindingStore.hpp"
 #include "multistream/SceneLinkStore.hpp"
 #include "multistream/StorePaths.hpp"
+#include "multistream/StreamInfoPresetStore.hpp"
 #include "multistream/StreamMetaStore.hpp"
 #include "multistream/StreamProfileStore.hpp"
 #include "multistream/VideoGate.hpp"
@@ -11610,6 +11611,78 @@ bool MethodStreamMetaSave(const json &params, json &result, std::string &error)
 	return PersistOrFail(saved, error);
 }
 
+// ---- saved stream info presets ---------------------------------------------
+//
+// The reusable "stream info sheets" a streamer re-applies each broadcast, held in
+// StreamInfoPresetStore (stream_info_presets.json). Like streamMeta.* these touch no
+// provider and no network, so they stay on the synchronous methods table -- the store is
+// UI-thread-only and unguarded, exactly as StreamMetaStore is.
+
+bool MethodStreamInfoPresetsList(const json & /*params*/, json &result, std::string & /*error*/)
+{
+	result = json{{"presets", ObsBootstrap::StreamInfoPresets().List()}};
+	return true;
+}
+
+bool MethodStreamInfoPresetsRemember(const json &params, json &result, std::string &error)
+{
+	StreamInfoPresetStore &store = ObsBootstrap::StreamInfoPresets();
+	bool created = false;
+	// A bag the dialog left out, or sent as something other than an object, is "nothing
+	// asserted" -- which is an empty bag. Refusing the call would cost the user a preset
+	// over a provider section they never filled in.
+	const std::string id = store.Remember(JsonUtil::ObjOrEmpty(params, "shared"),
+					      JsonUtil::ObjOrEmpty(params, "byProvider"), created);
+	const bool saved = store.Save();
+	result = json{{"id", id}, {"created", created}};
+	EmitEvent(EventNames::kStreamInfoPresetsChanged, json::object());
+	return PersistOrFail(saved, error);
+}
+
+// The tail the three id-addressed preset mutations share: refuse an id the store does not
+// hold, then persist and tell the UI. `verb` names the attempt in the error.
+bool FinishPresetMutation(const char *verb, const std::string &id, bool applied, json &result, std::string &error)
+{
+	if (!applied) {
+		error = std::string("could not ") + verb + " stream info preset " + id + ": no such preset";
+		return false;
+	}
+	const bool saved = ObsBootstrap::StreamInfoPresets().Save();
+	result = json{{"ok", true}};
+	EmitEvent(EventNames::kStreamInfoPresetsChanged, json::object());
+	return PersistOrFail(saved, error);
+}
+
+bool MethodStreamInfoPresetsTouch(const json &params, json &result, std::string &error)
+{
+	std::string id;
+	if (!RequireStr(params, "streamInfoPresets.touch", "id", id, error)) {
+		return false;
+	}
+	return FinishPresetMutation("touch", id, ObsBootstrap::StreamInfoPresets().Touch(id), result, error);
+}
+
+bool MethodStreamInfoPresetsRemove(const json &params, json &result, std::string &error)
+{
+	std::string id;
+	if (!RequireStr(params, "streamInfoPresets.remove", "id", id, error)) {
+		return false;
+	}
+	return FinishPresetMutation("remove", id, ObsBootstrap::StreamInfoPresets().Remove(id), result, error);
+}
+
+bool MethodStreamInfoPresetsRename(const json &params, json &result, std::string &error)
+{
+	std::string id;
+	if (!RequireStr(params, "streamInfoPresets.rename", "id", id, error)) {
+		return false;
+	}
+	// The name is read with OptString, not required: an empty one is a real instruction --
+	// it returns the row to the UI's title fallback.
+	const std::string name = OptString(params, "name");
+	return FinishPresetMutation("rename", id, ObsBootstrap::StreamInfoPresets().Rename(id, name), result, error);
+}
+
 // ---- chat (Phase 9.0) ------------------------------------------------------
 //
 // The multichat send/state surface, routed through the ChatHub (Chat::Hub()).
@@ -12592,6 +12665,11 @@ void Init()
 		{"streamMeta.getSaved", MethodStreamMetaGetSaved},
 		{"streamMeta.save", MethodStreamMetaSave},
 		{"streamMeta.forgetSent", MethodStreamMetaForgetSent},
+		{"streamInfoPresets.list", MethodStreamInfoPresetsList},
+		{"streamInfoPresets.remember", MethodStreamInfoPresetsRemember},
+		{"streamInfoPresets.touch", MethodStreamInfoPresetsTouch},
+		{"streamInfoPresets.remove", MethodStreamInfoPresetsRemove},
+		{"streamInfoPresets.rename", MethodStreamInfoPresetsRename},
 		{"events.list", MethodEventsList},
 		{"events.clear", MethodEventsClear},
 		{"overlays.list", MethodOverlaysList},

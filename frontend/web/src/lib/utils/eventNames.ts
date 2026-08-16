@@ -32,6 +32,7 @@ export const EV = {
   virtualCamChanged: "virtualCam.changed",
   undoChanged: "undo.changed",
   streamMetaChanged: "streamMeta.changed",
+  streamInfoPresetsChanged: "streamInfoPresets.changed",
   sceneItemsChanged: "sceneItems.changed",
   sceneItemSelected: "sceneItem.selected",
   previewContextMenu: "preview.contextMenu",

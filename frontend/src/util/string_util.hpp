@@ -62,6 +62,21 @@ inline std::string Trim(const std::string &s)
 	return s.substr(begin, s.find_last_not_of(kSpace) - begin + 1);
 }
 
+// Append `part` to `out` so the concatenation can only be read one way: the part's byte
+// length, a ':', then the bytes verbatim. For building an identity string out of several
+// values -- a key and its value, a provider id and its bag -- where joining on a delimiter
+// would be forgeable. The values are free text a streamer typed, so whatever byte was
+// chosen as the delimiter is a byte some value may carry, and a value carrying one would
+// move a boundary and let two different value sets build the same string. A length prefix
+// leaves nothing to forge: a reader is told how far the part runs and never looks for a
+// terminator, so the byte sequence decodes back to exactly one list of parts.
+inline void AppendLengthPrefixed(std::string &out, const std::string &part)
+{
+	out += std::to_string(part.size());
+	out += ':';
+	out += part;
+}
+
 // Case-sensitive suffix test. An empty suffix matches anything, matching
 // std::string::compare over a zero-length range.
 inline bool EndsWith(const std::string &s, const std::string &suffix)

@@ -1,9 +1,16 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import type { OAuthProviderField, ScheduleDestinationInfo, ScheduleEntryInfo } from "$lib/api/bridge";
+  import type {
+    OAuthProviderField,
+    ScheduleDestinationInfo,
+    ScheduleEntryInfo,
+    StreamInfoPreset,
+  } from "$lib/api/bridge";
   import GoLiveCategoryInput from "$lib/dialogs/golive/GoLiveCategoryInput.svelte";
   import GoLiveFieldInput from "$lib/dialogs/golive/GoLiveFieldInput.svelte";
   import GoLiveTagsInput from "$lib/dialogs/golive/GoLiveTagsInput.svelte";
+  import PresetPicker from "$lib/dialogs/streamInfoPresets/PresetPicker.svelte";
+  import { presetLabel, schedulePatchFor } from "$lib/dialogs/streamInfoPresets/applyPreset";
   import {
     destinationIdentityStore,
     unarmedLabel,
@@ -17,6 +24,7 @@
   import Modal from "$lib/ui/Modal.svelte";
   import PlatformMark from "$lib/ui/PlatformMark.svelte";
   import ToggleSwitch from "$lib/ui/ToggleSwitch.svelte";
+  import { joinNames } from "$lib/utils/format";
   import {
     destinationConflicts,
     formatDuration,
@@ -181,6 +189,65 @@
     const next = { id: m.categoryId, name: m.category };
     catByProfile.set(profileId, next);
     return next;
+  }
+
+  let presetPickerOpen = $state(false);
+  // Both halves of what the last load did: how far it reached, and what a planned entry
+  // has no room for. The second half is the one that must never be silent -- a sheet
+  // whose description simply vanished would read as applied.
+  let presetNote = $state("");
+
+  // Loads a saved sheet into the selected rows, resolved through each destination's own
+  // provider: which fields a preset states for a platform is the provider's declaration,
+  // so a sheet holding a Twitch category does not put that id on a YouTube row.
+  //
+  // Written through patchMeta, never by assigning `meta`, so the category control's
+  // identity cache keeps its held {id,name} for rows this does not change. User-triggered
+  // by construction -- the form is initialised once, untracked, and nothing else writes it.
+  function applyPreset(preset: StreamInfoPreset): void {
+    const dropped = new Set<string>();
+    const malformed = new Set<string>();
+    let reached = 0;
+    for (const d of selected) {
+      const provider = providerOf(d);
+      if (!provider) {
+        continue;
+      }
+      const patched = schedulePatchFor(preset, provider);
+      for (const label of patched.dropped) {
+        dropped.add(label);
+      }
+      for (const label of patched.malformed) {
+        malformed.add(label);
+      }
+      // An empty patch is not a destination reached: a sheet whose every value was
+      // unusable would otherwise be counted as applied to a row it never touched.
+      if (Object.keys(patched.patch).length > 0) {
+        patchMeta(d.profileUuid, patched.patch);
+        reached += 1;
+      }
+    }
+    const parts = [
+      `Loaded "${presetLabel(preset)}" into ${reached} ${reached === 1 ? "destination" : "destinations"}.`,
+    ];
+    // A planned entry stores a title, a category and tags per destination and nothing
+    // else, so anything else the sheet carries has nowhere to go here. Said in words
+    // rather than dropped, and named from what the sheet actually held.
+    if (dropped.size > 0) {
+      parts.push(
+        `A scheduled entry stores only a title, a category and tags, so ${joinNames([...dropped])} ${
+          dropped.size === 1 ? "is" : "are"
+        } not applied to it — set that in Stream Information when you go live.`,
+      );
+    }
+    if (malformed.size > 0) {
+      parts.push(
+        `${joinNames([...malformed])} could not be read from this preset and ${
+          malformed.size === 1 ? "was" : "were"
+        } left as ${malformed.size === 1 ? "it is" : "they are"}.`,
+      );
+    }
+    presetNote = parts.join(" ");
   }
 
   function isEmptyMeta(m: DestMeta): boolean {
@@ -413,7 +480,12 @@
 
     {#if selected.length > 0}
       <div class="field">
-        <div class="f-label">PER-DESTINATION METADATA</div>
+        <div class="f-head">
+          <div class="f-label">PER-DESTINATION METADATA</div>
+          <button type="button" class="preset-btn" onclick={() => (presetPickerOpen = true)}>
+            Saved info
+          </button>
+        </div>
         <div class="meta-list">
           {#each selected as d (d.profileUuid)}
             {@const m = metaOf(d.profileUuid)}
@@ -500,6 +572,11 @@
             </div>
           {/each}
         </div>
+        <!-- Announced, not merely rendered: loading a sheet rewrites several rows at once
+             and this sentence is the only statement of what happened, including what was
+             left out. Kept in the DOM while empty so the live region exists before its
+             text changes. -->
+        <p class="note presetnote" role="status">{presetNote}</p>
         <p class="note">
           Applied to each destination when the entry goes live. Anything left empty is left
           alone — the channel keeps whatever it already says.
@@ -544,6 +621,14 @@
   {/snippet}
 </Modal>
 
+{#if presetPickerOpen}
+  <PresetPicker
+    title="Saved Stream Info"
+    onPick={applyPreset}
+    onClose={() => (presetPickerOpen = false)}
+  />
+{/if}
+
 <style>
   .form {
     display: flex;
@@ -569,6 +654,35 @@
     letter-spacing: 0.1em;
     color: var(--color-muted);
     margin-bottom: 6px;
+  }
+  /* Section label with its one action on the right; the label keeps its own baseline
+     spacing, so the gap under the row comes from the label as everywhere else. */
+  .f-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .preset-btn {
+    height: 24px;
+    padding: 0 9px;
+    margin-bottom: 6px;
+    flex: 0 0 auto;
+    background: transparent;
+    border: var(--border-weight) solid var(--color-border);
+    color: var(--color-dim);
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+  .preset-btn:hover {
+    border-color: var(--color-accent);
+    color: var(--color-accent);
+  }
+  .preset-btn:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 1px;
   }
   .f-input {
     width: 100%;
@@ -707,6 +821,9 @@
     margin-bottom: 5px;
   }
 
+  .presetnote:empty {
+    display: none;
+  }
   .note {
     margin: 8px 0 0;
     font-family: var(--font-mono);

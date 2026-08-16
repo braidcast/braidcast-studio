@@ -36,6 +36,7 @@ inline constexpr const char *kEventsBackfill = "events.backfill";
 inline constexpr const char *kVirtualCamChanged = "virtualCam.changed";
 inline constexpr const char *kUndoChanged = "undo.changed";
 inline constexpr const char *kStreamMetaChanged = "streamMeta.changed";
+inline constexpr const char *kStreamInfoPresetsChanged = "streamInfoPresets.changed";
 inline constexpr const char *kSceneItemsChanged = "sceneItems.changed";
 inline constexpr const char *kSceneItemSelected = "sceneItem.selected";
 inline constexpr const char *kPreviewContextMenu = "preview.contextMenu";

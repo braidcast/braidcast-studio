@@ -333,6 +333,8 @@ target_sources(
     src/multistream/GlobalAudioChannels.hpp
     src/multistream/StreamMetaStore.cpp
     src/multistream/StreamMetaStore.hpp
+    src/multistream/StreamInfoPresetStore.cpp
+    src/multistream/StreamInfoPresetStore.hpp
     src/multistream/Hotkeys.cpp
     src/multistream/Hotkeys.hpp
     src/multistream/VirtualCamManager.cpp

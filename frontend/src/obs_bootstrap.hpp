@@ -35,6 +35,7 @@ class UndoManager;
 class VirtualCamManager;
 class GlobalAudioChannels;
 class StreamMetaStore;
+class StreamInfoPresetStore;
 struct GeneralSettings;
 struct AdvancedSettings;
 
@@ -223,6 +224,11 @@ GlobalAudioChannels &GlobalAudioChannels();
 // Owned by the bootstrap; it loads in its ctor, so it is valid for the whole
 // process. Exposed so the streamMeta.* bridge methods can read/write over it.
 StreamMetaStore &StreamMeta();
+
+// The saved stream-info presets (a capped, de-duplicated history of reusable metadata
+// sheets, persisted to stream_info_presets.json). Owned by the bootstrap and Load()ed in
+// Start(). Exposed so the streamInfoPresets.* bridge methods can read/write over it.
+StreamInfoPresetStore &StreamInfoPresets();
 
 // The global "General settings" bag (projector always-on-top, snapping prefs,
 // tray/multiview/importer prefs), persisted to general.json. Owned by the

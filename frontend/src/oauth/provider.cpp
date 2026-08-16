@@ -290,6 +290,29 @@ std::vector<MetadataDivergence> DiffAppliedMetadata(const json &capability, cons
 
 } // namespace
 
+// Walks kFieldRules in table order, so the string is stable across runs and across two bags
+// that happen to have been built in different key orders. Each key and each compared value
+// goes in length-prefixed, via StringUtil::AppendLengthPrefixed, and that is what makes two
+// bags that differ produce two strings that differ: Reduce() removes only CR and surrounding
+// whitespace, so a metadata value may hold ANY other byte. Joining on a separator instead
+// would let a value carrying that byte forge a field boundary and read alike to a different
+// bag -- and a safety row's raw-value fallback (see Reduce) can hand back a value no
+// reduction touched at all, so no byte is safe to reserve here.
+std::string MetadataIdentity(const json &bag)
+{
+	std::string identity;
+	for (const FieldRule &rule : kFieldRules) {
+		std::string cmp;
+		std::string text;
+		if (!ReadField(bag, rule, cmp, text)) {
+			continue;
+		}
+		StringUtil::AppendLengthPrefixed(identity, rule.key);
+		StringUtil::AppendLengthPrefixed(identity, cmp);
+	}
+	return identity;
+}
+
 std::vector<MetadataDivergence> SafetyDivergences(const std::vector<MetadataDivergence> &divergences)
 {
 	std::vector<MetadataDivergence> out;

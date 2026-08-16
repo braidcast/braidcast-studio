@@ -697,6 +697,25 @@ export interface StreamMeta {
   tags?: string[];
 }
 
+/** One saved stream-info sheet (streamInfoPresets.*): a reusable starting point the
+ * Go Live modal and the schedule editor load into their fields. `name` may be "" —
+ * the preset then reads by its title. Both timestamps are epoch ms; `lastUsedAtMs`
+ * is what the list is ordered by (most recent first).
+ *
+ * The two bags mirror the Go Live inherit layers exactly: `shared` holds the fields a
+ * value may legitimately cross providers on, `byProvider` (keyed by provider id) the
+ * ones scoped to one platform. A field belongs in neither bag unless
+ * `inheritLayers(field, providerId)` names a bucket for it — which is what keeps a
+ * channel-scoped field, and a per-destination ADDRESS, out of a preset. */
+export interface StreamInfoPreset {
+  id: string;
+  name: string;
+  createdAtMs: number;
+  lastUsedAtMs: number;
+  shared: Record<string, unknown>;
+  byProvider: Record<string, Record<string, unknown>>;
+}
+
 /** One category/game match (streamMeta.searchCategories). `boxArt` is the box-art
  * image URL (may contain {width}/{height} placeholders); YouTube's category list
  * carries no artwork, so it is absent there. */
@@ -1807,6 +1826,19 @@ export interface ObsMethods {
   // both and persists to stream_meta.json.
   "streamMeta.getSaved": { channel: Record<string, unknown>; streams: Record<string, Record<string, unknown>> };
   "streamMeta.save": { ok: true };
+  // Hands back the go-live records a push made when no session follows it, so the host
+  // stops reading those channels as already told.
+  "streamMeta.forgetSent": { ok: true };
+  // Saved stream-info sheets (no provider/network). list returns them most-recently-used
+  // first; remember ({shared, byProvider}) stores one and reports whether it created a new
+  // entry or matched an existing one, with an empty id if the store kept no row at all;
+  // touch ({id}) restamps lastUsedAtMs; rename ({id, name})
+  // takes "" as a reset to the title fallback. Every mutation emits streamInfoPresets.changed.
+  "streamInfoPresets.list": { presets: StreamInfoPreset[] };
+  "streamInfoPresets.remember": { id: string; created: boolean };
+  "streamInfoPresets.touch": { ok: true };
+  "streamInfoPresets.remove": { ok: true };
+  "streamInfoPresets.rename": { ok: true };
   // Output bindings (profile x canvas routing edges, 4.4.3).
   "outputBinding.list": OutputBindingInfo[];
   "outputBinding.create": { uuid: string };
