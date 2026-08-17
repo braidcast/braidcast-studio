@@ -52,7 +52,14 @@
 #define NUM_TEXTURES 2
 #define NUM_CHANNELS 3
 #define MICROSECOND_DEN 1000000
-#define NUM_ENCODE_TEXTURES 10
+/* How many frames of encoder stall the mix can absorb before it starts duplicating: this
+ * many frames divided by the canvas fps. The correct depth is the deepest attached encoder's
+ * output delay -- NVENC's grows with lookahead and b-frames, and at lookahead 8 with 2
+ * b-frames it reaches ~13, deeper than any fixed value chosen here. libobs cannot ask a
+ * plugin encoder for that number, so this is a fixed over-provision until an encoder API
+ * exposes it, and a deep enough encoder config will still outrun it. Costs one NV12 render
+ * target per frame per actively-encoding mix, so it scales with canvas resolution. */
+#define NUM_ENCODE_TEXTURES 32
 #define NUM_ENCODE_TEXTURE_FRAMES_TO_WAIT 1
 
 static inline int64_t packet_dts_usec(struct encoder_packet *packet)
