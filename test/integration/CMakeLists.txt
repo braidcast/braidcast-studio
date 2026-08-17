@@ -27,7 +27,17 @@ endfunction()
 set(
   _fe_sources
   "${_fe}/src/scene/scene_persistence.cpp"
+  # SceneCollection::Load hands the loaded scene to MainChannel::Set.
+  "${_fe}/src/scene/main_channel.cpp"
   "${_fe}/src/multistream/CanvasRuntime.cpp"
+  # CanvasRuntime wires four VideoGate seams in its constructor and calls
+  # Reconcile/Shutdown, so the gate is not optional for anything that
+  # constructs one. Compiled in rather than stubbed because these tests exist
+  # to run the real stores, and a stub gate would quietly make the idle-gate
+  # behavior untested rather than unreachable.
+  "${_fe}/src/multistream/VideoGate.cpp"
+  # VideoGate reads BRAIDCAST_MAIN_IDLE_GATE through Env::Flag.
+  "${_fe}/src/util/env_config.cpp"
   "${_fe}/src/multistream/CanvasStore.cpp"
   "${_fe}/src/multistream/StorePaths.cpp"
   "${_fe}/utility/CanvasDefinition.cpp"
