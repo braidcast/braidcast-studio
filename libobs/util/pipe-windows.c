@@ -141,8 +141,9 @@ error:
 
 static inline void add_backslashes(struct dstr *str, size_t count)
 {
-	while (count--)
+	while (count--) {
 		dstr_cat_ch(str, '\\');
+	}
 }
 
 os_process_pipe_t *os_process_pipe_create2(const os_process_args_t *args, const char *type)
@@ -159,10 +160,12 @@ os_process_pipe_t *os_process_pipe_create2(const os_process_args_t *args, const 
 		const char *arg = *argv;
 		bool needs_quotes = strlen(arg) == 0 || strstr(arg, " ") != NULL || strstr(arg, "\t") != NULL;
 
-		if (cmd_line.len)
+		if (cmd_line.len) {
 			dstr_cat_ch(&cmd_line, ' ');
-		if (needs_quotes)
+		}
+		if (needs_quotes) {
 			dstr_cat_ch(&cmd_line, '"');
+		}
 
 		while (*arg) {
 			if (*arg == '\\') {
@@ -182,8 +185,9 @@ os_process_pipe_t *os_process_pipe_create2(const os_process_args_t *args, const 
 			arg++;
 		}
 
-		if (bs_count)
+		if (bs_count) {
 			add_backslashes(&cmd_line, bs_count);
+		}
 
 		if (needs_quotes) {
 			add_backslashes(&cmd_line, bs_count);
@@ -210,8 +214,9 @@ int os_process_pipe_destroy(os_process_pipe_t *pp)
 		CloseHandle(pp->handle_err);
 
 		WaitForSingleObject(pp->process, INFINITE);
-		if (GetExitCodeProcess(pp->process, &code))
+		if (GetExitCodeProcess(pp->process, &code)) {
 			ret = (int)code;
+		}
 
 		CloseHandle(pp->process);
 		bfree(pp);
@@ -252,8 +257,36 @@ size_t os_process_pipe_read_err(os_process_pipe_t *pp, uint8_t *data, size_t len
 	success = !!ReadFile(pp->handle_err, data, (DWORD)len, &bytes_read, NULL);
 	if (success && bytes_read) {
 		return bytes_read;
-	} else
+	} else {
 		bytes_read = GetLastError();
+	}
+
+	return 0;
+}
+
+size_t os_process_pipe_read_err_avail(os_process_pipe_t *pp, uint8_t *data, size_t len)
+{
+	DWORD avail = 0;
+	DWORD bytes_read;
+
+	if (!pp || !pp->handle_err) {
+		return 0;
+	}
+
+	/* PeekNamedPipe reports what is buffered without consuming or waiting for
+	 * it, and works on the anonymous pipes CreatePipe hands out. A failure here
+	 * means the write end is gone, which reads the same as nothing to report. */
+	if (!PeekNamedPipe(pp->handle_err, NULL, 0, NULL, &avail, NULL) || !avail) {
+		return 0;
+	}
+
+	if ((size_t)avail > len) {
+		avail = (DWORD)len;
+	}
+
+	if (ReadFile(pp->handle_err, data, avail, &bytes_read, NULL) && bytes_read) {
+		return bytes_read;
+	}
 
 	return 0;
 }

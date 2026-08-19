@@ -20,6 +20,7 @@
 #include <errno.h>
 #include <spawn.h>
 #include <fcntl.h>
+#include <poll.h>
 
 #include "bmem.h"
 #include "pipe.h"
@@ -127,8 +128,9 @@ os_process_pipe_t *os_process_pipe_create_internal(const char *bin, char **argv,
 
 os_process_pipe_t *os_process_pipe_create(const char *cmd_line, const char *type)
 {
-	if (!cmd_line)
+	if (!cmd_line) {
 		return NULL;
+	}
 
 	char *argv[4] = {"sh", "-c", (char *)cmd_line, NULL};
 	return os_process_pipe_create_internal("/bin/sh", argv, type);
@@ -157,8 +159,9 @@ int os_process_pipe_destroy(os_process_pipe_t *pp)
 			ret = waitpid(pp->pid, &status, 0);
 		} while (ret == -1 && errno == EINTR);
 
-		if (WIFEXITED(status))
+		if (WIFEXITED(status)) {
 			ret = (int)(char)WEXITSTATUS(status);
+		}
 		bfree(pp);
 	}
 
@@ -186,6 +189,26 @@ size_t os_process_pipe_read_err(os_process_pipe_t *pp, uint8_t *data, size_t len
 	return fread(data, 1, len, pp->err_file);
 }
 
+size_t os_process_pipe_read_err_avail(os_process_pipe_t *pp, uint8_t *data, size_t len)
+{
+	if (!pp || !pp->err_file) {
+		return 0;
+	}
+
+	/* Deliberately the raw descriptor rather than err_file: a poll that says
+	 * readable promises read() will not block, and promises nothing about how
+	 * much fread would sit waiting for. See the header on not mixing the two. */
+	const int fd = fileno(pp->err_file);
+	struct pollfd pfd = {.fd = fd, .events = POLLIN, .revents = 0};
+
+	if (poll(&pfd, 1, 0) <= 0 || !(pfd.revents & POLLIN)) {
+		return 0;
+	}
+
+	const ssize_t ret = read(fd, data, len);
+	return ret > 0 ? (size_t)ret : 0;
+}
+
 size_t os_process_pipe_write(os_process_pipe_t *pp, const uint8_t *data, size_t len)
 {
 	if (!pp) {
@@ -198,8 +221,9 @@ size_t os_process_pipe_write(os_process_pipe_t *pp, const uint8_t *data, size_t 
 	size_t written = 0;
 	while (written < len) {
 		size_t ret = fwrite(data + written, 1, len - written, pp->file);
-		if (!ret)
+		if (!ret) {
 			return written;
+		}
 
 		written += ret;
 	}

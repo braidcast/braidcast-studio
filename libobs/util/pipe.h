@@ -34,6 +34,19 @@ EXPORT int os_process_pipe_destroy(os_process_pipe_t *pp);
 
 EXPORT size_t os_process_pipe_read(os_process_pipe_t *pp, uint8_t *data, size_t len);
 EXPORT size_t os_process_pipe_read_err(os_process_pipe_t *pp, uint8_t *data, size_t len);
+
+/* Reads only what the child has already written, and returns 0 rather than
+ * waiting for it to write more. This is what makes it safe to drain a child's
+ * stderr on a timer: the blocking form above can only be called once the child
+ * is known to have something to say, which in practice means once it has died,
+ * and a child whose stderr nobody reads blocks in write() as soon as the pipe
+ * buffer fills.
+ *
+ * Do not interleave with os_process_pipe_read_err on the same pipe. That one
+ * reads through the platform's buffered stdio and this one does not, so bytes
+ * consumed here can leave the blocking call waiting for data that has already
+ * been delivered. Pick one per pipe. */
+EXPORT size_t os_process_pipe_read_err_avail(os_process_pipe_t *pp, uint8_t *data, size_t len);
 EXPORT size_t os_process_pipe_write(os_process_pipe_t *pp, const uint8_t *data, size_t len);
 
 EXPORT struct os_process_args *os_process_args_create(const char *executable);
