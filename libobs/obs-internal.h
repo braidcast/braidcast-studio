@@ -366,6 +366,13 @@ struct obs_core_video_mix {
 	bool gpu_was_active;
 	bool raw_was_active;
 	bool was_active;
+	/* Set by obs_canvas_set_render_gated when the frontend knows nothing
+	 * receives this mix's composite. Only ever consulted together with the two
+	 * active flags above, so a mix that is encoding cannot be elided however
+	 * stale the frontend's answer is. Cleared when the mix is rebuilt, which
+	 * fails toward compositing a frame nobody wanted rather than dropping one
+	 * somebody did. */
+	volatile bool render_gated;
 	pthread_mutex_t gpu_encoder_mutex;
 	struct deque gpu_encoder_queue;
 	struct deque gpu_encoder_avail_queue;

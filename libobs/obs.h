@@ -2735,6 +2735,26 @@ EXPORT bool obs_canvas_get_video_info(const obs_canvas_t *canvas, struct obs_vid
 /** Renders the sources of this canvas's view context */
 EXPORT void obs_canvas_render(obs_canvas_t *canvas);
 
+/**
+ * Declares that nothing receives this canvas's composite, so the graphics thread
+ * may skip compositing it entirely -- no render target, no view walk, no flush.
+ *
+ * The caller answers only "is anything drawing this canvas": a preview, a
+ * projector, a screenshot. libobs answers the rest for itself and will composite
+ * a gated canvas anyway while an output is encoding it, so a gate left set by
+ * mistake wastes nothing worse than the work it was trying to save. It cannot
+ * interrupt a stream.
+ *
+ * Cleared when the canvas's mix is rebuilt, so a caller that sets this from a
+ * periodic reconcile will restore it on the next pass; a caller that sets it
+ * once will not.
+ *
+ * While gated, obs_get_main_texture returns NULL for this canvas rather than the
+ * last composite it made, so a consumer that appears without clearing the gate
+ * reads nothing instead of reading a stale frame.
+ */
+EXPORT void obs_canvas_set_render_gated(obs_canvas_t *canvas, bool gated);
+
 #ifdef __cplusplus
 }
 #endif

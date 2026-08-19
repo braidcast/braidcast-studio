@@ -670,3 +670,15 @@ void obs_canvas_render(obs_canvas_t *canvas)
 {
 	obs_view_render(&canvas->view);
 }
+
+void obs_canvas_set_render_gated(obs_canvas_t *canvas, bool gated)
+{
+	if (!obs_ptr_valid(canvas, "obs_canvas_set_render_gated")) {
+		return;
+	}
+	if (!canvas->mix) {
+		return;
+	}
+
+	os_atomic_set_bool(&canvas->mix->render_gated, gated);
+}

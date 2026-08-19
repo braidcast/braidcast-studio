@@ -1121,6 +1121,25 @@ static inline void output_frame(struct obs_core_video_mix *video, bool debug, bo
 	}
 }
 
+/* Whether this frame's whole composite for one mix can be skipped: the frontend
+ * has said nothing receives it (obs_canvas_set_render_gated) and libobs can see
+ * for itself that no output is reading it.
+ *
+ * The second half is not redundant with the first. It is what makes a stale or
+ * wrong gate cost wasted work instead of a broken stream -- a mix that is
+ * encoding is composited whatever the frontend believes, so the worst a bad gate
+ * can do is nothing.
+ *
+ * Only the frontend can supply the first half. A display consumes a mix through
+ * an opaque draw callback (struct obs_display carries no canvas), so libobs
+ * cannot tell a preview that is open from one that is not; the app can, and
+ * already tracks exactly that to decide whether the canvas's sources should be
+ * capturing at all. */
+static inline bool mix_composite_elided(const struct obs_core_video_mix *mix)
+{
+	return os_atomic_load_bool(&mix->render_gated) && !mix->raw_was_active && !mix->gpu_was_active;
+}
+
 /* Reports the mixes_mutex acquisition separately from the compositing it
  * guards. The audio thread takes the same lock and holds it across a walk of
  * every mix's active source tree (obs-audio.c), so a graphics frame can lose
@@ -1146,7 +1165,17 @@ static inline void output_frames(uint64_t *lock_ns, struct output_frame_timing *
 	for (size_t i = 0, num = obs->video.mixes.num; i < num; i++) {
 		struct obs_core_video_mix *mix = obs->video.mixes.array[i];
 		if (mix->view) {
-			output_frame(mix, debug, gpu_debug, debug_slot, t);
+			if (mix_composite_elided(mix)) {
+				/* Nothing rendered this frame, so nothing may be read
+				 * as though it had been: obs_get_main_texture and
+				 * can_reuse_mix_texture both gate on this. Leaving it
+				 * true would hand out the last composite this mix
+				 * happened to make, which is a frame from whenever its
+				 * last consumer went away. */
+				mix->texture_rendered = false;
+			} else {
+				output_frame(mix, debug, gpu_debug, debug_slot, t);
+			}
 		} else {
 			obs->video.mixes.array[i] = NULL;
 			obs_free_video_mix(mix);
