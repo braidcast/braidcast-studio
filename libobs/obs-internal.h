@@ -409,6 +409,32 @@ struct obs_core_video_mix {
 	uint64_t debug_composite_gpu_max;
 	uint32_t debug_composite_cpu_count;
 	uint32_t debug_composite_gpu_count;
+	/* Encode-path diagnostics, gated on the same flag. The queue fields are
+	 * written by the graphics thread inside queue_frame, the encode fields by
+	 * the encode thread at the tail of its iteration; both write under
+	 * gpu_encoder_mutex, which the rollup takes to drain them. The encode
+	 * thread holds that mutex only for the queue pop and the push that
+	 * follows -- never across the encode call itself -- so a rollup blocked on
+	 * it cannot be made to wait out the stall it exists to report. */
+	uint64_t debug_encode_call_accum;
+	uint64_t debug_encode_call_max;
+	uint64_t debug_encode_send_accum;
+	uint64_t debug_encode_send_max;
+	uint64_t debug_encode_iter_max;
+	uint32_t debug_encode_count;
+	/* Shallowest the texture pool was seen at, sampled once per composited
+	 * frame just before the pop. debug_queue_count doubles as the minimum's
+	 * validity flag: no frames queued means it is unset, not zero. */
+	uint32_t debug_queue_count;
+	uint32_t debug_queue_avail_min;
+	/* Duplicated encode frames split by which of queue_frame's two conditions
+	 * produced them -- an empty texture pool (the encode thread has not
+	 * returned one in time) versus the compositor handing over a frame that
+	 * already stood for more than one (it fell behind). enc_skipped sums the
+	 * two, which is what forced them to be told apart by arithmetic against
+	 * render_lagged; these count them directly. */
+	uint32_t debug_dup_starved;
+	uint32_t debug_dup_lagged;
 };
 
 extern struct obs_core_video_mix *obs_create_video_mix(struct obs_video_info *ovi);

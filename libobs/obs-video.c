@@ -464,6 +464,23 @@ static inline bool queue_frame(struct obs_core_video_mix *video, bool raw_active
 	bool duplicate = !video->gpu_encoder_avail_queue.size ||
 			 (video->gpu_encoder_queue.size && vframe_info->count > 1);
 
+	if (os_atomic_load_bool(&obs->video.render_debug)) {
+		const uint32_t avail = (uint32_t)(video->gpu_encoder_avail_queue.size / sizeof(struct obs_tex_frame));
+		if (!video->debug_queue_count || avail < video->debug_queue_avail_min) {
+			video->debug_queue_avail_min = avail;
+		}
+		video->debug_queue_count++;
+		if (duplicate) {
+			/* Matches the short circuit above: an empty pool decides the
+			 * duplicate on its own, whatever the frame's count says. */
+			if (!avail) {
+				video->debug_dup_starved++;
+			} else {
+				video->debug_dup_lagged++;
+			}
+		}
+	}
+
 	if (duplicate) {
 		struct obs_tex_frame *tf =
 			deque_data(&video->gpu_encoder_queue, video->gpu_encoder_queue.size - sizeof(*tf));
@@ -1460,6 +1477,69 @@ static void debug_format_gpu_field(char *buf, size_t size, bool measured, const 
 	snprintf(buf, size, ", %s %.1f" NBSP "us (%.1f%% frame)", label, (double)ns / 1000.0, pct);
 }
 
+/* The encode half of the rollup for one mix: how long the encode thread spent
+ * per frame, how shallow the texture pool got, and how the frames the compositor
+ * had to duplicate split between the two conditions that cause one.
+ *
+ * Drained under gpu_encoder_mutex because the encode thread is the writer. That
+ * mutex is held by the encode thread only across the queue pop and the push that
+ * returns the texture -- never across the encode call -- so this cannot block on
+ * the stall it is reporting. */
+static void debug_emit_encode_stats(struct obs_core_video_mix *mix, double budget_ns)
+{
+	uint64_t call_accum;
+	uint64_t call_max;
+	uint64_t send_accum;
+	uint64_t send_max;
+	uint64_t iter_max;
+	uint32_t count;
+	uint32_t queue_count;
+	uint32_t avail_min;
+	uint32_t dup_starved;
+	uint32_t dup_lagged;
+
+	pthread_mutex_lock(&mix->gpu_encoder_mutex);
+	call_accum = mix->debug_encode_call_accum;
+	call_max = mix->debug_encode_call_max;
+	send_accum = mix->debug_encode_send_accum;
+	send_max = mix->debug_encode_send_max;
+	iter_max = mix->debug_encode_iter_max;
+	count = mix->debug_encode_count;
+	queue_count = mix->debug_queue_count;
+	avail_min = mix->debug_queue_avail_min;
+	dup_starved = mix->debug_dup_starved;
+	dup_lagged = mix->debug_dup_lagged;
+	mix->debug_encode_call_accum = 0;
+	mix->debug_encode_call_max = 0;
+	mix->debug_encode_send_accum = 0;
+	mix->debug_encode_send_max = 0;
+	mix->debug_encode_iter_max = 0;
+	mix->debug_encode_count = 0;
+	mix->debug_queue_count = 0;
+	mix->debug_queue_avail_min = 0;
+	mix->debug_dup_starved = 0;
+	mix->debug_dup_lagged = 0;
+	pthread_mutex_unlock(&mix->gpu_encoder_mutex);
+
+	/* A mix that is composited but not encoded has nothing to say here, and a
+	 * line of zeroes for it would read as a measured idle encoder. */
+	if (!queue_count) {
+		return;
+	}
+
+	const uint64_t call_avg = count ? call_accum / count : 0;
+	const uint64_t send_avg = count ? send_accum / count : 0;
+	const double call_pct = budget_ns > 0.0 ? (double)call_avg / budget_ns * 100.0 : 0.0;
+
+	obs_debug_logf(LOG_INFO,
+		       "[render-debug] mix '%s': encode CPU %.1f" NBSP "us (%.1f%% frame), deliver %.1f" NBSP
+		       "us, max encode %.1f" NBSP "ms, max deliver %.1f" NBSP "ms, max iteration %.1f" NBSP
+		       "ms over %u" NBSP "frames; pool floor %u/%d, duplicated %u" NBSP "starved + %u" NBSP "lagged",
+		       mix->debug_label ? mix->debug_label : "?", (double)call_avg / 1000.0, call_pct,
+		       (double)send_avg / 1000.0, (double)call_max / 1000000.0, (double)send_max / 1000000.0,
+		       (double)iter_max / 1000000.0, count, avail_min, NUM_ENCODE_TEXTURES, dup_starved, dup_lagged);
+}
+
 static void debug_emit_composite_stats(void)
 {
 	const double fps = obs->video.video_fps;
@@ -1507,6 +1587,8 @@ static void debug_emit_composite_stats(void)
 		mix->debug_composite_gpu_max = 0;
 		mix->debug_composite_cpu_count = 0;
 		mix->debug_composite_gpu_count = 0;
+
+		debug_emit_encode_stats(mix, budget_ns);
 	}
 	pthread_mutex_unlock(&obs->video.mixes_mutex);
 

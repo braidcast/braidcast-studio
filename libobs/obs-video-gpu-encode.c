@@ -16,6 +16,7 @@
 ******************************************************************************/
 
 #include "obs-internal.h"
+#include "obs-debug-log.h"
 
 void handle_encoder_group_reconfigure_request(obs_encoder_t *encoder);
 
@@ -43,13 +44,26 @@ static void *gpu_encode_thread(void *data)
 		size_t lock_count = 0;
 		uint64_t fer_ts = 0;
 
-		if (os_atomic_load_bool(&video->gpu_encode_stop))
+		if (os_atomic_load_bool(&video->gpu_encode_stop)) {
 			break;
+		}
 
 		if (wait_frames) {
 			wait_frames--;
 			continue;
 		}
+
+		/* One atomic read and a branch is the whole cost of this diagnostic
+		 * while it is off: nothing below reads a clock or formats a string
+		 * until the flag is true. The accumulators are locals so the shared
+		 * fields are touched once per iteration, under the mutex the tail
+		 * already takes, rather than on every encoder. */
+		const bool debug = os_atomic_load_bool(&obs->video.render_debug);
+		const uint64_t iter_start = debug ? os_gettime_ns() : 0;
+		uint64_t call_accum = 0;
+		uint64_t call_max = 0;
+		uint64_t send_accum = 0;
+		uint64_t send_max = 0;
 
 		profile_start(gpu_encode_thread_name);
 
@@ -68,8 +82,9 @@ static void *gpu_encode_thread(void *data)
 
 		for (size_t i = 0; i < video->gpu_encoders.num; i++) {
 			obs_encoder_t *encoder = obs_encoder_get_ref(video->gpu_encoders.array[i]);
-			if (encoder)
+			if (encoder) {
 				da_push_back(encoders, &encoder);
+			}
 		}
 
 		pthread_mutex_unlock(&video->gpu_encoder_mutex);
@@ -96,8 +111,9 @@ static void *gpu_encode_thread(void *data)
 				pthread_mutex_lock(&group->mutex);
 				ready = group->start_timestamp == timestamp;
 				pthread_mutex_unlock(&group->mutex);
-				if (!ready)
+				if (!ready) {
 					continue;
+				}
 			}
 
 			if (!encoder->first_received && num_paired) {
@@ -105,8 +121,9 @@ static void *gpu_encode_thread(void *data)
 
 				for (size_t idx = 0; !wait_for_audio && idx < num_paired; idx++) {
 					obs_encoder_t *enc = obs_weak_encoder_get_encoder(paired[idx]);
-					if (!enc)
+					if (!enc) {
 						continue;
+					}
 
 					if (!enc->first_received || enc->first_raw_ts > timestamp) {
 						wait_for_audio = true;
@@ -115,21 +132,25 @@ static void *gpu_encode_thread(void *data)
 					obs_encoder_release(enc);
 				}
 
-				if (wait_for_audio)
+				if (wait_for_audio) {
 					continue;
+				}
 			}
 
-			if (video_pause_check(&encoder->pause, timestamp))
+			if (video_pause_check(&encoder->pause, timestamp)) {
 				continue;
+			}
 
 			// an explicit counter is used instead of remainder calculation
 			// to allow multiple encoders started at the same time to start on
 			// the same frame
 			skip = encoder->frame_rate_divisor_counter++;
-			if (encoder->frame_rate_divisor_counter == encoder->frame_rate_divisor)
+			if (encoder->frame_rate_divisor_counter == encoder->frame_rate_divisor) {
 				encoder->frame_rate_divisor_counter = 0;
-			if (skip)
+			}
+			if (skip) {
 				continue;
+			}
 
 			handle_encoder_group_reconfigure_request(encoder);
 
@@ -138,18 +159,22 @@ static void *gpu_encode_thread(void *data)
 				encoder->info.update(encoder->context.data, encoder->context.settings);
 			}
 
-			if (!encoder->start_ts)
+			if (!encoder->start_ts) {
 				encoder->start_ts = timestamp;
+			}
 
-			if (++lock_count == encoders.num)
+			if (++lock_count == encoders.num) {
 				next_key = 0;
-			else
+			} else {
 				next_key++;
+			}
 
 			/* Get the frame encode request timestamp. This
 			 * needs to be read just before the encode request.
 			 */
 			fer_ts = os_gettime_ns();
+
+			const uint64_t call_start = debug ? os_gettime_ns() : 0;
 
 			profile_start(gpu_encode_frame_name);
 			if (encoder->info.encode_texture2) {
@@ -167,6 +192,8 @@ static void *gpu_encode_thread(void *data)
 								       &received);
 			}
 			profile_end(gpu_encode_frame_name);
+
+			const uint64_t call_ns = debug ? os_gettime_ns() - call_start : 0;
 
 			/* Generate and enqueue the frame timing metrics, namely
 			 * the CTS (composition time), FER (frame encode request), FERC
@@ -187,7 +214,43 @@ static void *gpu_encode_thread(void *data)
 				ept->fer = fer_ts;
 			}
 
+			const uint64_t send_start = debug ? os_gettime_ns() : 0;
+
 			send_off_encoder_packet(encoder, success, received, &pkt);
+
+			if (debug) {
+				const uint64_t send_ns = os_gettime_ns() - send_start;
+
+				call_accum += call_ns;
+				send_accum += send_ns;
+				if (call_ns > call_max) {
+					call_max = call_ns;
+				}
+				if (send_ns > send_max) {
+					send_max = send_ns;
+				}
+
+				/* Named per encoder rather than rolled up, because the
+				 * question this instrument exists to answer is which of
+				 * the two an overrun sits in: the encoder plugin's own
+				 * work (which on D3D11 is an acquire, a copy and the
+				 * encode submission) or the delivery that follows it
+				 * (packet callbacks, and every output's mutex behind
+				 * them). A rollup average hides a single 500 ms stall in
+				 * a second of otherwise 2 ms frames, and a single stall
+				 * is exactly the event under investigation. */
+				if (call_ns + send_ns > interval) {
+					obs_debug_logf(
+						LOG_INFO,
+						"[render-debug] mix '%s': encoder '%s' held the encode thread %.1f" NBSP
+						"ms (encode %.1f" NBSP "ms, deliver %.1f" NBSP "ms) against a %.1f" NBSP
+						"ms frame",
+						video->debug_label ? video->debug_label : "?",
+						obs_encoder_get_name(encoder), (double)(call_ns + send_ns) / 1000000.0,
+						(double)call_ns / 1000000.0, (double)send_ns / 1000000.0,
+						(double)interval / 1000000.0);
+				}
+			}
 
 			lock_key = next_key;
 
@@ -209,14 +272,53 @@ static void *gpu_encode_thread(void *data)
 			deque_push_back(&video->gpu_encoder_avail_queue, &tf, sizeof(tf));
 		}
 
+		uint64_t iter_ns = 0;
+		uint64_t unaccounted_ns = 0;
+		if (debug) {
+			iter_ns = os_gettime_ns() - iter_start;
+			/* What the encoders did not spend. The pool texture is back in
+			 * the available queue by this point, so anything large here is
+			 * time the compositor could have been starved for while every
+			 * encoder was reporting itself prompt -- the mutex the pop
+			 * waited on, or the thread simply not being scheduled. */
+			const uint64_t accounted = call_accum + send_accum;
+			unaccounted_ns = iter_ns > accounted ? iter_ns - accounted : 0;
+
+			video->debug_encode_call_accum += call_accum;
+			video->debug_encode_send_accum += send_accum;
+			if (call_max > video->debug_encode_call_max) {
+				video->debug_encode_call_max = call_max;
+			}
+			if (send_max > video->debug_encode_send_max) {
+				video->debug_encode_send_max = send_max;
+			}
+			if (iter_ns > video->debug_encode_iter_max) {
+				video->debug_encode_iter_max = iter_ns;
+			}
+			video->debug_encode_count++;
+		}
+
 		pthread_mutex_unlock(&video->gpu_encoder_mutex);
+
+		/* Emitted outside the mutex: the compositor blocks on it once per
+		 * frame, and a diagnostic must not lengthen the section it waits on. */
+		if (debug && unaccounted_ns > interval) {
+			obs_debug_logf(LOG_INFO,
+				       "[render-debug] mix '%s': encode iteration %.1f" NBSP "ms with %.1f" NBSP
+				       "ms outside the encoders (%zu" NBSP "encoder(s) took %.1f" NBSP
+				       "ms) against a %.1f" NBSP "ms frame",
+				       video->debug_label ? video->debug_label : "?", (double)iter_ns / 1000000.0,
+				       (double)unaccounted_ns / 1000000.0, encoders.num,
+				       (double)(call_accum + send_accum) / 1000000.0, (double)interval / 1000000.0);
+		}
 
 		/* -------------- */
 
 		os_event_signal(video->gpu_encode_inactive);
 
-		for (size_t i = 0; i < encoders.num; i++)
+		for (size_t i = 0; i < encoders.num; i++) {
 			obs_encoder_release(encoders.array[i]);
+		}
 
 		da_resize(encoders, 0);
 
@@ -261,12 +363,15 @@ bool init_gpu_encoding(struct obs_core_video_mix *video)
 		deque_push_back(&video->gpu_encoder_avail_queue, &frame, sizeof(frame));
 	}
 
-	if (os_sem_init(&video->gpu_encode_semaphore, 0) != 0)
+	if (os_sem_init(&video->gpu_encode_semaphore, 0) != 0) {
 		return false;
-	if (os_event_init(&video->gpu_encode_inactive, OS_EVENT_TYPE_MANUAL) != 0)
+	}
+	if (os_event_init(&video->gpu_encode_inactive, OS_EVENT_TYPE_MANUAL) != 0) {
 		return false;
-	if (pthread_create(&video->gpu_encode_thread, NULL, gpu_encode_thread, video) != 0)
+	}
+	if (pthread_create(&video->gpu_encode_thread, NULL, gpu_encode_thread, video) != 0) {
 		return false;
+	}
 
 	os_event_signal(video->gpu_encode_inactive);
 
