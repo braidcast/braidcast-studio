@@ -2492,6 +2492,37 @@ void ObsBootstrap::RunMultistreamEngineSelfTest()
 		std::to_string(bindingsBefore) + ")");
 }
 
+namespace {
+
+// Bring up a temporary ADDITIONAL canvas for a self-test, the way the product
+// does it. canvas.create (bridge.cpp) calls EnsureCanvas and then EnsureScenes,
+// because seeding a default scene was deliberately decoupled from EnsureCanvas --
+// so a fixture that calls only the first gets a canvas with no scene at all, and
+// every later step fails with "no scene to add the source to" while the shipped
+// path works fine. Six self-tests had copied the setup and all six had copied the
+// omission; the ones that passed did so only because they created a scene of
+// their own first.
+//
+// In-memory only: the caller never Saves, and removes the canvas at the end.
+std::string MakeSelfTestCanvas(const char *name)
+{
+	CanvasDefinition def;
+	def.name = name;
+	def.isDefault = false;
+	def.width = 1280;
+	def.height = 720;
+	def.fpsNum = 30;
+	def.fpsDen = 1;
+
+	const CanvasDefinition &added = g_canvases.Add(std::move(def));
+	const std::string uuid = added.uuid;
+	g_canvasRuntime->EnsureCanvas(added);
+	g_canvasRuntime->EnsureScenes();
+	return uuid;
+}
+
+} // namespace
+
 void ObsBootstrap::RunCanvasRuntimeSelfTest()
 {
 	// Prove an ADDITIONAL canvas (not the Default) now encodes: bring up its live
@@ -2500,16 +2531,7 @@ void ObsBootstrap::RunCanvasRuntimeSelfTest()
 	// stores (never Save) so the user's files stay untouched and the model returns
 	// to baseline. The temp canvas leaves its encoder ids empty on purpose: the
 	// engine falls back to the Default canvas's encoders, which are already seeded.
-	CanvasDefinition def;
-	def.name = "selftest-runtime-canvas";
-	def.isDefault = false;
-	def.width = 1280;
-	def.height = 720;
-	def.fpsNum = 30;
-	def.fpsDen = 1;
-	const CanvasDefinition &added = g_canvases.Add(std::move(def));
-	const std::string canvasUuid = added.uuid;
-	g_canvasRuntime->EnsureCanvas(added);
+	const std::string canvasUuid = MakeSelfTestCanvas("selftest-runtime-canvas");
 
 	StreamProfile prof;
 	prof.label = "selftest-runtime";
@@ -2584,16 +2606,7 @@ void ObsBootstrap::RunCanvasSceneSelfTest()
 	// the in-memory stores (never Save) so the user's files stay untouched. The
 	// point is to prove the bridge's scene/source ops, when given this canvas's uuid,
 	// act on the canvas's OWN scenes -- isolated from the global channel-0 scene list.
-	CanvasDefinition def;
-	def.name = "selftest-scene-canvas";
-	def.isDefault = false;
-	def.width = 1280;
-	def.height = 720;
-	def.fpsNum = 30;
-	def.fpsDen = 1;
-	const CanvasDefinition &added = g_canvases.Add(std::move(def));
-	const std::string canvasUuid = added.uuid;
-	g_canvasRuntime->EnsureCanvas(added);
+	const std::string canvasUuid = MakeSelfTestCanvas("selftest-scene-canvas");
 
 	bool ok = false;
 
@@ -2704,21 +2717,8 @@ void ObsBootstrap::RunSceneDuplicateSelfTest()
 	// Save explicitly) so the user's files stay untouched. The point is to prove
 	// scenes.duplicateToCanvas performs a real deep copy across canvases, with
 	// undo/redo that preserves the copied source's uuid on restore.
-	auto makeTempCanvas = [](const char *name) -> std::string {
-		CanvasDefinition def;
-		def.name = name;
-		def.isDefault = false;
-		def.width = 1280;
-		def.height = 720;
-		def.fpsNum = 30;
-		def.fpsDen = 1;
-		const CanvasDefinition &added = g_canvases.Add(std::move(def));
-		const std::string uuid = added.uuid;
-		g_canvasRuntime->EnsureCanvas(added);
-		return uuid;
-	};
-	const std::string srcCanvasUuid = makeTempCanvas("selftest-duplicate-src-canvas");
-	const std::string destCanvasUuid = makeTempCanvas("selftest-duplicate-dest-canvas");
+	const std::string srcCanvasUuid = MakeSelfTestCanvas("selftest-duplicate-src-canvas");
+	const std::string destCanvasUuid = MakeSelfTestCanvas("selftest-duplicate-dest-canvas");
 
 	bool ok = false;
 
@@ -2899,16 +2899,7 @@ void ObsBootstrap::RunTransformPivotSelfTest()
 	// real libobs scene item, that setTransform/transformAction rotations pivot
 	// around the item's visual center (Task 1) and that an off-canvas transform
 	// gets nudged back on-screen (Task 2).
-	CanvasDefinition def;
-	def.name = "selftest-transform-pivot-canvas";
-	def.isDefault = false;
-	def.width = 1280;
-	def.height = 720;
-	def.fpsNum = 30;
-	def.fpsDen = 1;
-	const CanvasDefinition &added = g_canvases.Add(std::move(def));
-	const std::string canvasUuid = added.uuid;
-	g_canvasRuntime->EnsureCanvas(added);
+	const std::string canvasUuid = MakeSelfTestCanvas("selftest-transform-pivot-canvas");
 
 	// Read the axis-aligned box of a scene item on the temp canvas's current
 	// scene by id, mirroring bridge.cpp's GetSceneItemBox exactly (corner-
@@ -3099,16 +3090,7 @@ void ObsBootstrap::RunRotationBoundsSelfTest()
 	// reflect the rotated shape, the outline -- which reads box_transform live
 	// every frame, per the earlier static review of DrawSelection -- would
 	// visibly lag even though the draw code itself is correct.
-	CanvasDefinition def;
-	def.name = "selftest-rotation-bounds-canvas";
-	def.isDefault = false;
-	def.width = 1280;
-	def.height = 720;
-	def.fpsNum = 30;
-	def.fpsDen = 1;
-	const CanvasDefinition &added = g_canvases.Add(std::move(def));
-	const std::string canvasUuid = added.uuid;
-	g_canvasRuntime->EnsureCanvas(added);
+	const std::string canvasUuid = MakeSelfTestCanvas("selftest-rotation-bounds-canvas");
 
 	// Read the axis-aligned box of a scene item by id -- identical to
 	// RunTransformPivotSelfTest's readBox helper (bridge.cpp's GetSceneItemBox
@@ -3311,20 +3293,9 @@ void ObsBootstrap::RunPreviewSurfaceIsolationSelfTest()
 		return result;
 	};
 
-	// Bring up a temporary ADDITIONAL canvas with its own live mix (+ a default
-	// channel-0 "Scene"), like the canvas-scene selftest. In-memory only (never
-	// Save). The point: an edit driven on this canvas's preview surface must touch
-	// ONLY that surface's state, leaving the Default surface + output-0 scene alone.
-	CanvasDefinition def;
-	def.name = "selftest-isolation-canvas";
-	def.isDefault = false;
-	def.width = 1280;
-	def.height = 720;
-	def.fpsNum = 30;
-	def.fpsDen = 1;
-	const CanvasDefinition &added = g_canvases.Add(std::move(def));
-	const std::string canvasUuid = added.uuid;
-	g_canvasRuntime->EnsureCanvas(added);
+	// The point: an edit driven on this canvas's preview surface must touch ONLY
+	// that surface's state, leaving the Default surface + output-0 scene alone.
+	const std::string canvasUuid = MakeSelfTestCanvas("selftest-isolation-canvas");
 
 	bool ok = false;
 
