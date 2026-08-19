@@ -67,8 +67,21 @@ void CollectActiveTree(obs_source_t *root, SourceSet &out)
 		&out);
 }
 
+// Whether the graphics thread may skip compositing Main altogether this frame.
+// Separate from the per-source gate above and coarser: gating a source stops it
+// capturing, this stops the composite that would have drawn it. Both answer to
+// the same predicate, so they cannot disagree about whether Main is idle.
+void SetMainComposite(bool gated)
+{
+	OBSCanvasAutoRelease main = obs_get_main_canvas();
+	if (main) {
+		obs_canvas_set_render_gated(main, gated);
+	}
+}
+
 void UngateAll()
 {
+	SetMainComposite(false);
 	for (const std::string &uuid : g_gated) {
 		OBSSourceAutoRelease source = obs_get_source_by_uuid(uuid.c_str());
 		if (source) {
@@ -121,6 +134,17 @@ void Reconcile()
 	}
 
 	const bool mainIdle = !g_mainActiveFn();
+
+	// The graphics thread composites Main every frame whether or not anything
+	// reads the result -- roughly 400 us of CPU per frame measured on 08-13, about
+	// 30% of the composite total, for a canvas with no outputs. libobs cannot tell
+	// whether a display is drawing it (obs_display carries no canvas and its draw
+	// callback is opaque), and mainIdle is precisely that answer: every consumer of
+	// the Main composite -- a preview surface, a Program projector, a Default
+	// multiview, the virtual camera -- takes a CanvasRuntime preview ref on the
+	// Default, and the Scene/Source projectors that take a showing ref instead
+	// render a source directly rather than the composite.
+	SetMainComposite(mainIdle);
 
 	std::set<std::string> nextGated;
 	for (const auto &[uuid, source] : mainTree) {
