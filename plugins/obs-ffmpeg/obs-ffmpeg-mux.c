@@ -66,14 +66,18 @@ static void ffmpeg_mux_destroy(void *data)
 	struct ffmpeg_muxer *stream = data;
 
 	replay_buffer_clear(stream);
-	if (stream->mux_thread_joinable)
+	if (stream->mux_thread_joinable) {
 		pthread_join(stream->mux_thread, NULL);
-	for (size_t i = 0; i < stream->mux_packets.num; i++)
+	}
+	for (size_t i = 0; i < stream->mux_packets.num; i++) {
 		obs_encoder_packet_release(&stream->mux_packets.array[i]);
+	}
 	da_free(stream->mux_packets);
 	deque_free(&stream->packets);
 
 	os_process_pipe_destroy(stream->pipe);
+	dstr_free(&stream->err_partial);
+	dstr_free(&stream->err_last);
 	dstr_free(&stream->path);
 	dstr_free(&stream->printable_path);
 	dstr_free(&stream->stream_key);
@@ -86,8 +90,9 @@ static void split_file_proc(void *data, calldata_t *cd)
 	struct ffmpeg_muxer *stream = data;
 
 	calldata_set_bool(cd, "split_file_enabled", stream->split_file);
-	if (!stream->split_file)
+	if (!stream->split_file) {
 		return;
+	}
 
 	os_atomic_set_bool(&stream->manual_split, true);
 }
@@ -97,8 +102,9 @@ static void *ffmpeg_mux_create(obs_data_t *settings, obs_output_t *output)
 	struct ffmpeg_muxer *stream = bzalloc(sizeof(*stream));
 	stream->output = output;
 
-	if (obs_output_get_flags(output) & OBS_OUTPUT_SERVICE)
+	if (obs_output_get_flags(output) & OBS_OUTPUT_SERVICE) {
 		stream->is_network = true;
+	}
 
 	signal_handler_t *sh = obs_output_get_signal_handler(output);
 	signal_handler_add(sh, "void file_changed(string next_file)");
@@ -231,8 +237,9 @@ static void log_muxer_params(struct ffmpeg_muxer *stream, const char *settings)
 		struct dstr str = {0};
 
 		AVDictionaryEntry *entry = NULL;
-		while ((entry = av_dict_get(dict, "", entry, AV_DICT_IGNORE_SUFFIX)))
+		while ((entry = av_dict_get(dict, "", entry, AV_DICT_IGNORE_SUFFIX))) {
 			dstr_catf(&str, "\n\t%s=%s", entry->key, entry->value);
+		}
 
 		info("Using muxer settings:%s", str.array);
 		dstr_free(&str);
@@ -272,8 +279,9 @@ static void build_command_line(struct ffmpeg_muxer *stream, os_process_args_t **
 
 	for (;;) {
 		obs_encoder_t *aencoder = obs_output_get_audio_encoder(stream->output, num_tracks);
-		if (!aencoder)
+		if (!aencoder) {
 			break;
+		}
 
 		aencoders[num_tracks] = aencoder;
 		num_tracks++;
@@ -288,8 +296,9 @@ static void build_command_line(struct ffmpeg_muxer *stream, os_process_args_t **
 	os_process_args_add_argf(*args, "%d", vencoder ? 1 : 0);
 	os_process_args_add_argf(*args, "%d", num_tracks);
 
-	if (vencoder)
+	if (vencoder) {
 		add_video_encoder_params(stream, *args, vencoder);
+	}
 
 	if (num_tracks) {
 		os_process_args_add_arg(*args, obs_encoder_get_codec(aencoders[0]));
@@ -356,8 +365,9 @@ inline static void ts_offset_update(struct ffmpeg_muxer *stream, struct encoder_
 		return;
 	}
 
-	if (stream->found_audio[packet->track_idx])
+	if (stream->found_audio[packet->track_idx]) {
 		return;
+	}
 
 	stream->audio_dts_offsets[packet->track_idx] = packet->dts;
 	stream->found_audio[packet->track_idx] = true;
@@ -383,16 +393,19 @@ static inline bool ffmpeg_mux_start_internal(struct ffmpeg_muxer *stream, obs_da
 
 	update_encoder_settings(stream, path);
 
-	if (!obs_output_can_begin_data_capture(stream->output, 0))
+	if (!obs_output_can_begin_data_capture(stream->output, 0)) {
 		return false;
-	if (!obs_output_initialize_encoders(stream->output, 0))
+	}
+	if (!obs_output_initialize_encoders(stream->output, 0)) {
 		return false;
+	}
 
 	if (stream->is_network) {
 		obs_service_t *service;
 		service = obs_output_get_service(stream->output);
-		if (!service)
+		if (!service) {
 			return false;
+		}
 		path = obs_service_get_connect_info(service, OBS_SERVICE_CONNECT_INFO_SERVER_URL);
 		stream->split_file = false;
 	} else {
@@ -467,6 +480,10 @@ int deactivate(struct ffmpeg_muxer *stream, int code)
 	}
 
 	if (active(stream)) {
+		/* Last chance: os_process_pipe_destroy closes the read end, and
+		 * anything still buffered goes with it. */
+		drain_child_stderr(stream, true);
+
 		ret = os_process_pipe_destroy(stream->pipe);
 		stream->pipe = NULL;
 
@@ -510,20 +527,84 @@ void ffmpeg_mux_stop(void *data, uint64_t ts)
 	}
 }
 
+/* How often the child's stderr is emptied, and the most one unterminated line
+ * may accumulate before it is emitted anyway. The interval is a compromise: too
+ * long and the child's 4 KB pipe buffer can fill between drains, which is the
+ * block this exists to prevent; too short and every packet pays a syscall. The
+ * child rate-limits itself to roughly two lines a second, which this drains
+ * with three orders of magnitude to spare. */
+#define STDERR_DRAIN_INTERVAL_NS 250000000ULL
+#define STDERR_PARTIAL_MAX 4096
+
+/* Empty the child's stderr and log whatever complete lines it holds. Cheap
+ * enough to call per packet -- it costs one pipe peek per interval and nothing
+ * in between -- and safe to call from any thread that owns the pipe, which in
+ * practice means the same thread that writes to it.
+ *
+ * `force` skips the interval, for the two moments where there is no next drain:
+ * a failure being signalled, and the pipe about to be destroyed. */
+void drain_child_stderr(struct ffmpeg_muxer *stream, bool force)
+{
+	uint8_t buf[1024];
+	size_t len;
+
+	if (!stream->pipe) {
+		return;
+	}
+
+	const uint64_t now = os_gettime_ns();
+	if (!force && now < stream->err_next_drain_ns) {
+		return;
+	}
+	stream->err_next_drain_ns = now + STDERR_DRAIN_INTERVAL_NS;
+
+	while ((len = os_process_pipe_read_err_avail(stream->pipe, buf, sizeof(buf))) > 0) {
+		dstr_ncat(&stream->err_partial, (const char *)buf, len);
+
+		/* A child that writes a great deal without a newline must not be able
+		 * to grow this without bound; break the line ourselves instead. */
+		if (stream->err_partial.len > STDERR_PARTIAL_MAX) {
+			dstr_cat_ch(&stream->err_partial, '\n');
+		}
+	}
+
+	for (;;) {
+		char *nl = strchr(stream->err_partial.array ? stream->err_partial.array : "", '\n');
+		if (!nl) {
+			break;
+		}
+
+		*nl = 0;
+		struct dstr line = {0};
+		dstr_copy(&line, stream->err_partial.array);
+		dstr_remove(&stream->err_partial, 0, (nl - stream->err_partial.array) + 1);
+
+		dstr_depad(&line);
+		if (!dstr_is_empty(&line)) {
+			warn("%s", line.array);
+			/* Kept for obs_output_set_last_error: the line that ends a
+			 * session is the one worth showing, not the first symptom. */
+			dstr_copy_dstr(&stream->err_last, &line);
+		}
+		dstr_free(&line);
+	}
+}
+
 static void signal_failure(struct ffmpeg_muxer *stream)
 {
-	char error[1024];
 	int ret;
 	int code;
 
-	size_t len;
+	/* Take the child's last words from the drain rather than reading the pipe
+	 * again here. The two cannot share a pipe (see os_process_pipe_read_err_avail),
+	 * and the drain has the better view anyway: it has been logging every line
+	 * as it arrived, where this read saw only whatever one call happened to
+	 * return -- which for an unbuffered child is one fprintf, so a multi-line
+	 * failure reached the log as its first line alone. */
+	drain_child_stderr(stream, true);
 
-	len = os_process_pipe_read_err(stream->pipe, (uint8_t *)error, sizeof(error) - 1);
-
-	if (len > 0) {
-		error[len] = 0;
-		warn("ffmpeg-mux: %s", error);
-		obs_output_set_last_error(stream->output, error);
+	if (!dstr_is_empty(&stream->err_last)) {
+		obs_output_set_last_error(stream->output, stream->err_last.array);
 	}
 
 	ret = deactivate(stream, 0);
@@ -548,12 +629,14 @@ static void find_best_filename(struct dstr *path, bool space)
 {
 	int num = 2;
 
-	if (!os_file_exists(path->array))
+	if (!os_file_exists(path->array)) {
 		return;
+	}
 
 	const char *ext = strrchr(path->array, '.');
-	if (!ext)
+	if (!ext) {
 		return;
+	}
 
 	size_t extstart = ext - path->array;
 	struct dstr testpath;
@@ -583,8 +666,9 @@ static void generate_filename(struct ffmpeg_muxer *stream, struct dstr *dst, boo
 
 	dstr_copy(dst, dir);
 	dstr_replace(dst, "\\", "/");
-	if (dstr_end(dst) != '/')
+	if (dstr_end(dst) != '/') {
 		dstr_cat_ch(dst, '/');
+	}
 	dstr_cat(dst, filename);
 
 	char *slash = strrchr(dst->array, '/');
@@ -594,8 +678,9 @@ static void generate_filename(struct ffmpeg_muxer *stream, struct dstr *dst, boo
 		*slash = '/';
 	}
 
-	if (!overwrite)
+	if (!overwrite) {
 		find_best_filename(dst, space);
+	}
 
 	bfree(filename);
 	obs_data_release(settings);
@@ -639,8 +724,9 @@ bool write_packet(struct ffmpeg_muxer *stream, struct encoder_packet *packet)
 
 	stream->total_bytes += packet->size;
 
-	if (stream->split_file)
+	if (stream->split_file) {
 		stream->cur_size += packet->size;
+	}
 
 	return true;
 }
@@ -649,8 +735,9 @@ static bool send_audio_headers(struct ffmpeg_muxer *stream, obs_encoder_t *aenco
 {
 	struct encoder_packet packet = {.type = OBS_ENCODER_AUDIO, .timebase_den = 1, .track_idx = idx};
 
-	if (!obs_encoder_get_extra_data(aencoder, &packet.data, &packet.size))
+	if (!obs_encoder_get_extra_data(aencoder, &packet.data, &packet.size)) {
 		return false;
+	}
 	return write_packet(stream, &packet);
 }
 
@@ -660,8 +747,9 @@ static bool send_video_headers(struct ffmpeg_muxer *stream)
 
 	struct encoder_packet packet = {.type = OBS_ENCODER_VIDEO, .timebase_den = 1};
 
-	if (!obs_encoder_get_extra_data(vencoder, &packet.data, &packet.size))
+	if (!obs_encoder_get_extra_data(vencoder, &packet.data, &packet.size)) {
 		return false;
+	}
 	return write_packet(stream, &packet);
 }
 
@@ -670,8 +758,9 @@ bool send_headers(struct ffmpeg_muxer *stream)
 	obs_encoder_t *aencoder;
 	size_t idx = 0;
 
-	if (!send_video_headers(stream))
+	if (!send_video_headers(stream)) {
 		return false;
+	}
 
 	do {
 		aencoder = obs_output_get_audio_encoder(stream->output, idx);
@@ -689,23 +778,28 @@ bool send_headers(struct ffmpeg_muxer *stream)
 static inline bool should_split(struct ffmpeg_muxer *stream, struct encoder_packet *packet)
 {
 	/* split at video frame */
-	if (packet->type != OBS_ENCODER_VIDEO)
+	if (packet->type != OBS_ENCODER_VIDEO) {
 		return false;
+	}
 
 	/* don't split group of pictures */
-	if (!packet->keyframe)
+	if (!packet->keyframe) {
 		return false;
+	}
 
-	if (os_atomic_load_bool(&stream->manual_split))
+	if (os_atomic_load_bool(&stream->manual_split)) {
 		return true;
+	}
 
 	/* reached maximum file size */
-	if (stream->max_size > 0 && stream->cur_size + (int64_t)packet->size >= stream->max_size)
+	if (stream->max_size > 0 && stream->cur_size + (int64_t)packet->size >= stream->max_size) {
 		return true;
+	}
 
 	/* reached maximum duration */
-	if (stream->max_time > 0 && packet->dts_usec - stream->cur_time >= stream->max_time)
+	if (stream->max_time > 0 && packet->dts_usec - stream->cur_time >= stream->max_time) {
 		return true;
+	}
 
 	return false;
 }
@@ -749,8 +843,9 @@ static bool prepare_split_file(struct ffmpeg_muxer *stream, struct encoder_packe
 	signal_handler_signal(sh, "file_changed", &cd);
 	calldata_free(&cd);
 
-	if (!send_headers(stream))
+	if (!send_headers(stream)) {
 		return false;
+	}
 
 	stream->cur_size = 0;
 	stream->cur_time = packet->dts_usec;
@@ -775,8 +870,13 @@ static void ffmpeg_mux_data(void *data, struct encoder_packet *packet)
 {
 	struct ffmpeg_muxer *stream = data;
 
-	if (!active(stream))
+	if (!active(stream)) {
 		return;
+	}
+
+	/* The non-HLS path writes to the pipe from here, so this is where its
+	 * stderr may be read. Rate-limited inside; see drain_child_stderr. */
+	drain_child_stderr(stream, false);
 
 	/* encoder failure */
 	if (!packet) {
@@ -795,8 +895,9 @@ static void ffmpeg_mux_data(void *data, struct encoder_packet *packet)
 				return;
 			}
 
-			if (!prepare_split_file(stream, first_pkt))
+			if (!prepare_split_file(stream, first_pkt)) {
 				return;
+			}
 			stream->split_file_ready = true;
 		}
 	} else if (stream->split_file && should_split(stream, packet)) {
@@ -804,20 +905,23 @@ static void ffmpeg_mux_data(void *data, struct encoder_packet *packet)
 			push_back_packet(&stream->mux_packets, packet);
 			return;
 		} else {
-			if (!prepare_split_file(stream, packet))
+			if (!prepare_split_file(stream, packet)) {
 				return;
+			}
 			stream->split_file_ready = true;
 		}
 	}
 
 	if (!stream->sent_headers) {
-		if (!send_headers(stream))
+		if (!send_headers(stream)) {
 			return;
+		}
 
 		stream->sent_headers = true;
 
-		if (stream->split_file)
+		if (stream->split_file) {
 			stream->cur_time = packet->dts_usec;
+		}
 	}
 
 	if (stopping(stream)) {
@@ -839,8 +943,9 @@ static void ffmpeg_mux_data(void *data, struct encoder_packet *packet)
 		os_atomic_set_bool(&stream->manual_split, false);
 	}
 
-	if (stream->split_file)
+	if (stream->split_file) {
 		ts_offset_update(stream, packet);
+	}
 
 	write_packet(stream, packet);
 }
@@ -919,8 +1024,9 @@ static void replay_buffer_hotkey(void *data, obs_hotkey_id id, obs_hotkey_t *hot
 	UNUSED_PARAMETER(id);
 	UNUSED_PARAMETER(hotkey);
 
-	if (!pressed)
+	if (!pressed) {
 		return;
+	}
 
 	struct ffmpeg_muxer *stream = data;
 
@@ -944,8 +1050,9 @@ static void save_replay_proc(void *data, calldata_t *cd)
 static void get_last_replay(void *data, calldata_t *cd)
 {
 	struct ffmpeg_muxer *stream = data;
-	if (!os_atomic_load_bool(&stream->muxing))
+	if (!os_atomic_load_bool(&stream->muxing)) {
 		calldata_set_string(cd, "path", stream->path.array);
+	}
 }
 
 static void *replay_buffer_create(obs_data_t *settings, obs_output_t *output)
@@ -970,8 +1077,9 @@ static void *replay_buffer_create(obs_data_t *settings, obs_output_t *output)
 static void replay_buffer_destroy(void *data)
 {
 	struct ffmpeg_muxer *stream = data;
-	if (stream->hotkey)
+	if (stream->hotkey) {
 		obs_hotkey_unregister(stream->hotkey);
+	}
 	ffmpeg_mux_destroy(data);
 }
 
@@ -979,10 +1087,12 @@ static bool replay_buffer_start(void *data)
 {
 	struct ffmpeg_muxer *stream = data;
 
-	if (!obs_output_can_begin_data_capture(stream->output, 0))
+	if (!obs_output_can_begin_data_capture(stream->output, 0)) {
 		return false;
-	if (!obs_output_initialize_encoders(stream->output, 0))
+	}
+	if (!obs_output_initialize_encoders(stream->output, 0)) {
 		return false;
+	}
 
 	obs_data_t *s = obs_output_get_settings(stream->output);
 	stream->max_time = obs_data_get_int(s, "max_time_sec") * 1000000LL;
@@ -1002,15 +1112,17 @@ static bool purge_front(struct ffmpeg_muxer *stream)
 	struct encoder_packet pkt;
 	bool keyframe;
 
-	if (!stream->packets.size)
+	if (!stream->packets.size) {
 		return false;
+	}
 
 	deque_pop_front(&stream->packets, &pkt, sizeof(pkt));
 
 	keyframe = pkt.type == OBS_ENCODER_VIDEO && pkt.keyframe;
 
-	if (keyframe)
+	if (keyframe) {
 		stream->keyframes--;
+	}
 
 	if (!stream->packets.size) {
 		stream->cur_size = 0;
@@ -1032,11 +1144,13 @@ static inline void purge(struct ffmpeg_muxer *stream)
 		struct encoder_packet pkt;
 
 		for (;;) {
-			if (!stream->packets.size)
+			if (!stream->packets.size) {
 				return;
+			}
 			deque_peek_front(&stream->packets, &pkt, sizeof(pkt));
-			if (pkt.type == OBS_ENCODER_VIDEO && pkt.keyframe)
+			if (pkt.type == OBS_ENCODER_VIDEO && pkt.keyframe) {
 				return;
+			}
 
 			purge_front(stream);
 		}
@@ -1046,18 +1160,22 @@ static inline void purge(struct ffmpeg_muxer *stream)
 static inline void replay_buffer_purge(struct ffmpeg_muxer *stream, struct encoder_packet *pkt)
 {
 	if (stream->max_size) {
-		if (!stream->packets.size || stream->keyframes <= 2)
+		if (!stream->packets.size || stream->keyframes <= 2) {
 			return;
+		}
 
-		while ((stream->cur_size + (int64_t)pkt->size) > stream->max_size)
+		while ((stream->cur_size + (int64_t)pkt->size) > stream->max_size) {
 			purge(stream);
+		}
 	}
 
-	if (!stream->packets.size || stream->keyframes <= 2)
+	if (!stream->packets.size || stream->keyframes <= 2) {
 		return;
+	}
 
-	while ((pkt->dts_usec - stream->cur_time) > stream->max_time)
+	while ((pkt->dts_usec - stream->cur_time) > stream->max_time) {
 		purge(stream);
+	}
 }
 
 static void insert_packet(mux_packets_t *packets, struct encoder_packet *packet, int64_t video_offset,
@@ -1080,8 +1198,9 @@ static void insert_packet(mux_packets_t *packets, struct encoder_packet *packet,
 
 	for (idx = packets->num; idx > 0; idx--) {
 		struct encoder_packet *p = packets->array + (idx - 1);
-		if (p->dts_usec < pkt.dts_usec)
+		if (p->dts_usec < pkt.dts_usec) {
 			break;
+		}
 	}
 
 	da_insert(*packets, idx, &pkt);
@@ -1122,8 +1241,9 @@ error:
 	os_process_pipe_destroy(stream->pipe);
 	stream->pipe = NULL;
 	if (error) {
-		for (size_t i = 0; i < stream->mux_packets.num; i++)
+		for (size_t i = 0; i < stream->mux_packets.num; i++) {
 			obs_encoder_packet_release(&stream->mux_packets.array[i]);
+		}
 	}
 	da_free(stream->mux_packets);
 	os_atomic_set_bool(&stream->muxing, false);
@@ -1205,8 +1325,9 @@ static void replay_buffer_data(void *data, struct encoder_packet *packet)
 	struct ffmpeg_muxer *stream = data;
 	struct encoder_packet pkt;
 
-	if (!active(stream))
+	if (!active(stream)) {
 		return;
+	}
 
 	/* encoder failure */
 	if (!packet) {
@@ -1224,18 +1345,21 @@ static void replay_buffer_data(void *data, struct encoder_packet *packet)
 	obs_encoder_packet_ref(&pkt, packet);
 	replay_buffer_purge(stream, &pkt);
 
-	if (!stream->packets.size)
+	if (!stream->packets.size) {
 		stream->cur_time = pkt.dts_usec;
+	}
 	stream->cur_size += pkt.size;
 
 	deque_push_back(&stream->packets, packet, sizeof(*packet));
 
-	if (packet->type == OBS_ENCODER_VIDEO && packet->keyframe)
+	if (packet->type == OBS_ENCODER_VIDEO && packet->keyframe) {
 		stream->keyframes++;
+	}
 
 	if (stream->save_ts && packet->sys_dts_usec >= stream->save_ts) {
-		if (os_atomic_load_bool(&stream->muxing))
+		if (os_atomic_load_bool(&stream->muxing)) {
 			return;
+		}
 
 		if (stream->mux_thread_joinable) {
 			pthread_join(stream->mux_thread, NULL);

@@ -52,12 +52,15 @@ void *ffmpeg_hls_mux_create(obs_data_t *settings, obs_output_t *output)
 	stream->output = output;
 
 	/* init mutex, semaphore and event */
-	if (pthread_mutex_init(&stream->write_mutex, NULL) != 0)
+	if (pthread_mutex_init(&stream->write_mutex, NULL) != 0) {
 		goto fail;
-	if (os_event_init(&stream->stop_event, OS_EVENT_TYPE_AUTO) != 0)
+	}
+	if (os_event_init(&stream->stop_event, OS_EVENT_TYPE_AUTO) != 0) {
 		goto fail;
-	if (os_sem_init(&stream->write_sem, 0) != 0)
+	}
+	if (os_sem_init(&stream->write_sem, 0) != 0) {
 		goto fail;
+	}
 
 	UNUSED_PARAMETER(settings);
 	return stream;
@@ -94,11 +97,18 @@ static void *write_thread(void *data)
 	struct ffmpeg_muxer *stream = data;
 
 	while (os_sem_wait(stream->write_sem) == 0) {
-		if (os_event_try(stream->stop_event) == 0)
+		if (os_event_try(stream->stop_event) == 0) {
 			return NULL;
+		}
 
-		if (!process_packet(stream))
+		/* This thread owns the pipe, so it is the one that may read the
+		 * child's stderr. It rate-limits itself, so the per-packet call
+		 * costs a pipe peek four times a second and a compare otherwise. */
+		drain_child_stderr(stream, false);
+
+		if (!process_packet(stream)) {
 			break;
+		}
 	}
 
 	obs_output_signal_stop(stream->output, OBS_OUTPUT_ERROR);
@@ -117,14 +127,17 @@ bool ffmpeg_hls_mux_start(void *data)
 	obs_data_t *settings;
 	int keyint_sec;
 
-	if (!obs_output_can_begin_data_capture(stream->output, 0))
+	if (!obs_output_can_begin_data_capture(stream->output, 0)) {
 		return false;
-	if (!obs_output_initialize_encoders(stream->output, 0))
+	}
+	if (!obs_output_initialize_encoders(stream->output, 0)) {
 		return false;
+	}
 
 	service = obs_output_get_service(stream->output);
-	if (!service)
+	if (!service) {
 		return false;
+	}
 	path_str = obs_service_get_connect_info(service, OBS_SERVICE_CONNECT_INFO_SERVER_URL);
 	stream_key = obs_service_get_connect_info(service, OBS_SERVICE_CONNECT_INFO_STREAM_KEY);
 	dstr_copy(&stream->stream_key, stream_key);
@@ -152,8 +165,9 @@ bool ffmpeg_hls_mux_start(void *data)
 		return false;
 	}
 	stream->mux_thread_joinable = pthread_create(&stream->mux_thread, NULL, write_thread, stream) == 0;
-	if (!stream->mux_thread_joinable)
+	if (!stream->mux_thread_joinable) {
 		return false;
+	}
 
 	/* write headers and start capture */
 	os_atomic_set_bool(&stream->active, true);
@@ -199,8 +213,9 @@ static void drop_frames(struct ffmpeg_muxer *stream, int highest_priority)
 	deque_free(&stream->packets);
 	stream->packets = new_buf;
 
-	if (stream->min_priority < highest_priority)
+	if (stream->min_priority < highest_priority) {
 		stream->min_priority = highest_priority;
+	}
 
 	stream->dropped_frames += num_frames_dropped;
 }
@@ -227,13 +242,15 @@ void check_to_drop_frames(struct ffmpeg_muxer *stream, bool pframes)
 	int keyint_sec = stream->keyint_sec;
 	int64_t drop_threshold_sec = keyint_sec ? 2 * keyint_sec : 10;
 
-	if (!find_first_video_packet(stream, &first))
+	if (!find_first_video_packet(stream, &first)) {
 		return;
+	}
 
 	buffer_duration_usec = stream->last_dts_usec - first.dts_usec;
 
-	if (buffer_duration_usec > drop_threshold_sec * 1000000)
+	if (buffer_duration_usec > drop_threshold_sec * 1000000) {
 		drop_frames(stream, priority);
+	}
 }
 
 static bool add_video_packet(struct ffmpeg_muxer *stream, struct encoder_packet *packet)
@@ -260,8 +277,9 @@ void ffmpeg_hls_mux_data(void *data, struct encoder_packet *packet)
 	struct encoder_packet new_packet;
 	bool added_packet = false;
 
-	if (!active(stream))
+	if (!active(stream)) {
 		return;
+	}
 
 	/* encoder failure */
 	if (!packet) {
@@ -270,8 +288,9 @@ void ffmpeg_hls_mux_data(void *data, struct encoder_packet *packet)
 	}
 
 	if (!stream->sent_headers) {
-		if (!send_headers(stream))
+		if (!send_headers(stream)) {
 			return;
+		}
 		stream->sent_headers = true;
 	}
 
@@ -304,10 +323,11 @@ void ffmpeg_hls_mux_data(void *data, struct encoder_packet *packet)
 
 	pthread_mutex_unlock(&stream->write_mutex);
 
-	if (added_packet)
+	if (added_packet) {
 		os_sem_post(stream->write_sem);
-	else
+	} else {
 		obs_encoder_packet_release(&new_packet);
+	}
 }
 
 struct obs_output_info ffmpeg_hls_muxer = {

@@ -64,6 +64,17 @@ struct ffmpeg_muxer {
 	bool is_network;
 	bool split_file;
 	bool allow_overwrite;
+
+	/* The muxing and, on the HLS path, the HTTP PUT happen in a child process,
+	 * so its stderr is the only channel an error the child survives can reach
+	 * this side on. Drained on a timer rather than only when the pipe breaks:
+	 * ignore_io_errors means a transport failure need never break it, and a
+	 * child whose stderr nobody reads blocks in write() once the pipe fills.
+	 * err_partial carries the bytes after the last newline between drains;
+	 * err_last keeps the most recent complete line for obs_output_set_last_error. */
+	struct dstr err_partial;
+	struct dstr err_last;
+	uint64_t err_next_drain_ns;
 };
 
 bool stopping(struct ffmpeg_muxer *stream);
@@ -73,4 +84,5 @@ bool write_packet(struct ffmpeg_muxer *stream, struct encoder_packet *packet);
 bool send_headers(struct ffmpeg_muxer *stream);
 int deactivate(struct ffmpeg_muxer *stream, int code);
 void ffmpeg_mux_stop(void *data, uint64_t ts);
+void drain_child_stderr(struct ffmpeg_muxer *stream, bool force);
 uint64_t ffmpeg_mux_total_bytes(void *data);

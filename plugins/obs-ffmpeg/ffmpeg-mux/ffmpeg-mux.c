@@ -34,6 +34,7 @@
 #include <libavformat/avformat.h>
 #include <libavutil/channel_layout.h>
 #include <libavutil/mastering_display_metadata.h>
+#include <libavutil/time.h>
 
 #define ANSI_COLOR_RED "\x1b[0;91m"
 #define ANSI_COLOR_MAGENTA "\x1b[0;95m"
@@ -191,8 +192,9 @@ static void free_avformat(struct ffmpeg_mux *ffm)
 	}
 
 	if (ffm->audio_infos) {
-		for (int i = 0; i < ffm->num_audio_streams; ++i)
+		for (int i = 0; i < ffm->num_audio_streams; ++i) {
 			avcodec_free_context(&ffm->audio_infos[i].ctx);
+		}
 
 		free(ffm->audio_infos);
 	}
@@ -281,26 +283,92 @@ static bool get_opt_int(int *p_argc, char ***p_argv, int *i, const char *opt)
 
 static bool get_audio_params(struct audio_params *audio, int *argc, char ***argv)
 {
-	if (!get_opt_str(argc, argv, &audio->name, "audio track name"))
+	if (!get_opt_str(argc, argv, &audio->name, "audio track name")) {
 		return false;
-	if (!get_opt_int(argc, argv, &audio->abitrate, "audio bitrate"))
+	}
+	if (!get_opt_int(argc, argv, &audio->abitrate, "audio bitrate")) {
 		return false;
-	if (!get_opt_int(argc, argv, &audio->sample_rate, "audio sample rate"))
+	}
+	if (!get_opt_int(argc, argv, &audio->sample_rate, "audio sample rate")) {
 		return false;
-	if (!get_opt_int(argc, argv, &audio->frame_size, "audio frame size"))
+	}
+	if (!get_opt_int(argc, argv, &audio->frame_size, "audio frame size")) {
 		return false;
-	if (!get_opt_int(argc, argv, &audio->initial_padding, "audio padding"))
+	}
+	if (!get_opt_int(argc, argv, &audio->initial_padding, "audio padding")) {
 		return false;
-	if (!get_opt_int(argc, argv, &audio->channels, "audio channels"))
+	}
+	if (!get_opt_int(argc, argv, &audio->channels, "audio channels")) {
 		return false;
+	}
 	return true;
+}
+
+/* At most this many distinct error lines per window, and one window's worth of
+ * repeats collapsed into a count. The parent drains this pipe on a timer rather
+ * than continuously, so an unthrottled error per frame would fill the pipe
+ * buffer between drains and block this process inside fprintf -- which
+ * back-pressures into the muxer and stalls the very stream the message is
+ * reporting on. Per window rather than per lifetime so a long broadcast cannot
+ * fall permanently silent after one early burst. */
+#define ERROR_WINDOW_US 5000000
+#define ERROR_WINDOW_MAX 10
+
+static int64_t error_window_start = 0;
+static int error_window_count = 0;
+static int error_suppressed = 0;
+static char error_last[512] = {0};
+
+static void emit_error_line(const char *text)
+{
+	const int64_t now = av_gettime_relative();
+
+	if (now - error_window_start >= ERROR_WINDOW_US) {
+		error_window_start = now;
+		error_window_count = 0;
+		/* Let a persistent error reprint once a window, carrying the count of
+		 * what it stood for. An ingest failure that repeats for an hour should
+		 * read as ongoing, not as one line an hour ago. */
+		error_last[0] = 0;
+	}
+
+	/* FFmpeg repeats an I/O error verbatim for every frame it touches, and the
+	 * repetition carries nothing the count does not. */
+	if (strcmp(text, error_last) == 0 || error_window_count >= ERROR_WINDOW_MAX) {
+		error_suppressed++;
+		return;
+	}
+
+	snprintf(error_last, sizeof(error_last), "%s", text);
+	error_window_count++;
+
+	if (error_suppressed) {
+		fprintf(stderr, "error: [ffmpeg_muxer] (%d further message(s) suppressed)\n", error_suppressed);
+		error_suppressed = 0;
+	}
+	fprintf(stderr, "error: [ffmpeg_muxer] %s", text);
 }
 
 static void ffmpeg_log_callback(void *param, int level, const char *format, va_list args)
 {
-#ifdef ENABLE_FFMPEG_MUX_DEBUG
+	/* AV_LOG_PANIC, AV_LOG_FATAL and AV_LOG_ERROR. Lower is more severe. */
+	const bool is_error = level <= AV_LOG_ERROR;
 	char out_buffer[4096];
 	struct dstr out = {0};
+
+#ifndef ENABLE_FFMPEG_MUX_DEBUG
+	/* Info and warning traffic stays debug-build only. Errors do not: this pipe
+	 * is the parent's only way to learn that a transport failed in a way the
+	 * muxer itself survived, which ignore_io_errors makes routine on the HLS
+	 * path. Discarding them is what let an ingest failure drop 5,489 frames
+	 * without producing a single log line. */
+	if (!is_error) {
+		UNUSED_PARAMETER(format);
+		UNUSED_PARAMETER(args);
+		UNUSED_PARAMETER(param);
+		return;
+	}
+#endif
 
 	vsnprintf(out_buffer, sizeof(out_buffer), format, args);
 	dstr_copy(&out, out_buffer);
@@ -308,28 +376,20 @@ static void ffmpeg_log_callback(void *param, int level, const char *format, va_l
 		dstr_replace(&out, global_stream_key, "{stream_key}");
 	}
 
-	switch (level) {
-	case AV_LOG_INFO:
+	if (is_error) {
+		emit_error_line(out.array);
+	}
+#ifdef ENABLE_FFMPEG_MUX_DEBUG
+	else if (level == AV_LOG_INFO) {
 		fprintf(stdout, "info: [ffmpeg_muxer] %s", out.array);
 		fflush(stdout);
-		break;
-
-	case AV_LOG_WARNING:
+	} else if (level == AV_LOG_WARNING) {
 		fprintf(stdout, "%swarning: [ffmpeg_muxer] %s%s", ANSI_COLOR_MAGENTA, out.array, ANSI_COLOR_RESET);
 		fflush(stdout);
-		break;
-
-	case AV_LOG_ERROR:
-		fprintf(stderr, "%serror: [ffmpeg_muxer] %s%s", ANSI_COLOR_RED, out.array, ANSI_COLOR_RESET);
-		fflush(stderr);
 	}
+#endif
 
 	dstr_free(&out);
-#else
-	UNUSED_PARAMETER(level);
-	UNUSED_PARAMETER(format);
-	UNUSED_PARAMETER(args);
-#endif
 	UNUSED_PARAMETER(param);
 }
 
@@ -337,12 +397,15 @@ static bool init_params(int *argc, char ***argv, struct main_params *params, str
 {
 	struct audio_params *audio = NULL;
 
-	if (!get_opt_str(argc, argv, &params->file, "file name"))
+	if (!get_opt_str(argc, argv, &params->file, "file name")) {
 		return false;
-	if (!get_opt_int(argc, argv, &params->has_video, "video track count"))
+	}
+	if (!get_opt_int(argc, argv, &params->has_video, "video track count")) {
 		return false;
-	if (!get_opt_int(argc, argv, &params->tracks, "audio track count"))
+	}
+	if (!get_opt_int(argc, argv, &params->tracks, "audio track count")) {
 		return false;
+	}
 
 	if (params->has_video > 1 || params->has_video < 0) {
 		puts("Invalid number of video tracks\n");
@@ -358,37 +421,51 @@ static bool init_params(int *argc, char ***argv, struct main_params *params, str
 	}
 
 	if (params->has_video) {
-		if (!get_opt_str(argc, argv, &params->vcodec, "video codec"))
+		if (!get_opt_str(argc, argv, &params->vcodec, "video codec")) {
 			return false;
-		if (!get_opt_int(argc, argv, &params->vbitrate, "video bitrate"))
+		}
+		if (!get_opt_int(argc, argv, &params->vbitrate, "video bitrate")) {
 			return false;
-		if (!get_opt_int(argc, argv, &params->width, "video width"))
+		}
+		if (!get_opt_int(argc, argv, &params->width, "video width")) {
 			return false;
-		if (!get_opt_int(argc, argv, &params->height, "video height"))
+		}
+		if (!get_opt_int(argc, argv, &params->height, "video height")) {
 			return false;
-		if (!get_opt_int(argc, argv, &params->color_primaries, "video color primaries"))
+		}
+		if (!get_opt_int(argc, argv, &params->color_primaries, "video color primaries")) {
 			return false;
-		if (!get_opt_int(argc, argv, &params->color_trc, "video color trc"))
+		}
+		if (!get_opt_int(argc, argv, &params->color_trc, "video color trc")) {
 			return false;
-		if (!get_opt_int(argc, argv, &params->colorspace, "video colorspace"))
+		}
+		if (!get_opt_int(argc, argv, &params->colorspace, "video colorspace")) {
 			return false;
-		if (!get_opt_int(argc, argv, &params->color_range, "video color range"))
+		}
+		if (!get_opt_int(argc, argv, &params->color_range, "video color range")) {
 			return false;
-		if (!get_opt_int(argc, argv, &params->chroma_sample_location, "video chroma sample location"))
+		}
+		if (!get_opt_int(argc, argv, &params->chroma_sample_location, "video chroma sample location")) {
 			return false;
-		if (!get_opt_int(argc, argv, &params->max_luminance, "video max luminance"))
+		}
+		if (!get_opt_int(argc, argv, &params->max_luminance, "video max luminance")) {
 			return false;
-		if (!get_opt_int(argc, argv, &params->fps_num, "video fps num"))
+		}
+		if (!get_opt_int(argc, argv, &params->fps_num, "video fps num")) {
 			return false;
-		if (!get_opt_int(argc, argv, &params->fps_den, "video fps den"))
+		}
+		if (!get_opt_int(argc, argv, &params->fps_den, "video fps den")) {
 			return false;
-		if (!get_opt_int(argc, argv, &params->codec_tag, "video codec tag"))
+		}
+		if (!get_opt_int(argc, argv, &params->codec_tag, "video codec tag")) {
 			params->codec_tag = 0;
+		}
 	}
 
 	if (params->tracks) {
-		if (!get_opt_str(argc, argv, &params->acodec, "audio codec"))
+		if (!get_opt_str(argc, argv, &params->acodec, "audio codec")) {
 			return false;
+		}
 
 		audio = calloc(params->tracks, sizeof(*audio));
 
@@ -440,8 +517,9 @@ static void create_video_stream(struct ffmpeg_mux *ffm)
 		return;
 	}
 
-	if (!new_stream(ffm, &ffm->video_stream, name))
+	if (!new_stream(ffm, &ffm->video_stream, name)) {
 		return;
+	}
 
 	if (ffm->video_header.size) {
 		extradata = av_memdup(ffm->video_header.data, ffm->video_header.size);
@@ -468,8 +546,9 @@ static void create_video_stream(struct ffmpeg_mux *ffm)
 	ffm->video_stream->time_base = context->time_base;
 	ffm->video_stream->avg_frame_rate = av_inv_q(context->time_base);
 
-	if (ffm->output->oformat->flags & AVFMT_GLOBALHEADER)
+	if (ffm->output->oformat->flags & AVFMT_GLOBALHEADER) {
 		context->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+	}
 
 	avcodec_parameters_from_context(ffm->video_stream->codecpar, context);
 
@@ -525,8 +604,9 @@ static void create_audio_stream(struct ffmpeg_mux *ffm, int idx)
 		return;
 	}
 
-	if (!new_stream(ffm, &stream, name))
+	if (!new_stream(ffm, &stream, name)) {
 		return;
+	}
 
 	av_dict_set(&stream->metadata, "title", ffm->audio[idx].name, 0);
 
@@ -539,23 +619,27 @@ static void create_audio_stream(struct ffmpeg_mux *ffm, int idx)
 	context = avcodec_alloc_context3(NULL);
 	context->codec_type = codec->type;
 	context->codec_id = codec->id;
-	if (!(codec_desc->props & AV_CODEC_PROP_LOSSLESS))
+	if (!(codec_desc->props & AV_CODEC_PROP_LOSSLESS)) {
 		context->bit_rate = (int64_t)ffm->audio[idx].abitrate * 1000;
+	}
 
 	channels = ffm->audio[idx].channels;
 	context->sample_rate = ffm->audio[idx].sample_rate;
-	if (!(codec->capabilities & AV_CODEC_CAP_VARIABLE_FRAME_SIZE))
+	if (!(codec->capabilities & AV_CODEC_CAP_VARIABLE_FRAME_SIZE)) {
 		context->frame_size = ffm->audio[idx].frame_size;
+	}
 
 	context->time_base = stream->time_base;
 	context->extradata = extradata;
 	context->extradata_size = ffm->audio_header[idx].size;
 	av_channel_layout_default(&context->ch_layout, channels);
 	//avutil default channel layout for 5 channels is 5.0 ; fix for 4.1
-	if (channels == 5)
+	if (channels == 5) {
 		context->ch_layout = (AVChannelLayout)AV_CHANNEL_LAYOUT_4POINT1;
-	if (ffm->output->oformat->flags & AVFMT_GLOBALHEADER)
+	}
+	if (ffm->output->oformat->flags & AVFMT_GLOBALHEADER) {
 		context->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+	}
 
 	// Set initial padding so that priming samples are skipped
 	context->initial_padding = ffm->audio[idx].initial_padding;
@@ -569,18 +653,21 @@ static void create_audio_stream(struct ffmpeg_mux *ffm, int idx)
 
 static bool init_streams(struct ffmpeg_mux *ffm)
 {
-	if (ffm->params.has_video)
+	if (ffm->params.has_video) {
 		create_video_stream(ffm);
+	}
 
 	if (ffm->params.tracks) {
 		ffm->audio_infos = calloc(ffm->params.tracks, sizeof(*ffm->audio_infos));
 
-		for (int i = 0; i < ffm->params.tracks; i++)
+		for (int i = 0; i < ffm->params.tracks; i++) {
 			create_audio_stream(ffm, i);
+		}
 	}
 
-	if (!ffm->video_stream && !ffm->num_audio_streams)
+	if (!ffm->video_stream && !ffm->num_audio_streams) {
 		return false;
+	}
 
 	return true;
 }
@@ -608,8 +695,9 @@ static size_t safe_read(void *vdata, size_t size)
 
 	while (size > 0) {
 		size_t in_size = fread(data, 1, size, stdin);
-		if (in_size == 0)
+		if (in_size == 0) {
 			return 0;
+		}
 
 		size -= in_size;
 		data += in_size;
@@ -704,8 +792,9 @@ static void *ffmpeg_mux_io_thread(void *data)
 
 				// Buffer is empty (now) or was already empty (we got
 				// woken up to exit)
-				if (!available)
+				if (!available) {
 					break;
+				}
 
 				// Get seek offset and data size
 				struct io_header header;
@@ -786,13 +875,15 @@ static void *ffmpeg_mux_io_thread(void *data)
 		}
 
 		// If this was the last chunk, time to exit
-		if (shutting_down)
+		if (shutting_down) {
 			break;
+		}
 	}
 
 error:
-	if (chunk)
+	if (chunk) {
 		free(chunk);
+	}
 
 	fclose(ffm->io.output_file);
 	return NULL;
@@ -803,15 +894,17 @@ static int64_t ffmpeg_mux_seek_av_buffer(void *opaque, int64_t offset, int whenc
 	struct ffmpeg_mux *ffm = opaque;
 
 	// If the output thread failed, signal that back up the stack
-	if (os_atomic_load_bool(&ffm->io.output_error))
+	if (os_atomic_load_bool(&ffm->io.output_error)) {
 		return -1;
+	}
 
 	// Update where the next write should go
 	pthread_mutex_lock(&ffm->io.data_mutex);
-	if (whence == SEEK_SET)
+	if (whence == SEEK_SET) {
 		ffm->io.next_pos = offset;
-	else if (whence == SEEK_CUR)
+	} else if (whence == SEEK_CUR) {
 		ffm->io.next_pos += offset;
+	}
 	pthread_mutex_unlock(&ffm->io.data_mutex);
 
 	return 0;
@@ -826,8 +919,9 @@ static int ffmpeg_mux_write_av_buffer(void *opaque, uint8_t *buf, int buf_size)
 	struct ffmpeg_mux *ffm = opaque;
 
 	// If the output thread failed, signal that back up the stack
-	if (os_atomic_load_bool(&ffm->io.output_error))
+	if (os_atomic_load_bool(&ffm->io.output_error)) {
 		return -1;
+	}
 
 	for (;;) {
 		pthread_mutex_lock(&ffm->io.data_mutex);
@@ -924,8 +1018,9 @@ static inline int open_output_file(struct ffmpeg_mux *ffm)
 		printf("Using muxer settings:");
 
 		AVDictionaryEntry *entry = NULL;
-		while ((entry = av_dict_get(dict, "", entry, AV_DICT_IGNORE_SUFFIX)))
+		while ((entry = av_dict_get(dict, "", entry, AV_DICT_IGNORE_SUFFIX))) {
 			printf("\n\t%s=%s", entry->key, entry->value);
+		}
 
 		printf("\n");
 	}
@@ -957,10 +1052,11 @@ static int ffmpeg_mux_init_context(struct ffmpeg_mux *ffm)
 		avformat_network_init();
 	}
 
-	if (is_network && !is_http)
+	if (is_network && !is_http) {
 		output_format = av_guess_format("mpegts", NULL, "video/M2PT");
-	else
+	} else {
 		output_format = av_guess_format(NULL, ffm->params.file, NULL);
+	}
 
 	if (output_format == NULL) {
 		fprintf(stderr, "Couldn't find an appropriate muxer for '%s'\n", ffm->params.printable_file.array);
@@ -997,15 +1093,17 @@ static int ffmpeg_mux_init_internal(struct ffmpeg_mux *ffm, int argc, char *argv
 {
 	argc--;
 	argv++;
-	if (!init_params(&argc, &argv, &ffm->params, &ffm->audio))
+	if (!init_params(&argc, &argv, &ffm->params, &ffm->audio)) {
 		return FFM_ERROR;
+	}
 
 	if (ffm->params.tracks) {
 		ffm->audio_header = calloc(ffm->params.tracks, sizeof(*ffm->audio_header));
 	}
 
-	if (!ffmpeg_mux_get_extra_data(ffm))
+	if (!ffmpeg_mux_get_extra_data(ffm)) {
 		return FFM_ERROR;
+	}
 
 	ffm->packet = av_packet_alloc();
 
@@ -1086,8 +1184,9 @@ static inline bool ffmpeg_mux_packet(struct ffmpeg_mux *ffm, uint8_t *buf, struc
 	ffm->packet->pts = rescale_ts(ffm, codec_time_base, info->pts, idx);
 	ffm->packet->dts = rescale_ts(ffm, codec_time_base, info->dts, idx);
 
-	if (info->keyframe)
+	if (info->keyframe) {
 		ffm->packet->flags = AV_PKT_FLAG_KEY;
+	}
 
 	int ret = av_interleaved_write_frame(ffm->output, ffm->packet);
 
@@ -1201,8 +1300,9 @@ int main(int argc, char *argv[])
 	resize_buf_free(&rb_filename);
 
 #ifdef _WIN32
-	for (int i = 0; i < argc; i++)
+	for (int i = 0; i < argc; i++) {
 		free(argv[i]);
+	}
 	free(argv);
 #endif
 	return 0;
