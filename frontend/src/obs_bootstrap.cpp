@@ -52,6 +52,7 @@
 #include "history/SessionStore.hpp"
 #include "history/Thumbnails.hpp"
 #include "multistream/CanvasRuntime.hpp"
+#include "multistream/VideoGate.hpp"
 #include "multistream/CanvasService.hpp"
 #include "multistream/CanvasStore.hpp"
 #include "multistream/GlobalAudioChannels.hpp"
@@ -3669,6 +3670,128 @@ void ObsBootstrap::RunNativeThemeSelfTest()
 		return;
 	}
 	HostLog("[selftest] native-theme OK: AppliedCount=" + std::to_string(applied));
+}
+
+namespace {
+
+// Composite Main into a small buffer and report whether anything landed. Mirrors
+// what a Default screenshot does (History::GrabPng and screenshot.takeProgram both
+// render this same texture), so a blank here is a blank there.
+bool MainCompositeIsBlank()
+{
+	obs_video_info ovi;
+	if (!obs_get_video_info(&ovi)) {
+		return true;
+	}
+	std::vector<uint8_t> rgba;
+	std::string err;
+	const auto render = []() {
+		obs_render_main_texture();
+	};
+	if (!Bridge::RenderToRgbaPixels(ovi.base_width, ovi.base_height, 64, 36, render, rgba, err)) {
+		return true;
+	}
+	return History::IsBlank(rgba);
+}
+
+// Give the graphics thread two ticks to act on a gate change. total_frames advances
+// at the top of each tick, before that tick composites, so two means one full pass
+// both began and ended under the new state.
+void WaitTwoComposites()
+{
+	const uint32_t start = obs_get_total_frames();
+	const uint64_t deadline = os_gettime_ns() + 500000000ULL;
+	while (obs_get_total_frames() - start < 2 && os_gettime_ns() < deadline) {
+		os_sleep_ms(4);
+	}
+}
+
+} // namespace
+
+void ObsBootstrap::RunScreenshotGateSelfTest()
+{
+	// Channel 0 holds the transition, not the scene; Transitions::GetProgramScene
+	// unwraps it (and returns channel 0 directly when no transition is set).
+	OBSSourceAutoRelease scene = Transitions::GetProgramScene();
+	obs_scene_t *asScene = scene ? obs_scene_from_source(scene) : nullptr;
+	if (!asScene) {
+		HostLog("[selftest] screenshot-gate SKIPPED: no program scene");
+		return;
+	}
+
+	// An opaque white fill, so "did the composite run" is decidable by luma alone and
+	// does not depend on whatever the program scene happens to hold.
+	OBSDataAutoRelease settings = obs_data_create();
+	obs_data_set_int(settings, "color", 0xFFFFFFFF);
+	obs_data_set_int(settings, "width", 1920);
+	obs_data_set_int(settings, "height", 1080);
+	OBSSourceAutoRelease fill = obs_source_create_private("color_source", "selftest-screenshot-fill", settings);
+	if (!fill) {
+		HostLog("[selftest] screenshot-gate SKIPPED: color_source unavailable");
+		return;
+	}
+	obs_sceneitem_t *item = obs_scene_add(asScene, fill);
+	if (!item) {
+		HostLog("[selftest] screenshot-gate SKIPPED: could not add fill to program scene");
+		return;
+	}
+
+	// Sanity: the fill must be visible at all, or nothing below means anything.
+	WaitTwoComposites();
+	if (MainCompositeIsBlank()) {
+		obs_sceneitem_remove(item);
+		HostLog("[selftest] screenshot-gate SKIPPED: fill did not render, so the gate "
+			"cannot be told apart from an empty scene");
+		return;
+	}
+
+	// Try the real thing first: with nothing consuming Main, the frontend gates it and a
+	// capture comes back blank. A headless smoke usually has a consumer anyway (an enabled
+	// Default binding is enough), so this is attempted, not assumed.
+	VideoGate::Reconcile();
+	WaitTwoComposites();
+	const bool idleBlanked = MainCompositeIsBlank();
+
+	bool refRestored = false;
+	if (idleBlanked) {
+		g_canvasRuntime->AddPreview(g_canvases.Default().uuid);
+		WaitTwoComposites();
+		refRestored = !MainCompositeIsBlank();
+		g_canvasRuntime->RemovePreview(g_canvases.Default().uuid);
+	}
+
+	// Main had a consumer, so the gated state never occurred on its own. Synthesize it at
+	// the libobs level instead: this still covers the mechanism that makes a screenshot
+	// blank -- an elided composite leaves texture_rendered false and
+	// obs_render_main_texture draws nothing -- but not the frontend wiring that decides
+	// when to elide, which needs a genuinely idle Main to exercise.
+	bool synthBlanked = false;
+	bool synthRestored = false;
+	if (!idleBlanked) {
+		OBSCanvasAutoRelease mainCanvas = obs_get_main_canvas();
+		if (mainCanvas) {
+			obs_canvas_set_render_gated(mainCanvas, true);
+			WaitTwoComposites();
+			synthBlanked = MainCompositeIsBlank();
+			obs_canvas_set_render_gated(mainCanvas, false);
+			WaitTwoComposites();
+			synthRestored = !MainCompositeIsBlank();
+		}
+	}
+
+	obs_sceneitem_remove(item);
+	VideoGate::Reconcile(); // hand the gate back to the authoritative predicate
+
+	if (idleBlanked) {
+		HostLog(std::string("[selftest] screenshot-gate -> idle capture blank, Default ref ") +
+			(refRestored ? "restored the composite (OK)"
+				     : "did NOT restore the composite (BUG: screenshots stay blank)"));
+		return;
+	}
+	HostLog(std::string("[selftest] screenshot-gate -> Main had a consumer, so the frontend's "
+			    "idle path was not exercised; synthesized elision ") +
+		(synthBlanked ? "blanked the capture" : "did NOT blank the capture (BUG: elision is inert)") +
+		" and ungating " + (synthRestored ? "restored it (OK)" : "did NOT restore it (BUG)"));
 }
 
 void ObsBootstrap::RunCalendarSelfTest()

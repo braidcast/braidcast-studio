@@ -10532,6 +10532,43 @@ bool BuildScreenshotPath(const std::string &name, const char *fallback, std::str
 	return true;
 }
 
+// Hold a Default preview ref for the length of a capture. Every other consumer of
+// the Main composite takes this ref -- a preview surface, a Program projector, a
+// Default multiview, the virtual camera -- and a screenshot is one too. Without it
+// the idle gate has stopped Main's sources and elided its composite, so
+// obs_render_main_texture draws nothing at all (it early-returns on
+// !texture_rendered) and what gets encoded is the zero-cleared texrender. The
+// Ctrl+Shift+S binding is a global key handler, so it reaches this with no canvas
+// panel open -- which is exactly the state that makes Main idle.
+class DefaultCompositeRef {
+public:
+	DefaultCompositeRef() : uuid_(ObsBootstrap::Canvases().Default().uuid)
+	{
+		ObsBootstrap::CanvasRuntime().AddPreview(uuid_);
+	}
+	~DefaultCompositeRef() { ObsBootstrap::CanvasRuntime().RemovePreview(uuid_); }
+	DefaultCompositeRef(const DefaultCompositeRef &) = delete;
+	DefaultCompositeRef &operator=(const DefaultCompositeRef &) = delete;
+
+private:
+	std::string uuid_;
+};
+
+// Wait for a composite that ran after the ungate above. total_frames advances at
+// the top of each graphics tick, before that tick composites, so requiring two
+// means one full pass both began and ended with the gate already lifted --
+// stopping at one would accept the pass that was already in flight. Bounded so a
+// wedged graphics thread costs a stale screenshot rather than a hung caller.
+void WaitForMainComposite()
+{
+	constexpr uint64_t kTimeoutNs = 250000000ULL;
+	const uint32_t start = obs_get_total_frames();
+	const uint64_t deadline = os_gettime_ns() + kTimeoutNs;
+	while (obs_get_total_frames() - start < 2 && os_gettime_ns() < deadline) {
+		os_sleep_ms(4);
+	}
+}
+
 // Capture the composited program for the addressed canvas (absent/Default ->
 // the global pipeline; otherwise the additional canvas's mix) to a PNG.
 bool MethodScreenshotTakeProgram(const json &params, json &result, std::string &error)
@@ -10542,6 +10579,8 @@ bool MethodScreenshotTakeProgram(const json &params, json &result, std::string &
 	uint32_t h = 0;
 	std::function<void()> renderFn;
 	std::string name;
+	// Declared out here so the ref outlives the capture below, not just the branch.
+	std::optional<DefaultCompositeRef> mainRef;
 
 	if (t.isAdditional) {
 		obs_canvas_t *cv = ObsBootstrap::CanvasRuntime().Find(t.uuid);
@@ -10576,6 +10615,8 @@ bool MethodScreenshotTakeProgram(const json &params, json &result, std::string &
 		if (name.empty()) {
 			name = "Program";
 		}
+		mainRef.emplace();
+		WaitForMainComposite();
 	}
 
 	std::string fullPath;

@@ -424,6 +424,14 @@ void RunOverlaySelfTest();
 // smoke time). There is no headless pixel check, so this only confirms ApplyDark
 // ran on the host. Touches no config. Gated by the caller to the smoke path.
 void RunNativeThemeSelfTest();
+// A Default-canvas screenshot must not depend on something else keeping the Main
+// composite alive. Ctrl+Shift+S is a global key handler, so it fires with no canvas
+// panel open -- exactly the state where the idle gate stops Main's sources and elides
+// its composite, leaving obs_render_main_texture nothing to draw. Puts a white source
+// on the program scene, asserts the capture really is blank while idle (so the test
+// has teeth), then asserts a Default preview ref restores it. Removes the source and
+// the ref on every path; touches no config. Gated by the caller to the smoke path.
+void RunScreenshotGateSelfTest();
 // `drainCefTasks` is main.cpp's bounded CefDoMessageLoopWork pump (the frontend
 // owns CEF, so it is injected rather than called directly); see the header
 // comment for why Stop must pump between its source-removal sweep and
