@@ -175,11 +175,21 @@ void EventHub::StartAccount(const std::string &accountId, const OAuth::OAuthAcco
 		// Connecting bookend: a real-time transport reports Connected itself once its
 		// socket handshakes; the reconnect below re-marks Reconnecting on a drop.
 		ReportHealth(ctx, Transports::TransportHealth::State::Connecting);
+		// True once a poll-only transport has idled cleanly and is re-entering on its own
+		// cadence, so the line below can say so. Saying "connecting" every cycle reads as a
+		// reconnect loop and was misread as exactly that: 76 of those lines in an hour were
+		// the YouTube REST transport keeping its 90s cadence, with nothing wrong. A genuine
+		// drop clears this, so a real reconnect still announces itself as one.
+		bool idlingOnCadence = false;
 		while (!canceled()) {
 			fatal = false;
 			std::string err;
 			bool ok = false;
-			DBG(LogCat::Events, "connecting transport '%s'", providerId.c_str());
+			if (idlingOnCadence) {
+				DBG(LogCat::Events, "polling transport '%s'", providerId.c_str());
+			} else {
+				DBG(LogCat::Events, "connecting transport '%s'", providerId.c_str());
+			}
 			try {
 				ok = transport->connect(ctx, acctCopy, err);
 			} catch (const std::exception &e) {
@@ -209,6 +219,7 @@ void EventHub::StartAccount(const std::string &accountId, const OAuth::OAuthAcco
 			if (!ok) {
 				ReportHealth(ctx, Transports::TransportHealth::State::Reconnecting, err);
 			}
+			idlingOnCadence = polls && ok;
 
 			if (polls) {
 				try {
