@@ -32,15 +32,19 @@ double Double(const char *key, double fallback);
 
 // True when `key` is present, even set to an empty value -- matches the historical
 // `getenv(key) != nullptr` presence checks this replaces. Routing FE_SMOKE_QUIT_SECONDS
-// through this (and through Number/Raw) means a stray line in .env now arms the
-// self-terminating smoke path -- which also writes the real %APPDATA% config -- on
-// every dev launch, so keep that file clean.
+// through this (and through Number/Raw) means a stray line in .env arms the
+// self-terminating smoke path on every dev launch, so keep that file clean.
 bool IsSet(const char *key);
 
 // True during a headless smoke run (FE_SMOKE_QUIT_SECONDS) or a targeted self-test
-// (BRAIDCAST_SELFTEST_STREAM). Both drive the app unattended against the user's real
-// config directory, so anything that would block on a human, or persist state the user
-// did not ask for, asks here first.
+// (BRAIDCAST_SELFTEST_STREAM). Both drive the app unattended, so anything that would
+// block on a human asks here first.
+//
+// It also selects the config base: an unattended run gets its own directory beside the
+// executable rather than the developer's live one (see ResolveSelfTestConfigBase). That
+// removes the reason a self-test used to restore what it touched -- there is nothing
+// there to preserve -- but restoring is still the better habit, because a test that
+// leaves state behind can still be read by the test that runs after it.
 bool IsSelfTestRun();
 
 // String value, or fallback when absent.
