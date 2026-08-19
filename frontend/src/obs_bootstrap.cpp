@@ -2503,6 +2503,14 @@ namespace {
 // omission; the ones that passed did so only because they created a scene of
 // their own first.
 //
+// The preview ref is what builds the mix, and a mix is not optional for anything
+// that reads geometry back. An item on a mix-less canvas has no canvas size to
+// resolve against, so its box comes back degenerate -- which is how three
+// transform assertions came to be failing against arithmetic that is correct:
+// a 90-degree rotation reported exactly the drift of an uncorrected pivot, and a
+// bounds item reported a 0x0 box. The app never edits in that state either, since
+// the preview surface a user drags on takes this same ref before it renders.
+//
 // In-memory only: the caller never Saves, and removes the canvas at the end.
 std::string MakeSelfTestCanvas(const char *name)
 {
@@ -2518,6 +2526,7 @@ std::string MakeSelfTestCanvas(const char *name)
 	const std::string uuid = added.uuid;
 	g_canvasRuntime->EnsureCanvas(added);
 	g_canvasRuntime->EnsureScenes();
+	g_canvasRuntime->AddPreview(uuid);
 	return uuid;
 }
 
@@ -4010,7 +4019,13 @@ void ObsBootstrap::RunEventSelfTest()
 	HostLog(std::string("[selftest] events dedupe -> ") + std::to_string(afterDup) +
 		(afterDup == 3 ? " (OK, duplicate id rejected)" : " (BUG, duplicate stored)"));
 
-	// Persistence round-trip: a fresh store loads the just-saved events.json.
+	// Persistence round-trip: a fresh store loads the saved events.json. The Flush is
+	// not test scaffolding -- Add coalesces writes on a 3s debounce and Clear() above
+	// stamps that timer, so all three Ingests land inside one window and leave the feed
+	// dirty in memory with the empty file Clear wrote still on disk. Flush is exactly
+	// how the app persists that trailing state (bridge shutdown does the same call), so
+	// reading back without it asserts against a write the product never promised.
+	Events::Store().Flush();
 	Events::EventStore reloaded;
 	const size_t reloadedCount = reloaded.List().size();
 	HostLog(std::string("[selftest] events round-trip -> reloaded ") + std::to_string(reloadedCount) +
