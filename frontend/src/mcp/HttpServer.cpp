@@ -3,8 +3,10 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
+#include <chrono>
 #include <cstdint>
 #include <string>
+#include <thread>
 
 #include "log.hpp"
 #include "util/http_status.hpp"
@@ -100,28 +102,57 @@ bool HttpServer::Start(int port, HttpHandler handler)
 	}
 	wsaUp_ = true;
 
-	SOCKET listenSock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-	if (listenSock == INVALID_SOCKET) {
-		lastError_ = "socket() failed (" + std::to_string(WSAGetLastError()) + ")";
-		HostLog("[mcp] http: " + lastError_);
-		WSACleanup();
-		wsaUp_ = false;
-		return false;
-	}
+	// A relaunch races the previous instance's socket teardown, so the first bind can lose
+	// to a process that is already on its way out. One failed bind used to end the matter
+	// for the whole session -- the server never retried, which silently cost every external
+	// instrument (stats sampling, agent control) until the next launch. Retry briefly; the
+	// window that matters is the old process finishing its exit.
+	//
+	// Deliberately NOT SO_REUSEADDR. On Windows that flag lets an unrelated process bind
+	// the same address and receive this listener's traffic, which on a loopback control
+	// channel gated by a bearer token is a hijack rather than a convenience. Waiting is the
+	// correct fix here; reuse is not.
+	constexpr int kBindAttempts = 10;
+	constexpr auto kBindRetryDelay = std::chrono::milliseconds(200);
 
-	sockaddr_in addr = {};
-	addr.sin_family = AF_INET;
-	addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK); // 127.0.0.1 ONLY
-	addr.sin_port = htons((unsigned short)port);
+	SOCKET listenSock = INVALID_SOCKET;
+	for (int attempt = 1; attempt <= kBindAttempts; ++attempt) {
+		listenSock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+		if (listenSock == INVALID_SOCKET) {
+			lastError_ = "socket() failed (" + std::to_string(WSAGetLastError()) + ")";
+			HostLog("[mcp] http: " + lastError_);
+			WSACleanup();
+			wsaUp_ = false;
+			return false;
+		}
 
-	if (bind(listenSock, (sockaddr *)&addr, sizeof(addr)) == SOCKET_ERROR) {
-		lastError_ = "bind(127.0.0.1:" + std::to_string(port) + ") failed (" +
-			     std::to_string(WSAGetLastError()) + ", port in use?)";
-		HostLog("[mcp] http: " + lastError_);
+		sockaddr_in addr = {};
+		addr.sin_family = AF_INET;
+		addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK); // 127.0.0.1 ONLY
+		addr.sin_port = htons((unsigned short)port);
+
+		if (bind(listenSock, (sockaddr *)&addr, sizeof(addr)) != SOCKET_ERROR) {
+			if (attempt > 1) {
+				HostLog("[mcp] http: bound 127.0.0.1:" + std::to_string(port) + " on attempt " +
+					std::to_string(attempt) + " (previous instance was still releasing it)");
+			}
+			break;
+		}
+
+		const int bindErr = WSAGetLastError();
 		closesocket(listenSock);
-		WSACleanup();
-		wsaUp_ = false;
-		return false;
+		listenSock = INVALID_SOCKET;
+
+		// Only the in-use race is worth waiting on; anything else will not clear by itself.
+		if (bindErr != WSAEADDRINUSE || attempt == kBindAttempts) {
+			lastError_ = "bind(127.0.0.1:" + std::to_string(port) + ") failed (" + std::to_string(bindErr) +
+				     ", port in use?)";
+			HostLog("[mcp] http: " + lastError_);
+			WSACleanup();
+			wsaUp_ = false;
+			return false;
+		}
+		std::this_thread::sleep_for(kBindRetryDelay);
 	}
 
 	if (listen(listenSock, SOMAXCONN) == SOCKET_ERROR) {
