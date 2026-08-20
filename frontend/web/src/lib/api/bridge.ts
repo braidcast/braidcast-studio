@@ -782,6 +782,12 @@ export interface MultistreamStatus {
   canvasName: string;
   state: MultistreamState;
   lastError: string;
+  /** Whether this binding has had an output THIS SESSION, in any state. `state` alone
+   * flattens two different rows into "idle": a destination that was never on the
+   * running broadcast, and one that was and is not now -- which is what a platform
+   * ending a broadcast produces, since that connection closes cleanly. Only the
+   * second can be brought back, so only the second is offered a retry. */
+  startedThisSession: boolean;
 }
 
 // --- transport health (chat/events/overlay connection surface, R14/G1) -------
@@ -1852,9 +1858,17 @@ export interface ObsMethods {
   "sceneLink.list": { links: SceneLinkInfo[] };
   "sceneLink.set": Record<string, never>;
   "sceneLink.clear": Record<string, never>;
-  // Multistream live status (fan-out engine, 4.4.4). Start/stop is a single global
-  // action via streaming.start/stop; there is no per-row control method.
+  // Multistream live status (fan-out engine, 4.4.4). Going live and stopping are the
+  // global streaming.start/stop; startOutput is the one per-row action, and it exists
+  // only to bring a destination onto a broadcast that is ALREADY running.
   "multistream.status": { outputs: MultistreamStatus[] };
+  // The PREPARED start of one binding ({uuid}): the host creates and binds the
+  // destination's broadcast and writes the resolved ingest back into its stream profile
+  // BEFORE the encoder runs. Starting bare instead would push at whatever endpoint the
+  // last go-live left in that profile -- green on every local indicator, absent from the
+  // platform. `pending` means the preparation was dispatched and the outcome arrives
+  // later: outputBinding.armFailed if it is refused, multistream.changed if it comes up.
+  "multistream.startOutput": { ok: true; pending: boolean } | { ok: false; error: string };
   // Transport health snapshot (chat/events/overlay connection state, R14/G1). One row
   // per reporting transport; pushed on transports.healthChanged when any row changes.
   "transports.health": { transports: TransportHealth[] };
@@ -2160,6 +2174,10 @@ export interface ObsEvents {
   // re-runs streamMeta.get for that profile.
   "streamMeta.changed": { profileUuid: string };
   "outputBinding.changed": Record<string, never>;
+  // A destination armed while the stream was ALREADY running could not be brought up. Distinct
+  // from streaming.startFailed, which means nothing went live: here the broadcast is running and
+  // carrying every other destination, and only this one is not on it.
+  "outputBinding.armFailed": { uuid: string; destination: string; reason: string };
   // A scene link was created/updated/removed; a consumer re-runs sceneLink.list.
   "sceneLink.changed": Record<string, never>;
   "multistream.changed": { outputs: MultistreamStatus[] };

@@ -273,7 +273,15 @@ const std::vector<ToolDescriptor> &ToolRegistry()
 				SchemaObject(json::object(), json::array()))},
 
 		{"start_output", "multistream.startOutput",
-		 MakeDescriptor("start_output", "Start streaming one output binding by its uuid (go-live).",
+		 MakeDescriptor("start_output",
+				"Bring one armed output binding onto the broadcast that is already running. "
+				"Refused when nothing is streaming: this joins a broadcast, it does not "
+				"begin one. Preparing the destination on its platform can take a moment, so "
+				"{ok:true, pending:true} means it was accepted and the result arrives later "
+				"as multistream.changed (it came up) or outputBinding.armFailed (it did "
+				"not). Do not block waiting for either: if the stream ends or the user "
+				"disarms the destination while it is being prepared, the attempt is "
+				"abandoned and no event is emitted. Poll multistream_status instead.",
 				SchemaObject(json{{"uuid", Prop("string", "Output binding uuid (from list_outputs).")}},
 					     json::array({"uuid"})))},
 

@@ -3,6 +3,7 @@
 export const EV = {
   streamProfileChanged: "streamProfile.changed",
   outputBindingChanged: "outputBinding.changed",
+  outputBindingArmFailed: "outputBinding.armFailed",
   canvasChanged: "canvas.changed",
   collectionsChanged: "collections.changed",
   streamingChanged: "streaming.changed",

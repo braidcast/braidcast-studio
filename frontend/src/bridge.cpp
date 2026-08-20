@@ -207,6 +207,7 @@ json BuildStatusArray()
 			{"canvasName", st.canvasName},
 			{"state", MultistreamEngine::StateName(st.state)},
 			{"lastError", st.lastError},
+			{"startedThisSession", st.startedThisSession},
 		});
 	}
 	return arr;
@@ -7062,20 +7063,48 @@ bool MethodTransportsHealth(const json & /*params*/, json &result, std::string &
 	return true;
 }
 
+// What ArmBindingLive did with the request. Preparation is network work, so a destination it
+// accepted may not be going out yet by the time it returns.
+enum class ArmOutcome { Refused, Started, Preparing };
+
+// Defined below, next to the go-live prelude whose rules it shares; forward-declared because
+// this method is the only way in and is declared above it.
+ArmOutcome ArmBindingLive(const std::string &bindingUuid, std::string &error);
+
+// Bring one destination onto the broadcast that is already running. NOT a bare StartOutput:
+// an account-backed destination owns no broadcast until prepareDestination makes one, and its
+// profile still holds the ingest endpoint and key the LAST go-live wrote there, so attaching
+// an encoder to it pushes at an endpoint with nothing bound -- green on every local indicator
+// and absent from the platform. ArmBindingLive runs that preparation first.
+//
+// Three answers, because the preparation is asynchronous.
+//
+// `ok:false` carries the reason. It usually means nothing changed, but not always: a start
+// refused locally leaves an Error entry on the row, which is what puts Retry there.
+//
+// `ok:true, pending:false` means it is going out now.
+//
+// `ok:true, pending:true` means the preparation was dispatched. It reaches the row later, as
+// multistream.changed once the output comes up, or outputBinding.armFailed if it could not be
+// prepared or would not start. A caller must NOT wait unconditionally on one of those: if the
+// session ends or the destination is disarmed while the preparation is in flight, the attempt
+// is abandoned silently and neither event is emitted, because nothing about the running
+// broadcast changed and there is no failure to report about a destination the user took back.
 bool MethodMultistreamStartOutput(const json &params, json &result, std::string &error)
 {
 	std::string uuid;
 	if (!RequireStr(params, "multistream.startOutput", "uuid", uuid, error)) {
 		return false;
 	}
-	std::string startError;
-	const bool ok = ObsBootstrap::Multistream().StartOutput(uuid, startError);
-	result = json{{"ok", ok}};
-	if (!ok && !startError.empty()) {
-		// Surface the refusal/failure reason so the row shows WHY it won't go live
-		// instead of a bare {ok:false} (the same reason is on multistream.changed).
-		result["error"] = startError;
+	std::string armError;
+	const ArmOutcome outcome = ArmBindingLive(uuid, armError);
+	if (outcome == ArmOutcome::Refused) {
+		// Carried on the result rather than failing the call, so the row shows WHY it
+		// will not go live instead of a bare {ok:false}.
+		result = json{{"ok", false}, {"error", armError}};
+		return true;
 	}
+	result = json{{"ok", true}, {"pending", outcome == ArmOutcome::Preparing}};
 	return true;
 }
 
@@ -9740,10 +9769,43 @@ bool g_goLivePreludeInFlight = false;
 // overtaken seconds later by the go-live it was meant to cancel.
 uint64_t g_goLiveGeneration = 0;
 
-// Every enabled binding with work to do before the encoders start: a broadcast to create
-// on a create-per-go-live platform, or metadata to push on a persistent channel. Deduped
-// by whatever actually receives the call -- (account, profile) for the first, account
-// alone for the second, since one channel cannot hold two titles.
+// The dedup key one prelude destination claims: what actually RECEIVES the call. A persistent
+// channel is ONE place however many profiles point at it, so a second job would PATCH the same
+// channel again and let iteration order decide which bag wins; a create-per-go-live platform
+// genuinely owns a broadcast per profile. This is the keying rule broadcastPerDestination()
+// already states for chat and viewer reads.
+std::string PreludeDedupKey(const std::string &accountId, const std::string &profileUuid, bool metadataOnly)
+{
+	return metadataOnly ? accountId : accountId + "\n" + profileUuid;
+}
+
+// Keys claimed by mid-stream arms whose preparation is still in flight, each mapped to the
+// profile that claimed it. go-live gets this for free from the one `seen` its collection walk
+// shares; a modal arming several destinations issues a separate multistream.startOutput per
+// uuid, so nothing but this stops two of them on one persistent channel from PATCHing it
+// concurrently. Claimed and released on the UI thread, which is the whole of its
+// synchronization.
+//
+// The profileUuid is carried so a collision can say which of the two it is: the same
+// destination asked twice, or a sibling profile on a channel that can only carry one stream.
+// Those need opposite advice, and the key alone cannot tell them apart.
+//
+// The token identifies the individual claim, which profileUuid cannot: on a create-per-go-live
+// platform the key already embeds the profileUuid, so an arm made after a stop swept the map
+// stores an entry indistinguishable from the one still in flight. A landing must release only
+// its own entry, and the token is the only thing that tells the two apart.
+struct ArmPreludeClaim {
+	std::string profileUuid;
+	uint64_t token;
+};
+std::unordered_map<std::string, ArmPreludeClaim> g_armPreludeClaims;
+uint64_t g_armPreludeClaimSeq = 0;
+
+// One enabled binding's share of the work before the encoders start: a broadcast to create
+// on a create-per-go-live platform, or metadata to push on a persistent channel. Nothing
+// where it needs neither. Deduped through `seen`, keyed by whatever actually receives the
+// call -- (account, profile) for the first, account alone for the second, since one
+// channel cannot hold two titles.
 //
 // Reads the stores, so UI thread only. `fields` comes from StreamMetaStore because that is
 // all a go-live driven from the hotkey, the tray or the scheduler has. The Go Live modal's
@@ -9756,76 +9818,98 @@ uint64_t g_goLiveGeneration = 0;
 // they belong to it exactly as the ones this prelude is about to make do, and an attempt
 // that ends without a session has to drop both sets or those channels are skipped on
 // every later go-live.
+//
+// `retryingDeadOutput` says this binding had an output on THIS session which is now down, which
+// is the one case where the sent-metadata skip below must not apply -- see it for why. Passed in
+// rather than derived here, though the engine is as reachable from this function as the four
+// stores it already reads: go-live needs the opposite answer for the same state. Dead entries
+// linger (OnOutputStop never erases), so if every output died on its own and the user never
+// pressed Stop, a fresh streaming.start would find one for every binding and re-push the
+// remembered bag over what the modal had just applied.
+std::optional<BroadcastPreludeJob> MakePreludeJob(const OutputBinding &binding, std::unordered_set<std::string> &seen,
+						  std::vector<std::string> &alreadyRecorded, bool retryingDeadOutput)
+{
+	StreamMetaStore &meta = ObsBootstrap::StreamMeta();
+	if (!binding.enabled || binding.profileUuid.empty()) {
+		return std::nullopt;
+	}
+	const StreamProfile *profile = ObsBootstrap::StreamProfiles().Find(binding.profileUuid);
+	if (!profile || profile->accountId.empty()) {
+		return std::nullopt; // a stream-key / custom-RTMP / WHIP destination owns no broadcast
+	}
+	const std::optional<OAuth::OAuthAccount> stored = OAuth::Accounts().Get(profile->accountId);
+	OAuth::StreamProvider *provider = stored ? OAuth::Registry().Get(stored->providerId) : nullptr;
+	// A destination whose account is gone, disconnected, or on an unknown provider is NOT
+	// skipped here. Skipping it left the binding enabled and StartAllEnabled started it
+	// anyway, against the endpoint and key the LAST go-live wrote into the profile -- an
+	// encoder pushing at a stale ingest with no broadcast bound to it, green on every
+	// local indicator and absent from the platform. It becomes a job whose only outcome
+	// is the failure the worker records, which is the same refusal a broadcast that could
+	// not be created gets.
+	const bool disconnected = !stored || !provider || !OAuth::AccountHasCredential(*stored);
+	// A persistent-channel platform creates nothing, but its title and category
+	// still have to reach the channel, and the modal was the only thing pushing
+	// them -- so a scheduled, hotkey, or ask-disabled go-live went out carrying
+	// whatever that channel last had. Same reasoning that moved the broadcast
+	// precondition out of the modal; this is the half that was left behind.
+	//
+	// Skipped where a platform has already accepted this destination's metadata,
+	// which is what g_sentMetadata records. Asked per destination rather than per
+	// go-live: the modal pushes only for the channels it armed, so a global answer
+	// would suppress the push for one it never touched, and would not protect a
+	// pre-live "Edit stream info" followed by a hotkey start.
+	//
+	// The skip covers EVERY platform, not only the persistent-channel ones. What the
+	// prelude would push is the remembered bag, which "save these details for next time"
+	// may deliberately keep older than what the user just typed -- and prepareDestination
+	// now edits an existing broadcast in place instead of short-circuiting on it, so
+	// letting the job through would overwrite the values the modal applied seconds ago
+	// with the stale ones. The modal's own push already went through prepareDestination,
+	// so that destination is applied AND confirmed.
+	//
+	// Not for a destination being retried after its output died, though. The record says the
+	// platform was pushed at some point this session; it does not say the broadcast that push
+	// made is still open, and nothing clears it short of streaming.stop. A broadcast the
+	// PLATFORM ended closes cleanly, so honoring the record there would send the retry at an
+	// ingest bound to a finished broadcast -- the very failure this preparation exists to
+	// prevent. prepareDestination decides create-vs-edit for itself from hasActiveBroadcast.
+	if (!disconnected && !retryingDeadOutput && HasSentMetadata(binding.profileUuid)) {
+		alreadyRecorded.push_back(binding.profileUuid);
+		return std::nullopt;
+	}
+	const bool metadataOnly = !disconnected && !provider->broadcastPerDestination();
+	if (!seen.insert(PreludeDedupKey(profile->accountId, binding.profileUuid, metadataOnly)).second) {
+		return std::nullopt;
+	}
+	json fields = meta.ChannelDefaults(profile->accountId);
+	if (!fields.is_object()) {
+		fields = json::object();
+	}
+	// Per-stream values win over the channel defaults, key by key -- the same
+	// precedence the modal's effectiveFields applies.
+	const json overrides = meta.StreamOverride(binding.profileUuid);
+	if (overrides.is_object()) {
+		for (auto it = overrides.begin(); it != overrides.end(); ++it) {
+			fields[it.key()] = it.value();
+		}
+	}
+	return BroadcastPreludeJob{profile->accountId, binding.profileUuid, profile->DisplayName(), std::move(fields),
+				   metadataOnly};
+}
+
+// Every enabled binding with work to do, in binding order. One `seen` spans the whole walk, so
+// the dedup rule above sees the destinations earlier bindings have already claimed.
+//
+// Reads the stores, so UI thread only.
 std::vector<BroadcastPreludeJob> CollectBroadcastPrelude(std::vector<std::string> &alreadyRecorded)
 {
 	std::vector<BroadcastPreludeJob> jobs;
 	std::unordered_set<std::string> seen;
-	StreamMetaStore &meta = ObsBootstrap::StreamMeta();
 	for (const OutputBinding &binding : ObsBootstrap::OutputBindings().Bindings().bindings) {
-		if (!binding.enabled || binding.profileUuid.empty()) {
-			continue;
+		if (std::optional<BroadcastPreludeJob> job =
+			    MakePreludeJob(binding, seen, alreadyRecorded, /*retryingDeadOutput=*/false)) {
+			jobs.push_back(std::move(*job));
 		}
-		const StreamProfile *profile = ObsBootstrap::StreamProfiles().Find(binding.profileUuid);
-		if (!profile || profile->accountId.empty()) {
-			continue; // a stream-key / custom-RTMP / WHIP destination owns no broadcast
-		}
-		const std::optional<OAuth::OAuthAccount> stored = OAuth::Accounts().Get(profile->accountId);
-		OAuth::StreamProvider *provider = stored ? OAuth::Registry().Get(stored->providerId) : nullptr;
-		// A destination whose account is gone, disconnected, or on an unknown provider is NOT
-		// skipped here. Skipping it left the binding enabled and StartAllEnabled started it
-		// anyway, against the endpoint and key the LAST go-live wrote into the profile -- an
-		// encoder pushing at a stale ingest with no broadcast bound to it, green on every
-		// local indicator and absent from the platform. It becomes a job whose only outcome
-		// is the failure the worker records, which is the same refusal a broadcast that could
-		// not be created gets.
-		const bool disconnected = !stored || !provider || !OAuth::AccountHasCredential(*stored);
-		// A persistent-channel platform creates nothing, but its title and category
-		// still have to reach the channel, and the modal was the only thing pushing
-		// them -- so a scheduled, hotkey, or ask-disabled go-live went out carrying
-		// whatever that channel last had. Same reasoning that moved the broadcast
-		// precondition out of the modal; this is the half that was left behind.
-		//
-		// Skipped where a platform has already accepted this destination's metadata,
-		// which is what g_sentMetadata records. Asked per destination rather than per
-		// go-live: the modal pushes only for the channels it armed, so a global answer
-		// would suppress the push for one it never touched, and would not protect a
-		// pre-live "Edit stream info" followed by a hotkey start.
-		//
-		// The skip covers EVERY platform, not only the persistent-channel ones. What the
-		// prelude would push is the remembered bag, which "save these details for next time"
-		// may deliberately keep older than what the user just typed -- and prepareDestination
-		// now edits an existing broadcast in place instead of short-circuiting on it, so
-		// letting the job through would overwrite the values the modal applied seconds ago
-		// with the stale ones. The modal's own push already went through prepareDestination,
-		// so that destination is applied AND confirmed.
-		if (!disconnected && HasSentMetadata(binding.profileUuid)) {
-			alreadyRecorded.push_back(binding.profileUuid);
-			continue;
-		}
-		const bool metadataOnly = !disconnected && !provider->broadcastPerDestination();
-		// Keyed by what actually receives the call. A persistent channel is ONE place
-		// however many profiles point at it, so a second job would PATCH the same
-		// channel again and let iteration order decide which bag wins; a create-per-
-		// go-live platform genuinely owns a broadcast per profile. This is the keying
-		// rule broadcastPerDestination() already states for chat and viewer reads.
-		if (!seen.insert(metadataOnly ? profile->accountId : profile->accountId + "\n" + binding.profileUuid)
-			     .second) {
-			continue;
-		}
-		json fields = meta.ChannelDefaults(profile->accountId);
-		if (!fields.is_object()) {
-			fields = json::object();
-		}
-		// Per-stream values win over the channel defaults, key by key -- the same
-		// precedence the modal's effectiveFields applies.
-		const json overrides = meta.StreamOverride(binding.profileUuid);
-		if (overrides.is_object()) {
-			for (auto it = overrides.begin(); it != overrides.end(); ++it) {
-				fields[it.key()] = it.value();
-			}
-		}
-		jobs.push_back(BroadcastPreludeJob{profile->accountId, binding.profileUuid, profile->DisplayName(),
-						   std::move(fields), metadataOnly});
 	}
 	return jobs;
 }
@@ -9859,6 +9943,79 @@ void EmitMetadataMismatch(json destinations, json cleared)
 		  json{{"destinations", std::move(destinations)}, {"cleared", std::move(cleared)}});
 }
 
+// One prelude job run against its provider: create-or-edit the broadcast on a create-per-go-live
+// platform, or push the channel metadata on a persistent one, then judge what the platform reads
+// back. Appends to `failures` where the destination must not stream at all, to `mismatches` where
+// it may but not carrying what was asked, and to `recorded` the profiles whose remembered bag the
+// caller has to take back if no session comes of this.
+//
+// Runs OFF the UI thread -- it is all network. Shared with the mid-stream arm path so a
+// destination prepared after go-live is prepared by the same rules, not a second copy of them.
+void RunPreludeJob(const BroadcastPreludeJob &job, json &failures, json &mismatches, std::vector<std::string> &recorded)
+{
+	// Re-read the account rather than capturing it: a token rotated by a
+	// peer between collection and here must not be clobbered by a stale copy.
+	const std::optional<OAuth::OAuthAccount> stored = OAuth::Accounts().Get(job.accountId);
+	OAuth::StreamProvider *provider = stored ? OAuth::Registry().Get(stored->providerId) : nullptr;
+	if (!stored || !provider || !OAuth::AccountHasCredential(*stored)) {
+		failures.push_back(json{{"destination", job.label},
+					{"reason", "the account is not connected; reconnect it, or turn "
+						   "this destination off"}});
+		return;
+	}
+	OAuth::OAuthAccount acct = *stored;
+	std::string err;
+	OAuth::DestinationReadback readback;
+	bool ok = false;
+	try {
+		ok = provider->prepareDestination(acct, job.profileUuid, job.fields, readback, err);
+	} catch (const std::exception &e) {
+		err = e.what();
+	}
+	if (!ok) {
+		if (job.metadataOnly) {
+			// Not fatal, unlike a broadcast that could not be created: a
+			// persistent channel is streamable whatever its title says, and
+			// Twitch rejects a whole patch over one malformed tag. Refusing here
+			// would cost an unattended scheduled broadcast its airing to save it a
+			// stale title, which is the worse of the two.
+			mismatches.push_back(json{{"destination", job.label},
+						  {"profileUuid", job.profileUuid},
+						  {"reason", err.empty() ? "the metadata push failed" : err},
+						  {"fields", json::array()},
+						  {"unconfirmed", std::string()}});
+			return;
+		}
+		failures.push_back(json{{"destination", job.label},
+					{"reason", err.empty() ? "could not prepare the broadcast" : err}});
+		return;
+	}
+	if (job.metadataOnly) {
+		// What the session opening on the live edge reads to file what the channel
+		// was actually told. Only the persistent-channel branch: a create-per-
+		// go-live platform's values belong to the broadcast this call just made,
+		// and claiming a channel-wide push it did not make would put the remembered
+		// bag over the modal's own record.
+		RecordSentMetadata(job.profileUuid, job.fields);
+		recorded.push_back(job.profileUuid);
+	}
+	// A visibility nobody confirmed is the one divergence worth losing an airing
+	// over: the broadcast would go out to an audience the user never chose, and no
+	// later correction takes that back. Everything else is reported and streams.
+	const std::vector<OAuth::MetadataDivergence> unsafe = OAuth::SafetyDivergences(readback.divergences);
+	if (!unsafe.empty()) {
+		failures.push_back(json{{"destination", job.label}, {"reason", OAuth::DivergenceSummary(unsafe)}});
+		return;
+	}
+	if (!readback.divergences.empty() || !readback.unconfirmed.empty()) {
+		mismatches.push_back(json{{"destination", job.label},
+					  {"profileUuid", job.profileUuid},
+					  {"reason", std::string()},
+					  {"fields", OAuth::DivergencesJson(readback.divergences)},
+					  {"unconfirmed", readback.unconfirmed}});
+	}
+}
+
 // The whole of going live, already on the UI thread. Split out from StartStreamingAll so
 // StartStreamingAllAdoptingSchedule can run the schedule adoption and this in ONE posted
 // task -- see the threading note on that declaration for what interleaves otherwise.
@@ -9889,72 +10046,7 @@ void StartStreamingAllOnUi()
 		// prelude pushes below.
 		std::vector<std::string> recorded = alreadyRecorded;
 		for (const BroadcastPreludeJob &job : jobs) {
-			// Re-read the account rather than capturing it: a token rotated by a
-			// peer between collection and here must not be clobbered by a stale copy.
-			const std::optional<OAuth::OAuthAccount> stored = OAuth::Accounts().Get(job.accountId);
-			OAuth::StreamProvider *provider = stored ? OAuth::Registry().Get(stored->providerId) : nullptr;
-			if (!stored || !provider || !OAuth::AccountHasCredential(*stored)) {
-				failures.push_back(
-					json{{"destination", job.label},
-					     {"reason", "the account is not connected; reconnect it, or turn "
-							"this destination off"}});
-				continue;
-			}
-			OAuth::OAuthAccount acct = *stored;
-			std::string err;
-			OAuth::DestinationReadback readback;
-			bool ok = false;
-			try {
-				ok = provider->prepareDestination(acct, job.profileUuid, job.fields, readback, err);
-			} catch (const std::exception &e) {
-				err = e.what();
-			}
-			if (!ok) {
-				if (job.metadataOnly) {
-					// Not fatal, unlike a broadcast that could not be created: a
-					// persistent channel is streamable whatever its title says, and
-					// Twitch rejects a whole patch over one malformed tag. Refusing here
-					// would cost an unattended scheduled broadcast its airing to save it a
-					// stale title, which is the worse of the two.
-					mismatches.push_back(
-						json{{"destination", job.label},
-						     {"profileUuid", job.profileUuid},
-						     {"reason", err.empty() ? "the metadata push failed" : err},
-						     {"fields", json::array()},
-						     {"unconfirmed", std::string()}});
-					continue;
-				}
-				failures.push_back(
-					json{{"destination", job.label},
-					     {"reason", err.empty() ? "could not prepare the broadcast" : err}});
-				continue;
-			}
-			if (job.metadataOnly) {
-				// What the session opening on the live edge reads to file what the channel
-				// was actually told. Only the persistent-channel branch: a create-per-
-				// go-live platform's values belong to the broadcast this call just made,
-				// and claiming a channel-wide push it did not make would put the remembered
-				// bag over the modal's own record.
-				RecordSentMetadata(job.profileUuid, job.fields);
-				recorded.push_back(job.profileUuid);
-			}
-			// A visibility nobody confirmed is the one divergence worth losing an airing
-			// over: the broadcast would go out to an audience the user never chose, and no
-			// later correction takes that back. Everything else is reported and streams.
-			const std::vector<OAuth::MetadataDivergence> unsafe =
-				OAuth::SafetyDivergences(readback.divergences);
-			if (!unsafe.empty()) {
-				failures.push_back(
-					json{{"destination", job.label}, {"reason", OAuth::DivergenceSummary(unsafe)}});
-				continue;
-			}
-			if (!readback.divergences.empty() || !readback.unconfirmed.empty()) {
-				mismatches.push_back(json{{"destination", job.label},
-							  {"profileUuid", job.profileUuid},
-							  {"reason", std::string()},
-							  {"fields", OAuth::DivergencesJson(readback.divergences)},
-							  {"unconfirmed", readback.unconfirmed}});
-			}
+			RunPreludeJob(job, failures, mismatches, recorded);
 		}
 		AsyncTask::PostToUi([failures = std::move(failures), mismatches = std::move(mismatches),
 				     recorded = std::move(recorded), generation] {
@@ -10012,12 +10104,238 @@ void StartStreamingAllOnUi()
 	});
 }
 
+// One destination refused after the stream is already running. Its own event rather than
+// streaming.startFailed: that one means nothing went live and says so, which would be a lie
+// told to a streamer whose broadcast is up and carrying every other destination.
+void EmitArmFailed(const std::string &bindingUuid, const std::string &label, const std::string &reason)
+{
+	EmitEvent(EventNames::kOutputBindingArmFailed,
+		  json{{"uuid", bindingUuid}, {"destination", label}, {"reason", reason}});
+}
+
+// Start one binding that was armed while the session is live, once it is prepared. Reports the
+// reason back rather than emitting it: a synchronous caller still has an answer to receive, and
+// only the caller-less async landing needs the event.
+//
+// A refusal leaves the arm itself standing -- the binding is enabled and persisted, and every
+// other destination keeps streaming. One output that would not come up must not unwind a state
+// change the user asked for.
+bool StartArmedOutput(const std::string &bindingUuid, const std::string &label, std::string &error)
+{
+	CEF_REQUIRE_UI_THREAD();
+	if (!ObsBootstrap::Multistream().StartOutput(bindingUuid, error)) {
+		HostLog("[stream] " + label + " was armed mid-stream but would not start: " + error);
+		return false;
+	}
+	// Chat is resolved from the destinations that are LIVE, and on YouTube a broadcast's
+	// liveChatId exists only once there is a broadcast. Started here rather than on the arming
+	// toggle for that reason: on both routes in -- the prepared one, where the call above is
+	// what created the broadcast, and the one that had nothing to prepare, where the modal's
+	// own push did -- the broadcast exists by the time this runs, and on the toggle it did not.
+	// Idempotent, so the siblings already connected keep their transports.
+	Chat::Hub().Start();
+	return true;
+}
+
+// Bring one already-armed destination onto the broadcast that is running: prepare it exactly the
+// way go-live prepares one, then start it. Arming alone deliberately starts nothing -- the user
+// validates the destination's stream info first, and this is what runs once they have.
+//
+// The preparation is not optional, for the reason StartStreamingAllOnUi documents: an
+// account-backed destination owns no broadcast until prepareDestination makes one, and its
+// profile still holds the ingest endpoint and key the LAST go-live wrote there. Calling
+// StartOutput on its own would attach an encoder to a stale ingest with nothing bound to it --
+// green on every local indicator, absent from the platform.
+//
+// A binding that is not enabled is refused rather than prepared: MakePreludeJob declines a
+// disabled binding, so letting one through here would fall straight to the bare start this
+// exists to close.
+//
+// `seen` guards the metadata PUSH, not streaming -- a second job on one persistent channel would
+// PATCH it again and let iteration order decide which bag wins. A single call has nothing to
+// dedup against, but the modal fans out one startOutput per destination, so two arms on one
+// channel are concurrent CALLS, each with a `seen` of its own. g_armPreludeClaims is the claim
+// they share; a create-per-go-live platform keys per profile and never collides.
+ArmOutcome ArmBindingLive(const std::string &bindingUuid, std::string &error)
+{
+	CEF_REQUIRE_UI_THREAD();
+	const OutputBinding *binding = ObsBootstrap::OutputBindings().Bindings().Find(bindingUuid);
+	if (!binding) {
+		error = "no output binding with uuid '" + bindingUuid + "'";
+		return ArmOutcome::Refused;
+	}
+	MultistreamEngine &engine = ObsBootstrap::Multistream();
+	if (engine.IsLive(bindingUuid)) {
+		return ArmOutcome::Started; // already going out; nothing to prepare or start
+	}
+	// Refused for the reason SetOutputBindingEnabled refuses an arm in the same window: the
+	// prelude has already snapshotted the destinations it is creating broadcasts against, and
+	// the StartAllEnabled that follows it would start this one against the ingest the last
+	// go-live wrote into its profile.
+	if (GoLivePreludeInFlight()) {
+		error = kGoLiveAlreadyStarting;
+		return ArmOutcome::Refused;
+	}
+	if (!engine.AnyLive()) {
+		// Nothing to join. Starting alone from here would go out carrying only this
+		// destination, with none of the preparation go-live does for the rest.
+		error = "nothing is streaming; go live instead";
+		return ArmOutcome::Refused;
+	}
+	if (!binding->enabled) {
+		error = "that destination is turned off; arm it first";
+		return ArmOutcome::Refused;
+	}
+	const StreamProfile *profile = ObsBootstrap::StreamProfiles().Find(binding->profileUuid);
+	const std::string label = profile ? profile->DisplayName() : bindingUuid;
+	// Discarded rather than used: `seen` has nothing to dedup against for a single binding,
+	// and an alreadyRecorded entry would name a push the Stream Information modal made, which
+	// belongs to the modal's own attempt and not to this one.
+	std::unordered_set<std::string> seen;
+	std::vector<std::string> alreadyRecorded;
+	// IsLive was refused above, so WentLive still true means this destination reached the
+	// platform and is now down -- the row's Retry on a spent broadcast, not a first start.
+	// StartedThisSession would be wrong here: it is also true for a start refused locally
+	// before it ever connected, whose broadcast is still the fresh one the modal just made.
+	const bool retryingDeadOutput = engine.WentLiveThisSession(bindingUuid);
+	const std::optional<BroadcastPreludeJob> job =
+		MakePreludeJob(*binding, seen, alreadyRecorded, retryingDeadOutput);
+	if (!job) {
+		// Nothing to prepare: a stream-key destination owns no broadcast, or the Stream
+		// Information modal pushed for this one and it has not been on the wire since, so
+		// the broadcast that push made is the one an encoder would attach to now.
+		return StartArmedOutput(bindingUuid, label, error) ? ArmOutcome::Started : ArmOutcome::Refused;
+	}
+	// Held from here until the landing releases it. A collision is refused rather than queued:
+	// it cannot be let through to a bare start (the stale-ingest hazard this path exists to
+	// close) and it must not push concurrently.
+	//
+	// Which collision it is decides what the user is told. Same profile -- only reachable by
+	// arming one destination twice -- is a "not yet", and retrying after this lands succeeds,
+	// by which time HasSentMetadata covers it. A different profile on the same key can only be
+	// a persistent channel, whose profiles share one stream key, so it is a "not ever":
+	// ProfileEnabledElsewhere misses it because that keys on profileUuid, and telling the user
+	// to retry would just move the refusal to the platform, which rejects the duplicate ingest
+	// far less legibly.
+	const std::string claim = PreludeDedupKey(job->accountId, job->profileUuid, job->metadataOnly);
+	const uint64_t claimToken = ++g_armPreludeClaimSeq;
+	const auto claimed = g_armPreludeClaims.emplace(claim, ArmPreludeClaim{job->profileUuid, claimToken});
+	if (!claimed.second) {
+		error = claimed.first->second.profileUuid == job->profileUuid
+				? "that destination is already being prepared"
+				: "another destination on this channel is going live now, and one channel "
+				  "can only carry one stream";
+		return ArmOutcome::Refused;
+	}
+	// Captured before the network work and re-checked when it lands: a stop is what bumps it,
+	// so a mismatch means the session this arm was joining is gone.
+	const uint64_t generation = g_goLiveGeneration;
+	AsyncTask::RunAsync([job = *job, bindingUuid, label, generation, claim, claimToken] {
+		json failures = json::array();
+		json mismatches = json::array();
+		std::vector<std::string> recorded;
+		RunPreludeJob(job, failures, mismatches, recorded);
+		AsyncTask::PostToUi([bindingUuid, label, generation, claim, claimToken,
+				     dest = OAuth::DestinationId{job.accountId, job.profileUuid},
+				     failures = std::move(failures), mismatches = std::move(mismatches),
+				     recorded = std::move(recorded)] {
+			// Released before any branch below returns, so an abandoned or refused attempt
+			// leaves the target claimable again -- but only if this attempt still owns the
+			// entry. A stop sweeps the whole map, so a later arm can claim the same key
+			// while this one is still in flight; erasing by key alone would then release
+			// ITS claim and admit a third arm alongside it, which is the concurrent PATCH
+			// the claim exists to stop. The token is what identifies this attempt: the key and
+			// the profileUuid are both shared with that later arm, so neither can decide it.
+			const auto held = g_armPreludeClaims.find(claim);
+			if (held != g_armPreludeClaims.end() && held->second.token == claimToken) {
+				g_armPreludeClaims.erase(held);
+			}
+			const OutputBinding *b = ObsBootstrap::OutputBindings().Bindings().Find(bindingUuid);
+			const bool sessionEnded = generation != g_goLiveGeneration ||
+						  !ObsBootstrap::MultistreamAlive() ||
+						  !ObsBootstrap::Multistream().AnyLive();
+			// Re-read rather than trusting the enabled flag the synchronous half saw. The
+			// modal's cancel branch disarms every binding it armed that is not yet live,
+			// and a binding still inside prepareDestination is exactly that -- so starting
+			// on the flag from before would put an output on the wire for a destination the
+			// user just took back. Statuses() enumerates only ENABLED bindings, so that
+			// output would be live, absent from the UI, and unstoppable from it.
+			const bool disarmed = !b || !b->enabled;
+			if (sessionEnded || disarmed) {
+				// What this recorded has to come back out or the channel is skipped on
+				// every later go-live: a stop sweeps the sent-metadata map, and this
+				// attempt kept pushing after that.
+				ForgetSentMetadata(recorded);
+				// prepareDestination may also have cached a broadcast as this
+				// destination's active one after that same sweep. Nothing else takes it
+				// out: the next go-live would bind to a broadcast nothing is streaming
+				// to, and the viewer poller bills a videos.list against it every cycle
+				// until the session ends.
+				//
+				// Destination-scoped, never the account-wide clearActiveBroadcast. On
+				// the disarm cause nothing stopped, and one account routinely carries
+				// sibling profiles (RouteLikeOrigin) that are still streaming -- the
+				// account-wide call would drop THEIR targets too, which on Facebook
+				// means POSTing end_live_video against a broadcast whose encoder is
+				// still pushing. The account-wide sweep belongs to a stop, and the stop
+				// has already run its own before this lands.
+				if (const std::optional<OAuth::OAuthAccount> stored =
+					    OAuth::Accounts().Get(dest.accountId)) {
+					if (OAuth::StreamProvider *p = OAuth::Registry().Get(stored->providerId)) {
+						p->clearActiveBroadcastDestination(dest);
+					}
+				}
+				HostLog("[stream] mid-stream arm of " + label +
+					" abandoned: " + (sessionEnded ? "the session ended" : "it was disarmed") +
+					" while it was being prepared");
+				return;
+			}
+			if (!failures.empty()) {
+				ForgetSentMetadata(recorded);
+				// Only this destination is refused. Go-live refuses the whole attempt
+				// for one unpreparable destination because nothing has started yet;
+				// here the broadcast is running, and taking it down to punish a
+				// destination that could not be prepared costs far more than it saves.
+				HostLog("[stream] destination armed mid-stream could not be prepared: " +
+					failures.dump());
+				const std::string reason = failures[0].value("reason", std::string());
+				EmitArmFailed(bindingUuid, label, reason);
+				return;
+			}
+			std::string startError;
+			if (!StartArmedOutput(bindingUuid, label, startError)) {
+				// Nobody is left waiting on a return value, so the refusal reaches the
+				// row the same way a failed preparation does.
+				EmitArmFailed(bindingUuid, label, startError);
+				return;
+			}
+			// Same as go-live's: it IS going out, just not carrying everything it was asked
+			// to, and that is only actionable while the broadcast is still running.
+			if (!mismatches.empty()) {
+				EmitMetadataMismatch(mismatches, json::array());
+			}
+		});
+	});
+	return ArmOutcome::Preparing;
+}
+
 } // namespace
 
 bool GoLivePreludeInFlight()
 {
 	CEF_REQUIRE_UI_THREAD();
 	return g_goLivePreludeInFlight;
+}
+
+ScopedGoLivePrelude::ScopedGoLivePrelude() : previous(g_goLivePreludeInFlight)
+{
+	CEF_REQUIRE_UI_THREAD();
+	g_goLivePreludeInFlight = true;
+}
+
+ScopedGoLivePrelude::~ScopedGoLivePrelude()
+{
+	g_goLivePreludeInFlight = previous;
 }
 
 // Go live: bring every destination to a streamable state, THEN start the encoders.
@@ -10068,6 +10386,12 @@ void StopStreamingAll()
 		// never came up leaves one nothing will ever take. Left in place it would
 		// suppress the next go-live's metadata push for that destination.
 		ClearSentMetadata();
+		// Every in-flight arm is abandoned by the generation bump above, so no claim
+		// outlives this. Swept rather than left to each landing to release, because a
+		// worker that dies without reaching PostToUi -- RunAsync swallows a throw that is
+		// not a std::exception -- would otherwise hold its target un-armable for the rest
+		// of the process.
+		g_armPreludeClaims.clear();
 		Chat::Viewers().Stop();
 		Chat::Hub().Stop();
 		for (const auto &entry : OAuth::Accounts().All()) {
@@ -10090,6 +10414,16 @@ bool SetOutputBindingEnabled(const std::string &bindingUuid, bool enabled, std::
 		return false;
 	}
 
+	// Refused for the reason streaming.start refuses: a prelude in flight has already
+	// snapshotted the destinations it is creating broadcasts against, and the StartAllEnabled
+	// that follows it starts whatever is enabled when it lands -- which would include this
+	// one, against the ingest the LAST go-live wrote into its profile and with no broadcast
+	// bound to it.
+	if (enabled && GoLivePreludeInFlight()) {
+		error = kGoLiveAlreadyStarting;
+		return false;
+	}
+
 	// Enabling must obey the single-live-stream rule: refuse if this profile is already
 	// enabled on another canvas (one RTMP key = one live stream). Mirrors the engine's
 	// ProfileLiveElsewhere guard so config and the live layer agree.
@@ -10106,15 +10440,6 @@ bool SetOutputBindingEnabled(const std::string &bindingUuid, bool enabled, std::
 	// binding isn't live; it manages its own locking (we hold none across it).
 	if (!enabled) {
 		ObsBootstrap::Multistream().StopOutput(bindingUuid);
-	}
-
-	// Chat is resolved from the ENABLED destinations, so arming one mid-stream has to
-	// re-resolve or the destination streams with no chat for the rest of the session.
-	// Mirrors the mid-stream account-disconnect path; the disable direction does NOT come
-	// through here, because the output ending is what ends its chat (onOutputEnded ->
-	// Chat::Hub().StopDestination), which spares every sibling transport a reconnect.
-	if (enabled && ObsBootstrap::Multistream().AnyLive()) {
-		Chat::Hub().Start();
 	}
 
 	// Enabling builds the canvas mix (before any StartOutput); disabling the last

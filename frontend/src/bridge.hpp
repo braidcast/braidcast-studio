@@ -232,13 +232,33 @@ void StartStreamingAllAdoptingSchedule();
 // thread only.
 bool GoLivePreludeInFlight();
 
+// Holds the flag above up for as long as it lives, so the headless self-tests can prove
+// the refusals that key off it. They cannot reach a real prelude: one is collected only
+// for an account-backed destination, and driving a go-live to raise the flag would create
+// broadcasts on -- and then stream to -- whatever the machine actually has connected. UI
+// thread only.
+class ScopedGoLivePrelude {
+public:
+	ScopedGoLivePrelude();
+	~ScopedGoLivePrelude();
+	ScopedGoLivePrelude(const ScopedGoLivePrelude &) = delete;
+	ScopedGoLivePrelude &operator=(const ScopedGoLivePrelude &) = delete;
+
+private:
+	bool previous;
+};
+
 // Flip one output binding's enabled flag and run everything that has to follow it:
-// the single-live-stream refusal, the persist, stopping an output that just lost its
-// binding, re-resolving chat for a destination armed mid-stream, the canvas-mix
-// reconcile, and the outputBinding.changed push. Shared by outputBinding.setEnabled
-// and the schedule runner's arm step, so a scheduled entry cannot route itself
-// through a bare `enabled = x` that skips half of that tail. Returns false + `error`
-// on a refusal or a failed persist. UI thread only.
+// the single-live-stream refusal, the go-live-prelude refusal, the persist, stopping an
+// output that just lost its binding, the canvas-mix reconcile, and the
+// outputBinding.changed push. Shared by outputBinding.setEnabled and the schedule
+// runner's arm step, so a scheduled entry cannot route itself through a bare
+// `enabled = x` that skips half of that tail. Returns false + `error` on a refusal or a
+// failed persist. UI thread only.
+//
+// Arming while a session is running starts NOTHING. The destination has to be prepared
+// against its platform before an encoder may attach to it, and that preparation is gated
+// on the user having validated its stream info -- multistream.startOutput is what runs it.
 bool SetOutputBindingEnabled(const std::string &bindingUuid, bool enabled, std::string &error);
 
 // Write/read a single string value under `key` to/from a MultistreamBasicPath

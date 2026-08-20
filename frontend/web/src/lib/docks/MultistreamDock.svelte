@@ -11,11 +11,12 @@
   import {
     multistreamStatusStore,
     bindingRowState,
-    bindingRowDetail,
+    bindingRowStatus,
   } from "$lib/stores/multistreamStatusStore.svelte";
   import { destinationIdentityStore } from "$lib/stores/destinationIdentityStore.svelte";
   import { viewerCountStore } from "$lib/stores/viewerCountStore.svelte";
   import { STATE_COLOR_EXT } from "$lib/theme/stateColors";
+  import { isRetrying, retryDestination, setDestinationsEnabled } from "$lib/ui/destinationArming.svelte";
   import { fmtCompact } from "$lib/utils/format";
   import ToggleSwitch from "$lib/ui/ToggleSwitch.svelte";
   import PlatformMark from "$lib/ui/PlatformMark.svelte";
@@ -45,6 +46,10 @@
   });
 
   const statusByBinding = $derived(multistreamStatusStore.statusByBinding);
+  // Whether anything is on the air, which is what decides how an enabled-but-not-live row
+  // reads. Off the store's memoized derived rather than re-scanning the map here: this
+  // dock reads the store directly, so there is nothing to gain from a second copy.
+  const anyLive = $derived(multistreamStatusStore.anyLive);
 
   // A destination's viewer count, or null when it isn't known -- off, still
   // connecting, or live but the count hasn't arrived yet. Never 0 unless a real
@@ -182,7 +187,7 @@
     if (rows.length === 0) return;
     const target = !rows.some((b) => b.enabled);
     try {
-      await outputBindingStore.setEnabled(rows.map((b) => b.uuid), target);
+      await setDestinationsEnabled(rows.map((b) => b.uuid), target);
       void multistreamStatusStore.refresh();
     } catch (e) {
       error = (e as Error).message;
@@ -190,7 +195,7 @@
   }
   async function toggleRow(b: OutputBindingInfo, enabled: boolean): Promise<void> {
     try {
-      await outputBindingStore.setEnabled([b.uuid], enabled);
+      await setDestinationsEnabled([b.uuid], enabled);
       void multistreamStatusStore.refresh();
     } catch (e) {
       error = (e as Error).message;
@@ -232,9 +237,10 @@
             </span>
           </div>
           {#each g.rows as b (b.uuid)}
-            {@const rs = bindingRowState(b, statusByBinding)}
+            {@const st = bindingRowStatus(b, statusByBinding, anyLive)}
             {@const identity = destinationIdentityStore.forProfile(b.profileUuid)}
-            {@const viewers = rowViewerCount(b, rs)}
+            {@const name = identity ? identity.displayName : bindingDisplayName(b)}
+            {@const viewers = rowViewerCount(b, st.state)}
             <div class="drow" class:off={!b.enabled}>
               <span class="toggle-wrap" title={b.enabled ? "Disable" : "Enable"}>
                 <ToggleSwitch size="sm" bind:checked={b.enabled} onchange={(v) => void toggleRow(b, v)} />
@@ -247,12 +253,31 @@
                 class:deleted={isBindingDangling(b.profileLabel)}
                 class:unset={isBindingUnset(b.profileLabel)}
               >
-                {identity ? identity.displayName : bindingDisplayName(b)}
+                {name}
               </span>
               <span class="dstat">
-                <span class="dtag" style:color={STATE_COLOR_EXT[rs]} title={bindingRowDetail(b, statusByBinding) || undefined}>
-                  {rs.toUpperCase()}
+                <!-- The dock is the compact mirror; the sentence behind the tag stays on
+                     the title here and is rendered in full on the Canvases tab, where a
+                     row has the width for it. -->
+                <span class="dtag" style:color={STATE_COLOR_EXT[st.state]} title={st.detail || undefined}>
+                  {st.label.toUpperCase()}
                 </span>
+                {#if st.retryable}
+                  <!-- aria-disabled, not disabled: a native disable drops the control out
+                       of the tab order the instant it is pressed, so the state it changed
+                       into is never announced and focus is lost. retryDestination guards
+                       its own re-entry, so nothing needs the DOM to refuse a second click. -->
+                  <button
+                    class="dretry"
+                    aria-disabled={isRetrying(b.uuid)}
+                    aria-busy={isRetrying(b.uuid)}
+                    aria-label={isRetrying(b.uuid) ? "Starting " + name + ", please wait" : "Retry " + name}
+                    title={"Bring " + name + " back onto this stream"}
+                    onclick={() => void retryDestination(b.uuid, name)}
+                  >
+                    {isRetrying(b.uuid) ? "STARTING" : "RETRY"}
+                  </button>
+                {/if}
                 {#if viewers !== null}
                   <span class="dsep">|</span>
                   <span class="dcount">{fmtCompact(viewers)}</span>
@@ -362,6 +387,37 @@
     display: flex;
     align-items: baseline;
     gap: 4px;
+  }
+  /* Centered rather than baseline-aligned: a bordered box on the text baseline sits
+     visibly low beside the tag it belongs to. 10px matches the canvas name and the viewer
+     count on these rows -- the 8px the status tags use is a label size, not one to put on
+     a control -- and min-width holds both words so the row does not reflow when the
+     button changes to STARTING. */
+  .dretry {
+    flex: 0 0 auto;
+    align-self: center;
+    min-width: 62px;
+    padding: 3px 6px;
+    background: none;
+    border: var(--border-weight) solid var(--color-live);
+    color: var(--color-live);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    line-height: 12px;
+    cursor: pointer;
+  }
+  .dretry:hover:not([aria-disabled="true"]) {
+    background: color-mix(in srgb, var(--color-live) 16%, transparent);
+  }
+  .dretry:focus-visible {
+    outline: var(--border-weight) solid var(--color-accent);
+    outline-offset: 1px;
+  }
+  .dretry[aria-disabled="true"] {
+    cursor: default;
+    color: var(--color-muted);
+    border-color: var(--color-border);
   }
   .dsep {
     color: var(--color-border);

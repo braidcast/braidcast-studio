@@ -605,6 +605,24 @@ void MultistreamEngine::StopOutput(const std::string &bindingUuid)
 
 void MultistreamEngine::StartAllEnabled()
 {
+	/* A session BEGINS here, and this is the only path that begins one -- a mid-stream arm
+	 * calls StartOutput directly and must not clear anything. StopAll cannot be relied on to
+	 * have run: a session also ends when every output dies on its own (the platform ends them,
+	 * or the network drops with reconnect off) and the user never presses Stop. Carrying
+	 * wentLive across that boundary would tell the NEXT session that a destination had already
+	 * spent its broadcast, so a failed start there would re-prepare over the info the modal had
+	 * just applied. Unlike `live`, which self-heals because StartOutput reaps per binding,
+	 * wentLive deliberately survives a retry -- so it has to be cleared explicitly.
+	 *
+	 * Guarded on nothing being live: a go-live pressed while outputs are already running is
+	 * the same session continuing, and must not wipe the flags of destinations that did go
+	 * live. Tested and cleared in one critical section so the answer cannot go stale between. */
+	{
+		std::lock_guard<std::mutex> lock(liveMutex);
+		if (!AnyLiveLocked()) {
+			wentLive.clear();
+		}
+	}
 	for (auto &b : bindings.Bindings().bindings) {
 		if (b.enabled) {
 			std::string err;
@@ -643,6 +661,11 @@ void MultistreamEngine::StopAll()
 	{
 		std::lock_guard<std::mutex> lock(liveMutex);
 		dead.swap(live);
+		/* One of the two session edges that clear this; StartAllEnabled is the other,
+		 * and it is the one that covers a session which ended without ever reaching
+		 * here. StopOutput deliberately does NOT clear: one destination stopping leaves
+		 * the rest of the broadcast running, and its own broadcast stays spent. */
+		wentLive.clear();
 	}
 	UpdateSleepInhibit();
 	/* Encoders are released when the handler is destroyed or rebuilt; keep the
@@ -661,12 +684,20 @@ void MultistreamEngine::StopAll()
 bool MultistreamEngine::IsLive(const std::string &bindingUuid) const
 {
 	std::lock_guard<std::mutex> lock(liveMutex);
-	for (const auto &lo : live) {
-		if (lo->bindingUuid == bindingUuid && IsActiveState(lo->state)) {
-			return true;
-		}
-	}
-	return false;
+	const LiveOutput *lo = FindLive(bindingUuid);
+	return lo && IsActiveState(lo->state);
+}
+
+bool MultistreamEngine::StartedThisSession(const std::string &bindingUuid) const
+{
+	std::lock_guard<std::mutex> lock(liveMutex);
+	return FindLive(bindingUuid) != nullptr;
+}
+
+bool MultistreamEngine::WentLiveThisSession(const std::string &bindingUuid) const
+{
+	std::lock_guard<std::mutex> lock(liveMutex);
+	return wentLive.count(bindingUuid) != 0;
 }
 
 namespace {
@@ -739,9 +770,8 @@ bool MultistreamEngine::CanvasHasActiveOutput(const std::string &canvasUuid) con
 	return false;
 }
 
-bool MultistreamEngine::AnyLive() const
+bool MultistreamEngine::AnyLiveLocked() const
 {
-	std::lock_guard<std::mutex> lock(liveMutex);
 	for (const auto &lo : live) {
 		if (IsActiveState(lo->state)) {
 			return true;
@@ -750,14 +780,25 @@ bool MultistreamEngine::AnyLive() const
 	return false;
 }
 
-MultistreamEngine::LiveOutput *MultistreamEngine::FindLive(const std::string &bindingUuid)
+bool MultistreamEngine::AnyLive() const
 {
-	for (auto &lo : live) {
+	std::lock_guard<std::mutex> lock(liveMutex);
+	return AnyLiveLocked();
+}
+
+const MultistreamEngine::LiveOutput *MultistreamEngine::FindLive(const std::string &bindingUuid) const
+{
+	for (const auto &lo : live) {
 		if (lo->bindingUuid == bindingUuid) {
 			return lo.get();
 		}
 	}
 	return nullptr;
+}
+
+MultistreamEngine::LiveOutput *MultistreamEngine::FindLive(const std::string &bindingUuid)
+{
+	return const_cast<LiveOutput *>(static_cast<const MultistreamEngine *>(this)->FindLive(bindingUuid));
 }
 
 std::unique_ptr<MultistreamEngine::LiveOutput> MultistreamEngine::TakeLive(const std::string &bindingUuid)
@@ -805,12 +846,10 @@ std::vector<MultistreamEngine::OutputStatus> MultistreamEngine::Statuses() const
 		BindingMeta meta = ResolveBindingMeta(b);
 		st.profileLabel = std::move(meta.profileLabel);
 		st.canvasName = std::move(meta.canvasName);
-		for (const auto &lo : live) {
-			if (lo->bindingUuid == b.uuid) {
-				st.state = lo->state;
-				st.lastError = lo->lastError;
-				break;
-			}
+		if (const LiveOutput *lo = FindLive(b.uuid)) {
+			st.state = lo->state;
+			st.lastError = lo->lastError;
+			st.startedThisSession = true;
 		}
 		out.push_back(std::move(st));
 	}
@@ -833,10 +872,7 @@ std::vector<MultistreamEngine::OutputStats> MultistreamEngine::StatsSnapshot() c
 		st.profileName = std::move(meta.profileName);
 		st.platformKey = std::move(meta.platformKey);
 		st.canvasName = std::move(meta.canvasName);
-		for (const auto &lo : live) {
-			if (lo->bindingUuid != b.uuid) {
-				continue;
-			}
+		if (const LiveOutput *lo = FindLive(b.uuid)) {
 			st.state = lo->state;
 			if (lo->output) {
 				/* obs_output_get_congestion/_connect_time_ms take a non-const
@@ -848,7 +884,6 @@ std::vector<MultistreamEngine::OutputStats> MultistreamEngine::StatsSnapshot() c
 				st.congestion = obs_output_get_congestion(o);
 				st.uptimeMs = lo->liveStartNs ? (os_gettime_ns() - lo->liveStartNs) / 1000000ULL : 0;
 			}
-			break;
 		}
 		out.push_back(std::move(st));
 	}
@@ -872,6 +907,7 @@ void MultistreamEngine::OnOutputStart(void *data, calldata_t *cd)
 			if (lo->output == out) {
 				lo->state = State::Live;
 				lo->liveStartNs = os_gettime_ns();
+				self->wentLive.insert(lo->bindingUuid);
 				DBG(LogCat::Net, "rtmp connected (binding %s, canvas %s)", lo->bindingUuid.c_str(),
 				    lo->canvasUuid.c_str());
 				break;
@@ -972,6 +1008,16 @@ void MultistreamEngine::OnOutputReconnectSuccess(void *data, calldata_t *cd)
 			if (lo->output == out) {
 				lo->state = State::Live;
 				lo->lastError.clear();
+				/* Normally redundant -- "start" fires before anything can reconnect,
+				 * so wentLive already holds this binding. With stream delay it may
+				 * not: obs_output_begin_data_capture signals "starting" rather than
+				 * "start" while delay_active, so a disconnect inside that window can
+				 * set reconnecting before begin_delayed_capture runs, after which the
+				 * recovery arrives here and "start" never fires at all -- leaving an
+				 * output that IS live absent from the set. That interleaving is
+				 * reasoned from the delay path, not observed; the insert is idempotent,
+				 * so covering it costs nothing either way. */
+				self->wentLive.insert(lo->bindingUuid);
 				DBG(LogCat::Net, "rtmp reconnected (binding %s, canvas %s)", lo->bindingUuid.c_str(),
 				    lo->canvasUuid.c_str());
 				break;

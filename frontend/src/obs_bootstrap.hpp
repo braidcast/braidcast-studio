@@ -299,6 +299,24 @@ void RunMultistreamModelSelfTest();
 // Saves, so the user's files are untouched. Gated by the caller to the smoke
 // path.
 void RunMultistreamEngineSelfTest();
+// Headless proof for the mid-stream arming rules, on temp profiles + bindings pointed at a
+// dead local RTMP host. Four assertions: multistream.startOutput is refused when nothing is
+// live, arming while a session runs starts nothing and reports no live entry
+// (startedThisSession, with the holder binding as the positive control), arming is refused
+// while a go-live prelude is in flight, and StartedThisSession/WentLiveThisSession diverge
+// for an output that never connects -- and keep diverging across a second start, which is
+// what proves the went-live fact is session-scoped rather than carried on a LiveOutput the
+// next start reaps. The path under test Saves for itself, into the self-test config base
+// (Env::IsSelfTestRun); the cleanup restores the model anyway so the tests after it read
+// what they would have without this one.
+//
+// What it does NOT cover, all of it needing a connected account no smoke run has: that
+// startOutput PREPARES rather than starting bare (only its refusal with nothing live is
+// asserted here -- the ordering that prepareDestination precedes StartOutput, which is the
+// point of the whole path, is not), the modal's revert-on-close, and the partial-outcome
+// case where one destination starts and another fails to prepare. Those stay owed to a
+// manual run, as the other real-broadcast assertions already are.
+void RunMultistreamArmSelfTest();
 // Headless proof for 4.4.5a: bring up an additional canvas's live obs_canvas_t mix
 // via the runtime, assert the uuid is preserved and VideoFor returns the mix, then
 // drive StartOutput on a temp enabled binding pointed at it (which can only succeed

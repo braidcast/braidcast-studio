@@ -11,7 +11,7 @@
     type StreamProfileInfo,
   } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
-  import { goLiveModal, closeGoLiveModal } from "$lib/dialogs/golive/goLiveModalOpener.svelte";
+  import { goLiveModal, goLiveArmedHere, closeGoLiveModal } from "$lib/dialogs/golive/goLiveModalOpener.svelte";
   import {
     ALL_LAYER,
     inheritLayers,
@@ -41,11 +41,18 @@ import { EV } from "$lib/utils/eventNames";
     type DestinationIdentity,
   } from "$lib/stores/destinationIdentityStore.svelte";
   import { goLivePref, setGoLivePref } from "$lib/stores/goLivePrefStore.svelte";
-  import { outputBindingStore } from "$lib/stores/outputBindingStore.svelte";
+  import { bindingDisplayName, outputBindingStore } from "$lib/stores/outputBindingStore.svelte";
+  import { isActiveState, multistreamStatusStore } from "$lib/stores/multistreamStatusStore.svelte";
   import { scheduleStore } from "$lib/stores/scheduleStore.svelte";
   import { streamProfileStore } from "$lib/stores/streamProfileStore.svelte";
   import { oauthStore, isStaleToken } from "$lib/stores/oauthStore.svelte";
   import { showToast } from "$lib/stores/toastStore.svelte";
+  import {
+    destinationFailureToast,
+    startArmedOutput,
+    trackPendingArm,
+    untrackPendingArm,
+  } from "$lib/ui/destinationArming.svelte";
   import { joinTags } from "$lib/ui/tagsInput";
   import Avatar from "$lib/ui/Avatar.svelte";
   import GoLiveFieldInput from "$lib/dialogs/golive/GoLiveFieldInput.svelte";
@@ -114,6 +121,15 @@ import { EV } from "$lib/utils/eventNames";
     return `${n} destination${n === 1 ? "" : "s"}`;
   }
 
+  // What a metadata push that reported nothing is called, on the card strip and in the
+  // toast's per-destination lines alike.
+  const PUSH_FAILED = "metadata push failed";
+
+  // And for a channel count, so the footer's two channel clauses agree.
+  function channelsLabel(n: number): string {
+    return `${n} channel${n === 1 ? "" : "s"}`;
+  }
+
   // Provider/status/binding/profile lists come from the shared stores (one source of
   // truth); `loaded` gates the modal until they + the live flag have settled.
   let providers = $derived(oauthStore.providers);
@@ -175,11 +191,34 @@ import { EV } from "$lib/utils/eventNames";
       // switch the user just acted on.
       delete channelSaveState[c.accountId];
       delete channelSaveError[c.accountId];
+      // This switch and the destinations panel's are one door onto the same rule: an arm
+      // made while a broadcast is running is unvalidated until the primary pushes this
+      // channel's info, and goes back off if the modal closes first. Disarming withdraws
+      // that debt.
+      //
+      // Whether the rule applies is decided HERE, at the moment the switch is thrown, and
+      // never at close time. A broadcast can begin while this dialog sits open -- a
+      // scheduled go-live needs no dialog -- and judging by the state at close would then
+      // read a PRE-live arm as unvalidated and destroy it, which is the one thing arming
+      // pre-live is for.
+      for (const uuid of c.bindingUuids) {
+        if (!arming) {
+          goLiveArmedHere.delete(uuid);
+        } else if (multistreamStatusStore.anyLive) {
+          goLiveArmedHere.add(uuid);
+        }
+      }
       if (arming) {
         void prefill();
       }
     } catch (e) {
-      showToast("Couldn't update " + (c.provider?.displayName ?? c.login), (e as Error).message);
+      // Polite, unlike the start and prepare refusals: this one reports a switch that did
+      // not take, with the switch still on screen showing its real state.
+      destinationFailureToast({
+        lead: "Couldn't update ",
+        names: [c.provider?.displayName ?? c.login],
+        reason: (e as Error).message,
+      });
     } finally {
       armBusy[c.accountId] = false;
     }
@@ -659,16 +698,85 @@ import { EV } from "$lib/utils/eventNames";
     return out;
   });
 
+  // What this modal's primary would do to the armed-but-not-out set: every armed binding
+  // with nothing on the air is one it would bring onto the running broadcast. Decided in
+  // ONE pass so the count on the button, the footer's accounting and the list actually
+  // started cannot drift apart.
+  //
+  // Bindings rather than channels because a start is per output; the engine permits one
+  // ENABLED binding per profile (one stream key is one live stream), so the count still
+  // reads as a destination count.
+  //
+  // Empty outside the live edit path. Pre-live, arming for the next go-live is what the
+  // switch is for and starting nothing is correct; in golive mode the primary's own
+  // streaming.start brings up everything armed.
+  //
+  // A channel whose token scopes went stale is counted separately, never started: the
+  // backend refuses its streamMeta, so bringing it up would put it on air carrying
+  // whatever the channel last had -- the same reasoning that skips a channel whose push
+  // just failed. It stays armed-unvalidated and goes back off when this modal closes; the
+  // card's Reconnect strip is the remedy, and `needsReconnect` below is what says so
+  // rather than letting the destination silently evaporate.
+  //
+  // Gated on multistreamStatusStore.anyLive, the same predicate the arm switch above and
+  // the revert below read, so a destination cannot be counted here as joining while the
+  // panel's switch treats it as a plain pre-live arm.
+  const midStreamPlan = $derived.by<{ starting: string[]; needsReconnect: number }>(() => {
+    if (goLiveModal.mode !== "edit" || !multistreamStatusStore.anyLive) {
+      return { starting: [], needsReconnect: 0 };
+    }
+    // binding -> the stale channel it belongs to, so the blocked ones can be counted in
+    // CHANNELS. That is the unit the footer's reconnect clause already counts in, and one
+    // stale channel with two bindings otherwise puts two different numbers for one fact on
+    // the same line.
+    const staleChannelOf = new Map<string, string>();
+    for (const c of channels) {
+      if (c.needsReconnect) {
+        for (const uuid of c.bindingUuids) {
+          staleChannelOf.set(uuid, c.accountId);
+        }
+      }
+    }
+    const byBinding = multistreamStatusStore.statusByBinding;
+    const starting: string[] = [];
+    const blockedChannels = new Set<string>();
+    for (const b of bindings) {
+      if (!b.enabled || isActiveState(byBinding.get(b.uuid)?.state ?? "idle")) {
+        continue;
+      }
+      const staleChannel = staleChannelOf.get(b.uuid);
+      if (staleChannel !== undefined) {
+        blockedChannels.add(staleChannel);
+      } else {
+        starting.push(b.uuid);
+      }
+    }
+    return { starting, needsReconnect: blockedChannels.size };
+  });
+  const armedNotLiveUuids = $derived(midStreamPlan.starting);
+
+  // Binding uuids this dialog renders a card for. A profile with no linked account
+  // (key/RTMP/WHIP) carries no channel metadata and is deliberately dropped from
+  // `channels`, so it goes live without ever appearing here -- which is exactly why the
+  // footer has to name it rather than let the button's count silently outnumber the cards.
+  const cardedBindingUuids = $derived(new Set(channels.flatMap((c) => c.bindingUuids)));
+
   // Edit mode names the action after the stream's state; with that state unread the
   // label stays neutral rather than asserting one. Pushing metadata is valid either
   // way, so only the go-live primary is actually blocked (see the footer gate).
+  //
+  // Mid-broadcast the primary does two things, and the label names the one the user
+  // cannot see coming: destinations armed but not yet out are started once their info
+  // is validated. With none of those it is the plain info push it has always been.
   const primaryLabel = $derived(
     goLiveModal.mode === "golive"
       ? "Go Live now"
       : isLive === null
         ? "Apply info"
         : isLive
-          ? "Update info"
+          ? armedNotLiveUuids.length > 0
+            ? `Go live on ${armedNotLiveUuids.length} more`
+            : "Update info"
           : "Save info",
   );
 
@@ -692,8 +800,32 @@ import { EV } from "$lib/utils/eventNames";
       const ready = `${armedConnectedChannels.length} ready`;
       return `${ready} · ${streams} · ${reconnectChannels.length} need reconnect`;
     }
-    const chans = `${armedChannels.length} channel${armedChannels.length === 1 ? "" : "s"}`;
-    return `${chans} · ${streams} · all ready`;
+    return `${channelsLabel(armedChannels.length)} · ${streams} · all ready`;
+  });
+
+  // The live primary's label states a count, and some of what it counts has no card in
+  // this dialog: a key/RTMP/WHIP profile carries no channel metadata to edit but still
+  // goes live. Named only when there IS such a destination -- with every one of them
+  // carded the button's number already matches what is on screen and a line restating it
+  // would be noise. Worded the way the summary above already names key-only destinations.
+  const joiningNote = $derived.by<string>(() => {
+    const parts: string[] = [];
+    // Said out loud because the alternative is silence: a stale-token destination is
+    // armed, is not started, produces no push and therefore no failure toast, and is
+    // switched back off at close. Without this the user arms one, presses the primary,
+    // and nothing whatsoever happens.
+    //
+    // A complete noun phrase, never a bare verb clause: these are joined with "·" beside
+    // other clauses, and anything leaning on "they" binds to whichever clause happens to
+    // precede it. Ordered first so it sits beside the reconnect count it elaborates.
+    if (midStreamPlan.needsReconnect > 0) {
+      parts.push(`${channelsLabel(midStreamPlan.needsReconnect)} can't join this stream until reconnected`);
+    }
+    const keyOnly = armedNotLiveUuids.filter((uuid) => !cardedBindingUuids.has(uuid)).length;
+    if (keyOnly > 0) {
+      parts.push(`${destinationsLabel(keyOnly)} joining via stream key`);
+    }
+    return parts.join(" · ");
   });
 
   // "Use this schedule" banner. What is on screen is what airs (see confirm()'s
@@ -900,10 +1032,53 @@ import { EV } from "$lib/utils/eventNames";
     applyState = "idle";
   }
 
+  // Everything armed while this modal has been open that is not on the air goes back
+  // off, whichever way the modal closes — Escape, the X, a backdrop click, Cancel, or
+  // the primary finishing. Arming mid-stream costs the running broadcast nothing on its
+  // own (the binding merely reads enabled and its canvas composites; nothing is sent),
+  // but a destination left armed and unvalidated would join the NEXT go-live without
+  // anyone having agreed to it, and this modal is the only place that agreement is
+  // asked for. It also settles the partial outcome: the primary removes each start it
+  // got accepted from the set, so a destination that came up stays armed while one
+  // refused beside it reverts.
+  //
+  // Go Live mode is excluded by mode rather than left to the liveness test: it is
+  // pre-live by definition and its own primary is what starts everything it armed, but by
+  // the time this runs there the outputs are already coming up, so anyLive reads true and
+  // the test alone would switch off the very destinations that are connecting.
+  async function revertUnvalidatedArms(): Promise<void> {
+    const armed = [...goLiveArmedHere];
+    goLiveArmedHere.clear();
+    if (goLiveModal.mode !== "edit" || !multistreamStatusStore.anyLive || armed.length === 0) {
+      return;
+    }
+    const byBinding = multistreamStatusStore.statusByBinding;
+    const revert = armed.filter((uuid) => !isActiveState(byBinding.get(uuid)?.state ?? "idle"));
+    if (revert.length === 0) {
+      return;
+    }
+    try {
+      await outputBindingStore.setEnabled(revert, false);
+    } catch (e) {
+      // The arm surviving is the safe direction — it sends nothing until a go-live and
+      // the destination row says so — but it is not what the user asked for, so say it.
+      showToast("Couldn't switch those destinations back off", (e as Error).message);
+    }
+  }
+
   // Every way out of this modal that is NOT the confirm below. A staging the user backs
   // out of is put back: it narrowed the host's live routing, and no broadcast is coming
   // whose stop edge would do it instead.
   async function cancelGoLive(): Promise<void> {
+    // Escape, the X and a backdrop click all land here, and none of them may fire while
+    // the primary is still working: the revert below would see a destination whose start
+    // is mid-flight as "not on the air", switch it off, and SetOutputBindingEnabled(false)
+    // would then stop the output that came up a moment later. The primary reads "Working…"
+    // for the whole window, so there is nothing to explain beyond it.
+    if (submitting) {
+      return;
+    }
+    await revertUnvalidatedArms();
     await revertSchedule();
     closeGoLiveModal();
   }
@@ -1205,15 +1380,24 @@ import { EV } from "$lib/utils/eventNames";
       return;
     }
     liveRetrying = true;
-    const st = await readLiveState();
-    isLive = st.active;
-    liveReadError = st.error;
-    liveRetrying = false;
+    try {
+      const st = await readLiveState();
+      isLive = st.active;
+      liveReadError = st.error;
+    } finally {
+      // Same rule as confirm()'s: a flag that gates its own control off must not be able
+      // to survive a throw, or the retry it guards can never be pressed again.
+      liveRetrying = false;
+    }
   }
 
   $effect(() => {
     let active = true;
     const offOauth = oauthStore.subscribe();
+    // Which destinations are already out is what splits the live primary's work in two
+    // (start the armed ones, leave the live ones alone) and what the close hook checks
+    // before reverting an arm, so this modal is a subscriber in its own right.
+    const offStatus = multistreamStatusStore.subscribe();
     destinationIdentityStore.start();
     // Not in the whenReady gate below: a missing schedule read must not hold the
     // whole modal open the way a missing live-state read does. The banner is an
@@ -1237,6 +1421,10 @@ import { EV } from "$lib/utils/eventNames";
       // has to produce a result — but it resolves to "unread", never to "not live":
       // that guess picks the wrong primary action for the whole modal.
       readLiveState(),
+      // In the gate because multistreamStatusStore.anyLive is what decides whether an arm
+      // made here is a mid-stream one, and an unpolled store reads as "nothing is live".
+      // refresh() resolves rather than rejects, so a failed poll cannot hold the modal shut.
+      multistreamStatusStore.refresh(),
     ]).then(([, , , , st]) => {
       if (!active) {
         return;
@@ -1261,18 +1449,38 @@ import { EV } from "$lib/utils/eventNames";
     });
     return () => {
       active = false;
+      // The revert on every close path clears this already; this is the backstop for a
+      // teardown that reached no close path at all, so the set can never outlive the
+      // dialog that owns it and bleed into the next one's revert.
+      goLiveArmedHere.clear();
       offOauth();
+      offStatus();
       off();
       offMeta();
       clearInterval(tickId);
     };
   });
 
+  // The flag's whole lifetime, held apart from the work it guards. Every close route now
+  // refuses while `submitting` is set -- Escape and the X return early from cancelGoLive,
+  // Cancel is disabled -- so an exception escaping between the set and the clear would
+  // leave this dialog unclosable, with Modal's Tab trap and its suspended preview still in
+  // force and no way out but restarting the app mid-broadcast. A `$derived` getter over
+  // unexpected channel state (effectiveFields, presetCollection) is a realistic thrower,
+  // so the clear cannot live on the success paths.
   async function confirm(): Promise<void> {
     if (submitting) {
       return;
     }
     submitting = true;
+    try {
+      await runPrimary();
+    } finally {
+      submitting = false;
+    }
+  }
+
+  async function runPrimary(): Promise<void> {
     // Header chips go "saving" for every armed channel while the pushes are in flight.
     // Building fresh from the armed set also clears any stale chip on a channel the
     // user has since disarmed.
@@ -1356,10 +1564,7 @@ import { EV } from "$lib/utils/eventNames";
     // step prefixes) in the card; the diagnostic chain stays on message for the
     // toast's hover title.
     channelSaveError = Object.fromEntries(
-      [...failedByChannel].map(([id, f]) => [
-        id,
-        f.reason?.userMessage ?? f.reason?.message ?? "metadata push failed",
-      ]),
+      [...failedByChannel].map(([id, f]) => [id, f.reason?.userMessage ?? f.reason?.message ?? PUSH_FAILED]),
     );
     // Stream info is a precondition, not a courtesy: if any armed channel's metadata
     // push failed, going live would stream with stale/wrong title+category. Block the
@@ -1368,20 +1573,22 @@ import { EV } from "$lib/utils/eventNames";
     // auto-taken. Update-info mode has no start to block, so it only reports.
     if (failedByChannel.size > 0) {
       const fails = [...failedByChannel.values()];
-      const names = fails.map((v) => v.name).join(", ");
-      const reason = fails[0].reason?.message ?? "metadata push failed";
       const lead = goingLive ? "Not going live — couldn't update " : "Couldn't update ";
       // Assertive only when this refuses a go-live, matching the hotkey/tray refusal. The
       // update-info path blocks nothing and can run mid-broadcast, where interrupting a screen
       // reader to report a failed edit is out of proportion to what happened.
-      if (fails.length === 1) {
-        showToast(lead + fails[0].name + (goingLive ? "" : " stream info"), reason, { assertive: goingLive });
-      } else {
-        showToast(lead + fails.length + " destinations", names, { assertive: goingLive });
-      }
+      destinationFailureToast({
+        lead,
+        names: fails.map((v) => v.name),
+        // Raw, empty message and all: destinationFailureToast owns what an absent reason
+        // falls back to, and a second answer here would only be the one that disagrees.
+        reason: fails[0].reason?.message ?? "",
+        lines: fails.map((v) => (v.reason?.message ? `${v.name} — ${v.reason.message}` : v.name)),
+        singularSuffix: goingLive ? "" : " stream info",
+        assertive: goingLive,
+      });
       if (goingLive) {
         forgetPushedMetadata();
-        submitting = false;
         return;
       }
     }
@@ -1443,6 +1650,72 @@ import { EV } from "$lib/utils/eventNames";
       });
     }
 
+    // Mid-broadcast, the primary also STARTS. A destination armed since this modal
+    // opened has just had its stream info pushed, which is the precondition the arm was
+    // deferred on, so it can now join the broadcast that is running. The start is the
+    // prepared one — the host creates and binds the broadcast and writes the fresh
+    // ingest back before the encoder runs — so it can never push at the endpoint the
+    // last go-live left in the profile. Already-live destinations are not restarted and
+    // the running broadcast is untouched.
+    // No mode or liveness test of its own: midStreamPlan is empty outside the live edit
+    // path, and a second copy of that rule is exactly how the two doors drifted apart.
+    if (armedNotLiveUuids.length > 0) {
+      // A destination whose metadata push just failed is skipped rather than started:
+      // bringing it up now would put it on the air carrying the stale title and category
+      // the push failed to replace. It stays in the revert set and goes back off with
+      // the rest, which is the same "refused alone" treatment a start refusal gets — one
+      // destination's problem never takes the broadcast or its siblings down.
+      const blocked = new Set(
+        armedConnectedChannels.filter((c) => failedByChannel.has(c.accountId)).flatMap((c) => c.bindingUuids),
+      );
+      const starting = armedNotLiveUuids.filter((uuid) => !blocked.has(uuid));
+      // Registered BEFORE the fan-out, and only for arms THIS modal made. Before, because
+      // the stop edge clears that tracking and can land inside the await below -- adding
+      // afterwards would leave a uuid in a set the stop had just emptied. Only arms made
+      // here, because the tracking disarms on a later failure and `starting` is every
+      // armed-but-not-out destination, including ones nobody touched in this dialog: a
+      // destination the platform dropped off the broadcast is still enabled, and switching
+      // it off behind the user would take the Retry its row is offering with it.
+      for (const uuid of starting) {
+        if (goLiveArmedHere.has(uuid)) {
+          trackPendingArm(uuid);
+        }
+      }
+      // Fans out the way outputBindingStore.setEnabled does. Each call resolves to its
+      // own outcome rather than rejecting, so one refusal can't abandon the rest.
+      const outcomes = await Promise.all(
+        starting.map(async (uuid) => ({ uuid, ...(await startArmedOutput(uuid)) })),
+      );
+      const refused: { name: string; reason: string }[] = [];
+      for (const o of outcomes) {
+        // Accepted means this modal is done holding the arm; only a PENDING one still has
+        // an outcome coming, so anything else is handed straight back. untrack never
+        // re-adds, so a stop that landed mid-flight stays authoritative.
+        if (o.ok) {
+          goLiveArmedHere.delete(o.uuid);
+          if (!o.pending) {
+            untrackPendingArm(o.uuid);
+          }
+          continue;
+        }
+        untrackPendingArm(o.uuid);
+        const b = bindings.find((x) => x.uuid === o.uuid);
+        refused.push({ name: b ? bindingDisplayName(b) : "that destination", reason: o.error });
+      }
+      if (refused.length > 0) {
+        // Assertive: the streamer pressed a button expecting destinations to come up and
+        // is waiting on the answer. The broadcast itself is fine, so the wording never
+        // says otherwise — that is what separates this from a refused go-live.
+        destinationFailureToast({
+          lead: "Couldn't start ",
+          names: refused.map((r) => r.name),
+          reason: refused[0].reason,
+          lines: refused.map((r) => (r.reason ? `${r.name} — ${r.reason}` : r.name)),
+          assertive: true,
+        });
+      }
+    }
+
     if (goLiveModal.mode === "golive") {
       try {
         // What is on screen is what airs. A scheduled entry armed right now would
@@ -1460,11 +1733,12 @@ import { EV } from "$lib/utils/eventNames";
         // one profile per persistent channel. The cheaper loss wins.
         forgetPushedMetadata();
         showToast("Go Live failed", (e as Error).message, { assertive: true });
-        submitting = false;
         return;
       }
     }
-    submitting = false;
+    // Whatever the starts above did not take stays unvalidated and goes back off, on the
+    // same terms as every other way out of this modal.
+    await revertUnvalidatedArms();
     // Deliberately NOT reverting a staged schedule here, and this is the one path that
     // must not: the staged routing IS the routing the broadcast just started on, and the
     // host's own ScheduledSetup is holding the snapshot that puts the user's back on the
@@ -1947,8 +2221,8 @@ import { EV } from "$lib/utils/eventNames";
   </div>
 
   {#snippet footer()}
-    <span class="foot-note">{footerNote}</span>
-    <button class="ghost" onclick={() => void cancelGoLive()}>Cancel</button>
+    <span class="foot-note">{footerNote}{#if joiningNote} · {joiningNote}{/if}</span>
+    <button class="ghost" disabled={submitting} onclick={() => void cancelGoLive()}>Cancel</button>
     <button
       class="accent"
       disabled={submitting ||

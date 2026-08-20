@@ -9,6 +9,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 class CanvasStore;
@@ -37,6 +38,12 @@ public:
 		std::string canvasName;
 		State state = State::Idle;
 		std::string lastError;
+		/* True while this binding owns a live-set entry, in ANY state -- including a
+		 * dead one no retry or stop has reaped yet. `state` alone cannot tell the two
+		 * apart: a broadcast the PLATFORM ended closes with OBS_OUTPUT_SUCCESS, so its
+		 * row reads Idle exactly like a binding that never started on this session,
+		 * and only the first of those is worth offering a retry on. */
+		bool startedThisSession = false;
 	};
 
 	/* Numeric performance snapshot for one enabled binding. Plain struct (no
@@ -85,6 +92,24 @@ public:
 	void StopAll();
 
 	bool IsLive(const std::string &bindingUuid) const;
+	/* OutputStatus::startedThisSession asked for one binding: true while it owns a
+	 * live-set entry in ANY state, which is what the row's Retry affordance keys off:
+	 * a start refused before it ever connected leaves an Error entry, and offering a
+	 * retry on that is right.
+	 *
+	 * NOT the predicate for "its broadcast is spent" -- see WentLiveThisSession. Its
+	 * own accessor rather than a Statuses() lookup because that report SKIPS disabled
+	 * bindings, so it would answer false for one that is merely turned off, and it
+	 * builds a vector plus a ResolveBindingMeta per row to serve a single uuid. */
+	bool StartedThisSession(const std::string &bindingUuid) const;
+	/* True once this binding has signalled start at least once since the last StopAll,
+	 * and true from then on -- a later retry that never connects does NOT take it back.
+	 * A start refused locally, or one still connecting, has never signalled and reads
+	 * false. That is the distinction StartedThisSession cannot make, and the one that
+	 * says whether a broadcast this destination was given has been spent: once it has
+	 * carried ingest, the platform may have completed it, so the next attempt has to be
+	 * prepared afresh rather than pointed at what is already there. */
+	bool WentLiveThisSession(const std::string &bindingUuid) const;
 	/* True if any output is currently running on this canvas. While running, the
 	 * canvas's encoders are bound to its video mix, so the mix must not be reset
 	 * (obs_canvas_reset_video frees it -> UAF). */
@@ -223,7 +248,12 @@ private:
 	 * on this thread just re-enters OnOutputStop, which acquires the now-free
 	 * liveMutex and finds no entry -- a no-op. */
 	LiveOutput *FindLive(const std::string &bindingUuid);
+	const LiveOutput *FindLive(const std::string &bindingUuid) const;
 	std::unique_ptr<LiveOutput> TakeLive(const std::string &bindingUuid);
+	/* AnyLive without the lock; the caller must already hold liveMutex (see FindLive).
+	 * Exists so StartAllEnabled can test it and clear wentLive in ONE critical section,
+	 * rather than reading the answer under one lock and acting on it under another. */
+	bool AnyLiveLocked() const;
 	void NotifyChanged();
 
 	/* Sets the shared sleep-inhibit handle's active state to AnyLive(). Idempotent
@@ -251,6 +281,17 @@ private:
 	 * while a LiveOutput destructs (see TakeLive). */
 	mutable std::mutex liveMutex;
 	std::vector<std::unique_ptr<LiveOutput>> live;
+	/* Binding uuids whose output has signalled start at least once this session.
+	 * Session-scoped rather than a LiveOutput field because StartOutput REAPS the
+	 * old entry and pushes a fresh one (liveStartNs back to 0), so a retry that never
+	 * connects would erase the very fact that authorized it. Guarded by liveMutex.
+	 *
+	 * Cleared at BOTH session edges -- StopAll, and the head of StartAllEnabled when
+	 * nothing is live -- because a session can end without StopAll ever running, if every
+	 * output dies on its own and the user never presses Stop. Never by StopOutput:
+	 * disabling and re-arming a destination within one session does not give it back the
+	 * broadcast it already consumed. */
+	std::unordered_set<std::string> wentLive;
 
 	/* One shared handle for the whole engine (not one per output), held active for
 	 * as long as any output is connecting/streaming. Created with the engine,

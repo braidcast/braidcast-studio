@@ -7,6 +7,7 @@
 namespace EventNames {
 inline constexpr const char *kStreamProfileChanged = "streamProfile.changed";
 inline constexpr const char *kOutputBindingChanged = "outputBinding.changed";
+inline constexpr const char *kOutputBindingArmFailed = "outputBinding.armFailed";
 inline constexpr const char *kCanvasChanged = "canvas.changed";
 inline constexpr const char *kCollectionsChanged = "collections.changed";
 inline constexpr const char *kStreamingChanged = "streaming.changed";

@@ -31,6 +31,7 @@ import { EV } from "$lib/utils/eventNames";
   import { undoStore } from "$lib/stores/undoStore.svelte";
   import CollectionDialog, { type DialogSpec } from "$lib/dialogs/CollectionDialog.svelte";
   import ContextMenu, { type ContextMenuItem, type ContextMenuItems } from "$lib/menus/ContextMenu.svelte";
+  import { destinationFailureToast } from "$lib/ui/destinationArming.svelte";
   import Icon from "$lib/ui/Icon.svelte";
   import StaleNotice from "$lib/ui/StaleNotice.svelte";
   import {
@@ -378,16 +379,30 @@ import { EV } from "$lib/utils/eventNames";
       // will not happen.
       metadataMismatches = [];
       hideMetadataMismatchToast();
-      const names = p.failures.map((f) => f.destination).join(", ");
       // Announced assertively: nothing started, the streamer is sitting at the button waiting
       // for it to, and a polite queue would hold that until they had moved on.
-      showToast(
-        p.failures.length === 1
-          ? "Not going live — couldn't prepare " + p.failures[0].destination
-          : "Not going live — couldn't prepare " + p.failures.length + " destinations",
-        p.failures[0]?.reason ?? names,
-        { assertive: true },
-      );
+      destinationFailureToast({
+        lead: "Not going live — couldn't prepare ",
+        names: p.failures.map((f) => f.destination),
+        reason: p.failures[0]?.reason ?? "",
+        // Nothing started, so no output exists to carry a lastError and no destination row
+        // has anywhere to show why. With several failures a single shared reason would put
+        // the first one's cause against all of them, so each brings its own line.
+        lines: p.failures.map((f) => (f.reason ? `${f.destination} — ${f.reason}` : f.destination)),
+        assertive: true,
+      });
+    });
+    // The same refusal, for a destination armed after the stream was already running. Its own
+    // event because the copy above would be false here: the broadcast is up, and saying "not going
+    // live" about it would send the streamer looking for a stream that is running fine.
+    const offArmFailed = obs.on(EV.outputBindingArmFailed, (p) => {
+      const name = p.destination || "that destination";
+      destinationFailureToast({
+        lead: "Couldn't start ",
+        names: [name],
+        reason: p.reason,
+        assertive: true,
+      });
     });
     // The sibling of the refusal above: this one says the stream is going out carrying something
     // other than what was asked. Subscribed HERE for the same reason the refusal is -- the
@@ -428,6 +443,7 @@ import { EV } from "$lib/utils/eventNames";
       offVcam();
       offGeneral();
       offStartFailed();
+      offArmFailed();
       offMismatch();
     };
   });

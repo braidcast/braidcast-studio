@@ -12,16 +12,11 @@
   import PlatformMark from "$lib/ui/PlatformMark.svelte";
   import ProfileSelect from "$lib/ui/ProfileSelect.svelte";
   import { STATE_COLOR_EXT } from "$lib/theme/stateColors";
-  import {
-    outputBindingStore,
-    bindingDisplayName,
-    isBindingDangling,
-    isBindingUnset,
-  } from "$lib/stores/outputBindingStore.svelte";
-  import { bindingRowState, bindingRowDetail } from "$lib/stores/multistreamStatusStore.svelte";
+  import { bindingDisplayName, isBindingDangling, isBindingUnset } from "$lib/stores/outputBindingStore.svelte";
+  import { anyOutputLive, bindingRowStatus } from "$lib/stores/multistreamStatusStore.svelte";
   import { oauthStore } from "$lib/stores/oauthStore.svelte";
+  import { isRetrying, retryDestination, setDestinationsEnabled } from "$lib/ui/destinationArming.svelte";
   import { profileName, platformLabel, profileAvatarUrl } from "$lib/utils/profileDisplay";
-  import { titleState } from "$lib/utils/format";
 
   interface Props {
     canvasUuid: string;
@@ -63,6 +58,10 @@
     return profileByUuid.get(b.profileUuid);
   }
 
+  // Whether anything is on the air, which is what decides how an enabled-but-not-live
+  // row reads. Derived once per render rather than per row.
+  const anyLive = $derived(anyOutputLive(statusByBinding));
+
   const STATE_TAG_BG: Record<MultistreamState | "disabled", string> = {
     disabled: "color-mix(in srgb, var(--color-muted) 10%, transparent)",
     idle: "color-mix(in srgb, var(--color-muted) 12%, transparent)",
@@ -76,7 +75,7 @@
     if (rows.length === 0) return;
     const target = !canvasEnabled;
     try {
-      await outputBindingStore.setEnabled(rows.map((b) => b.uuid), target);
+      await setDestinationsEnabled(rows.map((b) => b.uuid), target);
       onChanged();
     } catch (e) {
       error = (e as Error).message;
@@ -84,7 +83,7 @@
   }
   async function toggleRow(b: OutputBindingInfo, enabled: boolean): Promise<void> {
     try {
-      await outputBindingStore.setEnabled([b.uuid], enabled);
+      await setDestinationsEnabled([b.uuid], enabled);
       onChanged();
     } catch (e) {
       error = (e as Error).message;
@@ -148,22 +147,19 @@
 
     <div class="cards">
       {#each rows as b (b.uuid)}
-        {@const s = bindingRowState(b, statusByBinding)}
+        {@const st = bindingRowStatus(b, statusByBinding, anyLive)}
         {@const p = profileFor(b)}
+        {@const name = p ? profileName(p) : bindingDisplayName(b)}
         {@const dangling = isBindingDangling(b.profileLabel)}
         {@const unset = isBindingUnset(b.profileLabel)}
         <div class="card" class:off={!b.enabled}>
           <div class="card-top">
             <span class="card-av">
-              <Avatar
-                url={p ? profileAvatarUrl(p) : ""}
-                name={p ? profileName(p) : bindingDisplayName(b)}
-                size={34}
-              />
+              <Avatar url={p ? profileAvatarUrl(p) : ""} {name} size={34} />
             </span>
             <div class="card-id">
               <span class="card-name" class:deleted={dangling} class:unset>
-                {p ? profileName(p) : bindingDisplayName(b)}
+                {name}
               </span>
               <span class="card-plat">
                 {#if p}
@@ -174,23 +170,56 @@
                 {/if}
               </span>
             </div>
+            <!-- `detail` on the title, `note` in the body below: every state that has a
+                 reason keeps it reachable on hover (a reconnecting row's drop reason has
+                 no other home here), while only the two mid-stream states this change
+                 introduces also take a visible line. -->
             <span
               class="card-state"
-              style:color={STATE_COLOR_EXT[s]}
-              style:background={STATE_TAG_BG[s]}
-              title={bindingRowDetail(b, statusByBinding) || undefined}
+              style:color={STATE_COLOR_EXT[st.state]}
+              style:background={STATE_TAG_BG[st.state]}
+              title={st.detail || undefined}
             >
-              {titleState(s).toUpperCase()}
+              {st.label.toUpperCase()}
             </span>
           </div>
+          <!-- Visible, not hover-only, because it carries the difference between a row
+               that is fine and one that is not, and a hover is a state a keyboard never
+               reaches. Only the two mid-stream states set `note`, so no row that already
+               had a hover-only reason grows a line it never had. -->
+          {#if st.note}
+            <p class="card-note" class:err={st.state === "error"}>{st.note}</p>
+          {/if}
           <div class="card-foot">
             <label class="card-toggle">
               <ToggleSwitch size="sm" bind:checked={b.enabled} onchange={(v) => void toggleRow(b, v)} />
               <span>{b.enabled ? "Enabled" : "Disabled"}</span>
             </label>
-            <button class="trash" title="Unbind destination" aria-label="Unbind destination" onclick={() => onRemove(b)}>
-              <Icon name="trash" size={14} />
-            </button>
+            <span class="card-acts">
+              {#if st.retryable}
+                <!-- aria-disabled, not disabled: a native disable drops the control out of
+                     the tab order the instant it is pressed, so the state it changed into
+                     is never announced and focus is lost. retryDestination guards its own
+                     re-entry, so nothing needs the DOM to refuse the second click. -->
+                <button
+                  class="retry"
+                  aria-disabled={isRetrying(b.uuid)}
+                  aria-busy={isRetrying(b.uuid)}
+                  aria-label={isRetrying(b.uuid) ? "Starting " + name + ", please wait" : "Retry " + name}
+                  onclick={() => void retryDestination(b.uuid, name)}
+                >
+                  {isRetrying(b.uuid) ? "Starting…" : "Retry"}
+                </button>
+              {/if}
+              <button
+                class="trash"
+                title="Unbind destination"
+                aria-label="Unbind destination"
+                onclick={() => onRemove(b)}
+              >
+                <Icon name="trash" size={14} />
+              </button>
+            </span>
           </div>
         </div>
       {/each}
@@ -332,6 +361,17 @@
     letter-spacing: 0.06em;
     padding: 2px 6px;
   }
+  /* Negative top margin eats the card's 12px flex gap so the note reads as belonging
+     to the state tag above it rather than floating between two blocks. */
+  .card-note {
+    margin: -6px 0 0;
+    font-size: 11.5px;
+    line-height: 1.4;
+    color: var(--color-muted);
+  }
+  .card-note.err {
+    color: var(--color-live);
+  }
   .card-foot {
     display: flex;
     align-items: center;
@@ -339,6 +379,35 @@
     gap: 10px;
     padding-top: 11px;
     border-top: var(--border-weight) solid var(--color-border-2);
+  }
+  .card-acts {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .retry {
+    flex: 0 0 auto;
+    height: 26px;
+    padding: 0 10px;
+    background: none;
+    border: var(--border-weight) solid var(--color-live);
+    color: var(--color-live);
+    cursor: pointer;
+    font: inherit;
+    font-size: 11.5px;
+  }
+  .retry:hover:not([aria-disabled="true"]) {
+    background: color-mix(in srgb, var(--color-live) 14%, transparent);
+  }
+  .retry:focus-visible {
+    outline: var(--border-weight) solid var(--color-accent);
+    outline-offset: 1px;
+  }
+  .retry[aria-disabled="true"] {
+    cursor: default;
+    color: var(--color-muted);
+    border-color: var(--color-border);
   }
   .card-toggle {
     display: flex;

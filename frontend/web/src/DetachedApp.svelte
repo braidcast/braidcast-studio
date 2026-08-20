@@ -9,6 +9,7 @@
   import { browserDockStore } from "$lib/stores/browserDockStore.svelte";
   import { canvasStore } from "$lib/stores/canvasStore.svelte";
   import TitleBar from "$lib/ui/TitleBar.svelte";
+  import Toast from "$lib/ui/Toast.svelte";
 
   // Apply the saved (or default Industrial) theme in this window too.
   void themeStore.hydrate();
@@ -70,6 +71,11 @@
   <TitleBar variant="detached" {title} onRedock={redock} />
   <div class="body" bind:this={host}></div>
 </div>
+
+<!-- Each window is its own CEF browser with its own module instances, so the toast store
+     a detached dock writes to is not the main window's and had nowhere to surface. A
+     refused Retry, or a refused mid-stream arm, failed completely silently here. -->
+<Toast />
 
 <style>
   .detached {

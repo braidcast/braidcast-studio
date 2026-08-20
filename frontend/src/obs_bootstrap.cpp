@@ -2442,6 +2442,24 @@ void ObsBootstrap::RunMultistreamModelSelfTest()
 	}
 }
 
+namespace {
+
+// A temp destination pointed at a dead local RTMP host, for the self-tests that need a
+// startable binding without a real ingest. In-memory only -- StreamProfileStore::Add does not
+// Save -- so the caller removes the profile at the end and the stored file is never touched.
+std::string MakeSelfTestProfile(const char *label)
+{
+	StreamProfile prof;
+	prof.label = label;
+	prof.serviceId = "rtmp_custom";
+	prof.settings = OBSDataAutoRelease(obs_data_create());
+	obs_data_set_string(prof.settings, "server", "rtmp://127.0.0.1:1/live");
+	obs_data_set_string(prof.settings, "key", "selftest");
+	return g_streamProfiles.Add(std::move(prof)).uuid;
+}
+
+} // namespace
+
 void ObsBootstrap::RunMultistreamEngineSelfTest()
 {
 	// Drive the fan-out engine end-to-end without a real broadcast: create a temp
@@ -2453,13 +2471,7 @@ void ObsBootstrap::RunMultistreamEngineSelfTest()
 	const size_t profilesBefore = g_streamProfiles.Profiles().size();
 	const size_t bindingsBefore = g_outputBindings.Bindings().bindings.size();
 
-	StreamProfile prof;
-	prof.label = "selftest-engine";
-	prof.serviceId = "rtmp_custom";
-	prof.settings = OBSDataAutoRelease(obs_data_create());
-	obs_data_set_string(prof.settings, "server", "rtmp://127.0.0.1:1/live");
-	obs_data_set_string(prof.settings, "key", "selftest");
-	const std::string profileUuid = g_streamProfiles.Add(std::move(prof)).uuid;
+	const std::string profileUuid = MakeSelfTestProfile("selftest-engine");
 
 	OutputBinding &binding = g_outputBindings.Bindings().Add(canvasUuid);
 	binding.profileUuid = profileUuid;
@@ -2531,7 +2543,132 @@ std::string MakeSelfTestCanvas(const char *name)
 	return uuid;
 }
 
+// The status row multistream.changed would carry for one binding, or nullopt where the
+// report has none -- Statuses() enumerates only ENABLED bindings, so an absent row and a
+// row reading Idle are different answers.
+std::optional<MultistreamEngine::OutputStatus> SelfTestStatusFor(const std::string &bindingUuid)
+{
+	for (const MultistreamEngine::OutputStatus &st : g_multistream->Statuses()) {
+		if (st.bindingUuid == bindingUuid) {
+			return st;
+		}
+	}
+	return std::nullopt;
+}
+
 } // namespace
+
+void ObsBootstrap::RunMultistreamArmSelfTest()
+{
+	using Bridge::json;
+
+	// Every reading below turns on whether a session is running, so one already in flight
+	// would make all of them meaningless.
+	if (g_multistream->AnyLive()) {
+		HostLog("[selftest] arm SKIPPED: something is already streaming");
+		return;
+	}
+
+	const std::string canvasUuid = g_canvases.Default().uuid;
+	const size_t profilesBefore = g_streamProfiles.Profiles().size();
+	const size_t bindingsBefore = g_outputBindings.Bindings().bindings.size();
+
+	// Two temp destinations: one to hold a session open, one to arm against it.
+	const std::string holderProfile = MakeSelfTestProfile("selftest-arm-holder");
+	OutputBinding &holder = g_outputBindings.Bindings().Add(canvasUuid);
+	holder.profileUuid = holderProfile;
+	holder.enabled = true;
+	const std::string holderUuid = holder.uuid;
+
+	// multistream.startOutput with nothing live is refused rather than starting bare: this
+	// path joins a broadcast that is running, and starting one destination on its own would
+	// go out with none of the preparation go-live does for the rest.
+	json refusal;
+	std::string dispatchError;
+	const bool dispatched =
+		Bridge::Dispatch("multistream.startOutput", json{{"uuid", holderUuid}}, refusal, dispatchError);
+	const bool refusedIdle = dispatched && refusal.is_object() && !refusal.value("ok", true) &&
+				 !refusal.value("error", std::string()).empty() && !g_multistream->IsLive(holderUuid);
+	HostLog(std::string("[selftest] arm startOutput with no session -> ") +
+		(refusedIdle ? "refused (OK)" : "MISMATCH") + ": " +
+		(dispatched ? refusal.dump() : Err::Diagnostic(dispatchError)));
+
+	// Hold a session open. A dead host leaves this Connecting, or Reconnecting once the
+	// refusal lands -- both count as live. It can also reach Error before the next line
+	// runs if the user has automatic reconnect turned off, which weakens the arm assertion
+	// below without invalidating it, so the log says which of the two was proven.
+	g_multistream->StartOutput(holderUuid);
+	const bool sessionLive = g_multistream->AnyLive();
+
+	// The two session predicates must disagree here, and that disagreement is the whole reason
+	// both exist: the holder has an entry (StartedThisSession) but a dead host never signals
+	// start, so it never went live. A build reading WentLive off the LiveOutput reports them equal.
+	const bool startedSeen = g_multistream->StartedThisSession(holderUuid);
+	const bool wentLiveSeen = g_multistream->WentLiveThisSession(holderUuid);
+	// And it must survive the entry being replaced. A second StartOutput is the shape a user's
+	// Retry takes: it reaps the old entry and pushes a fresh one whenever the first is already
+	// dead (it short-circuits while that one is still connecting). If the fact lived on the
+	// entry, the reaping branch is where it would be lost.
+	g_multistream->StartOutput(holderUuid);
+	const bool startedAfter = g_multistream->StartedThisSession(holderUuid);
+	const bool wentLiveAfter = g_multistream->WentLiveThisSession(holderUuid);
+	HostLog(std::string("[selftest] arm session predicates -> ") +
+		((startedSeen && !wentLiveSeen && startedAfter && !wentLiveAfter) ? "OK" : "MISMATCH") +
+		"; connecting-only started=" + (startedSeen ? "true" : "false (BUG)") +
+		" wentLive=" + (wentLiveSeen ? "true (BUG)" : "false") + "; after a second start started=" +
+		(startedAfter ? "true" : "false (BUG)") + " wentLive=" + (wentLiveAfter ? "true (BUG)" : "false") +
+		" (a real connection flips wentLive true and it must then STAY true; not headless)");
+
+	const std::string armedProfile = MakeSelfTestProfile("selftest-arm-armed");
+	OutputBinding &armed = g_outputBindings.Bindings().Add(canvasUuid);
+	armed.profileUuid = armedProfile;
+	armed.enabled = false;
+	const std::string armedUuid = armed.uuid;
+
+	// Arming starts nothing: the destination has to be prepared against its platform first,
+	// and that is gated on the user validating its stream info.
+	std::string armError;
+	const bool armOk = Bridge::SetOutputBindingEnabled(armedUuid, true, armError);
+	const std::optional<MultistreamEngine::OutputStatus> armedRow = SelfTestStatusFor(armedUuid);
+	const std::optional<MultistreamEngine::OutputStatus> holderRow = SelfTestStatusFor(holderUuid);
+	const bool armedIdle = armOk && !g_multistream->IsLive(armedUuid) && armedRow && !armedRow->startedThisSession;
+	// The holder is the positive control, and it is part of the verdict rather than a note
+	// beside it: without it "no live entry" would also pass on a report that simply never
+	// sets the field.
+	const bool holderMarked = holderRow && holderRow->startedThisSession;
+	HostLog(std::string("[selftest] arm mid-session (session ") + (sessionLive ? "live" : "already down") +
+		") -> " + ((armedIdle && holderMarked) ? "started nothing (OK)" : "MISMATCH") +
+		"; startedThisSession armed=" + ((armedRow && armedRow->startedThisSession) ? "true (BUG)" : "false") +
+		" holder=" + (holderMarked ? "true" : "false (BUG)") +
+		(armOk ? std::string() : "; setEnabled FAILED: " + Err::Diagnostic(armError)));
+
+	// Arming is refused outright while a go-live prelude is in flight: that prelude has
+	// already snapshotted the destinations it is creating broadcasts against, and the
+	// StartAllEnabled that follows it would start this one against the ingest the last
+	// go-live wrote into its profile.
+	{
+		Bridge::ScopedGoLivePrelude prelude;
+		std::string preludeError;
+		const bool refused = !Bridge::SetOutputBindingEnabled(armedUuid, true, preludeError);
+		HostLog(std::string("[selftest] arm during go-live prelude -> ") +
+			(refused ? "refused (OK): " + preludeError : "ALLOWED (BUG)"));
+	}
+
+	// Restore. SetOutputBindingEnabled Saved for itself, so the removal Saves too -- into the
+	// self-test config base, not the developer's, which is what makes writing here safe at
+	// all (Env::IsSelfTestRun). Restored anyway, so the tests that run after this one read
+	// the model they would have found without it.
+	g_multistream->StopOutput(holderUuid);
+	g_outputBindings.Bindings().Remove(armedUuid);
+	g_outputBindings.Bindings().Remove(holderUuid);
+	g_outputBindings.Save();
+	g_streamProfiles.Remove(armedProfile);
+	g_streamProfiles.Remove(holderProfile);
+	HostLog("[selftest] arm cleanup: profiles " + std::to_string(g_streamProfiles.Profiles().size()) + " (was " +
+		std::to_string(profilesBefore) + "), bindings " +
+		std::to_string(g_outputBindings.Bindings().bindings.size()) + " (was " +
+		std::to_string(bindingsBefore) + ")");
+}
 
 void ObsBootstrap::RunCanvasRuntimeSelfTest()
 {
@@ -2543,13 +2680,7 @@ void ObsBootstrap::RunCanvasRuntimeSelfTest()
 	// engine falls back to the Default canvas's encoders, which are already seeded.
 	const std::string canvasUuid = MakeSelfTestCanvas("selftest-runtime-canvas");
 
-	StreamProfile prof;
-	prof.label = "selftest-runtime";
-	prof.serviceId = "rtmp_custom";
-	prof.settings = OBSDataAutoRelease(obs_data_create());
-	obs_data_set_string(prof.settings, "server", "rtmp://127.0.0.1:1/live");
-	obs_data_set_string(prof.settings, "key", "selftest");
-	const std::string profileUuid = g_streamProfiles.Add(std::move(prof)).uuid;
+	const std::string profileUuid = MakeSelfTestProfile("selftest-runtime");
 
 	OutputBinding &binding = g_outputBindings.Bindings().Add(canvasUuid);
 	binding.profileUuid = profileUuid;
