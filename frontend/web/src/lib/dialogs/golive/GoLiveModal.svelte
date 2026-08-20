@@ -1560,11 +1560,19 @@ import { EV } from "$lib/utils/eventNames";
     // The card strip is the authoritative failure surface — persistent, and sitting
     // next to the arm switch that is the remedy. The toast below is only the
     // attention-getter: it auto-dismisses and the next toast replaces it.
-    // Prefer the decoded user message (the streamer-readable sentence, no method/
-    // step prefixes) in the card; the diagnostic chain stays on message for the
-    // toast's hover title.
+    //
+    // Both render the decoded user message where the host sent one: it is the sentence
+    // written for a streamer, and `message` prefixes it with the method/step chain that
+    // named the failing call. ONE reading of an OpError here, because the card and the
+    // toast are describing the same failure to the same person at the same moment.
+    //
+    // The card treats an EMPTY reading as no reading: a rejected promise can carry a blank
+    // message, and a strip whose only job is to name the failure must not render a blank.
+    // The toast keeps the empty string, which is the absent-reason case its helper owns.
+    const streamerReason = (f: { reason: BridgeError }): string =>
+      f.reason?.userMessage ?? f.reason?.message ?? "";
     channelSaveError = Object.fromEntries(
-      [...failedByChannel].map(([id, f]) => [id, f.reason?.userMessage ?? f.reason?.message ?? PUSH_FAILED]),
+      [...failedByChannel].map(([id, f]) => [id, streamerReason(f) || PUSH_FAILED]),
     );
     // Stream info is a precondition, not a courtesy: if any armed channel's metadata
     // push failed, going live would stream with stale/wrong title+category. Block the
@@ -1580,10 +1588,13 @@ import { EV } from "$lib/utils/eventNames";
       destinationFailureToast({
         lead,
         names: fails.map((v) => v.name),
-        // Raw, empty message and all: destinationFailureToast owns what an absent reason
-        // falls back to, and a second answer here would only be the one that disagrees.
-        reason: fails[0].reason?.message ?? "",
-        lines: fails.map((v) => (v.reason?.message ? `${v.name} — ${v.reason.message}` : v.name)),
+        // Empty and all: destinationFailureToast owns what an absent reason falls back
+        // to, and a second answer here would only be the one that disagrees.
+        reason: streamerReason(fails[0]),
+        lines: fails.map((v) => {
+          const why = streamerReason(v);
+          return why ? `${v.name} — ${why}` : v.name;
+        }),
         singularSuffix: goingLive ? "" : " stream info",
         assertive: goingLive,
       });

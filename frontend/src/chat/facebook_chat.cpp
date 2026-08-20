@@ -166,12 +166,13 @@ void ReportDegraded(CommentSession &s, const std::string &why)
 // to the hub's log, and `terminal` stops connect()'s clean bookend from overwriting it. A
 // terminal row's reason IS its whole content, so an empty one is substituted rather than
 // shown.
-void EndSession(CommentSession &s, const std::string &reason, std::string &err)
+void EndSession(CommentSession &s, const std::string &reason, std::string &err,
+		Transports::TransportHealth::State health = Transports::TransportHealth::State::Failed)
 {
 	const std::string text = reason.empty() ? std::string("Facebook comments stopped") : reason;
 	s.terminal = true;
 	err = text;
-	EmitChatTerminal(s.ctx, "facebook", text);
+	EmitChatTerminal(s.ctx, "facebook", text, health);
 }
 
 // Meta's error envelope ({"error":{"message":...}}). The status stands in when Meta sent no
@@ -386,7 +387,8 @@ bool FacebookChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, co
 	// nothing.
 	if (channelRef.empty()) {
 		err.clear();
-		EmitChatTerminal(ctx, "facebook", "No active Facebook broadcast to read comments from");
+		EmitChatTerminal(ctx, "facebook", "No active Facebook broadcast to read comments from",
+				 Transports::TransportHealth::State::Unavailable);
 		return false;
 	}
 	// A live video without its Page token is unreadable: the stored account holds the
@@ -429,7 +431,8 @@ bool FacebookChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, co
 	std::string endedStatus;
 	const bool ended = BroadcastEnded(session, endedStatus);
 	if (ended) {
-		EndSession(session, "Facebook comments unavailable: the broadcast is " + endedStatus, err);
+		EndSession(session, "Facebook comments unavailable: the broadcast is " + endedStatus, err,
+			   Transports::TransportHealth::State::Unavailable);
 	}
 
 	bool firstConnect = true;

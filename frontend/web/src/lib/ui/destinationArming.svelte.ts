@@ -27,20 +27,26 @@ export interface DestinationFailure {
   lead: string;
   /** Who it is about. One reads by name, several collapse to a count. */
   names: string[];
-  /** Why, for the SINGLE-destination case. Lands on the toast's `title`, so it is hover
-   * text rather than anything visible or announced. May be empty -- the host sends "" when
-   * it has no reason to give and an Error can carry a blank message. */
+  /** Why, for the SINGLE-destination case. Rendered as the toast's one visible line. May
+   * be empty -- the host sends "" when it has no reason to give and an Error can carry a
+   * blank message -- and an empty one renders no line rather than an empty one. */
   reason: string;
-  /** One visible line per failure. Used in the PLURAL case only -- where a single shared
-   * `reason` would attribute one destination's cause to all of them -- and ignored for a
-   * single destination, see below. Their presence is what switches the toast from one
-   * truncating line to a wrapping block, so the causes are read rather than hovered. */
+  /** One visible line per failure. Used in the PLURAL case only, where a single shared
+   * `reason` would attribute one destination's cause to all of them. */
   lines?: string[];
   /** Appended after the name in the SINGULAR branch only, where the lead alone would be
    * ambiguous about what failed ("Couldn't update Twitch stream info"). */
   singularSuffix?: string;
   assertive?: boolean;
 }
+
+// How long a toast carrying reason lines stays up. The 4s default sizes a headline; a lead
+// plus one host diagnostic per destination is body text, and on the hotkey, tray and
+// scheduler paths this toast is the only place that text ever appears. Sized for the common
+// case of one or two short reasons -- the content has no ceiling, since a wrapped Err chain
+// for several destinations can outrun any figure. Set here rather than at the call sites,
+// so no failure surface reads faster than another.
+const READ_MS = 9000;
 
 /**
  * THE wording for a destination-level failure, because the same sentence was authored at
@@ -52,17 +58,28 @@ export interface DestinationFailure {
  */
 export function destinationFailureToast(f: DestinationFailure): void {
   const one = f.names.length === 1;
+  const message = one
+    ? f.lead + f.names[0] + (f.singularSuffix ?? "")
+    : f.lead + f.names.length + " destinations";
+  // The cause is visible, wrapping text in both branches. Singular carries the reason bare
+  // -- the message has already named the destination, so the plural's "<name> — <reason>"
+  // shape would print it twice -- and a failure with no reason to give renders no line at
+  // all, since a line that only restates the message is worse than none.
+  const lines = one ? (f.reason ? [f.reason] : []) : (f.lines ?? []);
   showToast(
-    one ? f.lead + f.names[0] + (f.singularSuffix ?? "") : f.lead + f.names.length + " destinations",
-    // The toast's hover title, never visible or announced text. Falls back to the name so
-    // a pointer that stops on it is answered with something; showToast's parameter is a
-    // plain string, so there is no omit-the-attribute option to prefer over this.
-    one ? f.reason || f.names[0] || "No reason reported." : joinNames(f.names),
-    // Dropped in the singular case even when a caller passes them: one line would only
-    // restate the message and then move the reason from hover text into visible,
-    // wrapping text. Whether a single reason should be visible is a question about all
-    // six of these toasts, not something to change for whichever one passes `lines`.
-    { assertive: f.assertive ?? false, lines: one ? undefined : f.lines },
+    message,
+    // Hover text for the variant that has no lines, whose single line truncates. The view
+    // drops the attribute once there are lines, which wrap and need no tooltip; what is
+    // left to answer a pointer is the untruncated message, and the names the count hides.
+    one ? message : joinNames(f.names),
+    {
+      assertive: f.assertive ?? false,
+      lines,
+      // The lines carry the whole reason and a reader cannot reach them: the toast expires
+      // before it can be navigated to, so the announcement has to speak them.
+      announce: [message, ...lines].join(". "),
+      durationMs: lines.length > 0 ? READ_MS : undefined,
+    },
   );
 }
 

@@ -31,7 +31,12 @@ public:
 	// Connection lifecycle of one transport. Carried on the wire as its lowercase
 	// StateName; the web transportHealthStore maps it to a badge. Single source of
 	// truth for the contract (mirrors MultistreamEngine::State / StateName).
-	enum class State { Connecting, Connected, Reconnecting, Failed, Disconnected };
+	//
+	// Unavailable is terminal like Failed and is NOT a fault: there is no transport to
+	// run here at all for this broadcast, so nothing broke and nothing is retryable. A
+	// private YouTube broadcast's chat is the case it exists for -- reporting that as
+	// Failed tells the streamer to go fix a chat that was never going to run.
+	enum class State { Connecting, Connected, Reconnecting, Failed, Unavailable, Disconnected };
 
 	// Lowercase state name for the status JSON. Single source of truth.
 	static const char *StateName(State state);

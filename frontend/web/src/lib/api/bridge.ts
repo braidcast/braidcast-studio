@@ -793,8 +793,16 @@ export interface MultistreamStatus {
 // --- transport health (chat/events/overlay connection surface, R14/G1) -------
 
 /** Connection lifecycle of one chat/events/overlay transport. Lowercase mirror of
- * the native Transports::TransportHealth::State (StateName). */
-export type TransportHealthState = "connecting" | "connected" | "reconnecting" | "failed" | "disconnected";
+ * the native Transports::TransportHealth::State (StateName). "unavailable" is terminal
+ * like "failed" but is not a fault: there is no transport to run here for this
+ * broadcast, so it reads neutral and offers nothing to retry. */
+export type TransportHealthState =
+  | "connecting"
+  | "connected"
+  | "reconnecting"
+  | "failed"
+  | "unavailable"
+  | "disconnected";
 
 /**
  * One transport health row reported by transports.health / pushed on

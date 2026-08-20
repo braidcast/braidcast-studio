@@ -238,14 +238,18 @@ void ChatHub::Start()
 			//
 			// The latch records whether the transport reported a terminal of its own, so the
 			// backstop after connect() can fill one in without overwriting a reason the
-			// transport already gave.
+			// transport already gave. It keys on the two states a transport uses for a
+			// terminal, Failed and Unavailable, rather than on where the report came
+			// from: a terminal state that did not latch would leave the backstop free to
+			// overwrite it with a red Failed the moment connect() returned.
 			auto reportedTerminal = std::make_shared<std::atomic<bool>>(false);
 			ctx.reportHealth = [dest, canceled, reportedTerminal](Transports::TransportHealth::State st,
 									      const std::string &healthErr) {
 				if (canceled()) {
 					return;
 				}
-				if (st == Transports::TransportHealth::State::Failed) {
+				if (st == Transports::TransportHealth::State::Failed ||
+				    st == Transports::TransportHealth::State::Unavailable) {
 					reportedTerminal->store(true, std::memory_order_release);
 				}
 				Transports::Health().Report(Transports::ChatTransportId(dest), st, healthErr);

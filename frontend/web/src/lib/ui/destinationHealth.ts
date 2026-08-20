@@ -74,16 +74,19 @@ export function eventsTransportFor(d: DestinationIdentity): TransportHealth | nu
  * the only carrier. DestinationChips appends the note to both title and aria-label; the
  * Stats dock prints it inline on the output row.
  *
- * One builder rather than a table per subject: chat and events are the same five states
- * read against different nouns, and two hand-written tables drift a phrase at a time.
+ * One builder rather than a table per subject: chat and events are the same states read
+ * against different nouns, and two hand-written tables drift a phrase at a time.
  * `stopped` is neutral on purpose -- it covers a broadcast that simply ended as well as
- * a genuine fault, and the caller appends its own reason, which carries the judgement. */
+ * a genuine fault, and the caller appends its own reason, which carries the judgement.
+ * `unavailable` says less than that: nothing ran and nothing stopped, so the wording must
+ * not imply either -- there is simply none of this on this broadcast. */
 function stateNotes(subject: string): Record<TransportHealthState, string> {
   return {
     connected: `${subject} connected`,
     connecting: `${subject} connecting`,
     reconnecting: `${subject} reconnecting`,
     failed: `${subject} stopped`,
+    unavailable: `no ${subject} on this broadcast`,
     disconnected: `${subject} not connected`,
   };
 }

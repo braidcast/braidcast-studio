@@ -428,12 +428,13 @@ void ReportDegraded(ChatSession &s, const std::string &why, Degradation kind = D
 //   - `s.terminal` stops connect()'s clean bookend from overwriting it with an empty state.
 // A terminal row's reason IS its whole content, so an empty one is substituted rather than
 // shown -- the bug this replaces was a terminal path whose reason never reached the user.
-void EndSession(ChatSession &s, const std::string &reason, std::string &err)
+void EndSession(ChatSession &s, const std::string &reason, std::string &err,
+		Transports::TransportHealth::State health = Transports::TransportHealth::State::Failed)
 {
 	const std::string text = reason.empty() ? std::string("YouTube chat stopped") : reason;
 	s.terminal = true;
 	err = text;
-	EmitChatTerminal(s.ctx, "youtube", text);
+	EmitChatTerminal(s.ctx, "youtube", text, health);
 }
 
 // The user-facing reason for a terminal 403, shared by both read loops (chat disabled, chat
@@ -479,7 +480,9 @@ bool RefuseIfPrivate(ChatSession &s, const std::string &privacy, std::string &er
 	if (privacy != OAuth::kPrivacyPrivate) {
 		return false;
 	}
-	EndSession(s, kPrivateChatUnavailable, err);
+	// Unavailable rather than Failed: the app is declining to read this broadcast, which is
+	// a property of the broadcast and not something that went wrong with the transport.
+	EndSession(s, kPrivateChatUnavailable, err, Transports::TransportHealth::State::Unavailable);
 	return true;
 }
 
@@ -1051,7 +1054,8 @@ bool YouTubeChat::connect(const ChatContext &ctx, OAuth::OAuthAccount &acct, con
 	// the rest of the stream. `err` stays empty so the hub still logs nothing.
 	if (channelRef.empty()) {
 		err.clear();
-		EmitChatTerminal(ctx, "youtube", "No active YouTube broadcast to read chat from");
+		EmitChatTerminal(ctx, "youtube", "No active YouTube broadcast to read chat from",
+				 Transports::TransportHealth::State::Unavailable);
 		return false;
 	}
 	const std::string liveChatId = channelRef;

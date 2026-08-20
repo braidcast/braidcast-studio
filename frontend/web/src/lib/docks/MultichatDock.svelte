@@ -265,15 +265,26 @@
   // account-wide chat are ONE transport, and a destination whose transport has no
   // health row is not connected -- counting destinations, or counting health rows,
   // would promise a fan-out wider than the host will actually perform.
-  let fanTransports = $derived.by(() => {
-    const ids = new Set<string>();
+  //
+  // `onlyUnavailable` answers WHY the set came out empty, which the size alone cannot:
+  // a scope whose every candidate is unavailable has nothing wrong with it, while one
+  // holding a single failed or unrowed transport does. The two are counted on this walk
+  // rather than a second one, so the composer cannot classify a scope the fan-out never saw.
+  let fanScope = $derived.by(() => {
+    const connected = new Set<string>();
+    let unavailable = 0;
+    let unwell = 0;
     for (const d of fanDestinations) {
       const t = chatTransportFor(d);
       if (t && t.row.state === "connected") {
-        ids.add(t.id);
+        connected.add(t.id);
+      } else if (t && t.row.state === "unavailable") {
+        unavailable++;
+      } else {
+        unwell++;
       }
     }
-    return ids;
+    return { connected, onlyUnavailable: unavailable > 0 && unwell === 0 };
   });
 
   /** "3 chats" / "1 YouTube chat" -- one phrase for the band, the button and the
@@ -284,6 +295,9 @@
   }
 
   const PICK_ONE = "Pick one stream —";
+  // The composer's half of the neutral state, worded to describe the broadcast rather than
+  // a connection: every scope that reaches it reaches it for the same reason.
+  const NO_CHAT_HERE = "No chat to reply to here";
 
   interface Composer {
     /** The send addressing minus the text; null blocks the composer outright. */
@@ -296,8 +310,11 @@
     placeholder: string;
   }
 
-  function blocked(lead: string, to: string, placeholder: string): Composer {
-    return { address: null, tone: "warn", lead, to, button: "Send", buttonTitle: "", placeholder };
+  // `tone` is required rather than defaulted: whether a composer that cannot send is
+  // reporting a fault or just describing the situation is a judgement about that branch,
+  // and a default answers it for every branch written afterwards without being asked.
+  function blocked(lead: string, to: string, placeholder: string, tone: Composer["tone"]): Composer {
+    return { address: null, tone, lead, to, button: "Send", buttonTitle: "", placeholder };
   }
 
   let composer = $derived.by<Composer>(() => {
@@ -318,15 +335,22 @@
       const d = target;
       const t = targetTransport;
       if (!d) {
-        return blocked(PICK_ONE, scopeLabel, "Select one stream below to reply…");
+        return blocked(PICK_ONE, scopeLabel, "Select one stream below to reply…", "warn");
       }
       if (!t) {
         // No transport row at all is UNKNOWN, not healthy: there is nothing to reply
         // through, so this blocks rather than optimistically sending.
-        return blocked("No chat transport for", scopeLabel, "This chat is not connected");
+        return blocked("No chat transport for", scopeLabel, "This chat is not connected", "warn");
+      }
+      if (t.row.state === "unavailable") {
+        // Nothing was attempted and nothing failed, so this is not a warning -- it is the
+        // same reading as the offline state above. Both halves have to hold that line: an
+        // amber band saying "not connected" would put back the alarm the neutral edge and
+        // the note next to it just took away.
+        return blocked(CHAT_STATE_NOTE.unavailable + " —", scopeLabel, NO_CHAT_HERE, "calm");
       }
       if (t.row.state !== "connected") {
-        return blocked(CHAT_STATE_NOTE[t.row.state] + " —", scopeLabel, "This chat is not connected");
+        return blocked(CHAT_STATE_NOTE[t.row.state] + " —", scopeLabel, "This chat is not connected", "warn");
       }
       // accountId + profileUuid, never `platforms`: the host routes an accountId to
       // exactly one transport, and a null profileUuid means that account's
@@ -342,12 +366,23 @@
       };
     }
     const platform = sel.kind === "platform" ? sel.platform : "";
-    if (fanTransports.size === 0) {
+    if (fanScope.connected.size === 0) {
+      // This is the view the dock opens on, so the empty scope has to say why it is empty
+      // rather than assert the worst of the two reasons. Calm ONLY when every candidate is
+      // unavailable: nothing was attempted there, so nothing can be reported as not
+      // connected. A mix keeps the warning -- one destination genuinely down among several
+      // that were never going to run is still a destination the streamer has to see, and
+      // averaging it into the calm reading is how it would go unnoticed.
+      if (fanScope.onlyUnavailable) {
+        return platform
+          ? blocked("No chat on", scopeLabel, NO_CHAT_HERE, "calm")
+          : blocked("No chat on this broadcast", "", NO_CHAT_HERE, "calm");
+      }
       return platform
-        ? blocked("No connected chat on", scopeLabel, "No " + scopeLabel + " chat is connected")
-        : blocked("No chat is connected", "", "No chat is connected");
+        ? blocked("No connected chat on", scopeLabel, "No " + scopeLabel + " chat is connected", "warn")
+        : blocked("No chat is connected", "", "No chat is connected", "warn");
     }
-    const phrase = chatsPhrase(fanTransports.size, platform);
+    const phrase = chatsPhrase(fanScope.connected.size, platform);
     return {
       // No accountId: this is the host's fan-out path, where an omitted `platforms`
       // means every connected platform -- exactly what `all` asks for.

@@ -215,7 +215,11 @@
       return null;
     }
     const note = CHAT_STATE_NOTE[t.row.state];
-    const settled = t.row.state === "connected" || t.row.updatedAt <= 0;
+    // No elapsed clock where nothing is pending. A counter climbing beside a state reads as
+    // "this has been wrong for N minutes", which is true of a chat that dropped and false of
+    // one that was never going to run -- and the ticker would win back the alarm the neutral
+    // color gave up.
+    const settled = t.row.state === "connected" || t.row.state === "unavailable" || t.row.updatedAt <= 0;
     return {
       note,
       color: TRANSPORT_STATE_COLOR[t.row.state],

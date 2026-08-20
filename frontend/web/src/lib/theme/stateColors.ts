@@ -77,5 +77,9 @@ export const TRANSPORT_STATE_COLOR: Record<TransportHealthState, string> = {
   connected: STATE_COLOR.live,
   reconnecting: STATE_COLOR.reconnecting,
   failed: STATE_COLOR.error,
+  // The same muted token a staged binding reads as ("not on this stream", idle): both say
+  // "this is fine, it just isn't part of what's running", and two hand-picked greys for
+  // one idea is how the two surfaces would come to disagree about which grey means that.
+  unavailable: STATE_COLOR.idle,
   disconnected: STATE_COLOR.idle,
 };

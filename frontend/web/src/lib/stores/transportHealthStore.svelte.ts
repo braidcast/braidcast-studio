@@ -11,10 +11,20 @@ import { RefCountedSubscription } from "$lib/stores/refCountedSubscription";
 import { EV } from "$lib/utils/eventNames";
 import type { TransportHealth, TransportHealthState } from "$lib/api/bridge";
 
-// A state whose transport is up or working toward it -- the "not a problem" set.
-// ONE predicate; consumers must not re-derive it per call site.
+// A transport that is up, working toward it, or was never supposed to run here at all.
+// `unavailable` belongs on the strength of that last clause rather than any claim about a
+// connection -- a private broadcast has no chat to connect, so counting it unhealthy would
+// report a stream as degraded over a transport nobody asked for and nothing can restore.
+//
+// That is the whole rule, and it is narrower than "nothing is wrong": `disconnected` is
+// outside the set while covering two endings that are perfectly fine, the clean stop the
+// hub writes on Stop() and stateOf()'s default for a transport that has never reported.
+// A consumer asking "is anything wrong here" is asking a different question than this one
+// answers. ONE predicate; consumers must not re-derive it per call site.
 export function isHealthyState(state: TransportHealthState): boolean {
-  return state === "connected" || state === "connecting" || state === "reconnecting";
+  return (
+    state === "connected" || state === "connecting" || state === "reconnecting" || state === "unavailable"
+  );
 }
 
 class TransportHealthStore {

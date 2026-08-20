@@ -30,6 +30,9 @@ export interface ToastOptions {
    *  longer `durationMs` and name it in `announce`, since a reader hears the announcement
    *  rather than seeing the button. */
   action?: ToastAction;
+  /** How long it stays up. The timer is armed once when the toast is shown and is never
+   *  extended, so a pusher raising this is buying reading time for its own content up front
+   *  and gets no second chance to add more. */
   durationMs?: number;
   /** Identifies the pusher so it can withdraw its own toast without swallowing a newer
    *  one someone else put up in the meantime. */

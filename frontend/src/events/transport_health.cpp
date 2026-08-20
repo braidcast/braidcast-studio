@@ -15,6 +15,8 @@ const char *TransportHealth::StateName(State state)
 		return "reconnecting";
 	case State::Failed:
 		return "failed";
+	case State::Unavailable:
+		return "unavailable";
 	case State::Disconnected:
 	default:
 		return "disconnected";

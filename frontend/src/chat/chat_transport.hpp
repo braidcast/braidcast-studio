@@ -148,9 +148,17 @@ inline void EmitChatState(const ChatContext &ctx, const char *platform, bool con
 // Disconnected the hub writes on Stop(): "this destination's chat died mid-session" and
 // "the session ended" are different facts and both have to survive in the data. `reason`
 // is the whole content of a terminal row, so never pass an empty one.
-inline void EmitChatTerminal(const ChatContext &ctx, const char *platform, const std::string &reason)
+//
+// `health` splits the terminals by whether anything is actually wrong: Failed for a fault
+// the user can act on (authorization revoked, a budget spent, a Page token missing),
+// Unavailable for an ending where nothing ran and nothing broke (no broadcast to read at
+// all, or one this app will not read chat for). The default is Failed, so a new terminal
+// reads red unless it says otherwise -- classify it here rather than letting the default
+// answer for it, because a neutral ending painted red sends the user hunting for a fault.
+inline void EmitChatTerminal(const ChatContext &ctx, const char *platform, const std::string &reason,
+			     Transports::TransportHealth::State health = Transports::TransportHealth::State::Failed)
 {
-	EmitChatFrame(ctx, platform, false, Transports::TransportHealth::State::Failed, reason);
+	EmitChatFrame(ctx, platform, false, health, reason);
 }
 
 class ChatTransport {
