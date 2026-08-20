@@ -92,6 +92,11 @@ private:
 	// never longer than kMaxPresets.
 	void Normalize();
 
+	// Drop rows a file written under an older identity rule split in two. Load-time only:
+	// Remember compares each incoming sheet as it arrives, so a running store cannot grow
+	// a duplicate. Runs AFTER Normalize, whose ordering decides which of a pair survives.
+	void MergeDuplicates();
+
 	// Ordered most recently used first (see Normalize), which is also the order List()
 	// and the on-disk file carry.
 	std::vector<Preset> presets_;

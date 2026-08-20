@@ -82,10 +82,33 @@ bool ReadBag(const json &item, const char *key, json &out)
 // bag, and here for the same reason: a provider id and a bag identity are both free to hold
 // any byte, so joining them on a delimiter would let one of them forge a provider boundary
 // and make a one-provider sheet read alike to a two-provider one.
+// A bag with every empty list dropped. MetadataIdentity deliberately tells an ABSENT key
+// from one carrying an empty list: there, an empty list is the assertion "no tags" while an
+// absent key means the provider could not read the field at all, and the difference decides
+// whether a go-live is reported as diverging. A SAVED SHEET has no such distinction to make
+// -- both say the streamer set no tags -- and keeping it forked one stream into two presets
+// whose every visible field matched, because one go-live sent no `tags` key and the next
+// sent `tags: []`. Applied here rather than inside MetadataIdentity so the divergence check
+// keeps the distinction it needs.
+json WithoutEmptyLists(const json &bag)
+{
+	if (!bag.is_object()) {
+		return bag;
+	}
+	json out = json::object();
+	for (const auto &entry : bag.items()) {
+		if (entry.value().is_array() && entry.value().empty()) {
+			continue;
+		}
+		out[entry.key()] = entry.value();
+	}
+	return out;
+}
+
 std::string PresetIdentity(const json &shared, const json &byProvider)
 {
 	std::string identity;
-	StringUtil::AppendLengthPrefixed(identity, OAuth::MetadataIdentity(shared));
+	StringUtil::AppendLengthPrefixed(identity, OAuth::MetadataIdentity(WithoutEmptyLists(shared)));
 	if (!byProvider.is_object()) {
 		return identity;
 	}
@@ -97,7 +120,8 @@ std::string PresetIdentity(const json &shared, const json &byProvider)
 	std::sort(providerIds.begin(), providerIds.end());
 	for (const std::string &providerId : providerIds) {
 		StringUtil::AppendLengthPrefixed(identity, providerId);
-		StringUtil::AppendLengthPrefixed(identity, OAuth::MetadataIdentity(byProvider.at(providerId)));
+		StringUtil::AppendLengthPrefixed(identity,
+						 OAuth::MetadataIdentity(WithoutEmptyLists(byProvider.at(providerId))));
 	}
 	return identity;
 }
@@ -153,6 +177,7 @@ void StreamInfoPresetStore::Load()
 	// Neither the file's length nor its order is trusted: a hand-edited or newer-build
 	// document can carry more rows than the cap, and in any order at all.
 	Normalize();
+	MergeDuplicates();
 }
 
 bool StreamInfoPresetStore::Save() const
@@ -281,6 +306,38 @@ int64_t StreamInfoPresetStore::UsedNowMs() const
 	// stamp. So front() holds the largest stamp in the store whenever a caller reaches
 	// here.
 	return std::max(now, presets_.front().lastUsedAtMs + 1);
+}
+
+void StreamInfoPresetStore::MergeDuplicates()
+{
+	// Rows the identity rule would refuse to create today, but that a file written before it
+	// can still hold. The store's whole contract is a de-duplicated history, so restoring
+	// that invariant on load is not a new behavior -- without it a user carries the split
+	// pair forever, since Remember only ever compares what a go-live brings in.
+	//
+	// Normalize has already ordered by last use, so the row kept is the one used most
+	// recently; it inherits nothing from the row it absorbs beyond staying where it is. A
+	// name the user typed on the dropped row would be lost, so a NAMED row is never dropped.
+	std::vector<std::string> seen;
+	std::vector<Preset> kept;
+	kept.reserve(presets_.size());
+	size_t merged = 0;
+	for (Preset &preset : presets_) {
+		const std::string identity = PresetIdentity(preset.shared, preset.byProvider);
+		if (!preset.name.empty() || std::find(seen.begin(), seen.end(), identity) == seen.end()) {
+			seen.push_back(identity);
+			kept.push_back(std::move(preset));
+			continue;
+		}
+		merged++;
+	}
+	if (merged == 0) {
+		return;
+	}
+	presets_ = std::move(kept);
+	HostLog("[storage] merged " + std::to_string(merged) +
+		" duplicate stream info preset(s): same sheet, saved twice because one go-live "
+		"omitted a list field the other sent empty");
 }
 
 void StreamInfoPresetStore::Normalize()
