@@ -22,6 +22,30 @@ std::string LowerTrim(const std::string &s)
 {
 	return StringUtil::ToLower(StringUtil::Trim(s));
 }
+
+// Why each Log::kCostlyCats member is expensive. Prose only -- the set itself is
+// derived from kDefaultCats -- so a category enrolled later still announces
+// itself, just without a specific reason.
+struct CatCost {
+	LogCat cat;
+	const char *why;
+};
+constexpr CatCost kCatCosts[] = {
+	{LogCat::Render,
+	 "libobs emits per-frame [render-debug] timing, a log firehose, and boot arms the process-global "
+	 "OBS profiler, which taxes every profiled thread"},
+	{LogCat::RenderGpu, "per-frame GPU timer readback on the graphics thread can add the stalls it measures"},
+};
+
+const char *CatCostReason(LogCat cat)
+{
+	for (const CatCost &entry : kCatCosts) {
+		if (entry.cat == cat) {
+			return entry.why;
+		}
+	}
+	return "it is held out of the default category set for its cost";
+}
 } // namespace
 
 namespace Log {
@@ -60,6 +84,17 @@ void SetDebugMask(CatMask mask)
 	// possible while the frame timing above is on. Must follow the call above --
 	// source_profiler_gpu_enable ANDs against the CPU-side enable it sets.
 	obs_set_render_gpu_debug((mask & CatBit(LogCat::RenderGpu)) != 0);
+
+	// The mask setter is the choke point every costly category has to pass through.
+	// Today only the boot resolver hands over a mask that can carry one: SetDebug --
+	// and so diagnostics.setDebug -- passes kDefaultCats, which clears those bits by
+	// construction. A future caller passing a raw mask is covered here too.
+	for (int i = 0; i < kLogCatCount; ++i) {
+		const LogCat cat = static_cast<LogCat>(i);
+		if ((mask & kCostlyCats & CatBit(cat)) != 0) {
+			blog(LOG_WARNING, "[log] debug category '%s' is on: %s", LogCatName(cat), CatCostReason(cat));
+		}
+	}
 }
 
 void SetDebug(bool enabled)
@@ -80,10 +115,12 @@ DebugComponents ParseComponents(const std::string &spec)
 		const std::string name = LowerTrim(v.substr(pos, end - pos));
 		if (!name.empty()) {
 			LogCat cat{};
-			if (name == "all") {
-				// Every human-facing category, NOT the render-thread firehose;
-				// name "render" explicitly to opt [render-debug] in.
+			if (name == "basic") {
+				// Every human-facing category, NOT the render-thread gates;
+				// name "render" (or "all") to opt [render-debug] in.
 				out.logMask |= kDefaultCats;
+			} else if (name == "all") {
+				out.logMask |= kAllCats;
 			} else if (name == "gpudiag") {
 				out.gpuDiag = true;
 			} else if (LogCatFromName(name, cat)) {

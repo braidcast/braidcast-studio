@@ -21,11 +21,12 @@
 // behind those diagnostics (obs_set_render_gpu_debug) -- split out because the
 // per-frame query readback happens on the graphics thread and is itself a
 // suspect for the stalls the timing exists to find, so the timing has to be
-// observable without it. Both are excluded from kDefaultCats, so the binary
-// debug toggle never enables either; opt in explicitly with the two-var scheme,
-// BRAIDCAST_DEBUG=1 BRAIDCAST_DEBUG_COMPONENTS=render (optionally
-// ",rendergpu"). The master is mandatory: a falsy BRAIDCAST_DEBUG yields an
-// empty category set before components are parsed at all.
+// observable without it. Both are excluded from kDefaultCats, so neither the
+// binary debug toggle nor the "basic" spec token enables either; opt in with the
+// two-var scheme, BRAIDCAST_DEBUG=1 BRAIDCAST_DEBUG_COMPONENTS=render (optionally
+// ",rendergpu"), or take the whole table with "all". The master is mandatory: a
+// falsy BRAIDCAST_DEBUG yields an empty category set before components are parsed
+// at all.
 #define BRAIDCAST_LOG_CATEGORIES(X) \
 	X(Lifecycle, "lifecycle")   \
 	X(Bridge, "bridge")         \
@@ -58,8 +59,9 @@ inline constexpr int kLogCatCount = 0
 #undef BRAIDCAST_LOG_CAT_COUNT
 	;
 
-// One bit per category in Log::CatMask; the mask type sets the ceiling.
-static_assert(kLogCatCount <= 32, "LogCat no longer fits Log::CatMask -- widen it");
+// One bit per category in Log::CatMask; kAllCats shifts by the count, so the
+// ceiling is one below the mask type's width.
+static_assert(kLogCatCount < 32, "LogCat no longer fits Log::CatMask's shift -- widen it");
 
 // Lowercase, stable name for a category: the tag written into the log line and
 // the wire name shared with the web logger.
@@ -109,13 +111,20 @@ constexpr CatMask CatBit(LogCat cat)
 
 inline constexpr CatMask kNoCats = 0;
 inline constexpr CatMask kAllCats = (CatMask{1} << kLogCatCount) - 1;
-// Every category EXCEPT the two render-thread gates. The binary debug toggle
-// (SetDebug / diagnostics.setDebug) and the "all"/"on"/"true" spec map to this, so
-// enabling debug never floods the per-frame [render-debug] timing nor arms GPU
-// timer queries -- opt into those explicitly with
-// BRAIDCAST_DEBUG=1 BRAIDCAST_DEBUG_COMPONENTS=render / rendergpu (the master
-// is mandatory; without it no component is parsed).
+// Every category EXCEPT the two render-thread gates. Three routes resolve to it:
+// the binary debug toggle (SetDebug / diagnostics.setDebug), the "basic"
+// component token, and a truthy BRAIDCAST_DEBUG left with no
+// BRAIDCAST_DEBUG_COMPONENTS. So enabling debug never floods the per-frame
+// [render-debug] timing nor arms GPU timer queries -- opt into those with
+// BRAIDCAST_DEBUG=1 BRAIDCAST_DEBUG_COMPONENTS=render / rendergpu, or take every
+// category with "all". The master variable is mandatory either way: without it no
+// component is parsed at all.
 inline constexpr CatMask kDefaultCats = kAllCats & ~CatBit(LogCat::Render) & ~CatBit(LogCat::RenderGpu);
+
+// What kDefaultCats holds back, which it holds back because those categories cost
+// something to run. Derived rather than restated, so excluding a future category
+// from the default set also enrolls it in the cost notice SetDebugMask emits.
+inline constexpr CatMask kCostlyCats = kAllCats & ~kDefaultCats;
 
 // Whether any category is on. The coarse gate: what diagnostics.get reports and
 // what the web logger mirrors, since the per-category filter is applied
@@ -147,7 +156,8 @@ struct DebugComponents {
 
 // Parse a BRAIDCAST_DEBUG_COMPONENTS list (comma- or space-separated, case-
 // insensitive) into its components, accumulatively:
-//   "all"          -> |= kDefaultCats (every category except the render firehose)
+//   "basic"        -> |= kDefaultCats (every category except the render gates)
+//   "all"          -> |= kAllCats (the whole table, render gates included)
 //   a category name -> |= that category's bit (e.g. "render" opts the firehose in)
 //   "gpudiag"      -> gpuDiag = true
 //   anything else  -> ignored, so a stale token still yields the rest

@@ -22,12 +22,14 @@ export const Cat = {
   net: "net",
   cef: "cef",
   // Gate-only: toggles libobs's per-frame render-thread timing ([render-debug]) on
-  // the host; excluded from the blanket debug toggle. No web log.dbg uses it.
+  // the host; excluded from the blanket debug toggle and from the "basic" spec
+  // token, included in "all". No web log.dbg uses it.
   render: "render",
   // Gate-only: toggles the GPU timer queries behind those diagnostics on the host.
   // Separate from render because the per-frame query readback runs on the graphics
   // thread and can itself cause the stalls that timing exists to find. Excluded
-  // from the blanket debug toggle. No web log.dbg uses it.
+  // from the blanket debug toggle and from "basic", included in "all". No web
+  // log.dbg uses it.
   rendergpu: "rendergpu",
 } as const;
 
