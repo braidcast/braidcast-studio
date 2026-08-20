@@ -2654,6 +2654,32 @@ void ObsBootstrap::RunMultistreamArmSelfTest()
 			(refused ? "refused (OK): " + preludeError : "ALLOWED (BUG)"));
 	}
 
+	// Retargeting a LIVE binding onto a different stream profile must not restart it: the new
+	// profile carries the ingest the last go-live wrote there and no broadcast of this session's,
+	// so a restart would push at a stale endpoint. It is stopped and left staged instead. A
+	// canvas-only move still restarts, because that streams to the same place.
+	const std::string retargetProfile = MakeSelfTestProfile("selftest-arm-retarget");
+	// Read first: the holder can already have reached Error here (see above), and then the edit
+	// finds nothing live to stop and this proves nothing. Said out loud rather than passing
+	// quietly, because a vacuous OK is what would let the restart come back unnoticed.
+	const bool liveBefore = g_multistream->IsLive(holderUuid);
+	json retargeted;
+	std::string retargetError;
+	const bool retargetOk = Bridge::Dispatch("outputBinding.update",
+						 json{{"uuid", holderUuid}, {"profileUuid", retargetProfile}},
+						 retargeted, retargetError);
+	const OutputBinding *holderAfter = g_outputBindings.Bindings().Find(holderUuid);
+	const bool stillLive = g_multistream->IsLive(holderUuid);
+	const bool staged = retargetOk && holderAfter && holderAfter->profileUuid == retargetProfile && !stillLive;
+	HostLog(std::string("[selftest] retarget live binding profile -> ") +
+		(staged ? (liveBefore ? "stopped, not restarted (OK)"
+				      : "PROVES NOTHING (holder was not live; no restart was possible)")
+			: "MISMATCH") +
+		"; liveBefore=" + (liveBefore ? "true" : "false") +
+		"; profile=" + (holderAfter ? holderAfter->profileUuid : std::string("<gone>")) +
+		" live=" + (stillLive ? "true (BUG)" : "false") +
+		(retargetOk ? std::string() : "; update FAILED: " + Err::Diagnostic(retargetError)));
+
 	// Restore. SetOutputBindingEnabled Saved for itself, so the removal Saves too -- into the
 	// self-test config base, not the developer's, which is what makes writing here safe at
 	// all (Env::IsSelfTestRun). Restored anyway, so the tests that run after this one read
@@ -2664,6 +2690,7 @@ void ObsBootstrap::RunMultistreamArmSelfTest()
 	g_outputBindings.Save();
 	g_streamProfiles.Remove(armedProfile);
 	g_streamProfiles.Remove(holderProfile);
+	g_streamProfiles.Remove(retargetProfile);
 	HostLog("[selftest] arm cleanup: profiles " + std::to_string(g_streamProfiles.Profiles().size()) + " (was " +
 		std::to_string(profilesBefore) + "), bindings " +
 		std::to_string(g_outputBindings.Bindings().bindings.size()) + " (was " +

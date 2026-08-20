@@ -6982,7 +6982,8 @@ bool MethodOutputBindingUpdate(const json &params, json &result, std::string &er
 	// pair (if still enabled). A pure no-op keeps streaming untouched. Engine
 	// start/stop manage their own locking; we hold none across them.
 	MultistreamEngine &engine = ObsBootstrap::Multistream();
-	const bool targetChanged = newProfile != b->profileUuid || newCanvas != b->canvasUuid;
+	const bool profileChanged = newProfile != b->profileUuid;
+	const bool targetChanged = profileChanged || newCanvas != b->canvasUuid;
 	const bool wasLive = targetChanged && engine.IsLive(uuid);
 	if (wasLive) {
 		engine.StopOutput(uuid);
@@ -6998,7 +6999,14 @@ bool MethodOutputBindingUpdate(const json &params, json &result, std::string &er
 	// encoder build ("no video mix for canvas") and the stream would silently die.
 	ObsBootstrap::CanvasRuntime().ReconcileAll(); // retarget may (de)activate old+new canvas
 
-	if (wasLive && b->enabled) {
+	// Restarted only when the profile is unchanged: a canvas move streams to the same place, so
+	// the ingest this go-live resolved and the broadcast bound to it are still the right ones. A
+	// profile change is a different destination -- the new profile holds whatever ingest the LAST
+	// go-live wrote there and has no broadcast bound for this session, so restarting on it would
+	// push at a stale endpoint: green on every local indicator, absent from the platform. It stays
+	// enabled but not live, which the destinations row reports as not on this stream, and the go
+	// live modal is the way back on.
+	if (wasLive && b->enabled && !profileChanged) {
 		std::string startError;
 		engine.StartOutput(uuid, startError);
 	}
