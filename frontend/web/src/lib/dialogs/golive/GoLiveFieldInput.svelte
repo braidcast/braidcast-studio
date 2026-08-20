@@ -124,6 +124,11 @@
   let tooLarge = $state(false);
   let tooLargeMb = $state(0);
 
+  // Tri-state rather than a bare error flag, because "still reading" and "cannot be read"
+  // have to render differently: a failed read falls through to the empty picker, and doing
+  // that while the read is merely in flight would flash the picker on every open before the
+  // image resolved.
+  let imgState = $state<"idle" | "loading" | "ok" | "failed">("idle");
   let imgError = $state(false);
   let dataUri = $state("");
   $effect(() => {
@@ -132,12 +137,15 @@
     dataUri = "";
     tooLarge = false;
     if (!path) {
+      imgState = "idle";
       return;
     }
+    imgState = "loading";
     obs
       .call("file.readDataUri", { path })
       .then((r) => {
         if (imgPath === path) {
+          imgState = "ok";
           dataUri = r.dataUri;
           // Flag an already-saved oversized thumbnail (e.g. remembered from a prior
           // session) so it is not silently dropped at go-live.
@@ -149,7 +157,17 @@
       })
       .catch(() => {
         if (imgPath === path) {
+          // Unreadable: deleted, renamed, or on a drive that is not mounted. Whatever the
+          // reason, an image this app cannot read is one it cannot upload either, so the
+          // field says nothing is set rather than naming a file that is not there. A path
+          // THIS layer owns is also cleared, so what is stored matches what is shown and a
+          // go-live does not carry a doomed upload; an inherited one is left alone, since
+          // it belongs to the layer below and is not this field's to rewrite.
+          imgState = "failed";
           imgError = true;
+          if (str === path) {
+            onChange("");
+          }
         }
       });
   });
@@ -244,12 +262,12 @@
     oninput={(e) => onChange(e.currentTarget.value)}
   ></textarea>
 {:else if field.type === "image"}
-  {#if str}
+  {#if str && imgState !== "failed"}
     <div class="thumb has">
       {#if imgError || !dataUri}
         <span class="fname">{basename(str)}</span>
       {:else}
-        <img class="preview" src={dataUri} alt={basename(str)} onerror={() => (imgError = true)} />
+        <img class="preview" src={dataUri} alt={basename(str)} onerror={() => ((imgError = true), (imgState = "failed"))} />
       {/if}
       <button
         class="thumb-x"
@@ -259,7 +277,7 @@
       >×</button>
     </div>
     <div class="thumb-meta">{basename(str)}</div>
-  {:else if showGhost}
+  {:else if showGhost && imgState !== "failed"}
     <!-- Presented as a set image, because it is the one that will be sent. The box itself
          takes the click: there is no × on an inherited image (this layer has nothing to
          clear), so picking IS the override. The dashed frame plus reduced opacity is the
@@ -269,7 +287,7 @@
       {#if imgError || !dataUri}
         <span class="fname">{basename(imgPath)}</span>
       {:else}
-        <img class="preview" src={dataUri} alt={basename(imgPath)} onerror={() => (imgError = true)} />
+        <img class="preview" src={dataUri} alt={basename(imgPath)} onerror={() => ((imgError = true), (imgState = "failed"))} />
       {/if}
       <!-- An overlay rather than the frame itself, so the frame stays the same element the
            chosen-image case above uses: a <button> around the image does not size it the
