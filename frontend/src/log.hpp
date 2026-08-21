@@ -148,10 +148,11 @@ void SetDebug(bool enabled);
 void SetDebugMask(CatMask mask);
 
 // The components resolved from a BRAIDCAST_DEBUG_COMPONENTS list: the categories
-// to enable plus whether the non-category gpudiag sampler subsystem is requested.
+// to enable plus the non-category subsystems requested by name.
 struct DebugComponents {
 	CatMask logMask = kNoCats;
 	bool gpuDiag = false;
+	bool devTools = false;
 };
 
 // Parse a BRAIDCAST_DEBUG_COMPONENTS list (comma- or space-separated, case-
@@ -160,6 +161,8 @@ struct DebugComponents {
 //   "all"          -> |= kAllCats (the whole table, render gates included)
 //   a category name -> |= that category's bit (e.g. "render" opts the firehose in)
 //   "gpudiag"      -> gpuDiag = true
+//   "devtools"     -> devTools = true (opens CEF's remote-debugging port; see
+//                     devtools_port.hpp for why neither "basic" nor "all" covers it)
 //   anything else  -> ignored, so a stale token still yields the rest
 DebugComponents ParseComponents(const std::string &spec);
 

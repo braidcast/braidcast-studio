@@ -123,6 +123,8 @@ DebugComponents ParseComponents(const std::string &spec)
 				out.logMask |= kAllCats;
 			} else if (name == "gpudiag") {
 				out.gpuDiag = true;
+			} else if (name == "devtools") {
+				out.devTools = true;
 			} else if (LogCatFromName(name, cat)) {
 				out.logMask |= CatBit(cat);
 			}

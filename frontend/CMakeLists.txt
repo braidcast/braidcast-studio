@@ -59,6 +59,10 @@ target_sources(
     src/client.hpp
     src/gpu_safe_mode.cpp
     src/gpu_safe_mode.hpp
+    # The environment-only gate for CEF's remote-debugging (CDP) port, resolved before
+    # CefSettings is populated.
+    src/devtools_port.cpp
+    src/devtools_port.hpp
     # Mid-session GPU-load diagnostics (env-gated sampler + browser-source A/B kill
     # switch) for the CEF GPU-process crash that gpu_safe_mode's boot sentinel misses.
     src/diag/gpu_diag.cpp

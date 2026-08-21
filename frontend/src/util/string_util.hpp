@@ -45,6 +45,23 @@ inline std::string ToLower(std::string s)
 	return s;
 }
 
+// The strict boolean grammar the master debug flags are written in: 1/true/on/yes
+// (case-insensitive, whitespace ignored) are on; everything else -- 0/false/off/no,
+// empty, a typo -- is off. Deliberately stricter than Env::Flag, whose "set to
+// anything counts" convention exists for the diag flags; a switch that widens the
+// attack surface should only open on a word that says so.
+inline bool ParseBool(const std::string &raw)
+{
+	std::string v;
+	for (const char c : raw) {
+		if (!std::isspace(static_cast<unsigned char>(c))) {
+			v += c;
+		}
+	}
+	v = ToLower(v);
+	return v == "1" || v == "true" || v == "on" || v == "yes";
+}
+
 // `s` without leading or trailing whitespace, over the whole ASCII whitespace set. The
 // general-purpose one, for wherever "do these two strings say the same thing" is asked -- a
 // .env value, a log-filter token, a value a platform echoed back.

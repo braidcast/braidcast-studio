@@ -76,6 +76,12 @@
   --color-ok: #3fb950;
   --color-ok-bg: #234a2c;
   --color-warn: #e6b03e;
+  /* Ink for text/borders drawn ON --color-warn. Deliberately NOT --color-accent-ink:
+     that one follows the selected accent (ACCENT_VALUES rewrites it, and blue/violet/rose
+     set it to #ffffff, which is 1.97:1 on the amber above). Like --color-warn itself this
+     is absent from tokens.ts, so no mode or accent can rewrite it and the pair stays
+     legible in every theme by construction. */
+  --color-warn-ink: #0a0a0b;
   --backdrop: rgba(0, 0, 0, 0.55);
   --shadow-modal: 0 18px 48px rgba(0, 0, 0, 0.5);
   --meter-green: #46b85e;

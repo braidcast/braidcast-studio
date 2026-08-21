@@ -2130,7 +2130,12 @@ export interface ObsMethods {
   // live gate + the current session-log path (SessionLog::CurrentPath); setDebug
   // persists + flips the live gate + emits debug.changed, echoing the applied state;
   // openLogFolder reveals the logs/ directory in the OS file manager.
-  "diagnostics.get": { debug: boolean; logPath: string };
+  //
+  // devToolsPort is the listening CEF remote-debugging port, or 0 when closed. It is
+  // read from CefSettings at CefInitialize, so it is fixed for the session: no event
+  // carries it and one read is enough. debug.changed does NOT include it -- the port
+  // is env-gated at boot and the persisted debug toggle deliberately cannot open it.
+  "diagnostics.get": { debug: boolean; logPath: string; devToolsPort: number };
   "diagnostics.setDebug": { debug: boolean };
   "diagnostics.openLogFolder": { ok: boolean };
 }

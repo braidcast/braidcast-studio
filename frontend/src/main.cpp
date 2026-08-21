@@ -19,6 +19,7 @@
 #include "windowing/app_icon.hpp"
 #include "bridge.hpp"
 #include "client.hpp"
+#include "devtools_port.hpp"
 #include "diag/gpu_diag.hpp"
 #include "gpu_safe_mode.hpp"
 #include "settings/GeneralSettings.hpp"
@@ -322,6 +323,7 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 				ObsBootstrap::RunCalendarSelfTest();
 				ObsBootstrap::RunScheduleSelfTest();
 				ObsBootstrap::RunMcpSelfTest();
+				ObsBootstrap::RunDevToolsPortSelfTest();
 				ObsBootstrap::RunEventSelfTest();
 				ObsBootstrap::RunOverlaySelfTest();
 				ObsBootstrap::RunNativeThemeSelfTest();
@@ -644,6 +646,11 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 		HostLog("[gpu] software rendering forced (disable-gpu marker or persisted safe mode)");
 	}
 
+	// Resolve the remote-debugging opt-in before CefSettings is populated: CEF reads
+	// the port once, at CefInitialize, so there is no later seam. Off unless the
+	// environment names it; see devtools_port.hpp for the grammar and the exposure.
+	const uint16_t devToolsPort = DevToolsPort::DecideAtBoot();
+
 	CefSettings settings;
 	settings.no_sandbox = true;
 	settings.multi_threaded_message_loop = false; // we drive CefRunMessageLoop()
@@ -670,6 +677,18 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 	const std::string cefLog = BraidcastConfigPath("cef_debug.log");
 	if (!cefLog.empty()) {
 		CefString(&settings.log_file).FromString(cefLog);
+	}
+
+	// Leave the field untouched when the opt-in is absent: CefSettings zeroes it, and
+	// via the command-line switch a literal 0 means "pick an ephemeral port" -- close
+	// enough to a different meaning that assigning it unconditionally is not worth it.
+	//
+	// The warning that names what this costs is deliberately NOT here: nothing has
+	// installed the session-log handler yet (ObsBootstrap::Start does, and it runs
+	// after CefInitialize), so a blog() at this point reaches stderr and never lands
+	// on disk. It is emitted from Start() instead, off DevToolsPort::Active().
+	if (devToolsPort != 0) {
+		settings.remote_debugging_port = devToolsPort;
 	}
 
 	if (!CefInitialize(main_args, settings, app.get(), nullptr)) {

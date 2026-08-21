@@ -43,6 +43,7 @@
 #include "chat/ws_client.hpp"
 #include "events/event_hub.hpp"
 #include "events/transport_health.hpp"
+#include "devtools_port.hpp"
 #include "ingest_writeback.hpp"
 #include "log.hpp"
 #include "overlay/overlay_server.hpp"
@@ -11060,10 +11061,16 @@ bool MethodLogGetCurrent(const json & /*params*/, json &result, std::string & /*
 // ---- diagnostics (gated DEBUG channel) -------------------------------------
 
 // The current DEBUG gate + this session's log file path (so the UI can show and
-// open it).
+// open it), plus the CEF remote-debugging port this launch opened -- 0 when none.
+// That last one is not a setting the UI may change: it is decided from the
+// environment at boot and drives a mandatory indicator, because a debug port with
+// no visible sign is how someone opts in once, forgets, and streams for months
+// with it open.
 bool MethodDiagnosticsGet(const json & /*params*/, json &result, std::string & /*error*/)
 {
-	result = json{{"debug", Log::DebugEnabled()}, {"logPath", SessionLog::CurrentPath()}};
+	result = json{{"debug", Log::DebugEnabled()},
+		      {"logPath", SessionLog::CurrentPath()},
+		      {"devToolsPort", DevToolsPort::Active()}};
 	return true;
 }
 

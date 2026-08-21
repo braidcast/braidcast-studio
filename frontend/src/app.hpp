@@ -31,8 +31,10 @@ public:
 	CefRefPtr<CefRenderProcessHandler> GetRenderProcessHandler() override { return this; }
 	// Register the custom app:// scheme in every process before CefInitialize.
 	void OnRegisterCustomSchemes(CefRawPtr<CefSchemeRegistrar> registrar) override;
-	// Append --disable-gpu in software mode (browser process only; Chromium
-	// propagates the choice to the GPU/renderer subprocesses).
+	// Strip any remote-debugging switch the process was launched with, re-append the
+	// debug gate's own port decision, and append --disable-gpu in software mode
+	// (browser process only; Chromium propagates the choices to the GPU/renderer
+	// subprocesses).
 	void OnBeforeCommandLineProcessing(const CefString &process_type,
 					   CefRefPtr<CefCommandLine> command_line) override;
 

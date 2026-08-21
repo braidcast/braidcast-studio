@@ -424,6 +424,14 @@ void RunScheduleSelfTest();
 // executes). Touches no config file (StartForTest does not Save). Gated by the
 // caller to the smoke path.
 void RunMcpSelfTest();
+// Headless proof for the CEF remote-debugging gate: assert the environment-only
+// opt-in resolves closed when nothing names it, that DevToolsPort::Active() (what
+// main.cpp handed CefSettings) agrees with a fresh resolution, and that
+// diagnostics.get carries the same number to the UI indicator. It cannot prove the
+// socket either way -- CefSettings is read once at CefInitialize and a second CEF
+// instance cannot exist in this process -- so only the resolution and the seams
+// that read it are covered. Gated by the caller to the smoke path.
+void RunDevToolsPortSelfTest();
 // Headless proof for the Phase 9.2a events foundation: Ingest three synthetic
 // NormalizedEvents through EventHub -> EventStore -> emit, assert events.list returns
 // them newest-first, that a re-Ingest is deduped (count stays 3), and that a fresh

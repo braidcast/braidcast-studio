@@ -3,6 +3,7 @@
   import { obs } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
   import Icon from "$lib/ui/Icon.svelte";
+  import DebugPortBadge from "$lib/ui/DebugPortBadge.svelte";
   import { WINDOW_ID } from "$lib/utils/windowContext";
 
   interface Props {
@@ -37,6 +38,12 @@ import { EV } from "$lib/utils/eventNames";
       <span class="name">BRAIDCAST</span>
     {/if}
   </div>
+
+  <!-- Beside the brand rather than near the window controls: it belongs to the app's
+       standing state, it sits at the opposite corner from the studio bar's LIVE badge
+       and GO LIVE block, and the flex spacer absorbs its width so appearing after the
+       boot seed cannot shift the controls. -->
+  <DebugPortBadge />
 
   <div class="drag"></div>
 

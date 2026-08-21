@@ -15,7 +15,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <cctype>
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
@@ -36,6 +35,7 @@
 #include "audio/AudioMonitor.hpp"
 #include "bridge.hpp"
 #include "build_info.hpp"
+#include "devtools_port.hpp"
 #include "settings/DiagnosticsSettings.hpp"
 #include "frontend_callbacks.hpp"
 #include "log.hpp"
@@ -109,20 +109,6 @@ std::string BaseNameNoExt(const std::string &filename)
 	return dot == std::string::npos ? filename : filename.substr(0, dot);
 }
 
-// The pure-boolean master grammar: 1/true/on/yes (case-insensitive) are on;
-// everything else -- 0/false/off/no/empty -- is off.
-bool ParseBool(const std::string &raw)
-{
-	std::string v;
-	for (const char c : raw) {
-		if (!std::isspace(static_cast<unsigned char>(c))) {
-			v += c;
-		}
-	}
-	v = StringUtil::ToLower(v);
-	return v == "1" || v == "true" || v == "on" || v == "yes";
-}
-
 // Whether the gpudiag sampler was requested via BRAIDCAST_DEBUG_COMPONENTS;
 // resolved once in Start() and read back by ObsBootstrap::GpuDiagRequested().
 bool g_gpuDiagRequested = false;
@@ -142,7 +128,7 @@ Log::DebugComponents ResolveDebugConfig()
 {
 	bool master;
 	if (const std::optional<std::string> raw = Env::Raw("BRAIDCAST_DEBUG")) {
-		master = ParseBool(*raw);
+		master = StringUtil::ParseBool(*raw);
 	} else {
 		DiagnosticsSettings ds;
 		ds.Load();
@@ -1067,6 +1053,26 @@ bool ObsBootstrap::Start()
 	g_gpuDiagRequested = dbg.gpuDiag;
 	DBG(LogCat::Lifecycle, "bootstrap start (debug categories=0x%x gpudiag=%d)", (unsigned)Log::DebugMask(),
 	    dbg.gpuDiag ? 1 : 0);
+
+	// Every decision about the remote-debugging port was taken before CefInitialize,
+	// back in main.cpp, and this is the first point in the boot where a blog() reaches
+	// the session log -- so the findings queued along the way are flushed here, ahead
+	// of the state summary they explain.
+	DevToolsPort::FlushPendingWarnings();
+
+	if (const uint16_t devToolsPort = DevToolsPort::Active()) {
+		// The port is reported because the gate authorized it, and nothing observed at
+		// runtime is allowed to talk that down: over-reporting an open port is a
+		// harmless false alarm, while under-reporting one is the failure this feature
+		// exists to prevent.
+		blog(LOG_WARNING,
+		     "[devtools] CEF remote debugging is ENABLED on 127.0.0.1:%u. Anything that can reach that "
+		     "port executes arbitrary JavaScript inside the app's webview origin -- the origin holding "
+		     "your connected accounts' OAuth tokens and your resolved stream keys. It is on because "
+		     "BRAIDCAST_DEBUG is set and BRAIDCAST_DEBUG_COMPONENTS names 'devtools'; clearing either "
+		     "and relaunching closes it.",
+		     static_cast<unsigned>(devToolsPort));
+	}
 
 	// One derivation of the boot-time render-debug state, shared with the
 	// obs_set_render_debug call below so the two cannot drift apart at startup.
@@ -4247,6 +4253,62 @@ void ObsBootstrap::RunMcpSelfTest()
 	}
 
 	server.Stop();
+}
+
+void ObsBootstrap::RunDevToolsPortSelfTest()
+{
+	using Bridge::json;
+
+	const uint16_t resolved = DevToolsPort::Resolve();
+	const uint16_t active = DevToolsPort::Active();
+
+	// Resolve() re-reads the environment, so comparing it against itself would prove
+	// nothing. The independent fact is that the opt-in lives in one variable: with
+	// BRAIDCAST_DEBUG_COMPONENTS absent there is no token to name 'devtools', so a
+	// non-zero resolution means something outside that variable opened the port.
+	const bool optInNamed = Env::IsSet("BRAIDCAST_DEBUG_COMPONENTS");
+	const bool closedWithoutOptIn = optInNamed || resolved == 0;
+	// main.cpp resolved the port before CefInitialize and stashed it; a mismatch here
+	// means the boot path and the accessor read different state.
+	const bool stashAgrees = active == resolved;
+
+	json diag;
+	std::string error;
+	const bool got = Bridge::Dispatch("diagnostics.get", json(nullptr), diag, error);
+	const bool fieldPresent = got && diag.is_object() && diag.contains("devToolsPort") &&
+				  diag["devToolsPort"].is_number_unsigned();
+	const bool fieldAgrees = fieldPresent && diag["devToolsPort"].get<uint16_t>() == active;
+	// The one direction that must never fail, stated on its own so a regression names
+	// itself: a gate that authorized a port must never surface as "no port".
+	const bool exposureNotUnderReported = active == 0 ||
+					      (fieldPresent && diag["devToolsPort"].get<uint16_t>() != 0);
+
+	// The opt-in-named check above is only as strong as this machine's environment: with
+	// BRAIDCAST_DEBUG_COMPONENTS set (as .env sets it) it passes whatever Resolve()
+	// returned. These assert the grammar itself, over literals, so they hold on any
+	// machine and would catch a token quietly gaining the devtools capability.
+	const bool devToolsTokenExclusive =
+		!Log::ParseComponents("render").devTools && !Log::ParseComponents("basic").devTools &&
+		!Log::ParseComponents("all").devTools && !Log::ParseComponents("gpudiag").devTools &&
+		Log::ParseComponents("devtools").devTools;
+	const bool masterGrammarStrict = !StringUtil::ParseBool("") && !StringUtil::ParseBool("0") &&
+					 !StringUtil::ParseBool("false") && !StringUtil::ParseBool("maybe") &&
+					 StringUtil::ParseBool("TRUE") && StringUtil::ParseBool(" on ");
+
+	HostLog(std::string("[selftest] devtools grammar -> 'devtools' token exclusive=") +
+		(devToolsTokenExclusive ? "OK" : "false (BUG)") + "; master flag strict=" +
+		(masterGrammarStrict ? "OK" : "false (BUG)") + ". Environment-independent: neither reads a variable.");
+
+	HostLog("[selftest] devtools resolve=" + std::to_string(resolved) + " active=" + std::to_string(active) +
+		" components-var=" + (optInNamed ? "set" : "absent") +
+		" -> closed-without-opt-in=" + (closedWithoutOptIn ? "OK" : "false (BUG)") +
+		"; accessor-agrees=" + (stashAgrees ? "OK" : "false (BUG)") + "; diagnostics.get devToolsPort=" +
+		(fieldAgrees ? "OK" : (fieldPresent ? "mismatch (BUG)" : "MISSING (BUG)")) +
+		"; exposure-not-under-reported=" + (exposureNotUnderReported ? "OK" : "false (BUG)") +
+		". Proves the resolution and the seams that read it ONLY -- whether a socket is "
+		"listening is not asserted by anything, here or at boot. Nothing checks it: this "
+		"runs inside the process that owns the port, so a probe from here could not "
+		"answer the question independently anyway.");
 }
 
 void ObsBootstrap::RunEventSelfTest()
