@@ -277,7 +277,11 @@ bool BrokerStrategy::RefreshOnce(OAuthAccount &acct, std::string &err, RefreshFa
 	req.contentType = "application/x-www-form-urlencoded";
 	req.body = body;
 
+	const auto requestStart = std::chrono::steady_clock::now();
 	const Http::HttpResponse resp = Http::HttpRequest(req);
+	const long long elapsedMs =
+		std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - requestStart)
+			.count();
 	if (resp.status == 0) {
 		kind = ClassifyRefreshFailure(0, std::string());
 		err = "token refresh failed: " + resp.error;
@@ -308,6 +312,9 @@ bool BrokerStrategy::RefreshOnce(OAuthAccount &acct, std::string &err, RefreshFa
 	// A refresh that succeeds proves the credential is alive, so it retires any earlier
 	// dead verdict (e.g. the token was revoked, then the user relinked out of band).
 	acct.refreshDead = false;
+	DBG(LogCat::OAuth, "refresh succeeded (platform %s, http=%d, latency=%lldms, valid_for=%llds)",
+	    config_.platform.c_str(), resp.status, elapsedMs,
+	    static_cast<long long>(acct.expireTime - static_cast<int64_t>(time(nullptr))));
 	return true;
 }
 
@@ -332,7 +339,9 @@ bool BrokerStrategy::ensureFresh(OAuthAccount &acct, std::string &err, bool forc
 	}
 
 	const int64_t skew = 5;
-	if (!force && static_cast<int64_t>(time(nullptr)) <= acct.expireTime - skew) {
+	if (const int64_t now = static_cast<int64_t>(time(nullptr)); !force && now <= acct.expireTime - skew) {
+		DBG(LogCat::OAuth, "ensureFresh: still valid (account %s, expires in %llds)", AccountId(acct).c_str(),
+		    static_cast<long long>(acct.expireTime - now));
 		return true;
 	}
 
@@ -344,7 +353,9 @@ bool BrokerStrategy::ensureFresh(OAuthAccount &acct, std::string &err, bool forc
 	if (const std::optional<OAuthAccount> stored = Accounts().Get(accountId)) {
 		acct = *stored;
 	}
-	if (!force && static_cast<int64_t>(time(nullptr)) <= acct.expireTime - skew) {
+	if (const int64_t now = static_cast<int64_t>(time(nullptr)); !force && now <= acct.expireTime - skew) {
+		DBG(LogCat::OAuth, "ensureFresh: still valid after re-read (account %s, expires in %llds)",
+		    accountId.c_str(), static_cast<long long>(acct.expireTime - now));
 		return true;
 	}
 	// Forced (reactive-401) path: if a peer rotated the token while we waited on the
@@ -353,8 +364,12 @@ bool BrokerStrategy::ensureFresh(OAuthAccount &acct, std::string &err, bool forc
 	// rotation could invalidate the peer's in-flight access token (and burns an extra
 	// rotation on providers that rotate their refresh token per refresh, e.g. Kick).
 	if (force && !priorAccess.empty() && acct.access != priorAccess) {
+		DBG(LogCat::OAuth, "ensureFresh: peer already rotated token, skipping refresh (account %s)",
+		    accountId.c_str());
 		return true;
 	}
+	DBG(LogCat::OAuth, "ensureFresh: refreshing (account %s, force=%d, expires in %llds)", accountId.c_str(),
+	    (int)force, static_cast<long long>(acct.expireTime - static_cast<int64_t>(time(nullptr))));
 	RefreshFailureKind kind = RefreshFailureKind::Transient;
 	if (!RefreshOnce(acct, err, kind)) {
 		if (kind == RefreshFailureKind::Dead) {
