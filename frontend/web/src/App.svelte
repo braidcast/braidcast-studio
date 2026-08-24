@@ -32,7 +32,7 @@
   import GoLiveModal from "$lib/dialogs/golive/GoLiveModal.svelte";
   import { goLiveModal } from "$lib/dialogs/golive/goLiveModalOpener.svelte";
   import CollectionDialog, { type DialogSpec } from "$lib/dialogs/CollectionDialog.svelte";
-  import { planFile, planText, createDropped, type DropPlan } from "$lib/dialogs/add-source/dropSource";
+  import { planFile, planText, createDropped, INTERNAL_DRAG_TYPE, type DropPlan } from "$lib/dialogs/add-source/dropSource";
   import { undoStore } from "$lib/stores/undoStore.svelte";
   import { channelsStore } from "$lib/stores/channelsStore.svelte";
   import { diagnosticsStore } from "$lib/stores/diagnosticsStore.svelte";
@@ -288,6 +288,10 @@ import { EV } from "$lib/utils/eventNames";
     e.preventDefault();
     const dt = e.dataTransfer;
     if (!dt) return;
+    // An internal reorder drag (scene/source/canvas-item/filter row) bubbling from a
+    // row-level drop that only preventDefaults, not stopPropagation — it must not be
+    // read as a dropped file/URL/text.
+    if (dt.types.includes(INTERNAL_DRAG_TYPE)) return;
     // Files take precedence over the synthetic uri-list/plain text a file drag also
     // carries. planFile returns null when this build hides File.path (see dropSource).
     const files = Array.from(dt.files) as (File & { path?: string })[];
