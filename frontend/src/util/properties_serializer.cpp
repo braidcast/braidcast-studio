@@ -259,11 +259,15 @@ void SerializeValue(obs_property_t *prop, obs_data_t *settings, json &out)
 	}
 	case OBS_PROPERTY_FONT:
 	case OBS_PROPERTY_FRAME_RATE: {
-		// Composite obj-valued types: emit the raw obs_data sub-object as JSON
-		// so the UI can at least display it (full editing is a TODO).
+		// Composite obj-valued types: emit the obs_data sub-object as JSON.
+		// _with_defaults is load-bearing, not a preference: a freshly created
+		// source's font sub-object holds only defaults (obs-text sets face and
+		// size via obs_data_set_default_*), and plain obs_data_get_json skips
+		// any item without a user value -- yielding "{}" and a blank form while
+		// the source itself renders in the defaulted font.
 		obs_data_t *obj = obs_data_get_obj(settings, name);
 		if (obj) {
-			const char *raw = obs_data_get_json(obj);
+			const char *raw = obs_data_get_json_with_defaults(obj);
 			out["value"] = raw ? json::parse(raw, nullptr, false) : json(nullptr);
 			obs_data_release(obj);
 		} else {
