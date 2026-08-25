@@ -38,6 +38,7 @@ export const WIDGET_TYPES: WidgetTypeSpec[] = [
   { type: "uptime", label: "Stream Uptime", name: "New Stream Uptime", tests: ["stream"] },
   { type: "wheretowatch", label: "Where to Watch", name: "New Where to Watch", tests: ["stream"] },
   { type: "chatleaderboard", label: "Chat Leaderboard", name: "New Chat Leaderboard", tests: ["chat", "clear"] },
+  { type: "countdown", label: "Countdown", name: "New Countdown", tests: [] },
 ];
 
 const BY_TYPE = new Map(WIDGET_TYPES.map((w) => [w.type, w]));
