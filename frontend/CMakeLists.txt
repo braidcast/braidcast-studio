@@ -74,6 +74,9 @@ target_sources(
     src/bridge.cpp
     src/bridge.hpp
     src/event_names.hpp
+    # Installed system font families (DirectWrite), behind the fonts.list bridge method.
+    src/fonts.cpp
+    src/fonts.hpp
     src/util/env_config.cpp
     src/util/env_config.hpp
     src/util/file_util.hpp
@@ -521,6 +524,8 @@ target_link_libraries(
     # RtwqStartup/RtwqShutdown (Media Foundation Real-Time Work Queue) in the
     # Windows process-hardening preamble.
     RTWorkQ
+    # DWriteCreateFactory (system font-family enumeration) behind fonts.list.
+    dwrite
 )
 
 # CEF's /DELAYLOAD list (from SET_EXECUTABLE_TARGET_PROPERTIES) names DLLs this

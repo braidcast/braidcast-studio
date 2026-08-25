@@ -1725,6 +1725,11 @@ export interface ObsMethods {
   "properties.set": PropertiesResult;
   "properties.defaults": PropertiesResult;
   "properties.button": PropertiesResult;
+  // Installed font families, sorted case-insensitively and deduplicated; empty when the
+  // system font collection could not be read. No params. The host enumerates on the
+  // first call of a session and holds the answer, so a font installed mid-session is
+  // not offered until the next launch.
+  "fonts.list": { families: string[] };
   // Native OS file dialog (path / editable_list Browse). `mode` picks an open,
   // save, or directory chooser; `filter` is an OBS-style filter string. Returns
   // { path: null } when the user cancels.

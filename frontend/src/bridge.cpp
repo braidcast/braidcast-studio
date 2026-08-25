@@ -44,6 +44,7 @@
 #include "events/event_hub.hpp"
 #include "events/transport_health.hpp"
 #include "devtools_port.hpp"
+#include "fonts.hpp"
 #include "ingest_writeback.hpp"
 #include "log.hpp"
 #include "overlay/overlay_server.hpp"
@@ -5504,6 +5505,17 @@ bool MethodPropertiesButton(const json &params, json &result, std::string &error
 	const bool ok = BuildPropertiesResult(kind, obj, result, error);
 	kind->release(obj);
 	return ok;
+}
+
+// The installed font families, for the suggestion list behind every font field. On the
+// async lane: the first call walks the whole system font collection, which is seconds of
+// work on a large library, and TID_UI is where the CEF shell and the child-HWND previews
+// are pumped. Later calls only read the cache Fonts::ListFamilies holds, but they take
+// the same lane -- which caller pays the walk is not knowable here.
+bool MethodFontsList(const json & /*params*/, json &result, std::string & /*error*/)
+{
+	result = json{{"families", Fonts::ListFamilies()}};
+	return true;
 }
 
 // --- source filters ----------------------------------------------------------
@@ -13071,9 +13083,9 @@ void Init()
 	};
 
 	// Methods whose bodies block go on the async lane (libcurl platform calls, the
-	// overlay server's socket sends): they run off-thread and resolve the CEF
-	// callback later (same JS contract). Each body is the existing MethodFn, driven
-	// off-thread by RunAsyncMethod.
+	// overlay server's socket sends, the system font-collection walk): they run
+	// off-thread and resolve the CEF callback later (same JS contract). Each body is
+	// the existing MethodFn, driven off-thread by RunAsyncMethod.
 	g_asyncMethods = {
 		{"oauth.targets",
 		 [](const json &p, CefRefPtr<CefMessageRouterBrowserSide::Callback> cb) {
@@ -13102,6 +13114,10 @@ void Init()
 		{"overlays.test",
 		 [](const json &p, CefRefPtr<CefMessageRouterBrowserSide::Callback> cb) {
 			 RunAsyncMethod("overlays.test", p, cb, MethodOverlaysTest);
+		 }},
+		{"fonts.list",
+		 [](const json &p, CefRefPtr<CefMessageRouterBrowserSide::Callback> cb) {
+			 RunAsyncMethod("fonts.list", p, cb, MethodFontsList);
 		 }},
 	};
 

@@ -1,7 +1,26 @@
 <script lang="ts">
   import type { ControlProps } from "$lib/properties/controls";
   import type { FontProperty, FontValue } from "$lib/api/bridge";
+  import FontDatalist from "$lib/ui/FontDatalist.svelte";
   let { prop, value, onChange }: ControlProps = $props();
+
+  // Per mounted control: a properties view renders one of these per font property, and
+  // two of them sharing an id would point both inputs at the first list in the document.
+  //
+  // Per control rather than hoisted to one list per form, which is what the overlay
+  // fields panel does with its own: that panel holds its whole flat schema in one
+  // component, so hoisting there costs nothing, while every control here is reached
+  // through the single ControlProps contract (controls.ts) and through GroupControl's
+  // recursion -- so a form-level list would have to thread an id down both, past eleven
+  // controls with no use for it, to remove a duplicate libobs does not produce anyway: a
+  // source declares one font property at most.
+  const faceListId = $props.id();
+
+  // PropertyRow renders the property's label as an unassociated <div>, so this input has
+  // no accessible name of its own; `list` also promotes it to a combobox, which is worse
+  // to land on unnamed than a textbox was. Qualified, because the row's label names the
+  // whole font property while this input is only its family.
+  const faceLabel = $derived(`${prop.label ?? prop.name} family`);
 
   // flags bitmask: BOLD=1, ITALIC=2, UNDERLINE=4, STRIKEOUT=8.
   const BOLD = 1,
@@ -35,16 +54,20 @@
 
 <div class="font" title={prop.long_description ?? ""}>
   <div class="row">
-    <!-- Offline system-font enumeration isn't available in CEF, so face is a
-         free-text field for the MVP rather than a picker of installed families. -->
+    <!-- Free text with the installed families as suggestions, not a picker: libobs takes
+         whatever name is typed, and a font the host could not enumerate must stay
+         reachable. -->
     <input
       class="face"
       type="text"
       placeholder="font family"
+      aria-label={faceLabel}
+      list={faceListId}
       value={face}
       disabled={!prop.enabled}
       oninput={(e) => emit({ face: (e.currentTarget as HTMLInputElement).value })}
     />
+    <FontDatalist id={faceListId} />
     <input
       class="size"
       type="number"

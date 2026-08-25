@@ -15,8 +15,9 @@
   // in fieldTypes.ts. Settings stay immutable: each edit builds the next map through
   // withOverride and hands it to onChange, which the page debounces into overlays.update.
   import { obs, type OverlayField } from "$lib/api/bridge";
-  import { FIELD_TYPES, withOverride } from "$lib/overlays/fieldTypes";
+  import { specFor, suggestsFonts, withOverride } from "$lib/overlays/fieldTypes";
   import CssColorInput from "$lib/ui/CssColorInput.svelte";
+  import FontDatalist from "$lib/ui/FontDatalist.svelte";
   import Icon from "$lib/ui/Icon.svelte";
   import ToggleSwitch from "$lib/ui/ToggleSwitch.svelte";
 
@@ -34,6 +35,16 @@
 
   let uploadingKey = $state<string | null>(null);
   let uploadError = $state<string | null>(null);
+
+  // ONE font list per panel, shared by every font row in it: a datalist answers to any
+  // number of inputs, and a schema is free to declare several font fields. Hoisting is
+  // free here because this component already holds the whole flat schema; the properties
+  // form mounts one per control instead, for the reason FontControl states.
+  // Per-instance because the editor can render a panel in more than one place at once.
+  const fontListId = $props.id();
+  // Mounted only where a field asks for it, so opening a widget with no font field never
+  // makes the host enumerate the system font collection.
+  const wantsFonts = $derived(schema.some((f) => suggestsFonts(specFor(f))));
 
   function isOverridden(f: OverlayField): boolean {
     return Object.hasOwn(settings, f.key);
@@ -115,14 +126,10 @@
   <!-- Keyed by widget + position rather than by field key: a hand-edited document can
        carry the same key twice, which a key-keyed block reads as a collision and throws
        on, and folding the widget id in tears the rows down when the selection changes so
-       no uncontrolled file input carries its filename across.
-
-       `type` arrives from a passthrough JSON document the user can hand-edit, so the
-       Record's key type does not bind it at runtime; an unrecognized type reads as text
-       rather than taking the whole panel down with it. -->
+       no uncontrolled file input carries its filename across. -->
   <ul class="flist">
     {#each schema as f, i (widgetId + ":" + i)}
-      {@const spec = FIELD_TYPES[f.type] ?? FIELD_TYPES.text}
+      {@const spec = specFor(f)}
       {@const name = f.label || f.key}
       {@const placeholder = spec.control === "text" ? (spec.placeholder ?? "") : ""}
       {@const set = isOverridden(f)}
@@ -189,6 +196,7 @@
               class="ftext"
               type="text"
               {placeholder}
+              list={suggestsFonts(spec) ? fontListId : undefined}
               value={asText(value)}
               aria-label={name}
               oninput={(e) => setValue(f, e.currentTarget.value)}
@@ -213,6 +221,10 @@
       </li>
     {/each}
   </ul>
+
+  {#if wantsFonts}
+    <FontDatalist id={fontListId} />
+  {/if}
 </div>
 
 <style>

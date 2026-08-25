@@ -34,6 +34,16 @@ inline bool EqualsCI(const std::string &a, const std::string &b)
 	       });
 }
 
+// Case-insensitive ordering, the strict-weak counterpart to EqualsCI. What a list of
+// names shown to a user is sorted by: byte order files "Arial" and "arial" apart, which
+// reads as two entries for one thing.
+inline bool LessCI(const std::string &a, const std::string &b)
+{
+	return std::lexicographical_compare(a.begin(), a.end(), b.begin(), b.end(), [](char x, char y) {
+		return std::tolower(static_cast<unsigned char>(x)) < std::tolower(static_cast<unsigned char>(y));
+	});
+}
+
 // Lowercase every character, byte by byte. The unsigned-char cast is the whole point
 // of having this in one place: std::tolower takes an int and is undefined for a
 // negative one, which is exactly what a signed char holding UTF-8 continuation bytes
