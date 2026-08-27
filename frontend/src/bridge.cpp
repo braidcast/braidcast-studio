@@ -121,6 +121,10 @@ namespace {
 static bool RequireStr(const json &params, const char *method, const char *key, std::string &out, std::string &error);
 static bool RequireObject(const json &params, const char *method, std::string &error);
 
+// Announces a renamed source to every canvas that lists it (defined below, with the
+// scene-item emitters); forward-declared so the scene handlers above it can call it.
+void EmitSceneItemsChangedForSource(obs_source_t *src);
+
 // One method: (params) -> (result | error). Returns false and fills `error` on
 // failure. Runs on the browser UI thread.
 using MethodFn = std::function<bool(const json &params, json &result, std::string &error)>;
@@ -1630,6 +1634,10 @@ bool MethodScenesRename(const json &params, json &result, std::string &error)
 		return false;
 	}
 	obs_source_set_name(source, to.c_str());
+	// A scene can itself be an item in another scene, and dock rows address items by
+	// name -- so a nested scene needs the same per-canvas announcement a renamed
+	// source does, not just the scene-list refresh.
+	EmitSceneItemsChangedForSource(source);
 	obs_source_release(source);
 
 	EmitScenesChanged(std::string());
