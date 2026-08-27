@@ -8,6 +8,7 @@
   import Icon from "$lib/ui/Icon.svelte";
   import Avatar from "$lib/ui/Avatar.svelte";
   import PlatformMark from "$lib/ui/PlatformMark.svelte";
+  import CanvasMark from "$lib/ui/CanvasMark.svelte";
   import DestinationChips, { type DestinationChipStatus } from "$lib/ui/DestinationChips.svelte";
   import { EVENTS_STATE_NOTE, eventsTransportFor } from "$lib/ui/destinationHealth";
   import {
@@ -325,7 +326,17 @@
                   <Avatar url={o.avatarUrl} name={o.channel} size={14} />
                   <span class="ochannel">{o.channel}</span>
                   <span class="osep" aria-hidden="true">›</span>
-                  <span class="ocanvas" class:state={!o.named}>{o.canvasLabel}</span>
+                  {#if o.named}
+                    <CanvasMark
+                      number={o.canvasNumber}
+                      name={o.canvasLabel}
+                      width={o.canvasWidth}
+                      height={o.canvasHeight}
+                      size={14}
+                    />
+                  {:else}
+                    <span class="ocanvas state">{o.canvasLabel}</span>
+                  {/if}
                 </div>
               {/if}
             {/if}
@@ -449,17 +460,13 @@
     flex: 0 0 auto;
     color: var(--color-muted);
   }
+  /* Only ever a state word now -- a named canvas renders as a CanvasMark. Mono and
+     unbolded so "channel-wide" never reads as something the user named. */
   .ocanvas {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: var(--color-text);
-    font-weight: 500;
-  }
-  /* A state word, not a canvas name -- mono and unbolded so "channel-wide" never
-     reads as something the user named. */
-  .ocanvas.state {
     font-family: var(--font-mono);
     font-size: 9px;
     letter-spacing: 0.06em;

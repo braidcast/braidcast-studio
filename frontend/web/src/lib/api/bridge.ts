@@ -381,6 +381,10 @@ export interface CanvasColor {
 export interface CanvasInfo {
   uuid: string;
   name: string;
+  /** Permanent short label for this canvas, assigned once and never reused, so a
+   * number keeps meaning the same canvas for as long as the event/chat scrollback
+   * that stamps it. Deleting a canvas leaves a gap rather than renumbering. */
+  number: number;
   isDefault: boolean;
   baseWidth: number;
   baseHeight: number;

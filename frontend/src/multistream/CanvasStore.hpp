@@ -42,6 +42,18 @@ public:
 	// anything (caller should Save()).
 	bool EnsureDefaultEncoders();
 
+	// Give every canvas its permanent number, filling only the unassigned ones.
+	// Called by FromJson, so every path that installs a model establishes the
+	// invariant and no call site can forget it. Returns true if it assigned any.
+	bool AssignNumbers();
+
+	// Did the last model install have to assign numbers -- i.e. did it read a store
+	// written before numbers existed? The assignment lives in memory either way; this
+	// is what tells the caller to write it back, and writing it back is what stops a
+	// later reorder from handing a canvas a different number than the scrollback
+	// already named it by.
+	bool NumbersMigrated() const { return numbersMigrated; }
+
 	// The returned reference/pointer is invalidated by any subsequent Add/Remove/Load.
 	CanvasDefinition *Find(const std::string &uuid);
 	CanvasDefinition &Add(CanvasDefinition def); // assigns uuid if empty
@@ -58,6 +70,7 @@ public:
 
 private:
 	void EnsureDefault(); // append a 1080p60 Default if none present
+	bool numbersMigrated = false;
 
 	std::vector<CanvasDefinition> definitions;
 };

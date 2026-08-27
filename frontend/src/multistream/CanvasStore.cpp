@@ -4,6 +4,9 @@
 
 #include "uuid_util.hpp"
 
+#include <algorithm>
+#include <set>
+
 std::string CanvasStore::FilePath()
 {
 	return MultistreamBasicPath("canvases.json");
@@ -31,6 +34,7 @@ void CanvasStore::FromJson(const nlohmann::json &j)
 	}
 
 	EnsureDefault();
+	numbersMigrated = AssignNumbers();
 }
 
 void CanvasStore::Load()
@@ -56,8 +60,45 @@ void CanvasStore::EnsureDefault()
 	CanvasDefinition def;
 	def.isDefault = true;
 	def.name = "Main";
+	def.number = 1;
 	def.uuid = UuidUtil::New();
 	definitions.insert(definitions.begin(), std::move(def));
+}
+
+bool CanvasStore::AssignNumbers()
+{
+	std::set<uint32_t> used;
+	for (const CanvasDefinition &def : definitions) {
+		if (def.number != 0) {
+			used.insert(def.number);
+		}
+	}
+
+	bool changed = false;
+	// The base canvas takes 1 wherever 1 is still free. It is the one canvas every
+	// install has and none can remove, so pinning it costs nothing and makes the
+	// lowest number mean the same thing on every machine. Where a migrated store has
+	// already given 1 away, the base canvas just takes its turn below rather than
+	// renumbering a canvas whose number is already on screen.
+	for (CanvasDefinition &def : definitions) {
+		if (def.isDefault && def.number == 0 && used.insert(1).second) {
+			def.number = 1;
+			changed = true;
+			break;
+		}
+	}
+
+	// From the highest ever issued, not from the count: a number belonging to a
+	// deleted canvas must never come back, or the scrollback that still names it
+	// would start pointing at a different canvas.
+	uint32_t highest = used.empty() ? 0 : *used.rbegin();
+	for (CanvasDefinition &def : definitions) {
+		if (def.number == 0) {
+			def.number = ++highest;
+			changed = true;
+		}
+	}
+	return changed;
 }
 
 bool CanvasStore::EnsureDefaultEncoders()
@@ -128,6 +169,13 @@ CanvasDefinition &CanvasStore::Add(CanvasDefinition def)
 {
 	if (def.uuid.empty()) {
 		def.uuid = UuidUtil::New();
+	}
+	if (def.number == 0) {
+		uint32_t highest = 0;
+		for (const CanvasDefinition &d : definitions) {
+			highest = std::max(highest, d.number);
+		}
+		def.number = highest + 1;
 	}
 	definitions.push_back(std::move(def));
 	return definitions.back();

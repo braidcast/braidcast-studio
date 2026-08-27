@@ -56,6 +56,13 @@ export interface DestinationIdentity {
    * canvas label is the bug this whole surface exists to remove. Null with a non-null
    * `canvasUuid` means the canvas list has not loaded yet, or the canvas is gone. */
   canvasName: string | null;
+  /** The canvas's permanent number, and the encode size the canvas mark reads its
+   * orientation from. 0 wherever `canvasName` is null -- same absence, so a caller
+   * that has already decided not to name a canvas needs no second test. Carried here
+   * rather than re-joined per row: this store already holds the canvas object.  */
+  canvasNumber: number;
+  canvasWidth: number;
+  canvasHeight: number;
   /** The enabled binding, for joining multistreamStatusStore.statusByBinding without
    * re-deriving that store's state reduction here. */
   bindingUuid: string | null;
@@ -206,6 +213,9 @@ class DestinationIdentityStore {
       displayName: channelName || profileLabel || "Untitled destination",
       canvasUuid: binding?.canvasUuid ?? null,
       canvasName: canvas?.name ?? null,
+      canvasNumber: canvas?.number ?? 0,
+      canvasWidth: canvas?.outputWidth ?? 0,
+      canvasHeight: canvas?.outputHeight ?? 0,
       bindingUuid: binding?.uuid ?? null,
       boundButDisabled: !binding && this.#boundProfiles.has(p.uuid),
     };

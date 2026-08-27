@@ -33,6 +33,7 @@ import { EV } from "$lib/utils/eventNames";
   import ContextMenu, { type ContextMenuItem, type ContextMenuItems } from "$lib/menus/ContextMenu.svelte";
   import { destinationFailureToast } from "$lib/ui/destinationArming.svelte";
   import Icon from "$lib/ui/Icon.svelte";
+  import CanvasMark from "$lib/ui/CanvasMark.svelte";
   import StaleNotice from "$lib/ui/StaleNotice.svelte";
   import {
     showMetadataMismatchToast,
@@ -858,6 +859,14 @@ import { EV } from "$lib/utils/eventNames";
           onclick={() => toggleCanvasChip(c)}
         >
           <span class="dockdot" class:on={docked}></span>
+          <CanvasMark
+            number={c.number}
+            name={c.name}
+            width={c.outputWidth}
+            height={c.outputHeight}
+            size={20}
+            title={c.name + " is canvas " + c.number + " in the events and chat feeds"}
+          />
           <span class="chip-body">
             <span class="chip-name">{c.name}</span>
             <span class="chip-sub">{c.outputWidth}×{c.outputHeight} · {Math.round(c.fpsNum / c.fpsDen)}</span>

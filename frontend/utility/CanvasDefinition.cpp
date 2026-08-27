@@ -87,6 +87,7 @@ OBSDataAutoRelease CanvasDefinition::ToData() const
 	obs_data_set_string(d, "uuid", uuid.c_str());
 	obs_data_set_string(d, "name", name.c_str());
 	obs_data_set_bool(d, "is_default", isDefault);
+	obs_data_set_int(d, "number", number);
 
 	obs_data_set_int(d, "width", width);
 	obs_data_set_int(d, "height", height);
@@ -121,6 +122,9 @@ CanvasDefinition CanvasDefinition::FromData(obs_data_t *data)
 	def.uuid = obs_data_get_string(data, "uuid");
 	def.name = obs_data_get_string(data, "name");
 	def.isDefault = obs_data_get_bool(data, "is_default");
+	/* Absent in any store written before numbers existed; 0 is the "unassigned"
+	 * sentinel AssignNumbers fills in, not a number a canvas can legitimately hold. */
+	def.number = (uint32_t)obs_data_get_int(data, "number");
 
 	/* obs_data_get_* return 0/"" for absent keys; guard resolution so a malformed
 	 * entry can't create a 0x0 canvas. */

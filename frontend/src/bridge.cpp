@@ -6006,6 +6006,7 @@ json CanvasToJson(const CanvasDefinition &def)
 	return json{
 		{"uuid", def.uuid},
 		{"name", def.name},
+		{"number", def.number},
 		{"isDefault", def.isDefault},
 		{"baseWidth", def.width},
 		{"baseHeight", def.height},

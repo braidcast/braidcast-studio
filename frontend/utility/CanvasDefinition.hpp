@@ -34,6 +34,16 @@ struct CanvasDefinition {
 	std::string name;
 	bool isDefault = false; // the immutable base canvas
 
+	/* Short stable label, shown wherever a canvas has to be named in a space too
+	 * tight for its name -- the events feed and the chat feed stamp every row with
+	 * it. Assigned once by CanvasStore and never reused, so a number keeps meaning
+	 * the same canvas for as long as the scrollback that mentions it: a positional
+	 * index could not, since deleting or reordering a canvas would silently
+	 * repoint every row already written. Deletions therefore leave gaps, which is
+	 * the honest reading. 0 means unassigned -- only briefly, before
+	 * CanvasStore::AssignNumbers runs over a store persisted before this existed. */
+	uint32_t number = 0;
+
 	uint32_t width = 1920;
 	uint32_t height = 1080;
 	uint32_t outputWidth = 0;  // scaled encode size; 0 = mirror base width

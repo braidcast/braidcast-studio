@@ -127,6 +127,11 @@ export interface Attribution {
   canvasLabel: string;
   /** canvasLabel is a real canvas name rather than a state word. */
   named: boolean;
+  /** The canvas's number and encode size, for the canvas mark. All 0 unless `named`:
+   * a row that will not name a canvas has no canvas to draw either. */
+  canvasNumber: number;
+  canvasWidth: number;
+  canvasHeight: number;
   /** How many destinations share this channel; the canvas earns row width only where
    * it disambiguates. */
   siblings: number;
@@ -144,6 +149,9 @@ function fromDestination(
     avatarUrl: d.channelAvatarUrl,
     canvasLabel: named ? (d.canvasName ?? ABSENT_LABEL) : fidelity === "wide" ? CHANNEL_WIDE : ABSENT_LABEL,
     named,
+    canvasNumber: named ? d.canvasNumber : 0,
+    canvasWidth: named ? d.canvasWidth : 0,
+    canvasHeight: named ? d.canvasHeight : 0,
     siblings: destByAccount.get(d.accountId)?.length ?? 1,
   };
 }
@@ -178,6 +186,9 @@ export function attribute(
     avatarUrl: "",
     canvasLabel: ABSENT_LABEL,
     named: false,
+    canvasNumber: 0,
+    canvasWidth: 0,
+    canvasHeight: 0,
     siblings: 0,
   };
 }

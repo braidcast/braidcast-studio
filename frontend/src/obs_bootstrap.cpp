@@ -726,7 +726,12 @@ History::HealthSample SampleFromSnapshot(const Bridge::json &snapshot)
 void LoadMultistreamModel()
 {
 	g_canvases.Load();
-	if (g_canvases.EnsureDefaultEncoders()) {
+	// EnsureDefaultEncoders first and unconditionally: it is the one with the side
+	// effect, so it must not sit behind a short-circuit. Load() has already numbered
+	// whatever came back unnumbered; writing that back is what keeps the number stable
+	// against a later reorder.
+	const bool seededEncoders = g_canvases.EnsureDefaultEncoders();
+	if (seededEncoders || g_canvases.NumbersMigrated()) {
 		g_canvases.Save();
 	}
 	g_streamProfiles.Load();

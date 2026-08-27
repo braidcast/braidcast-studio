@@ -12,6 +12,7 @@
   import Icon from "$lib/ui/Icon.svelte";
   import Avatar from "$lib/ui/Avatar.svelte";
   import PlatformMark from "$lib/ui/PlatformMark.svelte";
+  import CanvasMark from "$lib/ui/CanvasMark.svelte";
   import DestinationChips, { type DestinationChipStatus } from "$lib/ui/DestinationChips.svelte";
   import {
     ALL_DESTINATIONS,
@@ -524,7 +525,17 @@
                   {#if o.fidelity !== "none"}
                     <Avatar url={o.avatarUrl} name={o.channel} size={15} />
                     {#if !o.named || o.siblings >= 2}
-                      <span class="ocanvas" class:state={!o.named}>{o.canvasLabel}</span>
+                      {#if o.named}
+                        <CanvasMark
+                          number={o.canvasNumber}
+                          name={o.canvasLabel}
+                          width={o.canvasWidth}
+                          height={o.canvasHeight}
+                          size={13}
+                        />
+                      {:else}
+                        <span class="ocanvas">{o.canvasLabel}</span>
+                      {/if}
                     {/if}
                   {/if}
                 </span>
@@ -685,18 +696,14 @@
     gap: 3px;
     min-width: 0;
   }
+  /* Only ever a state word now -- a named canvas renders as a CanvasMark. Mono and
+     dimmer so "channel-wide" never reads as something the user named. */
   .ocanvas {
     min-width: 0;
     max-width: 10ch;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: 10px;
-    color: var(--color-dim);
-  }
-  /* A state word, not a canvas name -- mono and dimmer so "channel-wide" never reads
-     as something the user named. */
-  .ocanvas.state {
     font-family: var(--font-mono);
     font-size: 9px;
     letter-spacing: 0.06em;
