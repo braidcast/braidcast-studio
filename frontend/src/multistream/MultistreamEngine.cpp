@@ -925,6 +925,13 @@ void MultistreamEngine::OnOutputStop(void *data, calldata_t *cd)
 	const char *lastError = calldata_string(cd, "last_error");
 	std::string canvasUuid;
 	std::string bindingUuid;
+	/* Only an UNREQUESTED stop matches here. obs_output_stop is asynchronous -- it
+	 * signals the send thread and returns -- while StopOutput/StopAll reap the
+	 * LiveOutput as soon as it returns, disconnecting this handler before the stop
+	 * signal arrives. Those two paths therefore do their own state and callback work
+	 * rather than relying on this one. Anything that must be reported for EVERY stop
+	 * belongs in libobs' own per-output summary, which is keyed by the output name
+	 * (multistream_out_<binding>) and already prints unconditionally. */
 	{
 		std::lock_guard<std::mutex> lock(self->liveMutex);
 		for (auto &lo : self->live) {
@@ -941,19 +948,6 @@ void MultistreamEngine::OnOutputStop(void *data, calldata_t *cd)
 				} else {
 					lo->state = State::Idle;
 					DBG(LogCat::Net, "rtmp stopped cleanly (binding %s)", lo->bindingUuid.c_str());
-					/* libobs only logs a drop summary when frames were actually
-					 * dropped, so a clean session is silent -- "no drops" then
-					 * reads as absence, not confirmation. Emit an unconditional
-					 * per-output summary so the log positively states the result. */
-					const int totalFrames = obs_output_get_total_frames(out);
-					const int droppedFrames = obs_output_get_frames_dropped(out);
-					const double droppedPct =
-						totalFrames > 0 ? (double)droppedFrames / (double)totalFrames * 100.0
-								: 0.0;
-					blog(LOG_INFO,
-					     "Multistream: output stopped cleanly (binding %s, canvas %s) -- %d/%d frames dropped (%.2f%%)",
-					     lo->bindingUuid.c_str(), lo->canvasUuid.c_str(), droppedFrames,
-					     totalFrames, droppedPct);
 				}
 				break;
 			}
