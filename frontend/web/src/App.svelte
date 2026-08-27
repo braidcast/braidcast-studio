@@ -293,10 +293,8 @@ import { EV } from "$lib/utils/eventNames";
   let dropConfirm = $state<DialogSpec | null>(null);
   async function onWindowDrop(e: DragEvent): Promise<void> {
     e.preventDefault();
-    // dragend clears the flag for the normal case. It's also read and cleared here,
-    // synchronously before any await: a drag source removed from the DOM mid-drag can
-    // skip dragend, so clearing only there risks a stuck flag that would silently
-    // disable real external drops for the rest of the session.
+    // Read and cleared synchronously before any await, so a drag whose dragend never
+    // arrives at all costs one swallowed drop rather than latching for the session.
     const wasInternal = internalDrag;
     internalDrag = false;
     if (wasInternal) return;
@@ -357,10 +355,14 @@ import { EV } from "$lib/utils/eventNames";
     window.addEventListener("wheel", onWheel, { passive: false });
     window.addEventListener("dragover", onDragOver);
     window.addEventListener("drop", onWindowDrop);
-    const onDragStartCapture = () => (internalDrag = true);
-    const onDragEndCapture = () => (internalDrag = false);
+    // dragend always fires at the source node, so the clear rides on that node rather
+    // than on a window listener: a node detached mid-drag — a keyed list re-rendering
+    // under the drag — no longer has a path to window, and the flag would latch.
+    const onDragStartCapture = (e: DragEvent) => {
+      internalDrag = true;
+      e.target?.addEventListener("dragend", () => (internalDrag = false), { once: true });
+    };
     window.addEventListener("dragstart", onDragStartCapture, true);
-    window.addEventListener("dragend", onDragEndCapture, true);
     // Surface every saved screenshot (program or source) as a transient toast.
     const offShot = obs.on(EV.screenshotSaved, (p) => {
       const file = p.path.split(/[\\/]/).pop() || p.path;
@@ -372,7 +374,6 @@ import { EV } from "$lib/utils/eventNames";
       window.removeEventListener("dragover", onDragOver);
       window.removeEventListener("drop", onWindowDrop);
       window.removeEventListener("dragstart", onDragStartCapture, true);
-      window.removeEventListener("dragend", onDragEndCapture, true);
       offShot();
       offChannels();
     };
