@@ -18,6 +18,7 @@
 
 #include "../multistream/StorePaths.hpp"
 #include "env_config.hpp"
+#include "time_util.hpp"
 
 namespace SessionLog {
 
@@ -88,9 +89,43 @@ void SessionLogHandler(int level, const char *format, va_list args, void *)
 	}
 	va_end(argsForPrev);
 
+	// One stamp for the whole message, so a multi-line block reads as the single
+	// event it is. Seconds and milliseconds come from one reading, which is why this
+	// splits NowMs rather than sampling the clock twice.
+	const int64_t nowMs = TimeUtil::NowMs();
+	const time_t nowSec = static_cast<time_t>(nowMs / 1000);
+
+	struct tm lt;
+	localtime_s(&lt, &nowSec);
+	char timeBuf[16];
+	strftime(timeBuf, sizeof(timeBuf), "%T", &lt);
+
+	char stamp[32];
+	snprintf(stamp, sizeof(stamp), "%s.%03u: ", timeBuf, static_cast<unsigned>(nowMs % 1000));
+
 	std::lock_guard<std::mutex> lock(g_mutex);
 	if (g_file.is_open()) {
-		g_file << line << '\n';
+		char *cursor = line;
+		for (;;) {
+			char *nextLine = strchr(cursor, '\n');
+			if (!nextLine) {
+				g_file << stamp << cursor << '\n';
+				break;
+			}
+			if (nextLine != cursor && nextLine[-1] == '\r') {
+				nextLine[-1] = '\0';
+			} else {
+				nextLine[0] = '\0';
+			}
+			g_file << stamp << cursor << '\n';
+			// The separator itself is never overwritten, so what follows it is the
+			// untouched remainder -- empty exactly when the message ended in a
+			// newline, which must not become a stamped blank line.
+			cursor = nextLine + 1;
+			if (*cursor == '\0') {
+				break;
+			}
+		}
 		g_file.flush();
 	}
 }
