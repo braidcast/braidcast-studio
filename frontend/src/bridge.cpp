@@ -2240,6 +2240,36 @@ void CommitSceneItemChange(const json &params, obs_source_t *sceneSource)
 	PersistSourceState(sceneSource);
 }
 
+// Announce a change to the SOURCE OBJECT (as opposed to one canvas's scene item)
+// to every canvas currently listing it. A source is shared by every scene that
+// holds it across every canvas, and a dock row addresses its source by NAME, so
+// the canvas-scoped event CommitSceneItemChange emits leaves the other canvases
+// holding a name that no longer resolves -- their next name-addressed call fails
+// outright rather than merely reading a stale label. Each canvas's list shows its
+// CURRENT scene, so that is the only scene per canvas worth re-fetching; the
+// Default canvas's surfaces listen on the global (canvas=null) channel.
+void EmitSceneItemsChangedForSource(obs_source_t *src)
+{
+	const char *uuid = src ? obs_source_get_uuid(src) : nullptr;
+	if (!uuid) {
+		return;
+	}
+	const std::string srcUuid = uuid;
+	OBSSourceAutoRelease programScene = ResolveSceneSource(std::string()); // addref'd or null
+	if (FindItemBySourceUuid(programScene, srcUuid)) {
+		EmitSceneItemsChanged(programScene, std::string());
+	}
+	for (const auto &def : ObsBootstrap::Canvases().Definitions()) {
+		if (def.isDefault) {
+			continue;
+		}
+		OBSSourceAutoRelease scene = ObsBootstrap::CanvasRuntime().CurrentScene(def.uuid); // addref'd
+		if (FindItemBySourceUuid(scene, srcUuid)) {
+			EmitSceneItemsChanged(scene, def.uuid);
+		}
+	}
+}
+
 // {canvas, scene, source-uuid} -- the re-resolution keys shared by every state.
 json StateBase(const json &params, obs_source_t *src)
 {
@@ -2468,7 +2498,8 @@ void ApplyRename(const std::string &data)
 	if (src) {
 		obs_source_set_name(src, name.c_str());
 	}
-	CommitSceneItemChange(state, sceneSource);
+	EmitSceneItemsChangedForSource(src);
+	PersistSourceState(sceneSource);
 	obs_source_release(sceneSource);
 }
 
@@ -4356,7 +4387,8 @@ bool MethodSourcesRename(const json &params, json &result, std::string &error)
 	json after = StateBase(params, src);
 	after["name"] = name;
 	obs_source_set_name(src, name.c_str());
-	CommitSceneItemChange(params, sceneSource);
+	EmitSceneItemsChangedForSource(src);
+	PersistSourceState(sceneSource);
 	obs_source_release(sceneSource);
 	RecordUndo("Rename", ApplyRename, before, after);
 	result = json{{"id", id}, {"source", name}};
@@ -4368,8 +4400,10 @@ bool MethodSourcesRename(const json &params, json &result, std::string &error)
 // whose global audio devices are not scene items at all). params: {uuid?|source?,
 // name}. Resolves uuid-first via the shared resolver and applies the SAME
 // different-source clash rule as sources.rename. Emits audio.changed so the mixer
-// picks up the new name. Not scene-scoped, so it uses neither the scene-item undo
-// (ApplyRename resolves by scene item) nor EmitSceneItemsChanged. Returns {source}.
+// picks up the new name, plus the same source-rename announcement sources.rename
+// makes -- a mixer row can be a scene item's source, and every canvas listing it
+// would otherwise keep addressing it by the old name. Not scene-scoped, so it does
+// not use the scene-item undo (ApplyRename resolves by scene item). Returns {source}.
 bool MethodSourcesRenameByName(const json &params, json &result, std::string &error)
 {
 	std::string name;
@@ -4395,6 +4429,7 @@ bool MethodSourcesRenameByName(const json &params, json &result, std::string &er
 	}
 	obs_source_set_name(src, name.c_str());
 	EmitEvent(EventNames::kAudioChanged, json::object());
+	EmitSceneItemsChangedForSource(src);
 	result = json{{"source", name}};
 	return true;
 }

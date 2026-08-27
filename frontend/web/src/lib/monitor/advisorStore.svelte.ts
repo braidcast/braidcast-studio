@@ -17,9 +17,11 @@ import { EV, type BridgeEvent } from "$lib/utils/eventNames";
 // answers to it.
 //
 // KNOWN EXCEPTION: `sources.renameByName` (frontend/src/bridge.cpp) — the audio-mixer
-// rename — emits `audio.changed` and nothing else, and browser sources are
-// audio-capable, so renaming one there leaves its findings pointing at the old name
-// until the next scene-graph event or a Rescan. `audio.changed` is deliberately NOT
+// rename — announces `sceneItems.changed` only for canvases whose CURRENT scene lists
+// the renamed source. A source held solely by a non-current scene, or a global audio
+// device (no scene item at all), gets `audio.changed` alone, so renaming one there
+// leaves its findings pointing at the old name until the next scene-graph event or a
+// Rescan. `audio.changed` is deliberately NOT
 // subscribed: OnAudioSourceSetChanged (frontend/src/obs_bootstrap.cpp) emits it from
 // the source_activate/source_deactivate signals, so every scene switch would fire a
 // second full sweep on top of the one scenes.changed already causes — plus one per
