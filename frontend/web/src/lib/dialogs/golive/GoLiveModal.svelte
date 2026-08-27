@@ -71,15 +71,20 @@ import { EV } from "$lib/utils/eventNames";
   // tags/category/image/enum/bool/labelset) — never by platform id — so a new
   // provider (or a new field type) renders with zero changes here.
 
-  // One stream feeding a channel: a distinct stream profile bound via an enabled
-  // output binding. Several streams (e.g. a 16:9 + a 9:16 profile) can post to the
-  // same channel; `canvasName` is the canvas this stream is CONFIGURED on, armed or
-  // not — null only when that canvas doesn't exist.
+  // One stream feeding a channel: a distinct stream profile bound to it. Several
+  // streams (e.g. a 16:9 + a 9:16 profile) can post to the same channel; `canvasName`
+  // is the canvas this stream is CONFIGURED on, armed or not — null only when that
+  // canvas doesn't exist.
   interface Stream {
     profileUuid: string;
     profile: StreamProfileInfo;
     label: string;
     canvasName: string | null;
+    // Any of THIS profile's bindings enabled. Distinct from the channel's `armed`,
+    // which answers for the card as a whole: one account can carry several profiles,
+    // so a channel is armed while some of its streams are not. Anything that acts on
+    // a platform has to ask this one -- see the job list in runPrimary.
+    armed: boolean;
   }
 
   // One channel = one account identity (`accountId` = "providerId:userId"). Profiles
@@ -594,7 +599,13 @@ import { EV } from "$lib/utils/eventNames";
       if (b.enabled) {
         ch.armed = true;
       }
-      if (!ch.streams.some((s) => s.profileUuid === b.profileUuid)) {
+      const existing = ch.streams.find((s) => s.profileUuid === b.profileUuid);
+      if (existing) {
+        // One profile can be bound on several canvases, and it is armed when ANY of
+        // those bindings is — so an enabled binding reached later has to upgrade the
+        // entry a disabled one created first.
+        existing.armed ||= b.enabled;
+      } else {
         // canvasNameFor, not forProfile: this row states which canvas the binding is
         // configured on, which a disarmed binding names just as well — resolving it
         // through the enabled-only profile lookup would print "no canvas" over exactly
@@ -605,6 +616,7 @@ import { EV } from "$lib/utils/eventNames";
           profile,
           label: profile.label,
           canvasName: destinationIdentityStore.canvasNameFor(b.canvasUuid),
+          armed: b.enabled,
         });
       }
     }
@@ -1489,16 +1501,21 @@ import { EV } from "$lib/utils/eventNames";
     );
     // A retry must not show last round's reason beside a fresh "Saving…" chip.
     channelSaveError = {};
-    // One job per stream, ARMED channels only — a disarmed channel produces no
-    // streamMeta.set (its bindings are disabled, so streaming.start won't start it
-    // either) and therefore can never land in failedByChannel and block the go-live.
+    // One job per ARMED stream. Arming is asked per stream, not per channel: an
+    // account carrying two profiles (a 16:9 and a 9:16, say) is an armed channel with
+    // one of them disabled, and a push for the disabled one has a platform-visible
+    // cost. On YouTube every streamMeta.set inserts and binds a broadcast, so pushing
+    // for a profile streaming.start will not start leaves a second live event on the
+    // channel that never receives ingest -- one the user then has to delete by hand.
+    // A stream nothing pushes for also can never land in failedByChannel and block the
+    // go-live, which is the same reason a fully disarmed channel is skipped.
     // Each stream's effective fields merge the channel default with that stream's own
     // values. YouTube needs the per-profile call; Twitch/Kick applying the same channel
     // twice (no divergence) is idempotent. Which of a stream's values apply is decided
     // in one place (streamValue): the override toggle is the sole authority over
     // metadata divergence, while a per-destination address always applies.
     const jobs = armedConnectedChannels.flatMap((c) =>
-      c.streams.map((s) => ({ channel: c, stream: s, fields: effectiveFields(c, s) })),
+      c.streams.filter((s) => s.armed).map((s) => ({ channel: c, stream: s, fields: effectiveFields(c, s) })),
     );
     // Snapshotted here rather than read after the pushes below: this is a $derived over
     // live modal state, and every successful streamMeta.set emits streamMeta.changed,
