@@ -10815,14 +10815,16 @@ bool EncodePngMemory(const uint8_t *pixels, uint32_t w, uint32_t h, std::vector<
 // file (CEF's app:// origin can't load file:// paths anyway, see file.readDataUri,
 // and a per-tile timestamped screenshot would spam the user's screenshots folder
 // for what is purely a UI preview).
+// Long edge of an add-source picker tile.
+constexpr uint32_t kPickerThumbMaxDim = 160;
+
 bool CaptureToThumbnailDataUri(uint32_t srcW, uint32_t srcH, const std::function<void()> &renderFn,
-			       std::string &dataUri, std::string &errOut)
+			       std::string &dataUri, std::string &errOut, uint32_t maxDim)
 {
-	constexpr uint32_t kMaxDim = 160;
 	uint32_t outW = srcW;
 	uint32_t outH = srcH;
-	if (outW > kMaxDim || outH > kMaxDim) {
-		const double scale = std::min((double)kMaxDim / outW, (double)kMaxDim / outH);
+	if (outW > maxDim || outH > maxDim) {
+		const double scale = std::min((double)maxDim / outW, (double)maxDim / outH);
 		outW = std::max<uint32_t>(1, (uint32_t)(outW * scale));
 		outH = std::max<uint32_t>(1, (uint32_t)(outH * scale));
 	}
@@ -10871,7 +10873,7 @@ bool MethodSourcesThumbnail(const json &params, json &result, std::string &error
 	};
 
 	std::string dataUri;
-	if (!CaptureToThumbnailDataUri(w, h, renderFn, dataUri, error)) {
+	if (!CaptureToThumbnailDataUri(w, h, renderFn, dataUri, error, kPickerThumbMaxDim)) {
 		return false;
 	}
 	result = json{{"dataUri", dataUri}};
@@ -10959,18 +10961,23 @@ void WaitForMainComposite()
 	}
 }
 
-// Capture the composited program for the addressed canvas (absent/Default ->
-// the global pipeline; otherwise the additional canvas's mix) to a PNG.
-bool MethodScreenshotTakeProgram(const json &params, json &result, std::string &error)
+// Resolve the addressed canvas to its size and the callback that draws it: absent
+// or Default means the global pipeline, anything else the additional canvas's own
+// mix. `mainRef` is an out-param rather than a local because the Default branch's
+// composite ref has to outlive this call -- it keeps Main ungated until the caller's
+// capture has actually run.
+//
+// Does NOT wait for a composite. Whether that wait is needed depends on why the
+// caller is capturing, not on which canvas it picked: a screenshot can arrive with
+// Main idle and must wait, while a freeze frame is taken of a preview that is on
+// screen and already holding its own ref, where the wait would only be a stall.
+bool ResolveProgramCapture(const json &params, uint32_t &w, uint32_t &h, std::function<void()> &renderFn,
+			   std::string &name, std::optional<DefaultCompositeRef> &mainRef, bool &isDefault,
+			   bool &wasComposited, std::string &error)
 {
 	const CanvasTarget t = ResolveCanvasTarget(params);
-
-	uint32_t w = 0;
-	uint32_t h = 0;
-	std::function<void()> renderFn;
-	std::string name;
-	// Declared out here so the ref outlives the capture below, not just the branch.
-	std::optional<DefaultCompositeRef> mainRef;
+	isDefault = !t.isAdditional;
+	wasComposited = true; // an additional canvas renders from its own mix, never Main's
 
 	if (t.isAdditional) {
 		obs_canvas_t *cv = ObsBootstrap::CanvasRuntime().Find(t.uuid);
@@ -10990,22 +10997,92 @@ bool MethodScreenshotTakeProgram(const json &params, json &result, std::string &
 		};
 		const char *n = obs_canvas_get_name(cv);
 		name = (n && *n) ? n : "Program";
-	} else {
-		obs_video_info ovi;
-		if (!obs_get_video_info(&ovi)) {
-			error = "no video";
-			return false;
-		}
-		w = ovi.base_width;
-		h = ovi.base_height;
-		renderFn = []() {
-			obs_render_main_texture();
-		};
-		name = ObsBootstrap::Canvases().Default().name;
-		if (name.empty()) {
-			name = "Program";
-		}
-		mainRef.emplace();
+		return true;
+	}
+
+	obs_video_info ovi;
+	if (!obs_get_video_info(&ovi)) {
+		error = "no video";
+		return false;
+	}
+	w = ovi.base_width;
+	h = ovi.base_height;
+	renderFn = []() {
+		obs_render_main_texture();
+	};
+	name = ObsBootstrap::Canvases().Default().name;
+	if (name.empty()) {
+		name = "Program";
+	}
+	// Asked BEFORE taking our own ref, since taking it is what would make the answer
+	// yes. False means Main was idle and its texture is the zero-cleared one until a
+	// pass runs with the gate lifted.
+	wasComposited = ObsBootstrap::CanvasRuntime().DefaultComposited();
+	mainRef.emplace();
+	return true;
+}
+
+// Long edge of a freeze frame. Larger than a picker tile because this one stands in
+// for the preview at its real size, and small enough that the base64 of its PNG does
+// not dwarf the bridge message carrying it.
+constexpr uint32_t kFreezeFrameMaxDim = 720;
+
+// One still of the addressed canvas, inlined as a PNG data URI: params
+// {canvas?} -> {dataUri,width,height}.
+//
+// The native preview is a child HWND the OS composites above the whole CEF window,
+// so a menu or modal over it can only be shown by hiding the preview -- which is why
+// right-clicking the canvas used to blank it. The web UI holds this still in the
+// surface's place for as long as the overlay is up, so the preview reads as paused
+// rather than broken. It is deliberately a stand-in and not a fix: the frame does not
+// advance, and the real answer is to stop the boundary existing (see
+// braidcast-notes/preview-architecture.md).
+bool MethodPreviewFreeze(const json &params, json &result, std::string &error)
+{
+	uint32_t w = 0;
+	uint32_t h = 0;
+	std::function<void()> renderFn;
+	std::string name;
+	std::optional<DefaultCompositeRef> mainRef;
+	bool isDefault = false;
+	bool wasComposited = false;
+	if (!ResolveProgramCapture(params, w, h, renderFn, name, mainRef, isDefault, wasComposited, error)) {
+		return false;
+	}
+	// The common case -- right-clicking a preview that is on screen -- finds Main
+	// already composited and pays nothing. Only a freeze taken while Main was idle
+	// waits, and it has to: without the wait that capture is the zero-cleared
+	// texrender, i.e. a black still, which reads as the preview having broken and is
+	// worse than showing no still at all.
+	if (!wasComposited) {
+		WaitForMainComposite();
+	}
+	std::string dataUri;
+	if (!CaptureToThumbnailDataUri(w, h, renderFn, dataUri, error, kFreezeFrameMaxDim)) {
+		return false;
+	}
+	result = json{{"dataUri", dataUri}, {"width", w}, {"height", h}};
+	return true;
+}
+
+// Capture the composited program for the addressed canvas (absent/Default ->
+// the global pipeline; otherwise the additional canvas's mix) to a PNG.
+bool MethodScreenshotTakeProgram(const json &params, json &result, std::string &error)
+{
+	uint32_t w = 0;
+	uint32_t h = 0;
+	std::function<void()> renderFn;
+	std::string name;
+	// Declared out here so the ref outlives the capture below, not just the branch.
+	std::optional<DefaultCompositeRef> mainRef;
+	bool isDefault = false;
+	bool wasComposited = false;
+	if (!ResolveProgramCapture(params, w, h, renderFn, name, mainRef, isDefault, wasComposited, error)) {
+		return false;
+	}
+	// Unconditional for the Default: a screenshot is reached by a global hotkey with
+	// no panel open, which is exactly the idle state, and it is not on a hot path.
+	if (isDefault) {
 		WaitForMainComposite();
 	}
 
@@ -12921,6 +12998,7 @@ void Init()
 		{"preview.hide", MethodPreviewHide},
 		{"preview.destroy", MethodPreviewDestroy},
 		{"preview.select", MethodPreviewSelect},
+		{"preview.freeze", MethodPreviewFreeze},
 		{"scenes.list", MethodScenesList},
 		{"scenes.create", MethodScenesCreate},
 		{"scenes.remove", MethodScenesRemove},

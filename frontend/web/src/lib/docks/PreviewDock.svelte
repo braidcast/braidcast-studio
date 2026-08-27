@@ -4,6 +4,7 @@
 import { EV } from "$lib/utils/eventNames";
   import { canvasStore } from "$lib/stores/canvasStore.svelte";
   import { previewSuspended, suspendPreview } from "$lib/stores/previewGate.svelte";
+  import { PreviewFreeze } from "$lib/stores/previewFreeze.svelte";
 import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   import { WINDOW_ID } from "$lib/utils/windowContext";
   import { syncPreviewRect, hidePreview, destroyPreview, mapOverlayCursor } from "$lib/docking/previewSurface";
@@ -328,11 +329,16 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   });
 
   // The global previewGate suspends every native overlay while a modal is open;
-  // hide our surface and re-assert its rect when cleared.
+  // hide our surface and re-assert its rect when cleared. The still is grabbed BEFORE
+  // the hide so the region keeps showing the last frame instead of going black --
+  // capturing after would read a canvas whose composite the hide has already gated.
+  const freeze = new PreviewFreeze();
   $effect(() => {
     if (previewSuspended()) {
+      void freeze.capture();
       hidePreview();
     } else {
+      freeze.clear();
       reportRect();
     }
   });
@@ -367,6 +373,14 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   {/if}
 
   <section class="preview" class:gated={!defaultEnabled || isPreviewDisabled(DEFAULT_PREVIEW_KEY)} bind:this={previewEl}>
+    <!-- Stands in for the hidden native surface while an overlay is up. FIRST so the
+         label and any placeholder stack above it on DOM order alone -- every one of
+         them is absolutely positioned, so no z-index has to be assigned to keep them
+         visible. aria-hidden: it is the same picture the surface was already showing,
+         so announcing it adds nothing. -->
+    {#if freeze.frame}
+      <img class="freeze" src={freeze.frame} alt="" aria-hidden="true" />
+    {/if}
     <span class="label">Default</span>
     {#if isPreviewDisabled(DEFAULT_PREVIEW_KEY)}
       <div class="placeholder">
@@ -414,6 +428,17 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     /* Transparent: the native overlay HWND paints this region. */
     background: transparent;
     overflow: hidden;
+  }
+  /* The held still, filling the region the native surface occupies. `contain` so it
+     matches the letterboxing the surface itself uses rather than cropping the frame,
+     and below the label but above the transparent backdrop. */
+  .freeze {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    background: var(--color-base);
   }
   /* Output-gated off: no native overlay paints here, so give the region an opaque
      surface + a muted empty-state message instead of a see-through hole. */

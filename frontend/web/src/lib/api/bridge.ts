@@ -1641,6 +1641,7 @@ export interface ObsMethods {
   // (4.4.5b). setRect params: {x,y,w,h,dpr,canvas?}; hide/select: {...,canvas?}.
   "preview.setRect": null;
   "preview.hide": null;
+  "preview.freeze": { dataUri: string; width: number; height: number };
   "preview.destroy": null;
   "preview.select": { selected: number | null };
   // Scenes. `current` = the scene bound to channel 0 of the addressed canvas. Pass

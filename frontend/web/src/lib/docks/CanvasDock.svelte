@@ -13,6 +13,7 @@ import { EV } from "$lib/utils/eventNames";
   import { selectOnMount } from "$lib/utils/focusActions";
   import { clamp } from "$lib/utils/clamp";
   import { previewSuspended, suspendPreview } from "$lib/stores/previewGate.svelte";
+  import { PreviewFreeze } from "$lib/stores/previewFreeze.svelte";
 import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   import { WINDOW_ID } from "$lib/utils/windowContext";
   import { syncPreviewRect, hidePreview as hidePreviewSurface, destroyPreview, mapOverlayCursor } from "$lib/docking/previewSurface";
@@ -1050,11 +1051,16 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     selection.reconcile(currentScene, items);
   });
 
-  // Hide our overlay while a modal suspends previews; re-assert on clear.
+  // Hide our overlay while a modal suspends previews; re-assert on clear. The still is
+  // grabbed BEFORE the hide -- both are bridge calls and run in order on the host's UI
+  // thread, so capturing second would read a canvas already gated off.
+  const freeze = new PreviewFreeze();
   $effect(() => {
     if (previewSuspended()) {
+      void freeze.capture(canvasUuid);
       hidePreview();
     } else {
+      freeze.clear();
       reportRect();
     }
   });
@@ -1082,6 +1088,11 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
        bottom-left). pointer-events:none so they never intercept overlay input. -->
   <div class="stage-area">
     <div class="stage" class:vertical class:active={surfaceActive} bind:this={previewEl}>
+      <!-- Stands in for the hidden native surface while an overlay is up. FIRST so the
+           chips and the scene tag stack above it on DOM order alone. -->
+      {#if freeze.frame}
+        <img class="freeze" src={freeze.frame} alt="" aria-hidden="true" />
+      {/if}
       {#if resText}
         <span class="res-chip">{resText}</span>
       {/if}
@@ -1272,6 +1283,14 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   }
   /* The native overlay HWND paints this exact element; stays transparent so the
      video shows through. Aspect: 16:9 by default, 9:16 for a vertical canvas. */
+  .freeze {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    background: var(--color-base);
+  }
   .stage {
     position: relative;
     background: transparent;

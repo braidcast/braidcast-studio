@@ -10,6 +10,7 @@
   import { oauthStore } from "$lib/stores/oauthStore.svelte";
   import { profileName, platformLabel, profileAvatarUrl } from "$lib/utils/profileDisplay";
   import type { StreamProfileInfo } from "$lib/api/bridge";
+  import { suspendPreview } from "$lib/stores/previewGate.svelte";
 
   interface Props {
     profiles: StreamProfileInfo[];
@@ -26,6 +27,13 @@
 
   let query = $state("");
   let open = $state(false);
+  // The dropdown list is a DOM layer like any other, so the native preview overlay
+  // would cover it wherever the two overlap.
+  $effect(() => {
+    if (open) {
+      return suspendPreview();
+    }
+  });
   let active = $state(0);
   let rootEl = $state<HTMLDivElement | null>(null);
 

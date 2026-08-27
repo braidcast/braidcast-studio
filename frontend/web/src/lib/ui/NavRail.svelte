@@ -10,6 +10,7 @@
 import { EV } from "$lib/utils/eventNames";
   import { pageStore, setPage, type Page } from "$lib/stores/pageStore.svelte";
   import { openAbout } from "$lib/dialogs/aboutOpener.svelte";
+  import { suspendPreview } from "$lib/stores/previewGate.svelte";
   import CollectionDialog, { type DialogSpec } from "$lib/dialogs/CollectionDialog.svelte";
   import { seamStore, SEAM, bumpDiagonals, offsetRight, polygon } from "$lib/stores/seamStore.svelte";
 
@@ -66,6 +67,14 @@ import { EV } from "$lib/utils/eventNames";
   let collections = $state<CollectionInfo[]>([]);
   let dialog = $state<DialogSpec | null>(null);
   let menuOpen = $state(false);
+  // The collection popup overlaps the preview region on a narrow window, and the
+  // native overlay would be composited over it. Same reasoning as ContextMenu: the
+  // surface that renders the popup owns the suspension.
+  $effect(() => {
+    if (menuOpen) {
+      return suspendPreview();
+    }
+  });
 
   const active = $derived(collections.find((c) => c.active));
 

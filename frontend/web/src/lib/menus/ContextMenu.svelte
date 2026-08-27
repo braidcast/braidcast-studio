@@ -38,6 +38,7 @@
   import Icon from "$lib/ui/Icon.svelte";
   import { isEditable } from "$lib/utils/editableTarget";
   import { pushEsc, popEsc, isTopEsc } from "$lib/utils/escStack";
+  import { suspendPreview } from "$lib/stores/previewGate.svelte";
 
   let {
     x,
@@ -246,6 +247,17 @@
     top = ny;
     ready = true;
   });
+
+  // The native preview is a child HWND the OS composites ABOVE the whole CEF window,
+  // so no z-index can put this menu over it -- the overlay has to be hidden instead.
+  // Held HERE rather than by whoever opened the menu, because every opener having to
+  // remember was not a rule anything enforced: four of the six surfaces that open a
+  // menu suspended, and the audio mixer's and the scene list's menus were drawn under
+  // the preview for as long as they have existed. Owning it here makes the coverage a
+  // property of the component instead of a habit, so a new menu cannot reintroduce
+  // the bug. Ref-counted, so a submenu level and any suspension its opener still
+  // holds simply nest.
+  $effect(() => suspendPreview());
 
   // Dismissal listeners, all torn down together. The Escape token gates so a menu
   // opened over a modal (or a submenu over its parent) only closes the topmost layer.

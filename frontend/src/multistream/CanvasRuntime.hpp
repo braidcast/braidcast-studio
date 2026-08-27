@@ -60,6 +60,13 @@ public:
 	void AddPreview(const std::string &uuid);
 	void RemovePreview(const std::string &uuid);
 
+	// Was something already consuming the Default's main composite before the caller
+	// took its own ref? Answers "is Main's texture live right now, or did I just
+	// ungate it and have to wait for a pass" -- the difference between capturing a
+	// real frame and capturing the zero-cleared texrender. Asked by the capture paths
+	// so they pay the composite wait only when they are the ones who woke Main.
+	bool DefaultComposited() const { return defaultPreviewCount > 0; }
+
 	obs_canvas_t *Find(const std::string &uuid) const; // null for Default/unknown
 	video_t *VideoFor(const std::string &uuid) const;  // obs_canvas_get_video or null
 
