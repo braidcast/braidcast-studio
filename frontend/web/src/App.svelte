@@ -32,7 +32,7 @@
   import GoLiveModal from "$lib/dialogs/golive/GoLiveModal.svelte";
   import { goLiveModal } from "$lib/dialogs/golive/goLiveModalOpener.svelte";
   import CollectionDialog, { type DialogSpec } from "$lib/dialogs/CollectionDialog.svelte";
-  import { planFile, planText, createDropped, INTERNAL_DRAG_TYPE, type DropPlan } from "$lib/dialogs/add-source/dropSource";
+  import { planFile, planText, createDropped, type DropPlan } from "$lib/dialogs/add-source/dropSource";
   import { undoStore } from "$lib/stores/undoStore.svelte";
   import { channelsStore } from "$lib/stores/channelsStore.svelte";
   import { diagnosticsStore } from "$lib/stores/diagnosticsStore.svelte";
@@ -280,18 +280,28 @@ import { EV } from "$lib/utils/eventNames";
     e.preventDefault();
   }
 
+  // A drag that never touches our own document (Explorer, another window) can only
+  // ever start with a dragstart we never saw; one that did start here — a reorder
+  // drag or a plain text selection — always fires dragstart on this window first.
+  // That makes "did dragstart fire in our document" a complete test for drags that
+  // start in this document; content dragged out of a hosted iframe isn't covered.
+  let internalDrag = false;
+
   // §1.6 parity: a drop becomes a source. Files -> image/media, a URL/.html ->
   // browser (after a confirm), other text -> a text source. dataTransfer is only
   // live during dispatch, so read every field synchronously before any await.
   let dropConfirm = $state<DialogSpec | null>(null);
   async function onWindowDrop(e: DragEvent): Promise<void> {
     e.preventDefault();
+    // dragend clears the flag for the normal case. It's also read and cleared here,
+    // synchronously before any await: a drag source removed from the DOM mid-drag can
+    // skip dragend, so clearing only there risks a stuck flag that would silently
+    // disable real external drops for the rest of the session.
+    const wasInternal = internalDrag;
+    internalDrag = false;
+    if (wasInternal) return;
     const dt = e.dataTransfer;
     if (!dt) return;
-    // An internal reorder drag (scene/source/canvas-item/filter row) bubbling from a
-    // row-level drop that only preventDefaults, not stopPropagation — it must not be
-    // read as a dropped file/URL/text.
-    if (dt.types.includes(INTERNAL_DRAG_TYPE)) return;
     // Files take precedence over the synthetic uri-list/plain text a file drag also
     // carries. planFile returns null when this build hides File.path (see dropSource).
     const files = Array.from(dt.files) as (File & { path?: string })[];
@@ -347,6 +357,10 @@ import { EV } from "$lib/utils/eventNames";
     window.addEventListener("wheel", onWheel, { passive: false });
     window.addEventListener("dragover", onDragOver);
     window.addEventListener("drop", onWindowDrop);
+    const onDragStartCapture = () => (internalDrag = true);
+    const onDragEndCapture = () => (internalDrag = false);
+    window.addEventListener("dragstart", onDragStartCapture, true);
+    window.addEventListener("dragend", onDragEndCapture, true);
     // Surface every saved screenshot (program or source) as a transient toast.
     const offShot = obs.on(EV.screenshotSaved, (p) => {
       const file = p.path.split(/[\\/]/).pop() || p.path;
@@ -357,6 +371,8 @@ import { EV } from "$lib/utils/eventNames";
       window.removeEventListener("wheel", onWheel);
       window.removeEventListener("dragover", onDragOver);
       window.removeEventListener("drop", onWindowDrop);
+      window.removeEventListener("dragstart", onDragStartCapture, true);
+      window.removeEventListener("dragend", onDragEndCapture, true);
       offShot();
       offChannels();
     };

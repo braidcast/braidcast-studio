@@ -8,7 +8,6 @@
   import { filterDialogOpener, type FilterKind } from "$lib/dialogs/filterDialogOpener.svelte";
   import { clipboard } from "$lib/stores/clipboardStore.svelte";
   import { selectOnMount } from "$lib/utils/focusActions";
-  import { INTERNAL_DRAG_TYPE } from "$lib/dialogs/add-source/dropSource";
 
   interface Props {
     source: string;
@@ -141,7 +140,6 @@
     if (e.dataTransfer) {
       e.dataTransfer.effectAllowed = "move";
       e.dataTransfer.setData("text/plain", f.uuid); // Firefox requires data
-      e.dataTransfer.setData(INTERNAL_DRAG_TYPE, "");
     }
   }
 

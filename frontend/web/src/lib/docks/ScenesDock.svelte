@@ -2,7 +2,6 @@
   import { onMount } from "svelte";
   import { obs, type SceneInfo, type ReorderDirection } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
-import { INTERNAL_DRAG_TYPE } from "$lib/dialogs/add-source/dropSource";
   import { selectOnMount } from "$lib/utils/focusActions";
   import { defaultCanvas } from "$lib/docks/defaultCanvasStore.svelte";
   import { canvasStore } from "$lib/stores/canvasStore.svelte";
@@ -232,7 +231,6 @@ import { INTERNAL_DRAG_TYPE } from "$lib/dialogs/add-source/dropSource";
     if (e.dataTransfer) {
       e.dataTransfer.effectAllowed = "move";
       e.dataTransfer.setData("text/plain", scene.name); // Firefox requires data
-      e.dataTransfer.setData(INTERNAL_DRAG_TYPE, "");
     }
   }
 

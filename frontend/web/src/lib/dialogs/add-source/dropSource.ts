@@ -1,11 +1,6 @@
 import { obs } from "$lib/api/bridge";
 import { sourceSelection } from "$lib/stores/sourceSelectionStore.svelte";
 
-// Stamped by every internal reorder drag (scenes/sources/canvas items/filters) so the
-// window-level drop handler below can tell "reordering something" apart from an actual
-// OS file/text/URL drop and ignore the former instead of turning it into a source.
-export const INTERNAL_DRAG_TYPE = "application/x-braidcast-internal";
-
 // Turns an OS/text drop into a source, reusing the same bridge seams AddSource does:
 // sources.create for the object, properties.set to load the path/url/text into it.
 // A plan's `confirm`, when present, is a question the caller must accept first (§1.6
