@@ -341,9 +341,11 @@ void MaterializeTargetDestinations(const std::string &accountId, const std::stri
 
 void MaterializeTargetDestinationsAtBoot()
 {
-	// A smoke/self-test run drives the app against the user's REAL config directory (the
-	// dev rundir's config is a junction to it), so a pass that creates stream profiles
-	// must not run there -- it would rewrite the user's streams.json on every such launch.
+	// An unattended run gets a throwaway config base (see ResolveSelfTestConfigBase), so
+	// this is no longer about protecting the user's streams.json. It is about
+	// determinism: materializing whatever destinations the connected accounts happen to
+	// expose makes a run's starting state depend on the network, which is not something
+	// a self-test or an unattended measurement should inherit.
 	if (Env::IsSelfTestRun()) {
 		return;
 	}
