@@ -59,8 +59,17 @@
   // One-line action summary per type (excludes `message`, which is bound
   // separately so it renders as escaped text). Registry map, not a switch, so a
   // new type is a single entry. Unknown types fall back to the type label.
+  // A YouTube subscribe normalizes to `follow` (youtube_events.cpp:188) because it is
+  // the free channel follow, not the paid membership -- but the platforms NAME that act
+  // differently, and a YouTube row reading "followed" describes something the viewer
+  // never did. Overrides only: "followed" is the default, so a new platform needs an
+  // entry here only where it disagrees.
+  const FOLLOW_VERB: Partial<Record<NormalizedEvent["platform"], string>> = {
+    youtube: "subscribed",
+  };
+
   const SUMMARY: Record<EventType, (e: NormalizedEvent) => string> = {
-    follow: () => "followed",
+    follow: (e) => FOLLOW_VERB[e.platform] ?? "followed",
     sub: (e) => "subscribed" + (e.tier ? ` · ${e.tier}` : ""),
     resub: (e) => "resubscribed" + (e.months ? ` · ${e.months} months` : ""),
     subgift: (e) => {
@@ -101,16 +110,6 @@
       "Naming a canvas here would be a guess.",
     pending: "This destination's canvas has not loaded yet, or was deleted.",
     none: "No stream profile is configured for the account this event came from.",
-  };
-
-  // Only `single` needs a word of its own: the other tiers already read as state in
-  // the canvas cell, and an "exact" row's signal is the absence of a caveat.
-  const FIDELITY_NOTE: Record<Fidelity, string> = {
-    exact: "",
-    single: "single stream",
-    wide: "",
-    pending: "",
-    none: "",
   };
 
   $effect(() => {
@@ -318,7 +317,6 @@
             {#if e.message}<span class="msg">{e.message}</span>{/if}
             {#if multiOrigin}
               {@const o = attribute(e, destByAccount)}
-              {@const note = FIDELITY_NOTE[o.fidelity]}
               <!-- "none" means nothing is known about the origin at all: ABSENT_LABEL is
                    documented as an absence it must not guess at, so the row renders
                    nothing rather than a pair of dashes standing in for content. -->
@@ -328,7 +326,6 @@
                   <span class="ochannel">{o.channel}</span>
                   <span class="osep" aria-hidden="true">›</span>
                   <span class="ocanvas" class:state={!o.named}>{o.canvasLabel}</span>
-                  {#if note}<span class="ofid">{note}</span>{/if}
                 </div>
               {/if}
             {/if}
@@ -469,16 +466,6 @@
     font-weight: 400;
     color: var(--color-dim);
   }
-  .ofid {
-    flex: 0 0 auto;
-    padding: 0 3px;
-    font-family: var(--font-mono);
-    font-size: 9px;
-    letter-spacing: 0.06em;
-    color: var(--color-dim);
-    border: var(--border-weight) solid var(--color-border);
-  }
-
   .jump {
     position: absolute;
     left: 50%;
