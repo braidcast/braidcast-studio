@@ -291,7 +291,23 @@ import { EV } from "$lib/utils/eventNames";
   // browser (after a confirm), other text -> a text source. dataTransfer is only
   // live during dispatch, so read every field synchronously before any await.
   let dropConfirm = $state<DialogSpec | null>(null);
+
+  // A file input and an editable field both handle a drop themselves. Cancelling the
+  // default here would leave the field empty AND turn the drop into a source, so those
+  // targets are left entirely alone -- including the preventDefault.
+  function handlesItsOwnDrop(e: DragEvent): boolean {
+    const el = e.target as HTMLElement | null;
+    if (!el?.closest) return false;
+    const hasFiles = (e.dataTransfer?.files?.length ?? 0) > 0;
+    if (el.closest('input[type="file"]')) return hasFiles;
+    return !hasFiles && !!el.closest("input, textarea, [contenteditable='true']");
+  }
+
   async function onWindowDrop(e: DragEvent): Promise<void> {
+    if (handlesItsOwnDrop(e)) {
+      internalDrag = false;
+      return;
+    }
     e.preventDefault();
     // Read and cleared synchronously before any await, so a drag whose dragend never
     // arrives at all costs one swallowed drop rather than latching for the session.
@@ -361,6 +377,12 @@ import { EV } from "$lib/utils/eventNames";
     const onDragStartCapture = (e: DragEvent) => {
       internalDrag = true;
       e.target?.addEventListener("dragend", () => (internalDrag = false), { once: true });
+      // Capture runs before the handlers that may cancel the drag, and a cancelled
+      // dragstart begins no session -- so no dragend and no drop ever follow to clear
+      // the flag. Re-check once dispatch has finished.
+      queueMicrotask(() => {
+        if (e.defaultPrevented) internalDrag = false;
+      });
     };
     window.addEventListener("dragstart", onDragStartCapture, true);
     // Surface every saved screenshot (program or source) as a transient toast.

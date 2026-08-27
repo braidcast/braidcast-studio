@@ -89,22 +89,26 @@ void SessionLogHandler(int level, const char *format, va_list args, void *)
 	}
 	va_end(argsForPrev);
 
-	// One stamp for the whole message, so a multi-line block reads as the single
-	// event it is. Seconds and milliseconds come from one reading, which is why this
-	// splits NowMs rather than sampling the clock twice.
-	const int64_t nowMs = TimeUtil::NowMs();
-	const time_t nowSec = static_cast<time_t>(nowMs / 1000);
-
-	struct tm lt;
-	localtime_s(&lt, &nowSec);
-	char timeBuf[16];
-	strftime(timeBuf, sizeof(timeBuf), "%T", &lt);
-
-	char stamp[32];
-	snprintf(stamp, sizeof(stamp), "%s.%03u: ", timeBuf, static_cast<unsigned>(nowMs % 1000));
-
 	std::lock_guard<std::mutex> lock(g_mutex);
 	if (g_file.is_open()) {
+		// Sampled under the lock, so the stamp column orders the same way the lines
+		// do. Read before it and two threads can interleave between reading the clock
+		// and writing, putting a later stamp above an earlier one -- which defeats the
+		// point precisely when the log is being read to settle a race.
+		//
+		// One stamp for the whole message, so a multi-line block reads as the single
+		// event it is; seconds and milliseconds come from one reading of NowMs.
+		const int64_t nowMs = TimeUtil::NowMs();
+		const time_t nowSec = static_cast<time_t>(nowMs / 1000);
+
+		struct tm lt;
+		localtime_s(&lt, &nowSec);
+		char timeBuf[16];
+		strftime(timeBuf, sizeof(timeBuf), "%T", &lt);
+
+		char stamp[32];
+		snprintf(stamp, sizeof(stamp), "%s.%03u: ", timeBuf, static_cast<unsigned>(nowMs % 1000));
+
 		char *cursor = line;
 		for (;;) {
 			char *nextLine = strchr(cursor, '\n');

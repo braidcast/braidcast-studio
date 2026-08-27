@@ -925,13 +925,17 @@ void MultistreamEngine::OnOutputStop(void *data, calldata_t *cd)
 	const char *lastError = calldata_string(cd, "last_error");
 	std::string canvasUuid;
 	std::string bindingUuid;
-	/* Only an UNREQUESTED stop matches here. obs_output_stop is asynchronous -- it
-	 * signals the send thread and returns -- while StopOutput/StopAll reap the
-	 * LiveOutput as soon as it returns, disconnecting this handler before the stop
-	 * signal arrives. Those two paths therefore do their own state and callback work
-	 * rather than relying on this one. Anything that must be reported for EVERY stop
-	 * belongs in libobs' own per-output summary, which is keyed by the output name
-	 * (multistream_out_<binding>) and already prints unconditionally. */
+	/* Whether this matches depends on how the output was stopped, so nothing here may
+	 * be treated as running once per stop. For a connected output obs_output_stop only
+	 * signals the send thread, and StopOutput/StopAll reap the LiveOutput as soon as it
+	 * returns -- so the stop signal arrives after this handler is disconnected and
+	 * finds nothing. A stop pressed while the output is RECONNECTING takes
+	 * obs_output_force_stop instead, which reaches obs_output_signal_stop on the
+	 * calling thread inside obs_output_stop, and does match (that synchronous
+	 * re-entry is why StopOutput stops outside liveMutex). An unrequested stop always
+	 * matches. Per-stop reporting therefore belongs in libobs' own summary, keyed by
+	 * the output name (multistream_out_<binding>) -- with the caveat that the
+	 * reconnecting path short-circuits before libobs logs one either. */
 	{
 		std::lock_guard<std::mutex> lock(self->liveMutex);
 		for (auto &lo : self->live) {
