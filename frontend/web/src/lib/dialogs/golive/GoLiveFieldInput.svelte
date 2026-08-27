@@ -200,6 +200,10 @@
 
   function onDrop(e: DragEvent): void {
     e.preventDefault();
+    // The window-level drop handler turns any dropped file into a scene source. This
+    // drop is consumed here, so it must not also reach that one -- preventDefault only
+    // stops CEF navigating, it does not stop the event bubbling.
+    e.stopPropagation();
     // CEF exposes the OS path on dropped files via the non-standard File.path. If it
     // is absent (sandboxed / plain browser), drag-drop is a no-op and click-to-pick
     // remains the path; we can't synthesize a local path from a sandboxed File.
