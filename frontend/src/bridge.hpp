@@ -70,7 +70,8 @@ void EmitEvent(const std::string &name, const json &payload);
 // thumbnail sampler; both run synchronously inside one obs graphics block and must
 // be called on the UI thread.
 bool RenderToBgraPixels(uint32_t srcW, uint32_t srcH, uint32_t outW, uint32_t outH,
-			const std::function<void()> &renderFn, std::vector<uint8_t> &pixels, std::string &errOut);
+			const std::function<void()> &renderFn, bool opaqueBackground, std::vector<uint8_t> &pixels,
+			std::string &errOut);
 bool EncodePngMemory(const uint8_t *pixels, uint32_t w, uint32_t h, std::vector<unsigned char> &out,
 		     std::string &errOut);
 

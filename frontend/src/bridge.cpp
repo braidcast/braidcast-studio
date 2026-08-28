@@ -10656,7 +10656,8 @@ bool EncodePngFile(const wchar_t *wpath, const uint8_t *pixels, uint32_t w, uint
 // bridge call). Both gs objects are destroyed and the graphics context left on
 // every path; the stage surface is unmapped before destroy.
 bool RenderToBgraPixels(uint32_t srcW, uint32_t srcH, uint32_t outW, uint32_t outH,
-			const std::function<void()> &renderFn, std::vector<uint8_t> &pixels, std::string &errOut)
+			const std::function<void()> &renderFn, bool opaqueBackground, std::vector<uint8_t> &pixels,
+			std::string &errOut)
 {
 	if (!srcW || !srcH || !outW || !outH) {
 		errOut = "source has no video";
@@ -10672,9 +10673,17 @@ bool RenderToBgraPixels(uint32_t srcW, uint32_t srcH, uint32_t outW, uint32_t ou
 	if (texrender && stage && gs_texrender_begin(texrender, outW, outH)) {
 		beginOk = true;
 
-		vec4 zero;
-		vec4_zero(&zero);
-		gs_clear(GS_CLEAR_COLOR, &zero, 0.0f, 0);
+		// A whole-canvas capture stands in for a preview, which shows uncovered area as
+		// black; clearing transparent instead would hand the page a PNG that lets its own
+		// backdrop through wherever the scene does not reach. A single source's tile keeps
+		// its transparency, which is the thing worth seeing about it.
+		vec4 bg;
+		if (opaqueBackground) {
+			vec4_set(&bg, 0.0f, 0.0f, 0.0f, 1.0f);
+		} else {
+			vec4_zero(&bg);
+		}
+		gs_clear(GS_CLEAR_COLOR, &bg, 0.0f, 0);
 
 		gs_viewport_push();
 		gs_projection_push();
@@ -10721,11 +10730,11 @@ bool RenderToBgraPixels(uint32_t srcW, uint32_t srcH, uint32_t outW, uint32_t ou
 
 // Render `renderFn` into a w*h GS_BGRA texture and write it out as PNG. Output is
 // native size with a 1:1 viewport (no letterbox).
-bool CaptureToPng(uint32_t w, uint32_t h, const std::function<void()> &renderFn, const std::string &outPath,
-		  std::string &errOut)
+bool CaptureToPng(uint32_t w, uint32_t h, const std::function<void()> &renderFn, bool opaqueBackground,
+		  const std::string &outPath, std::string &errOut)
 {
 	std::vector<uint8_t> pixels;
-	if (!RenderToBgraPixels(w, h, w, h, renderFn, pixels, errOut)) {
+	if (!RenderToBgraPixels(w, h, w, h, renderFn, opaqueBackground, pixels, errOut)) {
 		return false;
 	}
 
@@ -10815,7 +10824,7 @@ bool EncodePngMemory(const uint8_t *pixels, uint32_t w, uint32_t h, std::vector<
 constexpr uint32_t kPickerThumbMaxDim = 160;
 
 bool CaptureToThumbnailDataUri(uint32_t srcW, uint32_t srcH, const std::function<void()> &renderFn,
-			       std::string &dataUri, std::string &errOut, uint32_t maxDim)
+			       std::string &dataUri, std::string &errOut, uint32_t maxDim, bool opaqueBackground)
 {
 	uint32_t outW = srcW;
 	uint32_t outH = srcH;
@@ -10826,7 +10835,7 @@ bool CaptureToThumbnailDataUri(uint32_t srcW, uint32_t srcH, const std::function
 	}
 
 	std::vector<uint8_t> pixels;
-	if (!RenderToBgraPixels(srcW, srcH, outW, outH, renderFn, pixels, errOut)) {
+	if (!RenderToBgraPixels(srcW, srcH, outW, outH, renderFn, opaqueBackground, pixels, errOut)) {
 		return false;
 	}
 	std::vector<unsigned char> png;
@@ -10869,7 +10878,7 @@ bool MethodSourcesThumbnail(const json &params, json &result, std::string &error
 	};
 
 	std::string dataUri;
-	if (!CaptureToThumbnailDataUri(w, h, renderFn, dataUri, error, kPickerThumbMaxDim)) {
+	if (!CaptureToThumbnailDataUri(w, h, renderFn, dataUri, error, kPickerThumbMaxDim, false)) {
 		return false;
 	}
 	result = json{{"dataUri", dataUri}};
@@ -10989,7 +10998,11 @@ bool ResolveProgramCapture(const json &params, uint32_t &w, uint32_t &h, std::fu
 		w = ovi.base_width;
 		h = ovi.base_height;
 		renderFn = [cv]() {
-			obs_canvas_render(cv);
+			// The same call the preview surface makes. obs_canvas_render re-renders the
+			// scene's sources into whatever blend state the caller left set, bypassing
+			// both the finished mix texture and the sRGB handling that goes with it, so
+			// it comes out at a different gamma than the surface it is standing in for.
+			obs_render_canvas_texture(cv);
 		};
 		const char *n = obs_canvas_get_name(cv);
 		name = (n && *n) ? n : "Program";
@@ -11054,7 +11067,7 @@ bool MethodPreviewFreeze(const json &params, json &result, std::string &error)
 		WaitForMainComposite();
 	}
 	std::string dataUri;
-	if (!CaptureToThumbnailDataUri(w, h, renderFn, dataUri, error, kFreezeFrameMaxDim)) {
+	if (!CaptureToThumbnailDataUri(w, h, renderFn, dataUri, error, kFreezeFrameMaxDim, true)) {
 		return false;
 	}
 	result = json{{"dataUri", dataUri}, {"width", w}, {"height", h}};
@@ -11086,7 +11099,7 @@ bool MethodScreenshotTakeProgram(const json &params, json &result, std::string &
 	if (!BuildScreenshotPath(name, "Program", fullPath, error)) {
 		return false;
 	}
-	const bool captured = CaptureToPng(w, h, renderFn, fullPath, error);
+	const bool captured = CaptureToPng(w, h, renderFn, true, fullPath, error);
 	if (!captured) {
 		return false;
 	}
@@ -11148,7 +11161,7 @@ bool MethodScreenshotTakeSource(const json &params, json &result, std::string &e
 		obs_source_video_render(src);
 		VideoGate::DecShowing(src);
 	};
-	const bool ok = CaptureToPng(w, h, renderFn, fullPath, error);
+	const bool ok = CaptureToPng(w, h, renderFn, false, fullPath, error);
 	obs_source_release(sceneSource);
 	if (!ok) {
 		return false;

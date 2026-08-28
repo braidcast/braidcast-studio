@@ -3857,7 +3857,7 @@ bool MainCompositeIsBlank()
 	const auto render = []() {
 		obs_render_main_texture();
 	};
-	if (!Bridge::RenderToBgraPixels(ovi.base_width, ovi.base_height, 64, 36, render, bgra, err)) {
+	if (!Bridge::RenderToBgraPixels(ovi.base_width, ovi.base_height, 64, 36, render, true, bgra, err)) {
 		return true;
 	}
 	return History::IsBlank(bgra);

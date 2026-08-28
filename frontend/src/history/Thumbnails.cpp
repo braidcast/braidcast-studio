@@ -89,7 +89,7 @@ bool GrabPng(const std::string &canvasUuid, std::vector<unsigned char> &png, std
 	uint32_t outW = 0;
 	uint32_t outH = 0;
 	FitLongEdge(srcW, srcH, outW, outH);
-	if (!Bridge::RenderToBgraPixels(srcW, srcH, outW, outH, renderFn, bgra, err)) {
+	if (!Bridge::RenderToBgraPixels(srcW, srcH, outW, outH, renderFn, true, bgra, err)) {
 		return false;
 	}
 	return Bridge::EncodePngMemory(bgra.data(), outW, outH, png, err);
