@@ -31,7 +31,7 @@ inline constexpr double kBlankLumaThreshold = 8.0;
 // Absolute path of the thumbnail directory, created on demand.
 std::string ThumbnailDir();
 
-bool IsBlank(const std::vector<uint8_t> &rgba);
+bool IsBlank(const std::vector<uint8_t> &bgra);
 
 // Candidate frames for the running session, in the config directory beside the
 // database. Files rather than blobs: a blob would bloat every query that

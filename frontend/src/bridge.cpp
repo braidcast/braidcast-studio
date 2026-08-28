@@ -10555,7 +10555,49 @@ std::string ReadJsonString(const char *file, const char *key)
 	return v ? std::string(v) : std::string();
 }
 
-// Encode a tightly-packed (stride == w*4) GS_RGBA buffer to a PNG file via the
+// Write one tightly-packed (stride == w*4) BGRA frame into an initialized PNG encoder
+// and commit both.
+//
+// SetPixelFormat is an in/out parameter: WIC answers with the closest format its PNG
+// encoder actually supports, which need not be the one asked for. Writing the buffer
+// after an unnoticed substitution mislabels its bytes -- red and blue trade places --
+// so the answer is checked rather than assumed. BGRA is what is asked for because that
+// is the 32-bit layout the PNG encoder supports natively; anything else coming back
+// means the buffer would be described wrongly, and a hard error beats a silently
+// wrong-colored image.
+HRESULT EncodePngFrame(IWICBitmapEncoder *encoder, const uint8_t *pixels, uint32_t w, uint32_t h)
+{
+	using Microsoft::WRL::ComPtr;
+
+	ComPtr<IWICBitmapFrameEncode> frame;
+	ComPtr<IPropertyBag2> options;
+	HRESULT hr = encoder->CreateNewFrame(frame.GetAddressOf(), options.GetAddressOf());
+	if (SUCCEEDED(hr)) {
+		hr = frame->Initialize(options.Get());
+	}
+	if (SUCCEEDED(hr)) {
+		hr = frame->SetSize(w, h);
+	}
+	WICPixelFormatGUID format = GUID_WICPixelFormat32bppBGRA;
+	if (SUCCEEDED(hr)) {
+		hr = frame->SetPixelFormat(&format);
+	}
+	if (SUCCEEDED(hr) && !IsEqualGUID(format, GUID_WICPixelFormat32bppBGRA)) {
+		hr = WINCODEC_ERR_UNSUPPORTEDPIXELFORMAT;
+	}
+	if (SUCCEEDED(hr)) {
+		hr = frame->WritePixels(h, w * 4, w * h * 4, const_cast<BYTE *>(pixels));
+	}
+	if (SUCCEEDED(hr)) {
+		hr = frame->Commit();
+	}
+	if (SUCCEEDED(hr)) {
+		hr = encoder->Commit();
+	}
+	return hr;
+}
+
+// Encode a tightly-packed (stride == w*4) GS_BGRA buffer to a PNG file via the
 // Windows Imaging Component, mirroring the legacy SaveJxr COM pattern with the
 // PNG container. WIC needs COM up on the calling thread (the CEF UI thread); we
 // init MULTITHREADED and only balance with CoUninitialize when our init actually
@@ -10587,31 +10629,8 @@ bool EncodePngFile(const wchar_t *wpath, const uint8_t *pixels, uint32_t w, uint
 		if (SUCCEEDED(hr)) {
 			hr = encoder->Initialize(stream.Get(), WICBitmapEncoderNoCache);
 		}
-		ComPtr<IWICBitmapFrameEncode> frame;
-		ComPtr<IPropertyBag2> options;
 		if (SUCCEEDED(hr)) {
-			hr = encoder->CreateNewFrame(frame.GetAddressOf(), options.GetAddressOf());
-		}
-		if (SUCCEEDED(hr)) {
-			hr = frame->Initialize(options.Get());
-		}
-		if (SUCCEEDED(hr)) {
-			hr = frame->SetSize(w, h);
-		}
-		WICPixelFormatGUID format = GUID_WICPixelFormat32bppRGBA;
-		if (SUCCEEDED(hr)) {
-			hr = frame->SetPixelFormat(&format);
-		}
-		if (SUCCEEDED(hr)) {
-			// GS_RGBA is R,G,B,A byte order with opaque alpha; a WIC-negotiated substitute
-			// format is acceptable for opaque RGBA, so a format mismatch is not rejected.
-			hr = frame->WritePixels(h, w * 4, w * h * 4, const_cast<BYTE *>(pixels));
-		}
-		if (SUCCEEDED(hr)) {
-			hr = frame->Commit();
-		}
-		if (SUCCEEDED(hr)) {
-			hr = encoder->Commit();
+			hr = EncodePngFrame(encoder.Get(), pixels, w, h);
 		}
 	}
 
@@ -10626,7 +10645,7 @@ bool EncodePngFile(const wchar_t *wpath, const uint8_t *pixels, uint32_t w, uint
 	return true;
 }
 
-// Render `renderFn` into an outW*outH GS_RGBA texture (ortho'd to srcW*srcH source
+// Render `renderFn` into an outW*outH GS_BGRA texture (ortho'd to srcW*srcH source
 // units, so outW/outH smaller than srcW/srcH downscales on the GPU instead of after
 // the fact) and return the packed RGBA pixels. Shared core for the on-disk PNG
 // screenshot path (CaptureToPng, src==out) and the in-memory thumbnail path
@@ -10636,7 +10655,7 @@ bool EncodePngFile(const wchar_t *wpath, const uint8_t *pixels, uint32_t w, uint
 // only existed to avoid stalling the render thread, irrelevant for a one-shot
 // bridge call). Both gs objects are destroyed and the graphics context left on
 // every path; the stage surface is unmapped before destroy.
-bool RenderToRgbaPixels(uint32_t srcW, uint32_t srcH, uint32_t outW, uint32_t outH,
+bool RenderToBgraPixels(uint32_t srcW, uint32_t srcH, uint32_t outW, uint32_t outH,
 			const std::function<void()> &renderFn, std::vector<uint8_t> &pixels, std::string &errOut)
 {
 	if (!srcW || !srcH || !outW || !outH) {
@@ -10646,8 +10665,8 @@ bool RenderToRgbaPixels(uint32_t srcW, uint32_t srcH, uint32_t outW, uint32_t ou
 
 	obs_enter_graphics();
 
-	gs_texrender_t *texrender = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
-	gs_stagesurf_t *stage = gs_stagesurface_create(outW, outH, GS_RGBA);
+	gs_texrender_t *texrender = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
+	gs_stagesurf_t *stage = gs_stagesurface_create(outW, outH, GS_BGRA);
 
 	bool beginOk = false;
 	if (texrender && stage && gs_texrender_begin(texrender, outW, outH)) {
@@ -10700,13 +10719,13 @@ bool RenderToRgbaPixels(uint32_t srcW, uint32_t srcH, uint32_t outW, uint32_t ou
 	return true;
 }
 
-// Render `renderFn` into a w*h GS_RGBA texture and write it out as PNG. Output is
+// Render `renderFn` into a w*h GS_BGRA texture and write it out as PNG. Output is
 // native size with a 1:1 viewport (no letterbox).
 bool CaptureToPng(uint32_t w, uint32_t h, const std::function<void()> &renderFn, const std::string &outPath,
 		  std::string &errOut)
 {
 	std::vector<uint8_t> pixels;
-	if (!RenderToRgbaPixels(w, h, w, h, renderFn, pixels, errOut)) {
+	if (!RenderToBgraPixels(w, h, w, h, renderFn, pixels, errOut)) {
 		return false;
 	}
 
@@ -10755,31 +10774,8 @@ bool EncodePngMemory(const uint8_t *pixels, uint32_t w, uint32_t h, std::vector<
 		if (SUCCEEDED(hr)) {
 			hr = encoder->Initialize(wicStream.Get(), WICBitmapEncoderNoCache);
 		}
-		ComPtr<IWICBitmapFrameEncode> frame;
-		ComPtr<IPropertyBag2> options;
 		if (SUCCEEDED(hr)) {
-			hr = encoder->CreateNewFrame(frame.GetAddressOf(), options.GetAddressOf());
-		}
-		if (SUCCEEDED(hr)) {
-			hr = frame->Initialize(options.Get());
-		}
-		if (SUCCEEDED(hr)) {
-			hr = frame->SetSize(w, h);
-		}
-		WICPixelFormatGUID format = GUID_WICPixelFormat32bppRGBA;
-		if (SUCCEEDED(hr)) {
-			hr = frame->SetPixelFormat(&format);
-		}
-		if (SUCCEEDED(hr)) {
-			// GS_RGBA is R,G,B,A byte order with opaque alpha; a WIC-negotiated substitute
-			// format is acceptable for opaque RGBA, so a format mismatch is not rejected.
-			hr = frame->WritePixels(h, w * 4, w * h * 4, const_cast<BYTE *>(pixels));
-		}
-		if (SUCCEEDED(hr)) {
-			hr = frame->Commit();
-		}
-		if (SUCCEEDED(hr)) {
-			hr = encoder->Commit();
+			hr = EncodePngFrame(encoder.Get(), pixels, w, h);
 		}
 	}
 
@@ -10830,7 +10826,7 @@ bool CaptureToThumbnailDataUri(uint32_t srcW, uint32_t srcH, const std::function
 	}
 
 	std::vector<uint8_t> pixels;
-	if (!RenderToRgbaPixels(srcW, srcH, outW, outH, renderFn, pixels, errOut)) {
+	if (!RenderToBgraPixels(srcW, srcH, outW, outH, renderFn, pixels, errOut)) {
 		return false;
 	}
 	std::vector<unsigned char> png;

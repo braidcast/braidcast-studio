@@ -3852,15 +3852,15 @@ bool MainCompositeIsBlank()
 	if (!obs_get_video_info(&ovi)) {
 		return true;
 	}
-	std::vector<uint8_t> rgba;
+	std::vector<uint8_t> bgra;
 	std::string err;
 	const auto render = []() {
 		obs_render_main_texture();
 	};
-	if (!Bridge::RenderToRgbaPixels(ovi.base_width, ovi.base_height, 64, 36, render, rgba, err)) {
+	if (!Bridge::RenderToBgraPixels(ovi.base_width, ovi.base_height, 64, 36, render, bgra, err)) {
 		return true;
 	}
-	return History::IsBlank(rgba);
+	return History::IsBlank(bgra);
 }
 
 // Give the graphics thread two ticks to act on a gate change. total_frames advances

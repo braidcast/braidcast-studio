@@ -54,7 +54,7 @@ void FitLongEdge(uint32_t srcW, uint32_t srcH, uint32_t &outW, uint32_t &outH)
 // resolution the screenshot method uses: CanvasRuntime holds only the additional
 // canvases, so a null Find means the Default, whose mix is the global one.
 // Resolved per grab -- a canvas's mix can be dropped and rebuilt while inactive.
-bool GrabPng(const std::string &canvasUuid, std::vector<unsigned char> &png, std::vector<uint8_t> &rgba,
+bool GrabPng(const std::string &canvasUuid, std::vector<unsigned char> &png, std::vector<uint8_t> &bgra,
 	     std::string &err)
 {
 	uint32_t srcW = 0;
@@ -89,10 +89,10 @@ bool GrabPng(const std::string &canvasUuid, std::vector<unsigned char> &png, std
 	uint32_t outW = 0;
 	uint32_t outH = 0;
 	FitLongEdge(srcW, srcH, outW, outH);
-	if (!Bridge::RenderToRgbaPixels(srcW, srcH, outW, outH, renderFn, rgba, err)) {
+	if (!Bridge::RenderToBgraPixels(srcW, srcH, outW, outH, renderFn, bgra, err)) {
 		return false;
 	}
-	return Bridge::EncodePngMemory(rgba.data(), outW, outH, png, err);
+	return Bridge::EncodePngMemory(bgra.data(), outW, outH, png, err);
 }
 
 } // namespace
@@ -104,16 +104,17 @@ std::string ThumbnailDir()
 	return dir;
 }
 
-bool IsBlank(const std::vector<uint8_t> &rgba)
+bool IsBlank(const std::vector<uint8_t> &bgra)
 {
-	if (rgba.size() < 4) {
+	if (bgra.size() < 4) {
 		return true;
 	}
 	double sum = 0.0;
-	const size_t pixels = rgba.size() / 4;
+	const size_t pixels = bgra.size() / 4;
 	for (size_t i = 0; i < pixels; i++) {
-		const uint8_t *p = &rgba[i * 4];
-		sum += 0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2];
+		// B,G,R,A -- the Rec.709 weights are per-channel, so they follow the bytes.
+		const uint8_t *p = &bgra[i * 4];
+		sum += 0.0722 * p[0] + 0.7152 * p[1] + 0.2126 * p[2];
 	}
 	return (sum / static_cast<double>(pixels)) < kBlankLumaThreshold;
 }
@@ -135,9 +136,9 @@ void ThumbnailSampler::OnTick(int64_t sessionElapsedMs, const std::string &sessi
 	}
 
 	std::vector<unsigned char> png;
-	std::vector<uint8_t> rgba;
+	std::vector<uint8_t> bgra;
 	std::string err;
-	if (!GrabPng(canvasUuid, png, rgba, err)) {
+	if (!GrabPng(canvasUuid, png, bgra, err)) {
 		// A failed grab costs one candidate, never the broadcast. Do not mark
 		// the tick as taken, so the next one retries.
 		return;
@@ -155,7 +156,7 @@ void ThumbnailSampler::OnTick(int64_t sessionElapsedMs, const std::string &sessi
 	}
 	f.close();
 
-	candidates_.push_back(Candidate{name, IsBlank(rgba)});
+	candidates_.push_back(Candidate{name, IsBlank(bgra)});
 	lastGrabMs_ = sessionElapsedMs;
 	haveFirst_ = true;
 }

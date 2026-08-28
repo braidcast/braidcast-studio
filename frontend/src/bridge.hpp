@@ -64,12 +64,12 @@ bool DispatchAsync(const std::string &method, const json &params,
 // there. payload is any JSON value (object/array/scalar/null).
 void EmitEvent(const std::string &name, const json &payload);
 
-// Render `renderFn` into an outW*outH RGBA texture (ortho'd to srcW*srcH source
+// Render `renderFn` into an outW*outH BGRA texture (ortho'd to srcW*srcH source
 // units, so an out smaller than src downscales on the GPU) and return the packed
 // pixels, then encode those pixels as a PNG in memory. Exposed for the history
 // thumbnail sampler; both run synchronously inside one obs graphics block and must
 // be called on the UI thread.
-bool RenderToRgbaPixels(uint32_t srcW, uint32_t srcH, uint32_t outW, uint32_t outH,
+bool RenderToBgraPixels(uint32_t srcW, uint32_t srcH, uint32_t outW, uint32_t outH,
 			const std::function<void()> &renderFn, std::vector<uint8_t> &pixels, std::string &errOut);
 bool EncodePngMemory(const uint8_t *pixels, uint32_t w, uint32_t h, std::vector<unsigned char> &out,
 		     std::string &errOut);
