@@ -24,6 +24,7 @@
 
 #include "bmem.h"
 #include "pipe.h"
+#include "platform.h"
 
 extern char **environ;
 
@@ -142,30 +143,49 @@ os_process_pipe_t *os_process_pipe_create2(const os_process_args_t *args, const 
 	return os_process_pipe_create_internal(argv[0], argv, type);
 }
 
-int os_process_pipe_destroy(os_process_pipe_t *pp)
+int os_process_pipe_destroy_drain(os_process_pipe_t *pp, void (*drain)(void *param), void *param)
 {
 	int ret = 0;
 
 	if (pp) {
-		int status;
+		int status = 0;
 
 		fclose(pp->file);
 		pp->file = NULL;
 
-		fclose(pp->err_file);
-		pp->err_file = NULL;
+		if (!drain) {
+			fclose(pp->err_file);
+			pp->err_file = NULL;
+		}
 
 		do {
-			ret = waitpid(pp->pid, &status, 0);
-		} while (ret == -1 && errno == EINTR);
+			ret = waitpid(pp->pid, &status, drain ? WNOHANG : 0);
+			if (drain && ret == 0) {
+				drain(param);
+				os_sleep_ms(OS_PROCESS_PIPE_DRAIN_POLL_MS);
+			}
+		} while (ret == 0 || (ret == -1 && errno == EINTR));
 
-		if (WIFEXITED(status)) {
+		if (drain) {
+			drain(param);
+			fclose(pp->err_file);
+			pp->err_file = NULL;
+		}
+
+		/* Only a reap fills in `status`; on a failed wait `ret` carries the
+		 * errno-bearing -1 instead. */
+		if (ret > 0 && WIFEXITED(status)) {
 			ret = (int)(char)WEXITSTATUS(status);
 		}
 		bfree(pp);
 	}
 
 	return ret;
+}
+
+int os_process_pipe_destroy(os_process_pipe_t *pp)
+{
+	return os_process_pipe_destroy_drain(pp, NULL, NULL);
 }
 
 size_t os_process_pipe_read(os_process_pipe_t *pp, uint8_t *data, size_t len)

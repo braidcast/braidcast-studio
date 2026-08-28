@@ -30,7 +30,26 @@ typedef struct os_process_args os_process_args_t;
 
 EXPORT os_process_pipe_t *os_process_pipe_create(const char *cmd_line, const char *type);
 EXPORT os_process_pipe_t *os_process_pipe_create2(const os_process_args_t *args, const char *type);
+/* Closes the read end of the child's stderr before waiting for it to exit, so a
+ * child that writes past the pipe buffer fails its write rather than blocking in
+ * it while this waits for the exit that write is holding up. Use the draining
+ * form below to read what the child writes on its way out. */
 EXPORT int os_process_pipe_destroy(os_process_pipe_t *pp);
+
+/* Destroys the pipe as above, but keeps the child's stderr readable until it has
+ * exited. A child only learns the work is over when its stdin closes, so
+ * whatever it does last -- for a muxer, writing the trailer -- produces its
+ * errors after the point where the plain form has already dropped the read end.
+ *
+ * `drain` is called while waiting and once more after the child exits. It is
+ * also what keeps the child from blocking in write() against a stderr pipe
+ * nobody is emptying, so it must actually consume what is there. */
+EXPORT int os_process_pipe_destroy_drain(os_process_pipe_t *pp, void (*drain)(void *param), void *param);
+
+/* How often that drain runs while the child is still alive. The stderr pipe
+ * holds a few kilobytes, so emptying it this often is what makes it impossible
+ * for the child to block in write() and never reach the exit being waited on. */
+#define OS_PROCESS_PIPE_DRAIN_POLL_MS 50
 
 EXPORT size_t os_process_pipe_read(os_process_pipe_t *pp, uint8_t *data, size_t len);
 EXPORT size_t os_process_pipe_read_err(os_process_pipe_t *pp, uint8_t *data, size_t len);

@@ -203,7 +203,7 @@ os_process_pipe_t *os_process_pipe_create2(const os_process_args_t *args, const 
 	return ret;
 }
 
-int os_process_pipe_destroy(os_process_pipe_t *pp)
+int os_process_pipe_destroy_drain(os_process_pipe_t *pp, void (*drain)(void *param), void *param)
 {
 	int ret = 0;
 
@@ -211,9 +211,18 @@ int os_process_pipe_destroy(os_process_pipe_t *pp)
 		DWORD code;
 
 		CloseHandle(pp->handle);
-		CloseHandle(pp->handle_err);
 
-		WaitForSingleObject(pp->process, INFINITE);
+		if (drain) {
+			while (WaitForSingleObject(pp->process, OS_PROCESS_PIPE_DRAIN_POLL_MS) == WAIT_TIMEOUT) {
+				drain(param);
+			}
+			drain(param);
+			CloseHandle(pp->handle_err);
+		} else {
+			CloseHandle(pp->handle_err);
+			WaitForSingleObject(pp->process, INFINITE);
+		}
+
 		if (GetExitCodeProcess(pp->process, &code)) {
 			ret = (int)code;
 		}
@@ -223,6 +232,11 @@ int os_process_pipe_destroy(os_process_pipe_t *pp)
 	}
 
 	return ret;
+}
+
+int os_process_pipe_destroy(os_process_pipe_t *pp)
+{
+	return os_process_pipe_destroy_drain(pp, NULL, NULL);
 }
 
 size_t os_process_pipe_read(os_process_pipe_t *pp, uint8_t *data, size_t len)
