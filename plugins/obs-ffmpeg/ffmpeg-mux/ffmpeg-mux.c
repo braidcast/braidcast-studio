@@ -22,9 +22,11 @@
 
 #endif
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include "ffmpeg-mux.h"
+#include "ffmpeg-mux-upload.h"
 
 #include <util/threading.h>
 #include <util/platform.h>
@@ -35,8 +37,6 @@
 #include <libavutil/channel_layout.h>
 #include <libavutil/mastering_display_metadata.h>
 #include <libavutil/time.h>
-
-#define AVIO_BUFFER_SIZE 65536
 
 /* ------------------------------------------------------------------------- */
 
@@ -172,6 +172,11 @@ static void header_free(struct header *header)
 static void free_avformat(struct ffmpeg_mux *ffm)
 {
 	if (ffm->output) {
+		/* Taken before the free and released after it: freeing the context runs
+		 * hlsenc's deinit, which can still close an upload through the
+		 * callbacks, so they and their state have to outlive it. */
+		struct hls_upload *upload = hls_upload_state(ffm->output);
+
 		avcodec_free_context(&ffm->video_ctx);
 
 		if ((ffm->output->oformat->flags & AVFMT_NOFILE) == 0) {
@@ -185,6 +190,8 @@ static void free_avformat(struct ffmpeg_mux *ffm)
 
 		avformat_free_context(ffm->output);
 		ffm->output = NULL;
+
+		hls_upload_finish(upload);
 	}
 
 	if (ffm->audio_infos) {
@@ -354,6 +361,28 @@ static void emit_log_line(struct log_throttle *throttle, const char *text)
 		throttle->suppressed = 0;
 	}
 	fprintf(stderr, "%s[ffmpeg_muxer] %s", throttle->level, text);
+}
+
+void ffm_warn(const char *format, ...)
+{
+	char buffer[1024];
+	struct dstr out = {0};
+	va_list args;
+
+	va_start(args, format);
+	vsnprintf(buffer, sizeof(buffer), format, args);
+	va_end(args);
+
+	dstr_copy(&out, buffer);
+	if (global_stream_key && *global_stream_key) {
+		dstr_replace(&out, global_stream_key, "{stream_key}");
+	}
+	/* emit_log_line prints verbatim: the FFmpeg messages it was written for
+	 * bring their own line ending. */
+	dstr_cat(&out, "\n");
+
+	emit_log_line(&warning_throttle, out.array);
+	dstr_free(&out);
 }
 
 static void ffmpeg_log_callback(void *param, int level, const char *format, va_list args)
@@ -1036,6 +1065,10 @@ static inline int open_output_file(struct ffmpeg_mux *ffm)
 
 		printf("\n");
 	}
+
+	/* Must precede the header: hlsenc copies the io callbacks into the
+	 * per-segment context it creates there, and never re-reads them. */
+	hls_upload_install(ffm->output, dict);
 
 	ret = avformat_write_header(ffm->output, &dict);
 	if (ret < 0) {

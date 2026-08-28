@@ -34,6 +34,13 @@ enum ffm_packet_type {
 #define FFM_LOG_ERROR "error: "
 #define FFM_LOG_WARNING "warning: "
 
+#define AVIO_BUFFER_SIZE 65536
+
+/* Writes one warning through the same throttled, stream-key-redacting path the
+ * FFmpeg log callback uses, so a per-segment failure cannot outrun the parent's
+ * drain of this pipe. Implemented by the muxer executable. */
+void ffm_warn(const char *format, ...);
+
 struct ffm_packet_info {
 	int64_t pts;
 	int64_t dts;

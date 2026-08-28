@@ -196,7 +196,12 @@ bool ffmpeg_hls_mux_start(void *data)
 	dstr_copy(&stream->stream_key, stream_key);
 	dstr_copy(&path, path_str);
 	dstr_replace(&path, "{stream_key}", stream_key);
-	dstr_copy(&stream->muxer_settings, "method=PUT http_persistent=1 ignore_io_errors=1 ");
+	/* In persistent mode hlsenc drives the connection itself and requires every
+	 * context it closes to be one of its own HTTP contexts, so the muxer cannot
+	 * take the uploads over -- and taking them over is the only way to learn
+	 * whether a segment was accepted. The muxer keeps one connection alive
+	 * across segments itself, so this is not a net connection cost. */
+	dstr_copy(&stream->muxer_settings, "method=PUT http_persistent=0 ignore_io_errors=1 ");
 	dstr_catf(&stream->muxer_settings, "http_user_agent=libobs/%s", obs_get_version_string());
 	dstr_catf(&stream->muxer_settings, " timeout=%dus", HLS_IO_TIMEOUT_US);
 
