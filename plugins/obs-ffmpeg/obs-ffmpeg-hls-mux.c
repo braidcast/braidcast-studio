@@ -13,7 +13,12 @@
 /* Socket I/O timeout handed to hlsenc, which forwards it to the HTTP layer only
  * when it is not negative -- its own default of -1 leaves the persistent
  * connection with no read or write deadline at all, so a silently dead ingest
- * stalls the muxer instead of failing it. */
+ * stalls the muxer instead of failing it.
+ *
+ * hlsenc parses this as an FFmpeg duration, whose bare unit is SECONDS and whose
+ * range is [-1e-06, 2147.48]. A microsecond count written without a unit is
+ * therefore rejected outright and the muxer fails to open, so the "us" suffix
+ * emitted below is required, not decorative. */
 #define HLS_IO_TIMEOUT_US 8000000
 
 const char *ffmpeg_hls_mux_getname(void *type)
@@ -193,7 +198,7 @@ bool ffmpeg_hls_mux_start(void *data)
 	dstr_replace(&path, "{stream_key}", stream_key);
 	dstr_copy(&stream->muxer_settings, "method=PUT http_persistent=1 ignore_io_errors=1 ");
 	dstr_catf(&stream->muxer_settings, "http_user_agent=libobs/%s", obs_get_version_string());
-	dstr_catf(&stream->muxer_settings, " timeout=%d", HLS_IO_TIMEOUT_US);
+	dstr_catf(&stream->muxer_settings, " timeout=%dus", HLS_IO_TIMEOUT_US);
 
 	vencoder = obs_output_get_video_encoder(stream->output);
 	settings = obs_encoder_get_settings(vencoder);
