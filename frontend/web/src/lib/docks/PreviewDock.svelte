@@ -374,14 +374,17 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
 
   <section class="preview" class:gated={!defaultEnabled || isPreviewDisabled(DEFAULT_PREVIEW_KEY)} bind:this={previewEl}>
     <!-- Stands in for the hidden native surface while an overlay is up. FIRST so the
-         label and any placeholder stack above it on DOM order alone -- every one of
-         them is absolutely positioned, so no z-index has to be assigned to keep them
-         visible. aria-hidden: it is the same picture the surface was already showing,
+         placeholders still stack above it on DOM order alone -- each is absolutely
+         positioned, so no z-index has to be assigned to keep them visible. aria-hidden: it is the same picture the surface was already showing,
          so announcing it adds nothing. -->
     {#if freeze.frame}
       <img class="freeze" src={freeze.frame} alt="" aria-hidden="true" />
     {/if}
-    <span class="label">Default</span>
+    <!-- Same reasoning as the stage chips: the native surface paints over this, so
+         the still must too, or the region gains a label on right-click. -->
+    {#if !freeze.frame}
+      <span class="label">Default</span>
+    {/if}
     {#if isPreviewDisabled(DEFAULT_PREVIEW_KEY)}
       <div class="placeholder">
         <p class="ph-title">Preview disabled</p>

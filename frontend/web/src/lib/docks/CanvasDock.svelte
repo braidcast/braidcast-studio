@@ -1055,6 +1055,9 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   // grabbed BEFORE the hide -- both are bridge calls and run in order on the host's UI
   // thread, so capturing second would read a canvas already gated off.
   const freeze = new PreviewFreeze();
+  // Something is painting video over the stage: the native surface, or the still
+  // standing in for it. Either way the DOM outline underneath must not show.
+  const stageCovered = $derived(surfaceActive || freeze.frame !== null);
   $effect(() => {
     if (previewSuspended()) {
       void freeze.capture(canvasUuid);
@@ -1087,22 +1090,27 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
        are the mock's stage overlays (res top-left, LIVE top-right, scene label
        bottom-left). pointer-events:none so they never intercept overlay input. -->
   <div class="stage-area">
-    <div class="stage" class:vertical class:active={surfaceActive} bind:this={previewEl}>
+    <div class="stage" class:vertical class:active={stageCovered} bind:this={previewEl}>
       <!-- Stands in for the hidden native surface while an overlay is up. FIRST so the
-           chips and the scene tag stack above it on DOM order alone. -->
+           disabled-preview placeholder still stacks above it on DOM order alone. -->
       {#if freeze.frame}
         <img class="freeze" src={freeze.frame} alt="" aria-hidden="true" />
       {/if}
-      {#if resText}
-        <span class="res-chip">{resText}</span>
+      <!-- Occluded by the native surface whenever it paints, so the still has to
+           occlude them too -- otherwise a right-click visibly redecorates the stage
+           with chrome the live preview never shows. -->
+      {#if !freeze.frame}
+        {#if resText}
+          <span class="res-chip">{resText}</span>
+        {/if}
+        {#if liveState === "live"}
+          <span class="live-chip"><Icon name="dot" size={7} /> LIVE</span>
+        {/if}
+        <div class="scene-tag">
+          <span class="scene-bar"></span>
+          <span class="scene-pill">{currentScene ?? canvasName}</span>
+        </div>
       {/if}
-      {#if liveState === "live"}
-        <span class="live-chip"><Icon name="dot" size={7} /> LIVE</span>
-      {/if}
-      <div class="scene-tag">
-        <span class="scene-bar"></span>
-        <span class="scene-pill">{currentScene ?? canvasName}</span>
-      </div>
       {#if isPreviewDisabled(canvasUuid)}
         <div class="placeholder">
           <p class="ph-title">Preview disabled</p>
@@ -1300,10 +1308,10 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     max-width: 100%;
     max-height: 100%;
   }
-  /* Once the native surface is asserted it paints the whole stage, so drop the DOM
-     outline — otherwise it lingers as a ghost frame (visible drifting during a
-     resize while the async native window trails). It returns as the placeholder
-     frame whenever the surface is hidden/suspended. */
+  /* Whatever paints the stage — the native surface or the held still — covers the
+     whole of it, so drop the DOM outline; otherwise it lingers as a ghost frame
+     (visible drifting during a resize while the async native window trails). It
+     returns as the placeholder frame only when the stage is genuinely empty. */
   .stage.active {
     box-shadow: none;
   }
