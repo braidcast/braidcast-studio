@@ -10,6 +10,12 @@
 #define warn(format, ...) do_log(LOG_WARNING, format, ##__VA_ARGS__)
 #define info(format, ...) do_log(LOG_INFO, format, ##__VA_ARGS__)
 
+/* Socket I/O timeout handed to hlsenc, which forwards it to the HTTP layer only
+ * when it is not negative -- its own default of -1 leaves the persistent
+ * connection with no read or write deadline at all, so a silently dead ingest
+ * stalls the muxer instead of failing it. */
+#define HLS_IO_TIMEOUT_US 8000000
+
 const char *ffmpeg_hls_mux_getname(void *type)
 {
 	UNUSED_PARAMETER(type);
@@ -50,6 +56,10 @@ void *ffmpeg_hls_mux_create(obs_data_t *settings, obs_output_t *output)
 	struct ffmpeg_muxer *stream = bzalloc(sizeof(*stream));
 	pthread_mutex_init_value(&stream->write_mutex);
 	stream->output = output;
+
+	if (obs_output_get_flags(output) & OBS_OUTPUT_SERVICE) {
+		stream->is_network = true;
+	}
 
 	/* init mutex, semaphore and event */
 	if (pthread_mutex_init(&stream->write_mutex, NULL) != 0) {
@@ -92,12 +102,50 @@ static bool process_packet(struct ffmpeg_muxer *stream)
 	return ret;
 }
 
+/* A flush cannot be allowed to hold teardown open: it runs on the thread the
+ * encoder callback is waiting to join, which feeds every other output sharing
+ * that encoder, and a write to a stalled child blocks for as long as the socket
+ * timeout above. Deliver what the queue holds if the destination is healthy,
+ * abandon it if it is not. */
+#define HLS_FLUSH_TIMEOUT_NS 2000000000ULL
+
+/* The stop is signalled on its own event rather than by exhausting the
+ * semaphore, so the queue is normally not empty when this thread is told to
+ * leave, and anything left in it is media the destination never receives. Only
+ * what is queued at this moment: the encoder can still be pushing, since
+ * `active` is not cleared until after this thread is joined. */
+static void flush_packets(struct ffmpeg_muxer *stream)
+{
+	const uint64_t deadline = os_gettime_ns() + HLS_FLUSH_TIMEOUT_NS;
+	size_t remaining;
+
+	pthread_mutex_lock(&stream->write_mutex);
+	remaining = stream->packets.size / sizeof(struct encoder_packet);
+	pthread_mutex_unlock(&stream->write_mutex);
+
+	os_atomic_set_bool(&stream->flushing, true);
+
+	for (size_t i = 0; i < remaining; i++) {
+		/* The same interlock the main loop avoids, and this loop can run for
+		 * seconds: a child whose stderr nobody empties blocks in fprintf, and
+		 * a child blocked there never reads the write below. */
+		drain_child_stderr(stream, false);
+
+		if (!process_packet(stream) || os_gettime_ns() >= deadline) {
+			break;
+		}
+	}
+
+	os_atomic_set_bool(&stream->flushing, false);
+}
+
 static void *write_thread(void *data)
 {
 	struct ffmpeg_muxer *stream = data;
 
 	while (os_sem_wait(stream->write_sem) == 0) {
 		if (os_event_try(stream->stop_event) == 0) {
+			flush_packets(stream);
 			return NULL;
 		}
 
@@ -145,6 +193,7 @@ bool ffmpeg_hls_mux_start(void *data)
 	dstr_replace(&path, "{stream_key}", stream_key);
 	dstr_copy(&stream->muxer_settings, "method=PUT http_persistent=1 ignore_io_errors=1 ");
 	dstr_catf(&stream->muxer_settings, "http_user_agent=libobs/%s", obs_get_version_string());
+	dstr_catf(&stream->muxer_settings, " timeout=%d", HLS_IO_TIMEOUT_US);
 
 	vencoder = obs_output_get_video_encoder(stream->output);
 	settings = obs_encoder_get_settings(vencoder);
@@ -234,23 +283,67 @@ static bool find_first_video_packet(struct ffmpeg_muxer *stream, struct encoder_
 	return false;
 }
 
-void check_to_drop_frames(struct ffmpeg_muxer *stream, bool pframes)
+/* How much media the send queue holds, which is what both the drop decision and
+ * the congestion readout are measuring. */
+static bool buffered_duration_usec(struct ffmpeg_muxer *stream, int64_t *duration)
 {
 	struct encoder_packet first;
-	int64_t buffer_duration_usec;
-	int priority = pframes ? OBS_NAL_PRIORITY_HIGHEST : OBS_NAL_PRIORITY_HIGH;
+
+	if (!find_first_video_packet(stream, &first)) {
+		return false;
+	}
+
+	*duration = stream->last_dts_usec - first.dts_usec;
+	return true;
+}
+
+/* The depth at which frames start being dropped, and so also the full-scale
+ * point of the congestion the UI shows. */
+static int64_t drop_threshold_usec(struct ffmpeg_muxer *stream)
+{
 	int keyint_sec = stream->keyint_sec;
 	int64_t drop_threshold_sec = keyint_sec ? 2 * keyint_sec : 10;
 
-	if (!find_first_video_packet(stream, &first)) {
+	return drop_threshold_sec * 1000000;
+}
+
+void check_to_drop_frames(struct ffmpeg_muxer *stream, bool pframes)
+{
+	int64_t buffer_duration_usec;
+	int priority = pframes ? OBS_NAL_PRIORITY_HIGHEST : OBS_NAL_PRIORITY_HIGH;
+
+	if (!buffered_duration_usec(stream, &buffer_duration_usec)) {
 		return;
 	}
 
-	buffer_duration_usec = stream->last_dts_usec - first.dts_usec;
-
-	if (buffer_duration_usec > drop_threshold_sec * 1000000) {
+	if (buffer_duration_usec > drop_threshold_usec(stream)) {
 		drop_frames(stream, priority);
 	}
+}
+
+static float ffmpeg_hls_mux_congestion(void *data)
+{
+	struct ffmpeg_muxer *stream = data;
+	int64_t buffer_duration_usec;
+	float congestion = 0.0f;
+
+	if (!active(stream)) {
+		return 0.0f;
+	}
+
+	pthread_mutex_lock(&stream->write_mutex);
+
+	/* Dropping empties the very queue the depth is measured from, so the
+	 * measurement reads its lowest exactly when congestion is worst. */
+	if (stream->min_priority > 0) {
+		congestion = 1.0f;
+	} else if (buffered_duration_usec(stream, &buffer_duration_usec) && buffer_duration_usec > 0) {
+		congestion = (float)((double)buffer_duration_usec / (double)drop_threshold_usec(stream));
+	}
+
+	pthread_mutex_unlock(&stream->write_mutex);
+
+	return congestion > 1.0f ? 1.0f : congestion;
 }
 
 static bool add_video_packet(struct ffmpeg_muxer *stream, struct encoder_packet *packet)
@@ -347,5 +440,6 @@ struct obs_output_info ffmpeg_hls_muxer = {
 	.stop = ffmpeg_mux_stop,
 	.encoded_packet = ffmpeg_hls_mux_data,
 	.get_total_bytes = ffmpeg_mux_total_bytes,
+	.get_congestion = ffmpeg_hls_mux_congestion,
 	.get_dropped_frames = hls_stream_dropped_frames,
 };

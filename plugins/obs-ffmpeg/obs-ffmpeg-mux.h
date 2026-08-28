@@ -57,6 +57,11 @@ struct ffmpeg_muxer {
 	os_sem_t *write_sem;
 	os_event_t *stop_event;
 	bool is_hls;
+	/* Set while the mux thread writes out what the stop left queued. A write
+	 * that fails then must not be signalled as a failure: the stop it belongs
+	 * to is already tearing the output down from the thread waiting to join
+	 * this one. */
+	volatile bool flushing;
 	int dropped_frames;
 	int min_priority;
 	int64_t last_dts_usec;

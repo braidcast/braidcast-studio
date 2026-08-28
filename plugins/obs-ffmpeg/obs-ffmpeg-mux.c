@@ -127,6 +127,11 @@ static inline bool capturing(struct ffmpeg_muxer *stream)
 	return os_atomic_load_bool(&stream->capturing);
 }
 
+static inline bool flushing(struct ffmpeg_muxer *stream)
+{
+	return os_atomic_load_bool(&stream->flushing);
+}
+
 bool stopping(struct ffmpeg_muxer *stream)
 {
 	return os_atomic_load_bool(&stream->stopping);
@@ -466,6 +471,11 @@ static bool ffmpeg_mux_start(void *data)
 	return success;
 }
 
+static void drain_child_stderr_cb(void *param)
+{
+	drain_child_stderr(param, true);
+}
+
 int deactivate(struct ffmpeg_muxer *stream, int code)
 {
 	int ret = -1;
@@ -480,11 +490,12 @@ int deactivate(struct ffmpeg_muxer *stream, int code)
 	}
 
 	if (active(stream)) {
-		/* Last chance: os_process_pipe_destroy closes the read end, and
-		 * anything still buffered goes with it. */
-		drain_child_stderr(stream, true);
-
-		ret = os_process_pipe_destroy(stream->pipe);
+		/* The child only learns the stream is over when its stdin closes, and
+		 * what it does then -- on HLS the final segment PUT and the endlist tag
+		 * -- is as able to fail as anything before it. Draining across the wait
+		 * rather than once beforehand is what makes those last failures
+		 * reachable at all. */
+		ret = os_process_pipe_destroy_drain(stream->pipe, drain_child_stderr_cb, stream);
 		stream->pipe = NULL;
 
 		os_atomic_set_bool(&stream->active, false);
@@ -506,6 +517,12 @@ int deactivate(struct ffmpeg_muxer *stream, int code)
 		while (stream->packets.size) {
 			struct encoder_packet packet;
 			deque_pop_front(&stream->packets, &packet, sizeof(packet));
+			/* Whatever the flush could not write is lost media, and counting
+			 * it is the only reason the drop total ends up matching what the
+			 * destination actually received. */
+			if (packet.type == OBS_ENCODER_VIDEO) {
+				stream->dropped_frames++;
+			}
 			obs_encoder_packet_release(&packet);
 		}
 
@@ -583,8 +600,14 @@ void drain_child_stderr(struct ffmpeg_muxer *stream, bool force)
 		if (!dstr_is_empty(&line)) {
 			warn("%s", line.array);
 			/* Kept for obs_output_set_last_error: the line that ends a
-			 * session is the one worth showing, not the first symptom. */
-			dstr_copy_dstr(&stream->err_last, &line);
+			 * session is the one worth showing, not the first symptom.
+			 * Warnings are logged but never stand as the failure: FFmpeg
+			 * emits them for benign things -- non-monotonic DTS, unset
+			 * timestamps -- so one arriving after a transport died would
+			 * take the user's explanation with it. */
+			if (strncmp(line.array, FFM_LOG_WARNING, sizeof(FFM_LOG_WARNING) - 1) != 0) {
+				dstr_copy_dstr(&stream->err_last, &line);
+			}
 		}
 		dstr_free(&line);
 	}
@@ -594,6 +617,15 @@ static void signal_failure(struct ffmpeg_muxer *stream)
 {
 	int ret;
 	int code;
+
+	/* A write that fails while flushing a stop has nothing left to report: the
+	 * stop is already running deactivate on the thread waiting to join this
+	 * one, so going on would join this thread to itself and turn a stop the
+	 * user asked for into a disconnect the output reconnects from. The failed
+	 * write is logged by the caller either way. */
+	if (flushing(stream)) {
+		return;
+	}
 
 	/* Take the child's last words from the drain rather than reading the pipe
 	 * again here. The two cannot share a pipe (see os_process_pipe_read_err_avail),

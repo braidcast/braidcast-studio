@@ -29,6 +29,11 @@ enum ffm_packet_type {
 #define FFM_ERROR -1
 #define FFM_UNSUPPORTED -2
 
+/* Level tag the muxer stamps on the lines it writes to stderr. The parent reads
+ * it to tell one of its own failures from the warnings FFmpeg emits routinely. */
+#define FFM_LOG_ERROR "error: "
+#define FFM_LOG_WARNING "warning: "
+
 struct ffm_packet_info {
 	int64_t pts;
 	int64_t dts;

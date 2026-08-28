@@ -36,10 +36,6 @@
 #include <libavutil/mastering_display_metadata.h>
 #include <libavutil/time.h>
 
-#define ANSI_COLOR_RED "\x1b[0;91m"
-#define ANSI_COLOR_MAGENTA "\x1b[0;95m"
-#define ANSI_COLOR_RESET "\x1b[0m"
-
 #define AVIO_BUFFER_SIZE 65536
 
 /* ------------------------------------------------------------------------- */
@@ -304,7 +300,7 @@ static bool get_audio_params(struct audio_params *audio, int *argc, char ***argv
 	return true;
 }
 
-/* At most this many distinct error lines per window, and one window's worth of
+/* At most this many distinct lines per window, and one window's worth of
  * repeats collapsed into a count. The parent drains this pipe on a timer rather
  * than continuously, so an unthrottled error per frame would fill the pipe
  * buffer between drains and block this process inside fprintf -- which
@@ -314,55 +310,72 @@ static bool get_audio_params(struct audio_params *audio, int *argc, char ***argv
 #define ERROR_WINDOW_US 5000000
 #define ERROR_WINDOW_MAX 10
 
-static int64_t error_window_start = 0;
-static int error_window_count = 0;
-static int error_suppressed = 0;
-static char error_last[512] = {0};
+/* One budget per level, so that routine warning traffic -- non-monotonic DTS
+ * arrives distinct every time, and so burns a slot every time -- cannot spend
+ * the window an error needs. Pairing the tag with the state also keeps a
+ * suppression notice stamped with the level whose messages it counted. */
+struct log_throttle {
+	const char *level;
+	int64_t window_start;
+	int window_count;
+	int suppressed;
+	char last[512];
+};
 
-static void emit_error_line(const char *text)
+static struct log_throttle error_throttle = {FFM_LOG_ERROR};
+static struct log_throttle warning_throttle = {FFM_LOG_WARNING};
+
+static void emit_log_line(struct log_throttle *throttle, const char *text)
 {
 	const int64_t now = av_gettime_relative();
 
-	if (now - error_window_start >= ERROR_WINDOW_US) {
-		error_window_start = now;
-		error_window_count = 0;
+	if (now - throttle->window_start >= ERROR_WINDOW_US) {
+		throttle->window_start = now;
+		throttle->window_count = 0;
 		/* Let a persistent error reprint once a window, carrying the count of
 		 * what it stood for. An ingest failure that repeats for an hour should
 		 * read as ongoing, not as one line an hour ago. */
-		error_last[0] = 0;
+		throttle->last[0] = 0;
 	}
 
 	/* FFmpeg repeats an I/O error verbatim for every frame it touches, and the
 	 * repetition carries nothing the count does not. */
-	if (strcmp(text, error_last) == 0 || error_window_count >= ERROR_WINDOW_MAX) {
-		error_suppressed++;
+	if (strcmp(text, throttle->last) == 0 || throttle->window_count >= ERROR_WINDOW_MAX) {
+		throttle->suppressed++;
 		return;
 	}
 
-	snprintf(error_last, sizeof(error_last), "%s", text);
-	error_window_count++;
+	snprintf(throttle->last, sizeof(throttle->last), "%s", text);
+	throttle->window_count++;
 
-	if (error_suppressed) {
-		fprintf(stderr, "error: [ffmpeg_muxer] (%d further message(s) suppressed)\n", error_suppressed);
-		error_suppressed = 0;
+	if (throttle->suppressed) {
+		fprintf(stderr, "%s[ffmpeg_muxer] (%d further message(s) suppressed)\n", throttle->level,
+			throttle->suppressed);
+		throttle->suppressed = 0;
 	}
-	fprintf(stderr, "error: [ffmpeg_muxer] %s", text);
+	fprintf(stderr, "%s[ffmpeg_muxer] %s", throttle->level, text);
 }
 
 static void ffmpeg_log_callback(void *param, int level, const char *format, va_list args)
 {
 	/* AV_LOG_PANIC, AV_LOG_FATAL and AV_LOG_ERROR. Lower is more severe. */
 	const bool is_error = level <= AV_LOG_ERROR;
+	const bool is_warning = level == AV_LOG_WARNING;
 	char out_buffer[4096];
 	struct dstr out = {0};
 
 #ifndef ENABLE_FFMPEG_MUX_DEBUG
-	/* Info and warning traffic stays debug-build only. Errors do not: this pipe
+	/* Info traffic stays debug-build only. Errors and warnings do not: this pipe
 	 * is the parent's only way to learn that a transport failed in a way the
-	 * muxer itself survived, which ignore_io_errors makes routine on the HLS
-	 * path. Discarding them is what let an ingest failure drop 5,489 frames
-	 * without producing a single log line. */
-	if (!is_error) {
+	 * muxer itself survived, and with ignore_io_errors set, a segment that could
+	 * not be opened at all -- refused connection, DNS, TLS -- is reported at
+	 * warning level and nowhere else.
+	 *
+	 * It does not cover a segment the receiver rejected. hlsenc never inspects
+	 * the HTTP response to an upload, so a 503 for a segment body produces no
+	 * message at any level, and the playlist advertises the segment regardless.
+	 * Nothing on this pipe can report that. */
+	if (!is_error && !is_warning) {
 		UNUSED_PARAMETER(format);
 		UNUSED_PARAMETER(args);
 		UNUSED_PARAMETER(param);
@@ -377,14 +390,13 @@ static void ffmpeg_log_callback(void *param, int level, const char *format, va_l
 	}
 
 	if (is_error) {
-		emit_error_line(out.array);
+		emit_log_line(&error_throttle, out.array);
+	} else if (is_warning) {
+		emit_log_line(&warning_throttle, out.array);
 	}
 #ifdef ENABLE_FFMPEG_MUX_DEBUG
 	else if (level == AV_LOG_INFO) {
 		fprintf(stdout, "info: [ffmpeg_muxer] %s", out.array);
-		fflush(stdout);
-	} else if (level == AV_LOG_WARNING) {
-		fprintf(stdout, "%swarning: [ffmpeg_muxer] %s%s", ANSI_COLOR_MAGENTA, out.array, ANSI_COLOR_RESET);
 		fflush(stdout);
 	}
 #endif
