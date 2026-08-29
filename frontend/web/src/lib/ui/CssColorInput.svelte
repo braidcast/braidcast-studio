@@ -12,10 +12,13 @@
     value,
     onChange,
     ariaLabel,
+    ariaDescribedBy,
   }: {
     value: string;
     onChange: (v: string) => void;
     ariaLabel?: string;
+    /** Id of an element describing this control, for a form that renders help text. */
+    ariaDescribedBy?: string;
   } = $props();
 
   interface Rgba {
@@ -91,7 +94,13 @@
 {#if parsed}
   <div class="cc">
     <label class="swatch" style:--fill={serialize(parsed)}>
-      <input type="color" value={toHex(parsed)} aria-label={ariaLabel} oninput={(e) => setHex(e.currentTarget.value)} />
+      <input
+        type="color"
+        value={toHex(parsed)}
+        aria-label={ariaLabel}
+        aria-describedby={ariaDescribedBy}
+        oninput={(e) => setHex(e.currentTarget.value)}
+      />
     </label>
     <input
       class="alpha"
@@ -110,6 +119,7 @@
     type="text"
     {value}
     aria-label={ariaLabel}
+    aria-describedby={ariaDescribedBy}
     oninput={(e) => onChange(e.currentTarget.value)}
   />
 {/if}

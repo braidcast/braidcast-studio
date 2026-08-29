@@ -29,5 +29,7 @@
       { "value": "center", "label": "Center" },
       { "value": "right", "label": "Right" }
     ]
-  }
+  },
+  { "key": "style_prefix", "type": "textstyle", "label": "Prefix", "group": "Text Styling", "help": "Overrides the widget's Font, Font Size and Text Color for this element only. The widget's Background Color and Align still apply — a slot background paints a second box inside the widget's.", "default": {} },
+  { "key": "style_value", "type": "textstyle", "label": "Countdown", "group": "Text Styling", "help": "Overrides the widget's Font, Font Size and Text Color for this element only. The widget's Background Color and Align still apply — a slot background paints a second box inside the widget's.", "default": {} }
 ]

@@ -1,6 +1,8 @@
 const prefixEl = document.getElementById("prefix");
 const valueEl = document.getElementById("value");
 
+const pad = OBSOverlay.pad;
+
 // Same shape as the uptime widget's FORMATS: `auto` drops the hours field until there is an
 // hour to show, `hms` never does, `compact` steps down to seconds once the minutes run out.
 // No toLocaleString -- a countdown reading is not a grouped quantity.
@@ -51,30 +53,9 @@ function positive(key, fallback) {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
-// Checkbox reader with a per-field fallback for when the key is missing entirely (an older
-// widget, or the user deleted the field).
-function isOn(key, fallback) {
-  const v = fields[key];
-  if (v == null) {
-    return fallback;
-  }
-  return v === true || v === "true";
-}
-
-// An empty string the user typed deliberately is a valid answer, so only a missing key
-// falls back.
-function textField(key, fallback) {
-  const v = fields[key];
-  return v != null ? String(v) : fallback;
-}
-
-function pad(n) {
-  return n < 10 ? "0" + n : String(n);
-}
-
 function render() {
   const cycleMs = positive("cycleMinutes", 10) * 60000;
-  const looping = isOn("loop", true);
+  const looping = OBSOverlay.isOn(fields, "loop", true);
 
   let remainingMs;
   let inPayoff;
@@ -107,7 +88,7 @@ function render() {
       totalSeconds % 60,
     );
 
-    const prefix = textField("prefix", "");
+    const prefix = OBSOverlay.textField(fields, "prefix", "");
     prefixEl.textContent = prefix;
     prefixEl.hidden = prefix.length === 0;
     return;
@@ -116,7 +97,7 @@ function render() {
   prefixEl.textContent = "";
   prefixEl.hidden = true;
   valueEl.classList.remove("digits");
-  valueEl.textContent = textField("payoffText", "Let's go!");
+  valueEl.textContent = OBSOverlay.textField(fields, "payoffText", "Let's go!");
 
   // A non-looping cycle holds the payoff forever once it is reached, so there is nothing
   // left to recompute -- the interval stops instead of ticking against a static reading.

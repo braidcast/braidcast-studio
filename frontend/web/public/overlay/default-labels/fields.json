@@ -39,5 +39,6 @@
       { "value": "center", "label": "Center" },
       { "value": "right", "label": "Right" }
     ]
-  }
+  },
+  { "key": "style_text", "type": "textstyle", "label": "Text", "group": "Text Styling", "help": "Overrides the widget's Font, Font Size and Text Color for this element only. The widget's Background Color and Align still apply — a slot background paints a second box inside the widget's.", "default": {} }
 ]

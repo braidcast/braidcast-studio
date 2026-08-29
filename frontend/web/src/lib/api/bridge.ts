@@ -1540,13 +1540,22 @@ export interface OverlayField {
     | "slider"
     | "image-upload"
     | "sound-upload"
-    | "font";
+    | "font"
+    | "textstyle";
   label: string;
   default: unknown;
   options?: LabeledOption[];
   min?: number;
   max?: number;
   step?: number;
+  /** Section heading the panel files this field under. Optional and additive: a schema
+   * that names none renders as the flat list it always did. Consecutive fields naming the
+   * same group share one section, so the schema's own order still decides the layout. */
+  group?: string;
+  /** One sentence under the field's control saying what it does, or how it interacts with
+   * the fields around it -- the place for a rule too long to live in a label or a group
+   * heading. Optional and additive; a field naming none renders exactly as before. */
+  help?: string;
 }
 
 export interface OverlayAsset {

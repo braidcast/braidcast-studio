@@ -12,6 +12,8 @@
     size?: "sm" | "md";
     label?: string;
     ariaLabel?: string;
+    /** Id of an element describing this control, for a form that renders help text. */
+    ariaDescribedBy?: string;
   }
   let {
     checked = $bindable(false),
@@ -20,6 +22,7 @@
     size = "md",
     label,
     ariaLabel,
+    ariaDescribedBy,
   }: Props = $props();
 
   function toggle() {
@@ -34,6 +37,7 @@
   role="switch"
   aria-checked={checked}
   aria-label={ariaLabel ?? label}
+  aria-describedby={ariaDescribedBy}
   {disabled}
   onclick={toggle}
 >

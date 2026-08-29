@@ -14,6 +14,9 @@ import type {
   StreamState,
   ViewerCounts,
 } from "$lib/api/bridge";
+// A value import, so it is bundled into runtime.js rather than erased: relative, because
+// the $lib alias is Vite's and this file is built by `bun build` on its own.
+import { cssForSlots } from "./textStyle";
 
 interface OverlayBootstrap {
   id: string;
@@ -84,8 +87,49 @@ const viewersHandlers: ViewersHandler[] = [];
 const channelStatsHandlers: ChannelStatsHandler[] = [];
 const streamHandlers: StreamHandler[] = [];
 
+// One <style> for every slot rule, created on first use: a widget whose slots are all
+// untouched compiles to nothing and never gets an element. Appended to <head> after the
+// widget's own stylesheet, so a slot rule and a template rule of equal specificity resolve
+// in the slot's favour. A fork's own higher-specificity CSS (an id selector) still wins,
+// which is the fork author's call to make.
+let slotStyleEl: HTMLStyleElement | null = null;
+
+function applyStyles(fields: Record<string, unknown>) {
+  const css = cssForSlots(fields);
+  if (!css && !slotStyleEl) {
+    return;
+  }
+  if (!slotStyleEl) {
+    slotStyleEl = document.createElement("style");
+    document.head.appendChild(slotStyleEl);
+  }
+  slotStyleEl.textContent = css;
+}
+
 const OBSOverlay = {
   fields: boot.fields,
+  /** Recompile every slot rule from `fields`. Called with the resolved fields before
+   * onLoad runs, so a widget that only declares slots needs no JS of its own. */
+  applyStyles,
+  /** Checkbox reader with a per-field fallback for when the key is missing entirely (an
+   * older widget, or a fork whose author deleted the field). */
+  isOn(fields: Record<string, unknown>, key: string, fallback: boolean): boolean {
+    const v = fields[key];
+    if (v == null) {
+      return fallback;
+    }
+    return v === true || v === "true";
+  },
+  /** Text reader. An empty string the user typed deliberately is a valid answer, so only
+   * a missing key falls back. */
+  textField(fields: Record<string, unknown>, key: string, fallback: string): string {
+    const v = fields[key];
+    return v != null ? String(v) : fallback;
+  },
+  /** Two-digit clock field. */
+  pad(n: number): string {
+    return n < 10 ? "0" + n : String(n);
+  },
   onLoad(fn: LoadHandler) {
     loadHandlers.push(fn);
   },
@@ -116,6 +160,9 @@ const OBSOverlay = {
 
 function fireLoad() {
   const ctx: LoadCtx = { fields: boot.fields };
+  // Before the handlers, so a widget's own applyFields runs against markup already
+  // carrying its slot styling rather than restyling it a frame later.
+  applyStyles(boot.fields);
   for (const fn of loadHandlers) {
     try {
       fn(ctx);

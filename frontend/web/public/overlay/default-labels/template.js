@@ -41,8 +41,8 @@ function applyFields(f) {
 
   mode = f.mode === "count" ? "count" : "latest";
   types = EVENTS[String(f.eventType || "follower")] || EVENTS.follower;
-  format = f.format != null ? String(f.format) : "Latest follower: {name}";
-  emptyText = f.emptyText != null ? String(f.emptyText) : "—";
+  format = OBSOverlay.textField(f, "format", "Latest follower: {name}");
+  emptyText = OBSOverlay.textField(f, "emptyText", "—");
   render();
 }
 

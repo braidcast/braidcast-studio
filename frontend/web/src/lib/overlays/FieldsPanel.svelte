@@ -1,6 +1,9 @@
 <script lang="ts">
-  // The Simple pane: ONE list, one row per schema field — the field's label, its live value
-  // control, and a way back to the default. The field list is fixed by the widget's schema,
+  // The Simple pane: one row per schema field — the field's label, its live value control,
+  // and a way back to the default. A field naming a `group` files itself under a heading
+  // with the fields adjacent to it that name the same one, and one naming `help` gets a
+  // sentence under its control; a schema that names neither renders as the flat list this
+  // has always been. The field list is fixed by the widget's schema,
   // because the keys are a contract with the template that reads them: it looks up
   // f.fontSize, f.maxMessages and the rest by name and silently falls back to its own
   // default for anything missing, so a renamed or deleted key breaks the widget with no
@@ -15,11 +18,19 @@
   // in fieldTypes.ts. Settings stay immutable: each edit builds the next map through
   // withOverride and hands it to onChange, which the page debounces into overlays.update.
   import { obs, type OverlayField } from "$lib/api/bridge";
-  import { specFor, suggestsFonts, withOverride } from "$lib/overlays/fieldTypes";
+  import {
+    needsFontList,
+    specFor,
+    suggestsFonts,
+    textStyleDefaultFault,
+    withOverride,
+  } from "$lib/overlays/fieldTypes";
+  import TextStyleControl from "$lib/overlays/TextStyleControl.svelte";
   import CssColorInput from "$lib/ui/CssColorInput.svelte";
   import FontDatalist from "$lib/ui/FontDatalist.svelte";
   import Icon from "$lib/ui/Icon.svelte";
   import ToggleSwitch from "$lib/ui/ToggleSwitch.svelte";
+  import { isPlainObject } from "$lib/utils/plainObject";
 
   let {
     schema,
@@ -44,7 +55,30 @@
   const fontListId = $props.id();
   // Mounted only where a field asks for it, so opening a widget with no font field never
   // makes the host enumerate the system font collection.
-  const wantsFonts = $derived(schema.some((f) => suggestsFonts(specFor(f))));
+  const wantsFonts = $derived(schema.some((f) => needsFontList(specFor(f))));
+
+  /** The schema split into the sections the panel draws. A run of CONSECUTIVE fields
+   * naming the same group becomes one section, so the schema's order stays the layout and
+   * a file that names no group at all is one ungrouped run — exactly the flat list the
+   * panel drew before groups existed. `i` is carried because it is the row's key. */
+  interface FieldRun {
+    group: string | null;
+    items: { f: OverlayField; i: number }[];
+  }
+
+  const runs = $derived.by<FieldRun[]>(() => {
+    const out: FieldRun[] = [];
+    schema.forEach((f, i) => {
+      const group = f.group || null;
+      const last = out[out.length - 1];
+      if (last && last.group === group) {
+        last.items.push({ f, i });
+      } else {
+        out.push({ group, items: [{ f, i }] });
+      }
+    });
+    return out;
+  });
 
   function isOverridden(f: OverlayField): boolean {
     return Object.hasOwn(settings, f.key);
@@ -123,104 +157,160 @@
     <p class="empty">This widget's template exposes no settings.</p>
   {/if}
 
-  <!-- Keyed by widget + position rather than by field key: a hand-edited document can
-       carry the same key twice, which a key-keyed block reads as a collision and throws
-       on, and folding the widget id in tears the rows down when the selection changes so
-       no uncontrolled file input carries its filename across. -->
-  <ul class="flist">
-    {#each schema as f, i (widgetId + ":" + i)}
-      {@const spec = specFor(f)}
-      {@const name = f.label || f.key}
-      {@const placeholder = spec.control === "text" ? (spec.placeholder ?? "") : ""}
-      {@const set = isOverridden(f)}
-      {@const value = valueOf(f)}
-      <li class="frow" class:frow--set={set}>
-        <span class="cv-ci__name fname" title={f.key}>{name}</span>
+  {#snippet row(f: OverlayField, i: number)}
+    {@const spec = specFor(f)}
+    {@const name = f.label || f.key}
+    <!-- Only minted where the schema actually carries help: aria-describedby pointing at
+         an element that was never rendered is worse than no description at all. -->
+    {@const helpId = f.help ? `${widgetId}:help:${i}` : undefined}
+    {@const placeholder = spec.control === "text" ? (spec.placeholder ?? "") : ""}
+    {@const set = isOverridden(f)}
+    {@const value = valueOf(f)}
+    <li class="frow" class:frow--set={set} class:frow--tall={spec.control === "textstyle"}>
+      <span class="cv-ci__name fname" title={f.key}>{name}</span>
 
-        <div class="fval">
-          {#if spec.control === "switch"}
-            <ToggleSwitch checked={asBool(value)} ariaLabel={name} onchange={(v) => setValue(f, v)} />
-          {:else if spec.control === "color"}
-            <CssColorInput value={asText(value) || "#ffffff"} ariaLabel={name} onChange={(v) => setValue(f, v)} />
-          {:else if spec.control === "number"}
-            <div class="cv-num">
-              <input
-                type="number"
-                value={asNumber(value)}
-                aria-label={name}
-                oninput={(e) => setValue(f, Number(e.currentTarget.value))}
-              />
-            </div>
-          {:else if spec.control === "slider"}
-            <div class="fslider">
-              <input
-                type="range"
-                min={f.min ?? 0}
-                max={f.max ?? 100}
-                step={f.step ?? 1}
-                value={asNumber(value)}
-                aria-label={name}
-                oninput={(e) => setValue(f, Number(e.currentTarget.value))}
-              />
-              <span class="fslider__n">{asNumber(value)}</span>
-            </div>
-          {:else if spec.control === "select"}
-            <select
-              class="cv-select"
-              value={asText(value)}
-              aria-label={name}
-              onchange={(e) => setValue(f, e.currentTarget.value)}
-            >
-              <!-- Keyed by index: the options are fixed by the template, and two of them
-                   may legitimately carry the same value. -->
-              {#each f.options ?? [] as o, oi (oi)}
-                <option value={o.value}>{o.label}</option>
-              {/each}
-            </select>
-          {:else if spec.control === "upload"}
-            <div class="fupload">
-              <input
-                type="file"
-                accept={spec.accept}
-                aria-label={name}
-                onchange={(e) => onFile(f, e, spec.uploadKind)}
-              />
-              {#if uploadingKey === f.key}
-                <span class="fnote">Uploading…</span>
-              {:else if asText(value)}
-                <span class="fnote ok" title={asText(value)}>{asText(value)}</span>
-              {/if}
-            </div>
-          {:else}
+      <div class="fval">
+        {#if spec.control === "switch"}
+          <ToggleSwitch
+            checked={asBool(value)}
+            ariaLabel={name}
+            ariaDescribedBy={helpId}
+            onchange={(v) => setValue(f, v)}
+          />
+        {:else if spec.control === "color"}
+          <CssColorInput
+            value={asText(value) || "#ffffff"}
+            ariaLabel={name}
+            ariaDescribedBy={helpId}
+            onChange={(v) => setValue(f, v)}
+          />
+        {:else if spec.control === "number"}
+          <div class="cv-num">
             <input
-              class="ftext"
-              type="text"
-              {placeholder}
-              list={suggestsFonts(spec) ? fontListId : undefined}
-              value={asText(value)}
+              type="number"
+              value={asNumber(value)}
               aria-label={name}
-              oninput={(e) => setValue(f, e.currentTarget.value)}
+              aria-describedby={helpId}
+              oninput={(e) => setValue(f, Number(e.currentTarget.value))}
+            />
+          </div>
+        {:else if spec.control === "slider"}
+          <div class="fslider">
+            <input
+              type="range"
+              min={f.min ?? 0}
+              max={f.max ?? 100}
+              step={f.step ?? 1}
+              value={asNumber(value)}
+              aria-label={name}
+              aria-describedby={helpId}
+              oninput={(e) => setValue(f, Number(e.currentTarget.value))}
+            />
+            <span class="fslider__n">{asNumber(value)}</span>
+          </div>
+        {:else if spec.control === "select"}
+          <select
+            class="cv-select"
+            value={asText(value)}
+            aria-label={name}
+            aria-describedby={helpId}
+            onchange={(e) => setValue(f, e.currentTarget.value)}
+          >
+            <!-- Keyed by index: the options are fixed by the template, and two of them
+                 may legitimately carry the same value. -->
+            {#each f.options ?? [] as o, oi (oi)}
+              <option value={o.value}>{o.label}</option>
+            {/each}
+          </select>
+        {:else if spec.control === "upload"}
+          <div class="fupload">
+            <input
+              type="file"
+              accept={spec.accept}
+              aria-label={name}
+              aria-describedby={helpId}
+              onchange={(e) => onFile(f, e, spec.uploadKind)}
+            />
+            {#if uploadingKey === f.key}
+              <span class="fnote">Uploading…</span>
+            {:else if asText(value)}
+              <span class="fnote ok" title={asText(value)}>{asText(value)}</span>
+            {/if}
+          </div>
+        {:else if spec.control === "textstyle"}
+          {@const fault = textStyleDefaultFault(f)}
+          {#if fault}
+            <p class="err">{fault}</p>
+          {:else}
+            <!-- A hand-edited document can put anything under the key; anything that is
+                 not an object configures nothing, and the first edit replaces it. -->
+            <TextStyleControl
+              value={isPlainObject(value) ? value : {}}
+              {name}
+              {fontListId}
+              ariaDescribedBy={helpId}
+              onChange={(next) => setValue(f, next)}
             />
           {/if}
-        </div>
+        {:else}
+          <input
+            class="ftext"
+            type="text"
+            {placeholder}
+            list={suggestsFonts(spec) ? fontListId : undefined}
+            value={asText(value)}
+            aria-label={name}
+            aria-describedby={helpId}
+            oninput={(e) => setValue(f, e.currentTarget.value)}
+          />
+        {/if}
 
-        <!-- The slot is always laid out, so a row does not shift as it gains or loses its
-             override. Writing the default back is what clears the key (see withOverride). -->
-        <div class="freset">
-          {#if set}
-            <button
-              class="tool-btn"
-              aria-label="Reset {name} to default"
-              title="Changed from the default — reset it"
-              onclick={() => setValue(f, f.default)}
-            >
-              <Icon name="x" size={12} />
-            </button>
-          {/if}
-        </div>
-      </li>
+        {#if f.help}
+          <p class="fhelp" id={helpId}>{f.help}</p>
+        {/if}
+      </div>
+
+      <!-- The slot is always laid out, so a row does not shift as it gains or loses its
+           override. Writing the default back is what clears the key (see withOverride). -->
+      <div class="freset">
+        {#if set}
+          <button
+            class="tool-btn"
+            aria-label="Reset {name} to default"
+            title="Changed from the default — reset it"
+            onclick={() => setValue(f, f.default)}
+          >
+            <Icon name="x" size={12} />
+          </button>
+        {/if}
+      </div>
+    </li>
+  {/snippet}
+
+  <!-- Rows are keyed by widget + schema position rather than by field key: a hand-edited
+       document can carry the same key twice, which a key-keyed block reads as a collision
+       and throws on, and folding the widget id in tears the rows down when the selection
+       changes so no uncontrolled file input carries its filename across. -->
+  {#snippet rowList(items: { f: OverlayField; i: number }[])}
+    <ul class="frows">
+      {#each items as it (widgetId + ":" + it.i)}
+        {@render row(it.f, it.i)}
+      {/each}
+    </ul>
+  {/snippet}
+
+  <div class="flist">
+    {#each runs as run, ri (widgetId + ":run:" + ri)}
+      {#if run.group}
+        <section class="fgroup">
+          <h3 class="fgroup__h">{run.group}</h3>
+          {@render rowList(run.items)}
+        </section>
+      {:else}
+        {@render rowList(run.items)}
+      {/if}
     {/each}
-  </ul>
+  </div>
 
   {#if wantsFonts}
     <FontDatalist id={fontListId} />
@@ -249,12 +339,31 @@
   }
 
   .flist {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .frows {
     list-style: none;
     margin: 0;
     padding: 0;
     display: flex;
     flex-direction: column;
     gap: 6px;
+  }
+  .fgroup {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .fgroup__h {
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 400;
+    letter-spacing: var(--letter-spacing);
+    text-transform: var(--label-case);
+    color: var(--color-muted);
   }
   .frow {
     display: flex;
@@ -270,6 +379,17 @@
   .frow--set {
     border-left-color: var(--color-accent);
   }
+  /* A control that grows downward when it opens: the label stays at the row's top edge
+     instead of drifting to the vertical middle of an expanded editor. */
+  .frow--tall {
+    align-items: flex-start;
+  }
+  .frow--tall .fname {
+    padding-top: 6px;
+  }
+  .frow--tall .fval {
+    display: block;
+  }
   .fname {
     flex: 0 0 180px;
     min-width: 0;
@@ -282,6 +402,16 @@
     min-width: 0;
     display: flex;
     align-items: center;
+    /* So a help line can sit below the control on its own row without every other row
+       needing a wrapper element it would otherwise be the only child of. */
+    flex-wrap: wrap;
+  }
+  .fhelp {
+    flex: 0 0 100%;
+    margin: 4px 0 0;
+    font-size: 11px;
+    line-height: 1.45;
+    color: var(--color-muted);
   }
   .freset {
     flex: 0 0 25px;
