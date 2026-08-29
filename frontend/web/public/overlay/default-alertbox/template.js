@@ -45,8 +45,11 @@ function next() {
   }
   showing = true;
   const tmpl = fields[TEMPLATE_KEY[e.type]] || "{name}";
-  nameEl.textContent = e.actorName || "Someone";
-  msgEl.textContent = render(tmpl, e).replace((e.actorName || "") + " ", "");
+  // The strip has to remove exactly what render() substituted for {name}, fallback
+  // included -- otherwise an unnamed actor shows as "Someone Someone just followed!".
+  const shownName = e.actorName || "Someone";
+  nameEl.textContent = shownName;
+  msgEl.textContent = render(tmpl, e).replace(shownName + " ", "");
   el.classList.add("show");
   if (fields.sound) OBSOverlay.playSound(String(fields.sound), 1);
   const durMs = (Number(fields.duration) || 5) * 1000;

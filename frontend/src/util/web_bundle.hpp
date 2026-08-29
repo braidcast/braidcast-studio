@@ -33,6 +33,8 @@ inline std::string ContentTypeForPath(const std::string &path)
 		{".woff", "font/woff"},        {".woff2", "font/woff2"},     {".ttf", "font/ttf"},
 		{".wasm", "application/wasm"}, {".map", "application/json"}, {".txt", "text/plain"},
 		{".mp3", "audio/mpeg"},        {".ogg", "audio/ogg"},        {".wav", "audio/wav"},
+		{".m4a", "audio/mp4"},         {".aac", "audio/aac"},        {".opus", "audio/ogg"},
+		{".flac", "audio/flac"},       {".weba", "audio/webm"},      {".webm", "video/webm"},
 		{".webp", "image/webp"},
 	};
 

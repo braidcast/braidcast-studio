@@ -305,8 +305,15 @@ void EventHub::StopAll()
 void EventHub::Ingest(const NormalizedEvent &ev)
 {
 	if (!Store().Add(ev)) {
+		// Mostly the expected case -- the YouTube REST transport re-emits its whole poll
+		// window every tick and leans on this drop. The one worth catching is a real-time
+		// event whose id backfill already seeded into the store (it seeds without
+		// broadcasting), which therefore never reaches a widget.
+		DBG(LogCat::Events, "ingest dropped (duplicate or no id): %s %s id=%s", ev.platform.c_str(),
+		    ev.type.c_str(), ev.id.c_str());
 		return; // duplicate / no id -> already emitted or unusable; drop
 	}
+	DBG(LogCat::Events, "ingest %s %s id=%s", ev.platform.c_str(), ev.type.c_str(), ev.id.c_str());
 	json payload = ev.ToJson();
 	AsyncTask::PostToUi([payload = std::move(payload)]() { Bridge::EmitEvent(EventNames::kEventsNew, payload); });
 	// Phase 9.3: fan the same event to every open overlay widget (SSE). Called off the

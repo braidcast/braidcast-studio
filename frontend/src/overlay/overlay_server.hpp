@@ -96,6 +96,9 @@ private:
 	// stored, so a second such channel cannot drift from the first.
 	void BroadcastStateFrame(const char *eventName, const nlohmann::json &body);
 	void RunSse(uintptr_t sock, const std::string &widgetId); // owns the socket for its lifetime
+	// Live SSE sockets across every widget: the capacity ceiling's live half, and the
+	// audience a broadcast reaches. Caller must hold sseMutex_.
+	size_t LiveSseCount() const;
 	void CloseClient(uintptr_t sock); // the OWNING thread's sole close point: erase from clientSockets_ + close
 	void ReapFinishedThreads();       // join+erase threads whose done flag is set
 

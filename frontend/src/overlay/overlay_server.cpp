@@ -266,9 +266,27 @@ size_t OverlayServer::BroadcastFrame(const std::string &frame, const std::string
 	return targets.size() - dead.size();
 }
 
+size_t OverlayServer::LiveSseCount() const
+{
+	size_t n = 0;
+	for (const auto &entry : sockets_) {
+		n += entry.second.size();
+	}
+	return n;
+}
+
 void OverlayServer::Broadcast(const Events::NormalizedEvent &ev)
 {
-	BroadcastFrame(DataFrame(ev.ToJson()));
+	const size_t delivered = BroadcastFrame(DataFrame(ev.ToJson()));
+	if (delivered == 0) {
+		// Ungated: an alert that reached the server and went nowhere is otherwise
+		// indistinguishable from one that fired, and events are rare enough that saying
+		// so every time costs nothing.
+		HostLog("[overlay] event " + ev.type + " (" + ev.platform + ") delivered to 0 widgets");
+	} else {
+		DBG(LogCat::Overlay, "event %s (%s) delivered to %zu widget socket(s)", ev.type.c_str(),
+		    ev.platform.c_str(), delivered);
+	}
 }
 
 // Named `chat` event so widgets can select it independently of the default `message`
@@ -758,10 +776,7 @@ void OverlayServer::RunSse(uintptr_t clientSocket, const std::string &widgetId)
 		// exhaust threads/fds. Count live + reserved under the lock and reserve a slot,
 		// so the handshake below runs WITHOUT holding sseMutex_ (its sends are blocking,
 		// bounded by SO_SNDTIMEO, and must never stall broadcasts).
-		size_t total = ssePending_;
-		for (const auto &[wid, socks] : sockets_) {
-			total += socks.size();
-		}
+		const size_t total = ssePending_ + LiveSseCount();
 		if (total >= kMaxSseConnections) {
 			atCapacity = true;
 		} else {
@@ -824,17 +839,22 @@ void OverlayServer::RunSse(uintptr_t clientSocket, const std::string &widgetId)
 			send(sock, frame.c_str(), (int)frame.size(), 0);
 		}
 	}
+	size_t live = 0;
 	{
 		std::lock_guard<std::mutex> lock(sseMutex_);
 		--ssePending_;
 		if (headOk) {
 			sockets_[widgetId].insert(clientSocket);
+			live = LiveSseCount();
 		}
 	}
 	if (!headOk) {
 		CloseClient(clientSocket); // never registered in sockets_; just close+deregister
 		return;
 	}
+	// Logged outside sseMutex_: blog() writes to the session log, and the broadcast path
+	// must never wait on that lock behind an I/O call.
+	DBG(LogCat::Overlay, "SSE connected widget=%s (%zu live)", widgetId.c_str(), live);
 
 	// The 15s recv timeout drives the keepalive; recv also detects a client close.
 	setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&kSseRecvTimeoutMs, sizeof(kSseRecvTimeoutMs));
@@ -871,6 +891,8 @@ void OverlayServer::RunSse(uintptr_t clientSocket, const std::string &widgetId)
 	// EXCEPT while a broadcast is mid-send (broadcastDepth_ > 0): its snapshot may still
 	// hold this handle, so park the fd in deferredCloseSse_ and let the last broadcast to
 	// finish close it, so no in-flight send lands on a recycled fd.
+	size_t remaining = 0;
+	bool deferClose = false;
 	{
 		std::lock_guard<std::mutex> lock(sseMutex_);
 		auto it = sockets_.find(widgetId);
@@ -880,10 +902,15 @@ void OverlayServer::RunSse(uintptr_t clientSocket, const std::string &widgetId)
 				sockets_.erase(it);
 			}
 		}
+		remaining = LiveSseCount();
 		if (broadcastDepth_ > 0) {
 			deferredCloseSse_.insert(clientSocket);
-			return;
+			deferClose = true;
 		}
+	}
+	DBG(LogCat::Overlay, "SSE closed widget=%s (%zu live)", widgetId.c_str(), remaining);
+	if (deferClose) {
+		return;
 	}
 	CloseClient(clientSocket);
 }
