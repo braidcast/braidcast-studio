@@ -2,9 +2,10 @@
   import Modal from "$lib/ui/Modal.svelte";
   import Icon, { type IconName } from "$lib/ui/Icon.svelte";
   import EmptyState from "$lib/ui/EmptyState.svelte";
-  import { obs, type SourceType, type ExistingSource } from "$lib/api/bridge";
+  import { obs, type SourceType, type ExistingSource, type OverlayListItem } from "$lib/api/bridge";
   import { recentSources, pushRecent } from "$lib/dialogs/add-source/addSourceRecent.svelte";
   import { bucketTypes, CATEGORY_LABEL, type Category } from "$lib/dialogs/add-source/addSourceCategories";
+  import { labelFor } from "$lib/overlays/widgetTypes";
 
   interface Props {
     /** Focused canvas uuid; the source is added into this canvas's current scene. */
@@ -25,9 +26,17 @@
   let types = $state<SourceType[]>([]);
   let existingSources = $state<ExistingSource[]>([]);
   let existingNames = $state<Set<string>>(new Set());
+  let overlayItems = $state<OverlayListItem[]>([]);
+  let overlaysListening = $state(true); // assume healthy until load() resolves
   let loaded = $state(false);
   let error = $state<string | null>(null);
   let creating = $state(false);
+
+  const OVERLAY_TYPE_ID = "braidcast_overlay";
+  // Recent-list key for an overlay pick, distinct from a plain type id (which never
+  // contains a colon) so the two kinds coexist in the flat recentSources.ids array.
+  const OVERLAY_RECENT_PREFIX = `${OVERLAY_TYPE_ID}:`;
+  const overlayRecentKey = (widgetId: string) => OVERLAY_RECENT_PREFIX + widgetId;
 
   // Rail selection: "recent" | a functional Category. Detail step: the picked type.
   type Rail = "recent" | Category;
@@ -63,13 +72,19 @@
   async function load() {
     error = null;
     try {
-      const [list, existing] = await Promise.all([
+      // The two overlay reads carry their own catch: a failure there degrades only the
+      // Overlays category (empty list / assumed-listening), leaving the rest of the modal.
+      const [list, existing, overlays, serverInfo] = await Promise.all([
         obs.call("sourceTypes.list"),
         obs.call("sources.listExisting", { canvas, scene }),
+        obs.call("overlays.list").catch(() => [] as OverlayListItem[]),
+        obs.call("overlays.serverInfo").catch(() => null),
       ]);
       types = list;
       existingSources = existing;
       existingNames = new Set(existing.map((s) => s.name.toLowerCase()));
+      overlayItems = overlays;
+      if (serverInfo) overlaysListening = serverInfo.listening;
     } catch (e) {
       error = (e as Error).message;
     } finally {
@@ -81,25 +96,40 @@
   });
 
   const buckets = $derived(bucketTypes(types));
-  // Resolve the MRU type ids against the live type list (skip unregistered ones).
-  const recentTypes = $derived(
-    recentSources.ids.map((id) => types.find((t) => t.id === id)).filter((t): t is SourceType => t !== undefined),
+
+  // Recently Used mixes plain source types and overlay-widget picks, in MRU order.
+  type RecentEntry = { kind: "type"; type: SourceType } | { kind: "overlay"; item: OverlayListItem };
+  const recentEntries = $derived<RecentEntry[]>(
+    recentSources.ids
+      .map((id): RecentEntry | undefined => {
+        if (id.startsWith(OVERLAY_RECENT_PREFIX)) {
+          const item = overlayItems.find((o) => o.id === id.slice(OVERLAY_RECENT_PREFIX.length));
+          return item ? { kind: "overlay", item } : undefined;
+        }
+        // The bare type id names a picker entry that no longer exists, so it ages out.
+        if (id === OVERLAY_TYPE_ID) return undefined;
+        const t = types.find((t) => t.id === id);
+        return t ? { kind: "type", type: t } : undefined;
+      })
+      .filter((e): e is RecentEntry => e !== undefined),
   );
   // Rail tabs: Recently Used ONLY when it has entries (an empty one is an
   // unselectable dead tab), then each non-empty functional category.
   const railTabs = $derived<Rail[]>([
-    ...(recentTypes.length > 0 ? (["recent"] as Rail[]) : []),
+    ...(recentEntries.length > 0 ? (["recent"] as Rail[]) : []),
     ...buckets.map((b) => b.category),
   ]);
-  // Types shown in the right pane for the active rail tab.
-  const paneTypes = $derived<SourceType[]>(
-    rail === "recent" ? recentTypes : (buckets.find((b) => b.category === rail)?.types ?? []),
+  // Types shown in the right pane for an ordinary (non-recent, non-overlays) category.
+  const paneTypes = $derived<SourceType[]>(buckets.find((b) => b.category === rail)?.types ?? []);
+  // Overlay row icon: the braidcast_overlay type's own capability-derived glyph.
+  const overlayIcon = $derived<IconName>(
+    typeIcon(types.find((t) => t.id === OVERLAY_TYPE_ID)?.caps ?? { video: false, audio: false }),
   );
 
   // The initial rail state is "recent"; when it's empty (and thus hidden), fall the
   // selection through to the first functional category so the pane is never blank.
   $effect(() => {
-    if (loaded && rail === "recent" && recentTypes.length === 0 && buckets.length > 0) {
+    if (loaded && rail === "recent" && recentEntries.length === 0 && buckets.length > 0) {
       rail = buckets[0].category;
     }
   });
@@ -199,6 +229,23 @@
       creating = false;
     }
   }
+  // Overlay widgets bypass the type -> detail (existing/new, name) flow entirely: each
+  // widget already has its own name, so a single click adds it directly.
+  async function pickOverlay(item: OverlayListItem) {
+    if (!overlaysListening || creating) return;
+    creating = true;
+    error = null;
+    try {
+      const created = await obs.call("overlays.addToScene", { id: item.id, canvas, scene });
+      await applyVisibility(created.id);
+      pushRecent(overlayRecentKey(item.id));
+      onCreated(created);
+    } catch (e) {
+      error = (e as Error).message;
+      creating = false;
+    }
+  }
+
   // Add every selected existing source (§3.4), each honoring Add-Visible. onCreated
   // unmounts the modal, so fire it once after the whole batch with the last item.
   async function addSelectedExisting() {
@@ -322,17 +369,41 @@
         {/each}
       </div>
       <div class="pane">
-        {#if paneTypes.length === 0}
-          <EmptyState compact title={rail === "recent" ? "No recently used sources" : "No sources in this category"} />
+        {#if rail === "overlays"}
+          {#if !overlaysListening}
+            <p class="dim overlay-notice">
+              Overlay server isn't running — widgets will render blank until it starts.
+            </p>
+          {/if}
+          {#if overlayItems.length === 0}
+            <EmptyState compact title="No overlay widgets yet" sub="Create one on the Overlays page" />
+          {:else}
+            <ul class="types">
+              {#each overlayItems as item (item.id)}
+                {@render overlayRow(item)}
+              {/each}
+            </ul>
+          {/if}
+        {:else if rail === "recent"}
+          {#if recentEntries.length === 0}
+            <EmptyState compact title="No recently used sources" />
+          {:else}
+            <ul class="types">
+              {#each recentEntries as entry (entry.kind === "overlay" ? `o:${entry.item.id}` : `t:${entry.type.id}`)}
+                {#if entry.kind === "overlay"}
+                  {@render overlayRow(entry.item)}
+                {:else}
+                  {@render typeRow(entry.type)}
+                {/if}
+              {/each}
+            </ul>
+          {/if}
+        {:else if paneTypes.length === 0}
+          <EmptyState compact title="No sources in this category" />
         {:else}
           <ul class="types">
             {#each paneTypes as t (t.id)}
-              <li>
-                <button class="type" onclick={() => pickType(t)}>
-                  <span class="glyph"><Icon name={typeIcon(t.caps)} size={16} /></span>
-                  <span class="type-name">{t.name}</span>
-                </button>
-              </li>
+              {@render typeRow(t)}
             {/each}
           </ul>
         {/if}
@@ -340,6 +411,25 @@
     </div>
   {/if}
 </Modal>
+
+{#snippet typeRow(t: SourceType)}
+  <li>
+    <button class="type" onclick={() => pickType(t)}>
+      <span class="glyph"><Icon name={typeIcon(t.caps)} size={16} /></span>
+      <span class="type-name">{t.name}</span>
+    </button>
+  </li>
+{/snippet}
+
+{#snippet overlayRow(item: OverlayListItem)}
+  <li>
+    <button class="type" disabled={!overlaysListening} onclick={() => pickOverlay(item)}>
+      <span class="glyph"><Icon name={overlayIcon} size={16} /></span>
+      <span class="type-name">{item.name}</span>
+      <span class="overlay-type">{labelFor(item.type)}</span>
+    </button>
+  </li>
+{/snippet}
 
 <style>
   .picker {
@@ -408,10 +498,14 @@
     font-family: var(--font-ui);
     font-size: 12px;
   }
-  .type:hover {
+  .type:not(:disabled):hover {
     background: color-mix(in srgb, var(--color-accent) 12%, transparent);
     color: var(--color-accent);
     border: 0;
+  }
+  .type:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
   .glyph {
     flex: 0 0 22px;
@@ -420,7 +514,7 @@
     justify-content: center;
     color: var(--color-muted);
   }
-  .type:hover .glyph {
+  .type:not(:disabled):hover .glyph {
     color: var(--color-accent);
   }
   .type-name {
@@ -429,6 +523,23 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .overlay-type {
+    flex: 0 0 auto;
+    font-family: var(--font-mono);
+    font-size: 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--color-muted);
+    border: var(--border-weight) solid var(--color-border);
+    padding: 1px 4px;
+  }
+  .type:not(:disabled):hover .overlay-type {
+    color: var(--color-accent);
+    border-color: var(--color-accent);
+  }
+  .overlay-notice {
+    padding: 8px 12px 0;
   }
 
   .detail {
