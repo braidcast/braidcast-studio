@@ -23,6 +23,7 @@
 #include "diag/gpu_diag.hpp"
 #include "gpu_safe_mode.hpp"
 #include "settings/GeneralSettings.hpp"
+#include "windowing/filter_preview.hpp"
 #include "windowing/interact_window.hpp"
 #include "log.hpp"
 #include "multistream/StorePaths.hpp"
@@ -75,6 +76,12 @@ std::unique_ptr<ProjectorManager> g_projector;
 // window's display is destroyed (DestroyAll) before ObsBootstrap::Stop() frees the
 // source mixes.
 std::unique_ptr<InteractManager> g_interact;
+
+// Owns the Filters dialog's live preview (a second overlay HWND over CEF, inside
+// the dialog's own bounds -- the main preview is suspended for every modal). Its
+// display renders the filtered source directly, so it is destroyed alongside the
+// interaction windows, before ObsBootstrap::Stop() frees the source mixes.
+std::unique_ptr<FilterPreview> g_filterPreview;
 
 // Owns the system-tray icon + its context menu (Show/Hide, Start/Stop All,
 // Virtual Camera toggle, Exit). Created after ObsBootstrap::Start() (the menu
@@ -317,6 +324,7 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 				ObsBootstrap::RunRotationBoundsSelfTest();
 				ObsBootstrap::RunPreviewSurfaceIsolationSelfTest();
 				ObsBootstrap::RunProjectorSelfTest();
+				ObsBootstrap::RunFilterPreviewSelfTest();
 				ObsBootstrap::RunAudioMixerSelfTest();
 				ObsBootstrap::RunHotkeysSelfTest();
 				ObsBootstrap::RunStatsSelfTest();
@@ -465,6 +473,12 @@ void Teardown()
 		Interact::SetInstance(nullptr);
 		g_interact->DestroyAll();
 		g_interact.reset();
+	}
+
+	if (g_filterPreview) {
+		FilterPreviewHost::SetInstance(nullptr);
+		g_filterPreview->Close();
+		g_filterPreview.reset();
 	}
 
 	if (g_preview) {
@@ -760,6 +774,12 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 	// Stand up the source-interaction manager (top-level interaction windows).
 	g_interact = std::make_unique<InteractManager>(hInstance);
 	Interact::SetInstance(g_interact.get());
+
+	// Stand up the Filters dialog preview. Its overlay parents to the main host: the
+	// dialog is mounted only in the main window (a detached window renders a single
+	// dock and no dialogs).
+	g_filterPreview = std::make_unique<FilterPreview>(host, hInstance);
+	FilterPreviewHost::SetInstance(g_filterPreview.get());
 
 	// System tray. Created here so its menu actions (Start/Stop All, Virtual
 	// Camera, settings reads) have the engine + settings available. Policy: pin

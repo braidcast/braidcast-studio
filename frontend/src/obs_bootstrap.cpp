@@ -76,6 +76,7 @@
 #include "settings/GeneralSettings.hpp"
 #include "util/paths.hpp"
 #include "windowing/native_theme.hpp"
+#include "windowing/filter_preview.hpp"
 #include "windowing/preview_window.hpp"
 #include "windowing/projector_window.hpp"
 #include "scene/scene_collections.hpp"
@@ -3649,6 +3650,57 @@ void ObsBootstrap::RunProjectorSelfTest()
 		return;
 	}
 	HostLog("[selftest] projector windowed multiview -> opened id=" + std::to_string(mvId) + ", closed OK");
+}
+
+void ObsBootstrap::RunFilterPreviewSelfTest()
+{
+	FilterPreview *fp = FilterPreviewHost::Instance();
+	if (!fp) {
+		HostLog("[selftest] filter-preview: no instance (skipped)");
+		return;
+	}
+
+	// A scene is previewable (OBS_SOURCE_TYPE_SCENE + video), so the current program
+	// scene is a subject that needs no setup and leaves nothing behind.
+	obs_source_t *scene = Transitions::GetProgramScene();
+	if (!scene) {
+		HostLog("[selftest] filter-preview: no program scene (skipped)");
+		return;
+	}
+	std::string error;
+	const bool opened = fp->Open(scene, error);
+	obs_source_release(scene);
+	if (!opened) {
+		HostLog("[selftest] filter-preview open -> FAILED: " + error);
+		return;
+	}
+
+	// The overlay + display are lazy: they exist only once the UI reports a rect.
+	const bool beforeRect = fp->HasDisplayForTest();
+	fp->SetRect(0, 0, 320, 180);
+	const bool afterRect = fp->HasDisplayForTest();
+	fp->Close();
+	const bool afterClose = fp->HasDisplayForTest();
+	if (beforeRect || !afterRect || afterClose) {
+		HostLog("[selftest] filter-preview lifecycle -> FAILED (beforeRect=" + std::to_string(beforeRect) +
+			" afterRect=" + std::to_string(afterRect) + " afterClose=" + std::to_string(afterClose) + ")");
+		return;
+	}
+	HostLog("[selftest] filter-preview lifecycle -> display created on first rect, gone after close");
+
+	// An audio-only source must be refused, which is what makes the dialog omit its
+	// preview pane instead of showing a black box.
+	OBSSourceAutoRelease audioOnly =
+		obs_source_create_private("wasapi_output_capture", "selftest filter-preview audio", nullptr);
+	if (!audioOnly) {
+		HostLog("[selftest] filter-preview: no audio source to probe (audio-only case unverified)");
+		return;
+	}
+	std::string audioError;
+	const bool audioOpened = fp->Open(audioOnly, audioError);
+	fp->Close();
+	HostLog(std::string("[selftest] filter-preview audio-only -> ") +
+		(audioOpened ? "OPENED (BUG: should be refused)" : "refused: " + audioError));
 }
 
 void ObsBootstrap::RunAudioMixerSelfTest()

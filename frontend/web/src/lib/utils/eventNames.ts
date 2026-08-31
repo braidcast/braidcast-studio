@@ -37,6 +37,7 @@ export const EV = {
   sceneItemsChanged: "sceneItems.changed",
   sceneItemSelected: "sceneItem.selected",
   previewContextMenu: "preview.contextMenu",
+  filterPreviewClosed: "filterPreview.closed",
   chatState: "chat.state",
   chatMessage: "chat.message",
   channelsStats: "channels.stats",

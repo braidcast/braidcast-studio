@@ -41,6 +41,7 @@ inline constexpr const char *kStreamInfoPresetsChanged = "streamInfoPresets.chan
 inline constexpr const char *kSceneItemsChanged = "sceneItems.changed";
 inline constexpr const char *kSceneItemSelected = "sceneItem.selected";
 inline constexpr const char *kPreviewContextMenu = "preview.contextMenu";
+inline constexpr const char *kFilterPreviewClosed = "filterPreview.closed";
 inline constexpr const char *kChatState = "chat.state";
 inline constexpr const char *kChatMessage = "chat.message";
 inline constexpr const char *kChannelsStats = "channels.stats";

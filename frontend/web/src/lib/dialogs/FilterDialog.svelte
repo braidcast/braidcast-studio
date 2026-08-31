@@ -5,6 +5,7 @@
   import ToggleSwitch from "$lib/ui/ToggleSwitch.svelte";
   import { obs, type FilterInfo, type FilterType, type ReorderDirection } from "$lib/api/bridge";
   import PropertyForm from "$lib/properties/PropertyForm.svelte";
+  import FilterPreview from "$lib/dialogs/FilterPreview.svelte";
   import { filterDialogOpener, type FilterKind } from "$lib/dialogs/filterDialogOpener.svelte";
   import { clipboard } from "$lib/stores/clipboardStore.svelte";
   import { selectOnMount } from "$lib/utils/focusActions";
@@ -15,13 +16,12 @@
   }
   let { source, onClose }: Props = $props();
 
-  // The native preview overlay (a sibling HWND painted above CEF) is suspended by
-  // the opener (openFilters) for this dialog's whole lifetime, so it never occludes
-  // the modal. Suspending in the opener rather than here keeps the gate ref-count
-  // from transiently hitting zero on a context-menu -> modal handoff.
-  // Side effect: filter changes aren't visible live IN the dialog yet; that needs an
-  // in-dialog preview surface (known follow-up). The effect IS visible in the main
-  // preview once the dialog closes and the overlay re-asserts.
+  // The main native preview overlay (a sibling HWND painted above CEF) is suspended
+  // by Modal for this dialog's whole lifetime, so it never occludes the panel. The
+  // dialog shows the filtered source live in its OWN overlay instead (FilterPreview),
+  // positioned inside the panel, so edits are visible while making them without the
+  // main preview having to come back.
+  let preview: FilterPreview | undefined = $state();
 
   // Which stream the picker offers types for. Audio sources ask for audio-only so
   // video filters never appear in their list.
@@ -294,7 +294,7 @@
   }
 </script>
 
-<Modal title="Filters — {source}" {onClose} width={760}>
+<Modal title="Filters — {source}" {onClose} width={760} draggable fillBody onMove={() => preview?.resync()}>
   {#if error}<p class="error">{error}</p>{/if}
 
   <div class="wrap">
@@ -413,13 +413,18 @@
       </div>
     </div>
 
-    <!-- right: selected filter's obs_properties -->
+    <!-- right: live preview of the filtered source, then the selected filter's
+         obs_properties. Only the property form scrolls, so the preview -- a native
+         overlay that cannot clip to a scroll box -- keeps a stable rect. -->
     <div class="right">
-      {#if selectedUuid}
-        <PropertyForm kind="filter" ref={selectedUuid} />
-      {:else}
-        <p class="dim">No filter selected</p>
-      {/if}
+      <FilterPreview bind:this={preview} {source} />
+      <div class="props">
+        {#if selectedUuid}
+          <PropertyForm kind="filter" ref={selectedUuid} />
+        {:else}
+          <p class="dim">No filter selected</p>
+        {/if}
+      </div>
     </div>
   </div>
 
@@ -429,10 +434,18 @@
 </Modal>
 
 <style>
+  /* Takes exactly the height Modal's body has (hence fillBody) and never more, so each
+     column scrolls inside it and .modal-body itself never scrolls. That is load-bearing
+     rather than cosmetic: the preview is a native overlay painted over the DOM, it
+     cannot clip to a scroll box, and a scrolled body would drag it out of the panel.
+     Deriving the height from the flex chain rather than a vh figure keeps that true
+     without this file having to know the modal's chrome height. */
   .wrap {
     display: flex;
     gap: 12px;
-    align-items: flex-start;
+    align-items: stretch;
+    flex: 1 1 auto;
+    min-height: 0;
   }
   .left {
     flex: 0 0 240px;
@@ -442,9 +455,23 @@
     background: var(--color-base);
     border: var(--border-weight) solid var(--color-border);
   }
+  .left .dock-list {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+  }
+  /* Column so the preview pins to the top and only .props below it scrolls -- the
+     preview must never sit inside a scrolled region. */
   .right {
     flex: 1;
     min-width: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .props {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
   }
 
   /* The shared .dock-actions reveal on row hover; in this compact list show the
@@ -501,6 +528,7 @@
   }
 
   .add {
+    flex: 0 0 auto;
     padding: 8px;
     border-top: var(--border-weight) solid var(--color-border);
   }
@@ -565,6 +593,14 @@
     margin: 0;
     padding: 8px;
     font-size: 11px;
+  }
+  /* .left is a stretched column, so the loading/empty line would otherwise sit against
+     its top edge with the Add block stranded far below. */
+  .left > .dim {
+    flex: 1 1 auto;
+    display: grid;
+    place-items: center;
+    text-align: center;
   }
   .error {
     color: var(--color-live);

@@ -7,6 +7,7 @@
 #include "interact_window.hpp"
 #include "native_theme.hpp"
 #include "projector_window.hpp" // EnumerateMonitors() for initial centering
+#include "source_render.hpp"
 #include "window_dpi.hpp"
 #include "multistream/VideoGate.hpp"
 #include "util/text_encoding.hpp"
@@ -70,68 +71,13 @@ struct InteractWindow::State {
 
 namespace {
 
-// Resolve the source's base (canvas) size. Uses the source's intrinsic size when
-// available, falling back to the global base when the source has no size yet (a
-// freshly added capture). Shared by the draw callback AND the WndProc coordinate
-// mapping so both agree on the letterbox transform. Returns false when no size is
-// available (then the caller skips).
-bool InteractBaseSize(obs_source_t *source, float &baseCX, float &baseCY)
-{
-	if (!source) {
-		return false;
-	}
-	const uint32_t w = obs_source_get_width(source);
-	const uint32_t h = obs_source_get_height(source);
-	if (w > 0 && h > 0) {
-		baseCX = float(w);
-		baseCY = float(h);
-		return true;
-	}
-	obs_video_info ovi;
-	if (!obs_get_video_info(&ovi)) {
-		return false;
-	}
-	baseCX = float(ovi.base_width);
-	baseCY = float(ovi.base_height);
-	return true;
-}
-
 // Draw callback: fired by libobs once per frame on the render thread. cx/cy are
-// the display (HWND client) pixel size. Letterbox the source's base size into it
-// keeping aspect. `data` is the InteractWindow::State (addref-pinned source).
+// the display (HWND client) pixel size. `data` is the InteractWindow::State
+// (addref-pinned source).
 void RenderInteract(void *data, uint32_t cx, uint32_t cy)
 {
 	auto *state = static_cast<InteractWindow::State *>(data);
-	if (!state->source) {
-		return;
-	}
-
-	float baseCX = 0.0f;
-	float baseCY = 0.0f;
-	if (!InteractBaseSize(state->source, baseCX, baseCY)) {
-		return;
-	}
-	if (baseCX <= 0.0f || baseCY <= 0.0f || cx == 0 || cy == 0) {
-		return;
-	}
-
-	const float scale = (float(cx) / baseCX < float(cy) / baseCY) ? float(cx) / baseCX : float(cy) / baseCY;
-	const int drawCX = int(baseCX * scale);
-	const int drawCY = int(baseCY * scale);
-	const int drawX = (int(cx) - drawCX) / 2;
-	const int drawY = (int(cy) - drawCY) / 2;
-
-	gs_viewport_push();
-	gs_projection_push();
-	const bool previous = gs_set_linear_srgb(true);
-
-	gs_ortho(0.0f, baseCX, 0.0f, baseCY, -100.0f, 100.0f);
-	gs_set_viewport(drawX, drawY, drawCX, drawCY);
-	obs_source_video_render(state->source);
-
-	gs_set_linear_srgb(previous);
-	gs_projection_pop();
-	gs_viewport_pop();
+	SourceRender::Letterboxed(state->source, cx, cy);
 }
 
 // --- input translation (UI thread, WndProc) --------------------------------
@@ -180,7 +126,7 @@ bool MapToSource(obs_source_t *source, HWND hwnd, int mx, int my, obs_mouse_even
 {
 	float baseCX = 0.0f;
 	float baseCY = 0.0f;
-	if (!InteractBaseSize(source, baseCX, baseCY)) {
+	if (!SourceRender::BaseSize(source, baseCX, baseCY)) {
 		return false;
 	}
 	RECT rc;

@@ -44,18 +44,9 @@
 
 namespace {
 
-constexpr wchar_t kPreviewClassName[] = L"BraidcastPreview";
-
 constexpr float kHandleRadius = 4.0f;     // handle half-size in screen px
 constexpr float kHandleSelRadius = 6.0f;  // hit-test radius (kHandleRadius * 1.5)
 constexpr float kBoxLineThickness = 2.0f; // selection outline thickness in screen px
-
-// Rapid-resize debounce (SetRect): while a drag-resize keeps changing the rect the
-// overlay is hidden; the surface snaps to the final rect this long after the last
-// rect arrives. ~100ms reliably reads as "resize stopped" against the DOM's ~16ms
-// per-frame cadence. The timer is per-overlay-HWND, which has no other timers.
-constexpr UINT_PTR kResizeSettleTimerId = 1;
-constexpr UINT kResizeSettleMs = 100;
 
 enum class ItemHandle : uint32_t {
 	None = 0,
@@ -723,28 +714,6 @@ void DrawSelection(gs_vertbuffer_t *boxBuffer, obs_sceneitem_t *item, float scal
 	gs_technique_end(tech);
 }
 
-// The overlay HWND uses a no-background class: the obs_display swapchain paints
-// every pixel (the canvas plus its black letterbox bars), so a WM_ERASEBKGND
-// fill would only flicker against it.
-LRESULT CALLBACK PreviewWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
-
-ATOM RegisterPreviewClass(HINSTANCE instance)
-{
-	static ATOM atom = 0;
-	if (atom) {
-		return atom;
-	}
-	WNDCLASSEXW wc = {0};
-	wc.cbSize = sizeof(wc);
-	wc.lpfnWndProc = PreviewWndProc;
-	wc.hInstance = instance;
-	wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-	wc.hbrBackground = reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
-	wc.lpszClassName = kPreviewClassName;
-	atom = RegisterClassExW(&wc);
-	return atom;
-}
-
 } // namespace
 
 // Per-surface state shared between the render thread (draw callback) and the UI
@@ -972,10 +941,9 @@ void RenderPreview(void *data, uint32_t cx, uint32_t cy)
 
 PreviewSurface::PreviewSurface(HWND host, HINSTANCE instance, obs_canvas_t *targetCanvas, int windowId)
 	: state_(new State()),
-	  host_(host),
-	  instance_(instance),
 	  targetCanvas_(targetCanvas),
-	  windowId_(windowId)
+	  windowId_(windowId),
+	  overlay_(host, instance, RenderPreview, state_, this, "preview")
 {
 	state_->targetCanvas = targetCanvas;
 }
@@ -1009,8 +977,8 @@ float CurrentScale(PreviewSurface::State *state)
 
 void PreviewSurface::OnLeftDown(int mx, int my)
 {
-	if (hwnd_) {
-		SetCapture(hwnd_);
+	if (HWND hwnd = overlay_.Hwnd()) {
+		SetCapture(hwnd);
 	}
 
 	vec2 canvasPos;
@@ -1354,183 +1322,27 @@ void PreviewSurface::CancelDrag()
 	state_->drag.handle = ItemHandle::None;
 }
 
-void PreviewSurface::EnsureCreated()
-{
-	if (hwnd_) {
-		return;
-	}
-
-	RegisterPreviewClass(instance_);
-
-	// Borderless child sibling of the CEF browser HWND. WS_CLIPSIBLINGS keeps the
-	// browser from overdrawing into it (the browser HWND also sets it). Starts
-	// hidden; SetRect shows it after positioning so no frame flashes at 0,0. The
-	// State pointer is stashed in GWLP_USERDATA so the shared WndProc can map this
-	// HWND back to its surface state without a global table.
-	hwnd_ = CreateWindowExW(0, kPreviewClassName, L"", WS_CHILD | WS_CLIPSIBLINGS, 0, 0, 16, 16, host_, nullptr,
-				instance_, nullptr);
-	if (!hwnd_) {
-		HostLog("[obs] preview overlay HWND create FAILED");
-		return;
-	}
-	SetWindowLongPtrW(hwnd_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
-	HostLog("[obs] preview overlay HWND created");
-}
-
-void PreviewSurface::EnsureDisplay(int cx, int cy)
-{
-	if (display_ || !hwnd_) {
-		return;
-	}
-
-	// Create the swapchain at the target size so the fresh display presents at the
-	// right resolution immediately (a following obs_display_resize to the same size
-	// is a no-op). ApplyRect always feeds a positive rect here (zero/negative sizes
-	// hide in SetRect before reaching ApplyRect).
-	gs_init_data init = {};
-	init.cx = uint32_t(cx);
-	init.cy = uint32_t(cy);
-	init.format = GS_BGRA;
-	init.zsformat = GS_ZS_NONE;
-	init.window.hwnd = hwnd_; // child HWND passthrough (gs_window.hwnd is void*)
-
-	obs_display_t *display = obs_display_create(&init, 0x000000);
-	display_ = display;
-	HostLog(std::string("[obs] obs_display_create -> ") + (display ? "OK" : "NULL"));
-	if (display) {
-		obs_display_add_draw_callback(display, RenderPreview, state_);
-		HostLog("[obs] preview draw callback registered");
-	}
-}
-
-void PreviewSurface::ApplyRect(int x, int y, int cx, int cy)
-{
-	if (!hwnd_) {
-		return;
-	}
-	// Position in host-client device pixels and keep above the CEF browser HWND
-	// (HWND_TOP raises within the sibling z-order). SWP_SHOWWINDOW reveals it on
-	// the first sized call.
-	SetWindowPos(hwnd_, HWND_TOP, x, y, cx, cy, SWP_NOACTIVATE | SWP_SHOWWINDOW);
-
-	// Rebuild the swapchain if a prior Hide() dropped it, then size it to the rect.
-	EnsureDisplay(cx, cy);
-	if (display_) {
-		obs_display_resize(static_cast<obs_display_t *>(display_), uint32_t(cx), uint32_t(cy));
-	}
-	lastCx_ = cx;
-	lastCy_ = cy;
-}
-
 void PreviewSurface::SetRect(int x, int y, int cx, int cy)
 {
-	if (cx <= 0 || cy <= 0) {
-		Hide();
-		return;
-	}
-
-	EnsureCreated();
-	if (!hwnd_) {
-		return;
-	}
-
-	// A pure move (same size), or the very first rect after creation/hide, applies
-	// immediately so the surface appears without a debounce delay and a dock drag
-	// keeps the video tracking. Only a size change during a burst is deferred.
-	const bool sizeChanged = (cx != lastCx_ || cy != lastCy_);
-	const bool firstRect = (lastCx_ == 0 && lastCy_ == 0);
-	if (firstRect || !sizeChanged) {
-		if (resizeDeferred_) {
-			resizeDeferred_ = false;
-			KillTimer(hwnd_, kResizeSettleTimerId);
-		}
-		ApplyRect(x, y, cx, cy);
-		return;
-	}
-
-	// Mid-resize: hide the overlay so its trailing/half-resized swapchain never shows
-	// over the DOM, stash the target rect, and (re)arm the settle timer. The final
-	// rect lands in OnResizeSettled once the rects stop for kResizeSettleMs. Hide the
-	// HWND directly (not Hide()) so lastCx_/lastCy_ stay as the burst's size baseline.
-	if (IsWindowVisible(hwnd_)) {
-		ShowWindow(hwnd_, SW_HIDE);
-	}
-	pendingX_ = x;
-	pendingY_ = y;
-	pendingCx_ = cx;
-	pendingCy_ = cy;
-	resizeDeferred_ = true;
-	SetTimer(hwnd_, kResizeSettleTimerId, kResizeSettleMs, nullptr);
-}
-
-void PreviewSurface::OnResizeSettled()
-{
-	if (!hwnd_) {
-		return;
-	}
-	KillTimer(hwnd_, kResizeSettleTimerId);
-	if (!resizeDeferred_) {
-		return;
-	}
-	resizeDeferred_ = false;
-	ApplyRect(pendingX_, pendingY_, pendingCx_, pendingCy_);
+	overlay_.SetRect(x, y, cx, cy);
 }
 
 void PreviewSurface::Hide()
 {
-	// Cancel any pending resize snap so a settle timer doesn't re-show a surface the
-	// caller just hid (modal/suspend/tab-hidden). Reset the size baseline so the next
-	// SetRect re-applies immediately (firstRect path) rather than waiting a debounce.
-	if (resizeDeferred_ && hwnd_) {
-		resizeDeferred_ = false;
-		KillTimer(hwnd_, kResizeSettleTimerId);
-	}
-	lastCx_ = 0;
-	lastCy_ = 0;
-	if (hwnd_) {
-		ShowWindow(hwnd_, SW_HIDE);
-	}
-
-	// Drop the swapchain while hidden. A flip-model swapchain presented to an
-	// SW_HIDE window latches an occluded/black state that a same-size reshow never
-	// clears (render_display_begin skips gs_resize when the size is unchanged, and
-	// Present ignores DXGI_STATUS_OCCLUDED). Destroying it here forces ApplyRect to
-	// build a fresh one on the next show, mirroring stock OBS's recreate-on-show.
-	TeardownDisplay();
-}
-
-void PreviewSurface::TeardownDisplay()
-{
-	if (display_) {
-		obs_display_t *display = static_cast<obs_display_t *>(display_);
-		obs_display_remove_draw_callback(display, RenderPreview, state_);
-		obs_display_destroy(display);
-		display_ = nullptr;
-		HostLog("[obs] preview display destroyed");
-	}
+	overlay_.Hide();
 }
 
 void PreviewSurface::Destroy()
 {
-	TeardownDisplay();
+	// The display dies first (OverlaySurface removes the draw callback), so nothing
+	// the render thread reads outlives it -- including the box buffer below.
+	overlay_.Destroy();
 	if (state_->boxBuffer) {
 		obs_enter_graphics();
 		gs_vertexbuffer_destroy(state_->boxBuffer);
 		obs_leave_graphics();
 		state_->boxBuffer = nullptr;
 	}
-	if (hwnd_) {
-		// Kill a pending settle timer before the HWND goes away (defensive; the timer
-		// dies with the window regardless).
-		if (resizeDeferred_) {
-			KillTimer(hwnd_, kResizeSettleTimerId);
-			resizeDeferred_ = false;
-		}
-		DestroyWindow(hwnd_);
-		hwnd_ = nullptr;
-	}
-	lastCx_ = 0;
-	lastCy_ = 0;
 }
 
 bool PreviewSurface::SelectFromBridge(const std::string &scene, int64_t id, bool hasId)
@@ -1583,7 +1395,7 @@ int64_t PreviewSurface::SelectedIdForTest()
 
 bool PreviewSurface::OnVideoReset()
 {
-	if (!display_) {
+	if (!overlay_.HasDisplay()) {
 		// No display yet (UI never sized this surface). The next SetRect creates it
 		// fresh against the new base resolution; nothing to re-validate.
 		HostLog("[preview] OnVideoReset: no display yet (will create lazily)");
@@ -1600,54 +1412,33 @@ bool PreviewSurface::OnVideoReset()
 	}
 
 	// Nudge a redraw at the current size so the new mix is presented promptly.
-	obs_display_update_color_space(static_cast<obs_display_t *>(display_));
+	obs_display_update_color_space(static_cast<obs_display_t *>(overlay_.Display()));
 	HostLog("[preview] OnVideoReset: display alive, letterbox transform invalidated");
 	return true;
 }
 
-namespace {
-
-// Route a window message to the surface that owns the HWND (stashed in
-// GWLP_USERDATA at creation). null before the first SetRect / for a foreign HWND.
-PreviewSurface *SurfaceFromHwnd(HWND hwnd)
+bool PreviewSurface::OnOverlayMessage(UINT msg, WPARAM wparam, LPARAM lparam)
 {
-	return reinterpret_cast<PreviewSurface *>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-}
-
-LRESULT CALLBACK PreviewWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
-{
-	PreviewSurface *surface = SurfaceFromHwnd(hwnd);
-	if (!surface) {
-		return DefWindowProcW(hwnd, msg, wparam, lparam);
-	}
 	switch (msg) {
 	case WM_LBUTTONDOWN:
-		surface->OnLeftDown(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
-		return 0;
+		OnLeftDown(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+		return true;
 	case WM_MOUSEMOVE:
-		surface->OnMouseMove(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
-		return 0;
+		OnMouseMove(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+		return true;
 	case WM_LBUTTONUP:
-		surface->OnLeftUp();
-		return 0;
+		OnLeftUp();
+		return true;
 	case WM_RBUTTONUP:
-		surface->OnRightUp(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
-		return 0;
+		OnRightUp(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+		return true;
 	case WM_CAPTURECHANGED:
-		surface->CancelDrag();
-		return 0;
-	case WM_TIMER:
-		if (wparam == kResizeSettleTimerId) {
-			surface->OnResizeSettled();
-		}
-		return 0;
+		CancelDrag();
+		return true;
 	default:
-		break;
+		return false;
 	}
-	return DefWindowProcW(hwnd, msg, wparam, lparam);
 }
-
-} // namespace
 
 // One managed surface: its (windowId, canvas uuid) key ("" uuid for the Default
 // surface) and the owned PreviewSurface. unique_ptr so the surface keeps a stable

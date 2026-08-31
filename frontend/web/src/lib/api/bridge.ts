@@ -1807,6 +1807,16 @@ export interface ObsMethods {
   // Copy/paste a whole filter chain between sources (paste is not yet undoable).
   "filters.copyChain": { filters: CopiedFilter[] };
   "filters.pasteChain": { pasted: number };
+  // The Filters dialog's own native preview overlay -- a SECOND overlay from the
+  // preview.* family above, bound to the source being filtered rather than to a
+  // canvas, and positioned inside the dialog (the main preview stays suspended for
+  // every modal). open params: {source}; `video` false means the source has nothing
+  // to preview (audio-only, or no standalone composite) and the pane is omitted.
+  // setRect params: {x,y,w,h,dpr}, the same CSS-px convention as preview.setRect.
+  "filterPreview.open": { video: boolean };
+  "filterPreview.setRect": null;
+  "filterPreview.hide": null;
+  "filterPreview.close": null;
   // Stream profiles (reusable destination credentials, 4.4.2).
   "streamProfile.list": StreamProfileInfo[];
   "streamProfile.create": { uuid: string };
@@ -2318,6 +2328,9 @@ export interface ObsEvents {
   // The DEBUG gate flipped (Settings toggle or any setDebug caller); the diagnostics
   // store updates `debug` from the payload without a re-fetch.
   "debug.changed": { debug: boolean };
+  // The source the Filters dialog preview was bound to was removed; the host has
+  // already torn the overlay down, so the dialog collapses its preview pane.
+  "filterPreview.closed": Record<string, never>;
 }
 
 /** The scene item a preview right-click landed on, as much of it as the event

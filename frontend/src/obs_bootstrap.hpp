@@ -392,6 +392,12 @@ void RunAudioMixerSelfTest();
 // close it, leaving no state behind. Also logs the monitor count. Gated by the
 // caller to the smoke path.
 void RunProjectorSelfTest();
+// Headless proof for the Filters dialog preview: bind it to the current program
+// scene (a previewable source), position it, confirm the overlay got a live
+// obs_display, then close it; and confirm an audio-only source is refused so the
+// dialog omits its preview pane rather than showing a black box. Leaves no state
+// behind. Gated by the caller to the smoke path.
+void RunFilterPreviewSelfTest();
 // Headless proof for hotkeys: drive hotkeys.list (expect > 0, including the
 // frontend Start/Stop Streaming), then a hotkeys.set -> hotkeys.list round-trip on
 // one hotkey (bind Ctrl+Shift+F12 via a {code:"F12",ctrl,shift} call, confirm it

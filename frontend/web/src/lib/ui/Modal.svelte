@@ -21,6 +21,16 @@
     /** Drag the header to reposition the panel (kept within the viewport). Off by
      * default so every other modal keeps its fixed centered placement. */
     draggable?: boolean;
+    /** Called on every drag step. A caller hosting a native overlay needs it: an
+     * overlay HWND sits above CEF and does not follow the panel's CSS transform, so
+     * only an explicit re-measure keeps it on the region it covers. */
+    onMove?: () => void;
+    /** Lay the body out as a flex column, so a child asking for `flex: 1 1 auto;
+     * min-height: 0` fills the height the panel actually has instead of growing past
+     * it and making the body scroll. Off by default: it stops sibling margins
+     * collapsing, and blockifies inline children (an unwidthed button in the body
+     * would stretch to full width). */
+    fillBody?: boolean;
     /** Header-embedded controls (e.g. a segmented switch), right of the title. */
     headExtra?: Snippet;
     footer?: Snippet;
@@ -33,6 +43,8 @@
     maxHeight = "86vh",
     closeOnBackdrop = false,
     draggable = false,
+    onMove,
+    fillBody = false,
     headExtra,
     footer,
     children,
@@ -83,6 +95,7 @@
     curX = nx;
     curY = ny;
     modalEl.style.transform = `translate(${curX}px, ${curY}px)`;
+    onMove?.();
   }
   function onHeadPointerUp(e: PointerEvent) {
     dragging = false;
@@ -203,7 +216,7 @@
       </button>
     </header>
 
-    <div class="modal-body">{@render children()}</div>
+    <div class="modal-body" class:fill={fillBody}>{@render children()}</div>
 
     {#if footer}
       <footer class="modal-foot">{@render footer()}</footer>
@@ -283,6 +296,13 @@
     min-height: 0;
     padding: 16px 14px;
     overflow: auto;
+  }
+  /* Opt-in (fillBody): lets one child bound itself to the panel's real height rather
+     than overflowing it. Not the default -- it changes margin collapsing and inline
+     child sizing for bodies written against block flow. */
+  .modal-body.fill {
+    display: flex;
+    flex-direction: column;
   }
   /* Footer action bar. The primary button (.accent, or a non-ghost .btn) fills the
      bar full-height and sits flush to the corner — the same edge-to-edge block as

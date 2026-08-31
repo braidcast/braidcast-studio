@@ -69,6 +69,7 @@
 #include "settings/AdvancedSettings.hpp"
 #include "settings/DiagnosticsSettings.hpp"
 #include "settings/GeneralSettings.hpp"
+#include "windowing/filter_preview.hpp"
 #include "windowing/preview_window.hpp"
 #include "windowing/projector_window.hpp"
 #include "util/properties_serializer.hpp"
@@ -473,6 +474,27 @@ int PreviewWindowParam(const json &params)
 	return 0; // main window
 }
 
+// The one CSS-px -> device-px convention every native overlay is positioned with:
+// params {x,y,w,h} in CSS pixels (host-client space) plus `dpr`
+// (devicePixelRatio). Converting here rather than in JS keeps a single rounding
+// rule, so two overlays reporting the same DOM rect land on the same device pixel.
+// Returns the scale actually applied, so a caller's diagnostic can report it.
+double OverlayRectFromParams(const json &params, int &x, int &y, int &w, int &h)
+{
+	auto num = [&](const char *key, double fallback) -> double {
+		auto it = params.find(key);
+		return (it != params.end() && it->is_number()) ? it->get<double>() : fallback;
+	};
+
+	const double reported = num("dpr", 1.0);
+	const double dpr = reported > 0.0 ? reported : 1.0;
+	x = int(num("x", 0.0) * dpr + 0.5);
+	y = int(num("y", 0.0) * dpr + 0.5);
+	w = int(num("w", 0.0) * dpr + 0.5);
+	h = int(num("h", 0.0) * dpr + 0.5);
+	return dpr;
+}
+
 bool MethodPreviewSetRect(const json &params, json & /*result*/, std::string &error)
 {
 	PreviewManager *pm = Preview::Instance();
@@ -485,16 +507,11 @@ bool MethodPreviewSetRect(const json &params, json & /*result*/, std::string &er
 		return false;
 	}
 
-	auto num = [&](const char *key, double fallback) -> double {
-		auto it = params.find(key);
-		return (it != params.end() && it->is_number()) ? it->get<double>() : fallback;
-	};
-
-	const double dpr = num("dpr", 1.0) > 0.0 ? num("dpr", 1.0) : 1.0;
-	const int x = int(num("x", 0.0) * dpr + 0.5);
-	const int y = int(num("y", 0.0) * dpr + 0.5);
-	const int w = int(num("w", 0.0) * dpr + 0.5);
-	const int h = int(num("h", 0.0) * dpr + 0.5);
+	int x = 0;
+	int y = 0;
+	int w = 0;
+	int h = 0;
+	const double dpr = OverlayRectFromParams(params, x, y, w, h);
 	const std::string canvas = PreviewCanvasParam(params);
 	const int windowId = PreviewWindowParam(params);
 
@@ -5984,6 +6001,94 @@ bool MethodFiltersPasteChain(const json &params, json &result, std::string &erro
 		SceneCollection::Save();
 	}
 	result = json{{"pasted", pasted}};
+	return true;
+}
+
+// --- filters dialog live preview --------------------------------------------
+
+// The Filters dialog's own native overlay, rendering the source being filtered
+// with its whole chain applied. It is a SECOND overlay, not the main preview: that
+// one is suspended for every modal (previewGate.svelte.ts), because a child HWND
+// composited above CEF would swallow the dialog. This one is positioned inside the
+// dialog's own bounds instead, the way upstream OBSBasicFilters gives its dialog
+// its own display.
+
+// Bind the preview to the filtered source. params: {source}. Returns {video},
+// false when the source has nothing to preview (audio-only, or a type with no
+// standalone composite) -- the dialog then omits the preview pane rather than
+// showing a black box, mirroring OBSBasicFilters hiding its own.
+bool MethodFilterPreviewOpen(const json &params, json &result, std::string &error)
+{
+	FilterPreview *fp = FilterPreviewHost::Instance();
+	if (!fp) {
+		error = "filter preview not ready";
+		return false;
+	}
+	obs_source_t *parent = ResolveFilterParent(params, error);
+	if (!parent) {
+		// A rebind that cannot resolve its source must still drop the previous
+		// binding: Open() is what normally closes it, and returning here would leave
+		// the old overlay positioned and visible over the dialog.
+		fp->Close();
+		return false;
+	}
+	std::string openError;
+	const bool video = fp->Open(parent, openError);
+	obs_source_release(parent);
+	if (!video) {
+		HostLog("[bridge] filterPreview.open -> no preview (" + openError + ")");
+	}
+	result = json{{"video", video}};
+	return true;
+}
+
+// Position the overlay over the dialog's placeholder. params: {x,y,w,h,dpr} in the
+// same CSS-px convention as preview.setRect.
+bool MethodFilterPreviewSetRect(const json &params, json & /*result*/, std::string &error)
+{
+	FilterPreview *fp = FilterPreviewHost::Instance();
+	if (!fp) {
+		error = "filter preview not ready";
+		return false;
+	}
+	if (!params.is_object()) {
+		error = "filterPreview.setRect expects an object {x,y,w,h,dpr}";
+		return false;
+	}
+	int x = 0;
+	int y = 0;
+	int w = 0;
+	int h = 0;
+	OverlayRectFromParams(params, x, y, w, h);
+	DBG(LogCat::Preview, "filterPreview.setRect dev-px x=%d y=%d w=%d h=%d", x, y, w, h);
+	fp->SetRect(x, y, w, h);
+	return true;
+}
+
+// Hide the overlay but keep the binding: the placeholder is clipped (scrolled out of
+// the dialog, or off the viewport) so the overlay would otherwise paint over whatever
+// is now in its place.
+bool MethodFilterPreviewHide(const json & /*params*/, json & /*result*/, std::string &error)
+{
+	FilterPreview *fp = FilterPreviewHost::Instance();
+	if (!fp) {
+		error = "filter preview not ready";
+		return false;
+	}
+	fp->Hide();
+	return true;
+}
+
+// Tear the overlay down and drop the source ref. The dialog calls this on unmount;
+// teardown calls it again via FilterPreview::Close, which is idempotent.
+bool MethodFilterPreviewClose(const json & /*params*/, json & /*result*/, std::string &error)
+{
+	FilterPreview *fp = FilterPreviewHost::Instance();
+	if (!fp) {
+		error = "filter preview not ready";
+		return false;
+	}
+	fp->Close();
 	return true;
 }
 
@@ -13115,6 +13220,10 @@ void Init()
 		{"filters.duplicate", MethodFiltersDuplicate},
 		{"filters.copyChain", MethodFiltersCopyChain},
 		{"filters.pasteChain", MethodFiltersPasteChain},
+		{"filterPreview.open", MethodFilterPreviewOpen},
+		{"filterPreview.setRect", MethodFilterPreviewSetRect},
+		{"filterPreview.hide", MethodFilterPreviewHide},
+		{"filterPreview.close", MethodFilterPreviewClose},
 		{"settings.getVideo", MethodSettingsGetVideo},
 		{"settings.setVideo", MethodSettingsSetVideo},
 		{"settings.getAudio", MethodSettingsGetAudio},

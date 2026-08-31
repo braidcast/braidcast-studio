@@ -125,6 +125,12 @@ target_sources(
     src/windowing/projector_window.hpp
     src/windowing/interact_window.cpp
     src/windowing/interact_window.hpp
+    src/windowing/overlay_surface.cpp
+    src/windowing/overlay_surface.hpp
+    src/windowing/source_render.cpp
+    src/windowing/source_render.hpp
+    src/windowing/filter_preview.cpp
+    src/windowing/filter_preview.hpp
     src/audio/AudioMonitor.cpp
     src/audio/AudioMonitor.hpp
     src/scene/main_channel.cpp
@@ -550,6 +556,9 @@ set_source_files_properties(
   src/windowing/preview_window.cpp
   src/windowing/projector_window.cpp
   src/windowing/interact_window.cpp
+  src/windowing/overlay_surface.cpp
+  src/windowing/source_render.cpp
+  src/windowing/filter_preview.cpp
   src/audio/AudioMonitor.cpp
   src/scene/main_channel.cpp
   src/scene/scene_collections.cpp

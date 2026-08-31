@@ -8,6 +8,7 @@
 // differs.
 
 import { obs } from "$lib/api/bridge";
+import { overlayRectOf } from "$lib/utils/overlayRect";
 import { WINDOW_ID } from "$lib/utils/windowContext";
 
 interface PreviewTarget {
@@ -25,20 +26,13 @@ function target(canvasUuid?: string): PreviewTarget {
 // Otherwise assert the rect and report true. Callers use the return to drive their
 // own "surface active" state.
 export function syncPreviewRect(el: HTMLElement, canvasUuid?: string): boolean {
-  const r = el.getBoundingClientRect();
-  if (!el.offsetParent || r.width < 1 || r.height < 1) {
+  const rect = overlayRectOf(el);
+  if (!rect) {
     hidePreview(canvasUuid);
     return false;
   }
   obs
-    .call("preview.setRect", {
-      ...target(canvasUuid),
-      x: r.left,
-      y: r.top,
-      w: r.width,
-      h: r.height,
-      dpr: window.devicePixelRatio || 1,
-    })
+    .call("preview.setRect", { ...target(canvasUuid), ...rect })
     .catch((e) => console.log("preview.setRect failed: " + (e as Error).message));
   return true;
 }

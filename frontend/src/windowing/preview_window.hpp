@@ -6,14 +6,15 @@
 #include <cstdint>
 #include <string>
 
+#include "overlay_surface.hpp"
+
 struct obs_canvas;
 typedef struct obs_canvas obs_canvas_t;
 
-// One native preview surface: a borderless child HWND of the host (sibling above
-// the CEF browser HWND, z-ordered on top) plus an obs_display attached to it. The
-// obs_display is its own D3D11 swapchain libobs steps independently of the CEF
-// browser's renderer, rendering one canvas's program scene with aspect-correct
-// letterboxing.
+// One native preview surface: an OverlaySurface (a borderless child HWND of the
+// host, sibling above the CEF browser HWND, plus its own obs_display) rendering one
+// canvas's program scene with aspect-correct letterboxing, and the scene editing
+// driven off that HWND's mouse input.
 //
 // A surface is bound to a `targetCanvas` at construction. A null targetCanvas is
 // the Default surface: it renders the global mix (obs_get_video_info +
@@ -31,7 +32,7 @@ typedef struct obs_canvas obs_canvas_t;
 //
 // The overlay HWND + display are created lazily on the first SetRect so the UI
 // drives the geometry. Lives between its owner's creation and Destroy().
-class PreviewSurface {
+class PreviewSurface : public OverlaySurface::MessageSink {
 public:
 	// host: the top-level host window the overlay is parented to. targetCanvas:
 	// the canvas mix this surface renders+edits, or null for the Default surface
@@ -40,7 +41,7 @@ public:
 	// windowId: the owning window id (0 = main), carried in preview.contextMenu so
 	// JS filters the broadcast to the originating window.
 	PreviewSurface(HWND host, HINSTANCE instance, obs_canvas_t *targetCanvas, int windowId);
-	~PreviewSurface();
+	~PreviewSurface() override;
 
 	PreviewSurface(const PreviewSurface &) = delete;
 	PreviewSurface &operator=(const PreviewSurface &) = delete;
@@ -50,16 +51,16 @@ public:
 	// size hides instead.
 	void SetRect(int x, int y, int cx, int cy);
 
-	// Hide the overlay HWND (keeps it + the display alive for the next SetRect).
+	// Hide the overlay HWND and drop its swapchain, keeping the HWND for the next
+	// SetRect.
 	void Hide();
 
 	// Destroy the obs_display (must run while libobs is up, before this surface's
 	// canvas mix is freed) and the overlay HWND.
 	void Destroy();
 
-	// The overlay HWND, or null until the first SetRect. Used to map a window
-	// message back to its owning surface.
-	HWND Hwnd() const { return hwnd_; }
+	// The overlay HWND, or null until the first SetRect.
+	HWND Hwnd() const { return overlay_.Hwnd(); }
 
 	// Drive selection from JS without a mouse event (the SourcesPanel). `scene` is
 	// validated against the surface's current scene name (a mismatch is ignored);
@@ -91,9 +92,8 @@ public:
 	// emit preview.contextMenu so JS can open a DOM context menu. UI thread.
 	void OnRightUp(int mx, int my);
 
-	// Settle-timer callback (WM_TIMER on the overlay HWND): apply the last pending
-	// rect from a rapid-resize burst and re-show the surface. UI thread. See SetRect.
-	void OnResizeSettled();
+	// Mouse input off the overlay HWND, routed here by OverlaySurface's WndProc.
+	bool OnOverlayMessage(UINT msg, WPARAM wparam, LPARAM lparam) override;
 
 	// Per-surface impl state (selection + letterbox transform shared with the
 	// render thread, drag state, box buffer). Defined in the .cpp so this header
@@ -102,49 +102,11 @@ public:
 	struct State;
 
 private:
-	// Create the overlay child HWND (no display) on first use. Idempotent.
-	void EnsureCreated();
-
-	// (Re)create the obs_display + its swapchain at (cx,cy) and register the draw
-	// callback, when none exists yet. Hide() destroys the display so a suspended
-	// overlay drops its swapchain; this rebuilds a fresh one on the next SetRect,
-	// so a hidden-then-shown flip-model swapchain never resurfaces black (an
-	// unchanged-size reshow would otherwise skip gs_resize and keep the occluded
-	// buffers). No-op while a display already exists or before the HWND is created.
-	void EnsureDisplay(int cx, int cy);
-
-	// Remove the draw callback + destroy the obs_display (the swapchain), leaving
-	// the overlay HWND intact. Shared by Hide() (drop swapchain on suspend) and
-	// Destroy() (full teardown).
-	void TeardownDisplay();
-
-	// Position/size the overlay HWND + resize its obs_display to (cx,cy) and show it.
-	// The synchronous SetWindowPos keeps the HWND tracking the DOM; the obs_display
-	// resize + present lag is what SetRect's debounce hides during a resize burst.
-	void ApplyRect(int x, int y, int cx, int cy);
-
 	State *state_;
 
-	HWND host_;
-	HINSTANCE instance_;
 	obs_canvas_t *targetCanvas_; // null = Default surface (global mix, output 0)
 	int windowId_ = 0;           // owning window id (0 = main); carried in preview.contextMenu
-	HWND hwnd_ = nullptr;        // overlay child HWND; null until first SetRect
-	void *display_ = nullptr;    // obs_display_t* (opaque here)
-
-	// Rapid-resize debounce (UI thread only). During a drag-resize the DOM fires a
-	// rect every frame; the obs_display swapchain resize lags a frame or backlogs,
-	// so the letterboxed video visibly trails the HWND. We hide the surface for the
-	// duration of the burst and snap it to the final rect once the rects stop (the
-	// settle timer fires). lastCx_/lastCy_ are the size last applied via ApplyRect
-	// (0 = never applied → first rect shows immediately, no hide/delay).
-	int lastCx_ = 0;
-	int lastCy_ = 0;
-	int pendingX_ = 0;
-	int pendingY_ = 0;
-	int pendingCx_ = 0;
-	int pendingCy_ = 0;
-	bool resizeDeferred_ = false;
+	OverlaySurface overlay_;
 };
 
 // Owns the native preview surfaces, keyed by (windowId, canvasUuid). windowId 0 is
