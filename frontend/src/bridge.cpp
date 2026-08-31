@@ -11301,12 +11301,53 @@ void EmitOAuthConnectError(const std::string &profileUuid, const std::string &pr
 	});
 }
 
-void OpenUrlInBrowser(const std::string &url)
+// A URL the host is willing to hand to the shell. http(s) only -- every other scheme
+// runs whatever protocol handler is registered for it, and these URLs can originate in
+// third-party plugin text. Whitespace and double quotes are refused as well, since the
+// shell expands the URL into a handler's "%1" where they could split off extra
+// arguments; a normalized URL percent-encodes both, so nothing legitimate is lost.
+bool IsSafeWebUrl(const std::string &url)
 {
-	if (url.empty()) {
-		return;
+	const auto startsWithNoCase = [&url](const std::string &prefix) {
+		return url.size() > prefix.size() &&
+		       std::equal(prefix.begin(), prefix.end(), url.begin(), [](char a, char b) {
+			       return a == (b >= 'A' && b <= 'Z' ? static_cast<char>(b + ('a' - 'A')) : b);
+		       });
+	};
+	if (!startsWithNoCase("http://") && !startsWithNoCase("https://")) {
+		return false;
+	}
+	return std::none_of(url.begin(), url.end(),
+			    [](char c) { return static_cast<unsigned char>(c) <= 0x20 || c == '"'; });
+}
+
+bool OpenUrlInBrowser(const std::string &url)
+{
+	if (!IsSafeWebUrl(url)) {
+		if (!url.empty()) {
+			HostLog("[shell] refused to open URL: " + url);
+		}
+		return false;
 	}
 	ShellExecuteW(nullptr, L"open", Utf8ToWide(url).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+	return true;
+}
+
+// Open a URL in the system browser. The UI must never navigate the CEF main frame away
+// from app://app/ -- that would replace the whole app with a web page -- so links in the
+// UI come here instead of being followed.
+bool MethodShellOpenUrl(const json &params, json &result, std::string &error)
+{
+	std::string url;
+	if (!RequireStr(params, "shell.openUrl", "url", url, error)) {
+		return false;
+	}
+	if (!OpenUrlInBrowser(url)) {
+		error = "shell.openUrl: not an openable http(s) URL";
+		return false;
+	}
+	result = json{{"ok", true}};
+	return true;
 }
 
 // The interactive connect flow, run on a detached worker thread. Owns everything
@@ -13062,6 +13103,7 @@ void Init()
 		{"properties.button", MethodPropertiesButton},
 		{"dialog.openFile", MethodDialogOpenFile},
 		{"shell.revealPath", MethodShellRevealPath},
+		{"shell.openUrl", MethodShellOpenUrl},
 		{"file.readDataUri", MethodFileReadDataUri},
 		{"filterTypes.list", MethodFilterTypesList},
 		{"filters.list", MethodFiltersList},

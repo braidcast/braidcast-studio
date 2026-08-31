@@ -1751,6 +1751,10 @@ export interface ObsMethods {
   // Reveal a path in the system file manager (file highlighted in its folder;
   // directory opened directly).
   "shell.revealPath": { ok: boolean };
+  // Open an external URL in the system browser. The UI must never navigate the CEF
+  // main frame away from app://app/, so every outbound link routes through the host.
+  // Rejects anything that is not an http(s) URL (throws to JS).
+  "shell.openUrl": { ok: boolean };
   // Read a local file ({path}) and return it as a base64 data: URI. CEF's app://
   // origin refuses to load file:// resources, so a local-image preview must be
   // inlined. Caps at 10 MB and rejects missing/unreadable files (throws to JS).

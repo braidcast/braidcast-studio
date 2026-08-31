@@ -1,15 +1,16 @@
 <script lang="ts">
   import type { ControlProps } from "$lib/properties/controls";
   import type { ButtonProperty } from "$lib/api/bridge";
+  import { openExternalUrl } from "$lib/utils/externalUrl";
   let { prop, onButton }: ControlProps = $props();
 
   const p = $derived(prop as ButtonProperty);
 
   function click() {
-    // URL buttons open externally (later: a bridge open-url method); default
-    // buttons invoke the source's click callback via properties.button.
+    // URL buttons open in the system browser; default buttons invoke the source's
+    // click callback via properties.button.
     if (p.button_type === "url" && p.url) {
-      window.open(p.url, "_blank");
+      openExternalUrl(p.url);
       return;
     }
     onButton(prop.name);
