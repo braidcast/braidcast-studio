@@ -635,6 +635,19 @@ import { EV } from "$lib/utils/eventNames";
     width: 2px;
     background: var(--color-text);
   }
+  /* A muted source still reports levels -- libobs meters ahead of the mute -- so an
+     un-greyed bar reads exactly like a live one. Redefining the three zone colors on
+     .meter re-resolves the track gradient to one inert grey, which leaves the fill
+     geometry, the segmented mask and both orientations alone. Scoped to the meter
+     rather than dimming .row so the mute button keeps its full-strength red. */
+  .row.muted .meter {
+    --meter-green: var(--color-muted);
+    --meter-yellow: var(--color-muted);
+    --meter-red: var(--color-muted);
+  }
+  .row.muted .peak {
+    background: var(--color-muted);
+  }
   .controls {
     display: flex;
     align-items: center;
