@@ -39,6 +39,7 @@
 #include "util/env_config.hpp"
 #include "util/paths.hpp"
 #include "util/session_log.hpp"
+#include "util/win_dll_blocklist.h"
 #include "windowing/tray.hpp"
 #include "windowing/window_chrome.hpp"
 #include "windowing/window_manager.hpp"
@@ -439,6 +440,15 @@ void Teardown()
 	// rejection cannot delete a verdict the running instance left behind.
 	BrowserHwAccel::NoteSurvived();
 
+	// Report what the blocklist hook refused, once, covering the whole session --
+	// most of the table is injected at runtime (Browse dialogs, DShow enumeration,
+	// virtual-camera filters), so reading the counters at startup would miss it. Not
+	// gated on g_obsStarted: a blocked DLL is a plausible cause of the early bail-outs
+	// that never set it, and with no log handler installed blog() falls back to the
+	// default sink rather than failing. Must precede ObsBootstrap::Stop(), which shuts
+	// the session log down.
+	log_blocked_dlls();
+
 	// Stop the GPU-diagnostics sampler and disconnect its source_create hook before
 	// any obs teardown: the sampler thread enumerates live obs sources/outputs, so it
 	// must be joined before ObsBootstrap::Stop()/obs_shutdown free them. Idempotent
@@ -588,6 +598,17 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 	// -- obs.dll + its co-located deps still resolve.
 	SetSearchPathMode(BASE_SEARCH_PATH_ENABLE_SAFE_SEARCHMODE | BASE_SEARCH_PATH_PERMANENT);
 	SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+
+	// Detour NtMapViewOfSection so a known-bad DLL -- broken capture/overlay hooks,
+	// abandoned "security" shims -- is unmapped again instead of running inside the
+	// process that owns the encode pipeline. The search-path hardening above governs
+	// where a DLL may come from, not what may be injected, so neither substitutes for
+	// the other. obs.dll, libcef.dll and libcurl.dll are static imports, so the loader
+	// mapped them and their graphs before wWinMain was entered and the hook can never
+	// filter those; what it covers is every map after this point, which is where an
+	// injector reaches a running process. Main process only: patching ntdll inside the
+	// CEF subprocesses is not what this buys, and they returned above.
+	install_dll_blocklist_hook();
 
 	// Force system-critical DLLs to load only from System32, blocking DLL-planting via
 	// a co-located same-named DLL. Only affects system DLL resolution, so it is safe

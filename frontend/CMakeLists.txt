@@ -146,6 +146,11 @@ target_sources(
     src/util/session_log.cpp
     src/util/session_log.hpp
     src/util/string_util.hpp
+    # Detours hook on NtMapViewOfSection that refuses to map known-bad injected
+    # DLLs (broken overlays, hooking junk) into the process. Kept as C, and in the
+    # /wd4201 + /wd4152 set below.
+    src/util/win_dll_blocklist.c
+    src/util/win_dll_blocklist.h
     src/log.cpp
     src/log.hpp
     # Build-time platform OAuth credential injection (Phase 8a). obf.c is the
@@ -502,6 +507,9 @@ target_include_directories(${_target} SYSTEM PRIVATE "${CMAKE_CURRENT_SOURCE_DIR
 # libcurl backs the bridge HTTP client (Phase 8a OAuth + platform-API calls).
 find_package(CURL REQUIRED)
 
+# Detours backs the DLL-blocklist hook on NtMapViewOfSection.
+find_package(Detours REQUIRED)
+
 add_dependencies(${_target} libcef_dll_wrapper)
 target_link_libraries(
   ${_target}
@@ -532,12 +540,19 @@ target_link_libraries(
     RTWorkQ
     # DWriteCreateFactory (system font-family enumeration) behind fonts.list.
     dwrite
+    # DetourAttach, for the DLL-blocklist hook on NtMapViewOfSection.
+    Detours::Detours
 )
 
 # CEF's /DELAYLOAD list (from SET_EXECUTABLE_TARGET_PROPERTIES) names DLLs this
 # exe imports nothing from, yielding benign LNK4199 -- fatal under the project's
 # global link-time /WX. Ignore just that warning; the delayloads are harmless.
 target_link_options(${_target} PRIVATE "/IGNORE:4199")
+
+# obs-deps ships detours.lib without its PDB, so every object it contributes
+# raises LNK4099 -- fatal under the same /WX. The other Detours consumer
+# (win-capture/graphics-hook) ignores it the same way.
+target_link_options(${_target} PRIVATE "/IGNORE:4099")
 
 # obs.h uses nameless struct/union (C4201), fatal under CEF's /W4 /WX. Suppress
 # only on the TUs that include obs.h.
@@ -594,6 +609,11 @@ set_source_files_properties(
   src/history/Thumbnails.cpp
   PROPERTIES COMPILE_OPTIONS "/wd4201"
 )
+
+# The blocklist hook includes obs.h (C4201) and hands DetourAttach a function
+# pointer through its PVOID parameter, which /W4 flags as C4152 -- that
+# conversion is the Detours API's own calling convention.
+set_source_files_properties(src/util/win_dll_blocklist.c PROPERTIES COMPILE_OPTIONS "/wd4201;/wd4152")
 
 # Place the exe in the OBS rundir (bin/64bit) like other targets; keep a distinct
 # OUTPUT_NAME so it does not collide with the legacy obs64 in a shared rundir
