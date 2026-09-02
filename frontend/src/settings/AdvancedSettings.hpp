@@ -29,6 +29,16 @@ struct AdvancedSettings {
 	bool lowLatencyMode = false;
 	// --- browser source HW accel (obs-browser reads it once at module load) ---
 	bool browserHwAccel = true;
+	// --- audio monitoring device (applied at bootstrap; edited in Audio settings) ---
+	// libobs owns the live value but persists nothing, so without these the user's
+	// device reverts to the built-in "Default"/"default" on every launch. Empty means
+	// "never chosen", which is exactly that built-in, so nothing is applied. Two
+	// fields rather than one encoded pair because that is the shape of the API on
+	// both sides -- obs_set/get_audio_monitoring_device take them separately, as does
+	// the settings.getAudio/setAudio wire object -- and a Windows endpoint's friendly
+	// name is free-form enough that any separator would need an escape scheme.
+	std::string audioMonitoringDeviceId;
+	std::string audioMonitoringDeviceName;
 
 	// Round-trip every field to advanced.json (file keys snake_case). Missing keys
 	// fall back to the struct defaults. Save() is called on each bridge set.
@@ -131,6 +141,19 @@ inline constexpr AdvancedStringField kAdvancedStringFields[] = {
 	 &AdvancedSettings::bindIP,
 	 {"Bind to IP", "\"default\" binds nothing; otherwise a literal local IP.", "Network", "", 40},
 	 nullptr},
+	// Label-less on purpose: Settings > Audio already owns the device picker (it has
+	// the enumerated device list, which this form cannot render), so these ride the
+	// table only for persistence and the wire round-trip.
+	{"audioMonitoringDeviceId",
+	 "audio_monitoring_device_id",
+	 &AdvancedSettings::audioMonitoringDeviceId,
+	 {"", "", "", "", 0},
+	 nullptr},
+	{"audioMonitoringDeviceName",
+	 "audio_monitoring_device_name",
+	 &AdvancedSettings::audioMonitoringDeviceName,
+	 {"", "", "", "", 0},
+	 nullptr},
 };
 inline constexpr AdvancedUIntField kAdvancedUIntFields[] = {
 	{"streamDelaySec",
@@ -168,5 +191,13 @@ void ApplyEffectivePriority(const std::string &token, bool live);
 // automatic ducking. On Windows this maps to IAudioSessionControl2::SetDuckingPreference;
 // on other platforms it is a no-op.
 void DisableAudioDucking(bool disable);
+
+// Point libobs' audio monitoring at a persisted device. An empty id means the user
+// never chose one, so libobs' own "Default"/"default" is left standing. A device that
+// has disappeared since the last run is not an error here: libobs stores whatever id
+// it is given and each monitor's WASAPI init then fails on its own, leaving that
+// source unmonitored rather than hanging or falling back -- which is why a refusal is
+// logged rather than swallowed.
+void ApplyAudioMonitoringDevice(const std::string &name, const std::string &id);
 
 #endif // OBS_MULTISTREAM_FRONTEND_ADVANCED_SETTINGS_HPP_

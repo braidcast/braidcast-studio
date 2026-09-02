@@ -901,6 +901,7 @@ bool ApplyAdvancedPatch(const json &params, json &result, std::string &error)
 	AdvancedSettings &a = ObsBootstrap::Advanced();
 	const std::string oldPriority = a.processPriority;
 	const bool oldDisableAudioDucking = a.disableAudioDucking;
+	const std::string oldMonitoringDeviceId = a.audioMonitoringDeviceId;
 	// Apply ONLY present keys of the matching type; unknown keys are ignored.
 	for (const AdvancedBoolField &f : kAdvancedBoolFields) {
 		auto it = params.find(f.json);
@@ -934,6 +935,14 @@ bool ApplyAdvancedPatch(const json &params, json &result, std::string &error)
 	}
 	if (a.disableAudioDucking != oldDisableAudioDucking) {
 		DisableAudioDucking(a.disableAudioDucking);
+	}
+	// settings.setAudio is the normal writer for this pair, and it applies before it
+	// persists. This path exists because the field still rides the descriptor tables,
+	// so properties.defaults ("Restore Defaults" on the Advanced form) can clear it;
+	// applying here keeps the persisted value and libobs from disagreeing until the
+	// next launch.
+	if (a.audioMonitoringDeviceId != oldMonitoringDeviceId) {
+		ApplyAudioMonitoringDevice(a.audioMonitoringDeviceName, a.audioMonitoringDeviceId);
 	}
 
 	result = AdvancedToJson(a);
@@ -977,10 +986,27 @@ bool MethodSettingsSetAudio(const json &params, json &result, std::string &error
 	// Monitoring device is independent of the audio mix and is safe to change
 	// while outputs are active, so apply it before the active-output guard.
 	if (auto md = params.find("monitoringDevice"); md != params.end() && md->is_object()) {
-		const std::string id = md->value("id", std::string());
-		const std::string name = md->value("name", std::string());
-		if (!id.empty()) {
-			obs_set_audio_monitoring_device(name.empty() ? id.c_str() : name.c_str(), id.c_str());
+		ApplyAudioMonitoringDevice(md->value("name", std::string()), md->value("id", std::string()));
+
+		// libobs keeps this only in memory, so persist it here or the choice is lost
+		// on the next launch. Persisting what libobs actually holds rather than what
+		// was asked for keeps a refused device out of advanced.json. Only on a real
+		// change: settings.getAudio reports the device, so anything that snapshots and
+		// restores the audio settings (the smoke run's own restore step does) would
+		// otherwise rewrite advanced.json for nothing.
+		const char *appliedName = nullptr;
+		const char *appliedId = nullptr;
+		obs_get_audio_monitoring_device(&appliedName, &appliedId);
+		AdvancedSettings &a = ObsBootstrap::Advanced();
+		const std::string name = appliedName ? appliedName : "";
+		const std::string id = appliedId ? appliedId : "";
+		if (name != a.audioMonitoringDeviceName || id != a.audioMonitoringDeviceId) {
+			a.audioMonitoringDeviceName = name;
+			a.audioMonitoringDeviceId = id;
+			if (!a.Save()) {
+				HostLog("[bridge] settings.setAudio: advanced.json save failed; monitoring "
+					"device will not survive a restart");
+			}
 		}
 	}
 

@@ -9,6 +9,11 @@
 
 #include <utility>
 
+void ApplyGlobalVideoLevels(const CanvasColorDef &color)
+{
+	obs_set_video_levels((float)color.sdrWhiteLevel, (float)color.hdrNominalPeakLevel);
+}
+
 CanvasService::CanvasService(CanvasStore &canvases, CanvasRuntime &runtime, MultistreamEngine &engine,
 			     GlobalVideoApplier applyGlobalVideo)
 	: canvases(canvases),
@@ -158,6 +163,16 @@ CanvasUpdateResult CanvasService::Update(const CanvasUpdateRequest &req)
 	if (aencChanged) {
 		def->audio.id = aenc;
 		def->audio.settings = obs_encoder_defaults(aenc.c_str());
+	}
+
+	// The nit levels are deliberately excluded from colorChanged above, so a
+	// levels-only edit reaches neither applier and there is no reset to hang this off.
+	// Publish unconditionally for the Default canvas instead -- it is the only one
+	// whose color drives the global pipeline, and this is a two-float store, not a
+	// reset. A non-Default canvas's own levels stay model-only: libobs keeps exactly
+	// one pair for the whole process.
+	if (def->isDefault) {
+		ApplyGlobalVideoLevels(def->color);
 	}
 
 	// A structural change invalidates the engine's cached encoder pair (bound to

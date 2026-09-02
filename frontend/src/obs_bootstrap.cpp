@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
@@ -1034,6 +1035,43 @@ static void SyncProcessPriorityToLiveState()
 	});
 }
 
+// libobs' UI-task handler. obs_queue_task(OBS_TASK_UI, ...) logs and DROPS the task
+// when none is installed, which is what silently disabled win-wasapi's response to the
+// Windows default output device changing (it queues obs_reset_audio_monitoring).
+//
+// wait == false is the only shape any caller in this build uses -- win-wasapi's
+// device-change callback, on a WASAPI notification thread -- and it maps straight onto
+// PostToUi.
+//
+// wait == true deliberately does not block indefinitely. obs_queue_task(OBS_TASK_UI) is
+// reachable from the graphics and audio threads, and the UI thread routinely blocks on
+// those (obs_reset_video joins the graphics thread), so an unbounded wait deadlocks the
+// moment the two cross. PostToUi also drops the task outright once the bridge is torn
+// down, which would turn that wait from long into permanent. So it gets a ceiling and
+// gives up loudly; the task may still run afterwards, so an expiry means "not
+// confirmed", never "did not happen".
+static void UiTaskHandler(obs_task_t task, void *param, bool wait)
+{
+	if (!wait) {
+		AsyncTask::PostToUi([task, param] { task(param); });
+		return;
+	}
+
+	// A deadlock ceiling rather than a tuned budget: nothing in this build reaches
+	// this branch, so the value only has to be long enough that a merely busy UI
+	// thread is not mistaken for a wedged one.
+	constexpr std::chrono::seconds kUiTaskWait{5};
+	const std::optional<bool> ran = AsyncTask::CallOnUiWithTimeout<bool>(
+		[task, param] {
+			task(param);
+			return true;
+		},
+		kUiTaskWait);
+	if (!ran) {
+		HostLog("[obs] blocking UI task not confirmed within 5s; it may still run later");
+	}
+}
+
 bool ObsBootstrap::Start()
 {
 	// obs-browser checks this in its guarded path to skip CefInitialize (the
@@ -1112,6 +1150,21 @@ bool ObsBootstrap::Start()
 	}
 	HostLog("[obs] obs_startup ok");
 
+	// Before LoadCuratedModules below: win-wasapi arms its default-device notification
+	// inside obs_module_load, and that callback can fire the moment it is armed. With
+	// no handler installed obs_queue_task logs and DROPS the task, which is why audio
+	// monitoring stopped following the Windows default output device.
+	//
+	// Registration also queues set_ui_thread through the handler. Start() runs on the
+	// thread that called CefInitialize with multi_threaded_message_loop off, which is
+	// TID_UI, so PostToUi executes it inline and libobs marks the right thread.
+	//
+	// Never cleared. obs_set_ui_task_handler(nullptr) would immediately queue that
+	// same task into the hole it just made and log the error this fix exists to
+	// remove; instead AsyncTask's alive-guard, cleared in Bridge::Shutdown before
+	// obs_shutdown and long before CefShutdown, makes every late task a silent drop.
+	obs_set_ui_task_handler(UiTaskHandler);
+
 	const std::string root = RundirRoot();
 	obs_add_data_path((root + "/data/libobs/").c_str());
 
@@ -1136,6 +1189,15 @@ bool ObsBootstrap::Start()
 		return false;
 	}
 	HostLog("[obs] obs_reset_video ok (1920x1080@60, D3D11)");
+
+	// Nothing has ever published the nit levels, so from the moment graphics exists
+	// obs_get_video_sdr_white_level() reports the zero obs_startup left behind rather
+	// than its documented 300 fallback, and every SDR<->HDR composite divides by it.
+	// The canvas store loads much later (LoadMultistreamModel below), so seed from
+	// CanvasColorDef's own initializers -- restating 300/1000 here would be a second
+	// copy of the default free to drift from the persisted one -- and let the boot
+	// reconcile republish the user's values. No window is left at zero.
+	ApplyGlobalVideoLevels(CanvasColorDef{});
 
 	// Re-apply the seeded DEBUG gate now that obs exists: the boot seed above ran
 	// through Log::SetDebug before obs_startup, when obs_set_render_debug no-ops.
@@ -1175,6 +1237,10 @@ bool ObsBootstrap::Start()
 	// resolve "auto" against an idle state (false) rather than calling AnyLive().
 	ApplyEffectivePriority(g_advanced.processPriority, false);
 	DisableAudioDucking(g_advanced.disableAudioDucking);
+	// Before the scene collection loads below: a source with monitoring enabled builds
+	// its monitor against whatever device id is current at creation time, so setting it
+	// here saves every restored source a reset it would otherwise need.
+	ApplyAudioMonitoringDevice(g_advanced.audioMonitoringDeviceName, g_advanced.audioMonitoringDeviceId);
 	HostLog("[obs] advanced settings loaded; process priority=" + g_advanced.processPriority +
 		"; audio ducking disabled=" + std::string(g_advanced.disableAudioDucking ? "true" : "false"));
 
@@ -1491,6 +1557,10 @@ bool ObsBootstrap::Start()
 	// survives restarts. Inert on first run (seeded def == the fixed init).
 	{
 		const CanvasDefinition &def = g_canvases.Default();
+		// Outside the resolution comparison below: the nit levels reach libobs
+		// through obs_set_video_levels, not obs_video_info, so a run whose
+		// resolution already matches still has to republish them over the boot seed.
+		ApplyGlobalVideoLevels(def.color);
 		obs_video_info cur = {};
 		if (obs_get_video_info(&cur) && (cur.base_width != def.width || cur.base_height != def.height ||
 						 cur.fps_num != def.fpsNum || cur.fps_den != def.fpsDen)) {

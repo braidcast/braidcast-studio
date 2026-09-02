@@ -71,6 +71,16 @@ struct CanvasUpdateResult {
 	const CanvasDefinition *def = nullptr;
 };
 
+// Publish a Default-canvas color definition's SDR/HDR nit levels to libobs' global
+// video state. Kept out of the GlobalVideoApplier above because these two values are
+// the one part of the Default -> global coupling that needs no pipeline reset: they
+// are read per-composite (the SDR<->HDR tonemap multipliers in obs-source.c and
+// obs-scene.c) rather than baked into the mix, and obs_reset_video neither consumes
+// nor clears them. libobs zeroes them at obs_startup and never writes them itself, so
+// leaving them unset makes those multipliers divide by zero -- it does not fall back
+// to the 300/1000 the getters' no-graphics branch suggests. Requires graphics to be up.
+void ApplyGlobalVideoLevels(const CanvasColorDef &color);
+
 class CanvasService {
 public:
 	// Applies the Default canvas's resolution/color to the global/main video

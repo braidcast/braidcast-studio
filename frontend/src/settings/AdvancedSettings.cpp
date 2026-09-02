@@ -147,3 +147,19 @@ void DisableAudioDucking(bool disable)
 	(void)disable;
 #endif
 }
+
+void ApplyAudioMonitoringDevice(const std::string &name, const std::string &id)
+{
+	if (id.empty()) {
+		return;
+	}
+	// libobs rejects an empty name outright, and a stored pair can be half-written by
+	// an older build that only ever knew the id; fall back to the id as its own label.
+	const std::string &label = name.empty() ? id : name;
+	if (!obs_set_audio_monitoring_device(label.c_str(), id.c_str())) {
+		blog(LOG_WARNING, "AdvancedSettings: audio monitoring device '%s' (%s) was refused", label.c_str(),
+		     id.c_str());
+		return;
+	}
+	blog(LOG_INFO, "Audio monitoring device:\n\tname: %s\n\tid: %s", label.c_str(), id.c_str());
+}

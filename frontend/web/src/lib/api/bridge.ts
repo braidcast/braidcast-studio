@@ -366,8 +366,11 @@ export interface AdvancedAudio {
 /** A canvas's color/format settings. `format`/`space`/`range` are the libobs
  * tokens (e.g. format "NV12", space "709", range "Partial"); changing any of the
  * three is structural (refused while the canvas is live). `sdrWhiteLevel`/
- * `hdrNominalPeakLevel` persist but have no pipeline effect. `useDefault` (non-
- * default canvases only) inherits the Default canvas's color settings. */
+ * `hdrNominalPeakLevel` are the nits libobs scales SDR<->HDR composites by; they
+ * apply immediately and need no reset, so they are not structural, and only the
+ * Default canvas's pair reaches the pipeline (the levels are global, not per-mix).
+ * `useDefault` (non-default canvases only) inherits the Default canvas's color
+ * settings. */
 export interface CanvasColor {
   format: string;
   space: string;
