@@ -13,6 +13,14 @@
   const step = $derived(p.step || 1);
   const slider = $derived((p.type === "int" ? p.int_type : p.float_type) === "slider");
 
+  // A float property's value reaches us widened from the float32 the source keeps, so a
+  // shader declaring 0.8 reads back as 0.800000011920928955 and the box renders all of it.
+  // Show it at the precision the step grid can actually address instead. Display-only: the
+  // stored value is left alone until the user edits, so nothing is silently rewritten by
+  // merely opening a dialog.
+  const decimals = $derived(prop.type === "int" ? 0 : Math.min(10, Math.max(0, Math.ceil(-Math.log10(step)))));
+  const shown = $derived(Number(num.toFixed(decimals)));
+
   function clamp(v: number): number {
     if (typeof p.min === "number" && v < p.min) v = p.min;
     if (typeof p.max === "number" && v > p.max) v = p.max;
@@ -24,11 +32,13 @@
     if (!Number.isNaN(parsed)) onChange(prop.name, clamp(parsed));
   }
 
-  // Steppers round to the step grid so a float doesn't accumulate drift.
+  // Steppers round to the step grid so a float doesn't accumulate drift -- stepping from
+  // the displayed value rather than the raw one is what makes that true, otherwise every
+  // nudge carries the widening error forward.
   function bump(dir: 1 | -1) {
     if (!prop.enabled) return;
-    const next = clamp(num + dir * step);
-    onChange(prop.name, prop.type === "int" ? Math.round(next) : next);
+    const next = clamp(shown + dir * step);
+    onChange(prop.name, prop.type === "int" ? Math.round(next) : Number(next.toFixed(decimals)));
   }
 </script>
 
@@ -40,7 +50,7 @@
       min={p.min}
       max={p.max}
       step={step}
-      value={num}
+      value={shown}
       disabled={!prop.enabled}
       oninput={(e) => emit((e.currentTarget as HTMLInputElement).value)}
     />
@@ -51,7 +61,7 @@
       min={p.min}
       max={p.max}
       step={step}
-      value={num}
+      value={shown}
       disabled={!prop.enabled}
       oninput={(e) => emit((e.currentTarget as HTMLInputElement).value)}
     />
