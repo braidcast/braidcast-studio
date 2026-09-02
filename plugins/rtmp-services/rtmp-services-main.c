@@ -40,14 +40,16 @@ static bool confirm_service_file(void *param, struct file_download_data *file)
 		int format_version;
 
 		data = obs_data_create_from_json((char *)file->buffer.array);
-		if (!data)
+		if (!data) {
 			return false;
+		}
 
 		format_version = (int)obs_data_get_int(data, "format_version");
 		obs_data_release(data);
 
-		if (format_version != RTMP_SERVICES_FORMAT_VERSION)
+		if (format_version != RTMP_SERVICES_FORMAT_VERSION) {
 			return false;
+		}
 	}
 
 	UNUSED_PARAMETER(param);
@@ -67,10 +69,12 @@ extern void amazon_ivs_ingests_refresh(int seconds);
 static void refresh_callback(void *unused, calldata_t *cd)
 {
 	int seconds = (int)calldata_int(cd, "seconds");
-	if (seconds <= 0)
+	if (seconds <= 0) {
 		seconds = 3;
-	if (seconds > 10)
+	}
+	if (seconds > 10) {
 		seconds = 10;
+	}
 
 	twitch_ingests_refresh(seconds);
 
@@ -80,10 +84,12 @@ static void refresh_callback(void *unused, calldata_t *cd)
 static void amazon_ivs_refresh_callback(void *unused, calldata_t *cd)
 {
 	int seconds = (int)calldata_int(cd, "seconds");
-	if (seconds <= 0)
+	if (seconds <= 0) {
 		seconds = 3;
-	if (seconds > 10)
+	}
+	if (seconds > 10) {
 		seconds = 10;
+	}
 
 	amazon_ivs_ingests_refresh(seconds);
 
