@@ -39,6 +39,7 @@
 #include "devtools_port.hpp"
 #include "settings/DiagnosticsSettings.hpp"
 #include "frontend_callbacks.hpp"
+#include "gpu_safe_mode.hpp"
 #include "log.hpp"
 #include "chat/channel_stats_poller.hpp"
 #include "chat/chat_hub.hpp" // Chat::BindingDestination, Chat::Hub
@@ -1249,14 +1250,50 @@ bool ObsBootstrap::Start()
 	// every browser source to the CPU OnPaint readback for the process lifetime. So
 	// this must precede LoadCuratedModules() below, and a change to the setting only
 	// takes effect on the next launch (which is what its UI hint says).
+	//
+	// Acceleration puts every browser source on CEF's GPU shared-texture path, which
+	// is what makes it worth having and also what can CHECK()-fail on CrBrowserMain
+	// and freeze the UI; BrowserHwAccel::DecideAtBoot arms the crash probe that turns
+	// the setting off on the next launch when that happens. It is pointless -- and
+	// leaves the sources black -- when the browser process runs with --disable-gpu,
+	// since obs-browser derives shared-texture availability from the OBS D3D11 device
+	// and never sees that switch.
+	const bool hwAccelStored = g_advanced.browserHwAccel;
+	const bool softwareMode = GpuSafeMode::SoftwareRendering();
+	const BrowserHwAccel::BootDecision hwAccel = BrowserHwAccel::DecideAtBoot(hwAccelStored, softwareMode);
 	// obs_set_private_data copies into libobs' own bag rather than taking the
 	// reference, so the local one is ours to release.
 	{
 		OBSDataAutoRelease privateData = obs_data_create();
-		obs_data_set_bool(privateData, "BrowserHWAccel", g_advanced.browserHwAccel);
+		obs_data_set_bool(privateData, "BrowserHWAccel", hwAccel.enable);
 		obs_set_private_data(privateData);
 	}
-	HostLog("[obs] browser hardware acceleration=" + std::string(g_advanced.browserHwAccel ? "true" : "false"));
+	if (hwAccel.crashDetected) {
+		// The stored setting IS the latch: turning it off is what makes the
+		// suppression stick across boots, and it keeps the Settings checkbox an
+		// honest picture of what is running -- re-ticking it re-arms the probe. The
+		// probe's sentinel is still on disk and only retires once that has landed, so
+		// a refused write costs a repeat of this boot rather than the crash loop.
+		g_advanced.browserHwAccel = false;
+		if (g_advanced.Save()) {
+			BrowserHwAccel::ConfirmSuppressionPersisted();
+			blog(LOG_WARNING,
+			     "[gpu] browser hardware acceleration requested=true applied=false -- the previous "
+			     "launch brought browser sources up on the GPU and its CEF UI thread never came "
+			     "back. The setting has been turned off; re-enable it in Settings > Advanced to "
+			     "retry.");
+		} else {
+			blog(LOG_WARNING,
+			     "[gpu] browser hardware acceleration suppressed for this launch, but the setting "
+			     "could not be persisted, so the suppression is not sticky yet. It stays off this "
+			     "run and the next launch will detect the same crash and try again.");
+		}
+	} else {
+		HostLog("[gpu] browser hardware acceleration requested=" +
+			std::string(hwAccelStored ? "true" : "false") +
+			" applied=" + std::string(hwAccel.enable ? "true" : "false") +
+			(hwAccelStored && softwareMode ? " (this launch renders CEF in software mode)" : ""));
+	}
 
 	// obs-browser's braidcast_overlay source type resolves its URL through these, and
 	// a source can be created the moment the module registers the type, so they must

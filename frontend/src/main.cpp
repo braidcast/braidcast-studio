@@ -12,8 +12,10 @@
 #include <memory>
 #include <string>
 
+#include "include/base/cef_callback.h"
 #include "include/cef_app.h"
 #include "include/cef_browser.h"
+#include "include/wrapper/cef_closure_task.h"
 
 #include "app.hpp"
 #include "windowing/app_icon.hpp"
@@ -430,6 +432,13 @@ void DrainCefTasks()
 // before ObsBootstrap::Stop() frees the canvas mixes those surfaces render.
 void Teardown()
 {
+	// Close the browser-source hardware-acceleration probe first: reaching any
+	// deliberate exit -- the clean one, the CreateBrowserSync abort, every early
+	// bail-out -- proves CEF's UI thread was alive, which is exactly what the probe
+	// asks. It is a no-op unless this process armed one, so the single-instance
+	// rejection cannot delete a verdict the running instance left behind.
+	BrowserHwAccel::NoteSurvived();
+
 	// Stop the GPU-diagnostics sampler and disconnect its source_create hook before
 	// any obs teardown: the sampler thread enumerates live obs sources/outputs, so it
 	// must be joined before ObsBootstrap::Stop()/obs_shutdown free them. Idempotent
@@ -869,6 +878,20 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 	// Client (Client::Shared) so they join the same browser_list_ + emit registry.
 	g_windows = std::make_unique<WindowManager>(hInstance, StartupUrl());
 	WindowManager::SetInstance(g_windows.get());
+
+	// Close the browser-source hardware-acceleration probe once the CEF UI thread has
+	// outlived browser-source creation. A posted task rather than a wall-clock check
+	// because running it is itself the evidence: this is the thread a Chromium CHECK
+	// breaks, so a run that reaches the task cannot have hit the freeze. The converse
+	// does not hold -- see gpu_safe_mode.hpp for what else leaves the sentinel behind
+	// and why that residue is the cheaper error. A session that outlives the window
+	// closes the probe here; a shorter one closes it in Teardown().
+	if (!CefPostDelayedTask(TID_UI, base::BindOnce(&BrowserHwAccel::NoteSurvived),
+				BrowserHwAccel::kProbeWindowMs)) {
+		blog(LOG_WARNING, "[gpu] could not post the browser hardware-acceleration probe timer -- the "
+				  "probe now closes only at teardown, so a kill of a healthy long-running "
+				  "session will read as a GPU freeze and turn acceleration off");
+	}
 
 	CefRunMessageLoop();
 

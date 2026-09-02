@@ -16,6 +16,7 @@
 #include <util/base.h>
 #include <util/platform.h>
 
+#include "../gpu_safe_mode.hpp"
 #include "../multistream/StorePaths.hpp"
 #include "env_config.hpp"
 #include "time_util.hpp"
@@ -168,6 +169,15 @@ void CrashSinkHandler(const char *format, va_list args, void *)
 			file << g_crashText;
 		}
 	}
+
+	// The crash report is on disk; now retire the browser-source GPU probe. This
+	// process _exit()s below and never reaches teardown, so its sentinel would
+	// otherwise survive to the next boot and turn browser hardware acceleration off
+	// for a fault that had nothing to do with the GPU. It runs after the report so a
+	// failure inside it can never cost the diagnosis, and before the modal below so a
+	// kill while that box is up cannot strand the sentinel. Allocation-free by
+	// contract -- see BrowserHwAccel::NoteFatalError.
+	BrowserHwAccel::NoteFatalError();
 
 	if (!g_crashQuiet) {
 		std::replace(path.begin(), path.end(), '/', '\\');
