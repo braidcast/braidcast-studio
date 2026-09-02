@@ -587,6 +587,17 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 	image_load_policy.PreferSystem32Images = 1;
 	SetProcessMitigationPolicy(ProcessImageLoadPolicy, &image_load_policy, sizeof(image_load_policy));
 
+	// Block the legacy global-injection extension points -- AppInit_DLLs, SetWindowsHookEx
+	// hooks from other processes, legacy IMEs and Winsock LSPs. Unlike the DLL-search
+	// hardening above there is no linker or loader default for this, so third-party
+	// software that injects itself into every window (overlays, macro tools) is otherwise
+	// free to run inside the process that owns the encode pipeline. Not inherited by the
+	// CEF subprocesses, which returned above and never reach here.
+	PROCESS_MITIGATION_EXTENSION_POINT_DISABLE_POLICY extension_point_policy = {0};
+	extension_point_policy.DisableExtensionPoints = 1;
+	SetProcessMitigationPolicy(ProcessExtensionPointDisablePolicy, &extension_point_policy,
+				   sizeof(extension_point_policy));
+
 	// Enable SE_DEBUG + SE_INC_BASE_PRIORITY for this process (see load_debug_privilege).
 	load_debug_privilege();
 

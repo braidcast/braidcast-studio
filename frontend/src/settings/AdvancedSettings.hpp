@@ -9,8 +9,8 @@
 // whose fields are the single source of truth, round-tripped through descriptor
 // tables shared by the persistence layer and the bridge so the two can't drift.
 // Some fields drive behavior now (process priority at startup, per-output stream
-// delay / reconnect / network options applied in MultistreamEngine::StartOutput);
-// browserHwAccel is store-only (obs-browser reads its own config).
+// delay / reconnect / network options applied in MultistreamEngine::StartOutput;
+// browserHwAccel published to obs-browser through libobs private data at bootstrap).
 struct AdvancedSettings {
 	// --- process (Windows) ---
 	std::string processPriority = "auto"; // auto | normal | aboveNormal | high
@@ -27,7 +27,7 @@ struct AdvancedSettings {
 	std::string bindIP = "default"; // "default" (don't bind) or a literal IP
 	bool newSocketLoop = false;
 	bool lowLatencyMode = false;
-	// --- browser source HW accel (store-only; obs-browser reads its own config) ---
+	// --- browser source HW accel (obs-browser reads it once at module load) ---
 	bool browserHwAccel = true;
 
 	// Round-trip every field to advanced.json (file keys snake_case). Missing keys

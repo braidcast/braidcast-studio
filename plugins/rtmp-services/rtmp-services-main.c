@@ -121,12 +121,16 @@ bool obs_module_load(void)
 						 cache_dir, confirm_service_file, NULL);
 	}
 
-	load_twitch_data();
-	load_amazon_ivs_data();
-
 	bfree(local_dir);
 	bfree(cache_dir);
 #endif
+
+	/* Installs the fallback ingest lists (the hardcoded "Default" entry plus any
+	 * cached <service>_ingests.json). Independent of the services.json updater
+	 * above -- rtmp-common resolves server="auto" through twitch_ingest() whether
+	 * or not service updates are compiled in, and gets nothing without this. */
+	load_twitch_data();
+	load_amazon_ivs_data();
 
 	obs_register_service(&rtmp_common_service);
 	obs_register_service(&rtmp_custom_service);

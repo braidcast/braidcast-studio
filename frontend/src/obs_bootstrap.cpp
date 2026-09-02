@@ -1169,7 +1169,7 @@ bool ObsBootstrap::Start()
 
 	// Load the global Advanced settings and apply the stored process priority once.
 	// The engine reads the rest (stream delay / reconnect / network) per output at
-	// StartOutput; browserHwAccel is store-only.
+	// StartOutput; browserHwAccel is handed to obs-browser below.
 	g_advanced.Load();
 	// Nothing can be live at startup, and g_multistream is not constructed yet, so
 	// resolve "auto" against an idle state (false) rather than calling AnyLive().
@@ -1177,6 +1177,20 @@ bool ObsBootstrap::Start()
 	DisableAudioDucking(g_advanced.disableAudioDucking);
 	HostLog("[obs] advanced settings loaded; process priority=" + g_advanced.processPriority +
 		"; audio ducking disabled=" + std::string(g_advanced.disableAudioDucking ? "true" : "false"));
+
+	// obs-browser has no settings file of its own: it reads BrowserHWAccel out of
+	// libobs' private-data bag once, in its obs_module_load, and a false there pins
+	// every browser source to the CPU OnPaint readback for the process lifetime. So
+	// this must precede LoadCuratedModules() below, and a change to the setting only
+	// takes effect on the next launch (which is what its UI hint says).
+	// obs_set_private_data copies into libobs' own bag rather than taking the
+	// reference, so the local one is ours to release.
+	{
+		OBSDataAutoRelease privateData = obs_data_create();
+		obs_data_set_bool(privateData, "BrowserHWAccel", g_advanced.browserHwAccel);
+		obs_set_private_data(privateData);
+	}
+	HostLog("[obs] browser hardware acceleration=" + std::string(g_advanced.browserHwAccel ? "true" : "false"));
 
 	// obs-browser's braidcast_overlay source type resolves its URL through these, and
 	// a source can be created the moment the module registers the type, so they must
