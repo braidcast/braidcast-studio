@@ -331,10 +331,13 @@ void StreamInfoPresetStore::MergeDuplicates()
 		}
 		merged++;
 	}
+	// Unconditional, and load-bearing rather than tidy: the loop above moved every row
+	// out of presets_, so a return that skipped this would leave the store holding
+	// moved-from Presets -- empty ids and null bags -- which List() then hands to the UI.
+	presets_ = std::move(kept);
 	if (merged == 0) {
 		return;
 	}
-	presets_ = std::move(kept);
 	HostLog("[storage] merged " + std::to_string(merged) +
 		" duplicate stream info preset(s): same sheet, saved twice because one go-live "
 		"omitted a list field the other sent empty");

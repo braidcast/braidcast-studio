@@ -68,13 +68,16 @@ export function presetValuesFor(preset: StreamInfoPreset, provider: OAuthProvide
 /** The label a preset reads by: its own name, else the title it carries (shared first,
  * then any provider's own), else a stand-in -- a row with no words on it is unpickable. */
 export function presetLabel(preset: StreamInfoPreset): string {
-  const named = preset.name.trim();
+  const named = (preset.name ?? "").trim();
   if (named !== "") {
     return named;
   }
-  const bags = [preset.shared, ...Object.values(preset.byProvider)];
+  // Tolerates a row whose bags are missing. This runs while the picker renders each row,
+  // so a throw here takes the whole dialog down and leaves it unable to reopen -- a
+  // disproportionate answer to one unreadable preset among many readable ones.
+  const bags = [preset.shared, ...Object.values(preset.byProvider ?? {})];
   for (const bag of bags) {
-    const title = bag["title"];
+    const title = bag?.["title"];
     if (typeof title === "string" && title.trim() !== "") {
       return title.trim();
     }
