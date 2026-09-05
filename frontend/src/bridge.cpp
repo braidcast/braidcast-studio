@@ -1692,55 +1692,9 @@ bool MethodScenesRename(const json &params, json &result, std::string &error)
 	return true;
 }
 
-// scenes.duplicate {name, canvas?}: duplicate a global scene (Default path only)
-// using shared source refs, matching OBS's "Duplicate Scene". Additional-canvas
-// duplication is unsupported (same limitation as scenes.reorder).
-bool MethodScenesDuplicate(const json &params, json &result, std::string &error)
-{
-	std::string name;
-	if (!RequireStr(params, "scenes.duplicate", "name", name, error)) {
-		return false;
-	}
-	const CanvasTarget target = ResolveCanvasTarget(params);
-	if (target.isAdditional) {
-		error = "scene duplication is not supported for additional canvases";
-		return false;
-	}
-	obs_source_t *srcScene = obs_get_source_by_name(name.c_str()); // addref'd
-	if (!srcScene || !obs_scene_from_source(srcScene)) {
-		if (srcScene) {
-			obs_source_release(srcScene);
-		}
-		error = "no scene named '" + name + "'";
-		return false;
-	}
-	obs_scene_t *scene = obs_scene_from_source(srcScene);
-
-	// Duplicating within one namespace, so `name` itself is always the collision.
-	const std::string newName = UniqueName(name, BareName::Skip, [](const std::string &candidate) {
-		OBSSourceAutoRelease taken = obs_get_source_by_name(candidate.c_str());
-		return taken != nullptr;
-	});
-
-	obs_scene_t *dup = obs_scene_duplicate(scene, newName.c_str(), OBS_SCENE_DUP_REFS); // new ref
-	obs_source_release(srcScene);
-	if (!dup) {
-		error = "obs_scene_duplicate failed";
-		return false;
-	}
-	obs_scene_release(dup); // the new scene source persists in the registry
-
-	EmitScenesChanged(std::string());
-	SceneCollection::Save();
-	result = json{{"name", newName}};
-	return true;
-}
-
 // Resolve a scene by name on an explicit source canvas (Default when
 // srcCanvasUuid is empty or equals the Default canvas's uuid). Addref'd;
-// caller releases. Mirrors MethodScenesDuplicate's own-canvas resolution but
-// ALSO supports an additional canvas as the source (which MethodScenesDuplicate
-// explicitly rejects).
+// caller releases.
 obs_source_t *ResolveNamedSceneOnCanvas(const std::string &sceneName, const std::string &srcCanvasUuid)
 {
 	if (!srcCanvasUuid.empty() && srcCanvasUuid != ObsBootstrap::Canvases().Default().uuid) {
@@ -1783,9 +1737,10 @@ ResolvedDestCanvas ResolveDestCanvas(const std::string &destCanvasUuid)
 // unconditionally renamed a scene for a collision that had not happened, which is both
 // wrong and hard to undo once several canvases have drifted apart.
 //
-// This is why the bare name is tried here and skipped by MethodScenesDuplicate: that one
-// only ever copies within one canvas, where the source scene's own name is always the
-// collision.
+// MethodScenesDuplicate calls this too, for a same-canvas copy: BareName::Try still
+// runs there, but the original scene always already holds the base name on its own
+// canvas, so that probe fails immediately and the call falls through to the same
+// "<name> 2" suffix a same-canvas-only probe would have produced anyway.
 std::string FreeSceneNameOnCanvas(const std::string &baseName, const std::string &destCanvasUuid, bool destIsAdditional,
 				  obs_canvas_t *destCanvas)
 {
@@ -1795,6 +1750,52 @@ std::string FreeSceneNameOnCanvas(const std::string &baseName, const std::string
 						     : obs_get_source_by_name(candidate.c_str());
 		return taken != nullptr;
 	});
+}
+
+// scenes.duplicate {name, canvas?}: duplicate a scene within its own canvas (Default
+// or an additional one, selected by `canvas`), using shared source refs -- matching
+// OBS's own "Duplicate Scene". This is deliberately NOT scenes.duplicateToCanvas's deep
+// copy onto a DIFFERENT canvas. No obs_canvas_move_scene call is needed here: libobs
+// already mints the duplicate on the source scene's own canvas (obs_scene_duplicate
+// derives the new source's CANVAS from scene->source->canvas), so the copy lands
+// exactly where the original lives without any move step.
+bool MethodScenesDuplicate(const json &params, json &result, std::string &error)
+{
+	std::string name;
+	if (!RequireStr(params, "scenes.duplicate", "name", name, error)) {
+		return false;
+	}
+	const CanvasTarget target = ResolveCanvasTarget(params);
+
+	OBSSourceAutoRelease srcScene = ResolveNamedSceneOnCanvas(name, target.uuid); // addref'd
+	if (!srcScene || !obs_scene_from_source(srcScene)) {
+		error = "no scene named '" + name + "'";
+		return false;
+	}
+	obs_scene_t *scene = obs_scene_from_source(srcScene);
+
+	// Provably unreachable today -- ResolveNamedSceneOnCanvas above already did the
+	// same CanvasRuntime().Find() and would have failed with "no scene named" on a
+	// miss -- but kept as a cheap null-check rather than resting safety on that
+	// chain staying true.
+	ResolvedDestCanvas dest = ResolveDestCanvas(target.uuid);
+	if (!dest.canvas) {
+		error = "unknown canvas";
+		return false;
+	}
+	const std::string newName = FreeSceneNameOnCanvas(name, target.uuid, target.isAdditional, dest.canvas);
+
+	obs_scene_t *dup = obs_scene_duplicate(scene, newName.c_str(), OBS_SCENE_DUP_REFS); // new ref
+	if (!dup) {
+		error = "obs_scene_duplicate failed";
+		return false;
+	}
+	obs_scene_release(dup); // the canvas holds the scene (SCENE_REF); drop our create-ref
+
+	EmitScenesChanged(target.uuid);
+	SceneCollection::Save();
+	result = json{{"name", newName}};
+	return true;
 }
 
 // A name libobs will insert into `canvas`'s own source list verbatim: `baseName`,
@@ -1992,8 +1993,8 @@ extern const UndoManager::Cb kRedoDuplicateSceneToCanvas;
 // scenes.duplicateToCanvas {name, canvas?, destCanvas}: deep-copy a scene (its own
 // scene-level filters + every item's SOURCE, incl. that source's filters, via
 // OBS_SCENE_DUP_COPY) from its current canvas onto ANY other canvas (or the same
-// one). Independent of the existing scenes.duplicate, which stays REFS-only,
-// Default-canvas-only, and unchanged.
+// one). Independent of the existing scenes.duplicate, which stays REFS-only and
+// copies within a single canvas.
 bool MethodScenesDuplicateToCanvas(const json &params, json &result, std::string &error)
 {
 	std::string name;

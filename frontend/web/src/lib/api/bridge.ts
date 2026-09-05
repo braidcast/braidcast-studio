@@ -1676,7 +1676,10 @@ export interface ObsMethods {
   "scenes.remove": { removed: string };
   "scenes.setCurrent": { name: string };
   "scenes.rename": { name: string };
-  // Duplicate a scene (global channel-0 path only; additional canvases unsupported).
+  // Duplicate a scene within its own canvas (shared source refs, matching OBS's own
+  // "Duplicate Scene"). Params: {name, canvas?}; canvas omitted/empty means the
+  // Default canvas. Contrast scenes.duplicateToCanvas below, which deep-copies a
+  // scene onto a DIFFERENT canvas.
   "scenes.duplicate": { name: string };
   // Deep-copy a scene (its own scene-level filters + every item's SOURCE, filters
   // included) from one canvas onto another (or the same one). Params: {name,

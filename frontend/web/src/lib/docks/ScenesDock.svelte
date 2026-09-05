@@ -5,7 +5,7 @@ import { EV } from "$lib/utils/eventNames";
   import { selectOnMount } from "$lib/utils/focusActions";
   import { defaultCanvas } from "$lib/docks/defaultCanvasStore.svelte";
   import { canvasStore } from "$lib/stores/canvasStore.svelte";
-  import { callOrToast } from "$lib/utils/callToast";
+  import { callOrToast, renamedSuffix } from "$lib/utils/callToast";
   import { showToast } from "$lib/stores/toastStore.svelte";
   import ContextMenu, { type ContextMenuState } from "$lib/menus/ContextMenu.svelte";
   import ListToolbar, { type ToolAction } from "$lib/docking/ListToolbar.svelte";
@@ -193,8 +193,7 @@ import { EV } from "$lib/utils/eventNames";
     if (r) {
       const destName = canvasStore.byUuid(destUuid)?.name;
       const to = destName ? ` to "${destName}"` : "";
-      const as = r.name !== sceneName ? ` as "${r.name}"` : "";
-      showToast(`Duplicated "${sceneName}"${to}${as}`, r.name);
+      showToast(`Duplicated "${sceneName}"${to}${renamedSuffix(sceneName, r.name)}`, r.name);
     }
   }
 

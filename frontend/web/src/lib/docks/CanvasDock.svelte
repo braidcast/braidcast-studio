@@ -33,7 +33,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   import type { DeinterlaceMode, DeinterlaceFieldOrder, TransitionType } from "$lib/api/bridge";
   import { defaultCanvas } from "$lib/docks/defaultCanvasStore.svelte";
   import { canvasStore } from "$lib/stores/canvasStore.svelte";
-  import { callOrToast } from "$lib/utils/callToast";
+  import { callOrToast, renamedSuffix } from "$lib/utils/callToast";
   import { showToast } from "$lib/stores/toastStore.svelte";
   import AddSourceModal from "$lib/dialogs/add-source/AddSourceModal.svelte";
   import PropertiesModal from "$lib/properties/PropertiesModal.svelte";
@@ -265,8 +265,17 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
       : scenes,
   );
 
+  // Duplicates a scene within THIS canvas (shared source refs, matching OBS's own
+  // "Duplicate Scene"). See scenes.duplicate in bridge.ts.
+  async function duplicateScene(sceneName: string) {
+    const r = await callOrToast("scenes.duplicate", { name: sceneName, canvas: canvasUuid }, "Duplicate failed");
+    if (r) {
+      showToast(`Duplicated "${sceneName}"${renamedSuffix(sceneName, r.name)}`, r.name);
+    }
+  }
+
   // Duplicates a scene from THIS canvas onto another canvas (a deep copy, unlike
-  // the same-canvas sceneItems.duplicate above which is a ref duplicate). See
+  // the same-canvas sceneItems.duplicate below which is a ref duplicate). See
   // scenes.duplicateToCanvas in bridge.ts.
   async function duplicateSceneToCanvas(sceneName: string, destUuid: string) {
     const r = await callOrToast(
@@ -277,8 +286,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     if (r) {
       const destName = canvasStore.byUuid(destUuid)?.name;
       const to = destName ? ` to "${destName}"` : "";
-      const as = r.name !== sceneName ? ` as "${r.name}"` : "";
-      showToast(`Duplicated "${sceneName}"${to}${as}`, r.name);
+      showToast(`Duplicated "${sceneName}"${to}${renamedSuffix(sceneName, r.name)}`, r.name);
     }
   }
 
@@ -326,6 +334,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
         { label: "Rename", action: () => beginRenameScene(name) },
         { label: "Filters", action: () => openFilters(name) },
         { label: "Link to", children: linkChildren },
+        { label: "Duplicate", action: () => void duplicateScene(name) },
         { label: "Duplicate to canvas", children: duplicateChildren },
         // A scene is a source, so its screenshot reuses screenshot.takeSource (the
         // per-source path), targeting the scene by name instead of a scene-item id.

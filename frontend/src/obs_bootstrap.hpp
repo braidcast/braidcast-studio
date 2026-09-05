@@ -340,10 +340,14 @@ void RunCanvasSceneSelfTest();
 // source has a DIFFERENT uuid than the original (a real deep copy, not a shared
 // ref), that Undo() removes the duplicated scene, and that Redo() restores it
 // with the SAME item source uuid captured after the initial duplicate (proving
-// restore-from-snapshot rather than a fresh re-duplicate). Removes both temp
-// canvases afterward; never Saves explicitly (the bridge calls it drives do their
-// own normal Save, matching the other canvas-scene self-tests). Gated by the
-// caller to the smoke path.
+// restore-from-snapshot rather than a fresh re-duplicate). Also drives
+// scenes.duplicate on the source canvas and asserts the same-canvas copy is
+// suffixed "<name> 2", is listed on the source canvas but not the Default one,
+// and shares -- not copies -- the original item's source uuid, the shared-ref
+// contrast to the deep copy above. Removes both temp canvases afterward; never
+// Saves explicitly (the bridge calls it drives do their own normal Save,
+// matching the other canvas-scene self-tests). Gated by the caller to the
+// smoke path.
 void RunSceneDuplicateSelfTest();
 // Headless proof for the transform pivot/clamp fixes: bring up a temporary
 // additional canvas with one wide, off-center, non-uniformly scaled color

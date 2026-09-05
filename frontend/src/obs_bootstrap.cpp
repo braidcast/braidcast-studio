@@ -3077,17 +3077,17 @@ void ObsBootstrap::RunSceneDuplicateSelfTest()
 		return false;
 	};
 
-	// Helper: make `sceneName` current on the destination canvas, assert it has
-	// exactly one item, and return that item's source uuid (empty on any failure).
-	auto singleItemSourceUuid = [&](const std::string &sceneName, int64_t &outItemId,
+	// Helper: make `sceneName` current on `canvasUuid`, assert it has exactly one
+	// item, and return that item's source uuid (empty on any failure).
+	auto singleItemSourceUuid = [&](const std::string &canvasUuid, const std::string &sceneName, int64_t &outItemId,
 					std::string &outSrcName) -> std::string {
 		bool setOk = false;
-		run("scenes.setCurrent", json{{"canvas", destCanvasUuid}, {"name", sceneName}}, setOk);
+		run("scenes.setCurrent", json{{"canvas", canvasUuid}, {"name", sceneName}}, setOk);
 		if (!setOk) {
 			return {};
 		}
 		bool listOk = false;
-		json items = run("sceneItems.list", json{{"canvas", destCanvasUuid}}, listOk);
+		json items = run("sceneItems.list", json{{"canvas", canvasUuid}}, listOk);
 		if (!listOk || !items.is_array() || items.size() != 1) {
 			return {};
 		}
@@ -3112,12 +3112,71 @@ void ObsBootstrap::RunSceneDuplicateSelfTest()
 
 	int64_t dupItemId = 0;
 	std::string dupSrcName;
-	const std::string dupSrcUuid = foundOnDest ? singleItemSourceUuid(newSceneName, dupItemId, dupSrcName)
-						   : std::string();
+	const std::string dupSrcUuid =
+		foundOnDest ? singleItemSourceUuid(destCanvasUuid, newSceneName, dupItemId, dupSrcName) : std::string();
 	const bool isRealCopy = !dupSrcUuid.empty() && dupSrcUuid != origSrcUuid;
 	HostLog(std::string("[selftest] scene-duplicate item copy -> uuid=") +
 		(dupSrcUuid.empty() ? "MISSING (BUG)" : dupSrcUuid) +
 		"; independent-of-original=" + (isRealCopy ? "true" : "false (BUG)"));
+
+	// 3b) scenes.duplicate: a same-canvas ref-duplicate on the SOURCE canvas. This
+	// runs before Undo() below on purpose -- scenes.duplicate adds no UndoManager
+	// entry, so Undo() must still pop the duplicateToCanvas action from step 2;
+	// running this block first makes that a live assertion of the settled
+	// no-undo decision, not just a comment.
+	json sameDup = run("scenes.duplicate", json{{"name", kSceneName}, {"canvas", srcCanvasUuid}}, ok);
+	const std::string sameName = ok ? sameDup.value("name", std::string()) : std::string();
+	HostLog(std::string("[selftest] scene-duplicate scenes.duplicate -> ") +
+		(ok ? "ok name='" + sameName + "'" : "FAIL (BUG)"));
+
+	const bool sameNameSuffixed = sameName == std::string(kSceneName) + " 2";
+	HostLog(std::string("[selftest] scene-duplicate same-canvas name -> ") +
+		(sameNameSuffixed ? "'" + sameName + "'" : "WRONG '" + sameName + "' (BUG)"));
+
+	// The copy must land on the SOURCE canvas alongside the original -- the whole
+	// premise of "no obs_canvas_move_scene needed" -- and must NOT leak onto the
+	// Default canvas.
+	json srcScenes = run("scenes.list", json{{"canvas", srcCanvasUuid}}, ok);
+	bool srcHasOriginal = false;
+	bool srcHasDuplicate = false;
+	if (ok && srcScenes.is_array()) {
+		for (const auto &s : srcScenes) {
+			const std::string n = s.value("name", std::string());
+			srcHasOriginal = srcHasOriginal || n == kSceneName;
+			srcHasDuplicate = srcHasDuplicate || n == sameName;
+		}
+	}
+	HostLog(std::string("[selftest] scene-duplicate srcCanvas scenes.list -> original=") +
+		(srcHasOriginal ? "true" : "false (BUG)") + " duplicate=" + (srcHasDuplicate ? "true" : "false (BUG)"));
+
+	json defaultScenes = run("scenes.list", json(nullptr), ok);
+	bool leakedToDefault = false;
+	if (ok && defaultScenes.is_array()) {
+		for (const auto &s : defaultScenes) {
+			if (s.value("name", std::string()) == sameName) {
+				leakedToDefault = true;
+				break;
+			}
+		}
+	}
+	HostLog(std::string("[selftest] scene-duplicate Default scenes.list -> leaked=") +
+		(leakedToDefault ? "true (BUG)" : "false"));
+
+	// OBS_SCENE_DUP_REFS: the copy's single item must point at the SAME source
+	// uuid as the original -- the contrast to isRealCopy above, which asserts the
+	// opposite for scenes.duplicateToCanvas's deep copy.
+	int64_t sameItemId = 0;
+	std::string sameSrcName;
+	const std::string sameSrcUuid = singleItemSourceUuid(srcCanvasUuid, sameName, sameItemId, sameSrcName);
+	const bool sameRefIsShared = !sameSrcUuid.empty() && sameSrcUuid == origSrcUuid;
+	HostLog(std::string("[selftest] scene-duplicate same-canvas item ref -> uuid=") +
+		(sameSrcUuid.empty() ? "MISSING (BUG)" : sameSrcUuid) +
+		"; shared-with-original=" + (sameRefIsShared ? "true" : "false (BUG)"));
+
+	// singleItemSourceUuid just made the duplicate current on srcCanvasUuid;
+	// restore kSceneName so the srcItemId-based cleanup below still targets the
+	// scene it was captured from.
+	run("scenes.setCurrent", json{{"canvas", srcCanvasUuid}, {"name", kSceneName}}, ok);
 
 	// 4) Undo: the duplicated scene must disappear from the destination canvas.
 	// The removed scene + its child source only fully leave the uuid/name
@@ -3143,8 +3202,9 @@ void ObsBootstrap::RunSceneDuplicateSelfTest()
 
 	int64_t redoItemId = 0;
 	std::string redoSrcName;
-	const std::string redoSrcUuid = backAfterRedo ? singleItemSourceUuid(newSceneName, redoItemId, redoSrcName)
-						      : std::string();
+	const std::string redoSrcUuid =
+		backAfterRedo ? singleItemSourceUuid(destCanvasUuid, newSceneName, redoItemId, redoSrcName)
+			      : std::string();
 	const bool uuidPreserved = !redoSrcUuid.empty() && redoSrcUuid == dupSrcUuid;
 	HostLog(std::string("[selftest] scene-duplicate redo uuid-preserved -> ") +
 		(uuidPreserved ? "true" : "false (BUG)") + " (uuid=" + redoSrcUuid + ")");
