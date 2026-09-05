@@ -88,6 +88,13 @@ public:
 	void OnLeftUp();
 	void CancelDrag();
 
+	// The one drag-end path, shared by every way a gesture can finish: the button-up,
+	// a right-click that interrupts it, and a lost mouse capture. Clears the drag state
+	// and, when the gesture resized an overlay item, re-lays-out that overlay's page to
+	// the box it now occupies. Returns whether the drag had actually moved anything, so
+	// the caller can gate its save on it. Idempotent. UI thread.
+	bool FinishDrag();
+
 	// Right-button-up: hit-test + select the item under the cursor (or clear), then
 	// emit preview.contextMenu so JS can open a DOM context menu. UI thread.
 	void OnRightUp(int mx, int my);

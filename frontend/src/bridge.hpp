@@ -27,6 +27,8 @@
 // emits no-op safely before any browser exists or after all are gone. With a
 // single registered browser this is behavior-identical to a single-target emit.
 struct CanvasDefinition;
+struct obs_source;
+typedef struct obs_source obs_source_t;
 
 namespace Bridge {
 
@@ -148,6 +150,19 @@ bool ApplyDefaultCanvasVideo(const CanvasDefinition &desired, std::string &error
 // whatever its own path needs next (an event emit, an encoder-cache drop). Runs on
 // the UI thread.
 bool MirrorGlobalVideoToDefaultCanvas();
+
+// Announce a change to a SOURCE OBJECT (as opposed to one canvas's scene item) to every
+// canvas currently listing it, as "sceneItems.changed" on each. A source is shared by
+// every scene that holds it across every canvas and a dock row addresses it by NAME, so a
+// canvas-scoped emit would leave the other canvases holding a name that no longer
+// resolves. Bridge scope rather than file-local because the overlay viewport follow
+// (Overlay::CommitForSource) announces the same thing from outside this TU. UI thread.
+void EmitSceneItemsChangedForSource(obs_source_t *src);
+
+// Has Bridge::Shutdown() begun? The same latch the stats sampler probes, exposed so a
+// delayed task owned by another subsystem can make the identical bail. A task that ran
+// past this point would touch libobs state Stop() has already freed.
+bool IsShuttingDown();
 
 // Push the current multistream output statuses as the "multistream.changed"
 // event. Wired as the engine's onStatusChanged; safe to call off the UI thread

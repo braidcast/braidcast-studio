@@ -3,6 +3,9 @@
 
 #include <string>
 
+struct obs_source;
+typedef struct obs_source obs_source_t;
+
 namespace Overlay {
 
 // The obs source type obs-browser registers for stream overlays, and the obs_data
@@ -11,6 +14,21 @@ namespace Overlay {
 // taken), so a saved URL is a URL that eventually 404s.
 inline constexpr char kOverlaySourceId[] = "braidcast_overlay";
 inline constexpr char kOverlayIdKey[] = "overlay_id";
+
+// Is `source` one of this fork's overlay widget sources? The single spelling of the
+// type test: the viewport follow, the properties form and the refresh/count sweeps all
+// key off it, and an id compared by hand at each site is one rename from drifting.
+// Null-safe. Compares the UNVERSIONED id, so a future versioned variant still matches.
+bool IsOverlaySource(obs_source_t *source);
+
+// Will `source`'s page URL resolve RIGHT NOW? The precondition for updating an overlay
+// source at all: braidcast_overlay re-resolves its URL from the url proc on EVERY update,
+// so when the resolve yields nothing the url falls back to about:blank, compares unequal
+// to the page currently loaded, and obs-browser answers with DestroyBrowser +
+// create_browser -- a widget that was live on air goes blank. Three ways to yield
+// nothing: no overlay bound, no server listening, or the bound widget deleted from the
+// store; this reports all three, exactly as the proc decides them.
+bool IsOverlayUrlResolvable(obs_source_t *source);
 
 // Publish the overlay list + per-id URL lookup on the libobs GLOBAL proc handler, so
 // obs-browser -- a separately loaded module sharing this process and this libobs --

@@ -297,6 +297,11 @@ target_sources(
     # in the /wd4201 set below).
     src/overlay/overlay_sources.cpp
     src/overlay/overlay_sources.hpp
+    # Viewport auto-follow: makes a braidcast_overlay source's PAGE size track the scene
+    # item box the user drags, instead of magnifying a fixed-size bitmap (includes obs.h
+    # -> in the /wd4201 set below).
+    src/overlay/overlay_viewport.cpp
+    src/overlay/overlay_viewport.hpp
     # Overlay self-test: real loopback CLIENT sockets, so winsock-only (no obs.h) and
     # kept out of obs_bootstrap.cpp to dodge the winsock2/windows.h include-order clash.
     src/overlay/overlay_selftest.cpp
@@ -592,6 +597,7 @@ set_source_files_properties(
   src/events/event_store.cpp
   src/overlay/overlay_store.cpp
   src/overlay/overlay_sources.cpp
+  src/overlay/overlay_viewport.cpp
   src/multistream/CanvasStore.cpp
   src/multistream/StreamProfileStore.cpp
   src/multistream/OutputBindingStore.cpp

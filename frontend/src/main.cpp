@@ -34,6 +34,7 @@
 #include "windowing/native_theme.hpp"
 #include "windowing/preview_window.hpp"
 #include "windowing/projector_window.hpp"
+#include "overlay/overlay_viewport.hpp"
 #include "scene/scene_persistence.hpp"
 #include "scheme.hpp"
 #include "util/env_config.hpp"
@@ -325,6 +326,7 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 				ObsBootstrap::RunSceneDuplicateSelfTest();
 				ObsBootstrap::RunTransformPivotSelfTest();
 				ObsBootstrap::RunRotationBoundsSelfTest();
+				ObsBootstrap::RunOverlayViewportSelfTest();
 				ObsBootstrap::RunPreviewSurfaceIsolationSelfTest();
 				ObsBootstrap::RunProjectorSelfTest();
 				ObsBootstrap::RunFilterPreviewSelfTest();
@@ -511,6 +513,12 @@ void Teardown()
 	// (channel-0 scene save, scene unbind, engine Stop) would touch an uninitialized
 	// engine. g_obsStarted implies g_cefInitialized, so the CEF pumps below are live.
 	if (g_obsStarted) {
+		// Drop any overlay viewport publish still sitting on its coalesce timer. Its
+		// work (the pin, the page size) is already applied and the save below persists
+		// it; what must not happen is the timer firing later, after TeardownScene has
+		// unbound every scene, and saving a gutted collection over the user's real one.
+		Overlay::CancelPendingCommits();
+
 		// Capture the latest global scene collection while channel 0 and every scene
 		// source are still bound -- TeardownScene below unbinds and removes the
 		// placeholder default scene, so this must run first. Skipped under the

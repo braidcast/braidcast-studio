@@ -296,10 +296,13 @@ import { EV } from "$lib/utils/eventNames";
           <span>Type</span>
           <select value={xf.boundsType} onchange={(e) => void commit({ boundsType: Number(e.currentTarget.value) })}>
             {#each BOUNDS_TYPES as b (b.value)}
-              <option value={b.value}>{b.label}</option>
+              <option value={b.value} disabled={b.value === 0 && xf.viewportFollow}>{b.label}</option>
             {/each}
           </select>
         </label>
+        {#if xf.viewportFollow}
+          <p class="bounds-note">This widget re-draws its page at the size of its box, so it always has one.</p>
+        {/if}
         {#if showBounds}
           <div class="row4">
             <label>
@@ -391,6 +394,15 @@ import { EV } from "$lib/utils/eventNames";
     letter-spacing: var(--letter-spacing);
     text-transform: uppercase;
     color: var(--color-accent);
+  }
+
+  /* Says why "No bounds" is greyed out, so the disabled option reads as a rule rather
+     than a glitch. */
+  .bounds-note {
+    margin: 0;
+    font-size: 10px;
+    line-height: 1.4;
+    color: var(--color-muted);
   }
 
   label {

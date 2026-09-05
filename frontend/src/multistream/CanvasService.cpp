@@ -4,6 +4,8 @@
 #include "CanvasStore.hpp"
 #include "MultistreamEngine.hpp"
 
+#include "overlay/overlay_viewport.hpp"
+
 #include <obs.h>
 #include <obs.hpp>
 
@@ -136,6 +138,12 @@ CanvasUpdateResult CanvasService::Update(const CanvasUpdateRequest &req)
 				"cannot apply the new resolution/color: canvas video resets are refused while any output is live";
 			return result;
 		}
+
+		// Overlay boxes held in relative coordinates scale with the canvas height, so
+		// every overlay's page has to be re-laid-out to the box it now occupies. The
+		// Default canvas's counterpart lives in Bridge::ApplyGlobalVideo, which the
+		// isDefault branch above routes through.
+		Overlay::CommitAll();
 	}
 
 	def->width = newW;

@@ -909,6 +909,12 @@ export interface Transform {
   sourceHeight: number;
   baseWidth: number;
   baseHeight: number;
+  /**
+   * This item's source re-lays-out its page to match its box (a Braidcast overlay
+   * widget), so its box may not go back to "No bounds": a no-bounds box is derived from
+   * the page size, which would make the two definitions circular.
+   */
+  viewportFollow: boolean;
 }
 
 /** Quick-action verbs accepted by sceneItems.transformAction. */

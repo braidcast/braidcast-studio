@@ -10,6 +10,8 @@
 #include "multistream/CanvasRuntime.hpp"
 #include "multistream/CanvasStore.hpp"
 #include "obs_bootstrap.hpp"
+#include "overlay/overlay_sources.hpp"
+#include "overlay/overlay_viewport.hpp"
 #include "scene/transitions.hpp"
 #include "scene/scene_persistence.hpp"
 
@@ -1268,17 +1270,51 @@ void PreviewSurface::OnMouseMove(int mx, int my)
 	obs_source_release(sceneSource);
 }
 
-void PreviewSurface::OnLeftUp()
+bool PreviewSurface::FinishDrag()
 {
-	ReleaseCapture();
 	const bool dragged = state_->drag.mode != DragMode::None;
 	const bool moved = state_->drag.moved;
+	const bool resized = state_->drag.mode == DragMode::Resize;
+	const int64_t draggedId = state_->drag.id;
 	if (dragged) {
-		HostLog("[preview] drag end id=" + std::to_string(state_->drag.id));
+		HostLog("[preview] drag end id=" + std::to_string(draggedId));
 	}
 	state_->drag.mode = DragMode::None;
 	state_->drag.handle = ItemHandle::None;
 	state_->drag.moved = false;
+
+	// A braidcast_overlay source renders its page at the size in its settings and the
+	// item then scales that bitmap, so a resize alone would magnify pixels rather than
+	// re-lay-out the widget. Make the page follow the box instead. Resize only: a move
+	// leaves the box alone, while an Alt-crop changes how much page the box needs, so
+	// both stretch and crop drags (which share DragMode::Resize) commit.
+	if (resized && moved) {
+		obs_source_t *sceneSource = AcquireSurfaceSceneSource(targetCanvas_); // addref'd
+		if (sceneSource) {
+			obs_sceneitem_t *item = FindItemById(obs_scene_from_source(sceneSource), draggedId);
+			obs_source_t *itemSource = item ? obs_sceneitem_get_source(item) : nullptr;
+			if (Overlay::IsOverlaySource(itemSource)) {
+				// Saves unconditionally, including on an additional-canvas
+				// surface, unlike the Default-only save in OnLeftUp: the pin and
+				// the page size are collection state, and one scene-collection
+				// file holds every canvas's scenes, so skipping it there would
+				// simply lose them.
+				Overlay::CommitForSource(itemSource);
+			}
+			obs_source_release(sceneSource);
+		}
+	}
+	return moved;
+}
+
+void PreviewSurface::OnLeftUp()
+{
+	// Finish the gesture BEFORE releasing the capture. ReleaseCapture() sends
+	// WM_CAPTURECHANGED synchronously to this same overlay HWND, which routes straight
+	// back into CancelDrag() -- so any drag state read after the release has already
+	// been cleared, and every branch keyed on it is dead.
+	const bool moved = FinishDrag();
+	ReleaseCapture();
 
 	// A move/resize on the Default surface mutates the global scene's layout;
 	// persist it once at drag-end (never per-mousemove, and only when the drag
@@ -1309,7 +1345,7 @@ void PreviewSurface::OnRightUp(int mx, int my)
 		std::lock_guard<std::mutex> lock(state_->stateMutex);
 		state_->selectedId = hitId;
 	}
-	state_->drag.mode = DragMode::None;
+	FinishDrag();
 	EmitSelection(targetCanvas_, hitId);
 	EmitContextMenu(targetCanvas_, windowId_, scene, hitId, mx, my);
 
@@ -1318,8 +1354,12 @@ void PreviewSurface::OnRightUp(int mx, int my)
 
 void PreviewSurface::CancelDrag()
 {
-	state_->drag.mode = DragMode::None;
-	state_->drag.handle = ItemHandle::None;
+	// A stolen capture still ends a gesture that already mutated the item, so it takes
+	// the same finish as a button-up -- otherwise a resize interrupted mid-drag would
+	// leave an overlay's page sized for a box it no longer has. Idempotent, which is
+	// what makes the WM_CAPTURECHANGED that OnLeftUp's own ReleaseCapture() sends a
+	// harmless second call.
+	FinishDrag();
 }
 
 void PreviewSurface::SetRect(int x, int y, int cx, int cy)

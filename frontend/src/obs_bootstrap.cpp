@@ -41,6 +41,7 @@
 #include "frontend_callbacks.hpp"
 #include "gpu_safe_mode.hpp"
 #include "log.hpp"
+#include "overlay/overlay_viewport.hpp"
 #include "chat/channel_stats_poller.hpp"
 #include "chat/chat_hub.hpp" // Chat::BindingDestination, Chat::Hub
 #include "events/event_hub.hpp"
@@ -3572,6 +3573,222 @@ void ObsBootstrap::RunRotationBoundsSelfTest()
 	HostLog(std::string("[selftest] rotation-bounds cleanup: temp canvas ") +
 		(gone ? "removed" : "STILL PRESENT (BUG)"));
 	HostLog(std::string("[selftest] rotation-bounds overall -> ") + (allSwapped ? "PASS" : "FAIL (BUG)"));
+}
+
+// Headless proof for the overlay viewport follow (Overlay::PinItemToBounds /
+// PinAllItems / ComputeViewport). Three claims, none of which needs obs-browser loaded
+// or the overlay server up: a color source stands in, since everything under test is
+// source-type agnostic and a color source has the same OBS_SOURCE_VIDEO deferred-update
+// semantics plus its own width/height settings.
+//
+//   1. The pin is pixel-identical. Converting an OBS_BOUNDS_NONE item to
+//      OBS_BOUNDS_STRETCH over the box it already occupies must not move a pixel --
+//      including for an item INSIDE A GROUP, where group composition rewrites the item's
+//      scale (apply_group_transform) and defers the transform update to the graphics
+//      thread. That group case is the one part of the design that could not be settled
+//      by reading libobs alone, so it is asserted here rather than argued.
+//   2. The per-axis max rule, in CANVAS pixels. Items sharing one source must yield a
+//      page covering the widest box on each axis independently, plus that item's crop
+//      (libobs takes the crop off the page BEFORE scaling what is left into the box) and
+//      times its ancestors' draw scale (a group child's box is in group-local units, so
+//      a 2x group makes its 200 px child cover 400 canvas px). The group here is
+//      deliberately scaled: at the default 1x the ancestor factor is invisible, so the
+//      case would pass whether or not it were applied at all.
+//   3. It is a fixpoint. A second pass pins nothing and computes the same numbers, which
+//      is what terminates the feedback loop through source_size_changed().
+//
+// Removes the temp canvas afterward; never Saves. Gated by the caller to the smoke path.
+void ObsBootstrap::RunOverlayViewportSelfTest()
+{
+	using Bridge::json;
+
+	auto run = [](const std::string &method, const json &params, bool &ok) -> json {
+		json result;
+		std::string error;
+		ok = Bridge::Dispatch(method, params, result, error);
+		if (!ok) {
+			HostLog("[selftest] " + method + " FAILED: " + Err::Diagnostic(error));
+			return json(nullptr);
+		}
+		return result;
+	};
+
+	const std::string canvasUuid = MakeSelfTestCanvas("selftest-overlay-viewport-canvas");
+
+	auto teardownCanvas = [&canvasUuid]() {
+		g_multistream->InvalidateCanvasEncoders(canvasUuid);
+		g_canvasRuntime->RemoveCanvas(canvasUuid);
+		g_canvases.Remove(canvasUuid);
+		return g_canvasRuntime->Find(canvasUuid) == nullptr && g_canvases.Find(canvasUuid) == nullptr;
+	};
+
+	bool ok = false;
+	const char *kSceneName = "selftest-overlay-viewport-scene";
+	run("scenes.create", json{{"canvas", canvasUuid}, {"name", kSceneName}}, ok);
+	run("scenes.setCurrent", json{{"canvas", canvasUuid}, {"name", kSceneName}}, ok);
+
+	obs_source_t *sceneSource = g_canvasRuntime->CurrentScene(canvasUuid); // addref'd
+	obs_scene_t *scene = sceneSource ? obs_scene_from_source(sceneSource) : nullptr;
+	if (!scene) {
+		HostLog("[selftest] overlay-viewport: no scene on the temp canvas (skipped)");
+		obs_source_release(sceneSource);
+		teardownCanvas();
+		return;
+	}
+
+	// A group child's transform update is deferred to the graphics thread
+	// (do_update_transform), so the box has to be forced settled before it is read or the
+	// measurement describes the PREVIOUS state. A no-op for an already-current item.
+	auto readBox = [](obs_sceneitem_t *item, vec3 &tl, vec3 &br) {
+		obs_sceneitem_force_update_transform(item);
+		matrix4 boxTransform;
+		obs_sceneitem_get_box_transform(item, &boxTransform);
+		vec3_set(&tl, M_INFINITE, M_INFINITE, 0.0f);
+		vec3_set(&br, -M_INFINITE, -M_INFINITE, 0.0f);
+		const float corners[4][2] = {{0.0f, 0.0f}, {1.0f, 0.0f}, {0.0f, 1.0f}, {1.0f, 1.0f}};
+		for (const auto &c : corners) {
+			vec3 pos;
+			vec3_set(&pos, c[0], c[1], 0.0f);
+			vec3_transform(&pos, &pos, &boxTransform);
+			vec3_min(&tl, &tl, &pos);
+			vec3_max(&br, &br, &pos);
+		}
+	};
+	constexpr float kBoxEpsilonPx = 1.0f;
+	auto boxesMatch = [&](const vec3 &aTl, const vec3 &aBr, const vec3 &bTl, const vec3 &bBr) {
+		return std::fabs(aTl.x - bTl.x) <= kBoxEpsilonPx && std::fabs(aTl.y - bTl.y) <= kBoxEpsilonPx &&
+		       std::fabs(aBr.x - bBr.x) <= kBoxEpsilonPx && std::fabs(aBr.y - bBr.y) <= kBoxEpsilonPx;
+	};
+	auto boxSize = [](const vec3 &tl, const vec3 &br) {
+		return std::to_string(br.x - tl.x) + "x" + std::to_string(br.y - tl.y);
+	};
+
+	// One 320x180 source drawn by every item below, so the per-axis max rule has several
+	// boxes over a single page to reconcile.
+	constexpr uint32_t kSrcW = 320;
+	constexpr uint32_t kSrcH = 180;
+	OBSDataAutoRelease srcSettings = obs_data_create();
+	obs_data_set_int(srcSettings, "width", int64_t(kSrcW));
+	obs_data_set_int(srcSettings, "height", int64_t(kSrcH));
+	obs_source_t *src =
+		obs_source_create("color_source", "selftest-overlay-viewport-src", srcSettings, nullptr); // create-ref
+	if (!src) {
+		HostLog("[selftest] overlay-viewport: color_source create FAILED (BUG)");
+		obs_source_release(sceneSource);
+		teardownCanvas();
+		return;
+	}
+
+	// Size a scene item's box by scale alone, i.e. leave it in OBS_BOUNDS_NONE -- exactly
+	// the pre-pin state every already-placed overlay is in today.
+	auto placeUnpinned = [&](obs_sceneitem_t *item, float boxW, float boxH, float posX, float posY, float rot) {
+		vec2 v;
+		vec2_set(&v, posX, posY);
+		obs_sceneitem_set_pos(item, &v);
+		obs_sceneitem_set_rot(item, rot);
+		vec2_set(&v, boxW / float(kSrcW), boxH / float(kSrcH));
+		obs_sceneitem_set_scale(item, &v);
+	};
+
+	bool allPass = true;
+
+	// --- 1a. pin is pixel-identical, top-level item. Rotated, so that what the pin has
+	// to reproduce is the rotation-invariant box and not a rotated AABB. --------------
+	obs_sceneitem_t *wide = obs_scene_add(scene, src); // scene takes its own ref
+	placeUnpinned(wide, 400.0f, 100.0f, 120.0f, 300.0f, 30.0f);
+
+	vec3 beforeTl, beforeBr, afterTl, afterBr;
+	readBox(wide, beforeTl, beforeBr);
+	const bool pinnedWide = Overlay::PinItemToBounds(wide);
+	readBox(wide, afterTl, afterBr);
+	const bool wideIdentical = pinnedWide && boxesMatch(beforeTl, beforeBr, afterTl, afterBr);
+	allPass = allPass && wideIdentical;
+	HostLog(std::string("[selftest] overlay-viewport pin top-level -> identical=") +
+		(wideIdentical ? "true" : "false (BUG)") + " (before=" + boxSize(beforeTl, beforeBr) +
+		" after=" + boxSize(afterTl, afterBr) + ")");
+
+	// Idempotent: a second pin reports no change and leaves the item alone.
+	const bool pinAgain = Overlay::PinItemToBounds(wide);
+	allPass = allPass && !pinAgain;
+	HostLog(std::string("[selftest] overlay-viewport pin idempotent -> ") + (!pinAgain ? "true" : "false (BUG)"));
+
+	// --- 1b. pin is pixel-identical for an item INSIDE A GROUP -----------------------
+	obs_sceneitem_t *grouped = obs_scene_add(scene, src); // scene takes its own ref
+	placeUnpinned(grouped, 100.0f, 200.0f, 40.0f, 60.0f, 0.0f);
+	obs_sceneitem_t *group = obs_scene_add_group(scene, "selftest-overlay-viewport-group");
+	bool groupIdentical = false;
+	if (group) {
+		// Moving the item under a group is what switches libobs to the deferred
+		// transform path and rewrites the item's scale into group-local space; both
+		// readings below are taken after that, so they compare like with like.
+		obs_sceneitem_group_add_item(group, grouped);
+
+		vec3 gBeforeTl, gBeforeBr, gAfterTl, gAfterBr;
+		readBox(grouped, gBeforeTl, gBeforeBr);
+		const bool pinnedGrouped = Overlay::PinItemToBounds(grouped);
+		readBox(grouped, gAfterTl, gAfterBr);
+		groupIdentical = pinnedGrouped && boxesMatch(gBeforeTl, gBeforeBr, gAfterTl, gAfterBr);
+		HostLog(std::string("[selftest] overlay-viewport pin in-group -> identical=") +
+			(groupIdentical ? "true" : "false (BUG)") + " (before=" + boxSize(gBeforeTl, gBeforeBr) +
+			" after=" + boxSize(gAfterTl, gAfterBr) + ")");
+
+		// Now scale the group 2x, so the child's 100x200 GROUP-LOCAL box covers 200x400
+		// CANVAS px. Done after the pin comparison above so that check still measures a
+		// like-for-like group-local box, and before the max rule below so the ancestor
+		// factor is the thing that decides the expected height.
+		vec2 groupScale;
+		vec2_set(&groupScale, 2.0f, 2.0f);
+		obs_sceneitem_set_scale(group, &groupScale);
+	} else {
+		HostLog("[selftest] overlay-viewport group create FAILED (BUG)");
+	}
+	allPass = allPass && groupIdentical;
+
+	// --- 2. per-axis max over three items sharing one source, in canvas pixels --------
+	// wide is 400x100 with a 12px left crop, so its page has to be 12px wider still for
+	// the visible remainder to fill the same box -> 412 wide, and it owns the width.
+	// tall is 240x300 and still UNPINNED, so PinAllItems has real work to do here.
+	// grouped is 100x200 inside the 2x group -> 200x400 on canvas, so it owns the
+	// height, and only at 400 (not 200) is the ancestor scale actually being applied.
+	obs_sceneitem_t *tall = obs_scene_add(scene, src); // scene takes its own ref
+	placeUnpinned(tall, 240.0f, 300.0f, 600.0f, 40.0f, 0.0f);
+
+	obs_sceneitem_crop crop = {};
+	crop.left = 12;
+	obs_sceneitem_set_crop(wide, &crop);
+
+	const bool pinnedRest = Overlay::PinAllItems(src);
+	uint32_t vw = 0, vh = 0;
+	const bool computed = Overlay::ComputeViewport(src, vw, vh);
+	const bool maxRule = pinnedRest && computed && vw == 412u && vh == 400u;
+	allPass = allPass && maxRule;
+	HostLog(std::string("[selftest] overlay-viewport max rule -> ") + (maxRule ? "true" : "false (BUG)") +
+		" (want 412x400, got " + (computed ? std::to_string(vw) + "x" + std::to_string(vh) : "none") +
+		", pinned-remaining=" + (pinnedRest ? "true" : "false") + ")");
+
+	// --- 3. fixpoint: nothing left to pin and the same numbers come back --------------
+	const bool pinnedTwice = Overlay::PinAllItems(src);
+	uint32_t vw2 = 0, vh2 = 0;
+	const bool computed2 = Overlay::ComputeViewport(src, vw2, vh2);
+	const bool fixpoint = !pinnedTwice && computed2 && vw2 == vw && vh2 == vh;
+	allPass = allPass && fixpoint;
+	HostLog(std::string("[selftest] overlay-viewport fixpoint -> ") + (fixpoint ? "true" : "false (BUG)") +
+		" (second pass " + (computed2 ? std::to_string(vw2) + "x" + std::to_string(vh2) : "none") + ")");
+
+	// --- cleanup: items, group, source, temp canvas ----------------------------------
+	obs_sceneitem_remove(tall);
+	obs_sceneitem_remove(grouped);
+	if (group) {
+		obs_sceneitem_remove(group);
+	}
+	obs_sceneitem_remove(wide);
+	obs_source_remove(src);
+	obs_source_release(src);
+	obs_source_release(sceneSource);
+	const bool gone = teardownCanvas();
+	HostLog(std::string("[selftest] overlay-viewport cleanup: temp canvas ") +
+		(gone ? "removed" : "STILL PRESENT (BUG)"));
+	HostLog(std::string("[selftest] overlay-viewport overall -> ") + (allPass ? "PASS" : "FAIL (BUG)"));
 }
 
 void ObsBootstrap::RunPreviewSurfaceIsolationSelfTest()

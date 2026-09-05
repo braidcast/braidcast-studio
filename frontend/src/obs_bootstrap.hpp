@@ -372,6 +372,17 @@ void RunTransformPivotSelfTest();
 // setTransform, to prove both real rotation entry points agree. Removes the
 // temp canvas afterward; never Saves. Gated by the caller to the smoke path.
 void RunRotationBoundsSelfTest();
+// Headless proof for the overlay viewport follow: a braidcast_overlay's PAGE has to
+// track the scene item box, so the box must first be made source-size independent
+// (OBS_BOUNDS_STRETCH over the box it already occupies) and the page then sized to the
+// per-axis maximum of every box drawing that source, plus that box's crop. Asserts the
+// pin is pixel-identical -- for a top-level item AND for one inside a group, where
+// libobs rewrites the item's scale and defers the transform update -- that the max rule
+// reconciles several boxes over one page, and that a second pass is a no-op fixpoint
+// (which is what stops our own resize from feeding back through source_size_changed).
+// Uses a color source, so it needs neither obs-browser nor a live overlay server.
+// Removes the temp canvas afterward; never Saves. Gated by the caller to the smoke path.
+void RunOverlayViewportSelfTest();
 // Headless proof for 4.4.5b sub-phase B: bring up an additional canvas with a live
 // mix + a source in its current scene, address its preview surface by uuid, and
 // drive a hit-test + a select + a move on it. Assert the edit lands on the

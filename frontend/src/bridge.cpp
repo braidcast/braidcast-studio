@@ -100,7 +100,9 @@
 #include "oauth/registry.hpp"
 #include "oauth/account_store.hpp"
 #include "overlay/overlay_server.hpp"
+#include "overlay/overlay_sources.hpp"
 #include "overlay/overlay_store.hpp"
+#include "overlay/overlay_viewport.hpp"
 #include <util/dstr.h>
 #include <util/platform.h>
 #include <graphics/vec2.h>
@@ -122,10 +124,6 @@ namespace {
 // settings handlers above their definition, so forward-declare them here.
 static bool RequireStr(const json &params, const char *method, const char *key, std::string &out, std::string &error);
 static bool RequireObject(const json &params, const char *method, std::string &error);
-
-// Announces a renamed source to every canvas that lists it (defined below, with the
-// scene-item emitters); forward-declared so the scene handlers above it can call it.
-void EmitSceneItemsChangedForSource(obs_source_t *src);
 
 // One method: (params) -> (result | error). Returns false and fills `error` on
 // failure. Runs on the browser UI thread.
@@ -707,6 +705,10 @@ static bool ApplyGlobalVideo(uint32_t baseW, uint32_t baseH, uint32_t outW, uint
 	// Re-size the program transition on ch0 to the new base canvas so the composited
 	// output isn't clipped at the old dimensions until the next type-swap.
 	Transitions::OnVideoReset();
+
+	// Overlay boxes held in relative coordinates scale with the canvas height, so every
+	// overlay's page has to be re-laid-out to the box it now occupies.
+	Overlay::CommitAll();
 	return true;
 }
 
@@ -2292,6 +2294,8 @@ void CommitSceneItemChange(const json &params, obs_source_t *sceneSource)
 	PersistSourceState(sceneSource);
 }
 
+} // namespace
+
 // Announce a change to the SOURCE OBJECT (as opposed to one canvas's scene item)
 // to every canvas currently listing it. A source is shared by every scene that
 // holds it across every canvas, and a dock row addresses its source by NAME, so
@@ -2300,6 +2304,9 @@ void CommitSceneItemChange(const json &params, obs_source_t *sceneSource)
 // outright rather than merely reading a stale label. Each canvas's list shows its
 // CURRENT scene, so that is the only scene per canvas worth re-fetching; the
 // Default canvas's surfaces listen on the global (canvas=null) channel.
+//
+// Lives at Bridge scope rather than file-local because the overlay viewport follow
+// announces the same thing after it resizes an overlay's page.
 void EmitSceneItemsChangedForSource(obs_source_t *src)
 {
 	const char *uuid = src ? obs_source_get_uuid(src) : nullptr;
@@ -2322,6 +2329,8 @@ void EmitSceneItemsChangedForSource(obs_source_t *src)
 	}
 }
 
+namespace {
+
 // {canvas, scene, source-uuid} -- the re-resolution keys shared by every state.
 json StateBase(const json &params, obs_source_t *src)
 {
@@ -2338,6 +2347,19 @@ json StateBase(const json &params, obs_source_t *src)
 void RecordUndo(const std::string &name, const UndoManager::Cb &apply, const json &before, const json &after)
 {
 	ObsBootstrap::Undo().AddAction(name, apply, apply, before.dump(), after.dump());
+}
+
+// Put an overlay's items into their source-size-independent form before a transform's
+// undo BEFORE-state is captured. An OBS_BOUNDS_NONE box is (source size x scale), and the
+// source size is exactly what the viewport follow moves -- so a state recorded before the
+// pin reproduces the wrong box once the page has been resized. After the pin every
+// recorded geometry is a bounds, which restores exactly. No-op for every other type.
+void PinOverlayBeforeCapture(obs_sceneitem_t *item)
+{
+	obs_source_t *src = obs_sceneitem_get_source(item);
+	if (Overlay::IsOverlaySource(src)) {
+		Overlay::PinAllItems(src);
+	}
 }
 
 // Full item geometry (info2 + crop) plus the re-resolution keys.
@@ -2358,6 +2380,11 @@ json CaptureTransformState(const json &params, obs_sceneitem_t *item)
 	s["bounds"] = json{{"x", info.bounds.x}, {"y", info.bounds.y}};
 	s["cropToBounds"] = info.crop_to_bounds;
 	s["crop"] = json{{"left", crop.left}, {"top", crop.top}, {"right", crop.right}, {"bottom", crop.bottom}};
+	// Deliberately NOT carrying an overlay's page size. It is source-global while this
+	// state is item-scoped, so a preview drag -- which records no undo entry at all --
+	// would move the page out from under a recorded value and the undo would then force
+	// a page matching no item's box. SetItemGeometry recomputes it from the restored
+	// geometry instead, which is exact wherever a recorded value would have been.
 	return s;
 }
 
@@ -2422,6 +2449,13 @@ void SetItemGeometry(obs_sceneitem_t *item, const json &g)
 	if (auto it = g.find("locked"); it != g.end() && it->is_boolean()) {
 		obs_sceneitem_set_locked(item, it->get<bool>());
 	}
+
+	// An overlay's page follows its box, so restoring the box has to re-lay-out the page
+	// to match. Recomputed rather than restored from the state: the target is a pure
+	// function of the geometry just written, so this is right even when the page moved
+	// between the capture and the restore. A no-op for every other source type, and it
+	// carries the module's own undo suppression and resolvable-URL guard.
+	Overlay::CommitForSource(obs_sceneitem_get_source(item));
 }
 
 void ApplyTransform(const std::string &data)
@@ -3477,6 +3511,11 @@ json SceneItemTransformToJson(obs_sceneitem_t *item, uint32_t baseWidth, uint32_
 		{"sourceHeight", srcH},
 		{"baseWidth", baseWidth},
 		{"baseHeight", baseHeight},
+		// This item's source re-lays-out its page to match its box, so the box cannot be
+		// allowed back into OBS_BOUNDS_NONE -- a NONE box is derived from the page size,
+		// which would make the two definitions circular. The Transform dialog uses this
+		// to take "No bounds" off the menu rather than offering a control that snaps back.
+		{"viewportFollow", Overlay::IsOverlaySource(src)},
 	};
 }
 
@@ -3615,6 +3654,7 @@ bool MethodSceneItemsSetTransform(const json &params, json &result, std::string 
 		return false;
 	}
 
+	PinOverlayBeforeCapture(item);
 	const json undoBefore = CaptureTransformState(params, item);
 	obs_source_t *undoSrc = obs_sceneitem_get_source(item);
 	const char *undoSrcName = undoSrc ? obs_source_get_name(undoSrc) : nullptr;
@@ -3714,6 +3754,12 @@ bool MethodSceneItemsSetTransform(const json &params, json &result, std::string 
 		ClampItemToCanvas(item, clampBaseW, clampBaseH);
 	}
 
+	// The scene item IS the size for a braidcast_overlay: re-lay-out its page to the box
+	// this transform just produced. Ahead of the emit and the save below so neither
+	// ships a stale page size, and coalesced because a numeric Transform field drives
+	// this once per keystroke.
+	Overlay::CommitForSourceDebounced(obs_sceneitem_get_source(item));
+
 	CommitSceneItemChange(params, sceneSource);
 
 	RecordUndo(std::string("Transform ") + (undoSrcName ? undoSrcName : ""), ApplyTransform, undoBefore,
@@ -3789,6 +3835,7 @@ bool MethodSceneItemsTransformAction(const json &params, json &result, std::stri
 		return false;
 	}
 
+	PinOverlayBeforeCapture(item);
 	const json undoBefore = CaptureTransformState(params, item);
 	obs_source_t *undoSrc = obs_sceneitem_get_source(item);
 	const char *undoSrcName = undoSrc ? obs_source_get_name(undoSrc) : nullptr;
@@ -3871,6 +3918,12 @@ bool MethodSceneItemsTransformAction(const json &params, json &result, std::stri
 	if (haveBaseSize) {
 		ClampItemToCanvas(item, baseW, baseH);
 	}
+
+	// The scene item IS the size for a braidcast_overlay: re-lay-out its page to the box
+	// this transform just produced. Ahead of the emit and the save below so neither
+	// ships a stale page size, and coalesced because a numeric Transform field drives
+	// this once per keystroke.
+	Overlay::CommitForSourceDebounced(obs_sceneitem_get_source(item));
 
 	CommitSceneItemChange(params, sceneSource);
 
@@ -5143,6 +5196,18 @@ bool BuildPropertiesResult(const PropertyKind *kind, void *obj, json &result, st
 		obs_properties_apply_settings(props, settings);
 	}
 
+	// A braidcast_overlay's page size is not the user's to set: it follows the scene item
+	// box, so a field here would be silently overwritten by the next drag and read as
+	// broken. Stripped in C++ rather than in each dock, so a fifth dock cannot miss it
+	// and the source id is spelled once. The stored values stay, and stay live -- they
+	// are just no longer hand-editable, matching what this type already does with `url`
+	// (a settings key with no property row).
+	if (props && std::strcmp(kind->name, "source") == 0 &&
+	    Overlay::IsOverlaySource(static_cast<obs_source_t *>(obj))) {
+		obs_properties_remove_by_name(props, "width");
+		obs_properties_remove_by_name(props, "height");
+	}
+
 	json descriptors = PropertiesSerializer::SerializeProperties(props, settings);
 
 	// Build the value map from the serialized descriptors (default-aware) rather
@@ -5500,6 +5565,23 @@ bool MethodPropertiesGet(const json &params, json &result, std::string &error)
 	return ok;
 }
 
+// The tail both settings-writing property methods share: re-derive an overlay's page
+// size, then persist. The page size needs re-deriving because a settings write can move
+// it -- Restore Defaults puts it back to the browser source's 1920x1080 -- and the
+// properties form deliberately no longer offers the fields to correct it by hand. Encoder
+// and service kinds persist their own stores in their update closures; filters serialize
+// with their parent source, which is what PersistSourceState resolves.
+void CommitPropertySettingsChange(const PropertyKind *kind, void *obj)
+{
+	const std::string kindName = kind->name;
+	if (kindName != "source" && kindName != "filter") {
+		return;
+	}
+	obs_source_t *src = static_cast<obs_source_t *>(obj);
+	Overlay::CommitForSource(src); // no-op for every non-overlay source
+	PersistSourceState(src);
+}
+
 bool MethodPropertiesSet(const json &params, json &result, std::string &error)
 {
 	const PropertyKind *kind = nullptr;
@@ -5515,15 +5597,7 @@ bool MethodPropertiesSet(const json &params, json &result, std::string &error)
 		if (settings) {
 			kind->update(obj, settings);
 			obs_data_release(settings);
-			// Persist source-setting edits (encoder/service kinds persist their own
-			// stores in their update closures). Filters serialize with their parent
-			// source, so persist them the same way; PersistSourceState resolves
-			// whether that's the scene collection or (for a global audio channel's
-			// filter) GlobalAudioChannels.
-			const std::string kindName = kind->name;
-			if (kindName == "source" || kindName == "filter") {
-				PersistSourceState(static_cast<obs_source_t *>(obj));
-			}
+			CommitPropertySettingsChange(kind, obj);
 		}
 	}
 
@@ -5549,10 +5623,7 @@ bool MethodPropertiesDefaults(const json &params, json &result, std::string &err
 		obs_data_clear(settings);
 		kind->update(obj, settings);
 		obs_data_release(settings);
-		const std::string kindName = kind->name;
-		if (kindName == "source" || kindName == "filter") {
-			PersistSourceState(static_cast<obs_source_t *>(obj));
-		}
+		CommitPropertySettingsChange(kind, obj);
 	}
 	const bool ok = BuildPropertiesResult(kind, obj, result, error);
 	kind->release(obj);
@@ -10522,6 +10593,11 @@ bool GoLivePreludeInFlight()
 {
 	CEF_REQUIRE_UI_THREAD();
 	return g_goLivePreludeInFlight;
+}
+
+bool IsShuttingDown()
+{
+	return g_bridgeShutdown.load(std::memory_order_acquire);
 }
 
 ScopedGoLivePrelude::ScopedGoLivePrelude() : previous(g_goLivePreludeInFlight)

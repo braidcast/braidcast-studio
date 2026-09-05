@@ -52,10 +52,19 @@ void ProcList(void * /*data*/, calldata_t *cd)
 // ahead of the module load that registers the type, so resolution at load always sees
 // the final port. Leaving the parameter absent rather than composing one from the
 // persisted port keeps the caller from pointing CEF at a port nothing is listening on.
+// The three conditions under which the url proc yields a URL. Factored out so the proc
+// and the resize guard (IsOverlayUrlResolvable) can never disagree about what
+// "resolvable" means -- a resize that writes while the resolve would fail blanks a live
+// widget, so the two have to be one predicate rather than two that look alike.
+bool UrlResolvable(const char *id)
+{
+	return id != nullptr && *id != '\0' && Server().IsListening() && Store().Get(id).has_value();
+}
+
 void ProcUrl(void * /*data*/, calldata_t *cd)
 {
 	const char *id = calldata_string(cd, "id");
-	if (id == nullptr || *id == '\0' || !Server().IsListening()) {
+	if (!UrlResolvable(id)) {
 		return;
 	}
 	const std::optional<Widget> w = Store().Get(id);
@@ -72,8 +81,7 @@ void ProcUrl(void * /*data*/, calldata_t *cd)
 
 bool RefreshOne(void * /*param*/, obs_source_t *source)
 {
-	const char *id = obs_source_get_unversioned_id(source);
-	if (id != nullptr && strcmp(id, kOverlaySourceId) == 0) {
+	if (IsOverlaySource(source)) {
 		obs_source_update(source, nullptr);
 	}
 	return true;
@@ -86,8 +94,7 @@ struct UsageScan {
 
 bool CountOne(void *param, obs_source_t *source)
 {
-	const char *id = obs_source_get_unversioned_id(source);
-	if (id == nullptr || strcmp(id, kOverlaySourceId) != 0) {
+	if (!IsOverlaySource(source)) {
 		return true;
 	}
 	UsageScan *scan = static_cast<UsageScan *>(param);
@@ -103,6 +110,29 @@ bool CountOne(void *param, obs_source_t *source)
 }
 
 } // namespace
+
+bool IsOverlaySource(obs_source_t *source)
+{
+	if (source == nullptr) {
+		return false;
+	}
+	const char *id = obs_source_get_unversioned_id(source);
+	return id != nullptr && strcmp(id, kOverlaySourceId) == 0;
+}
+
+bool IsOverlayUrlResolvable(obs_source_t *source)
+{
+	if (!IsOverlaySource(source)) {
+		return false;
+	}
+	obs_data_t *settings = obs_source_get_settings(source); // addref'd
+	if (settings == nullptr) {
+		return false;
+	}
+	const bool resolvable = UrlResolvable(obs_data_get_string(settings, kOverlayIdKey));
+	obs_data_release(settings);
+	return resolvable;
+}
 
 void RegisterProcs()
 {
