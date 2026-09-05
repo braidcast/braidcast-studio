@@ -468,6 +468,11 @@ input[type="color"] {
   color: var(--color-muted);
   text-decoration: line-through;
 }
+/* Every row this styles carries a name the user typed -- a scene, a source, a filter --
+   so it takes neither --label-case nor the tracking that goes with it. Uppercasing user
+   data makes the list disagree with the rename field the name was entered in, and with
+   the name every other surface stores. Same reasoning as .embed-head-name in CanvasDock;
+   --label-case stays for chrome, which is what it is for. */
 .dock-label {
   flex: 1;
   text-align: left;
@@ -478,8 +483,6 @@ input[type="color"] {
   color: var(--color-text);
   font-family: var(--font-ui);
   font-size: 11px;
-  letter-spacing: var(--letter-spacing);
-  text-transform: var(--label-case);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

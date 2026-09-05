@@ -565,10 +565,10 @@ import { EV } from "$lib/utils/eventNames";
     justify-content: space-between;
     gap: 8px;
   }
+  /* The audio source's own name, so it keeps the case the user typed -- same reasoning
+     as .dock-label in app.css. */
   .name {
     font-size: 11px;
-    letter-spacing: var(--letter-spacing);
-    text-transform: var(--label-case);
     color: var(--color-text);
     overflow: hidden;
     text-overflow: ellipsis;
