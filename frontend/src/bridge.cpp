@@ -50,6 +50,7 @@
 #include "overlay/overlay_server.hpp"
 #include "overlay/overlay_sources.hpp"
 #include "overlay/overlay_store.hpp"
+#include "overlay/overlay_template.hpp"
 #include "mcp/McpServer.hpp"
 #include "windowing/interact_window.hpp"
 #include "util/json_util.hpp"
@@ -12554,6 +12555,18 @@ bool MethodOverlaysGet(const json &p, json &result, std::string &error)
 	result = w->ToJson();
 	result["url"] = Overlay::WidgetUrl(*w, Overlay::Store().Port());
 	result["schema"] = Overlay::Resolve(*w).schema;
+	// The rectangle the editor's preview has to render this widget at to show what a
+	// browser source shows: the widget's stylesheet scales itself to its viewport, and the
+	// preview pane is not that shape. Resolved here rather than restated in the page,
+	// because the sizes belong to the templates and one transcription of them is enough.
+	// Absent for a type this build does not ship, which the preview reads as "no rectangle
+	// to honour" and falls back to filling the pane.
+	uint32_t naturalW = 0;
+	uint32_t naturalH = 0;
+	if (Overlay::NaturalSize(w->type, naturalW, naturalH)) {
+		result["naturalW"] = naturalW;
+		result["naturalH"] = naturalH;
+	}
 	return true;
 }
 
@@ -13040,8 +13053,8 @@ bool MethodOverlaysUploadAsset(const json &p, json &result, std::string &error)
 
 // overlays.addToScene {id, canvas?, scene?} -> {id:<sceneItemId>, source:<name>}.
 // Mirrors MethodSourcesCreate exactly, differing only in creating a braidcast_overlay
-// bound to the widget id + sized to the target canvas's base resolution. The source
-// type resolves the id to a live URL itself, here and on every later load.
+// bound to the widget id + sized to its type's own design rectangle. The source type
+// resolves the id to a live URL itself, here and on every later load.
 bool MethodOverlaysAddToScene(const json &params, json &result, std::string &error)
 {
 	const std::string id = OptString(params, "id");
@@ -13069,14 +13082,25 @@ bool MethodOverlaysAddToScene(const json &params, json &result, std::string &err
 	}
 	obs_scene_t *scene = obs_scene_from_source(sceneSource);
 
-	uint32_t baseW = 1920;
-	uint32_t baseH = 1080;
-	ResolveBaseSize(params, baseW, baseH);
+	// The browser source's viewport, which is the only box the widget's stylesheet can
+	// measure itself against -- the scene-item transform that scales the rendered bitmap
+	// is invisible to CSS. Every stock template resolves 1rem to exactly 16 design px at
+	// its own rectangle, so a source created at the canvas instead draws a bar meant to be
+	// 54 px tall at fifteen times its type. The canvas base stays the fallback for a type
+	// the table does not know: the wrong scale, but at least on screen. No shipped type
+	// reaches it -- the table answers for all eleven -- and a twelfth added without a row
+	// fails the overlay self-test, which runs Overlay::TypesMissingNaturalSize against the
+	// staged rundir and whose verdict line the packaged smoke run treats as a crash.
+	uint32_t srcW = 1920;
+	uint32_t srcH = 1080;
+	if (!Overlay::NaturalSize(w->type, srcW, srcH)) {
+		ResolveBaseSize(params, srcW, srcH);
+	}
 
 	obs_data_t *settings = obs_data_create();
 	obs_data_set_string(settings, Overlay::kOverlayIdKey, id.c_str());
-	obs_data_set_int(settings, "width", baseW);
-	obs_data_set_int(settings, "height", baseH);
+	obs_data_set_int(settings, "width", srcW);
+	obs_data_set_int(settings, "height", srcH);
 	obs_source_t *source =
 		obs_source_create(Overlay::kOverlaySourceId, name.c_str(), settings, nullptr); // create-ref
 	obs_data_release(settings);

@@ -35,7 +35,8 @@ OBSOverlay.onEvent((e) => {
 function applyFields(f) {
   const set = (k, v) => document.documentElement.style.setProperty(k, v);
   if (f.fontFamily) set("--ov-font", String(f.fontFamily));
-  if (f.fontSize != null) set("--ov-size", (Number(f.fontSize) || 22) + "px");
+  // Design px, not device px: template.css resolves it against the root scale.
+  if (f.fontSize != null) set("--ov-size", String(Number(f.fontSize) || 22));
   if (f.textColor) set("--ov-text", String(f.textColor));
   if (f.backgroundColor) set("--ov-bg", String(f.backgroundColor));
   if (f.barColor) set("--ov-bar", String(f.barColor));

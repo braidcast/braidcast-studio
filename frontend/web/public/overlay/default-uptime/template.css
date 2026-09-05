@@ -1,10 +1,27 @@
 :root {
   --ov-font: "Inter", system-ui, sans-serif;
-  --ov-size: 24px;
+  --ov-size: 24;
   --ov-text: #ffffff;
   --ov-bg: rgba(0, 0, 0, 0);
   --ov-align: left;
+  /* One design pixel. The px-denominated fields arrive as plain numbers so that the root
+     scale governs them too rather than pinning them to device pixels. */
+  --ov-px: 0.0625rem;
 }
+/* Scale knob. Every length below is rem, so this one value carries the whole widget and it
+   renders at whatever rectangle the browser source is drawn at; 1rem is 16 design px.
+   Two fit terms and no max() floor: min() takes whichever axis the drawn rectangle is
+   short on, and a floor would structurally outrank both -- the bar is sized entirely off
+   the root, so the rectangle is the only bound that can hold it.
+   3.375 is the bar's own height: 0.75rem of padding top and bottom around a 1.875rem line
+   (1.5rem of text at line-height 1.25). 8 is its design width, the 7.125rem an "H:MM:SS"
+   reading measures rounded up, so the reading only shrinks once the rectangle is too
+   narrow to hold it. The optional prefix is not counted: it is arbitrary length and the
+   bar is full-bleed, so it has the rest of the rectangle to sit in.
+   Both terms give 16 at 128x54 px. Height binds on any bar more than 2.4 times as wide as
+   it is tall (8 / 3.375), which is the shape an uptime readout is drawn at, so a taller
+   bar draws a bigger reading, not empty band. */
+html { font-size: min(100vw / 8, 100vh / 3.375); }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
 body {
@@ -18,16 +35,16 @@ body {
   left: 0;
   right: 0;
   top: 0;
-  padding: 12px 18px;
+  padding: 0.75rem 1.125rem;
   background: var(--ov-bg);
   color: var(--ov-text);
-  font-size: var(--ov-size);
+  font-size: calc(var(--ov-size) * var(--ov-px));
   line-height: 1.25;
   font-weight: 600;
   /* text-align positions the inline-flex line, so the one align field needs no second
      alignment axis to keep in sync. */
   text-align: var(--ov-align);
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+  text-shadow: 0 0.0625rem 0.125rem rgba(0, 0, 0, 0.6);
 }
 
 .line {

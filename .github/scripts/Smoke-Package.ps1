@@ -135,7 +135,12 @@ $CrashPatterns = @(
     '0xc0000005',
     'terminate called after throwing',
     'Assertion failed',
-    'std::bad_alloc'
+    'std::bad_alloc',
+    # Narrow enough to be exempt from the false-positive concern above: this is one
+    # suite's own verdict line, not the word FAIL appearing in its step output. Listed
+    # because the overlay suite is the only checker of the per-type natural-size table,
+    # and a type shipped without a row is otherwise a log line nothing reads.
+    '\[selftest\] overlay -> FAILED'
 )
 
 # Positive proof the renderer actually loaded the Svelte bundle (OnLoadEnd on the

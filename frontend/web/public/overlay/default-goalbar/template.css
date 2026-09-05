@@ -1,11 +1,31 @@
 :root {
   --ov-font: "Inter", system-ui, sans-serif;
-  --ov-size: 22px;
+  --ov-size: 22;
   --ov-text: #ffffff;
   --ov-bg: rgba(0, 0, 0, 0);
   --ov-bar: #9147ff;
   --ov-track: rgba(255, 255, 255, 0.15);
+  /* One design pixel. The px-denominated fields arrive as plain numbers so that the root
+     scale governs them too rather than pinning them to device pixels. */
+  --ov-px: 0.0625rem;
 }
+/* Scale knob. Every length below that has a size worth scaling is rem, so this one value
+   carries the whole widget and it renders at whatever rectangle the browser source is
+   drawn at; 1rem is 16 design px. The two 999px pill radii are the exception and stay px
+   deliberately -- that is a saturating sentinel for "fully rounded", not a measurement.
+   Two fit terms and no max() floor: min() takes whichever axis the drawn rectangle is
+   short on, and a floor would structurally outrank both -- the bar is sized entirely off
+   the root, so the rectangle is the only bound that can hold it.
+   4.75 is the whole widget stacked: 0.875rem of padding top and bottom (1.75), a 1.665rem
+   head row (the 1.375rem title and the 1.1275rem count on a shared baseline), its 0.5rem
+   margin, and the 0.825rem track -- 4.74, rounded up so the track cannot land a fraction
+   of a pixel outside the rectangle. 12 is its design width, the 11.1875rem the head
+   measures with a title and a "0 / 50 · 0%" count, rounded up; the track is full-bleed and
+   has no width of its own to fit.
+   Both terms give 16 at 192x76 px. Height binds on any bar more than 2.5 times as wide as
+   it is tall (12 / 4.75), which is every real placement: a 1080x100 source lands on the
+   height term at root 21, and the head, its margin and the track then fill the 100px. */
+html { font-size: min(100vw / 12, 100vh / 4.75); }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
 body {
@@ -19,20 +39,20 @@ body {
   left: 0;
   right: 0;
   bottom: 0;
-  padding: 14px 18px;
+  padding: 0.875rem 1.125rem;
   background: var(--ov-bg);
   color: var(--ov-text);
-  font-size: var(--ov-size);
+  font-size: calc(var(--ov-size) * var(--ov-px));
   line-height: 1.2;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+  text-shadow: 0 0.0625rem 0.125rem rgba(0, 0, 0, 0.6);
 }
 
 .goal-head {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 8px;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
 }
 .goal-title {
   font-weight: 700;

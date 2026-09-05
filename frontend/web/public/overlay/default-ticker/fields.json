@@ -1,9 +1,9 @@
 [
   { "key": "fontFamily", "type": "font", "label": "Font", "default": "Inter, system-ui, sans-serif" },
-  { "key": "fontSize", "type": "slider", "label": "Font Size (px)", "min": 10, "max": 48, "step": 1, "default": 20 },
+  { "key": "fontSize", "type": "slider", "label": "Font Size (design px)", "min": 10, "max": 48, "step": 1, "default": 20 },
   { "key": "textColor", "type": "color", "label": "Text Color", "default": "#ffffff" },
   { "key": "backgroundColor", "type": "color", "label": "Background Color", "default": "rgba(0,0,0,0)" },
-  { "key": "scrollSpeed", "type": "slider", "label": "Scroll Speed (px/sec)", "min": 10, "max": 240, "step": 5, "default": 60 },
+  { "key": "scrollSpeed", "type": "slider", "label": "Scroll Speed (design px/sec)", "min": 10, "max": 240, "step": 5, "default": 60 },
   {
     "key": "direction",
     "type": "dropdown",

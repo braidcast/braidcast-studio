@@ -44,10 +44,11 @@ function applyFields(f) {
   fields = f;
   const set = (k, v) => document.documentElement.style.setProperty(k, v);
   if (f.fontFamily) set("--ov-font", String(f.fontFamily));
-  if (f.fontSize != null) set("--ov-size", (Number(f.fontSize) || 24) + "px");
+  // Design px, not device px: template.css resolves it against the root scale.
+  if (f.fontSize != null) set("--ov-size", String(Number(f.fontSize) || 24));
   if (f.textColor) set("--ov-text", String(f.textColor));
   if (f.backgroundColor) set("--ov-bg", String(f.backgroundColor));
-  if (f.gap != null) set("--ov-gap", Math.max(0, Number(f.gap) || 0) + "px");
+  if (f.gap != null) set("--ov-gap", String(Math.max(0, Number(f.gap) || 0)));
 
   const column = f.orientation === "column";
   const align = ALIGN[String(f.align || "left")] || ALIGN.left;

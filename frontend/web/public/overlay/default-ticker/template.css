@@ -1,9 +1,25 @@
 :root {
   --ov-font: "Inter", system-ui, sans-serif;
-  --ov-size: 20px;
+  --ov-size: 20;
   --ov-text: #ffffff;
   --ov-bg: rgba(0, 0, 0, 0);
+  /* One design pixel. The px-denominated fields arrive as plain numbers so that the root
+     scale governs them too rather than pinning them to device pixels. */
+  --ov-px: 0.0625rem;
 }
+/* Scale knob. Every length below is rem, so this one value carries the whole belt and it
+   renders at whatever rectangle the browser source is drawn at; 1rem is 16 design px.
+   Two fit terms and no max() floor: min() takes whichever axis the drawn rectangle is
+   short on, and a floor would structurally outrank both -- the belt is sized entirely off
+   the root, so the rectangle is the only bound that can hold it.
+   1.5 is the belt's own height, a 1.25rem line at line-height 1.2; the belt carries no
+   padding, so that is also the height of the rectangle it fills. 28 is its narrowest
+   useful width, about one whole event at design scale (the widest shipped phrasing
+   measures 27.64rem), so the text only shrinks once the rectangle cannot hold one item.
+   Both terms give 16 at 448x24 px. Height binds on any belt more than 18.7 times as wide
+   as it is tall (28 / 1.5), which is every full-bleed placement, so a taller band draws a
+   proportionally bigger line rather than empty space above it. */
+html { font-size: min(100vw / 28, 100vh / 1.5); }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
 body {
@@ -26,9 +42,9 @@ body {
   white-space: nowrap;
   background: var(--ov-bg);
   color: var(--ov-text);
-  font-size: var(--ov-size);
+  font-size: calc(var(--ov-size) * var(--ov-px));
   line-height: 1.2;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+  text-shadow: 0 0.0625rem 0.125rem rgba(0, 0, 0, 0.6);
 }
 
 /* Flip layer. For right-to-left scrolling it mirrors the whole belt (scaleX) so the
@@ -61,12 +77,12 @@ body {
 .tick-inner {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 0.5rem;
 }
 
 .tag {
   display: inline-block;
-  padding: 1px 7px;
+  padding: 0.0625rem 0.4375rem;
   font-size: 0.62em;
   font-weight: 700;
   letter-spacing: 0.04em;
@@ -95,7 +111,7 @@ body {
 /* Static label shown only while no events have arrived yet. */
 .idle {
   position: absolute;
-  left: 16px;
+  left: 1rem;
   color: var(--ov-text);
   opacity: 0.55;
   display: none;

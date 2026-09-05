@@ -1,7 +1,9 @@
 #ifndef OBS_MULTISTREAM_FRONTEND_OVERLAY_OVERLAY_TEMPLATE_HPP_
 #define OBS_MULTISTREAM_FRONTEND_OVERLAY_OVERLAY_TEMPLATE_HPP_
 
+#include <cstdint>
 #include <string>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -12,6 +14,27 @@ using json = nlohmann::json;
 // Where a type's shipped default template lives: the single place that layout is spelled
 // out, so a read and the log line that quotes the path cannot name different directories.
 std::string TemplateDir(const std::string &type);
+
+// The browser-source rectangle `type` is designed at, in pixels, written to `w`/`h`. False
+// for a type with no shipped template, leaving both untouched.
+//
+// A browser source's viewport is the only box its stylesheet can measure itself against --
+// the scene-item transform that scales the rendered bitmap is invisible to CSS -- so this
+// is the size at which a stock template resolves its root scale to exactly 1rem = 16 design
+// px. It is a property of the type in the same way TemplateDir is, and it is decided by the
+// widget's own stylesheet: the divisors in that template's
+// `html { font-size: min(100vw / <width>, 100vh / <height>) }` knob are what put 1rem at 16.
+// Change a knob and this answer changes with it.
+bool NaturalSize(const std::string &type, uint32_t &w, uint32_t &h);
+
+// Every shipped template directory NaturalSize has no answer for, empty when the table
+// covers them all. The table is data and nothing links it to the directories it describes,
+// so a twelfth type added under default-<type>/ without a row would be created at the
+// canvas resolution and drawn at fifteen times its design scale -- which reads as a broken
+// template rather than as a missing row, and is found on stream. The overlay self-test asks
+// this against the staged rundir, so the omission is named before a build ships rather than
+// after someone adds the source.
+std::vector<std::string> TypesMissingNaturalSize();
 
 // What reading a type's shipped template yielded. The three failures are kept apart
 // because they are not the same risk, and two of them are not even the same KIND of fact:

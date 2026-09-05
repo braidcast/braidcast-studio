@@ -1,15 +1,40 @@
 :root { --accent: #9147ff; }
+/* Scale knob. Every length below is rem, so this one value carries the whole card and it
+   renders at whatever rectangle the browser source is drawn at; 1rem is 16 design px.
+   Two fit terms and no max() floor: min() takes whichever axis the drawn rectangle is
+   short on, and a floor would structurally outrank both -- the card is sized entirely off
+   the root, so the rectangle is the only bound that can hold it.
+   Width: the card is centred and capped at 34rem, so 37.5 is that cap plus 1.75rem of
+   margin either side. Height: `top: 40%` leaves 60vh for the card, and 6.85rem is the
+   card measured at its tallest routine state, a name wrapped to a second line at the
+   34rem cap. Measured rather than summed, because .alert-msg is line-height: normal and
+   what that resolves to is the font's business, not arithmetic's.
+   Width binds on any rectangle less than 3.3 times as wide as it is tall (37.5 divided by
+   the 11.42 the 60vh term works out to), which includes the 600x400 a fresh add is given;
+   the height term takes over below 183px tall, where the card would otherwise run off the
+   bottom of the rectangle. */
+html { font-size: min(100vw / 37.5, 60vh / 6.85); }
 * { box-sizing: border-box; }
 body { margin: 0; background: transparent; overflow: hidden; font-family: var(--ov-font, system-ui, sans-serif); }
 .alert {
-  position: fixed; left: 50%; top: 40%; transform: translate(-50%, 20px);
-  display: flex; align-items: center; gap: 16px; min-width: 360px; max-width: 80vw;
-  padding: 18px 24px; background: rgba(18, 18, 22, 0.92);
-  border-left: 4px solid var(--accent); border-radius: 10px;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+  position: fixed; left: 50%; top: 40%; transform: translate(-50%, 1.25rem);
+  display: flex; align-items: center; gap: 1rem;
+  /* The card takes its width from its message, between these two bounds. width:max-content
+     is what lets it: `left: 50%` leaves only half the rectangle to shrink-to-fit into, and
+     without it every alert draws at min-width however long the message is. */
+  min-width: 22.5rem; max-width: 34rem; width: max-content;
+  padding: 1.125rem 1.5rem; background: rgba(18, 18, 22, 0.92);
+  border-left: 0.25rem solid var(--accent); border-radius: 0.625rem;
+  box-shadow: 0 0.75rem 2.5rem rgba(0, 0, 0, 0.55);
   opacity: 0; transition: opacity 320ms ease, transform 320ms ease;
 }
 .alert.show { opacity: 1; transform: translate(-50%, 0); }
-.alert-avatar { width: 44px; height: 44px; border-radius: 50%; background: var(--accent); flex: 0 0 auto; }
-.alert-name { color: var(--accent); font-weight: 700; font-size: 22px; line-height: 1.15; }
-.alert-msg { color: #f2f2f5; font-size: 16px; margin-top: 2px; }
+/* A flex item will not shrink below the width of its longest unbreakable word without
+   both of these, and a display name is one unbreakable word of arbitrary length. Left as
+   it was, such a name pushed the card's text out past the source rectangle -- 154 px past
+   it at the 600x400 the card is now given, where the old canvas-sized rectangle had room
+   to hide it. */
+.alert-body { min-width: 0; overflow-wrap: anywhere; }
+.alert-avatar { width: 2.75rem; height: 2.75rem; border-radius: 50%; background: var(--accent); flex: 0 0 auto; }
+.alert-name { color: var(--accent); font-weight: 700; font-size: 1.375rem; line-height: 1.15; }
+.alert-msg { color: #f2f2f5; font-size: 1rem; margin-top: 0.125rem; }

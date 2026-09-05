@@ -77,9 +77,29 @@ interface StyleBase {
   seed?: string | number;
 }
 
+/** How a stored length reaches CSS, and what the editor calls it. One row per unit, so a
+ * property picks a unit rather than spelling a conversion of its own.
+ *
+ * A slot rule declares on the styled element and so beats the widget's own stylesheet, and
+ * on both widgets that ship a slot the slot IS the visible content. A length left in device
+ * px would therefore be the one thing on the page that did not scale with the browser
+ * source: the widget around it grows with the rectangle while the text inside it holds at
+ * whatever number was typed. Design px instead -- a sixteenth of a rem, the same unit every
+ * widget's own fields carry -- so a stored 24 still renders 24 px at that widget's design
+ * rectangle, where the root resolves to exactly 16, and grows with the source from there.
+ * Nothing stored has to change for that: the value means the same thing it always did at
+ * the one size it was ever true at. */
+export const LENGTH_UNITS = {
+  designpx: { css: "rem", perUnit: 1 / 16, label: "design px" },
+  // Already proportional to the font size it modifies, so it scales with the type on its
+  // own and the number a user dials in means the same thing at every root size.
+  em: { css: "em", perUnit: 1, label: "em" },
+} as const;
+export type LengthUnit = keyof typeof LENGTH_UNITS;
+
 export type StyleProp = StyleBase &
   (
-    | { kind: "length"; unit: "px" | "em"; min: number; max: number; step: number }
+    | { kind: "length"; unit: LengthUnit; min: number; max: number; step: number }
     | { kind: "ratio"; min: number; max: number; step: number }
     | { kind: "percent"; min: number; max: number; step: number }
     | { kind: "color"; seed: string }
@@ -102,7 +122,7 @@ export const STYLE_PROPS: StyleProp[] = [
     group: "typography",
     css: "font-size",
     kind: "length",
-    unit: "px",
+    unit: "designpx",
     min: 4,
     max: 400,
     step: 1,
@@ -172,7 +192,7 @@ export const STYLE_PROPS: StyleProp[] = [
     group: "box",
     css: "padding-inline",
     kind: "length",
-    unit: "px",
+    unit: "designpx",
     min: 0,
     max: 200,
     step: 1,
@@ -183,7 +203,7 @@ export const STYLE_PROPS: StyleProp[] = [
     group: "box",
     css: "padding-block",
     kind: "length",
-    unit: "px",
+    unit: "designpx",
     min: 0,
     max: 200,
     step: 1,
@@ -194,7 +214,7 @@ export const STYLE_PROPS: StyleProp[] = [
     group: "box",
     css: "border-radius",
     kind: "length",
-    unit: "px",
+    unit: "designpx",
     min: 0,
     max: 200,
     step: 1,
@@ -205,7 +225,7 @@ export const STYLE_PROPS: StyleProp[] = [
     group: "box",
     css: "border-width",
     kind: "length",
-    unit: "px",
+    unit: "designpx",
     min: 0,
     max: 40,
     step: 1,
@@ -232,7 +252,7 @@ export const STYLE_PROPS: StyleProp[] = [
     group: "effects",
     css: null,
     kind: "length",
-    unit: "px",
+    unit: "designpx",
     // Floored above zero rather than at it: a zero-width stroke paints nothing, and
     // "no outline at all" is what the row's own clear button already expresses.
     min: 0.5,
@@ -262,7 +282,7 @@ export const STYLE_PROPS: StyleProp[] = [
     group: "effects",
     css: null,
     kind: "length",
-    unit: "px",
+    unit: "designpx",
     min: -50,
     max: 50,
     step: 1,
@@ -273,7 +293,7 @@ export const STYLE_PROPS: StyleProp[] = [
     group: "effects",
     css: null,
     kind: "length",
-    unit: "px",
+    unit: "designpx",
     min: -50,
     max: 50,
     step: 1,
@@ -284,7 +304,7 @@ export const STYLE_PROPS: StyleProp[] = [
     group: "effects",
     css: null,
     kind: "length",
-    unit: "px",
+    unit: "designpx",
     min: 0,
     max: 100,
     step: 1,
@@ -326,7 +346,9 @@ const COMPOSITES: Composite[] = [
     // under opaque text. Offset or blur alone is legitimate -- 6px 6px 0 is a hard-edged
     // drop shadow -- so only the all-zero case is rescued, with a radius rather than an
     // offset because a blur reads the same in every direction.
-    rescue: { whenAllZero: ["shadowX", "shadowY", "shadowBlur"], part: "shadowBlur", value: "2px" },
+    // In design px like every other length here, so the rescued blur scales with the source
+    // rather than being the one part of the shadow pinned to device pixels.
+    rescue: { whenAllZero: ["shadowX", "shadowY", "shadowBlur"], part: "shadowBlur", value: "0.125rem" },
   },
   {
     css: "-webkit-text-stroke",
@@ -417,8 +439,12 @@ const FONT_FAMILY = /^[a-zA-Z0-9 _-]{1,64}$/;
  * whatever ranges the table above later carries. */
 const MAX_MAGNITUDE = 1e6;
 
+// Five places, not three: a design pixel is 0.0625rem, so the rem conversion divides every
+// stored length by 16 and the smallest of them -- the outline width, which steps in halves
+// -- lands on 0.03125. Three places still round that to 0.031 rather than to nothing, so
+// this is accuracy on a sixteenth-of-a-pixel stroke, not a rescue from collapsing to zero.
 function fixed(n: number): string {
-  return String(Math.round(clamp(n, -MAX_MAGNITUDE, MAX_MAGNITUDE) * 1000) / 1000);
+  return String(Math.round(clamp(n, -MAX_MAGNITUDE, MAX_MAGNITUDE) * 100000) / 100000);
 }
 
 function sanitizeColor(raw: unknown): string | null {
@@ -466,7 +492,8 @@ function sanitize(prop: StyleProp, raw: unknown): string | null {
       }
       const v = clamp(n, prop.min, prop.max);
       if (prop.kind === "length") {
-        return fixed(v) + prop.unit;
+        const unit = LENGTH_UNITS[prop.unit];
+        return fixed(v * unit.perUnit) + unit.css;
       }
       return fixed(prop.kind === "percent" ? v / 100 : v);
     }

@@ -61,7 +61,23 @@ const SUMMARY = {
 
 // --- fields (live-applied) ---------------------------------------------------
 let fontSize = 20;
-let speed = 60; // px/sec
+let speed = 60; // design px/sec
+// The belt is translated in real px, but the type it carries scales with the source, so
+// the configured rate is resolved against the same root scale template.css sets -- left
+// in device px a small source would run its text past several times too fast for its size.
+// The design pixel is read from --ov-px rather than respelled here, so the belt's speed
+// and the type it carries cannot come to disagree about what one is: that property is a
+// rem coefficient, and the root font-size is one rem in device px, so their product is
+// device px per design px. A fork that deletes the property leaves an unscaled belt
+// rather than a NaN one, which would stop it dead.
+let pxPerDesignPx = 1;
+function readScale() {
+  const root = getComputedStyle(document.documentElement);
+  const remPerDesignPx = parseFloat(root.getPropertyValue("--ov-px"));
+  pxPerDesignPx = Number.isFinite(remPerDesignPx) ? parseFloat(root.fontSize) * remPerDesignPx : 1;
+}
+readScale();
+window.addEventListener("resize", readScale);
 let separator = "  •  ";
 let showPlatform = true;
 let maxItems = 30;
@@ -82,7 +98,8 @@ function applyFields(f) {
   if (f.fontFamily) set("--ov-font", String(f.fontFamily));
   if (f.fontSize != null) {
     fontSize = Number(f.fontSize) || 20;
-    set("--ov-size", fontSize + "px");
+    // Design px, not device px: template.css resolves it against the root scale.
+    set("--ov-size", String(fontSize));
   }
   if (f.textColor) set("--ov-text", String(f.textColor));
   if (f.backgroundColor) set("--ov-bg", String(f.backgroundColor));
@@ -186,7 +203,9 @@ function viewWidth() {
 // there's never a gap. Spawns from the cyclic buffer; bails when the buffer is empty.
 function topUp() {
   if (buffer.length === 0) return;
-  const target = viewWidth() * 2 + 64;
+  // 4rem of slack past the look-ahead, resolved against the root scale like every other
+  // length here: a fixed 64 device px is a different amount of belt on every source size.
+  const target = viewWidth() * 2 + 64 * pxPerDesignPx;
   // Guard the loop: at most enough items to cover the target twice over.
   let guard = 4096;
   while (track.scrollWidth + tx < target && guard-- > 0) {
@@ -206,7 +225,7 @@ function frame(now) {
   }
   idleEl.classList.remove("show");
 
-  tx -= speed * dt;
+  tx -= speed * pxPerDesignPx * dt;
 
   // Drop items that have fully scrolled off the left edge; add their width back to tx
   // so the remaining belt stays put as the DOM reflows.

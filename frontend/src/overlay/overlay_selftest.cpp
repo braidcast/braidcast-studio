@@ -20,6 +20,7 @@
 #include "util/file_util.hpp"
 #include "overlay_server.hpp"
 #include "overlay_store.hpp"
+#include "overlay_template.hpp"
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -419,6 +420,20 @@ void ObsBootstrap::RunOverlaySelfTest()
 	restore(ovPath, ovOrig);
 	restore(ovBak, ovOrigBak);
 
+	// Against the staged rundir, so this reads the shipped set of template directories
+	// rather than a list maintained beside them. A type with no natural size is created at
+	// the canvas resolution and drawn at fifteen times its design scale; naming it here is
+	// what keeps that from being found on stream instead.
+	const std::vector<std::string> unsized = Overlay::TypesMissingNaturalSize();
+	const bool sizesOk = unsized.empty();
+	std::string unsizedList;
+	for (const std::string &type : unsized) {
+		unsizedList += unsizedList.empty() ? "" : ", ";
+		unsizedList += type;
+	}
+	HostLog(std::string("[selftest] overlay natural sizes -> ") +
+		(sizesOk ? "OK" : "MISSING (" + unsizedList + ")"));
+
 	server.Stop();
 	// Leave the shared singleton clean: the real boot Server() must not serve this
 	// injected test widget after the smoke run.
@@ -426,8 +441,8 @@ void ObsBootstrap::RunOverlaySelfTest()
 	HostLog("[selftest] overlay cleanup -> server stopped");
 
 	if (docOk && sseHeaderOk && deliveryOk && channelsOk && replayOk && noWindowOk && replayScopeOk && authOk &&
-	    stockOk) {
-		HostLog("[selftest] overlay -> document/SSE/channels/replay/auth/stock OK");
+	    stockOk && sizesOk) {
+		HostLog("[selftest] overlay -> document/SSE/channels/replay/auth/stock/sizes OK");
 	} else {
 		HostLog("[selftest] overlay -> FAILED (see step lines above)");
 	}

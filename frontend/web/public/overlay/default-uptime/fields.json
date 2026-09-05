@@ -14,7 +14,7 @@
   { "key": "showWhenOffline", "type": "checkbox", "label": "Show When Offline", "default": false },
   { "key": "offlineText", "type": "text", "label": "Offline Text", "default": "—" },
   { "key": "fontFamily", "type": "font", "label": "Font", "default": "Inter, system-ui, sans-serif" },
-  { "key": "fontSize", "type": "slider", "label": "Font Size (px)", "min": 12, "max": 96, "step": 1, "default": 24 },
+  { "key": "fontSize", "type": "slider", "label": "Font Size (design px)", "min": 12, "max": 96, "step": 1, "default": 24 },
   { "key": "textColor", "type": "color", "label": "Text Color", "default": "#ffffff" },
   { "key": "backgroundColor", "type": "color", "label": "Background Color", "default": "rgba(0,0,0,0)" },
   {

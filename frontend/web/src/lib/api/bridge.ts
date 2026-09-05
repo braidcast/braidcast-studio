@@ -1603,6 +1603,12 @@ export interface OverlayWidget extends OverlayWidgetDoc {
   /** The schema in force — the type's for a stock widget, `custom.fields` for a forked
    * one. Not persisted. */
   schema: OverlayField[];
+  /** The browser-source rectangle this widget's type is designed at, in px. The preview
+   * renders the document at this size and scales the result to fit its pane, because a
+   * widget's stylesheet measures itself against its viewport and the pane is not that
+   * shape. Absent for a type this build doesn't ship. Not persisted. */
+  naturalW?: number;
+  naturalH?: number;
 }
 
 /** Compact list row (overlays.list). */

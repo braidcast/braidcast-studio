@@ -5,6 +5,7 @@
 #include "util/web_bundle.hpp"
 
 #include <exception>
+#include <filesystem>
 #include <map>
 #include <mutex>
 #include <utility>
@@ -15,6 +16,48 @@ namespace {
 
 std::mutex g_cacheMutex;
 std::map<std::string, TypeTemplate> g_cache;
+
+// The one spelling of where templates live and how a type's directory is named, so the
+// read below and the sweep at the bottom of this file cannot come to disagree about either.
+constexpr char kTypeDirPrefix[] = "default-";
+
+std::string TemplateRoot()
+{
+	// Off WebBundle::Root() rather than a second spelling of the rundir layout: this is
+	// the same tree scheme.cpp serves at app://app/, so the two cannot name different
+	// directories after one of them moves.
+	return WebBundle::Root() + "/overlay";
+}
+
+// One row per shipped widget type: the browser-source rectangle it is designed at, in
+// pixels. A data table rather than a branch, so a new type is one row.
+//
+// The knob in each template's stylesheet is what decides these, since it is what puts 1rem
+// at 16 design px: labels resolves min(100vw / 24, 100vh / 3.375), so its terms give
+// exactly 16 at 384x54 px. Each row is exact on the axis that BINDS there and generous on
+// the other, which is why most of the widths below are more than the width term alone would
+// give. Nine of these are bars and lists, bound by height: the height is the divisor times
+// 16 and the width is the shape a streamer actually draws one at, far enough past the width
+// term that a longer line or a wider name has room before the type starts shrinking to fit.
+// Two invert it -- the alert card is centred and sized by its message, and the chat column
+// wraps to its width -- so those two are exact in width and generous in height, their
+// height terms being guards (a card that would fall off the bottom, a column too short to
+// hold three messages) rather than fits.
+//
+// The ticker is the one where "generous" was tempting to read as the whole canvas. It is
+// not: a belt is height-bound, so widening one costs a streamer nothing and they stretch it
+// to whatever they want, whereas a 1920-wide row here would make the editor's preview --
+// which fits this rectangle into its pane -- draw 20-design-px type at six device px. 640
+// keeps it in the same proportion to its width term as the other ten.
+constexpr struct {
+	const char *type;
+	uint32_t w;
+	uint32_t h;
+} kNaturalSizes[] = {
+	{"alertbox", 600, 400},     {"chatbox", 400, 480},    {"chatleaderboard", 340, 191}, {"countdown", 300, 54},
+	{"followercount", 640, 58}, {"goalbar", 600, 76},     {"labels", 600, 54},           {"ticker", 640, 24},
+	{"uptime", 300, 54},        {"viewercount", 400, 58}, {"wheretowatch", 320, 174},
+};
 
 TypeTemplate ReadTemplate(const std::string &type)
 {
@@ -79,10 +122,56 @@ TypeTemplate ReadTemplate(const std::string &type)
 
 std::string TemplateDir(const std::string &type)
 {
-	// Off WebBundle::Root() rather than a second spelling of the rundir layout: this is
-	// the same tree scheme.cpp serves at app://app/, so the two cannot name different
-	// directories after one of them moves.
-	return WebBundle::Root() + "/overlay/default-" + type + "/";
+	return TemplateRoot() + "/" + kTypeDirPrefix + type + "/";
+}
+
+bool NaturalSize(const std::string &type, uint32_t &w, uint32_t &h)
+{
+	for (const auto &row : kNaturalSizes) {
+		if (type == row.type) {
+			w = row.w;
+			h = row.h;
+			return true;
+		}
+	}
+	return false;
+}
+
+std::vector<std::string> TypesMissingNaturalSize()
+{
+	std::vector<std::string> missing;
+	std::error_code ec;
+	// The shipped directories are the only list of types that exists at runtime, which is
+	// exactly why this sweep reads them rather than a second list someone would have to
+	// remember to extend alongside the one it is guarding.
+	// Stepped by hand rather than with a range-for so that every filesystem call here takes
+	// its error_code overload. The range-for form only routes the CONSTRUCTOR through `ec`;
+	// is_directory() and the increment are the throwing overloads, and this runs inside the
+	// self-test battery, where an escaping filesystem_error would take down the whole run
+	// over a directory that was briefly unreadable.
+	const std::filesystem::directory_iterator end;
+	std::filesystem::directory_iterator it(TemplateRoot(), ec);
+	for (; !ec && it != end; it.increment(ec)) {
+		if (!it->is_directory(ec) || ec) {
+			continue;
+		}
+		const std::string name = it->path().filename().string();
+		if (name.rfind(kTypeDirPrefix, 0) != 0) {
+			continue;
+		}
+		const std::string type = name.substr(sizeof(kTypeDirPrefix) - 1);
+		uint32_t w = 0;
+		uint32_t h = 0;
+		if (!NaturalSize(type, w, h)) {
+			missing.push_back(type);
+		}
+	}
+	// A directory that cannot be read answers "nothing missing" rather than "every type
+	// missing": this is a guard against a forgotten table row, and it must not turn a
+	// momentarily unreadable rundir into a failing self-test that names eleven types. This
+	// discards a partial sweep too -- half the directories read is not evidence about the
+	// half that did not.
+	return ec ? std::vector<std::string>() : missing;
 }
 
 TypeTemplate TemplateFor(const std::string &type)

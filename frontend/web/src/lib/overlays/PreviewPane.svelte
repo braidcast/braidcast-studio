@@ -19,7 +19,31 @@
     widgetId,
     widgetType,
     reloadKey,
-  }: { url: string; widgetId: string; widgetType: string; reloadKey: number } = $props();
+    naturalW,
+    naturalH,
+  }: {
+    url: string;
+    widgetId: string;
+    widgetType: string;
+    reloadKey: number;
+    naturalW?: number;
+    naturalH?: number;
+  } = $props();
+
+  // The document is rendered at the widget type's own design rectangle and the whole frame
+  // is then scaled into the pane, rather than stretched to it. A widget's stylesheet reads
+  // 100vw/100vh off its viewport and sizes everything from that, so an iframe given the
+  // pane's shape previews a rectangle no browser source is ever drawn at -- a tall pane
+  // would show a bar meant to be 54px tall filling several hundred.
+  // Falls back to filling the pane for a type that reports no rectangle (one this build
+  // does not ship), which is what the pane did before and still the only option there.
+  let paneW = $state(0);
+  let paneH = $state(0);
+  const fitted = $derived(
+    naturalW && naturalH && paneW > 0 && paneH > 0
+      ? { w: naturalW, h: naturalH, scale: Math.min(paneW / naturalW, paneH / naturalH) }
+      : null,
+  );
 
   const ALERT_TYPES: EventType[] = [
     "follow",
@@ -184,13 +208,15 @@
       </div>
     </div>
   {/if}
-  <div class="frame">
+  <div class="frame" bind:clientWidth={paneW} bind:clientHeight={paneH}>
     {#key reloadKey}
       <iframe
+        class:fitted={!!fitted}
         title="Overlay preview"
         src={url}
         sandbox="allow-scripts allow-same-origin"
         onload={() => (loadedKey = reloadKey)}
+        style={fitted ? `width:${fitted.w}px;height:${fitted.h}px;--preview-scale:${fitted.scale}` : ""}
       ></iframe>
     {/key}
   </div>
@@ -266,6 +292,10 @@
   .frame {
     flex: 1;
     min-height: 0;
+    /* A scaled iframe still occupies its unscaled layout box, so the pane positions it
+       itself and clips whatever the design rectangle leaves outside. */
+    position: relative;
+    overflow: hidden;
     border: var(--border-weight) solid var(--color-border);
     background: var(--color-base);
   }
@@ -275,5 +305,13 @@
     height: 100%;
     border: 0;
     background: var(--color-base);
+  }
+  /* Sized in the markup to the widget's design rectangle; --preview-scale is what fits
+     that rectangle into the pane. */
+  iframe.fitted {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%) scale(var(--preview-scale));
   }
 </style>

@@ -14,6 +14,7 @@
   import {
     dependencyFor,
     dependentsOf,
+    LENGTH_UNITS,
     STYLE_GROUPS,
     STYLE_PROPS,
     type StyleGroup,
@@ -108,7 +109,9 @@
   }
   function unitOf(p: StyleProp): string {
     if (p.kind === "length") {
-      return p.unit;
+      // The unit table's own word for it, so the row cannot say "px" over a value the
+      // runtime compiles to something else.
+      return LENGTH_UNITS[p.unit].label;
     }
     return p.kind === "percent" ? "%" : p.kind === "ratio" ? "×" : "";
   }
@@ -368,6 +371,9 @@
     font-family: var(--font-mono);
     font-size: 10px;
     color: var(--color-muted);
+    /* "design px" is nine characters beside a fixed-width number field, so in a narrow
+       panel it would wrap and leave those rows taller than the em and % ones. */
+    white-space: nowrap;
   }
   .ts__seed {
     padding: 0 10px;

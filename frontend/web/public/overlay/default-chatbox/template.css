@@ -1,11 +1,33 @@
 :root {
   --ov-font: "Inter", system-ui, sans-serif;
-  --ov-size: 20px;
+  --ov-size: 20;
   --ov-text: #ffffff;
   --ov-author: #a970ff;
   --ov-bg: rgba(0, 0, 0, 0);
   --ov-anim: 220ms;
+  /* One design pixel. The px-denominated fields arrive as plain numbers so that the root
+     scale governs them too rather than pinning them to device pixels. */
+  --ov-px: 0.0625rem;
 }
+/* Scale knob. Every length below is rem, so this one value carries the whole column and it
+   renders at whatever rectangle the browser source is drawn at; 1rem is 16 design px.
+   Two fit terms and no max() floor: min() takes whichever axis the drawn rectangle is
+   short on, and a floor would structurally outrank both -- the column is sized entirely
+   off the root, so the rectangle is the only bound that can hold it.
+   Width binds, and it is the axis that means something here: messages wrap to the column,
+   so the text has to keep its proportion to the column it wraps in, while the column
+   itself is deliberately elastic vertically -- older messages flow up and out, so a taller
+   rectangle shows more of them rather than bigger ones. 25 is the design column width: the
+   longest of the shipped test messages needs a 23.8125rem column to sit on one line, and
+   25 rounds that up.
+   7.5 is three messages with their gaps and the padding (1.5 padding, three 1.75rem lines,
+   two 0.375rem gaps), so the height term only takes over in a rectangle too short to hold
+   three of them, where one oversized clipped line would be the alternative.
+   Both terms give 16 at 400x120 px. Width binds on any column less than 3.3 times as wide
+   as it is tall (25 / 7.5), which is every column shape; the 400x480 a fresh add is given
+   sits on the width term at 16, and 480 px of column holds thirteen whole messages --
+   1.5 + N*1.75 + (N-1)*0.375 <= 30 solves at 13.58, and a fourteenth is half a line. */
+html { font-size: min(100vw / 25, 100vh / 7.5); }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
 body {
@@ -25,20 +47,20 @@ body {
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
-  gap: 6px;
-  padding: 12px;
+  gap: 0.375rem;
+  padding: 0.75rem;
   background: var(--ov-bg);
   overflow: hidden;
 }
 
 .msg {
   display: block;
-  font-size: var(--ov-size);
+  font-size: calc(var(--ov-size) * var(--ov-px));
   line-height: 1.4;
   color: var(--ov-text);
   word-wrap: break-word;
   overflow-wrap: anywhere;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+  text-shadow: 0 0.0625rem 0.125rem rgba(0, 0, 0, 0.6);
 }
 
 .msg-meta {
@@ -48,8 +70,8 @@ body {
 
 .platform {
   display: inline-block;
-  margin-right: 5px;
-  padding: 0 5px;
+  margin-right: 0.3125rem;
+  padding: 0 0.3125rem;
   font-size: 0.6em;
   font-weight: 700;
   letter-spacing: 0.04em;
@@ -62,7 +84,7 @@ body {
 .badge {
   height: 0.9em;
   width: auto;
-  margin-right: 3px;
+  margin-right: 0.1875rem;
   vertical-align: middle;
 }
 
@@ -71,7 +93,7 @@ body {
   color: var(--ov-author);
 }
 .sep {
-  margin: 0 4px 0 0;
+  margin: 0 0.25rem 0 0;
   color: var(--ov-text);
   opacity: 0.7;
 }
@@ -83,7 +105,7 @@ body {
   height: 1.3em;
   width: auto;
   vertical-align: middle;
-  margin: 0 1px;
+  margin: 0 0.0625rem;
 }
 
 /* Entry animations, toggled by a body class the JS sets from the field. */
@@ -93,7 +115,7 @@ body {
 }
 .anim-slide .msg {
   opacity: 0;
-  transform: translateX(-16px);
+  transform: translateX(-1rem);
   animation: msg-slide var(--ov-anim) ease forwards;
 }
 @keyframes msg-fade {

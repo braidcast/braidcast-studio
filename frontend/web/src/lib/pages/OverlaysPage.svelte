@@ -717,7 +717,14 @@ import { EV } from "$lib/utils/eventNames";
             {/if}
             {#if wide || pane === "preview"}
               <div class="preview-pane">
-                <PreviewPane url={widget.url} widgetId={widget.id} widgetType={widget.type} {reloadKey} />
+                <PreviewPane
+                  url={widget.url}
+                  widgetId={widget.id}
+                  widgetType={widget.type}
+                  naturalW={widget.naturalW}
+                  naturalH={widget.naturalH}
+                  {reloadKey}
+                />
               </div>
             {/if}
           </div>

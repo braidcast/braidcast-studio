@@ -1,13 +1,30 @@
 :root {
   --ov-font: "Inter", system-ui, sans-serif;
-  --ov-size: 24px;
+  --ov-size: 24;
   --ov-text: #ffffff;
   --ov-bg: rgba(0, 0, 0, 0);
   --ov-align: left;
   --ov-cross: center;
   --ov-dir: row;
-  --ov-gap: 14px;
+  --ov-gap: 14;
+  /* One design pixel. The px-denominated fields arrive as plain numbers so that the root
+     scale governs them too rather than pinning them to device pixels. */
+  --ov-px: 0.0625rem;
 }
+/* Scale knob. Every length below is rem, so this one value carries the whole widget and it
+   renders at whatever rectangle the browser source is drawn at; 1rem is 16 design px.
+   Two fit terms and no max() floor: min() takes whichever axis the drawn rectangle is
+   short on, and a floor would structurally outrank both -- the bar is sized entirely off
+   the root, so the rectangle is the only bound that can hold it.
+   3.625 is the bar's own height at the default row orientation: 0.75rem of padding top and
+   bottom around a 2.125rem line box. A quarter-rem taller than the 1.875rem text line the
+   font sets, and the platform dot is what adds it -- hiding .dot measures the bar at
+   3.375, the same as the structurally similar uptime bar. 15 is its design width, the
+   14.5625rem three platform chips measure, rounded up.
+   Both terms give 16 at 240x58 px. Height binds on any bar more than 4.1 times as wide as
+   it is tall (15 / 3.625), which is the shape a viewer row is drawn at, so a taller bar
+   draws bigger figures, not empty band. */
+html { font-size: min(100vw / 15, 100vh / 3.625); }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
 body {
@@ -21,16 +38,16 @@ body {
   left: 0;
   right: 0;
   top: 0;
-  padding: 12px 18px;
+  padding: 0.75rem 1.125rem;
   background: var(--ov-bg);
   color: var(--ov-text);
-  font-size: var(--ov-size);
+  font-size: calc(var(--ov-size) * var(--ov-px));
   line-height: 1.25;
   font-weight: 600;
   /* text-align positions the inline-flex stack, so the one align field works in both
      orientations without a second alignment axis to keep in sync. */
   text-align: var(--ov-align);
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+  text-shadow: 0 0.0625rem 0.125rem rgba(0, 0, 0, 0.6);
 }
 
 .stack,
@@ -38,7 +55,7 @@ body {
   display: inline-flex;
   flex-direction: var(--ov-dir);
   align-items: var(--ov-cross);
-  gap: var(--ov-gap);
+  gap: calc(var(--ov-gap) * var(--ov-px));
 }
 
 /* An empty half must leave layout entirely, or the flex gap prints a phantom indent
