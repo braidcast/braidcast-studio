@@ -3,10 +3,12 @@ import type { SceneItem } from "$lib/api/bridge";
 
 // The source-list selection model for ONE source list (a scene's scene items).
 // `SourcesDock` (Default canvas, channel-0 path) drives the exported `sourceSelection`
-// singleton, which the app-level Delete / Ctrl+C / Ctrl+V handlers read; each
-// `CanvasDock` builds its own instance for its per-canvas source list. The model holds
-// a multi-selection set while keeping `item` = the PRIMARY (anchor / last-clicked)
-// member, so single-item readers behave exactly as when only one is selected.
+// singleton; each `CanvasDock` builds its own instance for its per-canvas source list.
+// The app-level Delete / Ctrl+C / Ctrl+V handlers reach whichever of those the user last
+// clicked in through `activeSurface` (activeSurfaceStore.svelte.ts), not this export.
+// The model holds a multi-selection set while keeping `item` = the PRIMARY (anchor /
+// last-clicked) member, so single-item readers behave exactly as when only one is
+// selected.
 export class SourceSelection {
   // The scene the selection belongs to. Reconcile clears the set when this changes,
   // since a selection only makes sense within one scene.

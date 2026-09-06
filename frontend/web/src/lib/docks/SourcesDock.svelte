@@ -11,7 +11,8 @@ import { EV } from "$lib/utils/eventNames";
   import { clipboard } from "$lib/stores/clipboardStore.svelte";
   import { copyItem, pasteReference, pasteDuplicate } from "$lib/stores/clipboardItemState";
   import { sourceSelection } from "$lib/stores/sourceSelectionStore.svelte";
-  import { renameSignal } from "$lib/stores/renameSignalStore.svelte";
+  import { activeSurface } from "$lib/stores/activeSurfaceStore.svelte";
+  import { dockAction } from "$lib/stores/dockActionSignal.svelte";
   import { openFilters } from "$lib/dialogs/filterDialogOpener.svelte";
   import { DockError } from "$lib/docking/dockError.svelte";
   import { RequestGuard } from "$lib/utils/requestGuard";
@@ -27,6 +28,11 @@ import { EV } from "$lib/utils/eventNames";
   import FilterReveal from "$lib/docking/FilterReveal.svelte";
 
   let {}: Record<string, unknown> = $props();
+
+  // Identifies this dock's claim on the active surface. Not the SourceSelection instance:
+  // the Scenes dock drives the same `sourceSelection` singleton, so only a per-component
+  // token can tell the two claims apart.
+  const surfaceOwner = Symbol("SourcesDock");
 
   onMount(() => {
     defaultCanvas.start();
@@ -92,7 +98,10 @@ import { EV } from "$lib/utils/eventNames";
   // Plain click selects just this row; Ctrl/Cmd toggles it in/out of the set; Shift
   // extends from the anchor over the visible (filtered) order. Only a plain click drives
   // the native preview selection — a modifier click is a list-set edit, not a preview pick.
+  // Every branch claims the surface: a modifier click is still the user working here, and
+  // the app-level shortcuts must follow.
   function selectItem(e: MouseEvent, item: SceneItem) {
+    activeSurface.claimSource(surfaceOwner, null, sourceSelection);
     if (e.shiftKey) {
       sourceSelection.range(item, filteredItems);
     } else if (e.ctrlKey || e.metaKey) {
@@ -117,6 +126,7 @@ import { EV } from "$lib/utils/eventNames";
       if (p.canvas == null && (!p.scene || p.scene === currentScene)) {
         const it = items.find((i) => i.id === p.id);
         if (it) {
+          activeSurface.claimSource(surfaceOwner, null, sourceSelection);
           sourceSelection.selectOne(it);
         }
       }
@@ -164,6 +174,7 @@ import { EV } from "$lib/utils/eventNames";
   // stale scene/item after this dock unmounts — but only if the store still points at
   // what we published (another surface may have taken over).
   onDestroy(() => {
+    activeSurface.release(surfaceOwner);
     if (sourceSelection.scene === currentScene) {
       sourceSelection.scene = null;
       sourceSelection.clear();
@@ -185,6 +196,7 @@ import { EV } from "$lib/utils/eventNames";
     void load().then(() => {
       const it = items.find((i) => i.id === created.id);
       if (it) {
+        activeSurface.claimSource(surfaceOwner, null, sourceSelection);
         sourceSelection.selectOne(it);
       }
     });
@@ -300,19 +312,23 @@ import { EV } from "$lib/utils/eventNames";
   }
 
   // App-level F2 (source target): find the signalled row in our list and open its existing
-  // inline editor. Guard by seq so unrelated `items` mutations don't re-trigger a rename.
-  let handledRenameSeq = -1;
+  // inline editor. Consuming the request is what stops an unrelated `items` mutation from
+  // re-triggering the rename, and it is taken only when the row is actually there, so a
+  // request nothing can serve is reported to its sender rather than lingering.
   $effect(() => {
-    const p = renameSignal.pending;
-    const target = p?.target;
-    if (!p || p.seq === handledRenameSeq || target?.kind !== "source") {
+    const p = dockAction.pending;
+    const action = p?.action;
+    if (!p || p.canvas !== null || action?.kind !== "renameSource") {
       return;
     }
-    handledRenameSeq = p.seq;
-    const item = items.find((i) => i.id === target.id);
-    if (item) {
-      beginRename(item);
+    const item = items.find((i) => i.id === action.id);
+    if (!item) {
+      return;
     }
+    if (!dockAction.consume(p.seq)) {
+      return;
+    }
+    beginRename(item);
   });
 
   async function commitRename() {

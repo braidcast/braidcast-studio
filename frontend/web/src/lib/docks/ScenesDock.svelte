@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, onDestroy } from "svelte";
   import { obs, type SceneInfo, type ReorderDirection } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
   import { selectOnMount } from "$lib/utils/focusActions";
@@ -11,7 +11,9 @@ import { EV } from "$lib/utils/eventNames";
   import ListToolbar, { type ToolAction } from "$lib/docking/ListToolbar.svelte";
   import FilterReveal from "$lib/docking/FilterReveal.svelte";
   import { clipboard } from "$lib/stores/clipboardStore.svelte";
-  import { renameSignal } from "$lib/stores/renameSignalStore.svelte";
+  import { dockAction } from "$lib/stores/dockActionSignal.svelte";
+  import { sourceSelection } from "$lib/stores/sourceSelectionStore.svelte";
+  import { activeSurface } from "$lib/stores/activeSurfaceStore.svelte";
   import { openFilters } from "$lib/dialogs/filterDialogOpener.svelte";
   import {
     SceneDragReorder,
@@ -22,6 +24,17 @@ import { EV } from "$lib/utils/eventNames";
 
   // The mount adapter strips internal __* keys; this dock declares no props.
   let {}: Record<string, unknown> = $props();
+
+  // Identifies this dock's claim on the active surface. Not the SourceSelection instance:
+  // this dock drives the shared `sourceSelection` singleton it does not own, so only a
+  // per-component token lets it release a claim the Sources dock may since have taken.
+  const surfaceOwner = Symbol("ScenesDock");
+
+  // Hand the surface back so a Delete after this dock closes cannot address a scene row
+  // whose removal action is no longer mounted to receive it.
+  onDestroy(() => {
+    activeSurface.release(surfaceOwner);
+  });
 
   onMount(() => {
     defaultCanvas.start();
@@ -68,12 +81,17 @@ import { EV } from "$lib/utils/eventNames";
     return { idx, count: defaultCanvas.scenes.length, disabled: filtering, move };
   }
 
+  // Whether Remove can act at all. One predicate behind the toolbar button, the context
+  // menu entry and the claim the app-level Delete reads, so the keyboard cannot offer a
+  // removal the docks' own chrome disables.
+  const canRemoveScene = $derived(defaultCanvas.scenes.length > 1);
+
   const leftActions = $derived<ToolAction[]>([
     { icon: "plus", title: "Add scene", onClick: beginAdd },
     {
       icon: "trash",
       title: "Remove scene",
-      disabled: !currentName || defaultCanvas.scenes.length <= 1,
+      disabled: !currentName || !canRemoveScene,
       onClick: () => currentName && void remove(currentName),
     },
   ]);
@@ -98,8 +116,13 @@ import { EV } from "$lib/utils/eventNames";
     actionError = (e as Error).message;
   }
 
+  // Clicking any scene row hands the app-level shortcuts to the Default surface and
+  // drops the source selection with it — including when the row is already current,
+  // where setCurrent no-ops and nothing downstream would clear a selection the user
+  // can no longer see (Delete would then remove that stale source).
   function setCurrent(name: string) {
     actionError = null;
+    activeSurface.claimScene(surfaceOwner, null, sourceSelection, name, () => canRemoveScene);
     defaultCanvas.setCurrent(name).catch(report);
   }
 
@@ -129,19 +152,45 @@ import { EV } from "$lib/utils/eventNames";
     renameTo = name;
   }
 
-  // App-level F2 (scene target): open the signalled scene's existing inline editor once per
-  // seq, guarding against re-fires from unrelated scene-list mutations.
-  let handledRenameSeq = -1;
+  // App-level F2 / Delete (scene target): run this dock's own beginRename / remove for the
+  // signalled scene. The keyboard is a second caller of these actions, not a second copy:
+  // the last-scene refusal and the undo entry both live in the `scenes.remove` bridge
+  // method, and the error lands in this dock's `actionError` exactly as the menu's Remove
+  // does. Consuming the request is what stops an unrelated scene-list mutation from
+  // re-running it, and it is taken only once the scene is confirmed present, so a request
+  // for a row we cannot serve is reported to its sender instead of vanishing.
   $effect(() => {
-    const p = renameSignal.pending;
-    const target = p?.target;
-    if (!p || p.seq === handledRenameSeq || target?.kind !== "scene") {
+    const p = dockAction.pending;
+    const action = p?.action;
+    if (!p || p.canvas !== null || !action || action.kind === "renameSource") {
       return;
     }
-    handledRenameSeq = p.seq;
-    if (defaultCanvas.scenes.some((s) => s.name === target.name)) {
-      beginRename(target.name);
+    if (!defaultCanvas.scenes.some((s) => s.name === action.name)) {
+      return;
     }
+    if (!dockAction.consume(p.seq)) {
+      return;
+    }
+    switch (action.kind) {
+      case "renameScene":
+        beginRename(action.name);
+        break;
+      case "removeScene":
+        void remove(action.name);
+        break;
+      default:
+        // A new DockAction kind must be handled here explicitly, not fall into a removal.
+        action satisfies never;
+    }
+  });
+
+  // A scene claim must not outlive the row it names, or the next Delete raises a
+  // destructive confirm for a scene that is already gone.
+  $effect(() => {
+    activeSurface.dropStaleSceneClaim(
+      surfaceOwner,
+      defaultCanvas.scenes.map((s) => s.name),
+    );
   });
 
   async function commitRename() {
@@ -267,7 +316,7 @@ import { EV } from "$lib/utils/eventNames";
         { label: "Paste Filters", disabled: !clipboard.filters, action: () => void pasteSceneFilters(name) },
         // Projector entries hidden pending the projector redesign.
         null,
-        { label: "Remove", danger: true, disabled: defaultCanvas.scenes.length <= 1, action: () => void remove(name) },
+        { label: "Remove", danger: true, disabled: !canRemoveScene, action: () => void remove(name) },
       ],
     };
   }
@@ -381,7 +430,7 @@ import { EV } from "$lib/utils/eventNames";
   {/if}
 
   {#if actionError}
-    <p class="dock-msg err">{actionError}</p>
+    <p class="dock-msg err" role="alert">{actionError}</p>
   {/if}
   </div>
 
@@ -450,5 +499,14 @@ import { EV } from "$lib/utils/eventNames";
   }
   .grid-tile.sel :global(.dock-label) {
     color: var(--color-accent);
+  }
+  /* Grid twin of the row focus ring in app.css — see the note there for why the indicator
+     sits on the tile, why it is --color-text rather than the accent, and why :where(). */
+  .grid-tile:where(:has(.dock-label:focus-visible)) {
+    outline: 2px solid var(--color-text);
+    outline-offset: -2px;
+  }
+  .grid-tile .dock-label:focus-visible {
+    outline: none;
   }
 </style>

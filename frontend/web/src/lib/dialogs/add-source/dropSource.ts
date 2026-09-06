@@ -1,5 +1,5 @@
 import { obs } from "$lib/api/bridge";
-import { sourceSelection } from "$lib/stores/sourceSelectionStore.svelte";
+import { activeSurface } from "$lib/stores/activeSurfaceStore.svelte";
 
 // Turns an OS/text drop into a source, reusing the same bridge seams AddSource does:
 // sources.create for the object, properties.set to load the path/url/text into it.
@@ -116,13 +116,18 @@ export async function planText(text: string): Promise<DropPlan | null> {
 // numeric suffix on a name-clash error. Bounded so a genuine failure still surfaces.
 const NAME_CLASH = /already exists/i;
 async function createUnique(type: string, base: string): Promise<{ id: number; source: string }> {
-  // Default-canvas current scene (SourcesDock publishes it); null lets the bridge
-  // resolve the active scene so a drop still lands when no dock owns the selection.
-  const scene = sourceSelection.scene;
+  // The dock the user last worked in owns the drop, so a file dropped while a CanvasDock
+  // is active lands on that canvas rather than silently on the Default one. Scene comes
+  // from the store's own resolver -- the same one App.svelte's shortcuts read -- because
+  // `selection.scene` trails a scene click until the source list reloads, which would drop
+  // the file into the previously current scene. null canvas / null scene lets the bridge
+  // resolve the active scene, so a drop still lands when no dock owns the selection.
+  const canvas = activeSurface.canvas;
+  const scene = activeSurface.scene;
   for (let n = 1; n <= 50; n++) {
     const name = n === 1 ? base : `${base} ${n}`;
     try {
-      return await obs.call("sources.create", { type, name, canvas: null, scene });
+      return await obs.call("sources.create", { type, name, canvas, scene });
     } catch (e) {
       if (n < 50 && NAME_CLASH.test((e as Error).message)) {
         continue;
@@ -133,7 +138,7 @@ async function createUnique(type: string, base: string): Promise<{ id: number; s
   throw new Error("could not find a free source name");
 }
 
-/** Create the planned source in the Default-canvas current scene and load its
+/** Create the planned source in the active surface's current scene and load its
  *  path/url/text via properties.set. Returns the created source name; the bridge
  *  error propagates on failure. */
 export async function createDropped(plan: DropPlan): Promise<string> {

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, onDestroy } from "svelte";
   import {
     obs,
     type SceneInfo,
@@ -23,6 +23,8 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   import { clipboard } from "$lib/stores/clipboardStore.svelte";
   import { copyItem, pasteReference, pasteDuplicate } from "$lib/stores/clipboardItemState";
   import { SourceSelection } from "$lib/stores/sourceSelectionStore.svelte";
+  import { activeSurface } from "$lib/stores/activeSurfaceStore.svelte";
+  import { dockAction } from "$lib/stores/dockActionSignal.svelte";
   import { openFilters } from "$lib/dialogs/filterDialogOpener.svelte";
   import { transformMenu } from "$lib/menus/transformMenu";
   import { scaleFilterMenu } from "$lib/menus/scaleFilterMenu";
@@ -61,6 +63,11 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     canvasName: string;
   }
   let { canvasUuid, canvasName }: Props = $props();
+
+  // Identifies this dock's claim on the active surface. A per-component token rather than
+  // the SourceSelection instance, so a dock that shares a selection with another (the
+  // Default canvas's Scenes + Sources pair) can still release only its own claim.
+  const surfaceOwner = Symbol("CanvasDock");
 
   const dockError = new DockError();
   const report = dockError.report;
@@ -145,6 +152,10 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   let scenes = $state<SceneInfo[]>([]);
   let currentScene = $state<string | null>(null);
   let loaded = $state(false);
+  // Whether Remove can act at all. One predicate behind the toolbar button, the context
+  // menu entry and the claim the app-level Delete reads, so the keyboard cannot offer a
+  // removal this dock's own chrome disables.
+  let canRemoveScene = $derived(scenes.length > 1);
 
   async function loadScenes() {
     try {
@@ -158,7 +169,11 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
       loaded = true;
     }
   }
+  // Claim before the unchanged-scene bail: clicking a row that is already current still
+  // hands this canvas the app-level shortcuts, and still drops the source selection that
+  // nothing else would clear (Delete would otherwise remove that stale source).
   function setCurrentScene(name: string) {
+    activeSurface.claimScene(surfaceOwner, canvasUuid, selection, name, () => canRemoveScene);
     if (name === currentScene) {
       return;
     }
@@ -392,7 +407,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
         { label: "Copy Filters", action: () => void copySceneFilters(name) },
         { label: "Paste Filters", disabled: !clipboard.filters, action: () => void pasteSceneFilters(name) },
         null,
-        { label: "Remove", danger: true, disabled: scenes.length <= 1, action: () => removeScene(name) },
+        { label: "Remove", danger: true, disabled: !canRemoveScene, action: () => removeScene(name) },
       ],
     };
   }
@@ -441,6 +456,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   // extends from the anchor over the visible (filtered) order. Only a plain click drives
   // the native preview selection — a modifier click is a list-set edit.
   function selectItem(e: MouseEvent, item: SceneItem) {
+    activeSurface.claimSource(surfaceOwner, canvasUuid, selection);
     if (e.shiftKey) {
       selection.range(item, filteredItems);
     } else if (e.ctrlKey || e.metaKey) {
@@ -570,6 +586,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     void loadItems().then(() => {
       const it = items.find((i) => i.id === created.id);
       if (it) {
+        activeSurface.claimSource(surfaceOwner, canvasUuid, selection);
         selection.selectOne(it);
       }
     });
@@ -945,7 +962,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     {
       icon: "trash",
       title: "Delete scene",
-      disabled: !currentScene || scenes.length <= 1,
+      disabled: !currentScene || !canRemoveScene,
       onClick: () => currentScene && removeScene(currentScene),
     },
   ]);
@@ -1055,6 +1072,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
       if (p.canvas === canvasUuid && (!p.scene || p.scene === currentScene)) {
         const it = items.find((i) => i.id === p.id);
         if (it) {
+          activeSurface.claimSource(surfaceOwner, canvasUuid, selection);
           selection.selectOne(it);
         }
       }
@@ -1107,6 +1125,66 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   // Keep the per-canvas selection fresh against the latest list; clears on scene change.
   $effect(() => {
     selection.reconcile(currentScene, items);
+  });
+
+  // Hand the surface back so the app-level shortcuts stop addressing a canvas that is no
+  // longer mounted — only when the store still points at ours (another dock may have
+  // claimed it since).
+  onDestroy(() => {
+    activeSurface.release(surfaceOwner);
+  });
+
+  // App-level F2 / Delete, addressed by canvas because scene-item ids are per-scene
+  // counters and scene names are per-canvas, so a row from another surface's list can name
+  // a different row in ours. All three actions land here: this dock owns its scene rows as
+  // well as its source rows, and each branch calls the same function the dock's own
+  // toolbar/context menu calls, so the keyboard inherits its error surface, its undo entry
+  // and the bridge's last-scene refusal rather than re-deriving them. Each branch consumes
+  // the request only once its row is confirmed present, so one nothing can serve is
+  // reported to its sender rather than left to replay on a later mount.
+  $effect(() => {
+    const p = dockAction.pending;
+    const action = p?.action;
+    if (!p || p.canvas !== canvasUuid || !action) {
+      return;
+    }
+    if (action.kind === "renameSource") {
+      const item = items.find((i) => i.id === action.id);
+      if (!item) {
+        return;
+      }
+      if (!dockAction.consume(p.seq)) {
+        return;
+      }
+      beginRenameSource(item);
+      return;
+    }
+    if (!scenes.some((sc) => sc.name === action.name)) {
+      return;
+    }
+    if (!dockAction.consume(p.seq)) {
+      return;
+    }
+    switch (action.kind) {
+      case "renameScene":
+        beginRenameScene(action.name);
+        break;
+      case "removeScene":
+        removeScene(action.name);
+        break;
+      default:
+        // A new DockAction kind must be handled here explicitly, not fall into a removal.
+        action satisfies never;
+    }
+  });
+
+  // A scene claim must not outlive the row it names, or the next Delete raises a
+  // destructive confirm for a scene that is already gone.
+  $effect(() => {
+    activeSurface.dropStaleSceneClaim(
+      surfaceOwner,
+      scenes.map((sc) => sc.name),
+    );
   });
 
   // Hide our overlay while a modal suspends previews; re-assert on clear. The still is
@@ -1575,6 +1653,15 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   .es-row.hidden-src .es-label {
     color: var(--color-muted);
     text-decoration: line-through;
+  }
+  /* Twin of the .dock-row focus ring in app.css — see the note there for why the indicator
+     sits on the row, why it is --color-text rather than the accent, and why :where(). */
+  .es-row:where(:has(.es-label:focus-visible)) {
+    outline: 2px solid var(--color-text);
+    outline-offset: -2px;
+  }
+  .es-row .es-label:focus-visible {
+    outline: none;
   }
   .link-badge {
     flex: 0 0 auto;

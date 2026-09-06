@@ -488,6 +488,34 @@ input[type="color"] {
   white-space: nowrap;
   cursor: pointer;
 }
+/* The label button IS the row's text (flex:1, no box of its own), so the UA focus ring
+   draws around the glyph line and reads as damage rather than as focus. Hoist the indicator
+   onto the row instead -- the button keeps its semantics and its place in the tab order,
+   only where the ring paints moves.
+
+   --color-text, not --color-accent: the accent fails SC 1.4.11's 3:1 against the light
+   palette (amber #e7a338 on #f7f7f8 is 2.02:1, and 1.87:1 on a selected row's 12% wash),
+   and it already means "selected" on these rows. --color-text is the body-text token, so it
+   contrasts with every ground the app prints text on. Worst case over every preset in
+   presets.ts x five accents x {plain row, 12% left-bar, 22% fill} x {surface, base}:
+   6.31:1, at INDUSTRIAL's neutrals with the amber accent on a 22% fill wash over
+   --color-surface. selectionStyle is its own token in Appearance, so that pairing is
+   reachable even though INDUSTRIAL itself ships left-bar (7.85:1 there). It also tells
+   focus apart from selection.
+
+   2px meets the focus-appearance thickness; the negative offset keeps the ring inside the
+   row's own border so it never overlaps the neighbouring row. :where() holds the rule at
+   one class of specificity so the drag-and-drop indicator, which shares the outline
+   property, still wins on a row that also has focus. */
+/* Scoped to .dock-row so a .dock-label used outside one keeps the UA ring rather than
+   losing it with no replacement. */
+.dock-row:where(:has(.dock-label:focus-visible)) {
+  outline: 2px solid var(--color-text);
+  outline-offset: -2px;
+}
+.dock-row .dock-label:focus-visible {
+  outline: none;
+}
 .dock-actions {
   display: none;
   gap: 2px;

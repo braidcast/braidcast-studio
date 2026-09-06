@@ -36,12 +36,12 @@
   import { undoStore } from "$lib/stores/undoStore.svelte";
   import { channelsStore } from "$lib/stores/channelsStore.svelte";
   import { diagnosticsStore } from "$lib/stores/diagnosticsStore.svelte";
-  import { obs, type TransformAction, type ReorderDirection } from "$lib/api/bridge";
+  import { obs, type SceneItem, type TransformAction, type ReorderDirection, type TransformTarget } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
   import { clipboard } from "$lib/stores/clipboardStore.svelte";
   import { copyItem, pasteReference } from "$lib/stores/clipboardItemState";
-  import { sourceSelection } from "$lib/stores/sourceSelectionStore.svelte";
-  import { renameSignal } from "$lib/stores/renameSignalStore.svelte";
+  import { activeSurface } from "$lib/stores/activeSurfaceStore.svelte";
+  import { dockAction } from "$lib/stores/dockActionSignal.svelte";
   import Toast from "$lib/ui/Toast.svelte";
   import { showToast } from "$lib/stores/toastStore.svelte";
   import { callOrToast } from "$lib/utils/callToast";
@@ -63,22 +63,91 @@ import { EV } from "$lib/utils/eventNames";
   const viewClip = $derived(polygon([...offsetRight(railSeam(seamStore.ym), SEAM.G), ...notchTail]));
   const linerClip = $derived(polygon([...offsetRight(railSeam(seamStore.ym), SEAM.G - SEAM.LINE), ...notchTail]));
 
+  // Every shortcut below addresses the dock the user last clicked in, not the Default
+  // canvas: `activeSurface` carries that dock's canvas alongside its selection model, so
+  // the row and the canvas it is addressed through can never come from two different
+  // surfaces. Which canvas and which scene are BOTH resolved by the store (see its `scene`
+  // getter, shared with the drop path in dropSource.ts); the helpers below only shape that
+  // pair into the bridge's param object, so no call site here can address a row while
+  // omitting its canvas.
+  function activeParams(): { canvas?: string; scene?: string } {
+    return { canvas: activeSurface.canvasParam, scene: activeSurface.scene ?? undefined };
+  }
+
+  function activeItem(): { item: SceneItem; target: TransformTarget } | null {
+    const item = activeSurface.selection.item;
+    return item ? { item, target: { ...activeParams(), id: item.id } } : null;
+  }
+
+  // For the shortcuts that address a scene rather than a row (paste, scene rename).
+  function activeScene(): { canvas?: string; scene: string } | null {
+    const p = activeParams();
+    return p.scene ? { canvas: p.canvas, scene: p.scene } : null;
+  }
+
+  // The one modal-confirm slot the app-level shortcuts and the drop flow share. An occupied
+  // slot is never overwritten: a confirm that mutated into a different question under the
+  // user would take an answer meant for the first one, and would discard that one's commit
+  // and close handlers unrun. Returns whether the dialog was opened.
+  let confirmDialog = $state<DialogSpec | null>(null);
+  function openDialog(spec: DialogSpec): boolean {
+    if (confirmDialog) {
+      return false;
+    }
+    confirmDialog = spec;
+    return true;
+  }
+
+  // Delete on a scene row. Removal itself stays in the owning dock — dockAction pokes the
+  // same remove() its toolbar and context menu call, so the error surface, the undo entry
+  // and the bridge's last-scene refusal are inherited rather than re-derived. Only the
+  // confirm is added here: the menu's Remove is a deliberate two-step act, while a single
+  // keystroke that destroys a scene and everything in it must ask. The dock's own
+  // "can Remove act at all" answer short-circuits ahead of the confirm, so the last scene
+  // says so instead of asking a destructive question it would then fail to carry out.
+  function removeActiveScene(e: KeyboardEvent): void {
+    const s = activeScene();
+    // The confirmDialog half is belt-and-braces: Modal suspends the preview while it
+    // stands, and the Delete branch is already gated on the preview being live.
+    if (!s || confirmDialog) {
+      return;
+    }
+    e.preventDefault();
+    if (!activeSurface.canRemoveScene) {
+      showToast("Cannot remove the last scene", s.scene, { assertive: true });
+      return;
+    }
+    const canvas = activeSurface.canvas;
+    openDialog({
+      kind: "confirm",
+      title: "Remove Scene",
+      message: `Remove "${s.scene}" and everything in it? This can be undone.`,
+      confirmLabel: "Remove",
+      onCommit: () => void commitRemoveScene(canvas, s.scene),
+    });
+  }
+
+  // The confirmed removal. The dock that owns the scene performs it; if none took the
+  // request — its dock was closed while the confirm stood, or the scene went away under it
+  // — say so, because the user answered a destructive question and is owed the outcome.
+  async function commitRemoveScene(canvas: string | null, name: string): Promise<void> {
+    if (!(await dockAction.request(canvas, { kind: "removeScene", name }))) {
+      showToast(`Could not remove "${name}" — it is no longer listed`, name, { assertive: true });
+    }
+  }
+
   // Quick transform verbs (reset/fit/stretch/center) all shape the same bridge call
-  // against the globally-selected scene item — mirrors the calls transformMenu.ts's
+  // against the active surface's selected scene item — mirrors the calls transformMenu.ts's
   // "Transform" submenu makes via sceneItems.transformAction. No-op, no preventDefault,
   // when nothing is selected, so e.g. Ctrl+F still falls through to nothing rather than
   // eating the keystroke.
   function quickTransform(e: KeyboardEvent, action: TransformAction, errPrefix: string): void {
-    const it = sourceSelection.item;
-    if (!it) {
+    const t = activeItem();
+    if (!t) {
       return;
     }
     e.preventDefault();
-    void callOrToast(
-      "sceneItems.transformAction",
-      { scene: sourceSelection.scene ?? undefined, id: it.id, action },
-      errPrefix,
-    );
+    void callOrToast("sceneItems.transformAction", { ...t.target, action }, errPrefix);
   }
 
   // Arrow-key nudge (mirrors stock OBS: 1px, 10px with Shift). Reads the item's
@@ -87,11 +156,11 @@ import { EV } from "$lib/utils/eventNames";
   // is in canvas pixels, y growing downward, matching the preview and the Edit
   // Transform dialog.
   async function nudge(dx: number, dy: number): Promise<void> {
-    const it = sourceSelection.item;
-    if (!it) {
+    const t = activeItem();
+    if (!t) {
       return;
     }
-    const params = { scene: sourceSelection.scene ?? undefined, id: it.id };
+    const params = t.target;
     const xf = await callOrToast("sceneItems.getTransform", params, "Nudge failed");
     if (!xf) {
       return;
@@ -126,49 +195,57 @@ import { EV } from "$lib/utils/eventNames";
       void obs.call("window.toggleFullscreen").catch(() => {});
       return;
     }
-    // Arrow-key nudge of the globally-selected scene item on the preview. Leaves
+    // Arrow-key nudge of the active surface's selected scene item on its preview. Leaves
     // Ctrl/Alt+Arrow, editable targets, and modal-open (arrows belong to the
     // dialog) alone; no-ops (without preventDefault) when nothing is selected so
     // e.g. list navigation still gets the arrow.
     const arrowDelta = ARROW_DELTAS[e.key];
     if (arrowDelta && !e.ctrlKey && !e.altKey && !isEditable(e.target) && !previewSuspended()) {
-      if (sourceSelection.item) {
+      if (activeSurface.selection.item) {
         e.preventDefault();
         const step = e.shiftKey ? 10 : 1;
         void nudge(arrowDelta[0] * step, arrowDelta[1] * step);
       }
       return;
     }
-    // Delete removes the globally-selected scene item via the same bridge path the
-    // SourcesDock "Remove" toolbar/context-menu uses (server-side undoable). Gated like the
-    // nudge above; no-op (no preventDefault) when nothing is selected so the key falls
-    // through. Scene-ITEM removal only — a bare Delete nuking a whole scene needs focus
-    // context we don't have here and is an accidental-nuke hazard, so scene-Del is out of scope.
+    // Delete removes whatever the active surface last claimed — a scene row or the selected
+    // scene item(s) — via the same bridge path that surface's own "Remove" uses (server-side
+    // undoable). Gated like the nudge above, and the !isEditable gate wraps BOTH branches so
+    // an in-flight inline rename keeps the key for its text. No-op (no preventDefault) when
+    // there is nothing to remove, so the key falls through.
     if (e.key === "Delete" && !e.ctrlKey && !e.altKey && !isEditable(e.target) && !previewSuspended()) {
+      if (activeSurface.kind === "scene") {
+        removeActiveScene(e);
+        return;
+      }
       // Batch remove: one existing single-item remove per selected id (each independently
       // undoable). Snapshot the ids — the removals shrink the set mid-loop. A single
       // selection removes exactly one, unchanged from before.
-      const ids = [...sourceSelection.ids];
+      const params = activeParams();
+      const ids = [...activeSurface.selection.ids];
       if (ids.length > 0) {
         e.preventDefault();
         for (const id of ids) {
-          void callOrToast("sceneItems.remove", { scene: sourceSelection.scene ?? undefined, id }, "Remove failed");
+          void callOrToast("sceneItems.remove", { ...params, id }, "Remove failed");
         }
       }
       return;
     }
     // F2 starts inline rename of the current selection, reusing the docks' existing
-    // beginRename via renameSignal (no rename editor/bridge here). A selected source item
-    // wins; otherwise the active scene. Gated like the nudge/Delete siblings; no-op (no
-    // preventDefault) when nothing is selected so the key falls through.
+    // beginRename via dockAction (no rename editor/bridge here). A selected source item
+    // wins; otherwise the active surface's scene. Gated like the nudge/Delete siblings;
+    // no-op (no preventDefault) when nothing is selected so the key falls through.
     if (e.key === "F2" && !e.ctrlKey && !e.altKey && !isEditable(e.target) && !previewSuspended()) {
-      const it = sourceSelection.item;
-      if (it) {
+      // The surface's kind, not merely "is a row selected", decides which editor opens:
+      // a scene-row click is a scene target even if a row somehow stayed selected.
+      const t = activeSurface.kind === "source" ? activeItem() : null;
+      const s = t ? null : activeScene();
+      if (t) {
         e.preventDefault();
-        renameSignal.request({ kind: "source", id: it.id });
-      } else if (sourceSelection.scene) {
+        void dockAction.request(activeSurface.canvas, { kind: "renameSource", id: t.item.id });
+      } else if (s) {
         e.preventDefault();
-        renameSignal.request({ kind: "scene", name: sourceSelection.scene });
+        void dockAction.request(activeSurface.canvas, { kind: "renameScene", name: s.scene });
       }
       return;
     }
@@ -181,14 +258,10 @@ import { EV } from "$lib/utils/eventNames";
     // at the ends. No-op (no preventDefault) when nothing is selected.
     const orderDir = ORDER_DIRECTIONS[e.key];
     if (orderDir) {
-      const it = sourceSelection.item;
-      if (it) {
+      const t = activeItem();
+      if (t) {
         e.preventDefault();
-        void callOrToast(
-          "sceneItems.reorder",
-          { scene: sourceSelection.scene ?? undefined, id: it.id, direction: orderDir },
-          "Reorder failed",
-        );
+        void callOrToast("sceneItems.reorder", { ...t.target, direction: orderDir }, "Reorder failed");
       }
       return;
     }
@@ -200,45 +273,40 @@ import { EV } from "$lib/utils/eventNames";
       e.preventDefault();
       undoStore.redo();
     } else if (key === "c" && !e.shiftKey) {
-      // Copy the globally-selected source, carrying its full item state (§1.7).
-      const it = sourceSelection.item;
-      if (it?.source) {
+      // Copy the active surface's selected source, carrying its full item state (§1.7).
+      const t = activeItem();
+      if (t?.item.source) {
         e.preventDefault();
-        void copyItem({ scene: sourceSelection.scene, id: it.id }, it);
+        void copyItem(t.target, t.item);
       }
     } else if (key === "v" && !e.shiftKey) {
-      // Paste a reference of the copied source into the global current scene, then
-      // re-apply the carried item state (transform/blend/color/visibility/scale).
-      if (clipboard.source && sourceSelection.scene) {
+      // Paste a reference of the copied source into the active surface's current scene,
+      // then re-apply the carried item state (transform/blend/color/visibility/scale).
+      const s = activeScene();
+      if (clipboard.source && s) {
         e.preventDefault();
-        void pasteReference({ scene: sourceSelection.scene }).catch((err) =>
-          showToast("Paste failed: " + (err as Error).message, "paste"),
-        );
+        void pasteReference(s).catch((err) => showToast("Paste failed: " + (err as Error).message, "paste"));
       }
     } else if (key === "c" && e.shiftKey) {
-      // Copy the transform of the globally-selected scene item (mirrors the
-      // "Copy Transform" context-menu action / clipboard.transform in SourcesDock).
-      const it = sourceSelection.item;
-      if (it) {
+      // Copy the transform of the active surface's selected scene item (mirrors the
+      // "Copy Transform" context-menu action / clipboard.transform in the docks).
+      const t = activeItem();
+      if (t) {
         e.preventDefault();
-        void callOrToast(
-          "sceneItems.getTransform",
-          { scene: sourceSelection.scene ?? undefined, id: it.id },
-          "Copy transform failed",
-        ).then((t) => {
-          if (t) {
-            clipboard.transform = t;
+        void callOrToast("sceneItems.getTransform", t.target, "Copy transform failed").then((xf) => {
+          if (xf) {
+            clipboard.transform = xf;
           }
         });
       }
     } else if (key === "v" && e.shiftKey) {
-      // Paste the copied transform onto the globally-selected scene item.
-      const it = sourceSelection.item;
-      if (it && clipboard.transform) {
+      // Paste the copied transform onto the active surface's selected scene item.
+      const t = activeItem();
+      if (t && clipboard.transform) {
         e.preventDefault();
         void callOrToast(
           "sceneItems.setTransform",
-          { scene: sourceSelection.scene ?? undefined, id: it.id, transform: clipboard.transform },
+          { ...t.target, transform: clipboard.transform },
           "Paste transform failed",
         );
       }
@@ -252,10 +320,10 @@ import { EV } from "$lib/utils/eventNames";
     } else if (key === "e") {
       // Edit transform: open the same numeric dialog the context menu's
       // "Edit Transform" item opens.
-      const it = sourceSelection.item;
-      if (it) {
+      const t = activeItem();
+      if (t) {
         e.preventDefault();
-        openTransform({ scene: sourceSelection.scene, id: it.id }, it.source ?? "(unnamed)");
+        openTransform(t.target, t.item.source ?? "(unnamed)");
       }
     } else if (key === "r") {
       quickTransform(e, "reset", "Reset transform failed");
@@ -288,9 +356,9 @@ import { EV } from "$lib/utils/eventNames";
   let internalDrag = false;
 
   // §1.6 parity: a drop becomes a source. Files -> image/media, a URL/.html ->
-  // browser (after a confirm), other text -> a text source. dataTransfer is only
-  // live during dispatch, so read every field synchronously before any await.
-  let dropConfirm = $state<DialogSpec | null>(null);
+  // browser (after a confirm, through the shared confirmDialog slot above), other text ->
+  // a text source. dataTransfer is only live during dispatch, so read every field
+  // synchronously before any await.
 
   // A file input and an editable field both handle a drop themselves. Cancelling the
   // default here would leave the field empty AND turn the drop into a source, so those
@@ -337,13 +405,16 @@ import { EV } from "$lib/utils/eventNames";
 
   async function runDrop(plan: DropPlan): Promise<void> {
     if (plan.confirm) {
-      dropConfirm = {
+      const opened = openDialog({
         kind: "confirm",
         title: "Add Source",
         message: plan.confirm,
         confirmLabel: "Create",
         onCommit: () => void createDroppedSource(plan),
-      };
+      });
+      if (!opened) {
+        showToast("Finish the open dialog before adding this source", plan.name, { assertive: true });
+      }
       return;
     }
     await createDroppedSource(plan);
@@ -467,8 +538,8 @@ import { EV } from "$lib/utils/eventNames";
   <GoLiveModal />
 {/if}
 
-{#if dropConfirm}
-  <CollectionDialog {...dropConfirm} onClose={() => (dropConfirm = null)} />
+{#if confirmDialog}
+  <CollectionDialog {...confirmDialog} onClose={() => (confirmDialog = null)} />
 {/if}
 
 <Toast />
