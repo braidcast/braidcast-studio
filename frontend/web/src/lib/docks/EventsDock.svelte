@@ -4,11 +4,13 @@
   import { callOrToast } from "$lib/utils/callToast";
   import { PLATFORM_COLORS, EVENT_TYPE_COLORS, EVENT_TYPE_LABELS } from "$lib/theme/platformColors";
   import { FeedVirtualizer, type FeedRow } from "$lib/utils/feedVirtualizer.svelte";
+  import { tickWhileVisible } from "$lib/utils/tickWhileVisible";
   import EmptyState from "$lib/ui/EmptyState.svelte";
   import Icon from "$lib/ui/Icon.svelte";
   import Avatar from "$lib/ui/Avatar.svelte";
   import PlatformMark from "$lib/ui/PlatformMark.svelte";
   import CanvasMark from "$lib/ui/CanvasMark.svelte";
+  import FeedTime from "$lib/ui/FeedTime.svelte";
   import DestinationChips, { type DestinationChipStatus } from "$lib/ui/DestinationChips.svelte";
   import { EVENTS_STATE_NOTE, eventsTransportFor } from "$lib/ui/destinationHealth";
   import {
@@ -275,7 +277,7 @@
   </svg>
 {/snippet}
 
-<div class="events">
+<div class="events" use:tickWhileVisible>
   {#if destinations.length + unarmedPlatforms.length > 0}
     <div class="bar">
       <DestinationChips
@@ -307,39 +309,46 @@
           {@const actorColor = e.actorColor || PLATFORM_COLOR[e.platform] || "var(--color-muted)"}
           {@const accent = TYPE_COLOR[e.type] ?? "var(--color-muted)"}
           <div class="row selectable" style:top={row.top + "px"} use:measureRow={row.clientKey}>
-            <div class="line">
-              <span class="pmark"><PlatformMark platform={e.platform} size={12} /></span>
-              <span class="icon" style:color={accent} title={TYPE_LABEL[e.type] ?? e.type}
-                >{@render typeIcon(e.type)}</span
-              >
-              <span class="actor" style:color={actorColor}>{e.actorName}</span>
-              <span class="sum">{summary(e)}</span>
-            </div>
-            {#if e.message}<span class="msg">{e.message}</span>{/if}
-            {#if multiOrigin}
-              {@const o = attribute(e, destByAccount)}
-              <!-- "none" means nothing is known about the origin at all: ABSENT_LABEL is
-                   documented as an absence it must not guess at, so the row renders
-                   nothing rather than a pair of dashes standing in for content. -->
-              {#if o.fidelity !== "none"}
-                <div class="origin" title={FIDELITY_HINT[o.fidelity]}>
-                  <Avatar url={o.avatarUrl} name={o.channel} size={14} />
-                  <span class="ochannel">{o.channel}</span>
-                  <span class="osep" aria-hidden="true">›</span>
-                  {#if o.named}
-                    <CanvasMark
-                      number={o.canvasNumber}
-                      name={o.canvasLabel}
-                      width={o.canvasWidth}
-                      height={o.canvasHeight}
-                      size={14}
-                    />
-                  {:else}
-                    <span class="ocanvas state">{o.canvasLabel}</span>
-                  {/if}
-                </div>
+            <!-- FeedTime as a sibling of .body rather than an item inside .line --
+                 nesting it there would push .msg's hand-summed 31px indent to
+                 calc(31px + 5ch + 6px) and leave .origin, which has no indent,
+                 hanging to the left of the time column. -->
+            <FeedTime ts={e.ts} />
+            <div class="body">
+              <div class="line">
+                <span class="pmark"><PlatformMark platform={e.platform} size={12} /></span>
+                <span class="icon" style:color={accent} title={TYPE_LABEL[e.type] ?? e.type}
+                  >{@render typeIcon(e.type)}</span
+                >
+                <span class="actor" style:color={actorColor}>{e.actorName}</span>
+                <span class="sum">{summary(e)}</span>
+              </div>
+              {#if e.message}<span class="msg">{e.message}</span>{/if}
+              {#if multiOrigin}
+                {@const o = attribute(e, destByAccount)}
+                <!-- "none" means nothing is known about the origin at all: ABSENT_LABEL is
+                     documented as an absence it must not guess at, so the row renders
+                     nothing rather than a pair of dashes standing in for content. -->
+                {#if o.fidelity !== "none"}
+                  <div class="origin" title={FIDELITY_HINT[o.fidelity]}>
+                    <Avatar url={o.avatarUrl} name={o.channel} size={14} />
+                    <span class="ochannel">{o.channel}</span>
+                    <span class="osep" aria-hidden="true">›</span>
+                    {#if o.named}
+                      <CanvasMark
+                        number={o.canvasNumber}
+                        name={o.canvasLabel}
+                        width={o.canvasWidth}
+                        height={o.canvasHeight}
+                        size={14}
+                      />
+                    {:else}
+                      <span class="ocanvas state">{o.canvasLabel}</span>
+                    {/if}
+                  </div>
+                {/if}
               {/if}
-            {/if}
+            </div>
           </div>
         {/each}
       </div>
@@ -396,10 +405,17 @@
     position: absolute;
     left: 0;
     right: 0;
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
     padding: 4px 10px;
     font-size: 12px;
     line-height: 1.5;
     color: var(--color-text);
+  }
+  .body {
+    flex: 1 1 auto;
+    min-width: 0;
   }
   .line {
     display: flex;
