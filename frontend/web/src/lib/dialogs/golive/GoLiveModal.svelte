@@ -129,6 +129,24 @@ import { EV } from "$lib/utils/eventNames";
   // What a metadata push that reported nothing is called, on the card strip and in the
   // toast's per-destination lines alike.
   const PUSH_FAILED = "metadata push failed";
+  // And what a local save that reported nothing is called, on the same card strip.
+  const SAVE_FAILED = "couldn't be saved on this machine";
+
+  // ONE reading of a BridgeError for the user, wherever this dialog names a failure: the
+  // decoded sentence written for a streamer where the host sent one, otherwise `message`,
+  // which prefixes the method/step chain that named the failing call. An EMPTY reading is
+  // the absent-reason case, which each caller falls back for itself -- the card strip
+  // substitutes a noun for it, the toast helper keeps the empty string.
+  function streamerReason(e: BridgeError | undefined): string {
+    return e?.userMessage ?? e?.message ?? "";
+  }
+
+  // And ONE naming of a destination in copy the user reads: the platform where the channel
+  // resolved to one, otherwise the profile's own label, otherwise a neutral noun. Never the
+  // accountId -- an unresolved provider must not put a raw id in a sentence.
+  function destinationName(provider: OAuthProvider | null, label: string | undefined): string {
+    return provider?.displayName || label || "this platform";
+  }
 
   // And for a channel count, so the footer's two channel clauses agree.
   function channelsLabel(n: number): string {
@@ -802,17 +820,26 @@ import { EV } from "$lib/utils/eventNames";
   // relink, count ready vs. need-reconnect instead so the strips are accounted for. Falls
   // back to a key-only line when no account-linked channels are armed.
   const footerNote = $derived.by<string>(() => {
+    // Why the footer's Save is withheld, appended to whichever count line applies rather
+    // than given a surface of its own. With an entry staged, the metadata on screen is
+    // the entry's and goes back when the staging does, so persisting it would make one
+    // broadcast's plan the account's standing default. Only ever reached in Go Live mode,
+    // which is where the banner that stages one is offered.
+    const withStaged = (note: string): string =>
+      routingStaged ? `${note} · Save off while a schedule is staged` : note;
     if (armedChannels.length === 0) {
-      return armedProfileCount > 0
-        ? `${destinationsLabel(armedProfileCount)} via stream key`
-        : "No destinations armed.";
+      return withStaged(
+        armedProfileCount > 0
+          ? `${destinationsLabel(armedProfileCount)} via stream key`
+          : "No destinations armed.",
+      );
     }
     const streams = streamsLabel(channelStreamCount);
     if (reconnectChannels.length > 0) {
       const ready = `${armedConnectedChannels.length} ready`;
-      return `${ready} · ${streams} · ${reconnectChannels.length} need reconnect`;
+      return withStaged(`${ready} · ${streams} · ${reconnectChannels.length} need reconnect`);
     }
-    return `${channelsLabel(armedChannels.length)} · ${streams} · all ready`;
+    return withStaged(`${channelsLabel(armedChannels.length)} · ${streams} · all ready`);
   });
 
   // The live primary's label states a count, and some of what it counts has no card in
@@ -858,7 +885,13 @@ import { EV } from "$lib/utils/eventNames";
   // applies through and what the broadcast's stop edge reverts. All this modal keeps is
   // whether a stage of its own is outstanding -- the records that make a restore
   // possible live where they outlive this component.
-  let routingStaged = false;
+  //
+  // Reactive because the footer reads it: it is the flag that withholds Save, and the one
+  // that fits that window. Set the instant the stage lands, two statements before
+  // `appliedSetup` exists and before the loop that writes the entry's metadata into the
+  // bags, so it can never read false while those values are on screen -- which is what
+  // Save has to be refused across.
+  let routingStaged = $state(false);
   // The metadata half stays modal-local, because these bags never leave the component
   // until confirm() pushes them. Held so the paths where the entry never airs -- a
   // staging that fails part way, a modal the user backs out of -- put back what they
@@ -1151,14 +1184,19 @@ import { EV } from "$lib/utils/eventNames";
         );
       }
     }
-    // Only while Remember is on: with it off nothing is being saved, so a sentence about
-    // what the save leaves out would describe an action that is not happening.
-    if (remember && presetCollection.conflicts.length > 0) {
+    // Only where a save can actually happen: with Remember off and no Save button in
+    // reach, nothing is being saved and a sentence about what the save leaves out would
+    // describe an action that is not happening. Go Live mode always has that button, so
+    // the toggle alone no longer settles it there.
+    if ((remember || goLiveModal.mode === "golive") && presetCollection.conflicts.length > 0) {
       const labels = presetCollection.conflicts;
+      // Subject is the act, not the switch: this sentence is now also reached with Remember
+      // off, where the save it warns about is the footer's Save and naming the toggle would
+      // read as a restatement of the state the user just chose.
       parts.push(
-        `Remember won't save ${joinNames(labels)} — your destinations hold different ${
+        `Saving won't keep ${joinNames(labels)} — your destinations hold different ${
           labels.length === 1 ? "values for it" : "values for them"
-        }, and saved info keeps one per field. Everything else is saved.`,
+        }, and only one value per field can be kept. A save keeps the rest of what they agree on.`,
       );
     }
     return parts.join(" ");
@@ -1473,6 +1511,172 @@ import { EV } from "$lib/utils/eventNames";
     };
   });
 
+  // Remember these details for next time — best-effort, fired without awaiting so a
+  // slow or failing save never blocks the caller. Armed channels only: a disarmed
+  // channel's fields were locked this session, so its bags hold only the prefill
+  // echo — persisting that would overwrite remembered values the user never touched.
+  // One save per channel with its raw layers: the channel bag plus the channel's
+  // COMPLETE stream set. A stream with its override switch on carries its whole bag;
+  // one with the switch off carries only its per-destination address, so the store
+  // clears the divergences toggled off this session (they would otherwise resurrect
+  // and re-apply on the next go-live) WITHOUT unaddressing the stream. An empty result
+  // clears the entry outright, which is what a channel with no addressing wants.
+  //
+  // Two stores, and both callers feed BOTH. streamMeta.save keeps remembering each
+  // channel's own defaults for the next go-live exactly as it always has; the preset is
+  // additionally a named sheet the user re-applies by hand from the picker above. Neither
+  // replaces the other -- dropping the save would change what the next go-live prefills,
+  // dropping the preset would leave the picker with nothing to offer. The two do not
+  // always run together: the save runs for every armed channel, while the preset is
+  // skipped when this dialog states nothing of the user's own (see carriesIntent).
+  //
+  // The preset SHEET is handed in rather than read off the derivation: the go-live caller
+  // has awaited its platform pushes by the time it gets here, and every landed
+  // streamMeta.set emits streamMeta.changed, whose prefill() re-derives the values the
+  // sheet was collected from. The channel half below still reads the layers live, which is
+  // sound only because a prefill round-trip cannot resolve inside the gap.
+  //
+  // Resolves once BOTH writes have settled, to every armed channel whose remembered
+  // defaults did not land (accountId -> the reason, for the card strip). Empty means the
+  // details are on disk. A preset row that failed is warned about and not reported here:
+  // it is a convenience sheet the user re-applies by hand, and losing it costs none of the
+  // values, which the channel defaults above are what prefill the next go-live from.
+  // Never rejects; a synchronous throw out of the layer getters still propagates, as it
+  // did when this ran inline.
+  function persistDetails(
+    collected: typeof presetCollection,
+    sources: typeof presetSources,
+  ): Promise<Map<string, string>> {
+    const sheet = collected.sheet;
+    // A sheet of nothing but descriptor defaults would upsert onto itself forever under
+    // one "Untitled" row, costing a slot out of a small budget for a preset that states
+    // nothing to re-apply.
+    const preset = carriesIntent(sheet, sources)
+      ? streamInfoPresetStore.remember(sheet).catch(() => {
+          console.warn("streamInfoPresets.remember: these details were not saved as a preset");
+        })
+      : Promise.resolve();
+    // Kept beside its promise so a rejection can be attributed to the channel it belongs
+    // to; allSettled alone gives back only positions.
+    const targets = armedConnectedChannels.map((c) => {
+      const streams: Record<string, Record<string, unknown>> = {};
+      for (const s of c.streams) {
+        const ov = streamOverrides[s.profileUuid] ?? {};
+        streams[s.profileUuid] = streamOverrideOn[s.profileUuid] ? ov : addressOnly(c.provider, ov);
+      }
+      return {
+        accountId: c.accountId,
+        call: obs.call("streamMeta.save", {
+          accountId: c.accountId,
+          // Persist the EFFECTIVE channel-level defaults (every inherit layer merged
+          // with channel values, empties dropped) so inherited values — which live in
+          // layerValues, not channelValues — are actually saved. Prefill re-derives the
+          // layers from them on read (first-wins + dedup), so neither the persisted
+          // shape nor the store needs to know layers exist.
+          channel: effectiveFields(c, undefined),
+          streams,
+        }),
+      };
+    });
+    return Promise.all([preset, Promise.allSettled(targets.map((t) => t.call))]).then(([, rs]) => {
+      const failed = new Map<string, string>();
+      rs.forEach((r, i) => {
+        if (r.status === "rejected") {
+          failed.set(targets[i].accountId, streamerReason(r.reason as BridgeError) || SAVE_FAILED);
+        }
+      });
+      if (failed.size > 0) {
+        console.warn("streamMeta.save: some channels failed to persist");
+      }
+      return failed;
+    });
+  }
+
+  // Keep the edits and leave without going live. Pre-live only: edit mode's own primary
+  // already reads "Save info", and that one pushes to the platform, so a second Save
+  // beside it would wear one word for two different acts.
+  //
+  // Local-only by construction — no streamMeta.set. That call is what inserts and binds a
+  // YouTube broadcast, and this button's whole premise is that the user decided NOT to go
+  // live; pushing here would leave a live event on their channel that never gets ingest.
+  //
+  // The toggle is deliberately not consulted. It governs the IMPLICIT save the go-live
+  // does on the user's behalf; pressing a button labelled Save is the explicit act, and
+  // honouring the toggle here would make that press do nothing at all.
+  //
+  // `submitting` is held for the write, the same flag and the same reason runPrimary holds
+  // it: it is what every OTHER way out of this dialog already tests. Escape, the X and a
+  // backdrop click return early from cancelGoLive; Cancel and the primary are disabled by
+  // it. Without it the whole await below is a window in which the user can start a go-live
+  // -- which clears the chips and the error strip -- and have this continuation overwrite
+  // both underneath it, or close the dialog and still be handed this toast.
+  //
+  // It is therefore released BEFORE the close, never across it: cancelGoLive returns early
+  // while it is set, so closing with it still held would silently no-op and strand the
+  // dialog with its focus trap and suspended preview in force.
+  async function saveDetails(): Promise<void> {
+    if (submitting) {
+      return;
+    }
+    submitting = true;
+    let failed: Map<string, string>;
+    try {
+      // Same opening as runPrimary's, for the same reason: a retry after a failed save
+      // must not show last round's reason beside a fresh "Saving…" chip.
+      channelSaveState = Object.fromEntries(
+        armedConnectedChannels.map((c) => [c.accountId, "saving"] as [string, SaveState]),
+      );
+      channelSaveError = {};
+      // Awaited, where the go-live caller deliberately does not await the same call. There
+      // the values have already reached the platform and a slow disk must not hold up a
+      // broadcast; here this write is the ONLY copy of the edits and nothing is waiting on
+      // it, so reporting success before knowing would be reporting a guess.
+      failed = await persistDetails(presetCollection, presetSources);
+    } finally {
+      // Every exit below is outside this block, so all three release: the failure return,
+      // the close, and a throw out of the layer getters.
+      submitting = false;
+    }
+    if (failed.size > 0) {
+      // The dialog stays open on the same surface a failed push uses: the persistent strip
+      // in each channel's card, next to the fields that were not saved.
+      channelSaveState = Object.fromEntries(
+        armedConnectedChannels.map(
+          (c) => [c.accountId, failed.has(c.accountId) ? "error" : "saved"] as [string, SaveState],
+        ),
+      );
+      channelSaveError = Object.fromEntries(failed);
+      // Named in card order, so the toast lists the destinations the way the strips above
+      // it are stacked.
+      const fails = armedConnectedChannels
+        .filter((c) => failed.has(c.accountId))
+        .map((c) => ({
+          name: destinationName(c.provider, c.streams[0]?.label),
+          why: failed.get(c.accountId) ?? SAVE_FAILED,
+        }));
+      destinationFailureToast({
+        lead: "Couldn't save stream info for ",
+        names: fails.map((f) => f.name),
+        reason: fails[0].why,
+        lines: fails.map((f) => `${f.name} — ${f.why}`),
+      });
+      return;
+    }
+    // The scope goes in `lines`, not the second argument: that one renders as a title
+    // attribute, which no keyboard reaches and no reader announces on a toast that
+    // auto-dismisses.
+    const scope = `Remembered for ${channelsLabel(armedConnectedChannels.length)}`;
+    showToast("Stream info saved", "Stream info saved", {
+      lines: [scope],
+      announce: `Stream info saved. ${scope}`,
+    });
+    // The same exit Cancel takes. Arms are untouched here exactly as they are on Cancel --
+    // revertUnvalidatedArms is edit-mode-only, so in pre-live Go Live mode a destination
+    // armed from this dialog stays armed either way. Its schedule revert is unreachable
+    // from here: Save is withheld while a staging is applied.
+    await cancelGoLive();
+  }
+
   // The flag's whole lifetime, held apart from the work it guards. Every close route now
   // refuses while `submitting` is set -- Escape and the X return early from cancelGoLive,
   // Cancel is disabled -- so an exception escaping between the set and the clear would
@@ -1549,7 +1753,7 @@ import { EV } from "$lib/utils/eventNames";
     for (const f of failed) {
       if (!failedByChannel.has(f.job.channel.accountId)) {
         failedByChannel.set(f.job.channel.accountId, {
-          name: f.job.channel.provider?.displayName || f.job.stream.label || "this platform",
+          name: destinationName(f.job.channel.provider, f.job.stream.label),
           reason: f.reason,
         });
       }
@@ -1578,18 +1782,14 @@ import { EV } from "$lib/utils/eventNames";
     // next to the arm switch that is the remedy. The toast below is only the
     // attention-getter: it auto-dismisses and the next toast replaces it.
     //
-    // Both render the decoded user message where the host sent one: it is the sentence
-    // written for a streamer, and `message` prefixes it with the method/step chain that
-    // named the failing call. ONE reading of an OpError here, because the card and the
-    // toast are describing the same failure to the same person at the same moment.
+    // Both render the same reading of the OpError (streamerReason), because the card and
+    // the toast are describing one failure to the same person at the same moment.
     //
     // The card treats an EMPTY reading as no reading: a rejected promise can carry a blank
     // message, and a strip whose only job is to name the failure must not render a blank.
     // The toast keeps the empty string, which is the absent-reason case its helper owns.
-    const streamerReason = (f: { reason: BridgeError }): string =>
-      f.reason?.userMessage ?? f.reason?.message ?? "";
     channelSaveError = Object.fromEntries(
-      [...failedByChannel].map(([id, f]) => [id, streamerReason(f) || PUSH_FAILED]),
+      [...failedByChannel].map(([id, f]) => [id, streamerReason(f.reason) || PUSH_FAILED]),
     );
     // Stream info is a precondition, not a courtesy: if any armed channel's metadata
     // push failed, going live would stream with stale/wrong title+category. Block the
@@ -1607,9 +1807,9 @@ import { EV } from "$lib/utils/eventNames";
         names: fails.map((v) => v.name),
         // Empty and all: destinationFailureToast owns what an absent reason falls back
         // to, and a second answer here would only be the one that disagrees.
-        reason: streamerReason(fails[0]),
+        reason: streamerReason(fails[0].reason),
         lines: fails.map((v) => {
-          const why = streamerReason(v);
+          const why = streamerReason(v.reason);
           return why ? `${v.name} — ${why}` : v.name;
         }),
         singularSuffix: goingLive ? "" : " stream info",
@@ -1620,62 +1820,16 @@ import { EV } from "$lib/utils/eventNames";
         return;
       }
     }
-    // Remember these details for next time — best-effort, fired without awaiting so a
-    // slow or failing save never blocks going live. Armed channels only: a disarmed
-    // channel's fields were locked this session, so its bags hold only the prefill
-    // echo — persisting that would overwrite remembered values the user never touched.
-    // One save per channel with its raw layers: the channel bag plus the channel's
-    // COMPLETE stream set. A stream with its override switch on carries its whole bag;
-    // one with the switch off carries only its per-destination address, so the store
-    // clears the divergences toggled off this session (they would otherwise resurrect
-    // and re-apply on the next go-live) WITHOUT unaddressing the stream. An empty result
-    // clears the entry outright, which is what a channel with no addressing wants.
+    // Remember these details for next time, on the user's behalf. The toggle governs only
+    // this implicit save; the Save button is an explicit act and does not consult it.
+    // Deliberately NOT awaited, where saveDetails awaits the same call. Going live, every
+    // value here is already at the platform -- a failure returned above rather than
+    // reaching this line -- so a failed local write costs nothing this session and a slow
+    // one must never hold up the broadcast. Update-info mode falls through with its
+    // failures, so for those channels this is the weaker claim: nothing is waiting on the
+    // write either way, and the card strip is already naming what did not land.
     if (remember) {
-      // Two stores, and this toggle feeds BOTH. streamMeta.save keeps remembering each
-      // channel's own defaults for the next go-live exactly as it always has; the preset
-      // is additionally a named sheet the user re-applies by hand from the picker above.
-      // Neither replaces the other -- dropping the save would change what the next
-      // go-live prefills, dropping the preset would leave the picker with nothing to
-      // offer. The two do not always run together: the save runs for every armed channel,
-      // while the preset is skipped when this go-live states nothing of the user's own
-      // (see carriesIntent). Fired without awaiting for the same reason the save is: a
-      // slow write must never hold up going live.
-      // The collection as it stood at the click, which is what the note above reported on,
-      // so what the user was told would be left out is exactly what is left out. Any
-      // conflicting key is already absent from this sheet rather than resolved to one
-      // channel's value.
-      const sheet = collected.sheet;
-      // A sheet of nothing but descriptor defaults would upsert onto itself forever under
-      // one "Untitled" row, costing a slot out of a small budget for a preset that states
-      // nothing to re-apply.
-      if (carriesIntent(sheet, collectedSources)) {
-        void streamInfoPresetStore.remember(sheet).catch(() => {
-          console.warn("streamInfoPresets.remember: this go-live was not saved as a preset");
-        });
-      }
-      void Promise.allSettled(
-        armedConnectedChannels.map((c) => {
-          const streams: Record<string, Record<string, unknown>> = {};
-          for (const s of c.streams) {
-            const ov = streamOverrides[s.profileUuid] ?? {};
-            streams[s.profileUuid] = streamOverrideOn[s.profileUuid] ? ov : addressOnly(c.provider, ov);
-          }
-          return obs.call("streamMeta.save", {
-            accountId: c.accountId,
-            // Persist the EFFECTIVE channel-level defaults (every inherit layer merged
-            // with channel values, empties dropped) so inherited values — which live in
-            // layerValues, not channelValues — are actually saved. Prefill re-derives the
-            // layers from them on read (first-wins + dedup), so neither the persisted
-            // shape nor the store needs to know layers exist.
-            channel: effectiveFields(c, undefined),
-            streams,
-          });
-        }),
-      ).then((rs) => {
-        if (rs.some((r) => r.status === "rejected")) {
-          console.warn("streamMeta.save: some channels failed to persist");
-        }
-      });
+      void persistDetails(collected, collectedSources);
     }
 
     // Mid-broadcast, the primary also STARTS. A destination armed since this modal
@@ -2242,7 +2396,12 @@ import { EV } from "$lib/utils/eventNames";
         >
           <i></i>
         </button>
-        <span class="sbl">Save these details for next time</span>
+        <!-- "Remember", not "Save": the footer's Save is a separate explicit act that
+             ignores this switch, and sharing the verb would read as the switch that turns
+             that button off. Deliberately says nothing about WHEN it fires -- this bar has
+             no mode gate, so it renders over a "Save info" primary in edit mode as readily
+             as over "Go Live now", and naming either trigger would be false in the other. -->
+        <span class="sbl">Remember these details for next time</span>
         <span class="sbh">— prefill this dialog on your next go-live</span>
       </div>
     {/if}
@@ -2251,6 +2410,25 @@ import { EV } from "$lib/utils/eventNames";
   {#snippet footer()}
     <span class="foot-note">{footerNote}{#if joiningNote} · {joiningNote}{/if}</span>
     <button class="ghost" disabled={submitting} onclick={() => void cancelGoLive()}>Cancel</button>
+    {#if goLiveModal.mode === "golive"}
+      <!-- Between Cancel and the primary, ascending commitment left to right, and the
+           harmless neighbour for a slip on the Go Live cell's edge -- Cancel there would
+           throw the edits away. Gated on armedConnectedChannels, not the primary's
+           armedProfileCount: this persists per connected channel, so a go-live made
+           entirely of stream-key destinations has nothing for it to write and the press
+           would report a save that saved nothing. Withheld while a schedule is staged
+           because the metadata on screen is then the ENTRY's, borrowed until the staging
+           goes back, and saving it would make one broadcast's plan the account's standing
+           default; footerNote carries that reason. No liveness clause -- it starts
+           nothing, so an unread stream state is no reason to withhold it. -->
+      <button
+        class="ghost strong"
+        disabled={submitting || !loaded || routingStaged || armedConnectedChannels.length === 0}
+        onclick={() => void saveDetails()}
+      >
+        Save
+      </button>
+    {/if}
     <button
       class="accent"
       disabled={submitting ||
@@ -2907,5 +3085,16 @@ import { EV } from "$lib/utils/eventNames";
     flex: 1 1 auto;
     font-size: 11px;
     color: var(--color-muted);
+  }
+  /* Third weight in the footer, built the way .ghost.danger is: the shared ghost cell,
+     one token moved. Keeping the mono/uppercase rhythm and lifting only the ink puts Save
+     above Cancel's dimmed text without borrowing the accent that has to stay the primary's
+     alone. */
+  .ghost.strong {
+    color: var(--color-text);
+    font-weight: 600;
+  }
+  .ghost.strong:disabled {
+    color: var(--color-dim);
   }
 </style>
