@@ -349,6 +349,27 @@ void RunCanvasSceneSelfTest();
 // matching the other canvas-scene self-tests). Gated by the caller to the
 // smoke path.
 void RunSceneDuplicateSelfTest();
+// Headless proof that "Duplicate" always produces a genuinely independent source --
+// its own obs_source_t and its own filter chain -- even for a type libobs flags
+// OBS_SOURCE_DO_NOT_DUPLICATE (see DuplicateSourceObject in bridge.cpp). Brings up a
+// temporary additional canvas with one scene, creates a wasapi_output_capture source
+// (a flagged type that's headless-safe) in it, asserts the flag is actually set, then
+// drives sources.duplicate and asserts the copy's uuid differs from the original's.
+// Adds a filter to the copy via filters.add and asserts the original's filter count
+// is unchanged while the copy's is one higher -- the exact regression this test
+// guards against, where the "duplicate" aliased the original so a filter added to one
+// showed up on both. Also flips a bool property on the copy via properties.set and
+// asserts the original's properties.get is unchanged -- guards a second aliasing
+// path, a shared (not copied) obs_data_t settings object. Also duplicates a
+// color_source (a non-flagged type) and asserts the same uuid-independence, covering
+// the ordinary obs_source_duplicate path, and a nested scene -- flagged, and the one
+// flagged type whose content lives in its item list rather than its settings --
+// asserting the copy is both independent and carries the original's items rather than
+// coming back empty. Removes everything it creates, including the temp canvas,
+// afterward; never Saves explicitly (the bridge calls it drives do their own normal
+// Save, matching the other canvas-scene self-tests). Gated by the caller to the smoke
+// path.
+void RunSourceDuplicateSelfTest();
 // Headless proof for the transform pivot/clamp fixes: bring up a temporary
 // additional canvas with one wide, off-center, non-uniformly scaled color
 // source, then drive setTransform{rot:90} and transformAction{rotate90cw}

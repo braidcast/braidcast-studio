@@ -3342,6 +3342,332 @@ void ObsBootstrap::RunSceneDuplicateSelfTest()
 		std::to_string(g_canvases.Definitions().size()));
 }
 
+void ObsBootstrap::RunSourceDuplicateSelfTest()
+{
+	using Bridge::json;
+
+	auto run = [](const std::string &method, const json &params, bool &ok) -> json {
+		json result;
+		std::string error;
+		ok = Bridge::Dispatch(method, params, result, error);
+		if (!ok) {
+			HostLog("[selftest] " + method + " FAILED: " + Err::Diagnostic(error));
+			return json(nullptr);
+		}
+		return result;
+	};
+
+	// Helper: uuid of `s`, or empty if null -- the shared core both the by-name and
+	// by-pointer resolvers below reduce to (a canvas-scoped source, e.g. a nested
+	// scene, has no obs_get_source_by_name entry to resolve a name against).
+	auto uuidOfSource = [](obs_source_t *s) -> std::string {
+		if (!s) {
+			return {};
+		}
+		const char *u = obs_source_get_uuid(s);
+		return u ? u : std::string();
+	};
+
+	// Helper: uuid of the source currently named `name` in the GLOBAL registry, or
+	// empty if not found.
+	auto sourceUuid = [&](const std::string &name) -> std::string {
+		if (name.empty()) {
+			return {};
+		}
+		OBSSourceAutoRelease s = obs_get_source_by_name(name.c_str());
+		return uuidOfSource(s);
+	};
+
+	// Helper: filters.list's element count for the source named `name`, or -1 on
+	// any failure (so a failure never gets silently mistaken for a count of 0).
+	auto filterCount = [&](const std::string &name) -> int {
+		bool ok = false;
+		json filters = run("filters.list", json{{"source", name}}, ok);
+		if (!ok || !filters.is_array()) {
+			return -1;
+		}
+		return static_cast<int>(filters.size());
+	};
+
+	// Helper: item count of scene source `s`, or -1 when it doesn't resolve to a
+	// scene. Read straight off libobs: what matters is what the copy actually holds,
+	// not what a scene-addressed bridge method reports for it.
+	auto itemCountOfScene = [](obs_source_t *s) -> int {
+		obs_scene_t *scene = s ? obs_scene_from_source(s) : nullptr; // borrowed
+		if (!scene) {
+			return -1;
+		}
+		int count = 0;
+		obs_scene_enum_items(
+			scene,
+			[](obs_scene_t *, obs_sceneitem_t *, void *param) -> bool {
+				*static_cast<int *>(param) += 1;
+				return true;
+			},
+			&count);
+		return count;
+	};
+
+	// One temporary ADDITIONAL canvas: everything under test happens in a single
+	// scene, so there's no need for the source/destination pair the scene-duplicate
+	// self-test uses.
+	const std::string canvasUuid = MakeSelfTestCanvas("selftest-duplicate-canvas");
+
+	bool ok = false;
+
+	const char *kSceneName = "selftest-source-duplicate-scene";
+	run("scenes.create", json{{"canvas", canvasUuid}, {"name", kSceneName}}, ok);
+	HostLog(std::string("[selftest] source-duplicate scenes.create -> ") + (ok ? "ok" : "FAIL (BUG)"));
+
+	run("scenes.setCurrent", json{{"canvas", canvasUuid}, {"name", kSceneName}}, ok);
+	HostLog(std::string("[selftest] source-duplicate scenes.setCurrent -> ") + (ok ? "ok" : "FAIL (BUG)"));
+
+	// wasapi_output_capture: a flagged (OBS_SOURCE_DO_NOT_DUPLICATE) type already
+	// proven headless-safe by RunAudioMixerSelfTest, so this doesn't depend on a
+	// real display/GPU the way a video capture type might.
+	json wasapiCreated = run(
+		"sources.create",
+		json{{"canvas", canvasUuid}, {"type", "wasapi_output_capture"}, {"name", "selftest-duplicate-wasapi"}},
+		ok);
+	const int64_t wasapiItemId = ok ? wasapiCreated.value("id", int64_t(0)) : 0;
+	const std::string wasapiSrcName = ok ? wasapiCreated.value("source", std::string()) : std::string();
+	HostLog(std::string("[selftest] source-duplicate sources.create(wasapi) -> ") +
+		(ok ? "id=" + std::to_string(wasapiItemId) + " source='" + wasapiSrcName + "'" : "FAIL (BUG)"));
+
+	// Assert the type actually carries the flag under test -- a green result below
+	// proves nothing if it doesn't.
+	uint32_t wasapiFlags = 0;
+	{
+		OBSSourceAutoRelease s = wasapiSrcName.empty() ? nullptr
+							       : obs_get_source_by_name(wasapiSrcName.c_str());
+		if (s) {
+			wasapiFlags = obs_source_get_output_flags(s);
+		}
+	}
+	const bool wasapiIsFlagged = (wasapiFlags & OBS_SOURCE_DO_NOT_DUPLICATE) != 0;
+	HostLog(std::string("[selftest] source-duplicate wasapi output_flags -> ") + std::to_string(wasapiFlags) +
+		"; OBS_SOURCE_DO_NOT_DUPLICATE set=" + (wasapiIsFlagged ? "true" : "false (BUG)"));
+
+	const std::string origWasapiUuid = sourceUuid(wasapiSrcName);
+	HostLog(std::string("[selftest] source-duplicate original wasapi uuid -> ") +
+		(origWasapiUuid.empty() ? "MISSING (BUG)" : origWasapiUuid));
+
+	const int origWasapiFilterCount = filterCount(wasapiSrcName);
+	HostLog(std::string("[selftest] source-duplicate original filterCount=") +
+		std::to_string(origWasapiFilterCount) + " (expected 0)");
+
+	// Duplicate the flagged source through the same bridge method the UI's
+	// "Duplicate" action drives -- never DuplicateSourceObject/obs_source_duplicate
+	// directly, since the bridge method is what's actually under test.
+	json wasapiDup = run("sources.duplicate", json{{"canvas", canvasUuid}, {"id", wasapiItemId}}, ok);
+	const int64_t wasapiDupItemId = ok ? wasapiDup.value("id", int64_t(0)) : 0;
+	const std::string wasapiDupSrcName = ok ? wasapiDup.value("source", std::string()) : std::string();
+	HostLog(std::string("[selftest] source-duplicate sources.duplicate(wasapi) -> ") +
+		(ok ? "id=" + std::to_string(wasapiDupItemId) + " source='" + wasapiDupSrcName + "'" : "FAIL (BUG)"));
+
+	const std::string wasapiDupUuid = sourceUuid(wasapiDupSrcName);
+	const bool wasapiIndependent = !wasapiDupUuid.empty() && wasapiDupUuid != origWasapiUuid;
+	HostLog(std::string("[selftest] source-duplicate wasapi copy uuid -> ") +
+		(wasapiDupUuid.empty() ? "MISSING (BUG)" : wasapiDupUuid) +
+		"; independent-of-original=" + (wasapiIndependent ? "true" : "false (BUG)"));
+
+	// Add a filter to the COPY only, then assert the original's chain is untouched
+	// while the copy's grew by exactly one -- the exact regression this test
+	// guards against, where "duplicate" of a flagged type aliased the original.
+	// gain_filter (not crop_filter): wasapi_output_capture is audio-only, and
+	// libobs's filter_compatible (obs-source.c) silently refuses to attach a
+	// video-only filter to an audio-only source, which would make this assertion
+	// pass for the wrong reason (no filter attached to either side).
+	run("filters.add", json{{"source", wasapiDupSrcName}, {"type", "gain_filter"}}, ok);
+	HostLog(std::string("[selftest] source-duplicate filters.add(copy) -> ") + (ok ? "ok" : "FAIL (BUG)"));
+
+	// Literal 0/1 rather than a comparison against origWasapiFilterCount: filterCount
+	// reports -1 for a failed read, and a relative check would call -1 vs -1 "unchanged"
+	// and 0 vs -1+1 "grew by one", turning an all-failing sequence green.
+	const int finalOrigFilterCount = filterCount(wasapiSrcName);
+	const int finalDupFilterCount = filterCount(wasapiDupSrcName);
+	HostLog(std::string("[selftest] source-duplicate original filterCount=") +
+		std::to_string(finalOrigFilterCount) + " (expected 0)");
+	HostLog(std::string("[selftest] source-duplicate copy filterCount=") + std::to_string(finalDupFilterCount) +
+		" (expected 1)");
+	const bool originalUnaffected = origWasapiFilterCount == 0 && finalOrigFilterCount == 0;
+	const bool copyGrewByOne = finalDupFilterCount == 1;
+	HostLog(std::string("[selftest] source-duplicate independent filter chains -> ") +
+		((originalUnaffected && copyGrewByOne) ? "true" : "false (BUG)"));
+
+	// obs_source_get_settings only addref's the source's OWN obs_data_t, and passing
+	// that straight into obs_source_create would just addref it again rather than copy
+	// it (obs_data_newref never copies) -- so the "independent" duplicate could end up
+	// sharing one settings object with the original, and a properties.set on either one
+	// would silently rewrite both. Flip a bool setting on the COPY and assert the
+	// ORIGINAL's own properties.get is unchanged, to guard DuplicateSourceObject's
+	// settings-copy step against that regression. Fold the key's presence into *Ok
+	// (like filterCount's -1 sentinel above) so a future wasapi refactor that drops
+	// use_device_timing fails loudly instead of silently comparing two false defaults.
+	bool origPropsOk = false;
+	json origProps = run("properties.get", json{{"kind", "source"}, {"ref", wasapiSrcName}}, origPropsOk);
+	origPropsOk = origPropsOk && origProps["values"].contains("use_device_timing");
+	const bool origUseDeviceTiming = origPropsOk ? origProps["values"].value("use_device_timing", false) : false;
+	HostLog(std::string("[selftest] source-duplicate original use_device_timing (before) -> ") +
+		(origPropsOk ? (origUseDeviceTiming ? "true" : "false") : "FAIL (BUG)"));
+
+	bool setOk = false;
+	run("properties.set",
+	    json{{"kind", "source"},
+		 {"ref", wasapiDupSrcName},
+		 {"settings", json{{"use_device_timing", !origUseDeviceTiming}}}},
+	    setOk);
+	HostLog(std::string("[selftest] source-duplicate properties.set(copy) -> ") + (setOk ? "ok" : "FAIL (BUG)"));
+
+	bool afterPropsOk = false;
+	json afterProps = run("properties.get", json{{"kind", "source"}, {"ref", wasapiSrcName}}, afterPropsOk);
+	afterPropsOk = afterPropsOk && afterProps["values"].contains("use_device_timing");
+	const bool afterUseDeviceTiming = afterPropsOk ? afterProps["values"].value("use_device_timing", false) : false;
+	const bool settingsIndependent = origPropsOk && afterPropsOk && afterUseDeviceTiming == origUseDeviceTiming;
+	HostLog(std::string("[selftest] source-duplicate original use_device_timing (after copy edit) -> ") +
+		(afterPropsOk ? (afterUseDeviceTiming ? "true" : "false") : "FAIL (BUG)") +
+		"; unchanged=" + (settingsIndependent ? "true" : "false (BUG)"));
+
+	// Also cover the ordinary (non-flagged) obs_source_duplicate path, so a future
+	// regression there is caught too. No filter-count assertion needed here -- the
+	// uuid-independence check is what that path already guarantees.
+	json colorCreated =
+		run("sources.create",
+		    json{{"canvas", canvasUuid}, {"type", "color_source"}, {"name", "selftest-duplicate-color"}}, ok);
+	const int64_t colorItemId = ok ? colorCreated.value("id", int64_t(0)) : 0;
+	const std::string colorSrcName = ok ? colorCreated.value("source", std::string()) : std::string();
+	HostLog(std::string("[selftest] source-duplicate sources.create(color) -> ") +
+		(ok ? "id=" + std::to_string(colorItemId) + " source='" + colorSrcName + "'" : "FAIL (BUG)"));
+
+	const std::string origColorUuid = sourceUuid(colorSrcName);
+	HostLog(std::string("[selftest] source-duplicate original color uuid -> ") +
+		(origColorUuid.empty() ? "MISSING (BUG)" : origColorUuid));
+
+	json colorDup = run("sources.duplicate", json{{"canvas", canvasUuid}, {"id", colorItemId}}, ok);
+	const int64_t colorDupItemId = ok ? colorDup.value("id", int64_t(0)) : 0;
+	const std::string colorDupSrcName = ok ? colorDup.value("source", std::string()) : std::string();
+	HostLog(std::string("[selftest] source-duplicate sources.duplicate(color) -> ") +
+		(ok ? "id=" + std::to_string(colorDupItemId) + " source='" + colorDupSrcName + "'" : "FAIL (BUG)"));
+
+	const std::string colorDupUuid = sourceUuid(colorDupSrcName);
+	const bool colorIndependent = !colorDupUuid.empty() && colorDupUuid != origColorUuid;
+	HostLog(std::string("[selftest] source-duplicate color copy uuid -> ") +
+		(colorDupUuid.empty() ? "MISSING (BUG)" : colorDupUuid) +
+		"; independent-of-original=" + (colorIndependent ? "true" : "false (BUG)"));
+
+	// A nested scene is flagged OBS_SOURCE_DO_NOT_DUPLICATE too, and unlike every other
+	// flagged type its content is its item list rather than its settings -- so a copy
+	// rebuilt from settings alone comes back EMPTY. Assert both halves: a different
+	// obs_source_t, and a copy that actually carries the original's items.
+	//
+	// A scene created on an ADDITIONAL canvas lives in that canvas's own source
+	// namespace (obs_canvas_get_source_by_name), and obs_scene_duplicate preserves
+	// that same placement for the copy (it reads the original's owning canvas) --
+	// neither is in the global obs_get_source_by_name registry sourceUuid/filterCount
+	// resolve against, so this block resolves both scenes directly off the canvas
+	// instead of through those name-based helpers, which would silently read back
+	// "not found".
+	const char *kNestedSceneName = "selftest-source-duplicate-nested";
+	run("scenes.create", json{{"canvas", canvasUuid}, {"name", kNestedSceneName}}, ok);
+	HostLog(std::string("[selftest] source-duplicate nested scenes.create -> ") + (ok ? "ok" : "FAIL (BUG)"));
+
+	run("scenes.setCurrent", json{{"canvas", canvasUuid}, {"name", kNestedSceneName}}, ok);
+	json nestedChild =
+		run("sources.create",
+		    json{{"canvas", canvasUuid}, {"type", "color_source"}, {"name", "selftest-duplicate-nested-color"}},
+		    ok);
+	const std::string nestedChildName = ok ? nestedChild.value("source", std::string()) : std::string();
+	HostLog(std::string("[selftest] source-duplicate nested scene child -> ") +
+		(ok ? "'" + nestedChildName + "'" : "FAIL (BUG)"));
+
+	run("scenes.setCurrent", json{{"canvas", canvasUuid}, {"name", kSceneName}}, ok);
+
+	obs_canvas_t *testCanvas = g_canvasRuntime->Find(canvasUuid);
+	OBSSourceAutoRelease origNestedScene = testCanvas ? obs_canvas_get_source_by_name(testCanvas, kNestedSceneName)
+							  : nullptr; // addref'd
+	const std::string origNestedUuid = uuidOfSource(origNestedScene);
+	const int origNestedItems = itemCountOfScene(origNestedScene);
+	HostLog(std::string("[selftest] source-duplicate original nested scene -> uuid=") +
+		(origNestedUuid.empty() ? "MISSING (BUG)" : origNestedUuid) +
+		" itemCount=" + std::to_string(origNestedItems) + " (expected 1)");
+
+	// Nest it into the scene under test directly (obs_scene_add), not through a bridge
+	// method -- sources.addExisting resolves by obs_get_source_by_name, which can't see
+	// a canvas-scoped source either. This is fixture setup, not the operation under
+	// test; sources.duplicate below still goes through Bridge::Dispatch.
+	int64_t nestedItemId = 0;
+	{
+		OBSSourceAutoRelease parentSceneSrc = g_canvasRuntime->CurrentScene(canvasUuid); // addref'd
+		obs_scene_t *parentScene = parentSceneSrc ? obs_scene_from_source(parentSceneSrc) : nullptr;
+		obs_sceneitem_t *nestedItem =
+			(parentScene && origNestedScene) ? obs_scene_add(parentScene, origNestedScene) : nullptr;
+		nestedItemId = nestedItem ? obs_sceneitem_get_id(nestedItem) : 0;
+	}
+	HostLog(std::string("[selftest] source-duplicate nest into parent scene -> ") +
+		(nestedItemId ? "id=" + std::to_string(nestedItemId) : "FAIL (BUG)"));
+
+	json nestedDup = run("sources.duplicate", json{{"canvas", canvasUuid}, {"id", nestedItemId}}, ok);
+	const int64_t nestedDupItemId = ok ? nestedDup.value("id", int64_t(0)) : 0;
+	const std::string nestedDupSrcName = ok ? nestedDup.value("source", std::string()) : std::string();
+	HostLog(std::string("[selftest] source-duplicate sources.duplicate(nested scene) -> ") +
+		(ok ? "id=" + std::to_string(nestedDupItemId) + " source='" + nestedDupSrcName + "'" : "FAIL (BUG)"));
+
+	OBSSourceAutoRelease nestedDupScene =
+		(testCanvas && !nestedDupSrcName.empty())
+			? obs_canvas_get_source_by_name(testCanvas, nestedDupSrcName.c_str())
+			: nullptr; // addref'd
+	const std::string nestedDupUuid = uuidOfSource(nestedDupScene);
+	const bool nestedIndependent = !nestedDupUuid.empty() && nestedDupUuid != origNestedUuid;
+	const int nestedDupItems = itemCountOfScene(nestedDupScene);
+	HostLog(std::string("[selftest] source-duplicate nested scene copy uuid -> ") +
+		(nestedDupUuid.empty() ? "MISSING (BUG)" : nestedDupUuid) +
+		"; independent-of-original=" + (nestedIndependent ? "true" : "false (BUG)"));
+	HostLog(std::string("[selftest] source-duplicate nested scene copy itemCount=") +
+		std::to_string(nestedDupItems) + " (expected " + std::to_string(origNestedItems) +
+		"); non-empty=" + ((nestedDupItems > 0 && nestedDupItems == origNestedItems) ? "true" : "false (BUG)"));
+
+	// Clean up: remove the scene items + underlying sources created above, then
+	// destroy the temp canvas, returning the in-memory model to baseline. Removing the
+	// duplicated scene releases the child copies OBS_SCENE_DUP_COPY minted for it (no
+	// separate walk needed: obs_source_remove only marks a source removed, destruction
+	// is refcount-driven, and the copy's items hold their only strong ref -- the same
+	// reason the scene-duplicate self-test cleans up a duplicated scene-with-child
+	// without walking it).
+	//
+	// Detach `itemId`'s scene item (when nonzero) and remove the source named `name`
+	// (when non-empty) -- global-registry or canvas-scoped depending on the source's
+	// own namespace, matching the nested-scenes-are-canvas-scoped point above.
+	auto removeItemAndSource = [&](int64_t itemId, const std::string &name, bool canvasScoped) {
+		if (itemId) {
+			run("sceneItems.remove", json{{"canvas", canvasUuid}, {"id", itemId}}, ok);
+		}
+		if (name.empty()) {
+			return;
+		}
+		OBSSourceAutoRelease s =
+			canvasScoped ? (testCanvas ? obs_canvas_get_source_by_name(testCanvas, name.c_str()) : nullptr)
+				     : obs_get_source_by_name(name.c_str());
+		if (s) {
+			obs_source_remove(s);
+		}
+	};
+	removeItemAndSource(wasapiDupItemId, wasapiDupSrcName, false);
+	removeItemAndSource(wasapiItemId, wasapiSrcName, false);
+	removeItemAndSource(colorDupItemId, colorDupSrcName, false);
+	removeItemAndSource(colorItemId, colorSrcName, false);
+	removeItemAndSource(nestedDupItemId, nestedDupSrcName, true);
+	removeItemAndSource(nestedItemId, std::string(), false);
+	removeItemAndSource(0, nestedChildName, false);
+	removeItemAndSource(0, kNestedSceneName, true);
+	g_multistream->InvalidateCanvasEncoders(canvasUuid);
+	g_canvasRuntime->RemoveCanvas(canvasUuid);
+	g_canvases.Remove(canvasUuid);
+	const bool gone = g_canvasRuntime->Find(canvasUuid) == nullptr && g_canvases.Find(canvasUuid) == nullptr;
+	HostLog(std::string("[selftest] source-duplicate cleanup: temp canvas ") +
+		(gone ? "removed" : "STILL PRESENT (BUG)") + "; canvases now " +
+		std::to_string(g_canvases.Definitions().size()));
+}
+
 void ObsBootstrap::RunTransformPivotSelfTest()
 {
 	using Bridge::json;

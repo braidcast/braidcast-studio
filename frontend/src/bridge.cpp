@@ -4177,11 +4177,86 @@ std::string UniqueSourceName(const std::string &base)
 	});
 }
 
+// Mint a genuinely independent copy of `src` -- its own obs_source_t and its own
+// filter chain -- for every source type, including ones libobs flags
+// OBS_SOURCE_DO_NOT_DUPLICATE (display/game/monitor capture, dshow, wasapi, browser,
+// ffmpeg/vlc, scenes). obs_source_duplicate hands back a mere extra ref for those
+// types instead of a copy, so a filter added to the "duplicate" would mutate the
+// source it was duplicated from. The flag is a cost/exclusivity policy libobs
+// applies, not a hard technical impossibility: a Display Capture instance's DXGI
+// duplication handle is already shared+refcounted per monitor in
+// libobs-d3d11/d3d11-duplicator.cpp, so a second, independent instance for the same
+// monitor is cheap. Returns a create-ref, or nullptr on failure.
+obs_source_t *DuplicateSourceObject(obs_source_t *src, const std::string &name)
+{
+	if ((obs_source_get_output_flags(src) & OBS_SOURCE_DO_NOT_DUPLICATE) == 0) {
+		return obs_source_duplicate(src, name.c_str(), false); // create-ref
+	}
+
+	// A scene's content is its item list, not its obs_data settings, and the item
+	// list is only rebuilt by scene_load at obs_source_load time -- so recreating one
+	// through obs_source_create below would hand back an empty scene. obs_scene_duplicate
+	// is libobs's own deep copy, the same one it already applies to groups (which carry
+	// no OBS_SOURCE_DO_NOT_DUPLICATE and so reach it via the branch above).
+	if (obs_scene_t *scene = obs_scene_from_source(src)) { // borrowed
+		// `name` was validated unique only against the global registry (the caller's
+		// UniqueSourceName), but a scene's own namespace is its owning canvas's source
+		// list -- reuse the same canvas-scoped free-name seam
+		// scenes.duplicateToCanvas already uses for this exact mismatch (bridge.cpp,
+		// FreeNameInCanvasSources), rather than leaning on libobs's own silent
+		// rename-on-collision. This branch covers scenes only: a group is also
+		// canvas-scoped (OBS_SOURCE_REQUIRES_CANVAS) but carries no
+		// OBS_SOURCE_DO_NOT_DUPLICATE, so it takes the non-flagged obs_source_duplicate
+		// branch above and still falls back to libobs's own rename-with-warning on
+		// collision.
+		OBSCanvasAutoRelease srcCanvas = obs_source_get_canvas(src); // addref'd
+		const std::string sceneName = srcCanvas ? FreeNameInCanvasSources(name, srcCanvas) : name;
+		obs_scene_t *newScene = obs_scene_duplicate(scene, sceneName.c_str(), OBS_SCENE_DUP_COPY);
+		return newScene ? obs_scene_get_source(newScene) : nullptr; // create-ref, held by newScene
+	}
+
+	// obs_source_get_settings addref's the SAME obs_data_t src already owns; passing
+	// it straight to obs_source_create would addref it again (obs_data_newref), not
+	// copy it, leaving dup and src sharing one settings object -- editing either one's
+	// properties would silently rewrite the other. obs_data_create + obs_data_apply
+	// mirrors what obs_source_duplicate's own non-flagged path does (obs-source.c).
+	OBSDataAutoRelease srcSettings = obs_source_get_settings(src); // addref'd
+	OBSDataAutoRelease settings = obs_data_create();
+	obs_data_apply(settings, srcSettings);
+	obs_source_t *dup = obs_source_create(obs_source_get_id(src), name.c_str(), settings, nullptr); // create-ref
+	if (!dup) {
+		return nullptr;
+	}
+
+	obs_source_copy_filters(dup, src);
+
+	obs_source_set_audio_mixers(dup, obs_source_get_audio_mixers(src));
+	obs_source_set_sync_offset(dup, obs_source_get_sync_offset(src));
+	obs_source_set_volume(dup, obs_source_get_volume(src));
+	obs_source_set_muted(dup, obs_source_muted(src));
+	obs_source_set_flags(dup, obs_source_get_flags(src));
+	// Deinterlace is the one field this path carries that obs_source_duplicate does
+	// not, so the two branches deliberately disagree here. The types that reach this
+	// branch are the capture ones -- dshow above all -- where an interlaced feed and a
+	// chosen deinterlacer are ordinary, and a copy that dropped them would come up
+	// visibly combed.
+	obs_source_set_deinterlace_mode(dup, obs_source_get_deinterlace_mode(src));
+	obs_source_set_deinterlace_field_order(dup, obs_source_get_deinterlace_field_order(src));
+
+	OBSDataAutoRelease srcPriv = obs_source_get_private_settings(src); // addref'd
+	OBSDataAutoRelease dstPriv = obs_source_get_private_settings(dup); // addref'd
+	obs_data_apply(dstPriv, srcPriv);
+
+	return dup;
+}
+
 // Duplicate the source of a scene item and add the copy to the SAME scene (powers
-// "Paste Duplicate"). params: {scene?, id, canvas?, name?}. The copy is a normal
-// (non-private) duplicate so it shows in source lists; its transform is copied so
-// it lands in place. Recorded as an Add for undo, exactly like sources.create.
-// Returns {id, source}.
+// "Paste Duplicate"). params: {scene?, id, canvas?, name?}. The copy is always a
+// genuinely independent source -- its own obs_source_t and its own filter chain --
+// regardless of source type (see DuplicateSourceObject). It's a normal (non-private)
+// duplicate so it shows in source lists; its transform is copied so it lands in
+// place. Recorded as an Add for undo, exactly like sources.create. Returns
+// {id, source}.
 bool MethodSourcesDuplicate(const json &params, json &result, std::string &error)
 {
 	int64_t id = 0;
@@ -4219,12 +4294,17 @@ bool MethodSourcesDuplicate(const json &params, json &result, std::string &error
 	// lands in place, matching native OBS duplicate behavior.
 	const json transform = CaptureTransformState(params, item);
 
-	OBSSourceAutoRelease dup = obs_source_duplicate(src, uniqueName.c_str(), false); // create-ref
+	OBSSourceAutoRelease dup = DuplicateSourceObject(src, uniqueName); // create-ref
 	if (!dup) {
 		obs_source_release(sceneSource);
-		error = "obs_source_duplicate failed";
+		error = "DuplicateSourceObject failed";
 		return false;
 	}
+	// Read the name back rather than trusting uniqueName verbatim: a scene's namespace
+	// is its owning canvas, not the global registry uniqueName validated against, so
+	// DuplicateSourceObject resolves the real free name itself for that case.
+	const char *dupNameC = obs_source_get_name(dup);
+	const std::string dupName = dupNameC ? dupNameC : uniqueName;
 
 	obs_sceneitem_t *newItem = obs_scene_add(scene, dup); // scene takes its own ref
 	const int64_t newId = newItem ? obs_sceneitem_get_id(newItem) : 0;
@@ -4249,9 +4329,9 @@ bool MethodSourcesDuplicate(const json &params, json &result, std::string &error
 	}
 	PersistSourceState(sceneSource);
 	obs_source_release(sceneSource);
-	ObsBootstrap::Undo().AddAction("Add " + uniqueName, kRemoveItemBySource, kAddItemFromSnapshot, before.dump(),
+	ObsBootstrap::Undo().AddAction("Add " + dupName, kRemoveItemBySource, kAddItemFromSnapshot, before.dump(),
 				       after.dump());
-	result = json{{"id", newId}, {"source", uniqueName}};
+	result = json{{"id", newId}, {"source", dupName}};
 	return true;
 }
 
@@ -4261,9 +4341,11 @@ obs_source_t *ResolveAudioSource(const json &params);
 
 // Duplicate a source addressed by uuid/name and add the copy to the TARGET scene
 // (powers cross-scene "Paste (Duplicate)"). params: {uuid?|source?, scene, canvas?,
-// name?}. Combines sources.duplicate's uniquified copy with sources.addExisting's
-// add-to-target-scene + undo. The copy lands at the scene's default transform; the
-// caller applies any carried transform/appearance afterward. Returns {id, source}.
+// name?}. Combines sources.duplicate's uniquified, always-independent copy (its own
+// obs_source_t and its own filter chain, regardless of source type -- see
+// DuplicateSourceObject) with sources.addExisting's add-to-target-scene + undo. The
+// copy lands at the scene's default transform; the caller applies any carried
+// transform/appearance afterward. Returns {id, source}.
 bool MethodSourcesDuplicateInto(const json &params, json &result, std::string &error)
 {
 	OBSSourceAutoRelease src = ResolveAudioSource(params); // addref'd or null; uuid|name
@@ -4286,12 +4368,17 @@ bool MethodSourcesDuplicateInto(const json &params, json &result, std::string &e
 	}
 	const std::string uniqueName = UniqueSourceName(base);
 
-	OBSSourceAutoRelease dup = obs_source_duplicate(src, uniqueName.c_str(), false); // create-ref
+	OBSSourceAutoRelease dup = DuplicateSourceObject(src, uniqueName); // create-ref
 	if (!dup) {
 		obs_source_release(sceneSource);
-		error = "obs_source_duplicate failed";
+		error = "DuplicateSourceObject failed";
 		return false;
 	}
+	// Read the name back rather than trusting uniqueName verbatim: a scene's namespace
+	// is its owning canvas, not the global registry uniqueName validated against, so
+	// DuplicateSourceObject resolves the real free name itself for that case.
+	const char *dupNameC = obs_source_get_name(dup);
+	const std::string dupName = dupNameC ? dupNameC : uniqueName;
 
 	obs_sceneitem_t *newItem = obs_scene_add(scene, dup); // scene takes its own ref
 	const int64_t newId = newItem ? obs_sceneitem_get_id(newItem) : 0;
@@ -4315,9 +4402,9 @@ bool MethodSourcesDuplicateInto(const json &params, json &result, std::string &e
 	}
 	PersistSourceState(sceneSource);
 	obs_source_release(sceneSource);
-	ObsBootstrap::Undo().AddAction("Add " + uniqueName, kRemoveItemBySource, kAddItemFromSnapshot, before.dump(),
+	ObsBootstrap::Undo().AddAction("Add " + dupName, kRemoveItemBySource, kAddItemFromSnapshot, before.dump(),
 				       after.dump());
-	result = json{{"id", newId}, {"source", uniqueName}};
+	result = json{{"id", newId}, {"source", dupName}};
 	return true;
 }
 

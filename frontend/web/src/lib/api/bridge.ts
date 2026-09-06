@@ -1737,10 +1737,14 @@ export interface ObsMethods {
   // capped size and returns it inlined as a PNG data URI. Rejects (caller falls
   // back to a type icon) when the source has no video.
   "sources.thumbnail": { dataUri: string };
-  // Duplicate the source of a scene item in place (undo-recorded).
+  // Duplicate the source of a scene item in place (undo-recorded). The copy is
+  // always an independent source with its own filter chain, never shared,
+  // regardless of source type.
   "sources.duplicate": { id: number; source: string };
   // Duplicate a source (by uuid/name) into a TARGET scene ({ uuid?|source?, scene,
-  // canvas?, name? }) — for cross-scene paste-duplicate (undo-recorded).
+  // canvas?, name? }) — for cross-scene paste-duplicate (undo-recorded). The copy is
+  // always an independent source with its own filter chain, never shared,
+  // regardless of source type.
   "sources.duplicateInto": { id: number; source: string };
   // Open a native Interact window forwarding input to an interactive source.
   "sources.interact": { ok: boolean; interactId: number };
