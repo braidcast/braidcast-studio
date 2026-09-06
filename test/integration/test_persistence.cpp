@@ -16,7 +16,10 @@ extern "C" {
 
 #include "scene/scene_persistence.hpp"
 
+#include "multistream/CanvasRuntime.hpp"
+#include "multistream/CanvasStore.hpp"
 #include "multistream/StorePaths.hpp"
+#include "testseam.hpp"
 
 #include <obs.h>
 #include <obs.hpp>
@@ -53,6 +56,28 @@ std::set<std::string> SavedSourceNames(const std::string &path)
 		}
 	}
 	return names;
+}
+
+// One canvas's scene order as it exists ON DISK, so a test can assert what Save
+// actually persisted rather than what the in-memory map happens to hold.
+std::vector<std::string> SavedCanvasOrder(const std::string &path, const std::string &canvasUuid)
+{
+	std::vector<std::string> uuids;
+	OBSDataAutoRelease root = obs_data_create_from_json_file(path.c_str());
+	if (!root) {
+		return uuids;
+	}
+	OBSDataAutoRelease perCanvas = obs_data_get_obj(root, "canvas_scene_order");
+	OBSDataArrayAutoRelease arr = perCanvas ? obs_data_get_array(perCanvas, canvasUuid.c_str()) : nullptr;
+	const size_t n = arr ? obs_data_array_count(arr) : 0;
+	for (size_t i = 0; i < n; i++) {
+		OBSDataAutoRelease item = obs_data_array_item(arr, i);
+		const char *u = obs_data_get_string(item, "uuid");
+		if (u && *u) {
+			uuids.push_back(u);
+		}
+	}
+	return uuids;
 }
 
 struct ItemScan {
@@ -101,11 +126,11 @@ static void test_scene_order_roundtrip(void **)
 	const std::string uc = SceneUuid(c);
 
 	// Creation order is [A,B,C]; move C to the front -> [C,A,B].
-	assert_true(SceneCollection::ReorderScene(uc, "up"));
-	assert_true(SceneCollection::ReorderScene(uc, "up"));
+	assert_true(SceneCollection::ReorderScene(std::string(), uc, "up"));
+	assert_true(SceneCollection::ReorderScene(std::string(), uc, "up"));
 
 	const std::vector<std::string> expected = {uc, ua, ub};
-	assert_true(SceneCollection::SceneOrder() == expected);
+	assert_true(SceneCollection::SceneOrder(std::string()) == expected);
 
 	Harness::Save();
 	Harness::TeardownWorld();
@@ -114,7 +139,7 @@ static void test_scene_order_roundtrip(void **)
 	assert_true(Harness::Load());
 
 	// The user-defined order survived a full teardown + reload.
-	assert_true(SceneCollection::SceneOrder() == expected);
+	assert_true(SceneCollection::SceneOrder(std::string()) == expected);
 	OBSSourceAutoRelease ra = obs_get_source_by_name("A");
 	OBSSourceAutoRelease rb = obs_get_source_by_name("B");
 	OBSSourceAutoRelease rc = obs_get_source_by_name("C");
@@ -129,9 +154,13 @@ static void test_scene_order_roundtrip(void **)
 // creation order and drop no scenes.
 static void test_scene_order_legacy_missing_key(void **)
 {
-	assert_non_null(Harness::CreateMainScene("A"));
-	assert_non_null(Harness::CreateMainScene("B"));
-	assert_non_null(Harness::CreateMainScene("C"));
+	obs_source_t *a = Harness::CreateMainScene("A"); // borrowed; harness owns
+	obs_source_t *b = Harness::CreateMainScene("B");
+	obs_source_t *c = Harness::CreateMainScene("C");
+	assert_non_null(a);
+	assert_non_null(b);
+	assert_non_null(c);
+	const std::vector<std::string> creationOrder = {SceneUuid(a), SceneUuid(b), SceneUuid(c)};
 
 	Harness::Save();
 
@@ -147,8 +176,10 @@ static void test_scene_order_legacy_missing_key(void **)
 	Harness::TeardownWorld();
 	assert_true(Harness::Load());
 
-	// No scene vanished; the order self-heals to creation order (all three present).
-	assert_int_equal(static_cast<int>(SceneCollection::SceneOrder().size()), 3);
+	// No scene vanished, and the order self-heals to creation order -- asserted as
+	// the exact sequence, since a reconcile that healed to the WRONG order would
+	// still be the right length.
+	assert_true(SceneCollection::SceneOrder(std::string()) == creationOrder);
 	OBSSourceAutoRelease ra = obs_get_source_by_name("A");
 	OBSSourceAutoRelease rb = obs_get_source_by_name("B");
 	OBSSourceAutoRelease rc = obs_get_source_by_name("C");
@@ -248,6 +279,139 @@ static void test_additional_canvas_item_roundtrip(void **)
 	assert_string_equal(obs_source_get_name(itemSource), "ItemSrc");
 }
 
+// --- per-canvas scene order --------------------------------------------------
+//
+// Guards the "canvas_scene_order" object: an ADDITIONAL canvas's scene order is
+// tracked and persisted independently of the Default canvas's "scene_order".
+// Revert either half (Save omits the object, Load ignores it) and the reloaded
+// canvas falls back to creation order [A,B,C], failing the [C,A,B] assertion.
+static void test_canvas_scene_order_roundtrip(void **)
+{
+	// A main scene so the Default canvas has an order of its own to leave alone.
+	obs_source_t *main = Harness::CreateMainScene("M"); // borrowed; harness owns
+	assert_non_null(main);
+	const std::vector<std::string> mainExpected = {SceneUuid(main)};
+
+	const std::string canvasUuid = Harness::AddCanvas(1280, 720);
+	assert_true(!canvasUuid.empty());
+
+	obs_source_t *a = Harness::CreateCanvasScene(canvasUuid, "A"); // borrowed
+	obs_source_t *b = Harness::CreateCanvasScene(canvasUuid, "B");
+	obs_source_t *c = Harness::CreateCanvasScene(canvasUuid, "C");
+	assert_non_null(a);
+	assert_non_null(b);
+	assert_non_null(c);
+
+	const std::string ua = SceneUuid(a);
+	const std::string ub = SceneUuid(b);
+	const std::string uc = SceneUuid(c);
+
+	// Creation order is [A,B,C]; move C to the front -> [C,A,B].
+	assert_true(SceneCollection::ReorderScene(canvasUuid, uc, "up"));
+	assert_true(SceneCollection::ReorderScene(canvasUuid, uc, "up"));
+
+	const std::vector<std::string> expected = {uc, ua, ub};
+	assert_true(SceneCollection::SceneOrder(canvasUuid) == expected);
+	// The two orders are separate records: the canvas moves left the Default alone.
+	assert_true(SceneCollection::SceneOrder(std::string()) == mainExpected);
+
+	Harness::Save();
+
+	// Assert what Save actually wrote, so a silently-dropped key fails here rather
+	// than looking like a Load bug below.
+	assert_true(SavedCanvasOrder(Harness::ScenePath(), canvasUuid) == expected);
+
+	Harness::TeardownWorld();
+	assert_false(CanvasHasSceneNamed(canvasUuid, "A")); // scene world cleared, canvas kept
+
+	assert_true(Harness::Load());
+
+	// The canvas's user-defined order survived a full teardown + reload, and the
+	// Default canvas's order is still its own.
+	assert_true(SceneCollection::SceneOrder(canvasUuid) == expected);
+	assert_true(SceneCollection::SceneOrder(std::string()) == mainExpected);
+}
+
+// --- per-canvas scene order (degrade): collection with no canvas_scene_order --
+//
+// Every collection saved before this key existed lacks it. Load must reconcile the
+// canvas to creation order and drop no scene.
+static void test_canvas_scene_order_legacy_missing_key(void **)
+{
+	// Load only reports success once a main-canvas scene is bound to channel 0, so
+	// the collection needs one alongside the canvas under test.
+	assert_non_null(Harness::CreateMainScene("M"));
+
+	const std::string canvasUuid = Harness::AddCanvas(1280, 720);
+	assert_true(!canvasUuid.empty());
+	obs_source_t *a = Harness::CreateCanvasScene(canvasUuid, "A"); // borrowed
+	obs_source_t *b = Harness::CreateCanvasScene(canvasUuid, "B");
+	obs_source_t *c = Harness::CreateCanvasScene(canvasUuid, "C");
+	assert_non_null(a);
+	assert_non_null(b);
+	assert_non_null(c);
+	const std::vector<std::string> creationOrder = {SceneUuid(a), SceneUuid(b), SceneUuid(c)};
+
+	Harness::Save();
+
+	// Strip the key from the on-disk file to mimic a pre-fix save, exercising
+	// Load's absent-key branch against the REAL file format.
+	{
+		OBSDataAutoRelease root = obs_data_create_from_json_file_safe(Harness::ScenePath().c_str(), "bak");
+		assert_non_null(root.Get());
+		obs_data_erase(root, "canvas_scene_order");
+		assert_true(SaveJsonAtomic(root, Harness::ScenePath()));
+	}
+
+	Harness::TeardownWorld();
+	assert_true(Harness::Load());
+
+	// No canvas scene vanished, and the order self-heals to creation order -- the
+	// exact sequence, not just the length (same gap as the main-canvas test above).
+	assert_true(SceneCollection::SceneOrder(canvasUuid) == creationOrder);
+	assert_true(CanvasHasSceneNamed(canvasUuid, "A"));
+	assert_true(CanvasHasSceneNamed(canvasUuid, "B"));
+	assert_true(CanvasHasSceneNamed(canvasUuid, "C"));
+}
+
+// --- a save must never DISCARD a canvas's order ------------------------------
+//
+// Save reads each canvas's order through SceneOrderToPersist, not SceneOrder:
+// SceneOrder reconciles, and reconciling a canvas whose RUNTIME entry is gone
+// reduces its order to empty, whereupon Save's non-empty write guard drops the key
+// from the file too -- destroying the record in memory and on disk in one pass, with
+// no way back. The definition outliving its runtime entry is exactly what a failed
+// obs_load_canvas inside CanvasRuntime::EnsureCanvas leaves behind. Point Save back
+// at SceneOrder and this test fails: the file carries no order for the canvas.
+static void test_canvas_scene_order_survives_missing_runtime(void **)
+{
+	assert_non_null(Harness::CreateMainScene("M"));
+
+	const std::string canvasUuid = Harness::AddCanvas(1280, 720);
+	assert_true(!canvasUuid.empty());
+	obs_source_t *a = Harness::CreateCanvasScene(canvasUuid, "A"); // borrowed
+	obs_source_t *b = Harness::CreateCanvasScene(canvasUuid, "B");
+	obs_source_t *c = Harness::CreateCanvasScene(canvasUuid, "C");
+	assert_non_null(a);
+	assert_non_null(b);
+	assert_non_null(c);
+
+	const std::vector<std::string> expected = {SceneUuid(c), SceneUuid(a), SceneUuid(b)};
+	assert_true(SceneCollection::ReorderScene(canvasUuid, SceneUuid(c), "up"));
+	assert_true(SceneCollection::ReorderScene(canvasUuid, SceneUuid(c), "up"));
+	assert_true(SceneCollection::SceneOrder(canvasUuid) == expected);
+
+	// Drop ONLY the runtime entry; the definition stays in the store.
+	TestSeam::Runtime().RemoveCanvas(canvasUuid);
+	assert_null(TestSeam::Runtime().Find(canvasUuid));
+	assert_non_null(TestSeam::Canvases().Find(canvasUuid));
+
+	Harness::Save();
+
+	// The order is still on disk, in full and in order.
+	assert_true(SavedCanvasOrder(Harness::ScenePath(), canvasUuid) == expected);
+}
+
 // --- fixtures ----------------------------------------------------------------
 
 static int group_setup(void **)
@@ -280,6 +444,10 @@ int main(void)
 		cmocka_unit_test_setup_teardown(test_scene_order_legacy_missing_key, test_setup, test_teardown),
 		cmocka_unit_test_setup_teardown(test_audio_state_roundtrip, test_setup, test_teardown),
 		cmocka_unit_test_setup_teardown(test_additional_canvas_item_roundtrip, test_setup, test_teardown),
+		cmocka_unit_test_setup_teardown(test_canvas_scene_order_roundtrip, test_setup, test_teardown),
+		cmocka_unit_test_setup_teardown(test_canvas_scene_order_legacy_missing_key, test_setup, test_teardown),
+		cmocka_unit_test_setup_teardown(test_canvas_scene_order_survives_missing_runtime, test_setup,
+						test_teardown),
 	};
 	return cmocka_run_group_tests(tests, group_setup, group_teardown);
 }

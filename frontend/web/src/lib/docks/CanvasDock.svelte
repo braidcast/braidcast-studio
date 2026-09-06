@@ -43,6 +43,12 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   import Splitter from "$lib/docking/Splitter.svelte";
   import { getPaneSizes, setEmbedH, setScenesW } from "$lib/docking/canvasPaneSizes";
   import { multistreamStatusStore } from "$lib/stores/multistreamStatusStore.svelte";
+  import {
+    SceneDragReorder,
+    sceneMoveActions,
+    sceneOrderMenuChildren,
+    type SceneOrderTarget,
+  } from "$lib/utils/sceneReorder.svelte";
 
   // A composite, inseparable dock for one NON-DEFAULT canvas (hierarchy-model.html
   // §1 right column): an inline preview + this canvas's own scenes + its own
@@ -258,12 +264,49 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   }
 
   // ---- scene name filter (behind the toolbar reveal) -------------------------
+  // Reorder (buttons, menu, drag) is disabled while filtering since indices only
+  // make sense against the full, unfiltered ordering (mirrors ScenesDock).
   let sceneFilter = $state("");
+  let sceneFiltering = $derived(sceneFilter.trim().length > 0);
   let filteredScenes = $derived(
-    sceneFilter.trim()
+    sceneFiltering
       ? scenes.filter((s) => s.name.toLowerCase().includes(sceneFilter.trim().toLowerCase()))
       : scenes,
   );
+
+  // ---- scene reorder (this canvas's own persisted order) ---------------------
+  // Every call carries `canvas`, so the bridge reorders within THIS canvas's scene
+  // order and never the Default canvas's. `to` is the drop row's top-first index,
+  // the same order this list renders and scenes.list returns.
+  let currentSceneIdx = $derived(currentScene === null ? -1 : scenes.findIndex((s) => s.name === currentScene));
+
+  async function reorderScene(name: string, direction: ReorderDirection) {
+    try {
+      await obs.call("scenes.reorder", { name, canvas: canvasUuid, direction });
+    } catch (e) {
+      report(e);
+    }
+  }
+
+  async function reorderSceneTo(name: string, to: number) {
+    try {
+      await obs.call("scenes.reorder", { name, canvas: canvasUuid, to });
+    } catch (e) {
+      report(e);
+    }
+  }
+
+  const sceneDnd = new SceneDragReorder({
+    move: (name, to) => void reorderSceneTo(name, to),
+    indexOf: (name) => scenes.findIndex((s) => s.name === name),
+    disabled: () => sceneFiltering,
+  });
+
+  // The toolbar acts on the current scene, the menu on the right-clicked one; both
+  // index against the full, unfiltered list.
+  function sceneOrderTarget(idx: number, move: (direction: ReorderDirection) => void): SceneOrderTarget {
+    return { idx, count: scenes.length, disabled: sceneFiltering, move };
+  }
 
   // Duplicates a scene within THIS canvas (shared source refs, matching OBS's own
   // "Duplicate Scene"). See scenes.duplicate in bridge.ts.
@@ -327,6 +370,8 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
             label: c.name,
             action: () => void duplicateSceneToCanvas(name, c.uuid),
           }));
+    const idx = scenes.findIndex((s) => s.name === name);
+    const orderChildren = sceneOrderMenuChildren(sceneOrderTarget(idx, (d) => void reorderScene(name, d)));
     menu = {
       x: e.clientX,
       y: e.clientY,
@@ -336,6 +381,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
         { label: "Link to", children: linkChildren },
         { label: "Duplicate", action: () => void duplicateScene(name) },
         { label: "Duplicate to canvas", children: duplicateChildren },
+        { label: "Order", children: orderChildren },
         // A scene is a source, so its screenshot reuses screenshot.takeSource (the
         // per-source path), targeting the scene by name instead of a scene-item id.
         {
@@ -903,6 +949,9 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
       onClick: () => currentScene && removeScene(currentScene),
     },
   ]);
+  let scenesRight = $derived<ToolAction[]>(
+    sceneMoveActions(sceneOrderTarget(currentSceneIdx, (d) => currentScene && void reorderScene(currentScene, d))),
+  );
   let sourcesLeft = $derived<ToolAction[]>([
     { icon: "plus", title: "Add source", disabled: !currentScene, onClick: () => (addingSource = true) },
     { icon: "trash", title: "Delete source", disabled: !selectedItem, onClick: () => void removeSelected() },
@@ -1142,8 +1191,18 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     <div class="col scenes-col" bind:this={scenesColEl} style:--scenes-w={scenesW != null ? scenesW + "px" : null}>
       <div class="embed-head">Scenes</div>
       <ul class="list">
-        {#each filteredScenes as scene (scene.name)}
-          <li class="es-row" class:on={scene.current} oncontextmenu={(e) => openSceneMenu(e, scene.name)}>
+        {#each filteredScenes as scene, idx (scene.name)}
+          <li
+            class="es-row"
+            class:on={scene.current}
+            class:dropTarget={sceneDnd.isDropTarget(idx, scene.name)}
+            draggable={!sceneFiltering}
+            ondragstart={(e) => sceneDnd.onDragStart(e, scene.name)}
+            ondragover={(e) => sceneDnd.onDragOver(e, idx)}
+            ondrop={(e) => sceneDnd.onDrop(e, idx)}
+            ondragend={sceneDnd.onDragEnd}
+            oncontextmenu={(e) => openSceneMenu(e, scene.name)}
+          >
             <span class="es-bar"></span>
             {#if renamingScene === scene.name}
               <input
@@ -1184,10 +1243,10 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
           </li>
         {/if}
         {#if loaded && filteredScenes.length === 0 && !addingScene}
-          <li class="es-row empty">{sceneFilter.trim() ? "No matches" : "No scenes"}</li>
+          <li class="es-row empty">{sceneFiltering ? "No matches" : "No scenes"}</li>
         {/if}
       </ul>
-      <ListToolbar left={scenesLeft}>
+      <ListToolbar left={scenesLeft} right={scenesRight}>
         {#snippet middle()}
           <FilterReveal bind:value={sceneFilter} />
         {/snippet}
@@ -1479,7 +1538,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   }
   /* Drag-reorder drop indicator. Outline avoids layout shift and the inline
      box-shadow the color tag already uses. */
-  .es-row.src.dropTarget {
+  .es-row.dropTarget {
     outline: var(--border-weight) solid var(--color-accent);
     outline-offset: -1px;
   }

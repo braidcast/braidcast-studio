@@ -1303,25 +1303,39 @@ struct CanvasSceneRow {
 
 std::vector<CanvasSceneRow> ScenesOnCanvas(const std::string &canvasUuid)
 {
+	// Both branches list in the persisted user order (SceneCollection::SceneOrder)
+	// rather than the enumerators' creation order -- libobs has no scene-ordering
+	// primitive of its own, per canvas or otherwise; SceneOrder() is the only record
+	// of the user's chosen order. The Default canvas's order is keyed by the empty
+	// string, so its CanvasStore uuid is normalized away here.
 	std::vector<CanvasSceneRow> rows;
 	if (!ObsBootstrap::Canvases().IsDefaultUuid(canvasUuid)) {
 		// The additional canvas's own scenes (isolated from the global registry),
-		// flagging the one bound to its channel 0 as current.
-		for (const CanvasRuntime::SceneInfo &s : ObsBootstrap::CanvasRuntime().Scenes(canvasUuid)) {
+		// flagging the one bound to its channel 0 as current. Indexed by uuid so the
+		// saved order drives the listing; a live scene the order somehow missed is
+		// still emitted (appended), since dropping a scene from the list would hide
+		// it from the UI entirely.
+		std::vector<CanvasRuntime::SceneInfo> live = ObsBootstrap::CanvasRuntime().Scenes(canvasUuid);
+		for (const std::string &uuid : SceneCollection::SceneOrder(canvasUuid)) {
+			auto it = std::find_if(live.begin(), live.end(),
+					       [&](const CanvasRuntime::SceneInfo &s) { return s.uuid == uuid; });
+			if (it != live.end()) {
+				rows.push_back({it->name, it->current});
+				live.erase(it);
+			}
+		}
+		for (const CanvasRuntime::SceneInfo &s : live) {
 			rows.push_back({s.name, s.current});
 		}
 		return rows;
 	}
-	// List in the persisted user order (SceneCollection::SceneOrder) rather than
-	// obs_enum_scenes' creation order -- libobs has no scene-ordering primitive of
-	// its own; SceneOrder() is the only record of the user's chosen order.
 	// `current` flags the scene bound to output channel 0 (unwrapped from the
 	// program transition).
 	OBSSourceAutoRelease current = Transitions::GetProgramScene(); // addref'd; may be null
 	const char *currentName = current ? obs_source_get_name(current) : nullptr;
 	const std::string currentStr = currentName ? currentName : std::string();
 
-	for (const std::string &uuid : SceneCollection::SceneOrder()) {
+	for (const std::string &uuid : SceneCollection::SceneOrder(std::string())) {
 		OBSSourceAutoRelease scene = obs_get_source_by_uuid(uuid.c_str()); // addref'd
 		const char *name = scene ? obs_source_get_name(scene) : nullptr;
 		if (name) {
@@ -2036,23 +2050,21 @@ bool MethodScenesDuplicateToCanvas(const json &params, json &result, std::string
 }
 
 // scenes.reorder {name, direction:"up"|"down"|"top"|"bottom", canvas?} or
-// {name, to, canvas?}: reorder a scene within the global scene list, either
+// {name, to, canvas?}: reorder a scene within one canvas's scene list, either
 // relatively (`direction`) or to an absolute index (`to`, a top-first UI index
 // matching scenes.list order -- see below).
 //
 // HONEST LIMITATION: libobs has no scene-ordering primitive. Unlike scene ITEMS
-// (obs_sceneitem_set_order), global scenes are plain sources enumerated by
-// obs_enum_scenes in CREATION order -- it exposes no settable order. Mirroring
-// the legacy Qt frontend's SaveSceneListOrder, the order lives OUTSIDE libobs: a
-// "scene_order" array persisted alongside the rest of the scene collection (see
-// SceneCollection::SceneOrder/ReorderScene/MoveSceneToIndex in
-// scene_persistence.cpp), which scenes.list now consults instead of raw
-// creation order. scenes.list pushes SceneOrder() straight through with no
-// inversion (unlike sceneItems.list, which inverts libobs' bottom-to-top
-// enumeration) -- SceneOrder()[0] IS the UI list's top entry, so a `to` index
-// here maps directly onto MoveSceneToIndex with no inversion. An additional
-// canvas's scenes (obs_canvas_enum_scenes, same limitation) aren't tracked by
-// that order yet, so reordering there still isn't supported.
+// (obs_sceneitem_set_order), scenes are plain sources enumerated by
+// obs_enum_scenes / obs_canvas_enum_scenes in CREATION order -- neither exposes a
+// settable order. Mirroring the legacy Qt frontend's SaveSceneListOrder, the order
+// lives OUTSIDE libobs, per canvas, persisted alongside the rest of the scene
+// collection (see SceneCollection::SceneOrder/ReorderScene/MoveSceneToIndex in
+// scene_persistence.cpp), which scenes.list consults instead of raw creation order.
+// scenes.list pushes SceneOrder() straight through with no inversion (unlike
+// sceneItems.list, which inverts libobs' bottom-to-top enumeration) --
+// SceneOrder()[0] IS the UI list's top entry, so a `to` index here maps directly
+// onto MoveSceneToIndex with no inversion.
 bool MethodScenesReorder(const json &params, json &result, std::string &error)
 {
 	std::string name;
@@ -2070,23 +2082,34 @@ bool MethodScenesReorder(const json &params, json &result, std::string &error)
 		error = "scenes.reorder needs 'direction' (up|down|top|bottom) or an integer 'to' index";
 		return false;
 	}
-	if (ResolveCanvasTarget(params).isAdditional) {
-		error = "scene reordering is not yet supported for additional canvases";
-		return false;
+	const CanvasTarget target = ResolveCanvasTarget(params);
+	// Resolve within the addressed canvas's namespace. obs_get_source_by_name cannot
+	// see an additional canvas's scenes but WOULD happily return a same-named MAIN
+	// canvas scene, so an additional canvas must never take that path.
+	std::string sceneUuid;
+	if (target.isAdditional) {
+		sceneUuid = CanvasSceneUuidFromName(target.uuid, name);
+	} else {
+		OBSSourceAutoRelease scene = obs_get_source_by_name(name.c_str()); // addref'd
+		if (scene && obs_scene_from_source(scene)) {
+			const char *uuid = obs_source_get_uuid(scene);
+			sceneUuid = uuid ? uuid : std::string();
+		}
 	}
-	OBSSourceAutoRelease scene = obs_get_source_by_name(name.c_str()); // addref'd
-	if (!scene || !obs_scene_from_source(scene)) {
+	if (sceneUuid.empty()) {
 		error = "no scene named '" + name + "'";
 		return false;
 	}
-	const char *uuid = obs_source_get_uuid(scene);
-	const bool ok = uuid && (hasTo ? SceneCollection::MoveSceneToIndex(uuid, to)
-				       : SceneCollection::ReorderScene(uuid, direction));
+	const bool ok = hasTo ? SceneCollection::MoveSceneToIndex(target.uuid, sceneUuid, to)
+			      : SceneCollection::ReorderScene(target.uuid, sceneUuid, direction);
 	if (!ok) {
 		error = "scene reordering failed";
 		return false;
 	}
-	EmitScenesChanged(std::string());
+	// Tagged with the addressed canvas so a CanvasDock refreshes (it filters on
+	// p.canvas). The empty/global tag additionally re-syncs the per-scene switch
+	// hotkeys, which canvas scenes do not have.
+	EmitScenesChanged(target.uuid);
 	SceneCollection::Save();
 	result = json{{"name", name}, {"direction", direction}, {"to", hasTo ? json(to) : json(nullptr)}};
 	return true;

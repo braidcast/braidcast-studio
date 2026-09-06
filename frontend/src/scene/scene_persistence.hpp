@@ -22,25 +22,33 @@
 // a specific file (used by the registry/switch machinery).
 namespace SceneCollection {
 
-// The main-canvas scene list's user-defined order, as scene uuids. Self-healing:
-// always reconciled against the scenes that currently exist (stale uuids
-// dropped, untracked scenes appended in creation order) before it is returned, so
-// callers never see a stale list. Empty only when the collection has no scenes.
-const std::vector<std::string> &SceneOrder();
+// One canvas's scene list user-defined order, as scene uuids. `canvasUuid` is an
+// ADDITIONAL canvas's uuid, or the EMPTY string for the Default canvas -- note the
+// Default canvas's own CanvasStore uuid is NOT accepted here (it is a distinct
+// value); callers normalize it to empty first, so a Default-vs-canvas mixup can't
+// pass unnoticed. That is also why these take no defaulted argument.
+//
+// Self-healing: always reconciled against the scenes that currently exist on that
+// canvas (stale uuids dropped, untracked scenes appended in creation order) before
+// it is returned, so callers never see a stale list. Empty when that canvas has no
+// scenes, and for an additional canvas with no runtime entry at all. Being INACTIVE
+// is not that case: an inactive canvas keeps its obs_canvas_t (only its video mix is
+// dropped), so it still resolves and its order is returned intact.
+const std::vector<std::string> &SceneOrder(const std::string &canvasUuid);
 
 // Move the scene named by `sceneUuid` one slot toward `direction`
-// ("up"|"down"), or to the relevant edge ("top"|"bottom"), within SceneOrder().
-// Returns false if the uuid isn't a known main-canvas scene; a move already at
-// the relevant edge is a no-op success (matches sceneItems' boundary behavior).
-// Does not save -- the caller persists via Save().
-bool ReorderScene(const std::string &sceneUuid, const std::string &direction);
+// ("up"|"down"), or to the relevant edge ("top"|"bottom"), within
+// SceneOrder(canvasUuid). Returns false if the uuid isn't a known scene on that
+// canvas; a move already at the relevant edge is a no-op success (matches
+// sceneItems' boundary behavior). Does not save -- the caller persists via Save().
+bool ReorderScene(const std::string &canvasUuid, const std::string &sceneUuid, const std::string &direction);
 
 // Move the scene named by `sceneUuid` to an absolute position within
-// SceneOrder() (the drag-and-drop counterpart to ReorderScene's relative
-// moves). `index` is clamped to [0, SceneOrder().size() - 1]. Returns false
-// only if the uuid isn't a known main-canvas scene. Does not save -- the
+// SceneOrder(canvasUuid) (the drag-and-drop counterpart to ReorderScene's relative
+// moves). `index` is clamped to [0, SceneOrder(canvasUuid).size() - 1]. Returns
+// false only if the uuid isn't a known scene on that canvas. Does not save -- the
 // caller persists via Save().
-bool MoveSceneToIndex(const std::string &sceneUuid, int index);
+bool MoveSceneToIndex(const std::string &canvasUuid, const std::string &sceneUuid, int index);
 
 // Persist the active collection. No-op-safe; logs on failure.
 void Save();

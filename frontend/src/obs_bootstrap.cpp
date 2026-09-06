@@ -2904,10 +2904,12 @@ void ObsBootstrap::RunCanvasSceneSelfTest()
 	};
 
 	// Bring up a temporary ADDITIONAL canvas with its own live mix (+ a default
-	// channel-0 "Scene"), exactly like the canvas-runtime selftest. Operate ONLY on
-	// the in-memory stores (never Save) so the user's files stay untouched. The
-	// point is to prove the bridge's scene/source ops, when given this canvas's uuid,
-	// act on the canvas's OWN scenes -- isolated from the global channel-0 scene list.
+	// channel-0 "Scene"), exactly like the canvas-runtime selftest. The point is to
+	// prove the bridge's scene/source ops, when given this canvas's uuid, act on the
+	// canvas's OWN scenes -- isolated from the global channel-0 scene list. The
+	// reorder steps at the end go through scenes.reorder, which persists; a smoke run
+	// writes into its own throwaway config dir, and the temp canvas is torn down here
+	// so nothing of it survives into the next save.
 	const std::string canvasUuid = MakeSelfTestCanvas("selftest-scene-canvas");
 
 	bool ok = false;
@@ -2979,9 +2981,108 @@ void ObsBootstrap::RunCanvasSceneSelfTest()
 		"; in global scene=" + (inGlobalScene ? "true (BUG: leaked to output 0)" : "false") + " (placement " +
 		((inCanvasScene && !inGlobalScene) ? "OK" : "BUG") + ")");
 
+	// 5) Reorder within the canvas. Its scene order is tracked per canvas
+	// (SceneCollection::SceneOrder), independently of the Default canvas's -- the
+	// two must never bleed into each other, so the third scene deliberately takes a
+	// Default-canvas scene's NAME. Resolving that name globally would find the MAIN
+	// scene instead, so the collision is the assertion.
+	auto listNames = [&](const json &listParams) -> std::vector<std::string> {
+		bool listOk = false;
+		json rows = run("scenes.list", listParams, listOk);
+		std::vector<std::string> names;
+		if (listOk && rows.is_array()) {
+			for (const auto &s : rows) {
+				names.push_back(s.value("name", std::string()));
+			}
+		}
+		return names;
+	};
+	auto joinNames = [](const std::vector<std::string> &names) -> std::string {
+		std::string out;
+		for (const std::string &n : names) {
+			out += (out.empty() ? "" : ",") + n;
+		}
+		return out;
+	};
+
+	// The collision needs a Default-canvas name the canvas does not already use, and
+	// the canvas is seeded with one called "Scene" -- so a real config whose only main
+	// scene is also "Scene" would leave nothing to pick and quietly reduce the whole
+	// step to a no-collision run. Mint a main scene with a name the canvas cannot
+	// already hold, so a candidate always exists (removed again in cleanup). It also
+	// makes the Default-order comparison below non-vacuous: a one-element list
+	// compares equal however it is reordered.
+	const char *kOrderMainScene = "selftest-order-main";
+	run("scenes.create", json{{"name", kOrderMainScene}}, ok);
+	const bool mainSceneAdded = ok;
+	HostLog(std::string("[selftest] canvas-scene-order main scene '") + kOrderMainScene + "' -> " +
+		(mainSceneAdded ? "true" : "false (BUG)"));
+
+	const std::vector<std::string> mainBefore = listNames(json(nullptr));
+	std::vector<std::string> canvasNamesNow = listNames(json{{"canvas", canvasUuid}});
+	// A name already taken inside the canvas would be refused by the canvas runtime,
+	// so pick the first Default-canvas name that is still free here.
+	std::string collidingName = "selftest-canvas-scene-b";
+	bool collides = false;
+	for (const std::string &n : mainBefore) {
+		if (std::find(canvasNamesNow.begin(), canvasNamesNow.end(), n) == canvasNamesNow.end()) {
+			collidingName = n;
+			collides = true;
+			break;
+		}
+	}
+	run("scenes.create", json{{"canvas", canvasUuid}, {"name", collidingName}}, ok);
+	// `collides` is the assertion, not a diagnostic: without it the reorders below run
+	// on a name no main scene shares, and nothing here tests the resolver at all.
+	HostLog(std::string("[selftest] canvas-scene-order third scene '") + collidingName + "' -> " +
+		(ok ? "true" : "false (BUG)") +
+		"; name also on Default canvas=" + (collides ? "true" : "false (BUG: collision untested)") +
+		" (Default has " + std::to_string(mainBefore.size()) + ": " + joinNames(mainBefore) + ")");
+
+	const std::vector<std::string> orderBefore = listNames(json{{"canvas", canvasUuid}});
+	const bool haveThree = orderBefore.size() >= 3;
+
+	// direction:"down" on the top scene -- refused outright before per-canvas order.
+	run("scenes.reorder",
+	    json{{"canvas", canvasUuid}, {"name", haveThree ? orderBefore[0] : collidingName}, {"direction", "down"}},
+	    ok);
+	HostLog(std::string("[selftest] canvas-scene-order scenes.reorder down -> ") + (ok ? "true" : "false (BUG)"));
+
+	// The load-bearing half: scenes.list must REFLECT the move, not just accept it.
+	const std::vector<std::string> afterDown = listNames(json{{"canvas", canvasUuid}});
+	const bool downApplied = haveThree && afterDown.size() == orderBefore.size() &&
+				 afterDown[0] == orderBefore[1] && afterDown[1] == orderBefore[0] &&
+				 afterDown[2] == orderBefore[2];
+	HostLog(std::string("[selftest] canvas-scene-order scenes.list after down -> ") +
+		(downApplied ? "true" : "false (BUG)") + " (" + joinNames(orderBefore) + " -> " + joinNames(afterDown) +
+		")");
+
+	// Absolute move: {to:0} puts the colliding-name scene at the top.
+	run("scenes.reorder", json{{"canvas", canvasUuid}, {"name", collidingName}, {"to", 0}}, ok);
+	const std::vector<std::string> afterTop = listNames(json{{"canvas", canvasUuid}});
+	const bool topApplied = ok && !afterTop.empty() && afterTop[0] == collidingName;
+	HostLog(std::string("[selftest] canvas-scene-order scenes.reorder to=0 -> ") +
+		(topApplied ? "true" : "false (BUG)") + " (" + joinNames(afterTop) + ")");
+
+	// The Default canvas's own order must be untouched by every move above. Its list
+	// holds at least two scenes here, so this can actually fail.
+	const std::vector<std::string> mainAfter = listNames(json(nullptr));
+	HostLog(std::string("[selftest] canvas-scene-order Default order unchanged -> ") +
+		(mainAfter == mainBefore ? "true" : "false (BUG)") + " (" + joinNames(mainBefore) + " -> " +
+		joinNames(mainAfter) + ")");
+
+	// Drop the main scene minted above so the Default canvas returns to baseline for
+	// the self-tests that run after this one.
+	if (mainSceneAdded) {
+		run("scenes.remove", json{{"name", kOrderMainScene}}, ok);
+		HostLog(std::string("[selftest] canvas-scene-order main scene cleanup -> ") +
+			(ok ? "true" : "false (BUG)"));
+	}
+
 	// Clean up: remove the source from the canvas scene, then destroy the temp
-	// canvas + drop its mix, returning the in-memory model to baseline (nothing
-	// Saved). Destroying the canvas releases its scenes (including our created ones).
+	// canvas + drop its mix, returning the in-memory model to baseline. Destroying
+	// the canvas releases its scenes (including our created ones), and the next
+	// Save prunes its now-dead uuid out of the persisted per-canvas scene order.
 	if (newItemId) {
 		run("sceneItems.remove", json{{"canvas", canvasUuid}, {"id", newItemId}}, ok);
 		obs_source_t *s = obs_get_source_by_name(newSrcName.c_str());

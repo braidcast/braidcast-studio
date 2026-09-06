@@ -25,37 +25,52 @@ namespace SceneCollection {
 
 namespace {
 
-// The main-canvas scene list's user-defined order (uuids). Populated from the
-// "scene_order" array on Load(), mutated by ReorderScene(), and serialized back
-// by Save(). libobs has no scene-ordering primitive (unlike scene items), so this
-// is the only record of the user's chosen order -- obs_enum_scenes always yields
-// creation order.
-std::vector<std::string> g_sceneOrder;
+// Every scene list's user-defined order (uuids), keyed by canvas uuid -- the EMPTY
+// string is the Default canvas, whose order is persisted as the root "scene_order"
+// array; every other key is an additional canvas, persisted together under
+// "canvas_scene_order". Populated on Load(), mutated by ReorderScene(), and
+// serialized back by Save(). libobs has no scene-ordering primitive (unlike scene
+// items), so this map is the only record of the user's chosen order --
+// obs_enum_scenes and obs_canvas_enum_scenes both yield creation order.
+std::map<std::string, std::vector<std::string>> g_sceneOrder;
 
-// Rebuild g_sceneOrder to exactly match the scenes that currently exist:
-// previously-tracked uuids that still resolve keep their relative order, then any
-// scene not yet tracked (new since the last reconcile, or first run before any
-// order was ever saved) is appended in obs_enum_scenes' creation order. Cheap
-// enough (scene counts are small) to call before every read, so SceneOrder() and
+// Collect a scene's uuid into the std::vector<std::string> passed as `param`. The
+// callback shape both obs_enum_scenes and obs_canvas_enum_scenes take.
+bool CollectSceneUuid(void *param, obs_source_t *source)
+{
+	auto *out = static_cast<std::vector<std::string> *>(param);
+	const char *uuid = obs_source_get_uuid(source);
+	if (uuid) {
+		out->push_back(uuid);
+	}
+	return true;
+}
+
+// Rebuild one canvas's tracked order to exactly match the scenes that currently
+// exist on it: previously-tracked uuids that still resolve keep their relative
+// order, then any scene not yet tracked (new since the last reconcile, or first run
+// before any order was ever saved) is appended in enumeration order. Cheap enough
+// (scene counts are small) to call before every read, so SceneOrder() and
 // ReorderScene() are self-healing without needing a hook in every scene-mutating
 // handler.
-void ReconcileSceneOrder()
+//
+// An additional canvas that no longer resolves in the runtime is treated as having
+// NO live scenes (its entry reconciles to empty) rather than falling back to the
+// main canvas: a silent fallback there would let a canvas reorder rewrite the
+// Default canvas's order.
+void ReconcileSceneOrder(const std::string &canvasUuid)
 {
 	std::vector<std::string> live;
-	obs_enum_scenes(
-		[](void *param, obs_source_t *source) -> bool {
-			auto *out = static_cast<std::vector<std::string> *>(param);
-			const char *uuid = obs_source_get_uuid(source);
-			if (uuid) {
-				out->push_back(uuid);
-			}
-			return true;
-		},
-		&live);
+	if (canvasUuid.empty()) {
+		obs_enum_scenes(CollectSceneUuid, &live);
+	} else if (obs_canvas_t *canvas = ObsBootstrap::CanvasRuntime().Find(canvasUuid)) {
+		obs_canvas_enum_scenes(canvas, CollectSceneUuid, &live);
+	}
 
+	std::vector<std::string> &tracked = g_sceneOrder[canvasUuid];
 	std::vector<std::string> reconciled;
 	reconciled.reserve(live.size());
-	for (const std::string &uuid : g_sceneOrder) {
+	for (const std::string &uuid : tracked) {
 		if (std::find(live.begin(), live.end(), uuid) != live.end()) {
 			reconciled.push_back(uuid);
 		}
@@ -65,16 +80,31 @@ void ReconcileSceneOrder()
 			reconciled.push_back(uuid);
 		}
 	}
-	g_sceneOrder = std::move(reconciled);
+	tracked = std::move(reconciled);
 }
 
-// Per-save context carrying the channel 1-6 global audio sources to exclude (the
-// audio mixer persists those separately via audio_devices.json) plus the main
-// canvas (the Default canvas), so its scenes are KEPT while additional-canvas
-// scenes are dropped.
+// Drop order entries for canvases the model no longer knows about, so a removed
+// canvas's uuid neither lingers in memory nor gets written back out forever. Keyed
+// on the persisted CanvasStore definitions because THOSE are the record of which
+// canvases exist: a runtime entry can be absent for a canvas the user still has
+// (obs_load_canvas failing inside EnsureCanvas leaves the definition behind), and
+// keying on the runtime would silently delete that canvas's order. The Default
+// canvas's entry (the empty key) always survives.
+void PruneSceneOrder()
+{
+	for (auto it = g_sceneOrder.begin(); it != g_sceneOrder.end();) {
+		if (!it->first.empty() && !ObsBootstrap::Canvases().Find(it->first)) {
+			it = g_sceneOrder.erase(it);
+		} else {
+			++it;
+		}
+	}
+}
+
+// Per-save context carrying the channel 1-6 global audio sources to exclude; the
+// audio mixer persists those separately via audio_devices.json.
 struct SaveContext {
 	obs_source_t *audio[6] = {};
-	obs_canvas_t *mainCanvas = nullptr; // borrowed; lifetime spans the save call
 };
 
 // obs_save_sources_filtered predicate: keep public, global, non-audio sources.
@@ -115,57 +145,79 @@ void RestoreCanvasScenes(const std::map<std::string, std::string> &current)
 
 } // namespace
 
-const std::vector<std::string> &SceneOrder()
+const std::vector<std::string> &SceneOrder(const std::string &canvasUuid)
 {
-	ReconcileSceneOrder();
-	return g_sceneOrder;
+	ReconcileSceneOrder(canvasUuid);
+	return g_sceneOrder[canvasUuid];
 }
 
-bool ReorderScene(const std::string &sceneUuid, const std::string &direction)
+bool ReorderScene(const std::string &canvasUuid, const std::string &sceneUuid, const std::string &direction)
 {
-	ReconcileSceneOrder();
-	auto it = std::find(g_sceneOrder.begin(), g_sceneOrder.end(), sceneUuid);
-	if (it == g_sceneOrder.end()) {
+	ReconcileSceneOrder(canvasUuid);
+	std::vector<std::string> &order = g_sceneOrder[canvasUuid];
+	auto it = std::find(order.begin(), order.end(), sceneUuid);
+	if (it == order.end()) {
 		return false;
 	}
-	const size_t idx = static_cast<size_t>(std::distance(g_sceneOrder.begin(), it));
+	const size_t idx = static_cast<size_t>(std::distance(order.begin(), it));
 	if (direction == "up" && idx > 0) {
-		std::swap(g_sceneOrder[idx], g_sceneOrder[idx - 1]);
-	} else if (direction == "down" && idx + 1 < g_sceneOrder.size()) {
-		std::swap(g_sceneOrder[idx], g_sceneOrder[idx + 1]);
+		std::swap(order[idx], order[idx - 1]);
+	} else if (direction == "down" && idx + 1 < order.size()) {
+		std::swap(order[idx], order[idx + 1]);
 	} else if (direction == "top" && idx > 0) {
-		std::string uuid = std::move(g_sceneOrder[idx]);
-		g_sceneOrder.erase(g_sceneOrder.begin() + static_cast<std::ptrdiff_t>(idx));
-		g_sceneOrder.insert(g_sceneOrder.begin(), std::move(uuid));
-	} else if (direction == "bottom" && idx + 1 < g_sceneOrder.size()) {
-		std::string uuid = std::move(g_sceneOrder[idx]);
-		g_sceneOrder.erase(g_sceneOrder.begin() + static_cast<std::ptrdiff_t>(idx));
-		g_sceneOrder.push_back(std::move(uuid));
+		std::string uuid = std::move(order[idx]);
+		order.erase(order.begin() + static_cast<std::ptrdiff_t>(idx));
+		order.insert(order.begin(), std::move(uuid));
+	} else if (direction == "bottom" && idx + 1 < order.size()) {
+		std::string uuid = std::move(order[idx]);
+		order.erase(order.begin() + static_cast<std::ptrdiff_t>(idx));
+		order.push_back(std::move(uuid));
 	}
 	// Already at the relevant edge: no-op success, matching sceneItems.reorder.
 	return true;
 }
 
-bool MoveSceneToIndex(const std::string &sceneUuid, int index)
+bool MoveSceneToIndex(const std::string &canvasUuid, const std::string &sceneUuid, int index)
 {
-	ReconcileSceneOrder();
-	auto it = std::find(g_sceneOrder.begin(), g_sceneOrder.end(), sceneUuid);
-	if (it == g_sceneOrder.end()) {
+	ReconcileSceneOrder(canvasUuid);
+	std::vector<std::string> &order = g_sceneOrder[canvasUuid];
+	auto it = std::find(order.begin(), order.end(), sceneUuid);
+	if (it == order.end()) {
 		return false;
 	}
 	std::string uuid = std::move(*it);
-	g_sceneOrder.erase(it);
+	order.erase(it);
 
 	if (index < 0) {
 		index = 0;
 	}
-	const int maxIndex = static_cast<int>(g_sceneOrder.size());
+	const int maxIndex = static_cast<int>(order.size());
 	if (index > maxIndex) {
 		index = maxIndex;
 	}
-	g_sceneOrder.insert(g_sceneOrder.begin() + index, std::move(uuid));
+	order.insert(order.begin() + index, std::move(uuid));
 	return true;
 }
+
+namespace {
+
+// The order to persist for one canvas. Deliberately NOT SceneOrder(): that call
+// reconciles, and reconciling a canvas whose runtime entry is missing reduces its
+// order to empty -- which the non-empty guard in Save then turns into the key being
+// dropped from the file as well, destroying the record in memory and on disk at
+// once. A save must never be the thing that discards state, so it reconciles only
+// when the canvas actually resolves and otherwise persists what is still tracked,
+// verbatim. Stale entries are dropped by PruneSceneOrder, which keys on the
+// definitions rather than on the runtime.
+const std::vector<std::string> &SceneOrderToPersist(const std::string &canvasUuid)
+{
+	if (ObsBootstrap::CanvasRuntime().Find(canvasUuid)) {
+		return SceneOrder(canvasUuid);
+	}
+	return g_sceneOrder[canvasUuid];
+}
+
+} // namespace
 
 void Save()
 {
@@ -180,8 +232,6 @@ void Save(const std::string &path)
 		audioRefs[ch - 1] = obs_get_output_source(ch); // addref'd; may be null
 		ctx.audio[ch - 1] = audioRefs[ch - 1];
 	}
-	OBSCanvasAutoRelease mainCanvas = obs_get_main_canvas(); // addref'd; the Default canvas
-	ctx.mainCanvas = mainCanvas;
 
 	OBSDataArrayAutoRelease sources = obs_save_sources_filtered(SaveFilter, &ctx);
 
@@ -195,7 +245,12 @@ void Save(const std::string &path)
 	// Persist each additional canvas's active scene (its channel-0 binding), keyed
 	// by canvas uuid. Per-collection, mirroring current_scene for the main canvas.
 	OBSDataAutoRelease canvasCurrent = obs_data_create();
+	// Each additional canvas's own scene order, same canvas-uuid-keyed shape. Sibling
+	// of "scene_order" below rather than part of it, so an existing collection (which
+	// only ever carried the main array) keeps loading unchanged.
+	OBSDataAutoRelease canvasSceneOrder = obs_data_create();
 	::CanvasRuntime &runtime = ObsBootstrap::CanvasRuntime();
+	PruneSceneOrder(); // the canvas walk below is where dead uuids are dropped
 	for (const CanvasDefinition &def : ObsBootstrap::Canvases().Definitions()) {
 		if (def.isDefault) {
 			continue;
@@ -205,14 +260,24 @@ void Save(const std::string &path)
 		if (name && *name) {
 			obs_data_set_string(canvasCurrent, def.uuid.c_str(), name);
 		}
+		OBSDataArrayAutoRelease order = obs_data_array_create();
+		for (const std::string &uuid : SceneOrderToPersist(def.uuid)) {
+			OBSDataAutoRelease item = obs_data_create();
+			obs_data_set_string(item, "uuid", uuid.c_str());
+			obs_data_array_push_back(order, item);
+		}
+		if (obs_data_array_count(order) > 0) {
+			obs_data_set_array(canvasSceneOrder, def.uuid.c_str(), order);
+		}
 	}
 	obs_data_set_obj(root, "canvas_current", canvasCurrent);
+	obs_data_set_obj(root, "canvas_scene_order", canvasSceneOrder);
 
 	// Persist the main-canvas scene list's user-defined order (uuids, reconciled
 	// against the scenes just saved above) so it survives a restart -- libobs has
 	// no scene-ordering primitive, so this array is the only record of it.
 	OBSDataArrayAutoRelease sceneOrder = obs_data_array_create();
-	for (const std::string &uuid : SceneOrder()) {
+	for (const std::string &uuid : SceneOrder(std::string())) {
 		OBSDataAutoRelease item = obs_data_create();
 		obs_data_set_string(item, "uuid", uuid.c_str());
 		obs_data_array_push_back(sceneOrder, item);
@@ -251,17 +316,36 @@ bool Load(const std::string &path)
 	// actually loaded -- drops uuids for scenes that failed to load and appends
 	// any loaded scene the saved order didn't know about (e.g. an older save from
 	// before scene_order existed), so the order is always consistent from here on.
-	if (OBSDataArrayAutoRelease sceneOrder = obs_data_get_array(root, "scene_order")) {
-		const size_t count = obs_data_array_count(sceneOrder);
+	auto readOrder = [](obs_data_array_t *array, std::vector<std::string> &out) {
+		const size_t count = obs_data_array_count(array);
 		for (size_t i = 0; i < count; i++) {
-			OBSDataAutoRelease item = obs_data_array_item(sceneOrder, i);
+			OBSDataAutoRelease item = obs_data_array_item(array, i);
 			const char *uuid = obs_data_get_string(item, "uuid");
 			if (uuid && *uuid) {
-				g_sceneOrder.push_back(uuid);
+				out.push_back(uuid);
+			}
+		}
+	};
+	if (OBSDataArrayAutoRelease sceneOrder = obs_data_get_array(root, "scene_order")) {
+		readOrder(sceneOrder, g_sceneOrder[std::string()]);
+	}
+	ReconcileSceneOrder(std::string());
+
+	// Each additional canvas's scene order, keyed by canvas uuid (sibling of the
+	// main "scene_order" array above). Left un-reconciled here: the canvases' scenes
+	// are only fully in place once RestoreCanvasScenes below has seeded the empty
+	// ones, and every read reconciles anyway. A key for a canvas that no longer
+	// exists reconciles to empty on first read and is pruned by the next Save.
+	OBSDataAutoRelease canvasSceneOrder = obs_data_get_obj(root, "canvas_scene_order");
+	if (canvasSceneOrder) {
+		for (obs_data_item_t *item = obs_data_first(canvasSceneOrder); item; obs_data_item_next(&item)) {
+			const char *uuid = obs_data_item_get_name(item);
+			OBSDataArrayAutoRelease array = obs_data_item_get_array(item);
+			if (uuid && *uuid && array) {
+				readOrder(array, g_sceneOrder[uuid]);
 			}
 		}
 	}
-	ReconcileSceneOrder();
 
 	// Additional-canvas active scenes { canvas uuid -> scene name }, restored after
 	// the main channel-0 bind below via RestoreCanvasScenes.
@@ -311,17 +395,17 @@ bool Load(const std::string &path)
 void ClearCurrent()
 {
 	// Build the same exclude context Save uses, so the remove boundary stays in
-	// lockstep with the keep boundary (SaveFilter): the channel 1-6 audio sources and
-	// any additional-canvas sources are preserved; main-canvas scenes + plain inputs
-	// are removed.
+	// lockstep with the keep boundary (SaveFilter): the channel 1-6 global audio
+	// sources are preserved; main-canvas scenes + plain inputs are removed here.
+	// Additional-canvas scenes are removed too, by the explicit per-canvas sweep at
+	// the end of this function -- obs_enum_scenes below is main-canvas-scoped and
+	// never reaches them.
 	SaveContext ctx;
 	OBSSourceAutoRelease audioRefs[6];
 	for (uint32_t ch = 1; ch <= 6; ch++) {
 		audioRefs[ch - 1] = obs_get_output_source(ch); // addref'd; may be null
 		ctx.audio[ch - 1] = audioRefs[ch - 1];
 	}
-	OBSCanvasAutoRelease mainCanvas = obs_get_main_canvas(); // addref'd; the Default canvas
-	ctx.mainCanvas = mainCanvas;
 
 	// SaveFilter returns true for sources this collection owns; remove exactly those.
 	// libobs hands the same source to obs_enum_scenes (scenes) and obs_enum_sources

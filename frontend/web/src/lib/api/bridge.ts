@@ -1685,10 +1685,11 @@ export interface ObsMethods {
   // included) from one canvas onto another (or the same one). Params: {name,
   // canvas?, destCanvas}; canvas omitted/empty means the Default canvas.
   "scenes.duplicateToCanvas": { name: string; uuid: string };
-  // Reorder a scene within the persisted scene_order (Default canvas only; an
-  // additional canvas's scene list is not yet reorderable). Either
-  // {name, direction} (relative) or {name, to} (absolute, top-first UI index
-  // matching scenes.list order, for drag-and-drop).
+  // Reorder a scene within its canvas's persisted order. Params: {name, canvas?,
+  // ...}; canvas omitted/empty means the Default canvas, which is tracked by
+  // scene_order while each additional canvas has its own canvas_scene_order entry.
+  // Either {name, direction} (relative) or {name, to} (absolute, top-first UI
+  // index matching scenes.list order, for drag-and-drop).
   "scenes.reorder": { name: string; direction: ReorderDirection | ""; to: number | null };
   // Scene items (top-first draw order; omit `scene` to target the current scene).
   // Pass an optional `canvas` uuid to target an additional canvas's current scene.

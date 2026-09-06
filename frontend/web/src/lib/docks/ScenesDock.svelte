@@ -13,6 +13,12 @@ import { EV } from "$lib/utils/eventNames";
   import { clipboard } from "$lib/stores/clipboardStore.svelte";
   import { renameSignal } from "$lib/stores/renameSignalStore.svelte";
   import { openFilters } from "$lib/dialogs/filterDialogOpener.svelte";
+  import {
+    SceneDragReorder,
+    sceneMoveActions,
+    sceneOrderMenuChildren,
+    type SceneOrderTarget,
+  } from "$lib/utils/sceneReorder.svelte";
 
   // The mount adapter strips internal __* keys; this dock declares no props.
   let {}: Record<string, unknown> = $props();
@@ -56,6 +62,12 @@ import { EV } from "$lib/utils/eventNames";
     currentName === null ? -1 : defaultCanvas.scenes.findIndex((s) => s.name === currentName),
   );
 
+  // The toolbar acts on the current scene, the menu on the right-clicked one; both
+  // index against the full, unfiltered list.
+  function orderTarget(idx: number, move: (direction: ReorderDirection) => void): SceneOrderTarget {
+    return { idx, count: defaultCanvas.scenes.length, disabled: filtering, move };
+  }
+
   const leftActions = $derived<ToolAction[]>([
     { icon: "plus", title: "Add scene", onClick: beginAdd },
     {
@@ -66,18 +78,7 @@ import { EV } from "$lib/utils/eventNames";
     },
   ]);
   const rightActions = $derived<ToolAction[]>([
-    {
-      icon: "up",
-      title: "Move up",
-      disabled: filtering || currentIdx <= 0,
-      onClick: () => currentName && void reorder(currentName, "up"),
-    },
-    {
-      icon: "down",
-      title: "Move down",
-      disabled: filtering || currentIdx < 0 || currentIdx >= defaultCanvas.scenes.length - 1,
-      onClick: () => currentName && void reorder(currentName, "down"),
-    },
+    ...sceneMoveActions(orderTarget(currentIdx, (d) => currentName && void reorder(currentName, d))),
     {
       icon: gridMode ? "list" : "grid",
       title: gridMode ? "List view" : "Grid view",
@@ -219,50 +220,11 @@ import { EV } from "$lib/utils/eventNames";
   // list renders and scenes.list returns); the bridge moves the dragged scene
   // there, same as the up/down buttons. Disabled while filtering, since indices
   // only make sense against the full ordering.
-  let dragName = $state<string | null>(null);
-  let dragOverIdx = $state<number | null>(null);
-
-  function onDragStart(e: DragEvent, scene: SceneInfo) {
-    if (filtering) {
-      return;
-    }
-    dragName = scene.name;
-    if (e.dataTransfer) {
-      e.dataTransfer.effectAllowed = "move";
-      e.dataTransfer.setData("text/plain", scene.name); // Firefox requires data
-    }
-  }
-
-  function onDragOver(e: DragEvent, idx: number) {
-    if (dragName === null) {
-      return;
-    }
-    e.preventDefault(); // mark this a valid drop target
-    if (e.dataTransfer) {
-      e.dataTransfer.dropEffect = "move";
-    }
-    dragOverIdx = idx;
-  }
-
-  function onDrop(e: DragEvent, idx: number) {
-    e.preventDefault();
-    const name = dragName;
-    dragName = null;
-    dragOverIdx = null;
-    if (name === null) {
-      return;
-    }
-    const from = defaultCanvas.scenes.findIndex((s) => s.name === name);
-    if (from < 0 || from === idx) {
-      return;
-    }
-    void reorderTo(name, idx);
-  }
-
-  function onDragEnd() {
-    dragName = null;
-    dragOverIdx = null;
-  }
+  const dnd = new SceneDragReorder({
+    move: (name, to) => void reorderTo(name, to),
+    indexOf: (name) => defaultCanvas.scenes.findIndex((s) => s.name === name),
+    disabled: () => filtering,
+  });
 
   async function reorderTo(name: string, to: number) {
     actionError = null;
@@ -284,20 +246,7 @@ import { EV } from "$lib/utils/eventNames";
             action: () => void duplicateToCanvas(name, c.uuid),
           }));
     const idx = defaultCanvas.scenes.findIndex((s) => s.name === name);
-    const orderChildren = [
-      { label: "Up", disabled: filtering || idx <= 0, action: () => void reorder(name, "up") },
-      {
-        label: "Down",
-        disabled: filtering || idx < 0 || idx >= defaultCanvas.scenes.length - 1,
-        action: () => void reorder(name, "down"),
-      },
-      { label: "Top", disabled: filtering || idx <= 0, action: () => void reorder(name, "top") },
-      {
-        label: "Bottom",
-        disabled: filtering || idx < 0 || idx >= defaultCanvas.scenes.length - 1,
-        action: () => void reorder(name, "bottom"),
-      },
-    ];
+    const orderChildren = sceneOrderMenuChildren(orderTarget(idx, (d) => void reorder(name, d)));
     menu = {
       x: e.clientX,
       y: e.clientY,
@@ -364,12 +313,12 @@ import { EV } from "$lib/utils/eventNames";
         <div
           class="grid-tile"
           class:sel={scene.current}
-          class:dropTarget={dragOverIdx === idx && dragName !== null && dragName !== scene.name}
+          class:dropTarget={dnd.isDropTarget(idx, scene.name)}
           draggable={!filtering}
-          ondragstart={(e) => onDragStart(e, scene)}
-          ondragover={(e) => onDragOver(e, idx)}
-          ondrop={(e) => onDrop(e, idx)}
-          ondragend={onDragEnd}
+          ondragstart={(e) => dnd.onDragStart(e, scene.name)}
+          ondragover={(e) => dnd.onDragOver(e, idx)}
+          ondrop={(e) => dnd.onDrop(e, idx)}
+          ondragend={dnd.onDragEnd}
           oncontextmenu={(e) => openMenu(e, scene.name)}
           role="listitem"
         >
@@ -400,12 +349,12 @@ import { EV } from "$lib/utils/eventNames";
         <li
           class="dock-row"
           class:sel={scene.current}
-          class:dropTarget={dragOverIdx === idx && dragName !== null && dragName !== scene.name}
+          class:dropTarget={dnd.isDropTarget(idx, scene.name)}
           draggable={!filtering}
-          ondragstart={(e) => onDragStart(e, scene)}
-          ondragover={(e) => onDragOver(e, idx)}
-          ondrop={(e) => onDrop(e, idx)}
-          ondragend={onDragEnd}
+          ondragstart={(e) => dnd.onDragStart(e, scene.name)}
+          ondragover={(e) => dnd.onDragOver(e, idx)}
+          ondrop={(e) => dnd.onDrop(e, idx)}
+          ondragend={dnd.onDragEnd}
           oncontextmenu={(e) => openMenu(e, scene.name)}
         >
           {@render sceneCell(scene)}
