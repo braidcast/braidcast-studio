@@ -33,8 +33,9 @@
 
 <script lang="ts">
   import { unarmedLabel, type DestinationIdentity } from "$lib/stores/destinationIdentityStore.svelte";
-  import { PLATFORM_LABELS, platformChipColor, platformKey } from "$lib/theme/platformColors";
+  import { platformChipColor, platformKey, platformName } from "$lib/theme/platformColors";
   import { TRANSPORT_STATE_COLOR } from "$lib/theme/stateColors";
+  import Avatar from "$lib/ui/Avatar.svelte";
   import CanvasMark from "$lib/ui/CanvasMark.svelte";
   import PlatformMark from "$lib/ui/PlatformMark.svelte";
   import { ABSENT_LABEL, ALL_DESTINATIONS, type DestinationSelection } from "$lib/ui/destinationSelection";
@@ -63,7 +64,9 @@
      * The accessible name is composed here regardless and is never overridden. */
     titleOf?: (d: DestinationIdentity, canvas: string) => string;
     /** Defaults to "there is more than one chip", the point at which All means
-     * something. */
+     * something. Passing `false` explicitly also removes the scope row's only
+     * always-present visual anchor -- see withScopes -- leaving a row of bare platform
+     * marks that a destination chip can match pixel for pixel. Neither dock passes it. */
     showAll?: boolean;
   }
   let {
@@ -94,7 +97,7 @@
       } else {
         byPlatform.set(platform, {
           platform,
-          label: PLATFORM_LABELS[platform] ?? d.platform,
+          label: platformName(d.platform),
           color: platformChipColor(platform),
           members: [d],
         });
@@ -105,12 +108,26 @@
 
   let withAll = $derived(showAll ?? destinations.length + unarmedPlatforms.length >= 2);
 
-  // Row 2 (platform scope chips) repeats what Row 1's All chip already says once there
-  // is only one platform in play -- it adds no information, so it is suppressed rather
-  // than rendered redundantly.
+  // The platform chips repeat what the All chip already says once there is only one
+  // platform in play -- they add no information, so they are suppressed rather than
+  // rendered redundantly.
   let withPlatforms = $derived(groups.length + unarmedPlatforms.length >= 2);
 
-  // Row 3 (individual streams) has nothing to show once there are no destinations.
+  // The scope row holds both kinds, so it survives either one alone: `showAll: false`
+  // with several platforms, and a single platform holding several destinations, each
+  // still produce one populated row rather than an empty one with a divider under it.
+  //
+  // Left to itself, withPlatforms implies withAll, and that implication is what tells the
+  // two rows apart on screen: `groups` partitions `destinations`, so groups.length is at
+  // most destinations.length, so groups + unarmed >= 2 gives destinations + unarmed >= 2,
+  // which is withAll's own test. The scope row therefore always opens with the `All` chip
+  // (bare at one destination, `All N` above that) while the destination row never holds
+  // one -- a text anchor no theme setting can switch off, which matters because every
+  // chip after it is a bare mark that a destination chip can match exactly.
+  // `showAll: false` is the one thing that breaks it.
+  let withScopes = $derived(withAll || withPlatforms);
+
+  // The destination row has nothing to show once there are no destinations.
   let withStreams = $derived(groups.length > 0);
 
   /** What the canvas mark draws. Null for a destination that has no canvas at all --
@@ -174,75 +191,90 @@
   // parameter emits a bare marker in the parameter list -- invalid JS that only the
   // Vite build catches, never svelte-check.
   function accessibleName(d: DestinationIdentity, canvas: string, status: DestinationChipStatus | undefined): string {
-    const platform = PLATFORM_LABELS[platformKey(d.platform)] ?? d.platform;
     return (
-      [platform, d.displayName, canvas].filter((part) => part !== "").join(" · ") +
+      [platformName(d.platform), d.displayName, canvas].filter((part) => part !== "").join(" · ") +
       (status?.note ? " — " + status.note : "")
     );
   }
 
   function hoverText(d: DestinationIdentity, canvas: string, status: DestinationChipStatus | undefined): string {
-    // The note is appended below, so the base name is composed without it.
-    const base = titleOf?.(d, canvas) ?? accessibleName(d, canvas, undefined);
+    // The platform is led in even where the caller supplied its own wording: no chip in
+    // this component prints a platform, a channel or a canvas as text any more, so the
+    // hover text is the only place a pointer can recover any of the three. `titleOf`
+    // already carries the channel and the canvas; the platform is the part it omits.
+    // The note is appended below, so the base is composed without it.
+    const base = titleOf ? platformName(d.platform) + " — " + titleOf(d, canvas) : accessibleName(d, canvas, undefined);
     return status?.note && !base.endsWith(status.note) ? base + " — " + status.note : base;
   }
 
   function fallbackUnarmedHint(platform: string): string {
-    return (PLATFORM_LABELS[platformKey(platform)] ?? platform) + " has no destination configured.";
+    return platformName(platform) + " has no destination configured.";
   }
 </script>
 
 <div class="chips">
-  {#if withAll}
-    <div class="row" role="group" aria-label="All destinations">
-      <button
-        class="chip scope"
-        class:on={value.kind === "all"}
-        aria-pressed={value.kind === "all"}
-        aria-label={"All " + destinations.length + " destinations"}
-        onclick={() => onSelect(ALL_DESTINATIONS)}
-      >
-        All{destinations.length >= 2 ? " " + destinations.length : ""}
-      </button>
-    </div>
-  {/if}
-
-  {#if withAll && withPlatforms}
-    <div class="row-divider" aria-hidden="true"></div>
-  {/if}
-
-  {#if withPlatforms}
-    <!-- Every platform with at least one destination gets a scope chip here, even one
-         with a single destination: a chip that only shows up once a platform has 2+
-         members would make this row's very existence unpredictable. A dedicated row
-         makes the redundancy with its one member legible instead of confusing. -->
-    <div class="row" role="group" aria-label="Platforms">
-      {#each groups as g (g.platform)}
-        {@const selected = value.kind === "platform" && value.platform === g.platform}
+  {#if withScopes}
+    <!-- One row for both kinds of scope. They were split only because a row of chips
+         reading "All 7  YouTube  Twitch  Kick  Facebook Live" needed the width; with the
+         platform reduced to its mark there is no longer a second line's worth to place,
+         and "everything" and "everything on this platform" are the same question asked at
+         two widths.
+         Every platform with at least one destination gets a chip, even one with a single
+         destination: a chip that appeared only once a platform had 2+ members would make
+         its presence unpredictable. -->
+    <div class="row" role="group" aria-label="Scopes">
+      {#if withAll}
+        <!-- Pluralized because withAll counts unarmed platforms too, so this chip can
+             render over a single destination and read "All 1 destinations". -->
+        {@const allLabel = "All " + destinations.length + (destinations.length === 1 ? " destination" : " destinations")}
         <button
           class="chip scope"
-          class:on={selected}
-          aria-pressed={selected}
-          aria-label={"All " + g.label + " destinations"}
-          title={"All " + g.label + " destinations"}
-          style:--chip={g.color}
-          onclick={() => onSelect({ kind: "platform", platform: g.platform })}
+          class:on={value.kind === "all"}
+          aria-pressed={value.kind === "all"}
+          aria-label={allLabel}
+          title={allLabel}
+          onclick={() => onSelect(ALL_DESTINATIONS)}
         >
-          <PlatformMark platform={g.platform} size={12} />
-          {g.label}
+          <!-- Kept as a word: "all" is a scope, not the name of anything, and it has no
+               mark to fall back to. -->
+          All{destinations.length >= 2 ? " " + destinations.length : ""}
         </button>
-      {/each}
-      {#each unarmedPlatforms as p (p)}
-        {@const hint = (unarmedHint ?? fallbackUnarmedHint)(p)}
-        <button class="chip" disabled title={hint} aria-label={hint}>
-          <PlatformMark platform={p} size={12} />
-          <span class="cname">{PLATFORM_LABELS[platformKey(p)] ?? p}</span>
-        </button>
-      {/each}
+      {/if}
+      {#if withPlatforms}
+        {#each groups as g (g.platform)}
+          {@const selected = value.kind === "platform" && value.platform === g.platform}
+          <button
+            class="chip scope"
+            class:on={selected}
+            aria-pressed={selected}
+            aria-label={"All " + g.label + " destinations"}
+            title={"All " + g.label + " destinations"}
+            style:--chip={g.color}
+            onclick={() => onSelect({ kind: "platform", platform: g.platform })}
+          >
+            <PlatformMark platform={g.platform} size={12} />
+          </button>
+        {/each}
+        {#each unarmedPlatforms as p (p)}
+          {@const hint = (unarmedHint ?? fallbackUnarmedHint)(p)}
+          <!-- `scope` too, though it can never be pressed: it sits among scope chips and
+               a square chip here would read as one of the destinations below.
+               aria-disabled with the styling by class rather than the `disabled`
+               attribute: Chromium does not dispatch mouse events to a disabled form
+               control, so `title` never fires on hover, and this chip is a bare mark
+               whose entire identity is that tooltip -- it exists to explain a state
+               (connected, no destination) that is otherwise invisible.
+               It is therefore focusable and clickable, and is safe only because it has
+               no handler. Anything added to it must check aria-disabled first. -->
+          <button class="chip scope unselectable" aria-disabled="true" title={hint} aria-label={hint}>
+            <PlatformMark platform={p} size={12} />
+          </button>
+        {/each}
+      {/if}
     </div>
   {/if}
 
-  {#if (withAll || withPlatforms) && withStreams}
+  {#if withScopes && withStreams}
     <div class="row-divider" aria-hidden="true"></div>
   {/if}
 
@@ -276,17 +308,32 @@
             {@const status = statusOf?.(d)}
             {@const tone = status?.state ? TRANSPORT_STATE_COLOR[status.state] : ""}
             {@const selected = value.kind === "destination" && value.profileUuid === d.profileUuid}
+            {@const unavailable = status?.unavailable ?? false}
+            <!-- aria-disabled rather than the `disabled` attribute, same as the unarmed
+                 scope chip above: a disabled control receives no mouse events in Chromium
+                 and is skipped by the tab order, and this chip's title is where the
+                 transport's note lives -- the reason a destination is down, which is the
+                 one string a streamer goes looking for mid-broadcast. Unselectable is
+                 unchanged; only reaching the explanation is new.
+                 The early return below is the guard, NOT the styling: this button is
+                 focusable, so Enter and Space activate it and no CSS intercepts that. -->
             <button
               class="chip"
               class:on={selected}
               class:toned={tone !== ""}
-              disabled={status?.unavailable ?? false}
+              class:unselectable={unavailable}
+              aria-disabled={unavailable}
               aria-pressed={selected}
               aria-label={accessibleName(d, canvas, status)}
               title={hoverText(d, canvas, status)}
               style:--chip={platformChipColor(d.platform)}
               style:--tone={tone}
-              onclick={() => onSelect({ kind: "destination", profileUuid: d.profileUuid })}
+              onclick={() => {
+                if (unavailable) {
+                  return;
+                }
+                onSelect({ kind: "destination", profileUuid: d.profileUuid });
+              }}
             >
               <!-- Platform as a mark, never as a word: the name is carried by aria-label,
                    which is then the only carrier and must not be dropped. -->
@@ -294,16 +341,17 @@
               {#if inline}
                 {@render canvasFace(inline)}
               {:else if !g.canvas}
-                <!-- No canvas, so there is no number to reduce this chip to and the
-                     channel name has to stay. A caller that passes only armed
-                     destinations never reaches this branch and gets the compact form
-                     throughout; a caller that deliberately keeps unarmed chips (Events,
-                     whose transports are account-scoped) would otherwise render every
-                     destination of one platform as the same anonymous mark.
+                <!-- No canvas, so there is no number to reduce this chip to. The channel
+                     avatar takes the place the channel name held: a caller that keeps
+                     unarmed chips (Events, whose transports are account-scoped) has four
+                     YouTube destinations here, and without a per-channel mark they would
+                     be four controls with identical visible presentation. Avatar's
+                     monogram fallback still discriminates before an image loads. A
+                     caller that passes only armed destinations never reaches this branch.
                      The state word rather than a dash: unarmedLabel distinguishes
                      "disabled" from "not armed" because they ask for opposite actions,
                      and this is the branch that exists to say which. -->
-                <span class="cname">{d.displayName}</span>
+                <Avatar url={d.channelAvatarUrl} name={d.displayName} size={14} />
                 <span class="ccanvas">{canvas}</span>
               {/if}
             </button>
@@ -381,8 +429,28 @@
     color: var(--color-text);
     background: color-mix(in srgb, var(--chip, var(--color-accent)) 14%, transparent);
   }
-  /* Mono types a chip as a scope ("everything under this") rather than as one thing. */
+  /* What separates a scope chip from a destination chip is structural, not decorative:
+     the scope row always opens with the `All N` text chip and the destination row never
+     contains one (see withScopes above for why that holds), the divider sits between
+     them, and a multi-member destination group opens with a canvas mark. The styling
+     here is a second leg, not the carrier.
+
+     Two decorative carriers were tried and do not work in this app, which is worth
+     recording because both look available:
+     - radius is unreachable. app.css applies `border-radius: 0 !important` to `*`, and
+       author-origin !important outranks a scoped class.
+     - a background band on the row is imperceptible. --color-surface against the two
+       grounds the docks put it on measures 1.07-1.14:1 in every shipped preset, and the
+       step inverts -- darker than EventsDock's .bar (--color-surface-2), lighter than
+       MultichatDock's .dests (--color-base) -- so it reads as a recess in one dock and a
+       lift in the other.
+
+     The border is doubled as a RELATIONSHIP, not a constant: --border-weight is a
+     user-editable Appearance token offering 1px and 2px, so a hardcoded 2px here
+     silently collapses to no difference the moment a user picks the heavier setting.
+     Mono still types the one scope chip that has text. */
   .chip.scope {
+    border-width: calc(var(--border-weight) * 2);
     font-family: var(--font-mono);
     letter-spacing: var(--letter-spacing);
     text-transform: var(--label-case);
@@ -391,8 +459,13 @@
      platform with no destination, or a destination with no usable chat transport. The
      dashed edge is the carrier that survives when the hues do not -- opacity and the
      muted text are luminance, and the cursor only speaks to a mouse. Placed after
-     .chip.on so a selected chip that loses its transport still reads unselectable. */
-  .chip:disabled {
+     .chip.on because both set `color`, so a selected chip that loses its transport still
+     reads unselectable. Order against .chip.scope is not load-bearing: dashed is
+     border-style and the doubled edge is border-width, so a scope chip carries both.
+     Keyed on a class rather than :disabled because no chip here uses the attribute: a
+     `disabled` control receives no mouse events in Chromium and is skipped by the tab
+     order, and every chip in this strip is a mark whose identity is its tooltip. */
+  .chip.unselectable {
     cursor: not-allowed;
     opacity: 0.5;
     border-style: dashed;
@@ -403,12 +476,6 @@
     outline-offset: 1px;
     position: relative;
     z-index: 2;
-  }
-  .cname {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
   .ccanvas {
     flex: 0 0 auto;
@@ -424,7 +491,7 @@
   .chip.on .ccanvas {
     color: var(--color-text);
   }
-  .chip:disabled .ccanvas {
+  .chip.unselectable .ccanvas {
     color: var(--color-muted);
   }
   /* Transport state rides the chip's leading edge rather than a mark of its own: the

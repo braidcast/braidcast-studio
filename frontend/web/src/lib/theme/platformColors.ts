@@ -29,6 +29,27 @@ export const PLATFORM_LABELS: Record<string, string> = {
   facebook: "Facebook Live",
 };
 
+/**
+ * The platform in words, falling back to the caller's own string so an unrecognized
+ * provider still announces something rather than nothing. The companion to
+ * platformChipColor, and what carries the platform on a surface that shows the brand
+ * mark instead of the name.
+ *
+ * Only the spelling of the `?? raw` chain, not of the lookup itself: other consumers
+ * index PLATFORM_LABELS directly and end their chains elsewhere, so this is not a
+ * drop-in for all of them. Grep PLATFORM_LABELS before assuming otherwise.
+ *
+ * Two same-named neighbours, neither of them this: `profileDisplay.ts` exports a
+ * `platformLabel` for a profile's full service line ("YouTube - RTMPS"), and
+ * ChannelsDock has a file-local `platformName` over a channel row whose fallback reaches
+ * through the bound profile. Its fallback chain is longer than this one's, but its lookup
+ * is narrower -- it indexes PLATFORM_LABELS by a raw providerId with no platformKey -- so
+ * neither contains the other. Pre-existing, and not reconciled here.
+ */
+export function platformName(raw: string): string {
+  return PLATFORM_LABELS[platformKey(raw)] ?? raw;
+}
+
 /** Stable platform order so chip rows / filters never reshuffle. Chat/event surfaces
  * only — a platform belongs here once it has a chat transport, so Facebook is absent:
  * listing it would have the multichat dock report a connected platform as "not armed"

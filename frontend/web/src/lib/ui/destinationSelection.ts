@@ -15,7 +15,7 @@
 // shared string with a surface flag would be one abstraction pretending to be two.
 
 import { destinationIdentityStore, type DestinationIdentity } from "$lib/stores/destinationIdentityStore.svelte";
-import { PLATFORM_LABELS, platformKey } from "$lib/theme/platformColors";
+import { platformKey, platformName } from "$lib/theme/platformColors";
 
 /** What is selected. `platform` is a platformColors.ts key; `profileUuid` names one
  * stream profile. A caller that can only act on a single destination gates on
@@ -72,11 +72,7 @@ export function unarmedPlatforms(
 /** `consequence` completes the sentence with what this particular surface loses --
  * "it has no chat here." / "its events cannot be filtered." */
 export function unarmedHint(platform: string, consequence: string): string {
-  return (
-    (PLATFORM_LABELS[platformKey(platform)] ?? platform) +
-    " is connected but has no destination configured, so " +
-    consequence
-  );
+  return platformName(platform) + " is connected but has no destination configured, so " + consequence;
 }
 
 /**
@@ -204,7 +200,7 @@ export function selectionLabel(
   { separator, all }: { separator: string; all: string },
 ): string {
   if (sel.kind === "platform") {
-    return PLATFORM_LABELS[sel.platform] ?? sel.platform;
+    return platformName(sel.platform);
   }
   if (sel.kind === "destination") {
     const d = destByUuid.get(sel.profileUuid);

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { obs, type ChatMessage, type ChatSendParams } from "$lib/api/bridge";
   import { EV } from "$lib/utils/eventNames";
-  import { PLATFORM_COLORS, PLATFORM_LABELS, platformKey } from "$lib/theme/platformColors";
+  import { PLATFORM_COLORS, platformKey, platformName } from "$lib/theme/platformColors";
   import { FeedVirtualizer, type FeedRow } from "$lib/utils/feedVirtualizer.svelte";
   import { callOrToast } from "$lib/utils/callToast";
   import { tickWhileVisible } from "$lib/utils/tickWhileVisible";
@@ -32,7 +32,6 @@
   let {}: Record<string, unknown> = $props();
 
   const PLATFORM_COLOR = PLATFORM_COLORS;
-  const PLATFORM_LABEL = PLATFORM_LABELS;
 
   // Merged, ring-capped, virtualized scrollback. Rows carry a client-assigned key
   // (m.id could arrive empty/duplicated); 30px estimate for an unmeasured row.
@@ -163,7 +162,7 @@
   };
 
   function originTitle(m: ChatMessage, o: Attribution): string {
-    const platform = PLATFORM_LABEL[platformKey(m.platform)] ?? m.platform;
+    const platform = platformName(m.platform);
     const hint = FIDELITY_HINT[o.fidelity];
     return [platform, o.channel, o.canvasLabel].join(" · ") + (hint ? " — " + hint : "");
   }
@@ -325,7 +324,7 @@
   /** "3 chats" / "1 YouTube chat" -- one phrase for the band, the button and the
    * placeholder, so the three can never quote different counts. */
   function chatsPhrase(n: number, platform: string): string {
-    const label = platform ? (PLATFORM_LABEL[platform] ?? platform) + " " : "";
+    const label = platform ? platformName(platform) + " " : "";
     return n + " " + label + (n === 1 ? "chat" : "chats");
   }
 
