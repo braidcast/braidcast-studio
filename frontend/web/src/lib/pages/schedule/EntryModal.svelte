@@ -18,7 +18,7 @@
   } from "$lib/stores/destinationIdentityStore.svelte";
   import { oauthStore } from "$lib/stores/oauthStore.svelte";
   import { scheduleStore } from "$lib/stores/scheduleStore.svelte";
-  import { PLATFORM_COLORS, platformKey } from "$lib/theme/platformColors";
+  import { platformChipColor, platformKey } from "$lib/theme/platformColors";
   import EmptyState from "$lib/ui/EmptyState.svelte";
   import Icon from "$lib/ui/Icon.svelte";
   import Modal from "$lib/ui/Modal.svelte";
@@ -442,7 +442,7 @@
               class="chip"
               class:on
               aria-pressed={on}
-              style:--chip={PLATFORM_COLORS[platformKey(d.platform)] || "var(--color-accent)"}
+              style:--chip={platformChipColor(d.platform)}
               onclick={() => toggleDest(d.profileUuid)}
             >
               <PlatformMark platform={d.platform} size={12} />

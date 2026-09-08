@@ -12,6 +12,15 @@ export const PLATFORM_COLORS: Record<string, string> = {
   facebook: "#0866ff",
 };
 
+/**
+ * The chip/edge accent for a platform. Falls back to the theme accent rather than to
+ * PlatformMark's muted swatch: an unknown platform still needs an edge that reads as a
+ * selected chip, where an unknown *mark* must not claim a brand it does not have.
+ */
+export function platformChipColor(raw: string): string {
+  return PLATFORM_COLORS[platformKey(raw)] || "var(--color-accent)";
+}
+
 /** Display label per chat platform. */
 export const PLATFORM_LABELS: Record<string, string> = {
   twitch: "Twitch",

@@ -21,13 +21,10 @@
     matchesSelection,
     reconcileSelection,
     selectionLabel,
-    unarmedHint as unarmedHintFor,
-    unarmedPlatforms as unarmedPlatformsOf,
     type Attribution,
     type DestinationSelection,
     type Fidelity,
   } from "$lib/ui/destinationSelection";
-  import { oauthStore } from "$lib/stores/oauthStore.svelte";
   import { destinationIdentityStore, type DestinationIdentity } from "$lib/stores/destinationIdentityStore.svelte";
   import { transportHealthStore } from "$lib/stores/transportHealthStore.svelte";
 
@@ -47,12 +44,7 @@
 
   $effect(() => {
     destinationIdentityStore.start();
-    const offHealth = transportHealthStore.subscribe();
-    const offOauth = oauthStore.subscribe();
-    return () => {
-      offHealth();
-      offOauth();
-    };
+    return transportHealthStore.subscribe();
   });
 
   // Only an account-backed profile can run a chat transport, so a key/RTMP/WHIP
@@ -60,17 +52,34 @@
   let destinations = $derived(destinationIdentityStore.all.filter((d) => d.accountId !== ""));
   let destByUuid = $derived(new Map(destinations.map((d) => [d.profileUuid, d])));
 
-  // Needed twice: to attribute a channel-wide message to the streams it could belong
-  // to, and to know whether one chat is shared.
+  // What this dock offers a chip for, and the only thing a message can come from.
+  // ChatHub enumerates connected accounts and builds one transport per DESTINATION
+  // targeted by an ENABLED output binding (frontend/src/chat/chat_hub.hpp), and
+  // `canvasUuid` is resolved from exactly that enabled binding
+  // (destinationIdentityStore #identify), so a null canvas is the whole set of
+  // destinations chat can never reach: never bound, and bound-but-switched-off alike.
+  // They are what filled this strip with rows the streamer cannot act on.
+  //
+  // Deliberately NOT a test on statusOf().unavailable: an ARMED destination whose
+  // transport broke is unavailable too, and that is an error the streamer has to keep
+  // seeing. It keeps its canvas, so this predicate leaves it in.
+  let armed = $derived(destinations.filter((d) => d.canvasUuid !== null));
+  let armedByUuid = $derived(new Map(armed.map((d) => [d.profileUuid, d])));
+
+  // Two account maps, because "which channel is this row from" and "which chats am I
+  // about to write to" are different questions over different lists.
+  //
+  // Attribution reads the UNFILTERED one. Not for the single-vs-wide decision --
+  // attribute() filters unarmed siblings out itself (destinationSelection.ts:174) and
+  // would decide identically either way -- but for two things downstream of it: the
+  // `siblings` count fromDestination() reports (:155), which is what gates a row's
+  // canvas mark below, and the `siblings.length > 0` fallback (:178) that keeps a
+  // scrollback row from an account with nothing armed reading "wide" instead of
+  // collapsing to "none".
   let destByAccount = $derived(destinationsByAccount(destinations));
-
-  // A connected account with no destination still has nothing to read or reply to, so
-  // it gets a disabled chip that says why rather than no chip at all.
-  let unarmedPlatforms = $derived(unarmedPlatformsOf(oauthStore.connectedPlatforms, destinations));
-
-  function unarmedHint(platform: string): string {
-    return unarmedHintFor(platform, "it has no chat here.");
-  }
+  // Armed only: sharing is a claim about what is broadcasting right now, and a sibling
+  // that is switched off is neither streaming nor rendered as a chip to point at.
+  let armedByAccount = $derived(destinationsByAccount(armed));
 
   // --- transport resolution --------------------------------------------------
   // Resolution and wording both live in ui/destinationHealth.ts, shared with the Stats dock's
@@ -82,7 +91,7 @@
   /** True when this destination's chat is one channel-wide chat that its sibling
    * destinations read and reply to as well. */
   function sharesChat(d: DestinationIdentity, t: ChatTransport): boolean {
-    return t.profileUuid === null && (destByAccount.get(d.accountId)?.length ?? 1) >= 2;
+    return t.profileUuid === null && (armedByAccount.get(d.accountId)?.length ?? 1) >= 2;
   }
 
   // Absence of a row is UNKNOWN, not healthy: no state (so the chip's edge claims
@@ -117,7 +126,11 @@
 
   // Keep the selection valid as destinations come and go.
   $effect(() => {
-    const next = reconcileSelection(selection, destinations, destByUuid, unarmedPlatforms.length);
+    // Reconciled against the ARMED set, not every destination: a selection whose chip is
+    // no longer rendered has to fall back, and one armed destination is one chip, which
+    // is what the "pin to the only chip" rule is for. Zero unarmed platform chips here
+    // by construction, hence the literal 0.
+    const next = reconcileSelection(selection, armed, armedByUuid, 0);
     if (next) {
       select(next);
     }
@@ -156,8 +169,24 @@
   }
 
   // More than one place a message can come from: the point at which every row has to
-  // say which destination it belongs to.
-  let multiOrigin = $derived(destinations.length + unarmedPlatforms.length >= 2);
+  // say which destination it belongs to. Counted over the ARMED set, because an unarmed
+  // destination runs no transport and so originates nothing.
+  //
+  // Latched rather than derived, because `armed` is live configuration while the feed is
+  // history: FeedVirtualizer only ever appends and is cleared nowhere outside dispose()
+  // (utils/feedVirtualizer.svelte.ts), so disabling one of two bindings mid-session would
+  // otherwise pull the origin cluster off rows that were correctly attributed when they
+  // arrived, leaving two channels on one platform separated by nothing but the row's
+  // border-left color. Toggling a binding is routine; losing attribution retroactively
+  // must not be. Released only when the feed holds no rows for it to describe.
+  let multiOrigin = $state(false);
+  $effect(() => {
+    if (feed.rows.length === 0) {
+      multiOrigin = armed.length >= 2;
+    } else if (armed.length >= 2) {
+      multiOrigin = true;
+    }
+  });
 
   // --- badges ---------------------------------------------------------------
   // "broadcaster" is a badge KIND string rendered generically, so a kind-to-mark map
@@ -172,7 +201,8 @@
   let scopeLabel = $derived(
     selectionLabel(selection, destByUuid, {
       separator: " › ",
-      all: destinations.length >= 2 ? "All " + destinations.length + " chats" : "",
+      // Armed, so the header cannot claim more chats than the strip under it offers.
+      all: armed.length >= 2 ? "All " + armed.length + " chats" : "",
     }),
   );
 
@@ -211,12 +241,13 @@
 
   type EmptyKind = "offline" | "live" | null;
 
-  // feed.rows empty with no destinations = not live; feed.rows empty with destinations,
-  // or a scoped `filtered` empty while the wider feed isn't, are both "live but quiet" --
-  // the scoped case just names which pane via `sub` rather than getting its own tone.
+  // feed.rows empty with nothing armed = not live; feed.rows empty with an armed
+  // destination, or a scoped `filtered` empty while the wider feed isn't, are both "live
+  // but quiet" -- the scoped case just names which pane via `sub` rather than getting its
+  // own tone.
   let emptyKind = $derived<EmptyKind>(
     feed.rows.length === 0
-      ? destinations.length > 0
+      ? armed.length > 0
         ? "live"
         : "offline"
       : filtered.length === 0
@@ -250,16 +281,19 @@
   // before was a composer whose target silently disagreed with the feed it sat under;
   // broadcasting is fine as long as every affordance says how many chats it will hit.
 
-  /** Destinations the current selection would fan out to; empty when it names one. */
+  /** Destinations the current selection would fan out to; empty when it names one. Armed
+   * only: the host fans out over live transports, and counting a destination that has
+   * none would have the composer report "no chat is connected" about chats that were
+   * never in scope -- an amber band for a state where nothing is wrong. */
   let fanDestinations = $derived.by(() => {
     const sel = selection;
     if (sel.kind === "destination") {
       return [];
     }
     if (sel.kind === "platform") {
-      return destinations.filter((d) => platformKey(d.platform) === sel.platform);
+      return armed.filter((d) => platformKey(d.platform) === sel.platform);
     }
-    return destinations;
+    return armed;
   });
 
   // Distinct CONNECTED transports, each resolved by exact id. Two profiles sharing one
@@ -320,8 +354,11 @@
 
   let composer = $derived.by<Composer>(() => {
     const sel = selection;
-    if (destinations.length === 0) {
-      // Nothing to pick yet, so this is not a warning -- it is the offline state.
+    if (armed.length === 0) {
+      // Nothing armed means no binding is enabled, so nothing is or can be streaming and
+      // no transport exists to reply through. Not a warning -- it is the offline state,
+      // and it is the same predicate the strip and the feed's empty state read, so the
+      // three cannot describe one condition three ways.
       return {
         address: null,
         tone: "calm",
@@ -464,7 +501,7 @@
   <div class="feed">
     <div class="scroll" use:feedScroll>
       {#if feed.rows.length === 0}
-        <EmptyState compact title={destinations.length > 0 ? liveEmptyMessage : offlineMessage} />
+        <EmptyState compact title={emptyKind === "offline" ? offlineMessage : liveEmptyMessage} />
       {:else if filtered.length === 0}
         <EmptyState compact title={liveEmptyMessage} sub={scopeLabel || undefined} />
       {:else}
@@ -543,14 +580,15 @@
     {/if}
   </div>
 
-  {#if destinations.length + unarmedPlatforms.length > 0}
+  <!-- Gone entirely rather than rendered empty when nothing is armed: `.dests` carries a
+       top border, so an empty strip would leave a rule with nothing under it. The
+       composer directly below already reports that state calmly and in words. -->
+  {#if armed.length > 0}
     <div class="dests">
       <DestinationChips
-        {destinations}
+        destinations={armed}
         value={selection}
         onSelect={select}
-        {unarmedPlatforms}
-        {unarmedHint}
         {statusOf}
         titleOf={(d, canvas) => "Read and reply in " + d.displayName + (canvas ? " · " + canvas : "")}
       />

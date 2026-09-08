@@ -10,6 +10,11 @@
   // one click away. A flat chip per combination does not scale (two platforms x two
   // channels x two orientations already), so destinations are grouped under their
   // platform and the platform itself is the group's scope chip.
+  //
+  // The individual-destination row groups by CANVAS instead, and carries nothing but
+  // marks: a canvas number said once for its group, then one platform mark per
+  // destination under it. Spelling out either name is what made one destination occupy
+  // three stacked rows of a feed that has none to spare.
 
   // The selection vocabulary itself lives in destinationSelection.ts: this component
   // renders a selection, it does not define what one means.
@@ -28,19 +33,27 @@
 
 <script lang="ts">
   import { unarmedLabel, type DestinationIdentity } from "$lib/stores/destinationIdentityStore.svelte";
-  import { PLATFORM_COLORS, PLATFORM_LABELS, platformKey } from "$lib/theme/platformColors";
+  import { PLATFORM_LABELS, platformChipColor, platformKey } from "$lib/theme/platformColors";
   import { TRANSPORT_STATE_COLOR } from "$lib/theme/stateColors";
+  import CanvasMark from "$lib/ui/CanvasMark.svelte";
   import PlatformMark from "$lib/ui/PlatformMark.svelte";
   import { ABSENT_LABEL, ALL_DESTINATIONS, type DestinationSelection } from "$lib/ui/destinationSelection";
 
   interface Props {
-    /** Rendered in the order given -- the caller owns ordering, and groups appear in
-     * first-appearance order of this list so a user's profile order survives. */
+    /** The caller owns ordering. Both grouped rows regroup this list rather than
+     * reordering it: a group takes the position of its first member, and members keep
+     * their given order within it, so a profile's place survives as long as its
+     * neighbours share its group. A flat left-to-right reading of the last row is
+     * therefore the given order only when no two groups interleave. */
     destinations: readonly DestinationIdentity[];
     value: DestinationSelection;
     onSelect: (next: DestinationSelection) => void;
-    /** Platforms with a connected account but no destination. They still run a
-     * transport, so they get a disabled chip that says why rather than no chip. */
+    /** Platforms with a connected account but no destination, as a disabled chip that
+     * says why rather than no chip. Whether they belong here is the caller's call and
+     * differs by surface: the events transports run per connected ACCOUNT
+     * (`frontend/src/events/event_hub.hpp`), so an unarmed platform can still put rows
+     * in that feed, while chat runs per enabled output BINDING
+     * (`frontend/src/chat/chat_hub.hpp`) and cannot. */
     unarmedPlatforms?: readonly string[];
     unarmedHint?: (platform: string) => string;
     /** Per-destination transport state; never consulted for the All/platform chips,
@@ -82,7 +95,7 @@
         byPlatform.set(platform, {
           platform,
           label: PLATFORM_LABELS[platform] ?? d.platform,
-          color: PLATFORM_COLORS[platform] || "var(--color-accent)",
+          color: platformChipColor(platform),
           members: [d],
         });
       }
@@ -100,27 +113,60 @@
   // Row 3 (individual streams) has nothing to show once there are no destinations.
   let withStreams = $derived(groups.length > 0);
 
-  // accountId -> how many destinations share it, for the disambiguation rule below.
-  let siblingCount = $derived.by(() => {
-    const m = new Map<string, number>();
+  /** What the canvas mark draws. Null for a destination that has no canvas at all --
+   * there is no number to stand in for one, and CanvasMark's "?" means "not numbered
+   * yet", which is a different claim. */
+  type CanvasFace = { number: number; name: string; width: number; height: number } | null;
+
+  interface CanvasGroup {
+    key: string;
+    canvas: CanvasFace;
+    members: DestinationIdentity[];
+  }
+
+  // Row 3 groups by canvas rather than by platform: the canvas is what a destination
+  // shares with its siblings, so its number can be said once for the whole group and the
+  // members reduced to their marks. Each group takes the position of its first member
+  // and members keep their given order inside it -- a regrouping of the caller's order,
+  // not a re-sort of it.
+  let canvasGroups = $derived.by<CanvasGroup[]>(() => {
+    const out: CanvasGroup[] = [];
+    const byCanvas = new Map<string, CanvasGroup>();
     for (const d of destinations) {
-      m.set(d.accountId, (m.get(d.accountId) ?? 0) + 1);
+      if (d.canvasUuid === null) {
+        // Nothing to group under, so it stands alone rather than being pooled with the
+        // other canvas-less destinations into a scope none of them share.
+        out.push({ key: d.profileUuid, canvas: null, members: [d] });
+        continue;
+      }
+      const group = byCanvas.get(d.canvasUuid);
+      if (group) {
+        group.members.push(d);
+      } else {
+        const fresh: CanvasGroup = {
+          key: d.canvasUuid,
+          canvas: {
+            number: d.canvasNumber,
+            name: d.canvasName ?? ABSENT_LABEL,
+            width: d.canvasWidth,
+            height: d.canvasHeight,
+          },
+          members: [d],
+        };
+        byCanvas.set(d.canvasUuid, fresh);
+        out.push(fresh);
+      }
     }
-    return m;
+    return out;
   });
 
-  // The canvas earns chip space only where it disambiguates -- one destination per
-  // channel means the channel name already identifies it. This states what the
-  // destination currently points at, which is a different question from what an
-  // event can be attributed to; hence "not armed", never "channel-wide".
-  function canvasTag(d: DestinationIdentity): string {
-    if ((siblingCount.get(d.accountId) ?? 1) < 2) {
-      return "";
-    }
-    if (d.canvasUuid !== null) {
-      return d.canvasName ?? ABSENT_LABEL;
-    }
-    return unarmedLabel(d);
+  // The canvas in words, for the accessible name and the tooltip only -- the strip now
+  // carries it as a number, and the name is the one thing that number cannot be resolved
+  // to without hovering. This states what the destination currently points at, which is a
+  // different question from what an event can be attributed to; hence "not armed", never
+  // "channel-wide".
+  function canvasWord(d: DestinationIdentity): string {
+    return d.canvasUuid !== null ? (d.canvasName ?? ABSENT_LABEL) : unarmedLabel(d);
   }
 
   // `status` is spelled `| undefined` rather than `status?`: Svelte's built-in TS
@@ -200,35 +246,69 @@
     <div class="row-divider" aria-hidden="true"></div>
   {/if}
 
+  <!-- 16 rather than the 12-13 the marks around it use: this numeral is the only visible
+       carrier of which canvas a chip points at, and CanvasMark scales its digit to 0.58
+       of the box, so 13 would set it at about 7.5px. -->
+  {#snippet canvasFace(c: NonNullable<CanvasFace>)}
+    <CanvasMark number={c.number} name={c.name} width={c.width} height={c.height} size={16} />
+  {/snippet}
+
   {#if withStreams}
-    <div class="row" role="group" aria-label="Streams">
-      {#each groups as g (g.platform)}
-        {#each g.members as d (d.profileUuid)}
-          {@const canvas = canvasTag(d)}
-          {@const status = statusOf?.(d)}
-          {@const tone = status?.state ? TRANSPORT_STATE_COLOR[status.state] : ""}
-          {@const selected = value.kind === "destination" && value.profileUuid === d.profileUuid}
-          <button
-            class="chip"
-            class:on={selected}
-            class:toned={tone !== ""}
-            disabled={status?.unavailable ?? false}
-            aria-pressed={selected}
-            aria-label={accessibleName(d, canvas, status)}
-            title={hoverText(d, canvas, status)}
-            style:--chip={g.color}
-            style:--tone={tone}
-            onclick={() => onSelect({ kind: "destination", profileUuid: d.profileUuid })}
-          >
-            <!-- Always on, never hoisted to a group chip: this row is flat across
-                 platforms now, so the mark is the only thing telling apart two
-                 same-named channels on different platforms (e.g. two "AnimeCruizer"s,
-                 one on Twitch, one on Kick). -->
-            <PlatformMark platform={d.platform} size={12} />
-            <span class="cname">{d.displayName}</span>
-            {#if canvas}<span class="ccanvas">{canvas}</span>{/if}
-          </button>
-        {/each}
+    <div class="row bycanvas" role="group" aria-label="Streams">
+      {#each canvasGroups as g (g.key)}
+        <!-- A canvas-less destination is always alone in its group, so only a group with
+             siblings ever leads with a mark of its own; the single case carries its face
+             inside its one chip instead. -->
+        {@const lead = g.members.length >= 2 ? g.canvas : null}
+        <div class="cgroup">
+          {#if lead}
+            <!-- Said once for the group instead of once per member: every chip under it
+                 points at this canvas, so repeating the number would be the width the
+                 channel name used to eat. -->
+            {@render canvasFace(lead)}
+            <span class="csep" aria-hidden="true">|</span>
+          {/if}
+          {#each g.members as d (d.profileUuid)}
+            {@const canvas = canvasWord(d)}
+            <!-- The face this chip draws itself; null when the group's lead already drew
+                 it, and when there is no canvas to draw. -->
+            {@const inline = g.members.length === 1 ? g.canvas : null}
+            {@const status = statusOf?.(d)}
+            {@const tone = status?.state ? TRANSPORT_STATE_COLOR[status.state] : ""}
+            {@const selected = value.kind === "destination" && value.profileUuid === d.profileUuid}
+            <button
+              class="chip"
+              class:on={selected}
+              class:toned={tone !== ""}
+              disabled={status?.unavailable ?? false}
+              aria-pressed={selected}
+              aria-label={accessibleName(d, canvas, status)}
+              title={hoverText(d, canvas, status)}
+              style:--chip={platformChipColor(d.platform)}
+              style:--tone={tone}
+              onclick={() => onSelect({ kind: "destination", profileUuid: d.profileUuid })}
+            >
+              <!-- Platform as a mark, never as a word: the name is carried by aria-label,
+                   which is then the only carrier and must not be dropped. -->
+              <PlatformMark platform={d.platform} size={12} />
+              {#if inline}
+                {@render canvasFace(inline)}
+              {:else if !g.canvas}
+                <!-- No canvas, so there is no number to reduce this chip to and the
+                     channel name has to stay. A caller that passes only armed
+                     destinations never reaches this branch and gets the compact form
+                     throughout; a caller that deliberately keeps unarmed chips (Events,
+                     whose transports are account-scoped) would otherwise render every
+                     destination of one platform as the same anonymous mark.
+                     The state word rather than a dash: unarmedLabel distinguishes
+                     "disabled" from "not armed" because they ask for opposite actions,
+                     and this is the branch that exists to say which. -->
+                <span class="cname">{d.displayName}</span>
+                <span class="ccanvas">{canvas}</span>
+              {/if}
+            </button>
+          {/each}
+        </div>
       {/each}
     </div>
   {/if}
@@ -246,6 +326,32 @@
     flex-wrap: wrap;
     gap: 4px 6px;
     min-width: 0;
+  }
+  /* Canvas groups sit twice as far apart as the chips inside one, so a canvas's marks
+     read as belonging to its number rather than to the next group along. */
+  .row.bycanvas {
+    column-gap: 8px;
+  }
+  .cgroup {
+    display: flex;
+    /* Wraps inside itself rather than pushing the strip wider: a detached dock can be
+       narrower than one canvas's worth of marks, and the 8px between groups still reads
+       as the larger break. */
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+    /* The group's canvas mark sits outside any chip, so it takes its color from here; a
+       chip's own mark inherits the chip's instead and tracks selected/disabled. Full
+       text color, not the chips' dim: it is the only thing naming the canvas. */
+    color: var(--color-text);
+  }
+  .csep {
+    flex: none;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1;
+    color: var(--color-muted);
   }
   /* Full-width hairline between adjacent non-empty rows -- same border idiom as the
      chips themselves, just on the shared edge instead of all four sides. */
