@@ -331,15 +331,21 @@
     flex: 0 0 auto;
     padding-right: 6px;
   }
+  /* padding:0 resets the global `button` rule's `padding: 0 12px` (app.css:183-191); with
+     border-box the 26px width would otherwise leave a zero-width content box and collapse
+     the icon, while the border box still paints.
+     --color-dim, not --color-muted: the icon carries no label, so it owes SC 1.4.11 3:1, and
+     muted measures 2.63:1 over the 12% accent wash .row.on lays down (Industrial preset). */
   .act {
     width: 26px;
     height: 26px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    padding: 0;
     background: transparent;
     border: var(--border-weight) solid transparent;
-    color: var(--color-muted);
+    color: var(--color-dim);
     transition: color 0.12s ease;
   }
   .act:hover {

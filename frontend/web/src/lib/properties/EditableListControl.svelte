@@ -137,6 +137,7 @@
   }
   .icon {
     width: 28px;
+    padding: 0;
     flex: none;
     display: inline-flex;
     align-items: center;
