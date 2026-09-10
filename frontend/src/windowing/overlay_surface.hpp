@@ -34,9 +34,16 @@ public:
 	public:
 		virtual ~MessageSink() = default;
 
-		// Return true when the message was handled -- the WndProc then returns 0
-		// instead of falling through to DefWindowProc. UI thread.
+		// Return true when the message was handled -- the WndProc then replies
+		// itself instead of falling through to DefWindowProc (0, except for
+		// WM_SETCURSOR, whose contract makes TRUE the "stop here" reply). UI thread.
 		virtual bool OnOverlayMessage(UINT msg, WPARAM wparam, LPARAM lparam) = 0;
+
+		// The overlay HWND was hidden, by any route: Hide(), a zero-size SetRect, or
+		// the mid-resize burst. Sinks holding state derived from the pointer being
+		// over the surface drop it here, since the surface can be shown again with
+		// the pointer never having moved. UI thread. Optional.
+		virtual void OnOverlayHidden() {}
 	};
 
 	// host: the top-level window the overlay is parented to. draw/drawData: the
@@ -101,6 +108,10 @@ private:
 	// Settle-timer callback (WM_TIMER on the overlay HWND): apply the last pending
 	// rect from a rapid-resize burst and re-show the surface. See SetRect.
 	void OnResizeSettled();
+
+	// Tell the sink the HWND just went hidden. Called from every route that hides
+	// it, so a sink's teardown is written once rather than per route.
+	void NotifyHidden();
 
 	HWND host_;
 	HINSTANCE instance_;

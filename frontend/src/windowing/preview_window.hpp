@@ -90,9 +90,10 @@ public:
 
 	// The one drag-end path, shared by every way a gesture can finish: the button-up,
 	// a right-click that interrupts it, and a lost mouse capture. Clears the drag state
-	// and, when the gesture resized an overlay item, re-lays-out that overlay's page to
-	// the box it now occupies. Returns whether the drag had actually moved anything, so
-	// the caller can gate its save on it. Idempotent. UI thread.
+	// and the hover outline (a gesture can end with the pointer anywhere), and, when
+	// the gesture resized an overlay item, re-lays-out that overlay's page to the box
+	// it now occupies. Returns whether the drag had actually moved anything, so the
+	// caller can gate its save on it. Idempotent. UI thread.
 	bool FinishDrag();
 
 	// Right-button-up: hit-test + select the item under the cursor (or clear), then
@@ -102,13 +103,31 @@ public:
 	// Mouse input off the overlay HWND, routed here by OverlaySurface's WndProc.
 	bool OnOverlayMessage(UINT msg, WPARAM wparam, LPARAM lparam) override;
 
-	// Per-surface impl state (selection + letterbox transform shared with the
-	// render thread, drag state, box buffer). Defined in the .cpp so this header
+	// The overlay was hidden by any of OverlaySurface's routes: drop the hover
+	// outline and cursor, which describe a pointer position that is no longer over
+	// anything. UI thread.
+	void OnOverlayHidden() override;
+
+	// Per-surface impl state (selection/hover + letterbox transform shared with the
+	// render thread, drag + cursor state, box buffer). Defined in the .cpp so this header
 	// stays free of libobs + graphics types; declared here only so the .cpp's
 	// render/mouse helpers can name it. Incomplete outside that TU.
 	struct State;
 
 private:
+	// Affordance feedback for a mouse position with no drag in progress: resolve
+	// the gesture a press there would start, remember the item to outline, and
+	// apply the matching cursor. ClearHoverItem drops the outline alone; ClearHover
+	// drops it and also resets the remembered cursor shape without touching the
+	// live cursor -- that second half only for the paths where the pointer is no
+	// longer over the surface (it left, or the surface was hidden under it).
+	// SetCursorShape applies a shape and remembers it, so WM_SETCURSOR can re-apply
+	// that instead of the window class's arrow. UI thread.
+	void UpdateHover(int mx, int my);
+	void ClearHoverItem();
+	void ClearHover();
+	void SetCursorShape(const wchar_t *idc);
+
 	State *state_;
 
 	obs_canvas_t *targetCanvas_; // null = Default surface (global mix, output 0)

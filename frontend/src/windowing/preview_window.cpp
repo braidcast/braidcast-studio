@@ -83,14 +83,38 @@ struct PreviewTransform {
 	float baseCY = 0.0f;
 };
 
+// A scene-item id paired with the uuid of the scene it was resolved in. Item ids
+// are unique only within one scene and restart at 1 in the next, so an id kept
+// across a scene switch names an unrelated item in the new scene; Resolve()
+// reports -1 for any scene other than the one Set() recorded. Each id carries its
+// own uuid because selection and hover are written at different moments and a
+// switch can land between them.
+struct SceneItemRef {
+	int64_t id = -1;
+	std::string sceneUuid;
+
+	// `sceneSource` is the scene `newId` was resolved in; ignored for newId < 0.
+	void Set(obs_source_t *sceneSource, int64_t newId)
+	{
+		id = newId;
+		const char *uuid = (newId >= 0 && sceneSource) ? obs_source_get_uuid(sceneSource) : nullptr;
+		sceneUuid = uuid ? uuid : std::string();
+	}
+	void Clear() { Set(nullptr, -1); }
+	int64_t Resolve(const char *uuid) const { return (id >= 0 && uuid && sceneUuid == uuid) ? id : int64_t(-1); }
+};
+
 // Per-drag state, all captured at mousedown on the UI thread and only touched on
-// the UI thread, so a drag is atomic. We store the int64 id (re-resolved each
-// message) and the box-transform-derived matrices, never an obs_sceneitem_t*.
+// the UI thread, so a drag is atomic. We store the id (re-resolved each message)
+// and the box-transform-derived matrices, never an obs_sceneitem_t*. The id is
+// scene-scoped like the selection and hover ids: re-resolving a bare id would let
+// a scene switch mid-gesture land the drag's writes -- and the save that follows
+// them -- on the new scene's item of the same id.
 enum class DragMode { None, Move, Resize };
 struct DragState {
 	DragMode mode = DragMode::None;
 	bool moved = false; // true once a drag applied a real transform (gates the save)
-	int64_t id = -1;
+	SceneItemRef id;
 	vec2 startCanvasPos = {}; // mouse canvas pos at mousedown
 	vec2 startItemPos = {};   // item pos at mousedown (move)
 	ItemHandle handle = ItemHandle::None;
@@ -222,6 +246,107 @@ ItemHandle FindHandleAtPos(obs_sceneitem_t *item, const vec2 &canvasPos, float r
 		}
 	}
 	return found;
+}
+
+// What a press at a canvas-space point would grab.
+struct GestureAtPos {
+	ItemHandle handle = ItemHandle::None;
+	obs_sceneitem_t *item = nullptr; // the selected item, when handle != None
+	int64_t bodyId = -1;             // topmost item under the point, else -1
+};
+
+// A resize handle of the currently-selected item wins over an item body, and the
+// body hit-test is skipped entirely once a handle matches. Shared by OnLeftDown
+// and the hover cursor so the cursor cannot advertise a gesture other than the
+// one the click starts. `scale` is the letterbox screen-px-per-canvas-unit, so
+// the grab zone keeps a fixed kHandleSelRadius screen-px radius at any canvas size.
+GestureAtPos ResolveGestureAtPos(obs_scene_t *scene, int64_t selectedId, const vec2 &canvasPos, float scale)
+{
+	GestureAtPos gesture;
+	if (selectedId >= 0 && scale > 0.0f) {
+		obs_sceneitem_t *sel = FindItemById(scene, selectedId);
+		if (sel && !obs_sceneitem_locked(sel)) {
+			const ItemHandle handle = FindHandleAtPos(sel, canvasPos, kHandleSelRadius / scale);
+			if (handle != ItemHandle::None) {
+				gesture.handle = handle;
+				gesture.item = sel;
+				return gesture;
+			}
+		}
+	}
+	gesture.bodyId = HitTestItemId(scene, canvasPos);
+	return gesture;
+}
+
+// The directional cursor for a resize handle, ported from the legacy preview's
+// UpdateCursor: the handle's edge flags are remapped through the item's rotation
+// octant and its negative scales, so the arrow points along the edge the drag
+// will actually move rather than along the unrotated one.
+const wchar_t *CursorForHandle(obs_sceneitem_t *item, ItemHandle handle)
+{
+	uint32_t flags = uint32_t(handle);
+	if (flags == 0) {
+		return IDC_ARROW;
+	}
+	if (flags & ITEM_ROT) {
+		// Unreachable while FindHandleAtPos's table carries only the 8 box handles.
+		// The remapping below reads ITEM_LEFT..ITEM_BOTTOM only, so a rotation
+		// handle left to fall through it would answer with a resize cursor. The
+		// legacy preview answers this case with Qt::OpenHandCursor
+		// (OBSBasicPreview.cpp:657-660); Win32 has no stock equivalent, so wiring a
+		// rotation gesture means picking one here rather than deleting this branch.
+		return IDC_ARROW;
+	}
+
+	// The octant and parity tests below index off a rotation in [0,360).
+	float rotation = std::fmod(obs_sceneitem_get_rot(item), 360.0f);
+	if (rotation < 0.0f) {
+		rotation += 360.0f;
+	}
+	const int octant = int(std::round(rotation / 45.0f));
+
+	vec2 scale;
+	obs_sceneitem_get_scale(item, &scale);
+	const bool isCorner = (flags & (flags - 1)) != 0;
+
+	if (scale.x < 0.0f && isCorner) {
+		flags ^= ITEM_LEFT | ITEM_RIGHT;
+	}
+	if (scale.y < 0.0f && isCorner) {
+		flags ^= ITEM_TOP | ITEM_BOTTOM;
+	}
+
+	if (octant % 4 >= 2) {
+		if (isCorner) {
+			flags ^= ITEM_TOP | ITEM_BOTTOM;
+		} else {
+			flags = (flags >> 2) | (flags << 2);
+		}
+	}
+
+	if (octant % 2 == 1) {
+		if (isCorner) {
+			flags &= (flags % 3 == 0) ? ~uint32_t(ITEM_TOP | ITEM_BOTTOM)
+						  : ~uint32_t(ITEM_LEFT | ITEM_RIGHT);
+		} else {
+			flags = (flags % 4 == 0) ? flags | flags >> ((flags / 2) - 1)
+						 : flags | ((flags >> 2) | (flags << 2));
+		}
+	}
+
+	if (((flags & ITEM_LEFT) && (flags & ITEM_TOP)) || ((flags & ITEM_RIGHT) && (flags & ITEM_BOTTOM))) {
+		return IDC_SIZENWSE;
+	}
+	if (((flags & ITEM_LEFT) && (flags & ITEM_BOTTOM)) || ((flags & ITEM_RIGHT) && (flags & ITEM_TOP))) {
+		return IDC_SIZENESW;
+	}
+	if (flags & (ITEM_LEFT | ITEM_RIGHT)) {
+		return IDC_SIZEWE;
+	}
+	if (flags & (ITEM_TOP | ITEM_BOTTOM)) {
+		return IDC_SIZENS;
+	}
+	return IDC_ARROW;
 }
 
 // --- resize math (ported from legacy GetItemSize/StretchItem/ClampAspect) ----
@@ -401,7 +526,10 @@ void StretchItem(const DragState &drag, obs_sceneitem_t *item, const vec2 &canva
 			std::swap(probeTl.y, probeBr.y);
 		}
 
-		vec3 snap = CanvasSnapOffset(gs, scene, drag.id, probeTl, probeBr, snapBaseW, snapBaseH);
+		// The dragged item excludes itself from source-snapping; `item` is what
+		// drag.id resolved to, so its own id is that exclusion.
+		vec3 snap =
+			CanvasSnapOffset(gs, scene, obs_sceneitem_get_id(item), probeTl, probeBr, snapBaseW, snapBaseH);
 
 		// Canvas->item-local is rotation-only for a delta (itemToScreen has no
 		// scale component: local and canvas share units, differing by rotation
@@ -551,15 +679,18 @@ void CropItem(const DragState &drag, obs_sceneitem_t *item, const vec2 &canvasPo
 }
 
 // Capture the matrices/sizes a resize drag needs (legacy GetStretchHandleData,
-// no-group path) for the chosen item + handle.
-void BeginResize(DragState &drag, obs_sceneitem_t *item, ItemHandle handle, const vec2 &startCanvasPos)
+// no-group path) for the chosen item + handle. `sceneSource` is the scene `item`
+// belongs to, recorded with its id so a scene switch mid-gesture cannot redirect
+// the drag onto the new scene's item of the same id.
+void BeginResize(DragState &drag, obs_source_t *sceneSource, obs_sceneitem_t *item, ItemHandle handle,
+		 const vec2 &startCanvasPos)
 {
 	matrix4 boxTransform;
 	vec3 itemUL;
 
 	drag.mode = DragMode::Resize;
 	drag.moved = false;
-	drag.id = obs_sceneitem_get_id(item);
+	drag.id.Set(sceneSource, obs_sceneitem_get_id(item));
 	drag.handle = handle;
 	drag.startCanvasPos = startCanvasPos;
 	drag.stretchItemSize = GetItemSize(item);
@@ -602,8 +733,9 @@ void SelectOnly(obs_scene_t *scene, int64_t id)
 
 // --- drawing (ported from legacy DrawLine/DrawSquareAtPos/DrawRect) ----------
 
-// Draw a thin line (as a quad) in the current matrix space; thickness in canvas
-// units, divided by the per-axis box scale so the on-screen width is constant.
+// Draw a thin line (as a quad) in the current matrix space; thickness in screen
+// px, divided by the per-axis box scale (itself screen px per unit) so the
+// on-screen width is constant.
 void DrawLine(float x1, float y1, float x2, float y2, float thickness, const vec2 &boxScale)
 {
 	vec2 scale;
@@ -639,9 +771,10 @@ void DrawRect(float thickness, const vec2 &boxScale)
 	DrawLine(0.0f, 1.0f, 1.0f, 1.0f, thickness, boxScale);
 }
 
-// Draw a fixed-screen-size filled square at a unit-space handle coord. Reads the
-// current matrix (box transform), maps the point to canvas space, then draws an
-// axis-aligned square there in canvas-ortho space (matches legacy DrawSquareAtPos).
+// Draw a filled square at a unit-space handle coord. Reads the current matrix --
+// in the editing phase, the letterbox scale times the item's box transform -- and
+// maps the point through it into that phase's screen-px space, then draws an
+// axis-aligned square there off a reset matrix, so `halfSize` is screen px.
 void DrawSquareAtPos(float x, float y, float halfSize)
 {
 	vec3 pos;
@@ -659,11 +792,22 @@ void DrawSquareAtPos(float x, float y, float halfSize)
 	gs_matrix_pop();
 }
 
-// Draw the selection box + 8 handles for `item`. Runs inside the draw callback's
-// canvas ortho/viewport, so canvas coords map to the screen. `scale` = letterbox
-// screen-px-per-canvas-unit, used to keep outline/handles a constant pixel size.
-// `boxBuffer` is the shared unit-quad TRISTRIP vertbuffer.
-void DrawSelection(gs_vertbuffer_t *boxBuffer, obs_sceneitem_t *item, float scale)
+// Outline colors: the selection green this file already used, and the legacy
+// preview's hover blue (OBSBasic::GetHoverColor's non-override default,
+// rgb(0,127,255)).
+const vec4 kSelectionColor = {{{0.0f, 1.0f, 0.235f, 1.0f}}};
+const vec4 kHoverColor = {{{0.0f, 0.498f, 1.0f, 1.0f}}};
+
+// Draw `item`'s box outline in `color`, plus the 8 resize handles when
+// `handleBuffer` is non-null (the shared unit-quad TRISTRIP vertbuffer). Both are
+// drawn inside the box-transform matrix in unit space, so they follow the item's
+// rotation/scale. Runs in the draw callback's editing phase, whose ortho is screen
+// px and whose matrix stack already carries the letterbox scale (see
+// RenderPreview). `scale` = letterbox screen-px-per-canvas-unit: boxScale maps
+// unit->screen px so the line thickness stays ~constant on screen, and the handle
+// half-size is kHandleRadius unscaled because DrawSquareAtPos draws off a reset
+// matrix, in this phase's screen px.
+void DrawItemBox(obs_sceneitem_t *item, float scale, const vec4 &color, gs_vertbuffer_t *handleBuffer)
 {
 	if (scale <= 0.0f) {
 		return;
@@ -671,65 +815,65 @@ void DrawSelection(gs_vertbuffer_t *boxBuffer, obs_sceneitem_t *item, float scal
 	matrix4 boxTransform;
 	obs_sceneitem_get_box_transform(item, &boxTransform);
 
-	gs_effect_t *solid = obs_get_base_effect(OBS_EFFECT_SOLID);
-	gs_eparam_t *colParam = gs_effect_get_param_by_name(solid, "color");
-
-	vec4 green;
-	vec4_set(&green, 0.0f, 1.0f, 0.235f, 1.0f); // OBS selection green
-
-	// Box outline: drawn inside the box-transform matrix in unit space so the
-	// outline follows rotation/scale. boxScale maps unit->canvas px-equivalent so
-	// the line thickness stays ~constant on screen.
 	vec2 boxScale;
 	obs_sceneitem_get_box_scale(item, &boxScale);
 	boxScale.x *= scale;
 	boxScale.y *= scale;
 
+	gs_effect_t *solid = obs_get_base_effect(OBS_EFFECT_SOLID);
+	gs_eparam_t *colParam = gs_effect_get_param_by_name(solid, "color");
+
 	gs_matrix_push();
 	gs_matrix_mul(&boxTransform);
 
-	gs_effect_set_vec4(colParam, &green);
+	gs_effect_set_vec4(colParam, &color);
 	while (gs_effect_loop(solid, "Solid")) {
 		DrawRect(kBoxLineThickness, boxScale);
 	}
 
-	// 8 handles: filled squares sized in canvas units so they read ~kHandleRadius
-	// px on screen, drawn via the unit-space box vertbuffer.
-	const float halfSize = kHandleRadius / scale;
-	gs_technique_t *tech = gs_effect_get_technique(solid, "Solid");
-	gs_technique_begin(tech);
-	gs_technique_begin_pass(tech, 0);
-	gs_load_vertexbuffer(boxBuffer);
-	gs_effect_set_vec4(colParam, &green);
+	if (handleBuffer) {
+		gs_technique_t *tech = gs_effect_get_technique(solid, "Solid");
+		gs_technique_begin(tech);
+		gs_technique_begin_pass(tech, 0);
+		gs_load_vertexbuffer(handleBuffer);
+		gs_effect_set_vec4(colParam, &color);
 
-	DrawSquareAtPos(0.0f, 0.0f, halfSize);
-	DrawSquareAtPos(0.5f, 0.0f, halfSize);
-	DrawSquareAtPos(1.0f, 0.0f, halfSize);
-	DrawSquareAtPos(0.0f, 0.5f, halfSize);
-	DrawSquareAtPos(1.0f, 0.5f, halfSize);
-	DrawSquareAtPos(0.0f, 1.0f, halfSize);
-	DrawSquareAtPos(0.5f, 1.0f, halfSize);
-	DrawSquareAtPos(1.0f, 1.0f, halfSize);
+		DrawSquareAtPos(0.0f, 0.0f, kHandleRadius);
+		DrawSquareAtPos(0.5f, 0.0f, kHandleRadius);
+		DrawSquareAtPos(1.0f, 0.0f, kHandleRadius);
+		DrawSquareAtPos(0.0f, 0.5f, kHandleRadius);
+		DrawSquareAtPos(1.0f, 0.5f, kHandleRadius);
+		DrawSquareAtPos(0.0f, 1.0f, kHandleRadius);
+		DrawSquareAtPos(0.5f, 1.0f, kHandleRadius);
+		DrawSquareAtPos(1.0f, 1.0f, kHandleRadius);
+
+		// Unbind before leaving: the device keeps the last loaded buffer, and
+		// nothing downstream of this callback is obliged to load its own.
+		gs_load_vertexbuffer(nullptr);
+		gs_technique_end_pass(tech);
+		gs_technique_end(tech);
+	}
 
 	gs_matrix_pop();
-	gs_technique_end_pass(tech);
-	gs_technique_end(tech);
 }
 
 } // namespace
 
 // Per-surface state shared between the render thread (draw callback) and the UI
-// thread (WndProc + bridge). One mutex guards the selection + letterbox transform;
-// copy out under the lock and never hold it across a libobs render call. The drag
-// state + box buffer are touched only on their owning thread (drag = UI thread,
-// box buffer = render thread under a graphics context), but live here so they are
-// per-surface, not process-global.
+// thread (WndProc + bridge). One mutex guards the selection/hover ids + letterbox
+// transform; copy out under the lock and never hold it across a libobs render
+// call. The drag/cursor state + box buffer are touched only on their owning thread
+// (drag + cursor = UI thread, box buffer = render thread under a graphics
+// context), but live here so they are per-surface, not process-global.
 struct PreviewSurface::State {
 	std::mutex stateMutex;
-	int64_t selectedId = -1;
+	SceneItemRef selected;
+	SceneItemRef hovered;
 	PreviewTransform transform;
 
-	DragState drag; // UI thread only
+	DragState drag;                         // UI thread only
+	const wchar_t *cursorShape = IDC_ARROW; // UI thread only; re-applied on WM_SETCURSOR
+	bool mouseTracked = false;              // UI thread only; TME_LEAVE armed for this surface
 
 	// Unit-quad TRISTRIP vertbuffer for the selection handles, created lazily on
 	// the render thread and destroyed under a graphics context in Destroy().
@@ -869,10 +1013,12 @@ void EmitContextMenu(obs_canvas_t *targetCanvas, int windowId, obs_scene_t *scen
 }
 
 // Draw callback: fired by libobs once per frame on the render thread. cx/cy are
-// the display (HWND) pixel size. Fit the surface's base canvas into it with
-// letterboxing so the composited scene keeps its aspect ratio, then overlay the
-// selection box for the currently-selected item (re-resolved by id from the
-// surface's scene). `data` is the PreviewSurface::State.
+// the display (HWND) pixel size. Two phases: fit the surface's base canvas into
+// the display with letterboxing so the composited scene keeps its aspect ratio,
+// then switch to a screen-px space covering the whole display for the editing
+// overlay -- the hovered item's outline, and the selected item's box + handles,
+// each re-resolved by id from the surface's current scene. `data` is the
+// PreviewSurface::State.
 void RenderPreview(void *data, uint32_t cx, uint32_t cy)
 {
 	auto *state = static_cast<PreviewSurface::State *>(data);
@@ -916,23 +1062,68 @@ void RenderPreview(void *data, uint32_t cx, uint32_t cy)
 		obs_render_main_texture();
 	}
 
-	int64_t selectedId;
+	// Cheap gate: skip the scene addref entirely when neither id is set. The raw ids
+	// are enough here -- whether they still belong to the current scene is settled
+	// by Resolve() below, once that scene is in hand.
+	bool anyEditId;
 	{
 		std::lock_guard<std::mutex> lock(state->stateMutex);
-		selectedId = state->selectedId;
+		anyEditId = state->selected.id >= 0 || state->hovered.id >= 0;
 	}
 
-	if (selectedId >= 0) {
-		obs_source_t *sceneSource = AcquireSurfaceSceneSource(targetCanvas);
-		if (sceneSource) {
-			obs_scene_t *scene = obs_scene_from_source(sceneSource);
-			obs_sceneitem_t *item = FindItemById(scene, selectedId);
-			if (item && SceneItemHasVideo(item) && !obs_sceneitem_locked(item)) {
-				EnsureBoxBuffer(state);
-				DrawSelection(state->boxBuffer, item, scale);
-			}
-			obs_source_release(sceneSource);
+	obs_source_t *sceneSource = anyEditId ? AcquireSurfaceSceneSource(targetCanvas) : nullptr;
+	if (sceneSource) {
+		const char *sceneUuid = obs_source_get_uuid(sceneSource);
+		int64_t selectedId;
+		int64_t hoveredId;
+		{
+			std::lock_guard<std::mutex> lock(state->stateMutex);
+			selectedId = state->selected.Resolve(sceneUuid);
+			hoveredId = state->hovered.Resolve(sceneUuid);
 		}
+
+		if (selectedId >= 0 || hoveredId >= 0) {
+			// Editing phase, in a different space than the video above: ortho
+			// measured in screen px with the canvas origin at 0,0, over the whole
+			// display rather than the canvas viewport, so an outline or handle that
+			// falls in the letterbox is drawn instead of being clipped by that
+			// viewport. The matrix scale carries the items' canvas-space box
+			// transforms into this space.
+			gs_ortho(float(-drawX), float(cx) - float(drawX), float(-drawY), float(cy) - float(drawY),
+				 -100.0f, 100.0f);
+			gs_reset_viewport();
+
+			gs_matrix_push();
+			gs_matrix_scale3f(scale, scale, 1.0f);
+
+			obs_scene_t *scene = obs_scene_from_source(sceneSource);
+			// Hover first, so the selected item's box and handles draw over it. An
+			// eye-off item is skipped: outlining a source the user has hidden would
+			// paint a box on apparently-empty canvas. Diverges from the legacy
+			// preview, which hover-outlines invisible items.
+			if (hoveredId >= 0 && hoveredId != selectedId) {
+				obs_sceneitem_t *item = FindItemById(scene, hoveredId);
+				if (item && SceneItemHasVideo(item) && !obs_sceneitem_locked(item) &&
+				    obs_sceneitem_visible(item)) {
+					DrawItemBox(item, scale, kHoverColor, nullptr);
+				}
+			}
+			// Selection deliberately does NOT take the visible check above: an
+			// eye-off source the user selected on purpose still shows its box and
+			// handles, which is the only way to see and adjust a hidden item's
+			// transform in the preview. Hover is the passive case, selection the
+			// asked-for one, so the asymmetry is the intent, not an oversight.
+			if (selectedId >= 0) {
+				obs_sceneitem_t *item = FindItemById(scene, selectedId);
+				if (item && SceneItemHasVideo(item) && !obs_sceneitem_locked(item)) {
+					EnsureBoxBuffer(state);
+					DrawItemBox(item, scale, kSelectionColor, state->boxBuffer);
+				}
+			}
+
+			gs_matrix_pop();
+		}
+		obs_source_release(sceneSource);
 	}
 
 	gs_projection_pop();
@@ -994,30 +1185,25 @@ void PreviewSurface::OnLeftDown(int mx, int my)
 	}
 	obs_scene_t *scene = obs_scene_from_source(sceneSource);
 
-	const float scale = CurrentScale(state_);
-
-	// If a handle of the currently-selected item is hit, begin a resize.
+	const char *sceneUuid = obs_source_get_uuid(sceneSource);
 	int64_t selectedId;
 	{
 		std::lock_guard<std::mutex> lock(state_->stateMutex);
-		selectedId = state_->selectedId;
+		selectedId = state_->selected.Resolve(sceneUuid);
 	}
-	if (selectedId >= 0 && scale > 0.0f) {
-		obs_sceneitem_t *sel = FindItemById(scene, selectedId);
-		if (sel && !obs_sceneitem_locked(sel)) {
-			const ItemHandle handle = FindHandleAtPos(sel, canvasPos, kHandleSelRadius / scale);
-			if (handle != ItemHandle::None) {
-				BeginResize(state_->drag, sel, handle, canvasPos);
-				HostLog("[preview] resize start id=" + std::to_string(selectedId) +
-					" handle=" + std::to_string(uint32_t(handle)));
-				obs_source_release(sceneSource);
-				return;
-			}
-		}
+	const GestureAtPos gesture = ResolveGestureAtPos(scene, selectedId, canvasPos, CurrentScale(state_));
+
+	// A handle of the currently-selected item begins a resize.
+	if (gesture.handle != ItemHandle::None) {
+		BeginResize(state_->drag, sceneSource, gesture.item, gesture.handle, canvasPos);
+		HostLog("[preview] resize start id=" + std::to_string(selectedId) +
+			" handle=" + std::to_string(uint32_t(gesture.handle)));
+		obs_source_release(sceneSource);
+		return;
 	}
 
-	// Otherwise hit-test items and select/move (or deselect on empty).
-	const int64_t hitId = HitTestItemId(scene, canvasPos);
+	// Otherwise select/move the hit item (or deselect on empty).
+	const int64_t hitId = gesture.bodyId;
 	HostLog("[preview] click canvas=(" + std::to_string(int(canvasPos.x)) + "," + std::to_string(int(canvasPos.y)) +
 		") hit id=" + std::to_string(hitId));
 
@@ -1028,11 +1214,11 @@ void PreviewSurface::OnLeftDown(int mx, int my)
 
 		{
 			std::lock_guard<std::mutex> lock(state_->stateMutex);
-			state_->selectedId = hitId;
+			state_->selected.Set(sceneSource, hitId);
 		}
 		state_->drag.mode = DragMode::Move;
 		state_->drag.moved = false;
-		state_->drag.id = hitId;
+		state_->drag.id.Set(sceneSource, hitId);
 		state_->drag.startCanvasPos = canvasPos;
 		if (item) {
 			obs_sceneitem_get_pos(item, &state_->drag.startItemPos);
@@ -1042,7 +1228,7 @@ void PreviewSurface::OnLeftDown(int mx, int my)
 		SelectOnly(scene, -1);
 		{
 			std::lock_guard<std::mutex> lock(state_->stateMutex);
-			state_->selectedId = -1;
+			state_->selected.Clear();
 		}
 		state_->drag.mode = DragMode::None;
 		EmitSelection(targetCanvas_, -1);
@@ -1180,9 +1366,76 @@ vec3 CanvasSnapOffset(const GeneralSettings &gs, obs_scene_t *scene, int64_t dra
 
 } // namespace
 
+void PreviewSurface::SetCursorShape(const wchar_t *idc)
+{
+	if (state_->cursorShape == idc) {
+		return;
+	}
+	state_->cursorShape = idc;
+	SetCursor(LoadCursorW(nullptr, idc));
+}
+
+void PreviewSurface::ClearHoverItem()
+{
+	std::lock_guard<std::mutex> lock(state_->stateMutex);
+	state_->hovered.Clear();
+}
+
+void PreviewSurface::ClearHover()
+{
+	ClearHoverItem();
+	// Reset the remembered shape but do NOT call SetCursor: the callers run when the
+	// pointer is no longer over this surface (it left, or the surface was hidden
+	// under it), and SetCursor is process-global, so applying here would stomp the
+	// cursor of whatever window the pointer is actually over. The overlay's own
+	// WM_SETCURSOR applies this shape again the next time the pointer is here.
+	state_->cursorShape = IDC_ARROW;
+}
+
+void PreviewSurface::UpdateHover(int mx, int my)
+{
+	// One tail for every outcome: a surface with no frame yet or no scene bound has
+	// nothing to hover and takes the plain arrow, same as empty canvas does.
+	const wchar_t *cursor = IDC_ARROW;
+	int64_t hoveredId = -1;
+	obs_source_t *sceneSource = nullptr;
+
+	vec2 canvasPos;
+	if (ClientToCanvas(state_, mx, my, canvasPos)) {
+		sceneSource = AcquireSurfaceSceneSource(targetCanvas_);
+	}
+	if (sceneSource) {
+		obs_scene_t *scene = obs_scene_from_source(sceneSource);
+		const char *sceneUuid = obs_source_get_uuid(sceneSource);
+		int64_t selectedId;
+		{
+			std::lock_guard<std::mutex> lock(state_->stateMutex);
+			selectedId = state_->selected.Resolve(sceneUuid);
+		}
+		const GestureAtPos gesture = ResolveGestureAtPos(scene, selectedId, canvasPos, CurrentScale(state_));
+
+		if (gesture.handle != ItemHandle::None) {
+			cursor = CursorForHandle(gesture.item, gesture.handle);
+		} else if (gesture.bodyId >= 0) {
+			cursor = IDC_SIZEALL;
+			hoveredId = gesture.bodyId;
+		}
+	}
+
+	{
+		std::lock_guard<std::mutex> lock(state_->stateMutex);
+		state_->hovered.Set(sceneSource, hoveredId);
+	}
+	if (sceneSource) {
+		obs_source_release(sceneSource);
+	}
+	SetCursorShape(cursor);
+}
+
 void PreviewSurface::OnMouseMove(int mx, int my)
 {
 	if (state_->drag.mode == DragMode::None) {
+		UpdateHover(mx, my);
 		return;
 	}
 	vec2 canvasPos;
@@ -1196,7 +1449,10 @@ void PreviewSurface::OnMouseMove(int mx, int my)
 	}
 	obs_scene_t *scene = obs_scene_from_source(sceneSource);
 
-	obs_sceneitem_t *item = FindItemById(scene, state_->drag.id);
+	// A scene switch since mousedown resolves to -1 and leaves the rest of the
+	// gesture inert, rather than applying it to the new scene's item of that id.
+	const int64_t dragId = state_->drag.id.Resolve(obs_source_get_uuid(sceneSource));
+	obs_sceneitem_t *item = dragId >= 0 ? FindItemById(scene, dragId) : nullptr;
 	if (item && !obs_sceneitem_locked(item)) {
 		state_->drag.moved = true;
 		if (state_->drag.mode == DragMode::Move) {
@@ -1238,7 +1494,7 @@ void PreviewSurface::OnMouseMove(int mx, int my)
 				tl.y += shiftY;
 				br.y += shiftY;
 
-				vec3 snap = CanvasSnapOffset(gs, scene, state_->drag.id, tl, br, float(ovi.base_width),
+				vec3 snap = CanvasSnapOffset(gs, scene, dragId, tl, br, float(ovi.base_width),
 							     float(ovi.base_height));
 				offX += snap.x;
 				offY += snap.y;
@@ -1275,13 +1531,21 @@ bool PreviewSurface::FinishDrag()
 	const bool dragged = state_->drag.mode != DragMode::None;
 	const bool moved = state_->drag.moved;
 	const bool resized = state_->drag.mode == DragMode::Resize;
-	const int64_t draggedId = state_->drag.id;
+	const SceneItemRef draggedRef = state_->drag.id;
 	if (dragged) {
-		HostLog("[preview] drag end id=" + std::to_string(draggedId));
+		HostLog("[preview] drag end id=" + std::to_string(draggedRef.id));
 	}
 	state_->drag.mode = DragMode::None;
 	state_->drag.handle = ItemHandle::None;
 	state_->drag.moved = false;
+
+	// Every route that ends a gesture lands here, and a gesture can end with the
+	// pointer anywhere: a button-up outside the preview arrives only through the
+	// capture, and a capture lost to Alt-Tab or a foreground change carries no
+	// pointer position at all. Drop the hover outline -- the next move recomputes it
+	// -- or it paints on the just-dragged item the moment a bridge-driven selection
+	// moves elsewhere. The cursor shape is deliberately left alone (see ClearHover).
+	ClearHoverItem();
 
 	// A braidcast_overlay source renders its page at the size in its settings and the
 	// item then scales that bitmap, so a resize alone would magnify pixels rather than
@@ -1291,7 +1555,11 @@ bool PreviewSurface::FinishDrag()
 	if (resized && moved) {
 		obs_source_t *sceneSource = AcquireSurfaceSceneSource(targetCanvas_); // addref'd
 		if (sceneSource) {
-			obs_sceneitem_t *item = FindItemById(obs_scene_from_source(sceneSource), draggedId);
+			// Same scene scoping as the drag itself: a switch since mousedown must
+			// not commit this overlay's layout onto the new scene's same-id item.
+			const int64_t draggedId = draggedRef.Resolve(obs_source_get_uuid(sceneSource));
+			obs_sceneitem_t *item =
+				draggedId >= 0 ? FindItemById(obs_scene_from_source(sceneSource), draggedId) : nullptr;
 			obs_source_t *itemSource = item ? obs_sceneitem_get_source(item) : nullptr;
 			if (Overlay::IsOverlaySource(itemSource)) {
 				// Saves unconditionally, including on an additional-canvas
@@ -1343,7 +1611,7 @@ void PreviewSurface::OnRightUp(int mx, int my)
 	SelectOnly(scene, hitId);
 	{
 		std::lock_guard<std::mutex> lock(state_->stateMutex);
-		state_->selectedId = hitId;
+		state_->selected.Set(sceneSource, hitId);
 	}
 	FinishDrag();
 	EmitSelection(targetCanvas_, hitId);
@@ -1370,6 +1638,17 @@ void PreviewSurface::SetRect(int x, int y, int cx, int cy)
 void PreviewSurface::Hide()
 {
 	overlay_.Hide();
+}
+
+void PreviewSurface::OnOverlayHidden()
+{
+	// Every route that hides the overlay lands here, including the two inside
+	// OverlaySurface::SetRect that never reach this class's own Hide(). The surface
+	// can be shown again without the pointer ever moving over it, which would redraw
+	// a hover outline for wherever the cursor last was; drop it, and re-arm
+	// leave-tracking so the next move over the reshown surface starts clean.
+	state_->mouseTracked = false;
+	ClearHover();
 }
 
 void PreviewSurface::Destroy()
@@ -1405,7 +1684,7 @@ bool PreviewSurface::SelectFromBridge(const std::string &scene, int64_t id, bool
 	SelectOnly(sc, newId);
 	{
 		std::lock_guard<std::mutex> lock(state_->stateMutex);
-		state_->selectedId = newId;
+		state_->selected.Set(sceneSource, newId);
 	}
 	obs_source_release(sceneSource);
 
@@ -1429,8 +1708,10 @@ int64_t PreviewSurface::HitTestForTest(float canvasX, float canvasY)
 
 int64_t PreviewSurface::SelectedIdForTest()
 {
+	// The recorded id, not scene-resolved: the isolation self-test asserts what this
+	// surface holds, and it holds it against its own scene.
 	std::lock_guard<std::mutex> lock(state_->stateMutex);
-	return state_->selectedId;
+	return state_->selected.id;
 }
 
 bool PreviewSurface::OnVideoReset()
@@ -1463,8 +1744,37 @@ bool PreviewSurface::OnOverlayMessage(UINT msg, WPARAM wparam, LPARAM lparam)
 	case WM_LBUTTONDOWN:
 		OnLeftDown(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
 		return true;
-	case WM_MOUSEMOVE:
+	case WM_MOUSEMOVE: {
+		// TME_LEAVE is one-shot, so it is re-armed after each WM_MOUSELEAVE;
+		// without it the hover outline and cursor keep the last in-surface value
+		// once the pointer moves away.
+		HWND hwnd = overlay_.Hwnd();
+		if (!state_->mouseTracked && hwnd) {
+			TRACKMOUSEEVENT tme = {sizeof(TRACKMOUSEEVENT), TME_LEAVE, hwnd, 0};
+			state_->mouseTracked = TrackMouseEvent(&tme) != FALSE;
+		}
 		OnMouseMove(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+		return true;
+	}
+	case WM_MOUSELEAVE:
+		state_->mouseTracked = false;
+		// Capture does not suppress leave notifications, so a drag that pulls the
+		// pointer past the surface edge lands here every move. A gesture keeps the
+		// cursor it started with for its whole duration, and its outline is the
+		// selection box, not the hover one -- so only a leave with no drag clears.
+		if (state_->drag.mode == DragMode::None) {
+			ClearHover();
+		}
+		return true;
+	case WM_SETCURSOR:
+		// Client area only; every other hit-test code keeps DefWindowProc's
+		// handling. Reporting this handled is what makes OverlayWndProc answer TRUE,
+		// which per WM_SETCURSOR's contract halts the processing that would
+		// otherwise restore the window class's arrow cursor on every mouse move.
+		if (LOWORD(lparam) != HTCLIENT) {
+			return false;
+		}
+		SetCursor(LoadCursorW(nullptr, state_->cursorShape));
 		return true;
 	case WM_LBUTTONUP:
 		OnLeftUp();

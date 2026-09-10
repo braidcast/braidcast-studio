@@ -26,7 +26,10 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpara
 {
 	OverlaySurface *surface = SurfaceFromHwnd(hwnd);
 	if (surface && surface->HandleMessage(msg, wparam, lparam)) {
-		return 0;
+		// WM_SETCURSOR is the one message whose "handled" reply is not 0: it takes
+		// TRUE to halt further processing, and that halt is what keeps the default
+		// proc from restoring the class cursor over the one the sink just set.
+		return msg == WM_SETCURSOR ? TRUE : 0;
 	}
 	return DefWindowProcW(hwnd, msg, wparam, lparam);
 }
@@ -52,6 +55,13 @@ ATOM RegisterOverlayClass(HINSTANCE instance)
 }
 
 } // namespace
+
+void OverlaySurface::NotifyHidden()
+{
+	if (sink_) {
+		sink_->OnOverlayHidden();
+	}
+}
 
 bool OverlaySurface::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam)
 {
@@ -178,6 +188,7 @@ void OverlaySurface::SetRect(int x, int y, int cx, int cy)
 	// HWND directly (not Hide()) so lastCx_/lastCy_ stay as the burst's size baseline.
 	if (IsWindowVisible(hwnd_)) {
 		ShowWindow(hwnd_, SW_HIDE);
+		NotifyHidden();
 	}
 	pendingX_ = x;
 	pendingY_ = y;
@@ -213,6 +224,7 @@ void OverlaySurface::Hide()
 	lastCy_ = 0;
 	if (hwnd_) {
 		ShowWindow(hwnd_, SW_HIDE);
+		NotifyHidden();
 	}
 
 	// Drop the swapchain while hidden. A flip-model swapchain presented to an
