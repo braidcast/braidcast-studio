@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Button from "$lib/ui/Button.svelte";
   import Modal from "$lib/ui/Modal.svelte";
   import Icon, { type IconName } from "$lib/ui/Icon.svelte";
   import EmptyState from "$lib/ui/EmptyState.svelte";
@@ -288,28 +289,28 @@
   }
 
   const detailValid = $derived(mode === "existing" ? selectedExisting.size > 0 : nameValid);
+
+  const confirmLabel = $derived.by<string>(() => {
+    if (creating) {
+      return "Adding…";
+    }
+    if (mode !== "existing") {
+      return "Create";
+    }
+    return selectedExisting.size > 1 ? `Add ${selectedExisting.size} Existing` : "Add Existing";
+  });
 </script>
 
 <svelte:window onkeydown={onKeydown} />
-
-{#snippet footerActions()}
-  <label class="add-visible"><input type="checkbox" bind:checked={addVisible} /> Add Visible</label>
-  <button class="accent" disabled={!detailValid || creating} onclick={confirmDetail}>
-    {creating
-      ? "Adding…"
-      : mode === "existing"
-        ? selectedExisting.size > 1
-          ? `Add ${selectedExisting.size} Existing`
-          : "Add Existing"
-        : "Create"}
-  </button>
-{/snippet}
 
 <Modal
   title={selectedType ? `Add — ${selectedType.name}` : "Add Source"}
   {onClose}
   width={620}
-  footer={selectedType ? footerActions : undefined}
+  cancel={selectedType ? { label: "Cancel", onclick: onClose } : undefined}
+  confirm={selectedType
+    ? { label: confirmLabel, onclick: confirmDetail, disabled: !detailValid || creating }
+    : undefined}
 >
   {#if error}<p class="error">{error}</p>{/if}
 
@@ -317,7 +318,9 @@
     <p class="dim">Loading source types…</p>
   {:else if selectedType}
     <div class="detail">
-      <button class="back" onclick={backToPicker}><Icon name="submenu" size={10} /> Back</button>
+      <div class="back">
+        <Button size="xs" variant="bare" onclick={backToPicker}><Icon name="submenu" size={10} /> Back</Button>
+      </div>
       {#if existingOfType.length > 0}
         <label class="radio"><input type="radio" value="existing" bind:group={mode} /> Use existing</label>
         {#if mode === "existing"}
@@ -354,6 +357,7 @@
           {#if nameTaken}<p class="warn">A source named “{trimmed}” already exists.</p>{/if}
         </div>
       {/if}
+      <label class="add-visible"><input type="checkbox" bind:checked={addVisible} /> Add Visible</label>
     </div>
   {:else}
     <div class="picker">
@@ -547,20 +551,9 @@
     flex-direction: column;
     gap: 10px;
   }
+  /* Layout only: the row keeps the button from stretching in the flex column. */
   .back {
     align-self: flex-start;
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    background: none;
-    border: 0;
-    color: var(--color-muted);
-    font-size: 11px;
-    padding: 2px 0;
-  }
-  .back:hover {
-    color: var(--color-text);
-    border: 0;
   }
   .radio {
     display: flex;
@@ -654,11 +647,13 @@
   .name-step input {
     width: 100%;
   }
+  /* An option, not an action, so it sits with the form it qualifies: Modal's footer
+     takes actions and has no slot to put a checkbox in. */
   .add-visible {
+    align-self: flex-start;
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    margin-right: auto;
     font-size: 12px;
     color: var(--color-text);
     cursor: pointer;

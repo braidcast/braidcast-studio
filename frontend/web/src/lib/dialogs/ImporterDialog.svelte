@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Button from "$lib/ui/Button.svelte";
   import Modal from "$lib/ui/Modal.svelte";
   import { obs, type ImporterScan, type ImporterImportCollection, type ImporterImportResult } from "$lib/api/bridge";
 
@@ -155,6 +156,9 @@
       result == null &&
       (collections.length > 0 || importService || importVideo || importAudio),
   );
+  // Whether the footer offers an import at all -- a scan that found nothing, or an
+  // import already reported, leaves Close as the only thing to do.
+  let importable = $derived(scan !== null && scan.found && result == null);
 
   async function runImport() {
     if (!scan) {
@@ -180,7 +184,16 @@
   }
 </script>
 
-<Modal title="Import from OBS Studio" {onClose} width={640}>
+<Modal
+  title="Import from OBS Studio"
+  {onClose}
+  width={640}
+  actions={importable ? [{ label: "Browse…", onclick: () => void browse(), disabled: scanning }] : undefined}
+  cancel={{ label: "Close", onclick: onClose }}
+  confirm={importable
+    ? { label: busy ? "Importing…" : "Import", onclick: () => void runImport(), disabled: !canImport }
+    : undefined}
+>
   {#if error}<p class="error">{error}</p>{/if}
 
       {#if !loaded}
@@ -188,7 +201,7 @@
       {:else if !scan || !scan.found}
         <p class="dim">OBS Studio not found.</p>
         <p class="dim note">Pick the OBS Studio config folder (the one containing <code>basic</code>).</p>
-        <button class="btn" disabled={scanning} onclick={() => void browse()}>Browse…</button>
+        <Button size="xs" face="label" disabled={scanning} onclick={() => void browse()}>Browse…</Button>
       {:else if result}
         <p class="ok">Imported {result.imported.collections} collection{result.imported.collections === 1 ? "" : "s"}.</p>
         <ul class="summary">
@@ -225,9 +238,9 @@
                     <span class="count">{c.scenes.length} scene{c.scenes.length === 1 ? "" : "s"}</span>
                   </label>
                   {#if c.scenes.length > 0}
-                    <button class="btn ghost xs" onclick={() => toggleExpand(c.file)}>
+                    <Button size="xs" face="label" onclick={() => toggleExpand(c.file)}>
                       {expanded[c.file] ? "Hide" : "Scenes"}
-                    </button>
+                    </Button>
                   {/if}
                 </div>
                 {#if expanded[c.file] && c.scenes.length > 0}
@@ -287,16 +300,6 @@
         <p class="dim note small">Reads your OBS Studio data read-only; nothing in OBS is modified.</p>
         <p class="dim note small">Stream destinations are imported as profiles; wire them to canvases in Outputs.</p>
       {/if}
-
-  {#snippet footer()}
-    <button class="ghost" onclick={onClose}>Close</button>
-    {#if scan && scan.found && !result}
-      <button class="ghost" disabled={scanning} onclick={() => void browse()}>Browse…</button>
-      <button class="accent" disabled={!canImport} onclick={() => void runImport()}>
-        {busy ? "Importing…" : "Import"}
-      </button>
-    {/if}
-  {/snippet}
 </Modal>
 
 <style>
@@ -386,34 +389,6 @@
   .path {
     font-family: var(--font-mono, monospace);
     color: var(--color-muted);
-  }
-
-  .btn {
-    height: auto;
-    padding: 5px 10px;
-    font-family: var(--font-ui);
-    font-size: 11px;
-    border: var(--border-weight) solid var(--color-border);
-    background: transparent;
-    color: var(--color-text);
-    letter-spacing: var(--letter-spacing);
-    text-transform: var(--label-case);
-    white-space: nowrap;
-  }
-  .btn:hover:not(:disabled) {
-    border-color: var(--color-accent);
-    color: var(--color-accent);
-  }
-  .btn:disabled {
-    color: var(--color-muted);
-    cursor: default;
-  }
-  .btn.ghost {
-    background: none;
-  }
-  .btn.xs {
-    padding: 2px 7px;
-    font-size: 10px;
   }
 
   .dim {

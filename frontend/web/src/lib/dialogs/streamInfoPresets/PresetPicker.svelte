@@ -146,7 +146,7 @@
   }
 </script>
 
-<Modal {title} {onClose} width={460}>
+<Modal {title} {onClose} width={460} cancel={{ label: "Close", onclick: onClose }}>
   <div class="ph">
     <span class="ph__title">Presets</span>
     <span class="ph__count">{presets.length}</span>
@@ -243,10 +243,6 @@
       live, and everything stays editable.
     </p>
   {/if}
-
-  {#snippet footer()}
-    <button class="ghost" onclick={onClose}>Close</button>
-  {/snippet}
 </Modal>
 
 {#if pendingDelete}

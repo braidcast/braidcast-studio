@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Button from "$lib/ui/Button.svelte";
   import Modal from "$lib/ui/Modal.svelte";
   import { obs, type MissingFile } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
@@ -87,7 +88,7 @@ import { EV } from "$lib/utils/eventNames";
   }
 </script>
 
-<Modal title="Missing Files" {onClose} width={640}>
+<Modal title="Missing Files" {onClose} width={640} cancel={{ label: "Close", onclick: onClose }}>
   {#if error}<p class="error">{error}</p>{/if}
 
   {#if !loaded}
@@ -112,21 +113,19 @@ import { EV } from "$lib/utils/eventNames";
               value={newPaths[rowKey(row)] ?? ""}
               oninput={(e) => (newPaths = { ...newPaths, [rowKey(row)]: e.currentTarget.value })}
             />
-            <button onclick={() => void locate(row)}>Locate…</button>
-            <button
-              class="accent"
+            <Button size="xs" face="label" onclick={() => void locate(row)}>Locate…</Button>
+            <Button
+              size="xs"
+              face="label"
+              variant="filled"
               disabled={busy === rowKey(row) || !(newPaths[rowKey(row)] ?? "").trim()}
-              onclick={() => void relink(row)}>Relink</button
+              onclick={() => void relink(row)}>Relink</Button
             >
           </div>
         </li>
       {/each}
     </ul>
   {/if}
-
-  {#snippet footer()}
-    <button class="btn" onclick={onClose}>Close</button>
-  {/snippet}
 </Modal>
 
 <style>
@@ -186,14 +185,6 @@ import { EV } from "$lib/utils/eventNames";
   .edit input[type="text"]:focus {
     outline: none;
     border-color: var(--color-accent);
-  }
-  .edit button {
-    height: auto;
-    padding: 5px 10px;
-    font-size: 11px;
-    letter-spacing: var(--letter-spacing);
-    text-transform: var(--label-case);
-    white-space: nowrap;
   }
 
   .dim {

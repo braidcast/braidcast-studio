@@ -28,6 +28,7 @@
   import { showToast } from "$lib/stores/toastStore.svelte";
   import EmptyState from "$lib/ui/EmptyState.svelte";
   import Icon from "$lib/ui/Icon.svelte";
+  import Button from "$lib/ui/Button.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import PageShell from "$lib/ui/PageShell.svelte";
   import Segmented, { type SegmentedOption } from "$lib/ui/Segmented.svelte";
@@ -319,7 +320,7 @@
         aria-label="Previous"
         onclick={() => step(-1)}
       />
-      <button class="today-btn" onclick={goToday}>Today</button>
+      <Button size="xs" face="mono" onclick={goToday}>Today</Button>
       <IconButton
         icon="caret-right"
         size={26}
@@ -333,9 +334,9 @@
       <span class="range">{rangeLabel} · {plannedCount} planned</span>
     </div>
     <Segmented options={VIEW_OPTIONS} value={view} onChange={(v) => (view = v as View)} />
-    <button class="new-btn" onclick={() => openDay(startOfDay(Date.now()))}>
+    <Button variant="filled" onclick={() => openDay(startOfDay(Date.now()))}>
       <Icon name="plus" size={13} /> New Stream
-    </button>
+    </Button>
   {/snippet}
 
   <div class="body">
@@ -416,21 +417,6 @@
     align-items: center;
     gap: 6px;
   }
-  .today-btn {
-    height: 24px;
-    padding: 0 10px;
-    font-family: var(--font-mono);
-    font-size: 10px;
-    letter-spacing: var(--letter-spacing);
-    text-transform: uppercase;
-    background: transparent;
-    border: var(--border-weight) solid var(--color-border);
-    color: var(--color-dim);
-  }
-  .today-btn:hover {
-    color: var(--color-accent);
-    border-color: var(--color-accent);
-  }
   .range {
     font-family: var(--font-mono);
     font-size: 11px;
@@ -448,24 +434,6 @@
     padding: 3px 7px;
     cursor: help;
   }
-  .new-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    height: auto;
-    padding: 8px 16px;
-    font-size: 12px;
-    font-weight: 600;
-    border: 0;
-    background: var(--color-accent);
-    color: var(--color-accent-ink);
-    font-family: var(--font-ui);
-  }
-  .new-btn:hover {
-    border: 0;
-    background: color-mix(in srgb, var(--color-accent) 88%, var(--color-text));
-  }
-
   .body {
     position: relative;
     flex: 1;

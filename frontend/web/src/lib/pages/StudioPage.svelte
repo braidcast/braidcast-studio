@@ -16,6 +16,7 @@ import { bumpDockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   import { setDetachHandler } from "$lib/docking/detachRegistry";
   import { browserDockStore } from "$lib/stores/browserDockStore.svelte";
   import { obs, type CanvasInfo, type Monitor } from "$lib/api/bridge";
+  import Button from "$lib/ui/Button.svelte";
 import { EV } from "$lib/utils/eventNames";
   import { canvasStore } from "$lib/stores/canvasStore.svelte";
   import { multistreamStatusStore, isActiveState } from "$lib/stores/multistreamStatusStore.svelte";
@@ -879,12 +880,14 @@ import { EV } from "$lib/utils/eventNames";
         <span class="canvas-empty">No canvases with enabled destinations</span>
       {/if}
 
-      <button class="add" title="Add canvas" onclick={addCanvas}>
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
-          <path d="M12 5v14M5 12h14" />
-        </svg>
-        <span class="add-txt">CANVAS</span>
-      </button>
+      <div class="add">
+        <Button face="mono" variant="dashed" title="Add canvas" onclick={addCanvas}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
+            <path d="M12 5v14M5 12h14" />
+          </svg>
+          Canvas
+        </Button>
+      </div>
     </div>
 
     <div class="spacer"></div>
@@ -1217,28 +1220,10 @@ import { EV } from "$lib/utils/eventNames";
     color: var(--color-muted);
     padding: 0 6px;
   }
-  /* Dashed add-canvas: plus glyph + mono "CANVAS" label. */
+  /* Layout only: the add cell sits just past the last canvas chip in the strip. */
   .add {
     flex: 0 0 auto;
-    height: 30px;
-    min-width: 30px;
     margin-left: 2px;
-    padding: 0 8px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-    background: none;
-    border: var(--border-weight) dashed var(--color-border);
-    color: var(--color-muted);
-    font-family: var(--font-mono);
-    font-size: 10px;
-    letter-spacing: 0.08em;
-    cursor: pointer;
-  }
-  .add:hover {
-    border-color: var(--color-accent);
-    color: var(--color-accent);
   }
   /* Elastic gap that lets the canvas chips sit flush-left and the restore/utility
      clusters pin flush-right so the bar reads edge-to-edge. No border of its own:

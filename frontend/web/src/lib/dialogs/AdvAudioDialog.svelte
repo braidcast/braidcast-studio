@@ -155,7 +155,7 @@
   const title = $derived(label ? `Advanced Audio Properties — ${label}` : "Advanced Audio Properties");
 </script>
 
-<Modal {title} {onClose} width={920}>
+<Modal {title} {onClose} width={920} cancel={{ label: "Close", onclick: onClose }}>
   {#if error}<p class="error">{error}</p>{/if}
 
   <div class="tools">
@@ -254,10 +254,6 @@
       </table>
     </div>
   {/if}
-
-  {#snippet footer()}
-    <button class="btn" onclick={onClose}>Close</button>
-  {/snippet}
 </Modal>
 
 <style>

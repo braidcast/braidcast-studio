@@ -3,6 +3,7 @@
   import { ACCENT_VALUES } from "$lib/theme/presets";
   import type { AccentName, ThemeMode, ThemeTokens } from "$lib/theme/tokens";
   import Segmented, { type SegmentedOption } from "$lib/ui/Segmented.svelte";
+  import Button from "$lib/ui/Button.svelte";
   import Icon from "$lib/ui/Icon.svelte";
   import { selectOnMount } from "$lib/utils/focusActions";
 
@@ -292,9 +293,10 @@
         <div class="panel__bd">
           <div class="presets">
             {#each themeStore.allThemes as t (t.id)}
-              <button
-                class="preset"
-                class:on={themeStore.activeId === t.id}
+              <Button
+                face="mono"
+                tone={themeStore.activeId === t.id ? "accent" : "default"}
+                aria-pressed={themeStore.activeId === t.id}
                 onclick={() => themeStore.selectPreset(t.id)}
               >
                 <span class="swz" style:background={t.tokens.colorAccent}></span>
@@ -320,7 +322,7 @@
                     <Icon name="x" size={11} />
                   </span>
                 {/if}
-              </button>
+              </Button>
             {/each}
             {#if saving}
               <input
@@ -332,10 +334,10 @@
                 use:selectOnMount
               />
             {:else}
-              <button class="preset save" onclick={beginSave}>
+              <Button face="mono" variant="dashed" onclick={beginSave}>
                 <Icon name="plus" size={11} />
                 Save…
-              </button>
+              </Button>
             {/if}
           </div>
         </div>
@@ -678,29 +680,6 @@
     flex-wrap: wrap;
     align-items: center;
   }
-  .preset {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    height: 30px;
-    padding: 0 12px;
-    border: var(--border-weight) solid var(--color-border);
-    background: transparent;
-    color: var(--color-dim);
-    font-family: var(--font-mono);
-    font-size: 10px;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-  }
-  .preset:hover {
-    border-color: var(--color-accent);
-    color: var(--color-text);
-  }
-  .preset.on {
-    border-color: var(--color-accent);
-    color: var(--color-accent);
-    background: color-mix(in srgb, var(--color-accent) 12%, transparent);
-  }
   .swz {
     width: 9px;
     height: 9px;
@@ -718,14 +697,6 @@
   }
   .preset-del:hover {
     color: var(--color-live);
-  }
-  .preset.save {
-    border-style: dashed;
-    color: var(--color-muted);
-  }
-  .preset.save:hover {
-    border-color: var(--color-accent);
-    color: var(--color-accent);
   }
   .save-input {
     height: 30px;

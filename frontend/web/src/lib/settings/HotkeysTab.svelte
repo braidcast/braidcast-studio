@@ -1,5 +1,6 @@
 <script lang="ts">
   import { obs, type Hotkey, type HotkeyCombo, type HotkeyRegisterer } from "$lib/api/bridge";
+  import Button from "$lib/ui/Button.svelte";
 import { EV } from "$lib/utils/eventNames";
 
   let hotkeys = $state<Hotkey[]>([]);
@@ -217,12 +218,12 @@ import { EV } from "$lib/utils/eventNames";
                       {/if}
                     </button>
                   {/if}
-                  <button
-                    class="mini"
+                  <Button
+                    tone="live"
                     title="Clear binding"
                     aria-label="Clear binding"
                     disabled={h.bindings.length === 0}
-                    onclick={() => void clearBinding(h.id)}>✕</button
+                    onclick={() => void clearBinding(h.id)}>✕</Button
                   >
                 </div>
               </li>
@@ -340,24 +341,6 @@ import { EV } from "$lib/utils/eventNames";
   .sep {
     color: var(--color-muted);
     margin: 0 3px;
-  }
-  .mini {
-    background: none;
-    border: 1px solid var(--color-border);
-    color: var(--color-text);
-    cursor: pointer;
-    font: inherit;
-    font-size: 12px;
-    padding: 4px 8px;
-    line-height: 1;
-  }
-  .mini:hover:not(:disabled) {
-    color: var(--color-live);
-    border-color: var(--color-live);
-  }
-  .mini:disabled {
-    opacity: 0.35;
-    cursor: default;
   }
   .dim {
     color: var(--color-muted);

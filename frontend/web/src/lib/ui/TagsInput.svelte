@@ -14,6 +14,7 @@
   import { showToast } from "$lib/stores/toastStore.svelte";
   import { copyText } from "$lib/utils/clipboard";
   import { focusOnMount } from "$lib/utils/focusActions";
+  import Button from "$lib/ui/Button.svelte";
 
   // Chip-style tag editor. Holds its own draft so each instance is independent. Every tag
   // is a chip in both states, and every chip is editable in place; the inherited state
@@ -524,37 +525,46 @@
     {:else if hint}
       <div class="tag-note" id={noteId}>{hint}</div>
     {/if}
+    <!-- Text, not icons: these act on the whole list rather than on the chip beside them,
+         and a glyph would have to be learned to be told apart from the × that removes one
+         tag. Button's xs rung is 24px, which is WCAG 2.5.8's floor for the target. -->
     <div class="tag-acts">
       {#if canEmpty}
-        <button
-          type="button"
-          class="act"
+        <Button
+          size="xs"
+          variant="bare"
           title="Copy all tags as a comma-separated list"
           aria-label="Copy all tags as a comma-separated list"
           {disabled}
           onmousedown={keepFocus}
-          onclick={() => void copyAll()}>Copy all</button
+          onclick={() => void copyAll()}
         >
-        <button
-          type="button"
-          class="act"
+          Copy all
+        </Button>
+        <Button
+          size="xs"
+          variant="bare"
           title={removeLabelAll}
           aria-label={removeLabelAll}
           {disabled}
           onmousedown={keepFocus}
-          onclick={removeAll}>Remove all</button
+          onclick={removeAll}
         >
+          Remove all
+        </Button>
       {/if}
       {#if canReset}
-        <button
-          type="button"
-          class="act"
+        <Button
+          size="xs"
+          variant="bare"
           title={resetLabel}
           aria-label={resetLabel}
           {disabled}
           onmousedown={keepFocus}
-          onclick={useInherited}>Reset</button
+          onclick={useInherited}
         >
+          Reset
+        </Button>
       {/if}
     </div>
   </div>
@@ -779,32 +789,5 @@
     gap: 8px;
     flex: 0 0 auto;
     margin-left: auto;
-  }
-  /* Text, not icons: these act on the whole list rather than on the chip beside them, and
-     a glyph would have to be learned to be told apart from the × that removes one tag.
-     The box is floored at WCAG 2.5.8's 24px rather than left at the 13px the type alone
-     would give it; the padding grows the target without growing the label. */
-  .act {
-    display: inline-flex;
-    align-items: center;
-    background: none;
-    border: none;
-    height: auto;
-    min-height: 24px;
-    padding: 0 4px;
-    font: inherit;
-    font-size: 10px;
-    line-height: 1.35;
-    color: var(--color-muted);
-    cursor: pointer;
-    white-space: nowrap;
-  }
-  .act:hover:not(:disabled) {
-    color: var(--color-accent);
-    border: none;
-  }
-  .act:focus-visible {
-    outline: 2px solid var(--color-accent);
-    outline-offset: 1px;
   }
 </style>

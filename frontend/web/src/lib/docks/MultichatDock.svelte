@@ -1,6 +1,7 @@
 <script lang="ts">
   import { obs, type ChatMessage, type ChatSendParams } from "$lib/api/bridge";
   import { EV } from "$lib/utils/eventNames";
+  import Button from "$lib/ui/Button.svelte";
   import { PLATFORM_COLORS, platformKey, platformName } from "$lib/theme/platformColors";
   import { FeedVirtualizer, type FeedRow } from "$lib/utils/feedVirtualizer.svelte";
   import { callOrToast } from "$lib/utils/callToast";
@@ -609,11 +610,11 @@
         placeholder={composer.placeholder}
         aria-label="Chat message"
       ></textarea>
-      <button
-        class="sendbtn"
+      <Button
+        variant="filled"
         disabled={!canSend || draft.trim() === ""}
         title={composer.buttonTitle || undefined}
-        onclick={send}>{composer.button}</button
+        onclick={send}><span class="sendlabel">{composer.button}</span></Button
       >
     </div>
   </div>
@@ -831,23 +832,21 @@
     color: var(--color-muted);
     cursor: not-allowed;
   }
-  .sendbtn {
+  /* The label carries a count and, at one chat, a platform name -- built at :431
+     from chatsPhrase (:327-330), so the longest it can render is "Send to 1 YouTube
+     chat": the chat platforms are twitch/youtube/kick
+     (lib/theme/platformColors.ts:57) and it never lists names. It is still the
+     longest cell in the row, so it is the one that gives way when the dock narrows. */
+  .inputrow > :global(button) {
     flex: 0 1 auto;
     min-width: 0;
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-    padding: 0 14px;
-    font-size: 11px;
-    font-weight: 600;
-    font-family: var(--font-ui);
-    color: var(--color-accent-ink);
-    background: var(--color-accent);
-    border: 0;
-    cursor: pointer;
   }
-  .sendbtn:disabled {
-    opacity: 0.5;
-    cursor: default;
+  /* The truncation lives on this span rather than on the button: `text-overflow`
+     needs a block container and the button is a flex one. `min-width: 0` is what
+     lets a flex item shrink below its content width at all. */
+  .sendlabel {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 </style>

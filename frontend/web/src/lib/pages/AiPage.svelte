@@ -3,6 +3,7 @@
 import { EV } from "$lib/utils/eventNames";
   import { callOrToast } from "$lib/utils/callToast";
   import { clipboardAvailable, copyText } from "$lib/utils/clipboard";
+  import Button from "$lib/ui/Button.svelte";
   import PageShell from "$lib/ui/PageShell.svelte";
 
   // MCP control page. Logic mirrors McpTab.svelte (load + mcp.changed subscription,
@@ -119,9 +120,9 @@ import { EV } from "$lib/utils/eventNames";
               <div class="inline">
                 <code class="code grow">{cfg.endpoint}</code>
                 {#if clipboardAvailable()}
-                  <button class="copy-btn" onclick={() => void copy("endpoint", cfg!.endpoint)}>
+                  <Button size="sm" onclick={() => void copy("endpoint", cfg!.endpoint)}>
                     {copied === "endpoint" ? "Copied" : "Copy"}
-                  </button>
+                  </Button>
                 {/if}
               </div>
             </div>
@@ -130,15 +131,15 @@ import { EV } from "$lib/utils/eventNames";
               <span class="field-label">Auth token</span>
               <div class="inline">
                 <code class="code grow">{maskedToken}</code>
-                <button class="copy-btn" onclick={() => (showToken = !showToken)}>
+                <Button size="sm" onclick={() => (showToken = !showToken)}>
                   {showToken ? "Hide" : "Show"}
-                </button>
+                </Button>
                 {#if clipboardAvailable()}
-                  <button class="copy-btn" onclick={() => void copy("token", cfg!.token)}>
+                  <Button size="sm" onclick={() => void copy("token", cfg!.token)}>
                     {copied === "token" ? "Copied" : "Copy"}
-                  </button>
+                  </Button>
                 {/if}
-                <button class="copy-btn" disabled={busy} onclick={() => void regenerate()}>Regenerate</button>
+                <Button size="sm" disabled={busy} onclick={() => void regenerate()}>Regenerate</Button>
               </div>
             </div>
           </section>
@@ -313,21 +314,6 @@ import { EV } from "$lib/utils/eventNames";
     flex: 1 1 220px;
     min-width: 0;
   }
-  .copy-btn {
-    flex: 0 0 auto;
-    height: auto;
-    padding: 7px 13px;
-    font-family: var(--font-ui);
-    font-size: 11px;
-    background: none;
-    border: var(--border-weight) solid var(--color-border);
-    color: var(--color-dim);
-  }
-  .copy-btn:hover:not(:disabled) {
-    border-color: var(--color-accent);
-    color: var(--color-accent);
-  }
-
   .cap-row {
     display: flex;
     align-items: center;

@@ -31,6 +31,7 @@ import { EV } from "$lib/utils/eventNames";
     uncarriedFields,
   } from "$lib/dialogs/streamInfoPresets/applyPreset";
   import PresetPicker from "$lib/dialogs/streamInfoPresets/PresetPicker.svelte";
+  import type { ModalSecondaryAction } from "$lib/ui/Modal.svelte";
   import { streamInfoPresetStore } from "$lib/stores/streamInfoPresetStore.svelte";
   import { joinNames } from "$lib/utils/format";
   import { openOAuthConnect, isOAuthConnecting } from "$lib/dialogs/oauthConnectOpener.svelte";
@@ -56,6 +57,7 @@ import { EV } from "$lib/utils/eventNames";
   import { joinTags } from "$lib/ui/tagsInput";
   import Avatar from "$lib/ui/Avatar.svelte";
   import GoLiveFieldInput from "$lib/dialogs/golive/GoLiveFieldInput.svelte";
+  import Button from "$lib/ui/Button.svelte";
   import Icon from "$lib/ui/Icon.svelte";
   import Modal from "$lib/ui/Modal.svelte";
   import PlatformMark from "$lib/ui/PlatformMark.svelte";
@@ -865,6 +867,32 @@ import { EV } from "$lib/utils/eventNames";
       parts.push(`${destinationsLabel(keyOnly)} joining via stream key`);
     }
     return parts.join(" · ");
+  });
+
+  // Cancel is passed as an action rather than in Modal's `cancel` slot so that Save,
+  // not Cancel, is the cell touching the primary: Modal renders actions, then cancel,
+  // then confirm, and a slip on the Go Live cell's edge must land on the harmless
+  // neighbour -- Cancel there would throw the edits away.
+  //
+  // Save is gated on armedConnectedChannels, not the primary's armedProfileCount: it
+  // persists per connected channel, so a go-live made entirely of stream-key
+  // destinations has nothing for it to write and the press would report a save that
+  // saved nothing. Withheld while a schedule is staged because the metadata on screen
+  // is then the ENTRY's, borrowed until the staging goes back, and saving it would make
+  // one broadcast's plan the account's standing default; footerNote carries that
+  // reason. No liveness clause -- it starts nothing, so an unread stream state is no
+  // reason to withhold it.
+  const footerActions = $derived.by<ModalSecondaryAction[]>(() => {
+    const cells: ModalSecondaryAction[] = [{ label: "Cancel", onclick: () => void cancelGoLive(), disabled: submitting }];
+    if (goLiveModal.mode === "golive") {
+      cells.push({
+        label: "Save",
+        onclick: () => void saveDetails(),
+        disabled: submitting || !loaded || routingStaged || armedConnectedChannels.length === 0,
+        tone: "strong",
+      });
+    }
+    return cells;
   });
 
   // "Use this schedule" banner. What is on screen is what airs (see confirm()'s
@@ -1983,6 +2011,14 @@ import { EV } from "$lib/utils/eventNames";
   onClose={() => void cancelGoLive()}
   width={modalWidth}
   maxHeight="88vh"
+  note={joiningNote ? `${footerNote} · ${joiningNote}` : footerNote}
+  actions={footerActions}
+  confirm={{
+    label: submitting ? "Working…" : primaryLabel,
+    onclick: () => void confirm(),
+    disabled:
+      submitting || !loaded || armedProfileCount === 0 || (goLiveModal.mode === "golive" && isLive === null),
+  }}
 >
   {#snippet headExtra()}
     {#if isLive === null}
@@ -2008,9 +2044,16 @@ import { EV } from "$lib/utils/eventNames";
               ? "Going live could start a second stream over one already running, so Go Live is held until this reads."
               : "Stream information still applies; only the live indicator is unknown."}
           </span>
-          <button type="button" class="rbtn" disabled={liveRetrying} onclick={() => void retryLiveState()}>
+          <Button
+            size="sm"
+            face="mono"
+            variant="surface"
+            tone="warn"
+            disabled={liveRetrying}
+            onclick={() => void retryLiveState()}
+          >
             {liveRetrying ? "Retrying…" : "Retry"}
-          </button>
+          </Button>
         </div>
       {/if}
 
@@ -2028,14 +2071,16 @@ import { EV } from "$lib/utils/eventNames";
           {#if scheduleApplied}
             <span class="schedok"><Icon name="check" size={11} />Applied</span>
           {:else}
-            <button
-              type="button"
-              class="schedbtn"
+            <Button
+              size="sm"
+              face="mono"
+              variant="surface"
+              tone="accent"
               disabled={applyState === "applying"}
               onclick={() => void applySchedule(entry)}
             >
               {applyState === "applying" ? "Loading…" : "Use this schedule"}
-            </button>
+            </Button>
           {/if}
         </div>
       {/if}
@@ -2046,9 +2091,9 @@ import { EV } from "$lib/utils/eventNames";
              afterwards, sent by nothing but the Go Live below. -->
         <div class="schedbar">
           <span class="msg">Reuse a saved stream info sheet — the title, description and tags you keep per game.</span>
-          <button type="button" class="schedbtn" onclick={() => (presetPickerOpen = true)}>
+          <Button size="sm" face="mono" variant="surface" tone="accent" onclick={() => (presetPickerOpen = true)}>
             Saved info
-          </button>
+          </Button>
         </div>
         <!-- Announced, not merely rendered: loading a sheet rewrites many fields at once
              and this sentence is the only statement of what happened -- including what was
@@ -2374,7 +2419,16 @@ import { EV } from "$lib/utils/eventNames";
                   <b>{c.login}</b> — reconnect to edit
                   {c.provider?.displayName ?? "this platform"} stream info
                 </span>
-                <button type="button" class="rbtn" disabled={reconnectBusy(c)} onclick={() => reconnect(c)}>Reconnect</button>
+                <Button
+                  size="sm"
+                  face="mono"
+                  variant="surface"
+                  tone="warn"
+                  disabled={reconnectBusy(c)}
+                  onclick={() => reconnect(c)}
+                >
+                  Reconnect
+                </Button>
               </div>
             </div>
           {/if}
@@ -2406,40 +2460,6 @@ import { EV } from "$lib/utils/eventNames";
       </div>
     {/if}
   </div>
-
-  {#snippet footer()}
-    <span class="foot-note">{footerNote}{#if joiningNote} · {joiningNote}{/if}</span>
-    <button class="ghost" disabled={submitting} onclick={() => void cancelGoLive()}>Cancel</button>
-    {#if goLiveModal.mode === "golive"}
-      <!-- Between Cancel and the primary, ascending commitment left to right, and the
-           harmless neighbour for a slip on the Go Live cell's edge -- Cancel there would
-           throw the edits away. Gated on armedConnectedChannels, not the primary's
-           armedProfileCount: this persists per connected channel, so a go-live made
-           entirely of stream-key destinations has nothing for it to write and the press
-           would report a save that saved nothing. Withheld while a schedule is staged
-           because the metadata on screen is then the ENTRY's, borrowed until the staging
-           goes back, and saving it would make one broadcast's plan the account's standing
-           default; footerNote carries that reason. No liveness clause -- it starts
-           nothing, so an unread stream state is no reason to withhold it. -->
-      <button
-        class="ghost strong"
-        disabled={submitting || !loaded || routingStaged || armedConnectedChannels.length === 0}
-        onclick={() => void saveDetails()}
-      >
-        Save
-      </button>
-    {/if}
-    <button
-      class="accent"
-      disabled={submitting ||
-        !loaded ||
-        armedProfileCount === 0 ||
-        (goLiveModal.mode === "golive" && isLive === null)}
-      onclick={() => void confirm()}
-    >
-      {submitting ? "Working…" : primaryLabel}
-    </button>
-  {/snippet}
 </Modal>
 
 {#if presetPickerOpen}
@@ -2487,6 +2507,9 @@ import { EV } from "$lib/utils/eventNames";
     color: var(--color-warn);
     overflow-wrap: anywhere;
   }
+  .statewarn :global(button) {
+    margin-left: auto;
+  }
   /* Scheduled-entry banner: same shape as .statewarn, accent-toned since this is an
      offer rather than a problem. */
   .schedbar {
@@ -2508,26 +2531,11 @@ import { EV } from "$lib/utils/eventNames";
     color: var(--color-accent);
     font-weight: 600;
   }
-  .schedbtn {
-    height: 28px;
-    padding: 0 11px;
+  /* Pushed to the strip's right edge; the button's own box comes from Button. */
+  .schedbar :global(button) {
     margin-left: auto;
-    border: var(--border-weight) solid var(--color-accent);
-    background: var(--color-surface);
-    color: var(--color-accent);
-    font-family: var(--font-mono);
-    font-size: 10px;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-    flex: 0 0 auto;
   }
-  .schedbtn:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--color-accent) 14%, transparent);
-  }
-  .schedbtn:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
+
   /* Pulled up under the saved-info bar so it reads as that bar's outcome rather than as
      a note about the block below it. Kept in the DOM while empty -- a live region has to
      be present BEFORE its text changes to be announced -- so it collapses instead. */
@@ -3035,26 +3043,8 @@ import { EV } from "$lib/utils/eventNames";
     color: var(--color-text);
     font-weight: 600;
   }
-  .rbtn {
-    height: 28px;
-    padding: 0 11px;
+  .warnstrip :global(button) {
     margin-left: auto;
-    border: var(--border-weight) solid var(--color-warn);
-    background: var(--color-surface);
-    color: var(--color-warn);
-    font-family: var(--font-mono);
-    font-size: 10px;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-    flex: 0 0 auto;
-  }
-  .rbtn:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--color-warn) 14%, transparent);
-    border-color: var(--color-warn);
-  }
-  .rbtn:disabled {
-    opacity: 0.5;
-    cursor: default;
   }
 
   /* Save-for-next-time strip: sticks to the bottom of the scroll body and bleeds to
@@ -3078,23 +3068,5 @@ import { EV } from "$lib/utils/eventNames";
   .sbh {
     font-size: 10px;
     color: var(--color-muted);
-  }
-
-  /* Footer bar. */
-  .foot-note {
-    flex: 1 1 auto;
-    font-size: 11px;
-    color: var(--color-muted);
-  }
-  /* Third weight in the footer, built the way .ghost.danger is: the shared ghost cell,
-     one token moved. Keeping the mono/uppercase rhythm and lifting only the ink puts Save
-     above Cancel's dimmed text without borrowing the accent that has to stay the primary's
-     alone. */
-  .ghost.strong {
-    color: var(--color-text);
-    font-weight: 600;
-  }
-  .ghost.strong:disabled {
-    color: var(--color-dim);
   }
 </style>

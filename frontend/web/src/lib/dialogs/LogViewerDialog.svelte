@@ -61,7 +61,17 @@
   }
 </script>
 
-<Modal title="Current Log" {onClose} width={900}>
+<Modal
+  title="Current Log"
+  {onClose}
+  width={900}
+  actions={[
+    { label: copied ? "Copied" : "Copy", onclick: () => void copy() },
+    { label: "Refresh", onclick: () => void load() },
+    { label: "Open Folder", onclick: () => void openFolder(), disabled: !path },
+  ]}
+  cancel={{ label: "Close", onclick: onClose }}
+>
   {#if error}<p class="error">{error}</p>{/if}
   {#if path}<p class="path" title={path}>{path}</p>{/if}
 
@@ -70,13 +80,6 @@
   {:else}
     <pre bind:this={pre} class="log selectable">{contents}</pre>
   {/if}
-
-  {#snippet footer()}
-    <button class="ghost" onclick={() => void copy()}>{copied ? "Copied" : "Copy"}</button>
-    <button class="ghost" onclick={() => void load()}>Refresh</button>
-    <button class="ghost" disabled={!path} onclick={() => void openFolder()}>Open Folder</button>
-    <button class="btn" onclick={onClose}>Close</button>
-  {/snippet}
 </Modal>
 
 <style>

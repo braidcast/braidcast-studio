@@ -1,6 +1,7 @@
 <script lang="ts">
   import { obs } from "$lib/api/bridge";
   import { diagnosticsStore } from "$lib/stores/diagnosticsStore.svelte";
+  import Button from "$lib/ui/Button.svelte";
   import Icon from "$lib/ui/Icon.svelte";
   import ToggleSwitch from "$lib/ui/ToggleSwitch.svelte";
   import { DEVTOOLS_EXPOSURE, DEVTOOLS_OPT_IN } from "$lib/utils/devToolsExposure";
@@ -85,7 +86,7 @@
 
 <section class="group">
   <h4>Log Files</h4>
-  <button class="action" onclick={() => void openLogFolder()}>Open Log Folder</button>
+  <Button onclick={() => void openLogFolder()}>Open Log Folder</Button>
   <p class="dim note">Reveal the folder containing the session logs in your file manager.</p>
   {#if diagnosticsStore.logPath}
     <p class="dim path">{diagnosticsStore.logPath}</p>
@@ -121,20 +122,6 @@
   .dim {
     color: var(--color-muted);
     margin: 0;
-  }
-  .action {
-    height: auto;
-    padding: 7px 12px;
-    font-family: var(--font-ui);
-    font-size: 12px;
-    border: var(--border-weight) solid var(--color-border);
-    background: transparent;
-    color: var(--color-text);
-    cursor: pointer;
-  }
-  .action:hover {
-    border-color: var(--color-accent);
-    color: var(--color-accent);
   }
   .note {
     font-size: 12px;

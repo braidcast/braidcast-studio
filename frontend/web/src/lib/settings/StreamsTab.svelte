@@ -21,6 +21,7 @@
   import { oauthStore } from "$lib/stores/oauthStore.svelte";
   import { openOAuthConnect } from "$lib/dialogs/oauthConnectOpener.svelte";
   import CollectionDialog, { type DialogSpec } from "$lib/dialogs/CollectionDialog.svelte";
+  import Button from "$lib/ui/Button.svelte";
   import Icon from "$lib/ui/Icon.svelte";
   import Segmented from "$lib/ui/Segmented.svelte";
   import EmptyState from "$lib/ui/EmptyState.svelte";
@@ -703,7 +704,9 @@
         {#if reorder.dragging && reorder.dropIndex === profiles.length}<div class="reorder-line"></div>{/if}
       {/if}
       {#if loaded}
-        <button class="add-btn" onclick={openAdd}><Icon name="plus" size={13} /> Add Stream Profile</button>
+        <div class="add-btn">
+          <Button variant="dashed" grow onclick={openAdd}><Icon name="plus" size={13} /> Add Stream Profile</Button>
+        </div>
       {/if}
     </div>
   </div>
@@ -723,17 +726,20 @@
           <span class="fh-spacer"></span>
           {#if editingUuid && editingProfile}
             {#if !editingProfile.isPrimary}
-              <button
-                class="mini"
+              <Button
+                size="sm"
+                variant="surface"
                 title="Set as primary"
                 disabled={busyProfileUuid === editingProfile.uuid}
                 onclick={() => editingProfile && void setPrimary(editingProfile)}
               >
                 <span class="star"><Icon name="star" size={12} /></span> Primary
-              </button>
+              </Button>
             {/if}
-            <button
-              class="mini danger"
+            <Button
+              size="sm"
+              variant="surface"
+              tone="live"
               title="Remove"
               disabled={busyProfileUuid === editingProfile.uuid}
               onclick={() => editingProfile && confirmRemove(editingProfile)}
@@ -749,7 +755,7 @@
                 stroke-linejoin="round"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 13h10l1-13" /></svg
               >
               Remove
-            </button>
+            </Button>
           {/if}
         </div>
 
@@ -852,9 +858,9 @@
                         <small>Your authorization is out of date — reconnect to keep editing stream info.</small>
                       </span>
                     </div>
-                    <button class="btn connect" onclick={connect}>
+                    <Button variant="filled" onclick={connect}>
                       Reconnect {editingProvider.displayName} <Icon name="caret-right" size={12} />
-                    </button>
+                    </Button>
                   {:else if existing.length > 0}
                     <div class="reuse">
                       <div class="reuse-label">Reuse existing account</div>
@@ -866,13 +872,13 @@
                         </button>
                       {/each}
                     </div>
-                    <button class="btn connect" onclick={connect}>
+                    <Button variant="filled" onclick={connect}>
                       Connect a different account <Icon name="caret-right" size={12} />
-                    </button>
+                    </Button>
                   {:else}
-                    <button class="btn connect" onclick={connect}>
+                    <Button variant="filled" onclick={connect}>
                       Connect {editingProvider.displayName} <Icon name="caret-right" size={12} />
-                    </button>
+                    </Button>
                   {/if}
                   <p class="note">
                     Connected accounts unlock the Go Live "Stream Information" panel (title / category / tags /
@@ -913,11 +919,11 @@
 
         <div class="actions">
           {#if !editingUuid}
-            <button class="btn ghost" onclick={closeForm}>Cancel</button>
+            <Button onclick={closeForm}>Cancel</Button>
           {/if}
-          <button class="btn primary" disabled={!formValid || saving} onclick={() => void save()}>
+          <Button variant="filled" disabled={!formValid || saving} onclick={() => void save()}>
             {saving ? "Saving…" : editingUuid ? "Save" : "Create"}
-          </button>
+          </Button>
         </div>
       </div>
     {:else}
@@ -1116,28 +1122,10 @@
     color: var(--color-accent);
     border-color: var(--color-accent);
   }
+  /* Layout only: the row the add affordance sits in under the last profile. */
   .add-btn {
     flex: 0 0 auto;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-    width: 100%;
-    height: auto;
-    padding: 11px;
-    border: var(--border-weight) dashed var(--color-border);
-    background: transparent;
-    color: var(--color-dim);
-    font-family: var(--font-ui);
-    font-size: 12px;
-    cursor: pointer;
-    transition: color 0.1s ease;
   }
-  .add-btn:hover {
-    color: var(--color-accent);
-    border-color: var(--color-border);
-  }
-
   /* ---- detail (editor pane) --------------------------------------------- */
   .detail {
     flex: 1;
@@ -1181,30 +1169,6 @@
   .fh-spacer {
     flex: 1;
   }
-  .mini {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    height: auto;
-    background: var(--color-surface);
-    border: var(--border-weight) solid var(--color-border);
-    color: var(--color-dim);
-    cursor: pointer;
-    font: inherit;
-    font-size: 12px;
-    padding: 6px 10px;
-    line-height: 1;
-    white-space: nowrap;
-  }
-  .mini:hover:not(:disabled) {
-    color: var(--color-text);
-    border-color: var(--color-muted);
-  }
-  .mini.danger:hover:not(:disabled) {
-    color: var(--color-live);
-    border-color: var(--color-live);
-  }
-
   .field {
     margin-bottom: 14px;
     max-width: 380px;
@@ -1432,45 +1396,6 @@
     gap: 8px;
     margin-top: 20px;
     max-width: 480px;
-  }
-  .btn {
-    height: auto;
-    padding: 8px 16px;
-    font: inherit;
-    font-size: 12px;
-    cursor: pointer;
-    border: var(--border-weight) solid var(--color-border);
-    background: var(--color-surface);
-    color: var(--color-dim);
-  }
-  .btn:hover:not(:disabled) {
-    color: var(--color-text);
-    border-color: var(--color-muted);
-  }
-  .btn.connect,
-  .btn.primary {
-    background: var(--color-accent);
-    border-color: var(--color-accent);
-    color: var(--color-accent-ink);
-    font-weight: 600;
-  }
-  .btn.connect {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-  }
-  .btn.connect:hover:not(:disabled),
-  .btn.primary:hover:not(:disabled) {
-    color: var(--color-accent-ink);
-    background: color-mix(in srgb, var(--color-accent) 88%, var(--color-text));
-  }
-  .btn.primary:disabled {
-    opacity: 0.45;
-    cursor: default;
-  }
-  .btn.ghost {
-    background: none;
   }
   .dim {
     color: var(--color-muted);

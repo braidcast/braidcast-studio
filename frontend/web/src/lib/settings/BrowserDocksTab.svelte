@@ -1,5 +1,6 @@
 <script lang="ts">
   import { browserDockStore } from "$lib/stores/browserDockStore.svelte";
+  import Button from "$lib/ui/Button.svelte";
 
   // Manager for the user-defined browser docks (Task 12). Each {title,url} becomes
   // a Dockview panel hosting an <iframe> on the Studio page; the store persists the
@@ -64,9 +65,9 @@
     <span>
       Couldn't read your saved browser docks. Editing is paused so saving now can't erase them — retry to resume.
     </span>
-    <button class="btn" disabled={retrying} onclick={() => void retryLoad()}>
+    <Button variant="surface" disabled={retrying} onclick={() => void retryLoad()}>
       {retrying ? "Retrying…" : "Retry"}
-    </button>
+    </Button>
   </div>
 {/if}
 
@@ -89,7 +90,7 @@
         if (e.key === "Enter") void add();
       }}
     />
-    <button class="btn primary" disabled={!canAdd} onclick={() => void add()}>Add</button>
+    <Button variant="filled" disabled={!canAdd} onclick={() => void add()}>Add</Button>
   </div>
 </section>
 
@@ -105,10 +106,10 @@
             <div class="editform">
               <input class="in" type="text" placeholder="Title" bind:value={editTitle} />
               <input class="in" type="text" placeholder="https://…" bind:value={editUrl} />
-              <button class="btn primary" disabled={editUrl.trim().length === 0} onclick={() => void saveEdit(d.id)}>
+              <Button variant="filled" disabled={editUrl.trim().length === 0} onclick={() => void saveEdit(d.id)}>
                 Save
-              </button>
-              <button class="btn" onclick={cancelEdit}>Cancel</button>
+              </Button>
+              <Button variant="surface" onclick={cancelEdit}>Cancel</Button>
             </div>
           {:else}
             <div class="meta">
@@ -116,8 +117,8 @@
               <span class="rurl">{d.url}</span>
             </div>
             <div class="actions">
-              <button class="btn" onclick={() => startEdit(d.id, d.title, d.url)}>Edit</button>
-              <button class="btn danger" onclick={() => void remove(d.id)}>Remove</button>
+              <Button variant="surface" onclick={() => startEdit(d.id, d.title, d.url)}>Edit</Button>
+              <Button variant="surface" tone="live" onclick={() => void remove(d.id)}>Remove</Button>
             </div>
           {/if}
         </li>
@@ -199,37 +200,6 @@
   .in:focus {
     outline: none;
     border-color: var(--color-accent);
-  }
-  .btn {
-    flex: 0 0 auto;
-    background: var(--color-surface);
-    border: var(--border-weight) solid var(--color-border);
-    border-radius: 0;
-    color: var(--color-text);
-    font: inherit;
-    font-size: 12px;
-    padding: 7px 14px;
-    cursor: pointer;
-  }
-  .btn:hover:not(:disabled) {
-    border-color: var(--color-accent);
-    color: var(--color-accent);
-  }
-  .btn:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
-  .btn.primary {
-    background: var(--color-accent);
-    color: var(--color-accent-ink);
-    border-color: var(--color-accent);
-  }
-  .btn.primary:hover:not(:disabled) {
-    color: var(--color-accent-ink);
-  }
-  .btn.danger:hover:not(:disabled) {
-    border-color: var(--color-live);
-    color: var(--color-live);
   }
   .list {
     list-style: none;

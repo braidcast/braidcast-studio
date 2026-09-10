@@ -24,6 +24,7 @@ import { EV } from "$lib/utils/eventNames";
   import CollectionDialog, { type DialogSpec } from "$lib/dialogs/CollectionDialog.svelte";
   import PageShell from "$lib/ui/PageShell.svelte";
   import EmptyState from "$lib/ui/EmptyState.svelte";
+  import Button from "$lib/ui/Button.svelte";
   import Icon from "$lib/ui/Icon.svelte";
   import Segmented, { type SegmentedOption } from "$lib/ui/Segmented.svelte";
 
@@ -610,9 +611,14 @@ import { EV } from "$lib/utils/eventNames";
         {/each}
       {/if}
       <div class="addwrap">
-        <button class="addnav" aria-haspopup="menu" aria-expanded={typeMenuOpen} onclick={() => (typeMenuOpen = !typeMenuOpen)}>
+        <Button
+          variant="dashed"
+          aria-haspopup="menu"
+          aria-expanded={typeMenuOpen}
+          onclick={() => (typeMenuOpen = !typeMenuOpen)}
+        >
           <Icon name="plus" size={12} /> New overlay
-        </button>
+        </Button>
         {#if typeMenuOpen}
           <div class="typemenu" role="menu">
             {#each WIDGET_TYPES as t (t.type)}
@@ -649,13 +655,13 @@ import { EV } from "$lib/utils/eventNames";
             <span class="save-state">{saving ? "Saving…" : "Saved"}</span>
             <!-- Not held off during a fork or reset: this button's whole job is to save, and
                  the queue is what makes a save safe inside those windows. -->
-            <button class="accent" disabled={saving} onclick={saveNow}>Save</button>
-            <button class="ghost" onclick={duplicate}>Duplicate</button>
+            <Button variant="filled" disabled={saving} onclick={saveNow}>Save</Button>
+            <Button onclick={duplicate}>Duplicate</Button>
             <!-- A stock widget has no custom code to discard, so Reset would be a no-op. -->
             {#if forked}
-              <button class="ghost" disabled={resetting} onclick={confirmReset}>{RESET_LABEL}</button>
+              <Button disabled={resetting} onclick={confirmReset}>{RESET_LABEL}</Button>
             {/if}
-            <button class="ghost danger" onclick={() => void confirmDelete()}>Delete</button>
+            <Button tone="live" onclick={() => void confirmDelete()}>Delete</Button>
           </div>
 
           <div class="editor-body" class:split={wide}>
@@ -672,7 +678,7 @@ import { EV } from "$lib/utils/eventNames";
                           {labelFor(widget.type)} template. "{RESET_LABEL}" discards your code and puts it back on the
                           built-in template, keeping your settings.
                         </p>
-                        <button class="ghost" disabled={resetting} onclick={confirmReset}>{RESET_LABEL}</button>
+                        <Button disabled={resetting} onclick={confirmReset}>{RESET_LABEL}</Button>
                       </div>
                       <CodeGrid
                         html={widget.custom.html}
@@ -688,9 +694,9 @@ import { EV } from "$lib/utils/eventNames";
                           on this overlay stops receiving those improvements. Your settings are kept, and "{RESET_LABEL}"
                           puts it back on the built-in template.
                         </p>
-                        <button class="accent" disabled={forking} onclick={() => void forkCode()}>
+                        <Button variant="filled" disabled={forking} onclick={() => void forkCode()}>
                           {forking ? "Customizing…" : "Customize code"}
-                        </button>
+                        </Button>
                       </div>
                       {#if stockTemplate}
                         {#await stockTemplate}
@@ -842,31 +848,14 @@ import { EV } from "$lib/utils/eventNames";
     color: var(--meter-green);
     border-color: var(--meter-green);
   }
-  .addnav {
-    margin: 8px 12px 4px;
-    padding: 8px 10px;
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    text-align: left;
-    background: transparent;
-    border: var(--border-weight) dashed var(--color-border);
-    color: var(--color-dim);
-    cursor: pointer;
-    font-family: var(--font-ui);
-    font-size: 12px;
-  }
-  .addnav:hover {
-    border-color: var(--color-accent);
-    color: var(--color-accent);
-  }
   .addwrap {
     position: relative;
     display: flex;
     flex-direction: column;
   }
-  .addnav {
-    width: auto;
+  /* The add affordance is inset from the rail's edges. */
+  .addwrap > :global(button) {
+    margin: 8px 12px 4px;
   }
   .typemenu {
     display: flex;
@@ -940,35 +929,6 @@ import { EV } from "$lib/utils/eventNames";
     text-transform: uppercase;
     color: var(--color-muted);
   }
-  .accent {
-    padding: 7px 16px;
-    background: var(--color-accent);
-    border: 0;
-    color: var(--color-accent-ink);
-    cursor: pointer;
-    font-family: var(--font-ui);
-    font-size: 12px;
-    font-weight: 600;
-  }
-  .ghost {
-    padding: 7px 14px;
-    background: none;
-    border: var(--border-weight) solid var(--color-border);
-    color: var(--color-dim);
-    cursor: pointer;
-    font-family: var(--font-ui);
-    font-size: 12px;
-  }
-  /* The global button:disabled only dims; without the guard the hover would still
-     brighten a button that will not respond. */
-  .ghost:hover:not(:disabled) {
-    color: var(--color-text);
-  }
-  .ghost.danger:hover {
-    color: var(--color-live);
-    border-color: var(--color-live);
-  }
-
   .editor-body {
     flex: 1;
     min-height: 0;
@@ -1019,9 +979,6 @@ import { EV } from "$lib/utils/eventNames";
   .code-note b {
     font-weight: 600;
     color: var(--color-text);
-  }
-  .code-note button {
-    flex: 0 0 auto;
   }
   .tpl-state {
     flex: 1;

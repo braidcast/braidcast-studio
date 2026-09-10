@@ -9,6 +9,7 @@
   // painting only from onChat has no use for a Follow button, and its preview stays a
   // blank white rectangle until something feeds the channel it does listen to.
   import { type EventType } from "$lib/api/bridge";
+  import Button from "$lib/ui/Button.svelte";
   import { testsFor, type TestCapability } from "$lib/overlays/widgetTypes";
   import { EVENT_TYPE_COLORS, EVENT_TYPE_LABELS } from "$lib/theme/platformColors";
   import { showToast } from "$lib/stores/toastStore.svelte";
@@ -183,26 +184,28 @@
           {@const counter = COUNTERS[cap]}
           {#if cap === "alerts"}
             {#each ALERT_TYPES as t (t)}
-              <button class="test-btn" style:--dot={EVENT_TYPE_COLORS[t]} onclick={() => fire({ type: t })}>
-                <span class="dot"></span>{EVENT_TYPE_LABELS[t]}
-              </button>
+              <Button size="sm" face="mono" variant="surface" onclick={() => fire({ type: t })}>
+                <span class="dot" style:--dot={EVENT_TYPE_COLORS[t]}></span>{EVENT_TYPE_LABELS[t]}
+              </Button>
             {/each}
           {:else if cap === "chat"}
-            <button class="test-btn" onclick={sendChat}>Send message</button>
-            <button class="test-btn" onclick={burstChat}>Burst ×5</button>
+            <Button size="sm" face="mono" variant="surface" onclick={sendChat}>Send message</Button>
+            <Button size="sm" face="mono" variant="surface" onclick={burstChat}>Burst ×5</Button>
           {:else if counter}
             <input class="test-in" type="number" min="0" aria-label={counter.inputLabel} bind:value={counts[cap]} />
-            <button
-              class="test-btn"
+            <Button
+              size="sm"
+              face="mono"
+              variant="surface"
               onclick={() => fire({ channel: counter.channel, overrides: { count: asCount(counts[cap]) } })}
             >
               {counter.button}
-            </button>
+            </Button>
           {:else if cap === "stream"}
-            <button class="test-btn" onclick={() => setStreamActive(true)}>Go live</button>
-            <button class="test-btn" onclick={() => setStreamActive(false)}>End stream</button>
+            <Button size="sm" face="mono" variant="surface" onclick={() => setStreamActive(true)}>Go live</Button>
+            <Button size="sm" face="mono" variant="surface" onclick={() => setStreamActive(false)}>End stream</Button>
           {:else if cap === "clear"}
-            <button class="test-btn" onclick={() => setStreamActive(false)}>Clear</button>
+            <Button size="sm" face="mono" variant="surface" onclick={() => setStreamActive(false)}>Clear</Button>
           {/if}
         {/each}
       </div>
@@ -248,24 +251,6 @@
     flex-wrap: wrap;
     align-items: center;
     gap: 6px;
-  }
-  .test-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 5px 10px;
-    background: var(--color-surface);
-    border: var(--border-weight) solid var(--color-border);
-    color: var(--color-dim);
-    cursor: pointer;
-    font-family: var(--font-mono);
-    font-size: 10px;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-  }
-  .test-btn:hover {
-    color: var(--color-text);
-    border-color: var(--color-accent);
   }
   /* Matches the buttons it sits between rather than the page's 34px .cv-num, which would
      tower over a bar built at button height. */

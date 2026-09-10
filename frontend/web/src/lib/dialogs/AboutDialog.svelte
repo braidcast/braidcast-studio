@@ -22,7 +22,7 @@
   });
 </script>
 
-<Modal title="About" {onClose} width={380}>
+<Modal title="About" {onClose} width={380} cancel={{ label: "Close", onclick: onClose }}>
   <div class="wordmark">Braidcast</div>
   <p class="tagline">Stream to every platform at once. Built on OBS Studio.</p>
 
@@ -40,10 +40,6 @@
       <dd>A fork of OBS Studio (obsproject.com).</dd>
     </div>
   </dl>
-
-  {#snippet footer()}
-    <button class="btn" onclick={onClose}>Close</button>
-  {/snippet}
 </Modal>
 
 <style>

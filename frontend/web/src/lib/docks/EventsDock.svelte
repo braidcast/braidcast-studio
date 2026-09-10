@@ -1,6 +1,7 @@
 <script lang="ts">
   import { obs, type NormalizedEvent, type EventType } from "$lib/api/bridge";
   import { EV } from "$lib/utils/eventNames";
+  import Button from "$lib/ui/Button.svelte";
   import { callOrToast } from "$lib/utils/callToast";
   import { PLATFORM_COLORS, EVENT_TYPE_COLORS, EVENT_TYPE_LABELS } from "$lib/theme/platformColors";
   import { FeedVirtualizer, type FeedRow } from "$lib/utils/feedVirtualizer.svelte";
@@ -360,7 +361,7 @@
   {/if}
 
   <div class="footer">
-    <button class="clearbtn" disabled={feed.rows.length === 0} onclick={clear}>Clear</button>
+    <Button size="xs" disabled={feed.rows.length === 0} onclick={clear}>Clear</Button>
   </div>
 </div>
 
@@ -514,18 +515,5 @@
     padding: 6px 8px;
     border-top: var(--border-weight) solid var(--color-border);
     background: var(--color-surface-2);
-  }
-  .clearbtn {
-    padding: 3px 12px;
-    font-size: 10px;
-    font-family: var(--font-ui);
-    color: var(--color-dim);
-    background: transparent;
-    border: var(--border-weight) solid var(--color-border);
-    cursor: pointer;
-  }
-  .clearbtn:disabled {
-    opacity: 0.5;
-    cursor: default;
   }
 </style>

@@ -6,6 +6,7 @@
     type MultistreamStatus,
     type MultistreamState,
   } from "$lib/api/bridge";
+  import Button from "$lib/ui/Button.svelte";
   import ToggleSwitch from "$lib/ui/ToggleSwitch.svelte";
   import Icon from "$lib/ui/Icon.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
@@ -140,8 +141,8 @@
         <span class="add-label">New destination</span>
         <ProfileSelect {profiles} hideUuids={boundProfileUuids} onSelect={(uuid) => void confirmAdd(uuid)} />
         <div class="add-actions">
-          <button class="ghost" onclick={cancelAdd}>Cancel</button>
-          <button class="ghost" onclick={() => void confirmAdd("")}>No destination</button>
+          <Button onclick={cancelAdd}>Cancel</Button>
+          <Button onclick={() => void confirmAdd("")}>No destination</Button>
         </div>
       </div>
     {/if}
@@ -202,20 +203,20 @@
                      the tab order the instant it is pressed, so the state it changed into
                      is never announced and focus is lost. retryDestination guards its own
                      re-entry, so nothing needs the DOM to refuse the second click. -->
-                <button
-                  class="retry"
+                <Button
+                  size="sm"
+                  tone="live"
                   aria-disabled={isRetrying(b.uuid)}
                   aria-busy={isRetrying(b.uuid)}
                   aria-label={isRetrying(b.uuid) ? "Starting " + name + ", please wait" : "Retry " + name}
                   onclick={() => void retryDestination(b.uuid, name)}
                 >
                   {isRetrying(b.uuid) ? "Starting…" : "Retry"}
-                </button>
+                </Button>
               {/if}
               <IconButton
                 icon="trash"
                 size={28}
-                height={26}
                 iconSize={14}
                 variant="outline"
                 danger
@@ -390,28 +391,16 @@
     align-items: center;
     gap: 6px;
   }
-  .retry {
-    flex: 0 0 auto;
-    height: 26px;
-    padding: 0 10px;
-    background: none;
-    border: var(--border-weight) solid var(--color-live);
-    color: var(--color-live);
-    cursor: pointer;
-    font: inherit;
-    font-size: 11.5px;
-  }
-  .retry:hover:not([aria-disabled="true"]) {
-    background: color-mix(in srgb, var(--color-live) 14%, transparent);
-  }
-  .retry:focus-visible {
-    outline: var(--border-weight) solid var(--color-accent);
-    outline-offset: 1px;
-  }
-  .retry[aria-disabled="true"] {
+  /* aria-disabled, not disabled (see the call site), so `button:disabled`
+     (app.css:197-200) never matches and the retry would otherwise look pressable and
+     keep its hover wash while it is busy. This restates that rule's own treatment so
+     the busy retry reads the same as every other disabled button. The hover selector
+     is listed separately because Button's toned-hover rule outranks the plain one. */
+  .card-acts :global(button[aria-disabled="true"]),
+  .card-acts :global(button[aria-disabled="true"]:hover) {
+    opacity: 0.5;
     cursor: default;
-    color: var(--color-muted);
-    border-color: var(--color-border);
+    background: none;
   }
   .card-toggle {
     display: flex;
@@ -468,17 +457,5 @@
     display: flex;
     justify-content: flex-end;
     gap: 8px;
-  }
-  .add-actions .ghost {
-    padding: 7px 14px;
-    background: none;
-    border: var(--border-weight) solid var(--color-border);
-    color: var(--color-dim);
-    cursor: pointer;
-    font: inherit;
-    font-size: 12px;
-  }
-  .add-actions .ghost:hover {
-    color: var(--color-text);
   }
 </style>

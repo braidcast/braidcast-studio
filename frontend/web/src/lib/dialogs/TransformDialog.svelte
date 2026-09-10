@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Button from "$lib/ui/Button.svelte";
   import Modal from "$lib/ui/Modal.svelte";
   import { obs, type Transform, type TransformTarget, type TransformAction } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
@@ -152,7 +153,13 @@ import { EV } from "$lib/utils/eventNames";
   const showBounds = $derived(xf != null && xf.boundsType !== 0);
 </script>
 
-<Modal title="Edit Transform — {label}" {onClose} width={560} draggable>
+<Modal
+  title="Edit Transform — {label}"
+  {onClose}
+  width={560}
+  draggable
+  cancel={{ label: "Close", onclick: onClose }}
+>
   {#if error}<p class="error">{error}</p>{/if}
 
   {#if !loaded}
@@ -162,7 +169,7 @@ import { EV } from "$lib/utils/eventNames";
   {:else}
     <div class="actions">
       {#each ACTIONS as a (a.action)}
-        <button onclick={() => void runAction(a.action)}>{a.label}</button>
+        <Button size="xs" face="label" onclick={() => void runAction(a.action)}>{a.label}</Button>
       {/each}
     </div>
 
@@ -347,10 +354,6 @@ import { EV } from "$lib/utils/eventNames";
       </div>
     </div>
   {/if}
-
-  {#snippet footer()}
-    <button class="btn" onclick={onClose}>Close</button>
-  {/snippet}
 </Modal>
 
 <style>
@@ -359,18 +362,6 @@ import { EV } from "$lib/utils/eventNames";
     flex-wrap: wrap;
     gap: 6px;
     margin-bottom: 12px;
-  }
-  .actions button {
-    height: auto;
-    padding: 5px 10px;
-    font-size: 11px;
-    letter-spacing: var(--letter-spacing);
-    text-transform: var(--label-case);
-    background: transparent;
-  }
-  .actions button:hover {
-    border-color: var(--color-accent);
-    color: var(--color-accent);
   }
 
   .grid {

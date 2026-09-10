@@ -19,6 +19,7 @@
   import { oauthStore } from "$lib/stores/oauthStore.svelte";
   import { scheduleStore } from "$lib/stores/scheduleStore.svelte";
   import { platformChipColor, platformKey } from "$lib/theme/platformColors";
+  import Button from "$lib/ui/Button.svelte";
   import EmptyState from "$lib/ui/EmptyState.svelte";
   import Icon from "$lib/ui/Icon.svelte";
   import Modal from "$lib/ui/Modal.svelte";
@@ -386,7 +387,18 @@
   }
 </script>
 
-<Modal title={entry ? "Edit Stream" : "Schedule a Stream"} {onClose} width={540}>
+<Modal
+  title={entry ? "Edit Stream" : "Schedule a Stream"}
+  {onClose}
+  width={540}
+  actions={entry ? [{ label: "Delete", onclick: remove, disabled: saving, tone: "danger" }] : undefined}
+  cancel={{ label: "Cancel", onclick: onClose, disabled: saving }}
+  confirm={{
+    label: saving ? "Saving…" : entry ? "Save Changes" : "Schedule Stream",
+    onclick: save,
+    disabled: saving,
+  }}
+>
   <div class="form">
     <div class="field">
       <div class="f-label">TITLE</div>
@@ -482,9 +494,7 @@
       <div class="field">
         <div class="f-head">
           <div class="f-label">PER-DESTINATION METADATA</div>
-          <button type="button" class="preset-btn" onclick={() => (presetPickerOpen = true)}>
-            Saved info
-          </button>
+          <Button size="xs" face="mono" onclick={() => (presetPickerOpen = true)}>Saved info</Button>
         </div>
         <div class="meta-list">
           {#each selected as d (d.profileUuid)}
@@ -616,16 +626,6 @@
       <p class="error">{error}</p>
     {/if}
   </div>
-
-  {#snippet footer()}
-    {#if entry}
-      <button class="ghost danger" onclick={remove} disabled={saving}>Delete</button>
-    {/if}
-    <button class="ghost" onclick={onClose} disabled={saving}>Cancel</button>
-    <button class="accent" onclick={save} disabled={saving}>
-      {saving ? "Saving…" : entry ? "Save Changes" : "Schedule Stream"}
-    </button>
-  {/snippet}
 </Modal>
 
 {#if presetPickerOpen}
@@ -670,26 +670,10 @@
     justify-content: space-between;
     gap: 12px;
   }
-  .preset-btn {
-    height: 24px;
-    padding: 0 9px;
+  /* .f-label carries a 6px bottom margin; the button repeats it so both items of this
+     centered row reserve the same box and neither sits 3px off the other. */
+  .f-head :global(button) {
     margin-bottom: 6px;
-    flex: 0 0 auto;
-    background: transparent;
-    border: var(--border-weight) solid var(--color-border);
-    color: var(--color-dim);
-    font-family: var(--font-mono);
-    font-size: 9px;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-  }
-  .preset-btn:hover {
-    border-color: var(--color-accent);
-    color: var(--color-accent);
-  }
-  .preset-btn:focus-visible {
-    outline: 2px solid var(--color-accent);
-    outline-offset: 1px;
   }
   .f-input {
     width: 100%;
@@ -865,9 +849,6 @@
     font-family: var(--font-mono);
     font-size: 10px;
     line-height: 1.6;
-    color: var(--color-live);
-  }
-  .ghost.danger {
     color: var(--color-live);
   }
 </style>

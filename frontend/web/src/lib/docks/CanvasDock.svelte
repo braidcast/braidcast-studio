@@ -10,6 +10,7 @@
     type PreviewHitTarget,
   } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
+  import Button from "$lib/ui/Button.svelte";
   import { selectOnMount } from "$lib/utils/focusActions";
   import { clamp } from "$lib/utils/clamp";
   import { previewSuspended, suspendPreview } from "$lib/stores/previewGate.svelte";
@@ -1252,7 +1253,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
         <div class="placeholder">
           <p class="ph-title">Preview disabled</p>
           <p class="ph-sub">Rendering is stopped to save GPU.</p>
-          <button class="accent" onclick={enablePreview}>Re-enable Preview</button>
+          <Button variant="filled" face="label" onclick={enablePreview}>Re-enable Preview</Button>
         </div>
       {/if}
     </div>
@@ -1533,7 +1534,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   }
   /* The disabled-preview placeholder adds a real action (Re-enable); opt back into
      pointer events for just that button rather than the whole overlay. */
-  .placeholder button {
+  .placeholder :global(button) {
     pointer-events: auto;
     margin-top: 10px;
   }

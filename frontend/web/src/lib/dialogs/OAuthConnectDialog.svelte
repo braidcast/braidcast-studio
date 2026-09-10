@@ -133,7 +133,13 @@ import { EV } from "$lib/utils/eventNames";
   });
 </script>
 
-<Modal title="Connect {req.platformName}" {onClose} width={440}>
+<Modal
+  title="Connect {req.platformName}"
+  {onClose}
+  width={440}
+  cancel={{ label: phase === "waiting" || phase === "starting" ? "Cancel" : "Close", onclick: onClose }}
+  confirm={phase === "error" ? { label: "Retry", onclick: () => void begin() } : undefined}
+>
   {#if phase === "error"}
     <p class="error">{errorMsg}</p>
     <p class="dim">The connection could not be completed. Try again or close.</p>
@@ -159,17 +165,6 @@ import { EV } from "$lib/utils/eventNames";
   {:else}
     <p class="dim">Starting connection…</p>
   {/if}
-
-  {#snippet footer()}
-    {#if phase === "error"}
-      <button class="ghost" onclick={onClose}>Close</button>
-      <button class="btn" onclick={() => void begin()}>Retry</button>
-    {:else}
-      <button class="btn" onclick={onClose}>
-        {phase === "waiting" || phase === "starting" ? "Cancel" : "Close"}
-      </button>
-    {/if}
-  {/snippet}
 </Modal>
 
 <style>

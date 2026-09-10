@@ -116,7 +116,7 @@
     /* Declared size is the outer box, so the glyph plus both borders is the floor
        below which the content box can no longer hold the glyph. Derived from
        --border-weight rather than a constant: it is a user-editable Appearance token
-       with a 2px setting (lib/settings/AppearanceTab.svelte:102-105). */
+       with a 2px setting (lib/settings/AppearanceTab.svelte:103-106). */
     min-width: calc(var(--iconbtn-glyph) + var(--border-weight) * 2);
     min-height: calc(var(--iconbtn-glyph) + var(--border-weight) * 2);
     transition:
@@ -182,8 +182,22 @@
   /* No text label, so the ring is the only thing telling a keyboard user which
      control they are about to press. */
   .iconbtn:focus-visible {
-    outline: 2px solid var(--color-accent);
+    outline: calc(var(--border-weight) * 2) solid var(--iconbtn-ring, var(--color-accent));
     outline-offset: 1px;
+  }
+
+  /* The criterion here is agreement across a row, not what the button paints at
+     rest: CanvasDestinationsTab.svelte:206-226 puts a live-toned Button and a
+     `danger` IconButton side by side, and a ring that changed color between them
+     would read as two different kinds of focus. `danger` earns its place on that
+     alone -- unlike the other two it carries no color at rest (dim glyph, border
+     edge, live only on hover), and five call sites take it. The list therefore does
+     not match Button's: Button has no `danger` and spells destructive as `live`, so
+     the two are different predicates rather than one list transcribed twice. */
+  .iconbtn-accent,
+  .iconbtn-live,
+  .iconbtn-danger {
+    --iconbtn-ring: var(--color-text);
   }
 
   @media (prefers-reduced-motion: reduce) {

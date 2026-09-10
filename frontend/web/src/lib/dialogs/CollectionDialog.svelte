@@ -62,19 +62,18 @@
 
 <svelte:window onkeydown={onKeydown} />
 
-<Modal {title} {onClose} width={360}>
+<Modal
+  {title}
+  {onClose}
+  width={360}
+  cancel={kind === "alert" ? undefined : { label: "Cancel", onclick: onClose }}
+  confirm={{ label: confirmLabel, onclick: commit, disabled: !valid }}
+>
   {#if kind === "prompt"}
     <input class="field" bind:value aria-label={title} use:selectOnMount spellcheck="false" />
   {:else if message}
     <p class="msg">{message}</p>
   {/if}
-
-  {#snippet footer()}
-    {#if kind !== "alert"}
-      <button class="ghost" onclick={onClose}>Cancel</button>
-    {/if}
-    <button class="accent" disabled={!valid} onclick={commit}>{confirmLabel}</button>
-  {/snippet}
 </Modal>
 
 <style>

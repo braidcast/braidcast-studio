@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import Modal from "$lib/ui/Modal.svelte";
+  import Button from "$lib/ui/Button.svelte";
   import Icon from "$lib/ui/Icon.svelte";
   import IconButton, { ICONBTN_ROW } from "$lib/ui/IconButton.svelte";
   import ToggleSwitch from "$lib/ui/ToggleSwitch.svelte";
@@ -295,7 +296,15 @@
   }
 </script>
 
-<Modal title="Filters — {source}" {onClose} width={760} draggable fillBody onMove={() => preview?.resync()}>
+<Modal
+  title="Filters — {source}"
+  {onClose}
+  width={760}
+  draggable
+  fillBody
+  onMove={() => preview?.resync()}
+  cancel={{ label: "Close", onclick: onClose }}
+>
   {#if error}<p class="error">{error}</p>{/if}
 
   <div class="wrap">
@@ -388,12 +397,12 @@
 
       <div class="add">
         <div class="chain-actions">
-          <button class="chain-btn" disabled={filters.length === 0} onclick={() => void copyChain()}>
+          <Button size="xs" face="label" grow disabled={filters.length === 0} onclick={() => void copyChain()}>
             Copy Chain
-          </button>
-          <button class="chain-btn" disabled={!clipboard.filters} onclick={() => void pasteChain()}>
+          </Button>
+          <Button size="xs" face="label" grow disabled={!clipboard.filters} onclick={() => void pasteChain()}>
             Paste Chain
-          </button>
+          </Button>
         </div>
         {#if picking}
           <select bind:value={pickType} onchange={addFilter} onkeydown={onPickKey} use:selectOnMount>
@@ -414,9 +423,9 @@
             {/if}
           </select>
         {:else}
-          <button class="add-btn" disabled={!typesLoaded} onclick={beginPick}>
+          <Button size="sm" face="label" grow disabled={!typesLoaded} onclick={beginPick}>
             <Icon name="plus" size={12} /> Add Filter
-          </button>
+          </Button>
         {/if}
       </div>
     </div>
@@ -435,10 +444,6 @@
       </div>
     </div>
   </div>
-
-  {#snippet footer()}
-    <button class="btn" onclick={onClose}>Close</button>
-  {/snippet}
 </Modal>
 
 <style>
@@ -516,31 +521,11 @@
     gap: 6px;
     margin-bottom: 8px;
   }
-  .chain-btn {
-    flex: 1;
-    padding: 5px 8px;
-    font-family: var(--font-ui);
-    font-size: 11px;
-    background: transparent;
-    color: var(--color-text);
-    letter-spacing: var(--letter-spacing);
-    text-transform: var(--label-case);
-  }
-  .chain-btn:hover:not(:disabled) {
-    border-color: var(--color-accent);
-    color: var(--color-accent);
-  }
-  .chain-btn:disabled {
-    opacity: 0.45;
-    cursor: default;
-  }
-
   .add {
     flex: 0 0 auto;
     padding: 8px;
     border-top: var(--border-weight) solid var(--color-border);
   }
-
   .inline {
     flex: 1;
     min-width: 0;
@@ -566,30 +551,6 @@
   select:focus {
     outline: none;
     border-color: var(--color-accent);
-  }
-
-  .add-btn {
-    width: 100%;
-    height: auto;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-    padding: 6px 12px;
-    font-family: var(--font-ui);
-    font-size: 11px;
-    background: transparent;
-    color: var(--color-text);
-    letter-spacing: var(--letter-spacing);
-    text-transform: var(--label-case);
-  }
-  .add-btn:hover:not(:disabled) {
-    border-color: var(--color-accent);
-    color: var(--color-accent);
-  }
-  .add-btn:disabled {
-    opacity: 0.45;
-    cursor: default;
   }
 
   .dim {

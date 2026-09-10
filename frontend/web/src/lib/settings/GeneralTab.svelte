@@ -6,6 +6,7 @@ import { EV } from "$lib/utils/eventNames";
   import { openImporter } from "$lib/dialogs/importerOpener.svelte";
   import { goLivePref, setGoLivePref } from "$lib/stores/goLivePrefStore.svelte";
   import { RequestGuard } from "$lib/utils/requestGuard";
+  import Button from "$lib/ui/Button.svelte";
   import ToggleSwitch from "$lib/ui/ToggleSwitch.svelte";
 
   // General app settings, live-applied (the page model has no Apply boundary):
@@ -275,19 +276,19 @@ import { EV } from "$lib/utils/eventNames";
       Prompt to import from other software
     </label>
     <p class="dim note">Used by the OBS Studio importer.</p>
-    <button class="action" onclick={() => openImporter()}>Import from OBS Studio…</button>
+    <Button onclick={() => openImporter()}>Import from OBS Studio…</Button>
     <p class="dim note">Bring scene collections, stream destinations, and video/audio settings in from an OBS Studio install.</p>
   </section>
 
   <section class="group">
     <h4>Sources</h4>
-    <button class="action" onclick={() => openMissingFiles()}>Find Missing Files…</button>
+    <Button onclick={() => openMissingFiles()}>Find Missing Files…</Button>
     <p class="dim note">Locate and relink sources whose media file has moved or been renamed.</p>
   </section>
 
   <section class="group">
     <h4>Diagnostics</h4>
-    <button class="action" onclick={() => openLogViewer()}>View Current Log</button>
+    <Button onclick={() => openLogViewer()}>View Current Log</Button>
     <p class="dim note">Show the current session log for troubleshooting and bug reports.</p>
   </section>
 
@@ -355,20 +356,6 @@ import { EV } from "$lib/utils/eventNames";
   .dim {
     color: var(--color-muted);
     margin: 0;
-  }
-  .action {
-    height: auto;
-    padding: 7px 12px;
-    font-family: var(--font-ui);
-    font-size: 12px;
-    border: var(--border-weight) solid var(--color-border);
-    background: transparent;
-    color: var(--color-text);
-    cursor: pointer;
-  }
-  .action:hover {
-    border-color: var(--color-accent);
-    color: var(--color-accent);
   }
   .hint {
     font-size: 12px;

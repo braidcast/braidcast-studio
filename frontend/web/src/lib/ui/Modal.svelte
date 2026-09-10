@@ -1,3 +1,28 @@
+<script lang="ts" module>
+  // One footer cell. The bar takes actions, not markup: there is no snippet to write
+  // a <button> into, so a dialog cannot put a control in the footer that this
+  // component does not style. That is the whole point of the shape -- the previous
+  // contract was three class names (`.accent`, `.ghost`, `.btn`) that the footer
+  // matched with `:global()` but did not own, and two of the three had no shared
+  // definition at all -- outside a modal each meant whatever the file it was written
+  // in happened to define, or nothing.
+  export interface ModalAction {
+    label: string;
+    onclick: () => void;
+    disabled?: boolean;
+  }
+
+  // The weights live on the secondary type alone. `cancel` and `confirm` render fixed
+  // cells, so a `tone` on either would be accepted and never applied; keeping it off
+  // their type turns that into a compile error. The check is TypeScript's excess-
+  // property rule, so it fires on the object literals every call site writes and not
+  // on a pre-typed variable assigned in.
+  export interface ModalSecondaryAction extends ModalAction {
+    /** `strong` lifts a secondary above the quiet default; `danger` marks a destructive one. */
+    tone?: "strong" | "danger";
+  }
+</script>
+
 <script lang="ts">
   import type { Snippet } from "svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
@@ -6,10 +31,14 @@
 
   // Shared modal shell: backdrop + surface panel + mono micro-label head + body,
   // with an optional footer. Replaces the hand-rolled per-dialog copies; a caller
-  // owns only its body/footer content (and any preview-gate suspension it needs).
-  // Esc and the header close button always close; a backdrop click never does
-  // (closeOnBackdrop defaults off so a stray click can't discard work). A caller
-  // may opt back in with closeOnBackdrop={true}.
+  // owns its body content and describes its footer as actions (and any preview-gate
+  // suspension it needs). Esc and the header close button always close; a backdrop
+  // click never does (closeOnBackdrop defaults off so a stray click can't discard
+  // work). A caller may opt back in with closeOnBackdrop={true}.
+  //
+  // Footer cells render left to right as actions, cancel, confirm. `confirm` is the
+  // only accent cell there is, so a dialog cannot show two things that read as the
+  // primary; a dialog with nothing to commit passes only `cancel`.
   interface Props {
     title: string;
     onClose: () => void;
@@ -33,7 +62,14 @@
     fillBody?: boolean;
     /** Header-embedded controls (e.g. a segmented switch), right of the title. */
     headExtra?: Snippet;
-    footer?: Snippet;
+    /** Standing text pinned to the footer's left edge (why an action is withheld). */
+    note?: string;
+    /** Secondary actions, quietest weight, left of `cancel`. */
+    actions?: ModalSecondaryAction[];
+    /** Abandon without committing. Omit where the dialog has nothing to abandon. */
+    cancel?: ModalAction;
+    /** The one action that ends the dialog affirmatively; the only accent cell. */
+    confirm?: ModalAction;
     children: Snippet;
   }
   let {
@@ -46,9 +82,20 @@
     onMove,
     fillBody = false,
     headExtra,
-    footer,
+    note,
+    actions,
+    cancel,
+    confirm,
     children,
   }: Props = $props();
+
+  const hasFooter = $derived(
+    Boolean(note) || (actions?.length ?? 0) > 0 || cancel !== undefined || confirm !== undefined,
+  );
+
+  // With no confirm there is no filled cell, so nothing in a row of otherwise equal
+  // quiet cells says which one ends the dialog. See `.foot-cell.terminal`.
+  const terminalCancel = $derived(cancel !== undefined && confirm === undefined);
 
   // Header pointer-drag repositioning (opt-in). The offset is applied as a direct
   // transform on the panel (synchronous, so clamping can read the live rect); it is
@@ -216,8 +263,43 @@
 
     <div class="modal-body" class:fill={fillBody}>{@render children()}</div>
 
-    {#if footer}
-      <footer class="modal-foot">{@render footer()}</footer>
+    {#if hasFooter}
+      <footer class="modal-foot">
+        {#if note}<span class="foot-note">{note}</span>{/if}
+        {#each actions ?? [] as a}
+          <button
+            type="button"
+            class="foot-cell"
+            class:strong={a.tone === "strong"}
+            class:danger={a.tone === "danger"}
+            disabled={a.disabled}
+            onclick={a.onclick}
+          >
+            {a.label}
+          </button>
+        {/each}
+        {#if cancel}
+          <button
+            type="button"
+            class="foot-cell cancel"
+            class:terminal={terminalCancel}
+            disabled={cancel.disabled}
+            onclick={cancel.onclick}
+          >
+            {cancel.label}
+          </button>
+        {/if}
+        {#if confirm}
+          <button
+            type="button"
+            class="foot-cell accent"
+            disabled={confirm.disabled}
+            onclick={confirm.onclick}
+          >
+            {confirm.label}
+          </button>
+        {/if}
+      </footer>
     {/if}
   </div>
 </div>
@@ -286,10 +368,10 @@
     display: flex;
     flex-direction: column;
   }
-  /* Footer action bar. The primary button (.accent, or a non-ghost .btn) fills the
-     bar full-height and sits flush to the corner — the same edge-to-edge block as
-     the Studio GO LIVE button — while notes and secondary buttons stay centered with
-     left padding. min-height gives the bar a definite height for the stretch. */
+  /* Footer action bar. Every cell fills the bar full-height and sits flush to the
+     corner — the same edge-to-edge block as the Studio GO LIVE button — while the
+     note stays centered with left padding. min-height gives the bar a definite
+     height for the stretch. */
   .modal-foot {
     flex: 0 0 auto;
     display: flex;
@@ -300,9 +382,16 @@
     padding: 0 0 0 12px;
     border-top: var(--border-weight) solid var(--color-border);
   }
-  .modal-foot :global(.accent),
-  .modal-foot :global(.ghost),
-  .modal-foot :global(.btn:not(.ghost)) {
+  .foot-note {
+    flex: 1 1 auto;
+    font-size: 11px;
+    color: var(--color-muted);
+  }
+  /* Bar geometry, shared by every cell: cancels the global `button` rule's padding
+     and height (app.css:183-191) once, in the component that owns the bar.
+     `height: auto` with `align-self: stretch` is what makes a cell as tall as the
+     bar instead of --control-height. */
+  .foot-cell {
     align-self: stretch;
     height: auto;
     margin: 0;
@@ -310,19 +399,51 @@
     border: 0;
     border-left: var(--border-weight) solid var(--color-border);
   }
-  /* Secondary/cancel action: a de-emphasized ghost that fills the bar height like the
-     primary block, but reads quieter (mono, dimmed) so the accent cell stays dominant.
-     Centralized here so every modal footer's Cancel reads like the GO LIVE one. */
-  .modal-foot :global(.ghost) {
+  /* Everything but the confirm cell. Scoping the quiet look behind :not(.accent)
+     leaves `button.accent` (app.css:202-209) to paint the one filled block: a scoped
+     class outranks that element-plus-class global, so a rule that applied to every
+     cell would have had to restate the fill here to undo itself. Mono and dimmed, so
+     the accent cell stays dominant. --color-dim measures 5.20:1 at worst (Industrial)
+     against --color-surface. */
+  .foot-cell:not(.accent) {
+    background: var(--color-surface);
     font-family: var(--font-mono);
     font-size: 11px;
     letter-spacing: var(--letter-spacing);
-    text-transform: uppercase;
+    text-transform: var(--label-case);
     color: var(--color-dim);
-    background: var(--color-surface);
   }
-  .modal-foot :global(.ghost:hover) {
+  /* A footer with no confirm has no filled cell, so nothing separates the dismiss
+     from the secondaries beside it. The mark is the cell's ground, not its ink: the
+     accent cell has to stay the only thing that reads as primary, and a brightened
+     Cancel would compete with it in the dialogs that have both. --color-dim measures
+     4.81:1 against --color-surface-2 at worst (Industrial), so the label still clears
+     4.5:1 on the raised cell. */
+  .foot-cell.terminal {
+    background: var(--color-surface-2);
+  }
+  /* Fourth weight, for a secondary that must sit above the quiet default without
+     borrowing the accent the confirm cell keeps to itself. */
+  .foot-cell.strong {
     color: var(--color-text);
-    border-color: var(--color-border);
+    font-weight: 600;
+  }
+  .foot-cell.danger {
+    color: var(--color-live);
+  }
+  .foot-cell:not(.accent, .strong, .danger):hover:not(:disabled) {
+    color: var(--color-text);
+  }
+  /* These two already carry a lifted ink, so their hover moves the cell's divider
+     rather than its ink or its ground: recoloring a Delete's label would read as it
+     having stopped being destructive, and raising the ground under --color-live
+     costs contrast the label cannot spare (4.25:1 on --color-surface against 3.84:1
+     on --color-surface-2, Slate). An edge is outside the label, so it changes
+     nothing the label is measured against. */
+  .foot-cell.strong:hover:not(:disabled) {
+    border-left-color: var(--color-text);
+  }
+  .foot-cell.danger:hover:not(:disabled) {
+    border-left-color: var(--color-live);
   }
 </style>

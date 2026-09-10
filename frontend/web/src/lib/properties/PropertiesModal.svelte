@@ -41,19 +41,14 @@
   }
 </script>
 
-<Modal {title} onClose={discardAndClose} {width} {maxHeight}>
+<Modal
+  {title}
+  onClose={discardAndClose}
+  {width}
+  {maxHeight}
+  actions={[{ label: "Restore Defaults", onclick: () => void form?.restoreDefaults() }]}
+  cancel={{ label: "Cancel", onclick: discardAndClose }}
+  confirm={{ label: "OK", onclick: keepAndClose }}
+>
   <PropertyForm bind:this={form} {kind} {ref} />
-
-  {#snippet footer()}
-    <button class="ghost" onclick={() => void form?.restoreDefaults()}>Restore Defaults</button>
-    <span class="spacer"></span>
-    <button class="ghost" onclick={discardAndClose}>Cancel</button>
-    <button class="accent" onclick={keepAndClose}>OK</button>
-  {/snippet}
 </Modal>
-
-<style>
-  .spacer {
-    flex: 1 1 auto;
-  }
-</style>

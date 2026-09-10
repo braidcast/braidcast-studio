@@ -7,6 +7,7 @@
     type MultistreamState,
   } from "$lib/api/bridge";
   import { canvasStore } from "$lib/stores/canvasStore.svelte";
+  import Button from "$lib/ui/Button.svelte";
   import PageShell from "$lib/ui/PageShell.svelte";
   import { outputBindingStore, bindingDisplayName } from "$lib/stores/outputBindingStore.svelte";
   import { streamProfileStore } from "$lib/stores/streamProfileStore.svelte";
@@ -229,7 +230,9 @@
         </button>
       {/each}
       {#if reorder.dragging && reorder.dropIndex === otherCanvases.length}<div class="reorder-line"></div>{/if}
-      <button class="cv-newcanvas" onclick={addCanvas}><Icon name="plus" size={13} /><span>New Canvas</span></button>
+      <div class="cv-newcanvas">
+        <Button face="mono" variant="dashed" grow onclick={addCanvas}><Icon name="plus" size={13} />New Canvas</Button>
+      </div>
     </div>
   </aside>
 {/snippet}
