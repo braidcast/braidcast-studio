@@ -8,6 +8,7 @@
   import { showToast } from "$lib/stores/toastStore.svelte";
   import EmptyState from "$lib/ui/EmptyState.svelte";
   import Icon from "$lib/ui/Icon.svelte";
+  import IconButton from "$lib/ui/IconButton.svelte";
   import Modal from "$lib/ui/Modal.svelte";
   import { selectOnMount } from "$lib/utils/focusActions";
   import { fmtSince } from "$lib/utils/format";
@@ -216,24 +217,21 @@
                 </span>
               </button>
               <span class="acts">
-                <button
-                  type="button"
-                  class="act"
+                <IconButton
+                  icon="edit"
+                  iconSize={12}
                   aria-label={`Rename ${presetLabel(p)}`}
                   title="Rename (F2)"
                   onclick={() => startRename(p)}
-                >
-                  <Icon name="edit" size={12} />
-                </button>
-                <button
-                  type="button"
-                  class="act danger"
+                />
+                <IconButton
+                  icon="trash"
+                  iconSize={12}
+                  danger
                   aria-label={`Delete ${presetLabel(p)}`}
                   title="Delete (Del)"
                   onclick={() => (pendingDelete = p)}
-                >
-                  <Icon name="trash" size={12} />
-                </button>
+                />
               </span>
             {/if}
           </div>
@@ -331,35 +329,6 @@
     flex: 0 0 auto;
     padding-right: 6px;
   }
-  /* padding:0 resets the global `button` rule's `padding: 0 12px` (app.css:183-191); with
-     border-box the 26px width would otherwise leave a zero-width content box and collapse
-     the icon, while the border box still paints.
-     --color-dim, not --color-muted: the icon carries no label, so it owes SC 1.4.11 3:1, and
-     muted measures 2.63:1 over the 12% accent wash .row.on lays down (Industrial preset). */
-  .act {
-    width: 26px;
-    height: 26px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 0;
-    background: transparent;
-    border: var(--border-weight) solid transparent;
-    color: var(--color-dim);
-    transition: color 0.12s ease;
-  }
-  .act:hover {
-    color: var(--color-text);
-    border-color: var(--color-border);
-  }
-  .act.danger:hover {
-    color: var(--color-live);
-    border-color: color-mix(in srgb, var(--color-live) 45%, transparent);
-  }
-  .act:focus-visible {
-    outline: 2px solid var(--color-accent);
-    outline-offset: -2px;
-  }
   .rename {
     flex: 1;
     min-width: 0;
@@ -385,10 +354,5 @@
     font-size: 10px;
     line-height: 1.6;
     color: var(--color-live);
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .act {
-      transition: none;
-    }
   }
 </style>

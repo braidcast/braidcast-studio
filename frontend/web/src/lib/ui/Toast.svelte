@@ -1,5 +1,5 @@
 <script lang="ts">
-  import Icon from "$lib/ui/Icon.svelte";
+  import IconButton from "$lib/ui/IconButton.svelte";
   import { toast, hideToast } from "$lib/stores/toastStore.svelte";
   import { anyEscOwner, anyModalOpen, watchEscStack } from "$lib/utils/escStack";
   import { isEditable } from "$lib/utils/editableTarget";
@@ -142,9 +142,17 @@
         <button class="action" type="button" onclick={takeAction}>{toast.current.action.label}</button>
       {/if}
       {#if toast.current.dismissible}
-        <button class="close" type="button" aria-label="Dismiss notification" onclick={userDismiss}>
-          <Icon name="x" size={13} />
-        </button>
+        <!-- Trims the 24px box back into the toast's 9px/14px padding: -6px takes 6px
+             off the button's right inset, and the vertical pair takes 6px off the
+             toast's height wherever the button is what sets it -- a single-line toast,
+             not .rich, where the body drives the height instead. -->
+        <IconButton
+          icon="x"
+          size={24}
+          style="margin: -3px -6px -3px 0"
+          aria-label="Dismiss notification"
+          onclick={userDismiss}
+        />
       {/if}
     </div>
   {/key}
@@ -229,30 +237,6 @@
   }
 
   .action:focus-visible {
-    outline: var(--border-weight) solid var(--color-accent);
-    outline-offset: 1px;
-  }
-
-  .close {
-    flex: 0 0 auto;
-    display: grid;
-    place-items: center;
-    width: 24px;
-    height: 24px;
-    margin: -3px -6px -3px 0;
-    padding: 0;
-    color: var(--color-dim);
-    background: none;
-    border: 0;
-    cursor: pointer;
-  }
-
-  .close:hover {
-    color: var(--color-text);
-    background: color-mix(in srgb, var(--color-text) 12%, transparent);
-  }
-
-  .close:focus-visible {
     outline: var(--border-weight) solid var(--color-accent);
     outline-offset: 1px;
   }

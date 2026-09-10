@@ -23,6 +23,7 @@
   } from "../../overlay/textStyle";
   import CssColorInput from "$lib/ui/CssColorInput.svelte";
   import Icon from "$lib/ui/Icon.svelte";
+  import IconButton, { ICONBTN_TOOLBAR } from "$lib/ui/IconButton.svelte";
   import Segmented from "$lib/ui/Segmented.svelte";
   import { clamp } from "$lib/utils/clamp";
 
@@ -259,15 +260,14 @@
 
             <div class="ts__reset">
               {#if set}
-                <button
-                  type="button"
-                  class="tool-btn"
+                <IconButton
+                  icon="x"
+                  {...ICONBTN_TOOLBAR}
+                  iconSize={11}
                   aria-label="Clear {name} {p.label}"
                   title="Clear — inherit the widget's own setting"
                   onclick={() => drop(p.key)}
-                >
-                  <Icon name="x" size={11} />
-                </button>
+                />
               {/if}
             </div>
           </li>

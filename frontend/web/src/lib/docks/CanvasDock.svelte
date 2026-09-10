@@ -40,6 +40,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   import AddSourceModal from "$lib/dialogs/add-source/AddSourceModal.svelte";
   import PropertiesModal from "$lib/properties/PropertiesModal.svelte";
   import Icon from "$lib/ui/Icon.svelte";
+  import IconButton from "$lib/ui/IconButton.svelte";
   import ListToolbar, { type ToolAction } from "$lib/docking/ListToolbar.svelte";
   import FilterReveal from "$lib/docking/FilterReveal.svelte";
   import Splitter from "$lib/docking/Splitter.svelte";
@@ -1351,13 +1352,14 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
             ondragend={onDragEnd}
             oncontextmenu={(e) => void openSourceMenu(e, item)}
           >
-            <button
-              class="es-eye"
-              class:off={!item.visible}
+            <IconButton
+              icon={item.visible ? "eye" : "eye-off"}
+              size={17}
+              iconSize={14}
               title={item.visible ? "Hide" : "Show"}
               aria-label={item.visible ? "Hide" : "Show"}
-              onclick={() => void toggleVisible(item)}><Icon name={item.visible ? "eye" : "eye-off"} size={14} /></button
-            >
+              onclick={() => void toggleVisible(item)}
+            />
             {#if renamingId === item.id}
               <input
                 class="inline"
@@ -1371,13 +1373,14 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
                 >{item.source ?? "(unnamed)"}</button
               >
             {/if}
-            <button
-              class="es-lock"
-              class:locked={item.locked}
+            <IconButton
+              icon={item.locked ? "lock" : "lock-open"}
+              size={17}
+              iconSize={12}
               title={item.locked ? "Unlock" : "Lock"}
               aria-label={item.locked ? "Unlock" : "Lock"}
-              onclick={() => void toggleLocked(item)}><Icon name={item.locked ? "lock" : "lock-open"} size={12} /></button
-            >
+              onclick={() => void toggleLocked(item)}
+            />
           </li>
         {/each}
         {#if currentScene && filteredItems.length === 0}
@@ -1669,38 +1672,6 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     align-items: center;
     color: var(--color-dim);
     cursor: default;
-  }
-  .es-eye {
-    flex: 0 0 auto;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 17px;
-    height: 17px;
-    background: none;
-    border: 0;
-    padding: 0;
-    cursor: pointer;
-    color: var(--color-dim);
-  }
-  .es-eye.off {
-    color: var(--color-muted);
-  }
-  .es-lock {
-    flex: 0 0 auto;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 17px;
-    height: 17px;
-    background: none;
-    border: 0;
-    padding: 0;
-    cursor: pointer;
-    color: var(--color-muted);
-  }
-  .es-lock.locked {
-    color: var(--color-dim);
   }
   .es-row.empty {
     cursor: default;

@@ -28,7 +28,7 @@
   import TextStyleControl from "$lib/overlays/TextStyleControl.svelte";
   import CssColorInput from "$lib/ui/CssColorInput.svelte";
   import FontDatalist from "$lib/ui/FontDatalist.svelte";
-  import Icon from "$lib/ui/Icon.svelte";
+  import IconButton, { ICONBTN_TOOLBAR } from "$lib/ui/IconButton.svelte";
   import ToggleSwitch from "$lib/ui/ToggleSwitch.svelte";
   import { isPlainObject } from "$lib/utils/plainObject";
 
@@ -274,14 +274,14 @@
            override. Writing the default back is what clears the key (see withOverride). -->
       <div class="freset">
         {#if set}
-          <button
-            class="tool-btn"
+          <IconButton
+            icon="x"
+            {...ICONBTN_TOOLBAR}
+            iconSize={12}
             aria-label="Reset {name} to default"
             title="Changed from the default — reset it"
             onclick={() => setValue(f, f.default)}
-          >
-            <Icon name="x" size={12} />
-          </button>
+          />
         {/if}
       </div>
     </li>

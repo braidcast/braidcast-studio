@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import Modal from "$lib/ui/Modal.svelte";
   import Icon from "$lib/ui/Icon.svelte";
+  import IconButton, { ICONBTN_ROW } from "$lib/ui/IconButton.svelte";
   import ToggleSwitch from "$lib/ui/ToggleSwitch.svelte";
   import { obs, type FilterInfo, type FilterType, type ReorderDirection } from "$lib/api/bridge";
   import PropertyForm from "$lib/properties/PropertyForm.svelte";
@@ -329,30 +330,37 @@
             </button>
           {/if}
           <span class="dock-actions">
-            <button
-              class="dock-icon"
+            <IconButton
+              icon="up"
+              {...ICONBTN_ROW}
               title="Move up"
               aria-label="Move up"
               disabled={idx === 0}
               onclick={() => void reorder(f, "up")}
-            >
-              <Icon name="up" size={12} />
-            </button>
-            <button
-              class="dock-icon"
+            />
+            <IconButton
+              icon="down"
+              {...ICONBTN_ROW}
               title="Move down"
               aria-label="Move down"
               disabled={idx === filters.length - 1}
               onclick={() => void reorder(f, "down")}
-            >
-              <Icon name="down" size={12} />
-            </button>
-            <button class="dock-icon" title="Duplicate" aria-label="Duplicate" onclick={() => void duplicate(f)}>
-              <Icon name="copy" size={12} />
-            </button>
-            <button class="dock-icon danger" title="Remove" aria-label="Remove" onclick={() => void remove(f)}>
-              <Icon name="trash" size={12} />
-            </button>
+            />
+            <IconButton
+              icon="copy"
+              {...ICONBTN_ROW}
+              title="Duplicate"
+              aria-label="Duplicate"
+              onclick={() => void duplicate(f)}
+            />
+            <IconButton
+              icon="trash"
+              {...ICONBTN_ROW}
+              danger
+              title="Remove"
+              aria-label="Remove"
+              onclick={() => void remove(f)}
+            />
           </span>
         </li>
       {/snippet}
@@ -546,10 +554,6 @@
   .inline:focus {
     outline: none;
   }
-  .dock-icon.danger:hover:not(:disabled) {
-    color: var(--color-live);
-  }
-
   select {
     width: 100%;
     background: var(--color-base);

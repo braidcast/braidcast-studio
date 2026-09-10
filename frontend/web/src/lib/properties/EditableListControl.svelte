@@ -2,7 +2,7 @@
   import { obs } from "$lib/api/bridge";
   import type { ControlProps } from "$lib/properties/controls";
   import type { EditableListProperty, EditableListItem } from "$lib/api/bridge";
-  import Icon from "$lib/ui/Icon.svelte";
+  import IconButton, { ICONBTN_FIELD } from "$lib/ui/IconButton.svelte";
   let { prop, value, onChange }: ControlProps = $props();
 
   const p = $derived(prop as EditableListProperty);
@@ -61,30 +61,32 @@
           disabled={!prop.enabled}
           oninput={(e) => setValue(idx, (e.currentTarget as HTMLInputElement).value)}
         />
-        <button
-          type="button"
-          class="icon"
+        <IconButton
+          icon="up"
+          {...ICONBTN_FIELD}
           title="Move up"
           aria-label="Move up"
           disabled={!prop.enabled || idx === 0}
-          onclick={() => move(idx, -1)}><Icon name="up" size={12} /></button
-        >
-        <button
-          type="button"
-          class="icon"
+          onclick={() => move(idx, -1)}
+        />
+        <IconButton
+          icon="down"
+          {...ICONBTN_FIELD}
           title="Move down"
           aria-label="Move down"
           disabled={!prop.enabled || idx === items.length - 1}
-          onclick={() => move(idx, 1)}><Icon name="down" size={12} /></button
-        >
-        <button
-          type="button"
-          class="icon remove"
+          onclick={() => move(idx, 1)}
+        />
+        <IconButton
+          icon="x"
+          {...ICONBTN_FIELD}
+          tone="live"
+          danger
           title="Remove"
           aria-label="Remove"
           disabled={!prop.enabled}
-          onclick={() => remove(idx)}><Icon name="x" size={12} /></button
-        >
+          onclick={() => remove(idx)}
+        />
       </div>
     {/each}
     {#if items.length === 0}
@@ -134,17 +136,6 @@
   .row input {
     flex: 1;
     min-width: 0;
-  }
-  .icon {
-    width: 28px;
-    padding: 0;
-    flex: none;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-  }
-  .remove {
-    color: var(--color-live);
   }
   .empty {
     margin: 0;

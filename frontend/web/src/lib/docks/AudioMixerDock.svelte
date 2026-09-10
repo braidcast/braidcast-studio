@@ -9,6 +9,7 @@ import { EV } from "$lib/utils/eventNames";
   import PropertiesModal from "$lib/properties/PropertiesModal.svelte";
   import { RequestGuard } from "$lib/utils/requestGuard";
   import Icon from "$lib/ui/Icon.svelte";
+  import IconButton, { ICONBTN_TOOLBAR } from "$lib/ui/IconButton.svelte";
 
   // Per-source faders + live dB meters. Levels arrive on the audio.levels push
   // (~30 Hz x N sources); we coalesce into a Map and flush once per animation
@@ -402,27 +403,28 @@ import { EV } from "$lib/utils/eventNames";
       <button class="text-btn" title="Unhide all hidden sources" onclick={() => void unhideAll()}>
         Unhide All ({hiddenCount})
       </button>
-      <button
-        class="tool-btn"
-        class:active={showHidden}
+      <IconButton
+        icon={showHidden ? "eye" : "eye-off"}
+        {...ICONBTN_TOOLBAR}
+        tone={showHidden ? "accent" : "default"}
         title={showHidden ? "Hide hidden sources" : "Show hidden sources"}
         aria-label={showHidden ? "Hide hidden sources" : "Show hidden sources"}
         aria-pressed={showHidden}
         onclick={() => (showHidden = !showHidden)}
-      >
-        <Icon name={showHidden ? "eye" : "eye-off"} size={13} />
-      </button>
+      />
     {/if}
-    <button
-      class="tool-btn layout"
-      class:active={vertical}
+    <!-- margin-left:auto keeps this hugging the trailing edge whether or not the
+         Unhide-All/show-hidden controls rendered ahead of it. -->
+    <IconButton
+      icon={vertical ? "grid" : "list"}
+      {...ICONBTN_TOOLBAR}
+      tone={vertical ? "accent" : "default"}
+      style="margin-left: auto"
       title={vertical ? "Switch to horizontal layout" : "Switch to vertical layout"}
       aria-label={vertical ? "Switch to horizontal layout" : "Switch to vertical layout"}
       aria-pressed={vertical}
       onclick={toggleLayout}
-    >
-      <Icon name={vertical ? "grid" : "list"} size={13} />
-    </button>
+    />
   </div>
 
   {#if !loaded}
@@ -459,61 +461,48 @@ import { EV } from "$lib/utils/eventNames";
             {/if}
           </div>
           <div class="controls">
-            <button
-              class="tool-btn mute"
-              class:on={src.muted}
+            <IconButton
+              icon={src.muted ? "mute" : "volume"}
+              {...ICONBTN_TOOLBAR}
+              tone={src.muted ? "live" : "default"}
               title={src.muted ? "Unmute" : "Mute"}
               aria-label={src.muted ? "Unmute" : "Mute"}
               aria-pressed={src.muted}
               onclick={() => void toggleMuted(src)}
-            >
-              <Icon name={src.muted ? "mute" : "volume"} size={13} />
-            </button>
-            <button
-              class="tool-btn mon"
-              class:on={mon !== "none"}
-              class:both={mon === "monitorAndOutput"}
+            />
+            <!-- Tri-state, so the tone carries what the glyph does not: dim when Off,
+                 accent for Monitor Only, live once it is also routed to output. -->
+            <IconButton
+              icon="monitor"
+              {...ICONBTN_TOOLBAR}
+              tone={mon === "monitorAndOutput" ? "live" : mon === "none" ? "default" : "accent"}
               title={MONITOR_LABEL[mon]}
               aria-label={MONITOR_LABEL[mon]}
               onclick={() => void cycleMonitor(src)}
-            >
-              <svg
-                width="13"
-                height="13"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.7"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              >
-                <path d="M3 18v-6a9 9 0 0 1 18 0v6" />
-                <path
-                  d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"
-                />
-              </svg>
-            </button>
-            <button
-              class="tool-btn lock"
-              class:on={src.volumeLocked}
+            />
+            <IconButton
+              icon={src.volumeLocked ? "lock" : "lock-open"}
+              {...ICONBTN_TOOLBAR}
+              tone={src.volumeLocked ? "accent" : "default"}
               title={src.volumeLocked ? "Unlock Volume" : "Lock Volume"}
               aria-label={src.volumeLocked ? "Unlock Volume" : "Lock Volume"}
               aria-pressed={src.volumeLocked}
               onclick={() => void toggleVolumeLocked(src)}
-            >
-              <Icon name={src.volumeLocked ? "lock" : "lock-open"} size={13} />
-            </button>
-            <button class="tool-btn" title="Filters" aria-label="Filters" onclick={() => openFilters(src.name, "audio")}>
-              <Icon name="sliders" size={13} />
-            </button>
-            <button
-              class="tool-btn"
+            />
+            <IconButton
+              icon="sliders"
+              {...ICONBTN_TOOLBAR}
+              title="Filters"
+              aria-label="Filters"
+              onclick={() => openFilters(src.name, "audio")}
+            />
+            <IconButton
+              icon="gear"
+              {...ICONBTN_TOOLBAR}
               title="Advanced Audio Properties"
               aria-label="Advanced Audio Properties"
               onclick={() => openAdvAudio(src.name, src.name)}
-            >
-              <Icon name="gear" size={13} />
-            </button>
+            />
             <input
               class="fader"
               type="range"
@@ -653,24 +642,6 @@ import { EV } from "$lib/utils/eventNames";
     align-items: center;
     gap: 8px;
   }
-  .mute.on {
-    color: var(--color-live);
-  }
-  /* Monitoring quick-toggle: dim when Off, accent for Monitor Only, live tint when
-     also routed to output. Order matters -- .both must win over .on. */
-  .mon {
-    color: var(--color-muted);
-  }
-  .mon.on {
-    color: var(--color-accent);
-  }
-  .mon.both {
-    color: var(--color-live);
-  }
-  /* Volume-lock toggle: accent tint when locked (the fader is disabled alongside). */
-  .lock.on {
-    color: var(--color-accent);
-  }
   /* Hide/Unhide header: text action + show-hidden eye toggle. */
   .toolbar {
     display: flex;
@@ -713,12 +684,6 @@ import { EV } from "$lib/utils/eventNames";
   /* Audio mixer messages use a roomier pad than the shared 8px 7px default. */
   .dock-msg {
     padding: 10px 9px;
-  }
-
-  /* Layout toggle always hugs the trailing edge of the toolbar (whether or not the
-     Unhide-All/show-hidden controls are present). */
-  .toolbar .layout {
-    margin-left: auto;
   }
 
   /* Vertical layout (OBS "Vertical Layout"): strips flow left-to-right and wrap into

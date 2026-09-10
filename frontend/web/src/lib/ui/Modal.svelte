@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
-  import Icon from "$lib/ui/Icon.svelte";
+  import IconButton from "$lib/ui/IconButton.svelte";
   import { pushEsc, popEsc, isTopEsc } from "$lib/utils/escStack";
   import { suspendPreview } from "$lib/stores/previewGate.svelte";
 
@@ -211,9 +211,7 @@
       {#if headExtra}
         <div class="head-extra">{@render headExtra()}</div>
       {/if}
-      <button class="close" title="Close" aria-label="Close" onclick={onClose}>
-        <Icon name="x" size={13} />
-      </button>
+      <IconButton icon="x" size={22} height={20} title="Close" aria-label="Close" onclick={onClose} />
     </header>
 
     <div class="modal-body" class:fill={fillBody}>{@render children()}</div>
@@ -274,22 +272,6 @@
     align-items: center;
     gap: 8px;
     min-width: 0;
-  }
-  .close {
-    flex: 0 0 auto;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 22px;
-    height: 20px;
-    padding: 0;
-    background: none;
-    border: 0;
-    color: var(--color-muted);
-  }
-  .close:hover {
-    color: var(--color-text);
-    border: 0;
   }
   .modal-body {
     flex: 1 1 auto;

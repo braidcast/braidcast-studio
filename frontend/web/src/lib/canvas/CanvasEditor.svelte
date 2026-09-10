@@ -10,6 +10,7 @@
   import { fmtFps } from "$lib/utils/format";
   import { callOrToast } from "$lib/utils/callToast";
   import Icon, { type IconName } from "$lib/ui/Icon.svelte";
+  import IconButton from "$lib/ui/IconButton.svelte";
   import CanvasVideoTab from "$lib/canvas/CanvasVideoTab.svelte";
   import CanvasEncodingTab from "$lib/canvas/CanvasEncodingTab.svelte";
   import CanvasAudioTab from "$lib/canvas/CanvasAudioTab.svelte";
@@ -113,17 +114,27 @@
       </div>
       <!-- Duplicating reads the canvas rather than mutating it, so unlike delete it
            is offered for the Default canvas and stays available while live. -->
-      <button class="cfhead__act" title="Duplicate this canvas" aria-label="Duplicate this canvas" onclick={onDuplicate}>
-        <Icon name="copy" size={14} />
-      </button>
+      <IconButton
+        icon="copy"
+        size={28}
+        iconSize={14}
+        variant="outline"
+        title="Duplicate this canvas"
+        aria-label="Duplicate this canvas"
+        onclick={onDuplicate}
+      />
       {#if !isDefault}
-        <button
-          class="cfhead__act cfhead__del"
+        <IconButton
+          icon="trash"
+          size={28}
+          iconSize={14}
+          variant="outline"
+          danger
           disabled={isLive}
           title={isLive ? "Stop the stream first" : "Delete this canvas"}
           aria-label="Delete this canvas"
-          onclick={onDelete}><Icon name="trash" size={14} /></button
-        >
+          onclick={onDelete}
+        />
       {/if}
     </div>
     <div class="cfhead__note" class:live={isLive}>

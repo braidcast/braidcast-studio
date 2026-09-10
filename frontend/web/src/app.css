@@ -523,22 +523,6 @@ input[type="color"] {
 .dock-row:hover .dock-actions {
   display: inline-flex;
 }
-.dock-icon {
-  background: none;
-  border: none;
-  height: auto;
-  padding: 2px 4px;
-  font-size: 11px;
-  line-height: 1;
-  color: var(--color-muted);
-}
-.dock-icon:hover:not(:disabled) {
-  color: var(--color-accent);
-}
-.dock-icon:disabled {
-  opacity: 0.3;
-  cursor: default;
-}
 .dock-msg {
   margin: 0;
   padding: 8px 7px;
@@ -576,29 +560,6 @@ input[type="color"] {
 .list-toolbar .tool-spacer {
   flex: 1;
 }
-.tool-btn {
-  flex: 0 0 auto;
-  width: 25px;
-  height: 22px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: none;
-  border: 0;
-  padding: 0;
-  cursor: pointer;
-  color: var(--color-dim);
-}
-.tool-btn:hover:not(:disabled) {
-  color: var(--color-accent);
-}
-.tool-btn.active {
-  color: var(--color-accent);
-}
-.tool-btn:disabled {
-  opacity: 0.35;
-  cursor: default;
-}
 
 /* Reveal filter: search-icon button + an inline input that fills the toolbar gap. */
 .filter-reveal {
@@ -621,28 +582,6 @@ input[type="color"] {
 .filter-reveal .filter-input:focus {
   outline: none;
   border-color: var(--color-accent);
-}
-
-/* Fixed-size, centered box for an SVG eye/lock row toggle; constant footprint so
-   toggling the glyph never nudges the row (was the emoji-width jump). */
-.dock-toggle {
-  flex: 0 0 auto;
-  width: 18px;
-  height: 18px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: none;
-  border: 0;
-  padding: 0;
-  cursor: pointer;
-  color: var(--color-dim);
-}
-.dock-toggle:hover {
-  color: var(--color-accent);
-}
-.dock-toggle.off {
-  color: var(--color-muted);
 }
 
 /* Drag handle between two flex panes (CanvasDock sub-panes). Thin, 0-radius, hints
@@ -891,33 +830,6 @@ input[type="color"] {
 .cfhead__meta b {
   color: var(--color-accent);
   font-weight: 500;
-}
-/* Square icon button in the canvas header. .cfhead__del adds only the danger
-   hover on top, so a second action inherits the box without copying it. */
-.cfhead__act {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  background: none;
-  border: var(--border-weight) solid var(--color-border);
-  color: var(--color-muted);
-  cursor: pointer;
-}
-.cfhead__act:hover:not(:disabled) {
-  color: var(--color-accent);
-  border-color: var(--color-accent);
-}
-.cfhead__act:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-.cfhead__del:hover:not(:disabled) {
-  color: var(--color-live);
-  border-color: var(--color-live);
 }
 .cfhead__note {
   margin-top: 11px;

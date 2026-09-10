@@ -23,7 +23,7 @@ import { EV } from "$lib/utils/eventNames";
   import { deinterlaceMenu } from "$lib/menus/deinterlaceMenu";
   import { colorMenu } from "$lib/menus/colorMenu";
   import type { DeinterlaceMode, DeinterlaceFieldOrder } from "$lib/api/bridge";
-  import Icon from "$lib/ui/Icon.svelte";
+  import IconButton from "$lib/ui/IconButton.svelte";
   import ListToolbar, { type ToolAction } from "$lib/docking/ListToolbar.svelte";
   import FilterReveal from "$lib/docking/FilterReveal.svelte";
 
@@ -611,19 +611,22 @@ import { EV } from "$lib/utils/eventNames";
           ondragend={onDragEnd}
           oncontextmenu={(e) => void openMenu(e, item, idx)}
         >
-          <button
-            class="dock-toggle"
-            class:off={!item.visible}
+          <IconButton
+            icon={item.visible ? "eye" : "eye-off"}
+            size={18}
+            iconSize={14}
             title={item.visible ? "Hide" : "Show"}
             aria-label={item.visible ? "Hide" : "Show"}
-            onclick={() => void toggleVisible(item)}><Icon name={item.visible ? "eye" : "eye-off"} size={14} /></button
-          >
-          <button
-            class="dock-toggle"
+            onclick={() => void toggleVisible(item)}
+          />
+          <IconButton
+            icon={item.locked ? "lock" : "lock-open"}
+            size={18}
+            iconSize={12}
             title={item.locked ? "Unlock" : "Lock"}
             aria-label={item.locked ? "Unlock" : "Lock"}
-            onclick={() => void toggleLocked(item)}><Icon name={item.locked ? "lock" : "lock-open"} size={12} /></button
-          >
+            onclick={() => void toggleLocked(item)}
+          />
           {#if renamingId === item.id}
             <input class="inline" bind:value={renameTo} onkeydown={onRenameKey} onblur={commitRename} use:selectOnMount />
           {:else}

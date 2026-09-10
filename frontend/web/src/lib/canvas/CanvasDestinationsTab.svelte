@@ -8,6 +8,7 @@
   } from "$lib/api/bridge";
   import ToggleSwitch from "$lib/ui/ToggleSwitch.svelte";
   import Icon from "$lib/ui/Icon.svelte";
+  import IconButton from "$lib/ui/IconButton.svelte";
   import Avatar from "$lib/ui/Avatar.svelte";
   import PlatformMark from "$lib/ui/PlatformMark.svelte";
   import ProfileSelect from "$lib/ui/ProfileSelect.svelte";
@@ -211,14 +212,17 @@
                   {isRetrying(b.uuid) ? "Starting…" : "Retry"}
                 </button>
               {/if}
-              <button
-                class="trash"
+              <IconButton
+                icon="trash"
+                size={28}
+                height={26}
+                iconSize={14}
+                variant="outline"
+                danger
                 title="Unbind destination"
                 aria-label="Unbind destination"
                 onclick={() => onRemove(b)}
-              >
-                <Icon name="trash" size={14} />
-              </button>
+              />
             </span>
           </div>
         </div>
@@ -416,23 +420,6 @@
     cursor: pointer;
     font-size: 11.5px;
     color: var(--color-dim);
-  }
-  .trash {
-    flex: 0 0 auto;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 28px;
-    height: 26px;
-    padding: 0;
-    background: none;
-    border: var(--border-weight) solid var(--color-border);
-    color: var(--color-muted);
-    cursor: pointer;
-  }
-  .trash:hover {
-    color: var(--color-live);
-    border-color: var(--color-live);
   }
   .toggle-wrap {
     flex: 0 0 auto;

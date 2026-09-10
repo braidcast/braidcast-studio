@@ -1,5 +1,5 @@
 <script lang="ts">
-  import Icon from "$lib/ui/Icon.svelte";
+  import IconButton, { ICONBTN_TOOLBAR } from "$lib/ui/IconButton.svelte";
   import { focusOnMount } from "$lib/utils/focusActions";
 
   // Space-saving filter: a search-icon button that toggles a one-line input inline
@@ -30,15 +30,14 @@
 </script>
 
 <div class="filter-reveal" class:shown>
-  <button
-    class="tool-btn"
+  <IconButton
+    icon="search"
+    {...ICONBTN_TOOLBAR}
     title={shown ? "Hide filter" : "Filter…"}
     aria-label={shown ? "Hide filter" : "Filter…"}
     aria-pressed={shown}
     onclick={toggle}
-  >
-    <Icon name="search" size={13} />
-  </button>
+  />
   {#if shown}
     <input class="filter-input" bind:value {placeholder} onkeydown={onKey} use:focusOnMount />
   {/if}

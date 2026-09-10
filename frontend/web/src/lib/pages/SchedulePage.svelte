@@ -28,6 +28,7 @@
   import { showToast } from "$lib/stores/toastStore.svelte";
   import EmptyState from "$lib/ui/EmptyState.svelte";
   import Icon from "$lib/ui/Icon.svelte";
+  import IconButton from "$lib/ui/IconButton.svelte";
   import PageShell from "$lib/ui/PageShell.svelte";
   import Segmented, { type SegmentedOption } from "$lib/ui/Segmented.svelte";
 
@@ -308,13 +309,27 @@
       <span class="shell-note" title={sessionsStore.error}>history unavailable</span>
     {/if}
     <div class="nav">
-      <button class="nav-btn" title="Previous" aria-label="Previous" onclick={() => step(-1)}>
-        <Icon name="caret-left" size={14} />
-      </button>
+      <IconButton
+        icon="caret-left"
+        size={26}
+        height={24}
+        iconSize={14}
+        variant="outline"
+        title="Previous"
+        aria-label="Previous"
+        onclick={() => step(-1)}
+      />
       <button class="today-btn" onclick={goToday}>Today</button>
-      <button class="nav-btn" title="Next" aria-label="Next" onclick={() => step(1)}>
-        <Icon name="caret-right" size={14} />
-      </button>
+      <IconButton
+        icon="caret-right"
+        size={26}
+        height={24}
+        iconSize={14}
+        variant="outline"
+        title="Next"
+        aria-label="Next"
+        onclick={() => step(1)}
+      />
       <span class="range">{rangeLabel} · {plannedCount} planned</span>
     </div>
     <Segmented options={VIEW_OPTIONS} value={view} onChange={(v) => (view = v as View)} />
@@ -400,21 +415,6 @@
     display: flex;
     align-items: center;
     gap: 6px;
-  }
-  .nav-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 26px;
-    height: 24px;
-    padding: 0;
-    background: transparent;
-    border: var(--border-weight) solid var(--color-border);
-    color: var(--color-dim);
-  }
-  .nav-btn:hover {
-    color: var(--color-accent);
-    border-color: var(--color-accent);
   }
   .today-btn {
     height: 24px;

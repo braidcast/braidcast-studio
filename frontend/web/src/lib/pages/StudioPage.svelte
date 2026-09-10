@@ -33,6 +33,7 @@ import { EV } from "$lib/utils/eventNames";
   import ContextMenu, { type ContextMenuItem, type ContextMenuItems } from "$lib/menus/ContextMenu.svelte";
   import { destinationFailureToast } from "$lib/ui/destinationArming.svelte";
   import Icon from "$lib/ui/Icon.svelte";
+  import IconButton, { ICONBTN_UTILITY } from "$lib/ui/IconButton.svelte";
   import CanvasMark from "$lib/ui/CanvasMark.svelte";
   import StaleNotice from "$lib/ui/StaleNotice.svelte";
   import {
@@ -892,49 +893,42 @@ import { EV } from "$lib/utils/eventNames";
       <div class="restore" role="group" aria-label="Reopen docks">
         {#each DOCKS as d (d.id)}
           {#if visibleDocks[d.id] === false && dockOpenable(d.id)}
-            <button
-              class="iconbtn"
+            <IconButton
+              icon={d.icon}
+              {...ICONBTN_UTILITY}
               title={"Open " + d.title}
               aria-label={"Open " + d.title}
               onclick={() => toggleDock(d.id)}
-            >
-              <Icon name={d.icon} size={15} />
-            </button>
+            />
           {/if}
         {/each}
       </div>
     {/if}
 
     <div class="util">
-      <button
-        class="iconbtn"
+      <IconButton
+        icon="undo"
+        {...ICONBTN_UTILITY}
         title={undoStore.canUndo ? "Undo " + undoStore.undoName : "Undo"}
         aria-label="Undo"
         disabled={!undoStore.canUndo}
         onclick={() => undoStore.undo()}
-      >
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
-          <path d="M3 8h11a6 6 0 0 1 0 12H8" />
-          <path d="M7 4 3 8l4 4" />
-        </svg>
-      </button>
-      <button
-        class="iconbtn"
+      />
+      <IconButton
+        icon="redo"
+        {...ICONBTN_UTILITY}
         title={undoStore.canRedo ? "Redo " + undoStore.redoName : "Redo"}
         aria-label="Redo"
         disabled={!undoStore.canRedo}
         onclick={() => undoStore.redo()}
-      >
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
-          <path d="M21 8H10a6 6 0 0 0 0 12h6" />
-          <path d="M17 4l4 4-4 4" />
-        </svg>
-      </button>
-      <button class="iconbtn" title="More" aria-label="More studio actions" onclick={openOverflow}>
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
-          <circle cx="5" cy="12" r="1.7" /><circle cx="12" cy="12" r="1.7" /><circle cx="19" cy="12" r="1.7" />
-        </svg>
-      </button>
+      />
+      <IconButton
+        icon="more"
+        {...ICONBTN_UTILITY}
+        title="More"
+        aria-label="More studio actions"
+        onclick={openOverflow}
+      />
     </div>
   </div>
 
@@ -1256,8 +1250,8 @@ import { EV } from "$lib/utils/eventNames";
     min-width: 8px;
   }
   /* Restore-docks segment: one icon block per closed dock, left hairline divider.
-     Same .iconbtn block as the utility segment beside it, so the bar's whole right
-     edge is one row of equal targets rather than two competing button shapes. */
+     Same IconButton size/variant as the utility segment beside it, so the bar's whole
+     right edge is one row of equal targets rather than two competing button shapes. */
   .restore {
     flex: 0 0 auto;
     display: flex;
@@ -1276,38 +1270,6 @@ import { EV } from "$lib/utils/eventNames";
     height: 100%;
     padding: 0 8px;
     border-left: var(--border-weight) solid var(--color-border);
-  }
-  .iconbtn {
-    flex: 0 0 auto;
-    width: 28px;
-    height: 28px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 0;
-    background: var(--color-surface);
-    border: var(--border-weight) solid var(--color-border);
-    color: var(--color-dim);
-    cursor: pointer;
-    transition:
-      border-color 0.12s,
-      color 0.12s,
-      background 0.12s;
-  }
-  .iconbtn:hover:not(:disabled) {
-    border-color: var(--color-muted);
-    color: var(--color-text);
-    background: var(--color-surface-2);
-  }
-  .iconbtn:disabled {
-    color: #4a4a52;
-    cursor: default;
-  }
-  /* These carry no label, so the ring is the only thing telling a keyboard user
-     which one they are about to press. */
-  .iconbtn:focus-visible {
-    outline: 2px solid var(--color-accent);
-    outline-offset: 1px;
   }
   .txtbtn {
     flex: 0 0 auto;
