@@ -294,15 +294,13 @@ void FireCoalescedPublish(std::string uuid, uint64_t seq)
 
 } // namespace
 
-bool PinItemToBounds(obs_sceneitem_t *item)
+bool PinnedBoundsForItem(obs_sceneitem_t *item, float &outWidth, float &outHeight)
 {
 	CEF_REQUIRE_UI_THREAD();
 	if (item == nullptr) {
 		return false;
 	}
-	obs_transform_info info;
-	obs_sceneitem_get_info2(item, &info); // absolute coordinates, symmetric with set_info2
-	if (info.bounds_type != OBS_BOUNDS_NONE) {
+	if (obs_sceneitem_get_bounds_type(item) != OBS_BOUNDS_NONE) {
 		return false; // already source-size independent
 	}
 
@@ -315,15 +313,35 @@ bool PinItemToBounds(obs_sceneitem_t *item)
 	vec2 scale;
 	obs_sceneitem_get_scale(item, &scale);
 
+	// The magnitude, because the bounds does not carry the flip: calculate_bounds_data
+	// derives scale = copysignf(bounds / cx, scale) for OBS_BOUNDS_STRETCH
+	// (obs-scene.c:520-521), taking the sign from the scale the item already has. That
+	// is what keeps a flipped item flipped once these bounds are applied.
+	outWidth = std::fabs(scale.x) * float(cx);
+	outHeight = std::fabs(scale.y) * float(cy);
+	return true;
+}
+
+bool PinItemToBounds(obs_sceneitem_t *item)
+{
+	CEF_REQUIRE_UI_THREAD();
+	float boundsWidth = 0.0f;
+	float boundsHeight = 0.0f;
+	if (!PinnedBoundsForItem(item, boundsWidth, boundsHeight)) {
+		return false;
+	}
+
+	obs_transform_info info;
+	obs_sceneitem_get_info2(item, &info); // absolute coordinates, symmetric with set_info2
+
 	// OBS_BOUNDS_STRETCH over exactly the box the item occupies now is pixel-identical
 	// to the OBS_BOUNDS_NONE it replaces: calculate_bounds_data derives scale =
 	// bounds / cx, which leaves both size diffs at zero (so the bounds alignment
 	// contributes nothing and the crop-to-bounds branch cannot trigger) and leaves cx/cy
 	// at the same numbers they came from (so the item alignment resolves the same
-	// origin). copysignf keeps a flipped item flipped, which is why the magnitude is
-	// taken here. bounds_alignment is deliberately left as-is.
+	// origin). bounds_alignment is deliberately left as-is.
 	info.bounds_type = OBS_BOUNDS_STRETCH;
-	vec2_set(&info.bounds, std::fabs(scale.x) * float(cx), std::fabs(scale.y) * float(cy));
+	vec2_set(&info.bounds, boundsWidth, boundsHeight);
 	obs_sceneitem_set_info2(item, &info);
 	return true;
 }

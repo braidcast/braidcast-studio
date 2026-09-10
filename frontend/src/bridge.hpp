@@ -29,6 +29,8 @@
 struct CanvasDefinition;
 struct obs_source;
 typedef struct obs_source obs_source_t;
+struct obs_scene_item;
+typedef struct obs_scene_item obs_sceneitem_t;
 
 namespace Bridge {
 
@@ -158,6 +160,46 @@ bool MirrorGlobalVideoToDefaultCanvas();
 // resolves. Bridge scope rather than file-local because the overlay viewport follow
 // (Overlay::CommitForSource) announces the same thing from outside this TU. UI thread.
 void EmitSceneItemsChangedForSource(obs_source_t *src);
+
+// The SCENE source with this uuid, addref'd (caller releases). Null when the uuid names
+// nothing, or names a source that is not a scene -- the second case matters because a
+// uuid that has been reused by a non-scene source must not be handed back as one. Bridge
+// scope so the preview's own uuid-keyed lookups resolve a scene the same way the undo
+// appliers do. UI thread only.
+obs_source_t *AcquireSceneByUuid(const std::string &uuid);
+
+// One scene item's full geometry -- position, rotation, scale, alignment, bounds type,
+// bounds and crop -- plus the keys that re-resolve it later, serialized as the opaque
+// payload an item-transform undo action carries. Empty string for a null item.
+//
+// `canvasUuid` is empty for the Default (global channel-0) surface. That pair is what the
+// emit side addresses on apply; what the payload RESOLVES through is the uuid of the
+// scene `item` itself belongs to, recorded here, so the entry names the scene the gesture
+// happened in even after that canvas or channel has switched scenes.
+//
+// A braidcast_overlay item's OBS_BOUNDS_NONE box is rewritten to the equivalent
+// OBS_BOUNDS_STRETCH bounds (Overlay::PinnedBoundsForItem) IN THE PAYLOAD, without
+// touching the item -- the box described is identical, but it no longer depends on the
+// page size, which the overlay viewport follow moves whenever ANY item bound to that
+// source is resized. Unconditional, matching what the bridge's own capture paths do by
+// pinning the item itself: a move recorded as NONE would go stale the moment a sibling
+// item on the same overlay was resized.
+//
+// UI thread only.
+std::string CaptureItemTransformState(const std::string &canvasUuid, const std::string &sceneName,
+				      obs_sceneitem_t *item);
+
+// Push ONE undo step over a before/after pair from CaptureItemTransformState. Undo and
+// redo both re-resolve the item from the payload and write the geometry it carries back,
+// then emit sceneItems.changed and persist -- the same action sceneItems.setTransform
+// records, so an entry from a preview drag and one from the Transform dialog are
+// interchangeable.
+//
+// No-op when either payload is empty OR when the two are equal. The equality check is not
+// tidiness: a gesture can end without changing the geometry (an Alt-crop drag on an item
+// carrying a bounds type moves the pointer but is refused), and an entry for it would
+// both mislabel the undo affordance and clear the redo branch. UI thread only.
+void RecordItemTransformUndo(obs_source_t *itemSource, const std::string &before, const std::string &after);
 
 // Has Bridge::Shutdown() begun? The same latch the stats sampler probes, exposed so a
 // delayed task owned by another subsystem can make the identical bail. A task that ran

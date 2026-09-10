@@ -2231,9 +2231,20 @@ bool BlendMethodFromToken(const std::string &token, obs_blending_method &method)
 // undo and redo are symmetric: both just apply a captured target state. So each
 // mutation type has ONE Apply<X>(state) registered as both the undo and redo
 // callback; the manager hands it the BEFORE payload on undo and the AFTER
-// payload on redo. State carries {canvas, scene, source-uuid, ...} so the target
-// re-resolves via the SAME path the bridge methods use; keying on source uuid
-// (not item id) survives id churn from later add/remove undos.
+// payload on redo.
+//
+// State carries {canvas, scene, sceneUuid, source-uuid, itemId, ...}. The scene
+// and item are each addressed twice, exact key first:
+//   scene -- the recorded uuid names the scene the mutation actually happened in.
+//     The canvas/name pair behind it resolves an ADDITIONAL canvas to whatever
+//     scene that canvas shows when the action runs, which is a different scene
+//     once it has switched.
+//   item -- the recorded id names one item. The source uuid behind it names only
+//     the first item drawing that source, which is the wrong one whenever a scene
+//     holds the same source twice; it is kept as the fallback because it survives
+//     the id churn an add/remove undo produces.
+// Scene-item ids are monotonic per scene (obs-scene.c:2418), so a stale id fails
+// to resolve rather than matching an unrelated item.
 
 // Locate a scene item by its source's uuid. Borrowed item (owned by the scene),
 // valid only while `sceneSource` is held. null when none matches.
@@ -2263,16 +2274,57 @@ obs_sceneitem_t *FindItemBySourceUuid(obs_source_t *sceneSource, const std::stri
 	return ctx.found;
 }
 
-// Resolve scene + item from a captured state json (keys: canvas, scene, source).
+// The scene a captured state names, addref'd (caller releases) or null. Prefers the
+// recorded uuid. A uuid that is present but no longer resolves means the scene is gone,
+// and that FAILS rather than falling back to the canvas/name resolution -- the fallback
+// would hand an additional canvas whatever scene it shows now, and the caller would write
+// the recorded geometry onto a scene the user never edited.
+obs_source_t *ResolveStateScene(const json &state)
+{
+	const std::string uuid = OptString(state, "sceneUuid");
+	if (uuid.empty()) {
+		return ResolveTargetScene(state); // reads canvas/scene; addref'd
+	}
+	obs_source_t *source = AcquireSceneByUuid(uuid); // addref'd
+	if (!source) {
+		// UndoManager pops the entry before running the callback and pushes it onto the
+		// redo stack after, unconditionally (UndoManager.cpp:48, :54, :57), and the
+		// callback returns void -- so there is no channel to report that nothing was
+		// applied. A failure here is a Ctrl+Z that spends a stack slot and visibly does
+		// nothing; without this line there is no way to tell that from a bug.
+		HostLog("[bridge] undo apply: cannot resolve scene " + uuid);
+	}
+	return source;
+}
+
+// Resolve scene + item from a captured state json (keys: canvas, scene, sceneUuid,
+// source, itemId), each addressed exact-key-first per the note above this section.
 // On success `sceneSource` is addref'd (caller releases) and `item` is borrowed.
 bool ResolveStateItem(const json &state, obs_source_t *&sceneSource, obs_sceneitem_t *&item)
 {
-	sceneSource = ResolveTargetScene(state); // reads canvas/scene; addref'd
+	sceneSource = ResolveStateScene(state); // addref'd
 	if (!sceneSource) {
 		return false;
 	}
-	item = FindItemBySourceUuid(sceneSource, OptString(state, "source"));
+	int64_t itemId = -1;
+	item = nullptr;
+	if (auto it = state.find("itemId"); it != state.end() && it->is_number_integer()) {
+		itemId = it->get<int64_t>();
+		item = FindSceneItem(obs_scene_from_source(sceneSource), itemId);
+	}
+	const std::string sourceUuid = OptString(state, "source");
 	if (!item) {
+		item = FindItemBySourceUuid(sceneSource, sourceUuid);
+	}
+	if (!item) {
+		// Spends a stack slot and applies nothing, exactly as a failed scene resolve
+		// does -- see the note in ResolveStateScene.
+		// itemId stays at its -1 sentinel for states captured through the source
+		// overload, which carry no id at all -- naming it there would imply a lookup
+		// that never ran.
+		HostLog("[bridge] undo apply: no item for source " + sourceUuid + " in scene " +
+			OptString(state, "sceneUuid") +
+			(itemId >= 0 ? " (id " + std::to_string(itemId) + ")" : std::string()));
 		obs_source_release(sceneSource);
 		sceneSource = nullptr;
 		return false;
@@ -2355,15 +2407,47 @@ void EmitSceneItemsChangedForSource(obs_source_t *src)
 
 namespace {
 
-// {canvas, scene, source-uuid} -- the re-resolution keys shared by every state.
-json StateBase(const json &params, obs_source_t *src)
+// {canvas, scene, sceneUuid, source-uuid} -- the re-resolution keys shared by every
+// state. The canvas/scene pair is kept because the emit side still addresses a canvas by
+// it (CommitSceneItemChange); the scene uuid is what ResolveStateScene resolves through.
+// The uuid is a parameter because the two StateBase overloads below know the scene by
+// different means, and only one of them has to go looking for it.
+json StateKeys(const json &params, obs_source_t *src, const char *sceneUuid)
 {
 	const char *uuid = src ? obs_source_get_uuid(src) : nullptr;
 	return json{
 		{"canvas", OptString(params, "canvas")},
 		{"scene", OptString(params, "scene")},
+		{"sceneUuid", sceneUuid ? std::string(sceneUuid) : std::string()},
 		{"source", uuid ? std::string(uuid) : std::string()},
 	};
+}
+
+json StateBase(const json &params, obs_source_t *src)
+{
+	// A caller holding only a source has no scene of its own to record, so the scene is
+	// resolved the same way the mutation that is being recorded resolved it.
+	OBSSourceAutoRelease scene = ResolveTargetScene(params); // addref'd or null
+	return StateKeys(params, src, scene ? obs_source_get_uuid(scene) : nullptr);
+}
+
+// StateBase for a state that names one scene ITEM rather than a source: records the item
+// id, so the entry resolves to that item instead of to the first item drawing its source.
+// Use this wherever the recorded action is applied through ResolveStateItem.
+json StateBase(const json &params, obs_sceneitem_t *item)
+{
+	// The item's own scene, and never a resolution of `params`: an additional canvas
+	// resolves to whatever scene it shows NOW, which is a different scene once it has
+	// switched -- and a preview drag captures its AFTER state at exactly the moment that
+	// can already have happened. An item with no parent records an empty uuid and
+	// ResolveStateScene then falls back to the canvas/name pair, the same as a state
+	// that carries no uuid at all.
+	obs_scene_t *scene = obs_sceneitem_get_scene(item);
+	obs_source_t *sceneSource = scene ? obs_scene_get_source(scene) : nullptr; // borrowed
+	json s = StateKeys(params, obs_sceneitem_get_source(item),
+			   sceneSource ? obs_source_get_uuid(sceneSource) : nullptr);
+	s["itemId"] = obs_sceneitem_get_id(item);
+	return s;
 }
 
 // Record an apply-target-state action: undo==redo==apply; the manager picks the
@@ -2371,6 +2455,15 @@ json StateBase(const json &params, obs_source_t *src)
 void RecordUndo(const std::string &name, const UndoManager::Cb &apply, const json &before, const json &after)
 {
 	ObsBootstrap::Undo().AddAction(name, apply, apply, before.dump(), after.dump());
+}
+
+// The name one item-transform undo entry carries, shared by every path that records
+// one so the undo/redo affordance reads the same for a Transform-dialog edit and a
+// preview drag.
+std::string TransformUndoName(obs_source_t *itemSource)
+{
+	const char *name = itemSource ? obs_source_get_name(itemSource) : nullptr;
+	return std::string("Transform ") + (name ? name : "");
 }
 
 // Put an overlay's items into their source-size-independent form before a transform's
@@ -2394,7 +2487,7 @@ json CaptureTransformState(const json &params, obs_sceneitem_t *item)
 	obs_sceneitem_crop crop;
 	obs_sceneitem_get_crop(item, &crop);
 
-	json s = StateBase(params, obs_sceneitem_get_source(item));
+	json s = StateBase(params, item);
 	s["pos"] = json{{"x", info.pos.x}, {"y", info.pos.y}};
 	s["rot"] = info.rot;
 	s["scale"] = json{{"x", info.scale.x}, {"y", info.scale.y}};
@@ -2405,11 +2498,32 @@ json CaptureTransformState(const json &params, obs_sceneitem_t *item)
 	s["cropToBounds"] = info.crop_to_bounds;
 	s["crop"] = json{{"left", crop.left}, {"top", crop.top}, {"right", crop.right}, {"bottom", crop.bottom}};
 	// Deliberately NOT carrying an overlay's page size. It is source-global while this
-	// state is item-scoped, so a preview drag -- which records no undo entry at all --
-	// would move the page out from under a recorded value and the undo would then force
-	// a page matching no item's box. SetItemGeometry recomputes it from the restored
-	// geometry instead, which is exact wherever a recorded value would have been.
+	// state is item-scoped, and the page covers the per-axis maximum over EVERY item
+	// bound to the source (Overlay::ComputeViewport) -- so a value recorded here goes
+	// stale as soon as any other one of those items is resized, and the undo would then
+	// force a page matching no item's box. SetItemGeometry recomputes it from the
+	// restored geometry instead, which is exact wherever a recorded value would have been.
 	return s;
+}
+
+// The non-mutating counterpart to PinOverlayBeforeCapture: write the pinned form of the
+// item's CURRENT box into an already-captured state rather than into the item. For a
+// caller that must leave the item alone -- the preview drag, whose resize and crop math
+// both branch on the live bounds type, so pinning at mousedown would change what the
+// gesture in progress does. No-op for every non-overlay source and for an item that
+// already carries a bounds type.
+void PinOverlayBoundsInState(json &state, obs_sceneitem_t *item)
+{
+	if (!Overlay::IsOverlaySource(obs_sceneitem_get_source(item))) {
+		return;
+	}
+	float boundsWidth = 0.0f;
+	float boundsHeight = 0.0f;
+	if (!Overlay::PinnedBoundsForItem(item, boundsWidth, boundsHeight)) {
+		return;
+	}
+	state["boundsType"] = static_cast<int>(OBS_BOUNDS_STRETCH);
+	state["bounds"] = json{{"x", boundsWidth}, {"y", boundsHeight}};
 }
 
 // Overlay the geometry fields present in `g` (info2 + crop, plus optional
@@ -2628,9 +2742,14 @@ json CaptureOrderState(const json &params, obs_source_t *sceneSource)
 			return true;
 		},
 		&order);
+	// The scene is recorded by uuid for the same reason every other state records one
+	// (see the note above this section); here it is exact without a re-resolution
+	// because the caller already holds the scene it enumerated.
+	const char *sceneUuid = sceneSource ? obs_source_get_uuid(sceneSource) : nullptr;
 	return json{
 		{"canvas", OptString(params, "canvas")},
 		{"scene", OptString(params, "scene")},
+		{"sceneUuid", sceneUuid ? std::string(sceneUuid) : std::string()},
 		{"order", std::move(order)},
 	};
 }
@@ -2641,8 +2760,9 @@ void ApplyOrder(const std::string &data)
 	if (state.is_discarded()) {
 		return;
 	}
-	obs_source_t *sceneSource = ResolveTargetScene(state); // addref'd
+	obs_source_t *sceneSource = ResolveStateScene(state); // addref'd
 	if (!sceneSource) {
+		HostLog("[bridge] ApplyOrder: cannot resolve scene " + OptString(state, "sceneUuid"));
 		return;
 	}
 	obs_scene_t *scene = obs_scene_from_source(sceneSource);
@@ -2712,8 +2832,9 @@ void RemoveItemBySource(const json &state)
 // valid.
 void AddItemFromSnapshot(const json &state)
 {
-	obs_source_t *sceneSource = ResolveTargetScene(state); // addref'd
+	obs_source_t *sceneSource = ResolveStateScene(state); // addref'd
 	if (!sceneSource) {
+		HostLog("[bridge] AddItemFromSnapshot: cannot resolve scene for source " + OptString(state, "source"));
 		return;
 	}
 	obs_scene_t *scene = obs_scene_from_source(sceneSource);
@@ -3085,10 +3206,9 @@ bool MethodSceneItemsSetVisible(const json &params, json &result, std::string &e
 		error = "no scene item with id " + std::to_string(id);
 		return false;
 	}
-	obs_source_t *itemSrc = obs_sceneitem_get_source(item);
-	json before = StateBase(params, itemSrc);
+	json before = StateBase(params, item);
 	before["visible"] = obs_sceneitem_visible(item);
-	json after = StateBase(params, itemSrc);
+	json after = StateBase(params, item);
 	after["visible"] = visible;
 	obs_sceneitem_set_visible(item, visible);
 	CommitSceneItemChange(params, sceneSource);
@@ -3117,10 +3237,9 @@ bool MethodSceneItemsSetLocked(const json &params, json &result, std::string &er
 		error = "no scene item with id " + std::to_string(id);
 		return false;
 	}
-	obs_source_t *itemSrc = obs_sceneitem_get_source(item);
-	json before = StateBase(params, itemSrc);
+	json before = StateBase(params, item);
 	before["locked"] = obs_sceneitem_locked(item);
-	json after = StateBase(params, itemSrc);
+	json after = StateBase(params, item);
 	after["locked"] = locked;
 	obs_sceneitem_set_locked(item, locked);
 	CommitSceneItemChange(params, sceneSource);
@@ -3266,10 +3385,9 @@ bool MethodSceneItemsSetScaleFilter(const json &params, json &result, std::strin
 		error = "no scene item with id " + std::to_string(id);
 		return false;
 	}
-	obs_source_t *itemSrc = obs_sceneitem_get_source(item);
-	json before = StateBase(params, itemSrc);
+	json before = StateBase(params, item);
 	before["filter"] = ScaleFilterToToken(obs_sceneitem_get_scale_filter(item));
-	json after = StateBase(params, itemSrc);
+	json after = StateBase(params, item);
 	after["filter"] = filter;
 	obs_sceneitem_set_scale_filter(item, type);
 	CommitSceneItemChange(params, sceneSource);
@@ -3303,10 +3421,9 @@ bool MethodSceneItemsSetBlendingMode(const json &params, json &result, std::stri
 		error = "no scene item with id " + std::to_string(id);
 		return false;
 	}
-	obs_source_t *itemSrc = obs_sceneitem_get_source(item);
-	json before = StateBase(params, itemSrc);
+	json before = StateBase(params, item);
 	before["mode"] = BlendModeToToken(obs_sceneitem_get_blending_mode(item));
-	json after = StateBase(params, itemSrc);
+	json after = StateBase(params, item);
 	after["mode"] = mode;
 	obs_sceneitem_set_blending_mode(item, type);
 	CommitSceneItemChange(params, sceneSource);
@@ -3340,10 +3457,9 @@ bool MethodSceneItemsSetBlendingMethod(const json &params, json &result, std::st
 		error = "no scene item with id " + std::to_string(id);
 		return false;
 	}
-	obs_source_t *itemSrc = obs_sceneitem_get_source(item);
-	json before = StateBase(params, itemSrc);
+	json before = StateBase(params, item);
 	before["method"] = BlendMethodToToken(obs_sceneitem_get_blending_method(item));
-	json after = StateBase(params, itemSrc);
+	json after = StateBase(params, item);
 	after["method"] = method;
 	obs_sceneitem_set_blending_method(item, blendMethod);
 	CommitSceneItemChange(params, sceneSource);
@@ -3680,8 +3796,7 @@ bool MethodSceneItemsSetTransform(const json &params, json &result, std::string 
 
 	PinOverlayBeforeCapture(item);
 	const json undoBefore = CaptureTransformState(params, item);
-	obs_source_t *undoSrc = obs_sceneitem_get_source(item);
-	const char *undoSrcName = undoSrc ? obs_source_get_name(undoSrc) : nullptr;
+	const std::string undoName = TransformUndoName(obs_sceneitem_get_source(item));
 
 	// Partial update: start from the current transform and overlay only the
 	// fields the caller supplied so the UI can send just what changed.
@@ -3786,8 +3901,7 @@ bool MethodSceneItemsSetTransform(const json &params, json &result, std::string 
 
 	CommitSceneItemChange(params, sceneSource);
 
-	RecordUndo(std::string("Transform ") + (undoSrcName ? undoSrcName : ""), ApplyTransform, undoBefore,
-		   CaptureTransformState(params, item));
+	RecordUndo(undoName, ApplyTransform, undoBefore, CaptureTransformState(params, item));
 
 	uint32_t baseW = 0, baseH = 0;
 	ResolveBaseSize(params, baseW, baseH);
@@ -3861,8 +3975,7 @@ bool MethodSceneItemsTransformAction(const json &params, json &result, std::stri
 
 	PinOverlayBeforeCapture(item);
 	const json undoBefore = CaptureTransformState(params, item);
-	obs_source_t *undoSrc = obs_sceneitem_get_source(item);
-	const char *undoSrcName = undoSrc ? obs_source_get_name(undoSrc) : nullptr;
+	const std::string undoName = TransformUndoName(obs_sceneitem_get_source(item));
 
 	uint32_t baseW = 0, baseH = 0;
 	const bool haveBaseSize = ResolveBaseSize(params, baseW, baseH);
@@ -3951,8 +4064,7 @@ bool MethodSceneItemsTransformAction(const json &params, json &result, std::stri
 
 	CommitSceneItemChange(params, sceneSource);
 
-	RecordUndo(std::string("Transform ") + (undoSrcName ? undoSrcName : ""), ApplyTransform, undoBefore,
-		   CaptureTransformState(params, item));
+	RecordUndo(undoName, ApplyTransform, undoBefore, CaptureTransformState(params, item));
 
 	result = SceneItemTransformToJson(item, baseW, baseH);
 	obs_source_release(sceneSource);
@@ -10709,6 +10821,51 @@ bool GoLivePreludeInFlight()
 bool IsShuttingDown()
 {
 	return g_bridgeShutdown.load(std::memory_order_acquire);
+}
+
+obs_source_t *AcquireSceneByUuid(const std::string &uuid)
+{
+	CEF_REQUIRE_UI_THREAD();
+	if (uuid.empty()) {
+		return nullptr;
+	}
+	obs_source_t *source = obs_get_source_by_uuid(uuid.c_str()); // addref'd
+	if (source && !obs_scene_from_source(source)) {
+		obs_source_release(source);
+		return nullptr;
+	}
+	return source;
+}
+
+std::string CaptureItemTransformState(const std::string &canvasUuid, const std::string &sceneName,
+				      obs_sceneitem_t *item)
+{
+	CEF_REQUIRE_UI_THREAD();
+	if (!item) {
+		return std::string();
+	}
+	// The same addressing every bridge-recorded state carries, so ApplyTransform
+	// re-resolves a preview drag's payload by the identical route.
+	json state = CaptureTransformState(json{{"canvas", canvasUuid}, {"scene", sceneName}}, item);
+	PinOverlayBoundsInState(state, item);
+	return state.dump();
+}
+
+void RecordItemTransformUndo(obs_source_t *itemSource, const std::string &before, const std::string &after)
+{
+	CEF_REQUIRE_UI_THREAD();
+	if (before.empty() || after.empty()) {
+		return;
+	}
+	// A gesture that ended up changing nothing must not become a stack entry: it would
+	// take the undo affordance's label and, worse, AddAction clears the redo branch, so
+	// a stray drag would eat the redo the user was about to press. Both payloads come
+	// from the same builder with the same key order, so identical geometry serializes
+	// identically.
+	if (before == after) {
+		return;
+	}
+	ObsBootstrap::Undo().AddAction(TransformUndoName(itemSource), ApplyTransform, ApplyTransform, before, after);
 }
 
 ScopedGoLivePrelude::ScopedGoLivePrelude() : previous(g_goLivePreludeInFlight)

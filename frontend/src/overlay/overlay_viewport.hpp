@@ -45,6 +45,16 @@ inline constexpr int64_t kCommitCoalesceMs = 200;
 // which is scene-collection state the caller has to persist.
 bool PinItemToBounds(obs_sceneitem_t *item);
 
+// The bounds PinItemToBounds would write, without touching the item: the box `item`
+// occupies right now, in the source-size-independent form. Same false cases as the pin
+// (null item, or one that already carries a bounds type), leaving the outputs untouched.
+//
+// Split out for a caller that has to RECORD the pinned form rather than apply it. The
+// preview drag is that caller: its resize and crop math both branch on the item's live
+// bounds type, so pinning the item at mousedown would change what the gesture in
+// progress does.
+bool PinnedBoundsForItem(obs_sceneitem_t *item, float &outWidth, float &outHeight);
+
 // Pin every scene item bound to `src`, across the main canvas and every named canvas,
 // recursing into groups. Runs as one pass BEFORE any viewport write so no sibling's box
 // can jump when the source size changes. True when at least one item was converted.

@@ -113,7 +113,13 @@ struct SceneItemRef {
 enum class DragMode { None, Move, Resize };
 struct DragState {
 	DragMode mode = DragMode::None;
-	bool moved = false; // true once a drag applied a real transform (gates the save)
+	// Set on the first mouse-move that reaches a resolvable, unlocked item, BEFORE the
+	// geometry math runs -- so it means "this gesture got as far as trying", not "the
+	// transform changed". A drag mode can still refuse the frame (CropItem returns
+	// untouched for an item carrying a bounds type). It gates the save, which is
+	// idempotent either way; anything that must not fire on a no-op gesture compares the
+	// geometry instead.
+	bool moved = false;
 	SceneItemRef id;
 	vec2 startCanvasPos = {}; // mouse canvas pos at mousedown
 	vec2 startItemPos = {};   // item pos at mousedown (move)
@@ -122,6 +128,12 @@ struct DragState {
 	matrix4 screenToItem = {};
 	vec2 stretchItemSize = {};
 	obs_sceneitem_crop startCrop = {};
+
+	// The item's geometry at mousedown, as the opaque undo payload
+	// Bridge::CaptureItemTransformState produces. Empty when no item resolved at
+	// mousedown, and cleared whenever a gesture ends, so it is non-empty only while a
+	// gesture with something to reverse is in flight.
+	std::string undoBefore;
 };
 
 // --- hit-testing (ported from legacy FindItemAtPos) -------------------------
@@ -711,6 +723,32 @@ void BeginResize(DragState &drag, obs_source_t *sceneSource, obs_sceneitem_t *it
 	obs_sceneitem_get_pos(item, &drag.startItemPos);
 }
 
+// One end of a drag's undo pair: the item's full geometry plus the keys that re-resolve
+// it, addressed by this surface's canvas and by the scene the item was resolved in.
+// Empty for a null item.
+std::string CaptureDragUndoState(obs_canvas_t *targetCanvas, obs_source_t *sceneSource, obs_sceneitem_t *item)
+{
+	if (!item || !sceneSource) {
+		return std::string();
+	}
+	const char *canvasUuid = targetCanvas ? obs_canvas_get_uuid(targetCanvas) : nullptr;
+	const char *sceneName = obs_source_get_name(sceneSource);
+	return Bridge::CaptureItemTransformState(canvasUuid ? canvasUuid : "", sceneName ? sceneName : "", item);
+}
+
+// The scene a drag STARTED in, addref'd (caller releases) or null once that scene is
+// gone. Deliberately not the surface's current scene, which is what the rest of the drag
+// path resolves against: a scene switch mid-gesture makes the remaining frames inert but
+// does not un-move what the earlier ones already moved, and the entry that reverses them
+// has to name the scene they landed in.
+obs_source_t *AcquireDragScene(const SceneItemRef &draggedRef)
+{
+	if (draggedRef.id < 0) {
+		return nullptr;
+	}
+	return Bridge::AcquireSceneByUuid(draggedRef.sceneUuid); // addref'd
+}
+
 // --- selection -------------------------------------------------------------
 
 struct SelectCtx {
@@ -1170,6 +1208,20 @@ float CurrentScale(PreviewSurface::State *state)
 
 void PreviewSurface::OnLeftDown(int mx, int my)
 {
+	// A press with a gesture already in flight. SetCapture on an HWND that already holds
+	// the capture sends no WM_CAPTURECHANGED, so none of the drag-end routes has run and
+	// the assignments below would overwrite the live gesture's recorded BEFORE state --
+	// losing the undo for a move that has already been applied to the item. End it
+	// through the same path every other terminator uses. `mode` is the in-flight
+	// predicate the whole file keys off (OnMouseMove's first line, FinishDrag's
+	// `dragged`), and FinishDrag is idempotent, so this costs nothing when idle.
+	//
+	// Ahead of every early return below, so the drag state cannot outlive a press that
+	// bails on an unrendered surface or an unresolvable scene either.
+	if (state_->drag.mode != DragMode::None) {
+		FinishDrag();
+	}
+
 	if (HWND hwnd = overlay_.Hwnd()) {
 		SetCapture(hwnd);
 	}
@@ -1196,6 +1248,7 @@ void PreviewSurface::OnLeftDown(int mx, int my)
 	// A handle of the currently-selected item begins a resize.
 	if (gesture.handle != ItemHandle::None) {
 		BeginResize(state_->drag, sceneSource, gesture.item, gesture.handle, canvasPos);
+		state_->drag.undoBefore = CaptureDragUndoState(targetCanvas_, sceneSource, gesture.item);
 		HostLog("[preview] resize start id=" + std::to_string(selectedId) +
 			" handle=" + std::to_string(uint32_t(gesture.handle)));
 		obs_source_release(sceneSource);
@@ -1223,6 +1276,7 @@ void PreviewSurface::OnLeftDown(int mx, int my)
 		if (item) {
 			obs_sceneitem_get_pos(item, &state_->drag.startItemPos);
 		}
+		state_->drag.undoBefore = CaptureDragUndoState(targetCanvas_, sceneSource, item);
 		EmitSelection(targetCanvas_, hitId);
 	} else {
 		SelectOnly(scene, -1);
@@ -1532,6 +1586,8 @@ bool PreviewSurface::FinishDrag()
 	const bool moved = state_->drag.moved;
 	const bool resized = state_->drag.mode == DragMode::Resize;
 	const SceneItemRef draggedRef = state_->drag.id;
+	std::string undoBefore;
+	undoBefore.swap(state_->drag.undoBefore);
 	if (dragged) {
 		HostLog("[preview] drag end id=" + std::to_string(draggedRef.id));
 	}
@@ -1570,6 +1626,32 @@ bool PreviewSurface::FinishDrag()
 				Overlay::CommitForSource(itemSource);
 			}
 			obs_source_release(sceneSource);
+		}
+	}
+
+	// One undo step for the whole gesture, however many mouse-move frames it took.
+	// Recorded here rather than in OnLeftUp because this is the one drag-end path: a
+	// right-click or a lost capture also ends a gesture that already moved the item, and
+	// that has to be reversible too. Below the overlay commit so the AFTER state carries
+	// the box it left.
+	//
+	// `moved` only means the gesture got as far as trying (see its declaration), so it
+	// is the cheap gate that skips the AFTER capture entirely for a select-click.
+	// Whether an entry is actually pushed is decided by RecordItemTransformUndo, which
+	// compares the two payloads -- a drag mode can refuse every frame and leave the
+	// geometry untouched while `moved` is true. The empty check is the mousedown that
+	// resolved no item; a press can no longer inherit a live gesture's payload, because
+	// OnLeftDown ends any gesture still in flight before it records its own.
+	if (moved && !undoBefore.empty()) {
+		obs_source_t *dragScene = AcquireDragScene(draggedRef); // addref'd
+		obs_scene_t *scene = dragScene ? obs_scene_from_source(dragScene) : nullptr;
+		obs_sceneitem_t *item = scene ? FindItemById(scene, draggedRef.id) : nullptr;
+		if (item) {
+			Bridge::RecordItemTransformUndo(obs_sceneitem_get_source(item), undoBefore,
+							CaptureDragUndoState(targetCanvas_, dragScene, item));
+		}
+		if (dragScene) {
+			obs_source_release(dragScene);
 		}
 	}
 	return moved;
@@ -1653,6 +1735,15 @@ void PreviewSurface::OnOverlayHidden()
 
 void PreviewSurface::Destroy()
 {
+	// Closing the surface under a held button ends the gesture, and it is the one end
+	// no message can deliver: OverlaySurface::Destroy clears the HWND's GWLP_USERDATA
+	// before DestroyWindow (overlay_surface.cpp:260-261), so nothing the destruction
+	// sends can route back into this surface's WndProc -- CancelDrag included. Ahead of
+	// overlay_.Destroy() so the gesture finishes while the surface is whole; every
+	// Destroy path is already the window-owning thread, because the DestroyWindow it
+	// reaches must be.
+	FinishDrag();
+
 	// The display dies first (OverlaySurface removes the draw callback), so nothing
 	// the render thread reads outlives it -- including the box buffer below.
 	overlay_.Destroy();
