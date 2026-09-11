@@ -50,6 +50,13 @@ constexpr float kHandleRadius = 4.0f;     // handle half-size in screen px
 constexpr float kHandleSelRadius = 6.0f;  // hit-test radius (kHandleRadius * 1.5)
 constexpr float kBoxLineThickness = 2.0f; // selection outline thickness in screen px
 
+// Margin reserved on every side of the surface, in device px, before the canvas is
+// fitted into it. Without it a dock whose aspect ratio matches the canvas gets a
+// zero-px letterbox, and the selection handles of an item at the canvas edge land
+// outside the window with nowhere to draw. Matches the legacy frontend's
+// PREVIEW_EDGE_SIZE, which insets the same way for the same reason.
+constexpr int kPreviewEdgeSize = 10;
+
 enum class ItemHandle : uint32_t {
 	None = 0,
 	TopLeft = ITEM_TOP | ITEM_LEFT,
@@ -1073,7 +1080,20 @@ void RenderPreview(void *data, uint32_t cx, uint32_t cy)
 		return;
 	}
 
-	const float scale = (float(cx) / baseCX < float(cy) / baseCY) ? float(cx) / baseCX : float(cy) / baseCY;
+	// Fit into the surface minus the edge margin on both sides, but keep centering
+	// against the full surface -- the leftover extent is the margin, split evenly, so
+	// the canvas lands inset by kPreviewEdgeSize on each side of the limiting axis.
+	// A surface too narrow to hold two margins drops the margin on that axis rather
+	// than shrinking into it: subtracting unconditionally would fit the canvas into
+	// a sliver and rasterize nothing, turning a merely cramped dock black. Falling
+	// back to the full extent is what this drew before the margin existed. Either
+	// branch is <= cx/cy, so drawCX <= cx and drawCY <= cy still hold and the draw
+	// origin stays non-negative.
+	const int availCX = int(cx) > kPreviewEdgeSize * 2 ? int(cx) - kPreviewEdgeSize * 2 : int(cx);
+	const int availCY = int(cy) > kPreviewEdgeSize * 2 ? int(cy) - kPreviewEdgeSize * 2 : int(cy);
+
+	const float scale = (float(availCX) / baseCX < float(availCY) / baseCY) ? float(availCX) / baseCX
+										: float(availCY) / baseCY;
 	const int drawCX = int(baseCX * scale);
 	const int drawCY = int(baseCY * scale);
 	const int drawX = (int(cx) - drawCX) / 2;
