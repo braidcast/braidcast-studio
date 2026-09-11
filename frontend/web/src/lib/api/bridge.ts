@@ -1668,6 +1668,18 @@ export interface ObsMethods {
   "preview.freeze": { dataUri: string; width: number; height: number };
   "preview.destroy": null;
   "preview.select": { selected: number | null };
+  // Per-surface view: `fixed` = pinned scale rather than fit-to-window, `zoomPercent`
+  // = the scale the NEXT frame will draw at, `locked` = editing gestures blocked.
+  // Every one of these answers with that same shape, already reflecting the command
+  // just applied, so a caller holding a menu open can refresh from the reply rather
+  // than re-reading. The host derives the percentage from the pending view instead
+  // of the last rendered frame precisely so that is true.
+  // viewAction params: {action: "zoomIn"|"zoomOut"|"scaleToWindow"|"scaleToCanvas", canvas?};
+  // setLocked: {locked, canvas?}; zoomAt: {x, y, delta, canvas?} in overlay device px.
+  "preview.viewAction": PreviewView;
+  "preview.setLocked": PreviewView;
+  "preview.getView": PreviewView;
+  "preview.zoomAt": PreviewView;
   // Scenes. `current` = the scene bound to channel 0 of the addressed canvas. Pass
   // an optional `canvas` uuid to operate on an additional canvas's own scenes;
   // omit it (or pass the Default canvas uuid) for the global channel-0 path (4.4.5b).
@@ -2211,6 +2223,13 @@ export interface ObsEvents {
   // windows; the host dock filters by `window === WINDOW_ID` + its own canvas
   // (null = Default surface) and maps the device-px cursor to viewport coords via
   // the preview rect + devicePixelRatio. `id == null` = empty area (ignore).
+  // Edge-triggered as the pointer enters or leaves a preview surface. The native
+  // overlay covers the region, so no DOM pointer event ever fires for it.
+  "preview.pointerOver": {
+    canvas: string | null;
+    window: number;
+    over: boolean;
+  };
   "preview.contextMenu": {
     canvas: string | null;
     window: number;
@@ -2361,6 +2380,13 @@ export interface ObsEvents {
  * builder re-fetches those from sceneItems.list. Derived from the event rather
  * than respelled, so a change to the payload reaches every dock that hosts a
  * preview surface. */
+// The preview surface's view state, as every preview.* view method reports it.
+export interface PreviewView {
+  fixed: boolean;
+  zoomPercent: number;
+  locked: boolean;
+}
+
 export type PreviewHitTarget = Pick<
   ObsEvents["preview.contextMenu"],
   "scene" | "id" | "source" | "visible" | "locked"

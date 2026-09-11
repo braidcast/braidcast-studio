@@ -67,6 +67,26 @@ public:
 	// when `hasId` is false the selection is cleared. Emits sceneItem.selected.
 	bool SelectFromBridge(const std::string &scene, int64_t id, bool hasId);
 
+	// Zoom by `levelDelta` notches about the client pixel (px, py), which stays over
+	// the same canvas point. Public because the wheel arrives by two routes -- the
+	// overlay's own WM_MOUSEWHEEL and a forward from the web view -- and both land
+	// on this one implementation. UI thread.
+	void ZoomAt(int px, int py, int levelDelta);
+
+	// Apply one Scale-menu command by token ("zoomIn", "zoomOut", "scaleToWindow",
+	// "scaleToCanvas"); false for a token this surface does not recognize. The token
+	// list lives in the .cpp beside the behaviour it names. UI thread.
+	bool ApplyViewAction(const std::string &token);
+
+	// Block (or allow) editing gestures. Selection, the context menu and the view
+	// commands keep working while locked; an in-flight gesture is ended. UI thread.
+	void SetLocked(bool locked);
+
+	// The view state the context menu renders from: whether the surface is at a
+	// fixed scale rather than fitted, the scale actually on screen as a percentage,
+	// and the edit lock. UI thread.
+	void GetView(bool &fixed, int &zoomPercent, bool &locked);
+
 	// Hit-test at a canvas-space coordinate against this surface's scene; returns
 	// the topmost matching scene-item id, or -1. Used by the smoke self-test.
 	int64_t HitTestForTest(float canvasX, float canvasY);
@@ -127,6 +147,19 @@ private:
 	void ClearHoverItem();
 	void ClearHover();
 	void SetCursorShape(const wchar_t *idc);
+
+	// Zoom by `levelDelta` notches about the client pixel (px, py), which stays over
+	// the same canvas point; switches the surface to a fixed scale. PanBy offsets an
+	// already-fixed view by a client-px delta. Both clamp so the canvas cannot leave
+	// the surface. EndPan is the pan gesture's terminator, the counterpart to
+	// FinishDrag for item gestures -- idempotent, returns whether one was in flight.
+	// Locked/FixedScaling read the view under the surface's lock. UI thread.
+	void PanBy(int dx, int dy);
+	bool EndPan();
+	void EndPanOffSurface();
+	void RetractPointerOver();
+	bool Locked();
+	bool FixedScaling();
 
 	State *state_;
 
@@ -204,11 +237,20 @@ public:
 	// non-Default uuid with no live canvas mix. Used by the bridge
 	// select/hit-test/reset paths. The single-arg overload targets the main window.
 	PreviewSurface *SurfaceFor(int windowId, const std::string &canvasUuid);
+
+	// The same lookup WITHOUT the lazy creation, for readers: returns null rather
+	// than standing up a surface and its HWND as the side effect of a query.
+	PreviewSurface *FindSurface(int windowId, const std::string &canvasUuid);
 	PreviewSurface *SurfaceFor(const std::string &canvasUuid) { return SurfaceFor(0, canvasUuid); }
 
 	// Apply OnVideoReset to every live surface (global-mix reset). Runs on the UI
 	// thread.
 	void OnVideoResetAll();
+
+	// The same re-validation limited to one canvas's surfaces, for a resolution or
+	// color change applied to a single non-Default canvas -- which never touches the
+	// global video info and so never reaches OnVideoResetAll.
+	void OnVideoResetForCanvas(const std::string &canvasUuid);
 
 	// The main window's top-level host HWND (windowId 0), set at construction. Used
 	// to parent native modal dialogs (e.g. the file picker) to the app window.
@@ -243,12 +285,35 @@ bool SelectFromBridge(const std::string &canvas, const std::string &scene, int64
 // cursor. windowId defaults to 0 (main window).
 int64_t HitTestForTest(const std::string &canvas, float canvasX, float canvasY, int windowId = 0);
 
+// Drive the preview's view (the Scale submenu) and its edit lock from JS, on the
+// surface for (windowId, canvas) (empty canvas => the Default surface). Each
+// returns false when no such surface exists, and ApplyViewAction also when the
+// token is not one it knows. GetView fills the menu's checkmarks. UI thread.
+bool ApplyViewAction(const std::string &canvas, const std::string &token, int windowId = 0);
+bool SetLocked(const std::string &canvas, bool locked, int windowId = 0);
+bool GetView(const std::string &canvas, bool &fixed, int &zoomPercent, bool &locked, int windowId = 0);
+
+// Zoom about a point in the surface's own device-px client space. The second entry
+// point into the one anchor implementation: the overlay handles the wheel natively
+// (which is what keeps zoom working mid-drag, since a window holding the mouse
+// capture is sent the wheel whatever the shell's routing setting says), while the
+// web view forwards the wheel it receives through here (which is what makes zoom
+// work at all when that setting routes to the focused window instead). Neither
+// creates a surface.
+bool ZoomAt(const std::string &canvas, int x, int y, int levelDelta, int windowId = 0);
+
 // Re-validate every live surface after an obs_reset_video of the global mix. The
 // obs_display swapchains + draw callbacks survive a video reset (it rebuilds the
 // video mix, not the graphics device), so this just clears each cached letterbox
 // transform so the next frame recomputes it against the new base resolution, and
 // nudges a redraw. Runs on the UI thread.
 void OnVideoReset();
+
+// The per-canvas counterpart, for a non-Default canvas whose own mix was reset.
+// Called from CanvasRuntime::ResetVideo so that every route to a canvas resolution
+// change reaches the preview, and so a named canvas answers the change the same way
+// the Default one does. Runs on the UI thread.
+void OnCanvasVideoReset(const std::string &canvasUuid);
 } // namespace Preview
 
 #endif // OBS_MULTISTREAM_FRONTEND_PREVIEW_WINDOW_HPP_

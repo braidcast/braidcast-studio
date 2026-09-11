@@ -6,6 +6,15 @@
 
 #include <CanvasDefinition.hpp>
 
+#include <string>
+
+// Declared rather than included: windowing/preview_window.hpp pulls in <windows.h>,
+// and this translation unit is deliberately free of it. A signature change there
+// breaks the link rather than passing silently.
+namespace Preview {
+void OnCanvasVideoReset(const std::string &canvasUuid);
+}
+
 CanvasRuntime::CanvasRuntime(CanvasStore &defs_) : defs(defs_)
 {
 	// The gate reads both facts from here rather than re-deriving them, and the
@@ -297,7 +306,20 @@ bool CanvasRuntime::ResetVideo(const CanvasDefinition &def)
 	}
 	obs_video_info ovi = {};
 	BuildVideoInfo(def, ovi);
-	return obs_canvas_reset_video(e->canvas, &ovi);
+	if (!obs_canvas_reset_video(e->canvas, &ovi)) {
+		return false;
+	}
+
+	// This is the only place a non-Default canvas's base resolution changes, so it is
+	// the only place that can guarantee the preview hears about it -- the callers are
+	// a single-canvas edit and a scene-collection restore, and a third would be free
+	// to forget. Its surfaces' zoom describes a framing of the OLD base size; leaving
+	// it would pin a 4x view against four times the pixels and show a quarter of what
+	// the user was looking at, with nothing on screen explaining why. The Default
+	// canvas already refits through the global video apply; this is what stops the two
+	// kinds of surface answering the same user action differently.
+	Preview::OnCanvasVideoReset(def.uuid);
+	return true;
 }
 
 obs_canvas_t *CanvasRuntime::Find(const std::string &uuid) const

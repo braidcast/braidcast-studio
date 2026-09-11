@@ -57,6 +57,21 @@ constexpr float kBoxLineThickness = 2.0f; // selection outline thickness in scre
 // PREVIEW_EDGE_SIZE, which insets the same way for the same reason.
 constexpr int kPreviewEdgeSize = 10;
 
+// Zoom notches are geometric, so every step is the same ratio and a step out
+// exactly undoes a step in: level L is kZoomMaxAmount^(L/kZoomMaxLevel), putting
+// 1:1 at level 0 and the extremes at 8x and 1/8x. Ported from the legacy
+// preview's MAX_SCALING_LEVEL / MAX_SCALING_AMOUNT / ZOOM_SENSITIVITY
+// (frontend_old/widgets/OBSBasicPreview.hpp:15-17).
+constexpr int kZoomMaxLevel = 32;
+constexpr float kZoomMaxAmount = 8.0f;
+
+// D3D11 bounds a viewport's origin and extent at +-32768. The scene phase sets a
+// viewport spanning the whole scaled canvas, so a large canvas at a large zoom
+// would otherwise hand the rasterizer an out-of-range rect (a 7680-wide canvas at
+// 8x is 61440 px). Cap the amount rather than the level, so the level the user
+// asked for is still what a step out reverses.
+constexpr float kMaxViewportExtent = 32767.0f;
+
 enum class ItemHandle : uint32_t {
 	None = 0,
 	TopLeft = ITEM_TOP | ITEM_LEFT,
@@ -88,7 +103,134 @@ struct PreviewTransform {
 	int drawY = 0;
 	float baseCX = 0.0f;
 	float baseCY = 0.0f;
+	// The surface size the row above was computed against. The UI thread needs it to
+	// bound a pan and to anchor a zoom against the same frame the pointer was over,
+	// and the draw callback is the only place that knows it.
+	int surfaceCX = 0;
+	int surfaceCY = 0;
 };
+
+// What the UI thread asks the next frame to show. Fit mode is the default and
+// reproduces the margin-inset letterbox exactly; fixed mode pins the scale to a
+// zoom level and offsets the centered canvas by a pan. It sits beside
+// PreviewTransform under the same mutex because the pair is one conversation: this
+// is the input the draw callback reads, PreviewTransform is the result it
+// publishes back for hit-testing.
+struct PreviewView {
+	bool fixed = false;
+	int zoomLevel = 0;
+	float scrollX = 0.0f; // device px, added to the centered draw origin
+	float scrollY = 0.0f;
+	// Blocks editing gestures. Selection, the context menu and the view commands
+	// keep working while locked.
+	bool locked = false;
+
+	// Back to fit-to-surface. Deliberately leaves `locked` alone -- the lock is a
+	// separate choice from the zoom, and a Scale command must not silently unlock
+	// the preview. Named so the set of "zoom fields" lives in one place and cannot
+	// drift from the callers that reset them.
+	void ResetZoom()
+	{
+		fixed = false;
+		zoomLevel = 0;
+		scrollX = 0.0f;
+		scrollY = 0.0f;
+	}
+};
+
+// The zoom amount for a level, clamped to the level range.
+float ZoomAmountForLevel(int level)
+{
+	const int clamped = std::clamp(level, -kZoomMaxLevel, kZoomMaxLevel);
+	return std::pow(kZoomMaxAmount, float(clamped) / float(kZoomMaxLevel));
+}
+
+// The inverse: the level whose amount is nearest `amount`. Used to seed a fixed
+// zoom from whatever scale fit mode was last showing, so the first notch steps
+// from what is on screen rather than jumping to 1:1.
+int ZoomLevelForAmount(float amount)
+{
+	if (amount <= 0.0f) {
+		return 0;
+	}
+	const float level = std::log(amount) / std::log(kZoomMaxAmount) * float(kZoomMaxLevel);
+	return std::clamp(int(std::lround(level)), -kZoomMaxLevel, kZoomMaxLevel);
+}
+
+// A level's amount, reduced if it would put the scene phase's viewport past the
+// rasterizer's range. Both the draw callback and the zoom command resolve a level
+// through here, so they cannot disagree about what a level means.
+float FixedZoomScale(int level, float baseCX, float baseCY)
+{
+	const float amount = ZoomAmountForLevel(level);
+	const float maxBase = std::max(baseCX, baseCY);
+	return maxBase > 0.0f ? std::min(amount, kMaxViewportExtent / maxBase) : amount;
+}
+
+// Bound a pan so the canvas and the surface always overlap. The bound is the
+// legacy ClampScrollingOffsets rule
+// (frontend_old/widgets/OBSBasicPreview.cpp:2710-2733) restated as one axis pair,
+// and what it allows depends on which rect is bigger: a canvas larger than the
+// surface may be carried until one of its own edges reaches the surface's center,
+// while a canvas smaller than the surface may be carried until its center reaches
+// the surface's edge. Either way the two rects still intersect, which is the
+// property that matters -- the canvas can never be panned out of sight.
+void ClampScroll(PreviewView &view, float scaledCX, float scaledCY, int cx, int cy)
+{
+	const float boundX = std::max((scaledCX - float(cx)) * 0.5f, 0.0f) + float(cx) * 0.5f;
+	const float boundY = std::max((scaledCY - float(cy)) * 0.5f, 0.0f) + float(cy) * 0.5f;
+	view.scrollX = std::clamp(view.scrollX, -boundX, boundX);
+	view.scrollY = std::clamp(view.scrollY, -boundY, boundY);
+}
+
+// The fit-mode scale: the canvas fitted into the surface less the edge margin on
+// each axis. Extracted because the draw callback is no longer its only caller --
+// the view getter has to report what the NEXT frame will show, and a second copy
+// of this is exactly how the menu would come to disagree with the picture.
+//
+// The caller keeps centering against the full surface, so the leftover extent is
+// the margin, split evenly, and the canvas lands inset by kPreviewEdgeSize on each
+// side of the limiting axis. A surface too narrow to hold two margins drops the
+// margin on that axis rather than shrinking into it: subtracting unconditionally
+// would fit the canvas into a sliver and rasterize nothing, turning a merely
+// cramped dock black. Falling back to the full extent is what this drew before the
+// margin existed. Either branch is <= cx/cy, so the scaled canvas is never larger
+// than the surface and the centered draw origin stays non-negative.
+float FitScale(int cx, int cy, float baseCX, float baseCY)
+{
+	const int availCX = cx > kPreviewEdgeSize * 2 ? cx - kPreviewEdgeSize * 2 : cx;
+	const int availCY = cy > kPreviewEdgeSize * 2 ? cy - kPreviewEdgeSize * 2 : cy;
+	return (float(availCX) / baseCX < float(availCY) / baseCY) ? float(availCX) / baseCX : float(availCY) / baseCY;
+}
+
+// The scale the next frame will draw at, derived from the view rather than read
+// back off the last one, at the last surface size the draw callback reported.
+//
+// That distinction is the whole reason this exists. PreviewTransform.scale is
+// written by the render thread a frame after the UI thread changes the view, so
+// anything on the UI thread reading it back gets the scale from BEFORE the command
+// it just applied. Two wheel notches inside one frame would then pair a fresh zoom
+// level with a stale scale and throw the zoom anchor, and the view getter would
+// answer a menu with the percentage the preview is leaving rather than the one it
+// is arriving at.
+float PendingScale(const PreviewView &view, const PreviewTransform &t)
+{
+	if (t.baseCX <= 0.0f || t.baseCY <= 0.0f) {
+		return t.scale;
+	}
+	return view.fixed ? FixedZoomScale(view.zoomLevel, t.baseCX, t.baseCY)
+			  : FitScale(t.surfaceCX, t.surfaceCY, t.baseCX, t.baseCY);
+}
+
+// Whether the pan modifier is down right now. The overlay is a WS_CHILD sibling of
+// the CEF browser HWND and never takes the keyboard focus (nothing in the frontend
+// calls SetFocus, and showing it passes SWP_NOACTIVATE), so WM_KEYDOWN never
+// arrives here and the key has to be sampled inside a mouse message instead --
+// the same way this file already reads Ctrl/Shift/Alt for snapping and crop.
+bool PanModifierHeld()
+{
+	return GetKeyState(VK_SPACE) < 0;
+}
 
 // A scene-item id paired with the uuid of the scene it was resolved in. Item ids
 // are unique only within one scene and restart at 1 in the next, so an id kept
@@ -915,10 +1057,17 @@ struct PreviewSurface::State {
 	SceneItemRef selected;
 	SceneItemRef hovered;
 	PreviewTransform transform;
+	PreviewView view;
 
 	DragState drag;                         // UI thread only
 	const wchar_t *cursorShape = IDC_ARROW; // UI thread only; re-applied on WM_SETCURSOR
 	bool mouseTracked = false;              // UI thread only; TME_LEAVE armed for this surface
+
+	// The pan gesture, kept apart from DragState because it has no item: every
+	// `drag.mode != DragMode::None` test in this file means "an item gesture is in
+	// flight", and a pan must not answer those. UI thread only.
+	bool panning = false;
+	POINT panFrom = {};
 
 	// Unit-quad TRISTRIP vertbuffer for the selection handles, created lazily on
 	// the render thread and destroyed under a graphics context in Destroy().
@@ -1007,6 +1156,27 @@ void EmitSelection(obs_canvas_t *targetCanvas, int64_t id)
 // plus the surface's scene name, addressed canvas uuid (null for Default), and the
 // originating windowId, so JS filters to the right window+canvas and builds the
 // menu without a round-trip. Posts via EmitEvent (broadcast to all browsers).
+// Tell the UI whether the pointer is over this surface. Edge-triggered on both
+// sides -- the enter by the arming edge below, the leave by RetractPointerOver's
+// guard -- so holding the pointer still, dragging across the surface, or a resize
+// burst that hides a surface the pointer was never over all post nothing. The UI needs it because the pan modifier is a plain
+// SPACE: the native side samples the key itself, but the focused page element also
+// acts on it, so the web view has to suppress that default -- and only while the
+// pointer is actually here.
+void EmitPointerOver(obs_canvas_t *targetCanvas, int windowId, bool over)
+{
+	using Bridge::json;
+	json canvasField = json(nullptr);
+	if (targetCanvas) {
+		const char *uuid = obs_canvas_get_uuid(targetCanvas);
+		if (uuid) {
+			canvasField = json(std::string(uuid));
+		}
+	}
+	Bridge::EmitEvent(EventNames::kPreviewPointerOver,
+			  json{{"canvas", canvasField}, {"window", windowId}, {"over", over}});
+}
+
 void EmitContextMenu(obs_canvas_t *targetCanvas, int windowId, obs_scene_t *scene, int64_t id, int mx, int my)
 {
 	using Bridge::json;
@@ -1080,33 +1250,42 @@ void RenderPreview(void *data, uint32_t cx, uint32_t cy)
 		return;
 	}
 
-	// Fit into the surface minus the edge margin on both sides, but keep centering
-	// against the full surface -- the leftover extent is the margin, split evenly, so
-	// the canvas lands inset by kPreviewEdgeSize on each side of the limiting axis.
-	// A surface too narrow to hold two margins drops the margin on that axis rather
-	// than shrinking into it: subtracting unconditionally would fit the canvas into
-	// a sliver and rasterize nothing, turning a merely cramped dock black. Falling
-	// back to the full extent is what this drew before the margin existed. Either
-	// branch is <= cx/cy, so drawCX <= cx and drawCY <= cy still hold and the draw
-	// origin stays non-negative.
-	const int availCX = int(cx) > kPreviewEdgeSize * 2 ? int(cx) - kPreviewEdgeSize * 2 : int(cx);
-	const int availCY = int(cy) > kPreviewEdgeSize * 2 ? int(cy) - kPreviewEdgeSize * 2 : int(cy);
-
-	const float scale = (float(availCX) / baseCX < float(availCY) / baseCY) ? float(availCX) / baseCX
-										: float(availCY) / baseCY;
-	const int drawCX = int(baseCX * scale);
-	const int drawCY = int(baseCY * scale);
-	const int drawX = (int(cx) - drawCX) / 2;
-	const int drawY = (int(cy) - drawCY) / 2;
-
+	float scale;
+	int drawX;
+	int drawY;
 	{
 		std::lock_guard<std::mutex> lock(state->stateMutex);
+		if (state->view.fixed) {
+			// Fixed scale: the zoom level sets the scale outright and the pan
+			// offsets the centered canvas. No margin here -- it is a fit-mode
+			// affordance for reaching a handle that falls outside the canvas, and
+			// at a pinned scale the user reaches one by panning instead. Insetting
+			// would only shrink a view they asked to be exactly this size.
+			scale = FixedZoomScale(state->view.zoomLevel, baseCX, baseCY);
+			// Re-clamp every frame: a dock resize can invalidate a pan that was
+			// legal at the old size, and nothing else re-validates it.
+			ClampScroll(state->view, baseCX * scale, baseCY * scale, int(cx), int(cy));
+			drawX = int((float(cx) - baseCX * scale) * 0.5f + state->view.scrollX);
+			drawY = int((float(cy) - baseCY * scale) * 0.5f + state->view.scrollY);
+		} else {
+			// Centered against the FULL surface, not the margin-reduced extent, so
+			// the leftover is the margin split evenly across both sides.
+			scale = FitScale(int(cx), int(cy), baseCX, baseCY);
+			drawX = (int(cx) - int(baseCX * scale)) / 2;
+			drawY = (int(cy) - int(baseCY * scale)) / 2;
+		}
+
 		state->transform.scale = scale;
 		state->transform.drawX = drawX;
 		state->transform.drawY = drawY;
 		state->transform.baseCX = baseCX;
 		state->transform.baseCY = baseCY;
+		state->transform.surfaceCX = int(cx);
+		state->transform.surfaceCY = int(cy);
 	}
+
+	const int drawCX = int(baseCX * scale);
+	const int drawCY = int(baseCY * scale);
 
 	gs_viewport_push();
 	gs_projection_push();
@@ -1224,6 +1403,34 @@ float CurrentScale(PreviewSurface::State *state)
 	std::lock_guard<std::mutex> lock(state->stateMutex);
 	return state->transform.scale;
 }
+
+// The Scale-submenu commands. The token vocabulary lives next to the behaviour it
+// names, as one row per command, so adding a command is a row here plus a case --
+// the bridge never branches on the string and cannot drift from this list.
+enum class ViewAction { ZoomIn, ZoomOut, ScaleToWindow, ScaleToCanvas };
+
+struct ViewActionEntry {
+	const char *token;
+	ViewAction action;
+};
+
+constexpr ViewActionEntry kViewActions[] = {
+	{"zoomIn", ViewAction::ZoomIn},
+	{"zoomOut", ViewAction::ZoomOut},
+	{"scaleToWindow", ViewAction::ScaleToWindow},
+	{"scaleToCanvas", ViewAction::ScaleToCanvas},
+};
+
+bool ViewActionFromToken(const std::string &token, ViewAction &out)
+{
+	for (const ViewActionEntry &e : kViewActions) {
+		if (token == e.token) {
+			out = e.action;
+			return true;
+		}
+	}
+	return false;
+}
 } // namespace
 
 void PreviewSurface::OnLeftDown(int mx, int my)
@@ -1242,8 +1449,24 @@ void PreviewSurface::OnLeftDown(int mx, int my)
 		FinishDrag();
 	}
 
+	EndPan();
+
 	if (HWND hwnd = overlay_.Hwnd()) {
 		SetCapture(hwnd);
+	}
+
+	// Space + left-drag pans instead of touching an item, and only once zoomed:
+	// fit mode has nothing to pan, since the whole canvas is already in view. The
+	// modifier is sampled here and nowhere else in the gesture, which is what makes
+	// pressing space mid-drag harmless -- an item gesture already in flight is never
+	// converted to a pan, it just finishes as the move or resize it started as.
+	// Ahead of the transform check below so a pan can still be started (and refused
+	// by PanBy) on a surface that has not drawn yet.
+	if (PanModifierHeld() && FixedScaling()) {
+		state_->panning = true;
+		state_->panFrom = POINT{mx, my};
+		SetCursorShape(IDC_SIZEALL);
+		return;
 	}
 
 	vec2 canvasPos;
@@ -1263,7 +1486,14 @@ void PreviewSurface::OnLeftDown(int mx, int my)
 		std::lock_guard<std::mutex> lock(state_->stateMutex);
 		selectedId = state_->selected.Resolve(sceneUuid);
 	}
-	const GestureAtPos gesture = ResolveGestureAtPos(scene, selectedId, canvasPos, CurrentScale(state_));
+	// A locked preview starts no gesture, so it resolves none: passing -1 as the
+	// selected id skips the handle test and leaves a plain body hit-test, which is
+	// all selection needs. Selection stays live on purpose -- the lock is about
+	// editing geometry, not about choosing what the docks show -- so the resize
+	// branch below cannot fire and only the move is gated.
+	const bool locked = Locked();
+	const GestureAtPos gesture =
+		ResolveGestureAtPos(scene, locked ? -1 : selectedId, canvasPos, CurrentScale(state_));
 
 	// A handle of the currently-selected item begins a resize.
 	if (gesture.handle != ItemHandle::None) {
@@ -1289,14 +1519,16 @@ void PreviewSurface::OnLeftDown(int mx, int my)
 			std::lock_guard<std::mutex> lock(state_->stateMutex);
 			state_->selected.Set(sceneSource, hitId);
 		}
-		state_->drag.mode = DragMode::Move;
-		state_->drag.moved = false;
-		state_->drag.id.Set(sceneSource, hitId);
-		state_->drag.startCanvasPos = canvasPos;
-		if (item) {
-			obs_sceneitem_get_pos(item, &state_->drag.startItemPos);
+		if (!locked) {
+			state_->drag.mode = DragMode::Move;
+			state_->drag.moved = false;
+			state_->drag.id.Set(sceneSource, hitId);
+			state_->drag.startCanvasPos = canvasPos;
+			if (item) {
+				obs_sceneitem_get_pos(item, &state_->drag.startItemPos);
+			}
+			state_->drag.undoBefore = CaptureDragUndoState(targetCanvas_, sceneSource, item);
 		}
-		state_->drag.undoBefore = CaptureDragUndoState(targetCanvas_, sceneSource, item);
 		EmitSelection(targetCanvas_, hitId);
 	} else {
 		SelectOnly(scene, -1);
@@ -1468,6 +1700,22 @@ void PreviewSurface::ClearHover()
 
 void PreviewSurface::UpdateHover(int mx, int my)
 {
+	// Both of these short-circuit the hit-test because the cursor must never
+	// advertise a gesture other than the one a press would start. With space held
+	// over a zoomed preview that gesture is the pan; with the preview locked there
+	// is no gesture at all, so neither a resize cursor nor the hover outline -- each
+	// of which reads as "press to grab here" -- may be shown.
+	if (PanModifierHeld() && FixedScaling()) {
+		ClearHoverItem();
+		SetCursorShape(IDC_SIZEALL);
+		return;
+	}
+	if (Locked()) {
+		ClearHoverItem();
+		SetCursorShape(IDC_ARROW);
+		return;
+	}
+
 	// One tail for every outcome: a surface with no frame yet or no scene bound has
 	// nothing to hover and takes the plain arrow, same as empty canvas does.
 	const wchar_t *cursor = IDC_ARROW;
@@ -1508,6 +1756,15 @@ void PreviewSurface::UpdateHover(int mx, int my)
 
 void PreviewSurface::OnMouseMove(int mx, int my)
 {
+	// Ahead of the item-drag branch: a pan and an item gesture are mutually
+	// exclusive (OnLeftDown returns before it can start one after starting the
+	// other), and the pan is tracked in raw client px, so it needs neither the
+	// transform nor a scene.
+	if (state_->panning) {
+		PanBy(mx - state_->panFrom.x, my - state_->panFrom.y);
+		state_->panFrom = POINT{mx, my};
+		return;
+	}
 	if (state_->drag.mode == DragMode::None) {
 		UpdateHover(mx, my);
 		return;
@@ -1683,6 +1940,13 @@ void PreviewSurface::OnLeftUp()
 	// WM_CAPTURECHANGED synchronously to this same overlay HWND, which routes straight
 	// back into CancelDrag() -- so any drag state read after the release has already
 	// been cleared, and every branch keyed on it is dead.
+	// A pan ends here and goes no further: it has no item, so none of the save or
+	// undo tail below applies to it.
+	if (EndPan()) {
+		ReleaseCapture();
+		return;
+	}
+
 	const bool moved = FinishDrag();
 	ReleaseCapture();
 
@@ -1697,6 +1961,20 @@ void PreviewSurface::OnLeftUp()
 
 void PreviewSurface::OnRightUp(int mx, int my)
 {
+	// A right-click during a pan cancels the pan and stops there. The gesture in
+	// flight was a pan, so the press that ends it is a cancellation, not a new
+	// selection -- running the rest would let a pan change which item is selected
+	// and open a menu the user was not asking for.
+	//
+	// Deliberately not the legacy behaviour, which cancels on the right PRESS and
+	// opens its menu on the release, so it never swallows a menu. This surface is
+	// only sent the release, so the two cannot both happen here. Kept as-is; exact
+	// parity is available by handling WM_RBUTTONDOWN, cancelling there, and letting
+	// this release run through unchanged.
+	if (EndPan()) {
+		return;
+	}
+
 	vec2 canvasPos;
 	if (!ClientToCanvas(state_, mx, my, canvasPos)) {
 		return;
@@ -1730,6 +2008,201 @@ void PreviewSurface::CancelDrag()
 	// what makes the WM_CAPTURECHANGED that OnLeftUp's own ReleaseCapture() sends a
 	// harmless second call.
 	FinishDrag();
+	EndPan();
+}
+
+// The pan gesture's terminator, and the reason it is not folded into FinishDrag:
+// that function's whole body is item state -- the undo payload it hands back, the
+// collection save its return value gates, the hover outline it drops -- and a pan
+// has none of those. Kept idempotent for the same reason FinishDrag is, so every
+// capture-ending path can call both unconditionally. Returns whether a pan was in
+// flight, so a button-up can tell which gesture it just ended.
+bool PreviewSurface::EndPan()
+{
+	if (!state_->panning) {
+		return false;
+	}
+	state_->panning = false;
+	SetCursorShape(IDC_ARROW);
+	return true;
+}
+
+// The same end, for the paths where the pointer is no longer over this surface --
+// the overlay was hidden under it, or the surface is being destroyed. Those must
+// not call SetCursor, which is process-global and would repaint the cursor for
+// whatever the pointer is over now; they reset the remembered shape alone so the
+// next WM_SETCURSOR over a reshown surface starts from the arrow. Exactly the
+// split, and the reason for it, that ClearHover already has against
+// ClearHoverItem.
+// Retract the pointer-over flag, gated on this surface having actually claimed it.
+// Every hide and teardown path calls it unconditionally, so without the guard a
+// dock-resize burst would post a retraction for every surface on every hide. The
+// flag doubles as the leave-tracking state, which is exactly the "is the pointer
+// here" bit, so there is no second flag to keep in step.
+void PreviewSurface::RetractPointerOver()
+{
+	if (!state_->mouseTracked) {
+		return;
+	}
+	state_->mouseTracked = false;
+	EmitPointerOver(targetCanvas_, windowId_, false);
+}
+
+void PreviewSurface::EndPanOffSurface()
+{
+	state_->panning = false;
+	state_->cursorShape = IDC_ARROW;
+}
+
+bool PreviewSurface::Locked()
+{
+	std::lock_guard<std::mutex> lock(state_->stateMutex);
+	return state_->view.locked;
+}
+
+bool PreviewSurface::FixedScaling()
+{
+	std::lock_guard<std::mutex> lock(state_->stateMutex);
+	return state_->view.fixed;
+}
+
+// Zoom by `levelDelta` notches, keeping the canvas point currently under the
+// client pixel (px, py) under it afterwards. That anchor is the whole trick, and
+// getting it wrong is the usual way wheel zoom feels broken: read the canvas point
+// from the transform the last frame published, then pick the pan that puts that
+// same canvas point back on that same screen pixel at the new scale. Solving
+//     px == canvasX * newScale + drawX,  drawX == (cx - baseCX * newScale) / 2 + scrollX
+// for scrollX gives the assignment below. Leaving fit mode uses the same formula
+// -- the old transform is read the same way whichever mode produced it -- so the
+// first notch grows the view around the pointer instead of jumping to the centered
+// fixed-mode origin.
+void PreviewSurface::ZoomAt(int px, int py, int levelDelta)
+{
+	std::lock_guard<std::mutex> lock(state_->stateMutex);
+	const PreviewTransform &t = state_->transform;
+	if (t.scale <= 0.0f || t.baseCX <= 0.0f || t.baseCY <= 0.0f) {
+		return; // no frame yet, so there is no point on screen to anchor to
+	}
+
+	// Rebuild the whole "before" side from the view, never from the last published
+	// frame, because the two disagree whenever a command has landed since that frame
+	// was drawn -- two wheel notches inside one frame, which a high-resolution wheel
+	// or a fast flick produces routinely. Mixing them pairs a fresh level with a
+	// stale scale and throws the anchor by half the base times the scale delta.
+	//
+	// The origin is rebuilt in float for a second, independent reason: the transform
+	// stores it as the int the viewport is actually set to -- which is right, since a
+	// float there would let hit-testing address a half-pixel the frame was never
+	// drawn at -- but feeding that truncation back in makes every notch inherit the
+	// last one's rounding.
+	//
+	// Fit mode has neither a scale nor an origin of its own to rebuild from, so it
+	// reads the frame. That is sound because the first notch leaves fit mode, so
+	// nothing it rounds can compound.
+	const float oldScale = PendingScale(state_->view, t);
+	const float drawXf = state_->view.fixed
+				     ? (float(t.surfaceCX) - t.baseCX * oldScale) * 0.5f + state_->view.scrollX
+				     : float(t.drawX);
+	const float drawYf = state_->view.fixed
+				     ? (float(t.surfaceCY) - t.baseCY * oldScale) * 0.5f + state_->view.scrollY
+				     : float(t.drawY);
+
+	const float canvasX = (float(px) - drawXf) / oldScale;
+	const float canvasY = (float(py) - drawYf) / oldScale;
+
+	const int oldLevel = state_->view.fixed ? state_->view.zoomLevel : ZoomLevelForAmount(oldScale);
+	const int newLevel = std::clamp(oldLevel + levelDelta, -kZoomMaxLevel, kZoomMaxLevel);
+	const float newScale = FixedZoomScale(newLevel, t.baseCX, t.baseCY);
+
+	state_->view.fixed = true;
+	state_->view.zoomLevel = newLevel;
+	state_->view.scrollX = float(px) - canvasX * newScale - (float(t.surfaceCX) - t.baseCX * newScale) * 0.5f;
+	state_->view.scrollY = float(py) - canvasY * newScale - (float(t.surfaceCY) - t.baseCY * newScale) * 0.5f;
+	// The bound wins over the anchor: at the edge of the pannable range the point
+	// under the cursor does drift, which is the correct trade -- holding it there
+	// would mean scrolling the canvas out of the surface.
+	ClampScroll(state_->view, t.baseCX * newScale, t.baseCY * newScale, t.surfaceCX, t.surfaceCY);
+}
+
+void PreviewSurface::PanBy(int dx, int dy)
+{
+	std::lock_guard<std::mutex> lock(state_->stateMutex);
+	const PreviewTransform &t = state_->transform;
+	if (!state_->view.fixed || t.scale <= 0.0f) {
+		return;
+	}
+	// Same pending-scale rule as ZoomAt, for a smaller reason. The draw callback
+	// re-clamps authoritatively every frame, so a bound computed from a stale scale
+	// is corrected almost immediately -- but the clamp WRITES BACK, so a bound that
+	// was briefly too tight has already trimmed the offset and the next frame cannot
+	// restore it, which reads as the edge of the pan sticking for a frame after a
+	// zoom. The correct scale is one call away and shared with ZoomAt, so deriving
+	// it here costs nothing.
+	const float scale = PendingScale(state_->view, t);
+	state_->view.scrollX += float(dx);
+	state_->view.scrollY += float(dy);
+	ClampScroll(state_->view, t.baseCX * scale, t.baseCY * scale, t.surfaceCX, t.surfaceCY);
+}
+
+bool PreviewSurface::ApplyViewAction(const std::string &token)
+{
+	ViewAction action;
+	if (!ViewActionFromToken(token, action)) {
+		return false;
+	}
+
+	switch (action) {
+	case ViewAction::ZoomIn:
+	case ViewAction::ZoomOut: {
+		// A menu command carries no pointer, so the step is anchored at the surface
+		// center -- the one point the user is certainly looking at, and the only
+		// choice that keeps repeated zoom-ins from wandering.
+		int px;
+		int py;
+		{
+			std::lock_guard<std::mutex> lock(state_->stateMutex);
+			px = state_->transform.surfaceCX / 2;
+			py = state_->transform.surfaceCY / 2;
+		}
+		ZoomAt(px, py, action == ViewAction::ZoomIn ? 1 : -1);
+		return true;
+	}
+	case ViewAction::ScaleToWindow: {
+		std::lock_guard<std::mutex> lock(state_->stateMutex);
+		state_->view.ResetZoom();
+		return true;
+	}
+	case ViewAction::ScaleToCanvas: {
+		// 1:1 -- one canvas pixel per device pixel, centered with no pan.
+		std::lock_guard<std::mutex> lock(state_->stateMutex);
+		state_->view.ResetZoom();
+		state_->view.fixed = true;
+		return true;
+	}
+	}
+	return false;
+}
+
+void PreviewSurface::SetLocked(bool locked)
+{
+	{
+		std::lock_guard<std::mutex> lock(state_->stateMutex);
+		state_->view.locked = locked;
+	}
+	// A lock applied mid-gesture ends it where it stands rather than letting the
+	// held button keep editing an item the preview now refuses to edit.
+	FinishDrag();
+}
+
+void PreviewSurface::GetView(bool &fixed, int &zoomPercent, bool &locked)
+{
+	std::lock_guard<std::mutex> lock(state_->stateMutex);
+	fixed = state_->view.fixed;
+	locked = state_->view.locked;
+	// The scale the next frame will draw at, not the one the last frame did. A menu
+	// is built right after the command that opened it, so reporting the published
+	// scale would answer with the percentage the preview is leaving.
+	zoomPercent = int(std::lround(PendingScale(state_->view, state_->transform) * 100.0f));
 }
 
 void PreviewSurface::SetRect(int x, int y, int cx, int cy)
@@ -1749,8 +2222,9 @@ void PreviewSurface::OnOverlayHidden()
 	// can be shown again without the pointer ever moving over it, which would redraw
 	// a hover outline for wherever the cursor last was; drop it, and re-arm
 	// leave-tracking so the next move over the reshown surface starts clean.
-	state_->mouseTracked = false;
+	RetractPointerOver();
 	ClearHover();
+	EndPanOffSurface();
 }
 
 void PreviewSurface::Destroy()
@@ -1763,6 +2237,12 @@ void PreviewSurface::Destroy()
 	// Destroy path is already the window-owning thread, because the DestroyWindow it
 	// reaches must be.
 	FinishDrag();
+	EndPanOffSurface();
+	// A surface torn down with the pointer still over it must retract the flag, or
+	// the web view keeps suppressing the pan key's default action for a surface
+	// that no longer exists. WM_MOUSELEAVE cannot deliver this -- the HWND is about
+	// to stop routing messages to this object at all.
+	RetractPointerOver();
 
 	// The display dies first (OverlaySurface removes the draw callback), so nothing
 	// the render thread reads outlives it -- including the box buffer below.
@@ -1838,9 +2318,14 @@ bool PreviewSurface::OnVideoReset()
 	// Reset it; RenderPreview recomputes it from the surface's video info on the
 	// next frame. ClientToCanvas treats scale<=0 as "no frame yet" and ignores
 	// mouse input until that recompute lands, avoiding a one-frame mis-mapped drag.
+	// The zoom goes with it. A level and a pan describe a view of a canvas at the
+	// old base resolution; at a new one they name a framing the user never chose, so
+	// the predictable state is the one the surface opens in. The lock is a separate
+	// choice and survives.
 	{
 		std::lock_guard<std::mutex> lock(state_->stateMutex);
 		state_->transform = PreviewTransform{};
+		state_->view.ResetZoom();
 	}
 
 	// Nudge a redraw at the current size so the new mix is presented promptly.
@@ -1863,12 +2348,18 @@ bool PreviewSurface::OnOverlayMessage(UINT msg, WPARAM wparam, LPARAM lparam)
 		if (!state_->mouseTracked && hwnd) {
 			TRACKMOUSEEVENT tme = {sizeof(TRACKMOUSEEVENT), TME_LEAVE, hwnd, 0};
 			state_->mouseTracked = TrackMouseEvent(&tme) != FALSE;
+			if (state_->mouseTracked) {
+				// The arming edge IS the enter edge: mouseTracked is false
+				// exactly until the first move after the pointer arrives, and
+				// WM_MOUSELEAVE is what clears it again.
+				EmitPointerOver(targetCanvas_, windowId_, true);
+			}
 		}
 		OnMouseMove(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
 		return true;
 	}
 	case WM_MOUSELEAVE:
-		state_->mouseTracked = false;
+		RetractPointerOver();
 		// Capture does not suppress leave notifications, so a drag that pulls the
 		// pointer past the surface edge lands here every move. A gesture keeps the
 		// cursor it started with for its whole duration, and its outline is the
@@ -1893,6 +2384,27 @@ bool PreviewSurface::OnOverlayMessage(UINT msg, WPARAM wparam, LPARAM lparam)
 	case WM_RBUTTONUP:
 		OnRightUp(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
 		return true;
+	case WM_MOUSEWHEEL: {
+		// Unlike every button and move message, WM_MOUSEWHEEL carries the pointer in
+		// SCREEN coordinates, so it has to be mapped into this HWND's client space
+		// before it can anchor anything.
+		HWND hwnd = overlay_.Hwnd();
+		POINT pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+		if (!hwnd || !ScreenToClient(hwnd, &pt)) {
+			return false;
+		}
+		// Sign only, magnitude discarded -- one notch per message, matching the
+		// legacy preview (frontend_old/widgets/OBSBasicPreview.cpp:553-567), which
+		// tests the sign of angleDelta().y() and steps one level either way. If an
+		// accumulator is ever wanted it has to land here AND in the web view's
+		// forwarder in the same change, or the two routings give different zoom for
+		// the same physical gesture.
+		const int delta = GET_WHEEL_DELTA_WPARAM(wparam);
+		if (delta != 0) {
+			ZoomAt(pt.x, pt.y, delta > 0 ? 1 : -1);
+		}
+		return true;
+	}
 	case WM_CAPTURECHANGED:
 		CancelDrag();
 		return true;
@@ -1968,16 +2480,25 @@ void PreviewManager::UnregisterWindow(int windowId)
 	}
 }
 
-PreviewSurface *PreviewManager::SurfaceFor(int windowId, const std::string &canvasUuid)
+PreviewSurface *PreviewManager::FindSurface(int windowId, const std::string &canvasUuid)
 {
-	const bool isDefault = IsDefaultCanvasUuid(canvasUuid);
-	const std::string key = isDefault ? std::string() : canvasUuid;
-
+	const std::string key = IsDefaultCanvasUuid(canvasUuid) ? std::string() : canvasUuid;
 	for (ManagedSurface &s : impl_->surfaces) {
 		if (s.windowId == windowId && s.uuid == key) {
 			return s.surface.get();
 		}
 	}
+	return nullptr;
+}
+
+PreviewSurface *PreviewManager::SurfaceFor(int windowId, const std::string &canvasUuid)
+{
+	if (PreviewSurface *existing = FindSurface(windowId, canvasUuid)) {
+		return existing;
+	}
+
+	const bool isDefault = IsDefaultCanvasUuid(canvasUuid);
+	const std::string key = isDefault ? std::string() : canvasUuid;
 
 	// Resolve the host HWND for this window: a registered detached window's host,
 	// else the constructor's host_ (windowId 0 / main, or an unregistered window).
@@ -2102,6 +2623,20 @@ void PreviewManager::OnVideoResetAll()
 	}
 }
 
+void PreviewManager::OnVideoResetForCanvas(const std::string &canvasUuid)
+{
+	// Sweeps every windowId for this uuid, the same shape as DestroyForCanvas and
+	// for the same reason: one canvas can own a surface on the main window and on
+	// each detached one, and a per-window reset would leave the others pinned at a
+	// zoom chosen for the old base resolution.
+	const std::string key = IsDefaultCanvasUuid(canvasUuid) ? std::string() : canvasUuid;
+	for (ManagedSurface &s : impl_->surfaces) {
+		if (s.uuid == key) {
+			s.surface->OnVideoReset();
+		}
+	}
+}
+
 namespace Preview {
 
 void SetInstance(PreviewManager *pm)
@@ -2143,6 +2678,65 @@ void OnVideoReset()
 	if (g_instance) {
 		g_instance->OnVideoResetAll();
 	}
+}
+
+void OnCanvasVideoReset(const std::string &canvasUuid)
+{
+	if (g_instance) {
+		g_instance->OnVideoResetForCanvas(canvasUuid);
+	}
+}
+
+bool ApplyViewAction(const std::string &canvas, const std::string &token, int windowId)
+{
+	if (!g_instance) {
+		return false;
+	}
+	PreviewSurface *surface = g_instance->SurfaceFor(windowId, canvas);
+	return surface && surface->ApplyViewAction(token);
+}
+
+bool SetLocked(const std::string &canvas, bool locked, int windowId)
+{
+	if (!g_instance) {
+		return false;
+	}
+	PreviewSurface *surface = g_instance->SurfaceFor(windowId, canvas);
+	if (!surface) {
+		return false;
+	}
+	surface->SetLocked(locked);
+	return true;
+}
+
+// Reads must not allocate. SurfaceFor creates a surface (and its HWND) on a miss,
+// which is right for the commands -- they are asking for that surface -- but a
+// query that can conjure a window is a seam nobody expects, and it would make the
+// caller's "no such surface" error describe a case that could never occur.
+bool GetView(const std::string &canvas, bool &fixed, int &zoomPercent, bool &locked, int windowId)
+{
+	if (!g_instance) {
+		return false;
+	}
+	PreviewSurface *surface = g_instance->FindSurface(windowId, canvas);
+	if (!surface) {
+		return false;
+	}
+	surface->GetView(fixed, zoomPercent, locked);
+	return true;
+}
+
+bool ZoomAt(const std::string &canvas, int x, int y, int levelDelta, int windowId)
+{
+	if (!g_instance) {
+		return false;
+	}
+	PreviewSurface *surface = g_instance->FindSurface(windowId, canvas);
+	if (!surface) {
+		return false;
+	}
+	surface->ZoomAt(x, y, levelDelta);
+	return true;
 }
 
 } // namespace Preview

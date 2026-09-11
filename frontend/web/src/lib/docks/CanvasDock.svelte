@@ -17,7 +17,16 @@ import { EV } from "$lib/utils/eventNames";
   import { PreviewFreeze } from "$lib/stores/previewFreeze.svelte";
 import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   import { WINDOW_ID } from "$lib/utils/windowContext";
-  import { syncPreviewRect, hidePreview as hidePreviewSurface, destroyPreview, mapOverlayCursor } from "$lib/docking/previewSurface";
+  import {
+    syncPreviewRect,
+    hidePreview as hidePreviewSurface,
+    destroyPreview,
+    mapOverlayCursor,
+    fetchPreviewView,
+    previewViewMenuItems,
+    forwardPreviewWheel,
+  } from "$lib/docking/previewSurface";
+  import { usePreviewPointerGuard } from "$lib/docking/previewPointerGuard";
   import { isPreviewDisabled, setPreviewDisabled } from "$lib/docking/previewDisabledStore.svelte";
   import { DockError } from "$lib/docking/dockError.svelte";
   import ContextMenu, { type ContextMenuItems, type ContextMenuState } from "$lib/menus/ContextMenu.svelte";
@@ -1087,21 +1096,33 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
         return;
       }
       const { x, y } = mapOverlayCursor(previewEl, p);
-      if (p.id == null) {
-        menu = { x, y, items: buildEmptyItems(), suspendOverlay: true };
-        return;
-      }
       void (async () => {
+        // Read the surface's view first: both menu shapes end with the Scale and
+        // Lock Preview entries, which describe the preview itself rather than
+        // whatever is (or is not) under the cursor.
+        const view = await fetchPreviewView(canvasUuid);
+        if (p.id == null) {
+          menu = { x, y, items: [...buildEmptyItems(), ...previewViewMenuItems(view, canvasUuid, report)], suspendOverlay: true };
+          return;
+        }
         const deint = p.source
           ? await fetchDeint(p.source)
           : { mode: "disable" as const, fieldOrder: "top" as const };
         const transitionTypeList = await transitionTypes().catch(() => []);
-        menu = { x, y, items: buildPreviewItems(p, deint, transitionTypeList), suspendOverlay: true };
+        menu = {
+          x,
+          y,
+          items: [...buildPreviewItems(p, deint, transitionTypeList), ...previewViewMenuItems(view, canvasUuid, report)],
+          suspendOverlay: true,
+        };
       })();
     });
 
+    const releaseGuard = usePreviewPointerGuard();
+
     return () => {
       ro.disconnect();
+      releaseGuard();
       if (rectRaf) {
         cancelAnimationFrame(rectRaf);
       }
@@ -1228,7 +1249,14 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
        are the mock's stage overlays (res top-left, LIVE top-right, scene label
        bottom-left). pointer-events:none so they never intercept overlay input. -->
   <div class="stage-area">
-    <div class="stage" class:vertical class:active={stageCovered} bind:this={previewEl}>
+    <!-- onwheel forwards to the host's zoom; see the same handler in PreviewDock. -->
+    <div
+      class="stage"
+      class:vertical
+      class:active={stageCovered}
+      bind:this={previewEl}
+      onwheel={(e) => previewEl && forwardPreviewWheel(previewEl, e, canvasUuid)}
+    >
       <!-- Stands in for the hidden native surface while an overlay is up. FIRST so the
            disabled-preview placeholder still stacks above it on DOM order alone. -->
       {#if freeze.frame}

@@ -41,6 +41,10 @@ inline constexpr const char *kStreamInfoPresetsChanged = "streamInfoPresets.chan
 inline constexpr const char *kSceneItemsChanged = "sceneItems.changed";
 inline constexpr const char *kSceneItemSelected = "sceneItem.selected";
 inline constexpr const char *kPreviewContextMenu = "preview.contextMenu";
+// Edge-triggered as the pointer enters or leaves a preview surface. The overlay is
+// a native HWND painted over the web view, so the DOM never sees a pointer event
+// for that region and cannot work this out for itself -- it needs telling.
+inline constexpr const char *kPreviewPointerOver = "preview.pointerOver";
 inline constexpr const char *kFilterPreviewClosed = "filterPreview.closed";
 inline constexpr const char *kChatState = "chat.state";
 inline constexpr const char *kChatMessage = "chat.message";

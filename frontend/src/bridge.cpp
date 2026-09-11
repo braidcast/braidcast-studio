@@ -458,6 +458,10 @@ bool MethodStreamingStop(const json & /*params*/, json &result, std::string & /*
 // single-preview caller (which sends no `canvas`) is unchanged.
 std::string PreviewCanvasParam(const json &params);
 
+// Defined with the other param readers further down; declared here so the preview
+// methods above them can read a string param through the same helper.
+std::string OptString(const json &params, const char *key);
+
 // The originating window id for a preview surface. Absent => 0 (main window), so
 // single-window callers (no `window`) address the main window's surfaces. Carried
 // so per-window preview surfaces stay keyed by (windowId, canvasUuid) when
@@ -544,6 +548,102 @@ bool MethodPreviewDestroy(const json &params, json & /*result*/, std::string &er
 	}
 	pm->Destroy(PreviewWindowParam(params), PreviewCanvasParam(params));
 	return true;
+}
+
+// The addressed surface's view state, as the three fields the context menu renders
+// from. One filler for all three methods below so they cannot come to describe the
+// same surface differently, and so each of them leaves the menu with fresh state
+// without a second round-trip.
+bool PreviewViewResult(const json &params, json &result, std::string &error)
+{
+	bool fixed = false;
+	int zoomPercent = 0;
+	bool locked = false;
+	if (!Preview::GetView(PreviewCanvasParam(params), fixed, zoomPercent, locked, PreviewWindowParam(params))) {
+		error = "no preview surface for this canvas";
+		return false;
+	}
+	result = json{{"fixed", fixed}, {"zoomPercent", zoomPercent}, {"locked", locked}};
+	return true;
+}
+
+// Apply one Scale-menu command (zoomIn / zoomOut / scaleToWindow / scaleToCanvas)
+// to a preview surface. The token vocabulary lives in preview_window.cpp next to
+// the behaviour it names, so this stays a forwarder and cannot drift from it.
+bool MethodPreviewViewAction(const json &params, json &result, std::string &error)
+{
+	if (!Preview::Instance()) {
+		error = "preview not ready";
+		return false;
+	}
+	const std::string action = OptString(params, "action");
+	if (action.empty()) {
+		error = "viewAction expects an `action` token";
+		return false;
+	}
+	if (!Preview::ApplyViewAction(PreviewCanvasParam(params), action, PreviewWindowParam(params))) {
+		error = "no preview surface, or unknown action '" + action + "'";
+		return false;
+	}
+	return PreviewViewResult(params, result, error);
+}
+
+// Toggle the preview's edit lock. Native rather than a frontend-only flag because
+// the gestures it has to block are native: the overlay HWND takes the mouse, so
+// nothing in the DOM is in a position to refuse a drag.
+bool MethodPreviewSetLocked(const json &params, json &result, std::string &error)
+{
+	if (!Preview::Instance()) {
+		error = "preview not ready";
+		return false;
+	}
+	const bool locked = params.is_object() && params.value("locked", false);
+	if (!Preview::SetLocked(PreviewCanvasParam(params), locked, PreviewWindowParam(params))) {
+		error = "no preview surface for this canvas";
+		return false;
+	}
+	return PreviewViewResult(params, result, error);
+}
+
+bool MethodPreviewGetView(const json &params, json &result, std::string &error)
+{
+	if (!Preview::Instance()) {
+		error = "preview not ready";
+		return false;
+	}
+	return PreviewViewResult(params, result, error);
+}
+
+// A wheel the web view received over a preview region, forwarded here so it lands
+// on the same anchor implementation the overlay's own WM_MOUSEWHEEL does. Both
+// entry points are needed and neither is redundant: Windows routes the wheel to
+// the window under the pointer or to the focused one depending on a shell setting,
+// and only the focused-window case reaches the web view -- but a window holding
+// the mouse capture is sent the wheel regardless, which is what keeps zoom working
+// during a drag, when the web view gets nothing. `x`/`y` are device px in the
+// overlay's own client space; `delta` is signed notches.
+bool MethodPreviewZoomAt(const json &params, json &result, std::string &error)
+{
+	if (!Preview::Instance()) {
+		error = "preview not ready";
+		return false;
+	}
+	if (!params.is_object()) {
+		error = "zoomAt expects an object {x,y,delta,canvas?}";
+		return false;
+	}
+	const int x = params.value("x", 0);
+	const int y = params.value("y", 0);
+	const int delta = params.value("delta", 0);
+	if (delta == 0) {
+		error = "zoomAt expects a non-zero `delta`";
+		return false;
+	}
+	if (!Preview::ZoomAt(PreviewCanvasParam(params), x, y, delta, PreviewWindowParam(params))) {
+		error = "no preview surface for this canvas";
+		return false;
+	}
+	return PreviewViewResult(params, result, error);
 }
 
 // --- settings (video / audio) -----------------------------------------------
@@ -13548,6 +13648,10 @@ void Init()
 		{"preview.destroy", MethodPreviewDestroy},
 		{"preview.select", MethodPreviewSelect},
 		{"preview.freeze", MethodPreviewFreeze},
+		{"preview.viewAction", MethodPreviewViewAction},
+		{"preview.setLocked", MethodPreviewSetLocked},
+		{"preview.getView", MethodPreviewGetView},
+		{"preview.zoomAt", MethodPreviewZoomAt},
 		{"scenes.list", MethodScenesList},
 		{"scenes.create", MethodScenesCreate},
 		{"scenes.remove", MethodScenesRemove},

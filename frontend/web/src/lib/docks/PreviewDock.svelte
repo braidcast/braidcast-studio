@@ -8,7 +8,16 @@ import { EV } from "$lib/utils/eventNames";
   import { PreviewFreeze } from "$lib/stores/previewFreeze.svelte";
 import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   import { WINDOW_ID } from "$lib/utils/windowContext";
-  import { syncPreviewRect, hidePreview, destroyPreview, mapOverlayCursor } from "$lib/docking/previewSurface";
+  import {
+    syncPreviewRect,
+    hidePreview,
+    destroyPreview,
+    mapOverlayCursor,
+    fetchPreviewView,
+    previewViewMenuItems,
+    forwardPreviewWheel,
+  } from "$lib/docking/previewSurface";
+  import { usePreviewPointerGuard } from "$lib/docking/previewPointerGuard";
   import { isPreviewDisabled, setPreviewDisabled, DEFAULT_PREVIEW_KEY } from "$lib/docking/previewDisabledStore.svelte";
   import { DockError } from "$lib/docking/dockError.svelte";
   import ContextMenu, { type ContextMenuItems, type ContextMenuState } from "$lib/menus/ContextMenu.svelte";
@@ -294,18 +303,24 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
       }
       dockError.clear();
       const { x, y } = mapOverlayCursor(previewEl, p);
-      if (p.id == null) {
-        menu = { x, y, items: buildEmptyItems(p.scene) };
-        return;
-      }
       void (async () => {
+        // Read the surface's view first: both menu shapes end with the Scale and
+        // Lock Preview entries, which describe the preview itself rather than
+        // whatever is (or is not) under the cursor.
+        const view = await fetchPreviewView();
+        if (p.id == null) {
+          menu = { x, y, items: [...buildEmptyItems(p.scene), ...previewViewMenuItems(view, undefined, dockError.report)] };
+          return;
+        }
         const list = await obs.call("sceneItems.list", { scene: p.scene }).catch(() => [] as SceneItem[]);
         const it = list.find((i) => i.id === p.id) ?? null;
         const deint = p.source ? await fetchDeint(p.source) : { mode: "disable" as const, fieldOrder: "top" as const };
         const transitionTypeList = await transitionTypes().catch(() => []);
-        menu = { x, y, items: buildItems(p, it, deint, transitionTypeList) };
+        menu = { x, y, items: [...buildItems(p, it, deint, transitionTypeList), ...previewViewMenuItems(view, undefined, dockError.report)] };
       })();
     });
+
+    const releaseGuard = usePreviewPointerGuard();
 
     return () => {
       ro.disconnect();
@@ -315,6 +330,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
       window.removeEventListener("resize", reportRect);
       window.removeEventListener("scroll", reportRect, true);
       offMenu();
+      releaseGuard();
       destroyPreview();
     };
   });
@@ -373,7 +389,16 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     <p class="dock-msg err" role="alert">{dockError.message}</p>
   {/if}
 
-  <section class="preview" class:gated={!defaultEnabled || isPreviewDisabled(DEFAULT_PREVIEW_KEY)} bind:this={previewEl}>
+  <!-- onwheel forwards to the host's zoom. The native overlay covers this element and
+       has its own wheel handler, but which of the two is sent the event depends on a
+       Windows shell setting, so both entry points exist; they share one anchor
+       implementation on the host side. -->
+  <section
+    class="preview"
+    class:gated={!defaultEnabled || isPreviewDisabled(DEFAULT_PREVIEW_KEY)}
+    bind:this={previewEl}
+    onwheel={(e) => previewEl && forwardPreviewWheel(previewEl, e)}
+  >
     <!-- Stands in for the hidden native surface while an overlay is up. FIRST so the
          placeholders still stack above it on DOM order alone -- each is absolutely
          positioned, so no z-index has to be assigned to keep them visible. aria-hidden: it is the same picture the surface was already showing,
