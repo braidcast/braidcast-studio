@@ -186,20 +186,27 @@ obs_source_t *AcquireSceneByUuid(const std::string &uuid);
 // item on the same overlay was resized.
 //
 // UI thread only.
-std::string CaptureItemTransformState(const std::string &canvasUuid, const std::string &sceneName,
-				      obs_sceneitem_t *item);
+// Takes a whole selection so one gesture over N items is one payload: the result is
+// {"items":[<per-item state>, ...]}, each element exactly the object a single-item
+// capture produces. Empty (and so unrecordable) when no item resolved.
+std::string CaptureItemTransformStates(const std::string &canvasUuid, const std::string &sceneName,
+				       obs_sceneitem_t *const *items, size_t count);
 
-// Push ONE undo step over a before/after pair from CaptureItemTransformState. Undo and
-// redo both re-resolve the item from the payload and write the geometry it carries back,
-// then emit sceneItems.changed and persist -- the same action sceneItems.setTransform
-// records, so an entry from a preview drag and one from the Transform dialog are
+// Push ONE undo step over a before/after pair from CaptureItemTransformStates, however
+// many items the pair describes. Undo and redo both re-resolve every item from the
+// payload and write the geometry it carries back, then emit sceneItems.changed and
+// persist once per scene -- the same action sceneItems.setTransform records per item, so
+// a single-item entry from a preview drag and one from the Transform dialog stay
 // interchangeable.
 //
 // No-op when either payload is empty OR when the two are equal. The equality check is not
 // tidiness: a gesture can end without changing the geometry (an Alt-crop drag on an item
 // carrying a bounds type moves the pointer but is refused), and an entry for it would
-// both mislabel the undo affordance and clear the redo branch. UI thread only.
-void RecordItemTransformUndo(obs_source_t *itemSource, const std::string &before, const std::string &after);
+// both mislabel the undo affordance and clear the redo branch. Over a multi-item
+// selection the check is ALL-OR-NOTHING: one item moving records the whole batch. UI
+// thread only.
+void RecordItemTransformsUndo(obs_sceneitem_t *const *items, size_t count, const std::string &before,
+			      const std::string &after);
 
 // Has Bridge::Shutdown() begun? The same latch the stats sampler probes, exposed so a
 // delayed task owned by another subsystem can make the identical bail. A task that ran

@@ -80,6 +80,26 @@ export class SourceSelection {
     this._items = ordered.slice(lo, hi + 1);
   }
 
+  // Replace the whole set at once. This is how a selection made in the PREVIEW
+  // (Ctrl-click, rubber band, click-through) arrives: the native surface sends its set
+  // in one sceneItem.selected, so the dock adopts it wholesale rather than replaying it
+  // as a sequence of clicks. An empty list clears.
+  //
+  // The anchor is KEPT whenever it is still a member, and only falls back to the last
+  // element when it is not. That is the invariant range() documents above -- the pivot
+  // has to survive so a second Shift-click still spans from the same origin -- and every
+  // dock click echoes back through here, because pushing the set to the preview makes
+  // the preview emit it straight back. Taking the last element unconditionally would let
+  // that echo walk the anchor to the end of the range the user just made, so a
+  // Shift-click on row 2 then row 5 then row 8 would yield 5..8 instead of 2..8.
+  setAll(items: SceneItem[]): void {
+    this._items = [...items];
+    const anchorHeld = this._anchorId != null && items.some((i) => i.id === this._anchorId);
+    if (!anchorHeld) {
+      this._anchorId = items.at(-1)?.id ?? null;
+    }
+  }
+
   clear(): void {
     this._items = [];
     this._anchorId = null;

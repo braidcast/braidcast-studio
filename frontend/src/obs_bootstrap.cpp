@@ -2012,7 +2012,7 @@ void ObsBootstrap::RunPreviewEditSelfTest()
 	vec3_transform(&center, &center, &boxTransform);
 
 	// 1) Select via the same entry point the bridge uses (Default surface => "").
-	const bool selOk = Preview::SelectFromBridge("", "", id, true);
+	const bool selOk = Preview::SelectFromBridge("", "", std::vector<int64_t>{id});
 	HostLog("[selftest] preview-edit: SelectFromBridge -> " + std::string(selOk ? "OK" : "FAIL"));
 
 	// 2) Hit-test at the item center: expect to get the same id back.
@@ -2039,7 +2039,7 @@ void ObsBootstrap::RunPreviewEditSelfTest()
 		std::to_string(int(restoredPos.y)) + ")");
 
 	// Clear the selection so the smoke run leaves no committed selection state.
-	Preview::SelectFromBridge("", "", 0, false);
+	Preview::SelectFromBridge("", "", std::vector<int64_t>{});
 	obs_source_release(sceneSource);
 }
 
@@ -4355,7 +4355,7 @@ void ObsBootstrap::RunPreviewSurfaceIsolationSelfTest()
 
 	// 2) Select the canvas item on the ADDITIONAL surface. Its selection state must
 	// flip; the Default surface's must NOT.
-	const bool selOk = Preview::SelectFromBridge(canvasUuid, "", canvasItemId, true);
+	const bool selOk = Preview::SelectFromBridge(canvasUuid, "", std::vector<int64_t>{canvasItemId});
 	const int64_t canvasSel = canvasSurface ? canvasSurface->SelectedIdForTest() : -2;
 	const int64_t defaultSelAfter = defaultSurface ? defaultSurface->SelectedIdForTest() : -2;
 	HostLog(std::string("[selftest] preview-isolation: select on additional -> ") + (selOk ? "ok" : "FAIL") +
@@ -4410,7 +4410,7 @@ void ObsBootstrap::RunPreviewSurfaceIsolationSelfTest()
 	// tear down the temp canvas (drops its surface's mix; the surface itself is
 	// reaped by DestroyAll at shutdown, but its display already has no mix to render
 	// once the canvas is gone -- so destroy the surface now to keep ordering clean).
-	Preview::SelectFromBridge(canvasUuid, "", 0, false);
+	Preview::SelectFromBridge(canvasUuid, "", std::vector<int64_t>{});
 	Preview::Instance()->DestroyForCanvas(canvasUuid);
 
 	if (canvasItemId) {

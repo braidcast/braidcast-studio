@@ -96,10 +96,10 @@ import { EV } from "$lib/utils/eventNames";
   }
 
   // Plain click selects just this row; Ctrl/Cmd toggles it in/out of the set; Shift
-  // extends from the anchor over the visible (filtered) order. Only a plain click drives
-  // the native preview selection — a modifier click is a list-set edit, not a preview pick.
-  // Every branch claims the surface: a modifier click is still the user working here, and
-  // the app-level shortcuts must follow.
+  // extends from the anchor over the visible (filtered) order. Every branch pushes the
+  // resulting set to the native preview, which draws the same selection this list shows,
+  // and every branch claims the surface, because a modifier click is still the user
+  // working here and the app-level shortcuts have to follow them here.
   function selectItem(e: MouseEvent, item: SceneItem) {
     activeSurface.claimSource(surfaceOwner, null, sourceSelection);
     if (e.shiftKey) {
@@ -108,8 +108,8 @@ import { EV } from "$lib/utils/eventNames";
       sourceSelection.toggle(item);
     } else {
       sourceSelection.selectOne(item);
-      void obs.call("preview.select", { scene: currentScene, id: item.id }).catch(() => {});
     }
+    void obs.call("preview.select", { scene: currentScene, ids: [...sourceSelection.ids] }).catch(() => {});
   }
 
   // The properties modal overlaps the preview; suspend the native overlay while open.
@@ -124,11 +124,13 @@ import { EV } from "$lib/utils/eventNames";
     return obs.on(EV.sceneItemSelected, (p) => {
       // Global channel-0 path: only the Default surface (canvas=null) drives this.
       if (p.canvas == null && (!p.scene || p.scene === currentScene)) {
-        const it = items.find((i) => i.id === p.id);
-        if (it) {
-          activeSurface.claimSource(surfaceOwner, null, sourceSelection);
-          sourceSelection.selectOne(it);
-        }
+        // The whole set, anchor last, so a preview multi-select (Ctrl-click or a
+        // rubber band) lands here as the set it is rather than as its anchor alone.
+        const picked = (p.ids ?? (p.id != null ? [p.id] : []))
+          .map((id) => items.find((i) => i.id === id))
+          .filter((i): i is SceneItem => i != null);
+        activeSurface.claimSource(surfaceOwner, null, sourceSelection);
+        sourceSelection.setAll(picked);
       }
     });
   });

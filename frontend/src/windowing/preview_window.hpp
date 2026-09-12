@@ -5,11 +5,16 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "overlay_surface.hpp"
 
 struct obs_canvas;
 typedef struct obs_canvas obs_canvas_t;
+struct obs_scene;
+typedef struct obs_scene obs_scene_t;
+struct obs_source;
+typedef struct obs_source obs_source_t;
 
 // One native preview surface: an OverlaySurface (a borderless child HWND of the
 // host, sibling above the CEF browser HWND, plus its own obs_display) rendering one
@@ -63,9 +68,11 @@ public:
 	HWND Hwnd() const { return overlay_.Hwnd(); }
 
 	// Drive selection from JS without a mouse event (the SourcesPanel). `scene` is
-	// validated against the surface's current scene name (a mismatch is ignored);
-	// when `hasId` is false the selection is cleared. Emits sceneItem.selected.
-	bool SelectFromBridge(const std::string &scene, int64_t id, bool hasId);
+	// validated against the surface's current scene name (a mismatch is ignored); an
+	// empty `ids` clears. The whole set is replaced, so a dock's modifier click lands
+	// here as the set it produced rather than as a sequence of single picks. Emits
+	// sceneItem.selected.
+	bool SelectFromBridge(const std::string &scene, const std::vector<int64_t> &ids);
 
 	// Zoom by `levelDelta` notches about the client pixel (px, py), which stays over
 	// the same canvas point. Public because the wheel arrives by two routes -- the
@@ -91,9 +98,9 @@ public:
 	// the topmost matching scene-item id, or -1. Used by the smoke self-test.
 	int64_t HitTestForTest(float canvasX, float canvasY);
 
-	// The currently-selected scene-item id on this surface (-1 when none). Used by
-	// the isolation self-test to prove an edit on one surface leaves another's
-	// selection untouched. Reads under the surface's own lock.
+	// The ANCHOR scene-item id of this surface's selection (-1 when none). Used by the
+	// isolation self-test to prove an edit on one surface leaves another's selection
+	// untouched. Reads under the surface's own lock.
 	int64_t SelectedIdForTest();
 
 	// Re-validate the surface after a video reset of its mix: clear the cached
@@ -135,6 +142,32 @@ public:
 	struct State;
 
 private:
+	// Apply the press deferred by OnLeftDown as a selection change. A press does not
+	// select: pressing on an item that is already selected has to be able to drag the
+	// WHOLE selection, so which of select / move / rubber-band the press meant is
+	// settled by the first mouse-move or by the release. The first-move path already
+	// holds the scene; the release path resolves it through the ...OnCurrentScene
+	// overload. Both re-run the hit-test rather than reusing the press's, because the
+	// click-through cycle reads the live selection. `bandPending` marks the first-move
+	// call, where an empty hit under an additive modifier must NOT clear -- FinishBox
+	// will set the selection, and clearing first would emit a second, empty change.
+	// UI thread.
+	void ApplyPressClick(obs_source_t *sceneSource, obs_scene_t *scene, bool bandPending);
+	void ApplyPressClickOnCurrentScene();
+
+	// Begin dragging the whole current selection, recording each member's start
+	// position and the one batch undo payload. No-op when nothing movable resolves.
+	void BeginMove(obs_source_t *sceneSource, obs_scene_t *scene);
+
+	// The rubber band's whole lifecycle: start one at the press position, abandon one
+	// without committing, or commit one into the selection (returning whether a band
+	// was in flight). The two enders are idempotent, so every capture-ending path can
+	// call them unconditionally. FinishBox reads Shift/Ctrl/Alt at the RELEASE against a snapshot
+	// taken at the press -- see its definition. UI thread.
+	void BeginBox();
+	void CancelBox();
+	bool FinishBox();
+
 	// Affordance feedback for a mouse position with no drag in progress: resolve
 	// the gesture a press there would start, remember the item to outline, and
 	// apply the matching cursor. ClearHoverItem drops the outline alone; ClearHover
@@ -274,10 +307,11 @@ PreviewManager *Instance();
 // Drive selection from JS (the SourcesPanel) on the surface for (windowId, canvas)
 // (empty canvas => the Default surface, output channel 0). `scene` is validated
 // against that surface's current scene name (a mismatch is ignored, keeping
-// "preview shows the current scene" intact). When `hasId` is false the selection
-// is cleared. Emits sceneItem.selected like a mouse-driven change. Runs on the UI
-// thread. windowId defaults to 0 (main window).
-bool SelectFromBridge(const std::string &canvas, const std::string &scene, int64_t id, bool hasId, int windowId = 0);
+// "preview shows the current scene" intact). An empty `ids` clears. Emits
+// sceneItem.selected like a mouse-driven change. Runs on the UI thread. windowId
+// defaults to 0 (main window).
+bool SelectFromBridge(const std::string &canvas, const std::string &scene, const std::vector<int64_t> &ids,
+		      int windowId = 0);
 
 // Hit-test at a canvas-space coordinate against the surface for (windowId, canvas)
 // (empty canvas => the Default surface); returns the topmost matching scene-item

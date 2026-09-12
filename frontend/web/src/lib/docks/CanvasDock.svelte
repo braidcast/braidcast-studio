@@ -464,8 +464,8 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     }
   }
   // Plain click selects just this row; Ctrl/Cmd toggles it in/out of the set; Shift
-  // extends from the anchor over the visible (filtered) order. Only a plain click drives
-  // the native preview selection — a modifier click is a list-set edit.
+  // extends from the anchor over the visible (filtered) order. Every branch pushes the
+  // resulting set to the native preview, which draws the same selection this list shows.
   function selectItem(e: MouseEvent, item: SceneItem) {
     activeSurface.claimSource(surfaceOwner, canvasUuid, selection);
     if (e.shiftKey) {
@@ -474,8 +474,10 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
       selection.toggle(item);
     } else {
       selection.selectOne(item);
-      void obs.call("preview.select", { canvas: canvasUuid, window: WINDOW_ID, scene: currentScene, id: item.id }).catch(() => {});
     }
+    void obs
+      .call("preview.select", { canvas: canvasUuid, window: WINDOW_ID, scene: currentScene, ids: [...selection.ids] })
+      .catch(() => {});
   }
   async function toggleVisible(item: SceneItem) {
     try {
@@ -1081,11 +1083,13 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     });
     const offSel = obs.on(EV.sceneItemSelected, (p) => {
       if (p.canvas === canvasUuid && (!p.scene || p.scene === currentScene)) {
-        const it = items.find((i) => i.id === p.id);
-        if (it) {
-          activeSurface.claimSource(surfaceOwner, canvasUuid, selection);
-          selection.selectOne(it);
-        }
+        // The whole set, anchor last, so a preview multi-select (Ctrl-click or a
+        // rubber band) lands here as the set it is rather than as its anchor alone.
+        const picked = (p.ids ?? (p.id != null ? [p.id] : []))
+          .map((id) => items.find((i) => i.id === id))
+          .filter((i): i is SceneItem => i != null);
+        activeSurface.claimSource(surfaceOwner, canvasUuid, selection);
+        selection.setAll(picked);
       }
     });
 

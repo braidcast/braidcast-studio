@@ -1347,33 +1347,65 @@ bool ItemIdFromParams(const json &params, int64_t &id, std::string &error)
 	return false;
 }
 
-// Drive preview selection from the UI (SourcesPanel). params: {scene?, id?,
-// canvas?}. A null/absent id deselects. The addressed surface's scene (output 0
-// for the Default surface, else the canvas's current scene) is authoritative;
-// `scene` is only validated against it. Returns {selected: id|null}.
+// Drive preview selection from the UI (SourcesPanel). params: {scene?, id?, ids?,
+// canvas?}. `ids` replaces the whole preview selection and is what a dock sends after a
+// modifier click; `id` is the single-item shorthand every existing caller uses. Both
+// absent/null deselects. The addressed surface's scene (output 0 for the Default
+// surface, else the canvas's current scene) is authoritative; `scene` is only validated
+// against it. Returns {selected: anchorId|null, selectedIds: number[]}.
 bool MethodPreviewSelect(const json &params, json &result, std::string &error)
 {
 	const std::string scene = OptString(params, "scene");
 
-	int64_t id = 0;
-	bool hasId = false;
+	std::vector<int64_t> ids;
 	if (params.is_object()) {
-		auto it = params.find("id");
-		if (it != params.end() && !it->is_null()) {
-			std::string idErr;
-			if (!ItemIdFromParams(params, id, idErr)) {
-				error = idErr;
-				return false;
+		auto arrIt = params.find("ids");
+		if (arrIt != params.end() && arrIt->is_array()) {
+			for (const json &entry : *arrIt) {
+				if (!entry.is_number_integer()) {
+					error = "invalid entry in 'ids'";
+					return false;
+				}
+				const int64_t id = entry.get<int64_t>();
+				// libobs item ids start at 1, so a negative is the
+				// "nothing selected" sentinel leaking out of a caller
+				// rather than an item. Mirroring it onto the scene would
+				// match nothing and silently shrink the selection.
+				if (id < 0) {
+					error = "invalid entry in 'ids'";
+					return false;
+				}
+				// A repeat keeps its LAST position: the set is
+				// insertion-ordered and its final member is the anchor a
+				// later Shift-click pivots from, so dropping the repeat
+				// would hand the anchor to whatever preceded it.
+				auto dup = std::find(ids.begin(), ids.end(), id);
+				if (dup != ids.end()) {
+					ids.erase(dup);
+				}
+				ids.push_back(id);
 			}
-			hasId = true;
+		} else {
+			auto it = params.find("id");
+			if (it != params.end() && !it->is_null()) {
+				int64_t id = 0;
+				std::string idErr;
+				if (!ItemIdFromParams(params, id, idErr)) {
+					error = idErr;
+					return false;
+				}
+				ids.push_back(id);
+			}
 		}
 	}
 
-	if (!Preview::SelectFromBridge(PreviewCanvasParam(params), scene, id, hasId, PreviewWindowParam(params))) {
+	if (!Preview::SelectFromBridge(PreviewCanvasParam(params), scene, ids, PreviewWindowParam(params))) {
 		error = "preview selection failed (no scene or scene mismatch)";
 		return false;
 	}
-	result = json{{"selected", hasId ? json(id) : json(nullptr)}};
+	// The anchor is the LAST member, matching what the surface reports back in
+	// sceneItem.selected and what `sourceSelection.item` means on the web side.
+	result = json{{"selected", ids.empty() ? json(nullptr) : json(ids.back())}, {"selectedIds", ids}};
 	return true;
 }
 
@@ -2712,6 +2744,59 @@ void ApplyTransform(const std::string &data)
 
 	CommitSceneItemChange(state, sceneSource);
 	obs_source_release(sceneSource);
+}
+
+// Apply a whole batch of captured item states as ONE undo step. Every element of
+// "items" has the shape CaptureItemTransformStates records: a CaptureTransformState
+// object with whatever PinOverlayBoundsInState pins onto it, which is what the singular
+// capture stores too. So the per-item builder above and SetItemGeometry are shared with
+// ApplyTransform rather than duplicated -- this function is only the loop and the
+// commit fan-in.
+//
+// A per-element resolution failure is skipped rather than failing the batch: an item
+// deleted since the gesture must not block the rest of the selection from being
+// restored. That is deliberately looser than ApplyOrder, which refuses wholesale
+// because a partial reorder is meaningless while a partial restore is not.
+void ApplyTransforms(const std::string &data)
+{
+	json batch = json::parse(data, nullptr, false);
+	if (batch.is_discarded()) {
+		return;
+	}
+	auto itemsIt = batch.find("items");
+	if (itemsIt == batch.end() || !itemsIt->is_array()) {
+		return;
+	}
+
+	// One commit per distinct scene, not per item: CommitSceneItemChange emits
+	// sceneItems.changed and persists the collection, and N items moved in one scene
+	// are one change. The element that first named a scene carries the canvas keys
+	// the emit addresses it by, so it is kept alongside the addref'd source.
+	std::vector<std::pair<obs_source_t *, json>> commits;
+	for (const json &state : *itemsIt) {
+		if (!state.is_object()) {
+			continue;
+		}
+		obs_source_t *sceneSource = nullptr; // addref'd by ResolveStateItem
+		obs_sceneitem_t *item = nullptr;
+		if (!ResolveStateItem(state, sceneSource, item)) {
+			continue;
+		}
+		SetItemGeometry(item, state);
+
+		const auto seen = std::find_if(commits.begin(), commits.end(),
+					       [&](const auto &c) { return c.first == sceneSource; });
+		if (seen == commits.end()) {
+			commits.emplace_back(sceneSource, state); // keeps the ref for the commit below
+		} else {
+			obs_source_release(sceneSource);
+		}
+	}
+
+	for (auto &commit : commits) {
+		CommitSceneItemChange(commit.second, commit.first);
+		obs_source_release(commit.first);
+	}
 }
 
 void ApplyVisible(const std::string &data)
@@ -10937,21 +11022,29 @@ obs_source_t *AcquireSceneByUuid(const std::string &uuid)
 	return source;
 }
 
-std::string CaptureItemTransformState(const std::string &canvasUuid, const std::string &sceneName,
-				      obs_sceneitem_t *item)
+std::string CaptureItemTransformStates(const std::string &canvasUuid, const std::string &sceneName,
+				       obs_sceneitem_t *const *items, size_t count)
 {
 	CEF_REQUIRE_UI_THREAD();
-	if (!item) {
+	json arr = json::array();
+	for (size_t i = 0; i < count; i++) {
+		if (!items[i]) {
+			continue;
+		}
+		// The same addressing every bridge-recorded state carries, so ApplyTransforms
+		// re-resolves a preview drag's payload by the identical route.
+		json state = CaptureTransformState(json{{"canvas", canvasUuid}, {"scene", sceneName}}, items[i]);
+		PinOverlayBoundsInState(state, items[i]);
+		arr.push_back(std::move(state));
+	}
+	if (arr.empty()) {
 		return std::string();
 	}
-	// The same addressing every bridge-recorded state carries, so ApplyTransform
-	// re-resolves a preview drag's payload by the identical route.
-	json state = CaptureTransformState(json{{"canvas", canvasUuid}, {"scene", sceneName}}, item);
-	PinOverlayBoundsInState(state, item);
-	return state.dump();
+	return json{{"items", std::move(arr)}}.dump();
 }
 
-void RecordItemTransformUndo(obs_source_t *itemSource, const std::string &before, const std::string &after)
+void RecordItemTransformsUndo(obs_sceneitem_t *const *items, size_t count, const std::string &before,
+			      const std::string &after)
 {
 	CEF_REQUIRE_UI_THREAD();
 	if (before.empty() || after.empty()) {
@@ -10962,10 +11055,21 @@ void RecordItemTransformUndo(obs_source_t *itemSource, const std::string &before
 	// a stray drag would eat the redo the user was about to press. Both payloads come
 	// from the same builder with the same key order, so identical geometry serializes
 	// identically.
+	//
+	// With a multi-item selection this comparison is ALL-OR-NOTHING across the batch,
+	// which is not what a reader who knows the single-item behaviour will expect: if
+	// any one item moved, the whole batch is recorded, including the items that did
+	// not. That is correct for a drag -- the gesture is one action over one selection,
+	// and re-writing an unchanged item with its own geometry is a no-op -- and it is
+	// what keeps the undo a single Ctrl+Z.
 	if (before == after) {
 		return;
 	}
-	ObsBootstrap::Undo().AddAction(TransformUndoName(itemSource), ApplyTransform, ApplyTransform, before, after);
+	// One item keeps the source's own name so a preview drag and a Transform-dialog
+	// edit still read the same in the undo affordance; a batch names its size instead.
+	const std::string label = (count == 1 && items[0]) ? TransformUndoName(obs_sceneitem_get_source(items[0]))
+							   : ("Transform " + std::to_string(count) + " Items");
+	ObsBootstrap::Undo().AddAction(label, ApplyTransforms, ApplyTransforms, before, after);
 }
 
 ScopedGoLivePrelude::ScopedGoLivePrelude() : previous(g_goLivePreludeInFlight)

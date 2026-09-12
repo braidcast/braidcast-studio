@@ -27,6 +27,7 @@
 #include <windowsx.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <memory>
 #include <mutex>
@@ -253,13 +254,104 @@ struct SceneItemRef {
 	int64_t Resolve(const char *uuid) const { return (id >= 0 && uuid && sceneUuid == uuid) ? id : int64_t(-1); }
 };
 
-// Per-drag state, all captured at mousedown on the UI thread and only touched on
-// the UI thread, so a drag is atomic. We store the id (re-resolved each message)
+// A multi-item selection. This IS the collection form of SceneItemRef, with the
+// scene uuid hoisted out of the elements rather than repeated in each: a selection
+// cannot span scenes (the docks' own model clears on a scene change for the same
+// reason), so one uuid for the whole set both removes the redundancy and makes that
+// invariant structural. Resolve() is the scene-checked reader: it answers nothing for
+// any scene other than the one Set recorded, exactly like SceneItemRef::Resolve, and it
+// is what every id bound for libobs, the bridge or a gesture goes through. `ids` is read
+// directly only where the caller has already established which scene it is holding.
+//
+// Insertion-ordered, and the LAST member is the anchor: what the single-id readers
+// (the bridge reply, the isolation self-test, a right-click that lands outside the
+// set) report, mirroring `sourceSelection.item` on the web side.
+struct SceneItemSelection {
+	std::vector<int64_t> ids;
+	std::string sceneUuid;
+
+	bool Empty() const { return ids.empty(); }
+	size_t Size() const { return ids.size(); }
+	int64_t Anchor() const { return ids.empty() ? int64_t(-1) : ids.back(); }
+
+	bool Contains(int64_t id) const { return std::find(ids.begin(), ids.end(), id) != ids.end(); }
+
+	void Clear()
+	{
+		ids.clear();
+		sceneUuid.clear();
+	}
+
+	// Replace the whole set. `sceneSource` is the scene the ids were resolved in.
+	void Set(obs_source_t *sceneSource, const std::vector<int64_t> &newIds)
+	{
+		ids = newIds;
+		const char *uuid = (!ids.empty() && sceneSource) ? obs_source_get_uuid(sceneSource) : nullptr;
+		sceneUuid = uuid ? uuid : std::string();
+	}
+
+	void SetOne(obs_source_t *sceneSource, int64_t id)
+	{
+		if (id < 0) {
+			Clear();
+			return;
+		}
+		Set(sceneSource, std::vector<int64_t>{id});
+	}
+
+	// Ctrl-click: add or remove, with the anchor following the row just touched --
+	// the newly added one, or (when the anchor itself was removed) the last member
+	// left. Matches SourceSelection::toggle so the two models cannot drift.
+	void Toggle(obs_source_t *sceneSource, int64_t id)
+	{
+		if (id < 0) {
+			return;
+		}
+		// A toggle against a set recorded in another scene is a fresh selection:
+		// the old ids name items that are not on screen.
+		const char *uuid = sceneSource ? obs_source_get_uuid(sceneSource) : nullptr;
+		if (!uuid || sceneUuid != uuid) {
+			SetOne(sceneSource, id);
+			return;
+		}
+		auto it = std::find(ids.begin(), ids.end(), id);
+		if (it != ids.end()) {
+			ids.erase(it);
+			if (ids.empty()) {
+				sceneUuid.clear();
+			}
+		} else {
+			ids.push_back(id);
+		}
+	}
+
+	// The selected ids, but only for the scene they were recorded in; any other
+	// scene gets an empty set. The single gate every reader passes through.
+	std::vector<int64_t> Resolve(const char *uuid) const
+	{
+		if (ids.empty() || !uuid || sceneUuid != uuid) {
+			return {};
+		}
+		return ids;
+	}
+};
+
+// Per-drag state, captured when the gesture begins on the UI thread and only touched
+// on the UI thread, so a drag is atomic. We store the id (re-resolved each message)
 // and the box-transform-derived matrices, never an obs_sceneitem_t*. The id is
 // scene-scoped like the selection and hover ids: re-resolving a bare id would let
 // a scene switch mid-gesture land the drag's writes -- and the save that follows
 // them -- on the new scene's item of the same id.
 enum class DragMode { None, Move, Resize };
+
+// One member of a gesture. A move drags the whole selection, so DragState holds a
+// vector of these; a resize holds exactly one, which keeps the undo capture below
+// the same shape for both.
+struct DragItem {
+	SceneItemRef id;
+	vec2 startItemPos = {}; // item pos when the gesture began
+};
+
 struct DragState {
 	DragMode mode = DragMode::None;
 	// Set on the first mouse-move that reaches a resolvable, unlocked item, BEFORE the
@@ -269,20 +361,60 @@ struct DragState {
 	// idempotent either way; anything that must not fire on a no-op gesture compares the
 	// geometry instead.
 	bool moved = false;
+	// The gesture's anchor: the resize target, and the member whose scene the whole
+	// gesture is re-resolved against. Every `items` entry shares its scene.
 	SceneItemRef id;
+	// Everything the gesture moves, anchor last. Empty until a gesture begins.
+	std::vector<DragItem> items;
 	vec2 startCanvasPos = {}; // mouse canvas pos at mousedown
-	vec2 startItemPos = {};   // item pos at mousedown (move)
+	// The selection's combined extent at gesture start. Cached rather than recomputed
+	// per frame so the snap input is the START box translated by the gesture's offset:
+	// deriving it from the live items each frame would feed the snap a box its own
+	// previous correction had already moved.
+	vec3 startBoundsTl = {};
+	vec3 startBoundsBr = {};
+	bool hasStartBounds = false;
 	ItemHandle handle = ItemHandle::None;
 	matrix4 itemToScreen = {};
 	matrix4 screenToItem = {};
 	vec2 stretchItemSize = {};
 	obs_sceneitem_crop startCrop = {};
 
-	// The item's geometry at mousedown, as the opaque undo payload
-	// Bridge::CaptureItemTransformState produces. Empty when no item resolved at
-	// mousedown, and cleared whenever a gesture ends, so it is non-empty only while a
-	// gesture with something to reverse is in flight.
+	// Every dragged item's geometry at gesture start, as the one opaque batch payload
+	// Bridge::CaptureItemTransformStates produces. Empty when no item resolved, and
+	// cleared whenever a gesture ends, so it is non-empty only while a gesture with
+	// something to reverse is in flight.
 	std::string undoBefore;
+
+	void Reset()
+	{
+		mode = DragMode::None;
+		moved = false;
+		id.Clear();
+		items.clear();
+		hasStartBounds = false;
+		handle = ItemHandle::None;
+		undoBefore.clear();
+	}
+};
+
+// The rubber-band gesture. Kept apart from DragState for the same reason the pan is:
+// every `drag.mode != DragMode::None` test in this file means "an item gesture is in
+// flight", and a band moves no item. UI thread, except the three fields the draw
+// callback reads under the state mutex.
+struct BoxState {
+	bool active = false; // a band is being dragged right now
+	vec2 start = {};     // canvas-space press point
+	vec2 current = {};   // canvas-space pointer
+	// The selection as it stood at the PRESS, and the scene it belonged to. Recorded
+	// UNCONDITIONALLY on every band press -- one vector copy -- and consulted at the
+	// release only if a modifier is held then. That split is the whole point: the user
+	// starts sweeping and only afterwards decides to add to, subtract from or invert
+	// what was already selected. Gating the snapshot on a press-time modifier instead
+	// would make the release-time read decorative, since the only sequences it could
+	// honour are the ones already committed to at the press.
+	std::vector<int64_t> preSelection;
+	std::string preSceneUuid;
 };
 
 // --- hit-testing (ported from legacy FindItemAtPos) -------------------------
@@ -301,7 +433,35 @@ bool CloseFloat(float a, float b, float epsilon = 0.01f)
 struct HitFind {
 	vec2 pos;
 	obs_sceneitem_t *item;
+	// The click-through cycle. `selected` is the set the caller currently holds and
+	// `selectBelow` arms the walk; see HitTestItemId for what they do.
+	const std::vector<int64_t> *selected = nullptr;
+	bool selectBelow = false;
 };
+
+// True when `canvasPos` falls inside `item`'s transformed unit box. Transforming the
+// point into item space and straight back, then requiring the round trip to land where
+// it started, is what rejects a DEGENERATE (non-invertible) box transform -- a
+// zero-scale item would otherwise swallow clicks across the whole canvas. Ported from
+// the legacy FindItemAtPos; shared by the click hit-test, the rubber band and the
+// is-a-selected-item-here test so the three cannot disagree about what "inside" means.
+bool PointInItemBox(obs_sceneitem_t *item, const vec2 &canvasPos)
+{
+	matrix4 transform;
+	matrix4 invTransform;
+	vec3 transformedPos;
+	vec3 pos3;
+	vec3 pos3_;
+
+	vec3_set(&pos3, canvasPos.x, canvasPos.y, 0.0f);
+	obs_sceneitem_get_box_transform(item, &transform);
+	matrix4_inv(&invTransform, &transform);
+	vec3_transform(&transformedPos, &pos3, &invTransform);
+	vec3_transform(&pos3_, &transformedPos, &transform);
+
+	return CloseFloat(pos3.x, pos3_.x) && CloseFloat(pos3.y, pos3_.y) && transformedPos.x >= 0.0f &&
+	       transformedPos.x <= 1.0f && transformedPos.y >= 0.0f && transformedPos.y <= 1.0f;
+}
 
 // Topmost-wins: obs_scene_enum_items yields bottom-to-top, so the last match
 // (overwriting `item`) is the topmost hit.
@@ -313,30 +473,42 @@ bool FindItemAtPos(obs_scene_t *, obs_sceneitem_t *item, void *param)
 		return true;
 	}
 
-	matrix4 transform;
-	matrix4 invTransform;
-	vec3 transformedPos;
-	vec3 pos3;
-	vec3 pos3_;
-
-	vec3_set(&pos3, data->pos.x, data->pos.y, 0.0f);
-	obs_sceneitem_get_box_transform(item, &transform);
-	matrix4_inv(&invTransform, &transform);
-	vec3_transform(&transformedPos, &pos3, &invTransform);
-	vec3_transform(&pos3_, &transformedPos, &transform);
-
-	if (CloseFloat(pos3.x, pos3_.x) && CloseFloat(pos3.y, pos3_.y) && transformedPos.x >= 0.0f &&
-	    transformedPos.x <= 1.0f && transformedPos.y >= 0.0f && transformedPos.y <= 1.0f) {
+	if (PointInItemBox(item, data->pos)) {
+		// Click-through: on reaching a hit that is ALREADY selected, either stop
+		// and keep the hit below it (stepping one down the stack), or -- when this
+		// selected item is itself the bottom-most hit -- disarm and carry on
+		// climbing, which returns the topmost hit and so wraps the cycle back to
+		// the start. Ported from the legacy preview
+		// (frontend_old/widgets/OBSBasicPreview.cpp:162-168).
+		if (data->selectBelow && data->selected &&
+		    std::find(data->selected->begin(), data->selected->end(), obs_sceneitem_get_id(item)) !=
+			    data->selected->end()) {
+			if (data->item) {
+				return false;
+			}
+			data->selectBelow = false;
+		}
 		data->item = item;
 	}
 	return true;
 }
 
-// Returns the topmost item id at a canvas-space point, or -1. Caller holds the
-// scene alive (the returned id is re-resolved later, never a pointer).
-int64_t HitTestItemId(obs_scene_t *scene, const vec2 &canvasPos)
+// Returns the item id at a canvas-space point, or -1. Caller holds the scene alive
+// (the returned id is re-resolved later, never a pointer).
+//
+// With `selected` non-null the walk cycles DOWN the z-stack instead of always
+// answering the topmost hit, so repeated clicks in one spot reach what is buried
+// under a full-frame capture. The cycle carries NO state of its own -- no cursor,
+// no counter, no last-click position, no timeout: it is a pure function of the
+// selection the caller passes in, which is exactly why it needs no reset rule.
+// Clicking elsewhere resets it implicitly, because the previously selected item is
+// no longer under the cursor. This matches the legacy preview, which reads
+// obs_sceneitem_selected for the same purpose; we pass the set instead so
+// State::selected stays the one source of truth and the libobs flags stay a
+// write-only mirror.
+int64_t HitTestItemId(obs_scene_t *scene, const vec2 &canvasPos, const std::vector<int64_t> *selected = nullptr)
 {
-	HitFind data{canvasPos, nullptr};
+	HitFind data{canvasPos, nullptr, selected, selected != nullptr};
 	obs_scene_enum_items(scene, FindItemAtPos, &data);
 	return data.item ? obs_sceneitem_get_id(data.item) : int64_t(-1);
 }
@@ -365,6 +537,23 @@ obs_sceneitem_t *FindItemById(obs_scene_t *scene, int64_t id)
 	return ctx.found;
 }
 
+// Is any member of `ids` under the point? Deliberately NOT the cycling hit-test: a
+// press on an item that is already selected has to drag the WHOLE selection, and the
+// cycle would answer with whatever sits underneath instead. The legacy preview draws
+// the same distinction, testing SelectedAtPos at the press and only running the
+// cycling ProcessClick when that says no (frontend_old/widgets/OBSBasicPreview.cpp:638
+// and :1630-1632).
+bool SelectedItemAtPos(obs_scene_t *scene, const std::vector<int64_t> &ids, const vec2 &canvasPos)
+{
+	for (const int64_t id : ids) {
+		obs_sceneitem_t *item = FindItemById(scene, id);
+		if (item && SceneItemHasVideo(item) && !obs_sceneitem_locked(item) && PointInItemBox(item, canvasPos)) {
+			return true;
+		}
+	}
+	return false;
+}
+
 // --- handle hit-testing (ported from legacy FindHandleAtPos, no group/rot) ---
 
 vec3 GetTransformedPos(float x, float y, const matrix4 &mat)
@@ -377,7 +566,9 @@ vec3 GetTransformedPos(float x, float y, const matrix4 &mat)
 
 // Test the 8 resize handles of `item` against a canvas-space point. `radius` is
 // in canvas units (kHandleSelRadius / scale) so the on-screen proximity is fixed.
-ItemHandle FindHandleAtPos(obs_sceneitem_t *item, const vec2 &canvasPos, float radius)
+// `outDist` receives the winning handle's distance, so a caller testing several
+// selected items can pick the globally closest rather than the first to match.
+ItemHandle FindHandleAtPos(obs_sceneitem_t *item, const vec2 &canvasPos, float radius, float *outDist = nullptr)
 {
 	matrix4 transform;
 	obs_sceneitem_get_box_transform(item, &transform);
@@ -406,6 +597,9 @@ ItemHandle FindHandleAtPos(obs_sceneitem_t *item, const vec2 &canvasPos, float r
 			found = h.handle;
 		}
 	}
+	if (outDist) {
+		*outDist = closest;
+	}
 	return found;
 }
 
@@ -416,26 +610,44 @@ struct GestureAtPos {
 	int64_t bodyId = -1;             // topmost item under the point, else -1
 };
 
-// A resize handle of the currently-selected item wins over an item body, and the
+// A resize handle of a currently-selected item wins over an item body, and the
 // body hit-test is skipped entirely once a handle matches. Shared by OnLeftDown
 // and the hover cursor so the cursor cannot advertise a gesture other than the
 // one the click starts. `scale` is the letterbox screen-px-per-canvas-unit, so
 // the grab zone keeps a fixed kHandleSelRadius screen-px radius at any canvas size.
-GestureAtPos ResolveGestureAtPos(obs_scene_t *scene, int64_t selectedId, const vec2 &canvasPos, float scale)
+//
+// EVERY selected item offers its handles, not just the anchor, and the globally
+// closest wins -- with a multi-selection, only the anchor being resizable would be
+// arbitrary. A resize still acts on that ONE item, matching the legacy preview,
+// which likewise keeps a single stretchItem while the selection may be larger.
+// `selected` doubles as the click-through cycle's input for the body hit-test, which
+// `cycleBelow` arms. A Ctrl-click passes false: the legacy preview's DoCtrlSelect
+// takes selectBelow=false so a modifier click always toggles the TOPMOST hit rather
+// than walking the stack (frontend_old/widgets/OBSBasicPreview.cpp:730).
+GestureAtPos ResolveGestureAtPos(obs_scene_t *scene, const std::vector<int64_t> &selected, const vec2 &canvasPos,
+				 float scale, bool cycleBelow = true)
 {
 	GestureAtPos gesture;
-	if (selectedId >= 0 && scale > 0.0f) {
-		obs_sceneitem_t *sel = FindItemById(scene, selectedId);
-		if (sel && !obs_sceneitem_locked(sel)) {
-			const ItemHandle handle = FindHandleAtPos(sel, canvasPos, kHandleSelRadius / scale);
-			if (handle != ItemHandle::None) {
+	if (scale > 0.0f) {
+		float closest = kHandleSelRadius / scale;
+		for (const int64_t id : selected) {
+			obs_sceneitem_t *sel = FindItemById(scene, id);
+			if (!sel || obs_sceneitem_locked(sel)) {
+				continue;
+			}
+			float dist = closest;
+			const ItemHandle handle = FindHandleAtPos(sel, canvasPos, closest, &dist);
+			if (handle != ItemHandle::None && dist <= closest) {
+				closest = dist;
 				gesture.handle = handle;
 				gesture.item = sel;
-				return gesture;
 			}
 		}
+		if (gesture.handle != ItemHandle::None) {
+			return gesture;
+		}
 	}
-	gesture.bodyId = HitTestItemId(scene, canvasPos);
+	gesture.bodyId = HitTestItemId(scene, canvasPos, cycleBelow ? &selected : nullptr);
 	return gesture;
 }
 
@@ -508,6 +720,181 @@ const wchar_t *CursorForHandle(obs_sceneitem_t *item, ItemHandle handle)
 		return IDC_SIZENS;
 	}
 	return IDC_ARROW;
+}
+
+// The modifier keys as of right now. Polled rather than tracked: the overlay is a
+// borderless child that never takes focus, so WM_KEYDOWN never reaches it and the only
+// truthful read is the one taken while handling the mouse message itself.
+struct Modifiers {
+	bool ctrl = false;
+	bool shift = false;
+	bool alt = false;
+	bool Any() const { return ctrl || shift || alt; }
+};
+
+Modifiers ReadModifiers()
+{
+	Modifiers m;
+	m.ctrl = GetKeyState(VK_CONTROL) < 0;
+	m.shift = GetKeyState(VK_SHIFT) < 0;
+	m.alt = GetKeyState(VK_MENU) < 0;
+	return m;
+}
+
+// --- selection bounds + box select ------------------------------------------
+
+// The item box's four canvas-space corners, in winding order so that consecutive
+// entries (wrapping at the end) bound one edge. The min/max readers do not care about
+// the order; the edge walk in IntersectBox does.
+std::array<vec3, 4> BoxCorners(const matrix4 &transform)
+{
+	return {{
+		GetTransformedPos(0.0f, 0.0f, transform),
+		GetTransformedPos(1.0f, 0.0f, transform),
+		GetTransformedPos(1.0f, 1.0f, transform),
+		GetTransformedPos(0.0f, 1.0f, transform),
+	}};
+}
+
+// Fold `item`'s transformed box corners into the running [tl,br]. Taking the four
+// corners rather than the untransformed rect is what makes a rotated item's bounds
+// its true axis-aligned extent. `first` is the "accumulator still empty" sentinel.
+void AddItemBounds(obs_sceneitem_t *item, vec3 &tl, vec3 &br, bool &first)
+{
+	matrix4 boxTransform;
+	obs_sceneitem_get_box_transform(item, &boxTransform);
+
+	for (const vec3 &v : BoxCorners(boxTransform)) {
+		if (first) {
+			vec3_copy(&tl, &v);
+			vec3_copy(&br, &v);
+			first = false;
+		} else {
+			vec3_min(&tl, &tl, &v);
+			vec3_max(&br, &br, &v);
+		}
+	}
+}
+
+// The combined canvas-space extent of `ids`, or false when none of them resolve.
+// Shared by the two readers that need a selection's extent, but they pass DIFFERENT id
+// sets on purpose and so the two boxes coincide only while no selected item is locked.
+// The drawn box spans the whole selection, because it shows what is selected. The move
+// gesture's snap box spans only the members that gesture will actually move, because a
+// locked member's overhang would offset every mover by an edge nothing is dragging.
+bool SelectionBounds(obs_scene_t *scene, const std::vector<int64_t> &ids, vec3 &tl, vec3 &br)
+{
+	bool first = true;
+	for (const int64_t id : ids) {
+		obs_sceneitem_t *item = FindItemById(scene, id);
+		if (item) {
+			AddItemBounds(item, tl, br, first);
+		}
+	}
+	return !first;
+}
+
+// Standard CCW segment-vs-segment tests, ported from the legacy preview's
+// CounterClockwise/IntersectLine/IntersectBox (OBSBasicPreview.cpp:1048-1106).
+bool CounterClockwise(float x1, float x2, float x3, float y1, float y2, float y3)
+{
+	return (y3 - y1) * (x2 - x1) > (y2 - y1) * (x3 - x1);
+}
+
+bool IntersectLine(float x1, float x2, float x3, float x4, float y1, float y2, float y3, float y4)
+{
+	const bool a = CounterClockwise(x1, x2, x3, y1, y2, y3);
+	const bool b = CounterClockwise(x1, x2, x4, y1, y2, y4);
+	const bool c = CounterClockwise(x3, x4, x1, y3, y4, y1);
+	const bool d = CounterClockwise(x3, x4, x2, y3, y4, y2);
+	return (a != b) && (c != d);
+}
+
+// Does any edge of the item box whose corners are `c` cross any edge of the rect
+// [x1,x2]x[y1,y2]? Takes the corners rather than the transform because the only caller
+// already needs them for its own probes.
+bool IntersectBox(const std::array<vec3, 4> &c, float x1, float x2, float y1, float y2)
+{
+	for (int i = 0; i < 4; i++) {
+		const vec3 &a = c[i];
+		const vec3 &b = c[(i + 1) % 4];
+		if (IntersectLine(x1, x1, a.x, b.x, y1, y2, a.y, b.y) ||
+		    IntersectLine(x1, x2, a.x, b.x, y1, y1, a.y, b.y) ||
+		    IntersectLine(x2, x2, a.x, b.x, y1, y2, a.y, b.y) ||
+		    IntersectLine(x1, x2, a.x, b.x, y2, y2, a.y, b.y)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+struct BoxFind {
+	vec2 corner1;
+	vec2 corner2;
+	std::vector<int64_t> ids;
+};
+
+// Rubber-band membership, ported from the legacy FindItemsInBox
+// (OBSBasicPreview.cpp:1120-1205). The test is INTERSECT, not contain: any of the
+// item's four corners or its centre inside the rect, any edge crossing any rect
+// edge, or the band's own moving corner inside the item (which is what catches an
+// item so large it swallows the whole band). Unlike the click hit-test this one
+// also skips INVISIBLE items -- a band sweeping empty canvas must not pick up
+// sources the user has hidden.
+bool FindItemsInBox(obs_scene_t *, obs_sceneitem_t *item, void *param)
+{
+	auto *data = static_cast<BoxFind *>(param);
+
+	if (!SceneItemHasVideo(item) || obs_sceneitem_locked(item) || !obs_sceneitem_visible(item)) {
+		return true;
+	}
+
+	vec2 lo, hi;
+	vec2_min(&lo, &data->corner1, &data->corner2);
+	vec2_max(&hi, &data->corner1, &data->corner2);
+	const float x1 = lo.x, x2 = hi.x, y1 = lo.y, y2 = hi.y;
+
+	matrix4 transform;
+	obs_sceneitem_get_box_transform(item, &transform);
+	const std::array<vec3, 4> corners = BoxCorners(transform);
+
+	const auto inRect = [&](const vec3 &p) {
+		return p.x > x1 && p.x < x2 && p.y > y1 && p.y < y2;
+	};
+	const auto take = [&]() {
+		data->ids.push_back(obs_sceneitem_get_id(item));
+	};
+
+	// The band's moving corner inside the item's unit box -- what catches an item so
+	// large it swallows the whole band.
+	if (PointInItemBox(item, data->corner2)) {
+		take();
+		return true;
+	}
+
+	if (inRect(GetTransformedPos(0.5f, 0.5f, transform))) {
+		take();
+		return true;
+	}
+	for (const vec3 &p : corners) {
+		if (inRect(p)) {
+			take();
+			return true;
+		}
+	}
+
+	if (IntersectBox(corners, x1, x2, y1, y2)) {
+		take();
+	}
+	return true;
+}
+
+// Every item the band currently covers, bottom-to-top.
+std::vector<int64_t> BoxItems(obs_scene_t *scene, const vec2 &corner1, const vec2 &corner2)
+{
+	BoxFind data{corner1, corner2, {}};
+	obs_scene_enum_items(scene, FindItemsInBox, &data);
+	return data.ids;
 }
 
 // --- resize math (ported from legacy GetItemSize/StretchItem/ClampAspect) ----
@@ -606,8 +993,8 @@ void ClampAspect(ItemHandle handle, vec3 &tl, vec3 &br, vec2 &size, const vec2 &
 
 // Defined later in the file's other anonymous-namespace block; same translation
 // unit, so declaring it here lets StretchItem's resize-snap reuse it unchanged.
-vec3 CanvasSnapOffset(const GeneralSettings &gs, obs_scene_t *scene, int64_t draggedId, const vec3 &tl, const vec3 &br,
-		      float baseW, float baseH);
+vec3 CanvasSnapOffset(const GeneralSettings &gs, obs_scene_t *scene, const std::vector<int64_t> &draggedIds,
+		      const vec3 &tl, const vec3 &br, float baseW, float baseH);
 
 // Seeds the item-local box corners from the drag-start size (tl at the origin, br
 // at drag.stretchItemSize) and moves the live-dragged edge(s) to the mouse's
@@ -689,8 +1076,8 @@ void StretchItem(const DragState &drag, obs_sceneitem_t *item, const vec2 &canva
 
 		// The dragged item excludes itself from source-snapping; `item` is what
 		// drag.id resolved to, so its own id is that exclusion.
-		vec3 snap =
-			CanvasSnapOffset(gs, scene, obs_sceneitem_get_id(item), probeTl, probeBr, snapBaseW, snapBaseH);
+		vec3 snap = CanvasSnapOffset(gs, scene, std::vector<int64_t>{obs_sceneitem_get_id(item)}, probeTl,
+					     probeBr, snapBaseW, snapBaseH);
 
 		// Canvas->item-local is rotation-only for a delta (itemToScreen has no
 		// scale component: local and canvas share units, differing by rotation
@@ -852,6 +1239,12 @@ void BeginResize(DragState &drag, obs_source_t *sceneSource, obs_sceneitem_t *it
 	drag.mode = DragMode::Resize;
 	drag.moved = false;
 	drag.id.Set(sceneSource, obs_sceneitem_get_id(item));
+	// A resize acts on exactly one item, but it still records its member the same way
+	// a move does so the undo capture below has one shape for both gestures.
+	drag.items.clear();
+	drag.items.emplace_back();
+	drag.items.back().id = drag.id;
+	obs_sceneitem_get_pos(item, &drag.items.back().startItemPos);
 	drag.handle = handle;
 	drag.startCanvasPos = startCanvasPos;
 	drag.stretchItemSize = GetItemSize(item);
@@ -869,20 +1262,40 @@ void BeginResize(DragState &drag, obs_source_t *sceneSource, obs_sceneitem_t *it
 	matrix4_rotate_aa4f(&drag.screenToItem, &drag.screenToItem, 0.0f, 0.0f, 1.0f, RAD(-itemRot));
 
 	obs_sceneitem_get_crop(item, &drag.startCrop);
-	obs_sceneitem_get_pos(item, &drag.startItemPos);
 }
 
-// One end of a drag's undo pair: the item's full geometry plus the keys that re-resolve
-// it, addressed by this surface's canvas and by the scene the item was resolved in.
-// Empty for a null item.
-std::string CaptureDragUndoState(obs_canvas_t *targetCanvas, obs_source_t *sceneSource, obs_sceneitem_t *item)
+// One end of a drag's undo pair: EVERY dragged item's full geometry plus the keys that
+// re-resolve each, addressed by this surface's canvas and by the scene they were resolved
+// in. One payload for the whole gesture, so however many items a move drags it stays a
+// single undo step. Empty when nothing resolved.
+std::string CaptureDragUndoState(obs_canvas_t *targetCanvas, obs_source_t *sceneSource,
+				 const std::vector<obs_sceneitem_t *> &items)
 {
-	if (!item || !sceneSource) {
+	if (items.empty() || !sceneSource) {
 		return std::string();
 	}
 	const char *canvasUuid = targetCanvas ? obs_canvas_get_uuid(targetCanvas) : nullptr;
 	const char *sceneName = obs_source_get_name(sceneSource);
-	return Bridge::CaptureItemTransformState(canvasUuid ? canvasUuid : "", sceneName ? sceneName : "", item);
+	return Bridge::CaptureItemTransformStates(canvasUuid ? canvasUuid : "", sceneName ? sceneName : "",
+						  items.data(), items.size());
+}
+
+// The dragged items of a gesture, re-resolved in `scene` and in the gesture's own order.
+// Entries that no longer resolve are dropped, so the vector can be shorter than
+// drag.items -- or empty, which every caller treats as "nothing to do".
+std::vector<obs_sceneitem_t *> ResolveDragItems(obs_scene_t *scene, const std::vector<DragItem> &dragItems,
+						const char *sceneUuid)
+{
+	std::vector<obs_sceneitem_t *> out;
+	out.reserve(dragItems.size());
+	for (const DragItem &d : dragItems) {
+		const int64_t id = d.id.Resolve(sceneUuid);
+		obs_sceneitem_t *item = id >= 0 ? FindItemById(scene, id) : nullptr;
+		if (item) {
+			out.push_back(item);
+		}
+	}
+	return out;
 }
 
 // The scene a drag STARTED in, addref'd (caller releases) or null once that scene is
@@ -900,22 +1313,20 @@ obs_source_t *AcquireDragScene(const SceneItemRef &draggedRef)
 
 // --- selection -------------------------------------------------------------
 
-struct SelectCtx {
-	int64_t id;
-};
-
-bool SelectOnlyCb(obs_scene_t *, obs_sceneitem_t *item, void *param)
+bool SelectSetCb(obs_scene_t *, obs_sceneitem_t *item, void *param)
 {
-	const SelectCtx *ctx = static_cast<SelectCtx *>(param);
-	obs_sceneitem_select(item, obs_sceneitem_get_id(item) == ctx->id);
+	const auto *ids = static_cast<const std::vector<int64_t> *>(param);
+	obs_sceneitem_select(item, std::find(ids->begin(), ids->end(), obs_sceneitem_get_id(item)) != ids->end());
 	return true;
 }
 
-// Select exactly `id` in the scene (deselect everything else). id == -1 clears.
-void SelectOnly(obs_scene_t *scene, int64_t id)
+// Mirror `ids` onto libobs' own per-item selected flags, deselecting everything else;
+// an empty set clears. This is a one-way mirror: nothing in this frontend reads
+// obs_sceneitem_selected back, because State::selected is the single source of truth.
+// It is kept written because libobs and plugins surface the flag elsewhere.
+void SelectSet(obs_scene_t *scene, const std::vector<int64_t> &ids)
 {
-	SelectCtx ctx{id};
-	obs_scene_enum_items(scene, SelectOnlyCb, &ctx);
+	obs_scene_enum_items(scene, SelectSetCb, const_cast<void *>(static_cast<const void *>(&ids)));
 }
 
 // --- drawing (ported from legacy DrawLine/DrawSquareAtPos/DrawRect) ----------
@@ -984,6 +1395,64 @@ void DrawSquareAtPos(float x, float y, float halfSize)
 // rgb(0,127,255)).
 const vec4 kSelectionColor = {{{0.0f, 1.0f, 0.235f, 1.0f}}};
 const vec4 kHoverColor = {{{0.0f, 0.498f, 1.0f, 1.0f}}};
+
+// The combined bounding box drawn around a multi-item selection: the selection green
+// at half alpha, so it reads as subordinate to the per-item outlines it encloses.
+const vec4 kGroupBoxColor = {{{0.0f, 1.0f, 0.235f, 0.5f}}};
+
+// The rubber band: the legacy DrawSelectionBox's 50%-alpha light-grey fill and
+// opaque white border (frontend_old/widgets/OBSBasicPreview.cpp:2159-2163).
+const vec4 kBandFillColor = {{{0.7f, 0.7f, 0.7f, 0.5f}}};
+const vec4 kBandBorderColor = {{{1.0f, 1.0f, 1.0f, 1.0f}}};
+
+// Draw an axis-aligned canvas-space rect, optionally filled. Runs in the editing
+// phase, whose matrix stack already carries the letterbox scale, so `scale` converts
+// the screen-px thickness into the canvas units the matrix is measured in. Shared by
+// the combined selection box and the rubber band, which differ only in their colors
+// and in whether they fill.
+void DrawCanvasRect(const vec2 &tl, const vec2 &br, float scale, const vec4 &outline, const vec4 *fill,
+		    gs_vertbuffer_t *fillBuffer)
+{
+	const float w = br.x - tl.x;
+	const float h = br.y - tl.y;
+	if (scale <= 0.0f || w <= 0.0f || h <= 0.0f) {
+		return;
+	}
+
+	gs_effect_t *solid = obs_get_base_effect(OBS_EFFECT_SOLID);
+	gs_eparam_t *colParam = gs_effect_get_param_by_name(solid, "color");
+
+	// The unit square scaled to the rect, so DrawRect's unit-space edges land on it.
+	// boxScale is screen px per unit along each axis, which is what keeps the stroke a
+	// constant kBoxLineThickness on screen however far the preview is zoomed.
+	vec2 boxScale;
+	vec2_set(&boxScale, w * scale, h * scale);
+
+	gs_matrix_push();
+	gs_matrix_translate3f(tl.x, tl.y, 0.0f);
+	gs_matrix_scale3f(w, h, 1.0f);
+
+	if (fill && fillBuffer) {
+		gs_technique_t *tech = gs_effect_get_technique(solid, "Solid");
+		gs_technique_begin(tech);
+		gs_technique_begin_pass(tech, 0);
+		gs_effect_set_vec4(colParam, fill);
+		gs_load_vertexbuffer(fillBuffer);
+		gs_draw(GS_TRISTRIP, 0, 0);
+		// Unbind before leaving: the device keeps the last loaded buffer, and
+		// nothing downstream of this callback is obliged to load its own.
+		gs_load_vertexbuffer(nullptr);
+		gs_technique_end_pass(tech);
+		gs_technique_end(tech);
+	}
+
+	gs_effect_set_vec4(colParam, &outline);
+	while (gs_effect_loop(solid, "Solid")) {
+		DrawRect(kBoxLineThickness, boxScale);
+	}
+
+	gs_matrix_pop();
+}
 
 // Draw `item`'s box outline in `color`, plus the 8 resize handles when
 // `handleBuffer` is non-null (the shared unit-quad TRISTRIP vertbuffer). Both are
@@ -1054,7 +1523,7 @@ void DrawItemBox(obs_sceneitem_t *item, float scale, const vec4 &color, gs_vertb
 // context), but live here so they are per-surface, not process-global.
 struct PreviewSurface::State {
 	std::mutex stateMutex;
-	SceneItemRef selected;
+	SceneItemSelection selected;
 	SceneItemRef hovered;
 	PreviewTransform transform;
 	PreviewView view;
@@ -1069,8 +1538,25 @@ struct PreviewSurface::State {
 	bool panning = false;
 	POINT panFrom = {};
 
-	// Unit-quad TRISTRIP vertbuffer for the selection handles, created lazily on
-	// the render thread and destroyed under a graphics context in Destroy().
+	// The rubber band. `active`/`start`/`current` are written on the UI thread under
+	// stateMutex and read by the draw callback; the rest is UI thread only.
+	BoxState box;
+
+	// What the press resolved, held until the first move or the release decides what
+	// the gesture was. Selection is deliberately NOT applied at the press: pressing on
+	// an already-selected item has to be able to drag the WHOLE selection, and
+	// collapsing the set at the press would make that impossible. Ported from the
+	// legacy preview, which likewise selects at the first move or at the release
+	// (frontend_old/widgets/OBSBasicPreview.cpp:1630-1632 and :764-766). UI thread.
+	bool pressPending = false;      // a left press is open and has not yet been resolved
+	bool pressOverSelected = false; // it landed on an item already in the selection
+	bool pressCtrl = false;         // Ctrl was held at the press
+	bool pressModifier = false;     // Ctrl, Shift or Alt was held at the press
+	vec2 pressCanvasPos = {};
+
+	// Unit-quad TRISTRIP vertbuffer, used both for the selection handles and as the
+	// rubber band's fill. Created lazily on the render thread and destroyed under a
+	// graphics context in Destroy().
 	gs_vertbuffer_t *boxBuffer = nullptr;
 
 	obs_canvas_t *targetCanvas = nullptr; // mirror of the surface's binding for the callback
@@ -1117,13 +1603,18 @@ void EnsureBoxBuffer(PreviewSurface::State *state)
 	state->boxBuffer = gs_render_save();
 }
 
-// Emit sceneItem.selected to JS for the surface's scene. `id` < 0 ->
-// {scene:null,id:null}. Posts to the UI thread internally so it is safe from
+// Emit sceneItem.selected to JS for the surface's scene. An empty `ids` ->
+// {scene:null,id:null,ids:[]}. Posts to the UI thread internally so it is safe from
 // WndProc.
-void EmitSelection(obs_canvas_t *targetCanvas, int64_t id)
+void EmitSelection(obs_canvas_t *targetCanvas, const std::vector<int64_t> &ids)
 {
+	// `ids` is the whole selection, insertion-ordered; `id` is its anchor (the last
+	// member), kept alongside so the single-selection readers on both sides stay
+	// exactly as they were when one item is selected.
+	const int64_t anchor = ids.empty() ? int64_t(-1) : ids.back();
+
 	std::string sceneName;
-	if (id >= 0) {
+	if (anchor >= 0) {
 		obs_source_t *sceneSource = AcquireSurfaceSceneSource(targetCanvas);
 		if (sceneSource) {
 			const char *n = obs_source_get_name(sceneSource);
@@ -1144,8 +1635,9 @@ void EmitSelection(obs_canvas_t *targetCanvas, int64_t id)
 		}
 	}
 	json payload = json{
-		{"scene", id >= 0 && !sceneName.empty() ? json(sceneName) : json(nullptr)},
-		{"id", id >= 0 ? json(id) : json(nullptr)},
+		{"scene", anchor >= 0 && !sceneName.empty() ? json(sceneName) : json(nullptr)},
+		{"id", anchor >= 0 ? json(anchor) : json(nullptr)},
+		{"ids", ids},
 		{"canvas", canvasField},
 	};
 	Bridge::EmitEvent(EventNames::kSceneItemSelected, payload);
@@ -1299,27 +1791,34 @@ void RenderPreview(void *data, uint32_t cx, uint32_t cy)
 		obs_render_main_texture();
 	}
 
-	// Cheap gate: skip the scene addref entirely when neither id is set. The raw ids
-	// are enough here -- whether they still belong to the current scene is settled
-	// by Resolve() below, once that scene is in hand.
+	// Cheap gate: skip the scene addref entirely when there is nothing to draw over
+	// the frame. The raw ids are enough here -- whether they still belong to the
+	// current scene is settled by Resolve() below, once that scene is in hand.
 	bool anyEditId;
+	bool bandActive;
+	vec2 bandStart, bandCurrent;
 	{
 		std::lock_guard<std::mutex> lock(state->stateMutex);
-		anyEditId = state->selected.id >= 0 || state->hovered.id >= 0;
+		bandActive = state->box.active;
+		bandStart = state->box.start;
+		bandCurrent = state->box.current;
+		anyEditId = !state->selected.Empty() || state->hovered.id >= 0 || bandActive;
 	}
 
 	obs_source_t *sceneSource = anyEditId ? AcquireSurfaceSceneSource(targetCanvas) : nullptr;
 	if (sceneSource) {
 		const char *sceneUuid = obs_source_get_uuid(sceneSource);
-		int64_t selectedId;
+		std::vector<int64_t> selectedIds;
 		int64_t hoveredId;
 		{
 			std::lock_guard<std::mutex> lock(state->stateMutex);
-			selectedId = state->selected.Resolve(sceneUuid);
+			selectedIds = state->selected.Resolve(sceneUuid);
 			hoveredId = state->hovered.Resolve(sceneUuid);
 		}
+		const bool hoverSelected = hoveredId >= 0 && std::find(selectedIds.begin(), selectedIds.end(),
+								       hoveredId) != selectedIds.end();
 
-		if (selectedId >= 0 || hoveredId >= 0) {
+		if (!selectedIds.empty() || hoveredId >= 0 || bandActive) {
 			// Editing phase, in a different space than the video above: ortho
 			// measured in screen px with the canvas origin at 0,0, over the whole
 			// display rather than the canvas viewport, so an outline or handle that
@@ -1338,7 +1837,7 @@ void RenderPreview(void *data, uint32_t cx, uint32_t cy)
 			// eye-off item is skipped: outlining a source the user has hidden would
 			// paint a box on apparently-empty canvas. Diverges from the legacy
 			// preview, which hover-outlines invisible items.
-			if (hoveredId >= 0 && hoveredId != selectedId) {
+			if (hoveredId >= 0 && !hoverSelected) {
 				obs_sceneitem_t *item = FindItemById(scene, hoveredId);
 				if (item && SceneItemHasVideo(item) && !obs_sceneitem_locked(item) &&
 				    obs_sceneitem_visible(item)) {
@@ -1350,12 +1849,44 @@ void RenderPreview(void *data, uint32_t cx, uint32_t cy)
 			// handles, which is the only way to see and adjust a hidden item's
 			// transform in the preview. Hover is the passive case, selection the
 			// asked-for one, so the asymmetry is the intent, not an oversight.
-			if (selectedId >= 0) {
-				obs_sceneitem_t *item = FindItemById(scene, selectedId);
+			//
+			// Every member gets its own outline AND its own handles: with a
+			// multi-selection, only the anchor being grabbable would be arbitrary,
+			// and ResolveGestureAtPos tests all of them for exactly that reason.
+			for (const int64_t id : selectedIds) {
+				obs_sceneitem_t *item = FindItemById(scene, id);
 				if (item && SceneItemHasVideo(item) && !obs_sceneitem_locked(item)) {
 					EnsureBoxBuffer(state);
 					DrawItemBox(item, scale, kSelectionColor, state->boxBuffer);
 				}
+			}
+
+			// The combined bounding box over a multi-item selection. DELIBERATELY
+			// NOT PARITY: the legacy preview computes this extent (AddItemBounds)
+			// but only ever feeds it to the snapping math, and draws nothing. It is
+			// drawn here because a selection whose overall extent you cannot see is
+			// worse to work with -- do not "fix" it back to the legacy behaviour.
+			// It spans every selected id, locked ones included: it shows what is
+			// selected, not what a drag would move. The move gesture's snap box
+			// comes from the same helper built over the movers only, so the two
+			// boxes differ exactly when the selection holds a locked item.
+			if (selectedIds.size() > 1) {
+				vec3 tl, br;
+				if (SelectionBounds(scene, selectedIds, tl, br)) {
+					vec2 tl2, br2;
+					vec2_set(&tl2, tl.x, tl.y);
+					vec2_set(&br2, br.x, br.y);
+					DrawCanvasRect(tl2, br2, scale, kGroupBoxColor, nullptr, nullptr);
+				}
+			}
+
+			// The rubber band, last so it draws over everything it is sweeping.
+			if (bandActive) {
+				vec2 tl2, br2;
+				vec2_min(&tl2, &bandStart, &bandCurrent);
+				vec2_max(&br2, &bandStart, &bandCurrent);
+				EnsureBoxBuffer(state);
+				DrawCanvasRect(tl2, br2, scale, kBandBorderColor, &kBandFillColor, state->boxBuffer);
 			}
 
 			gs_matrix_pop();
@@ -1450,6 +1981,10 @@ void PreviewSurface::OnLeftDown(int mx, int my)
 	}
 
 	EndPan();
+	// A band still open when a new press arrives is abandoned, not committed: the
+	// press that would have committed it never reached the release path.
+	CancelBox();
+	state_->pressPending = false;
 
 	if (HWND hwnd = overlay_.Hwnd()) {
 		SetCapture(hwnd);
@@ -1481,66 +2016,119 @@ void PreviewSurface::OnLeftDown(int mx, int my)
 	obs_scene_t *scene = obs_scene_from_source(sceneSource);
 
 	const char *sceneUuid = obs_source_get_uuid(sceneSource);
-	int64_t selectedId;
+	std::vector<int64_t> selectedIds;
 	{
 		std::lock_guard<std::mutex> lock(state_->stateMutex);
-		selectedId = state_->selected.Resolve(sceneUuid);
+		selectedIds = state_->selected.Resolve(sceneUuid);
 	}
-	// A locked preview starts no gesture, so it resolves none: passing -1 as the
-	// selected id skips the handle test and leaves a plain body hit-test, which is
-	// all selection needs. Selection stays live on purpose -- the lock is about
-	// editing geometry, not about choosing what the docks show -- so the resize
-	// branch below cannot fire and only the move is gated.
-	const bool locked = Locked();
-	const GestureAtPos gesture =
-		ResolveGestureAtPos(scene, locked ? -1 : selectedId, canvasPos, CurrentScale(state_));
 
-	// A handle of the currently-selected item begins a resize.
+	// A locked preview starts no editing gesture, so it offers no handles: passing an
+	// empty selection skips the handle test. Selection stays live on purpose -- the
+	// lock is about editing geometry, not about choosing what the docks show -- so a
+	// click still selects and a drag still rubber-bands, but nothing moves or resizes.
+	const bool locked = Locked();
+	const Modifiers mods = ReadModifiers();
+	const bool ctrlHeld = mods.ctrl;
+	const bool modifierHeld = mods.Any();
+	static const std::vector<int64_t> kNoSelection;
+	const GestureAtPos gesture = ResolveGestureAtPos(scene, locked ? kNoSelection : selectedIds, canvasPos,
+							 CurrentScale(state_), !ctrlHeld);
+
+	// A handle of a selected item begins a resize, and that is the one decision a press
+	// still makes immediately: it names its target outright, so there is nothing left
+	// for the first move to resolve.
 	if (gesture.handle != ItemHandle::None) {
 		BeginResize(state_->drag, sceneSource, gesture.item, gesture.handle, canvasPos);
-		state_->drag.undoBefore = CaptureDragUndoState(targetCanvas_, sceneSource, gesture.item);
-		HostLog("[preview] resize start id=" + std::to_string(selectedId) +
+		state_->drag.undoBefore =
+			CaptureDragUndoState(targetCanvas_, sceneSource, std::vector<obs_sceneitem_t *>{gesture.item});
+		HostLog("[preview] resize start id=" + std::to_string(obs_sceneitem_get_id(gesture.item)) +
 			" handle=" + std::to_string(uint32_t(gesture.handle)));
 		obs_source_release(sceneSource);
 		return;
 	}
 
-	// Otherwise select/move the hit item (or deselect on empty).
-	const int64_t hitId = gesture.bodyId;
-	HostLog("[preview] click canvas=(" + std::to_string(int(canvasPos.x)) + "," + std::to_string(int(canvasPos.y)) +
-		") hit id=" + std::to_string(hitId));
+	// Everything else waits. The press only records what it landed on; whether it
+	// becomes a move, a rubber band or a plain selection change is settled by the first
+	// mouse-move (OnMouseMove) or by the release (OnLeftUp). See State::pressPending.
+	state_->pressPending = true;
+	state_->pressCtrl = ctrlHeld;
+	state_->pressModifier = modifierHeld;
+	state_->pressCanvasPos = canvasPos;
+	// A locked preview must not move anything, so a press on a selected item there is
+	// treated as empty space and starts a band instead of a drag.
+	state_->pressOverSelected = !locked && SelectedItemAtPos(scene, selectedIds, canvasPos);
 
-	if (hitId >= 0) {
-		SelectOnly(scene, hitId);
+	// The band's press-time snapshot, taken on every press so that a modifier pressed
+	// DURING the sweep still has a set to combine against. See BoxState::preSelection.
+	state_->box.preSelection = selectedIds;
+	state_->box.preSceneUuid = sceneUuid ? sceneUuid : std::string();
 
-		obs_sceneitem_t *item = FindItemById(scene, hitId);
-
-		{
-			std::lock_guard<std::mutex> lock(state_->stateMutex);
-			state_->selected.Set(sceneSource, hitId);
-		}
-		if (!locked) {
-			state_->drag.mode = DragMode::Move;
-			state_->drag.moved = false;
-			state_->drag.id.Set(sceneSource, hitId);
-			state_->drag.startCanvasPos = canvasPos;
-			if (item) {
-				obs_sceneitem_get_pos(item, &state_->drag.startItemPos);
-			}
-			state_->drag.undoBefore = CaptureDragUndoState(targetCanvas_, sceneSource, item);
-		}
-		EmitSelection(targetCanvas_, hitId);
-	} else {
-		SelectOnly(scene, -1);
-		{
-			std::lock_guard<std::mutex> lock(state_->stateMutex);
-			state_->selected.Clear();
-		}
-		state_->drag.mode = DragMode::None;
-		EmitSelection(targetCanvas_, -1);
-	}
+	HostLog("[preview] press canvas=(" + std::to_string(int(canvasPos.x)) + "," + std::to_string(int(canvasPos.y)) +
+		") overSelected=" + (state_->pressOverSelected ? "1" : "0"));
 
 	obs_source_release(sceneSource);
+}
+
+// Resolve this surface's scene and apply the deferred press against it. The release
+// path has no scene in hand, unlike the first-move path which already acquired one for
+// the gesture it is about to start.
+void PreviewSurface::ApplyPressClickOnCurrentScene()
+{
+	obs_source_t *sceneSource = AcquireSurfaceSceneSource(targetCanvas_); // addref'd
+	if (!sceneSource) {
+		return;
+	}
+	// A release with no movement is a click, never a band, so nothing is pending.
+	ApplyPressClick(sceneSource, obs_scene_from_source(sceneSource), false);
+	obs_source_release(sceneSource);
+}
+
+// Apply the deferred press as a selection change: a plain press selects the item under
+// it (or clears on empty canvas), a Ctrl press toggles it and does nothing at all on a
+// miss. The hit-test is re-run HERE rather than reused from the press, because the
+// click-through cycle reads the live selection -- which is exactly what makes a second
+// click in the same spot land one step further down the stack.
+//
+// `bandPending` says this call is the first move of a press that is about to become a
+// rubber band, which changes only what an empty hit does: see below.
+void PreviewSurface::ApplyPressClick(obs_source_t *sceneSource, obs_scene_t *scene, bool bandPending)
+{
+	const char *sceneUuid = obs_source_get_uuid(sceneSource);
+	std::vector<int64_t> selectedIds;
+	{
+		std::lock_guard<std::mutex> lock(state_->stateMutex);
+		selectedIds = state_->selected.Resolve(sceneUuid);
+	}
+
+	const int64_t hitId = HitTestItemId(scene, state_->pressCanvasPos, state_->pressCtrl ? nullptr : &selectedIds);
+
+	if (hitId < 0 && (state_->pressCtrl || (bandPending && state_->pressModifier))) {
+		// Nothing under the press, and a reason not to clear.
+		//
+		// Ctrl: a modifier click on empty canvas leaves the selection alone, matching
+		// the legacy DoCtrlSelect's early return (OBSBasicPreview.cpp:731-733).
+		//
+		// An additive band (Shift/Ctrl/Alt held at the press): clearing here and
+		// restoring from the snapshot at the release would push TWO selection changes
+		// at the docks for one gesture -- an empty one the moment the sweep starts,
+		// then the real one -- which reads as a flicker. FinishBox sets the selection
+		// authoritatively, so this call has nothing to contribute.
+		return;
+	}
+
+	std::vector<int64_t> next;
+	{
+		std::lock_guard<std::mutex> lock(state_->stateMutex);
+		if (state_->pressCtrl) {
+			state_->selected.Toggle(sceneSource, hitId);
+		} else {
+			state_->selected.SetOne(sceneSource, hitId);
+		}
+		next = state_->selected.ids;
+	}
+	SelectSet(scene, next);
+	EmitSelection(targetCanvas_, next);
+	HostLog("[preview] click hit id=" + std::to_string(hitId) + " selection=" + std::to_string(next.size()));
 }
 
 namespace {
@@ -1555,7 +2143,10 @@ constexpr float kSnapEpsilon = 0.0001f;
 // legacy OffsetData/GetSourceSnapOffset.
 struct SnapAccum {
 	float clampDist;
-	int64_t draggedId;
+	// Every item the gesture is moving. All of them are excluded, not just the
+	// anchor: with a multi-selection dragged as a unit, snapping members to each
+	// other would fight the gesture, since their relative positions never change.
+	const std::vector<int64_t> *draggedIds;
 	vec3 tl, br, offset;
 };
 
@@ -1563,7 +2154,8 @@ bool SourceSnapCb(obs_scene_t * /* scene */, obs_sceneitem_t *item, void *param)
 {
 	auto *data = static_cast<SnapAccum *>(param);
 
-	if (obs_sceneitem_get_id(item) == data->draggedId) {
+	if (data->draggedIds && std::find(data->draggedIds->begin(), data->draggedIds->end(),
+					  obs_sceneitem_get_id(item)) != data->draggedIds->end()) {
 		return true;
 	}
 	if (obs_sceneitem_locked(item) || !obs_sceneitem_visible(item) || !SceneItemHasVideo(item)) {
@@ -1573,12 +2165,7 @@ bool SourceSnapCb(obs_scene_t * /* scene */, obs_sceneitem_t *item, void *param)
 	matrix4 boxTransform;
 	obs_sceneitem_get_box_transform(item, &boxTransform);
 
-	vec3 t[4] = {
-		GetTransformedPos(0.0f, 0.0f, boxTransform),
-		GetTransformedPos(1.0f, 0.0f, boxTransform),
-		GetTransformedPos(0.0f, 1.0f, boxTransform),
-		GetTransformedPos(1.0f, 1.0f, boxTransform),
-	};
+	const std::array<vec3, 4> t = BoxCorners(boxTransform);
 
 	vec3 tl, br;
 	vec3_copy(&tl, &t[0]);
@@ -1613,8 +2200,8 @@ bool SourceSnapCb(obs_scene_t * /* scene */, obs_sceneitem_t *item, void *param)
 // lines, or other items' edges. Ports the legacy GetSnapOffset (edges/center)
 // and SnapItemMovement (source) combine logic. snapDistance is already in canvas
 // space here, so unlike the legacy we do NOT divide by the surface scale.
-vec3 CanvasSnapOffset(const GeneralSettings &gs, obs_scene_t *scene, int64_t draggedId, const vec3 &tl, const vec3 &br,
-		      float baseW, float baseH)
+vec3 CanvasSnapOffset(const GeneralSettings &gs, obs_scene_t *scene, const std::vector<int64_t> &draggedIds,
+		      const vec3 &tl, const vec3 &br, float baseW, float baseH)
 {
 	vec3 clampOffset;
 	vec3_zero(&clampOffset);
@@ -1657,7 +2244,7 @@ vec3 CanvasSnapOffset(const GeneralSettings &gs, obs_scene_t *scene, int64_t dra
 
 	SnapAccum acc;
 	acc.clampDist = clampDist;
-	acc.draggedId = draggedId;
+	acc.draggedIds = &draggedIds;
 	vec3_copy(&acc.tl, &tl);
 	vec3_copy(&acc.br, &br);
 	vec3_copy(&acc.offset, &clampOffset);
@@ -1729,12 +2316,14 @@ void PreviewSurface::UpdateHover(int mx, int my)
 	if (sceneSource) {
 		obs_scene_t *scene = obs_scene_from_source(sceneSource);
 		const char *sceneUuid = obs_source_get_uuid(sceneSource);
-		int64_t selectedId;
+		std::vector<int64_t> selectedIds;
 		{
 			std::lock_guard<std::mutex> lock(state_->stateMutex);
-			selectedId = state_->selected.Resolve(sceneUuid);
+			selectedIds = state_->selected.Resolve(sceneUuid);
 		}
-		const GestureAtPos gesture = ResolveGestureAtPos(scene, selectedId, canvasPos, CurrentScale(state_));
+		// The cycle is armed here too, so the hover outline previews what a click
+		// would actually select rather than the item on top of it.
+		const GestureAtPos gesture = ResolveGestureAtPos(scene, selectedIds, canvasPos, CurrentScale(state_));
 
 		if (gesture.handle != ItemHandle::None) {
 			cursor = CursorForHandle(gesture.item, gesture.handle);
@@ -1765,7 +2354,8 @@ void PreviewSurface::OnMouseMove(int mx, int my)
 		state_->panFrom = POINT{mx, my};
 		return;
 	}
-	if (state_->drag.mode == DragMode::None) {
+	// Nothing in flight and no press waiting on a decision: this is a plain hover.
+	if (state_->drag.mode == DragMode::None && !state_->box.active && !state_->pressPending) {
 		UpdateHover(mx, my);
 		return;
 	}
@@ -1780,9 +2370,51 @@ void PreviewSurface::OnMouseMove(int mx, int my)
 	}
 	obs_scene_t *scene = obs_scene_from_source(sceneSource);
 
+	// The first movement after a press decides what the press actually was. A press on
+	// an item already in the selection drags the WHOLE selection and leaves the set
+	// alone; anything else applies its click first (which may have just selected the
+	// item under the pointer) and then drags that, or -- on empty canvas -- starts a
+	// rubber band.
+	if (state_->pressPending) {
+		state_->pressPending = false;
+		bool overSelected = state_->pressOverSelected;
+		if (!overSelected) {
+			ApplyPressClick(sceneSource, scene, true);
+			const char *uuid = obs_source_get_uuid(sceneSource);
+			std::vector<int64_t> ids;
+			{
+				std::lock_guard<std::mutex> lock(state_->stateMutex);
+				ids = state_->selected.Resolve(uuid);
+			}
+			overSelected = !Locked() && SelectedItemAtPos(scene, ids, state_->pressCanvasPos);
+		}
+		if (overSelected) {
+			BeginMove(sceneSource, scene);
+		} else {
+			BeginBox();
+		}
+	}
+
+	if (state_->box.active) {
+		{
+			std::lock_guard<std::mutex> lock(state_->stateMutex);
+			state_->box.current = canvasPos;
+		}
+		// Outside the lock: releasing a source can run libobs teardown, and this
+		// file's rule is that the state mutex is never held across a libobs call.
+		obs_source_release(sceneSource);
+		return;
+	}
+
+	if (state_->drag.mode == DragMode::None) {
+		obs_source_release(sceneSource);
+		return;
+	}
+
 	// A scene switch since mousedown resolves to -1 and leaves the rest of the
 	// gesture inert, rather than applying it to the new scene's item of that id.
-	const int64_t dragId = state_->drag.id.Resolve(obs_source_get_uuid(sceneSource));
+	const char *dragSceneUuid = obs_source_get_uuid(sceneSource);
+	const int64_t dragId = state_->drag.id.Resolve(dragSceneUuid);
 	obs_sceneitem_t *item = dragId >= 0 ? FindItemById(scene, dragId) : nullptr;
 	if (item && !obs_sceneitem_locked(item)) {
 		state_->drag.moved = true;
@@ -1790,56 +2422,64 @@ void PreviewSurface::OnMouseMove(int mx, int my)
 			float offX = canvasPos.x - state_->drag.startCanvasPos.x;
 			float offY = canvasPos.y - state_->drag.startCanvasPos.y;
 
+			// Every member the gesture is still able to move, in one pass: the
+			// snap exclusion list and the write loop below need the same set.
+			std::vector<int64_t> movingIds;
+			movingIds.reserve(state_->drag.items.size());
+			for (const DragItem &d : state_->drag.items) {
+				const int64_t id = d.id.Resolve(dragSceneUuid);
+				if (id >= 0) {
+					movingIds.push_back(id);
+				}
+			}
+
 			// Snap the move to canvas edges/center and other items' edges, unless
 			// disabled in General settings or temporarily suppressed with Ctrl.
+			// The snap runs ONCE, against the selection's combined box -- a
+			// multi-item drag moves as a unit, so a per-item snap would pull the
+			// members apart.
 			const GeneralSettings &gs = ObsBootstrap::General();
-			const bool ctrlHeld = GetKeyState(VK_CONTROL) < 0;
+			const bool ctrlHeld = ReadModifiers().ctrl;
 			obs_video_info ovi;
-			if (gs.snapEnabled && !ctrlHeld && SurfaceVideoInfo(targetCanvas_, ovi) && ovi.base_width &&
-			    ovi.base_height) {
-				// Dragged item's transformed bounding box, translated from its
-				// current pos to the proposed pos (pos is a pure translation, so
-				// this stays correct for rotated/bounds-scaled items).
-				matrix4 boxTransform;
-				obs_sceneitem_get_box_transform(item, &boxTransform);
-				vec3 corners[4] = {
-					GetTransformedPos(0.0f, 0.0f, boxTransform),
-					GetTransformedPos(1.0f, 0.0f, boxTransform),
-					GetTransformedPos(0.0f, 1.0f, boxTransform),
-					GetTransformedPos(1.0f, 1.0f, boxTransform),
-				};
+			if (gs.snapEnabled && !ctrlHeld && state_->drag.hasStartBounds &&
+			    SurfaceVideoInfo(targetCanvas_, ovi) && ovi.base_width && ovi.base_height) {
+				// The start box translated by the proposed offset. pos is a pure
+				// translation, so this stays correct for rotated/bounds-scaled
+				// items without re-deriving any box transform.
 				vec3 tl, br;
-				vec3_copy(&tl, &corners[0]);
-				vec3_copy(&br, &corners[0]);
-				for (const vec3 &v : corners) {
-					vec3_min(&tl, &tl, &v);
-					vec3_max(&br, &br, &v);
-				}
+				vec3_copy(&tl, &state_->drag.startBoundsTl);
+				vec3_copy(&br, &state_->drag.startBoundsBr);
+				tl.x += offX;
+				br.x += offX;
+				tl.y += offY;
+				br.y += offY;
 
-				vec2 curPos;
-				obs_sceneitem_get_pos(item, &curPos);
-				const float shiftX = state_->drag.startItemPos.x + offX - curPos.x;
-				const float shiftY = state_->drag.startItemPos.y + offY - curPos.y;
-				tl.x += shiftX;
-				br.x += shiftX;
-				tl.y += shiftY;
-				br.y += shiftY;
-
-				vec3 snap = CanvasSnapOffset(gs, scene, dragId, tl, br, float(ovi.base_width),
+				vec3 snap = CanvasSnapOffset(gs, scene, movingIds, tl, br, float(ovi.base_width),
 							     float(ovi.base_height));
 				offX += snap.x;
 				offY += snap.y;
 			}
 
-			vec2 newPos;
-			newPos.x = std::round(state_->drag.startItemPos.x + offX);
-			newPos.y = std::round(state_->drag.startItemPos.y + offY);
-			obs_sceneitem_set_pos(item, &newPos);
+			// Absolute from each member's start position, never incremental: a
+			// snapped offset re-applied against the item's live position would
+			// accumulate the rounding below over the gesture and drift.
+			for (const DragItem &d : state_->drag.items) {
+				const int64_t id = d.id.Resolve(dragSceneUuid);
+				obs_sceneitem_t *member = id >= 0 ? FindItemById(scene, id) : nullptr;
+				if (!member || obs_sceneitem_locked(member)) {
+					continue;
+				}
+				vec2 newPos;
+				newPos.x = std::round(d.startItemPos.x + offX);
+				newPos.y = std::round(d.startItemPos.y + offY);
+				obs_sceneitem_set_pos(member, &newPos);
+			}
 		} else if (state_->drag.mode == DragMode::Resize) {
 			const GeneralSettings &gs = ObsBootstrap::General();
-			const bool ctrlHeld = GetKeyState(VK_CONTROL) < 0;
-			const bool shiftHeld = GetKeyState(VK_SHIFT) < 0;
-			const bool altHeld = GetKeyState(VK_MENU) < 0;
+			const Modifiers mods = ReadModifiers();
+			const bool ctrlHeld = mods.ctrl;
+			const bool shiftHeld = mods.shift;
+			const bool altHeld = mods.alt;
 			if (altHeld) {
 				CropItem(state_->drag, item, canvasPos);
 			} else {
@@ -1857,20 +2497,170 @@ void PreviewSurface::OnMouseMove(int mx, int my)
 	obs_source_release(sceneSource);
 }
 
+// Start moving the whole current selection. Every member records the position it
+// started at, so each frame writes an absolute position rather than accumulating
+// deltas, and the one batch undo payload is captured here -- before any geometry math
+// runs -- for exactly the set the gesture will write to.
+void PreviewSurface::BeginMove(obs_source_t *sceneSource, obs_scene_t *scene)
+{
+	const char *sceneUuid = obs_source_get_uuid(sceneSource);
+	std::vector<int64_t> ids;
+	{
+		std::lock_guard<std::mutex> lock(state_->stateMutex);
+		ids = state_->selected.Resolve(sceneUuid);
+	}
+
+	state_->drag.Reset();
+
+	std::vector<obs_sceneitem_t *> items;
+	std::vector<int64_t> movingIds;
+	for (const int64_t id : ids) {
+		obs_sceneitem_t *item = FindItemById(scene, id);
+		// A per-item lock excludes that item from the gesture without cancelling it:
+		// dragging a selection that happens to contain one locked source should move
+		// the rest, not refuse.
+		if (!item || obs_sceneitem_locked(item)) {
+			continue;
+		}
+		state_->drag.items.emplace_back();
+		DragItem &d = state_->drag.items.back();
+		d.id.Set(sceneSource, id);
+		obs_sceneitem_get_pos(item, &d.startItemPos);
+		items.push_back(item);
+		movingIds.push_back(id);
+	}
+	if (state_->drag.items.empty()) {
+		return;
+	}
+
+	state_->drag.mode = DragMode::Move;
+	state_->drag.moved = false;
+	state_->drag.id = state_->drag.items.back().id;
+	// The PRESS position, not the position of the move that triggered this: the offset
+	// every frame applies is measured from where the gesture began.
+	state_->drag.startCanvasPos = state_->pressCanvasPos;
+	state_->drag.hasStartBounds =
+		SelectionBounds(scene, movingIds, state_->drag.startBoundsTl, state_->drag.startBoundsBr);
+	state_->drag.undoBefore = CaptureDragUndoState(targetCanvas_, sceneSource, items);
+}
+
+// Start a rubber band from the press position.
+void PreviewSurface::BeginBox()
+{
+	std::lock_guard<std::mutex> lock(state_->stateMutex);
+	state_->box.active = true;
+	state_->box.start = state_->pressCanvasPos;
+	state_->box.current = state_->pressCanvasPos;
+}
+
+// Drop a band without committing it. Idempotent, like every other terminator here, so
+// the capture-ending paths can call it unconditionally.
+void PreviewSurface::CancelBox()
+{
+	std::lock_guard<std::mutex> lock(state_->stateMutex);
+	state_->box.active = false;
+	state_->box.preSelection.clear();
+	state_->box.preSceneUuid.clear();
+}
+
+// Commit a rubber band into the selection. Returns whether a band was in flight, so a
+// button-up can tell which gesture it just ended.
+//
+// The four modifier outcomes: none replaces, Shift adds, Ctrl XORs against the
+// press-time snapshot, Alt subtracts (legacy reference:
+// frontend_old/widgets/OBSBasicPreview.cpp:768-793). The snapshot was taken at the
+// PRESS, unconditionally, and the modifier is read HERE at the release -- so a modifier
+// pressed part-way through the sweep still combines against the set the gesture
+// started from, which is the point of splitting the two.
+bool PreviewSurface::FinishBox()
+{
+	bool active;
+	vec2 start, current;
+	std::vector<int64_t> preSelection;
+	std::string preSceneUuid;
+	{
+		std::lock_guard<std::mutex> lock(state_->stateMutex);
+		active = state_->box.active;
+		start = state_->box.start;
+		current = state_->box.current;
+		preSelection = state_->box.preSelection;
+		preSceneUuid = state_->box.preSceneUuid;
+		state_->box.active = false;
+		state_->box.preSelection.clear();
+		state_->box.preSceneUuid.clear();
+	}
+	if (!active) {
+		return false;
+	}
+
+	obs_source_t *sceneSource = AcquireSurfaceSceneSource(targetCanvas_); // addref'd
+	if (!sceneSource) {
+		return true;
+	}
+	obs_scene_t *scene = obs_scene_from_source(sceneSource);
+	const char *sceneUuid = obs_source_get_uuid(sceneSource);
+
+	// Shift gets no branch of its own below: additive IS the default pass over a
+	// non-empty snapshot, and mods.Any() is what decides whether that snapshot is kept.
+	const Modifiers mods = ReadModifiers();
+
+	const std::vector<int64_t> boxed = BoxItems(scene, start, current);
+
+	// The snapshot only counts for the scene it was taken in: a scene switch mid-band
+	// would otherwise re-select ids belonging to items that are no longer on screen.
+	std::vector<int64_t> next;
+	if (mods.Any() && sceneUuid && preSceneUuid == sceneUuid) {
+		next = preSelection;
+	}
+
+	for (const int64_t id : boxed) {
+		const auto at = std::find(next.begin(), next.end(), id);
+		if (mods.alt) {
+			if (at != next.end()) {
+				next.erase(at);
+			}
+		} else if (mods.ctrl) {
+			if (at != next.end()) {
+				next.erase(at);
+			} else {
+				next.push_back(id);
+			}
+		} else if (at == next.end()) {
+			next.push_back(id);
+		}
+	}
+
+	{
+		std::lock_guard<std::mutex> lock(state_->stateMutex);
+		state_->selected.Set(sceneSource, next);
+	}
+	SelectSet(scene, next);
+	EmitSelection(targetCanvas_, next);
+	HostLog("[preview] box select boxed=" + std::to_string(boxed.size()) +
+		" selection=" + std::to_string(next.size()));
+
+	obs_source_release(sceneSource);
+	return true;
+}
+
 bool PreviewSurface::FinishDrag()
 {
 	const bool dragged = state_->drag.mode != DragMode::None;
 	const bool moved = state_->drag.moved;
 	const bool resized = state_->drag.mode == DragMode::Resize;
 	const SceneItemRef draggedRef = state_->drag.id;
+	std::vector<DragItem> draggedItems;
+	draggedItems.swap(state_->drag.items);
 	std::string undoBefore;
 	undoBefore.swap(state_->drag.undoBefore);
 	if (dragged) {
-		HostLog("[preview] drag end id=" + std::to_string(draggedRef.id));
+		HostLog("[preview] drag end id=" + std::to_string(draggedRef.id) +
+			" items=" + std::to_string(draggedItems.size()));
 	}
-	state_->drag.mode = DragMode::None;
-	state_->drag.handle = ItemHandle::None;
-	state_->drag.moved = false;
+	// Everything the rest of this function needs is copied or swapped out above, so the
+	// gesture clears through the one resetter rather than a second field-by-field list
+	// that can drift from it.
+	state_->drag.Reset();
 
 	// Every route that ends a gesture lands here, and a gesture can end with the
 	// pointer anywhere: a button-up outside the preview arrives only through the
@@ -1914,18 +2704,27 @@ bool PreviewSurface::FinishDrag()
 	//
 	// `moved` only means the gesture got as far as trying (see its declaration), so it
 	// is the cheap gate that skips the AFTER capture entirely for a select-click.
-	// Whether an entry is actually pushed is decided by RecordItemTransformUndo, which
+	// Whether an entry is actually pushed is decided by RecordItemTransformsUndo, which
 	// compares the two payloads -- a drag mode can refuse every frame and leave the
-	// geometry untouched while `moved` is true. The empty check is the mousedown that
-	// resolved no item; a press can no longer inherit a live gesture's payload, because
-	// OnLeftDown ends any gesture still in flight before it records its own.
+	// geometry untouched while `moved` is true. Over a multi-item selection that
+	// comparison is ALL-OR-NOTHING: if any one member moved, the batch is recorded for
+	// every member, including the ones whose geometry is unchanged. That is deliberate
+	// -- the gesture is one action over one selection, and it is what keeps the whole
+	// drag a single Ctrl+Z -- but it does differ from the single-item behaviour a
+	// reader may be carrying over. The empty check covers a press that resolved no
+	// item; a press cannot inherit a live gesture's payload, because OnLeftDown ends
+	// any gesture still in flight before it records its own.
 	if (moved && !undoBefore.empty()) {
 		obs_source_t *dragScene = AcquireDragScene(draggedRef); // addref'd
 		obs_scene_t *scene = dragScene ? obs_scene_from_source(dragScene) : nullptr;
-		obs_sceneitem_t *item = scene ? FindItemById(scene, draggedRef.id) : nullptr;
-		if (item) {
-			Bridge::RecordItemTransformUndo(obs_sceneitem_get_source(item), undoBefore,
-							CaptureDragUndoState(targetCanvas_, dragScene, item));
+		// Re-resolved against the scene the gesture STARTED in, which is what
+		// AcquireDragScene hands back -- the same scoping the drag itself used.
+		std::vector<obs_sceneitem_t *> items =
+			scene ? ResolveDragItems(scene, draggedItems, obs_source_get_uuid(dragScene))
+			      : std::vector<obs_sceneitem_t *>{};
+		if (!items.empty()) {
+			Bridge::RecordItemTransformsUndo(items.data(), items.size(), undoBefore,
+							 CaptureDragUndoState(targetCanvas_, dragScene, items));
 		}
 		if (dragScene) {
 			obs_source_release(dragScene);
@@ -1946,6 +2745,19 @@ void PreviewSurface::OnLeftUp()
 		ReleaseCapture();
 		return;
 	}
+
+	// A press that never moved is a plain click, and this is where it is applied --
+	// which is also what makes a second click in the same spot step one item further
+	// down the z-stack, since the cycle reads the selection the first click left.
+	if (state_->pressPending) {
+		state_->pressPending = false;
+		ApplyPressClickOnCurrentScene();
+	}
+
+	// A band commits before the item gesture is finished: the two are mutually
+	// exclusive (OnMouseMove starts one or the other, never both), and FinishDrag is a
+	// no-op for a band.
+	FinishBox();
 
 	const bool moved = FinishDrag();
 	ReleaseCapture();
@@ -1984,17 +2796,40 @@ void PreviewSurface::OnRightUp(int mx, int my)
 		return;
 	}
 	obs_scene_t *scene = obs_scene_from_source(sceneSource);
-	const int64_t hitId = HitTestItemId(scene, canvasPos);
-
-	// Right-click selects (or clears) the item under the cursor before the menu
-	// opens, matching OBS and keeping the selection box + dock lists in sync.
-	SelectOnly(scene, hitId);
+	const char *sceneUuid = obs_source_get_uuid(sceneSource);
+	std::vector<int64_t> selectedIds;
 	{
 		std::lock_guard<std::mutex> lock(state_->stateMutex);
-		state_->selected.Set(sceneSource, hitId);
+		selectedIds = state_->selected.Resolve(sceneUuid);
 	}
+
+	// No cycle on a right-click: the menu must describe what is visibly under the
+	// cursor, and walking the stack would open it on something else.
+	const int64_t hitId = HitTestItemId(scene, canvasPos);
+
+	// Right-click selects (or clears) the item under the cursor before the menu opens,
+	// matching OBS and keeping the selection box + dock lists in sync -- EXCEPT when
+	// the click lands inside an existing multi-selection, which is left intact because
+	// collapsing it would silently discard work the user did to build it, and opening a
+	// menu is not a request to change what is selected.
+	const bool insideSelection = hitId >= 0 && selectedIds.size() > 1 &&
+				     std::find(selectedIds.begin(), selectedIds.end(), hitId) != selectedIds.end();
+	if (!insideSelection) {
+		{
+			std::lock_guard<std::mutex> lock(state_->stateMutex);
+			state_->selected.SetOne(sceneSource, hitId);
+			selectedIds = state_->selected.ids;
+		}
+		SelectSet(scene, selectedIds);
+	}
+	// A right-click abandons an open band rather than committing it: the gesture the
+	// user ended was the menu, not the selection sweep.
+	CancelBox();
+	state_->pressPending = false;
 	FinishDrag();
-	EmitSelection(targetCanvas_, hitId);
+	if (!insideSelection) {
+		EmitSelection(targetCanvas_, selectedIds);
+	}
 	EmitContextMenu(targetCanvas_, windowId_, scene, hitId, mx, my);
 
 	obs_source_release(sceneSource);
@@ -2009,6 +2844,10 @@ void PreviewSurface::CancelDrag()
 	// harmless second call.
 	FinishDrag();
 	EndPan();
+	// A lost capture abandons a band rather than committing it: no release happened,
+	// so there is no modifier state to read and no user intent to honour.
+	CancelBox();
+	state_->pressPending = false;
 }
 
 // The pan gesture's terminator, and the reason it is not folded into FinishDrag:
@@ -2255,7 +3094,7 @@ void PreviewSurface::Destroy()
 	}
 }
 
-bool PreviewSurface::SelectFromBridge(const std::string &scene, int64_t id, bool hasId)
+bool PreviewSurface::SelectFromBridge(const std::string &scene, const std::vector<int64_t> &ids)
 {
 	obs_source_t *sceneSource = AcquireSurfaceSceneSource(targetCanvas_);
 	if (!sceneSource) {
@@ -2271,15 +3110,19 @@ bool PreviewSurface::SelectFromBridge(const std::string &scene, int64_t id, bool
 	}
 	obs_scene_t *sc = obs_scene_from_source(sceneSource);
 
-	const int64_t newId = hasId ? id : int64_t(-1);
-	SelectOnly(sc, newId);
+	// A press still open when the docks drive a selection has nothing left to decide:
+	// applying its click afterwards would overwrite what the dock just asked for.
+	CancelBox();
+	state_->pressPending = false;
+
 	{
 		std::lock_guard<std::mutex> lock(state_->stateMutex);
-		state_->selected.Set(sceneSource, newId);
+		state_->selected.Set(sceneSource, ids);
 	}
+	SelectSet(sc, ids);
 	obs_source_release(sceneSource);
 
-	EmitSelection(targetCanvas_, newId);
+	EmitSelection(targetCanvas_, ids);
 	return true;
 }
 
@@ -2299,10 +3142,10 @@ int64_t PreviewSurface::HitTestForTest(float canvasX, float canvasY)
 
 int64_t PreviewSurface::SelectedIdForTest()
 {
-	// The recorded id, not scene-resolved: the isolation self-test asserts what this
-	// surface holds, and it holds it against its own scene.
+	// The recorded ANCHOR id, not scene-resolved: the isolation self-test asserts what
+	// this surface holds, and it holds it against its own scene.
 	std::lock_guard<std::mutex> lock(state_->stateMutex);
-	return state_->selected.id;
+	return state_->selected.Anchor();
 }
 
 bool PreviewSurface::OnVideoReset()
@@ -2649,7 +3492,8 @@ PreviewManager *Instance()
 	return g_instance;
 }
 
-bool SelectFromBridge(const std::string &canvas, const std::string &scene, int64_t id, bool hasId, int windowId)
+bool SelectFromBridge(const std::string &canvas, const std::string &scene, const std::vector<int64_t> &ids,
+		      int windowId)
 {
 	if (!g_instance) {
 		return false;
@@ -2658,7 +3502,7 @@ bool SelectFromBridge(const std::string &canvas, const std::string &scene, int64
 	if (!surface) {
 		return false;
 	}
-	return surface->SelectFromBridge(scene, id, hasId);
+	return surface->SelectFromBridge(scene, ids);
 }
 
 int64_t HitTestForTest(const std::string &canvas, float canvasX, float canvasY, int windowId)

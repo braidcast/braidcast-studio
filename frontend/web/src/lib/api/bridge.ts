@@ -1667,7 +1667,9 @@ export interface ObsMethods {
   "preview.hide": null;
   "preview.freeze": { dataUri: string; width: number; height: number };
   "preview.destroy": null;
-  "preview.select": { selected: number | null };
+  // `selected` is the ANCHOR (last) member, kept so single-selection callers read
+  // exactly as before; `selectedIds` is the whole set the preview now holds.
+  "preview.select": { selected: number | null; selectedIds: number[] };
   // Per-surface view: `fixed` = pinned scale rather than fit-to-window, `zoomPercent`
   // = the scale the NEXT frame will draw at, `locked` = editing gestures blocked.
   // Every one of these answers with that same shape, already reflecting the command
@@ -2218,7 +2220,10 @@ export interface ObsEvents {
   // `canvas` = the addressed canvas uuid, or null for the Default surface (global
   // channel-0 path); a per-canvas dock filters to its own canvas (scene names
   // collide across canvases).
-  "sceneItem.selected": { scene: string | null; id: number | null; canvas: string | null };
+  // `ids` is the whole preview selection, insertion-ordered; `id` is its anchor (the
+  // last member), so a single-selection reader behaves exactly as it did before
+  // multi-select existed. An empty `ids` means nothing is selected.
+  "sceneItem.selected": { scene: string | null; id: number | null; ids: number[]; canvas: string | null };
   // Right-click in a native preview overlay (WM_RBUTTONUP). Broadcast to ALL
   // windows; the host dock filters by `window === WINDOW_ID` + its own canvas
   // (null = Default surface) and maps the device-px cursor to viewport coords via
