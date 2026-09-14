@@ -4,18 +4,20 @@
 import { EV } from "$lib/utils/eventNames";
   import Button from "$lib/ui/Button.svelte";
   import { canvasStore } from "$lib/stores/canvasStore.svelte";
-  import { previewSuspended, suspendPreview } from "$lib/stores/previewGate.svelte";
+  import { suspendPreview } from "$lib/stores/previewGate.svelte";
   import { PreviewFreeze } from "$lib/stores/previewFreeze.svelte";
 import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   import { WINDOW_ID } from "$lib/utils/windowContext";
   import {
-    syncPreviewRect,
+    reportPreviewRect,
     hidePreview,
     destroyPreview,
     mapOverlayCursor,
     fetchPreviewView,
     previewViewMenuItems,
     forwardPreviewWheel,
+    syncPreviewGate,
+    type PreviewSurfaceDock,
   } from "$lib/docking/previewSurface";
   import { usePreviewPointerGuard } from "$lib/docking/previewPointerGuard";
   import { isPreviewDisabled, setPreviewDisabled, DEFAULT_PREVIEW_KEY } from "$lib/docking/previewDisabledStore.svelte";
@@ -266,21 +268,17 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     });
   }
 
-  function reportRect() {
-    if (!previewEl) {
-      return;
-    }
-    // Output-gated off (no enabled destination on the Default canvas), a modal
-    // holds the preview gate, or the user disabled the preview: keep the native
-    // overlay hidden. Re-asserting the rect during any of these would raise the
-    // native child window back above CEF (over the modal, or over the placeholder).
-    // While disabled the surface is already destroyed (see disablePreview above),
-    // so hidePreview here is a harmless idempotent no-op.
-    if (!defaultEnabled || previewSuspended() || isPreviewDisabled(DEFAULT_PREVIEW_KEY)) {
-      hidePreview();
-      return;
-    }
-    syncPreviewRect(previewEl);
+  // Output-gated off (no enabled destination on the Default canvas) or disabled by the
+  // user: the surface stays hidden over the placeholder. While disabled it is already
+  // destroyed (see disablePreview above), so the hide is a harmless idempotent no-op.
+  const surfaceDock: PreviewSurfaceDock = {
+    canvasUuid: undefined,
+    blocked: () => !defaultEnabled || isPreviewDisabled(DEFAULT_PREVIEW_KEY),
+    hide: () => hidePreview(),
+  };
+
+  function reportRect(): boolean {
+    return reportPreviewRect(previewEl, surfaceDock);
   }
 
   onMount(() => {
@@ -345,20 +343,10 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     }
   });
 
-  // The global previewGate suspends every native overlay while a modal is open;
-  // hide our surface and re-assert its rect when cleared. The still is grabbed BEFORE
-  // the hide so the region keeps showing the last frame instead of going black --
-  // capturing after would read a canvas whose composite the hide has already gated.
+  // The global previewGate suspends every native overlay while a modal is open; hand
+  // the region to the still and back.
   const freeze = new PreviewFreeze();
-  $effect(() => {
-    if (previewSuspended()) {
-      void freeze.capture();
-      hidePreview();
-    } else {
-      freeze.clear();
-      reportRect();
-    }
-  });
+  $effect(() => syncPreviewGate(freeze, previewEl, surfaceDock));
 
   // Re-measure on any dock layout change. A reorder/move swaps panel positions
   // without resizing them, so ResizeObserver never fires — measure next frame,
@@ -404,7 +392,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
          positioned, so no z-index has to be assigned to keep them visible. aria-hidden: it is the same picture the surface was already showing,
          so announcing it adds nothing. -->
     {#if freeze.frame}
-      <img class="freeze" src={freeze.frame} alt="" aria-hidden="true" />
+      <img class="freeze" src={freeze.frame} alt="" aria-hidden="true" bind:this={freeze.img} />
     {/if}
     <!-- Same reasoning as the stage chips: the native surface paints over this, so
          the still must too, or the region gains a label on right-click. -->

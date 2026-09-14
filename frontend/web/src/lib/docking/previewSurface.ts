@@ -2,14 +2,16 @@
 // surface (the Default PreviewDock and the per-canvas CanvasDock). The native
 // overlay is a sibling HWND painted above CEF, addressed by { window, canvas? }:
 // the Default surface OMITS canvas (global channel-0 path); a per-canvas dock
-// passes its uuid. Only the obs plumbing, the paintability guard, and the
-// device-px cursor mapping live here -- each dock keeps its own lifecycle wiring
-// (coalescing, output-gating, surface-active flag, menu shape), which genuinely
-// differs.
+// passes its uuid. The obs plumbing, the paintability guard, rect reporting, the
+// preview-gate hand-off to the freeze frame and the device-px cursor mapping are here;
+// each dock keeps what genuinely differs -- coalescing, what blocks its surface, its
+// surface-active flag, menu shape.
 
 import { obs, type PreviewView } from "$lib/api/bridge";
 import { previewViewItems, type PreviewViewAction } from "$lib/menus/previewViewMenu";
 import type { ContextMenuItems } from "$lib/menus/ContextMenu.svelte";
+import type { PreviewFreeze } from "$lib/stores/previewFreeze.svelte";
+import { previewSuspended } from "$lib/stores/previewGate.svelte";
 import { overlayRectOf } from "$lib/utils/overlayRect";
 import { WINDOW_ID } from "$lib/utils/windowContext";
 
@@ -45,6 +47,82 @@ export function hidePreview(canvasUuid?: string): void {
 
 export function destroyPreview(canvasUuid?: string): void {
   obs.call("preview.destroy", target(canvasUuid)).catch(() => {});
+}
+
+// What a dock hosting a surface tells the shared rect and gate logic about itself.
+export interface PreviewSurfaceDock {
+  /** The addressed canvas; undefined for the Default surface. */
+  readonly canvasUuid: string | undefined;
+  /** The dock keeps the surface hidden whatever the layout: output-gated off or disabled. */
+  blocked(): boolean;
+  /** The dock's hide: the shared hidePreview plus any state the dock mirrors from it. */
+  hide(): void;
+  /** Told whether a rect report left the surface painting. */
+  shown?(shown: boolean): void;
+}
+
+// Report the dock's rect to its surface; returns whether the surface was re-asserted
+// (and so will paint). Never re-asserts while the preview gate is held -- that would
+// raise the native child window back above CEF, over the modal -- and never hides then
+// either: hiding for the gate is syncPreviewGate's, which holds the surface up until the
+// still is painted. A blocked dock keeps its surface hidden over its placeholder.
+export function reportPreviewRect(el: HTMLElement | undefined, dock: PreviewSurfaceDock): boolean {
+  if (!el || previewSuspended()) {
+    return false;
+  }
+  if (dock.blocked()) {
+    dock.hide();
+    return false;
+  }
+  const shown = syncPreviewRect(el, dock.canvasUuid);
+  dock.shown?.(shown);
+  return shown;
+}
+
+// The body of each dock's preview-gate $effect: hand the region to the freeze still when
+// the gate engages and back when it releases. Returns the effect's cleanup.
+//
+// Engaging, the surface stays up until the still is painted beneath it, and only then is
+// it hidden -- so an overlay opening over the preview appears once the still is ready
+// rather than before. A failed capture still hides: a usable menu over a blank region
+// beats a menu drawn under the preview, so the menu wins. The cleanup cancels that hide,
+// because a gate released before the still lands has already had the dock re-assert the
+// rect, and a hide issued after it would leave the surface hidden with nothing to show it
+// again. A surface not painting when the gate engages (blocked, or no paintable box) has
+// nothing to freeze: capturing would only put a still behind the dock's placeholder, and
+// for a destroyed Default surface block the host on a composite wait, so it just hides.
+//
+// Releasing, a re-asserted surface warms up beneath the web view and rises once it has a
+// frame, so the still is held until the surface should cover it; a surface that stays
+// hidden leaves nothing to cover the region, so the still goes at once and the dock's
+// placeholder shows.
+export function syncPreviewGate(
+  freeze: PreviewFreeze,
+  el: HTMLElement | undefined,
+  dock: PreviewSurfaceDock,
+): (() => void) | undefined {
+  if (!previewSuspended()) {
+    if (reportPreviewRect(el, dock)) {
+      freeze.release();
+    } else {
+      freeze.clear();
+    }
+    return undefined;
+  }
+  if (!el || dock.blocked() || !overlayRectOf(el)) {
+    freeze.clear();
+    dock.hide();
+    return undefined;
+  }
+  let cancelled = false;
+  void freeze.capture(dock.canvasUuid).then(() => {
+    if (!cancelled) {
+      dock.hide();
+    }
+  });
+  return () => {
+    cancelled = true;
+  };
 }
 
 // The surface's view (zoom mode, the scale actually on screen, the edit lock), read

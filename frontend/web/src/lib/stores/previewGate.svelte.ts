@@ -3,7 +3,7 @@
 // The obs preview is a native child HWND z-ordered ABOVE the CEF browser, so any
 // DOM surface that overlaps the preview region (modals, dialogs) would be hidden
 // behind it -- DOM can't paint over a native window. Components that render over
-// the preview suspend it while open; PreviewArea hides the overlay whenever the
+// the preview suspend it while open; each preview dock hides its overlay while the
 // count is non-zero and re-asserts its rect when it returns to zero.
 
 import { untrack } from "svelte";
@@ -11,6 +11,11 @@ import { log } from "$lib/utils/log";
 import { Cat } from "$lib/utils/logCategories";
 
 let count = $state(0);
+
+// Readers care only whether any suspension is held. Deriving the boolean keeps them from
+// re-running on every nested acquire/release (a submenu level opening under a menu),
+// which would restart each dock's freeze capture on every hover.
+const suspended = $derived(count > 0);
 
 /** Suspend the preview while a modal/overlay is open. Returns a release fn. */
 export function suspendPreview(): () => void {
@@ -39,5 +44,5 @@ export function suspendPreview(): () => void {
 
 /** Reactive: true while any caller holds a suspension. */
 export function previewSuspended(): boolean {
-	return count > 0;
+	return suspended;
 }

@@ -13,18 +13,20 @@ import { EV } from "$lib/utils/eventNames";
   import Button from "$lib/ui/Button.svelte";
   import { selectOnMount } from "$lib/utils/focusActions";
   import { clamp } from "$lib/utils/clamp";
-  import { previewSuspended, suspendPreview } from "$lib/stores/previewGate.svelte";
+  import { suspendPreview } from "$lib/stores/previewGate.svelte";
   import { PreviewFreeze } from "$lib/stores/previewFreeze.svelte";
 import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   import { WINDOW_ID } from "$lib/utils/windowContext";
   import {
-    syncPreviewRect,
+    reportPreviewRect,
     hidePreview as hidePreviewSurface,
     destroyPreview,
     mapOverlayCursor,
     fetchPreviewView,
     previewViewMenuItems,
     forwardPreviewWheel,
+    syncPreviewGate,
+    type PreviewSurfaceDock,
   } from "$lib/docking/previewSurface";
   import { usePreviewPointerGuard } from "$lib/docking/previewPointerGuard";
   import { isPreviewDisabled, setPreviewDisabled } from "$lib/docking/previewDisabledStore.svelte";
@@ -110,24 +112,23 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     });
   }
 
-  function reportRect() {
-    if (!previewEl) {
-      return;
-    }
-    // While a modal/overlay holds the preview gate, or the user disabled this
-    // canvas's preview, never re-assert the rect: a stray resize/scroll/
-    // ResizeObserver tick would otherwise raise this canvas's native child window
-    // back above CEF, over the modal or over the placeholder. While disabled the
-    // surface is already destroyed (see disablePreview below), so hidePreview here
-    // is a harmless idempotent no-op.
-    if (previewSuspended() || isPreviewDisabled(canvasUuid)) {
-      hidePreview();
-      return;
-    }
-    // syncPreviewRect asserts the rect (or hides on a zero/hidden box) and reports
-    // whether the surface is now painting; mirror that into surfaceActive so the DOM
-    // stage outline drops only while the native surface owns the stage.
-    surfaceActive = syncPreviewRect(previewEl, canvasUuid);
+  // A disabled preview stays hidden over its placeholder; it is already destroyed then
+  // (see disablePreview below), so the hide is a harmless idempotent no-op. `shown`
+  // mirrors each report into surfaceActive so the DOM stage outline drops only while the
+  // native surface owns the stage.
+  const surfaceDock: PreviewSurfaceDock = {
+    get canvasUuid() {
+      return canvasUuid;
+    },
+    blocked: () => isPreviewDisabled(canvasUuid),
+    hide: () => hidePreview(),
+    shown: (shown) => {
+      surfaceActive = shown;
+    },
+  };
+
+  function reportRect(): boolean {
+    return reportPreviewRect(previewEl, surfaceDock);
   }
   function hidePreview() {
     surfaceActive = false;
@@ -1214,22 +1215,13 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     );
   });
 
-  // Hide our overlay while a modal suspends previews; re-assert on clear. The still is
-  // grabbed BEFORE the hide -- both are bridge calls and run in order on the host's UI
-  // thread, so capturing second would read a canvas already gated off.
+  // Hide our overlay while a modal suspends previews and re-assert on clear, handing
+  // the stage to the still and back.
   const freeze = new PreviewFreeze();
   // Something is painting video over the stage: the native surface, or the still
   // standing in for it. Either way the DOM outline underneath must not show.
   const stageCovered = $derived(surfaceActive || freeze.frame !== null);
-  $effect(() => {
-    if (previewSuspended()) {
-      void freeze.capture(canvasUuid);
-      hidePreview();
-    } else {
-      freeze.clear();
-      reportRect();
-    }
-  });
+  $effect(() => syncPreviewGate(freeze, previewEl, surfaceDock));
 
   // Re-measure on any dock layout change. A reorder/move swaps panel positions
   // without resizing them, so ResizeObserver never fires and this canvas's overlay
@@ -1264,7 +1256,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
       <!-- Stands in for the hidden native surface while an overlay is up. FIRST so the
            disabled-preview placeholder still stacks above it on DOM order alone. -->
       {#if freeze.frame}
-        <img class="freeze" src={freeze.frame} alt="" aria-hidden="true" />
+        <img class="freeze" src={freeze.frame} alt="" aria-hidden="true" bind:this={freeze.img} />
       {/if}
       <!-- Occluded by the native surface whenever it paints, so the still has to
            occlude them too -- otherwise a right-click visibly redecorates the stage

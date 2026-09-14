@@ -3,6 +3,7 @@
 
 #include <windows.h>
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 
@@ -28,8 +29,9 @@ public:
 	using DrawFn = void (*)(void *param, uint32_t cx, uint32_t cy);
 
 	// Window messages the overlay HWND receives that this class does not consume
-	// itself (it consumes only its resize-settle timer). Implemented by an owner
-	// that needs input off the surface; null for a display-only surface.
+	// itself (it consumes only its resize-settle and warm-up messages). Implemented by an owner
+	// that needs input off the surface; null for a display-only surface. WM_TIMER ids from
+	// kWarmupTimerIdBase up are the warm-up's and never reach the sink.
 	class MessageSink {
 	public:
 		virtual ~MessageSink() = default;
@@ -78,8 +80,8 @@ public:
 	// needs to drive the display directly casts it back.
 	void *Display() const { return display_; }
 
-	// Dispatch one window message for this surface: the resize-settle timer is
-	// consumed here, everything else is offered to the sink. Returns true when the
+	// Dispatch one window message for this surface: the resize-settle and warm-up
+	// messages are consumed here, everything else is offered to the sink. Returns true when the
 	// message was handled. Public only so the shared WndProc (in the .cpp) can reach
 	// it; nothing else calls it.
 	bool HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam);
@@ -103,7 +105,25 @@ private:
 	// Position/size the HWND + resize its obs_display to (cx,cy) and show it. The
 	// synchronous SetWindowPos keeps the HWND tracking the DOM; the obs_display
 	// resize + present lag is what SetRect's debounce hides during a resize burst.
+	// When this creates the display, the HWND is shown beneath the web view and raised by
+	// EndWarmup once a frame has presented, or when the warm-up timeout fires -- which can
+	// raise it before its first frame, showing the class brush until one lands. When the
+	// display cannot be created, the HWND is left hidden.
 	void ApplyRect(int x, int y, int cx, int cy);
+
+	// Raise a warming HWND to the top of the sibling z-order: the fresh display has
+	// presented (DrawAndCount posted), or the warm-up timeout fired. No-op when not
+	// warming. HandleMessage drops either message when its generation is not the
+	// current display's.
+	void EndWarmup();
+
+	// Stop a warm-up without raising (its timer too). Returns whether one was running.
+	bool CancelWarmup();
+
+	// The draw callback actually registered on the display: runs the owner's draw_,
+	// then counts calls so the UI thread learns when the first frame has presented.
+	// Render thread.
+	static void DrawAndCount(void *param, uint32_t cx, uint32_t cy);
 
 	// Settle-timer callback (WM_TIMER on the overlay HWND): apply the last pending
 	// rect from a rapid-resize burst and re-show the surface. See SetRect.
@@ -136,6 +156,19 @@ private:
 	int pendingCx_ = 0;
 	int pendingCy_ = 0;
 	bool resizeDeferred_ = false;
+
+	// Warm-up of a fresh display (see ApplyRect). warming_ is UI-thread state;
+	// drawCalls_ is bumped on the render thread and reset per display; displayGen_
+	// tags the posted "presented" message and the timeout's timer id so either one from a
+	// torn-down display is dropped.
+	bool warming_ = false;
+	std::atomic<uint32_t> drawCalls_{0};
+	std::atomic<uint32_t> displayGen_{0};
+
+	// The size whose display create last failed, so a retry at that size is not logged
+	// again. 0x0 once a create succeeds.
+	int failedCx_ = 0;
+	int failedCy_ = 0;
 };
 
 #endif // OBS_MULTISTREAM_FRONTEND_OVERLAY_SURFACE_HPP_

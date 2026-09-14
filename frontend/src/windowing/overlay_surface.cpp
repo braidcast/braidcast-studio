@@ -11,9 +11,30 @@ constexpr wchar_t kOverlayClassName[] = L"BraidcastOverlay";
 // Rapid-resize debounce (SetRect): while a drag-resize keeps changing the rect the
 // overlay is hidden; the surface snaps to the final rect this long after the last
 // rect arrives. ~100ms reliably reads as "resize stopped" against the DOM's ~16ms
-// per-frame cadence. The timer is per-overlay-HWND, which has no other timers.
+// per-frame cadence.
 constexpr UINT_PTR kResizeSettleTimerId = 1;
 constexpr UINT kResizeSettleMs = 100;
+
+// Warm-up after a fresh display (ApplyRect): the HWND is shown beneath the web view
+// and raised once the swapchain has presented. The draw callback runs before its
+// frame's Present, so the second call is the first proof a frame has landed. The
+// timeout raises regardless, so a display the render thread never reaches cannot
+// leave the surface buried. The web view holds its still for RELEASE_HOLD_MS
+// (previewFreeze.svelte.ts), a margin over this bound rather than a guarantee, since
+// the timer starts only once the display exists; raise one and the other must follow.
+//
+// Both warm-up messages carry the display generation, the timer in its id. KillTimer does
+// not withdraw a WM_TIMER already posted, so an untagged expiry dispatched after a Hide
+// and a fresh ApplyRect would raise the new display before its first frame.
+constexpr uint32_t kWarmupDrawCalls = 2;
+constexpr UINT kWarmupTimeoutMs = 250;
+constexpr UINT kWarmupPresentedMsg = WM_APP + 1;
+constexpr UINT_PTR kWarmupTimerIdBase = 0x100; // above kResizeSettleTimerId
+
+UINT_PTR WarmupTimerId(uint32_t generation)
+{
+	return kWarmupTimerIdBase + generation;
+}
 
 // Route a window message to the surface that owns the HWND (stashed in
 // GWLP_USERDATA at creation). Null for a foreign HWND.
@@ -34,9 +55,13 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpara
 	return DefWindowProcW(hwnd, msg, wparam, lparam);
 }
 
-// The overlay HWND uses a no-background class: the obs_display swapchain paints
-// every pixel (the video plus its black letterbox bars), so a WM_ERASEBKGND fill
-// would only flicker against it.
+// The class brush fills the HWND whenever its swapchain has nothing presented. It is
+// black so that, when it does show, it matches the swapchain's own black letterbox
+// rather than reading as a different surface. It normally stays covered: ApplyRect
+// keeps a fresh HWND beneath the web view until the swapchain has presented. It can
+// show on top when the warm-up timeout raises a display that has not presented yet.
+// A resize burst's settle also reshows the HWND before the resized frame presents;
+// what that frame shows has not been observed.
 ATOM RegisterOverlayClass(HINSTANCE instance)
 {
 	static ATOM atom = 0;
@@ -69,7 +94,28 @@ bool OverlaySurface::HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam)
 		OnResizeSettled();
 		return true;
 	}
+	const bool warmupTimer = msg == WM_TIMER && wparam >= kWarmupTimerIdBase;
+	if (warmupTimer || msg == kWarmupPresentedMsg) {
+		// One from a display torn down since is stale; its successor has a new
+		// generation and is still warming.
+		const uint32_t gen = displayGen_.load();
+		if (warmupTimer ? wparam == WarmupTimerId(gen) : wparam == gen) {
+			EndWarmup();
+		}
+		return true;
+	}
 	return sink_ && sink_->OnOverlayMessage(msg, wparam, lparam);
+}
+
+void OverlaySurface::DrawAndCount(void *param, uint32_t cx, uint32_t cy)
+{
+	auto *self = static_cast<OverlaySurface *>(param);
+	self->draw_(self->drawData_, cx, cy);
+	// hwnd_ is safe to read here: it is set before the display is created and cleared
+	// only after TeardownDisplay has removed this callback under libobs' draw mutex.
+	if (++self->drawCalls_ == kWarmupDrawCalls) {
+		PostMessageW(self->hwnd_, kWarmupPresentedMsg, WPARAM(self->displayGen_.load()), 0);
+	}
 }
 
 OverlaySurface::OverlaySurface(HWND host, HINSTANCE instance, DrawFn draw, void *drawData, MessageSink *sink,
@@ -130,9 +176,11 @@ void OverlaySurface::EnsureDisplay(int cx, int cy)
 
 	obs_display_t *display = obs_display_create(&init, 0x000000);
 	display_ = display;
-	HostLog("[" + tag_ + "] obs_display_create -> " + (display ? "OK" : "NULL"));
 	if (display) {
-		obs_display_add_draw_callback(display, draw_, drawData_);
+		HostLog("[" + tag_ + "] obs_display_create -> OK");
+		displayGen_.fetch_add(1);
+		drawCalls_.store(0);
+		obs_display_add_draw_callback(display, DrawAndCount, this);
 		HostLog("[" + tag_ + "] draw callback registered");
 	}
 }
@@ -142,18 +190,71 @@ void OverlaySurface::ApplyRect(int x, int y, int cx, int cy)
 	if (!hwnd_) {
 		return;
 	}
-	// Position in host-client device pixels and keep above the CEF browser HWND
-	// (HWND_TOP raises within the sibling z-order). SWP_SHOWWINDOW reveals it on
-	// the first sized call.
-	SetWindowPos(hwnd_, HWND_TOP, x, y, cx, cy, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+	// A fresh display has nothing on screen until its first Present, and a raised HWND
+	// shows its class brush until then -- a black frame over whatever the web view was
+	// holding in its place. So show it at the BOTTOM of the sibling z-order, where the
+	// CEF browser HWND covers it, and raise it once a frame has landed. It warms shown
+	// rather than hidden because a swapchain presenting into an SW_HIDE window is the
+	// case Hide() found coming back black, and it is shown before the display exists
+	// because the render thread may present the moment the display is created.
+	const bool freshDisplay = !display_;
+	if (freshDisplay) {
+		warming_ = true;
+	}
+	SetWindowPos(hwnd_, warming_ ? HWND_BOTTOM : HWND_TOP, x, y, cx, cy, SWP_NOACTIVATE | SWP_SHOWWINDOW);
 
 	// Rebuild the swapchain if a prior Hide() dropped it, then size it to the rect.
 	EnsureDisplay(cx, cy);
+	if (freshDisplay) {
+		if (display_) {
+			failedCx_ = 0;
+			failedCy_ = 0;
+			SetTimer(hwnd_, WarmupTimerId(displayGen_.load()), kWarmupTimeoutMs, nullptr);
+		} else {
+			// Nothing will ever present into this HWND; raised, it would be a black
+			// rectangle over the UI. Leave it hidden. lastCx_/lastCy_ still update
+			// below, so the next same-size SetRect lands here again and retries -- on
+			// any scroll anywhere in the app, so the failure is logged once per size.
+			CancelWarmup();
+			ShowWindow(hwnd_, SW_HIDE);
+			NotifyHidden();
+			if (cx != failedCx_ || cy != failedCy_) {
+				failedCx_ = cx;
+				failedCy_ = cy;
+				HostLog("[" + tag_ + "] display create FAILED at " + std::to_string(cx) + "x" +
+					std::to_string(cy) + " (rect " + std::to_string(x) + "," + std::to_string(y) +
+					"); overlay left hidden, retries at this size not logged. "
+					"obs_display_init's error is in the libobs log");
+			}
+		}
+	}
 	if (display_) {
 		obs_display_resize(static_cast<obs_display_t *>(display_), uint32_t(cx), uint32_t(cy));
 	}
 	lastCx_ = cx;
 	lastCy_ = cy;
+}
+
+bool OverlaySurface::CancelWarmup()
+{
+	if (!warming_) {
+		return false;
+	}
+	warming_ = false;
+	if (hwnd_) {
+		KillTimer(hwnd_, WarmupTimerId(displayGen_.load()));
+	}
+	return true;
+}
+
+void OverlaySurface::EndWarmup()
+{
+	if (!CancelWarmup() || !hwnd_) {
+		return;
+	}
+	// No SWP_SHOWWINDOW: a mid-resize burst may have hidden the HWND meanwhile, and
+	// its settle is what shows it again.
+	SetWindowPos(hwnd_, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 }
 
 void OverlaySurface::SetRect(int x, int y, int cx, int cy)
@@ -237,9 +338,10 @@ void OverlaySurface::Hide()
 
 void OverlaySurface::TeardownDisplay()
 {
+	CancelWarmup();
 	if (display_) {
 		obs_display_t *display = static_cast<obs_display_t *>(display_);
-		obs_display_remove_draw_callback(display, draw_, drawData_);
+		obs_display_remove_draw_callback(display, DrawAndCount, this);
 		obs_display_destroy(display);
 		display_ = nullptr;
 		HostLog("[" + tag_ + "] display destroyed");
