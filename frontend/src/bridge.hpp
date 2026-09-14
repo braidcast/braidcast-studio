@@ -200,8 +200,8 @@ std::string CaptureItemTransformStates(const std::string &canvasUuid, const std:
 // interchangeable.
 //
 // No-op when either payload is empty OR when the two are equal. The equality check is not
-// tidiness: a gesture can end without changing the geometry (an Alt-crop drag on an item
-// carrying a bounds type moves the pointer but is refused), and an entry for it would
+// tidiness: a gesture can end without changing the geometry (a drag over a source reporting
+// zero size moves the pointer but every frame is refused), and an entry for it would
 // both mislabel the undo affordance and clear the redo branch. Over a multi-item
 // selection the check is ALL-OR-NOTHING: one item moving records the whole batch. UI
 // thread only.

@@ -29,6 +29,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -37,8 +38,7 @@
 #include "log.hpp"
 
 // Item-edit handle bit flags, mirroring the legacy preview so the resize math is
-// identical. Rotation is deferred but its slot is kept so corner/edge handles
-// keep the same bit layout.
+// identical.
 #define ITEM_LEFT (1 << 0)
 #define ITEM_RIGHT (1 << 1)
 #define ITEM_TOP (1 << 2)
@@ -50,6 +50,30 @@ namespace {
 constexpr float kHandleRadius = 4.0f;     // handle half-size in screen px
 constexpr float kHandleSelRadius = 6.0f;  // hit-test radius (kHandleRadius * 1.5)
 constexpr float kBoxLineThickness = 2.0f; // selection outline thickness in screen px
+
+// How far the rotation handle's disc centre stands off the item's top edge, in screen
+// px: the legacy HANDLE_RADIUS * radius * 1.5 - radius
+// (frontend_old/widgets/OBSBasicPreview.cpp:402) at the radii above. The hit-test and
+// the draw both measure from this, and the disc is exactly the kHandleSelRadius grab
+// zone, so every drawn pixel of the disc grabs the rotation and no bare stem does.
+constexpr float kRotHandleDistance = (kHandleRadius * 1.5f - 1.0f) * kHandleSelRadius;
+
+// Two rotations closer than this, modulo a full turn, count as the same angle.
+constexpr float kRotSameAngleEpsilon = 0.001f;
+
+// Rotation snapping, from the legacy RotateItem (OBSBasicPreview.cpp:1566-1591). The
+// resolved angle is wrapped into [kRotAngleMin, kRotAngleMax), the range the legacy
+// pointer angle (atan2 plus a quarter turn) lands in, so the targets span exactly that
+// range. Unmodified, the angle is pulled within
+// kRotSnapPull of the angle the gesture started at and of every multiple of
+// kRotSnapStep, and is free between them. Shift pulls within half a kRotShiftStep of
+// every multiple of it, which leaves no angle unpulled, so the item turns in hard
+// steps. Ctrl without Shift turns it freely.
+constexpr float kRotAngleMin = -90.0f;
+constexpr float kRotAngleMax = 270.0f;
+constexpr float kRotSnapPull = 5.0f;
+constexpr float kRotSnapStep = 45.0f;
+constexpr float kRotShiftStep = 15.0f;
 
 // Margin reserved on every side of the surface, in device px, before the canvas is
 // fitted into it. Without it a dock whose aspect ratio matches the canvas gets a
@@ -342,14 +366,26 @@ struct SceneItemSelection {
 // scene-scoped like the selection and hover ids: re-resolving a bare id would let
 // a scene switch mid-gesture land the drag's writes -- and the save that follows
 // them -- on the new scene's item of the same id.
-enum class DragMode { None, Move, Resize };
+enum class DragMode { None, Move, Resize, Rotate };
 
 // One member of a gesture. A move drags the whole selection, so DragState holds a
-// vector of these; a resize holds exactly one, which keeps the undo capture below
-// the same shape for both.
+// vector of these; a resize or a rotation holds exactly one, which keeps the undo
+// capture below the same shape for all of them.
 struct DragItem {
 	SceneItemRef id;
 	vec2 startItemPos = {}; // item pos when the gesture began
+};
+
+// How a crop drag turns box-edge travel into source px, captured at the press by
+// CaptureCropFrame. Per item axis: canvas px per source px, the gap between each box edge
+// and the picture inside it (a bounds letterbox; zero unbounded), and whether the picture
+// is mirrored inside the box so that a box edge crops the source's opposite side.
+struct CropFrame {
+	vec2 scale = {};
+	vec2 gapTl = {};
+	vec2 gapBr = {};
+	bool flipX = false;
+	bool flipY = false;
 };
 
 struct DragState {
@@ -357,11 +393,11 @@ struct DragState {
 	// Set on the first mouse-move that reaches a resolvable, unlocked item, BEFORE the
 	// geometry math runs -- so it means "this gesture got as far as trying", not "the
 	// transform changed". A drag mode can still refuse the frame (CropItem returns
-	// untouched for an item carrying a bounds type). It gates the save, which is
+	// untouched for a source reporting zero size). It gates the save, which is
 	// idempotent either way; anything that must not fire on a no-op gesture compares the
 	// geometry instead.
 	bool moved = false;
-	// The gesture's anchor: the resize target, and the member whose scene the whole
+	// The gesture's anchor: the resize or rotation target, and the member whose scene the whole
 	// gesture is re-resolved against. Every `items` entry shares its scene.
 	SceneItemRef id;
 	// Everything the gesture moves, anchor last. Empty until a gesture begins.
@@ -379,6 +415,17 @@ struct DragState {
 	matrix4 screenToItem = {};
 	vec2 stretchItemSize = {};
 	obs_sceneitem_crop startCrop = {};
+	CropFrame crop = {}; // how the item's picture sat in its box at the press
+	// Rotate only: the item's rotation at gesture start (degrees), the box centre it
+	// turns about, the pointer's angle about that centre at the press (degrees), and the
+	// item's position relative to the centre with the start rotation taken out.
+	// `rotateApplied` records that a frame has written an angle other than the start
+	// one, so a return to the start angle knows whether to restore.
+	float rotateStartAngle = 0.0f;
+	vec2 rotateCenter = {};
+	float rotatePressAngle = 0.0f;
+	vec2 rotateOffset = {};
+	bool rotateApplied = false;
 
 	// Every dragged item's geometry at gesture start, as the one opaque batch payload
 	// Bridge::CaptureItemTransformStates produces. Empty when no item resolved, and
@@ -554,7 +601,7 @@ bool SelectedItemAtPos(obs_scene_t *scene, const std::vector<int64_t> &ids, cons
 	return false;
 }
 
-// --- handle hit-testing (ported from legacy FindHandleAtPos, no group/rot) ---
+// --- handle hit-testing (ported from legacy FindHandleAtPos, no group descent) ---
 
 vec3 GetTransformedPos(float x, float y, const matrix4 &mat)
 {
@@ -564,11 +611,48 @@ vec3 GetTransformedPos(float x, float y, const matrix4 &mat)
 	return result;
 }
 
-// Test the 8 resize handles of `item` against a canvas-space point. `radius` is
-// in canvas units (kHandleSelRadius / scale) so the on-screen proximity is fixed.
-// `outDist` receives the winning handle's distance, so a caller testing several
-// selected items can pick the globally closest rather than the first to match.
-ItemHandle FindHandleAtPos(obs_sceneitem_t *item, const vec2 &canvasPos, float radius, float *outDist = nullptr)
+// Turn `v` by `radians` about the origin, in the convention matrix4_rotate_aa4f about +z
+// produces (clockwise on the y-down canvas). Ported from the legacy preview's RotatePos.
+vec2 RotateVec2(const vec2 &v, float radians)
+{
+	const float c = std::cos(radians);
+	const float s = std::sin(radians);
+	vec2 out;
+	vec2_set(&out, c * v.x - s * v.y, s * v.x + c * v.y);
+	return out;
+}
+
+// `degrees` restated as the same angle in [lo, lo + 360).
+float WrapDegrees(float degrees, float lo)
+{
+	float d = std::fmod(degrees - lo, 360.0f);
+	if (d < 0.0f) {
+		d += 360.0f;
+	}
+	if (d >= 360.0f) {
+		d -= 360.0f;
+	}
+	return d + lo;
+}
+
+// The unit-box y of the edge the rotation handle stands off: the item's visual top,
+// which is the box's bottom edge once a negative y scale has flipped it. A bounded
+// item's box is sized by its bounds rather than its scale, so a flip never reaches it.
+// Shared by the hit-test and the draw so the two cannot put the handle on different
+// edges.
+float RotHandleEdgeY(obs_sceneitem_t *item)
+{
+	vec2 scale;
+	obs_sceneitem_get_scale(item, &scale);
+	return (scale.y < 0.0f && obs_sceneitem_get_bounds_type(item) == OBS_BOUNDS_NONE) ? 1.0f : 0.0f;
+}
+
+// Test the 8 resize handles and the rotation handle of `item` against a canvas-space
+// point. `scale` is the letterbox screen-px-per-canvas-unit, which keeps both the grab
+// radius and the rotation handle's stand-off a fixed number of screen px. `outDist`
+// receives the winning handle's distance, so a caller testing several selected items can
+// pick the globally closest rather than the first to match.
+ItemHandle FindHandleAtPos(obs_sceneitem_t *item, const vec2 &canvasPos, float scale, float *outDist = nullptr)
 {
 	matrix4 transform;
 	obs_sceneitem_get_box_transform(item, &transform);
@@ -576,6 +660,7 @@ ItemHandle FindHandleAtPos(obs_sceneitem_t *item, const vec2 &canvasPos, float r
 	vec3 pos3;
 	vec3_set(&pos3, canvasPos.x, canvasPos.y, 0.0f);
 
+	const float radius = kHandleSelRadius / scale;
 	ItemHandle found = ItemHandle::None;
 	float closest = radius;
 
@@ -583,14 +668,28 @@ ItemHandle FindHandleAtPos(obs_sceneitem_t *item, const vec2 &canvasPos, float r
 		float x, y;
 		ItemHandle handle;
 	};
+	// The rotation handle is last so a box handle at the same distance wins, as in the
+	// legacy test order. Its y is resolved per item by RotHandleEdgeY.
 	static const HandleCoord kHandles[] = {
 		{0.0f, 0.0f, ItemHandle::TopLeft},      {0.5f, 0.0f, ItemHandle::TopCenter},
 		{1.0f, 0.0f, ItemHandle::TopRight},     {0.0f, 0.5f, ItemHandle::CenterLeft},
 		{1.0f, 0.5f, ItemHandle::CenterRight},  {0.0f, 1.0f, ItemHandle::BottomLeft},
 		{0.5f, 1.0f, ItemHandle::BottomCenter}, {1.0f, 1.0f, ItemHandle::BottomRight},
+		{0.5f, 0.0f, ItemHandle::Rot},
 	};
 	for (const auto &h : kHandles) {
-		vec3 handlePos = GetTransformedPos(h.x, h.y, transform);
+		vec3 handlePos;
+		if (h.handle == ItemHandle::Rot) {
+			// Out from the edge midpoint along the item's own up direction.
+			handlePos = GetTransformedPos(h.x, RotHandleEdgeY(item), transform);
+			vec2 up;
+			vec2_set(&up, 0.0f, kRotHandleDistance / scale);
+			const vec2 offset = RotateVec2(up, RAD(obs_sceneitem_get_rot(item)));
+			handlePos.x -= offset.x;
+			handlePos.y -= offset.y;
+		} else {
+			handlePos = GetTransformedPos(h.x, h.y, transform);
+		}
 		const float dist = vec3_dist(&handlePos, &pos3);
 		if (dist < radius && dist < closest) {
 			closest = dist;
@@ -610,16 +709,16 @@ struct GestureAtPos {
 	int64_t bodyId = -1;             // topmost item under the point, else -1
 };
 
-// A resize handle of a currently-selected item wins over an item body, and the
-// body hit-test is skipped entirely once a handle matches. Shared by OnLeftDown
-// and the hover cursor so the cursor cannot advertise a gesture other than the
-// one the click starts. `scale` is the letterbox screen-px-per-canvas-unit, so
+// A resize or rotation handle of a currently-selected item wins over an item body,
+// and the body hit-test is skipped entirely once a handle matches. Shared by
+// OnLeftDown and the hover cursor so the cursor cannot advertise a gesture other than
+// the one the click starts. `scale` is the letterbox screen-px-per-canvas-unit, so
 // the grab zone keeps a fixed kHandleSelRadius screen-px radius at any canvas size.
 //
 // EVERY selected item offers its handles, not just the anchor, and the globally
-// closest wins -- with a multi-selection, only the anchor being resizable would be
-// arbitrary. A resize still acts on that ONE item, matching the legacy preview,
-// which likewise keeps a single stretchItem while the selection may be larger.
+// closest wins -- with a multi-selection, only the anchor being grabbable would be
+// arbitrary. A resize or rotation still acts on that ONE item, matching the legacy
+// preview, which likewise keeps a single stretchItem while the selection may be larger.
 // `selected` doubles as the click-through cycle's input for the body hit-test, which
 // `cycleBelow` arms. A Ctrl-click passes false: the legacy preview's DoCtrlSelect
 // takes selectBelow=false so a modifier click always toggles the TOPMOST hit rather
@@ -629,15 +728,16 @@ GestureAtPos ResolveGestureAtPos(obs_scene_t *scene, const std::vector<int64_t> 
 {
 	GestureAtPos gesture;
 	if (scale > 0.0f) {
-		float closest = kHandleSelRadius / scale;
+		float closest = std::numeric_limits<float>::infinity();
 		for (const int64_t id : selected) {
 			obs_sceneitem_t *sel = FindItemById(scene, id);
-			if (!sel || obs_sceneitem_locked(sel)) {
+			// The same items the draw gives handles to, so nothing undrawn can be grabbed.
+			if (!sel || !SceneItemHasVideo(sel) || obs_sceneitem_locked(sel)) {
 				continue;
 			}
 			float dist = closest;
-			const ItemHandle handle = FindHandleAtPos(sel, canvasPos, closest, &dist);
-			if (handle != ItemHandle::None && dist <= closest) {
+			const ItemHandle handle = FindHandleAtPos(sel, canvasPos, scale, &dist);
+			if (handle != ItemHandle::None && dist < closest) {
 				closest = dist;
 				gesture.handle = handle;
 				gesture.item = sel;
@@ -662,20 +762,16 @@ const wchar_t *CursorForHandle(obs_sceneitem_t *item, ItemHandle handle)
 		return IDC_ARROW;
 	}
 	if (flags & ITEM_ROT) {
-		// Unreachable while FindHandleAtPos's table carries only the 8 box handles.
-		// The remapping below reads ITEM_LEFT..ITEM_BOTTOM only, so a rotation
-		// handle left to fall through it would answer with a resize cursor. The
-		// legacy preview answers this case with Qt::OpenHandCursor
-		// (OBSBasicPreview.cpp:657-660); Win32 has no stock equivalent, so wiring a
-		// rotation gesture means picking one here rather than deleting this branch.
-		return IDC_ARROW;
+		// Ahead of the remapping below, which reads ITEM_LEFT..ITEM_BOTTOM only and
+		// would answer a rotation handle with a resize cursor. The legacy preview shows
+		// Qt::OpenHandCursor here and Qt::ClosedHandCursor while turning
+		// (OBSBasicPreview.cpp:657-660, :1657). Win32 has no stock open or closed hand,
+		// so its one hand cursor stands in for both.
+		return IDC_HAND;
 	}
 
 	// The octant and parity tests below index off a rotation in [0,360).
-	float rotation = std::fmod(obs_sceneitem_get_rot(item), 360.0f);
-	if (rotation < 0.0f) {
-		rotation += 360.0f;
-	}
+	const float rotation = WrapDegrees(obs_sceneitem_get_rot(item), 0.0f);
 	const int octant = int(std::round(rotation / 45.0f));
 
 	vec2 scale;
@@ -1026,11 +1122,11 @@ void DragBoxLocal(const DragState &drag, const vec2 &canvasPos, vec3 &tl, vec3 &
 
 // Resize the active drag item to the current mouse canvas pos. Single-select,
 // OBS_BOUNDS_NONE (scale) and bounds paths; aspect is preserved on corner and
-// edge drags unless shiftHeld requests free aspect.
+// edge drags unless Shift requests free aspect.
 // Snaps the moving edge(s) to canvas edges/center/other sources, mirroring
 // move-drag's CanvasSnapOffset via a per-live-edge probe box (see below).
 void StretchItem(const DragState &drag, obs_sceneitem_t *item, const vec2 &canvasPos, obs_scene_t *scene,
-		 const GeneralSettings &gs, float snapBaseW, float snapBaseH, bool shiftHeld)
+		 const GeneralSettings &gs, float snapBaseW, float snapBaseH, const Modifiers &mods)
 {
 	const obs_bounds_type boundsType = obs_sceneitem_get_bounds_type(item);
 	const uint32_t flags = uint32_t(drag.handle);
@@ -1046,8 +1142,7 @@ void StretchItem(const DragState &drag, obs_sceneitem_t *item, const vec2 &canva
 	// discard the returned offset for that axis.
 	const bool xLive = (flags & (ITEM_LEFT | ITEM_RIGHT)) != 0;
 	const bool yLive = (flags & (ITEM_TOP | ITEM_BOTTOM)) != 0;
-	const bool ctrlHeld = GetKeyState(VK_CONTROL) < 0;
-	if (gs.snapEnabled && !ctrlHeld && snapBaseW > 0.0f && snapBaseH > 0.0f && (xLive || yLive)) {
+	if (gs.snapEnabled && !mods.ctrl && snapBaseW > 0.0f && snapBaseH > 0.0f && (xLive || yLive)) {
 		vec3 canvasTl, canvasBr;
 		vec3_transform(&canvasTl, &tl, &drag.itemToScreen);
 		vec3_transform(&canvasBr, &br, &drag.itemToScreen);
@@ -1082,11 +1177,9 @@ void StretchItem(const DragState &drag, obs_sceneitem_t *item, const vec2 &canva
 		// Canvas->item-local is rotation-only for a delta (itemToScreen has no
 		// scale component: local and canvas share units, differing by rotation
 		// and translation, and translation drops out for a delta).
-		vec3 localSnap;
-		matrix4 rotationOnly;
-		matrix4_identity(&rotationOnly);
-		matrix4_rotate_aa4f(&rotationOnly, &rotationOnly, 0.0f, 0.0f, 1.0f, RAD(-obs_sceneitem_get_rot(item)));
-		vec3_transform(&localSnap, &snap, &rotationOnly);
+		vec2 canvasSnap;
+		vec2_set(&canvasSnap, snap.x, snap.y);
+		const vec2 localSnap = RotateVec2(canvasSnap, RAD(-obs_sceneitem_get_rot(item)));
 
 		if (xLive) {
 			if (flags & ITEM_LEFT) {
@@ -1132,7 +1225,7 @@ void StretchItem(const DragState &drag, obs_sceneitem_t *item, const vec2 &canva
 		baseSize.x -= float(crop.left + crop.right);
 		baseSize.y -= float(crop.top + crop.bottom);
 
-		if (!shiftHeld) {
+		if (!mods.shift) {
 			ClampAspect(drag.handle, tl, br, size, baseSize);
 		}
 
@@ -1148,27 +1241,26 @@ void StretchItem(const DragState &drag, obs_sceneitem_t *item, const vec2 &canva
 }
 
 // Crop the active drag item to the current mouse canvas pos (Alt-drag). Adjusts
-// obs_sceneitem_crop's per-edge left/right/top/bottom in source px; unlike
-// StretchItem this never touches scale, so the item's on-screen scale is exactly
-// what it was before the crop drag started. Never snaps (OBS's crop drag ignores
-// snapping outright), so this intentionally skips the CanvasSnapOffset step.
-// OBS_BOUNDS_NONE only: in bounds mode the item's scale is auto-derived from the
-// (source size - crop) to fill the fixed bounds box, so cropping would implicitly
-// rescale it too, breaking the "scale stays put" invariant this function relies
-// on; that case is left deferred, same posture as this file's rotation-drag gap.
+// obs_sceneitem_crop's per-edge left/right/top/bottom in source px and never writes
+// scale or bounds. Never snaps (OBS's crop drag ignores snapping outright), so this
+// intentionally skips the CanvasSnapOffset step.
+//
+// Branches on the bounds type as the legacy CropItem does
+// (frontend_old/widgets/OBSBasicPreview.cpp:1352-1469). Unbounded, the box is the
+// cropped source times the scale, so the position follows the dragged edge to keep the
+// opposite edge planted. Bounded, the box is the bounds and stays where it is while the
+// bounds type re-fits the remaining source inside it, so the position is left alone.
+// Either way the drag converts to source px through drag.crop; see CaptureCropFrame.
 void CropItem(const DragState &drag, obs_sceneitem_t *item, const vec2 &canvasPos)
 {
-	if (obs_sceneitem_get_bounds_type(item) != OBS_BOUNDS_NONE) {
-		return;
-	}
-
+	const bool bounded = obs_sceneitem_get_bounds_type(item) != OBS_BOUNDS_NONE;
 	const uint32_t flags = uint32_t(drag.handle);
 
 	vec3 tl, br, pos3;
 	DragBoxLocal(drag, canvasPos, tl, br, pos3);
 
-	vec2 scale;
-	obs_sceneitem_get_scale(item, &scale);
+	const CropFrame &frame = drag.crop;
+	const vec2 &scale = frame.scale;
 	if (scale.x == 0.0f || scale.y == 0.0f) {
 		return;
 	}
@@ -1180,37 +1272,54 @@ void CropItem(const DragState &drag, obs_sceneitem_t *item, const vec2 &canvasPo
 		return;
 	}
 
-	// Item-local (box-unit) delta -> source-px delta: box-unit and source-px
-	// differ only by the item's scale, since box_size = (source_size - crop) *
-	// scale (see GetItemSize above).
+	// A box edge's inward travel, less the gap between that edge and the picture, in source
+	// px. Travel that stays inside the gap reaches no picture and crops nothing; outward
+	// travel still uncrops.
+	const auto sourcePx = [](float travel, float gap, float perPx) {
+		const float past = travel > gap ? travel - gap : std::min(travel, 0.0f);
+		return int(std::round(past / perPx));
+	};
+
+	// On a mirrored axis a box edge shows the source's opposite side, and libobs crops the
+	// source before it mirrors, so the crop edge written is the opposite one.
 	obs_sceneitem_crop crop = drag.startCrop;
+	int &leftEdge = frame.flipX ? crop.right : crop.left;
+	int &rightEdge = frame.flipX ? crop.left : crop.right;
+	int &topEdge = frame.flipY ? crop.bottom : crop.top;
+	int &bottomEdge = frame.flipY ? crop.top : crop.bottom;
 	if (flags & ITEM_LEFT) {
-		crop.left += int(std::round(tl.x / scale.x));
+		leftEdge += sourcePx(tl.x, frame.gapTl.x, scale.x);
 	} else if (flags & ITEM_RIGHT) {
-		crop.right += int(std::round((drag.stretchItemSize.x - br.x) / scale.x));
+		rightEdge += sourcePx(drag.stretchItemSize.x - br.x, frame.gapBr.x, scale.x);
 	}
 	if (flags & ITEM_TOP) {
-		crop.top += int(std::round(tl.y / scale.y));
+		topEdge += sourcePx(tl.y, frame.gapTl.y, scale.y);
 	} else if (flags & ITEM_BOTTOM) {
-		crop.bottom += int(std::round((drag.stretchItemSize.y - br.y) / scale.y));
+		bottomEdge += sourcePx(drag.stretchItemSize.y - br.y, frame.gapBr.y, scale.y);
 	}
 
 	// Corner handles touch two edges on two different axes (e.g. top-left ->
 	// left+top), never two edges of the same axis, so each live edge clamps
 	// independently against its own untouched opposite edge. A 1px sliver of
 	// source is kept visible so a drag can never crop past the far edge.
+	const auto clampEdge = [](int &edge, int opposite, int sourceExtent) {
+		edge = std::clamp(edge, 0, std::max(0, sourceExtent - 1 - opposite));
+	};
 	if (flags & ITEM_LEFT) {
-		crop.left = std::clamp(crop.left, 0, std::max(0, source_cx - 1 - crop.right));
+		clampEdge(leftEdge, rightEdge, source_cx);
 	} else if (flags & ITEM_RIGHT) {
-		crop.right = std::clamp(crop.right, 0, std::max(0, source_cx - 1 - crop.left));
+		clampEdge(rightEdge, leftEdge, source_cx);
 	}
 	if (flags & ITEM_TOP) {
-		crop.top = std::clamp(crop.top, 0, std::max(0, source_cy - 1 - crop.bottom));
+		clampEdge(topEdge, bottomEdge, source_cy);
 	} else if (flags & ITEM_BOTTOM) {
-		crop.bottom = std::clamp(crop.bottom, 0, std::max(0, source_cy - 1 - crop.top));
+		clampEdge(bottomEdge, topEdge, source_cy);
 	}
 
 	obs_sceneitem_set_crop(item, &crop);
+	if (bounded) {
+		return;
+	}
 
 	// Re-derive tl/br from the (possibly clamped) crop so the position update
 	// below reflects what was actually applied, not the raw unclamped drag.
@@ -1226,27 +1335,89 @@ void CropItem(const DragState &drag, obs_sceneitem_t *item, const vec2 &canvasPo
 	obs_sceneitem_set_pos(item, &newPos);
 }
 
-// Capture the matrices/sizes a resize drag needs (legacy GetStretchHandleData,
-// no-group path) for the chosen item + handle. `sceneSource` is the scene `item`
-// belongs to, recorded with its id so a scene switch mid-gesture cannot redirect
-// the drag onto the new scene's item of the same id.
-void BeginResize(DragState &drag, obs_source_t *sceneSource, obs_sceneitem_t *item, ItemHandle handle,
-		 const vec2 &startCanvasPos)
+// The CropFrame for a crop drag starting now. `screenToItem` and `boxSize` are the
+// resize's canvas->box-local matrix and box size, `crop` the crop at the press.
+//
+// Unbounded, the box IS the picture: the scale is the item's own, signed, so a mirrored
+// item's box-local space mirrors with it and the dragged edge is already the right crop
+// edge; box_size = (source_size - crop) * scale (see GetItemSize above), and there is no
+// gap.
+//
+// Bounded, the box is the bounds and the picture is fitted inside it, which libobs
+// records in the draw transform whatever the bounds type. Its axis lengths are canvas px
+// per source px, taken as magnitudes because a mirror is expressed by which crop edge is
+// written, not by the sign of the conversion. Mapping the picture's corners through it
+// into box-local space gives the gap on each side and, from which way round the corners
+// land, whether the picture is mirrored on that axis.
+//
+// Read once at the press: the fit changes as the crop does, and re-reading it per frame
+// would feed each frame's crop back into the next one's conversion.
+CropFrame CaptureCropFrame(obs_sceneitem_t *item, const matrix4 &screenToItem, const vec2 &boxSize,
+			   const obs_sceneitem_crop &crop)
 {
-	matrix4 boxTransform;
-	vec3 itemUL;
+	CropFrame frame;
+	if (obs_sceneitem_get_bounds_type(item) == OBS_BOUNDS_NONE) {
+		obs_sceneitem_get_scale(item, &frame.scale);
+		return frame;
+	}
 
-	drag.mode = DragMode::Resize;
+	matrix4 draw;
+	obs_sceneitem_get_draw_transform(item, &draw);
+	vec2_set(&frame.scale, std::hypot(draw.x.x, draw.x.y), std::hypot(draw.y.x, draw.y.y));
+
+	// The picture in source px, without the extra crop libobs applies when cropping to
+	// bounds, which it does not expose. Whenever the picture overhangs the box, cropped to
+	// bounds or drawn past it, the clamp below treats the box edge as the picture's edge, so
+	// a drag crops from the first hidden row rather than jumping across the overhang.
+	obs_source_t *source = obs_sceneitem_get_source(item);
+	const float cx = float(std::max(0, int(obs_source_get_width(source)) - crop.left - crop.right));
+	const float cy = float(std::max(0, int(obs_source_get_height(source)) - crop.top - crop.bottom));
+
+	vec3 nearCorner = GetTransformedPos(0.0f, 0.0f, draw);
+	vec3 farCorner = GetTransformedPos(cx, cy, draw);
+	vec3_transform(&nearCorner, &nearCorner, &screenToItem);
+	vec3_transform(&farCorner, &farCorner, &screenToItem);
+
+	frame.flipX = farCorner.x < nearCorner.x;
+	frame.flipY = farCorner.y < nearCorner.y;
+
+	const auto gaps = [](float a, float b, float extent, float &gapLo, float &gapHi) {
+		gapLo = std::clamp(std::min(a, b), 0.0f, extent);
+		gapHi = extent - std::clamp(std::max(a, b), 0.0f, extent);
+	};
+	gaps(nearCorner.x, farCorner.x, boxSize.x, frame.gapTl.x, frame.gapBr.x);
+	gaps(nearCorner.y, farCorner.y, boxSize.y, frame.gapTl.y, frame.gapBr.y);
+	return frame;
+}
+
+// Open a gesture on the one item a handle names. `sceneSource` is the scene `item`
+// belongs to, recorded with its id so a scene switch mid-gesture cannot redirect the
+// drag onto the new scene's item of the same id. The item is still recorded as a member
+// the way a move records each of its own, so the undo capture has one shape for every
+// gesture.
+void BeginHandleGesture(DragState &drag, DragMode mode, obs_source_t *sceneSource, obs_sceneitem_t *item,
+			ItemHandle handle, const vec2 &startCanvasPos)
+{
+	drag.mode = mode;
 	drag.moved = false;
 	drag.id.Set(sceneSource, obs_sceneitem_get_id(item));
-	// A resize acts on exactly one item, but it still records its member the same way
-	// a move does so the undo capture below has one shape for both gestures.
 	drag.items.clear();
 	drag.items.emplace_back();
 	drag.items.back().id = drag.id;
 	obs_sceneitem_get_pos(item, &drag.items.back().startItemPos);
 	drag.handle = handle;
 	drag.startCanvasPos = startCanvasPos;
+}
+
+// Capture the matrices/sizes a resize drag needs (legacy GetStretchHandleData,
+// no-group path) for the chosen item + handle.
+void BeginResize(DragState &drag, obs_source_t *sceneSource, obs_sceneitem_t *item, ItemHandle handle,
+		 const vec2 &startCanvasPos)
+{
+	matrix4 boxTransform;
+	vec3 itemUL;
+
+	BeginHandleGesture(drag, DragMode::Resize, sceneSource, item, handle, startCanvasPos);
 	drag.stretchItemSize = GetItemSize(item);
 
 	obs_sceneitem_get_box_transform(item, &boxTransform);
@@ -1262,6 +1433,105 @@ void BeginResize(DragState &drag, obs_source_t *sceneSource, obs_sceneitem_t *it
 	matrix4_rotate_aa4f(&drag.screenToItem, &drag.screenToItem, 0.0f, 0.0f, 1.0f, RAD(-itemRot));
 
 	obs_sceneitem_get_crop(item, &drag.startCrop);
+	drag.crop = CaptureCropFrame(item, drag.screenToItem, drag.stretchItemSize, drag.startCrop);
+}
+
+// The pointer's angle about the rotation pivot, in degrees.
+float PointerAngle(const DragState &drag, const vec2 &canvasPos)
+{
+	return DEG(std::atan2(canvasPos.y - drag.rotateCenter.y, canvasPos.x - drag.rotateCenter.x));
+}
+
+// Capture the pivot a rotation turns about, as the legacy FindHandleAtPos does when it
+// picks the rotation handle (OBSBasicPreview.cpp:419-431): the box centre, and the
+// item's position relative to it with the start rotation taken out, so each frame can
+// place the position by turning that offset to the new angle. Also the pointer's own
+// angle at the press, which each frame's rotation is measured from.
+void BeginRotate(DragState &drag, obs_source_t *sceneSource, obs_sceneitem_t *item, const vec2 &startCanvasPos)
+{
+	BeginHandleGesture(drag, DragMode::Rotate, sceneSource, item, ItemHandle::Rot, startCanvasPos);
+
+	matrix4 boxTransform;
+	obs_sceneitem_get_box_transform(item, &boxTransform);
+	const vec3 center = GetTransformedPos(0.5f, 0.5f, boxTransform);
+
+	drag.rotateStartAngle = obs_sceneitem_get_rot(item);
+	vec2_set(&drag.rotateCenter, center.x, center.y);
+	drag.rotatePressAngle = PointerAngle(drag, startCanvasPos);
+	vec2 offset;
+	vec2_sub(&offset, &drag.items.back().startItemPos, &drag.rotateCenter);
+	drag.rotateOffset = RotateVec2(offset, RAD(-drag.rotateStartAngle));
+	drag.rotateApplied = false;
+}
+
+// The distance between two angles in degrees, the short way round.
+float AngleGap(float a, float b)
+{
+	return std::fabs(std::remainder(a - b, 360.0f));
+}
+
+// Whether two rotations in degrees are the same angle modulo a full turn.
+bool SameRotation(float a, float b)
+{
+	return AngleGap(a, b) < kRotSameAngleEpsilon;
+}
+
+// An angle in degrees after snapping; see kRotSnapPull for the rules. Distances are taken
+// the short way round, so a target pulls across the wrap point as well. Each target is
+// tried against the angle the previous one left, so a snap-step multiple within reach of
+// the start angle takes over from it, as it does in the legacy macro sequence.
+float SnapRotation(float angle, float startAngle, const Modifiers &mods)
+{
+	const auto pull = [&angle](float target, float within) {
+		if (AngleGap(angle, target) < within) {
+			angle = target;
+		}
+	};
+	if (mods.shift) {
+		for (float target = kRotAngleMin; target <= kRotAngleMax; target += kRotShiftStep) {
+			pull(target, kRotShiftStep * 0.5f);
+		}
+	} else if (!mods.ctrl) {
+		pull(startAngle, kRotSnapPull);
+		for (float target = kRotAngleMin; target <= kRotAngleMax; target += kRotSnapStep) {
+			pull(target, kRotSnapPull);
+		}
+	}
+	return angle;
+}
+
+// Turn the active drag item by the angle the pointer has swept about the box centre since
+// the press (after the legacy RotateItem, OBSBasicPreview.cpp:1557-1601, which instead
+// points the item's top at the pointer and so jumps by however far off-axis the press
+// landed on the disc). The position is the recorded offset turned to the new angle, which
+// is what keeps the box centre fixed whatever the item's alignment.
+//
+// At the start angle, however it is spelled (-10 for a start of 350), nothing is
+// computed or written: the recomputed position carries float error and the angle its
+// wrapped form, either of which would make the gesture's AFTER capture differ from its
+// BEFORE and record an undo entry for a press-and-jiggle. A return to the start angle
+// from elsewhere writes the recorded start values back instead.
+void RotateItem(DragState &drag, obs_sceneitem_t *item, const vec2 &canvasPos, const Modifiers &mods)
+{
+	const float swept = PointerAngle(drag, canvasPos) - drag.rotatePressAngle;
+	const float angle =
+		WrapDegrees(SnapRotation(drag.rotateStartAngle + swept, drag.rotateStartAngle, mods), kRotAngleMin);
+
+	if (SameRotation(angle, drag.rotateStartAngle)) {
+		if (drag.rotateApplied) {
+			obs_sceneitem_set_rot(item, drag.rotateStartAngle);
+			obs_sceneitem_set_pos(item, &drag.items.back().startItemPos);
+			drag.rotateApplied = false;
+		}
+		return;
+	}
+
+	vec2 pos = RotateVec2(drag.rotateOffset, RAD(angle));
+	vec2_add(&pos, &pos, &drag.rotateCenter);
+
+	obs_sceneitem_set_rot(item, angle);
+	obs_sceneitem_set_pos(item, &pos);
+	drag.rotateApplied = true;
 }
 
 // One end of a drag's undo pair: EVERY dragged item's full geometry plus the keys that
@@ -1369,11 +1639,12 @@ void DrawRect(float thickness, const vec2 &boxScale)
 	DrawLine(0.0f, 1.0f, 1.0f, 1.0f, thickness, boxScale);
 }
 
-// Draw a filled square at a unit-space handle coord. Reads the current matrix --
-// in the editing phase, the letterbox scale times the item's box transform -- and
-// maps the point through it into that phase's screen-px space, then draws an
-// axis-aligned square there off a reset matrix, so `halfSize` is screen px.
-void DrawSquareAtPos(float x, float y, float halfSize)
+// Push a matrix whose origin is the unit-space point (x, y) and whose units are screen
+// px. Reads the current matrix -- in the editing phase, the letterbox scale times the
+// item's box transform -- maps the point through it into that phase's screen-px space,
+// and resets to a plain translation there, so a handle drawn after it keeps its screen
+// size at any zoom or item scale. The caller pops.
+void PushHandleAnchor(float x, float y)
 {
 	vec3 pos;
 	vec3_set(&pos, x, y, 0.0f);
@@ -1384,9 +1655,39 @@ void DrawSquareAtPos(float x, float y, float halfSize)
 	gs_matrix_push();
 	gs_matrix_identity();
 	gs_matrix_translate(&pos);
+}
+
+// Draw a filled, axis-aligned square at a unit-space handle coord; `halfSize` is screen
+// px (see PushHandleAnchor).
+void DrawSquareAtPos(float x, float y, float halfSize)
+{
+	PushHandleAnchor(x, y);
 	gs_matrix_translate3f(-halfSize, -halfSize, 0.0f);
 	gs_matrix_scale3f(halfSize * 2.0f, halfSize * 2.0f, 1.0f);
 	gs_draw(GS_TRISTRIP, 0, 0);
+	gs_matrix_pop();
+}
+
+// Draw the rotation handle: a stem out from the midpoint of the item's visual top edge
+// to a filled disc, turned with the item, after the legacy DrawRotationHandle
+// (frontend_old/widgets/OBSBasicPreview.cpp:1763-1793). The disc is centred on the point
+// FindHandleAtPos tests and sized to its grab zone. Measured in screen px (see
+// PushHandleAnchor); the caller has the Solid technique begun and the color set.
+void DrawRotationHandle(obs_sceneitem_t *item, gs_vertbuffer_t *circleBuffer)
+{
+	PushHandleAnchor(0.5f, RotHandleEdgeY(item));
+	gs_matrix_rotaa4f(0.0f, 0.0f, 1.0f, RAD(obs_sceneitem_get_rot(item)));
+
+	gs_matrix_push();
+	gs_matrix_translate3f(-kBoxLineThickness * 0.5f, -kRotHandleDistance, 0.0f);
+	gs_draw_quadf(nullptr, 0, kBoxLineThickness, kRotHandleDistance);
+	gs_matrix_pop();
+
+	gs_matrix_translate3f(-kHandleSelRadius, -kRotHandleDistance - kHandleSelRadius, 0.0f);
+	gs_matrix_scale3f(kHandleSelRadius * 2.0f, kHandleSelRadius * 2.0f, 1.0f);
+	gs_load_vertexbuffer(circleBuffer);
+	gs_draw(GS_TRISTRIP, 0, 0);
+
 	gs_matrix_pop();
 }
 
@@ -1454,16 +1755,17 @@ void DrawCanvasRect(const vec2 &tl, const vec2 &br, float scale, const vec4 &out
 	gs_matrix_pop();
 }
 
-// Draw `item`'s box outline in `color`, plus the 8 resize handles when
-// `handleBuffer` is non-null (the shared unit-quad TRISTRIP vertbuffer). Both are
-// drawn inside the box-transform matrix in unit space, so they follow the item's
-// rotation/scale. Runs in the draw callback's editing phase, whose ortho is screen
-// px and whose matrix stack already carries the letterbox scale (see
-// RenderPreview). `scale` = letterbox screen-px-per-canvas-unit: boxScale maps
-// unit->screen px so the line thickness stays ~constant on screen, and the handle
-// half-size is kHandleRadius unscaled because DrawSquareAtPos draws off a reset
-// matrix, in this phase's screen px.
-void DrawItemBox(obs_sceneitem_t *item, float scale, const vec4 &color, gs_vertbuffer_t *handleBuffer)
+// Draw `item`'s box outline in `color`, plus the 8 resize handles and the rotation
+// handle when `handleBuffer` (the shared unit-quad TRISTRIP vertbuffer) and
+// `circleBuffer` (the rotation handle's disc) are non-null. All are drawn inside the
+// box-transform matrix in unit space, so they follow the item's rotation/scale. Runs
+// in the draw callback's editing phase, whose ortho is screen px and whose matrix
+// stack already carries the letterbox scale (see RenderPreview). `scale` = letterbox
+// screen-px-per-canvas-unit: boxScale maps unit->screen px so the line thickness stays
+// ~constant on screen, and the handle half-size is kHandleRadius unscaled because
+// the handles draw off a reset matrix, in this phase's screen px (PushHandleAnchor).
+void DrawItemBox(obs_sceneitem_t *item, float scale, const vec4 &color, gs_vertbuffer_t *handleBuffer,
+		 gs_vertbuffer_t *circleBuffer)
 {
 	if (scale <= 0.0f) {
 		return;
@@ -1487,7 +1789,7 @@ void DrawItemBox(obs_sceneitem_t *item, float scale, const vec4 &color, gs_vertb
 		DrawRect(kBoxLineThickness, boxScale);
 	}
 
-	if (handleBuffer) {
+	if (handleBuffer && circleBuffer) {
 		gs_technique_t *tech = gs_effect_get_technique(solid, "Solid");
 		gs_technique_begin(tech);
 		gs_technique_begin_pass(tech, 0);
@@ -1502,6 +1804,8 @@ void DrawItemBox(obs_sceneitem_t *item, float scale, const vec4 &color, gs_vertb
 		DrawSquareAtPos(0.0f, 1.0f, kHandleRadius);
 		DrawSquareAtPos(0.5f, 1.0f, kHandleRadius);
 		DrawSquareAtPos(1.0f, 1.0f, kHandleRadius);
+		// Last: it loads its own buffer over the one the squares draw from.
+		DrawRotationHandle(item, circleBuffer);
 
 		// Unbind before leaving: the device keeps the last loaded buffer, and
 		// nothing downstream of this callback is obliged to load its own.
@@ -1558,6 +1862,8 @@ struct PreviewSurface::State {
 	// rubber band's fill. Created lazily on the render thread and destroyed under a
 	// graphics context in Destroy().
 	gs_vertbuffer_t *boxBuffer = nullptr;
+	// The rotation handle's disc, with the same lifetime as boxBuffer.
+	gs_vertbuffer_t *circleBuffer = nullptr;
 
 	obs_canvas_t *targetCanvas = nullptr; // mirror of the surface's binding for the callback
 };
@@ -1601,6 +1907,26 @@ void EnsureBoxBuffer(PreviewSurface::State *state)
 	gs_vertex2f(0.0f, 1.0f);
 	gs_vertex2f(1.0f, 1.0f);
 	state->boxBuffer = gs_render_save();
+}
+
+// A unit disc built as the legacy preview builds its circleFill
+// (frontend_old/widgets/OBSBasicPreview.cpp:2117-2129): each rim segment followed by the
+// disc's bottom point, which as a strip fans the whole disc from that point.
+void EnsureCircleBuffer(PreviewSurface::State *state)
+{
+	if (state->circleBuffer) {
+		return;
+	}
+	constexpr int kSegments = 40;
+	gs_render_start(true);
+	float angle = 180.0f;
+	for (int i = 0; i < kSegments; i++) {
+		gs_vertex2f(std::sin(RAD(angle)) / 2.0f + 0.5f, std::cos(RAD(angle)) / 2.0f + 0.5f);
+		angle += 360.0f / float(kSegments);
+		gs_vertex2f(std::sin(RAD(angle)) / 2.0f + 0.5f, std::cos(RAD(angle)) / 2.0f + 0.5f);
+		gs_vertex2f(0.5f, 1.0f);
+	}
+	state->circleBuffer = gs_render_save();
 }
 
 // Emit sceneItem.selected to JS for the surface's scene. An empty `ids` ->
@@ -1796,9 +2122,11 @@ void RenderPreview(void *data, uint32_t cx, uint32_t cy)
 	// current scene is settled by Resolve() below, once that scene is in hand.
 	bool anyEditId;
 	bool bandActive;
+	bool locked;
 	vec2 bandStart, bandCurrent;
 	{
 		std::lock_guard<std::mutex> lock(state->stateMutex);
+		locked = state->view.locked;
 		bandActive = state->box.active;
 		bandStart = state->box.start;
 		bandCurrent = state->box.current;
@@ -1841,7 +2169,7 @@ void RenderPreview(void *data, uint32_t cx, uint32_t cy)
 				obs_sceneitem_t *item = FindItemById(scene, hoveredId);
 				if (item && SceneItemHasVideo(item) && !obs_sceneitem_locked(item) &&
 				    obs_sceneitem_visible(item)) {
-					DrawItemBox(item, scale, kHoverColor, nullptr);
+					DrawItemBox(item, scale, kHoverColor, nullptr, nullptr);
 				}
 			}
 			// Selection deliberately does NOT take the visible check above: an
@@ -1850,14 +2178,23 @@ void RenderPreview(void *data, uint32_t cx, uint32_t cy)
 			// transform in the preview. Hover is the passive case, selection the
 			// asked-for one, so the asymmetry is the intent, not an oversight.
 			//
-			// Every member gets its own outline AND its own handles: with a
-			// multi-selection, only the anchor being grabbable would be arbitrary,
-			// and ResolveGestureAtPos tests all of them for exactly that reason.
+			// Every member gets its own outline, and on an unlocked preview its own
+			// handles: with a multi-selection, only the anchor being grabbable would be
+			// arbitrary, and ResolveGestureAtPos tests all of them for exactly that
+			// reason. A locked preview keeps the outlines, which show what is selected,
+			// and drops the handles, which would promise an edit the lock refuses.
 			for (const int64_t id : selectedIds) {
 				obs_sceneitem_t *item = FindItemById(scene, id);
-				if (item && SceneItemHasVideo(item) && !obs_sceneitem_locked(item)) {
+				if (!item || !SceneItemHasVideo(item) || obs_sceneitem_locked(item)) {
+					continue;
+				}
+				if (locked) {
+					DrawItemBox(item, scale, kSelectionColor, nullptr, nullptr);
+				} else {
 					EnsureBoxBuffer(state);
-					DrawItemBox(item, scale, kSelectionColor, state->boxBuffer);
+					EnsureCircleBuffer(state);
+					DrawItemBox(item, scale, kSelectionColor, state->boxBuffer,
+						    state->circleBuffer);
 				}
 			}
 
@@ -1994,7 +2331,7 @@ void PreviewSurface::OnLeftDown(int mx, int my)
 	// fit mode has nothing to pan, since the whole canvas is already in view. The
 	// modifier is sampled here and nowhere else in the gesture, which is what makes
 	// pressing space mid-drag harmless -- an item gesture already in flight is never
-	// converted to a pan, it just finishes as the move or resize it started as.
+	// converted to a pan, it just finishes as the move, resize or rotation it started as.
 	// Ahead of the transform check below so a pan can still be started (and refused
 	// by PanBy) on a surface that has not drawn yet.
 	if (PanModifierHeld() && FixedScaling()) {
@@ -2034,14 +2371,20 @@ void PreviewSurface::OnLeftDown(int mx, int my)
 	const GestureAtPos gesture = ResolveGestureAtPos(scene, locked ? kNoSelection : selectedIds, canvasPos,
 							 CurrentScale(state_), !ctrlHeld);
 
-	// A handle of a selected item begins a resize, and that is the one decision a press
-	// still makes immediately: it names its target outright, so there is nothing left
-	// for the first move to resolve.
+	// A handle of a selected item begins a resize or a rotation, and that is the one
+	// decision a press still makes immediately: it names its target outright, so there is
+	// nothing left for the first move to resolve.
 	if (gesture.handle != ItemHandle::None) {
-		BeginResize(state_->drag, sceneSource, gesture.item, gesture.handle, canvasPos);
+		const bool rotating = gesture.handle == ItemHandle::Rot;
+		if (rotating) {
+			BeginRotate(state_->drag, sceneSource, gesture.item, canvasPos);
+		} else {
+			BeginResize(state_->drag, sceneSource, gesture.item, gesture.handle, canvasPos);
+		}
 		state_->drag.undoBefore =
 			CaptureDragUndoState(targetCanvas_, sceneSource, std::vector<obs_sceneitem_t *>{gesture.item});
-		HostLog("[preview] resize start id=" + std::to_string(obs_sceneitem_get_id(gesture.item)) +
+		HostLog(std::string("[preview] ") + (rotating ? "rotate" : "resize") +
+			" start id=" + std::to_string(obs_sceneitem_get_id(gesture.item)) +
 			" handle=" + std::to_string(uint32_t(gesture.handle)));
 		obs_source_release(sceneSource);
 		return;
@@ -2477,21 +2820,20 @@ void PreviewSurface::OnMouseMove(int mx, int my)
 		} else if (state_->drag.mode == DragMode::Resize) {
 			const GeneralSettings &gs = ObsBootstrap::General();
 			const Modifiers mods = ReadModifiers();
-			const bool ctrlHeld = mods.ctrl;
-			const bool shiftHeld = mods.shift;
-			const bool altHeld = mods.alt;
-			if (altHeld) {
+			if (mods.alt) {
 				CropItem(state_->drag, item, canvasPos);
 			} else {
 				obs_video_info ovi;
 				float snapBaseW = 0.0f, snapBaseH = 0.0f;
-				if (gs.snapEnabled && !ctrlHeld && SurfaceVideoInfo(targetCanvas_, ovi) &&
+				if (gs.snapEnabled && !mods.ctrl && SurfaceVideoInfo(targetCanvas_, ovi) &&
 				    ovi.base_width && ovi.base_height) {
 					snapBaseW = float(ovi.base_width);
 					snapBaseH = float(ovi.base_height);
 				}
-				StretchItem(state_->drag, item, canvasPos, scene, gs, snapBaseW, snapBaseH, shiftHeld);
+				StretchItem(state_->drag, item, canvasPos, scene, gs, snapBaseW, snapBaseH, mods);
 			}
+		} else if (state_->drag.mode == DragMode::Rotate) {
+			RotateItem(state_->drag, item, canvasPos, ReadModifiers());
 		}
 	}
 	obs_source_release(sceneSource);
@@ -2672,9 +3014,9 @@ bool PreviewSurface::FinishDrag()
 
 	// A braidcast_overlay source renders its page at the size in its settings and the
 	// item then scales that bitmap, so a resize alone would magnify pixels rather than
-	// re-lay-out the widget. Make the page follow the box instead. Resize only: a move
-	// leaves the box alone, while an Alt-crop changes how much page the box needs, so
-	// both stretch and crop drags (which share DragMode::Resize) commit.
+	// re-lay-out the widget. Make the page follow the box instead. Resize only: a move or
+	// a rotation leaves the box's size alone, while an Alt-crop changes how much page the
+	// box needs, so both stretch and crop drags (which share DragMode::Resize) commit.
 	if (resized && moved) {
 		obs_source_t *sceneSource = AcquireSurfaceSceneSource(targetCanvas_); // addref'd
 		if (sceneSource) {
@@ -3070,11 +3412,10 @@ void PreviewSurface::Destroy()
 {
 	// Closing the surface under a held button ends the gesture, and it is the one end
 	// no message can deliver: OverlaySurface::Destroy clears the HWND's GWLP_USERDATA
-	// before DestroyWindow (overlay_surface.cpp:260-261), so nothing the destruction
-	// sends can route back into this surface's WndProc -- CancelDrag included. Ahead of
-	// overlay_.Destroy() so the gesture finishes while the surface is whole; every
-	// Destroy path is already the window-owning thread, because the DestroyWindow it
-	// reaches must be.
+	// before its DestroyWindow, so nothing the destruction sends can route back into this
+	// surface's WndProc -- CancelDrag included. Ahead of overlay_.Destroy() so the gesture
+	// finishes while the surface is whole; every Destroy path is already the
+	// window-owning thread, because the DestroyWindow it reaches must be.
 	FinishDrag();
 	EndPanOffSurface();
 	// A surface torn down with the pointer still over it must retract the flag, or
@@ -3084,13 +3425,15 @@ void PreviewSurface::Destroy()
 	RetractPointerOver();
 
 	// The display dies first (OverlaySurface removes the draw callback), so nothing
-	// the render thread reads outlives it -- including the box buffer below.
+	// the render thread reads outlives it -- including the vertex buffers below.
 	overlay_.Destroy();
-	if (state_->boxBuffer) {
+	if (state_->boxBuffer || state_->circleBuffer) {
 		obs_enter_graphics();
-		gs_vertexbuffer_destroy(state_->boxBuffer);
+		for (gs_vertbuffer_t **buffer : {&state_->boxBuffer, &state_->circleBuffer}) {
+			gs_vertexbuffer_destroy(*buffer);
+			*buffer = nullptr;
+		}
 		obs_leave_graphics();
-		state_->boxBuffer = nullptr;
 	}
 }
 
