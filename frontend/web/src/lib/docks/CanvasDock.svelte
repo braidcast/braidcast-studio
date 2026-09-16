@@ -428,7 +428,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   let items = $state<SceneItem[]>([]);
   // Per-canvas source selection with its own instance — the global sourceSelection
   // singleton is Default-canvas only. Holds the multi-select set for this canvas's
-  // scene; `.item` stays the primary (anchor) row the toolbar acts on.
+  // scene; `.item` is the focused row the toolbar acts on.
   const selection = new SourceSelection();
 
   // The Sources toolbar acts on the primary row (the OBS list convention); these
@@ -465,8 +465,9 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     }
   }
   // Plain click selects just this row; Ctrl/Cmd toggles it in/out of the set; Shift
-  // extends from the anchor over the visible (filtered) order. Every branch pushes the
-  // resulting set to the native preview, which draws the same selection this list shows.
+  // extends from the pivot over the visible (filtered) order. Every branch pushes the
+  // resulting set, focused row last, to the native preview, which draws the same selection
+  // this list shows.
   function selectItem(e: MouseEvent, item: SceneItem) {
     activeSurface.claimSource(surfaceOwner, canvasUuid, selection);
     if (e.shiftKey) {
@@ -476,9 +477,9 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     } else {
       selection.selectOne(item);
     }
-    void obs
-      .call("preview.select", { canvas: canvasUuid, window: WINDOW_ID, scene: currentScene, ids: [...selection.ids] })
-      .catch(() => {});
+    selection.pushToPreview((ids) =>
+      obs.call("preview.select", { canvas: canvasUuid, window: WINDOW_ID, scene: currentScene, ids }),
+    );
   }
   async function toggleVisible(item: SceneItem) {
     try {
@@ -751,7 +752,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     const transitionTypeList = await transitionTypes().catch(() => []);
     // Right-clicking a row that is part of a 2+ selection acts on the whole set; a
     // right-click on a single (or unselected) row stays single.
-    const inMulti = selection.has(item.id) && selection.size >= 2;
+    const inMulti = selection.has(item) && selection.size >= 2;
     menu = {
       x,
       y,
@@ -1084,13 +1085,10 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     });
     const offSel = obs.on(EV.sceneItemSelected, (p) => {
       if (p.canvas === canvasUuid && (!p.scene || p.scene === currentScene)) {
-        // The whole set, anchor last, so a preview multi-select (Ctrl-click or a
-        // rubber band) lands here as the set it is rather than as its anchor alone.
-        const picked = (p.ids ?? (p.id != null ? [p.id] : []))
-          .map((id) => items.find((i) => i.id === id))
-          .filter((i): i is SceneItem => i != null);
+        // The whole set, so a preview multi-select (Ctrl-click or a rubber band) lands
+        // here as the set it is rather than as its focused item alone.
         activeSurface.claimSource(surfaceOwner, canvasUuid, selection);
-        selection.setAll(picked);
+        selection.adoptPreview(p, items);
       }
     });
 
@@ -1366,7 +1364,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
         {#each filteredItems as item, idx (item.id)}
           <li
             class="es-row src"
-            class:on={selection.has(item.id)}
+            class:on={selection.has(item)}
             class:hidden-src={!item.visible}
             class:dropTarget={dragOverIdx === idx && dragId !== null && dragId !== item.id}
             style:box-shadow={item.color ? `inset 3px 0 0 ${item.color}` : null}

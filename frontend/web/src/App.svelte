@@ -36,7 +36,14 @@
   import { undoStore } from "$lib/stores/undoStore.svelte";
   import { channelsStore } from "$lib/stores/channelsStore.svelte";
   import { diagnosticsStore } from "$lib/stores/diagnosticsStore.svelte";
-  import { obs, type SceneItem, type TransformAction, type ReorderDirection, type TransformTarget } from "$lib/api/bridge";
+  import {
+    obs,
+    type SceneItem,
+    type SceneItemsNudgeParams,
+    type TransformAction,
+    type ReorderDirection,
+    type TransformTarget,
+  } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
   import { clipboard } from "$lib/stores/clipboardStore.svelte";
   import { copyItem, pasteReference } from "$lib/stores/clipboardItemState";
@@ -76,7 +83,7 @@ import { EV } from "$lib/utils/eventNames";
 
   function activeItem(): { item: SceneItem; target: TransformTarget } | null {
     const item = activeSurface.selection.item;
-    return item ? { item, target: { ...activeParams(), id: item.id } } : null;
+    return item ? { item, target: { ...activeParams(), id: item.id, group: item.group } } : null;
   }
 
   // For the shortcuts that address a scene rather than a row (paste, scene rename).
@@ -150,26 +157,16 @@ import { EV } from "$lib/utils/eventNames";
     void callOrToast("sceneItems.transformAction", { ...t.target, action }, errPrefix);
   }
 
-  // Arrow-key nudge (mirrors stock OBS: 1px, 10px with Shift). Reads the item's
-  // current position and writes back a position-only patch through the same
-  // get/setTransform pair quickTransform/copy-paste-transform use above — position
-  // is in canvas pixels, y growing downward, matching the preview and the Edit
-  // Transform dialog.
-  async function nudge(dx: number, dy: number): Promise<void> {
-    const t = activeItem();
-    if (!t) {
+  // Arrow-key nudge (mirrors stock OBS: 1px, 10px with Shift) of every selected item,
+  // as one undo step. The offset is in canvas pixels, y growing downward, matching the
+  // preview; the host carries it into group space for an item inside a group.
+  function nudge(dx: number, dy: number): void {
+    const refs = activeSurface.selection.items.map(({ id, group }) => ({ id, group }));
+    if (refs.length === 0) {
       return;
     }
-    const params = t.target;
-    const xf = await callOrToast("sceneItems.getTransform", params, "Nudge failed");
-    if (!xf) {
-      return;
-    }
-    void callOrToast(
-      "sceneItems.setTransform",
-      { ...params, transform: { pos: { x: xf.pos.x + dx, y: xf.pos.y + dy } } },
-      "Nudge failed",
-    );
+    const params: SceneItemsNudgeParams = { ...activeParams(), refs, dx, dy };
+    void callOrToast("sceneItems.nudge", params, "Nudge failed");
   }
 
   const ARROW_DELTAS: Record<string, [number, number]> = {
@@ -195,16 +192,16 @@ import { EV } from "$lib/utils/eventNames";
       void obs.call("window.toggleFullscreen").catch(() => {});
       return;
     }
-    // Arrow-key nudge of the active surface's selected scene item on its preview. Leaves
+    // Arrow-key nudge of the active surface's selected scene items on its preview. Leaves
     // Ctrl/Alt+Arrow, editable targets, and modal-open (arrows belong to the
     // dialog) alone; no-ops (without preventDefault) when nothing is selected so
     // e.g. list navigation still gets the arrow.
     const arrowDelta = ARROW_DELTAS[e.key];
     if (arrowDelta && !e.ctrlKey && !e.altKey && !isEditable(e.target) && !previewSuspended()) {
-      if (activeSurface.selection.item) {
+      if (activeSurface.selection.size > 0) {
         e.preventDefault();
         const step = e.shiftKey ? 10 : 1;
-        void nudge(arrowDelta[0] * step, arrowDelta[1] * step);
+        nudge(arrowDelta[0] * step, arrowDelta[1] * step);
       }
       return;
     }

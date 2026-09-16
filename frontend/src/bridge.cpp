@@ -1450,7 +1450,7 @@ bool ItemIdFromParams(const json &params, int64_t &id, std::string &error)
 // modifier click; `id` is the single-item shorthand every existing caller uses. Both
 // absent/null deselects. The addressed surface's scene (output 0 for the Default
 // surface, else the canvas's current scene) is authoritative; `scene` is only validated
-// against it. Returns {selected: anchorId|null, selectedIds: number[]}.
+// against it. Returns {selected: focusId|null, selectedIds: number[]}.
 bool MethodPreviewSelect(const json &params, json &result, std::string &error)
 {
 	const std::string scene = OptString(params, "scene");
@@ -1474,9 +1474,9 @@ bool MethodPreviewSelect(const json &params, json &result, std::string &error)
 					return false;
 				}
 				// A repeat keeps its LAST position: the set is
-				// insertion-ordered and its final member is the anchor a
-				// later Shift-click pivots from, so dropping the repeat
-				// would hand the anchor to whatever preceded it.
+				// insertion-ordered and its final member is the focus the
+				// surface reports back, so dropping the repeat would hand
+				// the focus to whatever preceded it.
 				auto dup = std::find(ids.begin(), ids.end(), id);
 				if (dup != ids.end()) {
 					ids.erase(dup);
@@ -1501,7 +1501,7 @@ bool MethodPreviewSelect(const json &params, json &result, std::string &error)
 		error = "preview selection failed (no scene or scene mismatch)";
 		return false;
 	}
-	// The anchor is the LAST member, matching what the surface reports back in
+	// The focus is the LAST member, matching what the surface reports back in
 	// sceneItem.selected and what `sourceSelection.item` means on the web side.
 	result = json{{"selected", ids.empty() ? json(nullptr) : json(ids.back())}, {"selectedIds", ids}};
 	return true;
@@ -3112,6 +3112,59 @@ void ApplyTransform(const std::string &data)
 	obs_source_release(sceneSource);
 }
 
+// The owners a batch of scene-item writes commits, one entry per distinct owner:
+// CommitSceneItemChange emits sceneItems.changed and persists the collection, and N items
+// changed in one scene are one change. Each owner's reference is kept, with the params its
+// emit addresses it by, until the list is destroyed, so no owner is freed while the batch
+// still writes the items it resolved from it.
+using OwnerCommits = std::vector<std::pair<OBSSourceAutoRelease, json>>;
+
+// Adds `owner` (whose reference the list takes) unless it is already listed; the first
+// params to name an owner are the ones its commit uses.
+void AddOwnerCommit(OwnerCommits &commits, OBSSourceAutoRelease owner, const json &params)
+{
+	const bool seen = std::any_of(commits.begin(), commits.end(),
+				      [&](const auto &commit) { return commit.first == owner.Get(); });
+	if (!seen) {
+		commits.emplace_back(std::move(owner), params);
+	}
+}
+
+// Adds a re-fit hold on `item`'s group unless one is already held; a top-level item adds
+// nothing.
+void HoldGroupOf(std::vector<GroupResizeDeferral> &holds, obs_sceneitem_t *item)
+{
+	obs_sceneitem_t *groupItem = GroupItemOf(item);
+	if (groupItem && std::none_of(holds.begin(), holds.end(),
+				      [&](const GroupResizeDeferral &hold) { return hold.GroupItem() == groupItem; })) {
+		holds.emplace_back(groupItem);
+	}
+}
+
+// Commits every listed owner. `holds` are the group holds taken over the writes, still
+// held, which is how a group owner is matched to the item drawing it.
+void CommitOwners(const OwnerCommits &commits, const std::vector<GroupResizeDeferral> &holds)
+{
+	auto committed = [&commits](obs_source_t *source) {
+		return std::any_of(commits.begin(), commits.end(),
+				   [&](const auto &commit) { return commit.first == source; });
+	};
+	for (const auto &commit : commits) {
+		// A group's own commit is redundant when the scene holding it is committed too, as
+		// it is whenever the batch wrote the group's item: that scene's announcement is
+		// what the group's would have resolved to, and it saves the same collection.
+		const bool coveredByScene =
+			obs_source_is_group(commit.first) &&
+			std::any_of(holds.begin(), holds.end(), [&](const GroupResizeDeferral &hold) {
+				return obs_sceneitem_get_source(hold.GroupItem()) == commit.first &&
+				       committed(obs_scene_get_source(obs_sceneitem_get_scene(hold.GroupItem())));
+			});
+		if (!coveredByScene) {
+			CommitSceneItemChange(commit.second, commit.first);
+		}
+	}
+}
+
 // Apply a whole batch of captured item states as ONE undo step. Every element of
 // "items" has the shape CaptureItemTransformStates records: a CaptureTransformState
 // object with whatever PinOverlayBoundsInState pins onto it, which is what the singular
@@ -3132,12 +3185,7 @@ void ApplyTransform(const std::string &data)
 // Returns whether anything was committed, i.e. whether any element resolved.
 bool ApplyItemStates(const json &items)
 {
-	// One commit per distinct owner, not per item: CommitSceneItemChange emits
-	// sceneItems.changed and persists the collection, and N items moved in one scene
-	// are one change. The element that first named an owner carries the canvas keys
-	// the emit addresses it by, so it is kept alongside the addref'd source, which also
-	// keeps every item resolved from it valid until the writes below are done.
-	std::vector<std::pair<obs_source_t *, json>> commits;
+	OwnerCommits commits;
 	std::vector<std::pair<obs_sceneitem_t *, const json *>> writes;
 	for (const json &state : items) {
 		if (!state.is_object()) {
@@ -3149,47 +3197,18 @@ bool ApplyItemStates(const json &items)
 			continue;
 		}
 		writes.emplace_back(item, &state);
-
-		const auto seen = std::find_if(commits.begin(), commits.end(),
-					       [&](const auto &c) { return c.first == sceneSource; });
-		if (seen == commits.end()) {
-			commits.emplace_back(sceneSource, state); // keeps the ref for the commit below
-		} else {
-			obs_source_release(sceneSource);
-		}
+		AddOwnerCommit(commits, OBSSourceAutoRelease(sceneSource), state);
 	}
 
 	std::vector<GroupResizeDeferral> holds;
 	for (const auto &write : writes) {
-		obs_sceneitem_t *groupItem = GroupItemOf(write.first);
-		if (groupItem && std::none_of(holds.begin(), holds.end(), [&](const GroupResizeDeferral &hold) {
-			    return hold.GroupItem() == groupItem;
-		    })) {
-			holds.emplace_back(groupItem);
-		}
+		HoldGroupOf(holds, write.first);
 	}
 	for (const auto &write : writes) {
 		SetItemGeometry(write.first, *write.second);
 	}
 
-	auto committed = [&commits](obs_source_t *source) {
-		return std::any_of(commits.begin(), commits.end(), [&](const auto &c) { return c.first == source; });
-	};
-	for (auto &commit : commits) {
-		// A group's own commit is redundant when the scene holding it is committed too, as
-		// it is whenever the payload carried the group's item: that scene's announcement is
-		// what the group's would have resolved to, and it saves the same collection.
-		const bool coveredByScene =
-			obs_source_is_group(commit.first) &&
-			std::any_of(holds.begin(), holds.end(), [&](const GroupResizeDeferral &hold) {
-				return obs_sceneitem_get_source(hold.GroupItem()) == commit.first &&
-				       committed(obs_scene_get_source(obs_sceneitem_get_scene(hold.GroupItem())));
-			});
-		if (!coveredByScene) {
-			CommitSceneItemChange(commit.second, commit.first);
-		}
-		obs_source_release(commit.first);
-	}
+	CommitOwners(commits, holds);
 	// The holds end on return, after the commits above have read their group items.
 	return !commits.empty();
 }
@@ -4288,49 +4307,83 @@ void RepositionForCenterPivot(obs_sceneitem_t *item, const vec3 &beforeTl, const
 	obs_sceneitem_set_pos(item, &pos);
 }
 
-// If the item's bounding box has near-zero overlap with the canvas after a
-// transform, nudge it back so at least kMinVisiblePx of it stays reachable --
-// prevents an item from becoming invisible/unselectable until Undo.
+// The shift that brings kMinVisiblePx of one canvas-space box back onto the canvas along
+// each axis it has left, or zero while the box still overlaps the canvas or already sits
+// within kMinVisiblePx of it. It keeps an item from becoming invisible and unselectable
+// until Undo; ClampItemsToCanvas applies it to a set.
 constexpr float kMinVisiblePx = 32.0f;
-void ClampItemToCanvas(obs_sceneitem_t *item, uint32_t baseWidth, uint32_t baseHeight)
+vec2 CanvasClampCorrection(const vec3 &tl, const vec3 &br, uint32_t baseWidth, uint32_t baseHeight)
 {
-	vec3 tl, br;
-	GetSceneItemBox(item, tl, br);
-
+	vec2 correction;
+	vec2_zero(&correction);
 	const float overlapW = std::min(br.x, float(baseWidth)) - std::max(tl.x, 0.0f);
 	const float overlapH = std::min(br.y, float(baseHeight)) - std::max(tl.y, 0.0f);
 	if (overlapW > 0.0f && overlapH > 0.0f) {
-		return;
+		return correction;
 	}
 
-	vec2 pos;
-	obs_sceneitem_get_pos(item, &pos);
-	float dx = 0.0f, dy = 0.0f;
-
 	if (overlapW <= 0.0f) {
-		const float itemW = br.x - tl.x;
-		const float minX = kMinVisiblePx - itemW;
+		const float boxW = br.x - tl.x;
+		const float minX = kMinVisiblePx - boxW;
 		const float maxX = float(baseWidth) - kMinVisiblePx;
 		if (tl.x < minX) {
-			dx = minX - tl.x;
+			correction.x = minX - tl.x;
 		} else if (tl.x > maxX) {
-			dx = maxX - tl.x;
+			correction.x = maxX - tl.x;
 		}
 	}
 	if (overlapH <= 0.0f) {
-		const float itemH = br.y - tl.y;
-		const float minY = kMinVisiblePx - itemH;
+		const float boxH = br.y - tl.y;
+		const float minY = kMinVisiblePx - boxH;
 		const float maxY = float(baseHeight) - kMinVisiblePx;
 		if (tl.y < minY) {
-			dy = minY - tl.y;
+			correction.y = minY - tl.y;
 		} else if (tl.y > maxY) {
-			dy = maxY - tl.y;
+			correction.y = maxY - tl.y;
 		}
 	}
+	return correction;
+}
 
-	if (dx != 0.0f || dy != 0.0f) {
-		pos.x += dx;
-		pos.y += dy;
+// Clamp items back onto the canvas as one formation after a transform. Nothing moves while
+// any member still overlaps the canvas. Otherwise each member's own CanvasClampCorrection
+// is taken, the smallest (the one that returns the nearest member) is applied to every
+// member, so the set keeps its layout and at least that member is reachable again. A
+// group's child is left alone, because its box is in its group's space rather than the
+// canvas's. So is a member with no area (an audio source, a source not yet loaded): it has
+// nothing to make reachable, and its point box would either read as overlapping or shift
+// the whole set by its own correction. For a single item this is the clamp of that item's
+// own box.
+void ClampItemsToCanvas(obs_sceneitem_t *const *items, size_t count, uint32_t baseWidth, uint32_t baseHeight)
+{
+	std::vector<obs_sceneitem_t *> clamped;
+	vec2 correction;
+	vec2_zero(&correction);
+	float smallest = M_INFINITE;
+	for (size_t i = 0; i < count; i++) {
+		if (!items[i] || GroupSourceOf(items[i])) {
+			continue;
+		}
+		vec3 tl, br;
+		GetSceneItemBox(items[i], tl, br);
+		if (br.x == tl.x || br.y == tl.y) {
+			continue;
+		}
+		const vec2 own = CanvasClampCorrection(tl, br, baseWidth, baseHeight);
+		const float magnitude = vec2_len(&own);
+		if (magnitude == 0.0f) {
+			return;
+		}
+		if (magnitude < smallest) {
+			smallest = magnitude;
+			correction = own;
+		}
+		clamped.push_back(items[i]);
+	}
+	for (obs_sceneitem_t *item : clamped) {
+		vec2 pos;
+		obs_sceneitem_get_pos(item, &pos);
+		vec2_add(&pos, &pos, &correction);
 		obs_sceneitem_set_pos(item, &pos);
 	}
 }
@@ -4486,10 +4539,9 @@ bool MethodSceneItemsSetTransform(const json &params, json &result, std::string 
 		RepositionForCenterPivot(item, boxBeforeTl, boxBeforeBr);
 	}
 
-	// The clamp measures the item against the canvas, which a group child's box is not in.
 	uint32_t clampBaseW = 0, clampBaseH = 0;
-	if (!obs_source_is_group(sceneSource) && ResolveBaseSize(params, clampBaseW, clampBaseH)) {
-		ClampItemToCanvas(item, clampBaseW, clampBaseH);
+	if (ResolveBaseSize(params, clampBaseW, clampBaseH)) {
+		ClampItemsToCanvas(&item, 1, clampBaseW, clampBaseH);
 	}
 
 	// The scene item IS the size for a braidcast_overlay: re-lay-out its page to the box
@@ -4506,6 +4558,143 @@ bool MethodSceneItemsSetTransform(const json &params, json &result, std::string 
 	ResolveBaseSize(params, baseW, baseH);
 	result = SceneItemTransformToJson(item, baseW, baseH);
 	obs_source_release(sceneSource);
+	return true;
+}
+
+// Carry a canvas-pixel offset into the space `item`'s position is written in. A top-level
+// item's position is canvas space already. A child's is its group's space, so the offset
+// goes through the inverse of the linear part of the group's draw transform; translation
+// plays no part, as an offset has no origin. False when that part has no inverse: a group
+// scaled to zero on an axis, which draws nothing.
+bool OffsetInItemSpace(obs_sceneitem_t *item, const vec2 &canvasOffset, vec2 &out)
+{
+	obs_sceneitem_t *groupItem = GroupItemOf(item);
+	if (!groupItem) {
+		out = canvasOffset;
+		return true;
+	}
+	matrix4 m;
+	obs_sceneitem_get_draw_transform(groupItem, &m);
+	// libobs transforms row vectors, so a group-space (gx, gy) lands at gx * m.x + gy * m.y.
+	const float det = m.x.x * m.y.y - m.y.x * m.x.y;
+	if (det == 0.0f) {
+		return false;
+	}
+	const float gx = (m.y.y * canvasOffset.x - m.y.x * canvasOffset.y) / det;
+	const float gy = (m.x.x * canvasOffset.y - m.x.y * canvasOffset.x) / det;
+	if (!std::isfinite(gx) || !std::isfinite(gy)) {
+		return false;
+	}
+	vec2_set(&out, gx, gy);
+	return true;
+}
+
+// Move scene items by one canvas-pixel offset as a single undo step: the arrow-key nudge
+// over a whole selection. params: {canvas?, scene?, refs: [{id, group?}], dx, dy}, each
+// ref addressed as ResolveParamsItem reads it. Every ref resolves before anything moves,
+// so a stale one refuses the call. A group listed alongside its own child carries that
+// child, which is then skipped rather than moved twice, and so is a child whose group has
+// no inverse (see OffsetInItemSpace). Returns {moved}, the items actually written.
+bool MethodSceneItemsNudge(const json &params, json &result, std::string &error)
+{
+	const json *refs = nullptr;
+	if (params.is_object()) {
+		if (auto it = params.find("refs"); it != params.end() && it->is_array() && !it->empty()) {
+			refs = &*it;
+		}
+	}
+	if (!refs) {
+		error = "sceneItems.nudge requires a non-empty 'refs' array";
+		return false;
+	}
+	const auto dxIt = params.find("dx");
+	const auto dyIt = params.find("dy");
+	if (dxIt == params.end() || !dxIt->is_number() || dyIt == params.end() || !dyIt->is_number()) {
+		error = "sceneItems.nudge requires numbers 'dx' and 'dy'";
+		return false;
+	}
+	vec2 offset;
+	vec2_set(&offset, dxIt->get<float>(), dyIt->get<float>());
+
+	json base = params;
+	base.erase("refs");
+	std::vector<std::pair<obs_sceneitem_t *, OBSSourceAutoRelease>> resolved;
+	for (const json &ref : *refs) {
+		if (!ref.is_object()) {
+			error = "invalid entry in 'refs'";
+			return false;
+		}
+		json refParams = base;
+		refParams["id"] = ref.contains("id") ? ref.at("id") : json(nullptr);
+		refParams["group"] = ref.contains("group") ? ref.at("group") : json(nullptr);
+		obs_source_t *owner = nullptr; // addref'd by ResolveParamsItem
+		obs_sceneitem_t *item = nullptr;
+		int64_t id = 0;
+		if (!ResolveParamsItem(refParams, owner, item, id, error)) {
+			return false;
+		}
+		const bool repeat = std::any_of(resolved.begin(), resolved.end(),
+						[item](const auto &entry) { return entry.first == item; });
+		OBSSourceAutoRelease ownerRef(owner);
+		if (!repeat) {
+			resolved.emplace_back(item, std::move(ownerRef));
+		}
+	}
+
+	std::vector<obs_source_t *> listedGroups;
+	for (const auto &entry : resolved) {
+		if (obs_sceneitem_is_group(entry.first)) {
+			listedGroups.push_back(obs_sceneitem_get_source(entry.first));
+		}
+	}
+	std::vector<obs_sceneitem_t *> items;
+	std::vector<vec2> offsets;
+	OwnerCommits commits;
+	for (auto &entry : resolved) {
+		obs_source_t *group = GroupSourceOf(entry.first);
+		vec2 itemOffset;
+		if ((group && std::find(listedGroups.begin(), listedGroups.end(), group) != listedGroups.end()) ||
+		    !OffsetInItemSpace(entry.first, offset, itemOffset)) {
+			continue;
+		}
+		items.push_back(entry.first);
+		offsets.push_back(itemOffset);
+		AddOwnerCommit(commits, std::move(entry.second), base);
+	}
+
+	for (obs_sceneitem_t *item : items) {
+		PinOverlayBeforeCapture(item);
+	}
+	std::vector<GroupResizeDeferral> holds;
+	for (obs_sceneitem_t *item : items) {
+		HoldGroupOf(holds, item);
+	}
+	const std::string canvasUuid = OptString(params, "canvas");
+	const std::string sceneName = OptString(params, "scene");
+	const std::string before =
+		ItemStatesPayload(CaptureItemStates(canvasUuid, sceneName, items.data(), items.size()));
+
+	for (size_t i = 0; i < items.size(); i++) {
+		vec2 pos;
+		obs_sceneitem_get_pos(items[i], &pos);
+		vec2_add(&pos, &pos, &offsets[i]);
+		obs_sceneitem_set_pos(items[i], &pos);
+	}
+	uint32_t baseW = 0, baseH = 0;
+	if (ResolveBaseSize(params, baseW, baseH)) {
+		ClampItemsToCanvas(items.data(), items.size(), baseW, baseH);
+	}
+	for (obs_sceneitem_t *item : items) {
+		Overlay::CommitForSourceDebounced(obs_sceneitem_get_source(item));
+	}
+
+	const std::string after =
+		ItemStatesPayload(CaptureItemStates(canvasUuid, sceneName, items.data(), items.size()));
+	CommitOwners(commits, holds);
+	holds.clear();
+	RecordItemTransformsUndo(items.data(), items.size(), before, after);
+
+	result = json{{"moved", items.size()}};
 	return true;
 }
 
@@ -4662,8 +4851,8 @@ bool MethodSceneItemsTransformAction(const json &params, json &result, std::stri
 		RepositionForCenterPivot(item, boxBeforeTl, boxBeforeBr);
 	}
 
-	if (haveBaseSize && !inGroup) {
-		ClampItemToCanvas(item, baseW, baseH);
+	if (haveBaseSize) {
+		ClampItemsToCanvas(&item, 1, baseW, baseH);
 	}
 
 	// The scene item IS the size for a braidcast_overlay: re-lay-out its page to the box
@@ -14227,6 +14416,7 @@ void Init()
 		{"sceneItems.reorder", MethodSceneItemsReorder},
 		{"sceneItems.getTransform", MethodSceneItemsGetTransform},
 		{"sceneItems.setTransform", MethodSceneItemsSetTransform},
+		{"sceneItems.nudge", MethodSceneItemsNudge},
 		{"sceneItems.transformAction", MethodSceneItemsTransformAction},
 		{"sceneItems.setScaleFilter", MethodSceneItemsSetScaleFilter},
 		{"sceneItems.setShowTransition", MethodSceneItemsSetShowTransition},

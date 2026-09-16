@@ -96,10 +96,11 @@ import { EV } from "$lib/utils/eventNames";
   }
 
   // Plain click selects just this row; Ctrl/Cmd toggles it in/out of the set; Shift
-  // extends from the anchor over the visible (filtered) order. Every branch pushes the
-  // resulting set to the native preview, which draws the same selection this list shows,
-  // and every branch claims the surface, because a modifier click is still the user
-  // working here and the app-level shortcuts have to follow them here.
+  // extends from the pivot over the visible (filtered) order. Every branch pushes the
+  // resulting set, focused row last, to the native preview, which draws the same
+  // selection this list shows, and every branch claims the surface, because a modifier
+  // click is still the user working here and the app-level shortcuts have to follow them
+  // here.
   function selectItem(e: MouseEvent, item: SceneItem) {
     activeSurface.claimSource(surfaceOwner, null, sourceSelection);
     if (e.shiftKey) {
@@ -109,7 +110,7 @@ import { EV } from "$lib/utils/eventNames";
     } else {
       sourceSelection.selectOne(item);
     }
-    void obs.call("preview.select", { scene: currentScene, ids: [...sourceSelection.ids] }).catch(() => {});
+    sourceSelection.pushToPreview((ids) => obs.call("preview.select", { scene: currentScene, ids }));
   }
 
   // The properties modal overlaps the preview; suspend the native overlay while open.
@@ -124,13 +125,10 @@ import { EV } from "$lib/utils/eventNames";
     return obs.on(EV.sceneItemSelected, (p) => {
       // Global channel-0 path: only the Default surface (canvas=null) drives this.
       if (p.canvas == null && (!p.scene || p.scene === currentScene)) {
-        // The whole set, anchor last, so a preview multi-select (Ctrl-click or a
-        // rubber band) lands here as the set it is rather than as its anchor alone.
-        const picked = (p.ids ?? (p.id != null ? [p.id] : []))
-          .map((id) => items.find((i) => i.id === id))
-          .filter((i): i is SceneItem => i != null);
+        // The whole set, so a preview multi-select (Ctrl-click or a rubber band) lands
+        // here as the set it is rather than as its focused item alone.
         activeSurface.claimSource(surfaceOwner, null, sourceSelection);
-        sourceSelection.setAll(picked);
+        sourceSelection.adoptPreview(p, items);
       }
     });
   });
@@ -463,7 +461,7 @@ import { EV } from "$lib/utils/eventNames";
     const transitionTypeList = await transitionTypes().catch(() => []);
     // Right-clicking a row that is part of a 2+ selection acts on the whole set; a
     // right-click on a single (or unselected) row stays single.
-    const inMulti = sourceSelection.has(item.id) && sourceSelection.size >= 2;
+    const inMulti = sourceSelection.has(item) && sourceSelection.size >= 2;
     menu = {
       x,
       y,
@@ -602,7 +600,7 @@ import { EV } from "$lib/utils/eventNames";
       {#each filteredItems as item, idx (item.id)}
         <li
           class="dock-row"
-          class:sel={sourceSelection.has(item.id)}
+          class:sel={sourceSelection.has(item)}
           class:dimmed={!item.visible}
           class:dropTarget={dragOverIdx === idx && dragId !== null && dragId !== item.id}
           style:box-shadow={item.color ? `inset 3px 0 0 ${item.color}` : null}

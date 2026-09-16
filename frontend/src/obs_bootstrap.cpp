@@ -4897,7 +4897,233 @@ void ObsBootstrap::RunSceneItemGroupSelfTest()
 			check("shared-source setup", false, "");
 		}
 
-		// --- 10. a re-fit hold keeps a group item alive past the prune that releases it ----
+		// --- 10. nudge: one canvas offset, one undo step, a child through a rotated group -----
+		if (childA) {
+			obs_sceneitem_set_rot(groupItem, 30.0f);
+			vec2 groupScale;
+			vec2_set(&groupScale, 1.5f, 0.75f);
+			obs_sceneitem_set_scale(groupItem, &groupScale);
+			settle();
+			// Where an item's own origin lands on the canvas, through its group for a child.
+			auto canvasPointOf = [&](obs_sceneitem_t *item) {
+				matrix4 draw;
+				obs_sceneitem_get_draw_transform(item, &draw);
+				vec3 point;
+				vec3_zero(&point);
+				vec3_transform(&point, &point, &draw);
+				if (obs_sceneitem_t *owner = obs_sceneitem_get_group(scene, item)) {
+					obs_sceneitem_get_draw_transform(owner, &draw);
+					vec3_transform(&point, &point, &draw);
+				}
+				vec2 out;
+				vec2_set(&out, point.x, point.y);
+				return out;
+			};
+			auto nearPos = [](const vec2 &a, const vec2 &b) {
+				return std::fabs(a.x - b.x) <= 0.05f && std::fabs(a.y - b.y) <= 0.05f;
+			};
+			auto shifted = [](const vec2 &p, float dx, float dy) {
+				vec2 out;
+				vec2_set(&out, p.x + dx, p.y + dy);
+				return out;
+			};
+			auto nudgeParams = [&](const json &refs, float dx, float dy) {
+				json p = base;
+				p["refs"] = refs;
+				p["dx"] = dx;
+				p["dy"] = dy;
+				return p;
+			};
+			const json topRef{{"id", topId}};
+			const json groupRef{{"id", groupId}};
+			auto childRef = [&](int64_t id) {
+				return json{{"id", id}, {"group", groupUuid}};
+			};
+			auto nudgeText = [&]() {
+				return "top " + posText(posOf(top)) + " group " + posText(posOf(groupItem)) + " a " +
+				       posText(canvasPointOf(childA)) + " b " + posText(canvasPointOf(childB)) +
+				       " (canvas)";
+			};
+
+			const vec2 topStart = posOf(top), groupStart = posOf(groupItem);
+			const vec2 aLocal = posOf(childA), bLocal = posOf(childB);
+			const vec2 aStart = canvasPointOf(childA), bStart = canvasPointOf(childB);
+			json moved = run("sceneItems.nudge",
+					 nudgeParams(json::array({topRef, childRef(childAId)}), 7.0f, -4.0f), ok);
+			settle();
+			const vec2 topNudged = posOf(top), groupNudged = posOf(groupItem);
+			const vec2 aLocalNudged = posOf(childA), bLocalNudged = posOf(childB);
+			check("nudge moves a top-level item and a rotated group's child by the canvas offset",
+			      ok && moved.value("moved", 0) == 2 &&
+				      samePos(topNudged, shifted(topStart, 7.0f, -4.0f)) &&
+				      nearPos(canvasPointOf(childA), shifted(aStart, 7.0f, -4.0f)),
+			      nudgeText());
+			check("nudge leaves the child's sibling in place on the canvas",
+			      nearPos(canvasPointOf(childB), bStart), nudgeText());
+
+			const std::string nudgeLabel = undoState().undoName;
+			ObsBootstrap::Undo().Undo();
+			settle();
+			check("nudge undo restores every item in one step",
+			      nudgeLabel == "Transform 2 Items" && samePos(posOf(top), topStart) &&
+				      samePos(posOf(groupItem), groupStart) && samePos(posOf(childA), aLocal) &&
+				      samePos(posOf(childB), bLocal),
+			      "label '" + nudgeLabel + "', " + nudgeText());
+			ObsBootstrap::Undo().Redo();
+			settle();
+			check("nudge redo reapplies",
+			      samePos(posOf(top), topNudged) && samePos(posOf(groupItem), groupNudged) &&
+				      samePos(posOf(childA), aLocalNudged) && samePos(posOf(childB), bLocalNudged),
+			      nudgeText());
+			ObsBootstrap::Undo().Undo();
+			settle();
+
+			// Child B's id is the group's own id, so the two refs differ only by owner.
+			json once = run("sceneItems.nudge",
+					nudgeParams(json::array({childRef(childBId), groupRef}), 5.0f, 0.0f), ok);
+			settle();
+			check("nudge of a group and its own child moves them once",
+			      ok && once.value("moved", 0) == 1 &&
+				      samePos(posOf(groupItem), shifted(groupStart, 5.0f, 0.0f)) &&
+				      samePos(posOf(childB), bLocal) &&
+				      nearPos(canvasPointOf(childB), shifted(bStart, 5.0f, 0.0f)),
+			      nudgeText());
+			ObsBootstrap::Undo().Undo();
+			settle();
+
+			events.clear();
+			run("sceneItems.nudge", nudgeParams(json::array({childRef(childBId)}), 0.0f, 3.0f), ok);
+			settle();
+			check("nudge of a child alone moves it on the canvas",
+			      ok && nearPos(canvasPointOf(childB), shifted(bStart, 0.0f, 3.0f)) &&
+				      nearPos(canvasPointOf(childA), aStart),
+			      nudgeText());
+			check("nudge of a child names the listed scene", listedSceneEvent(), eventsText());
+			ObsBootstrap::Undo().Undo();
+			settle();
+
+			const std::string labelBeforeStale = undoState().undoName;
+			json staleResult;
+			std::string staleError;
+			const bool staleRefused = !Bridge::Dispatch(
+				"sceneItems.nudge", nudgeParams(json::array({topRef, childRef(987654)}), 9.0f, 9.0f),
+				staleResult, staleError);
+			settle();
+			check("nudge with a stale ref refuses and moves nothing",
+			      staleRefused && samePos(posOf(top), topStart) && undoState().undoName == labelBeforeStale,
+			      staleError);
+
+			// A mirrored group flips one axis, and a near-zero scale needs a group-space offset
+			// far larger than the canvas one; either way the child lands on the canvas offset.
+			auto nudgeChildThrough = [&](const char *label, float rot, float sx, float sy) {
+				obs_sceneitem_set_rot(groupItem, rot);
+				vec2_set(&groupScale, sx, sy);
+				obs_sceneitem_set_scale(groupItem, &groupScale);
+				settle();
+				const vec2 aFrom = canvasPointOf(childA), bFrom = canvasPointOf(childB);
+				json through = run("sceneItems.nudge",
+						   nudgeParams(json::array({childRef(childAId)}), 7.0f, -4.0f), ok);
+				settle();
+				check(std::string("nudge through a ") + label +
+					      " group moves the child by the canvas offset",
+				      ok && through.value("moved", 0) == 1 &&
+					      nearPos(canvasPointOf(childA), shifted(aFrom, 7.0f, -4.0f)) &&
+					      nearPos(canvasPointOf(childB), bFrom),
+				      nudgeText());
+				ObsBootstrap::Undo().Undo();
+				settle();
+			};
+			nudgeChildThrough("mirrored", 30.0f, -1.5f, 0.75f);
+			nudgeChildThrough("near-zero-scale", 0.0f, 0.02f, 0.02f);
+
+			obs_sceneitem_set_rot(groupItem, 0.0f);
+			vec2_set(&groupScale, 1.0f, 1.0f);
+			obs_sceneitem_set_scale(groupItem, &groupScale);
+			settle();
+			check("nudge leaves the group as it was",
+			      samePos(posOf(groupItem), groupStart) && samePos(posOf(childA), aLocal) &&
+				      samePos(posOf(childB), bLocal) && samePos(posOf(top), topStart),
+			      nudgeText());
+
+			auto boxOf = [](obs_sceneitem_t *item, vec3 &tl, vec3 &br) {
+				matrix4 box;
+				obs_sceneitem_get_box_transform(item, &box);
+				vec3_set(&tl, 1e9f, 1e9f, 0.0f);
+				vec3_set(&br, -1e9f, -1e9f, 0.0f);
+				for (float u : {0.0f, 1.0f}) {
+					for (float v : {0.0f, 1.0f}) {
+						vec3 corner;
+						vec3_set(&corner, u, v, 0.0f);
+						vec3_transform(&corner, &corner, &box);
+						vec3_min(&tl, &tl, &corner);
+						vec3_max(&br, &br, &corner);
+					}
+				}
+			};
+			// Off the left edge, the clamp leaves 32px of the moved set on the canvas.
+			auto boxRightOf = [&](obs_sceneitem_t *item) {
+				vec3 tl, br;
+				boxOf(item, tl, br);
+				return br.x;
+			};
+			const float kFarLeft = -5000.0f;
+			run("sceneItems.nudge", nudgeParams(json::array({topRef}), kFarLeft, 0.0f), ok);
+			settle();
+			check("nudge clamps a single item back onto the canvas",
+			      ok && std::fabs(boxRightOf(top) - 32.0f) <= 0.01f &&
+				      std::fabs(posOf(top).y - topStart.y) <= 0.01f,
+			      "top " + posText(posOf(top)) + ", right edge " + std::to_string(boxRightOf(top)));
+			ObsBootstrap::Undo().Undo();
+			settle();
+			run("sceneItems.nudge", nudgeParams(json::array({topRef, groupRef}), kFarLeft, 0.0f), ok);
+			settle();
+			const float setRight = std::max(boxRightOf(top), boxRightOf(groupItem));
+			check("nudge clamps a set as one formation",
+			      ok && std::fabs(setRight - 32.0f) <= 0.01f &&
+				      std::fabs((posOf(top).x - posOf(groupItem).x) - (topStart.x - groupStart.x)) <=
+					      0.01f &&
+				      std::fabs(posOf(top).y - topStart.y) <= 0.01f &&
+				      std::fabs(posOf(groupItem).y - groupStart.y) <= 0.01f,
+			      nudgeText() + ", right edge " + std::to_string(setRight));
+			ObsBootstrap::Undo().Undo();
+			settle();
+			check("nudge clamp undo restores the set",
+			      samePos(posOf(top), topStart) && samePos(posOf(groupItem), groupStart) &&
+				      samePos(posOf(childA), aLocal) && samePos(posOf(childB), bLocal),
+			      nudgeText());
+
+			// Each member leaves by a different edge while their union still spans the canvas:
+			// the top item above it, the group to its left. The nearest one has to come back.
+			const CanvasDefinition *canvasDef = g_canvases.Find(canvasUuid);
+			const float canvasW = canvasDef ? float(canvasDef->width) : 0.0f;
+			const float canvasH = canvasDef ? float(canvasDef->height) : 0.0f;
+			auto onCanvas = [&](obs_sceneitem_t *item) {
+				vec3 tl, br;
+				boxOf(item, tl, br);
+				return br.x > 0.0f && tl.x < canvasW && br.y > 0.0f && tl.y < canvasH;
+			};
+			setPos(top, 100.0f, -50.0f);
+			setPos(groupItem, -250.0f, 500.0f);
+			settle();
+			const vec2 topSplit = posOf(top), groupSplit = posOf(groupItem);
+			run("sceneItems.nudge", nudgeParams(json::array({topRef, groupRef}), -60.0f, -60.0f), ok);
+			settle();
+			check("nudge clamp returns a set whose members left by different edges",
+			      ok && (onCanvas(top) || onCanvas(groupItem)) &&
+				      std::fabs((posOf(top).x - posOf(groupItem).x) - (topSplit.x - groupSplit.x)) <=
+					      0.01f &&
+				      std::fabs((posOf(top).y - posOf(groupItem).y) - (topSplit.y - groupSplit.y)) <=
+					      0.01f,
+			      nudgeText());
+			ObsBootstrap::Undo().Undo();
+			setPos(top, topStart.x, topStart.y);
+			setPos(groupItem, groupStart.x, groupStart.y);
+			settle();
+		} else {
+			check("nudge setup", false, "child a did not come back");
+		}
+
+		// --- 11. a re-fit hold keeps a group item alive past the prune that releases it ----
 		{
 			json probeGroup = run("sceneItems.createGroup",
 					      json{{"canvas", canvasUuid}, {"name", "selftest-scene-item-group-probe"}},
@@ -4927,7 +5153,7 @@ void ObsBootstrap::RunSceneItemGroupSelfTest()
 			}
 		}
 
-		// --- 11. ungroup: children get new top-level ids, the old entry must not follow --
+		// --- 12. ungroup: children get new top-level ids, the old entry must not follow --
 		moveParams["id"] = childAId;
 		moveParams["transform"] = json{{"pos", json{{"x", -20.0}, {"y", 0.0}}}};
 		run("sceneItems.setTransform", moveParams, ok);
@@ -4965,7 +5191,7 @@ void ObsBootstrap::RunSceneItemGroupSelfTest()
 		      untouched && afterUngroupUndo.redoName == moveLabel && afterUngroupUndo.undoName != moveLabel,
 		      "redo='" + afterUngroupUndo.redoName + "'");
 
-		// --- 12. undo after deleting a group: logs, spends the slot, touches nothing ----
+		// --- 13. undo after deleting a group: logs, spends the slot, touches nothing ----
 		std::vector<int64_t> formerChildren;
 		for (const auto &entry : ungrouped) {
 			if (entry.first != topId) {

@@ -348,7 +348,7 @@ bool ContainsId(const std::vector<int64_t> &ids, int64_t id)
 // is what every id bound for libobs, the bridge or a gesture goes through. `ids` is read
 // directly only where the caller has already established which scene it is holding.
 //
-// Insertion-ordered, and the LAST member is the anchor: what the single-id readers
+// Insertion-ordered, and the LAST member is the focus: what the single-id readers
 // (the bridge reply, the isolation self-test, a right-click that lands outside the
 // set) report, mirroring `sourceSelection.item` on the web side.
 struct SceneItemSelection {
@@ -384,8 +384,8 @@ struct SceneItemSelection {
 		Set(sceneSource, std::vector<int64_t>{id});
 	}
 
-	// Ctrl-click: add or remove, with the anchor following the row just touched --
-	// the newly added one, or (when the anchor itself was removed) the last member
+	// Ctrl-click: add or remove, with the focus following the row just touched --
+	// the newly added one, or (when the focus itself was removed) the last member
 	// left. Matches SourceSelection::toggle so the two models cannot drift.
 	void Toggle(obs_source_t *sceneSource, int64_t id)
 	{
@@ -2353,7 +2353,7 @@ void EnsureOverflowTexture(PreviewSurface::State *state)
 // WndProc.
 void EmitSelection(obs_canvas_t *targetCanvas, const std::vector<int64_t> &ids)
 {
-	// `ids` is the whole selection, insertion-ordered; `id` is its anchor (the last
+	// `ids` is the whole selection, insertion-ordered; `id` is its focus (the last
 	// member), kept alongside so the single-selection readers on both sides stay
 	// exactly as they were when one item is selected.
 	const int64_t anchor = ids.empty() ? int64_t(-1) : ids.back();

@@ -898,13 +898,28 @@ export interface GlobalAudioSlot {
  * `scene` accepts null as well as omission because the preview hit payload and the
  * dock scene stores carry "no scene" as null; the host reads it through
  * JsonUtil::Str, which folds null, absent, and "" into the same empty name. */
-export interface TransformTarget {
+export interface TransformTarget extends SceneItemRef {
   canvas?: string;
   scene?: string | null;
+}
+
+/** Names one scene item within a scene: `id` is unique only within its owner. */
+export interface SceneItemRef {
   id: number;
   /** The owning group's source uuid when `id` names a group's child; omit (or null) for
    * a scene's own item. */
   group?: string | null;
+}
+
+/** Params for `sceneItems.nudge`: move every ref by one offset in canvas pixels (y down) as
+ * a single undo step. The host converts the offset into group space for a child, and a
+ * group listed with its own child moves the child once, with the group. */
+export interface SceneItemsNudgeParams {
+  canvas?: string;
+  scene?: string | null;
+  refs: SceneItemRef[];
+  dx: number;
+  dy: number;
 }
 
 /**
@@ -1775,6 +1790,10 @@ export interface ObsMethods {
   "sceneItems.getTransform": Transform;
   "sceneItems.setTransform": Transform;
   "sceneItems.transformAction": Transform;
+  // Keyboard nudge over a selection (SceneItemsNudgeParams); `moved` counts the items
+  // written, leaving out children carried by their own listed group and children of a
+  // group whose transform has no inverse (scaled to zero).
+  "sceneItems.nudge": { moved: number };
   // Source types + creation (4.3.3). Omit `scene` to target the current scene; pass
   // an optional `canvas` uuid to add into an additional canvas's current scene.
   "sourceTypes.list": SourceType[];
@@ -2270,7 +2289,7 @@ export interface ObsEvents {
   // `canvas` = the addressed canvas uuid, or null for the Default surface (global
   // channel-0 path); a per-canvas dock filters to its own canvas (scene names
   // collide across canvases).
-  // `ids` is the whole preview selection, insertion-ordered; `id` is its anchor (the
+  // `ids` is the whole preview selection, insertion-ordered; `id` is its focus (the
   // last member), so a single-selection reader behaves exactly as it did before
   // multi-select existed. An empty `ids` means nothing is selected.
   "sceneItem.selected": { scene: string | null; id: number | null; ids: number[]; canvas: string | null };
