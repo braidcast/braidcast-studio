@@ -49,14 +49,31 @@ std::string TemplateRoot()
 // to whatever they want, whereas a 1920-wide row here would make the editor's preview --
 // which fits this rectangle into its pane -- draw 20-design-px type at six device px. 640
 // keeps it in the same proportion to its width term as the other ten.
+//
+// `replay` rides along as a second column because this table is the only registry of widget
+// types that exists in C++, and the rule it encodes -- whether the type accepts a REPLAYED
+// event (events.replay) -- has to be STATED per type rather than inferred from anything
+// else here. Only the alert box takes one: of the four templates that implement onEvent at
+// all, the other three accumulate (a goal's total, the labels' last-of-each, the recent-
+// events belt), and a replay must not be countable as a second real occurrence on stream;
+// the remaining seven never look at an event. Forking does not change a widget's `type`, so
+// a fork follows its type's row like any other widget of it.
+//
+// False is the answer for a type with no row AND for a row that forgets the column (it
+// value-initializes), and that is deliberate: an absent type is a document from a newer
+// version or a broken widget, never one a user authored -- a user can fork a widget, not
+// author a type -- so accepting it would report a delivery nothing can show. A new type
+// added without a row is named by TypesMissingNaturalSize below before a build ships.
 constexpr struct {
 	const char *type;
 	uint32_t w;
 	uint32_t h;
+	bool replay;
 } kNaturalSizes[] = {
-	{"alertbox", 600, 400},     {"chatbox", 400, 480},    {"chatleaderboard", 340, 191}, {"countdown", 300, 54},
-	{"followercount", 640, 58}, {"goalbar", 600, 76},     {"labels", 600, 54},           {"ticker", 640, 24},
-	{"uptime", 300, 54},        {"viewercount", 400, 58}, {"wheretowatch", 320, 174},
+	{"alertbox", 600, 400, true},    {"chatbox", 400, 480, false},      {"chatleaderboard", 340, 191, false},
+	{"countdown", 300, 54, false},   {"followercount", 640, 58, false}, {"goalbar", 600, 76, false},
+	{"labels", 600, 54, false},      {"ticker", 640, 24, false},        {"uptime", 300, 54, false},
+	{"viewercount", 400, 58, false}, {"wheretowatch", 320, 174, false},
 };
 
 TypeTemplate ReadTemplate(const std::string &type)
@@ -134,6 +151,18 @@ bool NaturalSize(const std::string &type, uint32_t &w, uint32_t &h)
 			return true;
 		}
 	}
+	return false;
+}
+
+bool AcceptsReplay(const std::string &type)
+{
+	for (const auto &row : kNaturalSizes) {
+		if (type == row.type) {
+			return row.replay;
+		}
+	}
+	// No row, including the empty type a widget with a broken document carries: rejected,
+	// so `delivered` never counts a widget that was never going to show the frame.
 	return false;
 }
 

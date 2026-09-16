@@ -2,12 +2,13 @@
   import { obs, type NormalizedEvent, type EventType } from "$lib/api/bridge";
   import { EV } from "$lib/utils/eventNames";
   import Button from "$lib/ui/Button.svelte";
-  import { callOrToast } from "$lib/utils/callToast";
+  import { callOrToast, showNothingReceivedToast } from "$lib/utils/callToast";
   import { PLATFORM_COLORS, EVENT_TYPE_COLORS, EVENT_TYPE_LABELS } from "$lib/theme/platformColors";
   import { FeedVirtualizer, type FeedRow } from "$lib/utils/feedVirtualizer.svelte";
   import { tickWhileVisible } from "$lib/utils/tickWhileVisible";
   import EmptyState from "$lib/ui/EmptyState.svelte";
   import Icon from "$lib/ui/Icon.svelte";
+  import IconButton, { ICONBTN_ROW } from "$lib/ui/IconButton.svelte";
   import Avatar from "$lib/ui/Avatar.svelte";
   import PlatformMark from "$lib/ui/PlatformMark.svelte";
   import CanvasMark from "$lib/ui/CanvasMark.svelte";
@@ -220,6 +221,116 @@
     feed.setFeed([], true);
   }
 
+  // Re-fires a stored event at every eligible overlay widget (events.replay -> the same
+  // Broadcast() path a live event takes, tagged replay:true; the host itself gates delivery
+  // to widget TYPES that accept a replay and counts distinct widgets, so `delivered` is how
+  // many overlays could actually show it).
+  //
+  // A row stays LOCKED from the click until REPLAY_WINDOW_MS after its response lands, not
+  // merely for the round trip: that trip is a loopback call answering in single-digit
+  // milliseconds, so a lock ending with it let the second click of an ordinary double-click
+  // through and put a second alert on air. The window is the same span the check mark is
+  // shown for, so the row refuses a press for exactly as long as it is visibly acknowledging
+  // the last one -- and it is held on failure and on delivered:0 too, since those resolve no
+  // faster and a double-click would otherwise double the toast.
+  //
+  // Sighted feedback on success is the icon swap (the button's accessible name stays
+  // "Replay alert" throughout -- it never becomes the only place success is signaled); a
+  // screen reader gets it from a dock-local role="status" span -- the shared toast live
+  // region is left free for undo/failure toasts, which a same-text success toast would
+  // otherwise clobber (or be clobbered by). delivered:0 is NOT success, so that case still
+  // gets the shared "nothing received it" toast, same wording as overlays.test's.
+  const REPLAY_WINDOW_MS = 1200;
+  // Clearing a role="status" and setting it again only re-announces if the two DOM writes
+  // land in DIFFERENT tasks. tick() flushes the clear but resolves within the same one, so
+  // assistive tech observes a single net mutation -- no change -- and stays silent. A real
+  // gap is what makes the repeat announcement happen; ~100ms is below notice and well
+  // inside the window the check mark is up for.
+  const ANNOUNCE_GAP_MS = 100;
+
+  let locked = $state<Set<string>>(new Set());
+  let replayedId = $state("");
+  let replayTimer: ReturnType<typeof setTimeout> | undefined;
+  let replayAnnounce = $state("");
+  let announceTimer: ReturnType<typeof setTimeout> | undefined;
+  // One unlock timer per row, so replaying a second row does not cut the first row's window
+  // short (replayedId and its timer are single because only one check mark shows at a time).
+  const unlockTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  let disposed = false;
+
+  function setLocked(id: string, on: boolean): void {
+    const next = new Set(locked);
+    if (on) {
+      next.add(id);
+    } else {
+      next.delete(id);
+    }
+    locked = next;
+  }
+
+  function unlockAfterWindow(id: string): void {
+    if (disposed) {
+      return;
+    }
+    clearTimeout(unlockTimers.get(id));
+    unlockTimers.set(
+      id,
+      setTimeout(() => {
+        unlockTimers.delete(id);
+        setLocked(id, false);
+      }, REPLAY_WINDOW_MS),
+    );
+  }
+
+  function clearReplayTimers(): void {
+    clearTimeout(replayTimer);
+    clearTimeout(announceTimer);
+    for (const t of unlockTimers.values()) {
+      clearTimeout(t);
+    }
+    unlockTimers.clear();
+  }
+
+  // A response that lands after the row is gone (feed cleared/reloaded out from under it,
+  // or the dock itself torn down) has nothing left to give feedback on.
+  function rowStillShown(id: string): boolean {
+    return !disposed && feed.rows.some((row) => row.item.id === id);
+  }
+
+  function announceReplay(text: string): void {
+    clearTimeout(announceTimer);
+    replayAnnounce = "";
+    announceTimer = setTimeout(() => {
+      announceTimer = undefined;
+      replayAnnounce = text;
+    }, ANNOUNCE_GAP_MS);
+  }
+
+  async function replay(e: NormalizedEvent): Promise<void> {
+    // The button carries aria-disabled rather than `disabled` (see the call site), so this
+    // early return is what actually refuses the press -- pointer and keyboard alike.
+    if (locked.has(e.id)) {
+      return;
+    }
+    setLocked(e.id, true);
+    try {
+      const r = await callOrToast("events.replay", { id: e.id }, "Replay failed");
+      if (!r || !rowStillShown(e.id)) {
+        return;
+      }
+      if (r.delivered === 0) {
+        showNothingReceivedToast("replay");
+        return;
+      }
+      replayedId = e.id;
+      clearTimeout(replayTimer);
+      replayTimer = setTimeout(() => (replayedId = ""), REPLAY_WINDOW_MS);
+      announceReplay(`Replayed to ${r.delivered} alert widget${r.delivered === 1 ? "" : "s"}.`);
+    } finally {
+      unlockAfterWindow(e.id);
+    }
+  }
+
   $effect(() => {
     obs
       .call("events.list")
@@ -233,6 +344,8 @@
       offNew();
       offBackfill();
       feed.dispose();
+      clearReplayTimers();
+      disposed = true;
     };
   });
 </script>
@@ -279,6 +392,7 @@
 {/snippet}
 
 <div class="events" use:tickWhileVisible>
+  <span class="sr-only" role="status">{replayAnnounce}</span>
   {#if destinations.length + unarmedPlatforms.length > 0}
     <div class="bar">
       <DestinationChips
@@ -350,6 +464,21 @@
                 {/if}
               {/if}
             </div>
+            <!-- aria-disabled, not `disabled`: Chromium's focus fixup moves focus to
+                 <body> the moment the focused control is natively disabled, so a keyboard
+                 user pressing this loses their place in the feed and never hears the result.
+                 replay() refuses a locked row itself, so nothing needs the DOM to swallow
+                 the click; IconButton dims an aria-disabled button and kills its hover. -->
+            <span class="replay" class:acked={replayedId === e.id}>
+              <IconButton
+                {...ICONBTN_ROW}
+                icon={replayedId === e.id ? "check" : "replay"}
+                title="Replay alert"
+                aria-label="Replay alert"
+                aria-disabled={locked.has(e.id)}
+                onclick={() => void replay(e)}
+              />
+            </span>
           </div>
         {/each}
       </div>
@@ -438,6 +567,29 @@
     width: 13px;
     height: 13px;
     display: block;
+  }
+  .replay {
+    align-self: center;
+    flex: 0 0 auto;
+  }
+  /* The acked state carries a success tone, not just the check glyph. For the whole 1.2s
+     window the button is unpressable, and wearing the resting dim grey it would read as
+     "ready" while silently refusing a press; a tone that only this state uses is what tells
+     "just done" apart from "press me". Full opacity comes with it -- IconButton's
+     aria-disabled dimming would otherwise halve the one piece of sighted feedback the press
+     gets. Pointer affordance is still withdrawn: that rule's `cursor: default` stands.
+
+     Mixed off --color-ok (the app's status green, app.css:76) toward --color-text rather
+     than used raw. --color-ok is deliberately NOT redefined per preset, and raw it measures
+     1.89:1 against the light palette's grounds -- under SC 1.4.11's 3:1 for a glyph that is
+     the whole control. --color-text carries the mix: it is per-preset in dark mode, so the
+     green differs per preset there (7.41:1 at worst, Slate, over --color-surface), while
+     light mode rewrites it to one value for every preset, giving #31813d at 3.60:1. (The
+     feed row takes no selection wash -- it is `.row`, not `.dock-row.sel` -- so its only
+     ground is --color-surface.) */
+  .replay.acked :global(button[aria-disabled="true"]) {
+    opacity: 1;
+    color: color-mix(in srgb, var(--color-ok) 65%, var(--color-text));
   }
   .actor {
     font-weight: 600;

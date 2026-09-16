@@ -130,7 +130,7 @@
       class="toast"
       class:rich={toast.current.lines.length > 0}
       style:--toast-bottom={modalOpen ? "24px" : "68px"}
-      title={toast.current.lines.length > 0 ? undefined : toast.current.title}
+      title={toast.current.lines.length > 0 ? undefined : toast.current.title || undefined}
     >
       <div class="body">
         <span class="msg">{toast.current.message}</span>

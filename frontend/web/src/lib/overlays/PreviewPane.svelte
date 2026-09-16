@@ -12,8 +12,7 @@
   import Button from "$lib/ui/Button.svelte";
   import { testsFor, type TestCapability } from "$lib/overlays/widgetTypes";
   import { EVENT_TYPE_COLORS, EVENT_TYPE_LABELS } from "$lib/theme/platformColors";
-  import { showToast } from "$lib/stores/toastStore.svelte";
-  import { callOrToast } from "$lib/utils/callToast";
+  import { callOrToast, showNothingReceivedToast } from "$lib/utils/callToast";
 
   let {
     url,
@@ -139,10 +138,7 @@
   function fire(params: Record<string, unknown>): void {
     void callOrToast("overlays.test", { id: widgetId, ...params }, "Test failed").then((r) => {
       if (r && r.delivered === 0 && previewListening) {
-        showToast(
-          "Test sent, but nothing received it.",
-          "This overlay has no live listener — neither the preview nor any Browser Source is connected.",
-        );
+        showNothingReceivedToast("test");
       }
     });
   }

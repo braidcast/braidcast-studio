@@ -98,8 +98,14 @@ public:
 
 	std::vector<Widget> List() const;                       // copy, mutex-guarded
 	std::optional<Widget> Get(const std::string &id) const; // by id
-	int Port() const;                                       // persisted chosen port (default 43000)
-	void SetPort(int port);                                 // persist a newly-bound port
+	// Just the widget's `type`, for a caller that only needs to classify it. Get() copies
+	// the whole Widget -- settings, assets, and a fork's html/css/js -- under mutex_, which
+	// Create/Update/Delete hold across a disk Save(); a caller on a latency-sensitive path
+	// (OverlayServer's per-broadcast replay gate) pays that copy for one short string.
+	// Nullopt when no widget has that id.
+	std::optional<std::string> TypeOf(const std::string &id) const;
+	int Port() const;       // persisted chosen port (default 43000)
+	void SetPort(int port); // persist a newly-bound port
 
 	// Register a new widget of `type`. It starts stock -- no code and no values are
 	// copied out of the template -- so it serves whatever that type ships today and

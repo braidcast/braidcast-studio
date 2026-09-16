@@ -46,11 +46,16 @@ public:
 	bool PortChanged() const { return portChanged_; }
 	std::string LastError() const { return lastError_; }
 
-	// Push a NormalizedEvent to EVERY open widget socket (the EventHub::Ingest sink).
-	void Broadcast(const Events::NormalizedEvent &ev);
+	// Push a NormalizedEvent to open widget sockets: EVERY one for a live event (the
+	// EventHub::Ingest sink), and for events.replay (`replay=true`) only those belonging to
+	// a widget whose TYPE accepts a replay (Overlay::AcceptsReplay). Returns how many
+	// WIDGETS took it -- not sockets, so one widget open in both the editor preview and a
+	// Browser Source counts once -- so a replay can report "nothing received it" instead of
+	// claiming a delivery it cannot see.
+	size_t Broadcast(const Events::NormalizedEvent &ev, bool replay = false);
 	// Push to ONE widget's sockets (overlays.test -- never goes through the store).
-	// Returns how many took it, so a test can report that nothing was listening rather
-	// than claim a delivery it cannot see.
+	// Returns how many widgets took it (0 or 1), so a test can report that nothing was
+	// listening rather than claim a delivery it cannot see.
 	size_t BroadcastTo(const std::string &widgetId, const Events::NormalizedEvent &ev);
 	// Push a chat message to EVERY open widget socket as a named `chat` SSE event
 	// (distinct from the default `message` event alert boxes consume). The chat-box
@@ -86,11 +91,16 @@ private:
 	void ServeRuntime(uintptr_t sock, const std::string &path, const std::string &token);
 	void ServeWidget(uintptr_t sock, const std::string &path, const std::string &token);
 	// Send a prebuilt SSE frame to every open widget socket, or (with onlyWidgetId set)
-	// to one widget's sockets only. The single snapshot-under-lock / send-unlocked
+	// to one widget's sockets only, or (with widgetFilter set) to only the widgets it
+	// answers true for -- events.replay's per-type gate; the two selectors are never
+	// combined by a real caller. The single snapshot-under-lock / send-unlocked
 	// implementation shared by Broadcast/BroadcastChat/BroadcastViewers/
 	// BroadcastChannelStats/BroadcastStreamState/BroadcastTo/SendTestFrame, so sseMutex_ is
-	// never held across the bounded-blocking sends. Returns how many sockets took the frame.
-	size_t BroadcastFrame(const std::string &frame, const std::string *onlyWidgetId = nullptr);
+	// never held across the bounded-blocking sends -- nor across widgetFilter, which reads
+	// the widget store and would otherwise put every SSE channel behind an overlay save.
+	// Returns how many WIDGETS took the frame (a widget with two open sockets counts once).
+	size_t BroadcastFrame(const std::string &frame, const std::string *onlyWidgetId = nullptr,
+			      bool (*widgetFilter)(const std::string &) = nullptr);
 	// BroadcastFrame for a channel whose latest frame is also KEPT for replay on
 	// connect, keyed by eventName. The one place a replayable frame is built and
 	// stored, so a second such channel cannot drift from the first.

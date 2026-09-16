@@ -85,6 +85,18 @@ Widget *FindWidget(std::vector<Widget> &widgets, const std::string &id)
 	return nullptr;
 }
 
+// The same lookup from a const member function, so the read-only accessors go through one
+// spelling of "which widget is this id" rather than each carrying its own loop.
+const Widget *FindWidget(const std::vector<Widget> &widgets, const std::string &id)
+{
+	for (const Widget &w : widgets) {
+		if (w.id == id) {
+			return &w;
+		}
+	}
+	return nullptr;
+}
+
 // One v1 widget in the v2 model. Whether it keeps its code is decided by the code itself,
 // because that is the only honest signal separating "never touched it" from "edited it":
 //
@@ -340,12 +352,15 @@ std::vector<Widget> OverlayStore::List() const
 std::optional<Widget> OverlayStore::Get(const std::string &id) const
 {
 	std::lock_guard<std::mutex> lock(mutex_);
-	for (const Widget &w : widgets_) {
-		if (w.id == id) {
-			return w;
-		}
-	}
-	return std::nullopt;
+	const Widget *w = FindWidget(widgets_, id);
+	return w ? std::optional<Widget>(*w) : std::nullopt;
+}
+
+std::optional<std::string> OverlayStore::TypeOf(const std::string &id) const
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	const Widget *w = FindWidget(widgets_, id);
+	return w ? std::optional<std::string>(w->type) : std::nullopt;
 }
 
 int OverlayStore::Port() const

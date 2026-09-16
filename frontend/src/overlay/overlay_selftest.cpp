@@ -361,6 +361,98 @@ void ObsBootstrap::RunOverlaySelfTest()
 	}
 	HostLog(std::string("[selftest] overlay auth -> ") + (authOk ? "OK" : "MISMATCH"));
 
+	// 7) The per-TYPE replay gate. Two SSE sockets -- one on a type that accepts a replay
+	// (alertbox) and one on a type that must never receive one (ticker, which accumulates a
+	// belt of recent events, so a replay would put a second copy of a real moment on stream)
+	// -- with a single replay broadcast sandwiched between two LIVE ones.
+	//
+	// The live frames are the harness, not the subject. The first proves both sockets are
+	// registered, since RunSse registers only after its headers are on the wire and a
+	// broadcast before that would race. The second is a FENCE: frames arrive on one socket
+	// in order, so a ticker socket that has seen the fence has provably not been sent the
+	// replay that preceded it. That is an assertion about what DID arrive rather than a wait
+	// on nothing arriving, so it neither sleeps nor passes by timing out.
+	//
+	// This is the invariant the acceptsReplay column in overlay_template.cpp encodes, and
+	// the one most likely to rot: a twelfth type added with no row -- or with a row that
+	// leaves the column off -- changes what this step sees.
+	bool replayGateOk = false;
+	{
+		Overlay::Widget acc;
+		acc.id = "selftest-ticker";
+		acc.token = "selftesttoken2";
+		acc.name = "selftest accumulator";
+		acc.type = "ticker";
+		Overlay::Store().InjectForTest(acc);
+
+		SOCKET alertSse = DialLoopback(port);
+		SOCKET tickSse = DialLoopback(port);
+		if (alertSse != INVALID_SOCKET && tickSse != INVALID_SOCKET) {
+			WriteAll(alertSse, "GET /w/selftest-widget/events?t=selftesttoken HTTP/1.1\r\nHost: x\r\n\r\n");
+			WriteAll(tickSse, "GET /w/selftest-ticker/events?t=selftesttoken2 HTTP/1.1\r\nHost: x\r\n\r\n");
+			std::string alertAcc = RecvHeaders(alertSse);
+			std::string tickAcc = RecvHeaders(tickSse);
+			const DWORD rtoMs = 100;
+			setsockopt(alertSse, SOL_SOCKET, SO_RCVTIMEO, (const char *)&rtoMs, sizeof(rtoMs));
+			setsockopt(tickSse, SOL_SOCKET, SO_RCVTIMEO, (const char *)&rtoMs, sizeof(rtoMs));
+
+			// One builder for all three events so the replay differs from the two live
+			// frames in exactly the flag under test and its marker, nothing else.
+			auto eventNamed = [](const char *marker) {
+				Events::NormalizedEvent e;
+				e.id = marker;
+				e.platform = "twitch";
+				e.type = "follow";
+				e.ts = 1000;
+				e.actorName = "selftest-gate";
+				return e;
+			};
+			auto arrived = [](const char *marker) {
+				return [marker](const std::string &a) {
+					return a.find(marker) != std::string::npos;
+				};
+			};
+			auto pushLive = [&](const char *marker) {
+				return [&, marker] {
+					server.Broadcast(eventNamed(marker));
+				};
+			};
+
+			const bool warmAlert = PumpUntil(alertSse, alertAcc, pushLive("selftest-gate-warm"),
+							 arrived("selftest-gate-warm"));
+			const bool warmTick = PumpUntil(tickSse, tickAcc, pushLive("selftest-gate-warm"),
+							arrived("selftest-gate-warm"));
+
+			const size_t delivered = server.Broadcast(eventNamed("selftest-gate-replay"), /*replay=*/true);
+
+			const bool fenceAlert = PumpUntil(alertSse, alertAcc, pushLive("selftest-gate-fence"),
+							  arrived("selftest-gate-fence"));
+			const bool fenceTick = PumpUntil(tickSse, tickAcc, pushLive("selftest-gate-fence"),
+							 arrived("selftest-gate-fence"));
+
+			const bool alertTook = alertAcc.find("selftest-gate-replay") != std::string::npos &&
+					       alertAcc.find("\"replay\":true") != std::string::npos;
+			// Both markers, because they fail differently: the id catches a frame that
+			// reached the wrong type, and the flag catches one that reached it stripped
+			// of the marking that tells a widget what it is looking at.
+			const bool tickRefused = tickAcc.find("selftest-gate-replay") == std::string::npos &&
+						 tickAcc.find("\"replay\":true") == std::string::npos;
+			// Exactly one. The ticker is connected and a filter that let it through would
+			// have counted it, so this pins `delivered` to widgets that passed the gate
+			// rather than to open sockets.
+			replayGateOk = warmAlert && warmTick && fenceAlert && fenceTick && alertTook && tickRefused &&
+				       delivered == 1;
+		}
+		if (alertSse != INVALID_SOCKET) {
+			closesocket(alertSse);
+		}
+		if (tickSse != INVALID_SOCKET) {
+			closesocket(tickSse);
+		}
+		Overlay::Store().RemoveForTest("selftest-ticker");
+	}
+	HostLog(std::string("[selftest] overlay replay gate -> ") + (replayGateOk ? "OK" : "MISMATCH"));
+
 	// --- Real store round-trip (Group 2 persistence) ------------------------
 	// Snapshot the user's real overlays.json (+ .bak) so the create/delete below
 	// exercise the persist / reload path without clobbering real widgets; restored
@@ -441,8 +533,8 @@ void ObsBootstrap::RunOverlaySelfTest()
 	HostLog("[selftest] overlay cleanup -> server stopped");
 
 	if (docOk && sseHeaderOk && deliveryOk && channelsOk && replayOk && noWindowOk && replayScopeOk && authOk &&
-	    stockOk && sizesOk) {
-		HostLog("[selftest] overlay -> document/SSE/channels/replay/auth/stock/sizes OK");
+	    replayGateOk && stockOk && sizesOk) {
+		HostLog("[selftest] overlay -> document/SSE/channels/replay/gate/auth/stock/sizes OK");
 	} else {
 		HostLog("[selftest] overlay -> FAILED (see step lines above)");
 	}

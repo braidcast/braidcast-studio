@@ -34,7 +34,27 @@ bool NaturalSize(const std::string &type, uint32_t &w, uint32_t &h);
 // template rather than as a missing row, and is found on stream. The overlay self-test asks
 // this against the staged rundir, so the omission is named before a build ships rather than
 // after someone adds the source.
+//
+// A missing row now also means AcceptsReplay says no for that type, so this sweep is the
+// guard on both columns. It cannot guard the replay flag INSIDE a row someone did add: a
+// row that omits it value-initializes to false, which is the safe answer (the type simply
+// never receives a replay) but not necessarily the intended one for a new alert-style type.
 std::vector<std::string> TypesMissingNaturalSize();
+
+// Whether `type` accepts a replayed event (events.replay) instead of dropping it. Read off
+// an explicit per-type flag in the same table NaturalSize answers from -- the only registry
+// of widget types this layer has -- never inferred from that table's membership. Only the
+// alert box accepts, stock or forked (forking never changes a widget's `type`, so a fork
+// follows its type's flag): the rest either never look at an event at all or accumulate
+// from one (a goal, a running count, the recent-events belt), and a replay must not be
+// countable as a second real occurrence on stream.
+//
+// A type with no row -- and the empty type a widget with a broken document carries -- is
+// REJECTED. Absence is not evidence of a user-authored type, because a user cannot author
+// one: custom code is a fork, and a fork keeps its stock type. Absence means a document
+// written by a newer version, or a widget whose type never resolved, and counting either as
+// delivered would report a replay that nothing can show.
+bool AcceptsReplay(const std::string &type);
 
 // What reading a type's shipped template yielded. The three failures are kept apart
 // because they are not the same risk, and two of them are not even the same KIND of fact:

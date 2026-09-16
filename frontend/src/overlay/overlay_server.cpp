@@ -19,6 +19,7 @@
 #include "util/web_bundle.hpp"     // WebBundle::Root, WebBundle::ContentTypeForPath
 #include "../events/event_hub.hpp" // Events::Store() -- the persisted event history
 #include "overlay_store.hpp"       // Overlay::Store(), Widget, WidgetUrl
+#include "overlay_template.hpp"    // Overlay::AcceptsReplay
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -85,6 +86,23 @@ std::string QueryToken(const std::string &pathWithQuery, std::string &pathOut)
 	}
 	return std::string();
 }
+
+// Run a closure when the scope ends, however it ends. Local and minimal because this tree
+// has no scope-guard helper and exactly one place needs one: a bookkeeping counter that must
+// come back down on an exception as well as on the normal path. The destructor is noexcept,
+// so a closure that throws (locking, allocating) terminates instead of propagating -- the
+// trade is deliberate: a leaked counter strands every parked SSE socket for the process
+// lifetime, and nothing here can recover from a failed lock anyway.
+template<typename F> class ScopeExit {
+public:
+	explicit ScopeExit(F f) : f_(std::move(f)) {}
+	~ScopeExit() { f_(); }
+	ScopeExit(const ScopeExit &) = delete;
+	ScopeExit &operator=(const ScopeExit &) = delete;
+
+private:
+	F f_;
+};
 
 // Blocking best-effort write of an entire buffer; false on any send failure.
 bool SendAll(SOCKET sock, const char *data, size_t len)
@@ -195,6 +213,20 @@ std::string BuildBackfillFrame(int64_t sinceMs)
 	return NamedFrame("backfill", json{{"events", std::move(arr)}});
 }
 
+// The BroadcastFrame widgetFilter for events.replay: a widget whose id no longer resolves
+// (deleted mid-broadcast) is excluded the same as one whose type does not accept a replay.
+//
+// TypeOf rather than Get: this runs once per connected widget on the broadcast path, and
+// Get would copy the whole Widget -- a fork's html/css/js included -- under the store's
+// mutex, which its mutators hold across a disk Save(). BroadcastFrame calls this with
+// sseMutex_ released, so a save merely delays the filter rather than stalling every SSE
+// channel behind it.
+bool WidgetAcceptsReplay(const std::string &widgetId)
+{
+	const std::optional<std::string> type = Store().TypeOf(widgetId);
+	return type.has_value() && AcceptsReplay(*type);
+}
+
 } // namespace
 
 // ---- Broadcast --------------------------------------------------------------
@@ -209,61 +241,92 @@ std::string BuildBackfillFrame(int64_t sinceMs)
 // broadcastDepth_ (incremented while unlocked) makes RunSse defer its own closesocket()
 // so an in-flight send here can never land on a recycled fd.
 //
-// Returns how many sockets took the frame. A targeted send that answers 0 is the only way
-// a caller can tell "nothing is subscribed to that widget" apart from a delivery, since
-// filtering by widget id leaves no other trace.
-size_t OverlayServer::BroadcastFrame(const std::string &frame, const std::string *onlyWidgetId)
+// Returns how many WIDGETS took the frame, not how many sockets: one widget open in both
+// the editor preview and a Browser Source is two sockets and one widget, and "delivered to
+// 2" would be read as two overlays on stream. A widget counts once as long as any of its
+// sockets took the frame. A targeted send that answers 0 is the only way a caller can tell
+// "nothing is subscribed to that widget" apart from a delivery, since filtering by widget
+// id leaves no other trace.
+//
+// widgetFilter is applied with sseMutex_ RELEASED. It reads the widget store, whose own
+// mutex OverlayStore::Create/Update/Delete hold across a disk Save(); asking it under
+// sseMutex_ would put every SSE channel -- chat, viewer counts, live events, keepalives,
+// teardown -- behind an overlay save for the length of that write. The snapshot is what the
+// lock is for, and nothing else here needs it.
+size_t OverlayServer::BroadcastFrame(const std::string &frame, const std::string *onlyWidgetId,
+				     bool (*widgetFilter)(const std::string &))
 {
-	std::vector<std::pair<std::string, uintptr_t>> targets;
+	// Grouped by widget rather than flattened, so the filter is asked once per widget
+	// instead of once per socket, and a widget's sockets can answer as one delivery.
+	std::vector<std::pair<std::string, std::vector<uintptr_t>>> targets;
 	{
 		std::lock_guard<std::mutex> lock(sseMutex_);
 		for (auto &[wid, socks] : sockets_) {
 			if (onlyWidgetId && wid != *onlyWidgetId) {
 				continue;
 			}
-			for (uintptr_t s : socks) {
-				targets.emplace_back(wid, s);
-			}
+			targets.emplace_back(wid, std::vector<uintptr_t>(socks.begin(), socks.end()));
 		}
 		++broadcastDepth_;
 	}
 
+	// Everything below runs with broadcastDepth_ raised, so the epilogue is a scope guard
+	// rather than straight-line code. widgetFilter reads the widget store and allocates
+	// (Store().TypeOf returns a std::string), and an exception escaping this region would
+	// leave the depth raised permanently: it would never reach 0 again, deferredCloseSse_
+	// would never drain, and every SSE fd RunSse parks from then on would leak for the life
+	// of the process. The counter is the one thing here that cannot be allowed to leak.
 	std::vector<std::pair<std::string, uintptr_t>> dead;
-	for (auto &[wid, s] : targets) {
-		if (!SendAll((SOCKET)s, frame.data(), frame.size())) {
-			dead.emplace_back(wid, s);
+	const ScopeExit epilogue([&] {
+		std::vector<uintptr_t> toClose;
+		{
+			std::lock_guard<std::mutex> lock(sseMutex_);
+			for (auto &[wid, s] : dead) {
+				// Re-check membership by handle: RunSse may have dropped (and
+				// deferred the close of) this socket while we were unlocked. Only
+				// shutdown() one still registered, so we never touch an fd another
+				// path is already tearing down.
+				auto it = sockets_.find(wid);
+				if (it == sockets_.end() || !it->second.count(s)) {
+					continue;
+				}
+				it->second.erase(s);
+				if (it->second.empty()) {
+					sockets_.erase(it);
+				}
+				shutdown((SOCKET)s, SD_BOTH);
+			}
+			if (--broadcastDepth_ == 0 && !deferredCloseSse_.empty()) {
+				toClose.assign(deferredCloseSse_.begin(), deferredCloseSse_.end());
+				deferredCloseSse_.clear();
+			}
 		}
-	}
+		// Now that no broadcast is mid-send, it is safe to close the fds RunSse parked.
+		for (uintptr_t s : toClose) {
+			CloseClient(s);
+		}
+	});
 
-	std::vector<uintptr_t> toClose;
-	{
-		std::lock_guard<std::mutex> lock(sseMutex_);
-		for (auto &[wid, s] : dead) {
-			// Re-check membership by handle: RunSse may have dropped (and deferred the
-			// close of) this socket while we were unlocked. Only shutdown() one still
-			// registered, so we never touch an fd another path is already tearing down.
-			auto it = sockets_.find(wid);
-			if (it == sockets_.end() || !it->second.count(s)) {
-				continue;
-			}
-			it->second.erase(s);
-			if (it->second.empty()) {
-				sockets_.erase(it);
-			}
-			shutdown((SOCKET)s, SD_BOTH);
+	size_t delivered = 0;
+	for (const auto &[wid, socks] : targets) {
+		if (widgetFilter && !widgetFilter(wid)) {
+			continue;
 		}
-		if (--broadcastDepth_ == 0 && !deferredCloseSse_.empty()) {
-			toClose.assign(deferredCloseSse_.begin(), deferredCloseSse_.end());
-			deferredCloseSse_.clear();
+		bool took = false;
+		for (uintptr_t s : socks) {
+			if (SendAll((SOCKET)s, frame.data(), frame.size())) {
+				took = true;
+			} else {
+				dead.emplace_back(wid, s);
+			}
+		}
+		// The sends that failed are counted out: a socket the frame could not be
+		// written to did not receive it, and it is on its way out of the registry.
+		if (took) {
+			++delivered;
 		}
 	}
-	// Now that no broadcast is mid-send, it is safe to close the fds RunSse parked.
-	for (uintptr_t s : toClose) {
-		CloseClient(s);
-	}
-	// The sends that failed are counted out: a socket the frame could not be written to
-	// did not receive it, and it is on its way out of the registry.
-	return targets.size() - dead.size();
+	return delivered;
 }
 
 size_t OverlayServer::LiveSseCount() const
@@ -275,18 +338,33 @@ size_t OverlayServer::LiveSseCount() const
 	return n;
 }
 
-void OverlayServer::Broadcast(const Events::NormalizedEvent &ev)
+size_t OverlayServer::Broadcast(const Events::NormalizedEvent &ev, bool replay)
 {
-	const size_t delivered = BroadcastFrame(DataFrame(ev.ToJson()));
+	json body = ev.ToJson();
+	if (replay) {
+		// Set here rather than on NormalizedEvent itself: the flag marks how THIS
+		// broadcast went out, not a property of the stored event, so it never persists
+		// and never reaches the UI event feed's own copy of the same JSON.
+		body["replay"] = true;
+	}
+	// A replay is gated to widget TYPES that accept one (AcceptsReplay) so `delivered`
+	// means "a widget that can show this got it", not "some socket got a frame it was
+	// always going to ignore" -- a live event has no such promise to keep and still
+	// reaches every open widget, same as before. Either way the count is of widgets, so
+	// the same alert box open in the editor preview and in a Browser Source is one.
+	const size_t delivered = replay ? BroadcastFrame(DataFrame(body), nullptr, WidgetAcceptsReplay)
+					: BroadcastFrame(DataFrame(body));
 	if (delivered == 0) {
 		// Ungated: an alert that reached the server and went nowhere is otherwise
 		// indistinguishable from one that fired, and events are rare enough that saying
 		// so every time costs nothing.
-		HostLog("[overlay] event " + ev.type + " (" + ev.platform + ") delivered to 0 widgets");
+		HostLog("[overlay] event " + ev.type + " (" + ev.platform + ") delivered to 0 widgets" +
+			(replay ? " (replay)" : ""));
 	} else {
-		DBG(LogCat::Overlay, "event %s (%s) delivered to %zu widget socket(s)", ev.type.c_str(),
-		    ev.platform.c_str(), delivered);
+		DBG(LogCat::Overlay, "event %s (%s) delivered to %zu widget(s)%s", ev.type.c_str(), ev.platform.c_str(),
+		    delivered, replay ? " (replay)" : "");
 	}
+	return delivered;
 }
 
 // Named `chat` event so widgets can select it independently of the default `message`

@@ -155,15 +155,36 @@
      not change what the glyph is measured against; only the two rules below move a
      glyph's own color, and then deliberately. --color-text measures 7.00:1 at worst
      over the sweep described above. */
-  .iconbtn:hover:not(:disabled) {
+  .iconbtn:hover:not(:disabled):not([aria-disabled="true"]) {
     border-color: var(--color-text);
+  }
+
+  /* A call site that has to keep focus where it is reaches for aria-disabled instead of
+     the `disabled` attribute -- Chromium's focus fixup drops focus to <body> the instant
+     the focused control is natively disabled, so the state the press produced is never
+     announced. `button:disabled` (app.css:197-200) cannot match that, and neither can the
+     four :not(:disabled) hover rules here, which would otherwise leave an unpressable
+     button still lighting up under the pointer. This is that treatment restated for the
+     aria form, so the two spellings look the same.
+
+     It covers IconButton only. Other controls handle the aria form themselves, and not
+     alike: CanvasDestinationsTab.svelte:399-404 dims the same way, MultistreamDock.svelte:417-421
+     muddies color and border instead, and DestinationChips (.chip.unselectable) and
+     ContextMenu.svelte:340 style theirs differently again. Folding all of them into one
+     app.css rule is a separate decision rather than a sweep this rule started.
+
+     Refusing the click is still the call site's job: aria-disabled changes nothing about
+     what the DOM dispatches. */
+  .iconbtn[aria-disabled="true"] {
+    opacity: 0.5;
+    cursor: default;
   }
 
   /* The destructive mark rides the edge, so it holds whatever the glyph's tone is.
      --color-live undiluted: it is already the weakest edge in that sweep at 2.65:1
      (Slate's selected row, light mode), and mixing it with transparent composites it
      toward the ground from there. */
-  .iconbtn.iconbtn-danger:hover:not(:disabled) {
+  .iconbtn.iconbtn-danger:hover:not(:disabled):not([aria-disabled="true"]) {
     border-color: var(--color-live);
   }
 
@@ -171,11 +192,11 @@
      engaged toggle does not read as switching it off. Exactly one tone class is
      emitted, so a toned button carries no `iconbtn-default` and neither this rule
      nor the danger one below can match it. */
-  .iconbtn.iconbtn-default:hover:not(:disabled) {
+  .iconbtn.iconbtn-default:hover:not(:disabled):not([aria-disabled="true"]) {
     color: var(--color-text);
   }
 
-  .iconbtn.iconbtn-default.iconbtn-danger:hover:not(:disabled) {
+  .iconbtn.iconbtn-default.iconbtn-danger:hover:not(:disabled):not([aria-disabled="true"]) {
     color: var(--color-live);
   }
 

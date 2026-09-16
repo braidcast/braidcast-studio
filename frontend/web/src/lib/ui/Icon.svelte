@@ -30,6 +30,7 @@
     | "redock"
     | "undo"
     | "redo"
+    | "replay"
     | "more"
     // window controls (custom title bar)
     | "window-min"
@@ -128,6 +129,8 @@
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8h11a6 6 0 0 1 0 12H8" /><path d="M7 4 3 8l4 4" /></svg>
 {:else if name === "redo"}
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8H10a6 6 0 0 0 0 12h6" /><path d="M17 4l4 4-4 4" /></svg>
+{:else if name === "replay"}
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M1 4v6h6" /><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" /></svg>
 {:else if name === "more"}
   <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="5" cy="12" r="1.7" /><circle cx="12" cy="12" r="1.7" /><circle cx="19" cy="12" r="1.7" /></svg>
 {:else if name === "window-min"}

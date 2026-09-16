@@ -13118,6 +13118,49 @@ bool MethodEventsClear(const json & /*params*/, json &result, std::string & /*er
 	return true;
 }
 
+// events.replay {id} -> {ok:true, delivered:<n>} (async lane -- the overlay server's
+// socket sends block): re-fire a STORED event through the same Broadcast() path a live
+// event takes, tagged `replay:true`. Broadcast() itself gates delivery to widget TYPES
+// that accept a replay (Overlay::AcceptsReplay) -- only the alert box, stock or forked,
+// since forking a widget keeps its type; a type that accumulates from events (a goal, a
+// running count, the recent-events belt), one that never reads an event, and an unknown
+// type all never receive the frame at all. So `delivered` counts only widgets that could
+// actually show it, and counts each widget once however many of its sockets are open.
+// Deliberately narrower than EventHub::Ingest otherwise: never touches the store, never
+// re-emits events.new to the UI feed, and never reaches chat -- a replay must not be
+// mistaken for a second real occurrence.
+bool MethodEventsReplay(const json &p, json &result, std::string &error)
+{
+	const std::string id = OptString(p, "id");
+	if (id.empty()) {
+		error = "events.replay requires id";
+		return false;
+	}
+	// Refused rather than answered with delivered:0. Broadcast() cannot tell the two
+	// apart, and the UI's 0-delivered wording sends the user to look at their scene and
+	// their browser sources -- exactly the wrong place when the loopback server never
+	// bound a port (ObsBootstrap's overlayUp) and no widget could have connected to
+	// anything. Checked here so `delivered == 0` keeps one meaning: nothing eligible was
+	// listening on a server that is up.
+	if (!Overlay::Server().IsListening()) {
+		error = "the overlay server is not running \xe2\x80\x94 it could not bind a loopback port, "
+			"so no overlay widget is connected to anything";
+		return false;
+	}
+	for (const Events::NormalizedEvent &ev : Events::Store().List()) {
+		if (ev.id == id) {
+			const size_t delivered = Overlay::Server().Broadcast(ev, /*replay=*/true);
+			result = json{{"ok", true}, {"delivered", delivered}};
+			return true;
+		}
+	}
+	// The id is not embedded here: a Kick event id carries the viewer's username
+	// (kick_events.cpp) and so can a Twitch follow id, and this error reaches the
+	// always-on host log via RunAsyncMethod's FAIL line, not a debug-gated one.
+	error = "events.replay: unknown event id";
+	return false;
+}
+
 // --- overlays (Phase 9.3 widget layer) --------------------------------------
 
 // Compact standard-base64 decoder (no other decoder exists in this TU). Ignores
@@ -14097,6 +14140,10 @@ void Init()
 		{"overlays.test",
 		 [](const json &p, CefRefPtr<CefMessageRouterBrowserSide::Callback> cb) {
 			 RunAsyncMethod("overlays.test", p, cb, MethodOverlaysTest);
+		 }},
+		{"events.replay",
+		 [](const json &p, CefRefPtr<CefMessageRouterBrowserSide::Callback> cb) {
+			 RunAsyncMethod("events.replay", p, cb, MethodEventsReplay);
 		 }},
 		{"fonts.list",
 		 [](const json &p, CefRefPtr<CefMessageRouterBrowserSide::Callback> cb) {

@@ -1535,6 +1535,13 @@ export interface NormalizedEvent {
   months?: number;
   count?: number;
   message?: string;
+  /** Set only on the copy an `events.replay` broadcast delivers to overlay widgets —
+   * never on the stored event, never on `events.new`/`events.list`/`events.backfill`. The
+   * host already gates delivery by widget TYPE (only the alert box receives a replay at
+   * all, stock or forked — see `events.replay` below), so a widget that gets this flag can
+   * trust it: a forked alert box reads it to tell a rehearsal from the real thing, and an
+   * unforked one ignores it and shows every event the same way. */
+  replay?: boolean;
 }
 
 // --- overlay widgets (loopback SSE overlays, Phase 9.3) ----------------------
@@ -1637,6 +1644,16 @@ export interface OverlayServerInfo {
   port: number;
   listening: boolean;
   portChanged: boolean;
+}
+
+/** Result of a call that pushes a frame at overlay widgets rather than storing anything
+ * (`overlays.test`, `events.replay`). `delivered` is how many WIDGETS took the frame, not
+ * how many connections: the same widget open in both the editor preview and a Browser
+ * Source counts once. 0 means nothing eligible was listening rather than that a widget drew
+ * nothing. */
+export interface OverlayDeliverResult {
+  ok: boolean;
+  delivered: number;
 }
 
 /** Partial patch for overlays.update. `settings` REPLACES the stored override set
@@ -2162,12 +2179,13 @@ export interface ObsMethods {
   // Cross-platform events feed (creator engagement, Phase 9.2). list returns the
   // retained events newest-first; clear empties the host store (the host then
   // emits an empty events.backfill so consumers reset their feed). New events
-  // arrive via the events.new / events.backfill push events.
+  // arrive via the events.new / events.backfill push events. replay is documented
+  // beside overlays.test below, which it shares a result shape with.
   "events.list": NormalizedEvent[];
   "events.clear": { ok: boolean };
-  // Overlay widgets (loopback SSE overlays, Phase 9.3). Everything but uploadAsset and
-  // test is sync. create/update/resetDefaults/duplicate/delete/removeAsset emit
-  // overlays.changed.
+  // Overlay widgets (loopback SSE overlays, Phase 9.3). Everything but uploadAsset,
+  // test and events.replay is sync. create/update/resetDefaults/duplicate/delete/
+  // removeAsset emit overlays.changed.
   // update returns the widget's new revision so the editor's local copy stays level with
   // the stored one, and re-resolves every live overlay source so the edit reaches a copy
   // already on a scene. duplicate copies the source widget's asset files, so a duplicated
@@ -2186,9 +2204,17 @@ export interface ObsMethods {
   // test pushes a synthetic frame to one widget's open SSE streams (never persisted):
   // {id, channel?, type?, overrides?}, where channel picks the stream — omitted or "event"
   // is the alert path and needs `type`; "chat", "viewers", "channels" and "stream" take
-  // their payload from `overrides`. Its `delivered` is how many sockets took the frame, so
-  // 0 means nothing was listening rather than that the widget drew nothing. addToScene
-  // creates a Browser Source at the widget URL in the current scene.
+  // their payload from `overrides`. addToScene creates a Browser Source at the widget URL
+  // in the current scene.
+  // events.replay ({id}) re-fires a STORED event (by id), tagged `replay: true` -- it
+  // never touches the store, the UI feed, or chat. The host gates delivery to widget
+  // TYPES that accept a replay, which is the alert box alone, stock or forked (forking a
+  // widget keeps its type); a type that accumulates from events, one that never reads an
+  // event, and an unknown type all never receive the frame.
+  // Both test and replay answer OverlayDeliverResult: `delivered` is how many such
+  // widgets took the frame -- widgets, not connections, so one widget open in two places
+  // counts once -- so 0 means nothing eligible was listening rather than that a widget
+  // drew nothing.
   "overlays.list": OverlayListItem[];
   "overlays.get": OverlayWidget;
   "overlays.schema": { fields: OverlayField[] };
@@ -2201,7 +2227,8 @@ export interface ObsMethods {
   "overlays.delete": { removed: string };
   "overlays.usage": { sources: number };
   "overlays.url": { url: string };
-  "overlays.test": { ok: boolean; delivered: number };
+  "overlays.test": OverlayDeliverResult;
+  "events.replay": OverlayDeliverResult;
   "overlays.serverInfo": OverlayServerInfo;
   "overlays.uploadAsset": { path: string };
   "overlays.removeAsset": { ok: boolean };
