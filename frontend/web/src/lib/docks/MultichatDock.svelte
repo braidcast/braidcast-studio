@@ -197,11 +197,13 @@
     broadcaster: { label: "Broadcaster", d: "M3 18h18v3H3zM3 6l4.5 4L12 3l4.5 7L21 6v9H3z" },
   };
 
-  // --- header: which chat am I looking at ------------------------------------
+  // --- scope label: which chat am I looking at --------------------------------
+  // Feeds the composer band and the feed's empty-state `sub`, not a header -- there
+  // isn't one.
   let scopeLabel = $derived(
     selectionLabel(selection, destByUuid, {
       separator: " › ",
-      // Armed, so the header cannot claim more chats than the strip under it offers.
+      // Armed, so the label cannot claim more chats than the strip above it offers.
       all: armed.length >= 2 ? "All " + armed.length + " chats" : "",
     }),
   );
@@ -322,8 +324,8 @@
     return { connected, onlyUnavailable: unavailable > 0 && unwell === 0 };
   });
 
-  /** "3 chats" / "1 YouTube chat" -- one phrase for the band, the button and the
-   * placeholder, so the three can never quote different counts. */
+  /** "3 chats" / "1 YouTube chat" -- one phrase for the band, the button and its
+   * title, so the three can never quote different counts. */
   function chatsPhrase(n: number, platform: string): string {
     const label = platform ? platformName(platform) + " " : "";
     return n + " " + label + (n === 1 ? "chat" : "chats");
@@ -333,6 +335,9 @@
   // The composer's half of the neutral state, worded to describe the broadcast rather than
   // a connection: every scope that reaches it reaches it for the same reason.
   const NO_CHAT_HERE = "No chat to reply to here";
+  // Shared by every blocked branch whose transport is known-bad rather than merely
+  // unattempted (contrast NO_CHAT_HERE's calm "nothing was tried" reading).
+  const CHAT_NOT_CONNECTED = "This chat is not connected";
 
   interface Composer {
     /** The send addressing minus the text; null blocks the composer outright. */
@@ -378,7 +383,7 @@
       if (!t) {
         // No transport row at all is UNKNOWN, not healthy: there is nothing to reply
         // through, so this blocks rather than optimistically sending.
-        return blocked("No chat transport for", scopeLabel, "This chat is not connected", "warn");
+        return blocked("No chat transport for", scopeLabel, CHAT_NOT_CONNECTED, "warn");
       }
       if (t.row.state === "unavailable") {
         // Nothing was attempted and nothing failed, so this is not a warning -- it is the
@@ -388,7 +393,7 @@
         return blocked(CHAT_STATE_NOTE.unavailable + " —", scopeLabel, NO_CHAT_HERE, "calm");
       }
       if (t.row.state !== "connected") {
-        return blocked(CHAT_STATE_NOTE[t.row.state] + " —", scopeLabel, "This chat is not connected", "warn");
+        return blocked(CHAT_STATE_NOTE[t.row.state] + " —", scopeLabel, CHAT_NOT_CONNECTED, "warn");
       }
       // accountId + profileUuid, never `platforms`: the host routes an accountId to
       // exactly one transport, and a null profileUuid means that account's
@@ -400,7 +405,7 @@
         to: scopeLabel,
         button: "Send",
         buttonTitle: "",
-        placeholder: "Message " + scopeLabel + "…",
+        placeholder: "Type a message…",
       };
     }
     const platform = sel.kind === "platform" ? sel.platform : "";
@@ -411,14 +416,23 @@
       // connected. A mix keeps the warning -- one destination genuinely down among several
       // that were never going to run is still a destination the streamer has to see, and
       // averaging it into the calm reading is how it would go unnoticed.
+      //
+      // No top bar anymore, so the platform-less branches below name the fan-out set
+      // themselves too, via scopeLabel ("All N chats") when armed.length >= 2. The
+      // fallback covers the one frame where reconcileSelection hasn't yet pinned a
+      // lone armed destination to `destination` kind and scopeLabel is still "";
+      // only one chat is left by then, so a set phrase would read "across 1 chat".
+      // Leads drop the word "chat" -- scopeLabel ends in "chats" and the band is
+      // read at a glance, not parsed as prose.
+      const allLabel = scopeLabel || "this broadcast";
       if (fanScope.onlyUnavailable) {
         return platform
           ? blocked("No chat on", scopeLabel, NO_CHAT_HERE, "calm")
-          : blocked("No chat on this broadcast", "", NO_CHAT_HERE, "calm");
+          : blocked("Nothing to reply to across", allLabel, NO_CHAT_HERE, "calm");
       }
       return platform
         ? blocked("No connected chat on", scopeLabel, "No " + scopeLabel + " chat is connected", "warn")
-        : blocked("No chat is connected", "", "No chat is connected", "warn");
+        : blocked("None connected across", allLabel, "No chat is connected", "warn");
     }
     const phrase = chatsPhrase(fanScope.connected.size, platform);
     return {
@@ -430,7 +444,7 @@
       to: phrase,
       button: "Send to " + phrase,
       buttonTitle: "Post this message to " + phrase + " at once — every one whose chat is currently connected",
-      placeholder: "Announce to " + phrase + "…",
+      placeholder: "Type your announcement…",
     };
   });
 
@@ -494,10 +508,6 @@
 </script>
 
 <div class="chat" use:tickWhileVisible>
-  {#if scopeLabel}
-    <div class="scopebar" title={"Reading " + scopeLabel}>{scopeLabel}</div>
-  {/if}
-
   <div class="feed">
     <div class="scroll" use:feedScroll>
       {#if feed.rows.length === 0}
@@ -596,7 +606,7 @@
   {/if}
 
   <div class="composer">
-    <p class="replyto" class:warn={composer.tone === "warn"} class:fan={composer.tone === "fan"}>
+    <p id="replyto-label" class="replyto" class:warn={composer.tone === "warn"} class:fan={composer.tone === "fan"}>
       <span>{composer.lead}</span>
       {#if composer.to}<span class="to">{composer.to}</span>{/if}
     </p>
@@ -609,6 +619,7 @@
         disabled={!canSend}
         placeholder={composer.placeholder}
         aria-label="Chat message"
+        aria-describedby="replyto-label"
       ></textarea>
       <Button
         variant="filled"
@@ -628,22 +639,6 @@
     background: var(--color-surface);
     font-family: var(--font-ui);
     min-height: 0;
-  }
-  /* Which chat is on screen, restated in words: a highlighted chip is state you stop
-     seeing after an hour. */
-  .scopebar {
-    flex: 0 0 auto;
-    padding: 5px 10px;
-    border-bottom: var(--border-weight) solid var(--color-border);
-    background: var(--color-surface-2);
-    font-family: var(--font-mono);
-    font-size: 9.5px;
-    letter-spacing: 0.1em;
-    text-transform: var(--label-case);
-    color: var(--color-dim);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
   /* Own containing block for the jump chip, so a wrapping chip strip can't push it
      off the feed the way a fixed offset did. */
@@ -832,8 +827,8 @@
     color: var(--color-muted);
     cursor: not-allowed;
   }
-  /* The label carries a count and, at one chat, a platform name -- built at :431
-     from chatsPhrase (:327-330), so the longest it can render is "Send to 1 YouTube
+  /* The label carries a count and, at one chat, a platform name -- built at :444
+     from chatsPhrase (:327-332), so the longest it can render is "Send to 1 YouTube
      chat": the chat platforms are twitch/youtube/kick
      (lib/theme/platformColors.ts:57) and it never lists names. It is still the
      longest cell in the row, so it is the one that gives way when the dock narrows. */
