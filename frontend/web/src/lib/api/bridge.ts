@@ -62,7 +62,12 @@ export type BlendMethod = "default" | "srgbOff";
 
 /** A scene item (source within a scene) as reported by sceneItems.list. */
 export interface SceneItem {
+  /** Unique only among the items of one owner: a group's child can share its id with a
+   * top-level item, so `{ id, group }` together name an item. */
   id: number;
+  /** The uuid of the group source whose child this is; null for a scene's own items.
+   * Pass it back as `group` to address the child in any id-taking call. */
+  group: string | null;
   source: string | null;
   /** The member's source type id ("browser_source", "group", "scene", …); "" when
    * the item has no source. Same vocabulary as ExistingSource.typeId, but reported
@@ -81,6 +86,11 @@ export interface SceneItem {
   // (libobs falls back to a hard cut / the default 300ms when unset).
   showTransition: ItemTransition | null;
   hideTransition: ItemTransition | null;
+  /** Group rows only: the group's children, top-first like the list itself. */
+  children?: SceneItem[];
+  /** Group rows only: whether the group's row is collapsed in a sources tree, read from
+   * the group item's private settings the way OBS keeps it. */
+  collapsed?: boolean;
 }
 
 export type ReorderDirection = "up" | "down" | "top" | "bottom";
@@ -892,6 +902,9 @@ export interface TransformTarget {
   canvas?: string;
   scene?: string | null;
   id: number;
+  /** The owning group's source uuid when `id` names a group's child; omit (or null) for
+   * a scene's own item. */
+  group?: string | null;
 }
 
 /**

@@ -68,6 +68,15 @@ bool DispatchAsync(const std::string &method, const json &params,
 // there. payload is any JSON value (object/array/scalar/null).
 void EmitEvent(const std::string &name, const json &payload);
 
+// Register an in-process observer of every event as it is pushed to JS: the event name
+// and the serialized payload, on the CEF UI thread. For the headless self-tests, which
+// have no page to receive events on. One slot; pass nullptr to clear.
+void SetEventObserver(std::function<void(const std::string &name, const std::string &payload)> observer);
+
+// Run `during` while holding the group re-fit hold the undo paths take on `groupItem`, then
+// end it. For the headless self-test that removes the group under the hold.
+void WithGroupResizeHeldForTest(obs_sceneitem_t *groupItem, const std::function<void()> &during);
+
 // Render `renderFn` into an outW*outH BGRA texture (ortho'd to srcW*srcH source
 // units, so an out smaller than src downscales on the GPU) and return the packed
 // pixels, then encode those pixels as a PNG in memory. Exposed for the history
@@ -189,6 +198,17 @@ obs_source_t *AcquireSceneByUuid(const std::string &uuid);
 // Takes a whole selection so one gesture over N items is one payload: the result is
 // {"items":[<per-item state>, ...]}, each element exactly the object a single-item
 // capture produces. Empty (and so unrecordable) when no item resolved.
+//
+// An item inside a group brings the whole group with it: the group's own item and every
+// child, each once. libobs re-fits a group to its children whenever one of them moves: every
+// child shifts so the group's own space starts at their bounding box, and a group without
+// a bounds type also moves by the same amount, while a bounded group stays put and scales
+// the resized content into its bounds. Either way a state that restored the child alone
+// would put it back into a space that has since moved, whereas the whole group restored is
+// the state the re-fit ran from, so the re-fit that follows lands where it did. A capture
+// that writes geometry between BEFORE and AFTER should hold the group's re-fit off across
+// both reads (the bridge's GroupResizeDeferral), so AFTER is what was written rather than
+// a re-fit the graphics thread may or may not have applied yet.
 std::string CaptureItemTransformStates(const std::string &canvasUuid, const std::string &sceneName,
 				       obs_sceneitem_t *const *items, size_t count);
 
@@ -197,7 +217,9 @@ std::string CaptureItemTransformStates(const std::string &canvasUuid, const std:
 // payload and write the geometry it carries back, then emit sceneItems.changed and
 // persist once per scene -- the same action sceneItems.setTransform records per item, so
 // a single-item entry from a preview drag and one from the Transform dialog stay
-// interchangeable.
+// interchangeable. Every group whose children a payload carries has its re-fit deferred
+// until all of the payload is written, so the group is re-fitted once, to the restored
+// whole.
 //
 // No-op when either payload is empty OR when the two are equal. The equality check is not
 // tidiness: a gesture can end without changing the geometry (a drag over a source reporting

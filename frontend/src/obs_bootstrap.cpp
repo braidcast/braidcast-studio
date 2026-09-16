@@ -4392,6 +4392,673 @@ void ObsBootstrap::RunOverlayViewportSelfTest()
 	HostLog(std::string("[selftest] overlay-viewport overall -> ") + (allPass ? "PASS" : "FAIL (BUG)"));
 }
 
+// Headless proof that a group's child is addressable and undoable as {id, group}. The
+// group's children are added straight into the group's own scene, whose id counter is
+// independent of the top-level scene's, so the first child and the first top-level item
+// both get id 1: every bare-id route that could reach the wrong item is live here.
+// Positions are read after obs_scene_prune_sources, which runs the same transform update
+// and group re-fit a render does, so each reading is the settled state.
+//
+// Removes the temp canvas afterward; never Saves. Gated by the caller to the smoke path.
+void ObsBootstrap::RunSceneItemGroupSelfTest()
+{
+	using Bridge::json;
+
+	auto run = [](const std::string &method, const json &params, bool &ok) -> json {
+		json result;
+		std::string error;
+		ok = Bridge::Dispatch(method, params, result, error);
+		if (!ok) {
+			HostLog("[selftest] " + method + " FAILED: " + Err::Diagnostic(error));
+			return json(nullptr);
+		}
+		return result;
+	};
+
+	const std::string canvasUuid = MakeSelfTestCanvas("selftest-scene-item-group-canvas");
+	auto teardownCanvas = [&canvasUuid]() {
+		g_multistream->InvalidateCanvasEncoders(canvasUuid);
+		g_canvasRuntime->RemoveCanvas(canvasUuid);
+		g_canvases.Remove(canvasUuid);
+		return g_canvasRuntime->Find(canvasUuid) == nullptr && g_canvases.Find(canvasUuid) == nullptr;
+	};
+
+	bool ok = false;
+	const char *kSceneName = "selftest-scene-item-group-scene";
+	run("scenes.create", json{{"canvas", canvasUuid}, {"name", kSceneName}}, ok);
+	run("scenes.setCurrent", json{{"canvas", canvasUuid}, {"name", kSceneName}}, ok);
+
+	obs_source_t *sceneSource = g_canvasRuntime->CurrentScene(canvasUuid); // addref'd
+	obs_scene_t *scene = sceneSource ? obs_scene_from_source(sceneSource) : nullptr;
+	if (!scene) {
+		HostLog("[selftest] scene-item-group: no scene on the temp canvas (skipped)");
+		obs_source_release(sceneSource);
+		teardownCanvas();
+		return;
+	}
+
+	bool allPass = true;
+	auto check = [&allPass](const std::string &label, bool pass, const std::string &detail) {
+		allPass = allPass && pass;
+		HostLog("[selftest] scene-item-group " + label + " -> " + (pass ? "OK" : "MISMATCH") +
+			(detail.empty() ? std::string() : " (" + detail + ")"));
+	};
+	auto settle = [scene]() {
+		obs_scene_prune_sources(scene);
+	};
+	auto posOf = [](obs_sceneitem_t *item) {
+		vec2 pos;
+		obs_sceneitem_get_pos(item, &pos);
+		return pos;
+	};
+	auto posText = [](const vec2 &p) {
+		return std::to_string(p.x) + "," + std::to_string(p.y);
+	};
+	auto samePos = [](const vec2 &a, const vec2 &b) {
+		return std::fabs(a.x - b.x) <= 0.01f && std::fabs(a.y - b.y) <= 0.01f;
+	};
+	auto setPos = [](obs_sceneitem_t *item, float x, float y) {
+		vec2 pos;
+		vec2_set(&pos, x, y);
+		obs_sceneitem_set_pos(item, &pos);
+	};
+	auto makeSource = [](const char *name) {
+		OBSDataAutoRelease settings = obs_data_create();
+		obs_data_set_int(settings, "width", 100);
+		obs_data_set_int(settings, "height", 100);
+		return obs_source_create("color_source", name, settings, nullptr); // create-ref
+	};
+	auto undoState = []() {
+		return ObsBootstrap::Undo().GetState();
+	};
+	// UndoManager can only be emptied, not rolled back, so the stack is restored only when
+	// the test started from an empty one.
+	const UndoManager::State undoAtStart = undoState();
+
+	std::vector<std::pair<std::string, std::string>> events;
+	Bridge::SetEventObserver([&events](const std::string &name, const std::string &payload) {
+		if (name == EventNames::kSceneItemsChanged) {
+			events.emplace_back(name, payload);
+		}
+	});
+
+	obs_source_t *topSrc = makeSource("selftest-scene-item-group-top");
+	obs_source_t *childASrc = makeSource("selftest-scene-item-group-child-a");
+	obs_source_t *childBSrc = makeSource("selftest-scene-item-group-child-b");
+
+	obs_sceneitem_t *top = topSrc ? obs_scene_add(scene, topSrc) : nullptr;
+	json groupCreated = run("sceneItems.createGroup",
+				json{{"canvas", canvasUuid}, {"name", "selftest-scene-item-group-group"}}, ok);
+	const int64_t groupId = ok ? groupCreated.value("id", int64_t(0)) : 0;
+	const std::string groupUuid = ok ? groupCreated.value("source", std::string()) : std::string();
+	obs_sceneitem_t *groupItem = groupId ? obs_scene_find_sceneitem_by_id(scene, groupId) : nullptr;
+	obs_source_t *groupSrc = groupItem ? obs_sceneitem_get_source(groupItem) : nullptr; // borrowed
+	obs_scene_t *groupScene = groupSrc ? obs_group_from_source(groupSrc) : nullptr;
+	obs_sceneitem_t *childA = groupScene && childASrc ? obs_scene_add(groupScene, childASrc) : nullptr;
+	obs_sceneitem_t *childB = groupScene && childBSrc ? obs_scene_add(groupScene, childBSrc) : nullptr;
+	if (!top || !groupItem || !childA || !childB) {
+		HostLog("[selftest] scene-item-group setup FAILED (BUG)");
+		allPass = false;
+	} else {
+		setPos(top, 600.0f, 400.0f);
+		setPos(groupItem, 100.0f, 100.0f);
+		setPos(childA, 0.0f, 0.0f);
+		setPos(childB, 200.0f, 0.0f);
+		settle();
+
+		const int64_t topId = obs_sceneitem_get_id(top);
+		int64_t childAId = obs_sceneitem_get_id(childA);
+		const int64_t childBId = obs_sceneitem_get_id(childB);
+		check("id collision set up", childAId == topId,
+		      "child " + std::to_string(childAId) + ", top-level " + std::to_string(topId));
+		const json base{{"canvas", canvasUuid}, {"scene", kSceneName}};
+		auto childParams = [&](int64_t id) {
+			json p = base;
+			p["id"] = id;
+			p["group"] = groupUuid;
+			return p;
+		};
+		auto topParams = [&](int64_t id) {
+			json p = base;
+			p["id"] = id;
+			return p;
+		};
+
+		// --- 1. sceneItems.list: group rows carry children (top-first) + collapsed ------
+		auto findRow = [](const json &rows, int64_t id) -> const json * {
+			for (const json &row : rows) {
+				if (row.value("id", int64_t(-1)) == id) {
+					return &row;
+				}
+			}
+			return nullptr;
+		};
+		json rows = run("sceneItems.list", base, ok);
+		const json *groupRow = ok ? findRow(rows, groupId) : nullptr;
+		const json *topRow = ok ? findRow(rows, topId) : nullptr;
+		const json *children = groupRow && groupRow->contains("children") ? &groupRow->at("children") : nullptr;
+		const bool childrenOk = children && children->is_array() && children->size() == 2 &&
+					(*children)[0].value("id", int64_t(-1)) == childBId &&
+					(*children)[1].value("id", int64_t(-1)) == childAId &&
+					JsonUtil::Str((*children)[0], "group") == groupUuid &&
+					JsonUtil::Str((*children)[1], "group") == groupUuid;
+		auto topLevelOwner = [](const json *row) {
+			return row && row->contains("group") && row->at("group").is_null();
+		};
+		const bool ownersOk = topLevelOwner(groupRow) && topLevelOwner(topRow) &&
+				      !topRow->contains("children") && !topRow->contains("collapsed");
+		const bool collapsedFalse = groupRow && groupRow->value("collapsed", true) == false;
+		check("list children top-first", childrenOk, groupRow ? groupRow->dump() : "no group row");
+		check("list owners", ownersOk, "");
+		{
+			OBSDataAutoRelease priv = obs_sceneitem_get_private_settings(groupItem);
+			obs_data_set_bool(priv, "collapsed", true);
+			json collapsedRows = run("sceneItems.list", base, ok);
+			const json *collapsedRow = ok ? findRow(collapsedRows, groupId) : nullptr;
+			check("list collapsed",
+			      collapsedFalse && collapsedRow && collapsedRow->value("collapsed", false), "");
+			obs_data_erase(priv, "collapsed");
+		}
+
+		// --- 2. the colliding id reaches each item only through its own owner ----------
+		auto xOf = [](const json &xform) {
+			return xform.is_object() && xform.contains("pos") ? xform.at("pos").value("x", -1.0) : -1.0;
+		};
+		json childXform = run("sceneItems.getTransform", childParams(childAId), ok);
+		const bool childAddressed = ok && xOf(childXform) == 0.0;
+		json topXform = run("sceneItems.getTransform", topParams(topId), ok);
+		const bool topAddressed = ok && xOf(topXform) == 600.0;
+		check("addressing by owner", childAddressed && topAddressed,
+		      "child x=" + std::to_string(xOf(childXform)) + ", top-level x=" + std::to_string(xOf(topXform)));
+		json wrongGroup = childParams(childAId);
+		wrongGroup["group"] = "00000000-0000-0000-0000-000000000000";
+		json unused;
+		std::string wrongError;
+		check("unknown group refused",
+		      !Bridge::Dispatch("sceneItems.getTransform", wrongGroup, unused, wrongError), wrongError);
+
+		// --- 3. a child's change is announced for the scene the dock lists -------------
+		events.clear();
+		json lockParams = childParams(childAId);
+		lockParams["locked"] = true;
+		run("sceneItems.setLocked", lockParams, ok);
+		const bool lockedChild = ok && obs_sceneitem_locked(childA) && !obs_sceneitem_locked(top);
+		auto listedSceneEvent = [&]() {
+			bool seen = false;
+			for (const auto &event : events) {
+				json payload = json::parse(event.second, nullptr, false);
+				seen = seen || (JsonUtil::Str(payload, "scene") == kSceneName &&
+						JsonUtil::Str(payload, "canvas") == canvasUuid);
+			}
+			return seen;
+		};
+		auto eventsText = [&]() {
+			return std::to_string(events.size()) + " event(s)" +
+			       (events.empty() ? std::string() : ", first " + events.front().second);
+		};
+		check("child lock hits the child only", lockedChild, "");
+		check("change event names the listed scene", listedSceneEvent(), eventsText());
+		lockParams["locked"] = false;
+		run("sceneItems.setLocked", lockParams, ok);
+
+		// Child B's id is the group's own id, so a bare id would rename the group.
+		const std::string groupNameBeforeRename = obs_source_get_name(groupSrc);
+		const std::string childBName = obs_source_get_name(childBSrc);
+		events.clear();
+		json renameParams = childParams(childBId);
+		renameParams["name"] = "selftest-scene-item-group-child-b-renamed";
+		run("sources.rename", renameParams, ok);
+		check("child rename by owner",
+		      ok && childBId == groupId &&
+			      std::string(obs_source_get_name(childBSrc)) ==
+				      "selftest-scene-item-group-child-b-renamed" &&
+			      std::string(obs_source_get_name(groupSrc)) == groupNameBeforeRename,
+		      std::string("child '") + obs_source_get_name(childBSrc) + "', group '" +
+			      obs_source_get_name(groupSrc) + "'");
+		check("child rename event names the listed scene", listedSceneEvent(), eventsText());
+		ObsBootstrap::Undo().Undo();
+		check("child rename undo", std::string(obs_source_get_name(childBSrc)) == childBName,
+		      obs_source_get_name(childBSrc));
+
+		// --- 4. child transform, undo, redo: the whole group comes back ----------------
+		const vec2 groupBefore = posOf(groupItem), aBefore = posOf(childA), bBefore = posOf(childB);
+		const vec2 topBefore = posOf(top);
+		json moveParams = childParams(childAId);
+		moveParams["transform"] = json{{"pos", json{{"x", -50.0}, {"y", 0.0}}}};
+		run("sceneItems.setTransform", moveParams, ok);
+		settle();
+		const vec2 groupMoved = posOf(groupItem), aMoved = posOf(childA), bMoved = posOf(childB);
+		// The re-fit is what makes a child-only undo land wrong; without it this case would
+		// pass whether or not the group travels with the child.
+		vec2 refitGroup, refitA, refitB;
+		vec2_set(&refitGroup, groupBefore.x - 50.0f, groupBefore.y);
+		vec2_set(&refitA, 0.0f, 0.0f);
+		vec2_set(&refitB, bBefore.x + 50.0f, bBefore.y);
+		check("child move re-fits the group",
+		      ok && samePos(groupMoved, refitGroup) && samePos(aMoved, refitA) && samePos(bMoved, refitB),
+		      "group " + posText(groupMoved) + " a " + posText(aMoved) + " b " + posText(bMoved));
+
+		const std::string moveLabel = undoState().undoName;
+		ObsBootstrap::Undo().Undo();
+		settle();
+		check("child undo restores group + siblings",
+		      samePos(posOf(groupItem), groupBefore) && samePos(posOf(childA), aBefore) &&
+			      samePos(posOf(childB), bBefore) && samePos(posOf(top), topBefore),
+		      "group " + posText(posOf(groupItem)) + " a " + posText(posOf(childA)) + " b " +
+			      posText(posOf(childB)) + " top " + posText(posOf(top)));
+
+		ObsBootstrap::Undo().Redo();
+		settle();
+		check("child redo reapplies",
+		      samePos(posOf(groupItem), groupMoved) && samePos(posOf(childA), aMoved) &&
+			      samePos(posOf(childB), bMoved) && samePos(posOf(top), topBefore),
+		      "group " + posText(posOf(groupItem)) + " a " + posText(posOf(childA)) + " b " +
+			      posText(posOf(childB)));
+
+		// --- 5. undo after renaming the group: the entry keys on the uuid, not the name --
+		const std::string groupName = obs_source_get_name(groupSrc);
+		obs_source_set_name(groupSrc, "selftest-scene-item-group-renamed");
+		ObsBootstrap::Undo().Undo();
+		settle();
+		check("child undo after group rename",
+		      samePos(posOf(groupItem), groupBefore) && samePos(posOf(childA), aBefore) &&
+			      samePos(posOf(childB), bBefore),
+		      "group " + posText(posOf(groupItem)) + " a " + posText(posOf(childA)) + " b " +
+			      posText(posOf(childB)));
+		obs_source_set_name(groupSrc, groupName.c_str());
+
+		// --- 6. remove a child, then undo: it returns to its place on the canvas ----------
+		// Removing the child that defines the group's frame lets any later re-fit move that
+		// frame, so a child re-added at its group-space position alone lands elsewhere.
+		auto canvasPosOf = [&](obs_sceneitem_t *child) {
+			vec2 pos = posOf(child);
+			const vec2 group = posOf(groupItem);
+			vec2_add(&pos, &pos, &group);
+			return pos;
+		};
+		auto childNamed = [groupScene](const char *name) {
+			return obs_scene_find_source(groupScene, name); // borrowed or null
+		};
+		const char *kChildAName = "selftest-scene-item-group-child-a";
+		const vec2 aCanvas = canvasPosOf(childA), bCanvas = canvasPosOf(childB);
+		auto canvasText = [&]() {
+			obs_sceneitem_t *a = childNamed(kChildAName);
+			return "group " + posText(posOf(groupItem)) + " a " + (a ? posText(canvasPosOf(a)) : "gone") +
+			       " b " + posText(canvasPosOf(childB)) + " (canvas)";
+		};
+		run("sceneItems.remove", childParams(childAId), ok);
+		settle();
+		json moveB = childParams(childBId);
+		moveB["transform"] = json{{"pos", json{{"x", bBefore.x + 50.0}, {"y", bBefore.y}}}};
+		run("sceneItems.setTransform", moveB, ok);
+		settle();
+		ObsBootstrap::Undo().Undo();
+		settle();
+		vec2 origin;
+		vec2_zero(&origin);
+		check("child remove precondition: the group re-fits around the survivor",
+		      ok && !childNamed(kChildAName) && samePos(posOf(groupItem), bCanvas) &&
+			      samePos(posOf(childB), origin),
+		      canvasText());
+		ObsBootstrap::Undo().Undo();
+		settle();
+		childA = childNamed(kChildAName);
+		check("child remove undo restores it in place",
+		      childA && samePos(canvasPosOf(childA), aCanvas) && samePos(canvasPosOf(childB), bCanvas),
+		      canvasText());
+		ObsBootstrap::Undo().Redo();
+		settle();
+		check("child remove redo leaves the sibling in place",
+		      !childNamed(kChildAName) && samePos(canvasPosOf(childB), bCanvas), canvasText());
+		ObsBootstrap::Undo().Undo();
+		settle();
+		childA = childNamed(kChildAName);
+		childAId = childA ? obs_sceneitem_get_id(childA) : 0;
+		check("child remove undo after redo",
+		      childA && samePos(posOf(groupItem), groupBefore) && samePos(posOf(childA), aBefore) &&
+			      samePos(posOf(childB), bBefore),
+		      canvasText());
+
+		// --- 7. duplicate a child: the copy joins the group, undo/redo keep siblings -------
+		if (childA) {
+			json duplicated = run("sources.duplicate", childParams(childAId), ok);
+			const std::string copyName = ok ? JsonUtil::Str(duplicated, "source") : std::string();
+			settle();
+			auto copyText = [&]() {
+				obs_sceneitem_t *copy = childNamed(copyName.c_str());
+				return "copy " + (copy ? posText(canvasPosOf(copy)) : std::string("gone")) + ", " +
+				       canvasText();
+			};
+			auto siblingsInPlace = [&]() {
+				return samePos(canvasPosOf(childA), aCanvas) && samePos(canvasPosOf(childB), bCanvas);
+			};
+			obs_sceneitem_t *copy = copyName.empty() ? nullptr : childNamed(copyName.c_str());
+			check("child duplicate lands in the group over the original",
+			      copy && samePos(canvasPosOf(copy), aCanvas) && siblingsInPlace(), copyText());
+			ObsBootstrap::Undo().Undo();
+			settle();
+			check("child duplicate undo removes the copy only",
+			      !childNamed(copyName.c_str()) && siblingsInPlace(), copyText());
+			ObsBootstrap::Undo().Redo();
+			settle();
+			copy = childNamed(copyName.c_str());
+			check("child duplicate redo restores the copy in place",
+			      copy && samePos(canvasPosOf(copy), aCanvas) && siblingsInPlace(), copyText());
+			ObsBootstrap::Undo().Undo();
+			settle();
+		} else {
+			check("child duplicate", false, "child a did not come back");
+		}
+
+		// --- 8. canvas-space actions refuse a child; group-space ones still apply ----------
+		std::string refusedActions;
+		for (const char *action :
+		     {"center", "centerVertical", "centerHorizontal", "fitToScreen", "stretchToScreen"}) {
+			json actionParams = childParams(childBId);
+			actionParams["action"] = action;
+			json actionResult;
+			std::string actionError;
+			if (Bridge::Dispatch("sceneItems.transformAction", actionParams, actionResult, actionError)) {
+				refusedActions += std::string(action) + " applied; ";
+			} else if (actionError.find("inside a group") == std::string::npos) {
+				refusedActions += std::string(action) + ": " + actionError + "; ";
+			}
+		}
+		check("canvas-space actions refused for a child",
+		      refusedActions.empty() && samePos(canvasPosOf(childB), bCanvas), refusedActions);
+		// A rotation pivots on the item's visual centre, read from its box. A child's box is
+		// only recomputed on the next tick, and a square child's centre hides a stale read,
+		// so B is made non-square and each rotation is checked for the centre it keeps.
+		auto canvasCentreOf = [&](obs_sceneitem_t *child) {
+			matrix4 box;
+			obs_sceneitem_get_box_transform(child, &box);
+			vec3 centre;
+			vec3_set(&centre, 0.5f, 0.5f, 0.0f);
+			vec3_transform(&centre, &centre, &box);
+			vec2 out;
+			vec2_set(&out, centre.x, centre.y);
+			const vec2 group = posOf(groupItem);
+			vec2_add(&out, &out, &group);
+			return out;
+		};
+		vec2 wide;
+		vec2_set(&wide, 2.0f, 1.0f);
+		obs_sceneitem_set_scale(childB, &wide);
+		settle();
+		const vec2 bCentre = canvasCentreOf(childB);
+		json rotateParams = childParams(childBId);
+		rotateParams["action"] = "rotate90cw";
+		run("sceneItems.transformAction", rotateParams, ok);
+		settle();
+		check("child rotate action keeps its visual centre",
+		      ok && obs_sceneitem_get_rot(childB) == 90.0f && samePos(canvasCentreOf(childB), bCentre),
+		      "centre " + posText(canvasCentreOf(childB)) + ", was " + posText(bCentre));
+		ObsBootstrap::Undo().Undo();
+		settle();
+		json rotParams = childParams(childBId);
+		rotParams["transform"] = json{{"rot", 90.0}};
+		run("sceneItems.setTransform", rotParams, ok);
+		settle();
+		check("child rot transform keeps its visual centre",
+		      ok && obs_sceneitem_get_rot(childB) == 90.0f && samePos(canvasCentreOf(childB), bCentre),
+		      "centre " + posText(canvasCentreOf(childB)) + ", was " + posText(bCentre));
+		ObsBootstrap::Undo().Undo();
+		settle();
+		vec2 unit;
+		vec2_set(&unit, 1.0f, 1.0f);
+		obs_sceneitem_set_scale(childB, &unit);
+		settle();
+		// The clamp measures the box libobs last computed, which for a child is the settled
+		// one, so the child is settled off the canvas first and moved again: a clamp that
+		// ran would pull that second move back.
+		json farParams = childParams(childBId);
+		farParams["transform"] = json{{"pos", json{{"x", 5000.0}, {"y", 0.0}}}};
+		run("sceneItems.setTransform", farParams, ok);
+		settle();
+		farParams["transform"] = json{{"pos", json{{"x", 5050.0}, {"y", 0.0}}}};
+		json farResult = run("sceneItems.setTransform", farParams, ok);
+		check("canvas clamp skips a child", ok && xOf(farResult) == 5050.0, std::to_string(xOf(farResult)));
+		ObsBootstrap::Undo().Undo();
+		ObsBootstrap::Undo().Undo();
+		settle();
+		check("canvas-space fence leaves the group in place",
+		      samePos(posOf(groupItem), groupBefore) && samePos(posOf(childA), aBefore) &&
+			      samePos(posOf(childB), bBefore) && obs_sceneitem_get_rot(childB) == 0.0f,
+		      canvasText());
+
+		// --- 9. two children drawing one source: each entry touches only its own item ------
+		// The twin shares A's source and sits below it, so a lookup by source alone finds the
+		// twin before A.
+		obs_sceneitem_t *twin = obs_scene_add(groupScene, childASrc);
+		const int64_t twinId = twin ? obs_sceneitem_get_id(twin) : 0;
+		if (twin) {
+			setPos(twin, 200.0f, 150.0f);
+			obs_sceneitem_set_order(twin, OBS_ORDER_MOVE_BOTTOM);
+			settle();
+			const vec2 twinCanvas = canvasPosOf(twin);
+			auto twinNow = [&]() {
+				return obs_scene_find_sceneitem_by_id(groupScene, twinId);
+			};
+			auto childANow = [&]() {
+				struct Find {
+					obs_source_t *source;
+					int64_t skipId;
+					obs_sceneitem_t *found;
+				} find{childASrc, twinId, nullptr};
+				obs_scene_enum_items(
+					groupScene,
+					[](obs_scene_t *, obs_sceneitem_t *item, void *param) -> bool {
+						auto *f = static_cast<Find *>(param);
+						if (obs_sceneitem_get_source(item) == f->source &&
+						    obs_sceneitem_get_id(item) != f->skipId) {
+							f->found = item;
+							return false;
+						}
+						return true;
+					},
+					&find);
+				return find.found;
+			};
+			auto twinText = [&]() {
+				obs_sceneitem_t *a = childANow();
+				obs_sceneitem_t *t = twinNow();
+				return "a " + (a ? posText(canvasPosOf(a)) : std::string("gone")) + " twin " +
+				       (t ? posText(canvasPosOf(t)) : std::string("gone")) + " b " +
+				       posText(canvasPosOf(childB)) + " (canvas)";
+			};
+			auto twinAndBInPlace = [&]() {
+				obs_sceneitem_t *t = twinNow();
+				return t && samePos(canvasPosOf(t), twinCanvas) &&
+				       samePos(canvasPosOf(childB), bCanvas);
+			};
+			run("sceneItems.remove", childParams(childAId), ok);
+			settle();
+			ObsBootstrap::Undo().Undo();
+			settle();
+			obs_sceneitem_t *restoredA = childANow();
+			check("shared-source remove undo restores each item",
+			      ok && restoredA && samePos(canvasPosOf(restoredA), aCanvas) && twinAndBInPlace(),
+			      twinText());
+			ObsBootstrap::Undo().Redo();
+			settle();
+			check("shared-source remove redo removes only its own item", !childANow() && twinAndBInPlace(),
+			      twinText());
+			ObsBootstrap::Undo().Undo();
+			settle();
+			childA = childANow();
+			childAId = childA ? obs_sceneitem_get_id(childA) : 0;
+			check("shared-source remove undo after redo",
+			      childA && samePos(canvasPosOf(childA), aCanvas) && twinAndBInPlace(), twinText());
+			if (obs_sceneitem_t *t = twinNow()) {
+				obs_sceneitem_remove(t);
+			}
+			settle();
+		} else {
+			check("shared-source setup", false, "");
+		}
+
+		// --- 10. a re-fit hold keeps a group item alive past the prune that releases it ----
+		{
+			json probeGroup = run("sceneItems.createGroup",
+					      json{{"canvas", canvasUuid}, {"name", "selftest-scene-item-group-probe"}},
+					      ok);
+			const int64_t probeId = ok ? probeGroup.value("id", int64_t(0)) : 0;
+			obs_sceneitem_t *probeItem = probeId ? obs_scene_find_sceneitem_by_id(scene, probeId) : nullptr;
+			if (probeItem) {
+				obs_source_t *probeSrc = obs_sceneitem_get_source(probeItem); // borrowed
+				OBSWeakSourceAutoRelease weak = obs_source_get_weak_source(probeSrc);
+				bool aliveWhileHeld = false;
+				Bridge::WithGroupResizeHeldForTest(probeItem, [&]() {
+					obs_source_remove(probeSrc);
+					obs_scene_prune_sources(scene);
+					while (obs_wait_for_destroy_queue()) {
+					}
+					aliveWhileHeld = !obs_weak_source_expired(weak);
+				});
+				while (obs_wait_for_destroy_queue()) {
+				}
+				const bool releasedAfter = obs_weak_source_expired(weak);
+				check("re-fit hold outlives the prune of its group item",
+				      aliveWhileHeld && releasedAfter,
+				      std::string("alive while held ") + (aliveWhileHeld ? "yes" : "no") +
+					      ", released after " + (releasedAfter ? "yes" : "no"));
+			} else {
+				check("re-fit hold probe setup", false, "");
+			}
+		}
+
+		// --- 11. ungroup: children get new top-level ids, the old entry must not follow --
+		moveParams["id"] = childAId;
+		moveParams["transform"] = json{{"pos", json{{"x", -20.0}, {"y", 0.0}}}};
+		run("sceneItems.setTransform", moveParams, ok);
+		settle();
+		run("sceneItems.ungroup", topParams(groupId), ok);
+		while (obs_wait_for_destroy_queue()) {
+		}
+		settle();
+		std::vector<std::pair<int64_t, vec2>> ungrouped;
+		obs_scene_enum_items(
+			scene,
+			[](obs_scene_t *, obs_sceneitem_t *item, void *param) -> bool {
+				vec2 pos;
+				obs_sceneitem_get_pos(item, &pos);
+				static_cast<std::vector<std::pair<int64_t, vec2>> *>(param)->emplace_back(
+					obs_sceneitem_get_id(item), pos);
+				return true;
+			},
+			&ungrouped);
+		{
+			OBSSourceAutoRelease stale = obs_get_source_by_uuid(groupUuid.c_str());
+			check("ungroup", ok && ungrouped.size() == 3,
+			      std::to_string(ungrouped.size()) + " top-level item(s), group " +
+				      (stale ? "still resolves" : "gone"));
+		}
+		ObsBootstrap::Undo().Undo();
+		settle();
+		bool untouched = true;
+		for (const auto &entry : ungrouped) {
+			obs_sceneitem_t *item = obs_scene_find_sceneitem_by_id(scene, entry.first);
+			untouched = untouched && item && samePos(posOf(item), entry.second);
+		}
+		const UndoManager::State afterUngroupUndo = undoState();
+		check("undo after ungroup consumes its slot and moves nothing",
+		      untouched && afterUngroupUndo.redoName == moveLabel && afterUngroupUndo.undoName != moveLabel,
+		      "redo='" + afterUngroupUndo.redoName + "'");
+
+		// --- 12. undo after deleting a group: logs, spends the slot, touches nothing ----
+		std::vector<int64_t> formerChildren;
+		for (const auto &entry : ungrouped) {
+			if (entry.first != topId) {
+				formerChildren.push_back(entry.first);
+			}
+		}
+		json regrouped = run("sceneItems.group", json{{"canvas", canvasUuid}, {"ids", formerChildren}}, ok);
+		const int64_t group2Id = ok ? regrouped.value("id", int64_t(0)) : 0;
+		const std::string group2Uuid = ok ? regrouped.value("source", std::string()) : std::string();
+		obs_sceneitem_t *group2Item = group2Id ? obs_scene_find_sceneitem_by_id(scene, group2Id) : nullptr;
+		if (group2Item && !formerChildren.empty()) {
+			json move2 = base;
+			move2["id"] = formerChildren.front();
+			move2["group"] = group2Uuid;
+			move2["transform"] = json{{"pos", json{{"x", -30.0}, {"y", 0.0}}}};
+			run("sceneItems.setTransform", move2, ok);
+			settle();
+			const std::string move2Label = undoState().undoName;
+			obs_scene_t *group2Scene = obs_group_from_source(obs_sceneitem_get_source(group2Item));
+			obs_sceneitem_t *moved2 = obs_scene_find_sceneitem_by_id(group2Scene, formerChildren.front());
+			OBSSourceAutoRelease moved2Src = moved2 ? obs_source_get_ref(obs_sceneitem_get_source(moved2))
+								: nullptr;
+			obs_sceneitem_remove(group2Item);
+			while (obs_wait_for_destroy_queue()) {
+			}
+			// The entry's own source, alive again as a top-level item: the one thing a
+			// resolver falling back past the deleted group could still write onto.
+			obs_sceneitem_t *orphan = moved2Src ? obs_scene_add(scene, moved2Src) : nullptr;
+			if (orphan) {
+				setPos(orphan, 700.0f, 50.0f);
+			}
+			settle();
+			std::vector<std::pair<obs_sceneitem_t *, vec2>> survivors;
+			obs_scene_enum_items(
+				scene,
+				[](obs_scene_t *, obs_sceneitem_t *item, void *param) -> bool {
+					vec2 pos;
+					obs_sceneitem_get_pos(item, &pos);
+					static_cast<std::vector<std::pair<obs_sceneitem_t *, vec2>> *>(param)
+						->emplace_back(item, pos);
+					return true;
+				},
+				&survivors);
+			ObsBootstrap::Undo().Undo();
+			settle();
+			bool survivorsUntouched = orphan != nullptr;
+			for (const auto &survivor : survivors) {
+				survivorsUntouched = survivorsUntouched &&
+						     samePos(posOf(survivor.first), survivor.second);
+			}
+			const UndoManager::State afterDeleteUndo = undoState();
+			OBSSourceAutoRelease stale = obs_get_source_by_uuid(group2Uuid.c_str());
+			check("undo after group delete consumes its slot and moves nothing",
+			      ok && !stale && survivorsUntouched && afterDeleteUndo.redoName == move2Label &&
+				      afterDeleteUndo.undoName != move2Label,
+			      "redo='" + afterDeleteUndo.redoName + "', group " + (stale ? "still resolves" : "gone") +
+				      ", orphan " + (orphan ? posText(posOf(orphan)) : std::string("not added")));
+		} else {
+			check("regroup for the delete case", false, "");
+		}
+	}
+
+	// --- cleanup: every remaining item, our sources, temp canvas ----------------------
+	Bridge::SetEventObserver(nullptr);
+	if (!undoAtStart.canUndo && !undoAtStart.canRedo) {
+		ObsBootstrap::Undo().Clear();
+	} else {
+		HostLog("[selftest] scene-item-group cleanup: undo stack was not empty at start; its entries are left");
+	}
+	std::vector<obs_sceneitem_t *> remaining;
+	obs_scene_enum_items(
+		scene,
+		[](obs_scene_t *, obs_sceneitem_t *item, void *param) -> bool {
+			static_cast<std::vector<obs_sceneitem_t *> *>(param)->push_back(item);
+			return true;
+		},
+		&remaining);
+	for (obs_sceneitem_t *item : remaining) {
+		obs_sceneitem_remove(item);
+	}
+	for (obs_source_t *src : {topSrc, childASrc, childBSrc}) {
+		if (src) {
+			obs_source_remove(src);
+			obs_source_release(src);
+		}
+	}
+	obs_source_release(sceneSource);
+	const bool gone = teardownCanvas();
+	HostLog(std::string("[selftest] scene-item-group cleanup: temp canvas ") +
+		(gone ? "removed" : "STILL PRESENT (BUG)"));
+	HostLog(std::string("[selftest] scene-item-group overall -> ") + (allPass ? "PASS" : "FAIL (BUG)"));
+}
+
 void ObsBootstrap::RunPreviewSurfaceIsolationSelfTest()
 {
 	using Bridge::json;

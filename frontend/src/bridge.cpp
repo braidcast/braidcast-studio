@@ -2480,7 +2480,7 @@ bool BlendMethodFromToken(const std::string &token, obs_blending_method &method)
 // valid only while `sceneSource` is held. null when none matches.
 obs_sceneitem_t *FindItemBySourceUuid(obs_source_t *sceneSource, const std::string &uuid)
 {
-	obs_scene_t *scene = sceneSource ? obs_scene_from_source(sceneSource) : nullptr;
+	obs_scene_t *scene = sceneSource ? obs_group_or_scene_from_source(sceneSource) : nullptr;
 	if (!scene || uuid.empty()) {
 		return nullptr;
 	}
@@ -2509,13 +2509,24 @@ obs_sceneitem_t *FindItemBySourceUuid(obs_source_t *sceneSource, const std::stri
 // and that FAILS rather than falling back to the canvas/name resolution -- the fallback
 // would hand an additional canvas whatever scene it shows now, and the caller would write
 // the recorded geometry onto a scene the user never edited.
+//
+// The recorded uuid names the item's direct owner, which for a group's child is the group
+// source. A group deleted or ungrouped since fails the same way a deleted scene does, and
+// never falls through to the top-level scene, where the child's id can name another item.
+//
+// The source whose own item list holds a scene item, addref'd (caller releases): a scene
+// for a top-level item, a group for a group's child. Null when the uuid names nothing or
+// names a source that is neither. Kept apart from AcquireSceneByUuid because a caller
+// that needs a scene to draw or drag must not be handed a group. UI thread only.
+obs_source_t *AcquireItemOwnerByUuid(const std::string &uuid);
+
 obs_source_t *ResolveStateScene(const json &state)
 {
 	const std::string uuid = OptString(state, "sceneUuid");
 	if (uuid.empty()) {
 		return ResolveTargetScene(state); // reads canvas/scene; addref'd
 	}
-	obs_source_t *source = AcquireSceneByUuid(uuid); // addref'd
+	obs_source_t *source = AcquireItemOwnerByUuid(uuid); // addref'd
 	if (!source) {
 		// UndoManager pops the entry before running the callback and pushes it onto the
 		// redo stack after, unconditionally (UndoManager.cpp:48, :54, :57), and the
@@ -2530,19 +2541,30 @@ obs_source_t *ResolveStateScene(const json &state)
 // Resolve scene + item from a captured state json (keys: canvas, scene, sceneUuid,
 // source, itemId), each addressed exact-key-first per the note above this section.
 // On success `sceneSource` is addref'd (caller releases) and `item` is borrowed.
+// The scene-item id a captured state records, or -1 for a state captured without one.
+int64_t RecordedItemId(const json &state)
+{
+	auto it = state.find("itemId");
+	return it != state.end() && it->is_number_integer() ? it->get<int64_t>() : -1;
+}
+
 bool ResolveStateItem(const json &state, obs_source_t *&sceneSource, obs_sceneitem_t *&item)
 {
 	sceneSource = ResolveStateScene(state); // addref'd
 	if (!sceneSource) {
 		return false;
 	}
-	int64_t itemId = -1;
-	item = nullptr;
-	if (auto it = state.find("itemId"); it != state.end() && it->is_number_integer()) {
-		itemId = it->get<int64_t>();
-		item = FindSceneItem(obs_scene_from_source(sceneSource), itemId);
-	}
+	const int64_t itemId = RecordedItemId(state);
 	const std::string sourceUuid = OptString(state, "source");
+	item = itemId >= 0 ? FindSceneItem(obs_group_or_scene_from_source(sceneSource), itemId) : nullptr;
+	if (item && !sourceUuid.empty()) {
+		// An id now held by an item drawing another source names a different item.
+		obs_source_t *itemSource = obs_sceneitem_get_source(item);
+		const char *itemUuid = itemSource ? obs_source_get_uuid(itemSource) : nullptr;
+		if (!itemUuid || sourceUuid != itemUuid) {
+			item = nullptr;
+		}
+	}
 	if (!item) {
 		item = FindItemBySourceUuid(sceneSource, sourceUuid);
 	}
@@ -2560,6 +2582,134 @@ bool ResolveStateItem(const json &state, obs_source_t *&sceneSource, obs_sceneit
 		return false;
 	}
 	return true;
+}
+
+// Resolve the scene item a bridge call addresses, the one route every id-taking
+// sceneItems.* method (and sources.rename / sources.duplicate / screenshot.takeSource)
+// takes. params: {canvas?, scene?, id, group?}. The scene resolves as ResolveTargetScene
+// does; `group`, when present, is the uuid of a group sitting directly in that scene, and
+// `id` is then looked up among that group's children rather than the scene's own items.
+// Ids are unique only within one owner, so a child and a top-level item may share one --
+// which is why a bare id never names a child. On success `owner` is addref'd (caller
+// releases) and is the scene or group whose own list holds `item` (borrowed).
+bool ResolveParamsItem(const json &params, obs_source_t *&owner, obs_sceneitem_t *&item, int64_t &id,
+		       std::string &error)
+{
+	owner = nullptr;
+	item = nullptr;
+	if (!ItemIdFromParams(params, id, error)) {
+		return false;
+	}
+	obs_source_t *sceneSource = ResolveTargetScene(params); // addref'd
+	if (!sceneSource) {
+		error = "no scene";
+		return false;
+	}
+	const std::string group = OptString(params, "group");
+	if (group.empty()) {
+		owner = sceneSource;
+	} else {
+		obs_sceneitem_t *groupItem = FindItemBySourceUuid(sceneSource, group);
+		if (groupItem && obs_sceneitem_is_group(groupItem)) {
+			owner = obs_source_get_ref(obs_sceneitem_get_source(groupItem)); // addref'd
+		}
+		obs_source_release(sceneSource);
+		if (!owner) {
+			error = "no group " + group + " in scene";
+			return false;
+		}
+	}
+	item = FindSceneItem(obs_group_or_scene_from_source(owner), id);
+	if (!item) {
+		obs_source_release(owner);
+		owner = nullptr;
+		error = "no scene item with id " + std::to_string(id) + (group.empty() ? "" : " in group " + group);
+		return false;
+	}
+	return true;
+}
+
+// The group source whose own list holds `item`, borrowed, or null for a top-level item.
+obs_source_t *GroupSourceOf(obs_sceneitem_t *item)
+{
+	obs_scene_t *ownerScene = item ? obs_sceneitem_get_scene(item) : nullptr;
+	obs_source_t *ownerSource = ownerScene ? obs_scene_get_source(ownerScene) : nullptr;
+	return obs_source_is_group(ownerSource) ? ownerSource : nullptr;
+}
+
+// The group item that draws `item`'s group in a scene, borrowed, or null when `item` is not
+// a group's child. libobs keeps no link from a group's own scene back to the item drawing
+// it, so it is looked up among the scenes of the group's canvas. Valid only for immediate
+// use, while that scene still holds the group.
+obs_sceneitem_t *GroupItemOf(obs_sceneitem_t *item)
+{
+	obs_source_t *groupSource = GroupSourceOf(item);
+	const char *groupUuid = groupSource ? obs_source_get_uuid(groupSource) : nullptr;
+	if (!groupUuid) {
+		return nullptr;
+	}
+	// A group with no canvas of its own is sized against the main canvas by libobs
+	// (get_scene_dimensions), so that is where its scene is looked for too.
+	OBSCanvasAutoRelease canvas = obs_source_get_canvas(groupSource); // addref'd
+	if (!canvas) {
+		canvas = obs_get_main_canvas(); // addref'd
+	}
+	if (!canvas) {
+		return nullptr;
+	}
+	// Refs taken inside the enumeration and searched outside it, so no scene lock is taken
+	// while the canvas holds its source-list mutex.
+	std::vector<OBSSourceAutoRelease> scenes;
+	obs_canvas_enum_scenes(
+		canvas,
+		[](void *param, obs_source_t *scene) -> bool {
+			if (!obs_source_is_group(scene)) {
+				static_cast<std::vector<OBSSourceAutoRelease> *>(param)->emplace_back(
+					obs_source_get_ref(scene));
+			}
+			return true;
+		},
+		&scenes);
+	for (const OBSSourceAutoRelease &scene : scenes) {
+		obs_sceneitem_t *groupItem = FindItemBySourceUuid(scene, groupUuid);
+		if (groupItem && obs_sceneitem_get_source(groupItem) == groupSource) {
+			return groupItem;
+		}
+	}
+	return nullptr;
+}
+
+// `items` widened to whole groups: an item inside a group is replaced by that group's own
+// item followed by every child of the group, each included once however many of its
+// children were passed. Top-level items pass through in order. See
+// Bridge::CaptureItemTransformStates for why a group child never travels alone.
+std::vector<obs_sceneitem_t *> WithGroupClosure(obs_sceneitem_t *const *items, size_t count)
+{
+	std::vector<obs_sceneitem_t *> out;
+	auto add = [&out](obs_sceneitem_t *item) {
+		if (std::find(out.begin(), out.end(), item) == out.end()) {
+			out.push_back(item);
+		}
+	};
+	for (size_t i = 0; i < count; i++) {
+		if (!items[i]) {
+			continue;
+		}
+		obs_sceneitem_t *groupItem = GroupItemOf(items[i]);
+		if (!groupItem) {
+			add(items[i]);
+			continue;
+		}
+		add(groupItem);
+		obs_sceneitem_group_enum_items(
+			groupItem,
+			[](obs_scene_t *, obs_sceneitem_t *child, void *param) -> bool {
+				(*static_cast<decltype(add) *>(param))(child);
+				return true;
+			},
+			&add);
+	}
+	return out;
 }
 
 // Persist a mutated source to whichever store owns it. A source bound to a
@@ -2592,11 +2742,24 @@ void PersistSourceState(obs_source_t *source)
 	SceneCollection::Save();
 }
 
+// Emit sceneItems.changed for a change to the items of `owner`, a scene or a group. A
+// group's own item list is not what any surface lists: a dock lists the scene holding the
+// group and filters the event by that scene's name, so a group's change is announced for
+// every current scene that holds the group.
+void EmitItemOwnerChanged(const json &params, obs_source_t *owner)
+{
+	if (obs_source_is_group(owner)) {
+		EmitSceneItemsChangedForSource(owner);
+		return;
+	}
+	EmitSceneItemsChanged(owner, ResolveCanvasTarget(params).uuid);
+}
+
 // Emit + persist after a scene-item mutation (or an undo Apply), matching what
 // the original mutation does so the UI refreshes and the undo persists.
 void CommitSceneItemChange(const json &params, obs_source_t *sceneSource)
 {
-	EmitSceneItemsChanged(sceneSource, ResolveCanvasTarget(params).uuid);
+	EmitItemOwnerChanged(params, sceneSource);
 	PersistSourceState(sceneSource);
 }
 
@@ -2613,6 +2776,9 @@ void CommitSceneItemChange(const json &params, obs_source_t *sceneSource)
 //
 // Lives at Bridge scope rather than file-local because the overlay viewport follow
 // announces the same thing after it resizes an overlay's page.
+//
+// A source counts as listed when it is one of the scene's items or a child of one of the
+// scene's groups, since a dock lists a group's children under the group's row.
 void EmitSceneItemsChangedForSource(obs_source_t *src)
 {
 	const char *uuid = src ? obs_source_get_uuid(src) : nullptr;
@@ -2620,8 +2786,33 @@ void EmitSceneItemsChangedForSource(obs_source_t *src)
 		return;
 	}
 	const std::string srcUuid = uuid;
+	auto lists = [&srcUuid](obs_source_t *scene) {
+		obs_scene_t *sceneObj = scene ? obs_scene_from_source(scene) : nullptr;
+		if (!sceneObj) {
+			return false;
+		}
+		if (FindItemBySourceUuid(scene, srcUuid)) {
+			return true;
+		}
+		struct Ctx {
+			const std::string &uuid;
+			bool found;
+		} ctx{srcUuid, false};
+		obs_scene_enum_items(
+			sceneObj,
+			[](obs_scene_t *, obs_sceneitem_t *item, void *param) -> bool {
+				auto *c = static_cast<Ctx *>(param);
+				if (obs_sceneitem_is_group(item) &&
+				    FindItemBySourceUuid(obs_sceneitem_get_source(item), c->uuid)) {
+					c->found = true;
+				}
+				return !c->found;
+			},
+			&ctx);
+		return ctx.found;
+	};
 	OBSSourceAutoRelease programScene = ResolveSceneSource(std::string()); // addref'd or null
-	if (FindItemBySourceUuid(programScene, srcUuid)) {
+	if (lists(programScene)) {
 		EmitSceneItemsChanged(programScene, std::string());
 	}
 	for (const auto &def : ObsBootstrap::Canvases().Definitions()) {
@@ -2629,7 +2820,7 @@ void EmitSceneItemsChangedForSource(obs_source_t *src)
 			continue;
 		}
 		OBSSourceAutoRelease scene = ObsBootstrap::CanvasRuntime().CurrentScene(def.uuid); // addref'd
-		if (FindItemBySourceUuid(scene, srcUuid)) {
+		if (lists(scene)) {
 			EmitSceneItemsChanged(scene, def.uuid);
 		}
 	}
@@ -2640,7 +2831,7 @@ namespace {
 // {canvas, scene, sceneUuid, source-uuid} -- the re-resolution keys shared by every
 // state. The canvas/scene pair is kept because the emit side still addresses a canvas by
 // it (CommitSceneItemChange); the scene uuid is what ResolveStateScene resolves through.
-// The uuid is a parameter because the two StateBase overloads below know the scene by
+// The uuid is a parameter because the StateBase overloads below know the scene by
 // different means, and only one of them has to go looking for it.
 json StateKeys(const json &params, obs_source_t *src, const char *sceneUuid)
 {
@@ -2659,6 +2850,14 @@ json StateBase(const json &params, obs_source_t *src)
 	// resolved the same way the mutation that is being recorded resolved it.
 	OBSSourceAutoRelease scene = ResolveTargetScene(params); // addref'd or null
 	return StateKeys(params, src, scene ? obs_source_get_uuid(scene) : nullptr);
+}
+
+// StateBase for a caller that already holds the scene or group whose own list holds the
+// item drawing `src`. A group's child has to record that group: resolving `params` would
+// name the top-level scene, where the child's source is not an item at all.
+json StateBase(const json &params, obs_source_t *src, obs_source_t *owner)
+{
+	return StateKeys(params, src, owner ? obs_source_get_uuid(owner) : nullptr);
 }
 
 // StateBase for a state that names one scene ITEM rather than a source: records the item
@@ -2754,6 +2953,75 @@ void PinOverlayBoundsInState(json &state, obs_sceneitem_t *item)
 	}
 	state["boundsType"] = static_cast<int>(OBS_BOUNDS_STRETCH);
 	state["bounds"] = json{{"x", boundsWidth}, {"y", boundsHeight}};
+}
+
+// Holds a group's re-fit off until End() or destruction; a null group item holds nothing,
+// so a top-level item passes straight through. libobs counts the holds, so they nest.
+//
+// The hold keeps its own reference on the group item: the graphics thread prunes an item
+// whose source was removed and releases it without the UI thread, and ending a hold on that
+// item would write freed memory.
+class GroupResizeDeferral {
+public:
+	explicit GroupResizeDeferral(obs_sceneitem_t *groupItem) : groupItem_(groupItem)
+	{
+		if (groupItem_) {
+			obs_sceneitem_addref(groupItem_);
+			obs_sceneitem_defer_group_resize_begin(groupItem_);
+		}
+	}
+	GroupResizeDeferral(GroupResizeDeferral &&other) noexcept : groupItem_(std::exchange(other.groupItem_, nullptr))
+	{
+	}
+	GroupResizeDeferral(const GroupResizeDeferral &) = delete;
+	GroupResizeDeferral &operator=(const GroupResizeDeferral &) = delete;
+	GroupResizeDeferral &operator=(GroupResizeDeferral &&) = delete;
+	~GroupResizeDeferral() { End(); }
+
+	void End()
+	{
+		if (obs_sceneitem_t *groupItem = std::exchange(groupItem_, nullptr)) {
+			obs_sceneitem_defer_group_resize_end(groupItem);
+			obs_sceneitem_release(groupItem);
+		}
+	}
+	// The held group item; null for a top-level item and once the hold has ended.
+	obs_sceneitem_t *GroupItem() const { return groupItem_; }
+
+private:
+	obs_sceneitem_t *groupItem_;
+};
+
+// The item states Bridge::CaptureItemTransformStates records, as the array itself. The
+// caller holds each group's re-fit across the read (see GroupResizeDeferral): releasing a
+// hold flags a re-fit, which a read on its own must not cause.
+json CaptureItemStates(const std::string &canvasUuid, const std::string &sceneName, obs_sceneitem_t *const *items,
+		       size_t count)
+{
+	json arr = json::array();
+	for (obs_sceneitem_t *item : WithGroupClosure(items, count)) {
+		// The same addressing every bridge-recorded state carries, so ApplyTransforms
+		// re-resolves a preview drag's payload by the identical route.
+		json state = CaptureTransformState(json{{"canvas", canvasUuid}, {"scene", sceneName}}, item);
+		PinOverlayBoundsInState(state, item);
+		arr.push_back(std::move(state));
+	}
+	return arr;
+}
+
+// CaptureItemStates for one item, addressed the way `params` addressed the bridge call.
+json CaptureItemStates(const json &params, obs_sceneitem_t *item)
+{
+	return CaptureItemStates(OptString(params, "canvas"), OptString(params, "scene"), &item, 1);
+}
+
+// The payload ApplyTransforms reads: {"items": states}, or empty when no item was captured.
+std::string ItemStatesPayload(json states)
+{
+	if (states.empty()) {
+		return std::string();
+	}
+	return json{{"items", std::move(states)}}.dump();
 }
 
 // Overlay the geometry fields present in `g` (info2 + crop, plus optional
@@ -2855,23 +3123,23 @@ void ApplyTransform(const std::string &data)
 // deleted since the gesture must not block the rest of the selection from being
 // restored. That is deliberately looser than ApplyOrder, which refuses wholesale
 // because a partial reorder is meaningless while a partial restore is not.
-void ApplyTransforms(const std::string &data)
+//
+// Children of a group are written with that group's re-fit deferred until every element
+// is down. The payload carries the whole group (see Bridge::CaptureItemTransformStates),
+// and a re-fit between two of its writes would move the siblings still to be written
+// against a frame the payload no longer describes.
+//
+// Returns whether anything was committed, i.e. whether any element resolved.
+bool ApplyItemStates(const json &items)
 {
-	json batch = json::parse(data, nullptr, false);
-	if (batch.is_discarded()) {
-		return;
-	}
-	auto itemsIt = batch.find("items");
-	if (itemsIt == batch.end() || !itemsIt->is_array()) {
-		return;
-	}
-
-	// One commit per distinct scene, not per item: CommitSceneItemChange emits
+	// One commit per distinct owner, not per item: CommitSceneItemChange emits
 	// sceneItems.changed and persists the collection, and N items moved in one scene
-	// are one change. The element that first named a scene carries the canvas keys
-	// the emit addresses it by, so it is kept alongside the addref'd source.
+	// are one change. The element that first named an owner carries the canvas keys
+	// the emit addresses it by, so it is kept alongside the addref'd source, which also
+	// keeps every item resolved from it valid until the writes below are done.
 	std::vector<std::pair<obs_source_t *, json>> commits;
-	for (const json &state : *itemsIt) {
+	std::vector<std::pair<obs_sceneitem_t *, const json *>> writes;
+	for (const json &state : items) {
 		if (!state.is_object()) {
 			continue;
 		}
@@ -2880,7 +3148,7 @@ void ApplyTransforms(const std::string &data)
 		if (!ResolveStateItem(state, sceneSource, item)) {
 			continue;
 		}
-		SetItemGeometry(item, state);
+		writes.emplace_back(item, &state);
 
 		const auto seen = std::find_if(commits.begin(), commits.end(),
 					       [&](const auto &c) { return c.first == sceneSource; });
@@ -2891,9 +3159,50 @@ void ApplyTransforms(const std::string &data)
 		}
 	}
 
+	std::vector<GroupResizeDeferral> holds;
+	for (const auto &write : writes) {
+		obs_sceneitem_t *groupItem = GroupItemOf(write.first);
+		if (groupItem && std::none_of(holds.begin(), holds.end(), [&](const GroupResizeDeferral &hold) {
+			    return hold.GroupItem() == groupItem;
+		    })) {
+			holds.emplace_back(groupItem);
+		}
+	}
+	for (const auto &write : writes) {
+		SetItemGeometry(write.first, *write.second);
+	}
+
+	auto committed = [&commits](obs_source_t *source) {
+		return std::any_of(commits.begin(), commits.end(), [&](const auto &c) { return c.first == source; });
+	};
 	for (auto &commit : commits) {
-		CommitSceneItemChange(commit.second, commit.first);
+		// A group's own commit is redundant when the scene holding it is committed too, as
+		// it is whenever the payload carried the group's item: that scene's announcement is
+		// what the group's would have resolved to, and it saves the same collection.
+		const bool coveredByScene =
+			obs_source_is_group(commit.first) &&
+			std::any_of(holds.begin(), holds.end(), [&](const GroupResizeDeferral &hold) {
+				return obs_sceneitem_get_source(hold.GroupItem()) == commit.first &&
+				       committed(obs_scene_get_source(obs_sceneitem_get_scene(hold.GroupItem())));
+			});
+		if (!coveredByScene) {
+			CommitSceneItemChange(commit.second, commit.first);
+		}
 		obs_source_release(commit.first);
+	}
+	// The holds end on return, after the commits above have read their group items.
+	return !commits.empty();
+}
+
+void ApplyTransforms(const std::string &data)
+{
+	json batch = json::parse(data, nullptr, false);
+	if (batch.is_discarded()) {
+		return;
+	}
+	auto itemsIt = batch.find("items");
+	if (itemsIt != batch.end() && itemsIt->is_array()) {
+		ApplyItemStates(*itemsIt);
 	}
 }
 
@@ -3016,7 +3325,7 @@ json CaptureOrderState(const json &params, obs_source_t *sceneSource)
 {
 	json order = json::array();
 	obs_scene_enum_items(
-		obs_scene_from_source(sceneSource),
+		obs_group_or_scene_from_source(sceneSource),
 		[](obs_scene_t *, obs_sceneitem_t *item, void *param) -> bool {
 			auto *arr = static_cast<json *>(param);
 			obs_source_t *src = obs_sceneitem_get_source(item);
@@ -3048,7 +3357,7 @@ void ApplyOrder(const std::string &data)
 		HostLog("[bridge] ApplyOrder: cannot resolve scene " + OptString(state, "sceneUuid"));
 		return;
 	}
-	obs_scene_t *scene = obs_scene_from_source(sceneSource);
+	obs_scene_t *scene = obs_group_or_scene_from_source(sceneSource);
 	auto orderIt = state.find("order");
 	if (orderIt == state.end() || !orderIt->is_array()) {
 		obs_source_release(sceneSource);
@@ -3092,9 +3401,42 @@ void ApplyOrder(const std::string &data)
 // Structural add/remove undo: ADD and REMOVE are mirror images, so two shared
 // primitives are swapped between the undo and redo slots. State keys: the usual
 // {canvas, scene, source-uuid}; AddItemFromSnapshot additionally carries
-// {sourceData, geometry, order} produced by CaptureItemSnapshot.
+// {sourceData, geometry, order} produced by CaptureItemSnapshot. Both states carry the
+// item's "itemId": a source can be drawn by several items of one owner, so the id is what
+// names the item, and the re-add restores it so the id stays valid for the next redo.
+// States recorded without one resolve by source, as they always did. Either state of a
+// group child also carries "groupClosure": the whole group's item states
+// (CaptureItemStates), read while the item was still in the group.
 
-// Remove the scene item whose source matches state.source, then emit + persist.
+const char *const kGroupClosureKey = "groupClosure";
+
+// Finish a structural change to `owner`: restore the group closure the state carries, which
+// commits the owners it writes, or commit `owner` alone. The closure goes back whole because
+// a group's own space starts at its children's bounding box: once the child that set it is
+// gone or back, a re-fit in between shifts every child, so group-space positions alone no
+// longer name the canvas positions they were read at (see Bridge::CaptureItemTransformStates
+// for what the re-fit does to the group itself). The state's own item is left out: a removal
+// has just taken it away, and a re-add has already written the same geometry from its
+// snapshot.
+void CommitWithGroupClosure(const json &state, obs_source_t *owner)
+{
+	auto closure = state.find(kGroupClosureKey);
+	if (closure != state.end() && closure->is_array()) {
+		const int64_t ownId = RecordedItemId(state);
+		json items = json::array();
+		for (const json &entry : *closure) {
+			if (ownId < 0 || RecordedItemId(entry) != ownId) {
+				items.push_back(entry);
+			}
+		}
+		if (ApplyItemStates(items)) {
+			return;
+		}
+	}
+	CommitSceneItemChange(state, owner);
+}
+
+// Remove the scene item the state names (by id, else by source), then emit + persist.
 void RemoveItemBySource(const json &state)
 {
 	obs_source_t *sceneSource = nullptr;
@@ -3102,8 +3444,10 @@ void RemoveItemBySource(const json &state)
 	if (!ResolveStateItem(state, sceneSource, item)) {
 		return;
 	}
+	GroupResizeDeferral hold(GroupItemOf(item));
 	obs_sceneitem_remove(item);
-	CommitSceneItemChange(state, sceneSource);
+	CommitWithGroupClosure(state, sceneSource);
+	hold.End();
 	obs_source_release(sceneSource);
 }
 
@@ -3120,7 +3464,7 @@ void AddItemFromSnapshot(const json &state)
 		HostLog("[bridge] AddItemFromSnapshot: cannot resolve scene for source " + OptString(state, "source"));
 		return;
 	}
-	obs_scene_t *scene = obs_scene_from_source(sceneSource);
+	obs_scene_t *scene = obs_group_or_scene_from_source(sceneSource);
 
 	const std::string uuid = OptString(state, "source");
 	OBSSourceAutoRelease source = obs_get_source_by_uuid(uuid.c_str()); // addref'd or null
@@ -3144,6 +3488,12 @@ void AddItemFromSnapshot(const json &state)
 		obs_source_release(sceneSource);
 		return;
 	}
+	// Ids only grow within an owner, so the recorded one is free unless something unforeseen
+	// took it; the item then keeps its new id and later states resolve it by source.
+	if (const int64_t recordedId = RecordedItemId(state); recordedId > 0 && !FindSceneItem(scene, recordedId)) {
+		obs_sceneitem_set_id(item, recordedId);
+	}
+	GroupResizeDeferral hold(GroupItemOf(item));
 
 	if (auto geo = state.find("geometry"); geo != state.end() && geo->is_object()) {
 		SetItemGeometry(item, *geo);
@@ -3155,7 +3505,8 @@ void AddItemFromSnapshot(const json &state)
 		obs_sceneitem_set_order_position(item, pos < 0 ? 0 : pos);
 	}
 
-	CommitSceneItemChange(state, sceneSource);
+	CommitWithGroupClosure(state, sceneSource);
+	hold.End();
 	obs_source_release(sceneSource);
 }
 
@@ -3165,7 +3516,7 @@ void AddItemFromSnapshot(const json &state)
 json CaptureItemSnapshot(const json &params, obs_source_t *sceneSource, obs_sceneitem_t *item)
 {
 	obs_source_t *src = obs_sceneitem_get_source(item); // borrowed
-	json s = StateBase(params, src);
+	json s = StateBase(params, src, sceneSource);
 
 	if (src) {
 		OBSDataAutoRelease data = obs_save_source(src); // addref'd
@@ -3198,7 +3549,7 @@ json CaptureItemSnapshot(const json &params, obs_source_t *sceneSource, obs_scen
 		int found;
 	} octx{item, 0, -1};
 	obs_scene_enum_items(
-		obs_scene_from_source(sceneSource),
+		obs_group_or_scene_from_source(sceneSource),
 		[](obs_scene_t *, obs_sceneitem_t *it, void *param) -> bool {
 			auto *c = static_cast<OrderCtx *>(param);
 			if (it == c->target) {
@@ -3210,6 +3561,25 @@ json CaptureItemSnapshot(const json &params, obs_source_t *sceneSource, obs_scen
 		},
 		&octx);
 	s["order"] = octx.found < 0 ? 0 : octx.found;
+	s["itemId"] = obs_sceneitem_get_id(item);
+	if (GroupItemOf(item)) {
+		// The caller holds the group's re-fit across this read and its structural change.
+		s[kGroupClosureKey] = CaptureItemStates(params, item);
+	}
+	return s;
+}
+
+// The remove side of a structural add/remove pair: the re-resolution keys, plus the item id
+// and, for a group child, the group closure that `snapshot` (the add side, from
+// CaptureItemSnapshot) carries.
+json RemovalState(const json &params, obs_source_t *src, obs_source_t *owner, const json &snapshot)
+{
+	json s = StateBase(params, src, owner);
+	for (const char *key : {"itemId", kGroupClosureKey}) {
+		if (auto value = snapshot.find(key); value != snapshot.end()) {
+			s[key] = *value;
+		}
+	}
 	return s;
 }
 
@@ -3414,22 +3784,19 @@ json SceneItemTransitionJson(obs_sceneitem_t *item, bool show)
 	};
 }
 
-bool MethodSceneItemsList(const json &params, json &result, std::string &error)
+// The sceneItems.list rows for one owner's items, top-first (topmost draw-order source at
+// index 0) to match the OBS Sources-list convention. `group` is what every row reports as
+// its owner: null for a scene's own items, the group source's uuid for a group's children.
+json SceneItemRows(obs_scene_t *owner, const json &group)
 {
-	obs_source_t *sceneSource = ResolveTargetScene(params); // addref'd
-	if (!sceneSource) {
-		error = "no scene to list";
-		return false;
-	}
-	obs_scene_t *scene = obs_scene_from_source(sceneSource);
-
-	// obs_scene_enum_items yields bottom-to-top; we build top-first (topmost
-	// draw-order source at index 0) to match the OBS Sources-list convention.
-	json items = json::array();
+	struct Ctx {
+		json rows;
+		const json &group;
+	} ctx{json::array(), group};
 	obs_scene_enum_items(
-		scene,
+		owner,
 		[](obs_scene_t *, obs_sceneitem_t *item, void *param) -> bool {
-			auto *arr = static_cast<json *>(param);
+			auto *c = static_cast<Ctx *>(param);
 			obs_source_t *src = obs_sceneitem_get_source(item);
 			const char *srcName = src ? obs_source_get_name(src) : nullptr;
 			// The member's source type ("browser_source", "group", "scene", ...).
@@ -3442,29 +3809,46 @@ bool MethodSceneItemsList(const json &params, json &result, std::string &error)
 			// (hex string, "" when unset). See sceneItems.setColor.
 			OBSDataAutoRelease priv = obs_sceneitem_get_private_settings(item);
 			const char *color = priv ? obs_data_get_string(priv, "color") : "";
+			json row{
+				{"id", obs_sceneitem_get_id(item)},
+				{"group", c->group},
+				{"source", srcName ? json(srcName) : json(nullptr)},
+				{"typeId", typeId ? json(typeId) : json("")},
+				{"visible", obs_sceneitem_visible(item)},
+				{"locked", obs_sceneitem_locked(item)},
+				{"scaleFilter", ScaleFilterToToken(obs_sceneitem_get_scale_filter(item))},
+				{"blendMode", BlendModeToToken(obs_sceneitem_get_blending_mode(item))},
+				{"blendMethod", BlendMethodToToken(obs_sceneitem_get_blending_method(item))},
+				{"interactive",
+				 src ? ((obs_source_get_output_flags(src) & OBS_SOURCE_INTERACTION) != 0) : false},
+				{"color", color ? color : ""},
+				{"showTransition", SceneItemTransitionJson(item, true)},
+				{"hideTransition", SceneItemTransitionJson(item, false)},
+			};
+			if (obs_sceneitem_is_group(item)) {
+				const char *groupUuid = src ? obs_source_get_uuid(src) : nullptr;
+				row["children"] = SceneItemRows(obs_sceneitem_group_get_scene(item),
+								groupUuid ? json(groupUuid) : json(nullptr));
+				// The same private-settings key OBS's own Sources tree keeps a group's
+				// expander state under, so a collection saved by either reads the same.
+				row["collapsed"] = priv && obs_data_get_bool(priv, "collapsed");
+			}
 			// Prepend to invert bottom-first enumeration into top-first.
-			arr->insert(
-				arr->begin(),
-				json{
-					{"id", obs_sceneitem_get_id(item)},
-					{"source", srcName ? json(srcName) : json(nullptr)},
-					{"typeId", typeId ? json(typeId) : json("")},
-					{"visible", obs_sceneitem_visible(item)},
-					{"locked", obs_sceneitem_locked(item)},
-					{"scaleFilter", ScaleFilterToToken(obs_sceneitem_get_scale_filter(item))},
-					{"blendMode", BlendModeToToken(obs_sceneitem_get_blending_mode(item))},
-					{"blendMethod", BlendMethodToToken(obs_sceneitem_get_blending_method(item))},
-					{"interactive",
-					 src ? ((obs_source_get_output_flags(src) & OBS_SOURCE_INTERACTION) != 0)
-					     : false},
-					{"color", color ? color : ""},
-					{"showTransition", SceneItemTransitionJson(item, true)},
-					{"hideTransition", SceneItemTransitionJson(item, false)},
-				});
+			c->rows.insert(c->rows.begin(), std::move(row));
 			return true;
 		},
-		&items);
+		&ctx);
+	return std::move(ctx.rows);
+}
 
+bool MethodSceneItemsList(const json &params, json &result, std::string &error)
+{
+	obs_source_t *sceneSource = ResolveTargetScene(params); // addref'd
+	if (!sceneSource) {
+		error = "no scene to list";
+		return false;
+	}
+	json items = SceneItemRows(obs_scene_from_source(sceneSource), json(nullptr));
 	obs_source_release(sceneSource);
 	result = std::move(items);
 	return true;
@@ -3472,21 +3856,11 @@ bool MethodSceneItemsList(const json &params, json &result, std::string &error)
 
 bool MethodSceneItemsSetVisible(const json &params, json &result, std::string &error)
 {
-	int64_t id = 0;
-	if (!ItemIdFromParams(params, id, error)) {
-		return false;
-	}
 	const bool visible = params.is_object() && params.value("visible", false);
-	obs_source_t *sceneSource = ResolveTargetScene(params);
-	if (!sceneSource) {
-		error = "no scene";
-		return false;
-	}
-	obs_scene_t *scene = obs_scene_from_source(sceneSource);
-	obs_sceneitem_t *item = FindSceneItem(scene, id);
-	if (!item) {
-		obs_source_release(sceneSource);
-		error = "no scene item with id " + std::to_string(id);
+	obs_source_t *sceneSource = nullptr; // addref'd by ResolveParamsItem
+	obs_sceneitem_t *item = nullptr;
+	int64_t id = 0;
+	if (!ResolveParamsItem(params, sceneSource, item, id, error)) {
 		return false;
 	}
 	json before = StateBase(params, item);
@@ -3503,21 +3877,11 @@ bool MethodSceneItemsSetVisible(const json &params, json &result, std::string &e
 
 bool MethodSceneItemsSetLocked(const json &params, json &result, std::string &error)
 {
-	int64_t id = 0;
-	if (!ItemIdFromParams(params, id, error)) {
-		return false;
-	}
 	const bool locked = params.is_object() && params.value("locked", false);
-	obs_source_t *sceneSource = ResolveTargetScene(params);
-	if (!sceneSource) {
-		error = "no scene";
-		return false;
-	}
-	obs_scene_t *scene = obs_scene_from_source(sceneSource);
-	obs_sceneitem_t *item = FindSceneItem(scene, id);
-	if (!item) {
-		obs_source_release(sceneSource);
-		error = "no scene item with id " + std::to_string(id);
+	obs_source_t *sceneSource = nullptr; // addref'd by ResolveParamsItem
+	obs_sceneitem_t *item = nullptr;
+	int64_t id = 0;
+	if (!ResolveParamsItem(params, sceneSource, item, id, error)) {
 		return false;
 	}
 	json before = StateBase(params, item);
@@ -3534,20 +3898,10 @@ bool MethodSceneItemsSetLocked(const json &params, json &result, std::string &er
 
 bool MethodSceneItemsRemove(const json &params, json &result, std::string &error)
 {
+	obs_source_t *sceneSource = nullptr; // addref'd by ResolveParamsItem
+	obs_sceneitem_t *item = nullptr;
 	int64_t id = 0;
-	if (!ItemIdFromParams(params, id, error)) {
-		return false;
-	}
-	obs_source_t *sceneSource = ResolveTargetScene(params);
-	if (!sceneSource) {
-		error = "no scene";
-		return false;
-	}
-	obs_scene_t *scene = obs_scene_from_source(sceneSource);
-	obs_sceneitem_t *item = FindSceneItem(scene, id);
-	if (!item) {
-		obs_source_release(sceneSource);
-		error = "no scene item with id " + std::to_string(id);
+	if (!ResolveParamsItem(params, sceneSource, item, id, error)) {
 		return false;
 	}
 	obs_source_t *itemSrc = obs_sceneitem_get_source(item); // borrowed
@@ -3555,11 +3909,13 @@ bool MethodSceneItemsRemove(const json &params, json &result, std::string &error
 	const std::string name = srcName ? srcName : "";
 	// Snapshot the full item (source data + geometry + order) BEFORE removal so
 	// undo can faithfully recreate it; redo just removes by source uuid again.
+	GroupResizeDeferral hold(GroupItemOf(item));
 	const json before = CaptureItemSnapshot(params, sceneSource, item);
-	const json after = StateBase(params, itemSrc);
+	const json after = RemovalState(params, itemSrc, sceneSource, before);
 
 	obs_sceneitem_remove(item);
 	CommitSceneItemChange(params, sceneSource);
+	hold.End();
 	obs_source_release(sceneSource);
 	// undo == re-add the snapshot; redo == remove by source uuid.
 	ObsBootstrap::Undo().AddAction("Remove " + name, kAddItemFromSnapshot, kRemoveItemBySource, before.dump(),
@@ -3570,10 +3926,6 @@ bool MethodSceneItemsRemove(const json &params, json &result, std::string &error
 
 bool MethodSceneItemsReorder(const json &params, json &result, std::string &error)
 {
-	int64_t id = 0;
-	if (!ItemIdFromParams(params, id, error)) {
-		return false;
-	}
 	const std::string direction = OptString(params, "direction");
 	// Map UI direction -> libobs movement, data-driven.
 	struct Move {
@@ -3607,16 +3959,10 @@ bool MethodSceneItemsReorder(const json &params, json &result, std::string &erro
 		return false;
 	}
 
-	obs_source_t *sceneSource = ResolveTargetScene(params);
-	if (!sceneSource) {
-		error = "no scene";
-		return false;
-	}
-	obs_scene_t *scene = obs_scene_from_source(sceneSource);
-	obs_sceneitem_t *item = FindSceneItem(scene, id);
-	if (!item) {
-		obs_source_release(sceneSource);
-		error = "no scene item with id " + std::to_string(id);
+	obs_source_t *sceneSource = nullptr; // addref'd by ResolveParamsItem
+	obs_sceneitem_t *item = nullptr;
+	int64_t id = 0;
+	if (!ResolveParamsItem(params, sceneSource, item, id, error)) {
 		return false;
 	}
 	json before = CaptureOrderState(params, sceneSource);
@@ -3646,26 +3992,16 @@ bool MethodSceneItemsReorder(const json &params, json &result, std::string &erro
 
 bool MethodSceneItemsSetScaleFilter(const json &params, json &result, std::string &error)
 {
-	int64_t id = 0;
-	if (!ItemIdFromParams(params, id, error)) {
-		return false;
-	}
 	const std::string filter = OptString(params, "filter");
 	obs_scale_type type;
 	if (!ScaleFilterFromToken(filter, type)) {
 		error = "'filter' must be one of disable|point|bilinear|bicubic|lanczos|area";
 		return false;
 	}
-	obs_source_t *sceneSource = ResolveTargetScene(params);
-	if (!sceneSource) {
-		error = "no scene";
-		return false;
-	}
-	obs_scene_t *scene = obs_scene_from_source(sceneSource);
-	obs_sceneitem_t *item = FindSceneItem(scene, id);
-	if (!item) {
-		obs_source_release(sceneSource);
-		error = "no scene item with id " + std::to_string(id);
+	obs_source_t *sceneSource = nullptr; // addref'd by ResolveParamsItem
+	obs_sceneitem_t *item = nullptr;
+	int64_t id = 0;
+	if (!ResolveParamsItem(params, sceneSource, item, id, error)) {
 		return false;
 	}
 	json before = StateBase(params, item);
@@ -3682,26 +4018,16 @@ bool MethodSceneItemsSetScaleFilter(const json &params, json &result, std::strin
 
 bool MethodSceneItemsSetBlendingMode(const json &params, json &result, std::string &error)
 {
-	int64_t id = 0;
-	if (!ItemIdFromParams(params, id, error)) {
-		return false;
-	}
 	const std::string mode = OptString(params, "mode");
 	obs_blending_type type;
 	if (!BlendModeFromToken(mode, type)) {
 		error = "'mode' must be one of normal|additive|subtract|screen|multiply|lighten|darken";
 		return false;
 	}
-	obs_source_t *sceneSource = ResolveTargetScene(params);
-	if (!sceneSource) {
-		error = "no scene";
-		return false;
-	}
-	obs_scene_t *scene = obs_scene_from_source(sceneSource);
-	obs_sceneitem_t *item = FindSceneItem(scene, id);
-	if (!item) {
-		obs_source_release(sceneSource);
-		error = "no scene item with id " + std::to_string(id);
+	obs_source_t *sceneSource = nullptr; // addref'd by ResolveParamsItem
+	obs_sceneitem_t *item = nullptr;
+	int64_t id = 0;
+	if (!ResolveParamsItem(params, sceneSource, item, id, error)) {
 		return false;
 	}
 	json before = StateBase(params, item);
@@ -3718,26 +4044,16 @@ bool MethodSceneItemsSetBlendingMode(const json &params, json &result, std::stri
 
 bool MethodSceneItemsSetBlendingMethod(const json &params, json &result, std::string &error)
 {
-	int64_t id = 0;
-	if (!ItemIdFromParams(params, id, error)) {
-		return false;
-	}
 	const std::string method = OptString(params, "method");
 	obs_blending_method blendMethod;
 	if (!BlendMethodFromToken(method, blendMethod)) {
 		error = "'method' must be one of default|srgbOff";
 		return false;
 	}
-	obs_source_t *sceneSource = ResolveTargetScene(params);
-	if (!sceneSource) {
-		error = "no scene";
-		return false;
-	}
-	obs_scene_t *scene = obs_scene_from_source(sceneSource);
-	obs_sceneitem_t *item = FindSceneItem(scene, id);
-	if (!item) {
-		obs_source_release(sceneSource);
-		error = "no scene item with id " + std::to_string(id);
+	obs_source_t *sceneSource = nullptr; // addref'd by ResolveParamsItem
+	obs_sceneitem_t *item = nullptr;
+	int64_t id = 0;
+	if (!ResolveParamsItem(params, sceneSource, item, id, error)) {
 		return false;
 	}
 	json before = StateBase(params, item);
@@ -3771,11 +4087,6 @@ bool MethodSceneItemsSetBlendingMethod(const json &params, json &result, std::st
 // sceneItems.set* method already calls to persist + notify.
 bool SetSceneItemTransition(const json &params, json &result, std::string &error, bool show)
 {
-	int64_t id = 0;
-	if (!ItemIdFromParams(params, id, error)) {
-		return false;
-	}
-
 	std::string typeId;
 	bool clear = true;
 	if (auto it = params.find("transition"); it != params.end() && it->is_string()) {
@@ -3805,16 +4116,10 @@ bool SetSceneItemTransition(const json &params, json &result, std::string &error
 		}
 	}
 
-	obs_source_t *sceneSource = ResolveTargetScene(params);
-	if (!sceneSource) {
-		error = "no scene";
-		return false;
-	}
-	obs_scene_t *scene = obs_scene_from_source(sceneSource);
-	obs_sceneitem_t *item = FindSceneItem(scene, id);
-	if (!item) {
-		obs_source_release(sceneSource);
-		error = "no scene item with id " + std::to_string(id);
+	obs_source_t *sceneSource = nullptr; // addref'd by ResolveParamsItem
+	obs_sceneitem_t *item = nullptr;
+	int64_t id = 0;
+	if (!ResolveParamsItem(params, sceneSource, item, id, error)) {
 		return false;
 	}
 
@@ -3856,21 +4161,11 @@ bool MethodSceneItemsSetHideTransition(const json &params, json &result, std::st
 // with the scene collection. Resolution mirrors setScaleFilter ({canvas,scene,id}).
 bool MethodSceneItemsSetColor(const json &params, json &result, std::string &error)
 {
+	const std::string color = OptString(params, "color"); // empty string clears the tag
+	obs_source_t *sceneSource = nullptr;                  // addref'd by ResolveParamsItem
+	obs_sceneitem_t *item = nullptr;
 	int64_t id = 0;
-	if (!ItemIdFromParams(params, id, error)) {
-		return false;
-	}
-	const std::string color = OptString(params, "color");   // empty string clears the tag
-	obs_source_t *sceneSource = ResolveTargetScene(params); // addref'd
-	if (!sceneSource) {
-		error = "no scene";
-		return false;
-	}
-	obs_scene_t *scene = obs_scene_from_source(sceneSource);
-	obs_sceneitem_t *item = FindSceneItem(scene, id);
-	if (!item) {
-		obs_source_release(sceneSource);
-		error = "no scene item with id " + std::to_string(id);
+	if (!ResolveParamsItem(params, sceneSource, item, id, error)) {
 		return false;
 	}
 	// obs_sceneitem_get_private_settings returns an addref'd ref; OBSDataAutoRelease releases it.
@@ -3944,8 +4239,16 @@ json SceneItemTransformToJson(obs_sceneitem_t *item, uint32_t baseWidth, uint32_
 
 // Axis-aligned bounding box of an item's drawn quad, in scene space. Mirrors the
 // old frontend's GetItemBox so center math accounts for rotation/bounds.
+//
+// A group's child is only flagged by a transform write and recomputed on the next tick, so
+// its pending update is applied here first. That also consumes the flag the tick would have
+// re-fitted the group from, so a child's box is read only under a GroupResizeDeferral, whose
+// end flags the re-fit instead.
 void GetSceneItemBox(obs_sceneitem_t *item, vec3 &tl, vec3 &br)
 {
+	if (GroupSourceOf(item)) {
+		obs_sceneitem_force_update_transform(item);
+	}
 	matrix4 boxTransform;
 	obs_sceneitem_get_box_transform(item, &boxTransform);
 
@@ -4032,34 +4335,46 @@ void ClampItemToCanvas(obs_sceneitem_t *item, uint32_t baseWidth, uint32_t baseH
 	}
 }
 
-// Resolve the scene + item shared by all three transform methods. On success
-// `sceneSource` is addref'd (caller releases) and `item` is borrowed from it.
-bool ResolveTransformTarget(const json &params, obs_source_t *&sceneSource, obs_sceneitem_t *&item, std::string &error)
+// The undo capture shared by the transform methods. A top-level item records one
+// ApplyTransform state; a group child records its whole group through the batch capture
+// (see Bridge::CaptureItemTransformStates) with the group's re-fit deferred from BEFORE
+// until AFTER has been read, so AFTER is what the method wrote.
+struct TransformUndoCapture {
+	GroupResizeDeferral hold; // holds a group child's group only
+	json single;
+	std::string batch;
+};
+
+TransformUndoCapture BeginTransformUndo(const json &params, obs_sceneitem_t *item)
 {
-	int64_t id = 0;
-	if (!ItemIdFromParams(params, id, error)) {
-		return false;
+	PinOverlayBeforeCapture(item);
+	TransformUndoCapture capture{GroupResizeDeferral(GroupItemOf(item))};
+	if (capture.hold.GroupItem()) {
+		capture.batch = ItemStatesPayload(CaptureItemStates(params, item));
+	} else {
+		capture.single = CaptureTransformState(params, item);
 	}
-	sceneSource = ResolveTargetScene(params); // addref'd
-	if (!sceneSource) {
-		error = "no scene";
-		return false;
+	return capture;
+}
+
+void RecordTransformUndo(const json &params, obs_sceneitem_t *item, const std::string &undoName,
+			 TransformUndoCapture &capture)
+{
+	if (!capture.hold.GroupItem()) {
+		RecordUndo(undoName, ApplyTransform, capture.single, CaptureTransformState(params, item));
+		return;
 	}
-	item = FindSceneItem(obs_scene_from_source(sceneSource), id);
-	if (!item) {
-		obs_source_release(sceneSource);
-		sceneSource = nullptr;
-		error = "no scene item with id " + std::to_string(id);
-		return false;
-	}
-	return true;
+	const std::string after = ItemStatesPayload(CaptureItemStates(params, item));
+	capture.hold.End();
+	RecordItemTransformsUndo(&item, 1, capture.batch, after);
 }
 
 bool MethodSceneItemsGetTransform(const json &params, json &result, std::string &error)
 {
 	obs_source_t *sceneSource = nullptr;
 	obs_sceneitem_t *item = nullptr;
-	if (!ResolveTransformTarget(params, sceneSource, item, error)) {
+	int64_t id = 0;
+	if (!ResolveParamsItem(params, sceneSource, item, id, error)) {
 		return false;
 	}
 	uint32_t baseW = 0, baseH = 0;
@@ -4073,12 +4388,12 @@ bool MethodSceneItemsSetTransform(const json &params, json &result, std::string 
 {
 	obs_source_t *sceneSource = nullptr;
 	obs_sceneitem_t *item = nullptr;
-	if (!ResolveTransformTarget(params, sceneSource, item, error)) {
+	int64_t id = 0;
+	if (!ResolveParamsItem(params, sceneSource, item, id, error)) {
 		return false;
 	}
 
-	PinOverlayBeforeCapture(item);
-	const json undoBefore = CaptureTransformState(params, item);
+	TransformUndoCapture undoCapture = BeginTransformUndo(params, item);
 	const std::string undoName = TransformUndoName(obs_sceneitem_get_source(item));
 
 	// Partial update: start from the current transform and overlay only the
@@ -4171,8 +4486,9 @@ bool MethodSceneItemsSetTransform(const json &params, json &result, std::string 
 		RepositionForCenterPivot(item, boxBeforeTl, boxBeforeBr);
 	}
 
+	// The clamp measures the item against the canvas, which a group child's box is not in.
 	uint32_t clampBaseW = 0, clampBaseH = 0;
-	if (ResolveBaseSize(params, clampBaseW, clampBaseH)) {
+	if (!obs_source_is_group(sceneSource) && ResolveBaseSize(params, clampBaseW, clampBaseH)) {
 		ClampItemToCanvas(item, clampBaseW, clampBaseH);
 	}
 
@@ -4184,7 +4500,7 @@ bool MethodSceneItemsSetTransform(const json &params, json &result, std::string 
 
 	CommitSceneItemChange(params, sceneSource);
 
-	RecordUndo(undoName, ApplyTransform, undoBefore, CaptureTransformState(params, item));
+	RecordTransformUndo(params, item, undoName, undoCapture);
 
 	uint32_t baseW = 0, baseH = 0;
 	ResolveBaseSize(params, baseW, baseH);
@@ -4252,12 +4568,23 @@ bool MethodSceneItemsTransformAction(const json &params, json &result, std::stri
 
 	obs_source_t *sceneSource = nullptr;
 	obs_sceneitem_t *item = nullptr;
-	if (!ResolveTransformTarget(params, sceneSource, item, error)) {
+	int64_t id = 0;
+	if (!ResolveParamsItem(params, sceneSource, item, id, error)) {
+		return false;
+	}
+	// These place the item against the canvas, but a child's transform is in its group's
+	// space; rotate, flip and reset mean the same in either space.
+	static const char *kCanvasSpaceActions[] = {"center", "centerVertical", "centerHorizontal", "fitToScreen",
+						    "stretchToScreen"};
+	const bool inGroup = obs_source_is_group(sceneSource);
+	if (inGroup && std::any_of(std::begin(kCanvasSpaceActions), std::end(kCanvasSpaceActions),
+				   [&action](const char *a) { return action == a; })) {
+		obs_source_release(sceneSource);
+		error = "transformAction '" + action + "' is not supported for items inside a group yet";
 		return false;
 	}
 
-	PinOverlayBeforeCapture(item);
-	const json undoBefore = CaptureTransformState(params, item);
+	TransformUndoCapture undoCapture = BeginTransformUndo(params, item);
 	const std::string undoName = TransformUndoName(obs_sceneitem_get_source(item));
 
 	uint32_t baseW = 0, baseH = 0;
@@ -4335,7 +4662,7 @@ bool MethodSceneItemsTransformAction(const json &params, json &result, std::stri
 		RepositionForCenterPivot(item, boxBeforeTl, boxBeforeBr);
 	}
 
-	if (haveBaseSize) {
+	if (haveBaseSize && !inGroup) {
 		ClampItemToCanvas(item, baseW, baseH);
 	}
 
@@ -4347,7 +4674,7 @@ bool MethodSceneItemsTransformAction(const json &params, json &result, std::stri
 
 	CommitSceneItemChange(params, sceneSource);
 
-	RecordUndo(undoName, ApplyTransform, undoBefore, CaptureTransformState(params, item));
+	RecordTransformUndo(params, item, undoName, undoCapture);
 
 	result = SceneItemTransformToJson(item, baseW, baseH);
 	obs_source_release(sceneSource);
@@ -4437,8 +4764,8 @@ bool MethodSourcesCreate(const json &params, json &result, std::string &error)
 	// source uuid, redo re-adds from the snapshot.
 	json before, after;
 	if (item) {
-		before = StateBase(params, source);
 		after = CaptureItemSnapshot(params, sceneSource, item);
+		before = RemovalState(params, source, sceneSource, after);
 	}
 	obs_source_release(source); // drop the create-ref; scene holds the source
 
@@ -4541,8 +4868,8 @@ bool MethodSourcesAddExisting(const json &params, json &result, std::string &err
 	// will REUSE the pre-existing source via obs_get_source_by_uuid on redo.
 	json before, after;
 	if (item) {
-		before = StateBase(params, source);
 		after = CaptureItemSnapshot(params, sceneSource, item);
+		before = RemovalState(params, source, sceneSource, after);
 	}
 	obs_source_release(source); // drop our lookup ref
 
@@ -4654,22 +4981,15 @@ obs_source_t *DuplicateSourceObject(obs_source_t *src, const std::string &name)
 // {id, source}.
 bool MethodSourcesDuplicate(const json &params, json &result, std::string &error)
 {
+	obs_source_t *sceneSource = nullptr; // addref'd by ResolveParamsItem: the item's scene or group
+	obs_sceneitem_t *item = nullptr;
 	int64_t id = 0;
-	if (!ItemIdFromParams(params, id, error)) {
+	if (!ResolveParamsItem(params, sceneSource, item, id, error)) {
 		return false;
 	}
-	obs_source_t *sceneSource = ResolveTargetScene(params); // addref'd
-	if (!sceneSource) {
-		error = "no scene";
-		return false;
-	}
-	obs_scene_t *scene = obs_scene_from_source(sceneSource);
-	obs_sceneitem_t *item = FindSceneItem(scene, id);
-	if (!item) {
-		obs_source_release(sceneSource);
-		error = "no scene item with id " + std::to_string(id);
-		return false;
-	}
+	// The copy joins the item's own owner, so a group child's copy lands in that group,
+	// where the group-space transform copied below places it over the original.
+	obs_scene_t *scene = obs_group_or_scene_from_source(sceneSource);
 	obs_source_t *src = obs_sceneitem_get_source(item); // borrowed
 	if (!src) {
 		obs_source_release(sceneSource);
@@ -4701,6 +5021,7 @@ bool MethodSourcesDuplicate(const json &params, json &result, std::string &error
 	const char *dupNameC = obs_source_get_name(dup);
 	const std::string dupName = dupNameC ? dupNameC : uniqueName;
 
+	GroupResizeDeferral hold(GroupItemOf(item));
 	obs_sceneitem_t *newItem = obs_scene_add(scene, dup); // scene takes its own ref
 	const int64_t newId = newItem ? obs_sceneitem_get_id(newItem) : 0;
 
@@ -4709,13 +5030,14 @@ bool MethodSourcesDuplicate(const json &params, json &result, std::string &error
 	json before, after;
 	if (newItem) {
 		SetItemGeometry(newItem, transform);
-		before = StateBase(params, dup);
 		after = CaptureItemSnapshot(params, sceneSource, newItem);
+		before = RemovalState(params, dup, sceneSource, after);
 	}
+	hold.End();
 	// `dup`'s create-ref is dropped by OBSSourceAutoRelease at scope exit; the
 	// scene holds its own ref via obs_scene_add.
 
-	EmitSceneItemsChanged(sceneSource, ResolveCanvasTarget(params).uuid);
+	EmitItemOwnerChanged(params, sceneSource);
 
 	if (!newItem) {
 		obs_source_release(sceneSource);
@@ -4784,8 +5106,8 @@ bool MethodSourcesDuplicateInto(const json &params, json &result, std::string &e
 	// scene holds its own ref via obs_scene_add.
 	json before, after;
 	if (newItem) {
-		before = StateBase(params, dup);
 		after = CaptureItemSnapshot(params, sceneSource, newItem);
+		before = RemovalState(params, dup, sceneSource, after);
 	}
 
 	EmitSceneItemsChanged(sceneSource, ResolveCanvasTarget(params).uuid);
@@ -4916,20 +5238,10 @@ bool MethodSceneItemsCreateGroup(const json &params, json &result, std::string &
 // NOT wired into undo for the same reason as MethodSceneItemsGroup.
 bool MethodSceneItemsUngroup(const json &params, json &result, std::string &error)
 {
+	obs_source_t *sceneSource = nullptr; // addref'd by ResolveParamsItem
+	obs_sceneitem_t *item = nullptr;
 	int64_t id = 0;
-	if (!ItemIdFromParams(params, id, error)) {
-		return false;
-	}
-	obs_source_t *sceneSource = ResolveTargetScene(params); // addref'd
-	if (!sceneSource) {
-		error = "no scene";
-		return false;
-	}
-	obs_scene_t *scene = obs_scene_from_source(sceneSource);
-	obs_sceneitem_t *item = FindSceneItem(scene, id);
-	if (!item) {
-		obs_source_release(sceneSource);
-		error = "no scene item with id " + std::to_string(id);
+	if (!ResolveParamsItem(params, sceneSource, item, id, error)) {
 		return false;
 	}
 	if (!obs_sceneitem_is_group(item)) {
@@ -4940,7 +5252,7 @@ bool MethodSceneItemsUngroup(const json &params, json &result, std::string &erro
 
 	// Dissolves the group and reparents its children into the scene; releases the
 	// scene's own ref on the group item internally, so `item` is invalid after the
-	// call. We hold no extra ref on it (FindSceneItem borrows) -- nothing to free.
+	// call. We hold no extra ref on it (ResolveParamsItem borrows) -- nothing to free.
 	obs_sceneitem_group_ungroup(item);
 
 	CommitSceneItemChange(params, sceneSource);
@@ -4954,24 +5266,14 @@ bool MethodSceneItemsUngroup(const json &params, json &result, std::string &erro
 // {canvas?, scene?, id, name}. Rejects a clash with a DIFFERENT existing source.
 bool MethodSourcesRename(const json &params, json &result, std::string &error)
 {
-	int64_t id = 0;
-	if (!ItemIdFromParams(params, id, error)) {
-		return false;
-	}
 	std::string name;
 	if (!RequireStr(params, "sources.rename", "name", name, error)) {
 		return false;
 	}
-	obs_source_t *sceneSource = ResolveTargetScene(params); // addref'd
-	if (!sceneSource) {
-		error = "no scene";
-		return false;
-	}
-	obs_scene_t *scene = obs_scene_from_source(sceneSource);
-	obs_sceneitem_t *item = FindSceneItem(scene, id);
-	if (!item) {
-		obs_source_release(sceneSource);
-		error = "no scene item with id " + std::to_string(id);
+	obs_source_t *sceneSource = nullptr; // addref'd by ResolveParamsItem
+	obs_sceneitem_t *item = nullptr;
+	int64_t id = 0;
+	if (!ResolveParamsItem(params, sceneSource, item, id, error)) {
 		return false;
 	}
 	obs_source_t *src = obs_sceneitem_get_source(item); // borrowed, no ref
@@ -4993,9 +5295,9 @@ bool MethodSourcesRename(const json &params, json &result, std::string &error)
 		}
 	}
 	const std::string oldName = curName ? curName : "";
-	json before = StateBase(params, src);
+	json before = StateBase(params, src, sceneSource);
 	before["name"] = oldName;
-	json after = StateBase(params, src);
+	json after = StateBase(params, src, sceneSource);
 	after["name"] = name;
 	obs_source_set_name(src, name.c_str());
 	EmitSceneItemsChangedForSource(src);
@@ -9357,6 +9659,9 @@ bool MethodAudioSetGlobalDevice(const json &params, json &result, std::string &e
 	return PersistOrFail(saved, error);
 }
 
+// The one in-process event observer, set through SetEventObserver. UI thread only.
+std::function<void(const std::string &, const std::string &)> g_eventObserver;
+
 // Post the actual ExecuteJavaScript on TID_UI, broadcasting to every registered
 // browser. Built from JSON dumps so the name and payload are correctly
 // quoted/escaped. With a single registered browser this is identical to a
@@ -9364,6 +9669,10 @@ bool MethodAudioSetGlobalDevice(const json &params, json &result, std::string &e
 void DoEmit(const std::string &name, const std::string &payloadDump)
 {
 	CEF_REQUIRE_UI_THREAD();
+
+	if (g_eventObserver) {
+		g_eventObserver(name, payloadDump);
+	}
 
 	// Snapshot the registry so a callback can't mutate it under iteration and so
 	// we never hold the lock across ExecuteJavaScript.
@@ -11106,39 +11415,40 @@ bool IsShuttingDown()
 	return g_bridgeShutdown.load(std::memory_order_acquire);
 }
 
-obs_source_t *AcquireSceneByUuid(const std::string &uuid)
+namespace {
+
+// The source with this uuid, addref'd, only when `as` reads it as a scene-like object.
+obs_source_t *AcquireSourceByUuidAs(const std::string &uuid, obs_scene_t *(*as)(const obs_source_t *))
 {
 	CEF_REQUIRE_UI_THREAD();
 	if (uuid.empty()) {
 		return nullptr;
 	}
 	obs_source_t *source = obs_get_source_by_uuid(uuid.c_str()); // addref'd
-	if (source && !obs_scene_from_source(source)) {
+	if (source && !as(source)) {
 		obs_source_release(source);
 		return nullptr;
 	}
 	return source;
 }
 
+obs_source_t *AcquireItemOwnerByUuid(const std::string &uuid)
+{
+	return AcquireSourceByUuidAs(uuid, obs_group_or_scene_from_source);
+}
+
+} // namespace
+
+obs_source_t *AcquireSceneByUuid(const std::string &uuid)
+{
+	return AcquireSourceByUuidAs(uuid, obs_scene_from_source);
+}
+
 std::string CaptureItemTransformStates(const std::string &canvasUuid, const std::string &sceneName,
 				       obs_sceneitem_t *const *items, size_t count)
 {
 	CEF_REQUIRE_UI_THREAD();
-	json arr = json::array();
-	for (size_t i = 0; i < count; i++) {
-		if (!items[i]) {
-			continue;
-		}
-		// The same addressing every bridge-recorded state carries, so ApplyTransforms
-		// re-resolves a preview drag's payload by the identical route.
-		json state = CaptureTransformState(json{{"canvas", canvasUuid}, {"scene", sceneName}}, items[i]);
-		PinOverlayBoundsInState(state, items[i]);
-		arr.push_back(std::move(state));
-	}
-	if (arr.empty()) {
-		return std::string();
-	}
-	return json{{"items", std::move(arr)}}.dump();
+	return ItemStatesPayload(CaptureItemStates(canvasUuid, sceneName, items, count));
 }
 
 void RecordItemTransformsUndo(obs_sceneitem_t *const *items, size_t count, const std::string &before,
@@ -11893,30 +12203,26 @@ bool MethodScreenshotTakeProgram(const json &params, json &result, std::string &
 // held across the capture (it owns the item + source) and released on every path.
 bool MethodScreenshotTakeSource(const json &params, json &result, std::string &error)
 {
-	obs_source_t *sceneSource = ResolveTargetScene(params); // addref'd
-	if (!sceneSource) {
-		error = "no scene";
-		return false;
-	}
-
 	// `id` is optional: with a scene-item id, screenshot that item's source; without
 	// one, screenshot the scene source itself ("Screenshot Scene" -- a scene renders
 	// as a source). The Default path resolves the scene by name; an additional canvas
 	// returns its current scene.
-	obs_source_t *src = sceneSource; // borrowed default: the scene itself
+	obs_source_t *sceneSource = nullptr; // addref'd: the scene, or the item's owner
+	obs_source_t *src = nullptr;         // borrowed; kept alive by sceneSource
 	if (params.contains("id") && !params["id"].is_null()) {
+		obs_sceneitem_t *item = nullptr;
 		int64_t id = 0;
-		if (!ItemIdFromParams(params, id, error)) {
-			obs_source_release(sceneSource);
+		if (!ResolveParamsItem(params, sceneSource, item, id, error)) {
 			return false;
 		}
-		obs_sceneitem_t *item = FindSceneItem(obs_scene_from_source(sceneSource), id);
-		if (!item) {
-			obs_source_release(sceneSource);
-			error = "no scene item with id " + std::to_string(id);
+		src = obs_sceneitem_get_source(item);
+	} else {
+		sceneSource = ResolveTargetScene(params);
+		if (!sceneSource) {
+			error = "no scene";
 			return false;
 		}
-		src = obs_sceneitem_get_source(item); // borrowed; kept alive by sceneSource
+		src = sceneSource;
 	}
 	const uint32_t w = obs_source_get_width(src);
 	const uint32_t h = obs_source_get_height(src);
@@ -13804,8 +14110,8 @@ bool MethodOverlaysAddToScene(const json &params, json &result, std::string &err
 
 	json before, after;
 	if (item) {
-		before = StateBase(params, source);
 		after = CaptureItemSnapshot(params, sceneSource, item);
+		before = RemovalState(params, source, sceneSource, after);
 	}
 	obs_source_release(source); // drop the create-ref; scene holds the source
 
@@ -14309,6 +14615,19 @@ void SetStatsTickObserver(std::function<void(const json &)> observer)
 {
 	CEF_REQUIRE_UI_THREAD();
 	g_statsTickObserver = std::move(observer);
+}
+
+void SetEventObserver(std::function<void(const std::string &name, const std::string &payload)> observer)
+{
+	CEF_REQUIRE_UI_THREAD();
+	g_eventObserver = std::move(observer);
+}
+
+void WithGroupResizeHeldForTest(obs_sceneitem_t *groupItem, const std::function<void()> &during)
+{
+	CEF_REQUIRE_UI_THREAD();
+	GroupResizeDeferral hold(groupItem);
+	during();
 }
 
 void RecordSentMetadata(const std::string &profileUuid, const json &fields)

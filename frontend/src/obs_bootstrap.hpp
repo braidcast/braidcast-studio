@@ -408,6 +408,19 @@ void RunRotationBoundsSelfTest();
 // Uses a color source, so it needs neither obs-browser nor a live overlay server.
 // Removes the temp canvas afterward; never Saves. Gated by the caller to the smoke path.
 void RunOverlayViewportSelfTest();
+// Headless proof that a group's child is addressed and undone as {id, group}: a child and
+// a top-level item sharing one id each reach only themselves; sceneItems.list reports each
+// row's owning group and a group row's top-first children and collapsed state; a child's
+// change or rename is announced for the scene a dock lists; a child transform, removal and
+// duplicate each undo and redo with the whole group, so no re-fit libobs applies in between
+// leaves a child or sibling displaced on the canvas; and canvas-space actions and the canvas
+// clamp stay off children until they are computed in canvas space; a child rotation keeps
+// its visual centre; two children drawing one source are each removed and restored as
+// themselves; and a re-fit hold outlives a prune of its group item. Also asserts that an
+// entry outliving its group -- renamed, ungrouped, deleted -- still resolves by uuid after
+// a rename and otherwise spends its slot and moves nothing.
+// Removes the temp canvas afterward; never Saves. Gated by the caller to the smoke path.
+void RunSceneItemGroupSelfTest();
 // Headless proof for 4.4.5b sub-phase B: bring up an additional canvas with a live
 // mix + a source in its current scene, address its preview surface by uuid, and
 // drive a hit-test + a select + a move on it. Assert the edit lands on the

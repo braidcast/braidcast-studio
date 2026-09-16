@@ -126,6 +126,17 @@ McpServer::json Prop(const char *type, const char *description)
 	return McpServer::json{{"type", type}, {"description", description}};
 }
 
+// Item ids are unique only within one owner, so a group's child can share its id with a
+// top-level item: every tool addressing an item by id takes the owner alongside it.
+McpServer::json ItemGroupProp()
+{
+	return McpServer::json{
+		{"type", McpServer::json::array({"string", "null"})},
+		{"description",
+		 "Uuid of the group holding the item: the item's 'group' in list_scene_items. "
+		 "A child of a group is addressed by id plus group; omit or null for a top-level item."}};
+}
+
 // The tools/list registry: a data list so adding a tool is one row. `obs_call` is
 // the generic escape hatch; the rest are curated, high-value wrappers that each map
 // to a single bridge method (`bridgeMethod`). tools/call resolves a curated tool to
@@ -180,7 +191,9 @@ const std::vector<ToolDescriptor> &ToolRegistry()
 		{"list_scene_items", "sceneItems.list",
 		 MakeDescriptor(
 			 "list_scene_items",
-			 "List the items (sources) of a scene, topmost first. Defaults to the current scene.",
+			 "List the items (sources) of a scene, topmost first. Defaults to the current scene. "
+			 "A group's row lists its items under 'children'; each row's 'group' is the uuid of "
+			 "the group holding it, or null at top level.",
 			 SchemaObject(json{{"scene", Prop("string", "Optional scene name; defaults to current.")},
 					   {"canvas", Prop("string", "Optional canvas uuid; omit for Default.")}},
 				      json::array()))},
@@ -189,6 +202,7 @@ const std::vector<ToolDescriptor> &ToolRegistry()
 		 MakeDescriptor(
 			 "set_item_visible", "Show or hide a scene item by its numeric id.",
 			 SchemaObject(json{{"id", Prop("integer", "Scene-item id (from list_scene_items).")},
+					   {"group", ItemGroupProp()},
 					   {"visible", Prop("boolean", "True to show, false to hide.")},
 					   {"scene", Prop("string", "Optional scene name; defaults to current.")},
 					   {"canvas", Prop("string", "Optional canvas uuid; omit for Default.")}},
@@ -198,6 +212,7 @@ const std::vector<ToolDescriptor> &ToolRegistry()
 		 MakeDescriptor(
 			 "get_item_transform", "Read a scene item's full geometry (position, scale, rotation, crop).",
 			 SchemaObject(json{{"id", Prop("integer", "Scene-item id (from list_scene_items).")},
+					   {"group", ItemGroupProp()},
 					   {"scene", Prop("string", "Optional scene name; defaults to current.")},
 					   {"canvas", Prop("string", "Optional canvas uuid; omit for Default.")}},
 				      json::array({"id"})))},
@@ -207,6 +222,7 @@ const std::vector<ToolDescriptor> &ToolRegistry()
 			 "set_item_transform",
 			 "Apply a partial transform to a scene item (send only the fields that change).",
 			 SchemaObject(json{{"id", Prop("integer", "Scene-item id (from list_scene_items).")},
+					   {"group", ItemGroupProp()},
 					   {"transform",
 					    json{{"type", "object"},
 						 {"description", "Partial geometry: pos {x,y}, scale {x,y}, "
@@ -230,6 +246,7 @@ const std::vector<ToolDescriptor> &ToolRegistry()
 		 MakeDescriptor(
 			 "rename_source", "Rename the source backing a scene item.",
 			 SchemaObject(json{{"id", Prop("integer", "Scene-item id (from list_scene_items).")},
+					   {"group", ItemGroupProp()},
 					   {"name", Prop("string", "New source name.")},
 					   {"scene", Prop("string", "Optional scene name; defaults to current.")},
 					   {"canvas", Prop("string", "Optional canvas uuid; omit for Default.")}},
@@ -239,6 +256,7 @@ const std::vector<ToolDescriptor> &ToolRegistry()
 		 MakeDescriptor(
 			 "remove_source", "Remove a scene item (the source) from its scene by numeric id.",
 			 SchemaObject(json{{"id", Prop("integer", "Scene-item id (from list_scene_items).")},
+					   {"group", ItemGroupProp()},
 					   {"scene", Prop("string", "Optional scene name; defaults to current.")},
 					   {"canvas", Prop("string", "Optional canvas uuid; omit for Default.")}},
 				      json::array({"id"})))},
