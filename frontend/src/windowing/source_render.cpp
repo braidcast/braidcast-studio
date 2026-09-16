@@ -1,6 +1,6 @@
 #include "source_render.hpp"
 
-#include <obs.h>
+#include <obs.hpp>
 
 namespace SourceRender {
 
@@ -53,6 +53,26 @@ void Letterboxed(obs_source_t *source, uint32_t cx, uint32_t cy)
 	gs_set_linear_srgb(previous);
 	gs_projection_pop();
 	gs_viewport_pop();
+}
+
+obs_source_t *CreateTextLabel(const char *name, const char *text, int fontSize, obs_data_t *extra)
+{
+	OBSDataAutoRelease settings = obs_data_create();
+	OBSDataAutoRelease font = obs_data_create();
+
+	obs_data_set_string(font, "face", "Arial");
+	obs_data_set_int(font, "flags", 1); // bold
+	obs_data_set_int(font, "size", fontSize);
+
+	obs_data_set_obj(settings, "font", font);
+	obs_data_set_string(settings, "text", text ? text : "");
+	obs_data_set_bool(settings, "outline", true);
+	if (extra) {
+		obs_data_apply(settings, extra);
+	}
+
+	// Windows registers "text_gdiplus" (verified in plugins/obs-text/gdiplus/obs-text.cpp).
+	return obs_source_create_private("text_gdiplus", name, settings);
 }
 
 } // namespace SourceRender

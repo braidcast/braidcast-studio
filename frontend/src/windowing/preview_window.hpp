@@ -4,6 +4,7 @@
 #include <windows.h>
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -15,6 +16,43 @@ struct obs_scene;
 typedef struct obs_scene obs_scene_t;
 struct obs_source;
 typedef struct obs_source obs_source_t;
+struct GeneralSettings;
+
+// Which scene items the preview draws overflow for -- the part of an item that lies
+// outside the canvas: none, the selected ones, or every one.
+enum class PreviewOverflowMode : uint8_t { Hidden, Selection, Always };
+
+// The preview's guide overlays. One set for the whole process, not one per surface:
+// the legacy frontend kept them as user-wide preferences, so a choice made from any
+// preview's menu applies to every preview. GeneralSettings owns the persisted values
+// and their defaults; this is the decoded form the previews draw from. It has no default
+// constructor, so no instance of it can stand in for those defaults: each one is decoded
+// from GeneralSettings or read back from the render-side state that decode loaded.
+struct PreviewOverlays {
+	PreviewOverlays(PreviewOverflowMode overflow, bool overflowInvisible, bool safeAreas, bool spacingHelpers)
+		: overflow(overflow),
+		  overflowInvisible(overflowInvisible),
+		  safeAreas(safeAreas),
+		  spacingHelpers(spacingHelpers)
+	{
+	}
+
+	PreviewOverflowMode overflow;
+	// Draw overflow for items whose visibility is off, too.
+	bool overflowInvisible;
+	bool safeAreas;
+	bool spacingHelpers;
+};
+
+// What a preview's context menu renders from: whether the surface is at a fixed scale
+// rather than fitted, the scale the next frame draws at as a percentage, the edit lock,
+// and the overlays.
+struct PreviewViewState {
+	bool fixed;
+	int zoomPercent;
+	bool locked;
+	PreviewOverlays overlays;
+};
 
 // One native preview surface: an OverlaySurface (a borderless child HWND of the
 // host, sibling above the CEF browser HWND, plus its own obs_display) rendering one
@@ -89,10 +127,8 @@ public:
 	// commands keep working while locked; an in-flight gesture is ended. UI thread.
 	void SetLocked(bool locked);
 
-	// The view state the context menu renders from: whether the surface is at a
-	// fixed scale rather than fitted, the scale actually on screen as a percentage,
-	// and the edit lock. UI thread.
-	void GetView(bool &fixed, int &zoomPercent, bool &locked);
+	// The view state the context menu renders from. UI thread.
+	PreviewViewState GetView();
 
 	// Hit-test at a canvas-space coordinate against this surface's scene; returns
 	// the topmost matching scene-item id, or -1. Used by the smoke self-test.
@@ -325,7 +361,25 @@ int64_t HitTestForTest(const std::string &canvas, float canvasX, float canvasY, 
 // token is not one it knows. GetView fills the menu's checkmarks. UI thread.
 bool ApplyViewAction(const std::string &canvas, const std::string &token, int windowId = 0);
 bool SetLocked(const std::string &canvas, bool locked, int windowId = 0);
-bool GetView(const std::string &canvas, bool &fixed, int &zoomPercent, bool &locked, int windowId = 0);
+// Empty when there is no surface for this canvas and window.
+std::optional<PreviewViewState> GetView(const std::string &canvas, int windowId = 0);
+
+// The guide overlays as GeneralSettings holds them. FromSettings is empty when the
+// stored overflow mode is not a token it knows; ToSettings writes all four fields.
+std::optional<PreviewOverlays> OverlaysFromSettings(const GeneralSettings &settings);
+void OverlaysToSettings(const PreviewOverlays &overlays, GeneralSettings &settings);
+
+// Hand the overlays in `settings` to every surface: the only writer of what the draw
+// callbacks read, which is held in atomics rather than behind any one surface's mutex.
+// An unknown stored overflow mode is reset to the default first. Called once at startup
+// after the settings load, and by the General-settings commit after every change. UI
+// thread.
+void LoadOverlays(GeneralSettings &settings);
+
+// The wire tokens for PreviewOverflowMode ("hidden", "selection", "always"). FromToken
+// is false for a token it does not know.
+const char *OverflowModeToken(PreviewOverflowMode mode);
+bool OverflowModeFromToken(const std::string &token, PreviewOverflowMode &out);
 
 // Zoom about a point in the surface's own device-px client space. The second entry
 // point into the one anchor implementation: the overlay handles the wheel natively

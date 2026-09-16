@@ -3,6 +3,10 @@
 
 #include <string>
 
+// The default preview overflow mode, named so the preview can check it against its own
+// token table at compile time.
+inline constexpr const char *kDefaultPreviewOverflow = "selection";
+
 // Global "General settings" bag, persisted to general.json in the shared
 // braidcast config dir. Some fields drive behavior now (projector
 // always-on-top); the rest are persisted prefs that later backlog items
@@ -17,6 +21,14 @@ struct GeneralSettings {
 	bool snapToEdge = true;     // screen/canvas edges
 	bool snapToSource = true;   // other scene items' edges
 	bool snapToCenter = true;   // canvas center lines
+	// --- preview guide overlays (every preview reads them through Preview::LoadOverlays) ---
+	// Defaults are the legacy frontend's. previewOverflow is a Preview overflow-mode
+	// token: "hidden", "selection" or "always". Preview::LoadOverlays static_asserts that
+	// the default below is one of them, because it falls back to it.
+	std::string previewOverflow = kDefaultPreviewOverflow;
+	bool previewOverflowInvisible = false;
+	bool previewSafeAreas = false;
+	bool previewSpacingHelpers = true;
 	// --- warnings (consumed by the frontend Studio bar) ---
 	bool warnBeforeGoLive = false;
 	bool warnBeforeStop = false;
@@ -68,6 +80,9 @@ inline constexpr GeneralBoolField kGeneralBoolFields[] = {
 	{"snapToEdge", "snap_to_edge", &GeneralSettings::snapToEdge},
 	{"snapToSource", "snap_to_source", &GeneralSettings::snapToSource},
 	{"snapToCenter", "snap_to_center", &GeneralSettings::snapToCenter},
+	{"previewOverflowInvisible", "preview_overflow_invisible", &GeneralSettings::previewOverflowInvisible},
+	{"previewSafeAreas", "preview_safe_areas", &GeneralSettings::previewSafeAreas},
+	{"previewSpacingHelpers", "preview_spacing_helpers", &GeneralSettings::previewSpacingHelpers},
 	{"warnBeforeGoLive", "warn_before_go_live", &GeneralSettings::warnBeforeGoLive},
 	{"warnBeforeStop", "warn_before_stop", &GeneralSettings::warnBeforeStop},
 	{"scheduleRequireAllDestinations", "schedule_require_all_destinations",
@@ -82,6 +97,7 @@ inline constexpr GeneralBoolField kGeneralBoolFields[] = {
 };
 inline constexpr GeneralStringField kGeneralStringFields[] = {
 	{"multiviewLayout", "multiview_layout", &GeneralSettings::multiviewLayout},
+	{"previewOverflow", "preview_overflow", &GeneralSettings::previewOverflow},
 };
 inline constexpr GeneralDoubleField kGeneralDoubleFields[] = {
 	{"snapDistance", "snap_distance", &GeneralSettings::snapDistance, 0.0, 100.0},

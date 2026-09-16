@@ -312,6 +312,12 @@ export interface GeneralSettings {
   snapToEdge: boolean;
   snapToSource: boolean;
   snapToCenter: boolean;
+  /** The preview guide overlays, shared by every preview. preview.setOverlays writes
+   * the same four values and both paths broadcast settings.generalChanged. */
+  previewOverflow: PreviewOverflowMode;
+  previewOverflowInvisible: boolean;
+  previewSafeAreas: boolean;
+  previewSpacingHelpers: boolean;
   warnBeforeGoLive: boolean;
   warnBeforeStop: boolean;
   /** A scheduled entry refuses to start unless EVERY destination it names can go
@@ -1676,10 +1682,14 @@ export interface ObsMethods {
   // just applied, so a caller holding a menu open can refresh from the reply rather
   // than re-reading. The host derives the percentage from the pending view instead
   // of the last rendered frame precisely so that is true.
+  // The overlay fields (overflow, overflowInvisible, safeAreas, spacingHelpers) are
+  // persisted General settings shared by every preview, not per-surface state.
   // viewAction params: {action: "zoomIn"|"zoomOut"|"scaleToWindow"|"scaleToCanvas", canvas?};
-  // setLocked: {locked, canvas?}; zoomAt: {x, y, delta, canvas?} in overlay device px.
+  // setLocked: {locked, canvas?}; zoomAt: {x, y, delta, canvas?} in overlay device px;
+  // setOverlays: {canvas?, ...any subset of PreviewOverlays}.
   "preview.viewAction": PreviewView;
   "preview.setLocked": PreviewView;
+  "preview.setOverlays": PreviewView;
   "preview.getView": PreviewView;
   "preview.zoomAt": PreviewView;
   // Scenes. `current` = the scene bound to channel 0 of the addressed canvas. Pass
@@ -2380,13 +2390,24 @@ export interface ObsEvents {
   "filterPreview.closed": Record<string, never>;
 }
 
+/** Which items the preview draws overflow for: none, the selected ones, or every one. */
+export type PreviewOverflowMode = "hidden" | "selection" | "always";
+
+export interface PreviewOverlays {
+  overflow: PreviewOverflowMode;
+  /** Overflow is drawn for items whose visibility is off, too. */
+  overflowInvisible: boolean;
+  safeAreas: boolean;
+  spacingHelpers: boolean;
+}
+
 /** The scene item a preview right-click landed on, as much of it as the event
  * carries: the hit payload has no scale/blend/color/transition detail, so a menu
  * builder re-fetches those from sceneItems.list. Derived from the event rather
  * than respelled, so a change to the payload reaches every dock that hosts a
  * preview surface. */
 // The preview surface's view state, as every preview.* view method reports it.
-export interface PreviewView {
+export interface PreviewView extends PreviewOverlays {
   fixed: boolean;
   zoomPercent: number;
   locked: boolean;

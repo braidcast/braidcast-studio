@@ -15,6 +15,7 @@
 #include "obs_bootstrap.hpp"
 #include "settings/GeneralSettings.hpp"
 #include "scene/transitions.hpp"
+#include "source_render.hpp"
 #include "util/text_encoding.hpp"
 
 #include <obs.h>
@@ -195,24 +196,13 @@ namespace {
 // scales the label to fit its cell, so the absolute size only sets crispness).
 obs_source_t *CreateMultiviewLabel(const char *name)
 {
-	OBSDataAutoRelease settings = obs_data_create();
-	OBSDataAutoRelease font = obs_data_create();
-
 	std::string text = " ";
 	text += (name ? name : "");
 	text += " ";
 
-	obs_data_set_string(font, "face", "Arial");
-	obs_data_set_int(font, "flags", 1); // bold
-	obs_data_set_int(font, "size", 42);
-
-	obs_data_set_obj(settings, "font", font);
-	obs_data_set_string(settings, "text", text.c_str());
-	obs_data_set_bool(settings, "outline", true);
-	obs_data_set_int(settings, "opacity", 100);
-
-	// Windows registers "text_gdiplus" (verified in plugins/obs-text/gdiplus/obs-text.cpp).
-	return obs_source_create_private("text_gdiplus", name, settings);
+	OBSDataAutoRelease extra = obs_data_create();
+	obs_data_set_int(extra, "opacity", 100);
+	return SourceRender::CreateTextLabel(name, text.c_str(), 42, extra);
 }
 
 } // namespace

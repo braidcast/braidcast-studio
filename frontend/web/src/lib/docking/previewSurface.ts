@@ -8,7 +8,7 @@
 // surface-active flag, menu shape.
 
 import { obs, type PreviewView } from "$lib/api/bridge";
-import { previewViewItems, type PreviewViewAction } from "$lib/menus/previewViewMenu";
+import { previewViewItems, type PreviewOverlayPatch, type PreviewViewAction } from "$lib/menus/previewViewMenu";
 import type { ContextMenuItems } from "$lib/menus/ContextMenu.svelte";
 import type { PreviewFreeze } from "$lib/stores/previewFreeze.svelte";
 import { previewSuspended } from "$lib/stores/previewGate.svelte";
@@ -125,10 +125,10 @@ export function syncPreviewGate(
   };
 }
 
-// The surface's view (zoom mode, the scale actually on screen, the edit lock), read
-// just before its context menu is built. Null when the host has no surface for this
-// dock, which the menu renders as disabled entries rather than as commands that
-// would fail on click.
+// The surface's view (zoom mode, the scale the next frame draws at, the edit lock, the
+// overlays), read just before its context menu is built. Null when the host has no
+// surface for this dock, which the menu renders as disabled entries rather than as
+// commands that would fail on click.
 export function fetchPreviewView(canvasUuid?: string): Promise<PreviewView | null> {
   return obs.call("preview.getView", target(canvasUuid)).catch(() => null);
 }
@@ -143,6 +143,11 @@ export function applyPreviewViewAction(action: PreviewViewAction, canvasUuid?: s
 
 export function setPreviewLocked(locked: boolean, canvasUuid?: string): Promise<PreviewView> {
   return obs.call("preview.setLocked", { ...target(canvasUuid), locked });
+}
+
+// The overlays are shared by every preview; the target only picks whose view answers.
+export function setPreviewOverlays(patch: PreviewOverlayPatch, canvasUuid?: string): Promise<PreviewView> {
+  return obs.call("preview.setOverlays", { ...target(canvasUuid), ...patch });
 }
 
 // Forward a wheel the web view received over a preview region to the host's zoom.
@@ -179,9 +184,9 @@ export function forwardPreviewWheel(el: HTMLElement, e: WheelEvent, canvasUuid?:
     .catch(() => {});
 }
 
-// The Scale submenu and Lock Preview entries, wired to one surface. Lives here
-// rather than in each dock because the wiring is nothing but the target packing
-// this module already owns -- two docks had begun to carry identical copies of it,
+// The Scale, Overflow and Guides submenus and the Lock Preview entry, wired to one
+// surface. Lives here rather than in each dock because the wiring is nothing but the
+// target packing this module already owns -- two docks had begun to carry identical copies of it,
 // and a third would have pasted a third.
 export function previewViewMenuItems(
   view: PreviewView | null,
@@ -192,6 +197,7 @@ export function previewViewMenuItems(
     view,
     (action) => void applyPreviewViewAction(action, canvasUuid).catch(onError),
     (locked) => void setPreviewLocked(locked, canvasUuid).catch(onError),
+    (patch) => void setPreviewOverlays(patch, canvasUuid).catch(onError),
   );
 }
 

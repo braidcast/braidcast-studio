@@ -14,6 +14,7 @@
 #include "overlay/overlay_viewport.hpp"
 #include "scene/transitions.hpp"
 #include "scene/scene_persistence.hpp"
+#include "source_render.hpp"
 
 #include <CanvasDefinition.hpp>
 
@@ -28,11 +29,13 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <limits>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "log.hpp"
@@ -111,6 +114,59 @@ enum class ItemHandle : uint32_t {
 };
 
 PreviewManager *g_instance = nullptr;
+
+// The process-wide PreviewOverlays, one atomic per field, written only by
+// Preview::LoadOverlays. The values below are not defaults -- GeneralSettings owns those,
+// and LoadOverlays has run before any preview exists -- they only keep the fields defined
+// until it does. A reader may see one frame that mixes an old field with a new one; each
+// field is independent, so that frame is still a valid picture.
+struct OverlayFlags {
+	std::atomic<PreviewOverflowMode> overflow{PreviewOverflowMode::Hidden};
+	std::atomic<bool> overflowInvisible{false};
+	std::atomic<bool> safeAreas{false};
+	std::atomic<bool> spacingHelpers{false};
+
+	PreviewOverlays Load() const
+	{
+		return PreviewOverlays(overflow.load(), overflowInvisible.load(), safeAreas.load(),
+				       spacingHelpers.load());
+	}
+
+	void Store(const PreviewOverlays &o)
+	{
+		overflow.store(o.overflow);
+		overflowInvisible.store(o.overflowInvisible);
+		safeAreas.store(o.safeAreas);
+		spacingHelpers.store(o.spacingHelpers);
+	}
+};
+
+OverlayFlags g_overlays;
+
+struct OverflowModeEntry {
+	const char *token;
+	PreviewOverflowMode mode;
+};
+
+constexpr OverflowModeEntry kOverflowModes[] = {
+	{"hidden", PreviewOverflowMode::Hidden},
+	{"selection", PreviewOverflowMode::Selection},
+	{"always", PreviewOverflowMode::Always},
+};
+
+constexpr bool IsKnownOverflowToken(std::string_view token)
+{
+	for (const OverflowModeEntry &e : kOverflowModes) {
+		if (token == e.token) {
+			return true;
+		}
+	}
+	return false;
+}
+
+// LoadOverlays falls back to the General settings default, which leaves it nothing to fall
+// back to unless that default is one of the tokens above.
+static_assert(IsKnownOverflowToken(kDefaultPreviewOverflow), "the default overflow mode is not a known token");
 
 // The Default canvas has no obs_canvas_t mix (it uses the global pipeline). The
 // manager keys its Default surface under the empty string; a caller may also
@@ -278,6 +334,11 @@ struct SceneItemRef {
 	int64_t Resolve(const char *uuid) const { return (id >= 0 && uuid && sceneUuid == uuid) ? id : int64_t(-1); }
 };
 
+bool ContainsId(const std::vector<int64_t> &ids, int64_t id)
+{
+	return std::find(ids.begin(), ids.end(), id) != ids.end();
+}
+
 // A multi-item selection. This IS the collection form of SceneItemRef, with the
 // scene uuid hoisted out of the elements rather than repeated in each: a selection
 // cannot span scenes (the docks' own model clears on a scene change for the same
@@ -298,7 +359,7 @@ struct SceneItemSelection {
 	size_t Size() const { return ids.size(); }
 	int64_t Anchor() const { return ids.empty() ? int64_t(-1) : ids.back(); }
 
-	bool Contains(int64_t id) const { return std::find(ids.begin(), ids.end(), id) != ids.end(); }
+	bool Contains(int64_t id) const { return ContainsId(ids, id); }
 
 	void Clear()
 	{
@@ -486,28 +547,61 @@ struct HitFind {
 	bool selectBelow = false;
 };
 
-// True when `canvasPos` falls inside `item`'s transformed unit box. Transforming the
-// point into item space and straight back, then requiring the round trip to land where
-// it started, is what rejects a DEGENERATE (non-invertible) box transform -- a
-// zero-scale item would otherwise swallow clicks across the whole canvas. Ported from
-// the legacy FindItemAtPos; shared by the click hit-test, the rubber band and the
+// The unit box's corners, in the winding BoxCorners uses. Built once: this runs per item
+// per hit test, and per item per frame.
+const std::array<vec3, 4> &UnitBoxCorners()
+{
+	static const std::array<vec3, 4> corners = [] {
+		std::array<vec3, 4> c;
+		vec3_set(&c[0], 0.0f, 0.0f, 0.0f);
+		vec3_set(&c[1], 1.0f, 0.0f, 0.0f);
+		vec3_set(&c[2], 1.0f, 1.0f, 0.0f);
+		vec3_set(&c[3], 0.0f, 1.0f, 0.0f);
+		return c;
+	}();
+	return corners;
+}
+
+// The inverse of an item's box transform, or false for a DEGENERATE one, which every
+// reader must skip: a zero-scale item would otherwise swallow clicks across the whole
+// canvas or draw a collapsed box. matrix4_inv refuses a near-zero determinant and leaves
+// `inverse` unwritten when it does; past that, the unit box's corners must come back
+// from a round trip through the inverse. The round trip's error is affine in the unit
+// position, so a point inside the box comes back at least as close as the worst corner.
+bool InvertBoxTransform(const matrix4 &transform, matrix4 &inverse)
+{
+	if (!matrix4_inv(&inverse, &transform)) {
+		return false;
+	}
+	for (const vec3 &corner : UnitBoxCorners()) {
+		vec3 mapped;
+		vec3_transform(&mapped, &corner, &transform);
+		vec3 back;
+		vec3_transform(&back, &mapped, &inverse);
+		if (!CloseFloat(back.x, corner.x) || !CloseFloat(back.y, corner.y)) {
+			return false;
+		}
+	}
+	return true;
+}
+
+// True when `canvasPos` falls inside `item`'s transformed unit box. Ported from the
+// legacy FindItemAtPos; shared by the click hit-test, the rubber band and the
 // is-a-selected-item-here test so the three cannot disagree about what "inside" means.
 bool PointInItemBox(obs_sceneitem_t *item, const vec2 &canvasPos)
 {
 	matrix4 transform;
-	matrix4 invTransform;
-	vec3 transformedPos;
-	vec3 pos3;
-	vec3 pos3_;
-
-	vec3_set(&pos3, canvasPos.x, canvasPos.y, 0.0f);
 	obs_sceneitem_get_box_transform(item, &transform);
-	matrix4_inv(&invTransform, &transform);
-	vec3_transform(&transformedPos, &pos3, &invTransform);
-	vec3_transform(&pos3_, &transformedPos, &transform);
+	matrix4 inverse;
+	if (!InvertBoxTransform(transform, inverse)) {
+		return false;
+	}
 
-	return CloseFloat(pos3.x, pos3_.x) && CloseFloat(pos3.y, pos3_.y) && transformedPos.x >= 0.0f &&
-	       transformedPos.x <= 1.0f && transformedPos.y >= 0.0f && transformedPos.y <= 1.0f;
+	vec3 pos3;
+	vec3_set(&pos3, canvasPos.x, canvasPos.y, 0.0f);
+	vec3 local;
+	vec3_transform(&local, &pos3, &inverse);
+	return local.x >= 0.0f && local.x <= 1.0f && local.y >= 0.0f && local.y <= 1.0f;
 }
 
 // Topmost-wins: obs_scene_enum_items yields bottom-to-top, so the last match
@@ -1817,6 +1911,303 @@ void DrawItemBox(obs_sceneitem_t *item, float scale, const vec4 &color, gs_vertb
 	gs_matrix_pop();
 }
 
+// --- guide overlays (ported from legacy DrawOverflow/RenderSafeAreas/DrawSpacingHelpers) ---
+
+// The overflow fill's tile, generated rather than shipped: the legacy
+// data/images/overflow.png's pattern -- a 32 px square of 45-degree stripes, 16 px white
+// then 16 px black, every pixel at alpha 34. The PNG matches except that 29 of its black
+// pixels are (1,1,1), a difference nothing at that alpha can show. The legacy
+// DrawSelectedOverflow (frontend_old/widgets/OBSBasicPreview.cpp:1926-1927) repeats it
+// once per 96 canvas px of the item's box.
+constexpr uint32_t kOverflowTileSize = 32;
+constexpr uint8_t kOverflowTileAlpha = 34;
+constexpr float kOverflowTileCanvasPx = 96.0f;
+
+gs_texture_t *CreateOverflowTexture()
+{
+	std::array<uint8_t, kOverflowTileSize * kOverflowTileSize * 4> pixels;
+	for (uint32_t y = 0; y < kOverflowTileSize; y++) {
+		for (uint32_t x = 0; x < kOverflowTileSize; x++) {
+			const uint8_t value =
+				((x + y + kOverflowTileSize - 2) % kOverflowTileSize) < kOverflowTileSize / 2 ? 255 : 0;
+			const size_t i = (size_t(y) * kOverflowTileSize + x) * 4;
+			pixels[i] = value;
+			pixels[i + 1] = value;
+			pixels[i + 2] = value;
+			pixels[i + 3] = kOverflowTileAlpha;
+		}
+	}
+	const uint8_t *data = pixels.data();
+	return gs_texture_create(kOverflowTileSize, kOverflowTileSize, GS_RGBA, 1, &data, 0);
+}
+
+struct OverflowDraw {
+	gs_texture_t *texture;
+	const PreviewOverlays *overlays;
+	const std::vector<int64_t> *selected;
+};
+
+// Fill one item's whole box with the overflow tile. Drawn BEFORE the canvas, which
+// then paints over the part inside it, so what stays striped is exactly the part of
+// the item that lies outside the canvas. The item filters follow the legacy
+// DrawSelectedOverflow (OBSBasicPreview.cpp:1864-1951), minus its group descent.
+bool DrawItemOverflow(obs_scene_t *, obs_sceneitem_t *item, void *param)
+{
+	const auto *draw = static_cast<const OverflowDraw *>(param);
+	if (obs_sceneitem_locked(item) || !SceneItemHasVideo(item)) {
+		return true;
+	}
+	if (!draw->overlays->overflowInvisible && !obs_sceneitem_visible(item)) {
+		return true;
+	}
+	if (draw->overlays->overflow != PreviewOverflowMode::Always &&
+	    !ContainsId(*draw->selected, obs_sceneitem_get_id(item))) {
+		return true;
+	}
+
+	matrix4 boxTransform;
+	obs_sceneitem_get_box_transform(item, &boxTransform);
+	matrix4 inverse;
+	if (!InvertBoxTransform(boxTransform, inverse)) {
+		return true;
+	}
+
+	// One tile per kOverflowTileCanvasPx along each of the box's own axes, measured by
+	// their length so a rotated item keeps its stripe density. A mirrored box negates one
+	// texture axis, which mirrors the stripes back to the diagonal an unmirrored box shows.
+	const float axisX = std::hypot(boxTransform.x.x, boxTransform.x.y);
+	const float axisY = std::hypot(boxTransform.y.x, boxTransform.y.y);
+	const bool mirrored = boxTransform.x.x * boxTransform.y.y - boxTransform.x.y * boxTransform.y.x < 0.0f;
+	gs_effect_t *repeat = obs_get_base_effect(OBS_EFFECT_REPEAT);
+	vec2 tiles;
+	vec2_set(&tiles, (mirrored ? -axisX : axisX) / kOverflowTileCanvasPx, axisY / kOverflowTileCanvasPx);
+	gs_effect_set_vec2(gs_effect_get_param_by_name(repeat, "scale"), &tiles);
+	gs_effect_set_texture_srgb(gs_effect_get_param_by_name(repeat, "image"), draw->texture);
+
+	gs_matrix_push();
+	gs_matrix_mul(&boxTransform);
+	const bool previousSrgb = gs_framebuffer_srgb_enabled();
+	gs_enable_framebuffer_srgb(true);
+	while (gs_effect_loop(repeat, "Draw")) {
+		gs_draw_sprite(draw->texture, 0, 1, 1);
+	}
+	gs_enable_framebuffer_srgb(previousSrgb);
+	gs_matrix_pop();
+	return true;
+}
+
+// Safe-area margins, Rec. ITU-R BT.1848-1 / EBU R 95, and the centre marks on three
+// edges, as the legacy InitSafeAreas builds them (frontend_old/utility/display-helpers.hpp:62-118):
+// each strip is a 1 px line strip in unit canvas space.
+constexpr float kActionSafe = 0.035f;
+constexpr float kGraphicsSafe = 0.05f;
+constexpr float kFourByThreeSafe = 0.1625f;
+constexpr float kSafeMarkLength = 0.1f;
+
+struct GuideStrip {
+	int count;
+	float points[5][2];
+};
+
+constexpr GuideStrip kSafeAreaStrips[] = {
+	{5,
+	 {{kActionSafe, kActionSafe},
+	  {kActionSafe, 1.0f - kActionSafe},
+	  {1.0f - kActionSafe, 1.0f - kActionSafe},
+	  {1.0f - kActionSafe, kActionSafe},
+	  {kActionSafe, kActionSafe}}},
+	{5,
+	 {{kGraphicsSafe, kGraphicsSafe},
+	  {kGraphicsSafe, 1.0f - kGraphicsSafe},
+	  {1.0f - kGraphicsSafe, 1.0f - kGraphicsSafe},
+	  {1.0f - kGraphicsSafe, kGraphicsSafe},
+	  {kGraphicsSafe, kGraphicsSafe}}},
+	{5,
+	 {{kFourByThreeSafe, kGraphicsSafe},
+	  {1.0f - kFourByThreeSafe, kGraphicsSafe},
+	  {1.0f - kFourByThreeSafe, 1.0f - kGraphicsSafe},
+	  {kFourByThreeSafe, 1.0f - kGraphicsSafe},
+	  {kFourByThreeSafe, kGraphicsSafe}}},
+	{2, {{0.0f, 0.5f}, {kSafeMarkLength, 0.5f}}},
+	{2, {{0.5f, 0.0f}, {0.5f, kSafeMarkLength}}},
+	{2, {{1.0f, 0.5f}, {1.0f - kSafeMarkLength, 0.5f}}},
+};
+
+using SafeAreaBuffers = std::array<gs_vertbuffer_t *, std::size(kSafeAreaStrips)>;
+
+// The legacy OUTLINE_COLOR, 0xFFD0D0D0.
+const vec4 kSafeAreaColor = {{{0xD0 / 255.0f, 0xD0 / 255.0f, 0xD0 / 255.0f, 1.0f}}};
+
+// Draw the safe-area strips over a canvas drawn `drawCX` x `drawCY` screen px, in the
+// editing phase's screen-px space before any letterbox scale is pushed.
+void DrawSafeAreas(const SafeAreaBuffers &buffers, float drawCX, float drawCY)
+{
+	gs_effect_t *solid = obs_get_base_effect(OBS_EFFECT_SOLID);
+	gs_effect_set_vec4(gs_effect_get_param_by_name(solid, "color"), &kSafeAreaColor);
+
+	gs_matrix_push();
+	gs_matrix_scale3f(drawCX, drawCY, 1.0f);
+	for (gs_vertbuffer_t *buffer : buffers) {
+		gs_load_vertexbuffer(buffer);
+		while (gs_effect_loop(solid, "Solid")) {
+			gs_draw(GS_LINESTRIP, 0, 0);
+		}
+	}
+	gs_load_vertexbuffer(nullptr);
+	gs_matrix_pop();
+}
+
+// Spacing helpers, after the legacy DrawSpacingHelpers/RenderSpacingHelper
+// (OBSBasicPreview.cpp:2482-2707): a line from each edge of the one selected item to
+// the canvas edge it faces, labelled with its length in canvas px.
+constexpr float kSpacingRotBreakpoint = 45.0f;
+constexpr float kSpacingLabelMargin = 6.0f;
+constexpr int kSpacingLabelFontSize = 16;
+
+// One of the four labels: its private text source, created on first use on the
+// render thread, and the px value it currently reads (-1 before the first).
+struct SpacingLabel {
+	obs_source_t *source = nullptr;
+	int px = -1;
+};
+
+enum SpacingSide { kSpacingTop, kSpacingBottom, kSpacingLeft, kSpacingRight, kSpacingSideCount };
+
+using SpacingLabels = std::array<SpacingLabel, kSpacingSideCount>;
+
+// Draw one helper from `start` to `end` (canvas units, start nearer the canvas origin)
+// and its label. Nothing when the item edge lies beyond the canvas edge it measures to.
+// Runs with the letterbox scale pushed; `scale` is screen px per canvas unit.
+void DrawSpacingHelper(SpacingLabel &label, int side, const vec3 &start, const vec3 &end, float scale)
+{
+	const bool horizontal = side == kSpacingLeft || side == kSpacingRight;
+	if (horizontal ? end.x < start.x : end.y < start.y) {
+		return;
+	}
+	const float length = vec3_dist(&start, &end);
+	if (length <= 0.0f) {
+		return;
+	}
+
+	if (!label.source) {
+		OBSDataAutoRelease extra = obs_data_create();
+		obs_data_set_int(extra, "outline_color", 0x000000);
+		obs_data_set_int(extra, "outline_size", 3);
+		const std::string name = "Preview spacing label " + std::to_string(side);
+		label.source = SourceRender::CreateTextLabel(name.c_str(), "", kSpacingLabelFontSize, extra);
+		if (!label.source) {
+			return;
+		}
+	}
+
+	const float labelW = float(obs_source_get_width(label.source)) / scale;
+	const float labelH = float(obs_source_get_height(label.source)) / scale;
+	const float margin = kSpacingLabelMargin / scale;
+	vec2 labelPos;
+	if (horizontal) {
+		vec2_set(&labelPos, end.x - (end.x - start.x) * 0.5f - labelW * 0.5f,
+			 end.y - margin - labelH * 0.5f - kHandleRadius / scale);
+	} else {
+		vec2_set(&labelPos, end.x + margin, end.y - (end.y - start.y) * 0.5f - labelH * 0.5f);
+	}
+
+	gs_effect_t *solid = obs_get_base_effect(OBS_EFFECT_SOLID);
+	gs_effect_set_vec4(gs_effect_get_param_by_name(solid, "color"), &kSelectionColor);
+	vec2 boxScale;
+	vec2_set(&boxScale, scale, scale);
+	while (gs_effect_loop(solid, "Solid")) {
+		DrawLine(start.x, start.y, end.x, end.y, kBoxLineThickness, boxScale);
+	}
+
+	const int px = int(length);
+	if (px != label.px) {
+		OBSDataAutoRelease settings = obs_source_get_settings(label.source);
+		obs_data_set_string(settings, "text", (std::to_string(px) + " px").c_str());
+		obs_source_update(label.source, settings);
+		label.px = px;
+	}
+
+	PushHandleAnchor(labelPos.x, labelPos.y);
+	obs_source_video_render(label.source);
+	gs_matrix_pop();
+}
+
+void DrawSpacingHelpers(SpacingLabels &labels, obs_scene_t *scene, const std::vector<int64_t> &selectedIds, float scale,
+			float baseCX, float baseCY)
+{
+	if (selectedIds.size() != 1) {
+		return;
+	}
+	obs_sceneitem_t *item = FindItemById(scene, selectedIds.front());
+	if (!item || obs_sceneitem_locked(item)) {
+		return;
+	}
+	const vec2 itemSize = GetItemSize(item);
+	if (itemSize.x == 0.0f || itemSize.y == 0.0f) {
+		return;
+	}
+
+	matrix4 boxTransform;
+	obs_sceneitem_get_box_transform(item, &boxTransform);
+	obs_transform_info info;
+	obs_sceneitem_get_info2(item, &info);
+
+	// The unit-box midpoint of each side, then the legacy remap that decides which of
+	// them faces which canvas edge: a flip swaps opposite sides, and every quarter turn
+	// past 45 degrees moves each one round to the next.
+	vec2 left, right, top, bottom;
+	vec2_set(&left, 0.0f, 0.5f);
+	vec2_set(&right, 1.0f, 0.5f);
+	vec2_set(&top, 0.5f, 0.0f);
+	vec2_set(&bottom, 0.5f, 1.0f);
+	if (info.scale.x < 0.0f && info.bounds_type == OBS_BOUNDS_NONE) {
+		std::swap(left, right);
+	}
+	if (info.scale.y < 0.0f && info.bounds_type == OBS_BOUNDS_NONE) {
+		std::swap(top, bottom);
+	}
+	const float rot = info.rot;
+	if (rot >= kSpacingRotBreakpoint) {
+		for (float i = kSpacingRotBreakpoint; i <= 360.0f && rot >= i; i += 90.0f) {
+			const vec2 l = left, r = right, t = top, b = bottom;
+			top = l;
+			right = t;
+			bottom = r;
+			left = b;
+		}
+	} else if (rot <= -kSpacingRotBreakpoint) {
+		for (float i = -kSpacingRotBreakpoint; i >= -360.0f && rot <= i; i -= 90.0f) {
+			const vec2 l = left, r = right, t = top, b = bottom;
+			top = r;
+			right = b;
+			bottom = l;
+			left = t;
+		}
+	}
+
+	const vec3 l = GetTransformedPos(left.x, left.y, boxTransform);
+	const vec3 r = GetTransformedPos(right.x, right.y, boxTransform);
+	const vec3 t = GetTransformedPos(top.x, top.y, boxTransform);
+	const vec3 b = GetTransformedPos(bottom.x, bottom.y, boxTransform);
+
+	vec3 start, end;
+	vec3_set(&start, t.x, 0.0f, 0.0f);
+	vec3_set(&end, t.x, t.y, 0.0f);
+	DrawSpacingHelper(labels[kSpacingTop], kSpacingTop, start, end, scale);
+
+	vec3_set(&start, b.x, b.y, 0.0f);
+	vec3_set(&end, b.x, baseCY, 0.0f);
+	DrawSpacingHelper(labels[kSpacingBottom], kSpacingBottom, start, end, scale);
+
+	vec3_set(&start, 0.0f, l.y, 0.0f);
+	vec3_set(&end, l.x, l.y, 0.0f);
+	DrawSpacingHelper(labels[kSpacingLeft], kSpacingLeft, start, end, scale);
+
+	vec3_set(&start, r.x, r.y, 0.0f);
+	vec3_set(&end, baseCX, r.y, 0.0f);
+	DrawSpacingHelper(labels[kSpacingRight], kSpacingRight, start, end, scale);
+}
+
 } // namespace
 
 // Per-surface state shared between the render thread (draw callback) and the UI
@@ -1864,6 +2255,12 @@ struct PreviewSurface::State {
 	gs_vertbuffer_t *boxBuffer = nullptr;
 	// The rotation handle's disc, with the same lifetime as boxBuffer.
 	gs_vertbuffer_t *circleBuffer = nullptr;
+	// The guide overlays' graphics, with the same lifetime as boxBuffer.
+	SafeAreaBuffers safeAreaBuffers = {};
+	gs_texture_t *overflowTexture = nullptr;
+	// The spacing helpers' labels. Created on the render thread; released in Destroy()
+	// once the draw callback is gone.
+	SpacingLabels spacingLabels;
 
 	obs_canvas_t *targetCanvas = nullptr; // mirror of the surface's binding for the callback
 };
@@ -1927,6 +2324,28 @@ void EnsureCircleBuffer(PreviewSurface::State *state)
 		gs_vertex2f(0.5f, 1.0f);
 	}
 	state->circleBuffer = gs_render_save();
+}
+
+void EnsureSafeAreaBuffers(PreviewSurface::State *state)
+{
+	for (size_t i = 0; i < state->safeAreaBuffers.size(); i++) {
+		if (state->safeAreaBuffers[i]) {
+			continue;
+		}
+		const GuideStrip &strip = kSafeAreaStrips[i];
+		gs_render_start(true);
+		for (int p = 0; p < strip.count; p++) {
+			gs_vertex2f(strip.points[p][0], strip.points[p][1]);
+		}
+		state->safeAreaBuffers[i] = gs_render_save();
+	}
+}
+
+void EnsureOverflowTexture(PreviewSurface::State *state)
+{
+	if (!state->overflowTexture) {
+		state->overflowTexture = CreateOverflowTexture();
+	}
 }
 
 // Emit sceneItem.selected to JS for the surface's scene. An empty `ids` ->
@@ -2046,12 +2465,14 @@ void EmitContextMenu(obs_canvas_t *targetCanvas, int windowId, obs_scene_t *scen
 }
 
 // Draw callback: fired by libobs once per frame on the render thread. cx/cy are
-// the display (HWND) pixel size. Two phases: fit the surface's base canvas into
-// the display with letterboxing so the composited scene keeps its aspect ratio,
-// then switch to a screen-px space covering the whole display for the editing
-// overlay -- the hovered item's outline, and the selected item's box + handles,
-// each re-resolved by id from the surface's current scene. `data` is the
-// PreviewSurface::State.
+// the display (HWND) pixel size. Three phases, in the legacy RenderMain's order
+// (frontend_old/widgets/OBSBasic_Preview.cpp:158-199): the overflow fill in a
+// screen-px space covering the whole display; the surface's base canvas fitted into
+// the display with letterboxing so the composited scene keeps its aspect ratio; then
+// that screen-px space again for the safe areas and the editing overlay -- the hovered
+// item's outline, the selected items' boxes + handles, the rubber band and the
+// spacing helpers, each re-resolved by id from the surface's current scene. `data` is
+// the PreviewSurface::State.
 void RenderPreview(void *data, uint32_t cx, uint32_t cy)
 {
 	auto *state = static_cast<PreviewSurface::State *>(data);
@@ -2104,18 +2525,10 @@ void RenderPreview(void *data, uint32_t cx, uint32_t cy)
 
 	const int drawCX = int(baseCX * scale);
 	const int drawCY = int(baseCY * scale);
-
-	gs_viewport_push();
-	gs_projection_push();
-
-	gs_ortho(0.0f, baseCX, 0.0f, baseCY, -100.0f, 100.0f);
-	gs_set_viewport(drawX, drawY, drawCX, drawCY);
-
-	if (targetCanvas) {
-		obs_render_canvas_texture(targetCanvas);
-	} else {
-		obs_render_main_texture();
-	}
+	// The canvas viewport covers whole pixels, so an overlay measured to a canvas edge has to
+	// be mapped by the extent actually covered or it can land a pixel outside it.
+	const float coverX = float(drawCX) / baseCX;
+	const float coverY = float(drawCY) / baseCY;
 
 	// Cheap gate: skip the scene addref entirely when there is nothing to draw over
 	// the frame. The raw ids are enough here -- whether they still belong to the
@@ -2133,101 +2546,158 @@ void RenderPreview(void *data, uint32_t cx, uint32_t cy)
 		anyEditId = !state->selected.Empty() || state->hovered.id >= 0 || bandActive;
 	}
 
-	obs_source_t *sceneSource = anyEditId ? AcquireSurfaceSceneSource(targetCanvas) : nullptr;
+	// A locked preview draws no overflow and no spacing helpers, as in the legacy
+	// DrawOverflow and DrawSpacingHelpers: both describe an edit the lock refuses. The
+	// safe areas describe the canvas, not an edit, and draw either way.
+	const PreviewOverlays overlays = g_overlays.Load();
+	const bool drawOverflow = !locked && overlays.overflow != PreviewOverflowMode::Hidden;
+	const bool drawSpacing = !locked && overlays.spacingHelpers;
+	// Overflow for every item needs the scene even with nothing selected.
+	const bool needScene = anyEditId || (drawOverflow && overlays.overflow == PreviewOverflowMode::Always);
+
+	obs_source_t *sceneSource = needScene ? AcquireSurfaceSceneSource(targetCanvas) : nullptr;
+	obs_scene_t *scene = sceneSource ? obs_scene_from_source(sceneSource) : nullptr;
+	std::vector<int64_t> selectedIds;
+	int64_t hoveredId = -1;
 	if (sceneSource) {
 		const char *sceneUuid = obs_source_get_uuid(sceneSource);
-		std::vector<int64_t> selectedIds;
-		int64_t hoveredId;
-		{
-			std::lock_guard<std::mutex> lock(state->stateMutex);
-			selectedIds = state->selected.Resolve(sceneUuid);
-			hoveredId = state->hovered.Resolve(sceneUuid);
-		}
-		const bool hoverSelected = hoveredId >= 0 && std::find(selectedIds.begin(), selectedIds.end(),
-								       hoveredId) != selectedIds.end();
+		std::lock_guard<std::mutex> lock(state->stateMutex);
+		selectedIds = state->selected.Resolve(sceneUuid);
+		hoveredId = state->hovered.Resolve(sceneUuid);
+	}
+	const bool hoverSelected = hoveredId >= 0 &&
+				   std::find(selectedIds.begin(), selectedIds.end(), hoveredId) != selectedIds.end();
 
-		if (!selectedIds.empty() || hoveredId >= 0 || bandActive) {
-			// Editing phase, in a different space than the video above: ortho
-			// measured in screen px with the canvas origin at 0,0, over the whole
-			// display rather than the canvas viewport, so an outline or handle that
-			// falls in the letterbox is drawn instead of being clipped by that
-			// viewport. The matrix scale carries the items' canvas-space box
-			// transforms into this space.
-			gs_ortho(float(-drawX), float(cx) - float(drawX), float(-drawY), float(cy) - float(drawY),
-				 -100.0f, 100.0f);
-			gs_reset_viewport();
+	gs_viewport_push();
+	gs_projection_push();
 
+	// Screen px with the canvas origin at 0,0, over the whole display rather than the
+	// canvas viewport, so what falls in the letterbox is drawn instead of being clipped
+	// by that viewport. The matrix scale pushed on top of it carries the items'
+	// canvas-space box transforms into this space.
+	const auto screenSpace = [&]() {
+		gs_ortho(float(-drawX), float(cx) - float(drawX), float(-drawY), float(cy) - float(drawY), -100.0f,
+			 100.0f);
+		gs_reset_viewport();
+	};
+
+	if (scene && drawOverflow) {
+		screenSpace();
+		EnsureOverflowTexture(state);
+		if (state->overflowTexture) {
+			// Scaled by the covered extent rather than by `scale`, so an item flush with a
+			// canvas edge ends on the same pixel as the canvas and leaves no striped sliver.
 			gs_matrix_push();
-			gs_matrix_scale3f(scale, scale, 1.0f);
-
-			obs_scene_t *scene = obs_scene_from_source(sceneSource);
-			// Hover first, so the selected item's box and handles draw over it. An
-			// eye-off item is skipped: outlining a source the user has hidden would
-			// paint a box on apparently-empty canvas. Diverges from the legacy
-			// preview, which hover-outlines invisible items.
-			if (hoveredId >= 0 && !hoverSelected) {
-				obs_sceneitem_t *item = FindItemById(scene, hoveredId);
-				if (item && SceneItemHasVideo(item) && !obs_sceneitem_locked(item) &&
-				    obs_sceneitem_visible(item)) {
-					DrawItemBox(item, scale, kHoverColor, nullptr, nullptr);
-				}
-			}
-			// Selection deliberately does NOT take the visible check above: an
-			// eye-off source the user selected on purpose still shows its box and
-			// handles, which is the only way to see and adjust a hidden item's
-			// transform in the preview. Hover is the passive case, selection the
-			// asked-for one, so the asymmetry is the intent, not an oversight.
-			//
-			// Every member gets its own outline, and on an unlocked preview its own
-			// handles: with a multi-selection, only the anchor being grabbable would be
-			// arbitrary, and ResolveGestureAtPos tests all of them for exactly that
-			// reason. A locked preview keeps the outlines, which show what is selected,
-			// and drops the handles, which would promise an edit the lock refuses.
-			for (const int64_t id : selectedIds) {
-				obs_sceneitem_t *item = FindItemById(scene, id);
-				if (!item || !SceneItemHasVideo(item) || obs_sceneitem_locked(item)) {
-					continue;
-				}
-				if (locked) {
-					DrawItemBox(item, scale, kSelectionColor, nullptr, nullptr);
-				} else {
-					EnsureBoxBuffer(state);
-					EnsureCircleBuffer(state);
-					DrawItemBox(item, scale, kSelectionColor, state->boxBuffer,
-						    state->circleBuffer);
-				}
-			}
-
-			// The combined bounding box over a multi-item selection. DELIBERATELY
-			// NOT PARITY: the legacy preview computes this extent (AddItemBounds)
-			// but only ever feeds it to the snapping math, and draws nothing. It is
-			// drawn here because a selection whose overall extent you cannot see is
-			// worse to work with -- do not "fix" it back to the legacy behaviour.
-			// It spans every selected id, locked ones included: it shows what is
-			// selected, not what a drag would move. The move gesture's snap box
-			// comes from the same helper built over the movers only, so the two
-			// boxes differ exactly when the selection holds a locked item.
-			if (selectedIds.size() > 1) {
-				vec3 tl, br;
-				if (SelectionBounds(scene, selectedIds, tl, br)) {
-					vec2 tl2, br2;
-					vec2_set(&tl2, tl.x, tl.y);
-					vec2_set(&br2, br.x, br.y);
-					DrawCanvasRect(tl2, br2, scale, kGroupBoxColor, nullptr, nullptr);
-				}
-			}
-
-			// The rubber band, last so it draws over everything it is sweeping.
-			if (bandActive) {
-				vec2 tl2, br2;
-				vec2_min(&tl2, &bandStart, &bandCurrent);
-				vec2_max(&br2, &bandStart, &bandCurrent);
-				EnsureBoxBuffer(state);
-				DrawCanvasRect(tl2, br2, scale, kBandBorderColor, &kBandFillColor, state->boxBuffer);
-			}
-
+			gs_matrix_scale3f(coverX, coverY, 1.0f);
+			OverflowDraw draw{state->overflowTexture, &overlays, &selectedIds};
+			obs_scene_enum_items(scene, DrawItemOverflow, &draw);
 			gs_matrix_pop();
 		}
+	}
+
+	gs_ortho(0.0f, baseCX, 0.0f, baseCY, -100.0f, 100.0f);
+	gs_set_viewport(drawX, drawY, drawCX, drawCY);
+
+	// Color written, not blended, so the canvas covers the overflow fill beneath it
+	// wherever the mix is transparent too. Over the display's black clear the two
+	// blend modes produce the same pixels, so without overflow nothing changes.
+	if (targetCanvas) {
+		obs_render_canvas_texture_src_color_only(targetCanvas);
+	} else {
+		obs_render_main_texture_src_color_only();
+	}
+
+	screenSpace();
+
+	if (overlays.safeAreas) {
+		EnsureSafeAreaBuffers(state);
+		DrawSafeAreas(state->safeAreaBuffers, float(drawCX), float(drawCY));
+	}
+
+	if (scene && (!selectedIds.empty() || hoveredId >= 0 || bandActive)) {
+		gs_matrix_push();
+		gs_matrix_scale3f(scale, scale, 1.0f);
+
+		// Hover first, so the selected item's box and handles draw over it. An
+		// eye-off item is skipped: outlining a source the user has hidden would
+		// paint a box on apparently-empty canvas. Diverges from the legacy
+		// preview, which hover-outlines invisible items.
+		if (hoveredId >= 0 && !hoverSelected) {
+			obs_sceneitem_t *item = FindItemById(scene, hoveredId);
+			if (item && SceneItemHasVideo(item) && !obs_sceneitem_locked(item) &&
+			    obs_sceneitem_visible(item)) {
+				DrawItemBox(item, scale, kHoverColor, nullptr, nullptr);
+			}
+		}
+		// Selection deliberately does NOT take the visible check above: an
+		// eye-off source the user selected on purpose still shows its box and
+		// handles, which is the only way to see and adjust a hidden item's
+		// transform in the preview. Hover is the passive case, selection the
+		// asked-for one, so the asymmetry is the intent, not an oversight.
+		//
+		// Every member gets its own outline, and on an unlocked preview its own
+		// handles: with a multi-selection, only the anchor being grabbable would be
+		// arbitrary, and ResolveGestureAtPos tests all of them for exactly that
+		// reason. A locked preview keeps the outlines, which show what is selected,
+		// and drops the handles, which would promise an edit the lock refuses.
+		for (const int64_t id : selectedIds) {
+			obs_sceneitem_t *item = FindItemById(scene, id);
+			if (!item || !SceneItemHasVideo(item) || obs_sceneitem_locked(item)) {
+				continue;
+			}
+			if (locked) {
+				DrawItemBox(item, scale, kSelectionColor, nullptr, nullptr);
+			} else {
+				EnsureBoxBuffer(state);
+				EnsureCircleBuffer(state);
+				DrawItemBox(item, scale, kSelectionColor, state->boxBuffer, state->circleBuffer);
+			}
+		}
+
+		// The combined bounding box over a multi-item selection. DELIBERATELY
+		// NOT PARITY: the legacy preview computes this extent (AddItemBounds)
+		// but only ever feeds it to the snapping math, and draws nothing. It is
+		// drawn here because a selection whose overall extent you cannot see is
+		// worse to work with -- do not "fix" it back to the legacy behaviour.
+		// It spans every selected id, locked ones included: it shows what is
+		// selected, not what a drag would move. The move gesture's snap box
+		// comes from the same helper built over the movers only, so the two
+		// boxes differ exactly when the selection holds a locked item.
+		if (selectedIds.size() > 1) {
+			vec3 tl, br;
+			if (SelectionBounds(scene, selectedIds, tl, br)) {
+				vec2 tl2, br2;
+				vec2_set(&tl2, tl.x, tl.y);
+				vec2_set(&br2, br.x, br.y);
+				DrawCanvasRect(tl2, br2, scale, kGroupBoxColor, nullptr, nullptr);
+			}
+		}
+
+		// The rubber band, over everything it is sweeping.
+		if (bandActive) {
+			vec2 tl2, br2;
+			vec2_min(&tl2, &bandStart, &bandCurrent);
+			vec2_max(&br2, &bandStart, &bandCurrent);
+			EnsureBoxBuffer(state);
+			DrawCanvasRect(tl2, br2, scale, kBandBorderColor, &kBandFillColor, state->boxBuffer);
+		}
+
+		// Last, as in the legacy RenderMain, which draws them after the rest of the
+		// scene editing. They need exactly one selected item, so the gate above covers them.
+		if (drawSpacing) {
+			// On the covered extent, like the overflow and safe-area passes: a helper runs to
+			// a canvas edge, so it has to end where that edge does. The pass around it keeps
+			// `scale`, which is what the item boxes, handles and rubber band already draw at.
+			gs_matrix_push();
+			gs_matrix_identity();
+			gs_matrix_scale3f(coverX, coverY, 1.0f);
+			DrawSpacingHelpers(state->spacingLabels, scene, selectedIds, scale, baseCX, baseCY);
+			gs_matrix_pop();
+		}
+
+		gs_matrix_pop();
+	}
+	if (sceneSource) {
 		obs_source_release(sceneSource);
 	}
 
@@ -3375,15 +3845,15 @@ void PreviewSurface::SetLocked(bool locked)
 	FinishDrag();
 }
 
-void PreviewSurface::GetView(bool &fixed, int &zoomPercent, bool &locked)
+PreviewViewState PreviewSurface::GetView()
 {
+	const PreviewOverlays overlays = g_overlays.Load();
 	std::lock_guard<std::mutex> lock(state_->stateMutex);
-	fixed = state_->view.fixed;
-	locked = state_->view.locked;
 	// The scale the next frame will draw at, not the one the last frame did. A menu
 	// is built right after the command that opened it, so reporting the published
 	// scale would answer with the percentage the preview is leaving.
-	zoomPercent = int(std::lround(PendingScale(state_->view, state_->transform) * 100.0f));
+	const int zoomPercent = int(std::lround(PendingScale(state_->view, state_->transform) * 100.0f));
+	return PreviewViewState{state_->view.fixed, zoomPercent, state_->view.locked, overlays};
 }
 
 void PreviewSurface::SetRect(int x, int y, int cx, int cy)
@@ -3425,15 +3895,29 @@ void PreviewSurface::Destroy()
 	RetractPointerOver();
 
 	// The display dies first (OverlaySurface removes the draw callback), so nothing
-	// the render thread reads outlives it -- including the vertex buffers below.
+	// the render thread reads outlives it -- including the graphics and labels below.
 	overlay_.Destroy();
-	if (state_->boxBuffer || state_->circleBuffer) {
+	std::vector<gs_vertbuffer_t **> buffers = {&state_->boxBuffer, &state_->circleBuffer};
+	for (gs_vertbuffer_t *&buffer : state_->safeAreaBuffers) {
+		buffers.push_back(&buffer);
+	}
+	const bool anyBuffer = std::any_of(buffers.begin(), buffers.end(),
+					   [](gs_vertbuffer_t **buffer) { return *buffer != nullptr; });
+	if (anyBuffer || state_->overflowTexture) {
 		obs_enter_graphics();
-		for (gs_vertbuffer_t **buffer : {&state_->boxBuffer, &state_->circleBuffer}) {
+		for (gs_vertbuffer_t **buffer : buffers) {
 			gs_vertexbuffer_destroy(*buffer);
 			*buffer = nullptr;
 		}
+		if (state_->overflowTexture) {
+			gs_texture_destroy(state_->overflowTexture);
+			state_->overflowTexture = nullptr;
+		}
 		obs_leave_graphics();
+	}
+	for (SpacingLabel &label : state_->spacingLabels) {
+		obs_source_release(label.source);
+		label = SpacingLabel{};
 	}
 }
 
@@ -3900,17 +4384,66 @@ bool SetLocked(const std::string &canvas, bool locked, int windowId)
 // which is right for the commands -- they are asking for that surface -- but a
 // query that can conjure a window is a seam nobody expects, and it would make the
 // caller's "no such surface" error describe a case that could never occur.
-bool GetView(const std::string &canvas, bool &fixed, int &zoomPercent, bool &locked, int windowId)
+std::optional<PreviewViewState> GetView(const std::string &canvas, int windowId)
 {
 	if (!g_instance) {
-		return false;
+		return std::nullopt;
 	}
 	PreviewSurface *surface = g_instance->FindSurface(windowId, canvas);
 	if (!surface) {
-		return false;
+		return std::nullopt;
 	}
-	surface->GetView(fixed, zoomPercent, locked);
-	return true;
+	return surface->GetView();
+}
+
+std::optional<PreviewOverlays> OverlaysFromSettings(const GeneralSettings &settings)
+{
+	PreviewOverflowMode overflow;
+	if (!OverflowModeFromToken(settings.previewOverflow, overflow)) {
+		return std::nullopt;
+	}
+	return PreviewOverlays(overflow, settings.previewOverflowInvisible, settings.previewSafeAreas,
+			       settings.previewSpacingHelpers);
+}
+
+void OverlaysToSettings(const PreviewOverlays &overlays, GeneralSettings &settings)
+{
+	settings.previewOverflow = OverflowModeToken(overlays.overflow);
+	settings.previewOverflowInvisible = overlays.overflowInvisible;
+	settings.previewSafeAreas = overlays.safeAreas;
+	settings.previewSpacingHelpers = overlays.spacingHelpers;
+}
+
+void LoadOverlays(GeneralSettings &settings)
+{
+	std::optional<PreviewOverlays> overlays = OverlaysFromSettings(settings);
+	if (!overlays) {
+		HostLog("[preview] unknown stored overflow mode '" + settings.previewOverflow + "', using the default");
+		settings.previewOverflow = kDefaultPreviewOverflow;
+		overlays = OverlaysFromSettings(settings);
+	}
+	g_overlays.Store(overlays.value());
+}
+
+const char *OverflowModeToken(PreviewOverflowMode mode)
+{
+	for (const OverflowModeEntry &e : kOverflowModes) {
+		if (e.mode == mode) {
+			return e.token;
+		}
+	}
+	return kOverflowModes[0].token;
+}
+
+bool OverflowModeFromToken(const std::string &token, PreviewOverflowMode &out)
+{
+	for (const OverflowModeEntry &e : kOverflowModes) {
+		if (token == e.token) {
+			out = e.mode;
+			return true;
+		}
+	}
+	return false;
 }
 
 bool ZoomAt(const std::string &canvas, int x, int y, int levelDelta, int windowId)

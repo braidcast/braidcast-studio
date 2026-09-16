@@ -1229,6 +1229,8 @@ bool ObsBootstrap::Start()
 
 	// Load the global General settings early: projectors + later systems read it.
 	g_general.Load();
+	// Before any preview surface exists, so the first frame draws the stored overlays.
+	Preview::LoadOverlays(g_general);
 	HostLog("[obs] general settings loaded");
 
 	// Load the global Advanced settings and apply the stored process priority once.
@@ -2124,6 +2126,118 @@ void ObsBootstrap::RunSettingsSelfTest()
 	// 6) Restore the original audio config.
 	run("settings.setAudio", a0, ok);
 	HostLog("[selftest] audio restored to " + std::to_string(a0.value("sampleRate", 0u)) + "Hz");
+
+	// 7) Preview guide overlays. preview.setOverlays and settings.setGeneral end in the
+	// same General commit, so a write through either must read back through the other,
+	// and a refused write must leave every stored value as it was.
+	json g0 = run("settings.getGeneral", json(nullptr), ok);
+	if (!ok) {
+		return;
+	}
+	const char *const overlayKeys[] = {"previewOverflow", "previewOverflowInvisible", "previewSafeAreas",
+					   "previewSpacingHelpers"};
+	const auto field = [](const json &object, const char *key) {
+		const auto it = object.find(key);
+		return it == object.end() ? json() : *it;
+	};
+	json saved = json::object();
+	for (const char *key : overlayKeys) {
+		saved[key] = field(g0, key);
+	}
+	const auto overlaysAre = [&](const json &general, const json &expected) {
+		for (const char *key : overlayKeys) {
+			if (field(general, key) != field(expected, key)) {
+				return false;
+			}
+		}
+		return true;
+	};
+	const auto refused = [](const std::string &method, const json &params) {
+		json result;
+		std::string error;
+		const bool accepted = Bridge::Dispatch(method, params, result, error);
+		HostLog("[selftest] preview-overlays: " + method + " " +
+			(accepted ? std::string("ACCEPTED a bad value") : "refused: " + Err::Diagnostic(error)));
+		return !accepted;
+	};
+	const auto verdict = [](bool pass) {
+		return std::string(pass ? "OK" : "MISMATCH");
+	};
+
+	const bool invisible0 = g0.value("previewOverflowInvisible", false);
+	const bool safe0 = g0.value("previewSafeAreas", false);
+	const bool spacing0 = g0.value("previewSpacingHelpers", false);
+	const std::string mode1 = g0.value("previewOverflow", std::string()) == "always" ? "hidden" : "always";
+	const bool haveSurface = Preview::GetView("").has_value();
+
+	// 7a) setOverlays on the Default surface, read back through getGeneral.
+	json expected = {{"previewOverflow", mode1},
+			 {"previewOverflowInvisible", !invisible0},
+			 {"previewSafeAreas", !safe0},
+			 {"previewSpacingHelpers", !spacing0}};
+	if (haveSurface) {
+		const json view = run("preview.setOverlays",
+				      json{{"overflow", mode1},
+					   {"overflowInvisible", !invisible0},
+					   {"safeAreas", !safe0},
+					   {"spacingHelpers", !spacing0}},
+				      ok);
+		const bool replyOk = ok && view.value("overflow", std::string()) == mode1 &&
+				     view.value("overflowInvisible", invisible0) == !invisible0 &&
+				     view.value("safeAreas", safe0) == !safe0 &&
+				     view.value("spacingHelpers", spacing0) == !spacing0;
+		const json g1 = run("settings.getGeneral", json(nullptr), ok);
+		HostLog("[selftest] preview-overlays: setOverlays reply " + verdict(replyOk) + ", getGeneral " +
+			verdict(ok && overlaysAre(g1, expected)));
+
+		// 7b) Each refused call also carries a valid change, which must not land either.
+		const bool badMode =
+			refused("preview.setOverlays", json{{"overflow", "sideways"}, {"safeAreas", safe0}});
+		const bool badBool = refused("preview.setOverlays",
+					     json{{"overflowInvisible", invisible0}, {"spacingHelpers", "yes"}});
+		const json g2 = run("settings.getGeneral", json(nullptr), ok);
+		HostLog("[selftest] preview-overlays: setOverlays refusals " + verdict(badMode && badBool) +
+			", values intact " + verdict(ok && overlaysAre(g2, expected)));
+	} else {
+		expected = saved;
+		HostLog("[selftest] preview-overlays: no Default preview surface, setOverlays checks skipped");
+	}
+
+	// 7c) A setOverlays naming no surface is refused before it commits anything, which is
+	// the reason the target is resolved first. Runs whether or not a Default surface exists.
+	const bool badTarget = refused("preview.setOverlays", json{{"canvas", "no-such-uuid"}, {"safeAreas", !safe0}});
+	const json g2b = run("settings.getGeneral", json(nullptr), ok);
+	HostLog("[selftest] preview-overlays: setOverlays bad-target refusal " + verdict(badTarget) +
+		", values intact " + verdict(ok && overlaysAre(g2b, expected)));
+
+	// 7d) An unknown mode through settings.setGeneral is refused with the rest of the call.
+	const bool badStored =
+		refused("settings.setGeneral", json{{"previewOverflow", "sideways"}, {"previewSafeAreas", !safe0}});
+	const json g3 = run("settings.getGeneral", json(nullptr), ok);
+	HostLog("[selftest] preview-overlays: setGeneral refusal " + verdict(badStored) + ", values intact " +
+		verdict(ok && overlaysAre(g3, expected)));
+
+	// 7e) setGeneral, read back through the surface's view.
+	const std::string mode2 = "selection";
+	run("settings.setGeneral",
+	    json{{"previewOverflow", mode2},
+		 {"previewOverflowInvisible", invisible0},
+		 {"previewSafeAreas", !safe0},
+		 {"previewSpacingHelpers", spacing0}},
+	    ok);
+	if (ok && haveSurface) {
+		const json view = run("preview.getView", json(nullptr), ok);
+		HostLog("[selftest] preview-overlays: setGeneral -> getView " +
+			verdict(ok && view.value("overflow", std::string()) == mode2 &&
+				view.value("overflowInvisible", !invisible0) == invisible0 &&
+				view.value("safeAreas", safe0) == !safe0 &&
+				view.value("spacingHelpers", !spacing0) == spacing0));
+	}
+
+	// 8) Restore the original overlay settings.
+	run("settings.setGeneral", saved, ok);
+	const json g4 = run("settings.getGeneral", json(nullptr), ok);
+	HostLog("[selftest] preview-overlays: restored " + verdict(ok && overlaysAre(g4, saved)));
 }
 
 void ObsBootstrap::RunCanvasBridgeSelfTest()

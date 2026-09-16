@@ -1,5 +1,5 @@
 import type { ContextMenuItem, ContextMenuItems } from "$lib/menus/ContextMenu.svelte";
-import type { PreviewView } from "$lib/api/bridge";
+import type { PreviewOverflowMode, PreviewOverlays, PreviewView } from "$lib/api/bridge";
 
 /** The Scale-submenu commands. Tokens match the bridge (preview.viewAction `action`). */
 export type PreviewViewAction = "scaleToWindow" | "scaleToCanvas" | "zoomIn" | "zoomOut";
@@ -33,6 +33,69 @@ export function previewScaleMenu(
   };
 }
 
+// The overflow modes, one checked row each, in the legacy settings' order of
+// increasing reach.
+const OVERFLOW_MODES: { mode: PreviewOverflowMode; label: string }[] = [
+  { mode: "hidden", label: "Off" },
+  { mode: "selection", label: "Selected Sources" },
+  { mode: "always", label: "All Sources" },
+];
+
+// The on/off guides, one checkable row each.
+const GUIDE_TOGGLES: { key: "safeAreas" | "spacingHelpers"; label: string }[] = [
+  { key: "safeAreas", label: "Safe Areas" },
+  { key: "spacingHelpers", label: "Spacing Guides" },
+];
+
+/** A change to some of the preview overlays; absent keys keep their value. */
+export type PreviewOverlayPatch = Partial<PreviewOverlays>;
+
+// An "Overflow ▸" submenu: which items show the striped fill over the part of them
+// outside the canvas, and whether items with their visibility off count. The last row
+// has nothing to act on while overflow is off, so it is disabled then rather than
+// silently inert.
+export function previewOverflowMenu(
+  view: PreviewView | null,
+  onSetOverlays: (patch: PreviewOverlayPatch) => void,
+): ContextMenuItem {
+  return {
+    label: "Overflow",
+    disabled: !view,
+    children: [
+      ...OVERFLOW_MODES.map((m) => ({
+        label: m.label,
+        ...(view ? { checked: view.overflow === m.mode } : {}),
+        action: () => onSetOverlays({ overflow: m.mode }),
+      })),
+      null,
+      {
+        label: "Include Invisible Sources",
+        ...(view ? { checked: view.overflowInvisible } : {}),
+        disabled: view?.overflow === "hidden",
+        action: () => onSetOverlays({ overflowInvisible: !view?.overflowInvisible }),
+      },
+    ],
+  };
+}
+
+// A "Guides ▸" submenu of the canvas guides. A submenu rather than rows beside Lock
+// for the reason previewLockItem gives: checkable rows at this level would indent the
+// whole menu.
+export function previewGuidesMenu(
+  view: PreviewView | null,
+  onSetOverlays: (patch: PreviewOverlayPatch) => void,
+): ContextMenuItem {
+  return {
+    label: "Guides",
+    disabled: !view,
+    children: GUIDE_TOGGLES.map((g) => ({
+      label: g.label,
+      ...(view ? { checked: view[g.key] } : {}),
+      action: () => onSetOverlays({ [g.key]: !view?.[g.key] }),
+    })),
+  };
+}
+
 // The preview's edit lock, as a label flip rather than a checkable row. The
 // checkable form would be equally correct, but ContextMenu reserves the tick
 // gutter for a whole menu as soon as any one row declares `checked`, so a single
@@ -47,13 +110,20 @@ export function previewLockItem(view: PreviewView | null, onSetLocked: (locked: 
   };
 }
 
-// Both of the above plus the divider that separates them from the scene-item
+// All of the above plus the divider that separates them from the scene-item
 // entries above. Shared by the Default preview dock and every canvas dock, so the
 // two menus cannot drift apart the way their scene-item entries already have.
 export function previewViewItems(
   view: PreviewView | null,
   onAction: (action: PreviewViewAction) => void,
   onSetLocked: (locked: boolean) => void,
+  onSetOverlays: (patch: PreviewOverlayPatch) => void,
 ): ContextMenuItems {
-  return [null, previewScaleMenu(view, onAction), previewLockItem(view, onSetLocked)];
+  return [
+    null,
+    previewScaleMenu(view, onAction),
+    previewOverflowMenu(view, onSetOverlays),
+    previewGuidesMenu(view, onSetOverlays),
+    previewLockItem(view, onSetLocked),
+  ];
 }

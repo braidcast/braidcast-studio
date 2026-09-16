@@ -550,20 +550,49 @@ bool MethodPreviewDestroy(const json &params, json & /*result*/, std::string &er
 	return true;
 }
 
-// The addressed surface's view state, as the three fields the context menu renders
-// from. One filler for all three methods below so they cannot come to describe the
-// same surface differently, and so each of them leaves the menu with fresh state
-// without a second round-trip.
+// The guide-overlay wire keys, named once for the view reply and preview.setOverlays.
+constexpr const char *kPreviewOverflowKey = "overflow";
+
+struct PreviewOverlaySwitch {
+	const char *key;
+	bool PreviewOverlays::*member;
+};
+
+constexpr PreviewOverlaySwitch kPreviewOverlaySwitches[] = {
+	{"overflowInvisible", &PreviewOverlays::overflowInvisible},
+	{"safeAreas", &PreviewOverlays::safeAreas},
+	{"spacingHelpers", &PreviewOverlays::spacingHelpers},
+};
+
+// The addressed surface's view state, or empty with `error` set when there is none.
+std::optional<PreviewViewState> AddressedPreviewView(const json &params, std::string &error)
+{
+	std::optional<PreviewViewState> view = Preview::GetView(PreviewCanvasParam(params), PreviewWindowParam(params));
+	if (!view) {
+		error = "no preview surface for this canvas";
+	}
+	return view;
+}
+
+// The addressed surface's view state, as the fields the context menu renders from.
+// One filler for every method below so they cannot come to describe the same surface
+// differently, and so each of them leaves the menu with fresh state without a second
+// round-trip.
 bool PreviewViewResult(const json &params, json &result, std::string &error)
 {
-	bool fixed = false;
-	int zoomPercent = 0;
-	bool locked = false;
-	if (!Preview::GetView(PreviewCanvasParam(params), fixed, zoomPercent, locked, PreviewWindowParam(params))) {
-		error = "no preview surface for this canvas";
+	const std::optional<PreviewViewState> view = AddressedPreviewView(params, error);
+	if (!view) {
 		return false;
 	}
-	result = json{{"fixed", fixed}, {"zoomPercent", zoomPercent}, {"locked", locked}};
+	result = json{
+		{"fixed", view->fixed},
+		{"zoomPercent", view->zoomPercent},
+		{"locked", view->locked},
+		{kPreviewOverflowKey, Preview::OverflowModeToken(view->overlays.overflow)},
+	};
+	for (const PreviewOverlaySwitch &s : kPreviewOverlaySwitches) {
+		result[s.key] = view->overlays.*s.member;
+	}
 	return true;
 }
 
@@ -600,6 +629,57 @@ bool MethodPreviewSetLocked(const json &params, json &result, std::string &error
 	const bool locked = params.is_object() && params.value("locked", false);
 	if (!Preview::SetLocked(PreviewCanvasParam(params), locked, PreviewWindowParam(params))) {
 		error = "no preview surface for this canvas";
+		return false;
+	}
+	return PreviewViewResult(params, result, error);
+}
+
+bool CommitGeneral(const GeneralSettings &next, json &result, std::string &error);
+
+// Set any of the guide overlays: `overflow` (a mode token), `overflowInvisible`,
+// `safeAreas`, `spacingHelpers`; absent keys keep their value. The overlays are General
+// settings shared by every preview, so this ends in the same commit settings.setGeneral
+// does; the addressed surface only picks whose view answers. Everything is validated
+// before anything is applied.
+bool MethodPreviewSetOverlays(const json &params, json &result, std::string &error)
+{
+	if (!Preview::Instance()) {
+		error = "preview not ready";
+		return false;
+	}
+	if (!params.is_object()) {
+		error = "setOverlays expects an object";
+		return false;
+	}
+	// The addressed surface is resolved first, so a bad target refuses the call before
+	// the commit rather than reporting failure for a change it already saved. The commit
+	// creates and destroys no surface, so the reply built after it cannot fail.
+	std::optional<PreviewViewState> view = AddressedPreviewView(params, error);
+	if (!view) {
+		return false;
+	}
+	PreviewOverlays &overlays = view->overlays;
+	auto mode = params.find(kPreviewOverflowKey);
+	if (mode != params.end() &&
+	    !(mode->is_string() && Preview::OverflowModeFromToken(mode->get<std::string>(), overlays.overflow))) {
+		error = std::string("setOverlays: unknown `") + kPreviewOverflowKey + "` mode";
+		return false;
+	}
+	for (const PreviewOverlaySwitch &s : kPreviewOverlaySwitches) {
+		auto it = params.find(s.key);
+		if (it == params.end()) {
+			continue;
+		}
+		if (!it->is_boolean()) {
+			error = std::string("setOverlays: `") + s.key + "` must be a boolean";
+			return false;
+		}
+		overlays.*s.member = it->get<bool>();
+	}
+	GeneralSettings next = ObsBootstrap::General();
+	Preview::OverlaysToSettings(overlays, next);
+	json committed;
+	if (!CommitGeneral(next, committed, error)) {
 		return false;
 	}
 	return PreviewViewResult(params, result, error);
@@ -910,36 +990,24 @@ bool MethodSettingsGetGeneral(const json & /*params*/, json &result, std::string
 	return true;
 }
 
-bool MethodSettingsSetGeneral(const json &params, json &result, std::string &error)
+// The one commit for General settings: every write to them ends here, so what a preview
+// draws cannot come to disagree with the file. It checks one field, the preview overflow
+// mode, because settings.setGeneral accepts any string for it, and refuses an unknown
+// mode without touching anything. Otherwise it adopts `next`, saves, live-applies the
+// wired effects (the preview overlays and projectors' always-on-top) and broadcasts the
+// full state.
+bool CommitGeneral(const GeneralSettings &next, json &result, std::string &error)
 {
-	if (!RequireObject(params, "setGeneral", error)) {
+	if (!Preview::OverlaysFromSettings(next)) {
+		error = "unknown preview overflow mode '" + next.previewOverflow + "'";
 		return false;
 	}
+
 	GeneralSettings &g = ObsBootstrap::General();
-	// Apply ONLY present keys of the matching type; unknown keys are ignored.
-	for (const GeneralBoolField &f : kGeneralBoolFields) {
-		auto it = params.find(f.json);
-		if (it != params.end() && it->is_boolean()) {
-			g.*f.member = it->get<bool>();
-		}
-	}
-	for (const GeneralStringField &f : kGeneralStringFields) {
-		auto it = params.find(f.json);
-		if (it != params.end() && it->is_string()) {
-			g.*f.member = it->get<std::string>();
-		}
-	}
-	for (const GeneralDoubleField &f : kGeneralDoubleFields) {
-		auto it = params.find(f.json);
-		if (it != params.end() && it->is_number()) {
-			double v = it->get<double>();
-			v = v < f.min ? f.min : (v > f.max ? f.max : v);
-			g.*f.member = v;
-		}
-	}
+	g = next;
 	const bool saved = g.Save();
 
-	// Live-apply the one wired effect: re-pin open projectors' always-on-top.
+	Preview::LoadOverlays(g);
 	if (Projector::Instance()) {
 		Projector::Instance()->ApplyAlwaysOnTop(g.projectorAlwaysOnTop);
 	}
@@ -947,6 +1015,36 @@ bool MethodSettingsSetGeneral(const json &params, json &result, std::string &err
 	result = GeneralToJson(g);
 	EmitEvent(EventNames::kSettingsGeneralChanged, result);
 	return PersistOrFail(saved, error);
+}
+
+bool MethodSettingsSetGeneral(const json &params, json &result, std::string &error)
+{
+	if (!RequireObject(params, "setGeneral", error)) {
+		return false;
+	}
+	GeneralSettings next = ObsBootstrap::General();
+	// Apply ONLY present keys of the matching type; unknown keys are ignored.
+	for (const GeneralBoolField &f : kGeneralBoolFields) {
+		auto it = params.find(f.json);
+		if (it != params.end() && it->is_boolean()) {
+			next.*f.member = it->get<bool>();
+		}
+	}
+	for (const GeneralStringField &f : kGeneralStringFields) {
+		auto it = params.find(f.json);
+		if (it != params.end() && it->is_string()) {
+			next.*f.member = it->get<std::string>();
+		}
+	}
+	for (const GeneralDoubleField &f : kGeneralDoubleFields) {
+		auto it = params.find(f.json);
+		if (it != params.end() && it->is_number()) {
+			double v = it->get<double>();
+			v = v < f.min ? f.min : (v > f.max ? f.max : v);
+			next.*f.member = v;
+		}
+	}
+	return CommitGeneral(next, result, error);
 }
 
 // Build the full Advanced-settings wire object (camelCase keys) from the struct.
@@ -13754,6 +13852,7 @@ void Init()
 		{"preview.freeze", MethodPreviewFreeze},
 		{"preview.viewAction", MethodPreviewViewAction},
 		{"preview.setLocked", MethodPreviewSetLocked},
+		{"preview.setOverlays", MethodPreviewSetOverlays},
 		{"preview.getView", MethodPreviewGetView},
 		{"preview.zoomAt", MethodPreviewZoomAt},
 		{"scenes.list", MethodScenesList},
