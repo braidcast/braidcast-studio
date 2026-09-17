@@ -1,8 +1,14 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import { obs, type SceneItem, type ReorderDirection } from "$lib/api/bridge";
+  import {
+    obs,
+    type SceneItem,
+    type SceneItemRef,
+    type ReorderDirection,
+    type PreviewSelectParams,
+    type SceneItemsSetCollapsedParams,
+  } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
-  import { selectOnMount } from "$lib/utils/focusActions";
   import { defaultCanvas } from "$lib/docks/defaultCanvasStore.svelte";
   import AddSourceModal from "$lib/dialogs/add-source/AddSourceModal.svelte";
   import PropertiesModal from "$lib/properties/PropertiesModal.svelte";
@@ -23,7 +29,10 @@ import { EV } from "$lib/utils/eventNames";
   import { deinterlaceMenu } from "$lib/menus/deinterlaceMenu";
   import { colorMenu } from "$lib/menus/colorMenu";
   import type { DeinterlaceMode, DeinterlaceFieldOrder } from "$lib/api/bridge";
-  import IconButton from "$lib/ui/IconButton.svelte";
+  import SourceTree from "$lib/docking/SourceTree.svelte";
+  import { siblingPosition, visibleRows } from "$lib/docking/sourceTree";
+  import { PendingRename } from "$lib/docking/pendingRename.svelte";
+  import { itemTarget, sameItem, toRef } from "$lib/utils/sceneItemRef";
   import ListToolbar, { type ToolAction } from "$lib/docking/ListToolbar.svelte";
   import FilterReveal from "$lib/docking/FilterReveal.svelte";
 
@@ -46,21 +55,23 @@ import { EV } from "$lib/utils/eventNames";
   // up/down indices only make sense against the full, unfiltered ordering.
   let filter = $state("");
   const filtering = $derived(filter.trim().length > 0);
-  const filteredItems = $derived(
-    filtering ? items.filter((i) => (i.source ?? "").toLowerCase().includes(filter.trim().toLowerCase())) : items,
-  );
+  const rows = $derived(visibleRows(items, filter));
   let loaded = $state(false);
   const dockError = new DockError();
   let propsForSource = $state<string | null>(null);
   let adding = $state(false);
-  let renamingId = $state<number | null>(null);
+  let renaming = $state<SceneItemRef | null>(null);
   let renameTo = $state("");
   let menu = $state<ContextMenuState | null>(null);
 
   // The bottom toolbar acts on the selected row (OBS list convention). Reorder is
-  // indexed against the full, unfiltered `items` so up/down disable at the ends.
+  // indexed against the full, unfiltered list the row is ordered within (the scene's
+  // items, or its group's children) so up/down disable at the ends.
   const selectedItem = $derived(sourceSelection.item);
-  const selectedIdx = $derived(selectedItem ? items.findIndex((i) => i.id === selectedItem.id) : -1);
+  const selectedPos = $derived(selectedItem ? siblingPosition(items, selectedItem) : { index: -1, count: 0 });
+
+  // Item calls are addressed through here, so the owning group rides along with the id.
+  const at = (item: SceneItemRef) => itemTarget({ scene: currentScene }, item);
 
   const leftActions = $derived<ToolAction[]>([
     { icon: "plus", title: "Add source", disabled: !currentScene, onClick: () => (adding = true) },
@@ -76,13 +87,13 @@ import { EV } from "$lib/utils/eventNames";
     {
       icon: "up",
       title: "Move up",
-      disabled: filtering || selectedIdx <= 0,
+      disabled: filtering || selectedPos.index <= 0,
       onClick: () => selectedItem && void reorder(selectedItem, "up"),
     },
     {
       icon: "down",
       title: "Move down",
-      disabled: filtering || selectedIdx < 0 || selectedIdx >= items.length - 1,
+      disabled: filtering || selectedPos.index < 0 || selectedPos.index >= selectedPos.count - 1,
       onClick: () => selectedItem && void reorder(selectedItem, "down"),
     },
   ]);
@@ -95,22 +106,16 @@ import { EV } from "$lib/utils/eventNames";
     }
   }
 
-  // Plain click selects just this row; Ctrl/Cmd toggles it in/out of the set; Shift
-  // extends from the pivot over the visible (filtered) order. Every branch pushes the
-  // resulting set, focused row last, to the native preview, which draws the same
-  // selection this list shows, and every branch claims the surface, because a modifier
-  // click is still the user working here and the app-level shortcuts have to follow them
-  // here.
-  function selectItem(e: MouseEvent, item: SceneItem) {
+  // The tree changed the selection (a click or a key, plain or with a modifier). Push the
+  // resulting set, focused row last, to the native preview, which draws the same selection
+  // this list shows, and claim the surface, because a modifier click is still the user
+  // working here and the app-level shortcuts have to follow them here.
+  function onTreeSelect() {
     activeSurface.claimSource(surfaceOwner, null, sourceSelection);
-    if (e.shiftKey) {
-      sourceSelection.range(item, filteredItems);
-    } else if (e.ctrlKey || e.metaKey) {
-      sourceSelection.toggle(item);
-    } else {
-      sourceSelection.selectOne(item);
-    }
-    sourceSelection.pushToPreview((ids) => obs.call("preview.select", { scene: currentScene, ids }));
+    sourceSelection.pushToPreview((refs) => {
+      const params: PreviewSelectParams = { scene: currentScene, refs };
+      return obs.call("preview.select", params);
+    });
   }
 
   // The properties modal overlaps the preview; suspend the native overlay while open.
@@ -194,7 +199,7 @@ import { EV } from "$lib/utils/eventNames";
     adding = false;
     propsForSource = created.source;
     void load().then(() => {
-      const it = items.find((i) => i.id === created.id);
+      const it = items.find((i) => sameItem(i, { id: created.id, group: null }));
       if (it) {
         activeSurface.claimSource(surfaceOwner, null, sourceSelection);
         sourceSelection.selectOne(it);
@@ -204,7 +209,7 @@ import { EV } from "$lib/utils/eventNames";
 
   async function toggleVisible(item: SceneItem) {
     try {
-      await obs.call("sceneItems.setVisible", { scene: currentScene, id: item.id, visible: !item.visible });
+      await obs.call("sceneItems.setVisible", { ...at(item), visible: !item.visible });
     } catch (e) {
       report(e);
     }
@@ -212,7 +217,7 @@ import { EV } from "$lib/utils/eventNames";
 
   async function toggleLocked(item: SceneItem) {
     try {
-      await obs.call("sceneItems.setLocked", { scene: currentScene, id: item.id, locked: !item.locked });
+      await obs.call("sceneItems.setLocked", { ...at(item), locked: !item.locked });
     } catch (e) {
       report(e);
     }
@@ -220,86 +225,53 @@ import { EV } from "$lib/utils/eventNames";
 
   async function reorder(item: SceneItem, direction: ReorderDirection) {
     try {
-      await obs.call("sceneItems.reorder", { scene: currentScene, id: item.id, direction });
+      await obs.call("sceneItems.reorder", { ...at(item), direction });
     } catch (e) {
       report(e);
     }
   }
 
-  // Drag-to-reorder. `to` is the drop row's top-first index (the same order this
-  // list renders and sceneItems.list returns); the bridge moves the dragged item
-  // there as one undo action, the same as the up/down buttons. Disabled while
-  // filtering, since indices only make sense against the full ordering.
-  let dragId = $state<number | null>(null);
-  let dragOverIdx = $state<number | null>(null);
-
-  function onDragStart(e: DragEvent, item: SceneItem) {
-    if (filtering) {
-      return;
-    }
-    dragId = item.id;
-    if (e.dataTransfer) {
-      e.dataTransfer.effectAllowed = "move";
-      e.dataTransfer.setData("text/plain", String(item.id)); // Firefox requires data
-    }
-  }
-
-  function onDragOver(e: DragEvent, idx: number) {
-    if (dragId === null) {
-      return;
-    }
-    e.preventDefault(); // mark this a valid drop target
-    if (e.dataTransfer) {
-      e.dataTransfer.dropEffect = "move";
-    }
-    dragOverIdx = idx;
-  }
-
-  function onDrop(e: DragEvent, idx: number) {
-    e.preventDefault();
-    const id = dragId;
-    dragId = null;
-    dragOverIdx = null;
-    if (id === null) {
-      return;
-    }
-    const from = items.findIndex((i) => i.id === id);
-    if (from < 0 || from === idx) {
-      return;
-    }
-    void reorderTo(id, idx);
-  }
-
-  function onDragEnd() {
-    dragId = null;
-    dragOverIdx = null;
-  }
-
-  async function reorderTo(id: number, to: number) {
+  // Drag-to-reorder (SourceTree): `to` is the drop row's top-first index within the
+  // dragged item's own owner, the same order sceneItems.list returns; the bridge moves the
+  // item there as one undo action, the same as the up/down buttons.
+  async function reorderTo(item: SceneItem, to: number) {
     try {
-      await obs.call("sceneItems.reorder", { scene: currentScene, id, to });
+      await obs.call("sceneItems.reorder", { ...at(item), to });
     } catch (e) {
       report(e);
+    }
+  }
+
+  // Collapse state is saved on the group item and read back from the list it reloads.
+  // Resolves to whether the host took it.
+  async function setCollapsed(item: SceneItem, collapsed: boolean): Promise<boolean> {
+    try {
+      const params: SceneItemsSetCollapsedParams = { ...at(item), collapsed };
+      await obs.call("sceneItems.setCollapsed", params);
+      return true;
+    } catch (e) {
+      report(e);
+      return false;
     }
   }
 
   async function remove(item: SceneItem) {
     try {
-      await obs.call("sceneItems.remove", { scene: currentScene, id: item.id });
+      await obs.call("sceneItems.remove", at(item));
     } catch (e) {
       report(e);
     }
   }
 
-  // Batch remove: loop the existing single-item bridge remove once per selected id (no
+  // Batch remove: loop the existing single-item bridge remove once per selected ref (no
   // new bridge method; each removal stays independently undoable). Falls back to the
-  // primary row when nothing is in the set. Snapshot the ids first — the removals fire
+  // primary row when nothing is in the set. Snapshot the refs first — the removals fire
   // reload events that shrink the set mid-loop.
   async function removeSelected() {
-    const ids = sourceSelection.size > 0 ? [...sourceSelection.ids] : selectedItem ? [selectedItem.id] : [];
-    for (const id of ids) {
+    const refs = sourceSelection.size > 0 ? sourceSelection.removalRefs : selectedItem ? [selectedItem] : [];
+    for (const ref of refs) {
       try {
-        await obs.call("sceneItems.remove", { scene: currentScene, id });
+        await obs.call("sceneItems.remove", at(ref));
       } catch (e) {
         report(e);
       }
@@ -307,56 +279,47 @@ import { EV } from "$lib/utils/eventNames";
   }
 
   function beginRename(item: SceneItem) {
-    renamingId = item.id;
+    pendingRename.clear();
+    renaming = toRef(item);
     renameTo = item.source ?? "";
   }
 
-  // App-level F2 (source target): find the signalled row in our list and open its existing
-  // inline editor. Consuming the request is what stops an unrelated `items` mutation from
-  // re-triggering the rename, and it is taken only when the row is actually there, so a
-  // request nothing can serve is reported to its sender rather than lingering.
+  // Holds a rename for a child of a collapsed group while the group expands.
+  const pendingRename = new PendingRename({
+    items: () => items,
+    rows: () => rows,
+    filtering: () => filtering,
+    scene: () => currentScene,
+    begin: beginRename,
+    expand: (group) => setCollapsed(group, false),
+  });
+
+  // App-level F2 (source target) opens the row's existing inline editor.
   $effect(() => {
     const p = dockAction.pending;
-    const action = p?.action;
-    if (!p || p.canvas !== null || action?.kind !== "renameSource") {
-      return;
+    if (p?.canvas === null && p.action.kind === "renameSource") {
+      pendingRename.serve(p.action.ref, () => dockAction.consume(p.seq));
     }
-    const item = items.find((i) => i.id === action.id);
-    if (!item) {
-      return;
-    }
-    if (!dockAction.consume(p.seq)) {
-      return;
-    }
-    beginRename(item);
   });
 
   async function commitRename() {
-    const id = renamingId;
+    const ref = renaming;
     const name = renameTo.trim();
-    renamingId = null;
-    if (id === null || !name) {
+    renaming = null;
+    if (ref === null || !name) {
       return;
     }
     try {
-      await obs.call("sources.rename", { scene: currentScene, id, name });
+      await obs.call("sources.rename", { ...at(ref), name });
     } catch (e) {
       report(e);
-    }
-  }
-
-  function onRenameKey(e: KeyboardEvent) {
-    if (e.key === "Enter") {
-      void commitRename();
-    } else if (e.key === "Escape") {
-      renamingId = null;
     }
   }
 
   // ---- clipboard actions (copy/paste/duplicate/filters/transform/group) ------
   // All target the global channel-0 path (no canvas); paste lands in currentScene.
   function copySource(item: SceneItem) {
-    void copyItem({ scene: currentScene, id: item.id }, item);
+    void copyItem(at(item), item);
   }
 
   async function pasteSource() {
@@ -377,7 +340,7 @@ import { EV } from "$lib/utils/eventNames";
 
   async function duplicateItem(item: SceneItem) {
     try {
-      await obs.call("sources.duplicate", { scene: currentScene, id: item.id });
+      await obs.call("sources.duplicate", at(item));
     } catch (e) {
       report(e);
     }
@@ -407,7 +370,7 @@ import { EV } from "$lib/utils/eventNames";
 
   async function copyTransform(item: SceneItem) {
     try {
-      clipboard.transform = await obs.call("sceneItems.getTransform", { scene: currentScene, id: item.id });
+      clipboard.transform = await obs.call("sceneItems.getTransform", at(item));
     } catch (e) {
       report(e);
     }
@@ -418,7 +381,7 @@ import { EV } from "$lib/utils/eventNames";
       return;
     }
     try {
-      await obs.call("sceneItems.setTransform", { scene: currentScene, id: item.id, transform: clipboard.transform });
+      await obs.call("sceneItems.setTransform", { ...at(item), transform: clipboard.transform });
     } catch (e) {
       report(e);
     }
@@ -434,7 +397,7 @@ import { EV } from "$lib/utils/eventNames";
 
   async function ungroupItem(item: SceneItem) {
     try {
-      await obs.call("sceneItems.ungroup", { scene: currentScene, id: item.id });
+      await obs.call("sceneItems.ungroup", at(item));
     } catch (e) {
       report(e);
     }
@@ -453,8 +416,9 @@ import { EV } from "$lib/utils/eventNames";
     }
   }
 
-  async function openMenu(e: MouseEvent, item: SceneItem, idx: number) {
+  async function openMenu(e: MouseEvent, item: SceneItem) {
     e.preventDefault();
+    const pos = siblingPosition(items, item);
     const x = e.clientX;
     const y = e.clientY;
     const deint = item.source ? await fetchDeint(item.source) : { mode: "disable" as const, fieldOrder: "top" as const };
@@ -471,16 +435,16 @@ import { EV } from "$lib/utils/eventNames";
         ...(item.interactive && item.source
           ? [{ label: "Interact", action: () => void obs.call("sources.interact", { source: item.source }).catch(report) }]
           : []),
-        transformMenu({ scene: currentScene, id: item.id }, item.source ?? "(unnamed)"),
+        transformMenu(at(item), item.source ?? "(unnamed)"),
         { label: "Rename", action: () => beginRename(item) },
         scaleFilterMenu(item.scaleFilter, (filter) =>
-          void obs.call("sceneItems.setScaleFilter", { scene: currentScene, id: item.id, filter }).catch(report),
+          void obs.call("sceneItems.setScaleFilter", { ...at(item), filter }).catch(report),
         ),
         blendModeMenu(item.blendMode, (mode) =>
-          void obs.call("sceneItems.setBlendingMode", { scene: currentScene, id: item.id, mode }).catch(report),
+          void obs.call("sceneItems.setBlendingMode", { ...at(item), mode }).catch(report),
         ),
         blendMethodMenu(item.blendMethod, (method) =>
-          void obs.call("sceneItems.setBlendingMethod", { scene: currentScene, id: item.id, method }).catch(report),
+          void obs.call("sceneItems.setBlendingMethod", { ...at(item), method }).catch(report),
         ),
         showTransitionMenu(
           item.showTransition,
@@ -488,8 +452,7 @@ import { EV } from "$lib/utils/eventNames";
           (type) =>
             void obs
               .call("sceneItems.setShowTransition", {
-                scene: currentScene,
-                id: item.id,
+                ...at(item),
                 transition: type,
                 duration: item.showTransition?.duration ?? 300,
               })
@@ -497,8 +460,7 @@ import { EV } from "$lib/utils/eventNames";
           (duration) =>
             void obs
               .call("sceneItems.setShowTransition", {
-                scene: currentScene,
-                id: item.id,
+                ...at(item),
                 transition: item.showTransition?.type ?? null,
                 duration,
               })
@@ -510,8 +472,7 @@ import { EV } from "$lib/utils/eventNames";
           (type) =>
             void obs
               .call("sceneItems.setHideTransition", {
-                scene: currentScene,
-                id: item.id,
+                ...at(item),
                 transition: type,
                 duration: item.hideTransition?.duration ?? 300,
               })
@@ -519,8 +480,7 @@ import { EV } from "$lib/utils/eventNames";
           (duration) =>
             void obs
               .call("sceneItems.setHideTransition", {
-                scene: currentScene,
-                id: item.id,
+                ...at(item),
                 transition: item.hideTransition?.type ?? null,
                 duration,
               })
@@ -538,12 +498,12 @@ import { EV } from "$lib/utils/eventNames";
             ]
           : []),
         colorMenu(item.color, (color) =>
-          void obs.call("sceneItems.setColor", { scene: currentScene, id: item.id, color }).catch(report),
+          void obs.call("sceneItems.setColor", { ...at(item), color }).catch(report),
         ),
         {
           label: "Screenshot",
           disabled: !item.source,
-          action: () => void obs.call("screenshot.takeSource", { scene: currentScene, id: item.id }).catch(report),
+          action: () => void obs.call("screenshot.takeSource", at(item)).catch(report),
         },
         null,
         { label: "Copy", disabled: !item.source, action: () => copySource(item) },
@@ -556,18 +516,24 @@ import { EV } from "$lib/utils/eventNames";
         { label: "Copy Transform", action: () => void copyTransform(item) },
         { label: "Paste Transform", disabled: !clipboard.transform, action: () => void pasteTransform(item) },
         null,
-        { label: "Group", action: () => void groupItem(item) },
-        { label: "Ungroup", action: () => void ungroupItem(item) },
+        // A group's child is never a group itself (groups cannot nest), and Group's `ids`
+        // addresses top-level items only.
+        { label: "Group", disabled: item.group !== null, action: () => void groupItem(item) },
+        { label: "Ungroup", disabled: item.group !== null, action: () => void ungroupItem(item) },
         null,
         { label: item.visible ? "Hide" : "Show", action: () => void toggleVisible(item) },
         { label: item.locked ? "Unlock" : "Lock", action: () => void toggleLocked(item) },
         null,
-        { label: "Move Up", disabled: filtering || idx === 0, action: () => void reorder(item, "up") },
-        { label: "Move Down", disabled: filtering || idx === items.length - 1, action: () => void reorder(item, "down") },
-        { label: "Move to Top", disabled: filtering || idx === 0, action: () => void reorder(item, "top") },
+        { label: "Move Up", disabled: filtering || pos.index === 0, action: () => void reorder(item, "up") },
+        {
+          label: "Move Down",
+          disabled: filtering || pos.index === pos.count - 1,
+          action: () => void reorder(item, "down"),
+        },
+        { label: "Move to Top", disabled: filtering || pos.index === 0, action: () => void reorder(item, "top") },
         {
           label: "Move to Bottom",
-          disabled: filtering || idx === items.length - 1,
+          disabled: filtering || pos.index === pos.count - 1,
           action: () => void reorder(item, "bottom"),
         },
         // Projector entries hidden pending the projector redesign (projectorMenu +
@@ -593,50 +559,27 @@ import { EV } from "$lib/utils/eventNames";
       <p class="dock-msg">Loading…</p>
     {:else if items.length === 0}
       <p class="dock-msg">No sources</p>
-    {:else if filteredItems.length === 0}
+    {:else if rows.length === 0}
       <p class="dock-msg">No matches</p>
     {:else}
-      <ul class="dock-list">
-      {#each filteredItems as item, idx (item.id)}
-        <li
-          class="dock-row"
-          class:sel={sourceSelection.has(item)}
-          class:dimmed={!item.visible}
-          class:dropTarget={dragOverIdx === idx && dragId !== null && dragId !== item.id}
-          style:box-shadow={item.color ? `inset 3px 0 0 ${item.color}` : null}
-          draggable={!filtering}
-          ondragstart={(e) => onDragStart(e, item)}
-          ondragover={(e) => onDragOver(e, idx)}
-          ondrop={(e) => onDrop(e, idx)}
-          ondragend={onDragEnd}
-          oncontextmenu={(e) => void openMenu(e, item, idx)}
-        >
-          <IconButton
-            icon={item.visible ? "eye" : "eye-off"}
-            size={18}
-            iconSize={14}
-            title={item.visible ? "Hide" : "Show"}
-            aria-label={item.visible ? "Hide" : "Show"}
-            onclick={() => void toggleVisible(item)}
-          />
-          <IconButton
-            icon={item.locked ? "lock" : "lock-open"}
-            size={18}
-            iconSize={12}
-            title={item.locked ? "Unlock" : "Lock"}
-            aria-label={item.locked ? "Unlock" : "Lock"}
-            onclick={() => void toggleLocked(item)}
-          />
-          {#if renamingId === item.id}
-            <input class="inline" bind:value={renameTo} onkeydown={onRenameKey} onblur={commitRename} use:selectOnMount />
-          {:else}
-            <button class="dock-label" onclick={(e) => selectItem(e, item)} ondblclick={() => openProperties(item)}>
-              {item.source ?? "(unnamed)"}
-            </button>
-          {/if}
-        </li>
-      {/each}
-      </ul>
+      <SourceTree
+        {rows}
+        selection={sourceSelection}
+        variant="dock"
+        label="Sources"
+        {filtering}
+        {renaming}
+        bind:renameTo
+        onSelect={onTreeSelect}
+        onRenameCommit={() => void commitRename()}
+        onRenameCancel={() => (renaming = null)}
+        onToggleVisible={(item) => void toggleVisible(item)}
+        onToggleLocked={(item) => void toggleLocked(item)}
+        onOpenProperties={openProperties}
+        onContextMenu={(e, item) => void openMenu(e, item)}
+        onReorder={(item, to) => void reorderTo(item, to)}
+        onSetCollapsed={setCollapsed}
+      />
     {/if}
   </div>
 
@@ -665,28 +608,6 @@ import { EV } from "$lib/utils/eventNames";
 {/if}
 
 <style>
-  /* Sources rows are one row shorter than the shared default (5px 7px). */
-  .dock-row {
-    padding: 4px 7px;
-  }
-  /* Drag-reorder drop indicator. Outline avoids layout shift and the inline
-     box-shadow the color tag already uses. */
-  .dock-row.dropTarget {
-    outline: var(--border-weight) solid var(--color-accent);
-    outline-offset: -1px;
-  }
-  .inline {
-    flex: 1;
-    background: var(--color-base);
-    border: var(--border-weight) solid var(--color-accent);
-    color: var(--color-text);
-    font-family: var(--font-ui);
-    font-size: 11px;
-    padding: 3px 5px;
-  }
-  .inline:focus {
-    outline: none;
-  }
   /* Scroll region above the pinned bottom toolbar, so the toolbar stays at the
      dock's foot even when the list is empty or short. */
   .dock-fill {

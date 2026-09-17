@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "overlay_surface.hpp"
+#include "scene/scene_items.hpp"
 
 struct obs_canvas;
 typedef struct obs_canvas obs_canvas_t;
@@ -107,10 +108,12 @@ public:
 
 	// Drive selection from JS without a mouse event (the SourcesPanel). `scene` is
 	// validated against the surface's current scene name (a mismatch is ignored); an
-	// empty `ids` clears. The whole set is replaced, so a dock's modifier click lands
-	// here as the set it produced rather than as a sequence of single picks. Emits
-	// sceneItem.selected.
-	bool SelectFromBridge(const std::string &scene, const std::vector<int64_t> &ids);
+	// empty `keys` clears. The whole set is replaced, so a dock's modifier click lands
+	// here as the set it produced rather than as a sequence of single picks. A group's
+	// child whose group or item does not resolve in the scene is dropped. Emits
+	// sceneItem.selected, and returns the set now selected, or nothing on a mismatch.
+	std::optional<std::vector<SceneItemKey>> SelectFromBridge(const std::string &scene,
+								  const std::vector<SceneItemKey> &keys);
 
 	// Zoom by `levelDelta` notches about the client pixel (px, py), which stays over
 	// the same canvas point. Public because the wheel arrives by two routes -- the
@@ -343,11 +346,12 @@ PreviewManager *Instance();
 // Drive selection from JS (the SourcesPanel) on the surface for (windowId, canvas)
 // (empty canvas => the Default surface, output channel 0). `scene` is validated
 // against that surface's current scene name (a mismatch is ignored, keeping
-// "preview shows the current scene" intact). An empty `ids` clears. Emits
-// sceneItem.selected like a mouse-driven change. Runs on the UI thread. windowId
-// defaults to 0 (main window).
-bool SelectFromBridge(const std::string &canvas, const std::string &scene, const std::vector<int64_t> &ids,
-		      int windowId = 0);
+// "preview shows the current scene" intact). An empty `keys` clears. Emits
+// sceneItem.selected like a mouse-driven change, and returns the set now selected
+// (see PreviewSurface::SelectFromBridge), or nothing when there is no such surface or
+// the scene does not match. Runs on the UI thread. windowId defaults to 0 (main window).
+std::optional<std::vector<SceneItemKey>> SelectFromBridge(const std::string &canvas, const std::string &scene,
+							  const std::vector<SceneItemKey> &keys, int windowId = 0);
 
 // Hit-test at a canvas-space coordinate against the surface for (windowId, canvas)
 // (empty canvas => the Default surface); returns the topmost matching scene-item

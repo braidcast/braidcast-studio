@@ -52,7 +52,10 @@ import { EV } from "$lib/utils/eventNames";
   import Toast from "$lib/ui/Toast.svelte";
   import { showToast } from "$lib/stores/toastStore.svelte";
   import { callOrToast } from "$lib/utils/callToast";
+  import { itemTarget, toRef } from "$lib/utils/sceneItemRef";
   import { isEditable } from "$lib/utils/editableTarget";
+  import { isInSourceTree } from "$lib/docking/sourceTree";
+  import { WINDOW_ID } from "$lib/utils/windowContext";
   import { previewSuspended } from "$lib/stores/previewGate.svelte";
 
   // Apply the saved (or default Industrial) theme before first paint settles.
@@ -83,7 +86,7 @@ import { EV } from "$lib/utils/eventNames";
 
   function activeItem(): { item: SceneItem; target: TransformTarget } | null {
     const item = activeSurface.selection.item;
-    return item ? { item, target: { ...activeParams(), id: item.id, group: item.group } } : null;
+    return item ? { item, target: itemTarget(activeParams(), item) } : null;
   }
 
   // For the shortcuts that address a scene rather than a row (paste, scene rename).
@@ -161,7 +164,7 @@ import { EV } from "$lib/utils/eventNames";
   // as one undo step. The offset is in canvas pixels, y growing downward, matching the
   // preview; the host carries it into group space for an item inside a group.
   function nudge(dx: number, dy: number): void {
-    const refs = activeSurface.selection.items.map(({ id, group }) => ({ id, group }));
+    const refs = activeSurface.selection.refs;
     if (refs.length === 0) {
       return;
     }
@@ -193,11 +196,19 @@ import { EV } from "$lib/utils/eventNames";
       return;
     }
     // Arrow-key nudge of the active surface's selected scene items on its preview. Leaves
-    // Ctrl/Alt+Arrow, editable targets, and modal-open (arrows belong to the
+    // Ctrl/Alt+Arrow, editable targets, a sources tree (arrows move through its rows there;
+    // Ctrl+Arrow reorder below still applies), and modal-open (arrows belong to the
     // dialog) alone; no-ops (without preventDefault) when nothing is selected so
     // e.g. list navigation still gets the arrow.
     const arrowDelta = ARROW_DELTAS[e.key];
-    if (arrowDelta && !e.ctrlKey && !e.altKey && !isEditable(e.target) && !previewSuspended()) {
+    if (
+      arrowDelta &&
+      !e.ctrlKey &&
+      !e.altKey &&
+      !isEditable(e.target) &&
+      !isInSourceTree(e.target) &&
+      !previewSuspended()
+    ) {
       if (activeSurface.selection.size > 0) {
         e.preventDefault();
         const step = e.shiftKey ? 10 : 1;
@@ -215,15 +226,15 @@ import { EV } from "$lib/utils/eventNames";
         removeActiveScene(e);
         return;
       }
-      // Batch remove: one existing single-item remove per selected id (each independently
-      // undoable). Snapshot the ids — the removals shrink the set mid-loop. A single
+      // Batch remove: one existing single-item remove per selected ref (each independently
+      // undoable). Snapshot the refs — the removals shrink the set mid-loop. A single
       // selection removes exactly one, unchanged from before.
       const params = activeParams();
-      const ids = [...activeSurface.selection.ids];
-      if (ids.length > 0) {
+      const refs = activeSurface.selection.removalRefs;
+      if (refs.length > 0) {
         e.preventDefault();
-        for (const id of ids) {
-          void callOrToast("sceneItems.remove", { ...params, id }, "Remove failed");
+        for (const ref of refs) {
+          void callOrToast("sceneItems.remove", itemTarget(params, ref), "Remove failed");
         }
       }
       return;
@@ -239,7 +250,7 @@ import { EV } from "$lib/utils/eventNames";
       const s = t ? null : activeScene();
       if (t) {
         e.preventDefault();
-        void dockAction.request(activeSurface.canvas, { kind: "renameSource", id: t.item.id });
+        void dockAction.request(activeSurface.canvas, { kind: "renameSource", ref: toRef(t.item) });
       } else if (s) {
         e.preventDefault();
         void dockAction.request(activeSurface.canvas, { kind: "renameScene", name: s.scene });
@@ -458,6 +469,15 @@ import { EV } from "$lib/utils/eventNames";
       const file = p.path.split(/[\\/]/).pop() || p.path;
       showToast("Screenshot saved: " + file, p.path);
     });
+    // A press on any preview in this window leaves a sources tree the user was in, so the
+    // next arrow key nudges the selection rather than moving through the tree's rows. Any
+    // canvas counts: the press itself is the user moving on.
+    const offPreviewPress = obs.on(EV.previewPointerDown, (p) => {
+      const focused = document.activeElement;
+      if (p.window === WINDOW_ID && focused instanceof HTMLElement && isInSourceTree(focused)) {
+        focused.blur();
+      }
+    });
     return () => {
       window.removeEventListener("keydown", onKeydown);
       window.removeEventListener("wheel", onWheel);
@@ -465,6 +485,7 @@ import { EV } from "$lib/utils/eventNames";
       window.removeEventListener("drop", onWindowDrop);
       window.removeEventListener("dragstart", onDragStartCapture, true);
       offShot();
+      offPreviewPress();
       offChannels();
     };
   });

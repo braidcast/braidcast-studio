@@ -1,4 +1,5 @@
 import { tick } from "svelte";
+import type { SceneItemRef } from "$lib/api/bridge";
 
 // One-shot bridge for the app-level shortcuts. `onKeydown` lives in App.svelte but the
 // inline-rename editors and the scene-removal actions live inside the docks, so a shortcut
@@ -11,7 +12,7 @@ import { tick } from "svelte";
 // Adding a shortcut that has to reach into a dock is one more case in this union plus one
 // more branch in the owning dock's effect.
 export type DockAction =
-  | { kind: "renameSource"; id: number }
+  | { kind: "renameSource"; ref: SceneItemRef }
   | { kind: "renameScene"; name: string }
   | { kind: "removeScene"; name: string };
 

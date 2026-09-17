@@ -3,6 +3,7 @@
   import Modal from "$lib/ui/Modal.svelte";
   import { obs, type Transform, type TransformTarget, type TransformAction } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
+  import { targetParams } from "$lib/utils/sceneItemRef";
 
   interface Props {
     target: TransformTarget;
@@ -56,22 +57,10 @@ import { EV } from "$lib/utils/eventNames";
     error = (e as Error).message;
   }
 
-  // The push event/method params address the item with the same {canvas?,scene?,id}.
-  function targetParams(): TransformTarget {
-    const p: TransformTarget = { id: target.id };
-    if (target.canvas != null) {
-      p.canvas = target.canvas;
-    }
-    if (target.scene != null) {
-      p.scene = target.scene;
-    }
-    return p;
-  }
-
   async function load() {
     error = null;
     try {
-      xf = await obs.call("sceneItems.getTransform", targetParams());
+      xf = await obs.call("sceneItems.getTransform", targetParams(target));
     } catch (e) {
       report(e);
     } finally {
@@ -83,6 +72,7 @@ import { EV } from "$lib/utils/eventNames";
   // target can also change in place if a different item is opened while mounted.
   $effect(() => {
     void target.id;
+    void target.group;
     void target.canvas;
     void target.scene;
     loaded = false;
@@ -109,7 +99,7 @@ import { EV } from "$lib/utils/eventNames";
     const optimistic = { ...xf, ...patch };
     xf = optimistic;
     try {
-      xf = await obs.call("sceneItems.setTransform", { ...targetParams(), transform: patch });
+      xf = await obs.call("sceneItems.setTransform", { ...targetParams(target), transform: patch });
       error = null;
     } catch (e) {
       report(e);
@@ -119,7 +109,7 @@ import { EV } from "$lib/utils/eventNames";
 
   async function runAction(action: TransformAction) {
     try {
-      xf = await obs.call("sceneItems.transformAction", { ...targetParams(), action });
+      xf = await obs.call("sceneItems.transformAction", { ...targetParams(target), action });
       error = null;
     } catch (e) {
       report(e);

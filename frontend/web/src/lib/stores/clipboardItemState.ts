@@ -35,7 +35,7 @@ export async function copyItem(target: TransformTarget, item: SceneItem): Promis
   clipboard.source = {
     ref: item.source,
     name: item.source,
-    origin: { canvas: target.canvas, scene: target.scene ?? null, id: item.id },
+    origin: { canvas: target.canvas, scene: target.scene ?? null, id: item.id, group: item.group },
     state,
   };
 }
@@ -96,7 +96,7 @@ export async function pasteReference(target: SceneTarget): Promise<void> {
     return;
   }
   const res = await obs.call("sources.addExisting", { ...target, name: src.ref });
-  await applyItemState({ ...target, id: res.id }, src.state);
+  await applyItemState({ ...target, id: res.id, group: null }, src.state);
 }
 
 // Paste (Duplicate): duplicate the copied item's SOURCE (an independent copy) into
@@ -118,5 +118,5 @@ export async function pasteDuplicate(target: SceneTarget): Promise<void> {
     scene: target.scene,
     canvas: target.canvas,
   });
-  await applyItemState({ ...target, id: dup.id }, src.state);
+  await applyItemState({ ...target, id: dup.id, group: null }, src.state);
 }

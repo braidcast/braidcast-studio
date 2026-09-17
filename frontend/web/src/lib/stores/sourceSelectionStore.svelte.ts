@@ -1,28 +1,9 @@
 import { untrack } from "svelte";
 import type { ObsEvents, SceneItem, SceneItemRef } from "$lib/api/bridge";
-
-// Whether two refs name the same scene item. An id is unique only within its owner, so
-// the owning group is part of the identity; an absent group means top level.
-export function sameItem(a: SceneItemRef, b: SceneItemRef): boolean {
-  return a.id === b.id && (a.group ?? null) === (b.group ?? null);
-}
+import { findItem, normalizeRefs, sameItem, sameRefList, toRef, withoutChildrenOf } from "$lib/utils/sceneItemRef";
 
 function refOf(item: SceneItem | undefined): SceneItemRef | null {
-  return item ? { id: item.id, group: item.group } : null;
-}
-
-// The row a ref names in a dock's list, looking inside group rows for a child.
-function findItem(list: SceneItem[], ref: SceneItemRef): SceneItem | undefined {
-  for (const row of list) {
-    if (sameItem(row, ref)) {
-      return row;
-    }
-    const child = row.children?.find((c) => sameItem(c, ref));
-    if (child) {
-      return child;
-    }
-  }
-  return undefined;
+  return item ? toRef(item) : null;
 }
 
 // The source-list selection model for ONE source list (a scene's scene items).
@@ -46,9 +27,10 @@ export class SourceSelection {
   private _items = $state<SceneItem[]>([]);
   private _focus = $state<SceneItemRef | null>(null);
   private _pivot = $state<SceneItemRef | null>(null);
-  // Id lists pushed to the preview whose sceneItem.selected echo has not arrived yet,
-  // oldest first. Not reactive: only adoptPreview reads it.
-  private _pushes: number[][] = [];
+  // Ref lists pushed to the preview whose sceneItem.selected echo has not arrived yet,
+  // oldest first, each normalized the way the host echoes it. Not reactive: only
+  // adoptPreview reads it.
+  private _pushes: SceneItemRef[][] = [];
 
   // The set with the focused member last, the order the docks push to preview.select:
   // native reports the last member back as the focus, so any other order would echo a
@@ -72,8 +54,17 @@ export class SourceSelection {
     return this._ordered;
   }
 
-  get ids(): number[] {
-    return this._ordered.map((i) => i.id);
+  // The set as bridge refs, focused member last. Anything addressing the members reads
+  // these rather than bare ids, which cannot tell a group's child from a top-level item.
+  get refs(): SceneItemRef[] {
+    return this._ordered.map(toRef);
+  }
+
+  // `refs` without any child whose own group is also selected, for removal: removing the
+  // group already takes its children, so removing such a child as well would fail after.
+  get removalRefs(): SceneItemRef[] {
+    const groups = new Set(this._items.flatMap((i) => (i.children?.length ? [i.children[0].group] : [])));
+    return this.refs.filter((r) => r.group === null || !groups.has(r.group));
   }
 
   get size(): number {
@@ -123,6 +114,35 @@ export class SourceSelection {
     this._focus = refOf(item);
   }
 
+  // A group row is collapsing, hiding its children, so any selected child leaves the set and
+  // the app-level shortcuts cannot act on a row the collapse just hid. The group is never
+  // added in their place: that would widen the selection, so a Delete meant for one child
+  // would remove the whole group. Focus and pivot settle as for any removal, and the set may
+  // end up empty. Returns null when the set did not change. Otherwise the caller pushes the
+  // new set to the preview, and gets back a restore for when the host refuses the collapse:
+  // provided the set is still the one the collapse left, it puts back the members `list`
+  // still holds, with focus and pivot as they were, and reports whether it did.
+  collapseGroup(group: SceneItem): ((list: readonly SceneItem[]) => boolean) | null {
+    const rest = withoutChildrenOf(this._items, group);
+    if (rest === null) {
+      return null;
+    }
+    const before = { items: this._items, focus: this._focus, pivot: this._pivot };
+    this._items = rest;
+    this.settleRoles();
+    const left = this.refs;
+    return (list) => {
+      if (!sameRefList(this.refs, left)) {
+        return false;
+      }
+      this._items = before.items.map((i) => findItem(list, i)).filter((i): i is SceneItem => i != null);
+      this._focus = before.focus;
+      this._pivot = before.pivot;
+      this.settleRoles();
+      return true;
+    };
+  }
+
   // Replace the whole set at once, focusing `focus`. This is how a selection made in the
   // PREVIEW (Ctrl-click, rubber band, click-through) arrives: the native surface sends
   // its set and its focus in one sceneItem.selected, so the dock adopts it wholesale
@@ -138,11 +158,11 @@ export class SourceSelection {
   // Push the set to the native preview through `send`, the dock's preview.select call.
   // The push is remembered until its echo arrives, so adoptPreview can tell the echo from
   // a selection made in the preview. A refused call never echoes, so it is forgotten.
-  pushToPreview(send: (ids: number[]) => Promise<unknown>): void {
-    const ids = this.ids;
-    this._pushes.push(ids);
-    send(ids).catch(() => {
-      const at = this._pushes.indexOf(ids);
+  pushToPreview(send: (refs: SceneItemRef[]) => Promise<unknown>): void {
+    const refs = normalizeRefs(this.refs);
+    this._pushes.push(refs);
+    send(refs).catch(() => {
+      const at = this._pushes.indexOf(refs);
       if (at >= 0) {
         this._pushes.splice(at, 1);
       }
@@ -150,7 +170,8 @@ export class SourceSelection {
   }
 
   // Adopt a sceneItem.selected payload against the owning dock's list: its whole set,
-  // focused on the member the preview reports. Ids the list no longer holds are dropped.
+  // focused on the member the preview reports. Refs the list no longer holds are dropped. A
+  // payload without `refs` names top-level items by id.
   //
   // The echo of this model's own push is skipped. Local state applied that push before
   // sending it, so adopting the echo would undo whatever changed since: two quick
@@ -159,17 +180,21 @@ export class SourceSelection {
   // after that push was sent, is adopted over it, so until the next selection the dock
   // shows the preview's set while native holds the pushed one, whose echo is then skipped. Pushes queued ahead of the matching
   // one are dropped with it; native echoes pushes in order, so theirs are not coming.
-  adoptPreview(selected: Pick<ObsEvents["sceneItem.selected"], "id" | "ids">, list: SceneItem[]): void {
-    const ids = selected.ids ?? (selected.id != null ? [selected.id] : []);
-    const echoed = this._pushes.findIndex(
-      (pushed) => pushed.length === ids.length && pushed.every((id, i) => id === ids[i]),
-    );
+  adoptPreview(
+    selected: Pick<ObsEvents["sceneItem.selected"], "id" | "ids"> &
+      Partial<Pick<ObsEvents["sceneItem.selected"], "refs" | "group">>,
+    list: SceneItem[],
+  ): void {
+    const refs =
+      selected.refs?.map(toRef) ??
+      (selected.ids ?? (selected.id != null ? [selected.id] : [])).map((id) => ({ id, group: null }));
+    const echoed = this._pushes.findIndex((pushed) => sameRefList(pushed, refs));
     if (echoed >= 0) {
       this._pushes.splice(0, echoed + 1);
       return;
     }
-    const picked = ids.map((id) => findItem(list, { id })).filter((i): i is SceneItem => i != null);
-    this.setAll(picked, selected.id != null ? { id: selected.id } : null);
+    const picked = refs.map((ref) => findItem(list, ref)).filter((i): i is SceneItem => i != null);
+    this.setAll(picked, selected.id != null ? { id: selected.id, group: selected.group ?? null } : null);
   }
 
   clear(): void {

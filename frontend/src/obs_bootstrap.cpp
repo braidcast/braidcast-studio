@@ -85,6 +85,7 @@
 #include "scene/scene_collections.hpp"
 #include "util/session_log.hpp"
 #include "scene/main_channel.hpp"
+#include "scene/scene_items.hpp"
 #include "scene/scene_persistence.hpp"
 #include "scene/transitions.hpp"
 #include "target_destinations.hpp"
@@ -2014,7 +2015,7 @@ void ObsBootstrap::RunPreviewEditSelfTest()
 	vec3_transform(&center, &center, &boxTransform);
 
 	// 1) Select via the same entry point the bridge uses (Default surface => "").
-	const bool selOk = Preview::SelectFromBridge("", "", std::vector<int64_t>{id});
+	const bool selOk = Preview::SelectFromBridge("", "", std::vector<SceneItemKey>{SceneItemKey(id)}).has_value();
 	HostLog("[selftest] preview-edit: SelectFromBridge -> " + std::string(selOk ? "OK" : "FAIL"));
 
 	// 2) Hit-test at the item center: expect to get the same id back.
@@ -2041,7 +2042,7 @@ void ObsBootstrap::RunPreviewEditSelfTest()
 		std::to_string(int(restoredPos.y)) + ")");
 
 	// Clear the selection so the smoke run leaves no committed selection state.
-	Preview::SelectFromBridge("", "", std::vector<int64_t>{});
+	Preview::SelectFromBridge("", "", std::vector<SceneItemKey>{});
 	obs_source_release(sceneSource);
 }
 
@@ -4471,14 +4472,24 @@ void ObsBootstrap::RunSceneItemGroupSelfTest()
 	auto undoState = []() {
 		return ObsBootstrap::Undo().GetState();
 	};
+	// Whether the undo stack reads exactly as `before` did: an action that records nothing
+	// must neither add an entry nor spend the redo one.
+	auto undoUnchanged = [&undoState](const UndoManager::State &before) {
+		const UndoManager::State now = undoState();
+		return now.canUndo == before.canUndo && now.canRedo == before.canRedo &&
+		       now.undoName == before.undoName && now.redoName == before.redoName;
+	};
 	// UndoManager can only be emptied, not rolled back, so the stack is restored only when
 	// the test started from an empty one.
 	const UndoManager::State undoAtStart = undoState();
 
 	std::vector<std::pair<std::string, std::string>> events;
-	Bridge::SetEventObserver([&events](const std::string &name, const std::string &payload) {
+	std::vector<json> selections;
+	Bridge::SetEventObserver([&events, &selections](const std::string &name, const std::string &payload) {
 		if (name == EventNames::kSceneItemsChanged) {
 			events.emplace_back(name, payload);
+		} else if (name == EventNames::kSceneItemSelected) {
+			selections.push_back(json::parse(payload, nullptr, false));
 		}
 	});
 
@@ -4559,6 +4570,56 @@ void ObsBootstrap::RunSceneItemGroupSelfTest()
 			      collapsedFalse && collapsedRow && collapsedRow->value("collapsed", false), "");
 			obs_data_erase(priv, "collapsed");
 		}
+		{
+			// Round-trips both values, so a setter that always writes true, or writes a key list
+			// does not read, fails; and records no undo entry.
+			const UndoManager::State undoBeforeCollapse = undoState();
+			auto listedCollapsed = [&](bool fallback) {
+				bool listOk = false;
+				json listed = run("sceneItems.list", base, listOk);
+				const json *row = listOk ? findRow(listed, groupId) : nullptr;
+				return row ? row->value("collapsed", fallback) : fallback;
+			};
+			json collapseParams = topParams(groupId);
+			collapseParams["collapsed"] = true;
+			events.clear();
+			bool collapseOk = false;
+			const json collapseResult = run("sceneItems.setCollapsed", collapseParams, collapseOk);
+			const bool listedOn = listedCollapsed(false);
+			const bool announced = !events.empty();
+			collapseParams["collapsed"] = false;
+			bool expandOk = false;
+			run("sceneItems.setCollapsed", collapseParams, expandOk);
+			const bool listedOff = !listedCollapsed(true);
+			check("setCollapsed round-trips through list without an undo entry",
+			      collapseOk && collapseResult.is_object() && collapseResult.empty() && listedOn &&
+				      announced && expandOk && listedOff && undoUnchanged(undoBeforeCollapse),
+			      std::string("on ") + (listedOn ? "yes" : "no") + ", off " + (listedOff ? "yes" : "no") +
+				      ", event " + (announced ? "yes" : "no"));
+
+			// Child B's id is the group's own id, so a setter that ignored `group` would collapse
+			// the group rather than refuse the child.
+			auto collapseRefused = [&](const json &params) {
+				json unusedResult;
+				std::string refusal;
+				return !Bridge::Dispatch("sceneItems.setCollapsed", params, unusedResult, refusal);
+			};
+			json topCollapse = topParams(topId);
+			topCollapse["collapsed"] = true;
+			json childCollapse = childParams(childBId);
+			childCollapse["collapsed"] = true;
+			const bool refusals = collapseRefused(topCollapse) && collapseRefused(childCollapse) &&
+					      collapseRefused(topParams(groupId));
+			OBSDataAutoRelease groupPriv = obs_sceneitem_get_private_settings(groupItem);
+			OBSDataAutoRelease topPriv = obs_sceneitem_get_private_settings(top);
+			OBSDataAutoRelease childBPriv = obs_sceneitem_get_private_settings(childB);
+			check("setCollapsed refuses a non-group, a child sharing the group's id and a missing flag",
+			      refusals && !obs_data_get_bool(groupPriv, "collapsed") &&
+				      !obs_data_has_user_value(topPriv, "collapsed") &&
+				      !obs_data_has_user_value(childBPriv, "collapsed"),
+			      "");
+			obs_data_erase(groupPriv, "collapsed");
+		}
 
 		// --- 2. the colliding id reaches each item only through its own owner ----------
 		auto xOf = [](const json &xform) {
@@ -4576,6 +4637,100 @@ void ObsBootstrap::RunSceneItemGroupSelfTest()
 		std::string wrongError;
 		check("unknown group refused",
 		      !Bridge::Dispatch("sceneItems.getTransform", wrongGroup, unused, wrongError), wrongError);
+
+		// preview.select by refs. Child A and the top-level item share an id, so a selection
+		// keyed by id alone collapses them into one member; one that does not walk into groups
+		// leaves the child's libobs flag clear.
+		if (Preview::Instance()) {
+			const json topSelRef{{"id", topId}, {"group", nullptr}};
+			auto childSelRef = [&](int64_t id) {
+				return json{{"id", id}, {"group", groupUuid}};
+			};
+			auto selectRefs = [&](const json &refs, bool &selectOk) {
+				json p = base;
+				p["refs"] = refs;
+				selections.clear();
+				return run("preview.select", p, selectOk);
+			};
+			auto lastSelection = [&]() {
+				return selections.empty() ? json() : selections.back();
+			};
+			auto selectionText = [&](const json &reply) {
+				return "reply " + reply.dump() + ", event " + lastSelection().dump();
+			};
+			const json idsOfMixed = json::array({childAId, topId});
+
+			bool selectOk = false;
+			const json mixedRefs = json::array({childSelRef(childAId), topSelRef});
+			json reply = selectRefs(mixedRefs, selectOk);
+			json event = lastSelection();
+			check("preview.select keeps a child and a top-level item sharing its id, focus last",
+			      selectOk && reply.value("selectedRefs", json()) == mixedRefs &&
+				      reply.value("selectedIds", json()) == idsOfMixed &&
+				      reply.value("selected", int64_t(-1)) == topId && event.is_object() &&
+				      event.value("refs", json()) == mixedRefs &&
+				      event.value("ids", json()) == idsOfMixed &&
+				      event.value("id", int64_t(-1)) == topId && event.contains("group") &&
+				      event.at("group").is_null(),
+			      selectionText(reply));
+			check("preview.select mirrors a child's selection into libobs",
+			      obs_sceneitem_selected(childA) && obs_sceneitem_selected(top) &&
+				      !obs_sceneitem_selected(childB) && !obs_sceneitem_selected(groupItem),
+			      "");
+
+			// Reversed, the focus is the child: only `group` tells it from the top-level item.
+			const json childFocusRefs = json::array({topSelRef, childSelRef(childAId)});
+			reply = selectRefs(childFocusRefs, selectOk);
+			event = lastSelection();
+			check("preview.select names a child focus's group",
+			      selectOk && reply.value("selectedRefs", json()) == childFocusRefs && event.is_object() &&
+				      event.value("refs", json()) == childFocusRefs &&
+				      JsonUtil::Str(event, "group") == groupUuid,
+			      selectionText(reply));
+
+			// A repeat keeps its LAST position; keeping the first would echo the input order.
+			reply = selectRefs(json::array({childSelRef(childAId), topSelRef, childSelRef(childAId)}),
+					   selectOk);
+			check("preview.select dedupes a repeat to its last position",
+			      selectOk && reply.value("selectedRefs", json()) == childFocusRefs &&
+				      lastSelection().value("refs", json()) == childFocusRefs,
+			      selectionText(reply));
+
+			// A child that names no item, or a group that is not in the scene, is dropped
+			// rather than echoed.
+			const json missingGroupRef{{"id", childAId}, {"group", "00000000-0000-0000-0000-000000000000"}};
+			reply = selectRefs(json::array({childSelRef(987654), missingGroupRef, topSelRef}), selectOk);
+			check("preview.select drops children that do not resolve",
+			      selectOk && reply.value("selectedRefs", json()) == json::array({topSelRef}) &&
+				      lastSelection().value("refs", json()) == json::array({topSelRef}) &&
+				      !obs_sceneitem_selected(childA),
+			      selectionText(reply));
+
+			json refsOverIds = base;
+			refsOverIds["refs"] = json::array({childSelRef(childBId)});
+			refsOverIds["ids"] = json::array({topId});
+			reply = run("preview.select", refsOverIds, selectOk);
+			check("preview.select prefers refs over ids",
+			      selectOk && reply.value("selectedRefs", json()) == json::array({childSelRef(childBId)}),
+			      reply.dump());
+
+			std::string badRefs;
+			for (const json &bad :
+			     {json::array({json{{"id", -1}}}), json::array({json{{"id", topId}, {"group", 5}}}),
+			      json::array({json("x")}), json{{"id", topId}}, json("refs")}) {
+				json p = base;
+				p["refs"] = bad;
+				json badResult;
+				std::string badError;
+				if (Bridge::Dispatch("preview.select", p, badResult, badError)) {
+					badRefs += bad.dump() + " accepted; ";
+				}
+			}
+			check("preview.select refuses malformed refs", badRefs.empty(), badRefs);
+			run("preview.select", base, selectOk);
+		} else {
+			HostLog("[selftest] scene-item-group preview.select: no preview manager (skipped)");
+		}
 
 		// --- 3. a child's change is announced for the scene the dock lists -------------
 		events.clear();
@@ -4750,22 +4905,301 @@ void ObsBootstrap::RunSceneItemGroupSelfTest()
 			check("child duplicate", false, "child a did not come back");
 		}
 
-		// --- 8. canvas-space actions refuse a child; group-space ones still apply ----------
-		std::string refusedActions;
-		for (const char *action :
-		     {"center", "centerVertical", "centerHorizontal", "fitToScreen", "stretchToScreen"}) {
-			json actionParams = childParams(childBId);
-			actionParams["action"] = action;
-			json actionResult;
-			std::string actionError;
-			if (Bridge::Dispatch("sceneItems.transformAction", actionParams, actionResult, actionError)) {
-				refusedActions += std::string(action) + " applied; ";
-			} else if (actionError.find("inside a group") == std::string::npos) {
-				refusedActions += std::string(action) + ": " + actionError + "; ";
+		// --- 8. canvas-space actions place a child as the canvas shows it -----------------
+		const CanvasDefinition *groupCanvasDef = g_canvases.Find(canvasUuid);
+		const float canvasWidth = groupCanvasDef ? float(groupCanvasDef->width) : 0.0f;
+		const float canvasHeight = groupCanvasDef ? float(groupCanvasDef->height) : 0.0f;
+		auto setGroupTransform = [&](float rot, float sx, float sy) {
+			obs_sceneitem_set_rot(groupItem, rot);
+			vec2 groupScaleNow;
+			vec2_set(&groupScaleNow, sx, sy);
+			obs_sceneitem_set_scale(groupItem, &groupScaleNow);
+			settle();
+		};
+		auto within = [](float a, float b, float tolerance) {
+			return std::fabs(a - b) <= tolerance;
+		};
+		// The canvas-space extent of an item's box, through SceneItems::ItemBoxToCanvas, which the
+		// first case below checks against corners computed without it.
+		auto canvasBoxOf = [&](obs_sceneitem_t *item, vec3 &tl, vec3 &br) {
+			matrix4 box;
+			const bool found = SceneItems::ItemBoxToCanvas(item, box, scene);
+			SceneItems::BoxExtent(box, tl, br);
+			return found;
+		};
+		auto boxText = [](const vec3 &tl, const vec3 &br) {
+			return "(" + std::to_string(tl.x) + "," + std::to_string(tl.y) + ")-(" + std::to_string(br.x) +
+			       "," + std::to_string(br.y) + ")";
+		};
+		auto groupAsBefore = [&]() {
+			vec2 bScale;
+			obs_sceneitem_get_scale(childB, &bScale);
+			return samePos(posOf(groupItem), groupBefore) && samePos(posOf(childA), aBefore) &&
+			       samePos(posOf(childB), bBefore) && obs_sceneitem_get_rot(childB) == 0.0f &&
+			       bScale.x == 1.0f && bScale.y == 1.0f &&
+			       obs_sceneitem_get_bounds_type(childB) == OBS_BOUNDS_NONE;
+		};
+		auto actionOnB = [&](const char *action, bool &actionOk) {
+			json p = childParams(childBId);
+			p["action"] = action;
+			run("sceneItems.transformAction", p, actionOk);
+			settle();
+		};
+		auto undoAndSettle = [&]() {
+			ObsBootstrap::Undo().Undo();
+			settle();
+		};
+		const uint32_t topLeft = OBS_ALIGN_TOP | OBS_ALIGN_LEFT;
+		auto turn = [](float x, float y, float radians) {
+			vec2 out;
+			vec2_set(&out, std::cos(radians) * x - std::sin(radians) * y,
+				 std::sin(radians) * x + std::cos(radians) * y);
+			return out;
+		};
+		// Where the point (u, v) of a child's unit box lands on the canvas, composed from the
+		// child's and the group's own pos, rot and scale and the group's crop, with no matrix
+		// libobs built. A cropped group draws its content shifted by the crop, so the crop comes
+		// off the child's group-space point before the group's scale and turn. Both items are
+		// top-left aligned and unbounded, which the callers check.
+		auto expectedCanvasPoint = [&](obs_sceneitem_t *child, float u, float v) {
+			vec2 gScale, cScale;
+			obs_sceneitem_get_scale(groupItem, &gScale);
+			obs_sceneitem_get_scale(child, &cScale);
+			obs_sceneitem_crop crop;
+			obs_sceneitem_get_crop(groupItem, &crop);
+			obs_source_t *childSource = obs_sceneitem_get_source(child);
+			vec2 inGroup = turn(u * float(obs_source_get_width(childSource)) * cScale.x,
+					    v * float(obs_source_get_height(childSource)) * cScale.y,
+					    RAD(obs_sceneitem_get_rot(child)));
+			const vec2 cPos = posOf(child);
+			vec2_add(&inGroup, &inGroup, &cPos);
+			vec2 expected = turn((inGroup.x - float(crop.left)) * gScale.x,
+					     (inGroup.y - float(crop.top)) * gScale.y,
+					     RAD(obs_sceneitem_get_rot(groupItem)));
+			const vec2 gPos = posOf(groupItem);
+			vec2_add(&expected, &expected, &gPos);
+			return expected;
+		};
+		auto topLeftAligned = [&](obs_sceneitem_t *child) {
+			return obs_sceneitem_get_alignment(child) == topLeft &&
+			       obs_sceneitem_get_alignment(groupItem) == topLeft &&
+			       obs_sceneitem_get_bounds_type(child) == OBS_BOUNDS_NONE &&
+			       obs_sceneitem_get_bounds_type(groupItem) == OBS_BOUNDS_NONE;
+		};
+		// Every corner of `child`'s box, read through SceneItems::ItemBoxToCanvas both with the
+		// scene and by the canvas walk, against expectedCanvasPoint. `text` collects each pair.
+		auto cornersAsComposed = [&](obs_sceneitem_t *child, std::string &text) {
+			matrix4 viaScene, viaCanvas;
+			bool match = topLeftAligned(child) && SceneItems::ItemBoxToCanvas(child, viaScene, scene) &&
+				     SceneItems::ItemBoxToCanvas(child, viaCanvas);
+			for (float u : {0.0f, 1.0f}) {
+				for (float v : {0.0f, 1.0f}) {
+					const vec2 expected = expectedCanvasPoint(child, u, v);
+					for (const matrix4 *m : {&viaScene, &viaCanvas}) {
+						vec3 corner;
+						vec3_set(&corner, u, v, 0.0f);
+						vec3_transform(&corner, &corner, m);
+						match = match && within(corner.x, expected.x, 0.05f) &&
+							within(corner.y, expected.y, 0.05f);
+						text += "(" + std::to_string(corner.x) + "," +
+							std::to_string(corner.y) + " vs " + posText(expected) + ") ";
+					}
+				}
 			}
+			return match;
+		};
+
+		// The corners are composed here from the items' own pos, rot and scale, with no matrix
+		// libobs built: a box read without its group, or composed in the wrong order, or without
+		// the mirror, lands elsewhere. Child A is turned and scaled under an identity group, so
+		// the group's re-fit runs exactly, and the group is then turned, scaled unevenly and
+		// mirrored.
+		{
+			obs_sceneitem_set_rot(childA, 15.0f);
+			vec2 childScale;
+			vec2_set(&childScale, 1.2f, 0.8f);
+			obs_sceneitem_set_scale(childA, &childScale);
+			settle();
+			setGroupTransform(30.0f, -1.5f, 0.75f);
+			std::string cornerText;
+			const bool cornersMatch = cornersAsComposed(childA, cornerText);
+			check("ItemBoxToCanvas carries a child through a rotated, scaled, mirrored group", cornersMatch,
+			      cornerText);
+			setGroupTransform(0.0f, 1.0f, 1.0f);
+			obs_sceneitem_set_rot(childA, 0.0f);
+			vec2_set(&childScale, 1.0f, 1.0f);
+			obs_sceneitem_set_scale(childA, &childScale);
+			settle();
+			check("ItemBoxToCanvas case leaves the group as it was", groupAsBefore(), canvasText());
 		}
-		check("canvas-space actions refused for a child",
-		      refusedActions.empty() && samePos(canvasPosOf(childB), bCanvas), refusedActions);
+
+		// A cropped group: the outline and a centred child both come from the crop-shifted map,
+		// checked here against the composition rather than against that map itself, which would
+		// agree with a map that left the crop out.
+		{
+			setGroupTransform(30.0f, 1.5f, 0.75f);
+			obs_sceneitem_crop groupCrop{};
+			groupCrop.left = 20;
+			groupCrop.top = 10;
+			obs_sceneitem_set_crop(groupItem, &groupCrop);
+			settle();
+			std::string cornerText;
+			const bool cornersMatch = cornersAsComposed(childA, cornerText);
+			check("ItemBoxToCanvas carries a child through a cropped group", cornersMatch, cornerText);
+
+			const vec2 aCorner = expectedCanvasPoint(childA, 0.0f, 0.0f);
+			const vec2 bFrom = expectedCanvasPoint(childB, 0.5f, 0.5f);
+			bool actionOk = false;
+			actionOnB("center", actionOk);
+			const vec2 bCentre = expectedCanvasPoint(childB, 0.5f, 0.5f);
+			const vec2 aCornerAfter = expectedCanvasPoint(childA, 0.0f, 0.0f);
+			check("center places a child against the canvas through a cropped group",
+			      actionOk && topLeftAligned(childB) && obs_sceneitem_get_rot(childB) == 0.0f &&
+				      !within(bFrom.x, canvasWidth * 0.5f, 1.0f) &&
+				      within(bCentre.x, canvasWidth * 0.5f, 0.1f) &&
+				      within(bCentre.y, canvasHeight * 0.5f, 0.1f) && samePos(aCornerAfter, aCorner),
+			      "child b centre " + posText(bFrom) + " -> " + posText(bCentre) + ", sibling corner " +
+				      posText(aCorner) + " -> " + posText(aCornerAfter));
+			undoAndSettle();
+			check("center through a cropped group undoes in one step", groupAsBefore(), canvasText());
+			obs_sceneitem_crop noCrop{};
+			obs_sceneitem_set_crop(groupItem, &noCrop);
+			setGroupTransform(0.0f, 1.0f, 1.0f);
+			check("cropped-group case leaves the group as it was", groupAsBefore(), canvasText());
+		}
+
+		// A group anchored anywhere but its top-left corner puts that anchor at a whole pixel of
+		// its extent (add_alignment and resize_scene_base in obs-scene.c) while its re-fit aims at
+		// the exact point, so every child write moves its content by up to a group pixel along
+		// each axis. `exact` is the slack for a top-left anchored group.
+		auto placementSlack = [&](float exact) {
+			return obs_sceneitem_get_alignment(groupItem) == topLeft ? exact : 2.5f;
+		};
+		// Undo of a placement, checked to restore the group and its children in one step. Undo
+		// writes the group's position back against the extent the group has when it runs rather
+		// than the one it was captured with, so a group anchored anywhere but its top-left corner
+		// comes back offset by half the change in its extent. That is not checked here; the group
+		// is put back by hand so the cases after it start from the same place.
+		auto undoPlacement = [&](const std::string &action) {
+			undoAndSettle();
+			if (obs_sceneitem_get_alignment(groupItem) != topLeft) {
+				obs_sceneitem_set_pos(groupItem, &groupBefore);
+				settle();
+				return;
+			}
+			check(action + " undo restores the group and siblings in one step", groupAsBefore(),
+			      canvasText());
+		};
+
+		// Centering through a rotated, unevenly scaled group: a group-space offset applied as if
+		// it were a canvas one misses the centre, and on one axis moves the other canvas axis.
+		auto centerCase = [&](const char *action, const char *groupLabel, float rot, float sx, float sy) {
+			setGroupTransform(rot, sx, sy);
+			vec3 bTl, bBr, aTl, aBr;
+			canvasBoxOf(childB, bTl, bBr);
+			canvasBoxOf(childA, aTl, aBr);
+			const float fromX = (bTl.x + bBr.x) * 0.5f, fromY = (bTl.y + bBr.y) * 0.5f;
+			const bool alongX = std::string(action) != "centerVertical";
+			const bool alongY = std::string(action) != "centerHorizontal";
+			const float wantX = alongX ? canvasWidth * 0.5f : fromX;
+			const float wantY = alongY ? canvasHeight * 0.5f : fromY;
+			const float slack = placementSlack(0.1f);
+			bool actionOk = false;
+			actionOnB(action, actionOk);
+			vec3 bTlAfter, bBrAfter, aTlAfter, aBrAfter;
+			canvasBoxOf(childB, bTlAfter, bBrAfter);
+			canvasBoxOf(childA, aTlAfter, aBrAfter);
+			check(std::string(action) + " places a child against the canvas through a " + groupLabel,
+			      actionOk && !within(fromX, canvasWidth * 0.5f, 1.0f) &&
+				      !within(fromY, canvasHeight * 0.5f, 1.0f) &&
+				      within((bTlAfter.x + bBrAfter.x) * 0.5f, wantX, slack) &&
+				      within((bTlAfter.y + bBrAfter.y) * 0.5f, wantY, slack) &&
+				      within(aTlAfter.x, aTl.x, slack) && within(aTlAfter.y, aTl.y, slack),
+			      "child b " + boxText(bTl, bBr) + " -> " + boxText(bTlAfter, bBrAfter) + ", sibling " +
+				      boxText(aTl, aBr) + " -> " + boxText(aTlAfter, aBrAfter));
+			undoPlacement(action);
+		};
+		for (const char *action : {"center", "centerHorizontal", "centerVertical"}) {
+			centerCase(action, "rotated group", 30.0f, 1.5f, 0.75f);
+		}
+
+		// Fit and stretch cover the canvas with the child's content upright: through a mirrored
+		// group only a flipped child reads unmirrored, and through a quarter-turned group only a
+		// turned one covers the canvas rather than its transpose.
+		auto fillCase = [&](const char *action, obs_bounds_type type, const char *groupLabel, float rot,
+				    float sx, float sy) {
+			setGroupTransform(rot, sx, sy);
+			const float slack = placementSlack(0.25f);
+			vec3 aTl, aBr;
+			canvasBoxOf(childA, aTl, aBr);
+			bool actionOk = false;
+			actionOnB(action, actionOk);
+			matrix4 box;
+			const bool found = SceneItems::ItemBoxToCanvas(childB, box, scene);
+			vec3 bTl, bBr, aTlAfter, aBrAfter;
+			canvasBoxOf(childB, bTl, bBr);
+			canvasBoxOf(childA, aTlAfter, aBrAfter);
+			const bool covers = found && within(bTl.x, 0.0f, slack) && within(bTl.y, 0.0f, slack) &&
+					    within(bBr.x, canvasWidth, slack) && within(bBr.y, canvasHeight, slack) &&
+					    within(box.x.y, 0.0f, 0.01f) && within(box.y.x, 0.0f, 0.01f);
+			matrix4 draw, groupDraw;
+			obs_sceneitem_get_draw_transform(childB, &draw);
+			obs_sceneitem_get_draw_transform(groupItem, &groupDraw);
+			matrix4_mul(&draw, &draw, &groupDraw);
+			const bool upright = draw.x.x > 0.0f && draw.y.y > 0.0f &&
+					     std::fabs(draw.x.y) <= 1e-3f * draw.x.x &&
+					     std::fabs(draw.y.x) <= 1e-3f * draw.y.y;
+			check(std::string(action) + " covers the canvas with a child upright through a " + groupLabel,
+			      actionOk && covers && upright && obs_sceneitem_get_bounds_type(childB) == type &&
+				      within(aTlAfter.x, aTl.x, slack) && within(aTlAfter.y, aTl.y, slack),
+			      "child b " + boxText(bTl, bBr) + ", content axes (" + std::to_string(draw.x.x) + "," +
+				      std::to_string(draw.x.y) + ") (" + std::to_string(draw.y.x) + "," +
+				      std::to_string(draw.y.y) + "), sibling " + boxText(aTl, aBr) + " -> " +
+				      boxText(aTlAfter, aBrAfter));
+			undoPlacement(action);
+		};
+		fillCase("fitToScreen", OBS_BOUNDS_SCALE_INNER, "rotated, mirrored group", 30.0f, -1.5f, 1.5f);
+		fillCase("stretchToScreen", OBS_BOUNDS_STRETCH, "quarter-turned, scaled group", 90.0f, 0.5f, 0.5f);
+
+		// A centre-aligned group is anchored at its middle, which its re-fit after a child write
+		// moves as the group's extent changes; a placement composed for a top-left anchor misses
+		// by half that change.
+		obs_sceneitem_set_alignment(groupItem, OBS_ALIGN_CENTER);
+		settle();
+		centerCase("center", "centre-aligned, rotated group", 30.0f, 1.5f, 0.75f);
+		fillCase("fitToScreen", OBS_BOUNDS_SCALE_INNER, "centre-aligned, rotated group", 30.0f, 1.25f, 1.25f);
+		obs_sceneitem_set_alignment(groupItem, topLeft);
+		setGroupTransform(0.0f, 1.0f, 1.0f);
+		check("centre-aligned cases leave the group as it was", groupAsBefore(), canvasText());
+
+		// Refused before anything is written: a rotated group scaled unevenly draws no rectangle
+		// as the canvas, and a bounded group rescales its content after any child write.
+		{
+			const UndoManager::State undoBeforeRefusals = undoState();
+			auto actionRefused = [&](const char *action, std::string &refusal) {
+				json p = childParams(childBId);
+				p["action"] = action;
+				json refusedResult;
+				return !Bridge::Dispatch("sceneItems.transformAction", p, refusedResult, refusal);
+			};
+			setGroupTransform(30.0f, 1.5f, 0.75f);
+			std::string unevenError;
+			const bool unevenRefused = actionRefused("fitToScreen", unevenError);
+			setGroupTransform(0.0f, 1.0f, 1.0f);
+			vec2 groupBounds;
+			vec2_set(&groupBounds, float(obs_source_get_width(groupSrc)),
+				 float(obs_source_get_height(groupSrc)));
+			obs_sceneitem_set_bounds(groupItem, &groupBounds);
+			obs_sceneitem_set_bounds_type(groupItem, OBS_BOUNDS_STRETCH);
+			settle();
+			std::string boundedError;
+			const bool boundedRefused = actionRefused("center", boundedError);
+			obs_sceneitem_set_bounds_type(groupItem, OBS_BOUNDS_NONE);
+			settle();
+			check("canvas-space actions refuse a child they cannot place",
+			      unevenRefused && boundedRefused && undoUnchanged(undoBeforeRefusals) && groupAsBefore(),
+			      unevenError + "; " + boundedError);
+		}
 		// A rotation pivots on the item's visual centre, read from its box. A child's box is
 		// only recomputed on the next tick, and a square child's centre hides a stale read,
 		// so B is made non-square and each rotation is checked for the centre it keeps.
@@ -4808,23 +5242,60 @@ void ObsBootstrap::RunSceneItemGroupSelfTest()
 		vec2_set(&unit, 1.0f, 1.0f);
 		obs_sceneitem_set_scale(childB, &unit);
 		settle();
-		// The clamp measures the box libobs last computed, which for a child is the settled
-		// one, so the child is settled off the canvas first and moved again: a clamp that
-		// ran would pull that second move back.
-		json farParams = childParams(childBId);
-		farParams["transform"] = json{{"pos", json{{"x", 5000.0}, {"y", 0.0}}}};
-		run("sceneItems.setTransform", farParams, ok);
-		settle();
-		farParams["transform"] = json{{"pos", json{{"x", 5050.0}, {"y", 0.0}}}};
-		json farResult = run("sceneItems.setTransform", farParams, ok);
-		check("canvas clamp skips a child", ok && xOf(farResult) == 5050.0, std::to_string(xOf(farResult)));
-		ObsBootstrap::Undo().Undo();
-		ObsBootstrap::Undo().Undo();
-		settle();
-		check("canvas-space fence leaves the group in place",
-		      samePos(posOf(groupItem), groupBefore) && samePos(posOf(childA), aBefore) &&
-			      samePos(posOf(childB), bBefore) && obs_sceneitem_get_rot(childB) == 0.0f,
-		      canvasText());
+		// The clamp measures a child as the canvas shows it and carries the correction back
+		// through its group, so a child pushed off the right edge comes back kMinVisiblePx inside
+		// it without moving vertically on the canvas. A clamp that skipped children leaves it
+		// off the canvas; one that added the canvas correction to a group-space position moves
+		// it diagonally.
+		setGroupTransform(30.0f, 1.5f, 0.75f);
+		{
+			auto nudgeBy = [&](const json &refs, float dx) {
+				json p = base;
+				p["refs"] = refs;
+				p["dx"] = dx;
+				p["dy"] = 0.0f;
+				bool nudged = false;
+				run("sceneItems.nudge", p, nudged);
+				settle();
+				return nudged;
+			};
+			const json childBSel{{"id", childBId}, {"group", groupUuid}};
+			const json topSel{{"id", topId}};
+			vec3 bTl, bBr;
+			canvasBoxOf(childB, bTl, bBr);
+			bool clampOk = nudgeBy(json::array({childBSel}), 5000.0f);
+			vec3 bTlFar, bBrFar;
+			canvasBoxOf(childB, bTlFar, bBrFar);
+			check("canvas clamp returns a child through a rotated group",
+			      clampOk && within(bTlFar.x, canvasWidth - Bridge::kMinVisiblePx, 0.1f) &&
+				      within(bTlFar.y, bTl.y, 0.1f),
+			      boxText(bTl, bBr) + " -> " + boxText(bTlFar, bBrFar));
+			undoAndSettle();
+			check("canvas clamp undo restores the group", groupAsBefore(), canvasText());
+
+			// The top-level item and the child leave together and come back as one formation: the
+			// nearer one ends kMinVisiblePx onto the canvas and the other keeps its offset from it.
+			// Skipping the child, or correcting each member separately, breaks the offset.
+			const vec2 topStartPos = posOf(top);
+			vec3 tTl, tBr;
+			canvasBoxOf(top, tTl, tBr);
+			clampOk = nudgeBy(json::array({topSel, childBSel}), -5000.0f);
+			vec3 tTlFar, tBrFar;
+			canvasBoxOf(top, tTlFar, tBrFar);
+			canvasBoxOf(childB, bTlFar, bBrFar);
+			const float setRight = std::max(tBrFar.x, bBrFar.x);
+			check("canvas clamp returns a mixed set as one formation",
+			      clampOk && within(setRight, Bridge::kMinVisiblePx, 0.1f) &&
+				      within(tTlFar.x - bTlFar.x, tTl.x - bTl.x, 0.1f) &&
+				      within(tTlFar.y, tTl.y, 0.1f) && within(bTlFar.y, bTl.y, 0.1f),
+			      "top " + boxText(tTl, tBr) + " -> " + boxText(tTlFar, tBrFar) + ", child b " +
+				      boxText(bTl, bBr) + " -> " + boxText(bTlFar, bBrFar));
+			undoAndSettle();
+			check("canvas clamp undo restores a mixed set in one step",
+			      samePos(posOf(top), topStartPos) && groupAsBefore(), canvasText());
+		}
+		setGroupTransform(0.0f, 1.0f, 1.0f);
+		check("canvas-space actions leave the group in place", groupAsBefore(), canvasText());
 
 		// --- 9. two children drawing one source: each entry touches only its own item ------
 		// The twin shares A's source and sits below it, so a lookup by source alone finds the
@@ -5002,7 +5473,7 @@ void ObsBootstrap::RunSceneItemGroupSelfTest()
 			ObsBootstrap::Undo().Undo();
 			settle();
 
-			const std::string labelBeforeStale = undoState().undoName;
+			const UndoManager::State undoBeforeStale = undoState();
 			json staleResult;
 			std::string staleError;
 			const bool staleRefused = !Bridge::Dispatch(
@@ -5010,7 +5481,7 @@ void ObsBootstrap::RunSceneItemGroupSelfTest()
 				staleResult, staleError);
 			settle();
 			check("nudge with a stale ref refuses and moves nothing",
-			      staleRefused && samePos(posOf(top), topStart) && undoState().undoName == labelBeforeStale,
+			      staleRefused && samePos(posOf(top), topStart) && undoUnchanged(undoBeforeStale),
 			      staleError);
 
 			// A mirrored group flips one axis, and a near-zero scale needs a group-space offset
@@ -5048,19 +5519,9 @@ void ObsBootstrap::RunSceneItemGroupSelfTest()
 			auto boxOf = [](obs_sceneitem_t *item, vec3 &tl, vec3 &br) {
 				matrix4 box;
 				obs_sceneitem_get_box_transform(item, &box);
-				vec3_set(&tl, 1e9f, 1e9f, 0.0f);
-				vec3_set(&br, -1e9f, -1e9f, 0.0f);
-				for (float u : {0.0f, 1.0f}) {
-					for (float v : {0.0f, 1.0f}) {
-						vec3 corner;
-						vec3_set(&corner, u, v, 0.0f);
-						vec3_transform(&corner, &corner, &box);
-						vec3_min(&tl, &tl, &corner);
-						vec3_max(&br, &br, &corner);
-					}
-				}
+				SceneItems::BoxExtent(box, tl, br);
 			};
-			// Off the left edge, the clamp leaves 32px of the moved set on the canvas.
+			// Off the left edge, the clamp leaves kMinVisiblePx of the moved set on the canvas.
 			auto boxRightOf = [&](obs_sceneitem_t *item) {
 				vec3 tl, br;
 				boxOf(item, tl, br);
@@ -5070,7 +5531,7 @@ void ObsBootstrap::RunSceneItemGroupSelfTest()
 			run("sceneItems.nudge", nudgeParams(json::array({topRef}), kFarLeft, 0.0f), ok);
 			settle();
 			check("nudge clamps a single item back onto the canvas",
-			      ok && std::fabs(boxRightOf(top) - 32.0f) <= 0.01f &&
+			      ok && std::fabs(boxRightOf(top) - Bridge::kMinVisiblePx) <= 0.01f &&
 				      std::fabs(posOf(top).y - topStart.y) <= 0.01f,
 			      "top " + posText(posOf(top)) + ", right edge " + std::to_string(boxRightOf(top)));
 			ObsBootstrap::Undo().Undo();
@@ -5079,7 +5540,7 @@ void ObsBootstrap::RunSceneItemGroupSelfTest()
 			settle();
 			const float setRight = std::max(boxRightOf(top), boxRightOf(groupItem));
 			check("nudge clamps a set as one formation",
-			      ok && std::fabs(setRight - 32.0f) <= 0.01f &&
+			      ok && std::fabs(setRight - Bridge::kMinVisiblePx) <= 0.01f &&
 				      std::fabs((posOf(top).x - posOf(groupItem).x) - (topStart.x - groupStart.x)) <=
 					      0.01f &&
 				      std::fabs(posOf(top).y - topStart.y) <= 0.01f &&
@@ -5214,8 +5675,24 @@ void ObsBootstrap::RunSceneItemGroupSelfTest()
 			obs_sceneitem_t *moved2 = obs_scene_find_sceneitem_by_id(group2Scene, formerChildren.front());
 			OBSSourceAutoRelease moved2Src = moved2 ? obs_source_get_ref(obs_sceneitem_get_source(moved2))
 								: nullptr;
+			// A child selected in the preview when its group is deleted: the preview draws past
+			// the stale key for as long as it holds it, and a selection that repeats it drops it.
+			json staleSelect = base;
+			staleSelect["refs"] =
+				json::array({json{{"id", formerChildren.front()}, {"group", group2Uuid}}});
+			bool heldOk = false;
+			const json held = Preview::Instance() ? run("preview.select", staleSelect, heldOk) : json();
 			obs_sceneitem_remove(group2Item);
 			while (obs_wait_for_destroy_queue()) {
+			}
+			if (Preview::Instance()) {
+				bool droppedOk = false;
+				const json dropped = run("preview.select", staleSelect, droppedOk);
+				check("a child whose group was deleted is dropped from the selection",
+				      heldOk && held.value("selectedRefs", json()).size() == 1 && droppedOk &&
+					      dropped.value("selectedRefs", json()) == json::array(),
+				      held.dump() + " -> " + dropped.dump());
+				run("preview.select", base, droppedOk);
 			}
 			// The entry's own source, alive again as a top-level item: the one thing a
 			// resolver falling back past the deleted group could still write onto.
@@ -5256,6 +5733,11 @@ void ObsBootstrap::RunSceneItemGroupSelfTest()
 
 	// --- cleanup: every remaining item, our sources, temp canvas ----------------------
 	Bridge::SetEventObserver(nullptr);
+	// preview.select gave the temp canvas a surface, which has to go before its canvas does.
+	if (Preview::Instance()) {
+		Preview::SelectFromBridge(canvasUuid, "", std::vector<SceneItemKey>{});
+		Preview::Instance()->DestroyForCanvas(canvasUuid);
+	}
 	if (!undoAtStart.canUndo && !undoAtStart.canRedo) {
 		ObsBootstrap::Undo().Clear();
 	} else {
@@ -5362,7 +5844,9 @@ void ObsBootstrap::RunPreviewSurfaceIsolationSelfTest()
 
 	// 2) Select the canvas item on the ADDITIONAL surface. Its selection state must
 	// flip; the Default surface's must NOT.
-	const bool selOk = Preview::SelectFromBridge(canvasUuid, "", std::vector<int64_t>{canvasItemId});
+	const bool selOk =
+		Preview::SelectFromBridge(canvasUuid, "", std::vector<SceneItemKey>{SceneItemKey(canvasItemId)})
+			.has_value();
 	const int64_t canvasSel = canvasSurface ? canvasSurface->SelectedIdForTest() : -2;
 	const int64_t defaultSelAfter = defaultSurface ? defaultSurface->SelectedIdForTest() : -2;
 	HostLog(std::string("[selftest] preview-isolation: select on additional -> ") + (selOk ? "ok" : "FAIL") +
@@ -5417,7 +5901,7 @@ void ObsBootstrap::RunPreviewSurfaceIsolationSelfTest()
 	// tear down the temp canvas (drops its surface's mix; the surface itself is
 	// reaped by DestroyAll at shutdown, but its display already has no mix to render
 	// once the canvas is gone -- so destroy the surface now to keep ordering clean).
-	Preview::SelectFromBridge(canvasUuid, "", std::vector<int64_t>{});
+	Preview::SelectFromBridge(canvasUuid, "", std::vector<SceneItemKey>{});
 	Preview::Instance()->DestroyForCanvas(canvasUuid);
 
 	if (canvasItemId) {

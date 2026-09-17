@@ -1,6 +1,7 @@
 import { obs, type TransformAction, type TransformTarget } from "$lib/api/bridge";
 import type { ContextMenuItem } from "$lib/menus/ContextMenu.svelte";
 import { openTransform } from "$lib/dialogs/transformOpener.svelte";
+import { targetParams } from "$lib/utils/sceneItemRef";
 
 // The quick transform verbs the bridge exposes via sceneItems.transformAction,
 // ordered to mirror the classic OBS Transform submenu.
@@ -18,17 +19,6 @@ const ACTIONS: { label: string; action: TransformAction }[] = [
   { label: "Flip Vertical", action: "flipV" },
 ];
 
-function params(t: TransformTarget): TransformTarget {
-  const p: TransformTarget = { id: t.id };
-  if (t.canvas != null) {
-    p.canvas = t.canvas;
-  }
-  if (t.scene != null) {
-    p.scene = t.scene;
-  }
-  return p;
-}
-
 // A "Transform ▸" submenu: Edit Transform (opens the numeric dialog) plus every
 // bridge-backed quick action. `label` names the item in the dialog header. Each
 // caller passes its own canvas context so the ops address the right surface.
@@ -44,7 +34,7 @@ export function transformMenu(target: TransformTarget, label: string): ContextMe
       null,
       ...ACTIONS.map((a) => ({
         label: a.label,
-        action: () => void obs.call("sceneItems.transformAction", { ...params(target), action: a.action }).catch(report),
+        action: () => void obs.call("sceneItems.transformAction", { ...targetParams(target), action: a.action }).catch(report),
       })),
     ],
   };

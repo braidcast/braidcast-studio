@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -27,6 +28,7 @@
 // emits no-op safely before any browser exists or after all are gone. With a
 // single registered browser this is behavior-identical to a single-target emit.
 struct CanvasDefinition;
+struct SceneItemKey;
 struct obs_source;
 typedef struct obs_source obs_source_t;
 struct obs_scene_item;
@@ -176,6 +178,20 @@ void EmitSceneItemsChangedForSource(obs_source_t *src);
 // scope so the preview's own uuid-keyed lookups resolve a scene the same way the undo
 // appliers do. UI thread only.
 obs_source_t *AcquireSceneByUuid(const std::string &uuid);
+
+// Scene-item keys as the bridge's SceneItemRef list, [{id, group}] in the same order, with
+// `group` null for a top-level item. The one serializer the preview.select reply and the
+// sceneItem.selected event share, so the two cannot describe a selection differently.
+json SceneItemRefsJson(const std::vector<SceneItemKey> &keys);
+
+// The key one SceneItemRef names: `id` a non-negative integer, and `group` a group uuid, or
+// null or absent for a top-level item. Nullopt for anything else, so every method that takes
+// refs refuses the same malformed ones.
+std::optional<SceneItemKey> SceneItemKeyFromJson(const json &ref);
+
+// How much of an item's box, in canvas px, a placement keeps on the canvas once the item has
+// been moved entirely off it.
+inline constexpr float kMinVisiblePx = 32.0f;
 
 // One scene item's full geometry -- position, rotation, scale, alignment, bounds type,
 // bounds and crop -- plus the keys that re-resolve it later, serialized as the opaque

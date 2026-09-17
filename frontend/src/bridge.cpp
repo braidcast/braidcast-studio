@@ -75,6 +75,7 @@
 #include "windowing/projector_window.hpp"
 #include "util/properties_serializer.hpp"
 #include "scene/scene_collections.hpp"
+#include "scene/scene_items.hpp"
 #include "scene/scene_persistence.hpp"
 #include "target_destinations.hpp"
 #include "util/session_log.hpp"
@@ -1396,31 +1397,6 @@ std::string PreviewCanvasParam(const json &params)
 	return ResolveCanvasTarget(params).uuid;
 }
 
-// Locate a scene item by id within a scene. Returns the item WITHOUT an added
-// ref (it is owned by the scene); valid only while the scene is held. null when
-// no item matches.
-struct ItemFind {
-	int64_t id;
-	obs_sceneitem_t *found;
-};
-
-obs_sceneitem_t *FindSceneItem(obs_scene_t *scene, int64_t id)
-{
-	ItemFind ctx{id, nullptr};
-	obs_scene_enum_items(
-		scene,
-		[](obs_scene_t *, obs_sceneitem_t *item, void *param) -> bool {
-			auto *c = static_cast<ItemFind *>(param);
-			if (obs_sceneitem_get_id(item) == c->id) {
-				c->found = item;
-				return false; // stop
-			}
-			return true;
-		},
-		&ctx);
-	return ctx.found;
-}
-
 // Parse the required scene-item id from params (accepts number or numeric
 // string). Returns false and fills `error` when missing/unparseable.
 bool ItemIdFromParams(const json &params, int64_t &id, std::string &error)
@@ -1445,43 +1421,67 @@ bool ItemIdFromParams(const json &params, int64_t &id, std::string &error)
 	return false;
 }
 
-// Drive preview selection from the UI (SourcesPanel). params: {scene?, id?, ids?,
-// canvas?}. `ids` replaces the whole preview selection and is what a dock sends after a
-// modifier click; `id` is the single-item shorthand every existing caller uses. Both
-// absent/null deselects. The addressed surface's scene (output 0 for the Default
-// surface, else the canvas's current scene) is authoritative; `scene` is only validated
-// against it. Returns {selected: focusId|null, selectedIds: number[]}.
+// Add `key` to an insertion-ordered selection. A repeat keeps its LAST position: the set's
+// final member is the focus the surface reports back, so dropping the repeat would hand the
+// focus to whatever preceded it.
+void AppendSelectionKey(std::vector<SceneItemKey> &keys, SceneItemKey key)
+{
+	auto dup = std::find(keys.begin(), keys.end(), key);
+	if (dup != keys.end()) {
+		keys.erase(dup);
+	}
+	keys.push_back(std::move(key));
+}
+
+// libobs item ids start at 1, so a negative is the "nothing selected" sentinel leaking out
+// of a caller rather than an item. Mirroring it onto the scene would match nothing and
+// silently shrink the selection.
+std::optional<int64_t> SelectionEntryId(const json &value)
+{
+	if (!value.is_number_integer() || value.get<int64_t>() < 0) {
+		return std::nullopt;
+	}
+	return value.get<int64_t>();
+}
+
+// Drive preview selection from the UI (SourcesPanel). params: {scene?, id?, ids?, refs?,
+// canvas?}. `refs` ([{id, group}], `group` a group uuid or null) and `ids` replace the whole
+// preview selection and are what a dock sends after a modifier click; `refs` wins over
+// `ids`, and only `refs` can name a group's child. `id` is the single-item shorthand every
+// existing caller uses. All absent/null deselects. The addressed surface's scene (output 0
+// for the Default surface, else the canvas's current scene) is authoritative; `scene` is
+// only validated against it. A child whose group or item does not resolve there is dropped.
+// Returns {selected: focusId|null, selectedIds: number[], selectedRefs: SceneItemRef[]},
+// the set as applied.
 bool MethodPreviewSelect(const json &params, json &result, std::string &error)
 {
 	const std::string scene = OptString(params, "scene");
 
-	std::vector<int64_t> ids;
+	std::vector<SceneItemKey> keys;
 	if (params.is_object()) {
+		auto refsIt = params.find("refs");
 		auto arrIt = params.find("ids");
-		if (arrIt != params.end() && arrIt->is_array()) {
+		if (refsIt != params.end() && !refsIt->is_null() && !refsIt->is_array()) {
+			error = "'refs' must be an array";
+			return false;
+		}
+		if (refsIt != params.end() && refsIt->is_array()) {
+			for (const json &entry : *refsIt) {
+				std::optional<SceneItemKey> key = Bridge::SceneItemKeyFromJson(entry);
+				if (!key) {
+					error = "invalid entry in 'refs'";
+					return false;
+				}
+				AppendSelectionKey(keys, std::move(*key));
+			}
+		} else if (arrIt != params.end() && arrIt->is_array()) {
 			for (const json &entry : *arrIt) {
-				if (!entry.is_number_integer()) {
+				const std::optional<int64_t> id = SelectionEntryId(entry);
+				if (!id) {
 					error = "invalid entry in 'ids'";
 					return false;
 				}
-				const int64_t id = entry.get<int64_t>();
-				// libobs item ids start at 1, so a negative is the
-				// "nothing selected" sentinel leaking out of a caller
-				// rather than an item. Mirroring it onto the scene would
-				// match nothing and silently shrink the selection.
-				if (id < 0) {
-					error = "invalid entry in 'ids'";
-					return false;
-				}
-				// A repeat keeps its LAST position: the set is
-				// insertion-ordered and its final member is the focus the
-				// surface reports back, so dropping the repeat would hand
-				// the focus to whatever preceded it.
-				auto dup = std::find(ids.begin(), ids.end(), id);
-				if (dup != ids.end()) {
-					ids.erase(dup);
-				}
-				ids.push_back(id);
+				AppendSelectionKey(keys, SceneItemKey(*id));
 			}
 		} else {
 			auto it = params.find("id");
@@ -1492,18 +1492,25 @@ bool MethodPreviewSelect(const json &params, json &result, std::string &error)
 					error = idErr;
 					return false;
 				}
-				ids.push_back(id);
+				keys.push_back(SceneItemKey(id));
 			}
 		}
 	}
 
-	if (!Preview::SelectFromBridge(PreviewCanvasParam(params), scene, ids, PreviewWindowParam(params))) {
+	const std::optional<std::vector<SceneItemKey>> applied =
+		Preview::SelectFromBridge(PreviewCanvasParam(params), scene, keys, PreviewWindowParam(params));
+	if (!applied) {
 		error = "preview selection failed (no scene or scene mismatch)";
 		return false;
 	}
 	// The focus is the LAST member, matching what the surface reports back in
-	// sceneItem.selected and what `sourceSelection.item` means on the web side.
-	result = json{{"selected", ids.empty() ? json(nullptr) : json(ids.back())}, {"selectedIds", ids}};
+	// sceneItem.selected and what `sourceSelection.item` means on the web side. `selectedIds`
+	// is lossy once the set mixes owners: a child can share its id with a top-level item, so
+	// it can repeat one and cannot say which item it names. `selectedRefs` is the authority.
+	const std::vector<int64_t> ids = SceneItems::IdsOf(*applied);
+	result = json{{"selected", ids.empty() ? json(nullptr) : json(ids.back())},
+		      {"selectedIds", ids},
+		      {"selectedRefs", Bridge::SceneItemRefsJson(*applied)}};
 	return true;
 }
 
@@ -2556,7 +2563,8 @@ bool ResolveStateItem(const json &state, obs_source_t *&sceneSource, obs_sceneit
 	}
 	const int64_t itemId = RecordedItemId(state);
 	const std::string sourceUuid = OptString(state, "source");
-	item = itemId >= 0 ? FindSceneItem(obs_group_or_scene_from_source(sceneSource), itemId) : nullptr;
+	item = itemId >= 0 ? obs_scene_find_sceneitem_by_id(obs_group_or_scene_from_source(sceneSource), itemId)
+			   : nullptr;
 	if (item && !sourceUuid.empty()) {
 		// An id now held by an item drawing another source names a different item.
 		obs_source_t *itemSource = obs_sceneitem_get_source(item);
@@ -2609,8 +2617,8 @@ bool ResolveParamsItem(const json &params, obs_source_t *&owner, obs_sceneitem_t
 	if (group.empty()) {
 		owner = sceneSource;
 	} else {
-		obs_sceneitem_t *groupItem = FindItemBySourceUuid(sceneSource, group);
-		if (groupItem && obs_sceneitem_is_group(groupItem)) {
+		obs_sceneitem_t *groupItem = SceneItems::FindGroupItem(obs_scene_from_source(sceneSource), group);
+		if (groupItem) {
 			owner = obs_source_get_ref(obs_sceneitem_get_source(groupItem)); // addref'd
 		}
 		obs_source_release(sceneSource);
@@ -2619,7 +2627,7 @@ bool ResolveParamsItem(const json &params, obs_source_t *&owner, obs_sceneitem_t
 			return false;
 		}
 	}
-	item = FindSceneItem(obs_group_or_scene_from_source(owner), id);
+	item = obs_scene_find_sceneitem_by_id(obs_group_or_scene_from_source(owner), id);
 	if (!item) {
 		obs_source_release(owner);
 		owner = nullptr;
@@ -2627,56 +2635,6 @@ bool ResolveParamsItem(const json &params, obs_source_t *&owner, obs_sceneitem_t
 		return false;
 	}
 	return true;
-}
-
-// The group source whose own list holds `item`, borrowed, or null for a top-level item.
-obs_source_t *GroupSourceOf(obs_sceneitem_t *item)
-{
-	obs_scene_t *ownerScene = item ? obs_sceneitem_get_scene(item) : nullptr;
-	obs_source_t *ownerSource = ownerScene ? obs_scene_get_source(ownerScene) : nullptr;
-	return obs_source_is_group(ownerSource) ? ownerSource : nullptr;
-}
-
-// The group item that draws `item`'s group in a scene, borrowed, or null when `item` is not
-// a group's child. libobs keeps no link from a group's own scene back to the item drawing
-// it, so it is looked up among the scenes of the group's canvas. Valid only for immediate
-// use, while that scene still holds the group.
-obs_sceneitem_t *GroupItemOf(obs_sceneitem_t *item)
-{
-	obs_source_t *groupSource = GroupSourceOf(item);
-	const char *groupUuid = groupSource ? obs_source_get_uuid(groupSource) : nullptr;
-	if (!groupUuid) {
-		return nullptr;
-	}
-	// A group with no canvas of its own is sized against the main canvas by libobs
-	// (get_scene_dimensions), so that is where its scene is looked for too.
-	OBSCanvasAutoRelease canvas = obs_source_get_canvas(groupSource); // addref'd
-	if (!canvas) {
-		canvas = obs_get_main_canvas(); // addref'd
-	}
-	if (!canvas) {
-		return nullptr;
-	}
-	// Refs taken inside the enumeration and searched outside it, so no scene lock is taken
-	// while the canvas holds its source-list mutex.
-	std::vector<OBSSourceAutoRelease> scenes;
-	obs_canvas_enum_scenes(
-		canvas,
-		[](void *param, obs_source_t *scene) -> bool {
-			if (!obs_source_is_group(scene)) {
-				static_cast<std::vector<OBSSourceAutoRelease> *>(param)->emplace_back(
-					obs_source_get_ref(scene));
-			}
-			return true;
-		},
-		&scenes);
-	for (const OBSSourceAutoRelease &scene : scenes) {
-		obs_sceneitem_t *groupItem = FindItemBySourceUuid(scene, groupUuid);
-		if (groupItem && obs_sceneitem_get_source(groupItem) == groupSource) {
-			return groupItem;
-		}
-	}
-	return nullptr;
 }
 
 // `items` widened to whole groups: an item inside a group is replaced by that group's own
@@ -2695,7 +2653,7 @@ std::vector<obs_sceneitem_t *> WithGroupClosure(obs_sceneitem_t *const *items, s
 		if (!items[i]) {
 			continue;
 		}
-		obs_sceneitem_t *groupItem = GroupItemOf(items[i]);
+		obs_sceneitem_t *groupItem = SceneItems::GroupItemOf(items[i]);
 		if (!groupItem) {
 			add(items[i]);
 			continue;
@@ -3131,10 +3089,10 @@ void AddOwnerCommit(OwnerCommits &commits, OBSSourceAutoRelease owner, const jso
 }
 
 // Adds a re-fit hold on `item`'s group unless one is already held; a top-level item adds
-// nothing.
-void HoldGroupOf(std::vector<GroupResizeDeferral> &holds, obs_sceneitem_t *item)
+// nothing. `scene`, when known, is the scene the group sits in (see SceneItems::GroupItemOf).
+void HoldGroupOf(std::vector<GroupResizeDeferral> &holds, obs_sceneitem_t *item, obs_scene_t *scene = nullptr)
 {
-	obs_sceneitem_t *groupItem = GroupItemOf(item);
+	obs_sceneitem_t *groupItem = SceneItems::GroupItemOf(item, scene);
 	if (groupItem && std::none_of(holds.begin(), holds.end(),
 				      [&](const GroupResizeDeferral &hold) { return hold.GroupItem() == groupItem; })) {
 		holds.emplace_back(groupItem);
@@ -3463,7 +3421,7 @@ void RemoveItemBySource(const json &state)
 	if (!ResolveStateItem(state, sceneSource, item)) {
 		return;
 	}
-	GroupResizeDeferral hold(GroupItemOf(item));
+	GroupResizeDeferral hold(SceneItems::GroupItemOf(item));
 	obs_sceneitem_remove(item);
 	CommitWithGroupClosure(state, sceneSource);
 	hold.End();
@@ -3509,10 +3467,11 @@ void AddItemFromSnapshot(const json &state)
 	}
 	// Ids only grow within an owner, so the recorded one is free unless something unforeseen
 	// took it; the item then keeps its new id and later states resolve it by source.
-	if (const int64_t recordedId = RecordedItemId(state); recordedId > 0 && !FindSceneItem(scene, recordedId)) {
+	if (const int64_t recordedId = RecordedItemId(state);
+	    recordedId > 0 && !obs_scene_find_sceneitem_by_id(scene, recordedId)) {
 		obs_sceneitem_set_id(item, recordedId);
 	}
-	GroupResizeDeferral hold(GroupItemOf(item));
+	GroupResizeDeferral hold(SceneItems::GroupItemOf(item));
 
 	if (auto geo = state.find("geometry"); geo != state.end() && geo->is_object()) {
 		SetItemGeometry(item, *geo);
@@ -3581,7 +3540,7 @@ json CaptureItemSnapshot(const json &params, obs_source_t *sceneSource, obs_scen
 		&octx);
 	s["order"] = octx.found < 0 ? 0 : octx.found;
 	s["itemId"] = obs_sceneitem_get_id(item);
-	if (GroupItemOf(item)) {
+	if (SceneItems::GroupItemOf(item)) {
 		// The caller holds the group's re-fit across this read and its structural change.
 		s[kGroupClosureKey] = CaptureItemStates(params, item);
 	}
@@ -3928,7 +3887,7 @@ bool MethodSceneItemsRemove(const json &params, json &result, std::string &error
 	const std::string name = srcName ? srcName : "";
 	// Snapshot the full item (source data + geometry + order) BEFORE removal so
 	// undo can faithfully recreate it; redo just removes by source uuid again.
-	GroupResizeDeferral hold(GroupItemOf(item));
+	GroupResizeDeferral hold(SceneItems::GroupItemOf(item));
 	const json before = CaptureItemSnapshot(params, sceneSource, item);
 	const json after = RemovalState(params, itemSrc, sceneSource, before);
 
@@ -4196,6 +4155,37 @@ bool MethodSceneItemsSetColor(const json &params, json &result, std::string &err
 	return true;
 }
 
+// Record whether a group's row is collapsed in the sources dock. params: {canvas?, scene?, id,
+// collapsed}. A group item of the scene only, so a child (which is never a group) and any
+// other item are refused. Stored in the item's private settings under "collapsed", which
+// sceneItems.list reads back, so it persists with the scene collection. Not undoable: it is
+// how the dock is showing the scene, not an edit of it. Returns {}.
+bool MethodSceneItemsSetCollapsed(const json &params, json &result, std::string &error)
+{
+	const auto collapsedIt = params.is_object() ? params.find("collapsed") : params.end();
+	if (collapsedIt == params.end() || !collapsedIt->is_boolean()) {
+		error = "missing or invalid 'collapsed'";
+		return false;
+	}
+	obs_source_t *sceneSource = nullptr; // addref'd by ResolveParamsItem
+	obs_sceneitem_t *item = nullptr;
+	int64_t id = 0;
+	if (!ResolveParamsItem(params, sceneSource, item, id, error)) {
+		return false;
+	}
+	if (!obs_sceneitem_is_group(item)) {
+		obs_source_release(sceneSource);
+		error = "scene item " + std::to_string(id) + " is not a group";
+		return false;
+	}
+	OBSDataAutoRelease priv = obs_sceneitem_get_private_settings(item); // addref'd
+	obs_data_set_bool(priv, "collapsed", collapsedIt->get<bool>());
+	CommitSceneItemChange(params, sceneSource);
+	obs_source_release(sceneSource);
+	result = json::object();
+	return true;
+}
+
 // --- scene-item transform ---------------------------------------------------
 
 // The base (canvas) size a transform op centers/fits against. For an additional
@@ -4256,32 +4246,175 @@ json SceneItemTransformToJson(obs_sceneitem_t *item, uint32_t baseWidth, uint32_
 	};
 }
 
-// Axis-aligned bounding box of an item's drawn quad, in scene space. Mirrors the
-// old frontend's GetItemBox so center math accounts for rotation/bounds.
-//
-// A group's child is only flagged by a transform write and recomputed on the next tick, so
-// its pending update is applied here first. That also consumes the flag the tick would have
-// re-fitted the group from, so a child's box is read only under a GroupResizeDeferral, whose
-// end flags the re-fit instead.
-void GetSceneItemBox(obs_sceneitem_t *item, vec3 &tl, vec3 &br)
+// The vector in the space `ownerToCanvas` maps from that it carries onto `canvas`, ignoring
+// its translation. libobs transforms row vectors, so an owner-space (gx, gy) lands at
+// gx * m.x + gy * m.y. False when the linear part has no inverse: a group scaled to zero on
+// an axis, which draws nothing.
+bool CanvasToOwnerVector(const matrix4 &ownerToCanvas, const vec2 &canvas, vec2 &out)
 {
-	if (GroupSourceOf(item)) {
+	const matrix4 &m = ownerToCanvas;
+	const float det = m.x.x * m.y.y - m.y.x * m.x.y;
+	if (det == 0.0f) {
+		return false;
+	}
+	const float gx = (m.y.y * canvas.x - m.y.x * canvas.y) / det;
+	const float gy = (m.x.x * canvas.y - m.x.y * canvas.x) / det;
+	if (!std::isfinite(gx) || !std::isfinite(gy)) {
+		return false;
+	}
+	vec2_set(&out, gx, gy);
+	return true;
+}
+
+// Carry a canvas-pixel offset into the space an item's position is written in, through
+// `groupItem`, the group item drawing it (null for a top-level item, whose space is the
+// canvas's). Only the linear part of the group's transform takes part, which its crop and
+// bounds crop leave alone, so this holds for every group. False as CanvasToOwnerVector is.
+bool OffsetThroughGroup(obs_sceneitem_t *groupItem, const vec2 &canvasOffset, vec2 &out)
+{
+	if (!groupItem) {
+		out = canvasOffset;
+		return true;
+	}
+	matrix4 drawTransform;
+	obs_sceneitem_get_draw_transform(groupItem, &drawTransform);
+	return CanvasToOwnerVector(drawTransform, canvasOffset, out);
+}
+
+// Why no canvas-space placement (center, fit, stretch, the canvas clamp) can be written to
+// `item`, or null when one can. `groupItem` is the group item drawing it, null for a
+// top-level item, which always takes one. A child takes one only through a group that libobs
+// re-fits around its children without moving them on the canvas, which is a group with no
+// bounds type: a bounded group instead rescales its content into its bounds after every
+// child write, so no position written to a child holds.
+const char *CanvasPlacementRefusal(obs_sceneitem_t *item, obs_sceneitem_t *groupItem)
+{
+	if (!SceneItems::GroupSourceOf(item)) {
+		return nullptr;
+	}
+	if (!groupItem) {
+		return "its group is not in a scene";
+	}
+	if (obs_sceneitem_get_bounds_type(groupItem) != OBS_BOUNDS_NONE) {
+		return "its group has a bounding box, which rescales the group's content into it";
+	}
+	matrix4 ownerToCanvas;
+	vec2 probe;
+	vec2_set(&probe, 1.0f, 1.0f);
+	if (!SceneItems::GroupToCanvas(groupItem, ownerToCanvas) || !CanvasToOwnerVector(ownerToCanvas, probe, probe)) {
+		return "its group is scaled to nothing";
+	}
+	return nullptr;
+}
+
+// A group's child is only flagged by a transform write and recomputed on the next tick, so
+// its pending update is applied before its box is read. That also consumes the flag the tick
+// would have re-fitted the group from, so a child's box is read only under a
+// GroupResizeDeferral, whose end flags the re-fit instead. libobs skips the update, and
+// still clears the flag, while the item's own update is deferred, so no box is read then.
+void ApplyPendingChildUpdate(obs_sceneitem_t *item)
+{
+	if (SceneItems::GroupSourceOf(item)) {
 		obs_sceneitem_force_update_transform(item);
 	}
+}
+
+// Axis-aligned bounding box of an item's drawn quad, in the space its position is written
+// in. Mirrors the old frontend's GetItemBox so center math accounts for rotation/bounds.
+void GetSceneItemBox(obs_sceneitem_t *item, vec3 &tl, vec3 &br)
+{
+	ApplyPendingChildUpdate(item);
 	matrix4 boxTransform;
 	obs_sceneitem_get_box_transform(item, &boxTransform);
+	SceneItems::BoxExtent(boxTransform, tl, br);
+}
 
-	vec3_set(&tl, M_INFINITE, M_INFINITE, 0.0f);
-	vec3_set(&br, -M_INFINITE, -M_INFINITE, 0.0f);
-
-	const float corners[4][2] = {{0.0f, 0.0f}, {1.0f, 0.0f}, {0.0f, 1.0f}, {1.0f, 1.0f}};
-	for (const auto &c : corners) {
-		vec3 pos;
-		vec3_set(&pos, c[0], c[1], 0.0f);
-		vec3_transform(&pos, &pos, &boxTransform);
-		vec3_min(&tl, &tl, &pos);
-		vec3_max(&br, &br, &pos);
+// Axis-aligned bounding box of an item's drawn quad as the canvas shows it, carried through
+// `groupItem`, the group item drawing it (null for a top-level item). False as
+// SceneItems::ItemBoxThroughGroup is.
+bool GetSceneItemCanvasBox(obs_sceneitem_t *item, obs_sceneitem_t *groupItem, vec3 &tl, vec3 &br)
+{
+	ApplyPendingChildUpdate(item);
+	matrix4 boxTransform;
+	if (!SceneItems::ItemBoxThroughGroup(item, groupItem, boxTransform)) {
+		return false;
 	}
+	SceneItems::BoxExtent(boxTransform, tl, br);
+	return true;
+}
+
+// The transform fitToScreen and stretchToScreen write: `item`'s bounds box covering the
+// canvas exactly, with its content upright and unmirrored as the canvas shows it. For a
+// top-level item that is the identity placement with canvas-sized bounds. A child's is the
+// same box carried back through its group: bounds scaled by how much the group shrinks each
+// canvas axis, turned against the group's rotation, and flipped on one axis when the group
+// mirrors, since a bounded box never flips but its content does. Of the two flips that undo
+// a mirror, the one needing the smaller turn is taken. False when no such transform exists:
+// the group turns the canvas axes into directions that are not perpendicular (a rotated group
+// scaled unevenly), so no rectangle in its space draws as the canvas; or when
+// SceneItems::GroupToCanvas is. `groupItem` is the group item drawing `item`, null for a
+// top-level item.
+bool CanvasFillTransform(obs_sceneitem_t *item, obs_sceneitem_t *groupItem, uint32_t baseWidth, uint32_t baseHeight,
+			 obs_bounds_type boundsType, obs_transform_info &info)
+{
+	constexpr float kPerpendicularTolerance = 1e-4f;
+	constexpr float kWholeDegreeSnap = 1e-3f;
+
+	matrix4 ownerToCanvas;
+	vec2 canvasX, canvasY, ownerX, ownerY;
+	vec2_set(&canvasX, 1.0f, 0.0f);
+	vec2_set(&canvasY, 0.0f, 1.0f);
+	if (!SceneItems::GroupToCanvas(groupItem, ownerToCanvas) ||
+	    !CanvasToOwnerVector(ownerToCanvas, canvasX, ownerX) ||
+	    !CanvasToOwnerVector(ownerToCanvas, canvasY, ownerY)) {
+		return false;
+	}
+	const float lenX = vec2_len(&ownerX);
+	const float lenY = vec2_len(&ownerY);
+	vec2 dirX, dirY;
+	vec2_divf(&dirX, &ownerX, lenX);
+	vec2_divf(&dirY, &ownerY, lenY);
+	if (std::fabs(vec2_dot(&dirX, &dirY)) > kPerpendicularTolerance) {
+		return false;
+	}
+
+	// The box's own x runs along `boxX` and its y a quarter turn clockwise from that, which
+	// is +dirY unless the group mirrors.
+	vec2 boxX = dirX;
+	float flipX = 1.0f;
+	float flipY = 1.0f;
+	if (dirX.x * dirY.y - dirX.y * dirY.x < 0.0f) {
+		const float turnKeepingX = std::fabs(std::atan2(dirX.y, dirX.x));
+		const float turnFlippingX = std::fabs(std::atan2(-dirX.y, -dirX.x));
+		if (turnFlippingX < turnKeepingX) {
+			vec2_neg(&boxX, &dirX);
+			flipX = -1.0f;
+		} else {
+			flipY = -1.0f;
+		}
+	}
+
+	float rot = DEG(std::atan2(boxX.y, boxX.x));
+	if (std::fabs(rot - std::round(rot)) < kWholeDegreeSnap) {
+		rot = std::round(rot);
+	}
+	rot = std::fmod(rot + 360.0f, 360.0f);
+
+	// The box's origin corner sits on the canvas corner its flips point away from.
+	vec2 origin;
+	vec2_set(&origin, (flipX < 0.0f ? float(baseWidth) : 0.0f) - ownerToCanvas.t.x,
+		 (flipY < 0.0f ? float(baseHeight) : 0.0f) - ownerToCanvas.t.y);
+	if (!CanvasToOwnerVector(ownerToCanvas, origin, info.pos)) {
+		return false;
+	}
+	info.rot = rot;
+	vec2_set(&info.scale, flipX, flipY);
+	info.alignment = OBS_ALIGN_LEFT | OBS_ALIGN_TOP;
+	info.bounds_type = boundsType;
+	info.bounds_alignment = OBS_ALIGN_CENTER;
+	vec2_set(&info.bounds, float(baseWidth) * lenX, float(baseHeight) * lenY);
+	info.crop_to_bounds = obs_sceneitem_get_bounds_crop(item);
+	return true;
 }
 
 // After a rotation change has already been committed (box_transform reflects the
@@ -4311,7 +4444,6 @@ void RepositionForCenterPivot(obs_sceneitem_t *item, const vec3 &beforeTl, const
 // each axis it has left, or zero while the box still overlaps the canvas or already sits
 // within kMinVisiblePx of it. It keeps an item from becoming invisible and unselectable
 // until Undo; ClampItemsToCanvas applies it to a set.
-constexpr float kMinVisiblePx = 32.0f;
 vec2 CanvasClampCorrection(const vec3 &tl, const vec3 &br, uint32_t baseWidth, uint32_t baseHeight)
 {
 	vec2 correction;
@@ -4348,25 +4480,37 @@ vec2 CanvasClampCorrection(const vec3 &tl, const vec3 &br, uint32_t baseWidth, u
 // Clamp items back onto the canvas as one formation after a transform. Nothing moves while
 // any member still overlaps the canvas. Otherwise each member's own CanvasClampCorrection
 // is taken, the smallest (the one that returns the nearest member) is applied to every
-// member, so the set keeps its layout and at least that member is reachable again. A
-// group's child is left alone, because its box is in its group's space rather than the
-// canvas's. So is a member with no area (an audio source, a source not yet loaded): it has
-// nothing to make reachable, and its point box would either read as overlapping or shift
-// the whole set by its own correction. For a single item this is the clamp of that item's
-// own box.
-void ClampItemsToCanvas(obs_sceneitem_t *const *items, size_t count, uint32_t baseWidth, uint32_t baseHeight)
+// member, so the set keeps its layout and at least that member is reachable again. A group's
+// child is measured by its box as the canvas shows it, and the correction is carried into its
+// group's space for it (OffsetThroughGroup), so it moves on the canvas by what every other
+// member does. A child that takes no canvas-space placement (CanvasPlacementRefusal) is not
+// moved and does not choose the correction, but while it overlaps the canvas the set is still
+// reachable through it, so it holds the rest in place like any other member. A member whose
+// canvas box cannot be read counts for nothing, and so does a member with no area (an audio
+// source, a source not yet loaded): it has nothing to make reachable, and its point box would
+// either read as overlapping or shift the whole set by its own correction. For a single item
+// this is the clamp of that item's own box. `scene` is the scene the items, or their groups,
+// sit in.
+void ClampItemsToCanvas(obs_sceneitem_t *const *items, size_t count, uint32_t baseWidth, uint32_t baseHeight,
+			obs_scene_t *scene)
 {
-	std::vector<obs_sceneitem_t *> clamped;
+	struct Member {
+		obs_sceneitem_t *item;
+		obs_sceneitem_t *groupItem;
+	};
+	std::vector<Member> clamped;
 	vec2 correction;
 	vec2_zero(&correction);
 	float smallest = M_INFINITE;
 	for (size_t i = 0; i < count; i++) {
-		if (!items[i] || GroupSourceOf(items[i])) {
+		if (!items[i]) {
 			continue;
 		}
+		const bool child = SceneItems::GroupSourceOf(items[i]) != nullptr;
+		obs_sceneitem_t *groupItem = child ? SceneItems::GroupItemOf(items[i], scene) : nullptr;
 		vec3 tl, br;
-		GetSceneItemBox(items[i], tl, br);
-		if (br.x == tl.x || br.y == tl.y) {
+		if ((child && !groupItem) || !GetSceneItemCanvasBox(items[i], groupItem, tl, br) || br.x == tl.x ||
+		    br.y == tl.y) {
 			continue;
 		}
 		const vec2 own = CanvasClampCorrection(tl, br, baseWidth, baseHeight);
@@ -4374,16 +4518,24 @@ void ClampItemsToCanvas(obs_sceneitem_t *const *items, size_t count, uint32_t ba
 		if (magnitude == 0.0f) {
 			return;
 		}
+		if (CanvasPlacementRefusal(items[i], groupItem)) {
+			continue;
+		}
 		if (magnitude < smallest) {
 			smallest = magnitude;
 			correction = own;
 		}
-		clamped.push_back(items[i]);
+		clamped.push_back({items[i], groupItem});
 	}
-	for (obs_sceneitem_t *item : clamped) {
+	for (const Member &member : clamped) {
+		obs_sceneitem_t *item = member.item;
+		vec2 itemCorrection;
+		if (!OffsetThroughGroup(member.groupItem, correction, itemCorrection)) {
+			continue;
+		}
 		vec2 pos;
 		obs_sceneitem_get_pos(item, &pos);
-		vec2_add(&pos, &pos, &correction);
+		vec2_add(&pos, &pos, &itemCorrection);
 		obs_sceneitem_set_pos(item, &pos);
 	}
 }
@@ -4401,7 +4553,7 @@ struct TransformUndoCapture {
 TransformUndoCapture BeginTransformUndo(const json &params, obs_sceneitem_t *item)
 {
 	PinOverlayBeforeCapture(item);
-	TransformUndoCapture capture{GroupResizeDeferral(GroupItemOf(item))};
+	TransformUndoCapture capture{GroupResizeDeferral(SceneItems::GroupItemOf(item))};
 	if (capture.hold.GroupItem()) {
 		capture.batch = ItemStatesPayload(CaptureItemStates(params, item));
 	} else {
@@ -4541,7 +4693,8 @@ bool MethodSceneItemsSetTransform(const json &params, json &result, std::string 
 
 	uint32_t clampBaseW = 0, clampBaseH = 0;
 	if (ResolveBaseSize(params, clampBaseW, clampBaseH)) {
-		ClampItemsToCanvas(&item, 1, clampBaseW, clampBaseH);
+		OBSSourceAutoRelease targetScene = ResolveTargetScene(params);
+		ClampItemsToCanvas(&item, 1, clampBaseW, clampBaseH, obs_scene_from_source(targetScene));
 	}
 
 	// The scene item IS the size for a braidcast_overlay: re-lay-out its page to the box
@@ -4561,40 +4714,12 @@ bool MethodSceneItemsSetTransform(const json &params, json &result, std::string 
 	return true;
 }
 
-// Carry a canvas-pixel offset into the space `item`'s position is written in. A top-level
-// item's position is canvas space already. A child's is its group's space, so the offset
-// goes through the inverse of the linear part of the group's draw transform; translation
-// plays no part, as an offset has no origin. False when that part has no inverse: a group
-// scaled to zero on an axis, which draws nothing.
-bool OffsetInItemSpace(obs_sceneitem_t *item, const vec2 &canvasOffset, vec2 &out)
-{
-	obs_sceneitem_t *groupItem = GroupItemOf(item);
-	if (!groupItem) {
-		out = canvasOffset;
-		return true;
-	}
-	matrix4 m;
-	obs_sceneitem_get_draw_transform(groupItem, &m);
-	// libobs transforms row vectors, so a group-space (gx, gy) lands at gx * m.x + gy * m.y.
-	const float det = m.x.x * m.y.y - m.y.x * m.x.y;
-	if (det == 0.0f) {
-		return false;
-	}
-	const float gx = (m.y.y * canvasOffset.x - m.y.x * canvasOffset.y) / det;
-	const float gy = (m.x.x * canvasOffset.y - m.x.y * canvasOffset.x) / det;
-	if (!std::isfinite(gx) || !std::isfinite(gy)) {
-		return false;
-	}
-	vec2_set(&out, gx, gy);
-	return true;
-}
-
 // Move scene items by one canvas-pixel offset as a single undo step: the arrow-key nudge
 // over a whole selection. params: {canvas?, scene?, refs: [{id, group?}], dx, dy}, each
 // ref addressed as ResolveParamsItem reads it. Every ref resolves before anything moves,
 // so a stale one refuses the call. A group listed alongside its own child carries that
 // child, which is then skipped rather than moved twice, and so is a child whose group has
-// no inverse (see OffsetInItemSpace). Returns {moved}, the items actually written.
+// no inverse (see OffsetThroughGroup). Returns {moved}, the items actually written.
 bool MethodSceneItemsNudge(const json &params, json &result, std::string &error)
 {
 	const json *refs = nullptr;
@@ -4620,13 +4745,14 @@ bool MethodSceneItemsNudge(const json &params, json &result, std::string &error)
 	base.erase("refs");
 	std::vector<std::pair<obs_sceneitem_t *, OBSSourceAutoRelease>> resolved;
 	for (const json &ref : *refs) {
-		if (!ref.is_object()) {
+		const std::optional<SceneItemKey> key = Bridge::SceneItemKeyFromJson(ref);
+		if (!key) {
 			error = "invalid entry in 'refs'";
 			return false;
 		}
 		json refParams = base;
-		refParams["id"] = ref.contains("id") ? ref.at("id") : json(nullptr);
-		refParams["group"] = ref.contains("group") ? ref.at("group") : json(nullptr);
+		refParams["id"] = key->id;
+		refParams["group"] = key->IsTopLevel() ? json(nullptr) : json(key->groupUuid);
 		obs_source_t *owner = nullptr; // addref'd by ResolveParamsItem
 		obs_sceneitem_t *item = nullptr;
 		int64_t id = 0;
@@ -4647,14 +4773,19 @@ bool MethodSceneItemsNudge(const json &params, json &result, std::string &error)
 			listedGroups.push_back(obs_sceneitem_get_source(entry.first));
 		}
 	}
+	// Every ref resolved in this scene, so it is where each child's group item is looked for.
+	OBSSourceAutoRelease targetScene = ResolveTargetScene(base);
+	obs_scene_t *scene = obs_scene_from_source(targetScene);
 	std::vector<obs_sceneitem_t *> items;
 	std::vector<vec2> offsets;
 	OwnerCommits commits;
 	for (auto &entry : resolved) {
-		obs_source_t *group = GroupSourceOf(entry.first);
+		obs_source_t *group = SceneItems::GroupSourceOf(entry.first);
+		obs_sceneitem_t *groupItem = group ? SceneItems::GroupItemOf(entry.first, scene) : nullptr;
 		vec2 itemOffset;
-		if ((group && std::find(listedGroups.begin(), listedGroups.end(), group) != listedGroups.end()) ||
-		    !OffsetInItemSpace(entry.first, offset, itemOffset)) {
+		if ((group && (!groupItem ||
+			       std::find(listedGroups.begin(), listedGroups.end(), group) != listedGroups.end())) ||
+		    !OffsetThroughGroup(groupItem, offset, itemOffset)) {
 			continue;
 		}
 		items.push_back(entry.first);
@@ -4667,7 +4798,7 @@ bool MethodSceneItemsNudge(const json &params, json &result, std::string &error)
 	}
 	std::vector<GroupResizeDeferral> holds;
 	for (obs_sceneitem_t *item : items) {
-		HoldGroupOf(holds, item);
+		HoldGroupOf(holds, item, scene);
 	}
 	const std::string canvasUuid = OptString(params, "canvas");
 	const std::string sceneName = OptString(params, "scene");
@@ -4682,7 +4813,7 @@ bool MethodSceneItemsNudge(const json &params, json &result, std::string &error)
 	}
 	uint32_t baseW = 0, baseH = 0;
 	if (ResolveBaseSize(params, baseW, baseH)) {
-		ClampItemsToCanvas(items.data(), items.size(), baseW, baseH);
+		ClampItemsToCanvas(items.data(), items.size(), baseW, baseH, scene);
 	}
 	for (obs_sceneitem_t *item : items) {
 		Overlay::CommitForSourceDebounced(obs_sceneitem_get_source(item));
@@ -4699,40 +4830,31 @@ bool MethodSceneItemsNudge(const json &params, json &result, std::string &error)
 }
 
 // Center the item along the requested axes in the base canvas, replicating the
-// old frontend's CenterSelectedSceneItems: shift the item's axis-aligned box so
-// its center lands on the canvas center (accounts for rotation/bounds). Applies
-// the offset only on the axes requested so "center horizontally/vertically" move
-// a single axis while leaving the other coordinate untouched.
-void CenterItemAxis(obs_sceneitem_t *item, uint32_t baseWidth, uint32_t baseHeight, bool horizontal, bool vertical)
+// old frontend's CenterSelectedSceneItems: shift the item's axis-aligned box as the canvas
+// shows it so its center lands on the canvas center (accounts for rotation/bounds, and for a
+// child its group's transform). The box moves only along the canvas axes requested, so
+// "center horizontally/vertically" leaves the other canvas coordinate alone. Reads a box, so
+// it runs outside the item's deferred update (see ApplyPendingChildUpdate). Callers check
+// CanvasPlacementRefusal first. `groupItem` is the group item drawing `item`, null for a
+// top-level item.
+void CenterItemAxis(obs_sceneitem_t *item, obs_sceneitem_t *groupItem, uint32_t baseWidth, uint32_t baseHeight,
+		    bool horizontal, bool vertical)
 {
 	vec3 tl, br;
-	GetSceneItemBox(item, tl, br);
-
-	vec3 center;
-	vec3_set(&center, (tl.x + br.x) / 2.0f, (tl.y + br.y) / 2.0f, 0.0f);
-
-	vec3 screenCenter;
-	vec3_set(&screenCenter, float(baseWidth), float(baseHeight), 0.0f);
-	vec3_mulf(&screenCenter, &screenCenter, 0.5f);
-
-	vec3 offset;
-	vec3_sub(&offset, &screenCenter, &center);
-
-	// Translate the existing top-left by the offset (SetItemTL math).
+	if (!GetSceneItemCanvasBox(item, groupItem, tl, br)) {
+		return;
+	}
+	vec2 offset;
+	vec2_set(&offset, horizontal ? float(baseWidth) * 0.5f - (tl.x + br.x) * 0.5f : 0.0f,
+		 vertical ? float(baseHeight) * 0.5f - (tl.y + br.y) * 0.5f : 0.0f);
+	vec2 itemOffset;
+	if (!OffsetThroughGroup(groupItem, offset, itemOffset)) {
+		return;
+	}
 	vec2 pos;
 	obs_sceneitem_get_pos(item, &pos);
-	if (horizontal) {
-		pos.x += offset.x;
-	}
-	if (vertical) {
-		pos.y += offset.y;
-	}
+	vec2_add(&pos, &pos, &itemOffset);
 	obs_sceneitem_set_pos(item, &pos);
-}
-
-void CenterItemInBase(obs_sceneitem_t *item, uint32_t baseWidth, uint32_t baseHeight)
-{
-	CenterItemAxis(item, baseWidth, baseHeight, true, true);
 }
 
 bool MethodSceneItemsTransformAction(const json &params, json &result, std::string &error)
@@ -4761,23 +4883,36 @@ bool MethodSceneItemsTransformAction(const json &params, json &result, std::stri
 	if (!ResolveParamsItem(params, sceneSource, item, id, error)) {
 		return false;
 	}
-	// These place the item against the canvas, but a child's transform is in its group's
-	// space; rotate, flip and reset mean the same in either space.
-	static const char *kCanvasSpaceActions[] = {"center", "centerVertical", "centerHorizontal", "fitToScreen",
-						    "stretchToScreen"};
-	const bool inGroup = obs_source_is_group(sceneSource);
-	if (inGroup && std::any_of(std::begin(kCanvasSpaceActions), std::end(kCanvasSpaceActions),
-				   [&action](const char *a) { return action == a; })) {
+	uint32_t baseW = 0, baseH = 0;
+	const bool haveBaseSize = ResolveBaseSize(params, baseW, baseH);
+
+	OBSSourceAutoRelease targetScene = ResolveTargetScene(params);
+	obs_scene_t *scene = obs_scene_from_source(targetScene);
+	obs_sceneitem_t *groupItem = SceneItems::GroupItemOf(item, scene);
+
+	// These place the item against the canvas, which a child's group can refuse; rotate, flip
+	// and reset mean the same in either space. Settled before the undo capture, which can
+	// already write to the item, and under a hold on the group's re-fit, so the group transform
+	// they read is still the one the write lands in.
+	GroupResizeDeferral placementHold(groupItem);
+	const bool isCenterAction = action == "center" || action == "centerVertical" || action == "centerHorizontal";
+	const bool isFillAction = action == "fitToScreen" || action == "stretchToScreen";
+	const char *refusal = (isCenterAction || isFillAction) ? CanvasPlacementRefusal(item, groupItem) : nullptr;
+	obs_transform_info fill;
+	if (!refusal && isFillAction &&
+	    !CanvasFillTransform(item, groupItem, baseW, baseH,
+				 action == "fitToScreen" ? OBS_BOUNDS_SCALE_INNER : OBS_BOUNDS_STRETCH, fill)) {
+		refusal = "its group is rotated and scaled unevenly, so no box in it draws as the canvas";
+	}
+	if (refusal) {
 		obs_source_release(sceneSource);
-		error = "transformAction '" + action + "' is not supported for items inside a group yet";
+		error = "transformAction '" + action + "' cannot place this item against the canvas: " + refusal;
 		return false;
 	}
 
 	TransformUndoCapture undoCapture = BeginTransformUndo(params, item);
+	placementHold.End();
 	const std::string undoName = TransformUndoName(obs_sceneitem_get_source(item));
-
-	uint32_t baseW = 0, baseH = 0;
-	const bool haveBaseSize = ResolveBaseSize(params, baseW, baseH);
 
 	vec3 boxBeforeTl, boxBeforeBr;
 	const bool isRotateAction = (action == "rotate90cw" || action == "rotate90ccw" || action == "rotate180");
@@ -4785,74 +4920,66 @@ bool MethodSceneItemsTransformAction(const json &params, json &result, std::stri
 		GetSceneItemBox(item, boxBeforeTl, boxBeforeBr);
 	}
 
-	obs_sceneitem_defer_update_begin(item);
+	// Centering is one position write, so it takes no deferred update: ending one on a
+	// top-level item updates its transform again and announces a second change.
+	if (isCenterAction) {
+		CenterItemAxis(item, groupItem, baseW, baseH, action != "centerVertical", action != "centerHorizontal");
+	} else {
+		obs_sceneitem_defer_update_begin(item);
 
-	if (action == "reset") {
-		obs_transform_info info;
-		vec2_set(&info.pos, 0.0f, 0.0f);
-		info.rot = 0.0f;
-		vec2_set(&info.scale, 1.0f, 1.0f);
-		info.alignment = OBS_ALIGN_TOP | OBS_ALIGN_LEFT;
-		info.bounds_type = OBS_BOUNDS_NONE;
-		info.bounds_alignment = OBS_ALIGN_CENTER;
-		vec2_set(&info.bounds, 0.0f, 0.0f);
-		info.crop_to_bounds = false;
-		obs_sceneitem_set_info2(item, &info);
+		if (action == "reset") {
+			obs_transform_info info;
+			vec2_set(&info.pos, 0.0f, 0.0f);
+			info.rot = 0.0f;
+			vec2_set(&info.scale, 1.0f, 1.0f);
+			info.alignment = OBS_ALIGN_TOP | OBS_ALIGN_LEFT;
+			info.bounds_type = OBS_BOUNDS_NONE;
+			info.bounds_alignment = OBS_ALIGN_CENTER;
+			vec2_set(&info.bounds, 0.0f, 0.0f);
+			info.crop_to_bounds = false;
+			obs_sceneitem_set_info2(item, &info);
 
-		obs_sceneitem_crop crop = {};
-		obs_sceneitem_set_crop(item, &crop);
-	} else if (action == "flipH" || action == "flipV") {
-		obs_transform_info info;
-		obs_sceneitem_get_info2(item, &info);
-		if (action == "flipH") {
-			info.scale.x = -info.scale.x;
-		} else {
-			info.scale.y = -info.scale.y;
+			obs_sceneitem_crop crop = {};
+			obs_sceneitem_set_crop(item, &crop);
+		} else if (action == "flipH" || action == "flipV") {
+			obs_transform_info info;
+			obs_sceneitem_get_info2(item, &info);
+			if (action == "flipH") {
+				info.scale.x = -info.scale.x;
+			} else {
+				info.scale.y = -info.scale.y;
+			}
+			obs_sceneitem_set_info2(item, &info);
+		} else if (isFillAction) {
+			// Mirrors the old frontend's CenterAlignSelectedItems (see CanvasFillTransform).
+			obs_sceneitem_set_info2(item, &fill);
+		} else if (action == "rotate90cw" || action == "rotate90ccw" || action == "rotate180") {
+			// Rotation only, matching classic OBS: leave pos/scale untouched and
+			// normalize the result to [0, 360).
+			float rot = obs_sceneitem_get_rot(item);
+			if (action == "rotate90cw") {
+				rot += 90.0f;
+			} else if (action == "rotate90ccw") {
+				rot -= 90.0f;
+			} else {
+				rot += 180.0f;
+			}
+			rot = std::fmod(rot, 360.0f);
+			if (rot < 0.0f) {
+				rot += 360.0f;
+			}
+			obs_sceneitem_set_rot(item, rot);
 		}
-		obs_sceneitem_set_info2(item, &info);
-	} else if (action == "fitToScreen" || action == "stretchToScreen") {
-		// Mirror the old frontend's CenterAlignSelectedItems: identity
-		// pos/scale, left/top alignment, bounds = base size, centered.
-		obs_transform_info info;
-		vec2_set(&info.pos, 0.0f, 0.0f);
-		info.rot = 0.0f;
-		vec2_set(&info.scale, 1.0f, 1.0f);
-		info.alignment = OBS_ALIGN_LEFT | OBS_ALIGN_TOP;
-		info.bounds_type = (action == "fitToScreen") ? OBS_BOUNDS_SCALE_INNER : OBS_BOUNDS_STRETCH;
-		info.bounds_alignment = OBS_ALIGN_CENTER;
-		vec2_set(&info.bounds, float(baseW), float(baseH));
-		info.crop_to_bounds = obs_sceneitem_get_bounds_crop(item);
-		obs_sceneitem_set_info2(item, &info);
-	} else if (action == "rotate90cw" || action == "rotate90ccw" || action == "rotate180") {
-		// Rotation only, matching classic OBS: leave pos/scale untouched and
-		// normalize the result to [0, 360).
-		float rot = obs_sceneitem_get_rot(item);
-		if (action == "rotate90cw") {
-			rot += 90.0f;
-		} else if (action == "rotate90ccw") {
-			rot -= 90.0f;
-		} else {
-			rot += 180.0f;
-		}
-		rot = std::fmod(rot, 360.0f);
-		if (rot < 0.0f) {
-			rot += 360.0f;
-		}
-		obs_sceneitem_set_rot(item, rot);
-	} else if (action == "centerHorizontal" || action == "centerVertical") {
-		CenterItemAxis(item, baseW, baseH, action == "centerHorizontal", action == "centerVertical");
-	} else { // center
-		CenterItemInBase(item, baseW, baseH);
+
+		obs_sceneitem_defer_update_end(item);
 	}
-
-	obs_sceneitem_defer_update_end(item);
 
 	if (isRotateAction) {
 		RepositionForCenterPivot(item, boxBeforeTl, boxBeforeBr);
 	}
 
 	if (haveBaseSize) {
-		ClampItemsToCanvas(&item, 1, baseW, baseH);
+		ClampItemsToCanvas(&item, 1, baseW, baseH, scene);
 	}
 
 	// The scene item IS the size for a braidcast_overlay: re-lay-out its page to the box
@@ -5210,7 +5337,7 @@ bool MethodSourcesDuplicate(const json &params, json &result, std::string &error
 	const char *dupNameC = obs_source_get_name(dup);
 	const std::string dupName = dupNameC ? dupNameC : uniqueName;
 
-	GroupResizeDeferral hold(GroupItemOf(item));
+	GroupResizeDeferral hold(SceneItems::GroupItemOf(item));
 	obs_sceneitem_t *newItem = obs_scene_add(scene, dup); // scene takes its own ref
 	const int64_t newId = newItem ? obs_sceneitem_get_id(newItem) : 0;
 
@@ -5344,7 +5471,7 @@ bool MethodSceneItemsGroup(const json &params, json &result, std::string &error)
 		if (!entry.is_number_integer()) {
 			continue;
 		}
-		obs_sceneitem_t *item = FindSceneItem(scene, entry.get<int64_t>());
+		obs_sceneitem_t *item = obs_scene_find_sceneitem_by_id(scene, entry.get<int64_t>());
 		if (item && !obs_sceneitem_is_group(item) &&
 		    std::find(items.begin(), items.end(), item) == items.end()) {
 			items.push_back(item);
@@ -11633,6 +11760,35 @@ obs_source_t *AcquireSceneByUuid(const std::string &uuid)
 	return AcquireSourceByUuidAs(uuid, obs_scene_from_source);
 }
 
+json SceneItemRefsJson(const std::vector<SceneItemKey> &keys)
+{
+	json refs = json::array();
+	for (const SceneItemKey &key : keys) {
+		refs.push_back(json{{"id", key.id}, {"group", key.IsTopLevel() ? json(nullptr) : json(key.groupUuid)}});
+	}
+	return refs;
+}
+
+std::optional<SceneItemKey> SceneItemKeyFromJson(const json &ref)
+{
+	if (!ref.is_object()) {
+		return std::nullopt;
+	}
+	const auto idIt = ref.find("id");
+	const std::optional<int64_t> id = idIt != ref.end() ? SelectionEntryId(*idIt) : std::nullopt;
+	if (!id) {
+		return std::nullopt;
+	}
+	const auto groupIt = ref.find("group");
+	if (groupIt == ref.end() || groupIt->is_null()) {
+		return SceneItemKey(*id);
+	}
+	if (!groupIt->is_string()) {
+		return std::nullopt;
+	}
+	return SceneItemKey(*id, groupIt->get<std::string>());
+}
+
 std::string CaptureItemTransformStates(const std::string &canvasUuid, const std::string &sceneName,
 				       obs_sceneitem_t *const *items, size_t count)
 {
@@ -14424,6 +14580,7 @@ void Init()
 		{"sceneItems.setBlendingMode", MethodSceneItemsSetBlendingMode},
 		{"sceneItems.setBlendingMethod", MethodSceneItemsSetBlendingMethod},
 		{"sceneItems.setColor", MethodSceneItemsSetColor},
+		{"sceneItems.setCollapsed", MethodSceneItemsSetCollapsed},
 		{"sceneItems.group", MethodSceneItemsGroup},
 		{"sceneItems.createGroup", MethodSceneItemsCreateGroup},
 		{"sceneItems.ungroup", MethodSceneItemsUngroup},

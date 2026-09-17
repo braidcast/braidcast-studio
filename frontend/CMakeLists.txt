@@ -137,6 +137,8 @@ target_sources(
     src/scene/main_channel.hpp
     src/scene/scene_collections.cpp
     src/scene/scene_collections.hpp
+    src/scene/scene_items.cpp
+    src/scene/scene_items.hpp
     src/scene/scene_persistence.cpp
     src/scene/scene_persistence.hpp
     src/windowing/tray.cpp
@@ -582,6 +584,7 @@ set_source_files_properties(
   src/audio/AudioMonitor.cpp
   src/scene/main_channel.cpp
   src/scene/scene_collections.cpp
+  src/scene/scene_items.cpp
   src/scene/scene_persistence.cpp
   src/windowing/tray.cpp
   src/scene/transitions.cpp

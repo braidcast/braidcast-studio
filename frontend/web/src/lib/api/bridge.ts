@@ -906,9 +906,26 @@ export interface TransformTarget extends SceneItemRef {
 /** Names one scene item within a scene: `id` is unique only within its owner. */
 export interface SceneItemRef {
   id: number;
-  /** The owning group's source uuid when `id` names a group's child; omit (or null) for
-   * a scene's own item. */
-  group?: string | null;
+  /** The owning group's source uuid when `id` names a group's child; null for a scene's
+   * own item. Required so that no address can be built from an id alone. */
+  group: string | null;
+}
+
+/** Params for `preview.select`. `refs` wins over `ids`, which names top-level items only; the
+ * host dedupes either by (group, id), a repeat keeping its last position, and the last member
+ * is the focus it echoes back. */
+export interface PreviewSelectParams {
+  canvas?: string;
+  window?: number;
+  scene?: string | null;
+  refs?: SceneItemRef[];
+  ids?: number[];
+}
+
+/** Params for `sceneItems.setCollapsed`: a top-level group row's collapsed state in a
+ * sources tree, saved on the group item. Not an undo step. */
+export interface SceneItemsSetCollapsedParams extends TransformTarget {
+  collapsed: boolean;
 }
 
 /** Params for `sceneItems.nudge`: move every ref by one offset in canvas pixels (y down) as
@@ -1719,8 +1736,9 @@ export interface ObsMethods {
   "preview.freeze": { dataUri: string; width: number; height: number };
   "preview.destroy": null;
   // `selected` is the ANCHOR (last) member, kept so single-selection callers read
-  // exactly as before; `selectedIds` is the whole set the preview now holds.
-  "preview.select": { selected: number | null; selectedIds: number[] };
+  // exactly as before; `selectedIds` is the whole set the preview now holds, and
+  // `selectedRefs` that same set with each member's owning group.
+  "preview.select": { selected: number | null; selectedIds: number[]; selectedRefs: SceneItemRef[] };
   // Per-surface view: `fixed` = pinned scale rather than fit-to-window, `zoomPercent`
   // = the scale the NEXT frame will draw at, `locked` = editing gestures blocked.
   // Every one of these answers with that same shape, already reflecting the command
@@ -1783,6 +1801,8 @@ export interface ObsMethods {
   // Create a new empty group in the target scene ({ scene?, canvas?, name? }).
   "sceneItems.createGroup": { id: number; source: string };
   "sceneItems.ungroup": { ungrouped: boolean };
+  // Collapse or expand a group row (SceneItemsSetCollapsedParams); emits sceneItems.changed.
+  "sceneItems.setCollapsed": Record<string, never>;
   // Numeric transform read/edit (Edit Transform dialog). getTransform loads the
   // full geometry; setTransform applies a partial (send only changed fields) and
   // echoes the full updated transform; transformAction runs a quick action and
@@ -2291,8 +2311,24 @@ export interface ObsEvents {
   // collide across canvases).
   // `ids` is the whole preview selection, insertion-ordered; `id` is its focus (the
   // last member), so a single-selection reader behaves exactly as it did before
-  // multi-select existed. An empty `ids` means nothing is selected.
-  "sceneItem.selected": { scene: string | null; id: number | null; ids: number[]; canvas: string | null };
+  // multi-select existed. An empty `ids` means nothing is selected. `refs` is the same set
+  // with each member's owning group (focus last), and `group` is the focus's group; `ids`
+  // alone cannot tell a group's child from the top-level item sharing its id.
+  "sceneItem.selected": {
+    scene: string | null;
+    id: number | null;
+    ids: number[];
+    refs: SceneItemRef[];
+    group: string | null;
+    canvas: string | null;
+  };
+  // Any left or right button press on a preview surface, broadcast to all windows like the
+  // events below. The overlay never takes DOM focus, so this is how the page learns the user
+  // has moved on from whatever it had focused.
+  "preview.pointerDown": {
+    canvas: string | null;
+    window: number;
+  };
   // Right-click in a native preview overlay (WM_RBUTTONUP). Broadcast to ALL
   // windows; the host dock filters by `window === WINDOW_ID` + its own canvas
   // (null = Default surface) and maps the device-px cursor to viewport coords via

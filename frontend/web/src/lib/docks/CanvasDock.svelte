@@ -4,7 +4,10 @@
     obs,
     type SceneInfo,
     type SceneItem,
+    type SceneItemRef,
     type ReorderDirection,
+    type PreviewSelectParams,
+    type SceneItemsSetCollapsedParams,
     type MultistreamState,
     type SceneLinkInfo,
     type PreviewHitTarget,
@@ -52,7 +55,10 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   import AddSourceModal from "$lib/dialogs/add-source/AddSourceModal.svelte";
   import PropertiesModal from "$lib/properties/PropertiesModal.svelte";
   import Icon from "$lib/ui/Icon.svelte";
-  import IconButton from "$lib/ui/IconButton.svelte";
+  import SourceTree from "$lib/docking/SourceTree.svelte";
+  import { siblingPosition, visibleRows } from "$lib/docking/sourceTree";
+  import { PendingRename } from "$lib/docking/pendingRename.svelte";
+  import { itemTarget, sameItem, toRef } from "$lib/utils/sceneItemRef";
   import ListToolbar, { type ToolAction } from "$lib/docking/ListToolbar.svelte";
   import FilterReveal from "$lib/docking/FilterReveal.svelte";
   import Splitter from "$lib/docking/Splitter.svelte";
@@ -434,16 +440,15 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   // The Sources toolbar acts on the primary row (the OBS list convention); these
   // derive the target + its index so delete/move can disable when there is none.
   let selectedItem = $derived(selection.item);
-  let selectedIdx = $derived(selectedItem ? items.findIndex((i) => i.id === selectedItem.id) : -1);
+  let selectedPos = $derived(selectedItem ? siblingPosition(items, selectedItem) : { index: -1, count: 0 });
+
+  // Item calls are addressed through here, so the owning group rides along with the id.
+  const at = (item: SceneItemRef) => itemTarget({ canvas: canvasUuid, scene: currentScene }, item);
 
   // ---- source name filter (behind the toolbar reveal) ------------------------
   let sourceFilter = $state("");
   let sourceFiltering = $derived(sourceFilter.trim().length > 0);
-  let filteredItems = $derived(
-    sourceFiltering
-      ? items.filter((i) => (i.source ?? "").toLowerCase().includes(sourceFilter.trim().toLowerCase()))
-      : items,
-  );
+  let sourceRows = $derived(visibleRows(items, sourceFilter));
 
   // Request-generation guard: a fast scene switch must not let a slow prior list
   // response overwrite the newer scene's sources.
@@ -464,128 +469,77 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
       report(e);
     }
   }
-  // Plain click selects just this row; Ctrl/Cmd toggles it in/out of the set; Shift
-  // extends from the pivot over the visible (filtered) order. Every branch pushes the
+  // The tree changed the selection (a click or a key, plain or with a modifier). Push the
   // resulting set, focused row last, to the native preview, which draws the same selection
   // this list shows.
-  function selectItem(e: MouseEvent, item: SceneItem) {
+  function onTreeSelect() {
     activeSurface.claimSource(surfaceOwner, canvasUuid, selection);
-    if (e.shiftKey) {
-      selection.range(item, filteredItems);
-    } else if (e.ctrlKey || e.metaKey) {
-      selection.toggle(item);
-    } else {
-      selection.selectOne(item);
-    }
-    selection.pushToPreview((ids) =>
-      obs.call("preview.select", { canvas: canvasUuid, window: WINDOW_ID, scene: currentScene, ids }),
-    );
+    selection.pushToPreview((refs) => {
+      const params: PreviewSelectParams = { canvas: canvasUuid, window: WINDOW_ID, scene: currentScene, refs };
+      return obs.call("preview.select", params);
+    });
   }
   async function toggleVisible(item: SceneItem) {
     try {
-      await obs.call("sceneItems.setVisible", {
-        canvas: canvasUuid,
-        scene: currentScene,
-        id: item.id,
-        visible: !item.visible,
-      });
+      await obs.call("sceneItems.setVisible", { ...at(item), visible: !item.visible });
     } catch (e) {
       report(e);
     }
   }
   async function toggleLocked(item: SceneItem) {
     try {
-      await obs.call("sceneItems.setLocked", {
-        canvas: canvasUuid,
-        scene: currentScene,
-        id: item.id,
-        locked: !item.locked,
-      });
+      await obs.call("sceneItems.setLocked", { ...at(item), locked: !item.locked });
     } catch (e) {
       report(e);
     }
   }
   async function reorder(item: SceneItem, direction: ReorderDirection) {
     try {
-      await obs.call("sceneItems.reorder", { canvas: canvasUuid, scene: currentScene, id: item.id, direction });
+      await obs.call("sceneItems.reorder", { ...at(item), direction });
     } catch (e) {
       report(e);
     }
   }
 
-  // Drag-to-reorder. `to` is the drop row's top-first index (the same order this
-  // list renders and sceneItems.list returns); the bridge moves the dragged item
-  // there as one undo action, the same as the up/down buttons. Disabled while
-  // filtering, since indices only make sense against the full ordering.
-  let dragId = $state<number | null>(null);
-  let dragOverIdx = $state<number | null>(null);
-
-  function onDragStart(e: DragEvent, item: SceneItem) {
-    if (sourceFiltering) {
-      return;
-    }
-    dragId = item.id;
-    if (e.dataTransfer) {
-      e.dataTransfer.effectAllowed = "move";
-      e.dataTransfer.setData("text/plain", String(item.id)); // Firefox requires data
-    }
-  }
-
-  function onDragOver(e: DragEvent, idx: number) {
-    if (dragId === null) {
-      return;
-    }
-    e.preventDefault(); // mark this a valid drop target
-    if (e.dataTransfer) {
-      e.dataTransfer.dropEffect = "move";
-    }
-    dragOverIdx = idx;
-  }
-
-  function onDrop(e: DragEvent, idx: number) {
-    e.preventDefault();
-    const id = dragId;
-    dragId = null;
-    dragOverIdx = null;
-    if (id === null) {
-      return;
-    }
-    const from = items.findIndex((i) => i.id === id);
-    if (from < 0 || from === idx) {
-      return;
-    }
-    void reorderTo(id, idx);
-  }
-
-  function onDragEnd() {
-    dragId = null;
-    dragOverIdx = null;
-  }
-
-  async function reorderTo(id: number, to: number) {
+  // Drag-to-reorder (SourceTree): `to` is the drop row's top-first index within the
+  // dragged item's own owner, the same order sceneItems.list returns; the bridge moves the
+  // item there as one undo action, the same as the up/down buttons.
+  async function reorderTo(item: SceneItem, to: number) {
     try {
-      await obs.call("sceneItems.reorder", { canvas: canvasUuid, scene: currentScene, id, to });
+      await obs.call("sceneItems.reorder", { ...at(item), to });
     } catch (e) {
       report(e);
+    }
+  }
+  // Collapse state is saved on the group item and read back from the list it reloads.
+  // Resolves to whether the host took it.
+  async function setCollapsed(item: SceneItem, collapsed: boolean): Promise<boolean> {
+    try {
+      const params: SceneItemsSetCollapsedParams = { ...at(item), collapsed };
+      await obs.call("sceneItems.setCollapsed", params);
+      return true;
+    } catch (e) {
+      report(e);
+      return false;
     }
   }
   async function remove(item: SceneItem) {
     try {
-      await obs.call("sceneItems.remove", { canvas: canvasUuid, scene: currentScene, id: item.id });
+      await obs.call("sceneItems.remove", at(item));
     } catch (e) {
       report(e);
     }
   }
 
-  // Batch remove: loop the existing single-item bridge remove once per selected id (no
+  // Batch remove: loop the existing single-item bridge remove once per selected ref (no
   // new bridge method; each removal stays independently undoable). Falls back to the
-  // primary row when nothing is in the set. Snapshot the ids — the removals fire reload
+  // primary row when nothing is in the set. Snapshot the refs — the removals fire reload
   // events that shrink the set mid-loop.
   async function removeSelected() {
-    const ids = selection.size > 0 ? [...selection.ids] : selectedItem ? [selectedItem.id] : [];
-    for (const id of ids) {
+    const refs = selection.size > 0 ? selection.removalRefs : selectedItem ? [selectedItem] : [];
+    for (const ref of refs) {
       try {
-        await obs.call("sceneItems.remove", { canvas: canvasUuid, scene: currentScene, id });
+        await obs.call("sceneItems.remove", at(ref));
       } catch (e) {
         report(e);
       }
@@ -599,7 +553,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     addingSource = false;
     propsForSource = created.source;
     void loadItems().then(() => {
-      const it = items.find((i) => i.id === created.id);
+      const it = items.find((i) => sameItem(i, { id: created.id, group: null }));
       if (it) {
         activeSurface.claimSource(surfaceOwner, canvasUuid, selection);
         selection.selectOne(it);
@@ -613,31 +567,35 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   }
 
   // ---- source rename (scoped to this canvas's current scene) -----------------
-  let renamingId = $state<number | null>(null);
+  let renaming = $state<SceneItemRef | null>(null);
   let renameTo = $state("");
 
+  // Holds a rename for a child of a collapsed group while the group expands.
+  const pendingRename = new PendingRename({
+    items: () => items,
+    rows: () => sourceRows,
+    filtering: () => sourceFiltering,
+    scene: () => currentScene,
+    begin: beginRenameSource,
+    expand: (group) => setCollapsed(group, false),
+  });
+
   function beginRenameSource(item: SceneItem) {
-    renamingId = item.id;
+    pendingRename.clear();
+    renaming = toRef(item);
     renameTo = item.source ?? "";
   }
   async function commitRenameSource() {
-    const id = renamingId;
+    const ref = renaming;
     const name = renameTo.trim();
-    renamingId = null;
-    if (id === null || !name) {
+    renaming = null;
+    if (ref === null || !name) {
       return;
     }
     try {
-      await obs.call("sources.rename", { canvas: canvasUuid, scene: currentScene, id, name });
+      await obs.call("sources.rename", { ...at(ref), name });
     } catch (e) {
       report(e);
-    }
-  }
-  function onRenameSourceKey(e: KeyboardEvent) {
-    if (e.key === "Enter") {
-      void commitRenameSource();
-    } else if (e.key === "Escape") {
-      renamingId = null;
     }
   }
 
@@ -646,7 +604,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   // lands in this canvas's current scene. Filter copy/paste keys off the source
   // name and so shares the same clipboard slots as the global SourcesDock.
   function copySource(item: SceneItem) {
-    void copyItem({ canvas: canvasUuid, scene: currentScene, id: item.id }, item);
+    void copyItem(at(item), item);
   }
   async function pasteSource() {
     try {
@@ -664,7 +622,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   }
   async function duplicateItem(item: SceneItem) {
     try {
-      await obs.call("sources.duplicate", { canvas: canvasUuid, scene: currentScene, id: item.id });
+      await obs.call("sources.duplicate", at(item));
     } catch (e) {
       report(e);
     }
@@ -691,11 +649,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   }
   async function copyTransform(item: SceneItem) {
     try {
-      clipboard.transform = await obs.call("sceneItems.getTransform", {
-        canvas: canvasUuid,
-        scene: currentScene,
-        id: item.id,
-      });
+      clipboard.transform = await obs.call("sceneItems.getTransform", at(item));
     } catch (e) {
       report(e);
     }
@@ -705,12 +659,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
       return;
     }
     try {
-      await obs.call("sceneItems.setTransform", {
-        canvas: canvasUuid,
-        scene: currentScene,
-        id: item.id,
-        transform: clipboard.transform,
-      });
+      await obs.call("sceneItems.setTransform", { ...at(item), transform: clipboard.transform });
     } catch (e) {
       report(e);
     }
@@ -724,7 +673,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   }
   async function ungroupItem(item: SceneItem) {
     try {
-      await obs.call("sceneItems.ungroup", { canvas: canvasUuid, scene: currentScene, id: item.id });
+      await obs.call("sceneItems.ungroup", at(item));
     } catch (e) {
       report(e);
     }
@@ -747,7 +696,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     e.preventDefault();
     const x = e.clientX;
     const y = e.clientY;
-    const idx = items.findIndex((i) => i.id === item.id);
+    const pos = siblingPosition(items, item);
     const deint = item.source ? await fetchDeint(item.source) : { mode: "disable" as const, fieldOrder: "top" as const };
     const transitionTypeList = await transitionTypes().catch(() => []);
     // Right-clicking a row that is part of a 2+ selection acts on the whole set; a
@@ -761,22 +710,16 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
         ...(item.interactive && item.source
           ? [{ label: "Interact", action: () => void obs.call("sources.interact", { source: item.source }).catch(report) }]
           : []),
-        transformMenu({ canvas: canvasUuid, scene: currentScene, id: item.id }, item.source ?? "(unnamed)"),
+        transformMenu(at(item), item.source ?? "(unnamed)"),
         { label: "Rename", action: () => beginRenameSource(item) },
         scaleFilterMenu(item.scaleFilter, (filter) =>
-          void obs
-            .call("sceneItems.setScaleFilter", { canvas: canvasUuid, scene: currentScene, id: item.id, filter })
-            .catch(report),
+          void obs.call("sceneItems.setScaleFilter", { ...at(item), filter }).catch(report),
         ),
         blendModeMenu(item.blendMode, (mode) =>
-          void obs
-            .call("sceneItems.setBlendingMode", { canvas: canvasUuid, scene: currentScene, id: item.id, mode })
-            .catch(report),
+          void obs.call("sceneItems.setBlendingMode", { ...at(item), mode }).catch(report),
         ),
         blendMethodMenu(item.blendMethod, (method) =>
-          void obs
-            .call("sceneItems.setBlendingMethod", { canvas: canvasUuid, scene: currentScene, id: item.id, method })
-            .catch(report),
+          void obs.call("sceneItems.setBlendingMethod", { ...at(item), method }).catch(report),
         ),
         showTransitionMenu(
           item.showTransition,
@@ -784,9 +727,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
           (type) =>
             void obs
               .call("sceneItems.setShowTransition", {
-                canvas: canvasUuid,
-                scene: currentScene,
-                id: item.id,
+                ...at(item),
                 transition: type,
                 duration: item.showTransition?.duration ?? 300,
               })
@@ -794,9 +735,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
           (duration) =>
             void obs
               .call("sceneItems.setShowTransition", {
-                canvas: canvasUuid,
-                scene: currentScene,
-                id: item.id,
+                ...at(item),
                 transition: item.showTransition?.type ?? null,
                 duration,
               })
@@ -808,9 +747,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
           (type) =>
             void obs
               .call("sceneItems.setHideTransition", {
-                canvas: canvasUuid,
-                scene: currentScene,
-                id: item.id,
+                ...at(item),
                 transition: type,
                 duration: item.hideTransition?.duration ?? 300,
               })
@@ -818,9 +755,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
           (duration) =>
             void obs
               .call("sceneItems.setHideTransition", {
-                canvas: canvasUuid,
-                scene: currentScene,
-                id: item.id,
+                ...at(item),
                 transition: item.hideTransition?.type ?? null,
                 duration,
               })
@@ -837,18 +772,11 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
               ),
             ]
           : []),
-        colorMenu(item.color, (color) =>
-          void obs
-            .call("sceneItems.setColor", { canvas: canvasUuid, scene: currentScene, id: item.id, color })
-            .catch(report),
-        ),
+        colorMenu(item.color, (color) => void obs.call("sceneItems.setColor", { ...at(item), color }).catch(report)),
         {
           label: "Screenshot",
           disabled: !item.source,
-          action: () =>
-            void obs
-              .call("screenshot.takeSource", { canvas: canvasUuid, scene: currentScene, id: item.id })
-              .catch(report),
+          action: () => void obs.call("screenshot.takeSource", at(item)).catch(report),
         },
         null,
         { label: "Copy", disabled: !item.source, action: () => copySource(item) },
@@ -861,16 +789,18 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
         { label: "Copy Transform", action: () => void copyTransform(item) },
         { label: "Paste Transform", disabled: !clipboard.transform, action: () => void pasteTransform(item) },
         null,
-        { label: "Group", action: () => void groupItem(item) },
-        { label: "Ungroup", action: () => void ungroupItem(item) },
+        // A group's child is never a group itself (groups cannot nest), and Group's `ids`
+        // addresses top-level items only.
+        { label: "Group", disabled: item.group !== null, action: () => void groupItem(item) },
+        { label: "Ungroup", disabled: item.group !== null, action: () => void ungroupItem(item) },
         null,
         { label: item.visible ? "Hide" : "Show", action: () => void toggleVisible(item) },
         { label: item.locked ? "Unlock" : "Lock", action: () => void toggleLocked(item) },
         null,
-        { label: "Move Up", disabled: idx === 0, action: () => void reorder(item, "up") },
-        { label: "Move Down", disabled: idx === items.length - 1, action: () => void reorder(item, "down") },
-        { label: "Move to Top", disabled: idx === 0, action: () => void reorder(item, "top") },
-        { label: "Move to Bottom", disabled: idx === items.length - 1, action: () => void reorder(item, "bottom") },
+        { label: "Move Up", disabled: pos.index === 0, action: () => void reorder(item, "up") },
+        { label: "Move Down", disabled: pos.index === pos.count - 1, action: () => void reorder(item, "down") },
+        { label: "Move to Top", disabled: pos.index === 0, action: () => void reorder(item, "top") },
+        { label: "Move to Bottom", disabled: pos.index === pos.count - 1, action: () => void reorder(item, "bottom") },
         // Projector entries hidden pending the projector redesign.
         null,
         {
@@ -900,7 +830,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     const currentHideTransition = items.find((i) => i.id === p.id)?.hideTransition ?? null;
     return [
       ...(p.id != null
-        ? [transformMenu({ canvas: canvasUuid, scene: p.scene, id: p.id }, p.source ?? "(unnamed)")]
+        ? [transformMenu({ canvas: canvasUuid, scene: p.scene, id: p.id, group: null }, p.source ?? "(unnamed)")]
         : []),
       scaleFilterMenu(currentFilter, (filter) => void call("sceneItems.setScaleFilter", { filter })),
       blendModeMenu(currentBlendMode, (mode) => void call("sceneItems.setBlendingMode", { mode })),
@@ -998,13 +928,13 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     {
       icon: "up",
       title: "Move up",
-      disabled: sourceFiltering || selectedIdx <= 0,
+      disabled: sourceFiltering || selectedPos.index <= 0,
       onClick: () => selectedItem && void reorder(selectedItem, "up"),
     },
     {
       icon: "down",
       title: "Move down",
-      disabled: sourceFiltering || selectedIdx < 0 || selectedIdx >= items.length - 1,
+      disabled: sourceFiltering || selectedPos.index < 0 || selectedPos.index >= selectedPos.count - 1,
       onClick: () => selectedItem && void reorder(selectedItem, "down"),
     },
   ]);
@@ -1175,14 +1105,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
       return;
     }
     if (action.kind === "renameSource") {
-      const item = items.find((i) => i.id === action.id);
-      if (!item) {
-        return;
-      }
-      if (!dockAction.consume(p.seq)) {
-        return;
-      }
-      beginRenameSource(item);
+      pendingRename.serve(action.ref, () => dockAction.consume(p.seq));
       return;
     }
     if (!scenes.some((sc) => sc.name === action.name)) {
@@ -1360,56 +1283,32 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
 
     <div class="col sources-col">
       <div class="embed-head">Sources{#if currentScene}<span class="embed-head-name dot-sep">{currentScene}</span>{/if}</div>
-      <ul class="list">
-        {#each filteredItems as item, idx (item.id)}
-          <li
-            class="es-row src"
-            class:on={selection.has(item)}
-            class:hidden-src={!item.visible}
-            class:dropTarget={dragOverIdx === idx && dragId !== null && dragId !== item.id}
-            style:box-shadow={item.color ? `inset 3px 0 0 ${item.color}` : null}
-            draggable={!sourceFiltering}
-            ondragstart={(e) => onDragStart(e, item)}
-            ondragover={(e) => onDragOver(e, idx)}
-            ondrop={(e) => onDrop(e, idx)}
-            ondragend={onDragEnd}
-            oncontextmenu={(e) => void openSourceMenu(e, item)}
-          >
-            <IconButton
-              icon={item.visible ? "eye" : "eye-off"}
-              size={17}
-              iconSize={14}
-              title={item.visible ? "Hide" : "Show"}
-              aria-label={item.visible ? "Hide" : "Show"}
-              onclick={() => void toggleVisible(item)}
-            />
-            {#if renamingId === item.id}
-              <input
-                class="inline"
-                bind:value={renameTo}
-                onkeydown={onRenameSourceKey}
-                onblur={commitRenameSource}
-                use:selectOnMount
-              />
-            {:else}
-              <button class="es-label" onclick={(e) => selectItem(e, item)} ondblclick={() => openProperties(item)}
-                >{item.source ?? "(unnamed)"}</button
-              >
-            {/if}
-            <IconButton
-              icon={item.locked ? "lock" : "lock-open"}
-              size={17}
-              iconSize={12}
-              title={item.locked ? "Unlock" : "Lock"}
-              aria-label={item.locked ? "Unlock" : "Lock"}
-              onclick={() => void toggleLocked(item)}
-            />
-          </li>
-        {/each}
-        {#if currentScene && filteredItems.length === 0}
-          <li class="es-row empty">{sourceFiltering ? "No matches" : "No sources"}</li>
-        {/if}
-      </ul>
+      {#if sourceRows.length > 0}
+        <SourceTree
+          rows={sourceRows}
+          {selection}
+          variant="embed"
+          label="{canvasName} sources"
+          filtering={sourceFiltering}
+          {renaming}
+          bind:renameTo
+          onSelect={onTreeSelect}
+          onRenameCommit={() => void commitRenameSource()}
+          onRenameCancel={() => (renaming = null)}
+          onToggleVisible={(item) => void toggleVisible(item)}
+          onToggleLocked={(item) => void toggleLocked(item)}
+          onOpenProperties={openProperties}
+          onContextMenu={(e, item) => void openSourceMenu(e, item)}
+          onReorder={(item, to) => void reorderTo(item, to)}
+          onSetCollapsed={setCollapsed}
+        />
+      {:else}
+        <ul class="list">
+          {#if currentScene}
+            <li class="es-row empty">{sourceFiltering ? "No matches" : "No sources"}</li>
+          {/if}
+        </ul>
+      {/if}
       <ListToolbar left={sourcesLeft} right={sourcesRight}>
         {#snippet middle()}
           <FilterReveal bind:value={sourceFilter} />
@@ -1624,7 +1523,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     min-height: 0;
   }
 
-  .es-row {
+  .embed :global(.es-row) {
     position: relative;
     display: flex;
     align-items: center;
@@ -1633,11 +1532,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     cursor: pointer;
     border-bottom: var(--border-weight) solid var(--color-border-2);
   }
-  .es-row.src {
-    padding: 5px 10px;
-    cursor: default;
-  }
-  .es-row.on {
+  .embed :global(.es-row.on) {
     background: color-mix(in srgb, var(--color-accent) 11%, transparent);
   }
   /* Drag-reorder drop indicator. Outline avoids layout shift and the inline
@@ -1657,7 +1552,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   .es-row.on .es-bar {
     background: var(--color-accent);
   }
-  .es-label {
+  .embed :global(.es-label) {
     flex: 1;
     min-width: 0;
     text-align: left;
@@ -1672,13 +1567,9 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .es-row.on .es-label {
+  .embed :global(.es-row.on .es-label) {
     color: var(--color-accent);
     font-weight: 600;
-  }
-  .es-row.hidden-src .es-label {
-    color: var(--color-muted);
-    text-decoration: line-through;
   }
   /* Twin of the .dock-row focus ring in app.css — see the note there for why the indicator
      sits on the row, why it is --color-text rather than the accent, and why :where(). */

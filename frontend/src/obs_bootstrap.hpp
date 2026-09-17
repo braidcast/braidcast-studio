@@ -413,9 +413,11 @@ void RunOverlayViewportSelfTest();
 // row's owning group and a group row's top-first children and collapsed state; a child's
 // change or rename is announced for the scene a dock lists; a child transform, removal and
 // duplicate each undo and redo with the whole group, so no re-fit libobs applies in between
-// leaves a child or sibling displaced on the canvas; and canvas-space actions and the canvas
-// clamp stay off children until they are computed in canvas space; a child rotation keeps
-// its visual centre; two children drawing one source are each removed and restored as
+// leaves a child or sibling displaced on the canvas; a child's box maps to the canvas through
+// a rotated, scaled, mirrored or cropped group; center, fit, stretch and the canvas clamp place
+// a child as the canvas shows it, through rotated, mirrored and centre-aligned groups (center
+// also through a cropped one), and refuse a group they cannot place through; a child rotation
+// keeps its visual centre; two children drawing one source are each removed and restored as
 // themselves; and a re-fit hold outlives a prune of its group item. Also asserts that an
 // entry outliving its group -- renamed, ungrouped, deleted -- still resolves by uuid after
 // a rename and otherwise spends its slot and moves nothing.

@@ -38,6 +38,7 @@ export const EV = {
   sceneItemSelected: "sceneItem.selected",
   previewContextMenu: "preview.contextMenu",
   previewPointerOver: "preview.pointerOver",
+  previewPointerDown: "preview.pointerDown",
   filterPreviewClosed: "filterPreview.closed",
   chatState: "chat.state",
   chatMessage: "chat.message",
