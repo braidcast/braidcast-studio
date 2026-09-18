@@ -152,7 +152,12 @@ const OBSOverlay = {
     if (!url) return;
     const a = new Audio(url);
     a.volume = Math.max(0, Math.min(1, volume));
-    void a.play().catch(() => {});
+    // console.error, not log: obs-browser forwards only errors to the session log.
+    void a.play().catch((e: unknown) => {
+      // The query carries the overlay access token, which must not reach the log.
+      const path = url.split("?")[0];
+      console.error(`OBSOverlay playSound failed: ${e instanceof Error ? e.name : String(e)} ${path}`);
+    });
   },
 };
 

@@ -133,7 +133,15 @@ void App::OnBeforeCommandLineProcessing(const CefString &process_type, CefRefPtr
 	// Backgrounded renderers also get their timers clamped to ~1/minute, which stalls
 	// any interval-driven UI in a detached dock window the user isn't looking at.
 	command_line->AppendSwitch("disable-background-timer-throttling");
-	command_line->AppendSwitchWithValue("disable-features", "CalculateNativeWinOcclusion");
+	// One disable-features value for every feature: a second disable-features switch
+	// replaces this one rather than merging with it. CalculateNativeWinOcclusion is ours
+	// (see above); the other three and the autoplay policy are obs-browser's BrowserApp
+	// switches, which never run because the frontend owns CEF. They keep media keys,
+	// gamepad polling and Bluetooth away from browser sources, and let an overlay play
+	// sound without the user gesture an unattended page never receives.
+	command_line->AppendSwitchWithValue("disable-features", "CalculateNativeWinOcclusion,HardwareMediaKeyHandling,"
+								"EnableWindowsGamingInputDataFetcher,WebBluetooth");
+	command_line->AppendSwitchWithValue("autoplay-policy", "no-user-gesture-required");
 
 	// --disable-gpu stops the CEF GPU-subprocess crash loop (EXCEPTION_BREAKPOINT on
 	// hardware newer than this libcef); compositing then runs via SwiftShader.
