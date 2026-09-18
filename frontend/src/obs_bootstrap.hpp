@@ -415,10 +415,14 @@ void RunOverlayViewportSelfTest();
 // duplicate each undo and redo with the whole group, so no re-fit libobs applies in between
 // leaves a child or sibling displaced on the canvas; a child's box maps to the canvas through
 // a rotated, scaled, mirrored or cropped group; center, fit, stretch and the canvas clamp place
-// a child as the canvas shows it, through rotated, mirrored and centre-aligned groups (center
-// also through a cropped one), and refuse a group they cannot place through; a child rotation
-// keeps its visual centre; two children drawing one source are each removed and restored as
-// themselves; and a re-fit hold outlives a prune of its group item. Also asserts that an
+// a child as the canvas shows it, through rotated, mirrored, centre- and bottom-right-aligned
+// groups (center also through cropped ones), and refuse a group they cannot place through;
+// those placements and a nudge undo and redo over three cycles, and a removal undoes, redoes
+// and undoes again, with the group and every child's canvas box back in place whatever the
+// group is anchored at, cropped or bounded, and a child write that keeps a cropped group's
+// extent leaves it in place; a child rotation keeps its visual centre; two children drawing
+// one source are each removed and restored as themselves; and a re-fit hold outlives a prune
+// of its group item. Also asserts that an
 // entry outliving its group -- renamed, ungrouped, deleted -- still resolves by uuid after
 // a rename and otherwise spends its slot and moves nothing.
 // Removes the temp canvas afterward; never Saves. Gated by the caller to the smoke path.

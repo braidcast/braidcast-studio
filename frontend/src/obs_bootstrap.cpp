@@ -4931,13 +4931,15 @@ void ObsBootstrap::RunSceneItemGroupSelfTest()
 			return "(" + std::to_string(tl.x) + "," + std::to_string(tl.y) + ")-(" + std::to_string(br.x) +
 			       "," + std::to_string(br.y) + ")";
 		};
-		auto groupAsBefore = [&]() {
+		auto childrenAsBefore = [&]() {
 			vec2 bScale;
 			obs_sceneitem_get_scale(childB, &bScale);
-			return samePos(posOf(groupItem), groupBefore) && samePos(posOf(childA), aBefore) &&
-			       samePos(posOf(childB), bBefore) && obs_sceneitem_get_rot(childB) == 0.0f &&
-			       bScale.x == 1.0f && bScale.y == 1.0f &&
+			return samePos(posOf(childA), aBefore) && samePos(posOf(childB), bBefore) &&
+			       obs_sceneitem_get_rot(childB) == 0.0f && bScale.x == 1.0f && bScale.y == 1.0f &&
 			       obs_sceneitem_get_bounds_type(childB) == OBS_BOUNDS_NONE;
+		};
+		auto groupAsBefore = [&]() {
+			return samePos(posOf(groupItem), groupBefore) && childrenAsBefore();
 		};
 		auto actionOnB = [&](const char *action, bool &actionOk) {
 			json p = childParams(childBId);
@@ -5069,31 +5071,118 @@ void ObsBootstrap::RunSceneItemGroupSelfTest()
 		}
 
 		// A group anchored anywhere but its top-left corner puts that anchor at a whole pixel of
-		// its extent (add_alignment and resize_scene_base in obs-scene.c) while its re-fit aims at
-		// the exact point, so every child write moves its content by up to a group pixel along
-		// each axis. `exact` is the slack for a top-left anchored group.
-		auto placementSlack = [&](float exact) {
-			return obs_sceneitem_get_alignment(groupItem) == topLeft ? exact : 2.5f;
+		// its ceiled extent (add_alignment and resize_scene_base in obs-scene.c) while its re-fit
+		// aims at the exact point, so every re-fit moves its content by under one scaled pixel of
+		// the group plus one canvas pixel along a right- or bottom-anchored axis, and half that
+		// along a centred one, which the larger of the two is a bound on. Zero for a top-left
+		// anchored group.
+		auto refitRounding = [&]() {
+			const uint32_t alignment = obs_sceneitem_get_alignment(groupItem);
+			vec2 groupScale;
+			obs_sceneitem_get_scale(groupItem, &groupScale);
+			auto axis = [](uint32_t alignment, uint32_t start, uint32_t end, float scale) {
+				if (alignment & start) {
+					return 0.0f;
+				}
+				const float scaled = std::fabs(scale);
+				return (alignment & end) ? scaled + 1.0f : std::max(scaled, 1.0f);
+			};
+			return std::hypot(axis(alignment, OBS_ALIGN_LEFT, OBS_ALIGN_RIGHT, groupScale.x),
+					  axis(alignment, OBS_ALIGN_TOP, OBS_ALIGN_BOTTOM, groupScale.y));
 		};
-		// Undo of a placement, checked to restore the group and its children in one step. Undo
-		// writes the group's position back against the extent the group has when it runs rather
-		// than the one it was captured with, so a group anchored anywhere but its top-left corner
-		// comes back offset by half the change in its extent. That is not checked here; the group
-		// is put back by hand so the cases after it start from the same place.
-		auto undoPlacement = [&](const std::string &action) {
-			undoAndSettle();
-			if (obs_sceneitem_get_alignment(groupItem) != topLeft) {
-				obs_sceneitem_set_pos(groupItem, &groupBefore);
+		// `exact` is the slack for a top-left anchored group.
+		auto placementSlack = [&](float exact) {
+			return std::max(exact, refitRounding());
+		};
+
+		// Where the group sits and every item's box as the canvas shows it: what an undo or redo of
+		// a child write has to bring back, whatever the group is anchored at.
+		struct Arrangement {
+			vec2 group;
+			vec2 top;
+			vec3 aTl, aBr, bTl, bBr;
+		};
+		auto arrangement = [&]() {
+			Arrangement out;
+			out.group = posOf(groupItem);
+			out.top = posOf(top);
+			canvasBoxOf(childA, out.aTl, out.aBr);
+			canvasBoxOf(childB, out.bTl, out.bBr);
+			return out;
+		};
+		auto arrangementText = [&](const Arrangement &a) {
+			return "group " + posText(a.group) + " a " + boxText(a.aTl, a.aBr) + " b " +
+			       boxText(a.bTl, a.bBr);
+		};
+		auto sameBox = [&](const vec3 &tl, const vec3 &br, const vec3 &otherTl, const vec3 &otherBr,
+				   float tolerance) {
+			return within(tl.x, otherTl.x, tolerance) && within(tl.y, otherTl.y, tolerance) &&
+			       within(br.x, otherBr.x, tolerance) && within(br.y, otherBr.y, tolerance);
+		};
+		auto sameArrangement = [&](const Arrangement &a, const Arrangement &b, float tolerance) {
+			return within(a.group.x, b.group.x, tolerance) && within(a.group.y, b.group.y, tolerance) &&
+			       samePos(a.top, b.top) && sameBox(a.aTl, a.aBr, b.aTl, b.aBr, tolerance) &&
+			       sameBox(a.bTl, a.bBr, b.bTl, b.bBr, tolerance);
+		};
+		// Each re-fit of a group anchored anywhere but its top-left corner can leave it up to
+		// refitRounding from where its content puts it, which is libobs's rounding rather than the
+		// undo's. Checks the group is within that of where every case starts, then puts it back
+		// there so the next case starts there too.
+		auto clearRefitResidue = [&](const std::string &label) {
+			const vec2 pos = posOf(groupItem);
+			const float offset = std::hypot(pos.x - groupBefore.x, pos.y - groupBefore.y);
+			check(label + " leaves the group within one re-fit's rounding of where it started",
+			      offset <= refitRounding() + 0.01f,
+			      "group " + posText(pos) + ", off by " + std::to_string(offset));
+			obs_sceneitem_set_pos(groupItem, &groupBefore);
+			settle();
+		};
+		// Undo and redo of the child write just made, over three cycles: each undo lands within
+		// `tolerance` of `before` with the children's own state exact, each redo within it of
+		// `after`, and the last of each where the first landed, so nothing builds up. Leaves the
+		// write undone. A top-left anchored group's position is also held to its exact slack.
+		auto undoRedoCycles = [&](const std::string &label, const Arrangement &before, const Arrangement &after,
+					  float tolerance) {
+			const bool anchoredTopLeft = obs_sceneitem_get_alignment(groupItem) == topLeft;
+			std::string undoMiss, redoMiss;
+			Arrangement firstUndone{}, firstRedone{}, redone{};
+			for (int cycle = 0; cycle < 3; cycle++) {
+				undoAndSettle();
+				const Arrangement undone = arrangement();
+				const bool childrenBack = anchoredTopLeft ? groupAsBefore() : childrenAsBefore();
+				if (undoMiss.empty() && !(childrenBack && sameArrangement(undone, before, tolerance))) {
+					undoMiss = "cycle " + std::to_string(cycle + 1) + " " +
+						   arrangementText(undone) + ", " + canvasText();
+				}
+				ObsBootstrap::Undo().Redo();
 				settle();
-				return;
+				redone = arrangement();
+				if (redoMiss.empty() && !sameArrangement(redone, after, tolerance)) {
+					redoMiss = "cycle " + std::to_string(cycle + 1) + " " + arrangementText(redone);
+				}
+				if (cycle == 0) {
+					firstUndone = undone;
+					firstRedone = redone;
+				}
 			}
-			check(action + " undo restores the group and siblings in one step", groupAsBefore(),
-			      canvasText());
+			undoAndSettle();
+			const Arrangement lastUndone = arrangement();
+			check(label + " undo restores the group and siblings in one step", undoMiss.empty(),
+			      "before " + arrangementText(before) + "; " + undoMiss);
+			check(label + " redo reapplies it", redoMiss.empty(),
+			      "after " + arrangementText(after) + "; " + redoMiss);
+			check(label + " undo and redo do not drift over three cycles",
+			      sameArrangement(lastUndone, firstUndone, 0.01f) &&
+				      sameArrangement(redone, firstRedone, 0.01f),
+			      "first undo " + arrangementText(firstUndone) + ", last " + arrangementText(lastUndone) +
+				      "; first redo " + arrangementText(firstRedone) + ", last " +
+				      arrangementText(redone));
 		};
 
 		// Centering through a rotated, unevenly scaled group: a group-space offset applied as if
 		// it were a canvas one misses the centre, and on one axis moves the other canvas axis.
-		auto centerCase = [&](const char *action, const char *groupLabel, float rot, float sx, float sy) {
+		auto centerCase = [&](const char *action, const std::string &groupLabel, float rot, float sx,
+				      float sy) {
 			setGroupTransform(rot, sx, sy);
 			vec3 bTl, bBr, aTl, aBr;
 			canvasBoxOf(childB, bTl, bBr);
@@ -5104,6 +5193,7 @@ void ObsBootstrap::RunSceneItemGroupSelfTest()
 			const float wantX = alongX ? canvasWidth * 0.5f : fromX;
 			const float wantY = alongY ? canvasHeight * 0.5f : fromY;
 			const float slack = placementSlack(0.1f);
+			const Arrangement before = arrangement();
 			bool actionOk = false;
 			actionOnB(action, actionOk);
 			vec3 bTlAfter, bBrAfter, aTlAfter, aBrAfter;
@@ -5117,7 +5207,8 @@ void ObsBootstrap::RunSceneItemGroupSelfTest()
 				      within(aTlAfter.x, aTl.x, slack) && within(aTlAfter.y, aTl.y, slack),
 			      "child b " + boxText(bTl, bBr) + " -> " + boxText(bTlAfter, bBrAfter) + ", sibling " +
 				      boxText(aTl, aBr) + " -> " + boxText(aTlAfter, aBrAfter));
-			undoPlacement(action);
+			undoRedoCycles(std::string(action) + " through a " + groupLabel, before, arrangement(),
+				       placementSlack(0.05f));
 		};
 		for (const char *action : {"center", "centerHorizontal", "centerVertical"}) {
 			centerCase(action, "rotated group", 30.0f, 1.5f, 0.75f);
@@ -5126,12 +5217,13 @@ void ObsBootstrap::RunSceneItemGroupSelfTest()
 		// Fit and stretch cover the canvas with the child's content upright: through a mirrored
 		// group only a flipped child reads unmirrored, and through a quarter-turned group only a
 		// turned one covers the canvas rather than its transpose.
-		auto fillCase = [&](const char *action, obs_bounds_type type, const char *groupLabel, float rot,
+		auto fillCase = [&](const char *action, obs_bounds_type type, const std::string &groupLabel, float rot,
 				    float sx, float sy) {
 			setGroupTransform(rot, sx, sy);
 			const float slack = placementSlack(0.25f);
 			vec3 aTl, aBr;
 			canvasBoxOf(childA, aTl, aBr);
+			const Arrangement before = arrangement();
 			bool actionOk = false;
 			actionOnB(action, actionOk);
 			matrix4 box;
@@ -5156,21 +5248,142 @@ void ObsBootstrap::RunSceneItemGroupSelfTest()
 				      std::to_string(draw.x.y) + ") (" + std::to_string(draw.y.x) + "," +
 				      std::to_string(draw.y.y) + "), sibling " + boxText(aTl, aBr) + " -> " +
 				      boxText(aTlAfter, aBrAfter));
-			undoPlacement(action);
+			undoRedoCycles(std::string(action) + " through a " + groupLabel, before, arrangement(),
+				       placementSlack(0.05f));
 		};
 		fillCase("fitToScreen", OBS_BOUNDS_SCALE_INNER, "rotated, mirrored group", 30.0f, -1.5f, 1.5f);
 		fillCase("stretchToScreen", OBS_BOUNDS_STRETCH, "quarter-turned, scaled group", 90.0f, 0.5f, 0.5f);
 
-		// A centre-aligned group is anchored at its middle, which its re-fit after a child write
-		// moves as the group's extent changes; a placement composed for a top-left anchor misses
-		// by half that change.
+		// A group anchored anywhere but its top-left corner is anchored at a fraction of its extent,
+		// which a child write changes, so an undo has to put the group back against the extent it
+		// has when the undo runs rather than the one it was captured with.
+		auto nudgeUndoCase = [&](const std::string &groupLabel) {
+			setGroupTransform(30.0f, 1.5f, 0.75f);
+			const Arrangement before = arrangement();
+			const uint32_t widthBefore = obs_source_get_width(groupSrc);
+			const uint32_t heightBefore = obs_source_get_height(groupSrc);
+			json p = base;
+			p["refs"] = json::array({json{{"id", childAId}, {"group", groupUuid}}});
+			p["dx"] = 7.0f;
+			p["dy"] = -4.0f;
+			bool nudged = false;
+			run("sceneItems.nudge", p, nudged);
+			settle();
+			check("nudge resizes a " + groupLabel,
+			      nudged && (obs_source_get_width(groupSrc) != widthBefore ||
+					 obs_source_get_height(groupSrc) != heightBefore),
+			      arrangementText(arrangement()));
+			undoRedoCycles("nudge in a " + groupLabel, before, arrangement(), placementSlack(0.05f));
+		};
+		auto removeUndoCase = [&](const std::string &groupLabel) {
+			setGroupTransform(30.0f, 1.5f, 0.75f);
+			const float tolerance = placementSlack(0.05f);
+			const Arrangement before = arrangement();
+			const uint32_t widthBefore = obs_source_get_width(groupSrc);
+			run("sceneItems.remove", childParams(childAId), ok);
+			settle();
+			vec3 bTlRemoved, bBrRemoved;
+			canvasBoxOf(childB, bTlRemoved, bBrRemoved);
+			const bool shrank = ok && !childNamed(kChildAName) &&
+					    obs_source_get_width(groupSrc) != widthBefore;
+			auto restoredText = [&]() {
+				return childA ? arrangementText(arrangement()) + ", " + canvasText()
+					      : std::string("a gone");
+			};
+			ObsBootstrap::Undo().Undo();
+			settle();
+			childA = childNamed(kChildAName);
+			const bool restored = childA && childrenAsBefore() &&
+					      sameArrangement(arrangement(), before, tolerance);
+			check("child remove undo in a " + groupLabel + " restores it and the group in place",
+			      shrank && restored, "before " + arrangementText(before) + "; " + restoredText());
+			ObsBootstrap::Undo().Redo();
+			settle();
+			vec3 bTl, bBr;
+			canvasBoxOf(childB, bTl, bBr);
+			const bool removedAgain = !childNamed(kChildAName) &&
+						  sameBox(bTl, bBr, bTlRemoved, bBrRemoved, tolerance);
+			const std::string redoneText =
+				"b " + boxText(bTl, bBr) + ", was " + boxText(bTlRemoved, bBrRemoved);
+			ObsBootstrap::Undo().Undo();
+			settle();
+			childA = childNamed(kChildAName);
+			childAId = childA ? obs_sceneitem_get_id(childA) : 0;
+			check("child remove redo and undo again in a " + groupLabel,
+			      removedAgain && childA && childrenAsBefore() &&
+				      sameArrangement(arrangement(), before, tolerance),
+			      redoneText + "; " + restoredText());
+		};
+		// A cropped group draws its content shifted by the crop, which its re-fit has to keep in
+		// place like any other child write.
+		auto croppedCase = [&](const std::string &groupLabel) {
+			obs_sceneitem_crop groupCrop{};
+			groupCrop.left = 20;
+			groupCrop.top = 10;
+			obs_sceneitem_set_crop(groupItem, &groupCrop);
+			setGroupTransform(30.0f, 1.5f, 0.75f);
+			const Arrangement before = arrangement();
+			setPos(childB, bBefore.x, bBefore.y);
+			settle();
+			check("a child write that keeps a cropped, " + groupLabel + "'s extent leaves it in place",
+			      sameArrangement(arrangement(), before, placementSlack(0.05f)),
+			      "before " + arrangementText(before) + ", after " + arrangementText(arrangement()));
+			clearRefitResidue("a child write in a cropped, " + groupLabel);
+			centerCase("center", "cropped, " + groupLabel, 30.0f, 1.5f, 0.75f);
+			clearRefitResidue("center through a cropped, " + groupLabel);
+			obs_sceneitem_crop noCrop{};
+			obs_sceneitem_set_crop(groupItem, &noCrop);
+			settle();
+		};
+
+		const std::string centreLabel = "centre-aligned, rotated group";
 		obs_sceneitem_set_alignment(groupItem, OBS_ALIGN_CENTER);
 		settle();
-		centerCase("center", "centre-aligned, rotated group", 30.0f, 1.5f, 0.75f);
-		fillCase("fitToScreen", OBS_BOUNDS_SCALE_INNER, "centre-aligned, rotated group", 30.0f, 1.25f, 1.25f);
+		centerCase("center", centreLabel, 30.0f, 1.5f, 0.75f);
+		clearRefitResidue("center through a " + centreLabel);
+		fillCase("fitToScreen", OBS_BOUNDS_SCALE_INNER, centreLabel, 30.0f, 1.25f, 1.25f);
+		clearRefitResidue("fitToScreen through a " + centreLabel);
+		nudgeUndoCase(centreLabel);
+		clearRefitResidue("nudge in a " + centreLabel);
+		removeUndoCase(centreLabel);
+		clearRefitResidue("child remove in a " + centreLabel);
+		croppedCase(centreLabel);
+		const std::string bottomRightLabel = "bottom-right-aligned, rotated group";
+		obs_sceneitem_set_alignment(groupItem, OBS_ALIGN_BOTTOM | OBS_ALIGN_RIGHT);
+		settle();
+		centerCase("center", bottomRightLabel, 30.0f, 1.5f, 0.75f);
+		clearRefitResidue("center through a " + bottomRightLabel);
+		fillCase("fitToScreen", OBS_BOUNDS_SCALE_INNER, bottomRightLabel, 30.0f, 1.25f, 1.25f);
+		clearRefitResidue("fitToScreen through a " + bottomRightLabel);
+		croppedCase(bottomRightLabel);
 		obs_sceneitem_set_alignment(groupItem, topLeft);
 		setGroupTransform(0.0f, 1.0f, 1.0f);
-		check("centre-aligned cases leave the group as it was", groupAsBefore(), canvasText());
+		check("non-top-left-aligned cases leave the group as it was", groupAsBefore(), canvasText());
+
+		// A bounded group keeps its box where it is and rescales its content into it, so its undo
+		// takes no correction for a changed extent.
+		{
+			obs_sceneitem_set_alignment(groupItem, OBS_ALIGN_CENTER);
+			vec2 groupBounds;
+			vec2_set(&groupBounds, float(obs_source_get_width(groupSrc)),
+				 float(obs_source_get_height(groupSrc)));
+			obs_sceneitem_set_bounds(groupItem, &groupBounds);
+			obs_sceneitem_set_bounds_type(groupItem, OBS_BOUNDS_STRETCH);
+			setGroupTransform(30.0f, 1.0f, 1.0f);
+			const Arrangement before = arrangement();
+			json p = childParams(childAId);
+			p["transform"] = json{{"pos", json{{"x", -50.0}, {"y", 0.0}}}};
+			run("sceneItems.setTransform", p, ok);
+			settle();
+			const Arrangement after = arrangement();
+			check("child move rescales a bounded group's content",
+			      ok && !sameArrangement(after, before, 1.0f), arrangementText(after));
+			undoRedoCycles("child move in a bounded, centre-aligned group", before, after, 0.05f);
+			obs_sceneitem_set_bounds_type(groupItem, OBS_BOUNDS_NONE);
+			obs_sceneitem_set_alignment(groupItem, topLeft);
+			setGroupTransform(0.0f, 1.0f, 1.0f);
+			check("bounded-group case leaves the group as it was", groupAsBefore(), canvasText());
+		}
 
 		// Refused before anything is written: a rotated group scaled unevenly draws no rectangle
 		// as the canvas, and a bounded group rescales its content after any child write.

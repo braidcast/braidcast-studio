@@ -2950,6 +2950,11 @@ private:
 	obs_sceneitem_t *groupItem_;
 };
 
+// Where a group item's content origin sat on the canvas when its state was captured: the
+// translation of SceneItems::GroupToCanvas. Recorded for a group item in a batch capture, and
+// read back by RestoreGroupContentOrigin.
+const char *const kGroupContentOriginKey = "contentOrigin";
+
 // The item states Bridge::CaptureItemTransformStates records, as the array itself. The
 // caller holds each group's re-fit across the read (see GroupResizeDeferral): releasing a
 // hold flags a re-fit, which a read on its own must not cause.
@@ -2962,6 +2967,10 @@ json CaptureItemStates(const std::string &canvasUuid, const std::string &sceneNa
 		// re-resolves a preview drag's payload by the identical route.
 		json state = CaptureTransformState(json{{"canvas", canvasUuid}, {"scene", sceneName}}, item);
 		PinOverlayBoundsInState(state, item);
+		matrix4 contentToCanvas;
+		if (obs_sceneitem_is_group(item) && SceneItems::GroupToCanvas(item, contentToCanvas)) {
+			state[kGroupContentOriginKey] = json{{"x", contentToCanvas.t.x}, {"y", contentToCanvas.t.y}};
+		}
 		arr.push_back(std::move(state));
 	}
 	return arr;
@@ -3123,6 +3132,45 @@ void CommitOwners(const OwnerCommits &commits, const std::vector<GroupResizeDefe
 	}
 }
 
+// Moves a just-written group item so its content origin lands where `state` recorded it
+// (kGroupContentOriginKey). The position SetItemGeometry wrote back is an anchor at a fraction
+// of the group's size, and that size is still whatever the group was last re-fitted to, not
+// the size the state was captured at; the re-fit that follows keeps the content wherever that
+// anchor puts it. A bounded group is left as written: its re-fit rescales the content into its
+// bounds and never moves the group.
+//
+// The correction is exact while nothing re-fits the group between the read below and the
+// write. A payload carrying the group's children holds the re-fit (ApplyItemStates), so the
+// size read is the one the re-fit starts from. A group item written without its children
+// takes no hold: ending one flags a re-fit, and a re-fit with nothing to change still moves a
+// group anchored anywhere but its top-left corner by libobs's rounding. Such a payload changes
+// no size, so a re-fit there comes only from a child edit made outside it. One already running
+// has finished before this runs (ApplyItemStates takes the scene's lock), but one that starts
+// between the read and the write has its position replaced by one computed against the old
+// size.
+void RestoreGroupContentOrigin(obs_sceneitem_t *item, const json &state)
+{
+	constexpr float kUnmovedPx = 1e-4f;
+
+	auto recorded = state.find(kGroupContentOriginKey);
+	matrix4 contentToCanvas;
+	if (recorded == state.end() || !recorded->is_object() || !obs_sceneitem_is_group(item) ||
+	    obs_sceneitem_get_bounds_type(item) != OBS_BOUNDS_NONE ||
+	    !SceneItems::GroupToCanvas(item, contentToCanvas)) {
+		return;
+	}
+	const float dx = recorded->value("x", contentToCanvas.t.x) - contentToCanvas.t.x;
+	const float dy = recorded->value("y", contentToCanvas.t.y) - contentToCanvas.t.y;
+	if (std::fabs(dx) <= kUnmovedPx && std::fabs(dy) <= kUnmovedPx) {
+		return;
+	}
+	vec2 pos;
+	obs_sceneitem_get_pos(item, &pos);
+	pos.x += dx;
+	pos.y += dy;
+	obs_sceneitem_set_pos(item, &pos);
+}
+
 // Apply a whole batch of captured item states as ONE undo step. Every element of
 // "items" has the shape CaptureItemTransformStates records: a CaptureTransformState
 // object with whatever PinOverlayBoundsInState pins onto it, which is what the singular
@@ -3138,7 +3186,9 @@ void CommitOwners(const OwnerCommits &commits, const std::vector<GroupResizeDefe
 // Children of a group are written with that group's re-fit deferred until every element
 // is down. The payload carries the whole group (see Bridge::CaptureItemTransformStates),
 // and a re-fit between two of its writes would move the siblings still to be written
-// against a frame the payload no longer describes.
+// against a frame the payload no longer describes. The group item is then put back where
+// its content was captured (RestoreGroupContentOrigin), so the one re-fit after the holds
+// end keeps every child where the payload puts it on the canvas.
 //
 // Returns whether anything was committed, i.e. whether any element resolved.
 bool ApplyItemStates(const json &items)
@@ -3162,8 +3212,32 @@ bool ApplyItemStates(const json &items)
 	for (const auto &write : writes) {
 		HoldGroupOf(holds, write.first);
 	}
+	// A hold stops a re-fit from starting, not one the graphics thread had already begun,
+	// which would still move a group under the writes. Re-fits run under the video lock of the
+	// scene holding the group, so taking that lock once lets any such re-fit finish. A group
+	// item written without its children holds nothing (see RestoreGroupContentOrigin) but
+	// still waits here.
+	std::vector<obs_scene_t *> awaitedScenes;
+	auto awaitRunningRefits = [&awaitedScenes](obs_sceneitem_t *groupItem) {
+		obs_scene_t *scene = obs_sceneitem_get_scene(groupItem);
+		if (std::find(awaitedScenes.begin(), awaitedScenes.end(), scene) == awaitedScenes.end()) {
+			awaitedScenes.push_back(scene);
+			obs_scene_atomic_update(scene, [](void *, obs_scene_t *) {}, nullptr);
+		}
+	};
+	for (const GroupResizeDeferral &hold : holds) {
+		awaitRunningRefits(hold.GroupItem());
+	}
+	for (const auto &write : writes) {
+		if (obs_sceneitem_is_group(write.first)) {
+			awaitRunningRefits(write.first);
+		}
+	}
 	for (const auto &write : writes) {
 		SetItemGeometry(write.first, *write.second);
+	}
+	for (const auto &write : writes) {
+		RestoreGroupContentOrigin(write.first, *write.second);
 	}
 
 	CommitOwners(commits, holds);

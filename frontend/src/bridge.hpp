@@ -221,10 +221,14 @@ inline constexpr float kMinVisiblePx = 32.0f;
 // a bounds type also moves by the same amount, while a bounded group stays put and scales
 // the resized content into its bounds. Either way a state that restored the child alone
 // would put it back into a space that has since moved, whereas the whole group restored is
-// the state the re-fit ran from, so the re-fit that follows lands where it did. A capture
-// that writes geometry between BEFORE and AFTER should hold the group's re-fit off across
-// both reads (the bridge's GroupResizeDeferral), so AFTER is what was written rather than
-// a re-fit the graphics thread may or may not have applied yet.
+// the state the re-fit ran from, so the re-fit that follows lands where it did. A group item
+// also records where its content sat on the canvas, whenever SceneItems::GroupToCanvas maps it,
+// and the restore places a group without a bounds type by that: its position is an anchor at
+// a fraction of its size, and the size it has when the restore runs is not the one it was
+// captured at. A bounded group's restore skips it. A capture that writes geometry between
+// BEFORE and AFTER should hold the group's re-fit off across both reads (the bridge's
+// GroupResizeDeferral), so AFTER is what was written rather than a re-fit the graphics
+// thread may or may not have applied yet.
 std::string CaptureItemTransformStates(const std::string &canvasUuid, const std::string &sceneName,
 				       obs_sceneitem_t *const *items, size_t count);
 
