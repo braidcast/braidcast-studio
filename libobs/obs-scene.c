@@ -3696,21 +3696,26 @@ static void resize_group(obs_sceneitem_t *group, bool scene_resize)
 
 	if (group->bounds_type == OBS_BOUNDS_NONE && !scene_resize) {
 		struct vec2 new_pos;
+		/* The draw transform maps the cropped texture, whose origin sits crop.left,
+		 * crop.top into the content, so the anchor is a fraction of the extent left
+		 * once the crop is taken off, not of the whole extent. */
+		const float crop_cx = (float)(group->crop.left + group->crop.right);
+		const float crop_cy = (float)(group->crop.top + group->crop.bottom);
 
 		if ((group->align & OBS_ALIGN_LEFT) != 0) {
 			new_pos.x = minv.x;
 		} else if ((group->align & OBS_ALIGN_RIGHT) != 0) {
-			new_pos.x = maxv.x;
+			new_pos.x = maxv.x - crop_cx;
 		} else {
-			new_pos.x = (maxv.x - minv.x) * 0.5f + minv.x;
+			new_pos.x = (maxv.x - minv.x - crop_cx) * 0.5f + minv.x;
 		}
 
 		if ((group->align & OBS_ALIGN_TOP) != 0) {
 			new_pos.y = minv.y;
 		} else if ((group->align & OBS_ALIGN_BOTTOM) != 0) {
-			new_pos.y = maxv.y;
+			new_pos.y = maxv.y - crop_cy;
 		} else {
-			new_pos.y = (maxv.y - minv.y) * 0.5f + minv.y;
+			new_pos.y = (maxv.y - minv.y - crop_cy) * 0.5f + minv.y;
 		}
 
 		transform_val(&new_pos, &group->draw_transform);
