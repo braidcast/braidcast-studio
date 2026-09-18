@@ -32,12 +32,12 @@
 </script>
 
 <script lang="ts">
-  import { unarmedLabel, type DestinationIdentity } from "$lib/stores/destinationIdentityStore.svelte";
+  import { destinationLabel, unarmedLabel, type DestinationIdentity } from "$lib/stores/destinationIdentityStore.svelte";
   import { platformChipColor, platformKey, platformName } from "$lib/theme/platformColors";
   import { TRANSPORT_STATE_COLOR } from "$lib/theme/stateColors";
-  import Avatar from "$lib/ui/Avatar.svelte";
   import CanvasMark from "$lib/ui/CanvasMark.svelte";
   import PlatformMark from "$lib/ui/PlatformMark.svelte";
+  import UnarmedAvatar from "$lib/ui/UnarmedAvatar.svelte";
   import { ABSENT_LABEL, ALL_DESTINATIONS, type DestinationSelection } from "$lib/ui/destinationSelection";
 
   interface Props {
@@ -191,10 +191,7 @@
   // parameter emits a bare marker in the parameter list -- invalid JS that only the
   // Vite build catches, never svelte-check.
   function accessibleName(d: DestinationIdentity, canvas: string, status: DestinationChipStatus | undefined): string {
-    return (
-      [platformName(d.platform), d.displayName, canvas].filter((part) => part !== "").join(" · ") +
-      (status?.note ? " — " + status.note : "")
-    );
+    return destinationLabel(d, canvas) + (status?.note ? " — " + status.note : "");
   }
 
   function hoverText(d: DestinationIdentity, canvas: string, status: DestinationChipStatus | undefined): string {
@@ -322,6 +319,7 @@
               class:on={selected}
               class:toned={tone !== ""}
               class:unselectable={unavailable}
+              class:unarmed={!g.canvas}
               aria-disabled={unavailable}
               aria-pressed={selected}
               aria-label={accessibleName(d, canvas, status)}
@@ -336,8 +334,9 @@
               }}
             >
               <!-- Platform as a mark, never as a word: the name is carried by aria-label,
-                   which is then the only carrier and must not be dropped. -->
-              <PlatformMark platform={d.platform} size={12} />
+                   which is then the only carrier and must not be dropped. Muted in the
+                   unarmed branch below so the brand hue itself doesn't read as "live". -->
+              <PlatformMark platform={d.platform} size={12} muted={!g.canvas} />
               {#if inline}
                 {@render canvasFace(inline)}
               {:else if !g.canvas}
@@ -348,11 +347,22 @@
                      be four controls with identical visible presentation. Avatar's
                      monogram fallback still discriminates before an image loads. A
                      caller that passes only armed destinations never reaches this branch.
-                     The state word rather than a dash: unarmedLabel distinguishes
-                     "disabled" from "not armed" because they ask for opposite actions,
-                     and this is the branch that exists to say which. -->
-                <Avatar url={d.channelAvatarUrl} name={d.displayName} size={14} />
-                <span class="ccanvas">{canvas}</span>
+                     State is grey, never a word: the chip's `unarmed` class dims the
+                     border, PlatformMark's `muted` greys the mark, and UnarmedAvatar
+                     (shared with EntryModal's destination picker) desaturates the
+                     avatar and draws a corner ring ONLY for boundButDisabled (a binding
+                     that exists and is merely switched off) -- distinct from plain "not
+                     armed" (no binding at all) because the two ask for opposite
+                     actions, enable vs. go create one. The word itself is carried by
+                     aria-label/title (`canvas` above is canvasWord(d)); visible text
+                     would truncate in a chip this narrow. -->
+                <UnarmedAvatar
+                  url={d.channelAvatarUrl}
+                  name={d.displayName}
+                  size={14}
+                  disabled={d.boundButDisabled}
+                  active={selected}
+                />
               {/if}
             </button>
           {/each}
@@ -429,6 +439,14 @@
     color: var(--color-text);
     background: color-mix(in srgb, var(--chip, var(--color-accent)) 14%, transparent);
   }
+  /* The unarmed/disabled destination chip's own border, dimmer than a resting chip's
+     --color-border so the box reads inert even though (unlike .unselectable) it is
+     still a live control. :not(.on) so selecting this destination as the filter still
+     wins the brand-accent border -- greying it while selected would bury the one state
+     that matters more. */
+  .chip.unarmed:not(.on) {
+    border-color: var(--color-border-2);
+  }
   /* What separates a scope chip from a destination chip is structural, not decorative:
      the scope row always opens with the `All N` text chip and the destination row never
      contains one (see withScopes above for why that holds), the divider sits between
@@ -476,23 +494,6 @@
     outline-offset: 1px;
     position: relative;
     z-index: 2;
-  }
-  .ccanvas {
-    flex: 0 0 auto;
-    font-family: var(--font-mono);
-    font-size: 9px;
-    letter-spacing: 0.08em;
-    color: var(--color-dim);
-    max-width: 9ch;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .chip.on .ccanvas {
-    color: var(--color-text);
-  }
-  .chip.unselectable .ccanvas {
-    color: var(--color-muted);
   }
   /* Transport state rides the chip's leading edge rather than a mark of its own: the
      other three sides are already spoken for (brand color = selected, dashed =

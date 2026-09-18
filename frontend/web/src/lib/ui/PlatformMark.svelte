@@ -71,15 +71,21 @@
     size?: number;
     /** Accessible name override; defaults to the platform's display label. */
     title?: string;
+    /** Swaps the brand fill for --color-dim: an inactive chip greys its avatar and
+     * border, and the saturated brand hue would read as "live" right through that --
+     * unlike an opacity blend, --color-dim is the token IconButton.svelte's own
+     * contrast sweep verified at >=3:1 (SC 1.4.11) against every preset, so muting
+     * this way keeps the mark legible instead of merely fainter. */
+    muted?: boolean;
   }
-  let { platform, size = 16, title }: Props = $props();
+  let { platform, size = 16, title, muted = false }: Props = $props();
 
   const key = $derived(platformKey(platform));
   const mark = $derived(MARKS[key]);
   // Unknown platform: a neutral square, never a blank box. The label still resolves --
   // to the raw string the caller passed if it isn't one we have a mark for -- so an
   // unrecognized provider degrades to "a dot that announces its name".
-  const color = $derived(PLATFORM_COLORS[key] || "var(--color-muted)");
+  const color = $derived(muted ? "var(--color-dim)" : PLATFORM_COLORS[key] || "var(--color-muted)");
   const label = $derived(title?.trim() || PLATFORM_LABELS[key] || platform.trim() || "Unknown platform");
 </script>
 

@@ -23,7 +23,7 @@ import { channelsStore, type ChannelRow } from "$lib/stores/channelsStore.svelte
 import { oauthStore } from "$lib/stores/oauthStore.svelte";
 import { outputBindingStore } from "$lib/stores/outputBindingStore.svelte";
 import { streamProfileStore } from "$lib/stores/streamProfileStore.svelte";
-import { platformKey } from "$lib/theme/platformColors";
+import { platformKey, platformName } from "$lib/theme/platformColors";
 
 export interface DestinationIdentity {
   profileUuid: string;
@@ -86,6 +86,13 @@ export interface DestinationIdentity {
  * schedule editor, which is exactly what three hand-written copies produce. */
 export function unarmedLabel(d: DestinationIdentity): string {
   return d.boundButDisabled ? "disabled" : "not armed";
+}
+
+/** "Platform · channel · canvas" -- a destination spelled out in words, for an
+ * aria-label or title where the chip itself shows only marks. `canvas` is the canvas
+ * name, or unarmedLabel(d) when there is none; an empty part is skipped. */
+export function destinationLabel(d: DestinationIdentity, canvas: string): string {
+  return [platformName(d.platform), d.displayName, canvas].filter((part) => part !== "").join(" · ");
 }
 
 class DestinationIdentityStore {

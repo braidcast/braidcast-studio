@@ -13,6 +13,7 @@
   import { presetLabel, schedulePatchFor } from "$lib/dialogs/streamInfoPresets/applyPreset";
   import {
     destinationIdentityStore,
+    destinationLabel,
     unarmedLabel,
     type DestinationIdentity,
   } from "$lib/stores/destinationIdentityStore.svelte";
@@ -25,6 +26,7 @@
   import Modal from "$lib/ui/Modal.svelte";
   import PlatformMark from "$lib/ui/PlatformMark.svelte";
   import ToggleSwitch from "$lib/ui/ToggleSwitch.svelte";
+  import UnarmedAvatar from "$lib/ui/UnarmedAvatar.svelte";
   import { joinNames } from "$lib/utils/format";
   import {
     destinationConflicts,
@@ -449,21 +451,34 @@
           {#each options as d (d.profileUuid)}
             {@const on = dests.has(d.profileUuid)}
             {@const off = d.canvasUuid === null}
+            <!-- Only an unarmed chip needs its own name: its state has no visible text,
+                 and an aria-label replaces the name computed from the chip's content
+                 (PlatformMark's label + the cname text) rather than adding to it, so it
+                 restates the platform and channel alongside the state. -->
+            {@const offLabel = off ? destinationLabel(d, unarmedLabel(d)) : undefined}
             <button
               type="button"
               class="chip"
               class:on
               aria-pressed={on}
+              aria-label={offLabel}
+              title={offLabel}
               style:--chip={platformChipColor(d.platform)}
               onclick={() => toggleDest(d.profileUuid)}
             >
-              <PlatformMark platform={d.platform} size={12} />
+              <PlatformMark platform={d.platform} size={12} muted={off} />
               <span class="cname">{d.displayName}</span>
-              <!-- The state word takes the canvas chip's slot, which is empty for
-                   exactly these rows -- and it is a word, so the tone is not the only
-                   thing carrying it. -->
+              <!-- The canvas chip's slot, empty for exactly these rows: grey (via
+                   UnarmedAvatar, shared with DestinationChips) marks "not armed" /
+                   "disabled", and the word itself is in aria-label/title above. -->
               {#if off}
-                <span class="ccanvas off">{unarmedLabel(d)}</span>
+                <UnarmedAvatar
+                  url={d.channelAvatarUrl}
+                  name={d.displayName}
+                  size={14}
+                  disabled={d.boundButDisabled}
+                  active={on}
+                />
               {:else if d.canvasName}
                 <span class="ccanvas">{d.canvasName}</span>
               {/if}
@@ -472,7 +487,7 @@
         </div>
         {#if unavailable.length > 0}
           <p class="note">
-            Marked destinations have no enabled output binding. They stay on the entry and
+            Greyed destinations have no enabled output binding. They stay on the entry and
             saving keeps them, but going live will not switch one on — they cannot be reached
             until one is enabled on the Destinations page.
           </p>
@@ -732,9 +747,6 @@
     font-size: 9px;
     letter-spacing: 0.08em;
     color: var(--color-muted);
-  }
-  .ccanvas.off {
-    color: var(--color-live);
   }
 
   /* Accordion rather than every destination expanded at once: three open panels of
