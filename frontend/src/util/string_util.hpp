@@ -117,6 +117,19 @@ inline std::string StripSuffix(const std::string &s, const std::string &suffix)
 	return EndsWith(s, suffix) ? s.substr(0, s.size() - suffix.size()) : s;
 }
 
+// `url` without its query or fragment, for anything written to a log: overlay widget
+// URLs carry their access token in the query.
+inline std::string WithoutQuery(const std::string &url)
+{
+	return url.substr(0, url.find_first_of("?#"));
+}
+
+// Whether `url` points at a server on this machine, such as the overlay server.
+inline bool IsLoopbackUrl(const std::string &url)
+{
+	return url.rfind("http://127.0.0.1:", 0) == 0 || url.rfind("http://localhost:", 0) == 0;
+}
+
 // Whether `list` -- a delimited string, the shape libobs uses for its codec and protocol
 // lists ("h264;hevc") -- carries `item` as a whole entry. A plain substring test would
 // accept "h264" against a list holding only "h264_fallback", so the boundaries matter.

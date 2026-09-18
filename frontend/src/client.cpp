@@ -10,6 +10,7 @@
 #include "bridge.hpp"
 #include "gpu_safe_mode.hpp"
 #include "log.hpp"
+#include "util/string_util.hpp"
 #include "windowing/window_chrome.hpp"
 
 Client::Client() = default;
@@ -115,7 +116,12 @@ bool Client::OnConsoleMessage(CefRefPtr<CefBrowser> /*browser*/, cef_log_severit
 			      const CefString &source, int line)
 {
 	const std::string msg = message.ToString();
-	const std::string loc = " (" + source.ToString() + ":" + std::to_string(line) + ")";
+	const std::string src = source.ToString();
+	const std::string loc = " (" + StringUtil::WithoutQuery(src) + ":" + std::to_string(line) + ")";
+	// Returning false also has Chromium write the line to cef_debug.log with the raw
+	// source URL, so a loopback page (the overlay preview iframe) claims it here. Under
+	// FE_DEV_URL the UI itself is loopback, so its lines then reach the session log only.
+	const bool handled = StringUtil::IsLoopbackUrl(src);
 
 	// The web logger prefixes each line with "[<L>][<cat>]" (L in D/I/W/E). Parse
 	// it and re-emit through blog at the matching level so the line lands in the
@@ -150,7 +156,7 @@ bool Client::OnConsoleMessage(CefRefPtr<CefBrowser> /*browser*/, cef_log_severit
 		// they are not part of the gated channel.
 		LogCat parsed{};
 		if (level == LOG_DEBUG && LogCatFromName(cat, parsed) && !Log::DebugEnabled(parsed)) {
-			return false;
+			return handled;
 		}
 		std::string rest = msg.substr(catEnd + 1);
 		if (!rest.empty() && rest[0] == ' ') {
@@ -160,7 +166,7 @@ bool Client::OnConsoleMessage(CefRefPtr<CefBrowser> /*browser*/, cef_log_severit
 	} else {
 		blog(LOG_INFO, "[cef] %s%s", msg.c_str(), loc.c_str());
 	}
-	return false;
+	return handled;
 }
 
 void Client::OnDraggableRegionsChanged(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> /*frame*/,
@@ -191,7 +197,7 @@ void Client::OnLoadError(CefRefPtr<CefBrowser> /*browser*/, CefRefPtr<CefFrame> 
 		return;
 	}
 	HostLog("[cef] load error " + std::to_string(error_code) + " (" + error_text.ToString() + ") for " +
-		failed_url.ToString());
+		StringUtil::WithoutQuery(failed_url.ToString()));
 	(void)frame;
 }
 
