@@ -12,6 +12,7 @@
 #include <graphics/vec3.h>
 
 #include <windows.h>
+#include <util/windows/WinHandle.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -32,6 +33,7 @@
 #include "util/file_util.hpp"
 #include "util/json_util.hpp"
 #include "util/op_error.hpp"
+#include "util/random_util.hpp"
 #include "util/string_util.hpp"
 #include "audio/AudioMonitor.hpp"
 #include "bridge.hpp"
@@ -6883,6 +6885,151 @@ void ObsBootstrap::RunProjectorSelfTest()
 		return;
 	}
 	HostLog("[selftest] projector windowed multiview -> opened id=" + std::to_string(mvId) + ", closed OK");
+}
+
+namespace {
+
+// Mirrors SELFTEST_NONCE_ENV and the OPT_SELFTEST_* keys of StartRaceProbe in
+// plugins/win-wasapi/win-wasapi.cpp.
+constexpr const wchar_t *kStartRaceNonceEnv = L"BRAIDCAST_SELFTEST_WASAPI_NONCE";
+constexpr const char *kStartRaceNonce = "selftest_start_race_nonce";
+constexpr const char *kStartRaceInWindow = "selftest_start_race_in_window";
+constexpr const char *kStartRaceIdleLate = "selftest_start_race_idle_late";
+constexpr const char *kStartRaceHeld = "selftest_start_race_held";
+constexpr const char *kStartRaceInitDone = "selftest_start_race_init_done";
+constexpr const char *kStartRaceWaitMs = "selftest_start_race_wait_ms";
+constexpr const char *kStartRaceStatus = "selftest_start_race_status";
+
+// True once every destroy task queued before this call has run. On a timeout the marker
+// task is still queued and will signal the event later, so the handle is left open.
+bool DestroyQueueDrainsWithin(DWORD ms)
+{
+	const HANDLE drained = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+	if (!drained) {
+		return false;
+	}
+	obs_queue_task(OBS_TASK_DESTROY, [](void *event) { SetEvent(static_cast<HANDLE>(event)); }, drained, false);
+	if (WaitForSingleObject(drained, ms) != WAIT_OBJECT_0) {
+		return false;
+	}
+	CloseHandle(drained);
+	return true;
+}
+
+} // namespace
+
+void ObsBootstrap::RunWasapiStartRaceSelfTest()
+{
+	constexpr DWORD kWaitMs = 3000;
+	// Mirrors StartRaceProbe::kStartBoundMs in win-wasapi.
+	constexpr DWORD kStartBoundMs = 60000;
+	const auto report = [](const std::string &verdict) {
+		HostLog("[selftest] wasapi start-race -> " + verdict);
+	};
+
+	// An explicit endpoint rather than "default": a default-device change mid-case would
+	// raise restartSignal, which also wakes the sample handler and would mask the bug.
+	std::string deviceId;
+	for (const auto &[id, name] : Bridge::EnumAudioDevices(false)) {
+		if (!id.empty() && id != "default") {
+			deviceId = id;
+			break;
+		}
+	}
+	if (deviceId.empty()) {
+		report("SKIP (no render endpoint to open)");
+		return;
+	}
+	if (!DestroyQueueDrainsWithin(kWaitMs)) {
+		report("SKIP (destroy queue already blocked before this case)");
+		return;
+	}
+
+	WinHandle inWindow = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+	WinHandle idleLate = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+	WinHandle heldEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+	WinHandle initDoneEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+	if (!inWindow.Valid() || !idleLate.Valid() || !heldEvent.Valid() || !initDoneEvent.Valid()) {
+		report("SKIP (could not create probe events)");
+		return;
+	}
+
+	// The probe arms only when this nonce is in both its settings and the process
+	// environment, which saved or imported settings cannot arrange. It is minted now,
+	// published in the Win32 block the plugin reads, and withdrawn once the source exists.
+	const std::string nonce = RandomUtil::HexToken(16);
+	if (nonce.empty()) {
+		report("SKIP (could not mint the probe nonce)");
+		return;
+	}
+
+	OBSDataAutoRelease settings = obs_data_create();
+	obs_data_set_string(settings, "device_id", deviceId.c_str());
+	obs_data_set_string(settings, kStartRaceNonce, nonce.c_str());
+	obs_data_set_int(settings, kStartRaceInWindow, (long long)(intptr_t)(HANDLE)inWindow);
+	obs_data_set_int(settings, kStartRaceIdleLate, (long long)(intptr_t)(HANDLE)idleLate);
+	obs_data_set_int(settings, kStartRaceHeld, (long long)(intptr_t)(HANDLE)heldEvent);
+	obs_data_set_int(settings, kStartRaceInitDone, (long long)(intptr_t)(HANDLE)initDoneEvent);
+	obs_data_set_int(settings, kStartRaceWaitMs, kWaitMs);
+
+	SetEnvironmentVariableW(kStartRaceNonceEnv, std::wstring(nonce.begin(), nonce.end()).c_str());
+	obs_source_t *capture =
+		obs_source_create_private("wasapi_output_capture", "selftest wasapi start-race", settings);
+	SetEnvironmentVariableW(kStartRaceNonceEnv, nullptr);
+	if (!capture) {
+		report("SKIP (wasapi_output_capture create failed)");
+		return;
+	}
+
+	OBSDataAutoRelease applied = obs_source_get_settings(capture);
+	const std::string status = obs_data_get_string(applied, kStartRaceStatus);
+	if (status != "armed") {
+		obs_source_release(capture);
+		DestroyQueueDrainsWithin(kWaitMs);
+		if (status == "no-rtwq") {
+			report("SKIP (RTWorkQ unavailable: the capture-thread path cannot lose this wake-up, so the "
+			       "case cannot fail here)");
+		} else if (status.empty()) {
+			report("SKIP (probe gate refused: it needs this run's nonce and FE_SMOKE_QUIT_SECONDS in "
+			       "the process environment, not only in .env)");
+		} else {
+			report("SKIP (probe not armed: " + status + ")");
+		}
+		return;
+	}
+
+	// Release only once the capture has passed its stop check and is held inside Initialize.
+	const bool entered = WaitForSingleObject(inWindow, kWaitMs) == WAIT_OBJECT_0;
+	obs_source_release(capture);
+
+	// Stop() waits up to the probe's start bound for the capture start to return, then at most
+	// kWaitMs before the probe delivers the late wake-up itself.
+	const bool destroyed = DestroyQueueDrainsWithin(kStartBoundMs + kWaitMs * 2);
+	// These events are the test's own, so they outlive the source; the plugin signals
+	// duplicates of them.
+	const bool late = WaitForSingleObject(idleLate, 0) == WAIT_OBJECT_0;
+	const bool held = WaitForSingleObject(heldEvent, 0) == WAIT_OBJECT_0;
+	const bool initDone = WaitForSingleObject(initDoneEvent, 0) == WAIT_OBJECT_0;
+
+	if (!entered) {
+		report(destroyed ? "SKIP (capture never reached the hold; device lookup failed)"
+				 : "FAILED (capture never reached the hold and the destroy did not finish)");
+	} else if (!held) {
+		report(destroyed ? "SKIP (hold timed out before Stop(): race not exercised)"
+				 : "FAILED (hold never saw Stop() and the destroy did not finish; not the start race)");
+	} else if (!initDone) {
+		report(destroyed ? "SKIP (device init failed after the hold: race not exercised)"
+				 : "FAILED (Initialize did not finish after the hold; the destroy is still waiting)");
+	} else if (late && !destroyed) {
+		report("FAILED (wake-up lost and the probe's rescue did not drain the destroy)");
+	} else if (late) {
+		report("MISMATCH (Stop() saw no idle signal within " + std::to_string(kWaitMs) +
+		       " ms; its wake-up was lost to the capture start)");
+	} else if (!destroyed) {
+		report("FAILED (source destroy did not finish; not the start race)");
+	} else {
+		report("OK");
+	}
 }
 
 void ObsBootstrap::RunFilterPreviewSelfTest()

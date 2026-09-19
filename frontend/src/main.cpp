@@ -312,6 +312,7 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 			// In the headless smoke path, prove the 4.3.2 properties bridge
 			// round-trips before self-quit.
 			if (Env::IsSet("FE_SMOKE_QUIT_SECONDS")) {
+				ObsBootstrap::RunWasapiStartRaceSelfTest();
 				ObsBootstrap::RunPropertiesSelfTest();
 				ObsBootstrap::RunPreviewEditSelfTest();
 				ObsBootstrap::RunSettingsSelfTest();

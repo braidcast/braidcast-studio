@@ -5,6 +5,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -254,6 +255,9 @@ std::string CaptureItemTransformStates(const std::string &canvasUuid, const std:
 // thread only.
 void RecordItemTransformsUndo(obs_sceneitem_t *const *items, size_t count, const std::string &before,
 			      const std::string &after);
+
+// {id, name} pairs for the wasapi input or output device list, "default" included.
+std::vector<std::pair<std::string, std::string>> EnumAudioDevices(bool input);
 
 // Has Bridge::Shutdown() begun? The same latch the stats sampler probes, exposed so a
 // delayed task owned by another subsystem can make the identical bail. A task that ran

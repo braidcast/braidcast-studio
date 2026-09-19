@@ -447,6 +447,14 @@ void RunAudioMixerSelfTest();
 // close it, leaving no state behind. Also logs the monitor count. Gated by the
 // caller to the smoke path.
 void RunProjectorSelfTest();
+// Headless proof that a win-wasapi capture released while its start is still inside
+// Initialize reaches idle without a capture event. A test-only probe in the plugin holds
+// Initialize until Stop() has sent its wake-up and replaces the endpoint's event with
+// one nothing signals, so the outcome does not depend on what the device is playing.
+// The test's own waits are bounded, and on a miss the probe delivers the lost wake-up itself
+// so the destroy queue drains; a capture start that never returns still parks Stop(), as it
+// would outside the test. Gated by the caller to the smoke path.
+void RunWasapiStartRaceSelfTest();
 // Headless proof for the Filters dialog preview: bind it to the current program
 // scene (a previewable source), position it, confirm the overlay got a live
 // obs_display, then close it; and confirm an audio-only source is refused so the

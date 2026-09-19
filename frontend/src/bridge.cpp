@@ -9845,6 +9845,8 @@ bool MethodAudioListMonitorDevices(const json & /*params*/, json &result, std::s
 // device enumeration helper stays here since it serves the generic audio.listDevices
 // method, not the global-channel state.
 
+} // namespace
+
 // Enumerate {id,name} audio devices for the matching wasapi type. Reads the
 // "device_id" string-list property off the source type. Some libobs builds need a
 // live instance for the list to populate, so fall back to a temp source if the
@@ -9898,6 +9900,8 @@ std::vector<std::pair<std::string, std::string>> EnumAudioDevices(bool input)
 		" via temp-instance properties (type-level list empty)");
 	return out;
 }
+
+namespace {
 
 bool MethodAudioListDevices(const json &params, json &result, std::string & /*error*/)
 {

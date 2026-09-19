@@ -16,6 +16,7 @@
 
 #include <atomic>
 #include <cinttypes>
+#include <memory>
 
 #include <audioclientactivationparams.h>
 #include <avrt.h>
@@ -141,6 +142,171 @@ protected:
 	DWORD queue_id = 0;
 };
 
+/* Self-test seam for the create-then-release race in OnStartCapture. Source settings can
+ * come from saved or imported data, so they alone never arm it: the settings must also carry
+ * a nonce equal to SELFTEST_NONCE_ENV in the process environment, which the self-test mints
+ * at run time and clears once the source is created, and FE_SMOKE_QUIT_SECONDS must be set
+ * there too. Both are read from the Win32 environment block, never from a file. The names
+ * are mirrored by RunWasapiStartRaceSelfTest in frontend/src/obs_bootstrap.cpp. */
+#define SELFTEST_SMOKE_ENV "FE_SMOKE_QUIT_SECONDS"
+#define SELFTEST_NONCE_ENV "BRAIDCAST_SELFTEST_WASAPI_NONCE"
+#define OPT_SELFTEST_NONCE "selftest_start_race_nonce"
+#define OPT_SELFTEST_IN_WINDOW "selftest_start_race_in_window"
+#define OPT_SELFTEST_IDLE_LATE "selftest_start_race_idle_late"
+#define OPT_SELFTEST_HELD "selftest_start_race_held"
+#define OPT_SELFTEST_INIT_DONE "selftest_start_race_init_done"
+#define OPT_SELFTEST_WAIT_MS "selftest_start_race_wait_ms"
+#define OPT_SELFTEST_STATUS "selftest_start_race_status"
+
+class StartRaceProbe {
+	static constexpr long long kMinWaitMs = 100;
+	static constexpr long long kMaxWaitMs = 60000;
+	static constexpr DWORD kStartBoundMs = 60000;
+
+	WinHandle inWindow;
+	WinHandle idleLate;
+	WinHandle held;
+	WinHandle initDone;
+	WinHandle stopWoke;
+	WinHandle startEnded;
+	DWORD waitMs = 0;
+
+	static bool ProcessEnv(const char *name, string &value)
+	{
+		char buf[128];
+		SetLastError(ERROR_SUCCESS);
+		const DWORD len = GetEnvironmentVariableA(name, buf, sizeof(buf));
+		if (len == 0 && GetLastError() == ERROR_ENVVAR_NOT_FOUND) {
+			return false;
+		}
+		if (len >= sizeof(buf)) {
+			return false;
+		}
+		value.assign(buf, len);
+		return true;
+	}
+
+	static bool InvokedBySelfTest(obs_data_t *settings)
+	{
+		string smoke;
+		string nonce;
+		if (!ProcessEnv(SELFTEST_SMOKE_ENV, smoke) || !ProcessEnv(SELFTEST_NONCE_ENV, nonce) || nonce.empty()) {
+			return false;
+		}
+		return nonce == obs_data_get_string(settings, OPT_SELFTEST_NONCE);
+	}
+
+	static HANDLE Duplicate(obs_data_t *settings, const char *key)
+	{
+		const HANDLE source = (HANDLE)(intptr_t)obs_data_get_int(settings, key);
+		HANDLE dup = NULL;
+		if (!source || !DuplicateHandle(GetCurrentProcess(), source, GetCurrentProcess(), &dup, 0, FALSE,
+						DUPLICATE_SAME_ACCESS)) {
+			return NULL;
+		}
+		return dup;
+	}
+
+	static std::unique_ptr<StartRaceProbe> Refuse(obs_data_t *settings, const char *status)
+	{
+		obs_data_set_string(settings, OPT_SELFTEST_STATUS, status);
+		blog(LOG_WARNING, "WASAPI: start-race probe not armed: %s", status);
+		return nullptr;
+	}
+
+public:
+	/* Stands in for the audio engine's event, so no capture event can ever arrive:
+	 * the behavior of a loopback endpoint that renders nothing. */
+	WinHandle silentEndpoint;
+
+	/* Reports its outcome in OPT_SELFTEST_STATUS once the invocation is proven, so the
+	 * self-test can tell a refusal from a capture that never started. */
+	static std::unique_ptr<StartRaceProbe> FromSettings(obs_data_t *settings, bool rtwqSupported)
+	{
+		if (!obs_data_has_user_value(settings, OPT_SELFTEST_NONCE)) {
+			return nullptr;
+		}
+		if (!InvokedBySelfTest(settings)) {
+			blog(LOG_WARNING, "WASAPI: start-race probe settings ignored: not this self-test's invocation");
+			return nullptr;
+		}
+
+		/* Only the RTWorkQ path can lose the wake-up; on the capture-thread path the case
+		 * could never fail, so a pass there would prove nothing. */
+		if (!rtwqSupported) {
+			return Refuse(settings, "no-rtwq");
+		}
+
+		const long long waitMs = obs_data_get_int(settings, OPT_SELFTEST_WAIT_MS);
+		if (waitMs < kMinWaitMs || waitMs > kMaxWaitMs) {
+			return Refuse(settings, "invalid-wait-ms");
+		}
+
+		auto probe = std::make_unique<StartRaceProbe>();
+		probe->inWindow = Duplicate(settings, OPT_SELFTEST_IN_WINDOW);
+		probe->idleLate = Duplicate(settings, OPT_SELFTEST_IDLE_LATE);
+		probe->held = Duplicate(settings, OPT_SELFTEST_HELD);
+		probe->initDone = Duplicate(settings, OPT_SELFTEST_INIT_DONE);
+		probe->stopWoke = CreateEvent(nullptr, true, false, nullptr);
+		probe->startEnded = CreateEvent(nullptr, true, false, nullptr);
+		probe->silentEndpoint = CreateEvent(nullptr, false, false, nullptr);
+		probe->waitMs = (DWORD)waitMs;
+		if (!probe->inWindow.Valid() || !probe->idleLate.Valid() || !probe->held.Valid() ||
+		    !probe->initDone.Valid() || !probe->stopWoke.Valid() || !probe->startEnded.Valid() ||
+		    !probe->silentEndpoint.Valid()) {
+			return Refuse(settings, "setup-failed");
+		}
+
+		obs_data_set_string(settings, OPT_SELFTEST_STATUS, "armed");
+		return probe;
+	}
+
+	/* Called from Initialize just before it resets receiveSignal: parks there until
+	 * Stop() has sent its wake-up, so the reset always lands after it. `held` is set only
+	 * when that ordering was achieved, and before the reset, so any idleSignal that
+	 * follows implies it is already visible. A hold that times out leaves it unset and
+	 * the case is not exercised. */
+	bool HoldUntilStopWakes()
+	{
+		SetEvent(inWindow);
+		if (WaitForSingleObject(stopWoke, waitMs) != WAIT_OBJECT_0) {
+			return false;
+		}
+		SetEvent(held);
+		return true;
+	}
+
+	/* Called at the end of a successful Initialize that held, once both waiting work
+	 * items are armed: an Initialize that throws after the hold never exercises the lost
+	 * wake-up, and its reconnect path must not read as a pass. */
+	void MarkInitDone() { SetEvent(initDone); }
+
+	/* Set as the last act of OnStartCapture, on every path. */
+	HANDLE StartEndedEvent() const { return startEnded; }
+
+	/* Called from Stop() after its wake-up. Waits for OnStartCapture to have returned,
+	 * so nothing is judged, or woken, while it can still touch the source. Only a held
+	 * Initialize that completed is judged: if idleSignal does not follow it within the
+	 * bound, reports that and delivers the wake a late capture event would, which the
+	 * sample handler answers by tearing the client down and setting idleSignal. Every
+	 * other path resolves Stop() on its own. A start that never returns is left alone:
+	 * nothing can safely wake it, and the self-test reports the stalled destroy. */
+	void AwaitIdle(HANDLE idleSignal, HANDLE receiveSignal)
+	{
+		SetEvent(stopWoke);
+		if (WaitForSingleObject(startEnded, kStartBoundMs) != WAIT_OBJECT_0) {
+			return;
+		}
+		if (WaitForSingleObject(initDone, 0) != WAIT_OBJECT_0) {
+			return;
+		}
+		if (WaitForSingleObject(idleSignal, waitMs) == WAIT_TIMEOUT) {
+			SetEvent(idleLate);
+			SetEvent(receiveSignal);
+		}
+	}
+};
+
 class WASAPISource {
 	ComPtr<IMMDeviceEnumerator> enumerator;
 	ComPtr<IAudioClient> client;
@@ -224,6 +390,8 @@ class WASAPISource {
 	WinHandle initSignal;
 	DWORD reconnectDuration = 0;
 	WinHandle reconnectSignal;
+
+	std::unique_ptr<StartRaceProbe> startRaceProbe;
 
 	speaker_layout speakers;
 	audio_format format;
@@ -412,6 +580,8 @@ WASAPISource::WASAPISource(obs_data_t *settings, obs_source_t *source_, SourceTy
 		}
 	}
 
+	startRaceProbe = StartRaceProbe::FromSettings(settings, rtwq_supported);
+
 	if (!rtwq_supported) {
 		captureThread = CreateThread(nullptr, 0, WASAPISource::CaptureThread, this, 0, nullptr);
 		if (!captureThread.Valid()) {
@@ -446,6 +616,10 @@ void WASAPISource::Stop()
 
 	if (rtwq_supported) {
 		SetEvent(receiveSignal);
+	}
+
+	if (startRaceProbe) {
+		startRaceProbe->AwaitIdle(idleSignal, receiveSignal);
 	}
 
 	if (reconnectThread.Valid()) {
@@ -876,6 +1050,8 @@ void WASAPISource::Initialize()
 		device_name = GetDeviceName(device);
 	}
 
+	const bool heldForStop = startRaceProbe && startRaceProbe->HoldUntilStopWakes();
+
 	ResetEvent(receiveSignal);
 
 	ComPtr<IAudioClient> temp_client = InitClient(device, sourceType, process_id, activate_audio_interface_async,
@@ -883,7 +1059,8 @@ void WASAPISource::Initialize()
 	if (sourceType == SourceType::DeviceOutput) {
 		ClearBuffer(device);
 	}
-	ComPtr<IAudioCaptureClient> temp_capture = InitCapture(temp_client, receiveSignal);
+	const HANDLE engineSignal = startRaceProbe ? HANDLE(startRaceProbe->silentEndpoint) : HANDLE(receiveSignal);
+	ComPtr<IAudioCaptureClient> temp_capture = InitCapture(temp_client, engineSignal);
 
 	client = std::move(temp_client);
 	capture = std::move(temp_capture);
@@ -902,6 +1079,10 @@ void WASAPISource::Initialize()
 			client.Clear();
 			throw HRError("RtwqPutWaitingWorkItem failed", hr);
 		}
+	}
+
+	if (heldForStop) {
+		startRaceProbe->MarkInitDone();
 	}
 
 	blog(LOG_INFO, "WASAPI: Device '%s' [%" PRIu32 " Hz] initialized (source: %s)", device_name.c_str(), sampleRate,
@@ -1266,6 +1447,16 @@ void WASAPISource::SetDefaultDevice(EDataFlow flow, ERole role, LPCWSTR id)
 
 void WASAPISource::OnStartCapture()
 {
+	struct StartEnded {
+		HANDLE event;
+		~StartEnded()
+		{
+			if (event) {
+				SetEvent(event);
+			}
+		}
+	} startEnded{startRaceProbe ? startRaceProbe->StartEndedEvent() : NULL};
+
 	const DWORD ret = WaitForSingleObject(stopSignal, 0);
 	switch (ret) {
 	case WAIT_OBJECT_0:
