@@ -417,10 +417,20 @@ static bool audio_monitor_init(struct audio_monitor *monitor, obs_source_t *sour
 		return false;
 	}
 
-	const struct audio_output_info *info = audio_output_get_info(obs->audio.audio);
+	/* Borrowed only long enough to copy the format out, rather than held
+	 * across the stream setup below: teardown waits on every borrower, and
+	 * opening a stream is unbounded. */
+	audio_t *mix = obs_audio_mix_acquire();
+	if (!mix) {
+		blog(LOG_ERROR, "%s: No audio mix", __func__);
+		return false;
+	}
 
-	struct resample_info from = {.samples_per_sec = info->samples_per_sec,
-				     .speakers = info->speakers,
+	const struct audio_output_info info = *audio_output_get_info(mix);
+	obs_audio_mix_release();
+
+	struct resample_info from = {.samples_per_sec = info.samples_per_sec,
+				     .speakers = info.speakers,
 				     .format = AUDIO_FORMAT_FLOAT_PLANAR};
 	struct resample_info to = {.samples_per_sec = (uint32_t)monitor->samples_per_sec,
 				   .speakers = pulseaudio_channels_to_obs_speakers(monitor->channels),

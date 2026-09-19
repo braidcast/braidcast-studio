@@ -1616,9 +1616,8 @@ static inline size_t get_buf_placement(audio_t *audio, uint64_t offset)
 	return (size_t)util_mul_div64(offset, sample_rate, 1000000000ULL);
 }
 
-static void source_output_audio_place(obs_source_t *source, const struct audio_data *in)
+static void source_output_audio_place(obs_source_t *source, audio_t *audio, const struct audio_data *in)
 {
-	audio_t *audio = obs->audio.audio;
 	size_t buf_placement;
 	size_t channels = audio_output_get_channels(audio);
 	size_t size = in->frames * sizeof(float);
@@ -1649,9 +1648,8 @@ static void source_output_audio_place(obs_source_t *source, const struct audio_d
 	source->last_audio_input_buf_size = 0;
 }
 
-static inline void source_output_audio_push_back(obs_source_t *source, const struct audio_data *in)
+static inline void source_output_audio_push_back(obs_source_t *source, audio_t *audio, const struct audio_data *in)
 {
-	audio_t *audio = obs->audio.audio;
 	size_t channels = audio_output_get_channels(audio);
 	size_t size = in->frames * sizeof(float);
 
@@ -1686,9 +1684,9 @@ static inline bool source_muted(obs_source_t *source, uint64_t os_time)
 	       (source->push_to_talk_enabled && !push_to_talk_active);
 }
 
-static void source_output_audio_data(obs_source_t *source, const struct audio_data *data)
+static void source_output_audio_data(obs_source_t *source, audio_t *audio, const struct audio_data *data)
 {
-	size_t sample_rate = audio_output_get_sample_rate(obs->audio.audio);
+	size_t sample_rate = audio_output_get_sample_rate(audio);
 	struct audio_data in = *data;
 	uint64_t diff;
 	uint64_t os_time = os_gettime_ns();
@@ -1768,9 +1766,9 @@ static void source_output_audio_data(obs_source_t *source, const struct audio_da
 
 	if (source->monitoring_type != OBS_MONITORING_TYPE_MONITOR_ONLY) {
 		if (push_back && source->audio_ts) {
-			source_output_audio_push_back(source, &in);
+			source_output_audio_push_back(source, audio, &in);
 		} else {
-			source_output_audio_place(source, &in);
+			source_output_audio_place(source, audio, &in);
 		}
 	}
 
@@ -4091,12 +4089,12 @@ static inline struct obs_audio_data *filter_async_audio(obs_source_t *source, st
 	return in;
 }
 
-static inline void reset_resampler(obs_source_t *source, const struct obs_source_audio *audio)
+static inline void reset_resampler(obs_source_t *source, audio_t *mix, const struct obs_source_audio *audio)
 {
 	const struct audio_output_info *obs_info;
 	struct resample_info output_info;
 
-	obs_info = audio_output_get_info(obs->audio.audio);
+	obs_info = audio_output_get_info(mix);
 
 	output_info.format = obs_info->format;
 	output_info.samples_per_sec = obs_info->samples_per_sec;
@@ -4124,10 +4122,11 @@ static inline void reset_resampler(obs_source_t *source, const struct obs_source
 	}
 }
 
-static void copy_audio_data(obs_source_t *source, const uint8_t *const data[], uint32_t frames, uint64_t ts)
+static void copy_audio_data(obs_source_t *source, audio_t *mix, const uint8_t *const data[], uint32_t frames,
+			    uint64_t ts)
 {
-	size_t planes = audio_output_get_planes(obs->audio.audio);
-	size_t blocksize = audio_output_get_block_size(obs->audio.audio);
+	size_t planes = audio_output_get_planes(mix);
+	size_t blocksize = audio_output_get_block_size(mix);
 	size_t size = (size_t)frames * blocksize;
 	bool resize = source->audio_storage_size < size;
 
@@ -4150,9 +4149,9 @@ static void copy_audio_data(obs_source_t *source, const uint8_t *const data[], u
 }
 
 /* TODO: SSE optimization */
-static void downmix_to_mono_planar(struct obs_source *source, uint32_t frames)
+static void downmix_to_mono_planar(struct obs_source *source, audio_t *mix, uint32_t frames)
 {
-	size_t channels = audio_output_get_channels(obs->audio.audio);
+	size_t channels = audio_output_get_channels(mix);
 	const float channels_i = 1.0f / (float)channels;
 	float **data = (float **)source->audio_data.data;
 
@@ -4203,21 +4202,14 @@ static void process_audio_balancing(struct obs_source *source, uint32_t frames, 
 }
 
 /* resamples/remixes new audio to the designated main audio output format */
-static void process_audio(obs_source_t *source, const struct obs_source_audio *audio)
+static void process_audio(obs_source_t *source, audio_t *mix, const struct obs_source_audio *audio)
 {
 	uint32_t frames = audio->frames;
 	bool mono_output;
 
-	/* obs_reset_audio can tear down + rebuild the global mix while a source
-	 * pushes audio on the audio thread; copy_audio_data reads obs->audio.audio
-	 * unguarded, so drop the buffer if the mix is momentarily gone. */
-	if (!obs->audio.audio) {
-		return;
-	}
-
 	if (source->sample_info.samples_per_sec != audio->samples_per_sec ||
 	    source->sample_info.format != audio->format || source->sample_info.speakers != audio->speakers) {
-		reset_resampler(source, audio);
+		reset_resampler(source, mix, audio);
 	}
 
 	if (source->audio_failed) {
@@ -4232,12 +4224,12 @@ static void process_audio(obs_source_t *source, const struct obs_source_audio *a
 		audio_resampler_resample(source->resampler, output, &frames, &source->resample_offset, audio->data,
 					 audio->frames);
 
-		copy_audio_data(source, (const uint8_t *const *)output, frames, audio->timestamp);
+		copy_audio_data(source, mix, (const uint8_t *const *)output, frames, audio->timestamp);
 	} else {
-		copy_audio_data(source, audio->data, audio->frames, audio->timestamp);
+		copy_audio_data(source, mix, audio->data, audio->frames, audio->timestamp);
 	}
 
-	mono_output = audio_output_get_channels(obs->audio.audio) == 1;
+	mono_output = audio_output_get_channels(mix) == 1;
 
 	if (!mono_output && source->sample_info.speakers == SPEAKERS_STEREO &&
 	    (source->balance > 0.51f || source->balance < 0.49f)) {
@@ -4245,7 +4237,7 @@ static void process_audio(obs_source_t *source, const struct obs_source_audio *a
 	}
 
 	if (!mono_output && (source->flags & OBS_SOURCE_FLAG_FORCE_MONO) != 0) {
-		downmix_to_mono_planar(source, frames);
+		downmix_to_mono_planar(source, mix, frames);
 	}
 }
 
@@ -4263,6 +4255,19 @@ void obs_source_output_audio(obs_source_t *source, const struct obs_source_audio
 		return;
 	}
 
+	/* The global mix is read all the way down this call chain, and
+	 * obs_reset_audio2 can close and reopen it from another thread. Take it
+	 * once here, under the mix guard, and pass it down; nothing below may
+	 * read obs->audio.audio again. This outer borrow is taken before any
+	 * source mutex; the monitor backends nest a second, short borrow under
+	 * the source mutexes taken below, which the counter allows. Teardown
+	 * waits for the outer borrow to finish, and since the tearing-down
+	 * thread holds no source mutex, that wait cannot cycle. */
+	audio_t *mix = obs_audio_mix_acquire();
+	if (!mix) {
+		return;
+	}
+
 	/* sets unused data pointers to NULL automatically because apparently
 	 * some filter plugins aren't checking the actual channel count, and
 	 * instead are checking to see whether the pointer is non-zero. */
@@ -4272,7 +4277,7 @@ void obs_source_output_audio(obs_source_t *source, const struct obs_source_audio
 		audio.data[i] = NULL;
 	}
 
-	process_audio(source, &audio);
+	process_audio(source, mix, &audio);
 
 	pthread_mutex_lock(&source->filter_mutex);
 	output = filter_async_audio(source, &source->audio_data);
@@ -4288,11 +4293,13 @@ void obs_source_output_audio(obs_source_t *source, const struct obs_source_audio
 		data.timestamp = output->timestamp;
 
 		pthread_mutex_lock(&source->audio_mutex);
-		source_output_audio_data(source, &data);
+		source_output_audio_data(source, mix, &data);
 		pthread_mutex_unlock(&source->audio_mutex);
 	}
 
 	pthread_mutex_unlock(&source->filter_mutex);
+
+	obs_audio_mix_release();
 }
 
 void remove_async_frame(obs_source_t *source, struct obs_source_frame *frame)

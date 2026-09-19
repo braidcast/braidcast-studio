@@ -1004,9 +1004,90 @@ static void apply_monitoring_deduplication(void *ignored, calldata_t *cd)
 
 static void set_audio_thread(void *unused);
 
+/* Guards obs->audio.audio against obs_reset_audio2 closing and reopening the
+ * global mix while capture threads are pushing into it. Readers count
+ * themselves in and out around their whole use of the mix, and the pointer is
+ * only ever written under mix_mutex, so a reader either gets a mix that stays
+ * alive for as long as it holds the count, or gets NULL and does nothing.
+ *
+ * The audio thread is a reader like any other: audio_callback borrows the mix
+ * for its own sample rate and channel count, and reaches obs_source_output_audio
+ * on top of that through submix and custom-render sources. So the writer must
+ * never hold mix_mutex while waiting for that thread, or the join below would
+ * wait for a thread that is waiting for the mutex. Two things
+ * enforce that. The drain waits on a condition variable, which releases the
+ * mutex while it blocks. And the close -- audio_output_close's join included --
+ * runs only after detach has dropped the mutex and cleared the pointer, so a
+ * reader arriving mid-join takes the NULL path out instead of blocking.
+ *
+ * A counter rather than an rwlock because a filter callback can re-enter
+ * obs_source_output_audio on the same thread, and a writer-preferring rwlock
+ * deadlocks on the recursive read acquisition that produces. */
+static pthread_mutex_t audio_mix_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t audio_mix_idle = PTHREAD_COND_INITIALIZER;
+static size_t audio_mix_readers = 0;
+static bool audio_mix_detaching = false;
+
+audio_t *obs_audio_mix_acquire(void)
+{
+	audio_t *mix;
+
+	pthread_mutex_lock(&audio_mix_mutex);
+	mix = (obs && !audio_mix_detaching) ? obs->audio.audio : NULL;
+	if (mix) {
+		audio_mix_readers++;
+	}
+	pthread_mutex_unlock(&audio_mix_mutex);
+
+	return mix;
+}
+
+void obs_audio_mix_release(void)
+{
+	pthread_mutex_lock(&audio_mix_mutex);
+	if (audio_mix_readers == 0) {
+		/* Wrapping the count would leave every later teardown waiting
+		 * on readers that do not exist. */
+		blog(LOG_ERROR, "%s: release without a matching acquire", __func__);
+	} else if (--audio_mix_readers == 0) {
+		pthread_cond_broadcast(&audio_mix_idle);
+	}
+	pthread_mutex_unlock(&audio_mix_mutex);
+}
+
+/* Takes the mix out of circulation and hands it back for the caller to close.
+ * Readers are turned away from the moment the drain starts, so a steady stream
+ * of them cannot outrun it. Returns NULL when there was no mix. */
+static audio_t *audio_mix_detach(void)
+{
+	audio_t *mix;
+
+	pthread_mutex_lock(&audio_mix_mutex);
+	audio_mix_detaching = true;
+	while (audio_mix_readers > 0) {
+		pthread_cond_wait(&audio_mix_idle, &audio_mix_mutex);
+	}
+	mix = obs->audio.audio;
+	obs->audio.audio = NULL;
+	audio_mix_detaching = false;
+	pthread_mutex_unlock(&audio_mix_mutex);
+
+	return mix;
+}
+
+/* Publishes a freshly opened mix, so the pointer is written only under the
+ * mutex readers take to read it. */
+static void audio_mix_publish(audio_t *mix)
+{
+	pthread_mutex_lock(&audio_mix_mutex);
+	obs->audio.audio = mix;
+	pthread_mutex_unlock(&audio_mix_mutex);
+}
+
 static bool obs_init_audio(struct audio_output_info *ai)
 {
 	struct obs_core_audio *audio = &obs->audio;
+	audio_t *mix;
 	int errorcode;
 
 	pthread_mutex_init_value(&audio->monitoring_mutex);
@@ -1028,8 +1109,9 @@ static bool obs_init_audio(struct audio_output_info *ai)
 	signal_handler_add(obs->signals, "void deduplication_changed(ptr source)");
 	signal_handler_connect(obs->signals, "deduplication_changed", apply_monitoring_deduplication, NULL);
 
-	errorcode = audio_output_open(&audio->audio, ai);
+	errorcode = audio_output_open(&mix, ai);
 	if (errorcode == AUDIO_OUTPUT_SUCCESS) {
+		audio_mix_publish(mix);
 		return true;
 	} else if (errorcode == AUDIO_OUTPUT_INVALIDPARAM) {
 		blog(LOG_ERROR, "Invalid audio parameters specified");
@@ -1042,24 +1124,14 @@ static bool obs_init_audio(struct audio_output_info *ai)
 
 static void stop_audio(void)
 {
-	struct obs_core_audio *audio = &obs->audio;
-
-	if (audio->audio) {
-		audio_output_close(audio->audio);
-		audio->audio = NULL;
-	}
+	audio_output_close(audio_mix_detach());
 }
 
 static void obs_free_audio(void)
 {
 	struct obs_core_audio *audio = &obs->audio;
-	if (audio->audio) {
-		audio_output_close(audio->audio);
-		/* null it (like stop_audio) so a source pushing audio during an
-		 * obs_reset_audio teardown reads NULL and drops the buffer rather
-		 * than dereferencing the freed mix. */
-		audio->audio = NULL;
-	}
+
+	audio_output_close(audio_mix_detach());
 
 	deque_free(&audio->buffered_timestamps);
 	da_free(audio->render_order);
@@ -1764,6 +1836,12 @@ bool obs_reset_audio2(const struct obs_audio_info2 *oai)
 		return false;
 	}
 
+	/* obs_free_audio drains the mix before closing it, so a capture thread
+	 * mid-push holds the teardown off rather than being cut out from under.
+	 * Between here and obs_init_audio below the mix is NULL and pushes are
+	 * dropped, which is what a sample-rate change makes of them anyway.
+	 * audio_output_active above only covers connected outputs and encoders,
+	 * not sources pushing audio. */
 	obs_free_audio();
 	if (!oai) {
 		return true;

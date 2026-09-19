@@ -148,11 +148,22 @@ extern bool devices_match(const char *id1, const char *id2);
 
 static bool audio_monitor_init(struct audio_monitor *monitor, obs_source_t *source)
 {
-	const struct audio_output_info *info = audio_output_get_info(obs->audio.audio);
-	uint32_t channels = get_audio_channels(info->speakers);
+	/* Borrowed only long enough to copy the format out, rather than held
+	 * across the device setup below: teardown waits on every borrower, and
+	 * opening a device is unbounded. */
+	audio_t *mix = obs_audio_mix_acquire();
+	if (!mix) {
+		blog(LOG_ERROR, "%s: No audio mix", __func__);
+		return false;
+	}
+
+	const struct audio_output_info info = *audio_output_get_info(mix);
+	obs_audio_mix_release();
+
+	uint32_t channels = get_audio_channels(info.speakers);
 	OSStatus stat;
 
-	AudioStreamBasicDescription desc = {.mSampleRate = (Float64)info->samples_per_sec,
+	AudioStreamBasicDescription desc = {.mSampleRate = (Float64)info.samples_per_sec,
 					    .mFormatID = kAudioFormatLinearPCM,
 					    .mFormatFlags = kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
 					    .mBytesPerPacket = sizeof(float) * channels,
@@ -164,7 +175,7 @@ static bool audio_monitor_init(struct audio_monitor *monitor, obs_source_t *sour
 	monitor->source = source;
 
 	monitor->channels = channels;
-	monitor->buffer_size = channels * sizeof(float) * info->samples_per_sec / 100 * 3;
+	monitor->buffer_size = channels * sizeof(float) * info.samples_per_sec / 100 * 3;
 	monitor->wait_size = monitor->buffer_size * 3;
 
 	pthread_mutex_init_value(&monitor->mutex);
@@ -223,11 +234,11 @@ static bool audio_monitor_init(struct audio_monitor *monitor, obs_source_t *sour
 		return false;
 	}
 
-	struct resample_info from = {.samples_per_sec = info->samples_per_sec,
-				     .speakers = info->speakers,
+	struct resample_info from = {.samples_per_sec = info.samples_per_sec,
+				     .speakers = info.speakers,
 				     .format = AUDIO_FORMAT_FLOAT_PLANAR};
-	struct resample_info to = {.samples_per_sec = info->samples_per_sec,
-				   .speakers = info->speakers,
+	struct resample_info to = {.samples_per_sec = info.samples_per_sec,
+				   .speakers = info.speakers,
 				   .format = AUDIO_FORMAT_FLOAT};
 
 	monitor->resampler = audio_resampler_create(&to, &from);

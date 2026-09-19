@@ -586,11 +586,23 @@ bool audio_callback(void *param, uint64_t start_ts_in, uint64_t end_ts_in, uint6
 	struct obs_core_data *data = &obs->data;
 	struct obs_core_audio *audio = &obs->audio;
 	struct obs_source *source;
-	size_t sample_rate = audio_output_get_sample_rate(audio->audio);
-	size_t channels = audio_output_get_channels(audio->audio);
 	struct ts_info ts = {start_ts_in, end_ts_in};
 	size_t audio_size;
 	uint64_t min_ts;
+
+	/* Borrowed for the two values below and returned immediately; nothing
+	 * else here touches the mix itself. A NULL mix means a reset or shutdown
+	 * has taken it away and this thread is about to be joined, so there is
+	 * nothing left to mix. */
+	audio_t *mix = obs_audio_mix_acquire();
+	if (!mix) {
+		return false;
+	}
+
+	size_t sample_rate = audio_output_get_sample_rate(mix);
+	size_t channels = audio_output_get_channels(mix);
+
+	obs_audio_mix_release();
 
 	da_resize(audio->render_order, 0);
 	da_resize(audio->root_nodes, 0);

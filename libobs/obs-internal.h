@@ -782,6 +782,16 @@ extern gs_effect_t *obs_load_effect(gs_effect_t **effect, const char *file);
 extern bool audio_callback(void *param, uint64_t start_ts_in, uint64_t end_ts_in, uint64_t *out_ts, uint32_t mixers,
 			   struct audio_output_data *mixes);
 
+/* Borrow the global audio mix for the duration of one use, holding off
+ * obs_reset_audio2's teardown until every borrower has returned it. Returns
+ * NULL when there is no mix, in which case no release is owed. Safe from any
+ * thread, the audio thread included, and safe to nest. See obs.c for the
+ * ordering rules -- in particular a borrower must not block on anything the
+ * tearing-down thread can hold, and must not block indefinitely before
+ * releasing, since teardown waits on it. */
+extern audio_t *obs_audio_mix_acquire(void);
+extern void obs_audio_mix_release(void);
+
 extern struct obs_core_video_mix *get_mix_for_video(video_t *video);
 
 extern void start_raw_video(video_t *video, const struct video_scale_info *conversion, uint32_t frame_rate_divisor,

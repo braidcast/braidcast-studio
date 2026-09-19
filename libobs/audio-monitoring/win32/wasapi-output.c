@@ -204,13 +204,28 @@ static bool audio_monitor_init_wasapi(struct audio_monitor *monitor)
 	/* ------------------------------------------ *
 	 * Init resampler                             */
 
-	const struct audio_output_info *info = audio_output_get_info(obs->audio.audio);
+	/* Borrowed only long enough to copy the format out, rather than held
+	 * across the device initialization above and below: teardown waits on
+	 * every borrower, and opening a device is unbounded. on_audio_playback
+	 * reaches here to reconnect a dropped monitor while it is itself inside a
+	 * borrow, so this nests -- which the mix guard counts rather than
+	 * deadlocks on. On that path the outer borrow does span the device open,
+	 * so a reset can wait for it; it is bounded by WASAPI, not by this. */
+	audio_t *mix = obs_audio_mix_acquire();
+	if (!mix) {
+		warn("%s: No audio mix", __FUNCTION__);
+		goto fail;
+	}
+
+	const struct audio_output_info info = *audio_output_get_info(mix);
+	obs_audio_mix_release();
+
 	WAVEFORMATEXTENSIBLE *ext = (WAVEFORMATEXTENSIBLE *)wfex;
 	struct resample_info from;
 	struct resample_info to;
 
-	from.samples_per_sec = info->samples_per_sec;
-	from.speakers = info->speakers;
+	from.samples_per_sec = info.samples_per_sec;
+	from.speakers = info.speakers;
 	from.format = AUDIO_FORMAT_FLOAT_PLANAR;
 
 	to.samples_per_sec = (uint32_t)wfex->nSamplesPerSec;
