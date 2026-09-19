@@ -446,11 +446,20 @@ enum class DragMode { None, Move, Resize, Rotate };
 // capture below the same shape for all of them.
 struct DragItem {
 	SceneItemRef id;
-	vec2 startItemPos = {}; // item pos when the gesture began
+	// The item's pos when the gesture began, in the space that pos is written in: its
+	// group's for a child, the canvas's for a top-level item.
+	vec2 startItemPos = {};
+	// The map from that space onto the canvas -- the group's, or the identity at top level.
+	// SceneItems::CanvasToOwnerVector against it carries the gesture's canvas offset back
+	// into it. Read once at the press: the gesture holds every group's re-fit and never writes
+	// the group's own transform itself. A write from elsewhere between two mouse messages (an
+	// undo, the dock, a bridge call) is not tracked, as the top-level start position is not.
+	matrix4 ownerToCanvas = {};
 };
 
 // How a crop drag turns box-edge travel into source px, captured at the press by
-// CaptureCropFrame. Per item axis: canvas px per source px, the gap between each box edge
+// CaptureCropFrame. Per item axis: own-space px per source px -- the item's own space, which
+// is its group's for a child and the canvas's at top level -- the gap between each box edge
 // and the picture inside it (a bounds letterbox; zero unbounded), and whether the picture
 // is mirrored inside the box so that a box edge crops the source's opposite side.
 struct CropFrame {
@@ -483,7 +492,25 @@ struct DragState {
 	vec3 startBoundsTl = {};
 	vec3 startBoundsBr = {};
 	bool hasStartBounds = false;
+	// The top-level ids the gesture moves, which the snap leaves out of its candidates. A
+	// child contributes its GROUP's id instead of its own: the group's box is derived from
+	// the child, so snapping the child to its own group's edges would chase itself, and the
+	// child's own id can collide with an unrelated top-level item's.
+	std::vector<int64_t> snapExcludeIds;
+	// Every group the gesture writes into, its re-fit held from the press until the drag ends
+	// on ANY path (see FinishDrag). Held for a child's move as well as its resize, because
+	// our move is absolute from the start position and libobs's re-fit shifts every sibling
+	// mid-drag, which would move the start positions out from under it.
+	std::vector<SceneItems::GroupResizeDeferral> groupHolds;
 	ItemHandle handle = ItemHandle::None;
+	// The anchor's own space, the one its transform is written in: its group's for a child,
+	// the canvas's for a top-level item. A resize, rotation or crop runs entirely in that
+	// space -- the same obs_sceneitem_set_* calls, the same matrices, whatever the group does
+	// -- so the pointer crosses into it once per frame (canvasToOwner), and the resize snap,
+	// which measures against the canvas, crosses back (ownerToCanvas). Both are the identity
+	// for a top-level anchor, which is what keeps that path byte-identical.
+	matrix4 canvasToOwner = {};
+	matrix4 ownerToCanvas = {};
 	matrix4 itemToScreen = {};
 	matrix4 screenToItem = {};
 	vec2 stretchItemSize = {};
@@ -513,7 +540,16 @@ struct DragState {
 		id.Clear();
 		items.clear();
 		hasStartBounds = false;
+		snapExcludeIds.clear();
+		// Ends every hold. FinishDrag swaps them out ahead of this so the gesture's AFTER
+		// state is still read under them; every other caller has none left to end.
+		groupHolds.clear();
 		handle = ItemHandle::None;
+		// Back to "the anchor is written in canvas space", so a gesture that does not use
+		// the pair (a move, which converts per member instead) cannot inherit the last
+		// gesture's group.
+		matrix4_identity(&canvasToOwner);
+		matrix4_identity(&ownerToCanvas);
 		undoBefore.clear();
 	}
 };
@@ -597,14 +633,15 @@ bool InvertBoxTransform(const matrix4 &transform, matrix4 &inverse)
 	return true;
 }
 
-// True when `canvasPos` falls inside `item`'s transformed unit box. Ported from the
-// legacy FindItemAtPos; shared by the click hit-test, the rubber band and the
+// True when `canvasPos` falls inside `item`'s transformed unit box, carried through
+// `groupItem`, the group item drawing it (null for a top-level item). Ported from the legacy
+// FindItemAtPos; shared by the click hit-test, the rubber band and the
 // is-a-selected-item-here test so the three cannot disagree about what "inside" means.
-bool PointInItemBox(obs_sceneitem_t *item, const vec2 &canvasPos)
+bool PointInItemBox(obs_sceneitem_t *item, obs_sceneitem_t *groupItem, const vec2 &canvasPos)
 {
 	matrix4 transform;
 	matrix4 inverse;
-	if (!SceneItems::ItemBoxToCanvas(item, transform) || !InvertBoxTransform(transform, inverse)) {
+	if (!SceneItems::ItemBoxThroughGroup(item, groupItem, transform) || !InvertBoxTransform(transform, inverse)) {
 		return false;
 	}
 
@@ -625,7 +662,9 @@ bool FindItemAtPos(obs_scene_t *, obs_sceneitem_t *item, void *param)
 		return true;
 	}
 
-	if (PointInItemBox(item, data->pos)) {
+	// The scene's own enumeration never descends into a group, so every item here is top
+	// level and carries no group transform.
+	if (PointInItemBox(item, nullptr, data->pos)) {
 		// Click-through: on reaching a hit that is ALREADY selected, either stop
 		// and keep the hit below it (stepping one down the stack), or -- when this
 		// selected item is itself the bottom-most hit -- disarm and carry on
@@ -665,17 +704,57 @@ int64_t HitTestItemId(obs_scene_t *scene, const vec2 &canvasPos, const std::vect
 	return data.item ? obs_sceneitem_get_id(data.item) : int64_t(-1);
 }
 
-// Is any member of `ids` under the point? Deliberately NOT the cycling hit-test: a
-// press on an item that is already selected has to drag the WHOLE selection, and the
-// cycle would answer with whatever sits underneath instead. The legacy preview draws
+// Whether a preview gesture may write to `item`, drawn through `groupItem` (the group item
+// holding it, null at top level). THE predicate: the hover cursor, the handle hit-test, the
+// press, the move and the handle draw all read this one, so none of them can offer an edit
+// another refuses.
+//
+// It is false for an item that draws no video or is locked; for a child of a LOCKED GROUP,
+// because a group's lock covers what it holds; and for a child its group cannot take a
+// canvas-space placement through (SceneItems::CanvasPlacementRefusal). That last one is what
+// fences a BOUNDED group: every gesture here is driven by a canvas-space pointer, and a
+// bounded group rescales its content into its bounds after each child write, so nothing the
+// pointer asked for survives the re-fit -- refusing the gesture is the only answer that does
+// not corrupt the geometry. Such a child stays selectable and outlined, and the dock and the
+// Transform dialog still edit it, because those write its group space directly.
+bool ItemTakesGesture(obs_sceneitem_t *item, obs_sceneitem_t *groupItem)
+{
+	return item && SceneItemHasVideo(item) && !obs_sceneitem_locked(item) &&
+	       !(groupItem && obs_sceneitem_locked(groupItem)) &&
+	       SceneItems::CanvasPlacementRefusal(item, groupItem) == nullptr;
+}
+
+// One selected member resolved for a gesture. Borrowed pointers, for immediate use on the UI
+// thread.
+struct GestureTarget {
+	obs_sceneitem_t *item = nullptr;      // null when the key does not resolve
+	obs_sceneitem_t *groupItem = nullptr; // the group item drawing a child, null at top level
+	bool editable = false;                // ItemTakesGesture for the pair above
+};
+
+GestureTarget ResolveGestureTarget(obs_scene_t *scene, const SceneItemKey &key)
+{
+	GestureTarget target;
+	target.item = SceneItems::FindItem(scene, key);
+	if (!target.item) {
+		return target;
+	}
+	target.groupItem = key.IsTopLevel() ? nullptr : SceneItems::GroupItemOf(target.item, scene);
+	target.editable = ItemTakesGesture(target.item, target.groupItem);
+	return target;
+}
+
+// Is any member of `keys` under the point, and draggable? Deliberately NOT the cycling
+// hit-test: a press on an item that is already selected has to drag the WHOLE selection, and
+// the cycle would answer with whatever sits underneath instead. The legacy preview draws
 // the same distinction, testing SelectedAtPos at the press and only running the
 // cycling ProcessClick when that says no (frontend_old/widgets/OBSBasicPreview.cpp:638
 // and :1630-1632).
-bool SelectedItemAtPos(obs_scene_t *scene, const std::vector<int64_t> &ids, const vec2 &canvasPos)
+bool SelectedItemAtPos(obs_scene_t *scene, const std::vector<SceneItemKey> &keys, const vec2 &canvasPos)
 {
-	for (const int64_t id : ids) {
-		obs_sceneitem_t *item = obs_scene_find_sceneitem_by_id(scene, id);
-		if (item && SceneItemHasVideo(item) && !obs_sceneitem_locked(item) && PointInItemBox(item, canvasPos)) {
+	for (const SceneItemKey &key : keys) {
+		const GestureTarget target = ResolveGestureTarget(scene, key);
+		if (target.editable && PointInItemBox(target.item, target.groupItem, canvasPos)) {
 			return true;
 		}
 	}
@@ -728,17 +807,49 @@ float RotHandleEdgeY(obs_sceneitem_t *item)
 	return (scale.y < 0.0f && obs_sceneitem_get_bounds_type(item) == OBS_BOUNDS_NONE) ? 1.0f : 0.0f;
 }
 
+// Where the rotation handle stands off `item`: the unit-box y of the edge it springs from, and
+// the CANVAS-space unit vector pointing out of that edge, which is what the stand-off is
+// measured along.
+//
+// The direction is read off the box's own y axis rather than turned by the item's rotation,
+// which is the same vector for a top-level item -- the box's y axis IS its scale turned by its
+// rotation -- and is also right for a child, whose box carries its group's rotation, scale and
+// mirroring that no single angle of the item's own describes.
+//
+// A box with no y extent has no such axis, so the legacy direction stands in: the item's own
+// up, turned by its own rotation, which is what this file used for every item before the box
+// axis replaced it. It keeps a zero-height top-level item's handle exactly where it was, and
+// any fixed direction will do for a box that draws nothing.
+void RotHandleStandoff(obs_sceneitem_t *item, const matrix4 &boxTransform, float &edgeY, vec2 &out)
+{
+	edgeY = RotHandleEdgeY(item);
+	vec2 axis;
+	vec2_set(&axis, boxTransform.y.x, boxTransform.y.y);
+	const float length = vec2_len(&axis);
+	if (length <= 0.0f) {
+		const float radians = RAD(obs_sceneitem_get_rot(item));
+		vec2_set(&out, std::sin(radians), -std::cos(radians));
+		return;
+	}
+	// (edgeY - 0.5) * 2 is -1 at the v=0 edge and +1 at the v=1 edge: away from the centre.
+	vec2_mulf(&out, &axis, (edgeY - 0.5f) * 2.0f / length);
+}
+
 // Test the 8 resize handles and the rotation handle of `item` against a canvas-space
 // point. `scale` is the letterbox screen-px-per-canvas-unit, which keeps both the grab
 // radius and the rotation handle's stand-off a fixed number of screen px. `outDist`
 // receives the winning handle's distance, so a caller testing several selected items can
 // pick the globally closest rather than the first to match.
-ItemHandle FindHandleAtPos(obs_sceneitem_t *item, const vec2 &canvasPos, float scale, float *outDist = nullptr)
+ItemHandle FindHandleAtPos(obs_sceneitem_t *item, obs_sceneitem_t *groupItem, const vec2 &canvasPos, float scale,
+			   float *outDist = nullptr)
 {
 	matrix4 transform;
-	if (!SceneItems::ItemBoxToCanvas(item, transform)) {
+	if (!SceneItems::ItemBoxThroughGroup(item, groupItem, transform)) {
 		return ItemHandle::None;
 	}
+	float rotEdgeY = 0.0f;
+	vec2 rotOut;
+	RotHandleStandoff(item, transform, rotEdgeY, rotOut);
 
 	vec3 pos3;
 	vec3_set(&pos3, canvasPos.x, canvasPos.y, 0.0f);
@@ -752,7 +863,7 @@ ItemHandle FindHandleAtPos(obs_sceneitem_t *item, const vec2 &canvasPos, float s
 		ItemHandle handle;
 	};
 	// The rotation handle is last so a box handle at the same distance wins, as in the
-	// legacy test order. Its y is resolved per item by RotHandleEdgeY.
+	// legacy test order. Its y and its direction are resolved per item by RotHandleStandoff.
 	static const HandleCoord kHandles[] = {
 		{0.0f, 0.0f, ItemHandle::TopLeft},      {0.5f, 0.0f, ItemHandle::TopCenter},
 		{1.0f, 0.0f, ItemHandle::TopRight},     {0.0f, 0.5f, ItemHandle::CenterLeft},
@@ -764,12 +875,9 @@ ItemHandle FindHandleAtPos(obs_sceneitem_t *item, const vec2 &canvasPos, float s
 		vec3 handlePos;
 		if (h.handle == ItemHandle::Rot) {
 			// Out from the edge midpoint along the item's own up direction.
-			handlePos = GetTransformedPos(h.x, RotHandleEdgeY(item), transform);
-			vec2 up;
-			vec2_set(&up, 0.0f, kRotHandleDistance / scale);
-			const vec2 offset = RotateVec2(up, RAD(obs_sceneitem_get_rot(item)));
-			handlePos.x -= offset.x;
-			handlePos.y -= offset.y;
+			handlePos = GetTransformedPos(h.x, rotEdgeY, transform);
+			handlePos.x += rotOut.x * kRotHandleDistance / scale;
+			handlePos.y += rotOut.y * kRotHandleDistance / scale;
 		} else {
 			handlePos = GetTransformedPos(h.x, h.y, transform);
 		}
@@ -788,8 +896,9 @@ ItemHandle FindHandleAtPos(obs_sceneitem_t *item, const vec2 &canvasPos, float s
 // What a press at a canvas-space point would grab.
 struct GestureAtPos {
 	ItemHandle handle = ItemHandle::None;
-	obs_sceneitem_t *item = nullptr; // the selected item, when handle != None
-	int64_t bodyId = -1;             // topmost item under the point, else -1
+	obs_sceneitem_t *item = nullptr;      // the selected item, when handle != None
+	obs_sceneitem_t *groupItem = nullptr; // its group, when that item is a child
+	int64_t bodyId = -1;                  // topmost top-level item under the point, else -1
 };
 
 // A resize or rotation handle of a currently-selected item wins over an item body,
@@ -806,31 +915,37 @@ struct GestureAtPos {
 // `cycleBelow` arms. A Ctrl-click passes false: the legacy preview's DoCtrlSelect
 // takes selectBelow=false so a modifier click always toggles the TOPMOST hit rather
 // than walking the stack (frontend_old/widgets/OBSBasicPreview.cpp:730).
-GestureAtPos ResolveGestureAtPos(obs_scene_t *scene, const std::vector<int64_t> &selected, const vec2 &canvasPos,
+GestureAtPos ResolveGestureAtPos(obs_scene_t *scene, const std::vector<SceneItemKey> &selected, const vec2 &canvasPos,
 				 float scale, bool cycleBelow = true)
 {
 	GestureAtPos gesture;
 	if (scale > 0.0f) {
 		float closest = std::numeric_limits<float>::infinity();
-		for (const int64_t id : selected) {
-			obs_sceneitem_t *sel = obs_scene_find_sceneitem_by_id(scene, id);
-			// The same items the draw gives handles to, so nothing undrawn can be grabbed.
-			if (!sel || !SceneItemHasVideo(sel) || obs_sceneitem_locked(sel)) {
+		for (const SceneItemKey &key : selected) {
+			// The same members the draw gives handles to, so nothing undrawn can be grabbed.
+			const GestureTarget target = ResolveGestureTarget(scene, key);
+			if (!target.editable) {
 				continue;
 			}
 			float dist = closest;
-			const ItemHandle handle = FindHandleAtPos(sel, canvasPos, scale, &dist);
+			const ItemHandle handle =
+				FindHandleAtPos(target.item, target.groupItem, canvasPos, scale, &dist);
 			if (handle != ItemHandle::None && dist < closest) {
 				closest = dist;
 				gesture.handle = handle;
-				gesture.item = sel;
+				gesture.item = target.item;
+				gesture.groupItem = target.groupItem;
 			}
 		}
 		if (gesture.handle != ItemHandle::None) {
 			return gesture;
 		}
 	}
-	gesture.bodyId = HitTestItemId(scene, canvasPos, cycleBelow ? &selected : nullptr);
+	// The body hit-test walks the scene's own items only, so the cycle compares bare ids
+	// against top-level items and takes the top-level members alone: a child's id can collide
+	// with a top-level item's, and passing it here would cycle past the wrong item.
+	const std::vector<int64_t> cycleIds = cycleBelow ? SceneItems::TopLevelIds(selected) : std::vector<int64_t>();
+	gesture.bodyId = HitTestItemId(scene, canvasPos, cycleBelow ? &cycleIds : nullptr);
 	return gesture;
 }
 
@@ -838,7 +953,7 @@ GestureAtPos ResolveGestureAtPos(obs_scene_t *scene, const std::vector<int64_t> 
 // UpdateCursor: the handle's edge flags are remapped through the item's rotation
 // octant and its negative scales, so the arrow points along the edge the drag
 // will actually move rather than along the unrotated one.
-const wchar_t *CursorForHandle(obs_sceneitem_t *item, ItemHandle handle)
+const wchar_t *CursorForHandle(obs_sceneitem_t *item, obs_sceneitem_t *groupItem, ItemHandle handle)
 {
 	uint32_t flags = uint32_t(handle);
 	if (flags == 0) {
@@ -853,12 +968,57 @@ const wchar_t *CursorForHandle(obs_sceneitem_t *item, ItemHandle handle)
 		return IDC_HAND;
 	}
 
-	// The octant and parity tests below index off a rotation in [0,360).
-	const float rotation = WrapDegrees(obs_sceneitem_get_rot(item), 0.0f);
-	const int octant = int(std::round(rotation / 45.0f));
-
+	// The remap's model of a box is "scale, then turn": its canvas x axis is (scale.x, 0)
+	// turned by `rotationDegrees`, its y axis (0, scale.y) turned by the same.
+	//
+	// A child draws under its group's turn, scale and mirroring as well as its own, and that
+	// composition is NOT the sum of the two rotations: a single-axis reflection conjugates a
+	// rotation to its inverse, so a group with an odd number of negative scale axes makes the
+	// effective turn groupRot - itemRot. Summing them is off by 2 * itemRot there -- with the
+	// item at 30 degrees in a group scaled (-1, 1) the box's x axis lands at 150 degrees on the
+	// canvas while the sum says 210, two octants out. So the two linear maps are composed and
+	// the model read back off the result instead. `groupItem` is null at top level, which skips
+	// the block entirely and leaves the inputs exactly as they were -- including for a bounded
+	// item, whose box_scale is the positive bounds and would have lost its flip.
+	float rotationDegrees = obs_sceneitem_get_rot(item);
 	vec2 scale;
 	obs_sceneitem_get_scale(item, &scale);
+	if (groupItem) {
+		const float radians = RAD(rotationDegrees);
+		const float cosR = std::cos(radians);
+		const float sinR = std::sin(radians);
+		// libobs transforms row vectors, so a turn takes x to (cos, sin) and y to (-sin, cos).
+		vec2 axisX;
+		vec2_set(&axisX, scale.x * cosR, scale.x * sinR);
+		vec2 axisY;
+		vec2_set(&axisY, -scale.y * sinR, scale.y * cosR);
+		matrix4 groupDraw;
+		obs_sceneitem_get_draw_transform(groupItem, &groupDraw);
+		// The group's translation is irrelevant to an axis, so only its 2x2 part applies.
+		auto through = [&groupDraw](vec2 &v) {
+			vec2_set(&v, v.x * groupDraw.x.x + v.y * groupDraw.y.x,
+				 v.x * groupDraw.x.y + v.y * groupDraw.y.y);
+		};
+		through(axisX);
+		through(axisY);
+		const float lengthX = vec2_len(&axisX);
+		if (lengthX > 0.0f) {
+			// (scale, rot) and (-scale, rot + 180) describe the same pair of axes, and the
+			// tests below read `octant` modulo 4 and modulo 2, so the branch is free. Keep
+			// the one whose x sign matches the item's own.
+			const float signX = scale.x < 0.0f ? -1.0f : 1.0f;
+			rotationDegrees = DEG(std::atan2(signX * axisX.y, signX * axisX.x));
+			// det = scale.x * scale.y for a scale-then-turn, so its sign fixes y's.
+			const float det = axisX.x * axisY.y - axisX.y * axisY.x;
+			scale.x = signX * lengthX;
+			scale.y = (det < 0.0f ? -signX : signX) * vec2_len(&axisY);
+		}
+	}
+
+	// The octant and parity tests below index off a rotation in [0,360).
+	const float rotation = WrapDegrees(rotationDegrees, 0.0f);
+	const int octant = int(std::round(rotation / 45.0f));
+
 	const bool isCorner = (flags & (flags - 1)) != 0;
 
 	if (scale.x < 0.0f && isCorner) {
@@ -911,14 +1071,31 @@ struct Modifiers {
 	bool Any() const { return ctrl || shift || alt; }
 };
 
+// What a scripted gesture holds instead of the keyboard, empty outside one. The smoke
+// self-test drives Alt-crop and Ctrl-no-snap through it, because a headless run has no key to
+// press and the modifiers are sampled from the keyboard rather than carried in the message.
+// UI thread only, and set only for the length of one DragForTest call.
+std::optional<Modifiers> g_testModifiers;
+
 Modifiers ReadModifiers()
 {
+	if (g_testModifiers) {
+		return *g_testModifiers;
+	}
 	Modifiers m;
 	m.ctrl = GetKeyState(VK_CONTROL) < 0;
 	m.shift = GetKeyState(VK_SHIFT) < 0;
 	m.alt = GetKeyState(VK_MENU) < 0;
 	return m;
 }
+
+// Holds `mods` for the length of one scripted gesture and puts the keyboard back afterwards.
+struct ScopedTestModifiers {
+	explicit ScopedTestModifiers(const Modifiers &mods) { g_testModifiers = mods; }
+	ScopedTestModifiers(const ScopedTestModifiers &) = delete;
+	ScopedTestModifiers &operator=(const ScopedTestModifiers &) = delete;
+	~ScopedTestModifiers() { g_testModifiers.reset(); }
+};
 
 // --- selection bounds + box select ------------------------------------------
 
@@ -937,12 +1114,12 @@ std::array<vec3, 4> BoxCorners(const matrix4 &transform)
 
 // The combined canvas-space extent of `keys`, or false when none of them resolve.
 // Shared by the two readers that need a selection's extent, but they pass DIFFERENT key
-// sets on purpose and so the two boxes coincide only while no selected item is locked
-// and no child is selected. The drawn box spans the whole selection, because it shows
-// what is selected. The move gesture's snap box spans only the members that gesture will
-// actually move, because a locked member's overhang, or a child the gesture leaves where
-// it is, would offset every mover by an edge nothing is dragging. The render thread is one
-// of the two readers, so each member is held while its box is read.
+// sets on purpose and so the two boxes coincide only while every selected member is one the
+// gesture can move. The drawn box spans the whole selection, because it shows what is
+// selected. The move gesture's snap box spans only the members that gesture will actually
+// move, because a locked member's overhang, or a child the gesture refuses, would offset every
+// mover by an edge nothing is dragging. The render thread is one of the two readers, so each
+// member is held while its box is read.
 bool SelectionBounds(obs_scene_t *scene, const std::vector<SceneItemKey> &keys, vec3 &tl, vec3 &br)
 {
 	bool first = true;
@@ -1043,7 +1220,7 @@ bool FindItemsInBox(obs_scene_t *, obs_sceneitem_t *item, void *param)
 
 	// The band's moving corner inside the item's unit box -- what catches an item so
 	// large it swallows the whole band.
-	if (PointInItemBox(item, data->corner2)) {
+	if (PointInItemBox(item, nullptr, data->corner2)) {
 		take();
 		return true;
 	}
@@ -1174,18 +1351,18 @@ vec3 CanvasSnapOffset(const GeneralSettings &gs, obs_scene_t *scene, const std::
 
 // Seeds the item-local box corners from the drag-start size (tl at the origin, br
 // at drag.stretchItemSize) and moves the live-dragged edge(s) to the mouse's
-// current item-local position (canvasPos mapped through drag.screenToItem, the
-// same matrix BeginResize captured at mousedown). Shared by StretchItem
-// (scale/bounds resize) and CropItem (Alt-crop) so both drag modes read the
-// identical canvas->item-local mapping and the identical live-edge selection.
-void DragBoxLocal(const DragState &drag, const vec2 &canvasPos, vec3 &tl, vec3 &br, vec3 &pos3)
+// current item-local position (`ownerPos`, the pointer in the item's own space, mapped
+// through drag.screenToItem, the same matrix BeginResize captured at mousedown). Shared by
+// StretchItem (scale/bounds resize) and CropItem (Alt-crop) so both drag modes read the
+// identical own-space->item-local mapping and the identical live-edge selection.
+void DragBoxLocal(const DragState &drag, const vec2 &ownerPos, vec3 &tl, vec3 &br, vec3 &pos3)
 {
 	const uint32_t flags = uint32_t(drag.handle);
 
 	vec3_zero(&tl);
 	vec3_set(&br, drag.stretchItemSize.x, drag.stretchItemSize.y, 0.0f);
 
-	vec3_set(&pos3, canvasPos.x, canvasPos.y, 0.0f);
+	vec3_set(&pos3, ownerPos.x, ownerPos.y, 0.0f);
 	vec3_transform(&pos3, &pos3, &drag.screenToItem);
 
 	if (flags & ITEM_LEFT) {
@@ -1200,19 +1377,20 @@ void DragBoxLocal(const DragState &drag, const vec2 &canvasPos, vec3 &tl, vec3 &
 	}
 }
 
-// Resize the active drag item to the current mouse canvas pos. Single-select,
-// OBS_BOUNDS_NONE (scale) and bounds paths; aspect is preserved on corner and
+// Resize the active drag item to the current mouse position, in the item's OWN space (see
+// DragState::canvasToOwner): group space for a child, the canvas's for a top-level item.
+// Single-select, OBS_BOUNDS_NONE (scale) and bounds paths; aspect is preserved on corner and
 // edge drags unless Shift requests free aspect.
 // Snaps the moving edge(s) to canvas edges/center/other sources, mirroring
 // move-drag's CanvasSnapOffset via a per-live-edge probe box (see below).
-void StretchItem(const DragState &drag, obs_sceneitem_t *item, const vec2 &canvasPos, obs_scene_t *scene,
+void StretchItem(const DragState &drag, obs_sceneitem_t *item, const vec2 &ownerPos, obs_scene_t *scene,
 		 const GeneralSettings &gs, float snapBaseW, float snapBaseH, const Modifiers &mods)
 {
 	const obs_bounds_type boundsType = obs_sceneitem_get_bounds_type(item);
 	const uint32_t flags = uint32_t(drag.handle);
 
 	vec3 tl, br, pos3;
-	DragBoxLocal(drag, canvasPos, tl, br, pos3);
+	DragBoxLocal(drag, ownerPos, tl, br, pos3);
 
 	// --- resize-snap ---
 	// Only one edge per live axis moves; the opposite edge is a fixed anchor.
@@ -1223,9 +1401,14 @@ void StretchItem(const DragState &drag, obs_sceneitem_t *item, const vec2 &canva
 	const bool xLive = (flags & (ITEM_LEFT | ITEM_RIGHT)) != 0;
 	const bool yLive = (flags & (ITEM_TOP | ITEM_BOTTOM)) != 0;
 	if (gs.snapEnabled && !mods.ctrl && snapBaseW > 0.0f && snapBaseH > 0.0f && (xLive || yLive)) {
+		// itemToScreen lands in the item's own space, so a child's box crosses into the
+		// canvas through its group before it is measured against canvas edges and against
+		// other items' boxes, which are canvas-space too.
 		vec3 canvasTl, canvasBr;
 		vec3_transform(&canvasTl, &tl, &drag.itemToScreen);
 		vec3_transform(&canvasBr, &br, &drag.itemToScreen);
+		vec3_transform(&canvasTl, &canvasTl, &drag.ownerToCanvas);
+		vec3_transform(&canvasBr, &canvasBr, &drag.ownerToCanvas);
 
 		vec3 probeTl = canvasTl, probeBr = canvasBr;
 		if (xLive) {
@@ -1249,17 +1432,26 @@ void StretchItem(const DragState &drag, obs_sceneitem_t *item, const vec2 &canva
 			std::swap(probeTl.y, probeBr.y);
 		}
 
-		// The dragged item excludes itself from source-snapping; `item` is what
-		// drag.id resolved to, so its own id is that exclusion.
-		vec3 snap = CanvasSnapOffset(gs, scene, std::vector<int64_t>{obs_sceneitem_get_id(item)}, probeTl,
-					     probeBr, snapBaseW, snapBaseH);
+		// The dragged item excludes itself from source-snapping; for a child that
+		// exclusion is its GROUP, whose box the child's own edges define (see
+		// DragState::snapExcludeIds).
+		vec3 snap = CanvasSnapOffset(gs, scene, drag.snapExcludeIds, probeTl, probeBr, snapBaseW, snapBaseH);
 
-		// Canvas->item-local is rotation-only for a delta (itemToScreen has no
-		// scale component: local and canvas share units, differing by rotation
+		// Back the other way: canvas -> the item's own space through its group, then
+		// own-space -> item-local, which is rotation-only for a delta (itemToScreen has no
+		// scale component: local and own space share units, differing by rotation
 		// and translation, and translation drops out for a delta).
 		vec2 canvasSnap;
 		vec2_set(&canvasSnap, snap.x, snap.y);
-		const vec2 localSnap = RotateVec2(canvasSnap, RAD(-obs_sceneitem_get_rot(item)));
+		// A group with no inverse never starts a gesture (GestureTarget, through
+		// CanvasPlacementRefusal -> CanvasToGroup), and that refuses on the determinant of
+		// this very matrix by the same rule this call uses, so the false branch is
+		// unreachable; leaving the offset zero there snaps nothing rather than applying a
+		// canvas-space delta in group space.
+		vec2 ownerSnap;
+		vec2_zero(&ownerSnap);
+		SceneItems::CanvasToOwnerVector(drag.ownerToCanvas, canvasSnap, ownerSnap);
+		const vec2 localSnap = RotateVec2(ownerSnap, RAD(-obs_sceneitem_get_rot(item)));
 
 		if (xLive) {
 			if (flags & ITEM_LEFT) {
@@ -1320,7 +1512,8 @@ void StretchItem(const DragState &drag, obs_sceneitem_t *item, const vec2 &canva
 	obs_sceneitem_set_pos(item, &newPos);
 }
 
-// Crop the active drag item to the current mouse canvas pos (Alt-drag). Adjusts
+// Crop the active drag item to the current mouse position in the item's own space (Alt-drag;
+// see DragState::canvasToOwner, which is what put the pointer there). Adjusts
 // obs_sceneitem_crop's per-edge left/right/top/bottom in source px and never writes
 // scale or bounds. Never snaps (OBS's crop drag ignores snapping outright), so this
 // intentionally skips the CanvasSnapOffset step.
@@ -1331,13 +1524,13 @@ void StretchItem(const DragState &drag, obs_sceneitem_t *item, const vec2 &canva
 // opposite edge planted. Bounded, the box is the bounds and stays where it is while the
 // bounds type re-fits the remaining source inside it, so the position is left alone.
 // Either way the drag converts to source px through drag.crop; see CaptureCropFrame.
-void CropItem(const DragState &drag, obs_sceneitem_t *item, const vec2 &canvasPos)
+void CropItem(const DragState &drag, obs_sceneitem_t *item, const vec2 &ownerPos)
 {
 	const bool bounded = obs_sceneitem_get_bounds_type(item) != OBS_BOUNDS_NONE;
 	const uint32_t flags = uint32_t(drag.handle);
 
 	vec3 tl, br, pos3;
-	DragBoxLocal(drag, canvasPos, tl, br, pos3);
+	DragBoxLocal(drag, ownerPos, tl, br, pos3);
 
 	const CropFrame &frame = drag.crop;
 	const vec2 &scale = frame.scale;
@@ -1416,7 +1609,9 @@ void CropItem(const DragState &drag, obs_sceneitem_t *item, const vec2 &canvasPo
 }
 
 // The CropFrame for a crop drag starting now. `screenToItem` and `boxSize` are the
-// resize's canvas->box-local matrix and box size, `crop` the crop at the press.
+// resize's own-space->box-local matrix and box size, `crop` the crop at the press. "Own
+// space" is the space the item's transform is written in: its group's for a child, the
+// canvas's at top level.
 //
 // Unbounded, the box IS the picture: the scale is the item's own, signed, so a mirrored
 // item's box-local space mirrors with it and the dragged edge is already the right crop
@@ -1424,7 +1619,7 @@ void CropItem(const DragState &drag, obs_sceneitem_t *item, const vec2 &canvasPo
 // gap.
 //
 // Bounded, the box is the bounds and the picture is fitted inside it, which libobs
-// records in the draw transform whatever the bounds type. Its axis lengths are canvas px
+// records in the draw transform whatever the bounds type. Its axis lengths are own-space px
 // per source px, taken as magnitudes because a mirror is expressed by which crop edge is
 // written, not by the sign of the conversion. Mapping the picture's corners through it
 // into box-local space gives the gap on each side and, from which way round the corners
@@ -1470,40 +1665,90 @@ CropFrame CaptureCropFrame(obs_sceneitem_t *item, const matrix4 &screenToItem, c
 	return frame;
 }
 
-// Open a gesture on the one item a handle names. `sceneSource` is the scene `item`
-// belongs to, recorded with its id so a scene switch mid-gesture cannot redirect the
-// drag onto the new scene's item of the same id. The item is still recorded as a member
-// the way a move records each of its own, so the undo capture has one shape for every
-// gesture.
-void BeginHandleGesture(DragState &drag, DragMode mode, obs_source_t *sceneSource, obs_sceneitem_t *item,
-			ItemHandle handle, const vec2 &startCanvasPos)
+// The id the snap leaves out for one gesture member: its own at top level, its GROUP's item id
+// for a child (see DragState::snapExcludeIds). Zero ids are never real, so a child whose group
+// item cannot be found contributes nothing rather than a wrong exclusion.
+void AddSnapExclusion(std::vector<int64_t> &ids, obs_sceneitem_t *item, obs_sceneitem_t *groupItem)
 {
-	drag.mode = mode;
-	drag.moved = false;
-	drag.id.Set(sceneSource, SceneItems::KeyOf(item));
-	drag.items.clear();
-	drag.items.emplace_back();
-	drag.items.back().id = drag.id;
-	obs_sceneitem_get_pos(item, &drag.items.back().startItemPos);
-	drag.handle = handle;
-	drag.startCanvasPos = startCanvasPos;
-}
-
-// Capture the matrices/sizes a resize drag needs (legacy GetStretchHandleData,
-// no-group path) for the chosen item + handle.
-void BeginResize(DragState &drag, obs_source_t *sceneSource, obs_sceneitem_t *item, ItemHandle handle,
-		 const vec2 &startCanvasPos)
-{
-	matrix4 boxTransform;
-	vec3 itemUL;
-	if (!SceneItems::ItemBoxToCanvas(item, boxTransform)) {
+	obs_sceneitem_t *topLevel = groupItem ? groupItem : item;
+	if (!topLevel) {
 		return;
 	}
+	const int64_t id = obs_sceneitem_get_id(topLevel);
+	if (std::find(ids.begin(), ids.end(), id) == ids.end()) {
+		ids.push_back(id);
+	}
+}
 
-	BeginHandleGesture(drag, DragMode::Resize, sceneSource, item, handle, startCanvasPos);
+// Record one member of a gesture: the key that re-resolves it, the position it started at, and
+// the map from the space that position is written in onto the canvas. `sceneSource` is the
+// scene the member belongs to, recorded with its key so a scene switch mid-gesture cannot
+// redirect the drag onto the new scene's item of the same id. False when the member's group
+// does not map to the canvas, which is the one thing every gesture here depends on.
+bool AddDragItem(DragState &drag, obs_source_t *sceneSource, obs_sceneitem_t *item, obs_sceneitem_t *groupItem)
+{
+	matrix4 ownerToCanvas;
+	if (!SceneItems::GroupToCanvas(groupItem, ownerToCanvas)) {
+		return false;
+	}
+	drag.items.emplace_back();
+	DragItem &member = drag.items.back();
+	member.id.Set(sceneSource, SceneItems::KeyOf(item));
+	obs_sceneitem_get_pos(item, &member.startItemPos);
+	member.ownerToCanvas = ownerToCanvas;
+	AddSnapExclusion(drag.snapExcludeIds, item, groupItem);
+	return true;
+}
+
+// Open a gesture on the one item a handle names. The item is still recorded as a member
+// the way a move records each of its own, so the undo capture has one shape for every
+// gesture. `groupItem` is the group item drawing it, null at top level; its re-fit is held for
+// the whole gesture, because the resize changes the child's extent and a re-fit between two
+// frames would shift every sibling -- and the child's own start position -- under the drag.
+// False when the group's maps cannot be built, leaving the drag untouched.
+bool BeginHandleGesture(DragState &drag, DragMode mode, obs_source_t *sceneSource, obs_sceneitem_t *item,
+			obs_sceneitem_t *groupItem, ItemHandle handle, const vec2 &startCanvasPos)
+{
+	matrix4 ownerToCanvas;
+	matrix4 canvasToOwner;
+	if (!SceneItems::GroupToCanvas(groupItem, ownerToCanvas) ||
+	    !SceneItems::CanvasToGroup(groupItem, canvasToOwner)) {
+		return false;
+	}
+	drag.Reset();
+	SceneItems::HoldGroup(drag.groupHolds, groupItem);
+	// Under the hold, so the flag the tick would have re-fitted the group from is consumed
+	// here rather than left to move the group mid-gesture.
+	SceneItems::ApplyPendingChildUpdate(item);
+	drag.mode = mode;
+	drag.moved = false;
+	drag.canvasToOwner = canvasToOwner;
+	drag.ownerToCanvas = ownerToCanvas;
+	if (!AddDragItem(drag, sceneSource, item, groupItem)) {
+		drag.Reset();
+		return false;
+	}
+	drag.id = drag.items.back().id;
+	drag.handle = handle;
+	drag.startCanvasPos = startCanvasPos;
+	return true;
+}
+
+// Capture the matrices/sizes a resize drag needs (legacy GetStretchHandleData) for the chosen
+// item + handle. The box is the item's own, in the space its transform is written in, so the
+// whole resize runs there and only the pointer crosses the group boundary.
+void BeginResize(DragState &drag, obs_source_t *sceneSource, obs_sceneitem_t *item, obs_sceneitem_t *groupItem,
+		 ItemHandle handle, const vec2 &startCanvasPos)
+{
+	if (!BeginHandleGesture(drag, DragMode::Resize, sceneSource, item, groupItem, handle, startCanvasPos)) {
+		return;
+	}
+	matrix4 boxTransform;
+	obs_sceneitem_get_box_transform(item, &boxTransform);
 	drag.stretchItemSize = GetItemSize(item);
 
 	const float itemRot = obs_sceneitem_get_rot(item);
+	vec3 itemUL;
 	vec3_from_vec4(&itemUL, &boxTransform.t);
 
 	matrix4_identity(&drag.itemToScreen);
@@ -1518,30 +1763,48 @@ void BeginResize(DragState &drag, obs_source_t *sceneSource, obs_sceneitem_t *it
 	drag.crop = CaptureCropFrame(item, drag.screenToItem, drag.stretchItemSize, drag.startCrop);
 }
 
-// The pointer's angle about the rotation pivot, in degrees.
-float PointerAngle(const DragState &drag, const vec2 &canvasPos)
+// A canvas point in the space the gesture's anchor is written in: group space for a child, the
+// canvas's own for a top-level item, where canvasToOwner is the identity.
+vec2 ToOwnerSpace(const DragState &drag, const vec2 &canvasPos)
 {
-	return DEG(std::atan2(canvasPos.y - drag.rotateCenter.y, canvasPos.x - drag.rotateCenter.x));
+	vec3 point;
+	vec3_set(&point, canvasPos.x, canvasPos.y, 0.0f);
+	vec3_transform(&point, &point, &drag.canvasToOwner);
+	vec2 out;
+	vec2_set(&out, point.x, point.y);
+	return out;
+}
+
+// The pointer's angle about the rotation pivot, in degrees. Both are in the anchor's own
+// space, so a child turns by the angle its own rot is measured in -- the same one the dock's
+// rotation field and the 45-degree snap targets use -- rather than by a canvas angle its
+// group's scale would distort.
+float PointerAngle(const DragState &drag, const vec2 &ownerPos)
+{
+	return DEG(std::atan2(ownerPos.y - drag.rotateCenter.y, ownerPos.x - drag.rotateCenter.x));
 }
 
 // Capture the pivot a rotation turns about, as the legacy FindHandleAtPos does when it
 // picks the rotation handle (OBSBasicPreview.cpp:419-431): the box centre, and the
 // item's position relative to it with the start rotation taken out, so each frame can
 // place the position by turning that offset to the new angle. Also the pointer's own
-// angle at the press, which each frame's rotation is measured from.
-void BeginRotate(DragState &drag, obs_source_t *sceneSource, obs_sceneitem_t *item, const vec2 &startCanvasPos)
+// angle at the press, which each frame's rotation is measured from. All in the item's own
+// space, which is where its position is written.
+void BeginRotate(DragState &drag, obs_source_t *sceneSource, obs_sceneitem_t *item, obs_sceneitem_t *groupItem,
+		 const vec2 &startCanvasPos)
 {
-	matrix4 boxTransform;
-	if (!SceneItems::ItemBoxToCanvas(item, boxTransform)) {
+	if (!BeginHandleGesture(drag, DragMode::Rotate, sceneSource, item, groupItem, ItemHandle::Rot,
+				startCanvasPos)) {
 		return;
 	}
-	BeginHandleGesture(drag, DragMode::Rotate, sceneSource, item, ItemHandle::Rot, startCanvasPos);
+	matrix4 boxTransform;
+	obs_sceneitem_get_box_transform(item, &boxTransform);
 
 	const vec3 center = GetTransformedPos(0.5f, 0.5f, boxTransform);
 
 	drag.rotateStartAngle = obs_sceneitem_get_rot(item);
 	vec2_set(&drag.rotateCenter, center.x, center.y);
-	drag.rotatePressAngle = PointerAngle(drag, startCanvasPos);
+	drag.rotatePressAngle = PointerAngle(drag, ToOwnerSpace(drag, startCanvasPos));
 	vec2 offset;
 	vec2_sub(&offset, &drag.items.back().startItemPos, &drag.rotateCenter);
 	drag.rotateOffset = RotateVec2(offset, RAD(-drag.rotateStartAngle));
@@ -1595,9 +1858,9 @@ float SnapRotation(float angle, float startAngle, const Modifiers &mods)
 // wrapped form, either of which would make the gesture's AFTER capture differ from its
 // BEFORE and record an undo entry for a press-and-jiggle. A return to the start angle
 // from elsewhere writes the recorded start values back instead.
-void RotateItem(DragState &drag, obs_sceneitem_t *item, const vec2 &canvasPos, const Modifiers &mods)
+void RotateItem(DragState &drag, obs_sceneitem_t *item, const vec2 &ownerPos, const Modifiers &mods)
 {
-	const float swept = PointerAngle(drag, canvasPos) - drag.rotatePressAngle;
+	const float swept = PointerAngle(drag, ownerPos) - drag.rotatePressAngle;
 	const float angle =
 		WrapDegrees(SnapRotation(drag.rotateStartAngle + swept, drag.rotateStartAngle, mods), kRotAngleMin);
 
@@ -1649,6 +1912,19 @@ std::vector<obs_sceneitem_t *> ResolveDragItems(obs_scene_t *scene, const std::v
 		}
 	}
 	return out;
+}
+
+// A group locked after a gesture began stops that gesture where it stands, exactly as a lock
+// on the item itself does. The gesture already holds a reference on every group it writes
+// into, so this needs no lookup of its own; one locked group stops the whole drag, which over
+// a selection spanning two groups is the conservative half of the trade.
+bool AnyHeldGroupLocked(const DragState &drag)
+{
+	// GroupItem() reads null on an ended hold, and obs_sceneitem_locked does not take one.
+	return std::any_of(drag.groupHolds.begin(), drag.groupHolds.end(),
+			   [](const SceneItems::GroupResizeDeferral &hold) {
+				   return hold.GroupItem() && obs_sceneitem_locked(hold.GroupItem());
+			   });
 }
 
 // The scene a drag STARTED in, addref'd (caller releases) or null once that scene is
@@ -1772,12 +2048,14 @@ void DrawSquareAtPos(float x, float y, float halfSize)
 // Draw the rotation handle: a stem out from the midpoint of the item's visual top edge
 // to a filled disc, turned with the item, after the legacy DrawRotationHandle
 // (frontend_old/widgets/OBSBasicPreview.cpp:1763-1793). The disc is centred on the point
-// FindHandleAtPos tests and sized to its grab zone. Measured in screen px (see
-// PushHandleAnchor); the caller has the Solid technique begun and the color set.
-void DrawRotationHandle(obs_sceneitem_t *item, gs_vertbuffer_t *circleBuffer)
+// FindHandleAtPos tests and sized to its grab zone -- `edgeY` and `out` come from the same
+// RotHandleStandoff call, so the two cannot disagree. The stem is drawn along -y before the
+// turn, so the angle that points it along `out` is atan2(out.x, -out.y). Measured in screen px
+// (see PushHandleAnchor); the caller has the Solid technique begun and the color set.
+void DrawRotationHandle(float edgeY, const vec2 &out, gs_vertbuffer_t *circleBuffer)
 {
-	PushHandleAnchor(0.5f, RotHandleEdgeY(item));
-	gs_matrix_rotaa4f(0.0f, 0.0f, 1.0f, RAD(obs_sceneitem_get_rot(item)));
+	PushHandleAnchor(0.5f, edgeY);
+	gs_matrix_rotaa4f(0.0f, 0.0f, 1.0f, std::atan2(out.x, -out.y));
 
 	gs_matrix_push();
 	gs_matrix_translate3f(-kBoxLineThickness * 0.5f, -kRotHandleDistance, 0.0f);
@@ -1906,7 +2184,10 @@ void DrawItemBox(const SceneItems::HeldSceneItem &held, float scale, const vec4 
 		DrawSquareAtPos(0.5f, 1.0f, kHandleRadius);
 		DrawSquareAtPos(1.0f, 1.0f, kHandleRadius);
 		// Last: it loads its own buffer over the one the squares draw from.
-		DrawRotationHandle(held.item, circleBuffer);
+		float rotEdgeY = 0.0f;
+		vec2 rotOut;
+		RotHandleStandoff(held.item, boxTransform, rotEdgeY, rotOut);
+		DrawRotationHandle(rotEdgeY, rotOut, circleBuffer);
 
 		// Unbind before leaving: the device keeps the last loaded buffer, and
 		// nothing downstream of this callback is obliged to load its own.
@@ -2138,7 +2419,10 @@ void DrawSpacingHelper(SpacingLabel &label, int side, const vec3 &start, const v
 	gs_matrix_pop();
 }
 
-// A child has none: it takes no gesture in the preview, and the helpers describe an edit.
+// A child gets none. The side remap below decides which of the item's four edges faces which
+// canvas edge from the item's OWN rotation and scale, which for a child are measured in its
+// group's space; a group's own turn and mirroring never reach it, so through a rotated group
+// it would label the wrong edges. Deliberately left as it is rather than wired up wrong.
 void DrawSpacingHelpers(SpacingLabels &labels, obs_scene_t *scene, const std::vector<SceneItemKey> &selected,
 			float scale, float baseCX, float baseCY)
 {
@@ -2656,19 +2940,20 @@ void RenderPreview(void *data, uint32_t cx, uint32_t cy)
 		// arbitrary, and ResolveGestureAtPos tests all of them for exactly that
 		// reason. A locked preview keeps the outlines, which show what is selected,
 		// and drops the handles, which would promise an edit the lock refuses. A group's
-		// child is outlined without handles too: no preview gesture reaches a child, and
-		// a locked group locks what it holds.
+		// child is drawn exactly like a top-level item, handles included, and drops them on
+		// the same predicate a press would refuse it on (ItemTakesGesture) -- so a child of
+		// a bounded group is outlined without them, while a child of a locked group is
+		// skipped outright below, the way a locked item is.
 		for (const SceneItemKey &key : selected) {
 			SceneItems::HeldSceneItem held;
 			if (!SceneItems::AcquireItem(scene, key, held) || !SceneItemHasVideo(held.item) ||
 			    obs_sceneitem_locked(held.item)) {
 				continue;
 			}
-			const bool child = held.group != nullptr;
-			if (child && obs_sceneitem_locked(held.group)) {
+			if (held.group && obs_sceneitem_locked(held.group)) {
 				continue;
 			}
-			if (locked || child) {
+			if (locked || !ItemTakesGesture(held.item, held.group)) {
 				DrawItemBox(held, scale, kSelectionColor, nullptr, nullptr);
 			} else {
 				EnsureBoxBuffer(state);
@@ -2851,7 +3136,6 @@ void PreviewSurface::OnLeftDown(int mx, int my)
 		std::lock_guard<std::mutex> lock(state_->stateMutex);
 		selected = state_->selected.Resolve(sceneUuid);
 	}
-	const std::vector<int64_t> selectedIds = SceneItems::TopLevelIds(selected);
 
 	// A locked preview starts no editing gesture, so it offers no handles: passing an
 	// empty selection skips the handle test. Selection stays live on purpose -- the
@@ -2861,8 +3145,8 @@ void PreviewSurface::OnLeftDown(int mx, int my)
 	const Modifiers mods = ReadModifiers();
 	const bool ctrlHeld = mods.ctrl;
 	const bool modifierHeld = mods.Any();
-	static const std::vector<int64_t> kNoSelection;
-	const GestureAtPos gesture = ResolveGestureAtPos(scene, locked ? kNoSelection : selectedIds, canvasPos,
+	static const std::vector<SceneItemKey> kNoSelection;
+	const GestureAtPos gesture = ResolveGestureAtPos(scene, locked ? kNoSelection : selected, canvasPos,
 							 CurrentScale(state_), !ctrlHeld);
 
 	// A handle of a selected item begins a resize or a rotation, and that is the one
@@ -2871,15 +3155,21 @@ void PreviewSurface::OnLeftDown(int mx, int my)
 	if (gesture.handle != ItemHandle::None) {
 		const bool rotating = gesture.handle == ItemHandle::Rot;
 		if (rotating) {
-			BeginRotate(state_->drag, sceneSource, gesture.item, canvasPos);
+			BeginRotate(state_->drag, sceneSource, gesture.item, gesture.groupItem, canvasPos);
 		} else {
-			BeginResize(state_->drag, sceneSource, gesture.item, gesture.handle, canvasPos);
+			BeginResize(state_->drag, sceneSource, gesture.item, gesture.groupItem, gesture.handle,
+				    canvasPos);
 		}
-		state_->drag.undoBefore =
-			CaptureDragUndoState(targetCanvas_, sceneSource, std::vector<obs_sceneitem_t *>{gesture.item});
+		// Captured under the re-fit hold the gesture just took, so the BEFORE state reads
+		// the group as it stands rather than as a re-fit triggered by the read would
+		// leave it. Empty when the gesture refused to open, which leaves nothing to undo.
+		if (state_->drag.mode != DragMode::None) {
+			state_->drag.undoBefore = CaptureDragUndoState(targetCanvas_, sceneSource,
+								       std::vector<obs_sceneitem_t *>{gesture.item});
+		}
 		HostLog(std::string("[preview] ") + (rotating ? "rotate" : "resize") +
 			" start id=" + std::to_string(obs_sceneitem_get_id(gesture.item)) +
-			" handle=" + std::to_string(uint32_t(gesture.handle)));
+			(gesture.groupItem ? " (child)" : "") + " handle=" + std::to_string(uint32_t(gesture.handle)));
 		obs_source_release(sceneSource);
 		return;
 	}
@@ -2893,7 +3183,7 @@ void PreviewSurface::OnLeftDown(int mx, int my)
 	state_->pressCanvasPos = canvasPos;
 	// A locked preview must not move anything, so a press on a selected item there is
 	// treated as empty space and starts a band instead of a drag.
-	state_->pressOverSelected = !locked && SelectedItemAtPos(scene, selectedIds, canvasPos);
+	state_->pressOverSelected = !locked && SelectedItemAtPos(scene, selected, canvasPos);
 
 	// The band's press-time snapshot, taken on every press so that a modifier pressed
 	// DURING the sweep still has a set to combine against. See BoxState::preSelection.
@@ -2987,9 +3277,11 @@ constexpr float kSnapEpsilon = 0.0001f;
 // legacy OffsetData/GetSourceSnapOffset.
 struct SnapAccum {
 	float clampDist;
-	// Every item the gesture is moving. All of them are excluded, not just the
-	// anchor: with a multi-selection dragged as a unit, snapping members to each
-	// other would fight the gesture, since their relative positions never change.
+	// The TOP-LEVEL ids the gesture excludes from snapping -- a child contributes its
+	// group's id, since that is the item this enumeration sees (see
+	// DragState::snapExcludeIds). All of them are excluded, not just the anchor: with a
+	// multi-selection dragged as a unit, snapping members to each other would fight the
+	// gesture, since their relative positions never change.
 	const std::vector<int64_t> *draggedIds;
 	vec3 tl, br, offset;
 };
@@ -3162,17 +3454,17 @@ void PreviewSurface::UpdateHover(int mx, int my)
 	if (sceneSource) {
 		obs_scene_t *scene = obs_scene_from_source(sceneSource);
 		const char *sceneUuid = obs_source_get_uuid(sceneSource);
-		std::vector<int64_t> selectedIds;
+		std::vector<SceneItemKey> selected;
 		{
 			std::lock_guard<std::mutex> lock(state_->stateMutex);
-			selectedIds = SceneItems::TopLevelIds(state_->selected.Resolve(sceneUuid));
+			selected = state_->selected.Resolve(sceneUuid);
 		}
 		// The cycle is armed here too, so the hover outline previews what a click
 		// would actually select rather than the item on top of it.
-		const GestureAtPos gesture = ResolveGestureAtPos(scene, selectedIds, canvasPos, CurrentScale(state_));
+		const GestureAtPos gesture = ResolveGestureAtPos(scene, selected, canvasPos, CurrentScale(state_));
 
 		if (gesture.handle != ItemHandle::None) {
-			cursor = CursorForHandle(gesture.item, gesture.handle);
+			cursor = CursorForHandle(gesture.item, gesture.groupItem, gesture.handle);
 		} else if (gesture.bodyId >= 0) {
 			cursor = IDC_SIZEALL;
 			hoveredId = gesture.bodyId;
@@ -3227,12 +3519,12 @@ void PreviewSurface::OnMouseMove(int mx, int my)
 		if (!overSelected) {
 			ApplyPressClick(sceneSource, scene, true);
 			const char *uuid = obs_source_get_uuid(sceneSource);
-			std::vector<int64_t> ids;
+			std::vector<SceneItemKey> keys;
 			{
 				std::lock_guard<std::mutex> lock(state_->stateMutex);
-				ids = SceneItems::TopLevelIds(state_->selected.Resolve(uuid));
+				keys = state_->selected.Resolve(uuid);
 			}
-			overSelected = !Locked() && SelectedItemAtPos(scene, ids, state_->pressCanvasPos);
+			overSelected = !Locked() && SelectedItemAtPos(scene, keys, state_->pressCanvasPos);
 		}
 		if (overSelected) {
 			BeginMove(sceneSource, scene);
@@ -3261,21 +3553,11 @@ void PreviewSurface::OnMouseMove(int mx, int my)
 	// gesture inert, rather than applying it to the new scene's item of that id.
 	const char *dragSceneUuid = obs_source_get_uuid(sceneSource);
 	obs_sceneitem_t *item = state_->drag.id.Find(scene, dragSceneUuid);
-	if (item && !obs_sceneitem_locked(item)) {
+	if (item && !obs_sceneitem_locked(item) && !AnyHeldGroupLocked(state_->drag)) {
 		state_->drag.moved = true;
 		if (state_->drag.mode == DragMode::Move) {
 			float offX = canvasPos.x - state_->drag.startCanvasPos.x;
 			float offY = canvasPos.y - state_->drag.startCanvasPos.y;
-
-			// Every member the gesture is still able to move, in one pass: the
-			// snap exclusion list and the write loop below need the same set.
-			std::vector<int64_t> movingIds;
-			movingIds.reserve(state_->drag.items.size());
-			for (const DragItem &d : state_->drag.items) {
-				if (const std::optional<SceneItemKey> key = d.id.Resolve(dragSceneUuid)) {
-					movingIds.push_back(key->id);
-				}
-			}
 
 			// Snap the move to canvas edges/center and other items' edges, unless
 			// disabled in General settings or temporarily suppressed with Ctrl.
@@ -3298,8 +3580,8 @@ void PreviewSurface::OnMouseMove(int mx, int my)
 				tl.y += offY;
 				br.y += offY;
 
-				vec3 snap = CanvasSnapOffset(gs, scene, movingIds, tl, br, float(ovi.base_width),
-							     float(ovi.base_height));
+				vec3 snap = CanvasSnapOffset(gs, scene, state_->drag.snapExcludeIds, tl, br,
+							     float(ovi.base_width), float(ovi.base_height));
 				offX += snap.x;
 				offY += snap.y;
 			}
@@ -3307,21 +3589,33 @@ void PreviewSurface::OnMouseMove(int mx, int my)
 			// Absolute from each member's start position, never incremental: a
 			// snapped offset re-applied against the item's live position would
 			// accumulate the rounding below over the gesture and drift.
+			//
+			// The offset is the one canvas offset for the whole gesture, carried into the
+			// space each member's position is written in -- the canvas's for a top-level
+			// item, its group's for a child -- so a mixed selection travels as one
+			// formation whatever its members' groups do.
+			vec2 canvasOffset;
+			vec2_set(&canvasOffset, offX, offY);
 			for (const DragItem &d : state_->drag.items) {
 				obs_sceneitem_t *member = d.id.Find(scene, dragSceneUuid);
-				if (!member || obs_sceneitem_locked(member)) {
+				vec2 memberOffset;
+				if (!member || obs_sceneitem_locked(member) ||
+				    !SceneItems::CanvasToOwnerVector(d.ownerToCanvas, canvasOffset, memberOffset)) {
 					continue;
 				}
 				vec2 newPos;
-				newPos.x = std::round(d.startItemPos.x + offX);
-				newPos.y = std::round(d.startItemPos.y + offY);
+				newPos.x = std::round(d.startItemPos.x + memberOffset.x);
+				newPos.y = std::round(d.startItemPos.y + memberOffset.y);
 				obs_sceneitem_set_pos(member, &newPos);
 			}
 		} else if (state_->drag.mode == DragMode::Resize) {
+			// Every other gesture runs in the anchor's own space, so the pointer crosses
+			// into it once here and the math below is the same one a top-level item takes.
+			const vec2 ownerPos = ToOwnerSpace(state_->drag, canvasPos);
 			const GeneralSettings &gs = ObsBootstrap::General();
 			const Modifiers mods = ReadModifiers();
 			if (mods.alt) {
-				CropItem(state_->drag, item, canvasPos);
+				CropItem(state_->drag, item, ownerPos);
 			} else {
 				obs_video_info ovi;
 				float snapBaseW = 0.0f, snapBaseH = 0.0f;
@@ -3330,10 +3624,10 @@ void PreviewSurface::OnMouseMove(int mx, int my)
 					snapBaseW = float(ovi.base_width);
 					snapBaseH = float(ovi.base_height);
 				}
-				StretchItem(state_->drag, item, canvasPos, scene, gs, snapBaseW, snapBaseH, mods);
+				StretchItem(state_->drag, item, ownerPos, scene, gs, snapBaseW, snapBaseH, mods);
 			}
 		} else if (state_->drag.mode == DragMode::Rotate) {
-			RotateItem(state_->drag, item, canvasPos, ReadModifiers());
+			RotateItem(state_->drag, item, ToOwnerSpace(state_->drag, canvasPos), ReadModifiers());
 		}
 	}
 	obs_source_release(sceneSource);
@@ -3346,32 +3640,68 @@ void PreviewSurface::OnMouseMove(int mx, int my)
 void PreviewSurface::BeginMove(obs_source_t *sceneSource, obs_scene_t *scene)
 {
 	const char *sceneUuid = obs_source_get_uuid(sceneSource);
-	std::vector<int64_t> ids;
+	std::vector<SceneItemKey> keys;
 	{
 		std::lock_guard<std::mutex> lock(state_->stateMutex);
-		ids = SceneItems::TopLevelIds(state_->selected.Resolve(sceneUuid));
+		keys = state_->selected.Resolve(sceneUuid);
 	}
 
 	state_->drag.Reset();
 
-	std::vector<obs_sceneitem_t *> items;
-	std::vector<SceneItemKey> movingKeys;
-	for (const int64_t id : ids) {
-		obs_sceneitem_t *item = obs_scene_find_sceneitem_by_id(scene, id);
-		// A per-item lock excludes that item from the gesture without cancelling it:
-		// dragging a selection that happens to contain one locked source should move
-		// the rest, not refuse.
-		if (!item || obs_sceneitem_locked(item)) {
+	// A group and one of its own children both selected: the group wins, and the child is
+	// dropped. The group's move already carries its children across the canvas, so writing the
+	// child's own position on top of that would move it twice. Matches sceneItems.nudge.
+	const std::vector<int64_t> selectedTopLevelIds = SceneItems::TopLevelIds(keys);
+	const auto ownGroupAlsoSelected = [&](const GestureTarget &target) {
+		return target.groupItem &&
+		       std::find(selectedTopLevelIds.begin(), selectedTopLevelIds.end(),
+				 obs_sceneitem_get_id(target.groupItem)) != selectedTopLevelIds.end();
+	};
+
+	// Resolved first and in full, because the holds below have to be in place before any
+	// member's start position is read, and this pass is the only thing that says which members
+	// there are. A per-member refusal excludes that member from the gesture without cancelling
+	// it: dragging a selection that happens to contain one locked source, or one child of a
+	// bounded group, should move the rest rather than refuse (see ItemTakesGesture).
+	std::vector<GestureTarget> targets;
+	std::vector<SceneItemKey> targetKeys;
+	for (const SceneItemKey &key : keys) {
+		const GestureTarget target = ResolveGestureTarget(scene, key);
+		if (!target.editable || ownGroupAlsoSelected(target)) {
 			continue;
 		}
-		state_->drag.items.emplace_back();
-		DragItem &d = state_->drag.items.back();
-		d.id.Set(sceneSource, SceneItemKey(id));
-		obs_sceneitem_get_pos(item, &d.startItemPos);
-		items.push_back(item);
-		movingKeys.push_back(SceneItemKey(id));
+		targets.push_back(target);
+		targetKeys.push_back(key);
+	}
+	if (targets.empty()) {
+		return;
+	}
+	// Held before a single start position is recorded, and for the whole gesture: our move
+	// writes an absolute position from each member's start, and libobs's re-fit shifts every
+	// sibling, so a re-fit landing between the read and the first frame -- or between two
+	// frames -- would move those starts out from under the drag. The pending updates are
+	// consumed under the hold for the same reason, so the start bounds read below cannot leave
+	// a re-fit flagged behind it.
+	for (const GestureTarget &target : targets) {
+		SceneItems::HoldGroup(state_->drag.groupHolds, target.groupItem);
+	}
+	for (const GestureTarget &target : targets) {
+		SceneItems::ApplyPendingChildUpdate(target.item);
+	}
+
+	std::vector<obs_sceneitem_t *> items;
+	std::vector<SceneItemKey> movingKeys;
+	for (size_t i = 0; i < targets.size(); ++i) {
+		if (!AddDragItem(state_->drag, sceneSource, targets[i].item, targets[i].groupItem)) {
+			continue;
+		}
+		items.push_back(targets[i].item);
+		movingKeys.push_back(targetKeys[i]);
 	}
 	if (state_->drag.items.empty()) {
+		// Reset rather than return: the holds above are already taken, and leaving them on
+		// a gesture that never opens would freeze the group's re-fitting until the next one.
+		state_->drag.Reset();
 		return;
 	}
 
@@ -3496,9 +3826,19 @@ bool PreviewSurface::FinishDrag()
 	draggedItems.swap(state_->drag.items);
 	std::string undoBefore;
 	undoBefore.swap(state_->drag.undoBefore);
+	// The re-fit holds the gesture took, moved out of the drag state so Reset() below does not
+	// end them: the AFTER capture has to read the group as the gesture left it, and ending a
+	// hold flags the re-fit that would move it. This local owns them for the rest of the
+	// function and releases them on EVERY path out of it, the early-return-free shape being
+	// what makes that true -- a leaked hold would freeze that group's re-fitting for the rest
+	// of the session. This is also the one drag-end path, reached from the button-up, a
+	// right-click, a lost capture, a lock applied mid-drag, a press that interrupts a live
+	// gesture and the surface's own teardown, so there is no other path to leak from.
+	std::vector<SceneItems::GroupResizeDeferral> holds;
+	holds.swap(state_->drag.groupHolds);
 	if (dragged) {
-		HostLog("[preview] drag end id=" + std::to_string(draggedRef.key.id) +
-			" items=" + std::to_string(draggedItems.size()));
+		HostLog("[preview] drag end id=" + std::to_string(draggedRef.key.id) + " items=" +
+			std::to_string(draggedItems.size()) + " groupHolds=" + std::to_string(holds.size()));
 	}
 	// Everything the rest of this function needs is copied or swapped out above, so the
 	// gesture clears through the one resetter rather than a second field-by-field list
@@ -3565,8 +3905,12 @@ bool PreviewSurface::FinishDrag()
 			scene ? ResolveDragItems(scene, draggedItems, obs_source_get_uuid(dragScene))
 			      : std::vector<obs_sceneitem_t *>{};
 		if (!items.empty()) {
-			Bridge::RecordItemTransformsUndo(items.data(), items.size(), undoBefore,
-							 CaptureDragUndoState(targetCanvas_, dragScene, items));
+			// AFTER is read while the holds are still in hand, so it describes the
+			// group as the gesture left it rather than as the re-fit their release
+			// flags would; the release then happens on the way out of this function.
+			const std::string undoAfter = CaptureDragUndoState(targetCanvas_, dragScene, items);
+			holds.clear();
+			Bridge::RecordItemTransformsUndo(items.data(), items.size(), undoBefore, undoAfter);
 		}
 		if (dragScene) {
 			obs_source_release(dragScene);
@@ -3998,6 +4342,121 @@ int64_t PreviewSurface::HitTestForTest(float canvasX, float canvasY)
 	return id;
 }
 
+namespace {
+
+// The grab point of one scripted gesture, in canvas space, plus what the press is expected to
+// resolve to and which modifier it needs.
+struct TestGrab {
+	vec2 pos = {};
+	ItemHandle handle = ItemHandle::None; // None means the body, i.e. a move
+	Modifiers mods;
+};
+
+bool ResolveTestGrab(obs_sceneitem_t *item, const matrix4 &box, PreviewTestGesture gesture, TestGrab &out)
+{
+	const auto at = [&box](float u, float v) {
+		const vec3 point = GetTransformedPos(u, v, box);
+		vec2 result;
+		vec2_set(&result, point.x, point.y);
+		return result;
+	};
+	out.mods = Modifiers{};
+	switch (gesture) {
+	case PreviewTestGesture::Move:
+		out.pos = at(0.5f, 0.5f);
+		out.handle = ItemHandle::None;
+		out.mods.ctrl = true;
+		return true;
+	case PreviewTestGesture::MoveSnapping:
+		out.pos = at(0.5f, 0.5f);
+		out.handle = ItemHandle::None;
+		return true;
+	case PreviewTestGesture::ResizeBottomRight:
+		out.pos = at(1.0f, 1.0f);
+		out.handle = ItemHandle::BottomRight;
+		out.mods.ctrl = true;
+		// Shift for free aspect, so the grabbed corner tracks the pointer on both axes
+		// instead of along a constrained line. That is what lets a case say where the
+		// corner should end up rather than only that the item changed size.
+		out.mods.shift = true;
+		return true;
+	case PreviewTestGesture::CropLeft:
+		out.pos = at(0.0f, 0.5f);
+		out.handle = ItemHandle::CenterLeft;
+		out.mods.alt = true;
+		return true;
+	case PreviewTestGesture::Rotate: {
+		float edgeY = 0.0f;
+		vec2 standoff;
+		RotHandleStandoff(item, box, edgeY, standoff);
+		// The surface is seeded at 1:1 (see DragForTest), so a screen-px stand-off is a
+		// canvas-px one and the disc centre is exactly where FindHandleAtPos looks.
+		out.pos = at(0.5f, edgeY);
+		out.pos.x += standoff.x * kRotHandleDistance;
+		out.pos.y += standoff.y * kRotHandleDistance;
+		out.handle = ItemHandle::Rot;
+		out.mods.ctrl = true;
+		return true;
+	}
+	}
+	return false;
+}
+
+} // namespace
+
+bool PreviewSurface::DragForTest(const SceneItemKey &key, PreviewTestGesture gesture, float dx, float dy, vec2 *outGrab)
+{
+	obs_source_t *sceneSource = AcquireSurfaceSceneSource(targetCanvas_); // addref'd
+	if (!sceneSource) {
+		return false;
+	}
+	obs_scene_t *scene = obs_scene_from_source(sceneSource);
+	// `editable` is checked HERE rather than left to the press, because a press on an item
+	// that takes no gesture is not a no-op: with no drill-in, the body hit-test answers with
+	// the top-level item under the pointer, so the press would select and drag that instead.
+	// A scripted gesture asks about one item, so a refusal is reported as one and nothing is
+	// pressed.
+	const GestureTarget target = ResolveGestureTarget(scene, key);
+	matrix4 box;
+	TestGrab grab;
+	const bool resolved = target.editable && SceneItems::ItemBoxThroughGroup(target.item, target.groupItem, box) &&
+			      ResolveTestGrab(target.item, box, gesture, grab);
+	obs_source_release(sceneSource);
+	if (!resolved) {
+		return false;
+	}
+
+	// 1:1 and unshifted, so a canvas coordinate IS a client pixel for the whole gesture. The
+	// next drawn frame overwrites this; a surface the UI never sized never draws one.
+	{
+		std::lock_guard<std::mutex> lock(state_->stateMutex);
+		state_->transform.scale = 1.0f;
+		state_->transform.drawX = 0;
+		state_->transform.drawY = 0;
+	}
+
+	const ScopedTestModifiers held(grab.mods);
+	// The ROUNDED press point, which is where the pointer went: OnLeftDown takes client pixels,
+	// so a case measuring against grab.pos itself would be off by up to half a pixel per axis.
+	const int fromX = int(std::lround(grab.pos.x));
+	const int fromY = int(std::lround(grab.pos.y));
+	if (outGrab) {
+		vec2_set(outGrab, float(fromX), float(fromY));
+	}
+	OnLeftDown(fromX, fromY);
+	const bool grabbedBody = gesture == PreviewTestGesture::Move || gesture == PreviewTestGesture::MoveSnapping;
+	const bool pressedRight = grabbedBody ? (state_->pressPending && state_->pressOverSelected)
+					      : (state_->drag.mode != DragMode::None &&
+						 state_->drag.handle == grab.handle && state_->drag.id.key == key);
+	OnMouseMove(int(std::lround(grab.pos.x + dx)), int(std::lround(grab.pos.y + dy)));
+	const bool startedRight =
+		pressedRight && state_->drag.id.key == key &&
+		(grabbedBody ? state_->drag.mode == DragMode::Move : state_->drag.mode != DragMode::None) &&
+		state_->drag.moved;
+	OnLeftUp();
+	return startedRight;
+}
+
 int64_t PreviewSurface::SelectedIdForTest()
 {
 	// The recorded ANCHOR id, not scene-resolved: the isolation self-test asserts what
@@ -4379,6 +4838,18 @@ int64_t HitTestForTest(const std::string &canvas, float canvasX, float canvasY, 
 		return -1;
 	}
 	return surface->HitTestForTest(canvasX, canvasY);
+}
+
+bool DragForTest(const std::string &canvas, const SceneItemKey &key, PreviewTestGesture gesture, float dx, float dy,
+		 int windowId, vec2 *outGrab)
+{
+	if (!g_instance) {
+		return false;
+	}
+	// FindSurface, not SurfaceFor: a scripted gesture has to run on the surface the test's
+	// own preview.select already stood up, never stand one up as a side effect.
+	PreviewSurface *surface = g_instance->FindSurface(windowId, canvas);
+	return surface && surface->DragForTest(key, gesture, dx, dy, outGrab);
 }
 
 void OnVideoReset()

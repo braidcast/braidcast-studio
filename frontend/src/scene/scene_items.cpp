@@ -3,7 +3,11 @@
 #include <obs.hpp>
 
 #include <graphics/matrix4.h>
+#include <graphics/vec2.h>
 #include <graphics/vec3.h>
+
+#include <algorithm>
+#include <cmath>
 
 namespace SceneItems {
 
@@ -240,6 +244,38 @@ bool ItemBoxToCanvas(obs_sceneitem_t *item, matrix4 &out, obs_scene_t *scene)
 	return ItemBoxThroughGroup(item, groupItem, out);
 }
 
+bool CanvasToGroup(obs_sceneitem_t *groupItem, matrix4 &out)
+{
+	matrix4 groupToCanvas;
+	if (!GroupToCanvas(groupItem, groupToCanvas)) {
+		return false;
+	}
+	if (!groupItem) {
+		matrix4_identity(&out);
+		return true;
+	}
+	// Inverted here rather than by matrix4_inv, which refuses any determinant under 0.0005
+	// (libobs/graphics/matrix4.c:283) -- a general 4x4 guard that would turn away a group
+	// scaled to 0.02 on both axes, which is tiny but perfectly workable in float. A group to
+	// canvas map is a 2D affine, so its inverse is the 2x2 inverse plus the moved origin, and
+	// sharing CanvasToOwnerVector's det == 0 rule is what keeps this and CanvasPlacementRefusal
+	// answering alike: a group the refusal admits has to be one a gesture can open on.
+	const matrix4 &m = groupToCanvas;
+	const float det = m.x.x * m.y.y - m.y.x * m.x.y;
+	if (det == 0.0f) {
+		return false;
+	}
+	matrix4_identity(&out);
+	out.x.x = m.y.y / det;
+	out.x.y = -m.x.y / det;
+	out.y.x = -m.y.x / det;
+	out.y.y = m.x.x / det;
+	out.t.x = -(m.t.x * out.x.x + m.t.y * out.y.x);
+	out.t.y = -(m.t.x * out.x.y + m.t.y * out.y.y);
+	return std::isfinite(out.x.x) && std::isfinite(out.x.y) && std::isfinite(out.y.x) && std::isfinite(out.y.y) &&
+	       std::isfinite(out.t.x) && std::isfinite(out.t.y);
+}
+
 void BoxExtent(const matrix4 &boxTransform, vec3 &tl, vec3 &br)
 {
 	vec3_set(&tl, M_INFINITE, M_INFINITE, 0.0f);
@@ -253,6 +289,90 @@ void BoxExtent(const matrix4 &boxTransform, vec3 &tl, vec3 &br)
 			vec3_max(&br, &br, &corner);
 		}
 	}
+}
+
+bool CanvasToOwnerVector(const matrix4 &ownerToCanvas, const vec2 &canvas, vec2 &out)
+{
+	const matrix4 &m = ownerToCanvas;
+	const float det = m.x.x * m.y.y - m.y.x * m.x.y;
+	if (det == 0.0f) {
+		return false;
+	}
+	const float gx = (m.y.y * canvas.x - m.y.x * canvas.y) / det;
+	const float gy = (m.x.x * canvas.y - m.x.y * canvas.x) / det;
+	if (!std::isfinite(gx) || !std::isfinite(gy)) {
+		return false;
+	}
+	vec2_set(&out, gx, gy);
+	return true;
+}
+
+bool OffsetThroughGroup(obs_sceneitem_t *groupItem, const vec2 &canvasOffset, vec2 &out)
+{
+	if (!groupItem) {
+		out = canvasOffset;
+		return true;
+	}
+	matrix4 drawTransform;
+	obs_sceneitem_get_draw_transform(groupItem, &drawTransform);
+	return CanvasToOwnerVector(drawTransform, canvasOffset, out);
+}
+
+const char *CanvasPlacementRefusal(obs_sceneitem_t *item, obs_sceneitem_t *groupItem)
+{
+	if (!GroupSourceOf(item)) {
+		return nullptr;
+	}
+	if (!groupItem) {
+		return "its group is not in a scene";
+	}
+	if (obs_sceneitem_get_bounds_type(groupItem) != OBS_BOUNDS_NONE) {
+		return "its group has a bounding box, which rescales the group's content into it";
+	}
+	// The map a gesture actually opens on, not a stand-in for it: CanvasToGroup builds
+	// GroupToCanvas on the way in and fails on exactly the determinant that stops the inverse,
+	// so anything this admits is something BeginHandleGesture can then build.
+	matrix4 canvasToGroup;
+	if (!CanvasToGroup(groupItem, canvasToGroup)) {
+		return "its group is scaled to nothing";
+	}
+	return nullptr;
+}
+
+void ApplyPendingChildUpdate(obs_sceneitem_t *item)
+{
+	if (GroupSourceOf(item)) {
+		obs_sceneitem_force_update_transform(item);
+	}
+}
+
+GroupResizeDeferral::GroupResizeDeferral(obs_sceneitem_t *groupItem) : groupItem_(groupItem)
+{
+	if (groupItem_) {
+		obs_sceneitem_addref(groupItem_);
+		obs_sceneitem_defer_group_resize_begin(groupItem_);
+	}
+}
+
+void GroupResizeDeferral::End()
+{
+	if (obs_sceneitem_t *groupItem = std::exchange(groupItem_, nullptr)) {
+		obs_sceneitem_defer_group_resize_end(groupItem);
+		obs_sceneitem_release(groupItem);
+	}
+}
+
+void HoldGroup(std::vector<GroupResizeDeferral> &holds, obs_sceneitem_t *groupItem)
+{
+	if (groupItem && std::none_of(holds.begin(), holds.end(),
+				      [&](const GroupResizeDeferral &hold) { return hold.GroupItem() == groupItem; })) {
+		holds.emplace_back(groupItem);
+	}
+}
+
+void HoldGroupOf(std::vector<GroupResizeDeferral> &holds, obs_sceneitem_t *item, obs_scene_t *scene)
+{
+	HoldGroup(holds, GroupItemOf(item, scene));
 }
 
 } // namespace SceneItems

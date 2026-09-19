@@ -5797,7 +5797,409 @@ void ObsBootstrap::RunSceneItemGroupSelfTest()
 			check("nudge setup", false, "child a did not come back");
 		}
 
-		// --- 11. a re-fit hold keeps a group item alive past the prune that releases it ----
+		// --- 11. preview gestures on a child: move, resize, rotate and Alt-crop -----------
+		// Driven through the surface's own OnLeftDown/OnMouseMove/OnLeftUp, so every case
+		// exercises the real press, the real conversions and the real drag-end path. The
+		// group is turned and scaled unevenly throughout: a gesture that treated a child's
+		// group space as the canvas would land somewhere else on every one of them.
+		if (Preview::Instance() && childA) {
+			const SceneItemKey childAKey(childAId, groupUuid);
+			const float gestureSlack = placementSlack(1.5f);
+
+			json selectChild = base;
+			selectChild["refs"] = json::array({json{{"id", childAId}, {"group", groupUuid}}});
+			bool childSelected = false;
+			run("preview.select", selectChild, childSelected);
+			check("preview gesture setup selects the child", childSelected, "");
+
+			// Whether libobs still re-fits the group around its children. A re-fit hold a
+			// gesture failed to release suppresses this silently for the rest of the
+			// session, and nothing else in the app would notice; the child that defines
+			// the group's left edge is moved, the group's frame is watched for the follow,
+			// and every item is put back where it was.
+			auto refitRuns = [&]() {
+				const vec2 groupAt = posOf(groupItem);
+				const vec2 aAt = posOf(childA), bAt = posOf(childB);
+				setPos(childA, aAt.x - 60.0f, aAt.y);
+				settle();
+				const bool followed = !samePos(posOf(groupItem), groupAt);
+				setPos(childA, aAt.x, aAt.y);
+				setPos(childB, bAt.x, bAt.y);
+				obs_sceneitem_set_pos(groupItem, &groupAt);
+				settle();
+				return followed;
+			};
+			auto afterGesture = [&](const std::string &label, const Arrangement &before) {
+				undoAndSettle();
+				check("preview " + label + " undo restores the group and siblings in one step",
+				      sameArrangement(arrangement(), before, gestureSlack),
+				      "before " + arrangementText(before) + ", after " +
+					      arrangementText(arrangement()));
+				const bool released = refitRuns();
+				check("preview " + label + " releases the group's re-fit deferral",
+				      released && sameArrangement(arrangement(), before, gestureSlack),
+				      released ? arrangementText(arrangement())
+					       : std::string("the group stopped re-fitting"));
+			};
+			auto centreOf = [](const vec3 &tl, const vec3 &br) {
+				vec2 out;
+				vec2_set(&out, (tl.x + br.x) * 0.5f, (tl.y + br.y) * 0.5f);
+				return out;
+			};
+			// A canvas point in the GROUP's space, which is where a child's own geometry lives.
+			auto inGroupSpace = [&](const vec2 &canvasPoint) {
+				matrix4 canvasToGroup;
+				vec3 out;
+				vec3_set(&out, canvasPoint.x, canvasPoint.y, 0.0f);
+				if (SceneItems::CanvasToGroup(groupItem, canvasToGroup)) {
+					vec3_transform(&out, &out, &canvasToGroup);
+				}
+				vec2 flat;
+				vec2_set(&flat, out.x, out.y);
+				return flat;
+			};
+			// The angle a canvas point subtends at a canvas pivot, both read in group space.
+			auto groupAngle = [&](const vec2 &canvasPoint, const vec2 &canvasPivot) {
+				const vec2 p = inGroupSpace(canvasPoint), c = inGroupSpace(canvasPivot);
+				return float(DEG(std::atan2(p.y - c.y, p.x - c.x)));
+			};
+			auto wrapDegrees = [](float degrees) {
+				while (degrees > 180.0f) {
+					degrees -= 360.0f;
+				}
+				while (degrees <= -180.0f) {
+					degrees += 360.0f;
+				}
+				return degrees;
+			};
+			// One corner of an item's box on the canvas, through the group.
+			auto boxCorner = [&](obs_sceneitem_t *item, float u, float v) {
+				matrix4 box;
+				vec3 corner;
+				vec3_set(&corner, u, v, 0.0f);
+				if (SceneItems::ItemBoxToCanvas(item, box, scene)) {
+					vec3_transform(&corner, &corner, &box);
+				}
+				vec2 flat;
+				vec2_set(&flat, corner.x, corner.y);
+				return flat;
+			};
+
+			// Every case restores what it touched, so the battery runs whole against more
+			// than one group transform. `pass` names which one in the log.
+			auto gestureBattery = [&](const std::string &pass) {
+				{
+					const Arrangement before = arrangement();
+					const vec2 from = centreOf(before.aTl, before.aBr);
+					const bool driven = Preview::DragForTest(
+						canvasUuid, childAKey, PreviewTestGesture::Move, 40.0f, 25.0f);
+					settle();
+					const Arrangement after = arrangement();
+					const vec2 to = centreOf(after.aTl, after.aBr);
+					check("preview move carries a child by the CANVAS offset and leaves its sibling" +
+						      pass,
+					      driven && within(to.x, from.x + 40.0f, gestureSlack) &&
+						      within(to.y, from.y + 25.0f, gestureSlack) &&
+						      sameBox(after.bTl, after.bBr, before.bTl, before.bBr,
+							      gestureSlack),
+					      posText(from) + " -> " + posText(to) + ", " + arrangementText(after));
+					afterGesture("move" + pass, before);
+				}
+
+				{
+					// The grabbed corner has to end up UNDER THE POINTER. Free aspect is held for
+					// the scripted grab (ResolveTestGrab), so that is exact rather than a slide
+					// along a constrained line -- and it is the assertion a dropped mirror fails:
+					// such a conversion drives the corner the other way along the group's x axis
+					// while still changing the scale and the box, which is all the old check asked.
+					const Arrangement before = arrangement();
+					vec2 grab;
+					vec2_zero(&grab);
+					const bool driven = Preview::DragForTest(canvasUuid, childAKey,
+										 PreviewTestGesture::ResizeBottomRight,
+										 -40.0f, -30.0f, 0, &grab);
+					settle();
+					const Arrangement after = arrangement();
+					vec2 aScale;
+					obs_sceneitem_get_scale(childA, &aScale);
+					const vec2 corner = boxCorner(childA, 1.0f, 1.0f);
+					// StretchItem rounds the box to whole ITEM-LOCAL units, which the group scale
+					// then stretches, so the corner lands within a pixel or so rather than on top.
+					const float cornerSlack = placementSlack(2.0f);
+					check("preview resize puts the grabbed corner under the pointer" + pass,
+					      driven && (aScale.x != 1.0f || aScale.y != 1.0f) &&
+						      within(corner.x, grab.x - 40.0f, cornerSlack) &&
+						      within(corner.y, grab.y - 30.0f, cornerSlack) &&
+						      sameBox(after.bTl, after.bBr, before.bTl, before.bBr,
+							      gestureSlack),
+					      "scale " + posText(aScale) + ", pointer " + posText(grab) +
+						      " - (40,30), corner " + posText(corner) + ", " +
+						      boxText(before.aTl, before.aBr) + " -> " +
+						      boxText(after.aTl, after.aBr));
+					afterGesture("resize" + pass, before);
+				}
+
+				{
+					// The item must turn by the angle the pointer SWEPT ABOUT ITS CENTRE, measured
+					// in the group space, which is where the item own rotation lives. Measuring
+					// that sweep on the canvas instead, or dropping the group mirror, still turns
+					// the item by something and still holds the pivot -- so "it turned at all" let
+					// both through. Ctrl is held, so SnapRotation is a no-op and the angle is raw.
+					const Arrangement before = arrangement();
+					const float rotBefore = obs_sceneitem_get_rot(childA);
+					const vec2 pivot = centreOf(before.aTl, before.aBr);
+					vec2 grab;
+					vec2_zero(&grab);
+					const bool driven = Preview::DragForTest(canvasUuid, childAKey,
+										 PreviewTestGesture::Rotate, 50.0f,
+										 50.0f, 0, &grab);
+					settle();
+					const Arrangement after = arrangement();
+					const float rotAfter = obs_sceneitem_get_rot(childA);
+					vec2 grabTo;
+					vec2_set(&grabTo, grab.x + 50.0f, grab.y + 50.0f);
+					const float swept =
+						wrapDegrees(groupAngle(grabTo, pivot) - groupAngle(grab, pivot));
+					const float turned = wrapDegrees(rotAfter - rotBefore);
+					check("preview rotate turns a child by the pointer sweep in GROUP space" + pass,
+					      driven && std::fabs(swept) > 1.0f && within(turned, swept, 1.5f) &&
+						      within(centreOf(after.aTl, after.aBr).x, pivot.x, gestureSlack) &&
+						      within(centreOf(after.aTl, after.aBr).y, pivot.y, gestureSlack) &&
+						      sameBox(after.bTl, after.bBr, before.bTl, before.bBr,
+							      gestureSlack),
+					      "rot " + std::to_string(rotBefore) + " -> " + std::to_string(rotAfter) +
+						      " (turned " + std::to_string(turned) + ", swept " +
+						      std::to_string(swept) + "), centre " + posText(pivot) + " -> " +
+						      posText(centreOf(after.aTl, after.aBr)));
+					afterGesture("rotate" + pass, before);
+				}
+
+				{
+					// Inward along the box's own +u axis on the canvas, which is what the
+					// left edge has to travel for the crop to bite whatever the group's turn.
+					matrix4 aBox;
+					vec2 inward;
+					vec2_zero(&inward);
+					if (SceneItems::ItemBoxToCanvas(childA, aBox, scene)) {
+						vec2_set(&inward, aBox.x.x, aBox.x.y);
+						const float length = vec2_len(&inward);
+						vec2_mulf(&inward, &inward, length > 0.0f ? 24.0f / length : 0.0f);
+					}
+					const Arrangement before = arrangement();
+					obs_sceneitem_crop cropBefore;
+					obs_sceneitem_get_crop(childA, &cropBefore);
+					const bool driven = Preview::DragForTest(canvasUuid, childAKey,
+										 PreviewTestGesture::CropLeft, inward.x,
+										 inward.y);
+					settle();
+					obs_sceneitem_crop cropAfter;
+					obs_sceneitem_get_crop(childA, &cropAfter);
+					const Arrangement after = arrangement();
+					check("preview Alt-crop crops a child from its left edge and leaves its sibling" +
+						      pass,
+					      driven && cropBefore.left == 0 && cropAfter.left > 0 &&
+						      cropAfter.right == 0 &&
+						      sameBox(after.bTl, after.bBr, before.bTl, before.bBr,
+							      gestureSlack),
+					      "crop.left " + std::to_string(cropBefore.left) + " -> " +
+						      std::to_string(cropAfter.left) + ", " + arrangementText(after));
+					afterGesture("crop" + pass, before);
+				}
+			};
+
+			setGroupTransform(30.0f, 1.5f, 0.75f);
+			gestureBattery("");
+			// A NEGATIVE axis is the one configuration where a sign error is silent: mirroring the
+			// group leaves every offset the same length and only reverses its direction, so a
+			// conversion that drops the mirror still lands the right distance from where it began.
+			setGroupTransform(30.0f, -1.5f, 0.75f);
+			gestureBattery(" through a mirrored group");
+			setGroupTransform(30.0f, 1.5f, 0.75f);
+
+			// A locked group locks what it holds. What these two cases pin down is the PREDICATE,
+			// ItemTakesGesture: DragForTest reports its refusal and presses nothing, because with
+			// no drill-in a press on a refused child is not a no-op -- the body hit-test answers
+			// with the top-level item under the pointer, so the press would select and drag THAT,
+			// which is a different gesture and belongs to Phase 5 to pin down. So: no handle is
+			// offered, no gesture opens on the child, and nothing about the child moves.
+			obs_sceneitem_set_locked(groupItem, true);
+			const Arrangement lockedBefore = arrangement();
+			const bool lockedMove =
+				Preview::DragForTest(canvasUuid, childAKey, PreviewTestGesture::Move, 40.0f, 25.0f);
+			const bool lockedResize = Preview::DragForTest(
+				canvasUuid, childAKey, PreviewTestGesture::ResizeBottomRight, -40.0f, -30.0f);
+			settle();
+			obs_sceneitem_set_locked(groupItem, false);
+			check("a child of a locked group takes no preview gesture",
+			      !lockedMove && !lockedResize &&
+				      sameArrangement(arrangement(), lockedBefore, gestureSlack),
+			      arrangementText(arrangement()));
+
+			// A bounded group rescales its content into its bounds after every child write, so a
+			// canvas-space gesture cannot hold: the predicate refuses it rather than let it be
+			// applied and undone by the re-fit. Same scope as the locked case above.
+			vec2 gestureBounds;
+			vec2_set(&gestureBounds, float(obs_source_get_width(groupSrc)),
+				 float(obs_source_get_height(groupSrc)));
+			obs_sceneitem_set_bounds(groupItem, &gestureBounds);
+			obs_sceneitem_set_bounds_type(groupItem, OBS_BOUNDS_STRETCH);
+			settle();
+			const Arrangement boundedBefore = arrangement();
+			const UndoManager::State undoBeforeBounded = undoState();
+			const bool boundedMove =
+				Preview::DragForTest(canvasUuid, childAKey, PreviewTestGesture::Move, 40.0f, 25.0f);
+			const bool boundedRotate =
+				Preview::DragForTest(canvasUuid, childAKey, PreviewTestGesture::Rotate, 50.0f, 50.0f);
+			settle();
+			check("a child of a bounded group takes no preview gesture and records no undo entry",
+			      !boundedMove && !boundedRotate && undoUnchanged(undoBeforeBounded) &&
+				      sameArrangement(arrangement(), boundedBefore, gestureSlack),
+			      arrangementText(arrangement()));
+			obs_sceneitem_set_bounds_type(groupItem, OBS_BOUNDS_NONE);
+			settle();
+
+			// Square on and unscaled from here: the two cases below are about canvas coordinates
+			// landing exactly, and a turned group would only add slack to read through.
+			setGroupTransform(0.0f, 1.0f, 1.0f);
+
+			// The group's OWN resize still works. Every gesture now resolves its target through
+			// one path, and a top-level item has to come out of that path unchanged.
+			{
+				json selectGroup = base;
+				selectGroup["refs"] = json::array({json{{"id", groupId}, {"group", nullptr}}});
+				bool groupSelected = false;
+				run("preview.select", selectGroup, groupSelected);
+				const Arrangement before = arrangement();
+				const bool driven = Preview::DragForTest(canvasUuid, SceneItemKey(groupId),
+									 PreviewTestGesture::ResizeBottomRight, -40.0f,
+									 -30.0f);
+				settle();
+				const Arrangement after = arrangement();
+				check("the group's own resize still works and carries both children",
+				      groupSelected && driven &&
+					      !sameBox(after.aTl, after.aBr, before.aTl, before.aBr, 1.0f) &&
+					      !sameBox(after.bTl, after.bBr, before.bTl, before.bBr, 1.0f),
+				      arrangementText(before) + " -> " + arrangementText(after));
+				undoAndSettle();
+				check("the group's own resize undoes in one step",
+				      sameArrangement(arrangement(), before, 1.0f), arrangementText(arrangement()));
+				run("preview.select", selectChild, childSelected);
+			}
+
+			// Snapping must not pull a child onto its own group's edges. The group's box is fitted
+			// AROUND its children, so every edge a child can be dragged up to is an edge it helped
+			// place; left in the snap set the group would keep catching its own content. The re-fit
+			// is held for the whole gesture, so the group's box stays where the child started while
+			// the child walks up to it -- which is exactly the tempting geometry.
+			//
+			// SourceSnapCb pairs OPPOSITE edges (a box's left against the dragged box's right), so
+			// the temptation here is childA's LEFT edge arriving at the group's RIGHT edge, not the
+			// left edge it sits on. Its sibling cannot stand in for the group: the snap walks the
+			// scene's own items, and childB is inside the group.
+			{
+				// Forced rather than asserted, so the case measures the code and not the owner's
+				// settings: with snapping off it would go red instead of testing anything, and the
+				// distance has to be one whose half is a whole pixel (DragForTest rounds both
+				// endpoints to ints, so a fractional step is not the offset that gets applied).
+				GeneralSettings &gs = ObsBootstrap::General();
+				const double snapDistanceWas = gs.snapDistance;
+				const bool snapEnabledWas = gs.snapEnabled, snapToEdgeWas = gs.snapToEdge;
+				const bool snapToSourceWas = gs.snapToSource, snapToCenterWas = gs.snapToCenter;
+				gs.snapDistance = 10.0;
+				gs.snapEnabled = true;
+				gs.snapToEdge = true;
+				gs.snapToSource = true;
+				// Off, not on: the canvas centre line is a snap target like any other, and the walk
+				// up to the group edge would be caught by it rather than by what is under test.
+				gs.snapToCenter = false;
+				const float snapDistance = float(gs.snapDistance);
+				const float step = std::max(1.0f, std::floor(snapDistance * 0.5f));
+
+				// The other top-level item starts at the origin, where its right edge is exactly on
+				// childA's left and its left edge is on the canvas edge -- it would answer for both
+				// of the cases below. Parked clear of them, and the third case then snaps to it.
+				const vec2 topStart = posOf(top);
+				setPos(top, std::floor(canvasWidth * 0.78f), 120.0f);
+				settle();
+				vec3 topTl, topBr;
+				canvasBoxOf(top, topTl, topBr);
+
+				vec3 aTl, aBr, groupTl, groupBr;
+				canvasBoxOf(childA, aTl, aBr);
+				canvasBoxOf(groupItem, groupTl, groupBr);
+				const float toOwnGroup = (groupBr.x - step) - aTl.x;
+				const bool tempted = step >= 1.0f && step < snapDistance && toOwnGroup > snapDistance &&
+						     aTl.y < groupBr.y && aBr.y > groupTl.y;
+				const bool drivenOff = Preview::DragForTest(
+					canvasUuid, childAKey, PreviewTestGesture::MoveSnapping, toOwnGroup, 0.0f);
+				settle();
+				vec3 offTl, offBr;
+				canvasBoxOf(childA, offTl, offBr);
+				check("a child does not snap to its own group's edge",
+				      drivenOff && tempted && within(offTl.x, aTl.x + toOwnGroup, 0.5f),
+				      "left " + std::to_string(aTl.x) + " -> " + std::to_string(offTl.x) +
+					      ", stopping " + std::to_string(step) +
+					      " short of the group's right edge " + std::to_string(groupBr.x));
+				undoAndSettle();
+
+				// Control one: the same gesture still snaps to the canvas edge, so the case above
+				// cannot pass by snapping being off or by the drag never reaching CanvasSnapOffset.
+				canvasBoxOf(childA, aTl, aBr);
+				const bool drivenEdge = Preview::DragForTest(
+					canvasUuid, childAKey, PreviewTestGesture::MoveSnapping, step - aTl.x, 0.0f);
+				settle();
+				vec3 edgeTl, edgeBr;
+				canvasBoxOf(childA, edgeTl, edgeBr);
+				check("the same drag still snaps a child to the canvas edge",
+				      drivenEdge && within(edgeTl.x, 0.0f, 0.5f),
+				      "left " + std::to_string(aTl.x) + " -> " + std::to_string(edgeTl.x));
+				undoAndSettle();
+
+				// Control two: and still snaps to another SOURCE's edge. Without this, a change that
+				// excluded every item rather than just the child's own group would leave the first
+				// case green, because the canvas edge above is a different branch of CanvasSnapOffset.
+				canvasBoxOf(childA, aTl, aBr);
+				const float toTop = (topTl.x - step) - aBr.x;
+				// Where the drag alone would leave the edge. The snap has to pull it off this and onto
+				// the other item's edge, and the two are `step` apart, so no single pixel of slack in
+				// the position rounding can satisfy both halves of the check at once.
+				const float unsnapped = aBr.x + toTop;
+				const bool reachesTop = toTop > snapDistance && aTl.y < topBr.y && aBr.y > topTl.y;
+				const bool drivenSource = Preview::DragForTest(
+					canvasUuid, childAKey, PreviewTestGesture::MoveSnapping, toTop, 0.0f);
+				settle();
+				vec3 srcTl, srcBr;
+				canvasBoxOf(childA, srcTl, srcBr);
+				// A whole pixel of tolerance, not a half: a move writes each member a ROUNDED
+				// position, so an edge snapped onto a target that is not itself on a whole pixel
+				// lands beside it. The `unsnapped` half below is what makes the case discriminating.
+				check("the same drag still snaps a child to another source's edge",
+				      drivenSource && reachesTop && within(srcBr.x, topTl.x, 1.0f) &&
+					      !within(srcBr.x, unsnapped, 1.0f),
+				      "right " + std::to_string(aBr.x) + " -> " + std::to_string(srcBr.x) +
+					      " (unsnapped " + std::to_string(unsnapped) + "), other item's left " +
+					      std::to_string(topTl.x));
+				undoAndSettle();
+
+				setPos(top, topStart.x, topStart.y);
+				settle();
+				gs.snapDistance = snapDistanceWas;
+				gs.snapEnabled = snapEnabledWas;
+				gs.snapToEdge = snapToEdgeWas;
+				gs.snapToSource = snapToSourceWas;
+				gs.snapToCenter = snapToCenterWas;
+			}
+
+			run("preview.select", base, ok);
+			setGroupTransform(0.0f, 1.0f, 1.0f);
+			check("preview gesture cases leave the group as they found it", groupAsBefore(), canvasText());
+		} else if (!childA) {
+			check("preview gesture setup", false, "child a did not come back");
+		} else {
+			HostLog("[selftest] scene-item-group preview gestures: no preview manager (skipped)");
+		}
+
+		// --- 12. a re-fit hold keeps a group item alive past the prune that releases it ----
 		{
 			json probeGroup = run("sceneItems.createGroup",
 					      json{{"canvas", canvasUuid}, {"name", "selftest-scene-item-group-probe"}},
@@ -5827,7 +6229,7 @@ void ObsBootstrap::RunSceneItemGroupSelfTest()
 			}
 		}
 
-		// --- 12. ungroup: children get new top-level ids, the old entry must not follow --
+		// --- 13. ungroup: children get new top-level ids, the old entry must not follow --
 		moveParams["id"] = childAId;
 		moveParams["transform"] = json{{"pos", json{{"x", -20.0}, {"y", 0.0}}}};
 		run("sceneItems.setTransform", moveParams, ok);
@@ -5865,7 +6267,7 @@ void ObsBootstrap::RunSceneItemGroupSelfTest()
 		      untouched && afterUngroupUndo.redoName == moveLabel && afterUngroupUndo.undoName != moveLabel,
 		      "redo='" + afterUngroupUndo.redoName + "'");
 
-		// --- 13. undo after deleting a group: logs, spends the slot, touches nothing ----
+		// --- 14. undo after deleting a group: logs, spends the slot, touches nothing ----
 		std::vector<int64_t> formerChildren;
 		for (const auto &entry : ungrouped) {
 			if (entry.first != topId) {

@@ -2913,42 +2913,15 @@ void PinOverlayBoundsInState(json &state, obs_sceneitem_t *item)
 	state["bounds"] = json{{"x", boundsWidth}, {"y", boundsHeight}};
 }
 
-// Holds a group's re-fit off until End() or destruction; a null group item holds nothing,
-// so a top-level item passes straight through. libobs counts the holds, so they nest.
-//
-// The hold keeps its own reference on the group item: the graphics thread prunes an item
-// whose source was removed and releases it without the UI thread, and ending a hold on that
-// item would write freed memory.
-class GroupResizeDeferral {
-public:
-	explicit GroupResizeDeferral(obs_sceneitem_t *groupItem) : groupItem_(groupItem)
-	{
-		if (groupItem_) {
-			obs_sceneitem_addref(groupItem_);
-			obs_sceneitem_defer_group_resize_begin(groupItem_);
-		}
-	}
-	GroupResizeDeferral(GroupResizeDeferral &&other) noexcept : groupItem_(std::exchange(other.groupItem_, nullptr))
-	{
-	}
-	GroupResizeDeferral(const GroupResizeDeferral &) = delete;
-	GroupResizeDeferral &operator=(const GroupResizeDeferral &) = delete;
-	GroupResizeDeferral &operator=(GroupResizeDeferral &&) = delete;
-	~GroupResizeDeferral() { End(); }
-
-	void End()
-	{
-		if (obs_sceneitem_t *groupItem = std::exchange(groupItem_, nullptr)) {
-			obs_sceneitem_defer_group_resize_end(groupItem);
-			obs_sceneitem_release(groupItem);
-		}
-	}
-	// The held group item; null for a top-level item and once the hold has ended.
-	obs_sceneitem_t *GroupItem() const { return groupItem_; }
-
-private:
-	obs_sceneitem_t *groupItem_;
-};
+// The group geometry the preview's child gestures share with this file. Each lived here until
+// the preview needed it too; they are named unqualified below because every call site predates
+// the move.
+using SceneItems::ApplyPendingChildUpdate;
+using SceneItems::CanvasPlacementRefusal;
+using SceneItems::CanvasToOwnerVector;
+using SceneItems::GroupResizeDeferral;
+using SceneItems::HoldGroupOf;
+using SceneItems::OffsetThroughGroup;
 
 // Where a group item's content origin sat on the canvas when its state was captured: the
 // translation of SceneItems::GroupToCanvas. Recorded for a group item in a batch capture, and
@@ -3094,17 +3067,6 @@ void AddOwnerCommit(OwnerCommits &commits, OBSSourceAutoRelease owner, const jso
 				      [&](const auto &commit) { return commit.first == owner.Get(); });
 	if (!seen) {
 		commits.emplace_back(std::move(owner), params);
-	}
-}
-
-// Adds a re-fit hold on `item`'s group unless one is already held; a top-level item adds
-// nothing. `scene`, when known, is the scene the group sits in (see SceneItems::GroupItemOf).
-void HoldGroupOf(std::vector<GroupResizeDeferral> &holds, obs_sceneitem_t *item, obs_scene_t *scene = nullptr)
-{
-	obs_sceneitem_t *groupItem = SceneItems::GroupItemOf(item, scene);
-	if (groupItem && std::none_of(holds.begin(), holds.end(),
-				      [&](const GroupResizeDeferral &hold) { return hold.GroupItem() == groupItem; })) {
-		holds.emplace_back(groupItem);
 	}
 }
 
@@ -4318,79 +4280,6 @@ json SceneItemTransformToJson(obs_sceneitem_t *item, uint32_t baseWidth, uint32_
 		// to take "No bounds" off the menu rather than offering a control that snaps back.
 		{"viewportFollow", Overlay::IsOverlaySource(src)},
 	};
-}
-
-// The vector in the space `ownerToCanvas` maps from that it carries onto `canvas`, ignoring
-// its translation. libobs transforms row vectors, so an owner-space (gx, gy) lands at
-// gx * m.x + gy * m.y. False when the linear part has no inverse: a group scaled to zero on
-// an axis, which draws nothing.
-bool CanvasToOwnerVector(const matrix4 &ownerToCanvas, const vec2 &canvas, vec2 &out)
-{
-	const matrix4 &m = ownerToCanvas;
-	const float det = m.x.x * m.y.y - m.y.x * m.x.y;
-	if (det == 0.0f) {
-		return false;
-	}
-	const float gx = (m.y.y * canvas.x - m.y.x * canvas.y) / det;
-	const float gy = (m.x.x * canvas.y - m.x.y * canvas.x) / det;
-	if (!std::isfinite(gx) || !std::isfinite(gy)) {
-		return false;
-	}
-	vec2_set(&out, gx, gy);
-	return true;
-}
-
-// Carry a canvas-pixel offset into the space an item's position is written in, through
-// `groupItem`, the group item drawing it (null for a top-level item, whose space is the
-// canvas's). Only the linear part of the group's transform takes part, which its crop and
-// bounds crop leave alone, so this holds for every group. False as CanvasToOwnerVector is.
-bool OffsetThroughGroup(obs_sceneitem_t *groupItem, const vec2 &canvasOffset, vec2 &out)
-{
-	if (!groupItem) {
-		out = canvasOffset;
-		return true;
-	}
-	matrix4 drawTransform;
-	obs_sceneitem_get_draw_transform(groupItem, &drawTransform);
-	return CanvasToOwnerVector(drawTransform, canvasOffset, out);
-}
-
-// Why no canvas-space placement (center, fit, stretch, the canvas clamp) can be written to
-// `item`, or null when one can. `groupItem` is the group item drawing it, null for a
-// top-level item, which always takes one. A child takes one only through a group that libobs
-// re-fits around its children without moving them on the canvas, which is a group with no
-// bounds type: a bounded group instead rescales its content into its bounds after every
-// child write, so no position written to a child holds.
-const char *CanvasPlacementRefusal(obs_sceneitem_t *item, obs_sceneitem_t *groupItem)
-{
-	if (!SceneItems::GroupSourceOf(item)) {
-		return nullptr;
-	}
-	if (!groupItem) {
-		return "its group is not in a scene";
-	}
-	if (obs_sceneitem_get_bounds_type(groupItem) != OBS_BOUNDS_NONE) {
-		return "its group has a bounding box, which rescales the group's content into it";
-	}
-	matrix4 ownerToCanvas;
-	vec2 probe;
-	vec2_set(&probe, 1.0f, 1.0f);
-	if (!SceneItems::GroupToCanvas(groupItem, ownerToCanvas) || !CanvasToOwnerVector(ownerToCanvas, probe, probe)) {
-		return "its group is scaled to nothing";
-	}
-	return nullptr;
-}
-
-// A group's child is only flagged by a transform write and recomputed on the next tick, so
-// its pending update is applied before its box is read. That also consumes the flag the tick
-// would have re-fitted the group from, so a child's box is read only under a
-// GroupResizeDeferral, whose end flags the re-fit instead. libobs skips the update, and
-// still clears the flag, while the item's own update is deferred, so no box is read then.
-void ApplyPendingChildUpdate(obs_sceneitem_t *item)
-{
-	if (SceneItems::GroupSourceOf(item)) {
-		obs_sceneitem_force_update_transform(item);
-	}
 }
 
 // Axis-aligned bounding box of an item's drawn quad, in the space its position is written

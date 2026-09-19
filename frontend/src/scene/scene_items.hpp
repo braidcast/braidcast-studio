@@ -12,6 +12,7 @@ typedef struct obs_scene obs_scene_t;
 typedef struct obs_scene_item obs_sceneitem_t;
 typedef struct obs_source obs_source_t;
 struct matrix4;
+struct vec2;
 struct vec3;
 
 // One scene item named the way a scene lists it: its id, and the uuid of the group source
@@ -104,8 +105,74 @@ bool ItemBoxThroughGroup(obs_sceneitem_t *item, obs_sceneitem_t *groupItem, matr
 // found (see GroupItemOf for `scene`) or as ItemBoxThroughGroup is.
 bool ItemBoxToCanvas(obs_sceneitem_t *item, matrix4 &out, obs_scene_t *scene = nullptr);
 
+// The map from the canvas back into a group's own space, the inverse of GroupToCanvas: what
+// carries a pointer position into the space the group's children are written in. A null group
+// item maps identically. False as GroupToCanvas is, and for a group whose linear part has no
+// inverse (one scaled to nothing on an axis), which draws nothing to point at anyway.
+bool CanvasToGroup(obs_sceneitem_t *groupItem, matrix4 &out);
+
 // The axis-aligned extent of the unit square `boxTransform` maps.
 void BoxExtent(const matrix4 &boxTransform, vec3 &tl, vec3 &br);
+
+// The vector in the space `ownerToCanvas` maps from that it carries onto `canvas`, ignoring
+// its translation. libobs transforms row vectors, so an owner-space (gx, gy) lands at
+// gx * m.x + gy * m.y. False when the linear part has no inverse: a group scaled to zero on
+// an axis, which draws nothing.
+bool CanvasToOwnerVector(const matrix4 &ownerToCanvas, const vec2 &canvas, vec2 &out);
+
+// Carry a canvas-pixel offset into the space an item's position is written in, through
+// `groupItem`, the group item drawing it (null for a top-level item, whose space is the
+// canvas's). Only the linear part of the group's transform takes part, which its crop and
+// bounds crop leave alone, so this holds for every group. False as CanvasToOwnerVector is.
+bool OffsetThroughGroup(obs_sceneitem_t *groupItem, const vec2 &canvasOffset, vec2 &out);
+
+// Why no canvas-space placement (a preview gesture, center, fit, stretch, the canvas clamp)
+// can be written to `item`, or null when one can. `groupItem` is the group item drawing it,
+// null for a top-level item, which always takes one. A child takes one only through a group
+// that libobs re-fits around its children without moving them on the canvas, which is a group
+// with no bounds type: a bounded group instead rescales its content into its bounds after
+// every child write, so no position written to a child holds.
+const char *CanvasPlacementRefusal(obs_sceneitem_t *item, obs_sceneitem_t *groupItem);
+
+// A group's child is only flagged by a transform write and recomputed on the next tick, so its
+// pending update is applied before its box is read. That also consumes the flag the tick would
+// have re-fitted the group from, so a child's box is read only under a GroupResizeDeferral,
+// whose end flags the re-fit instead. libobs skips the update, and still clears the flag, while
+// the item's own update is deferred, so no box is read then.
+void ApplyPendingChildUpdate(obs_sceneitem_t *item);
+
+// Holds a group's re-fit off until End() or destruction; a null group item holds nothing, so a
+// top-level item passes straight through. libobs counts the holds, so they nest.
+//
+// The hold keeps its own reference on the group item: the graphics thread prunes an item whose
+// source was removed and releases it without the UI thread, and ending a hold on that item
+// would write freed memory.
+class GroupResizeDeferral {
+public:
+	explicit GroupResizeDeferral(obs_sceneitem_t *groupItem);
+	GroupResizeDeferral(GroupResizeDeferral &&other) noexcept : groupItem_(std::exchange(other.groupItem_, nullptr))
+	{
+	}
+	GroupResizeDeferral(const GroupResizeDeferral &) = delete;
+	GroupResizeDeferral &operator=(const GroupResizeDeferral &) = delete;
+	GroupResizeDeferral &operator=(GroupResizeDeferral &&) = delete;
+	~GroupResizeDeferral() { End(); }
+
+	void End();
+	// The held group item; null for a top-level item and once the hold has ended.
+	obs_sceneitem_t *GroupItem() const { return groupItem_; }
+
+private:
+	obs_sceneitem_t *groupItem_ = nullptr;
+};
+
+// Adds a re-fit hold on `groupItem` unless one is already held; a null group item adds nothing.
+// For a caller that already has the group in hand, which is every gesture path.
+void HoldGroup(std::vector<GroupResizeDeferral> &holds, obs_sceneitem_t *groupItem);
+
+// The same, for a caller holding only the child: resolves its group first. `scene`, when known,
+// is the scene the group sits in (see GroupItemOf).
+void HoldGroupOf(std::vector<GroupResizeDeferral> &holds, obs_sceneitem_t *item, obs_scene_t *scene = nullptr);
 
 } // namespace SceneItems
 

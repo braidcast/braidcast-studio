@@ -45,6 +45,16 @@ struct PreviewOverlays {
 	bool spacingHelpers;
 };
 
+// The gestures a scripted drag can start, one per grab point PreviewSurface::DragForTest
+// knows how to aim at: the item's body, its bottom-right resize handle, its rotation disc, and
+// its left edge under Alt (a crop). Exists for the smoke self-test, which has no cursor and no
+// keyboard.
+//
+// MoveSnapping is Move with the keyboard's snap suppression NOT held, so the drag runs through
+// CanvasSnapOffset the way an ordinary one does; every other gesture suppresses it, because a
+// snap would move the item somewhere other than the offset the case asked for.
+enum class PreviewTestGesture { Move, MoveSnapping, ResizeBottomRight, Rotate, CropLeft };
+
 // What a preview's context menu renders from: whether the surface is at a fixed scale
 // rather than fitted, the scale the next frame draws at as a percentage, the edit lock,
 // and the overlays.
@@ -136,6 +146,22 @@ public:
 	// Hit-test at a canvas-space coordinate against this surface's scene; returns
 	// the topmost matching scene-item id, or -1. Used by the smoke self-test.
 	int64_t HitTestForTest(float canvasX, float canvasY);
+
+	// Drive one whole editing gesture on `key` for the smoke self-test: grab what `gesture`
+	// names on that item, drag by (dx, dy) canvas px in one move, and release, through the
+	// same OnLeftDown/OnMouseMove/OnLeftUp the mouse takes. `key` must already be selected,
+	// since only a selected item offers handles and only a selected item's body starts a
+	// move. Ctrl stands in for "suppress snapping" on every gesture but the crop, which takes
+	// Alt, because a scripted drag has to land where it asked to and both modifiers are
+	// sampled from a keyboard a headless run does not have. Seeds the letterbox transform to
+	// 1:1 first: a surface the UI never sized has drawn no frame to read one from, and every
+	// mouse entry point refuses input without it. Returns false when the item does not
+	// resolve, its box is degenerate, the press grabbed something other than what `gesture`
+	// named, or the drag changed nothing. `outGrab`, when given, receives the CANVAS point the
+	// press landed on, so a case can state what the gesture should have done in terms of where
+	// the pointer actually went rather than re-deriving the grab geometry. UI thread.
+	bool DragForTest(const SceneItemKey &key, PreviewTestGesture gesture, float dx, float dy,
+			 vec2 *outGrab = nullptr);
 
 	// The ANCHOR scene-item id of this surface's selection (-1 when none). Used by the
 	// isolation self-test to prove an edit on one surface leaves another's selection
@@ -358,6 +384,12 @@ std::optional<std::vector<SceneItemKey>> SelectFromBridge(const std::string &can
 // id, or -1. Used by the smoke self-tests to prove hit-testing without a real
 // cursor. windowId defaults to 0 (main window).
 int64_t HitTestForTest(const std::string &canvas, float canvasX, float canvasY, int windowId = 0);
+
+// PreviewSurface::DragForTest on the surface for (windowId, canvas) (empty canvas => the
+// Default surface). False when no such surface exists yet -- this never creates one -- or as
+// PreviewSurface::DragForTest is. windowId defaults to 0 (main window).
+bool DragForTest(const std::string &canvas, const SceneItemKey &key, PreviewTestGesture gesture, float dx, float dy,
+		 int windowId = 0, vec2 *outGrab = nullptr);
 
 // Drive the preview's view (the Scale submenu) and its edit lock from JS, on the
 // surface for (windowId, canvas) (empty canvas => the Default surface). Each
