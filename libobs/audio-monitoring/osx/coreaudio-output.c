@@ -96,8 +96,9 @@ static void on_audio_playback(void *param, obs_source_t *source, const struct au
 			register float *cur = (float *)resample_data[0];
 			register float *end = cur + resample_frames * monitor->channels;
 
-			while (cur < end)
+			while (cur < end) {
 				*(cur++) *= vol;
+			}
 		}
 	}
 
@@ -270,8 +271,9 @@ static void audio_monitor_free(struct audio_monitor *monitor)
 
 static void audio_monitor_init_final(struct audio_monitor *monitor)
 {
-	if (monitor->ignore)
+	if (monitor->ignore) {
 		return;
+	}
 
 	obs_source_add_audio_capture_callback(monitor->source, on_audio_playback, monitor);
 	obs_source_add_audio_pause_callback(monitor->source, on_audio_pause, monitor);
@@ -307,8 +309,9 @@ void audio_monitor_reset(struct audio_monitor *monitor)
 	memset(monitor, 0, sizeof(*monitor));
 
 	success = audio_monitor_init(monitor, source);
-	if (success)
+	if (success) {
 		audio_monitor_init_final(monitor);
+	}
 }
 
 void audio_monitor_destroy(struct audio_monitor *monitor)

@@ -125,8 +125,9 @@ static void process_byte(void *p, size_t frames, size_t channels, float vol)
 	register uint8_t *cur = (uint8_t *)p;
 	register uint8_t *end = cur + frames * channels;
 
-	for (; cur < end; cur++)
+	for (; cur < end; cur++) {
 		*cur = ((int)*cur - 128) * vol + 128;
+	}
 }
 
 static void process_s16(void *p, size_t frames, size_t channels, float vol)
@@ -134,8 +135,9 @@ static void process_s16(void *p, size_t frames, size_t channels, float vol)
 	register int16_t *cur = (int16_t *)p;
 	register int16_t *end = cur + frames * channels;
 
-	while (cur < end)
+	while (cur < end) {
 		*(cur++) *= vol;
+	}
 }
 
 static void process_s32(void *p, size_t frames, size_t channels, float vol)
@@ -143,8 +145,9 @@ static void process_s32(void *p, size_t frames, size_t channels, float vol)
 	register int32_t *cur = (int32_t *)p;
 	register int32_t *end = cur + frames * channels;
 
-	while (cur < end)
+	while (cur < end) {
 		*(cur++) *= vol;
+	}
 }
 
 static void process_float(void *p, size_t frames, size_t channels, float vol)
@@ -152,8 +155,9 @@ static void process_float(void *p, size_t frames, size_t channels, float vol)
 	register float *cur = (float *)p;
 	register float *end = cur + frames * channels;
 
-	while (cur < end)
+	while (cur < end) {
 		*(cur++) *= vol;
+	}
 }
 
 void process_volume(const struct audio_monitor *monitor, float vol, uint8_t *const *resample_data,
@@ -207,8 +211,9 @@ static void do_stream_write(void *param)
 
 	while (data->new_data.size > 0) {
 		size_t bytesToFill = data->new_data.size;
-		if (pa_stream_begin_write(data->stream, (void **)&buffer, &bytesToFill))
+		if (pa_stream_begin_write(data->stream, (void **)&buffer, &bytesToFill)) {
 			goto finish;
+		}
 
 		// PA may request we submit more or less data than we have.
 		// Wait for more data if we cannot perform a full write.
@@ -238,17 +243,20 @@ static void on_audio_playback(void *param, obs_source_t *source, const struct au
 	uint64_t ts_offset;
 	bool success;
 
-	if (pthread_mutex_trylock(&monitor->playback_mutex) != 0)
+	if (pthread_mutex_trylock(&monitor->playback_mutex) != 0) {
 		return;
+	}
 
-	if (os_atomic_load_long(&source->activate_refs) == 0)
+	if (os_atomic_load_long(&source->activate_refs) == 0) {
 		goto unlock;
+	}
 
 	success = audio_resampler_resample(monitor->resampler, resample_data, &resample_frames, &ts_offset,
 					   (const uint8_t *const *)audio_data->data, (uint32_t)audio_data->frames);
 
-	if (!success)
+	if (!success) {
 		goto unlock;
+	}
 
 	bytes = monitor->bytes_per_frame * resample_frames;
 
@@ -289,8 +297,9 @@ static void pulseaudio_sink_info(pa_context *c, const pa_sink_info *i, int eol, 
 		goto skip;
 	}
 	// Terminating call for multi instance callbacks
-	if (eol > 0)
+	if (eol > 0) {
 		goto skip;
+	}
 
 	blog(LOG_INFO, "Audio format: %s, %" PRIu32 " Hz, %" PRIu8 " channels",
 	     pa_sample_format_to_string(i->sample_spec.format), i->sample_spec.rate, i->sample_spec.channels);
@@ -355,8 +364,9 @@ static bool audio_monitor_init(struct audio_monitor *monitor, obs_source_t *sour
 	monitor->source = source;
 
 	const char *id = obs->audio.monitoring_device_id;
-	if (!id)
+	if (!id) {
 		return false;
+	}
 
 	if (source->info.output_flags & OBS_SOURCE_DO_NOT_SELF_MONITOR) {
 		obs_data_t *s = obs_source_get_settings(source);
@@ -373,13 +383,15 @@ static bool audio_monitor_init(struct audio_monitor *monitor, obs_source_t *sour
 
 	pulseaudio_init();
 
-	if (strcmp(id, "default") == 0)
+	if (strcmp(id, "default") == 0) {
 		get_default_id(&monitor->device);
-	else
+	} else {
 		monitor->device = bstrdup(id);
+	}
 
-	if (!monitor->device)
+	if (!monitor->device) {
 		return false;
+	}
 
 	if (pulseaudio_get_server_info(pulseaudio_server_info, (void *)monitor) < 0) {
 		blog(LOG_ERROR, "Unable to get server info !");
@@ -452,25 +464,29 @@ static bool audio_monitor_init(struct audio_monitor *monitor, obs_source_t *sour
 
 static void audio_monitor_init_final(struct audio_monitor *monitor)
 {
-	if (monitor->ignore)
+	if (monitor->ignore) {
 		return;
+	}
 
 	obs_source_add_audio_capture_callback(monitor->source, on_audio_playback, monitor);
 }
 
 static inline void audio_monitor_free(struct audio_monitor *monitor)
 {
-	if (monitor->ignore)
+	if (monitor->ignore) {
 		return;
+	}
 
-	if (monitor->source)
+	if (monitor->source) {
 		obs_source_remove_audio_capture_callback(monitor->source, on_audio_playback, monitor);
+	}
 
 	audio_resampler_destroy(monitor->resampler);
 	deque_free(&monitor->new_data);
 
-	if (monitor->stream)
+	if (monitor->stream) {
 		pulseaudio_stop_playback(monitor);
+	}
 	pulseaudio_unref();
 
 	bfree(monitor->device);
@@ -481,8 +497,9 @@ struct audio_monitor *audio_monitor_create(obs_source_t *source)
 	struct audio_monitor monitor = {0};
 	struct audio_monitor *out;
 
-	if (!audio_monitor_init(&monitor, source))
+	if (!audio_monitor_init(&monitor, source)) {
 		goto fail;
+	}
 
 	out = bmemdup(&monitor, sizeof(monitor));
 

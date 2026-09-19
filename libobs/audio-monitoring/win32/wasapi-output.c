@@ -61,8 +61,9 @@ static bool process_audio_delay(struct audio_monitor *monitor, float **data, uin
 	uint32_t blocksize = monitor->channels * sizeof(float);
 
 	/* cut off audio if long-since leftover audio in delay buffer */
-	if (cur_time - monitor->last_recv_time > 1000000000)
+	if (cur_time - monitor->last_recv_time > 1000000000) {
 		deque_free(&monitor->delay_buffer);
+	}
 	monitor->last_recv_time = cur_time;
 
 	ts += monitor->source->sync_offset;
@@ -248,15 +249,17 @@ static bool audio_monitor_init_wasapi(struct audio_monitor *monitor)
 
 fail:
 	safe_release(immde);
-	if (wfex)
+	if (wfex) {
 		CoTaskMemFree(wfex);
+	}
 	return success;
 }
 
 static void audio_monitor_free_for_reconnect(struct audio_monitor *monitor)
 {
-	if (monitor->client)
+	if (monitor->client) {
 		monitor->client->lpVtbl->Stop(monitor->client);
+	}
 
 	if (monitor->render) {
 		monitor->render->lpVtbl->Release(monitor->render);
@@ -331,8 +334,9 @@ static void on_audio_playback(void *param, obs_source_t *source, const struct au
 			register float *cur = (float *)resample_data[0];
 			register float *end = cur + resample_frames * monitor->channels;
 
-			while (cur < end)
+			while (cur < end) {
 				*(cur++) *= vol;
+			}
 		}
 		memcpy(output, resample_data[0], resample_frames * monitor->channels * sizeof(float));
 	}
@@ -352,15 +356,17 @@ unlock:
 
 static inline void audio_monitor_free(struct audio_monitor *monitor)
 {
-	if (monitor->ignore)
+	if (monitor->ignore) {
 		return;
+	}
 
 	if (monitor->source) {
 		obs_source_remove_audio_capture_callback(monitor->source, on_audio_playback, monitor);
 	}
 
-	if (monitor->client)
+	if (monitor->client) {
 		monitor->client->lpVtbl->Stop(monitor->client);
+	}
 
 	safe_release(monitor->client);
 	safe_release(monitor->render);
@@ -400,8 +406,9 @@ static bool audio_monitor_init(struct audio_monitor *monitor, obs_source_t *sour
 
 static void audio_monitor_init_final(struct audio_monitor *monitor)
 {
-	if (monitor->ignore)
+	if (monitor->ignore) {
 		return;
+	}
 
 	monitor->source_has_video = (monitor->source->info.output_flags & OBS_SOURCE_VIDEO) != 0;
 	obs_source_add_audio_capture_callback(monitor->source, on_audio_playback, monitor);

@@ -58,8 +58,9 @@ static inline bool is_individual_audio_source(obs_source_t *source)
  */
 static void push_audio_tree2(obs_source_t *parent, obs_source_t *source, void *p)
 {
-	if (obs_source_removed(source))
+	if (obs_source_removed(source)) {
 		return;
+	}
 
 	struct obs_core_audio *audio = p;
 	size_t idx = da_find(audio->render_order, &source, 0);
@@ -93,13 +94,15 @@ static inline void mix_audio(struct audio_output_data *mixes, obs_source_t *sour
 	size_t total_floats = AUDIO_OUTPUT_FRAMES;
 	size_t start_point = 0;
 
-	if (source->audio_ts < ts->start || ts->end <= source->audio_ts)
+	if (source->audio_ts < ts->start || ts->end <= source->audio_ts) {
 		return;
+	}
 
 	if (source->audio_ts != ts->start) {
 		start_point = convert_time_to_frames(sample_rate, source->audio_ts - ts->start);
-		if (start_point == AUDIO_OUTPUT_FRAMES)
+		if (start_point == AUDIO_OUTPUT_FRAMES) {
 			return;
+		}
 
 		total_floats -= start_point;
 	}
@@ -113,8 +116,9 @@ static inline void mix_audio(struct audio_output_data *mixes, obs_source_t *sour
 			mix += start_point;
 			end = aud + total_floats;
 
-			while (aud < end)
+			while (aud < end) {
 				*(mix++) += *(aud++);
+			}
 		}
 	}
 }
@@ -128,8 +132,9 @@ static bool ignore_audio(obs_source_t *source, size_t channels, size_t sample_ra
 #if DEBUG_LAGGED_AUDIO == 1
 		blog(LOG_DEBUG, "[src: %s] no timestamp, but audio available?", name);
 #endif
-		for (size_t ch = 0; ch < channels; ch++)
+		for (size_t ch = 0; ch < channels; ch++) {
 			deque_pop_front(&source->audio_input_buf[ch], NULL, source->audio_input_buf[0].size);
+		}
 		source->last_audio_input_buf_size = 0;
 		return false;
 	}
@@ -137,27 +142,31 @@ static bool ignore_audio(obs_source_t *source, size_t channels, size_t sample_ra
 	if (num_floats) {
 		/* round up the number of samples to drop */
 		size_t drop = (size_t)util_mul_div64(start_ts - source->audio_ts - 1, sample_rate, 1000000000ULL) + 1;
-		if (drop > num_floats)
+		if (drop > num_floats) {
 			drop = num_floats;
+		}
 
 #if DEBUG_LAGGED_AUDIO == 1
 		blog(LOG_DEBUG, "[src: %s] ignored %" PRIu64 "/%" PRIu64 " samples", name, (uint64_t)drop,
 		     (uint64_t)num_floats);
 #endif
-		for (size_t ch = 0; ch < channels; ch++)
+		for (size_t ch = 0; ch < channels; ch++) {
 			deque_pop_front(&source->audio_input_buf[ch], NULL, drop * sizeof(float));
+		}
 
 		source->last_audio_input_buf_size = 0;
 		source->audio_ts += util_mul_div64(drop, 1000000000ULL, sample_rate);
 		blog(LOG_DEBUG, "[src: %s] ts lag after ignoring: %" PRIu64, name, start_ts - source->audio_ts);
 
 		/* rounding error, adjust */
-		if (source->audio_ts == (start_ts - 1))
+		if (source->audio_ts == (start_ts - 1)) {
 			source->audio_ts = start_ts;
+		}
 
 		/* source is back in sync */
-		if (source->audio_ts >= start_ts)
+		if (source->audio_ts >= start_ts) {
 			return true;
+		}
 	} else {
 #if DEBUG_LAGGED_AUDIO == 1
 		blog(LOG_DEBUG, "[src: %s] no samples to ignore! ts = %" PRIu64, name, source->audio_ts);
@@ -187,8 +196,9 @@ static bool discard_if_stopped(obs_source_t *source, size_t channels)
 	last_size = source->last_audio_input_buf_size;
 	size = source->audio_input_buf[0].size;
 
-	if (!size)
+	if (!size) {
 		return false;
+	}
 
 	/* if perpetually pending data, it means the audio has stopped,
 	 * so clear the audio data */
@@ -201,8 +211,9 @@ static bool discard_if_stopped(obs_source_t *source, size_t channels)
 			return false;
 		}
 
-		for (size_t ch = 0; ch < channels; ch++)
+		for (size_t ch = 0; ch < channels; ch++) {
 			deque_pop_front(&source->audio_input_buf[ch], NULL, source->audio_input_buf[ch].size);
+		}
 
 		source->pending_stop = false;
 		source->audio_ts = 0;
@@ -250,8 +261,9 @@ static inline void discard_audio(struct obs_core_audio *audio, obs_source_t *sou
 
 	if (source->audio_ts < (ts->start - 1)) {
 		if (source->audio_pending && source->audio_input_buf[0].size < MAX_AUDIO_SIZE &&
-		    discard_if_stopped(source, channels))
+		    discard_if_stopped(source, channels)) {
 			return;
+		}
 
 #if DEBUG_AUDIO == 1
 		if (is_audio_source) {
@@ -274,9 +286,10 @@ static inline void discard_audio(struct obs_core_audio *audio, obs_source_t *sou
 		size_t start_point = convert_time_to_frames(sample_rate, source->audio_ts - ts->start);
 		if (start_point == AUDIO_OUTPUT_FRAMES) {
 #if DEBUG_AUDIO == 1
-			if (is_audio_source)
+			if (is_audio_source) {
 				blog(LOG_DEBUG, "can't discard, start point is "
 						"at audio frame count");
+			}
 #endif
 			return;
 		}
@@ -287,25 +300,29 @@ static inline void discard_audio(struct obs_core_audio *audio, obs_source_t *sou
 	size = total_floats * sizeof(float);
 
 	if (source->audio_input_buf[0].size < size) {
-		if (discard_if_stopped(source, channels))
+		if (discard_if_stopped(source, channels)) {
 			return;
+		}
 
 #if DEBUG_AUDIO == 1
-		if (is_audio_source)
+		if (is_audio_source) {
 			blog(LOG_DEBUG, "can't discard, data still pending");
+		}
 #endif
 		source->audio_ts = ts->end;
 		return;
 	}
 
-	for (size_t ch = 0; ch < channels; ch++)
+	for (size_t ch = 0; ch < channels; ch++) {
 		deque_pop_front(&source->audio_input_buf[ch], NULL, size);
+	}
 
 	source->last_audio_input_buf_size = 0;
 
 #if DEBUG_AUDIO == 1
-	if (is_audio_source)
+	if (is_audio_source) {
 		blog(LOG_DEBUG, "audio discarded, new ts: %" PRIu64, ts->end);
+	}
 #endif
 
 	source->pending_stop = false;
@@ -323,11 +340,13 @@ static void set_fixed_audio_buffering(struct obs_core_audio *audio, size_t sampl
 	size_t total_ms;
 	int ticks;
 
-	if (audio_buffering_maxed(audio))
+	if (audio_buffering_maxed(audio)) {
 		return;
+	}
 
-	if (!audio->buffering_wait_ticks)
+	if (!audio->buffering_wait_ticks) {
 		audio->buffered_ts = ts->start;
+	}
 
 	ticks = audio->max_buffering_ticks - audio->total_buffering_ticks;
 	audio->total_buffering_ticks += ticks;
@@ -368,11 +387,13 @@ static void add_audio_buffering(struct obs_core_audio *audio, size_t sample_rate
 	size_t ms;
 	int ticks;
 
-	if (audio_buffering_maxed(audio))
+	if (audio_buffering_maxed(audio)) {
 		return;
+	}
 
-	if (!audio->buffering_wait_ticks)
+	if (!audio->buffering_wait_ticks) {
 		audio->buffered_ts = ts->start;
+	}
 
 	offset = ts->start - min_ts;
 	frames = ns_to_audio_frames(sample_rate, offset);
@@ -432,8 +453,9 @@ static bool audio_buffer_insufficient(struct obs_source *source, size_t sample_r
 
 	if (source->audio_ts != min_ts && source->audio_ts != (min_ts - 1)) {
 		size_t start_point = convert_time_to_frames(sample_rate, source->audio_ts - min_ts);
-		if (start_point >= AUDIO_OUTPUT_FRAMES)
+		if (start_point >= AUDIO_OUTPUT_FRAMES) {
 			return false;
+		}
 
 		total_floats -= start_point;
 	}
@@ -479,15 +501,17 @@ static inline bool mark_invalid_sources(struct obs_core_data *data, size_t sampl
 static inline const char *calc_min_ts(struct obs_core_data *data, size_t sample_rate, uint64_t *min_ts)
 {
 	const char *buffering_name = find_min_ts(data, min_ts);
-	if (mark_invalid_sources(data, sample_rate, *min_ts))
+	if (mark_invalid_sources(data, sample_rate, *min_ts)) {
 		buffering_name = find_min_ts(data, min_ts);
+	}
 	return buffering_name;
 }
 
 static inline void release_audio_sources(struct obs_core_audio *audio)
 {
-	for (size_t i = 0; i < audio->render_order.num; i++)
+	for (size_t i = 0; i < audio->render_order.num; i++) {
 		obs_source_release(audio->render_order.array[i]);
+	}
 }
 
 static inline void execute_audio_tasks(void)
@@ -514,11 +538,13 @@ static inline bool should_silence_monitored_source(obs_source_t *source, struct 
 {
 	obs_source_t *dup_src = audio->monitoring_duplicating_source;
 
-	if (!dup_src || !obs_source_active(dup_src))
+	if (!dup_src || !obs_source_active(dup_src)) {
 		return false;
+	}
 
-	if (dup_src->monitoring_type == OBS_MONITORING_TYPE_MONITOR_ONLY)
+	if (dup_src->monitoring_type == OBS_MONITORING_TYPE_MONITOR_ONLY) {
 		return false;
+	}
 
 	bool fader_muted = close_float(audio->monitoring_duplicating_source->volume, 0.0f, 0.0001f);
 	bool output_capture_unmuted = !audio->monitoring_duplicating_source->muted && !fader_muted;
@@ -534,8 +560,9 @@ static inline bool should_silence_monitored_source(obs_source_t *source, struct 
 
 static inline void clear_audio_output_buf(obs_source_t *source, struct obs_core_audio *audio)
 {
-	if (!audio->monitoring_duplicating_source)
+	if (!audio->monitoring_duplicating_source) {
 		return;
+	}
 
 	uint32_t aoc_mixers = audio->monitoring_duplicating_source->audio_mixers;
 	uint32_t source_mixers = source->audio_mixers;
@@ -545,8 +572,9 @@ static inline void clear_audio_output_buf(obs_source_t *source, struct obs_core_
 		if ((aoc_mixers & mix_and_val) && (source_mixers & mix_and_val)) {
 			for (size_t ch = 0; ch < MAX_AUDIO_CHANNELS; ch++) {
 				float *buf = source->audio_output_buf[mix][ch];
-				if (buf)
+				if (buf) {
 					memset(buf, 0, AUDIO_OUTPUT_FRAMES * sizeof(float));
+				}
 			}
 		}
 	}
@@ -583,24 +611,29 @@ bool audio_callback(void *param, uint64_t start_ts_in, uint64_t end_ts_in, uint6
 	pthread_mutex_lock(&obs->video.mixes_mutex);
 	for (size_t j = 0; j < obs->video.mixes.num; j++) {
 		struct obs_view *view = obs->video.mixes.array[j]->view;
-		if (!view)
+		if (!view) {
 			continue;
+		}
 
 		pthread_mutex_lock(&view->channels_mutex);
 
 		/* NOTE: these are source channels, not audio channels */
 		for (uint32_t i = 0; i < MAX_CHANNELS; i++) {
 			obs_source_t *source = view->channels[i];
-			if (!source)
+			if (!source) {
 				continue;
-			if (!obs_source_active(source))
+			}
+			if (!obs_source_active(source)) {
 				continue;
-			if (obs_source_removed(source))
+			}
+			if (obs_source_removed(source)) {
 				continue;
+			}
 
 			/* first, add top - level sources as root_nodes */
-			if (obs->video.mixes.array[j]->mix_audio)
+			if (obs->video.mixes.array[j]->mix_audio) {
 				da_push_back(audio->root_nodes, &source);
+			}
 
 			/* Build audio tree, tag duplicate individual sources */
 			obs_source_enum_active_tree(source, push_audio_tree2, audio);
@@ -629,8 +662,9 @@ bool audio_callback(void *param, uint64_t start_ts_in, uint64_t end_ts_in, uint6
 	for (size_t i = 0; i < audio->render_order.num; i++) {
 		obs_source_t *source = audio->render_order.array[i];
 		obs_source_audio_render(source, mixers, channels, sample_rate, audio_size);
-		if (should_silence_monitored_source(source, audio))
+		if (should_silence_monitored_source(source, audio)) {
 			clear_audio_output_buf(source, audio);
+		}
 
 		/* if a source has gone backward in time and we can no
 		 * longer buffer, drop some or all of its audio */
@@ -653,8 +687,9 @@ bool audio_callback(void *param, uint64_t start_ts_in, uint64_t end_ts_in, uint6
 				pthread_mutex_unlock(&source->audio_buf_mutex);
 
 				/* if we (potentially) recovered, re-render */
-				if (rerender)
+				if (rerender) {
 					obs_source_audio_render(source, mixers, channels, sample_rate, audio_size);
+				}
 			}
 		}
 	}
@@ -681,13 +716,15 @@ bool audio_callback(void *param, uint64_t start_ts_in, uint64_t end_ts_in, uint6
 		for (size_t i = 0; i < audio->root_nodes.num; i++) {
 			obs_source_t *source = audio->root_nodes.array[i];
 
-			if (source->audio_pending)
+			if (source->audio_pending) {
 				continue;
+			}
 
 			pthread_mutex_lock(&source->audio_buf_mutex);
 
-			if (source->audio_output_buf[0][0] && source->audio_ts)
+			if (source->audio_output_buf[0][0] && source->audio_ts) {
 				mix_audio(mixes, source, channels, sample_rate, &ts);
+			}
 
 			pthread_mutex_unlock(&source->audio_buf_mutex);
 		}
