@@ -6199,6 +6199,308 @@ void ObsBootstrap::RunSceneItemGroupSelfTest()
 			HostLog("[selftest] scene-item-group preview gestures: no preview manager (skipped)");
 		}
 
+		// --- 11b. drill-in: double click enters a group, and every way back out -----------
+		// Driven through the surface's own OnLeftDown / OnLeftDblClk / OnLeftUp, so each case
+		// sees the message sequence Windows actually sends on a CS_DBLCLKS window class -- the
+		// second press of a double click as WM_LBUTTONDBLCLK, never as another WM_LBUTTONDOWN.
+		if (Preview::Instance() && childA) {
+			auto keysText = [](const std::vector<SceneItemKey> &keys) {
+				std::string out;
+				for (const SceneItemKey &key : keys) {
+					out += (out.empty() ? "" : " ") + std::to_string(key.id) +
+					       (key.IsTopLevel() ? "@top" : "@group");
+				}
+				return out.empty() ? std::string("(none)") : out;
+			};
+			auto selectedKeys = [&]() {
+				return Preview::SelectedKeysForTest(canvasUuid);
+			};
+			auto enteredUuid = [&]() {
+				return Preview::EnteredGroupForTest(canvasUuid);
+			};
+			auto childKeys = [&](std::initializer_list<int64_t> ids) {
+				std::vector<SceneItemKey> keys;
+				for (const int64_t id : ids) {
+					keys.emplace_back(id, groupUuid);
+				}
+				return keys;
+			};
+			auto boxCentre = [&](obs_sceneitem_t *item) {
+				vec3 tl, br;
+				canvasBoxOf(item, tl, br);
+				vec2 out;
+				vec2_set(&out, (tl.x + br.x) * 0.5f, (tl.y + br.y) * 0.5f);
+				return out;
+			};
+			auto drillState = [&]() {
+				return "entered '" + enteredUuid() + "', selection " + keysText(selectedKeys());
+			};
+
+			run("preview.select", base, ok);
+			setGroupTransform(0.0f, 1.0f, 1.0f);
+			const vec2 topStartPos = posOf(top);
+			vec3 gTl, gBr, aTl, aBr, bTl, bBr;
+			canvasBoxOf(groupItem, gTl, gBr);
+			canvasBoxOf(childA, aTl, aBr);
+			canvasBoxOf(childB, bTl, bBr);
+			// Inside the group's box but over neither child: where a band that stays in the
+			// group has to start, since a press outside that box is itself an exit.
+			vec2 gapInGroup;
+			vec2_set(&gapInGroup, (aBr.x + bTl.x) * 0.5f, (gTl.y + gBr.y) * 0.5f);
+			// Empty canvas, well clear of every item this scene holds.
+			vec2 emptySpot;
+			vec2_set(&emptySpot, canvasWidth - 80.0f, 80.0f);
+			check("drill-in geometry: a gap inside the group and empty canvas outside it",
+			      bTl.x - aBr.x > 8.0f &&
+				      Preview::HitTestForTest(canvasUuid, gapInGroup.x, gapInGroup.y) == groupId &&
+				      Preview::HitTestForTest(canvasUuid, emptySpot.x, emptySpot.y) < 0,
+			      "group " + boxText(gTl, gBr) + " gap " + posText(gapInGroup) + " empty " +
+				      posText(emptySpot));
+
+			// Enter. The first press selects the group; the second, arriving as
+			// WM_LBUTTONDBLCLK, drills in and takes the child under the pointer.
+			const vec2 drillACentre = boxCentre(childA);
+			selections.clear();
+			Preview::ClickForTest(canvasUuid, drillACentre.x, drillACentre.y, true);
+			const json enterEvent = selections.empty() ? json() : selections.back();
+			check("double click on a group enters it and selects the child under the pointer",
+			      enteredUuid() == groupUuid && selectedKeys() == childKeys({childAId}), drillState());
+			check("the enter is announced as enteredGroup on sceneItem.selected",
+			      enterEvent.is_object() && enterEvent.value("enteredGroup", json()) ==
+								json{{"id", groupId}, {"group", nullptr}},
+			      enterEvent.dump());
+
+			// Hit-testing while entered runs over the group's children. Without the scope
+			// this press would answer with the GROUP, which is what covers the point at top
+			// level.
+			const vec2 drillBCentre = boxCentre(childB);
+			Preview::ClickForTest(canvasUuid, drillBCentre.x, drillBCentre.y, false);
+			check("a click while entered picks the group's child, not the group",
+			      enteredUuid() == groupUuid && selectedKeys() == childKeys({childBId}), drillState());
+
+			// The band, twice: it must reach either child and must not pick up a top-level
+			// item lying in the swept area. `top` is parked inside the first sweep for
+			// exactly that -- and its id equals child A's, so a band that fell back to the
+			// scene's own items would look like a correct answer on ids alone.
+			setPos(top, aTl.x, aBr.y + 50.0f);
+			settle();
+			run("preview.select", base, ok);
+			Preview::BandForTest(canvasUuid, gapInGroup.x, gapInGroup.y, aTl.x - 10.0f, aBr.y + 200.0f);
+			const std::vector<SceneItemKey> bandLeft = selectedKeys();
+			setPos(top, topStartPos.x, topStartPos.y);
+			settle();
+			check("a band while entered takes the group's child and not the top-level item over it",
+			      enteredUuid() == groupUuid && bandLeft == childKeys({childAId}),
+			      keysText(bandLeft) + ", top-level id " + std::to_string(topId));
+			run("preview.select", base, ok);
+			Preview::BandForTest(canvasUuid, gapInGroup.x, gapInGroup.y, bBr.x + 10.0f, aTl.y - 10.0f);
+			check("a band while entered reaches the other child too",
+			      enteredUuid() == groupUuid && selectedKeys() == childKeys({childBId}), drillState());
+
+			// Exit 1: Esc, which arrives over the bridge because the overlay never gets keys.
+			json exitReply = run("preview.exitGroup", base, ok);
+			check("preview.exitGroup leaves the group and selects it",
+			      ok && exitReply.value("exited", false) && enteredUuid().empty() &&
+				      selectedKeys() == std::vector<SceneItemKey>{SceneItemKey(groupId)},
+			      exitReply.dump() + ", " + drillState());
+			exitReply = run("preview.exitGroup", base, ok);
+			check("preview.exitGroup outside a group reports nothing to leave",
+			      ok && !exitReply.value("exited", true), exitReply.dump());
+
+			// Exit 2: a click outside the group's box, which then applies at top level. The
+			// item it lands on shares child A's id, so a press that stayed in the group
+			// would select a child and still answer with the same number.
+			Preview::ClickForTest(canvasUuid, drillACentre.x, drillACentre.y, true);
+			const bool enteredForOutside = enteredUuid() == groupUuid;
+			Preview::ClickForTest(canvasUuid, topStartPos.x + 10.0f, topStartPos.y + 10.0f, false);
+			check("a click outside the group leaves it and selects at top level",
+			      enteredForOutside && enteredUuid().empty() &&
+				      selectedKeys() == std::vector<SceneItemKey>{SceneItemKey(topId)},
+			      drillState());
+
+			// Exit 3: a click on empty canvas outside the group leaves it and clears.
+			Preview::ClickForTest(canvasUuid, drillACentre.x, drillACentre.y, true);
+			const bool enteredForEmpty = enteredUuid() == groupUuid;
+			Preview::ClickForTest(canvasUuid, emptySpot.x, emptySpot.y, false);
+			check("a click on empty canvas leaves the group and clears the selection",
+			      enteredForEmpty && enteredUuid().empty() && selectedKeys().empty(), drillState());
+
+			// Exit 4: a scene switch. The drill-in is scoped to the scene it was made in, so
+			// the switch drops it and switching back does NOT restore it. A scene-collection
+			// change ends up here too: it replaces the scenes, so the uuid stops matching.
+			//
+			// NOTHING may read the drill-in while the other scene is up: EnteredGroupForTest
+			// resolves, and a resolve is itself the exit, so a probe there would be what
+			// cleared the state and the read after the switch back would prove nothing. The
+			// sceneItem.selected the switch emits is the only witness that does not mutate.
+			const char *kOtherScene = "selftest-scene-item-group-scene-2";
+			run("scenes.create", json{{"canvas", canvasUuid}, {"name", kOtherScene}}, ok);
+			Preview::ClickForTest(canvasUuid, drillACentre.x, drillACentre.y, true);
+			const bool enteredForSwitch = enteredUuid() == groupUuid;
+			selections.clear();
+			run("scenes.setCurrent", json{{"canvas", canvasUuid}, {"name", kOtherScene}}, ok);
+			const json switchEvent = selections.empty() ? json() : selections.back();
+			run("scenes.setCurrent", json{{"canvas", canvasUuid}, {"name", kSceneName}}, ok);
+			const std::string enteredBackAgain = enteredUuid();
+			run("scenes.remove", json{{"canvas", canvasUuid}, {"name", kOtherScene}}, ok);
+			check("a scene switch leaves the group with no pointer event to notice it",
+			      enteredForSwitch && switchEvent.is_object() && switchEvent.contains("enteredGroup") &&
+				      switchEvent["enteredGroup"].is_null(),
+			      switchEvent.dump());
+			check("switching back does not re-enter the group", enteredBackAgain.empty(),
+			      "back again '" + enteredBackAgain + "'");
+
+			// A rename is announced the same way a switch is, and must NOT exit: the scene
+			// the drill-in was made in is still the one on screen.
+			Preview::ClickForTest(canvasUuid, drillACentre.x, drillACentre.y, true);
+			const bool enteredForRename = enteredUuid() == groupUuid;
+			const char *kRenamedScene = "selftest-scene-item-group-scene-renamed";
+			bool renameOk = false;
+			run("scenes.rename", json{{"canvas", canvasUuid}, {"from", kSceneName}, {"to", kRenamedScene}},
+			    renameOk);
+			const std::string enteredAfterRename = enteredUuid();
+			run("scenes.rename", json{{"canvas", canvasUuid}, {"from", kRenamedScene}, {"to", kSceneName}},
+			    ok);
+			check("renaming the scene leaves the drill-in alone",
+			      enteredForRename && renameOk && enteredAfterRename == groupUuid, drillState());
+			run("preview.exitGroup", base, ok);
+
+			// Exits 5 and 6: the group stops existing while it is entered. Two throwaway
+			// one-child groups rather than the shared one, because neither an ungroup nor a
+			// removal can be undone.
+			struct DrillProbe {
+				obs_source_t *src = nullptr; // create-ref, released below
+				int64_t groupId = 0;
+				std::string groupUuid;
+				obs_sceneitem_t *groupItem = nullptr;
+				vec2 centre = {};
+			};
+			auto makeDrillProbe = [&](const char *name, float x, float y) {
+				DrillProbe probe;
+				probe.src = makeSource(name);
+				json created = run("sceneItems.createGroup",
+						   json{{"canvas", canvasUuid}, {"name", std::string(name) + "-group"}},
+						   ok);
+				probe.groupId = ok ? created.value("id", int64_t(0)) : 0;
+				probe.groupUuid = ok ? created.value("source", std::string()) : std::string();
+				probe.groupItem = probe.groupId ? obs_scene_find_sceneitem_by_id(scene, probe.groupId)
+								: nullptr;
+				obs_scene_t *inner =
+					probe.groupItem
+						? obs_group_from_source(obs_sceneitem_get_source(probe.groupItem))
+						: nullptr;
+				obs_sceneitem_t *child = inner && probe.src ? obs_scene_add(inner, probe.src) : nullptr;
+				if (!child) {
+					return probe;
+				}
+				setPos(child, 0.0f, 0.0f);
+				setPos(probe.groupItem, x, y);
+				settle();
+				probe.centre = boxCentre(child);
+				return probe;
+			};
+			DrillProbe ungroupProbe = makeDrillProbe("selftest-scene-item-group-drill-a",
+								 canvasWidth * 0.62f, canvasHeight * 0.75f);
+			DrillProbe removeProbe = makeDrillProbe("selftest-scene-item-group-drill-b",
+								canvasWidth * 0.82f, canvasHeight * 0.75f);
+			if (ungroupProbe.groupItem && removeProbe.groupItem) {
+				Preview::ClickForTest(canvasUuid, ungroupProbe.centre.x, ungroupProbe.centre.y, true);
+				const bool enteredUngroupProbe = enteredUuid() == ungroupProbe.groupUuid;
+				run("sceneItems.ungroup", topParams(ungroupProbe.groupId), ok);
+				while (obs_wait_for_destroy_queue()) {
+				}
+				settle();
+				check("ungrouping the entered group leaves it",
+				      ok && enteredUngroupProbe && enteredUuid().empty(), drillState());
+
+				Preview::ClickForTest(canvasUuid, removeProbe.centre.x, removeProbe.centre.y, true);
+				const bool enteredRemoveProbe = enteredUuid() == removeProbe.groupUuid;
+				obs_sceneitem_remove(removeProbe.groupItem);
+				while (obs_wait_for_destroy_queue()) {
+				}
+				settle();
+				check("deleting the entered group leaves it",
+				      enteredRemoveProbe && enteredUuid().empty(), drillState());
+			} else {
+				check("drill-in probe groups", false, "");
+			}
+			// Whatever survived: the ungrouped probe's item is top level now, the removed
+			// one's group took its child with it. A probe that failed half way through still
+			// created its group, and on that path neither the ungroup nor the removal ran --
+			// so look the group up by uuid and take it out before the source, or it would
+			// stay in the scene for sections 12-14 to trip over.
+			for (DrillProbe *probe : {&ungroupProbe, &removeProbe}) {
+				obs_sceneitem_t *survivor =
+					probe->groupUuid.empty() ? nullptr
+								 : SceneItems::FindGroupItem(scene, probe->groupUuid);
+				if (survivor) {
+					obs_sceneitem_remove(survivor);
+				}
+				if (probe->src) {
+					obs_source_remove(probe->src);
+					obs_source_release(probe->src);
+				}
+			}
+			while (obs_wait_for_destroy_queue()) {
+			}
+			settle();
+
+			// Risk 4: with CS_DBLCLKS set the SECOND of two clicks in one spot arrives as
+			// WM_LBUTTONDBLCLK. Unrouted, it would do nothing and the click-through cycle
+			// would stop dead on the first item. Two identically placed, identically sized
+			// top-level items, neither a group, so the double press cycles instead of
+			// entering; which of them is on top is read off the first click rather than
+			// assumed from the add order.
+			obs_source_t *cycleSrc = makeSource("selftest-scene-item-group-cycle");
+			obs_sceneitem_t *cycleItem = cycleSrc ? obs_scene_add(scene, cycleSrc) : nullptr;
+			if (cycleItem) {
+				setPos(cycleItem, topStartPos.x, topStartPos.y);
+				settle();
+				const vec2 stack = boxCentre(cycleItem);
+				const int64_t cycleId = obs_sceneitem_get_id(cycleItem);
+				// One press from an empty selection: the topmost of the two.
+				run("preview.select", base, ok);
+				Preview::ClickForTest(canvasUuid, stack.x, stack.y, false);
+				const std::vector<SceneItemKey> first = selectedKeys();
+				// Two presses from an empty selection, the second of them the
+				// WM_LBUTTONDBLCLK: one step down the stack, so the OTHER item. This is
+				// the case that fails outright when that message is not routed -- the
+				// second press would then do nothing and the answer would still be `first`.
+				run("preview.select", base, ok);
+				Preview::ClickForTest(canvasUuid, stack.x, stack.y, true);
+				const std::vector<SceneItemKey> second = selectedKeys();
+				// A third press wraps the cycle back to the top, as it does in a run with
+				// no double click in it.
+				Preview::ClickForTest(canvasUuid, stack.x, stack.y, false);
+				const std::vector<SceneItemKey> third = selectedKeys();
+				const bool stacked = first.size() == 1 && second.size() == 1 && third.size() == 1 &&
+						     first.front().IsTopLevel() &&
+						     (first.front().id == cycleId || first.front().id == topId);
+				check("the click-through cycle survives the double-click message",
+				      stacked && second.front() != first.front() && third == first &&
+					      enteredUuid().empty(),
+				      keysText(first) + " -> " + keysText(second) + " -> " + keysText(third) +
+					      " (stacked ids " + std::to_string(cycleId) + "," + std::to_string(topId) +
+					      ")");
+				obs_sceneitem_remove(cycleItem);
+			} else {
+				check("click-cycle probe item", false, "");
+			}
+			if (cycleSrc) {
+				obs_source_remove(cycleSrc);
+				obs_source_release(cycleSrc);
+			}
+			while (obs_wait_for_destroy_queue()) {
+			}
+
+			run("preview.select", base, ok);
+			setPos(top, topStartPos.x, topStartPos.y);
+			settle();
+			check("drill-in cases leave the group and the scene as they found them",
+			      groupAsBefore() && enteredUuid().empty() && samePos(posOf(top), topStartPos),
+			      canvasText());
+		}
+
 		// --- 12. a re-fit hold keeps a group item alive past the prune that releases it ----
 		{
 			json probeGroup = run("sceneItems.createGroup",

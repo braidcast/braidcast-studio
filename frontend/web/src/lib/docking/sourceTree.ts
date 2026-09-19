@@ -1,5 +1,5 @@
 import type { SceneItem, SceneItemRef } from "$lib/api/bridge";
-import { isChildOf, refKey, sameItem } from "$lib/utils/sceneItemRef";
+import { findItem, isChildOf, refKey, sameItem } from "$lib/utils/sceneItemRef";
 
 // One rendered row of a sources tree: a scene's own item at level 1, or a group's child at
 // level 2 (groups cannot nest, so there is no deeper level).
@@ -129,6 +129,25 @@ export function revealRow(
     return { kind: "expand", group };
   }
   return { kind: "hidden" };
+}
+
+// Expand the group the preview has been drilled into, so the children it is now picking
+// from are listed. `entered` is sceneItem.selected's `enteredGroup`: a ref to the group's
+// own top-level row, or null when the preview is in no group. Nothing here ever collapses:
+// a collapse is the user's own state, and leaving a group is not a request to undo their
+// expand. Shared by every dock that hosts a sources tree so they cannot react differently.
+export async function expandEnteredGroup(
+  items: readonly SceneItem[],
+  entered: SceneItemRef | null | undefined,
+  setCollapsed: (group: SceneItem, collapsed: boolean) => Promise<boolean>,
+): Promise<void> {
+  if (!entered) {
+    return;
+  }
+  const group = findItem(items, entered);
+  if (group?.collapsed) {
+    await setCollapsed(group, false);
+  }
 }
 
 export type TreeKeyAction =

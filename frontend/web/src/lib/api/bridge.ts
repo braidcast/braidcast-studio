@@ -1739,6 +1739,11 @@ export interface ObsMethods {
   // exactly as before; `selectedIds` is the whole set the preview now holds, and
   // `selectedRefs` that same set with each member's owning group.
   "preview.select": { selected: number | null; selectedIds: number[]; selectedRefs: SceneItemRef[] };
+  // Leave the group the addressed surface is drilled into, selecting that group. `exited`
+  // is false when it was not in one, which is not an error. params: {canvas?, window?}.
+  // The page owns this because the native overlay never takes keyboard focus, so Esc is
+  // only ever seen by the DOM.
+  "preview.exitGroup": { exited: boolean };
   // Per-surface view: `fixed` = pinned scale rather than fit-to-window, `zoomPercent`
   // = the scale the NEXT frame will draw at, `locked` = editing gestures blocked.
   // Every one of these answers with that same shape, already reflecting the command
@@ -2320,6 +2325,11 @@ export interface ObsEvents {
     ids: number[];
     refs: SceneItemRef[];
     group: string | null;
+    // The group the surface is drilled into (double-click in the preview), as a ref to its
+    // own top-level row, or null. A sources tree expands that row so the children the
+    // preview is now picking from are visible; nothing re-collapses it, because a collapse
+    // is the user's own state and leaving a group is not a request to undo their expand.
+    enteredGroup: SceneItemRef | null;
     canvas: string | null;
   };
   // Any left or right button press on a preview surface, broadcast to all windows like the

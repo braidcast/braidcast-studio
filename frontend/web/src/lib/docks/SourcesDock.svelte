@@ -30,7 +30,7 @@ import { EV } from "$lib/utils/eventNames";
   import { colorMenu } from "$lib/menus/colorMenu";
   import type { DeinterlaceMode, DeinterlaceFieldOrder } from "$lib/api/bridge";
   import SourceTree from "$lib/docking/SourceTree.svelte";
-  import { siblingPosition, visibleRows } from "$lib/docking/sourceTree";
+  import { expandEnteredGroup, siblingPosition, visibleRows } from "$lib/docking/sourceTree";
   import { PendingRename } from "$lib/docking/pendingRename.svelte";
   import { itemTarget, sameItem, toRef } from "$lib/utils/sceneItemRef";
   import ListToolbar, { type ToolAction } from "$lib/docking/ListToolbar.svelte";
@@ -134,6 +134,8 @@ import { EV } from "$lib/utils/eventNames";
         // here as the set it is rather than as its focused item alone.
         activeSurface.claimSource(surfaceOwner, null, sourceSelection);
         sourceSelection.adoptPreview(p, items);
+        // Drilling into a group in the preview picks from its children, so show them.
+        void expandEnteredGroup(items, p.enteredGroup, setCollapsed);
       }
     });
   });

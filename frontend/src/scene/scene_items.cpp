@@ -21,15 +21,20 @@ std::vector<int64_t> IdsOf(const std::vector<SceneItemKey> &keys)
 	return ids;
 }
 
-std::vector<int64_t> TopLevelIds(const std::vector<SceneItemKey> &keys)
+std::vector<int64_t> IdsInOwner(const std::vector<SceneItemKey> &keys, const std::string &groupUuid)
 {
 	std::vector<int64_t> ids;
 	for (const SceneItemKey &key : keys) {
-		if (key.IsTopLevel()) {
+		if (key.groupUuid == groupUuid) {
 			ids.push_back(key.id);
 		}
 	}
 	return ids;
+}
+
+std::vector<int64_t> TopLevelIds(const std::vector<SceneItemKey> &keys)
+{
+	return IdsInOwner(keys, std::string());
 }
 
 obs_source_t *GroupSourceOf(obs_sceneitem_t *item)

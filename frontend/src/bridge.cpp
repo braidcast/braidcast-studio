@@ -618,6 +618,21 @@ bool MethodPreviewViewAction(const json &params, json &result, std::string &erro
 	return PreviewViewResult(params, result, error);
 }
 
+// Leave the group the addressed preview surface is drilled into, selecting that group.
+// params: {canvas?, window?}. This is how Esc reaches the preview -- the overlay HWND never
+// takes the keyboard focus, so no key event ever arrives there and the page forwards it.
+// Returns {exited} so the page can tell a handled Esc from one that should fall through;
+// never an error, because "not in a group" is the ordinary answer.
+bool MethodPreviewExitGroup(const json &params, json &result, std::string &error)
+{
+	if (!Preview::Instance()) {
+		error = "preview not ready";
+		return false;
+	}
+	result = json{{"exited", Preview::ExitGroup(PreviewCanvasParam(params), PreviewWindowParam(params))}};
+	return true;
+}
+
 // Toggle the preview's edit lock. Native rather than a frontend-only flag because
 // the gestures it has to block are native: the overlay HWND takes the mouse, so
 // nothing in the DOM is in a position to refuse a drag.
@@ -1521,6 +1536,12 @@ bool MethodPreviewSelect(const json &params, json &result, std::string &error)
 void EmitScenesChanged(const std::string &canvasUuid)
 {
 	EmitEvent(EventNames::kScenesChanged, json{{"canvas", canvasUuid.empty() ? json(nullptr) : json(canvasUuid)}});
+	// Where a scene switch reaches the preview: a drill-in's implicit exit rules fire on a
+	// resolve, and a switch driven from a hotkey or a dock touches no pointer handler, so
+	// without this the surface stays scoped to a group on a scene it no longer shows. A
+	// resolve, not a clear -- this also fires on create/rename/remove, which leave the
+	// entered group's scene alone.
+	Preview::RefreshEnteredGroupForCanvas(canvasUuid);
 	if (canvasUuid.empty()) {
 		// The global scene set may have changed (create/remove/duplicate/rename):
 		// reconcile the per-scene switch hotkeys. Idempotent + no-op on a pure switch.
@@ -4714,8 +4735,7 @@ bool MethodSceneItemsNudge(const json &params, json &result, std::string &error)
 			return false;
 		}
 		json refParams = base;
-		refParams["id"] = key->id;
-		refParams["group"] = key->IsTopLevel() ? json(nullptr) : json(key->groupUuid);
+		refParams.update(Bridge::SceneItemRefJson(*key));
 		obs_source_t *owner = nullptr; // addref'd by ResolveParamsItem
 		obs_sceneitem_t *item = nullptr;
 		int64_t id = 0;
@@ -11723,11 +11743,16 @@ obs_source_t *AcquireSceneByUuid(const std::string &uuid)
 	return AcquireSourceByUuidAs(uuid, obs_scene_from_source);
 }
 
+json SceneItemRefJson(const SceneItemKey &key)
+{
+	return json{{"id", key.id}, {"group", key.IsTopLevel() ? json(nullptr) : json(key.groupUuid)}};
+}
+
 json SceneItemRefsJson(const std::vector<SceneItemKey> &keys)
 {
 	json refs = json::array();
 	for (const SceneItemKey &key : keys) {
-		refs.push_back(json{{"id", key.id}, {"group", key.IsTopLevel() ? json(nullptr) : json(key.groupUuid)}});
+		refs.push_back(SceneItemRefJson(key));
 	}
 	return refs;
 }
@@ -14506,6 +14531,7 @@ void Init()
 		{"preview.hide", MethodPreviewHide},
 		{"preview.destroy", MethodPreviewDestroy},
 		{"preview.select", MethodPreviewSelect},
+		{"preview.exitGroup", MethodPreviewExitGroup},
 		{"preview.freeze", MethodPreviewFreeze},
 		{"preview.viewAction", MethodPreviewViewAction},
 		{"preview.setLocked", MethodPreviewSetLocked},

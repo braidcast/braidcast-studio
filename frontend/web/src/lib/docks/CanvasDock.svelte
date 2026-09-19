@@ -29,6 +29,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     previewViewMenuItems,
     forwardPreviewWheel,
     syncPreviewGate,
+    previewTarget,
     type PreviewSurfaceDock,
   } from "$lib/docking/previewSurface";
   import { usePreviewPointerGuard } from "$lib/docking/previewPointerGuard";
@@ -56,7 +57,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   import PropertiesModal from "$lib/properties/PropertiesModal.svelte";
   import Icon from "$lib/ui/Icon.svelte";
   import SourceTree from "$lib/docking/SourceTree.svelte";
-  import { siblingPosition, visibleRows } from "$lib/docking/sourceTree";
+  import { expandEnteredGroup, siblingPosition, visibleRows } from "$lib/docking/sourceTree";
   import { PendingRename } from "$lib/docking/pendingRename.svelte";
   import { itemTarget, sameItem, toRef } from "$lib/utils/sceneItemRef";
   import ListToolbar, { type ToolAction } from "$lib/docking/ListToolbar.svelte";
@@ -475,7 +476,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   function onTreeSelect() {
     activeSurface.claimSource(surfaceOwner, canvasUuid, selection);
     selection.pushToPreview((refs) => {
-      const params: PreviewSelectParams = { canvas: canvasUuid, window: WINDOW_ID, scene: currentScene, refs };
+      const params: PreviewSelectParams = { ...previewTarget(canvasUuid), scene: currentScene, refs };
       return obs.call("preview.select", params);
     });
   }
@@ -1019,6 +1020,8 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
         // here as the set it is rather than as its focused item alone.
         activeSurface.claimSource(surfaceOwner, canvasUuid, selection);
         selection.adoptPreview(p, items);
+        // Drilling into a group in the preview picks from its children, so show them.
+        void expandEnteredGroup(items, p.enteredGroup, setCollapsed);
       }
     });
 

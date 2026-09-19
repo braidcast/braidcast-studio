@@ -15,12 +15,16 @@ import { previewSuspended } from "$lib/stores/previewGate.svelte";
 import { overlayRectOf } from "$lib/utils/overlayRect";
 import { WINDOW_ID } from "$lib/utils/windowContext";
 
-interface PreviewTarget {
+export interface PreviewTarget {
   window: number;
   canvas?: string;
 }
 
-function target(canvasUuid?: string): PreviewTarget {
+// How every surface-addressed bridge call names its surface: this window, plus the canvas
+// uuid for a per-canvas dock and nothing for the Default one. The `window` is what a
+// detached dock depends on -- omit it and the call lands on window 0's surface instead --
+// so callers outside this module use `previewTarget` rather than building the object.
+export function previewTarget(canvasUuid?: string): PreviewTarget {
   return canvasUuid ? { canvas: canvasUuid, window: WINDOW_ID } : { window: WINDOW_ID };
 }
 
@@ -36,17 +40,17 @@ export function syncPreviewRect(el: HTMLElement, canvasUuid?: string): boolean {
     return false;
   }
   obs
-    .call("preview.setRect", { ...target(canvasUuid), ...rect })
+    .call("preview.setRect", { ...previewTarget(canvasUuid), ...rect })
     .catch((e) => console.log("preview.setRect failed: " + (e as Error).message));
   return true;
 }
 
 export function hidePreview(canvasUuid?: string): void {
-  obs.call("preview.hide", target(canvasUuid)).catch(() => {});
+  obs.call("preview.hide", previewTarget(canvasUuid)).catch(() => {});
 }
 
 export function destroyPreview(canvasUuid?: string): void {
-  obs.call("preview.destroy", target(canvasUuid)).catch(() => {});
+  obs.call("preview.destroy", previewTarget(canvasUuid)).catch(() => {});
 }
 
 // What a dock hosting a surface tells the shared rect and gate logic about itself.
@@ -130,7 +134,7 @@ export function syncPreviewGate(
 // surface for this dock, which the menu renders as disabled entries rather than as
 // commands that would fail on click.
 export function fetchPreviewView(canvasUuid?: string): Promise<PreviewView | null> {
-  return obs.call("preview.getView", target(canvasUuid)).catch(() => null);
+  return obs.call("preview.getView", previewTarget(canvasUuid)).catch(() => null);
 }
 
 // The mutators answer with the surface's state as of the command just applied --
@@ -138,16 +142,16 @@ export function fetchPreviewView(canvasUuid?: string): Promise<PreviewView | nul
 // percentage from the pending view rather than from the last rendered frame. A
 // caller holding a menu open can refresh straight from the reply.
 export function applyPreviewViewAction(action: PreviewViewAction, canvasUuid?: string): Promise<PreviewView> {
-  return obs.call("preview.viewAction", { ...target(canvasUuid), action });
+  return obs.call("preview.viewAction", { ...previewTarget(canvasUuid), action });
 }
 
 export function setPreviewLocked(locked: boolean, canvasUuid?: string): Promise<PreviewView> {
-  return obs.call("preview.setLocked", { ...target(canvasUuid), locked });
+  return obs.call("preview.setLocked", { ...previewTarget(canvasUuid), locked });
 }
 
 // The overlays are shared by every preview; the target only picks whose view answers.
 export function setPreviewOverlays(patch: PreviewOverlayPatch, canvasUuid?: string): Promise<PreviewView> {
-  return obs.call("preview.setOverlays", { ...target(canvasUuid), ...patch });
+  return obs.call("preview.setOverlays", { ...previewTarget(canvasUuid), ...patch });
 }
 
 // Forward a wheel the web view received over a preview region to the host's zoom.
@@ -169,7 +173,7 @@ export function forwardPreviewWheel(el: HTMLElement, e: WheelEvent, canvasUuid?:
   const dpr = window.devicePixelRatio || 1;
   obs
     .call("preview.zoomAt", {
-      ...target(canvasUuid),
+      ...previewTarget(canvasUuid),
       x: Math.round((e.clientX - r.left) * dpr),
       y: Math.round((e.clientY - r.top) * dpr),
       // Sign only, magnitude discarded -- one notch per event, matching the legacy

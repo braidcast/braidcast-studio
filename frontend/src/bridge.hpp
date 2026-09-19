@@ -179,6 +179,11 @@ void EmitSceneItemsChangedForSource(obs_source_t *src);
 // appliers do. UI thread only.
 obs_source_t *AcquireSceneByUuid(const std::string &uuid);
 
+// One scene-item key as the bridge's SceneItemRef, {id, group}, with `group` null for a
+// top-level item. THE serializer for a ref: every payload that names an item this way goes
+// through it, so none of them can spell one differently.
+json SceneItemRefJson(const SceneItemKey &key);
+
 // Scene-item keys as the bridge's SceneItemRef list, [{id, group}] in the same order, with
 // `group` null for a top-level item. The one serializer the preview.select reply and the
 // sceneItem.selected event share, so the two cannot describe a selection differently.

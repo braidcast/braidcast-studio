@@ -168,6 +168,26 @@ public:
 	// untouched. Reads under the surface's own lock.
 	int64_t SelectedIdForTest();
 
+	// This surface's whole selection, in order, for the smoke self-test: the anchor id
+	// alone cannot say which owner a member belongs to. Reads under the surface's own lock.
+	std::vector<SceneItemKey> SelectedKeysForTest();
+
+	// The uuid of the group source this surface is drilled into, empty when it is in none.
+	// RESOLVED against the scene the surface shows now, so a drill-in that any exit rule has
+	// invalidated reports as left even before a pointer event notices. UI thread.
+	std::string EnteredGroupForTest();
+
+	// Drive a whole left click at a canvas point for the smoke self-test, through the same
+	// OnLeftDown/OnLeftUp the mouse takes. `doubleClick` appends the second press as
+	// WM_LBUTTONDBLCLK does, which is the only form Windows sends on this window class --
+	// so a scripted double click exercises the same routing a real one does. Seeds the
+	// letterbox transform to 1:1 first (see DragForTest) and holds no modifier. UI thread.
+	void ClickForTest(float canvasX, float canvasY, bool doubleClick);
+
+	// The same, for a rubber band: press at (fromX, fromY), one move to (toX, toY), release.
+	// UI thread.
+	void BandForTest(float fromX, float fromY, float toX, float toY);
+
 	// Re-validate the surface after a video reset of its mix: clear the cached
 	// letterbox transform so the next frame recomputes it against the new base
 	// resolution, and nudge a redraw. Returns false when no display exists yet.
@@ -179,6 +199,29 @@ public:
 	void OnMouseMove(int mx, int my);
 	void OnLeftUp();
 	void CancelDrag();
+
+	// The second press of a double click (WM_LBUTTONDBLCLK). The overlay's window class
+	// sets CS_DBLCLKS, so this message REPLACES the WM_LBUTTONDOWN that press would
+	// otherwise be. It enters ("drills into") the top-level group under the pointer, and
+	// hands every other case straight to OnLeftDown -- which is what keeps the
+	// click-through cycle, driven entirely by repeated presses, working. UI thread.
+	void OnLeftDblClk(int mx, int my);
+
+	// Leave the drilled-into group and select it: what Esc does, arriving over the bridge
+	// because the overlay never receives keys. Returns whether one was entered. Idempotent.
+	// The other ways out are a click or right-click outside the group's box, and the
+	// implicit rules (scene switch, scene-collection change, the group removed, ungrouped or
+	// no longer a group) that the surface applies whenever it resolves the drill-in. UI thread.
+	bool ExitGroup();
+
+	// Re-apply the implicit exit rules against the scene this surface shows now, emitting
+	// sceneItem.selected when they ended the drill-in (that event is how the docks learn).
+	// The one caller is the scene-list announcement: a switch driven from a hotkey or a dock
+	// reaches no pointer handler, so nothing else would resolve the drill-in until the next
+	// event over the preview. Safe on every scenes.changed -- a create or a rename leaves the
+	// entered group's scene intact, so the resolve is a no-op -- and free when no group is
+	// entered. UI thread.
+	void RefreshEnteredGroup();
 
 	// The one drag-end path, shared by every way a gesture can finish: the button-up,
 	// a right-click that interrupts it, and a lost mouse capture. Clears the drag state
@@ -219,6 +262,25 @@ private:
 	// UI thread.
 	void ApplyPressClick(obs_source_t *sceneSource, obs_scene_t *scene, bool bandPending);
 	void ApplyPressClickOnCurrentScene();
+
+	// Emit sceneItem.selected for `keys`, tagged with the group this surface is drilled
+	// into. Every selection change goes through it so none of them can drop the tag.
+	void EmitSelectionChange(const std::vector<SceneItemKey> &keys);
+
+	// Drill into `groupItem` and select the topmost of its children under `canvasPos`, or
+	// nothing when none is there. The double click's own press already selected the group.
+	void EnterGroup(obs_source_t *sceneSource, obs_scene_t *scene, obs_sceneitem_t *groupItem,
+			const vec2 &canvasPos);
+
+	// Seed the letterbox transform at 1:1 for a scripted pointer sequence; shared by
+	// DragForTest, ClickForTest and BandForTest.
+	void SeedTestTransform();
+
+	// Post one mouse message through OnOverlayMessage, the way the window procedure does,
+	// so a scripted click exercises the real message routing and not just the handler
+	// behind it. `msg` is a WM_* value (UINT, spelled as uint32_t so this header needs no
+	// windows.h ordering assumption beyond the one it already has).
+	void SendTestMouseMessage(uint32_t msg, int x, int y);
 
 	// Begin dragging the whole current selection, recording each member's start
 	// position and the one batch undo payload. No-op when nothing movable resolves.
@@ -350,6 +412,10 @@ public:
 	// global video info and so never reaches OnVideoResetAll.
 	void OnVideoResetForCanvas(const std::string &canvasUuid);
 
+	// PreviewSurface::RefreshEnteredGroup on every surface showing this canvas, across
+	// windows for the reason DestroyForCanvas sweeps them. Runs on the UI thread.
+	void RefreshEnteredGroupForCanvas(const std::string &canvasUuid);
+
 	// The main window's top-level host HWND (windowId 0), set at construction. Used
 	// to parent native modal dialogs (e.g. the file picker) to the app window.
 	HWND MainHostHwnd() const { return host_; }
@@ -390,6 +456,27 @@ int64_t HitTestForTest(const std::string &canvas, float canvasX, float canvasY, 
 // PreviewSurface::DragForTest is. windowId defaults to 0 (main window).
 bool DragForTest(const std::string &canvas, const SceneItemKey &key, PreviewTestGesture gesture, float dx, float dy,
 		 int windowId = 0, vec2 *outGrab = nullptr);
+
+// Leave the group the surface for (windowId, canvas) is drilled into, selecting it. False
+// when there is no such surface (none is created) or it was not in a group. This is what
+// preview.exitGroup calls, which is how Esc reaches the preview: the overlay HWND never
+// takes the keyboard focus, so the key is seen by the page and forwarded. UI thread.
+bool ExitGroup(const std::string &canvas, int windowId = 0);
+
+// Re-resolve the drill-in on every surface showing `canvas` (empty => the Default surface),
+// which is how a scene switch reaches the preview: the implicit exit rules live in the
+// surface's resolve, and a switch made from a hotkey or a dock touches no pointer handler.
+// A no-op when there is no manager or no surface holds a drill-in. UI thread.
+void RefreshEnteredGroupForCanvas(const std::string &canvas);
+
+// Smoke self-test entry points, each on the surface for (windowId, canvas) and each a no-op
+// (false / empty) when there is none -- they never create one. ClickForTest/BandForTest
+// drive real pointer sequences; EnteredGroupForTest and SelectedKeysForTest read back what
+// they left. UI thread.
+bool ClickForTest(const std::string &canvas, float canvasX, float canvasY, bool doubleClick, int windowId = 0);
+bool BandForTest(const std::string &canvas, float fromX, float fromY, float toX, float toY, int windowId = 0);
+std::string EnteredGroupForTest(const std::string &canvas, int windowId = 0);
+std::vector<SceneItemKey> SelectedKeysForTest(const std::string &canvas, int windowId = 0);
 
 // Drive the preview's view (the Scale submenu) and its edit lock from JS, on the
 // surface for (windowId, canvas) (empty canvas => the Default surface). Each

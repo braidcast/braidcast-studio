@@ -433,6 +433,36 @@ struct SceneItemSelection {
 	}
 };
 
+// The group a surface has been DRILLED INTO: while one is entered, the click, the
+// click-through cycle, the hover and the rubber band all run over that group's children
+// instead of the scene's own items. Selection, outlines, handles and gestures are NOT
+// scoped by it -- a selection outlives a drill-in, exactly as it survives a dock click.
+//
+// Stored as uuids rather than pointers because the render thread reads it and the UI
+// thread can remove the group between two frames. `sceneUuid` scopes it the way
+// SceneItemSelection's does: a key kept across a scene switch names an unrelated item, so
+// a switch is a leave. `itemId` is the group item's own top-level id, refreshed on every
+// successful resolve; it is what an exit re-selects and what the docks are told to expand.
+//
+// EVERY implicit exit rule is a resolve failure rather than a separate listener:
+// PreviewSurface::ResolveEnteredGroup clears the state when the scene no longer matches (a
+// scene switch or a scene-collection change), when the group item is gone (removed or
+// ungrouped), or when it is no longer a group (SceneItems::FindGroupItem checks that). The
+// explicit exits -- Esc and a click outside the group's box -- clear it outright.
+struct EnteredGroupRef {
+	std::string groupUuid; // the group SOURCE's uuid, which is also what its children's keys carry
+	std::string sceneUuid; // the scene the group was entered in
+	int64_t itemId = -1;   // the group item's top-level id, as of the last successful resolve
+
+	bool Empty() const { return groupUuid.empty(); }
+	void Clear()
+	{
+		groupUuid.clear();
+		sceneUuid.clear();
+		itemId = -1;
+	}
+};
+
 // Per-drag state, captured when the gesture begins on the UI thread and only touched
 // on the UI thread, so a drag is atomic. We store the id (re-resolved each message)
 // and the box-transform-derived matrices, never an obs_sceneitem_t*. The id is
@@ -593,6 +623,10 @@ struct HitFind {
 	// `selectBelow` arms the walk; see HitTestItemId for what they do.
 	const std::vector<int64_t> *selected = nullptr;
 	bool selectBelow = false;
+	// The group item drawing the list being walked, null when that list is the scene's
+	// own. Every box in the walk is carried through it, so a drilled-in hit test measures
+	// its children where the canvas shows them.
+	obs_sceneitem_t *groupItem = nullptr;
 };
 
 // The unit box's corners, in the winding BoxCorners uses. Built once: this runs per item
@@ -662,9 +696,10 @@ bool FindItemAtPos(obs_scene_t *, obs_sceneitem_t *item, void *param)
 		return true;
 	}
 
-	// The scene's own enumeration never descends into a group, so every item here is top
-	// level and carries no group transform.
-	if (PointInItemBox(item, nullptr, data->pos)) {
+	// `groupItem` is the group whose child list this walk is over, null when it is the
+	// scene's own -- neither enumeration descends further, so one level of group transform
+	// is all any item here carries.
+	if (PointInItemBox(item, data->groupItem, data->pos)) {
 		// Click-through: on reaching a hit that is ALREADY selected, either stop
 		// and keep the hit below it (stepping one down the stack), or -- when this
 		// selected item is itself the bottom-most hit -- disarm and carry on
@@ -697,12 +732,48 @@ bool FindItemAtPos(obs_scene_t *, obs_sceneitem_t *item, void *param)
 // obs_sceneitem_selected for the same purpose; we pass the set instead so
 // State::selected stays the one source of truth and the libobs flags stay a
 // write-only mirror.
-int64_t HitTestItemId(obs_scene_t *scene, const vec2 &canvasPos, const std::vector<int64_t> *selected = nullptr)
+// `groupItem`, when given, is the group the surface has been drilled into: the walk runs
+// over ITS children instead of the scene's own items, and the returned id names one of
+// them. A child's id can equal a top-level item's, so a caller pairs the id back up with
+// the owner it asked about (HitScope::Key) rather than treating it as a scene-wide name.
+int64_t HitTestItemId(obs_scene_t *scene, const vec2 &canvasPos, const std::vector<int64_t> *selected = nullptr,
+		      obs_sceneitem_t *groupItem = nullptr)
 {
-	HitFind data{canvasPos, nullptr, selected, selected != nullptr};
-	obs_scene_enum_items(scene, FindItemAtPos, &data);
+	HitFind data{canvasPos, nullptr, selected, selected != nullptr, groupItem};
+	if (groupItem) {
+		obs_sceneitem_group_enum_items(groupItem, FindItemAtPos, &data);
+	} else {
+		obs_scene_enum_items(scene, FindItemAtPos, &data);
+	}
 	return data.item ? obs_sceneitem_get_id(data.item) : int64_t(-1);
 }
+
+// Which item list every hit test on a surface runs over: the group that surface has been
+// drilled into, or the scene's own items when it is not in one. Built once per event by
+// PreviewSurface::CurrentHitScope and threaded through the click, the click-through cycle,
+// the hover and the rubber band, so the four cannot disagree about what is clickable.
+//
+// It exists because an id alone stops naming an item the moment a group's children are in
+// play: a child's id can equal a top-level item's. The scope is what pairs an id from its
+// own walk back up with the owner that walk ran over.
+struct HitScope {
+	obs_sceneitem_t *groupItem = nullptr; // null => the scene's own items
+	std::string groupUuid;                // the entered group's source uuid, empty at top level
+
+	bool Entered() const { return groupItem != nullptr; }
+
+	// The full key for an id this scope's walk returned; a miss (id < 0) stays the plain
+	// "nothing" key rather than a nothing owned by the group.
+	SceneItemKey Key(int64_t id) const { return id < 0 ? SceneItemKey() : SceneItemKey(id, groupUuid); }
+
+	// The members of `keys` that live in this scope's list, as bare ids -- what the
+	// click-through cycle compares each hit against. Members of any other owner are left
+	// out: their ids can collide with ones in this list and would cycle past the wrong item.
+	std::vector<int64_t> CycleIds(const std::vector<SceneItemKey> &keys) const
+	{
+		return SceneItems::IdsInOwner(keys, groupUuid);
+	}
+};
 
 // Whether a preview gesture may write to `item`, drawn through `groupItem` (the group item
 // holding it, null at top level). THE predicate: the hover cursor, the handle hit-test, the
@@ -898,7 +969,8 @@ struct GestureAtPos {
 	ItemHandle handle = ItemHandle::None;
 	obs_sceneitem_t *item = nullptr;      // the selected item, when handle != None
 	obs_sceneitem_t *groupItem = nullptr; // its group, when that item is a child
-	int64_t bodyId = -1;                  // topmost top-level item under the point, else -1
+	// The topmost item of the hit scope's list under the point; its id is < 0 for none.
+	SceneItemKey bodyKey;
 };
 
 // A resize or rotation handle of a currently-selected item wins over an item body,
@@ -916,7 +988,7 @@ struct GestureAtPos {
 // takes selectBelow=false so a modifier click always toggles the TOPMOST hit rather
 // than walking the stack (frontend_old/widgets/OBSBasicPreview.cpp:730).
 GestureAtPos ResolveGestureAtPos(obs_scene_t *scene, const std::vector<SceneItemKey> &selected, const vec2 &canvasPos,
-				 float scale, bool cycleBelow = true)
+				 float scale, const HitScope &scope, bool cycleBelow = true)
 {
 	GestureAtPos gesture;
 	if (scale > 0.0f) {
@@ -941,11 +1013,13 @@ GestureAtPos ResolveGestureAtPos(obs_scene_t *scene, const std::vector<SceneItem
 			return gesture;
 		}
 	}
-	// The body hit-test walks the scene's own items only, so the cycle compares bare ids
-	// against top-level items and takes the top-level members alone: a child's id can collide
-	// with a top-level item's, and passing it here would cycle past the wrong item.
-	const std::vector<int64_t> cycleIds = cycleBelow ? SceneItems::TopLevelIds(selected) : std::vector<int64_t>();
-	gesture.bodyId = HitTestItemId(scene, canvasPos, cycleBelow ? &cycleIds : nullptr);
+	// The body hit-test walks ONE owner's list -- the entered group's children, or the
+	// scene's own items -- so the cycle takes only the selected members of that same list:
+	// a child's id can collide with a top-level item's, and passing a foreign member here
+	// would cycle past the wrong item. Handles above are unscoped on purpose: they belong
+	// to what is selected, and a selection outlives a drill-in.
+	const std::vector<int64_t> cycleIds = cycleBelow ? scope.CycleIds(selected) : std::vector<int64_t>();
+	gesture.bodyKey = scope.Key(HitTestItemId(scene, canvasPos, cycleBelow ? &cycleIds : nullptr, scope.groupItem));
 	return gesture;
 }
 
@@ -1183,6 +1257,10 @@ struct BoxFind {
 	vec2 corner1;
 	vec2 corner2;
 	std::vector<int64_t> ids;
+	// The group item drawing the list being swept, null for the scene's own items --
+	// the same scoping the click hit-test takes, so a band inside a group sweeps that
+	// group's children and nothing else.
+	obs_sceneitem_t *groupItem = nullptr;
 };
 
 // Rubber-band membership, ported from the legacy FindItemsInBox
@@ -1206,7 +1284,7 @@ bool FindItemsInBox(obs_scene_t *, obs_sceneitem_t *item, void *param)
 	const float x1 = lo.x, x2 = hi.x, y1 = lo.y, y2 = hi.y;
 
 	matrix4 transform;
-	if (!SceneItems::ItemBoxToCanvas(item, transform)) {
+	if (!SceneItems::ItemBoxThroughGroup(item, data->groupItem, transform)) {
 		return true;
 	}
 	const std::array<vec3, 4> corners = BoxCorners(transform);
@@ -1220,7 +1298,7 @@ bool FindItemsInBox(obs_scene_t *, obs_sceneitem_t *item, void *param)
 
 	// The band's moving corner inside the item's unit box -- what catches an item so
 	// large it swallows the whole band.
-	if (PointInItemBox(item, nullptr, data->corner2)) {
+	if (PointInItemBox(item, data->groupItem, data->corner2)) {
 		take();
 		return true;
 	}
@@ -1242,11 +1320,16 @@ bool FindItemsInBox(obs_scene_t *, obs_sceneitem_t *item, void *param)
 	return true;
 }
 
-// Every item the band currently covers, bottom-to-top.
-std::vector<int64_t> BoxItems(obs_scene_t *scene, const vec2 &corner1, const vec2 &corner2)
+// Every item of `scope`'s list the band currently covers, bottom-to-top, as bare ids the
+// caller pairs back with the scope's owner (HitScope::Key).
+std::vector<int64_t> BoxItems(obs_scene_t *scene, const vec2 &corner1, const vec2 &corner2, const HitScope &scope)
 {
-	BoxFind data{corner1, corner2, {}};
-	obs_scene_enum_items(scene, FindItemsInBox, &data);
+	BoxFind data{corner1, corner2, {}, scope.groupItem};
+	if (scope.groupItem) {
+		obs_sceneitem_group_enum_items(scope.groupItem, FindItemsInBox, &data);
+	} else {
+		obs_scene_enum_items(scene, FindItemsInBox, &data);
+	}
 	return data.ids;
 }
 
@@ -2080,6 +2163,10 @@ const vec4 kHoverColor = {{{0.0f, 0.498f, 1.0f, 1.0f}}};
 // at half alpha, so it reads as subordinate to the per-item outlines it encloses.
 const vec4 kGroupBoxColor = {{{0.0f, 1.0f, 0.235f, 0.5f}}};
 
+// The group the surface has been drilled into: a third colour, neither of the other two, so
+// the frame the picking is happening inside cannot be read as something selected or hovered.
+const vec4 kEnteredGroupColor = {{{1.0f, 0.647f, 0.0f, 1.0f}}};
+
 // The rubber band: the legacy DrawSelectionBox's 50%-alpha light-grey fill and
 // opaque white border (frontend_old/widgets/OBSBasicPreview.cpp:2159-2163).
 const vec4 kBandFillColor = {{{0.7f, 0.7f, 0.7f, 0.5f}}};
@@ -2514,6 +2601,9 @@ struct PreviewSurface::State {
 	std::mutex stateMutex;
 	SceneItemSelection selected;
 	SceneItemRef hovered;
+	// The drilled-into group. Written on the UI thread, read by the draw callback for the
+	// entered outline, so it lives under the same mutex the selection does.
+	EnteredGroupRef entered;
 	PreviewTransform transform;
 	PreviewView view;
 
@@ -2651,9 +2741,10 @@ Bridge::json CanvasField(obs_canvas_t *targetCanvas)
 }
 
 // Emit sceneItem.selected to JS for the surface's scene. An empty `keys` ->
-// {scene:null,id:null,ids:[],refs:[],group:null}. Posts to the UI thread internally so it
-// is safe from WndProc.
-void EmitSelection(obs_canvas_t *targetCanvas, const std::vector<SceneItemKey> &keys)
+// {scene:null,id:null,ids:[],refs:[],group:null}. `enteredGroupId` is the id of the group
+// the surface is drilled into, or < 0 for none. Posts to the UI thread internally so it is
+// safe from WndProc.
+void EmitSelection(obs_canvas_t *targetCanvas, const std::vector<SceneItemKey> &keys, int64_t enteredGroupId)
 {
 	// `refs` is the whole selection, insertion-ordered, and `ids` its ids; `id` and `group`
 	// name its focus (the last member), kept alongside so the single-selection readers on
@@ -2682,6 +2773,12 @@ void EmitSelection(obs_canvas_t *targetCanvas, const std::vector<SceneItemKey> &
 		{"ids", ids},
 		{"refs", Bridge::SceneItemRefsJson(keys)},
 		{"group", anchor >= 0 && !focus.IsTopLevel() ? json(focus.groupUuid) : json(nullptr)},
+		// The group this surface is drilled into, as a ref to its own (top-level) row,
+		// or null. A sources tree expands that row so the children the preview is now
+		// picking from are visible; nothing re-collapses it, because collapsing is the
+		// user's own state and leaving a group is not a request to undo their expand.
+		{"enteredGroup",
+		 enteredGroupId >= 0 ? Bridge::SceneItemRefJson(SceneItemKey(enteredGroupId)) : json(nullptr)},
 		// A per-canvas dock filters selection to its own canvas, since scene names collide.
 		{"canvas", CanvasField(targetCanvas)},
 	};
@@ -2840,7 +2937,8 @@ void RenderPreview(void *data, uint32_t cx, uint32_t cy)
 		bandActive = state->box.active;
 		bandStart = state->box.start;
 		bandCurrent = state->box.current;
-		anyEditId = !state->selected.Empty() || !state->hovered.Empty() || bandActive;
+		anyEditId = !state->selected.Empty() || !state->hovered.Empty() || bandActive ||
+			    !state->entered.Empty();
 	}
 
 	// A locked preview draws no overflow and no spacing helpers, as in the legacy
@@ -2856,11 +2954,18 @@ void RenderPreview(void *data, uint32_t cx, uint32_t cy)
 	obs_scene_t *scene = sceneSource ? obs_scene_from_source(sceneSource) : nullptr;
 	std::vector<SceneItemKey> selected;
 	std::optional<SceneItemKey> hovered;
+	// The drilled-into group's own (top-level) key, scene-checked the same way, so a switch
+	// the UI thread has not noticed yet cannot outline an unrelated item of the new scene.
+	std::optional<SceneItemKey> entered;
 	if (sceneSource) {
 		const char *sceneUuid = obs_source_get_uuid(sceneSource);
 		std::lock_guard<std::mutex> lock(state->stateMutex);
 		selected = state->selected.Resolve(sceneUuid);
 		hovered = state->hovered.Resolve(sceneUuid);
+		if (!state->entered.Empty() && state->entered.itemId >= 0 && sceneUuid &&
+		    state->entered.sceneUuid == sceneUuid) {
+			entered = SceneItemKey(state->entered.itemId);
+		}
 	}
 	const bool hoverSelected = hovered && ContainsKey(selected, *hovered);
 
@@ -2910,9 +3015,20 @@ void RenderPreview(void *data, uint32_t cx, uint32_t cy)
 		DrawSafeAreas(state->safeAreaBuffers, float(drawCX), float(drawCY));
 	}
 
-	if (scene && (!selected.empty() || hovered || bandActive)) {
+	if (scene && (!selected.empty() || hovered || bandActive || entered)) {
 		gs_matrix_push();
 		gs_matrix_scale3f(scale, scale, 1.0f);
+
+		// The entered group, under everything else: its outline says which frame the
+		// clicking is happening inside. Never handles -- it is not selected, and a
+		// drilled-into group is not what the pointer is editing. Its children draw
+		// exactly like any other selected or hovered item.
+		if (entered) {
+			SceneItems::HeldSceneItem held;
+			if (SceneItems::AcquireItem(scene, *entered, held)) {
+				DrawItemBox(held, scale, kEnteredGroupColor, nullptr, nullptr);
+			}
+		}
 
 		// Hover first, so the selected item's box and handles draw over it. An
 		// eye-off item is skipped: outlining a source the user has hidden would
@@ -3077,7 +3193,248 @@ bool ViewActionFromToken(const std::string &token, ViewAction &out)
 	}
 	return false;
 }
+
+// Forget the entered group, reporting whether there was one to forget. The explicit half of
+// leaving one (Esc, a click outside its box, a right-click); the implicit half is
+// ResolveEnteredGroup failing. Idempotent. The return matters only to a caller that has to
+// decide whether the docks still need telling the drill-in is over.
+bool ClearEnteredGroup(PreviewSurface::State *state)
+{
+	std::lock_guard<std::mutex> lock(state->stateMutex);
+	const bool wasEntered = !state->entered.Empty();
+	state->entered.Clear();
+	return wasEntered;
+}
+
+// The group item this surface is drilled into, resolved against the scene it is showing
+// NOW, or null. THE place every implicit exit rule lives: a scene switch or a
+// scene-collection change breaks the uuid match, and a group that was removed, ungrouped or
+// is no longer a group fails to resolve. Either way the stored state is dropped, so the
+// surface leaves the group exactly once and no caller has to re-test the rules. `outUuid`
+// receives the group source's uuid, which is what its children's keys carry.
+obs_sceneitem_t *ResolveEnteredGroup(PreviewSurface::State *state, obs_scene_t *scene, const char *sceneUuid,
+				     std::string *outUuid = nullptr)
+{
+	std::string groupUuid;
+	{
+		std::lock_guard<std::mutex> lock(state->stateMutex);
+		if (!state->entered.Empty() && (!sceneUuid || state->entered.sceneUuid != sceneUuid)) {
+			state->entered.Clear();
+		}
+		groupUuid = state->entered.groupUuid;
+	}
+	if (groupUuid.empty()) {
+		return nullptr;
+	}
+	obs_sceneitem_t *groupItem = SceneItems::FindGroupItem(scene, groupUuid);
+	// Read outside the lock, which this file never holds across a libobs call.
+	const int64_t itemId = groupItem ? obs_sceneitem_get_id(groupItem) : -1;
+	{
+		std::lock_guard<std::mutex> lock(state->stateMutex);
+		if (groupItem) {
+			state->entered.itemId = itemId;
+		} else {
+			state->entered.Clear();
+		}
+	}
+	if (!groupItem) {
+		return nullptr;
+	}
+	if (outUuid) {
+		*outUuid = groupUuid;
+	}
+	return groupItem;
+}
+
+// The item list this surface's hit tests run over right now. One call per event, threaded
+// into the click, the cycle, the hover and the band.
+HitScope CurrentHitScope(PreviewSurface::State *state, obs_scene_t *scene, const char *sceneUuid)
+{
+	HitScope scope;
+	scope.groupItem = ResolveEnteredGroup(state, scene, sceneUuid, &scope.groupUuid);
+	if (!scope.groupItem) {
+		scope.groupUuid.clear();
+	}
+	return scope;
+}
 } // namespace
+
+// Emit sceneItem.selected for `keys`, tagged with the group this surface is drilled into.
+// The one emitter every selection change goes through, so none of them can forget the tag.
+// The entered id it reads is the one the last ResolveEnteredGroup left, and every caller
+// here has resolved the scope for this same event already.
+void PreviewSurface::EmitSelectionChange(const std::vector<SceneItemKey> &keys)
+{
+	int64_t enteredId;
+	{
+		std::lock_guard<std::mutex> lock(state_->stateMutex);
+		enteredId = state_->entered.itemId;
+	}
+	EmitSelection(targetCanvas_, keys, enteredId);
+}
+
+// Drill into `groupItem` and select the topmost of its children under `canvasPos`, or
+// nothing when the pointer is over none of them. Replaces the selection: the group itself
+// was what the first click selected, and what the user is working with now is inside it.
+void PreviewSurface::EnterGroup(obs_source_t *sceneSource, obs_scene_t *scene, obs_sceneitem_t *groupItem,
+				const vec2 &canvasPos)
+{
+	const char *groupUuid = obs_source_get_uuid(obs_sceneitem_get_source(groupItem));
+	if (!groupUuid) {
+		return;
+	}
+	const char *sceneUuid = obs_source_get_uuid(sceneSource);
+	const int64_t groupId = obs_sceneitem_get_id(groupItem);
+	{
+		std::lock_guard<std::mutex> lock(state_->stateMutex);
+		state_->entered.groupUuid = groupUuid;
+		state_->entered.sceneUuid = sceneUuid ? sceneUuid : std::string();
+		state_->entered.itemId = groupId;
+	}
+	// The hover outline still names the group, picked at top level by the first press, and
+	// the entered box is about to draw over the same item in its own color. A double click
+	// is followed by no pointer movement, so nothing would recompute it -- drop it and let
+	// the next move do so, the same "state changed under a still pointer" case FinishDrag
+	// clears for.
+	ClearHoverItem();
+
+	HitScope scope;
+	scope.groupItem = groupItem;
+	scope.groupUuid = groupUuid;
+	// No click-through cycle: the first press of the double click already selected the
+	// group, so there is no earlier pick under this pointer for a cycle to step past.
+	const SceneItemKey hit = scope.Key(HitTestItemId(scene, canvasPos, nullptr, groupItem));
+
+	std::vector<SceneItemKey> next;
+	{
+		std::lock_guard<std::mutex> lock(state_->stateMutex);
+		state_->selected.SetOne(sceneSource, hit);
+		next = state_->selected.keys;
+	}
+	SelectSet(scene, next);
+	EmitSelectionChange(next);
+	HostLog("[preview] enter group id=" + std::to_string(groupId) + " child=" + std::to_string(hit.id));
+}
+
+bool PreviewSurface::ExitGroup()
+{
+	obs_source_t *sceneSource = AcquireSurfaceSceneSource(targetCanvas_); // addref'd
+	if (!sceneSource) {
+		// Nothing to resolve against, so whatever is stored can only be stale.
+		ClearEnteredGroup(state_);
+		return false;
+	}
+	obs_scene_t *scene = obs_scene_from_source(sceneSource);
+	obs_sceneitem_t *groupItem = ResolveEnteredGroup(state_, scene, obs_source_get_uuid(sceneSource));
+	if (!groupItem) {
+		obs_source_release(sceneSource);
+		return false;
+	}
+	const SceneItemKey groupKey(obs_sceneitem_get_id(groupItem));
+	ClearEnteredGroup(state_);
+
+	// A press still open when Esc leaves the group has nothing left to decide: its click
+	// would apply at top level on release and overwrite the group this exit just selected.
+	CancelBox();
+	state_->pressPending = false;
+
+	std::vector<SceneItemKey> next;
+	{
+		std::lock_guard<std::mutex> lock(state_->stateMutex);
+		state_->selected.SetOne(sceneSource, groupKey);
+		next = state_->selected.keys;
+	}
+	SelectSet(scene, next);
+	obs_source_release(sceneSource);
+	EmitSelectionChange(next);
+	HostLog("[preview] exit group id=" + std::to_string(groupKey.id));
+	return true;
+}
+
+// Re-run the implicit exit rules against the scene this surface shows NOW. Without this they
+// fire only when something else resolves the drill-in -- a pointer event or a bridge-driven
+// selection -- so a scene switch made from a hotkey or a dock, with the pointer away from the
+// preview, would leave the surface scoped to a group on a scene it no longer shows, outline
+// and all. Resolving rather than clearing is what lets the scene events that are NOT switches
+// (a create, a rename) reach this safely: they leave the entered group's scene intact, so the
+// resolve is a no-op.
+void PreviewSurface::RefreshEnteredGroup()
+{
+	{
+		std::lock_guard<std::mutex> lock(state_->stateMutex);
+		if (state_->entered.Empty()) {
+			return;
+		}
+	}
+	obs_source_t *sceneSource = AcquireSurfaceSceneSource(targetCanvas_); // addref'd
+	if (!sceneSource) {
+		// Nothing to resolve against, so whatever is stored can only be stale.
+		ClearEnteredGroup(state_);
+		return;
+	}
+	const char *sceneUuid = obs_source_get_uuid(sceneSource);
+	const bool stillEntered = ResolveEnteredGroup(state_, obs_scene_from_source(sceneSource), sceneUuid) != nullptr;
+	std::vector<SceneItemKey> selected;
+	if (!stillEntered) {
+		std::lock_guard<std::mutex> lock(state_->stateMutex);
+		selected = state_->selected.Resolve(sceneUuid);
+	}
+	obs_source_release(sceneSource);
+	if (stillEntered) {
+		return;
+	}
+	// The selection is unchanged and still owes an event: `enteredGroup` rides on this one,
+	// and a sources tree goes on treating the group as what the preview picks from until it
+	// sees the clear. Same reason the right-click path emits on `leftGroup` alone.
+	EmitSelectionChange(selected);
+	HostLog("[preview] entered group resolved away");
+}
+
+void PreviewSurface::OnLeftDblClk(int mx, int my)
+{
+	vec2 canvasPos;
+	// Space + left-drag pans, and the second press of a double one must not drill in
+	// instead. OnLeftDown owns that gesture outright, so hand the press straight over
+	// before anything here looks at what is under it; the same test, sampled the same way,
+	// as the one at the top of OnLeftDown.
+	if (PanModifierHeld() && FixedScaling()) {
+		OnLeftDown(mx, my);
+		return;
+	}
+
+	obs_source_t *sceneSource = ClientToCanvas(state_, mx, my, canvasPos) ? AcquireSurfaceSceneSource(targetCanvas_)
+									      : nullptr;
+	bool entered = false;
+	if (sceneSource) {
+		obs_scene_t *scene = obs_scene_from_source(sceneSource);
+		HitScope scope = CurrentHitScope(state_, scene, obs_source_get_uuid(sceneSource));
+		// A double click outside the entered group leaves it first, so this press acts at
+		// top level -- which may mean entering a different group under the same pointer.
+		if (scope.Entered() && !PointInItemBox(scope.groupItem, nullptr, canvasPos)) {
+			ClearEnteredGroup(state_);
+			scope = HitScope();
+		}
+		// Groups do not nest, so from inside one there is nothing to enter: a double click
+		// on a child is an ordinary press. No cycle either way -- the first press already
+		// picked what is under the pointer.
+		if (!scope.Entered()) {
+			obs_sceneitem_t *hit =
+				SceneItems::FindItem(scene, SceneItemKey(HitTestItemId(scene, canvasPos)));
+			if (hit && obs_sceneitem_is_group(hit)) {
+				EnterGroup(sceneSource, scene, hit, canvasPos);
+				entered = true;
+			}
+		}
+		obs_source_release(sceneSource);
+	}
+	// Everything that is not an enter is the plain press this message replaced. Without
+	// this the click-through cycle would break outright: with CS_DBLCLKS set, the second
+	// of two clicks in one spot arrives HERE instead of as a WM_LBUTTONDOWN, and cycling
+	// is driven entirely by repeated presses.
+	if (!entered) {
+		OnLeftDown(mx, my);
+	}
+}
 
 void PreviewSurface::OnLeftDown(int mx, int my)
 {
@@ -3137,6 +3494,21 @@ void PreviewSurface::OnLeftDown(int mx, int my)
 		selected = state_->selected.Resolve(sceneUuid);
 	}
 
+	// A press outside the entered group's box is the exit -- but it is NOT applied yet. A
+	// selected child's handles are grab zones of a fixed screen-px radius hung off its
+	// corners, so one can straddle the group's frame, and the press that takes it lands
+	// outside the box while plainly meaning "resize this child". Exiting there would drop
+	// the drill-in under a gesture the user is starting INSIDE it. So the flag is recorded
+	// here and spent below the handle branch: a handle grab keeps the group, anything else
+	// leaves it and goes on at top level, which is where that press actually pointed.
+	//
+	// The scope is still resolved first because the resolve is what applies every implicit
+	// exit rule (a scene switch, the group going away). The preview's own lock is not
+	// consulted -- a locked preview still enters and leaves groups, it just starts no
+	// gesture once there.
+	const HitScope scope = CurrentHitScope(state_, scene, sceneUuid);
+	const bool pressLeavesGroup = scope.Entered() && !PointInItemBox(scope.groupItem, nullptr, canvasPos);
+
 	// A locked preview starts no editing gesture, so it offers no handles: passing an
 	// empty selection skips the handle test. Selection stays live on purpose -- the
 	// lock is about editing geometry, not about choosing what the docks show -- so a
@@ -3146,8 +3518,12 @@ void PreviewSurface::OnLeftDown(int mx, int my)
 	const bool ctrlHeld = mods.ctrl;
 	const bool modifierHeld = mods.Any();
 	static const std::vector<SceneItemKey> kNoSelection;
+	// Only `handle` is read here, and the handle test is scope-independent -- it walks the
+	// selection, which a drill-in never narrows. So a pending exit cannot change this
+	// answer, which is what makes deciding the exit afterwards sound. The body hit-test is
+	// re-run from scratch by ApplyPressClick, against the scope as it stands THEN.
 	const GestureAtPos gesture = ResolveGestureAtPos(scene, locked ? kNoSelection : selected, canvasPos,
-							 CurrentScale(state_), !ctrlHeld);
+							 CurrentScale(state_), scope, !ctrlHeld);
 
 	// A handle of a selected item begins a resize or a rotation, and that is the one
 	// decision a press still makes immediately: it names its target outright, so there is
@@ -3172,6 +3548,11 @@ void PreviewSurface::OnLeftDown(int mx, int my)
 			(gesture.groupItem ? " (child)" : "") + " handle=" + std::to_string(uint32_t(gesture.handle)));
 		obs_source_release(sceneSource);
 		return;
+	}
+
+	// No handle: the press outside the group's box means what it looked like, so leave.
+	if (pressLeavesGroup) {
+		ClearEnteredGroup(state_);
 	}
 
 	// Everything else waits. The press only records what it landed on; whether it
@@ -3221,15 +3602,20 @@ void PreviewSurface::ApplyPressClickOnCurrentScene()
 void PreviewSurface::ApplyPressClick(obs_source_t *sceneSource, obs_scene_t *scene, bool bandPending)
 {
 	const char *sceneUuid = obs_source_get_uuid(sceneSource);
+	// Resolved again rather than carried over from the press: the drill-in can end between
+	// the two -- a scene switch, or the group removed or ungrouped -- and hit-testing
+	// against the scope the press saw would pick from a group this surface has left.
+	const HitScope scope = CurrentHitScope(state_, scene, sceneUuid);
 	std::vector<int64_t> selectedIds;
 	{
 		std::lock_guard<std::mutex> lock(state_->stateMutex);
-		selectedIds = SceneItems::TopLevelIds(state_->selected.Resolve(sceneUuid));
+		selectedIds = scope.CycleIds(state_->selected.Resolve(sceneUuid));
 	}
 
-	const int64_t hitId = HitTestItemId(scene, state_->pressCanvasPos, state_->pressCtrl ? nullptr : &selectedIds);
+	const SceneItemKey hit = scope.Key(HitTestItemId(scene, state_->pressCanvasPos,
+							 state_->pressCtrl ? nullptr : &selectedIds, scope.groupItem));
 
-	if (hitId < 0 && (state_->pressCtrl || (bandPending && state_->pressModifier))) {
+	if (hit.id < 0 && (state_->pressCtrl || (bandPending && state_->pressModifier))) {
 		// Nothing under the press, and a reason not to clear.
 		//
 		// Ctrl: a modifier click on empty canvas leaves the selection alone, matching
@@ -3247,9 +3633,9 @@ void PreviewSurface::ApplyPressClick(obs_source_t *sceneSource, obs_scene_t *sce
 	{
 		std::lock_guard<std::mutex> lock(state_->stateMutex);
 		if (state_->pressCtrl) {
-			state_->selected.Toggle(sceneSource, SceneItemKey(hitId));
+			state_->selected.Toggle(sceneSource, hit);
 		} else {
-			state_->selected.SetOne(sceneSource, SceneItemKey(hitId));
+			state_->selected.SetOne(sceneSource, hit);
 		}
 		next = state_->selected.keys;
 	}
@@ -3261,8 +3647,9 @@ void PreviewSurface::ApplyPressClick(obs_source_t *sceneSource, obs_scene_t *sce
 		state_->selected.Set(sceneSource, next);
 	}
 	SelectSet(scene, next);
-	EmitSelection(targetCanvas_, next);
-	HostLog("[preview] click hit id=" + std::to_string(hitId) + " selection=" + std::to_string(next.size()));
+	EmitSelectionChange(next);
+	HostLog("[preview] click hit id=" + std::to_string(hit.id) + (scope.Entered() ? " (in group)" : "") +
+		" selection=" + std::to_string(next.size()));
 }
 
 namespace {
@@ -3444,7 +3831,7 @@ void PreviewSurface::UpdateHover(int mx, int my)
 	// One tail for every outcome: a surface with no frame yet or no scene bound has
 	// nothing to hover and takes the plain arrow, same as empty canvas does.
 	const wchar_t *cursor = IDC_ARROW;
-	int64_t hoveredId = -1;
+	SceneItemKey hoveredKey;
 	obs_source_t *sceneSource = nullptr;
 
 	vec2 canvasPos;
@@ -3460,20 +3847,23 @@ void PreviewSurface::UpdateHover(int mx, int my)
 			selected = state_->selected.Resolve(sceneUuid);
 		}
 		// The cycle is armed here too, so the hover outline previews what a click
-		// would actually select rather than the item on top of it.
-		const GestureAtPos gesture = ResolveGestureAtPos(scene, selected, canvasPos, CurrentScale(state_));
+		// would actually select rather than the item on top of it. The scope is the
+		// press's: inside an entered group only its children hover.
+		const HitScope scope = CurrentHitScope(state_, scene, sceneUuid);
+		const GestureAtPos gesture =
+			ResolveGestureAtPos(scene, selected, canvasPos, CurrentScale(state_), scope);
 
 		if (gesture.handle != ItemHandle::None) {
 			cursor = CursorForHandle(gesture.item, gesture.groupItem, gesture.handle);
-		} else if (gesture.bodyId >= 0) {
+		} else if (gesture.bodyKey.id >= 0) {
 			cursor = IDC_SIZEALL;
-			hoveredId = gesture.bodyId;
+			hoveredKey = gesture.bodyKey;
 		}
 	}
 
 	{
 		std::lock_guard<std::mutex> lock(state_->stateMutex);
-		state_->hovered.Set(sceneSource, SceneItemKey(hoveredId));
+		state_->hovered.Set(sceneSource, hoveredKey);
 	}
 	if (sceneSource) {
 		obs_source_release(sceneSource);
@@ -3776,7 +4166,10 @@ bool PreviewSurface::FinishBox()
 	// non-empty snapshot, and mods.Any() is what decides whether that snapshot is kept.
 	const Modifiers mods = ReadModifiers();
 
-	const std::vector<int64_t> boxed = BoxItems(scene, start, current);
+	// A band inside an entered group sweeps that group's children only, the same list the
+	// click hit-test picks from. The press that started the band already settled the scope.
+	const HitScope scope = CurrentHitScope(state_, scene, sceneUuid);
+	const std::vector<int64_t> boxed = BoxItems(scene, start, current, scope);
 
 	// The snapshot only counts for the scene it was taken in: a scene switch mid-band
 	// would otherwise re-select ids belonging to items that are no longer on screen.
@@ -3786,7 +4179,7 @@ bool PreviewSurface::FinishBox()
 	}
 
 	for (const int64_t id : boxed) {
-		const SceneItemKey key(id);
+		const SceneItemKey key = scope.Key(id);
 		const auto at = std::find(next.begin(), next.end(), key);
 		if (mods.alt) {
 			if (at != next.end()) {
@@ -3808,8 +4201,8 @@ bool PreviewSurface::FinishBox()
 		state_->selected.Set(sceneSource, next);
 	}
 	SelectSet(scene, next);
-	EmitSelection(targetCanvas_, next);
-	HostLog("[preview] box select boxed=" + std::to_string(boxed.size()) +
+	EmitSelectionChange(next);
+	HostLog("[preview] box select boxed=" + std::to_string(boxed.size()) + (scope.Entered() ? " (in group)" : "") +
 		" selection=" + std::to_string(next.size()));
 
 	obs_source_release(sceneSource);
@@ -3989,6 +4382,13 @@ void PreviewSurface::OnRightUp(int mx, int my)
 		selected = state_->selected.Resolve(sceneUuid);
 	}
 
+	// A right-click LEAVES an entered group, and hit-tests at top level. Deliberate: the
+	// menu it opens, and every params rebuild downstream of it, address an item by bare id
+	// (preview.contextMenu carries no group), so opening it on a child would silently act
+	// on whatever top-level item shares that child's id. Exiting first makes the menu
+	// truthful about what it is about to edit.
+	const bool leftGroup = ClearEnteredGroup(state_);
+
 	// No cycle on a right-click: the menu must describe what is visibly under the
 	// cursor, and walking the stack would open it on something else.
 	const int64_t hitId = HitTestItemId(scene, canvasPos);
@@ -4012,8 +4412,13 @@ void PreviewSurface::OnRightUp(int mx, int my)
 	CancelBox();
 	state_->pressPending = false;
 	FinishDrag();
-	if (!insideSelection) {
-		EmitSelection(targetCanvas_, selected);
+	// The selection may be unchanged and still owe an event: `enteredGroup` rides on this
+	// one, and the clear above is a change the docks have to see or a sources tree keeps
+	// treating the group as the one being picked from. Reachable because a selection can
+	// hold a top-level item while the preview is drilled in -- a dock click puts one there
+	// -- and a right-click inside such a multi-selection takes the insideSelection path.
+	if (!insideSelection || leftGroup) {
+		EmitSelectionChange(selected);
 	}
 	EmitContextMenu(targetCanvas_, windowId_, scene, hitId, mx, my);
 
@@ -4310,6 +4715,9 @@ std::optional<std::vector<SceneItemKey>> PreviewSurface::SelectFromBridge(const 
 		}
 	}
 	obs_scene_t *sc = obs_scene_from_source(sceneSource);
+	// Re-validate the drill-in against this scene before the event carries it: a dock can
+	// drive a selection after a scene switch that nothing else has made the surface notice.
+	ResolveEnteredGroup(state_, sc, obs_source_get_uuid(sceneSource));
 	const std::vector<SceneItemKey> applied = WithoutStaleChildren(sc, keys);
 
 	// A press still open when the docks drive a selection has nothing left to decide:
@@ -4324,7 +4732,7 @@ std::optional<std::vector<SceneItemKey>> PreviewSurface::SelectFromBridge(const 
 	SelectSet(sc, applied);
 	obs_source_release(sceneSource);
 
-	EmitSelection(targetCanvas_, applied);
+	EmitSelectionChange(applied);
 	return applied;
 }
 
@@ -4404,6 +4812,76 @@ bool ResolveTestGrab(obs_sceneitem_t *item, const matrix4 &box, PreviewTestGestu
 
 } // namespace
 
+// 1:1 and unshifted, so a canvas coordinate IS a client pixel for the whole scripted
+// gesture. The next drawn frame overwrites this; a surface the UI never sized never draws
+// one. Shared by every scripted pointer entry point, so none of them can aim differently.
+void PreviewSurface::SeedTestTransform()
+{
+	std::lock_guard<std::mutex> lock(state_->stateMutex);
+	state_->transform.scale = 1.0f;
+	state_->transform.drawX = 0;
+	state_->transform.drawY = 0;
+}
+
+// Post one mouse message at this surface the way OverlayWndProc does, through
+// OnOverlayMessage rather than into the handler behind it. That routing is itself under
+// test: the window class sets CS_DBLCLKS, so dropping the WM_LBUTTONDBLCLK case would take
+// the second press of every double click out of the click-through cycle, and a hook calling
+// OnLeftDblClk directly could not see that. Coordinates are packed the way Win32 packs them
+// -- GET_X_LPARAM sign-extends the low word, so a negative one round-trips.
+void PreviewSurface::SendTestMouseMessage(uint32_t msg, int x, int y)
+{
+	OnOverlayMessage(msg, 0, MAKELPARAM(x, y));
+}
+
+void PreviewSurface::ClickForTest(float canvasX, float canvasY, bool doubleClick)
+{
+	SeedTestTransform();
+	// No modifier: a headless run has no keyboard, and ReadModifiers would otherwise
+	// sample whatever the real one happens to be holding.
+	const ScopedTestModifiers held(Modifiers{});
+	const int x = int(std::lround(canvasX));
+	const int y = int(std::lround(canvasY));
+	SendTestMouseMessage(WM_LBUTTONDOWN, x, y);
+	SendTestMouseMessage(WM_LBUTTONUP, x, y);
+	if (doubleClick) {
+		// Exactly what Windows sends on a CS_DBLCLKS class: the SECOND press arrives as
+		// WM_LBUTTONDBLCLK, never as another WM_LBUTTONDOWN. Scripting it any other way
+		// would test a message sequence the real overlay never receives.
+		SendTestMouseMessage(WM_LBUTTONDBLCLK, x, y);
+		SendTestMouseMessage(WM_LBUTTONUP, x, y);
+	}
+}
+
+void PreviewSurface::BandForTest(float fromX, float fromY, float toX, float toY)
+{
+	SeedTestTransform();
+	const ScopedTestModifiers held(Modifiers{});
+	SendTestMouseMessage(WM_LBUTTONDOWN, int(std::lround(fromX)), int(std::lround(fromY)));
+	SendTestMouseMessage(WM_MOUSEMOVE, int(std::lround(toX)), int(std::lround(toY)));
+	SendTestMouseMessage(WM_LBUTTONUP, int(std::lround(toX)), int(std::lround(toY)));
+}
+
+std::string PreviewSurface::EnteredGroupForTest()
+{
+	obs_source_t *sceneSource = AcquireSurfaceSceneSource(targetCanvas_); // addref'd
+	if (!sceneSource) {
+		return std::string();
+	}
+	// Resolved, not read back raw: the answer has to be the one the next hit test would
+	// get, so an exit rule that has not been exercised yet still reports as left.
+	std::string uuid;
+	ResolveEnteredGroup(state_, obs_scene_from_source(sceneSource), obs_source_get_uuid(sceneSource), &uuid);
+	obs_source_release(sceneSource);
+	return uuid;
+}
+
+std::vector<SceneItemKey> PreviewSurface::SelectedKeysForTest()
+{
+	std::lock_guard<std::mutex> lock(state_->stateMutex);
+	return state_->selected.keys;
+}
+
 bool PreviewSurface::DragForTest(const SceneItemKey &key, PreviewTestGesture gesture, float dx, float dy, vec2 *outGrab)
 {
 	obs_source_t *sceneSource = AcquireSurfaceSceneSource(targetCanvas_); // addref'd
@@ -4426,14 +4904,7 @@ bool PreviewSurface::DragForTest(const SceneItemKey &key, PreviewTestGesture ges
 		return false;
 	}
 
-	// 1:1 and unshifted, so a canvas coordinate IS a client pixel for the whole gesture. The
-	// next drawn frame overwrites this; a surface the UI never sized never draws one.
-	{
-		std::lock_guard<std::mutex> lock(state_->stateMutex);
-		state_->transform.scale = 1.0f;
-		state_->transform.drawX = 0;
-		state_->transform.drawY = 0;
-	}
+	SeedTestTransform();
 
 	const ScopedTestModifiers held(grab.mods);
 	// The ROUNDED press point, which is where the pointer went: OnLeftDown takes client pixels,
@@ -4501,9 +4972,21 @@ bool PreviewSurface::OnOverlayMessage(UINT msg, WPARAM wparam, LPARAM lparam)
 		EmitPointerDown(targetCanvas_, windowId_);
 		OnLeftDown(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
 		return true;
+	case WM_LBUTTONDBLCLK:
+		// The overlay class sets CS_DBLCLKS, so the second press of a double click arrives
+		// as this INSTEAD of a second WM_LBUTTONDOWN. It must be routed or every
+		// repeated-press behaviour -- the click-through cycle above all -- silently stops
+		// on the second click. OnLeftDblClk enters a group or hands the press straight to
+		// OnLeftDown.
+		EmitPointerDown(targetCanvas_, windowId_);
+		OnLeftDblClk(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+		return true;
 	case WM_RBUTTONDOWN:
+	case WM_RBUTTONDBLCLK:
 		// The right-click itself acts on release (OnRightUp), so the press is only announced
-		// and otherwise left to the default handling it had before.
+		// and otherwise left to the default handling it had before. The double-click form is
+		// the same announcement: with CS_DBLCLKS it replaces the second of two fast presses,
+		// which would otherwise stop telling the page focus has moved.
 		EmitPointerDown(targetCanvas_, windowId_);
 		return false;
 	case WM_MOUSEMOVE: {
@@ -4803,6 +5286,20 @@ void PreviewManager::OnVideoResetForCanvas(const std::string &canvasUuid)
 	}
 }
 
+void PreviewManager::RefreshEnteredGroupForCanvas(const std::string &canvasUuid)
+{
+	// Sweeps every windowId for this uuid, the same shape as OnVideoResetForCanvas and for
+	// the same reason: one canvas can own a surface on the main window and on each detached
+	// one, and a per-window refresh would leave the others drilled into a group that belongs
+	// to a scene they are no longer showing.
+	const std::string key = IsDefaultCanvasUuid(canvasUuid) ? std::string() : canvasUuid;
+	for (ManagedSurface &s : impl_->surfaces) {
+		if (s.uuid == key) {
+			s.surface->RefreshEnteredGroup();
+		}
+	}
+}
+
 namespace Preview {
 
 void SetInstance(PreviewManager *pm)
@@ -4850,6 +5347,68 @@ bool DragForTest(const std::string &canvas, const SceneItemKey &key, PreviewTest
 	// own preview.select already stood up, never stand one up as a side effect.
 	PreviewSurface *surface = g_instance->FindSurface(windowId, canvas);
 	return surface && surface->DragForTest(key, gesture, dx, dy, outGrab);
+}
+
+bool ExitGroup(const std::string &canvas, int windowId)
+{
+	if (!g_instance) {
+		return false;
+	}
+	// FindSurface: leaving a group a surface that does not exist cannot be in is a no-op,
+	// not a reason to stand up a window.
+	PreviewSurface *surface = g_instance->FindSurface(windowId, canvas);
+	return surface && surface->ExitGroup();
+}
+
+void RefreshEnteredGroupForCanvas(const std::string &canvas)
+{
+	if (g_instance) {
+		g_instance->RefreshEnteredGroupForCanvas(canvas);
+	}
+}
+
+std::string EnteredGroupForTest(const std::string &canvas, int windowId)
+{
+	if (!g_instance) {
+		return std::string();
+	}
+	PreviewSurface *surface = g_instance->FindSurface(windowId, canvas);
+	return surface ? surface->EnteredGroupForTest() : std::string();
+}
+
+std::vector<SceneItemKey> SelectedKeysForTest(const std::string &canvas, int windowId)
+{
+	if (!g_instance) {
+		return {};
+	}
+	PreviewSurface *surface = g_instance->FindSurface(windowId, canvas);
+	return surface ? surface->SelectedKeysForTest() : std::vector<SceneItemKey>{};
+}
+
+bool ClickForTest(const std::string &canvas, float canvasX, float canvasY, bool doubleClick, int windowId)
+{
+	if (!g_instance) {
+		return false;
+	}
+	PreviewSurface *surface = g_instance->FindSurface(windowId, canvas);
+	if (!surface) {
+		return false;
+	}
+	surface->ClickForTest(canvasX, canvasY, doubleClick);
+	return true;
+}
+
+bool BandForTest(const std::string &canvas, float fromX, float fromY, float toX, float toY, int windowId)
+{
+	if (!g_instance) {
+		return false;
+	}
+	PreviewSurface *surface = g_instance->FindSurface(windowId, canvas);
+	if (!surface) {
+		return false;
+	}
+	surface->BandForTest(fromX, fromY, toX, toY);
+	return true;
 }
 
 void OnVideoReset()

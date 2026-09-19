@@ -42,6 +42,12 @@ namespace SceneItems {
 // repeat one and is not a way back to the keys.
 std::vector<int64_t> IdsOf(const std::vector<SceneItemKey> &keys);
 
+// The ids of the members of `keys` that `groupUuid` owns, in order -- the scene's own
+// items for an empty uuid. THE scoping helper for anything that compares a selection
+// against one owner's item list: an id is unique only within its owner, so a member from
+// another owner must never take part in that comparison.
+std::vector<int64_t> IdsInOwner(const std::vector<SceneItemKey> &keys, const std::string &groupUuid);
+
 // The ids of the top-level members of `keys`, in order.
 std::vector<int64_t> TopLevelIds(const std::vector<SceneItemKey> &keys);
 

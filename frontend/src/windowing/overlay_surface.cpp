@@ -70,6 +70,12 @@ ATOM RegisterOverlayClass(HINSTANCE instance)
 	}
 	WNDCLASSEXW wc = {0};
 	wc.cbSize = sizeof(wc);
+	// CS_DBLCLKS is what makes drill-in possible: without it Windows never sends
+	// WM_LBUTTONDBLCLK and a second quick press is just another WM_LBUTTONDOWN. With it,
+	// that second press arrives as WM_LBUTTONDBLCLK INSTEAD -- so every sink must route
+	// that message or the repeated-click behaviour it used to get (the preview's
+	// click-through cycle) silently stops working. See PreviewSurface::OnLeftDblClk.
+	wc.style = CS_DBLCLKS;
 	wc.lpfnWndProc = OverlayWndProc;
 	wc.hInstance = instance;
 	wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);

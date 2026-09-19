@@ -57,6 +57,7 @@ import { EV } from "$lib/utils/eventNames";
   import { isInSourceTree } from "$lib/docking/sourceTree";
   import { WINDOW_ID } from "$lib/utils/windowContext";
   import { previewSuspended } from "$lib/stores/previewGate.svelte";
+  import { previewTarget } from "$lib/docking/previewSurface";
 
   // Apply the saved (or default Industrial) theme before first paint settles.
   void themeStore.hydrate();
@@ -193,6 +194,16 @@ import { EV } from "$lib/utils/eventNames";
     if (e.key === "F11") {
       e.preventDefault();
       void obs.call("window.toggleFullscreen").catch(() => {});
+      return;
+    }
+    // Esc leaves a group the preview has been drilled into (double-click in the overlay).
+    // It has to be handled here: the overlay HWND never takes keyboard focus, so no key
+    // event ever reaches the preview itself. Deliberately neither preventDefault'ed nor
+    // gated on the reply — a preview that is in no group answers `exited: false` and Esc
+    // goes on meaning whatever else is listening for it. The modal case is covered by
+    // previewSuspended(), which is true exactly while one stands.
+    if (e.key === "Escape" && !e.ctrlKey && !e.altKey && !isEditable(e.target) && !previewSuspended()) {
+      void obs.call("preview.exitGroup", previewTarget(activeSurface.canvasParam)).catch(() => {});
       return;
     }
     // Arrow-key nudge of the active surface's selected scene items on its preview. Leaves
