@@ -1282,6 +1282,11 @@ void WASAPISource::OnStartCapture()
 			}
 			reconnectDuration = RECONNECT_INTERVAL;
 			SetEvent(reconnectSignal);
+		} else if (WaitForSingleObject(stopSignal, 0) == WAIT_OBJECT_0) {
+			/* Stop() may have woken the sample handler before Initialize reset receiveSignal.
+			 * Wake it again: it owns the teardown, and sets idleSignal once the client is
+			 * stopped and the sample-ready work item armed by Initialize has been consumed. */
+			SetEvent(receiveSignal);
 		}
 	}
 }
