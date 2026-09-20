@@ -17,6 +17,8 @@
 #include <atomic>
 #include <cinttypes>
 #include <memory>
+#include <mutex>
+#include <shared_mutex>
 
 #include <audioclientactivationparams.h>
 #include <avrt.h>
@@ -98,56 +100,28 @@ enum class SourceType {
 	ProcessOutput,
 };
 
-class ARtwqAsyncCallback : public IRtwqAsyncCallback {
-protected:
-	ARtwqAsyncCallback(void *source) : source(source) {}
+class RtwqSourceLink;
 
-public:
-	STDMETHOD_(ULONG, AddRef)() { return ++refCount; }
-
-	STDMETHOD_(ULONG, Release)() { return --refCount; }
-
-	STDMETHOD(QueryInterface)(REFIID riid, void **ppvObject)
-	{
-		HRESULT hr = E_NOINTERFACE;
-
-		if (riid == __uuidof(IRtwqAsyncCallback) || riid == __uuidof(IUnknown)) {
-			*ppvObject = this;
-			AddRef();
-			hr = S_OK;
-		} else {
-			*ppvObject = NULL;
-		}
-
-		return hr;
+/* Both duplicates this file takes stay in this process: the copy is what outlives the settings
+ * value or the member handle it came from. */
+static bool DuplicateInProcess(HANDLE source, HANDLE *dup)
+{
+	*dup = NULL;
+	if (!source) {
+		SetLastError(ERROR_INVALID_HANDLE);
+		return false;
 	}
-
-	STDMETHOD(GetParameters)
-	(DWORD *pdwFlags, DWORD *pdwQueue)
-	{
-		*pdwFlags = 0;
-		*pdwQueue = queue_id;
-		return S_OK;
-	}
-
-	STDMETHOD(Invoke)
-	(IRtwqAsyncResult *) override = 0;
-
-	DWORD GetQueueId() const { return queue_id; }
-	void SetQueueId(DWORD id) { queue_id = id; }
-
-protected:
-	std::atomic<ULONG> refCount = 1;
-	void *source;
-	DWORD queue_id = 0;
-};
+	return DuplicateHandle(GetCurrentProcess(), source, GetCurrentProcess(), dup, 0, FALSE,
+			       DUPLICATE_SAME_ACCESS) != FALSE;
+}
 
 /* Self-test seam for the create-then-release race in OnStartCapture. Source settings can
  * come from saved or imported data, so they alone never arm it: the settings must also carry
  * a nonce equal to SELFTEST_NONCE_ENV in the process environment, which the self-test mints
  * at run time and clears once the source is created, and FE_SMOKE_QUIT_SECONDS must be set
- * there too. Both are read from the Win32 environment block, never from a file. The names
- * are mirrored by RunWasapiStartRaceSelfTest in frontend/src/obs_bootstrap.cpp. */
+ * there too. Both are read from the Win32 environment block, never from a file. The names are
+ * mirrored by the kStartRace* constants in frontend/src/obs_bootstrap.cpp, which the start-race
+ * and restart self-tests share through CreateProbedCapture. */
 #define SELFTEST_SMOKE_ENV "FE_SMOKE_QUIT_SECONDS"
 #define SELFTEST_NONCE_ENV "BRAIDCAST_SELFTEST_WASAPI_NONCE"
 #define OPT_SELFTEST_NONCE "selftest_start_race_nonce"
@@ -198,12 +172,8 @@ class StartRaceProbe {
 
 	static HANDLE Duplicate(obs_data_t *settings, const char *key)
 	{
-		const HANDLE source = (HANDLE)(intptr_t)obs_data_get_int(settings, key);
 		HANDLE dup = NULL;
-		if (!source || !DuplicateHandle(GetCurrentProcess(), source, GetCurrentProcess(), &dup, 0, FALSE,
-						DUPLICATE_SAME_ACCESS)) {
-			return NULL;
-		}
+		DuplicateInProcess((HANDLE)(intptr_t)obs_data_get_int(settings, key), &dup);
 		return dup;
 	}
 
@@ -276,8 +246,8 @@ public:
 		return true;
 	}
 
-	/* Called at the end of a successful Initialize that held, once both waiting work
-	 * items are armed: an Initialize that throws after the hold never exercises the lost
+	/* Called at the end of a successful Initialize that held, once the sample-ready work
+	 * item is armed: an Initialize that throws after the hold never exercises the lost
 	 * wake-up, and its reconnect path must not read as a pass. */
 	void MarkInitDone() { SetEvent(initDone); }
 
@@ -340,45 +310,10 @@ class WASAPISource {
 	bool previouslyFailed = false;
 	WinHandle reconnectThread = NULL;
 
-	class CallbackStartCapture : public ARtwqAsyncCallback {
-	public:
-		CallbackStartCapture(WASAPISource *source) : ARtwqAsyncCallback(source) {}
-
-		STDMETHOD(Invoke)
-		(IRtwqAsyncResult *) override
-		{
-			((WASAPISource *)source)->OnStartCapture();
-			return S_OK;
-		}
-
-	} startCapture;
+	DWORD rtwqQueueId = 0;
+	std::shared_ptr<RtwqSourceLink> rtwqLink;
 	ComPtr<IRtwqAsyncResult> startCaptureAsyncResult;
-
-	class CallbackSampleReady : public ARtwqAsyncCallback {
-	public:
-		CallbackSampleReady(WASAPISource *source) : ARtwqAsyncCallback(source) {}
-
-		STDMETHOD(Invoke)
-		(IRtwqAsyncResult *) override
-		{
-			((WASAPISource *)source)->OnSampleReady();
-			return S_OK;
-		}
-	} sampleReady;
 	ComPtr<IRtwqAsyncResult> sampleReadyAsyncResult;
-
-	class CallbackRestart : public ARtwqAsyncCallback {
-	public:
-		CallbackRestart(WASAPISource *source) : ARtwqAsyncCallback(source) {}
-
-		STDMETHOD(Invoke)
-		(IRtwqAsyncResult *) override
-		{
-			((WASAPISource *)source)->OnRestart();
-			return S_OK;
-		}
-	} restart;
-	ComPtr<IRtwqAsyncResult> restartAsyncResult;
 
 	WinHandle captureThread;
 	WinHandle idleSignal;
@@ -418,6 +353,10 @@ class WASAPISource {
 	static ComPtr<IAudioCaptureClient> InitCapture(IAudioClient *client, HANDLE receiveSignal);
 	void Initialize();
 
+	ComPtr<IRtwqAsyncResult> CreateRtwqResult(void (WASAPISource::*handler)(), std::atomic<bool> *armed = nullptr);
+	HRESULT ArmSampleReady();
+	void RequestRestart();
+
 	bool TryInitialize();
 
 	struct UpdateParams {
@@ -448,7 +387,6 @@ public:
 
 	void OnStartCapture();
 	void OnSampleReady();
-	void OnRestart();
 
 	bool GetHooked();
 	HWND GetHwnd();
@@ -460,12 +398,93 @@ public:
 	}
 };
 
+/* RTWorkQ keeps its own references to a source's callbacks and releases them after Invoke
+ * returns, which can be after Stop() has returned and the source is freed. So the callbacks,
+ * this link, and the event handle the sample-ready wait is registered on are refcounted apart
+ * from the source, and reach it only while it is attached. */
+class RtwqSourceLink {
+	std::shared_mutex lock;
+	WASAPISource *source;
+
+public:
+	const WinHandle sampleWait;
+
+	/* Set while a sample-ready work item is armed. Its callback clears it on invoke, before the
+	 * source is checked, so an item consumed after Detach() does not read as still armed. */
+	std::atomic<bool> sampleReadyArmed = false;
+
+	RtwqSourceLink(WASAPISource *source, HANDLE sampleWait) : source(source), sampleWait(sampleWait) {}
+
+	void Run(void (WASAPISource::*handler)())
+	{
+		std::shared_lock<std::shared_mutex> guard(lock);
+		if (source) {
+			(source->*handler)();
+		}
+	}
+
+	/* Returns once no handler is running, and none runs afterwards. */
+	void Detach()
+	{
+		std::unique_lock<std::shared_mutex> guard(lock);
+		source = nullptr;
+	}
+};
+
+class RtwqSourceCallback
+	: public Microsoft::WRL::RuntimeClass<Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>,
+					      IRtwqAsyncCallback> {
+	const std::shared_ptr<RtwqSourceLink> link;
+	void (WASAPISource::*const handler)();
+	std::atomic<bool> *const armed;
+	const DWORD queueId;
+
+public:
+	RtwqSourceCallback(std::shared_ptr<RtwqSourceLink> link, void (WASAPISource::*handler)(),
+			   std::atomic<bool> *armed, DWORD queueId)
+		: link(std::move(link)),
+		  handler(handler),
+		  armed(armed),
+		  queueId(queueId)
+	{
+	}
+
+	STDMETHODIMP GetParameters(DWORD *flags, DWORD *queue) override
+	{
+		*flags = 0;
+		*queue = queueId;
+		return S_OK;
+	}
+
+	STDMETHODIMP Invoke(IRtwqAsyncResult *) override
+	{
+		if (armed) {
+			*armed = false;
+		}
+		link->Run(handler);
+		return S_OK;
+	}
+};
+
+ComPtr<IRtwqAsyncResult> WASAPISource::CreateRtwqResult(void (WASAPISource::*handler)(), std::atomic<bool> *armed)
+{
+	const Microsoft::WRL::ComPtr<RtwqSourceCallback> callback =
+		Microsoft::WRL::Make<RtwqSourceCallback>(rtwqLink, handler, armed, rtwqQueueId);
+	if (!callback) {
+		throw HRError("Could not create RTWQ callback", E_OUTOFMEMORY);
+	}
+
+	ComPtr<IRtwqAsyncResult> result;
+	const HRESULT hr = rtwq_create_async_result(nullptr, callback.Get(), nullptr, result.Assign());
+	if (FAILED(hr)) {
+		throw HRError("Could not create RTWQ async result", hr);
+	}
+	return result;
+}
+
 WASAPISource::WASAPISource(obs_data_t *settings, obs_source_t *source_, SourceType type)
 	: source(source_),
-	  sourceType(type),
-	  startCapture(this),
-	  sampleReady(this),
-	  restart(this)
+	  sourceType(type)
 {
 	mmdevapi_module = LoadLibrary(L"Mmdevapi");
 	if (mmdevapi_module) {
@@ -548,34 +567,29 @@ WASAPISource::WASAPISource(obs_data_t *settings, obs_source_t *source_, SourceTy
 		rtwq_put_waiting_work_item =
 			(PFN_RtwqPutWaitingWorkItem)GetProcAddress(rtwq_module, "RtwqPutWaitingWorkItem");
 
+		bool queueLocked = false;
 		try {
-			hr = rtwq_create_async_result(nullptr, &startCapture, nullptr, &startCaptureAsyncResult);
-			if (FAILED(hr)) {
-				throw HRError("Could not create startCaptureAsyncResult", hr);
-			}
-
-			hr = rtwq_create_async_result(nullptr, &sampleReady, nullptr, &sampleReadyAsyncResult);
-			if (FAILED(hr)) {
-				throw HRError("Could not create sampleReadyAsyncResult", hr);
-			}
-
-			hr = rtwq_create_async_result(nullptr, &restart, nullptr, &restartAsyncResult);
-			if (FAILED(hr)) {
-				throw HRError("Could not create restartAsyncResult", hr);
-			}
-
 			DWORD taskId = 0;
-			DWORD id = 0;
-			hr = rtwq_lock_shared_work_queue(L"Capture", 0, &taskId, &id);
+			hr = rtwq_lock_shared_work_queue(L"Capture", 0, &taskId, &rtwqQueueId);
 			if (FAILED(hr)) {
 				throw HRError("RtwqLockSharedWorkQueue failed", hr);
 			}
+			queueLocked = true;
 
-			startCapture.SetQueueId(id);
-			sampleReady.SetQueueId(id);
-			restart.SetQueueId(id);
+			HANDLE sampleWait = NULL;
+			if (!DuplicateInProcess(receiveSignal, &sampleWait)) {
+				throw HRError("Could not duplicate receive signal", HRESULT_FROM_WIN32(GetLastError()));
+			}
+			rtwqLink = std::make_shared<RtwqSourceLink>(this, sampleWait);
+
+			startCaptureAsyncResult = CreateRtwqResult(&WASAPISource::OnStartCapture);
+			sampleReadyAsyncResult =
+				CreateRtwqResult(&WASAPISource::OnSampleReady, &rtwqLink->sampleReadyArmed);
 		} catch (HRError &err) {
 			blog(LOG_ERROR, "RTWQ setup failed: %s (0x%08X)", err.str, err.hr);
+			if (queueLocked) {
+				rtwq_unlock_work_queue(rtwqQueueId);
+			}
 			rtwq_supported = false;
 		}
 	}
@@ -602,7 +616,7 @@ WASAPISource::WASAPISource(obs_data_t *settings, obs_source_t *source_, SourceTy
 void WASAPISource::Start()
 {
 	if (rtwq_supported) {
-		rtwq_put_work_item(startCapture.GetQueueId(), 0, startCaptureAsyncResult);
+		rtwq_put_work_item(rtwqQueueId, 0, startCaptureAsyncResult);
 	} else {
 		SetEvent(initSignal);
 	}
@@ -637,7 +651,14 @@ void WASAPISource::Stop()
 	}
 
 	if (rtwq_supported) {
-		rtwq_unlock_work_queue(sampleReady.GetQueueId());
+		/* idleSignal can be set while a start or sample handler is still running, and a start
+		 * queued by the reconnect thread can still be pending. */
+		rtwqLink->Detach();
+		if (rtwqLink->sampleReadyArmed) {
+			blog(LOG_ERROR, "WASAPI: Device '%s' stopped with its sample-ready work item still armed",
+			     device_name.c_str());
+		}
+		rtwq_unlock_work_queue(rtwqQueueId);
 	} else {
 		WaitForSingleObject(captureThread, INFINITE);
 	}
@@ -741,7 +762,7 @@ void WASAPISource::Update(obs_data_t *settings)
 	LogSettings();
 
 	if (restart) {
-		SetEvent(restartSignal);
+		RequestRestart();
 	}
 }
 
@@ -757,7 +778,17 @@ void WASAPISource::OnWindowChanged(obs_data_t *settings)
 	UpdateSettings(std::move(params));
 
 	if (restart) {
-		SetEvent(restartSignal);
+		RequestRestart();
+	}
+}
+
+void WASAPISource::RequestRestart()
+{
+	SetEvent(restartSignal);
+
+	/* The sample handler owns the restart, and on a silent endpoint nothing else wakes it. */
+	if (rtwq_supported) {
+		SetEvent(receiveSignal);
 	}
 }
 
@@ -1065,15 +1096,9 @@ void WASAPISource::Initialize()
 	client = std::move(temp_client);
 	capture = std::move(temp_capture);
 
+	/* The last step that can fail, so a throw never leaves a work item armed. */
 	if (rtwq_supported) {
-		HRESULT hr = rtwq_put_waiting_work_item(receiveSignal, 0, sampleReadyAsyncResult, nullptr);
-		if (FAILED(hr)) {
-			capture.Clear();
-			client.Clear();
-			throw HRError("RtwqPutWaitingWorkItem failed", hr);
-		}
-
-		hr = rtwq_put_waiting_work_item(restartSignal, 0, restartAsyncResult, nullptr);
+		const HRESULT hr = ArmSampleReady();
 		if (FAILED(hr)) {
 			capture.Clear();
 			client.Clear();
@@ -1442,7 +1467,7 @@ void WASAPISource::SetDefaultDevice(EDataFlow flow, ERole role, LPCWSTR id)
 
 	blog(LOG_INFO, "WASAPI: Default %s device changed", input ? "input" : "output");
 
-	SetEvent(restartSignal);
+	RequestRestart();
 }
 
 void WASAPISource::OnStartCapture()
@@ -1473,13 +1498,25 @@ void WASAPISource::OnStartCapture()
 			}
 			reconnectDuration = RECONNECT_INTERVAL;
 			SetEvent(reconnectSignal);
-		} else if (WaitForSingleObject(stopSignal, 0) == WAIT_OBJECT_0) {
-			/* Stop() may have woken the sample handler before Initialize reset receiveSignal.
-			 * Wake it again: it owns the teardown, and sets idleSignal once the client is
-			 * stopped and the sample-ready work item armed by Initialize has been consumed. */
+		} else if (WaitForSingleObject(stopSignal, 0) == WAIT_OBJECT_0 ||
+			   WaitForSingleObject(restartSignal, 0) == WAIT_OBJECT_0) {
+			/* Stop() or RequestRestart() may have woken the sample handler before Initialize
+			 * reset receiveSignal. Wake it again: it owns both, and on a stop it sets idleSignal
+			 * once the client is stopped and the work item armed by Initialize is consumed. */
 			SetEvent(receiveSignal);
 		}
 	}
+}
+
+HRESULT WASAPISource::ArmSampleReady()
+{
+	/* Set before the put: the item can fire, and clear it, before the put returns. */
+	rtwqLink->sampleReadyArmed = true;
+	const HRESULT hr = rtwq_put_waiting_work_item(rtwqLink->sampleWait, 0, sampleReadyAsyncResult, nullptr);
+	if (FAILED(hr)) {
+		rtwqLink->sampleReadyArmed = false;
+	}
+	return hr;
 }
 
 void WASAPISource::OnSampleReady()
@@ -1499,7 +1536,6 @@ void WASAPISource::OnSampleReady()
 		reconnectDuration = 0;
 
 		ResetEvent(restartSignal);
-		rtwq_put_waiting_work_item(restartSignal, 0, restartAsyncResult, nullptr);
 	}
 
 	if (WaitForSingleObject(stopSignal, 0) == WAIT_OBJECT_0) {
@@ -1508,7 +1544,7 @@ void WASAPISource::OnSampleReady()
 	}
 
 	if (!stop) {
-		if (FAILED(rtwq_put_waiting_work_item(receiveSignal, 0, sampleReadyAsyncResult, nullptr))) {
+		if (FAILED(ArmSampleReady())) {
 			blog(LOG_ERROR, "Could not requeue sample receive work");
 			stop = true;
 			reconnect = true;
@@ -1538,11 +1574,6 @@ void WASAPISource::OnSampleReady()
 			SetEvent(idleSignal);
 		}
 	}
-}
-
-void WASAPISource::OnRestart()
-{
-	SetEvent(receiveSignal);
 }
 
 bool WASAPISource::GetHooked()

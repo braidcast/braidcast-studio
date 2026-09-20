@@ -21,6 +21,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -6916,6 +6917,199 @@ bool DestroyQueueDrainsWithin(DWORD ms)
 	return true;
 }
 
+// Releases a source and waits for its destroy callback to have returned. The "destroy" signal
+// fires at the top of the deferred destroy task, so waiting on it reaches only the point where
+// the destroy has begun; draining the destroy queue behind it is what proves that task
+// returned. The wait comes first because the last reference can be dropped on another thread
+// after this release, which then queues the destroy later than a marker queued here would.
+// On a timeout the handler may still signal the event later, so the handle is left open.
+bool ReleaseAndAwaitDestroy(obs_source_t *source, DWORD ms)
+{
+	const HANDLE destroying = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+	if (!destroying) {
+		obs_source_release(source);
+		return false;
+	}
+	signal_handler_connect(
+		obs_source_get_signal_handler(source), "destroy",
+		[](void *event, calldata_t *) { SetEvent(static_cast<HANDLE>(event)); }, destroying);
+
+	const ULONGLONG deadline = GetTickCount64() + ms;
+	obs_source_release(source);
+	if (WaitForSingleObject(destroying, ms) != WAIT_OBJECT_0) {
+		return false;
+	}
+	CloseHandle(destroying);
+	const ULONGLONG now = GetTickCount64();
+	return DestroyQueueDrainsWithin(deadline > now ? DWORD(deadline - now) : 0);
+}
+
+// Explicit endpoints rather than "default": a default-device change mid-case would raise
+// a restart, which also wakes the sample handler and would mask the case under test.
+std::vector<std::string> ExplicitRenderEndpoints()
+{
+	std::vector<std::string> ids;
+	for (const auto &[id, name] : Bridge::EnumAudioDevices(false)) {
+		if (!id.empty() && id != "default") {
+			ids.push_back(id);
+		}
+	}
+	return ids;
+}
+
+// Events the start-race probe signals. They belong to the test, so they outlive the source;
+// the plugin signals duplicates of them.
+struct StartRaceProbeEvents {
+	WinHandle inWindow = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+	WinHandle idleLate = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+	WinHandle held = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+	WinHandle initDone = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+
+	bool Valid() const { return inWindow.Valid() && idleLate.Valid() && held.Valid() && initDone.Valid(); }
+};
+
+// Creates a private wasapi_output_capture with the plugin's start-race probe asked for. The
+// probe arms only when this nonce is in both its settings and the process environment, which
+// saved or imported settings cannot arrange. It is minted here, published in the Win32 block
+// the plugin reads, and withdrawn once the source exists. Returns nullptr with `error` set if
+// the source was not created; otherwise ProbeStatus says whether the probe armed.
+obs_source_t *CreateProbedCapture(const char *name, const std::string &deviceId, const StartRaceProbeEvents &events,
+				  DWORD holdMs, std::string &error)
+{
+	const std::string nonce = RandomUtil::HexToken(16);
+	if (nonce.empty()) {
+		error = "could not mint the probe nonce";
+		return nullptr;
+	}
+
+	OBSDataAutoRelease settings = obs_data_create();
+	obs_data_set_string(settings, "device_id", deviceId.c_str());
+	obs_data_set_string(settings, kStartRaceNonce, nonce.c_str());
+	obs_data_set_int(settings, kStartRaceInWindow, (long long)(intptr_t)(HANDLE)events.inWindow);
+	obs_data_set_int(settings, kStartRaceIdleLate, (long long)(intptr_t)(HANDLE)events.idleLate);
+	obs_data_set_int(settings, kStartRaceHeld, (long long)(intptr_t)(HANDLE)events.held);
+	obs_data_set_int(settings, kStartRaceInitDone, (long long)(intptr_t)(HANDLE)events.initDone);
+	obs_data_set_int(settings, kStartRaceWaitMs, holdMs);
+
+	SetEnvironmentVariableW(kStartRaceNonceEnv, std::wstring(nonce.begin(), nonce.end()).c_str());
+	obs_source_t *capture = obs_source_create_private("wasapi_output_capture", name, settings);
+	SetEnvironmentVariableW(kStartRaceNonceEnv, nullptr);
+	if (!capture) {
+		error = "wasapi_output_capture create failed";
+	}
+	return capture;
+}
+
+std::string ProbeStatus(obs_source_t *capture)
+{
+	OBSDataAutoRelease applied = obs_source_get_settings(capture);
+	return obs_data_get_string(applied, kStartRaceStatus);
+}
+
+// Why a probe that is not "armed" leaves its case unexercised.
+std::string ProbeRefusal(const std::string &status)
+{
+	if (status == "no-rtwq") {
+		return "RTWorkQ unavailable: the capture-thread path cannot lose this wake-up, so the case cannot "
+		       "fail here";
+	}
+	if (status.empty()) {
+		return "probe gate refused: it needs this run's nonce and FE_SMOKE_QUIT_SECONDS in the process "
+		       "environment, not only in .env";
+	}
+	return "probe not armed: " + status;
+}
+
+// Counts log lines containing each of its needles while installed; every line still reaches
+// the handler it replaced. blog reads the handler and its param as two separate globals, so a
+// line racing the install or the restore can pair either handler with the other's param. So
+// the state stays static — the param carries nothing to get out of step — and Handler is
+// installed with the replaced handler's own param and ignores it. One counter therefore holds
+// a list of needles instead of nesting one counter per needle, which would corrupt both the
+// counts and the restore chain. Needles must outlive the counter; string literals do.
+//
+// Asking for more needles than fit is a coding error rather than a runtime condition, and a
+// dropped needle would read as a count that never moves — a silent pass for any case that
+// expects none. So truncation is logged and latched, and every caller must fail on Truncated()
+// before reading a count. assert is compiled out in RelWithDebInfo and cannot carry this.
+class LogLineCounter {
+public:
+	static constexpr size_t kMaxNeedles = 6;
+
+private:
+	static inline log_handler_t prevHandler = nullptr;
+	static inline void *prevParam = nullptr;
+	static inline const char *needles[kMaxNeedles] = {};
+	// Released once the needles are in place and acquired by every reader, so a needle pointer
+	// is never read before the store that published it. The install is the only other ordering
+	// this rests on, and it happens after this store.
+	static inline std::atomic<size_t> needleCount = 0;
+	static inline std::atomic<int> counts[kMaxNeedles] = {};
+	bool truncated = false;
+
+	static void Handler(int level, const char *format, va_list args, void *)
+	{
+		va_list copy;
+		va_copy(copy, args);
+		char line[4096];
+		vsnprintf(line, sizeof(line), format, copy);
+		va_end(copy);
+		const size_t active = needleCount.load(std::memory_order_acquire);
+		for (size_t i = 0; i < active; ++i) {
+			if (strstr(line, needles[i])) {
+				++counts[i];
+			}
+		}
+		prevHandler(level, format, args, prevParam);
+	}
+
+public:
+	explicit LogLineCounter(std::initializer_list<const char *> wanted)
+	{
+		needleCount.store(0, std::memory_order_release);
+		size_t kept = 0;
+		for (const char *needle : wanted) {
+			if (kept == kMaxNeedles) {
+				truncated = true;
+				break;
+			}
+			needles[kept] = needle;
+			counts[kept] = 0;
+			++kept;
+		}
+		needleCount.store(kept, std::memory_order_release);
+		// Before the install, so this line is not itself counted.
+		if (truncated) {
+			HostLog("[selftest] log counter kept " + std::to_string(kept) + " of " +
+				std::to_string(wanted.size()) + " needles: raise LogLineCounter::kMaxNeedles");
+		}
+		base_get_log_handler(&prevHandler, &prevParam);
+		base_set_log_handler(Handler, prevParam);
+	}
+	~LogLineCounter() { base_set_log_handler(prevHandler, prevParam); }
+	LogLineCounter(const LogLineCounter &) = delete;
+	LogLineCounter &operator=(const LogLineCounter &) = delete;
+
+	bool Truncated() const { return truncated; }
+
+	int Count(size_t needle) const
+	{
+		return needle < needleCount.load(std::memory_order_acquire) ? counts[needle].load() : 0;
+	}
+
+	bool WaitForCount(size_t needle, int n, DWORD ms) const
+	{
+		const ULONGLONG deadline = GetTickCount64() + ms;
+		while (Count(needle) < n) {
+			if (GetTickCount64() >= deadline) {
+				return false;
+			}
+			Sleep(10);
+		}
+		return true;
+	}
+};
+
 } // namespace
 
 void ObsBootstrap::RunWasapiStartRaceSelfTest()
@@ -6927,16 +7121,8 @@ void ObsBootstrap::RunWasapiStartRaceSelfTest()
 		HostLog("[selftest] wasapi start-race -> " + verdict);
 	};
 
-	// An explicit endpoint rather than "default": a default-device change mid-case would
-	// raise restartSignal, which also wakes the sample handler and would mask the bug.
-	std::string deviceId;
-	for (const auto &[id, name] : Bridge::EnumAudioDevices(false)) {
-		if (!id.empty() && id != "default") {
-			deviceId = id;
-			break;
-		}
-	}
-	if (deviceId.empty()) {
+	const std::vector<std::string> endpoints = ExplicitRenderEndpoints();
+	if (endpoints.empty()) {
 		report("SKIP (no render endpoint to open)");
 		return;
 	}
@@ -6945,71 +7131,36 @@ void ObsBootstrap::RunWasapiStartRaceSelfTest()
 		return;
 	}
 
-	WinHandle inWindow = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-	WinHandle idleLate = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-	WinHandle heldEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-	WinHandle initDoneEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-	if (!inWindow.Valid() || !idleLate.Valid() || !heldEvent.Valid() || !initDoneEvent.Valid()) {
+	const StartRaceProbeEvents events;
+	if (!events.Valid()) {
 		report("SKIP (could not create probe events)");
 		return;
 	}
 
-	// The probe arms only when this nonce is in both its settings and the process
-	// environment, which saved or imported settings cannot arrange. It is minted now,
-	// published in the Win32 block the plugin reads, and withdrawn once the source exists.
-	const std::string nonce = RandomUtil::HexToken(16);
-	if (nonce.empty()) {
-		report("SKIP (could not mint the probe nonce)");
-		return;
-	}
-
-	OBSDataAutoRelease settings = obs_data_create();
-	obs_data_set_string(settings, "device_id", deviceId.c_str());
-	obs_data_set_string(settings, kStartRaceNonce, nonce.c_str());
-	obs_data_set_int(settings, kStartRaceInWindow, (long long)(intptr_t)(HANDLE)inWindow);
-	obs_data_set_int(settings, kStartRaceIdleLate, (long long)(intptr_t)(HANDLE)idleLate);
-	obs_data_set_int(settings, kStartRaceHeld, (long long)(intptr_t)(HANDLE)heldEvent);
-	obs_data_set_int(settings, kStartRaceInitDone, (long long)(intptr_t)(HANDLE)initDoneEvent);
-	obs_data_set_int(settings, kStartRaceWaitMs, kWaitMs);
-
-	SetEnvironmentVariableW(kStartRaceNonceEnv, std::wstring(nonce.begin(), nonce.end()).c_str());
+	std::string error;
 	obs_source_t *capture =
-		obs_source_create_private("wasapi_output_capture", "selftest wasapi start-race", settings);
-	SetEnvironmentVariableW(kStartRaceNonceEnv, nullptr);
+		CreateProbedCapture("selftest wasapi start-race", endpoints.front(), events, kWaitMs, error);
 	if (!capture) {
-		report("SKIP (wasapi_output_capture create failed)");
+		report("SKIP (" + error + ")");
 		return;
 	}
 
-	OBSDataAutoRelease applied = obs_source_get_settings(capture);
-	const std::string status = obs_data_get_string(applied, kStartRaceStatus);
+	const std::string status = ProbeStatus(capture);
 	if (status != "armed") {
-		obs_source_release(capture);
-		DestroyQueueDrainsWithin(kWaitMs);
-		if (status == "no-rtwq") {
-			report("SKIP (RTWorkQ unavailable: the capture-thread path cannot lose this wake-up, so the "
-			       "case cannot fail here)");
-		} else if (status.empty()) {
-			report("SKIP (probe gate refused: it needs this run's nonce and FE_SMOKE_QUIT_SECONDS in "
-			       "the process environment, not only in .env)");
-		} else {
-			report("SKIP (probe not armed: " + status + ")");
-		}
+		ReleaseAndAwaitDestroy(capture, kWaitMs);
+		report("SKIP (" + ProbeRefusal(status) + ")");
 		return;
 	}
 
 	// Release only once the capture has passed its stop check and is held inside Initialize.
-	const bool entered = WaitForSingleObject(inWindow, kWaitMs) == WAIT_OBJECT_0;
-	obs_source_release(capture);
+	const bool entered = WaitForSingleObject(events.inWindow, kWaitMs) == WAIT_OBJECT_0;
 
 	// Stop() waits up to the probe's start bound for the capture start to return, then at most
 	// kWaitMs before the probe delivers the late wake-up itself.
-	const bool destroyed = DestroyQueueDrainsWithin(kStartBoundMs + kWaitMs * 2);
-	// These events are the test's own, so they outlive the source; the plugin signals
-	// duplicates of them.
-	const bool late = WaitForSingleObject(idleLate, 0) == WAIT_OBJECT_0;
-	const bool held = WaitForSingleObject(heldEvent, 0) == WAIT_OBJECT_0;
-	const bool initDone = WaitForSingleObject(initDoneEvent, 0) == WAIT_OBJECT_0;
+	const bool destroyed = ReleaseAndAwaitDestroy(capture, kStartBoundMs + kWaitMs * 2);
+	const bool late = WaitForSingleObject(events.idleLate, 0) == WAIT_OBJECT_0;
+	const bool held = WaitForSingleObject(events.held, 0) == WAIT_OBJECT_0;
+	const bool initDone = WaitForSingleObject(events.initDone, 0) == WAIT_OBJECT_0;
 
 	if (!entered) {
 		report(destroyed ? "SKIP (capture never reached the hold; device lookup failed)"
@@ -7030,6 +7181,309 @@ void ObsBootstrap::RunWasapiStartRaceSelfTest()
 	} else {
 		report("OK");
 	}
+}
+
+void ObsBootstrap::RunWasapiStopDuringStartStressSelfTest()
+{
+	constexpr int kCycles = 300;
+	// Initialize takes about 20 ms on a render endpoint, so releasing 0..24 ms after the
+	// create lands the stop before, inside, and after it.
+	constexpr DWORD kReleaseSpreadMs = 25;
+	constexpr DWORD kDestroyBoundMs = 10000;
+	const auto log = [](const std::string &line) {
+		HostLog("[selftest] wasapi stop-during-start " + line);
+	};
+
+	const std::vector<std::string> endpoints = ExplicitRenderEndpoints();
+	if (endpoints.empty()) {
+		log("overall -> SKIP (no render endpoint to open)");
+		return;
+	}
+	if (!DestroyQueueDrainsWithin(kDestroyBoundMs)) {
+		log("overall -> SKIP (destroy queue already blocked before this case)");
+		return;
+	}
+
+	OBSDataAutoRelease settings = obs_data_create();
+	obs_data_set_string(settings, "device_id", endpoints.front().c_str());
+
+	// A passing cycle says nothing a summary does not, and 300 of them bury the rest of the
+	// smoke log, so only a failing cycle gets a line.
+	int destroyed = 0;
+	ULONGLONG totalMs = 0;
+	ULONGLONG maxMs = 0;
+	for (int cycle = 0; cycle < kCycles; ++cycle) {
+		obs_source_t *capture = obs_source_create_private("wasapi_output_capture",
+								  "selftest wasapi stop-during-start", settings);
+		if (!capture) {
+			log("cycle " + std::to_string(cycle) + " -> FAILED (wasapi_output_capture create failed)");
+			break;
+		}
+		const DWORD releaseAfterMs = DWORD(cycle) % kReleaseSpreadMs;
+		if (releaseAfterMs) {
+			Sleep(releaseAfterMs);
+		}
+
+		const ULONGLONG releasedAt = GetTickCount64();
+		if (!ReleaseAndAwaitDestroy(capture, kDestroyBoundMs)) {
+			// Every later destroy would queue behind this one, so stop here.
+			log("cycle " + std::to_string(cycle) + " release+" + std::to_string(releaseAfterMs) +
+			    "ms -> FAILED (destroy did not finish within " + std::to_string(kDestroyBoundMs) + " ms)");
+			break;
+		}
+		++destroyed;
+		const ULONGLONG tookMs = GetTickCount64() - releasedAt;
+		totalMs += tookMs;
+		maxMs = tookMs > maxMs ? tookMs : maxMs;
+	}
+
+	const std::string timing = destroyed ? " destroy max " + std::to_string(maxMs) + " ms, mean " +
+						       std::to_string(totalMs / destroyed) + "." +
+						       std::to_string((totalMs * 10 / destroyed) % 10) + " ms"
+					     : " no cycle completed";
+	log("overall -> " + std::string(destroyed == kCycles ? "PASS" : "FAILED") + " (" + std::to_string(destroyed) +
+	    "/" + std::to_string(kCycles) + " cycles destroyed;" + timing + ")");
+}
+
+void ObsBootstrap::RunWasapiRestartSelfTest()
+{
+	// Every Initialize parks this long in the probe's hold, which is the window the in-start
+	// case lands its second restart in.
+	constexpr DWORD kHoldMs = 1000;
+	// How late into that hold the in-start case may still issue its second restart. Past the
+	// hold the update would be served by the arm Initialize just placed, not by the re-check's
+	// restartSignal clause, and the case would pass without exercising it.
+	constexpr DWORD kIssueBoundMs = 700;
+	constexpr DWORD kInitBoundMs = kHoldMs + 4000;
+	constexpr DWORD kQuietMs = kHoldMs + 1500;
+	constexpr DWORD kActivateBoundMs = 5000;
+	constexpr DWORD kEndpointBoundMs = 3000;
+	constexpr DWORD kDestroyBoundMs = 10000;
+	const auto log = [](const std::string &line) {
+		HostLog("[selftest] wasapi restart " + line);
+	};
+
+	// Two explicit endpoints, never "default": parking the source on "default" would let a
+	// system default-device change raise a real restart, which fails the quiet case and could
+	// supply either of the other two cases' initializations.
+	const std::vector<std::string> endpoints = ExplicitRenderEndpoints();
+	if (endpoints.size() < 2) {
+		log("overall -> SKIP (needs two explicit render endpoints to alternate between; found " +
+		    std::to_string(endpoints.size()) + ")");
+		return;
+	}
+	const std::string first = endpoints[0];
+	const std::string second = endpoints[1];
+	log("endpoints -> first=" + first + " second=" + second);
+
+	if (!DestroyQueueDrainsWithin(kDestroyBoundMs)) {
+		log("overall -> SKIP (destroy queue already blocked before this case)");
+		return;
+	}
+	const StartRaceProbeEvents events;
+	if (!events.Valid()) {
+		log("overall -> SKIP (could not create probe events)");
+		return;
+	}
+
+	// The probe also hands the audio engine an event of its own in place of receiveSignal, so a
+	// capture event lands on a handle nothing waits on and only the restart request itself can
+	// wake the sample handler.
+	//
+	// A reconnect driven by a ProcessCaptureData failure logs the same `initialized` line as a
+	// restart, so an increment alone does not prove the restart under test produced it. Each
+	// restart served on the RTWQ path logs exactly one `invalidated.  Retrying`, so every case
+	// pins that count to the restarts it asked for; a spontaneous reconnect, or a start that
+	// failed and retried, adds a line the case did not account for.
+	constexpr size_t kInitialized = 0;
+	constexpr size_t kInvalidated = 1;
+	constexpr size_t kFailedStart = 2;
+	constexpr size_t kProbeInit = 3;
+	const LogLineCounter lines({"initialized (source: selftest wasapi restart)",
+				    "invalidated.  Retrying (source: selftest wasapi restart)",
+				    "failed to start (source: selftest wasapi restart)",
+				    "initialized (source: selftest wasapi endpoint probe)"});
+	if (lines.Truncated()) {
+		log("overall -> FAILED (the log counter dropped a needle; every count it reports would be blind)");
+		return;
+	}
+
+	// An endpoint that will not open is an environment fact, so it is found here and skips the
+	// whole test. Pre-flighting rather than reclassifying keeps a `failed to start` during the
+	// cases meaning the one thing it should: a defect.
+	for (const std::string &endpoint : {first, second}) {
+		OBSDataAutoRelease probeSettings = obs_data_create();
+		obs_data_set_string(probeSettings, "device_id", endpoint.c_str());
+		const int beforeProbe = lines.Count(kProbeInit);
+		obs_source_t *probe = obs_source_create_private("wasapi_output_capture",
+								"selftest wasapi endpoint probe", probeSettings);
+		const bool opened = probe && lines.WaitForCount(kProbeInit, beforeProbe + 1, kEndpointBoundMs);
+		// A probe that will not destroy leaves the queue blocked, so the real case's own
+		// destroy would time out behind it and read as a defect.
+		if (probe && !ReleaseAndAwaitDestroy(probe, kDestroyBoundMs)) {
+			log("overall -> SKIP (endpoint " + endpoint + " probe did not destroy within " +
+			    std::to_string(kDestroyBoundMs) + " ms)");
+			return;
+		}
+		if (!opened) {
+			log("overall -> SKIP (endpoint " + endpoint + " did not open within " +
+			    std::to_string(kEndpointBoundMs) + " ms)");
+			return;
+		}
+	}
+
+	std::string error;
+	obs_source_t *capture = CreateProbedCapture("selftest wasapi restart", first, events, kHoldMs, error);
+	if (!capture) {
+		log("overall -> SKIP (" + error + ")");
+		return;
+	}
+	const std::string status = ProbeStatus(capture);
+	if (status != "armed") {
+		ReleaseAndAwaitDestroy(capture, kDestroyBoundMs);
+		log("overall -> SKIP (" + ProbeRefusal(status) + ")");
+		return;
+	}
+
+	// A restart reconnects through the reconnect thread, which exists only while active. Left
+	// open if the destroy times out, since the handler could still signal it.
+	const HANDLE activated = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+	if (activated) {
+		signal_handler_connect(
+			obs_source_get_signal_handler(capture), "activate",
+			[](void *event, calldata_t *) { SetEvent(static_cast<HANDLE>(event)); }, activated);
+	}
+	obs_source_inc_active(capture);
+	const bool isActive = activated && WaitForSingleObject(activated, kActivateBoundMs) == WAIT_OBJECT_0;
+	const bool started = lines.WaitForCount(kInitialized, 1, kInitBoundMs);
+
+	const auto update = [capture](const std::string &deviceId) {
+		OBSDataAutoRelease settings = obs_data_create();
+		obs_data_set_string(settings, "device_id", deviceId.c_str());
+		obs_source_update(capture, settings);
+	};
+
+	int invalidatedMark = 0;
+	int failedMark = 0;
+	const auto markNoise = [&]() {
+		invalidatedMark = lines.Count(kInvalidated);
+		failedMark = lines.Count(kFailedStart);
+	};
+	const auto noiseFree = [&](int restarts) {
+		return lines.Count(kInvalidated) - invalidatedMark == restarts &&
+		       lines.Count(kFailedStart) == failedMark;
+	};
+	const auto noiseText = [&](int restarts) {
+		return ", invalidated +" + std::to_string(lines.Count(kInvalidated) - invalidatedMark) + " of " +
+		       std::to_string(restarts) + " expected, failed-to-start +" +
+		       std::to_string(lines.Count(kFailedStart) - failedMark);
+	};
+
+	bool pass = isActive && started;
+	bool inStartSkipped = false;
+	if (!pass) {
+		log("setup -> FAILED (active=" + std::to_string(isActive) + " initialized=" + std::to_string(started) +
+		    ")");
+	} else {
+		// A device change while capturing restarts it.
+		int before = lines.Count(kInitialized);
+		markNoise();
+		update(second);
+		const bool changed = lines.WaitForCount(kInitialized, before + 1, kInitBoundMs);
+		const bool changedClean = noiseFree(1);
+		log(std::string("device change -> ") +
+		    (!changed        ? "FAILED (no re-initialize)"
+		     : !changedClean ? "FAILED (a reconnect this case did not ask for supplied the start)"
+				     : "PASS (re-initialized)") +
+		    " initialized " + std::to_string(before) + " -> " + std::to_string(lines.Count(kInitialized)) +
+		    noiseText(1));
+
+		// An update that keeps the device does not.
+		before = lines.Count(kInitialized);
+		ResetEvent(events.inWindow);
+		markNoise();
+		update(second);
+		const bool quiet = !lines.WaitForCount(kInitialized, before + 1, kQuietMs) &&
+				   WaitForSingleObject(events.inWindow, 0) == WAIT_TIMEOUT;
+		const bool quietClean = noiseFree(0);
+		log(std::string("same device -> ") +
+		    (!quiet        ? "FAILED (restarted)"
+		     : !quietClean ? "FAILED (a reconnect landed in the quiet window)"
+				   : "PASS (no restart)") +
+		    " initialized " + std::to_string(before) + " -> " + std::to_string(lines.Count(kInitialized)) +
+		    noiseText(0));
+
+		// A restart requested while Initialize is parked before it resets receiveSignal, so the
+		// reset eats that wake-up. It must still be served: two initializations, not one. The
+		// second update has to reach the plugin while Initialize is still parked, which a
+		// scheduling stall can miss without anything being wrong, so a miss retries once and
+		// then reports the case unexercised instead of failing the run.
+		constexpr int kInStartAttempts = 2;
+		bool inStart = false;
+		bool inHold = false;
+		bool served = false;
+		bool servedClean = false;
+		bool lateLost = false;
+		ULONGLONG issuedAfterMs = 0;
+		int attempt = 0;
+		for (; attempt < kInStartAttempts; ++attempt) {
+			before = lines.Count(kInitialized);
+			ResetEvent(events.inWindow);
+			markNoise();
+			update(first);
+			inStart = WaitForSingleObject(events.inWindow, kInitBoundMs) == WAIT_OBJECT_0;
+			const ULONGLONG inWindowAt = GetTickCount64();
+			issuedAfterMs = 0;
+			if (!inStart) {
+				break;
+			}
+			update(second);
+			issuedAfterMs = GetTickCount64() - inWindowAt;
+			inHold = issuedAfterMs <= kIssueBoundMs;
+			if (inHold) {
+				served = lines.WaitForCount(kInitialized, before + 2, kInitBoundMs * 2);
+				servedClean = noiseFree(2);
+				break;
+			}
+			// The late update still restarts the capture, so let both restarts finish before
+			// the retry: it needs a settled source and its own baseline. A settle that never
+			// arrives means the late restart itself was lost, which is the defect this case
+			// hunts, so report it rather than retrying on an unsettled source.
+			if (!lines.WaitForCount(kInitialized, before + 2, kInitBoundMs * 2)) {
+				lateLost = true;
+				break;
+			}
+		}
+		inStartSkipped = inStart && !inHold && !lateLost;
+		log(std::string("restart during Initialize -> ") +
+		    (!inStart         ? "FAILED (the first restart never reached Initialize)"
+		     : lateLost       ? "FAILED (a restart issued after the hold was never served)"
+		     : inStartSkipped ? "SKIP (inconclusive: every attempt issued the second restart after the "
+					"hold, so the case was never exercised)"
+		     : !served        ? "FAILED (the restart raised inside Initialize was lost)"
+		     : !servedClean   ? "FAILED (a reconnect this case did not ask for supplied a start)"
+				      : "PASS (both restarts served)") +
+		    " initialized " + std::to_string(before) + " -> " + std::to_string(lines.Count(kInitialized)) +
+		    noiseText(2) + ", second update +" + std::to_string(issuedAfterMs) + " ms into a " +
+		    std::to_string(kHoldMs) + " ms hold, attempt " +
+		    std::to_string(std::min(attempt + 1, kInStartAttempts)) + " of " +
+		    std::to_string(kInStartAttempts));
+
+		pass = changed && changedClean && quiet && quietClean && (inStartSkipped || (served && servedClean));
+	}
+
+	obs_source_dec_active(capture);
+	const bool destroyed = ReleaseAndAwaitDestroy(capture, kDestroyBoundMs);
+	if (destroyed && activated) {
+		CloseHandle(activated);
+	}
+	log(std::string("destroy -> ") + (destroyed ? "PASS" : "FAILED (did not finish)"));
+	log("coverage -> the default-device path is not driven: it needs a system default-device change");
+	if (inStartSkipped) {
+		log("coverage -> the restart-during-Initialize case did not run: its second restart never landed "
+		    "inside the hold");
+	}
+	log(std::string("overall -> ") + (pass && destroyed ? "PASS" : "FAILED"));
 }
 
 void ObsBootstrap::RunFilterPreviewSelfTest()

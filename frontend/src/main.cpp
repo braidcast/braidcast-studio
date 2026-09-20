@@ -313,6 +313,8 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 			// round-trips before self-quit.
 			if (Env::IsSet("FE_SMOKE_QUIT_SECONDS")) {
 				ObsBootstrap::RunWasapiStartRaceSelfTest();
+				ObsBootstrap::RunWasapiStopDuringStartStressSelfTest();
+				ObsBootstrap::RunWasapiRestartSelfTest();
 				ObsBootstrap::RunPropertiesSelfTest();
 				ObsBootstrap::RunPreviewEditSelfTest();
 				ObsBootstrap::RunSettingsSelfTest();

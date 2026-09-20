@@ -455,6 +455,21 @@ void RunProjectorSelfTest();
 // so the destroy queue drains; a capture start that never returns still parks Stop(), as it
 // would outside the test. Gated by the caller to the smoke path.
 void RunWasapiStartRaceSelfTest();
+// Stress for win-wasapi capture lifetime: creates and releases a wasapi_output_capture
+// source a few hundred times, releasing it at staggered points in its capture start so the
+// stop lands before, inside, and after Initialize. Each destroy must finish within a bound;
+// a crash ends the run. So a pass shows no hang and no crash in that window; it does not show
+// the use-after-free is gone, which needs a guard allocator to catch. Logs a line per failing
+// cycle and an overall line carrying the destroy max and mean. Gated by the caller to the
+// smoke path.
+void RunWasapiStopDuringStartStressSelfTest();
+// Headless proof that win-wasapi serves a capture restart with no audio arriving: on a live,
+// activated wasapi_output_capture whose endpoint event the start-race probe silences, a device
+// change must re-initialize the capture, an update that keeps the device must not, and a
+// restart raised while Initialize is parked in the probe's hold must still be served. Then the
+// source must destroy within a bound. The default-device path is not driven: it needs a system
+// default-device change. Gated by the caller to the smoke path.
+void RunWasapiRestartSelfTest();
 // Headless proof for the Filters dialog preview: bind it to the current program
 // scene (a previewable source), position it, confirm the overlay got a live
 // obs_display, then close it; and confirm an audio-only source is refused so the
