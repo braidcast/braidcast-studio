@@ -117,10 +117,21 @@ var cppExts = map[string]bool{
 
 var formatSkipDirs = []string{buildDir, "deps", depsDir, "frontend/deps"}
 
+// Submodules whose C/C++ we own, and therefore format. A change inside a submodule reaches
+// this repo's own `git diff --name-only` as one gitlink entry with no extension, so without
+// this list nothing below can ever see the files inside it: every obs-browser change before
+// this was checked by hand or not at all, and one had already shipped with a real violation
+// (issues.md #22). CI's format job compares against master in this repo and has the same
+// blind spot.
+//
+// deps/libdshowcapture/src and plugins/obs-websocket stay out: they are upstream code we
+// only carry, which is what formatSkipDirs exists for.
+var formatSubmodules = []string{"plugins/obs-browser"}
+
 // Format runs clang-format in place over the C/C++ files changed vs HEAD
 // (staged, unstaged, and untracked), using the repo's .clang-format style.
 func Format() error {
-	files, err := cppFilesFrom([][]string{
+	files, err := changedCppFiles([][]string{
 		{"diff", "--name-only", "HEAD"},
 		{"diff", "--name-only", "--cached"},
 		{"ls-files", "--others", "--exclude-standard"},
@@ -154,7 +165,7 @@ func Format() error {
 // format job examines once work reaches master, which is the moment the whole accumulated
 // batch is checked at once.
 func FormatCheck() error {
-	files, err := cppFilesFrom([][]string{{"diff", "--name-only", "master...HEAD"}})
+	files, err := changedCppFiles([][]string{{"diff", "--name-only", "master...HEAD"}})
 	if err != nil {
 		return err
 	}
@@ -171,29 +182,65 @@ func FormatCheck() error {
 	return sh(exe, append([]string{"--dry-run", "-Werror", "--style=file"}, files...)...)
 }
 
-// cppFilesFrom collects the C/C++ files named by each git invocation, deduplicated across
-// them, skipping vendored trees and anything that is no longer a file on disk (a deletion
-// still shows up in `git diff --name-only`).
-func cppFilesFrom(gitArgs [][]string) ([]string, error) {
+// changedCppFiles runs the same git invocations over this repo and over every submodule in
+// formatSubmodules, returning one list of paths relative to this repo's root.
+//
+// A submodule that is not checked out is skipped rather than failed: a shallow or partial
+// clone is a normal state, and refusing to format anything because of it would be worse than
+// formatting what is here.
+func changedCppFiles(gitArgs [][]string) ([]string, error) {
+	files, err := cppFilesFrom("", gitArgs)
+	if err != nil {
+		return nil, err
+	}
+	for _, sub := range formatSubmodules {
+		if _, err := os.Stat(filepath.Join(sub, ".git")); err != nil {
+			continue
+		}
+		subFiles, err := cppFilesFrom(sub, gitArgs)
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, subFiles...)
+	}
+	return files, nil
+}
+
+// cppFilesFrom collects the C/C++ files named by each git invocation run in repoDir (empty
+// for this repo), deduplicated across them, skipping vendored trees and anything that is no
+// longer a file on disk (a deletion still shows up in `git diff --name-only`). Returned
+// paths are relative to this repo's root, so a submodule's files carry its prefix.
+func cppFilesFrom(repoDir string, gitArgs [][]string) ([]string, error) {
 	seen := make(map[string]bool)
 	var files []string
 	for _, args := range gitArgs {
+		if repoDir != "" {
+			args = append([]string{"-C", repoDir}, args...)
+		}
 		out, err := shCapture("git", args...)
 		if err != nil {
 			return nil, err
 		}
 		for _, l := range strings.Split(out, "\n") {
 			l = strings.TrimSpace(l)
-			if l == "" || seen[l] {
+			if l == "" {
 				continue
 			}
-			seen[l] = true
 			if !cppExts[strings.ToLower(filepath.Ext(l))] {
 				continue
 			}
+			// Against the submodule-relative path, so its own vendored trees are skipped by
+			// the same rules as this repo's.
 			if inSkippedDir(l) {
 				continue
 			}
+			if repoDir != "" {
+				l = filepath.ToSlash(filepath.Join(repoDir, l))
+			}
+			if seen[l] {
+				continue
+			}
+			seen[l] = true
 			if info, err := os.Stat(l); err != nil || info.IsDir() {
 				continue
 			}
