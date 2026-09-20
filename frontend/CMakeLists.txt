@@ -329,6 +329,10 @@ target_sources(
     # Shared summary-file path + run stamp for every BRAIDCAST_SELFTEST_STREAM mode.
     src/util/selftest_paths.cpp
     src/util/selftest_paths.hpp
+    # speaker_layout <-> wire name, shared by the settings bridge, the persisted audio
+    # settings and the boot that applies them. Includes obs.h -> /wd4201 set below.
+    src/util/speaker_layout.cpp
+    src/util/speaker_layout.hpp
     api-impl/frontend_callbacks.cpp
     api-impl/frontend_callbacks.hpp
     # Phase 4.4.0 native-multistream data model. These five model files are
@@ -583,6 +587,7 @@ set_source_files_properties(
   src/bridge.cpp
   src/chat/chat_hub.cpp
   src/util/properties_serializer.cpp
+  src/util/speaker_layout.cpp
   src/windowing/preview_window.cpp
   src/windowing/projector_window.cpp
   src/windowing/interact_window.cpp

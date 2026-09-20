@@ -5,6 +5,7 @@
 #include "log.hpp"
 #include "obs_bootstrap.hpp"
 #include "settings/AdvancedSettings.hpp"
+#include "util/speaker_layout.hpp"
 #include "windowing/preview_window.hpp"
 #include "scene/scene_collections.hpp"
 #include "scene/transitions.hpp"
@@ -570,8 +571,16 @@ bool ApplyAudio(const AudioInfo &a, std::string &error)
 	// obs_reset_audio re-seeds the monitoring device to Default, so an import would
 	// silently discard the user's own choice along with the profile it is applying.
 	// Same restore as MethodSettingsSetAudio does after its own reset.
-	const AdvancedSettings &adv = ObsBootstrap::Advanced();
+	AdvancedSettings &adv = ObsBootstrap::Advanced();
 	ApplyAudioMonitoringDevice(adv.audioMonitoringDeviceName, adv.audioMonitoringDeviceId);
+
+	// And persist the imported mix, or the next launch reverts to the stored one and the
+	// import silently half-applies.
+	adv.audioSampleRate = oai.samples_per_sec;
+	adv.audioSpeakers = Audio::SpeakerLayoutName(oai.speakers);
+	if (!adv.Save()) {
+		blog(LOG_WARNING, "import: advanced.json save failed; imported audio mix will not survive a restart");
+	}
 	return true;
 }
 

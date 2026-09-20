@@ -1,4 +1,6 @@
 #include "bridge.hpp"
+
+#include "util/speaker_layout.hpp"
 #include "event_names.hpp"
 
 #include <algorithm>
@@ -752,37 +754,8 @@ bool AnyOutputActive()
 	return ObsBootstrap::Multistream().AnyLive();
 }
 
-// speaker_layout <-> string. Data-driven so a new layout is one row. The set is
-// what obs_audio_info accepts; the UI offers at least mono/stereo.
-struct SpeakerName {
-	speaker_layout layout;
-	const char *name;
-};
-const SpeakerName kSpeakerNames[] = {
-	{SPEAKERS_MONO, "mono"},   {SPEAKERS_STEREO, "stereo"}, {SPEAKERS_2POINT1, "2.1"}, {SPEAKERS_4POINT0, "4.0"},
-	{SPEAKERS_4POINT1, "4.1"}, {SPEAKERS_5POINT1, "5.1"},   {SPEAKERS_7POINT1, "7.1"},
-};
-
-const char *SpeakerLayoutName(speaker_layout layout)
-{
-	for (const auto &s : kSpeakerNames) {
-		if (s.layout == layout) {
-			return s.name;
-		}
-	}
-	return "stereo";
-}
-
-bool SpeakerLayoutFromName(const std::string &name, speaker_layout &out)
-{
-	for (const auto &s : kSpeakerNames) {
-		if (name == s.name) {
-			out = s.layout;
-			return true;
-		}
-	}
-	return false;
-}
+using Audio::SpeakerLayoutFromName;
+using Audio::SpeakerLayoutName;
 
 json VideoInfoToJson(const obs_video_info &ovi)
 {
@@ -1245,8 +1218,7 @@ bool MethodSettingsSetAudio(const json &params, json &result, std::string &error
 			return false;
 		}
 		const int64_t v = sr->get<int64_t>();
-		// OBS supports 44100 and 48000; reject anything else.
-		if (v != 44100 && v != 48000) {
+		if (v < 0 || !Audio::SampleRateSupported(uint32_t(v))) {
 			error = "'sampleRate' must be 44100 or 48000";
 			return false;
 		}
@@ -1285,8 +1257,17 @@ bool MethodSettingsSetAudio(const json &params, json &result, std::string &error
 		// discards the chosen device. Put back what the store holds -- which the block
 		// above has already updated if this same call changed it. A store that never held
 		// one leaves libobs at its own Default, which is the right answer.
-		const AdvancedSettings &a = ObsBootstrap::Advanced();
+		AdvancedSettings &a = ObsBootstrap::Advanced();
 		ApplyAudioMonitoringDevice(a.audioMonitoringDeviceName, a.audioMonitoringDeviceId);
+
+		// libobs persists no part of the mix either, so store what was just applied or the
+		// boot's own reset takes it back to 48 kHz stereo on the next launch.
+		a.audioSampleRate = oai.samples_per_sec;
+		a.audioSpeakers = Audio::SpeakerLayoutName(oai.speakers);
+		if (!a.Save()) {
+			HostLog("[bridge] settings.setAudio: advanced.json save failed; sample rate and "
+				"channel layout will not survive a restart");
+		}
 	}
 
 	obs_audio_info applied = {};

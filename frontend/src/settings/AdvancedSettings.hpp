@@ -39,6 +39,13 @@ struct AdvancedSettings {
 	// name is free-form enough that any separator would need an escape scheme.
 	std::string audioMonitoringDeviceId;
 	std::string audioMonitoringDeviceName;
+	// --- audio mix (applied at bootstrap; edited in Audio settings) ---
+	// Same reason as the device above: libobs owns the live values and persists none of
+	// them, so the boot's own obs_reset_audio would take a 44.1 kHz or 5.1 choice back to
+	// 48 kHz stereo on every launch. Stored as the wire spelling of the layout rather than
+	// the enum, so advanced.json stays readable and survives an enum renumber.
+	uint32_t audioSampleRate = 48000;
+	std::string audioSpeakers = "stereo";
 
 	// Round-trip every field to advanced.json (file keys snake_case). Missing keys
 	// fall back to the struct defaults. Save() is called on each bridge set.
@@ -156,8 +163,14 @@ inline constexpr AdvancedStringField kAdvancedStringFields[] = {
 	 &AdvancedSettings::audioMonitoringDeviceName,
 	 {"", "", "", "", 0},
 	 nullptr},
+	{"audioSpeakers", "audio_speakers", &AdvancedSettings::audioSpeakers, {"", "", "", "", 0}, nullptr},
 };
 inline constexpr AdvancedUIntField kAdvancedUIntFields[] = {
+	// Label-less like the monitoring device: Settings > Audio owns this control. The
+	// bounds are the two supported rates, so a corrupt file lands on a real one -- but
+	// they cannot exclude an in-range value that is neither, which is why the boot
+	// checks Audio::SampleRateSupported before applying it.
+	{"audioSampleRate", "audio_sample_rate", &AdvancedSettings::audioSampleRate, 44100, 48000, {"", "", "", "", 0}},
 	{"streamDelaySec",
 	 "stream_delay_sec",
 	 &AdvancedSettings::streamDelaySec,

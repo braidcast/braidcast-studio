@@ -87,6 +87,7 @@
 #include "windowing/projector_window.hpp"
 #include "scene/scene_collections.hpp"
 #include "util/session_log.hpp"
+#include "util/speaker_layout.hpp"
 #include "scene/main_channel.hpp"
 #include "scene/scene_items.hpp"
 #include "scene/scene_persistence.hpp"
@@ -1217,14 +1218,26 @@ bool ObsBootstrap::Start()
 	obs_set_render_debug(renderDebug);
 	obs_set_render_gpu_debug(renderGpuDebug);
 
+	// Loaded here rather than with the other settings below, because the mix reset on the
+	// next line needs it: libobs persists no part of the audio mix, so reading the store
+	// first is the only thing that makes a 44.1 kHz or 5.1 choice survive a launch. The
+	// process-priority, ducking and monitoring-device applies still run further down, where
+	// the subsystems they touch exist.
+	g_advanced.Load();
+
 	obs_audio_info oai = {};
-	oai.samples_per_sec = 48000;
+	oai.samples_per_sec = Audio::SampleRateSupported(g_advanced.audioSampleRate) ? g_advanced.audioSampleRate
+										     : 48000;
+	// Left at stereo by a name this build does not know: SpeakerLayoutFromName only
+	// writes through on a match.
 	oai.speakers = SPEAKERS_STEREO;
+	Audio::SpeakerLayoutFromName(g_advanced.audioSpeakers, oai.speakers);
 	if (!obs_reset_audio(&oai)) {
 		HostLog("[obs] obs_reset_audio failed");
 		return false;
 	}
-	HostLog("[obs] obs_reset_audio ok (48kHz stereo)");
+	HostLog("[obs] obs_reset_audio ok (" + std::to_string(oai.samples_per_sec) + "Hz " +
+		Audio::SpeakerLayoutName(oai.speakers) + ")");
 
 	// Register the frontend-api shim before loading modules so obs-browser's
 	// obs_module_load (which calls obs_frontend_add_event_callback) resolves
@@ -1244,10 +1257,9 @@ bool ObsBootstrap::Start()
 	Preview::LoadOverlays(g_general);
 	HostLog("[obs] general settings loaded");
 
-	// Load the global Advanced settings and apply the stored process priority once.
-	// The engine reads the rest (stream delay / reconnect / network) per output at
-	// StartOutput; browserHwAccel is handed to obs-browser below.
-	g_advanced.Load();
+	// Already loaded above, before the audio mix reset that reads it. Apply the stored
+	// process priority once here; the engine reads the rest (stream delay / reconnect /
+	// network) per output at StartOutput, and browserHwAccel is handed to obs-browser below.
 	// Nothing can be live at startup, and g_multistream is not constructed yet, so
 	// resolve "auto" against an idle state (false) rather than calling AnyLive().
 	ApplyEffectivePriority(g_advanced.processPriority, false);
@@ -2132,6 +2144,18 @@ void ObsBootstrap::RunSettingsSelfTest()
 		HostLog("[selftest] setAudio 44100 -> " + std::to_string(a1.value("sampleRate", 0u)) + "Hz " +
 			a1.value("speakers", std::string("?")) + " (round-trip " +
 			(a1.value("sampleRate", 0u) == 44100 ? "OK" : "MISMATCH") + ")");
+	}
+
+	// 5a) The applied mix must reach the store, not just libobs: nothing in libobs persists
+	// the sample rate or the layout, so the boot's own obs_reset_audio took a 44.1 kHz or 5.1
+	// choice back to 48 kHz stereo on the next launch. Step 5 could not see that either -- it
+	// read the value back out of libobs, which is exactly where it was never the problem. The
+	// boot half (reading the store before the reset) needs two launches and is not covered.
+	if (ok) {
+		const AdvancedSettings &stored = Advanced();
+		const bool held = stored.audioSampleRate == 44100 && stored.audioSpeakers == "stereo";
+		HostLog("[selftest] setAudio 44100 -> stored " + std::to_string(stored.audioSampleRate) + "Hz " +
+			stored.audioSpeakers + (held ? " (PERSISTED)" : " (NOT PERSISTED)"));
 	}
 
 	// 5b) The monitoring device must survive a setAudio, both when the mix is untouched and
