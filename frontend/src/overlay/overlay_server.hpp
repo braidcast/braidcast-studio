@@ -88,8 +88,13 @@ public:
 private:
 	void AcceptLoop();
 	void HandleConnection(uintptr_t clientSocket); // runs on its own thread; closes the socket
-	void ServeRuntime(uintptr_t sock, const std::string &path, const std::string &token);
-	void ServeWidget(uintptr_t sock, const std::string &path, const std::string &token);
+	// `ifNoneMatch` is the request's If-None-Match verbatim (empty when absent); only the
+	// asset route reads it, but it rides the shared route-handler signature so the route
+	// table stays one data list rather than splitting into cacheable/non-cacheable halves.
+	void ServeRuntime(uintptr_t sock, const std::string &path, const std::string &token,
+			  const std::string &ifNoneMatch);
+	void ServeWidget(uintptr_t sock, const std::string &path, const std::string &token,
+			 const std::string &ifNoneMatch);
 	// Send a prebuilt SSE frame to every open widget socket, or (with onlyWidgetId set)
 	// to one widget's sockets only, or (with widgetFilter set) to only the widgets it
 	// answers true for -- events.replay's per-type gate; the two selectors are never

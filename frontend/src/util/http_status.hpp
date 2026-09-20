@@ -19,6 +19,7 @@ struct ReasonPhrase {
 inline constexpr ReasonPhrase kReasons[] = {
 	{200, "OK"},
 	{202, "Accepted"},
+	{304, "Not Modified"},
 	{400, "Bad Request"},
 	{401, "Unauthorized"},
 	{403, "Forbidden"},

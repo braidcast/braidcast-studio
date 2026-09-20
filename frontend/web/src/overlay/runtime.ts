@@ -23,6 +23,11 @@ interface OverlayBootstrap {
   token: string;
   port: number;
   fields: Record<string, unknown>;
+  /** Every URL this widget could play, taken off its schema's sound fields by the host
+   * (AssembleDocument in overlay_server.cpp). Optional because a document assembled by an
+   * older build carries no such key -- an absent list means nothing preloads, not that the
+   * widget is silent. */
+  sounds?: string[];
 }
 
 /** A viewer-count cycle as a widget sees it: the host payload verbatim, plus the
@@ -94,6 +99,375 @@ const streamHandlers: StreamHandler[] = [];
 // which is the fork author's call to make.
 let slotStyleEl: HTMLStyleElement | null = null;
 
+// --- Sound -------------------------------------------------------------------------
+// One decoded AudioBuffer per URL, reused for every play. The path this replaces built a
+// `new Audio(url)` per alert, which refetched, re-demuxed and re-decoded the clip and
+// opened a fresh output stream while the alert was already on screen -- audible as a cut
+// partway through, a stall, then the remainder.
+//
+// WebAudio rather than a pool of media elements: an AudioBuffer is decoded PCM already in
+// memory, so a play costs a node allocation and nothing else, and a new
+// AudioBufferSourceNode per play gives overlapping alerts real polyphony rather than one
+// element's single playback cursor. Nothing is serialized and no play is dropped.
+
+interface SoundEntry {
+  /** Decoded PCM, once the decode below has resolved. */
+  buffer: AudioBuffer | null;
+  /** `buffer`'s size in bytes, 0 until it lands. The cache budgets on this, not on a count. */
+  bytes: number;
+  /** The queued-or-in-flight decode, so a second play during it cannot start a second fetch.
+   * Cleared when it settles -- `buffer`, `elementOnly` and `attempts` are the durable
+   * answers, and holding a settled promise would pin its closure for the page's life. */
+  decode: Promise<void> | null;
+  /** This URL will never get a decoded buffer: its PCM was over the per-sound ceiling, or
+   * transient failures used up kMaxSoundDecodeAttempts. Every play of it uses the media
+   * element instead. One-way, which is what stops anything retrying forever -- so only a
+   * genuinely permanent condition may set it. */
+  elementOnly: boolean;
+  /** Transient decode failures so far: a rejected or timed-out fetch, a non-OK status, or a
+   * decode of bytes that arrived damaged. None of those say anything about the NEXT attempt,
+   * so they leave the entry retryable until this reaches kMaxSoundDecodeAttempts. Eviction
+   * resets it by dropping the entry, which is the right answer: a URL coming back after a
+   * long absence is a new question. */
+  attempts: number;
+}
+
+/** Two independent bounds, because they fail in different ways.
+ *
+ * `kMaxDecodedSoundBytes` is the memory bound: an asset may be up to the server's 8 MB cap
+ * and decodes to far more than that as float32 PCM (48 kHz stereo is 384 KB per second), so
+ * counting entries bounds nothing. One 2 s alert clip is about 700 KB decoded, so this holds
+ * roughly twenty of them.
+ *
+ * `kMaxSoundEntries` bounds entry CHURN rather than memory: an entry that never decodes
+ * costs almost nothing, but a widget minting sound URLs at runtime could otherwise
+ * accumulate them without limit.
+ *
+ * Insertion order is the LRU order for both: every lookup re-inserts, so eviction always
+ * drops the least recently used. */
+const kMaxDecodedSoundBytes = 16 * 1024 * 1024;
+/** Per sound, checked after decode -- the decoded size cannot be known before. About 21 s of
+ * 48 kHz stereo. A clip over it is a stinger rather than an alert sound, and it falls back to
+ * the media element, which streams instead of holding the whole PCM resident. */
+const kMaxOneDecodedSoundBytes = 8 * 1024 * 1024;
+const kMaxSoundEntries = 8;
+/** Total attempts a URL gets before it settles into elementOnly for good. Nothing schedules
+ * them: a retry rides the next playSound miss, so a sound nobody plays again never spends the
+ * rest of its budget, and a sound played every alert gets its retry immediately. */
+const kMaxSoundDecodeAttempts = 3;
+/** Deadline on one preload's fetch, body included. The chain runs one decode at a time, so a
+ * request that never answers would otherwise park every later sound behind it for the life of
+ * the page -- nothing else releases it. Cold fetches against the in-process overlay server on
+ * loopback measured 9.3-13.9 ms, so this is well over two orders of magnitude of headroom and
+ * still fires long before a broadcast could notice. A timeout is a transient failure. */
+const kSoundFetchTimeoutMs = 3000;
+const soundCache = new Map<string, SoundEntry>();
+/** Keyed "<stage>|<url>", so one durable condition reports once per stage instead of once
+ * per alert -- an alert box fires hundreds of times a broadcast and this channel is the
+ * session log. Bounded for the same reason kMaxSoundEntries is, and against the same
+ * adversary: a widget minting sound URLs at runtime would otherwise grow this set without
+ * limit and emit a line per URL per stage forever. Evicting a key only risks one repeated
+ * line, long after the first. */
+const kMaxLoggedSoundNotices = 32;
+const loggedSoundNotices = new Set<string>();
+let audioCtx: AudioContext | null = null;
+
+/** The token in the query must never reach the log. */
+function soundLogPath(url: string): string {
+  return url.split("?")[0];
+}
+
+function describeSoundError(e: unknown): string {
+  return e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+}
+
+/** One line per (stage, url). console.error rather than console.log because obs-browser
+ * forwards nothing else to the session log -- including the lines that report a policy
+ * decision rather than a fault, so `detail` has to carry that distinction in its wording. */
+function logSoundOnce(url: string, stage: string, detail: string) {
+  const key = stage + "|" + url;
+  if (loggedSoundNotices.has(key)) {
+    return;
+  }
+  // Oldest-first; a Set iterates in insertion order, and deleting the key being visited is
+  // defined behaviour.
+  for (const old of loggedSoundNotices) {
+    if (loggedSoundNotices.size < kMaxLoggedSoundNotices) {
+      break;
+    }
+    loggedSoundNotices.delete(old);
+  }
+  loggedSoundNotices.add(key);
+  console.error(`OBSOverlay ${detail} ${soundLogPath(url)}`);
+}
+
+/** A suspended context is the external-browser case only: the app owns the CEF process and
+ * starts it with `--autoplay-policy=no-user-gesture-required` (frontend/src/app.cpp), which
+ * covers browser sources and the editor preview iframe alike -- obs-browser has its own copy of
+ * that switch, but it never runs. So in-app the context is running from creation and this is a
+ * no-op. In a plain browser tab it stays suspended until a gesture, which the listeners in
+ * soundContext() wait for. */
+function resumeSoundContext(ctx: AudioContext) {
+  if (ctx.state !== "suspended") {
+    return;
+  }
+  // A refused resume leaves the context suspended and the play silent; there is nothing to
+  // recover to, since a media element is blocked by the same policy.
+  void ctx.resume().catch(() => {});
+}
+
+const kSoundResumeEvents: (keyof WindowEventMap)[] = ["pointerdown", "keydown"];
+
+/** Created on first use rather than at load: every widget type loads this runtime and most
+ * never play a sound. Null when the platform has no WebAudio at all, which puts every play
+ * on the media-element path. */
+function soundContext(): AudioContext | null {
+  if (audioCtx) {
+    return audioCtx;
+  }
+  const Ctor =
+    window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  if (!Ctor) {
+    return null;
+  }
+  try {
+    audioCtx = new Ctor();
+  } catch {
+    return null;
+  }
+  const ctx = audioCtx;
+  for (const name of kSoundResumeEvents) {
+    window.addEventListener(name, () => resumeSoundContext(ctx), { passive: true });
+  }
+  return ctx;
+}
+
+/** float32 PCM, one array per channel. */
+function decodedBytes(buffer: AudioBuffer): number {
+  return buffer.length * buffer.numberOfChannels * 4;
+}
+
+/** Evict least-recently-used entries until both bounds hold. The total is summed fresh each
+ * time rather than carried in a counter, over at most a handful of entries, so it cannot
+ * drift out of step with the map.
+ *
+ * Exactly one entry is exempt: the one `decodeSound` is running right now, whose fetch is
+ * already paid for and whose buffer is about to land. A merely QUEUED entry is not exempt --
+ * it has spent nothing yet, its chain link no-ops once it finds itself evicted, and exempting
+ * the whole queue is what would make these bounds unenforceable for as long as the queue
+ * takes to drain. */
+function enforceSoundBudget() {
+  let total = 0;
+  for (const e of soundCache.values()) {
+    total += e.bytes;
+  }
+  // Oldest-first, and deleting the key being visited is defined behaviour for a Map.
+  for (const [url, e] of soundCache) {
+    if (total <= kMaxDecodedSoundBytes && soundCache.size <= kMaxSoundEntries) {
+      break;
+    }
+    if (e === decodingEntry) {
+      continue;
+    }
+    total -= e.bytes;
+    soundCache.delete(url);
+  }
+}
+
+function soundEntry(url: string): SoundEntry {
+  const hit = soundCache.get(url);
+  if (hit) {
+    soundCache.delete(url);
+    soundCache.set(url, hit);
+    return hit;
+  }
+  // Before the insert, never after. After, the entry just created is the newest thing in the
+  // map and the likeliest candidate the pass would take -- deleting it at birth and leaving
+  // the decode that follows with nothing to write into. A widget with more sound fields than
+  // kMaxSoundEntries reaches that state from the parse-time preload loop alone.
+  //
+  // Overshoot after this pass is at most two entries: the one about to be inserted, plus the
+  // one currently decoding if it would otherwise have been evicted. It is NOT bounded by the
+  // queue depth -- a queued entry is evictable, which is what keeps the bound enforceable
+  // while a long queue drains.
+  enforceSoundBudget();
+  const entry: SoundEntry = { buffer: null, bytes: 0, decode: null, elementOnly: false, attempts: 0 };
+  soundCache.set(url, entry);
+  return entry;
+}
+
+/** Every decode runs through this chain, one at a time.
+ *
+ * The per-sound ceiling can only be checked AFTER decodeAudioData has allocated the PCM, so
+ * decoding concurrently would let N whole clips exist at once before any of them could be
+ * rejected: eight in flight against an 8 MB ceiling is a ~64 MB transient inside a 16 MB
+ * budget, in a renderer that is already software-compositing every other overlay. Serializing
+ * makes the peak one decode rather than one per declared sound, and the budget then bounds
+ * both the retained bytes and the peak.
+ *
+ * The cost is warm-up order on a fork with several sounds: the second and later ones are
+ * ready a few milliseconds apart rather than together, and an alert that beats its own sound
+ * to the finish plays through the media element instead. */
+let decodeChain: Promise<void> = Promise.resolve();
+/** The entry the chain is executing right now, or null between links. The one thing
+ * enforceSoundBudget will not evict, and the only reason this is a variable rather than a
+ * flag on the entry: at most one can hold it, which is the invariant the chain exists for. */
+let decodingEntry: SoundEntry | null = null;
+
+/** Fetch the encoded bytes under a deadline. The signal covers the body read as well as the
+ * headers, because a response that stalls mid-body parks the chain exactly as one that never
+ * arrives does. decodeAudioData stays outside it deliberately: it is CPU-bound on bytes
+ * already in hand and bounded by the server's own upload cap, so it cannot hang the way a
+ * socket can. */
+async function fetchSoundBytes(url: string): Promise<ArrayBuffer> {
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = window.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, kSoundFetchTimeoutMs);
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    if (!res.ok) {
+      throw new Error("HTTP " + res.status);
+    }
+    return await res.arrayBuffer();
+  } catch (e: unknown) {
+    // An abort surfaces as "AbortError: signal is aborted without reason", which names
+    // neither the deadline nor its value -- and the log line is the only evidence anyone gets.
+    throw timedOut ? new Error(`no response within ${kSoundFetchTimeoutMs} ms`) : e;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+/** Never rejects: the chain must not break, and every outcome is recorded on `entry`. */
+async function decodeSound(url: string, entry: SoundEntry, ctx: AudioContext): Promise<void> {
+  // A queued link can find its entry already gone: a budget pass evicts queued entries, and
+  // a later miss on the same URL puts a DIFFERENT entry under that key. Decoding into either
+  // one would be work nothing can look up, so the link simply drops. `buffer`/`elementOnly`
+  // are re-read for the same reason -- a second queue attempt for one entry is guarded
+  // against in preloadSound, but this is the cheap end of that invariant.
+  if (soundCache.get(url) !== entry || entry.buffer || entry.elementOnly) {
+    return;
+  }
+  decodingEntry = entry;
+  try {
+    const buffer = await ctx.decodeAudioData(await fetchSoundBytes(url));
+    const bytes = decodedBytes(buffer);
+    if (bytes > kMaxOneDecodedSoundBytes) {
+      // A policy decision, not a fault: caching this would spend half the page's whole PCM
+      // budget on one clip, so it plays from a media element, which streams. Still logged,
+      // because a sound that quietly stopped being preloaded is worth knowing about.
+      entry.elementOnly = true;
+      logSoundOnce(
+        url,
+        "decode",
+        `sound not cached: ${bytes} B of decoded PCM is over the ${kMaxOneDecodedSoundBytes} B per-sound ceiling, so it plays from a media element instead --`,
+      );
+      return;
+    }
+    entry.buffer = buffer;
+    entry.bytes = bytes;
+  } catch (e: unknown) {
+    // Transient by default. A rejected fetch, a timeout, a non-OK status and a decode of
+    // damaged bytes all report the same thing -- this attempt did not work -- and none of
+    // them says the next one will not. Leaving the entry retryable is the difference between
+    // a dropped connection costing one alert and costing every alert of a broadcast, which is
+    // what a one-way latch here would mean. Two stages, so the first failure and the giving
+    // up are separate keys and a URL that spends its whole budget says so exactly once.
+    entry.attempts += 1;
+    if (entry.attempts >= kMaxSoundDecodeAttempts) {
+      logSoundOnce(
+        url,
+        "decode-exhausted",
+        `sound decode failed ${entry.attempts} times, so it plays from a media element from now on -- last was ${describeSoundError(e)}:`,
+      );
+      entry.elementOnly = true;
+    } else {
+      logSoundOnce(
+        url,
+        "decode",
+        `sound decode failed, attempt ${entry.attempts} of ${kMaxSoundDecodeAttempts} -- a media element covers it and the next play retries -- ${describeSoundError(e)}:`,
+      );
+    }
+  } finally {
+    // Released before the pass, so this entry is an ordinary eviction candidate again the
+    // moment it stops being the one in flight.
+    decodingEntry = null;
+    entry.decode = null;
+    enforceSoundBudget();
+  }
+}
+
+/** Queue `url` for decoding if it is not already answered or queued. Idempotent, synchronous,
+ * and never throws: a failure marks the URL so it falls back to a media element from then on. */
+function preloadSound(url: string): void {
+  if (!url) {
+    return;
+  }
+  const entry = soundEntry(url);
+  if (entry.buffer || entry.decode || entry.elementOnly) {
+    return;
+  }
+  const ctx = soundContext();
+  if (!ctx) {
+    entry.elementOnly = true;
+    logSoundOnce(url, "decode", "sound decode failed: no AudioContext available");
+    return;
+  }
+  decodeChain = decodeChain.then(() => decodeSound(url, entry, ctx));
+  // Marks the entry as queued-or-in-flight, which is what stops a second play queueing a
+  // second link for it. It is deliberately NOT what the budget pass exempts -- that is
+  // `decodingEntry`, which is only ever the one link actually running.
+  entry.decode = decodeChain;
+}
+
+/** The pre-WebAudio path, kept as the fallback for a URL that has no decoded buffer. */
+function playSoundElement(url: string, volume: number) {
+  const a = new Audio(url);
+  a.volume = volume;
+  void a.play().catch((e: unknown) => logSoundOnce(url, "play", `playSound failed: ${describeSoundError(e)}`));
+}
+
+function playSound(url: string, volume = 1) {
+  if (!url) {
+    return;
+  }
+  const gain = Math.max(0, Math.min(1, volume));
+  const entry = soundEntry(url);
+  const ctx = entry.elementOnly ? null : soundContext();
+  if (ctx && entry.buffer) {
+    resumeSoundContext(ctx);
+    const src = ctx.createBufferSource();
+    src.buffer = entry.buffer;
+    const vol = ctx.createGain();
+    vol.gain.value = gain;
+    src.connect(vol).connect(ctx.destination);
+    // Source nodes are one-shot; dropping the graph on end is what keeps a long broadcast
+    // from accumulating one node pair per alert.
+    src.onended = () => {
+      src.disconnect();
+      vol.disconnect();
+    };
+    src.start();
+    return;
+  }
+  // No decoded buffer: queue the decode so the NEXT play is instant, and serve this one from
+  // a media element rather than going silent. Reached by a URL no schema declared, by one
+  // whose decode has not come round yet, and permanently by one that will not decode.
+  preloadSound(url);
+  playSoundElement(url, gain);
+}
+
+// Queue every declared sound at parse time -- before DOM ready, and normally long before the
+// first alert. Normally, not always: the decodes run one at a time, and a source reloaded
+// mid-broadcast starts this window over, so an alert can still arrive inside it. That alert
+// plays through the media element; see playSound.
+for (const url of boot.sounds ?? []) {
+  preloadSound(String(url));
+}
+
 function applyStyles(fields: Record<string, unknown>) {
   const css = cssForSlots(fields);
   if (!css && !slotStyleEl) {
@@ -148,17 +522,15 @@ const OBSOverlay = {
   onStream(fn: StreamHandler) {
     streamHandlers.push(fn);
   },
-  playSound(url: string, volume = 1) {
-    if (!url) return;
-    const a = new Audio(url);
-    a.volume = Math.max(0, Math.min(1, volume));
-    // console.error, not log: obs-browser forwards only errors to the session log.
-    void a.play().catch((e: unknown) => {
-      // The query carries the overlay access token, which must not reach the log.
-      const path = url.split("?")[0];
-      console.error(`OBSOverlay playSound failed: ${e instanceof Error ? e.name : String(e)} ${path}`);
-    });
-  },
+  /** Play `url` at `volume` (0..1). Overlapping calls mix rather than queue.
+   *
+   * Plays from memory once the URL has been decoded, which for a sound the host declared is
+   * normally well before the first event. It is not guaranteed to be: an alert landing inside
+   * the parse-time decode window plays through a media element instead, and that window is
+   * genuinely reachable, because a save mid-broadcast re-mints the URL and reloads the source
+   * (overlay_sources.cpp). A URL no schema declared is in the same position on its first play.
+   * Either way nothing is dropped, and the next play of that URL is instant. */
+  playSound,
 };
 
 (window as unknown as { OBSOverlay: typeof OBSOverlay }).OBSOverlay = OBSOverlay;

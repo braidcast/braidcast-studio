@@ -709,6 +709,27 @@ std::string OverlayStore::AddAsset(const std::string &id, const std::string &key
 			if (!exists) {
 				target->assets.push_back(json{{"key", key}, {"kind", kind}, {"file", safeKey}});
 			}
+			// Unconditionally, including when `exists` was already true -- that is the
+			// re-upload-under-the-same-name case, where the filename and therefore the
+			// served URL do not move but the bytes just did. The revision is what the
+			// asset URL is keyed on (overlay_server.cpp AssembleDocument) and what the
+			// source URL is keyed on (overlay_sources.cpp), so bumping it here, under the
+			// same lock as the append and in the same call as the byte write, is what
+			// makes "these bytes changed" and "this URL changed" a single fact. It does
+			// not RE-RESOLVE a live source -- this call sweeps nothing, so one already on
+			// a scene keeps the old URL until some later mutation refreshes it.
+			//
+			// Here rather than in the editor's follow-up overlays.update, because that
+			// follow-up is not guaranteed: FieldsPanel drops it when the panel moved to
+			// another widget during the upload, and Update rolls `rev` back to its
+			// pre-call value when the save fails. Both leave the URL still naming bytes
+			// that are no longer there. A caller that does follow up merely bumps a
+			// second time, which costs one extra revalidation and nothing else -- no
+			// caller passes or compares a revision, it is only ever read back.
+			++target->rev;
+			// The Save() below persists it: Widget::ToJson writes `rev`, so no extra
+			// write is needed. It is a no-op in a deferred-upgrade session, exactly as
+			// the appended asset entry above already is -- see Save()'s own note.
 			Save();
 		}
 	}

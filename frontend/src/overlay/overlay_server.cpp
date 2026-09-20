@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <cstring>
 #include <utility>
 #include <vector>
@@ -16,6 +17,7 @@
 #include "../log.hpp"
 #include "util/file_util.hpp"      // FileUtil::ReadBinaryFile
 #include "util/http_status.hpp"    // Http::ReasonFor
+#include "util/string_util.hpp"    // StringUtil::ToLower
 #include "util/web_bundle.hpp"     // WebBundle::Root, WebBundle::ContentTypeForPath
 #include "../events/event_hub.hpp" // Events::Store() -- the persisted event history
 #include "overlay_store.hpp"       // Overlay::Store(), Widget, WidgetUrl
@@ -41,6 +43,23 @@ constexpr DWORD kHeaderRecvTimeoutMs = 10000;  // I1: backstop so a silent clien
 constexpr DWORD kResponseSendTimeoutMs = 3000; // bounded plain-HTTP send so a stuck reader can't park a thread
 constexpr size_t kMaxSseConnections = 64;      // ceiling on concurrent live SSE streams; excess rejected 503
 constexpr size_t kMaxBackfillEvents = 200;     // ceiling on the connect-time event replay
+
+// Freshness for an uploaded widget asset. A day, because the URL AssembleDocument mints
+// carries the widget revision, and OverlayStore::AddAsset -- the only writer of these bytes
+// -- bumps that revision under the same lock as the write. So the cache key cannot outlive
+// the bytes it names: a re-upload at the same filename still moves the URL. Freshness only
+// has to outlast a broadcast, and a day is well past that. Not `immutable`: the ETag
+// revalidation below is the backstop if a future writer ever appears that does not bump,
+// and `immutable` would tell the client not to check even on a reload.
+constexpr int kAssetMaxAgeSeconds = 86400;
+
+// The fields.json `type` whose value is an audio file the page plays. The editor's half of
+// the same registry is `frontend/web/src/lib/overlays/fieldTypes.ts`; nothing links them,
+// so a rename there must be made here too. Listing these URLs in the bootstrap is what lets
+// the runtime decode a widget's sounds once at load rather than building, fetching and
+// decoding a fresh media element per alert -- and it covers a FORKED widget for free,
+// because a fork carries its own schema through the same Resolve().
+constexpr const char *kSoundFieldType = "sound-upload";
 
 // Read one file under an absolute root, rejecting ".." (copy of scheme.cpp guard).
 bool ReadFileGuarded(const std::string &root, const std::string &rel, std::string &out, std::string &ctype)
@@ -87,6 +106,86 @@ std::string QueryToken(const std::string &pathWithQuery, std::string &pathOut)
 	return std::string();
 }
 
+// One request header's value, or "" when absent. `headerBlock` is the CRLF-joined block
+// HandleConnection already split off, request line included -- a name split out of the
+// request line always contains a space, so it can never match a header name. `lowerName`
+// must be lowercase; header names are case-insensitive on the wire and Chromium sends them
+// lowercased over HTTP/1.1 only by convention.
+std::string HeaderValue(const std::string &headerBlock, const char *lowerName)
+{
+	size_t pos = 0;
+	while (pos <= headerBlock.size()) {
+		const size_t eol = headerBlock.find("\r\n", pos);
+		const std::string line =
+			headerBlock.substr(pos, eol == std::string::npos ? std::string::npos : eol - pos);
+		const size_t colon = line.find(':');
+		if (colon != std::string::npos) {
+			if (StringUtil::ToLower(line.substr(0, colon)) == lowerName) {
+				std::string value = line.substr(colon + 1);
+				const size_t first = value.find_first_not_of(" \t");
+				const size_t last = value.find_last_not_of(" \t");
+				return first == std::string::npos ? std::string()
+								  : value.substr(first, last - first + 1);
+			}
+		}
+		if (eol == std::string::npos) {
+			break;
+		}
+		pos = eol + 2;
+	}
+	return std::string();
+}
+
+// A strong ETag for a body we have already read: FNV-1a 64 over the bytes, quoted.
+//
+// Content-derived rather than mtime-derived deliberately. An asset is replaced in place at
+// the same path by OverlayStore::AddAsset, and a filesystem timestamp has a granularity a
+// fast replace can land inside -- which would hand a client a validator that says "still
+// the same file" about different bytes. Hashing what we are about to serve cannot say that.
+std::string StrongETag(const std::string &body)
+{
+	uint64_t h = 1469598103934665603ull; // FNV offset basis
+	for (const char c : body) {
+		h ^= (uint64_t)(unsigned char)c;
+		h *= 1099511628211ull; // FNV prime
+	}
+	static const char *kHex = "0123456789abcdef";
+	std::string out = "\"";
+	for (int shift = 60; shift >= 0; shift -= 4) {
+		out += kHex[(h >> shift) & 0xf];
+	}
+	out += '"';
+	return out;
+}
+
+// Whether an If-None-Match value selects `etag`. Accepts "*", a single tag, and the
+// comma-separated list form, and tolerates the weak "W/" prefix a proxy may add -- our own
+// tag is strong, and for a GET the weak comparison is the one RFC 9110 specifies anyway.
+bool ETagMatches(const std::string &ifNoneMatch, const std::string &etag)
+{
+	size_t pos = 0;
+	while (pos < ifNoneMatch.size()) {
+		const size_t comma = ifNoneMatch.find(',', pos);
+		std::string tag = ifNoneMatch.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
+		const size_t first = tag.find_first_not_of(" \t");
+		const size_t last = tag.find_last_not_of(" \t");
+		if (first != std::string::npos) {
+			tag = tag.substr(first, last - first + 1);
+			if (tag.rfind("W/", 0) == 0) {
+				tag = tag.substr(2);
+			}
+			if (tag == "*" || tag == etag) {
+				return true;
+			}
+		}
+		if (comma == std::string::npos) {
+			break;
+		}
+		pos = comma + 1;
+	}
+	return false;
+}
+
 // Run a closure when the scope ends, however it ends. Local and minimal because this tree
 // has no scope-guard helper and exactly one place needs one: a bookkeeping counter that must
 // come back down on an exception as well as on the normal path. The destructor is noexcept,
@@ -120,15 +219,28 @@ bool SendAll(SOCKET sock, const char *data, size_t len)
 }
 
 // Write a complete HTTP/1.1 response with Connection: close (mirrors mcp WriteResponse).
-void WriteResponse(SOCKET sock, int status, const std::string &ctype, const std::string &body)
+//
+// `extraHeaders` is appended verbatim and must be whole CRLF-terminated header lines (or
+// empty). It exists so the asset route can attach its cache policy without every other
+// caller growing a header argument it has no answer for -- the default is what every route
+// sent before there was one.
+//
+// `suppressBody` writes the head alone while still advertising `body`'s length, which is
+// what a 304 needs: RFC 9110 SS15.4.5 forbids a message body on a 304, and SS8.6 forbids a
+// Content-Length that disagrees with the one a 200 for the same resource would have carried.
+// Passing the representation and dropping only the write satisfies both, and it is the one
+// form of decoupling needed -- every other caller sends its body and is unchanged on the wire.
+void WriteResponse(SOCKET sock, int status, const std::string &ctype, const std::string &body,
+		   const std::string &extraHeaders = std::string(), bool suppressBody = false)
 {
 	std::string head = "HTTP/1.1 " + std::to_string(status) + " " + Http::ReasonFor(status) + "\r\n";
 	head += "Content-Type: " + ctype + "\r\n";
 	head += "Content-Length: " + std::to_string(body.size()) + "\r\n";
 	head += "Connection: close\r\n";
 	head += "Access-Control-Allow-Origin: *\r\n";
+	head += extraHeaders;
 	head += "\r\n";
-	const std::string out = head + body;
+	const std::string out = suppressBody ? head : head + body;
 	SendAll(sock, out.data(), out.size());
 }
 
@@ -142,22 +254,70 @@ std::string AssembleDocument(const Widget &w, int port)
 	const ResolvedWidget resolved = Resolve(w);
 	// Every key that schema declares, at the widget's override or the schema's default.
 	json fieldData = MergeSettings(resolved.schema, w.settings);
+	// The keys the rewrite below actually turned into a served URL. Collected rather than
+	// re-derived from the value afterwards, so "the runtime may fetch this" means exactly
+	// "this server serves it" by construction.
+	std::vector<std::string> servedKeys;
 	for (auto it = fieldData.begin(); it != fieldData.end(); ++it) {
 		// An uploaded asset field stores the portable, token-less "assets/<file>" as its
 		// persisted value. Rewrite ONLY the injected copy to the absolute tokenized URL the
-		// server actually serves (/w/<id>/assets/<file>?t=<token>); a bare "assets/<file>"
-		// would resolve against /w/ (no <base>) and 404, and lacks the required token. Match
-		// the prefix so it works regardless of the field's declared type. The stored setting
-		// is left untouched so it survives token/port changes.
+		// server actually serves (/w/<id>/assets/<file>?t=<token>&r=<rev>); a bare
+		// "assets/<file>" would resolve against /w/ (no <base>) and 404, and lacks the
+		// required token. Match the prefix so it works regardless of the field's declared
+		// type. The stored setting is left untouched so it survives token/port changes.
+		//
+		// `r` is the widget revision, and it is what makes this URL safe to cache for a
+		// long time. AddAsset replaces an upload IN PLACE at the same filename, so without
+		// it a re-upload under the same name keeps the same URL and a browser source that
+		// reloaded would re-read its own still-fresh cache entry and play the OLD bytes.
+		// AddAsset is the only writer of those bytes and bumps the revision itself, under
+		// the same lock as the write, so that cannot happen: changing the bytes changes
+		// this URL. What this does NOT do is reload a source already on a scene --
+		// overlays.uploadAsset sweeps nothing -- so that source keeps its old document and
+		// its old sound until something else reloads it. Every document assembled from the
+		// write onwards names the new bytes, which is the whole claim here.
 		if (!it->is_string()) {
 			continue;
 		}
 		const std::string s = it->get<std::string>();
 		if (s.rfind("assets/", 0) == 0) {
-			*it = "/w/" + w.id + "/" + s + "?t=" + w.token;
+			*it = "/w/" + w.id + "/" + s + "?t=" + w.token + "&r=" + std::to_string(w.rev);
+			servedKeys.push_back(it.key());
 		}
 	}
-	const json overlay = json{{"id", w.id}, {"token", w.token}, {"port", port}, {"fields", fieldData}};
+	// Every sound this widget could play, as the tokenized URLs the rewrite above just
+	// produced, so the runtime can decode them at load. Read off the schema rather than
+	// guessed from the value, because only the schema knows a string is audio.
+	//
+	// Restricted to keys the rewrite handled. A widget with no sound configured has an empty
+	// value and is simply not listed -- but so is a fork whose fields.json defaults a sound
+	// field to an absolute http(s) URL. A media element plays a cross-origin sound without
+	// CORS; fetch does not, so preloading one would spend a request to earn a CORS failure
+	// and a log line on every page load, then fall back to the element and play it correctly
+	// anyway. Leaving it off the list is what keeps that path quiet and working.
+	json sounds = json::array();
+	if (resolved.schema.is_array()) {
+		for (const json &f : resolved.schema) {
+			if (!f.is_object() || f.value("type", std::string()) != kSoundFieldType) {
+				continue;
+			}
+			const std::string key = f.value("key", std::string());
+			if (std::find(servedKeys.begin(), servedKeys.end(), key) == servedKeys.end()) {
+				continue;
+			}
+			const auto valueIt = fieldData.find(key);
+			if (valueIt == fieldData.end() || !valueIt->is_string()) {
+				continue;
+			}
+			// Two fields can point at one upload; decoding it twice would just evict
+			// something else from the runtime's cache.
+			if (std::find(sounds.begin(), sounds.end(), *valueIt) == sounds.end()) {
+				sounds.push_back(*valueIt);
+			}
+		}
+	}
+	const json overlay =
+		json{{"id", w.id}, {"token", w.token}, {"port", port}, {"fields", fieldData}, {"sounds", sounds}};
 	std::string doc = "<!doctype html><html><head><meta charset=\"utf-8\">\n<style>\n";
 	doc += resolved.css;
 	doc += "\n</style></head><body>\n";
@@ -729,6 +889,9 @@ void OverlayServer::HandleConnection(uintptr_t clientSocket)
 
 	std::string path;
 	const std::string token = QueryToken(target, path);
+	// Read here rather than in the handler: this is the only scope that still holds the
+	// request's headers, and the asset route needs the client's validator to answer 304.
+	const std::string ifNoneMatch = HeaderValue(headerBlock, "if-none-match");
 
 	// Route table (order: most specific first). Data list, not a switch, so a new
 	// top-level widget-type route is a one-line add. The handler owns socket close;
@@ -736,7 +899,8 @@ void OverlayServer::HandleConnection(uintptr_t clientSocket)
 	struct Route {
 		const char *prefix;
 		bool exact;
-		void (OverlayServer::*handler)(uintptr_t, const std::string &, const std::string &);
+		void (OverlayServer::*handler)(uintptr_t, const std::string &, const std::string &,
+					       const std::string &);
 	};
 	static const std::array<Route, 2> kRoutes = {{
 		{"/runtime.js", true, &OverlayServer::ServeRuntime},
@@ -745,7 +909,7 @@ void OverlayServer::HandleConnection(uintptr_t clientSocket)
 	for (const auto &r : kRoutes) {
 		const bool match = r.exact ? (path == r.prefix) : (path.rfind(r.prefix, 0) == 0);
 		if (match) {
-			(this->*r.handler)(clientSocket, path, token);
+			(this->*r.handler)(clientSocket, path, token, ifNoneMatch);
 			return;
 		}
 	}
@@ -753,7 +917,8 @@ void OverlayServer::HandleConnection(uintptr_t clientSocket)
 	CloseClient(clientSocket);
 }
 
-void OverlayServer::ServeRuntime(uintptr_t clientSocket, const std::string &, const std::string &token)
+void OverlayServer::ServeRuntime(uintptr_t clientSocket, const std::string &, const std::string &token,
+				 const std::string &)
 {
 	const SOCKET sock = (SOCKET)clientSocket;
 	// runtime.js is non-sensitive, but keep the uniform token guard: accept if the
@@ -782,7 +947,8 @@ void OverlayServer::ServeRuntime(uintptr_t clientSocket, const std::string &, co
 	CloseClient(clientSocket);
 }
 
-void OverlayServer::ServeWidget(uintptr_t clientSocket, const std::string &path, const std::string &token)
+void OverlayServer::ServeWidget(uintptr_t clientSocket, const std::string &path, const std::string &token,
+				const std::string &ifNoneMatch)
 {
 	const SOCKET sock = (SOCKET)clientSocket;
 	const std::string rest = path.substr(3); // after "/w/"
@@ -810,7 +976,10 @@ void OverlayServer::ServeWidget(uintptr_t clientSocket, const std::string &path,
 	}
 
 	if (action.empty() || action == "/") {
-		WriteResponse(sock, 200, "text/html", AssembleDocument(*w, port_));
+		// Never cacheable: the document is assembled per request and embeds the widget's
+		// current token, port and resolved field values, so a reused copy could carry a
+		// rotated token or the settings the owner just changed away from.
+		WriteResponse(sock, 200, "text/html", AssembleDocument(*w, port_), "Cache-Control: no-store\r\n");
 		CloseClient(clientSocket);
 		return;
 	}
@@ -832,7 +1001,20 @@ void OverlayServer::ServeWidget(uintptr_t clientSocket, const std::string &path,
 			CloseClient(clientSocket);
 			return;
 		}
-		WriteResponse(sock, 200, ctype, body);
+		// The only cacheable route. Without a validator Chromium cannot cache this even
+		// heuristically, so every play of an alert sound refetched, re-demuxed and
+		// re-decoded the clip -- which is what made alerts stutter.
+		const std::string etag = StrongETag(body);
+		const std::string cacheHeaders = "Cache-Control: private, max-age=" +
+						 std::to_string(kAssetMaxAgeSeconds) + "\r\nETag: " + etag + "\r\n";
+		if (ETagMatches(ifNoneMatch, etag)) {
+			// The representation is passed so Content-Length still names what a 200
+			// would have sent (RFC 9110 SS8.6); only the body write is suppressed.
+			WriteResponse(sock, 304, ctype, body, cacheHeaders, /*suppressBody=*/true);
+			CloseClient(clientSocket);
+			return;
+		}
+		WriteResponse(sock, 200, ctype, body, cacheHeaders);
 		CloseClient(clientSocket);
 		return;
 	}
