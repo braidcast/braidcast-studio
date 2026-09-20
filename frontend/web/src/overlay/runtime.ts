@@ -286,10 +286,11 @@ function soundEntry(url: string): SoundEntry {
   // the decode that follows with nothing to write into. A widget with more sound fields than
   // kMaxSoundEntries reaches that state from the parse-time preload loop alone.
   //
-  // Overshoot after this pass is at most two entries: the one about to be inserted, plus the
-  // one currently decoding if it would otherwise have been evicted. It is NOT bounded by the
-  // queue depth -- a queued entry is evictable, which is what keeps the bound enforceable
-  // while a long queue drains.
+  // Overshoot after this pass, by budget: kMaxSoundEntries by two -- the one about to be
+  // inserted, plus the one currently decoding if it would otherwise have been evicted --
+  // and kMaxDecodedSoundBytes by one, since the entry inserted below carries no bytes
+  // until its decode lands. Neither is bounded by the queue depth: a queued entry is
+  // evictable, which is what keeps the bound enforceable while a long queue drains.
   enforceSoundBudget();
   const entry: SoundEntry = { buffer: null, bytes: 0, decode: null, elementOnly: false, attempts: 0 };
   soundCache.set(url, entry);
@@ -412,8 +413,16 @@ function preloadSound(url: string): void {
   }
   const ctx = soundContext();
   if (!ctx) {
-    entry.elementOnly = true;
-    logSoundOnce(url, "decode", "sound decode failed: no AudioContext available");
+    // A platform with no WebAudio at all is permanent, but the same null also means
+    // `new AudioContext()` threw -- which Chromium does while a document is not fully
+    // active, and which the next preload in a live document would not hit. Counting it
+    // as an attempt rather than latching keeps `elementOnly` honest about being
+    // one-way and reserved for genuinely permanent conditions.
+    entry.attempts += 1;
+    if (entry.attempts >= kMaxSoundDecodeAttempts) {
+      entry.elementOnly = true;
+    }
+    logSoundOnce(url, "decode", "no AudioContext available; playing from a media element");
     return;
   }
   decodeChain = decodeChain.then(() => decodeSound(url, entry, ctx));

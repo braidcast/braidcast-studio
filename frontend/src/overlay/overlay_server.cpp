@@ -1,4 +1,5 @@
 #include "overlay_server.hpp"
+#include "util/fnv1a.hpp"
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -144,11 +145,7 @@ std::string HeaderValue(const std::string &headerBlock, const char *lowerName)
 // the same file" about different bytes. Hashing what we are about to serve cannot say that.
 std::string StrongETag(const std::string &body)
 {
-	uint64_t h = 1469598103934665603ull; // FNV offset basis
-	for (const char c : body) {
-		h ^= (uint64_t)(unsigned char)c;
-		h *= 1099511628211ull; // FNV prime
-	}
+	const uint64_t h = Fnv1a64(body);
 	static const char *kHex = "0123456789abcdef";
 	std::string out = "\"";
 	for (int shift = 60; shift >= 0; shift -= 4) {
@@ -918,7 +915,7 @@ void OverlayServer::HandleConnection(uintptr_t clientSocket)
 }
 
 void OverlayServer::ServeRuntime(uintptr_t clientSocket, const std::string &, const std::string &token,
-				 const std::string &)
+				 const std::string &ifNoneMatch)
 {
 	const SOCKET sock = (SOCKET)clientSocket;
 	// runtime.js is non-sensitive, but keep the uniform token guard: accept if the
@@ -943,7 +940,19 @@ void OverlayServer::ServeRuntime(uintptr_t clientSocket, const std::string &, co
 		CloseClient(clientSocket);
 		return;
 	}
-	WriteResponse(sock, 200, ctype, body);
+	// Same validator the asset route uses, for the same reason: without one Chromium
+	// cannot cache this even heuristically, so every widget load and every editor preview
+	// rebuild refetched the whole runtime. The bytes only change on a rebuild, which a
+	// content-derived ETag notices by itself.
+	const std::string etag = StrongETag(body);
+	const std::string cacheHeaders =
+		"Cache-Control: private, max-age=" + std::to_string(kAssetMaxAgeSeconds) + "\r\nETag: " + etag + "\r\n";
+	if (ETagMatches(ifNoneMatch, etag)) {
+		WriteResponse(sock, 304, ctype, body, cacheHeaders, /*suppressBody=*/true);
+		CloseClient(clientSocket);
+		return;
+	}
+	WriteResponse(sock, 200, ctype, body, cacheHeaders);
 	CloseClient(clientSocket);
 }
 

@@ -80,6 +80,7 @@ target_sources(
     src/util/env_config.cpp
     src/util/env_config.hpp
     src/util/file_util.hpp
+    src/util/fnv1a.hpp
     src/util/http_client.cpp
     src/util/http_client.hpp
     src/util/http_status.hpp

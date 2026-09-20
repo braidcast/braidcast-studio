@@ -214,6 +214,48 @@ void ObsBootstrap::RunOverlaySelfTest()
 	}
 	HostLog(std::string("[selftest] overlay document -> ") + (docOk ? "OK" : "MISMATCH"));
 
+	// 1b) The runtime is the only cacheable route that needs nothing written into the config
+	// tree to exercise, so it is where the cache headers get their automated check -- they had
+	// none at all, which is how /runtime.js kept shipping with no validator at all. Asserted end
+	// to end, because a validator that is never honoured is worth nothing: a 200 carries one, a
+	// replay of it gets 304, and that 304 still names the length a 200 would have sent while
+	// sending no body (RFC 9110 SS8.6) -- the part a naive 304 gets wrong.
+	bool cacheOk = false;
+	{
+		std::string etag;
+		size_t bodyLen = 0;
+		SOCKET c = DialLoopback(port);
+		if (c != INVALID_SOCKET) {
+			WriteAll(c, "GET /runtime.js?t=selftesttoken HTTP/1.1\r\nHost: x\r\n\r\n");
+			const std::string resp = RecvUntilClose(c);
+			closesocket(c);
+			const size_t tagAt = resp.find("ETag: ");
+			const size_t tagEnd = tagAt == std::string::npos ? std::string::npos : resp.find("\r\n", tagAt);
+			const size_t head = resp.find("\r\n\r\n");
+			if (StatusOf(resp) == 200 && tagEnd != std::string::npos && head != std::string::npos &&
+			    resp.find("Cache-Control: private, max-age=") != std::string::npos) {
+				etag = resp.substr(tagAt + 6, tagEnd - tagAt - 6);
+				bodyLen = resp.size() - (head + 4);
+			}
+		}
+		if (!etag.empty() && bodyLen > 0) {
+			SOCKET c2 = DialLoopback(port);
+			if (c2 != INVALID_SOCKET) {
+				WriteAll(c2, "GET /runtime.js?t=selftesttoken HTTP/1.1\r\nHost: x\r\n"
+					     "If-None-Match: " +
+						     etag + "\r\n\r\n");
+				const std::string again = RecvUntilClose(c2);
+				closesocket(c2);
+				const size_t head2 = again.find("\r\n\r\n");
+				cacheOk = StatusOf(again) == 304 && head2 != std::string::npos &&
+					  again.size() == head2 + 4 &&
+					  again.find("Content-Length: " + std::to_string(bodyLen) + "\r\n") !=
+						  std::string::npos;
+			}
+		}
+	}
+	HostLog(std::string("[selftest] overlay runtime caching -> ") + (cacheOk ? "OK" : "MISMATCH"));
+
 	// 2) Open an SSE client, 3) broadcast a synthetic event, assert the data: frame, then
 	// 4) push one frame through every named channel and assert each arrives under its own
 	// event name.

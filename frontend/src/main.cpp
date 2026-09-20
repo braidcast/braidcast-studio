@@ -39,6 +39,7 @@
 #include "scene/scene_persistence.hpp"
 #include "scheme.hpp"
 #include "util/env_config.hpp"
+#include "util/fnv1a.hpp"
 #include "util/paths.hpp"
 #include "util/session_log.hpp"
 #include "util/win_dll_blocklist.h"
@@ -193,14 +194,15 @@ void AddObsBinDirToSearchPath()
 // can't name a mutex (backslash is the object-namespace separator).
 std::wstring ConfigInstanceToken(const std::string &configDir)
 {
-	uint64_t hash = 1469598103934665603ULL;
-	for (unsigned char c : configDir) {
+	// Case-folded first: the same directory reached through differently-cased paths is
+	// one install, and Windows paths are case-insensitive.
+	std::string folded = configDir;
+	for (char &c : folded) {
 		if (c >= 'A' && c <= 'Z') {
-			c = static_cast<unsigned char>(c - 'A' + 'a');
+			c = static_cast<char>(c - 'A' + 'a');
 		}
-		hash ^= c;
-		hash *= 1099511628211ULL;
 	}
+	const uint64_t hash = Fnv1a64(folded);
 	wchar_t token[17];
 	swprintf(token, 17, L"%016llx", static_cast<unsigned long long>(hash));
 	return std::wstring(token);

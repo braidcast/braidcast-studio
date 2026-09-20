@@ -14371,6 +14371,18 @@ bool MethodOverlaysUploadAsset(const json &p, json &result, std::string &error)
 		return false;
 	}
 	result = json{{"path", rel}};
+
+	// AddAsset bumped the widget's revision, but a source already on a scene keeps
+	// rendering the document it loaded until it re-resolves its URL -- which the bumped
+	// revision makes differ. FinishOverlayMutation does this for every other mutation;
+	// this one is not routed through it, so without the sweep an upload reached the store
+	// and nothing else, and a live source kept its old document and its old sound until
+	// something unrelated reloaded it. Posted rather than called: uploadAsset runs on the
+	// async lane and the sweep touches sources, which is UI-thread-only.
+	AsyncTask::PostToUi([] {
+		Overlay::RefreshSources();
+		EmitEvent(EventNames::kOverlaysChanged, json::object());
+	});
 	return true;
 }
 
