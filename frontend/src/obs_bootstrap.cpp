@@ -7636,6 +7636,120 @@ void ObsBootstrap::RunAudioMixerSelfTest()
 		" source(s) (was " + std::to_string(baseCount) + ")");
 }
 
+void ObsBootstrap::RunOverlayAudioSelfTest()
+{
+	// Spelled here rather than shared with obs-browser: the plugin is a separate repo
+	// that libobs only ever reaches through obs_data, so the keys ARE the contract.
+	constexpr char kRerouteKey[] = "reroute_audio";
+	constexpr char kMigratedKey[] = "braidcast_reroute_migrated";
+
+	// pageWidth is each type's own default width in obs-browser, and the fence below:
+	// it is the first field the deferred update writes back through the source. The
+	// same cross-repo coupling as the keys above.
+	struct Case {
+		const char *name;
+		const char *sourceId;
+		uint32_t pageWidth;
+		bool seedReroute;
+		bool seedRerouteValue;
+		bool seedMigrated;
+		bool wantReroute;
+		bool wantMarker;
+	};
+	// The control row is load-bearing, not decorative. libobs initialises
+	// source->audio_active to true (libobs/obs-source.c:226), so read as an absolute the
+	// two rerouted rows would assert it vacuously -- a subject whose update never touched
+	// audio state at all still reads active. A plain browser_source through the same
+	// harness keeps the shared false default and must come back inactive, which is what
+	// makes "true" mean something on the rows above it, and which doubles as the guard
+	// that the overlay's flipped default did not leak into the other CEF source type.
+	const Case kCases[] = {
+		{"fresh overlay", Overlay::kOverlaySourceId, 1920, false, false, false, true, true},
+		{"overlay, persisted false, unmigrated", Overlay::kOverlaySourceId, 1920, true, false, false, true,
+		 true},
+		{"overlay, persisted false, already migrated", Overlay::kOverlaySourceId, 1920, true, false, true,
+		 false, true},
+		{"browser_source control", "browser_source", 800, false, false, false, false, false},
+	};
+
+	bool allPass = true;
+	for (const Case &c : kCases) {
+		OBSDataAutoRelease settings = obs_data_create();
+		// Never shown and shutdown-when-invisible, so obs-browser leaves create_browser
+		// false and no CEF browser is spun up for a settings-only subject. Load-bearing
+		// for the fence below rather than merely economical -- see there.
+		obs_data_set_bool(settings, "shutdown", true);
+		if (c.seedReroute) {
+			obs_data_set_bool(settings, kRerouteKey, c.seedRerouteValue);
+		}
+		if (c.seedMigrated) {
+			obs_data_set_bool(settings, kMigratedKey, true);
+		}
+
+		// Private: obs_enum_sources skips private sources (libobs/obs.c:2871), which is
+		// what keeps a concurrent AudioMonitor::Rebuild from attaching a volmeter to a
+		// rerouted subject and surfacing it as a row in the mixer dock. Defaults still
+		// apply -- obs_source_create_internal calls get_defaults either way
+		// (libobs/obs-source.c:493-500) -- and private sources are still ticked, since
+		// they go into obs->data.sources unconditionally (:305), which is the list
+		// tick_sources walks.
+		OBSSourceAutoRelease src = obs_source_create_private(c.sourceId, "selftest-overlay-audio", settings);
+		if (!src) {
+			// Summary line too: a scraper keying on "overlay-audio ->" should see a
+			// verdict rather than nothing at all.
+			HostLog(std::string("[selftest] overlay-audio ") + c.name + " SKIPPED: " + c.sourceId +
+				" unavailable (obs-browser not loaded)");
+			HostLog("[selftest] overlay-audio -> SKIPPED (obs-browser not loaded)");
+			return;
+		}
+
+		// The fence. libobs defers every OBS_SOURCE_VIDEO update to the video thread, so
+		// the settings under test are not applied when create returns; the page width is
+		// what the update writes back, so reaching it means the update ran.
+		//
+		// Sleeping here stops CEF task dispatch: main.cpp runs CEF with
+		// multi_threaded_message_loop=false and this self-test runs inside HostWndProc's
+		// WM_TIMER, so this thread IS the CEF UI thread. It is safe only because the
+		// shutdown seed above leaves create_browser false on a never-shown subject, so
+		// DestroyBrowser has nothing to queue. A row that drops that seed, or adds its
+		// subject to a scene, would post a CEF task to a thread that will not pump until
+		// this function returns.
+		//
+		// One latent way the fence itself breaks: gpu_diag's kill switch
+		// (diag/gpu_diag.cpp:38-53) rewrites width to 16 on every browser source from the
+		// global source_create signal, which would strand every row at NO UPDATE. Gated
+		// on BRAIDCAST_DISABLE_BROWSER_SOURCES, which the smoke path does not set.
+		uint32_t observed = obs_source_get_width(src);
+		const uint64_t deadline = os_gettime_ns() + 1000000000ULL;
+		while (observed != c.pageWidth && os_gettime_ns() < deadline) {
+			os_sleep_ms(4);
+			observed = obs_source_get_width(src);
+		}
+		const bool applied = observed == c.pageWidth;
+
+		OBSDataAutoRelease after = obs_source_get_settings(src);
+		const bool reroute = obs_data_get_bool(after, kRerouteKey);
+		const bool marker = obs_data_get_bool(after, kMigratedKey);
+		// What actually decides whether the mixer lists the source and whether its
+		// audio reaches an output at all.
+		const bool audioActive = obs_source_audio_active(src);
+		const bool pass = applied && reroute == c.wantReroute && marker == c.wantMarker &&
+				  audioActive == c.wantReroute;
+		allPass = allPass && pass;
+		HostLog(std::string("[selftest] overlay-audio ") + c.name +
+			" -> reroute=" + (reroute ? "true" : "false") + " marker=" + (marker ? "true" : "false") +
+			" audioActive=" + (audioActive ? "true" : "false") +
+			" mixers=" + std::to_string(obs_source_get_audio_mixers(src)) + " (want reroute=" +
+			(c.wantReroute ? "true" : "false") + " marker=" + (c.wantMarker ? "true" : "false") + ") " +
+			(pass ? "OK"
+			      : (applied ? "MISMATCH"
+					 : "NO UPDATE (width " + std::to_string(observed) + ", wanted " +
+						   std::to_string(c.pageWidth) + ")")));
+	}
+
+	HostLog(std::string("[selftest] overlay-audio -> ") + (allPass ? "OK" : "FAILED (see step lines above)"));
+}
+
 void ObsBootstrap::RunHotkeysSelfTest()
 {
 	using Bridge::json;

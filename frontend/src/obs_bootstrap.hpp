@@ -442,6 +442,22 @@ void RunPreviewSurfaceIsolationSelfTest();
 // scene so it activates), rebuilds the monitor, exercises the methods, then
 // removes the temp source + restores state. Gated by the caller to the smoke path.
 void RunAudioMixerSelfTest();
+// Headless proof that the settings deciding a stream overlay's audio route reach the
+// source: reroute_audio, the migration marker, and the audio_active flag that decides
+// whether the mixer lists it. What it does NOT prove is that CEF delivers PCM into the
+// mix -- no browser is created here, so that end still needs a live alert.
+//
+// Three braidcast_overlay subjects over one table, because the default flip alone covers
+// only the first: a fresh source; one whose scene collection persisted an explicit
+// reroute_audio=false before the flip, which must be migrated once and marked; and one
+// already carrying the marker, whose false is a deliberate opt-out and must survive the
+// load untouched. A fourth row runs a plain browser_source through the same harness as a
+// control -- audio_active initialises to true, so without a subject that must come back
+// inactive the two rerouted rows would assert it vacuously.
+//
+// Each subject is shutdown-when-invisible and never shown, so no CEF browser is created
+// for it. Removes its sources; never Saves. Gated by the caller to the smoke path.
+void RunOverlayAudioSelfTest();
 // Headless proof for native projectors: open a WINDOWED PROGRAM projector via the
 // manager directly (no monitor needed), confirm it got a live obs_display, then
 // close it, leaving no state behind. Also logs the monitor count. Gated by the
