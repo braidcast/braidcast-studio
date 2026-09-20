@@ -2,6 +2,7 @@
 #define OBS_MULTISTREAM_FRONTEND_OBS_BOOTSTRAP_HPP_
 
 #include <string>
+#include <vector>
 
 // Brings libobs up inside the CEF-hosted browser process and tears it down.
 // Start() initializes the core, the video pipeline (D3D11), and audio, then
@@ -244,6 +245,19 @@ GeneralSettings &General();
 // settings.getAdvanced/setAdvanced over it and the engine can read per-output
 // options at StartOutput. Valid between Start() and Stop().
 AdvancedSettings &Advanced();
+
+// The global output channel a self-test binds a temporary audio source to when it needs
+// libobs to actually mix that source. Inside the span GlobalAudioChannels occupies (1..6),
+// which is the span the scene-save filter excludes, so nothing an interrupted run leaves
+// behind can be persisted into a scene collection. Every user saves and restores whatever
+// was on it.
+constexpr int kSelfTestOutputChannel = 6;
+
+// Render-endpoint device ids, "default" excluded. Self-tests that open an audio capture
+// name an endpoint rather than taking "default": a default-device change mid-case would
+// raise a restart that masks the case under test, and whatever the default happens to be
+// may carry other audio.
+std::vector<std::string> ExplicitRenderEndpoints();
 
 void TeardownScene();
 // Stand up a fresh placeholder Default scene bound to channel 0, owned by libobs's

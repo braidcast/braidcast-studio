@@ -21,6 +21,7 @@
 #include <shared_mutex>
 
 #include <audioclientactivationparams.h>
+#include <audiopolicy.h>
 #include <avrt.h>
 #include <RTWorkQ.h>
 #include <wrl/implements.h>
@@ -277,6 +278,69 @@ public:
 	}
 };
 
+/* Keeps one started render stream of silence on a loopback capture's endpoint.
+ *
+ * Measured, on a render endpoint with no other render session open: the loopback capture
+ * receives no packets at all, not silent ones. libobs keeps its own timeline, so its expected
+ * timestamp falls behind wall clock for the whole idle stretch, then it buffers to its cap and
+ * restarts the source's audio. Holding one started render session on the endpoint for as long
+ * as the capture is open is what keeps packets arriving; without it the same endpoint delivers
+ * zero packets (see the loopback-silence self-test, which fails in exactly that shape).
+ *
+ * Self-contained by design: its thread creates, refills and releases every COM object it
+ * touches, so nothing crosses an apartment, and it reads no WASAPISource state. Every failure
+ * is one log line and a capture that behaves exactly as it did before this existed. */
+class SilentRenderKeepalive {
+	/* Refill cadence. The client buffer is BUFFER_TIME_100NS long and each pass tops up to
+	 * full against GetCurrentPadding rather than adding a fixed amount, so a late pass costs
+	 * nothing and only starvation longer than the whole buffer can underrun it. Waking on the
+	 * render client's own event would refill an order of magnitude more often to the same end,
+	 * and would add a third handle to a teardown path this file has already been bitten by. */
+	static constexpr DWORD kRefillMs = 500;
+	/* Retry cadence after a failed open, so an endpoint another app holds in exclusive mode is
+	 * retried without spinning. */
+	static constexpr DWORD kRetryMs = 5000;
+	/* Consecutive refill passes finding the buffer still full -- the engine having consumed
+	 * nothing -- before the client is stopped and reopened. Every documented way an engine stops
+	 * consuming invalidates the stream, which the failure path already catches; a driver that
+	 * simply stops servicing the client does not, and Refill succeeds against a frozen buffer
+	 * either way. So this is the only thing that would ever notice the keepalive reporting
+	 * healthy while the endpoint idles -- the defect it exists to prevent, with a clean log.
+	 * Spans the whole client buffer in kRefillMs passes, so no healthy cadence can reach it
+	 * (asserted against BUFFER_TIME_100NS in Run). */
+	static constexpr int kStalledPassLimit = 10;
+
+	std::mutex lock;
+	wstring wanted;
+
+	WinHandle retargetSignal;
+	WinHandle exitSignal;
+	WinHandle thread;
+	bool reportedRefusal = false;
+
+	static HRESULT OpenClient(IMMDeviceEnumerator *enumerator, const wstring &deviceId,
+				  ComPtr<IAudioClient> &client, ComPtr<IAudioRenderClient> &render,
+				  UINT32 &bufferFrames, UINT32 &blockAlign);
+	/* `wroteFrames` reports whether the buffer had room for any, i.e. whether the engine
+	 * consumed anything since the last pass. See kStalledPassLimit. */
+	static HRESULT Refill(IAudioClient *client, IAudioRenderClient *render, UINT32 bufferFrames, UINT32 blockAlign,
+			      bool &wroteFrames);
+
+	static DWORD WINAPI ThreadProc(LPVOID param);
+	void Run();
+
+public:
+	SilentRenderKeepalive();
+	~SilentRenderKeepalive() { Stop(); }
+
+	/* Points the keepalive at `deviceId`, starting its thread on the first call. Safe to call
+	 * on every capture start: a restart retargets the one thread instead of adding a client. */
+	void Start(const wstring &deviceId);
+
+	/* Stops the render stream and joins the thread. Idempotent. */
+	void Stop();
+};
+
 class WASAPISource {
 	ComPtr<IMMDeviceEnumerator> enumerator;
 	ComPtr<IAudioClient> client;
@@ -328,6 +392,10 @@ class WASAPISource {
 
 	std::unique_ptr<StartRaceProbe> startRaceProbe;
 
+	/* Non-null for SourceType::DeviceOutput only, which is the only type that captures a
+	 * render endpoint whose engine can go idle. */
+	std::unique_ptr<SilentRenderKeepalive> keepalive;
+
 	speaker_layout speakers;
 	audio_format format;
 	uint32_t sampleRate;
@@ -349,7 +417,6 @@ class WASAPISource {
 					       speaker_layout &speakers, audio_format &format, uint32_t &sampleRate);
 	static void InitFormat(const WAVEFORMATEX *wfex, enum speaker_layout &speakers, enum audio_format &format,
 			       uint32_t &sampleRate);
-	static void ClearBuffer(IMMDevice *device);
 	static ComPtr<IAudioCaptureClient> InitCapture(IAudioClient *client, HANDLE receiveSignal);
 	void Initialize();
 
@@ -596,6 +663,10 @@ WASAPISource::WASAPISource(obs_data_t *settings, obs_source_t *source_, SourceTy
 
 	startRaceProbe = StartRaceProbe::FromSettings(settings, rtwq_supported);
 
+	if (sourceType == SourceType::DeviceOutput) {
+		keepalive = std::make_unique<SilentRenderKeepalive>();
+	}
+
 	if (!rtwq_supported) {
 		captureThread = CreateThread(nullptr, 0, WASAPISource::CaptureThread, this, 0, nullptr);
 		if (!captureThread.Valid()) {
@@ -661,6 +732,12 @@ void WASAPISource::Stop()
 		rtwq_unlock_work_queue(rtwqQueueId);
 	} else {
 		WaitForSingleObject(captureThread, INFINITE);
+	}
+
+	/* Joined last, after the capture is quiesced: its thread touches none of the state above,
+	 * and stopping it earlier would let the endpoint idle while a teardown still reads it. */
+	if (keepalive) {
+		keepalive->Stop();
 	}
 
 	obs_weak_source_release(reroute_target);
@@ -953,52 +1030,287 @@ ComPtr<IAudioClient> WASAPISource::InitClient(IMMDevice *device, SourceType type
 	return client;
 }
 
-void WASAPISource::ClearBuffer(IMMDevice *device)
+/* Its own audio session, because AUDCLNT_SESSIONFLAGS_DISPLAY_HIDE is ignored for a stream that
+ * joins a session the process already opened, and the app renders audio monitoring on the
+ * process default one. Shared across sources: two captures of the same endpoint then share one
+ * session rather than showing two. */
+static const GUID kSilentRenderSession = {0x6b2f0f2a, 0x9c41, 0x4b7e, {0x8d, 0x2c, 0x5a, 0x17, 0xe3, 0x94, 0x6f, 0xd1}};
+
+static wstring GetDeviceId(IMMDevice *device)
 {
-	CoTaskMemPtr<WAVEFORMATEX> wfex;
-	HRESULT res;
-	LPBYTE buffer;
-	UINT32 frames;
-	ComPtr<IAudioClient> client;
+	CoTaskMemPtr<wchar_t> id;
+	if (!device || FAILED(device->GetId(&id)) || !id.Get()) {
+		return wstring();
+	}
+	return wstring(id.Get());
+}
+
+SilentRenderKeepalive::SilentRenderKeepalive()
+{
+	/* Failing to create either is not fatal: Start() then declines and says so once. */
+	retargetSignal = CreateEvent(nullptr, false, false, nullptr);
+	exitSignal = CreateEvent(nullptr, true, false, nullptr);
+}
+
+HRESULT SilentRenderKeepalive::OpenClient(IMMDeviceEnumerator *enumerator, const wstring &deviceId,
+					  ComPtr<IAudioClient> &client, ComPtr<IAudioRenderClient> &render,
+					  UINT32 &bufferFrames, UINT32 &blockAlign)
+{
+	ComPtr<IMMDevice> device;
+	HRESULT res = enumerator->GetDevice(deviceId.c_str(), device.Assign());
+	if (FAILED(res)) {
+		return res;
+	}
 
 	res = device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, (void **)client.Assign());
 	if (FAILED(res)) {
-		throw HRError("Failed to activate client context", res);
+		return res;
 	}
 
+	/* The engine mixes at the endpoint's own format, which the capture source's negotiated
+	 * format need not match. */
+	CoTaskMemPtr<WAVEFORMATEX> wfex;
 	res = client->GetMixFormat(&wfex);
 	if (FAILED(res)) {
-		throw HRError("Failed to get mix format", res);
+		return res;
 	}
 
-	res = client->Initialize(AUDCLNT_SHAREMODE_SHARED, 0, BUFFER_TIME_100NS, 0, wfex, nullptr);
+	res = client->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_SESSIONFLAGS_DISPLAY_HIDE, BUFFER_TIME_100NS, 0,
+				 wfex, &kSilentRenderSession);
 	if (FAILED(res)) {
-		throw HRError("Failed to initialize audio client", res);
+		return res;
 	}
 
-	/* Silent loopback fix. Prevents audio stream from stopping and */
-	/* messing up timestamps and other weird glitches during silence */
-	/* by playing a silent sample all over again. */
-
-	res = client->GetBufferSize(&frames);
+	res = client->GetBufferSize(&bufferFrames);
 	if (FAILED(res)) {
-		throw HRError("Failed to get buffer size", res);
+		return res;
 	}
 
-	ComPtr<IAudioRenderClient> render;
 	res = client->GetService(IID_PPV_ARGS(render.Assign()));
 	if (FAILED(res)) {
-		throw HRError("Failed to get render client", res);
+		return res;
 	}
 
+	/* Names the mixer entry on any build that shows it in spite of the hide flag. */
+	ComPtr<IAudioSessionControl> session;
+	if (SUCCEEDED(client->GetService(IID_PPV_ARGS(session.Assign())))) {
+		session->SetDisplayName(L"Desktop audio capture keepalive", nullptr);
+	}
+
+	blockAlign = wfex->nBlockAlign;
+
+	/* Filled before it is started, so the first engine period after Start has data instead of
+	 * an underrun glitch. What holds the endpoint's engine up is the started session rather
+	 * than the data in it, so this is about this stream's own first period, nothing more. */
+	bool wroteFrames = false;
+	res = Refill(client, render, bufferFrames, blockAlign, wroteFrames);
+	if (FAILED(res)) {
+		return res;
+	}
+
+	return client->Start();
+}
+
+HRESULT SilentRenderKeepalive::Refill(IAudioClient *client, IAudioRenderClient *render, UINT32 bufferFrames,
+				      UINT32 blockAlign, bool &wroteFrames)
+{
+	wroteFrames = false;
+
+	UINT32 padding = 0;
+	HRESULT res = client->GetCurrentPadding(&padding);
+	if (FAILED(res)) {
+		return res;
+	}
+	if (padding >= bufferFrames) {
+		return S_OK;
+	}
+	wroteFrames = true;
+
+	const UINT32 frames = bufferFrames - padding;
+	BYTE *buffer = nullptr;
 	res = render->GetBuffer(frames, &buffer);
 	if (FAILED(res)) {
-		throw HRError("Failed to get buffer", res);
+		return res;
 	}
 
-	memset(buffer, 0, (size_t)frames * (size_t)wfex->nBlockAlign);
+	/* Zeros rather than AUDCLNT_BUFFERFLAGS_SILENT, which is documented only as a shortcut for
+	 * filling a buffer with silence: this leaves the stream indistinguishable from audio. */
+	memset(buffer, 0, (size_t)frames * (size_t)blockAlign);
+	return render->ReleaseBuffer(frames, 0);
+}
 
-	render->ReleaseBuffer(frames, 0);
+DWORD WINAPI SilentRenderKeepalive::ThreadProc(LPVOID param)
+{
+	os_set_thread_name("win-wasapi: silent render keepalive");
+	static_cast<SilentRenderKeepalive *>(param)->Run();
+	return 0;
+}
+
+void SilentRenderKeepalive::Run()
+{
+	const HRESULT hrCom = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+	if (FAILED(hrCom)) {
+		blog(LOG_WARNING,
+		     "WASAPI: silent render keepalive CoInitializeEx failed: 0x%08X;"
+		     " the endpoint can stop delivering loopback while it is silent",
+		     hrCom);
+		return;
+	}
+
+	ComPtr<IMMDeviceEnumerator> enumerator;
+	ComPtr<IAudioClient> client;
+	ComPtr<IAudioRenderClient> render;
+	wstring open;
+	UINT32 bufferFrames = 0;
+	UINT32 blockAlign = 0;
+	bool reportedFailure = false;
+	int stalledPasses = 0;
+
+	static_assert(
+		kStalledPassLimit * kRefillMs == BUFFER_TIME_100NS / 10000,
+		"the stalled-pass limit must span the whole client buffer, so no healthy refill cadence reaches it");
+
+	HRESULT res =
+		CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(enumerator.Assign()));
+
+	const HANDLE sigs[] = {exitSignal, retargetSignal};
+	bool exit = false;
+	while (!exit && enumerator) {
+		wstring target;
+		{
+			std::lock_guard<std::mutex> guard(lock);
+			target = wanted;
+		}
+
+		if (client && target != open) {
+			client->Stop();
+			render.Clear();
+			client.Clear();
+		}
+
+		bool degraded = false;
+		if (!client) {
+			res = OpenClient(enumerator, target, client, render, bufferFrames, blockAlign);
+			if (SUCCEEDED(res)) {
+				open = target;
+				/* The only trace this subsystem leaves when it works: it plays
+				 * silence and asks not to be shown in the volume mixer. */
+				blog(LOG_DEBUG, "WASAPI: silent render keepalive started (%u frame buffer)",
+				     bufferFrames);
+			} else {
+				render.Clear();
+				client.Clear();
+				degraded = true;
+			}
+		}
+
+		if (client) {
+			bool wroteFrames = false;
+			res = Refill(client, render, bufferFrames, blockAlign, wroteFrames);
+			if (FAILED(res)) {
+				client->Stop();
+				render.Clear();
+				client.Clear();
+				degraded = true;
+				stalledPasses = 0;
+			} else if (wroteFrames) {
+				stalledPasses = 0;
+			} else if (++stalledPasses >= kStalledPassLimit) {
+				/* Not degraded: there is no failing HRESULT to report, and a reopen is
+				 * the whole remedy. Reachable at most once per buffer duration, so it
+				 * cannot spin even if every reopen stalls again. */
+				blog(LOG_WARNING,
+				     "WASAPI: silent render keepalive consumed nothing for %ums; reopening the client",
+				     kStalledPassLimit * kRefillMs);
+				client->Stop();
+				render.Clear();
+				client.Clear();
+				stalledPasses = 0;
+			}
+		}
+
+		if (degraded != reportedFailure) {
+			reportedFailure = degraded;
+			if (degraded) {
+				blog(LOG_WARNING,
+				     "WASAPI: silent render keepalive is not running: 0x%08X;"
+				     " the endpoint can stop delivering loopback while it is silent",
+				     res);
+			} else {
+				blog(LOG_INFO, "WASAPI: silent render keepalive recovered");
+			}
+		}
+
+		/* Only a retarget or the refill timeout continues; anything else, the stop signal
+		 * included, ends the loop rather than risking a spin on a wait that cannot wait. */
+		const DWORD ret = WaitForMultipleObjects(_countof(sigs), sigs, false, degraded ? kRetryMs : kRefillMs);
+		exit = ret != (WAIT_OBJECT_0 + 1) && ret != WAIT_TIMEOUT;
+	}
+
+	if (!enumerator) {
+		blog(LOG_WARNING,
+		     "WASAPI: silent render keepalive could not create an enumerator: 0x%08X;"
+		     " the endpoint can stop delivering loopback while it is silent",
+		     res);
+	}
+
+	if (client) {
+		client->Stop();
+	}
+	render.Clear();
+	client.Clear();
+	enumerator.Clear();
+
+	CoUninitialize();
+}
+
+void SilentRenderKeepalive::Start(const wstring &deviceId)
+{
+	const char *refusal = nullptr;
+	if (deviceId.empty()) {
+		refusal = "the endpoint reported no id";
+	} else if (!retargetSignal.Valid() || !exitSignal.Valid()) {
+		refusal = "its signals could not be created";
+	} else {
+		{
+			std::lock_guard<std::mutex> guard(lock);
+			wanted = deviceId;
+		}
+
+		if (thread.Valid()) {
+			SetEvent(retargetSignal);
+			return;
+		}
+
+		/* Stop() leaves this manual-reset signal set, so a thread started after one would
+		 * exit on its first wait and quietly leave the endpoint to idle. */
+		ResetEvent(exitSignal);
+		thread = CreateThread(nullptr, 0, SilentRenderKeepalive::ThreadProc, this, 0, nullptr);
+		if (thread.Valid()) {
+			return;
+		}
+		refusal = "its thread could not be created";
+	}
+
+	/* Reported once: a device that keeps failing reconnects every few seconds. */
+	if (!reportedRefusal) {
+		reportedRefusal = true;
+		blog(LOG_WARNING,
+		     "WASAPI: no silent render keepalive (%s);"
+		     " the endpoint can stop delivering loopback while it is silent",
+		     refusal);
+	}
+}
+
+void SilentRenderKeepalive::Stop()
+{
+	if (!thread.Valid()) {
+		return;
+	}
+
+	SetEvent(exitSignal);
+	WaitForSingleObject(thread, INFINITE);
+	thread = NULL;
 }
 
 static speaker_layout ConvertSpeakerLayout(DWORD layout, WORD channels)
@@ -1087,8 +1399,8 @@ void WASAPISource::Initialize()
 
 	ComPtr<IAudioClient> temp_client = InitClient(device, sourceType, process_id, activate_audio_interface_async,
 						      speakers, format, sampleRate);
-	if (sourceType == SourceType::DeviceOutput) {
-		ClearBuffer(device);
+	if (keepalive) {
+		keepalive->Start(GetDeviceId(device));
 	}
 	const HANDLE engineSignal = startRaceProbe ? HANDLE(startRaceProbe->silentEndpoint) : HANDLE(receiveSignal);
 	ComPtr<IAudioCaptureClient> temp_capture = InitCapture(temp_client, engineSignal);
@@ -1110,6 +1422,10 @@ void WASAPISource::Initialize()
 		startRaceProbe->MarkInitDone();
 	}
 
+	/* Parsed by frontend/src/loopback_silence_selftest.cpp: its kInitializedMarker matches
+	 * "] initialized (source:" and it reads the endpoint rate out of the bracket before that.
+	 * Rewording this line makes that regression gate report SKIP on the very defect it exists to
+	 * catch, so reword the producer and the consumer together. */
 	blog(LOG_INFO, "WASAPI: Device '%s' [%" PRIu32 " Hz] initialized (source: %s)", device_name.c_str(), sampleRate,
 	     obs_source_get_name(source));
 

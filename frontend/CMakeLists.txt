@@ -321,6 +321,14 @@ target_sources(
     # driven by its own WM_TIMER (see main.cpp); includes obs.hpp -> /wd4201 set.
     src/perf_repro_selftest.cpp
     src/perf_repro_selftest.hpp
+    # Automated loopback-silence self-test (regression gate for win-wasapi's silent
+    # render keepalive). Gated by BRAIDCAST_SELFTEST_STREAM=loopback-silence, driven by
+    # the same WM_TIMER; includes obs.hpp -> /wd4201 set.
+    src/loopback_silence_selftest.cpp
+    src/loopback_silence_selftest.hpp
+    # Shared summary-file path + run stamp for every BRAIDCAST_SELFTEST_STREAM mode.
+    src/util/selftest_paths.cpp
+    src/util/selftest_paths.hpp
     api-impl/frontend_callbacks.cpp
     api-impl/frontend_callbacks.hpp
     # Phase 4.4.0 native-multistream data model. These five model files are
@@ -591,6 +599,7 @@ set_source_files_properties(
   src/ingest_writeback.cpp
   src/target_destinations.cpp
   src/perf_repro_selftest.cpp
+  src/loopback_silence_selftest.cpp
   api-impl/frontend_callbacks.cpp
   utility/CanvasDefinition.cpp
   utility/OBSCanvas.cpp

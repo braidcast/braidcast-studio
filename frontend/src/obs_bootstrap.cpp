@@ -94,6 +94,13 @@
 #include "target_destinations.hpp"
 #include "UndoManager.hpp"
 
+// kSelfTestOutputChannel is a bare literal whose whole justification is that it sits inside the
+// span the scene-save filter excludes, so nothing an interrupted self-test leaves bound can be
+// persisted into a scene collection. Narrowing that span elsewhere would silently falsify it.
+static_assert(ObsBootstrap::kSelfTestOutputChannel >= GlobalAudioChannels::kFirstChannel &&
+		      ObsBootstrap::kSelfTestOutputChannel <= GlobalAudioChannels::kLastChannel,
+	      "the self-test output channel must stay inside the span the scene-save filter excludes");
+
 namespace {
 
 // Qt-frontend UI helpers we never want headless. obs-websocket is a FORCED
@@ -6888,6 +6895,17 @@ void ObsBootstrap::RunProjectorSelfTest()
 	HostLog("[selftest] projector windowed multiview -> opened id=" + std::to_string(mvId) + ", closed OK");
 }
 
+std::vector<std::string> ObsBootstrap::ExplicitRenderEndpoints()
+{
+	std::vector<std::string> ids;
+	for (const auto &[id, name] : Bridge::EnumAudioDevices(false)) {
+		if (!id.empty() && id != "default") {
+			ids.push_back(id);
+		}
+	}
+	return ids;
+}
+
 namespace {
 
 // Mirrors SELFTEST_NONCE_ENV and the OPT_SELFTEST_* keys of StartRaceProbe in
@@ -6942,19 +6960,6 @@ bool ReleaseAndAwaitDestroy(obs_source_t *source, DWORD ms)
 	CloseHandle(destroying);
 	const ULONGLONG now = GetTickCount64();
 	return DestroyQueueDrainsWithin(deadline > now ? DWORD(deadline - now) : 0);
-}
-
-// Explicit endpoints rather than "default": a default-device change mid-case would raise
-// a restart, which also wakes the sample handler and would mask the case under test.
-std::vector<std::string> ExplicitRenderEndpoints()
-{
-	std::vector<std::string> ids;
-	for (const auto &[id, name] : Bridge::EnumAudioDevices(false)) {
-		if (!id.empty() && id != "default") {
-			ids.push_back(id);
-		}
-	}
-	return ids;
 }
 
 // Events the start-race probe signals. They belong to the test, so they outlive the source;
@@ -7564,15 +7569,14 @@ void ObsBootstrap::RunAudioMixerSelfTest()
 	// global output channel so it activates, then rebuild the monitor so the new
 	// source picks up a fader + volmeter. wasapi_output_capture is a synchronous
 	// audio source: audio_active stays true even without a live device.
-	constexpr int kTempChannel = 6; // high channel, unlikely bound by the bootstrap
-	OBSSourceAutoRelease prior = obs_get_output_source(kTempChannel); // save to restore
+	OBSSourceAutoRelease prior = obs_get_output_source(kSelfTestOutputChannel); // save to restore
 	obs_source_t *audioSrc =
 		obs_source_create("wasapi_output_capture", GlobalAudioChannels::kSelfTestSourceName, nullptr, nullptr);
 	if (!audioSrc) {
 		HostLog("[selftest] audio-mixer: wasapi_output_capture create FAILED (skipping)");
 		return;
 	}
-	obs_set_output_source(kTempChannel, audioSrc);
+	obs_set_output_source(kSelfTestOutputChannel, audioSrc);
 
 	const char *uuidPtr = obs_source_get_uuid(audioSrc);
 	const std::string uuid = uuidPtr ? uuidPtr : std::string();
@@ -7625,7 +7629,7 @@ void ObsBootstrap::RunAudioMixerSelfTest()
 
 	// 6) Restore: unbind the channel (or its prior source), remove + release the
 	// temp source, then rebuild so the monitor drops its entry. Leaves no state.
-	obs_set_output_source(kTempChannel, prior); // null or the prior source
+	obs_set_output_source(kSelfTestOutputChannel, prior); // null or the prior source
 	obs_source_remove(audioSrc);
 	obs_source_release(audioSrc);
 	g_audioMonitor->Rebuild();

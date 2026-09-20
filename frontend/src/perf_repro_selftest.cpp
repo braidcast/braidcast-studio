@@ -4,16 +4,12 @@
 
 #include <algorithm>
 #include <chrono>
-#include <fstream>
 #include <string>
-
-#include <util/platform.h>
 
 #include "bridge.hpp"
 #include "log.hpp"
-#include "multistream/StorePaths.hpp"
 #include "util/env_config.hpp"
-#include "util/session_log.hpp"
+#include "util/selftest_paths.hpp"
 
 namespace {
 
@@ -71,34 +67,6 @@ constexpr double kDefaultMaxLagPct = 2.0;
 // being throttled.
 constexpr ULONG kOptOutBits = PROCESS_POWER_THROTTLING_EXECUTION_SPEED |
 			      PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
-
-// <config base>/selftest/<file>, resolved through the shared BraidcastConfigPath
-// seam (StorePaths.hpp) so the self-test's scratch files follow portable mode
-// with every other store.
-std::string SelfTestConfigPath(const std::string &file)
-{
-	const std::string base = BraidcastConfigPath("selftest");
-	if (base.empty()) {
-		return std::string();
-	}
-	os_mkdirs(base.c_str());
-	return base + "/" + file;
-}
-
-// Reuse SessionLog's own per-session timestamp (its filename is already
-// "YYYY-MM-DD HH-MM-SS.txt") instead of a fresh time() call, per the "reuse the
-// session log's timestamp" instruction.
-std::string TimestampFromSessionLog()
-{
-	const std::string logPath = SessionLog::CurrentPath();
-	if (logPath.empty()) {
-		return "unknown";
-	}
-	const size_t slash = logPath.find_last_of("/\\");
-	const std::string base = slash == std::string::npos ? logPath : logPath.substr(slash + 1);
-	const size_t dot = base.rfind(".txt");
-	return dot == std::string::npos ? base : base.substr(0, dot);
-}
 
 // True iff main.cpp's wWinMain ProcessPowerThrottling opt-out is in force: both
 // control bits asserted (main.cpp is asserting control) AND neither state bit set
@@ -180,13 +148,7 @@ void WriteSummary(State &st)
 		{"worstEncodeSkipPct", st.worstEncodeSkipPct},
 	};
 
-	const std::string path = SelfTestConfigPath("perf-repro-" + TimestampFromSessionLog() + ".txt");
-	if (!path.empty()) {
-		std::ofstream out(path, std::ios::out | std::ios::trunc);
-		if (out) {
-			out << summary.dump(2);
-		}
-	}
+	const std::string path = SelfTest::WriteSummaryFile("perf-repro", summary.dump(2));
 
 	HostLog(std::string("[selftest-stream] perf-repro ") + resultName + " worstRenderLagPct=" +
 		std::to_string(st.worstRenderLagPct) + " worstEncodeSkipPct=" + std::to_string(st.worstEncodeSkipPct) +

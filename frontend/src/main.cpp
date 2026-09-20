@@ -30,6 +30,7 @@
 #include "log.hpp"
 #include "multistream/StorePaths.hpp"
 #include "obs_bootstrap.hpp"
+#include "loopback_silence_selftest.hpp"
 #include "perf_repro_selftest.hpp"
 #include "windowing/native_theme.hpp"
 #include "windowing/preview_window.hpp"
@@ -52,10 +53,31 @@ constexpr int kHostHeight = 720;
 constexpr wchar_t kHostClassName[] = L"BraidcastShell";
 constexpr UINT_PTR kSizeProbeTimerId = 1;
 constexpr UINT_PTR kSmokeQuitTimerId = 2;
-// Drives the perf-repro self-test state machine (BRAIDCAST_SELFTEST_STREAM=
-// perf-repro); distinct from both timers above so the two selftest modes never
-// collide on one id.
-constexpr UINT_PTR kPerfReproTimerId = 3;
+// Drives whichever BRAIDCAST_SELFTEST_STREAM mode is armed (see kSelfTestStreamModes);
+// distinct from both timers above so the selftest modes never collide on one id. The
+// env var holds a single value, so at most one mode is ever armed and one timer serves
+// all of them.
+constexpr UINT_PTR kSelfTestStreamTimerId = 3;
+
+// The BRAIDCAST_SELFTEST_STREAM modes. Each drives its own state machine one step per
+// timer tick and owns the process exit code once it reports finished. Adding a mode is a
+// row here plus its three functions -- arm, tick, exit code.
+struct SelfTestStreamMode {
+	const char *name;
+	void (*arm)(HWND host);
+	bool (*tick)();
+	int (*exitCode)();
+};
+
+constexpr SelfTestStreamMode kSelfTestStreamModes[] = {
+	{"perf-repro", ObsBootstrap::ArmPerfReproSelfTest, ObsBootstrap::RunPerfReproSelfTest,
+	 ObsBootstrap::PerfReproSelfTestExitCode},
+	{"loopback-silence", ObsBootstrap::ArmLoopbackSilenceSelfTest, ObsBootstrap::RunLoopbackSilenceSelfTest,
+	 ObsBootstrap::LoopbackSilenceSelfTestExitCode},
+};
+
+// The armed mode, or nullptr. Set once during startup, read on the UI thread only.
+const SelfTestStreamMode *g_selfTestStream = nullptr;
 
 // Host-window-owned handles. Single-threaded (browser process UI thread).
 CefRefPtr<CefBrowser> g_browser;
@@ -352,10 +374,11 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 			KillTimer(hwnd, kSmokeQuitTimerId);
 			HostLog("[host] smoke-quit timer fired -> WM_CLOSE");
 			PostMessageW(hwnd, WM_CLOSE, 0, 0);
-		} else if (wparam == kPerfReproTimerId) {
-			if (ObsBootstrap::RunPerfReproSelfTest()) {
-				KillTimer(hwnd, kPerfReproTimerId);
-				HostLog("[host] perf-repro selftest finished -> WM_CLOSE");
+		} else if (wparam == kSelfTestStreamTimerId) {
+			if (g_selfTestStream && g_selfTestStream->tick()) {
+				KillTimer(hwnd, kSelfTestStreamTimerId);
+				HostLog(std::string("[host] ") + g_selfTestStream->name +
+					" selftest finished -> WM_CLOSE");
 				PostMessageW(hwnd, WM_CLOSE, 0, 0);
 			}
 		}
@@ -860,19 +883,20 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 		SetTimer(host, kSmokeQuitTimerId, UINT(smokeQuitSecs) * 1000, nullptr);
 	}
 
-	// Env-gated automated perf-repro self-test: the regression gate for the
-	// background power-throttling opt-out above (the SetProcessInformation/
-	// ProcessPowerThrottling call). Network-free and deterministic -- it verifies
-	// the opt-out is in force, minimizes the host window to simulate losing the
-	// foreground, samples render pacing via stats.get for a fixed window, then
-	// quits with a PASS/FAIL exit code. Inert without
-	// BRAIDCAST_SELFTEST_STREAM=perf-repro.
-	bool perfReproArmed = false;
-	if (Env::Value("BRAIDCAST_SELFTEST_STREAM") == "perf-repro") {
-		HostLog("[host] perf-repro selftest armed");
-		ObsBootstrap::ArmPerfReproSelfTest(host);
-		SetTimer(host, kPerfReproTimerId, 500, nullptr);
-		perfReproArmed = true;
+	// Env-gated automated self-test streams: long-running, network-free state machines
+	// that each drive their own scenario and quit with a PASS/FAIL exit code. Separate
+	// from the FE_SMOKE_QUIT_SECONDS battery, whose cases all have to finish in one tick.
+	// Inert without BRAIDCAST_SELFTEST_STREAM naming one of kSelfTestStreamModes.
+	const std::string selfTestStream = Env::Value("BRAIDCAST_SELFTEST_STREAM");
+	for (const SelfTestStreamMode &mode : kSelfTestStreamModes) {
+		if (selfTestStream != mode.name) {
+			continue;
+		}
+		HostLog(std::string("[host] ") + mode.name + " selftest armed");
+		g_selfTestStream = &mode;
+		mode.arm(host);
+		SetTimer(host, kSelfTestStreamTimerId, 500, nullptr);
+		break;
 	}
 
 	// ONE Client for the whole process, published via Client::SetShared so future
@@ -932,8 +956,8 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 
 	Teardown();
 
-	// Propagate the perf-repro self-test's PASS/FAIL/skip/error exit code (see
-	// perf_repro_selftest.hpp) so it can gate CI; every other path keeps the
-	// existing always-0 exit.
-	return perfReproArmed ? ObsBootstrap::PerfReproSelfTestExitCode() : 0;
+	// Propagate the armed self-test stream's PASS/FAIL/skip/error exit code (see each
+	// mode's header) so it can gate CI; every other path keeps the existing always-0
+	// exit.
+	return g_selfTestStream ? g_selfTestStream->exitCode() : 0;
 }
