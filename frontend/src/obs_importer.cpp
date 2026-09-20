@@ -4,6 +4,7 @@
 #include "bridge.hpp"
 #include "log.hpp"
 #include "obs_bootstrap.hpp"
+#include "settings/AdvancedSettings.hpp"
 #include "windowing/preview_window.hpp"
 #include "scene/scene_collections.hpp"
 #include "scene/transitions.hpp"
@@ -565,6 +566,12 @@ bool ApplyAudio(const AudioInfo &a, std::string &error)
 		error = "obs_reset_audio failed (audio may be active)";
 		return false;
 	}
+
+	// obs_reset_audio re-seeds the monitoring device to Default, so an import would
+	// silently discard the user's own choice along with the profile it is applying.
+	// Same restore as MethodSettingsSetAudio does after its own reset.
+	const AdvancedSettings &adv = ObsBootstrap::Advanced();
+	ApplyAudioMonitoringDevice(adv.audioMonitoringDeviceName, adv.audioMonitoringDeviceId);
 	return true;
 }
 

@@ -1227,48 +1227,50 @@ bool MethodSettingsSetAudio(const json &params, json &result, std::string &error
 		}
 	}
 
-	// Sample rate / channel layout require resetting the audio mix, which fails
-	// while audio is active -- only gate (and reset) when one is actually set.
-	const bool changeMix = params.contains("sampleRate") || params.contains("speakers");
-	if (changeMix) {
+	// Sample rate / channel layout require resetting the audio mix. Parse and validate
+	// first, then gate on a real CHANGE rather than on the field being present: the
+	// settings pane sends all three fields on every apply, so a monitoring-device change
+	// arrives carrying the unchanged rate and layout too.
+	obs_audio_info oai = {};
+	if (!obs_get_audio_info(&oai)) {
+		error = "audio not initialized";
+		return false;
+	}
+	const obs_audio_info before = oai;
+
+	auto sr = params.find("sampleRate");
+	if (sr != params.end()) {
+		if (!sr->is_number_integer() && !sr->is_number_unsigned()) {
+			error = "'sampleRate' must be an integer";
+			return false;
+		}
+		const int64_t v = sr->get<int64_t>();
+		// OBS supports 44100 and 48000; reject anything else.
+		if (v != 44100 && v != 48000) {
+			error = "'sampleRate' must be 44100 or 48000";
+			return false;
+		}
+		oai.samples_per_sec = uint32_t(v);
+	}
+
+	auto sp = params.find("speakers");
+	if (sp != params.end()) {
+		if (!sp->is_string()) {
+			error = "'speakers' must be a string layout name";
+			return false;
+		}
+		speaker_layout layout;
+		if (!SpeakerLayoutFromName(sp->get<std::string>(), layout)) {
+			error = "unknown speaker layout '" + sp->get<std::string>() + "'";
+			return false;
+		}
+		oai.speakers = layout;
+	}
+
+	if (oai.samples_per_sec != before.samples_per_sec || oai.speakers != before.speakers) {
 		if (AnyOutputActive()) {
 			error = "cannot change sample rate or channels while an output is active";
 			return false;
-		}
-
-		obs_audio_info oai = {};
-		if (!obs_get_audio_info(&oai)) {
-			error = "audio not initialized";
-			return false;
-		}
-
-		auto sr = params.find("sampleRate");
-		if (sr != params.end()) {
-			if (!sr->is_number_integer() && !sr->is_number_unsigned()) {
-				error = "'sampleRate' must be an integer";
-				return false;
-			}
-			const int64_t v = sr->get<int64_t>();
-			// OBS supports 44100 and 48000; reject anything else.
-			if (v != 44100 && v != 48000) {
-				error = "'sampleRate' must be 44100 or 48000";
-				return false;
-			}
-			oai.samples_per_sec = uint32_t(v);
-		}
-
-		auto sp = params.find("speakers");
-		if (sp != params.end()) {
-			if (!sp->is_string()) {
-				error = "'speakers' must be a string layout name";
-				return false;
-			}
-			speaker_layout layout;
-			if (!SpeakerLayoutFromName(sp->get<std::string>(), layout)) {
-				error = "unknown speaker layout '" + sp->get<std::string>() + "'";
-				return false;
-			}
-			oai.speakers = layout;
 		}
 
 		// obs_reset_audio fails when audio is active; with no outputs yet it succeeds.
@@ -1277,6 +1279,14 @@ bool MethodSettingsSetAudio(const json &params, json &result, std::string &error
 			error = "obs_reset_audio failed (audio may be active)";
 			return false;
 		}
+
+		// obs_reset_audio tears the whole obs_core_audio down and obs_init_audio re-seeds
+		// the monitoring device to Default/default, so a rate or layout change silently
+		// discards the chosen device. Put back what the store holds -- which the block
+		// above has already updated if this same call changed it. A store that never held
+		// one leaves libobs at its own Default, which is the right answer.
+		const AdvancedSettings &a = ObsBootstrap::Advanced();
+		ApplyAudioMonitoringDevice(a.audioMonitoringDeviceName, a.audioMonitoringDeviceId);
 	}
 
 	obs_audio_info applied = {};

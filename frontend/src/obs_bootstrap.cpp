@@ -2134,6 +2134,44 @@ void ObsBootstrap::RunSettingsSelfTest()
 			(a1.value("sampleRate", 0u) == 44100 ? "OK" : "MISMATCH") + ")");
 	}
 
+	// 5b) The monitoring device must survive a setAudio, both when the mix is untouched and
+	// when it is reset. The settings pane sends sampleRate, speakers and monitoringDevice on
+	// every apply, so a device change arrives carrying an unchanged rate -- and obs_reset_audio
+	// re-seeds the device to Default, which made the control snap back the instant it was used.
+	// Step 5 above could not see that: it only ever asserted the rate round-trips.
+	json devices = run("audio.listMonitorDevices", json(nullptr), ok);
+	if (ok && devices.is_array() && devices.size() > 1) {
+		// [0] is always the synthetic "default" entry, which cannot show this defect: a reset
+		// re-seeds to exactly that, so the wrong answer and the right one are the same value.
+		const json &target = devices[1];
+		const std::string wantedId = target.value("id", std::string());
+		const auto deviceId = [](const json &audio) {
+			const auto it = audio.find("monitoringDevice");
+			return it == audio.end() ? std::string() : it->value("id", std::string());
+		};
+
+		const uint32_t heldRate = a1.value("sampleRate", 0u);
+		const std::string heldSpeakers = a1.value("speakers", std::string("stereo"));
+
+		// Unchanged rate + a device change: the exact shape the settings pane sends.
+		json m1 = run("settings.setAudio",
+			      json{{"sampleRate", heldRate}, {"speakers", heldSpeakers}, {"monitoringDevice", target}},
+			      ok);
+		HostLog("[selftest] setAudio monitoring device, mix unchanged -> " +
+			(ok ? (deviceId(m1) == wantedId ? std::string("HELD") : "REVERTED to '" + deviceId(m1) + "'")
+			    : std::string("call failed")));
+
+		// And across a real mix reset, which tears the device down inside libobs.
+		const uint32_t otherRate = heldRate == 48000 ? 44100u : 48000u;
+		json m2 = run("settings.setAudio", json{{"sampleRate", otherRate}, {"speakers", heldSpeakers}}, ok);
+		HostLog("[selftest] setAudio monitoring device, mix reset -> " +
+			(ok ? (deviceId(m2) == wantedId ? std::string("HELD") : "LOST to '" + deviceId(m2) + "'")
+			    : std::string("call failed")));
+	} else {
+		// Not a pass: this machine has no second monitoring endpoint to move to.
+		HostLog("[selftest] setAudio monitoring device -> SKIPPED (no device besides Default)");
+	}
+
 	// 6) Restore the original audio config.
 	run("settings.setAudio", a0, ok);
 	HostLog("[selftest] audio restored to " + std::to_string(a0.value("sampleRate", 0u)) + "Hz");
