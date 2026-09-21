@@ -371,6 +371,13 @@ bool ChatHub::SendToDestination(const OAuth::DestinationId &dest, const std::str
 	return true;
 }
 
+std::shared_ptr<ChatTransport> ChatHub::TransportFor(const OAuth::DestinationId &dest)
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	const auto it = active_.find(dest);
+	return it == active_.end() ? nullptr : it->second.transport;
+}
+
 void ChatHub::DispatchSend(const Active &target, const std::string &text)
 {
 	const OAuth::DestinationId dest = target.dest;

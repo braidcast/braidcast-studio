@@ -34,6 +34,8 @@ export const EV = {
   undoChanged: "undo.changed",
   streamMetaChanged: "streamMeta.changed",
   streamInfoPresetsChanged: "streamInfoPresets.changed",
+  pollsChanged: "polls.changed",
+  pollTemplatesChanged: "pollTemplates.changed",
   sceneItemsChanged: "sceneItems.changed",
   sceneItemSelected: "sceneItem.selected",
   previewContextMenu: "preview.contextMenu",

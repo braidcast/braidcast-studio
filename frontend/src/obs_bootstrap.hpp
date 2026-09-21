@@ -37,6 +37,7 @@ class VirtualCamManager;
 class GlobalAudioChannels;
 class StreamMetaStore;
 class StreamInfoPresetStore;
+class PollTemplateStore;
 struct GeneralSettings;
 struct AdvancedSettings;
 
@@ -230,6 +231,11 @@ StreamMetaStore &StreamMeta();
 // sheets, persisted to stream_info_presets.json). Owned by the bootstrap and Load()ed in
 // Start(). Exposed so the streamInfoPresets.* bridge methods can read/write over it.
 StreamInfoPresetStore &StreamInfoPresets();
+
+// The saved live-poll templates (a capped MRU history of polls run, persisted to
+// poll_templates.json). Owned by the bootstrap and Load()ed in Start(). Exposed so the
+// pollTemplates.* bridge methods and polls.create can read/write over it.
+PollTemplateStore &PollTemplates();
 
 // The global "General settings" bag (projector always-on-top, snapping prefs,
 // tray/multiview/importer prefs), persisted to general.json. Owned by the

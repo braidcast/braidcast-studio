@@ -47,6 +47,7 @@
 #include "overlay/overlay_viewport.hpp"
 #include "chat/channel_stats_poller.hpp"
 #include "chat/chat_hub.hpp" // Chat::BindingDestination, Chat::Hub
+#include "chat/youtube_poll.hpp"
 #include "events/event_hub.hpp"
 #include "events/event_store.hpp"
 #include "events/transport_health.hpp"
@@ -68,6 +69,7 @@
 #include "multistream/OutputBindingStore.hpp"
 #include "multistream/SceneLinkStore.hpp"
 #include "multistream/StreamInfoPresetStore.hpp"
+#include "multistream/PollTemplateStore.hpp"
 #include "multistream/StreamMetaStore.hpp"
 #include "multistream/StorePaths.hpp"
 #include "multistream/StreamProfileStore.hpp"
@@ -448,6 +450,9 @@ StreamMetaStore g_streamMeta;
 // presets document cannot cost the user their remembered defaults.
 StreamInfoPresetStore g_streamInfoPresets;
 
+// The saved live-poll templates. Same shape as g_streamInfoPresets.
+PollTemplateStore g_pollTemplates;
+
 // The stream-history database and its two users. Db migrates at Start(); a failure
 // degrades history to unavailable rather than aborting startup, because streaming
 // must never depend on the archive. All three are UI-thread-only.
@@ -754,6 +759,7 @@ void LoadMultistreamModel()
 	g_streamProfiles.Load();
 	g_streamMeta.Load();
 	g_streamInfoPresets.Load();
+	g_pollTemplates.Load();
 	g_outputBindings.Load();
 	// Canvases loaded above, so a binding pointing at one that is gone is provably
 	// an orphan rather than a load-ordering artifact.
@@ -827,6 +833,11 @@ VirtualCamManager &ObsBootstrap::VirtualCam()
 ::StreamInfoPresetStore &ObsBootstrap::StreamInfoPresets()
 {
 	return g_streamInfoPresets;
+}
+
+::PollTemplateStore &ObsBootstrap::PollTemplates()
+{
+	return g_pollTemplates;
 }
 
 History::SessionStore &ObsBootstrap::Sessions()
@@ -2262,6 +2273,90 @@ void ObsBootstrap::RunSettingsSelfTest()
 		if (!ok6a) {
 			HostLog("[selftest] youtube-snippet kept=" + kept.dump() + " overridden=" + overridden.dump() +
 				" blank=" + blank.dump() + " zxx=" + notApplicable.dump());
+		}
+	}
+
+	// 6b) YouTube live polls, offline: the insert body carries the poll in the order given,
+	// and a liveChatMessage reads back into the neutral shape whatever form the tallies take.
+	{
+		const json two = YouTubePoll::BuildInsertBody("chat-1", "Best map?", {"A", "B"});
+		const json four = YouTubePoll::BuildInsertBody("chat-1", "Q", {"one", "two", "three", "four"});
+		const json &snippet = two["snippet"];
+		const json &twoOptions = snippet["pollDetails"]["metadata"]["options"];
+		const json &fourOptions = four["snippet"]["pollDetails"]["metadata"]["options"];
+		const auto message = [](const json &options, const char *status) {
+			json metadata = json{{"questionText", "Best map?"}, {"options", options}};
+			if (status) {
+				metadata["status"] = status;
+			}
+			return json{{"id", "poll-1"}, {"snippet", json{{"pollDetails", json{{"metadata", metadata}}}}}};
+		};
+		const json numeric =
+			YouTubePoll::Normalize(message(json::array({json{{"optionText", "A"}, {"tally", 3}},
+								    json{{"optionText", "B"}, {"tally", 0}}}),
+						       "closed"),
+					       "active");
+		const json stringy =
+			YouTubePoll::Normalize(message(json::array({json{{"optionText", "A"}, {"tally", "12"}},
+								    json{{"optionText", "B"}, {"tally", "x"}}}),
+						       "active"),
+					       "closed");
+		const json untallied =
+			YouTubePoll::Normalize(message(json::array({json{{"optionText", "A"}}}), nullptr), "active");
+		const json unknownStatus = YouTubePoll::Normalize(message(json::array(), "unknown"), "closed");
+		const json empty = YouTubePoll::Normalize(json::object(), "active");
+
+		const bool okPoll = snippet["type"] == "pollEvent" && snippet["liveChatId"] == "chat-1" &&
+				    snippet["pollDetails"]["metadata"]["questionText"] == "Best map?" &&
+				    twoOptions.size() == 2 && twoOptions[0]["optionText"] == "A" &&
+				    twoOptions[1]["optionText"] == "B" && fourOptions.size() == 4 &&
+				    fourOptions[0]["optionText"] == "one" && fourOptions[3]["optionText"] == "four" &&
+				    numeric["id"] == "poll-1" && numeric["question"] == "Best map?" &&
+				    numeric["status"] == "closed" && numeric["options"][0]["text"] == "A" &&
+				    numeric["options"][0]["tally"] == 3 && numeric["options"][1]["tally"] == 0 &&
+				    stringy["status"] == "active" && stringy["options"][0]["tally"] == 12 &&
+				    stringy["options"][1]["tally"].is_null() &&
+				    untallied["options"][0]["tally"].is_null() && untallied["status"] == "active" &&
+				    unknownStatus["status"] == "closed" && empty["id"] == "" &&
+				    empty["options"].empty() && empty["status"] == "active";
+		HostLog(std::string("[selftest] youtube-poll -> ") + (okPoll ? "OK" : "MISMATCH"));
+		if (!okPoll) {
+			HostLog("[selftest] youtube-poll body=" + two.dump() + " numeric=" + numeric.dump() +
+				" stringy=" + stringy.dump() + " untallied=" + untallied.dump());
+		}
+	}
+
+	// 6c) Poll templates: identity is the trimmed question + options, so a re-run bumps one
+	// row, and the list never outgrows its cap. A private instance that is never Load()ed or
+	// Save()d, so the real poll_templates.json is untouched.
+	{
+		PollTemplateStore store;
+		bool createdFirst = false;
+		bool createdAgain = true;
+		bool createdOther = false;
+		const std::string first = store.Remember("Best map?", {"A", "B"}, createdFirst);
+		const std::string other = store.Remember("Best map?", {"B", "A"}, createdOther);
+		const std::string again = store.Remember("  Best map? ", {" A", "B  "}, createdAgain);
+		const json afterDedupe = store.List();
+		const bool renamed = store.Rename(first, "Maps");
+		const std::string caseDiffers = store.Remember("best map?", {"A", "B"}, createdOther);
+		for (size_t i = 0; i < PollTemplateStore::kMaxTemplates + 5; ++i) {
+			bool created = false;
+			store.Remember("Filler " + std::to_string(i), {"x", "y"}, created);
+		}
+		const json capped = store.List();
+		const bool okTemplates = createdFirst && !first.empty() && !createdAgain && again == first &&
+					 other != first && afterDedupe.size() == 2 && afterDedupe[0]["id"] == first &&
+					 afterDedupe[0]["question"] == "Best map?" &&
+					 afterDedupe[0]["options"] == json::array({"A", "B"}) && renamed &&
+					 caseDiffers != first && capped.size() == PollTemplateStore::kMaxTemplates &&
+					 capped[0]["question"] ==
+						 "Filler " + std::to_string(PollTemplateStore::kMaxTemplates + 4) &&
+					 !store.Touch(first) && store.Remove(capped[0]["id"].get<std::string>());
+		HostLog(std::string("[selftest] poll-templates -> ") + (okTemplates ? "OK" : "MISMATCH"));
+		if (!okTemplates) {
+			HostLog("[selftest] poll-templates deduped=" + afterDedupe.dump() +
+				" cappedSize=" + std::to_string(capped.size()));
 		}
 	}
 

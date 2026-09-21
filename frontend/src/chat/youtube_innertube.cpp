@@ -638,6 +638,71 @@ const std::pair<const char *, ActionFn> kActions[] = {
 	{"removeBannerForLiveChatCommand", OnNothingToRender},
 };
 
+// Poll payloads are not parsed yet: which of YouTube's two shapes arrives (the older
+// updateLiveChatPollAction pollRenderer, or a liveChatBannerPollRenderer whose tallies sit
+// behind a state entity key) is unknown until a real poll runs. So an action whose STRUCTURE
+// names a poll is written to the debug log whole, with URLs blanked. Only object keys are
+// matched -- the action and renderer names YouTube's schema uses -- never string values, so a
+// viewer message whose text says "poll" is not captured. The key walk is bounded at
+// kPollKeyDepth levels, deep enough for the banner shape
+// (addBannerToLiveChatCommand > bannerRenderer > liveChatBannerRenderer > contents >
+// liveChatBannerPollRenderer).
+constexpr int kPollKeyDepth = 5;
+
+bool HasPollKey(const json &node, int depth)
+{
+	if (depth <= 0) {
+		return false;
+	}
+	if (node.is_array()) {
+		for (const json &element : node) {
+			if (HasPollKey(element, depth)) {
+				return true;
+			}
+		}
+		return false;
+	}
+	if (!node.is_object()) {
+		return false;
+	}
+	for (const auto &entry : node.items()) {
+		const std::string &key = entry.key();
+		if (key.find("Poll") != std::string::npos || key.find("poll") != std::string::npos ||
+		    HasPollKey(entry.value(), depth - 1)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+json WithoutUrls(const json &node)
+{
+	if (node.is_string()) {
+		const std::string &s = node.get_ref<const std::string &>();
+		return s.find("://") != std::string::npos || s.rfind("//", 0) == 0 ? json("<url>") : node;
+	}
+	if (node.is_array() || node.is_object()) {
+		json out = node;
+		for (auto &child : out) {
+			child = WithoutUrls(child);
+		}
+		return out;
+	}
+	return node;
+}
+
+void CapturePollAction(const Loop &lp, const json &action)
+{
+	if (!::Log::DebugEnabled(LogCat::Chat)) {
+		return;
+	}
+	if (!HasPollKey(action, kPollKeyDepth)) {
+		return;
+	}
+	DBG(LogCat::Chat, "youtube innertube: dest=%s poll action captured: %s", lp.cfg.destTag.c_str(),
+	    WithoutUrls(action).dump(-1, ' ', false, json::error_handler_t::replace).c_str());
+}
+
 void ProcessActions(Loop &lp, const json &actions)
 {
 	if (!actions.is_array()) {
@@ -647,6 +712,7 @@ void ProcessActions(Loop &lp, const json &actions)
 		if (lp.cb.canceled()) {
 			return;
 		}
+		CapturePollAction(lp, action);
 		for (const auto &entry : kActions) {
 			const json &payload = Obj(action, entry.first);
 			if (payload.is_object()) {

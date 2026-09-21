@@ -97,6 +97,12 @@ public:
 	// silently drop.
 	bool SendToDestination(const OAuth::DestinationId &dest, const std::string &text);
 
+	// The live transport reading exactly `dest`, or null when none is active. Copied out
+	// under the hub lock; the caller holds the shared_ptr for the whole call it makes and
+	// never calls into the transport with any hub lock held (a concurrent Stop() only drops
+	// the hub's reference).
+	std::shared_ptr<ChatTransport> TransportFor(const OAuth::DestinationId &dest);
+
 	// Per-active-transport status: [{ platform, accountId, profileUuid, connected, error }].
 	json State();
 

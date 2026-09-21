@@ -4,6 +4,7 @@
 #include <functional>
 #include "../event_names.hpp"
 #include <string>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -161,6 +162,8 @@ inline void EmitChatTerminal(const ChatContext &ctx, const char *platform, const
 	EmitChatFrame(ctx, platform, false, health, reason);
 }
 
+inline constexpr const char *kPollsUnsupported = "polls are not supported on this platform";
+
 class ChatTransport {
 public:
 	virtual ~ChatTransport() = default;
@@ -189,6 +192,27 @@ public:
 	// real messages in the frontend. "" until connect() has resolved it. Default ""
 	// -- transports that reflect never need an echo, so they skip the override.
 	virtual std::string channelId() const { return std::string(); }
+
+	// Live polls, as a capability: a platform without them keeps these defaults, and adding
+	// one is a single override pair in its transport. Both address THIS transport's
+	// broadcast, like send(). On success `poll` is the platform-neutral shape
+	// {id, question, options:[{text, tally:number|null}], status:"active"|"closed"} as the
+	// platform reported it -- `id` must be set; question/options may come back empty, in
+	// which case the caller keeps what it asked for. `options` arrive already validated
+	// (trimmed, non-empty, a count the caller allows). false + `err` on failure; `err` may
+	// carry an Err::User envelope for a reason the streamer can act on.
+	virtual bool createPoll(OAuth::OAuthAccount & /*acct*/, const std::string & /*question*/,
+				const std::vector<std::string> & /*options*/, json & /*poll*/, std::string &err)
+	{
+		err = kPollsUnsupported;
+		return false;
+	}
+	virtual bool endPoll(OAuth::OAuthAccount & /*acct*/, const std::string & /*pollId*/, json & /*poll*/,
+			     std::string &err)
+	{
+		err = kPollsUnsupported;
+		return false;
+	}
 
 	// Signal the read loop to stop and close any open sockets. May be called from a
 	// different thread than connect()'s worker, so it must only flip a flag / shut

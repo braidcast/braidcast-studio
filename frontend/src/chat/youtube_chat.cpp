@@ -21,6 +21,7 @@
 #include "third_party_emotes.hpp"
 #include "ws_client.hpp"         // CancelableSleep / Backoff
 #include "youtube_innertube.hpp" // the zero-quota primary read
+#include "youtube_poll.hpp"
 
 namespace Chat {
 
@@ -40,6 +41,59 @@ const char *kLiveChatMessagesUrl = "https://www.googleapis.com/youtube/v3/liveCh
 // carries the next nextPageToken. So this endpoint is a ~10s long-poll in practice, not a
 // broadcast-length stream, and the per-connection billing makes the reconnect cadence
 // below a direct quota knob.
+// liveChatMessages.transition: closes an active poll. POST with no body; `id`, `status=closed`
+// and `part` all travel in the query string, and part=snippet is what makes the response carry
+// the final result. Verified against the reference page 2026-09-21.
+const char *kLiveChatTransitionUrl = "https://www.googleapis.com/youtube/v3/liveChat/messages/transition";
+
+// What every write into this transport's broadcast chat answers while it is reading none.
+const char *kNoActiveBroadcast = "no active YouTube broadcast";
+
+// The one pinned active poll a broadcast may hold. Inserting a second is expected to fail with
+// this reason, per the API reference (not yet seen live), and the only thing the streamer can
+// do about it is end the first.
+const char *kPollAlreadyActiveReason = "preconditionCheckFailed";
+
+// The shared tail of createPoll/endPoll: send through the provider (token coherence), log
+// the status for quota measurement -- the Data API does not document what either call
+// costs -- and read the result into the platform-neutral poll shape. The error names the
+// status and Google's reason, never the body: a response body is not ours to put in a log.
+bool SendPollCall(OAuth::YouTubeProvider &owner, OAuth::OAuthAccount &acct, const Http::HttpReq &req, const char *verb,
+		  const char *fallbackStatus, json &poll, std::string &err)
+{
+	Http::HttpResponse resp;
+	if (!owner.SendAuthed(acct, req, resp, err)) {
+		DBG(LogCat::Chat, "youtube: poll %s transport error", verb);
+		return false;
+	}
+	const bool ok = resp.status >= 200 && resp.status < 300;
+	const json parsed = ok ? JsonUtil::ParseJson(resp.body) : json();
+	DBG(LogCat::Chat, "youtube: poll %s HTTP %ld id=%s", verb, resp.status,
+	    ok ? JsonUtil::Str(parsed, "id").c_str() : "-");
+	if (!ok) {
+		const std::string reason = OAuth::YouTubeErrorReason(resp.body);
+		const std::string diagnostic = std::string("YouTube poll ") + verb + " failed (HTTP " +
+					       std::to_string(resp.status) + (reason.empty() ? "" : ": " + reason) +
+					       ")";
+		if (reason == kPollAlreadyActiveReason) {
+			err = Err::User(diagnostic, "End the poll that is already running on this broadcast first.");
+		} else if (OAuth::ClassifyYouTubeError(resp.status, reason) ==
+			   OAuth::YouTubeErrorClass::QuotaExhausted) {
+			// SendAuthed has already armed the provider's quota gate off this response.
+			err = Err::User(diagnostic, owner.QuotaMessage());
+		} else {
+			err = diagnostic;
+		}
+		return false;
+	}
+	poll = YouTubePoll::Normalize(parsed, fallbackStatus);
+	if (JsonUtil::Str(poll, "id").empty()) {
+		err = std::string("YouTube poll ") + verb + " returned no poll id";
+		return false;
+	}
+	return true;
+}
+
 const char *kLiveChatStreamUrl = "https://www.googleapis.com/youtube/v3/liveChat/messages/stream";
 
 // liveChatMessages.list omits pollingIntervalMillis on rare responses; fall back
@@ -1197,13 +1251,9 @@ bool YouTubeChat::send(OAuth::OAuthAccount &acct, const std::string &text, std::
 	// This transport's own read target, not a fresh provider lookup: the provider holds one
 	// broadcast per destination, and re-resolving here would post into whichever of the
 	// account's broadcasts applied last rather than the one this chat pane is showing.
-	std::string liveChatId;
-	{
-		const std::lock_guard<std::mutex> guard(targetMutex_);
-		liveChatId = liveChatId_;
-	}
+	const std::string liveChatId = CurrentLiveChatId();
 	if (liveChatId.empty()) {
-		err = "no active YouTube broadcast";
+		err = kNoActiveBroadcast;
 		return false;
 	}
 
@@ -1227,6 +1277,38 @@ bool YouTubeChat::send(OAuth::OAuthAccount &acct, const std::string &text, std::
 		return false;
 	}
 	return true;
+}
+
+std::string YouTubeChat::CurrentLiveChatId() const
+{
+	const std::lock_guard<std::mutex> guard(targetMutex_);
+	return liveChatId_;
+}
+
+bool YouTubeChat::createPoll(OAuth::OAuthAccount &acct, const std::string &question,
+			     const std::vector<std::string> &options, json &poll, std::string &err)
+{
+	const std::string liveChatId = CurrentLiveChatId();
+	if (liveChatId.empty()) {
+		err = kNoActiveBroadcast;
+		return false;
+	}
+	Http::HttpReq req;
+	req.method = "POST";
+	req.url = std::string(kLiveChatMessagesUrl) + "?part=snippet";
+	req.contentType = "application/json";
+	req.body = YouTubePoll::BuildInsertBody(liveChatId, question, options).dump();
+	return SendPollCall(owner_, acct, req, "create", "active", poll, err);
+}
+
+bool YouTubeChat::endPoll(OAuth::OAuthAccount &acct, const std::string &pollId, json &poll, std::string &err)
+{
+	// No request body: the transition is addressed entirely by its query parameters.
+	Http::HttpReq req;
+	req.method = "POST";
+	req.url =
+		std::string(kLiveChatTransitionUrl) + "?id=" + Http::UrlEncode(pollId) + "&status=closed&part=snippet";
+	return SendPollCall(owner_, acct, req, "end", "closed", poll, err);
 }
 
 } // namespace Chat

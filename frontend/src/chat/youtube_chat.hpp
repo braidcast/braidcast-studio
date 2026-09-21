@@ -4,6 +4,7 @@
 #include <atomic>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include "chat_transport.hpp"
 
@@ -60,6 +61,13 @@ public:
 	// whichever of them went live last.
 	bool send(OAuth::OAuthAccount &acct, const std::string &text, std::string &err) override;
 
+	// Live polls in THIS transport's broadcast chat, for the same reason send() posts there:
+	// create is liveChatMessages.insert of a pollEvent, end is liveChatMessages.transition to
+	// closed with part=snippet so the response carries the final tallies.
+	bool createPoll(OAuth::OAuthAccount &acct, const std::string &question, const std::vector<std::string> &options,
+			json &poll, std::string &err) override;
+	bool endPoll(OAuth::OAuthAccount &acct, const std::string &pollId, json &poll, std::string &err) override;
+
 	// Every read path returns EVERY message in the chat -- including ones this
 	// account inserted via send() -- so the read loop already emits the sender's
 	// own messages (on the next poll). A local echo would double them.
@@ -70,6 +78,10 @@ public:
 	void disconnect() override { stop_.store(true, std::memory_order_release); }
 
 private:
+	// The liveChatId connect() is reading, "" while not connected. The one read of the
+	// published target, shared by every call that writes into this broadcast's chat.
+	std::string CurrentLiveChatId() const;
+
 	OAuth::YouTubeProvider &owner_;
 	std::mutex runMutex_;           // serializes connect() across overlapping Start/Stop
 	std::atomic<bool> stop_{false}; // set by disconnect(); secondary to ctx.canceled()

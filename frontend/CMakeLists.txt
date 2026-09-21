@@ -214,6 +214,13 @@ target_sources(
     # + .insert send), owned by the YouTube provider; HTTP only, no obs.h.
     src/chat/youtube_chat.cpp
     src/chat/youtube_chat.hpp
+    # YouTube live polls: the pure insert-body builder and liveChatMessage reader the
+    # transport's createPoll/endPoll use; no I/O, no obs.h.
+    src/chat/youtube_poll.cpp
+    src/chat/youtube_poll.hpp
+    # The session's open live polls (polls.* bridge methods); mutex-guarded, no obs.h.
+    src/chat/poll_registry.cpp
+    src/chat/poll_registry.hpp
     # YouTube InnerTube live-chat read (youtubei/v1/live_chat/get_live_chat): the zero-quota
     # PRIMARY read the transport above drives, with the Data API loops as its fallback.
     # Anonymous HTTP only -- no credential ever reaches this endpoint. No obs.h.
@@ -377,6 +384,9 @@ target_sources(
     src/multistream/StreamMetaStore.hpp
     src/multistream/StreamInfoPresetStore.cpp
     src/multistream/StreamInfoPresetStore.hpp
+    src/multistream/PollTemplateStore.cpp
+    src/multistream/PollTemplateStore.hpp
+    src/multistream/MruRows.hpp
     src/multistream/Hotkeys.cpp
     src/multistream/Hotkeys.hpp
     src/multistream/VirtualCamManager.cpp

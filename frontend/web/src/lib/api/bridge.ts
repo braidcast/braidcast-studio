@@ -739,6 +739,41 @@ export interface StreamInfoPreset {
   byProvider: Record<string, Record<string, unknown>>;
 }
 
+/** One option of a live poll. `tally` is the vote count, or null while the platform
+ * has not reported one (an open poll, or a closing response that carried none). */
+export interface LivePollOption {
+  text: string;
+  tally: number | null;
+}
+
+/** One live poll opened in a destination's broadcast chat (polls.*). Addressed like a
+ * chat.send reply: `accountId` + `profileUuid` ("" for an account-wide destination).
+ * `error` is set when the last action on it failed -- typically a broadcast that ended
+ * under it -- and such a poll can be dismissed. Timestamps are epoch ms. */
+export interface LivePoll {
+  id: string;
+  accountId: string;
+  profileUuid: string;
+  question: string;
+  options: LivePollOption[];
+  status: "active" | "closed";
+  startedAtMs: number;
+  endedAtMs: number | null;
+  error?: string;
+}
+
+/** One saved poll template (pollTemplates.*). Identity is the question plus options, so
+ * running the same poll again bumps this row; `name` may be "" (the UI then labels it by
+ * its question). Ordered by `lastUsedAtMs`, most recent first. */
+export interface PollTemplate {
+  id: string;
+  name: string;
+  question: string;
+  options: string[];
+  createdAtMs: number;
+  lastUsedAtMs: number;
+}
+
 /** One category/game match (streamMeta.searchCategories). `boxArt` is the box-art
  * image URL (may contain {width}/{height} placeholders); YouTube's category list
  * carries no artwork, so it is absent there. */
@@ -2233,6 +2268,25 @@ export interface ObsMethods {
   // started by the host on go-live and stopped on stop -- there is no connect method.
   "chat.send": { ok: boolean };
   "chat.state": ChatState[];
+  // Live polls. create ({accountId, profileUuid?, question, options: string[2..4]}) opens
+  // one in that destination's broadcast chat and remembers it as a template; end ({id})
+  // closes it and returns the final tallies when the platform reports them; dismiss ({id})
+  // removes a closed, failed or orphaned poll, and succeeds for an id already gone.
+  // create/end run on the async lane and reject with a readable error (a poll already
+  // running, duplicate options, no live chat for the destination, a platform without
+  // polls). Every change also emits polls.changed.
+  "polls.create": { poll: LivePoll };
+  "polls.end": { poll: LivePoll };
+  "polls.list": { polls: LivePoll[] };
+  "polls.dismiss": { ok: true };
+  // Saved poll templates (no provider/network). remember ({question, options}) reports
+  // whether it created a row; touch/remove/rename ({id} / {id, name}) mirror
+  // streamInfoPresets.*. Every mutation emits pollTemplates.changed.
+  "pollTemplates.list": { templates: PollTemplate[] };
+  "pollTemplates.remember": { id: string; created: boolean };
+  "pollTemplates.touch": { ok: true };
+  "pollTemplates.remove": { ok: true };
+  "pollTemplates.rename": { ok: true };
   // Cross-platform events feed (creator engagement, Phase 9.2). list returns the
   // retained events newest-first; clear empties the host store (the host then
   // emits an empty events.backfill so consumers reset their feed). New events
@@ -2470,6 +2524,10 @@ export interface ObsEvents {
   // time, so a consumer merges it by `platform`). Chat is only active while live.
   "chat.message": ChatMessage;
   "chat.state": ChatState;
+  // The full live-poll list after any change (open, close, a failure, dismiss).
+  "polls.changed": { polls: LivePoll[] };
+  // A poll template was remembered/touched/renamed/removed; re-run pollTemplates.list.
+  "pollTemplates.changed": Record<string, never>;
   // Aggregate viewer count (perAccount + total), pushed by the host's viewer
   // poller while live; the Multichat dock / Monitor card / Studio chip render off it.
   "viewers.changed": ViewerCounts;

@@ -78,18 +78,8 @@ private:
 	// through, so "which preset is that" is decided in a single place.
 	std::vector<Preset>::iterator Find(const std::string &id);
 
-	// The stamp a row takes when it is used: the wall clock, or one past the most recent
-	// stamp already held when the wall clock does not exceed it. Eviction reads this field
-	// (see Normalize), and TimeUtil::NowMs is system_clock -- so an NTP correction, a VM
-	// resume or a manual time change that moves the clock BACKWARD would otherwise stamp
-	// the row the user just applied below every other row and make it the next one dropped.
-	// The clamp keeps the field usable as the date the picker shows while making the order
-	// it drives monotonic. The trade it accepts: while the clock is behind, the shown "last
-	// used" time leads the real one, by at most how far back the clock went.
-	int64_t UsedNowMs() const;
-
 	// Restore the invariant presets_ holds: ordered by last use, most recent first, and
-	// never longer than kMaxPresets.
+	// never longer than kMaxPresets (MruRows::Normalize).
 	void Normalize();
 
 	// Drop rows a file written under an older identity rule split in two. Load-time only:

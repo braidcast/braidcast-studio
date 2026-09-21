@@ -23,6 +23,12 @@ void RunAsync(std::function<void()> work);
 // a late callback from a detached worker can't touch CEF after shutdown.
 void PostToUi(std::function<void()> fn);
 
+// PostToUi without the inline shortcut: `fn` always goes to the back of the UI task queue,
+// even when called on the UI thread. For a producer that emits from both the UI thread and
+// workers and needs delivery in the order it posted -- an inline run would overtake a
+// worker's already-queued task. Same alive-guard as PostToUi.
+void QueueOnUi(std::function<void()> fn);
+
 // Toggle the alive-guard. Called with false during bridge teardown (on the UI
 // thread) so any in-flight PostToUi no-ops thereafter.
 void SetAlive(bool alive);

@@ -1,5 +1,6 @@
 #include "StreamInfoPresetStore.hpp"
 
+#include "MruRows.hpp"
 #include "StorePaths.hpp"
 
 #include "log.hpp"
@@ -13,7 +14,6 @@
 #include <util/platform.h>
 
 #include <algorithm>
-#include <limits>
 #include <utility>
 
 using json = nlohmann::json;
@@ -28,18 +28,6 @@ constexpr int kStoreVersion = 1;
 std::string FilePath()
 {
 	return MultistreamBasicPath("stream_info_presets.json");
-}
-
-// An epoch-ms field, falling back to `fallback` for a missing, non-numeric or non-positive
-// value. Zero is refused along with garbage: a hand-edited row carrying one would be the
-// next eviction victim regardless of how recently it was really used. The upper clamp is
-// what keeps UsedNowMs()'s `front().lastUsedAtMs + 1` from overflowing on a document
-// carrying INT64_MAX.
-int64_t ReadTimestamp(const json &item, const char *key, int64_t fallback)
-{
-	constexpr int64_t kMaxStampMs = std::numeric_limits<int64_t>::max() / 2;
-	const int64_t value = JsonUtil::NumLoose(item, key, fallback);
-	return value > 0 ? std::min(value, kMaxStampMs) : fallback;
 }
 
 // A metadata bag as it was persisted: the stringified JSON object Save writes (see the note
@@ -170,8 +158,8 @@ void StreamInfoPresetStore::Load()
 			continue;
 		}
 		preset.name = JsonUtil::Str(item, "name");
-		preset.createdAtMs = ReadTimestamp(item, "createdAtMs", now);
-		preset.lastUsedAtMs = ReadTimestamp(item, "lastUsedAtMs", now);
+		preset.createdAtMs = MruRows::ReadTimestamp(item, "createdAtMs", now);
+		preset.lastUsedAtMs = MruRows::ReadTimestamp(item, "lastUsedAtMs", now);
 		presets_.push_back(std::move(preset));
 	}
 	// Neither the file's length nor its order is trusted: a hand-edited or newer-build
@@ -220,7 +208,7 @@ json StreamInfoPresetStore::List() const
 std::string StreamInfoPresetStore::Remember(const json &shared, const json &byProvider, bool &created)
 {
 	const std::string incoming = PresetIdentity(shared, byProvider);
-	const int64_t usedNow = UsedNowMs();
+	const int64_t usedNow = MruRows::UsedNowMs(presets_);
 
 	for (Preset &preset : presets_) {
 		if (PresetIdentity(preset.shared, preset.byProvider) != incoming) {
@@ -263,7 +251,7 @@ bool StreamInfoPresetStore::Touch(const std::string &id)
 	if (it == presets_.end()) {
 		return false;
 	}
-	it->lastUsedAtMs = UsedNowMs();
+	it->lastUsedAtMs = MruRows::UsedNowMs(presets_);
 	Normalize();
 	return true;
 }
@@ -292,20 +280,7 @@ bool StreamInfoPresetStore::Rename(const std::string &id, const std::string &nam
 
 auto StreamInfoPresetStore::Find(const std::string &id) -> std::vector<Preset>::iterator
 {
-	return std::find_if(presets_.begin(), presets_.end(), [&id](const Preset &p) { return p.id == id; });
-}
-
-int64_t StreamInfoPresetStore::UsedNowMs() const
-{
-	const int64_t now = TimeUtil::NowMs();
-	if (presets_.empty()) {
-		return now;
-	}
-	// Normalize leaves presets_ ordered most recent first, and no mutator leaves it
-	// otherwise: Remove only erases, which preserves the order, and Rename touches no
-	// stamp. So front() holds the largest stamp in the store whenever a caller reaches
-	// here.
-	return std::max(now, presets_.front().lastUsedAtMs + 1);
+	return MruRows::FindById(presets_, id);
 }
 
 void StreamInfoPresetStore::MergeDuplicates()
@@ -345,13 +320,5 @@ void StreamInfoPresetStore::MergeDuplicates()
 
 void StreamInfoPresetStore::Normalize()
 {
-	// Stable, so two rows stamped in the same millisecond keep a deterministic order.
-	std::stable_sort(presets_.begin(), presets_.end(),
-			 [](const Preset &a, const Preset &b) { return a.lastUsedAtMs > b.lastUsedAtMs; });
-	// Eviction takes the tail, which is the row used longest ago -- never the oldest by
-	// creation. A sheet made months back but applied every broadcast has to survive a burst
-	// of one-off experiments.
-	if (presets_.size() > kMaxPresets) {
-		presets_.resize(kMaxPresets);
-	}
+	MruRows::Normalize(presets_, kMaxPresets);
 }

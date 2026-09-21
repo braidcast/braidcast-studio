@@ -40,6 +40,7 @@
 #include "audio/AudioMonitor.hpp"
 #include "chat/chat_hub.hpp"
 #include "chat/chat_transport.hpp"
+#include "chat/poll_registry.hpp"
 #include "chat/channel_stats_poller.hpp"
 #include "chat/viewer_poller.hpp"
 #include "chat/ws_client.hpp"
@@ -95,6 +96,7 @@
 #include "multistream/SceneLinkStore.hpp"
 #include "multistream/StorePaths.hpp"
 #include "multistream/StreamInfoPresetStore.hpp"
+#include "multistream/PollTemplateStore.hpp"
 #include "multistream/StreamMetaStore.hpp"
 #include "multistream/StreamProfileStore.hpp"
 #include "multistream/VideoGate.hpp"
@@ -13615,18 +13617,28 @@ bool MethodStreamInfoPresetsRemember(const json &params, json &result, std::stri
 	return PersistOrFail(saved, error);
 }
 
-// The tail the three id-addressed preset mutations share: refuse an id the store does not
-// hold, then persist and tell the UI. `verb` names the attempt in the error.
-bool FinishPresetMutation(const char *verb, const std::string &id, bool applied, json &result, std::string &error)
+// The tail every id-addressed mutation of a saved-row store shares (stream info presets,
+// poll templates): refuse an id the store does not hold, then persist and tell the UI.
+// `noun` names the row and `shortNoun` the thing that is missing in the error, `verb` the
+// attempt, `event` the change push.
+template<typename Store>
+bool FinishStoreMutation(Store &store, const char *noun, const char *shortNoun, const char *event, const char *verb,
+			 const std::string &id, bool applied, json &result, std::string &error)
 {
 	if (!applied) {
-		error = std::string("could not ") + verb + " stream info preset " + id + ": no such preset";
+		error = std::string("could not ") + verb + " " + noun + " " + id + ": no such " + shortNoun;
 		return false;
 	}
-	const bool saved = ObsBootstrap::StreamInfoPresets().Save();
+	const bool saved = store.Save();
 	result = json{{"ok", true}};
-	EmitEvent(EventNames::kStreamInfoPresetsChanged, json::object());
+	EmitEvent(event, json::object());
 	return PersistOrFail(saved, error);
+}
+
+bool FinishPresetMutation(const char *verb, const std::string &id, bool applied, json &result, std::string &error)
+{
+	return FinishStoreMutation(ObsBootstrap::StreamInfoPresets(), "stream info preset", "preset",
+				   EventNames::kStreamInfoPresetsChanged, verb, id, applied, result, error);
 }
 
 bool MethodStreamInfoPresetsTouch(const json &params, json &result, std::string &error)
@@ -13677,6 +13689,13 @@ bool MethodStreamInfoPresetsRename(const json &params, json &result, std::string
 // All three flow through the existing alive-guarded EmitEvent path -- no new emit
 // plumbing is needed; the chat.* helpers live in the hub (RouteEmit).
 
+// The refusal for a call addressed to a destination the hub holds no live transport for.
+std::string NoLiveChatError(const OAuth::DestinationId &dest)
+{
+	return "no live chat for destination '" + OAuth::DestinationKey(dest) +
+	       "' (it is not streaming, or its chat transport dropped)";
+}
+
 bool MethodChatSend(const json &params, json &result, std::string &error)
 {
 	std::string text;
@@ -13698,8 +13717,7 @@ bool MethodChatSend(const json &params, json &result, std::string &error)
 		// Neither falling back to the platform nor answering ok:true would be honest: the
 		// reply would have gone to the wrong chat, or to none, with the composer cleared.
 		if (!Chat::Hub().SendToDestination(dest, text)) {
-			error = "no live chat for destination '" + OAuth::DestinationKey(dest) +
-				"' (it is not streaming, or its chat transport dropped)";
+			error = NoLiveChatError(dest);
 			return false;
 		}
 		result = json{{"ok", true}};
@@ -13724,6 +13742,238 @@ bool MethodChatState(const json & /*params*/, json &result, std::string & /*erro
 {
 	result = Chat::Hub().State();
 	return true;
+}
+
+// ---- live polls ------------------------------------------------------------
+//
+// A poll is opened in ONE destination's broadcast chat, addressed exactly like a chat.send
+// reply (accountId + profileUuid), through that destination's live transport -- which is
+// what decides whether the platform has polls at all (ChatTransport::createPoll). create and
+// end are network calls and run on the async lane; the registry they write is mutex-guarded
+// for that reason and pushes polls.changed itself. The transport's shared_ptr is held for the
+// whole call and the account is loaded fresh, as ChatHub::DispatchSend does, so ensureFresh
+// stays the only token writer.
+
+// The question and options of a poll draft, trimmed, or false + `error` naming what is wrong.
+bool ReadPollDraft(const json &params, const char *method, std::string &question, std::vector<std::string> &options,
+		   std::string &error)
+{
+	question = StringUtil::Trim(OptString(params, "question"));
+	if (question.empty()) {
+		error = std::string(method) + ": the poll needs a question";
+		return false;
+	}
+	const json &raw = JsonUtil::Obj(params, "options");
+	if (!raw.is_array() || raw.size() < Chat::kMinPollOptions || raw.size() > Chat::kMaxPollOptions) {
+		error = std::string(method) + ": a poll needs " + std::to_string(Chat::kMinPollOptions) + " to " +
+			std::to_string(Chat::kMaxPollOptions) + " options";
+		return false;
+	}
+	options.clear();
+	for (const json &option : raw) {
+		const std::string text = option.is_string() ? StringUtil::Trim(option.get<std::string>())
+							    : std::string();
+		if (text.empty()) {
+			error = std::string(method) + ": every poll option needs text";
+			return false;
+		}
+		// Options are told apart by their text (tallies are matched back onto them that way),
+		// and two identical choices are no use to a voter anyway.
+		if (std::find(options.begin(), options.end(), text) != options.end()) {
+			error = std::string(method) + ": two poll options say \"" + text +
+				"\"; make each one different";
+			return false;
+		}
+		options.push_back(text);
+	}
+	return true;
+}
+
+// Remember a poll as a template, persist, and tell the UI. UI thread only (the store is
+// unguarded). False when the save failed.
+bool RememberPollTemplate(const std::string &question, const std::vector<std::string> &options, json &result)
+{
+	PollTemplateStore &store = ObsBootstrap::PollTemplates();
+	bool created = false;
+	const std::string id = store.Remember(question, options, created);
+	const bool saved = store.Save();
+	result = json{{"id", id}, {"created", created}};
+	EmitEvent(EventNames::kPollTemplatesChanged, json::object());
+	return saved;
+}
+
+// The live transport and a freshly loaded account for a poll call on `dest`, or false +
+// `error`. The caller holds `transport` for the whole call.
+bool PollCallTarget(const OAuth::DestinationId &dest, std::shared_ptr<Chat::ChatTransport> &transport,
+		    OAuth::OAuthAccount &acct, std::string &error)
+{
+	transport = Chat::Hub().TransportFor(dest);
+	if (!transport) {
+		error = NoLiveChatError(dest);
+		return false;
+	}
+	const std::optional<OAuth::OAuthAccount> stored = OAuth::Accounts().Get(dest.accountId);
+	if (!stored) {
+		error = "account not connected; reconnect";
+		return false;
+	}
+	acct = *stored;
+	return true;
+}
+
+// The destination a registered poll (wire shape) was opened on.
+OAuth::DestinationId PollDestination(const json &poll)
+{
+	return OAuth::DestinationId{JsonUtil::Str(poll, "accountId"), JsonUtil::Str(poll, "profileUuid")};
+}
+
+bool MethodPollsCreate(const json &params, json &result, std::string &error)
+{
+	std::string accountId;
+	if (!RequireStr(params, "polls.create", "accountId", accountId, error)) {
+		return false;
+	}
+	std::string question;
+	std::vector<std::string> options;
+	if (!ReadPollDraft(params, "polls.create", question, options, error)) {
+		return false;
+	}
+	const OAuth::DestinationId dest{accountId, OptString(params, "profileUuid")};
+	std::shared_ptr<Chat::ChatTransport> transport;
+	OAuth::OAuthAccount acct;
+	if (!PollCallTarget(dest, transport, acct, error)) {
+		return false;
+	}
+	json reported;
+	if (!transport->createPoll(acct, question, options, reported, error)) {
+		return false;
+	}
+	result = json{{"poll", Chat::Polls().Open(dest, question, options, reported)}};
+	// The template store is UI-thread-only. A failed save is logged by the store and does
+	// not fail a poll that is already running in the chat.
+	AsyncTask::PostToUi([question, options] {
+		json ignored;
+		RememberPollTemplate(question, options, ignored);
+	});
+	return true;
+}
+
+bool MethodPollsEnd(const json &params, json &result, std::string &error)
+{
+	std::string id;
+	if (!RequireStr(params, "polls.end", "id", id, error)) {
+		return false;
+	}
+	const json poll = Chat::Polls().Get(id);
+	if (poll.is_null()) {
+		error = "polls.end: no poll '" + id + "'";
+		return false;
+	}
+	if (JsonUtil::Str(poll, "status") == "closed") {
+		result = json{{"poll", poll}};
+		return true;
+	}
+	// A failure is recorded on the poll as well as answered to the caller, and the poll stays
+	// dismissable: the usual cause is a broadcast that ended under it, and the row must say so.
+	std::shared_ptr<Chat::ChatTransport> transport;
+	OAuth::OAuthAccount acct;
+	json reported;
+	if (!PollCallTarget(PollDestination(poll), transport, acct, error) ||
+	    !transport->endPoll(acct, id, reported, error)) {
+		Chat::Polls().Fail(id, Err::Diagnostic(error));
+		return false;
+	}
+	const json closed = Chat::Polls().Close(id, reported);
+	if (closed.is_null()) {
+		error = "polls.end: poll '" + id + "' was dismissed while it was being ended";
+		return false;
+	}
+	result = json{{"poll", closed}};
+	return true;
+}
+
+bool MethodPollsList(const json & /*params*/, json &result, std::string & /*error*/)
+{
+	result = Chat::Polls().List();
+	return true;
+}
+
+bool MethodPollsDismiss(const json &params, json &result, std::string &error)
+{
+	std::string id;
+	if (!RequireStr(params, "polls.dismiss", "id", id, error)) {
+		return false;
+	}
+	const json poll = Chat::Polls().Get(id);
+	const bool orphaned = !poll.is_null() && Chat::Hub().TransportFor(PollDestination(poll)) == nullptr;
+	switch (Chat::Polls().Dismiss(id, orphaned)) {
+	case Chat::PollRegistry::DismissResult::Removed:
+	case Chat::PollRegistry::DismissResult::Unknown:
+		// Already gone (a double click, or another window got there first): the outcome
+		// the caller wanted, so not a failure.
+		result = json{{"ok", true}};
+		return true;
+	case Chat::PollRegistry::DismissResult::StillRunning:
+		break;
+	}
+	error = "polls.dismiss: the poll is still running; end it first";
+	return false;
+}
+
+// ---- saved poll templates --------------------------------------------------
+//
+// PollTemplateStore (poll_templates.json): the polls a streamer has run, kept to run again.
+// No provider and no network, so the synchronous lane, like streamInfoPresets.*.
+
+bool FinishPollTemplateMutation(const char *verb, const std::string &id, bool applied, json &result, std::string &error)
+{
+	return FinishStoreMutation(ObsBootstrap::PollTemplates(), "poll template", "template",
+				   EventNames::kPollTemplatesChanged, verb, id, applied, result, error);
+}
+
+bool MethodPollTemplatesList(const json & /*params*/, json &result, std::string & /*error*/)
+{
+	result = json{{"templates", ObsBootstrap::PollTemplates().List()}};
+	return true;
+}
+
+bool MethodPollTemplatesRemember(const json &params, json &result, std::string &error)
+{
+	std::string question;
+	std::vector<std::string> options;
+	if (!ReadPollDraft(params, "pollTemplates.remember", question, options, error)) {
+		return false;
+	}
+	return PersistOrFail(RememberPollTemplate(question, options, result), error);
+}
+
+bool MethodPollTemplatesTouch(const json &params, json &result, std::string &error)
+{
+	std::string id;
+	if (!RequireStr(params, "pollTemplates.touch", "id", id, error)) {
+		return false;
+	}
+	return FinishPollTemplateMutation("touch", id, ObsBootstrap::PollTemplates().Touch(id), result, error);
+}
+
+bool MethodPollTemplatesRemove(const json &params, json &result, std::string &error)
+{
+	std::string id;
+	if (!RequireStr(params, "pollTemplates.remove", "id", id, error)) {
+		return false;
+	}
+	return FinishPollTemplateMutation("remove", id, ObsBootstrap::PollTemplates().Remove(id), result, error);
+}
+
+bool MethodPollTemplatesRename(const json &params, json &result, std::string &error)
+{
+	std::string id;
+	if (!RequireStr(params, "pollTemplates.rename", "id", id, error)) {
+		return false;
+	}
+	// Optional, like streamInfoPresets.rename: "" returns the row to its question as label.
+	const std::string name = OptString(params, "name");
+	return FinishPollTemplateMutation("rename", id, ObsBootstrap::PollTemplates().Rename(id, name), result, error);
 }
 
 // ---- events (Phase 9.2a) ---------------------------------------------------
@@ -14738,6 +14988,13 @@ void Init()
 		{"streamInfoPresets.touch", MethodStreamInfoPresetsTouch},
 		{"streamInfoPresets.remove", MethodStreamInfoPresetsRemove},
 		{"streamInfoPresets.rename", MethodStreamInfoPresetsRename},
+		{"polls.list", MethodPollsList},
+		{"polls.dismiss", MethodPollsDismiss},
+		{"pollTemplates.list", MethodPollTemplatesList},
+		{"pollTemplates.remember", MethodPollTemplatesRemember},
+		{"pollTemplates.touch", MethodPollTemplatesTouch},
+		{"pollTemplates.remove", MethodPollTemplatesRemove},
+		{"pollTemplates.rename", MethodPollTemplatesRename},
 		{"events.list", MethodEventsList},
 		{"events.clear", MethodEventsClear},
 		{"overlays.list", MethodOverlaysList},
@@ -14781,6 +15038,14 @@ void Init()
 		{"chat.send",
 		 [](const json &p, CefRefPtr<CefMessageRouterBrowserSide::Callback> cb) {
 			 RunAsyncMethod("chat.send", p, cb, MethodChatSend);
+		 }},
+		{"polls.create",
+		 [](const json &p, CefRefPtr<CefMessageRouterBrowserSide::Callback> cb) {
+			 RunAsyncMethod("polls.create", p, cb, MethodPollsCreate);
+		 }},
+		{"polls.end",
+		 [](const json &p, CefRefPtr<CefMessageRouterBrowserSide::Callback> cb) {
+			 RunAsyncMethod("polls.end", p, cb, MethodPollsEnd);
 		 }},
 		{"overlays.uploadAsset",
 		 [](const json &p, CefRefPtr<CefMessageRouterBrowserSide::Callback> cb) {

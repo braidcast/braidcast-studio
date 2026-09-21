@@ -10,9 +10,8 @@
   import { CHAT_STATE_NOTE, chatTransportFor, type ChatTransport } from "$lib/ui/destinationHealth";
   import EmptyState from "$lib/ui/EmptyState.svelte";
   import Icon from "$lib/ui/Icon.svelte";
-  import Avatar from "$lib/ui/Avatar.svelte";
-  import PlatformMark from "$lib/ui/PlatformMark.svelte";
-  import CanvasMark from "$lib/ui/CanvasMark.svelte";
+  import ChatOrigin from "$lib/ui/ChatOrigin.svelte";
+  import IconButton from "$lib/ui/IconButton.svelte";
   import FeedTime from "$lib/ui/FeedTime.svelte";
   import DestinationChips, { type DestinationChipStatus } from "$lib/ui/DestinationChips.svelte";
   import {
@@ -28,6 +27,10 @@
   } from "$lib/ui/destinationSelection";
   import { destinationIdentityStore, type DestinationIdentity } from "$lib/stores/destinationIdentityStore.svelte";
   import { transportHealthStore } from "$lib/stores/transportHealthStore.svelte";
+  import { pollStore } from "$lib/stores/pollStore.svelte";
+  import type { LivePoll } from "$lib/api/bridge";
+  import NewPollDialog, { type PollTarget } from "$lib/dialogs/polls/NewPollDialog.svelte";
+  import PollStrip from "$lib/docks/multichat/PollStrip.svelte";
 
   // Host supplies tab chrome + strips __* keys; this body declares no props.
   let {}: Record<string, unknown> = $props();
@@ -44,6 +47,7 @@
 
   $effect(() => {
     destinationIdentityStore.start();
+    pollStore.start();
     return transportHealthStore.subscribe();
   });
 
@@ -162,10 +166,9 @@
     none: "No stream profile is configured for the account this message came from.",
   };
 
-  function originTitle(m: ChatMessage, o: Attribution): string {
-    const platform = platformName(m.platform);
+  function originTitle(platform: string, o: Attribution): string {
     const hint = FIDELITY_HINT[o.fidelity];
-    return [platform, o.channel, o.canvasLabel].join(" · ") + (hint ? " — " + hint : "");
+    return [platformName(platform), o.channel, o.canvasLabel].join(" · ") + (hint ? " — " + hint : "");
   }
 
   // More than one place a message can come from: the point at which every row has to
@@ -450,6 +453,77 @@
 
   let canSend = $derived(composer.address !== null);
 
+  // --- polls ------------------------------------------------------------------
+  // YouTube is the one platform with chat polls. A poll opens in ONE chat, addressed like
+  // a reply (accountId + profileUuid), so what is on offer is the connected YouTube chat
+  // transports -- deduplicated by transport id, because two destinations sharing one
+  // channel-wide chat are one chat and must not get two polls. Independent of the chip
+  // selection: the selection scopes replies, and a poll names its chats in its own form.
+  const POLL_PLATFORM = "youtube";
+
+  let pollTargets = $derived.by<PollTarget[]>(() => {
+    const byTransport = new Map<string, PollTarget>();
+    for (const d of armed) {
+      if (platformKey(d.platform) !== POLL_PLATFORM) {
+        continue;
+      }
+      const t = chatTransportFor(d);
+      if (!t || t.row.state !== "connected" || byTransport.has(t.id)) {
+        continue;
+      }
+      // polls.create reads an absent/empty profileUuid as the channel-wide chat, which is
+      // what a null here means.
+      const profileUuid = t.profileUuid ?? "";
+      const origin = attribute({ platform: d.platform, accountId: d.accountId, profileUuid }, destByAccount);
+      byTransport.set(t.id, {
+        key: t.id,
+        accountId: d.accountId,
+        profileUuid,
+        // A shared chat belongs to the channel, not to this one profile.
+        name: sharesChat(d, t) ? origin.channel : d.displayName,
+        origin,
+        originTitle: originTitle(d.platform, origin),
+      });
+    }
+    return [...byTransport.values()];
+  });
+
+  /** Why the poll control is off, in words; empty while it is available. */
+  let pollBlocker = $derived.by(() => {
+    if (pollTargets.length > 0) {
+      return "";
+    }
+    const youtube = armed.filter((d) => platformKey(d.platform) === POLL_PLATFORM);
+    if (youtube.length === 0) {
+      return "Polls run in YouTube live chat — no YouTube stream is set to go out";
+    }
+    const t = chatTransportFor(youtube[0]);
+    return "Polls need a connected YouTube chat — " + (t ? CHAT_STATE_NOTE[t.row.state] : NO_TRANSPORT_NOTE);
+  });
+
+  let pollFormOpen = $state(false);
+  const uid = $props.id();
+  const pollButtonId = uid + "-poll";
+
+  function openPollForm(): void {
+    // The button is aria-disabled rather than disabled so its title can say why, which
+    // means the click still arrives and is refused here.
+    if (pollBlocker) {
+      return;
+    }
+    pollFormOpen = true;
+  }
+
+  function focusPollButton(): void {
+    document.getElementById(pollButtonId)?.focus();
+  }
+
+  function pollOrigin(p: LivePoll): { origin: Attribution; title: string } {
+    const source = { platform: POLL_PLATFORM, accountId: p.accountId, profileUuid: p.profileUuid };
+    const origin = attribute(source, destByAccount);
+    return { origin, title: originTitle(POLL_PLATFORM, origin) };
+  }
+
   let draft = $state("");
 
   function send(): void {
@@ -508,6 +582,7 @@
 </script>
 
 <div class="chat" use:tickWhileVisible>
+  <PollStrip polls={pollStore.polls} originOf={pollOrigin} fallbackFocus={focusPollButton} />
   <div class="feed">
     <div class="scroll" use:feedScroll>
       {#if feed.rows.length === 0}
@@ -528,30 +603,7 @@
               <FeedTime ts={m.ts} />
               {#if multiOrigin}
                 {@const o = attribute(m, destByAccount)}
-                <!-- The avatar is what tells two channels of one platform apart: they
-                     share one brand mark and one stripe color, so neither can. -->
-                <span class="origin" title={originTitle(m, o)}>
-                  <PlatformMark platform={m.platform} size={11} />
-                  <!-- An unattributable row knows its platform and nothing else. Both the
-                       avatar and the canvas label would resolve to ABSENT_LABEL, which
-                       prints an absence as if it were content; the mark above is real. -->
-                  {#if o.fidelity !== "none"}
-                    <Avatar url={o.avatarUrl} name={o.channel} size={15} />
-                    {#if !o.named || o.siblings >= 2}
-                      {#if o.named}
-                        <CanvasMark
-                          number={o.canvasNumber}
-                          name={o.canvasLabel}
-                          width={o.canvasWidth}
-                          height={o.canvasHeight}
-                          size={13}
-                        />
-                      {:else}
-                        <span class="ocanvas">{o.canvasLabel}</span>
-                      {/if}
-                    {/if}
-                  {/if}
-                </span>
+                <ChatOrigin platform={m.platform} origin={o} title={originTitle(m.platform, o)} />
               {/if}
               {#each m.author.badges as b (b.kind + (b.url ?? ""))}
                 {@const mark = BADGE_MARKS[b.kind]}
@@ -611,6 +663,21 @@
       {#if composer.to}<span class="to">{composer.to}</span>{/if}
     </p>
     <div class="inputrow">
+      <!-- aria-disabled, not disabled: CEF dispatches no mouse events to a disabled
+           control, so the title saying why polls are off would never show. -->
+      <IconButton
+        id={pollButtonId}
+        icon="poll"
+        size={28}
+        height="auto"
+        iconSize={14}
+        variant="surface"
+        aria-label="New poll"
+        aria-haspopup="dialog"
+        title={pollBlocker || "Start a YouTube poll"}
+        aria-disabled={pollBlocker !== ""}
+        onclick={openPollForm}
+      />
       <textarea
         class="input"
         rows="1"
@@ -630,6 +697,10 @@
     </div>
   </div>
 </div>
+
+{#if pollFormOpen}
+  <NewPollDialog targets={pollTargets} onClose={() => (pollFormOpen = false)} />
+{/if}
 
 <style>
   .chat {
@@ -674,27 +745,6 @@
     line-height: 1.5;
     color: var(--color-text);
     word-break: break-word;
-  }
-  .origin {
-    align-self: center;
-    flex: 0 0 auto;
-    display: inline-flex;
-    align-items: center;
-    gap: 3px;
-    min-width: 0;
-  }
-  /* Only ever a state word now -- a named canvas renders as a CanvasMark. Mono and
-     dimmer so "channel-wide" never reads as something the user named. */
-  .ocanvas {
-    min-width: 0;
-    max-width: 10ch;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-family: var(--font-mono);
-    font-size: 9px;
-    letter-spacing: 0.06em;
-    color: var(--color-muted);
   }
   .badge {
     height: 14px;

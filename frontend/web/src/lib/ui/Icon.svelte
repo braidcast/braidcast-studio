@@ -68,7 +68,9 @@
     | "chat"
     | "bell"
     | "users"
-    | "chart";
+    | "chart"
+    // chat tools
+    | "poll";
 </script>
 
 <script lang="ts">
@@ -195,4 +197,6 @@
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="9" cy="8" r="3.5" /><path d="M2.5 20a6.5 6.5 0 0 1 13 0" /><path d="M16 5.4a3.5 3.5 0 0 1 0 5.2" /><path d="M17.6 14.4A6.5 6.5 0 0 1 21.5 20" /></svg>
 {:else if name === "chart"}
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3.5 3.5v17h17" /><path d="M8 17.5v-5M13 17.5v-9M18 17.5v-12" stroke-width="2.4" /></svg>
+{:else if name === "poll"}
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3.5" y="4" width="17" height="4.5" /><rect x="3.5" y="10" width="17" height="4.5" /><rect x="3.5" y="16" width="17" height="4.5" /><path d="M3.5 6.25h11M3.5 12.25h6M3.5 18.25h3" stroke-width="4.5" /></svg>
 {/if}
