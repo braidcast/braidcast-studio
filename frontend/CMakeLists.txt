@@ -184,6 +184,8 @@ target_sources(
     src/oauth/kick_provider.hpp
     src/oauth/youtube_provider.cpp
     src/oauth/youtube_provider.hpp
+    src/oauth/youtube_snippet.cpp
+    src/oauth/youtube_snippet.hpp
     src/oauth/facebook_provider.cpp
     src/oauth/facebook_provider.hpp
     # The Graph API access seam (pinned version + URL builder + the Page-scoped scratch
@@ -334,6 +336,8 @@ target_sources(
     # settings and the boot that applies them. Includes obs.h -> /wd4201 set below.
     src/util/speaker_layout.cpp
     src/util/speaker_layout.hpp
+    src/util/user_locale.cpp
+    src/util/user_locale.hpp
     api-impl/frontend_callbacks.cpp
     api-impl/frontend_callbacks.hpp
     # Phase 4.4.0 native-multistream data model. These five model files are

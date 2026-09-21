@@ -20,6 +20,8 @@
 #include "util/op_error.hpp"
 #include "util/string_util.hpp"
 #include "util/time_util.hpp"
+#include "util/user_locale.hpp"
+#include "youtube_snippet.hpp"
 #include "../log.hpp"
 #include "ui-config.h"
 
@@ -51,6 +53,48 @@ const std::streamoff kMaxThumbnailBytes = 2 * 1024 * 1024;
 // snippet.tags takes arbitrary strings and caps neither how many there are nor how long
 // any one of them is -- the only limit is on the characters they add up to.
 constexpr int kMaxTagTotalChars = 500;
+
+// The languages offered for a video. Unset is the default and means "the Windows display
+// language" (not the regional format -- see UserLocale), so this list only has to cover
+// choosing something else. Codes are the primary
+// subtag, which is how YouTube stores a language it detected itself; Chinese keeps its
+// script. A value outside this list is treated as unset rather than sent.
+struct VideoLanguage {
+	const char *code;
+	const char *label;
+};
+constexpr VideoLanguage kVideoLanguages[] = {
+	{"en", "English"},
+	{"es", "Spanish"},
+	{"pt", "Portuguese"},
+	{"fr", "French"},
+	{"de", "German"},
+	{"it", "Italian"},
+	{"nl", "Dutch"},
+	{"pl", "Polish"},
+	{"ru", "Russian"},
+	{"uk", "Ukrainian"},
+	{"tr", "Turkish"},
+	{"ar", "Arabic"},
+	{"hi", "Hindi"},
+	{"id", "Indonesian"},
+	{"vi", "Vietnamese"},
+	{"th", "Thai"},
+	{"ja", "Japanese"},
+	{"ko", "Korean"},
+	{"zh-Hans", "Chinese (Simplified)"},
+	{"zh-Hant", "Chinese (Traditional)"},
+};
+
+bool IsOfferedVideoLanguage(const std::string &code)
+{
+	for (const VideoLanguage &lang : kVideoLanguages) {
+		if (code == lang.code) {
+			return true;
+		}
+	}
+	return false;
+}
 
 // force-ssl is the single broad write scope covering channels.list,
 // liveBroadcasts/liveStreams insert+bind, videos.update, thumbnails.set, and
@@ -656,6 +700,22 @@ json YouTubeProvider::capabilityJson() const
 			      {"tier", "simple"},
 			      {"scope", "provider"},
 			      {"maxTotalChars", kMaxTagTotalChars}});
+	// Unset means the Windows display language (see applyMetadata), which is right for most
+	// people, so this sits with the advanced fields. It exists because YouTube guesses when a
+	// video states no language, and guesses wrong often enough to matter -- English
+	// commentary tagged Russian feeds the recommender the wrong audience.
+	{
+		json languageOptions = json::array();
+		for (const VideoLanguage &lang : kVideoLanguages) {
+			languageOptions.push_back(json{{"value", lang.code}, {"label", lang.label}});
+		}
+		fields.push_back(json{{"key", "language"},
+				      {"label", "Video language"},
+				      {"type", "enum"},
+				      {"tier", "advanced"},
+				      {"scope", "provider"},
+				      {"options", languageOptions}});
+	}
 	// Only YouTube takes a thumbnail, and its 2 MB/aspect rules are its own -- so one image
 	// serves every YouTube channel the user runs and is picked once for all of them.
 	fields.push_back(json{{"key", "thumbnail"},
@@ -897,6 +957,23 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 
 	const std::string thumbnailPath = Str(fields, "thumbnail");
 
+	// What the video snippet should end up holding. The language is always known -- the
+	// user's pick, else the Windows display language -- so the update runs on every apply,
+	// not only when a category or tags were stated. A video that states no language is one
+	// YouTube guesses about.
+	YouTubeSnippet::Edit videoEdit;
+	videoEdit.title = title;
+	videoEdit.description = description;
+	videoEdit.categoryId = categoryId;
+	videoEdit.tagsStated = tagsStated;
+	videoEdit.tags = tags;
+	if (const std::string picked = Str(fields, "language"); IsOfferedVideoLanguage(picked)) {
+		videoEdit.language = picked;
+		videoEdit.languageExplicit = true;
+	} else {
+		videoEdit.language = YouTubeSnippet::LanguageFromLocale(UserLocale::UiLanguage());
+	}
+
 	// One JSON POST/PUT through SendAuthed (so the 401-refresh path covers every
 	// step). Fills `outJson` from the response body; `stepErr` carries the reason.
 	auto sendJson = [&](const std::string &method, const std::string &url, const json &payload, json &outJson,
@@ -915,6 +992,30 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 			return false;
 		}
 		outJson = ParseJson(resp.body);
+		return true;
+	};
+
+	// The video's current snippet, for step 4's read-modify-write. False (and `out` an empty
+	// object) when it cannot be read; the caller decides whether writing without it is
+	// acceptable.
+	auto readVideoSnippet = [&](const std::string &videoId, json &out) -> bool {
+		out = json::object();
+		Http::HttpReq req;
+		req.method = "GET";
+		req.url = std::string(kVideosUrl) + "?part=snippet&id=" + Http::UrlEncode(videoId);
+		Http::HttpResponse resp;
+		std::string readErr;
+		if (!SendAuthed(acct, req, resp, readErr) || resp.status < 200 || resp.status >= 300) {
+			HostLog("[oauth] YouTube videos.list failed before videos.update: " +
+				(readErr.empty() ? "HTTP " + std::to_string(resp.status) : Err::Diagnostic(readErr)));
+			return false;
+		}
+		const json item = First(ParseJson(resp.body), "items");
+		if (!item.is_object() || !item.contains("snippet") || !item["snippet"].is_object()) {
+			HostLog("[oauth] YouTube videos.list returned no snippet for the broadcast's video");
+			return false;
+		}
+		out = item["snippet"];
 		return true;
 	};
 
@@ -955,42 +1056,72 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 		return skipUnchanged && !digest.empty() && AppliedDigest(dest, videoId, kind) == digest;
 	};
 
-	// Steps 4 + 5 (video category/tags, then thumbnail) apply identically whether the
+	// Steps 4 + 5 (video snippet, then thumbnail) apply identically whether the
 	// broadcast was just created for go-live or is already live for a mid-stream edit, so
 	// both paths call this instead of duplicating the blocks. Both are NON-CRITICAL:
 	// failures are logged and skipped, never surfaced as an apply failure.
-	auto applyVideoTagsAndThumbnail = [&](const std::string &videoId, bool skipUnchanged) {
-		// 4. videos.update -- category + tags live on the video, not the broadcast.
-		// part=snippet REPLACES the whole snippet, so title + categoryId must be
-		// re-sent or the call 400s / wipes them. Only worth a call when a category was
-		// chosen or tags were stated; categoryId 24 (Entertainment) is a safe assignable
-		// default needed only when tags are stated without a chosen category.
+	auto applyVideoSnippetAndThumbnail = [&](const std::string &videoId, bool skipUnchanged) {
+		// 4. videos.update -- category, tags and language live on the video, not the
+		// broadcast. part=snippet is destructive: a property that already has a value and
+		// is left out of the request is DELETED (videos.update reference). So the body is
+		// read-modify-write -- the video's current writable snippet with this edit laid
+		// over it (YouTubeSnippet::Merge) -- rather than only the fields managed here,
+		// which used to wipe whatever language the video held and let YouTube re-guess.
+		// One videos.list (1 unit) in front of the 50-unit update, spent only when the
+		// edit is not one already applied.
 		//
-		// Stated, not non-empty: clearing a video's tags is a stated empty list, and
+		// Tags stated, not non-empty: clearing a video's tags is a stated empty list, and
 		// gating on what the list HOLDS would make that the one edit this step silently
-		// declines to perform -- the button says the tags are gone and they are not.
-		if (!categoryId.empty() || tagsStated) {
-			const std::string effectiveCategory = categoryId.empty() ? "24" : categoryId;
-			json videoSnippet = json{
-				{"title", title},
-				{"description", description},
-				{"categoryId", effectiveCategory},
-				{"tags", tags},
-			};
-			json videoBody = json{{"id", videoId}, {"snippet", videoSnippet}};
-			const std::string digest = ContentDigest(videoSnippet.dump());
+		// declines to perform.
+		const bool statedVideoFields = !videoEdit.categoryId.empty() || videoEdit.tagsStated;
+		if (statedVideoFields || !videoEdit.language.empty()) {
+			const std::string digest = ContentDigest(YouTubeSnippet::EditDigestSource(videoEdit).dump());
 			if (alreadyApplied(videoId, AppliedKind::Snippet, digest, skipUnchanged)) {
-				DBG(LogCat::OAuth, "youtube: dest=%s videos.update skipped (unchanged, 50 units saved)",
+				DBG(LogCat::OAuth, "youtube: dest=%s videos.update skipped (unchanged, 51 units saved)",
 				    DestinationKey(dest).c_str());
 			} else {
-				json vResp;
-				std::string vErr;
-				if (!sendJson("PUT", std::string(kVideosUrl) + "?part=snippet", videoBody, vResp,
-					      vErr)) {
-					HostLog("[oauth] YouTube videos.update failed (continuing): " +
-						Err::Diagnostic(vErr));
+				json current;
+				const bool haveCurrent = readVideoSnippet(videoId, current);
+				if (!haveCurrent && !statedVideoFields) {
+					// Only the language would change, and without the current snippet the
+					// write would reset category and tags to get it there. Not worth it. A
+					// mid-stream edit tries again on the next apply; on go-live there is no
+					// next apply for this video, so that broadcast keeps no stated language.
+					HostLog("[oauth] YouTube video language not set: could not read the video first");
 				} else {
-					RecordApplied(dest, videoId, AppliedKind::Snippet, digest);
+					auto put = [&](const YouTubeSnippet::Edit &edit, std::string &putErr) {
+						json vResp;
+						const json body =
+							json{{"id", videoId},
+							     {"snippet", YouTubeSnippet::Merge(current, edit)}};
+						return sendJson("PUT", std::string(kVideosUrl) + "?part=snippet", body,
+								vResp, putErr);
+					};
+					std::string vErr;
+					bool sent = put(videoEdit, vErr);
+					// A language YouTube does not accept must not cost the category and tags
+					// that ride in the same write: retry once without it -- but only when
+					// dropping it changes the body. A fallback that only filled nothing leaves
+					// the body identical, and resending that is 50 units for the same 400.
+					// Recorded as applied either way, so the SAME edit is not re-sent and
+					// re-refused; any later change to the edit is a new digest and pays again.
+					YouTubeSnippet::Edit withoutLanguage = videoEdit;
+					withoutLanguage.language.clear();
+					const bool languageInBody = YouTubeSnippet::Merge(current, videoEdit) !=
+								    YouTubeSnippet::Merge(current, withoutLanguage);
+					if (!sent && languageInBody && vErr.rfind("HTTP 400", 0) == 0) {
+						HostLog("[oauth] YouTube refused video language '" +
+							videoEdit.language +
+							"'; retrying without it: " + Err::Diagnostic(vErr));
+						vErr.clear();
+						sent = put(withoutLanguage, vErr);
+					}
+					if (!sent) {
+						HostLog("[oauth] YouTube videos.update failed (continuing): " +
+							Err::Diagnostic(vErr));
+					} else {
+						RecordApplied(dest, videoId, AppliedKind::Snippet, digest);
+					}
 				}
 			}
 		}
@@ -1105,7 +1236,7 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 				}
 			}
 
-			applyVideoTagsAndThumbnail(active.broadcastId, true);
+			applyVideoSnippetAndThumbnail(active.broadcastId, true);
 			return true;
 		}
 		// EnsureActiveBroadcast returned false: a non-empty err is a genuine API/network
@@ -1369,10 +1500,10 @@ bool YouTubeProvider::applyMetadata(OAuthAccount &acct, const std::string &profi
 		broadcasts_[dest] = BroadcastState{};
 	}
 
-	// 4 + 5. Video category/tags, then thumbnail (both NON-CRITICAL). Shared with the
-	// mid-stream edit path, but never skipping: this video id was created seconds ago and
-	// carries none of it yet.
-	applyVideoTagsAndThumbnail(broadcastId, false);
+	// 4 + 5. Video snippet, then thumbnail (both NON-CRITICAL). Shared with the mid-stream
+	// edit path, but never skipping: this video id was created seconds ago, and nothing was
+	// recorded against it yet.
+	applyVideoSnippetAndThumbnail(broadcastId, false);
 
 	// 6. Ingest writeback -- put the CDN endpoint + key into the linked profile so
 	// the modal's streaming.start streams to YouTube. Blocks on the UI-thread write

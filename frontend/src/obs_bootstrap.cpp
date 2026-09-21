@@ -88,6 +88,7 @@
 #include "scene/scene_collections.hpp"
 #include "util/session_log.hpp"
 #include "util/speaker_layout.hpp"
+#include "oauth/youtube_snippet.hpp"
 #include "scene/main_channel.hpp"
 #include "scene/scene_items.hpp"
 #include "scene/scene_persistence.hpp"
@@ -2199,6 +2200,70 @@ void ObsBootstrap::RunSettingsSelfTest()
 	// 6) Restore the original audio config.
 	run("settings.setAudio", a0, ok);
 	HostLog("[selftest] audio restored to " + std::to_string(a0.value("sampleRate", 0u)) + "Hz");
+
+	// 6a) The YouTube video snippet body. videos.update(part=snippet) deletes any property
+	// that has a value and is left out, so the body is the video's own snippet with the edit
+	// laid over it. Offline: these are the rules, not the network.
+	{
+		using YouTubeSnippet::Edit;
+		using YouTubeSnippet::Merge;
+		const json video = json{{"title", "old"},
+					{"description", "old"},
+					{"categoryId", "20"},
+					{"tags", json::array({"keep"})},
+					{"defaultLanguage", "ru"},
+					{"defaultAudioLanguage", "ru"},
+					{"publishedAt", "2026-07-31T00:00:00Z"},
+					{"channelId", "UCx"}};
+		Edit fallback;
+		fallback.title = "new";
+		fallback.description = "";
+		fallback.language = "en";
+		const json kept = Merge(video, fallback);
+		Edit picked = fallback;
+		picked.languageExplicit = true;
+		const json overridden = Merge(video, picked);
+		Edit clearTags = fallback;
+		clearTags.tagsStated = true;
+		const json cleared = Merge(video, clearTags);
+		const json blank = Merge(json::object(), fallback);
+		const json notApplicable = Merge(json{{"categoryId", "20"}, {"defaultAudioLanguage", "zxx"}}, fallback);
+
+		const bool ok6a =
+			// A fallback fills, never overrides a language the video already states.
+			kept["defaultLanguage"] == "ru" && kept["defaultAudioLanguage"] == "ru" &&
+			// An explicit pick does override it.
+			overridden["defaultLanguage"] == "en" && overridden["defaultAudioLanguage"] == "en" &&
+			// What the edit does not state survives; what it states wins.
+			kept["categoryId"] == "20" && kept["tags"] == json::array({"keep"}) && kept["title"] == "new" &&
+			kept["description"] == "" &&
+			// A stated empty list is a clear, not an omission.
+			cleared["tags"] == json::array() &&
+			// Read-only properties are not echoed back into the write.
+			!kept.contains("publishedAt") && !kept.contains("channelId") &&
+			// A video with nothing still gets the required category, and the fallback lands.
+			blank["categoryId"] == "24" && blank["defaultLanguage"] == "en" && !blank.contains("tags") &&
+			// "zxx" is readable but not writable: dropped, then filled.
+			notApplicable["defaultAudioLanguage"] == "en" &&
+			YouTubeSnippet::LanguageFromLocale("en-US") == "en" &&
+			YouTubeSnippet::LanguageFromLocale("ru-RU") == "ru" &&
+			YouTubeSnippet::LanguageFromLocale("zh-Hant-TW") == "zh-Hant" &&
+			YouTubeSnippet::LanguageFromLocale("zh-TW") == "zh-Hant" &&
+			YouTubeSnippet::LanguageFromLocale("zh-HK") == "zh-Hant" &&
+			YouTubeSnippet::LanguageFromLocale("zh-CN") == "zh-Hans" &&
+			YouTubeSnippet::LanguageFromLocale("zh-Hans-SG") == "zh-Hans" &&
+			YouTubeSnippet::LanguageFromLocale("zh-Hans-HK") == "zh-Hans" &&
+			YouTubeSnippet::LanguageFromLocale("zh_TW") == "zh-Hant" &&
+			YouTubeSnippet::LanguageFromLocale("fil-PH") == "fil" &&
+			YouTubeSnippet::LanguageFromLocale("x-foo").empty() &&
+			YouTubeSnippet::LanguageFromLocale("qps-ploc").empty() &&
+			YouTubeSnippet::LanguageFromLocale("").empty();
+		HostLog(std::string("[selftest] youtube-snippet merge -> ") + (ok6a ? "OK" : "MISMATCH"));
+		if (!ok6a) {
+			HostLog("[selftest] youtube-snippet kept=" + kept.dump() + " overridden=" + overridden.dump() +
+				" blank=" + blank.dump() + " zxx=" + notApplicable.dump());
+		}
+	}
 
 	// 7) Preview guide overlays. preview.setOverlays and settings.setGeneral end in the
 	// same General commit, so a write through either must read back through the other,

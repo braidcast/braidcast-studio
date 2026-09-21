@@ -3,6 +3,7 @@
 #include "log.hpp"
 #include "util/string_util.hpp"
 #include "util/text_encoding.hpp"
+#include "util/user_locale.hpp"
 
 #include <util/base.h>
 
@@ -33,9 +34,8 @@ std::string FamilyName(IDWriteFontFamily *family)
 
 	UINT32 index = 0;
 	BOOL exists = FALSE;
-	wchar_t locale[LOCALE_NAME_MAX_LENGTH] = {};
-	if (GetUserDefaultLocaleName(locale, LOCALE_NAME_MAX_LENGTH) != 0) {
-		names->FindLocaleName(locale, &index, &exists);
+	if (const std::wstring locale = UserLocale::NameW(); !locale.empty()) {
+		names->FindLocaleName(locale.c_str(), &index, &exists);
 	}
 	if (!exists) {
 		names->FindLocaleName(L"en-us", &index, &exists);
