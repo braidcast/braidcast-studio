@@ -149,7 +149,7 @@
           {#if p.error}
             <p class="perr">{p.error}</p>
           {/if}
-          <PollResults poll={p} />
+          <PollResults poll={p} collapsible />
         </li>
       {/each}
     </ul>
