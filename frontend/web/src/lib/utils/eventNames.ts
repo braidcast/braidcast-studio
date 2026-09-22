@@ -35,6 +35,7 @@ export const EV = {
   streamMetaChanged: "streamMeta.changed",
   streamInfoPresetsChanged: "streamInfoPresets.changed",
   pollsChanged: "polls.changed",
+  pollsResults: "polls.results",
   pollTemplatesChanged: "pollTemplates.changed",
   sceneItemsChanged: "sceneItems.changed",
   sceneItemSelected: "sceneItem.selected",

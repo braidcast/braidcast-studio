@@ -30,6 +30,9 @@
 // single registered browser this is behavior-identical to a single-target emit.
 struct CanvasDefinition;
 struct SceneItemKey;
+namespace OAuth {
+struct DestinationId;
+}
 struct obs_source;
 typedef struct obs_source obs_source_t;
 struct obs_scene_item;
@@ -115,6 +118,13 @@ void ForgetSentMetadata(const std::vector<std::string> &profileUuids);
 // The stop edge's sweep: a session that opened consumed its own entries, so anything
 // still here belongs to a destination that never came up.
 void ClearSentMetadata();
+
+// The stream stopped for `dest` (or, with no dest, for every destination): end each poll it
+// still runs and hand the results to the UI (polls.results), then drop them from the dock.
+// Never blocks the caller -- the transports are captured here, so this must run BEFORE the
+// chat hub stops them, and the end calls run on a worker. A poll whose end call fails keeps
+// its last live result and carries the error, so the popup can say it is not final.
+void FinishPolls(const std::optional<OAuth::DestinationId> &dest);
 json TakeSentMetadata(const std::string &profileUuid);
 
 // Register an in-process consumer of the 1 Hz stats tick. Called on the CEF UI

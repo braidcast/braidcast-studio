@@ -1728,8 +1728,8 @@ bool ObsBootstrap::Start()
 			// -- painting a red transport edge on the Multichat/Events chips for a
 			// destination that was switched off deliberately. Per-destination rather than
 			// a hub re-Start so the account's sibling orientations keep their transports.
+			Bridge::FinishPolls(dest); // before the transport it ends the poll with stops
 			Chat::Hub().StopDestination(dest);
-			Chat::Polls().RemoveDestination(dest);
 
 			// How this destination finished, onto its session row. Idempotent
 			// by contract: a deliberate stop whose stop signal also fires

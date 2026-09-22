@@ -30,6 +30,8 @@
   import OAuthConnectDialog from "$lib/dialogs/OAuthConnectDialog.svelte";
   import { oauthConnect, closeOAuthConnect } from "$lib/dialogs/oauthConnectOpener.svelte";
   import GoLiveModal from "$lib/dialogs/golive/GoLiveModal.svelte";
+  import PollResultsDialog from "$lib/dialogs/polls/PollResultsDialog.svelte";
+  import { pollStore } from "$lib/stores/pollStore.svelte";
   import { goLiveModal } from "$lib/dialogs/golive/goLiveModalOpener.svelte";
   import CollectionDialog, { type DialogSpec } from "$lib/dialogs/CollectionDialog.svelte";
   import { planFile, planText, createDropped, type DropPlan } from "$lib/dialogs/add-source/dropSource";
@@ -451,6 +453,9 @@ import { EV } from "$lib/utils/eventNames";
 
   onMount(() => {
     undoStore.start();
+    // Here, not only in the chat dock: a stream stop's poll results must reach the popup
+    // even when the dock is closed or popped out.
+    pollStore.start();
     // Seed the DEBUG gate + log path early so log.dbg is gated correctly app-wide.
     diagnosticsStore.start();
     const offChannels = channelsStore.init();
@@ -565,6 +570,10 @@ import { EV } from "$lib/utils/eventNames";
 
 {#if goLiveModal.open}
   <GoLiveModal />
+{/if}
+
+{#if pollStore.results}
+  <PollResultsDialog polls={pollStore.results} onClose={() => pollStore.closeResults()} />
 {/if}
 
 {#if confirmDialog}

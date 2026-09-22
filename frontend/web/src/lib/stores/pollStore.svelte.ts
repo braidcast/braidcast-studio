@@ -20,6 +20,8 @@ export interface PollCreateParams {
 
 class PollStore {
   polls = $state<LivePoll[]>([]);
+  /** The polls the last stream stop ended, until the results popup is closed. */
+  results = $state<LivePoll[] | null>(null);
   loaded = $state(false);
   error = $state<string | null>(null);
 
@@ -39,6 +41,9 @@ class PollStore {
       this.polls = polls;
       this.error = null;
       this.loaded = true;
+    });
+    obs.on(EV.pollsResults, ({ polls }) => {
+      this.results = polls.length > 0 ? polls : null;
     });
     void this.refresh();
   }
@@ -70,6 +75,10 @@ class PollStore {
   /** Closes a running poll. A failure is also recorded on the poll itself (its `error`). */
   async end(id: string): Promise<LivePoll> {
     return (await obs.call("polls.end", { id })).poll;
+  }
+
+  closeResults(): void {
+    this.results = null;
   }
 
   async dismiss(id: string): Promise<void> {

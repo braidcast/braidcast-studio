@@ -25,7 +25,8 @@
 // Wire shape of one poll:
 //   {id, accountId, profileUuid, question,
 //    options:[{text, tally:number|null, ratio:number|null}], totalVotes:number|null,
-//    status:"active"|"closed", startedAtMs, endedAtMs:number|null, error?:string}
+//    status:"active"|"closed", startedAtMs, endedAtMs:number|null, error?:string,
+//    finishing?:true}
 // `ratio` (0..1) and `totalVotes` are the live result while the poll runs; `tally` is a count,
 // from the platform's closing response or derived from ratio x totalVotes.
 namespace Chat {
@@ -72,10 +73,14 @@ public:
 	// changed, because the platform repeats an unchanged result every few seconds.
 	void UpdateLive(const OAuth::DestinationId &dest, const nlohmann::json &live);
 
-	// A poll lives inside one broadcast, so it goes when the broadcast does: drop every poll
-	// `dest` held (its output ended), or every poll (the go-live ended).
-	void RemoveDestination(const OAuth::DestinationId &dest);
-	void Clear();
+	// A poll lives inside one broadcast, so it goes when the broadcast does. When the stream
+	// stops, every poll `dest` held (or every poll, with no dest) is marked finishing -- the
+	// dock shows it as ending while its final result is fetched -- and returned as wire polls.
+	nlohmann::json MarkFinishing(const std::optional<OAuth::DestinationId> &dest);
+
+	// Remove `ids` and return them as wire polls, for the stop edge's results. An id already
+	// gone (dismissed meanwhile) is skipped.
+	nlohmann::json Take(const std::vector<std::string> &ids);
 
 	// {polls:[...]}, most recently started first.
 	nlohmann::json List() const;
@@ -91,11 +96,8 @@ private:
 		std::optional<int64_t> endedAtMs;
 		std::optional<int64_t> totalVotes;
 		std::string error;
+		bool finishing = false;
 	};
-
-	// Drop the polls `drop` selects and emit when any went. Shared by RemoveDestination and
-	// Clear.
-	template<typename Pred> void RemoveWhere(Pred drop);
 
 	static nlohmann::json ToJson(const Poll &poll);
 	nlohmann::json ListLocked() const;

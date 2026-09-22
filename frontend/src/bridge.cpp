@@ -11876,10 +11876,9 @@ void StopStreamingAll()
 		// of the process.
 		g_armPreludeClaims.clear();
 		Chat::Viewers().Stop();
+		// Before the hub stops: this captures each running poll's transport to end it with.
+		FinishPolls(std::nullopt);
 		Chat::Hub().Stop();
-		// A poll lives inside its broadcast; once the broadcast is over there is nothing left
-		// to end or read, so it leaves the dock with it.
-		Chat::Polls().Clear();
 		for (const auto &entry : OAuth::Accounts().All()) {
 			OAuth::StreamProvider *provider = OAuth::Registry().Get(entry.second.providerId);
 			if (provider) {
@@ -13893,6 +13892,54 @@ bool MethodPollsEnd(const json &params, json &result, std::string &error)
 	}
 	result = json{{"poll", closed}};
 	return true;
+}
+
+void FinishPolls(const std::optional<OAuth::DestinationId> &dest)
+{
+	const json held = Chat::Polls().MarkFinishing(dest);
+	if (held.empty()) {
+		return;
+	}
+	struct PendingEnd {
+		std::string id;
+		OAuth::DestinationId dest;
+		std::shared_ptr<Chat::ChatTransport> transport;
+	};
+	std::vector<PendingEnd> ends;
+	std::vector<std::string> ids;
+	for (const json &poll : held) {
+		const std::string id = JsonUtil::Str(poll, "id");
+		ids.push_back(id);
+		if (JsonUtil::Str(poll, "status") == "active") {
+			const OAuth::DestinationId pollDest = PollDestination(poll);
+			ends.push_back(PendingEnd{id, pollDest, Chat::Hub().TransportFor(pollDest)});
+		}
+	}
+	AsyncTask::RunAsync([ends, ids] {
+		for (const PendingEnd &end : ends) {
+			std::string error;
+			json reported;
+			const std::optional<OAuth::OAuthAccount> stored = OAuth::Accounts().Get(end.dest.accountId);
+			if (!end.transport) {
+				error = NoLiveChatError(end.dest);
+			} else if (!stored) {
+				error = "account not connected; reconnect";
+			} else {
+				OAuth::OAuthAccount acct = *stored;
+				if (end.transport->endPoll(acct, end.id, reported, error)) {
+					Chat::Polls().Close(end.id, reported);
+					continue;
+				}
+			}
+			Chat::Polls().Fail(end.id, Err::Diagnostic(error));
+		}
+		const json finished = Chat::Polls().Take(ids);
+		if (!finished.empty()) {
+			// Queued like polls.changed, so the popup lands after the dock has emptied.
+			AsyncTask::QueueOnUi(
+				[finished] { EmitEvent(EventNames::kPollsResults, json{{"polls", finished}}); });
+		}
+	});
 }
 
 bool MethodPollsList(const json & /*params*/, json &result, std::string & /*error*/)

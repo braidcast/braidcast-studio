@@ -766,6 +766,9 @@ export interface LivePoll {
   startedAtMs: number;
   endedAtMs: number | null;
   error?: string;
+  /** The stream stopped and the poll's final result is being fetched; it leaves the dock
+   * when that returns, in a polls.results event. */
+  finishing?: true;
 }
 
 /** One saved poll template (pollTemplates.*). Identity is the question plus options, so
@@ -2532,6 +2535,9 @@ export interface ObsEvents {
   "chat.state": ChatState;
   // The full live-poll list after any change (open, close, a failure, dismiss).
   "polls.changed": { polls: LivePoll[] };
+  /** The polls a stream stop just ended, with their final results (or, where the end call
+   * failed, the last live result and an `error`). */
+  "polls.results": { polls: LivePoll[] };
   // A poll template was remembered/touched/renamed/removed; re-run pollTemplates.list.
   "pollTemplates.changed": Record<string, never>;
   // Aggregate viewer count (perAccount + total), pushed by the host's viewer

@@ -73,6 +73,9 @@ json PollRegistry::ToJson(const Poll &poll)
 	if (!poll.error.empty()) {
 		out["error"] = poll.error;
 	}
+	if (poll.finishing) {
+		out["finishing"] = true;
+	}
 	return out;
 }
 
@@ -245,30 +248,50 @@ void PollRegistry::UpdateLive(const OAuth::DestinationId &dest, const json &live
 	EmitChanged(list);
 }
 
-template<typename Pred> void PollRegistry::RemoveWhere(Pred drop)
+json PollRegistry::MarkFinishing(const std::optional<OAuth::DestinationId> &dest)
 {
 	const std::lock_guard<std::mutex> emitLock(emitMutex_);
+	json marked = json::array();
 	json list;
 	{
 		const std::lock_guard<std::mutex> lock(mutex_);
-		const auto kept = std::remove_if(polls_.begin(), polls_.end(), drop);
-		if (kept == polls_.end()) {
-			return;
+		for (Poll &poll : polls_) {
+			if (!poll.finishing && (!dest || poll.dest == *dest)) {
+				poll.finishing = true;
+				marked.push_back(ToJson(poll));
+			}
 		}
-		polls_.erase(kept, polls_.end());
+		if (marked.empty()) {
+			return marked;
+		}
 		list = ListLocked();
 	}
 	EmitChanged(list);
+	return marked;
 }
 
-void PollRegistry::RemoveDestination(const OAuth::DestinationId &dest)
+json PollRegistry::Take(const std::vector<std::string> &ids)
 {
-	RemoveWhere([&dest](const Poll &p) { return p.dest == dest; });
-}
-
-void PollRegistry::Clear()
-{
-	RemoveWhere([](const Poll &) { return true; });
+	const std::lock_guard<std::mutex> emitLock(emitMutex_);
+	json taken = json::array();
+	json list;
+	{
+		const std::lock_guard<std::mutex> lock(mutex_);
+		for (const std::string &id : ids) {
+			const auto poll = FindLocked(id);
+			if (poll != polls_.end()) {
+				poll->finishing = false;
+				taken.push_back(ToJson(*poll));
+				polls_.erase(poll);
+			}
+		}
+		if (taken.empty()) {
+			return taken;
+		}
+		list = ListLocked();
+	}
+	EmitChanged(list);
+	return taken;
 }
 
 json PollRegistry::List() const
