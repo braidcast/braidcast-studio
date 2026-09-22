@@ -47,6 +47,7 @@
 #include "overlay/overlay_viewport.hpp"
 #include "chat/channel_stats_poller.hpp"
 #include "chat/chat_hub.hpp" // Chat::BindingDestination, Chat::Hub
+#include "chat/poll_registry.hpp"
 #include "chat/youtube_poll.hpp"
 #include "events/event_hub.hpp"
 #include "events/event_store.hpp"
@@ -1728,6 +1729,7 @@ bool ObsBootstrap::Start()
 			// destination that was switched off deliberately. Per-destination rather than
 			// a hub re-Start so the account's sibling orientations keep their transports.
 			Chat::Hub().StopDestination(dest);
+			Chat::Polls().RemoveDestination(dest);
 
 			// How this destination finished, onto its session row. Idempotent
 			// by contract: a deliberate stop whose stop signal also fires
@@ -2305,24 +2307,44 @@ void ObsBootstrap::RunSettingsSelfTest()
 			YouTubePoll::Normalize(message(json::array({json{{"optionText", "A"}}}), nullptr), "active");
 		const json unknownStatus = YouTubePoll::Normalize(message(json::array(), "unknown"), "closed");
 		const json empty = YouTubePoll::Normalize(json::object(), "active");
+		// The InnerTube live result, in the shape a real poll delivered (2026-09-22).
+		const json emojiRun = json{{"emoji", json{{"emojiId", "\xF0\x9F\x94\xA5"}, {"shortcuts", {":fire:"}}}}};
+		const json live = YouTubePoll::FromInnerTube(json{
+			{"choices",
+			 json::array({json{{"text", json{{"runs", json::array({json{{"text", "Awesome "}}, emojiRun})}}},
+					   {"voteRatio", 0.7142857313156128}},
+				      json{{"text", json{{"runs", json::array({json{{"text", "Lagging"}}})}}},
+					   {"voteRatio", 0}},
+				      json{{"text", json{{"simpleText", "Odd"}}}, {"voteRatio", 1.5}}})},
+			{"header",
+			 json{{"pollHeaderRenderer",
+			       json{{"metadataText",
+				     json{{"runs", json::array({json{{"text", "Poll \xC2\xB7 1,234 votes"}}})}}}}}}}});
+		const json liveNoHeader = YouTubePoll::FromInnerTube(json{{"choices", json::array()}});
 
-		const bool okPoll = snippet["type"] == "pollEvent" && snippet["liveChatId"] == "chat-1" &&
-				    snippet["pollDetails"]["metadata"]["questionText"] == "Best map?" &&
-				    twoOptions.size() == 2 && twoOptions[0]["optionText"] == "A" &&
-				    twoOptions[1]["optionText"] == "B" && fourOptions.size() == 4 &&
-				    fourOptions[0]["optionText"] == "one" && fourOptions[3]["optionText"] == "four" &&
-				    numeric["id"] == "poll-1" && numeric["question"] == "Best map?" &&
-				    numeric["status"] == "closed" && numeric["options"][0]["text"] == "A" &&
-				    numeric["options"][0]["tally"] == 3 && numeric["options"][1]["tally"] == 0 &&
-				    stringy["status"] == "active" && stringy["options"][0]["tally"] == 12 &&
-				    stringy["options"][1]["tally"].is_null() &&
-				    untallied["options"][0]["tally"].is_null() && untallied["status"] == "active" &&
-				    unknownStatus["status"] == "closed" && empty["id"] == "" &&
-				    empty["options"].empty() && empty["status"] == "active";
+		const bool okPoll =
+			snippet["type"] == "pollEvent" && snippet["liveChatId"] == "chat-1" &&
+			snippet["pollDetails"]["metadata"]["questionText"] == "Best map?" && twoOptions.size() == 2 &&
+			twoOptions[0]["optionText"] == "A" && twoOptions[1]["optionText"] == "B" &&
+			fourOptions.size() == 4 && fourOptions[0]["optionText"] == "one" &&
+			fourOptions[3]["optionText"] == "four" && numeric["id"] == "poll-1" &&
+			numeric["question"] == "Best map?" && numeric["status"] == "closed" &&
+			numeric["options"][0]["text"] == "A" && numeric["options"][0]["tally"] == 3 &&
+			numeric["options"][1]["tally"] == 0 && stringy["status"] == "active" &&
+			stringy["options"][0]["tally"] == 12 && stringy["options"][1]["tally"].is_null() &&
+			untallied["options"][0]["tally"].is_null() && untallied["status"] == "active" &&
+			unknownStatus["status"] == "closed" && empty["id"] == "" && empty["options"].empty() &&
+			empty["status"] == "active" && live["options"].size() == 3 &&
+			live["options"][0]["text"] == "Awesome \xF0\x9F\x94\xA5" &&
+			live["options"][0]["ratio"].get<double>() > 0.71 && live["options"][1]["ratio"] == 0 &&
+			live["options"][2]["ratio"].is_null() && live["options"][2]["text"] == "Odd" &&
+			live["totalVotes"] == 1234 && liveNoHeader["totalVotes"].is_null() &&
+			liveNoHeader["options"].empty();
 		HostLog(std::string("[selftest] youtube-poll -> ") + (okPoll ? "OK" : "MISMATCH"));
 		if (!okPoll) {
 			HostLog("[selftest] youtube-poll body=" + two.dump() + " numeric=" + numeric.dump() +
-				" stringy=" + stringy.dump() + " untallied=" + untallied.dump());
+				" stringy=" + stringy.dump() + " untallied=" + untallied.dump() +
+				" live=" + live.dump());
 		}
 	}
 

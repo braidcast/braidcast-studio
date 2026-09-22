@@ -18,6 +18,7 @@
 #include "util/op_error.hpp"
 #include "../oauth/youtube_provider.hpp"
 #include "util/time_util.hpp"
+#include "poll_registry.hpp"
 #include "third_party_emotes.hpp"
 #include "ws_client.hpp"         // CancelableSleep / Backoff
 #include "youtube_innertube.hpp" // the zero-quota primary read
@@ -611,6 +612,9 @@ bool RunInnerTube(ChatSession &s, std::string &err)
 	};
 	cb.emitEvent = [&s](Events::NormalizedEvent &ev) {
 		IngestChatEvent(s.ctx, ev);
+	};
+	cb.emitPoll = [&s](const json &live) {
+		Polls().UpdateLive(s.ctx.dest, live);
 	};
 	// Reusing AnnounceOnce is what keeps this destination's live-chat refcount held for an
 	// InnerTube read exactly as it is for a Data API read. Without that hold

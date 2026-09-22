@@ -11877,6 +11877,9 @@ void StopStreamingAll()
 		g_armPreludeClaims.clear();
 		Chat::Viewers().Stop();
 		Chat::Hub().Stop();
+		// A poll lives inside its broadcast; once the broadcast is over there is nothing left
+		// to end or read, so it leaves the dock with it.
+		Chat::Polls().Clear();
 		for (const auto &entry : OAuth::Accounts().All()) {
 			OAuth::StreamProvider *provider = OAuth::Registry().Get(entry.second.providerId);
 			if (provider) {

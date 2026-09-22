@@ -10,6 +10,7 @@
 #include "chat_transport.hpp" // BuildChatMessage -- the shared normalized-frame assembler
 #include "seen_ids.hpp"       // the bounded id memory shared with the Facebook read
 #include "third_party_emotes.hpp"
+#include "youtube_poll.hpp"
 #include "util/innertube_client.hpp"
 #include "util/json_util.hpp"
 #include "ws_client.hpp" // CancelableSleep / Backoff
@@ -617,6 +618,31 @@ void OnNothingToRender(Loop &lp, const char *name, const json &)
 	    name);
 }
 
+// A poll's live result. updateLiveChatPollAction repeats it every few seconds while votes come
+// in; showLiveChatActionPanelAction is the panel that first pins the poll (and may pin other
+// panels, which carry no pollRenderer and are skipped).
+void EmitPoll(Loop &lp, const json &pollRenderer)
+{
+	if (!pollRenderer.is_object() || !lp.cb.emitPoll) {
+		return;
+	}
+	const json live = YouTubePoll::FromInnerTube(pollRenderer);
+	DBG(LogCat::Chat, "youtube innertube: dest=%s poll result, %zu options, totalVotes=%s", lp.cfg.destTag.c_str(),
+	    live["options"].size(), live["totalVotes"].dump().c_str());
+	lp.cb.emitPoll(live);
+}
+
+void OnPollUpdate(Loop &lp, const char *, const json &action)
+{
+	EmitPoll(lp, Obj(Obj(action, "pollToUpdate"), "pollRenderer"));
+}
+
+void OnActionPanel(Loop &lp, const char *, const json &action)
+{
+	EmitPoll(lp,
+		 Obj(Obj(Obj(Obj(action, "panelToShow"), "liveChatActionPanelRenderer"), "contents"), "pollRenderer"));
+}
+
 using ActionFn = void (*)(Loop &, const char *name, const json &action);
 
 // actions[] entry name -> handler. Dispatch is a table lookup, not a chain: an entry whose
@@ -636,72 +662,9 @@ const std::pair<const char *, ActionFn> kActions[] = {
 	{"removeChatItemByAuthorAction", OnNothingToRender},
 	{"addBannerToLiveChatCommand", OnNothingToRender},
 	{"removeBannerForLiveChatCommand", OnNothingToRender},
+	{"updateLiveChatPollAction", OnPollUpdate},
+	{"showLiveChatActionPanelAction", OnActionPanel},
 };
-
-// Poll payloads are not parsed yet: which of YouTube's two shapes arrives (the older
-// updateLiveChatPollAction pollRenderer, or a liveChatBannerPollRenderer whose tallies sit
-// behind a state entity key) is unknown until a real poll runs. So an action whose STRUCTURE
-// names a poll is written to the debug log whole, with URLs blanked. Only object keys are
-// matched -- the action and renderer names YouTube's schema uses -- never string values, so a
-// viewer message whose text says "poll" is not captured. The key walk is bounded at
-// kPollKeyDepth levels, deep enough for the banner shape
-// (addBannerToLiveChatCommand > bannerRenderer > liveChatBannerRenderer > contents >
-// liveChatBannerPollRenderer).
-constexpr int kPollKeyDepth = 5;
-
-bool HasPollKey(const json &node, int depth)
-{
-	if (depth <= 0) {
-		return false;
-	}
-	if (node.is_array()) {
-		for (const json &element : node) {
-			if (HasPollKey(element, depth)) {
-				return true;
-			}
-		}
-		return false;
-	}
-	if (!node.is_object()) {
-		return false;
-	}
-	for (const auto &entry : node.items()) {
-		const std::string &key = entry.key();
-		if (key.find("Poll") != std::string::npos || key.find("poll") != std::string::npos ||
-		    HasPollKey(entry.value(), depth - 1)) {
-			return true;
-		}
-	}
-	return false;
-}
-
-json WithoutUrls(const json &node)
-{
-	if (node.is_string()) {
-		const std::string &s = node.get_ref<const std::string &>();
-		return s.find("://") != std::string::npos || s.rfind("//", 0) == 0 ? json("<url>") : node;
-	}
-	if (node.is_array() || node.is_object()) {
-		json out = node;
-		for (auto &child : out) {
-			child = WithoutUrls(child);
-		}
-		return out;
-	}
-	return node;
-}
-
-void CapturePollAction(const Loop &lp, const json &action)
-{
-	if (!::Log::DebugEnabled(LogCat::Chat)) {
-		return;
-	}
-	if (!HasPollKey(action, kPollKeyDepth)) {
-		return;
-	}
-	DBG(LogCat::Chat, "youtube innertube: dest=%s poll action captured: %s", lp.cfg.destTag.c_str(),
-	    WithoutUrls(action).dump(-1, ' ', false, json::error_handler_t::replace).c_str());
-}
 
 void ProcessActions(Loop &lp, const json &actions)
 {
@@ -712,7 +675,6 @@ void ProcessActions(Loop &lp, const json &actions)
 		if (lp.cb.canceled()) {
 			return;
 		}
-		CapturePollAction(lp, action);
 		for (const auto &entry : kActions) {
 			const json &payload = Obj(action, entry.first);
 			if (payload.is_object()) {

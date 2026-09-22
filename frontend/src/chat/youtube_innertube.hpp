@@ -41,6 +41,8 @@ struct Callbacks {
 	// A monetization/membership event, IN ADDITION to that item's chat line -- never
 	// instead of it. Non-const so the transport can stamp the destination identity on.
 	std::function<void(Events::NormalizedEvent &ev)> emitEvent;
+	// A running poll's live result, as YouTubePoll::FromInnerTube reads it. Optional.
+	std::function<void(const json &live)> emitPoll;
 	// The first response proving the chat is being read. The transport's connected state
 	// AND its per-destination live-chat refcount hold hang off this, so it must be called
 	// before any message is emitted. Idempotent on the transport's side.

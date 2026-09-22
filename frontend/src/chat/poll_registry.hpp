@@ -23,8 +23,11 @@
 // (the bridge does the I/O between two registry calls).
 //
 // Wire shape of one poll:
-//   {id, accountId, profileUuid, question, options:[{text, tally:number|null}],
+//   {id, accountId, profileUuid, question,
+//    options:[{text, tally:number|null, ratio:number|null}], totalVotes:number|null,
 //    status:"active"|"closed", startedAtMs, endedAtMs:number|null, error?:string}
+// `ratio` (0..1) and `totalVotes` are the live result while the poll runs; `tally` is a count,
+// from the platform's closing response or derived from ratio x totalVotes.
 namespace Chat {
 
 // The option counts a poll may carry. YouTube's limits, and the only platform with polls
@@ -62,6 +65,18 @@ public:
 	// would leave it pinned in the chat with no way to end it from here.
 	DismissResult Dismiss(const std::string &id, bool orphaned);
 
+	// Lay a live result ({options:[{text, ratio}], totalVotes}) onto `dest`'s running poll --
+	// a broadcast pins one poll at a time, so the newest active one is it. Rows are matched by
+	// position, since the platform keeps the order they were created in; a result with a
+	// different option count is not this poll and is ignored. Emits only when something
+	// changed, because the platform repeats an unchanged result every few seconds.
+	void UpdateLive(const OAuth::DestinationId &dest, const nlohmann::json &live);
+
+	// A poll lives inside one broadcast, so it goes when the broadcast does: drop every poll
+	// `dest` held (its output ended), or every poll (the go-live ended).
+	void RemoveDestination(const OAuth::DestinationId &dest);
+	void Clear();
+
 	// {polls:[...]}, most recently started first.
 	nlohmann::json List() const;
 
@@ -74,8 +89,13 @@ private:
 		std::string status;
 		int64_t startedAtMs = 0;
 		std::optional<int64_t> endedAtMs;
+		std::optional<int64_t> totalVotes;
 		std::string error;
 	};
+
+	// Drop the polls `drop` selects and emit when any went. Shared by RemoveDestination and
+	// Clear.
+	template<typename Pred> void RemoveWhere(Pred drop);
 
 	static nlohmann::json ToJson(const Poll &poll);
 	nlohmann::json ListLocked() const;

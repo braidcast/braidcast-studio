@@ -741,9 +741,13 @@ export interface StreamInfoPreset {
 
 /** One option of a live poll. `tally` is the vote count, or null while the platform
  * has not reported one (an open poll, or a closing response that carried none). */
+/** `ratio` is the option's live share of votes (0..1) while the poll runs; `tally` is a count,
+ * from the closing result or derived from `ratio` x the poll's `totalVotes`. Either may be null
+ * when the platform has not reported it. */
 export interface LivePollOption {
   text: string;
   tally: number | null;
+  ratio: number | null;
 }
 
 /** One live poll opened in a destination's broadcast chat (polls.*). Addressed like a
@@ -756,6 +760,8 @@ export interface LivePoll {
   profileUuid: string;
   question: string;
   options: LivePollOption[];
+  /** Votes cast so far, when the platform reports a count. */
+  totalVotes: number | null;
   status: "active" | "closed";
   startedAtMs: number;
   endedAtMs: number | null;

@@ -25,6 +25,15 @@ nlohmann::json BuildInsertBody(const std::string &liveChatId, const std::string 
 // empty; the caller keeps what it asked for in that case.
 nlohmann::json Normalize(const nlohmann::json &message, const char *fallbackStatus);
 
+// An InnerTube pollRenderer -- carried by updateLiveChatPollAction as votes come in, and by the
+// showLiveChatActionPanelAction that first pins the poll -- read into
+// {options:[{text, ratio}], totalVotes}. This is the live result: the anonymous chat read sees
+// it at no quota cost, where the Data API only reports tallies once the poll is closed.
+// `ratio` is the option's share of votes (0..1), null when absent or out of range; option text
+// joins the text runs, with an emoji run as its emoji. `totalVotes` comes from the header's
+// "N votes" text and is null when that text carries no count.
+nlohmann::json FromInnerTube(const nlohmann::json &pollRenderer);
+
 } // namespace YouTubePoll
 
 #endif // OBS_MULTISTREAM_FRONTEND_CHAT_YOUTUBE_POLL_HPP_

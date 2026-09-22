@@ -106,7 +106,7 @@
   }
 
   /** Votes on the options that reported a count. Null when none did. */
-  function totalOf(options: LivePollOption[]): number | null {
+  function tallySum(options: LivePollOption[]): number | null {
     let total: number | null = null;
     for (const o of options) {
       if (o.tally !== null) {
@@ -116,7 +116,19 @@
     return total;
   }
 
-  const pct = (tally: number, total: number): number => (total > 0 ? Math.round((tally / total) * 100) : 0);
+  /** Each option's share of the votes (0..1): the platform's live ratio when it sent one,
+   * else the option's count over the counted total. Null when neither is known. */
+  function sharesOf(options: LivePollOption[]): (number | null)[] {
+    const sum = tallySum(options);
+    return options.map((o) => {
+      if (o.ratio !== null) {
+        return o.ratio;
+      }
+      return o.tally !== null && sum !== null && sum > 0 ? o.tally / sum : null;
+    });
+  }
+
+  const pct = (share: number): number => Math.round(share * 100);
 </script>
 
 {#if polls.length > 0}
@@ -126,8 +138,9 @@
         {@const src = originOf(p)}
         {@const active = p.status === "active"}
         {@const busy = ending.includes(p.id)}
-        {@const total = totalOf(p.options)}
-        {@const top = Math.max(0, ...p.options.map((o) => o.tally ?? 0))}
+        {@const shares = sharesOf(p.options)}
+        {@const votes = p.totalVotes ?? tallySum(p.options)}
+        {@const top = Math.max(0, ...shares.map((s) => s ?? 0))}
         <li class="poll" data-poll-row={p.id} style:border-left-color={PLATFORM_COLORS[PLATFORM]}>
           <div class="phead">
             <ChatOrigin platform={PLATFORM} origin={src.origin} title={src.title} />
@@ -160,34 +173,33 @@
           {#if p.error}
             <p class="perr">{p.error}</p>
           {/if}
-          {#if active}
-            <ol class="popts">
-              {#each p.options as o, j (j)}
-                <li>{o.text}</li>
-              {/each}
-            </ol>
-            <p class="pnote">Results appear when the poll ends.</p>
-          {:else}
-            <ol class="res">
-              {#each p.options as o, j (j)}
-                <li class:lead={o.tally !== null && o.tally > 0 && o.tally === top}>
-                  <span class="rtext">{o.text}</span>
-                  {#if o.tally === null || total === null}
-                    <span class="rnum"
-                      ><span aria-hidden="true">—</span><span class="sr-only">no count reported</span></span
-                    >
-                  {:else}
-                    <span class="rnum"
-                      >{o.tally}<span class="sr-only"> {o.tally === 1 ? "vote" : "votes"},</span>
-                      · {pct(o.tally, total)}%</span
-                    >
-                    <span class="rbar" aria-hidden="true"
-                      ><span class="rfill" style:width={pct(o.tally, total) + "%"}></span></span
-                    >
-                  {/if}
-                </li>
-              {/each}
-            </ol>
+          <ol class="res">
+            {#each p.options as o, j (j)}
+              {@const share = shares[j]}
+              <li class:lead={share !== null && share > 0 && share === top}>
+                <span class="rtext">{o.text}</span>
+                {#if share === null}
+                  <span class="rnum"
+                    ><span aria-hidden="true">—</span><span class="sr-only">no result yet</span></span
+                  >
+                {:else}
+                  <span class="rnum"
+                    >{#if o.tally !== null}{o.tally}<span class="sr-only">
+                        {o.tally === 1 ? "vote" : "votes"},</span
+                      >
+                      · {/if}{pct(share)}%</span
+                  >
+                  <span class="rbar" aria-hidden="true"
+                    ><span class="rfill" style:width={pct(share) + "%"}></span></span
+                  >
+                {/if}
+              </li>
+            {/each}
+          </ol>
+          {#if votes !== null}
+            <p class="pnote">{votes} {votes === 1 ? "vote" : "votes"}{active ? " so far" : ""}</p>
+          {:else if active && shares.every((s) => s === null)}
+            <p class="pnote">Waiting for the first results from YouTube…</p>
           {/if}
         </li>
       {/each}
@@ -265,21 +277,6 @@
     font-size: 10px;
     line-height: 1.5;
     color: var(--color-warn);
-    overflow-wrap: anywhere;
-  }
-  .popts {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 3px 5px;
-    margin: 4px 0 0;
-    padding: 0;
-    list-style: none;
-  }
-  .popts li {
-    padding: 1px 6px;
-    border: var(--border-weight) solid var(--color-border);
-    font-size: 11px;
-    color: var(--color-dim);
     overflow-wrap: anywhere;
   }
   .pnote {

@@ -1,6 +1,7 @@
 #include "poll_registry.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <utility>
 
 #include "../bridge.hpp"
@@ -25,7 +26,7 @@ json OpeningOptions(const std::vector<std::string> &asked, const json &reported)
 	}
 	json out = json::array();
 	for (const std::string &text : asked) {
-		out.push_back(json{{"text", text}, {"tally", nullptr}});
+		out.push_back(json{{"text", text}, {"tally", nullptr}, {"ratio", nullptr}});
 	}
 	return out;
 }
@@ -67,7 +68,8 @@ json PollRegistry::ToJson(const Poll &poll)
 			{"options", poll.options},
 			{"status", poll.status},
 			{"startedAtMs", poll.startedAtMs},
-			{"endedAtMs", poll.endedAtMs ? json(*poll.endedAtMs) : json(nullptr)}};
+			{"endedAtMs", poll.endedAtMs ? json(*poll.endedAtMs) : json(nullptr)},
+			{"totalVotes", poll.totalVotes ? json(*poll.totalVotes) : json(nullptr)}};
 	if (!poll.error.empty()) {
 		out["error"] = poll.error;
 	}
@@ -200,6 +202,73 @@ PollRegistry::DismissResult PollRegistry::Dismiss(const std::string &id, bool or
 	}
 	EmitChanged(list);
 	return DismissResult::Removed;
+}
+
+void PollRegistry::UpdateLive(const OAuth::DestinationId &dest, const json &live)
+{
+	const json &rows = JsonUtil::Obj(live, "options");
+	if (!rows.is_array()) {
+		return;
+	}
+	const json &totalRaw = JsonUtil::Obj(live, "totalVotes");
+	const std::optional<int64_t> total =
+		totalRaw.is_number_integer() ? std::optional<int64_t>(totalRaw.get<int64_t>()) : std::nullopt;
+
+	const std::lock_guard<std::mutex> emitLock(emitMutex_);
+	json list;
+	{
+		const std::lock_guard<std::mutex> lock(mutex_);
+		const auto poll = std::find_if(polls_.rbegin(), polls_.rend(), [&dest](const Poll &p) {
+			return p.dest == dest && p.status == "active";
+		});
+		if (poll == polls_.rend() || !poll->options.is_array() || poll->options.size() != rows.size()) {
+			return;
+		}
+		const json before = poll->options;
+		const std::optional<int64_t> totalBefore = poll->totalVotes;
+		for (size_t i = 0; i < rows.size(); ++i) {
+			const json &ratio = JsonUtil::Obj(rows[i], "ratio");
+			json &held = poll->options[i];
+			held["ratio"] = ratio.is_number() ? ratio : json(nullptr);
+			if (total && ratio.is_number()) {
+				held["tally"] = static_cast<int64_t>(std::llround(ratio.get<double>() * *total));
+			}
+		}
+		if (total) {
+			poll->totalVotes = total;
+		}
+		if (poll->options == before && poll->totalVotes == totalBefore) {
+			return;
+		}
+		list = ListLocked();
+	}
+	EmitChanged(list);
+}
+
+template<typename Pred> void PollRegistry::RemoveWhere(Pred drop)
+{
+	const std::lock_guard<std::mutex> emitLock(emitMutex_);
+	json list;
+	{
+		const std::lock_guard<std::mutex> lock(mutex_);
+		const auto kept = std::remove_if(polls_.begin(), polls_.end(), drop);
+		if (kept == polls_.end()) {
+			return;
+		}
+		polls_.erase(kept, polls_.end());
+		list = ListLocked();
+	}
+	EmitChanged(list);
+}
+
+void PollRegistry::RemoveDestination(const OAuth::DestinationId &dest)
+{
+	RemoveWhere([&dest](const Poll &p) { return p.dest == dest; });
+}
+
+void PollRegistry::Clear()
+{
+	RemoveWhere([](const Poll &) { return true; });
 }
 
 json PollRegistry::List() const
