@@ -16,19 +16,57 @@
 html { font-size: min(100vw / 37.5, 60vh / 6.85); }
 * { box-sizing: border-box; }
 body { margin: 0; background: transparent; overflow: hidden; font-family: var(--ov-font, system-ui, sans-serif); }
-.alert {
+/* The deck: the one positioned box. It holds the front card in flow, which sizes it, and
+   everything else is laid over that card. width:max-content is what lets the front card
+   size it: `left: 50%` leaves only half the rectangle to shrink-to-fit into, and without it
+   every alert draws at min-width however long the message is. */
+.deck {
   position: fixed; left: 50%; top: 40%; transform: translate(-50%, 1.25rem);
+  width: max-content;
+  opacity: 0; transition: opacity 320ms ease, transform 320ms ease;
+}
+.deck.show { opacity: 1; transform: translate(-50%, 0); }
+/* One card. --depth is its place in the stack: 0 is the front, 1 and 2 peek out above it,
+   each smaller and fainter, so a burst reads as a pile rather than as one alert. The card
+   takes its width from its message, between the two bounds. */
+.alert {
+  position: relative; z-index: calc(3 - var(--depth, 0));
   display: flex; align-items: center; gap: 1rem;
-  /* The card takes its width from its message, between these two bounds. width:max-content
-     is what lets it: `left: 50%` leaves only half the rectangle to shrink-to-fit into, and
-     without it every alert draws at min-width however long the message is. */
   min-width: 22.5rem; max-width: 34rem; width: max-content;
   padding: 1.125rem 1.5rem; background: rgba(18, 18, 22, 0.92);
   border-left: 0.25rem solid var(--accent); border-radius: 0.625rem;
   box-shadow: 0 0.75rem 2.5rem rgba(0, 0, 0, 0.55);
-  opacity: 0; transition: opacity 320ms ease, transform 320ms ease;
+  transform-origin: 50% 0;
+  transform: translateY(calc(var(--depth, 0) * -0.7rem)) scale(calc(1 - var(--depth, 0) * 0.05));
+  opacity: calc(1 - var(--depth, 0) * 0.3);
+  transition: transform 280ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity 280ms ease;
 }
-.alert.show { opacity: 1; transform: translate(-50%, 0); }
+/* A peek takes the front card's box rather than its own, so every card in the pile lines up
+   whatever its message length; only the strip above the front card ever shows. */
+.alert.peek { position: absolute; inset: 0; min-width: 0; max-width: none; width: auto; }
+/* A peek's content stays blank: the front card's background is not quite opaque, and text
+   ghosting through it reads as a smudge. It fades up as the card comes forward. */
+.alert > * { transition: opacity 200ms ease; }
+.alert.peek > * { opacity: 0; }
+/* A card on its way out leaves the flow so the next one can size the deck. The script
+   freezes its width, height and centring margin first, so it keeps its own shape. */
+.alert.exiting { position: absolute; left: 50%; top: 0; z-index: 4; pointer-events: none; }
+/* The "+N more" card has a headline and no message line. */
+.alert.summary .alert-msg { display: none; }
+/* "3 / 10": only while a burst has more than one card, riding the front card's top edge. */
+.deck-count {
+  position: absolute; z-index: 5; top: -0.7rem; right: 1.25rem;
+  padding: 0.125rem 0.5rem; border-radius: 999px;
+  background: var(--accent); color: #fff;
+  font-size: 0.8125rem; font-weight: 700; line-height: 1.2; font-variant-numeric: tabular-nums;
+  box-shadow: 0 0.25rem 0.75rem rgba(0, 0, 0, 0.45);
+  opacity: 0; transition: opacity 200ms ease;
+}
+.deck-count.on { opacity: 1; }
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
 /* A flex item will not shrink below the width of its longest unbreakable word without
    both of these, and a display name is one unbreakable word of arbitrary length. Left as
    it was, such a name pushed the card's text out past the source rectangle -- 154 px past
@@ -38,3 +76,42 @@ body { margin: 0; background: transparent; overflow: hidden; font-family: var(--
 .alert-avatar { width: 2.75rem; height: 2.75rem; border-radius: 50%; background: var(--accent); flex: 0 0 auto; }
 .alert-name { color: var(--accent); font-weight: 700; font-size: 1.375rem; line-height: 1.15; }
 .alert-msg { color: #f2f2f5; font-size: 1rem; margin-top: 0.125rem; }
+
+/* Burst exit styles. One block per style, named exit-<style>; template.js maps the
+   burstAnimation field onto these class names. Each runs well inside the 350 ms shortest
+   card hold, so no more than two exiting cards are ever alive at once. */
+.alert.exit-slide { animation: exit-slide 300ms cubic-bezier(0.55, 0, 1, 0.45) forwards; }
+@keyframes exit-slide {
+  from { transform: translateX(0) rotate(0); opacity: 1; }
+  to { transform: translateX(-120%) rotate(-4deg); opacity: 0; }
+}
+.alert.exit-flip { animation: exit-flip 320ms ease-in forwards; }
+@keyframes exit-flip {
+  from { transform: perspective(40rem) translateY(0) rotateX(0); opacity: 1; }
+  to { transform: perspective(40rem) translateY(-1.5rem) rotateX(80deg); opacity: 0; }
+}
+.alert.exit-fall { animation: exit-fall 320ms cubic-bezier(0.55, 0, 1, 0.45) forwards; }
+@keyframes exit-fall {
+  from { transform: translateY(0) rotate(0); opacity: 1; }
+  to { transform: translateY(8rem) rotate(10deg); opacity: 0; }
+}
+.alert.exit-fade { animation: exit-fade 260ms ease-in forwards; }
+@keyframes exit-fade {
+  from { transform: translateY(0); opacity: 1; }
+  to { transform: translateY(-1.5rem); opacity: 0; }
+}
+.alert.exit-zoom { transform-origin: 50% 50%; animation: exit-zoom 280ms ease-in forwards; }
+@keyframes exit-zoom {
+  from { transform: scale(1); opacity: 1; }
+  to { transform: scale(1.3); opacity: 0; }
+}
+
+/* Reduced motion: nothing travels. The deck and the pile keep their places and every
+   change, the exit style included, becomes a short crossfade. Last in the file so it
+   outranks the exit classes above at equal specificity. */
+@media (prefers-reduced-motion: reduce) {
+  .deck, .deck.show { transform: translate(-50%, 0); transition: opacity 200ms ease; }
+  .alert { transition: opacity 200ms ease; }
+  .alert.exiting { animation: exit-crossfade 200ms ease forwards; }
+}
+@keyframes exit-crossfade { to { opacity: 0; } }

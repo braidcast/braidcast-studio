@@ -70,9 +70,9 @@
 
   // Three lists of pairwise-coprime length (3 · 7 · 8) walked by one counter, so a burst
   // reads as several people talking rather than as the same line five times, and no pair
-  // of columns locks into step.
+  // of columns locks into step. The alert burst takes its names from the same list.
   const CHAT_PLATFORMS = ["twitch", "youtube", "kick"];
-  const CHAT_AUTHORS = [
+  const TEST_AUTHORS = [
     "nightowl",
     "pixelpanda",
     "verdant_fox",
@@ -150,17 +150,47 @@
       channel: "chat",
       overrides: {
         platform: CHAT_PLATFORMS[i % CHAT_PLATFORMS.length],
-        author: CHAT_AUTHORS[i % CHAT_AUTHORS.length],
+        author: TEST_AUTHORS[i % TEST_AUTHORS.length],
         text: CHAT_TEXTS[i % CHAT_TEXTS.length],
       },
     });
   }
 
+  /** How many frames a Burst button sends. */
+  const TEST_BURST_SIZE = 5;
+  /** Gap between the alerts of a test burst. The first sub puts a card on screen and the
+   * rest join it while it shows; the gap makes them arrive as a stream, the way real subs
+   * do, rather than all in one tick. */
+  const ALERT_BURST_SPACING_MS = 200;
+
   function burstChat(): void {
-    for (let n = 0; n < 5; n++) {
+    for (let n = 0; n < TEST_BURST_SIZE; n++) {
       sendChat();
     }
   }
+
+  // Subs from different people, spaced out through the same test path a single button uses,
+  // so the alert box's burst stacking can be seen without a real one.
+  let alertBurstTimers: number[] = [];
+  function cancelAlertBurst(): void {
+    alertBurstTimers.forEach((t) => clearTimeout(t));
+    alertBurstTimers = [];
+  }
+  function burstAlerts(): void {
+    cancelAlertBurst();
+    for (let n = 0; n < TEST_BURST_SIZE; n++) {
+      const actorName = TEST_AUTHORS[n % TEST_AUTHORS.length];
+      const send = () => fire({ type: "sub", overrides: { actorName } });
+      alertBurstTimers.push(window.setTimeout(send, n * ALERT_BURST_SPACING_MS));
+    }
+  }
+  // Switching to another widget, or leaving the page, abandons a burst still in flight:
+  // `fire` addresses whichever widget the pane shows when each timer lands, so the rest of
+  // the burst would otherwise go to the widget switched to.
+  $effect(() => {
+    void widgetId;
+    return cancelAlertBurst;
+  });
 
   // Clear and End stream are the same frame under the two names a widget earns: chatbox,
   // chat leaderboard and viewer count each empty themselves on a stream frame whose
@@ -185,9 +215,12 @@
                 <span class="dot" style:--dot={EVENT_TYPE_COLORS[t]}></span>{EVENT_TYPE_LABELS[t]}
               </Button>
             {/each}
+            <Button size="sm" face="mono" variant="surface" onclick={burstAlerts}>
+              <span class="dot" style:--dot={EVENT_TYPE_COLORS.sub}></span>{EVENT_TYPE_LABELS.sub} burst ×{TEST_BURST_SIZE}
+            </Button>
           {:else if cap === "chat"}
             <Button size="sm" face="mono" variant="surface" onclick={sendChat}>Send message</Button>
-            <Button size="sm" face="mono" variant="surface" onclick={burstChat}>Burst ×5</Button>
+            <Button size="sm" face="mono" variant="surface" onclick={burstChat}>Burst ×{TEST_BURST_SIZE}</Button>
           {:else if counter}
             <input class="test-in" type="number" min="0" aria-label={counter.inputLabel} bind:value={counts[cap]} />
             <Button

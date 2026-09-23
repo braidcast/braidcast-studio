@@ -3,6 +3,9 @@
   { "key": "font", "type": "font", "label": "Font", "default": "Inter, system-ui, sans-serif" },
   { "key": "duration", "type": "slider", "label": "Alert Duration (s)", "min": 2, "max": 15, "step": 1, "default": 5 },
   { "key": "sound", "type": "sound-upload", "label": "Alert Sound", "default": "" },
+  { "key": "burstWindow", "type": "slider", "label": "Burst Window (s, 0 = off)", "min": 0, "max": 5, "step": 0.5, "default": 1.5, "help": "Alerts of the same kind stack into one burst while it is on screen, or when they arrive this close together. A burst plays the sound once. Cheers, raids, Super Chats, Super Stickers and Kicks always play on their own. 0 shows every alert on its own." },
+  { "key": "cardInterval", "type": "slider", "label": "Burst Card Time (s)", "min": 0.5, "max": 3, "step": 0.25, "default": 1, "help": "How long each card in a burst stays in front before the next one replaces it. The last card stays for the full Alert Duration. Large bursts speed up to finish within about 8 seconds more than that." },
+  { "key": "burstAnimation", "type": "dropdown", "label": "Burst Card Exit", "default": "slide", "options": [ { "value": "slide", "label": "Slide" }, { "value": "flip", "label": "Flip" }, { "value": "fall", "label": "Fall" }, { "value": "fade", "label": "Fade" }, { "value": "zoom", "label": "Zoom" } ] },
   { "key": "msgFollow", "type": "text", "label": "Follow message", "help": "Variables: {name}.", "default": "{name} just followed!" },
   { "key": "msgSub", "type": "text", "label": "Sub message", "help": "Used for subs, resubs and gift subs. Variables: {name}, {tier}, {months} (resubs), {count} (subs gifted), {message} (resub message).", "default": "{name} subscribed!" },
   { "key": "msgCheer", "type": "text", "label": "Cheer message", "help": "Variables: {name}, {amountText} (with its unit, e.g. 1,000 bits), {amount} (the number alone), {message}.", "default": "{name} cheered {amountText}!" },
@@ -10,5 +13,6 @@
   { "key": "msgSuperchat", "type": "text", "label": "Super Chat message", "help": "Variables: {name}, {amount} (with its currency, e.g. $5.00), {currency} (code, e.g. USD), {message}.", "default": "{name} sent {amount}!" },
   { "key": "msgSupersticker", "type": "text", "label": "Super Sticker message", "help": "Variables: {name}, {amount} (with its currency), {currency}.", "default": "{name} sent a {amount} sticker!" },
   { "key": "msgMember", "type": "text", "label": "Member message", "help": "Variables: {name}, {tier}, {months}.", "default": "{name} is now a member!" },
-  { "key": "msgKicks", "type": "text", "label": "Kicks message", "help": "Variables: {name}, {amountText} (with its unit, e.g. 500 Kicks), {amount} (the number alone), {tier} (the gift's name, e.g. Rage Quit), {message}.", "default": "{name} sent {amountText}!" }
+  { "key": "msgKicks", "type": "text", "label": "Kicks message", "help": "Variables: {name}, {amountText} (with its unit, e.g. 500 Kicks), {amount} (the number alone), {tier} (the gift's name, e.g. Rage Quit), {message}.", "default": "{name} sent {amountText}!" },
+  { "key": "msgBurstMore", "type": "text", "label": "Burst overflow message", "help": "The last card of a burst too big to show one card per alert. Variables: {count} (alerts not shown).", "default": "and {count} more!" }
 ]

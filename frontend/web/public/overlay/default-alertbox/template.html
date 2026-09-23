@@ -1,7 +1,13 @@
-<div id="alert" class="alert" aria-live="polite">
-  <div class="alert-avatar"></div>
-  <div class="alert-body">
-    <div class="alert-name" id="alert-name"></div>
-    <div class="alert-msg" id="alert-msg"></div>
-  </div>
+<div id="deck" class="deck">
+  <div id="deck-count" class="deck-count" aria-hidden="true"></div>
 </div>
+<div id="alert-live" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+<template id="alert-card">
+  <div class="alert" aria-hidden="true">
+    <div class="alert-avatar"></div>
+    <div class="alert-body">
+      <div class="alert-name"></div>
+      <div class="alert-msg"></div>
+    </div>
+  </div>
+</template>
