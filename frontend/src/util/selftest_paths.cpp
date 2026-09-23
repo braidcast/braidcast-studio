@@ -49,4 +49,25 @@ std::string WriteSummaryFile(const std::string &prefix, const std::string &body)
 	return path;
 }
 
+const char *ResultName(int exitCode)
+{
+	return exitCode == 0 ? "PASS" : exitCode == 1 ? "FAIL" : exitCode == 2 ? "SKIP" : "NOT RUN";
+}
+
+int CountSessionLogLines(const std::string &needle)
+{
+	std::ifstream in(SessionLog::CurrentPath());
+	if (!in) {
+		return -1;
+	}
+	int count = 0;
+	std::string line;
+	while (std::getline(in, line)) {
+		if (line.find(needle) != std::string::npos) {
+			++count;
+		}
+	}
+	return count;
+}
+
 } // namespace SelfTest

@@ -7482,6 +7482,36 @@ std::vector<std::string> ObsBootstrap::ExplicitRenderEndpoints()
 	return ids;
 }
 
+ObsBootstrap::SelfTestEndpoint ObsBootstrap::ResolveSelfTestEndpoint(const std::string &logPrefix)
+{
+	SelfTestEndpoint result;
+	const std::vector<std::string> endpoints = ExplicitRenderEndpoints();
+	if (endpoints.empty()) {
+		result.exitCode = 2;
+		result.reason = "no named render endpoint to open";
+		return result;
+	}
+	for (const std::string &id : endpoints) {
+		HostLog(logPrefix + " endpoint candidate " + id);
+	}
+	const std::string wanted = Env::Value("BRAIDCAST_SELFTEST_ENDPOINT");
+	if (wanted.empty()) {
+		result.exitCode = 3;
+		result.reason = "BRAIDCAST_SELFTEST_ENDPOINT is unset; set it to a substring of one of the endpoint "
+				"ids logged above, naming one nothing else is playing to";
+		return result;
+	}
+	for (const std::string &id : endpoints) {
+		if (id.find(wanted) != std::string::npos) {
+			result.id = id;
+			return result;
+		}
+	}
+	result.exitCode = 3;
+	result.reason = "no render endpoint id contains BRAIDCAST_SELFTEST_ENDPOINT='" + wanted + "'";
+	return result;
+}
+
 namespace {
 
 // Mirrors SELFTEST_NONCE_ENV and the OPT_SELFTEST_* keys of StartRaceProbe in

@@ -49,7 +49,6 @@ struct State {
 
 State g_state;
 
-constexpr std::chrono::milliseconds kBootSettle{3000};
 constexpr std::chrono::seconds kSampleInterval{1};
 
 // Short, CI-friendly default background-measurement window. The old harness used
@@ -180,7 +179,7 @@ bool ObsBootstrap::RunPerfReproSelfTest()
 			return true; // never armed
 
 		case Phase::BootSettle: {
-			if (std::chrono::steady_clock::now() - st.phaseStart < kBootSettle) {
+			if (std::chrono::steady_clock::now() - st.phaseStart < SelfTest::kBootSettle) {
 				return false;
 			}
 			st.phase = Phase::CheckOptOut;

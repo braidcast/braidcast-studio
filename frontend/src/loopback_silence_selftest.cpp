@@ -84,8 +84,6 @@ State g_state;
 // Apart from State, which is reassigned wholesale on arm and cannot hold a mutex.
 Counters g_counters;
 
-constexpr std::chrono::milliseconds kBootSettle{3000};
-
 // A live endpoint delivers a packet every engine period, so an opened capture that has
 // produced nothing this long is already sitting in the defect's first gap -- an endpoint
 // whose engine was idle before the capture ever started. Measured: the unfixed build
@@ -101,14 +99,6 @@ constexpr int kDefaultDurationSec = 120;
 // milliseconds, so this sits well
 // clear of both: it separates "the engine idled" from "a packet was late".
 constexpr ULONGLONG kDefaultMaxGapMs = 500;
-
-// Rate gate: how far the received sample count may fall behind wall clock, as a percentage of
-// the rate those samples are counted in. This is the only gate that catches PARTIAL starvation
-// -- many gaps each under the gap threshold, or short packets -- which leaves the stream
-// falling behind while no single gap looks wrong. Measured spread on a healthy run is under
-// 0.01%, so 2% is ~200x margin against tick granularity and the partial packet at each end of
-// the window, while 2% of a 120 s window is still 2.4 s of audio that never arrived.
-constexpr double kMaxRateDeficitPct = 2.0;
 
 // Distinctive enough that a substring match against a log line cannot collide with another
 // source's name. Private, so it is never written into a scene collection.
@@ -210,13 +200,6 @@ LogScan ScanSessionLog(const std::string &path, const std::string &source)
 	return scan;
 }
 
-// One name per exit code, so the log line and the summary file can never disagree about what
-// a run did. See LoopbackSilenceSelfTestExitCode() for what each code means.
-const char *ResultName(int exitCode)
-{
-	return exitCode == 0 ? "PASS" : exitCode == 1 ? "FAIL" : exitCode == 2 ? "SKIP" : "NOT RUN";
-}
-
 // Puts the run's numbers where someone who was not there can find them, in perf-repro's shape
 // and beside its summaries. `endpoint` is the load-bearing field: a green run only means
 // anything if the endpoint it ran against was genuinely quiet, and that cannot be checked
@@ -228,7 +211,7 @@ void WriteSummary(const State &st)
 	// record ends up calling itself NOT RUN beside an exit code of 0.
 	const int exitCode = st.exitCode < 0 ? 3 : st.exitCode;
 	const Bridge::json summary{
-		{"result", ResultName(exitCode)},
+		{"result", SelfTest::ResultName(exitCode)},
 		{"exitCode", exitCode},
 		{"reason", st.skipReason},
 		{"endpoint", st.endpoint},
@@ -241,7 +224,7 @@ void WriteSummary(const State &st)
 		{"mixRateHz", st.mixRateHz},
 		{"impliedRateHz", st.impliedRateHz},
 		{"rateDeficitPct", st.rateDeficitPct},
-		{"rateDeficitThresholdPct", kMaxRateDeficitPct},
+		{"rateDeficitThresholdPct", SelfTest::kMaxRateDeficitPct},
 		{"maxGapMs", st.maxGapMs},
 		{"maxGapThresholdMs", st.maxGapThresholdMs},
 		{"tsJumps", st.tsJumps},
@@ -278,7 +261,7 @@ void Bail(State &st, int exitCode, const std::string &reason)
 {
 	st.exitCode = exitCode;
 	st.skipReason = reason;
-	HostLog("[selftest-stream] loopback-silence " + std::string(ResultName(exitCode)) + " " + reason);
+	HostLog("[selftest-stream] loopback-silence " + std::string(SelfTest::ResultName(exitCode)) + " " + reason);
 	st.phase = Phase::Teardown;
 }
 
@@ -317,7 +300,7 @@ bool ObsBootstrap::RunLoopbackSilenceSelfTest()
 			return true; // never armed
 
 		case Phase::BootSettle: {
-			if (std::chrono::steady_clock::now() - st.phaseStart < kBootSettle) {
+			if (std::chrono::steady_clock::now() - st.phaseStart < SelfTest::kBootSettle) {
 				return false;
 			}
 			st.phase = Phase::OpenCapture;
@@ -325,41 +308,17 @@ bool ObsBootstrap::RunLoopbackSilenceSelfTest()
 		}
 
 		case Phase::OpenCapture: {
-			const std::vector<std::string> endpoints = ExplicitRenderEndpoints();
-			if (endpoints.empty()) {
-				Bail(st, 2, "no named render endpoint to open");
+			// This case only exists on an endpoint whose audio engine has nothing else
+			// keeping it running, and any other render session on it -- another app's, or
+			// this very fix's -- holds the engine up and makes both a fixed and an unfixed
+			// build pass. So an unconfigured run does not run at all; a guessed endpoint
+			// would report PASS while proving nothing.
+			const SelfTestEndpoint endpoint = ResolveSelfTestEndpoint("[selftest-stream] loopback-silence");
+			if (endpoint.id.empty()) {
+				Bail(st, endpoint.exitCode, endpoint.reason);
 				continue;
 			}
-			for (const std::string &id : endpoints) {
-				HostLog("[selftest-stream] loopback-silence endpoint candidate " + id);
-			}
-
-			// The endpoint is named, never guessed. This case only exists on an endpoint
-			// whose audio engine has nothing else keeping it running, and any other
-			// render session on it -- another app's, or this very fix's -- holds the
-			// engine up and makes both a fixed and an unfixed build pass. Picking one by
-			// default would land on whatever the enumerator lists first, in practice the
-			// machine's own speakers, which is the likeliest endpoint to be held up; the
-			// run would report PASS while proving nothing, now and after any future
-			// change breaks the keepalive. So an unconfigured run does not run at all.
-			const std::string wanted = Env::Value("BRAIDCAST_SELFTEST_ENDPOINT");
-			if (wanted.empty()) {
-				Bail(st, 3,
-				     "BRAIDCAST_SELFTEST_ENDPOINT is unset; set it to a substring of one of "
-				     "the endpoint ids logged above, naming one nothing else is playing to");
-				continue;
-			}
-			for (const std::string &id : endpoints) {
-				if (id.find(wanted) != std::string::npos) {
-					st.endpoint = id;
-					break;
-				}
-			}
-			if (st.endpoint.empty()) {
-				Bail(st, 3,
-				     "no render endpoint id contains BRAIDCAST_SELFTEST_ENDPOINT='" + wanted + "'");
-				continue;
-			}
+			st.endpoint = endpoint.id;
 
 			OBSDataAutoRelease settings = obs_data_create();
 			obs_data_set_string(settings, "device_id", st.endpoint.c_str());
@@ -493,19 +452,19 @@ bool ObsBootstrap::RunLoopbackSilenceSelfTest()
 						"sample count cannot be held against wall clock";
 			} else {
 				st.exitCode = (maxGapMs <= st.maxGapThresholdMs &&
-					       rateDeficitPct <= kMaxRateDeficitPct && tsJumps == 0 &&
+					       rateDeficitPct <= SelfTest::kMaxRateDeficitPct && tsJumps == 0 &&
 					       audioRestarts == 0)
 						      ? 0
 						      : 1;
 			}
 
-			HostLog("[selftest-stream] loopback-silence " + std::string(ResultName(st.exitCode)) +
+			HostLog("[selftest-stream] loopback-silence " + std::string(SelfTest::ResultName(st.exitCode)) +
 				" endpoint=" + st.endpoint + " elapsedSec=" + std::to_string(elapsedSec) +
 				" packets=" + std::to_string(packets) + " frames=" + std::to_string(frames) +
 				" impliedRateHz=" + std::to_string(impliedRateHz) + " endpointRateHz=" +
 				std::to_string(endpointRateHz) + " mixRateHz=" + std::to_string(mixRateHz) +
 				" rateDeficitPct=" + std::to_string(rateDeficitPct) + " rateDeficitThresholdPct=" +
-				std::to_string(kMaxRateDeficitPct) + " maxGapMs=" + std::to_string(maxGapMs) +
+				std::to_string(SelfTest::kMaxRateDeficitPct) + " maxGapMs=" + std::to_string(maxGapMs) +
 				" maxGapThresholdMs=" + std::to_string(st.maxGapThresholdMs) + " tsJumps=" +
 				std::to_string(tsJumps) + " audioRestarts=" + std::to_string(audioRestarts) +
 				(st.skipReason.empty() ? "" : " reason=" + st.skipReason));

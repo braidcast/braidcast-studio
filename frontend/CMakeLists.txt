@@ -336,6 +336,11 @@ target_sources(
     # the same WM_TIMER; includes obs.hpp -> /wd4201 set.
     src/loopback_silence_selftest.cpp
     src/loopback_silence_selftest.hpp
+    # Automated overlay-audio self-test (regression gate for obs-browser's rerouted-audio
+    # keepalive). Gated by BRAIDCAST_SELFTEST_STREAM=overlay-audio[-monitor], driven by the
+    # same WM_TIMER; includes obs.hpp -> /wd4201 set.
+    src/overlay_audio_capture_selftest.cpp
+    src/overlay_audio_capture_selftest.hpp
     # Shared summary-file path + run stamp for every BRAIDCAST_SELFTEST_STREAM mode.
     src/util/selftest_paths.cpp
     src/util/selftest_paths.hpp
@@ -620,6 +625,7 @@ set_source_files_properties(
   src/target_destinations.cpp
   src/perf_repro_selftest.cpp
   src/loopback_silence_selftest.cpp
+  src/overlay_audio_capture_selftest.cpp
   api-impl/frontend_callbacks.cpp
   utility/CanvasDefinition.cpp
   utility/OBSCanvas.cpp

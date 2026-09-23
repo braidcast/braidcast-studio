@@ -265,6 +265,23 @@ constexpr int kSelfTestOutputChannel = 6;
 // may carry other audio.
 std::vector<std::string> ExplicitRenderEndpoints();
 
+// The endpoint a self-test pinned to BRAIDCAST_SELFTEST_ENDPOINT runs against: the first
+// explicit render endpoint whose id contains that value. On failure `id` is empty and
+// `exitCode`/`reason` are what the case bails with -- 2 (SKIP) when this machine lists no
+// named render endpoint at all, 3 (NOT RUN) when the variable is unset or matches none.
+struct SelfTestEndpoint {
+	std::string id;
+	int exitCode = 0;
+	std::string reason;
+};
+
+// Logs every candidate as "<logPrefix> endpoint candidate <id>" so an operator can pick one.
+// The endpoint is named, never guessed: a capture hears everything else playing on its
+// endpoint, and a default pick lands on whatever the enumerator lists first -- in practice the
+// machine's own speakers, the likeliest to carry other audio. One resolver for every such
+// self-test, so they cannot disagree about which device a given value selects.
+SelfTestEndpoint ResolveSelfTestEndpoint(const std::string &logPrefix);
+
 void TeardownScene();
 // Stand up a fresh placeholder Default scene bound to channel 0, owned by libobs's
 // source list (NOT tracked by the boot g_scene). Used by the scene-collection
