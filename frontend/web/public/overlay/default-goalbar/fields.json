@@ -14,6 +14,7 @@
   },
   { "key": "target", "type": "number", "label": "Target", "min": 1, "max": 1000000, "step": 1, "default": 50 },
   { "key": "startCurrent", "type": "number", "label": "Starting Amount", "min": 0, "max": 1000000, "step": 1, "default": 0 },
+  { "key": "currency", "type": "text", "label": "Donation Currency", "help": "Used only when Goal Type is Donations. A currency code such as USD, EUR or JPY; Target and Starting Amount are in whole units of it. Only donations in this currency count, since there is no exchange rate to convert the others with.", "default": "USD" },
   { "key": "title", "type": "text", "label": "Title", "default": "Goal" },
   { "key": "barColor", "type": "color", "label": "Bar Color", "default": "#9147ff" },
   { "key": "trackColor", "type": "color", "label": "Track Color", "default": "rgba(255,255,255,0.15)" },

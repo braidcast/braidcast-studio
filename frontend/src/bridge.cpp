@@ -14580,18 +14580,18 @@ bool MethodOverlaysTest(const json &p, json &result, std::string &error)
 		 }},
 		{"sub",
 		 [](Events::NormalizedEvent &e) {
-			 e.tier = "1000";
+			 e.tier = "Tier 1";
 			 e.months = 3;
 		 }},
 		{"resub",
 		 [](Events::NormalizedEvent &e) {
-			 e.tier = "1000";
+			 e.tier = "Tier 1";
 			 e.months = 3;
 		 }},
 		{"subgift",
 		 [](Events::NormalizedEvent &e) {
 			 e.count = 5;
-			 e.tier = "1000";
+			 e.tier = "Tier 1";
 		 }},
 		{"superchat",
 		 [](Events::NormalizedEvent &e) {

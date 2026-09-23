@@ -31,10 +31,25 @@ OBSOverlay.onEvent((e) => {
   if (!showing) next();
 });
 
+const actorLabel = (e) => e.actorName || "Someone";
+
+// Template variable -> its value for an event. One table, so a new variable is one entry.
+// A getter returning "" or nothing means the event carries no such value.
+const VARS = {
+  name: actorLabel,
+  amount: (e) => OBSOverlay.formatAmount(e),
+  amountText: (e) => OBSOverlay.formatAmountText(e),
+  message: (e) => e.message,
+  currency: (e) => e.currency,
+  tier: (e) => e.tier,
+  months: (e) => e.months,
+  count: (e) => (e.count ? OBSOverlay.formatCount(e.count) : ""),
+};
+
 function render(tmpl, e) {
-  return String(tmpl || "")
-    .replaceAll("{name}", e.actorName || "Someone")
-    .replaceAll("{amount}", e.amount != null ? String(e.amount) : "");
+  const values = {};
+  for (const key in VARS) values[key] = VARS[key](e);
+  return OBSOverlay.fillTemplate(tmpl || "", values);
 }
 
 function next() {
@@ -47,7 +62,7 @@ function next() {
   const tmpl = fields[TEMPLATE_KEY[e.type]] || "{name}";
   // The strip has to remove exactly what render() substituted for {name}, fallback
   // included -- otherwise an unnamed actor shows as "Someone Someone just followed!".
-  const shownName = e.actorName || "Someone";
+  const shownName = actorLabel(e);
   nameEl.textContent = shownName;
   msgEl.textContent = render(tmpl, e).replace(shownName + " ", "");
   el.classList.add("show");

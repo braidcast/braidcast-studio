@@ -10,6 +10,7 @@ import type {
   AudienceKind,
   ChannelStats,
   ChatMessage,
+  EventType,
   NormalizedEvent,
   StreamState,
   ViewerCounts,
@@ -17,6 +18,7 @@ import type {
 // A value import, so it is bundled into runtime.js rather than erased: relative, because
 // the $lib alias is Vite's and this file is built by `bun build` on its own.
 import { cssForSlots } from "./textStyle";
+import { fmtCount, fmtMoney, fmtTally, isTally } from "../lib/utils/format";
 
 interface OverlayBootstrap {
   id: string;
@@ -489,6 +491,58 @@ function applyStyles(fields: Record<string, unknown>) {
   slotStyleEl.textContent = css;
 }
 
+// What an event's `amount` counts, per type: money in hundredths of `currency`, or a plain
+// tally (bits cheered, raiding viewers). A type not listed reads as a plain count, so
+// nothing is ever dressed as currency unless it is listed here.
+const kMoneyTypes = new Set<EventType>(["superchat", "supersticker"]);
+
+// The host omits a zero amount from the wire, so for a tally (a 0-viewer raid) a missing
+// amount is zero. Anything else without one carries no amount at all.
+function amountOf(e: NormalizedEvent): number | null {
+  if (e.amount != null) {
+    return e.amount;
+  }
+  return isTally(e.type) ? 0 : null;
+}
+
+function formatAmount(e: NormalizedEvent): string {
+  const n = amountOf(e);
+  if (n == null) {
+    return "";
+  }
+  return kMoneyTypes.has(e.type) ? fmtMoney(n, e.currency) : fmtCount(n);
+}
+
+function formatAmountText(e: NormalizedEvent): string {
+  const n = amountOf(e);
+  if (n == null) {
+    return "";
+  }
+  return kMoneyTypes.has(e.type) ? fmtMoney(n, e.currency) : fmtTally(e.type, n);
+}
+
+const kTemplateToken = /\{(\w+)\}/g;
+// The lookbehind starts a match only at the head of a run of spaces, keeping a long run linear.
+const kEmptyTemplateToken = /(?<! ) *\{(\w+)\}/g;
+
+// Fill `{key}` tokens from `values`. A key absent from `values` is not a variable and stays
+// verbatim. An empty value (null, undefined or "") leaves along with the spaces before it,
+// so an absent value never leaves "sent  !" behind. The rest fill in one pass, so a value
+// that itself contains "{name}" is shown as typed, never expanded.
+function fillTemplate(text: string, values: Record<string, unknown>): string {
+  const valueOf = (key: string): string | null => {
+    if (!Object.prototype.hasOwnProperty.call(values, key)) {
+      return null;
+    }
+    const v = values[key];
+    return v == null ? "" : String(v);
+  };
+  return String(text ?? "")
+    .replace(kEmptyTemplateToken, (m, key: string) => (valueOf(key) === "" ? "" : m))
+    .replace(kTemplateToken, (m, key: string) => valueOf(key) ?? m)
+    .trim();
+}
+
 const OBSOverlay = {
   fields: boot.fields,
   /** Recompile every slot rule from `fields`. Called with the resolved fields before
@@ -513,6 +567,24 @@ const OBSOverlay = {
   pad(n: number): string {
     return n < 10 ? "0" + n : String(n);
   },
+  /** Money given in hundredths of `currency`'s major unit -- the scale every money event
+   * carries, zero-decimal currencies included, so 100000 JPY reads "¥1,000". With no code
+   * it reads as the bare figure to two decimals; a malformed code is kept after it. */
+  formatMoney: fmtMoney,
+  /** A whole count (bits, viewers, a running total), grouped per locale: 1000 -> "1,000". */
+  formatCount: fmtCount,
+  /** An event's `amount` as its type means it: currency for a Super Chat or Sticker, a
+   * grouped count for bits or raiders. Empty when the event carries no amount; a tally
+   * type with none reads as zero, since the host omits a zero amount. */
+  formatAmount,
+  /** formatAmount with the unit a tally counts in: "1 viewer", "1,000 bits". Money reads
+   * exactly as formatAmount does. Empty when the event carries no amount; a tally type
+   * with none reads as zero, since the host omits a zero amount. */
+  formatAmountText,
+  /** Fill a user-typed template's `{key}` tokens from `values` in one pass. Unknown tokens
+   * stay verbatim, empty values drop out with their leading spaces, and substituted text is
+   * never re-expanded. Put the result in textContent, never innerHTML. */
+  fillTemplate,
   onLoad(fn: LoadHandler) {
     loadHandlers.push(fn);
   },

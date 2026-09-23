@@ -1619,7 +1619,7 @@ export type EventType =
 /** One normalized platform event (the `events.new` event; the `events.list`
  * method and `events.backfill` event carry arrays of these, newest-first).
  * Optional fields are omitted by the host when empty/zero: `amount` is cheer
- * bits / superchat minor units / raid viewers; `actorColor` falls back to a
+ * bits / superchat hundredths of the major unit (even JPY) / raid viewers; `actorColor` falls back to a
  * platform color when absent; `message` is rendered as plain text, never HTML.
  *
  * `accountId` names the account the event belongs to (absent only for a host-synthesized

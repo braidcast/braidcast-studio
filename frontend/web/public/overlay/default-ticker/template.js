@@ -23,21 +23,6 @@ const TYPE_EMOJI = {
   member: "🛡️",
 };
 
-// Format a money amount given in MINOR currency units (cents). Prefers the locale
-// currency formatter; an unknown ISO code throws, so fall back to a bare form.
-// Mirrors EventsDock.svelte so the ticker reads consistently with the app.
-function money(amount, currency) {
-  const value = amount / 100;
-  if (currency) {
-    try {
-      return new Intl.NumberFormat(undefined, { style: "currency", currency }).format(value);
-    } catch {
-      // invalid currency code -- fall through to the plain form below.
-    }
-  }
-  return (value.toFixed(2) + " " + (currency || "")).trim();
-}
-
 // One-line action phrasing per type, ported from EventsDock.svelte's SUMMARY map so
 // the ticker matches the app. Unknown types fall back to the raw type string.
 const SUMMARY = {
@@ -48,13 +33,10 @@ const SUMMARY = {
     const n = e.count != null ? e.count : 1;
     return "gifted " + n + " sub" + (n === 1 ? "" : "s") + (e.tier ? " · " + e.tier : "");
   },
-  cheer: (e) => "cheered " + (e.amount != null ? e.amount : 0) + " bits",
-  raid: (e) => {
-    const n = e.amount != null ? e.amount : 0;
-    return "raided with " + n + " viewer" + (n === 1 ? "" : "s");
-  },
-  superchat: (e) => "Super Chat" + (e.amount != null ? " " + money(e.amount, e.currency) : ""),
-  supersticker: (e) => "Super Sticker" + (e.amount != null ? " " + money(e.amount, e.currency) : ""),
+  cheer: (e) => "cheered " + OBSOverlay.formatAmountText(e),
+  raid: (e) => "raided with " + OBSOverlay.formatAmountText(e),
+  superchat: (e) => "Super Chat" + (e.amount != null ? " " + OBSOverlay.formatMoney(e.amount, e.currency) : ""),
+  supersticker: (e) => "Super Sticker" + (e.amount != null ? " " + OBSOverlay.formatMoney(e.amount, e.currency) : ""),
   member: (e) =>
     e.months ? "member · " + e.months + " months" : e.tier ? "became a member · " + e.tier : "became a member",
 };

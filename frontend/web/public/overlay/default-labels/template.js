@@ -26,7 +26,7 @@ OBSOverlay.onEvent((e) => {
   if (!e || types.indexOf(e.type) === -1) return;
   count += 1;
   lastName = e.actorName || "Someone";
-  lastAmount = e.amount != null ? String(e.amount) : "";
+  lastAmount = OBSOverlay.formatAmount(e);
   hasData = true;
   render();
 });
@@ -48,10 +48,11 @@ function applyFields(f) {
 }
 
 function fill(tmpl) {
-  return String(tmpl || "")
-    .replaceAll("{name}", lastName || "")
-    .replaceAll("{count}", String(count))
-    .replaceAll("{amount}", lastAmount || "");
+  return OBSOverlay.fillTemplate(tmpl || "", {
+    name: lastName,
+    count: OBSOverlay.formatCount(count),
+    amount: lastAmount,
+  });
 }
 
 function render() {

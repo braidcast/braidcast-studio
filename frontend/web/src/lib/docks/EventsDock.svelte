@@ -1,6 +1,7 @@
 <script lang="ts">
   import { obs, type NormalizedEvent, type EventType } from "$lib/api/bridge";
   import { EV } from "$lib/utils/eventNames";
+  import { fmtMoney, fmtTally } from "$lib/utils/format";
   import Button from "$lib/ui/Button.svelte";
   import { callOrToast, showNothingReceivedToast } from "$lib/utils/callToast";
   import { PLATFORM_COLORS, EVENT_TYPE_COLORS, EVENT_TYPE_LABELS } from "$lib/theme/platformColors";
@@ -45,22 +46,6 @@
   // cheer=teal (bits); raid=orange; superchat/supersticker=green (money).
   const TYPE_COLOR = EVENT_TYPE_COLORS;
 
-  // Format a money amount given in MINOR currency units (cents). Prefers the
-  // locale currency formatter; an unknown/invalid currency code throws, so wrap it
-  // and fall back to a bare `${value} ${code}`. Callers only invoke this when
-  // amount != null.
-  function money(amount: number, currency: string | undefined): string {
-    const value = amount / 100;
-    if (currency) {
-      try {
-        return new Intl.NumberFormat(undefined, { style: "currency", currency }).format(value);
-      } catch {
-        // invalid ISO 4217 code -- fall through to the plain form below.
-      }
-    }
-    return `${value.toFixed(2)} ${currency ?? ""}`.trim();
-  }
-
   // One-line action summary per type (excludes `message`, which is bound
   // separately so it renders as escaped text). Registry map, not a switch, so a
   // new type is a single entry. Unknown types fall back to the type label.
@@ -81,13 +66,10 @@
       const n = e.count ?? 1;
       return `gifted ${n} sub${n === 1 ? "" : "s"}` + (e.tier ? ` · ${e.tier}` : "");
     },
-    cheer: (e) => `cheered ${e.amount ?? 0} bits`,
-    raid: (e) => {
-      const n = e.amount ?? 0;
-      return `raided with ${n} viewer${n === 1 ? "" : "s"}`;
-    },
-    superchat: (e) => "Super Chat" + (e.amount != null ? ` ${money(e.amount, e.currency)}` : ""),
-    supersticker: (e) => "Super Sticker" + (e.amount != null ? ` ${money(e.amount, e.currency)}` : ""),
+    cheer: (e) => `cheered ${fmtTally("cheer", e.amount ?? 0)}`,
+    raid: (e) => `raided with ${fmtTally("raid", e.amount ?? 0)}`,
+    superchat: (e) => "Super Chat" + (e.amount != null ? ` ${fmtMoney(e.amount, e.currency)}` : ""),
+    supersticker: (e) => "Super Sticker" + (e.amount != null ? ` ${fmtMoney(e.amount, e.currency)}` : ""),
     member: (e) =>
       e.months ? `member · ${e.months} months` : e.tier ? `became a member · ${e.tier}` : "became a member",
   };

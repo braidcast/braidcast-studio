@@ -151,3 +151,59 @@ export function fmtFps(num: number, den: number): string {
   }
   return den > 1 ? (num / den).toFixed(2) : String(num);
 }
+
+// Building an Intl.NumberFormat costs far more than formatting with one, and a feed formats
+// one amount per row, so each formatter is built once and reused.
+let countFormat: Intl.NumberFormat | undefined;
+
+// A whole count shown to a person (bits cheered, raiding viewers), grouped per locale.
+export function fmtCount(n: number): string {
+  if (!countFormat) {
+    countFormat = new Intl.NumberFormat();
+  }
+  return countFormat.format(n);
+}
+
+// The unit an event type's `amount` tallies, singular then plural. One row per type, so a
+// new tally is one entry; a type not listed has no unit.
+const kTallyUnits: Record<string, readonly [string, string]> = {
+  cheer: ["bit", "bits"],
+  raid: ["viewer", "viewers"],
+};
+
+export function isTally(type: string): boolean {
+  return Object.prototype.hasOwnProperty.call(kTallyUnits, type);
+}
+
+// An event amount that is a tally, with its unit: "1 viewer", "1,000 bits". A type with no
+// unit reads as the bare grouped count.
+export function fmtTally(type: string, n: number): string {
+  const unit = isTally(type) ? kTallyUnits[type] : undefined;
+  return unit ? `${fmtCount(n)} ${unit[n === 1 ? 0 : 1]}` : fmtCount(n);
+}
+
+// A money amount in hundredths of `currency`'s major unit. Every money event carries that
+// scale, zero-decimal currencies included (a ¥1,000 Super Chat arrives as 100000, since the
+// host stores micros / 10000), so the divisor is always 100 and Intl picks the shown digits.
+// Intl throws only on a malformed code; that, or no code at all, gets the bare figure.
+export function fmtMoney(hundredths: number, currency?: string): string {
+  const value = hundredths / 100;
+  const format = currency ? moneyFormat(currency) : null;
+  return format ? format.format(value) : `${value.toFixed(2)} ${currency ?? ""}`.trim();
+}
+
+// currency code -> its formatter, or null for a malformed code Intl refused.
+const moneyFormats = new Map<string, Intl.NumberFormat | null>();
+
+function moneyFormat(currency: string): Intl.NumberFormat | null {
+  let format = moneyFormats.get(currency);
+  if (format === undefined) {
+    try {
+      format = new Intl.NumberFormat(undefined, { style: "currency", currency });
+    } catch {
+      format = null;
+    }
+    moneyFormats.set(currency, format);
+  }
+  return format;
+}
