@@ -1,51 +1,39 @@
 <script lang="ts">
-  import type { LivePoll, LivePollOption } from "$lib/api/bridge";
+  import type { LivePoll } from "$lib/api/bridge";
   import { untrack } from "svelte";
   import Icon from "$lib/ui/Icon.svelte";
+  import { tallySum, sharesOf, pct, pollLeaders } from "$lib/utils/pollShares";
+  import { fmtCount } from "$lib/utils/format";
 
   // One poll's options, each row filled to its share of the votes, and the vote line under
   // them. Shared by the chat dock's poll strip (live and ended) and the results popup at the
   // end of a stream. `collapsible` shows the leading option alone at full size with the rest
   // as one compact line under it, which expands to every row -- the dock is narrow and chat
-  // is what it is for.
+  // is what it is for. `excludeIndices` drops rows for options the caller already rendered
+  // elsewhere (the results dialog's winner hero pulls the leader(s) out of the breakdown so
+  // they aren't shown twice); it leaves `collapsible` callers, which never pass it, untouched.
+  // `emptyNote` renders in place of every row and the trailing vote-count line -- the
+  // results dialog's real-zero-vote case, where a breakdown of empty rows would be
+  // noise -- in this component's own `.pnote` styling.
   interface Props {
     poll: LivePoll;
     collapsible?: boolean;
+    excludeIndices?: number[];
+    emptyNote?: string;
   }
-  let { poll, collapsible = false }: Props = $props();
-
-  /** Votes on the options that reported a count. Null when none did. */
-  function tallySum(options: LivePollOption[]): number | null {
-    let total: number | null = null;
-    for (const o of options) {
-      if (o.tally !== null) {
-        total = (total ?? 0) + o.tally;
-      }
-    }
-    return total;
-  }
-
-  /** Each option's share of the votes (0..1): the platform's live ratio when it sent one,
-   * else the option's count over the counted total. Null when neither is known. */
-  function sharesOf(options: LivePollOption[]): (number | null)[] {
-    const sum = tallySum(options);
-    return options.map((o) => {
-      if (o.ratio !== null) {
-        return o.ratio;
-      }
-      return o.tally !== null && sum !== null && sum > 0 ? o.tally / sum : null;
-    });
-  }
-
-  const pct = (share: number): number => Math.round(share * 100);
+  let { poll, collapsible = false, excludeIndices = [], emptyNote }: Props = $props();
 
   const active = $derived(poll.status === "active");
   const shares = $derived(sharesOf(poll.options));
   const votes = $derived(poll.totalVotes ?? tallySum(poll.options));
-  const top = $derived(Math.max(0, ...shares.map((s) => s ?? 0)));
-  const isLead = (j: number): boolean => top > 0 && shares[j] === top;
+  const excluded = $derived(new Set(excludeIndices));
+  /** False only when every option is excluded (an all-way tie, whose winners already
+   * fill the hero above this component) -- there is then no breakdown row to show. */
+  const hasVisible = $derived(poll.options.some((_, j) => !excluded.has(j)));
+  const leaders = $derived(pollLeaders(shares));
+  const isLead = (j: number): boolean => leaders.indices.includes(j);
   /** The row the collapsed view shows: the first leader, else the first option. */
-  const leadIndex = $derived(Math.max(0, shares.findIndex((_, j) => isLead(j))));
+  const leadIndex = $derived(leaders.indices[0] ?? 0);
 
   let expanded = $state(false);
   const showAll = $derived(!collapsible || expanded || poll.options.length < 2);
@@ -82,7 +70,7 @@
         {#if share === null}
           <span aria-hidden="true">—</span><span class="sr-only">no result yet</span>
         {:else}
-          {#if o.tally !== null}{o.tally}<span class="sr-only"> {o.tally === 1 ? "vote" : "votes"},</span>
+          {#if o.tally !== null}{fmtCount(o.tally)}<span class="sr-only"> {o.tally === 1 ? "vote" : "votes"},</span>
             · {/if}{pct(share)}%
         {/if}
       </span>
@@ -90,40 +78,48 @@
   </li>
 {/snippet}
 
-{#if showAll}
-  <ol class="res">
-    {#each poll.options as _, j (j)}
-      {@render row(j)}
-    {/each}
-  </ol>
-  {#if collapsible && poll.options.length > 1}
-    <button type="button" class="toggle less" aria-expanded="true" onclick={() => (expanded = false)}>
-      <span>Show less</span>
-      <span class="chev up" aria-hidden="true"><Icon name="caret-down" size={10} /></span>
+{#if emptyNote}
+  <p class="pnote">{emptyNote}</p>
+{:else}
+  {#if showAll}
+    {#if hasVisible}
+      <ol class="res">
+        {#each poll.options as _, j (j)}
+          {#if !excluded.has(j)}
+            {@render row(j)}
+          {/if}
+        {/each}
+      </ol>
+    {/if}
+    {#if collapsible && poll.options.length > 1}
+      <button type="button" class="toggle less" aria-expanded="true" onclick={() => (expanded = false)}>
+        <span>Show less</span>
+        <span class="chev up" aria-hidden="true"><Icon name="caret-down" size={10} /></span>
+      </button>
+    {/if}
+  {:else}
+    <ol class="res">
+      {@render row(leadIndex)}
+    </ol>
+    <button type="button" class="toggle rest" aria-expanded="false" onclick={() => (expanded = true)}>
+      <span class="sr-only">Show all {poll.options.length} options:</span>
+      {#each poll.options as o, j (j)}
+        {#if j !== leadIndex}
+          {@const share = shares[j]}
+          <span class="chip" class:lead={isLead(j)}>
+            <span class="ctext">{o.text}</span>
+            <span class="cnum">{share === null ? "—" : `${pct(share)}%`}</span>
+          </span>
+        {/if}
+      {/each}
+      <span class="chev" aria-hidden="true"><Icon name="caret-down" size={10} /></span>
     </button>
   {/if}
-{:else}
-  <ol class="res">
-    {@render row(leadIndex)}
-  </ol>
-  <button type="button" class="toggle rest" aria-expanded="false" onclick={() => (expanded = true)}>
-    <span class="sr-only">Show all {poll.options.length} options:</span>
-    {#each poll.options as o, j (j)}
-      {#if j !== leadIndex}
-        {@const share = shares[j]}
-        <span class="chip" class:lead={isLead(j)}>
-          <span class="ctext">{o.text}</span>
-          <span class="cnum">{share === null ? "—" : `${pct(share)}%`}</span>
-        </span>
-      {/if}
-    {/each}
-    <span class="chev" aria-hidden="true"><Icon name="caret-down" size={10} /></span>
-  </button>
-{/if}
-{#if votes !== null}
-  <p class="pnote">{votes} {votes === 1 ? "vote" : "votes"}{active ? " so far" : ""}</p>
-{:else if active && shares.every((s) => s === null)}
-  <p class="pnote">Waiting for the first results from YouTube…</p>
+  {#if votes !== null}
+    <p class="pnote">{fmtCount(votes)} {votes === 1 ? "vote" : "votes"}{active ? " so far" : ""}</p>
+  {:else if active && shares.every((s) => s === null)}
+    <p class="pnote">Waiting for the first results from YouTube…</p>
+  {/if}
 {/if}
 
 <style>
