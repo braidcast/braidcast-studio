@@ -26,6 +26,9 @@
     font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
     font-size: 10px;
-    color: var(--color-muted);
+    /* --feedtime-color lets an ancestor row recolor the timestamp (MultichatDock's
+       .row.paid does, for contrast against its tint) without this component knowing
+       about that caller; every other row is unaffected by the unset fallback. */
+    color: var(--feedtime-color, var(--color-muted));
   }
 </style>

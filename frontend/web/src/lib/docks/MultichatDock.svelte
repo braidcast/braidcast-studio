@@ -1,8 +1,9 @@
 <script lang="ts">
-  import { obs, type ChatMessage, type ChatSendParams } from "$lib/api/bridge";
+  import { obs, type ChatMessage, type ChatPaid, type ChatSendParams } from "$lib/api/bridge";
   import { EV } from "$lib/utils/eventNames";
   import Button from "$lib/ui/Button.svelte";
-  import { PLATFORM_COLORS, platformKey, platformName } from "$lib/theme/platformColors";
+  import { PLATFORM_COLORS, platformChipColor, platformKey, platformName } from "$lib/theme/platformColors";
+  import { HEX_COLOR_RE, readableTextColor } from "$lib/utils/hexColor";
   import { FeedVirtualizer, type FeedRow } from "$lib/utils/feedVirtualizer.svelte";
   import { callOrToast } from "$lib/utils/callToast";
   import { tickWhileVisible } from "$lib/utils/tickWhileVisible";
@@ -36,6 +37,16 @@
   let {}: Record<string, unknown> = $props();
 
   const PLATFORM_COLOR = PLATFORM_COLORS;
+
+  // sr-only word read ahead of the amount chip ("Super Chat $5.00"). Kept local rather
+  // than EVENT_TYPE_LABELS (platformColors.ts): that map serves the separate
+  // NormalizedEvent feed (EventsDock/PreviewPane), keyed loosely by string, not this
+  // wire shape's literal ChatPaid["kind"] union.
+  const PAID_KIND_LABEL: Record<ChatPaid["kind"], string> = {
+    superchat: "Super Chat",
+    supersticker: "Super Sticker",
+    cheer: "Cheer",
+  };
 
   // Merged, ring-capped, virtualized scrollback. Rows carry a client-assigned key
   // (m.id could arrive empty/duplicated); 30px estimate for an unmeasured row.
@@ -594,10 +605,16 @@
           {#each feed.visible as row (row.clientKey)}
             {@const m = row.item}
             {@const authorColor = m.author.color || PLATFORM_COLOR[m.platform]}
+            {@const paid = m.paid}
+            {@const paidColor = paid?.color && HEX_COLOR_RE.test(paid.color) ? paid.color : undefined}
+            {@const paidBg = paidColor ?? platformChipColor(m.platform)}
+            {@const chipTextColor = HEX_COLOR_RE.test(paidBg) ? readableTextColor(paidBg) : "var(--color-accent-ink)"}
             <div
               class="row selectable"
+              class:paid={!!paid}
               style:top={row.top + "px"}
               style:border-left-color={PLATFORM_COLOR[m.platform] || "var(--color-muted)"}
+              style:--paid={paid ? paidBg : undefined}
               use:measureRow={row.clientKey}
             >
               <FeedTime ts={m.ts} />
@@ -618,19 +635,27 @@
                 {/if}
               {/each}
               <span class="author" style:color={authorColor}>{m.author.name}</span>
-              <span class="sep">:</span>
-              <span class="text">
-                {#each m.fragments as frag, i (i)}
-                  {#if frag.type === "text"}{frag.text}{:else}<img
-                      class="emote"
-                      src={frag.url}
-                      alt={frag.code}
-                      title={frag.code}
-                      loading="lazy"
-                      draggable="false"
-                    />{/if}
-                {/each}
-              </span>
+              {#if m.fragments.length > 0 || !paid}
+                <span class="sep">:</span>
+              {/if}
+              {#if paid}
+                <span class="sr-only">{PAID_KIND_LABEL[paid.kind]}</span>
+                <span class="amount" style:color={chipTextColor}>{paid.amount}</span>
+              {/if}
+              {#if m.fragments.length > 0}
+                <span class="text">
+                  {#each m.fragments as frag, i (i)}
+                    {#if frag.type === "text"}{frag.text}{:else}<img
+                        class="emote"
+                        src={frag.url}
+                        alt={frag.code}
+                        title={frag.code}
+                        loading="lazy"
+                        draggable="false"
+                      />{/if}
+                  {/each}
+                </span>
+              {/if}
             </div>
           {/each}
         </div>
@@ -745,6 +770,32 @@
     line-height: 1.5;
     color: var(--color-text);
     word-break: break-word;
+  }
+  /* class:paid and style:--paid are set together on the row, so var(--paid) always
+     resolves here and on .amount. Tinted 12% -- enough to mark the row as a purchase at
+     a glance without competing with the author/amount colors sitting on top of it. At
+     12% the worst tier (#FFCA28, YouTube's yellow, lightest) still leaves --color-dim at 6.92:1
+     (default dark) / 5.24:1 (Graphite) against the tinted surface -- comfortably past
+     4.5:1 -- but --color-muted drops to 4.06 / 3.68 there, so FeedTime and .sep switch
+     to --color-dim below rather than the tint moving. */
+  .row.paid {
+    background: color-mix(in srgb, var(--paid) 12%, transparent);
+    --feedtime-color: var(--color-dim);
+  }
+  .row.paid .sep {
+    color: var(--color-dim);
+  }
+  .amount {
+    align-self: center;
+    flex: 0 0 auto;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    padding: 1px 6px;
+    font-family: var(--font-mono);
+    font-weight: 700;
+    font-size: 11px;
+    line-height: 1.4;
+    background: var(--paid);
   }
   .badge {
     height: 14px;

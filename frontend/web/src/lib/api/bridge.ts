@@ -1435,6 +1435,20 @@ export type ChatFragment =
   | { type: "text"; text: string }
   | { type: "emote"; code: string; url: string };
 
+/** A Super Chat/Super Sticker/Cheer (or platform equivalent) attached to a chat
+ * message. `amount` is the platform's own display string ("$5.00", "₹450.00",
+ * "100 bits") -- render it verbatim, never parse it. `color` is the "#RRGGBB" tier
+ * color when the platform supplies one (YouTube); absent on the official-API
+ * fallback path, which has no color, and always absent for `"cheer"` (Twitch Bits
+ * carry no tier color at all). A paid line may have empty `fragments` (a Super Chat
+ * or a cheer with no comment is its amount alone); a supersticker's fragments are
+ * usually one emote fragment (the sticker image, code "[sticker]"). */
+export interface ChatPaid {
+  kind: "superchat" | "supersticker" | "cheer";
+  amount: string;
+  color?: string;
+}
+
 /** One normalized chat message (the `chat.message` event). `id` is the platform
  * message id (dedupe/list key); `ts` is epoch ms; `channelId` is the platform
  * channel it arrived on.
@@ -1443,7 +1457,8 @@ export type ChatFragment =
  * `platform` alone cannot distinguish two accounts on the same platform.
  * `profileUuid` is present only on a platform that runs one chat per broadcast
  * (YouTube creates a broadcast per stream profile, so two orientations on one channel
- * are two separate chats); it is absent for one-chat-per-channel platforms. */
+ * are two separate chats); it is absent for one-chat-per-channel platforms.
+ * `paid` is absent on an ordinary line -- see ChatPaid. */
 export interface ChatMessage {
   platform: ChatPlatform;
   accountId: string;
@@ -1453,6 +1468,7 @@ export interface ChatMessage {
   ts: number;
   author: ChatAuthor;
   fragments: ChatFragment[];
+  paid?: ChatPaid;
 }
 
 /** Per-transport chat connection state. The `chat.state` METHOD returns the full

@@ -1,4 +1,5 @@
 import type { ContextMenuItem } from "$lib/menus/ContextMenu.svelte";
+import { HEX_COLOR_RE } from "$lib/utils/hexColor";
 
 // A small preset palette for per-scene-item color tags. Tokens are the hex values
 // stored on the item (sceneItems.list `color` / sceneItems.setColor `color`).
@@ -22,7 +23,7 @@ const COLORS: { token: string; label: string }[] = [
 function openColorPicker(initial: string, onPick: (color: string) => void): void {
   const input = document.createElement("input");
   input.type = "color";
-  input.value = /^#[0-9a-f]{6}$/i.test(initial) ? initial : "#ffffff";
+  input.value = HEX_COLOR_RE.test(initial) ? initial : "#ffffff";
   input.style.cssText = "position:fixed;left:-9999px;width:0;height:0;opacity:0";
   document.body.appendChild(input);
   input.addEventListener("input", () => onPick(input.value));
