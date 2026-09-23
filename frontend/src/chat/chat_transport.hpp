@@ -49,8 +49,8 @@ using json = nlohmann::json;
 //                 "badges": [ { "kind": <string>, "url": <string?> } ] },
 //     "fragments": [ { "type": "text",  "text": <string> }
 //                  | { "type": "emote", "code": <string>, "url": <string> } ],
-//     "paid": { "kind":   "superchat" | "supersticker",
-//               "amount": <string>,     // the platform's display string, "$5.00"
+//     "paid": { "kind":   "superchat" | "supersticker" | "cheer",
+//               "amount": <string>,     // the platform's display string, "$5.00" / "100 bits"
 //               "color":  <string?> } } // "#RRGGBB" tier colour; OMITTED when unknown
 //   `paid` is OMITTED on an ordinary line. A paid line may carry NO fragments: a Super
 //   Chat without a comment is its amount alone.

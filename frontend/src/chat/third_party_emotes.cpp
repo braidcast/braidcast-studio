@@ -11,8 +11,6 @@ namespace Chat {
 
 namespace {
 
-using EmoteMap = std::unordered_map<std::string, std::string>;
-
 // Kept short (matching kick_chat.cpp's lookup) so that even a run of non-responsive
 // providers only briefly delays the caller: the fetch can't observe the cancel flag
 // mid-transfer, so a small per-request timeout bounds the worst-case teardown/next-
@@ -21,7 +19,7 @@ constexpr int kFetchTimeoutSec = 5;
 
 // Defense-in-depth: only accept https emote URLs so a compromised/hostile provider
 // body cannot inject an http/tracking origin into the dock's <img src>.
-void Insert(EmoteMap &out, const std::string &code, const std::string &url)
+void Insert(ThirdPartyEmoteMap &out, const std::string &code, const std::string &url)
 {
 	if (url.rfind("https://", 0) != 0) {
 		return;
@@ -61,7 +59,7 @@ json GetJson(const std::string &url, const char *what)
 // ("//cdn.7tv.app/emote/<id>"), data.host.files[] }. Prefer the 2x.webp rendition;
 // fall back to the largest webp, then the first file, so an emote with an unusual
 // file list still resolves. host.url is protocol-relative, so prefix https:.
-void Parse7tv(const json &emoteSet, EmoteMap &out)
+void Parse7tv(const json &emoteSet, ThirdPartyEmoteMap &out)
 {
 	if (!emoteSet.is_object()) {
 		return;
@@ -119,7 +117,7 @@ void Parse7tv(const json &emoteSet, EmoteMap &out)
 
 // BetterTTV: an array of emotes, each { id, code }. The CDN serves per-size webp at
 // https://cdn.betterttv.net/emote/<id>/2x.webp.
-void ParseBttvArray(const json &arr, EmoteMap &out)
+void ParseBttvArray(const json &arr, ThirdPartyEmoteMap &out)
 {
 	if (!arr.is_array()) {
 		return;
@@ -140,7 +138,7 @@ void ParseBttvArray(const json &arr, EmoteMap &out)
 // FrankerFaceZ: a `.sets` map whose sets each hold `.emoticons[]`, each
 // { name, urls{"1","2","4"} }. Prefer urls["2"], then "4", then "1". urls may be
 // protocol-relative, so prefix https: when they start with "//".
-void ParseFfz(const json &root, EmoteMap &out)
+void ParseFfz(const json &root, ThirdPartyEmoteMap &out)
 {
 	if (!root.is_object()) {
 		return;
@@ -214,12 +212,11 @@ const PlatformEmoteConfig &ConfigFor(EmotePlatform platform)
 
 } // namespace
 
-std::unordered_map<std::string, std::string> FetchThirdPartyEmotes(EmotePlatform platform, const std::string &login,
-								   const std::string &userId,
-								   const std::function<bool()> &canceled)
+ThirdPartyEmoteMap FetchThirdPartyEmotes(EmotePlatform platform, const std::string &login, const std::string &userId,
+					 const std::function<bool()> &canceled)
 {
 	const PlatformEmoteConfig &cfg = ConfigFor(platform);
-	EmoteMap out;
+	ThirdPartyEmoteMap out;
 
 	// A GET can't observe the cancel flag mid-transfer, but polling before each one
 	// lets a Stop() bail out of the remaining fetches promptly rather than paying the
@@ -299,7 +296,7 @@ std::unordered_map<std::string, std::string> FetchThirdPartyEmotes(EmotePlatform
 	return out;
 }
 
-json ApplyThirdPartyEmotes(const json &fragments, const std::unordered_map<std::string, std::string> &emotes)
+json ApplyThirdPartyEmotes(const json &fragments, const ThirdPartyEmoteMap &emotes)
 {
 	if (emotes.empty()) {
 		return fragments;

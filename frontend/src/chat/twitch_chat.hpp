@@ -4,9 +4,9 @@
 #include <atomic>
 #include <mutex>
 #include <string>
-#include <unordered_map>
 
 #include "chat_transport.hpp"
+#include "third_party_emotes.hpp"
 #include "ws_client.hpp"
 
 // The Twitch chat transport (Phase 9.0): IRC-over-WebSocket against
@@ -20,6 +20,13 @@
 namespace OAuth {
 
 class AuthStrategy;
+
+// Normalize one raw IRC line (tags included, no CRLF) into a chat.message frame, or a null
+// json when the line is not a chat line. Pure apart from the "now" fallback for a line with
+// no `tmi-sent-ts`; the read loop runs the same parse + normalization, so the offline
+// self-test exercises exactly what live chat does.
+Chat::json NormalizeTwitchChatLine(const std::string &line, const std::string &channel,
+				   const Chat::ThirdPartyEmoteMap &emotes);
 
 class TwitchChat : public Chat::ChatTransport {
 public:
@@ -56,7 +63,7 @@ private:
 	// Third-party (7TV/BTTV/FFZ) emote code -> image URL, built once at the top of
 	// connect() and only READ by the read loop on that same worker thread, so it
 	// needs no lock. send() runs on a different worker but never touches it.
-	std::unordered_map<std::string, std::string> thirdPartyEmotes_;
+	Chat::ThirdPartyEmoteMap thirdPartyEmotes_;
 };
 
 } // namespace OAuth

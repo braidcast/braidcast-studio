@@ -1,5 +1,4 @@
 #include "twitch_chat.hpp"
-#include "../event_names.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -117,7 +116,53 @@ struct IrcLine {
 	std::string command;
 	std::string param0;
 	std::string trailing;
+
+	// The tag's (already unescaped) value, "" when absent.
+	std::string tag(const char *key) const
+	{
+		const auto it = tags.find(key);
+		return it == tags.end() ? std::string() : it->second;
+	}
 };
+
+// Undo IRCv3 tag-value escaping: `\:` -> ';', `\s` -> ' ', `\\` -> '\', `\r` -> CR, `\n` -> LF.
+// Any other escaped character stands for itself and a lone trailing backslash is dropped,
+// as the IRCv3 message-tags spec requires.
+std::string UnescapeTagValue(std::string value)
+{
+	if (value.find('\\') == std::string::npos) {
+		return value;
+	}
+	std::string out;
+	out.reserve(value.size());
+	for (size_t i = 0; i < value.size(); ++i) {
+		if (value[i] != '\\') {
+			out += value[i];
+			continue;
+		}
+		if (++i == value.size()) {
+			break;
+		}
+		switch (value[i]) {
+		case ':':
+			out += ';';
+			break;
+		case 's':
+			out += ' ';
+			break;
+		case 'r':
+			out += '\r';
+			break;
+		case 'n':
+			out += '\n';
+			break;
+		default:
+			out += value[i];
+			break;
+		}
+	}
+	return out;
+}
 
 IrcLine ParseIrc(const std::string &raw)
 {
@@ -136,7 +181,7 @@ IrcLine ParseIrc(const std::string &raw)
 			if (eq == std::string::npos) {
 				out.tags[kv] = "";
 			} else {
-				out.tags[kv.substr(0, eq)] = kv.substr(eq + 1);
+				out.tags[kv.substr(0, eq)] = UnescapeTagValue(kv.substr(eq + 1));
 			}
 			if (semi == std::string::npos) {
 				break;
@@ -237,13 +282,18 @@ std::string JoinCps(const std::vector<std::string> &cps, int from, int to)
 	return out;
 }
 
+json TextFragment(const std::string &text)
+{
+	return json{{"type", "text"}, {"text", text}};
+}
+
 // Split the message text into text/emote fragments using the emote spans.
 json BuildFragments(const std::string &message, const std::vector<EmoteSpan> &spans)
 {
 	json frags = json::array();
 	if (spans.empty()) {
 		if (!message.empty()) {
-			frags.push_back(json{{"type", "text"}, {"text", message}});
+			frags.push_back(TextFragment(message));
 		}
 		return frags;
 	}
@@ -256,7 +306,7 @@ json BuildFragments(const std::string &message, const std::vector<EmoteSpan> &sp
 			continue; // malformed/overlapping span -- skip defensively
 		}
 		if (s.start > cursor) {
-			frags.push_back(json{{"type", "text"}, {"text", JoinCps(cps, cursor, s.start - 1)}});
+			frags.push_back(TextFragment(JoinCps(cps, cursor, s.start - 1)));
 		}
 		frags.push_back(json{{"type", "emote"},
 				     {"code", JoinCps(cps, s.start, s.end)},
@@ -264,7 +314,7 @@ json BuildFragments(const std::string &message, const std::vector<EmoteSpan> &sp
 		cursor = s.end + 1;
 	}
 	if (cursor < n) {
-		frags.push_back(json{{"type", "text"}, {"text", JoinCps(cps, cursor, n - 1)}});
+		frags.push_back(TextFragment(JoinCps(cps, cursor, n - 1)));
 	}
 	return frags;
 }
@@ -335,7 +385,111 @@ json BuildBadges(const std::string &badgeTag)
 	return arr;
 }
 
+// A USERNOTICE mirrored from ANOTHER channel of a shared-chat session (its original msg-id
+// rides in `source-msg-id`). Rendering it would show that channel's subs and raids as ours.
+const char *kSharedChatNotice = "sharedchatnotice";
+
+// The `paid` object for a PRIVMSG's `bits` tag, or null when the line is not a cheer.
+json CheerPaid(const std::string &bitsTag)
+{
+	if (bitsTag.empty() || bitsTag.size() > 12 ||
+	    !std::all_of(bitsTag.begin(), bitsTag.end(), [](char c) { return c >= '0' && c <= '9'; })) {
+		return json();
+	}
+	const long long bits = std::strtoll(bitsTag.c_str(), nullptr, 10);
+	if (bits <= 0) {
+		return json();
+	}
+	return Chat::BuildChatPaid("cheer", bits == 1 ? std::string("1 bit") : std::to_string(bits) + " bits", "");
+}
+
+// A `/me` line arrives as the CTCP ACTION "\x01ACTION <text>\x01", and Twitch counts its emote
+// offsets from <text>, so the wrapper must go before the offsets are applied.
+std::string StripCtcpAction(const std::string &text)
+{
+	// Split literal: a hex escape consumes every hex digit after it, so "\x01ACTION" would
+	// read as the single escape \x01AC followed by "TION".
+	static constexpr char kPrefix[] = "\x01"
+					  "ACTION ";
+	static constexpr size_t kPrefixLen = sizeof(kPrefix) - 1;
+	if (text.compare(0, kPrefixLen, kPrefix) != 0) {
+		return text;
+	}
+	std::string inner = text.substr(kPrefixLen);
+	if (!inner.empty() && inner.back() == '\x01') {
+		inner.pop_back();
+	}
+	return inner;
+}
+
+// The chatter's own words (the trailing param): native emotes from the `emotes` tag, then the
+// third-party pass.
+json UserMessageFragments(const IrcLine &m, const Chat::ThirdPartyEmoteMap &emotes)
+{
+	return Chat::ApplyThirdPartyEmotes(BuildFragments(StripCtcpAction(m.trailing), ParseEmotes(m.tag("emotes"))),
+					   emotes);
+}
+
+// PRIVMSG and USERNOTICE become chat lines; anything else is null. A USERNOTICE is the
+// channel's own announcement of a sub/gift/raid/etc. and renders in chat ONLY: EventSub
+// already raises those events, so raising one here would double every alert.
+json NormalizeChatLine(const IrcLine &m, const std::string &channel, const Chat::ThirdPartyEmoteMap &emotes)
+{
+	const bool privmsg = m.command == "PRIVMSG";
+	if (!privmsg && m.command != "USERNOTICE") {
+		return json();
+	}
+
+	std::string name = m.tag("display-name");
+	json fragments = json::array();
+	json paid;
+	if (privmsg) {
+		if (name.empty()) {
+			name = m.nick;
+		}
+		fragments = UserMessageFragments(m, emotes);
+		paid = CheerPaid(m.tag("bits"));
+	} else {
+		if (m.tag("msg-id") == kSharedChatNotice) {
+			return json();
+		}
+		// The prefix of a USERNOTICE is the server, not the chatter.
+		if (name.empty()) {
+			name = m.tag("login");
+		}
+		// `system-msg` is Twitch's own rendering of the notice ("X subscribed for 12
+		// months!"), so every msg-id reads right without a per-kind template here.
+		const std::string systemMsg = StringUtil::Trim(m.tag("system-msg"));
+		if (!systemMsg.empty()) {
+			fragments.push_back(TextFragment(systemMsg));
+		}
+		json userFragments = UserMessageFragments(m, emotes);
+		if (!userFragments.empty() && !fragments.empty()) {
+			fragments.push_back(TextFragment(" "));
+		}
+		for (json &f : userFragments) {
+			fragments.push_back(std::move(f));
+		}
+		if (fragments.empty()) {
+			return json();
+		}
+	}
+
+	int64_t ts = std::strtoll(m.tag("tmi-sent-ts").c_str(), nullptr, 10);
+	if (ts <= 0) {
+		ts = NowMs();
+	}
+	return Chat::BuildChatMessage("twitch", channel, m.tag("id"), ts, name, m.tag("user-id"), m.tag("color"),
+				      BuildBadges(m.tag("badges")), fragments, paid);
+}
+
 } // namespace
+
+json NormalizeTwitchChatLine(const std::string &line, const std::string &channel,
+			     const Chat::ThirdPartyEmoteMap &emotes)
+{
+	return NormalizeChatLine(ParseIrc(line), channel, emotes);
+}
 
 bool TwitchChat::sendLine(const std::string &line)
 {
@@ -463,33 +617,9 @@ bool TwitchChat::connect(const Chat::ChatContext &ctx, OAuthAccount &acct, const
 					err = "Twitch chat login failed: " + m.trailing;
 					break;
 				}
-				if (m.command == "PRIVMSG") {
-					const auto tag = [&](const char *k) -> std::string {
-						auto it = m.tags.find(k);
-						return it == m.tags.end() ? std::string() : it->second;
-					};
-					std::string name = tag("display-name");
-					if (name.empty()) {
-						name = m.nick;
-					}
-					int64_t ts = NowMs();
-					const std::string tsTag = tag("tmi-sent-ts");
-					if (!tsTag.empty()) {
-						ts = std::strtoll(tsTag.c_str(), nullptr, 10);
-					}
-					ctx.emit(json{
-						{"event", EventNames::kChatMessage},
-						{"platform", "twitch"},
-						{"channelId", channel},
-						{"id", tag("id")},
-						{"ts", ts},
-						{"author", Chat::BuildChatAuthor(name, tag("user-id"), tag("color"),
-										 BuildBadges(tag("badges")))},
-						{"fragments",
-						 Chat::ApplyThirdPartyEmotes(BuildFragments(m.trailing,
-											    ParseEmotes(tag("emotes"))),
-									     thirdPartyEmotes_)},
-					});
+				const json message = NormalizeChatLine(m, channel, thirdPartyEmotes_);
+				if (message.is_object()) {
+					ctx.emit(message);
 				}
 			}
 			if (authFailed) {

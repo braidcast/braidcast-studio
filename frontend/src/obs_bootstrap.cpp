@@ -48,6 +48,7 @@
 #include "chat/channel_stats_poller.hpp"
 #include "chat/chat_hub.hpp" // Chat::BindingDestination, Chat::Hub
 #include "chat/poll_registry.hpp"
+#include "chat/twitch_chat.hpp"
 #include "chat/youtube_innertube.hpp"
 #include "chat/youtube_poll.hpp"
 #include "events/event_hub.hpp"
@@ -2439,6 +2440,131 @@ void ObsBootstrap::RunSettingsSelfTest()
 				" milestone.months=" + std::to_string(milestone.ev.months) +
 				" tier=" + milestone.ev.tier + " welcome.months=" + std::to_string(welcome.ev.months) +
 				" redeemed.event=" + std::string(redeemed.hasEvent ? "1" : "0"));
+		}
+	}
+
+	// 6b3) Twitch IRC chat lines, offline: a USERNOTICE renders Twitch's own system-msg (plus
+	// the chatter's words, emotes resolved, when there are any), a shared-chat mirror of another
+	// channel's notice renders nothing, a cheer's line carries its bits as `paid`, a /me line
+	// places its emotes inside the ACTION wrapper, and tag values unescape per IRCv3.
+	{
+		const Chat::ThirdPartyEmoteMap noEmotes;
+		const auto line = [&](const char *raw) {
+			return OAuth::NormalizeTwitchChatLine(raw, "dallas", noEmotes);
+		};
+		const json resub = line(
+			"@badge-info=subscriber/12;badges=subscriber/12,premium/1;color=#008000;display-name=ronni;"
+			"emotes=25:13-17;flags=;id=db25007f-7a18-43eb-9379-80131e44d633;login=ronni;mod=0;msg-id=resub;"
+			"msg-param-cumulative-months=12;msg-param-months=0;msg-param-should-share-streak=1;"
+			"msg-param-streak-months=12;msg-param-sub-plan-name=Channel\\sSubscription\\s(dallas);"
+			"msg-param-sub-plan=Prime;room-id=12345678;subscriber=1;"
+			"system-msg=ronni\\ssubscribed\\swith\\sPrime.\\sThey've\\ssubscribed\\sfor\\s12\\smonths!;"
+			"tmi-sent-ts=1507246572675;user-id=87654321;user-type= :tmi.twitch.tv USERNOTICE #dallas "
+			":Great stream Kappa");
+		const json subgift = line(
+			"@badge-info=;badges=staff/1,premium/1;color=#0000FF;display-name=TWW2;emotes=;flags=;"
+			"id=e9176cd8-5e22-4684-ad40-ce53c2561c5e;login=tww2;mod=0;msg-id=subgift;msg-param-months=1;"
+			"msg-param-recipient-display-name=Mr_Woodchuck;msg-param-recipient-id=55554444;"
+			"msg-param-recipient-user-name=mr_woodchuck;msg-param-sub-plan-name=House\\sof\\sNyoro~n;"
+			"msg-param-sub-plan=1000;room-id=19571752;subscriber=0;"
+			"system-msg=TWW2\\sgifted\\sa\\sTier\\s1\\ssub\\sto\\sMr_Woodchuck!;tmi-sent-ts=1521159445153;"
+			"turbo=0;user-id=87654321;user-type=staff :tmi.twitch.tv USERNOTICE #dallas");
+		const json shared =
+			line("@badge-info=;badges=;color=#1E90FF;display-name=Other;emotes=;flags=;"
+			     "id=0d6a4d77-7e2c-4d5b-9b1f-3c7f2b9d6e11;login=other;mod=0;msg-id=sharedchatnotice;"
+			     "msg-param-sub-plan=1000;room-id=12345678;source-badge-info=;source-badges=;"
+			     "source-id=8b0c1e2a-51f4-4a8e-9d2a-6f3b7c9e0a44;source-msg-id=sub;source-room-id=22222222;"
+			     "subscriber=0;system-msg=Other\\ssubscribed\\sat\\sTier\\s1.;tmi-sent-ts=1507246572675;"
+			     "user-id=33333333;user-type= :tmi.twitch.tv USERNOTICE #dallas");
+		const json cheer =
+			line("@badge-info=;badges=bits/100;bits=100;color=#FF0000;display-name=ronni;emotes=;"
+			     "id=b34ccfc7-4977-403a-8a94-33c6bac34fb8;mod=0;room-id=12345678;subscriber=0;"
+			     "tmi-sent-ts=1507246572675;turbo=1;user-id=12345678;user-type= "
+			     ":ronni!ronni@ronni.tmi.twitch.tv PRIVMSG #dallas :Cheer100 Nice!");
+		const json oneBit = line("@bits=1;display-name=ronni;id=c1;tmi-sent-ts=1507246572675;user-id=12345678 "
+					 ":ronni!ronni@ronni.tmi.twitch.tv PRIVMSG #dallas :Cheer1");
+		const json plain =
+			line("@badge-info=;badges=broadcaster/1;color=;display-name=;emotes=;first-msg=0;flags=;"
+			     "id=885196de-cb67-427a-baa8-82f9b0fcd05f;mod=0;room-id=713936733;subscriber=0;"
+			     "tmi-sent-ts=1643904084794;turbo=0;user-id=713936733;user-type= "
+			     ":foo!foo@foo.tmi.twitch.tv PRIVMSG #dallas :bleedPurple");
+		// Twitch counts a /me line's emote offsets from the text inside the CTCP ACTION wrapper.
+		const json action = line("@badge-info=;badges=;color=#8A2BE2;display-name=ronni;emotes=25:6-10;"
+					 "id=2f1f6b0e-6c2d-4a51-9d4e-0b8f3c7a9e15;mod=0;room-id=12345678;subscriber=0;"
+					 "tmi-sent-ts=1507246572675;user-id=12345678;user-type= "
+					 ":ronni!ronni@ronni.tmi.twitch.tv PRIVMSG #dallas :\x01"
+					 "ACTION waves Kappa\x01");
+		// An announcement's text is the chatter's own; its system-msg is empty, and an unparsable
+		// tmi-sent-ts falls back to now rather than to the epoch.
+		const json announcement =
+			line("@badge-info=;badges=broadcaster/1;color=#033700;display-name=Dallas;emotes=;flags=;"
+			     "id=f4a0c5d9-2f5a-4c47-9c40-2e3f0a6b1d22;login=dallas;mod=0;msg-id=announcement;"
+			     "msg-param-color=PRIMARY;room-id=12345678;subscriber=0;system-msg=;tmi-sent-ts=soon;"
+			     "user-id=12345678;user-type= :tmi.twitch.tv USERNOTICE #dallas :Hello everyone");
+		// Tag-value escapes: `\:` is ';', `\\` is '\', and a lone trailing '\' is dropped.
+		const json escaped =
+			line("@display-name=Dallas;id=e1;login=dallas;msg-id=viewermilestone;"
+			     "system-msg=Tip\\:\\sa\\\\b\\sdone\\;tmi-sent-ts=1507246572675;user-id=12345678 "
+			     ":tmi.twitch.tv USERNOTICE #dallas");
+		const json blank =
+			line("@display-name=Dallas;id=e2;login=dallas;msg-id=viewermilestone;system-msg=\\s\\s;"
+			     "tmi-sent-ts=1507246572675;user-id=12345678 :tmi.twitch.tv USERNOTICE #dallas");
+
+		// Reads a nested key without inserting it, so a failed check leaves the dump as produced.
+		const auto at = [](const json &j, std::initializer_list<const char *> path) -> json {
+			const json *cur = &j;
+			for (const char *key : path) {
+				if (!cur->is_object()) {
+					return json();
+				}
+				const auto it = cur->find(key);
+				if (it == cur->end()) {
+					return json();
+				}
+				cur = &*it;
+			}
+			return *cur;
+		};
+		const auto text = [](const char *t) {
+			return json{{"type", "text"}, {"text", t}};
+		};
+		const auto kappa = json{{"type", "emote"},
+					{"code", "Kappa"},
+					{"url", "https://static-cdn.jtvnw.net/emoticons/v2/25/default/dark/1.0"}};
+
+		const json resubFrags =
+			json::array({text("ronni subscribed with Prime. They've subscribed for 12 months!"), text(" "),
+				     text("Great stream "), kappa});
+		const json resubBadges = json::array({json{{"kind", "subscriber"}}, json{{"kind", "premium"}}});
+		const json announcementTs = at(announcement, {"ts"});
+		const bool okTwitch =
+			at(resub, {"event"}) == EventNames::kChatMessage && at(resub, {"platform"}) == "twitch" &&
+			at(resub, {"channelId"}) == "dallas" &&
+			at(resub, {"id"}) == "db25007f-7a18-43eb-9379-80131e44d633" &&
+			at(resub, {"ts"}) == 1507246572675LL && at(resub, {"author", "name"}) == "ronni" &&
+			at(resub, {"author", "id"}) == "87654321" && at(resub, {"author", "color"}) == "#008000" &&
+			at(resub, {"author", "badges"}) == resubBadges && at(resub, {"fragments"}) == resubFrags &&
+			resub.is_object() && !resub.contains("paid") && at(subgift, {"author", "name"}) == "TWW2" &&
+			at(subgift, {"ts"}) == 1521159445153LL &&
+			at(subgift, {"fragments"}) ==
+				json::array({text("TWW2 gifted a Tier 1 sub to Mr_Woodchuck!")}) &&
+			subgift.is_object() && !subgift.contains("paid") && shared.is_null() &&
+			at(cheer, {"paid"}) == json{{"kind", "cheer"}, {"amount", "100 bits"}} &&
+			at(cheer, {"fragments"}) == json::array({text("Cheer100 Nice!")}) &&
+			at(oneBit, {"paid", "amount"}) == "1 bit" && plain.is_object() && !plain.contains("paid") &&
+			at(plain, {"author", "name"}) == "foo" && at(plain, {"author", "color"}) == "" &&
+			at(plain, {"fragments"}) == json::array({text("bleedPurple")}) &&
+			at(action, {"fragments"}) == json::array({text("waves "), kappa}) &&
+			at(announcement, {"fragments"}) == json::array({text("Hello everyone")}) &&
+			at(announcement, {"author", "name"}) == "Dallas" && announcementTs.is_number_integer() &&
+			announcementTs.get<int64_t>() > 1507246572675LL &&
+			at(escaped, {"fragments"}) == json::array({text("Tip; a\\b done")}) && blank.is_null();
+		HostLog(std::string("[selftest] twitch-chat-lines -> ") + (okTwitch ? "OK" : "MISMATCH"));
+		if (!okTwitch) {
+			HostLog("[selftest] twitch-chat-lines resub=" + resub.dump() + " subgift=" + subgift.dump() +
+				" shared=" + shared.dump() + " cheer=" + cheer.dump() + " oneBit=" + oneBit.dump() +
+				" plain=" + plain.dump() + " action=" + action.dump() + " announcement=" +
+				announcement.dump() + " escaped=" + escaped.dump() + " blank=" + blank.dump());
 		}
 	}
 

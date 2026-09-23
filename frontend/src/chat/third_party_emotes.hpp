@@ -15,6 +15,9 @@ namespace Chat {
 
 using json = nlohmann::json;
 
+// Third-party (7TV/BTTV/FFZ) emote code -> image URL.
+using ThirdPartyEmoteMap = std::unordered_map<std::string, std::string>;
+
 // The host platform the third-party providers key their channel sets off. 7TV and
 // BTTV serve Twitch, Kick, and YouTube channels behind the same
 // /users/<platform>/<id> shape; FFZ is Twitch-only.
@@ -35,9 +38,8 @@ enum class EmotePlatform {
 // and skipped, yielding fewer emotes rather than an error. `canceled` is polled
 // before each GET so a Stop() during teardown returns promptly with whatever partial
 // map was built (an empty map is fine -- the caller's post-pass tolerates it).
-std::unordered_map<std::string, std::string> FetchThirdPartyEmotes(EmotePlatform platform, const std::string &login,
-								   const std::string &userId,
-								   const std::function<bool()> &canceled);
+ThirdPartyEmoteMap FetchThirdPartyEmotes(EmotePlatform platform, const std::string &login, const std::string &userId,
+					 const std::function<bool()> &canceled);
 
 // Rescan already-built fragments and substitute third-party (7TV/BTTV/FFZ) emotes.
 // Only `text` fragments are touched -- native platform emote fragments win and pass
@@ -45,7 +47,7 @@ std::unordered_map<std::string, std::string> FetchThirdPartyEmotes(EmotePlatform
 // EXACT, case-sensitive match, since third-party codes are case-sensitive. Spaces
 // are kept in the text runs so the message reads back byte-identical apart from the
 // matched words, and the emitted emote fragment shape matches the transports'.
-json ApplyThirdPartyEmotes(const json &fragments, const std::unordered_map<std::string, std::string> &emotes);
+json ApplyThirdPartyEmotes(const json &fragments, const ThirdPartyEmoteMap &emotes);
 
 } // namespace Chat
 
