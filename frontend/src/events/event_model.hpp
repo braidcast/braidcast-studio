@@ -32,7 +32,7 @@ struct NormalizedEvent {
 	std::string actorName;
 	std::string actorColor; // "" if unknown
 	// Optional, per-type (omitted from JSON when empty-string / zero):
-	int64_t amount = 0;   // cheer bits / superchat minor-currency units / raid viewers
+	int64_t amount = 0;   // cheer bits / superchat HUNDREDTHS of the major unit (even JPY) / raid viewers
 	std::string currency; // superchat currency code
 	std::string tier;     // sub/member tier label
 	int months = 0;       // resub cumulative months

@@ -100,9 +100,13 @@ inline json BuildChatAuthor(const std::string &name, const std::string &id, cons
 
 // The `paid` object of a chat line that is itself a purchase, shaped as documented above.
 // `amount` is the platform's own display string rather than a number, because that is what
-// the viewer paid and what the platform itself shows beside the line.
+// the viewer paid and what the platform itself shows beside the line. Null when `amount` is
+// empty: a purchase chip with nothing on it says less than no chip at all.
 inline json BuildChatPaid(const char *kind, const std::string &amount, const std::string &color)
 {
+	if (amount.empty()) {
+		return json();
+	}
 	json paid = json{{"kind", kind}, {"amount", amount}};
 	if (!color.empty()) {
 		paid["color"] = color;

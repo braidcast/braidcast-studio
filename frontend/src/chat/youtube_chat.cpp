@@ -230,7 +230,7 @@ json BadgesFor(const json &authorDetails)
 }
 
 // One liveChatMessages item -> the Phase 9 normalized message, or a null json when
-// the item carries no displayable text (e.g. a non-text event we skip).
+// the item has neither text nor a `paid` amount (membership, tombstone, chat ended...).
 json NormalizeItem(const json &item, const std::string &liveChatId,
 		   const std::unordered_map<std::string, std::string> &thirdPartyEmotes)
 {
@@ -246,6 +246,7 @@ json NormalizeItem(const json &item, const std::string &liveChatId,
 	const std::string type = Str(snippet, "type");
 	json paid;
 	std::string text;
+	bool stickerAltText = false;
 	if (type == "superChatEvent") {
 		const json &d = Obj(snippet, "superChatDetails");
 		paid = BuildChatPaid("superchat", Str(d, "amountDisplayString"), std::string());
@@ -254,6 +255,7 @@ json NormalizeItem(const json &item, const std::string &liveChatId,
 		const json &d = Obj(snippet, "superStickerDetails");
 		paid = BuildChatPaid("supersticker", Str(d, "amountDisplayString"), std::string());
 		text = Str(Obj(d, "superStickerMetadata"), "altText");
+		stickerAltText = true;
 	} else {
 		text = Str(snippet, "displayMessage");
 		if (text.empty() && snippet.is_object() && snippet.contains("textMessageDetails") &&
@@ -262,16 +264,20 @@ json NormalizeItem(const json &item, const std::string &liveChatId,
 		}
 	}
 	if (text.empty() && !paid.is_object()) {
-		return json(nullptr); // membership events without text -- the events feed carries those
+		return json(nullptr); // non-paid items without text; the events feed carries memberships
 	}
 
 	// YouTube's list response carries no emoji image runs, so the message starts as a
 	// single plain-text fragment (emoji arrive inline as unicode in displayMessage);
-	// the third-party pass then splits any 7TV/BTTV emote words out of that text.
+	// the third-party pass then splits any 7TV/BTTV emote words out of that text. A
+	// sticker's alt text is YouTube's description of the image, not something the viewer
+	// typed, so it skips that pass.
 	json fragments = json::array();
 	if (!text.empty()) {
 		fragments.push_back(json{{"type", "text"}, {"text", text}});
-		fragments = ApplyThirdPartyEmotes(fragments, thirdPartyEmotes);
+		if (!stickerAltText) {
+			fragments = ApplyThirdPartyEmotes(fragments, thirdPartyEmotes);
+		}
 	}
 
 	// The frame itself comes from the shared assembler, which the InnerTube read also uses --
@@ -320,7 +326,7 @@ bool BuildEventFromChat(const json &item, Events::NormalizedEvent &ev)
 		// the store. Fall back to the message id when the supporter channel is absent (rare).
 		ev.id = channelId.empty() ? ("youtube:superchat:" + itemId)
 					  : Events::YouTubeMoneyEventId("superchat", channelId, micros, ts / 1000);
-		ev.amount = micros / 10000; // micros -> minor units (cents)
+		ev.amount = micros / 10000; // micros -> hundredths of the major unit, whatever the currency
 		ev.currency = Str(d, "currency");
 		ev.message = Str(d, "userComment");
 		return true;
@@ -380,8 +386,8 @@ void ProcessChatItems(const ChatContext &ctx, const json &items, const std::stri
 		if (canceled()) {
 			break;
 		}
-		// Chat first: a plain message emits a chat line; a Super Chat / membership item
-		// still emits its chat line (it carries text).
+		// Chat first: a plain message emits a chat line, and so does a Super Chat or Sticker
+		// (its amount alone is a line) or a membership item that carries text.
 		const json msg = NormalizeItem(item, liveChatId, thirdPartyEmotes);
 		if (msg.is_object()) {
 			ctx.emit(msg);

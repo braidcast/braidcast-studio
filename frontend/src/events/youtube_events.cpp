@@ -140,8 +140,8 @@ void YouTubeEvents::collect(const EventContext &ctx, OAuth::OAuthAccount &acct,
 							: YouTubeMoneyEventId(type, supporterChannelId, micros,
 									      createdMs / 1000);
 					ev.actorName = Str(Obj(snippet, "supporterDetails"), "displayName");
-					// amountMicros is micros of the currency; store MINOR units (cents) for the
-					// dock to format: micros / 10000 = cents.
+					// amountMicros is micros of the currency; micros / 10000 = hundredths of the
+					// major unit, whatever the currency (see NormalizedEvent::amount).
 					ev.amount = micros / 10000;
 					ev.currency = Str(snippet, "currency");
 					ev.message = Str(snippet, "commentText");

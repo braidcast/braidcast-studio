@@ -2385,7 +2385,7 @@ void ObsBootstrap::RunSettingsSelfTest()
 			return json{{"liveChatMembershipItemRenderer", r}};
 		};
 
-		DecodedItem sc, bare, sticker, milestone, welcome, redeemed, unknown;
+		DecodedItem sc, bare, sticker, tinted, noAmount, milestone, welcome, redeemed, unknown;
 		const bool decoded =
 			DecodeChatItem(paidMessage("sc-1", runs({"hi"})), sc) &&
 			DecodeChatItem(paidMessage("sc-2", json()), bare) &&
@@ -2397,6 +2397,16 @@ void ObsBootstrap::RunSettingsSelfTest()
 					   {"sticker",
 					    json{{"thumbnails", json::array({json{{"url", "//s.example/a.png"}}})}}}}}},
 				sticker) &&
+			// The chip colour falls back to backgroundColor, and a colour serialized as a
+			// signed 32-bit int (0xFF1E88E5 == -14776091) still reads as its RGB.
+			DecodeChatItem(json{{"liveChatPaidStickerRenderer",
+					     json{{"id", "st-2"},
+						  {"purchaseAmountText", json{{"simpleText", "$2.00"}}},
+						  {"backgroundColor", -14776091}}}},
+				       tinted) &&
+			DecodeChatItem(json{{"liveChatPaidMessageRenderer",
+					     json{{"id", "sc-3"}, {"message", runs({"no amount"})}}}},
+				       noAmount) &&
 			DecodeChatItem(membership("m-1", runs({"Member for ", "12", " months"}),
 						  json{{"simpleText", "Gold"}}),
 				       milestone) &&
@@ -2407,23 +2417,25 @@ void ObsBootstrap::RunSettingsSelfTest()
 				redeemed) &&
 			!DecodeChatItem(json{{"liveChatViewerEngagementMessageRenderer", json{{"id", "x"}}}}, unknown);
 
-		const bool okItems = decoded && sc.fragments.size() == 1 && sc.paid["kind"] == "superchat" &&
-				     sc.paid["amount"] == "$5.00" && sc.paid["color"] == "#1E88E5" && sc.hasEvent &&
-				     sc.ev.type == "superchat" && sc.ev.amount == 500 && sc.ev.currency == "USD" &&
-				     sc.ev.message == "hi" && sc.tsMs == 1700000000000LL && bare.fragments.empty() &&
-				     bare.paid["amount"] == "$5.00" && bare.hasEvent &&
-				     sticker.paid["kind"] == "supersticker" && !sticker.paid.contains("color") &&
-				     sticker.fragments.size() == 1 &&
-				     sticker.fragments[0]["url"] == "https://s.example/a.png" &&
-				     sticker.ev.currency == "INR" && milestone.hasEvent && milestone.ev.months == 12 &&
-				     milestone.ev.tier == "Gold" && milestone.ev.message == "a year!" &&
-				     welcome.hasEvent && welcome.ev.months == 0 && welcome.ev.tier == "Gold" &&
-				     welcome.paid.is_null() && !redeemed.hasEvent && redeemed.fragments.size() == 1;
+		const bool okItems =
+			decoded && sc.fragments.size() == 1 && sc.paid["kind"] == "superchat" &&
+			sc.paid["amount"] == "$5.00" && sc.paid["color"] == "#1E88E5" && sc.hasEvent &&
+			sc.ev.type == "superchat" && sc.ev.amount == 500 && sc.ev.currency == "USD" &&
+			sc.ev.message == "hi" && sc.tsMs == 1700000000000LL && bare.fragments.empty() &&
+			bare.paid["amount"] == "$5.00" && bare.hasEvent && sticker.paid["kind"] == "supersticker" &&
+			!sticker.paid.contains("color") && sticker.fragments.size() == 1 &&
+			sticker.fragments[0]["url"] == "https://s.example/a.png" && sticker.ev.currency == "INR" &&
+			milestone.hasEvent && milestone.ev.months == 12 && milestone.ev.tier == "Gold" &&
+			milestone.ev.message == "a year!" && welcome.hasEvent && welcome.ev.months == 0 &&
+			welcome.ev.tier == "Gold" && welcome.paid.is_null() && !redeemed.hasEvent &&
+			redeemed.fragments.size() == 1 && tinted.paid["color"] == "#1E88E5" &&
+			tinted.fragments.empty() && noAmount.paid.is_null() && noAmount.fragments.size() == 1;
 		HostLog(std::string("[selftest] youtube-chat-items -> ") + (okItems ? "OK" : "MISMATCH"));
 		if (!okItems) {
 			HostLog("[selftest] youtube-chat-items decoded=" + std::string(decoded ? "1" : "0") +
 				" sc.paid=" + sc.paid.dump() + " sc.frags=" + sc.fragments.dump() +
 				" bare.frags=" + bare.fragments.dump() + " sticker.paid=" + sticker.paid.dump() +
+				" tinted.paid=" + tinted.paid.dump() + " noAmount.paid=" + noAmount.paid.dump() +
 				" milestone.months=" + std::to_string(milestone.ev.months) +
 				" tier=" + milestone.ev.tier + " welcome.months=" + std::to_string(welcome.ev.months) +
 				" redeemed.event=" + std::string(redeemed.hasEvent ? "1" : "0"));

@@ -411,7 +411,7 @@ std::string ArgbColor(const json &renderer, const char *key)
 // One renderer kind decoded into `out`: the chat line's fragments and `paid`, and optionally
 // the monetization/membership event that item ALSO produces (`hasEvent` stays false for plain
 // chat, and an event never suppresses the chat line). The common author fields are already
-// read; the gift renderers overwrite them because they keep the author on a nested header. A
+// read; the gift purchase fills them from its nested header when the item itself has none. A
 // builder never emits: the caller owns the wire shape and the emit order.
 using RendererFn = void (*)(const json &renderer, DecodedItem &out);
 
@@ -428,7 +428,7 @@ void FillMoneyEvent(const char *type, const json &renderer, DecodedItem &out)
 	ev.id = (out.authorChannelId.empty() || !amount.ok)
 			? (std::string("youtube:") + type + ":" + out.id)
 			: Events::YouTubeMoneyEventId(type, out.authorChannelId, amount.micros, out.tsMs / 1000);
-	ev.amount = amount.micros / 10000; // micros -> minor units, as the official read stores
+	ev.amount = amount.micros / 10000; // micros -> hundredths, as the official read stores
 	ev.currency = amount.currency;
 	out.hasEvent = true;
 }
