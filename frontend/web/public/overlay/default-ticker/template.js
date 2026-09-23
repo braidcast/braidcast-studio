@@ -21,6 +21,7 @@ const TYPE_EMOJI = {
   superchat: "💰",
   supersticker: "🎨",
   member: "🛡️",
+  kicks: "🪙",
 };
 
 // One-line action phrasing per type, ported from EventsDock.svelte's SUMMARY map so
@@ -39,6 +40,7 @@ const SUMMARY = {
   supersticker: (e) => "Super Sticker" + (e.amount != null ? " " + OBSOverlay.formatMoney(e.amount, e.currency) : ""),
   member: (e) =>
     e.months ? "member · " + e.months + " months" : e.tier ? "became a member · " + e.tier : "became a member",
+  kicks: (e) => "sent " + OBSOverlay.formatAmountText(e) + (e.tier ? " · " + e.tier : ""),
 };
 
 // --- fields (live-applied) ---------------------------------------------------

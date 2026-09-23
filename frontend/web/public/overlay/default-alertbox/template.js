@@ -14,6 +14,7 @@ const TEMPLATE_KEY = {
   superchat: "msgSuperchat",
   supersticker: "msgSupersticker",
   member: "msgMember",
+  kicks: "msgKicks",
 };
 
 let fields = {};

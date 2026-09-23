@@ -14605,6 +14605,14 @@ bool MethodOverlaysTest(const json &p, json &result, std::string &error)
 			 e.currency = "USD";
 			 e.message = "Nice!";
 		 }},
+		// Kicks exist only on Kick, so the test event says so rather than riding kTestPlatform.
+		{"kicks",
+		 [](Events::NormalizedEvent &e) {
+			 e.platform = "kick";
+			 e.amount = 500;
+			 e.tier = "Rage Quit";
+			 e.message = "w";
+		 }},
 	};
 	auto def = kDefaults.find(type);
 	if (def != kDefaults.end()) {

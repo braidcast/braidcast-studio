@@ -67,23 +67,6 @@ json ParseFragments(const std::string &content)
 	return frags;
 }
 
-// Read an id that Kick serializes as either a JSON string or a JSON integer (message ids are
-// uuids, sender ids are numbers) into its string form. Missing / any other type -> "".
-std::string IdField(const json &j, const char *key)
-{
-	auto it = j.find(key);
-	if (it == j.end()) {
-		return std::string();
-	}
-	if (it->is_string()) {
-		return it->get<std::string>();
-	}
-	if (it->is_number_integer()) {
-		return std::to_string(it->get<long long>());
-	}
-	return std::string();
-}
-
 void EmitState(const ChatContext &ctx, bool connected, const std::string &error)
 {
 	EmitChatState(ctx, "kick", connected, error);
@@ -120,7 +103,7 @@ void HandleChatMessage(const json &outer, const ChatContext &ctx, const std::str
 		if (name.empty()) {
 			name = sender.value("slug", std::string());
 		}
-		senderId = IdField(sender, "id");
+		senderId = KickIdField(sender, "id");
 		auto idIt = sender.find("identity");
 		if (idIt != sender.end() && idIt->is_object()) {
 			color = idIt->value("color", std::string());
@@ -145,7 +128,7 @@ void HandleChatMessage(const json &outer, const ChatContext &ctx, const std::str
 		return; // no resolvable author -> skip
 	}
 
-	const std::string msgId = IdField(inner, "id");
+	const std::string msgId = KickIdField(inner, "id");
 
 	const std::string content = inner.value("content", std::string());
 

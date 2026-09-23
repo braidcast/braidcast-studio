@@ -42,7 +42,7 @@
   // fallback the summary/aria fall back to for an unknown type.
   const TYPE_LABEL = EVENT_TYPE_LABELS;
 
-  // Accent color per type. follow=blue; sub/resub=purple; subgift/member=gold;
+  // Accent color per type. follow=blue; sub/resub=purple; subgift/member/kicks=gold;
   // cheer=teal (bits); raid=orange; superchat/supersticker=green (money).
   const TYPE_COLOR = EVENT_TYPE_COLORS;
 
@@ -72,6 +72,7 @@
     supersticker: (e) => "Super Sticker" + (e.amount != null ? ` ${fmtMoney(e.amount, e.currency)}` : ""),
     member: (e) =>
       e.months ? `member · ${e.months} months` : e.tier ? `became a member · ${e.tier}` : "became a member",
+    kicks: (e) => `sent ${fmtTally("kicks", e.amount ?? 0)}` + (e.tier ? ` · ${e.tier}` : ""),
   };
 
   function summary(e: NormalizedEvent): string {
@@ -367,6 +368,10 @@
       <line x1="15" y1="9" x2="15.01" y2="9" />
     {:else if type === "member"}
       <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+    {:else if type === "kicks"}
+      <circle cx="12" cy="12" r="10" />
+      <path d="M9.5 7.5v9" />
+      <path d="M15 7.5l-5.5 4.5 5.5 4.5" />
     {:else}
       <circle cx="12" cy="12" r="4" fill="currentColor" stroke="none" />
     {/if}

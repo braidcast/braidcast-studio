@@ -18,7 +18,7 @@ using json = nlohmann::json;
 struct NormalizedEvent {
 	std::string id;       // stable, platform-unique; the dedupe key
 	std::string platform; // "twitch" | "youtube" | "kick"
-	std::string type;     // follow|sub|resub|subgift|cheer|raid|superchat|supersticker|member
+	std::string type;     // follow|sub|resub|subgift|cheer|raid|superchat|supersticker|member|kicks
 	int64_t ts = 0;       // ms since epoch (event time if the API gives one, else receipt)
 	// WHICH destination produced this. `accountId` is stamped for every event by the hub's
 	// per-account emit path, so `platform` is no longer the only identity two accounts on
@@ -31,13 +31,15 @@ struct NormalizedEvent {
 	std::string profileUuid;
 	std::string actorName;
 	std::string actorColor; // "" if unknown
-	// Optional, per-type (omitted from JSON when empty-string / zero):
-	int64_t amount = 0;   // cheer bits / superchat HUNDREDTHS of the major unit (even JPY) / raid viewers
+	// Optional, per-type (omitted from JSON when empty-string / zero). `amount` is cheer bits /
+	// superchat HUNDREDTHS of the major unit (even JPY) / raid viewers / Kicks sent (a count of
+	// Kick's gift currency, never money).
+	int64_t amount = 0;
 	std::string currency; // superchat currency code
-	std::string tier;     // sub/member tier label
+	std::string tier;     // sub/member tier label / Kicks gift name
 	int months = 0;       // resub cumulative months
 	int count = 0;        // gift count
-	std::string message;  // resub/superchat user message (plain text; the dock escapes it)
+	std::string message;  // resub/superchat/Kicks user message (plain text; the dock escapes it)
 
 	// The JS/persistence shape: always id/platform/type/ts/actorName; every other
 	// field is omitted when empty-string or zero so a follow event carries no stray

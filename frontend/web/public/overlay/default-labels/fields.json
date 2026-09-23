@@ -19,6 +19,7 @@
       { "value": "subscriber", "label": "Subscriber" },
       { "value": "giftedsub", "label": "Gifted Sub" },
       { "value": "cheer", "label": "Cheer" },
+      { "value": "kicks", "label": "Kicks" },
       { "value": "raid", "label": "Raid" },
       { "value": "superchat", "label": "Super Chat" }
     ]

@@ -9,6 +9,7 @@ const fillEl = document.getElementById("goal-fill");
 //   subscribers -> +1 per sub or resub
 //   gifted subs -> + e.count (a community gift of N subs counts as N)
 //   bits        -> + e.amount (bits cheered)
+//   kicks       -> + e.amount (Kicks sent; a count of Kick's gift currency, not money)
 //   donations   -> + e.amount, counting only events in the goal's currency. Amounts
 //                  arrive in hundredths of the major unit, so a money goal is kept in
 //                  hundredths too and its configured target/start are scaled to match.
@@ -19,6 +20,7 @@ const GOALS = {
   subscribers: { types: ["sub", "resub"], inc: () => 1 },
   giftedsubs: { types: ["subgift"], inc: (e) => (e.count != null ? e.count : 1) },
   bits: { types: ["cheer"], inc: (e) => (e.amount != null ? e.amount : 0) },
+  kicks: { types: ["kicks"], inc: (e) => (e.amount != null ? e.amount : 0) },
   donations: { types: ["superchat", "supersticker"], inc: (e) => (e.amount != null ? e.amount : 0), money: true },
 };
 
@@ -61,7 +63,7 @@ function applyFields(f) {
   render();
 }
 
-// Counts (followers/subs/bits) render grouped; a money goal renders in its currency.
+// Counts (followers/subs/bits/Kicks) render grouped; a money goal renders in its currency.
 function fmt(n) {
   return goal.money ? OBSOverlay.formatMoney(n, currency) : OBSOverlay.formatCount(n);
 }

@@ -2,7 +2,9 @@
 #include "../event_names.hpp"
 
 #include <array>
+#include <cctype>
 #include <cstdint>
+#include <functional>
 
 #include <nlohmann/json.hpp>
 
@@ -42,18 +44,43 @@ using TimeUtil::NowMs;
 // normalize the follow itself -- and the two must not drift apart.
 constexpr const char *kFollowersUpdated = "App\\Events\\FollowersUpdated";
 
-// Normalize one reverse-engineered Kick Pusher event into `ev`. Returns false for an
-// unknown/ignored event (including chat messages, bans, pins, reactions, and the
-// count-only follower ping) or one missing its required actor. Best-effort: names +
-// shapes are unofficial and validated against KickLib.
-//
-// Event -> Pusher channel it arrives on (per KickLib):
+// "#RRGGBB" exactly: the only colour shape the dock and overlays paint an actor with.
+bool IsHexRgb(const std::string &s)
+{
+	if (s.size() != 7 || s[0] != '#') {
+		return false;
+	}
+	for (size_t i = 1; i < s.size(); ++i) {
+		if (!std::isxdigit(static_cast<unsigned char>(s[i]))) {
+			return false;
+		}
+	}
+	return true;
+}
+
+// A Kick sender's name colour. The gift payload carries it as `username_color`; KickLib
+// models it as `identity.color` (the chat-message shape), so either is accepted.
+std::string KickSenderColor(const json &sender)
+{
+	std::string color = Str(sender, "username_color");
+	if (color.empty()) {
+		color = Str(Obj(sender, "identity"), "color");
+	}
+	return IsHexRgb(color) ? color : std::string();
+}
+
+} // namespace
+
+// Event -> Pusher channel it arrives on (per KickLib; KicksGifted per KickLib + social_stream):
 //   App\Events\SubscriptionEvent        chatrooms.<chatroomId>.v2  {username, months}
 //   App\Events\GiftedSubscriptionsEvent chatrooms.<chatroomId>.v2  {gifter_username, gifted_usernames[]}
 //   App\Events\StreamHostEvent          chatrooms.<chatroomId>.v2  {host_username, number_viewers}
 //   App\Events\StreamHostedEvent        chatrooms.<chatroomId>.v2  {user:{username}, message:{id,numberOfViewers}}
 //   App\Events\FollowersUpdated         channel.<channelId>        {username, followed, followersCount, created_at}
-bool Normalize(const std::string &event, const json &outer, NormalizedEvent &ev)
+//   KicksGifted                         channel.<channelId>        {gift_transaction_id, message,
+//                                                                   sender:{username, username_color},
+//                                                                   gift:{gift_id, name, amount}}
+bool NormalizeKickEvent(const std::string &event, const json &outer, NormalizedEvent &ev)
 {
 	const json d = Chat::PusherInnerData(outer);
 	if (!d.is_object()) {
@@ -129,22 +156,77 @@ bool Normalize(const std::string &event, const json &outer, NormalizedEvent &ev)
 		}
 		ev.type = "follow";
 		ev.actorName = username;
-		// created_at is an integer tick count (not a date) -> a stable per-follow suffix
-		// so a redelivery (e.g. on both channel.<id> and channel_<id>) dedupes.
+		// created_at is an integer tick count (not a date) -> a stable per-follow suffix, so
+		// a redelivery KickDeliveryDedupe let through still dedupes in the store.
 		const int64_t createdAt = NumLoose(d, "created_at");
 		ev.id = "kick:follow:" + username + ":" +
 			(createdAt != 0 ? std::to_string(createdAt) : std::to_string(ev.ts));
 		return true;
 	}
 
+	if (event == "KicksGifted") {
+		// Kicks are Kick's paid gift currency, and `amount` counts them -- never money, since
+		// Kick publishes no exchange rate. This event has no App\Events\ form.
+		const json &gift = Obj(d, "gift");
+		ev.amount = NumLoose(gift, "amount");
+		if (ev.amount <= 0) {
+			return false;
+		}
+		const json &sender = Obj(d, "sender");
+		const std::string username = Str(sender, "username");
+		ev.type = "kicks";
+		ev.actorName = username.empty() ? "Anonymous" : username;
+		ev.actorColor = KickSenderColor(sender);
+		ev.tier = Str(gift, "name"); // the gift's display name, e.g. "Rage Quit"
+		ev.message = Str(d, "message");
+		// Without a transaction id the id carries receipt time, like the follow's fallback;
+		// KickDeliveryDedupe has already dropped the channel_<id> / channel.<id> twin.
+		const std::string txn = Chat::KickIdField(d, "gift_transaction_id");
+		ev.id = !txn.empty() ? ("kick:kicks:" + txn)
+				     : ("kick:kicks:" + ev.actorName + ":" + std::to_string(ev.amount) + ":" +
+					std::to_string(ev.ts));
+		return true;
+	}
+
 	return false; // ChatMessageEvent, bans, pins, reactions, count-only follower pings, ...
 }
+
+bool KickDeliveryDedupe::IsDuplicate(const json &frame, int64_t nowMs)
+{
+	const std::string channel = Str(frame, "channel");
+	if (channel.rfind("channel.", 0) != 0 && channel.rfind("channel_", 0) != 0) {
+		return false;
+	}
+	const json &data = Obj(frame, "data");
+	if (data.is_null()) {
+		return false;
+	}
+	const size_t key = std::hash<std::string>{}(Str(frame, "event") + '\n' +
+						    (data.is_string() ? data.get<std::string>() : data.dump()));
+
+	while (!recent_.empty() && nowMs - recent_.front().receivedMs > kWindowMs) {
+		recent_.pop_front();
+	}
+	for (auto it = recent_.begin(); it != recent_.end(); ++it) {
+		if (it->key == key && it->channel != channel) {
+			recent_.erase(it);
+			return true;
+		}
+	}
+	if (recent_.size() >= kMaxRemembered) {
+		recent_.pop_front();
+	}
+	recent_.push_back(Delivery{key, channel, nowMs});
+	return false;
+}
+
+namespace {
 
 // A FollowersUpdated push carries the channel's LIVE follower total (followersCount).
 // Kick exposes no REST follower endpoint, so this push is the ONLY source of the number;
 // feed it into the same channels.stats path the audience poller uses (Task 4) so the
 // Channels panel shows a live Kick figure while streaming. This fires for the count-only
-// (nameless) ping too -- which Normalize drops -- so the number updates on every follow
+// (nameless) ping too -- which NormalizeKickEvent drops -- so the number updates on every follow
 // AND unfollow, independent of the normalized follow event. Field-scoped store write
 // (never round-trips access/refresh, so a concurrent token refresh isn't clobbered) plus
 // the alive-guarded PostToUi so a late emit after Shutdown is dropped, never touching CEF.
@@ -162,8 +244,7 @@ void EmitKickFollowerCount(const json &outer, const OAuth::OAuthAccount &acct)
 	const int64_t pushedCount = it->get<int64_t>();
 	const std::string accountId = OAuth::AccountId(acct); // providerId:userId store key
 
-	// Dedupe the double-channel delivery (channel.<id> AND channel_<id> both carry this):
-	// skip the redundant DPAPI-encrypt + disk write (UpdateAudience always persists) and
+	// Skip the redundant DPAPI-encrypt + disk write (UpdateAudience always persists) and
 	// the identical emit when the total hasn't changed. Freshness for a newly-opened
 	// browser is covered by the poller re-emitting the cached last-known each tick.
 	auto existing = OAuth::Accounts().Get(accountId);
@@ -262,8 +343,8 @@ bool KickEvents::connect(const EventContext &ctx, OAuth::OAuthAccount &acct, std
 
 			if (event == Chat::kPusherConnectionEstablished) {
 				// Subscribe to the chatroom channel (sub/gift/host) and both channel
-				// formats (followers). channel. and channel_ are alternate spellings
-				// KickLib binds both of; a duplicate delivery dedupes by event id.
+				// formats (followers, Kicks). channel. and channel_ are alternate spellings
+				// KickLib binds both of; dedupe_ drops the second spelling's copy.
 				const std::array<std::string, 3> channels = {
 					Chat::PusherChatroomChannel(chatroomId),
 					channelId.empty() ? std::string() : "channel." + channelId,
@@ -285,15 +366,17 @@ bool KickEvents::connect(const EventContext &ctx, OAuth::OAuthAccount &acct, std
 			} else if (event == Chat::kPusherError) {
 				HostLog("[events] kick pusher error: " + frame);
 			} else {
+				if (dedupe_.IsDuplicate(outer, (int64_t)(os_gettime_ns() / 1000000))) {
+					continue; // the other channel spelling already delivered this one
+				}
 				if (event == kFollowersUpdated) {
 					// Feed the live follower total into channels.stats regardless of
-					// whether this ping also names a follower (Normalize drops nameless
-					// ones). Both channel.<id> and channel_<id> deliver it -> a duplicate
-					// emit carries the same count, so it is idempotent.
+					// whether this ping also names a follower (NormalizeKickEvent drops nameless
+					// ones).
 					EmitKickFollowerCount(outer, acct);
 				}
 				NormalizedEvent ev;
-				if (Normalize(event, outer, ev)) {
+				if (NormalizeKickEvent(event, outer, ev)) {
 					ctx.emit(ev);
 				}
 				// Unknown event names (chat messages, bans, ...) are ignored.

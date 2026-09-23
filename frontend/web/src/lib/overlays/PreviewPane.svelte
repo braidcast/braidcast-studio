@@ -55,6 +55,7 @@
     "superchat",
     "supersticker",
     "member",
+    "kicks",
   ];
 
   /** The word each capability contributes to the bar's heading. A capability that only

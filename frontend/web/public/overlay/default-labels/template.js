@@ -8,6 +8,7 @@ const EVENTS = {
   subscriber: ["sub", "resub"],
   giftedsub: ["subgift"],
   cheer: ["cheer"],
+  kicks: ["kicks"],
   raid: ["raid"],
   superchat: ["superchat"],
 };

@@ -53,6 +53,7 @@
 #include "chat/youtube_poll.hpp"
 #include "events/event_hub.hpp"
 #include "events/event_store.hpp"
+#include "events/kick_events.hpp"
 #include "events/transport_health.hpp"
 #include "history/Db.hpp"
 #include "history/SessionRecorder.hpp"
@@ -2565,6 +2566,117 @@ void ObsBootstrap::RunSettingsSelfTest()
 				" shared=" + shared.dump() + " cheer=" + cheer.dump() + " oneBit=" + oneBit.dump() +
 				" plain=" + plain.dump() + " action=" + action.dump() + " announcement=" +
 				announcement.dump() + " escaped=" + escaped.dump() + " blank=" + blank.dump());
+		}
+	}
+
+	// 6b4) Kick Kicks gifts, offline: a KicksGifted frame normalizes to a `kicks` event whether
+	// Pusher's `data` arrives as an object or double-encoded as a string, the sender colour
+	// reads from either payload shape and is dropped when malformed, and the channel.<id> and
+	// channel_<id> deliveries of one gift normalize alike. KickDeliveryDedupe, not the id, is
+	// what drops that twin: without a gift_transaction_id the two ids differ by receipt time.
+	{
+		const json payload = json{
+			{"gift_transaction_id", "01J9KICKS8F2C"},
+			{"message", "w"},
+			{"sender", json{{"id", 4815162}, {"username", "gifter"}, {"username_color", "#FF9D00"}}},
+			{"gift", json{{"gift_id", "rage_quit"},
+				      {"name", "Rage Quit"},
+				      {"amount", 500},
+				      {"type", "LEVEL_UP"},
+				      {"tier", "MID"},
+				      {"character_limit", 100},
+				      {"pinned_time", 600}}},
+		};
+		const auto frame = [](const char *channel, const json &data) {
+			return json{{"event", "KicksGifted"}, {"channel", channel}, {"data", data}};
+		};
+		const auto with = [&](const char *key, const json &value) {
+			json p = payload;
+			p[key] = value;
+			return p;
+		};
+		const json identitySender = json{{"username", "gifter"}, {"identity", json{{"color", "#00aaff"}}}};
+		const json plainGift = json{{"name", "Hype"}, {"amount", 1}};
+
+		Events::NormalizedEvent dot, underscore, identity, badColor, noTxn, noAmount, chat;
+		const bool normalized =
+			Events::NormalizeKickEvent("KicksGifted", frame("channel.1234", payload), dot) &&
+			Events::NormalizeKickEvent("KicksGifted", frame("channel_1234", payload.dump()), underscore) &&
+			Events::NormalizeKickEvent("KicksGifted", frame("channel.1234", with("sender", identitySender)),
+						   identity) &&
+			Events::NormalizeKickEvent(
+				"KicksGifted",
+				frame("channel.1234",
+				      with("sender", json{{"username", "gifter"}, {"username_color", "red"}})),
+				badColor) &&
+			Events::NormalizeKickEvent("KicksGifted",
+						   frame("channel.1234", json{{"sender", json{{"username", "gifter"}}},
+									      {"gift", plainGift}}),
+						   noTxn) &&
+			!Events::NormalizeKickEvent("KicksGifted",
+						    frame("channel.1234", with("gift", json{{"name", "Rage Quit"}})),
+						    noAmount) &&
+			!Events::NormalizeKickEvent("App\\Events\\ChatMessageEvent", frame("chatrooms.1.v2", payload),
+						    chat);
+
+		// The two deliveries differ only in receipt time, so everything else must match.
+		const auto sansTs = [](const Events::NormalizedEvent &ev) {
+			json j = ev.ToJson();
+			j.erase("ts");
+			return j;
+		};
+		const std::string noTxnPrefix = "kick:kicks:gifter:1:";
+		const bool okKicks = normalized && dot.type == "kicks" && dot.platform == "kick" && dot.amount == 500 &&
+				     dot.actorName == "gifter" && dot.actorColor == "#FF9D00" && dot.message == "w" &&
+				     dot.tier == "Rage Quit" && dot.id == "kick:kicks:01J9KICKS8F2C" &&
+				     dot.count == 0 && dot.currency.empty() && underscore.id == dot.id &&
+				     sansTs(underscore) == sansTs(dot) && identity.actorColor == "#00aaff" &&
+				     badColor.actorColor.empty() && noTxn.id.rfind(noTxnPrefix, 0) == 0 &&
+				     noTxn.id.size() > noTxnPrefix.size() && noTxn.tier == "Hype" &&
+				     noTxn.message.empty() && noTxn.actorColor.empty();
+		// The channel.<id> / channel_<id> twin is dropped before normalizing; a repeat on one
+		// spelling is a second genuine gift, and an expired or chatroom frame never matches.
+		Events::KickDeliveryDedupe dedupe;
+		const std::string raw = payload.dump();
+		const std::string other = with("message", "gg").dump();
+		const auto dup = [&](const char *channel, const json &data, int64_t ms) {
+			return dedupe.IsDuplicate(frame(channel, data), ms);
+		};
+		const std::vector<bool> seen = {
+			dup("channel.1234", raw, 1000),    // first delivery
+			dup("channel_1234", raw, 1050),    // its twin -> dropped
+			dup("channel.1234", raw, 2000),    // a second identical gift
+			dup("channel.1234", raw, 2100),    // and a third, same spelling
+			dup("channel_1234", raw, 2150),    // twin of the second -> dropped
+			dup("channel_1234", raw, 2160),    // twin of the third -> dropped
+			dup("channel_1234", raw, 2170),    // nothing left to pair with
+			dup("channel.1234", raw, 30000),   // remembered...
+			dup("channel_1234", raw, 40001),   // ...but past the window
+			dup("chatrooms.1.v2", raw, 45000), // chatroom frames are never collapsed
+			dup("chatrooms.1.v2", raw, 45001),
+			dup("channel.1234", other, 50000), // different data never matches
+			dup("channel_1234", raw, 50010),
+			dup("channel.1234", payload, 70000), // object-shaped data pairs the same way
+			dup("channel_1234", payload, 70001),
+		};
+		const std::vector<bool> wantSeen = {false, true,  false, false, true,  true,  false, false,
+						    false, false, false, false, false, false, true};
+		const bool okDedupe = seen == wantSeen;
+		HostLog(std::string("[selftest] kick-delivery-dedupe -> ") + (okDedupe ? "OK" : "MISMATCH"));
+		if (!okDedupe) {
+			std::string got;
+			for (bool b : seen) {
+				got += b ? '1' : '0';
+			}
+			HostLog("[selftest] kick-delivery-dedupe got=" + got);
+		}
+
+		HostLog(std::string("[selftest] kick-kicks -> ") + (okKicks ? "OK" : "MISMATCH"));
+		if (!okKicks) {
+			HostLog("[selftest] kick-kicks normalized=" + std::string(normalized ? "1" : "0") +
+				" dot=" + dot.ToJson().dump() + " underscore=" + underscore.ToJson().dump() +
+				" identity=" + identity.ToJson().dump() + " badColor=" + badColor.ToJson().dump() +
+				" noTxn=" + noTxn.ToJson().dump());
 		}
 	}
 

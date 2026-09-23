@@ -288,7 +288,7 @@ target_sources(
     src/events/youtube_events.cpp
     src/events/youtube_events.hpp
     # Phase 9.2d: Kick Pusher event transport (best-effort reverse-engineered
-    # sub/gift/host(raid)/follow), owned by KickProvider. Rides Kick's public Pusher
+    # sub/gift/host(raid)/Kicks gifts/follow), owned by KickProvider. Rides Kick's public Pusher
     # (shared config in src/chat/kick_pusher); HTTP + WS only, no obs.h.
     src/events/kick_events.cpp
     src/events/kick_events.hpp

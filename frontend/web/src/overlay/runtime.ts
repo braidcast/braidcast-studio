@@ -492,7 +492,7 @@ function applyStyles(fields: Record<string, unknown>) {
 }
 
 // What an event's `amount` counts, per type: money in hundredths of `currency`, or a plain
-// tally (bits cheered, raiding viewers). A type not listed reads as a plain count, so
+// tally (bits cheered, raiding viewers, Kicks sent). A type not listed reads as a plain count, so
 // nothing is ever dressed as currency unless it is listed here.
 const kMoneyTypes = new Set<EventType>(["superchat", "supersticker"]);
 

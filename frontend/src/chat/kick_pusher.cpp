@@ -16,9 +16,9 @@ namespace {
 // detached worker lingers only briefly past Stop()/Shutdown.
 constexpr int kChannelLookupTimeoutSec = 5;
 
-// Extract an id field that Kick may serialize as a JSON integer or a string into a
-// decimal string; returns "" when absent/unusable.
-std::string IdToString(const json &j, const char *key)
+} // namespace
+
+std::string KickIdField(const json &j, const char *key)
 {
 	auto it = j.find(key);
 	if (it == j.end()) {
@@ -32,8 +32,6 @@ std::string IdToString(const json &j, const char *key)
 	}
 	return std::string();
 }
-
-} // namespace
 
 std::string KickPusherUrl()
 {
@@ -107,7 +105,7 @@ bool ResolveKickChannelIds(const std::string &slug, std::string &chatroomIdOut, 
 		err = "Kick channel lookup: no chatroom in response";
 		return false;
 	}
-	chatroomIdOut = IdToString(*chat, "id");
+	chatroomIdOut = KickIdField(*chat, "id");
 	if (chatroomIdOut.empty() || chatroomIdOut == "0") {
 		err = "Kick channel lookup: invalid chatroom id";
 		return false;
@@ -115,7 +113,7 @@ bool ResolveKickChannelIds(const std::string &slug, std::string &chatroomIdOut, 
 
 	// Top-level id -- the numeric channel id (follower events). Best-effort: absence
 	// is non-fatal (a caller wanting only the chatroom id still succeeds).
-	channelIdOut = IdToString(j, "id");
+	channelIdOut = KickIdField(j, "id");
 	if (channelIdOut == "0") {
 		channelIdOut.clear();
 	}

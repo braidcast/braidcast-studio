@@ -54,6 +54,10 @@ inline constexpr const char *kPusherPongFrame = "{\"event\":\"pusher:pong\",\"da
 // logging.
 nlohmann::json PusherInnerData(const nlohmann::json &outer);
 
+// An id Kick serializes as either a JSON integer or a string (message ids are uuids, sender
+// and channel ids are numbers), in its string form. Missing / any other type -> "".
+std::string KickIdField(const nlohmann::json &j, const char *key);
+
 // A `pusher:subscribe` frame for `channel`. Every Kick channel either transport reads is
 // public, so the auth field is always the empty string.
 std::string PusherSubscribeFrame(const std::string &channel);

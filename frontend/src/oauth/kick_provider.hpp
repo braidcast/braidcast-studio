@@ -61,7 +61,7 @@ public:
 	std::unique_ptr<Chat::ChatTransport> makeChat(const OAuthAccount &acct) override;
 
 	// The Kick Pusher event transport (Phase 9.2d): best-effort reverse-engineered
-	// sub/gift/host(raid)/(rarely)follow. A fresh instance per account, run by the
+	// sub/gift/host(raid)/Kicks gifts/(rarely)follow. A fresh instance per account, run by the
 	// EventHub on the account-connect lifecycle. The public Pusher WS is
 	// unauthenticated, so it needs no OAuth scope.
 	std::unique_ptr<Events::EventTransport> makeEvents(const OAuthAccount &acct) override;

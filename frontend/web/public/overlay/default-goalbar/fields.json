@@ -9,6 +9,7 @@
       { "value": "subscribers", "label": "Subscribers" },
       { "value": "giftedsubs", "label": "Gifted Subs" },
       { "value": "bits", "label": "Bits" },
+      { "value": "kicks", "label": "Kicks" },
       { "value": "donations", "label": "Donations" }
     ]
   },

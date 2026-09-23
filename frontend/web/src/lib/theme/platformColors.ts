@@ -76,8 +76,8 @@ export const PLATFORM_MARK_KNOCKOUT = "#ffffff";
 
 /**
  * Accent color per normalized event type. follow=blue; sub/resub=purple;
- * subgift/member=gold; cheer=teal (bits); raid=orange; superchat/supersticker=
- * green (money).
+ * subgift/member/kicks=gold (gifts); cheer=teal (bits); raid=orange;
+ * superchat/supersticker=green (money).
  */
 export const EVENT_TYPE_COLORS: Record<string, string> = {
   follow: "#3ea6ff",
@@ -89,6 +89,7 @@ export const EVENT_TYPE_COLORS: Record<string, string> = {
   superchat: "#2ecc71",
   supersticker: "#2ecc71",
   member: "#ffb62c",
+  kicks: "#ffb62c",
 };
 
 /** Human label per normalized event type. */
@@ -102,4 +103,5 @@ export const EVENT_TYPE_LABELS: Record<string, string> = {
   superchat: "Super Chat",
   supersticker: "Super Sticker",
   member: "Member",
+  kicks: "Kicks",
 };

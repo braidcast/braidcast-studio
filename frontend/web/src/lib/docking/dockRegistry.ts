@@ -68,7 +68,7 @@ export const DOCKS: DockDef[] = [
     accent: true,
     minWidth: 280,
   },
-  // Live cross-platform events feed (follows/subs/gifts/cheers/raids/superchats,
+  // Live cross-platform events feed (follows/subs/gifts/cheers/raids/superchats/Kicks,
   // Phase 9.2). Like Multichat it is NOT in the default layout -- it opens from the
   // CANVASES-bar reopen button -- but stays registered so it is addable/restorable.
   { id: "events", title: "Events", icon: "bell", component: EventsDock, params: {}, accent: true, minWidth: 280 },

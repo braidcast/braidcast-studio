@@ -9,5 +9,6 @@
   { "key": "msgRaid", "type": "text", "label": "Raid message", "help": "Variables: {name}, {amountText} (with its unit, e.g. 12 viewers), {amount} (the number alone).", "default": "{name} raided with {amountText}!" },
   { "key": "msgSuperchat", "type": "text", "label": "Super Chat message", "help": "Variables: {name}, {amount} (with its currency, e.g. $5.00), {currency} (code, e.g. USD), {message}.", "default": "{name} sent {amount}!" },
   { "key": "msgSupersticker", "type": "text", "label": "Super Sticker message", "help": "Variables: {name}, {amount} (with its currency), {currency}.", "default": "{name} sent a {amount} sticker!" },
-  { "key": "msgMember", "type": "text", "label": "Member message", "help": "Variables: {name}, {tier}, {months}.", "default": "{name} is now a member!" }
+  { "key": "msgMember", "type": "text", "label": "Member message", "help": "Variables: {name}, {tier}, {months}.", "default": "{name} is now a member!" },
+  { "key": "msgKicks", "type": "text", "label": "Kicks message", "help": "Variables: {name}, {amountText} (with its unit, e.g. 500 Kicks), {amount} (the number alone), {tier} (the gift's name, e.g. Rage Quit), {message}.", "default": "{name} sent {amountText}!" }
 ]
