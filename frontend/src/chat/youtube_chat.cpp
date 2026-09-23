@@ -240,21 +240,39 @@ json NormalizeItem(const json &item, const std::string &liveChatId,
 	const json &snippet = item.contains("snippet") ? item["snippet"] : json(nullptr);
 	const json &author = item.contains("authorDetails") ? item["authorDetails"] : json(nullptr);
 
-	std::string text = Str(snippet, "displayMessage");
-	if (text.empty() && snippet.is_object() && snippet.contains("textMessageDetails") &&
-	    snippet["textMessageDetails"].is_object()) {
-		text = Str(snippet["textMessageDetails"], "messageText");
+	// A paid line's text is the viewer's own comment, not displayMessage: the amount travels
+	// in `paid`, and the reference leaves unstated whether displayMessage repeats it. The
+	// official read states a tier NUMBER, not a colour, so these lines carry none.
+	const std::string type = Str(snippet, "type");
+	json paid;
+	std::string text;
+	if (type == "superChatEvent") {
+		const json &d = Obj(snippet, "superChatDetails");
+		paid = BuildChatPaid("superchat", Str(d, "amountDisplayString"), std::string());
+		text = Str(d, "userComment");
+	} else if (type == "superStickerEvent") {
+		const json &d = Obj(snippet, "superStickerDetails");
+		paid = BuildChatPaid("supersticker", Str(d, "amountDisplayString"), std::string());
+		text = Str(Obj(d, "superStickerMetadata"), "altText");
+	} else {
+		text = Str(snippet, "displayMessage");
+		if (text.empty() && snippet.is_object() && snippet.contains("textMessageDetails") &&
+		    snippet["textMessageDetails"].is_object()) {
+			text = Str(snippet["textMessageDetails"], "messageText");
+		}
 	}
-	if (text.empty()) {
-		return json(nullptr); // super-chat/membership events without text -- skip in the MVP
+	if (text.empty() && !paid.is_object()) {
+		return json(nullptr); // membership events without text -- the events feed carries those
 	}
 
 	// YouTube's list response carries no emoji image runs, so the message starts as a
 	// single plain-text fragment (emoji arrive inline as unicode in displayMessage);
 	// the third-party pass then splits any 7TV/BTTV emote words out of that text.
 	json fragments = json::array();
-	fragments.push_back(json{{"type", "text"}, {"text", text}});
-	fragments = ApplyThirdPartyEmotes(fragments, thirdPartyEmotes);
+	if (!text.empty()) {
+		fragments.push_back(json{{"type", "text"}, {"text", text}});
+		fragments = ApplyThirdPartyEmotes(fragments, thirdPartyEmotes);
+	}
 
 	// The frame itself comes from the shared assembler, which the InnerTube read also uses --
 	// the two schemas share no field, so that seam is the only thing keeping the wire shape
@@ -262,7 +280,7 @@ json NormalizeItem(const json &item, const std::string &liveChatId,
 	return BuildChatMessage("youtube", liveChatId, Str(item, "id"),
 				static_cast<int64_t>(Rfc3339ToEpochMs(Str(snippet, "publishedAt"))),
 				Str(author, "displayName"), Str(author, "channelId"), std::string(), BadgesFor(author),
-				fragments);
+				fragments, paid);
 }
 
 // Recognize the monetization/membership live-chat item types and fill `ev` with the

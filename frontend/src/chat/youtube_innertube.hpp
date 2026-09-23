@@ -1,6 +1,7 @@
 #ifndef OBS_MULTISTREAM_FRONTEND_CHAT_YOUTUBE_INNERTUBE_HPP_
 #define OBS_MULTISTREAM_FRONTEND_CHAT_YOUTUBE_INNERTUBE_HPP_
 
+#include <cstdint>
 #include <functional>
 #include <string>
 #include <unordered_map>
@@ -63,6 +64,26 @@ struct Config {
 	const std::unordered_map<std::string, std::string> *thirdPartyEmotes = nullptr;
 	std::string destTag; // OAuth::DestinationKey(dest), for the gated log lines
 };
+
+// One live-chat item (addChatItemAction.item) decoded into the normalized parts: the author,
+// the chat line (`fragments`, plus `paid` for a Super Chat or Super Sticker) and, when the item
+// is also a monetization/membership record, the event it raises. A line with no fragments and
+// no `paid` is not emitted.
+struct DecodedItem {
+	std::string id;
+	int64_t tsMs = 0;
+	std::string authorName;
+	std::string authorChannelId;
+	json badges = json::array();
+	json fragments = json::array();
+	json paid; // null on an ordinary line
+	bool hasEvent = false;
+	Events::NormalizedEvent ev;
+};
+
+// False when the item holds no renderer this read decodes. Pure: the read loop and the smoke
+// self-test share it.
+bool DecodeChatItem(const json &item, DecodedItem &out);
 
 // Run the whole read on the CALLING thread until canceled or the chat ends. Returns true to
 // request the caller's fallback read -- the continuation never resolved, or the endpoint

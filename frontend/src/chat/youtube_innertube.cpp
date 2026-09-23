@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdio>
 #include <random>
 #include <string>
 #include <utility>
@@ -381,87 +382,88 @@ ParsedAmount ParseAmountText(const std::string &text)
 	return out;
 }
 
-// The fields every chat-item renderer carries in the same place.
-struct ItemCommon {
-	std::string id;
-	int64_t tsMs = 0;
-	std::string authorName;
-	std::string authorChannelId;
-	json badges = json::array();
-};
-
-ItemCommon ReadCommon(const json &renderer)
+void ReadCommon(const json &renderer, DecodedItem &out)
 {
-	ItemCommon common;
-	common.id = Str(renderer, "id");
+	out.id = Str(renderer, "id");
 	// timestampUsec is MICROseconds since epoch, serialized as a numeric string.
-	common.tsMs = NumLoose(renderer, "timestampUsec") / 1000;
-	common.authorName = PlainText(Obj(renderer, "authorName"));
-	common.authorChannelId = Str(renderer, "authorExternalChannelId");
-	common.badges = BadgesFromAuthorBadges(Obj(renderer, "authorBadges"));
-	return common;
+	out.tsMs = NumLoose(renderer, "timestampUsec") / 1000;
+	out.authorName = PlainText(Obj(renderer, "authorName"));
+	out.authorChannelId = Str(renderer, "authorExternalChannelId");
+	out.badges = BadgesFromAuthorBadges(Obj(renderer, "authorBadges"));
 }
 
-// One renderer kind decoded into (a) the chat line's fragments and (b) optionally the
-// monetization/membership event that item ALSO produces (`hasEvent` stays false for plain
-// chat, and an event never suppresses the chat line). `common` is mutable because the gift
-// renderers keep the author on a nested header rather than on the item itself. A builder
-// never emits: the caller owns the wire shape and the emit order.
-using RendererFn = void (*)(const json &renderer, ItemCommon &common, json &fragments, Events::NormalizedEvent &ev,
-			    bool &hasEvent);
+// An InnerTube colour: a number holding 0xAARRGGBB. "#RRGGBB" with the alpha dropped, "" when
+// the key is absent or not a number.
+std::string ArgbColor(const json &renderer, const char *key)
+{
+	if (!renderer.is_object()) {
+		return std::string();
+	}
+	const auto it = renderer.find(key);
+	if (it == renderer.end() || !it->is_number_integer()) {
+		return std::string();
+	}
+	char hex[8];
+	std::snprintf(hex, sizeof(hex), "#%06X", static_cast<unsigned>(it->get<int64_t>() & 0xFFFFFF));
+	return hex;
+}
+
+// One renderer kind decoded into `out`: the chat line's fragments and `paid`, and optionally
+// the monetization/membership event that item ALSO produces (`hasEvent` stays false for plain
+// chat, and an event never suppresses the chat line). The common author fields are already
+// read; the gift renderers overwrite them because they keep the author on a nested header. A
+// builder never emits: the caller owns the wire shape and the emit order.
+using RendererFn = void (*)(const json &renderer, DecodedItem &out);
 
 // The shared tail of both paid renderers: the content-derived dedupe id that collapses a
 // purchase seen by BOTH this read and the REST superChatEvents.list poll (the two surfaces
 // assign the same purchase different resource ids). Falls back to the item-keyed form when
 // the supporter channel is unknown or the display amount did not parse -- that item then
 // will not cross-path-dedupe, the same accepted edge the official path takes.
-void FillMoneyEvent(const char *type, const json &renderer, const ItemCommon &common, Events::NormalizedEvent &ev)
+void FillMoneyEvent(const char *type, const json &renderer, DecodedItem &out)
 {
 	const ParsedAmount amount = ParseAmountText(PlainText(Obj(renderer, "purchaseAmountText")));
+	Events::NormalizedEvent &ev = out.ev;
 	ev.type = type;
-	ev.id = (common.authorChannelId.empty() || !amount.ok)
-			? (std::string("youtube:") + type + ":" + common.id)
-			: Events::YouTubeMoneyEventId(type, common.authorChannelId, amount.micros, common.tsMs / 1000);
+	ev.id = (out.authorChannelId.empty() || !amount.ok)
+			? (std::string("youtube:") + type + ":" + out.id)
+			: Events::YouTubeMoneyEventId(type, out.authorChannelId, amount.micros, out.tsMs / 1000);
 	ev.amount = amount.micros / 10000; // micros -> minor units, as the official read stores
 	ev.currency = amount.currency;
+	out.hasEvent = true;
 }
 
-void BuildTextMessage(const json &renderer, ItemCommon &, json &fragments, Events::NormalizedEvent &, bool &)
+void BuildTextMessage(const json &renderer, DecodedItem &out)
 {
-	fragments = FragmentsFromRuns(Obj(Obj(renderer, "message"), "runs"));
+	out.fragments = FragmentsFromRuns(Obj(Obj(renderer, "message"), "runs"));
 }
 
-void BuildPaidMessage(const json &renderer, ItemCommon &common, json &fragments, Events::NormalizedEvent &ev,
-		      bool &hasEvent)
+void BuildPaidMessage(const json &renderer, DecodedItem &out)
 {
-	const std::string comment = PlainText(Obj(renderer, "message"));
-	fragments = FragmentsFromRuns(Obj(Obj(renderer, "message"), "runs"));
-	if (fragments.empty()) {
-		// A Super Chat with no comment still belongs in the chat feed: the amount is its
-		// whole content, and the official read's line carries the same.
-		fragments.push_back(json{{"type", "text"}, {"text", PlainText(Obj(renderer, "purchaseAmountText"))}});
-	}
-	FillMoneyEvent("superchat", renderer, common, ev);
-	ev.message = comment;
-	hasEvent = true;
+	// A Super Chat without a comment has no fragments at all: its amount is the whole
+	// content, and that travels in `paid`. The header colour is the tier's -- the saturated
+	// one YouTube draws the amount on.
+	out.fragments = FragmentsFromRuns(Obj(Obj(renderer, "message"), "runs"));
+	out.paid = BuildChatPaid("superchat", PlainText(Obj(renderer, "purchaseAmountText")),
+				 ArgbColor(renderer, "headerBackgroundColor"));
+	FillMoneyEvent("superchat", renderer, out);
+	out.ev.message = PlainText(Obj(renderer, "message"));
 }
 
-void BuildPaidSticker(const json &renderer, ItemCommon &common, json &fragments, Events::NormalizedEvent &ev,
-		      bool &hasEvent)
+void BuildPaidSticker(const json &renderer, DecodedItem &out)
 {
-	// A sticker carries no message runs: its content is the amount plus the sticker image,
-	// and that image is a real emote fragment the official read cannot supply.
-	fragments = json::array();
-	const std::string amountText = PlainText(Obj(renderer, "purchaseAmountText"));
-	if (!amountText.empty()) {
-		fragments.push_back(json{{"type", "text"}, {"text", amountText}});
-	}
+	// A sticker carries no message runs: its content is the sticker image, a real emote
+	// fragment the official read cannot supply, and the amount travels in `paid`.
 	const std::string url = LargestThumbnail(Obj(renderer, "sticker"));
 	if (!url.empty()) {
-		fragments.push_back(json{{"type", "emote"}, {"code", "[sticker]"}, {"url", url}});
+		out.fragments.push_back(json{{"type", "emote"}, {"code", "[sticker]"}, {"url", url}});
 	}
-	FillMoneyEvent("supersticker", renderer, common, ev);
-	hasEvent = true;
+	std::string color = ArgbColor(renderer, "moneyChipBackgroundColor");
+	if (color.empty()) {
+		color = ArgbColor(renderer, "backgroundColor");
+	}
+	out.paid = BuildChatPaid("supersticker", PlainText(Obj(renderer, "purchaseAmountText")), color);
+	FillMoneyEvent("supersticker", renderer, out);
 }
 
 // The membership tier out of headerSubtext. YouTube ships no tier field on this renderer, but
@@ -481,56 +483,59 @@ std::string TierFromHeaderSubtext(const json &subtext, const std::string &plain)
 	return plain;
 }
 
-void BuildMembership(const json &renderer, ItemCommon &common, json &fragments, Events::NormalizedEvent &ev,
-		     bool &hasEvent)
+void BuildMembership(const json &renderer, DecodedItem &out)
 {
 	// A new member's line is the header ("Welcome to <tier>!"); a milestone carries the
 	// member's own message runs alongside it.
-	fragments = FragmentsFromRuns(Obj(Obj(renderer, "message"), "runs"));
+	out.fragments = FragmentsFromRuns(Obj(Obj(renderer, "message"), "runs"));
+	const json &primary = Obj(renderer, "headerPrimaryText");
 	const json &subtext = Obj(renderer, "headerSubtext");
 	const std::string subtextPlain = PlainText(subtext);
-	if (fragments.empty()) {
-		const std::string header = PlainText(Obj(renderer, "headerPrimaryText")) + subtextPlain;
+	if (out.fragments.empty()) {
+		const std::string header = PlainText(primary) + subtextPlain;
 		if (!header.empty()) {
-			fragments.push_back(json{{"type", "text"}, {"text", header}});
+			out.fragments.push_back(json{{"type", "text"}, {"text", header}});
 		}
 	}
+	Events::NormalizedEvent &ev = out.ev;
 	ev.type = "member";
 	ev.tier = TierFromHeaderSubtext(subtext, subtextPlain);
+	// Only a milestone has a primary header ("Member for ", "12", " months"), and its one
+	// numeric run is the tenure -- the same number the official read's memberMonth carries.
+	ev.months = FirstIntegerInRuns(Obj(primary, "runs"));
 	// Membership ids stay keyed on the item id: no other surface delivers the same record,
 	// so there is nothing to cross-dedupe against.
-	ev.id = "youtube:member:" + common.id;
+	ev.id = "youtube:member:" + out.id;
 	ev.message = PlainText(Obj(renderer, "message"));
-	hasEvent = true;
+	out.hasEvent = true;
 }
 
-void BuildGiftPurchase(const json &renderer, ItemCommon &common, json &fragments, Events::NormalizedEvent &ev,
-		       bool &hasEvent)
+void BuildGiftPurchase(const json &renderer, DecodedItem &out)
 {
 	// "<name> gifted N memberships" lives on a NESTED header renderer, and so does the
 	// gifter's own name/badges -- the announcement itself carries only the id, timestamp and
 	// channel id.
 	const json &header = Obj(Obj(renderer, "header"), "liveChatSponsorshipsHeaderRenderer");
 	const json &primary = Obj(Obj(header, "primaryText"), "runs");
-	fragments = FragmentsFromRuns(primary);
-	if (common.authorName.empty()) {
-		common.authorName = PlainText(Obj(header, "authorName"));
-		common.badges = BadgesFromAuthorBadges(Obj(header, "authorBadges"));
+	out.fragments = FragmentsFromRuns(primary);
+	if (out.authorName.empty()) {
+		out.authorName = PlainText(Obj(header, "authorName"));
+		out.badges = BadgesFromAuthorBadges(Obj(header, "authorBadges"));
 	}
+	Events::NormalizedEvent &ev = out.ev;
 	ev.type = "subgift";
-	ev.id = "youtube:subgift:" + common.id;
+	ev.id = "youtube:subgift:" + out.id;
 	ev.count = FirstIntegerInRuns(primary);
-	hasEvent = true;
+	out.hasEvent = true;
 }
 
-void BuildGiftRedemption(const json &renderer, ItemCommon &common, json &fragments, Events::NormalizedEvent &ev,
-			 bool &hasEvent)
+void BuildGiftRedemption(const json &renderer, DecodedItem &out)
 {
-	// "<name> was gifted a membership by <gifter>".
-	fragments = FragmentsFromRuns(Obj(Obj(renderer, "message"), "runs"));
-	ev.type = "member";
-	ev.id = "youtube:member:" + common.id;
-	hasEvent = true;
+	// "<name> was gifted a membership by <gifter>" -- a chat line only. The gift purchase
+	// already raised the one event for the whole gift; an event per recipient would fire fifty
+	// "new member" alerts after a fifty-gift purchase. Twitch's recipient rows are dropped
+	// for the same reason.
+	out.fragments = FragmentsFromRuns(Obj(Obj(renderer, "message"), "runs"));
 }
 
 // addChatItemAction.item.<renderer> -> builder. A renderer name absent from this table is
@@ -567,44 +572,33 @@ struct Loop {
 
 void OnAddChatItem(Loop &lp, const char *, const json &action)
 {
-	const json &item = Obj(action, "item");
-	for (const auto &entry : kRenderers) {
-		const json &renderer = Obj(item, entry.first);
-		if (!renderer.is_object()) {
-			continue;
-		}
-		++lp.items;
-		ItemCommon common = ReadCommon(renderer);
-		if (!lp.seen.add(common.id)) {
-			++lp.dropped;
-			return;
-		}
-		if (lp.suppress) {
-			++lp.suppressed;
-			return;
-		}
-
-		json fragments = json::array();
-		Events::NormalizedEvent ev;
-		bool hasEvent = false;
-		entry.second(renderer, common, fragments, ev, hasEvent);
-
-		if (!fragments.empty()) {
-			fragments = ApplyThirdPartyEmotes(fragments, *lp.emotes);
-			lp.cb.emitMessage(BuildChatMessage("youtube", lp.cfg.channelId, common.id, common.tsMs,
-							   common.authorName, common.authorChannelId, std::string(),
-							   common.badges, fragments));
-			++lp.emitted;
-		}
-		// Then, IN ADDITION, forward monetization/membership items into the events feed.
-		// YouTube has no real-time event socket, so this sink is their only push source.
-		if (hasEvent) {
-			ev.platform = "youtube";
-			ev.actorName = common.authorName;
-			ev.ts = common.tsMs;
-			lp.cb.emitEvent(ev);
-		}
+	DecodedItem d;
+	if (!DecodeChatItem(Obj(action, "item"), d)) {
 		return;
+	}
+	++lp.items;
+	if (!lp.seen.add(d.id)) {
+		++lp.dropped;
+		return;
+	}
+	if (lp.suppress) {
+		++lp.suppressed;
+		return;
+	}
+
+	if (!d.fragments.empty() || d.paid.is_object()) {
+		const json fragments = ApplyThirdPartyEmotes(d.fragments, *lp.emotes);
+		lp.cb.emitMessage(BuildChatMessage("youtube", lp.cfg.channelId, d.id, d.tsMs, d.authorName,
+						   d.authorChannelId, std::string(), d.badges, fragments, d.paid));
+		++lp.emitted;
+	}
+	// Then, IN ADDITION, forward monetization/membership items into the events feed.
+	// YouTube has no real-time event socket, so this sink is their only push source.
+	if (d.hasEvent) {
+		d.ev.platform = "youtube";
+		d.ev.actorName = d.authorName;
+		d.ev.ts = d.tsMs;
+		lp.cb.emitEvent(d.ev);
 	}
 }
 
@@ -812,6 +806,21 @@ long JitteredWaitMs(long stepMs, std::mt19937 &rng)
 }
 
 } // namespace
+
+bool DecodeChatItem(const json &item, DecodedItem &out)
+{
+	for (const auto &entry : kRenderers) {
+		const json &renderer = Obj(item, entry.first);
+		if (!renderer.is_object()) {
+			continue;
+		}
+		out = DecodedItem();
+		ReadCommon(renderer, out);
+		entry.second(renderer, out);
+		return true;
+	}
+	return false;
+}
 
 bool Run(const Config &cfg, const Callbacks &cb)
 {

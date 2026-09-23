@@ -48,7 +48,12 @@ using json = nlohmann::json;
 //                 "color":  <string>,      // "#RRGGBB" ("" if unset)
 //                 "badges": [ { "kind": <string>, "url": <string?> } ] },
 //     "fragments": [ { "type": "text",  "text": <string> }
-//                  | { "type": "emote", "code": <string>, "url": <string> } ] }
+//                  | { "type": "emote", "code": <string>, "url": <string> } ],
+//     "paid": { "kind":   "superchat" | "supersticker",
+//               "amount": <string>,     // the platform's display string, "$5.00"
+//               "color":  <string?> } } // "#RRGGBB" tier colour; OMITTED when unknown
+//   `paid` is OMITTED on an ordinary line. A paid line may carry NO fragments: a Super
+//   Chat without a comment is its amount alone.
 //
 // Connection-state payload (event "chat.state"):
 //   { "event": "chat.state", "platform": <providerId>,
@@ -93,6 +98,18 @@ inline json BuildChatAuthor(const std::string &name, const std::string &id, cons
 	return author;
 }
 
+// The `paid` object of a chat line that is itself a purchase, shaped as documented above.
+// `amount` is the platform's own display string rather than a number, because that is what
+// the viewer paid and what the platform itself shows beside the line.
+inline json BuildChatPaid(const char *kind, const std::string &amount, const std::string &color)
+{
+	json paid = json{{"kind", kind}, {"amount", amount}};
+	if (!color.empty()) {
+		paid["color"] = color;
+	}
+	return paid;
+}
+
 // Assemble one normalized chat.message frame from already-normalized parts. The ONE
 // assembler for the shape documented above, so a platform reading the same chat over TWO
 // different APIs (YouTube's official liveChatMessages surface and its InnerTube surface,
@@ -101,9 +118,9 @@ inline json BuildChatAuthor(const std::string &name, const std::string &id, cons
 // owns only the frame.
 inline json BuildChatMessage(const char *platform, const std::string &channelId, const std::string &id, int64_t ts,
 			     const std::string &authorName, const std::string &authorId, const std::string &authorColor,
-			     const json &badges, const json &fragments)
+			     const json &badges, const json &fragments, const json &paid = json())
 {
-	return json{
+	json frame = json{
 		{"event", EventNames::kChatMessage},
 		{"platform", platform},
 		{"channelId", channelId},
@@ -112,6 +129,10 @@ inline json BuildChatMessage(const char *platform, const std::string &channelId,
 		{"author", BuildChatAuthor(authorName, authorId, authorColor, badges)},
 		{"fragments", fragments},
 	};
+	if (paid.is_object()) {
+		frame["paid"] = paid;
+	}
+	return frame;
 }
 
 // Emit one connection-state frame with a FIXED key set (event/platform/connected/

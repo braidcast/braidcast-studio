@@ -48,6 +48,7 @@
 #include "chat/channel_stats_poller.hpp"
 #include "chat/chat_hub.hpp" // Chat::BindingDestination, Chat::Hub
 #include "chat/poll_registry.hpp"
+#include "chat/youtube_innertube.hpp"
 #include "chat/youtube_poll.hpp"
 #include "events/event_hub.hpp"
 #include "events/event_store.hpp"
@@ -2345,6 +2346,87 @@ void ObsBootstrap::RunSettingsSelfTest()
 			HostLog("[selftest] youtube-poll body=" + two.dump() + " numeric=" + numeric.dump() +
 				" stringy=" + stringy.dump() + " untallied=" + untallied.dump() +
 				" live=" + live.dump());
+		}
+	}
+
+	// 6b2) InnerTube chat items, offline: a Super Chat's line carries its amount and tier colour
+	// (with or without a comment), a milestone reads its months, and a gift redemption is a chat
+	// line that raises no event of its own -- the purchase already raised the one alert.
+	{
+		using Chat::YouTubeInnerTube::DecodeChatItem;
+		using Chat::YouTubeInnerTube::DecodedItem;
+		const auto runs = [](std::initializer_list<const char *> texts) {
+			json out = json::array();
+			for (const char *t : texts) {
+				out.push_back(json{{"text", t}});
+			}
+			return json{{"runs", out}};
+		};
+		const auto paidMessage = [&](const char *id, const json &message) {
+			json r = json{{"id", id},
+				      {"timestampUsec", "1700000000000000"},
+				      {"authorName", json{{"simpleText", "Ann"}}},
+				      {"authorExternalChannelId", "UCann"},
+				      {"purchaseAmountText", json{{"simpleText", "$5.00"}}},
+				      {"headerBackgroundColor", 4280191205LL}};
+			if (!message.is_null()) {
+				r["message"] = message;
+			}
+			return json{{"liveChatPaidMessageRenderer", r}};
+		};
+		const auto membership = [&](const char *id, const json &primary, const json &subtext) {
+			json r = json{{"id", id},
+				      {"authorName", json{{"simpleText", "Bo"}}},
+				      {"headerSubtext", subtext}};
+			if (!primary.is_null()) {
+				r["headerPrimaryText"] = primary;
+				r["message"] = runs({"a year!"});
+			}
+			return json{{"liveChatMembershipItemRenderer", r}};
+		};
+
+		DecodedItem sc, bare, sticker, milestone, welcome, redeemed, unknown;
+		const bool decoded =
+			DecodeChatItem(paidMessage("sc-1", runs({"hi"})), sc) &&
+			DecodeChatItem(paidMessage("sc-2", json()), bare) &&
+			DecodeChatItem(
+				json{{"liveChatPaidStickerRenderer",
+				      json{{"id", "st-1"},
+					   {"purchaseAmountText", json{{"simpleText", "\xE2\x82\xB9"
+										      "450.00"}}},
+					   {"sticker",
+					    json{{"thumbnails", json::array({json{{"url", "//s.example/a.png"}}})}}}}}},
+				sticker) &&
+			DecodeChatItem(membership("m-1", runs({"Member for ", "12", " months"}),
+						  json{{"simpleText", "Gold"}}),
+				       milestone) &&
+			DecodeChatItem(membership("m-2", json(), runs({"Welcome to ", "Gold", "!"})), welcome) &&
+			DecodeChatItem(
+				json{{"liveChatSponsorshipsGiftRedemptionAnnouncementRenderer",
+				      json{{"id", "g-1"}, {"message", runs({"Cy was gifted a membership by Ann"})}}}},
+				redeemed) &&
+			!DecodeChatItem(json{{"liveChatViewerEngagementMessageRenderer", json{{"id", "x"}}}}, unknown);
+
+		const bool okItems = decoded && sc.fragments.size() == 1 && sc.paid["kind"] == "superchat" &&
+				     sc.paid["amount"] == "$5.00" && sc.paid["color"] == "#1E88E5" && sc.hasEvent &&
+				     sc.ev.type == "superchat" && sc.ev.amount == 500 && sc.ev.currency == "USD" &&
+				     sc.ev.message == "hi" && sc.tsMs == 1700000000000LL && bare.fragments.empty() &&
+				     bare.paid["amount"] == "$5.00" && bare.hasEvent &&
+				     sticker.paid["kind"] == "supersticker" && !sticker.paid.contains("color") &&
+				     sticker.fragments.size() == 1 &&
+				     sticker.fragments[0]["url"] == "https://s.example/a.png" &&
+				     sticker.ev.currency == "INR" && milestone.hasEvent && milestone.ev.months == 12 &&
+				     milestone.ev.tier == "Gold" && milestone.ev.message == "a year!" &&
+				     welcome.hasEvent && welcome.ev.months == 0 && welcome.ev.tier == "Gold" &&
+				     welcome.paid.is_null() && !redeemed.hasEvent && redeemed.fragments.size() == 1;
+		HostLog(std::string("[selftest] youtube-chat-items -> ") + (okItems ? "OK" : "MISMATCH"));
+		if (!okItems) {
+			HostLog("[selftest] youtube-chat-items decoded=" + std::string(decoded ? "1" : "0") +
+				" sc.paid=" + sc.paid.dump() + " sc.frags=" + sc.fragments.dump() +
+				" bare.frags=" + bare.fragments.dump() + " sticker.paid=" + sticker.paid.dump() +
+				" milestone.months=" + std::to_string(milestone.ev.months) +
+				" tier=" + milestone.ev.tier + " welcome.months=" + std::to_string(welcome.ev.months) +
+				" redeemed.event=" + std::string(redeemed.hasEvent ? "1" : "0"));
 		}
 	}
 
