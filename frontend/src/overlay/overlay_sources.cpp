@@ -6,6 +6,7 @@
 #include "../log.hpp"
 
 #include <obs.h>
+#include <obs.hpp>
 
 #include <nlohmann/json.hpp>
 
@@ -81,10 +82,79 @@ void ProcUrl(void * /*data*/, calldata_t *cd)
 
 bool RefreshOne(void * /*param*/, obs_source_t *source)
 {
-	if (IsOverlaySource(source)) {
-		obs_source_update(source, nullptr);
-	}
+	RefreshSource(source);
 	return true;
+}
+
+// reroute_audio as obs-browser will apply it from these settings. A value never set is the
+// type's default (on); an explicit false without the migrated marker is one the plugin
+// flips back on at its first update.
+bool EffectiveReroute(obs_data_t *settings)
+{
+	if (!obs_data_has_user_value(settings, kRerouteAudioKey) || obs_data_get_bool(settings, kRerouteAudioKey)) {
+		return true;
+	}
+	return !obs_data_get_bool(settings, kRerouteMigratedKey);
+}
+
+// The one persisted state that is provably the user's: obs-browser's migration forced every
+// unmarked false on and then marked it, so a false that carries the marker was set after.
+bool IsDeliberateOptOut(obs_data_t *settings)
+{
+	return obs_data_has_user_value(settings, kRerouteAudioKey) && !obs_data_get_bool(settings, kRerouteAudioKey) &&
+	       obs_data_get_bool(settings, kRerouteMigratedKey);
+}
+
+bool IsUserOwned(obs_data_t *settings)
+{
+	return strcmp(obs_data_get_string(settings, kRerouteOwnerKey), kRerouteOwnerUser) == 0;
+}
+
+const char *DescribeDecision(RerouteDecision d)
+{
+	switch (d) {
+	case RerouteDecision::Unidentified:
+		return "overlay unknown, left alone";
+	case RerouteDecision::UserOwned:
+		return "user-owned, left alone";
+	case RerouteDecision::Unchanged:
+		return "follows template, unchanged";
+	case RerouteDecision::Changed:
+		return "follows template, changed";
+	}
+	return "?";
+}
+
+// ApplySettingsPatch's first half; see there.
+void PrepareSettingsPatch(obs_source_t *source, obs_data_t *patch)
+{
+	if (!IsOverlaySource(source) || patch == nullptr) {
+		return;
+	}
+	OBSDataAutoRelease current = obs_source_get_settings(source);
+	const char *name = obs_source_get_name(source);
+	// The rebind is decided first because the properties form's Cancel sends its whole
+	// open-time snapshot back: overlay_id AND reroute_audio. Read as a toggle, the restored
+	// reroute value would hand the setting to the user; read as a rebind, it follows the
+	// restored overlay's template, which is where it came from.
+	const char *nextId = obs_data_get_string(patch, kOverlayIdKey);
+	if (obs_data_has_user_value(patch, kOverlayIdKey) &&
+	    strcmp(nextId, obs_data_get_string(current, kOverlayIdKey)) != 0) {
+		const RerouteDecision d = FollowTemplateReroute(current, nextId, patch);
+		if (d == RerouteDecision::Unchanged || d == RerouteDecision::Changed) {
+			DBG(LogCat::Overlay, "'%s' rebound to overlay '%s': audio route %s, reroute=%s", name, nextId,
+			    DescribeDecision(d), obs_data_get_bool(patch, kRerouteAudioKey) ? "true" : "false");
+			return;
+		}
+		DBG(LogCat::Overlay, "'%s' rebound to overlay '%s': audio route %s", name, nextId, DescribeDecision(d));
+	}
+	if (obs_data_has_user_value(patch, kRerouteAudioKey) &&
+	    obs_data_get_bool(patch, kRerouteAudioKey) != EffectiveReroute(current)) {
+		obs_data_set_bool(patch, kRerouteMigratedKey, true);
+		obs_data_set_string(patch, kRerouteOwnerKey, kRerouteOwnerUser);
+		DBG(LogCat::Overlay, "'%s' audio route set by the user: reroute=%s", name,
+		    obs_data_get_bool(patch, kRerouteAudioKey) ? "true" : "false");
+	}
 }
 
 struct UsageScan {
@@ -149,6 +219,88 @@ void RegisterProcs()
 void RefreshSources()
 {
 	obs_enum_sources(&RefreshOne, nullptr);
+}
+
+void RefreshSource(obs_source_t *source)
+{
+	if (!IsOverlaySource(source)) {
+		return;
+	}
+	OBSDataAutoRelease current = obs_source_get_settings(source);
+	OBSDataAutoRelease patch = obs_data_create();
+	const RerouteDecision d = FollowTemplateReroute(current, obs_data_get_string(current, kOverlayIdKey), patch);
+	if (d == RerouteDecision::Changed) {
+		HostLog(std::string("[overlay] '") + obs_source_get_name(source) + "' audio route now reroute=" +
+			(obs_data_get_bool(patch, kRerouteAudioKey) ? "true" : "false") + " (its template changed)");
+	}
+	obs_source_update(source, patch);
+}
+
+RerouteDecision ApplyTemplateReroute(obs_data_t *current, bool mayPlayAudio, obs_data_t *out)
+{
+	if (IsUserOwned(current)) {
+		return RerouteDecision::UserOwned;
+	}
+	if (obs_data_get_string(current, kRerouteOwnerKey)[0] == '\0' && IsDeliberateOptOut(current)) {
+		obs_data_set_string(out, kRerouteOwnerKey, kRerouteOwnerUser);
+		return RerouteDecision::UserOwned;
+	}
+	const bool was = EffectiveReroute(current);
+	obs_data_set_bool(out, kRerouteAudioKey, mayPlayAudio);
+	obs_data_set_bool(out, kRerouteMigratedKey, true);
+	obs_data_set_string(out, kRerouteOwnerKey, kRerouteOwnerTemplate);
+	return mayPlayAudio == was ? RerouteDecision::Unchanged : RerouteDecision::Changed;
+}
+
+RerouteDecision FollowTemplateReroute(obs_data_t *current, const char *overlayId, obs_data_t *out)
+{
+	const std::optional<bool> mayPlayAudio =
+		(overlayId != nullptr && *overlayId != '\0') ? Store().MayPlayAudio(overlayId) : std::nullopt;
+	if (!mayPlayAudio) {
+		return RerouteDecision::Unidentified;
+	}
+	return ApplyTemplateReroute(current, *mayPlayAudio, out);
+}
+
+void SyncSavedSource(obs_data_t *sourceData)
+{
+	// "id" is the unversioned id obs_save_source writes, the same one IsOverlaySource
+	// compares, so a versioned variant of the type is synced too.
+	if (sourceData == nullptr || strcmp(obs_data_get_string(sourceData, "id"), kOverlaySourceId) != 0) {
+		return;
+	}
+	OBSDataAutoRelease settings = obs_data_get_obj(sourceData, "settings");
+	if (!settings) {
+		return;
+	}
+	const char *name = obs_data_get_string(sourceData, "name");
+	const bool hadOwner = obs_data_has_user_value(settings, kRerouteOwnerKey);
+	const RerouteDecision d =
+		FollowTemplateReroute(settings, obs_data_get_string(settings, kOverlayIdKey), settings);
+	// The always-on log gets the first decision a source ever receives and every value that
+	// moves; a template-owned source already in step, or one whose overlay is unknown (asked
+	// again on every load), would otherwise repeat itself on each one.
+	if (d == RerouteDecision::Changed || (!hadOwner && d != RerouteDecision::Unidentified)) {
+		HostLog(std::string("[overlay] audio route of '") + name + "' on load: " + DescribeDecision(d) +
+			", reroute=" + (EffectiveReroute(settings) ? "true" : "false"));
+	} else {
+		DBG(LogCat::Overlay, "audio route of '%s' on load: %s", name, DescribeDecision(d));
+	}
+}
+
+void SyncSavedReroute(obs_data_array_t *sources)
+{
+	const size_t count = obs_data_array_count(sources);
+	for (size_t i = 0; i < count; i++) {
+		OBSDataAutoRelease item = obs_data_array_item(sources, i);
+		SyncSavedSource(item);
+	}
+}
+
+void ApplySettingsPatch(obs_source_t *source, obs_data_t *patch)
+{
+	PrepareSettingsPatch(source, patch);
+	obs_source_update(source, patch);
 }
 
 int CountSourcesUsing(const std::string &overlayId)

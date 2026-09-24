@@ -64,17 +64,45 @@ std::string TemplateRoot()
 // version or a broken widget, never one a user authored -- a user can fork a widget, not
 // author a type -- so accepting it would report a delivery nothing can show. A new type
 // added without a row is named by TypesMissingNaturalSize below before a build ships.
-constexpr struct {
+//
+// `audio` is the third column, and the one place a type declares whether its stock page can
+// make sound (PlaysAudio). Only the alert box can: it is the one template that calls
+// OBSOverlay.playSound, and none of the others creates an Audio element or an AudioContext.
+// Plays is the enum's zero, so a row that leaves the column off stays in the mixer: a silent
+// type wrongly kept there costs a mixer row, while a sound-playing type wrongly marked silent
+// would drop its sound off the stream without a word.
+enum class PageAudio { Plays, Silent };
+
+struct TypeRow {
 	const char *type;
 	uint32_t w;
 	uint32_t h;
 	bool replay;
-} kNaturalSizes[] = {
-	{"alertbox", 600, 400, true},    {"chatbox", 400, 480, false},      {"chatleaderboard", 340, 191, false},
-	{"countdown", 300, 54, false},   {"followercount", 640, 58, false}, {"goalbar", 600, 76, false},
-	{"labels", 600, 54, false},      {"ticker", 640, 24, false},        {"uptime", 300, 54, false},
-	{"viewercount", 400, 58, false}, {"wheretowatch", 320, 174, false},
+	PageAudio audio;
 };
+
+constexpr PageAudio kPlays = PageAudio::Plays;
+constexpr PageAudio kSilent = PageAudio::Silent;
+
+constexpr TypeRow kTypeRows[] = {
+	{"alertbox", 600, 400, true, kPlays},          {"chatbox", 400, 480, false, kSilent},
+	{"chatleaderboard", 340, 191, false, kSilent}, {"countdown", 300, 54, false, kSilent},
+	{"followercount", 640, 58, false, kSilent},    {"goalbar", 600, 76, false, kSilent},
+	{"labels", 600, 54, false, kSilent},           {"ticker", 640, 24, false, kSilent},
+	{"uptime", 300, 54, false, kSilent},           {"viewercount", 400, 58, false, kSilent},
+	{"wheretowatch", 320, 174, false, kSilent},
+};
+
+// `type`'s row, or null when the table has none.
+const TypeRow *FindTypeRow(const std::string &type)
+{
+	for (const TypeRow &row : kTypeRows) {
+		if (type == row.type) {
+			return &row;
+		}
+	}
+	return nullptr;
+}
 
 TypeTemplate ReadTemplate(const std::string &type)
 {
@@ -144,26 +172,30 @@ std::string TemplateDir(const std::string &type)
 
 bool NaturalSize(const std::string &type, uint32_t &w, uint32_t &h)
 {
-	for (const auto &row : kNaturalSizes) {
-		if (type == row.type) {
-			w = row.w;
-			h = row.h;
-			return true;
-		}
+	const TypeRow *row = FindTypeRow(type);
+	if (row == nullptr) {
+		return false;
 	}
-	return false;
+	w = row->w;
+	h = row->h;
+	return true;
 }
 
 bool AcceptsReplay(const std::string &type)
 {
-	for (const auto &row : kNaturalSizes) {
-		if (type == row.type) {
-			return row.replay;
-		}
-	}
 	// No row, including the empty type a widget with a broken document carries: rejected,
 	// so `delivered` never counts a widget that was never going to show the frame.
-	return false;
+	const TypeRow *row = FindTypeRow(type);
+	return row != nullptr && row->replay;
+}
+
+bool PlaysAudio(const std::string &type)
+{
+	// No row answers the opposite way to AcceptsReplay, and for the same reason turned
+	// around: a type nothing here describes is a page nothing here has read, so it keeps
+	// the mixer channel its sound would need.
+	const TypeRow *row = FindTypeRow(type);
+	return row == nullptr || row->audio == PageAudio::Plays;
 }
 
 std::vector<std::string> TypesMissingNaturalSize()

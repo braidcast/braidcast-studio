@@ -3500,6 +3500,9 @@ void AddItemFromSnapshot(const json &state)
 		if (!sourceData.empty()) {
 			OBSDataAutoRelease data = obs_data_create_from_json(sourceData.c_str());
 			if (data) {
+				// The saved route may predate a template change made since; see
+				// Overlay::SyncSavedReroute. No-op for every non-overlay source.
+				Overlay::SyncSavedSource(data);
 				source = obs_load_source(data); // create-ref
 			}
 		}
@@ -3735,6 +3738,8 @@ void RestoreDuplicatedCanvasScene(const json &state)
 			}
 			OBSDataAutoRelease data = obs_data_create_from_json(sourceData.c_str());
 			if (data) {
+				// As in AddItemFromSnapshot.
+				Overlay::SyncSavedSource(data);
 				restoredSources.emplace_back(obs_load_source(data)); // create-ref
 			}
 		}
@@ -6137,7 +6142,11 @@ const PropertyKind kPropertyKinds[] = {
 		[](const std::string &ref) -> void * { return obs_get_source_by_name(ref.c_str()); },
 		[](void *obj) -> obs_properties_t * { return obs_source_properties(static_cast<obs_source_t *>(obj)); },
 		[](void *obj) -> obs_data_t * { return obs_source_get_settings(static_cast<obs_source_t *>(obj)); },
-		[](void *obj, obs_data_t *settings) { obs_source_update(static_cast<obs_source_t *>(obj), settings); },
+		// Overlay::ApplySettingsPatch is obs_source_update with an overlay's audio route
+		// folded into the same update.
+		[](void *obj, obs_data_t *settings) {
+			Overlay::ApplySettingsPatch(static_cast<obs_source_t *>(obj), settings);
+		},
 		[](void *obj) { obs_source_release(static_cast<obs_source_t *>(obj)); },
 	},
 	{
@@ -14742,6 +14751,9 @@ bool MethodOverlaysAddToScene(const json &params, json &result, std::string &err
 
 	obs_data_t *settings = obs_data_create();
 	obs_data_set_string(settings, Overlay::kOverlayIdKey, id.c_str());
+	// Decided here, in the create settings, so a silent widget's page is never started
+	// with audio capture it would only have to be reloaded out of.
+	Overlay::ApplyTemplateReroute(settings, w->MayPlayAudio(), settings);
 	obs_data_set_int(settings, "width", srcW);
 	obs_data_set_int(settings, "height", srcH);
 	obs_source_t *source =

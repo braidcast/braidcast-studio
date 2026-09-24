@@ -363,6 +363,13 @@ std::optional<std::string> OverlayStore::TypeOf(const std::string &id) const
 	return w ? std::optional<std::string>(w->type) : std::nullopt;
 }
 
+std::optional<bool> OverlayStore::MayPlayAudio(const std::string &id) const
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	const Widget *w = FindWidget(widgets_, id);
+	return w ? std::optional<bool>(w->MayPlayAudio()) : std::nullopt;
+}
+
 int OverlayStore::Port() const
 {
 	std::lock_guard<std::mutex> lock(mutex_);

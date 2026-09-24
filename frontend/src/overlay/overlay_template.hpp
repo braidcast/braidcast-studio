@@ -35,10 +35,10 @@ bool NaturalSize(const std::string &type, uint32_t &w, uint32_t &h);
 // this against the staged rundir, so the omission is named before a build ships rather than
 // after someone adds the source.
 //
-// A missing row now also means AcceptsReplay says no for that type, so this sweep is the
-// guard on both columns. It cannot guard the replay flag INSIDE a row someone did add: a
-// row that omits it value-initializes to false, which is the safe answer (the type simply
-// never receives a replay) but not necessarily the intended one for a new alert-style type.
+// A missing row also means AcceptsReplay says no and PlaysAudio says yes for that type,
+// so this sweep is the guard on every column. It cannot guard the flags INSIDE a row someone
+// did add: a row that omits them value-initializes to no replay and to plays-audio, which
+// are the safe answers but not necessarily the intended ones for a new type.
 std::vector<std::string> TypesMissingNaturalSize();
 
 // Whether `type` accepts a replayed event (events.replay) instead of dropping it. Read off
@@ -55,6 +55,16 @@ std::vector<std::string> TypesMissingNaturalSize();
 // written by a newer version, or a widget whose type never resolved, and counting either as
 // delivered would report a replay that nothing can show.
 bool AcceptsReplay(const std::string &type);
+
+// Whether `type`'s SHIPPED page can make sound, read off the per-type `audio` column in the
+// same table. Only the alert box does. It answers for the stock template alone: a fork runs
+// the user's own code, which this cannot vouch for, so a caller deciding a widget's audio
+// route asks about the widget (Widget::MayPlayAudio), not just its type.
+//
+// A type with no row answers TRUE, the opposite of AcceptsReplay: an unrecognized page may
+// play sound, and the cost of wrongly keeping it in the mixer is a row, while wrongly
+// dropping it loses its sound from the stream.
+bool PlaysAudio(const std::string &type);
 
 // What reading a type's shipped template yielded. The three failures are kept apart
 // because they are not the same risk, and two of them are not even the same KIND of fact:

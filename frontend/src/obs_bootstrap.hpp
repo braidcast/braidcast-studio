@@ -484,13 +484,20 @@ void RunAudioMixerSelfTest();
 // whether the mixer lists it. What it does NOT prove is that CEF delivers PCM into the
 // mix -- no browser is created here, so that end still needs a live alert.
 //
-// Three braidcast_overlay subjects over one table, because the default flip alone covers
-// only the first: a fresh source; one whose scene collection persisted an explicit
+// The first three braidcast_overlay subjects, bound to no overlay, cover obs-browser's own
+// default flip: a fresh source; one whose scene collection persisted an explicit
 // reroute_audio=false before the flip, which must be migrated once and marked; and one
 // already carrying the marker, whose false is a deliberate opt-out and must survive the
 // load untouched. A fourth row runs a plain browser_source through the same harness as a
 // control -- audio_active initialises to true, so without a subject that must come back
 // inactive the two rerouted rows would assert it vacuously.
+//
+// The rest cover the frontend's per-template route (Overlay::FollowTemplateReroute): a
+// silent built-in created off, the alert box and a fork created on, an unknown overlay left
+// on; the load sync (Overlay::SyncSavedReroute) turning a persisted silent built-in off,
+// catching up on a template that changed while its collection was not loaded, and leaving
+// user-owned values, a deliberate opt-out and an unknown overlay alone; and the live
+// re-evaluation when a widget is forked, a source is rebound, or the user flips the box.
 //
 // Each subject is shutdown-when-invisible and never shown, so no CEF browser is created
 // for it. Removes its sources; never Saves. Gated by the caller to the smoke path.

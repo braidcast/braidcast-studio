@@ -1016,7 +1016,7 @@ bool SetUp(State &st)
 
 	OBSDataAutoRelease settings = obs_data_create();
 	obs_data_set_string(settings, Overlay::kOverlayIdKey, st.widgetId.c_str());
-	obs_data_set_bool(settings, "reroute_audio", true);
+	obs_data_set_bool(settings, Overlay::kRerouteAudioKey, true);
 	st.source = obs_source_create_private(Overlay::kOverlaySourceId, kSourceName, settings);
 	if (!st.source) {
 		Bail(st, 3, std::string(Overlay::kOverlaySourceId) + " create failed (obs-browser not loaded?)");

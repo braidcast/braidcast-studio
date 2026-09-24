@@ -8567,38 +8567,126 @@ void ObsBootstrap::RunAudioMixerSelfTest()
 
 void ObsBootstrap::RunOverlayAudioSelfTest()
 {
-	// Spelled here rather than shared with obs-browser: the plugin is a separate repo
-	// that libobs only ever reaches through obs_data, so the keys ARE the contract.
-	constexpr char kRerouteKey[] = "reroute_audio";
-	constexpr char kMigratedKey[] = "braidcast_reroute_migrated";
+	using Overlay::kRerouteAudioKey;
+	using Overlay::kRerouteMigratedKey;
+	using Overlay::kRerouteOwnerKey;
+
+	// How a row's settings reach the source. Raw hands them to create as seeded -- the
+	// plugin's own default and migration, nothing of the frontend's. Create runs them
+	// through FollowTemplateReroute first -- the id-keyed form of the ApplyTemplateReroute
+	// call overlays.addToScene builds its create settings with. Load wraps them in a
+	// saved-source record and runs SyncSavedReroute over it, exactly as SceneCollection::Load
+	// does before obs_load_sources.
+	enum class Path { Raw, Create, Load };
+	// What the row's overlay_id names: nothing, a stock widget of `type`, a forked one, or
+	// an id no widget has.
+	enum class Bind { None, Stock, Forked, Unknown };
+	// A step after the fence that moves the route on a live source: fork the widget and
+	// sweep it (the tail every overlays.* mutation ends in), rebind the source to a stock
+	// widget of `thenType` through the properties patch, or flip reroute_audio through the
+	// same patch the way the properties form does.
+	enum class Then { Nothing, Fork, Rebind, Toggle };
 
 	// pageWidth is each type's own default width in obs-browser, and the fence below:
-	// it is the first field the deferred update writes back through the source. The
-	// same cross-repo coupling as the keys above.
+	// it is the first field the deferred update writes back through the source -- the same
+	// cross-repo coupling as the keys.
 	struct Case {
 		const char *name;
 		const char *sourceId;
 		uint32_t pageWidth;
+		Path path;
+		Bind bind;
+		const char *type;
 		bool seedReroute;
 		bool seedRerouteValue;
 		bool seedMigrated;
+		const char *seedOwner;
+		Then then;
+		const char *thenType;
 		bool wantReroute;
 		bool wantMarker;
+		const char *wantOwner; // kNoOwner = the key absent
 	};
+	constexpr const char *kNoOwner = "";
+	constexpr const char *kTemplate = Overlay::kRerouteOwnerTemplate;
+	constexpr const char *kUser = Overlay::kRerouteOwnerUser;
+	constexpr const char *kOverlay = Overlay::kOverlaySourceId;
 	// The control row is load-bearing, not decorative. libobs initialises
 	// source->audio_active to true (libobs/obs-source.c:226), so read as an absolute the
-	// two rerouted rows would assert it vacuously -- a subject whose update never touched
+	// rerouted rows would assert it vacuously -- a subject whose update never touched
 	// audio state at all still reads active. A plain browser_source through the same
 	// harness keeps the shared false default and must come back inactive, which is what
 	// makes "true" mean something on the rows above it, and which doubles as the guard
 	// that the overlay's flipped default did not leak into the other CEF source type.
+	//
+	// The first three overlay rows are bound to nothing, so they prove the plugin's own
+	// default and migration with the frontend's template rule out of the way.
 	const Case kCases[] = {
-		{"fresh overlay", Overlay::kOverlaySourceId, 1920, false, false, false, true, true},
-		{"overlay, persisted false, unmigrated", Overlay::kOverlaySourceId, 1920, true, false, false, true,
-		 true},
-		{"overlay, persisted false, already migrated", Overlay::kOverlaySourceId, 1920, true, false, true,
-		 false, true},
-		{"browser_source control", "browser_source", 800, false, false, false, false, false},
+		{"fresh overlay", kOverlay, 1920, Path::Raw, Bind::None, nullptr, false, false, false, nullptr,
+		 Then::Nothing, nullptr, true, true, kNoOwner},
+		{"overlay, persisted false, unmigrated", kOverlay, 1920, Path::Raw, Bind::None, nullptr, true, false,
+		 false, nullptr, Then::Nothing, nullptr, true, true, kNoOwner},
+		{"overlay, persisted false, already migrated", kOverlay, 1920, Path::Raw, Bind::None, nullptr, true,
+		 false, true, nullptr, Then::Nothing, nullptr, false, true, kNoOwner},
+		{"browser_source control", "browser_source", 800, Path::Raw, Bind::None, nullptr, false, false, false,
+		 nullptr, Then::Nothing, nullptr, false, false, kNoOwner},
+		{"silent built-in, fresh", kOverlay, 1920, Path::Create, Bind::Stock, "countdown", false, false, false,
+		 nullptr, Then::Nothing, nullptr, false, true, kTemplate},
+		{"alertbox, fresh", kOverlay, 1920, Path::Create, Bind::Stock, "alertbox", false, false, false, nullptr,
+		 Then::Nothing, nullptr, true, true, kTemplate},
+		{"forked silent type, fresh", kOverlay, 1920, Path::Create, Bind::Forked, "chatbox", false, false,
+		 false, nullptr, Then::Nothing, nullptr, true, true, kTemplate},
+		{"unknown overlay, fresh", kOverlay, 1920, Path::Create, Bind::Unknown, nullptr, false, false, false,
+		 nullptr, Then::Nothing, nullptr, true, true, kNoOwner},
+		{"silent built-in, persisted true, no owner", kOverlay, 1920, Path::Load, Bind::Stock, "labels", true,
+		 true, true, nullptr, Then::Nothing, nullptr, false, true, kTemplate},
+		{"silent built-in, persisted default, no owner", kOverlay, 1920, Path::Load, Bind::Stock, "viewercount",
+		 false, false, true, nullptr, Then::Nothing, nullptr, false, true, kTemplate},
+		{"silent built-in, user-owned true", kOverlay, 1920, Path::Load, Bind::Stock, "chatbox", true, true,
+		 true, kUser, Then::Nothing, nullptr, true, true, kUser},
+		{"alertbox, persisted deliberate false", kOverlay, 1920, Path::Load, Bind::Stock, "alertbox", true,
+		 false, true, nullptr, Then::Nothing, nullptr, false, true, kUser},
+		{"unknown overlay, persisted true", kOverlay, 1920, Path::Load, Bind::Unknown, nullptr, true, true,
+		 true, nullptr, Then::Nothing, nullptr, true, true, kNoOwner},
+		// Widgets are global and sources per collection, so a template can change while the
+		// collection holding its sources is not loaded. The next load has to catch up, in both
+		// directions, and must still never move a user-owned value.
+		{"forked while unloaded, template-owned false", kOverlay, 1920, Path::Load, Bind::Forked, "countdown",
+		 true, false, true, kTemplate, Then::Nothing, nullptr, true, true, kTemplate},
+		{"back to stock while unloaded, template-owned true", kOverlay, 1920, Path::Load, Bind::Stock, "labels",
+		 true, true, true, kTemplate, Then::Nothing, nullptr, false, true, kTemplate},
+		{"alertbox, user-owned false", kOverlay, 1920, Path::Load, Bind::Stock, "alertbox", true, false, true,
+		 kUser, Then::Nothing, nullptr, false, true, kUser},
+		{"silent built-in, then forked", kOverlay, 1920, Path::Create, Bind::Stock, "countdown", false, false,
+		 false, nullptr, Then::Fork, nullptr, true, true, kTemplate},
+		{"silent built-in, rebound to alertbox", kOverlay, 1920, Path::Create, Bind::Stock, "uptime", false,
+		 false, false, nullptr, Then::Rebind, "alertbox", true, true, kTemplate},
+		{"alertbox, rebound to silent", kOverlay, 1920, Path::Create, Bind::Stock, "alertbox", false, false,
+		 false, nullptr, Then::Rebind, "goalbar", false, true, kTemplate},
+		{"silent built-in, user turns on", kOverlay, 1920, Path::Create, Bind::Stock, "ticker", false, false,
+		 false, nullptr, Then::Toggle, nullptr, true, true, kUser},
+	};
+
+	// A test widget per bound row, injected rather than created so nothing reaches
+	// overlays.json, and removed at the end of the row whatever the verdict.
+	std::vector<std::string> injected;
+	auto inject = [&injected](const char *type, bool forked) {
+		Overlay::Widget w;
+		w.id = "selftest-overlay-audio-" + std::to_string(injected.size());
+		w.name = w.id;
+		w.type = type;
+		if (forked) {
+			w.custom = Overlay::CustomCode{};
+		}
+		Overlay::Store().InjectForTest(w);
+		injected.push_back(w.id);
+		return w.id;
+	};
+	auto removeInjected = [&injected] {
+		for (const std::string &id : injected) {
+			Overlay::Store().RemoveForTest(id);
+		}
+		injected.clear();
 	};
 
 	bool allPass = true;
@@ -8608,22 +8696,48 @@ void ObsBootstrap::RunOverlayAudioSelfTest()
 		// false and no CEF browser is spun up for a settings-only subject. Load-bearing
 		// for the fence below rather than merely economical -- see there.
 		obs_data_set_bool(settings, "shutdown", true);
+		std::string widgetId;
+		if (c.bind == Bind::Stock || c.bind == Bind::Forked) {
+			widgetId = inject(c.type, c.bind == Bind::Forked);
+		} else if (c.bind == Bind::Unknown) {
+			widgetId = "selftest-overlay-audio-no-such-widget";
+		}
+		if (!widgetId.empty()) {
+			obs_data_set_string(settings, Overlay::kOverlayIdKey, widgetId.c_str());
+		}
 		if (c.seedReroute) {
-			obs_data_set_bool(settings, kRerouteKey, c.seedRerouteValue);
+			obs_data_set_bool(settings, kRerouteAudioKey, c.seedRerouteValue);
 		}
 		if (c.seedMigrated) {
-			obs_data_set_bool(settings, kMigratedKey, true);
+			obs_data_set_bool(settings, kRerouteMigratedKey, true);
+		}
+		if (c.seedOwner) {
+			obs_data_set_string(settings, kRerouteOwnerKey, c.seedOwner);
+		}
+
+		if (c.path == Path::Create) {
+			Overlay::FollowTemplateReroute(settings, widgetId.c_str(), settings);
+		} else if (c.path == Path::Load) {
+			OBSDataAutoRelease saved = obs_data_create();
+			obs_data_set_string(saved, "id", c.sourceId);
+			obs_data_set_string(saved, "name", c.name);
+			obs_data_set_obj(saved, "settings", settings);
+			OBSDataArrayAutoRelease sources = obs_data_array_create();
+			obs_data_array_push_back(sources, saved);
+			Overlay::SyncSavedReroute(sources);
 		}
 
 		// Private: obs_enum_sources skips private sources (libobs/obs.c:2871), which is
 		// what keeps a concurrent AudioMonitor::Rebuild from attaching a volmeter to a
-		// rerouted subject and surfacing it as a row in the mixer dock. Defaults still
-		// apply -- obs_source_create_internal calls get_defaults either way
+		// rerouted subject and surfacing it as a row in the mixer dock -- and what keeps
+		// a concurrent RefreshSources sweep off it. Defaults still apply --
+		// obs_source_create_internal calls get_defaults either way
 		// (libobs/obs-source.c:493-500) -- and private sources are still ticked, since
 		// they go into obs->data.sources unconditionally (:305), which is the list
 		// tick_sources walks.
 		OBSSourceAutoRelease src = obs_source_create_private(c.sourceId, "selftest-overlay-audio", settings);
 		if (!src) {
+			removeInjected();
 			// Summary line too: a scraper keying on "overlay-audio ->" should see a
 			// verdict rather than nothing at all.
 			HostLog(std::string("[selftest] overlay-audio ") + c.name + " SKIPPED: " + c.sourceId +
@@ -8649,31 +8763,68 @@ void ObsBootstrap::RunOverlayAudioSelfTest()
 		// global source_create signal, which would strand every row at NO UPDATE. Gated
 		// on BRAIDCAST_DISABLE_BROWSER_SOURCES, which the smoke path does not set.
 		uint32_t observed = obs_source_get_width(src);
-		const uint64_t deadline = os_gettime_ns() + 1000000000ULL;
+		uint64_t deadline = os_gettime_ns() + 1000000000ULL;
 		while (observed != c.pageWidth && os_gettime_ns() < deadline) {
 			os_sleep_ms(4);
 			observed = obs_source_get_width(src);
 		}
 		const bool applied = observed == c.pageWidth;
 
+		// The live step. Its settings land synchronously, audio_active only once the
+		// deferred update has run, and the width fence cannot tell the two apart because
+		// the step does not move the width. So audio_active is polled toward the wanted
+		// value and read once more after the deadline: a MISMATCH costs the run a second,
+		// never a false OK.
+		if (applied && c.then != Then::Nothing) {
+			if (c.then == Then::Fork) {
+				std::optional<Overlay::Widget> w = Overlay::Store().Get(widgetId);
+				if (w) {
+					w->custom = Overlay::CustomCode{};
+					Overlay::Store().RemoveForTest(widgetId);
+					Overlay::Store().InjectForTest(*w);
+				}
+				Overlay::RefreshSource(src);
+			} else {
+				OBSDataAutoRelease patch = obs_data_create();
+				if (c.then == Then::Rebind) {
+					obs_data_set_string(patch, Overlay::kOverlayIdKey,
+							    inject(c.thenType, false).c_str());
+				} else {
+					OBSDataAutoRelease now = obs_source_get_settings(src);
+					obs_data_set_bool(patch, kRerouteAudioKey,
+							  !obs_data_get_bool(now, kRerouteAudioKey));
+				}
+				// The "source" property kind's update, which properties.set calls.
+				Overlay::ApplySettingsPatch(src, patch);
+			}
+			deadline = os_gettime_ns() + 1000000000ULL;
+			while (obs_source_audio_active(src) != c.wantReroute && os_gettime_ns() < deadline) {
+				os_sleep_ms(4);
+			}
+		}
+
 		OBSDataAutoRelease after = obs_source_get_settings(src);
-		const bool reroute = obs_data_get_bool(after, kRerouteKey);
-		const bool marker = obs_data_get_bool(after, kMigratedKey);
+		const bool reroute = obs_data_get_bool(after, kRerouteAudioKey);
+		const bool marker = obs_data_get_bool(after, kRerouteMigratedKey);
+		const std::string owner = obs_data_get_string(after, kRerouteOwnerKey);
 		// What actually decides whether the mixer lists the source and whether its
 		// audio reaches an output at all.
 		const bool audioActive = obs_source_audio_active(src);
 		const bool pass = applied && reroute == c.wantReroute && marker == c.wantMarker &&
-				  audioActive == c.wantReroute;
+				  owner == c.wantOwner && audioActive == c.wantReroute;
 		allPass = allPass && pass;
 		HostLog(std::string("[selftest] overlay-audio ") + c.name +
 			" -> reroute=" + (reroute ? "true" : "false") + " marker=" + (marker ? "true" : "false") +
+			" owner=" + (owner.empty() ? "(none)" : owner) +
 			" audioActive=" + (audioActive ? "true" : "false") +
 			" mixers=" + std::to_string(obs_source_get_audio_mixers(src)) + " (want reroute=" +
-			(c.wantReroute ? "true" : "false") + " marker=" + (c.wantMarker ? "true" : "false") + ") " +
+			(c.wantReroute ? "true" : "false") + " marker=" + (c.wantMarker ? "true" : "false") +
+			" owner=" + (*c.wantOwner ? c.wantOwner : "(none)") + ") " +
 			(pass ? "OK"
 			      : (applied ? "MISMATCH"
 					 : "NO UPDATE (width " + std::to_string(observed) + ", wanted " +
 						   std::to_string(c.pageWidth) + ")")));
+		removeInjected();
 	}
 
 	HostLog(std::string("[selftest] overlay-audio -> ") + (allPass ? "OK" : "FAILED (see step lines above)"));

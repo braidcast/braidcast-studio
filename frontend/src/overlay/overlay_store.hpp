@@ -52,6 +52,10 @@ struct Widget {
 	int rev = 0;
 
 	bool IsForked() const { return custom.has_value(); }
+	// Whether this widget's page may make sound: its type's declared answer while it
+	// serves the shipped template (PlaysAudio), and always yes once forked, since a fork
+	// runs the user's own code and nothing here has read it.
+	bool MayPlayAudio() const { return IsForked() || PlaysAudio(type); }
 
 	json ToJson() const;             // full definition
 	json ToListJson(int port) const; // {id,name,type,token,url} for overlays.list
@@ -104,6 +108,10 @@ public:
 	// (OverlayServer's per-broadcast replay gate) pays that copy for one short string.
 	// Nullopt when no widget has that id.
 	std::optional<std::string> TypeOf(const std::string &id) const;
+	// Widget::MayPlayAudio for the widget `id` names, for the same reason as TypeOf: the
+	// RefreshSources sweep asks it once per overlay source on every overlays.* mutation, and
+	// a fork's code is not worth copying for one bool. Nullopt when no widget has that id.
+	std::optional<bool> MayPlayAudio(const std::string &id) const;
 	int Port() const;       // persisted chosen port (default 43000)
 	void SetPort(int port); // persist a newly-bound port
 

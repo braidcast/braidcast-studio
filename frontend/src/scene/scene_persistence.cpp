@@ -9,6 +9,7 @@
 #include "multistream/CanvasRuntime.hpp"
 #include "multistream/CanvasStore.hpp"
 #include "multistream/StorePaths.hpp"
+#include "overlay/overlay_sources.hpp"
 
 #include <CanvasDefinition.hpp>
 
@@ -310,6 +311,9 @@ bool Load(const std::string &path)
 		return false;
 	}
 
+	// Before the load, so an overlay's page is created with its final audio route rather
+	// than created, rerouted and then reloaded.
+	Overlay::SyncSavedReroute(sources);
 	obs_load_sources(sources, nullptr, nullptr);
 
 	// Restore the saved scene order (uuids), then reconcile against what was
