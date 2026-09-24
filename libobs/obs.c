@@ -986,12 +986,15 @@ static void obs_free_graphics(void)
 	}
 }
 
+/* Runs on the audio thread, which keeps the owner only as a weak reference: a source that loses
+ * deduplication can then be freed without waiting for this task. */
 void set_monitoring_duplication_source(void *param)
 {
-	obs_source_t *src = param;
+	obs_weak_source_t *weak = param;
 	struct obs_core_audio *audio = &obs->audio;
 
-	audio->monitoring_duplicating_source = src;
+	obs_weak_source_release(audio->monitoring_duplicating_source);
+	audio->monitoring_duplicating_source = weak;
 }
 
 static void apply_monitoring_deduplication(void *ignored, calldata_t *cd)
@@ -999,7 +1002,14 @@ static void apply_monitoring_deduplication(void *ignored, calldata_t *cd)
 	UNUSED_PARAMETER(ignored);
 	obs_source_t *src = calldata_ptr(cd, "source");
 
-	obs_queue_task(OBS_TASK_AUDIO, set_monitoring_duplication_source, src, false);
+	/* With no audio core (reset to none, or shutting down) there is no task queue to apply the
+	 * decision on; the next obs_init_audio seeds the audio thread from the current owner. */
+	if (!obs_audio_mix_acquire()) {
+		return;
+	}
+	obs_audio_mix_release();
+
+	obs_queue_task(OBS_TASK_AUDIO, set_monitoring_duplication_source, obs_source_get_weak_source(src), false);
 }
 
 static void set_audio_thread(void *unused);
@@ -1104,7 +1114,12 @@ static bool obs_init_audio(struct audio_output_info *ai)
 
 	audio->monitoring_device_name = bstrdup("Default");
 	audio->monitoring_device_id = bstrdup("default");
-	audio->monitoring_duplicating_source = NULL;
+
+	/* Deduplication outlives a reset, so the new audio thread starts from the current owner. */
+	obs_audio_monitoring_dedup_set_monitor(audio->monitoring_device_id);
+	pthread_mutex_lock(&obs->dedup.mutex);
+	audio->monitoring_duplicating_source = obs_source_get_weak_source(obs->dedup.owner);
+	pthread_mutex_unlock(&obs->dedup.mutex);
 
 	signal_handler_add(obs->signals, "void deduplication_changed(ptr source)");
 	signal_handler_connect(obs->signals, "deduplication_changed", apply_monitoring_deduplication, NULL);
@@ -1132,6 +1147,22 @@ static void obs_free_audio(void)
 	struct obs_core_audio *audio = &obs->audio;
 
 	audio_output_close(audio_mix_detach());
+
+	/* The audio thread is gone, so a deduplication decision it never applied still carries the
+	 * weak reference it was queued with. Tasks exist only once obs_init_audio has created the
+	 * mutex, and the first reset frees a never-initialized audio core. */
+	if (audio->tasks.size) {
+		pthread_mutex_lock(&audio->task_mutex);
+		while (audio->tasks.size) {
+			struct obs_task_info info;
+			deque_pop_front(&audio->tasks, &info, sizeof(info));
+			if (info.task == set_monitoring_duplication_source) {
+				obs_weak_source_release(info.param);
+			}
+		}
+		pthread_mutex_unlock(&audio->task_mutex);
+	}
+	obs_weak_source_release(audio->monitoring_duplicating_source);
 
 	deque_free(&audio->buffered_timestamps);
 	da_free(audio->render_order);
@@ -1426,10 +1457,15 @@ static bool obs_init(const char *locale, const char *module_config_path, profile
 	obs = bzalloc(sizeof(struct obs_core));
 
 	pthread_mutex_init_value(&obs->audio.monitoring_mutex);
+	pthread_mutex_init_value(&obs->dedup.mutex);
 	pthread_mutex_init_value(&obs->audio.task_mutex);
 	pthread_mutex_init_value(&obs->video.task_mutex);
 	pthread_mutex_init_value(&obs->video.encoder_group_mutex);
 	pthread_mutex_init_value(&obs->video.mixes_mutex);
+
+	if (pthread_mutex_init_recursive(&obs->dedup.mutex) != 0) {
+		return false;
+	}
 
 	obs->name_store_owned = !store;
 	obs->name_store = store ? store : profiler_name_store_create();
@@ -1647,6 +1683,8 @@ void obs_shutdown(void)
 
 	obs_free_data();
 	obs_free_audio();
+	pthread_mutex_destroy(&obs->dedup.mutex);
+	bfree(obs->dedup.monitor_id);
 	obs_free_video();
 	os_task_queue_destroy(obs->destruction_task_thread);
 	obs_free_hotkeys();
@@ -1826,15 +1864,34 @@ int obs_reset_video(struct obs_video_info *ovi)
 #define SEC_TO_MSEC 1000
 #endif
 
+static bool obs_reset_audio_locked(const struct obs_audio_info2 *oai);
+
 bool obs_reset_audio2(const struct obs_audio_info2 *oai)
 {
 	struct obs_core_audio *audio = &obs->audio;
-	struct audio_output_info ai;
 
 	/* don't allow changing of audio settings if active. */
 	if (!obs || (audio->audio && audio_output_active(audio->audio))) {
 		return false;
 	}
+
+	/* A capture thread's deduplication decision queues an audio task, so none may run while
+	 * the task queue is torn down and rebuilt. */
+	pthread_mutex_lock(&obs->dedup.mutex);
+	const bool success = obs_reset_audio_locked(oai);
+	pthread_mutex_unlock(&obs->dedup.mutex);
+
+	/* The reset put monitoring back on the default device, which the current owner may not hear. */
+	if (success && oai) {
+		obs_audio_monitoring_dedup_recheck();
+	}
+	return success;
+}
+
+static bool obs_reset_audio_locked(const struct obs_audio_info2 *oai)
+{
+	struct obs_core_audio *audio = &obs->audio;
+	struct audio_output_info ai;
 
 	/* obs_free_audio drains the mix before closing it, so a capture thread
 	 * mid-push holds the teardown off rather than being cut out from under.
@@ -3303,18 +3360,46 @@ void obs_reset_audio_monitoring(void)
 	}
 
 	pthread_mutex_unlock(&obs->audio.monitoring_mutex);
+
+	/* A monitor on "default" has just followed the system default, which can make an Audio
+	 * Output Capture source start or stop capturing what it plays. */
+	obs_audio_monitoring_dedup_recheck();
 }
 
-static bool check_all_aoc_sources(void *param, obs_source_t *src)
+static bool collect_dedup_candidates(void *param, obs_source_t *src)
 {
-	UNUSED_PARAMETER(param);
-	if (src->info.output_flags & OBS_SOURCE_DO_NOT_SELF_MONITOR) {
-		obs_data_t *settings = obs_source_get_settings(src);
-		const char *device_id = obs_data_get_string(settings, "device_id");
-		obs_source_audio_output_capture_device_changed(src, device_id);
-		obs_data_release(settings);
+	DARRAY(obs_source_t *) *sources = param;
+	if (!(src->info.output_flags & OBS_SOURCE_DO_NOT_SELF_MONITOR)) {
+		return true;
+	}
+	obs_source_t *ref = obs_source_get_ref(src);
+	if (ref) {
+		da_push_back(*sources, &ref);
 	}
 	return true;
+}
+
+/* Decides from a snapshot, not inside obs_enum_sources, so no decision is ever made while
+ * sources_mutex is held. */
+void obs_audio_monitoring_dedup_recheck(void)
+{
+	DARRAY(obs_source_t *) sources;
+	da_init(sources);
+	obs_enum_sources(collect_dedup_candidates, &sources);
+
+	for (size_t i = 0; i < sources.num; i++) {
+		obs_source_audio_output_capture_recheck(sources.array[i]);
+		obs_source_release(sources.array[i]);
+	}
+	da_free(sources);
+}
+
+void obs_audio_monitoring_dedup_set_monitor(const char *id)
+{
+	pthread_mutex_lock(&obs->dedup.mutex);
+	bfree(obs->dedup.monitor_id);
+	obs->dedup.monitor_id = bstrdup(id);
+	pthread_mutex_unlock(&obs->dedup.mutex);
 }
 
 bool obs_set_audio_monitoring_device(const char *name, const char *id)
@@ -3341,10 +3426,9 @@ bool obs_set_audio_monitoring_device(const char *name, const char *id)
 	obs->audio.monitoring_device_id = bstrdup(id);
 	pthread_mutex_unlock(&obs->audio.monitoring_mutex);
 
-	obs_reset_audio_monitoring();
+	obs_audio_monitoring_dedup_set_monitor(id);
 
-	/* Check all Audio Output Capture sources for monitoring duplication. */
-	obs_enum_sources(check_all_aoc_sources, NULL);
+	obs_reset_audio_monitoring();
 
 	return true;
 }

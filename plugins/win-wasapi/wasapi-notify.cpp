@@ -100,6 +100,15 @@ void WASAPINotify::RemoveDefaultDeviceChangedCallback(void *handle)
 	defaultDeviceChangedCallbacks.erase(handle);
 }
 
+void WASAPINotify::DeliverDefaultDeviceChanged(void *handle, EDataFlow flow, ERole role, LPCWSTR id)
+{
+	std::lock_guard<std::mutex> l(mutex);
+	const auto it = defaultDeviceChangedCallbacks.find(handle);
+	if (it != defaultDeviceChangedCallbacks.end()) {
+		it->second(flow, role, id);
+	}
+}
+
 void WASAPINotify::OnDefaultDeviceChanged(EDataFlow flow, ERole role, LPCWSTR id)
 {
 	std::lock_guard<std::mutex> l(mutex);

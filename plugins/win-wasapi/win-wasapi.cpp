@@ -116,15 +116,44 @@ static bool DuplicateInProcess(HANDLE source, HANDLE *dup)
 			       DUPLICATE_SAME_ACCESS) != FALSE;
 }
 
-/* Self-test seam for the create-then-release race in OnStartCapture. Source settings can
- * come from saved or imported data, so they alone never arm it: the settings must also carry
- * a nonce equal to SELFTEST_NONCE_ENV in the process environment, which the self-test mints
- * at run time and clears once the source is created, and FE_SMOKE_QUIT_SECONDS must be set
- * there too. Both are read from the Win32 environment block, never from a file. The names are
- * mirrored by the kStartRace* constants in frontend/src/obs_bootstrap.cpp, which the start-race
- * and restart self-tests share through CreateProbedCapture. */
+/* Gate for this file's self-test seams. Source settings can come from saved or imported data,
+ * so they alone never arm a seam: the settings must also carry, under the seam's own key, a
+ * nonce equal to SELFTEST_NONCE_ENV in the process environment, which the self-test mints at
+ * run time and clears once the source is created, and FE_SMOKE_QUIT_SECONDS must be set there
+ * too. Both are read from the Win32 environment block, never from a file. The names are
+ * mirrored by kSelfTestNonceEnv and the kStartRace* and kDefaultEndpoint* constants in
+ * frontend/src/obs_bootstrap.cpp. */
 #define SELFTEST_SMOKE_ENV "FE_SMOKE_QUIT_SECONDS"
 #define SELFTEST_NONCE_ENV "BRAIDCAST_SELFTEST_WASAPI_NONCE"
+
+static bool SelfTestProcessEnv(const char *name, string &value)
+{
+	char buf[128];
+	SetLastError(ERROR_SUCCESS);
+	const DWORD len = GetEnvironmentVariableA(name, buf, sizeof(buf));
+	if (len == 0 && GetLastError() == ERROR_ENVVAR_NOT_FOUND) {
+		return false;
+	}
+	if (len >= sizeof(buf)) {
+		return false;
+	}
+	value.assign(buf, len);
+	return true;
+}
+
+static bool InvokedBySelfTest(obs_data_t *settings, const char *nonceKey)
+{
+	string smoke;
+	string nonce;
+	if (!SelfTestProcessEnv(SELFTEST_SMOKE_ENV, smoke) || !SelfTestProcessEnv(SELFTEST_NONCE_ENV, nonce) ||
+	    nonce.empty()) {
+		return false;
+	}
+	return nonce == obs_data_get_string(settings, nonceKey);
+}
+
+/* Self-test seam for the create-then-release race in OnStartCapture, which the start-race and
+ * restart self-tests share through CreateProbedCapture. */
 #define OPT_SELFTEST_NONCE "selftest_start_race_nonce"
 #define OPT_SELFTEST_IN_WINDOW "selftest_start_race_in_window"
 #define OPT_SELFTEST_IDLE_LATE "selftest_start_race_idle_late"
@@ -145,31 +174,6 @@ class StartRaceProbe {
 	WinHandle stopWoke;
 	WinHandle startEnded;
 	DWORD waitMs = 0;
-
-	static bool ProcessEnv(const char *name, string &value)
-	{
-		char buf[128];
-		SetLastError(ERROR_SUCCESS);
-		const DWORD len = GetEnvironmentVariableA(name, buf, sizeof(buf));
-		if (len == 0 && GetLastError() == ERROR_ENVVAR_NOT_FOUND) {
-			return false;
-		}
-		if (len >= sizeof(buf)) {
-			return false;
-		}
-		value.assign(buf, len);
-		return true;
-	}
-
-	static bool InvokedBySelfTest(obs_data_t *settings)
-	{
-		string smoke;
-		string nonce;
-		if (!ProcessEnv(SELFTEST_SMOKE_ENV, smoke) || !ProcessEnv(SELFTEST_NONCE_ENV, nonce) || nonce.empty()) {
-			return false;
-		}
-		return nonce == obs_data_get_string(settings, OPT_SELFTEST_NONCE);
-	}
 
 	static HANDLE Duplicate(obs_data_t *settings, const char *key)
 	{
@@ -197,7 +201,7 @@ public:
 		if (!obs_data_has_user_value(settings, OPT_SELFTEST_NONCE)) {
 			return nullptr;
 		}
-		if (!InvokedBySelfTest(settings)) {
+		if (!InvokedBySelfTest(settings, OPT_SELFTEST_NONCE)) {
 			blog(LOG_WARNING, "WASAPI: start-race probe settings ignored: not this self-test's invocation");
 			return nullptr;
 		}
@@ -277,6 +281,13 @@ public:
 		}
 	}
 };
+
+/* Self-test seam for a "default" output capture following the system default. Once armed, the
+ * source answers SELFTEST_DEFAULT_PROC by resolving "default" to the endpoint id it is given and
+ * delivering that id as a default-device change through WASAPINotify, so the restart and every
+ * step after it run as a real change drives them. */
+#define OPT_SELFTEST_DEFAULT_NONCE "selftest_default_endpoint_nonce"
+#define SELFTEST_DEFAULT_PROC "selftest_default_changed"
 
 /* Keeps one started render stream of silence on a loopback capture's endpoint.
  *
@@ -396,6 +407,13 @@ class WASAPISource {
 	 * render endpoint whose engine can go idle. */
 	std::unique_ptr<SilentRenderKeepalive> keepalive;
 
+	/* The endpoint the last successful Initialize opened; touched only by TryInitialize. */
+	wstring capturedDeviceId;
+
+	/* What "default" resolves to while the default-endpoint seam is armed; empty otherwise. */
+	std::mutex selftestDefaultMutex;
+	string selftestDefaultEndpoint;
+
 	speaker_layout speakers;
 	audio_format format;
 	uint32_t sampleRate;
@@ -425,6 +443,8 @@ class WASAPISource {
 	void RequestRestart();
 
 	bool TryInitialize();
+	void NoteCapturedDevice(const wstring &deviceId);
+	string SelfTestDefaultEndpoint();
 
 	struct UpdateParams {
 		string device_id;
@@ -451,6 +471,7 @@ public:
 	void Deactivate();
 
 	void SetDefaultDevice(EDataFlow flow, ERole role, LPCWSTR id);
+	void SimulateDefaultDevice(const char *id);
 
 	void OnStartCapture();
 	void OnSampleReady();
@@ -681,6 +702,21 @@ WASAPISource::WASAPISource(obs_data_t *settings, obs_source_t *source_, SourceTy
 									std::placeholders::_3));
 	}
 
+	if (sourceType == SourceType::DeviceOutput && obs_data_has_user_value(settings, OPT_SELFTEST_DEFAULT_NONCE)) {
+		if (InvokedBySelfTest(settings, OPT_SELFTEST_DEFAULT_NONCE)) {
+			proc_handler_add(
+				obs_source_get_proc_handler(source), "void " SELFTEST_DEFAULT_PROC "(in string id)",
+				[](void *data, calldata_t *cd) {
+					static_cast<WASAPISource *>(data)->SimulateDefaultDevice(
+						calldata_string(cd, "id"));
+				},
+				this);
+		} else {
+			blog(LOG_WARNING,
+			     "WASAPI: default-endpoint probe settings ignored: not this self-test's invocation");
+		}
+	}
+
 	Start();
 }
 
@@ -749,12 +785,19 @@ WASAPISource::~WASAPISource()
 	if (notify) {
 		notify->RemoveDefaultDeviceChangedCallback(this);
 	}
-	// If the device is also used for monitoring, a cleanup is needed.
+
+	/* An Initialize still running can claim deduplication again until Stop() has joined it, so the
+	 * claim is released once more after; that second release does nothing unless such a claim
+	 * landed. */
 	if (sourceType == SourceType::DeviceOutput) {
 		obs_source_audio_output_capture_device_changed(source, NULL);
 	}
 
 	Stop();
+
+	if (sourceType == SourceType::DeviceOutput) {
+		obs_source_audio_output_capture_device_changed(source, NULL);
+	}
 }
 
 WASAPISource::UpdateParams WASAPISource::BuildUpdateParams(obs_data_t *settings)
@@ -1388,10 +1431,13 @@ void WASAPISource::Initialize()
 
 		process_id = dwProcessId;
 	} else {
-		device = InitDevice(enumerator, isDefaultDevice, sourceType, device_id);
+		const string selftestDefault = isDefaultDevice ? SelfTestDefaultEndpoint() : string();
+		device = selftestDefault.empty() ? InitDevice(enumerator, isDefaultDevice, sourceType, device_id)
+						 : InitDevice(enumerator, false, sourceType, selftestDefault);
 
 		device_name = GetDeviceName(device);
 	}
+	const wstring deviceId = GetDeviceId(device);
 
 	const bool heldForStop = startRaceProbe && startRaceProbe->HoldUntilStopWakes();
 
@@ -1400,7 +1446,7 @@ void WASAPISource::Initialize()
 	ComPtr<IAudioClient> temp_client = InitClient(device, sourceType, process_id, activate_audio_interface_async,
 						      speakers, format, sampleRate);
 	if (keepalive) {
-		keepalive->Start(GetDeviceId(device));
+		keepalive->Start(deviceId);
 	}
 	const HANDLE engineSignal = startRaceProbe ? HANDLE(startRaceProbe->silentEndpoint) : HANDLE(receiveSignal);
 	ComPtr<IAudioCaptureClient> temp_capture = InitCapture(temp_client, engineSignal);
@@ -1428,6 +1474,10 @@ void WASAPISource::Initialize()
 	 * catch, so reword the producer and the consumer together. */
 	blog(LOG_INFO, "WASAPI: Device '%s' [%" PRIu32 " Hz] initialized (source: %s)", device_name.c_str(), sampleRate,
 	     obs_source_get_name(source));
+
+	if (sourceType == SourceType::DeviceOutput) {
+		NoteCapturedDevice(deviceId);
+	}
 
 	if (sourceType == SourceType::ProcessOutput && !hooked) {
 		hooked = true;
@@ -1474,8 +1524,60 @@ bool WASAPISource::TryInitialize()
 		}
 	}
 
+	/* A capture that hears nothing must not keep deduplication on, or the monitored sources it
+	 * was standing in for vanish from the mix. The next successful open reports its endpoint. */
+	if (!success && sourceType == SourceType::DeviceOutput) {
+		capturedDeviceId.clear();
+		obs_source_audio_output_capture_device_changed(source, NULL);
+	}
+
 	previouslyFailed = !success;
 	return success;
+}
+
+/* A "default" capture follows the system default without its device_id changing, so the
+ * deduplication decision its settings produced goes stale when the default moves. It is
+ * re-made here, from the endpoint actually opened, whenever that endpoint changes. Reported only
+ * once the capture is running, so a device that keeps failing its open does not claim and drop
+ * deduplication on every retry. */
+void WASAPISource::NoteCapturedDevice(const wstring &deviceId)
+{
+	if (deviceId.empty() || deviceId == capturedDeviceId) {
+		return;
+	}
+	capturedDeviceId = deviceId;
+
+	char *utf8 = nullptr;
+	os_wcs_to_utf8_ptr(deviceId.c_str(), deviceId.size(), &utf8);
+	if (utf8) {
+		obs_source_audio_output_capture_device_changed(source, utf8);
+		bfree(utf8);
+	}
+}
+
+string WASAPISource::SelfTestDefaultEndpoint()
+{
+	std::lock_guard<std::mutex> lock(selftestDefaultMutex);
+	return selftestDefaultEndpoint;
+}
+
+void WASAPISource::SimulateDefaultDevice(const char *id)
+{
+	if (!id || !*id) {
+		return;
+	}
+	{
+		std::lock_guard<std::mutex> lock(selftestDefaultMutex);
+		selftestDefaultEndpoint = id;
+	}
+
+	wchar_t *w_id = nullptr;
+	os_utf8_to_wcs_ptr(id, 0, &w_id);
+	auto notify = GetNotify();
+	if (w_id && notify) {
+		notify->DeliverDefaultDeviceChanged(this, eRender, eConsole, w_id);
+	}
+	bfree(w_id);
 }
 
 DWORD WINAPI WASAPISource::ReconnectThread(LPVOID param)

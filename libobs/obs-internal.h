@@ -590,8 +590,26 @@ struct obs_core_audio {
 	pthread_mutex_t task_mutex;
 	struct deque tasks;
 
-	struct obs_source *monitoring_duplicating_source;
+	/* The audio thread's copy of obs_core_dedup.owner: seeded from it when audio is initialized,
+	 * then written only by the task each deduplication decision queues. */
+	obs_weak_source_t *monitoring_duplicating_source;
 };
+
+/* Which Audio Output Capture source monitoring deduplication is applied for. Kept apart from
+ * obs_core_audio, which a runtime audio reset tears down and rebuilds, because capture threads
+ * make these decisions at any time. `mutex` guards `owner`, `monitor_id` (the dedup copy of the
+ * monitoring device id) and every source's dedup_device and dedup_reported. */
+struct obs_core_dedup {
+	pthread_mutex_t mutex;
+	struct obs_source *owner;
+	char *monitor_id;
+	volatile bool handover_queued;
+};
+
+void obs_audio_monitoring_dedup_set_monitor(const char *id);
+/* Re-decides deduplication for every public Audio Output Capture source. */
+void obs_audio_monitoring_dedup_recheck(void);
+void obs_source_audio_output_capture_recheck(obs_source_t *src);
 
 /* user sources, output channels, and displays */
 struct obs_core_data {
@@ -700,6 +718,7 @@ struct obs_core {
 	 * clean and organized */
 	struct obs_core_video video;
 	struct obs_core_audio audio;
+	struct obs_core_dedup dedup;
 	struct obs_core_data data;
 	struct obs_core_hotkeys hotkeys;
 
@@ -1082,6 +1101,10 @@ struct obs_source {
 	float balance;
 	/* audio_is_duplicated: tracks whether a source appears multiple times in the audio tree during this tick */
 	bool audio_is_duplicated;
+	/* The device an Audio Output Capture source last reported for deduplication, and whether it
+	 * has reported one; guarded by obs->dedup.mutex. */
+	char *dedup_device;
+	bool dedup_reported;
 
 	/* async video data */
 	gs_texture_t *async_textures[MAX_AV_PLANES];
@@ -1257,6 +1280,16 @@ static inline void obs_source_dosignal_canvas(struct obs_source *source, struct 
 
 /* maximum timestamp variance in nanoseconds */
 #define MAX_TS_VAR 2000000000ULL
+
+/* Whether deduplication owned by `owner` keeps the monitored sources out of the output. An owner
+ * that is inactive, monitor-only, muted or faded to silence puts nothing of the monitor's device
+ * into the output, so the monitored sources have to stay in it. Reads the volume and mute state the
+ * audio thread has applied. */
+static inline bool obs_source_dedup_silences(const struct obs_source *owner)
+{
+	return obs_source_active(owner) && owner->monitoring_type != OBS_MONITORING_TYPE_MONITOR_ONLY &&
+	       !owner->muted && !close_float(owner->volume, 0.0f, 0.0001f);
+}
 
 static inline bool frame_out_of_bounds(const obs_source_t *source, uint64_t ts)
 {

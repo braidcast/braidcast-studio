@@ -523,6 +523,19 @@ void RunWasapiStopDuringStartStressSelfTest();
 // source must destroy within a bound. The default-device path is not driven: it needs a system
 // default-device change. Gated by the caller to the smoke path.
 void RunWasapiRestartSelfTest();
+// Headless proof that monitoring deduplication follows a "default" wasapi_output_capture as the
+// endpoint it resolves to moves: with the monitor pinned to an explicit endpoint no other capture
+// deduplicates, the plugin's default-endpoint seam moves the capture's "default" onto that
+// endpoint, onto one that will not open, back, and off it, each through a real default-device
+// notification and restart. Deduplication must name the capture exactly while it captures the
+// monitored endpoint -- not while its open is failing -- logging each transition once, and
+// re-deciding an unchanged match must log nothing. Then two captures pinned to that endpoint: an
+// inactive one may not take over from an inactive owner, an active one must take over from it, and
+// once both are active they must not swap. Restores the monitoring device, which
+// re-decides every Audio Output Capture source. The seam replaces the system default for this
+// source alone; a monitor on "default" following a real change is not driven. Gated by the
+// caller to the smoke path.
+void RunWasapiDedupFollowSelfTest();
 // Headless proof for the Filters dialog preview: bind it to the current program
 // scene (a previewable source), position it, confirm the overlay got a live
 // obs_display, then close it; and confirm an audio-only source is refused so the

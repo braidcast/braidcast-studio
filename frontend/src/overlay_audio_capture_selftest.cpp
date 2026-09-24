@@ -860,11 +860,6 @@ void Teardown(State &st)
 		st.priorChannelSource = nullptr;
 	}
 	if (st.loopback) {
-		// Drop the loopback's claim on monitoring deduplication before it goes: libobs keeps a
-		// bare pointer to that source and clears it on its audio thread, so wait for that
-		// task to have run rather than let the pointer outlive what it names.
-		obs_source_audio_output_capture_device_changed(st.loopback, nullptr);
-		obs_queue_task(OBS_TASK_AUDIO, [](void *) {}, nullptr, true);
 		obs_source_release(st.loopback);
 		st.loopback = nullptr;
 	}

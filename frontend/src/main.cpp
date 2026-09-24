@@ -344,6 +344,7 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 				ObsBootstrap::RunWasapiStartRaceSelfTest();
 				ObsBootstrap::RunWasapiStopDuringStartStressSelfTest();
 				ObsBootstrap::RunWasapiRestartSelfTest();
+				ObsBootstrap::RunWasapiDedupFollowSelfTest();
 				ObsBootstrap::RunPropertiesSelfTest();
 				ObsBootstrap::RunPreviewEditSelfTest();
 				ObsBootstrap::RunSettingsSelfTest();

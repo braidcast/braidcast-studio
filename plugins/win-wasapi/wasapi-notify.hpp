@@ -18,6 +18,9 @@ public:
 
 	void AddDefaultDeviceChangedCallback(void *handle, WASAPINotifyDefaultDeviceChangedCallback cb);
 	void RemoveDefaultDeviceChangedCallback(void *handle);
+	/* Hands one default-device change to the callback registered under `handle` alone, in
+	 * turn with the real notifications. */
+	void DeliverDefaultDeviceChanged(void *handle, EDataFlow flow, ERole role, LPCWSTR id);
 
 private:
 	void OnDefaultDeviceChanged(EDataFlow flow, ERole role, LPCWSTR id);

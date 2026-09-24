@@ -387,73 +387,199 @@ static void obs_source_init_audio_hotkeys(struct obs_source *source)
 							      obs_source_hotkey_push_to_talk, source);
 }
 
-void obs_source_audio_output_capture_device_activated(void *vptr, calldata_t *cd)
+static void dedup_decide(obs_source_t *src, bool report, const char *device_id);
+
+static void dedup_capture_activated(void *unused, calldata_t *cd)
 {
-	UNUSED_PARAMETER(vptr);
+	UNUSED_PARAMETER(unused);
 	obs_source_t *src = calldata_ptr(cd, "source");
 	if (!src) {
 		return;
 	}
 
-	obs_data_t *settings = obs_source_get_settings(src);
-	const char *device_id = obs_data_get_string(settings, "device_id");
-	obs_source_audio_output_capture_device_changed(src, device_id);
-	obs_data_release(settings);
+	dedup_decide(src, false, NULL);
 }
 
 extern bool devices_match(const char *id1, const char *id2);
-void obs_source_audio_output_capture_device_changed(obs_source_t *src, const char *device_id)
+
+/* Caller holds obs->dedup.mutex, which guards the monitor id this reads. */
+static bool dedup_device_matches_monitor(const char *device_id)
 {
-	struct obs_core_audio *audio = &obs->audio;
-
-	if (!audio->monitoring_device_name) {
-		return;
+	const char *mon_id = obs->dedup.monitor_id;
+	if (!mon_id) {
+		return false;
 	}
-
-	if (!(src->info.output_flags & OBS_SOURCE_DO_NOT_SELF_MONITOR)) {
-		return;
-	}
-
-	const char *mon_id = audio->monitoring_device_id;
-	bool id_match = false;
 
 #ifdef __APPLE__
 	extern void get_desktop_default_id(char **p_id);
 	if (device_id && strcmp(device_id, "default") == 0) {
 		char *def_id = NULL;
 		get_desktop_default_id(&def_id);
-		id_match = devices_match(def_id, mon_id);
+		bool id_match = devices_match(def_id, mon_id);
 		if (def_id) {
 			bfree(def_id);
 		}
-	} else {
-		id_match = devices_match(device_id, mon_id);
+		return id_match;
 	}
-#else
-	id_match = devices_match(device_id, mon_id);
 #endif
-	struct calldata cd;
-	uint8_t stack[128];
-	calldata_init_fixed(&cd, stack, sizeof(stack));
+	return devices_match(device_id, mon_id);
+}
 
-	if (id_match) {
-		calldata_set_ptr(&cd, "source", src);
+static void dedup_handover_task(void *unused)
+{
+	UNUSED_PARAMETER(unused);
+	if (!obs) {
+		return;
+	}
+	os_atomic_set_bool(&obs->dedup.handover_queued, false);
+	obs_audio_monitoring_dedup_recheck();
+}
+
+/* An owner that stops matching may leave another capture that still hears the monitor. Finding
+ * it means enumerating sources, which takes sources_mutex, and a handover can be asked for while a
+ * source's "activate" or "deactivate" signal lock is held, so the search is queued to the UI thread
+ * rather than run here. Those locks are only ever held on the graphics thread, which emits both
+ * signals from its video tick, so a host that runs the task at once when the request is already on
+ * its UI thread stays safe. A host with no UI task handler gets no handover and is left without deduplication,
+ * the safe side. */
+static void dedup_queue_handover(void)
+{
+	if (!obs->ui_task_handler) {
+		return;
+	}
+	if (!os_atomic_set_bool(&obs->dedup.handover_queued, true)) {
+		obs_queue_task(OBS_TASK_UI, dedup_handover_task, NULL, false);
+	}
+}
+
+/* An owner that goes inactive no longer silences anything, so an active capture that still hears
+ * the monitor has to take over. */
+static void dedup_capture_deactivated(void *unused, calldata_t *cd)
+{
+	UNUSED_PARAMETER(unused);
+	obs_source_t *src = calldata_ptr(cd, "source");
+
+	pthread_mutex_lock(&obs->dedup.mutex);
+	const bool was_owner = src && obs->dedup.owner == src;
+	pthread_mutex_unlock(&obs->dedup.mutex);
+
+	if (was_owner) {
+		dedup_queue_handover();
+	}
+}
+
+/* Decides whether src owns deduplication, from the device it reports now when `report` is set,
+ * else from the one it last reported (its settings until it has reported one).
+ *
+ * Called from the UI thread, from capture threads that have just opened or failed to open a
+ * device, from the graphics thread's "activate" signal and from source destruction. Every
+ * decision is made under obs->dedup.mutex, held across the device lookup, so a decision made from
+ * state that has since changed cannot land after the one made from the change; the signal is
+ * raised under it too, so the audio thread receives decisions in the order they were made. A
+ * caller may already hold a source's "activate" signal lock, but never sources_mutex (a recheck
+ * decides from a snapshot taken outside it). Under the mutex only the deduplication_changed
+ * signal, a weak reference, the audio mix gate and the audio task queue are taken; nothing that
+ * holds any of those decides, and nothing under the mutex waits for another thread.
+ *
+ * A capture that matches while another already owns deduplication leaves it in place: both hear
+ * the same endpoint, and a swap would only churn. The exception is an owner that silences nothing
+ * (obs_source_dedup_silences), which a capture that would silence takes over from. Only a change
+ * of owner is logged, so a session log reads as a list of transitions. */
+static void dedup_decide(obs_source_t *src, bool report, const char *device_id)
+{
+	struct obs_core_dedup *dedup = &obs->dedup;
+	obs_data_t *settings = report ? NULL : obs_source_get_settings(src);
+
+	pthread_mutex_lock(&dedup->mutex);
+
+	if (report) {
+		bfree(src->dedup_device);
+		src->dedup_device = bstrdup(device_id);
+		src->dedup_reported = true;
+	}
+	const char *effective = src->dedup_reported ? src->dedup_device : obs_data_get_string(settings, "device_id");
+
+	const bool id_match = dedup_device_matches_monitor(effective);
+	const bool was_owner = dedup->owner == src;
+	const bool owner_silent = dedup->owner && dedup->owner != src && !obs_source_dedup_silences(dedup->owner);
+	/* Keeps a capture that is being torn down out of the log; it can still slip in just before
+	 * destroying is set, which dedup_forget then undoes. */
+	const bool take = !destroying(src) && id_match &&
+			  (!dedup->owner || (owner_silent && obs_source_dedup_silences(src)));
+	const bool leave = !id_match && was_owner;
+
+	if (take || leave) {
+		dedup->owner = take ? src : NULL;
+
+		struct calldata cd;
+		uint8_t stack[128];
+		calldata_init_fixed(&cd, stack, sizeof(stack));
+		calldata_set_ptr(&cd, "source", dedup->owner);
 		signal_handler_signal(obs->signals, "deduplication_changed", &cd);
-		signal_handler_connect(src->context.signals, "activate",
-				       obs_source_audio_output_capture_device_activated, NULL);
-		blog(LOG_INFO,
-		     "Device for 'Audio Output Capture' source %s is also used for audio monitoring."
-		     "\nDeduplication logic is being applied to all monitored sources.",
-		     src->context.name);
-	} else {
-		if (src == audio->monitoring_duplicating_source) {
-			calldata_set_ptr(&cd, "source", NULL);
-			signal_handler_disconnect(src->context.signals, "activate",
-						  obs_source_audio_output_capture_device_activated, NULL);
-			signal_handler_signal(obs->signals, "deduplication_changed", &cd);
-			blog(LOG_INFO, "Deduplication logic stopped.");
+
+		if (take) {
+			blog(LOG_INFO,
+			     "Device for 'Audio Output Capture' source %s is also used for audio monitoring."
+			     "\nDeduplication logic is being applied to all monitored sources.",
+			     src->context.name);
+		} else {
+			blog(LOG_INFO,
+			     "Device for 'Audio Output Capture' source %s is no longer used for audio monitoring."
+			     "\nDeduplication logic stopped.",
+			     src->context.name);
 		}
 	}
+
+	pthread_mutex_unlock(&dedup->mutex);
+	obs_data_release(settings);
+
+	if (leave) {
+		dedup_queue_handover();
+	}
+}
+
+void obs_source_audio_output_capture_device_changed(obs_source_t *src, const char *device_id)
+{
+	if (!(src->info.output_flags & OBS_SOURCE_DO_NOT_SELF_MONITOR)) {
+		return;
+	}
+
+	/* Connected before the decision, so an activation between the two is not missed. Never
+	 * disconnected: each handler acts only on a capture's current state, so it is a no-op for one
+	 * that stopped matching, and a disconnect could land after a later connect. */
+	if (device_id) {
+		signal_handler_connect(src->context.signals, "activate", dedup_capture_activated, NULL);
+		signal_handler_connect(src->context.signals, "deactivate", dedup_capture_deactivated, NULL);
+	}
+
+	dedup_decide(src, true, device_id);
+}
+
+void obs_source_audio_output_capture_recheck(obs_source_t *src)
+{
+	if (src->info.output_flags & OBS_SOURCE_DO_NOT_SELF_MONITOR) {
+		dedup_decide(src, false, NULL);
+	}
+}
+
+/* A plugin that did not report NULL from its destroy callback must still not leave a freed source
+ * owning deduplication. */
+static void dedup_forget(obs_source_t *src)
+{
+	if (src->info.output_flags & OBS_SOURCE_DO_NOT_SELF_MONITOR) {
+		dedup_decide(src, true, NULL);
+	}
+}
+
+obs_source_t *obs_get_audio_monitoring_dedup_source(void)
+{
+	if (!obs) {
+		return NULL;
+	}
+	pthread_mutex_lock(&obs->dedup.mutex);
+	obs_source_t *owner = obs_source_get_ref(obs->dedup.owner);
+	pthread_mutex_unlock(&obs->dedup.mutex);
+	return owner;
 }
 
 static obs_source_t *obs_source_create_internal(const char *id, const char *name, const char *uuid,
@@ -764,6 +890,11 @@ void obs_source_destroy(struct obs_source *source)
 		return;
 	}
 
+	/* obs_source_release drops the last weak reference as soon as this returns, but the source
+	 * lives on until obs_source_destroy_defer, and a capture thread can still take a weak
+	 * reference to it for deduplication until then. */
+	obs_weak_source_addref(get_weak(source));
+
 	if (is_audio_source(source)) {
 		pthread_mutex_lock(&source->audio_cb_mutex);
 		da_free(source->audio_cb_list);
@@ -822,6 +953,7 @@ void obs_source_destroy(struct obs_source *source)
 
 static void obs_source_destroy_defer(struct obs_source *source)
 {
+	obs_weak_source_t *control = get_weak(source);
 	size_t i;
 
 	/* prevents the destruction of sources if destroy triggered inside of
@@ -834,6 +966,8 @@ static void obs_source_destroy_defer(struct obs_source *source)
 		source->info.destroy(source->context.data);
 		source->context.data = NULL;
 	}
+	dedup_forget(source);
+	bfree(source->dedup_device);
 
 	blog(LOG_DEBUG, "%ssource '%s' destroyed", source->context.private ? "private " : "", source->context.name);
 
@@ -908,6 +1042,7 @@ static void obs_source_destroy_defer(struct obs_source *source)
 	}
 
 	bfree(source);
+	obs_weak_source_release(control);
 }
 
 void obs_source_addref(obs_source_t *source)

@@ -1070,8 +1070,9 @@ static void SyncProcessPriorityToLiveState()
 // Windows default output device changing (it queues obs_reset_audio_monitoring).
 //
 // wait == false is the only shape any caller in this build uses -- win-wasapi's
-// device-change callback, on a WASAPI notification thread -- and it maps straight onto
-// PostToUi.
+// device-change callback, on a WASAPI notification thread, and libobs's monitoring
+// deduplication handover, from whichever thread made the decision -- and it maps straight
+// onto PostToUi, which runs the task at once when the caller is already the UI thread.
 //
 // wait == true deliberately does not block indefinitely. obs_queue_task(OBS_TASK_UI) is
 // reachable from the graphics and audio threads, and the UI thread routinely blocks on
@@ -7514,9 +7515,11 @@ ObsBootstrap::SelfTestEndpoint ObsBootstrap::ResolveSelfTestEndpoint(const std::
 
 namespace {
 
-// Mirrors SELFTEST_NONCE_ENV and the OPT_SELFTEST_* keys of StartRaceProbe in
-// plugins/win-wasapi/win-wasapi.cpp.
-constexpr const wchar_t *kStartRaceNonceEnv = L"BRAIDCAST_SELFTEST_WASAPI_NONCE";
+// Mirrors SELFTEST_NONCE_ENV, the OPT_SELFTEST_* keys of StartRaceProbe and the default-endpoint
+// seam's OPT_SELFTEST_DEFAULT_NONCE and SELFTEST_DEFAULT_PROC in plugins/win-wasapi/win-wasapi.cpp.
+constexpr const wchar_t *kSelfTestNonceEnv = L"BRAIDCAST_SELFTEST_WASAPI_NONCE";
+constexpr const char *kDefaultEndpointNonce = "selftest_default_endpoint_nonce";
+constexpr const char *kDefaultEndpointProc = "selftest_default_changed";
 constexpr const char *kStartRaceNonce = "selftest_start_race_nonce";
 constexpr const char *kStartRaceInWindow = "selftest_start_race_in_window";
 constexpr const char *kStartRaceIdleLate = "selftest_start_race_idle_late";
@@ -7524,6 +7527,12 @@ constexpr const char *kStartRaceHeld = "selftest_start_race_held";
 constexpr const char *kStartRaceInitDone = "selftest_start_race_init_done";
 constexpr const char *kStartRaceWaitMs = "selftest_start_race_wait_ms";
 constexpr const char *kStartRaceStatus = "selftest_start_race_status";
+
+// A signal callback that sets the Win32 event it was connected with.
+void SetEventOnSignal(void *event, calldata_t *)
+{
+	SetEvent(static_cast<HANDLE>(event));
+}
 
 // True once every destroy task queued before this call has run. On a timeout the marker
 // task is still queued and will signal the event later, so the handle is left open.
@@ -7554,9 +7563,7 @@ bool ReleaseAndAwaitDestroy(obs_source_t *source, DWORD ms)
 		obs_source_release(source);
 		return false;
 	}
-	signal_handler_connect(
-		obs_source_get_signal_handler(source), "destroy",
-		[](void *event, calldata_t *) { SetEvent(static_cast<HANDLE>(event)); }, destroying);
+	signal_handler_connect(obs_source_get_signal_handler(source), "destroy", SetEventOnSignal, destroying);
 
 	const ULONGLONG deadline = GetTickCount64() + ms;
 	obs_source_release(source);
@@ -7579,36 +7586,41 @@ struct StartRaceProbeEvents {
 	bool Valid() const { return inWindow.Valid() && idleLate.Valid() && held.Valid() && initDone.Valid(); }
 };
 
-// Creates a private wasapi_output_capture with the plugin's start-race probe asked for. The
-// probe arms only when this nonce is in both its settings and the process environment, which
-// saved or imported settings cannot arrange. It is minted here, published in the Win32 block
-// the plugin reads, and withdrawn once the source exists. Returns nullptr with `error` set if
-// the source was not created; otherwise ProbeStatus says whether the probe armed.
-obs_source_t *CreateProbedCapture(const char *name, const std::string &deviceId, const StartRaceProbeEvents &events,
-				  DWORD holdMs, std::string &error)
+// Creates a private wasapi_output_capture from `settings` with one of the plugin's self-test
+// seams asked for. A seam arms only when a nonce is in both its settings, under `nonceKey`, and
+// the process environment, which saved or imported settings cannot arrange. It is minted here,
+// published in the Win32 block the plugin reads, and withdrawn once the source exists. Returns
+// nullptr with `error` set if the source was not created.
+obs_source_t *CreateSeamedCapture(const char *name, obs_data_t *settings, const char *nonceKey, std::string &error)
 {
 	const std::string nonce = RandomUtil::HexToken(16);
 	if (nonce.empty()) {
-		error = "could not mint the probe nonce";
+		error = "could not mint the self-test nonce";
 		return nullptr;
 	}
+	obs_data_set_string(settings, nonceKey, nonce.c_str());
 
+	SetEnvironmentVariableW(kSelfTestNonceEnv, std::wstring(nonce.begin(), nonce.end()).c_str());
+	obs_source_t *capture = obs_source_create_private("wasapi_output_capture", name, settings);
+	SetEnvironmentVariableW(kSelfTestNonceEnv, nullptr);
+	if (!capture) {
+		error = "wasapi_output_capture create failed";
+	}
+	return capture;
+}
+
+// A capture with the plugin's start-race probe asked for; ProbeStatus says whether it armed.
+obs_source_t *CreateProbedCapture(const char *name, const std::string &deviceId, const StartRaceProbeEvents &events,
+				  DWORD holdMs, std::string &error)
+{
 	OBSDataAutoRelease settings = obs_data_create();
 	obs_data_set_string(settings, "device_id", deviceId.c_str());
-	obs_data_set_string(settings, kStartRaceNonce, nonce.c_str());
 	obs_data_set_int(settings, kStartRaceInWindow, (long long)(intptr_t)(HANDLE)events.inWindow);
 	obs_data_set_int(settings, kStartRaceIdleLate, (long long)(intptr_t)(HANDLE)events.idleLate);
 	obs_data_set_int(settings, kStartRaceHeld, (long long)(intptr_t)(HANDLE)events.held);
 	obs_data_set_int(settings, kStartRaceInitDone, (long long)(intptr_t)(HANDLE)events.initDone);
 	obs_data_set_int(settings, kStartRaceWaitMs, holdMs);
-
-	SetEnvironmentVariableW(kStartRaceNonceEnv, std::wstring(nonce.begin(), nonce.end()).c_str());
-	obs_source_t *capture = obs_source_create_private("wasapi_output_capture", name, settings);
-	SetEnvironmentVariableW(kStartRaceNonceEnv, nullptr);
-	if (!capture) {
-		error = "wasapi_output_capture create failed";
-	}
-	return capture;
+	return CreateSeamedCapture(name, settings, kStartRaceNonce, error);
 }
 
 std::string ProbeStatus(obs_source_t *capture)
@@ -7629,6 +7641,19 @@ std::string ProbeRefusal(const std::string &status)
 		       "environment, not only in .env";
 	}
 	return "probe not armed: " + status;
+}
+
+// Polls `done` every 10 ms until it holds or `ms` has passed; true if it held.
+template<typename Done> bool PollUntil(Done &&done, DWORD ms)
+{
+	const ULONGLONG deadline = GetTickCount64() + ms;
+	while (!done()) {
+		if (GetTickCount64() >= deadline) {
+			return false;
+		}
+		Sleep(10);
+	}
+	return true;
 }
 
 // Counts log lines containing each of its needles while installed; every line still reaches
@@ -7710,14 +7735,7 @@ public:
 
 	bool WaitForCount(size_t needle, int n, DWORD ms) const
 	{
-		const ULONGLONG deadline = GetTickCount64() + ms;
-		while (Count(needle) < n) {
-			if (GetTickCount64() >= deadline) {
-				return false;
-			}
-			Sleep(10);
-		}
-		return true;
+		return PollUntil([&] { return Count(needle) >= n; }, ms);
 	}
 };
 
@@ -7960,9 +7978,7 @@ void ObsBootstrap::RunWasapiRestartSelfTest()
 	// open if the destroy times out, since the handler could still signal it.
 	const HANDLE activated = CreateEventW(nullptr, TRUE, FALSE, nullptr);
 	if (activated) {
-		signal_handler_connect(
-			obs_source_get_signal_handler(capture), "activate",
-			[](void *event, calldata_t *) { SetEvent(static_cast<HANDLE>(event)); }, activated);
+		signal_handler_connect(obs_source_get_signal_handler(capture), "activate", SetEventOnSignal, activated);
 	}
 	obs_source_inc_active(capture);
 	const bool isActive = activated && WaitForSingleObject(activated, kActivateBoundMs) == WAIT_OBJECT_0;
@@ -8095,6 +8111,309 @@ void ObsBootstrap::RunWasapiRestartSelfTest()
 		    "inside the hold");
 	}
 	log(std::string("overall -> ") + (pass && destroyed ? "PASS" : "FAILED"));
+}
+
+void ObsBootstrap::RunWasapiDedupFollowSelfTest()
+{
+	constexpr DWORD kActivateBoundMs = 5000;
+	// Past win-wasapi's RECONNECT_INTERVAL (3 s): a capture recovering from a failed open reopens
+	// only on its next reconnect attempt.
+	constexpr DWORD kInitBoundMs = 8000;
+	constexpr DWORD kDecideBoundMs = 2000;
+	constexpr DWORD kDestroyBoundMs = 10000;
+	constexpr const char *kName = "selftest wasapi dedup";
+	// A well-formed endpoint id no device has, so the capture's open fails.
+	constexpr const char *kMissingEndpoint = "{0.0.0.00000000}.{00000000-0000-0000-0000-000000000000}";
+	const auto log = [](const std::string &line) {
+		HostLog("[selftest] wasapi dedup " + line);
+	};
+
+	// The monitor is pinned to one endpoint, and the capture's "default" moves between the two
+	// through the plugin's seam; the system default is never touched.
+	const std::vector<std::string> endpoints = ExplicitRenderEndpoints();
+	if (endpoints.size() < 2) {
+		log("overall -> SKIP (needs two explicit render endpoints; found " + std::to_string(endpoints.size()) +
+		    ")");
+		return;
+	}
+
+	if (!DestroyQueueDrainsWithin(kDestroyBoundMs)) {
+		log("overall -> SKIP (destroy queue already blocked before this case)");
+		return;
+	}
+
+	constexpr size_t kInitialized = 0;
+	constexpr size_t kOn = 1;
+	constexpr size_t kOff = 2;
+	constexpr size_t kFailedStart = 3;
+	constexpr size_t kLiveInitialized = 4;
+	constexpr size_t kTakeoverFailedStart = 5;
+	constexpr const char *kIdleName = "selftest wasapi takeover idle";
+	constexpr const char *kLiveName = "selftest wasapi takeover live";
+	const LogLineCounter lines({"initialized (source: selftest wasapi dedup)",
+				    "source selftest wasapi dedup is also used for audio monitoring",
+				    "source selftest wasapi dedup is no longer used for audio monitoring",
+				    "failed to start (source: selftest wasapi dedup)",
+				    "initialized (source: selftest wasapi takeover live)",
+				    "failed to start (source: selftest wasapi takeover"});
+	if (lines.Truncated()) {
+		log("overall -> FAILED (the log counter dropped a needle; every count it reports would be blind)");
+		return;
+	}
+
+	const auto ownerIs = [](obs_source_t *who) {
+		obs_source_t *owner = obs_get_audio_monitoring_dedup_source();
+		const bool is = owner == who;
+		obs_source_release(owner);
+		return is;
+	};
+	const char *priorName = nullptr;
+	const char *priorId = nullptr;
+	obs_get_audio_monitoring_device(&priorName, &priorId);
+	const std::string savedName = priorName ? priorName : "";
+	const std::string savedId = priorId ? priorId : "";
+	const auto restoreMonitor = [&]() {
+		if (!savedId.empty() && !obs_set_audio_monitoring_device(savedName.c_str(), savedId.c_str())) {
+			log("restore -> FAILED (monitoring device " + savedId + " could not be set back)");
+		}
+	};
+	// A capture that matches never takes deduplication from an active one that already has it, so
+	// the monitor is pinned to an endpoint no other capture -- the user's Desktop Audio above all --
+	// claims.
+	std::string monitored;
+	std::string other;
+	for (size_t i = 0; i < 2 && monitored.empty(); ++i) {
+		if (!obs_set_audio_monitoring_device(kName, endpoints[i].c_str())) {
+			restoreMonitor();
+			log("overall -> SKIP (could not pin the monitoring device to " + endpoints[i] + ")");
+			return;
+		}
+		if (ownerIs(nullptr)) {
+			monitored = endpoints[i];
+			other = endpoints[1 - i];
+		}
+	}
+	if (monitored.empty()) {
+		restoreMonitor();
+		log("overall -> SKIP (another capture already deduplicates each of the first two endpoints)");
+		return;
+	}
+	log("endpoints -> monitored=" + monitored + " other=" + other);
+
+	OBSDataAutoRelease settings = obs_data_create();
+	obs_data_set_string(settings, "device_id", "default");
+	std::string error;
+	obs_source_t *capture = CreateSeamedCapture(kName, settings, kDefaultEndpointNonce, error);
+	if (!capture) {
+		restoreMonitor();
+		log("overall -> SKIP (" + error + ")");
+		return;
+	}
+
+	// A restart reconnects through the reconnect thread, which exists only while active. Left
+	// open if the destroy times out, since the handler could still signal it.
+	const HANDLE activated = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+	if (activated) {
+		signal_handler_connect(obs_source_get_signal_handler(capture), "activate", SetEventOnSignal, activated);
+	}
+	obs_source_inc_active(capture);
+	const bool isActive = activated && WaitForSingleObject(activated, kActivateBoundMs) == WAIT_OBJECT_0;
+	const bool started = lines.WaitForCount(kInitialized, 1, kInitBoundMs);
+
+	const auto moveDefault = [capture](const std::string &id) {
+		calldata_t cd = {};
+		calldata_set_string(&cd, "id", id.c_str());
+		const bool delivered =
+			proc_handler_call(obs_source_get_proc_handler(capture), kDefaultEndpointProc, &cd);
+		calldata_free(&cd);
+		return delivered;
+	};
+	const auto isOwner = [&]() {
+		return ownerIs(capture);
+	};
+	const auto waitForOwnership = [&](bool expectOn) {
+		return PollUntil([&] { return isOwner() == expectOn; }, kDecideBoundMs);
+	};
+	const auto counts = [&]() {
+		return " initialized " + std::to_string(lines.Count(kInitialized)) + ", on " +
+		       std::to_string(lines.Count(kOn)) + ", off " + std::to_string(lines.Count(kOff));
+	};
+
+	bool pass = false;
+	bool skipped = false;
+	std::string skipReason;
+	// One default move: the restart must re-open the capture on `id`, and the decision it re-makes
+	// must leave `expectOn` true exactly when it logged `expectLine` once more. An endpoint that
+	// will not open is an environment fact, not a defect.
+	const auto step = [&](const char *label, const std::string &id, bool expectOn, int expectLines) {
+		const int initBefore = lines.Count(kInitialized);
+		const int onBefore = lines.Count(kOn);
+		const int offBefore = lines.Count(kOff);
+		const int failedBefore = lines.Count(kFailedStart);
+		if (!moveDefault(id)) {
+			skipped = true;
+			skipReason = "the default-endpoint seam refused: it needs this run's nonce and "
+				     "FE_SMOKE_QUIT_SECONDS in the process environment, not only in .env";
+			return false;
+		}
+		if (!lines.WaitForCount(kInitialized, initBefore + 1, kInitBoundMs)) {
+			if (lines.Count(kFailedStart) > failedBefore) {
+				skipped = true;
+				skipReason = "endpoint " + id + " did not open";
+			} else {
+				log(std::string(label) +
+				    " -> FAILED (the default move never re-initialized the capture)" + counts());
+			}
+			return false;
+		}
+		const bool decided = waitForOwnership(expectOn);
+		const size_t line = expectOn ? kOn : kOff;
+		const int before = expectOn ? onBefore : offBefore;
+		const bool logged = expectLines < 0 || lines.WaitForCount(line, before + expectLines, kDecideBoundMs);
+		const bool exact = expectLines < 0 || lines.Count(line) == before + expectLines;
+		const bool noOpposite = lines.Count(expectOn ? kOff : kOn) == (expectOn ? offBefore : onBefore);
+		const bool ok = decided && logged && exact && noOpposite;
+		log(std::string(label) + " -> " +
+		    (!decided ? std::string("FAILED (deduplication ") + (expectOn ? "never" : "still") +
+					" named this capture)"
+		     : !logged || !exact ? "FAILED (the transition was not logged exactly once)"
+		     : !noOpposite       ? "FAILED (the opposite transition was logged)"
+					 : "PASS") +
+		    counts());
+		return ok;
+	};
+
+	if (!isActive || !started) {
+		log("setup -> FAILED (active=" + std::to_string(isActive) + " initialized=" + std::to_string(started) +
+		    ")");
+	} else {
+		// Settles the capture off the monitored endpoint first. Where the real default already
+		// is the monitored one, the capture starts out deduplicating and this is its first stop,
+		// so the line it logs is not counted.
+		const bool baseline = step("baseline", other, false, -1);
+		const bool on = baseline && step("default moves onto the monitor", monitored, true, 1);
+
+		// The same decision made again is not a transition: nothing is logged and nothing is sent.
+		bool repeatQuiet = false;
+		if (on) {
+			const int onBefore = lines.Count(kOn);
+			obs_source_audio_output_capture_device_changed(capture, monitored.c_str());
+			repeatQuiet = lines.Count(kOn) == onBefore && isOwner();
+			log(std::string("unchanged decision -> ") +
+			    (repeatQuiet ? "PASS" : "FAILED (re-deciding the same match logged a transition)") +
+			    counts());
+		}
+
+		// A restart onto an endpoint that will not open leaves a capture that hears nothing, so it
+		// must give deduplication up rather than keep the monitored sources out of the mix.
+		bool failedOff = false;
+		if (repeatQuiet) {
+			const int initBefore = lines.Count(kInitialized);
+			const int offBefore = lines.Count(kOff);
+			moveDefault(kMissingEndpoint);
+			failedOff = waitForOwnership(false) &&
+				    lines.WaitForCount(kOff, offBefore + 1, kDecideBoundMs) &&
+				    lines.Count(kOff) == offBefore + 1 && lines.Count(kInitialized) == initBefore;
+			log(std::string("default moves onto an endpoint that will not open -> ") +
+			    (failedOff ? "PASS"
+				       : "FAILED (the failed capture kept deduplication, or it was not logged once)") +
+			    counts());
+		}
+		const bool recovered = failedOff && step("capture reopens on the monitor", monitored, true, 1);
+		const bool off = recovered && step("default moves off the monitor", other, false, 1);
+		pass = baseline && on && repeatQuiet && failedOff && recovered && off;
+	}
+
+	obs_source_dec_active(capture);
+	const bool destroyed = ReleaseAndAwaitDestroy(capture, kDestroyBoundMs);
+	if (destroyed && activated) {
+		CloseHandle(activated);
+	}
+	log(std::string("destroy -> ") + (destroyed ? "PASS" : "FAILED (did not finish)"));
+
+	// An owner that is not active silences nothing, so it must not keep an active capture on the
+	// same endpoint from taking over; two active captures must still not swap.
+	bool takeoverPass = false;
+	bool takeoverSkipped = false;
+	bool takeoverDestroyed = true;
+	if (!destroyed || !ownerIs(nullptr)) {
+		takeoverSkipped = true;
+		log("takeover -> SKIP (deduplication is not free after the first case)");
+	} else {
+		OBSDataAutoRelease pinned = obs_data_create();
+		obs_data_set_string(pinned, "device_id", monitored.c_str());
+		obs_source_t *idle = obs_source_create_private("wasapi_output_capture", kIdleName, pinned);
+		obs_source_t *live = obs_source_create_private("wasapi_output_capture", kLiveName, pinned);
+		const HANDLE idleActivated = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+
+		// Holds for kDecideBoundMs unless the owner changes first.
+		const auto ownerStays = [&](obs_source_t *who) {
+			return !PollUntil([&] { return !ownerIs(who); }, kDecideBoundMs);
+		};
+		const auto waitForOwner = [&](obs_source_t *who) {
+			return PollUntil([&] { return ownerIs(who); }, kInitBoundMs);
+		};
+
+		std::string verdict;
+		if (!idle || !live || !idleActivated) {
+			verdict = "FAILED (could not create the two captures)";
+		} else if (!waitForOwner(idle)) {
+			takeoverSkipped = lines.Count(kTakeoverFailedStart) > 0;
+			verdict = takeoverSkipped ? "SKIP (endpoint " + monitored + " did not open)"
+						  : "FAILED (the idle capture never took deduplication)";
+		} else if (!lines.WaitForCount(kLiveInitialized, 1, kInitBoundMs)) {
+			takeoverSkipped = lines.Count(kTakeoverFailedStart) > 0;
+			verdict = takeoverSkipped ? "SKIP (endpoint " + monitored + " did not open twice)"
+						  : "FAILED (the live capture never initialized)";
+		} else if (!ownerStays(idle)) {
+			verdict = "FAILED (an inactive capture took over from an inactive owner)";
+		} else {
+			obs_source_inc_active(live);
+			if (!waitForOwner(live)) {
+				verdict = "FAILED (the idle owner kept the active capture out)";
+			} else {
+				signal_handler_connect(obs_source_get_signal_handler(idle), "activate",
+						       SetEventOnSignal, idleActivated);
+				obs_source_inc_active(idle);
+				if (WaitForSingleObject(idleActivated, kActivateBoundMs) != WAIT_OBJECT_0) {
+					verdict = "FAILED (the idle capture never activated)";
+				} else if (!ownerStays(live)) {
+					verdict = "FAILED (two active captures swapped deduplication)";
+				} else {
+					takeoverPass = true;
+					verdict = "PASS";
+				}
+				obs_source_dec_active(idle);
+			}
+			obs_source_dec_active(live);
+		}
+		log("takeover -> " + verdict);
+
+		for (obs_source_t *takeover : {live, idle}) {
+			if (!takeover) {
+				continue;
+			}
+			takeoverDestroyed = ReleaseAndAwaitDestroy(takeover, kDestroyBoundMs) && takeoverDestroyed;
+		}
+		if (takeoverDestroyed && idleActivated) {
+			CloseHandle(idleActivated);
+		}
+		log(std::string("takeover destroy -> ") + (takeoverDestroyed ? "PASS" : "FAILED (did not finish)"));
+	}
+
+	// Re-decides every Audio Output Capture source against the monitor it is set back to.
+	restoreMonitor();
+
+	// Any failure outranks a skip, which outranks a pass.
+	const bool failed = (!skipped && !pass) || !destroyed || (!takeoverPass && !takeoverSkipped) ||
+			    !takeoverDestroyed;
+	if (failed) {
+		log("overall -> FAILED");
+	} else if (skipped || takeoverSkipped) {
+		log("overall -> SKIP (" + (skipped ? skipReason : std::string("the takeover case did not run")) + ")");
+	} else {
+		log("overall -> PASS");
+	}
 }
 
 void ObsBootstrap::RunFilterPreviewSelfTest()

@@ -553,7 +553,9 @@ Video, Audio, and Graphics
 
 .. function:: void obs_reset_audio_monitoring(void)
 
-   Resets all audio monitoring devices.
+   Resets all audio monitoring devices, then re-decides monitoring
+   deduplication for every public Audio Output Capture source, since a
+   monitor on the default device may now play to a different endpoint.
 
    .. versionadded:: 30.1
 
@@ -583,6 +585,15 @@ Video, Audio, and Graphics
 .. function:: void obs_get_audio_monitoring_device(const char **name, const char **id)
 
    Gets the current audio device for audio monitoring.
+
+---------------------
+
+.. function:: obs_source_t *obs_get_audio_monitoring_dedup_source(void)
+
+   :return: A new reference to the Audio Output Capture source that
+            owns monitoring deduplication, or *NULL* if none does.
+            Monitored sources are silenced on its mixes only while it
+            is active. Release it with :c:func:`obs_source_release()`.
 
 ---------------------
 
