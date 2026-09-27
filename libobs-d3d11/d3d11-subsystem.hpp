@@ -767,6 +767,8 @@ struct gs_duplicator : gs_obj {
 	int idx;
 	long refs;
 	bool updated;
+	/* frames copied from the desktop; pointer-only updates are not counted */
+	uint32_t frame_seq = 0;
 
 	void Start();
 

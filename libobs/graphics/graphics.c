@@ -3433,6 +3433,18 @@ float gs_duplicator_get_sdr_white_level(gs_duplicator_t *duplicator)
 	return thread_graphics->exports.gs_duplicator_get_sdr_white_level(duplicator);
 }
 
+uint32_t gs_duplicator_get_frame_seq(gs_duplicator_t *duplicator)
+{
+	if (!gs_valid_p("gs_duplicator_get_frame_seq", duplicator)) {
+		return 0;
+	}
+	if (!thread_graphics->exports.gs_duplicator_get_frame_seq) {
+		return 0;
+	}
+
+	return thread_graphics->exports.gs_duplicator_get_frame_seq(duplicator);
+}
+
 /** creates a windows GDI-lockable texture */
 gs_texture_t *gs_texture_create_gdi(uint32_t width, uint32_t height)
 {

@@ -295,6 +295,9 @@ EXPORT bool gs_duplicator_update_frame(gs_duplicator_t *d)
 	copy_texture(d, tex);
 	d->duplicator->ReleaseFrame();
 	d->updated = true;
+	if (info.LastPresentTime.QuadPart != 0) {
+		d->frame_seq++;
+	}
 	return true;
 }
 
@@ -311,5 +314,10 @@ EXPORT enum gs_color_space gs_duplicator_get_color_space(gs_duplicator_t *duplic
 EXPORT float gs_duplicator_get_sdr_white_level(gs_duplicator_t *duplicator)
 {
 	return duplicator->sdr_white_nits;
+}
+
+EXPORT uint32_t gs_duplicator_get_frame_seq(gs_duplicator_t *duplicator)
+{
+	return duplicator->frame_seq;
 }
 }

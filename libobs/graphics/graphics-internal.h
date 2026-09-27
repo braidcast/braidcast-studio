@@ -240,6 +240,7 @@ struct gs_exports {
 	gs_texture_t *(*gs_duplicator_get_texture)(gs_duplicator_t *duplicator);
 	enum gs_color_space (*gs_duplicator_get_color_space)(gs_duplicator_t *duplicator);
 	float (*gs_duplicator_get_sdr_white_level)(gs_duplicator_t *duplicator);
+	uint32_t (*gs_duplicator_get_frame_seq)(gs_duplicator_t *duplicator);
 
 	bool (*device_can_adapter_fast_clear)(gs_device_t *device);
 
