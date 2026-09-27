@@ -106,7 +106,7 @@ struct winrt_capture {
 	bool texture_written;
 	/* taken and zeroed by winrt_capture_take_frames; both ends run on the
 	 * graphics thread, the atomic only keeps that assumption cheap to break */
-	std::atomic<uint32_t> frames_copied;
+	std::atomic<uint32_t> frames_copied{0};
 	winrt::Windows::Graphics::Capture::GraphicsCaptureItem item{nullptr};
 	winrt::Windows::Graphics::DirectX::Direct3D11::IDirect3DDevice device{nullptr};
 	ComPtr<ID3D11DeviceContext> context;
