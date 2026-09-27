@@ -72,8 +72,9 @@ void gs_enum_adapters(bool (*callback)(void *param, const char *name, uint32_t i
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p("gs_enum_adapters", callback))
+	if (!gs_valid_p("gs_enum_adapters", callback)) {
 		return;
+	}
 
 	if (graphics->exports.device_enum_adapters) {
 		if (graphics->exports.device_enum_adapters(graphics->device, callback, param)) {
@@ -108,8 +109,9 @@ static bool graphics_init_immediate_vb(struct graphics_subsystem *graphics)
 
 	graphics->immediate_vertbuffer =
 		graphics->exports.device_vertexbuffer_create(graphics->device, vbd, GS_DYNAMIC);
-	if (!graphics->immediate_vertbuffer)
+	if (!graphics->immediate_vertbuffer) {
 		return false;
+	}
 
 	return true;
 }
@@ -138,12 +140,14 @@ static bool graphics_init_sprite_vbs(struct graphics_subsystem *graphics)
 	uvs[3].y = 1.0f;
 
 	graphics->sprite_buffer = gs_vertexbuffer_create(vbd, GS_DUP_BUFFER);
-	if (!graphics->sprite_buffer)
+	if (!graphics->sprite_buffer) {
 		return false;
+	}
 
 	graphics->subregion_buffer = gs_vertexbuffer_create(vbd, GS_DUP_BUFFER | GS_DYNAMIC);
-	if (!graphics->subregion_buffer)
+	if (!graphics->subregion_buffer) {
 		return false;
+	}
 
 	uvs[0].y = 1.0f;
 	uvs[1].y = 1.0f;
@@ -151,8 +155,9 @@ static bool graphics_init_sprite_vbs(struct graphics_subsystem *graphics)
 	uvs[3].y = 0.0f;
 
 	graphics->flipped_sprite_buffer = gs_vertexbuffer_create(vbd, 0);
-	if (!graphics->flipped_sprite_buffer)
+	if (!graphics->flipped_sprite_buffer) {
 		return false;
+	}
 
 	return true;
 }
@@ -168,14 +173,18 @@ static bool graphics_init(struct graphics_subsystem *graphics)
 
 	thread_graphics = graphics;
 
-	if (!graphics_init_immediate_vb(graphics))
+	if (!graphics_init_immediate_vb(graphics)) {
 		return false;
-	if (!graphics_init_sprite_vbs(graphics))
+	}
+	if (!graphics_init_sprite_vbs(graphics)) {
 		return false;
-	if (pthread_mutex_init(&graphics->mutex, NULL) != 0)
+	}
+	if (pthread_mutex_init(&graphics->mutex, NULL) != 0) {
 		return false;
-	if (pthread_mutex_init(&graphics->effect_mutex, NULL) != 0)
+	}
+	if (pthread_mutex_init(&graphics->effect_mutex, NULL) != 0) {
 		return false;
+	}
 
 	graphics->exports.device_blend_function_separate(graphics->device, GS_BLEND_SRCALPHA, GS_BLEND_INVSRCALPHA,
 							 GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
@@ -209,12 +218,14 @@ int gs_create(graphics_t **pgraphics, const char *module, uint32_t adapter)
 		goto error;
 	}
 
-	if (!load_graphics_imports(&graphics->exports, graphics->module, module))
+	if (!load_graphics_imports(&graphics->exports, graphics->module, module)) {
 		goto error;
+	}
 
 	errcode = graphics->exports.device_create(&graphics->device, adapter);
-	if (errcode != GS_SUCCESS)
+	if (errcode != GS_SUCCESS) {
 		goto error;
+	}
 
 	if (!graphics_init(graphics)) {
 		errcode = GS_ERROR_FAIL;
@@ -233,11 +244,13 @@ extern void gs_effect_actually_destroy(gs_effect_t *effect);
 
 void gs_destroy(graphics_t *graphics)
 {
-	if (!ptr_valid(graphics, "gs_destroy"))
+	if (!ptr_valid(graphics, "gs_destroy")) {
 		return;
+	}
 
-	while (thread_graphics)
+	while (thread_graphics) {
 		gs_leave_context();
+	}
 
 	if (graphics->device) {
 		struct gs_effect *effect = graphics->first_effect;
@@ -265,8 +278,9 @@ void gs_destroy(graphics_t *graphics)
 	da_free(graphics->matrix_stack);
 	da_free(graphics->viewport_stack);
 	da_free(graphics->blend_state_stack);
-	if (graphics->module)
+	if (graphics->module) {
 		os_dlclose(graphics->module);
+	}
 	bfree(graphics);
 
 	gs_free_image_deps();
@@ -274,13 +288,15 @@ void gs_destroy(graphics_t *graphics)
 
 void gs_enter_context(graphics_t *graphics)
 {
-	if (!ptr_valid(graphics, "gs_enter_context"))
+	if (!ptr_valid(graphics, "gs_enter_context")) {
 		return;
+	}
 
 	bool is_current = thread_graphics == graphics;
 	if (thread_graphics && !is_current) {
-		while (thread_graphics)
+		while (thread_graphics) {
 			gs_leave_context();
+		}
 	}
 
 	if (!is_current) {
@@ -312,8 +328,9 @@ graphics_t *gs_get_context(void)
 
 void *gs_get_device_obj(void)
 {
-	if (!gs_valid("gs_get_device_obj"))
+	if (!gs_valid("gs_get_device_obj")) {
 		return NULL;
+	}
 
 	return thread_graphics->exports.device_get_device_obj(thread_graphics->device);
 }
@@ -327,52 +344,60 @@ const char *gs_get_driver_version(void)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_get_driver_version"))
+	if (!gs_valid("gs_get_driver_version")) {
 		return NULL;
+	}
 
-	if (graphics->exports.gpu_get_driver_version)
+	if (graphics->exports.gpu_get_driver_version) {
 		return (graphics->exports.gpu_get_driver_version());
-	else
+	} else {
 		return NULL;
+	}
 }
 
 const char *gs_get_renderer(void)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_get_renderer"))
+	if (!gs_valid("gs_get_renderer")) {
 		return NULL;
+	}
 
-	if (graphics->exports.gpu_get_renderer)
+	if (graphics->exports.gpu_get_renderer) {
 		return (graphics->exports.gpu_get_renderer());
-	else
+	} else {
 		return NULL;
+	}
 }
 
 uint64_t gs_get_gpu_dmem(void)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_get_gpu_dmem"))
+	if (!gs_valid("gs_get_gpu_dmem")) {
 		return 0;
+	}
 
-	if (graphics->exports.gpu_get_dmem)
+	if (graphics->exports.gpu_get_dmem) {
 		return (graphics->exports.gpu_get_dmem());
-	else
+	} else {
 		return 0;
+	}
 }
 
 uint64_t gs_get_gpu_smem(void)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_get_gpu_smem"))
+	if (!gs_valid("gs_get_gpu_smem")) {
 		return 0;
+	}
 
-	if (graphics->exports.gpu_get_smem)
+	if (graphics->exports.gpu_get_smem) {
 		return (graphics->exports.gpu_get_smem());
-	else
+	} else {
 		return 0;
+	}
 }
 
 int gs_get_device_type(void)
@@ -389,8 +414,9 @@ void gs_matrix_push(void)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_matrix_push"))
+	if (!gs_valid("gs_matrix_push")) {
 		return;
+	}
 
 	struct matrix4 mat, *top_mat = top_matrix(graphics);
 
@@ -403,8 +429,9 @@ void gs_matrix_pop(void)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_matrix_pop"))
+	if (!gs_valid("gs_matrix_pop")) {
 		return;
+	}
 
 	if (graphics->cur_matrix == 0) {
 		blog(LOG_ERROR, "Tried to pop last matrix on stack");
@@ -419,108 +446,126 @@ void gs_matrix_identity(void)
 {
 	struct matrix4 *top_mat;
 
-	if (!gs_valid("gs_matrix_identity"))
+	if (!gs_valid("gs_matrix_identity")) {
 		return;
+	}
 
 	top_mat = top_matrix(thread_graphics);
-	if (top_mat)
+	if (top_mat) {
 		matrix4_identity(top_mat);
+	}
 }
 
 void gs_matrix_transpose(void)
 {
 	struct matrix4 *top_mat;
 
-	if (!gs_valid("gs_matrix_transpose"))
+	if (!gs_valid("gs_matrix_transpose")) {
 		return;
+	}
 
 	top_mat = top_matrix(thread_graphics);
-	if (top_mat)
+	if (top_mat) {
 		matrix4_transpose(top_mat, top_mat);
+	}
 }
 
 void gs_matrix_set(const struct matrix4 *matrix)
 {
 	struct matrix4 *top_mat;
 
-	if (!gs_valid("gs_matrix_set"))
+	if (!gs_valid("gs_matrix_set")) {
 		return;
+	}
 
 	top_mat = top_matrix(thread_graphics);
-	if (top_mat)
+	if (top_mat) {
 		matrix4_copy(top_mat, matrix);
+	}
 }
 
 void gs_matrix_get(struct matrix4 *dst)
 {
 	struct matrix4 *top_mat;
 
-	if (!gs_valid("gs_matrix_get"))
+	if (!gs_valid("gs_matrix_get")) {
 		return;
+	}
 
 	top_mat = top_matrix(thread_graphics);
-	if (top_mat)
+	if (top_mat) {
 		matrix4_copy(dst, top_mat);
+	}
 }
 
 void gs_matrix_mul(const struct matrix4 *matrix)
 {
 	struct matrix4 *top_mat;
 
-	if (!gs_valid("gs_matrix_mul"))
+	if (!gs_valid("gs_matrix_mul")) {
 		return;
+	}
 
 	top_mat = top_matrix(thread_graphics);
-	if (top_mat)
+	if (top_mat) {
 		matrix4_mul(top_mat, matrix, top_mat);
+	}
 }
 
 void gs_matrix_rotquat(const struct quat *rot)
 {
 	struct matrix4 *top_mat;
 
-	if (!gs_valid("gs_matrix_rotquat"))
+	if (!gs_valid("gs_matrix_rotquat")) {
 		return;
+	}
 
 	top_mat = top_matrix(thread_graphics);
-	if (top_mat)
+	if (top_mat) {
 		matrix4_rotate_i(top_mat, rot, top_mat);
+	}
 }
 
 void gs_matrix_rotaa(const struct axisang *rot)
 {
 	struct matrix4 *top_mat;
 
-	if (!gs_valid("gs_matrix_rotaa"))
+	if (!gs_valid("gs_matrix_rotaa")) {
 		return;
+	}
 
 	top_mat = top_matrix(thread_graphics);
-	if (top_mat)
+	if (top_mat) {
 		matrix4_rotate_aa_i(top_mat, rot, top_mat);
+	}
 }
 
 void gs_matrix_translate(const struct vec3 *pos)
 {
 	struct matrix4 *top_mat;
 
-	if (!gs_valid("gs_matrix_translate"))
+	if (!gs_valid("gs_matrix_translate")) {
 		return;
+	}
 
 	top_mat = top_matrix(thread_graphics);
-	if (top_mat)
+	if (top_mat) {
 		matrix4_translate3v_i(top_mat, pos, top_mat);
+	}
 }
 
 void gs_matrix_scale(const struct vec3 *scale)
 {
 	struct matrix4 *top_mat;
 
-	if (!gs_valid("gs_matrix_scale"))
+	if (!gs_valid("gs_matrix_scale")) {
 		return;
+	}
 
 	top_mat = top_matrix(thread_graphics);
-	if (top_mat)
+	if (top_mat) {
 		matrix4_scale_i(top_mat, scale, top_mat);
+	}
 }
 
 void gs_matrix_rotaa4f(float x, float y, float z, float angle)
@@ -528,8 +573,9 @@ void gs_matrix_rotaa4f(float x, float y, float z, float angle)
 	struct matrix4 *top_mat;
 	struct axisang aa;
 
-	if (!gs_valid("gs_matrix_rotaa4f"))
+	if (!gs_valid("gs_matrix_rotaa4f")) {
 		return;
+	}
 
 	top_mat = top_matrix(thread_graphics);
 	if (top_mat) {
@@ -543,8 +589,9 @@ void gs_matrix_translate3f(float x, float y, float z)
 	struct matrix4 *top_mat;
 	struct vec3 p;
 
-	if (!gs_valid("gs_matrix_translate3f"))
+	if (!gs_valid("gs_matrix_translate3f")) {
 		return;
+	}
 
 	top_mat = top_matrix(thread_graphics);
 	if (top_mat) {
@@ -569,16 +616,18 @@ static inline void reset_immediate_arrays(graphics_t *graphics)
 	da_init(graphics->verts);
 	da_init(graphics->norms);
 	da_init(graphics->colors);
-	for (size_t i = 0; i < 16; i++)
+	for (size_t i = 0; i < 16; i++) {
 		da_init(graphics->texverts[i]);
+	}
 }
 
 void gs_render_start(bool b_new)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_render_start"))
+	if (!gs_valid("gs_render_start")) {
 		return;
+	}
 
 	graphics->using_immediate = !b_new;
 	reset_immediate_arrays(graphics);
@@ -611,8 +660,9 @@ void gs_render_stop(enum gs_draw_mode mode)
 	graphics_t *graphics = thread_graphics;
 	size_t i, num;
 
-	if (!gs_valid("gs_render_stop"))
+	if (!gs_valid("gs_render_stop")) {
 		return;
+	}
 
 	num = graphics->verts.num;
 	if (!num) {
@@ -620,8 +670,9 @@ void gs_render_stop(enum gs_draw_mode mode)
 			da_free(graphics->verts);
 			da_free(graphics->norms);
 			da_free(graphics->colors);
-			for (i = 0; i < 16; i++)
+			for (i = 0; i < 16; i++) {
 				da_free(graphics->texverts[i]);
+			}
 			gs_vbdata_destroy(graphics->vbd);
 		}
 
@@ -672,19 +723,23 @@ gs_vertbuffer_t *gs_render_save(void)
 	graphics_t *graphics = thread_graphics;
 	size_t num_tex, i;
 
-	if (!gs_valid("gs_render_save"))
+	if (!gs_valid("gs_render_save")) {
 		return NULL;
-	if (graphics->using_immediate)
+	}
+	if (graphics->using_immediate) {
 		return NULL;
+	}
 
 	if (!graphics->verts.num) {
 		gs_vbdata_destroy(graphics->vbd);
 		return NULL;
 	}
 
-	for (num_tex = 0; num_tex < 16; num_tex++)
-		if (!graphics->texverts[num_tex].num)
+	for (num_tex = 0; num_tex < 16; num_tex++) {
+		if (!graphics->texverts[num_tex].num) {
 			break;
+		}
+	}
 
 	graphics->vbd->points = graphics->verts.array;
 	graphics->vbd->normals = graphics->norms.array;
@@ -744,10 +799,12 @@ void gs_color(uint32_t color)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_color"))
+	if (!gs_valid("gs_color")) {
 		return;
-	if (!validvertsize(graphics, graphics->colors.num, "gs_color"))
+	}
+	if (!validvertsize(graphics, graphics->colors.num, "gs_color")) {
 		return;
+	}
 
 	da_push_back(graphics->colors, &color);
 }
@@ -770,10 +827,12 @@ void gs_vertex3v(const struct vec3 *v)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_vertex3v"))
+	if (!gs_valid("gs_vertex3v")) {
 		return;
-	if (!validvertsize(graphics, graphics->verts.num, "gs_vertex"))
+	}
+	if (!validvertsize(graphics, graphics->verts.num, "gs_vertex")) {
 		return;
+	}
 
 	da_push_back(graphics->verts, v);
 }
@@ -782,10 +841,12 @@ void gs_normal3v(const struct vec3 *v)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_normal3v"))
+	if (!gs_valid("gs_normal3v")) {
 		return;
-	if (!validvertsize(graphics, graphics->norms.num, "gs_normal"))
+	}
+	if (!validvertsize(graphics, graphics->norms.num, "gs_normal")) {
 		return;
+	}
 
 	da_push_back(graphics->norms, v);
 }
@@ -800,10 +861,12 @@ void gs_texcoord2v(const struct vec2 *v, int unit)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_texcoord2v"))
+	if (!gs_valid("gs_texcoord2v")) {
 		return;
-	if (!validvertsize(graphics, graphics->texverts[unit].num, "gs_texcoord"))
+	}
+	if (!validvertsize(graphics, graphics->texverts[unit].num, "gs_texcoord")) {
 		return;
+	}
 
 	da_push_back(graphics->texverts[unit], v);
 }
@@ -816,8 +879,9 @@ input_t *gs_get_input(void)
 
 gs_effect_t *gs_get_effect(void)
 {
-	if (!gs_valid("gs_get_effect"))
+	if (!gs_valid("gs_get_effect")) {
 		return NULL;
+	}
 
 	return thread_graphics ? thread_graphics->cur_effect : NULL;
 }
@@ -827,8 +891,9 @@ static inline struct gs_effect *find_cached_effect(const char *filename)
 	struct gs_effect *effect = thread_graphics->first_effect;
 
 	while (effect) {
-		if (strcmp(effect->effect_path, filename) == 0)
+		if (strcmp(effect->effect_path, filename) == 0) {
 			break;
+		}
 		effect = effect->next;
 	}
 
@@ -840,12 +905,14 @@ gs_effect_t *gs_effect_create_from_file(const char *file, char **error_string)
 	char *file_string;
 	gs_effect_t *effect = NULL;
 
-	if (!gs_valid_p("gs_effect_create_from_file", file))
+	if (!gs_valid_p("gs_effect_create_from_file", file)) {
 		return NULL;
+	}
 
 	effect = find_cached_effect(file);
-	if (effect)
+	if (effect) {
 		return effect;
+	}
 
 	file_string = os_quick_read_utf8_file(file);
 	if (!file_string) {
@@ -861,8 +928,9 @@ gs_effect_t *gs_effect_create_from_file(const char *file, char **error_string)
 
 gs_effect_t *gs_effect_create(const char *effect_string, const char *filename, char **error_string)
 {
-	if (!gs_valid_p("gs_effect_create", effect_string))
+	if (!gs_valid_p("gs_effect_create", effect_string)) {
 		return NULL;
+	}
 
 	struct gs_effect *effect = bzalloc(sizeof(struct gs_effect));
 	struct effect_parser parser;
@@ -874,8 +942,9 @@ gs_effect_t *gs_effect_create(const char *effect_string, const char *filename, c
 	ep_init(&parser);
 	success = ep_parse(&parser, effect, effect_string, filename);
 	if (!success) {
-		if (error_string)
+		if (error_string) {
 			*error_string = error_data_buildstring(&parser.cfp.error_list);
+		}
 		gs_effect_destroy(effect);
 		effect = NULL;
 	}
@@ -898,8 +967,9 @@ gs_effect_t *gs_effect_create(const char *effect_string, const char *filename, c
 
 gs_shader_t *gs_vertexshader_create_from_file(const char *file, char **error_string)
 {
-	if (!gs_valid_p("gs_vertexshader_create_from_file", file))
+	if (!gs_valid_p("gs_vertexshader_create_from_file", file)) {
 		return NULL;
+	}
 
 	char *file_string;
 	gs_shader_t *shader = NULL;
@@ -921,8 +991,9 @@ gs_shader_t *gs_pixelshader_create_from_file(const char *file, char **error_stri
 	char *file_string;
 	gs_shader_t *shader = NULL;
 
-	if (!gs_valid_p("gs_pixelshader_create_from_file", file))
+	if (!gs_valid_p("gs_pixelshader_create_from_file", file)) {
 		return NULL;
+	}
 
 	file_string = os_quick_read_utf8_file(file);
 	if (!file_string) {
@@ -1135,8 +1206,9 @@ void gs_reset_viewport(void)
 {
 	uint32_t cx, cy;
 
-	if (!gs_valid("gs_reset_viewport"))
+	if (!gs_valid("gs_reset_viewport")) {
 		return;
+	}
 
 	gs_get_size(&cx, &cy);
 	gs_set_viewport(0, 0, (int)cx, (int)cy);
@@ -1146,8 +1218,9 @@ void gs_set_2d_mode(void)
 {
 	uint32_t cx, cy;
 
-	if (!gs_valid("gs_set_2d_mode"))
+	if (!gs_valid("gs_set_2d_mode")) {
 		return;
+	}
 
 	gs_get_size(&cx, &cy);
 	gs_ortho(0.0f, (float)cx, 0.0f, (float)cy, -1.0, -1024.0f);
@@ -1163,8 +1236,9 @@ void gs_set_3d_mode(double fovy, double znear, double zvar)
 
 void gs_viewport_push(void)
 {
-	if (!gs_valid("gs_viewport_push"))
+	if (!gs_valid("gs_viewport_push")) {
 		return;
+	}
 
 	struct gs_rect *rect = da_push_back_new(thread_graphics->viewport_stack);
 	gs_get_viewport(rect);
@@ -1174,10 +1248,12 @@ void gs_viewport_pop(void)
 {
 	struct gs_rect *rect;
 
-	if (!gs_valid("gs_viewport_pop"))
+	if (!gs_valid("gs_viewport_pop")) {
 		return;
-	if (!thread_graphics->viewport_stack.num)
+	}
+	if (!thread_graphics->viewport_stack.num) {
 		return;
+	}
 
 	rect = da_end(thread_graphics->viewport_stack);
 	gs_set_viewport(rect->x, rect->y, rect->cx, rect->cy);
@@ -1191,11 +1267,13 @@ void gs_texture_set_image(gs_texture_t *tex, const uint8_t *data, uint32_t lines
 	size_t row_copy;
 	size_t height;
 
-	if (!gs_valid_p2("gs_texture_set_image", tex, data))
+	if (!gs_valid_p2("gs_texture_set_image", tex, data)) {
 		return;
+	}
 
-	if (!gs_texture_map(tex, &ptr, &linesize_out))
+	if (!gs_texture_map(tex, &ptr, &linesize_out)) {
 		return;
+	}
 
 	row_copy = (linesize < linesize_out) ? linesize : linesize_out;
 
@@ -1240,8 +1318,9 @@ void gs_perspective(float angle, float aspect, float near, float far)
 	graphics_t *graphics = thread_graphics;
 	float xmin, xmax, ymin, ymax;
 
-	if (!gs_valid("gs_perspective"))
+	if (!gs_valid("gs_perspective")) {
 		return;
+	}
 
 	ymax = near * tanf(RAD(angle) * 0.5f);
 	ymin = -ymax;
@@ -1256,8 +1335,9 @@ void gs_blend_state_push(void)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_blend_state_push"))
+	if (!gs_valid("gs_blend_state_push")) {
 		return;
+	}
 
 	da_push_back(graphics->blend_state_stack, &graphics->cur_blend_state);
 }
@@ -1267,12 +1347,14 @@ void gs_blend_state_pop(void)
 	graphics_t *graphics = thread_graphics;
 	struct blend_state *state;
 
-	if (!gs_valid("gs_blend_state_pop"))
+	if (!gs_valid("gs_blend_state_pop")) {
 		return;
+	}
 
 	state = da_end(graphics->blend_state_stack);
-	if (!state)
+	if (!state) {
 		return;
+	}
 
 	gs_enable_blending(state->enabled);
 	gs_blend_function_separate(state->src_c, state->dest_c, state->src_a, state->dest_a);
@@ -1285,11 +1367,13 @@ void gs_reset_blend_state(void)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_preprocessor_name"))
+	if (!gs_valid("gs_preprocessor_name")) {
 		return;
+	}
 
-	if (!graphics->cur_blend_state.enabled)
+	if (!graphics->cur_blend_state.enabled) {
 		gs_enable_blending(true);
+	}
 
 	if (graphics->cur_blend_state.src_c != GS_BLEND_SRCALPHA ||
 	    graphics->cur_blend_state.dest_c != GS_BLEND_INVSRCALPHA ||
@@ -1306,8 +1390,9 @@ const char *gs_preprocessor_name(void)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_preprocessor_name"))
+	if (!gs_valid("gs_preprocessor_name")) {
 		return NULL;
+	}
 
 	return graphics->exports.device_preprocessor_name();
 }
@@ -1317,11 +1402,13 @@ gs_swapchain_t *gs_swapchain_create(const struct gs_init_data *data)
 	struct gs_init_data new_data = *data;
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p("gs_swapchain_create", data))
+	if (!gs_valid_p("gs_swapchain_create", data)) {
 		return NULL;
+	}
 
-	if (new_data.num_backbuffers == 0)
+	if (new_data.num_backbuffers == 0) {
 		new_data.num_backbuffers = 1;
+	}
 
 	return graphics->exports.device_swapchain_create(graphics->device, &new_data);
 }
@@ -1330,8 +1417,9 @@ void gs_resize(uint32_t x, uint32_t y)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_resize"))
+	if (!gs_valid("gs_resize")) {
 		return;
+	}
 
 	graphics->exports.device_resize(graphics->device, x, y);
 }
@@ -1340,8 +1428,9 @@ void gs_update_color_space(void)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_update_color_space"))
+	if (!gs_valid("gs_update_color_space")) {
 		return;
+	}
 
 	graphics->exports.device_update_color_space(graphics->device);
 }
@@ -1350,8 +1439,9 @@ void gs_get_size(uint32_t *x, uint32_t *y)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_get_size"))
+	if (!gs_valid("gs_get_size")) {
 		return;
+	}
 
 	graphics->exports.device_get_size(graphics->device, x, y);
 }
@@ -1360,8 +1450,9 @@ uint32_t gs_get_width(void)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_get_width"))
+	if (!gs_valid("gs_get_width")) {
 		return 0;
+	}
 
 	return graphics->exports.device_get_width(graphics->device);
 }
@@ -1370,8 +1461,9 @@ uint32_t gs_get_height(void)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_get_height"))
+	if (!gs_valid("gs_get_height")) {
 		return 0;
+	}
 
 	return graphics->exports.device_get_height(graphics->device);
 }
@@ -1388,8 +1480,9 @@ gs_texture_t *gs_texture_create(uint32_t width, uint32_t height, enum gs_color_f
 	bool pow2tex = is_pow2(width) && is_pow2(height);
 	bool uses_mipmaps = (flags & GS_BUILD_MIPMAPS || levels != 1);
 
-	if (!gs_valid("gs_texture_create"))
+	if (!gs_valid("gs_texture_create")) {
 		return NULL;
+	}
 
 	if (uses_mipmaps && !pow2tex) {
 		blog(LOG_WARNING, "Cannot use mipmaps with a "
@@ -1510,8 +1603,9 @@ gs_texture_t *gs_cubetexture_create(uint32_t size, enum gs_color_format color_fo
 	bool pow2tex = is_pow2(size);
 	bool uses_mipmaps = (flags & GS_BUILD_MIPMAPS || levels != 1);
 
-	if (!gs_valid("gs_cubetexture_create"))
+	if (!gs_valid("gs_cubetexture_create")) {
 		return NULL;
+	}
 
 	if (uses_mipmaps && !pow2tex) {
 		blog(LOG_WARNING, "Cannot use mipmaps with a "
@@ -1539,8 +1633,9 @@ gs_texture_t *gs_voltexture_create(uint32_t width, uint32_t height, uint32_t dep
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_voltexture_create"))
+	if (!gs_valid("gs_voltexture_create")) {
 		return NULL;
+	}
 
 	return graphics->exports.device_voltexture_create(graphics->device, width, height, depth, color_format, levels,
 							  data, flags);
@@ -1550,8 +1645,9 @@ gs_zstencil_t *gs_zstencil_create(uint32_t width, uint32_t height, enum gs_zsten
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_zstencil_create"))
+	if (!gs_valid("gs_zstencil_create")) {
 		return NULL;
+	}
 
 	return graphics->exports.device_zstencil_create(graphics->device, width, height, format);
 }
@@ -1560,8 +1656,9 @@ gs_stagesurf_t *gs_stagesurface_create(uint32_t width, uint32_t height, enum gs_
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_stagesurface_create"))
+	if (!gs_valid("gs_stagesurface_create")) {
 		return NULL;
+	}
 
 	return graphics->exports.device_stagesurface_create(graphics->device, width, height, color_format);
 }
@@ -1570,8 +1667,9 @@ gs_samplerstate_t *gs_samplerstate_create(const struct gs_sampler_info *info)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p("gs_samplerstate_create", info))
+	if (!gs_valid_p("gs_samplerstate_create", info)) {
 		return NULL;
+	}
 
 	return graphics->exports.device_samplerstate_create(graphics->device, info);
 }
@@ -1580,8 +1678,9 @@ gs_shader_t *gs_vertexshader_create(const char *shader, const char *file, char *
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p("gs_vertexshader_create", shader))
+	if (!gs_valid_p("gs_vertexshader_create", shader)) {
 		return NULL;
+	}
 
 	return graphics->exports.device_vertexshader_create(graphics->device, shader, file, error_string);
 }
@@ -1590,8 +1689,9 @@ gs_shader_t *gs_pixelshader_create(const char *shader, const char *file, char **
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p("gs_pixelshader_create", shader))
+	if (!gs_valid_p("gs_pixelshader_create", shader)) {
 		return NULL;
+	}
 
 	return graphics->exports.device_pixelshader_create(graphics->device, shader, file, error_string);
 }
@@ -1600,8 +1700,9 @@ gs_vertbuffer_t *gs_vertexbuffer_create(struct gs_vb_data *data, uint32_t flags)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_vertexbuffer_create"))
+	if (!gs_valid("gs_vertexbuffer_create")) {
 		return NULL;
+	}
 
 	if (data && data->num && (flags & GS_DUP_BUFFER) != 0) {
 		struct gs_vb_data *new_data = gs_vbdata_create();
@@ -1644,8 +1745,9 @@ gs_indexbuffer_t *gs_indexbuffer_create(enum gs_index_type type, void *indices, 
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_indexbuffer_create"))
+	if (!gs_valid("gs_indexbuffer_create")) {
 		return NULL;
+	}
 
 	if (indices && num && (flags & GS_DUP_BUFFER) != 0) {
 		size_t size = type == GS_UNSIGNED_SHORT ? 2 : 4;
@@ -1659,8 +1761,9 @@ gs_timer_t *gs_timer_create()
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_timer_create"))
+	if (!gs_valid("gs_timer_create")) {
 		return NULL;
+	}
 
 	return graphics->exports.device_timer_create(graphics->device);
 }
@@ -1669,8 +1772,9 @@ gs_timer_range_t *gs_timer_range_create()
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_timer_range_create"))
+	if (!gs_valid("gs_timer_range_create")) {
 		return NULL;
+	}
 
 	return graphics->exports.device_timer_range_create(graphics->device);
 }
@@ -1679,8 +1783,9 @@ enum gs_texture_type gs_get_texture_type(const gs_texture_t *texture)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p("gs_get_texture_type", texture))
+	if (!gs_valid_p("gs_get_texture_type", texture)) {
 		return GS_TEXTURE_2D;
+	}
 
 	return graphics->exports.device_get_texture_type(texture);
 }
@@ -1689,8 +1794,9 @@ void gs_load_vertexbuffer(gs_vertbuffer_t *vertbuffer)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_load_vertexbuffer"))
+	if (!gs_valid("gs_load_vertexbuffer")) {
 		return;
+	}
 
 	graphics->exports.device_load_vertexbuffer(graphics->device, vertbuffer);
 }
@@ -1699,8 +1805,9 @@ void gs_load_indexbuffer(gs_indexbuffer_t *indexbuffer)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_load_indexbuffer"))
+	if (!gs_valid("gs_load_indexbuffer")) {
 		return;
+	}
 
 	graphics->exports.device_load_indexbuffer(graphics->device, indexbuffer);
 }
@@ -1709,8 +1816,9 @@ void gs_load_texture(gs_texture_t *tex, int unit)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_load_texture"))
+	if (!gs_valid("gs_load_texture")) {
 		return;
+	}
 
 	graphics->exports.device_load_texture(graphics->device, tex, unit);
 }
@@ -1719,8 +1827,9 @@ void gs_load_samplerstate(gs_samplerstate_t *samplerstate, int unit)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_load_samplerstate"))
+	if (!gs_valid("gs_load_samplerstate")) {
 		return;
+	}
 
 	graphics->exports.device_load_samplerstate(graphics->device, samplerstate, unit);
 }
@@ -1729,8 +1838,9 @@ void gs_load_vertexshader(gs_shader_t *vertshader)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_load_vertexshader"))
+	if (!gs_valid("gs_load_vertexshader")) {
 		return;
+	}
 
 	graphics->exports.device_load_vertexshader(graphics->device, vertshader);
 }
@@ -1739,8 +1849,9 @@ void gs_load_pixelshader(gs_shader_t *pixelshader)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_load_pixelshader"))
+	if (!gs_valid("gs_load_pixelshader")) {
 		return;
+	}
 
 	graphics->exports.device_load_pixelshader(graphics->device, pixelshader);
 }
@@ -1749,8 +1860,9 @@ void gs_load_default_samplerstate(bool b_3d, int unit)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_load_default_samplerstate"))
+	if (!gs_valid("gs_load_default_samplerstate")) {
 		return;
+	}
 
 	graphics->exports.device_load_default_samplerstate(graphics->device, b_3d, unit);
 }
@@ -1759,8 +1871,9 @@ gs_shader_t *gs_get_vertex_shader(void)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_get_vertex_shader"))
+	if (!gs_valid("gs_get_vertex_shader")) {
 		return NULL;
+	}
 
 	return graphics->exports.device_get_vertex_shader(graphics->device);
 }
@@ -1769,8 +1882,9 @@ gs_shader_t *gs_get_pixel_shader(void)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_get_pixel_shader"))
+	if (!gs_valid("gs_get_pixel_shader")) {
 		return NULL;
+	}
 
 	return graphics->exports.device_get_pixel_shader(graphics->device);
 }
@@ -1779,8 +1893,9 @@ enum gs_color_space gs_get_color_space(void)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_get_color_space"))
+	if (!gs_valid("gs_get_color_space")) {
 		return GS_CS_SRGB;
+	}
 
 	return graphics->exports.device_get_color_space(graphics->device);
 }
@@ -1789,8 +1904,9 @@ gs_texture_t *gs_get_render_target(void)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_get_render_target"))
+	if (!gs_valid("gs_get_render_target")) {
 		return NULL;
+	}
 
 	return graphics->exports.device_get_render_target(graphics->device);
 }
@@ -1799,8 +1915,9 @@ gs_zstencil_t *gs_get_zstencil_target(void)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_get_zstencil_target"))
+	if (!gs_valid("gs_get_zstencil_target")) {
 		return NULL;
+	}
 
 	return graphics->exports.device_get_zstencil_target(graphics->device);
 }
@@ -1809,8 +1926,9 @@ void gs_set_render_target(gs_texture_t *tex, gs_zstencil_t *zstencil)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_set_render_target"))
+	if (!gs_valid("gs_set_render_target")) {
 		return;
+	}
 
 	graphics->exports.device_set_render_target(graphics->device, tex, zstencil);
 }
@@ -1819,8 +1937,9 @@ void gs_set_render_target_with_color_space(gs_texture_t *tex, gs_zstencil_t *zst
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_set_render_target_with_color_space"))
+	if (!gs_valid("gs_set_render_target_with_color_space")) {
 		return;
+	}
 
 	graphics->exports.device_set_render_target_with_color_space(graphics->device, tex, zstencil, space);
 }
@@ -1829,8 +1948,9 @@ void gs_set_cube_render_target(gs_texture_t *cubetex, int side, gs_zstencil_t *z
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_set_cube_render_target"))
+	if (!gs_valid("gs_set_cube_render_target")) {
 		return;
+	}
 
 	graphics->exports.device_set_cube_render_target(graphics->device, cubetex, side, zstencil);
 }
@@ -1839,8 +1959,9 @@ void gs_enable_framebuffer_srgb(bool enable)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_enable_framebuffer_srgb"))
+	if (!gs_valid("gs_enable_framebuffer_srgb")) {
 		return;
+	}
 
 	graphics->exports.device_enable_framebuffer_srgb(graphics->device, enable);
 }
@@ -1849,8 +1970,9 @@ bool gs_framebuffer_srgb_enabled(void)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_framebuffer_srgb_enabled"))
+	if (!gs_valid("gs_framebuffer_srgb_enabled")) {
 		return false;
+	}
 
 	return graphics->exports.device_framebuffer_srgb_enabled(graphics->device);
 }
@@ -1859,8 +1981,9 @@ bool gs_get_linear_srgb(void)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_get_linear_srgb"))
+	if (!gs_valid("gs_get_linear_srgb")) {
 		return false;
+	}
 
 	return graphics->linear_srgb;
 }
@@ -1869,8 +1992,9 @@ bool gs_set_linear_srgb(bool linear_srgb)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_set_linear_srgb"))
+	if (!gs_valid("gs_set_linear_srgb")) {
 		return false;
+	}
 
 	const bool previous = graphics->linear_srgb;
 	graphics->linear_srgb = linear_srgb;
@@ -1881,8 +2005,9 @@ void gs_copy_texture(gs_texture_t *dst, gs_texture_t *src)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p2("gs_copy_texture", dst, src))
+	if (!gs_valid_p2("gs_copy_texture", dst, src)) {
 		return;
+	}
 
 	graphics->exports.device_copy_texture(graphics->device, dst, src);
 }
@@ -1892,8 +2017,9 @@ void gs_copy_texture_region(gs_texture_t *dst, uint32_t dst_x, uint32_t dst_y, g
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p("gs_copy_texture_region", dst))
+	if (!gs_valid_p("gs_copy_texture_region", dst)) {
 		return;
+	}
 
 	graphics->exports.device_copy_texture_region(graphics->device, dst, dst_x, dst_y, src, src_x, src_y, src_w,
 						     src_h);
@@ -1903,8 +2029,9 @@ void gs_stage_texture(gs_stagesurf_t *dst, gs_texture_t *src)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_stage_texture"))
+	if (!gs_valid("gs_stage_texture")) {
 		return;
+	}
 
 	graphics->exports.device_stage_texture(graphics->device, dst, src);
 }
@@ -1913,8 +2040,9 @@ void gs_begin_frame(void)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_begin_frame"))
+	if (!gs_valid("gs_begin_frame")) {
 		return;
+	}
 
 	graphics->exports.device_begin_frame(graphics->device);
 }
@@ -1923,8 +2051,9 @@ void gs_begin_scene(void)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_begin_scene"))
+	if (!gs_valid("gs_begin_scene")) {
 		return;
+	}
 
 	graphics->exports.device_begin_scene(graphics->device);
 }
@@ -1933,8 +2062,9 @@ void gs_draw(enum gs_draw_mode draw_mode, uint32_t start_vert, uint32_t num_vert
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_draw"))
+	if (!gs_valid("gs_draw")) {
 		return;
+	}
 
 	graphics->exports.device_draw(graphics->device, draw_mode, start_vert, num_verts);
 }
@@ -1943,8 +2073,9 @@ void gs_end_scene(void)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_end_scene"))
+	if (!gs_valid("gs_end_scene")) {
 		return;
+	}
 
 	graphics->exports.device_end_scene(graphics->device);
 }
@@ -1953,8 +2084,9 @@ void gs_load_swapchain(gs_swapchain_t *swapchain)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_load_swapchain"))
+	if (!gs_valid("gs_load_swapchain")) {
 		return;
+	}
 
 	graphics->exports.device_load_swapchain(graphics->device, swapchain);
 }
@@ -1963,8 +2095,9 @@ void gs_clear(uint32_t clear_flags, const struct vec4 *color, float depth, uint8
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_clear"))
+	if (!gs_valid("gs_clear")) {
 		return;
+	}
 
 	graphics->exports.device_clear(graphics->device, clear_flags, color, depth, stencil);
 }
@@ -1973,8 +2106,9 @@ bool gs_is_present_ready(void)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_is_present_ready"))
+	if (!gs_valid("gs_is_present_ready")) {
 		return false;
+	}
 
 	return graphics->exports.device_is_present_ready(graphics->device);
 }
@@ -1983,8 +2117,9 @@ void gs_present(void)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_present"))
+	if (!gs_valid("gs_present")) {
 		return;
+	}
 
 	graphics->exports.device_present(graphics->device);
 }
@@ -1993,8 +2128,9 @@ void gs_flush(void)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_flush"))
+	if (!gs_valid("gs_flush")) {
 		return;
+	}
 
 	graphics->exports.device_flush(graphics->device);
 }
@@ -2003,8 +2139,9 @@ void gs_set_cull_mode(enum gs_cull_mode mode)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_set_cull_mode"))
+	if (!gs_valid("gs_set_cull_mode")) {
 		return;
+	}
 
 	graphics->exports.device_set_cull_mode(graphics->device, mode);
 }
@@ -2013,8 +2150,9 @@ enum gs_cull_mode gs_get_cull_mode(void)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_get_cull_mode"))
+	if (!gs_valid("gs_get_cull_mode")) {
 		return GS_NEITHER;
+	}
 
 	return graphics->exports.device_get_cull_mode(graphics->device);
 }
@@ -2023,8 +2161,9 @@ void gs_enable_blending(bool enable)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_enable_blending"))
+	if (!gs_valid("gs_enable_blending")) {
 		return;
+	}
 
 	graphics->cur_blend_state.enabled = enable;
 	graphics->exports.device_enable_blending(graphics->device, enable);
@@ -2034,8 +2173,9 @@ void gs_enable_depth_test(bool enable)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_enable_depth_test"))
+	if (!gs_valid("gs_enable_depth_test")) {
 		return;
+	}
 
 	graphics->exports.device_enable_depth_test(graphics->device, enable);
 }
@@ -2044,8 +2184,9 @@ void gs_enable_stencil_test(bool enable)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_enable_stencil_test"))
+	if (!gs_valid("gs_enable_stencil_test")) {
 		return;
+	}
 
 	graphics->exports.device_enable_stencil_test(graphics->device, enable);
 }
@@ -2054,8 +2195,9 @@ void gs_enable_stencil_write(bool enable)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_enable_stencil_write"))
+	if (!gs_valid("gs_enable_stencil_write")) {
 		return;
+	}
 
 	graphics->exports.device_enable_stencil_write(graphics->device, enable);
 }
@@ -2064,8 +2206,9 @@ void gs_enable_color(bool red, bool green, bool blue, bool alpha)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_enable_color"))
+	if (!gs_valid("gs_enable_color")) {
 		return;
+	}
 
 	graphics->exports.device_enable_color(graphics->device, red, green, blue, alpha);
 }
@@ -2074,8 +2217,9 @@ void gs_blend_function(enum gs_blend_type src, enum gs_blend_type dest)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_blend_function"))
+	if (!gs_valid("gs_blend_function")) {
 		return;
+	}
 
 	graphics->cur_blend_state.src_c = src;
 	graphics->cur_blend_state.dest_c = dest;
@@ -2089,8 +2233,9 @@ void gs_blend_function_separate(enum gs_blend_type src_c, enum gs_blend_type des
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_blend_function_separate"))
+	if (!gs_valid("gs_blend_function_separate")) {
 		return;
+	}
 
 	graphics->cur_blend_state.src_c = src_c;
 	graphics->cur_blend_state.dest_c = dest_c;
@@ -2103,8 +2248,9 @@ void gs_blend_op(enum gs_blend_op_type op)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_blend_op"))
+	if (!gs_valid("gs_blend_op")) {
 		return;
+	}
 
 	graphics->cur_blend_state.op = op;
 	graphics->exports.device_blend_op(graphics->device, graphics->cur_blend_state.op);
@@ -2114,8 +2260,9 @@ void gs_depth_function(enum gs_depth_test test)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_depth_function"))
+	if (!gs_valid("gs_depth_function")) {
 		return;
+	}
 
 	graphics->exports.device_depth_function(graphics->device, test);
 }
@@ -2124,8 +2271,9 @@ void gs_stencil_function(enum gs_stencil_side side, enum gs_depth_test test)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_stencil_function"))
+	if (!gs_valid("gs_stencil_function")) {
 		return;
+	}
 
 	graphics->exports.device_stencil_function(graphics->device, side, test);
 }
@@ -2135,8 +2283,9 @@ void gs_stencil_op(enum gs_stencil_side side, enum gs_stencil_op_type fail, enum
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_stencil_op"))
+	if (!gs_valid("gs_stencil_op")) {
 		return;
+	}
 
 	graphics->exports.device_stencil_op(graphics->device, side, fail, zfail, zpass);
 }
@@ -2145,8 +2294,9 @@ void gs_set_viewport(int x, int y, int width, int height)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_set_viewport"))
+	if (!gs_valid("gs_set_viewport")) {
 		return;
+	}
 
 	graphics->exports.device_set_viewport(graphics->device, x, y, width, height);
 }
@@ -2155,8 +2305,9 @@ void gs_get_viewport(struct gs_rect *rect)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p("gs_get_viewport", rect))
+	if (!gs_valid_p("gs_get_viewport", rect)) {
 		return;
+	}
 
 	graphics->exports.device_get_viewport(graphics->device, rect);
 }
@@ -2165,8 +2316,9 @@ void gs_set_scissor_rect(const struct gs_rect *rect)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_set_scissor_rect"))
+	if (!gs_valid("gs_set_scissor_rect")) {
 		return;
+	}
 
 	graphics->exports.device_set_scissor_rect(graphics->device, rect);
 }
@@ -2175,8 +2327,9 @@ void gs_ortho(float left, float right, float top, float bottom, float znear, flo
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_ortho"))
+	if (!gs_valid("gs_ortho")) {
 		return;
+	}
 
 	graphics->exports.device_ortho(graphics->device, left, right, top, bottom, znear, zfar);
 }
@@ -2185,8 +2338,9 @@ void gs_frustum(float left, float right, float top, float bottom, float znear, f
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_frustum"))
+	if (!gs_valid("gs_frustum")) {
 		return;
+	}
 
 	graphics->exports.device_frustum(graphics->device, left, right, top, bottom, znear, zfar);
 }
@@ -2195,8 +2349,9 @@ void gs_projection_push(void)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_projection_push"))
+	if (!gs_valid("gs_projection_push")) {
 		return;
+	}
 
 	graphics->exports.device_projection_push(graphics->device);
 }
@@ -2205,8 +2360,9 @@ void gs_projection_pop(void)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_projection_pop"))
+	if (!gs_valid("gs_projection_pop")) {
 		return;
+	}
 
 	graphics->exports.device_projection_pop(graphics->device);
 }
@@ -2215,10 +2371,12 @@ void gs_swapchain_destroy(gs_swapchain_t *swapchain)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_swapchain_destroy"))
+	if (!gs_valid("gs_swapchain_destroy")) {
 		return;
-	if (!swapchain)
+	}
+	if (!swapchain) {
 		return;
+	}
 
 	graphics->exports.gs_swapchain_destroy(swapchain);
 }
@@ -2227,10 +2385,12 @@ void gs_shader_destroy(gs_shader_t *shader)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_shader_destroy"))
+	if (!gs_valid("gs_shader_destroy")) {
 		return;
-	if (!shader)
+	}
+	if (!shader) {
 		return;
+	}
 
 	graphics->exports.gs_shader_destroy(shader);
 }
@@ -2239,8 +2399,9 @@ int gs_shader_get_num_params(const gs_shader_t *shader)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p("gs_shader_get_num_params", shader))
+	if (!gs_valid_p("gs_shader_get_num_params", shader)) {
 		return 0;
+	}
 
 	return graphics->exports.gs_shader_get_num_params(shader);
 }
@@ -2249,8 +2410,9 @@ gs_sparam_t *gs_shader_get_param_by_idx(gs_shader_t *shader, uint32_t param)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p("gs_shader_get_param_by_idx", shader))
+	if (!gs_valid_p("gs_shader_get_param_by_idx", shader)) {
 		return NULL;
+	}
 
 	return graphics->exports.gs_shader_get_param_by_idx(shader, param);
 }
@@ -2259,8 +2421,9 @@ gs_sparam_t *gs_shader_get_param_by_name(gs_shader_t *shader, const char *name)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p2("gs_shader_get_param_by_name", shader, name))
+	if (!gs_valid_p2("gs_shader_get_param_by_name", shader, name)) {
 		return NULL;
+	}
 
 	return graphics->exports.gs_shader_get_param_by_name(shader, name);
 }
@@ -2269,8 +2432,9 @@ gs_sparam_t *gs_shader_get_viewproj_matrix(const gs_shader_t *shader)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p("gs_shader_get_viewproj_matrix", shader))
+	if (!gs_valid_p("gs_shader_get_viewproj_matrix", shader)) {
 		return NULL;
+	}
 
 	return graphics->exports.gs_shader_get_viewproj_matrix(shader);
 }
@@ -2279,8 +2443,9 @@ gs_sparam_t *gs_shader_get_world_matrix(const gs_shader_t *shader)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p("gs_shader_get_world_matrix", shader))
+	if (!gs_valid_p("gs_shader_get_world_matrix", shader)) {
 		return NULL;
+	}
 
 	return graphics->exports.gs_shader_get_world_matrix(shader);
 }
@@ -2289,8 +2454,9 @@ void gs_shader_get_param_info(const gs_sparam_t *param, struct gs_shader_param_i
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p2("gs_shader_get_param_info", param, info))
+	if (!gs_valid_p2("gs_shader_get_param_info", param, info)) {
 		return;
+	}
 
 	graphics->exports.gs_shader_get_param_info(param, info);
 }
@@ -2299,8 +2465,9 @@ void gs_shader_set_bool(gs_sparam_t *param, bool val)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p("gs_shader_set_bool", param))
+	if (!gs_valid_p("gs_shader_set_bool", param)) {
 		return;
+	}
 
 	graphics->exports.gs_shader_set_bool(param, val);
 }
@@ -2309,8 +2476,9 @@ void gs_shader_set_float(gs_sparam_t *param, float val)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p("gs_shader_set_float", param))
+	if (!gs_valid_p("gs_shader_set_float", param)) {
 		return;
+	}
 
 	graphics->exports.gs_shader_set_float(param, val);
 }
@@ -2319,8 +2487,9 @@ void gs_shader_set_int(gs_sparam_t *param, int val)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p("gs_shader_set_int", param))
+	if (!gs_valid_p("gs_shader_set_int", param)) {
 		return;
+	}
 
 	graphics->exports.gs_shader_set_int(param, val);
 }
@@ -2329,8 +2498,9 @@ void gs_shader_set_matrix3(gs_sparam_t *param, const struct matrix3 *val)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p2("gs_shader_set_matrix3", param, val))
+	if (!gs_valid_p2("gs_shader_set_matrix3", param, val)) {
 		return;
+	}
 
 	graphics->exports.gs_shader_set_matrix3(param, val);
 }
@@ -2339,8 +2509,9 @@ void gs_shader_set_matrix4(gs_sparam_t *param, const struct matrix4 *val)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p2("gs_shader_set_matrix4", param, val))
+	if (!gs_valid_p2("gs_shader_set_matrix4", param, val)) {
 		return;
+	}
 
 	graphics->exports.gs_shader_set_matrix4(param, val);
 }
@@ -2349,8 +2520,9 @@ void gs_shader_set_vec2(gs_sparam_t *param, const struct vec2 *val)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p2("gs_shader_set_vec2", param, val))
+	if (!gs_valid_p2("gs_shader_set_vec2", param, val)) {
 		return;
+	}
 
 	graphics->exports.gs_shader_set_vec2(param, val);
 }
@@ -2359,8 +2531,9 @@ void gs_shader_set_vec3(gs_sparam_t *param, const struct vec3 *val)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p2("gs_shader_set_vec3", param, val))
+	if (!gs_valid_p2("gs_shader_set_vec3", param, val)) {
 		return;
+	}
 
 	graphics->exports.gs_shader_set_vec3(param, val);
 }
@@ -2369,8 +2542,9 @@ void gs_shader_set_vec4(gs_sparam_t *param, const struct vec4 *val)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p2("gs_shader_set_vec4", param, val))
+	if (!gs_valid_p2("gs_shader_set_vec4", param, val)) {
 		return;
+	}
 
 	graphics->exports.gs_shader_set_vec4(param, val);
 }
@@ -2379,8 +2553,9 @@ void gs_shader_set_texture(gs_sparam_t *param, gs_texture_t *val)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p("gs_shader_set_texture", param))
+	if (!gs_valid_p("gs_shader_set_texture", param)) {
 		return;
+	}
 
 	graphics->exports.gs_shader_set_texture(param, val);
 }
@@ -2389,8 +2564,9 @@ void gs_shader_set_val(gs_sparam_t *param, const void *val, size_t size)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p2("gs_shader_set_val", param, val))
+	if (!gs_valid_p2("gs_shader_set_val", param, val)) {
 		return;
+	}
 
 	graphics->exports.gs_shader_set_val(param, val, size);
 }
@@ -2399,8 +2575,9 @@ void gs_shader_set_default(gs_sparam_t *param)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p("gs_shader_set_default", param))
+	if (!gs_valid_p("gs_shader_set_default", param)) {
 		return;
+	}
 
 	graphics->exports.gs_shader_set_default(param);
 }
@@ -2409,8 +2586,9 @@ void gs_shader_set_next_sampler(gs_sparam_t *param, gs_samplerstate_t *sampler)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p("gs_shader_set_next_sampler", param))
+	if (!gs_valid_p("gs_shader_set_next_sampler", param)) {
 		return;
+	}
 
 	graphics->exports.gs_shader_set_next_sampler(param, sampler);
 }
@@ -2419,10 +2597,12 @@ void gs_texture_destroy(gs_texture_t *tex)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_texture_destroy"))
+	if (!gs_valid("gs_texture_destroy")) {
 		return;
-	if (!tex)
+	}
+	if (!tex) {
 		return;
+	}
 
 	graphics->exports.gs_texture_destroy(tex);
 }
@@ -2431,8 +2611,9 @@ uint32_t gs_texture_get_width(const gs_texture_t *tex)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p("gs_texture_get_width", tex))
+	if (!gs_valid_p("gs_texture_get_width", tex)) {
 		return 0;
+	}
 
 	return graphics->exports.gs_texture_get_width(tex);
 }
@@ -2441,8 +2622,9 @@ uint32_t gs_texture_get_height(const gs_texture_t *tex)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p("gs_texture_get_height", tex))
+	if (!gs_valid_p("gs_texture_get_height", tex)) {
 		return 0;
+	}
 
 	return graphics->exports.gs_texture_get_height(tex);
 }
@@ -2451,8 +2633,9 @@ enum gs_color_format gs_texture_get_color_format(const gs_texture_t *tex)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p("gs_texture_get_color_format", tex))
+	if (!gs_valid_p("gs_texture_get_color_format", tex)) {
 		return GS_UNKNOWN;
+	}
 
 	return graphics->exports.gs_texture_get_color_format(tex);
 }
@@ -2461,8 +2644,9 @@ bool gs_texture_map(gs_texture_t *tex, uint8_t **ptr, uint32_t *linesize)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p3("gs_texture_map", tex, ptr, linesize))
+	if (!gs_valid_p3("gs_texture_map", tex, ptr, linesize)) {
 		return false;
+	}
 
 	return graphics->exports.gs_texture_map(tex, ptr, linesize);
 }
@@ -2471,8 +2655,9 @@ void gs_texture_unmap(gs_texture_t *tex)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p("gs_texture_unmap", tex))
+	if (!gs_valid_p("gs_texture_unmap", tex)) {
 		return;
+	}
 
 	graphics->exports.gs_texture_unmap(tex);
 }
@@ -2481,21 +2666,24 @@ bool gs_texture_is_rect(const gs_texture_t *tex)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p("gs_texture_is_rect", tex))
+	if (!gs_valid_p("gs_texture_is_rect", tex)) {
 		return false;
+	}
 
-	if (graphics->exports.gs_texture_is_rect)
+	if (graphics->exports.gs_texture_is_rect) {
 		return graphics->exports.gs_texture_is_rect(tex);
-	else
+	} else {
 		return false;
+	}
 }
 
 void *gs_texture_get_obj(gs_texture_t *tex)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p("gs_texture_get_obj", tex))
+	if (!gs_valid_p("gs_texture_get_obj", tex)) {
 		return NULL;
+	}
 
 	return graphics->exports.gs_texture_get_obj(tex);
 }
@@ -2504,10 +2692,12 @@ void gs_cubetexture_destroy(gs_texture_t *cubetex)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_cubetexture_destroy"))
+	if (!gs_valid("gs_cubetexture_destroy")) {
 		return;
-	if (!cubetex)
+	}
+	if (!cubetex) {
 		return;
+	}
 
 	graphics->exports.gs_cubetexture_destroy(cubetex);
 }
@@ -2516,8 +2706,9 @@ uint32_t gs_cubetexture_get_size(const gs_texture_t *cubetex)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p("gs_cubetexture_get_size", cubetex))
+	if (!gs_valid_p("gs_cubetexture_get_size", cubetex)) {
 		return 0;
+	}
 
 	return graphics->exports.gs_cubetexture_get_size(cubetex);
 }
@@ -2526,8 +2717,9 @@ enum gs_color_format gs_cubetexture_get_color_format(const gs_texture_t *cubetex
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p("gs_cubetexture_get_color_format", cubetex))
+	if (!gs_valid_p("gs_cubetexture_get_color_format", cubetex)) {
 		return GS_UNKNOWN;
+	}
 
 	return graphics->exports.gs_cubetexture_get_color_format(cubetex);
 }
@@ -2536,10 +2728,12 @@ void gs_voltexture_destroy(gs_texture_t *voltex)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_voltexture_destroy"))
+	if (!gs_valid("gs_voltexture_destroy")) {
 		return;
-	if (!voltex)
+	}
+	if (!voltex) {
 		return;
+	}
 
 	graphics->exports.gs_voltexture_destroy(voltex);
 }
@@ -2548,8 +2742,9 @@ uint32_t gs_voltexture_get_width(const gs_texture_t *voltex)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p("gs_voltexture_get_width", voltex))
+	if (!gs_valid_p("gs_voltexture_get_width", voltex)) {
 		return 0;
+	}
 
 	return graphics->exports.gs_voltexture_get_width(voltex);
 }
@@ -2558,8 +2753,9 @@ uint32_t gs_voltexture_get_height(const gs_texture_t *voltex)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p("gs_voltexture_get_height", voltex))
+	if (!gs_valid_p("gs_voltexture_get_height", voltex)) {
 		return 0;
+	}
 
 	return graphics->exports.gs_voltexture_get_height(voltex);
 }
@@ -2568,8 +2764,9 @@ uint32_t gs_voltexture_get_depth(const gs_texture_t *voltex)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p("gs_voltexture_get_depth", voltex))
+	if (!gs_valid_p("gs_voltexture_get_depth", voltex)) {
 		return 0;
+	}
 
 	return graphics->exports.gs_voltexture_get_depth(voltex);
 }
@@ -2578,8 +2775,9 @@ enum gs_color_format gs_voltexture_get_color_format(const gs_texture_t *voltex)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p("gs_voltexture_get_color_format", voltex))
+	if (!gs_valid_p("gs_voltexture_get_color_format", voltex)) {
 		return GS_UNKNOWN;
+	}
 
 	return graphics->exports.gs_voltexture_get_color_format(voltex);
 }
@@ -2588,10 +2786,12 @@ void gs_stagesurface_destroy(gs_stagesurf_t *stagesurf)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_stagesurface_destroy"))
+	if (!gs_valid("gs_stagesurface_destroy")) {
 		return;
-	if (!stagesurf)
+	}
+	if (!stagesurf) {
 		return;
+	}
 
 	graphics->exports.gs_stagesurface_destroy(stagesurf);
 }
@@ -2600,8 +2800,9 @@ uint32_t gs_stagesurface_get_width(const gs_stagesurf_t *stagesurf)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p("gs_stagesurface_get_width", stagesurf))
+	if (!gs_valid_p("gs_stagesurface_get_width", stagesurf)) {
 		return 0;
+	}
 
 	return graphics->exports.gs_stagesurface_get_width(stagesurf);
 }
@@ -2610,8 +2811,9 @@ uint32_t gs_stagesurface_get_height(const gs_stagesurf_t *stagesurf)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p("gs_stagesurface_get_height", stagesurf))
+	if (!gs_valid_p("gs_stagesurface_get_height", stagesurf)) {
 		return 0;
+	}
 
 	return graphics->exports.gs_stagesurface_get_height(stagesurf);
 }
@@ -2620,8 +2822,9 @@ enum gs_color_format gs_stagesurface_get_color_format(const gs_stagesurf_t *stag
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p("gs_stagesurface_get_color_format", stagesurf))
+	if (!gs_valid_p("gs_stagesurface_get_color_format", stagesurf)) {
 		return GS_UNKNOWN;
+	}
 
 	return graphics->exports.gs_stagesurface_get_color_format(stagesurf);
 }
@@ -2630,8 +2833,9 @@ bool gs_stagesurface_map(gs_stagesurf_t *stagesurf, uint8_t **data, uint32_t *li
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p3("gs_stagesurface_map", stagesurf, data, linesize))
+	if (!gs_valid_p3("gs_stagesurface_map", stagesurf, data, linesize)) {
 		return 0;
+	}
 
 	return graphics->exports.gs_stagesurface_map(stagesurf, data, linesize);
 }
@@ -2640,28 +2844,33 @@ void gs_stagesurface_unmap(gs_stagesurf_t *stagesurf)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p("gs_stagesurface_unmap", stagesurf))
+	if (!gs_valid_p("gs_stagesurface_unmap", stagesurf)) {
 		return;
+	}
 
 	graphics->exports.gs_stagesurface_unmap(stagesurf);
 }
 
 void gs_zstencil_destroy(gs_zstencil_t *zstencil)
 {
-	if (!gs_valid("gs_zstencil_destroy"))
+	if (!gs_valid("gs_zstencil_destroy")) {
 		return;
-	if (!zstencil)
+	}
+	if (!zstencil) {
 		return;
+	}
 
 	thread_graphics->exports.gs_zstencil_destroy(zstencil);
 }
 
 void gs_samplerstate_destroy(gs_samplerstate_t *samplerstate)
 {
-	if (!gs_valid("gs_samplerstate_destroy"))
+	if (!gs_valid("gs_samplerstate_destroy")) {
 		return;
-	if (!samplerstate)
+	}
+	if (!samplerstate) {
 		return;
+	}
 
 	thread_graphics->exports.gs_samplerstate_destroy(samplerstate);
 }
@@ -2670,34 +2879,39 @@ void gs_vertexbuffer_destroy(gs_vertbuffer_t *vertbuffer)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_vertexbuffer_destroy"))
+	if (!gs_valid("gs_vertexbuffer_destroy")) {
 		return;
-	if (!vertbuffer)
+	}
+	if (!vertbuffer) {
 		return;
+	}
 
 	graphics->exports.gs_vertexbuffer_destroy(vertbuffer);
 }
 
 void gs_vertexbuffer_flush(gs_vertbuffer_t *vertbuffer)
 {
-	if (!gs_valid_p("gs_vertexbuffer_flush", vertbuffer))
+	if (!gs_valid_p("gs_vertexbuffer_flush", vertbuffer)) {
 		return;
+	}
 
 	thread_graphics->exports.gs_vertexbuffer_flush(vertbuffer);
 }
 
 void gs_vertexbuffer_flush_direct(gs_vertbuffer_t *vertbuffer, const struct gs_vb_data *data)
 {
-	if (!gs_valid_p2("gs_vertexbuffer_flush_direct", vertbuffer, data))
+	if (!gs_valid_p2("gs_vertexbuffer_flush_direct", vertbuffer, data)) {
 		return;
+	}
 
 	thread_graphics->exports.gs_vertexbuffer_flush_direct(vertbuffer, data);
 }
 
 struct gs_vb_data *gs_vertexbuffer_get_data(const gs_vertbuffer_t *vertbuffer)
 {
-	if (!gs_valid_p("gs_vertexbuffer_get_data", vertbuffer))
+	if (!gs_valid_p("gs_vertexbuffer_get_data", vertbuffer)) {
 		return NULL;
+	}
 
 	return thread_graphics->exports.gs_vertexbuffer_get_data(vertbuffer);
 }
@@ -2706,50 +2920,57 @@ void gs_indexbuffer_destroy(gs_indexbuffer_t *indexbuffer)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_indexbuffer_destroy"))
+	if (!gs_valid("gs_indexbuffer_destroy")) {
 		return;
-	if (!indexbuffer)
+	}
+	if (!indexbuffer) {
 		return;
+	}
 
 	graphics->exports.gs_indexbuffer_destroy(indexbuffer);
 }
 
 void gs_indexbuffer_flush(gs_indexbuffer_t *indexbuffer)
 {
-	if (!gs_valid_p("gs_indexbuffer_flush", indexbuffer))
+	if (!gs_valid_p("gs_indexbuffer_flush", indexbuffer)) {
 		return;
+	}
 
 	thread_graphics->exports.gs_indexbuffer_flush(indexbuffer);
 }
 
 void gs_indexbuffer_flush_direct(gs_indexbuffer_t *indexbuffer, const void *data)
 {
-	if (!gs_valid_p2("gs_indexbuffer_flush_direct", indexbuffer, data))
+	if (!gs_valid_p2("gs_indexbuffer_flush_direct", indexbuffer, data)) {
 		return;
+	}
 
 	thread_graphics->exports.gs_indexbuffer_flush_direct(indexbuffer, data);
 }
 
 void *gs_indexbuffer_get_data(const gs_indexbuffer_t *indexbuffer)
 {
-	if (!gs_valid_p("gs_indexbuffer_get_data", indexbuffer))
+	if (!gs_valid_p("gs_indexbuffer_get_data", indexbuffer)) {
 		return NULL;
+	}
 
 	return thread_graphics->exports.gs_indexbuffer_get_data(indexbuffer);
 }
 
 size_t gs_indexbuffer_get_num_indices(const gs_indexbuffer_t *indexbuffer)
 {
-	if (!gs_valid_p("gs_indexbuffer_get_num_indices", indexbuffer))
+	if (!gs_valid_p("gs_indexbuffer_get_num_indices", indexbuffer)) {
 		return 0;
+	}
 
 	return thread_graphics->exports.gs_indexbuffer_get_num_indices(indexbuffer);
 }
 
 enum gs_index_type gs_indexbuffer_get_type(const gs_indexbuffer_t *indexbuffer)
 {
-	if (!gs_valid_p("gs_indexbuffer_get_type", indexbuffer))
+	if (!gs_valid_p("gs_indexbuffer_get_type", indexbuffer)) {
 		return (enum gs_index_type)0;
+	}
 
 	return thread_graphics->exports.gs_indexbuffer_get_type(indexbuffer);
 }
@@ -2758,10 +2979,12 @@ void gs_timer_destroy(gs_timer_t *timer)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_timer_destroy"))
+	if (!gs_valid("gs_timer_destroy")) {
 		return;
-	if (!timer)
+	}
+	if (!timer) {
 		return;
+	}
 
 	graphics->exports.gs_timer_destroy(timer);
 }
@@ -2770,10 +2993,12 @@ void gs_timer_begin(gs_timer_t *timer)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_timer_begin"))
+	if (!gs_valid("gs_timer_begin")) {
 		return;
-	if (!timer)
+	}
+	if (!timer) {
 		return;
+	}
 
 	graphics->exports.gs_timer_begin(timer);
 }
@@ -2782,18 +3007,21 @@ void gs_timer_end(gs_timer_t *timer)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_timer_end"))
+	if (!gs_valid("gs_timer_end")) {
 		return;
-	if (!timer)
+	}
+	if (!timer) {
 		return;
+	}
 
 	graphics->exports.gs_timer_end(timer);
 }
 
 bool gs_timer_get_data(gs_timer_t *timer, uint64_t *ticks)
 {
-	if (!gs_valid_p2("gs_timer_get_data", timer, ticks))
+	if (!gs_valid_p2("gs_timer_get_data", timer, ticks)) {
 		return false;
+	}
 
 	return thread_graphics->exports.gs_timer_get_data(timer, ticks);
 }
@@ -2802,10 +3030,12 @@ void gs_timer_range_destroy(gs_timer_range_t *range)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_timer_range_destroy"))
+	if (!gs_valid("gs_timer_range_destroy")) {
 		return;
-	if (!range)
+	}
+	if (!range) {
 		return;
+	}
 
 	graphics->exports.gs_timer_range_destroy(range);
 }
@@ -2814,10 +3044,12 @@ void gs_timer_range_begin(gs_timer_range_t *range)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_timer_range_begin"))
+	if (!gs_valid("gs_timer_range_begin")) {
 		return;
-	if (!range)
+	}
+	if (!range) {
 		return;
+	}
 
 	graphics->exports.gs_timer_range_begin(range);
 }
@@ -2826,67 +3058,78 @@ void gs_timer_range_end(gs_timer_range_t *range)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_timer_range_end"))
+	if (!gs_valid("gs_timer_range_end")) {
 		return;
-	if (!range)
+	}
+	if (!range) {
 		return;
+	}
 
 	graphics->exports.gs_timer_range_end(range);
 }
 
 bool gs_timer_range_get_data(gs_timer_range_t *range, bool *disjoint, uint64_t *frequency)
 {
-	if (!gs_valid_p2("gs_timer_range_get_data", disjoint, frequency))
+	if (!gs_valid_p2("gs_timer_range_get_data", disjoint, frequency)) {
 		return false;
+	}
 
 	return thread_graphics->exports.gs_timer_range_get_data(range, disjoint, frequency);
 }
 
 bool gs_nv12_available(void)
 {
-	if (!gs_valid("gs_nv12_available"))
+	if (!gs_valid("gs_nv12_available")) {
 		return false;
+	}
 
-	if (!thread_graphics->exports.device_nv12_available)
+	if (!thread_graphics->exports.device_nv12_available) {
 		return false;
+	}
 
 	return thread_graphics->exports.device_nv12_available(thread_graphics->device);
 }
 
 bool gs_p010_available(void)
 {
-	if (!gs_valid("gs_p010_available"))
+	if (!gs_valid("gs_p010_available")) {
 		return false;
+	}
 
-	if (!thread_graphics->exports.device_p010_available)
+	if (!thread_graphics->exports.device_p010_available) {
 		return false;
+	}
 
 	return thread_graphics->exports.device_p010_available(thread_graphics->device);
 }
 
 bool gs_is_monitor_hdr(void *monitor)
 {
-	if (!gs_valid("gs_is_monitor_hdr"))
+	if (!gs_valid("gs_is_monitor_hdr")) {
 		return false;
+	}
 
 	return thread_graphics->exports.device_is_monitor_hdr(thread_graphics->device, monitor);
 }
 
 void gs_debug_marker_begin(const float color[4], const char *markername)
 {
-	if (!gs_valid("gs_debug_marker_begin"))
+	if (!gs_valid("gs_debug_marker_begin")) {
 		return;
+	}
 
-	if (!markername)
+	if (!markername) {
 		markername = "(null)";
+	}
 
 	thread_graphics->exports.device_debug_marker_begin(thread_graphics->device, markername, color);
 }
 
 void gs_debug_marker_begin_format(const float color[4], const char *format, ...)
 {
-	if (!gs_valid("gs_debug_marker_begin"))
+	if (!gs_valid("gs_debug_marker_begin")) {
 		return;
+	}
 
 	if (format) {
 		char markername[64];
@@ -2902,8 +3145,9 @@ void gs_debug_marker_begin_format(const float color[4], const char *format, ...)
 
 void gs_debug_marker_end(void)
 {
-	if (!gs_valid("gs_debug_marker_end"))
+	if (!gs_valid("gs_debug_marker_end")) {
 		return;
+	}
 
 	thread_graphics->exports.device_debug_marker_end(thread_graphics->device);
 }
@@ -2914,8 +3158,9 @@ bool gs_texture_create_nv12(gs_texture_t **tex_y, gs_texture_t **tex_uv, uint32_
 	graphics_t *graphics = thread_graphics;
 	bool success = false;
 
-	if (!gs_valid("gs_texture_create_nv12"))
+	if (!gs_valid("gs_texture_create_nv12")) {
 		return false;
+	}
 
 	if ((width & 1) == 1 || (height & 1) == 1) {
 		blog(LOG_ERROR, "NV12 textures must have dimensions "
@@ -2926,18 +3171,21 @@ bool gs_texture_create_nv12(gs_texture_t **tex_y, gs_texture_t **tex_uv, uint32_
 	if (graphics->exports.device_texture_create_nv12) {
 		success = graphics->exports.device_texture_create_nv12(graphics->device, tex_y, tex_uv, width, height,
 								       flags);
-		if (success)
+		if (success) {
 			return true;
+		}
 	}
 
 	*tex_y = gs_texture_create(width, height, GS_R8, 1, NULL, flags);
 	*tex_uv = gs_texture_create(width / 2, height / 2, GS_R8G8, 1, NULL, flags);
 
 	if (!*tex_y || !*tex_uv) {
-		if (*tex_y)
+		if (*tex_y) {
 			gs_texture_destroy(*tex_y);
-		if (*tex_uv)
+		}
+		if (*tex_uv) {
 			gs_texture_destroy(*tex_uv);
+		}
 		*tex_y = NULL;
 		*tex_uv = NULL;
 		return false;
@@ -2952,8 +3200,9 @@ bool gs_texture_create_p010(gs_texture_t **tex_y, gs_texture_t **tex_uv, uint32_
 	graphics_t *graphics = thread_graphics;
 	bool success = false;
 
-	if (!gs_valid("gs_texture_create_p010"))
+	if (!gs_valid("gs_texture_create_p010")) {
 		return false;
+	}
 
 	if ((width & 1) == 1 || (height & 1) == 1) {
 		blog(LOG_ERROR, "P010 textures must have dimensions "
@@ -2964,18 +3213,21 @@ bool gs_texture_create_p010(gs_texture_t **tex_y, gs_texture_t **tex_uv, uint32_
 	if (graphics->exports.device_texture_create_p010) {
 		success = graphics->exports.device_texture_create_p010(graphics->device, tex_y, tex_uv, width, height,
 								       flags);
-		if (success)
+		if (success) {
 			return true;
+		}
 	}
 
 	*tex_y = gs_texture_create(width, height, GS_R16, 1, NULL, flags);
 	*tex_uv = gs_texture_create(width / 2, height / 2, GS_RG16, 1, NULL, flags);
 
 	if (!*tex_y || !*tex_uv) {
-		if (*tex_y)
+		if (*tex_y) {
 			gs_texture_destroy(*tex_y);
-		if (*tex_uv)
+		}
+		if (*tex_uv) {
 			gs_texture_destroy(*tex_uv);
+		}
 		*tex_y = NULL;
 		*tex_uv = NULL;
 		return false;
@@ -2986,10 +3238,12 @@ bool gs_texture_create_p010(gs_texture_t **tex_y, gs_texture_t **tex_uv, uint32_
 
 uint32_t gs_get_adapter_count(void)
 {
-	if (!gs_valid("gs_get_adapter_count"))
+	if (!gs_valid("gs_get_adapter_count")) {
 		return 0;
-	if (!thread_graphics->exports.gs_get_adapter_count)
+	}
+	if (!thread_graphics->exports.gs_get_adapter_count) {
 		return 0;
+	}
 
 	return thread_graphics->exports.gs_get_adapter_count();
 }
@@ -3001,10 +3255,12 @@ gs_texture_t *gs_texture_create_from_iosurface(void *iosurf)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p("gs_texture_create_from_iosurface", iosurf))
+	if (!gs_valid_p("gs_texture_create_from_iosurface", iosurf)) {
 		return NULL;
-	if (!graphics->exports.device_texture_create_from_iosurface)
+	}
+	if (!graphics->exports.device_texture_create_from_iosurface) {
 		return NULL;
+	}
 
 	return graphics->exports.device_texture_create_from_iosurface(graphics->device, iosurf);
 }
@@ -3013,18 +3269,21 @@ bool gs_texture_rebind_iosurface(gs_texture_t *texture, void *iosurf)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid_p("gs_texture_rebind_iosurface", texture))
+	if (!gs_valid_p("gs_texture_rebind_iosurface", texture)) {
 		return false;
-	if (!graphics->exports.gs_texture_rebind_iosurface)
+	}
+	if (!graphics->exports.gs_texture_rebind_iosurface) {
 		return false;
+	}
 
 	return graphics->exports.gs_texture_rebind_iosurface(texture, iosurf);
 }
 
 bool gs_shared_texture_available(void)
 {
-	if (!gs_valid("gs_shared_texture_available"))
+	if (!gs_valid("gs_shared_texture_available")) {
 		return false;
+	}
 
 	return thread_graphics->exports.device_shared_texture_available();
 }
@@ -3032,11 +3291,13 @@ bool gs_shared_texture_available(void)
 gs_texture_t *gs_texture_open_shared(uint32_t handle)
 {
 	graphics_t *graphics = thread_graphics;
-	if (!gs_valid("gs_texture_open_shared"))
+	if (!gs_valid("gs_texture_open_shared")) {
 		return NULL;
+	}
 
-	if (graphics->exports.device_texture_open_shared)
+	if (graphics->exports.device_texture_open_shared) {
 		return graphics->exports.device_texture_open_shared(graphics->device, handle);
+	}
 	return NULL;
 }
 
@@ -3044,26 +3305,30 @@ gs_texture_t *gs_texture_open_shared(uint32_t handle)
 
 bool gs_gdi_texture_available(void)
 {
-	if (!gs_valid("gs_gdi_texture_available"))
+	if (!gs_valid("gs_gdi_texture_available")) {
 		return false;
+	}
 
 	return thread_graphics->exports.device_gdi_texture_available();
 }
 
 bool gs_shared_texture_available(void)
 {
-	if (!gs_valid("gs_shared_texture_available"))
+	if (!gs_valid("gs_shared_texture_available")) {
 		return false;
+	}
 
 	return thread_graphics->exports.device_shared_texture_available();
 }
 
 bool gs_get_duplicator_monitor_info(int monitor_idx, struct gs_monitor_info *monitor_info)
 {
-	if (!gs_valid_p("gs_get_duplicator_monitor_info", monitor_info))
+	if (!gs_valid_p("gs_get_duplicator_monitor_info", monitor_info)) {
 		return false;
-	if (!thread_graphics->exports.device_get_duplicator_monitor_info)
+	}
+	if (!thread_graphics->exports.device_get_duplicator_monitor_info) {
 		return false;
+	}
 
 	return thread_graphics->exports.device_get_duplicator_monitor_info(thread_graphics->device, monitor_idx,
 									   monitor_info);
@@ -3071,82 +3336,99 @@ bool gs_get_duplicator_monitor_info(int monitor_idx, struct gs_monitor_info *mon
 
 int gs_duplicator_get_monitor_index(void *monitor)
 {
-	if (!gs_valid("gs_duplicator_get_monitor_index"))
+	if (!gs_valid("gs_duplicator_get_monitor_index")) {
 		return false;
-	if (!thread_graphics->exports.device_duplicator_get_monitor_index)
+	}
+	if (!thread_graphics->exports.device_duplicator_get_monitor_index) {
 		return false;
+	}
 
 	return thread_graphics->exports.device_duplicator_get_monitor_index(thread_graphics->device, monitor);
 }
 
 gs_duplicator_t *gs_duplicator_create(int monitor_idx)
 {
-	if (!gs_valid("gs_duplicator_create"))
+	if (!gs_valid("gs_duplicator_create")) {
 		return NULL;
-	if (!thread_graphics->exports.device_duplicator_create)
+	}
+	if (!thread_graphics->exports.device_duplicator_create) {
 		return NULL;
+	}
 
 	return thread_graphics->exports.device_duplicator_create(thread_graphics->device, monitor_idx);
 }
 
 void gs_duplicator_destroy(gs_duplicator_t *duplicator)
 {
-	if (!gs_valid("gs_duplicator_destroy"))
+	if (!gs_valid("gs_duplicator_destroy")) {
 		return;
-	if (!duplicator)
+	}
+	if (!duplicator) {
 		return;
-	if (!thread_graphics->exports.gs_duplicator_destroy)
+	}
+	if (!thread_graphics->exports.gs_duplicator_destroy) {
 		return;
+	}
 
 	thread_graphics->exports.gs_duplicator_destroy(duplicator);
 }
 
 bool gs_duplicator_update_frame(gs_duplicator_t *duplicator)
 {
-	if (!gs_valid_p("gs_duplicator_update_frame", duplicator))
+	if (!gs_valid_p("gs_duplicator_update_frame", duplicator)) {
 		return false;
-	if (!thread_graphics->exports.gs_duplicator_update_frame)
+	}
+	if (!thread_graphics->exports.gs_duplicator_update_frame) {
 		return false;
+	}
 
 	return thread_graphics->exports.gs_duplicator_update_frame(duplicator);
 }
 
 bool gs_can_adapter_fast_clear(void)
 {
-	if (!gs_valid("gs_can_adapter_fast_clear"))
+	if (!gs_valid("gs_can_adapter_fast_clear")) {
 		return false;
-	if (!thread_graphics->exports.device_can_adapter_fast_clear)
+	}
+	if (!thread_graphics->exports.device_can_adapter_fast_clear) {
 		return false;
+	}
 
 	return thread_graphics->exports.device_can_adapter_fast_clear(thread_graphics->device);
 }
 
 gs_texture_t *gs_duplicator_get_texture(gs_duplicator_t *duplicator)
 {
-	if (!gs_valid_p("gs_duplicator_get_texture", duplicator))
+	if (!gs_valid_p("gs_duplicator_get_texture", duplicator)) {
 		return NULL;
-	if (!thread_graphics->exports.gs_duplicator_get_texture)
+	}
+	if (!thread_graphics->exports.gs_duplicator_get_texture) {
 		return NULL;
+	}
 
 	return thread_graphics->exports.gs_duplicator_get_texture(duplicator);
 }
 
 enum gs_color_space gs_duplicator_get_color_space(gs_duplicator_t *duplicator)
 {
-	if (!gs_valid_p("gs_duplicator_get_color_space", duplicator))
+	if (!gs_valid_p("gs_duplicator_get_color_space", duplicator)) {
 		return GS_CS_SRGB;
-	if (!thread_graphics->exports.gs_duplicator_get_color_space)
+	}
+	if (!thread_graphics->exports.gs_duplicator_get_color_space) {
 		return GS_CS_SRGB;
+	}
 
 	return thread_graphics->exports.gs_duplicator_get_color_space(duplicator);
 }
 
 float gs_duplicator_get_sdr_white_level(gs_duplicator_t *duplicator)
 {
-	if (!gs_valid_p("gs_duplicator_get_sdr_white_level", duplicator))
+	if (!gs_valid_p("gs_duplicator_get_sdr_white_level", duplicator)) {
 		return 80.f;
-	if (!thread_graphics->exports.gs_duplicator_get_sdr_white_level)
+	}
+	if (!thread_graphics->exports.gs_duplicator_get_sdr_white_level) {
 		return 80.f;
+	}
 
 	return thread_graphics->exports.gs_duplicator_get_sdr_white_level(duplicator);
 }
@@ -3156,96 +3438,114 @@ gs_texture_t *gs_texture_create_gdi(uint32_t width, uint32_t height)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_texture_create_gdi"))
+	if (!gs_valid("gs_texture_create_gdi")) {
 		return NULL;
+	}
 
-	if (graphics->exports.device_texture_create_gdi)
+	if (graphics->exports.device_texture_create_gdi) {
 		return graphics->exports.device_texture_create_gdi(graphics->device, width, height);
+	}
 	return NULL;
 }
 
 void *gs_texture_get_dc(gs_texture_t *gdi_tex)
 {
-	if (!gs_valid_p("gs_texture_release_dc", gdi_tex))
+	if (!gs_valid_p("gs_texture_release_dc", gdi_tex)) {
 		return NULL;
+	}
 
-	if (thread_graphics->exports.gs_texture_get_dc)
+	if (thread_graphics->exports.gs_texture_get_dc) {
 		return thread_graphics->exports.gs_texture_get_dc(gdi_tex);
+	}
 	return NULL;
 }
 
 void gs_texture_release_dc(gs_texture_t *gdi_tex)
 {
-	if (!gs_valid_p("gs_texture_release_dc", gdi_tex))
+	if (!gs_valid_p("gs_texture_release_dc", gdi_tex)) {
 		return;
+	}
 
-	if (thread_graphics->exports.gs_texture_release_dc)
+	if (thread_graphics->exports.gs_texture_release_dc) {
 		thread_graphics->exports.gs_texture_release_dc(gdi_tex);
+	}
 }
 
 gs_texture_t *gs_texture_open_shared(uint32_t handle)
 {
 	graphics_t *graphics = thread_graphics;
-	if (!gs_valid("gs_texture_open_shared"))
+	if (!gs_valid("gs_texture_open_shared")) {
 		return NULL;
+	}
 
-	if (graphics->exports.device_texture_open_shared)
+	if (graphics->exports.device_texture_open_shared) {
 		return graphics->exports.device_texture_open_shared(graphics->device, handle);
+	}
 	return NULL;
 }
 
 gs_texture_t *gs_texture_open_nt_shared(uint32_t handle)
 {
 	graphics_t *graphics = thread_graphics;
-	if (!gs_valid("gs_texture_open_nt_shared"))
+	if (!gs_valid("gs_texture_open_nt_shared")) {
 		return NULL;
+	}
 
-	if (graphics->exports.device_texture_open_nt_shared)
+	if (graphics->exports.device_texture_open_nt_shared) {
 		return graphics->exports.device_texture_open_nt_shared(graphics->device, handle);
+	}
 	return NULL;
 }
 
 uint32_t gs_texture_get_shared_handle(gs_texture_t *tex)
 {
 	graphics_t *graphics = thread_graphics;
-	if (!gs_valid("gs_texture_get_shared_handle"))
+	if (!gs_valid("gs_texture_get_shared_handle")) {
 		return GS_INVALID_HANDLE;
+	}
 
-	if (graphics->exports.device_texture_get_shared_handle)
+	if (graphics->exports.device_texture_get_shared_handle) {
 		return graphics->exports.device_texture_get_shared_handle(tex);
+	}
 	return GS_INVALID_HANDLE;
 }
 
 gs_texture_t *gs_texture_wrap_obj(void *obj)
 {
 	graphics_t *graphics = thread_graphics;
-	if (!gs_valid("gs_texture_wrap_obj"))
+	if (!gs_valid("gs_texture_wrap_obj")) {
 		return NULL;
+	}
 
-	if (graphics->exports.device_texture_wrap_obj)
+	if (graphics->exports.device_texture_wrap_obj) {
 		return graphics->exports.device_texture_wrap_obj(graphics->device, obj);
+	}
 	return NULL;
 }
 
 int gs_texture_acquire_sync(gs_texture_t *tex, uint64_t key, uint32_t ms)
 {
 	graphics_t *graphics = thread_graphics;
-	if (!gs_valid("gs_texture_acquire_sync"))
+	if (!gs_valid("gs_texture_acquire_sync")) {
 		return -1;
+	}
 
-	if (graphics->exports.device_texture_acquire_sync)
+	if (graphics->exports.device_texture_acquire_sync) {
 		return graphics->exports.device_texture_acquire_sync(tex, key, ms);
+	}
 	return -1;
 }
 
 int gs_texture_release_sync(gs_texture_t *tex, uint64_t key)
 {
 	graphics_t *graphics = thread_graphics;
-	if (!gs_valid("gs_texture_release_sync"))
+	if (!gs_valid("gs_texture_release_sync")) {
 		return -1;
+	}
 
-	if (graphics->exports.device_texture_release_sync)
+	if (graphics->exports.device_texture_release_sync) {
 		return graphics->exports.device_texture_release_sync(tex, key);
+	}
 	return -1;
 }
 
@@ -3253,8 +3553,9 @@ gs_stagesurf_t *gs_stagesurface_create_nv12(uint32_t width, uint32_t height)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_stagesurface_create_nv12"))
+	if (!gs_valid("gs_stagesurface_create_nv12")) {
 		return NULL;
+	}
 
 	if ((width & 1) == 1 || (height & 1) == 1) {
 		blog(LOG_ERROR, "NV12 textures must have dimensions "
@@ -3262,8 +3563,9 @@ gs_stagesurf_t *gs_stagesurface_create_nv12(uint32_t width, uint32_t height)
 		return NULL;
 	}
 
-	if (graphics->exports.device_stagesurface_create_nv12)
+	if (graphics->exports.device_stagesurface_create_nv12) {
 		return graphics->exports.device_stagesurface_create_nv12(graphics->device, width, height);
+	}
 
 	return NULL;
 }
@@ -3272,8 +3574,9 @@ gs_stagesurf_t *gs_stagesurface_create_p010(uint32_t width, uint32_t height)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_stagesurface_create_p010"))
+	if (!gs_valid("gs_stagesurface_create_p010")) {
 		return NULL;
+	}
 
 	if ((width & 1) == 1 || (height & 1) == 1) {
 		blog(LOG_ERROR, "P010 textures must have dimensions "
@@ -3281,8 +3584,9 @@ gs_stagesurf_t *gs_stagesurface_create_p010(uint32_t width, uint32_t height)
 		return NULL;
 	}
 
-	if (graphics->exports.device_stagesurface_create_p010)
+	if (graphics->exports.device_stagesurface_create_p010) {
 		return graphics->exports.device_stagesurface_create_p010(graphics->device, width, height);
+	}
 
 	return NULL;
 }
@@ -3291,22 +3595,26 @@ void gs_register_loss_callbacks(const struct gs_device_loss *callbacks)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_register_loss_callbacks"))
+	if (!gs_valid("gs_register_loss_callbacks")) {
 		return;
+	}
 
-	if (graphics->exports.device_register_loss_callbacks)
+	if (graphics->exports.device_register_loss_callbacks) {
 		graphics->exports.device_register_loss_callbacks(graphics->device, callbacks);
+	}
 }
 
 void gs_unregister_loss_callbacks(void *data)
 {
 	graphics_t *graphics = thread_graphics;
 
-	if (!gs_valid("gs_unregister_loss_callbacks"))
+	if (!gs_valid("gs_unregister_loss_callbacks")) {
 		return;
+	}
 
-	if (graphics->exports.device_unregister_loss_callbacks)
+	if (graphics->exports.device_unregister_loss_callbacks) {
 		graphics->exports.device_unregister_loss_callbacks(graphics->device, data);
+	}
 }
 
 #endif

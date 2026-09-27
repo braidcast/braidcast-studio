@@ -226,15 +226,17 @@ static inline struct gs_vb_data *gs_vbdata_create(void)
 static inline void gs_vbdata_destroy(struct gs_vb_data *data)
 {
 	uint32_t i;
-	if (!data)
+	if (!data) {
 		return;
+	}
 
 	bfree(data->points);
 	bfree(data->normals);
 	bfree(data->tangents);
 	bfree(data->colors);
-	for (i = 0; i < data->num_tex; i++)
+	for (i = 0; i < data->num_tex; i++) {
 		bfree(data->tvarray[i].array);
+	}
 	bfree(data->tvarray);
 	bfree(data);
 }
