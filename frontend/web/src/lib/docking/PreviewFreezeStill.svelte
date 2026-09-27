@@ -41,6 +41,8 @@
     <img
       src={freeze.frame.dataUri}
       alt=""
+      elementtiming={freeze.paintId}
+      decoding="sync"
       style:left={freeze.frame.placement.left}
       style:top={freeze.frame.placement.top}
       style:width={freeze.frame.placement.width}

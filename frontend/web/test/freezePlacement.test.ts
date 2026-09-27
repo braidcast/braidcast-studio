@@ -96,11 +96,16 @@ describe("PreviewFreezeStill", () => {
         { dataUri: "data:x", width: 1, height: 1, canvasRect: FITTED },
         ELEMENT,
       )!;
-      body = render(Still, { props: { freeze: { frame, img: undefined } } }).body;
+      body = render(Still, { props: { freeze: { frame, img: undefined, paintId: "freeze-7" } } }).body;
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
     expect(body).toContain('src="data:x"');
+    // What capture() waits on to know the still has been presented.
+    expect(body).toContain('elementtiming="freeze-7"');
+    // Asks for the decode to finish before the frame that paints it, so the frame the entry
+    // reports is meant to carry its pixels rather than a placeholder.
+    expect(body).toContain('decoding="sync"');
     expect(body).toMatch(/left:\s*10px/);
     expect(body).toMatch(/top:\s*17px/);
     expect(body).toMatch(/width:\s*368px/);

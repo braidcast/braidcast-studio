@@ -14,8 +14,17 @@
 
 import { tick } from "svelte";
 import { obs } from "$lib/api/bridge";
-import { frozenFrameFrom, placeCanvasRect, sameSurfaceSize, type FrozenFrame } from "$lib/docking/freezeFrame";
+import {
+  elementTimingSource,
+  frozenFrameFrom,
+  paintStill,
+  placeCanvasRect,
+  sameSurfaceSize,
+  type FrozenFrame,
+} from "$lib/docking/freezeFrame";
 import type { PreviewTarget } from "$lib/docking/previewSurface";
+import { log } from "$lib/utils/log";
+import { Cat } from "$lib/utils/logCategories";
 import type { OverlayRect } from "$lib/utils/overlayRect";
 
 // How long the still outlives the gate's release. A reshown surface warms up beneath the
@@ -28,15 +37,11 @@ import type { OverlayRect } from "$lib/utils/overlayRect";
 // dropping it after is invisible. Raise the host bound and this must follow.
 const RELEASE_HOLD_MS = 500;
 
-// Frames to let pass after the still has decoded before the surface may hide, so the
-// frame that paints it has been produced rather than merely scheduled.
-const PAINT_FRAMES = 2;
-
-// Bound on each step of putting the still on screen (its decode, each frame wait). The
-// surface only hides once these finish, so an unbounded step would leave the overlay
-// drawn over the menu it is being hidden for -- rAF does not run while the web view is
-// hidden, and nothing guarantees a decode settles. A step that runs out just moves on:
-// a still that finishes decoding late beats a blank region.
+// Bound on each step of putting the still on screen (its presentation, or its decode and
+// each frame wait). The surface only hides once these finish, so an unbounded step would
+// leave the overlay drawn over the menu it is being hidden for -- rAF does not run while
+// the web view is hidden, and nothing guarantees a decode or a presentation entry settles.
+// A step that runs out just moves on: a still that lands late beats a blank region.
 const PAINT_STEP_MS = 150;
 
 function bounded(step: Promise<unknown>): Promise<void> {
@@ -54,12 +59,17 @@ function nextFrame(): Promise<void> {
   return bounded(new Promise((resolve) => requestAnimationFrame(resolve)));
 }
 
+const ELEMENT_TIMING = elementTimingSource();
+
 export class PreviewFreeze {
   /** The held frame, or null when the surface is live. */
   frame = $state.raw<FrozenFrame | null>(null);
 
   /** The element showing `frame`, bound by the dock so capture() can wait on its decode. */
   img = $state<HTMLImageElement | undefined>();
+
+  /** The `elementtiming` identifier the still's element carries, so its presentation can be told apart. */
+  paintId = $state<string | undefined>();
 
   // Per-operation token. Capture and the release hold are both async, so each one
   // checks it is still the latest before touching `frame`: a capture overtaken by the
@@ -73,9 +83,10 @@ export class PreviewFreeze {
   #placeSeq = 0;
 
   /**
-   * Grab the current frame and put it on screen. Resolves once the still is decoded in
-   * its element and a frame carrying it has been produced (each step bounded), or once
-   * the capture has failed or a later operation has overtaken this one. Never rejects.
+   * Grab the current frame and put it on screen. Resolves once a frame showing the still
+   * has been presented -- or, where that cannot be observed, once it has decoded and
+   * PAINT_FRAMES have passed -- each step bounded (see paintStill); or once the capture
+   * has failed or a later operation has overtaken this one. Never rejects.
    * Call BEFORE hiding the surface: the still has to be on screen before the surface
    * leaves it.
    *
@@ -100,17 +111,25 @@ export class PreviewFreeze {
     if (!frame || seq !== this.#seq) {
       return;
     }
-    this.#target = target;
-    this.frame = frame;
-    await tick();
-    if (seq !== this.#seq) {
-      return;
-    }
-    if (this.img) {
-      await bounded(this.img.decode());
-    }
-    for (let i = 0; i < PAINT_FRAMES && seq === this.#seq; i++) {
-      await nextFrame();
+    const still = frame;
+    const shownAt = performance.now();
+    const how = await paintStill({
+      heldUri: this.frame?.dataUri,
+      nextUri: still.dataUri,
+      source: ELEMENT_TIMING,
+      insert: async (paintId) => {
+        this.#target = target;
+        this.paintId = paintId;
+        this.frame = still;
+        await tick();
+        return this.img;
+      },
+      bound: bounded,
+      nextFrame,
+      current: () => seq === this.#seq,
+    });
+    if (how !== "overtaken") {
+      log.dbg(Cat.preview, `freeze still on screen (${how}) after ${Math.round(performance.now() - shownAt)} ms`);
     }
   }
 
