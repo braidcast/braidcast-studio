@@ -286,7 +286,7 @@ float FitScale(int cx, int cy, float baseCX, float baseCY)
 
 // The scale `view` draws a baseCX x baseCY canvas at on a cx x cy surface: the zoom
 // level's when fixed, the margin-inset fit otherwise. The one place that choice is
-// made, so the drawn frame, the menu's percentage and the freeze still cannot disagree.
+// made, so the drawn frame and the menu's percentage cannot disagree.
 float ViewScale(const PreviewView &view, int cx, int cy, float baseCX, float baseCY)
 {
 	return view.fixed ? FixedZoomScale(view.zoomLevel, baseCX, baseCY) : FitScale(cx, cy, baseCX, baseCY);
@@ -319,10 +319,8 @@ struct CanvasPlacement {
 	int cy = 0;
 };
 
-// The draw callback's layout, extracted so the freeze still is placed by the same
-// arithmetic that places the canvas it stands in for. Clamps the view's
-// pan to this surface size in place, as a frame must; a caller that is only asking
-// where the canvas would go passes a copy.
+// The draw callback's layout. Clamps the view's pan to this surface size in place, as a
+// frame must.
 CanvasPlacement PlaceCanvas(PreviewView &view, int cx, int cy, float baseCX, float baseCY)
 {
 	CanvasPlacement p;
@@ -2635,6 +2633,10 @@ struct PreviewSurface::State {
 	EnteredGroupRef entered;
 	PreviewTransform transform;
 	PreviewView view;
+	// DrawFrame is drawing a still rather than the display a frame: lay it out on a copy
+	// of the view and leave `transform` alone. Set and cleared under the graphics context,
+	// which keeps the display's own frames out meanwhile.
+	bool capturing = false;
 
 	DragState drag;                         // UI thread only
 	const wchar_t *cursorShape = IDC_ARROW; // UI thread only; re-applied on WM_SETCURSOR
@@ -2915,17 +2917,22 @@ void RenderPreview(void *data, uint32_t cx, uint32_t cy)
 	CanvasPlacement place;
 	{
 		std::lock_guard<std::mutex> lock(state->stateMutex);
-		// Re-placed every frame, which is also what re-clamps a pan: a dock resize can
-		// invalidate one that was legal at the old size, and nothing else re-validates it.
-		place = PlaceCanvas(state->view, int(cx), int(cy), baseCX, baseCY);
+		if (state->capturing) {
+			PreviewView view = state->view;
+			place = PlaceCanvas(view, int(cx), int(cy), baseCX, baseCY);
+		} else {
+			// Re-placed every frame, which is also what re-clamps a pan: a dock resize can
+			// invalidate one that was legal at the old size, and nothing else re-validates it.
+			place = PlaceCanvas(state->view, int(cx), int(cy), baseCX, baseCY);
 
-		state->transform.scale = place.scale;
-		state->transform.drawX = place.x;
-		state->transform.drawY = place.y;
-		state->transform.baseCX = baseCX;
-		state->transform.baseCY = baseCY;
-		state->transform.surfaceCX = int(cx);
-		state->transform.surfaceCY = int(cy);
+			state->transform.scale = place.scale;
+			state->transform.drawX = place.x;
+			state->transform.drawY = place.y;
+			state->transform.baseCX = baseCX;
+			state->transform.baseCY = baseCY;
+			state->transform.surfaceCX = int(cx);
+			state->transform.surfaceCY = int(cy);
+		}
 	}
 	const float scale = place.scale;
 	const int drawX = place.x;
@@ -4657,25 +4664,6 @@ PreviewViewState PreviewSurface::GetView()
 	return PreviewViewState{state_->view.fixed, zoomPercent, state_->view.locked, overlays};
 }
 
-std::optional<PreviewCanvasRect> PreviewSurface::CanvasRectAt(int cx, int cy)
-{
-	obs_video_info ovi;
-	if (cx <= 0 || cy <= 0 || !SurfaceVideoInfo(targetCanvas_, ovi) || ovi.base_width == 0 ||
-	    ovi.base_height == 0) {
-		return std::nullopt;
-	}
-	PreviewView view;
-	{
-		std::lock_guard<std::mutex> lock(state_->stateMutex);
-		view = state_->view;
-	}
-	const CanvasPlacement p = PlaceCanvas(view, cx, cy, float(ovi.base_width), float(ovi.base_height));
-	if (p.cx <= 0 || p.cy <= 0) {
-		return std::nullopt;
-	}
-	return PreviewCanvasRect{p.x, p.y, p.cx, p.cy, cx, cy};
-}
-
 void PreviewSurface::SetRect(int x, int y, int cx, int cy)
 {
 	overlay_.SetRect(x, y, cx, cy);
@@ -4868,15 +4856,16 @@ void PreviewSurface::SeedTestTransform()
 	state_->transform.drawY = 0;
 }
 
-// Post one mouse message at this surface the way OverlayWndProc does, through
-// OnOverlayMessage rather than into the handler behind it. That routing is itself under
-// test: the window class sets CS_DBLCLKS, so dropping the WM_LBUTTONDBLCLK case would take
-// the second press of every double click out of the click-through cycle, and a hook calling
-// OnLeftDblClk directly could not see that. Coordinates are packed the way Win32 packs them
-// -- GET_X_LPARAM sign-extends the low word, so a negative one round-trips.
+// Post one mouse message at this surface the way OverlayWndProc does, through the
+// overlay's HandleMessage rather than into the handler behind it. That routing is itself
+// under test: the window class sets CS_DBLCLKS, so dropping the WM_LBUTTONDBLCLK case would
+// take the second press of every double click out of the click-through cycle, and a hook
+// calling OnLeftDblClk directly could not see that; and a host's grab is applied there,
+// ahead of this surface. Coordinates are packed the way Win32 packs them -- GET_X_LPARAM
+// sign-extends the low word, so a negative one round-trips.
 void PreviewSurface::SendTestMouseMessage(uint32_t msg, int x, int y)
 {
-	OnOverlayMessage(msg, 0, MAKELPARAM(x, y));
+	overlay_.HandleMessage(msg, 0, MAKELPARAM(x, y));
 }
 
 void PreviewSurface::ClickForTest(float canvasX, float canvasY, bool doubleClick)
@@ -5008,6 +4997,17 @@ bool PreviewSurface::OnVideoReset()
 	obs_display_update_color_space(static_cast<obs_display_t *>(overlay_.Display()));
 	HostLog("[preview] OnVideoReset: display alive, letterbox transform invalidated");
 	return true;
+}
+
+void PreviewSurface::DrawFrame(uint32_t cx, uint32_t cy)
+{
+	{
+		std::lock_guard<std::mutex> lock(state_->stateMutex);
+		state_->capturing = true;
+	}
+	overlay_.DrawFrame(cx, cy);
+	std::lock_guard<std::mutex> lock(state_->stateMutex);
+	state_->capturing = false;
 }
 
 bool PreviewSurface::OnOverlayMessage(UINT msg, WPARAM wparam, LPARAM lparam)
@@ -5163,10 +5163,28 @@ void PreviewManager::RegisterWindow(int windowId, HWND host)
 	HostLog("[preview] RegisterWindow id=" + std::to_string(windowId));
 }
 
+HWND PreviewManager::KnownHostFor(int windowId) const
+{
+	for (const auto &h : impl_->windowHosts) {
+		if (h.first == windowId) {
+			return h.second;
+		}
+	}
+	return nullptr;
+}
+
+HWND PreviewManager::HostFor(int windowId) const
+{
+	const HWND known = KnownHostFor(windowId);
+	return known ? known : host_;
+}
+
 void PreviewManager::UnregisterWindow(int windowId)
 {
 	for (auto it = impl_->windowHosts.begin(); it != impl_->windowHosts.end(); ++it) {
 		if (it->first == windowId) {
+			// A menu open as the window closes never sends its restore.
+			OverlaySurface::ClearHost(it->second);
 			impl_->windowHosts.erase(it);
 			HostLog("[preview] UnregisterWindow id=" + std::to_string(windowId));
 			return;
@@ -5194,15 +5212,7 @@ PreviewSurface *PreviewManager::SurfaceFor(int windowId, const std::string &canv
 	const bool isDefault = IsDefaultCanvasUuid(canvasUuid);
 	const std::string key = isDefault ? std::string() : canvasUuid;
 
-	// Resolve the host HWND for this window: a registered detached window's host,
-	// else the constructor's host_ (windowId 0 / main, or an unregistered window).
-	HWND host = host_;
-	for (const auto &h : impl_->windowHosts) {
-		if (h.first == windowId) {
-			host = h.second;
-			break;
-		}
-	}
+	const HWND host = HostFor(windowId);
 
 	// First use of this (window, canvas): bind the surface to the right mix.
 	// Default => null targetCanvas (global mix); otherwise activate the canvas
@@ -5584,16 +5594,14 @@ std::optional<PreviewViewState> GetView(const std::string &canvas, int windowId)
 	return surface->GetView();
 }
 
-std::optional<PreviewCanvasRect> CanvasRectAt(const std::string &canvas, int cx, int cy, int windowId)
+bool DrawSurfaceFrame(const std::string &canvas, uint32_t cx, uint32_t cy, int windowId)
 {
-	if (!g_instance) {
-		return std::nullopt;
-	}
-	PreviewSurface *surface = g_instance->FindSurface(windowId, canvas);
+	PreviewSurface *surface = g_instance ? g_instance->FindSurface(windowId, canvas) : nullptr;
 	if (!surface) {
-		return std::nullopt;
+		return false;
 	}
-	return surface->CanvasRectAt(cx, cy);
+	surface->DrawFrame(cx, cy);
+	return true;
 }
 
 std::optional<PreviewOverlays> OverlaysFromSettings(const GeneralSettings &settings)

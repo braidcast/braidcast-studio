@@ -2,11 +2,10 @@
   import type { PreviewFreeze } from "$lib/stores/previewFreeze.svelte";
   import { overlayRectOf } from "$lib/utils/overlayRect";
 
-  // Stands in for a hidden native preview surface while an overlay is up: the held
-  // frame, drawn where the surface would draw the canvas, over the black the surface
-  // clears to. Fills the element the surface was positioned from, which must be its
-  // containing block and carry no border, so this box measures as the rect the surface
-  // is sized from.
+  // Stands in for a hidden native preview surface while a modal is up: the surface's own
+  // frame, one image pixel per device pixel where the surface was. Fills the element the
+  // surface was positioned from, which must be its containing block and carry no border,
+  // so this box measures as the rect the surface is sized from.
   interface Props {
     freeze: PreviewFreeze;
   }
@@ -15,8 +14,8 @@
   let box = $state<HTMLDivElement | undefined>();
 
   // Nothing reports the surface's rect while it is hidden, so a resize under a held
-  // still -- the window, a dock, or the display's scale -- is caught here and the still
-  // re-placed for the new size. Device-pixel boxes, so a scale change with no change in
+  // still -- the window, a dock, or the display's scale -- is caught here and the surface
+  // drawn again at the new size. Device-pixel boxes, so a scale change with no change in
   // CSS size is caught as well.
   $effect(() => {
     const node = box;
@@ -57,11 +56,11 @@
     position: absolute;
     inset: 0;
     overflow: hidden;
-    /* The surface's own clear colour (obs_display_create in overlay_surface.cpp), so the
-       margin around the canvas reads as it did live. */
+    /* The surface's own clear colour (obs_display_create in overlay_surface.cpp), under
+       the sub-pixel edge the still's device-pixel snap can leave. */
     background: #000;
   }
-  /* Stretched, not fitted: the surface draws the mix into exactly this rect. */
+  /* At the still's own size: placeStill sizes it to one image pixel per device pixel. */
   img {
     position: absolute;
     display: block;

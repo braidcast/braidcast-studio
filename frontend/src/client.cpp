@@ -11,6 +11,7 @@
 #include "gpu_safe_mode.hpp"
 #include "log.hpp"
 #include "util/string_util.hpp"
+#include "windowing/overlay_surface.hpp"
 #include "windowing/window_chrome.hpp"
 
 Client::Client() = default;
@@ -176,6 +177,25 @@ void Client::OnDraggableRegionsChanged(CefRefPtr<CefBrowser> browser, CefRefPtr<
 	WindowChrome::SetDraggableRegions(browser, regions);
 }
 
+namespace {
+// The page that cut holes in its window's preview surfaces, or grabbed their input, is
+// gone and its successor starts knowing of none, so nothing would ever restore them.
+void ReleasePageLayers(CefRefPtr<CefBrowser> browser)
+{
+	if (HWND browserHwnd = browser->GetHost()->GetWindowHandle()) {
+		OverlaySurface::ClearHost(GetParent(browserHwnd));
+	}
+}
+} // namespace
+
+void Client::OnLoadStart(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, TransitionType /*transition_type*/)
+{
+	CEF_REQUIRE_UI_THREAD();
+	if (frame->IsMain()) {
+		ReleasePageLayers(browser);
+	}
+}
+
 void Client::OnLoadEnd(CefRefPtr<CefBrowser> /*browser*/, CefRefPtr<CefFrame> frame, int http_status_code)
 {
 	CEF_REQUIRE_UI_THREAD();
@@ -220,6 +240,7 @@ void Client::OnRenderProcessTerminated(CefRefPtr<CefBrowser> browser, Terminatio
 	if (message_router_) {
 		message_router_->OnRenderProcessTerminated(browser);
 	}
+	ReleasePageLayers(browser);
 
 	// Without a reload the window keeps its last painted frame but is inert: no JS,
 	// no timers, no bridge subscriptions, and nothing on screen says so. A detached

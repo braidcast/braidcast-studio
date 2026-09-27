@@ -1,10 +1,11 @@
 // The freeze still's geometry and the wait for it to reach the screen, kept out of the rune
-// store so they can be tested. The host lays out where the surface would draw its canvas
-// (the draw callback's own arithmetic, see bridge.cpp's PreviewCanvasRectJson); this only
-// carries that rect into the element.
+// store so they can be tested. The host draws the still with the surface's own draw callback
+// at the surface's device-pixel size (bridge.cpp's MethodPreviewFreeze); this only lays that
+// picture over the element pixel for pixel.
 
-import type { ObsMethods, PreviewCanvasRect } from "$lib/api/bridge";
+import type { ObsMethods } from "$lib/api/bridge";
 import type { OverlayRect } from "$lib/utils/overlayRect";
+import { nextPaintId, watchPresented, type ElementTimingSource } from "$lib/utils/presented";
 
 /** A box inside the surface's element, in CSS px from its top-left corner. */
 export interface BoxPlacement {
@@ -14,85 +15,44 @@ export interface BoxPlacement {
   height: string;
 }
 
-/** A held frame, where the surface would draw it, and the element rect that is for. */
+/** A held frame, where it sits in the element, and the element rect it was drawn for. */
 export interface FrozenFrame {
   dataUri: string;
   placement: BoxPlacement;
   element: OverlayRect;
 }
 
-// Place a canvas rect the host computed for `element`. CSS px rather than fractions of
-// the element: until a resize has been re-placed the still keeps its size and aspect
-// ratio instead of stretching with the box. Null for a degenerate rect, and for one laid
-// out for a surface of another size than this element's -- a stale answer describes a
-// different picture, and placing it would show the canvas at the wrong size.
-export function placeCanvasRect(r: PreviewCanvasRect | undefined, element: OverlayRect): BoxPlacement | null {
-  if (!r || r.w <= 0 || r.h <= 0) {
+// Lay a width x height device-px still over `element` at one image pixel per device pixel,
+// starting on the device pixel the surface's HWND starts on: the host rounds the element's
+// CSS position to device px, and a still left at the fractional position would be resampled
+// across two pixels. Sized in CSS px, so until a resize has been re-captured the still keeps
+// its size rather than stretching with the box. Null for an empty still, and for one drawn
+// for a surface of another size than this element's -- a stale answer is a different
+// picture.
+export function placeStill(width: number, height: number, element: OverlayRect): BoxPlacement | null {
+  if (width <= 0 || height <= 0) {
     return null;
   }
+  const { x, y, w, h, dpr } = element;
   // The host rounds CSS px to device px; a tolerance avoids restating its rule here.
-  if (Math.abs(r.surfaceW - element.w * element.dpr) > 1 || Math.abs(r.surfaceH - element.h * element.dpr) > 1) {
+  if (Math.abs(width - w * dpr) > 1 || Math.abs(height - h * dpr) > 1) {
     return null;
   }
-  const px = (n: number) => `${n / element.dpr}px`;
-  return { left: px(r.x), top: px(r.y), width: px(r.w), height: px(r.h) };
+  const snap = (v: number) => `${Math.round(v * dpr) / dpr - v}px`;
+  const px = (n: number) => `${n / dpr}px`;
+  return { left: snap(x), top: snap(y), width: px(width), height: px(height) };
 }
 
-// A freeze reply as the still to show, or null when it cannot be placed -- which counts
-// as a failed capture: the still would otherwise have to guess where the canvas was.
+// A freeze reply as the still to show, or null when it cannot be placed -- which counts as a
+// failed capture.
 export function frozenFrameFrom(reply: ObsMethods["preview.freeze"], element: OverlayRect): FrozenFrame | null {
-  const placement = placeCanvasRect(reply.canvasRect, element);
+  const placement = placeStill(reply.width, reply.height, element);
   return placement ? { dataUri: reply.dataUri, placement, element } : null;
 }
 
 /** Whether two element rects give the surface the same size (position is irrelevant). */
 export function sameSurfaceSize(a: OverlayRect, b: OverlayRect): boolean {
   return a.w === b.w && a.h === b.h && a.dpr === b.dpr;
-}
-
-/** Hands each element-timing entry's identifier to `onEntry`; the returned function stops it. */
-export type ElementTimingSource = (onEntry: (identifier: string) => void) => () => void;
-
-// Element Timing queues an image's entry from the presentation feedback of the frame that
-// first painted it, so the entry arriving is the one sign a page gets that a picture has
-// reached the screen rather than been scheduled for it. Null where it is not supported.
-export function elementTimingSource(): ElementTimingSource | null {
-  if (typeof PerformanceObserver === "undefined" || !PerformanceObserver.supportedEntryTypes?.includes("element")) {
-    return null;
-  }
-  return (onEntry) => {
-    const observer = new PerformanceObserver((list) => {
-      for (const entry of list.getEntries()) {
-        onEntry((entry as PerformanceEntry & { identifier?: string }).identifier ?? "");
-      }
-    });
-    observer.observe({ type: "element" });
-    return () => observer.disconnect();
-  };
-}
-
-// Every dock's observer sees every element entry in the document, and the docks capture in
-// lockstep on the one preview gate, so an id drawn from a per-dock counter would let one
-// dock's still answer for another's. One counter for the document.
-let paintSerial = 0;
-
-/** An `elementtiming` identifier no other still in this document carries. */
-export function nextPaintId(): string {
-  return `freeze-${++paintSerial}`;
-}
-
-/** Watch for `identifier` to be presented. Start it before the element is inserted. */
-export function watchPresented(identifier: string, source: ElementTimingSource): { presented: Promise<void>; stop: () => void } {
-  let stop = () => {};
-  const presented = new Promise<void>((resolve) => {
-    stop = source((id) => {
-      if (id === identifier) {
-        stop();
-        resolve();
-      }
-    });
-  });
-  return { presented, stop: () => stop() };
 }
 
 /** The steps that put a freshly inserted still on screen, each already bounded by the caller. */

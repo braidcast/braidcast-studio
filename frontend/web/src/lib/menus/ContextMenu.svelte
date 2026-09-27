@@ -38,7 +38,7 @@
   import Icon from "$lib/ui/Icon.svelte";
   import { isEditable } from "$lib/utils/editableTarget";
   import { pushEsc, popEsc, isTopEsc } from "$lib/utils/escStack";
-  import { suspendPreview } from "$lib/stores/previewGate.svelte";
+  import { cutPreviewUnder } from "$lib/stores/previewCutouts.svelte";
 
   let {
     x,
@@ -248,16 +248,19 @@
     ready = true;
   });
 
-  // The native preview is a child HWND the OS composites ABOVE the whole CEF window,
-  // so no z-index can put this menu over it -- the overlay has to be hidden instead.
-  // Held HERE rather than by whoever opened the menu, because every opener having to
-  // remember was not a rule anything enforced: four of the six surfaces that open a
-  // menu suspended, and the audio mixer's and the scene list's menus were drawn under
-  // the preview for as long as they have existed. Owning it here makes the coverage a
-  // property of the component instead of a habit, so a new menu cannot reintroduce
-  // the bug. Ref-counted, so a submenu level and any suspension its opener still
-  // holds simply nest.
-  $effect(() => suspendPreview());
+  // The native preview is a child HWND the OS composites ABOVE the whole CEF window, so
+  // no z-index can put this menu over it: each level cuts its box out of the preview
+  // instead, once placed and shown. Held HERE rather than by whoever opened the menu, so
+  // the coverage is a property of the component rather than a habit every opener has to
+  // keep. Released as the level unmounts -- the whole menu closing, or a flyout swapped by
+  // hover -- and the release keeps the level's likeness painted until its hole is closed.
+  $effect(() => {
+    if (!ready || !menuEl) {
+      return;
+    }
+    const cutout = cutPreviewUnder(menuEl, () => onClose());
+    return () => void cutout.release();
+  });
 
   // Dismissal listeners, all torn down together. The Escape token gates so a menu
   // opened over a modal (or a submenu over its parent) only closes the topmost layer.

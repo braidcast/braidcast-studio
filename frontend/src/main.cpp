@@ -935,13 +935,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR, int)
 	}
 	DBG(LogCat::Lifecycle, "cef browser created");
 
-	// Both siblings clip each other so neither overdraws the boundary: the obs
-	// overlay floats above the browser without flicker (browser HWND gets the bit
-	// here; the overlay sets it at creation).
-	if (HWND browser_hwnd = g_browser->GetHost()->GetWindowHandle()) {
-		SetWindowLongPtrW(browser_hwnd, GWL_STYLE,
-				  GetWindowLongPtrW(browser_hwnd, GWL_STYLE) | WS_CLIPSIBLINGS);
-	}
+	OverlaySurface::LetPaintUnder(g_browser->GetHost()->GetWindowHandle());
 
 	LayoutBrowser(host);
 

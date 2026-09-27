@@ -86,13 +86,22 @@ void WithGroupResizeHeldForTest(obs_sceneitem_t *groupItem, const std::function<
 // Render `renderFn` into an outW*outH BGRA texture (ortho'd to srcW*srcH source
 // units, so an out smaller than src downscales on the GPU) and return the packed
 // pixels, then encode those pixels as a PNG in memory. Exposed for the history
-// thumbnail sampler; both run synchronously inside one obs graphics block and must
-// be called on the UI thread.
+// thumbnail sampler. The render runs inside an obs graphics block and must be called on
+// the UI thread; the encode touches nothing shared and runs on any thread.
 bool RenderToBgraPixels(uint32_t srcW, uint32_t srcH, uint32_t outW, uint32_t outH,
 			const std::function<void()> &renderFn, bool opaqueBackground, std::vector<uint8_t> &pixels,
 			std::string &errOut);
+
+// How a PNG trades encode time for size; the pixels decode the same either way.
+enum class PngEncoding {
+	// WIC's default adaptive row filter: the smallest file.
+	Compact,
+	// Unfiltered rows and no alpha channel when nothing is transparent: a faster encode for
+	// a larger file, for an image someone is waiting on.
+	Fast,
+};
 bool EncodePngMemory(const uint8_t *pixels, uint32_t w, uint32_t h, std::vector<unsigned char> &out,
-		     std::string &errOut);
+		     std::string &errOut, PngEncoding encoding = PngEncoding::Compact);
 
 // Record metadata at the moment it is accepted by a platform, keyed by stream
 // profile uuid. The go-live prelude is the only caller that matters; a session

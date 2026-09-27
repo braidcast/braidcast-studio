@@ -1,13 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import {
-  nextPaintId,
-  PAINT_FRAMES,
-  paintStill,
-  stillOnScreen,
-  watchPresented,
-  type ElementTimingSource,
-  type StillPaint,
-} from "$lib/docking/freezeFrame";
+import { PAINT_FRAMES, paintStill, stillOnScreen, type StillPaint } from "$lib/docking/freezeFrame";
+import { nextPaintId, watchPresented, type ElementTimingSource } from "$lib/utils/presented";
 
 // Settles every queued microtask and one macrotask turn, so a promise that could resolve
 // from what has already happened has.

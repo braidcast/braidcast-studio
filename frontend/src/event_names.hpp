@@ -48,8 +48,13 @@ inline constexpr const char *kPreviewContextMenu = "preview.contextMenu";
 // a native HWND painted over the web view, so the DOM never sees a pointer event
 // for that region and cannot work this out for itself -- it needs telling.
 inline constexpr const char *kPreviewPointerOver = "preview.pointerOver";
-// Once per left or right button press on a preview surface, for the same reason.
+// Once per left or right button press on a preview surface, for the same reason. A press
+// an open layer's grab swallows sends kPreviewLayerPress instead.
 inline constexpr const char *kPreviewPointerDown = "preview.pointerDown";
+// A press on a preview surface while the page has a menu or dropdown open. The press goes
+// no further -- the layer holds the pointer (OverlaySurface::HostLayers) -- so the page
+// closes its layers on this, as it would for a click outside them.
+inline constexpr const char *kPreviewLayerPress = "preview.layerPress";
 inline constexpr const char *kFilterPreviewClosed = "filterPreview.closed";
 inline constexpr const char *kChatState = "chat.state";
 inline constexpr const char *kChatMessage = "chat.message";

@@ -98,19 +98,6 @@ struct PreviewViewState {
 	PreviewOverlays overlays;
 };
 
-// Where a frame of a surface this size puts the canvas inside it, and that surface size,
-// all in device px. Laid out by the draw callback's own arithmetic rather than an
-// equivalent, because it is what a stand-in for the surface has to match, zoom and pan
-// included.
-struct PreviewCanvasRect {
-	int x;
-	int y;
-	int cx;
-	int cy;
-	int surfaceCX;
-	int surfaceCY;
-};
-
 // One native preview surface: an OverlaySurface (a borderless child HWND of the
 // host, sibling above the CEF browser HWND, plus its own obs_display) rendering one
 // canvas's program scene with aspect-correct letterboxing, and the scene editing
@@ -162,6 +149,12 @@ public:
 	// The overlay HWND, or null until the first SetRect.
 	HWND Hwnd() const { return overlay_.Hwnd(); }
 
+	// Draw a cx x cy frame of this surface into the bound render target, as the draw
+	// callback lays out a frame of that size, without touching the live view: a size the
+	// surface is not at must neither clamp its pan nor publish its layout. The caller holds
+	// the graphics context.
+	void DrawFrame(uint32_t cx, uint32_t cy);
+
 	// Drive selection from JS without a mouse event (the SourcesPanel). `scene` is
 	// validated against the surface's current scene name (a mismatch is ignored); an
 	// empty `keys` clears. The whole set is replaced, so a dock's modifier click lands
@@ -188,13 +181,6 @@ public:
 
 	// The view state the context menu renders from. UI thread.
 	PreviewViewState GetView();
-
-	// The canvas rect the next frame would draw were the surface cx x cy device px: the
-	// current view and the surface's base resolution, through the draw callback's layout.
-	// Asks about a size rather than reading one back, so it answers for a surface that is
-	// hidden, has not drawn at its new size yet, or has never drawn. Empty for a
-	// degenerate size or a mix with no video. UI thread.
-	std::optional<PreviewCanvasRect> CanvasRectAt(int cx, int cy);
 
 	// Hit-test at a canvas-space coordinate against this surface's scene; returns
 	// the topmost matching scene-item id, or -1. Used by the smoke self-test.
@@ -329,10 +315,10 @@ private:
 	// DragForTest, ClickForTest and BandForTest.
 	void SeedTestTransform();
 
-	// Post one mouse message through OnOverlayMessage, the way the window procedure does,
-	// so a scripted click exercises the real message routing and not just the handler
-	// behind it. `msg` is a WM_* value (UINT, spelled as uint32_t so this header needs no
-	// windows.h ordering assumption beyond the one it already has).
+	// Post one mouse message through the overlay's HandleMessage, the way the window
+	// procedure does, so a scripted click exercises the real message routing and not just
+	// the handler behind it. `msg` is a WM_* value (UINT, spelled as uint32_t so this header
+	// needs no windows.h ordering assumption beyond the one it already has).
 	void SendTestMouseMessage(uint32_t msg, int x, int y);
 
 	// Begin dragging the whole current selection, recording each member's start
@@ -413,6 +399,11 @@ public:
 	// the constructor's host_ when not registered.
 	void RegisterWindow(int windowId, HWND host);
 	void UnregisterWindow(int windowId);
+
+	// The host HWND windowId's surfaces parent to: its registered host, else host_.
+	HWND HostFor(int windowId) const;
+	// windowId's registered host, or null for a window that is not (or no longer) registered.
+	HWND KnownHostFor(int windowId) const;
 
 	// Position/size the surface for (windowId, canvasUuid) (empty/Default uuid =>
 	// the Default surface). Lazily creates the surface on first use; an unknown
@@ -553,8 +544,8 @@ bool ApplyViewAction(const std::string &canvas, const std::string &token, int wi
 bool SetLocked(const std::string &canvas, bool locked, int windowId = 0);
 // Empty when there is no surface for this canvas and window.
 std::optional<PreviewViewState> GetView(const std::string &canvas, int windowId = 0);
-// PreviewSurface::CanvasRectAt; empty also when there is no surface. Never creates one.
-std::optional<PreviewCanvasRect> CanvasRectAt(const std::string &canvas, int cx, int cy, int windowId = 0);
+// PreviewSurface::DrawFrame; false when there is no surface. Never creates one.
+bool DrawSurfaceFrame(const std::string &canvas, uint32_t cx, uint32_t cy, int windowId = 0);
 
 // The guide overlays as GeneralSettings holds them. FromSettings is empty when the
 // stored overflow mode is not a token it knows; ToSettings writes all four fields.

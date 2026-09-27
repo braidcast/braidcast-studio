@@ -59,6 +59,7 @@ import { EV } from "$lib/utils/eventNames";
   import { isInSourceTree } from "$lib/docking/sourceTree";
   import { WINDOW_ID } from "$lib/utils/windowContext";
   import { previewSuspended } from "$lib/stores/previewGate.svelte";
+  import { previewLayerOpen } from "$lib/stores/previewCutouts.svelte";
   import { previewTarget } from "$lib/docking/previewSurface";
 
   // Apply the saved (or default Industrial) theme before first paint settles.
@@ -191,6 +192,11 @@ import { EV } from "$lib/utils/eventNames";
     End: "bottom",
   };
 
+  // A modal, a menu or a dropdown is up: the keys below belong to it, not to the preview.
+  function overlayOpen(): boolean {
+    return previewSuspended() || previewLayerOpen();
+  }
+
   function onKeydown(e: KeyboardEvent): void {
     // Fullscreen toggles regardless of focus (not gated on editable target).
     if (e.key === "F11") {
@@ -202,9 +208,9 @@ import { EV } from "$lib/utils/eventNames";
     // It has to be handled here: the overlay HWND never takes keyboard focus, so no key
     // event ever reaches the preview itself. Deliberately neither preventDefault'ed nor
     // gated on the reply — a preview that is in no group answers `exited: false` and Esc
-    // goes on meaning whatever else is listening for it. The modal case is covered by
-    // previewSuspended(), which is true exactly while one stands.
-    if (e.key === "Escape" && !e.ctrlKey && !e.altKey && !isEditable(e.target) && !previewSuspended()) {
+    // goes on meaning whatever else is listening for it. A modal or a menu is covered by
+    // overlayOpen(), which is true exactly while one stands.
+    if (e.key === "Escape" && !e.ctrlKey && !e.altKey && !isEditable(e.target) && !overlayOpen()) {
       void obs.call("preview.exitGroup", previewTarget(activeSurface.canvasParam)).catch(() => {});
       return;
     }
@@ -220,7 +226,7 @@ import { EV } from "$lib/utils/eventNames";
       !e.altKey &&
       !isEditable(e.target) &&
       !isInSourceTree(e.target) &&
-      !previewSuspended()
+      !overlayOpen()
     ) {
       if (activeSurface.selection.size > 0) {
         e.preventDefault();
@@ -234,7 +240,7 @@ import { EV } from "$lib/utils/eventNames";
     // undoable). Gated like the nudge above, and the !isEditable gate wraps BOTH branches so
     // an in-flight inline rename keeps the key for its text. No-op (no preventDefault) when
     // there is nothing to remove, so the key falls through.
-    if (e.key === "Delete" && !e.ctrlKey && !e.altKey && !isEditable(e.target) && !previewSuspended()) {
+    if (e.key === "Delete" && !e.ctrlKey && !e.altKey && !isEditable(e.target) && !overlayOpen()) {
       if (activeSurface.kind === "scene") {
         removeActiveScene(e);
         return;
@@ -256,7 +262,7 @@ import { EV } from "$lib/utils/eventNames";
     // beginRename via dockAction (no rename editor/bridge here). A selected source item
     // wins; otherwise the active surface's scene. Gated like the nudge/Delete siblings;
     // no-op (no preventDefault) when nothing is selected so the key falls through.
-    if (e.key === "F2" && !e.ctrlKey && !e.altKey && !isEditable(e.target) && !previewSuspended()) {
+    if (e.key === "F2" && !e.ctrlKey && !e.altKey && !isEditable(e.target) && !overlayOpen()) {
       // The surface's kind, not merely "is a row selected", decides which editor opens:
       // a scene-row click is a scene target even if a row somehow stayed selected.
       const t = activeSurface.kind === "source" ? activeItem() : null;

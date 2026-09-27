@@ -16,7 +16,6 @@ import { EV } from "$lib/utils/eventNames";
   import Button from "$lib/ui/Button.svelte";
   import { selectOnMount } from "$lib/utils/focusActions";
   import { clamp } from "$lib/utils/clamp";
-  import { suspendPreview } from "$lib/stores/previewGate.svelte";
   import { PreviewFreeze } from "$lib/stores/previewFreeze.svelte";
   import PreviewFreezeStill from "$lib/docking/PreviewFreezeStill.svelte";
 import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
@@ -94,10 +93,8 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   const report = dockError.report;
 
   // One context menu for the whole dock (scene rows, source rows, and the preview
-  // all use it). `suspendOverlay` is set only by the preview menu: it opens over
-  // the native overlay and must blank it; row menus open in the list area and must
-  // not (blanking would flash the preview off for no reason).
-  let menu = $state<(ContextMenuState & { suspendOverlay?: boolean }) | null>(null);
+  // all use it).
+  let menu = $state<ContextMenuState | null>(null);
 
   // ---- inline preview region (native overlay scoped to this canvas) -----------
   let previewEl = $state<HTMLElement | undefined>();
@@ -1037,7 +1034,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
         // whatever is (or is not) under the cursor.
         const view = await fetchPreviewView(canvasUuid);
         if (p.id == null) {
-          menu = { x, y, items: [...buildEmptyItems(), ...previewViewMenuItems(view, canvasUuid, report)], suspendOverlay: true };
+          menu = { x, y, items: [...buildEmptyItems(), ...previewViewMenuItems(view, canvasUuid, report)] };
           return;
         }
         const deint = p.source
@@ -1048,7 +1045,6 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
           x,
           y,
           items: [...buildPreviewItems(p, deint, transitionTypeList), ...previewViewMenuItems(view, canvasUuid, report)],
-          suspendOverlay: true,
         };
       })();
     });
@@ -1154,13 +1150,6 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     scheduleRect();
   });
 
-  // The preview menu opens at the cursor inside the overlay (which sits above CEF
-  // and would occlude it); suspend the overlay only for that menu, not row menus.
-  $effect(() => {
-    if (menu?.suspendOverlay) {
-      return suspendPreview();
-    }
-  });
 </script>
 
 <div class="dock-body" bind:this={dockBodyEl}>

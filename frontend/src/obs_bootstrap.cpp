@@ -5089,11 +5089,20 @@ void ObsBootstrap::RunSceneItemGroupSelfTest()
 
 	std::vector<std::pair<std::string, std::string>> events;
 	std::vector<json> selections;
-	Bridge::SetEventObserver([&events, &selections](const std::string &name, const std::string &payload) {
+	int layerPresses = 0;
+	// What the page does on a layer press, when a check needs it: close the layer.
+	std::function<void()> onLayerPress;
+	Bridge::SetEventObserver([&events, &selections, &layerPresses, &onLayerPress](const std::string &name,
+										      const std::string &payload) {
 		if (name == EventNames::kSceneItemsChanged) {
 			events.emplace_back(name, payload);
 		} else if (name == EventNames::kSceneItemSelected) {
 			selections.push_back(json::parse(payload, nullptr, false));
+		} else if (name == EventNames::kPreviewLayerPress) {
+			++layerPresses;
+			if (onLayerPress) {
+				onLayerPress();
+			}
 		}
 	});
 
@@ -6928,6 +6937,48 @@ void ObsBootstrap::RunSceneItemGroupSelfTest()
 			Preview::ClickForTest(canvasUuid, emptySpot.x, emptySpot.y, false);
 			check("a click on empty canvas leaves the group and clears the selection",
 			      enteredForEmpty && enteredUuid().empty() && selectedKeys().empty(), drillState());
+
+			// An open menu or dropdown holds the pointer (preview.setCutouts' grab): a press on
+			// the surface, with its release, only reports itself so the page can close the layer.
+			// The same click once the grab is gone is what shows the first one was swallowed.
+			{
+				json selectTop = base;
+				selectTop["id"] = topId;
+				run("preview.select", selectTop, ok);
+				json layers{{"window", 0}, {"dpr", 1.0}, {"rects", json::array()}, {"grab", true}};
+				bool grabbed = false;
+				run("preview.setCutouts", layers, grabbed);
+				layerPresses = 0;
+				Preview::ClickForTest(canvasUuid, emptySpot.x, emptySpot.y, false);
+				const int pressesWhileGrabbed = layerPresses;
+				const std::vector<SceneItemKey> selectionWhileGrabbed = selectedKeys();
+				layers["grab"] = false;
+				run("preview.setCutouts", layers, ok);
+				Preview::ClickForTest(canvasUuid, emptySpot.x, emptySpot.y, false);
+				check("a press under an open layer closes it and goes no further",
+				      grabbed && ok && pressesWhileGrabbed == 1 &&
+					      selectionWhileGrabbed == std::vector<SceneItemKey>{SceneItemKey(topId)} &&
+					      layerPresses == 1 && selectedKeys().empty(),
+				      "layer presses " + std::to_string(pressesWhileGrabbed) + " then " +
+					      std::to_string(layerPresses) + ", selection under the grab " +
+					      keysText(selectionWhileGrabbed) + ", after " + keysText(selectedKeys()));
+
+				// A double-click whose first press closed the layer: the layer closes on that
+				// press, as the page closes it, and the second press is the user's first
+				// click -- it selects the group rather than entering it.
+				layers["grab"] = true;
+				run("preview.setCutouts", layers, grabbed);
+				onLayerPress = [&] {
+					layers["grab"] = false;
+					run("preview.setCutouts", layers, ok);
+				};
+				Preview::ClickForTest(canvasUuid, drillACentre.x, drillACentre.y, true);
+				onLayerPress = nullptr;
+				check("a double-click that closes a layer reaches the preview as one plain click",
+				      grabbed && ok && enteredUuid().empty() &&
+					      selectedKeys() == std::vector<SceneItemKey>{SceneItemKey(groupId)},
+				      drillState());
+			}
 
 			// Exit 4: a scene switch. The drill-in is scoped to the scene it was made in, so
 			// the switch drops it and switching back does NOT restore it. A scene-collection

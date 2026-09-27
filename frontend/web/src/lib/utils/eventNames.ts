@@ -42,6 +42,7 @@ export const EV = {
   previewContextMenu: "preview.contextMenu",
   previewPointerOver: "preview.pointerOver",
   previewPointerDown: "preview.pointerDown",
+  previewLayerPress: "preview.layerPress",
   filterPreviewClosed: "filterPreview.closed",
   chatState: "chat.state",
   chatMessage: "chat.message",

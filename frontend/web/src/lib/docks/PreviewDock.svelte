@@ -85,8 +85,8 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
 
   // The Properties modal overlaps the native overlay. Acquire/release the preview
   // suspension together with `propsForSource` (not in a reactive $effect) so the
-  // gate ref-count never transiently hits zero during the context-menu -> modal
-  // handoff -- which would let the overlay re-raise above the modal.
+  // suspension spans exactly the modal's lifetime, with no reactive gap in which the
+  // overlay could re-raise above it.
   let propsRelease: (() => void) | null = null;
   function openProps(source: string) {
     propsForSource = source;
@@ -355,14 +355,6 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   $effect(() => {
     dockLayout.v;
     scheduleRect();
-  });
-
-  // The context menu opens at the cursor inside the preview; the native overlay
-  // sits above CEF and would occlude it, so suspend the overlay while it's open.
-  $effect(() => {
-    if (menu) {
-      return suspendPreview();
-    }
   });
 
   // The add-source modal overlaps the native overlay too; suspend while it's open.

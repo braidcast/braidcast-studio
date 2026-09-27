@@ -10,7 +10,7 @@
   import { oauthStore } from "$lib/stores/oauthStore.svelte";
   import { profileName, platformLabel, profileAvatarUrl } from "$lib/utils/profileDisplay";
   import type { StreamProfileInfo } from "$lib/api/bridge";
-  import { suspendPreview } from "$lib/stores/previewGate.svelte";
+  import { cutoutLayer } from "$lib/stores/previewCutouts.svelte";
 
   interface Props {
     profiles: StreamProfileInfo[];
@@ -26,14 +26,9 @@
   $effect(() => oauthStore.subscribe());
 
   let query = $state("");
+  // The dropdown list is a DOM layer like any other, so the native preview overlay would
+  // cover it wherever the two overlap; it cuts itself out (use:cutoutLayer).
   let open = $state(false);
-  // The dropdown list is a DOM layer like any other, so the native preview overlay
-  // would cover it wherever the two overlap.
-  $effect(() => {
-    if (open) {
-      return suspendPreview();
-    }
-  });
   let active = $state(0);
   let rootEl = $state<HTMLDivElement | null>(null);
 
@@ -119,7 +114,7 @@
     onkeydown={onKeydown}
   />
   {#if open}
-    <div class="ps-list" id="ps-list" role="listbox">
+    <div class="ps-list" id="ps-list" role="listbox" use:cutoutLayer={() => (open = false)}>
       {#if filtered.length === 0}
         <p class="ps-empty">No matching destinations</p>
       {:else}

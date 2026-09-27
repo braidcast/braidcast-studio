@@ -5,7 +5,9 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <string>
+#include <vector>
 
 // A borderless child HWND of a host window -- a sibling of the CEF browser HWND,
 // z-ordered above it -- with an obs_display attached to it. The obs_display is its
@@ -28,10 +30,11 @@ public:
 	// libobs' draw-callback signature, respelled so this header stays free of obs.h.
 	using DrawFn = void (*)(void *param, uint32_t cx, uint32_t cy);
 
-	// Window messages the overlay HWND receives that this class does not consume
-	// itself (it consumes only its resize-settle and warm-up messages). Implemented by an owner
-	// that needs input off the surface; null for a display-only surface. WM_TIMER ids from
-	// kWarmupTimerIdBase up are the warm-up's and never reach the sink.
+	// Window messages the overlay HWND receives that this class does not consume itself
+	// (it consumes its resize-settle and warm-up messages, and the pointer input a host's
+	// grab takes -- see HostLayers). Implemented by an owner that needs input off the
+	// surface; null for a display-only surface. WM_TIMER ids from kWarmupTimerIdBase up are
+	// the warm-up's and never reach the sink.
 	class MessageSink {
 	public:
 		virtual ~MessageSink() = default;
@@ -81,10 +84,48 @@ public:
 	void *Display() const { return display_; }
 
 	// Dispatch one window message for this surface: the resize-settle and warm-up
-	// messages are consumed here, everything else is offered to the sink. Returns true when the
-	// message was handled. Public only so the shared WndProc (in the .cpp) can reach
-	// it; nothing else calls it.
+	// messages, and pointer input under a grab, are consumed here; everything else is
+	// offered to the sink. Returns true when the message was handled. Public so the shared
+	// WndProc (in the .cpp) and PreviewSurface::SendTestMouseMessage can reach it.
 	bool HandleMessage(UINT msg, WPARAM wparam, LPARAM lparam);
+
+	// The page's floating layers -- menus, dropdowns -- as they bear on one host's surfaces.
+	struct HostLayers {
+		// Cut out of every surface, in host-client device px, so the web view shows through
+		// while the video around the holes stays live: how a layer over a preview is seen.
+		std::vector<RECT> cut;
+		// A layer is open, whether or not it has been cut yet. Pointer input on a surface
+		// belongs to the layer then, as it would to a popup holding a mouse grab: a button
+		// press, with its release, goes no further than `onPress`, and hover and the wheel
+		// do nothing.
+		bool grab = false;
+		// A grabbed press landed on a surface: the page closes its layers, as it would for a
+		// click anywhere else outside them.
+		std::function<void()> onPress;
+	};
+
+	// Replace `host`'s layers on every overlay parented to it. Each surface cuts only the
+	// part of a rect over itself, and cuts again whenever the rect it was last applied at
+	// changes. UI thread.
+	static void SetHostLayers(HWND host, HostLayers layers);
+
+	// No layers on `host`: every surface whole, nothing grabbed. For a page that can no
+	// longer send its own restore -- reloaded, crashed, or its window gone. UI thread.
+	static void ClearHost(HWND host);
+
+	// Whether `rect` (host-client device px) overlaps a surface on `host`, so a hole cut
+	// there would open onto the web view. UI thread.
+	static bool CutsInto(HWND host, const RECT &rect);
+
+	// Clear WS_CLIPSIBLINGS on a web view HWND that overlays sit above. A software-composited
+	// web view clipped against its siblings never paints the area under a surface, so a fresh
+	// cut-out would show stale pixels for a few frames before the page repainted into it.
+	static void LetPaintUnder(HWND browser);
+
+	// Run the draw callback for a cx*cy frame into the bound render target, with the depth,
+	// cull and blend state render_display gives it. The caller holds the graphics context.
+	// UI thread.
+	void DrawFrame(uint32_t cx, uint32_t cy);
 
 private:
 	// Create the overlay child HWND (no display) on first use. Idempotent.
@@ -129,6 +170,23 @@ private:
 	// rect from a rapid-resize burst and re-show the surface. See SetRect.
 	void OnResizeSettled();
 
+	// Bring the HWND's window region in line with its host's cutouts at the rect last
+	// applied. Only calls SetWindowRgn when the holes or the size they are cut from change.
+	void ApplyCutouts();
+
+	// The rect ApplyRect last put the HWND at, in host-client px; false before it has one.
+	bool Placed(RECT &rect) const;
+
+	// What a host's grab does with one window message: nothing (Pass, the sink gets it),
+	// swallow it (Consume), or leave it to DefWindowProc without the sink (Default). May
+	// rewrite `msg` into what the sink should see instead.
+	enum class GrabAction { Pass, Consume, Default };
+	GrabAction Grab(UINT &msg, WPARAM wparam);
+
+	// The host's layers just took the grab: the pointer is the layer's now, so the sink
+	// drops what it derived from the pointer being over the surface.
+	void OnGrabBegin();
+
 	// Tell the sink the HWND just went hidden. Called from every route that hides
 	// it, so a sink's teardown is written once rather than per route.
 	void NotifyHidden();
@@ -151,6 +209,10 @@ private:
 	// applied, so the first rect shows immediately with no hide/delay).
 	int lastCx_ = 0;
 	int lastCy_ = 0;
+	// Where ApplyRect last put the HWND, in host-client px; what the cutouts are
+	// intersected against.
+	int lastX_ = 0;
+	int lastY_ = 0;
 	int pendingX_ = 0;
 	int pendingY_ = 0;
 	int pendingCx_ = 0;
@@ -169,6 +231,19 @@ private:
 	// again. 0x0 once a create succeeds.
 	int failedCx_ = 0;
 	int failedCy_ = 0;
+
+	// The rects the window region currently cuts out, in client px, and the size the region
+	// was built at; empty when the HWND has no region.
+	std::vector<RECT> cut_;
+	int cutCx_ = 0;
+	int cutCy_ = 0;
+
+	// Mouse buttons whose press a grab swallowed, one bit per button, so the release is
+	// swallowed with it even when the grab has ended in between. UI thread.
+	unsigned swallowed_ = 0;
+	// Mouse buttons whose last press a grab swallowed, until that button's next press, which
+	// the sink sees as a plain press even when Windows sends it as a double-click. UI thread.
+	unsigned dismissed_ = 0;
 };
 
 #endif // OBS_MULTISTREAM_FRONTEND_OVERLAY_SURFACE_HPP_

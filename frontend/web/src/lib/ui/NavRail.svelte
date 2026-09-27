@@ -10,7 +10,7 @@
 import { EV } from "$lib/utils/eventNames";
   import { pageStore, setPage, type Page } from "$lib/stores/pageStore.svelte";
   import { openAbout } from "$lib/dialogs/aboutOpener.svelte";
-  import { suspendPreview } from "$lib/stores/previewGate.svelte";
+  import { cutoutLayer } from "$lib/stores/previewCutouts.svelte";
   import CollectionDialog, { type DialogSpec } from "$lib/dialogs/CollectionDialog.svelte";
   import { seamStore, SEAM, bumpDiagonals, offsetRight, polygon } from "$lib/stores/seamStore.svelte";
 
@@ -66,15 +66,10 @@ import { EV } from "$lib/utils/eventNames";
   // --- Scene Collection switcher (rehomed from the menu bar, Phase 6a logic) ---
   let collections = $state<CollectionInfo[]>([]);
   let dialog = $state<DialogSpec | null>(null);
+  // The collection popup overlaps the preview region on a narrow window, where the native
+  // overlay would be composited over it; the popup cuts itself out (use:cutoutLayer), the
+  // same as ContextMenu.
   let menuOpen = $state(false);
-  // The collection popup overlaps the preview region on a narrow window, and the
-  // native overlay would be composited over it. Same reasoning as ContextMenu: the
-  // surface that renders the popup owns the suspension.
-  $effect(() => {
-    if (menuOpen) {
-      return suspendPreview();
-    }
-  });
 
   const active = $derived(collections.find((c) => c.active));
 
@@ -275,7 +270,7 @@ import { EV } from "$lib/utils/eventNames";
 
       {#if menuOpen}
         <div class="menu-backdrop" role="presentation" onclick={() => (menuOpen = false)}></div>
-        <div class="menu" role="menu" aria-label="Scene Collection">
+        <div class="menu" role="menu" aria-label="Scene Collection" use:cutoutLayer={() => (menuOpen = false)}>
           {#each collections as c (c.id)}
             <button class="menu-item" class:on={c.active} role="menuitemradio" aria-checked={c.active} onclick={() => switchCollection(c.id)}>
               <span class="tick">{c.active ? "●" : ""}</span><span class="menu-text">{c.name}</span>

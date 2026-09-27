@@ -4,8 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { compile } from "svelte/compiler";
 import { render } from "svelte/server";
-import type { PreviewCanvasRect } from "$lib/api/bridge";
-import { frozenFrameFrom, placeCanvasRect, sameSurfaceSize, type FrozenFrame } from "$lib/docking/freezeFrame";
+import { frozenFrameFrom, placeStill, sameSurfaceSize, type FrozenFrame } from "$lib/docking/freezeFrame";
 import type { OverlayRect } from "$lib/utils/overlayRect";
 
 const px = (v: string) => {
@@ -13,58 +12,49 @@ const px = (v: string) => {
   return parseFloat(v);
 };
 
-// Issue #27's session: the Default surface at 388x689 CSS px and dpr 1, showing a
-// 1440x2560 canvas fitted with the 10 px edge margin (preview_window.cpp PlaceCanvas).
+// Issue #27's session: the Default surface at 388x689 CSS px and dpr 1.
 const ELEMENT: OverlayRect = { x: 766, y: 125, w: 388, h: 689, dpr: 1 };
-const FITTED: PreviewCanvasRect = { x: 10, y: 17, w: 368, h: 654, surfaceW: 388, surfaceH: 689 };
 
-describe("placeCanvasRect", () => {
-  test("puts the still on the canvas rect the host laid out, not the whole element", () => {
-    const p = placeCanvasRect(FITTED, ELEMENT)!;
-    expect([px(p.left), px(p.top), px(p.width), px(p.height)]).toEqual([10, 17, 368, 654]);
+describe("placeStill", () => {
+  test("covers the element at one image pixel per device pixel", () => {
+    const p = placeStill(388, 689, ELEMENT)!;
+    expect([px(p.left), px(p.top), px(p.width), px(p.height)]).toEqual([0, 0, 388, 689]);
   });
 
-  test("converts device px to CSS px at a fractional devicePixelRatio", () => {
-    // The same element at dpr 1.5: the host sized the surface 582x1034 and fitted the
-    // canvas at 562x999, 10 px in and centered vertically.
-    const element = { ...ELEMENT, dpr: 1.5 };
-    const p = placeCanvasRect({ x: 10, y: 17, w: 562, h: 999, surfaceW: 582, surfaceH: 1034 }, element)!;
-    expect(px(p.left)).toBeCloseTo(10 / 1.5, 6);
-    expect(px(p.top)).toBeCloseTo(17 / 1.5, 6);
-    expect(px(p.width)).toBeCloseTo(562 / 1.5, 6);
-    expect(px(p.height)).toBeCloseTo(999 / 1.5, 6);
+  test("starts on the device pixel the host rounds the surface to", () => {
+    // At dpr 1.25 the element's left edge, 766.3 CSS px, is device px 957.875; the host puts
+    // the HWND at 958, so the still moves right by the 0.125 device px it rounded up.
+    const element: OverlayRect = { x: 766.3, y: 125.1, w: 388, h: 689, dpr: 1.25 };
+    const p = placeStill(485, 861, element)!;
+    expect((element.x + px(p.left)) * 1.25).toBeCloseTo(958, 9);
+    expect((element.y + px(p.top)) * 1.25).toBeCloseTo(156, 9);
+    expect(px(p.width) * 1.25).toBeCloseTo(485, 9);
+    expect(px(p.height) * 1.25).toBeCloseTo(861, 9);
   });
 
-  test("keeps a zoomed and panned canvas that overhangs the element", () => {
-    const element: OverlayRect = { x: 0, y: 0, w: 800, h: 450, dpr: 1 };
-    const p = placeCanvasRect({ x: -300, y: -120, w: 1920, h: 1080, surfaceW: 800, surfaceH: 450 }, element)!;
-    expect([px(p.left), px(p.top), px(p.width), px(p.height)]).toEqual([-300, -120, 1920, 1080]);
-  });
-
-  test("refuses a rect laid out for another surface size", () => {
-    // The element has since grown; a rect for the old size would show the wrong picture.
-    expect(placeCanvasRect(FITTED, { ...ELEMENT, w: 500 })).toBeNull();
-    expect(placeCanvasRect(FITTED, { ...ELEMENT, dpr: 1.25 })).toBeNull();
+  test("refuses a still drawn for another surface size", () => {
+    // The element has since grown; a still for the old size is a different picture.
+    expect(placeStill(388, 689, { ...ELEMENT, w: 500 })).toBeNull();
+    expect(placeStill(388, 689, { ...ELEMENT, dpr: 1.25 })).toBeNull();
     // Rounding to device px is the host's; within a pixel is the same surface.
-    expect(placeCanvasRect(FITTED, { ...ELEMENT, w: 388.4 })).not.toBeNull();
+    expect(placeStill(388, 689, { ...ELEMENT, w: 388.4 })).not.toBeNull();
   });
 
-  test("refuses a missing or degenerate rect", () => {
-    expect(placeCanvasRect(undefined, ELEMENT)).toBeNull();
-    expect(placeCanvasRect({ ...FITTED, w: 0 }, ELEMENT)).toBeNull();
+  test("refuses an empty still", () => {
+    expect(placeStill(0, 689, ELEMENT)).toBeNull();
   });
 });
 
 describe("frozenFrameFrom", () => {
-  test("a reply with a placeable rect becomes the still", () => {
-    const f = frozenFrameFrom({ dataUri: "data:x", width: 1440, height: 2560, canvasRect: FITTED }, ELEMENT)!;
+  test("a reply the size of the surface becomes the still", () => {
+    const f = frozenFrameFrom({ dataUri: "data:x", width: 388, height: 689 }, ELEMENT)!;
     expect(f.dataUri).toBe("data:x");
     expect(f.element).toEqual(ELEMENT);
-    expect(px(f.placement.left)).toBe(10);
+    expect(px(f.placement.width)).toBe(388);
   });
 
-  test("a reply without a rect is a failed capture", () => {
-    expect(frozenFrameFrom({ dataUri: "data:x", width: 1440, height: 2560 }, ELEMENT)).toBeNull();
+  test("a reply for another size is a failed capture", () => {
+    expect(frozenFrameFrom({ dataUri: "data:x", width: 720, height: 405 }, ELEMENT)).toBeNull();
   });
 });
 
@@ -93,7 +83,7 @@ describe("PreviewFreezeStill", () => {
       writeFileSync(file, code);
       const { default: Still } = await import(file);
       const frame: FrozenFrame = frozenFrameFrom(
-        { dataUri: "data:x", width: 1, height: 1, canvasRect: FITTED },
+        { dataUri: "data:x", width: 388, height: 689 },
         ELEMENT,
       )!;
       body = render(Still, { props: { freeze: { frame, img: undefined, paintId: "freeze-7" } } }).body;
@@ -106,10 +96,10 @@ describe("PreviewFreezeStill", () => {
     // Asks for the decode to finish before the frame that paints it, so the frame the entry
     // reports is meant to carry its pixels rather than a placeholder.
     expect(body).toContain('decoding="sync"');
-    expect(body).toMatch(/left:\s*10px/);
-    expect(body).toMatch(/top:\s*17px/);
-    expect(body).toMatch(/width:\s*368px/);
-    expect(body).toMatch(/height:\s*654px/);
+    expect(body).toMatch(/left:\s*0px/);
+    expect(body).toMatch(/top:\s*0px/);
+    expect(body).toMatch(/width:\s*388px/);
+    expect(body).toMatch(/height:\s*689px/);
     expect(out.css?.code ?? "").not.toMatch(/object-fit:\s*(contain|cover)/);
   });
 });

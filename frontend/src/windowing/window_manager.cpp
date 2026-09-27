@@ -115,11 +115,7 @@ int WindowManager::Detach(const std::string &dockId)
 		::DestroyWindow(hwnd);
 		return 0;
 	}
-	// Clip the browser HWND against its sibling preview overlay so neither
-	// overdraws the boundary -- mirrors the main window's wiring.
-	if (HWND bh = browser->GetHost()->GetWindowHandle()) {
-		SetWindowLongPtrW(bh, GWL_STYLE, GetWindowLongPtrW(bh, GWL_STYLE) | WS_CLIPSIBLINGS);
-	}
+	OverlaySurface::LetPaintUnder(browser->GetHost()->GetWindowHandle());
 
 	// Register this window's host HWND so its preview surfaces parent to THIS
 	// top-level window (its overlay HWND becomes a child of hwnd, z-ordered above

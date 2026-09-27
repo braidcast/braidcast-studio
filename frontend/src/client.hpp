@@ -79,6 +79,8 @@ public:
 				       const std::vector<CefDraggableRegion> &regions) override;
 
 	// CefLoadHandler methods:
+	void OnLoadStart(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame,
+			 TransitionType transition_type) override;
 	void OnLoadEnd(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, int http_status_code) override;
 	void OnLoadError(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, ErrorCode error_code,
 			 const CefString &error_text, const CefString &failed_url) override;

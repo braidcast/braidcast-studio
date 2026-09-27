@@ -1795,10 +1795,14 @@ export interface ObsMethods {
   // (4.4.5b). setRect params: {x,y,w,h,dpr,canvas?}; hide/select: {...,canvas?}.
   "preview.setRect": null;
   "preview.hide": null;
-  // freeze and canvasRect params: {canvas?, window?, x, y, w, h, dpr}, the element rect as
-  // setRect takes it; the reply's canvasRect is placed for that size.
-  "preview.freeze": { dataUri: string; width: number; height: number; canvasRect?: PreviewCanvasRect };
-  "preview.canvasRect": { canvasRect?: PreviewCanvasRect };
+  // freeze params: {canvas?, window?, x, y, w, h, dpr}, the element rect as setRect takes
+  // it; the still is the surface drawn at that size, width x height device px.
+  "preview.freeze": { dataUri: string; width: number; height: number };
+  // setCutouts params: {window, dpr, rects: [{x, y, w, h}], grab} in CSS px; an empty
+  // list restores the window's surfaces whole. `grab`: a layer is open, so pointer input on
+  // the window's surfaces is the layer's (a press becomes preview.layerPress). `hits`: per
+  // rect, whether it overlaps one of the window's surfaces, so a hole opened there.
+  "preview.setCutouts": { hits: boolean[] };
   "preview.destroy": null;
   // `selected` is the ANCHOR (last) member, kept so single-selection callers read
   // exactly as before; `selectedIds` is the whole set the preview now holds, and
@@ -2418,9 +2422,15 @@ export interface ObsEvents {
   };
   // Any left or right button press on a preview surface, broadcast to all windows like the
   // events below. The overlay never takes DOM focus, so this is how the page learns the user
-  // has moved on from whatever it had focused.
+  // has moved on from whatever it had focused. A press an open layer swallows is
+  // preview.layerPress instead.
   "preview.pointerDown": {
     canvas: string | null;
+    window: number;
+  };
+  // A press on any preview surface in `window` while a floating layer is open there. The
+  // press itself is swallowed, so this is the only trace of it: the layers close.
+  "preview.layerPress": {
     window: number;
   };
   // Right-click in a native preview overlay (WM_RBUTTONUP). Broadcast to ALL
@@ -2607,18 +2617,6 @@ export interface PreviewView extends PreviewOverlays {
   fixed: boolean;
   zoomPercent: number;
   locked: boolean;
-}
-
-// Where a surface would draw its canvas at the element size a call passed:
-// {x,y,w,h} inside {surfaceW,surfaceH}, all in that surface's device px. Absent from a
-// reply when there is no such surface or nothing to place.
-export interface PreviewCanvasRect {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  surfaceW: number;
-  surfaceH: number;
 }
 
 export type PreviewHitTarget = Pick<

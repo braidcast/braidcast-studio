@@ -10,6 +10,7 @@
 import { obs, type PreviewView } from "$lib/api/bridge";
 import { previewViewItems, type PreviewOverlayPatch, type PreviewViewAction } from "$lib/menus/previewViewMenu";
 import type { ContextMenuItems } from "$lib/menus/ContextMenu.svelte";
+import { previewLayerOpen } from "$lib/stores/previewCutouts.svelte";
 import type { PreviewFreeze } from "$lib/stores/previewFreeze.svelte";
 import { previewSuspended } from "$lib/stores/previewGate.svelte";
 import { overlayRectOf } from "$lib/utils/overlayRect";
@@ -87,14 +88,14 @@ export function reportPreviewRect(el: HTMLElement | undefined, dock: PreviewSurf
 // the gate engages and back when it releases. Returns the effect's cleanup.
 //
 // Engaging, the surface stays up until the still is painted beneath it, and only then is
-// it hidden -- so an overlay opening over the preview appears once the still is ready
-// rather than before. A failed capture still hides: a usable menu over a blank region
-// beats a menu drawn under the preview, so the menu wins. The cleanup cancels that hide,
+// it hidden -- so a modal opening over the preview appears once the still is ready
+// rather than before. A failed capture still hides: a usable modal over a blank region
+// beats a modal drawn under the preview, so the modal wins. The cleanup cancels that hide,
 // because a gate released before the still lands has already had the dock re-assert the
 // rect, and a hide issued after it would leave the surface hidden with nothing to show it
 // again. A surface not painting when the gate engages (blocked, or no paintable box) has
-// nothing to freeze: capturing would only put a still behind the dock's placeholder, and
-// for a destroyed Default surface block the host on a composite wait, so it just hides.
+// nothing to freeze: capturing would only put a still behind the dock's placeholder, so it
+// just hides.
 //
 // Releasing, a re-asserted surface warms up beneath the web view and rises once it has a
 // frame, so the still is held until the surface should cover it; a surface that stays
@@ -167,7 +168,8 @@ export function forwardPreviewWheel(el: HTMLElement, e: WheelEvent, canvasUuid?:
   // Suppress the page scroll this would otherwise be; the region is a preview, not
   // a document.
   e.preventDefault();
-  if (e.deltaY === 0) {
+  // An open menu or dropdown holds the pointer, the surface's own wheel included.
+  if (e.deltaY === 0 || previewLayerOpen()) {
     return;
   }
   const r = el.getBoundingClientRect();

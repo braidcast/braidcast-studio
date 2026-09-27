@@ -12014,6 +12014,24 @@ std::string ReadJsonString(const char *file, const char *key)
 	return v ? std::string(v) : std::string();
 }
 
+// `pixels` (tightly packed BGRA) repacked as BGR, or empty when any pixel is not fully
+// opaque and dropping the alpha channel would change the image.
+std::vector<uint8_t> OpaqueBgr(const uint8_t *pixels, uint32_t w, uint32_t h)
+{
+	const size_t count = size_t(w) * h;
+	std::vector<uint8_t> bgr(count * 3);
+	uint8_t *out = bgr.data();
+	for (size_t i = 0; i < count; ++i, pixels += 4, out += 3) {
+		if (pixels[3] != 0xFF) {
+			return {};
+		}
+		out[0] = pixels[0];
+		out[1] = pixels[1];
+		out[2] = pixels[2];
+	}
+	return bgr;
+}
+
 // Write one tightly-packed (stride == w*4) BGRA frame into an initialized PNG encoder
 // and commit both.
 //
@@ -12024,28 +12042,49 @@ std::string ReadJsonString(const char *file, const char *key)
 // is the 32-bit layout the PNG encoder supports natively; anything else coming back
 // means the buffer would be described wrongly, and a hard error beats a silently
 // wrong-colored image.
-HRESULT EncodePngFrame(IWICBitmapEncoder *encoder, const uint8_t *pixels, uint32_t w, uint32_t h)
+//
+// PngEncoding::Fast writes every row unfiltered, and a frame with no transparent pixel as
+// 24-bit BGR; the file decodes to the same pixels either way. WIC's PNG encoder exposes
+// no zlib level, so the row filter is the one speed setting it has.
+HRESULT EncodePngFrame(IWICBitmapEncoder *encoder, const uint8_t *pixels, uint32_t w, uint32_t h, PngEncoding encoding)
 {
 	using Microsoft::WRL::ComPtr;
+
+	std::vector<uint8_t> opaque;
+	if (encoding == PngEncoding::Fast) {
+		opaque = OpaqueBgr(pixels, w, h);
+	}
+	const bool bgr = !opaque.empty();
+	const uint32_t stride = w * (bgr ? 3 : 4);
 
 	ComPtr<IWICBitmapFrameEncode> frame;
 	ComPtr<IPropertyBag2> options;
 	HRESULT hr = encoder->CreateNewFrame(frame.GetAddressOf(), options.GetAddressOf());
+	if (SUCCEEDED(hr) && encoding == PngEncoding::Fast) {
+		PROPBAG2 filter{};
+		filter.pstrName = const_cast<LPOLESTR>(L"FilterOption");
+		VARIANT none;
+		VariantInit(&none);
+		none.vt = VT_UI1;
+		none.bVal = WICPngFilterNone;
+		hr = options->Write(1, &filter, &none);
+	}
 	if (SUCCEEDED(hr)) {
 		hr = frame->Initialize(options.Get());
 	}
 	if (SUCCEEDED(hr)) {
 		hr = frame->SetSize(w, h);
 	}
-	WICPixelFormatGUID format = GUID_WICPixelFormat32bppBGRA;
+	const WICPixelFormatGUID wanted = bgr ? GUID_WICPixelFormat24bppBGR : GUID_WICPixelFormat32bppBGRA;
+	WICPixelFormatGUID format = wanted;
 	if (SUCCEEDED(hr)) {
 		hr = frame->SetPixelFormat(&format);
 	}
-	if (SUCCEEDED(hr) && !IsEqualGUID(format, GUID_WICPixelFormat32bppBGRA)) {
+	if (SUCCEEDED(hr) && !IsEqualGUID(format, wanted)) {
 		hr = WINCODEC_ERR_UNSUPPORTEDPIXELFORMAT;
 	}
 	if (SUCCEEDED(hr)) {
-		hr = frame->WritePixels(h, w * 4, w * h * 4, const_cast<BYTE *>(pixels));
+		hr = frame->WritePixels(h, stride, stride * h, const_cast<BYTE *>(bgr ? opaque.data() : pixels));
 	}
 	if (SUCCEEDED(hr)) {
 		hr = frame->Commit();
@@ -12089,7 +12128,7 @@ bool EncodePngFile(const wchar_t *wpath, const uint8_t *pixels, uint32_t w, uint
 			hr = encoder->Initialize(stream.Get(), WICBitmapEncoderNoCache);
 		}
 		if (SUCCEEDED(hr)) {
-			hr = EncodePngFrame(encoder.Get(), pixels, w, h);
+			hr = EncodePngFrame(encoder.Get(), pixels, w, h, PngEncoding::Compact);
 		}
 	}
 
@@ -12212,7 +12251,7 @@ bool CaptureToPng(uint32_t w, uint32_t h, const std::function<void()> &renderFn,
 // instead of a file, for callers that need the PNG bytes directly rather than a file
 // on disk (an inline data-URI thumbnail).
 bool EncodePngMemory(const uint8_t *pixels, uint32_t w, uint32_t h, std::vector<unsigned char> &out,
-		     std::string &errOut)
+		     std::string &errOut, PngEncoding encoding)
 {
 	using Microsoft::WRL::ComPtr;
 
@@ -12243,7 +12282,7 @@ bool EncodePngMemory(const uint8_t *pixels, uint32_t w, uint32_t h, std::vector<
 			hr = encoder->Initialize(wicStream.Get(), WICBitmapEncoderNoCache);
 		}
 		if (SUCCEEDED(hr)) {
-			hr = EncodePngFrame(encoder.Get(), pixels, w, h);
+			hr = EncodePngFrame(encoder.Get(), pixels, w, h, encoding);
 		}
 	}
 
@@ -12431,17 +12470,13 @@ void WaitForMainComposite()
 // composite ref has to outlive this call -- it keeps Main ungated until the caller's
 // capture has actually run.
 //
-// Does NOT wait for a composite. Whether that wait is needed depends on why the
-// caller is capturing, not on which canvas it picked: a screenshot can arrive with
-// Main idle and must wait, while a freeze frame is taken of a preview that is on
-// screen and already holding its own ref, where the wait would only be a stall.
+// Does NOT wait for a composite; a caller capturing the Default does that itself.
 bool ResolveProgramCapture(const json &params, uint32_t &w, uint32_t &h, std::function<void()> &renderFn,
 			   std::string &name, std::optional<DefaultCompositeRef> &mainRef, bool &isDefault,
-			   bool &wasComposited, std::string &error)
+			   std::string &error)
 {
 	const CanvasTarget t = ResolveCanvasTarget(params);
 	isDefault = !t.isAdditional;
-	wasComposited = true; // an additional canvas renders from its own mix, never Main's
 
 	if (t.isAdditional) {
 		obs_canvas_t *cv = ObsBootstrap::CanvasRuntime().Find(t.uuid);
@@ -12460,7 +12495,7 @@ bool ResolveProgramCapture(const json &params, uint32_t &w, uint32_t &h, std::fu
 			// The same call the preview surface makes. obs_canvas_render re-renders the
 			// scene's sources into whatever blend state the caller left set, bypassing
 			// both the finished mix texture and the sRGB handling that goes with it, so
-			// it comes out at a different gamma than the surface it is standing in for.
+			// it comes out at a different gamma than the preview shows.
 			obs_render_canvas_texture(cv);
 		};
 		const char *n = obs_canvas_get_name(cv);
@@ -12482,105 +12517,167 @@ bool ResolveProgramCapture(const json &params, uint32_t &w, uint32_t &h, std::fu
 	if (name.empty()) {
 		name = "Program";
 	}
-	// Asked BEFORE taking our own ref, since taking it is what would make the answer
-	// yes. False means Main was idle and its texture is the zero-cleared one until a
-	// pass runs with the gate lifted.
-	wasComposited = ObsBootstrap::CanvasRuntime().DefaultComposited();
 	mainRef.emplace();
 	return true;
 }
 
-// Long edge of a freeze frame. Larger than a picker tile because this one stands in
-// for the preview at its real size, and small enough that the base64 of its PNG does
-// not dwarf the bridge message carrying it.
-constexpr uint32_t kFreezeFrameMaxDim = 720;
+// One still of the addressed preview surface, inlined as a lossless PNG data URI: params
+// {canvas?, window?, w, h, dpr} -- the element rect, as preview.setRect takes it -- ->
+// {dataUri, width, height}, the size in device px.
+//
+// The native preview is a child HWND the OS composites above the whole CEF window, so a
+// modal over it can only be shown by hiding the surface, and the web UI holds this still
+// in its place meanwhile. The surface's own draw callback renders it, at the device-pixel
+// size the surface has at that rect -- the canvas where the view puts it, the overflow,
+// the selection, handles and guides. Compared against DXGI captures of the live surface
+// (SDR BGRA swapchain, dpr 1), the letterbox and the guides came out byte-identical and
+// every differing pixel lay in moving video. A menu does not hide the surface at all; see
+// preview.setCutouts.
+//
+// On the async lane: the draw and readback need the graphics context and run here, on the
+// UI thread, but the encode is most of the cost -- over 100 ms at 1440p -- and runs on a
+// worker, so the UI thread is not held while a modal opens.
+struct FrozenPixels {
+	uint32_t cx = 0;
+	uint32_t cy = 0;
+	std::vector<uint8_t> bgra;
+	uint64_t readbackNs = 0;
+};
 
-// Where the addressed surface would draw its canvas were it the size given in params
-// {w,h,dpr} (CSS px, converted exactly as preview.setRect converts them), as
-// {x,y,w,h,surfaceW,surfaceH} in that surface's device px. False when there is no such
-// surface or nothing to place. Shared by preview.freeze and preview.canvasRect so the
-// still is placed the same way when it is first shown and when its element resizes.
-bool PreviewCanvasRectJson(const json &params, json &out)
+bool FreezePreviewPixels(const json &params, FrozenPixels &frozen, std::string &error)
 {
 	int x = 0;
 	int y = 0;
 	int w = 0;
 	int h = 0;
 	OverlayRectFromParams(params, x, y, w, h);
-	const std::optional<PreviewCanvasRect> r =
-		Preview::CanvasRectAt(PreviewCanvasParam(params), w, h, PreviewWindowParam(params));
-	if (!r) {
+	if (w <= 0 || h <= 0) {
+		error = "nothing to freeze";
 		return false;
 	}
-	out = json{{"x", r->x},
-		   {"y", r->y},
-		   {"w", r->cx},
-		   {"h", r->cy},
-		   {"surfaceW", r->surfaceCX},
-		   {"surfaceH", r->surfaceCY}};
+	const std::string canvas = PreviewCanvasParam(params);
+	const int windowId = PreviewWindowParam(params);
+	frozen.cx = uint32_t(w);
+	frozen.cy = uint32_t(h);
+	bool drawn = false;
+	const auto renderFn = [&]() {
+		drawn = Preview::DrawSurfaceFrame(canvas, frozen.cx, frozen.cy, windowId);
+	};
+	const uint64_t startNs = os_gettime_ns();
+	if (!RenderToBgraPixels(frozen.cx, frozen.cy, frozen.cx, frozen.cy, renderFn, true, frozen.bgra, error)) {
+		return false;
+	}
+	if (!drawn) {
+		error = "no preview surface";
+		return false;
+	}
+	frozen.readbackNs = os_gettime_ns() - startNs;
 	return true;
 }
 
-// One still of the addressed canvas, inlined as a PNG data URI: params
-// {canvas?, window?, w, h, dpr} -> {dataUri,width,height,canvasRect?}.
-//
-// The native preview is a child HWND the OS composites above the whole CEF window,
-// so a menu or modal over it can only be shown by hiding the preview -- which is why
-// right-clicking the canvas used to blank it. The web UI holds this still in the
-// surface's place for as long as the overlay is up, so the preview reads as paused
-// rather than broken. It is deliberately a stand-in and not a fix: the frame does not
-// advance, and the real answer is to stop the boundary existing (see
-// braidcast-notes/preview-architecture.md).
-//
-// `canvasRect` (PreviewCanvasRectJson) is where the surface draws the canvas at the size
-// of the element it stands in, which the caller passes as it would to preview.setRect.
-// The still has to be laid out there and not fitted to the element: the surface insets
-// the canvas by a margin, and a zoom or pan puts it anywhere. Asked of the size rather
-// than read back off the last frame, which may predate a resize the surface has not
-// drawn yet. Absent when there is no such surface or nothing to place.
-bool MethodPreviewFreeze(const json &params, json &result, std::string &error)
+bool EncodeFrozenPixels(const FrozenPixels &frozen, json &result, std::string &error)
 {
-	json canvasRect;
-	const bool placed = PreviewCanvasRectJson(params, canvasRect);
-	uint32_t w = 0;
-	uint32_t h = 0;
-	std::function<void()> renderFn;
-	std::string name;
-	std::optional<DefaultCompositeRef> mainRef;
-	bool isDefault = false;
-	bool wasComposited = false;
-	if (!ResolveProgramCapture(params, w, h, renderFn, name, mainRef, isDefault, wasComposited, error)) {
+	const uint64_t startNs = os_gettime_ns();
+	std::vector<unsigned char> png;
+	if (!EncodePngMemory(frozen.bgra.data(), frozen.cx, frozen.cy, png, error, PngEncoding::Fast)) {
 		return false;
 	}
-	// The common case -- right-clicking a preview that is on screen -- finds Main
-	// already composited and pays nothing. Only a freeze taken while Main was idle
-	// waits, and it has to: without the wait that capture is the zero-cleared
-	// texrender, i.e. a black still, which reads as the preview having broken and is
-	// worse than showing no still at all.
-	if (!wasComposited) {
-		WaitForMainComposite();
-	}
-	std::string dataUri;
-	if (!CaptureToThumbnailDataUri(w, h, renderFn, dataUri, error, kFreezeFrameMaxDim, true)) {
-		return false;
-	}
-	result = json{{"dataUri", dataUri}, {"width", w}, {"height", h}};
-	if (placed) {
-		result["canvasRect"] = canvasRect;
-	}
+	const uint64_t encodedNs = os_gettime_ns();
+	result = json{{"dataUri", "data:image/png;base64," + EncodeBase64(png)},
+		      {"width", frozen.cx},
+		      {"height", frozen.cy}};
+	DBG(LogCat::Preview,
+	    "preview.freeze %ux%u: draw+readback %.1f ms (UI thread), png %.1f ms (%zu KiB), base64 %.1f ms", frozen.cx,
+	    frozen.cy, double(frozen.readbackNs) / 1e6, double(encodedNs - startNs) / 1e6, png.size() / 1024,
+	    double(os_gettime_ns() - encodedNs) / 1e6);
 	return true;
 }
 
-// Re-place a held still after its element resized: params as preview.freeze's minus the
-// capture -> {canvasRect?}. The hidden surface draws nothing while a still stands in for
-// it, so no frame could report the new placement.
-bool MethodPreviewCanvasRect(const json &params, json &result, std::string & /*error*/)
+void RunAsyncMethod(std::string method, const json &params, CefRefPtr<CefMessageRouterBrowserSide::Callback> callback,
+		    MethodFn work);
+
+void MethodPreviewFreezeAsync(const json &params, CefRefPtr<CefMessageRouterBrowserSide::Callback> callback)
 {
-	result = json::object();
-	json canvasRect;
-	if (PreviewCanvasRectJson(params, canvasRect)) {
-		result["canvasRect"] = canvasRect;
+	auto frozen = std::make_shared<FrozenPixels>();
+	std::string captureError;
+	const bool captured = FreezePreviewPixels(params, *frozen, captureError);
+	// A failed capture resolves through the same lane, so the reply and its log line keep
+	// one shape.
+	RunAsyncMethod("preview.freeze", params, callback,
+		       [frozen, captured, captureError](const json &, json &result, std::string &error) {
+			       if (!captured) {
+				       error = captureError;
+				       return false;
+			       }
+			       return EncodeFrozenPixels(*frozen, result, error);
+		       });
+}
+
+// Cut the page's floating layers out of this window's preview surfaces, so a menu over a
+// preview shows while the video around it stays live: params {window?, dpr, rects:
+// [{x,y,w,h}], grab} in CSS px -> {hits: [bool]}, per rect whether it overlaps one of the
+// window's surfaces, which is where a hole opens. Replaces the window's previous set; an
+// empty list restores every surface whole. The page sends a rect only once the layer in it
+// has been presented, and takes it back before the layer -- or the likeness a closed one
+// leaves in its place -- stops painting, so the hole never shows the web view from before
+// the layer or after it (previewCutouts.svelte.ts). `grab` holds from the moment a layer
+// opens until the last one closes: the window's surfaces take no pointer input meanwhile,
+// and a press on one becomes preview.layerPress.
+//
+// Each edge rounds on its own, the way Chromium snaps a box to device pixels, rather than
+// as preview.setRect rounds a size: the hole has to land on the layer's painted edges. An
+// edge Chromium lays out exactly on a half pixel can still snap the other way, leaving a
+// one-pixel sliver of video along it.
+//
+// A window that is not registered -- a detached page's last send as its window closes --
+// has nothing to cut; that is not an error.
+bool MethodPreviewSetCutouts(const json &params, json &result, std::string &error)
+{
+	PreviewManager *pm = Preview::Instance();
+	if (!pm) {
+		error = "preview not ready";
+		return false;
 	}
+	const auto list = params.is_object() ? params.find("rects") : params.end();
+	if (!params.is_object() || list == params.end() || !list->is_array()) {
+		error = "setCutouts expects {rects:[{x,y,w,h}],dpr,window?}";
+		return false;
+	}
+	const double reported = params.value("dpr", 1.0);
+	const double dpr = reported > 0.0 ? reported : 1.0;
+	const int windowId = PreviewWindowParam(params);
+	const bool grab = params.value("grab", false);
+	const HWND host = pm->KnownHostFor(windowId);
+	std::vector<RECT> rects;
+	json hits = json::array();
+	for (const json &r : *list) {
+		bool hit = false;
+		if (r.is_object()) {
+			const double x = r.value("x", 0.0);
+			const double y = r.value("y", 0.0);
+			const RECT px{LONG(std::lround(x * dpr)), LONG(std::lround(y * dpr)),
+				      LONG(std::lround((x + r.value("w", 0.0)) * dpr)),
+				      LONG(std::lround((y + r.value("h", 0.0)) * dpr))};
+			if (px.right > px.left && px.bottom > px.top) {
+				rects.push_back(px);
+				hit = host && OverlaySurface::CutsInto(host, px);
+			}
+		}
+		hits.push_back(hit);
+	}
+	result = json{{"hits", std::move(hits)}};
+	DBG(LogCat::Preview, "preview.setCutouts window=%d rects=%zu grab=%d%s", windowId, rects.size(), int(grab),
+	    host ? "" : " (no such window)");
+	if (!host) {
+		return true;
+	}
+	OverlaySurface::HostLayers layers;
+	layers.cut = std::move(rects);
+	layers.grab = grab;
+	layers.onPress = [windowId]() {
+		Bridge::EmitEvent(EventNames::kPreviewLayerPress, json{{"window", windowId}});
+	};
+	OverlaySurface::SetHostLayers(host, std::move(layers));
 	return true;
 }
 
@@ -12595,8 +12692,7 @@ bool MethodScreenshotTakeProgram(const json &params, json &result, std::string &
 	// Declared out here so the ref outlives the capture below, not just the branch.
 	std::optional<DefaultCompositeRef> mainRef;
 	bool isDefault = false;
-	bool wasComposited = false;
-	if (!ResolveProgramCapture(params, w, h, renderFn, name, mainRef, isDefault, wasComposited, error)) {
+	if (!ResolveProgramCapture(params, w, h, renderFn, name, mainRef, isDefault, error)) {
 		return false;
 	}
 	// Unconditional for the Default: a screenshot is reached by a global hotkey with
@@ -14940,8 +15036,7 @@ void Init()
 		{"preview.destroy", MethodPreviewDestroy},
 		{"preview.select", MethodPreviewSelect},
 		{"preview.exitGroup", MethodPreviewExitGroup},
-		{"preview.freeze", MethodPreviewFreeze},
-		{"preview.canvasRect", MethodPreviewCanvasRect},
+		{"preview.setCutouts", MethodPreviewSetCutouts},
 		{"preview.viewAction", MethodPreviewViewAction},
 		{"preview.setLocked", MethodPreviewSetLocked},
 		{"preview.setOverlays", MethodPreviewSetOverlays},
@@ -15168,9 +15263,10 @@ void Init()
 	};
 
 	// Methods whose bodies block go on the async lane (libcurl platform calls, the
-	// overlay server's socket sends, the system font-collection walk): they run
-	// off-thread and resolve the CEF callback later (same JS contract). Each body is
-	// the existing MethodFn, driven off-thread by RunAsyncMethod.
+	// overlay server's socket sends, the system font-collection walk, a preview still's
+	// PNG encode): they run off-thread and resolve the CEF callback later (same JS
+	// contract). Each body is a MethodFn driven off-thread by RunAsyncMethod;
+	// preview.freeze reads the surface back on the UI thread before handing one over.
 	g_asyncMethods = {
 		{"oauth.targets",
 		 [](const json &p, CefRefPtr<CefMessageRouterBrowserSide::Callback> cb) {
@@ -15216,6 +15312,7 @@ void Init()
 		 [](const json &p, CefRefPtr<CefMessageRouterBrowserSide::Callback> cb) {
 			 RunAsyncMethod("fonts.list", p, cb, MethodFontsList);
 		 }},
+		{"preview.freeze", MethodPreviewFreezeAsync},
 	};
 
 	// Notify JS whenever the undo stack changes (add/undo/redo/clear) so the UI's
