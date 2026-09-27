@@ -1313,6 +1313,45 @@ General Source Functions
 
 ---------------------
 
+.. function:: void obs_source_set_frame_count_kind(obs_source_t *source, enum obs_frame_count_kind kind)
+
+   Declares what the source's frame counters measure.  Capture plugins
+   call it from their video tick; async video sources are classified by
+   libobs itself.  **OBS_FRAME_COUNT_NONE** also means the source is not
+   delivering right now, so its ticks are not counted.
+
+   :param kind: | OBS_FRAME_COUNT_NONE
+                | OBS_FRAME_COUNT_WGC
+                | OBS_FRAME_COUNT_DXGI
+                | OBS_FRAME_COUNT_ASYNC
+                | OBS_FRAME_COUNT_BROWSER_PAINT
+                | OBS_FRAME_COUNT_GAME_HOOK
+
+---------------------
+
+.. function:: void obs_source_add_new_frames(obs_source_t *source, uint32_t count)
+
+   Reports frames the source received since its previous call.  The
+   count only accumulates; libobs folds it into the counters once per
+   video tick, so it is safe to call several times per tick.
+
+---------------------
+
+.. function:: void obs_source_get_frame_counts(const obs_source_t *source, struct obs_source_frame_counts *counts)
+
+   Reads the source's cumulative frame counters.  All three counts wrap
+   as ``uint32_t``; take modular deltas between two reads.
+
+   - **live_ticks** - video ticks on which the source was showing and
+     its kind was not NONE, whether or not a frame arrived
+   - **new_frame_ticks** - the subset of those ticks that brought at
+     least one new frame
+   - **frames_delivered** - frames the producer delivered; for async
+     video sources, every frame passed to
+     :c:func:`obs_source_output_video()`
+
+---------------------
+
 .. function:: void obs_source_set_flags(obs_source_t *source, uint32_t flags)
               uint32_t obs_source_get_flags(const obs_source_t *source)
 

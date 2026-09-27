@@ -1252,6 +1252,49 @@ EXPORT void obs_source_set_video_gated(obs_source_t *source, bool gated);
 /** Returns true if the source's showing state is currently gated */
 EXPORT bool obs_source_video_gated(const obs_source_t *source);
 
+/** What a source's frame counters measure.  NONE also means "not live now". */
+enum obs_frame_count_kind {
+	OBS_FRAME_COUNT_NONE,
+	OBS_FRAME_COUNT_WGC,
+	OBS_FRAME_COUNT_DXGI,
+	OBS_FRAME_COUNT_ASYNC,
+	OBS_FRAME_COUNT_BROWSER_PAINT,
+	OBS_FRAME_COUNT_GAME_HOOK,
+};
+
+/**
+ * Cumulative frame counters, read as uint32 and expected to wrap: consumers
+ * take modular deltas between two reads of the same source.
+ *
+ * live_ticks counts video ticks on which the source was showing and its kind
+ * was not NONE, whether or not a frame arrived; new_frame_ticks counts the
+ * subset of those that brought at least one new frame.  frames_delivered is
+ * the producer's count: frames reported by the capture plugin, or for async
+ * video sources every frame handed to obs_source_output_video.
+ */
+struct obs_source_frame_counts {
+	enum obs_frame_count_kind kind;
+	uint32_t live_ticks;
+	uint32_t new_frame_ticks;
+	uint32_t frames_delivered;
+};
+
+/**
+ * Declares what the source's frame counters measure.  Async video sources are
+ * classified by libobs itself; capture plugins set this from their video tick.
+ */
+EXPORT void obs_source_set_frame_count_kind(obs_source_t *source, enum obs_frame_count_kind kind);
+
+/**
+ * Reports frames the source received since its last call.  Accumulates only;
+ * libobs folds the total into the counters once per video tick, so calling it
+ * several times per tick (or with zero) is fine.
+ */
+EXPORT void obs_source_add_new_frames(obs_source_t *source, uint32_t count);
+
+/** Reads the source's frame counters (see struct obs_source_frame_counts) */
+EXPORT void obs_source_get_frame_counts(const obs_source_t *source, struct obs_source_frame_counts *counts);
+
 /** Unused flag */
 #define OBS_SOURCE_FLAG_UNUSED_1 (1 << 0)
 /** Specifies to force audio to mono */

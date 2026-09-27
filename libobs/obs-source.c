@@ -1575,6 +1575,9 @@ static void async_tick(obs_source_t *source)
 		}
 
 		source->cur_async_frame = get_closest_frame(source, sys_time);
+		if (source->cur_async_frame) {
+			os_atomic_inc_long(&source->frames_pending);
+		}
 	}
 
 	source->last_sys_timestamp = sys_time;
@@ -1589,6 +1592,43 @@ static void async_tick(obs_source_t *source)
 	}
 
 	pthread_mutex_unlock(&source->async_mutex);
+}
+
+static inline void atomic_add_long(volatile long *val, long n)
+{
+	long cur = os_atomic_load_long(val);
+	while (!os_atomic_compare_exchange_long(val, &cur, (long)((unsigned long)cur + (unsigned long)n))) {
+	}
+}
+
+/* Runs once per source per loop, after the plugin's own tick has reported what
+ * it received.  A loop that overran still ticks once, so render lag is never
+ * read as capture lag, and ticks spent hidden or gated drop out entirely. */
+static void fold_frame_counts(obs_source_t *source)
+{
+	const long pending = os_atomic_set_long(&source->frames_pending, 0);
+
+	if ((source->info.output_flags & OBS_SOURCE_ASYNC_VIDEO) == OBS_SOURCE_ASYNC_VIDEO) {
+		/* deinterlaced frames are picked by deinterlace_process_last_frame,
+		 * which async_tick does not count, so that path reads unmeasured */
+		const bool measurable = source->async_active && !deinterlacing_enabled(source);
+		os_atomic_set_long(&source->frame_count_kind,
+				   measurable ? OBS_FRAME_COUNT_ASYNC : OBS_FRAME_COUNT_NONE);
+	}
+
+	const long kind = os_atomic_load_long(&source->frame_count_kind);
+	if (!source->showing || kind == OBS_FRAME_COUNT_NONE) {
+		return;
+	}
+
+	os_atomic_inc_long(&source->live_ticks);
+	if (pending != 0) {
+		os_atomic_inc_long(&source->new_frame_ticks);
+	}
+	/* async input is counted by the producer as each frame arrives */
+	if (kind != OBS_FRAME_COUNT_ASYNC) {
+		atomic_add_long(&source->frames_delivered, pending);
+	}
 }
 
 void obs_source_video_tick(obs_source_t *source, float seconds)
@@ -1669,6 +1709,8 @@ void obs_source_video_tick(obs_source_t *source, float seconds)
 	if (source->context.data && source->info.video_tick) {
 		source->info.video_tick(source->context.data, seconds);
 	}
+
+	fold_frame_counts(source);
 
 	source->async_rendered = false;
 	source->deinterlace_rendered = false;
@@ -3895,6 +3937,7 @@ static void obs_source_output_video_internal(obs_source_t *source, const struct 
 	}
 
 	source_profiler_async_frame_received(source);
+	os_atomic_inc_long(&source->frames_delivered);
 
 	struct obs_source_frame *output = cache_video(source, frame);
 
@@ -5210,6 +5253,37 @@ bool obs_source_video_gated(const obs_source_t *source)
 {
 	return obs_source_valid(source, "obs_source_video_gated") ? os_atomic_load_long(&source->video_gated) != 0
 								  : false;
+}
+
+void obs_source_set_frame_count_kind(obs_source_t *source, enum obs_frame_count_kind kind)
+{
+	if (!obs_source_valid(source, "obs_source_set_frame_count_kind")) {
+		return;
+	}
+	os_atomic_set_long(&source->frame_count_kind, (long)kind);
+}
+
+void obs_source_add_new_frames(obs_source_t *source, uint32_t count)
+{
+	if (!obs_source_valid(source, "obs_source_add_new_frames") || !count) {
+		return;
+	}
+	atomic_add_long(&source->frames_pending, (long)count);
+}
+
+void obs_source_get_frame_counts(const obs_source_t *source, struct obs_source_frame_counts *counts)
+{
+	if (!obs_ptr_valid(counts, "obs_source_get_frame_counts")) {
+		return;
+	}
+	memset(counts, 0, sizeof(*counts));
+	if (!obs_source_valid(source, "obs_source_get_frame_counts")) {
+		return;
+	}
+	counts->kind = (enum obs_frame_count_kind)os_atomic_load_long(&source->frame_count_kind);
+	counts->live_ticks = (uint32_t)os_atomic_load_long(&source->live_ticks);
+	counts->new_frame_ticks = (uint32_t)os_atomic_load_long(&source->new_frame_ticks);
+	counts->frames_delivered = (uint32_t)os_atomic_load_long(&source->frames_delivered);
 }
 
 static inline void signal_flags_updated(obs_source_t *source)
