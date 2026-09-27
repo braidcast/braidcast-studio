@@ -31,6 +31,9 @@
   import { oauthStore } from "$lib/stores/oauthStore.svelte";
   import { destinationIdentityStore, type DestinationIdentity } from "$lib/stores/destinationIdentityStore.svelte";
   import { transportHealthStore } from "$lib/stores/transportHealthStore.svelte";
+  import { sessionsStore } from "$lib/stores/sessionsStore.svelte";
+  import { diagnosticsStore } from "$lib/stores/diagnosticsStore.svelte";
+  import { byEventTime, eventScope, scopeRows, type ScopeKind } from "$lib/docks/events/eventScope";
 
   // Host supplies tab chrome + strips __* keys; this body declares no props.
   let {}: Record<string, unknown> = $props();
@@ -119,6 +122,9 @@
   // specific stream. Filtering feeds the virtualizer a derived subset -- heights stay
   // keyed by the stable clientKey, so a filtered-out row keeps its measured height and
   // re-appears at the right size when re-shown.
+  //
+  // The subset is also ordered by each event's own time and scoped to the current
+  // broadcast (docks/events/eventScope.ts says why); "Show earlier" lifts the scope.
   let filter = $state<DestinationSelection>(ALL_DESTINATIONS);
 
   // Chips are gated on what can actually originate an event, not on the fixed platform
@@ -172,11 +178,57 @@
     return { state: row.state, note: parts.join(" — ") };
   }
 
-  const feed = new FeedVirtualizer<NormalizedEvent>({ max: 500, estimate: 38, getDisplay: () => filtered });
+  // 500 = the host store's cap (EventStore::kCap). Keyed by event id, so a backfill that
+  // re-sends the whole store keeps every surviving row, its height, and the reader's place.
+  const feed = new FeedVirtualizer<NormalizedEvent>({
+    max: 500,
+    estimate: 38,
+    getDisplay: () => filtered,
+    key: (e) => e.id,
+  });
+
+  $effect(() => {
+    sessionsStore.start();
+    diagnosticsStore.start();
+  });
+
+  // This page's own load time stands in until diagnostics.get lands: in the main window
+  // that is moments after the app started.
+  let appStartedAt = $derived(diagnosticsStore.appStartedAt || Math.round(performance.timeOrigin));
+  let scope = $derived(eventScope(sessionsStore.sessions, appStartedAt));
+  let showEarlier = $state(false);
+
   // Explicitly typed to break the feed <-> filtered inference cycle (getDisplay
   // closes over filtered, which reads feed.rows).
-  let filtered: FeedRow<NormalizedEvent>[] = $derived(
-    filter.kind === "all" ? feed.rows : feed.rows.filter((r) => matchesSelection(r.item, filter, destByUuid)),
+  let sorted: FeedRow<NormalizedEvent>[] = $derived(byEventTime(feed.rows));
+  let selected: FeedRow<NormalizedEvent>[] = $derived(
+    filter.kind === "all" ? sorted : sorted.filter((r) => matchesSelection(r.item, filter, destByUuid)),
+  );
+  let scoped: { shown: FeedRow<NormalizedEvent>[]; earlier: number } = $derived(
+    scopeRows(selected, scope.since, showEarlier),
+  );
+  let filtered: FeedRow<NormalizedEvent>[] = $derived(scoped.shown);
+
+  // Where the default view starts, in words: the empty state and the toggle's hint say it.
+  const SCOPE_PHRASE: Record<ScopeKind, string> = {
+    live: "during this stream",
+    last: "since your last stream started",
+    launch: "since Braidcast opened",
+  };
+  const SCOPE_BOUNDARY: Record<ScopeKind, string> = {
+    live: "this stream started",
+    last: "your last stream started",
+    launch: "Braidcast opened",
+  };
+
+  let emptyTitle = $derived.by(() => {
+    const target = filterLabel ? " for " + filterLabel : "";
+    return showEarlier ? "No events yet" + target + "." : "No events" + target + " " + SCOPE_PHRASE[scope.kind] + ".";
+  });
+  let emptySub = $derived(
+    !showEarlier && scoped.earlier > 0
+      ? `${scoped.earlier} earlier ${scoped.earlier === 1 ? "event" : "events"} hidden`
+      : undefined,
   );
   const measureRow = feed.measureRow;
   const feedScroll = feed.scroll;
@@ -397,13 +449,17 @@
     </div>
   {/if}
 
-  <div class="scroll" use:feedScroll>
+  <!-- Focusable so the feed scrolls from the keyboard, and named as a region. Not role="log":
+       that is an implicit live region, and this list is virtualized -- rows re-mount as
+       the view scrolls, which a live region would read out as new events. -->
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+  <div class="scroll" use:feedScroll tabindex="0" role="region" aria-label="Events">
     {#if connectedPlatforms.length === 0}
       <EmptyState compact title="Connect an account to see events." />
     {:else if feed.rows.length === 0}
       <EmptyState compact title="Follows, subs, gifts and cheers from your connected accounts appear here." />
     {:else if filtered.length === 0}
-      <EmptyState compact title={filterLabel ? "No events yet for " + filterLabel + "." : "No events yet."} />
+      <EmptyState compact title={emptyTitle} sub={emptySub} />
     {:else}
       <div class="sizer" style:height={feed.layout.total + "px"}>
         {#each feed.visible as row (row.clientKey)}
@@ -477,6 +533,17 @@
   {/if}
 
   <div class="footer">
+    <!-- A toggle, so the label stays put and aria-pressed carries the state. Never disabled:
+         with nothing held back it changes nothing, but a control that disables itself while
+         focused drops keyboard focus to <body>. -->
+    <Button
+      size="xs"
+      tone={showEarlier ? "accent" : "default"}
+      aria-pressed={showEarlier}
+      title={"Include events from before " + SCOPE_BOUNDARY[scope.kind]}
+      onclick={() => (showEarlier = !showEarlier)}
+      >Show earlier{scoped.earlier > 0 ? ` (${scoped.earlier})` : ""}</Button
+    >
     <Button size="xs" disabled={feed.rows.length === 0} onclick={clear}>Clear</Button>
   </div>
 </div>
@@ -511,6 +578,11 @@
     min-height: 0;
     overflow-y: auto;
     overflow-x: hidden;
+  }
+  /* Inset, so the ring is not cut off by the bar and footer it sits flush against. */
+  .scroll:focus-visible {
+    outline: calc(var(--border-weight) * 2) solid var(--color-accent);
+    outline-offset: calc(var(--border-weight) * -2);
   }
   /* Absolute-positioned rows over a sized spacer = virtualized list (only the
      visible window is in the DOM; the sizer reserves the full scroll height). */
@@ -650,7 +722,8 @@
   .footer {
     flex: 0 0 auto;
     display: flex;
-    justify-content: flex-end;
+    justify-content: space-between;
+    gap: 6px;
     padding: 6px 8px;
     border-top: var(--border-weight) solid var(--color-border);
     background: var(--color-surface-2);

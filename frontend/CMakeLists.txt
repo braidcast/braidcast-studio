@@ -208,6 +208,9 @@ target_sources(
     src/chat/chat_transport.hpp
     src/chat/chat_hub.cpp
     src/chat/chat_hub.hpp
+    # The in-memory multichat scrollback chat.list hydrates from, and the hub's dedupe.
+    src/chat/chat_history.cpp
+    src/chat/chat_history.hpp
     # Phase 9.0 Task 3: Twitch IRC-over-WebSocket chat transport (read + send),
     # owned by TwitchProvider; WS only, no obs.h.
     src/chat/twitch_chat.cpp

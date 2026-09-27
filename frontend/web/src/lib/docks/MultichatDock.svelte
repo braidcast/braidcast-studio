@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import { obs, type ChatMessage, type ChatPaid, type ChatSendParams } from "$lib/api/bridge";
   import { EV } from "$lib/utils/eventNames";
   import Button from "$lib/ui/Button.svelte";
@@ -7,7 +8,6 @@
   import { FeedVirtualizer, type FeedRow } from "$lib/utils/feedVirtualizer.svelte";
   import { callOrToast } from "$lib/utils/callToast";
   import { tickWhileVisible } from "$lib/utils/tickWhileVisible";
-  import { destinationKey } from "$lib/api/destinationKeys";
   import { CHAT_STATE_NOTE, chatTransportFor, type ChatTransport } from "$lib/ui/destinationHealth";
   import EmptyState from "$lib/ui/EmptyState.svelte";
   import Icon from "$lib/ui/Icon.svelte";
@@ -32,6 +32,7 @@
   import type { LivePoll } from "$lib/api/bridge";
   import NewPollDialog, { type PollTarget } from "$lib/dialogs/polls/NewPollDialog.svelte";
   import PollStrip from "$lib/docks/multichat/PollStrip.svelte";
+  import { CHAT_HISTORY_MAX, ChatIntake, chatKey, spansDestinations } from "$lib/docks/multichat/chatIntake";
 
   // Host supplies tab chrome + strips __* keys; this body declares no props.
   let {}: Record<string, unknown> = $props();
@@ -48,11 +49,18 @@
     cheer: "Cheer",
   };
 
-  // Merged, ring-capped, virtualized scrollback. Rows carry a client-assigned key
-  // (m.id could arrive empty/duplicated); 30px estimate for an unmeasured row.
-  // Filtering feeds it a derived subset rather than trimming the ring, so a row
-  // filtered out keeps its measured height and its place in the 500-row cap.
-  const feed = new FeedVirtualizer<ChatMessage>({ max: 500, estimate: 30, getDisplay: () => filtered });
+  // Merged, ring-capped, virtualized scrollback, as deep as the host's own (so a hydrate
+  // never trims what chat.list sent). Rows render by a client-assigned key; chatKey
+  // (destination + id) is the message's identity across a whole-feed replace. 30px
+  // estimate for an unmeasured row. Filtering feeds it a derived subset rather than
+  // trimming the ring, so a row filtered out keeps its measured height and its place in
+  // the cap.
+  const feed = new FeedVirtualizer<ChatMessage>({
+    max: CHAT_HISTORY_MAX,
+    estimate: 30,
+    getDisplay: () => filtered,
+    key: chatKey,
+  });
   const measureRow = feed.measureRow;
   const feedScroll = feed.scroll;
 
@@ -184,20 +192,25 @@
 
   // More than one place a message can come from: the point at which every row has to
   // say which destination it belongs to. Counted over the ARMED set, because an unarmed
-  // destination runs no transport and so originates nothing.
+  // destination runs no transport and so originates nothing -- and over the rows held,
+  // because the hydrate brings in scrollback from destinations armed earlier this launch
+  // and perhaps no longer.
   //
   // Latched rather than derived, because `armed` is live configuration while the feed is
-  // history: FeedVirtualizer only ever appends and is cleared nowhere outside dispose()
-  // (utils/feedVirtualizer.svelte.ts), so disabling one of two bindings mid-session would
-  // otherwise pull the origin cluster off rows that were correctly attributed when they
-  // arrived, leaving two channels on one platform separated by nothing but the row's
-  // border-left color. Toggling a binding is routine; losing attribution retroactively
-  // must not be. Released only when the feed holds no rows for it to describe.
+  // history: after its one hydrate this feed only ever appends and is never cleared, so
+  // disabling one of two bindings mid-session would otherwise pull the origin cluster off
+  // rows that were correctly attributed when they arrived, leaving two channels on one
+  // platform separated by nothing but the row's border-left color. Toggling a binding is
+  // routine; losing attribution retroactively must not be. Released only when the feed
+  // holds no rows for it to describe.
   let multiOrigin = $state(false);
   $effect(() => {
-    if (feed.rows.length === 0) {
+    const rows = feed.rows;
+    if (rows.length === 0) {
       multiOrigin = armed.length >= 2;
     } else if (armed.length >= 2) {
+      multiOrigin = true;
+    } else if (!untrack(() => multiOrigin) && spansDestinations(rows.map((r) => r.item))) {
       multiOrigin = true;
     }
   });
@@ -560,32 +573,25 @@
     }
   }
 
-  // The host emits each message once. Chat workers are keyed by destination: one per
-  // account on a platform with a single chat per channel, one per live broadcast on a
-  // platform that makes a broadcast per stream profile -- so two profiles on one channel
-  // are two separate chats whose ids never coincide. Guard the render path anyway: drop a
-  // repeated platform-native id so a transport reconnect that replays recent history
-  // can't double a line. Keyed by DESTINATION, not platform: two transports on one
-  // platform legitimately carry the same platform-native id space.
-  const seenIds = new Set<string>();
-  const seenOrder: string[] = [];
-  function enqueueMessage(m: ChatMessage): void {
-    if (m.id) {
-      const key = destinationKey(m.accountId, m.profileUuid) + ":" + m.id;
-      if (seenIds.has(key)) return;
-      seenIds.add(key);
-      seenOrder.push(key);
-      if (seenOrder.length > 500) {
-        const old = seenOrder.shift();
-        if (old !== undefined) seenIds.delete(old);
-      }
-    }
-    feed.enqueue(m);
-  }
-
+  // The host dedupes before it emits (its scrollback ring is the dedupe), so a live frame
+  // is new to the host. What can still repeat is the seam between the scrollback and the
+  // live stream: subscribe FIRST so nothing falls between them, then hydrate, and let
+  // ChatIntake (docks/multichat/chatIntake.ts) hold the live frames until the scrollback
+  // lands and admit each message once.
   $effect(() => {
-    const offMsg = obs.on(EV.chatMessage, (m) => enqueueMessage(m));
+    const intake = new ChatIntake(feed);
+    let disposed = false;
+    const offMsg = obs.on(EV.chatMessage, (m) => intake.live(m));
+    obs
+      .call("chat.list")
+      .catch(() => [])
+      .then((list) => {
+        if (!disposed) {
+          intake.hydrate(list);
+        }
+      });
     return () => {
+      disposed = true;
       offMsg();
       feed.dispose();
     };
@@ -595,7 +601,11 @@
 <div class="chat" use:tickWhileVisible>
   <PollStrip polls={pollStore.polls} originOf={pollOrigin} fallbackFocus={focusPollButton} />
   <div class="feed">
-    <div class="scroll" use:feedScroll>
+    <!-- Focusable so the feed scrolls from the keyboard, and named as a region. Not role="log":
+         that is an implicit live region, and this list is virtualized -- rows re-mount as
+         the view scrolls, which a live region would read out as new messages. -->
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+    <div class="scroll" use:feedScroll tabindex="0" role="region" aria-label="Chat messages">
       {#if feed.rows.length === 0}
         <EmptyState compact title={emptyKind === "offline" ? offlineMessage : liveEmptyMessage} />
       {:else if filtered.length === 0}
@@ -749,6 +759,11 @@
     min-height: 0;
     overflow-y: auto;
     overflow-x: hidden;
+  }
+  /* Inset, so the ring is not cut off by the strips it sits flush against. */
+  .scroll:focus-visible {
+    outline: calc(var(--border-weight) * 2) solid var(--color-accent);
+    outline-offset: calc(var(--border-weight) * -2);
   }
   /* Absolute-positioned rows over a sized spacer = virtualized list (only the
      visible window is in the DOM; the sizer reserves the full scroll height). */

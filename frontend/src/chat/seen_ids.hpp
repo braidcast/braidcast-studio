@@ -11,11 +11,16 @@
 // continuation, and Facebook's live-comment stream carries no resume, so each reconnect
 // gap-fills over a window the stream may also have covered. Dedupe is by platform message
 // id and eviction is oldest-first, so the set cannot grow with uptime on a day-long
-// broadcast.
+// broadcast. The hub's scrollback ring (chat_history.hpp) indexes itself with one too.
 namespace Chat {
 
 class SeenIds {
 public:
+	// Not explicit: the transports hold one as an aggregate member that brace-init leaves
+	// defaulted.
+	SeenIds() = default;
+	explicit SeenIds(size_t cap) : cap_(cap) {}
+
 	// True when `id` is new (and is now remembered); false when it was already seen.
 	bool add(const std::string &id)
 	{
@@ -26,7 +31,7 @@ public:
 			return false;
 		}
 		order_.push_back(id);
-		if (order_.size() > kCap) {
+		if (order_.size() > cap_) {
 			ids_.erase(order_.front());
 			order_.pop_front();
 		}
@@ -36,8 +41,9 @@ public:
 private:
 	// Covers every re-delivery window either surface has been measured to produce while
 	// costing a few tens of kilobytes at most.
-	static constexpr size_t kCap = 512;
+	static constexpr size_t kDefaultCap = 512;
 
+	size_t cap_ = kDefaultCap;
 	std::unordered_set<std::string> ids_;
 	std::deque<std::string> order_;
 };

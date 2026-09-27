@@ -612,6 +612,11 @@ void RunDevToolsPortSelfTest();
 // events.json (+ .bak) so the smoke run leaves it exactly as found. Gated by the
 // caller to the smoke path.
 void RunEventSelfTest();
+// Headless proof for the multichat scrollback ring (chat/chat_history.hpp) on a private
+// instance: per-destination dedupe, the kCap bound, oldest-first order, and the key index
+// evicting in lockstep with the ring. Touches no config and not the live Chat::History().
+// Gated by the caller to the smoke path.
+void RunChatHistorySelfTest();
 // Overlay-server smoke: bind an ephemeral port, GET an assembled document for an
 // injected test widget, open a real SSE client socket, broadcast a synthetic event,
 // assert it arrives as a data: frame, then tear the server down. Injected state is

@@ -46,6 +46,7 @@
 #include "log.hpp"
 #include "overlay/overlay_viewport.hpp"
 #include "chat/channel_stats_poller.hpp"
+#include "chat/chat_history.hpp"
 #include "chat/chat_hub.hpp" // Chat::BindingDestination, Chat::Hub
 #include "chat/poll_registry.hpp"
 #include "chat/twitch_chat.hpp"
@@ -9803,6 +9804,44 @@ void ObsBootstrap::RunEventSelfTest()
 	restore(bakPath, origBak);
 	HostLog(std::string("[selftest] events cleanup -> restored user events.json ") +
 		(origMain ? "(original contents)" : "(removed test file)"));
+}
+
+void ObsBootstrap::RunChatHistorySelfTest()
+{
+	// A private ring, not Chat::History(): the smoke run must not leave synthetic lines in
+	// the scrollback a dock would hydrate.
+	Chat::ChatHistory ring;
+	const OAuth::DestinationId twitch{"twitch:1", ""};
+	const OAuth::DestinationId youtubeA{"youtube:2", "profile-a"};
+	const OAuth::DestinationId youtubeB{"youtube:2", "profile-b"};
+	auto message = [](const std::string &id) {
+		return nlohmann::json{{"id", id}, {"platform", "selftest"}};
+	};
+
+	// Dedupe is per destination: the same platform id on two destinations is two messages,
+	// the same id again on one destination is a re-delivery.
+	const bool first = ring.Add(twitch, message("m1"));
+	const bool repeat = ring.Add(twitch, message("m1"));
+	const bool otherDest = ring.Add(youtubeA, message("m1"));
+	const bool otherProfile = ring.Add(youtubeB, message("m1"));
+	const bool dedupeOk = first && !repeat && otherDest && otherProfile && ring.List().size() == 3;
+	HostLog(std::string("[selftest] chat-history dedupe -> ") + (dedupeOk ? "OK" : "FAIL") + " (held " +
+		std::to_string(ring.List().size()) + ", expect 3)");
+
+	// The cap evicts oldest-first, and the key index evicts with it: an evicted message's
+	// id is admitted again, a held one is still refused.
+	for (size_t i = 0; i < Chat::ChatHistory::kCap; ++i) {
+		ring.Add(twitch, message("fill-" + std::to_string(i)));
+	}
+	const nlohmann::json held = ring.List();
+	const bool capped = held.size() == Chat::ChatHistory::kCap;
+	const bool oldestFirst = capped && held.front().value("id", "") == "fill-0" &&
+				 held.back().value("id", "") == "fill-" + std::to_string(Chat::ChatHistory::kCap - 1);
+	const bool evictedReadmitted = ring.Add(twitch, message("m1"));
+	const bool heldRefused = !ring.Add(twitch, message("fill-" + std::to_string(Chat::ChatHistory::kCap - 1)));
+	const bool capOk = capped && oldestFirst && evictedReadmitted && heldRefused;
+	HostLog(std::string("[selftest] chat-history cap -> ") + (capOk ? "OK" : "FAIL") + " (held " +
+		std::to_string(held.size()) + ", expect " + std::to_string(Chat::ChatHistory::kCap) + ")");
 }
 
 void ObsBootstrap::Stop(void (*drainCefTasks)())

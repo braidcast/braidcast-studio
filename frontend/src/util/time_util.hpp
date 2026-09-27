@@ -72,6 +72,18 @@ inline std::string NowIso8601Utc()
 	return std::string(buf);
 }
 
+// Current local time as a file-name stamp ("2024-01-02_03-04-05"): sorts
+// chronologically and holds no character a Windows file name refuses.
+inline std::string LocalFileStamp()
+{
+	const std::time_t now = std::time(nullptr);
+	std::tm tm{};
+	localtime_s(&tm, &now);
+	char buf[32];
+	std::strftime(buf, sizeof buf, "%Y-%m-%d_%H-%M-%S", &tm);
+	return std::string(buf);
+}
+
 } // namespace TimeUtil
 
 #endif // OBS_MULTISTREAM_FRONTEND_TIME_UTIL_HPP_

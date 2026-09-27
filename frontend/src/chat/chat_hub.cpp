@@ -20,6 +20,7 @@
 #include "../obs_bootstrap.hpp"
 #include "../overlay/overlay_server.hpp" // OverlayServer::BroadcastChat
 #include "../overlay/overlay_store.hpp"  // Overlay::Server()
+#include "chat_history.hpp"
 #include "chat_transport.hpp"
 
 namespace Chat {
@@ -187,6 +188,14 @@ void ChatHub::Start()
 					}
 					const uint64_t seq = idSeq_.fetch_add(1, std::memory_order_relaxed);
 					body["id"] = platform + ":" + tsStr + ":" + std::to_string(seq);
+				}
+				// Into the scrollback, which is also the dedupe: a message this
+				// destination already delivered stops here, before the overlay and
+				// the docks see it a second time.
+				if (!History().Add(dest, body)) {
+					DBG(LogCat::Chat, "chat message dropped (duplicate): %s",
+					    body.value("id", std::string()).c_str());
+					return;
 				}
 				// Fan chat messages (never connection-state frames) to overlay
 				// widgets as a named `chat` SSE event, HERE on the emitting worker

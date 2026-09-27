@@ -1,4 +1,5 @@
-// Shared reactive diagnostics state: the DEBUG gate + the current session-log path.
+// Shared reactive diagnostics state: the DEBUG gate, the current session-log path, and
+// when this app session started.
 // Mirrors outputBindingStore/canvasStore lifecycle (start/whenReady/refresh + a
 // #seq guard). Seeded once from diagnostics.get at app boot; the debug.changed event
 // keeps `debug` live when the Settings toggle (or any other caller) flips it.
@@ -18,6 +19,8 @@ class DiagnosticsStore {
   // (CefSettings is read once at CefInitialize), so the boot seed is the only read
   // and no event updates it -- debug.changed below carries the gate alone.
   devToolsPort = $state(0);
+  // Epoch ms the app process started; 0 until the seed lands. Fixed for the session.
+  appStartedAt = $state(0);
   loaded = $state(false);
   error = $state<string | null>(null);
 
@@ -55,6 +58,7 @@ class DiagnosticsStore {
       this.debug = d.debug;
       this.logPath = d.logPath;
       this.devToolsPort = d.devToolsPort;
+      this.appStartedAt = d.appStartedAt;
       this.error = null;
     } catch (e) {
       if (seq !== this.#seq) {

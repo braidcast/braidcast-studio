@@ -4,7 +4,7 @@
   import DockHost from "$lib/docking/DockHost.svelte";
   import { DOCKS, panelOptions } from "$lib/docking/dockRegistry";
   import { dockColumnWidth, installDockSizing, whenMeasured } from "$lib/docking/dockSizing";
-  import { layoutStore } from "$lib/docking/layoutStore.svelte";
+  import { createLayoutPersister, layoutStore } from "$lib/docking/layoutStore.svelte";
 import { bumpDockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   import {
     startCanvasDockReconciler,
@@ -235,7 +235,7 @@ import { EV } from "$lib/utils/eventNames";
     stopBrowserReconciler?.();
     offWindowClosed?.();
     for (const d of dropDisposers) d.dispose();
-    clearTimeout(saveTimer);
+    layoutPersister.dispose();
   });
 
   // Store-change reactivity for the user-defined browser docks. The store is a
@@ -455,6 +455,7 @@ import { EV } from "$lib/utils/eventNames";
   // owning this dock, then drops the panel from this (main) window. The dock comes
   // back via the window.closed subscription wired in onReady.
   async function detachDock(panelId: string): Promise<void> {
+    armLayoutPersistence();
     try {
       await obs.call("window.detach", { dock: panelId });
       // The panel now lives in the detached window; remove it from this one.
@@ -520,12 +521,20 @@ import { EV } from "$lib/utils/eventNames";
     canvasDocksPresent = canvasSet;
   }
 
-  // Coalesce the save bursts Dockview emits while a layout is being assembled
-  // (one onDidLayoutChange per addPanel) into a single trailing write.
-  let saveTimer: ReturnType<typeof setTimeout> | undefined;
-  function persistLayoutSoon(dv: DockviewApi): void {
-    clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => void layoutStore.save(dv), 250);
+  // Armed by a layout change the user makes: the explicit layout actions below, and a
+  // press or key on the dock chrome -- a sash (resize) or a tab strip (drag, close,
+  // detach, tab switch). Never by clicking or typing inside a dock's content: that
+  // focuses its group, which Dockview reports as a layout change too.
+  const layoutPersister = createLayoutPersister(
+    () => api?.toJSON() ?? null,
+    (layout) => void layoutStore.write(layout),
+  );
+  const DOCK_CHROME = ".dv-sash, .dv-tabs-and-actions-container";
+  function armFromDockChrome(e: Event): void {
+    if (e.target instanceof Element && e.target.closest(DOCK_CHROME)) layoutPersister.armFromGesture();
+  }
+  function armLayoutPersistence(): void {
+    layoutPersister.armExplicit();
   }
 
   async function onReady(dv: DockviewApi): Promise<void> {
@@ -542,23 +551,38 @@ import { EV } from "$lib/utils/eventNames";
     dropDisposers.push(
       dv.onDidLayoutChange(() => {
         refreshVisible();
-        persistLayoutSoon(dv);
+        layoutPersister.changed();
         // A reorder/move changes panel POSITIONS without resizing them, so the
         // native-preview docks' ResizeObserver never fires; ping them to re-assert
         // their overlay rect so the native HWNDs follow their slots.
         bumpDockLayout();
       }),
     );
-    // Restore the saved arrangement if one exists; otherwise build the default.
-    // fromJSON itself fires onDidLayoutChange, which re-persists the restored
-    // (or default) layout, so the on-disk copy stays current.
-    const restored = await layoutStore.restore(dv);
-    if (restored) {
+    // Restore the saved arrangement if one exists; otherwise build the default. Neither
+    // is written back (see layoutPersister): a restored layout is already on disk, and a
+    // default standing in for one that failed lives in memory only until the user
+    // changes the layout. A failed one is copied aside first; if that copy could not be
+    // made, only an explicit layout action may overwrite it, never a drag or a resize.
+    const restore = await layoutStore.restore(dv);
+    let trustGestures = true;
+    if (restore === "restored") {
       console.log("OBSSHELL: layout restored (" + dv.panels.length + " docks)");
       refreshVisible();
     } else {
+      if (restore === "failed") {
+        const copy = await layoutStore.quarantine();
+        trustGestures = copy !== "";
+        console.log(
+          "OBSSHELL: saved layout failed to restore; left on disk" +
+            (copy ? " and copied to " + copy : ", and no copy could be made") +
+            ", default layout in memory until the layout is changed" +
+            (copy ? "" : " from the layout controls"),
+        );
+      }
       buildDefaultLayout(dv);
     }
+    layoutPersister.settle();
+    if (trustGestures) layoutPersister.allowGestures();
     // Output-gated per-canvas composite docks (added/removed as canvases enable).
     stopReconciler = startCanvasDockReconciler(dv);
     // User-defined browser docks (iframe panels). Loads the set + asserts panels;
@@ -571,6 +595,7 @@ import { EV } from "$lib/utils/eventNames";
     offWindowClosed = obs.on(EV.windowClosed, (p) => {
       if (!api) return;
       if (api.getPanel(p.dock)) return; // already present
+      armLayoutPersistence();
       if (p.dock.startsWith("canvas:")) {
         void reconcileCanvasDocks(api);
       } else if (p.dock.startsWith("browserdock:")) {
@@ -584,6 +609,7 @@ import { EV } from "$lib/utils/eventNames";
 
   function toggleDock(id: string): void {
     if (!api) return;
+    armLayoutPersistence();
     const existing = api.getPanel(id);
     if (existing) {
       api.removePanel(existing);
@@ -598,6 +624,7 @@ import { EV } from "$lib/utils/eventNames";
 
   function resetLayout(): void {
     if (!api) return;
+    armLayoutPersistence();
     // A fresh default shows every output-gated canvas: drop the user-hidden set
     // before rebuilding so eye-hidden canvases reappear.
     clearCanvasUserHidden();
@@ -667,6 +694,7 @@ import { EV } from "$lib/utils/eventNames";
   // only if still output-gated-enabled).
   function toggleCanvasPreview(c: CanvasInfo): void {
     if (!api) return;
+    armLayoutPersistence();
     if (c.isDefault) {
       toggleDock("preview");
       return;
@@ -935,7 +963,7 @@ import { EV } from "$lib/utils/eventNames";
     </div>
   </div>
 
-  <div class="host-area">
+  <div class="host-area" onpointerdowncapture={armFromDockChrome} onkeydowncapture={armFromDockChrome}>
     <DockHost {onReady} />
   </div>
 

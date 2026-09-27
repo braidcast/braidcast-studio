@@ -38,6 +38,7 @@
 
 #include "util/async_task.hpp"
 #include "audio/AudioMonitor.hpp"
+#include "chat/chat_history.hpp"
 #include "chat/chat_hub.hpp"
 #include "chat/chat_transport.hpp"
 #include "chat/poll_registry.hpp"
@@ -154,6 +155,11 @@ std::unordered_map<std::string, AsyncMethodFn> g_asyncMethods;
 // detached worker bails instead of polling on after teardown (its emits already
 // no-op via the AsyncTask alive-guard; this stops the loop body too).
 std::atomic<bool> g_oauthRunning{true};
+
+// Wall-clock epoch ms this process started. Namespace scope, so it is fixed during static
+// initialization, before any window exists; diagnostics.get reports it as the start of the
+// app session.
+const int64_t g_appStartedAtMs = TimeUtil::NowMs();
 
 // Set true at the very top of Shutdown(), before the chat/events hubs are stopped.
 // A detached OAuth connect worker that finished authorize() just as teardown began
@@ -10148,8 +10154,57 @@ bool MethodLayoutSave(const json &params, json &result, std::string &error)
 
 bool MethodLayoutLoad(const json & /*params*/, json &result, std::string & /*error*/)
 {
-	// Empty => no saved layout yet; the shell builds the default arrangement.
-	result = json{{"layout", ReadJsonString("layout.json", "layout")}};
+	// Empty => no saved layout yet; the shell builds the default arrangement. `present`
+	// tells that apart from a layout on disk that could not be read (locked, or corrupt
+	// along with its .bak), which the shell must treat as a failed restore -- set aside,
+	// never overwritten -- rather than as nothing saved.
+	const std::string path = MultistreamBasicPath("layout.json");
+	const bool present = !path.empty() && (os_file_exists(path.c_str()) || os_file_exists((path + ".bak").c_str()));
+	result = json{{"layout", ReadJsonString("layout.json", "layout")}, {"present", present}};
+	return true;
+}
+
+// The shell could not apply the saved layout, so it runs on the default in memory and
+// stops writing until the user changes the layout. Keep what was saved regardless: copy
+// it beside the original as layout.failed-<local time>.json, touching neither
+// layout.json nor its .bak. layout.load has already moved a readable .bak over an
+// unparseable layout.json (obs_data_create_from_json_file_safe), so layout.json holds what
+// the page tried; the .bak is read only when layout.json is missing. A layout that fails
+// on every launch is copied once: an identical earlier copy is reported instead.
+bool MethodLayoutQuarantine(const json & /*params*/, json &result, std::string &error)
+{
+	namespace fs = std::filesystem;
+	const std::string path = MultistreamBasicPath("layout.json");
+	if (path.empty()) {
+		error = "failed to resolve layout.json";
+		return false;
+	}
+	const fs::path saved = fs::u8path(path);
+	std::string bytes;
+	if (!FileUtil::ReadBinaryFile(saved, bytes) && !FileUtil::ReadBinaryFile(fs::u8path(path + ".bak"), bytes)) {
+		result = json{{"file", ""}};
+		return true;
+	}
+
+	const std::string prefix = "layout.failed-";
+	std::error_code ec;
+	for (fs::directory_iterator it(saved.parent_path(), ec), end; !ec && it != end; it.increment(ec)) {
+		const std::string name = it->path().filename().u8string();
+		std::string existing;
+		if (name.rfind(prefix, 0) == 0 && FileUtil::ReadBinaryFile(it->path(), existing) && existing == bytes) {
+			result = json{{"file", name}};
+			return true;
+		}
+	}
+
+	const std::string name = prefix + TimeUtil::LocalFileStamp() + ".json";
+	std::ofstream out(saved.parent_path() / fs::u8path(name), std::ios::out | std::ios::binary);
+	if (!(out << bytes) || !out.flush()) {
+		error = "failed to write " + name;
+		return false;
+	}
+	HostLog("[bridge] layout.quarantine: saved layout failed to restore, copied to " + name);
+	result = json{{"file", name}};
 	return true;
 }
 
@@ -12417,13 +12472,7 @@ bool BuildScreenshotPath(const std::string &name, const char *fallback, std::str
 		return false;
 	}
 
-	const time_t t = time(nullptr);
-	struct tm lt;
-	localtime_s(&lt, &t);
-	char ts[32];
-	strftime(ts, sizeof(ts), "%Y-%m-%d_%H-%M-%S", &lt);
-
-	fullPath = dir + "/" + SanitizeScreenshotName(name, fallback) + "_" + ts + ".png";
+	fullPath = dir + "/" + SanitizeScreenshotName(name, fallback) + "_" + TimeUtil::LocalFileStamp() + ".png";
 	return true;
 }
 
@@ -12805,7 +12854,8 @@ bool MethodLogGetCurrent(const json & /*params*/, json &result, std::string & /*
 // ---- diagnostics (gated DEBUG channel) -------------------------------------
 
 // The current DEBUG gate + this session's log file path (so the UI can show and
-// open it), plus the CEF remote-debugging port this launch opened -- 0 when none.
+// open it), when this launch started, plus the CEF remote-debugging port this launch
+// opened -- 0 when none.
 // That last one is not a setting the UI may change: it is decided from the
 // environment at boot and drives a mandatory indicator, because a debug port with
 // no visible sign is how someone opts in once, forgets, and streams for months
@@ -12814,7 +12864,8 @@ bool MethodDiagnosticsGet(const json & /*params*/, json &result, std::string & /
 {
 	result = json{{"debug", Log::DebugEnabled()},
 		      {"logPath", SessionLog::CurrentPath()},
-		      {"devToolsPort", DevToolsPort::Active()}};
+		      {"devToolsPort", DevToolsPort::Active()},
+		      {"appStartedAt", g_appStartedAtMs}};
 	return true;
 }
 
@@ -13929,6 +13980,18 @@ bool MethodChatSend(const json &params, json &result, std::string &error)
 bool MethodChatState(const json & /*params*/, json &result, std::string & /*error*/)
 {
 	result = Chat::Hub().State();
+	return true;
+}
+
+// The multichat scrollback, oldest first: every chat.message still in the hub's ring, so a
+// dock mounted after they arrived can show them. On the async lane rather than the sync
+// one so TID_UI, where every on-stream browser source renders, never copies up to
+// Chat::ChatHistory::kCap messages or contends for the lock every chat transport's emit
+// also takes. The reply is still serialized on TID_UI when the lane resolves. The body
+// touches the ring alone (its own mutex), never the bridge or CEF.
+bool MethodChatList(const json & /*params*/, json &result, std::string & /*error*/)
+{
+	result = Chat::History().List();
 	return true;
 }
 
@@ -15194,6 +15257,7 @@ void Init()
 		{"theme.load", MethodThemeLoad},
 		{"layout.save", MethodLayoutSave},
 		{"layout.load", MethodLayoutLoad},
+		{"layout.quarantine", MethodLayoutQuarantine},
 		{"window.detach", MethodWindowDetach},
 		{"window.redock", MethodWindowRedock},
 		{"window.list", MethodWindowList},
@@ -15287,6 +15351,10 @@ void Init()
 		{"chat.send",
 		 [](const json &p, CefRefPtr<CefMessageRouterBrowserSide::Callback> cb) {
 			 RunAsyncMethod("chat.send", p, cb, MethodChatSend);
+		 }},
+		{"chat.list",
+		 [](const json &p, CefRefPtr<CefMessageRouterBrowserSide::Callback> cb) {
+			 RunAsyncMethod("chat.list", p, cb, MethodChatList);
 		 }},
 		{"polls.create",
 		 [](const json &p, CefRefPtr<CefMessageRouterBrowserSide::Callback> cb) {

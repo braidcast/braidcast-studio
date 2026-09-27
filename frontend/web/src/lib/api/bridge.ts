@@ -2247,7 +2247,12 @@ export interface ObsMethods {
   "theme.save": { saved: boolean };
   "theme.load": { state: string };
   "layout.save": { saved: boolean };
-  "layout.load": { layout: string };
+  // `present`: a layout file is on disk, even when `layout` is "" because it could not
+  // be read.
+  "layout.load": { layout: string; present: boolean };
+  // Copies a saved layout that failed to restore to layout.failed-<time>.json beside
+  // it (layout.json itself is left alone); `file` is the copy's name, "" if none.
+  "layout.quarantine": { file: string };
   // Current session log (Item 16). getCurrent returns the active log file path plus
   // its contents, tail-capped at 512KB by the backend. No params; the viewer modal
   // re-calls it on Refresh.
@@ -2302,6 +2307,11 @@ export interface ObsMethods {
   // started by the host on go-live and stopped on stop -- there is no connect method.
   "chat.send": { ok: boolean };
   "chat.state": ChatState[];
+  // The host's in-memory scrollback (the last 1000 chat.message frames across every
+  // destination), oldest first, for a dock that mounts after they arrived. Deduped by the
+  // host already, but a message can still arrive both here and live while the call is in
+  // flight, so a consumer merges by destination + id. Not persisted: empty after a restart.
+  "chat.list": ChatMessage[];
   // Live polls. create ({accountId, profileUuid?, question, options: string[2..4]}) opens
   // one in that destination's broadcast chat and remembers it as a template; end ({id})
   // closes it and returns the final tallies when the platform reports them; dismiss ({id})
@@ -2387,7 +2397,11 @@ export interface ObsMethods {
   // read from CefSettings at CefInitialize, so it is fixed for the session: no event
   // carries it and one read is enough. debug.changed does NOT include it -- the port
   // is env-gated at boot and the persisted debug toggle deliberately cannot open it.
-  "diagnostics.get": { debug: boolean; logPath: string; devToolsPort: number };
+  //
+  // appStartedAt is the wall-clock epoch ms this app process started -- fixed for the
+  // session, like devToolsPort, and the same in every window (a detached dock's page loads
+  // later than the app did, so its own clock cannot stand in for this).
+  "diagnostics.get": { debug: boolean; logPath: string; devToolsPort: number; appStartedAt: number };
   "diagnostics.setDebug": { debug: boolean };
   "diagnostics.openLogFolder": { ok: boolean };
 }
