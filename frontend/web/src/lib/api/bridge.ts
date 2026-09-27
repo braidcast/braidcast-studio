@@ -1795,7 +1795,10 @@ export interface ObsMethods {
   // (4.4.5b). setRect params: {x,y,w,h,dpr,canvas?}; hide/select: {...,canvas?}.
   "preview.setRect": null;
   "preview.hide": null;
-  "preview.freeze": { dataUri: string; width: number; height: number };
+  // freeze and canvasRect params: {canvas?, window?, x, y, w, h, dpr}, the element rect as
+  // setRect takes it; the reply's canvasRect is placed for that size.
+  "preview.freeze": { dataUri: string; width: number; height: number; canvasRect?: PreviewCanvasRect };
+  "preview.canvasRect": { canvasRect?: PreviewCanvasRect };
   "preview.destroy": null;
   // `selected` is the ANCHOR (last) member, kept so single-selection callers read
   // exactly as before; `selectedIds` is the whole set the preview now holds, and
@@ -2604,6 +2607,18 @@ export interface PreviewView extends PreviewOverlays {
   fixed: boolean;
   zoomPercent: number;
   locked: boolean;
+}
+
+// Where a surface would draw its canvas at the element size a call passed:
+// {x,y,w,h} inside {surfaceW,surfaceH}, all in that surface's device px. Absent from a
+// reply when there is no such surface or nothing to place.
+export interface PreviewCanvasRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  surfaceW: number;
+  surfaceH: number;
 }
 
 export type PreviewHitTarget = Pick<

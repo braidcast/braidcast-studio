@@ -14,6 +14,9 @@
 
 import { tick } from "svelte";
 import { obs } from "$lib/api/bridge";
+import { frozenFrameFrom, placeCanvasRect, sameSurfaceSize, type FrozenFrame } from "$lib/docking/freezeFrame";
+import type { PreviewTarget } from "$lib/docking/previewSurface";
+import type { OverlayRect } from "$lib/utils/overlayRect";
 
 // How long the still outlives the gate's release. A reshown surface warms up beneath the
 // web view and the host raises it once its fresh swapchain has presented, or when
@@ -52,8 +55,8 @@ function nextFrame(): Promise<void> {
 }
 
 export class PreviewFreeze {
-  /** PNG data URI of the held frame, or null when the surface is live. */
-  frame = $state<string | null>(null);
+  /** The held frame, or null when the surface is live. */
+  frame = $state.raw<FrozenFrame | null>(null);
 
   /** The element showing `frame`, bound by the dock so capture() can wait on its decode. */
   img = $state<HTMLImageElement | undefined>();
@@ -64,6 +67,10 @@ export class PreviewFreeze {
   // must not drop the new still.
   #seq = 0;
   #releaseTimer: ReturnType<typeof setTimeout> | undefined;
+  // The surface the held frame stands in for, and a token of its own for re-placements,
+  // so a slow answer for an old size cannot land over a newer one.
+  #target: PreviewTarget | undefined;
+  #placeSeq = 0;
 
   /**
    * Grab the current frame and put it on screen. Resolves once the still is decoded in
@@ -72,23 +79,29 @@ export class PreviewFreeze {
    * Call BEFORE hiding the surface: the still has to be on screen before the surface
    * leaves it.
    *
-   * `canvasUuid` omitted addresses the Default canvas, the same convention every other
-   * preview method uses. A failed capture leaves `frame` as it was -- no still, or the
-   * one already held from a moment ago -- and is not surfaced: an error toast on
-   * right-click would be worse than the thing it reports.
+   * `element` is the surface's element rect, as preview.setRect takes it. The host
+   * answers with where the surface draws the canvas at that size, and the still is placed
+   * there: the surface insets the canvas by a margin and a zoom or pan moves it, so
+   * filling the element would show it at a different size and position than the preview
+   * it replaces. A reply that cannot be placed counts as failed (frozenFrameFrom).
+   *
+   * A failed capture leaves `frame` as it was -- no still, or the one already held from
+   * a moment ago -- and is not surfaced: an error toast on right-click would be worse
+   * than the thing it reports.
    */
-  async capture(canvasUuid?: string): Promise<void> {
+  async capture(target: PreviewTarget, element: OverlayRect): Promise<void> {
     const seq = this.#next();
-    let dataUri: string;
+    let frame: FrozenFrame | null;
     try {
-      dataUri = (await obs.call("preview.freeze", canvasUuid ? { canvas: canvasUuid } : {})).dataUri;
+      frame = frozenFrameFrom(await obs.call("preview.freeze", { ...target, ...element }), element);
     } catch {
       return;
     }
-    if (seq !== this.#seq) {
+    if (!frame || seq !== this.#seq) {
       return;
     }
-    this.frame = dataUri;
+    this.#target = target;
+    this.frame = frame;
     await tick();
     if (seq !== this.#seq) {
       return;
@@ -98,6 +111,34 @@ export class PreviewFreeze {
     }
     for (let i = 0; i < PAINT_FRAMES && seq === this.#seq; i++) {
       await nextFrame();
+    }
+  }
+
+  /**
+   * The held still's element now measures `element`: move the still to where the surface
+   * would draw the canvas at that size. The hidden surface draws nothing, so the host lays
+   * the rect out from the size rather than reading it off a frame. Until the answer lands
+   * the still keeps its size and aspect ratio, and an answer that cannot be placed leaves
+   * it where it is. Never rejects.
+   */
+  async relayout(element: OverlayRect): Promise<void> {
+    // Taken before the early return too: a resize back to the held size must still void
+    // an answer in flight for the size in between.
+    const placeSeq = ++this.#placeSeq;
+    const held = this.frame;
+    const target = this.#target;
+    if (!held || !target || sameSurfaceSize(held.element, element)) {
+      return;
+    }
+    const seq = this.#seq;
+    let placement;
+    try {
+      placement = placeCanvasRect((await obs.call("preview.canvasRect", { ...target, ...element })).canvasRect, element);
+    } catch {
+      return;
+    }
+    if (placement && seq === this.#seq && placeSeq === this.#placeSeq && this.frame === held) {
+      this.frame = { ...held, placement, element };
     }
   }
 

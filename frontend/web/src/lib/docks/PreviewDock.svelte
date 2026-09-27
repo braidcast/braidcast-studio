@@ -6,6 +6,7 @@ import { EV } from "$lib/utils/eventNames";
   import { canvasStore } from "$lib/stores/canvasStore.svelte";
   import { suspendPreview } from "$lib/stores/previewGate.svelte";
   import { PreviewFreeze } from "$lib/stores/previewFreeze.svelte";
+  import PreviewFreezeStill from "$lib/docking/PreviewFreezeStill.svelte";
 import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   import { WINDOW_ID } from "$lib/utils/windowContext";
   import {
@@ -389,11 +390,8 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   >
     <!-- Stands in for the hidden native surface while an overlay is up. FIRST so the
          placeholders still stack above it on DOM order alone -- each is absolutely
-         positioned, so no z-index has to be assigned to keep them visible. aria-hidden: it is the same picture the surface was already showing,
-         so announcing it adds nothing. -->
-    {#if freeze.frame}
-      <img class="freeze" src={freeze.frame} alt="" aria-hidden="true" bind:this={freeze.img} />
-    {/if}
+         positioned, so no z-index has to be assigned to keep them visible. -->
+    <PreviewFreezeStill {freeze} />
     <!-- Same reasoning as the stage chips: the native surface paints over this, so
          the still must too, or the region gains a label on right-click. -->
     {#if !freeze.frame}
@@ -445,17 +443,6 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     /* Transparent: the native overlay HWND paints this region. */
     background: transparent;
     overflow: hidden;
-  }
-  /* The held still, filling the region the native surface occupies. `contain` so it
-     matches the letterboxing the surface itself uses rather than cropping the frame,
-     and below the label but above the transparent backdrop. */
-  .freeze {
-    position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
-    object-fit: contain;
-    background: var(--color-base);
   }
   /* Output-gated off: no native overlay paints here, so give the region an opaque
      surface + a muted empty-state message instead of a see-through hole. */

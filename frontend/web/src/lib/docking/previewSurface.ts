@@ -113,13 +113,14 @@ export function syncPreviewGate(
     }
     return undefined;
   }
-  if (!el || dock.blocked() || !overlayRectOf(el)) {
+  const rect = el && !dock.blocked() ? overlayRectOf(el) : null;
+  if (!rect) {
     freeze.clear();
     dock.hide();
     return undefined;
   }
   let cancelled = false;
-  void freeze.capture(dock.canvasUuid).then(() => {
+  void freeze.capture(previewTarget(dock.canvasUuid), rect).then(() => {
     if (!cancelled) {
       dock.hide();
     }

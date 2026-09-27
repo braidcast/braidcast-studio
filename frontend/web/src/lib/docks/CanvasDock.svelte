@@ -18,6 +18,7 @@ import { EV } from "$lib/utils/eventNames";
   import { clamp } from "$lib/utils/clamp";
   import { suspendPreview } from "$lib/stores/previewGate.svelte";
   import { PreviewFreeze } from "$lib/stores/previewFreeze.svelte";
+  import PreviewFreezeStill from "$lib/docking/PreviewFreezeStill.svelte";
 import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   import { WINDOW_ID } from "$lib/utils/windowContext";
   import {
@@ -1179,9 +1180,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     >
       <!-- Stands in for the hidden native surface while an overlay is up. FIRST so the
            disabled-preview placeholder still stacks above it on DOM order alone. -->
-      {#if freeze.frame}
-        <img class="freeze" src={freeze.frame} alt="" aria-hidden="true" bind:this={freeze.img} />
-      {/if}
+      <PreviewFreezeStill {freeze} />
       <!-- Occluded by the native surface whenever it paints, so the still has to
            occlude them too -- otherwise a right-click visibly redecorates the stage
            with chrome the live preview never shows. -->
@@ -1365,14 +1364,6 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
   }
   /* The native overlay HWND paints this exact element; stays transparent so the
      video shows through. Aspect: 16:9 by default, 9:16 for a vertical canvas. */
-  .freeze {
-    position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
-    object-fit: contain;
-    background: var(--color-base);
-  }
   .stage {
     position: relative;
     background: transparent;

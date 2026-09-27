@@ -12465,8 +12465,34 @@ bool ResolveProgramCapture(const json &params, uint32_t &w, uint32_t &h, std::fu
 // not dwarf the bridge message carrying it.
 constexpr uint32_t kFreezeFrameMaxDim = 720;
 
+// Where the addressed surface would draw its canvas were it the size given in params
+// {w,h,dpr} (CSS px, converted exactly as preview.setRect converts them), as
+// {x,y,w,h,surfaceW,surfaceH} in that surface's device px. False when there is no such
+// surface or nothing to place. Shared by preview.freeze and preview.canvasRect so the
+// still is placed the same way when it is first shown and when its element resizes.
+bool PreviewCanvasRectJson(const json &params, json &out)
+{
+	int x = 0;
+	int y = 0;
+	int w = 0;
+	int h = 0;
+	OverlayRectFromParams(params, x, y, w, h);
+	const std::optional<PreviewCanvasRect> r =
+		Preview::CanvasRectAt(PreviewCanvasParam(params), w, h, PreviewWindowParam(params));
+	if (!r) {
+		return false;
+	}
+	out = json{{"x", r->x},
+		   {"y", r->y},
+		   {"w", r->cx},
+		   {"h", r->cy},
+		   {"surfaceW", r->surfaceCX},
+		   {"surfaceH", r->surfaceCY}};
+	return true;
+}
+
 // One still of the addressed canvas, inlined as a PNG data URI: params
-// {canvas?} -> {dataUri,width,height}.
+// {canvas?, window?, w, h, dpr} -> {dataUri,width,height,canvasRect?}.
 //
 // The native preview is a child HWND the OS composites above the whole CEF window,
 // so a menu or modal over it can only be shown by hiding the preview -- which is why
@@ -12475,8 +12501,17 @@ constexpr uint32_t kFreezeFrameMaxDim = 720;
 // rather than broken. It is deliberately a stand-in and not a fix: the frame does not
 // advance, and the real answer is to stop the boundary existing (see
 // braidcast-notes/preview-architecture.md).
+//
+// `canvasRect` (PreviewCanvasRectJson) is where the surface draws the canvas at the size
+// of the element it stands in, which the caller passes as it would to preview.setRect.
+// The still has to be laid out there and not fitted to the element: the surface insets
+// the canvas by a margin, and a zoom or pan puts it anywhere. Asked of the size rather
+// than read back off the last frame, which may predate a resize the surface has not
+// drawn yet. Absent when there is no such surface or nothing to place.
 bool MethodPreviewFreeze(const json &params, json &result, std::string &error)
 {
+	json canvasRect;
+	const bool placed = PreviewCanvasRectJson(params, canvasRect);
 	uint32_t w = 0;
 	uint32_t h = 0;
 	std::function<void()> renderFn;
@@ -12500,6 +12535,22 @@ bool MethodPreviewFreeze(const json &params, json &result, std::string &error)
 		return false;
 	}
 	result = json{{"dataUri", dataUri}, {"width", w}, {"height", h}};
+	if (placed) {
+		result["canvasRect"] = canvasRect;
+	}
+	return true;
+}
+
+// Re-place a held still after its element resized: params as preview.freeze's minus the
+// capture -> {canvasRect?}. The hidden surface draws nothing while a still stands in for
+// it, so no frame could report the new placement.
+bool MethodPreviewCanvasRect(const json &params, json &result, std::string & /*error*/)
+{
+	result = json::object();
+	json canvasRect;
+	if (PreviewCanvasRectJson(params, canvasRect)) {
+		result["canvasRect"] = canvasRect;
+	}
 	return true;
 }
 
@@ -14860,6 +14911,7 @@ void Init()
 		{"preview.select", MethodPreviewSelect},
 		{"preview.exitGroup", MethodPreviewExitGroup},
 		{"preview.freeze", MethodPreviewFreeze},
+		{"preview.canvasRect", MethodPreviewCanvasRect},
 		{"preview.viewAction", MethodPreviewViewAction},
 		{"preview.setLocked", MethodPreviewSetLocked},
 		{"preview.setOverlays", MethodPreviewSetOverlays},

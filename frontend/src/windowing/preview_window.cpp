@@ -284,6 +284,14 @@ float FitScale(int cx, int cy, float baseCX, float baseCY)
 	return (float(availCX) / baseCX < float(availCY) / baseCY) ? float(availCX) / baseCX : float(availCY) / baseCY;
 }
 
+// The scale `view` draws a baseCX x baseCY canvas at on a cx x cy surface: the zoom
+// level's when fixed, the margin-inset fit otherwise. The one place that choice is
+// made, so the drawn frame, the menu's percentage and the freeze still cannot disagree.
+float ViewScale(const PreviewView &view, int cx, int cy, float baseCX, float baseCY)
+{
+	return view.fixed ? FixedZoomScale(view.zoomLevel, baseCX, baseCY) : FitScale(cx, cy, baseCX, baseCY);
+}
+
 // The scale the next frame will draw at, derived from the view rather than read
 // back off the last one, at the last surface size the draw callback reported.
 //
@@ -299,8 +307,44 @@ float PendingScale(const PreviewView &view, const PreviewTransform &t)
 	if (t.baseCX <= 0.0f || t.baseCY <= 0.0f) {
 		return t.scale;
 	}
-	return view.fixed ? FixedZoomScale(view.zoomLevel, t.baseCX, t.baseCY)
-			  : FitScale(t.surfaceCX, t.surfaceCY, t.baseCX, t.baseCY);
+	return ViewScale(view, t.surfaceCX, t.surfaceCY, t.baseCX, t.baseCY);
+}
+
+// Where a frame of a cx x cy surface draws the canvas under `view`, in device px.
+struct CanvasPlacement {
+	float scale = 0.0f;
+	int x = 0;
+	int y = 0;
+	int cx = 0;
+	int cy = 0;
+};
+
+// The draw callback's layout, extracted so the freeze still is placed by the same
+// arithmetic that places the canvas it stands in for. Clamps the view's
+// pan to this surface size in place, as a frame must; a caller that is only asking
+// where the canvas would go passes a copy.
+CanvasPlacement PlaceCanvas(PreviewView &view, int cx, int cy, float baseCX, float baseCY)
+{
+	CanvasPlacement p;
+	p.scale = ViewScale(view, cx, cy, baseCX, baseCY);
+	if (view.fixed) {
+		// Fixed scale: the zoom level sets the scale outright and the pan offsets the
+		// centered canvas. No margin here -- it is a fit-mode affordance for reaching a
+		// handle that falls outside the canvas, and at a pinned scale the user reaches
+		// one by panning instead. Insetting would only shrink a view they asked to be
+		// exactly this size.
+		ClampScroll(view, baseCX * p.scale, baseCY * p.scale, cx, cy);
+		p.x = int((float(cx) - baseCX * p.scale) * 0.5f + view.scrollX);
+		p.y = int((float(cy) - baseCY * p.scale) * 0.5f + view.scrollY);
+	} else {
+		// Centered against the FULL surface, not the margin-reduced extent, so the
+		// leftover is the margin split evenly across both sides.
+		p.x = (cx - int(baseCX * p.scale)) / 2;
+		p.y = (cy - int(baseCY * p.scale)) / 2;
+	}
+	p.cx = int(baseCX * p.scale);
+	p.cy = int(baseCY * p.scale);
+	return p;
 }
 
 // Whether the pan modifier is down right now. The overlay is a WS_CHILD sibling of
@@ -2883,42 +2927,27 @@ void RenderPreview(void *data, uint32_t cx, uint32_t cy)
 		return;
 	}
 
-	float scale;
-	int drawX;
-	int drawY;
+	CanvasPlacement place;
 	{
 		std::lock_guard<std::mutex> lock(state->stateMutex);
-		if (state->view.fixed) {
-			// Fixed scale: the zoom level sets the scale outright and the pan
-			// offsets the centered canvas. No margin here -- it is a fit-mode
-			// affordance for reaching a handle that falls outside the canvas, and
-			// at a pinned scale the user reaches one by panning instead. Insetting
-			// would only shrink a view they asked to be exactly this size.
-			scale = FixedZoomScale(state->view.zoomLevel, baseCX, baseCY);
-			// Re-clamp every frame: a dock resize can invalidate a pan that was
-			// legal at the old size, and nothing else re-validates it.
-			ClampScroll(state->view, baseCX * scale, baseCY * scale, int(cx), int(cy));
-			drawX = int((float(cx) - baseCX * scale) * 0.5f + state->view.scrollX);
-			drawY = int((float(cy) - baseCY * scale) * 0.5f + state->view.scrollY);
-		} else {
-			// Centered against the FULL surface, not the margin-reduced extent, so
-			// the leftover is the margin split evenly across both sides.
-			scale = FitScale(int(cx), int(cy), baseCX, baseCY);
-			drawX = (int(cx) - int(baseCX * scale)) / 2;
-			drawY = (int(cy) - int(baseCY * scale)) / 2;
-		}
+		// Re-placed every frame, which is also what re-clamps a pan: a dock resize can
+		// invalidate one that was legal at the old size, and nothing else re-validates it.
+		place = PlaceCanvas(state->view, int(cx), int(cy), baseCX, baseCY);
 
-		state->transform.scale = scale;
-		state->transform.drawX = drawX;
-		state->transform.drawY = drawY;
+		state->transform.scale = place.scale;
+		state->transform.drawX = place.x;
+		state->transform.drawY = place.y;
 		state->transform.baseCX = baseCX;
 		state->transform.baseCY = baseCY;
 		state->transform.surfaceCX = int(cx);
 		state->transform.surfaceCY = int(cy);
 	}
+	const float scale = place.scale;
+	const int drawX = place.x;
+	const int drawY = place.y;
+	const int drawCX = place.cx;
+	const int drawCY = place.cy;
 
-	const int drawCX = int(baseCX * scale);
-	const int drawCY = int(baseCY * scale);
 	// The canvas viewport covers whole pixels, so an overlay measured to a canvas edge has to
 	// be mapped by the extent actually covered or it can land a pixel outside it.
 	const float coverX = float(drawCX) / baseCX;
@@ -4634,6 +4663,25 @@ PreviewViewState PreviewSurface::GetView()
 	return PreviewViewState{state_->view.fixed, zoomPercent, state_->view.locked, overlays};
 }
 
+std::optional<PreviewCanvasRect> PreviewSurface::CanvasRectAt(int cx, int cy)
+{
+	obs_video_info ovi;
+	if (cx <= 0 || cy <= 0 || !SurfaceVideoInfo(targetCanvas_, ovi) || ovi.base_width == 0 ||
+	    ovi.base_height == 0) {
+		return std::nullopt;
+	}
+	PreviewView view;
+	{
+		std::lock_guard<std::mutex> lock(state_->stateMutex);
+		view = state_->view;
+	}
+	const CanvasPlacement p = PlaceCanvas(view, cx, cy, float(ovi.base_width), float(ovi.base_height));
+	if (p.cx <= 0 || p.cy <= 0) {
+		return std::nullopt;
+	}
+	return PreviewCanvasRect{p.x, p.y, p.cx, p.cy, cx, cy};
+}
+
 void PreviewSurface::SetRect(int x, int y, int cx, int cy)
 {
 	overlay_.SetRect(x, y, cx, cy);
@@ -5461,6 +5509,18 @@ std::optional<PreviewViewState> GetView(const std::string &canvas, int windowId)
 		return std::nullopt;
 	}
 	return surface->GetView();
+}
+
+std::optional<PreviewCanvasRect> CanvasRectAt(const std::string &canvas, int cx, int cy, int windowId)
+{
+	if (!g_instance) {
+		return std::nullopt;
+	}
+	PreviewSurface *surface = g_instance->FindSurface(windowId, canvas);
+	if (!surface) {
+		return std::nullopt;
+	}
+	return surface->CanvasRectAt(cx, cy);
 }
 
 std::optional<PreviewOverlays> OverlaysFromSettings(const GeneralSettings &settings)

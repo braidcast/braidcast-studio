@@ -65,6 +65,19 @@ struct PreviewViewState {
 	PreviewOverlays overlays;
 };
 
+// Where a frame of a surface this size puts the canvas inside it, and that surface size,
+// all in device px. Laid out by the draw callback's own arithmetic rather than an
+// equivalent, because it is what a stand-in for the surface has to match, zoom and pan
+// included.
+struct PreviewCanvasRect {
+	int x;
+	int y;
+	int cx;
+	int cy;
+	int surfaceCX;
+	int surfaceCY;
+};
+
 // One native preview surface: an OverlaySurface (a borderless child HWND of the
 // host, sibling above the CEF browser HWND, plus its own obs_display) rendering one
 // canvas's program scene with aspect-correct letterboxing, and the scene editing
@@ -142,6 +155,13 @@ public:
 
 	// The view state the context menu renders from. UI thread.
 	PreviewViewState GetView();
+
+	// The canvas rect the next frame would draw were the surface cx x cy device px: the
+	// current view and the surface's base resolution, through the draw callback's layout.
+	// Asks about a size rather than reading one back, so it answers for a surface that is
+	// hidden, has not drawn at its new size yet, or has never drawn. Empty for a
+	// degenerate size or a mix with no video. UI thread.
+	std::optional<PreviewCanvasRect> CanvasRectAt(int cx, int cy);
 
 	// Hit-test at a canvas-space coordinate against this surface's scene; returns
 	// the topmost matching scene-item id, or -1. Used by the smoke self-test.
@@ -486,6 +506,8 @@ bool ApplyViewAction(const std::string &canvas, const std::string &token, int wi
 bool SetLocked(const std::string &canvas, bool locked, int windowId = 0);
 // Empty when there is no surface for this canvas and window.
 std::optional<PreviewViewState> GetView(const std::string &canvas, int windowId = 0);
+// PreviewSurface::CanvasRectAt; empty also when there is no surface. Never creates one.
+std::optional<PreviewCanvasRect> CanvasRectAt(const std::string &canvas, int cx, int cy, int windowId = 0);
 
 // The guide overlays as GeneralSettings holds them. FromSettings is empty when the
 // stored overflow mode is not a token it knows; ToSettings writes all four fields.
