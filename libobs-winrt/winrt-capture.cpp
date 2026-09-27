@@ -1,4 +1,5 @@
 #include "winrt-capture.h"
+#include <atomic>
 
 extern "C" EXPORT BOOL winrt_capture_supported()
 try {
@@ -103,6 +104,9 @@ struct winrt_capture {
 
 	gs_texture_t *texture;
 	bool texture_written;
+	/* taken and zeroed by winrt_capture_take_frames; both ends run on the
+	 * graphics thread, the atomic only keeps that assumption cheap to break */
+	std::atomic<uint32_t> frames_copied;
 	winrt::Windows::Graphics::Capture::GraphicsCaptureItem item{nullptr};
 	winrt::Windows::Graphics::DirectX::Direct3D11::IDirect3DDevice device{nullptr};
 	ComPtr<ID3D11DeviceContext> context;
@@ -175,6 +179,7 @@ struct winrt_capture {
 				}
 
 				texture_written = true;
+				frames_copied.fetch_add(1, std::memory_order_relaxed);
 			}
 
 			if (frame_content_size.Width != last_size.Width ||
@@ -584,6 +589,11 @@ extern "C" EXPORT uint32_t winrt_capture_width(const struct winrt_capture *captu
 extern "C" EXPORT uint32_t winrt_capture_height(const struct winrt_capture *capture)
 {
 	return capture ? capture->texture_height : 0;
+}
+
+extern "C" EXPORT uint32_t winrt_capture_take_frames(struct winrt_capture *capture)
+{
+	return capture ? capture->frames_copied.exchange(0, std::memory_order_relaxed) : 0;
 }
 
 extern "C" EXPORT void winrt_capture_thread_start()

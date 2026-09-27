@@ -49,6 +49,7 @@ typedef enum gs_color_space (*PFN_winrt_capture_get_color_space)(const struct wi
 typedef void (*PFN_winrt_capture_render)(struct winrt_capture *capture);
 typedef uint32_t (*PFN_winrt_capture_width)(const struct winrt_capture *capture);
 typedef uint32_t (*PFN_winrt_capture_height)(const struct winrt_capture *capture);
+typedef uint32_t (*PFN_winrt_capture_take_frames)(struct winrt_capture *capture);
 
 struct winrt_exports {
 	PFN_winrt_capture_supported winrt_capture_supported;
@@ -60,6 +61,7 @@ struct winrt_exports {
 	PFN_winrt_capture_render winrt_capture_render;
 	PFN_winrt_capture_width winrt_capture_width;
 	PFN_winrt_capture_height winrt_capture_height;
+	PFN_winrt_capture_take_frames winrt_capture_take_frames;
 };
 
 enum display_capture_method {
@@ -90,6 +92,7 @@ struct duplicator_capture {
 	uint32_t width;
 	uint32_t height;
 	gs_duplicator_t *duplicator;
+	uint32_t dxgi_last_seq;
 	float reset_timeout;
 	struct cursor_data cursor_data;
 
@@ -418,6 +421,7 @@ static bool load_winrt_imports(struct winrt_exports *exports, void *module, cons
 	WINRT_IMPORT(winrt_capture_render);
 	WINRT_IMPORT(winrt_capture_width);
 	WINRT_IMPORT(winrt_capture_height);
+	WINRT_IMPORT(winrt_capture_take_frames);
 
 	return success;
 }
@@ -493,6 +497,17 @@ static void update_monitor_handle(struct duplicator_capture *capture)
 	capture->handle = find_monitor(capture->monitor_id).handle;
 }
 
+static void update_frame_count_kind(struct duplicator_capture *capture)
+{
+	enum obs_frame_count_kind kind = OBS_FRAME_COUNT_NONE;
+	if (capture->capture_winrt) {
+		kind = OBS_FRAME_COUNT_WGC;
+	} else if (capture->duplicator) {
+		kind = OBS_FRAME_COUNT_DXGI;
+	}
+	obs_source_set_frame_count_kind(capture->source, kind);
+}
+
 static void duplicator_capture_tick(void *data, float seconds)
 {
 	struct duplicator_capture *capture = data;
@@ -507,6 +522,7 @@ static void duplicator_capture_tick(void *data, float seconds)
 
 			capture->showing = false;
 		}
+		update_frame_count_kind(capture);
 		return;
 	}
 
@@ -519,6 +535,12 @@ static void duplicator_capture_tick(void *data, float seconds)
 	obs_enter_graphics();
 
 	if (capture->method == METHOD_WGC) {
+		/* before any free below, so frames already copied are counted */
+		if (capture->capture_winrt) {
+			obs_source_add_new_frames(capture->source,
+						  capture->exports.winrt_capture_take_frames(capture->capture_winrt));
+		}
+
 		if (capture->reset_wgc && capture->capture_winrt) {
 			capture->exports.winrt_capture_free(capture->capture_winrt);
 			capture->capture_winrt = NULL;
@@ -579,6 +601,12 @@ static void duplicator_capture_tick(void *data, float seconds)
 
 					if (dxgi_index != -1) {
 						capture->duplicator = gs_duplicator_create(dxgi_index);
+						/* the duplicator may be shared with another source
+						 * and already counting, so start from where it is */
+						if (capture->duplicator) {
+							capture->dxgi_last_seq =
+								gs_duplicator_get_frame_seq(capture->duplicator);
+						}
 					}
 				}
 
@@ -594,13 +622,21 @@ static void duplicator_capture_tick(void *data, float seconds)
 			if (!gs_duplicator_update_frame(capture->duplicator)) {
 				free_capture_data(capture);
 
-			} else if (capture->width == 0) {
-				reset_capture_data(capture);
+			} else {
+				const uint32_t seq = gs_duplicator_get_frame_seq(capture->duplicator);
+				obs_source_add_new_frames(capture->source, seq - capture->dxgi_last_seq);
+				capture->dxgi_last_seq = seq;
+
+				if (capture->width == 0) {
+					reset_capture_data(capture);
+				}
 			}
 		}
 	}
 
 	obs_leave_graphics();
+
+	update_frame_count_kind(capture);
 
 	if (!capture->showing) {
 		capture->showing = true;

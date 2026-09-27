@@ -49,6 +49,7 @@ typedef enum gs_color_space (*PFN_winrt_capture_get_color_space)(const struct wi
 typedef void (*PFN_winrt_capture_render)(struct winrt_capture *capture);
 typedef uint32_t (*PFN_winrt_capture_width)(const struct winrt_capture *capture);
 typedef uint32_t (*PFN_winrt_capture_height)(const struct winrt_capture *capture);
+typedef uint32_t (*PFN_winrt_capture_take_frames)(struct winrt_capture *capture);
 
 struct winrt_exports {
 	PFN_winrt_capture_supported winrt_capture_supported;
@@ -61,6 +62,7 @@ struct winrt_exports {
 	PFN_winrt_capture_render winrt_capture_render;
 	PFN_winrt_capture_width winrt_capture_width;
 	PFN_winrt_capture_height winrt_capture_height;
+	PFN_winrt_capture_take_frames winrt_capture_take_frames;
 };
 
 enum window_capture_method {
@@ -296,6 +298,7 @@ static bool load_winrt_imports(struct winrt_exports *exports, void *module, cons
 	WINRT_IMPORT(winrt_capture_render);
 	WINRT_IMPORT(winrt_capture_width);
 	WINRT_IMPORT(winrt_capture_height);
+	WINRT_IMPORT(winrt_capture_take_frames);
 
 	return success;
 }
@@ -601,6 +604,16 @@ static void wc_tick(void *data, float seconds)
 	struct window_capture *wc = data;
 	RECT rect;
 	bool reset_capture = false;
+
+	/* ahead of every early return below, so frames already copied are
+	 * counted and the kind always describes the capture this tick starts
+	 * with; BitBlt has no frame signal and stays unmeasured */
+	if (wc->capture_winrt) {
+		obs_source_add_new_frames(wc->source, wc->exports.winrt_capture_take_frames(wc->capture_winrt));
+	}
+	obs_source_set_frame_count_kind(wc->source, (wc->method == METHOD_WGC && wc->capture_winrt)
+							    ? OBS_FRAME_COUNT_WGC
+							    : OBS_FRAME_COUNT_NONE);
 
 	if (!obs_source_showing(wc->source)) {
 		return;
