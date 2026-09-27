@@ -49,7 +49,8 @@ function alertbox() {
     formatAmount: () => "",
     formatAmountText: () => "",
     formatCount: (n: number) => String(n),
-    fillTemplate: (t: string) => t,
+    fillTemplate: (t: string, v: Record<string, unknown>) =>
+      t.replace(/[{]([a-zA-Z]+)[}]/g, (m, k: string) => (k in v ? String(v[k]) : m)),
     textField: (_f: unknown, _k: string, d: string) => d,
     playSound() {},
   };
@@ -59,11 +60,12 @@ function alertbox() {
     "performance",
     "setTimeout",
     "clearTimeout",
-    SOURCE + "\n;return { queue: () => queue, current: () => current };",
+    SOURCE + "\n;return { queue: () => queue, current: () => current, fillSummary };",
   );
   const box = run(document, overlay, { now: () => now }, () => 0, () => {}) as {
     queue: () => Burst[];
     current: () => Burst | null;
+    fillSummary: (el: unknown, b: Burst) => void;
   };
   let seq = 0;
   return {
@@ -121,6 +123,36 @@ describe("alertbox queue", () => {
     expect(q[10].summaryFrom).toBe(0); // the whole burst is its "+N more" card
     expect(q[10].events.length).toBe(89); // 1 on the deck + 10 whole + 89 folded
     expect(a.held()).toBe(100);
+  });
+
+  test("an overflow card names the type it counts; a burst's own '+N more' does not", () => {
+    const a = alertbox();
+    for (let i = 0; i < 25; i++) {
+      a.fire("superchat");
+    }
+    const card = () => {
+      const name = { textContent: "" };
+      const msg = { textContent: "a peek's old line" };
+      const el = {
+        classList: { add() {} },
+        querySelector: (sel: string) => (sel === ".alert-name" ? name : msg),
+      };
+      return { el, name, msg };
+    };
+    const overflow = a.box.queue().at(-1)!;
+    const c = card();
+    a.box.fillSummary(c.el, overflow);
+    expect(c.name.textContent).toBe("and 14 more!"); // 1 on the deck + 10 whole + 14 folded
+    expect(c.msg.textContent).toBe("Super Chats");
+    const burst: Burst = {
+      group: "subs",
+      summaryFrom: 3,
+      events: Array.from({ length: 8 }, (_, i) => ({ type: "sub", id: "s" + i })),
+    };
+    const b = card();
+    a.box.fillSummary(b.el, burst);
+    expect(b.name.textContent).toBe("and 5 more!");
+    expect(b.msg.textContent).toBe("");
   });
 
   test("5 Super Chats stay individual cards", () => {

@@ -34,6 +34,17 @@ const BURST_GROUP = {
   kicks: null,
 };
 
+// Play-alone type -> what its overflow card counts, shown under the "+N more" line. That card
+// can follow another kind's burst, so it has to say what it stands for. An unlisted type
+// shows as its type string.
+const OVERFLOW_NOUN = {
+  cheer: "cheers",
+  raid: "raids",
+  superchat: "Super Chats",
+  supersticker: "Super Stickers",
+  kicks: "Kicks",
+};
+
 // burstAnimation value -> the class that plays a card's exit (one keyframes block each in
 // template.css). An unknown value plays the default's.
 const EXIT_CLASS = {
@@ -323,7 +334,10 @@ function fillSummary(el, b) {
   const more = OBSOverlay.formatCount(b.events.length - b.summaryFrom);
   el.classList.add("summary");
   el.querySelector(".alert-name").textContent = OBSOverlay.fillTemplate(tmpl, { count: more });
-  el.querySelector(".alert-msg").textContent = ""; // a taken-over peek still holds its alert's line
+  // A burst's own "+N more" follows its cards and needs no label; a taken-over peek still
+  // holds its alert's line, so the line is always rewritten.
+  const type = b.events[0].type;
+  el.querySelector(".alert-msg").textContent = b.overflow ? own(OVERFLOW_NOUN, type) || type : "";
 }
 
 // The live region says each card once, as it reaches the front. The cards themselves are
