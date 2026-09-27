@@ -2,19 +2,11 @@
 
 #include "util/env_config.hpp"
 
-#include <obs.hpp>
-
-#include <map>
 #include <set>
-#include <string>
 
 namespace VideoGate {
 
 namespace {
-
-// uuid -> strong ref, held only for the duration of one Reconcile so the graph
-// cannot change under the walk. Sets that outlive a call store uuids alone.
-using SourceSet = std::map<std::string, OBSSource>;
 
 bool GateEnabled()
 {
@@ -24,6 +16,7 @@ bool GateEnabled()
 
 std::function<bool()> g_mainActiveFn;
 std::function<void(const RootVisitor &)> g_canvasRootsFn;
+std::function<std::string()> g_mainCanvasUuidFn;
 
 // uuid -> outstanding IncShowing count. A source held here is being drawn by the
 // frontend itself (a thumbnail render, a Multiview cell), so its tree renders
@@ -91,6 +84,13 @@ void UngateAll()
 	g_gated.clear();
 }
 
+// No predicate means the runtime that owns it is gone (teardown) or not yet built,
+// and either way nothing can be judged idle.
+bool GateArmed()
+{
+	return GateEnabled() && g_mainActiveFn;
+}
+
 } // namespace
 
 void SetMainActivePredicate(std::function<bool()> fn)
@@ -103,34 +103,62 @@ void SetCanvasRootEnumerator(std::function<void(const RootVisitor &)> fn)
 	g_canvasRootsFn = std::move(fn);
 }
 
+void SetMainCanvasUuid(std::function<std::string()> fn)
+{
+	g_mainCanvasUuidFn = std::move(fn);
+}
+
+std::vector<Root> WalkRoots()
+{
+	std::vector<Root> roots;
+	{
+		OBSSourceAutoRelease main = obs_get_output_source(0);
+		if (main) {
+			const std::string uuid = g_mainCanvasUuidFn ? g_mainCanvasUuidFn() : std::string();
+			Root &root = roots.emplace_back(Root{RootKind::Main, uuid, {}});
+			CollectActiveTree(main, root.sources);
+		}
+	}
+	if (g_canvasRootsFn) {
+		g_canvasRootsFn([&roots](const std::string &canvasUuid, obs_source_t *source) {
+			Root &root = roots.emplace_back(Root{RootKind::Canvas, canvasUuid, {}});
+			CollectActiveTree(source, root.sources);
+		});
+	}
+	for (const auto &holder : g_showingRoots) {
+		OBSSourceAutoRelease source = obs_get_source_by_uuid(holder.first.c_str());
+		if (source) {
+			Root &root = roots.emplace_back(Root{RootKind::ShowingRoot, std::string(), {}});
+			CollectActiveTree(source, root.sources);
+		}
+	}
+	return roots;
+}
+
 void Reconcile()
 {
-	// No predicate means the runtime that owns it is gone (teardown) or not yet
-	// built, and either way nothing can be judged idle.
-	if (!GateEnabled() || !g_mainActiveFn) {
+	if (!GateArmed()) {
+		UngateAll();
+		return;
+	}
+	ReconcileWith(WalkRoots());
+}
+
+void ReconcileWith(const std::vector<Root> &roots)
+{
+	if (!GateArmed()) {
 		UngateAll();
 		return;
 	}
 
+	// Main's tree, and the union of everything reachable from any other root. A
+	// source in `wanted` renders for that root's sake even while Main is idle, so
+	// it must not be gated.
 	SourceSet mainTree;
-	{
-		OBSSourceAutoRelease main = obs_get_output_source(0);
-		if (main) {
-			CollectActiveTree(main, mainTree);
-		}
-	}
-
-	// Everything reachable from a root other than Main. A source in here renders
-	// for that root's sake even while Main is idle, so it must not be gated.
 	SourceSet wanted;
-	if (g_canvasRootsFn) {
-		g_canvasRootsFn([&wanted](obs_source_t *root) { CollectActiveTree(root, wanted); });
-	}
-	for (const auto &holder : g_showingRoots) {
-		OBSSourceAutoRelease root = obs_get_source_by_uuid(holder.first.c_str());
-		if (root) {
-			CollectActiveTree(root, wanted);
-		}
+	for (const Root &root : roots) {
+		SourceSet &into = root.kind == RootKind::Main ? mainTree : wanted;
+		into.insert(root.sources.begin(), root.sources.end());
 	}
 
 	const bool mainIdle = !g_mainActiveFn();
@@ -203,6 +231,7 @@ void Shutdown()
 	g_showingRoots.clear();
 	g_mainActiveFn = nullptr;
 	g_canvasRootsFn = nullptr;
+	g_mainCanvasUuidFn = nullptr;
 }
 
 } // namespace VideoGate

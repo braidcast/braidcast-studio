@@ -133,10 +133,10 @@ private:
 	bool DefaultIsActive() const;
 	void ReconcileDefault();
 
-	// Channel 0 of every canvas that currently has a mix, for VideoGate: those trees
-	// composite independently of Main. An inactive canvas has no mix and contributes
-	// nothing.
-	void EnumActiveRoots(const std::function<void(obs_source_t *)> &fn) const;
+	// Channel 0 of every canvas that currently has a mix, with that canvas's uuid, for
+	// VideoGate: those trees composite independently of Main. An inactive canvas has no
+	// mix and contributes nothing.
+	void EnumActiveRoots(const std::function<void(const std::string &, obs_source_t *)> &fn) const;
 
 	CanvasStore &defs;
 	std::vector<Entry> canvases;

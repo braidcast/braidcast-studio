@@ -1,8 +1,11 @@
 #pragma once
 
-#include <obs.h>
+#include <obs.hpp>
 
 #include <functional>
+#include <map>
+#include <string>
+#include <vector>
 
 // Stops the Default ("Main") canvas's scene tree from capturing video while
 // nothing consumes that composite -- no enabled output binding, no open preview,
@@ -25,11 +28,36 @@
 // state below is unsynchronized.
 namespace VideoGate {
 
-// Visits one root source; the source is borrowed for the duration of the call.
-using RootVisitor = std::function<void(obs_source_t *)>;
+// Visits one root source and the canvas it composites for; the source is
+// borrowed for the duration of the call.
+using RootVisitor = std::function<void(const std::string &canvasUuid, obs_source_t *root)>;
 
-// Recompute the gated set from the live source graph. Idempotent, and cheap
-// enough to call on every consumer change as well as from the periodic sweep.
+// uuid -> strong ref. Held only for the tick that walked it, so the graph cannot
+// change under a consumer; anything kept across ticks stores uuids or weak refs.
+using SourceSet = std::map<std::string, OBSSource>;
+
+enum class RootKind {
+	Main,        // channel 0, the Default canvas's composite
+	Canvas,      // channel 0 of an active non-Default canvas
+	ShowingRoot, // a frontend showing holder (thumbnail, projector, Multiview cell)
+};
+
+struct Root {
+	RootKind kind;
+	std::string canvasUuid; // empty for a ShowingRoot, which composites for no canvas
+	SourceSet sources;      // the root and its active tree
+};
+
+// Every root that renders right now, each with its active tree. One walk serves
+// every consumer of a sweep, so the gate and the capture-rate sampler cannot
+// disagree about what reaches what.
+std::vector<Root> WalkRoots();
+
+// Recompute the gated set from a walk. Idempotent, and cheap enough to call on
+// every consumer change as well as from the periodic sweep.
+void ReconcileWith(const std::vector<Root> &roots);
+
+// ReconcileWith(WalkRoots()), skipping the walk when the gate is off.
 void Reconcile();
 
 // "Does the Default canvas still have a consumer": CanvasRuntime::DefaultIsActive.
@@ -39,6 +67,10 @@ void SetMainActivePredicate(std::function<bool()> fn);
 // Visits channel 0 of every ACTIVE non-Default canvas. Those trees composite
 // independently of Main, so anything they reach must stay ungated.
 void SetCanvasRootEnumerator(std::function<void(const RootVisitor &)> fn);
+
+// The Default canvas's uuid, which the Main root reports. Injected for the same
+// reason as the predicate: the canvas store owns that answer.
+void SetMainCanvasUuid(std::function<std::string()> fn);
 
 // obs_source_inc_showing / obs_source_dec_showing plus registration of the
 // source as a gate root. The frontend's explicit showing holders go through

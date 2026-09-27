@@ -21,6 +21,7 @@ CanvasRuntime::CanvasRuntime(CanvasStore &defs_) : defs(defs_)
 	// registration is revoked in ClearAll so it cannot outlive this object.
 	VideoGate::SetMainActivePredicate([this] { return DefaultIsActive(); });
 	VideoGate::SetCanvasRootEnumerator([this](const VideoGate::RootVisitor &visit) { EnumActiveRoots(visit); });
+	VideoGate::SetMainCanvasUuid([this] { return defs.Default().uuid; });
 }
 
 CanvasRuntime::~CanvasRuntime()
@@ -213,7 +214,7 @@ void CanvasRuntime::ReconcileDefault()
 	VideoGate::Reconcile();
 }
 
-void CanvasRuntime::EnumActiveRoots(const std::function<void(obs_source_t *)> &fn) const
+void CanvasRuntime::EnumActiveRoots(const std::function<void(const std::string &, obs_source_t *)> &fn) const
 {
 	for (const Entry &e : canvases) {
 		if (!e.active) {
@@ -221,7 +222,7 @@ void CanvasRuntime::EnumActiveRoots(const std::function<void(obs_source_t *)> &f
 		}
 		OBSSourceAutoRelease root = obs_canvas_get_channel(e.canvas, 0); // addref'd
 		if (root) {
-			fn(root);
+			fn(e.uuid, root);
 		}
 	}
 }
