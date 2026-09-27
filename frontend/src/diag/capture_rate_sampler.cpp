@@ -55,6 +55,7 @@ bool IsCandidate(obs_source_t *source, Kind kind)
 // Whether the source's capture method counts its frames at all, for a source that
 // reports no kind. Deinterlacing hides an async source's frames from the fold, and
 // BitBlt has no signal; anything else counting nothing is not capturing now.
+// A WGC setting on a system without WGC runs BitBlt and reads idle.
 bool HasFrameSignal(obs_source_t *source)
 {
 	if ((obs_source_get_output_flags(source) & OBS_SOURCE_ASYNC_VIDEO) == OBS_SOURCE_ASYNC_VIDEO) {
