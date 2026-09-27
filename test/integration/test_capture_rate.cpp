@@ -401,6 +401,33 @@ static void test_grace_restarts_on_going_live(void **)
 	assert_null(RowFor(t, "disp")->lockedFraction);
 }
 
+// No reference means no rule (plan 1.4): once the broadcast ends and only a
+// lease keeps sampling, the row shows the rate alone. A lock from the broadcast
+// must not linger, nor count as locked time.
+static void test_lock_ends_with_the_broadcast(void **)
+{
+	Tracker t;
+	Feed f("disp", Kind::Wgc);
+	Prime(t, f);
+	for (int s = 0; s < 15; s++) {
+		Step(t, f, 60, 30, 30);
+	}
+	assert_non_null(RowFor(t, "disp")->lockedFraction);
+
+	f.src.reach = {Reach{kMainFps, false}};
+	t.ResetWindows();
+	t.SessionBegin(0);
+	for (int s = 0; s < 8; s++) {
+		Step(t, f, 60, 30, 30);
+		const Row *r = RowFor(t, "disp");
+		assert_false(r->refFps.has_value());
+		assert_null(r->lockedFraction);
+		assert_true(r->rate.has_value());
+	}
+	assert_true(RowFor(t, "disp")->sinceReset.lockedSec == 0.0);
+	assert_null(strstr(t.SessionEnd(8ull * 1000000000ull).c_str(), "locked"));
+}
+
 // A source removed mid-session keeps its name and final sums in the line.
 static void test_removed_source_keeps_its_sums(void **)
 {
@@ -440,6 +467,7 @@ int main(void)
 		cmocka_unit_test(test_removed_source_keeps_its_sums),
 		cmocka_unit_test(test_repeated_session_begin_keeps_the_session),
 		cmocka_unit_test(test_grace_restarts_on_going_live),
+		cmocka_unit_test(test_lock_ends_with_the_broadcast),
 	};
 	return cmocka_run_group_tests(tests, nullptr, nullptr);
 }

@@ -159,6 +159,7 @@ private:
 	};
 
 	void RestartGrace(Entry &e);
+	void ClearLock(Entry &e);
 	void Rebaseline(Entry &e, const SourceInput &src, double mainFps);
 	Row Evaluate(Entry &e, const SourceInput &src, double dt, double mainFps);
 	void UpdateLock(Entry &e, std::optional<double> fraction, bool eligible);

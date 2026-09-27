@@ -151,6 +151,11 @@ std::optional<double> RefFps(const std::vector<Reach> &reach, double mainFps)
 void Tracker::RestartGrace(Entry &e)
 {
 	e.sinceBaselineSec = 0.0;
+	ClearLock(e);
+}
+
+void Tracker::ClearLock(Entry &e)
+{
 	e.streakFraction = -1;
 	e.streakCount = 0;
 	e.lockedFraction = -1;
@@ -202,15 +207,19 @@ Row Tracker::Evaluate(Entry &e, const SourceInput &src, double dt, double mainFp
 	r.refFps = RefFps(src.reach, mainFps);
 	r.status = StatusOf(src);
 
-	// uint32 modular deltas: the counters wrap, and only a new identity or kind
-	// (handled by the caller) means they restarted.
 	if (r.refFps && !e.hadRef) {
-		// Going live: grace runs from here, and a lock from an earlier broadcast
-		// (or from watching before this one) does not carry over.
+		// Going live: grace runs from here, and a lock from watching before does
+		// not carry over.
 		RestartGrace(e);
+	} else if (!r.refFps && e.hadRef) {
+		// Going off air: no reference means no rule, so the broadcast's lock ends
+		// with it rather than lingering on the rate.
+		ClearLock(e);
 	}
 	e.hadRef = r.refFps.has_value();
 
+	// uint32 modular deltas: the counters wrap, and only a new identity or kind
+	// (handled by the caller) means they restarted.
 	const uint32_t dLive = src.counts.liveTicks - e.last.liveTicks;
 	const uint32_t dNew = src.counts.newFrameTicks - e.last.newFrameTicks;
 	const uint32_t dDelivered = src.counts.framesDelivered - e.last.framesDelivered;
