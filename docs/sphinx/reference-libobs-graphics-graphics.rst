@@ -1607,6 +1607,13 @@ Display Duplicator (Windows Only)
 
 ---------------------
 
+.. function:: uint32_t gs_duplicator_get_frame_seq(gs_duplicator_t *duplicator)
+
+   Frames copied from the desktop so far; pointer-only updates are not counted.
+   Wraps as uint32_t; take modular deltas.
+
+---------------------
+
 .. function:: bool gs_get_duplicator_monitor_info(int monitor_idx, struct gs_monitor_info *monitor_info)
 
 ---------------------
