@@ -268,8 +268,9 @@ static void close_handle(HANDLE *p_handle)
 {
 	HANDLE handle = *p_handle;
 	if (handle) {
-		if (handle != INVALID_HANDLE_VALUE)
+		if (handle != INVALID_HANDLE_VALUE) {
 			CloseHandle(handle);
+		}
 		*p_handle = NULL;
 	}
 }
@@ -277,8 +278,9 @@ static void close_handle(HANDLE *p_handle)
 static inline HMODULE kernel32(void)
 {
 	static HMODULE kernel32_handle = NULL;
-	if (!kernel32_handle)
+	if (!kernel32_handle) {
 		kernel32_handle = GetModuleHandleW(L"kernel32");
+	}
 	return kernel32_handle;
 }
 
@@ -286,9 +288,10 @@ static inline HANDLE open_process(DWORD desired_access, bool inherit_handle, DWO
 {
 	typedef HANDLE(WINAPI * PFN_OpenProcess)(DWORD, BOOL, DWORD);
 	static PFN_OpenProcess open_process_proc = NULL;
-	if (!open_process_proc)
+	if (!open_process_proc) {
 		open_process_proc =
 			(PFN_OpenProcess)ms_get_obfuscated_func(kernel32(), "NuagUykjcxr", 0x1B694B59451ULL);
+	}
 
 	return open_process_proc(desired_access, inherit_handle, process_id);
 }
@@ -351,8 +354,9 @@ static void stop_capture(struct game_capture *gc)
 	gc->texture = NULL;
 	obs_leave_graphics();
 
-	if (gc->active)
+	if (gc->active) {
 		info("capture stopped");
+	}
 
 	// if it was previously capturing, send an unhooked signal
 	if (gc->capturing) {
@@ -364,16 +368,18 @@ static void stop_capture(struct game_capture *gc)
 		calldata_free(&data);
 
 		// Also update audio source to stop capturing
-		if (gc->audio_source)
+		if (gc->audio_source) {
 			reconfigure_audio_source(gc->audio_source, NULL);
+		}
 	}
 
 	gc->copy_texture = NULL;
 	gc->wait_for_target_startup = false;
 	gc->active = false;
 
-	if (gc->retrying)
+	if (gc->retrying) {
 		gc->retrying--;
+	}
 }
 
 static inline void free_config(struct game_capture_config *config)
@@ -389,14 +395,16 @@ static void game_capture_destroy(void *data)
 	struct game_capture *gc = data;
 	stop_capture(gc);
 
-	if (gc->audio_source)
+	if (gc->audio_source) {
 		destroy_audio_source(gc->source, &gc->audio_source);
+	}
 
 	signal_handler_t *sh = obs_source_get_signal_handler(gc->source);
 	signal_handler_disconnect(sh, "rename", rename_audio_source, &gc->audio_source);
 
-	if (gc->hotkey_pair)
+	if (gc->hotkey_pair) {
 		obs_hotkey_pair_unregister(gc->hotkey_pair);
+	}
 
 	obs_enter_graphics();
 	cursor_data_free(&gc->cursor_data);
@@ -428,12 +436,13 @@ static inline void get_config(struct game_capture_config *cfg, obs_data_t *setti
 		mode_str = obs_data_get_string(settings, SETTING_MODE);
 	}
 
-	if (mode_str && strcmp(mode_str, SETTING_MODE_WINDOW) == 0)
+	if (mode_str && strcmp(mode_str, SETTING_MODE_WINDOW) == 0) {
 		cfg->mode = CAPTURE_MODE_WINDOW;
-	else if (mode_str && strcmp(mode_str, SETTING_MODE_HOTKEY) == 0)
+	} else if (mode_str && strcmp(mode_str, SETTING_MODE_HOTKEY) == 0) {
 		cfg->mode = CAPTURE_MODE_HOTKEY;
-	else
+	} else {
 		cfg->mode = CAPTURE_MODE_ANY;
+	}
 
 	cfg->priority = (enum window_priority)obs_data_get_int(settings, SETTING_WINDOW_PRIORITY);
 	cfg->force_shmem = obs_data_get_bool(settings, SETTING_COMPATIBILITY);
@@ -450,8 +459,9 @@ static inline void get_config(struct game_capture_config *cfg, obs_data_t *setti
 
 static inline int s_cmp(const char *str1, const char *str2)
 {
-	if (!str1 || !str2)
+	if (!str1 || !str2) {
 		return -1;
+	}
 
 	return strcmp(str1, str2);
 }
@@ -514,8 +524,9 @@ static bool hotkey_stop(void *data, obs_hotkey_pair_id id, obs_hotkey_t *hotkey,
 static void game_capture_get_hooked(void *data, calldata_t *cd)
 {
 	struct game_capture *gc = data;
-	if (!gc)
+	if (!gc) {
 		return;
+	}
 
 	calldata_set_bool(cd, "hooked", gc->capturing);
 
@@ -766,8 +777,9 @@ static inline void reset_frame_interval(struct game_capture *gc)
 		 * running at 900 FPS is being captured without some sort of
 		 * limited capture interval, it will dramatically reduce
 		 * performance. */
-		if (!gc->config.limit_framerate)
+		if (!gc->config.limit_framerate) {
 			interval /= 2;
+		}
 	}
 
 	gc->global_hook_info->frame_interval = interval;
@@ -813,8 +825,9 @@ static inline bool init_hook_info(struct game_capture *gc)
 static void pipe_log(void *param, uint8_t *data, size_t size)
 {
 	struct game_capture *gc = param;
-	if (data && size)
+	if (data && size) {
 		info("%s", data);
+	}
 }
 
 static inline bool init_pipe(struct game_capture *gc)
@@ -981,15 +994,17 @@ static bool is_blacklisted_exe(const char *exe)
 {
 	char cur_exe[MAX_PATH];
 
-	if (!exe)
+	if (!exe) {
 		return false;
+	}
 
 	for (const char **vals = blacklisted_exes; *vals; vals++) {
 		strcpy(cur_exe, *vals);
 		strcat(cur_exe, ".exe");
 
-		if (strcmpi(cur_exe, exe) == 0)
+		if (strcmpi(cur_exe, exe) == 0) {
 			return true;
+		}
 	}
 
 	return false;
@@ -1018,8 +1033,9 @@ static bool init_hook(struct game_capture *gc)
 	}
 
 	blacklisted_process = is_blacklisted_exe(exe.array);
-	if (blacklisted_process)
+	if (blacklisted_process) {
 		info("cannot capture %s due to being blacklisted", exe.array);
+	}
 	dstr_free(&exe);
 
 	if (blacklisted_process) {
@@ -1171,11 +1187,13 @@ static void try_hook(struct game_capture *gc)
 		gc->thread_id = GetWindowThreadProcessId(gc->next_window, &gc->process_id);
 
 		// Make sure we never try to hook ourselves (projector)
-		if (gc->process_id == GetCurrentProcessId())
+		if (gc->process_id == GetCurrentProcessId()) {
 			return;
+		}
 
-		if (!gc->thread_id && gc->process_id)
+		if (!gc->thread_id && gc->process_id) {
 			return;
+		}
 		if (!gc->process_id) {
 			warn("error acquiring, failed to get window "
 			     "thread/process ids: %lu",
@@ -1482,13 +1500,15 @@ static void copy_shmem_tex(struct game_capture *gc)
 	int next_texture;
 	uint8_t *data;
 
-	if (!gc->shmem_data)
+	if (!gc->shmem_data) {
 		return;
+	}
 
 	cur_texture = gc->shmem_data->last_tex;
 
-	if (cur_texture < 0 || cur_texture > 1)
+	if (cur_texture < 0 || cur_texture > 1) {
 		return;
+	}
 
 	next_texture = cur_texture == 1 ? 0 : 1;
 
@@ -1555,8 +1575,9 @@ static inline bool init_shmem_capture(struct game_capture *gc)
 		if (!linear_sample) {
 			extra_texrender = gs_texrender_create(GS_RGBA16F, GS_ZS_NONE);
 			success = extra_texrender != NULL;
-			if (!success)
+			if (!success) {
 				warn("init_shmem_capture: failed to create extra texrender");
+			}
 		}
 
 		if (success) {
@@ -1601,15 +1622,17 @@ static inline bool init_shtex_capture(struct game_capture *gc)
 			if (ten_bit_srgb) {
 				extra_texrender = gs_texrender_create(linear_format, GS_ZS_NONE);
 				success = extra_texrender != NULL;
-				if (!success)
+				if (!success) {
 					warn("init_shtex_capture: failed to create extra texrender");
+				}
 			} else {
 				extra_texture = gs_texture_create(gs_texture_get_width(texture),
 								  gs_texture_get_height(texture), linear_format, 1,
 								  NULL, 0);
 				success = extra_texture != NULL;
-				if (!success)
+				if (!success) {
 					warn("init_shtex_capture: failed to create extra texture");
+				}
 			}
 		}
 
@@ -1661,8 +1684,9 @@ static bool start_capture(struct game_capture *gc)
 
 static inline bool capture_valid(struct game_capture *gc)
 {
-	if (!gc->dwm_capture && !IsWindow(gc->window))
+	if (!gc->dwm_capture && !IsWindow(gc->window)) {
 		return false;
+	}
 
 	return !object_signalled(gc->target_process);
 }
@@ -1674,10 +1698,11 @@ static void check_foreground_window(struct game_capture *gc, float seconds)
 	if (gc->cursor_check_time >= 0.1f) {
 		DWORD foreground_process_id;
 		GetWindowThreadProcessId(GetForegroundWindow(), &foreground_process_id);
-		if (gc->process_id != foreground_process_id)
+		if (gc->process_id != foreground_process_id) {
 			gc->cursor_hidden = true;
-		else
+		} else {
 			gc->cursor_hidden = false;
+		}
 		gc->cursor_check_time = 0.0f;
 	}
 }
@@ -1691,8 +1716,9 @@ static void game_capture_tick(void *data, float seconds)
 	if (activate_now) {
 		HWND hwnd = (HWND)(uintptr_t)os_atomic_load_long(&gc->hotkey_window);
 
-		if (ms_is_uwp_window(hwnd))
+		if (ms_is_uwp_window(hwnd)) {
 			hwnd = ms_get_uwp_actual_window(hwnd);
+		}
 
 		if (ms_get_window_exe(&gc->executable, hwnd)) {
 			ms_get_window_title(&gc->title, hwnd);
@@ -1711,8 +1737,9 @@ static void game_capture_tick(void *data, float seconds)
 
 	if (!obs_source_showing(gc->source)) {
 		if (gc->showing) {
-			if (gc->active)
+			if (gc->active) {
 				stop_capture(gc);
+			}
 			gc->showing = false;
 		}
 		return;
@@ -1753,10 +1780,11 @@ static void game_capture_tick(void *data, float seconds)
 		debug("capture initializing!");
 		enum capture_result result = init_capture_data(gc);
 
-		if (result == CAPTURE_SUCCESS)
+		if (result == CAPTURE_SUCCESS) {
 			gc->capturing = start_capture(gc);
-		else
+		} else {
 			debug("init_capture_data failed");
+		}
 
 		// If capture was successful, send a hooked signal
 		if (gc->capturing) {
@@ -1833,8 +1861,9 @@ static void game_capture_tick(void *data, float seconds)
 		}
 	}
 
-	if (!gc->showing)
+	if (!gc->showing) {
 		gc->showing = true;
+	}
 }
 
 static inline void game_capture_render_cursor(struct game_capture *gc)
@@ -1842,8 +1871,9 @@ static inline void game_capture_render_cursor(struct game_capture *gc)
 	POINT p = {0};
 	HWND window;
 
-	if (!gc->global_hook_info->cx || !gc->global_hook_info->cy)
+	if (!gc->global_hook_info->cx || !gc->global_hook_info->cy) {
 		return;
+	}
 
 	window = !!gc->global_hook_info->window ? (HWND)(uintptr_t)gc->global_hook_info->window : gc->window;
 
@@ -1855,8 +1885,9 @@ static inline void game_capture_render_cursor(struct game_capture *gc)
 
 	ClientToScreen(window, &p);
 
-	if (previous)
+	if (previous) {
 		gc->set_thread_dpi_awareness_context(previous);
+	}
 
 	cursor_draw(&gc->cursor_data, -p.x, -p.y, gc->global_hook_info->cx, gc->global_hook_info->cy);
 }
@@ -1866,8 +1897,9 @@ static void game_capture_render(void *data, gs_effect_t *unused)
 	UNUSED_PARAMETER(unused);
 
 	struct game_capture *gc = data;
-	if (!gc->texture || !gc->active)
+	if (!gc->texture || !gc->active) {
 		return;
+	}
 
 	const bool allow_transparency = gc->config.allow_transparency;
 	gs_effect_t *const effect = obs_get_base_effect(allow_transparency ? OBS_EFFECT_DEFAULT : OBS_EFFECT_OPAQUE);
@@ -1961,19 +1993,22 @@ static void game_capture_render(void *data, gs_effect_t *unused)
 	case GS_CS_SRGB:
 		switch (current_space) {
 		case GS_CS_SRGB:
-			if (allow_transparency && !linear_sample)
+			if (allow_transparency && !linear_sample) {
 				tech_name = "DrawSrgbDecompress";
+			}
 			break;
 		case GS_CS_SRGB_16F:
 		case GS_CS_709_EXTENDED:
-			if (!linear_sample)
+			if (!linear_sample) {
 				tech_name = "DrawSrgbDecompress";
+			}
 			break;
 		case GS_CS_709_SCRGB:
-			if (linear_sample)
+			if (linear_sample) {
 				tech_name = "DrawMultiply";
-			else
+			} else {
 				tech_name = "DrawSrgbDecompressMultiply";
+			}
 			multiplier = obs_get_video_sdr_white_level() / 80.f;
 		}
 		break;
@@ -2040,10 +2075,11 @@ static void game_capture_render(void *data, gs_effect_t *unused)
 		gs_enable_blending(allow_transparency);
 		gs_blend_function_separate(gc->config.premultiplied_alpha ? GS_BLEND_ONE : GS_BLEND_SRCALPHA,
 					   GS_BLEND_INVSRCALPHA, GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
-		if (linear_sample)
+		if (linear_sample) {
 			gs_effect_set_texture_srgb(image, texture);
-		else
+		} else {
 			gs_effect_set_texture(image, texture);
+		}
 		gs_effect_set_float(gs_effect_get_param_by_name(effect, "multiplier"), multiplier);
 		gs_draw_sprite(texture, flip, 0, 0);
 		gs_blend_state_pop();
@@ -2136,8 +2172,9 @@ static bool window_changed_callback(obs_properties_t *ppts, obs_property_t *p, o
 		capture_any = strcmp(mode, SETTING_MODE_ANY) == 0 || strcmp(mode, SETTING_MODE_HOTKEY) == 0;
 	}
 
-	if (capture_any)
+	if (capture_any) {
 		return modified;
+	}
 
 	const char *window = obs_data_get_string(settings, SETTING_CAPTURE_WINDOW);
 
@@ -2285,15 +2322,17 @@ enum gs_color_space game_capture_get_color_space(void *data, size_t count, const
 		const enum gs_color_format format = gs_texture_get_color_format(gc->texture);
 		if (((format == GS_R10G10B10A2) && gc->is_10a2_2100pq) || (format == GS_RGBA16F)) {
 			for (size_t i = 0; i < count; ++i) {
-				if (preferred_spaces[i] == GS_CS_709_SCRGB)
+				if (preferred_spaces[i] == GS_CS_709_SCRGB) {
 					return GS_CS_709_SCRGB;
+				}
 			}
 
 			capture_space = GS_CS_709_EXTENDED;
 		} else if (format == GS_R10G10B10A2) {
 			for (size_t i = 0; i < count; ++i) {
-				if (preferred_spaces[i] == GS_CS_SRGB_16F)
+				if (preferred_spaces[i] == GS_CS_SRGB_16F) {
 					return GS_CS_SRGB_16F;
+				}
 			}
 
 			capture_space = GS_CS_709_EXTENDED;
@@ -2304,8 +2343,9 @@ enum gs_color_space game_capture_get_color_space(void *data, size_t count, const
 	for (size_t i = 0; i < count; ++i) {
 		const enum gs_color_space preferred_space = preferred_spaces[i];
 		space = preferred_space;
-		if (preferred_space == capture_space)
+		if (preferred_space == capture_space) {
 			break;
+		}
 	}
 
 	return space;
@@ -2314,8 +2354,9 @@ enum gs_color_space game_capture_get_color_space(void *data, size_t count, const
 static void game_capture_enum(void *data, obs_source_enum_proc_t cb, void *param)
 {
 	struct game_capture *gc = data;
-	if (gc->audio_source)
+	if (gc->audio_source) {
 		cb(gc->source, gc->audio_source, param);
+	}
 }
 
 struct obs_source_info game_capture_info = {
