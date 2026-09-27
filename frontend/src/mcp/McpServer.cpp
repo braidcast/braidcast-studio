@@ -311,7 +311,8 @@ const std::vector<ToolDescriptor> &ToolRegistry()
 		{"get_stats", "stats.get",
 		 MakeDescriptor(
 			 "get_stats",
-			 "Get a performance + per-output streaming stats snapshot (fps, cpu, bitrate, dropped frames).",
+			 "Get a performance + per-output streaming stats snapshot (fps, cpu, bitrate, dropped frames, "
+			 "per-source capture rates while live).",
 			 SchemaObject(json::object(), json::array()))},
 	};
 	return kTools;

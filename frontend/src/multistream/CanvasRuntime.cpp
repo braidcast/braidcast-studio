@@ -17,7 +17,7 @@ void OnCanvasVideoReset(const std::string &canvasUuid);
 
 CanvasRuntime::CanvasRuntime(CanvasStore &defs_) : defs(defs_)
 {
-	// The gate reads both facts from here rather than re-deriving them, and the
+	// The gate reads these facts from here rather than re-deriving them, and the
 	// registration is revoked in ClearAll so it cannot outlive this object.
 	VideoGate::SetMainActivePredicate([this] { return DefaultIsActive(); });
 	VideoGate::SetCanvasRootEnumerator([this](const VideoGate::RootVisitor &visit) { EnumActiveRoots(visit); });

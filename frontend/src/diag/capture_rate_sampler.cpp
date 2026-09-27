@@ -135,9 +135,8 @@ void Sampler::Sample(const std::vector<VideoGate::Root> &roots, uint64_t nowNs)
 		}
 	}
 
-	obs_video_info ovi = {};
 	SampleInput in;
-	in.mainFps = obs_get_video_info(&ovi) && ovi.fps_den ? static_cast<double>(ovi.fps_num) / ovi.fps_den : 0.0;
+	in.mainFps = FpsOf(obs_get_video());
 	in.dtSec = lastSampleNs_ && nowNs > lastSampleNs_ ? (nowNs - lastSampleNs_) / 1e9 : 0.0;
 
 	std::map<std::string, Held> nextHeld;
