@@ -250,8 +250,9 @@ static void log_settings(struct duplicator_capture *capture, const char *monitor
 static enum display_capture_method choose_method(enum display_capture_method method, bool wgc_supported,
 						 HMONITOR monitor)
 {
-	if (!wgc_supported)
+	if (!wgc_supported) {
 		method = METHOD_DXGI;
+	}
 
 	if (method == METHOD_AUTO) {
 		method = METHOD_DXGI;
@@ -268,8 +269,9 @@ static enum display_capture_method choose_method(enum display_capture_method met
 				obs_enter_graphics();
 				const uint32_t count = gs_get_adapter_count();
 				obs_leave_graphics();
-				if (count >= 2)
+				if (count >= 2) {
 					method = METHOD_WGC;
+				}
 			}
 		}
 	}
@@ -528,8 +530,9 @@ static void duplicator_capture_tick(void *data, float seconds)
 			capture->reset_timeout += seconds;
 
 			if (capture->reset_timeout >= RESET_INTERVAL_SEC) {
-				if (!capture->handle)
+				if (!capture->handle) {
 					update_monitor_handle(capture);
+				}
 
 				if (capture->handle) {
 					capture->capture_winrt = capture->exports.winrt_capture_init_monitor(
@@ -559,8 +562,9 @@ static void duplicator_capture_tick(void *data, float seconds)
 			capture->reset_timeout += seconds;
 
 			if (capture->reset_timeout >= RESET_INTERVAL_SEC) {
-				if (!capture->handle)
+				if (!capture->handle) {
 					update_monitor_handle(capture);
+				}
 
 				if (capture->handle) {
 					int dxgi_index = gs_duplicator_get_monitor_index(capture->handle);
@@ -583,8 +587,9 @@ static void duplicator_capture_tick(void *data, float seconds)
 		}
 
 		if (capture->duplicator) {
-			if (capture->capture_cursor)
+			if (capture->capture_cursor) {
 				cursor_capture(&capture->cursor_data);
+			}
 
 			if (!gs_duplicator_update_frame(capture->duplicator)) {
 				free_capture_data(capture);
@@ -597,8 +602,9 @@ static void duplicator_capture_tick(void *data, float seconds)
 
 	obs_leave_graphics();
 
-	if (!capture->showing)
+	if (!capture->showing) {
 		capture->showing = true;
+	}
 }
 
 static uint32_t duplicator_capture_width(void *data)
@@ -638,12 +644,14 @@ static void duplicator_capture_render(void *data, gs_effect_t *unused)
 			}
 		}
 	} else {
-		if (!capture->duplicator)
+		if (!capture->duplicator) {
 			return;
+		}
 
 		gs_texture_t *const texture = gs_duplicator_get_texture(capture->duplicator);
-		if (!texture)
+		if (!texture) {
 			return;
+		}
 
 		const bool previous = gs_framebuffer_srgb_enabled();
 		gs_enable_framebuffer_srgb(true);
@@ -708,8 +716,9 @@ static void duplicator_capture_render(void *data, gs_effect_t *unused)
 			gs_draw_sprite(texture, 0, 0, 0);
 		}
 
-		if (rot != 0)
+		if (rot != 0) {
 			gs_matrix_pop();
+		}
 
 		gs_enable_blending(true);
 		gs_enable_framebuffer_srgb(previous);
@@ -739,8 +748,9 @@ static BOOL CALLBACK enum_monitor_props(HMONITOR handle, HDC hdc, LPRECT rect, L
 		struct dstr monitor_desc = {0};
 		dstr_printf(&monitor_desc, "%s: %dx%d @ %d,%d", monitor_name, mi.rcMonitor.right - mi.rcMonitor.left,
 			    mi.rcMonitor.bottom - mi.rcMonitor.top, mi.rcMonitor.left, mi.rcMonitor.top);
-		if (mi.dwFlags == MONITORINFOF_PRIMARY)
+		if (mi.dwFlags == MONITORINFOF_PRIMARY) {
 			dstr_catf(&monitor_desc, " (%s)", TEXT_PRIMARY_MONITOR);
+		}
 
 		DISPLAY_DEVICEA device;
 		device.cb = sizeof(device);
@@ -782,8 +792,9 @@ static bool display_capture_method_changed(obs_properties_t *props, obs_property
 	UNUSED_PARAMETER(p);
 
 	struct duplicator_capture *capture = obs_properties_get_param(props);
-	if (!capture)
+	if (!capture) {
 		return false;
+	}
 
 	update_settings(capture, settings);
 
@@ -841,8 +852,9 @@ enum gs_color_space duplicator_capture_get_color_space(void *data, size_t count,
 	for (size_t i = 0; i < count; ++i) {
 		const enum gs_color_space preferred_space = preferred_spaces[i];
 		space = preferred_space;
-		if (preferred_space == capture_space)
+		if (preferred_space == capture_space) {
 			break;
+		}
 	}
 
 	return space;

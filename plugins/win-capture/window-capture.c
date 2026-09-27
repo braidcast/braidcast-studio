@@ -138,14 +138,17 @@ static const char *wgc_whole_match_classes[] = {
 static enum window_capture_method choose_method(enum window_capture_method method, bool wgc_supported,
 						const char *current_class)
 {
-	if (!wgc_supported)
+	if (!wgc_supported) {
 		return METHOD_BITBLT;
+	}
 
-	if (method != METHOD_AUTO)
+	if (method != METHOD_AUTO) {
 		return method;
+	}
 
-	if (!current_class)
+	if (!current_class) {
 		return METHOD_BITBLT;
+	}
 
 	const char **class = wgc_partial_match_classes;
 	while (*class) {
@@ -235,8 +238,9 @@ static void update_settings(struct window_capture *wc, obs_data_t *s)
 static void wc_get_hooked(void *data, calldata_t *cd)
 {
 	struct window_capture *wc = data;
-	if (!wc)
+	if (!wc) {
 		return;
+	}
 
 	if (wc->hooked && wc->window) {
 		calldata_set_bool(cd, "hooked", true);
@@ -362,8 +366,9 @@ static void wc_actual_destroy(void *data)
 	bfree(wc->class);
 	bfree(wc->executable);
 
-	if (wc->winrt_module)
+	if (wc->winrt_module) {
 		os_dlclose(wc->winrt_module);
+	}
 
 	pthread_mutex_destroy(&wc->update_mutex);
 
@@ -373,8 +378,9 @@ static void wc_actual_destroy(void *data)
 static void wc_destroy(void *data)
 {
 	struct window_capture *wc = data;
-	if (wc->audio_source)
+	if (wc->audio_source) {
 		destroy_audio_source(wc->source, &wc->audio_source);
+	}
 
 	signal_handler_t *sh = obs_source_get_signal_handler(wc->source);
 	signal_handler_disconnect(sh, "rename", rename_audio_source, &wc->audio_source);
@@ -410,8 +416,9 @@ static uint32_t wc_width(void *data)
 {
 	struct window_capture *wc = data;
 
-	if (!window_normal(wc))
+	if (!window_normal(wc)) {
 		return 0;
+	}
 
 	return (wc->method == METHOD_WGC) ? wc->exports.winrt_capture_width(wc->capture_winrt) : wc->capture.width;
 }
@@ -420,8 +427,9 @@ static uint32_t wc_height(void *data)
 {
 	struct window_capture *wc = data;
 
-	if (!window_normal(wc))
+	if (!window_normal(wc)) {
 		return 0;
+	}
 
 	return (wc->method == METHOD_WGC) ? wc->exports.winrt_capture_height(wc->capture_winrt) : wc->capture.height;
 }
@@ -483,8 +491,9 @@ static bool wc_capture_method_changed(obs_properties_t *props, obs_property_t *p
 	UNUSED_PARAMETER(p);
 
 	struct window_capture *wc = obs_properties_get_param(props);
-	if (!wc)
+	if (!wc) {
 		return false;
+	}
 
 	update_settings(wc, settings);
 
@@ -498,8 +507,9 @@ static bool wc_capture_method_changed(obs_properties_t *props, obs_property_t *p
 static bool wc_window_changed(obs_properties_t *props, obs_property_t *p, obs_data_t *settings)
 {
 	struct window_capture *wc = obs_properties_get_param(props);
-	if (!wc)
+	if (!wc) {
 		return false;
+	}
 
 	update_settings(wc, settings);
 
@@ -592,8 +602,9 @@ static void wc_tick(void *data, float seconds)
 	RECT rect;
 	bool reset_capture = false;
 
-	if (!obs_source_showing(wc->source))
+	if (!obs_source_showing(wc->source)) {
 		return;
+	}
 
 	if (!wc->window || !IsWindow(wc->window)) {
 		if (wc->hooked) {
@@ -607,16 +618,18 @@ static void wc_tick(void *data, float seconds)
 		}
 
 		if (!wc->title && !wc->class) {
-			if (wc->capture.valid)
+			if (wc->capture.valid) {
 				dc_capture_free(&wc->capture);
+			}
 			return;
 		}
 
 		wc->check_window_timer += seconds;
 
 		if (wc->check_window_timer < WC_CHECK_TIMER) {
-			if (wc->capture.valid)
+			if (wc->capture.valid) {
 				dc_capture_free(&wc->capture);
+			}
 			return;
 		}
 
@@ -632,8 +645,9 @@ static void wc_tick(void *data, float seconds)
 							: ms_find_window(INCLUDE_MINIMIZED, wc->priority, wc->class,
 									 wc->title, wc->executable);
 		if (!wc->window) {
-			if (wc->capture.valid)
+			if (wc->capture.valid) {
 				dc_capture_free(&wc->capture);
+			}
 			return;
 		}
 
@@ -649,11 +663,13 @@ static void wc_tick(void *data, float seconds)
 		DWORD foreground_pid, target_pid;
 
 		// Can't just compare the window handle in case of app with child windows
-		if (!GetWindowThreadProcessId(GetForegroundWindow(), &foreground_pid))
+		if (!GetWindowThreadProcessId(GetForegroundWindow(), &foreground_pid)) {
 			foreground_pid = 0;
+		}
 
-		if (!GetWindowThreadProcessId(wc->window, &target_pid))
+		if (!GetWindowThreadProcessId(wc->window, &target_pid)) {
 			target_pid = 0;
+		}
 
 		const bool cursor_hidden = foreground_pid && target_pid && foreground_pid != target_pid;
 		wc->capture.cursor_hidden = cursor_hidden;
@@ -690,8 +706,9 @@ static void wc_tick(void *data, float seconds)
 
 			if (wc->resize_timer >= RESIZE_CHECK_TIME) {
 				if ((rect.bottom - rect.top) != (wc->last_rect.bottom - wc->last_rect.top) ||
-				    (rect.right - rect.left) != (wc->last_rect.right - wc->last_rect.left))
+				    (rect.right - rect.left) != (wc->last_rect.right - wc->last_rect.left)) {
 					reset_capture = true;
+				}
 
 				wc->resize_timer = 0.0f;
 			}
@@ -731,8 +748,9 @@ static void wc_tick(void *data, float seconds)
 
 		dc_capture_capture(&wc->capture, wc->window);
 
-		if (previous)
+		if (previous) {
 			wc->set_thread_dpi_awareness_context(previous);
+		}
 	} else if (wc->method == METHOD_WGC) {
 		if (wc->window && (wc->capture_winrt == NULL)) {
 			if (!wc->previously_failed) {
@@ -776,8 +794,9 @@ static void wc_render(void *data, gs_effect_t *effect)
 {
 	struct window_capture *wc = data;
 
-	if (!window_normal(wc))
+	if (!window_normal(wc)) {
 		return;
+	}
 
 	if (wc->method == METHOD_WGC) {
 		if (wc->capture_winrt) {
@@ -809,8 +828,9 @@ enum gs_color_space wc_get_color_space(void *data, size_t count, const enum gs_c
 	for (size_t i = 0; i < count; ++i) {
 		const enum gs_color_space preferred_space = preferred_spaces[i];
 		space = preferred_space;
-		if (preferred_space == capture_space)
+		if (preferred_space == capture_space) {
 			break;
+		}
 	}
 
 	return space;
@@ -819,8 +839,9 @@ enum gs_color_space wc_get_color_space(void *data, size_t count, const enum gs_c
 static void wc_child_enum(void *data, obs_source_enum_proc_t cb, void *param)
 {
 	struct window_capture *wc = data;
-	if (wc->audio_source)
+	if (wc->audio_source) {
 		cb(wc->source, wc->audio_source, param);
+	}
 }
 
 struct obs_source_info window_capture_info = {
