@@ -544,6 +544,22 @@ bool AnyFlag(const std::vector<json> &rows, const char *field)
 
 // ---------------------------------------------------------------------------
 
+// A weak ref outlives its source, and the allocator may hand the freed address to
+// the next source created, as a reload can. The pointer value such a source would
+// carry is only compared here, never dereferenced.
+void CheckIdentityAfterFree(State &st)
+{
+	obs_source_t *probe = obs_source_create_private(kAsyncId, "caprate-identity", nullptr);
+	if (!probe) {
+		Check(st, false, "identity probe source created");
+		return;
+	}
+	OBSWeakSourceAutoRelease weak = obs_source_get_weak_source(probe);
+	Check(st, CaptureRate::HoldsSource(weak, probe), "a weak ref holds its live source");
+	obs_source_release(probe);
+	Check(st, !CaptureRate::HoldsSource(weak, probe), "a freed source's address is not its identity");
+}
+
 bool Setup(State &st)
 {
 	json result;
@@ -593,6 +609,7 @@ bool Setup(State &st)
 	OBSSourceAutoRelease wgc = CreateMonitorCapture(st, kWgcName, kMethodWgc);
 	OBSSourceAutoRelease dxgi = CreateMonitorCapture(st, kDxgiName, kMethodDxgi);
 	RegisterAsyncTestSource();
+	CheckIdentityAfterFree(st);
 	OBSSourceAutoRelease async = obs_source_create_private(kAsyncId, kAsyncName, nullptr);
 	if (!wgc || !dxgi || !async) {
 		st.exitCode = 3;

@@ -15,6 +15,11 @@
 
 namespace CaptureRate {
 
+// Whether `weak`, held since an earlier tick, still names `source`: the same
+// object, so the same counters. A freed source's address can come back for the
+// next source created, so an expired weak ref names nothing.
+bool HoldsSource(obs_weak_source_t *weak, obs_source_t *source);
+
 // Feeds the tracker from the live source graph once per stats tick, while any
 // output is live or a viewer holds a lease (stats.watchCaptures), and holds the
 // session the stop edge summarizes.

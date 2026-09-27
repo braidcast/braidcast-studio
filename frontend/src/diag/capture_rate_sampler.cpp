@@ -60,6 +60,11 @@ nlohmann::json OptionalNumber(const std::optional<double> &v)
 
 } // namespace
 
+bool HoldsSource(obs_weak_source_t *weak, obs_source_t *source)
+{
+	return !obs_weak_source_expired(weak) && obs_weak_source_references_source(weak, source);
+}
+
 bool Sampler::CanvasLive(const std::string &canvasUuid) const
 {
 	if (liveOverride_) {
@@ -127,7 +132,7 @@ void Sampler::Tick(const std::vector<VideoGate::Root> &roots, uint64_t nowNs)
 		// counters as last time; the weak ref can.
 		Held held;
 		auto it = held_.find(uuid);
-		if (it != held_.end() && obs_weak_source_references_source(it->second.weak, p.source)) {
+		if (it != held_.end() && HoldsSource(it->second.weak, p.source)) {
 			held = it->second;
 		} else {
 			held.weak = OBSGetWeakRef(p.source);
