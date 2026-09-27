@@ -284,6 +284,7 @@ static void test_unmeasurable_and_idle(void **)
 {
 	Tracker t;
 	Feed bitblt("win", Kind::None);
+	bitblt.src.frameSignal = false;
 	Prime(t, bitblt);
 	Step(t, bitblt, 0, 0, 0);
 	assert_int_equal((int)RowFor(t, "win")->status, (int)Status::Unmeasurable);
@@ -291,6 +292,18 @@ static void test_unmeasurable_and_idle(void **)
 	bitblt.src.showing = false;
 	Step(t, bitblt, 0, 0, 0);
 	assert_int_equal((int)RowFor(t, "win")->status, (int)Status::Idle);
+
+	// Showing but counting nothing with a method that does count (a stopped
+	// camera, a monitor capture whose duplicator failed): not capturing, which
+	// is not the same claim as "cannot be measured".
+	Tracker t2;
+	Feed cam("cam", Kind::None);
+	Prime(t2, cam);
+	Step(t2, cam, 60, 0, 0);
+	assert_int_equal((int)RowFor(t2, "cam")->status, (int)Status::Idle);
+	t2.SessionBegin(0);
+	Step(t2, cam, 60, 0, 0);
+	assert_true(t2.SessionEnd(1000000000ull).find("unmeasurable") == std::string::npos);
 }
 
 // The session line names each source with its median and lock; stats.reset

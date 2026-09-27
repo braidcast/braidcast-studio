@@ -5,16 +5,21 @@
 
 #include <util/platform.h>
 
+#include <cstring>
 #include <set>
 
 namespace CaptureRate {
 
 namespace {
 
-// Capture sources whose method may have no frame signal (BitBlt window capture).
-// They get a row reading "unmeasurable" rather than no row, so a missing number
-// is visible as such. Sources that report a kind need no listing.
-const std::set<std::string> kUnmeasuredCaptureIds = {"monitor_capture", "window_capture"};
+// Capture sources that may count nothing right now: a failed duplicator, a BitBlt
+// window capture. They get a row rather than none, so a missing number is visible
+// as such. Sources that report a kind need no listing.
+constexpr const char *kWindowCaptureId = "window_capture";
+const std::set<std::string> kDisplayCaptureIds = {"monitor_capture", kWindowCaptureId};
+
+// window-capture.c's METHOD_WGC; auto and BitBlt settle on BitBlt for most windows.
+constexpr long long kWindowCaptureMethodWgc = 2;
 
 Kind ToKind(enum obs_frame_count_kind kind)
 {
@@ -44,7 +49,23 @@ bool IsCandidate(obs_source_t *source, Kind kind)
 		return true; // deinterlaced, or not delivering right now
 	}
 	const char *id = obs_source_get_id(source);
-	return id && kUnmeasuredCaptureIds.count(id) != 0;
+	return id && kDisplayCaptureIds.count(id) != 0;
+}
+
+// Whether the source's capture method counts its frames at all, for a source that
+// reports no kind. Deinterlacing hides an async source's frames from the fold, and
+// BitBlt has no signal; anything else counting nothing is not capturing now.
+bool HasFrameSignal(obs_source_t *source)
+{
+	if ((obs_source_get_output_flags(source) & OBS_SOURCE_ASYNC_VIDEO) == OBS_SOURCE_ASYNC_VIDEO) {
+		return obs_source_get_deinterlace_mode(source) == OBS_DEINTERLACE_MODE_DISABLE;
+	}
+	const char *id = obs_source_get_id(source);
+	if (id && strcmp(id, kWindowCaptureId) == 0) {
+		OBSDataAutoRelease settings = obs_source_get_settings(source);
+		return obs_data_get_int(settings, "method") == kWindowCaptureMethodWgc;
+	}
+	return true;
 }
 
 double FpsOf(video_t *video)
@@ -145,6 +166,7 @@ void Sampler::Tick(const std::vector<VideoGate::Root> &roots, uint64_t nowNs)
 		src.name = name ? name : "";
 		src.identity = held.identity;
 		src.showing = obs_source_showing(p.source);
+		src.frameSignal = kind != Kind::None || HasFrameSignal(p.source);
 		src.counts = Counts{kind, raw.live_ticks, raw.new_frame_ticks, raw.frames_delivered};
 		src.reach = std::move(p.reach);
 		in.sources.push_back(std::move(src));

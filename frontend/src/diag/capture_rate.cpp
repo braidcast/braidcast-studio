@@ -83,6 +83,17 @@ bool IsReported(Kind kind)
 	return kind != Kind::BrowserPaint && kind != Kind::GameHook;
 }
 
+Status StatusOf(const SourceInput &src)
+{
+	if (!src.showing) {
+		return Status::Idle;
+	}
+	if (src.counts.kind != Kind::None) {
+		return Status::Ok;
+	}
+	return src.frameSignal ? Status::Idle : Status::Unmeasurable;
+}
+
 std::string Format(const char *fmt, double a, double b = 0.0, double c = 0.0)
 {
 	char buf[128];
@@ -189,7 +200,7 @@ Row Tracker::Evaluate(Entry &e, const SourceInput &src, double dt, double mainFp
 	r.name = src.name;
 	r.kind = src.counts.kind;
 	r.refFps = RefFps(src.reach, mainFps);
-	r.status = !src.showing ? Status::Idle : (r.kind == Kind::None ? Status::Unmeasurable : Status::Ok);
+	r.status = StatusOf(src);
 
 	// uint32 modular deltas: the counters wrap, and only a new identity or kind
 	// (handled by the caller) means they restarted.
@@ -287,8 +298,7 @@ void Tracker::Sample(const SampleInput &in)
 			r.name = src.name;
 			r.kind = src.counts.kind;
 			r.refFps = RefFps(src.reach, in.mainFps);
-			r.status = !src.showing ? Status::Idle
-						: (r.kind == Kind::None ? Status::Unmeasurable : Status::Ok);
+			r.status = StatusOf(src);
 			r.inGrace = IsDisplayRate(r.kind);
 			r.sinceReset = e.window;
 			if (inSession_ && r.status == Status::Unmeasurable) {

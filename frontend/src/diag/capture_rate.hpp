@@ -52,6 +52,11 @@ struct SourceInput {
 	// whether two counter readings come from the same counters.
 	uint64_t identity = 0;
 	bool showing = false;
+	// False when the capture method delivers frames with no counter behind them
+	// (BitBlt window capture, a deinterlaced async source). Only then does a
+	// showing source that counts nothing read "unmeasurable"; otherwise it is
+	// simply not capturing right now.
+	bool frameSignal = true;
 	Counts counts;
 	std::vector<Reach> reach;
 };
@@ -65,7 +70,7 @@ struct SampleInput {
 enum class Status {
 	Ok,           // measured
 	Unmeasurable, // showing, but its capture method has no frame signal
-	Idle,         // not showing right now
+	Idle,         // not capturing now: hidden, or nothing to count (camera stopped, capture failed)
 };
 
 const char *StatusName(Status status);
