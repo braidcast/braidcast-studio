@@ -326,6 +326,9 @@ struct State {
 	std::unique_ptr<Flicker> flicker;
 	std::unique_ptr<CursorMover> cursor;
 	std::unique_ptr<Producer> producer;
+	// Every check reads the real desktop, which a display gone to sleep stops
+	// composing; held for the run so the idle timer cannot turn it off midway.
+	os_inhibit_t *displayAwake = nullptr;
 	json lastHalfRateCaptures; // the summary's example of a locked stats.get payload
 	bool joined = false;
 	bool reloaded = false;
@@ -601,6 +604,9 @@ bool Setup(State &st)
 	ObsBootstrap::CaptureRates().SetCanvasLiveOverrideForTest(
 		[defaultUuid](const std::string &uuid) { return uuid == defaultUuid; });
 
+	st.displayAwake = os_inhibit_sleep_create("Braidcast capture-rate self-test");
+	os_inhibit_sleep_set_active(st.displayAwake, true);
+
 	st.flicker = std::make_unique<Flicker>();
 	if (!st.flicker->Start(st.monitorRect)) {
 		st.exitCode = 3;
@@ -737,6 +743,10 @@ void Teardown(State &st)
 	}
 	ObsBootstrap::CaptureRates().SetCanvasLiveOverrideForTest(nullptr);
 	st.scene = nullptr;
+	if (st.displayAwake) {
+		os_inhibit_sleep_destroy(st.displayAwake);
+		st.displayAwake = nullptr;
+	}
 }
 
 void WriteSummary(State &st)
