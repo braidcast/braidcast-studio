@@ -8,6 +8,8 @@
 import { obs } from "$lib/api/bridge";
 import { EV } from "$lib/utils/eventNames";
 import { callOrToast } from "$lib/utils/callToast";
+import { log } from "$lib/utils/log";
+import { Cat } from "$lib/utils/logCategories";
 import type { UndoState } from "$lib/api/bridge";
 
 class UndoStore {
@@ -43,15 +45,22 @@ class UndoStore {
     this.redoName = s.redoName ?? "";
   }
 
+  // A refusal is logged because it is otherwise silent: the host's bridge debug log records
+  // every undo.undo it receives, so without this a shortcut that arrived with nothing to undo
+  // and one that never reached the page read the same in the session log.
   undo(): void {
     if (this.canUndo) {
       void callOrToast("undo.undo", undefined, "Undo failed");
+    } else {
+      log.dbg(Cat.bridge, "undo: nothing to undo");
     }
   }
 
   redo(): void {
     if (this.canRedo) {
       void callOrToast("undo.redo", undefined, "Redo failed");
+    } else {
+      log.dbg(Cat.bridge, "redo: nothing to redo");
     }
   }
 }
