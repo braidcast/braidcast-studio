@@ -137,17 +137,23 @@ std::optional<double> RefFps(const std::vector<Reach> &reach, double mainFps)
 	return ref;
 }
 
-void Tracker::Rebaseline(Entry &e, const SourceInput &src)
+void Tracker::RestartGrace(Entry &e)
 {
-	e.identity = src.identity;
-	e.kind = src.counts.kind;
-	e.last = src.counts;
-	e.baselined = true;
 	e.sinceBaselineSec = 0.0;
 	e.streakFraction = -1;
 	e.streakCount = 0;
 	e.lockedFraction = -1;
 	e.exitCount = 0;
+}
+
+void Tracker::Rebaseline(Entry &e, const SourceInput &src, double mainFps)
+{
+	e.identity = src.identity;
+	e.kind = src.counts.kind;
+	e.last = src.counts;
+	e.baselined = true;
+	e.hadRef = RefFps(src.reach, mainFps).has_value();
+	RestartGrace(e);
 }
 
 void Tracker::UpdateLock(Entry &e, std::optional<double> fraction, bool eligible)
@@ -187,6 +193,13 @@ Row Tracker::Evaluate(Entry &e, const SourceInput &src, double dt, double mainFp
 
 	// uint32 modular deltas: the counters wrap, and only a new identity or kind
 	// (handled by the caller) means they restarted.
+	if (r.refFps && !e.hadRef) {
+		// Going live: grace runs from here, and a lock from an earlier broadcast
+		// (or from watching before this one) does not carry over.
+		RestartGrace(e);
+	}
+	e.hadRef = r.refFps.has_value();
+
 	const uint32_t dLive = src.counts.liveTicks - e.last.liveTicks;
 	const uint32_t dNew = src.counts.newFrameTicks - e.last.newFrameTicks;
 	const uint32_t dDelivered = src.counts.framesDelivered - e.last.framesDelivered;
@@ -268,7 +281,7 @@ void Tracker::Sample(const SampleInput &in)
 		const bool restart = !e.baselined || !gapOk || e.identity != src.identity || e.kind != src.counts.kind;
 		if (restart) {
 			// A new window: no delta across it, and the grace period runs again.
-			Rebaseline(e, src);
+			Rebaseline(e, src, in.mainFps);
 			Row r;
 			r.uuid = src.uuid;
 			r.name = src.name;
@@ -320,6 +333,9 @@ void Tracker::ResetWindows()
 
 void Tracker::SessionBegin(uint64_t nowNs)
 {
+	if (inSession_) {
+		return;
+	}
 	inSession_ = true;
 	sessionStartNs_ = nowNs;
 	for (auto &[uuid, e] : entries_) {

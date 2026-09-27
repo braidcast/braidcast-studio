@@ -47,9 +47,12 @@ public:
 	// stats.reset: rebase the rows' "since reset" windows. Session sums stay.
 	void ResetWindows();
 
+	// Both follow the live edge and tolerate repeats: a begin during a session and
+	// an end without one are no-ops.
 	void SessionBegin();
-	// Logs the session's one-line summary. A no-op without an open session.
-	void SessionEnd();
+	// Logs the session's one-line summary and returns it. A no-op returning ""
+	// without an open session.
+	std::string SessionEnd();
 
 	// Drop every weak ref and all state. Called from ObsBootstrap::Stop while
 	// libobs is still up.

@@ -204,12 +204,13 @@ void Sampler::SessionBegin()
 	tracker_.SessionBegin(os_gettime_ns());
 }
 
-void Sampler::SessionEnd()
+std::string Sampler::SessionEnd()
 {
 	const std::string line = tracker_.SessionEnd(os_gettime_ns());
 	if (!line.empty()) {
 		blog(LOG_INFO, "%s", line.c_str());
 	}
+	return line;
 }
 
 void Sampler::Clear()

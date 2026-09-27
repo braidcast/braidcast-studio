@@ -112,6 +112,7 @@ public:
 	// stats.reset: rebase the per-row "since reset" window. Session sums stay.
 	void ResetWindows();
 
+	// Opens a session; a no-op while one is open, since live edges can repeat.
 	void SessionBegin(uint64_t nowNs);
 	// Closes the session and returns its one-line summary ("" without a session).
 	std::string SessionEnd(uint64_t nowNs);
@@ -141,6 +142,7 @@ private:
 		Kind kind = Kind::None;
 		uint64_t identity = 0;
 		bool baselined = false;
+		bool hadRef = false; // a live canvas reached it at the last sample
 		Counts last;
 		double sinceBaselineSec = 0.0;
 		int streakFraction = -1;
@@ -151,7 +153,8 @@ private:
 		decltype(Row::sinceReset) window;
 	};
 
-	void Rebaseline(Entry &e, const SourceInput &src);
+	void RestartGrace(Entry &e);
+	void Rebaseline(Entry &e, const SourceInput &src, double mainFps);
 	Row Evaluate(Entry &e, const SourceInput &src, double dt, double mainFps);
 	void UpdateLock(Entry &e, std::optional<double> fraction, bool eligible);
 	std::string Summarize(const std::string &name, const Entry &e) const;

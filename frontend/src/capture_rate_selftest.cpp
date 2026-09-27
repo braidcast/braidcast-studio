@@ -10,6 +10,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <map>
 #include <memory>
 #include <string>
@@ -331,6 +332,8 @@ struct State {
 	std::string reloadUuid;
 	bool sessionOpen = false;
 	int sessionLinesBefore = 0;
+	Clock::time_point sessionBegan;
+	std::string sessionLine;
 
 	int64_t lastSampledAtMs = -1;
 	std::map<Phase, std::vector<Sample>> samples;
@@ -687,6 +690,14 @@ void CheckStatic(State &st)
 	      "C deinterlaced async reads unmeasurable");
 }
 
+// The session line's length in seconds, or -1.
+double SessionSeconds(const std::string &line)
+{
+	const std::string marker = "[capture-rate] session ";
+	const size_t at = line.find(marker);
+	return at == std::string::npos ? -1.0 : std::atof(line.c_str() + at + marker.size());
+}
+
 void CheckNoSpike(State &st, Phase phase, const std::string &name, const std::string &what)
 {
 	const std::vector<json> rows = RowsOf(st, phase, name);
@@ -721,7 +732,7 @@ void Teardown(State &st)
 		st.flicker->Stop();
 	}
 	if (st.sessionOpen) {
-		ObsBootstrap::CaptureRates().SessionEnd();
+		st.sessionLine = ObsBootstrap::CaptureRates().SessionEnd();
 		st.sessionOpen = false;
 	}
 	ObsBootstrap::CaptureRates().SetCanvasLiveOverrideForTest(nullptr);
@@ -788,6 +799,7 @@ bool ObsBootstrap::RunCaptureRateSelfTest()
 		if (wgc && dxgi) {
 			ObsBootstrap::CaptureRates().SessionBegin();
 			st.sessionOpen = true;
+			st.sessionBegan = Clock::now();
 			st.sessionLinesBefore = SelfTest::CountSessionLogLines("[capture-rate] session ");
 			Enter(st, Phase::FullRate);
 		} else if (InPhase(st) >= kWaitKinds) {
@@ -803,6 +815,9 @@ bool ObsBootstrap::RunCaptureRateSelfTest()
 	case Phase::FullRate:
 		if (InPhase(st) >= kFullRate) {
 			CheckFullRate(st);
+			// A second live edge while the session is open, as coalesced
+			// transitions deliver: the session must carry on untouched.
+			ObsBootstrap::CaptureRates().SessionBegin();
 			HalfCadence(st);
 			st.producer->SetMode(FeedMode::Bursty);
 			Enter(st, Phase::HalfRate);
@@ -897,8 +912,13 @@ bool ObsBootstrap::RunCaptureRateSelfTest()
 
 	case Phase::Finish: {
 		const bool hadSession = st.sessionOpen;
+		const double sessionWanted =
+			std::chrono::duration<double>(Clock::now() - st.sessionBegan).count() - 2.0;
 		Teardown(st);
 		if (hadSession) {
+			const double seconds = SessionSeconds(st.sessionLine);
+			Check(st, seconds >= sessionWanted,
+			      "a repeated begin keeps the session: " + Fmt(seconds) + " s >= " + Fmt(sessionWanted));
 			const int lines = SelfTest::CountSessionLogLines("[capture-rate] session ");
 			Check(st, lines == st.sessionLinesBefore + 1, "session log line written");
 			Check(st, SelfTest::CountSessionLogLines("'caprate-async' async in") >= 1,

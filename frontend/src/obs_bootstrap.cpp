@@ -711,7 +711,6 @@ void EndSessionWithThumbnail(const std::string &reason)
 {
 	g_thumbs.Finalize(g_recorder);
 	g_recorder.End(TimeUtil::NowMs(), reason);
-	g_captureRate.SessionEnd();
 }
 
 // Map the stats snapshot onto a health sample. The field names come from
@@ -1794,7 +1793,6 @@ bool ObsBootstrap::Start()
 				// unscheduled session, not a claim on a plan it never ran.
 				start.scheduleId = g_scheduleRunner.ActiveEntryId();
 				g_recorder.Begin(start);
-				g_captureRate.SessionBegin();
 				g_scheduleRunner.NoteWentLive();
 				g_thumbs.Reset();
 				Bridge::EmitEvent(EventNames::kSessionsChanged, Bridge::json::object());
@@ -1807,6 +1805,14 @@ bool ObsBootstrap::Start()
 				// A no-op when nothing was applied.
 				g_scheduledSetup.Revert();
 				Bridge::EmitEvent(EventNames::kSessionsChanged, Bridge::json::object());
+			}
+			// Outside the recorder's guard: its row may never open (no history
+			// database), and the capture-rate session follows the live edge
+			// regardless. Both calls tolerate repeats.
+			if (live) {
+				g_captureRate.SessionBegin();
+			} else {
+				g_captureRate.SessionEnd();
 			}
 		});
 	};
@@ -9840,6 +9846,8 @@ void ObsBootstrap::Stop(void (*drainCefTasks)())
 		// signal the feature exists to provide.
 		EndSessionWithThumbnail("ended");
 	}
+	// A shutdown mid-broadcast ends the capture-rate session too, history row or not.
+	g_captureRate.SessionEnd();
 	// Its weak refs go while libobs can still take them back.
 	g_captureRate.Clear();
 	g_recorder.Detach();

@@ -330,6 +330,64 @@ static void test_session_summary_and_reset(void **)
 	assert_false(t.InSession());
 }
 
+// Several live transitions can coalesce into one edge, and the history database
+// that used to gate the edge may not be open at all, so a begin can arrive while a
+// session is already open. It must neither wipe the sums nor move the start.
+static void test_repeated_session_begin_keeps_the_session(void **)
+{
+	Tracker t;
+	t.SessionBegin(0);
+	Feed f("disp", Kind::Dxgi);
+	Prime(t, f);
+	for (int s = 0; s < 15; s++) {
+		Step(t, f, 60, 60, 60);
+	}
+	t.SessionBegin(15ull * 1000000000ull);
+	for (int s = 0; s < 5; s++) {
+		Step(t, f, 60, 30, 30);
+	}
+	const std::string line = t.SessionEnd(20ull * 1000000000ull);
+	assert_non_null(strstr(line.c_str(), "[capture-rate] session 20 s: "));
+	// 15 s at 60 and 5 s at 30: a wiped session would read 30.0.
+	assert_non_null(strstr(line.c_str(), "'disp' DXGI median 60.0/s"));
+	assert_true(t.SessionEnd(21ull * 1000000000ull).empty());
+}
+
+// Watching with nothing live (a lease) samples a source for as long as the panel
+// is open. Going live is where the reference appears, and the grace period has to
+// run from there: a lock needs 5 s of grace plus 10 eligible seconds after it.
+static void test_grace_restarts_on_going_live(void **)
+{
+	Tracker t;
+	Feed f("disp", Kind::Wgc, kMainFps, false);
+	Prime(t, f);
+	for (int s = 0; s < 20; s++) {
+		Step(t, f, 60, 30, 30);
+	}
+	assert_false(RowFor(t, "disp")->inGrace);
+
+	f.src.reach = {Reach{kMainFps, true}};
+	for (int s = 1; s <= 5; s++) {
+		Step(t, f, 60, 30, 30);
+		assert_true(RowFor(t, "disp")->inGrace);
+	}
+	for (int s = 6; s <= 14; s++) {
+		Step(t, f, 60, 30, 30);
+		assert_false(RowFor(t, "disp")->inGrace);
+		assert_null(RowFor(t, "disp")->lockedFraction);
+	}
+	Step(t, f, 60, 30, 30);
+	assert_non_null(RowFor(t, "disp")->lockedFraction);
+
+	// A second broadcast starts over rather than inheriting the first one's lock.
+	f.src.reach = {Reach{kMainFps, false}};
+	Step(t, f, 60, 30, 30);
+	f.src.reach = {Reach{kMainFps, true}};
+	Step(t, f, 60, 30, 30);
+	assert_true(RowFor(t, "disp")->inGrace);
+	assert_null(RowFor(t, "disp")->lockedFraction);
+}
+
 // A source removed mid-session keeps its name and final sums in the line.
 static void test_removed_source_keeps_its_sums(void **)
 {
@@ -367,6 +425,8 @@ int main(void)
 		cmocka_unit_test(test_unmeasurable_and_idle),
 		cmocka_unit_test(test_session_summary_and_reset),
 		cmocka_unit_test(test_removed_source_keeps_its_sums),
+		cmocka_unit_test(test_repeated_session_begin_keeps_the_session),
+		cmocka_unit_test(test_grace_restarts_on_going_live),
 	};
 	return cmocka_run_group_tests(tests, nullptr, nullptr);
 }
