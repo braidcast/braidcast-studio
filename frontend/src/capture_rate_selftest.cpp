@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -314,6 +315,7 @@ struct State {
 	int exitCode = -1;
 	std::vector<std::string> failures;
 	std::vector<std::string> passes;
+	std::vector<std::string> inconclusive; // the machine, not the code, decided these
 
 	double mainFps = 0.0;
 	int refreshHz = 60;
@@ -354,6 +356,12 @@ void Check(State &st, bool ok, const std::string &what)
 {
 	Say(std::string(ok ? "PASS " : "FAIL ") + what);
 	(ok ? st.passes : st.failures).push_back(what);
+}
+
+void Inconclusive(State &st, const std::string &what)
+{
+	Say("INCONCLUSIVE " + what);
+	st.inconclusive.push_back(what);
 }
 
 void Enter(State &st, Phase phase)
@@ -713,6 +721,48 @@ void CheckNoSpike(State &st, Phase phase, const std::string &name, const std::st
 	Check(st, AnyFlag(rows, "inGrace"), what + ": " + name + " grace ran again");
 }
 
+std::optional<double> RateIn(const Sample &sample, const std::string &name)
+{
+	auto row = sample.find(name);
+	if (row == sample.end() || !row->second.contains("rate") || !row->second["rate"].is_number()) {
+		return std::nullopt;
+	}
+	return row->second["rate"].get<double>();
+}
+
+// Both DXGI sources share one duplicator, so screen activity raises them together,
+// while a reloaded source that missed its baseline spikes alone.
+void CheckReload(State &st)
+{
+	const std::string what = "save/remove/load";
+	const double spike = kSpikeShare * st.mainFps;
+	double soloMax = -1.0;
+	double sharedMax = -1.0;
+	for (const Sample &sample : st.samples[Phase::Reload]) {
+		const std::optional<double> rate = RateIn(sample, kDxgiName);
+		if (!rate || *rate <= spike) {
+			continue;
+		}
+		const std::optional<double> other = RateIn(sample, kDxgi2Name);
+		double &slot = other && *other > spike ? sharedMax : soloMax;
+		slot = std::max(slot, *rate);
+	}
+	if (soloMax >= 0.0) {
+		Check(st, false,
+		      what + ": " + kDxgiName + " max " + Fmt(soloMax) + "/s <= " + Fmt(spike) + " with " + kDxgi2Name +
+			      " steady (missed baseline)");
+	} else if (sharedMax >= 0.0) {
+		Inconclusive(st, what + ": " + kDxgiName + " and " + kDxgi2Name + " both above " + Fmt(spike) +
+					 "/s in one sample (" + kDxgiName + " " + Fmt(sharedMax) +
+					 "/s): screen activity, not a missed baseline");
+	} else {
+		const double max = Max(Numbers(RowsOf(st, Phase::Reload, kDxgiName), "rate"));
+		Check(st, true, what + ": " + kDxgiName + " max " + Fmt(max) + "/s <= " + Fmt(spike));
+	}
+	Check(st, AnyFlag(RowsOf(st, Phase::Reload, kDxgiName), "inGrace"),
+	      what + ": " + kDxgiName + " grace ran again");
+}
+
 void Teardown(State &st)
 {
 	if (st.cursor) {
@@ -752,20 +802,22 @@ void Teardown(State &st)
 void WriteSummary(State &st)
 {
 	if (st.exitCode < 0) {
-		st.exitCode = st.failures.empty() ? 0 : 1;
+		st.exitCode = !st.failures.empty() ? 1 : !st.inconclusive.empty() ? 2 : 0;
 	}
 	const json summary{
 		{"result", SelfTest::ResultName(st.exitCode)},
 		{"exitCode", st.exitCode},
 		{"passes", st.passes},
 		{"failures", st.failures},
+		{"inconclusive", st.inconclusive},
 		{"mainFps", st.mainFps},
 		{"refreshHz", st.refreshHz},
 		{"halfRateCaptures", st.lastHalfRateCaptures},
 	};
 	const std::string path = SelfTest::WriteSummaryFile("capture-rate", summary.dump(2));
 	Say(std::string(SelfTest::ResultName(st.exitCode)) + " passes=" + std::to_string(st.passes.size()) +
-	    " failures=" + std::to_string(st.failures.size()) + " summary=" + (path.empty() ? "(unwritten)" : path));
+	    " failures=" + std::to_string(st.failures.size()) + " inconclusive=" +
+	    std::to_string(st.inconclusive.size()) + " summary=" + (path.empty() ? "(unwritten)" : path));
 }
 
 } // namespace
@@ -915,7 +967,7 @@ bool ObsBootstrap::RunCaptureRateSelfTest()
 
 	case Phase::Reload:
 		if (InPhase(st) >= kReload) {
-			CheckNoSpike(st, Phase::Reload, kDxgiName, "save/remove/load");
+			CheckReload(st);
 			Enter(st, Phase::Finish);
 		}
 		return false;

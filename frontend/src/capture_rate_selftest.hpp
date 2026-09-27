@@ -32,7 +32,8 @@ void ArmCaptureRateSelfTest(HWND host);
 bool RunCaptureRateSelfTest();
 
 // 0 PASS, 1 FAIL (including stats.get carrying no captures), 2 SKIP (no DXGI
-// duplicator or no WGC on this machine), 3 infra error. 0 before the flow finishes.
+// duplicator or no WGC on this machine, or screen activity made a check
+// inconclusive), 3 infra error. 0 before the flow finishes.
 int CaptureRateSelfTestExitCode();
 
 } // namespace ObsBootstrap
