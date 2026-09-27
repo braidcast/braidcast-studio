@@ -7271,6 +7271,275 @@ void ObsBootstrap::RunSceneItemGroupSelfTest()
 	HostLog(std::string("[selftest] scene-item-group overall -> ") + (allPass ? "PASS" : "FAIL (BUG)"));
 }
 
+void ObsBootstrap::RunPreviewZeroSizeResizeSelfTest()
+{
+	using Bridge::json;
+
+	bool allPass = true;
+	auto check = [&allPass](const std::string &label, bool pass, const std::string &detail) {
+		allPass = allPass && pass;
+		HostLog("[selftest] preview-zero-size " + label + " -> " + (pass ? "OK" : "MISMATCH") +
+			(detail.empty() ? std::string() : " (" + detail + ")"));
+	};
+	auto closeTo = [](float a, float b) {
+		return std::fabs(a - b) <= 0.5f;
+	};
+
+	// --- spacing guides: both sides of every canvas edge, on a 1280x720 canvas ------------
+	{
+		struct GuideCase {
+			const char *label;
+			PreviewSpacingSide side;
+			float edgeX, edgeY;
+			int px;
+			float startX, startY, endX, endY;
+		};
+		const GuideCase cases[] = {
+			{"top inside", PreviewSpacingSide::Top, 640.0f, 329.0f, 329, 640.0f, 0.0f, 640.0f, 329.0f},
+			{"bottom inside", PreviewSpacingSide::Bottom, 640.0f, 161.0f, 559, 640.0f, 161.0f, 640.0f,
+			 720.0f},
+			{"left inside", PreviewSpacingSide::Left, 100.0f, 360.0f, 100, 0.0f, 360.0f, 100.0f, 360.0f},
+			{"left outside", PreviewSpacingSide::Left, -383.0f, 360.0f, -383, -383.0f, 360.0f, 0.0f,
+			 360.0f},
+			{"right outside", PreviewSpacingSide::Right, 1330.0f, 360.0f, -50, 1280.0f, 360.0f, 1330.0f,
+			 360.0f},
+			{"top outside", PreviewSpacingSide::Top, 640.0f, -20.0f, -20, 640.0f, -20.0f, 640.0f, 0.0f},
+			{"bottom outside", PreviewSpacingSide::Bottom, 640.0f, 800.0f, -80, 640.0f, 720.0f, 640.0f,
+			 800.0f},
+		};
+		for (const GuideCase &c : cases) {
+			const auto guide = Preview::SpacingGuideFor(c.side, c.edgeX, c.edgeY, 1280.0f, 720.0f);
+			const bool pass = guide && guide->px == c.px && closeTo(guide->startX, c.startX) &&
+					  closeTo(guide->startY, c.startY) && closeTo(guide->endX, c.endX) &&
+					  closeTo(guide->endY, c.endY);
+			check(std::string("spacing guide ") + c.label, pass,
+			      guide ? std::to_string(guide->px) + " px from " + std::to_string(guide->startX) + "," +
+					      std::to_string(guide->startY) + " to " + std::to_string(guide->endX) +
+					      "," + std::to_string(guide->endY)
+				    : std::string("no guide"));
+		}
+		check("spacing guide on the edge draws nothing",
+		      !Preview::SpacingGuideFor(PreviewSpacingSide::Right, 1280.0f, 360.0f, 1280.0f, 720.0f), "");
+		check("spacing guide under a px from the edge draws nothing",
+		      !Preview::SpacingGuideFor(PreviewSpacingSide::Left, -0.6f, 360.0f, 1280.0f, 720.0f) &&
+			      !Preview::SpacingGuideFor(PreviewSpacingSide::Top, 640.0f, 0.4f, 1280.0f, 720.0f),
+		      "");
+	}
+
+	// --- spacing labels: on screen, clear of the handle they measure ---------------------------
+	// At 1:1 with the fit letterbox, so the visible plane is 10 px past each canvas edge; zoomed
+	// in to the canvas centre, so every canvas edge is off screen.
+	{
+		PreviewSpacingLabelFrame fit{};
+		fit.labelW = 60.0f;
+		fit.labelH = 20.0f;
+		fit.margin = 6.0f;
+		fit.handleRadius = 4.0f;
+		fit.visibleMinX = -10.0f;
+		fit.visibleMinY = -10.0f;
+		fit.visibleMaxX = 1290.0f;
+		fit.visibleMaxY = 730.0f;
+		PreviewSpacingLabelFrame zoomed = fit;
+		zoomed.visibleMinX = 440.0f;
+		zoomed.visibleMinY = 260.0f;
+		zoomed.visibleMaxX = 840.0f;
+		zoomed.visibleMaxY = 460.0f;
+
+		struct LabelCase {
+			const char *label;
+			PreviewSpacingSide side;
+			float edgeX, edgeY;
+			const PreviewSpacingLabelFrame *frame;
+			bool legacy; // expected at the legacy spot beside the guide's midpoint
+		};
+		const LabelCase cases[] = {
+			{"inside guide keeps the legacy spot", PreviewSpacingSide::Top, 640.0f, 329.0f, &fit, true},
+			{"left outside past the window edge", PreviewSpacingSide::Left, -383.0f, 360.0f, &fit, false},
+			{"right outside past the window edge", PreviewSpacingSide::Right, 1900.0f, 360.0f, &fit, false},
+			{"top outside past the window edge", PreviewSpacingSide::Top, 640.0f, -300.0f, &fit, false},
+			{"bottom outside past the window edge", PreviewSpacingSide::Bottom, 640.0f, 1100.0f, &fit,
+			 false},
+			{"short guide slides off its handle", PreviewSpacingSide::Left, 20.0f, 360.0f, &fit, false},
+			{"zoomed in, left inside", PreviewSpacingSide::Left, 600.0f, 360.0f, &zoomed, false},
+			{"zoomed in, bottom inside", PreviewSpacingSide::Bottom, 640.0f, 420.0f, &zoomed, false},
+		};
+		for (const LabelCase &c : cases) {
+			const auto guide = Preview::SpacingGuideFor(c.side, c.edgeX, c.edgeY, 1280.0f, 720.0f);
+			if (!guide) {
+				check(std::string("spacing label ") + c.label, false, "no guide");
+				continue;
+			}
+			const PreviewSpacingLabelFrame &f = *c.frame;
+			float x = 0.0f;
+			float y = 0.0f;
+			Preview::SpacingLabelOriginFor(c.side, *guide, f, x, y);
+			const bool onScreen = x >= f.visibleMinX && y >= f.visibleMinY &&
+					      x + f.labelW <= f.visibleMaxX && y + f.labelH <= f.visibleMaxY;
+			const float r = f.handleRadius;
+			const bool coversHandle = x < guide->handleX + r && x + f.labelW > guide->handleX - r &&
+						  y < guide->handleY + r && y + f.labelH > guide->handleY - r;
+			const bool horizontal = c.side == PreviewSpacingSide::Left ||
+						c.side == PreviewSpacingSide::Right;
+			const float legacyX = horizontal ? (guide->startX + guide->endX) * 0.5f - f.labelW * 0.5f
+							 : guide->startX + f.margin;
+			const float legacyY = horizontal ? guide->startY - f.margin - f.labelH * 0.5f - r
+							 : (guide->startY + guide->endY) * 0.5f - f.labelH * 0.5f;
+			const bool atLegacy = closeTo(x, legacyX) && closeTo(y, legacyY);
+			check(std::string("spacing label ") + c.label,
+			      onScreen && !coversHandle && (!c.legacy || atLegacy),
+			      "at " + std::to_string(x) + "," + std::to_string(y) + (onScreen ? "" : ", off screen") +
+				      (coversHandle ? ", covers the handle" : ""));
+		}
+	}
+
+	if (!Preview::Instance()) {
+		HostLog("[selftest] preview-zero-size: no preview manager (gesture cases skipped)");
+		HostLog(std::string("[selftest] preview-zero-size overall -> ") + (allPass ? "PASS" : "FAIL (BUG)"));
+		return;
+	}
+
+	auto run = [](const std::string &method, const json &params, bool &ok) -> json {
+		json result;
+		std::string error;
+		ok = Bridge::Dispatch(method, params, result, error);
+		if (!ok) {
+			HostLog("[selftest] " + method + " FAILED: " + Err::Diagnostic(error));
+			return json(nullptr);
+		}
+		return result;
+	};
+
+	const std::string canvasUuid = MakeSelfTestCanvas("selftest-preview-zero-size-canvas");
+	auto teardownCanvas = [&canvasUuid]() {
+		g_multistream->InvalidateCanvasEncoders(canvasUuid);
+		g_canvasRuntime->RemoveCanvas(canvasUuid);
+		g_canvases.Remove(canvasUuid);
+		return g_canvasRuntime->Find(canvasUuid) == nullptr && g_canvases.Find(canvasUuid) == nullptr;
+	};
+
+	const UndoManager::State undoAtStart = ObsBootstrap::Undo().GetState();
+	bool ok = false;
+	const char *kSceneName = "selftest-preview-zero-size-scene";
+	run("scenes.create", json{{"canvas", canvasUuid}, {"name", kSceneName}}, ok);
+	run("scenes.setCurrent", json{{"canvas", canvasUuid}, {"name", kSceneName}}, ok);
+
+	obs_source_t *sceneSource = g_canvasRuntime->CurrentScene(canvasUuid); // addref'd
+	obs_scene_t *scene = sceneSource ? obs_scene_from_source(sceneSource) : nullptr;
+	// An image source with no file measures 0x0, as a Game Capture does before it hooks.
+	obs_source_t *emptySrc = scene ? obs_source_create("image_source", "selftest-preview-zero-size-image", nullptr,
+							   nullptr) // create-ref
+				       : nullptr;
+	obs_sceneitem_t *item = emptySrc ? obs_scene_add(scene, emptySrc) : nullptr;
+
+	if (!item || obs_source_get_width(emptySrc) != 0 || obs_source_get_height(emptySrc) != 0) {
+		check("setup: a 0x0 item on the temp canvas", false,
+		      emptySrc ? std::to_string(obs_source_get_width(emptySrc)) + "x" +
+					 std::to_string(obs_source_get_height(emptySrc))
+			       : std::string("no source"));
+	} else {
+		const int64_t id = obs_sceneitem_get_id(item);
+		const SceneItemKey key(id);
+		const json base{{"canvas", canvasUuid}, {"scene", kSceneName}};
+		json itemParams = base;
+		itemParams["id"] = id;
+		auto boundsOf = [item]() {
+			vec2 bounds;
+			obs_sceneitem_get_bounds(item, &bounds);
+			return bounds;
+		};
+		auto sizeText = [](const vec2 &v) {
+			return std::to_string(v.x) + "x" + std::to_string(v.y);
+		};
+
+		json selectParams = base;
+		selectParams["refs"] = json::array({json{{"id", id}, {"group", nullptr}}});
+		bool selected = false;
+		run("preview.select", selectParams, selected);
+
+		json fitParams = itemParams;
+		fitParams["action"] = "fitToScreen";
+		bool fitted = false;
+		run("sceneItems.transformAction", fitParams, fitted);
+		const vec2 fitBounds = boundsOf();
+		check("setup: Fit to Screen bounds the 0x0 item to the canvas",
+		      selected && fitted && obs_sceneitem_get_bounds_type(item) == OBS_BOUNDS_SCALE_INNER &&
+			      closeTo(fitBounds.x, 1280.0f) && closeTo(fitBounds.y, 720.0f),
+		      sizeText(fitBounds));
+
+		const bool driven =
+			Preview::DragForTest(canvasUuid, key, PreviewTestGesture::ResizeBottomRight, -40.0f, -30.0f);
+		const vec2 resized = boundsOf();
+		check("handle drag resizes a bounded 0x0 item's bounds",
+		      driven && closeTo(resized.x, 1240.0f) && closeTo(resized.y, 690.0f), sizeText(resized));
+
+		// One undo lands on the fitted bounds rather than past them: the whole drag is one step.
+		ObsBootstrap::Undo().Undo();
+		const vec2 undone = boundsOf();
+		check("one undo restores the fitted bounds", closeTo(undone.x, 1280.0f) && closeTo(undone.y, 720.0f),
+		      sizeText(undone));
+		ObsBootstrap::Undo().Redo();
+		const vec2 redone = boundsOf();
+		check("redo re-applies the resized bounds", closeTo(redone.x, 1240.0f) && closeTo(redone.y, 690.0f),
+		      sizeText(redone));
+
+		// Unbounded, the box is the source size times the scale, so a 0x0 source leaves
+		// nothing to resize: the drag must write no scale and record nothing. Every handle of
+		// a 0x0 box sits on one point and a press there takes the top-left one, so that is the
+		// handle driven.
+		json resetParams = itemParams;
+		resetParams["action"] = "reset";
+		bool reset = false;
+		run("sceneItems.transformAction", resetParams, reset);
+		vec2 scaleBefore, posBefore;
+		obs_sceneitem_get_scale(item, &scaleBefore);
+		obs_sceneitem_get_pos(item, &posBefore);
+		const bool drivenUnbounded =
+			Preview::DragForTest(canvasUuid, key, PreviewTestGesture::ResizeTopLeft, 40.0f, 30.0f);
+		vec2 scaleAfter, posAfter;
+		obs_sceneitem_get_scale(item, &scaleAfter);
+		obs_sceneitem_get_pos(item, &posAfter);
+		check("an unbounded 0x0 item is left alone",
+		      reset && drivenUnbounded && obs_sceneitem_get_bounds_type(item) == OBS_BOUNDS_NONE &&
+			      scaleAfter.x == scaleBefore.x && scaleAfter.y == scaleBefore.y &&
+			      posAfter.x == posBefore.x && posAfter.y == posBefore.y,
+		      std::string("drag ") + (drivenUnbounded ? "driven" : "not driven") + ", scale " +
+			      sizeText(scaleBefore) + " -> " + sizeText(scaleAfter) + ", pos " + sizeText(posBefore) +
+			      " -> " + sizeText(posAfter));
+
+		// The reset and a drag share an undo label, so the step on top is told apart by what
+		// undoing it does: if the drag recorded nothing, the one undo reverts the reset and the
+		// item is bounded again at its resized size.
+		ObsBootstrap::Undo().Undo();
+		const vec2 rebounded = boundsOf();
+		check("the unbounded drag records no undo step",
+		      obs_sceneitem_get_bounds_type(item) == OBS_BOUNDS_SCALE_INNER && closeTo(rebounded.x, 1240.0f) &&
+			      closeTo(rebounded.y, 690.0f),
+		      "bounds type " + std::to_string(int(obs_sceneitem_get_bounds_type(item))) + ", " +
+			      sizeText(rebounded));
+	}
+
+	// --- cleanup: the surface before its canvas, the item, the source, the temp canvas ---
+	Preview::SelectFromBridge(canvasUuid, "", std::vector<SceneItemKey>{});
+	Preview::Instance()->DestroyForCanvas(canvasUuid);
+	if (!undoAtStart.canUndo && !undoAtStart.canRedo) {
+		ObsBootstrap::Undo().Clear();
+	} else {
+		HostLog("[selftest] preview-zero-size cleanup: undo stack was not empty at start; its entries are left");
+	}
+	if (item) {
+		obs_sceneitem_remove(item);
+	}
+	if (emptySrc) {
+		obs_source_remove(emptySrc);
+		obs_source_release(emptySrc);
+	}
+	obs_source_release(sceneSource);
+	const bool gone = teardownCanvas();
+	HostLog(std::string("[selftest] preview-zero-size cleanup: temp canvas ") +
+		(gone ? "removed" : "STILL PRESENT (BUG)"));
+	HostLog(std::string("[selftest] preview-zero-size overall -> ") + (allPass ? "PASS" : "FAIL (BUG)"));
+}
+
 void ObsBootstrap::RunPreviewSurfaceIsolationSelfTest()
 {
 	using Bridge::json;

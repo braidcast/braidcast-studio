@@ -464,6 +464,14 @@ void RunOverlayViewportSelfTest();
 // a rename and otherwise spends its slot and moves nothing.
 // Removes the temp canvas afterward; never Saves. Gated by the caller to the smoke path.
 void RunSceneItemGroupSelfTest();
+// Headless proof that a preview handle drag resizes a BOUNDED item whose source measures 0x0 --
+// a Game Capture that has not hooked, after Fit to Screen -- by resizing its bounds, as one
+// undo step that undo and redo both restore; that an unbounded 0x0 item is left alone and
+// records nothing; and that the spacing guides cover an item edge on either side of each
+// canvas edge, labelling one outside the canvas negative, with each label kept on screen and
+// clear of the handle it measures. Removes the temp canvas afterward; never Saves. Gated by the
+// caller to the smoke path.
+void RunPreviewZeroSizeResizeSelfTest();
 // Headless proof for 4.4.5b sub-phase B: bring up an additional canvas with a live
 // mix + a source in its current scene, address its preview surface by uuid, and
 // drive a hit-test + a select + a move on it. Assert the edit lands on the

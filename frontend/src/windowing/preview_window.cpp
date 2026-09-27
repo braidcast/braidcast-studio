@@ -1597,18 +1597,14 @@ void StretchItem(const DragState &drag, obs_sceneitem_t *item, const vec2 &owner
 	}
 	// --- end resize-snap ---
 
-	obs_source_t *source = obs_sceneitem_get_source(item);
-	const uint32_t source_cx = obs_source_get_width(source);
-	const uint32_t source_cy = obs_source_get_height(source);
-	if (!source_cx || !source_cy) {
-		return;
-	}
-
-	vec2 baseSize;
-	vec2_set(&baseSize, float(source_cx), float(source_cy));
 	vec2 size;
 	vec2_set(&size, br.x - tl.x, br.y - tl.y);
 
+	// Bounds are sized in the item's own px, so a bounded box resizes whatever the source
+	// measures -- a Game Capture that has not hooked yet is 0x0 until it does. A scale is a
+	// ratio of the source size, so only the unbounded path needs one to divide by; without
+	// it that path writes nothing, which also keeps a source that drops to 0x0 mid-drag
+	// from being left at an infinite or zero scale.
 	if (boundsType != OBS_BOUNDS_NONE) {
 		if (tl.x > br.x) {
 			std::swap(tl.x, br.x);
@@ -1619,6 +1615,15 @@ void StretchItem(const DragState &drag, obs_sceneitem_t *item, const vec2 &owner
 		vec2_abs(&size, &size);
 		obs_sceneitem_set_bounds(item, &size);
 	} else {
+		obs_source_t *source = obs_sceneitem_get_source(item);
+		const uint32_t source_cx = obs_source_get_width(source);
+		const uint32_t source_cy = obs_source_get_height(source);
+		if (!source_cx || !source_cy) {
+			return;
+		}
+		vec2 baseSize;
+		vec2_set(&baseSize, float(source_cx), float(source_cy));
+
 		obs_sceneitem_crop crop;
 		obs_sceneitem_get_crop(item, &crop);
 		baseSize.x -= float(crop.left + crop.right);
@@ -2477,72 +2482,58 @@ void DrawSafeAreas(const SafeAreaBuffers &buffers, float drawCX, float drawCY)
 
 // Spacing helpers, after the legacy DrawSpacingHelpers/RenderSpacingHelper
 // (OBSBasicPreview.cpp:2482-2707): a line from each edge of the one selected item to
-// the canvas edge it faces, labelled with its length in canvas px.
+// the canvas edge it faces, labelled with its length in canvas px. Unlike the legacy one,
+// an edge past the canvas edge still gets its guide, from the item edge in to the canvas
+// edge and labelled negative (see Preview::SpacingGuideFor).
 constexpr float kSpacingRotBreakpoint = 45.0f;
 constexpr float kSpacingLabelMargin = 6.0f;
 constexpr int kSpacingLabelFontSize = 16;
 
 // One of the four labels: its private text source, created on first use on the
-// render thread, and the px value it currently reads (-1 before the first).
+// render thread, and the px value it currently reads (empty before the first).
 struct SpacingLabel {
 	obs_source_t *source = nullptr;
-	int px = -1;
+	std::optional<int> px;
 };
 
-enum SpacingSide { kSpacingTop, kSpacingBottom, kSpacingLeft, kSpacingRight, kSpacingSideCount };
+using SpacingLabels = std::array<SpacingLabel, size_t(PreviewSpacingSide::Count)>;
 
-using SpacingLabels = std::array<SpacingLabel, kSpacingSideCount>;
-
-// Draw one helper from `start` to `end` (canvas units, start nearer the canvas origin)
-// and its label. Nothing when the item edge lies beyond the canvas edge it measures to.
-// Runs with the letterbox scale pushed; `scale` is screen px per canvas unit.
-void DrawSpacingHelper(SpacingLabel &label, int side, const vec3 &start, const vec3 &end, float scale)
+// Draw one guide and its label. Runs with the letterbox scale pushed; `scale` is screen px
+// per canvas unit, and `frame` carries the visible area, margin and handle size in canvas px.
+void DrawSpacingHelper(SpacingLabel &label, PreviewSpacingSide side, const PreviewSpacingGuide &guide, float scale,
+		       PreviewSpacingLabelFrame frame)
 {
-	const bool horizontal = side == kSpacingLeft || side == kSpacingRight;
-	if (horizontal ? end.x < start.x : end.y < start.y) {
-		return;
-	}
-	const float length = vec3_dist(&start, &end);
-	if (length <= 0.0f) {
-		return;
-	}
-
 	if (!label.source) {
 		OBSDataAutoRelease extra = obs_data_create();
 		obs_data_set_int(extra, "outline_color", 0x000000);
 		obs_data_set_int(extra, "outline_size", 3);
-		const std::string name = "Preview spacing label " + std::to_string(side);
+		const std::string name = "Preview spacing label " + std::to_string(int(side));
 		label.source = SourceRender::CreateTextLabel(name.c_str(), "", kSpacingLabelFontSize, extra);
 		if (!label.source) {
 			return;
 		}
 	}
 
-	const float labelW = float(obs_source_get_width(label.source)) / scale;
-	const float labelH = float(obs_source_get_height(label.source)) / scale;
-	const float margin = kSpacingLabelMargin / scale;
-	vec2 labelPos;
-	if (horizontal) {
-		vec2_set(&labelPos, end.x - (end.x - start.x) * 0.5f - labelW * 0.5f,
-			 end.y - margin - labelH * 0.5f - kHandleRadius / scale);
-	} else {
-		vec2_set(&labelPos, end.x + margin, end.y - (end.y - start.y) * 0.5f - labelH * 0.5f);
+	// libobs applies a video source's update at its next tick, so a reading that changes width
+	// is still measured at the old one for a frame.
+	if (label.px != guide.px) {
+		OBSDataAutoRelease settings = obs_source_get_settings(label.source);
+		obs_data_set_string(settings, "text", (std::to_string(guide.px) + " px").c_str());
+		obs_source_update(label.source, settings);
+		label.px = guide.px;
 	}
+
+	frame.labelW = float(obs_source_get_width(label.source)) / scale;
+	frame.labelH = float(obs_source_get_height(label.source)) / scale;
+	vec2 labelPos;
+	Preview::SpacingLabelOriginFor(side, guide, frame, labelPos.x, labelPos.y);
 
 	gs_effect_t *solid = obs_get_base_effect(OBS_EFFECT_SOLID);
 	gs_effect_set_vec4(gs_effect_get_param_by_name(solid, "color"), &kSelectionColor);
 	vec2 boxScale;
 	vec2_set(&boxScale, scale, scale);
 	while (gs_effect_loop(solid, "Solid")) {
-		DrawLine(start.x, start.y, end.x, end.y, kBoxLineThickness, boxScale);
-	}
-
-	const int px = int(length);
-	if (px != label.px) {
-		OBSDataAutoRelease settings = obs_source_get_settings(label.source);
-		obs_data_set_string(settings, "text", (std::to_string(px) + " px").c_str());
-		obs_source_update(label.source, settings);
-		label.px = px;
+		DrawLine(guide.startX, guide.startY, guide.endX, guide.endY, kBoxLineThickness, boxScale);
 	}
 
 	PushHandleAnchor(labelPos.x, labelPos.y);
@@ -2555,7 +2546,7 @@ void DrawSpacingHelper(SpacingLabel &label, int side, const vec3 &start, const v
 // group's space; a group's own turn and mirroring never reach it, so through a rotated group
 // it would label the wrong edges. Deliberately left as it is rather than wired up wrong.
 void DrawSpacingHelpers(SpacingLabels &labels, obs_scene_t *scene, const std::vector<SceneItemKey> &selected,
-			float scale, float baseCX, float baseCY)
+			float scale, float baseCX, float baseCY, PreviewSpacingLabelFrame frame)
 {
 	if (selected.size() != 1 || !selected.front().IsTopLevel()) {
 		return;
@@ -2614,23 +2605,17 @@ void DrawSpacingHelpers(SpacingLabels &labels, obs_scene_t *scene, const std::ve
 	const vec3 r = GetTransformedPos(right.x, right.y, boxTransform);
 	const vec3 t = GetTransformedPos(top.x, top.y, boxTransform);
 	const vec3 b = GetTransformedPos(bottom.x, bottom.y, boxTransform);
-
-	vec3 start, end;
-	vec3_set(&start, t.x, 0.0f, 0.0f);
-	vec3_set(&end, t.x, t.y, 0.0f);
-	DrawSpacingHelper(labels[kSpacingTop], kSpacingTop, start, end, scale);
-
-	vec3_set(&start, b.x, b.y, 0.0f);
-	vec3_set(&end, b.x, baseCY, 0.0f);
-	DrawSpacingHelper(labels[kSpacingBottom], kSpacingBottom, start, end, scale);
-
-	vec3_set(&start, 0.0f, l.y, 0.0f);
-	vec3_set(&end, l.x, l.y, 0.0f);
-	DrawSpacingHelper(labels[kSpacingLeft], kSpacingLeft, start, end, scale);
-
-	vec3_set(&start, r.x, r.y, 0.0f);
-	vec3_set(&end, baseCX, r.y, 0.0f);
-	DrawSpacingHelper(labels[kSpacingRight], kSpacingRight, start, end, scale);
+	const std::pair<PreviewSpacingSide, vec3> edges[] = {
+		{PreviewSpacingSide::Top, t},
+		{PreviewSpacingSide::Bottom, b},
+		{PreviewSpacingSide::Left, l},
+		{PreviewSpacingSide::Right, r},
+	};
+	for (const auto &[side, edge] : edges) {
+		if (const auto guide = Preview::SpacingGuideFor(side, edge.x, edge.y, baseCX, baseCY)) {
+			DrawSpacingHelper(labels[size_t(side)], side, *guide, scale, frame);
+		}
+	}
 }
 
 } // namespace
@@ -3144,7 +3129,16 @@ void RenderPreview(void *data, uint32_t cx, uint32_t cy)
 			gs_matrix_push();
 			gs_matrix_identity();
 			gs_matrix_scale3f(coverX, coverY, 1.0f);
-			DrawSpacingHelpers(state->spacingLabels, scene, selected, scale, baseCX, baseCY);
+			// What of the canvas plane the surface shows, letterbox and pan included, so a
+			// label can be kept on screen.
+			PreviewSpacingLabelFrame frame{};
+			frame.margin = kSpacingLabelMargin / scale;
+			frame.handleRadius = kHandleRadius / scale;
+			frame.visibleMinX = -float(drawX) / coverX;
+			frame.visibleMinY = -float(drawY) / coverY;
+			frame.visibleMaxX = (float(cx) - float(drawX)) / coverX;
+			frame.visibleMaxY = (float(cy) - float(drawY)) / coverY;
+			DrawSpacingHelpers(state->spacingLabels, scene, selected, scale, baseCX, baseCY, frame);
 			gs_matrix_pop();
 		}
 
@@ -4828,14 +4822,17 @@ bool ResolveTestGrab(obs_sceneitem_t *item, const matrix4 &box, PreviewTestGestu
 		out.handle = ItemHandle::None;
 		return true;
 	case PreviewTestGesture::ResizeBottomRight:
-		out.pos = at(1.0f, 1.0f);
-		out.handle = ItemHandle::BottomRight;
+	case PreviewTestGesture::ResizeTopLeft: {
+		const bool bottomRight = gesture == PreviewTestGesture::ResizeBottomRight;
+		out.pos = bottomRight ? at(1.0f, 1.0f) : at(0.0f, 0.0f);
+		out.handle = bottomRight ? ItemHandle::BottomRight : ItemHandle::TopLeft;
 		out.mods.ctrl = true;
 		// Shift for free aspect, so the grabbed corner tracks the pointer on both axes
 		// instead of along a constrained line. That is what lets a case say where the
 		// corner should end up rather than only that the item changed size.
 		out.mods.shift = true;
 		return true;
+	}
 	case PreviewTestGesture::CropLeft:
 		out.pos = at(0.0f, 0.5f);
 		out.handle = ItemHandle::CenterLeft;
@@ -5371,6 +5368,82 @@ std::optional<std::vector<SceneItemKey>> SelectFromBridge(const std::string &can
 		return std::nullopt;
 	}
 	return surface->SelectFromBridge(scene, keys);
+}
+
+std::optional<PreviewSpacingGuide> SpacingGuideFor(PreviewSpacingSide side, float edgeX, float edgeY, float baseCX,
+						   float baseCY)
+{
+	const bool horizontal = side == PreviewSpacingSide::Left || side == PreviewSpacingSide::Right;
+	const bool farEdge = side == PreviewSpacingSide::Bottom || side == PreviewSpacingSide::Right;
+	const float edge = horizontal ? edgeX : edgeY;
+	const float canvasEdge = farEdge ? (horizontal ? baseCX : baseCY) : 0.0f;
+	const float inset = farEdge ? canvasEdge - edge : edge - canvasEdge;
+	if (!std::isfinite(inset) || int(inset) == 0) {
+		return std::nullopt;
+	}
+
+	const float lo = std::min(edge, canvasEdge);
+	const float hi = std::max(edge, canvasEdge);
+	PreviewSpacingGuide guide;
+	guide.startX = horizontal ? lo : edgeX;
+	guide.startY = horizontal ? edgeY : lo;
+	guide.endX = horizontal ? hi : edgeX;
+	guide.endY = horizontal ? edgeY : hi;
+	guide.handleX = edgeX;
+	guide.handleY = edgeY;
+	guide.px = int(inset);
+	return guide;
+}
+
+void SpacingLabelOriginFor(PreviewSpacingSide side, const PreviewSpacingGuide &guide,
+			   const PreviewSpacingLabelFrame &frame, float &outX, float &outY)
+{
+	// Worked along the guide ("along") and across it ("across"), so both orientations share it.
+	const bool horizontal = side == PreviewSpacingSide::Left || side == PreviewSpacingSide::Right;
+	const float segLo = horizontal ? guide.startX : guide.startY;
+	const float segHi = horizontal ? guide.endX : guide.endY;
+	const float visAlongLo = horizontal ? frame.visibleMinX : frame.visibleMinY;
+	const float visAlongHi = horizontal ? frame.visibleMaxX : frame.visibleMaxY;
+	const float visAcrossLo = horizontal ? frame.visibleMinY : frame.visibleMinX;
+	const float visAcrossHi = horizontal ? frame.visibleMaxY : frame.visibleMaxX;
+	const float lenAlong = horizontal ? frame.labelW : frame.labelH;
+	const float lenAcross = horizontal ? frame.labelH : frame.labelW;
+	const float handleAlong = horizontal ? guide.handleX : guide.handleY;
+	const float handleAcross = horizontal ? guide.handleY : guide.handleX;
+	const float r = frame.handleRadius;
+
+	// A box too big for the visible span pins to its low side.
+	const auto clampInto = [](float pos, float len, float lo, float hi) {
+		return std::max(lo, std::min(pos, hi - len));
+	};
+
+	const float shownLo = std::max(segLo, visAlongLo);
+	const float shownHi = std::min(segHi, visAlongHi);
+	const float mid = shownLo <= shownHi ? (shownLo + shownHi) * 0.5f : (segLo + segHi) * 0.5f;
+	float along = clampInto(mid - lenAlong * 0.5f, lenAlong, visAlongLo, visAlongHi);
+
+	// The legacy offsets: above a horizontal guide, clear of the handle's half-height, and
+	// right of a vertical one.
+	const float across = clampInto(horizontal ? guide.startY - frame.margin - frame.labelH * 0.5f - r
+						  : guide.startX + frame.margin,
+				       lenAcross, visAcrossLo, visAcrossHi);
+
+	const bool coversHandle = along < handleAlong + r && along + lenAlong > handleAlong - r &&
+				  across < handleAcross + r && across + lenAcross > handleAcross - r;
+	if (coversHandle) {
+		const float before = handleAlong - r - lenAlong;
+		const float after = handleAlong + r;
+		const bool beforeFits = before >= visAlongLo;
+		const bool afterFits = after + lenAlong <= visAlongHi;
+		if (beforeFits && (!afterFits || along - before <= after - along)) {
+			along = before;
+		} else if (afterFits) {
+			along = after;
+		}
+	}
+
+	outX = horizontal ? along : across;
+	outY = horizontal ? across : along;
 }
 
 int64_t HitTestForTest(const std::string &canvas, float canvasX, float canvasY, int windowId)

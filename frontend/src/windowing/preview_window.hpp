@@ -46,14 +46,47 @@ struct PreviewOverlays {
 };
 
 // The gestures a scripted drag can start, one per grab point PreviewSurface::DragForTest
-// knows how to aim at: the item's body, its bottom-right resize handle, its rotation disc, and
-// its left edge under Alt (a crop). Exists for the smoke self-test, which has no cursor and no
-// keyboard.
+// knows how to aim at: the item's body, its bottom-right or top-left resize handle, its rotation
+// disc, and its left edge under Alt (a crop). Exists for the smoke self-test, which has no cursor
+// and no keyboard. ResizeTopLeft is the handle a press on a 0x0 box gets: every handle sits on
+// one point there, and the hit test keeps the first.
 //
 // MoveSnapping is Move with the keyboard's snap suppression NOT held, so the drag runs through
 // CanvasSnapOffset the way an ordinary one does; every other gesture suppresses it, because a
 // snap would move the item somewhere other than the offset the case asked for.
-enum class PreviewTestGesture { Move, MoveSnapping, ResizeBottomRight, Rotate, CropLeft };
+enum class PreviewTestGesture { Move, MoveSnapping, ResizeBottomRight, ResizeTopLeft, Rotate, CropLeft };
+
+// The canvas edges the spacing guides measure to, in the order their labels are numbered.
+enum class PreviewSpacingSide { Top, Bottom, Left, Right, Count };
+
+// One spacing guide, in canvas px: the segment it draws, its start being the end nearer the
+// canvas origin, the item-edge end where the side handle is drawn, and the distance its label
+// reads. That distance is the item edge's inset from the canvas edge, so it is negative when
+// the edge lies outside the canvas, and the segment then runs from the item edge in to the
+// canvas edge.
+struct PreviewSpacingGuide {
+	float startX;
+	float startY;
+	float endX;
+	float endY;
+	float handleX;
+	float handleY;
+	int px;
+};
+
+// What a guide's label is placed within, in canvas px: the label's size, its gap from the
+// guide, the half-side of the handle it must stay clear of, and the part of the canvas plane
+// the surface shows, letterbox included.
+struct PreviewSpacingLabelFrame {
+	float labelW;
+	float labelH;
+	float margin;
+	float handleRadius;
+	float visibleMinX;
+	float visibleMinY;
+	float visibleMaxX;
+	float visibleMaxY;
+};
 
 // What a preview's context menu renders from: whether the surface is at a fixed scale
 // rather than fitted, the scale the next frame draws at as a percentage, the edit lock,
@@ -497,6 +530,20 @@ bool ClickForTest(const std::string &canvas, float canvasX, float canvasY, bool 
 bool BandForTest(const std::string &canvas, float fromX, float fromY, float toX, float toY, int windowId = 0);
 std::string EnteredGroupForTest(const std::string &canvas, int windowId = 0);
 std::vector<SceneItemKey> SelectedKeysForTest(const std::string &canvas, int windowId = 0);
+
+// The guide from (edgeX, edgeY), the midpoint of the item side that faces `side`'s canvas edge,
+// to that edge of a `baseCX` x `baseCY` canvas. Empty when the side lies less than a whole px
+// from the edge, which is the label reading 0, or its position is not finite.
+std::optional<PreviewSpacingGuide> SpacingGuideFor(PreviewSpacingSide side, float edgeX, float edgeY, float baseCX,
+						   float baseCY);
+
+// The top-left corner of `guide`'s label, in canvas px. Where the whole guide is on screen that
+// is the legacy placement, beside the guide's midpoint. Otherwise the label centres on the part
+// that is, so an off-canvas guide whose midpoint lies past the window edge still shows its
+// value. Then the label is kept inside the visible area and, sliding along the guide, off the
+// handle it measures.
+void SpacingLabelOriginFor(PreviewSpacingSide side, const PreviewSpacingGuide &guide,
+			   const PreviewSpacingLabelFrame &frame, float &outX, float &outY);
 
 // Drive the preview's view (the Scale submenu) and its edit lock from JS, on the
 // surface for (windowId, canvas) (empty canvas => the Default surface). Each
