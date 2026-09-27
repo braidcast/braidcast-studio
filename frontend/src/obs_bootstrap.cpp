@@ -62,6 +62,7 @@
 #include "history/ScheduledSetup.hpp"
 #include "history/SessionStore.hpp"
 #include "history/Thumbnails.hpp"
+#include "diag/capture_rate_sampler.hpp"
 #include "multistream/CanvasRuntime.hpp"
 #include "multistream/VideoGate.hpp"
 #include "multistream/CanvasService.hpp"
@@ -467,6 +468,9 @@ History::ScheduleRunner g_scheduleRunner;
 History::SessionRecorder g_recorder;
 History::ThumbnailSampler g_thumbs;
 
+// Per-source capture rates and the session summary they feed. UI-thread-only.
+CaptureRate::Sampler g_captureRate;
+
 // The embedded MCP server. Constructed at the end of Start() (after the audio
 // monitor is up) and torn down at the very top of Stop() (before Bridge::Shutdown,
 // so its accept thread is joined while the bridge + libobs are still alive).
@@ -707,6 +711,7 @@ void EndSessionWithThumbnail(const std::string &reason)
 {
 	g_thumbs.Finalize(g_recorder);
 	g_recorder.End(TimeUtil::NowMs(), reason);
+	g_captureRate.SessionEnd();
 }
 
 // Map the stats snapshot onto a health sample. The field names come from
@@ -867,6 +872,11 @@ History::ScheduledSetup &ObsBootstrap::ScheduledSetup()
 History::SessionRecorder &ObsBootstrap::Recorder()
 {
 	return g_recorder;
+}
+
+CaptureRate::Sampler &ObsBootstrap::CaptureRates()
+{
+	return g_captureRate;
 }
 
 GeneralSettings &ObsBootstrap::General()
@@ -1784,6 +1794,7 @@ bool ObsBootstrap::Start()
 				// unscheduled session, not a claim on a plan it never ran.
 				start.scheduleId = g_scheduleRunner.ActiveEntryId();
 				g_recorder.Begin(start);
+				g_captureRate.SessionBegin();
 				g_scheduleRunner.NoteWentLive();
 				g_thumbs.Reset();
 				Bridge::EmitEvent(EventNames::kSessionsChanged, Bridge::json::object());
@@ -9829,6 +9840,8 @@ void ObsBootstrap::Stop(void (*drainCefTasks)())
 		// signal the feature exists to provide.
 		EndSessionWithThumbnail("ended");
 	}
+	// Its weak refs go while libobs can still take them back.
+	g_captureRate.Clear();
 	g_recorder.Detach();
 	g_scheduleRunner.Detach();
 	g_sessions.Detach();

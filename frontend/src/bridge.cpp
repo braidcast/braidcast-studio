@@ -100,6 +100,7 @@
 #include "multistream/StreamMetaStore.hpp"
 #include "multistream/StreamProfileStore.hpp"
 #include "multistream/VideoGate.hpp"
+#include "diag/capture_rate_sampler.hpp"
 #include "multistream/VirtualCamManager.hpp"
 #include "oauth/provider.hpp"
 #include "oauth/registry.hpp"
@@ -8767,6 +8768,8 @@ json BuildStatsSnapshot()
 	// and pre-broadcast zeros are indistinguishable from a dead stream.
 	return json{{"general", std::move(general)},
 		    {"outputs", std::move(outputs)},
+		    // Empty unless an output is live or stats.watchCaptures holds a lease.
+		    {"captures", ObsBootstrap::CaptureRates().Payload()},
 		    {"sampledAtMs", TimeUtil::NowMs()}};
 }
 
@@ -8782,6 +8785,10 @@ void SampleStatsTick()
 	if (g_bridgeShutdown.load(std::memory_order_acquire)) {
 		return;
 	}
+	// One walk of the render roots per tick, shared by the capture-rate sampler and the
+	// video gate so they cannot disagree about what reaches what.
+	const std::vector<VideoGate::Root> roots = VideoGate::WalkRoots();
+	ObsBootstrap::CaptureRates().Tick(roots, os_gettime_ns());
 	g_lastStats = BuildStatsSnapshot();
 	EmitEvent(EventNames::kStatsChanged, g_lastStats);
 	// Piggyback the video-gate sweep on the one tick the app already runs, so scene-item
@@ -8789,7 +8796,7 @@ void SampleStatsTick()
 	// second of gating latency is invisible -- gating only stops a capture nothing is
 	// looking at -- while restoring is instant, because every consumer change reconciles
 	// on its own path.
-	VideoGate::Reconcile();
+	VideoGate::ReconcileWith(roots);
 	// After the JS push, deliberately: the Stats dock's update must not wait on a
 	// database write.
 	if (g_statsTickObserver) {
@@ -9347,7 +9354,19 @@ bool MethodStatsReset(const json & /*params*/, json &result, std::string & /*err
 	for (const MultistreamEngine::OutputStats &s : rows) {
 		g_outputStatsBaseline[s.bindingUuid] = {s.droppedFrames, s.totalFrames};
 	}
+	// The capture rows' "since reset" windows only; the session summary keeps counting.
+	ObsBootstrap::CaptureRates().ResetWindows();
 	result = json{{"ok", true}};
+	return true;
+}
+
+// Ask the host to sample capture rates for the next few seconds even with nothing
+// live. A panel showing them renews this well inside the lease; when it stops, the
+// sampler goes back to idle on its own.
+bool MethodStatsWatchCaptures(const json & /*params*/, json &result, std::string & /*error*/)
+{
+	ObsBootstrap::CaptureRates().Watch(os_gettime_ns());
+	result = json{{"ok", true}, {"leaseMs", CaptureRate::Sampler::kLeaseNs / 1000000}};
 	return true;
 }
 
@@ -15035,6 +15054,7 @@ void Init()
 		{"undo.state", MethodUndoState},
 		{"stats.get", MethodStatsGet},
 		{"stats.reset", MethodStatsReset},
+		{"stats.watchCaptures", MethodStatsWatchCaptures},
 		{"sessions.list", MethodSessionsList},
 		{"sessions.get", MethodSessionsGet},
 		{"sessions.delete", MethodSessionsDelete},

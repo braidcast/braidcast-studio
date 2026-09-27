@@ -156,3 +156,25 @@ add_test(
   COMMAND ${_target}
   WORKING_DIRECTORY "${OBS_OUTPUT_DIR}/$<CONFIG>/${OBS_EXECUTABLE_DESTINATION}"
 )
+
+# test_capture_rate: the capture-rate tracker's rules. The tracker is pure (no
+# libobs, no CEF) precisely so it can be driven second by second here; the sampler
+# that feeds it from the live graph is covered by the capture-rate stream self-test.
+set(_target test_capture_rate)
+
+add_executable(${_target} test_capture_rate.cpp "${_fe}/src/diag/capture_rate.cpp" "${_fe}/src/diag/capture_rate.hpp")
+
+target_include_directories(${_target} PRIVATE "${_fe}/src")
+target_include_directories(${_target} SYSTEM PRIVATE ${CMOCKA_INCLUDE_DIR})
+target_link_libraries(${_target} PRIVATE cmocka::cmocka)
+
+set_target_properties(
+  ${_target}
+  PROPERTIES FOLDER tests RUNTIME_OUTPUT_DIRECTORY "${OBS_OUTPUT_DIR}/$<CONFIG>/${OBS_EXECUTABLE_DESTINATION}"
+)
+
+add_test(
+  NAME ${_target}
+  COMMAND ${_target}
+  WORKING_DIRECTORY "${OBS_OUTPUT_DIR}/$<CONFIG>/${OBS_EXECUTABLE_DESTINATION}"
+)

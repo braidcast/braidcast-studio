@@ -67,6 +67,12 @@ target_sources(
     # switch) for the CEF GPU-process crash that gpu_safe_mode's boot sentinel misses.
     src/diag/gpu_diag.cpp
     src/diag/gpu_diag.hpp
+    # Per-source capture rates: the pure tracker and the sampler that feeds it from the
+    # stats tick.
+    src/diag/capture_rate.cpp
+    src/diag/capture_rate.hpp
+    src/diag/capture_rate_sampler.cpp
+    src/diag/capture_rate_sampler.hpp
     src/build_info.cpp
     src/build_info.hpp
     src/scheme.cpp
@@ -341,6 +347,8 @@ target_sources(
     # same WM_TIMER; includes obs.hpp -> /wd4201 set.
     src/overlay_audio_capture_selftest.cpp
     src/overlay_audio_capture_selftest.hpp
+    src/capture_rate_selftest.cpp
+    src/capture_rate_selftest.hpp
     # Shared summary-file path + run stamp for every BRAIDCAST_SELFTEST_STREAM mode.
     src/util/selftest_paths.cpp
     src/util/selftest_paths.hpp
@@ -599,6 +607,7 @@ set_source_files_properties(
   src/main.cpp
   src/gpu_safe_mode.cpp
   src/diag/gpu_diag.cpp
+  src/diag/capture_rate_sampler.cpp
   src/obs_bootstrap.cpp
   src/obs_importer.cpp
   src/settings/GeneralSettings.cpp
@@ -626,6 +635,7 @@ set_source_files_properties(
   src/perf_repro_selftest.cpp
   src/loopback_silence_selftest.cpp
   src/overlay_audio_capture_selftest.cpp
+  src/capture_rate_selftest.cpp
   api-impl/frontend_callbacks.cpp
   utility/CanvasDefinition.cpp
   utility/OBSCanvas.cpp

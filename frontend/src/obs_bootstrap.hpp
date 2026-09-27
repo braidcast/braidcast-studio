@@ -41,6 +41,10 @@ class PollTemplateStore;
 struct GeneralSettings;
 struct AdvancedSettings;
 
+namespace CaptureRate {
+class Sampler;
+} // namespace CaptureRate
+
 namespace History {
 class SessionStore;
 class SessionRecorder;
@@ -87,6 +91,10 @@ History::SessionStore &Sessions();
 
 // The broadcast-time writer. Valid between Start() and Stop().
 History::SessionRecorder &Recorder();
+
+// The capture-rate sampler, fed by the bridge's stats tick. Owned here rather than by
+// the bridge because a session can end during shutdown, after the bridge is gone.
+CaptureRate::Sampler &CaptureRates();
 
 // Planned broadcasts, over the same database as Sessions(). Unattached when the
 // database could not be opened, on the same terms: scheduling degrades to

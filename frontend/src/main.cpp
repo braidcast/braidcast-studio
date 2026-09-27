@@ -30,6 +30,7 @@
 #include "log.hpp"
 #include "multistream/StorePaths.hpp"
 #include "obs_bootstrap.hpp"
+#include "capture_rate_selftest.hpp"
 #include "loopback_silence_selftest.hpp"
 #include "overlay_audio_capture_selftest.hpp"
 #include "perf_repro_selftest.hpp"
@@ -80,6 +81,8 @@ constexpr SelfTestStreamMode kSelfTestStreamModes[] = {
 	 ObsBootstrap::OverlayAudioCaptureSelfTestExitCode},
 	{"overlay-audio-monitor", ObsBootstrap::ArmOverlayAudioMonitorSelfTest,
 	 ObsBootstrap::RunOverlayAudioCaptureSelfTest, ObsBootstrap::OverlayAudioCaptureSelfTestExitCode},
+	{"capture-rate", ObsBootstrap::ArmCaptureRateSelfTest, ObsBootstrap::RunCaptureRateSelfTest,
+	 ObsBootstrap::CaptureRateSelfTestExitCode},
 };
 
 // The armed mode, or nullptr. Set once during startup, read on the UI thread only.
