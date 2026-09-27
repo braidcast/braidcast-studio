@@ -159,13 +159,11 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     requestAnimationFrame(reportRect);
   }
 
-  // ---- canvas geometry (stage res chip + aspect) -----------------------------
-  // Display-only read: the mock stage needs the canvas resolution (res chip) and
-  // aspect (9:16 vertical vs 16:9). CanvasDock receives only uuid+name, so look
-  // this canvas up in canvas.list and refresh on canvas.changed. Nothing in the
-  // scene/source/preview path depends on it.
+  // ---- canvas geometry (stage res chip) --------------------------------------
+  // Display-only read: the stage's res chip needs the canvas resolution.
+  // CanvasDock receives only uuid+name, so look this canvas up in canvas.list and
+  // refresh on canvas.changed. Nothing in the scene/source/preview path depends on it.
   let canvasInfo = $derived(canvasStore.byUuid(canvasUuid) ?? null);
-  let vertical = $derived(!!canvasInfo && canvasInfo.outputHeight > canvasInfo.outputWidth);
   let resText = $derived(canvasInfo ? canvasInfo.outputWidth + " × " + canvasInfo.outputHeight : "");
 
   // ---- scenes (this canvas's own scene list) ---------------------------------
@@ -983,7 +981,7 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     const offStatus = multistreamStatusStore.subscribe();
 
     reportRect();
-    // Observe BOTH the stage and the whole dock body: the stage catches aspect/size
+    // Observe BOTH the stage and the whole dock body: the stage catches size
     // changes; the dock body catches resizes/relayouts that move the stage without
     // changing its own box (splitter drags elsewhere, dock re-tiling). Both feed the
     // rAF-coalesced scheduler so a resize burst collapses to one send per frame.
@@ -1166,14 +1164,13 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
 </script>
 
 <div class="dock-body" bind:this={dockBodyEl}>
-  <!-- Stage: aspect-correct surface the native overlay paints through; the chips
+  <!-- Stage: the whole preview area, which the native overlay paints through; the chips
        are the mock's stage overlays (res top-left, LIVE top-right, scene label
        bottom-left). pointer-events:none so they never intercept overlay input. -->
   <div class="stage-area">
     <!-- onwheel forwards to the host's zoom; see the same handler in PreviewDock. -->
     <div
       class="stage"
-      class:vertical
       class:active={stageCovered}
       bind:this={previewEl}
       onwheel={(e) => previewEl && forwardPreviewWheel(previewEl, e, canvasUuid)}
@@ -1357,21 +1354,19 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
     flex: 1;
     min-height: 0;
     display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 12px;
     background: var(--color-base);
   }
   /* The native overlay HWND paints this exact element; stays transparent so the
-     video shows through. Aspect: 16:9 by default, 9:16 for a vertical canvas. */
+     video shows through. It fills the area rather than taking the canvas's aspect:
+     the host fits the canvas inside with a margin and draws overflow, selection
+     boxes and handles in whatever surface is left around it, so a canvas-shaped
+     stage leaves an item's out-of-canvas edges only that margin to draw in. */
   .stage {
     position: relative;
+    flex: 1;
+    min-width: 0;
     background: transparent;
-    box-shadow: 0 0 0 1px var(--color-border);
-    width: 100%;
-    aspect-ratio: 16 / 9;
-    max-width: 100%;
-    max-height: 100%;
+    box-shadow: inset 0 0 0 1px var(--color-border);
   }
   /* Whatever paints the stage — the native surface or the held still — covers the
      whole of it, so drop the DOM outline; otherwise it lingers as a ghost frame
@@ -1379,12 +1374,6 @@ import { dockLayout } from "$lib/docking/dockLayoutSignal.svelte";
      returns as the placeholder frame only when the stage is genuinely empty. */
   .stage.active {
     box-shadow: none;
-  }
-  .stage.vertical {
-    width: auto;
-    height: 100%;
-    aspect-ratio: 9 / 16;
-    max-height: 100%;
   }
   .res-chip {
     position: absolute;
