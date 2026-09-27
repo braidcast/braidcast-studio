@@ -76,11 +76,13 @@ describe("createLayoutPersister", () => {
   let nextId = 1;
   let layout: { grid: string; activeGroup?: string };
   let written: string[];
+  let writeOk: boolean;
 
   beforeEach(() => {
     timers = new Map();
     layout = { grid: "default", activeGroup: "1" };
     written = [];
+    writeOk = true;
     (globalThis as Record<string, unknown>).setTimeout = (fn: () => void) => {
       timers.set(nextId, fn);
       return nextId++;
@@ -92,19 +94,25 @@ describe("createLayoutPersister", () => {
     globalThis.clearTimeout = realClearTimeout;
   });
 
-  function elapse(): void {
+  // Fires the pending save and lets its write settle.
+  async function elapse(): Promise<void> {
     const due = [...timers.values()];
     timers.clear();
     for (const fn of due) {
       fn();
     }
+    await Promise.resolve();
+    await Promise.resolve();
   }
 
   // As StudioPage sets it up after a restore: the layout on screen is the baseline.
   function persister(trustGestures = true) {
     const p = createLayoutPersister(
       () => layout as never,
-      (s) => written.push(s),
+      async (s) => {
+        written.push(s);
+        return writeOk;
+      },
     );
     p.settle();
     if (trustGestures) p.allowGestures();
@@ -115,61 +123,87 @@ describe("createLayoutPersister", () => {
     p.changed();
   }
 
-  test("a restore or fallback default is never written before the user arms it", () => {
+  test("a restore or fallback default is never written before the user arms it", async () => {
     const p = persister();
     change({ grid: "reconciled" }, p);
-    elapse();
+    await elapse();
     expect(written).toEqual([]);
   });
 
-  test("once armed, a burst of changes is one trailing save of the latest layout", () => {
+  test("once armed, a burst of changes is one trailing save of the latest layout", async () => {
     const p = persister();
     p.armFromGesture();
     change({ grid: "a" }, p);
     change({ grid: "b" }, p);
-    elapse();
+    await elapse();
     expect(written.map((w) => JSON.parse(w).grid)).toEqual(["b"]);
   });
 
-  test("a group taking focus is no reason to write", () => {
+  test("a group taking focus is no reason to write", async () => {
     const p = persister();
     p.armExplicit();
     change({ activeGroup: "2" }, p);
-    elapse();
+    await elapse();
     expect(written).toEqual([]);
     change({ grid: "moved", activeGroup: "3" }, p);
-    elapse();
+    await elapse();
     expect(JSON.parse(written[0])).toEqual({ grid: "moved", activeGroup: "3" }); // saved whole
   });
 
-  test("an unchanged arrangement is not written twice", () => {
+  test("an unchanged arrangement is not written twice", async () => {
     const p = persister();
     p.armExplicit();
     change({ grid: "x" }, p);
-    elapse();
+    await elapse();
     change({ activeGroup: "9" }, p);
-    elapse();
+    await elapse();
     expect(written.length).toBe(1);
   });
 
-  test("with a failed layout not copied aside, gestures cannot arm; explicit actions can", () => {
+  test("with a failed layout not copied aside, gestures cannot arm; explicit actions can", async () => {
     const p = persister(false);
     p.armFromGesture();
     change({ grid: "dragged" }, p);
-    elapse();
+    await elapse();
     expect(written).toEqual([]);
     p.armExplicit();
     change({ grid: "reset" }, p);
-    elapse();
+    await elapse();
     expect(written.length).toBe(1);
   });
 
-  test("dispose drops a pending save", () => {
+  test("a failed write is retried for the same arrangement", async () => {
+    const p = persister();
+    p.armExplicit();
+    writeOk = false;
+    change({ grid: "x" }, p);
+    await elapse();
+    writeOk = true;
+    change({ activeGroup: "2" }, p); // same arrangement: only focus moved
+    await elapse();
+    expect(written.map((w) => JSON.parse(w).grid)).toEqual(["x", "x"]);
+    change({ activeGroup: "3" }, p); // now saved, so no third write
+    await elapse();
+    expect(written.length).toBe(2);
+  });
+
+  test("Reset always writes, even when it rebuilds the baseline", async () => {
+    const p = persister(false); // a failed restore with no copy: the baseline is the default
+    p.armRewrite();
+    change({ grid: "default" }, p); // Reset rebuilt that same default
+    await elapse();
+    expect(written.map((w) => JSON.parse(w).grid)).toEqual(["default"]);
+    change({ activeGroup: "2" }, p); // the rewrite was one-shot
+    await elapse();
+    expect(written.length).toBe(1);
+  });
+
+  test("dispose drops a pending save", async () => {
     const p = persister();
     p.armExplicit();
     change({ grid: "y" }, p);
     p.dispose();
-    elapse();
+    await elapse();
     expect(written).toEqual([]);
   });
 });

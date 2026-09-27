@@ -527,7 +527,7 @@ import { EV } from "$lib/utils/eventNames";
   // focuses its group, which Dockview reports as a layout change too.
   const layoutPersister = createLayoutPersister(
     () => api?.toJSON() ?? null,
-    (layout) => void layoutStore.write(layout),
+    (layout) => layoutStore.write(layout),
   );
   const DOCK_CHROME = ".dv-sash, .dv-tabs-and-actions-container";
   function armFromDockChrome(e: Event): void {
@@ -624,7 +624,7 @@ import { EV } from "$lib/utils/eventNames";
 
   function resetLayout(): void {
     if (!api) return;
-    armLayoutPersistence();
+    layoutPersister.armRewrite();
     // A fresh default shows every output-gated canvas: drop the user-hidden set
     // before rebuilding so eye-hidden canvases reappear.
     clearCanvasUserHidden();

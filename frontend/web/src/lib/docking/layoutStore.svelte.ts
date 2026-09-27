@@ -14,8 +14,13 @@ export interface LayoutPersister {
   /** A user gesture on the dock chrome (a sash, a tab strip). Arms unless gestures are
    * not trusted yet -- see allowGestures. */
   armFromGesture(): void;
-  /** An explicit layout action (open/close a dock, reset, detach, redock). Always arms. */
+  /** An explicit layout action (open/close a dock, detach, redock). Always arms. Reset
+   * uses armRewrite. */
   armExplicit(): void;
+  /** Reset: arms, and the next save is written even when the arrangement matches the
+   * baseline -- after a failed restore the baseline is the default that Reset rebuilds,
+   * and Reset is the user saying "this, from now on". */
+  armRewrite(): void;
   /** Lets gestures arm. Withheld until the saved layout is restored, or is safely copied
    * aside; while it is withheld only an explicit action can overwrite layout.json. */
   allowGestures(): void;
@@ -38,23 +43,28 @@ const arrangement = (layout: SerializedDockview): string => JSON.stringify({ ...
 // layout.json into layout.json.bak -- so saving a fallback default would push the
 // user's saved layout out to .bak, and the next save out of existence. Changes after
 // arming are coalesced (one per addPanel while a layout is assembled) into a single
-// trailing save, skipped when the arrangement is what was last saved or settled.
+// trailing save, skipped when the arrangement is what was last saved or settled. Only a
+// write that succeeded counts as saved, so a failed one is retried on the next change.
 export function createLayoutPersister(
   snapshot: () => SerializedDockview | null,
-  write: (layout: string) => void,
+  write: (layout: string) => Promise<boolean>,
   delayMs = 250,
 ): LayoutPersister {
   let armed = false;
   let gestures = false;
+  let rewrite = false;
   let last: string | null = null;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const flush = (): void => {
+  const flush = async (): Promise<void> => {
     const layout = snapshot();
     if (!layout) return;
     const key = arrangement(layout);
-    if (key === last) return;
-    last = key;
-    write(JSON.stringify(layout));
+    if (key === last && !rewrite) return;
+    const forced = rewrite;
+    if (await write(JSON.stringify(layout))) {
+      last = key;
+      if (forced) rewrite = false;
+    }
   };
   return {
     armFromGesture(): void {
@@ -62,6 +72,10 @@ export function createLayoutPersister(
     },
     armExplicit(): void {
       armed = true;
+    },
+    armRewrite(): void {
+      armed = true;
+      rewrite = true;
     },
     allowGestures(): void {
       gestures = true;
@@ -73,7 +87,7 @@ export function createLayoutPersister(
     changed(): void {
       if (!armed) return;
       clearTimeout(timer);
-      timer = setTimeout(flush, delayMs);
+      timer = setTimeout(() => void flush(), delayMs);
     },
     dispose(): void {
       clearTimeout(timer);
@@ -82,11 +96,14 @@ export function createLayoutPersister(
 }
 
 export const layoutStore = {
-  async write(layout: string): Promise<void> {
+  // Whether the layout reached disk. A failure is non-fatal: the layout stays live in
+  // memory, and the persister tries again on the next change.
+  async write(layout: string): Promise<boolean> {
     try {
       await obs.call("layout.save", { layout });
+      return true;
     } catch {
-      // non-fatal: layout still live in-memory
+      return false;
     }
   },
 
