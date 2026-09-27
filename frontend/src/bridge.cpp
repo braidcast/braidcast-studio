@@ -8786,9 +8786,20 @@ void SampleStatsTick()
 		return;
 	}
 	// One walk of the render roots per tick, shared by the capture-rate sampler and the
-	// video gate so they cannot disagree about what reaches what.
-	const std::vector<VideoGate::Root> roots = VideoGate::WalkRoots();
-	ObsBootstrap::CaptureRates().Tick(roots, os_gettime_ns());
+	// video gate so they cannot disagree about what reaches what, and none at all
+	// when neither wants it.
+	const uint64_t now = os_gettime_ns();
+	CaptureRate::Sampler &rates = ObsBootstrap::CaptureRates();
+	const bool sampleRates = rates.WantsSample(now);
+	std::vector<VideoGate::Root> roots;
+	if (sampleRates || VideoGate::Armed()) {
+		roots = VideoGate::WalkRoots();
+	}
+	if (sampleRates) {
+		rates.Sample(roots, now);
+	} else {
+		rates.Idle();
+	}
 	g_lastStats = BuildStatsSnapshot();
 	EmitEvent(EventNames::kStatsChanged, g_lastStats);
 	// Piggyback the video-gate sweep on the one tick the app already runs, so scene-item

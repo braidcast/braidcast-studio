@@ -84,14 +84,14 @@ void UngateAll()
 	g_gated.clear();
 }
 
+} // namespace
+
 // No predicate means the runtime that owns it is gone (teardown) or not yet built,
 // and either way nothing can be judged idle.
-bool GateArmed()
+bool Armed()
 {
 	return GateEnabled() && g_mainActiveFn;
 }
-
-} // namespace
 
 void SetMainActivePredicate(std::function<bool()> fn)
 {
@@ -137,7 +137,7 @@ std::vector<Root> WalkRoots()
 
 void Reconcile()
 {
-	if (!GateArmed()) {
+	if (!Armed()) {
 		UngateAll();
 		return;
 	}
@@ -146,7 +146,7 @@ void Reconcile()
 
 void ReconcileWith(const std::vector<Root> &roots)
 {
-	if (!GateArmed()) {
+	if (!Armed()) {
 		UngateAll();
 		return;
 	}

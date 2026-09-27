@@ -34,9 +34,15 @@ bool HoldsSource(obs_weak_source_t *weak, obs_source_t *source);
 // UI thread only.
 class Sampler {
 public:
-	// Samples the sources `roots` reach, if a live output or a lease wants it;
-	// otherwise forgets the previous sample so the next one starts clean.
-	void Tick(const std::vector<VideoGate::Root> &roots, uint64_t nowNs);
+	// Whether this tick samples: an output is live or a lease holds.
+	bool WantsSample(uint64_t nowNs) const;
+
+	// Samples the sources `roots` reach. For a tick WantsSample accepted.
+	void Sample(const std::vector<VideoGate::Root> &roots, uint64_t nowNs);
+
+	// A tick WantsSample declined: forget the previous sample so the next one
+	// starts clean.
+	void Idle();
 
 	// The last sample's rows, shaped for stats.get; an empty array while idle.
 	nlohmann::json Payload() const;
@@ -72,7 +78,6 @@ private:
 	};
 
 	bool CanvasLive(const std::string &canvasUuid) const;
-	bool WantsSample(uint64_t nowNs) const;
 
 	Tracker tracker_;
 	std::map<std::string, Held> held_;

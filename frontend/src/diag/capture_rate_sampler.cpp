@@ -99,17 +99,17 @@ bool Sampler::WantsSample(uint64_t nowNs) const
 	return nowNs < leaseUntilNs_ || (ObsBootstrap::MultistreamAlive() && ObsBootstrap::Multistream().AnyLive());
 }
 
-void Sampler::Tick(const std::vector<VideoGate::Root> &roots, uint64_t nowNs)
+void Sampler::Idle()
 {
-	if (!WantsSample(nowNs)) {
-		if (lastSampleNs_) {
-			tracker_.Pause();
-			held_.clear();
-			lastSampleNs_ = 0;
-		}
-		return;
+	if (lastSampleNs_) {
+		tracker_.Pause();
+		held_.clear();
+		lastSampleNs_ = 0;
 	}
+}
 
+void Sampler::Sample(const std::vector<VideoGate::Root> &roots, uint64_t nowNs)
+{
 	struct Pending {
 		OBSSource source;
 		std::vector<Reach> reach;

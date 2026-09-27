@@ -53,6 +53,10 @@ struct Root {
 // disagree about what reaches what.
 std::vector<Root> WalkRoots();
 
+// Whether gating runs at all: enabled, and the Default canvas's consumer
+// predicate registered. While it is not, ReconcileWith needs no walk.
+bool Armed();
+
 // Recompute the gated set from a walk. Idempotent, and cheap enough to call on
 // every consumer change as well as from the periodic sweep.
 void ReconcileWith(const std::vector<Root> &roots);
