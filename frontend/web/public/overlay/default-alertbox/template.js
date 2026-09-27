@@ -52,6 +52,16 @@ const BURST_EXTRA_MS = 8000;
 const CARD_FLOOR_MS = 350;
 // A "+N more" card is only worth it when it stands in for at least this many alerts.
 const MIN_SUMMARIZED = 2;
+// Bursts that may wait behind the one on the deck. Past this, an event of a burst group joins
+// the newest waiting burst of its group whatever the burst window says, so a follow or bot
+// storm stays one burst however long it runs; only a group with nothing waiting adds a burst.
+// A type that plays alone (a `null` BURST_GROUP: tips and raids) is capped separately, below.
+// Nothing is dropped either way -- a big merged burst ends on its "+N more" card instead.
+const MAX_WAITING = 3;
+// Cards of one play-alone type that may wait, each whole, so whoever paid still gets their
+// own card. Past this, more of that type fold into one waiting "+N more" card for the type,
+// so a storm of one-bit cheers still ends in bounded time.
+const MAX_ALONE_WAITING = 10;
 // Outlasts the deck's 320 ms hide transition in template.css.
 const HIDE_MS = 360;
 // Removes an exiting card if its animationend never arrives. Longer than every exit
@@ -100,9 +110,41 @@ OBSOverlay.onEvent((e) => {
       return;
     }
   }
-  queue.push({ group, events: [e], lastAt: now, startAt: 0, front: 0, frontAt: 0, summaryFrom: -1, leaving: false });
+  if (group !== null && queue.length >= MAX_WAITING) {
+    for (let i = queue.length - 1; i >= 0; i--) {
+      if (queue[i].group === group) {
+        queue[i].events.push(e);
+        queue[i].lastAt = now;
+        return;
+      }
+    }
+  }
+  const alone = group === null ? aloneBacklog(e.type) : null;
+  if (alone?.overflow) {
+    alone.overflow.events.push(e);
+    alone.overflow.lastAt = now;
+    alone.overflow.summaryFrom = 0;
+    return;
+  }
+  const overflow = alone?.full === true;
+  queue.push({ group, overflow, events: [e], lastAt: now, startAt: 0, front: 0, frontAt: 0, summaryFrom: -1, leaving: false });
   if (!current) next();
 });
+
+// A play-alone type's waiting backlog: its overflow burst if one waits, and whether its whole
+// cards have reached MAX_ALONE_WAITING -- then a new one starts the overflow burst, which
+// shows as one "+N more" card once it holds two (a lone one still shows whole). It waits
+// behind every whole card of its type, so those all play first.
+function aloneBacklog(type) {
+  let whole = 0;
+  let overflow = null;
+  for (const b of queue) {
+    if (b.group !== null || b.events[0].type !== type) continue;
+    if (b.overflow) overflow = b;
+    else whole++;
+  }
+  return { overflow, full: whole >= MAX_ALONE_WAITING };
+}
 
 const actorLabel = (e) => e.actorName || "Someone";
 
@@ -139,7 +181,8 @@ const intervalMs = () => Math.max(CARD_FLOOR_MS, (seconds("cardInterval") || DEF
 // budget is spent -- unless a "+N more" card already stands at its end, which absorbs any
 // number of latecomers without adding a moment to the burst. Nothing joins once another
 // burst is waiting: alerts play in arrival order, so a latecomer never pushes back an alert
-// that came before it.
+// that came before it. (Past MAX_WAITING the waiting queue gives that order up for the burst
+// groups, to bound their wait; see onEvent.)
 function canJoin(b, group, now) {
   return (
     queue.length === 0 &&
