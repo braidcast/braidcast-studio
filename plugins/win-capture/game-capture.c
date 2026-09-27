@@ -146,6 +146,7 @@ struct game_capture {
 	bool showing;
 	bool active;
 	bool capturing;
+	bool hook_ready_seen;
 	bool activate_hook;
 	bool process_is_64bit;
 	bool error_acquiring;
@@ -316,9 +317,18 @@ static void stop_capture(struct game_capture *gc)
 {
 	ipc_pipe_server_free(&gc->pipe);
 
-	if (gc->hook_stop) {
+	/* The hook reads stop only while active; raised against an inactive hook
+	 * it lingers and ends whichever attempt reads it next. A pending ready means
+	 * the hook went active unseen, and consuming it is harmless as we are ending.
+	 * A hook still mid-init misses the stop, but its 5 s keepalive check frees it
+	 * once no capture holds the keepalive mutex. */
+	if (gc->hook_stop && (gc->hook_ready_seen || object_signalled(gc->hook_ready))) {
 		SetEvent(gc->hook_stop);
+	} else if (gc->hook_stop) {
+		debug("hook never signalled ready, not signalling stop");
 	}
+	gc->hook_ready_seen = false;
+
 	if (gc->global_hook_info) {
 		UnmapViewOfFile(gc->global_hook_info);
 		gc->global_hook_info = NULL;
@@ -1748,7 +1758,12 @@ static void game_capture_tick(void *data, float seconds)
 		gc->retry_time = 10.0f * hook_rate_to_float(gc->config.hook_rate);
 	}
 
-	if (gc->hook_stop && object_signalled(gc->hook_stop)) {
+	/* graphics-hook never raises the stop signal; every one comes from some
+	 * game capture's stop_capture and is meant for the hook. Until this attempt
+	 * has seen ready, a pending one belongs to an earlier attempt and must not
+	 * end this one. hook_ready_seen approximates the hook's own active-only
+	 * gate from our side and can lag the hook's real state. */
+	if (gc->hook_ready_seen && object_signalled(gc->hook_stop)) {
 		debug("hook stop signal received");
 		stop_capture(gc);
 	}
@@ -1778,6 +1793,12 @@ static void game_capture_tick(void *data, float seconds)
 
 	if (gc->hook_ready && object_signalled(gc->hook_ready)) {
 		debug("capture initializing!");
+
+		/* A stop still pending was raised before this ready was seen and would
+		 * only restart the hook. Clients that open the hook pipe before its
+		 * events, as this file does, cannot raise one while we hold the pipe. */
+		ResetEvent(gc->hook_stop);
+		gc->hook_ready_seen = true;
 		enum capture_result result = init_capture_data(gc);
 
 		if (result == CAPTURE_SUCCESS) {
