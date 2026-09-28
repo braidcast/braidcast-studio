@@ -9691,6 +9691,86 @@ void ObsBootstrap::RunMcpSelfTest()
 	}
 
 	server.Stop();
+
+	RunMcpUnreadableConfigSelfTest();
+}
+
+// An mcp.json that can't be parsed (#30) is copied aside once and never saved over, however
+// many times the server loads it. Runs in the self-test config dir, then restores mcp.json
+// and its .bak as it found them and removes the copies it made.
+void ObsBootstrap::RunMcpUnreadableConfigSelfTest()
+{
+	namespace fs = std::filesystem;
+	const std::string path = MultistreamBasicPath("mcp.json");
+	const fs::path file = fs::u8path(path);
+	const fs::path bak = fs::u8path(path + ".bak");
+	const std::optional<std::string> savedFile = FileUtil::ReadUtf8File(path);
+	const std::optional<std::string> savedBak = FileUtil::ReadUtf8File(path + ".bak");
+	auto copies = [&] {
+		std::set<fs::path> found;
+		std::error_code ec;
+		for (fs::directory_iterator it(file.parent_path(), ec), end; !ec && it != end; it.increment(ec)) {
+			if (it->path().filename().u8string().rfind("mcp.failed-", 0) == 0) {
+				found.insert(it->path());
+			}
+		}
+		return found;
+	};
+	auto restore = [](const fs::path &target, const std::optional<std::string> &bytes) {
+		std::error_code ec;
+		if (bytes) {
+			std::ofstream(target, std::ios::out | std::ios::binary) << *bytes;
+		} else {
+			fs::remove(target, ec);
+		}
+	};
+
+	const std::set<fs::path> before = copies();
+	// Different bytes in each, so the check can tell which one was kept: libobs moves the
+	// .bak over an unparseable mcp.json before giving up, so the .bak's bytes are expected.
+	const std::string badFile = "{ not json";
+	const std::string badBak = "{ not json either";
+	std::ofstream(file, std::ios::out | std::ios::binary) << badFile;
+	std::ofstream(bak, std::ios::out | std::ios::binary) << badBak;
+
+	{
+		McpServer first;
+	}
+	std::set<fs::path> made;
+	for (const fs::path &p : copies()) {
+		if (!before.count(p)) {
+			made.insert(p);
+		}
+	}
+	std::string kept;
+	const bool keptOk = made.size() == 1 && FileUtil::ReadBinaryFile(*made.begin(), kept) && kept == badBak;
+	// Copy names carry a one-second stamp, so a second load that skipped the identical-copy
+	// check would overwrite the first copy unseen. Under a stamp-free name it would add one.
+	std::error_code ec;
+	if (made.size() == 1) {
+		const fs::path renamed = file.parent_path() / fs::u8path("mcp.failed-selftest.json");
+		fs::rename(*made.begin(), renamed, ec);
+		made = {ec ? *made.begin() : renamed};
+	}
+	{
+		McpServer second;
+	}
+	std::string onDisk;
+	const bool untouched = FileUtil::ReadUtf8File(path, onDisk) && onDisk == badBak;
+	const bool noSecondCopy = !ec && copies().size() == before.size() + made.size();
+
+	for (const fs::path &p : copies()) {
+		if (!before.count(p)) {
+			fs::remove(p, ec);
+		}
+	}
+	restore(file, savedFile);
+	restore(bak, savedBak);
+
+	const bool ok = keptOk && untouched && noSecondCopy;
+	HostLog(std::string("[selftest] mcp unreadable config -> ") + (ok ? "PASS" : "FAIL") + " (copied aside once=" +
+		(keptOk ? "true" : "false") + ", mcp.json not saved over=" + (untouched ? "true" : "false") +
+		", second load reused the copy=" + (noSecondCopy ? "true" : "false") + ")");
 }
 
 void ObsBootstrap::RunDevToolsPortSelfTest()

@@ -10175,45 +10175,25 @@ bool MethodLayoutLoad(const json & /*params*/, json &result, std::string & /*err
 
 // The shell could not apply the saved layout, so it runs on the default in memory and
 // stops writing until the user changes the layout. Keep what was saved regardless: copy
-// it beside the original as layout.failed-<local time>.json, touching neither
-// layout.json nor its .bak. layout.load has already moved a readable .bak over an
-// unparseable layout.json (obs_data_create_from_json_file_safe), so layout.json holds what
-// the page tried; the .bak is read only when layout.json is missing. A layout that fails
-// on every launch is copied once: an identical earlier copy is reported instead.
+// it beside the original as layout.failed-<local time>.json (KeepUnusableStoreFile).
+// layout.load has already moved any .bak over an unparseable layout.json
+// (obs_data_create_from_json_file_safe), so layout.json holds what the page tried.
 bool MethodLayoutQuarantine(const json & /*params*/, json &result, std::string &error)
 {
-	namespace fs = std::filesystem;
 	const std::string path = MultistreamBasicPath("layout.json");
 	if (path.empty()) {
 		error = "failed to resolve layout.json";
 		return false;
 	}
-	const fs::path saved = fs::u8path(path);
-	std::string bytes;
-	if (!FileUtil::ReadBinaryFile(saved, bytes) && !FileUtil::ReadBinaryFile(fs::u8path(path + ".bak"), bytes)) {
-		result = json{{"file", ""}};
-		return true;
-	}
-
-	const std::string prefix = "layout.failed-";
-	std::error_code ec;
-	for (fs::directory_iterator it(saved.parent_path(), ec), end; !ec && it != end; it.increment(ec)) {
-		const std::string name = it->path().filename().u8string();
-		std::string existing;
-		if (name.rfind(prefix, 0) == 0 && FileUtil::ReadBinaryFile(it->path(), existing) && existing == bytes) {
-			result = json{{"file", name}};
-			return true;
-		}
-	}
-
-	const std::string name = prefix + TimeUtil::LocalFileStamp() + ".json";
-	std::ofstream out(saved.parent_path() / fs::u8path(name), std::ios::out | std::ios::binary);
-	if (!(out << bytes) || !out.flush()) {
-		error = "failed to write " + name;
+	const std::optional<KeptStoreCopy> kept = KeepUnusableStoreFile(path, "layout.failed-");
+	if (!kept) {
+		error = "failed to write a copy of layout.json";
 		return false;
 	}
-	HostLog("[bridge] layout.quarantine: saved layout failed to restore, copied to " + name);
-	result = json{{"file", name}};
+	if (kept->fresh) {
+		HostLog("[bridge] layout.quarantine: saved layout failed to restore, copied to " + kept->name);
+	}
+	result = json{{"file", kept->name}};
 	return true;
 }
 

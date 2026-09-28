@@ -599,9 +599,11 @@ void RunScheduleSelfTest();
 // HandleRequest, no real socket), then drive initialize / tools/list / a
 // tools/call obs_call(scenes.list) and assert the round-trips, plus a go-live
 // gating check (allowGoLive=false blocks multistream.startOutput before it
-// executes). Touches no config file (StartForTest does not Save). Gated by the
-// caller to the smoke path.
+// executes). StartForTest does not Save; RunMcpUnreadableConfigSelfTest, run at the
+// end, writes a bad mcp.json and .bak, then restores both and removes the copies it
+// made. Gated by the caller to the smoke path.
 void RunMcpSelfTest();
+void RunMcpUnreadableConfigSelfTest();
 // Headless proof for the CEF remote-debugging gate: assert the environment-only
 // opt-in resolves closed when nothing names it, that DevToolsPort::Active() (what
 // main.cpp handed CefSettings) agrees with a fresh resolution, and that

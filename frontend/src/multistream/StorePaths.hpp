@@ -4,6 +4,7 @@
 
 #include <nlohmann/json_fwd.hpp>
 
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -67,6 +68,19 @@ nlohmann::json LoadStoreJson(const std::string &absPath);
 // Persist `root` to `absPath` through SaveJsonAtomic and ReportSaveResult: the
 // whole save envelope a store's Save() is, minus the model-to-JSON step.
 bool SaveStoreJson(const nlohmann::json &root, const std::string &absPath);
+
+// A store file the app found but could not use, kept beside the original so that a
+// later save of the fallback cannot destroy it.
+struct KeptStoreCopy {
+	std::string name;   // the copy's file name; empty when neither file could be read
+	bool fresh = false; // false when an identical earlier copy was reused
+};
+
+// Copy the store file at `absPath` beside it as <prefix><local time>.json, touching
+// neither it nor its ".bak". The ".bak" is read only when the file itself can't be. A
+// file that fails on every launch is copied once: an identical earlier copy is reported
+// instead. nullopt only when the copy could not be written.
+std::optional<KeptStoreCopy> KeepUnusableStoreFile(const std::string &absPath, const std::string &prefix);
 
 // Wrap `arr` as the sole `key` member of a JSON object -- the envelope shape every
 // array-backed store file on disk holds. Does not take ownership of `arr`.

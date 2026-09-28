@@ -11,7 +11,9 @@
 
 #include "../log.hpp"
 #include "../util/env_config.hpp"
+#include "../util/file_util.hpp"
 #include "../util/paths.hpp"
+#include "../util/time_util.hpp"
 
 namespace {
 
@@ -137,6 +139,36 @@ bool ReportSaveResult(bool saved, const std::string &path)
 		HostLog("[storage] failed to save " + path);
 	}
 	return saved;
+}
+
+std::optional<KeptStoreCopy> KeepUnusableStoreFile(const std::string &absPath, const std::string &prefix)
+{
+	namespace fs = std::filesystem;
+	const fs::path saved = fs::u8path(absPath);
+	std::string bytes;
+	if (!FileUtil::ReadBinaryFile(saved, bytes) && !FileUtil::ReadBinaryFile(fs::u8path(absPath + ".bak"), bytes)) {
+		return KeptStoreCopy{};
+	}
+
+	std::error_code ec;
+	for (fs::directory_iterator it(saved.parent_path(), ec), end; !ec && it != end; it.increment(ec)) {
+		const std::string name = it->path().filename().u8string();
+		std::string existing;
+		if (name.rfind(prefix, 0) == 0 && FileUtil::ReadBinaryFile(it->path(), existing) && existing == bytes) {
+			return KeptStoreCopy{name, false};
+		}
+	}
+
+	const std::string name = prefix + TimeUtil::LocalFileStamp() + ".json";
+	const fs::path target = saved.parent_path() / fs::u8path(name);
+	std::ofstream out(target, std::ios::out | std::ios::binary);
+	if (!(out << bytes) || !out.flush()) {
+		// A truncated copy left behind would read as a faithful one to whoever finds it.
+		out.close();
+		fs::remove(target, ec);
+		return std::nullopt;
+	}
+	return KeptStoreCopy{name, true};
 }
 
 nlohmann::json LoadStoreJson(const std::string &absPath)
