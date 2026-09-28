@@ -1,6 +1,7 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import { obs, type ChatMessage, type ChatPaid, type ChatSendParams } from "$lib/api/bridge";
+  import { FEED_PAGE_MAX, fetchAllPages } from "$lib/api/feedPages";
   import { EV } from "$lib/utils/eventNames";
   import Button from "$lib/ui/Button.svelte";
   import { PLATFORM_COLORS, platformChipColor, platformKey, platformName } from "$lib/theme/platformColors";
@@ -582,8 +583,9 @@
     const intake = new ChatIntake(feed);
     let disposed = false;
     const offMsg = obs.on(EV.chatMessage, (m) => intake.live(m));
-    obs
-      .call("chat.list")
+    fetchAllPages<ChatMessage>((before) =>
+      obs.call("chat.list", { before: before && { seq: before.seq }, limit: FEED_PAGE_MAX }),
+    )
       .catch(() => [])
       .then((list) => {
         if (!disposed) {

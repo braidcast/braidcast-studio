@@ -175,7 +175,8 @@ void ChatHub::Start()
 				// fallback id for any chat.message lacking one, so the frontend's
 				// keyed list never throws each_key_duplicate. Real ids are left
 				// untouched (dedupe relies on them); the monotonic seq guarantees
-				// uniqueness even within a single frame.
+				// uniqueness within a launch and the launch id across launches,
+				// where idSeq_ starts over at 0.
 				auto id = body.find("id");
 				const bool missing = id == body.end() || !id->is_string() ||
 						     id->get<std::string>().empty();
@@ -187,11 +188,13 @@ void ChatHub::Start()
 						tsStr = std::to_string(tsIt->get<long long>());
 					}
 					const uint64_t seq = idSeq_.fetch_add(1, std::memory_order_relaxed);
-					body["id"] = platform + ":" + tsStr + ":" + std::to_string(seq);
+					body["id"] =
+						platform + ":" + LaunchId() + ":" + tsStr + ":" + std::to_string(seq);
 				}
 				// Into the scrollback, which is also the dedupe: a message this
 				// destination already delivered stops here, before the overlay and
-				// the docks see it a second time.
+				// the docks see it a second time. An admitted one comes back stamped
+				// with its admission seq and receipt time.
 				if (!History().Add(dest, body)) {
 					DBG(LogCat::Chat, "chat message dropped (duplicate): %s",
 					    body.value("id", std::string()).c_str());

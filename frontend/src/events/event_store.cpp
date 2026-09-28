@@ -6,13 +6,24 @@
 #include <obs.hpp>
 #include <util/platform.h>
 
+#include <algorithm>
+
 namespace Events {
 
 namespace {
 
-// Rebuild a NormalizedEvent from its ToJson() shape. Every optional field defaults
-// to empty/zero (ToJson omits them), so a follow event round-trips without stray
-// keys and an older/newer file with missing fields loads cleanly.
+// (ts, id) order, the order events.list pages in. std::string compares bytes as unsigned
+// char, so a UTF-8 id sorts by code point.
+bool SortsBefore(int64_t aTs, const std::string &aId, int64_t bTs, const std::string &bId)
+{
+	return aTs < bTs || (aTs == bTs && aId < bId);
+}
+
+} // namespace
+
+// Every optional field defaults to empty/zero (ToJson omits them), so a follow event
+// round-trips without stray keys and an older/newer file with missing fields loads
+// cleanly.
 NormalizedEvent EventFromJson(const json &j)
 {
 	NormalizedEvent ev;
@@ -23,6 +34,8 @@ NormalizedEvent EventFromJson(const json &j)
 	ev.platform = j.value("platform", std::string());
 	ev.type = j.value("type", std::string());
 	ev.ts = j.value("ts", static_cast<int64_t>(0));
+	ev.accountId = j.value("accountId", std::string());
+	ev.profileUuid = j.value("profileUuid", std::string());
 	ev.actorName = j.value("actorName", std::string());
 	ev.actorColor = j.value("actorColor", std::string());
 	ev.amount = j.value("amount", static_cast<int64_t>(0));
@@ -33,8 +46,6 @@ NormalizedEvent EventFromJson(const json &j)
 	ev.message = j.value("message", std::string());
 	return ev;
 }
-
-} // namespace
 
 std::string EventStore::FilePath()
 {
@@ -83,7 +94,41 @@ std::vector<NormalizedEvent> EventStore::List() const
 	return std::vector<NormalizedEvent>(events_.rbegin(), events_.rend()); // newest-first
 }
 
-void EventStore::Clear()
+EventPage EventStore::Page(const std::optional<EventCursor> &before, size_t limit, const Feed::Filter &filter) const
+{
+	// The copy is bounded by kCap and made under the lock; the sort runs after it.
+	std::vector<NormalizedEvent> matching;
+	EventPage page;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		page.epoch = seq_;
+		matching.reserve(events_.size());
+		for (const NormalizedEvent &ev : events_) {
+			if (before && !SortsBefore(ev.ts, ev.id, before->ts, before->id)) {
+				continue;
+			}
+			if (filter.Matches(ev.platform, ev.profileUuid, ev.accountId)) {
+				matching.push_back(ev);
+			}
+		}
+	}
+	// Newest first, one past the limit, so `more` needs no second pass.
+	const size_t keep = std::min(matching.size(), limit + 1);
+	std::partial_sort(matching.begin(), matching.begin() + static_cast<std::ptrdiff_t>(keep), matching.end(),
+			  [](const NormalizedEvent &a, const NormalizedEvent &b) {
+				  return SortsBefore(b.ts, b.id, a.ts, a.id);
+			  });
+	matching.resize(keep);
+	page.more = matching.size() > limit;
+	if (page.more) {
+		matching.pop_back();
+	}
+	std::reverse(matching.begin(), matching.end());
+	page.items = std::move(matching);
+	return page;
+}
+
+uint64_t EventStore::Clear()
 {
 	json snapshot;
 	uint64_t writeSeq = 0;
@@ -99,6 +144,7 @@ void EventStore::Clear()
 		lastSaveNs_ = os_gettime_ns();
 	}
 	WriteToDisk(snapshot, writeSeq);
+	return writeSeq;
 }
 
 void EventStore::Flush()
@@ -167,6 +213,9 @@ void EventStore::WriteToDisk(const json &root, uint64_t seq) const
 	// Serialize concurrent writers (Add vs. Flush vs. Clear) so two passes can't
 	// interleave on the shared tmp path; mutex_ is NOT held here, so the deque stays
 	// writable during the (slow) file I/O.
+	if (!persist_) {
+		return;
+	}
 	std::lock_guard<std::mutex> wlock(writeMutex_);
 	// Drop a snapshot a later epoch already superseded: a stale in-flight Add that built
 	// its snapshot before a Clear must not win writeMutex_ after Clear and resurrect the

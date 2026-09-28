@@ -9809,39 +9809,245 @@ void ObsBootstrap::RunEventSelfTest()
 void ObsBootstrap::RunChatHistorySelfTest()
 {
 	// A private ring, not Chat::History(): the smoke run must not leave synthetic lines in
-	// the scrollback a dock would hydrate.
+	// the scrollback a dock would page.
 	Chat::ChatHistory ring;
 	const OAuth::DestinationId twitch{"twitch:1", ""};
 	const OAuth::DestinationId youtubeA{"youtube:2", "profile-a"};
 	const OAuth::DestinationId youtubeB{"youtube:2", "profile-b"};
-	auto message = [](const std::string &id) {
-		return nlohmann::json{{"id", id}, {"platform", "selftest"}};
+	auto message = [](const std::string &id, const std::string &platform = "selftest") {
+		return nlohmann::json{{"id", id}, {"platform", platform}};
+	};
+	auto add = [](Chat::ChatHistory &into, const OAuth::DestinationId &dest, nlohmann::json m) {
+		return into.Add(dest, m);
+	};
+	auto all = [&ring] {
+		return ring.Page(std::nullopt, Chat::ChatHistory::kCap, Feed::Filter{}).items;
 	};
 
 	// Dedupe is per destination: the same platform id on two destinations is two messages,
 	// the same id again on one destination is a re-delivery.
-	const bool first = ring.Add(twitch, message("m1"));
-	const bool repeat = ring.Add(twitch, message("m1"));
-	const bool otherDest = ring.Add(youtubeA, message("m1"));
-	const bool otherProfile = ring.Add(youtubeB, message("m1"));
-	const bool dedupeOk = first && !repeat && otherDest && otherProfile && ring.List().size() == 3;
+	const bool first = add(ring, twitch, message("m1"));
+	const bool repeat = add(ring, twitch, message("m1"));
+	const bool otherDest = add(ring, youtubeA, message("m1"));
+	const bool otherProfile = add(ring, youtubeB, message("m1"));
+	const bool dedupeOk = first && !repeat && otherDest && otherProfile && all().size() == 3;
 	HostLog(std::string("[selftest] chat-history dedupe -> ") + (dedupeOk ? "OK" : "FAIL") + " (held " +
-		std::to_string(ring.List().size()) + ", expect 3)");
+		std::to_string(all().size()) + ", expect 3)");
 
 	// The cap evicts oldest-first, and the key index evicts with it: an evicted message's
 	// id is admitted again, a held one is still refused.
 	for (size_t i = 0; i < Chat::ChatHistory::kCap; ++i) {
-		ring.Add(twitch, message("fill-" + std::to_string(i)));
+		add(ring, twitch, message("fill-" + std::to_string(i)));
 	}
-	const nlohmann::json held = ring.List();
+	const nlohmann::json held = all();
 	const bool capped = held.size() == Chat::ChatHistory::kCap;
 	const bool oldestFirst = capped && held.front().value("id", "") == "fill-0" &&
 				 held.back().value("id", "") == "fill-" + std::to_string(Chat::ChatHistory::kCap - 1);
-	const bool evictedReadmitted = ring.Add(twitch, message("m1"));
-	const bool heldRefused = !ring.Add(twitch, message("fill-" + std::to_string(Chat::ChatHistory::kCap - 1)));
+	const bool evictedReadmitted = add(ring, twitch, message("m1"));
+	const bool heldRefused = !add(ring, twitch, message("fill-" + std::to_string(Chat::ChatHistory::kCap - 1)));
 	const bool capOk = capped && oldestFirst && evictedReadmitted && heldRefused;
 	HostLog(std::string("[selftest] chat-history cap -> ") + (capOk ? "OK" : "FAIL") + " (held " +
 		std::to_string(held.size()) + ", expect " + std::to_string(Chat::ChatHistory::kCap) + ")");
+
+	// Admission stamps a strictly rising seq and a receipt time onto the caller's frame; a
+	// refused re-delivery is left unstamped.
+	Chat::ChatHistory paged;
+	const OAuth::DestinationId *order[] = {&twitch, &youtubeA, &twitch, &youtubeB, &twitch};
+	std::vector<uint64_t> seqs;
+	bool stampOk = true;
+	// Stamped with its destination the way the hub stamps every frame, for the filter.
+	auto framed = [&message](const OAuth::DestinationId &dest, const std::string &id) {
+		nlohmann::json m = message(id, dest.accountId == "twitch:1" ? " Twitch " : "youtube");
+		m["accountId"] = dest.accountId;
+		if (!dest.profileUuid.empty()) {
+			m["profileUuid"] = dest.profileUuid;
+		}
+		return m;
+	};
+	for (size_t i = 0; i < std::size(order); ++i) {
+		nlohmann::json m = framed(*order[i], "p" + std::to_string(i));
+		stampOk = stampOk && paged.Add(*order[i], m) && m.value("rx", int64_t(0)) > 0;
+		seqs.push_back(m.value("seq", uint64_t(0)));
+	}
+	nlohmann::json again = framed(twitch, "p0");
+	stampOk = stampOk && !paged.Add(twitch, again) && !again.contains("seq");
+	for (size_t i = 1; i < seqs.size(); ++i) {
+		stampOk = stampOk && seqs[i] > seqs[i - 1];
+	}
+	HostLog(std::string("[selftest] chat-history seq stamp -> ") + (stampOk ? "OK" : "FAIL"));
+
+	// Pages walk back from the newest by seq cursor, each oldest-first, with `more` set
+	// until the ring is exhausted.
+	auto ids = [](const nlohmann::json &items) {
+		std::string out;
+		for (const nlohmann::json &m : items) {
+			out += (out.empty() ? "" : ",") + m.value("id", std::string());
+		}
+		return out;
+	};
+	auto seqOf = [](const Chat::ChatPage &page) {
+		return page.items.front().value("seq", uint64_t(0));
+	};
+	const Chat::ChatPage newest = paged.Page(std::nullopt, 2, Feed::Filter{});
+	const Chat::ChatPage middle = paged.Page(seqOf(newest), 2, Feed::Filter{});
+	const Chat::ChatPage oldest = paged.Page(seqOf(middle), 2, Feed::Filter{});
+	const bool cursorOk = ids(newest.items) == "p3,p4" && newest.more && ids(middle.items) == "p1,p2" &&
+			      middle.more && ids(oldest.items) == "p0" && !oldest.more;
+	HostLog(std::string("[selftest] chat-history page cursor -> ") + (cursorOk ? "OK" : "FAIL") + " (" +
+		ids(newest.items) + " | " + ids(middle.items) + " | " + ids(oldest.items) + ")");
+
+	// The filter is matchesSelection's: a platform matches trimmed and case-folded, and a
+	// destination matches its own profile only.
+	Feed::Filter byPlatform;
+	byPlatform.kind = Feed::Filter::Kind::Platform;
+	byPlatform.platform = "twitch";
+	Feed::Filter byDest;
+	byDest.kind = Feed::Filter::Kind::Destination;
+	byDest.profileUuid = "profile-a";
+	byDest.accountId = "youtube:2";
+	const Chat::ChatPage twitchPage = paged.Page(std::nullopt, 2, byPlatform);
+	const Chat::ChatPage destPage = paged.Page(std::nullopt, 10, byDest);
+	const bool filterOk = ids(twitchPage.items) == "p2,p4" && twitchPage.more && ids(destPage.items) == "p1" &&
+			      !destPage.more;
+	HostLog(std::string("[selftest] chat-history page filter -> ") + (filterOk ? "OK" : "FAIL") + " (" +
+		ids(twitchPage.items) + " | " + ids(destPage.items) + ")");
+
+	// Clear opens a new epoch and empties the ring and its key index; seq keeps rising.
+	const uint64_t epochBefore = paged.Page(std::nullopt, 1, Feed::Filter{}).epoch;
+	const uint64_t epoch = paged.Clear();
+	const Chat::ChatPage cleared = paged.Page(std::nullopt, 10, Feed::Filter{});
+	nlohmann::json readmit = framed(twitch, "p4");
+	const bool readmitted = paged.Add(twitch, readmit);
+	const bool clearOk = epoch == epochBefore + 1 && cleared.items.empty() && !cleared.more &&
+			     cleared.epoch == epoch && readmitted && readmit.value("seq", uint64_t(0)) > seqs.back();
+	HostLog(std::string("[selftest] chat-history clear epoch -> ") + (clearOk ? "OK" : "FAIL") + " (epoch " +
+		std::to_string(epoch) + ")");
+}
+
+void ObsBootstrap::RunEventsPagingSelfTest()
+{
+	// A private in-memory store: it never reads or writes the user's events.json.
+	Events::EventStore store{Events::EventStore::InMemory{}};
+	auto event = [](const std::string &id, int64_t ts, const std::string &accountId = "",
+			const std::string &profileUuid = "") {
+		Events::NormalizedEvent ev;
+		ev.id = id;
+		ev.platform = "twitch";
+		ev.type = "follow";
+		ev.ts = ts;
+		ev.accountId = accountId;
+		ev.profileUuid = profileUuid;
+		return ev;
+	};
+	auto ids = [](const Events::EventPage &page) {
+		std::string out;
+		for (const Events::NormalizedEvent &ev : page.items) {
+			out += (out.empty() ? "" : ",") + ev.id;
+		}
+		return out;
+	};
+	auto cursorAt = [](const Events::EventPage &page) {
+		return Events::EventCursor{page.items.front().ts, page.items.front().id};
+	};
+
+	// (ts, id) order with ids compared as UTF-8 bytes: U+FF21 (EF BC A1) sorts before
+	// U+1F600 (F0 9F 98 80), the reverse of their UTF-16 order.
+	const std::string fullwidthA = "\xEF\xBC\xA1";
+	const std::string grin = "\xF0\x9F\x98\x80";
+	for (const Events::NormalizedEvent &ev : {event("b", 1000), event(grin, 1000), event("a", 1000),
+						  event(fullwidthA, 1000), event("z", 2000), event("y", 500)}) {
+		store.Add(ev);
+	}
+	const Events::EventPage p1 = store.Page(std::nullopt, 2, Feed::Filter{});
+	const Events::EventPage p2 = store.Page(cursorAt(p1), 2, Feed::Filter{});
+	const Events::EventPage p3 = store.Page(cursorAt(p2), 2, Feed::Filter{});
+	const Events::EventPage p4 = store.Page(cursorAt(p3), 2, Feed::Filter{});
+	const bool orderOk = ids(p1) == grin + ",z" && p1.more && ids(p2) == "b," + fullwidthA && p2.more &&
+			     ids(p3) == "y,a" && !p3.more && p4.items.empty() && !p4.more;
+	HostLog(std::string("[selftest] events-paging tie-break -> ") + (orderOk ? "OK" : "FAIL"));
+
+	// A cursor is a value: once everything older than it is evicted, the page past it is
+	// empty and says there is no more -- not an error.
+	const Events::EventCursor oldest = cursorAt(p3);
+	for (size_t i = 0; i < Events::EventStore::kCap; ++i) {
+		store.Add(event("fill-" + std::to_string(i), 3000 + static_cast<int64_t>(i)));
+	}
+	const Events::EventPage evicted = store.Page(oldest, 30, Feed::Filter{});
+	const bool evictOk = evicted.items.empty() && !evicted.more;
+	HostLog(std::string("[selftest] events-paging evicted cursor -> ") + (evictOk ? "OK" : "FAIL"));
+
+	// Attribution survives the events.json shape; the host filter depends on it.
+	const Events::NormalizedEvent reread = Events::EventFromJson(event("attr", 1, "acct-1", "profile-1").ToJson());
+	const bool roundTripOk = reread.accountId == "acct-1" && reread.profileUuid == "profile-1";
+	HostLog(std::string("[selftest] events-paging attribution round-trip -> ") + (roundTripOk ? "OK" : "FAIL"));
+
+	// The destination filter, then Clear opening a new epoch that pages report.
+	Events::EventStore scoped{Events::EventStore::InMemory{}};
+	scoped.Add(event("exact", 1, "acct-1", "profile-1"));
+	scoped.Add(event("sibling", 2, "acct-1", "profile-2"));
+	scoped.Add(event("wide", 3, "acct-1"));
+	scoped.Add(event("other", 4, "acct-2"));
+	Feed::Filter byDest;
+	byDest.kind = Feed::Filter::Kind::Destination;
+	byDest.profileUuid = "profile-1";
+	byDest.accountId = "acct-1";
+	const bool filterOk = ids(scoped.Page(std::nullopt, 30, byDest)) == "exact,wide";
+	const uint64_t epoch = scoped.Clear();
+	const Events::EventPage afterClear = scoped.Page(std::nullopt, 30, Feed::Filter{});
+	const bool clearOk = epoch == 1 && afterClear.epoch == 1 && afterClear.items.empty();
+	HostLog(std::string("[selftest] events-paging filter -> ") + (filterOk ? "OK" : "FAIL") + ", clear epoch -> " +
+		(clearOk ? "OK" : "FAIL"));
+
+	// The table the webview's filterOf/matchesSelection parity test runs too
+	// (frontend/web/test/feedPaging.test.ts). A disagreement is a row that appears or
+	// vanishes as the reader pages.
+	struct ParityCase {
+		const char *kind, *platform, *profileUuid, *accountId;
+		const char *itemPlatform, *itemProfileUuid, *itemAccountId;
+		bool match;
+	};
+	const ParityCase cases[] = {
+		{"all", "", "", "", "kick", "", "k1", true},
+		{"platform", "twitch", "", "", " Twitch ", "", "t1", true},
+		{"platform", "youtube", "", "", "twitch", "", "t1", false},
+		{"destination", "", "P1", "A1", "youtube", "P1", "A1", true},
+		{"destination", "", "P1", "A1", "youtube", "P2", "A1", false},
+		{"destination", "", "P1", "A1", "youtube", "", "A1", true},
+		{"destination", "", "P1", "A1", "youtube", "", "A2", false},
+		{"destination", "", "P1", "", "youtube", "", "", true},
+		{"destination", "", "P1", "", "youtube", "", "A1", false},
+	};
+	int parityFails = 0;
+	for (const ParityCase &c : cases) {
+		const nlohmann::json params = {{"filter",
+						{{"kind", c.kind},
+						 {"platform", c.platform},
+						 {"profileUuid", c.profileUuid},
+						 {"accountId", c.accountId}}}};
+		Feed::Filter f;
+		std::string err;
+		if (!Feed::ParseFilter(params, f, err) ||
+		    f.Matches(c.itemPlatform, c.itemProfileUuid, c.itemAccountId) != c.match) {
+			++parityFails;
+		}
+	}
+	HostLog(std::string("[selftest] events-paging filter parity -> ") + (parityFails == 0 ? "OK" : "FAIL") + " (" +
+		std::to_string(parityFails) + " of " + std::to_string(std::size(cases)) + " disagree)");
+
+	// Hostile paging params get an error or a clamp, never a conversion with no answer: a
+	// float or out-of-range ts is refused, and a limit past INT64_MAX clamps to the maximum.
+	auto refused = [](const nlohmann::json &before) {
+		nlohmann::json result;
+		std::string err;
+		return !Bridge::Dispatch("events.list", {{"before", before}}, result, err) && !err.empty();
+	};
+	size_t hugeLimit = 0;
+	std::string limitErr;
+	const bool limitOk = Feed::ParseLimit({{"limit", UINT64_MAX}}, 30, hugeLimit, limitErr) &&
+			     hugeLimit == Feed::kMaxLimit;
+	const bool hostileOk = refused({{"ts", 1e300}, {"id", "x"}}) && refused({{"ts", 1.5}, {"id", "x"}}) &&
+			       refused({{"ts", UINT64_MAX}, {"id", "x"}}) && limitOk;
+	HostLog(std::string("[selftest] events-paging hostile params -> ") + (hostileOk ? "OK" : "FAIL"));
 }
 
 void ObsBootstrap::Stop(void (*drainCefTasks)())

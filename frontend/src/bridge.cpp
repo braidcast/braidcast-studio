@@ -13983,15 +13983,51 @@ bool MethodChatState(const json & /*params*/, json &result, std::string & /*erro
 	return true;
 }
 
-// The multichat scrollback, oldest first: every chat.message still in the hub's ring, so a
-// dock mounted after they arrived can show them. On the async lane rather than the sync
-// one so TID_UI, where every on-stream browser source renders, never copies up to
-// Chat::ChatHistory::kCap messages or contends for the lock every chat transport's emit
-// also takes. The reply is still serialized on TID_UI when the lane resolves. The body
-// touches the ring alone (its own mutex), never the bridge or CEF.
-bool MethodChatList(const json & /*params*/, json &result, std::string & /*error*/)
+// params.before -> a chat.list cursor: {seq}. Absent or null means the newest page.
+bool ParseChatCursor(const json &params, std::optional<uint64_t> &out, std::string &error)
 {
-	result = Chat::History().List();
+	out.reset();
+	const auto it = params.is_object() ? params.find("before") : params.end();
+	if (!params.is_object() || it == params.end() || it->is_null()) {
+		return true;
+	}
+	const auto seq = it->is_object() ? it->find("seq") : it->end();
+	if (!it->is_object() || seq == it->end() || !seq->is_number_unsigned()) {
+		error = "chat.list: before must be {seq} with a non-negative integer seq";
+		return false;
+	}
+	out = seq->get<uint64_t>();
+	return true;
+}
+
+// One page of the multichat scrollback (FeedPage: items oldest-first, more, epoch), so a
+// dock can open on the newest messages and page back as the reader scrolls up. On the
+// async lane rather than the sync one so TID_UI, where every on-stream browser source
+// renders, never contends for the lock every chat transport's emit also takes. The reply
+// is still serialized on TID_UI when the lane resolves. The body touches the ring alone
+// (its own mutex), never the bridge or CEF.
+bool MethodChatList(const json &params, json &result, std::string &error)
+{
+	Feed::Filter filter;
+	size_t limit = 0;
+	std::optional<uint64_t> before;
+	if (!Feed::ParseFilter(params, filter, error) ||
+	    !Feed::ParseLimit(params, Feed::kChatPageDefault, limit, error) ||
+	    !ParseChatCursor(params, before, error)) {
+		return false;
+	}
+	Chat::ChatPage page = Chat::History().Page(before, limit, filter);
+	result = Feed::PageJson(std::move(page.items), page.more, page.epoch);
+	return true;
+}
+
+// Empty the multichat scrollback. Every open dock resets on chat.cleared; the caller gets
+// the same epoch in its reply, so it can reset without waiting for the push.
+bool MethodChatClear(const json & /*params*/, json &result, std::string & /*error*/)
+{
+	const uint64_t epoch = Chat::History().Clear();
+	EmitEvent(EventNames::kChatCleared, json{{"epoch", epoch}});
+	result = json{{"epoch", epoch}};
 	return true;
 }
 
@@ -14277,27 +14313,62 @@ bool MethodPollTemplatesRename(const json &params, json &result, std::string &er
 
 // ---- events (Phase 9.2a) ---------------------------------------------------
 //
-// The persisted, de-duplicated live-events feed. events.list returns the stored
-// history newest-first; events.clear wipes it and pushes an empty events.backfill so
-// the dock resets. Real-time pushes arrive as events.new (one event) / events.backfill
+// The persisted, de-duplicated live-events feed. events.list returns one page of the
+// stored history in (ts, id) order; events.clear wipes it and pushes events.cleared so
+// every dock resets. Real-time pushes arrive as events.new (one event) / events.backfill
 // (an array) from the EventHub, started on account connect and stopped on disconnect /
 // shutdown -- account-lifecycle, not go-live.
 
-bool MethodEventsList(const json & /*params*/, json &result, std::string & /*error*/)
+// params.before -> an events.list cursor: {ts, id}. Absent or null means the newest page.
+bool ParseEventCursor(const json &params, std::optional<Events::EventCursor> &out, std::string &error)
 {
-	json arr = json::array();
-	for (const Events::NormalizedEvent &ev : Events::Store().List()) {
-		arr.push_back(ev.ToJson());
+	out.reset();
+	const auto it = params.is_object() ? params.find("before") : params.end();
+	if (!params.is_object() || it == params.end() || it->is_null()) {
+		return true;
 	}
-	result = std::move(arr);
+	const auto ts = it->is_object() ? it->find("ts") : it->end();
+	const auto id = it->is_object() ? it->find("id") : it->end();
+	// An integer that fits int64: a float (1e300 included) or an unsigned value past
+	// INT64_MAX has no int64 to convert to.
+	const bool tsOk = ts != it->end() && ts->is_number_integer() &&
+			  (!ts->is_number_unsigned() || ts->get<uint64_t>() <= uint64_t(INT64_MAX));
+	if (!it->is_object() || !tsOk || id == it->end() || !id->is_string()) {
+		error = "events.list: before must be {ts, id} with an integer ts";
+		return false;
+	}
+	out = Events::EventCursor{ts->get<int64_t>(), id->get<std::string>()};
 	return true;
 }
 
+// Sync lane: the copy it makes under the store's lock is bounded by EventStore::kCap, and
+// that lock is never held across I/O.
+bool MethodEventsList(const json &params, json &result, std::string &error)
+{
+	Feed::Filter filter;
+	size_t limit = 0;
+	std::optional<Events::EventCursor> before;
+	if (!Feed::ParseFilter(params, filter, error) ||
+	    !Feed::ParseLimit(params, Feed::kEventPageDefault, limit, error) ||
+	    !ParseEventCursor(params, before, error)) {
+		return false;
+	}
+	const Events::EventPage page = Events::Store().Page(before, limit, filter);
+	json items = json::array();
+	for (const Events::NormalizedEvent &ev : page.items) {
+		items.push_back(ev.ToJson());
+	}
+	result = Feed::PageJson(std::move(items), page.more, page.epoch);
+	return true;
+}
+
+// The caller gets the new epoch in its reply as well as in the push, so it can reset
+// without waiting for the push.
 bool MethodEventsClear(const json & /*params*/, json &result, std::string & /*error*/)
 {
-	Events::Store().Clear();
-	EmitEvent(EventNames::kEventsBackfill, json::array());
-	result = json{{"ok", true}};
+	const uint64_t epoch = Events::Store().Clear();
+	EmitEvent(EventNames::kEventsCleared, json{{"epoch", epoch}});
+	result = json{{"epoch", epoch}};
 	return true;
 }
 
@@ -15292,6 +15363,7 @@ void Init()
 		{"oauth.linkAccount", MethodOAuthLinkAccount},
 		{"oauth.status", MethodOAuthStatus},
 		{"chat.state", MethodChatState},
+		{"chat.clear", MethodChatClear},
 		{"streamMeta.getSaved", MethodStreamMetaGetSaved},
 		{"streamMeta.save", MethodStreamMetaSave},
 		{"streamMeta.forgetSent", MethodStreamMetaForgetSent},

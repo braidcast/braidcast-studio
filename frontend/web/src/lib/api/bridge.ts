@@ -1458,7 +1458,12 @@ export interface ChatPaid {
  * `profileUuid` is present only on a platform that runs one chat per broadcast
  * (YouTube creates a broadcast per stream profile, so two orientations on one channel
  * are two separate chats); it is absent for one-chat-per-channel platforms.
- * `paid` is absent on an ordinary line -- see ChatPaid. */
+ * `paid` is absent on an ordinary line -- see ChatPaid.
+ *
+ * `seq` is the order the host admitted the message in -- the order chat reads in, and
+ * the chat.list cursor -- and `rx` the host's receipt time in epoch ms, on the same
+ * clock as a session's `startedAt`. `ts` is the platform's own time, which disagrees
+ * across platforms. */
 export interface ChatMessage {
   platform: ChatPlatform;
   accountId: string;
@@ -1466,6 +1471,8 @@ export interface ChatMessage {
   channelId: string;
   id: string;
   ts: number;
+  seq: number;
+  rx: number;
   author: ChatAuthor;
   fragments: ChatFragment[];
   paid?: ChatPaid;
@@ -1617,8 +1624,8 @@ export type EventType =
   | "member"
   | "kicks";
 
-/** One normalized platform event (the `events.new` event; the `events.list`
- * method and `events.backfill` event carry arrays of these, newest-first).
+/** One normalized platform event (the `events.new` event; `events.list` pages and the
+ * `events.backfill` event carry arrays of these).
  * Optional fields are omitted by the host when empty/zero: `amount` is cheer
  * bits / superchat hundredths of the major unit (even JPY) / raid viewers / Kicks sent (a count of
  * Kick's gift currency, never money; `tier` is the gift's name); `actorColor` falls back to a
@@ -1649,6 +1656,24 @@ export interface NormalizedEvent {
    * trust it: a forked alert box reads it to tell a rehearsal from the real thing, and an
    * unforked one ignores it and shows every event the same way. */
   replay?: boolean;
+}
+
+/** Which rows a paged feed request (`events.list`, `chat.list`) returns. The host applies
+ * it exactly as `matchesSelection` (ui/destinationSelection.ts) does: `platform` is
+ * platformKey()-normalized, and a destination names the profile plus its account, since a
+ * channel-wide row carries only the account. */
+export type FeedFilter =
+  | { kind: "all" }
+  | { kind: "platform"; platform: string }
+  | { kind: "destination"; profileUuid: string; accountId: string };
+
+/** One page of a paged feed. `items` are oldest-first, ready to prepend; `more` says older
+ * matching rows exist past them; `epoch` is the store's clear epoch the page was read
+ * under, so a page read before a clear can be told apart and dropped. */
+export interface FeedPage<T> {
+  items: T[];
+  more: boolean;
+  epoch: number;
 }
 
 // --- overlay widgets (loopback SSE overlays, Phase 9.3) ----------------------
@@ -2307,11 +2332,14 @@ export interface ObsMethods {
   // started by the host on go-live and stopped on stop -- there is no connect method.
   "chat.send": { ok: boolean };
   "chat.state": ChatState[];
-  // The host's in-memory scrollback (the last 1000 chat.message frames across every
-  // destination), oldest first, for a dock that mounts after they arrived. Deduped by the
-  // host already, but a message can still arrive both here and live while the call is in
-  // flight, so a consumer merges by destination + id. Not persisted: empty after a restart.
-  "chat.list": ChatMessage[];
+  // One page of the host's in-memory scrollback (the last 1000 chat.message frames across
+  // every destination), in seq order: params { before?: {seq}; limit?: number (default 50,
+  // max 200); filter?: FeedFilter }. Without `before` it is the newest page. Deduped by
+  // the host already, but a message can still arrive both here and live while the call is
+  // in flight, so a consumer merges by destination + id. Not persisted: empty after a
+  // restart. clear empties it; every consumer resets on chat.cleared.
+  "chat.list": FeedPage<ChatMessage>;
+  "chat.clear": { epoch: number };
   // Live polls. create ({accountId, profileUuid?, question, options: string[2..4]}) opens
   // one in that destination's broadcast chat and remembers it as a template; end ({id})
   // closes it and returns the final tallies when the platform reports them; dismiss ({id})
@@ -2331,13 +2359,14 @@ export interface ObsMethods {
   "pollTemplates.touch": { ok: true };
   "pollTemplates.remove": { ok: true };
   "pollTemplates.rename": { ok: true };
-  // Cross-platform events feed (creator engagement, Phase 9.2). list returns the
-  // retained events newest-first; clear empties the host store (the host then
-  // emits an empty events.backfill so consumers reset their feed). New events
-  // arrive via the events.new / events.backfill push events. replay is documented
-  // beside overlays.test below, which it shares a result shape with.
-  "events.list": NormalizedEvent[];
-  "events.clear": { ok: boolean };
+  // Cross-platform events feed (creator engagement, Phase 9.2). list returns one page
+  // of the retained events in (ts, id) order: params { before?: {ts; id}; limit?: number
+  // (default 30, max 200); filter?: FeedFilter }, the newest page without `before`. clear
+  // empties the host store and emits events.cleared so every consumer resets. New events
+  // arrive via the events.new / events.backfill push events. replay is documented beside
+  // overlays.test below, which it shares a result shape with.
+  "events.list": FeedPage<NormalizedEvent>;
+  "events.clear": { epoch: number };
   // Overlay widgets (loopback SSE overlays, Phase 9.3). Everything but uploadAsset,
   // test and events.replay is sync. create/update/resetDefaults/duplicate/delete/
   // removeAsset emit overlays.changed.
@@ -2578,6 +2607,8 @@ export interface ObsEvents {
   // time, so a consumer merges it by `platform`). Chat is only active while live.
   "chat.message": ChatMessage;
   "chat.state": ChatState;
+  // The multichat scrollback was emptied (chat.clear); drop every row.
+  "chat.cleared": { epoch: number };
   // The full live-poll list after any change (open, close, a failure, dismiss).
   "polls.changed": { polls: LivePoll[] };
   /** The polls a stream stop just ended, with their final results (or, where the end call
@@ -2592,13 +2623,13 @@ export interface ObsEvents {
   // channels.stats poller. Merged with viewers.changed by the store, not carried here.
   "channels.stats": ChannelStats;
   // Cross-platform events feed (Phase 9.2). new = one normalized event appended to
-  // the feed. backfill = a batch of events (newest-first) that REPLACES the feed;
-  // it is also fired empty after events.clear, so treat it as "set the feed to
-  // this array". Events run on the account-connect lifecycle (always-on for
-  // connected accounts) -- they are NOT gated on Go Live and can arrive before or
-  // after a broadcast.
+  // the feed. backfill = the whole stored feed (newest-first), which REPLACES it.
+  // cleared = the store was emptied; drop every row. Events run on the account-connect
+  // lifecycle (always-on for connected accounts) -- they are NOT gated on Go Live and
+  // can arrive before or after a broadcast.
   "events.new": NormalizedEvent;
   "events.backfill": NormalizedEvent[];
+  "events.cleared": { epoch: number };
   // A widget was created/updated/duplicated/deleted; the Overlays page re-runs
   // overlays.list (and re-fetches the open widget if it changed elsewhere).
   "overlays.changed": Record<string, never>;

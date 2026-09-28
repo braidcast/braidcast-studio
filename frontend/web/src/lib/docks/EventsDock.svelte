@@ -1,5 +1,6 @@
 <script lang="ts">
   import { obs, type NormalizedEvent, type EventType } from "$lib/api/bridge";
+  import { FEED_PAGE_MAX, fetchAllPages } from "$lib/api/feedPages";
   import { EV } from "$lib/utils/eventNames";
   import { fmtMoney, fmtTally } from "$lib/utils/format";
   import Button from "$lib/ui/Button.svelte";
@@ -249,7 +250,7 @@
   }
 
   function clear(): void {
-    // The host clears its store then emits an empty events.backfill; setFeed([])
+    // The host clears its store then emits events.cleared; setFeed([])
     // below is a local echo so the feed empties immediately even if the push lags.
     // The echo makes a rejected clear look like it worked, so surface the failure.
     void callOrToast("events.clear", undefined, "Clear events failed");
@@ -367,17 +368,20 @@
   }
 
   $effect(() => {
-    obs
-      .call("events.list")
-      // events.list / events.backfill arrive newest-first; setFeed reverses into
-      // oldest->newest (top->bottom) to match the enqueue-at-bottom order.
-      .then((list) => feed.setFeed(list, true))
+    // events.list pages arrive oldest-first, the enqueue-at-bottom order; events.backfill
+    // carries the whole store newest-first, which setFeed reverses.
+    fetchAllPages<NormalizedEvent>((before) =>
+      obs.call("events.list", { before: before && { ts: before.ts, id: before.id }, limit: FEED_PAGE_MAX }),
+    )
+      .then((list) => feed.setFeed(list))
       .catch(() => {});
     const offNew = obs.on(EV.eventsNew, (e) => feed.enqueue(e));
     const offBackfill = obs.on(EV.eventsBackfill, (batch) => feed.setFeed(batch, true));
+    const offCleared = obs.on(EV.eventsCleared, () => feed.setFeed([]));
     return () => {
       offNew();
       offBackfill();
+      offCleared();
       feed.dispose();
       clearReplayTimers();
       disposed = true;
